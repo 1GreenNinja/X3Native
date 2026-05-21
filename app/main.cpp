@@ -141,6 +141,13 @@ int main(int argc, char** argv) {
     // ms. Headless of gameplay (no input); used to produce the perf baseline.
     bool     bench = false;
     uint32_t benchFrames = 600;
+    // Screenshot mode (--screenshot [path.png]): build EFLZ Level 1, pose the
+    // camera at a representative corridor vantage, render a few frames so shadows
+    // + art settle, read the color image back to CPU, write a PNG, and exit 0.
+    // Used to judge how the game looks without being at the keyboard. Default path
+    // when omitted: G:\X3Native\screenshot.png.
+    bool        screenshot = false;
+    std::string screenshotPath = "G:/X3Native/screenshot.png";
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
@@ -166,6 +173,11 @@ int main(int argc, char** argv) {
             // Optional second positional arg = frame count.
             if (i + 1 < argc && argv[i + 1][0] != '-')
                 benchFrames = (uint32_t)std::strtoul(argv[++i], nullptr, 10);
+        }
+        else if (a == "--screenshot") {
+            screenshot = true;
+            // Optional path arg (next token, if it isn't another flag).
+            if (i + 1 < argc && argv[i + 1][0] != '-') screenshotPath = argv[++i];
         }
     }
 
@@ -418,6 +430,55 @@ int main(int argc, char** argv) {
         glfwDestroyWindow(window);
         glfwTerminate();
         return 0;
+    }
+
+    // ---- Screenshot mode (--screenshot [path.png]) -------------------------
+    // Pose the camera at a representative corridor vantage that frames the real
+    // ModularSciFi art + a doorway down-corridor, render enough frames for the
+    // shadow map + art + doors to settle, then read the rendered color image back
+    // and write it as a PNG. Brief window flash is acceptable; exits cleanly.
+    if (screenshot) {
+        x3::logInfo("--screenshot: rendering EFLZ Level 1 to " + screenshotPath);
+        // Vantage: stand in the warm corridor (x 6..22) a couple meters past Door
+        // A, eye height ~1.7 m, looking straight down +X toward Door B / the armory
+        // so the corridor walls + doorway + floor recede into the frame. A slight
+        // downward pitch puts floor shadows in view; the sun is normalize(0.4,1,0.3)
+        // (matches the shadow pass) so the down-corridor look shows cast shadows.
+        const float ssX = 8.0f, ssY = 1.75f, ssZ = -0.4f;
+        const float ssYaw = 0.06f, ssPitch = -0.16f, ssFov = 70.0f;
+        device->setCamera(ssX, ssY, ssZ, ssYaw, ssPitch, ssFov);
+        const x3::phys::Vec3 ssEye{ ssX, ssY, ssZ };
+        const float dt = 1.0f / 60.0f;
+        // Open Door A so the corridor reads as an opened doorway (drive the use
+        // verb once at the Door A button before the settle loop).
+        {
+            x3::phys::Vec3 dir{ 1.0f, 0.0f, 0.0f };
+            game.onUse(x3::phys::Vec3{ 5.0f, 1.7f, 0.0f }, dir, scene, *physics);
+        }
+        const int kSettleFrames = 16;
+        for (int i = 0; i < kSettleFrames; ++i) {
+            glfwPollEvents();
+            game.tick(dt, scene, *physics, ssEye, ssEye);
+            physics->step(dt);
+            scene.update(*physics);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                scene.render(*device, frame);
+                game.drawWorldExtras(*device, frame, scene);
+            }
+            device->endFrame(frame);
+        }
+        const bool wrote = device->captureFrame(screenshotPath.c_str());
+        if (wrote) x3::logInfo("--screenshot: wrote " + screenshotPath);
+        else       x3::logError("--screenshot: capture FAILED");
+
+        audio->shutdown();
+        combatFx.shutdown(*device);
+        physics->shutdown();
+        device->shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return wrote ? 0 : 1;
     }
 
     if (smoketest) {
