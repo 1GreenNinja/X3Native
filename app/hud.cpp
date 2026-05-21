@@ -29,6 +29,9 @@ float smoothstep01(float t) {
 void Hud::init(x3::con::IConsole& console, bool* quitFlag) {
     // hud_fps: 1 shows the FPS/frame-time meter, 0 hides it.
     console.registerCVar("hud_fps", "1", "show the FPS / frame-time meter (0/1)");
+    // r_stats: 1 shows the perf instrumentation panel (FPS/CPU/GPU ms, draws,
+    // tris, objects). Off by default; toggled by `r_stats`/`stats` or F3.
+    console.registerCVar("r_stats", "0", "show the renderer stats panel (0/1)");
 
     console.registerCommand("quit", [quitFlag](const std::vector<std::string>&) {
         if (quitFlag) *quitFlag = true;
@@ -40,6 +43,16 @@ void Hud::init(x3::con::IConsole& console, bool* quitFlag) {
         else            { console.set("hud_fps", console.getInt("hud_fps") ? "0" : "1"); }
         console.print(std::string("hud_fps = ") + console.getString("hud_fps"));
     }, "toggle/set the FPS meter");
+
+    // `stats` / `r_speeds`: toggle (or set 0|1) the renderer stats panel. Both
+    // names drive the same r_stats cvar (r_speeds is the id-Tech-style alias).
+    auto statsToggle = [&console](const std::vector<std::string>& a) {
+        if (!a.empty()) { console.set("r_stats", a[0]); }
+        else            { console.set("r_stats", console.getInt("r_stats") ? "0" : "1"); }
+        console.print(std::string("r_stats = ") + console.getString("r_stats"));
+    };
+    console.registerCommand("stats",    statsToggle, "toggle/set the renderer stats panel");
+    console.registerCommand("r_speeds", statsToggle, "toggle/set the renderer stats panel (alias)");
 
     console.print("X3 console ready. type 'help' for commands, '~' to close.");
 }
@@ -137,6 +150,64 @@ void Hud::drawFps(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& f
     // 1px drop shadow for legibility over bright scene pixels.
     device.drawHudText(frame, buf, 9.0f, 9.0f, kGlyphPx, shadow);
     device.drawHudText(frame, buf, 8.0f, 8.0f, kGlyphPx, white);
+}
+
+void Hud::drawStats(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                    x3::con::IConsole& console, float dt, bool force) {
+    // Keep the CPU-ms EMA fresh even when the panel is hidden (drawFps shares it,
+    // but stats may be the only consumer when hud_fps is off).
+    if (dt > 0.0f) {
+        if (!m_emaSeeded) { m_emaDt = dt; m_emaSeeded = true; }
+        else m_emaDt = m_emaDt * 0.9f + dt * 0.1f;
+    }
+    if (!force && console.getInt("r_stats") == 0) return;
+
+    const x3::rhi::RenderStats s = device.stats();
+    const float cpuMs = m_emaDt * 1000.0f;
+    const float fps   = (m_emaDt > 1e-6f) ? (1.0f / m_emaDt) : 0.0f;
+
+    // Format the GPU line: "(n/a)" when timestamps are unsupported (gpuFrameMs==0
+    // can also mean a degenerate first frame, but it reads fine as a tiny number).
+    char gpuStr[24];
+    if (s.gpuFrameMs > 0.0f) std::snprintf(gpuStr, sizeof(gpuStr), "%5.2f ms", s.gpuFrameMs);
+    else                     std::snprintf(gpuStr, sizeof(gpuStr), "  n/a  ");
+
+    char lines[6][64];
+    std::snprintf(lines[0], sizeof(lines[0]), "FPS %4.0f", fps);
+    std::snprintf(lines[1], sizeof(lines[1]), "CPU %5.2f ms", cpuMs);
+    std::snprintf(lines[2], sizeof(lines[2]), "GPU %s", gpuStr);
+    std::snprintf(lines[3], sizeof(lines[3]), "draws %u", s.drawCalls);
+    std::snprintf(lines[4], sizeof(lines[4]), "tris  %u", s.triangles);
+    std::snprintf(lines[5], sizeof(lines[5]), "objs  %u/%u", s.objectsDrawn, s.objectsSubmitted);
+
+    // Right-aligned panel in the top-right corner so it never collides with the
+    // top-left FPS meter / objective text.
+    uint32_t w = 0, h = 0;
+    device.hudSize(w, h);
+    const float glyph = 14.0f;
+    const float pad = 8.0f;
+    // Widest line drives the panel width (monospace font: glyph*0.? approximated by
+    // glyph width == glyph height for this 8x8 atlas scaled square).
+    size_t widest = 0;
+    for (auto& l : lines) widest = std::max(widest, std::char_traits<char>::length(l));
+    const float panelW = widest * glyph + pad * 2.0f;
+    const float panelH = 6 * (glyph + 2.0f) + pad * 2.0f;
+    const float x0 = (w > 0) ? ((float)w - panelW - 8.0f) : 8.0f;
+    const float y0 = 8.0f;
+
+    // Backing plate for legibility over bright scene pixels.
+    const float plate[4] = { 0.0f, 0.0f, 0.0f, 0.55f };
+    device.drawHudQuad(frame, x0, y0, panelW, panelH, plate);
+
+    const float white[4]  = { 0.85f, 1.0f, 0.85f, 1.0f };
+    const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.8f };
+    float ty = y0 + pad;
+    for (auto& l : lines) {
+        const float tx = x0 + pad;
+        device.drawHudText(frame, l, tx + 1.0f, ty + 1.0f, glyph, shadow);
+        device.drawHudText(frame, l, tx, ty, glyph, white);
+        ty += glyph + 2.0f;
+    }
 }
 
 void Hud::drawCrosshair(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const {

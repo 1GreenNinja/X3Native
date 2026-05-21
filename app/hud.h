@@ -46,6 +46,13 @@ public:
     // Smooth + draw "FPS NNN  M.M ms" top-left (gated by the hud_fps cvar).
     void drawFps(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                  x3::con::IConsole& console, float dt);
+    // ---- Perf instrumentation overlay (r_stats / r_speeds) ----------------
+    // Multi-line "stats" panel below the FPS line: FPS, CPU ms (smoothed), GPU ms
+    // (timestamp queries), draw calls, triangles, visible objects. Gated by the
+    // `r_stats` cvar (0/1); the host can also force it via the `force` arg (F3).
+    // CPU ms reuses the same smoothed dt as drawFps. No-op if hidden / headless.
+    void drawStats(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                   x3::con::IConsole& console, float dt, bool force = false);
     // Crisp 2D crosshair at the framebuffer center.
     void drawCrosshair(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const;
     // ---- Phase 2a: player health + damage feedback ------------------------

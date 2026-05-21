@@ -21,6 +21,7 @@
 #include "level1_game.h"
 #include "fx.h"
 #include "hud.h"
+#include "stress.h"
 
 #include <memory>
 #include <string_view>
@@ -28,6 +29,8 @@
 #include <cmath>
 #include <vector>
 #include <cstdint>
+#include <cstdlib>
+#include <algorithm>
 
 namespace {
 // Approximate the viewmodel muzzle in world space from the eye + look angles, so
@@ -130,6 +133,14 @@ int main(int argc, char** argv) {
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false;
+    // Stress test: add N procedural cubes to the scene at startup (--stress N).
+    // Default 0 = OFF; Level 1 is unaffected unless requested.
+    uint32_t stressCount = 0;
+    // Benchmark mode (--bench N [frames]): spawn N cubes, point the camera at the
+    // field, run `frames` frames with vsync OFF, and report averaged FPS/CPU/GPU
+    // ms. Headless of gameplay (no input); used to produce the perf baseline.
+    bool     bench = false;
+    uint32_t benchFrames = 600;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
@@ -146,6 +157,16 @@ int main(int argc, char** argv) {
         else if (a == "--test-level1") testLevel1 = true;
         else if (a == "--test-phase2a") testPhase2a = true;
         else if (a == "--test-phase2b") testPhase2b = true;
+        else if (a == "--stress") {
+            if (i + 1 < argc) { stressCount = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
+        }
+        else if (a == "--bench") {
+            bench = true;
+            if (i + 1 < argc) { stressCount = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
+            // Optional second positional arg = frame count.
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+                benchFrames = (uint32_t)std::strtoul(argv[++i], nullptr, 10);
+        }
     }
 
     // Headless self-tests (no window / Vulkan needed)
@@ -227,7 +248,9 @@ int main(int argc, char** argv) {
     desc.nativeWindowHandle = glfwGetWin32Window(window);
     desc.width  = W;
     desc.height = H;
-    desc.vsync  = true;
+    // Benchmark mode runs with vsync OFF so it measures the true frame ceiling,
+    // not the display refresh cap.
+    desc.vsync  = !bench;
 #ifdef _DEBUG
     desc.validation = true;
 #else
@@ -319,6 +342,84 @@ int main(int argc, char** argv) {
     // drawViewmodel so typing e.g. `vm_pitch 10` moves the held gun immediately.
     registerViewmodelCVars(*console);
 
+    // ---- Stress-test injection (perf instrumentation layer) ----------------
+    // `spawn N` adds N procedural cubes around the level spawn so the renderer can
+    // be load-tested live; `stress_clear` hides them. The --stress N CLI flag does
+    // the same at startup. Default OFF — Level 1 unaffected unless requested.
+    x3::game::StressSpawner stress;
+    {
+        x3::game::Scene*        scenePtr   = &scene;
+        x3::rhi::IRenderDevice* devicePtr  = device.get();
+        const x3::phys::Vec3    around     = L1.spawn;
+        console->registerCommand("spawn",
+            [&stress, scenePtr, devicePtr, around, &console](const std::vector<std::string>& a) {
+                uint32_t n = a.empty() ? 1000u : (uint32_t)std::strtoul(a[0].c_str(), nullptr, 10);
+                stress.spawn(*scenePtr, *devicePtr, n, around.x, around.y, around.z, 40.0f);
+                console->print("spawned " + std::to_string(n) + " stress cubes (total " +
+                               std::to_string(stress.count()) + ")");
+            }, "spawn N procedural cubes for renderer load-testing (default 1000)");
+        console->registerCommand("stress_clear",
+            [&stress, scenePtr, &console](const std::vector<std::string>&) {
+                uint32_t n = stress.clear(*scenePtr);
+                console->print("cleared " + std::to_string(n) + " stress cubes");
+            }, "hide all spawned stress cubes");
+    }
+    // Apply the startup --stress N (placed around the level spawn).
+    if (stressCount > 0) {
+        x3::logInfo("--stress " + std::to_string(stressCount) + ": adding cubes around spawn");
+        stress.spawn(scene, *device, stressCount, L1.spawn.x, L1.spawn.y, L1.spawn.z, 40.0f);
+    }
+
+    // ---- Benchmark mode (--bench N [frames]) -------------------------------
+    // Point the camera at the spawned cube field and render `benchFrames` frames
+    // with vsync OFF, then report averaged FPS + CPU/GPU ms over the steady-state
+    // window (the first frames are skipped to drop swapchain/pipeline warm-up and
+    // the GPU-timestamp readback latency). Produces the perf baseline numbers.
+    if (bench) {
+        // Camera above + back from the spawn so the whole 40 m cube volume is in
+        // view (worst case for the renderer: everything submitted is on-screen).
+        const float bx = L1.spawn.x - 35.0f, by = L1.spawn.y + 25.0f, bz = L1.spawn.z;
+        const float byaw = 0.0f, bpitch = -0.5f;
+        device->setCamera(bx, by, bz, byaw, bpitch, 75.0f);
+
+        const uint32_t warmup = std::min<uint32_t>(60, benchFrames / 4);
+        double sumCpuMs = 0.0, sumGpuMs = 0.0; uint32_t measured = 0;
+        double prevT = glfwGetTime();
+        x3::rhi::RenderStats last{};
+        for (uint32_t f = 0; f < benchFrames && !glfwWindowShouldClose(window); ++f) {
+            glfwPollEvents();
+            double nowT = glfwGetTime();
+            double cpuMs = (nowT - prevT) * 1000.0; prevT = nowT;
+
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                scene.render(*device, frame);
+                // Stats overlay on so the HUD path is exercised under load too.
+                hud.drawStats(*device, frame, *console, (float)(cpuMs / 1000.0), /*force=*/true);
+            }
+            device->endFrame(frame);
+
+            last = device->stats();
+            if (f >= warmup) { sumCpuMs += cpuMs; sumGpuMs += last.gpuFrameMs; ++measured; }
+        }
+        const double avgCpu = measured ? sumCpuMs / measured : 0.0;
+        const double avgGpu = measured ? sumGpuMs / measured : 0.0;
+        const double avgFps = (avgCpu > 1e-6) ? (1000.0 / avgCpu) : 0.0;
+        char rb[256];
+        std::snprintf(rb, sizeof(rb),
+            "BENCH cubes=%u draws=%u tris=%u | FPS=%.1f  CPU=%.3f ms  GPU=%.3f ms  (avg over %u frames)",
+            stressCount, last.drawCalls, last.triangles, avgFps, avgCpu, avgGpu, measured);
+        x3::logInfo(rb);
+
+        audio->shutdown();
+        combatFx.shutdown(*device);
+        physics->shutdown();
+        device->shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
     if (smoketest) {
         x3::logInfo("smoketest: stepping Level 1 + rendering 30 frames (+ a mid-run swapchain recreate)");
         // Sit the camera in the armory looking at the pistol pickup so arming +
@@ -368,6 +469,9 @@ int main(int argc, char** argv) {
                 // HUD overlay last: crosshair + FPS meter + objective + console.
                 hud.drawCrosshair(*device, frame);
                 hud.drawFps(*device, frame, *console, dt);
+                // Perf stats panel: force-on under smoketest so the overlay + the
+                // GPU-timestamp readback path are exercised under validation.
+                hud.drawStats(*device, frame, *console, dt, /*force=*/true);
                 game.drawObjective(*device, frame);
                 // Phase 2a: exercise the health bar + damage flash + death overlay
                 // draw paths under validation (fixed sample values, no real player).
@@ -384,6 +488,17 @@ int main(int argc, char** argv) {
         x3::logInfo(std::string("smoketest: weapon viewmodel drawn (") +
                     (game.weapon().usingRealModel() ? "real GLB" : "fallback box") +
                     "); armed=" + (game.armed() ? "yes" : "no"));
+        // Surface the measured perf counters from the final frame (the GPU ms is the
+        // readback of an earlier frame, see VulkanRenderDevice timestamp notes).
+        {
+            const x3::rhi::RenderStats st = device->stats();
+            char sb[160];
+            std::snprintf(sb, sizeof(sb),
+                "smoketest: stats draws=%u tris=%u objs=%u/%u gpu=%.3f ms (stress=%u cubes)",
+                st.drawCalls, st.triangles, st.objectsDrawn, st.objectsSubmitted,
+                st.gpuFrameMs, stress.count());
+            x3::logInfo(sb);
+        }
         x3::logInfo("smoketest: 30 frames + recreate OK");
         audio->shutdown();
         combatFx.shutdown(*device);
@@ -419,6 +534,7 @@ int main(int argc, char** argv) {
     // (super-strength melee), and the left mouse button (fire). A small fire
     // cooldown gates the gun's rate; the melee cooldown lives in the MeleeSystem.
     bool prevSpace = false, prevF = false, prevE = false, prevFire = false, prevMelee = false;
+    bool prevF3 = false;                 // F3 toggles the perf stats overlay
     float fireCooldown = 0.0f;          // seconds until the gun can fire again
     constexpr float kFireCooldown = 0.25f;
 
@@ -488,6 +604,15 @@ int main(int argc, char** argv) {
             x3::logInfo(noclip ? "noclip ON" : "noclip OFF");
         }
         prevF = fNow;
+
+        // F3: toggle the perf stats overlay (drives the r_stats cvar) on the rising
+        // edge. Polled even with the console open so it always works.
+        bool f3Now = (glfwGetKey(window, GLFW_KEY_F3) == GLFW_PRESS);
+        if (f3Now && !prevF3) {
+            console->set("r_stats", console->getInt("r_stats") ? "0" : "1");
+            x3::logInfo(std::string("r_stats = ") + console->getString("r_stats"));
+        }
+        prevF3 = f3Now;
 
         bool spaceNow = keyDown(GLFW_KEY_SPACE);
 
@@ -691,6 +816,8 @@ int main(int argc, char** argv) {
             // the death overlay (when dead), then the console panel (when open).
             if (!consoleOpen && player.isAlive()) hud.drawCrosshair(*device, frame);
             hud.drawFps(*device, frame, *console, dt);
+            // Perf stats overlay (top-right): gated by the r_stats cvar / F3.
+            hud.drawStats(*device, frame, *console, dt);
             if (!consoleOpen) game.drawObjective(*device, frame);
             // Phase 2b: boss "PHASE 2!/PHASE 3!" flash, centered near the top, while
             // the banner timer is live (a brief, attention-grabbing red string).

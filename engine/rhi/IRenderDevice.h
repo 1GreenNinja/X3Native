@@ -30,6 +30,26 @@ struct MeshVertex { float pos[3]; float normal[3]; float uv[2]; };
 struct MeshHandle    { uint32_t id = 0; bool valid() const { return id != 0; } };
 struct TextureHandle { uint32_t id = 0; bool valid() const { return id != 0; } };
 
+// ---------------------------------------------------------------------------
+// Per-frame performance counters (perf instrumentation layer). No Vulkan types
+// here — the device fills this from its own counters + GPU timestamp queries so
+// the HUD / console can report draw calls / triangles / GPU+CPU ms without ever
+// touching the graphics API. Snapshot it with IRenderDevice::stats().
+//
+// Counters (drawCalls / triangles / objectsSubmitted / objectsDrawn) reflect the
+// frame that was most recently submitted via endFrame(). gpuFrameMs is the GPU
+// time of an EARLIER frame (read back with the frames-in-flight latency, so the
+// timestamps are guaranteed available without a stall) — see the .cpp notes.
+// ---------------------------------------------------------------------------
+struct RenderStats {
+    uint32_t drawCalls        = 0;   // drawMesh() calls that recorded a draw this frame
+    uint32_t triangles        = 0;   // total triangles submitted this frame
+    uint32_t objectsSubmitted = 0;   // drawMesh() calls attempted (incl. skipped)
+    uint32_t objectsDrawn     = 0;   // drawMesh() calls that actually drew (== drawCalls)
+    float    gpuFrameMs       = 0.0f; // GPU time for the main pass (timestamp queries)
+    uint64_t frameCount       = 0;   // total frames presented since init
+};
+
 class IRenderDevice {
 public:
     virtual ~IRenderDevice() = default;
@@ -78,6 +98,12 @@ public:
                              float yPx, float pxPerGlyph, const float rgba[4]) = 0;
     // Current framebuffer size in pixels (for HUD layout / centering).
     virtual void hudSize(uint32_t& outW, uint32_t& outH) const = 0;
+
+    // ---- Perf instrumentation (stats / r_speeds) --------------------------
+    // Snapshot of the most recently completed frame's counters + the GPU frame
+    // time (read back with frames-in-flight latency). Cheap; copy it each frame
+    // for the HUD/console overlay. No Vulkan types cross this boundary.
+    virtual RenderStats stats() const = 0;
 
     // Capability query
     virtual bool supportsDescriptorIndexing() const = 0;
