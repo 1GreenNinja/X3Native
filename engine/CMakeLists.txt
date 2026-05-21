@@ -2,6 +2,7 @@ add_library(x3engine STATIC
     core/x3_log.cpp
     core/Console.cpp
     rhi/VulkanRenderDevice.cpp
+    rhi/vma_impl.cpp
     asset/PakAssetSource.cpp
 )
 

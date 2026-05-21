@@ -15,10 +15,14 @@
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_win32.h>
 #include <VkBootstrap.h>
+#include <vk_mem_alloc.h>
 
 #include <vector>
 #include <string>
 #include <cmath>
+#include <fstream>
+#include <cstring>
+#include <cstddef>
 
 namespace x3::rhi {
 
@@ -87,11 +91,13 @@ public:
 
         if (!createSwapchain(m_width, m_height)) return false;
         if (!createPerFrame()) return false;
+        if (!createGraphics()) return false;
         return true;
     }
 
     void shutdown() override {
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        destroyGraphics();
         destroyPerFrame();
         destroySwapchain();
         if (m_dev.device)    vkb::destroy_device(m_dev);
@@ -157,7 +163,17 @@ public:
         ri.pColorAttachments = &color;
         vkCmdBeginRendering(fr.cmd, &ri);
 
-        // (TODO D2+: bind pipeline + draw here)
+        // Draw the test triangle (proves the full pipeline path).
+        if (m_triPipeline) {
+            VkViewport vp{ 0.0f, 0.0f, (float)m_extent.width, (float)m_extent.height, 0.0f, 1.0f };
+            VkRect2D scis{ {0,0}, m_extent };
+            vkCmdSetViewport(fr.cmd, 0, 1, &vp);
+            vkCmdSetScissor(fr.cmd, 0, 1, &scis);
+            vkCmdBindPipeline(fr.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_triPipeline);
+            VkDeviceSize off = 0;
+            vkCmdBindVertexBuffers(fr.cmd, 0, 1, &m_triVB, &off);
+            vkCmdDraw(fr.cmd, 3, 1, 0, 0);
+        }
 
         fc.frameIndex = m_frameIdx;
         fc.cmd = reinterpret_cast<uint64_t>(fr.cmd);
@@ -319,6 +335,134 @@ private:
         }
     }
 
+    // ---- Graphics: VMA + triangle pipeline (first geometry) ----
+    static std::string exeDir() {
+        char buf[1024]; DWORD n = GetModuleFileNameA(nullptr, buf, sizeof(buf));
+        std::string p(buf, n);
+        size_t slash = p.find_last_of("\\/");
+        return slash == std::string::npos ? std::string(".") : p.substr(0, slash);
+    }
+
+    VkShaderModule loadShaderModule(const std::string& relPath) {
+        std::string full = exeDir() + "\\" + relPath;
+        std::ifstream f(full, std::ios::binary | std::ios::ate);
+        if (!f) { logError(std::string("[rhi] shader not found: ") + full); return VK_NULL_HANDLE; }
+        size_t sz = (size_t)f.tellg(); f.seekg(0);
+        std::vector<char> code(sz); f.read(code.data(), sz);
+        VkShaderModuleCreateInfo ci{ VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
+        ci.codeSize = sz;
+        ci.pCode = reinterpret_cast<const uint32_t*>(code.data());
+        VkShaderModule m = VK_NULL_HANDLE;
+        if (vkCreateShaderModule(m_dev.device, &ci, nullptr, &m) != VK_SUCCESS)
+            logError(std::string("[rhi] shader module create failed: ") + full);
+        return m;
+    }
+
+    bool createGraphics() {
+        // VMA allocator
+        VmaAllocatorCreateInfo aci{};
+        aci.physicalDevice = m_dev.physical_device;
+        aci.device = m_dev.device;
+        aci.instance = m_inst.instance;
+        aci.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+        aci.vulkanApiVersion = VK_API_VERSION_1_3;
+        if (vmaCreateAllocator(&aci, &m_alloc) != VK_SUCCESS) { logError("[rhi] VMA create failed"); return false; }
+
+        // Triangle vertex buffer (host-visible, mapped)
+        struct Vtx { float pos[2]; float color[3]; };
+        const Vtx tri[3] = {
+            { { 0.0f, -0.5f }, { 1.0f, 0.2f, 0.2f } },
+            { { 0.5f,  0.5f }, { 0.2f, 1.0f, 0.2f } },
+            { {-0.5f,  0.5f }, { 0.2f, 0.4f, 1.0f } },
+        };
+        VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        bci.size = sizeof(tri);
+        bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        VmaAllocationCreateInfo vaci{};
+        vaci.usage = VMA_MEMORY_USAGE_AUTO;
+        vaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        VmaAllocationInfo vainfo{};
+        if (vmaCreateBuffer(m_alloc, &bci, &vaci, &m_triVB, &m_triVBAlloc, &vainfo) != VK_SUCCESS) {
+            logError("[rhi] triangle VB create failed"); return false;
+        }
+        std::memcpy(vainfo.pMappedData, tri, sizeof(tri));
+
+        // Shaders
+        VkShaderModule vs = loadShaderModule("shaders\\tri.vert.spv");
+        VkShaderModule fs = loadShaderModule("shaders\\tri.frag.spv");
+        if (!vs || !fs) return false;
+
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = vs; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
+
+        VkVertexInputBindingDescription bind{ 0, sizeof(Vtx), VK_VERTEX_INPUT_RATE_VERTEX };
+        VkVertexInputAttributeDescription attrs[2]{
+            { 0, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(Vtx, pos)   },
+            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vtx, color) },
+        };
+        VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+        vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &bind;
+        vin.vertexAttributeDescriptionCount = 2; vin.pVertexAttributeDescriptions = attrs;
+
+        VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        vp.viewportCount = 1; vp.scissorCount = 1;
+
+        VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        cb.attachmentCount = 1; cb.pAttachments = &cba;
+
+        VkDynamicState dyn[2]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+
+        VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_triLayout) != VK_SUCCESS) {
+            logError("[rhi] pipeline layout failed"); return false;
+        }
+
+        VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+        prci.colorAttachmentCount = 1; prci.pColorAttachmentFormats = &m_format;
+
+        VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        gpci.pNext = &prci;
+        gpci.stageCount = 2; gpci.pStages = stages;
+        gpci.pVertexInputState = &vin; gpci.pInputAssemblyState = &ia;
+        gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
+        gpci.pMultisampleState = &ms; gpci.pColorBlendState = &cb;
+        gpci.pDynamicState = &ds; gpci.layout = m_triLayout;
+        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_triPipeline);
+
+        vkDestroyShaderModule(m_dev.device, vs, nullptr);
+        vkDestroyShaderModule(m_dev.device, fs, nullptr);
+        if (pr != VK_SUCCESS) { logError("[rhi] graphics pipeline create failed"); return false; }
+
+        logInfo("[rhi] triangle pipeline ready (VMA + SPIR-V + dynamic-rendering)");
+        return true;
+    }
+
+    void destroyGraphics() {
+        if (m_triPipeline) vkDestroyPipeline(m_dev.device, m_triPipeline, nullptr);
+        if (m_triLayout)   vkDestroyPipelineLayout(m_dev.device, m_triLayout, nullptr);
+        if (m_triVB)       vmaDestroyBuffer(m_alloc, m_triVB, m_triVBAlloc);
+        if (m_alloc)       vmaDestroyAllocator(m_alloc);
+        m_triPipeline = VK_NULL_HANDLE; m_triLayout = VK_NULL_HANDLE;
+        m_triVB = VK_NULL_HANDLE; m_alloc = nullptr;
+    }
+
     // Core objects
     vkb::Instance m_inst{};
     vkb::Device   m_dev{};
@@ -326,6 +470,13 @@ private:
     VkQueue       m_gfxQueue = VK_NULL_HANDLE;
     uint32_t      m_gfxFamily = 0;
     bool          m_descriptorIndexing = false;
+
+    // Graphics
+    VmaAllocator  m_alloc = nullptr;
+    VkPipeline    m_triPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout m_triLayout = VK_NULL_HANDLE;
+    VkBuffer      m_triVB = VK_NULL_HANDLE;
+    VmaAllocation m_triVBAlloc = nullptr;
 
     // Swapchain
     VkSwapchainKHR m_swapchain = VK_NULL_HANDLE;

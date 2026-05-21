@@ -10,3 +10,29 @@ endif()
 
 set_target_properties(X3Engine PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+# ---- Compile GLSL shaders to SPIR-V (glslc from the Vulkan SDK) ----
+set(SHADER_SRCS
+    ${CMAKE_SOURCE_DIR}/shaders/tri.vert
+    ${CMAKE_SOURCE_DIR}/shaders/tri.frag)
+set(SPV_DIR ${CMAKE_BINARY_DIR}/shaders_spv)
+file(MAKE_DIRECTORY ${SPV_DIR})
+set(SPV_FILES "")
+foreach(s ${SHADER_SRCS})
+    get_filename_component(fn ${s} NAME)
+    set(out ${SPV_DIR}/${fn}.spv)
+    add_custom_command(
+        OUTPUT ${out}
+        COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${s} -o ${out}
+        DEPENDS ${s}
+        COMMENT "glslc ${fn}"
+        VERBATIM)
+    list(APPEND SPV_FILES ${out})
+endforeach()
+add_custom_target(x3shaders DEPENDS ${SPV_FILES})
+add_dependencies(X3Engine x3shaders)
+
+# Copy compiled .spv next to the exe so runtime loads <exedir>/shaders/*.spv
+add_custom_command(TARGET X3Engine POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:X3Engine>/shaders
+    COMMAND ${CMAKE_COMMAND} -E copy_directory ${SPV_DIR} $<TARGET_FILE_DIR:X3Engine>/shaders)
