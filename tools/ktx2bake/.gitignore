@@ -1,0 +1,12 @@
+# Encoder binaries (downloaded on demand — not committed)
+bin/
+
+# Baked output (test runs — not committed)
+out/
+test_out/
+*.ktx2
+*.ktx
+
+# Temp / scratch
+*.tmp
+*.bak
