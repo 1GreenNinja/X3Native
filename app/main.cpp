@@ -129,7 +129,7 @@ int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
-         testPhase2a = false;
+         testPhase2a = false, testPhase2b = false;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
@@ -145,6 +145,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-audio") testAudio = true;
         else if (a == "--test-level1") testLevel1 = true;
         else if (a == "--test-phase2a") testPhase2a = true;
+        else if (a == "--test-phase2b") testPhase2b = true;
     }
 
     // Headless self-tests (no window / Vulkan needed)
@@ -195,6 +196,10 @@ int main(int argc, char** argv) {
     if (testPhase2a) {
         x3::logInfo("running EFLZ Phase 2a (player health + enemies fight back) self-test...");
         return x3::game::runPhase2aSelfTest() ? 0 : 1;
+    }
+    if (testPhase2b) {
+        x3::logInfo("running EFLZ Phase 2b (super-strength melee + Martinez boss phases) self-test...");
+        return x3::game::runPhase2bSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -389,7 +394,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    x3::logInfo("entering main loop — WASD walk, mouse look, LeftShift sprint, Space jump, E use, F noclip, ` console, Esc to quit");
+    x3::logInfo("entering main loop — WASD walk, mouse look, LeftShift sprint, Space jump, E use, V super-strength melee (LMB fire when armed), F noclip, ` console, Esc to quit");
 
     // ---- Walking player (S3). Spawn at the Level 1 cell spawn point (Jake wakes
     // in the detention cell), facing +X down the level spine.
@@ -410,9 +415,10 @@ int main(int argc, char** argv) {
     glfwSetKeyCallback(window, keyCallback);
     bool consoleWasOpen = false;   // tracks cursor-mode transitions
 
-    // Rising-edge tracking for Space (jump), F (noclip toggle), E (use), and the
-    // left mouse button (fire). A small fire cooldown gates the gun's rate.
-    bool prevSpace = false, prevF = false, prevE = false, prevFire = false;
+    // Rising-edge tracking for Space (jump), F (noclip toggle), E (use), V/MMB
+    // (super-strength melee), and the left mouse button (fire). A small fire
+    // cooldown gates the gun's rate; the melee cooldown lives in the MeleeSystem.
+    bool prevSpace = false, prevF = false, prevE = false, prevFire = false, prevMelee = false;
     float fireCooldown = 0.0f;          // seconds until the gun can fire again
     constexpr float kFireCooldown = 0.25f;
 
@@ -603,6 +609,33 @@ int main(int argc, char** argv) {
             audio->playSound2D(sndPickup, 0.8f, 1.0f);
         prevArmed = game.armed();
 
+        // ---- Phase 2b: SUPER-STRENGTH MELEE on the V key or middle-mouse rising
+        // edge. The unarmed-strength punch: damages + knocks back every enemy in a
+        // short forward arc, and brute-forces a closed door you punch. Works whether
+        // or not armed (the pistol is the separate LMB verb). Gated by the
+        // MeleeSystem's own cooldown; only while alive. ----
+        bool meleeNow = (keyDown(GLFW_KEY_V) ||
+            (!consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS));
+        if (meleeNow && !prevMelee && player.isAlive()) {
+            x3::phys::Vec3 eye{ camX, camY, camZ };
+            x3::phys::Vec3 dir{ std::cos(camPitch) * std::cos(camYaw),
+                                std::sin(camPitch),
+                                std::cos(camPitch) * std::sin(camYaw) };
+            x3::game::MeleeResult mr = game.onMelee(eye, dir, scene, *physics);
+            if (!mr.onCooldown) {
+                // Melee swing FX: a short tracer from the muzzle out to the punch's
+                // far point so the strength swing reads (reuses the CombatFx beam).
+                const x3::phys::Vec3 muzzle = muzzleFromCamera(camX, camY, camZ, camYaw, camPitch);
+                combatFx.addTracer(muzzle, mr.swingTo);
+                // A heavy "thump" cue (reuse the gunshot WAV at low pitch).
+                audio->playSound3D(sndGun, muzzle.x, muzzle.y, muzzle.z, 0.7f, 0.6f);
+                if (mr.doorForced)  x3::logInfo("melee: brute-forced a door open");
+                if (mr.enemiesHit)  x3::logInfo("melee: punched " + std::to_string(mr.enemiesHit) +
+                                                " enemy(ies), killed " + std::to_string(mr.enemiesKilled));
+            }
+        }
+        prevMelee = meleeNow;
+
         // ---- Combat: FIRE on the left-mouse rising edge — only effective when
         // armed, gated by a small cooldown. The controller raycasts across all
         // Level-1 enemy groups; the first live monster the ray hits takes damage. ----
@@ -659,6 +692,17 @@ int main(int argc, char** argv) {
             if (!consoleOpen && player.isAlive()) hud.drawCrosshair(*device, frame);
             hud.drawFps(*device, frame, *console, dt);
             if (!consoleOpen) game.drawObjective(*device, frame);
+            // Phase 2b: boss "PHASE 2!/PHASE 3!" flash, centered near the top, while
+            // the banner timer is live (a brief, attention-grabbing red string).
+            if (game.phaseBannerTime() > 0.0f && !game.phaseBanner().empty()) {
+                uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                const float scale = 28.0f;
+                const float w = game.phaseBanner().size() * scale * 0.6f;
+                const float px = (hw > 0) ? (hw * 0.5f - w * 0.5f) : 420.0f;
+                const float py = (hh > 0) ? (hh * 0.22f) : 120.0f;
+                const float red[4] = { 1.0f, 0.25f, 0.2f, 1.0f };
+                device->drawHudText(frame, game.phaseBanner().c_str(), px, py, scale, red);
+            }
             // Phase 2a: player health + damage feedback.
             hud.drawHealth(*device, frame, player.hp(), player.maxHp());
             hud.drawDamageFlash(*device, frame, player.damageFlash());

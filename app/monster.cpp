@@ -88,6 +88,24 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     m_windupTimer    = 0.0f;
     m_winding        = false;
 
+    // ---- Boss phases (Phase 2b, spec §8). Always start at Phase1 with neutral
+    // (1x) multipliers; the HP-keyed machine in update() advances them. Copying the
+    // config even for non-Boss types is harmless (the machine only runs for Boss). ----
+    m_phase            = BossPhase::Phase1;
+    m_phase2Frac       = tuning.phase2Frac;
+    m_phase3Frac       = tuning.phase3Frac;
+    m_phase2SpeedMul   = tuning.phase2SpeedMul;
+    m_phase2DamageMul  = tuning.phase2DamageMul;
+    m_phase3SpeedMul   = tuning.phase3SpeedMul;
+    m_phase3DamageMul  = tuning.phase3DamageMul;
+    m_phase2ScaleMul   = tuning.phase2ScaleMul;
+    m_phase3ScaleMul   = tuning.phase3ScaleMul;
+    m_phase3SummonCount= tuning.phase3SummonCount;
+    m_phaseSpeedMul    = 1.0f;
+    m_phaseDamageMul   = 1.0f;
+    m_phaseScaleMul    = 1.0f;
+    m_phaseTintMul[0] = m_phaseTintMul[1] = m_phaseTintMul[2] = 1.0f;
+
     // ---- Try the real purchased GLB via a mounted loose-dir asset source. ----
     m_assets.reset(x3::asset::createAssetSource());
     bool mounted = m_assets->mountDir(modelDir, 0);
@@ -224,17 +242,84 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
 }
 
 // ---------------------------------------------------------------------------
+// Super-strength melee (Phase 2b): apply heavy damage + start the hit-flash, and
+// kill (hide + remove body + death-pop) on HP<=0 — the same death path fire()
+// uses. The caller has already resolved that this monster is inside the punch arc.
+// The knockback impulse is applied by the caller (it owns the direction).
+// ---------------------------------------------------------------------------
+bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
+                                    x3::phys::IPhysicsWorld& physics) {
+    if (!m_alive) return false;
+    bool dead = applyDamage(&m_hp, damage);
+    m_flash = kHitFlashTime;
+    if (dead) {
+        m_alive    = false;
+        m_dying    = true;
+        m_deathPop = kDeathPopTime;
+        if (m_entity != kNoLink && m_entity < scene.size())
+            scene.get(m_entity).body = x3::phys::BodyId{};
+        if (m_body.valid()) physics.removeBody(m_body);
+        m_body = x3::phys::BodyId{};
+        x3::logInfo("[monster] melee-killed (HP 0) — body removed, death-pop started");
+    } else {
+        x3::logInfo("[monster] melee hit for " + std::to_string(damage) +
+                    " — HP now " + std::to_string(m_hp));
+    }
+    return dead;
+}
+
+int MonsterSystem::effectiveDamage() const {
+    // Phase-scaled per-attack damage (Phase1 = 1x). Round to nearest int.
+    return (int)(m_dmg * m_phaseDamageMul + 0.5f);
+}
+
+// ---------------------------------------------------------------------------
 // Per-frame: decay hit-flash; run the death pop; else face + chase the player.
 // ---------------------------------------------------------------------------
 void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                            const x3::phys::Vec3& playerPos) {
-    update(dt, scene, physics, playerPos, nullptr, AttackFxFn{});
+    update(dt, scene, physics, playerPos, nullptr, AttackFxFn{}, BossPhaseFn{});
 }
 
 void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                            const x3::phys::Vec3& playerPos,
                            IDamageSink* target, const AttackFxFn& fx) {
+    update(dt, scene, physics, playerPos, target, fx, BossPhaseFn{});
+}
+
+void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                           const x3::phys::Vec3& playerPos,
+                           IDamageSink* target, const AttackFxFn& fx,
+                           const BossPhaseFn& onPhase) {
     if (dt <= 0.0f) return;
+
+    // ---- Boss phase machine (Phase 2b). Monotone HP-fraction latch: only ever
+    // advances Phase1 -> Phase2 -> Phase3. On a transition, fold in that phase's
+    // speed/damage/scale/tint multipliers and fire onPhase once (HUD flash / audio
+    // / summon). Runs while alive (a dead boss has its body gone). ----
+    if (m_type == MonsterType::Boss && m_alive && m_maxHp > 0) {
+        const float frac = (float)m_hp / (float)m_maxHp;
+        BossPhase want = m_phase;
+        if (frac <= m_phase3Frac)      want = BossPhase::Phase3;
+        else if (frac <= m_phase2Frac) want = BossPhase::Phase2;
+        if ((uint32_t)want > (uint32_t)m_phase) {
+            m_phase = want;
+            if (m_phase == BossPhase::Phase2) {
+                m_phaseSpeedMul  = m_phase2SpeedMul;
+                m_phaseDamageMul = m_phase2DamageMul;
+                m_phaseScaleMul  = m_phase2ScaleMul;
+                m_phaseTintMul[0] = 1.0f; m_phaseTintMul[1] = 0.6f; m_phaseTintMul[2] = 0.6f;
+                x3::logInfo("[monster] BOSS PHASE 2 — ENRAGE (faster + harder + reddened)");
+            } else { // Phase3
+                m_phaseSpeedMul  = m_phase3SpeedMul;
+                m_phaseDamageMul = m_phase3DamageMul;
+                m_phaseScaleMul  = m_phase3ScaleMul;
+                m_phaseTintMul[0] = 1.0f; m_phaseTintMul[1] = 0.35f; m_phaseTintMul[2] = 0.35f;
+                x3::logInfo("[monster] BOSS PHASE 3 — DESPERATE (summon + charge)");
+            }
+            if (onPhase) onPhase(m_phase);
+        }
+    }
 
     // Decay hit-flash.
     if (m_flash > 0.0f) {
@@ -279,7 +364,9 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // The Drone (ranged) instead HOLDS a standoff distance: it approaches only
     // until within m_standoff, then strafes/backs off to keep its distance and
     // shoot. (Facing still tracks the player, above.) ----
-    if (m_chaseSpeed > 0.0f && m_body.valid() && horiz > 1e-4f) {
+    // Phase-scaled chase speed (Boss enrage moves faster; 1x for everyone else).
+    const float chaseSpeed = m_chaseSpeed * m_phaseSpeedMul;
+    if (chaseSpeed > 0.0f && m_body.valid() && horiz > 1e-4f) {
         m_wander += dt * kStrafeFreq;
         const float fxn = dx / horiz, fzn = dz / horiz;   // toward player (XZ)
         const float pxn = -fzn,       pzn = fxn;          // perpendicular (left)
@@ -313,7 +400,7 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         float ml = std::sqrt(mx * mx + mz * mz);
         if (ml > 1e-4f) { mx /= ml; mz /= ml; }
 
-        const float step  = m_chaseSpeed * dt;
+        const float step  = chaseSpeed * dt;
         const float probe = step + kMonsterHalf.x + 0.05f;
         const x3::phys::Vec3 mdir{ mx, 0.0f, mz };
         // Don't walk through walls (Static) or props like the dynamic box (Dynamic).
@@ -384,11 +471,13 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                     }
                 }
                 if (landed) {
-                    bool hit = target->takeDamage(m_dmg);
+                    // Phase-scaled damage (Boss enrage hits harder; 1x otherwise).
+                    const int dmg = effectiveDamage();
+                    bool hit = target->takeDamage(dmg);
                     if (hit)
                         x3::logInfo(std::string("[monster] ") +
                                     (m_ranged ? "drone ranged" : "melee") +
-                                    " hit player for " + std::to_string(m_dmg));
+                                    " hit player for " + std::to_string(dmg));
                 }
             }
         }
@@ -404,13 +493,15 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // long as the host calls update() after scene.update() (see main loop). ----
     {
         const float c = std::cos(m_yaw), s = std::sin(m_yaw);
-        // Yaw about +Y: local +X -> (c,0,-s), +Z -> (s,0,c).
+        // Yaw about +Y: local +X -> (c,0,-s), +Z -> (s,0,c). The phase scale
+        // multiplier up-scales the boss as it enrages (graybox phase feedback).
+        const float scale = m_modelScale * m_phaseScaleMul;
         Entity& me = scene.get(m_entity);
         composeTRS(me.transform,
                    x3::phys::Vec3{ c, 0.0f, -s },
                    x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
                    x3::phys::Vec3{ s, 0.0f, c },
-                   m_modelScale, m_pos);
+                   scale, m_pos);
     }
 }
 
@@ -429,7 +520,12 @@ void MonsterSystem::drawMonster(x3::rhi::IRenderDevice& device,
     // flashAmt in [0,1]; 1 right after a hit, 0 once decayed. Start from the
     // per-instance base tint (Tuning.tint) so e.g. boss Martinez reads distinct.
     const float flashAmt = (kHitFlashTime > 0.0f) ? (m_flash / kHitFlashTime) : 0.0f;
-    float tint[4] = { m_baseTint[0], m_baseTint[1], m_baseTint[2], m_baseTint[3] };
+    // Fold the per-phase tint multiplier into the base (Boss enrage reddens; 1x for
+    // everyone else) so the active boss phase reads on screen.
+    float tint[4] = { m_baseTint[0] * m_phaseTintMul[0],
+                      m_baseTint[1] * m_phaseTintMul[1],
+                      m_baseTint[2] * m_phaseTintMul[2],
+                      m_baseTint[3] };
     // Toward red: keep R, knock down G/B by the flash amount.
     tint[1] *= (1.0f - 0.85f * flashAmt);
     tint[2] *= (1.0f - 0.85f * flashAmt);
@@ -498,14 +594,21 @@ uint32_t MonsterManager::aliveCount() const {
 
 void MonsterManager::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                             const x3::phys::Vec3& playerPos) {
-    update(dt, scene, physics, playerPos, nullptr, AttackFxFn{});
+    update(dt, scene, physics, playerPos, nullptr, AttackFxFn{}, BossPhaseFn{});
 }
 
 void MonsterManager::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                             const x3::phys::Vec3& playerPos,
                             IDamageSink* target, const AttackFxFn& fx) {
+    update(dt, scene, physics, playerPos, target, fx, BossPhaseFn{});
+}
+
+void MonsterManager::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                            const x3::phys::Vec3& playerPos,
+                            IDamageSink* target, const AttackFxFn& fx,
+                            const BossPhaseFn& onPhase) {
     for (auto& m : m_monsters)
-        m->update(dt, scene, physics, playerPos, target, fx);
+        m->update(dt, scene, physics, playerPos, target, fx, onPhase);
 }
 
 void MonsterManager::drawAll(x3::rhi::IRenderDevice& device,
