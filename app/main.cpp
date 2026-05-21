@@ -15,7 +15,82 @@
 
 #include <memory>
 #include <string_view>
+#include <string>
 #include <cmath>
+#include <vector>
+#include <cstdint>
+#include <filesystem>
+
+namespace {
+
+// ---- Procedural scene helpers (S1) ----------------------------------------
+using x3::rhi::MeshVertex;
+
+// A flat ground quad on the XZ plane, centered at origin, `half` units to a side,
+// UVs tiled `tiles` times so the checker reads as repeated cells.
+void makeGroundQuad(float half, float tiles,
+                    std::vector<MeshVertex>& verts, std::vector<uint32_t>& idx) {
+    verts = {
+        {{-half, 0, -half}, {0, 1, 0}, {0,     0    }},
+        {{ half, 0, -half}, {0, 1, 0}, {tiles, 0    }},
+        {{ half, 0,  half}, {0, 1, 0}, {tiles, tiles}},
+        {{-half, 0,  half}, {0, 1, 0}, {0,     tiles}},
+    };
+    // CCW when viewed from above (+Y), matching VK_FRONT_FACE_COUNTER_CLOCKWISE.
+    idx = { 0, 2, 1, 0, 3, 2 };
+}
+
+// A unit cube (24 verts, per-face normals + UVs), `h` = half-extent.
+void makeCube(float h, std::vector<MeshVertex>& verts, std::vector<uint32_t>& idx) {
+    verts.clear(); idx.clear();
+    auto face = [&](float ax,float ay,float az, float bx,float by,float bz,
+                    float cx,float cy,float cz, float dx,float dy,float dz,
+                    float nx,float ny,float nz) {
+        uint32_t base = (uint32_t)verts.size();
+        verts.push_back({{ax,ay,az},{nx,ny,nz},{0,0}});
+        verts.push_back({{bx,by,bz},{nx,ny,nz},{1,0}});
+        verts.push_back({{cx,cy,cz},{nx,ny,nz},{1,1}});
+        verts.push_back({{dx,dy,dz},{nx,ny,nz},{0,1}});
+        idx.insert(idx.end(), {base, base+1, base+2, base, base+2, base+3});
+    };
+    face(-h,-h, h,  h,-h, h,  h, h, h, -h, h, h,  0,0, 1); // +Z
+    face( h,-h,-h, -h,-h,-h, -h, h,-h,  h, h,-h,  0,0,-1); // -Z
+    face( h,-h, h,  h,-h,-h,  h, h,-h,  h, h, h,  1,0, 0); // +X
+    face(-h,-h,-h, -h,-h, h, -h, h, h, -h, h,-h, -1,0, 0); // -X
+    face(-h, h, h,  h, h, h,  h, h,-h, -h, h,-h,  0,1, 0); // +Y
+    face(-h,-h,-h,  h,-h,-h,  h,-h, h, -h,-h, h,  0,-1,0); // -Y
+}
+
+// Procedural NxN checker texture (RGBA8). Two contrasting colors per cell.
+std::vector<uint8_t> makeCheckerRGBA(uint32_t n, uint32_t cell) {
+    std::vector<uint8_t> px((size_t)n * n * 4);
+    for (uint32_t y = 0; y < n; ++y)
+        for (uint32_t x = 0; x < n; ++x) {
+            bool on = ((x / cell) ^ (y / cell)) & 1u;
+            uint8_t* p = &px[((size_t)y * n + x) * 4];
+            if (on) { p[0]=230; p[1]=230; p[2]=235; }     // light
+            else    { p[0]= 40; p[1]= 55; p[2]= 90;  }    // dark blue-grey
+            p[3] = 255;
+        }
+    return px;
+}
+
+// Pick the first .glb in the corpus directory (alphabetically), if any.
+std::string firstGlbIn(const char* dir) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    if (!fs::exists(dir, ec) || !fs::is_directory(dir, ec)) return {};
+    std::string best;
+    for (auto& de : fs::directory_iterator(dir, ec)) {
+        if (de.path().extension() == ".glb") {
+            std::string fn = de.path().filename().string();
+            if (best.empty() || fn < best) best = fn;
+        }
+    }
+    return best;
+}
+
+} // namespace
 
 int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false, testGltf = false;
@@ -89,15 +164,92 @@ int main(int argc, char** argv) {
     std::unique_ptr<x3::asset::IAssetSource> assets(x3::asset::createAssetSource());
     assets->mountPak("base.x3pak", 0);  // stub: logs not-implemented for now
 
+    // ---- Build the S1 scene: ground quad (checker), flat-color cube, one GLB ----
+    const char* kCorpusDir = "G:/GameModels/rigged_glb";
+
+    // (a) Ground quad + procedural checker texture.
+    std::vector<MeshVertex> gv; std::vector<uint32_t> gi;
+    makeGroundQuad(20.0f, 16.0f, gv, gi);
+    x3::rhi::MeshHandle groundMesh = device->createMesh(gv.data(), (uint32_t)gv.size(),
+                                                        gi.data(), (uint32_t)gi.size());
+    std::vector<uint8_t> checker = makeCheckerRGBA(256, 32);
+    x3::rhi::TextureHandle checkerTex = device->createTexture(checker.data(), 256, 256, true);
+
+    // (b) Flat-color cube (default white texture x baseColorFactor).
+    std::vector<MeshVertex> cv; std::vector<uint32_t> ci;
+    makeCube(0.5f, cv, ci);
+    x3::rhi::MeshHandle cubeMesh = device->createMesh(cv.data(), (uint32_t)cv.size(),
+                                                      ci.data(), (uint32_t)ci.size());
+
+    // (c) One GLB from the corpus, loaded STATIC (no skinning) via the M2 loader.
+    std::unique_ptr<x3::asset::IAssetSource> modelAssets;
+    std::unique_ptr<x3::asset::IModelLoader> loader;
+    x3::asset::Model glbModel;
+    std::vector<x3::asset::ModelDrawable> glbDrawables;
+    std::string glbName = firstGlbIn(kCorpusDir);
+    if (!glbName.empty()) {
+        modelAssets.reset(x3::asset::createAssetSource());
+        modelAssets->mountDir(kCorpusDir, 0);
+        loader.reset(x3::asset::createModelLoader(device.get(), modelAssets.get()));
+        glbModel = loader->load(glbName);
+        if (glbModel.ok) {
+            glbDrawables = x3::asset::makeDrawables(glbModel);
+            x3::logInfo("S1 scene: loaded GLB '" + glbName + "' (" +
+                        std::to_string(glbDrawables.size()) + " drawable primitives)");
+        } else {
+            x3::logWarn("S1 scene: GLB load failed: " + glbName);
+        }
+    } else {
+        x3::logWarn(std::string("S1 scene: no .glb found in ") + kCorpusDir + " — drawing quad + cube only");
+    }
+
+    // Column-major transforms (translate only) for the three placements.
+    auto translate = [](float x, float y, float z, float s, float out[16]) {
+        out[0]=s; out[1]=0; out[2]=0; out[3]=0;
+        out[4]=0; out[5]=s; out[6]=0; out[7]=0;
+        out[8]=0; out[9]=0; out[10]=s; out[11]=0;
+        out[12]=x; out[13]=y; out[14]=z; out[15]=1;
+    };
+    float groundXf[16], cubeXf[16], glbXf[16];
+    translate(0.0f, 0.0f,  0.0f, 1.0f, groundXf);
+    translate(-1.5f, 0.5f, 0.0f, 1.0f, cubeXf);
+    translate( 1.8f, 0.0f, 0.0f, 1.0f, glbXf);
+
+    const float kGroundFactor[4] = { 1, 1, 1, 1 };       // checker as-is
+    const float kCubeFactor[4]   = { 0.95f, 0.55f, 0.2f, 1 }; // warm flat color
+
+    // Issue all per-frame draws between beginFrame/endFrame.
+    auto drawScene = [&](const x3::rhi::FrameContext& frame) {
+        if (groundMesh.valid())
+            device->drawMesh(frame, groundMesh, checkerTex, kGroundFactor, groundXf);
+        if (cubeMesh.valid())
+            device->drawMesh(frame, cubeMesh, x3::rhi::TextureHandle{}, kCubeFactor, cubeXf);
+        for (const auto& d : glbDrawables)
+            device->drawMesh(frame, x3::rhi::MeshHandle{ d.meshId },
+                             x3::rhi::TextureHandle{ d.baseColorTexId },
+                             d.baseColorFactor, glbXf);
+    };
+
+    // Destroys the procedurally-created scene resources (the GLB is freed via
+    // loader->unload, which routes through the device's destroyMesh/Texture).
+    auto destroyScene = [&]() {
+        if (loader && glbModel.ok) loader->unload(glbModel);
+        if (cubeMesh.valid())   device->destroyMesh(cubeMesh);
+        if (groundMesh.valid()) device->destroyMesh(groundMesh);
+        if (checkerTex.valid()) device->destroyTexture(checkerTex);
+    };
+
     if (smoketest) {
         x3::logInfo("smoketest: rendering 30 frames (+ a mid-run swapchain recreate) then exiting");
         for (int i = 0; i < 30; ++i) {
             glfwPollEvents();
             if (i == 15) { x3::logInfo("smoketest: triggering swapchain recreate"); device->onResize(960, 540); }
             auto frame = device->beginFrame();
+            if (frame.valid) drawScene(frame);
             device->endFrame(frame);
         }
         x3::logInfo("smoketest: 30 frames + recreate OK");
+        destroyScene();
         device->shutdown();
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -159,10 +311,12 @@ int main(int argc, char** argv) {
         }
 
         auto frame = device->beginFrame();
+        if (frame.valid) drawScene(frame);
         device->endFrame(frame);
     }
 
     x3::logInfo("shutting down");
+    destroyScene();
     device->shutdown();
     glfwDestroyWindow(window);
     glfwTerminate();

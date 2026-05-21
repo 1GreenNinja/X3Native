@@ -9,19 +9,27 @@
 //
 // GPU-UPLOAD SEAM
 // ---------------
-// IRenderDevice currently exposes no generic buffer/texture creation API (it
-// only does clear/present + a hardcoded cube). So this loader does ALL CPU-side
-// parsing, and for the opaque GPU handles it routes through GpuUploader:
+// This loader does ALL CPU-side parsing, and for the opaque GPU handles it
+// routes through GpuUploader (the ONLY place that decides how a handle is born):
 //   * device == nullptr (headless / self-test): mint monotonic non-zero fake
-//     handle IDs; no Vulkan touched. This is what the self-test uses.
-//   * device != nullptr: TODO — call dev->createBuffer()/createTexture() once
-//     those land on IRenderDevice. The seam (GpuUploader) is the single place
-//     to wire that in; nothing else in this file knows how handles are made.
+//     handle IDs; no Vulkan touched. This is what the self-test uses — its
+//     behavior is intentionally unchanged.
+//   * device != nullptr (S1): call IRenderDevice::createMesh()/createTexture()
+//     for real. The loader's interleaved Vertex (pos/nrm/tan/uv/joints/weights)
+//     is narrowed to the device's MeshVertex (pos/nrm/uv) at upload; tangents,
+//     joints and weights are dropped (skinned upload is subsystem J). The real
+//     MeshHandle/TextureHandle ids are stored in the Model's opaque handle
+//     fields so unload() can destroy them.
+//
+// makeDrawables() turns a loaded Model into per-primitive draw records
+// (mesh + base-color texture + baseColorFactor) the scene/app can feed to
+// IRenderDevice::drawMesh().
 //
 // Verified via runModelLoaderSelfTest() (the M2 acceptance tests).
 
 #include "IModelLoader.h"
 #include "IAssetSource.h"
+#include "../rhi/IRenderDevice.h"
 #include "../core/x3_log.h"
 
 // cgltf / stb live ONLY in this translation unit (Pimpl: never in the header).
@@ -58,48 +66,79 @@ constexpr bool kHasKtx2 = false;
 
 // ---------------------------------------------------------------------------
 // GPU-upload seam. The ONLY place that decides how an opaque handle is born.
+//   * null device  -> monotonic non-zero fake ids (no Vulkan; unchanged path).
+//   * real device  -> IRenderDevice::createMesh()/createTexture().
+// Handle encoding (real device): the device hands out 32-bit MeshHandle /
+// TextureHandle ids; we store them verbatim in the 64-bit opaque fields and a
+// kMeshTag / kTexTag high bit so free() can route destroy to the right call.
 // ---------------------------------------------------------------------------
+constexpr uint64_t kMeshTag = 0x1ull << 60;
+constexpr uint64_t kTexTag  = 0x2ull << 60;
+constexpr uint64_t kTagMask = 0xFull << 60;
+
 class GpuUploader {
 public:
     explicit GpuUploader(rhi::IRenderDevice* dev) : m_dev(dev) {}
 
-    // Upload an interleaved vertex buffer; returns an opaque handle (!= 0).
-    uint64_t uploadVertexBuffer(const void* /*data*/, size_t bytes) {
-        m_vbBytes += bytes;
-        return mint();
+    // Upload one mesh (already narrowed to the device's pos/nrm/uv vertex) and
+    // its 32-bit indices; writes the SAME opaque handle into both outVB/outIB so
+    // the existing two-field MeshPrimitive stays non-zero in either path.
+    void uploadMesh(const rhi::MeshVertex* verts, uint32_t vcount,
+                    const uint32_t* idx, uint32_t icount,
+                    uint64_t& outVB, uint64_t& outIB) {
+        if (m_dev) {
+            rhi::MeshHandle mh = m_dev->createMesh(verts, vcount, idx, icount);
+            uint64_t h = mh.valid() ? (kMeshTag | mh.id) : 0;
+            outVB = h; outIB = h;
+        } else {
+            m_vbBytes += (size_t)vcount * sizeof(rhi::MeshVertex);
+            m_ibBytes += (size_t)icount * sizeof(uint32_t);
+            outVB = mint(); outIB = mint();
+        }
     }
-    uint64_t uploadIndexBuffer(const void* /*data*/, size_t bytes) {
-        m_ibBytes += bytes;
-        return mint();
-    }
-    // Upload a decoded RGBA8 texture; returns an opaque handle (!= 0).
-    uint64_t uploadTexture(const void* /*rgba*/, int /*w*/, int /*h*/) {
+
+    // Upload a decoded RGBA8 texture; returns an opaque handle (!= 0). `srgb`
+    // selects the storage format (color textures are sRGB).
+    uint64_t uploadTexture(const void* rgba, int w, int h, bool srgb = true) {
+        if (m_dev) {
+            rhi::TextureHandle th = m_dev->createTexture(rgba, (uint32_t)w, (uint32_t)h, srgb);
+            return th.valid() ? (kTexTag | th.id) : 0;
+        }
         return mint();
     }
 
     // Shared 1x1 default textures (white base color, flat normal). Created once
     // per model, reused so a model with N missing textures only allocates two.
     uint64_t defaultWhite() {
-        if (!m_defWhite) m_defWhite = mint();
+        if (!m_defWhite) {
+            if (m_dev) {
+                const uint8_t white[4] = { 255, 255, 255, 255 };
+                m_defWhite = uploadTexture(white, 1, 1, true);
+            } else m_defWhite = mint();
+        }
         return m_defWhite;
     }
     uint64_t defaultNormal() {
-        if (!m_defNormal) m_defNormal = mint();
+        if (!m_defNormal) {
+            if (m_dev) {
+                const uint8_t flat[4] = { 128, 128, 255, 255 }; // +Z normal, linear
+                m_defNormal = uploadTexture(flat, 1, 1, false);
+            } else m_defNormal = mint();
+        }
         return m_defNormal;
     }
 
-    // Free a handle. With a real device this would destroy the resource; in the
-    // headless seam there is nothing to free, so this is a no-op (the model
-    // clears the field itself).
-    void free(uint64_t /*handle*/) { /* TODO: dev->destroyBuffer/Texture */ }
+    // Free a handle. Real device: route to destroyMesh/destroyTexture by tag.
+    // Headless seam: nothing to free (the model clears the field itself).
+    void free(uint64_t handle) {
+        if (!m_dev || !handle) return;
+        uint32_t id = (uint32_t)(handle & ~kTagMask);
+        if ((handle & kTagMask) == kMeshTag)      m_dev->destroyMesh(rhi::MeshHandle{ id });
+        else if ((handle & kTagMask) == kTexTag)  m_dev->destroyTexture(rhi::TextureHandle{ id });
+    }
 
 private:
     uint64_t mint() {
-        if (m_dev) {
-            // TODO(GPU seam): real upload once IRenderDevice grows a buffer /
-            // texture API. For now even a real device routes through the fake
-            // allocator so the engine links and runs; nothing is rendered yet.
-        }
         return s_next.fetch_add(1, std::memory_order_relaxed);
     }
 
@@ -412,9 +451,19 @@ private:
                 if (!haveNormals)  generateFlatNormals(verts, indices);
                 if (!haveTangents) generateTangents(verts, indices, haveUV);
 
+                // Narrow the rich interleaved vertex to the device's pos/nrm/uv
+                // layout (tangents/joints/weights dropped — skinning is subsys J).
+                std::vector<rhi::MeshVertex> mv(verts.size());
+                for (size_t i = 0; i < verts.size(); ++i) {
+                    mv[i].pos[0] = verts[i].px; mv[i].pos[1] = verts[i].py; mv[i].pos[2] = verts[i].pz;
+                    mv[i].normal[0] = verts[i].nx; mv[i].normal[1] = verts[i].ny; mv[i].normal[2] = verts[i].nz;
+                    mv[i].uv[0] = verts[i].u; mv[i].uv[1] = verts[i].v;
+                }
+
                 MeshPrimitive mp;
-                mp.vertexBuffer = up.uploadVertexBuffer(verts.data(), verts.size() * sizeof(Vertex));
-                mp.indexBuffer  = up.uploadIndexBuffer(indices.data(), indices.size() * sizeof(uint32_t));
+                up.uploadMesh(mv.data(), static_cast<uint32_t>(mv.size()),
+                              indices.data(), static_cast<uint32_t>(indices.size()),
+                              mp.vertexBuffer, mp.indexBuffer);
                 mp.indexCount   = static_cast<uint32_t>(indices.size());
                 mp.materialIndex = prim.material
                     ? static_cast<uint32_t>(cgltf_material_index(&data, prim.material))
@@ -603,6 +652,26 @@ private:
 
 IModelLoader* createModelLoader(rhi::IRenderDevice* dev, IAssetSource* assets) {
     return new ModelLoaderImpl(dev, assets);
+}
+
+std::vector<ModelDrawable> makeDrawables(const Model& m) {
+    std::vector<ModelDrawable> out;
+    out.reserve(m.primitives.size());
+    for (const auto& p : m.primitives) {
+        // Real-device meshes carry the kMeshTag; headless ids don't and aren't
+        // drawable, so skip them.
+        if ((p.vertexBuffer & kTagMask) != kMeshTag) continue;
+        ModelDrawable d;
+        d.meshId = static_cast<uint32_t>(p.vertexBuffer & ~kTagMask);
+        if (p.materialIndex < m.materials.size()) {
+            const Material& mat = m.materials[p.materialIndex];
+            for (int k = 0; k < 4; ++k) d.baseColorFactor[k] = mat.baseColor[k];
+            if ((mat.baseColorTex & kTagMask) == kTexTag)
+                d.baseColorTexId = static_cast<uint32_t>(mat.baseColorTex & ~kTagMask);
+        }
+        out.push_back(d);
+    }
+    return out;
 }
 
 // ===========================================================================
