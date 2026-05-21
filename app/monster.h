@@ -34,11 +34,13 @@
 //     for the slice that's fine.
 //   * Damage / death are factored into a pure applyDamage() helper so combat is
 //     fully testable headlessly (see --test-combat) with no rendering.
-//   * Optional chase is translation-only: IPhysicsWorld exposes no rotation
-//     getter/setter, so the monster does NOT turn to face the player (its authored
-//     orientation is preserved, same caveat as Scene::update + S4/S5). Chase is
-//     OFF by default for the slice (kChaseSpeed gates it) to keep the target a
-//     stationary, predictable thing to shoot.
+//   * Chase moves the body toward the player (translation via setBodyPosition,
+//     since IPhysicsWorld has no rotation setter) AND bakes a yaw-toward-player
+//     rotation into the render transform's upper-left 3x3 each frame. This is safe
+//     because Scene::update only overwrites the translation column and preserves
+//     the 3x3, so the baked facing survives the per-frame physics sync (the host
+//     must call update() AFTER scene.update() — see main loop order). kChaseSpeed
+//     gates movement; kFaceSign flips the model's forward axis if needed.
 //   * makeDrawables() does NOT bake per-node TRS, so all primitives draw at one
 //     model transform (minor offset possible for multi-node models). Same caveat
 //     as S1/S5; acceptable for the slice.
@@ -70,15 +72,33 @@ constexpr float kFireMaxDist   = 100.0f;
 // a hit, then decays back to its base color.
 constexpr float kHitFlashTime  = 0.1f;
 
-// Optional gentle chase speed (m/s) toward the player. 0 disables chasing (the
-// slice default: a stationary target). Translation only — no turning.
-constexpr float kChaseSpeed    = 0.0f;
+// Gentle chase speed (m/s) toward the player (player walks 5 m/s). Set > 0 to
+// enable chasing. Translation toward the player + facing rotation baked into the
+// render 3x3 each frame (see update()).
+constexpr float kChaseSpeed    = 2.5f;
 
-// Result of a fire() call, returned for HUD/logging and used by the self-test.
+// Stop distance (meters, horizontal): the monster crawls toward the player only
+// while horizontal distance exceeds this, so it doesn't grind into the player.
+constexpr float kChaseStopDist = 1.5f;
+
+// Facing sign for the model's authored forward axis. glTF convention is local -Z
+// forward, so the default -1 makes local -Z point at the player. Flip to +1 if
+// the model turns its back to the player (authored +Z forward). VISUAL TUNING.
+constexpr float kFaceSign      = -1.0f;
+
+// Death "pop" duration (seconds): on death the physics body is removed
+// IMMEDIATELY (rays miss right away) but the model keeps DRAWING for this long,
+// shrinking toward zero and flashing bright, then hides. Gives shot feedback.
+constexpr float kDeathPopTime  = 0.25f;
+
+// Result of a fire() call, returned for HUD/FX/logging and used by the self-test.
 struct FireResult {
     bool hitMonster = false;  // the ray hit a live monster
     bool killed     = false;  // this shot dropped it to HP <= 0
     int  hpAfter    = 0;      // monster HP after the shot (0 if it died / no hit)
+    bool hit        = false;  // the ray hit ANY body (monster, wall, etc.)
+    x3::phys::Vec3 hitPoint{};// world-space hit point (valid iff hit)
+    x3::phys::Vec3 endPoint{};// FX tracer end: hitPoint on a hit, else eye+dir*range
 };
 
 // Pure damage rule, factored out so it is testable headlessly. Subtracts `damage`
@@ -129,6 +149,9 @@ public:
     // Gameplay state.
     int  hp() const { return m_hp; }
     bool alive() const { return m_alive; }
+    // True during the brief death "pop" after a kill: not alive, body already
+    // removed, but the model is still being drawn (shrinking/flashing).
+    bool dying() const { return m_dying; }
 
     // The monster's entity id (kNoLink until built) and physics body.
     uint32_t entity() const { return m_entity; }
@@ -160,6 +183,16 @@ private:
     int   m_hp        = kMonsterHp;
     bool  m_alive     = true;
     float m_flash     = 0.0f;                 // remaining hit-flash time (s)
+
+    // Death "pop": when killed, m_alive flips false and the body is removed, but
+    // m_dying stays true and m_deathPop counts down from kDeathPopTime while the
+    // model keeps drawing (shrinking + flashing). Once it reaches 0 the Entity is
+    // hidden and m_dying clears.
+    bool  m_dying     = false;
+    float m_deathPop  = 0.0f;                 // remaining death-pop time (s)
+
+    // Current yaw (radians) the model faces; baked into the render 3x3 each frame.
+    float m_yaw       = 0.0f;
 };
 
 // Headless self-test (--test-combat). Builds a physics world + an Enemy-layer

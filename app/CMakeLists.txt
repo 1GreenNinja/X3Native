@@ -5,7 +5,8 @@ add_executable(X3Engine WIN32
     player.cpp
     door.cpp
     weapon.cpp
-    monster.cpp)
+    monster.cpp
+    fx.cpp)
 
 target_link_libraries(X3Engine PRIVATE x3engine glfw)
 

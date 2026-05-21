@@ -137,10 +137,27 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
                                Scene& scene, x3::phys::IPhysicsWorld& physics) {
     FireResult r;
     r.hpAfter = m_hp;
+
+    // Normalize the look dir so the FX tracer "miss" end point (eye + dir*range)
+    // is at the true max range regardless of the caller's dir magnitude.
+    float dl = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+    if (dl < 1e-6f) dl = 1e-6f;
+    const x3::phys::Vec3 ndir{ dir.x / dl, dir.y / dl, dir.z / dl };
+    // Default tracer end on a miss: straight out to max range.
+    r.endPoint = x3::phys::Vec3{ eye.x + ndir.x * kFireMaxDist,
+                                 eye.y + ndir.y * kFireMaxDist,
+                                 eye.z + ndir.z * kFireMaxDist };
+
     if (!m_alive) return r;                       // already dead: nothing to hit
 
-    x3::phys::RayHit hit = physics.rayCast(eye, dir, kFireMaxDist, x3::phys::Layer::Enemy);
-    if (!hit.hit || !hit.body.valid()) return r;  // missed everything
+    x3::phys::RayHit hit = physics.rayCast(eye, ndir, kFireMaxDist, x3::phys::Layer::Enemy);
+    if (hit.hit && hit.body.valid()) {
+        r.hit      = true;
+        r.hitPoint = hit.point;
+        r.endPoint = hit.point;                   // tracer terminates at the hit
+    } else {
+        return r;                                 // missed everything
+    }
 
     uint32_t ent = scene.entityForBody(hit.body);
     if (ent == kNoLink || ent >= scene.size()) return r;
@@ -156,18 +173,22 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
     r.hpAfter = m_hp;
 
     if (dead) {
-        // ---- Death: hide the Entity, remove the physics body (so subsequent
-        // rays miss), drop the Entity's body handle, and latch dead. ----
+        // ---- Death: remove the physics body IMMEDIATELY (so subsequent rays
+        // miss right away) and drop the Entity's body handle, but DO NOT hide the
+        // model yet — start a brief death "pop" so the kill reads on screen. The
+        // Entity stays visible while m_dying; update() counts m_deathPop down and
+        // hides it when the pop finishes. ----
         m_alive = false;
         r.killed = true;
+        m_dying    = true;
+        m_deathPop = kDeathPopTime;
         if (m_entity != kNoLink && m_entity < scene.size()) {
             Entity& me = scene.get(m_entity);
-            me.visible = false;
             me.body = x3::phys::BodyId{};         // entity no longer owns a body
         }
         physics.removeBody(m_body);
         m_body = x3::phys::BodyId{};
-        x3::logInfo("[monster] killed (HP 0) — hidden + body removed");
+        x3::logInfo("[monster] killed (HP 0) — body removed, death-pop started");
     } else {
         x3::logInfo("[monster] hit for " + std::to_string(kDamagePerShot) +
                     " — HP now " + std::to_string(m_hp));
@@ -176,7 +197,7 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
 }
 
 // ---------------------------------------------------------------------------
-// Per-frame: decay hit-flash; optional gentle chase (translation only).
+// Per-frame: decay hit-flash; run the death pop; else face + chase the player.
 // ---------------------------------------------------------------------------
 void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                            const x3::phys::Vec3& playerPos) {
@@ -188,28 +209,57 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         if (m_flash < 0.0f) m_flash = 0.0f;
     }
 
-    if (!m_alive) return;
-
-    // Optional gentle chase toward the player (XZ only). OFF by default
-    // (kChaseSpeed == 0). Translation only: no rotation getter/setter on the
-    // physics interface, so the monster does not turn to face the player.
-    if (kChaseSpeed > 0.0f && m_body.valid()) {
-        float dx = playerPos.x - m_pos.x;
-        float dz = playerPos.z - m_pos.z;
-        float d  = std::sqrt(dx * dx + dz * dz);
-        if (d > 1.0f) {                           // don't crawl into the player
-            float step = kChaseSpeed * dt;
-            m_pos.x += (dx / d) * step;
-            m_pos.z += (dz / d) * step;
-            physics.setBodyPosition(m_body, m_pos);
-            if (m_entity != kNoLink && m_entity < scene.size()) {
-                Entity& me = scene.get(m_entity);
-                me.transform[12] = m_pos.x;
-                me.transform[13] = m_pos.y;
-                me.transform[14] = m_pos.z;
-                me.transform[15] = 1.0f;
+    // ---- Death pop: keep drawing (shrink + flash, in drawMonster) until the
+    // timer runs out, then hide the Entity. The body is already gone. ----
+    if (!m_alive) {
+        if (m_dying) {
+            m_deathPop -= dt;
+            if (m_deathPop <= 0.0f) {
+                m_deathPop = 0.0f;
+                m_dying = false;
+                if (m_entity != kNoLink && m_entity < scene.size())
+                    scene.get(m_entity).visible = false;
             }
         }
+        return;
+    }
+
+    if (m_entity == kNoLink || m_entity >= scene.size()) return;
+
+    // ---- Face the player (horizontal yaw) EVERY frame while alive. Computed
+    // from the body->player vector on the XZ plane. The render 3x3 is rebuilt
+    // below from this yaw + kFaceSign (which forward axis the model authored). ----
+    float dx = playerPos.x - m_pos.x;
+    float dz = playerPos.z - m_pos.z;
+    float horiz = std::sqrt(dx * dx + dz * dz);
+    if (horiz > 1e-4f) {
+        // Yaw so the model's forward axis points toward the player. With
+        // kFaceSign = -1 (glTF -Z forward), aim local -Z at (dx,dz).
+        m_yaw = std::atan2(kFaceSign * dx, kFaceSign * dz);
+    }
+
+    // ---- Chase: crawl toward the player (XZ) while beyond the stop distance. ----
+    if (kChaseSpeed > 0.0f && m_body.valid() && horiz > kChaseStopDist) {
+        float step = kChaseSpeed * dt;
+        m_pos.x += (dx / horiz) * step;
+        m_pos.z += (dz / horiz) * step;
+        physics.setBodyPosition(m_body, m_pos);
+    }
+
+    // ---- Bake the facing yaw into the render transform's upper-left 3x3, keeping
+    // the uniform model scale, and set the translation to the (possibly moved)
+    // body center. Scene::update only overwrites the translation column and
+    // preserves the 3x3, so this facing survives the per-frame physics sync as
+    // long as the host calls update() after scene.update() (see main loop). ----
+    {
+        const float c = std::cos(m_yaw), s = std::sin(m_yaw);
+        // Yaw about +Y: local +X -> (c,0,-s), +Z -> (s,0,c).
+        Entity& me = scene.get(m_entity);
+        composeTRS(me.transform,
+                   x3::phys::Vec3{ c, 0.0f, -s },
+                   x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
+                   x3::phys::Vec3{ s, 0.0f, c },
+                   m_modelScale, m_pos);
     }
 }
 
@@ -219,7 +269,8 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
 void MonsterSystem::drawMonster(x3::rhi::IRenderDevice& device,
                                 const x3::rhi::FrameContext& frame,
                                 const Scene& scene) const {
-    if (!m_alive || m_entity == kNoLink || m_entity >= scene.size()) return;
+    // Draw while alive OR during the brief death pop (m_dying). Skip otherwise.
+    if ((!m_alive && !m_dying) || m_entity == kNoLink || m_entity >= scene.size()) return;
     const Entity& e = scene.get(m_entity);
     if (!e.visible) return;
 
@@ -230,6 +281,26 @@ void MonsterSystem::drawMonster(x3::rhi::IRenderDevice& device,
     // Toward red: keep R, knock down G/B by the flash amount.
     tint[1] = 1.0f - 0.85f * flashAmt;
     tint[2] = 1.0f - 0.85f * flashAmt;
+
+    if (m_dying) {
+        // ---- Death pop: shrink the model toward zero and flash it bright white
+        // over the pop window, so the kill reads as a distinct event. popAmt goes
+        // 1 -> 0 across kDeathPopTime. ----
+        const float popAmt = (kDeathPopTime > 0.0f) ? (m_deathPop / kDeathPopTime) : 0.0f;
+        // Flash bright: push tint up toward white-hot as it dies.
+        const float bright = 1.0f + 1.5f * popAmt;
+        tint[0] = bright; tint[1] = bright; tint[2] = bright;
+        // Scale the whole transform down (uniform shrink) while keeping the center.
+        float m[16];
+        for (int i = 0; i < 16; ++i) m[i] = e.transform[i];
+        for (int col = 0; col < 3; ++col) {        // scale the 3 basis columns
+            m[col * 4 + 0] *= popAmt;
+            m[col * 4 + 1] *= popAmt;
+            m[col * 4 + 2] *= popAmt;
+        }
+        drawMonsterAt(device, frame, m, tint);
+        return;
+    }
 
     drawMonsterAt(device, frame, e.transform, tint);
 }
@@ -359,9 +430,10 @@ bool runCombatSelfTest() {
             if (r.killed) killedAtSomePoint = true;
         }
         bool dead    = !combat.alive() && combat.hp() <= 0;
-        bool hidden  = combat.entity() != kNoLink &&
-                       combat.entity() < scene.size() &&
-                       !scene.get(combat.entity()).visible;
+        // Death now defers the hide to a brief "pop" (driven by update(), which
+        // this headless test never calls), so the kill leaves the monster in the
+        // dying state with the body already removed (rays must miss immediately).
+        bool dying   = combat.dying();
         // Subsequent ray AT where the monster was now MISSES (body removed).
         x3::phys::RayHit after = physics->rayCast(eye, aimAt, kFireMaxDist,
                                                   x3::phys::Layer::Enemy);
@@ -369,8 +441,8 @@ bool runCombatSelfTest() {
         // Firing again is a no-op (still dead, no hit reported).
         FireResult again = combat.fire(eye, aimAt, scene, *physics);
         bool noopAfter = !again.hitMonster && !again.killed;
-        check(killedAtSomePoint && dead && hidden && raysMiss && noopAfter,
-              "T2 shots kill monster: hidden + body removed + rays miss");
+        check(killedAtSomePoint && dead && dying && raysMiss && noopAfter,
+              "T2 shots kill monster: dying-pop + body removed + rays miss");
     }
 
     physics->shutdown();

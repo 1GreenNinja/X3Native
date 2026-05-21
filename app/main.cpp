@@ -20,6 +20,7 @@
 #include "door.h"
 #include "weapon.h"
 #include "monster.h"
+#include "fx.h"
 
 #include <memory>
 #include <string_view>
@@ -27,6 +28,29 @@
 #include <cmath>
 #include <vector>
 #include <cstdint>
+
+namespace {
+// Approximate the viewmodel muzzle in world space from the eye + look angles, so
+// the FX tracer starts near the gun barrel (lower-right of the view) rather than
+// dead center. Mirrors the camera-basis offsets used by WeaponSystem; tuned to
+// sit just in front of and below/right of the eye.
+x3::phys::Vec3 muzzleFromCamera(float ex, float ey, float ez, float yaw, float pitch) {
+    const float cp = std::cos(pitch), sp = std::sin(pitch);
+    const float cy = std::cos(yaw),   sy = std::sin(yaw);
+    const x3::phys::Vec3 forward{ cp * cy, sp, cp * sy };
+    const x3::phys::Vec3 right{ -sy, 0.0f, cy };
+    const x3::phys::Vec3 up{
+        right.y * forward.z - right.z * forward.y,
+        right.z * forward.x - right.x * forward.z,
+        right.x * forward.y - right.y * forward.x };
+    // Muzzle offset (m) in the camera basis: a bit forward, a bit right + down.
+    const float mFwd = 0.6f, mRight = 0.18f, mDown = 0.12f;
+    return x3::phys::Vec3{
+        ex + forward.x * mFwd + right.x * mRight - up.x * mDown,
+        ey + forward.y * mFwd + right.y * mRight - up.y * mDown,
+        ez + forward.z * mFwd + right.z * mRight - up.z * mDown };
+}
+} // namespace
 
 int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
@@ -181,6 +205,11 @@ int main(int argc, char** argv) {
     combat.buildMonster(scene, *device, *physics, "G:/GameModels/rigged_glb",
                         x3::phys::Vec3{ 0.0f, 0.4f, -4.0f });
 
+    // ---- Combat FX (gameplay-feel pass): crosshair (always), shot tracers, and
+    // muzzle flash. World-space geometry (no 2D/UI path in the slice). ----
+    x3::game::CombatFx combatFx;
+    combatFx.init(*device);
+
     if (smoketest) {
         x3::logInfo("smoketest: stepping physics + rendering 30 frames (+ a mid-run swapchain recreate)");
         // Arm the player so the weapon GLB renders as the viewmodel this run
@@ -197,12 +226,24 @@ int main(int argc, char** argv) {
             scene.update(*physics);
             weapon.update(dt, scene, x3::phys::Vec3{ vmX, vmY, vmZ });
             combat.update(dt, scene, *physics, x3::phys::Vec3{ vmX, vmY, vmZ });
+            // Exercise the FX path under validation: fire once mid-run (tracer +
+            // muzzle flash) and crosshair every frame.
+            if (i == 10) {
+                x3::phys::Vec3 eye{ vmX, vmY, vmZ };
+                x3::phys::Vec3 dir{ std::cos(vmPitch) * std::cos(vmYaw),
+                                    std::sin(vmPitch),
+                                    std::cos(vmPitch) * std::sin(vmYaw) };
+                x3::game::FireResult r = combat.fire(eye, dir, scene, *physics);
+                combatFx.addTracer(muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch), r.endPoint);
+            }
+            combatFx.update(dt);
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
                 weapon.drawPickup(*device, frame, scene);
                 combat.drawMonster(*device, frame, scene);
                 weapon.drawViewmodel(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch);
+                combatFx.draw(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch);
             }
             device->endFrame(frame);
         }
@@ -219,6 +260,7 @@ int main(int argc, char** argv) {
             }
         }
         x3::logInfo("smoketest: 30 frames + recreate OK");
+        combatFx.shutdown(*device);
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -363,10 +405,16 @@ int main(int argc, char** argv) {
                                 std::sin(camPitch),
                                 std::cos(camPitch) * std::sin(camYaw) };
             x3::game::FireResult r = combat.fire(eye, dir, scene, *physics);
+            // Shot feedback: a tracer from the viewmodel muzzle to the hit point
+            // (or max range on a miss) + a muzzle flash.
+            combatFx.addTracer(muzzleFromCamera(camX, camY, camZ, camYaw, camPitch), r.endPoint);
             if (r.killed)          x3::logInfo("fire: monster killed!");
             else if (r.hitMonster) x3::logInfo("fire: monster hit — HP " + std::to_string(r.hpAfter));
         }
         prevFire = fireNow;
+
+        // Advance FX timers (tracer lifetimes + muzzle flash).
+        combatFx.update(dt);
 
         int cw, ch;
         glfwGetFramebufferSize(window, &cw, &ch);
@@ -379,13 +427,16 @@ int main(int argc, char** argv) {
         if (frame.valid) {
             scene.render(*device, frame);
             weapon.drawPickup(*device, frame, scene);   // bobbing pickup (until armed)
-            combat.drawMonster(*device, frame, scene);  // the monster (+ hit-flash)
+            combat.drawMonster(*device, frame, scene);  // the monster (+ hit-flash / death-pop)
             weapon.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch);
+            // FX last: crosshair (always) + active tracers + muzzle flash.
+            combatFx.draw(*device, frame, camX, camY, camZ, camYaw, camPitch);
         }
         device->endFrame(frame);
     }
 
     x3::logInfo("shutting down");
+    combatFx.shutdown(*device);
     physics->shutdown();
     device->shutdown();
     glfwDestroyWindow(window);

@@ -28,6 +28,25 @@ constexpr float kVmForward = 0.5f;       // forward along look dir
 constexpr float kVmRight   = 0.25f;      // to the right
 constexpr float kVmDown    = 0.2f;       // below the eye line
 
+// ---------------------------------------------------------------------------
+// Viewmodel ORIENTATION OFFSET (visual tuning) — radians.
+// ---------------------------------------------------------------------------
+// The purchased pistol GLB's authored "forward" axis is unknown and clearly
+// mismapped: with a plain camera-basis orientation the barrel points roughly to
+// the player's RIGHT (the ear-aim bug from play-test). These three offsets are
+// applied to the model orientation (about the CAMERA basis: yaw about up, pitch
+// about right, roll about forward) BEFORE the model is placed, so the barrel can
+// be dialed to point along the look direction.
+//
+// THESE ARE FOR VISUAL TUNING ONLY — they have no gameplay effect (the fire ray
+// uses the camera look dir, not the viewmodel). Tweak between play-tests.
+//
+// "Points right" implies a ~90 deg yaw error, so the best-guess default is a
+// -90 deg (-pi/2) yaw to swing the barrel from right-facing to forward-facing.
+constexpr float kVmYawOffset   = -kPi * 0.5f;  // yaw about camera up   (default -90 deg)
+constexpr float kVmPitchOffset = 0.0f;         // pitch about camera right
+constexpr float kVmRollOffset  = 0.0f;         // roll about camera forward
+
 // The purchased pistol GLB is authored at a world scale that is too large for a
 // viewmodel; scale it down so it reads as a held pistol. The fallback box is
 // authored small already, so it uses scale 1.
@@ -46,6 +65,23 @@ void composeTRS(float m[16],
     m[4]  = by.x * s; m[5]  = by.y * s; m[6]  = by.z * s; m[7]  = 0.0f;
     m[8]  = bz.x * s; m[9]  = bz.y * s; m[10] = bz.z * s; m[11] = 0.0f;
     m[12] = t.x;      m[13] = t.y;      m[14] = t.z;      m[15] = 1.0f;
+}
+
+// Rotate vector v about unit axis k by angle (radians) — Rodrigues' formula.
+// Used to apply the viewmodel orientation offsets about the camera basis axes.
+x3::phys::Vec3 rotateAboutAxis(const x3::phys::Vec3& v, const x3::phys::Vec3& k, float angle) {
+    if (angle == 0.0f) return v;
+    const float c = std::cos(angle), s = std::sin(angle);
+    // cross(k, v)
+    const x3::phys::Vec3 kxv{
+        k.y * v.z - k.z * v.y,
+        k.z * v.x - k.x * v.z,
+        k.x * v.y - k.y * v.x };
+    const float kdotv = k.x * v.x + k.y * v.y + k.z * v.z;
+    return x3::phys::Vec3{
+        v.x * c + kxv.x * s + k.x * kdotv * (1.0f - c),
+        v.y * c + kxv.y * s + k.y * kdotv * (1.0f - c),
+        v.z * c + kxv.z * s + k.z * kdotv * (1.0f - c) };
 }
 
 } // namespace
@@ -225,8 +261,24 @@ void WeaponSystem::drawViewmodel(x3::rhi::IRenderDevice& device,
     // Orient the model so its local axes align to the camera basis. glTF forward
     // is local -Z, so local +Z -> -forward, local +X -> right, local +Y -> up.
     x3::phys::Vec3 negFwd{ -forward.x, -forward.y, -forward.z };
+
+    // Apply the visual orientation offsets about the CAMERA basis axes so the
+    // mismapped barrel can be dialed onto the look direction. Yaw about up,
+    // pitch about right, roll about forward; rotate the model basis vectors
+    // (right/up/negFwd) by the same offsets so the whole model swings together.
+    // (No gameplay effect — the fire ray uses the camera look dir, see header.)
+    auto applyOffsets = [&](x3::phys::Vec3 v) {
+        v = rotateAboutAxis(v, up,      kVmYawOffset);
+        v = rotateAboutAxis(v, right,   kVmPitchOffset);
+        v = rotateAboutAxis(v, forward, kVmRollOffset);
+        return v;
+    };
+    x3::phys::Vec3 bx = applyOffsets(right);
+    x3::phys::Vec3 by = applyOffsets(up);
+    x3::phys::Vec3 bz = applyOffsets(negFwd);
+
     float model[16];
-    composeTRS(model, right, up, negFwd, m_modelScale, pos);
+    composeTRS(model, bx, by, bz, m_modelScale, pos);
     drawWeaponAt(device, frame, model);
 }
 
