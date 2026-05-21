@@ -13,6 +13,8 @@
 
 #include "IPhysicsWorld.h"
 #include "../core/x3_log.h"
+#include "../core/IJobSystem.h"
+#include "JoltJobBridge.h"
 
 // --- Jolt ---
 #include <Jolt/Jolt.h>
@@ -249,8 +251,16 @@ public:
         // Leave one core for the main thread.
         int hw = (int)std::thread::hardware_concurrency();
         int threads = hw > 1 ? hw - 1 : 1;
-        m_jobs = std::make_unique<JPH::JobSystemThreadPool>(
-            JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, threads);
+
+        // Slice 41 (D-JOB): physics shares the ONE engine scheduler instead of
+        // spinning up a private JobSystemThreadPool. We own + bring up an
+        // x3::jobs::IJobSystem and route Jolt's jobs through JoltJobBridge.
+        // GetMaxConcurrency reports the worker count so Jolt parallelises the
+        // same way it would with its own pool.
+        m_engineJobs.reset(x3::jobs::createJobSystem());
+        m_engineJobs->init(threads);
+        m_jobs = std::make_unique<JoltJobBridge>(
+            m_engineJobs.get(), JPH::cMaxPhysicsBarriers, threads);
 
         const JPH::uint cMaxBodies = 65536;
         const JPH::uint cNumBodyMutexes = 0;
@@ -285,7 +295,8 @@ public:
         m_triggerSet.clear();
         m_contactListener.reset();
         m_system.reset();
-        m_jobs.reset();
+        m_jobs.reset();        // bridge references m_engineJobs -> destroy it first
+        m_engineJobs.reset();  // joins engine worker threads
         m_temp.reset();
     }
 
@@ -602,7 +613,10 @@ private:
 
     // Jolt state
     std::unique_ptr<JPH::TempAllocatorImpl> m_temp;
-    std::unique_ptr<JPH::JobSystemThreadPool> m_jobs;
+    // Slice 41: the engine job system that physics shares, and the JPH::JobSystem
+    // adapter that routes Jolt's jobs onto it. m_engineJobs must outlive m_jobs.
+    std::unique_ptr<x3::jobs::IJobSystem> m_engineJobs;
+    std::unique_ptr<JPH::JobSystem> m_jobs;
     std::unique_ptr<JPH::PhysicsSystem> m_system;
     std::unique_ptr<TriggerContactListener> m_contactListener;
     BPLayerInterfaceImpl m_bpLayers;

@@ -8,6 +8,7 @@
 
 #include "engine/core/x3_log.h"
 #include "engine/core/IConsole.h"
+#include "engine/core/IJobSystem.h"
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/asset/IAssetSource.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -127,10 +128,11 @@ void keyCallback(GLFWwindow* win, int key, int /*scancode*/, int action, int /*m
 int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
-         testCombat = false, testAudio = false, testLevel1 = false;
+         testCombat = false, testAudio = false, testLevel1 = false, testJobs = false;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
+        else if (a == "--test-jobs") testJobs = true;
         else if (a == "--test-asset") testAsset = true;
         else if (a == "--test-console") testConsole = true;
         else if (a == "--test-physics") testPhysics = true;
@@ -144,6 +146,10 @@ int main(int argc, char** argv) {
     }
 
     // Headless self-tests (no window / Vulkan needed)
+    if (testJobs) {
+        x3::logInfo("running job system (Subsystem A) self-test...");
+        return x3::jobs::runJobSystemSelfTest() ? 0 : 1;
+    }
     if (testAsset) {
         x3::logInfo("running asset (D5) self-test...");
         return x3::asset::runAssetSelfTest() ? 0 : 1;
