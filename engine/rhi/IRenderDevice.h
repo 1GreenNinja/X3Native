@@ -88,6 +88,14 @@ public:
     virtual MeshHandle    createMesh(const MeshVertex* verts, uint32_t vcount,
                                      const uint32_t* idx, uint32_t icount) = 0;
     virtual void          destroyMesh(MeshHandle) = 0;
+    // Re-upload the vertices of an EXISTING mesh in place (CPU skinning path, J1).
+    // The vertex count must match the count the mesh was created with; the index
+    // buffer is untouched. The mesh's vertex storage becomes HOST_VISIBLE on first
+    // update so subsequent re-uploads are cheap mapped memcpys (no staging). Used a
+    // handful of times per frame for the animated characters only; the static
+    // environment art never calls this. Validation-clean: the call waits for any
+    // in-flight GPU use of the buffer before overwriting it. No-op on bad input.
+    virtual void          updateMesh(MeshHandle, const MeshVertex* verts, uint32_t vcount) = 0;
     // Create a sampled texture from tightly-packed RGBA8 (w*h*4 bytes). `srgb`
     // selects the storage format (sRGB for color, UNORM for data/linear).
     virtual TextureHandle createTexture(const void* rgba8, uint32_t w, uint32_t h, bool srgb) = 0;

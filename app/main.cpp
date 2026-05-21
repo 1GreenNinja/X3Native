@@ -132,7 +132,7 @@ int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
-         testPhase2a = false, testPhase2b = false;
+         testPhase2a = false, testPhase2b = false, testAnim = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
@@ -148,6 +148,11 @@ int main(int argc, char** argv) {
     // when omitted: G:\X3Native\screenshot.png.
     bool        screenshot = false;
     std::string screenshotPath = "G:/X3Native/screenshot.png";
+    // Optional settle-frame count for --screenshot (default 16 = unchanged
+    // behavior). Larger values advance the world (and the characters' skeletal
+    // animation) further before the capture, so two shots at different counts show
+    // different animated poses — used to prove J1 animation is live.
+    int         screenshotSettle = 16;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
@@ -164,6 +169,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-level1") testLevel1 = true;
         else if (a == "--test-phase2a") testPhase2a = true;
         else if (a == "--test-phase2b") testPhase2b = true;
+        else if (a == "--test-anim") testAnim = true;
         else if (a == "--stress") {
             if (i + 1 < argc) { stressCount = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -178,6 +184,9 @@ int main(int argc, char** argv) {
             screenshot = true;
             // Optional path arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') screenshotPath = argv[++i];
+            // Optional settle-frame count (second positional, if numeric).
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
+                screenshotSettle = (int)std::strtol(argv[++i], nullptr, 10);
         }
     }
 
@@ -233,6 +242,10 @@ int main(int argc, char** argv) {
     if (testPhase2b) {
         x3::logInfo("running EFLZ Phase 2b (super-strength melee + Martinez boss phases) self-test...");
         return x3::game::runPhase2bSelfTest() ? 0 : 1;
+    }
+    if (testAnim) {
+        x3::logInfo("running J1 skeletal animation + CPU skinning self-test...");
+        return x3::anim::runAnimSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -455,7 +468,7 @@ int main(int argc, char** argv) {
             x3::phys::Vec3 dir{ 1.0f, 0.0f, 0.0f };
             game.onUse(x3::phys::Vec3{ 5.0f, 1.7f, 0.0f }, dir, scene, *physics);
         }
-        const int kSettleFrames = 16;
+        const int kSettleFrames = (screenshotSettle > 0) ? screenshotSettle : 16;
         for (int i = 0; i < kSettleFrames; ++i) {
             glfwPollEvents();
             game.tick(dt, scene, *physics, ssEye, ssEye);

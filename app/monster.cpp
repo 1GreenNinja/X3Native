@@ -115,6 +115,7 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     const std::string useDir = tuning.modelDirOverride.empty()
         ? std::string(modelDir) : tuning.modelDirOverride;
 
+    m_device = &device;   // cached so update() can re-upload CPU-skinned vertices
     m_assets.reset(x3::asset::createAssetSource());
     bool mounted = m_assets->mountDir(useDir, 0);
     if (mounted) {
@@ -124,6 +125,30 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
             m_drawables = x3::asset::makeDrawables(m_model);
     } else {
         x3::logWarn("[monster] mountDir failed: " + useDir);
+    }
+
+    // ---- J1: bind the skeletal-animation runtime if this model is skinnable
+    // (has a skin + joints + at least one clip + skinned primitives). Pick an idle
+    // clip (fuzzy name match; fall back to the first clip) and, if present, a walk/
+    // run clip to play while moving. Models with no skin/anim (the Drone, the
+    // legacy crawler, the fallback box) leave the skinner invalid -> static draw. ----
+    if (m_model.ok && m_skinner.bind(m_model)) {
+        m_idleClip = m_skinner.findClip({ "idle", "stand", "breath", "loop" });
+        m_walkClip = m_skinner.findClip({ "walk", "run", "move", "jog" });
+        if (m_idleClip < 0) m_idleClip = 0;   // fall back to the first clip
+        m_animActive = (m_idleClip >= 0);
+        std::string clipList;
+        for (uint32_t c = 0; c < m_skinner.clipCount(); ++c) {
+            clipList += (c ? ", " : "") + std::string(m_skinner.clipName(c)) +
+                        "(" + std::to_string(m_skinner.clipDuration(c)) + "s)";
+        }
+        x3::logInfo("[monster] " + modelFile + " is animated — clips: " + clipList +
+                    "; idle=" + std::to_string(m_idleClip) +
+                    " walk=" + std::to_string(m_walkClip));
+        // Pose the bind-pose mesh into the idle clip at t=0 once up front so the
+        // very first rendered frame already shows the animated pose (not bind pose).
+        if (m_animActive && m_device)
+            m_skinner.apply(m_model, *m_device, (uint32_t)m_idleClip, 0.0f);
     }
 
     // ---- Model-local fixup: the converted character GLBs are Z-up (lying flat),
@@ -370,6 +395,10 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
 
     if (m_entity == kNoLink || m_entity >= scene.size()) return;
 
+    // Snapshot the pre-movement position so we can measure this frame's planar
+    // speed (used to choose idle vs walk for the skeletal animation, below).
+    const x3::phys::Vec3 prevPos = m_pos;
+
     // ---- Face the player (horizontal yaw) EVERY frame while alive. Computed
     // from the body->player vector on the XZ plane. The render 3x3 is rebuilt
     // below from this yaw + kFaceSign (which forward axis the model authored). ----
@@ -525,6 +554,20 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                    x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
                    x3::phys::Vec3{ s, 0.0f, c },
                    scale, m_pos);
+    }
+
+    // ---- J1: drive skeletal animation. Advance the active clip's time and CPU-
+    // skin the mesh. Use the walk/run clip while the planar velocity is non-trivial
+    // and a walk clip exists; otherwise the idle clip. Re-uploads the skinned
+    // vertices through the cached device. No-op for unskinned models. ----
+    if (m_animActive && m_device) {
+        const float ddx = m_pos.x - prevPos.x, ddz = m_pos.z - prevPos.z;
+        const float planarSpeed = (dt > 1e-5f)
+            ? std::sqrt(ddx*ddx + ddz*ddz) / dt : 0.0f;
+        const bool moving = (m_walkClip >= 0) && (planarSpeed > 0.25f);
+        const int clip = moving ? m_walkClip : m_idleClip;
+        m_animTime += dt;
+        m_skinner.apply(m_model, *m_device, (uint32_t)clip, m_animTime);
     }
 }
 
@@ -693,6 +736,7 @@ public:
         return x3::rhi::MeshHandle{ m_next++ };
     }
     void destroyMesh(x3::rhi::MeshHandle) override {}
+    void updateMesh(x3::rhi::MeshHandle, const x3::rhi::MeshVertex*, uint32_t) override {}
     x3::rhi::TextureHandle createTexture(const void*, uint32_t, uint32_t, bool) override {
         return x3::rhi::TextureHandle{ m_next++ };
     }

@@ -140,6 +140,7 @@ public:
         return x3::rhi::MeshHandle{ m_next++ };
     }
     void destroyMesh(x3::rhi::MeshHandle) override {}
+    void updateMesh(x3::rhi::MeshHandle, const x3::rhi::MeshVertex*, uint32_t) override {}
     x3::rhi::TextureHandle createTexture(const void*, uint32_t, uint32_t, bool) override {
         return x3::rhi::TextureHandle{ m_next++ };
     }

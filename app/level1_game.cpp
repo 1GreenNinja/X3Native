@@ -27,6 +27,12 @@ constexpr float kEnemyY = 0.4f;
 // On load failure the MonsterSystem falls back to its procedural box (per-enemy),
 // so the level never breaks. Characters are Z-up (lying flat) -> standUpZtoY. -----
 const char* kConvertedDir = "G:/GameModels/converted_glb";
+// The original rigged GLBs: these retain their skeleton AND an "Idle" animation
+// clip (the converted_glb/Characters export dropped the animation, leaving only a
+// bind-pose skin). For J1 (make the characters ANIMATE) the humanoid enemies load
+// the rigged source so they play their idle clip via CPU skinning. Authored Y-up
+// (feet at y=0, head ~1.8 m), so NO Z->Y stand-up is needed.
+const char* kRiggedDir = "G:/GameModels/rigged_glb";
 
 // Apply the converted-character model to a tuning (file under Characters/, the
 // converted dir, the Z->Y stand-up, and a real-scale humanoid size).
@@ -35,6 +41,17 @@ void useCharacter(MonsterSystem::Tuning& t, const char* file, float scale) {
     t.modelDirOverride = kConvertedDir;
     t.standUpZtoY      = true;          // converted characters are authored Z-up
     t.modelScale       = scale;         // ~1.0 => ~1.77 m tall humanoid
+}
+
+// Apply a RIGGED + ANIMATED source character (J1). Same role as useCharacter but
+// from rigged_glb (so the MonsterSystem's Skinner finds the "Idle" clip and plays
+// it). Y-up, so standUpZtoY stays false. On load failure the per-enemy box
+// fallback still applies (the level never breaks).
+void useRiggedCharacter(MonsterSystem::Tuning& t, const char* file, float scale) {
+    t.modelFile        = file;
+    t.modelDirOverride = kRiggedDir;
+    t.standUpZtoY      = false;         // rigged sources are authored Y-up
+    t.modelScale       = scale;
 }
 
 // Boss-tier Martinez (§8): more HP + a bit faster + bigger + a distinct tint +
@@ -52,7 +69,8 @@ MonsterSystem::Tuning martinezTuning() {
     t.attackCooldown = 1.1f;
     t.attackWindup   = 0.30f;
     t.ranged         = false;
-    useCharacter(t, "Security_Chief.glb", 1.35f);  // boss reads taller than a guard
+    // J1: rigged + ANIMATED Chief Martinez (plays its Idle clip via CPU skinning).
+    useRiggedCharacter(t, "chief_martinez.glb", 1.35f);  // boss reads taller than a guard
     return t;
 }
 MonsterSystem::Tuning guardTuning() {
@@ -64,7 +82,9 @@ MonsterSystem::Tuning guardTuning() {
     t.attackCooldown = 1.0f;
     t.attackWindup   = 0.25f;
     t.ranged         = false;
-    useCharacter(t, "Security_Chief.glb", 1.0f);   // real ~1.77 m guard
+    // J1: rigged + ANIMATED guard (the rigged source plays an Idle clip; the
+    // converted_glb/Characters/Security_Chief.glb has only a bind-pose skin).
+    useRiggedCharacter(t, "marcus_webb.glb", 1.0f);   // real ~1.8 m animated guard
     return t;
 }
 MonsterSystem::Tuning droneTuning() {
@@ -492,6 +512,7 @@ public:
         return x3::rhi::MeshHandle{ m_next++ };
     }
     void destroyMesh(x3::rhi::MeshHandle) override {}
+    void updateMesh(x3::rhi::MeshHandle, const x3::rhi::MeshVertex*, uint32_t) override {}
     x3::rhi::TextureHandle createTexture(const void*, uint32_t, uint32_t, bool) override {
         return x3::rhi::TextureHandle{ m_next++ };
     }

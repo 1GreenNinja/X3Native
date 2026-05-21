@@ -448,9 +448,11 @@ private:
                     cgltf_find_accessor(&prim, cgltf_attribute_type_joints, 0);
                 const cgltf_accessor* weights =
                     cgltf_find_accessor(&prim, cgltf_attribute_type_weights, 0);
+                bool haveSkin = false;
                 if (joints && weights && joints->count == vcount) {
                     readVec(joints,  vcount, 4, offsetJoints,  verts);
                     readVec(weights, vcount, 4, offsetWeights, verts);
+                    haveSkin = true;
                 }
 
                 // Indices: copy out, or synthesize 0..n-1 for non-indexed prims.
@@ -487,7 +489,40 @@ private:
                 // Record the source mesh so makeDrawables() can map each node that
                 // references this mesh back to its primitives (and bake the node TRS).
                 mp.meshIndex = static_cast<uint32_t>(mi);
-                model.primitives.push_back(mp);
+
+                // ---- Retain CPU vertex data for skinned primitives (J1). The bind-
+                // pose pos/nrm/uv + per-vertex joint indices/weights let the anim
+                // runtime recompute vertices each frame and re-upload via updateMesh.
+                // Only kept when the primitive actually carries joints+weights so the
+                // static environment art pays nothing. ----
+                if (haveSkin) {
+                    mp.skinned = true;
+                    mp.basePos.resize(vcount * 3);
+                    mp.baseNrm.resize(vcount * 3);
+                    mp.baseUv.resize(vcount * 2);
+                    mp.jointIdx.resize(vcount * 4);
+                    mp.jointWt.resize(vcount * 4);
+                    for (size_t vi = 0; vi < vcount; ++vi) {
+                        mp.basePos[vi*3+0] = verts[vi].px;
+                        mp.basePos[vi*3+1] = verts[vi].py;
+                        mp.basePos[vi*3+2] = verts[vi].pz;
+                        mp.baseNrm[vi*3+0] = verts[vi].nx;
+                        mp.baseNrm[vi*3+1] = verts[vi].ny;
+                        mp.baseNrm[vi*3+2] = verts[vi].nz;
+                        mp.baseUv[vi*2+0]  = verts[vi].u;
+                        mp.baseUv[vi*2+1]  = verts[vi].v;
+                        // glTF joint indices come through as floats; round to ints.
+                        mp.jointIdx[vi*4+0] = (uint16_t)(verts[vi].j0 + 0.5f);
+                        mp.jointIdx[vi*4+1] = (uint16_t)(verts[vi].j1 + 0.5f);
+                        mp.jointIdx[vi*4+2] = (uint16_t)(verts[vi].j2 + 0.5f);
+                        mp.jointIdx[vi*4+3] = (uint16_t)(verts[vi].j3 + 0.5f);
+                        mp.jointWt[vi*4+0] = verts[vi].w0;
+                        mp.jointWt[vi*4+1] = verts[vi].w1;
+                        mp.jointWt[vi*4+2] = verts[vi].w2;
+                        mp.jointWt[vi*4+3] = verts[vi].w3;
+                    }
+                }
+                model.primitives.push_back(std::move(mp));
                 totalVerts += vcount;
             }
         }
@@ -675,6 +710,11 @@ IModelLoader* createModelLoader(rhi::IRenderDevice* dev, IAssetSource* assets) {
 
 void mulMat4(const float a[16], const float b[16], float out[16]) {
     mat4Mul(a, b, out);
+}
+
+uint32_t meshIdOf(const MeshPrimitive& p) {
+    if ((p.vertexBuffer & kTagMask) != kMeshTag) return 0;  // headless / no device mesh
+    return static_cast<uint32_t>(p.vertexBuffer & ~kTagMask);
 }
 
 namespace {

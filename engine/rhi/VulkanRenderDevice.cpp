@@ -530,6 +530,7 @@ public:
             vmaDestroyBuffer(m_alloc, m.vbo, m.vboAlloc); return {};
         }
         m.indexCount = icount;
+        m.vertexCount = vcount;
         uint32_t id = m_nextMeshId++;
         m_meshes.emplace(id, m);
         return { id };
@@ -539,9 +540,59 @@ public:
         auto it = m_meshes.find(h.id);
         if (it == m_meshes.end()) return;
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        if (it->second.dynamic && it->second.vboMapped)
+            vmaUnmapMemory(m_alloc, it->second.vboAlloc);
         vmaDestroyBuffer(m_alloc, it->second.vbo, it->second.vboAlloc);
         vmaDestroyBuffer(m_alloc, it->second.ibo, it->second.iboAlloc);
         m_meshes.erase(it);
+    }
+
+    // ---- Dynamic mesh re-upload (CPU skinning, J1) --------------------------
+    // Overwrite an existing mesh's vertices in place. On the first call the vbo is
+    // swapped for a HOST_VISIBLE + persistently-mapped buffer (so re-uploads are a
+    // plain memcpy with no staging). vkDeviceWaitIdle before the swap/overwrite
+    // makes this validation-clean (no frame can still be reading the buffer); the
+    // handful of animated characters make this cheap enough.
+    void updateMesh(MeshHandle h, const MeshVertex* verts, uint32_t vcount) override {
+        if (!verts || vcount == 0) return;
+        auto it = m_meshes.find(h.id);
+        if (it == m_meshes.end()) return;
+        Mesh& m = it->second;
+        if (vcount != m.vertexCount) return;  // count must match the original mesh
+        const VkDeviceSize bytes = (VkDeviceSize)vcount * sizeof(MeshVertex);
+
+        // Ensure no in-flight GPU work still references this vertex buffer.
+        if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+
+        if (!m.dynamic) {
+            // Promote: replace the DEVICE_LOCAL vbo with a HOST_VISIBLE mapped one.
+            VkBuffer newVbo = VK_NULL_HANDLE; VmaAllocation newAlloc = nullptr;
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = bytes; bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+            VmaAllocationCreateInfo vaci{};
+            vaci.usage = VMA_MEMORY_USAGE_AUTO;
+            vaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo ai{};
+            if (vmaCreateBuffer(m_alloc, &bci, &vaci, &newVbo, &newAlloc, &ai) != VK_SUCCESS) {
+                logError("[rhi] updateMesh: dynamic vbo alloc failed"); return;
+            }
+            // Persistent map (MAPPED flag gives pMappedData; keep it for reuse).
+            m.vboMapped = ai.pMappedData;
+            if (!m.vboMapped) {
+                if (vmaMapMemory(m_alloc, newAlloc, &m.vboMapped) != VK_SUCCESS) {
+                    vmaDestroyBuffer(m_alloc, newVbo, newAlloc);
+                    logError("[rhi] updateMesh: dynamic vbo map failed"); return;
+                }
+            }
+            // Free the old device-local vbo (idle above guarantees it is unused).
+            vmaDestroyBuffer(m_alloc, m.vbo, m.vboAlloc);
+            m.vbo = newVbo; m.vboAlloc = newAlloc; m.dynamic = true;
+        }
+        std::memcpy(m.vboMapped, verts, (size_t)bytes);
+        // HOST_VISIBLE allocations from VMA_MEMORY_USAGE_AUTO may not be coherent;
+        // flush the range so the GPU sees the write (no-op if host-coherent).
+        vmaFlushAllocation(m_alloc, m.vboAlloc, 0, bytes);
     }
 
     TextureHandle createTexture(const void* rgba8, uint32_t w, uint32_t h, bool srgb) override {
@@ -652,6 +703,12 @@ private:
         VkBuffer vbo = VK_NULL_HANDLE; VmaAllocation vboAlloc = nullptr;
         VkBuffer ibo = VK_NULL_HANDLE; VmaAllocation iboAlloc = nullptr;
         uint32_t indexCount = 0;
+        // CPU-skinning support (J1): a mesh that has been updated at least once
+        // holds a HOST_VISIBLE, persistently-mapped vertex buffer so subsequent
+        // re-uploads are a plain memcpy (no staging). Static meshes leave these 0.
+        uint32_t vertexCount = 0;       // vertices the vbo was sized for
+        bool     dynamic = false;       // vbo is HOST_VISIBLE + mapped
+        void*    vboMapped = nullptr;   // persistent map (only when dynamic)
     };
     struct Texture {
         VkImage image = VK_NULL_HANDLE; VmaAllocation alloc = nullptr;
