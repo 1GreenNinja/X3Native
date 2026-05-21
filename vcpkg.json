@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+  "name": "x3native",
+  "version": "0.0.1",
+  "description": "Custom native C++/Vulkan game engine for the 1GreenNinja portfolio.",
+  "dependencies": [
+    "vk-bootstrap",
+    "vulkan-memory-allocator",
+    "glfw3",
+    "miniz",
+    "glm"
+  ],
+  "builtin-baseline": "REPLACE_WITH_VCPKG_COMMIT_SHA",
+  "overrides": []
+}
