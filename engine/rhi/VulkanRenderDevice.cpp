@@ -44,6 +44,12 @@
 #include <VkBootstrap.h>
 #include <vk_mem_alloc.h>
 
+// PNG writer for captureFrame() (--screenshot). This is the ONLY translation unit
+// that defines STB_IMAGE_WRITE_IMPLEMENTATION (ModelLoader.cpp owns the matching
+// STB_IMAGE_IMPLEMENTATION for the reader — they are separate stb headers).
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include <stb_image_write.h>
+
 #include <vector>
 #include <string>
 #include <cmath>
@@ -410,6 +416,94 @@ public:
     }
 
     RenderStats stats() const override { return m_lastStats; }
+
+    // ---- Offscreen capture (--screenshot) ----------------------------------
+    // Copy the last presented swapchain color image into a host-visible buffer
+    // and write it as a PNG. Self-contained: it idles the device, does its own
+    // one-time-submit (PRESENT_SRC -> TRANSFER_SRC, copy, -> PRESENT_SRC), then
+    // maps the readback buffer, swizzles to RGBA per the swapchain format, and
+    // hands tightly-packed RGBA8 to stb_image_write. Validation-clean.
+    bool captureFrame(const char* path) override {
+        if (!path || !m_swapchain || m_swapImages.empty()) {
+            logError("[rhi] captureFrame: not ready (no swapchain)"); return false;
+        }
+        // The last presented frame's image index (set each beginFrame). After
+        // endFrame() it still refers to the most recently presented image.
+        const uint32_t imageIndex = m_curImageIndex;
+        if (imageIndex >= m_swapImages.size()) {
+            logError("[rhi] captureFrame: bad image index"); return false;
+        }
+        const uint32_t W = m_extent.width, H = m_extent.height;
+        if (W == 0 || H == 0) { logError("[rhi] captureFrame: zero extent"); return false; }
+
+        // Make sure all rendering/presenting on the captured image has retired
+        // before we read it (also satisfies the one-time-submit's implicit sync).
+        vkDeviceWaitIdle(m_dev.device);
+
+        // Host-visible readback buffer: tightly packed (vkCmdCopyImageToBuffer
+        // with bufferRowLength=0 packs rows to image width, so pitch == W*4).
+        const VkDeviceSize bytes = (VkDeviceSize)W * H * 4;
+        VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        bci.size = bytes; bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        VmaAllocationCreateInfo vaci{};
+        vaci.usage = VMA_MEMORY_USAGE_AUTO;
+        vaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        VkBuffer readback = VK_NULL_HANDLE; VmaAllocation readbackAlloc = nullptr; VmaAllocationInfo rinfo{};
+        if (vmaCreateBuffer(m_alloc, &bci, &vaci, &readback, &readbackAlloc, &rinfo) != VK_SUCCESS) {
+            logError("[rhi] captureFrame: readback buffer alloc failed"); return false;
+        }
+
+        VkImage img = m_swapImages[imageIndex];
+        bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
+            // PRESENT_SRC -> TRANSFER_SRC_OPTIMAL
+            imageBarrier(cmd, img,
+                VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+            VkBufferImageCopy region{};
+            region.bufferOffset = 0;
+            region.bufferRowLength = 0;     // tightly packed to image width
+            region.bufferImageHeight = 0;
+            region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+            region.imageOffset = { 0, 0, 0 };
+            region.imageExtent = { W, H, 1 };
+            vkCmdCopyImageToBuffer(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   readback, 1, &region);
+            // TRANSFER_SRC -> PRESENT_SRC so the image is back in a presentable
+            // layout (the next beginFrame transitions from UNDEFINED anyway, but
+            // this keeps the swapchain image in a defined, valid state).
+            imageBarrier(cmd, img,
+                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
+        });
+        if (!ok) {
+            vmaDestroyBuffer(m_alloc, readback, readbackAlloc);
+            logError("[rhi] captureFrame: copy submit failed"); return false;
+        }
+
+        // Map + swizzle into a tightly-packed RGBA8 image for the PNG. The default
+        // swapchain format is B8G8R8A8_UNORM (raw bytes are exactly what is shown,
+        // no gamma needed) — swap B<->R. Handle the R/B-already-RGBA formats too.
+        const bool bgra = (m_format == VK_FORMAT_B8G8R8A8_UNORM ||
+                           m_format == VK_FORMAT_B8G8R8A8_SRGB);
+        const uint8_t* src = static_cast<const uint8_t*>(rinfo.pMappedData);
+        std::vector<uint8_t> rgba((size_t)W * H * 4);
+        for (size_t p = 0; p < (size_t)W * H; ++p) {
+            const uint8_t* s = src + p * 4;
+            uint8_t* d = rgba.data() + p * 4;
+            if (bgra) { d[0] = s[2]; d[1] = s[1]; d[2] = s[0]; }
+            else      { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; }
+            d[3] = 255;  // force opaque (swapchain alpha is undefined for display)
+        }
+        vmaDestroyBuffer(m_alloc, readback, readbackAlloc);
+
+        const int rc = stbi_write_png(path, (int)W, (int)H, 4, rgba.data(), (int)(W * 4));
+        if (rc == 0) { logError(std::string("[rhi] captureFrame: PNG write failed: ") + path); return false; }
+        logInfo(std::string("[rhi] captureFrame: wrote ") + path + " (" +
+                std::to_string(W) + "x" + std::to_string(H) + ")");
+        return true;
+    }
 
     bool supportsDescriptorIndexing() const override { return m_descriptorIndexing; }
     bool supportsMeshShaders() const override { return false; }
@@ -1115,7 +1209,10 @@ private:
         scb.set_desired_format(VkSurfaceFormatKHR{ VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })
            .set_desired_present_mode(m_vsync ? VK_PRESENT_MODE_FIFO_KHR : VK_PRESENT_MODE_MAILBOX_KHR)
            .set_desired_extent(w, h)
-           .add_image_usage_flags(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+           // TRANSFER_SRC so captureFrame() can vkCmdCopyImageToBuffer the
+           // presented color image to a host-visible readback buffer (--screenshot).
+           .add_image_usage_flags(VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
         if (m_swapchain != VK_NULL_HANDLE) scb.set_old_swapchain(m_swapchain);
         auto ret = scb.build();
         if (!ret) { logError(std::string("[rhi] swapchain: ") + ret.error().message()); return false; }

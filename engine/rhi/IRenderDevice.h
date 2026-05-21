@@ -105,6 +105,14 @@ public:
     // for the HUD/console overlay. No Vulkan types cross this boundary.
     virtual RenderStats stats() const = 0;
 
+    // ---- Offscreen capture (--screenshot) ---------------------------------
+    // Read back the LAST presented color (swapchain) image to the CPU and write
+    // it as a PNG at `path`. Call AFTER endFrame() has presented at least one
+    // frame (and no beginFrame/endFrame is in progress). Returns true on success.
+    // The implementation handles the swapchain channel order (BGRA->RGBA) and the
+    // row pitch so colors + dimensions are correct. No Vulkan types cross here.
+    virtual bool captureFrame(const char* path) = 0;
+
     // Capability query
     virtual bool supportsDescriptorIndexing() const = 0;
     virtual bool supportsMeshShaders() const = 0;
