@@ -428,6 +428,9 @@ int main(int argc, char** argv) {
             if (keyDown(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
             if (keyDown(GLFW_KEY_D)) in.moveStrafe += 1.0f;
             if (keyDown(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+            // Right mouse button = walk forward (hold to autorun)
+            if (!consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
+                in.moveFwd += 1.0f;
             in.sprint      = keyDown(GLFW_KEY_LEFT_SHIFT);
             in.jumpPressed = spaceNow && !prevSpace;   // rising edge
             in.lookDX = ddx;
