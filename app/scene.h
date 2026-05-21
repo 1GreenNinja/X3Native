@@ -13,9 +13,13 @@
 #include "engine/physics/IPhysicsWorld.h"
 
 #include <cstdint>
+#include <unordered_map>
 #include <vector>
 
 namespace x3::game {
+
+// Sentinel for Entity::link meaning "not linked to anything".
+constexpr uint32_t kNoLink = 0xFFFFFFFFu;
 
 // Semantic tags for gameplay slices. S2 only uses None/Static/Prop; the rest
 // are reserved so S4-S6 can find entities by role without a separate registry.
@@ -37,6 +41,10 @@ struct Entity {
     float                  transform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; // column-major model
     bool                   visible = true;
     uint32_t               tag = (uint32_t)Tag::None;
+    // Generic gameplay linkage (S4): the entity id this one targets, or kNoLink.
+    // A Button stores the entity id of the Door it opens. Chosen over a separate
+    // side-table because the link is 1:1 and stays cache-local with the entity.
+    uint32_t               link = kNoLink;
 };
 
 class Scene {
@@ -49,6 +57,11 @@ public:
     const Entity& get(uint32_t id) const;
 
     uint32_t size() const { return (uint32_t)m_entities.size(); }
+
+    // Resolve a physics BodyId (e.g. from a rayCast hit) back to the entity id
+    // that owns it. Returns kNoLink if no entity has that body. The map is
+    // maintained by add(); bodies with id 0 (invalid) are skipped.
+    uint32_t entityForBody(x3::phys::BodyId body) const;
 
     // Sync transforms FROM physics: for every entity with a valid body, rebuild
     // its model matrix from getBodyPosition() (translation). Entities without a
@@ -70,6 +83,8 @@ public:
 
 private:
     std::vector<Entity> m_entities;
+    // BodyId.id -> entity id, for rayCast-hit -> entity resolution. Built in add().
+    std::unordered_map<uint32_t, uint32_t> m_bodyToEntity;
 };
 
 } // namespace x3::game
