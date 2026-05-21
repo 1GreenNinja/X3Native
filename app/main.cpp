@@ -19,6 +19,7 @@
 #include "player.h"
 #include "door.h"
 #include "weapon.h"
+#include "monster.h"
 
 #include <memory>
 #include <string_view>
@@ -29,7 +30,8 @@
 
 int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
-         testGltf = false, testPlayer = false, testInteract = false, testPickup = false;
+         testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
+         testCombat = false;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
@@ -40,6 +42,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-player") testPlayer = true;
         else if (a == "--test-interact") testInteract = true;
         else if (a == "--test-pickup") testPickup = true;
+        else if (a == "--test-combat") testCombat = true;
     }
 
     // Headless self-tests (no window / Vulkan needed)
@@ -70,6 +73,10 @@ int main(int argc, char** argv) {
     if (testPickup) {
         x3::logInfo("running weapon pickup + arming (S5) self-test...");
         return x3::game::runPickupSelfTest() ? 0 : 1;
+    }
+    if (testCombat) {
+        x3::logInfo("running shoot-monster combat (S6) self-test...");
+        return x3::game::runCombatSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -165,6 +172,15 @@ int main(int argc, char** argv) {
     weapon.buildWeaponPickup(scene, *device, "G:/GameModels/rigged_glb",
                              x3::phys::Vec3{ 0.0f, 1.0f, 2.0f });
 
+    // ---- S6: the monster to shoot. Load alien_crawler.glb (fallback to a
+    // procedural box), give it an Enemy-layer collision body for the shoot
+    // raycast, and place it on open floor on the far (-Z) side of the room so the
+    // player walks in, grabs the gun near the origin, then turns and shoots it.
+    // It starts with 100 HP; 34 dmg/shot => 3 shots to kill. ----
+    x3::game::MonsterSystem combat;
+    combat.buildMonster(scene, *device, *physics, "G:/GameModels/rigged_glb",
+                        x3::phys::Vec3{ 0.0f, 0.4f, -4.0f });
+
     if (smoketest) {
         x3::logInfo("smoketest: stepping physics + rendering 30 frames (+ a mid-run swapchain recreate)");
         // Arm the player so the weapon GLB renders as the viewmodel this run
@@ -180,16 +196,20 @@ int main(int argc, char** argv) {
             physics->step(dt);
             scene.update(*physics);
             weapon.update(dt, scene, x3::phys::Vec3{ vmX, vmY, vmZ });
+            combat.update(dt, scene, *physics, x3::phys::Vec3{ vmX, vmY, vmZ });
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
                 weapon.drawPickup(*device, frame, scene);
+                combat.drawMonster(*device, frame, scene);
                 weapon.drawViewmodel(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch);
             }
             device->endFrame(frame);
         }
         x3::logInfo(std::string("smoketest: weapon viewmodel drawn (") +
                     (weapon.usingRealModel() ? "real GLB" : "fallback box") + ")");
+        x3::logInfo(std::string("smoketest: monster drawn (") +
+                    (combat.usingRealModel() ? "real GLB" : "fallback box") + ")");
         // Report where the dynamic box settled (proves physics drives the entity).
         for (uint32_t id = 0; id < scene.size(); ++id) {
             const auto& e = scene.get(id);
@@ -218,8 +238,11 @@ int main(int argc, char** argv) {
     double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
     double prevTime = glfwGetTime();
 
-    // Rising-edge tracking for Space (jump), F (noclip toggle), E (use).
-    bool prevSpace = false, prevF = false, prevE = false;
+    // Rising-edge tracking for Space (jump), F (noclip toggle), E (use), and the
+    // left mouse button (fire). A small fire cooldown gates the gun's rate.
+    bool prevSpace = false, prevF = false, prevE = false, prevFire = false;
+    float fireCooldown = 0.0f;          // seconds until the gun can fire again
+    constexpr float kFireCooldown = 0.25f;
 
     // ---- Optional debug noclip/fly camera (toggle with F). Not required by S3,
     // handy for inspecting the level. Off by default — gameplay is the walker.
@@ -325,6 +348,26 @@ int main(int argc, char** argv) {
         // (player eye) is within pickup radius; once armed, draw the viewmodel.
         weapon.update(dt, scene, x3::phys::Vec3{ camX, camY, camZ });
 
+        // ---- S6: combat. Decay the monster's hit-flash (+ optional chase), then
+        // handle FIRE on the left-mouse rising edge: only effective when armed,
+        // gated by a small cooldown. Raycast from the eye along the look dir;
+        // hitting the monster damages it (red flash) and eventually kills it.
+        combat.update(dt, scene, *physics, x3::phys::Vec3{ camX, camY, camZ });
+        if (fireCooldown > 0.0f) fireCooldown -= dt;
+        bool fireNow = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        if (fireNow && !prevFire && weapon.hasWeapon() && fireCooldown <= 0.0f) {
+            fireCooldown = kFireCooldown;
+            // Device forward convention: fwd = (cos p cos y, sin p, cos p sin y).
+            x3::phys::Vec3 eye{ camX, camY, camZ };
+            x3::phys::Vec3 dir{ std::cos(camPitch) * std::cos(camYaw),
+                                std::sin(camPitch),
+                                std::cos(camPitch) * std::sin(camYaw) };
+            x3::game::FireResult r = combat.fire(eye, dir, scene, *physics);
+            if (r.killed)          x3::logInfo("fire: monster killed!");
+            else if (r.hitMonster) x3::logInfo("fire: monster hit — HP " + std::to_string(r.hpAfter));
+        }
+        prevFire = fireNow;
+
         int cw, ch;
         glfwGetFramebufferSize(window, &cw, &ch);
         if (cw != lastW || ch != lastH) {
@@ -336,6 +379,7 @@ int main(int argc, char** argv) {
         if (frame.valid) {
             scene.render(*device, frame);
             weapon.drawPickup(*device, frame, scene);   // bobbing pickup (until armed)
+            combat.drawMonster(*device, frame, scene);  // the monster (+ hit-flash)
             weapon.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch);
         }
         device->endFrame(frame);
