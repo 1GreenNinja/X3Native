@@ -71,6 +71,13 @@ public:
     uint32_t instanceCount() const { return (uint32_t)m_instances.size(); }
     bool any() const { return assetsLoaded() > 0; }
 
+    // Forward point lights for the Light_A ceiling fixtures placed by build(): one
+    // warm-white omni at each fixture's world position (the meshes only model the
+    // fixture; this is where the light should emit). Captured at build time; empty
+    // if the light kit piece failed to load. Feed these to
+    // IRenderDevice::setPointLights so the corridor reads as a lit interior.
+    const std::vector<x3::rhi::PointLight>& lightFixtures() const { return m_lightFixtures; }
+
 private:
     // Load one GLB by relative path under the mounted dir; returns the asset index
     // (always valid — a failed load yields an EnvAsset with ok=false that draws
@@ -86,6 +93,7 @@ private:
     std::vector<EnvAsset>                    m_assetTable;
     std::vector<std::string>                 m_assetPaths; // parallel to m_assetTable
     std::vector<EnvInstance>                 m_instances;
+    std::vector<x3::rhi::PointLight>         m_lightFixtures; // omni per Light_A fixture
 };
 
 } // namespace x3::game

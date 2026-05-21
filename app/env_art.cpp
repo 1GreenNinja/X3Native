@@ -227,8 +227,22 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
     }
 
     // ---- CEILING LIGHTS: a strip light down the corridor + arena centers. ------
+    // Each placed Light_A fixture also registers a forward POINT LIGHT (captured in
+    // m_lightFixtures) so the corridor is actually lit, not just decorated with dark
+    // fixture meshes. The light emits from just below the fixture (so the ceiling
+    // doesn't occlude it and the cone reaches the floor ~3 m down). Warm-white, the
+    // color premultiplied by an intensity so a fixture reads as a bright pool of
+    // light with sensible overlap (placed every 4 m; range ~7.5 m).
     if (haveLight && haveCeil) {
-        const float lightY = kWallTopY - 0.05f;
+        const float lightY = kWallTopY - 0.05f;       // fixture mesh Y (~2.95)
+        // Warm-white emitter, premultiplied by intensity (kept in linear light;
+        // mesh.frag accumulates additively then tonemaps). Tuned so the corridor
+        // reads bright + atmospheric without blowing out the hazard stripes.
+        const float kIntensity = 3.2f;
+        const float kColR = 1.00f * kIntensity;
+        const float kColG = 0.86f * kIntensity;
+        const float kColB = 0.62f * kIntensity;       // warm tungsten-ish white
+        const float kRange = 7.5f;                     // meters; covers the 4 m spacing
         for (const Room& r : rooms) {
             const int n = (int)std::ceil((r.x1 - r.x0) / 4.0f);
             for (int i=0;i<n;++i) {
@@ -236,8 +250,17 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
                 placeYaw(m, 0.0f, 1.0f, cx(kLightAabb), kLightAabb.maxy, cz(kLightAabb),
                          wx, lightY, 0.0f);
                 addInstance(lightA, m);
+                // Point light a touch below the fixture so the ceiling panel above
+                // doesn't occlude the pool of light it casts on the floor/walls.
+                x3::rhi::PointLight pl;
+                pl.pos[0] = wx; pl.pos[1] = lightY - 0.25f; pl.pos[2] = 0.0f;
+                pl.range  = kRange;
+                pl.color[0] = kColR; pl.color[1] = kColG; pl.color[2] = kColB;
+                m_lightFixtures.push_back(pl);
             }
         }
+        x3::logInfo("[env-art] registered " + std::to_string(m_lightFixtures.size()) +
+                    " point light(s) at Light_A fixtures");
     }
 
     x3::logInfo("[env-art] built: " + std::to_string(assetsLoaded()) + " asset(s) loaded, " +

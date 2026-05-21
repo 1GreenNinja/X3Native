@@ -189,6 +189,14 @@ public:
         m_camYaw = yaw; m_camPitch = pitch; m_camFov = fovDeg;
     }
 
+    void setPointLights(const PointLight* lights, uint32_t count) override {
+        // Copy a clamped snapshot (we never retain the caller's pointer). The
+        // cached set is re-uploaded into each frame's UBO by prepareFrameData, so
+        // static lights only need one call. count==0 clears them.
+        const uint32_t n = std::min<uint32_t>(count, kMaxPointLights);
+        m_pointLights.assign(lights, lights + n);
+    }
+
     FrameContext beginFrame() override {
         FrameContext fc{};
         if (m_needsRecreate) { recreateSwapchain(); m_needsRecreate = false; }
@@ -654,14 +662,32 @@ private:
     // 2D HUD vertex: position already in clip space (NDC), uv, rgba color.
     struct HudVertex { float pos[2]; float uv[2]; float color[4]; };
 
-    // Per-frame camera UBO (matches shaders/mesh.{vert,frag} + shadow.vert). Two
-    // mat4s: the camera viewProj and the sun's lightViewProj (perf-stack E). std140
-    // packs back-to-back mat4s with no padding, so 128 bytes total.
-    struct CameraUBO {
-        glm::mat4 viewProj;
-        glm::mat4 lightViewProj;
+    // Forward point-light cap. A bounded fragment-shader loop over this many
+    // lights is fine for a corridor (NOT clustered/tiled — that's a later perf
+    // item). 64 omni fills cover Level 1's ceiling fixtures with headroom.
+    static constexpr uint32_t kMaxPointLights = 64;
+
+    // One GPU point light row (matches the GLSL std140 PointLight in mesh.frag).
+    // std140 packs each as two vec4s: (pos.xyz, range) + (color.rgb, _pad) = 32 B.
+    struct GpuPointLight {
+        glm::vec4 posRange;     // xyz = world pos, w = range (meters)
+        glm::vec4 colorPad;     // rgb = linear color * intensity, a = unused
     };
-    static_assert(sizeof(CameraUBO) == 128, "CameraUBO must be two tightly-packed mat4");
+    static_assert(sizeof(GpuPointLight) == 32, "GpuPointLight must be two vec4 (std140)");
+
+    // Per-frame UBO (matches shaders/mesh.{vert,frag} + shadow.vert). The camera
+    // viewProj + the sun's lightViewProj (perf-stack E), plus the forward point-
+    // light set: an ambient/count header vec4 then a fixed array. std140: the two
+    // mat4s pack back-to-back (128 B); ambientCount is a vec4 (16 B, 16-aligned);
+    // the GpuPointLight[] array of 32-B (vec4-aligned) elements follows tightly.
+    struct FrameUBO {
+        glm::mat4 viewProj;          // offset 0
+        glm::mat4 lightViewProj;     // offset 64
+        glm::vec4 ambientCount;      // offset 128: rgb = ambient color, w = light count (as float)
+        GpuPointLight lights[kMaxPointLights]; // offset 144
+    };
+    static_assert(sizeof(FrameUBO) == 144 + kMaxPointLights * 32,
+                  "FrameUBO must match the std140 layout in mesh.frag");
 
     // Per-object GPU row (matches shaders/mesh.vert ObjectData; std430). The 3
     // uint pads keep the struct 16-byte aligned after texIndex so std430's mat4
@@ -815,11 +841,21 @@ private:
         glm::mat4 view = glm::lookAt(m_camPos, m_camPos + fwd, glm::vec3(0, 1, 0));
         glm::mat4 proj = glm::perspective(glm::radians(m_camFov), aspect, 0.1f, 200.0f);
         proj[1][1] *= -1.0f;
-        CameraUBO ubo{};
+        FrameUBO ubo{};
         ubo.viewProj = proj * view;
         m_lightViewProj = computeLightViewProj();
         ubo.lightViewProj = m_lightViewProj;
-        std::memcpy(fr.camMapped, &ubo, sizeof(CameraUBO));
+        // Forward point lights: a constant hemispheric-ish ambient lift in the rgb,
+        // the active light count in w, then the cached light rows. Static lights are
+        // set once via setPointLights(); we re-upload the cached copy each frame.
+        const uint32_t lc = std::min<uint32_t>((uint32_t)m_pointLights.size(), kMaxPointLights);
+        ubo.ambientCount = glm::vec4(m_ambient, (float)lc);
+        for (uint32_t i = 0; i < lc; ++i) {
+            const PointLight& s = m_pointLights[i];
+            ubo.lights[i].posRange = glm::vec4(s.pos[0], s.pos[1], s.pos[2], s.range);
+            ubo.lights[i].colorPad = glm::vec4(s.color[0], s.color[1], s.color[2], 0.0f);
+        }
+        std::memcpy(fr.camMapped, &ubo, sizeof(FrameUBO));
 
         if (m_drawRecords.empty() || !m_meshPipeline) return;
 
@@ -1593,9 +1629,9 @@ private:
                 }
                 fr.objMapped = info.pMappedData;
 
-                // Camera UBO (camera viewProj + sun lightViewProj).
+                // Frame UBO (camera viewProj + sun lightViewProj + point lights).
                 VkBufferCreateInfo cbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-                cbci.size = sizeof(CameraUBO);
+                cbci.size = sizeof(FrameUBO);
                 cbci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
                 VmaAllocationInfo cinfo{};
                 if (vmaCreateBuffer(m_alloc, &cbci, &aci, &fr.camBuf, &fr.camAlloc, &cinfo) != VK_SUCCESS) {
@@ -1622,7 +1658,7 @@ private:
                     logError("[rhi] object set alloc failed"); return false;
                 }
                 VkDescriptorBufferInfo sbi{ fr.objBuf, 0, VK_WHOLE_SIZE };
-                VkDescriptorBufferInfo cbi{ fr.camBuf, 0, sizeof(CameraUBO) };
+                VkDescriptorBufferInfo cbi{ fr.camBuf, 0, sizeof(FrameUBO) };
                 VkWriteDescriptorSet writes[2]{};
                 writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 writes[0].dstSet = fr.objSet; writes[0].dstBinding = 0; writes[0].descriptorCount = 1;
@@ -2074,6 +2110,13 @@ private:
     float m_camYaw = -1.5708f;   // look toward -Z
     float m_camPitch = -0.30f;   // slightly down
     float m_camFov = 60.0f;
+
+    // ---- Forward point lights (interior fill) -----------------------------
+    // CPU-side cache set by setPointLights(); re-uploaded into each frame's UBO.
+    // m_ambient is a small constant lift so shadowed/back-faces aren't pure black
+    // (a touch cool/blue to read as a sci-fi interior without washing out).
+    std::vector<PointLight> m_pointLights;
+    glm::vec3               m_ambient{ 0.10f, 0.11f, 0.14f };
 };
 
 } // namespace

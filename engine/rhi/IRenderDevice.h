@@ -31,6 +31,22 @@ struct MeshHandle    { uint32_t id = 0; bool valid() const { return id != 0; } }
 struct TextureHandle { uint32_t id = 0; bool valid() const { return id != 0; } };
 
 // ---------------------------------------------------------------------------
+// Point lights (forward, fixed-array). A small per-frame set of omni lights the
+// mesh fragment shader accumulates ON TOP of the directional sun + shadow term.
+// POD only — no Vulkan types cross the boundary. `pos` is world-space; `color`
+// is linear RGB pre-multiplied by intensity (so caller controls brightness);
+// `range` is the falloff radius in meters (attenuation reaches ~0 at `range`).
+// A point light contributes NO shadow (the single shadow map is the sun's); it
+// is a cheap unshadowed fill — exactly right for corridor ceiling fixtures.
+// ---------------------------------------------------------------------------
+struct PointLight {
+    float pos[3]   = { 0.0f, 0.0f, 0.0f };
+    float range    = 6.0f;                  // meters; attenuation -> 0 at range
+    float color[3] = { 1.0f, 1.0f, 1.0f };  // linear RGB * intensity
+    float _pad     = 0.0f;                  // keep 16-byte friendly for the GPU
+};
+
+// ---------------------------------------------------------------------------
 // Per-frame performance counters (perf instrumentation layer). No Vulkan types
 // here — the device fills this from its own counters + GPU timestamp queries so
 // the HUD / console can report draw calls / triangles / GPU+CPU ms without ever
@@ -81,6 +97,16 @@ public:
     // color. `model` is a column-major 4x4. baseColorFactor multiplies the texel.
     virtual void          drawMesh(const FrameContext&, MeshHandle, TextureHandle baseColor,
                                    const float baseColorFactor[4], const float model[16]) = 0;
+
+    // ---- Forward point lights (interior fill) ------------------------------
+    // Set the active point lights for subsequent frames. The device copies the
+    // array (does NOT retain the pointer) and uploads them into the per-frame
+    // lights UBO inside beginFrame/endFrame, so mesh.frag accumulates them with
+    // distance attenuation on top of the directional sun. Static lights only need
+    // ONE call (the device re-uploads its cached copy each frame); call again to
+    // change them. `count` is clamped to the device's cap (extra lights ignored).
+    // Passing count==0 clears all point lights (sun + ambient only).
+    virtual void          setPointLights(const PointLight* lights, uint32_t count) = 0;
 
     // ---- Screen-space 2D HUD overlay (S7) ----------------------------------
     // A pixel-space overlay drawn over the 3D scene, inside the same dynamic-
