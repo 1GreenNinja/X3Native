@@ -306,6 +306,7 @@ public:
     void drawHudQuad(const x3::rhi::FrameContext&, float, float, float, float, const float[4]) override {}
     void drawHudText(const x3::rhi::FrameContext&, const char*, float, float, float, const float[4]) override {}
     void hudSize(uint32_t& w, uint32_t& h) const override { w = 0; h = 0; }
+    x3::rhi::RenderStats stats() const override { return {}; }
     bool supportsDescriptorIndexing() const override { return false; }
     bool supportsMeshShaders() const override { return false; }
 private:

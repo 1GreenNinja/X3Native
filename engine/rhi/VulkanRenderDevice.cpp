@@ -154,6 +154,23 @@ public:
         auto& fr = m_frames[m_frameIdx];
         vkWaitForFences(m_dev.device, 1, &fr.inFlight, VK_TRUE, UINT64_MAX);
 
+        // The fence above retired this ring slot's PREVIOUS submission, so its
+        // timestamps (written kFramesInFlight frames ago) are now guaranteed
+        // available — read them back without a stall, then recycle the pool.
+        if (m_tsSupported && fr.tsPending) {
+            uint64_t ticks[2] = { 0, 0 };
+            VkResult qr = vkGetQueryPoolResults(m_dev.device, fr.tsPool, 0, 2,
+                sizeof(ticks), ticks, sizeof(uint64_t),
+                VK_QUERY_RESULT_64_BIT);
+            if (qr == VK_SUCCESS) {
+                uint64_t t0 = ticks[0] & m_tsValidMask;
+                uint64_t t1 = ticks[1] & m_tsValidMask;
+                if (t1 >= t0)
+                    m_lastGpuMs = (float)((t1 - t0) * (double)m_tsPeriodNs * 1e-6);
+            }
+            fr.tsPending = false;
+        }
+
         uint32_t imageIndex = 0;
         VkResult acq = vkAcquireNextImageKHR(m_dev.device, m_swapchain, UINT64_MAX,
                                              fr.imageAvailable, VK_NULL_HANDLE, &imageIndex);
@@ -162,6 +179,9 @@ public:
 
         vkResetFences(m_dev.device, 1, &fr.inFlight);
         vkResetCommandPool(m_dev.device, fr.pool, 0);
+
+        // Start accumulating this frame's counters fresh.
+        m_building = RenderStats{};
 
         // This frame's GPU work has retired (we waited on inFlight): it's safe to
         // recycle its descriptor sets and reuse the factor-UBO + HUD vertex rings.
@@ -174,6 +194,12 @@ public:
         bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         vkBeginCommandBuffer(fr.cmd, &bi);
+
+        // Recycle this frame's timestamp queries before re-writing them. Resetting
+        // on the command buffer (vs host) keeps the pool's availability state
+        // VUID-correct: every query is reset, then written exactly once below.
+        if (m_tsSupported && fr.tsPool)
+            vkCmdResetQueryPool(fr.cmd, fr.tsPool, 0, 2);
 
         // UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL
         imageBarrier(fr.cmd, m_swapImages[imageIndex],
@@ -216,6 +242,12 @@ public:
         ri.pDepthAttachment = &depth;
         vkCmdBeginRendering(fr.cmd, &ri);
 
+        // Timestamp the start of the main pass. TOP_OF_PIPE marks "work entered the
+        // pipeline"; paired with the BOTTOM_OF_PIPE stamp at endFrame this brackets
+        // the whole scene+HUD pass. (sync2 vkCmdWriteTimestamp2.)
+        if (m_tsSupported && fr.tsPool)
+            vkCmdWriteTimestamp2(fr.cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, fr.tsPool, 0);
+
         // Viewport + scissor for the whole frame; the app issues drawMesh() calls
         // between beginFrame/endFrame (each binds the mesh pipeline + descriptors).
         VkViewport vp{ 0.0f, 0.0f, (float)m_extent.width, (float)m_extent.height, 0.0f, 1.0f };
@@ -234,6 +266,13 @@ public:
         if (!fc.valid) return;
         auto& fr = m_frames[m_frameIdx];
         uint32_t imageIndex = fc.backbuffer;
+
+        // Timestamp the end of the main pass (before we end rendering) at
+        // BOTTOM_OF_PIPE so it captures all draws completing.
+        if (m_tsSupported && fr.tsPool) {
+            vkCmdWriteTimestamp2(fr.cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, fr.tsPool, 1);
+            fr.tsPending = true; // results read back when this slot recurs
+        }
 
         vkCmdEndRendering(fr.cmd);
 
@@ -278,7 +317,14 @@ public:
 
         m_frameIdx = (m_frameIdx + 1) % kFramesInFlight;
         ++m_totalFrames;
+
+        // Snapshot this frame's counters + the latest GPU time for stats().
+        m_building.gpuFrameMs = m_lastGpuMs;
+        m_building.frameCount = m_totalFrames;
+        m_lastStats = m_building;
     }
+
+    RenderStats stats() const override { return m_lastStats; }
 
     bool supportsDescriptorIndexing() const override { return m_descriptorIndexing; }
     bool supportsMeshShaders() const override { return false; }
@@ -331,6 +377,8 @@ public:
     void drawMesh(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                   const float baseColorFactor[4], const float model[16]) override {
         if (!fc.valid || !m_meshPipeline) return;
+        // Count every attempted submission (incl. ones that fall through below).
+        ++m_building.objectsSubmitted;
         auto mit = m_meshes.find(mesh.id);
         if (mit == m_meshes.end()) return;
         const Mesh& mh = mit->second;
@@ -402,6 +450,11 @@ public:
         vkCmdBindVertexBuffers(cmd, 0, 1, &mh.vbo, &off);
         vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd, mh.indexCount, 1, 0, 0, 0);
+
+        // Per-frame perf counters: one draw call, indexCount/3 triangles.
+        ++m_building.drawCalls;
+        ++m_building.objectsDrawn;
+        m_building.triangles += mh.indexCount / 3;
     }
 
     // ---- Screen-space 2D HUD overlay (S7) ----------------------------------
@@ -467,9 +520,19 @@ private:
     // 2D HUD vertex: position already in clip space (NDC), uv, rgba color.
     struct HudVertex { float pos[2]; float uv[2]; float color[4]; };
 
-    static constexpr uint32_t kMaxDrawsPerFrame = 256;
-    // Per-frame HUD vertex ring capacity (verts). 6 verts/quad; a full-screen
-    // console with output + input is well under this.
+    // Per-frame mesh-draw capacity: sizes the per-draw factor-UBO ring + the
+    // per-frame descriptor pool (one combined-image-sampler + one UBO set per
+    // drawMesh). Raised to 128k to support the stress harness (spawn up to 100k
+    // cubes) so the renderer can actually be load-tested to the frame-budget
+    // ceiling; draws beyond this are skipped safely. The cost is ~32 MB of UBO
+    // ring per frame (stride*cap) — acceptable for a measurement build, and the
+    // per-draw descriptor allocation IS the CPU bottleneck we want to measure
+    // (bindless/multidraw, which remove it, are the next tier — see roadmap).
+    static constexpr uint32_t kMaxDrawsPerFrame = 131072;
+    // Per-frame HUD draw + vertex capacity. HUD draws are few (one per text/quad
+    // flush); kept small + independent of the mesh cap so the HUD descriptor pool
+    // stays tiny. 6 verts/quad; a full-screen console is well under this.
+    static constexpr uint32_t kMaxHudDraws = 256;
     static constexpr uint32_t kMaxHudVerts = 24576;
 
     struct Frame {
@@ -489,6 +552,12 @@ private:
         VmaAllocation hudVboAlloc = nullptr;
         void*         hudVboMapped = nullptr;
         uint32_t      hudVertsUsed = 0;  // write cursor into the vertex ring
+        // Per-frame GPU timestamp query pool (2 stamps: pass begin + pass end).
+        // Reset + written each beginFrame/endFrame; results are read back when the
+        // SAME ring slot comes around again (kFramesInFlight frames later, so the
+        // fence has already guaranteed the timestamps are available — no stall).
+        VkQueryPool   tsPool = VK_NULL_HANDLE;
+        bool          tsPending = false; // a frame's timestamps await readback
     };
 
     void imageBarrier(VkCommandBuffer cmd, VkImage img,
@@ -638,9 +707,9 @@ private:
         // Per-frame HUD descriptor pools + host-visible vertex rings.
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
             auto& fr = m_frames[i];
-            VkDescriptorPoolSize sz{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxDrawsPerFrame };
+            VkDescriptorPoolSize sz{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxHudDraws };
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-            pci.maxSets = kMaxDrawsPerFrame; pci.poolSizeCount = 1; pci.pPoolSizes = &sz;
+            pci.maxSets = kMaxHudDraws; pci.poolSizeCount = 1; pci.pPoolSizes = &sz;
             if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &fr.hudDescPool) != VK_SUCCESS) {
                 logError("[rhi] HUD descriptor pool failed"); return false;
             }
@@ -830,6 +899,21 @@ private:
         VkFenceCreateInfo fi{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
         fi.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
+        // ---- GPU timestamp support (perf instrumentation) ----
+        // timestampPeriod (ns/tick) is a device limit; a graphics queue family with
+        // timestampValidBits>0 can write timestamps. If unsupported we skip the
+        // query pools entirely and gpuFrameMs stays 0 (CPU stats still work).
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(m_dev.physical_device, &props);
+        m_tsPeriodNs = props.limits.timestampPeriod;
+        uint32_t qfCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(m_dev.physical_device, &qfCount, nullptr);
+        std::vector<VkQueueFamilyProperties> qfs(qfCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(m_dev.physical_device, &qfCount, qfs.data());
+        uint32_t validBits = (m_gfxFamily < qfCount) ? qfs[m_gfxFamily].timestampValidBits : 0;
+        m_tsSupported = (m_tsPeriodNs > 0.0f) && (validBits > 0);
+        m_tsValidMask = (validBits >= 64) ? ~0ull : ((1ull << validBits) - 1ull);
+
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
             auto& fr = m_frames[i];
             if (vkCreateCommandPool(m_dev.device, &pci, nullptr, &fr.pool) != VK_SUCCESS) return false;
@@ -841,13 +925,28 @@ private:
             if (vkAllocateCommandBuffers(m_dev.device, &ai, &fr.cmd) != VK_SUCCESS) return false;
             vkCreateSemaphore(m_dev.device, &si, nullptr, &fr.imageAvailable);
             vkCreateFence(m_dev.device, &fi, nullptr, &fr.inFlight);
+
+            // 2 timestamps per frame (pass begin + pass end).
+            if (m_tsSupported) {
+                VkQueryPoolCreateInfo qci{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+                qci.queryType = VK_QUERY_TYPE_TIMESTAMP;
+                qci.queryCount = 2;
+                if (vkCreateQueryPool(m_dev.device, &qci, nullptr, &fr.tsPool) != VK_SUCCESS) {
+                    logError("[rhi] timestamp query pool create failed; GPU timing disabled");
+                    m_tsSupported = false; // fall back: CPU stats only
+                }
+            }
         }
+        if (m_tsSupported)
+            logInfo("[rhi] GPU timestamp queries enabled (timestampPeriod=" +
+                    std::to_string(m_tsPeriodNs) + " ns/tick)");
         return true;
     }
 
     void destroyPerFrame() {
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
             auto& fr = m_frames[i];
+            if (fr.tsPool) vkDestroyQueryPool(m_dev.device, fr.tsPool, nullptr);
             if (fr.inFlight) vkDestroyFence(m_dev.device, fr.inFlight, nullptr);
             if (fr.imageAvailable) vkDestroySemaphore(m_dev.device, fr.imageAvailable, nullptr);
             if (fr.pool) vkDestroyCommandPool(m_dev.device, fr.pool, nullptr);
@@ -1234,6 +1333,19 @@ private:
     Frame    m_frames[kFramesInFlight];
     uint32_t m_frameIdx = 0;
     uint64_t m_totalFrames = 0;
+
+    // ---- Perf instrumentation ---------------------------------------------
+    // GPU timestamps: the device's valid bit count + ns-per-tick (timestampPeriod).
+    // Both come from VkPhysicalDeviceLimits; if timestamps are unsupported on the
+    // graphics queue the pool is never created and gpuFrameMs stays 0.
+    bool     m_tsSupported = false;
+    float    m_tsPeriodNs  = 0.0f;       // nanoseconds per timestamp tick
+    uint64_t m_tsValidMask = 0;          // mask of meaningful timestamp bits
+    float    m_lastGpuMs   = 0.0f;       // most recent GPU pass time (ms)
+    // Counters being accumulated for the in-flight frame (reset each beginFrame),
+    // and the snapshot of the last completed frame (returned by stats()).
+    RenderStats m_building{};            // accumulates during the current frame
+    RenderStats m_lastStats{};           // snapshot taken at endFrame()
 
     bool m_vsync = true;
     bool m_needsRecreate = false;
