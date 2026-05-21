@@ -10,6 +10,7 @@
 #include <cmath>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace x3::game {
 
@@ -195,6 +196,23 @@ void Level1Game::spawnMartinez(Scene& scene, x3::rhi::IRenderDevice& device,
     x3::logInfo("Level1: BOSS — Chief Martinez spawned in the arena (boss-tier HP/speed)");
 }
 
+void Level1Game::spawnBossAdds(Scene& scene, x3::rhi::IRenderDevice& device,
+                               x3::phys::IPhysicsWorld& physics) {
+    if (m_bossSummoned) return;
+    m_bossSummoned = true;
+    // Phase 3 "summons" beat: spawn N Guard adds flanking the arena center. The
+    // count comes from the boss's tuning so the boss + host stay in agreement.
+    const int n = m_martinez.summonCount();
+    for (int i = 0; i < n; ++i) {
+        const float side = (i % 2 == 0) ? -3.0f : 3.0f;
+        const float fwd  = (float)(i / 2) * 2.0f;
+        m_bossAdds.spawn(scene, device, physics, m_modelDir,
+                         x3::phys::Vec3{ m_layout.arenaCenter.x - 3.0f + fwd, kEnemyY,
+                                         m_layout.arenaCenter.z + side }, guardTuning());
+    }
+    x3::logInfo("Level1: MARTINEZ SUMMONS — " + std::to_string(n) + " Guard add(s) spawned");
+}
+
 void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                       const x3::phys::Vec3& eye, const x3::phys::Vec3& playerPos) {
     tick(dt, scene, physics, eye, playerPos, nullptr, AttackFxFn{});
@@ -204,6 +222,9 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                       const x3::phys::Vec3& eye, const x3::phys::Vec3& playerPos,
                       IDamageSink* player, const AttackFxFn& attackFx) {
     if (!m_built || !m_devicePtr) return;
+
+    // ---- Melee cooldown advances (Phase 2b super-strength punch). ----
+    m_melee.update(dt);
 
     // ---- Doors advance ----
     m_doors.update(dt, scene, physics);
@@ -237,13 +258,39 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
         x3::logInfo("Level1: ARMED — Door C unlocked + opening");
     }
 
+    // ---- Phase banner flash decay (Phase 2b: "PHASE 2!/PHASE 3!"). ----
+    if (m_phaseBannerTimer > 0.0f) {
+        m_phaseBannerTimer -= dt;
+        if (m_phaseBannerTimer <= 0.0f) { m_phaseBannerTimer = 0.0f; m_phaseBanner.clear(); }
+    }
+
     // ---- Monsters update (now attack the player on cooldown, Phase 2a). Enemies
     // only attack while the player is alive; once dead they keep moving but stop
     // dealing damage (the player is respawning). ----
     IDamageSink* atkTarget = (player && player->isAlive()) ? player : nullptr;
     m_corridor.update(dt, scene, physics, eye, atkTarget, attackFx);
     m_checkpoint.update(dt, scene, physics, eye, atkTarget, attackFx);
-    if (m_martinezSpawned) m_martinez.update(dt, scene, physics, eye, atkTarget, attackFx);
+    m_bossAdds.update(dt, scene, physics, eye, atkTarget, attackFx);
+
+    // ---- Beat 9b (Phase 2b): Martinez runs its HP-keyed phase machine. On a
+    // phase transition the callback raises the "PHASE N!" HUD banner + plays a cue,
+    // and on Phase 3 summons Guard adds once (the bible's "summons" beat). ----
+    if (m_martinezSpawned) {
+        const float kPhaseBannerTime = 2.2f;
+        BossPhaseFn onPhase = [&](BossPhase p) {
+            if (p == BossPhase::Phase2) {
+                m_phaseBanner = "PHASE 2!  ENRAGED";
+                x3::logInfo("Level1: MARTINEZ PHASE 2 — ENRAGE");
+            } else if (p == BossPhase::Phase3) {
+                m_phaseBanner = "PHASE 3!  DESPERATE";
+                x3::logInfo("Level1: MARTINEZ PHASE 3 — DESPERATE (summoning adds)");
+                spawnBossAdds(scene, *m_devicePtr, physics);
+            }
+            m_phaseBannerTimer = kPhaseBannerTime;
+            playSfx(m_audio.death, m_layout.arenaCenter, 0.7f);  // reuse a sting cue
+        };
+        m_martinez.update(dt, scene, physics, eye, atkTarget, attackFx, onPhase);
+    }
 
     // ---- Beat 10: Martinez dies -> Door E unlock + open + objective 2 -> 3 ----
     if (m_martinezSpawned && !m_martinez.alive() && !m_martinezDeadLatch) {
@@ -317,12 +364,43 @@ FireResult Level1Game::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& d
     return r;
 }
 
+MeleeResult Level1Game::onMelee(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
+                                Scene& scene, x3::phys::IPhysicsWorld& physics) {
+    // Super-strength punch across all manager-held enemy groups + the doors (the
+    // brute-force). Works whether or not armed (the pistol is a separate verb).
+    std::vector<MonsterManager*> groups{ &m_corridor, &m_checkpoint, &m_bossAdds };
+    MeleeResult r = m_melee.strike(eye, dir, scene, physics, groups, &m_doors);
+    if (r.onCooldown) return r;   // the strike was suppressed; nothing else to do
+
+    // Martinez is a single MonsterSystem (not a manager), so handle it inline with
+    // the same arc test the MeleeSystem uses for the groups.
+    if (m_martinezSpawned && m_martinez.alive()) {
+        const Entity& e = scene.get(m_martinez.entity());
+        const x3::phys::Vec3 c{ e.transform[12], e.transform[13], e.transform[14] };
+        if (inMeleeArc(eye, dir, c, kMeleeRange, kMeleeHalfAngle)) {
+            x3::phys::Vec3 kb{ c.x - eye.x, 0.0f, c.z - eye.z };
+            float kl = std::sqrt(kb.x * kb.x + kb.z * kb.z);
+            if (kl < 1e-4f) kl = 1.0f;
+            if (m_martinez.body().valid())
+                physics.applyImpulse(m_martinez.body(),
+                    x3::phys::Vec3{ kb.x / kl * kMeleeKnockback, 2.0f, kb.z / kl * kMeleeKnockback });
+            bool killed = m_martinez.takeMeleeDamage(kMeleeDamage, scene, physics);
+            ++r.enemiesHit;
+            if (killed) ++r.enemiesKilled;
+        }
+    }
+    if (r.doorForced) playSfx(m_audio.door, eye, 1.0f);
+    if (r.enemiesKilled > 0) playSfx(m_audio.death, eye, 0.9f);
+    return r;
+}
+
 void Level1Game::drawWorldExtras(x3::rhi::IRenderDevice& device,
                                  const x3::rhi::FrameContext& frame,
                                  const Scene& scene) const {
     m_weapon.drawPickup(device, frame, scene);
     m_corridor.drawAll(device, frame, scene);
     m_checkpoint.drawAll(device, frame, scene);
+    m_bossAdds.drawAll(device, frame, scene);
     if (m_martinezSpawned) m_martinez.drawMonster(device, frame, scene);
 }
 

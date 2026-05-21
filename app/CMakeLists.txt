@@ -7,6 +7,7 @@ add_executable(X3Engine WIN32
     door.cpp
     weapon.cpp
     monster.cpp
+    melee.cpp
     objective.cpp
     trigger.cpp
     level1_game.cpp

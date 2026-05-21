@@ -69,9 +69,28 @@ namespace x3::game {
 //     `attackRange` (after a short wind-up).
 //   * Drone — ranged: keep a standoff distance, periodically fire a hitscan toward
 //     the player (with a brief visible tracer/telegraph) for `damage` on cooldown.
-//   * Boss  — Chief Martinez: melee like a Guard but more HP/damage (NO phases this
-//     pass — that is Phase 2b).
+//   * Boss  — Chief Martinez: melee like a Guard but more HP/damage, PLUS a
+//     multi-phase state machine keyed off HP thresholds (Phase 2b — see BossPhase).
 enum class MonsterType : uint32_t { Guard = 0, Drone = 1, Boss = 2 };
+
+// Boss phase (Phase 2b, spec §8 + EFLZ_DESIGN.md Chief Martinez). A Boss-type
+// monster advances through phases as its HP drops past tuned thresholds. Each
+// phase scales speed/damage and re-tints/re-scales the model, plus fires a
+// one-shot host callback (HUD flash / audio / summon adds). The machine is a
+// pure HP-threshold latch (monotone: it only advances, never reverts).
+//   * Phase1 (>66% HP)        — baseline aggression (cover/posturing in the bible).
+//   * Phase2 (66%..33% HP)    — ENRAGE: faster chase + harder melee + reddened/
+//                               scaled tint.
+//   * Phase3 (<33% HP)        — DESPERATE: faster still + a one-time summon of
+//                               Guard adds (the bible's "summons" beat).
+// Non-Boss monsters always report Phase1 and never transition.
+enum class BossPhase : uint32_t { Phase1 = 0, Phase2 = 1, Phase3 = 2 };
+
+// Callback the MonsterSystem invokes ONCE when a Boss crosses into a new phase.
+// `newPhase` is the phase just entered. The host wires this to: a "PHASE 2!/
+// PHASE 3!" HUD flash + log + audio cue, and (for Phase3) spawning summoned adds
+// via the MonsterManager. Optional (may be empty). Fired from update().
+using BossPhaseFn = std::function<void(BossPhase newPhase)>;
 
 // Callback the MonsterSystem invokes to spawn a visible attack effect (a ranged
 // drone's hitscan tracer / a melee wind-up telegraph). `from`->`to` is the beam;
@@ -156,6 +175,26 @@ public:
         // Drone-only: preferred standoff distance (m). The drone strafes to keep
         // roughly this far from the player instead of closing to melee.
         float standoff            = 6.0f;
+
+        // ---- Boss phases (Phase 2b, spec §8) ------------------------------
+        // Only consulted for type == Boss. HP-fraction thresholds (of maxHp)
+        // at which the boss enters Phase2 / Phase3. Defaults: 2/3 and 1/3.
+        float phase2Frac          = 0.66f; // enter Phase2 when hp/maxHp <= this
+        float phase3Frac          = 0.33f; // enter Phase3 when hp/maxHp <= this
+        // Per-phase multipliers applied OVER the base chaseSpeed / damage when the
+        // phase is active (Phase1 = 1x; later phases ramp up the pressure).
+        float phase2SpeedMul      = 1.35f;
+        float phase2DamageMul     = 1.4f;
+        float phase3SpeedMul      = 1.7f;
+        float phase3DamageMul     = 1.8f;
+        // Phase2 "enrage" cosmetic: extra red tint push + model up-scale so the
+        // phase shift reads on screen (graybox feedback, no new animations).
+        float phase2ScaleMul      = 1.15f;
+        float phase3ScaleMul      = 1.30f;
+        // Phase3 "desperate" summon: how many Guard adds the boss summons once on
+        // entering Phase3 (the bible's "summons" beat). The host owns the actual
+        // spawn (it has the MonsterManager); this is just the count it should use.
+        int   phase3SummonCount   = 2;
     };
 
     // Build the monster: load alien_crawler.glb from `modelDir` via a fresh
@@ -188,9 +227,16 @@ public:
     // monster is alive, move it relative to `playerPos` (chase for melee, hold a
     // standoff for the drone) via setBodyPosition + sync the Entity transform, and
     // run its attack (melee reach hit / ranged hitscan) against `target` on
-    // cooldown. `target` may be null (no attacks — pure movement, e.g. the legacy
-    // single-monster path). `fx`, if set, is invoked to spawn a visible attack beam
-    // (drone tracer / melee telegraph). No-op once dead.
+    // cooldown. For a Boss, also advance the HP-keyed phase machine (firing
+    // `onPhase` once per transition). `target` may be null (no attacks — pure
+    // movement, e.g. the legacy single-monster path). `fx`, if set, is invoked to
+    // spawn a visible attack beam (drone tracer / melee telegraph). `onPhase`, if
+    // set, fires when a Boss enters a new phase. No-op once dead.
+    void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                const x3::phys::Vec3& playerPos,
+                IDamageSink* target, const AttackFxFn& fx, const BossPhaseFn& onPhase);
+
+    // As above but with no phase callback (still advances the phase machine).
     void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                 const x3::phys::Vec3& playerPos,
                 IDamageSink* target, const AttackFxFn& fx);
@@ -200,12 +246,31 @@ public:
     void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                 const x3::phys::Vec3& playerPos);
 
+    // Take melee damage (Phase 2b super-strength punch). Like fire()'s damage path
+    // but the caller has already resolved that THIS monster is in the arc — it just
+    // applies `damage` (heavy), starts the hit-flash, and kills on HP<=0 (hide +
+    // remove body + death-pop), exactly as a lethal shot does. Returns the killed
+    // flag. No-op (returns false) when already dead. The knockback impulse is the
+    // caller's job (it owns the physics body + direction).
+    bool takeMeleeDamage(int damage, Scene& scene, x3::phys::IPhysicsWorld& physics);
+
     // Enemy archetype + attack params (read for the HUD / self-test / tuning).
     MonsterType type() const { return m_type; }
     int   attackDamage() const { return m_dmg; }
     float attackRange() const { return m_attackRange; }
     float attackCooldown() const { return m_attackCooldown; }
     bool  ranged() const { return m_ranged; }
+
+    // ---- Boss phase state (Phase 2b) --------------------------------------
+    // Current boss phase (always Phase1 for non-Boss monsters).
+    BossPhase phase() const { return m_phase; }
+    // Effective (phase-scaled) chase speed + attack damage in the current phase.
+    // Useful for the HUD / self-test to observe that enrage actually changed stats.
+    float effectiveChaseSpeed() const { return m_chaseSpeed * m_phaseSpeedMul; }
+    int   effectiveDamage() const;
+    // How many Guard adds this boss wants summoned on entering Phase3 (read by the
+    // host's phase callback). 0 for non-Boss.
+    int   summonCount() const { return m_phase3SummonCount; }
 
     // Draw all monster primitives at its current transform, tinted toward red by
     // the active hit-flash. No-op once dead / hidden. The monster Entity carries an
@@ -269,6 +334,24 @@ private:
     float m_windupTimer         = 0.0f;       // >0 while winding up an attack
     bool  m_winding             = false;      // currently in an attack wind-up
 
+    // ---- Boss phases (Phase 2b) -------------------------------------------
+    BossPhase m_phase           = BossPhase::Phase1; // current phase (HP-keyed)
+    float m_phase2Frac          = 0.66f;      // hp/maxHp threshold to enter Phase2
+    float m_phase3Frac          = 0.33f;      // hp/maxHp threshold to enter Phase3
+    float m_phase2SpeedMul      = 1.35f;
+    float m_phase2DamageMul     = 1.4f;
+    float m_phase3SpeedMul      = 1.7f;
+    float m_phase3DamageMul     = 1.8f;
+    float m_phase2ScaleMul      = 1.15f;
+    float m_phase3ScaleMul      = 1.30f;
+    int   m_phase3SummonCount   = 2;
+    // Active per-phase multipliers (Phase1 = 1x). Folded into movement/attacks +
+    // the render scale/tint so the phase shift is felt + seen.
+    float m_phaseSpeedMul       = 1.0f;
+    float m_phaseDamageMul      = 1.0f;
+    float m_phaseScaleMul       = 1.0f;
+    float m_phaseTintMul[3]     = { 1.0f, 1.0f, 1.0f }; // extra red push per phase
+
     // Death "pop": when killed, m_alive flips false and the body is removed, but
     // m_dying stays true and m_deathPop counts down from kDeathPopTime while the
     // model keeps drawing (shrinking + flashing). Once it reaches 0 the Entity is
@@ -308,9 +391,15 @@ public:
     // Number of monsters still alive (not dead). Used for objective/door gating.
     uint32_t aliveCount() const;
 
-    // Advance every monster one frame (hit-flash decay, death-pop, chase, and —
-    // if `target` is non-null — attacks against the player on cooldown). `fx`, if
-    // set, spawns a visible attack beam per attack (drone tracer / melee tell).
+    // Advance every monster one frame (hit-flash decay, death-pop, chase, boss
+    // phase machine, and — if `target` is non-null — attacks against the player on
+    // cooldown). `fx`, if set, spawns a visible attack beam per attack (drone
+    // tracer / melee tell). `onPhase`, if set, fires per Boss phase transition.
+    void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                const x3::phys::Vec3& playerPos,
+                IDamageSink* target, const AttackFxFn& fx, const BossPhaseFn& onPhase);
+
+    // As above but with no phase callback.
     void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                 const x3::phys::Vec3& playerPos,
                 IDamageSink* target, const AttackFxFn& fx);
@@ -341,5 +430,16 @@ private:
 // away does no damage), T4 (firing when NOT armed does nothing). Logs PASS/FAIL
 // T#, returns true iff all pass. No window/Vulkan. Mirrors the S4/S5 self-tests.
 bool runCombatSelfTest();
+
+// Headless self-test (--test-phase2b, EFLZ Phase 2b). Asserts:
+//   (a) a super-strength melee damages an enemy in FRONT but not one BEHIND / out
+//       of range (the forward arc), and applies a knockback impulse;
+//   (b) melee on a locked door forces it open (unlockAndOpen);
+//   (c) a Boss transitions phase at the HP threshold — enrage stats change (faster
+//       chase + harder melee) and the Phase3 summon callback fires exactly once;
+//   (d) a Boss still only opens Door E on death (the existing gate is intact).
+// Logs PASS/FAIL T#, returns true iff all pass. No window/Vulkan. Lives in
+// melee.cpp (where the MeleeSystem + a HeadlessDevice are). Mirrors the others.
+bool runPhase2bSelfTest();
 
 } // namespace x3::game

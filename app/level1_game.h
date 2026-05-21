@@ -27,6 +27,7 @@
 #include "door.h"
 #include "weapon.h"
 #include "monster.h"
+#include "melee.h"
 #include "objective.h"
 #include "trigger.h"
 #include "level1.h"
@@ -107,6 +108,15 @@ public:
     FireResult onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                       Scene& scene, x3::phys::IPhysicsWorld& physics);
 
+    // Handle a MELEE press (rising edge) along `dir` from `eye` — the super-strength
+    // punch (Phase 2b). Damages + knocks back every live enemy across all Level-1
+    // enemy groups (corridor / checkpoint / Martinez) in the forward arc, and
+    // brute-forces a closed door the punch is aimed at. Works whether or not the
+    // player is armed (it is the unarmed-strength verb; the pistol is onFire).
+    // Returns the result so the host can spawn the melee swing FX + SFX.
+    MeleeResult onMelee(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
+                        Scene& scene, x3::phys::IPhysicsWorld& physics);
+
     // ---- Draw helpers (host calls inside beginFrame/endFrame) --------------
     void drawWorldExtras(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                          const Scene& scene) const;  // pickup + all monsters
@@ -142,6 +152,17 @@ public:
     bool martinezAlive()   const { return m_martinezSpawned && m_martinez.alive(); }
     bool martinezDead()    const { return m_martinezSpawned && !m_martinez.alive(); }
 
+    // ---- Boss phase HUD (Phase 2b) ----------------------------------------
+    // The boss's current phase (Phase1 until it spawns). Drives a boss HP/phase
+    // HUD element if the host wants one.
+    BossPhase martinezPhase() const { return m_martinezSpawned ? m_martinez.phase() : BossPhase::Phase1; }
+    int  martinezHp()  const { return m_martinezSpawned ? m_martinez.hp() : 0; }
+    int  martinezMaxHp() const { return m_martinezSpawned ? m_martinez.maxHp() : 0; }
+    // Banner text + remaining time for the "PHASE 2!/PHASE 3!" HUD flash, set when
+    // the boss enters a new phase and decayed by tick(). Empty / 0 when inactive.
+    const std::string& phaseBanner() const { return m_phaseBanner; }
+    float phaseBannerTime() const { return m_phaseBannerTimer; }
+
     // The weapon system (host reads usingRealModel() for logging).
     const WeaponSystem& weapon() const { return m_weapon; }
 
@@ -154,17 +175,27 @@ private:
                               x3::phys::IPhysicsWorld& physics);
     void spawnMartinez(Scene& scene, x3::rhi::IRenderDevice& device,
                        x3::phys::IPhysicsWorld& physics);
+    // Phase 2b: summon the boss's Phase-3 Guard adds (once). Idempotent guard.
+    void spawnBossAdds(Scene& scene, x3::rhi::IRenderDevice& device,
+                       x3::phys::IPhysicsWorld& physics);
 
     void playSfx(x3::audio::SoundHandle h, const x3::phys::Vec3& at, float vol);
 
     Level1Layout   m_layout;
     DoorSystem     m_doors;
     WeaponSystem   m_weapon;
+    MeleeSystem    m_melee;        // super-strength punch (Phase 2b)
     MonsterManager m_corridor;     // 2 guards + 1 drone (beat 3)
     MonsterManager m_checkpoint;   // 1-2 guards (built at level build)
     MonsterSystem  m_martinez;     // boss (beat 9)
+    MonsterManager m_bossAdds;     // Phase 3 summoned Guard adds (Phase 2b)
     ObjectiveSystem m_objectives;
     TriggerSystem  m_triggers;
+
+    // Boss phase HUD flash (Phase 2b): banner text + countdown set on a transition.
+    std::string    m_phaseBanner;          // "PHASE 2!" / "PHASE 3!" (empty = none)
+    float          m_phaseBannerTimer = 0.0f;
+    bool           m_bossSummoned = false;  // Phase 3 adds spawned once
 
     Level1Audio    m_audio;
     std::string    m_modelDir;
