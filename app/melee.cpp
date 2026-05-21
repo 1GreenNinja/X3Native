@@ -146,6 +146,7 @@ public:
     void destroyTexture(x3::rhi::TextureHandle) override {}
     void drawMesh(const x3::rhi::FrameContext&, x3::rhi::MeshHandle,
                   x3::rhi::TextureHandle, const float[4], const float[16]) override {}
+    void setPointLights(const x3::rhi::PointLight*, uint32_t) override {}
     void drawHudQuad(const x3::rhi::FrameContext&, float, float, float, float, const float[4]) override {}
     void drawHudText(const x3::rhi::FrameContext&, const char*, float, float, float, const float[4]) override {}
     void hudSize(uint32_t& w, uint32_t& h) const override { w = 0; h = 0; }

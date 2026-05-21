@@ -106,6 +106,17 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_artMask = m_envArt.build(device, kConvertedDir, seed);
     }
 
+    // ---- Lighting: register a forward point light at each Light_A ceiling fixture
+    // the env-art placed, so the corridor is lit (not just decorated with dark
+    // fixture meshes). The fixtures are static, so one call is enough — the device
+    // caches the set and re-uploads it into each frame's UBO. mesh.frag accumulates
+    // them on TOP of the existing directional sun + shadow pass. ----
+    {
+        const auto& fixtures = m_envArt.lightFixtures();
+        if (!fixtures.empty())
+            device.setPointLights(fixtures.data(), (uint32_t)fixtures.size());
+    }
+
     // ---- Geometry (graybox collision; surface renders suppressed where real art
     // covers them — see m_artMask). ----
     m_layout = buildLevel1(scene, device, physics, m_artMask);
@@ -487,6 +498,7 @@ public:
     void destroyTexture(x3::rhi::TextureHandle) override {}
     void drawMesh(const x3::rhi::FrameContext&, x3::rhi::MeshHandle,
                   x3::rhi::TextureHandle, const float[4], const float[16]) override {}
+    void setPointLights(const x3::rhi::PointLight*, uint32_t) override {}
     void drawHudQuad(const x3::rhi::FrameContext&, float, float, float, float, const float[4]) override {}
     void drawHudText(const x3::rhi::FrameContext&, const char*, float, float, float, const float[4]) override {}
     void hudSize(uint32_t& w, uint32_t& h) const override { w = 0; h = 0; }

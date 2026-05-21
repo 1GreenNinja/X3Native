@@ -23,9 +23,19 @@ layout(std430, set = 1, binding = 0) readonly buffer Objects {
     ObjectData objects[];
 } objBuf;
 
+// Per-frame UBO (set1/binding1). The vertex stage only needs viewProj, but the
+// block layout MUST match the fragment shader's (same buffer): camera viewProj +
+// sun lightViewProj, then the point-light header + array. See mesh.frag / FrameUBO.
+struct PointLight {
+    vec4 posRange;   // xyz = world position, w = range
+    vec4 colorPad;   // rgb = color * intensity, a = unused
+};
+const int kMaxPointLights = 64;
 layout(set = 1, binding = 1) uniform Camera {
     mat4 viewProj;
     mat4 lightViewProj;
+    vec4 ambientCount;
+    PointLight lights[kMaxPointLights];
 } cam;
 
 layout(location = 0) in vec3 inPos;
