@@ -55,12 +55,25 @@ struct Level1Layout {
     uint32_t equipmentProp = kNoLink;
 };
 
+// Art-overlay mask (EFLZ art pass). When the converted sci-fi GLBs load, the real
+// art is drawn OVER the graybox collision (by EnvArtSystem), so the corresponding
+// graybox SURFACE render meshes are suppressed (collision is always kept). Each
+// flag = true means "build that surface collision-only (invisible)". A flag left
+// false keeps the original visible graybox for that surface (per-piece fallback:
+// if a GLB failed to load, its graybox stays visible and the level never breaks).
+struct Level1ArtMask {
+    bool walls    = false;   // hide graybox side walls + cross walls render
+    bool floors   = false;   // hide graybox floor render
+};
+
 // Build the Level 1 graybox into `scene` (render meshes via `device`, static
 // collision via `physics`) and return its authored coordinates. Call once on a
 // fresh scene. The doors/pickups/enemies/triggers are added by the host using the
-// returned layout.
+// returned layout. `artMask` suppresses graybox surface renders that real GLB art
+// will cover (collision is always built); default mask = full graybox (legacy).
 Level1Layout buildLevel1(Scene& scene,
                          x3::rhi::IRenderDevice& device,
-                         x3::phys::IPhysicsWorld& physics);
+                         x3::phys::IPhysicsWorld& physics,
+                         const Level1ArtMask& artMask = {});
 
 } // namespace x3::game

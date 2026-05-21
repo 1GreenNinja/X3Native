@@ -23,9 +23,9 @@
 //     system (setTriggerCallback) is the "proper" future path.
 //   * Viewmodel is depth-tested in world space (no dedicated viewmodel depth
 //     pass), so it can clip into nearby walls. Acceptable for the slice.
-//   * makeDrawables() does NOT bake per-node TRS, so all primitives draw at the
-//     same model transform (minor offset possible for multi-node models). Same
-//     caveat as S1; acceptable for the slice.
+//   * makeDrawables() bakes each glTF node's world TRS into the drawable
+//     (nodeTransform); drawWeaponAt multiplies it in (model * nodeTransform), so
+//     multi-node / Y-up-corrected GLBs place correctly (M2 node-TRS fix).
 //   * Audio (pickup chime / gunshot) is DEFERRED — no audio system until M9.
 
 #include "scene.h"

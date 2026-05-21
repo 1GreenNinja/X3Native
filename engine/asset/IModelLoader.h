@@ -26,6 +26,9 @@ struct MeshPrimitive {
     uint64_t indexBuffer  = 0;
     uint32_t indexCount   = 0;
     uint32_t materialIndex = 0;  // index into Model::materials
+    uint32_t meshIndex    = 0;   // index of the glTF mesh this primitive came from
+                                 // (lets makeDrawables() map nodes -> primitives so
+                                 //  per-node TRS can be baked into each drawable)
 };
 
 struct Material {
@@ -94,20 +97,36 @@ public:
     virtual void  unload(Model& m) = 0;
 };
 
-// One drawable record per primitive, resolved to the device's handle types so
-// the scene/app can feed it straight to IRenderDevice::drawMesh(). meshId == 0
-// means the primitive was not uploaded to a real device (headless path).
+// One drawable record per (node, primitive) pair, resolved to the device's
+// handle types so the scene/app can feed it straight to IRenderDevice::drawMesh().
+// meshId == 0 means the primitive was not uploaded to a real device (headless path).
+//
+// nodeTransform is the WORLD matrix of the glTF node that referenced this
+// primitive's mesh (the product of its own + all ancestor local TRS, column-major).
+// The converted GLBs lean on node transforms for Y-up correction and multi-part
+// placement, so the caller MUST draw each drawable at `objectTransform * nodeTransform`
+// (object/world placement times this baked node transform). For a single-node /
+// identity model (e.g. the synthetic test cube) nodeTransform is the identity, so
+// the multiply is a no-op and old behavior is preserved.
 struct ModelDrawable {
     uint32_t meshId        = 0;          // -> rhi::MeshHandle{ meshId }
     uint32_t baseColorTexId = 0;         // -> rhi::TextureHandle{ } (0 == default white)
     float    baseColorFactor[4] = {1, 1, 1, 1};
+    float    nodeTransform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; // node world (column-major)
 };
 
-// Build per-primitive draw records from a Model previously loaded with a REAL
-// IRenderDevice (handles carry the device's mesh/texture ids). Static meshes
-// only — node transforms / skinning are applied by the caller (S1 draws the
-// model at a single placement transform). Returns empty for headless models.
+// Build per-(node,primitive) draw records from a Model previously loaded with a
+// REAL IRenderDevice (handles carry the device's mesh/texture ids). Walks the
+// glTF node hierarchy, computes each node's world matrix, and bakes it into the
+// drawable's nodeTransform so the caller can apply objectTransform * nodeTransform.
+// Static meshes only — skinning is applied separately. A node-less / single-node
+// model still works (identity nodeTransform). Returns empty for headless models.
 std::vector<ModelDrawable> makeDrawables(const Model& m);
+
+// Column-major 4x4 multiply helper: out = a * b (glTF/glm convention). Exposed so
+// callers can compose objectTransform (a) with a drawable's nodeTransform (b)
+// before handing the result to IRenderDevice::drawMesh(). out may NOT alias a/b.
+void mulMat4(const float a[16], const float b[16], float out[16]);
 
 // Factory. `dev` may be null (headless path): in that case opaque GPU handles
 // are minted as monotonic non-zero fake IDs and no real upload is performed,

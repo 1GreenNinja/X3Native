@@ -24,20 +24,24 @@ constexpr float kLintelBottom = 2.1f; // head clearance under the doorway lintel
 
 // Add one world-baked graybox box (render mesh + optional static collision) to
 // the scene. Mirrors level.cpp's addPiece. Returns the entity id.
+// `visible`: when false the render mesh is omitted (collision-only) so real GLB
+// art can be drawn over this volume without z-fighting (EFLZ art pass).
 uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
                 float hx, float hy, float hz, float cx, float cy, float cz,
                 x3::rhi::TextureHandle tex, const float color[4],
-                uint32_t tag = (uint32_t)Tag::Static, bool collide = true) {
+                uint32_t tag = (uint32_t)Tag::Static, bool collide = true,
+                bool visible = true) {
     x3::prims::PrimMesh geo = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, 0.5f);
     Entity e;
-    e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
-                               geo.index.data(), (uint32_t)geo.index.size());
+    if (visible)
+        e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                   geo.index.data(), (uint32_t)geo.index.size());
     e.tex = tex;
     e.baseColor[0] = color[0]; e.baseColor[1] = color[1];
     e.baseColor[2] = color[2]; e.baseColor[3] = color[3];
     for (int i = 0; i < 16; ++i) e.transform[i] = kIdentity[i];
     e.tag = tag;
-    e.visible = true;
+    e.visible = visible;
     if (collide)
         e.body = physics.addStaticMesh(geo.cverts.data(), (uint32_t)(geo.cverts.size() / 3),
                                        geo.cindex.data(), (uint32_t)geo.cindex.size());
@@ -47,16 +51,18 @@ uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysics
 // Floor slab for a room (thin slab at y=0, top surface flush with floor).
 void addFloor(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
               float cx, float cz, float hx, float hz, x3::rhi::TextureHandle tex,
-              const float color[4]) {
-    addBox(scene, device, physics, hx, 0.05f, hz, cx, -0.05f, cz, tex, color);
+              const float color[4], bool visible = true) {
+    addBox(scene, device, physics, hx, 0.05f, hz, cx, -0.05f, cz, tex, color,
+           (uint32_t)Tag::Static, /*collide*/true, visible);
 }
 
 // A solid wall running along X (its plane is z = const). Spans x in [x0,x1].
 void addWallX(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
-              float x0, float x1, float z, x3::rhi::TextureHandle tex, const float color[4]) {
+              float x0, float x1, float z, x3::rhi::TextureHandle tex, const float color[4],
+              bool visible = true) {
     const float hx = (x1 - x0) * 0.5f, cx = (x0 + x1) * 0.5f;
     addBox(scene, device, physics, hx, kWallH * 0.5f, kWallT * 0.5f, cx, kWallH * 0.5f, z,
-           tex, color);
+           tex, color, (uint32_t)Tag::Static, /*collide*/true, visible);
 }
 
 // A cross-wall running along Z (its plane is x = const), spanning z in [z0,z1],
@@ -64,11 +70,11 @@ void addWallX(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWo
 // If withDoorway is false, builds a fully solid wall (end cap).
 void addCrossWall(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
                   float x, float z0, float z1, float zDoor, bool withDoorway,
-                  x3::rhi::TextureHandle tex, const float color[4]) {
+                  x3::rhi::TextureHandle tex, const float color[4], bool visible = true) {
     if (!withDoorway) {
         const float hz = (z1 - z0) * 0.5f, cz = (z0 + z1) * 0.5f;
         addBox(scene, device, physics, kWallT * 0.5f, kWallH * 0.5f, hz, x, kWallH * 0.5f, cz,
-               tex, color);
+               tex, color, (uint32_t)Tag::Static, /*collide*/true, visible);
         return;
     }
     // Left segment: z in [z0, zDoor - kDoorHalf]
@@ -77,7 +83,7 @@ void addCrossWall(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysi
         if (hi > lo) {
             const float hz = (hi - lo) * 0.5f, cz = (lo + hi) * 0.5f;
             addBox(scene, device, physics, kWallT * 0.5f, kWallH * 0.5f, hz, x, kWallH * 0.5f, cz,
-                   tex, color);
+                   tex, color, (uint32_t)Tag::Static, /*collide*/true, visible);
         }
     }
     // Right segment: z in [zDoor + kDoorHalf, z1]
@@ -86,14 +92,17 @@ void addCrossWall(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysi
         if (hi > lo) {
             const float hz = (hi - lo) * 0.5f, cz = (lo + hi) * 0.5f;
             addBox(scene, device, physics, kWallT * 0.5f, kWallH * 0.5f, hz, x, kWallH * 0.5f, cz,
-                   tex, color);
+                   tex, color, (uint32_t)Tag::Static, /*collide*/true, visible);
         }
     }
-    // Lintel above the doorway (so the opening reads as a doorway).
+    // Lintel above the doorway (so the opening reads as a doorway). The lintel is
+    // small + mostly hidden by the door frame art, so it stays visible regardless
+    // of the wall mask (a cheap header that reads fine over the GLB walls).
     {
         const float lh = (kWallH - kLintelBottom) * 0.5f;
         const float lcy = kLintelBottom + lh;
-        addBox(scene, device, physics, kWallT * 0.5f, lh, kDoorHalf, x, lcy, zDoor, tex, color);
+        addBox(scene, device, physics, kWallT * 0.5f, lh, kDoorHalf, x, lcy, zDoor, tex, color,
+               (uint32_t)Tag::Static, /*collide*/true, visible);
     }
 }
 
@@ -101,8 +110,13 @@ void addCrossWall(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysi
 
 Level1Layout buildLevel1(Scene& scene,
                          x3::rhi::IRenderDevice& device,
-                         x3::phys::IPhysicsWorld& physics) {
-    x3::logInfo("buildLevel1: EFLZ 'Awakening' — 6 graybox rooms (cell/corridor/armory/checkpoint/arena/elevator)");
+                         x3::phys::IPhysicsWorld& physics,
+                         const Level1ArtMask& artMask) {
+    x3::logInfo("buildLevel1: EFLZ 'Awakening' — 6 graybox rooms (cell/corridor/armory/checkpoint/arena/elevator)"
+                + std::string(artMask.walls ? " [GLB walls]" : "")
+                + std::string(artMask.floors ? " [GLB floors]" : ""));
+    const bool wallVis  = !artMask.walls;   // graybox wall render on iff no GLB wall art
+    const bool floorVis = !artMask.floors;  // graybox floor render on iff no GLB floor art
 
     // ---- Shared graybox textures (a couple of checkers reused per surface). ----
     auto floorPx = x3::prims::makeCheckerRGBA(256, 32, 200,205,215, 45,55,80);
@@ -131,9 +145,9 @@ Level1Layout buildLevel1(Scene& scene,
     // ---- Per-room floor + the two long side walls (along X at z = ±zHalf). ----
     for (const Room& r : rooms) {
         const float cx = (r.x0 + r.x1) * 0.5f;
-        addFloor(scene, device, physics, cx, 0.0f, (r.x1 - r.x0) * 0.5f, r.zHalf, floorTex, r.tint);
-        addWallX(scene, device, physics, r.x0, r.x1, -r.zHalf, wallTex, r.tint);
-        addWallX(scene, device, physics, r.x0, r.x1,  r.zHalf, wallTex, r.tint);
+        addFloor(scene, device, physics, cx, 0.0f, (r.x1 - r.x0) * 0.5f, r.zHalf, floorTex, r.tint, floorVis);
+        addWallX(scene, device, physics, r.x0, r.x1, -r.zHalf, wallTex, r.tint, wallVis);
+        addWallX(scene, device, physics, r.x0, r.x1,  r.zHalf, wallTex, r.tint, wallVis);
     }
 
     // ---- Cross-walls at each X boundary. The cell back (x=0) and elevator far
@@ -142,13 +156,13 @@ Level1Layout buildLevel1(Scene& scene,
     // adjacent rooms so it seals the back of the narrower neighbor. ----
     const float wallTint[4] = { 0.62f, 0.66f, 0.78f, 1.0f };
     // Cell back wall (solid end cap), spans the cell width.
-    addCrossWall(scene, device, physics, cell.x0, -cell.zHalf, cell.zHalf, 0.0f, false, wallTex, wallTint);
+    addCrossWall(scene, device, physics, cell.x0, -cell.zHalf, cell.zHalf, 0.0f, false, wallTex, wallTint, wallVis);
     // Elevator far wall (solid end cap).
-    addCrossWall(scene, device, physics, elevator.x1, -elevator.zHalf, elevator.zHalf, 0.0f, false, wallTex, wallTint);
+    addCrossWall(scene, device, physics, elevator.x1, -elevator.zHalf, elevator.zHalf, 0.0f, false, wallTex, wallTint, wallVis);
     // Interior boundaries with doorways. For each, span the wider neighbor z-half.
     auto boundary = [&](float x, float zHalfA, float zHalfB) {
         const float zh = (zHalfA > zHalfB) ? zHalfA : zHalfB;
-        addCrossWall(scene, device, physics, x, -zh, zh, 0.0f, true, wallTex, wallTint);
+        addCrossWall(scene, device, physics, x, -zh, zh, 0.0f, true, wallTex, wallTint, wallVis);
     };
     boundary(corridor.x0,   cell.zHalf,       corridor.zHalf);   // Door A x=6
     boundary(armory.x0,     corridor.zHalf,   armory.zHalf);     // Door B x=22

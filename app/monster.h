@@ -41,9 +41,9 @@
 //     the 3x3, so the baked facing survives the per-frame physics sync (the host
 //     must call update() AFTER scene.update() — see main loop order). kChaseSpeed
 //     gates movement; kFaceSign flips the model's forward axis if needed.
-//   * makeDrawables() does NOT bake per-node TRS, so all primitives draw at one
-//     model transform (minor offset possible for multi-node models). Same caveat
-//     as S1/S5; acceptable for the slice.
+//   * makeDrawables() bakes each glTF node's world TRS into the drawable
+//     (nodeTransform); drawMonsterAt multiplies it in (model * nodeTransform), so
+//     multi-node / Y-up-corrected GLBs place correctly (M2 node-TRS fix).
 //   * Audio (gunshot / monster death sound) is DEFERRED — no audio system until
 //     M9. No sound is played on fire or death.
 
@@ -58,6 +58,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -164,6 +165,20 @@ public:
         float chaseSpeed = kChaseSpeed;    // m/s toward the player (0 = stationary)
         float modelScale = -1.0f;          // <0 => use the per-model default scale
         float tint[4]    = { 1, 1, 1, 1 }; // multiplied into the model base color
+
+        // ---- Model override (EFLZ art pass) -------------------------------
+        // GLB filename to load (relative to the mounted modelDir). Empty => the
+        // legacy "alien_crawler.glb" (keeps --test-combat / --test-level1 green).
+        std::string modelFile;
+        // Loose-dir to load `modelFile` from. Empty => the modelDir passed to
+        // buildMonster (the legacy rigged_glb). Lets Level 1 point characters at
+        // G:/GameModels/converted_glb while the tests stay on rigged_glb.
+        std::string modelDirOverride;
+        // Stand-up fixup: the converted character GLBs are authored Z-up (lying
+        // flat — height runs along +Z, feet at z=0). Set true to rotate -90deg
+        // about X so they stand upright in our Y-up world (feet land at y=0). The
+        // ModularSciFi / crawler models are already Y-up, so leave false for them.
+        bool  standUpZtoY = false;
 
         // ---- Attack behaviour (Phase 2a, spec §6.5) -----------------------
         MonsterType type          = MonsterType::Guard;
@@ -309,6 +324,11 @@ private:
     x3::asset::Model                          m_model;
     std::vector<x3::asset::ModelDrawable>     m_drawables;
     bool                                      m_usingReal = false;
+    // Model-local fixup applied between the gameplay transform and each drawable's
+    // node transform (final = model * fixup * nodeTransform). Identity for Y-up
+    // models; a -90deg-X stand-up for the Z-up converted character GLBs. Also
+    // grounds the feet to y=0 after the rotation.
+    float                                     m_modelFixup[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 
     x3::phys::Vec3   m_pos{};                 // current body-center world position
     uint32_t         m_entity = kNoLink;      // index into the Scene

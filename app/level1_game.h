@@ -31,6 +31,7 @@
 #include "objective.h"
 #include "trigger.h"
 #include "level1.h"
+#include "env_art.h"
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -182,6 +183,8 @@ private:
     void playSfx(x3::audio::SoundHandle h, const x3::phys::Vec3& at, float vol);
 
     Level1Layout   m_layout;
+    EnvArtSystem   m_envArt;       // converted sci-fi GLB visuals over the graybox
+    Level1ArtMask  m_artMask;      // which graybox surfaces real art covers
     DoorSystem     m_doors;
     WeaponSystem   m_weapon;
     MeleeSystem    m_melee;        // super-strength punch (Phase 2b)

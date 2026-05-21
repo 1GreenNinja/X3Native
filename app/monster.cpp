@@ -106,22 +106,45 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     m_phaseScaleMul    = 1.0f;
     m_phaseTintMul[0] = m_phaseTintMul[1] = m_phaseTintMul[2] = 1.0f;
 
-    // ---- Try the real purchased GLB via a mounted loose-dir asset source. ----
+    // ---- Try the real purchased GLB via a mounted loose-dir asset source. The
+    // model file + dir are tuning-overridable (EFLZ art pass): Level 1 points the
+    // characters at converted_glb/Characters/*.glb; the tests keep the legacy
+    // rigged_glb/alien_crawler.glb (empty overrides). ----
+    const std::string modelFile = tuning.modelFile.empty()
+        ? std::string("alien_crawler.glb") : tuning.modelFile;
+    const std::string useDir = tuning.modelDirOverride.empty()
+        ? std::string(modelDir) : tuning.modelDirOverride;
+
     m_assets.reset(x3::asset::createAssetSource());
-    bool mounted = m_assets->mountDir(modelDir, 0);
+    bool mounted = m_assets->mountDir(useDir, 0);
     if (mounted) {
         m_loader.reset(x3::asset::createModelLoader(&device, m_assets.get()));
-        m_model = m_loader->load("alien_crawler.glb");
+        m_model = m_loader->load(modelFile);
         if (m_model.ok)
             m_drawables = x3::asset::makeDrawables(m_model);
     } else {
-        x3::logWarn("[monster] mountDir failed: " + std::string(modelDir));
+        x3::logWarn("[monster] mountDir failed: " + useDir);
+    }
+
+    // ---- Model-local fixup: the converted character GLBs are Z-up (lying flat),
+    // so rotate -90deg about X to stand them upright (local +Z -> world +Y), then
+    // ground the feet at y=0. Y-up models (crawler / ModularSciFi) keep identity. -
+    {
+        for (int i=0;i<16;++i) m_modelFixup[i]=(i%5==0)?1.0f:0.0f;
+        if (tuning.standUpZtoY) {
+            // Rotation -90deg about X (column-major): +Z->+Y, +Y->-Z.
+            //  col0=(1,0,0) col1=(0,0,-1) col2=(0,1,0)
+            m_modelFixup[0]=1; m_modelFixup[1]=0;  m_modelFixup[2]=0;
+            m_modelFixup[4]=0; m_modelFixup[5]=0;  m_modelFixup[6]=-1;
+            m_modelFixup[8]=0; m_modelFixup[9]=1;  m_modelFixup[10]=0;
+            // After rotation the feet (was z=0) sit at y=0 already; no extra offset.
+        }
     }
 
     if (!m_drawables.empty()) {
         m_usingReal  = true;
         m_modelScale = kRealModelScale;
-        x3::logInfo("[monster] loaded alien_crawler.glb — " +
+        x3::logInfo("[monster] loaded " + modelFile + " — " +
                     std::to_string(m_drawables.size()) + " drawable primitive(s)");
     } else {
         // ---- Fallback: a procedural box monster so the slice still works. ----
@@ -130,7 +153,7 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
         if (m_model.ok)
             x3::logWarn("[monster] GLB loaded but produced no drawables; using fallback box");
         else
-            x3::logWarn("[monster] alien_crawler.glb load failed; using fallback box");
+            x3::logWarn("[monster] " + modelFile + " load failed; using fallback box");
 
         x3::prims::PrimMesh geo = x3::prims::makeBox(kMonsterHalf.x, kMonsterHalf.y,
                                                      kMonsterHalf.z, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -563,11 +586,18 @@ void MonsterSystem::drawMonsterAt(x3::rhi::IRenderDevice& device,
             d.baseColorFactor[2] * tint[2],
             d.baseColorFactor[3] * tint[3],
         };
+        // Compose: fin = model * fixup * nodeTransform. `model` is the gameplay
+        // transform (yaw + scale + pos); `fixup` stands up Z-up character GLBs;
+        // nodeTransform is the baked glTF node world matrix (M2 fix). Identity
+        // fixup + identity node => legacy behaviour (crawler / box).
+        float mf[16], fin[16];
+        x3::asset::mulMat4(model, m_modelFixup, mf);
+        x3::asset::mulMat4(mf, d.nodeTransform, fin);
         device.drawMesh(frame,
                         x3::rhi::MeshHandle{ d.meshId },
                         x3::rhi::TextureHandle{ d.baseColorTexId },
                         color,
-                        model);
+                        fin);
     }
 }
 
