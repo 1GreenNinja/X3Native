@@ -94,6 +94,21 @@ public:
     virtual void  unload(Model& m) = 0;
 };
 
+// One drawable record per primitive, resolved to the device's handle types so
+// the scene/app can feed it straight to IRenderDevice::drawMesh(). meshId == 0
+// means the primitive was not uploaded to a real device (headless path).
+struct ModelDrawable {
+    uint32_t meshId        = 0;          // -> rhi::MeshHandle{ meshId }
+    uint32_t baseColorTexId = 0;         // -> rhi::TextureHandle{ } (0 == default white)
+    float    baseColorFactor[4] = {1, 1, 1, 1};
+};
+
+// Build per-primitive draw records from a Model previously loaded with a REAL
+// IRenderDevice (handles carry the device's mesh/texture ids). Static meshes
+// only — node transforms / skinning are applied by the caller (S1 draws the
+// model at a single placement transform). Returns empty for headless models.
+std::vector<ModelDrawable> makeDrawables(const Model& m);
+
 // Factory. `dev` may be null (headless path): in that case opaque GPU handles
 // are minted as monotonic non-zero fake IDs and no real upload is performed,
 // so the loader can be exercised without a Vulkan device.
