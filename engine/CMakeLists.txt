@@ -4,11 +4,20 @@ add_library(x3engine STATIC
     rhi/VulkanRenderDevice.cpp
     rhi/vma_impl.cpp
     asset/PakAssetSource.cpp
+    asset/ModelLoader.cpp
 )
+
+# Header-only model-loader deps (M2): cgltf (glTF/GLB parse) + stb (image decode)
+find_path(CGLTF_INCLUDE_DIRS "cgltf.h")
+find_package(Stb REQUIRED)
 
 # Repo root on the include path so consumers use the namespaced prefix,
 # e.g. #include "engine/rhi/IRenderDevice.h"
 target_include_directories(x3engine PUBLIC ${CMAKE_SOURCE_DIR})
+
+# cgltf + stb are header-only and live only inside ModelLoader.cpp (Pimpl),
+# so they're PRIVATE include dirs — they never leak to engine consumers.
+target_include_directories(x3engine PRIVATE ${CGLTF_INCLUDE_DIRS} ${Stb_INCLUDE_DIR})
 
 target_link_libraries(x3engine
     PUBLIC

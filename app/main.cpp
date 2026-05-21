@@ -10,18 +10,20 @@
 #include "engine/core/IConsole.h"
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/asset/IAssetSource.h"
+#include "engine/asset/IModelLoader.h"
 
 #include <memory>
 #include <string_view>
 #include <cmath>
 
 int main(int argc, char** argv) {
-    bool smoketest = false, testAsset = false, testConsole = false;
+    bool smoketest = false, testAsset = false, testConsole = false, testGltf = false;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
         else if (a == "--test-asset") testAsset = true;
         else if (a == "--test-console") testConsole = true;
+        else if (a == "--test-gltf") testGltf = true;
     }
 
     // Headless self-tests (no window / Vulkan needed)
@@ -32,6 +34,10 @@ int main(int argc, char** argv) {
     if (testConsole) {
         x3::logInfo("running console (D6) self-test...");
         return x3::con::runConsoleSelfTest() ? 0 : 1;
+    }
+    if (testGltf) {
+        x3::logInfo("running glTF/GLB model loader (M2) self-test...");
+        return x3::asset::runModelLoaderSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
