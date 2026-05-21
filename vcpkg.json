@@ -11,7 +11,8 @@
     "glm",
     "joltphysics",
     "cgltf",
-    "stb"
+    "stb",
+    "miniaudio"
   ],
   "builtin-baseline": "f7f94113c3b629c01df3d49d5edebae6d598c78c",
   "overrides": []
