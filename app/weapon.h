@@ -45,6 +45,19 @@ namespace x3::game {
 // player-feet (camera/eye XZ) to pickup center.
 constexpr float kPickupRadius = 1.2f;
 
+// Default first-person viewmodel pose. These seed the live-tunable console cvars
+// (vm_yaw/vm_pitch/vm_roll in DEGREES, vm_fwd/vm_right/vm_down in METERS) and are
+// the values baked from play-testing. Orientation defaults are in DEGREES here so
+// main.cpp can register the cvars without converting. The pistol GLB's barrel
+// reads "to the right" with a plain camera-basis orientation, so the default yaw
+// offset (-45 deg) swings it toward forward; dial vm_* in-game to converge.
+constexpr float kVmDefYawDeg   = -45.0f; // yaw about camera up   (degrees)
+constexpr float kVmDefPitchDeg = 0.0f;   // pitch about camera right (degrees)
+constexpr float kVmDefRollDeg  = 0.0f;   // roll about camera forward (degrees)
+constexpr float kVmDefFwd      = 0.5f;   // forward along look dir (meters)
+constexpr float kVmDefRight    = 0.25f;  // to the right (meters)
+constexpr float kVmDefDown     = 0.2f;   // below the eye line (meters)
+
 // Pure arming rule, factored out so it is testable headlessly (see
 // runPickupSelfTest). Given the player position, the pickup position and the
 // current armed flag, returns true iff the player should become armed THIS call
@@ -87,8 +100,17 @@ public:
     // hasWeapon. Places the drawables at a camera-relative transform built from
     // the eye position + look angles (lower-right of the view). Call AFTER
     // scene.render() each frame so it composites on top of the world.
+    //
+    // The viewmodel pose is fully caller-supplied so it can be live-tuned from
+    // the console (cvars vm_yaw/vm_pitch/vm_roll in RADIANS about the camera
+    // basis, and vm_fwd/vm_right/vm_down in METERS along the camera basis). The
+    // purchased pistol GLB's authored axes are mismapped, so these let the player
+    // dial the barrel onto the look direction without recompiling. These have NO
+    // gameplay effect — the fire ray uses the camera look dir, not the viewmodel.
     void drawViewmodel(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
-                       float eyeX, float eyeY, float eyeZ, float yaw, float pitch) const;
+                       float eyeX, float eyeY, float eyeZ, float yaw, float pitch,
+                       float yawOff, float pitchOff, float rollOff,
+                       float fwd, float right, float down) const;
 
     // Gameplay state. S6 reads this: only shoot if armed.
     bool hasWeapon() const { return m_hasWeapon; }
