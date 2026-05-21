@@ -2,13 +2,16 @@
 
 **Goal:** maximum frame rate. This is the whole reason for going native. The target is to beat the Babylon/WebGL X3 by a wide margin on the same hardware, and to scale across the many-core CPUs (14900K / 13700K) + modern GPUs (5090 / A2000 / 1080 Ti).
 
-**Sourcing:** every technique here is from PUBLIC references (Vulkan spec, vkguide.dev, "Real-Time Rendering 4th ed", GPU-driven rendering papers, GDC talks). None require reading RBDOOM/GPL source — and most are *faster* than id Tech 4's 2004 OpenGL-era architecture anyway.
+**Sourcing:** every technique here is from PUBLIC references (Vulkan spec, vkguide.dev, "Real-Time Rendering 4th ed", GPU-driven rendering papers, GDC talks). None require reading RBDOOM/GPL source.
 
 ---
 
-## Why not just copy id Tech 4 / RBDOOM?
+## Where RBDOOM sits (accurate version)
 
-id Tech 4 is a 2004 engine; RBDOOM modernized it to Vulkan + PBR but kept a traditional architecture: largely single-threaded submission, per-draw descriptor binding, CPU-side culling. That is **not** the frame-rate ceiling. The techniques below postdate it and beat it. RBDOOM is worth studying for *architecture* (frame structure, material organization) — captured as technique notes on the 14900K — but not as the speed reference.
+- **id Tech 4** = the 2004 base (Doom 3). The entity/material/frame *architecture* lineage.
+- **RBDOOM-3-BFG** (Robert Beckebans, ~2013→present) **modernized the renderer in ~2016-2021**: PBR, a **Vulkan backend**, soft shadow mapping (replacing stencil shadow volumes), image-based lighting / env probes, glTF2. So RBDOOM's rendering is genuinely modern (2016-2021) — a **solid, proven Vulkan+PBR baseline worth studying** (architecture notes on the 14900K).
+
+What RBDOOM is **not**: the bleeding-edge frame-rate ceiling. Its Vulkan renderer is modern but still fairly traditional — per-draw descriptor binding, mostly CPU-side culling, forward/forward+. The 2021+ "GPU-driven" techniques (below) sit *above* it. So the plan is: **treat RBDOOM as the proven baseline reference, and add the GPU-driven layer on top for absolute max FPS.** Not "ignore RBDOOM" — extend past it where it matters for frame rate.
 
 ---
 

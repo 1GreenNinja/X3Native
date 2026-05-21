@@ -60,3 +60,4 @@ buildstep3.log
 run.log
 runerr.log
 run.pid
+*.log
