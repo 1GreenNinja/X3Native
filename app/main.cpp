@@ -11,9 +11,13 @@
 #include "engine/asset/IAssetSource.h"
 
 #include <memory>
+#include <string_view>
 
 int main(int argc, char** argv) {
-    (void)argc; (void)argv;
+    bool smoketest = false;
+    for (int i = 1; i < argc; ++i) {
+        if (std::string_view(argv[i]) == "--smoketest") smoketest = true;
+    }
     x3::logInfo("X3Engine starting...");
 
     if (!glfwInit()) {
@@ -56,6 +60,14 @@ int main(int argc, char** argv) {
     // ---- Asset source (stub until D5) ----
     std::unique_ptr<x3::asset::IAssetSource> assets(x3::asset::createAssetSource());
     assets->mountPak("base.x3pak", 0);  // stub: logs not-implemented for now
+
+    if (smoketest) {
+        x3::logInfo("smoketest: init OK, exiting before the window loop");
+        device->shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
 
     x3::logInfo("entering main loop (close the window to exit)");
 

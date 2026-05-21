@@ -10,6 +10,6 @@
     "miniz",
     "glm"
   ],
-  "builtin-baseline": "REPLACE_WITH_VCPKG_COMMIT_SHA",
+  "builtin-baseline": "f7f94113c3b629c01df3d49d5edebae6d598c78c",
   "overrides": []
 }

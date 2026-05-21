@@ -4,7 +4,9 @@ add_library(x3engine STATIC
     asset/PakAssetSource.cpp
 )
 
-target_include_directories(x3engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+# Repo root on the include path so consumers use the namespaced prefix,
+# e.g. #include "engine/rhi/IRenderDevice.h"
+target_include_directories(x3engine PUBLIC ${CMAKE_SOURCE_DIR})
 
 target_link_libraries(x3engine
     PUBLIC

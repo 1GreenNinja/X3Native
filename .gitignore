@@ -50,3 +50,13 @@ desktop.ini
 # OMITTED on the 13700K clean-room checkout via sparse-checkout (see
 # tools/cleanroom-setup.ps1). It IS tracked in the main repo during the
 # prototype phase — do NOT gitignore it here, or the spec team loses it.
+build-local.bat
+build-local.log
+configure.log
+configure2.log
+buildstep.log
+buildstep2.log
+buildstep3.log
+run.log
+runerr.log
+run.pid

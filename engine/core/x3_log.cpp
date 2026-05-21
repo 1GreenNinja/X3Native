@@ -10,8 +10,9 @@ void log(LogLevel level, std::string_view msg) {
         case LogLevel::Warn:  tag = "[WARN] "; break;
         case LogLevel::Error: tag = "[ERROR]"; break;
     }
-    std::fprintf(level == LogLevel::Error ? stderr : stdout,
-                 "%s %.*s\n", tag, static_cast<int>(msg.size()), msg.data());
+    std::FILE* out = (level == LogLevel::Error) ? stderr : stdout;
+    std::fprintf(out, "%s %.*s\n", tag, static_cast<int>(msg.size()), msg.data());
+    std::fflush(out); // flush so output survives redirection + forced exit
 }
 
 } // namespace x3
