@@ -14,7 +14,7 @@
 
 | ID | GPL module (from RBDOOM) | Interface | Quarantine path | Spec file | Status | Owner | Notes |
 |---|---|---|---|---|---|---|---|
-| D1 | Vulkan device + swapchain + cmd buffers | `IRenderDevice` | (clean-from-start — no GPL v0) | `specs/D1-render-device.spec.md` | WIP | 13700K | skeleton landed (instance/surface/device via vk-bootstrap); swapchain+frame+VMA TODO |
+| D1 | Vulkan device + swapchain + cmd buffers | `IRenderDevice` | (clean-from-start — no GPL v0) | `specs/D1-render-device.spec.md` | DONE-CLEAN | I9DevPC | swapchain + per-frame cmd/sync + dynamic-rendering clear + present + resize-recreate; validation-clean on A2000 (30 frames + recreate). Deferred: VMA (D2), runtime vsync-toggle |
 | D2 | Material / shader pipeline (PBR) | `IMaterialSystem` | `engine/_gpl_rbdoom/material/` | `specs/D2-material-system.spec.md` | TODO | — | shaders authored fresh GLSL→SPIR-V |
 | D3 | Cascaded shadow maps | `IShadowRenderer` | `engine/_gpl_rbdoom/shadow/` | `specs/D3-shadow-renderer.spec.md` | TODO | — | refs: RTR4 ch.7, GPU Gems |
 | D4 | Scene submission + culling | `ISceneRenderer` | `engine/_gpl_rbdoom/scene/` | `specs/D4-scene-renderer.spec.md` | TODO | — | optionally GPU-driven |
@@ -34,6 +34,7 @@ When a row flips to DONE-CLEAN, record:
 |---|---|---|---|---|
 | 2026-05-20 | — | Ledger created (scaffold) | — | I9DevPC |
 | 2026-05-20 | D1,D5 | Buildable skeleton + interfaces seeded (clean-from-start) | (this push) | I9DevPC |
+| 2026-05-20 | D1 | DONE-CLEAN — render device verified validation-clean on A2000 (clear+present+recreate, 30 frames) | (this push) | I9DevPC |
 
 > Note: D1 + D5 are being built **clean from the start** (no GPL v0 stage) — standard permissive-lib wrappers spec'd from public knowledge. They go WIP → DONE-CLEAN directly. The GPL scaffold path (`engine/_gpl_rbdoom/`) applies mainly to the bespoke renderer internals D2-D4.
 

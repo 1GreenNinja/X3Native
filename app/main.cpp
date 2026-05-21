@@ -62,7 +62,14 @@ int main(int argc, char** argv) {
     assets->mountPak("base.x3pak", 0);  // stub: logs not-implemented for now
 
     if (smoketest) {
-        x3::logInfo("smoketest: init OK, exiting before the window loop");
+        x3::logInfo("smoketest: rendering 30 frames (+ a mid-run swapchain recreate) then exiting");
+        for (int i = 0; i < 30; ++i) {
+            glfwPollEvents();
+            if (i == 15) { x3::logInfo("smoketest: triggering swapchain recreate"); device->onResize(960, 540); }
+            auto frame = device->beginFrame();
+            device->endFrame(frame);
+        }
+        x3::logInfo("smoketest: 30 frames + recreate OK");
         device->shutdown();
         glfwDestroyWindow(window);
         glfwTerminate();
