@@ -8,7 +8,8 @@
     "vulkan-memory-allocator",
     "glfw3",
     "miniz",
-    "glm"
+    "glm",
+    "joltphysics"
   ],
   "builtin-baseline": "f7f94113c3b629c01df3d49d5edebae6d598c78c",
   "overrides": []
