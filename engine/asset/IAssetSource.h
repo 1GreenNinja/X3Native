@@ -30,4 +30,9 @@ public:
 
 IAssetSource* createAssetSource();
 
+// Runs the D5 acceptance tests in-process (creates temp paks via miniz,
+// mounts, reads, checks priority/missing/list/zip-slip). Returns true if all
+// pass. Implemented in PakAssetSource.cpp (where miniz is available).
+bool runAssetSelfTest();
+
 } // namespace x3::asset

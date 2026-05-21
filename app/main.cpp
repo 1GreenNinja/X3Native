@@ -14,10 +14,20 @@
 #include <string_view>
 
 int main(int argc, char** argv) {
-    bool smoketest = false;
+    bool smoketest = false, testAsset = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::string_view(argv[i]) == "--smoketest") smoketest = true;
+        std::string_view a(argv[i]);
+        if (a == "--smoketest") smoketest = true;
+        else if (a == "--test-asset") testAsset = true;
     }
+
+    // Headless self-tests (no window / Vulkan needed)
+    if (testAsset) {
+        x3::logInfo("running asset (D5) self-test...");
+        bool ok = x3::asset::runAssetSelfTest();
+        return ok ? 0 : 1;
+    }
+
     x3::logInfo("X3Engine starting...");
 
     if (!glfwInit()) {

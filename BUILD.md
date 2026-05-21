@@ -43,13 +43,16 @@ So the 13700K (GTX 1080 Ti) should build identically; expect the device line to 
 
 A 1280×720 window titled **X3Engine** opens (black — no rendering yet, correct). The build proves the whole toolchain: SDK found, vk-bootstrap + VMA + glfw + miniz + glm link, validation layers load, a real GPU is selected at Vulkan 1.3.
 
-## Smoketest (CI / headless verification)
+## Self-tests (CI / headless verification)
 
-`X3Engine.exe --smoketest` initializes the device, logs, and exits 0 **without** entering the window loop — use this for automated build verification (it doesn't hang on the window):
 ```powershell
-.\build\bin\Release\X3Engine.exe --smoketest
-echo $LASTEXITCODE   # 0 = device init OK
+.\build\bin\Release\X3Engine.exe --smoketest    # D1: 30 frames + swapchain recreate, exit 0
+.\build\bin\Release\X3Engine.exe --test-asset   # D5: 7 pak/VFS acceptance tests, exit 0 = all pass
+echo $LASTEXITCODE
 ```
+Neither hangs on a window. Run the **Debug** build's `--smoketest` to exercise the render path under Vulkan validation layers (must be error-free).
+
+Verified DONE-CLEAN on I9DevPC (RTX A2000): **D1** (render device, validation-clean) + **D5** (pak/VFS, 7/7 tests).
 
 > If the GTX 1080 Ti driver doesn't expose all required 1.3 features (`dynamicRendering`/`sync2`/`descriptorIndexing`/`timelineSemaphore`/`bufferDeviceAddress`), `init()` will log which selection failed. 1080 Ti on a recent driver supports all of these, but if not, relax `set_required_features_*` in `VulkanRenderDevice.cpp` and note it.
 
