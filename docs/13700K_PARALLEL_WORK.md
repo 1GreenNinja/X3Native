@@ -34,16 +34,22 @@ Most engine subsystems are **"adopt a permissive lib + write glue behind a clean
 - Milestone: mount two paks, resolve an asset by virtual path with priority.
 
 ### 3. glTF loader + PBR import
-- Spec: (to be written — request from laptop/14900K). Build on cgltf (MIT) + basis_universal (KTX2).
+- Spec: `specs/M2-gltf-loader.spec.md` ✅ ready. Build on cgltf (MIT) + basis_universal (KTX2).
 - Disk-heavy: batch-import all 140 of Tim's converted GLBs; catalog clean vs needs-fixing → `docs/GLB_IMPORT_REPORT.md`.
 
 ### 4. Jolt physics world + character controller
-- Spec: (to be written). Build Jolt (MIT) behind `IPhysicsWorld`.
-- Milestone: fixed-step world + falling box rests on floor + `JPH::CharacterVirtual` capsule walks/collides/steps.
+- Spec: `specs/M3-physics-world.spec.md` ✅ ready. Build Jolt (MIT) behind `IPhysicsWorld`.
+- Milestone: fixed-step world + falling box rests on floor + `JPH::CharacterVirtual` capsule walks/collides/steps. (8 acceptance tests)
 
 ### 5. Lua / sol3 embed
-- Spec: (to be written). sol3 + LuaJIT.
-- Milestone: hello-from-Lua → bind log/cvar → spawn-entity API → hot-reload.
+- Spec: `specs/M4-script-vm.spec.md` ✅ ready. sol3 + LuaJIT.
+- Milestone: hello-from-Lua → bind log/cvar → spawn-entity API → hot-reload. (8 acceptance tests)
+
+### 5b. Audio backend (parallel anytime)
+- Spec: `specs/M9-audio-backend.spec.md` ✅ ready. miniaudio (MIT), 3D HRTF + music crossfade + buses.
+
+### 5c. Console + cvars (parallel anytime, small)
+- Spec: `specs/D6-console.spec.md` ✅ ready. Ports the Babylon X3 `quality` preset UX.
 
 ### 6. KTX2 / Basis texture bake  ▶ CAN RUN TODAY, no code
 - Pure asset-pipeline tooling. The 2.8GB PBR masters in the Babylon X3 (`textures/_originals/`) → GPU-ready KTX2/Basis.

@@ -19,7 +19,7 @@
 | D3 | Cascaded shadow maps | `IShadowRenderer` | `engine/_gpl_rbdoom/shadow/` | `specs/D3-shadow-renderer.spec.md` | TODO | — | refs: RTR4 ch.7, GPU Gems |
 | D4 | Scene submission + culling | `ISceneRenderer` | `engine/_gpl_rbdoom/scene/` | `specs/D4-scene-renderer.spec.md` | TODO | — | optionally GPU-driven |
 | D5 | Pak / virtual filesystem | `IAssetSource` | (clean-from-start — no GPL v0) | `specs/D5-asset-source.spec.md` | WIP | 13700K | interface + stub landed; miniz impl TODO |
-| D6 | Console + cvar system | `IConsole` | `engine/_gpl_rbdoom/console/` | `specs/D6-console.spec.md` | TODO | — | trivial fresh rewrite |
+| D6 | Console + cvar system | `IConsole` | (clean-from-start — no GPL v0) | `specs/D6-console.spec.md` | SPEC | — | spec ready; trivial fresh rewrite, ports Babylon `quality` UX |
 | D7 | Math + containers | n/a (header) | `engine/_gpl_rbdoom/math/` | — | TODO | — | swap to glm + STL; mostly delete |
 | D8 | Animation (md5/skinning) | `IAnimSystem` | `engine/_gpl_rbdoom/anim/` | `specs/D8-anim-system.spec.md` | TODO | — | targeting glTF skins |
 
