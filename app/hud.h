@@ -48,9 +48,13 @@ public:
                  x3::con::IConsole& console, float dt);
     // Crisp 2D crosshair at the framebuffer center.
     void drawCrosshair(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const;
-    // Semi-transparent panel + scrollback + input line (only when open).
+    // Semi-transparent panel + scrollback + input line. Slides down from the top
+    // edge when opening and back up when closing over ~0.18 s (smoothstep). The
+    // panel is drawn whenever the slide animation is in progress (anim > 0) so the
+    // close animation is visible; input routing stays tied to consoleOpen(). `dt`
+    // advances the animation toward the logical open state.
     void drawConsole(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
-                     x3::con::IConsole& console) const;
+                     x3::con::IConsole& console, float dt);
 
 private:
     // FPS exponential moving average (seconds/frame).
@@ -62,6 +66,11 @@ private:
     std::string m_input;
     std::vector<std::string> m_history;   // submitted command lines
     int         m_historyPos = -1;        // -1 == editing a fresh line
+
+    // Console open/close slide animation: 0 = fully hidden (above the top edge),
+    // 1 = fully on-screen. Advanced by dt in drawConsole toward the logical open
+    // state; the panel Y is lerped by the eased value so it slides down/up.
+    float       m_consoleAnim = 0.0f;
 };
 
 } // namespace x3::game

@@ -59,6 +59,43 @@ struct InputContext {
     x3::con::IConsole*   console = nullptr;
 };
 
+// ---- Live-tunable viewmodel pose (FIX 1) ----------------------------------
+// The held-gun pose is exposed as console cvars so the player can dial the
+// barrel onto the crosshair in-game, then bake the values as defaults. Angles
+// are entered in DEGREES in the console (intuitive) and converted to radians
+// before being handed to WeaponSystem::drawViewmodel(); placement is in meters.
+struct VmPose { float yawRad, pitchRad, rollRad, fwd, right, down; };
+
+constexpr float kDegToRad = 3.14159265358979f / 180.0f;
+
+// Register the six viewmodel cvars, seeded with the baked defaults (weapon.h).
+void registerViewmodelCVars(x3::con::IConsole& console) {
+    console.registerCVar("vm_yaw",   std::to_string(x3::game::kVmDefYawDeg),
+                         "viewmodel yaw offset about camera up (degrees)");
+    console.registerCVar("vm_pitch", std::to_string(x3::game::kVmDefPitchDeg),
+                         "viewmodel pitch offset about camera right (degrees)");
+    console.registerCVar("vm_roll",  std::to_string(x3::game::kVmDefRollDeg),
+                         "viewmodel roll offset about camera forward (degrees)");
+    console.registerCVar("vm_fwd",   std::to_string(x3::game::kVmDefFwd),
+                         "viewmodel offset forward along the look dir (meters)");
+    console.registerCVar("vm_right", std::to_string(x3::game::kVmDefRight),
+                         "viewmodel offset to the right (meters)");
+    console.registerCVar("vm_down",  std::to_string(x3::game::kVmDefDown),
+                         "viewmodel offset below the eye line (meters)");
+}
+
+// Read the current cvar values, converting the angle cvars degrees->radians.
+VmPose readViewmodelPose(const x3::con::IConsole& console) {
+    return VmPose{
+        console.getFloat("vm_yaw")   * kDegToRad,
+        console.getFloat("vm_pitch") * kDegToRad,
+        console.getFloat("vm_roll")  * kDegToRad,
+        console.getFloat("vm_fwd"),
+        console.getFloat("vm_right"),
+        console.getFloat("vm_down"),
+    };
+}
+
 // GLFW character callback: feed printable codepoints to the console input line.
 void charCallback(GLFWwindow* win, unsigned int codepoint) {
     auto* ctx = static_cast<InputContext*>(glfwGetWindowUserPointer(win));
@@ -253,6 +290,11 @@ int main(int argc, char** argv) {
     bool quitRequested = false;
     hud.init(*console, &quitRequested);
 
+    // FIX 1: live-tunable viewmodel aim. Register vm_yaw/vm_pitch/vm_roll (deg)
+    // and vm_fwd/vm_right/vm_down (m); read them each frame and feed the pose to
+    // drawViewmodel so typing e.g. `vm_pitch 10` moves the held gun immediately.
+    registerViewmodelCVars(*console);
+
     if (smoketest) {
         x3::logInfo("smoketest: stepping physics + rendering 30 frames (+ a mid-run swapchain recreate)");
         // Arm the player so the weapon GLB renders as the viewmodel this run
@@ -289,12 +331,15 @@ int main(int argc, char** argv) {
                 scene.render(*device, frame);
                 weapon.drawPickup(*device, frame, scene);
                 combat.drawMonster(*device, frame, scene);
-                weapon.drawViewmodel(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch);
+                const VmPose vmPose = readViewmodelPose(*console);
+                weapon.drawViewmodel(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch,
+                                     vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
+                                     vmPose.fwd, vmPose.right, vmPose.down);
                 combatFx.draw(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch);
                 // HUD overlay last: crosshair + FPS meter + console (when open).
                 hud.drawCrosshair(*device, frame);
                 hud.drawFps(*device, frame, *console, dt);
-                hud.drawConsole(*device, frame, *console);
+                hud.drawConsole(*device, frame, *console, dt);
                 // Also exercise a raw quad + text string every frame.
                 const float tag[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
                 device->drawHudText(frame, "X3 HUD SMOKETEST 0123", 8.0f, 40.0f, 16.0f, tag);
@@ -514,14 +559,17 @@ int main(int argc, char** argv) {
             scene.render(*device, frame);
             weapon.drawPickup(*device, frame, scene);   // bobbing pickup (until armed)
             combat.drawMonster(*device, frame, scene);  // the monster (+ hit-flash / death-pop)
-            weapon.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch);
+            const VmPose vmPose = readViewmodelPose(*console);
+            weapon.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,
+                                 vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
+                                 vmPose.fwd, vmPose.right, vmPose.down);
             // FX: active tracers + muzzle flash (world-space).
             combatFx.draw(*device, frame, camX, camY, camZ, camYaw, camPitch);
             // ---- S7 HUD overlay last: crosshair (hidden while console open),
             // FPS meter, then the console panel (when open). ----
             if (!consoleOpen) hud.drawCrosshair(*device, frame);
             hud.drawFps(*device, frame, *console, dt);
-            hud.drawConsole(*device, frame, *console);
+            hud.drawConsole(*device, frame, *console, dt);
         }
         device->endFrame(frame);
     }

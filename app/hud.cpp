@@ -14,6 +14,16 @@ namespace {
 constexpr float kGlyphPx = 16.0f;
 // Console panel covers the top fraction of the screen.
 constexpr float kConsoleHeightFrac = 0.45f;
+// Console open/close slide duration (seconds). The anim value crosses [0..1] in
+// this time, so 1/kConsoleSlideTime is the per-second rate.
+constexpr float kConsoleSlideTime = 0.18f;
+
+// Smoothstep ease (3t^2 - 2t^3) on [0,1]; flat slopes at both ends.
+float smoothstep01(float t) {
+    if (t <= 0.0f) return 0.0f;
+    if (t >= 1.0f) return 1.0f;
+    return t * t * (3.0f - 2.0f * t);
+}
 } // namespace
 
 void Hud::init(x3::con::IConsole& console, bool* quitFlag) {
@@ -147,8 +157,18 @@ void Hud::drawCrosshair(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
 }
 
 void Hud::drawConsole(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
-                      x3::con::IConsole& console) const {
-    if (!m_consoleOpen) return;
+                      x3::con::IConsole& console, float dt) {
+    // Advance the slide animation toward the logical open state. Input handling
+    // and gameplay-input suppression remain tied to m_consoleOpen (unchanged);
+    // this only governs where/whether the panel is drawn.
+    const float rate = (kConsoleSlideTime > 0.0f) ? (dt / kConsoleSlideTime) : 1.0f;
+    if (m_consoleOpen) m_consoleAnim = std::min(1.0f, m_consoleAnim + rate);
+    else               m_consoleAnim = std::max(0.0f, m_consoleAnim - rate);
+
+    // Draw whenever the slide is in progress (anim > 0) so the close animation is
+    // visible; once fully closed there is nothing to draw.
+    if (m_consoleAnim <= 0.0f) return;
+
     uint32_t w = 0, h = 0;
     device.hudSize(w, h);
     if (w == 0 || h == 0) return;
@@ -157,23 +177,29 @@ void Hud::drawConsole(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
     const float pad = 8.0f;
     const float lineH = kGlyphPx + 2.0f;
 
-    // Background panel + a bright bottom edge separator.
+    // Slide: at anim=0 the panel sits fully above the top edge (top = -panelH);
+    // at anim=1 it rests on-screen (top = 0). Lerp by the eased value.
+    const float eased = smoothstep01(m_consoleAnim);
+    const float top = -panelH + eased * panelH;   // lerp(-panelH, 0, eased)
+
+    // Background panel + a bright bottom edge separator (offset by the slide).
     const float panel[4] = { 0.02f, 0.03f, 0.06f, 0.85f };
     const float edge[4]  = { 0.2f, 0.7f, 1.0f, 0.9f };
-    device.drawHudQuad(frame, 0.0f, 0.0f, (float)w, panelH, panel);
-    device.drawHudQuad(frame, 0.0f, panelH - 2.0f, (float)w, 2.0f, edge);
+    device.drawHudQuad(frame, 0.0f, top, (float)w, panelH, panel);
+    device.drawHudQuad(frame, 0.0f, top + panelH - 2.0f, (float)w, 2.0f, edge);
 
-    // Input line at the bottom of the panel.
-    const float inputY = panelH - pad - kGlyphPx;
+    // Input line at the bottom of the (slid) panel.
+    const float inputY = top + panelH - pad - kGlyphPx;
     const float inText[4] = { 1.0f, 1.0f, 0.6f, 1.0f };
     std::string inLine = "] " + m_input + "_";   // blinking-ish caret marker
     device.drawHudText(frame, inLine.c_str(), pad, inputY, kGlyphPx, inText);
 
-    // Scrollback above the input line, newest at the bottom.
+    // Scrollback above the input line, newest at the bottom (clipped to the
+    // panel's slid top edge so text doesn't spill above the panel while sliding).
     const auto& lines = console.outputLines();
     const float outText[4] = { 0.8f, 0.85f, 0.8f, 1.0f };
     float y = inputY - lineH;
-    for (int i = (int)lines.size() - 1; i >= 0 && y > pad - lineH; --i) {
+    for (int i = (int)lines.size() - 1; i >= 0 && y > top + pad - lineH; --i) {
         device.drawHudText(frame, lines[(size_t)i].c_str(), pad, y, kGlyphPx, outText);
         y -= lineH;
     }
