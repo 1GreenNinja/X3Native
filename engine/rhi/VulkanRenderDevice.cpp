@@ -23,6 +23,12 @@
 #include <fstream>
 #include <cstring>
 #include <cstddef>
+#include <algorithm>
+
+#define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#define GLM_FORCE_RADIANS
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace x3::rhi {
 
@@ -89,6 +95,15 @@ public:
         logInfo(std::string("[rhi] device ready: ") + phys.name +
                 " (Vulkan 1.3, dynamic-rendering + sync2 + descriptor-indexing)");
 
+        // VMA allocator (needed by the swapchain's depth image + graphics buffers)
+        VmaAllocatorCreateInfo aci{};
+        aci.physicalDevice = m_dev.physical_device;
+        aci.device = m_dev.device;
+        aci.instance = m_inst.instance;
+        aci.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+        aci.vulkanApiVersion = VK_API_VERSION_1_3;
+        if (vmaCreateAllocator(&aci, &m_alloc) != VK_SUCCESS) { logError("[rhi] VMA create failed"); return false; }
+
         if (!createSwapchain(m_width, m_height)) return false;
         if (!createPerFrame()) return false;
         if (!createGraphics()) return false;
@@ -100,6 +115,7 @@ public:
         destroyGraphics();
         destroyPerFrame();
         destroySwapchain();
+        if (m_alloc)         { vmaDestroyAllocator(m_alloc); m_alloc = nullptr; }
         if (m_dev.device)    vkb::destroy_device(m_dev);
         if (m_surface)       vkDestroySurfaceKHR(m_inst.instance, m_surface, nullptr);
         if (m_inst.instance) vkb::destroy_instance(m_inst);
@@ -140,12 +156,15 @@ public:
                      VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                      VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
-        // Animated clear color so the window is visibly alive.
-        float t = static_cast<float>(m_totalFrames) * 0.02f;
+        // UNDEFINED -> DEPTH_ATTACHMENT_OPTIMAL (contents cleared, so UNDEFINED src is fine)
+        depthBarrier(fr.cmd, m_depthImg,
+                     VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                     VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+
         VkClearValue clear{};
-        clear.color = { { 0.05f + 0.05f * std::sin(t),
-                          0.10f + 0.10f * std::sin(t * 0.7f + 1.0f),
-                          0.18f + 0.10f * std::sin(t * 0.5f + 2.0f), 1.0f } };
+        clear.color = { { 0.04f, 0.05f, 0.08f, 1.0f } }; // dark slate backdrop
 
         VkRenderingAttachmentInfo color{};
         color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -155,24 +174,44 @@ public:
         color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         color.clearValue = clear;
 
+        VkRenderingAttachmentInfo depth{};
+        depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depth.imageView = m_depthView;
+        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depth.clearValue.depthStencil = { 1.0f, 0 };
+
         VkRenderingInfo ri{};
         ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
         ri.renderArea = { {0,0}, m_extent };
         ri.layerCount = 1;
         ri.colorAttachmentCount = 1;
         ri.pColorAttachments = &color;
+        ri.pDepthAttachment = &depth;
         vkCmdBeginRendering(fr.cmd, &ri);
 
-        // Draw the test triangle (proves the full pipeline path).
+        // Draw the cube with a rotating model + fixed look-at camera.
         if (m_triPipeline) {
             VkViewport vp{ 0.0f, 0.0f, (float)m_extent.width, (float)m_extent.height, 0.0f, 1.0f };
             VkRect2D scis{ {0,0}, m_extent };
             vkCmdSetViewport(fr.cmd, 0, 1, &vp);
             vkCmdSetScissor(fr.cmd, 0, 1, &scis);
             vkCmdBindPipeline(fr.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_triPipeline);
+
+            float t = static_cast<float>(m_totalFrames) * 0.01f;
+            float aspect = (float)m_extent.width / (float)std::max(1u, m_extent.height);
+            glm::mat4 model = glm::rotate(glm::mat4(1.0f), t, glm::vec3(0.3f, 1.0f, 0.2f));
+            glm::mat4 view  = glm::lookAt(glm::vec3(2.5f, 2.0f, 2.5f), glm::vec3(0.0f), glm::vec3(0,1,0));
+            glm::mat4 proj  = glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
+            proj[1][1] *= -1.0f; // Vulkan clip-space Y points down
+            struct Push { glm::mat4 mvp; glm::mat4 model; } push{ proj * view * model, model };
+            vkCmdPushConstants(fr.cmd, m_triLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
+
             VkDeviceSize off = 0;
             vkCmdBindVertexBuffers(fr.cmd, 0, 1, &m_triVB, &off);
-            vkCmdDraw(fr.cmd, 3, 1, 0, 0);
+            vkCmdBindIndexBuffer(fr.cmd, m_ibo, 0, VK_INDEX_TYPE_UINT16);
+            vkCmdDrawIndexed(fr.cmd, m_indexCount, 1, 0, 0, 0);
         }
 
         fc.frameIndex = m_frameIdx;
@@ -261,6 +300,24 @@ private:
         vkCmdPipelineBarrier2(cmd, &dep);
     }
 
+    void depthBarrier(VkCommandBuffer cmd, VkImage img,
+                      VkImageLayout oldL, VkImageLayout newL,
+                      VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
+                      VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
+        VkImageMemoryBarrier2 b{};
+        b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+        b.srcStageMask = srcStage; b.srcAccessMask = srcAccess;
+        b.dstStageMask = dstStage; b.dstAccessMask = dstAccess;
+        b.oldLayout = oldL; b.newLayout = newL;
+        b.image = img;
+        b.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.imageMemoryBarrierCount = 1;
+        dep.pImageMemoryBarriers = &b;
+        vkCmdPipelineBarrier2(cmd, &dep);
+    }
+
     bool createSwapchain(uint32_t w, uint32_t h) {
         vkb::SwapchainBuilder scb{ m_dev };
         scb.set_desired_format(VkSurfaceFormatKHR{ VK_FORMAT_B8G8R8A8_UNORM, VK_COLOR_SPACE_SRGB_NONLINEAR_KHR })
@@ -285,10 +342,34 @@ private:
         m_renderFinished.resize(m_swapImages.size());
         VkSemaphoreCreateInfo si{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
         for (auto& s : m_renderFinished) vkCreateSemaphore(m_dev.device, &si, nullptr, &s);
+
+        // Depth buffer sized to the swapchain
+        VkImageCreateInfo dici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        dici.imageType = VK_IMAGE_TYPE_2D;
+        dici.format = m_depthFormat;
+        dici.extent = { m_extent.width, m_extent.height, 1 };
+        dici.mipLevels = 1; dici.arrayLayers = 1;
+        dici.samples = VK_SAMPLE_COUNT_1_BIT;
+        dici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        dici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        VmaAllocationCreateInfo daci{};
+        daci.usage = VMA_MEMORY_USAGE_AUTO;
+        daci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        if (vmaCreateImage(m_alloc, &dici, &daci, &m_depthImg, &m_depthAlloc, nullptr) != VK_SUCCESS) {
+            logError("[rhi] depth image create failed"); return false;
+        }
+        VkImageViewCreateInfo dvci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        dvci.image = m_depthImg; dvci.viewType = VK_IMAGE_VIEW_TYPE_2D; dvci.format = m_depthFormat;
+        dvci.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(m_dev.device, &dvci, nullptr, &m_depthView) != VK_SUCCESS) {
+            logError("[rhi] depth view create failed"); return false;
+        }
         return true;
     }
 
     void destroySwapchain() {
+        if (m_depthView) { vkDestroyImageView(m_dev.device, m_depthView, nullptr); m_depthView = VK_NULL_HANDLE; }
+        if (m_depthImg)  { vmaDestroyImage(m_alloc, m_depthImg, m_depthAlloc); m_depthImg = VK_NULL_HANDLE; m_depthAlloc = nullptr; }
         for (auto v : m_swapViews) if (v) vkDestroyImageView(m_dev.device, v, nullptr);
         m_swapViews.clear();
         for (auto s : m_renderFinished) if (s) vkDestroySemaphore(m_dev.device, s, nullptr);
@@ -358,38 +439,43 @@ private:
         return m;
     }
 
-    bool createGraphics() {
-        // VMA allocator
-        VmaAllocatorCreateInfo aci{};
-        aci.physicalDevice = m_dev.physical_device;
-        aci.device = m_dev.device;
-        aci.instance = m_inst.instance;
-        aci.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
-        aci.vulkanApiVersion = VK_API_VERSION_1_3;
-        if (vmaCreateAllocator(&aci, &m_alloc) != VK_SUCCESS) { logError("[rhi] VMA create failed"); return false; }
-
-        // Triangle vertex buffer (host-visible, mapped)
-        struct Vtx { float pos[2]; float color[3]; };
-        const Vtx tri[3] = {
-            { { 0.0f, -0.5f }, { 1.0f, 0.2f, 0.2f } },
-            { { 0.5f,  0.5f }, { 0.2f, 1.0f, 0.2f } },
-            { {-0.5f,  0.5f }, { 0.2f, 0.4f, 1.0f } },
-        };
+    VkBuffer makeMappedBuffer(const void* data, size_t size, VkBufferUsageFlags usage, VmaAllocation& outAlloc) {
         VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-        bci.size = sizeof(tri);
-        bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        bci.size = size; bci.usage = usage;
         VmaAllocationCreateInfo vaci{};
         vaci.usage = VMA_MEMORY_USAGE_AUTO;
         vaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        VmaAllocationInfo vainfo{};
-        if (vmaCreateBuffer(m_alloc, &bci, &vaci, &m_triVB, &m_triVBAlloc, &vainfo) != VK_SUCCESS) {
-            logError("[rhi] triangle VB create failed"); return false;
-        }
-        std::memcpy(vainfo.pMappedData, tri, sizeof(tri));
+        VkBuffer buf = VK_NULL_HANDLE; VmaAllocationInfo info{};
+        if (vmaCreateBuffer(m_alloc, &bci, &vaci, &buf, &outAlloc, &info) != VK_SUCCESS) return VK_NULL_HANDLE;
+        std::memcpy(info.pMappedData, data, size);
+        return buf;
+    }
 
-        // Shaders
-        VkShaderModule vs = loadShaderModule("shaders\\tri.vert.spv");
-        VkShaderModule fs = loadShaderModule("shaders\\tri.frag.spv");
+    bool createGraphics() {
+        // Cube: 24 verts (per-face normals), 36 indices.
+        struct Vtx { float pos[3]; float normal[3]; float color[3]; };
+        const float h = 0.5f;
+        std::vector<Vtx> verts;
+        std::vector<uint16_t> idx;
+        auto addFace = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d, glm::vec3 n, glm::vec3 col){
+            uint16_t base = (uint16_t)verts.size();
+            for (glm::vec3 p : { a,b,c,d }) verts.push_back({ {p.x,p.y,p.z},{n.x,n.y,n.z},{col.x,col.y,col.z} });
+            idx.insert(idx.end(), { base,(uint16_t)(base+1),(uint16_t)(base+2), base,(uint16_t)(base+2),(uint16_t)(base+3) });
+        };
+        addFace({-h,-h, h},{ h,-h, h},{ h, h, h},{-h, h, h}, { 0, 0, 1}, {0.9f,0.3f,0.3f}); // +Z
+        addFace({ h,-h,-h},{-h,-h,-h},{-h, h,-h},{ h, h,-h}, { 0, 0,-1}, {0.3f,0.9f,0.3f}); // -Z
+        addFace({ h,-h, h},{ h,-h,-h},{ h, h,-h},{ h, h, h}, { 1, 0, 0}, {0.3f,0.4f,0.9f}); // +X
+        addFace({-h,-h,-h},{-h,-h, h},{-h, h, h},{-h, h,-h}, {-1, 0, 0}, {0.9f,0.9f,0.3f}); // -X
+        addFace({-h, h, h},{ h, h, h},{ h, h,-h},{-h, h,-h}, { 0, 1, 0}, {0.3f,0.9f,0.9f}); // +Y
+        addFace({-h,-h,-h},{ h,-h,-h},{ h,-h, h},{-h,-h, h}, { 0,-1, 0}, {0.9f,0.3f,0.9f}); // -Y
+        m_indexCount = (uint32_t)idx.size();
+
+        m_triVB = makeMappedBuffer(verts.data(), verts.size()*sizeof(Vtx), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, m_triVBAlloc);
+        m_ibo   = makeMappedBuffer(idx.data(),   idx.size()*sizeof(uint16_t), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, m_iboAlloc);
+        if (!m_triVB || !m_ibo) { logError("[rhi] cube buffer create failed"); return false; }
+
+        VkShaderModule vs = loadShaderModule("shaders\\mesh.vert.spv");
+        VkShaderModule fs = loadShaderModule("shaders\\mesh.frag.spv");
         if (!vs || !fs) return false;
 
         VkPipelineShaderStageCreateInfo stages[2]{};
@@ -399,13 +485,14 @@ private:
         stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
 
         VkVertexInputBindingDescription bind{ 0, sizeof(Vtx), VK_VERTEX_INPUT_RATE_VERTEX };
-        VkVertexInputAttributeDescription attrs[2]{
-            { 0, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(Vtx, pos)   },
-            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vtx, color) },
+        VkVertexInputAttributeDescription attrs[3]{
+            { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vtx, pos)    },
+            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vtx, normal) },
+            { 2, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vtx, color)  },
         };
         VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
         vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &bind;
-        vin.vertexAttributeDescriptionCount = 2; vin.pVertexAttributeDescriptions = attrs;
+        vin.vertexAttributeDescriptionCount = 3; vin.pVertexAttributeDescriptions = attrs;
 
         VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
         ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
@@ -414,11 +501,15 @@ private:
         vp.viewportCount = 1; vp.scissorCount = 1;
 
         VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
-        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_BACK_BIT;
         rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
 
         VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
         ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        dss.depthTestEnable = VK_TRUE; dss.depthWriteEnable = VK_TRUE;
+        dss.depthCompareOp = VK_COMPARE_OP_LESS;
 
         VkPipelineColorBlendAttachmentState cba{};
         cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
@@ -429,28 +520,31 @@ private:
         VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
         ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
 
+        VkPushConstantRange pcr{ VK_SHADER_STAGE_VERTEX_BIT, 0, 2 * sizeof(glm::mat4) };
         VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        plci.pushConstantRangeCount = 1; plci.pPushConstantRanges = &pcr;
         if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_triLayout) != VK_SUCCESS) {
             logError("[rhi] pipeline layout failed"); return false;
         }
 
         VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
         prci.colorAttachmentCount = 1; prci.pColorAttachmentFormats = &m_format;
+        prci.depthAttachmentFormat = m_depthFormat;
 
         VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
         gpci.pNext = &prci;
         gpci.stageCount = 2; gpci.pStages = stages;
         gpci.pVertexInputState = &vin; gpci.pInputAssemblyState = &ia;
         gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
-        gpci.pMultisampleState = &ms; gpci.pColorBlendState = &cb;
-        gpci.pDynamicState = &ds; gpci.layout = m_triLayout;
+        gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
+        gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_triLayout;
         VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_triPipeline);
 
         vkDestroyShaderModule(m_dev.device, vs, nullptr);
         vkDestroyShaderModule(m_dev.device, fs, nullptr);
         if (pr != VK_SUCCESS) { logError("[rhi] graphics pipeline create failed"); return false; }
 
-        logInfo("[rhi] triangle pipeline ready (VMA + SPIR-V + dynamic-rendering)");
+        logInfo("[rhi] cube pipeline ready (VMA + SPIR-V + depth + MVP + lighting)");
         return true;
     }
 
@@ -458,9 +552,9 @@ private:
         if (m_triPipeline) vkDestroyPipeline(m_dev.device, m_triPipeline, nullptr);
         if (m_triLayout)   vkDestroyPipelineLayout(m_dev.device, m_triLayout, nullptr);
         if (m_triVB)       vmaDestroyBuffer(m_alloc, m_triVB, m_triVBAlloc);
-        if (m_alloc)       vmaDestroyAllocator(m_alloc);
+        if (m_ibo)         vmaDestroyBuffer(m_alloc, m_ibo, m_iboAlloc);
         m_triPipeline = VK_NULL_HANDLE; m_triLayout = VK_NULL_HANDLE;
-        m_triVB = VK_NULL_HANDLE; m_alloc = nullptr;
+        m_triVB = VK_NULL_HANDLE; m_ibo = VK_NULL_HANDLE;
     }
 
     // Core objects
@@ -477,6 +571,15 @@ private:
     VkPipelineLayout m_triLayout = VK_NULL_HANDLE;
     VkBuffer      m_triVB = VK_NULL_HANDLE;
     VmaAllocation m_triVBAlloc = nullptr;
+    VkBuffer      m_ibo = VK_NULL_HANDLE;
+    VmaAllocation m_iboAlloc = nullptr;
+    uint32_t      m_indexCount = 0;
+
+    // Depth (sized to swapchain)
+    VkFormat      m_depthFormat = VK_FORMAT_D32_SFLOAT;
+    VkImage       m_depthImg = VK_NULL_HANDLE;
+    VkImageView   m_depthView = VK_NULL_HANDLE;
+    VmaAllocation m_depthAlloc = nullptr;
 
     // Swapchain
     VkSwapchainKHR m_swapchain = VK_NULL_HANDLE;

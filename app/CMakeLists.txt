@@ -14,7 +14,9 @@ set_target_properties(X3Engine PROPERTIES
 # ---- Compile GLSL shaders to SPIR-V (glslc from the Vulkan SDK) ----
 set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/tri.vert
-    ${CMAKE_SOURCE_DIR}/shaders/tri.frag)
+    ${CMAKE_SOURCE_DIR}/shaders/tri.frag
+    ${CMAKE_SOURCE_DIR}/shaders/mesh.vert
+    ${CMAKE_SOURCE_DIR}/shaders/mesh.frag)
 set(SPV_DIR ${CMAKE_BINARY_DIR}/shaders_spv)
 file(MAKE_DIRECTORY ${SPV_DIR})
 set(SPV_FILES "")
