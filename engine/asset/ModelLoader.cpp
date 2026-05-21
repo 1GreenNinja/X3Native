@@ -42,12 +42,14 @@
 #include <stb_image.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -168,6 +170,20 @@ struct Vertex {
 void mat4Identity(float* m) {
     for (int i = 0; i < 16; ++i) m[i] = (i % 5 == 0) ? 1.0f : 0.0f;
 }
+// Column-major 4x4 multiply: out = a * b (glTF/glm convention; b applied first).
+// out must not alias a or b.
+void mat4Mul(const float a[16], const float b[16], float out[16]) {
+    for (int col = 0; col < 4; ++col) {
+        for (int row = 0; row < 4; ++row) {
+            out[col * 4 + row] =
+                a[0 * 4 + row] * b[col * 4 + 0] +
+                a[1 * 4 + row] * b[col * 4 + 1] +
+                a[2 * 4 + row] * b[col * 4 + 2] +
+                a[3 * 4 + row] * b[col * 4 + 3];
+        }
+    }
+}
+
 // Compose a TRS into a column-major 4x4. q = (x,y,z,w).
 void trsToMat4(const float t[3], const float q[4], const float s[3], float* m) {
     const float x = q[0], y = q[1], z = q[2], w = q[3];
@@ -468,6 +484,9 @@ private:
                 mp.materialIndex = prim.material
                     ? static_cast<uint32_t>(cgltf_material_index(&data, prim.material))
                     : 0;
+                // Record the source mesh so makeDrawables() can map each node that
+                // references this mesh back to its primitives (and bake the node TRS).
+                mp.meshIndex = static_cast<uint32_t>(mi);
                 model.primitives.push_back(mp);
                 totalVerts += vcount;
             }
@@ -654,22 +673,90 @@ IModelLoader* createModelLoader(rhi::IRenderDevice* dev, IAssetSource* assets) {
     return new ModelLoaderImpl(dev, assets);
 }
 
+void mulMat4(const float a[16], const float b[16], float out[16]) {
+    mat4Mul(a, b, out);
+}
+
+namespace {
+// Build one ModelDrawable from a primitive (resolve the device handle + material),
+// stamping the supplied node world transform. Returns false if the primitive has
+// no real device mesh (headless ids carry no kMeshTag and aren't drawable).
+bool fillDrawable(const Model& m, const MeshPrimitive& p, const float nodeWorld[16],
+                  ModelDrawable& d) {
+    if ((p.vertexBuffer & kTagMask) != kMeshTag) return false;
+    d.meshId = static_cast<uint32_t>(p.vertexBuffer & ~kTagMask);
+    if (p.materialIndex < m.materials.size()) {
+        const Material& mat = m.materials[p.materialIndex];
+        for (int k = 0; k < 4; ++k) d.baseColorFactor[k] = mat.baseColor[k];
+        if ((mat.baseColorTex & kTagMask) == kTexTag)
+            d.baseColorTexId = static_cast<uint32_t>(mat.baseColorTex & ~kTagMask);
+    }
+    for (int i = 0; i < 16; ++i) d.nodeTransform[i] = nodeWorld[i];
+    return true;
+}
+} // namespace
+
 std::vector<ModelDrawable> makeDrawables(const Model& m) {
     std::vector<ModelDrawable> out;
     out.reserve(m.primitives.size());
-    for (const auto& p : m.primitives) {
-        // Real-device meshes carry the kMeshTag; headless ids don't and aren't
-        // drawable, so skip them.
-        if ((p.vertexBuffer & kTagMask) != kMeshTag) continue;
-        ModelDrawable d;
-        d.meshId = static_cast<uint32_t>(p.vertexBuffer & ~kTagMask);
-        if (p.materialIndex < m.materials.size()) {
-            const Material& mat = m.materials[p.materialIndex];
-            for (int k = 0; k < 4; ++k) d.baseColorFactor[k] = mat.baseColor[k];
-            if ((mat.baseColorTex & kTagMask) == kTexTag)
-                d.baseColorTexId = static_cast<uint32_t>(mat.baseColorTex & ~kTagMask);
+
+    // ---- No node hierarchy: emit every primitive at identity (legacy path,
+    // e.g. the synthetic test cube which carries a single identity node anyway). ----
+    if (m.nodes.empty()) {
+        const float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+        for (const auto& p : m.primitives) {
+            ModelDrawable d;
+            if (fillDrawable(m, p, ident, d)) out.push_back(d);
         }
-        out.push_back(d);
+        return out;
+    }
+
+    // ---- Compute each node's WORLD matrix by composing local transforms up the
+    // parent chain. Node::parent always references an earlier-or-later index, so we
+    // memoize and recurse (the chains are short; models have <few-thousand nodes). ----
+    const size_t n = m.nodes.size();
+    std::vector<std::array<float, 16>> world(n);
+    std::vector<char> state(n, 0);   // 0=unvisited, 1=in-progress, 2=done
+    std::function<void(size_t)> computeWorld = [&](size_t i) {
+        if (state[i] == 2) return;
+        const Node& nd = m.nodes[i];
+        // Guard against a malformed parent cycle (would otherwise recurse forever):
+        // treat an in-progress / out-of-range parent as a root.
+        if (nd.parent < 0 || nd.parent >= (int)n || state[(size_t)nd.parent] == 1) {
+            std::memcpy(world[i].data(), nd.localTransform, sizeof(float) * 16);
+        } else {
+            state[i] = 1;
+            computeWorld((size_t)nd.parent);
+            mat4Mul(world[(size_t)nd.parent].data(), nd.localTransform, world[i].data());
+        }
+        state[i] = 2;
+    };
+    for (size_t i = 0; i < n; ++i) computeWorld(i);
+
+    // ---- Walk nodes: each node with a mesh emits that mesh's primitives, baking
+    // the node's world transform into each drawable. A mesh instanced by several
+    // nodes is therefore drawn once per node (correct for multi-part placement). ----
+    for (size_t i = 0; i < n; ++i) {
+        const Node& nd = m.nodes[i];
+        if (nd.meshIndex < 0) continue;
+        for (const auto& p : m.primitives) {
+            if ((int)p.meshIndex != nd.meshIndex) continue;
+            ModelDrawable d;
+            if (fillDrawable(m, p, world[i].data(), d)) out.push_back(d);
+        }
+    }
+
+    // ---- Safety net: any mesh referenced by NO node (orphaned — non-conformant,
+    // but don't silently drop it) is emitted once at identity. ----
+    {
+        std::unordered_set<uint32_t> nodeMeshes;
+        for (const Node& nd : m.nodes) if (nd.meshIndex >= 0) nodeMeshes.insert((uint32_t)nd.meshIndex);
+        const float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+        for (const auto& p : m.primitives) {
+            if (nodeMeshes.count(p.meshIndex)) continue;
+            ModelDrawable d;
+            if (fillDrawable(m, p, ident, d)) out.push_back(d);
+        }
     }
     return out;
 }

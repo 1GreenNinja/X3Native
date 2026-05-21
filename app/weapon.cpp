@@ -208,11 +208,15 @@ void WeaponSystem::drawWeaponAt(x3::rhi::IRenderDevice& device,
                                 const x3::rhi::FrameContext& frame,
                                 const float model[16]) const {
     for (const auto& d : m_drawables) {
+        // Bake the glTF node's world transform: fin = model * nodeTransform, so
+        // multi-node / Y-up-corrected GLBs place each primitive correctly (M2 fix).
+        float fin[16];
+        x3::asset::mulMat4(model, d.nodeTransform, fin);
         device.drawMesh(frame,
                         x3::rhi::MeshHandle{ d.meshId },
                         x3::rhi::TextureHandle{ d.baseColorTexId },
                         d.baseColorFactor,
-                        model);
+                        fin);
     }
 }
 

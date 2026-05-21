@@ -21,14 +21,29 @@ namespace x3::game {
 namespace {
 constexpr float kEnemyY = 0.4f;
 
+// ---- EFLZ art pass: the converted character GLBs (real sci-fi enemies). The
+// host passes `modelDir` = rigged_glb (for the legacy pistol/crawler fallback);
+// these tunings point the enemy meshes at the converted_glb Characters instead.
+// On load failure the MonsterSystem falls back to its procedural box (per-enemy),
+// so the level never breaks. Characters are Z-up (lying flat) -> standUpZtoY. -----
+const char* kConvertedDir = "G:/GameModels/converted_glb";
+
+// Apply the converted-character model to a tuning (file under Characters/, the
+// converted dir, the Z->Y stand-up, and a real-scale humanoid size).
+void useCharacter(MonsterSystem::Tuning& t, const char* file, float scale) {
+    t.modelFile        = std::string("Characters/") + file;
+    t.modelDirOverride = kConvertedDir;
+    t.standUpZtoY      = true;          // converted characters are authored Z-up
+    t.modelScale       = scale;         // ~1.0 => ~1.77 m tall humanoid
+}
+
 // Boss-tier Martinez (§8): more HP + a bit faster + bigger + a distinct tint +
 // stronger melee. NO new AI/phases this pass — purely params over the basic
-// monster (boss phases are Phase 2b).
+// monster (boss phases are Phase 2b). Mesh: Security_Chief (the armed humanoid).
 MonsterSystem::Tuning martinezTuning() {
     MonsterSystem::Tuning t;
     t.hp         = 340;     // ~10 pistol shots (basic monster is 100 / 3 shots)
     t.chaseSpeed = 3.4f;    // a bit faster than the basic 2.5 m/s
-    t.modelScale = -1.0f;   // keep the per-model default scale (already reads big)
     t.tint[0] = 1.0f; t.tint[1] = 0.55f; t.tint[2] = 0.55f; t.tint[3] = 1.0f; // reddish
     // Melee boss: hits harder + a touch faster than a guard.
     t.type           = MonsterType::Boss;
@@ -37,6 +52,7 @@ MonsterSystem::Tuning martinezTuning() {
     t.attackCooldown = 1.1f;
     t.attackWindup   = 0.30f;
     t.ranged         = false;
+    useCharacter(t, "Security_Chief.glb", 1.35f);  // boss reads taller than a guard
     return t;
 }
 MonsterSystem::Tuning guardTuning() {
@@ -48,6 +64,7 @@ MonsterSystem::Tuning guardTuning() {
     t.attackCooldown = 1.0f;
     t.attackWindup   = 0.25f;
     t.ranged         = false;
+    useCharacter(t, "Security_Chief.glb", 1.0f);   // real ~1.77 m guard
     return t;
 }
 MonsterSystem::Tuning droneTuning() {
@@ -63,6 +80,8 @@ MonsterSystem::Tuning droneTuning() {
     t.attackWindup   = 0.35f;          // a beat of telegraph before the bolt
     t.ranged         = true;
     t.standoff       = 7.0f;
+    // Drone GLB is NOT rigged and authored Z-up like the characters; stand it up.
+    useCharacter(t, "Drone.glb", 1.0f);
     return t;
 }
 } // namespace
@@ -72,8 +91,24 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_modelDir = std::string(modelDir);
     m_devicePtr = &device;   // cached so tick() can spawn enemies on their beats
 
-    // ---- Geometry ----
-    m_layout = buildLevel1(scene, device, physics);
+    // ---- EFLZ art pass: load the converted sci-fi GLBs and place visual props
+    // over the graybox. The door positions are deterministic (the cross-wall X
+    // boundaries at z=0), so we seed a minimal layout for EnvArt to anchor door
+    // frames/consoles; EnvArt returns a mask of which graybox surfaces real art
+    // now covers. If the GLBs are missing, the mask is all-false (full graybox). --
+    {
+        Level1Layout seed;
+        seed.doorA = x3::phys::Vec3{  6.0f, 0.0f, 0.0f };
+        seed.doorB = x3::phys::Vec3{ 22.0f, 0.0f, 0.0f };
+        seed.doorC = x3::phys::Vec3{ 30.0f, 0.0f, 0.0f };
+        seed.doorD = x3::phys::Vec3{ 42.0f, 0.0f, 0.0f };
+        seed.doorE = x3::phys::Vec3{ 56.0f, 0.0f, 0.0f };
+        m_artMask = m_envArt.build(device, kConvertedDir, seed);
+    }
+
+    // ---- Geometry (graybox collision; surface renders suppressed where real art
+    // covers them — see m_artMask). ----
+    m_layout = buildLevel1(scene, device, physics, m_artMask);
 
     // ---- Doors A-E (generalized builder). Doorways sit in cross-walls whose
     // plane is x=const (the wall runs along Z), so DoorAxis::AlongZ. ----
@@ -397,6 +432,7 @@ MeleeResult Level1Game::onMelee(const x3::phys::Vec3& eye, const x3::phys::Vec3&
 void Level1Game::drawWorldExtras(x3::rhi::IRenderDevice& device,
                                  const x3::rhi::FrameContext& frame,
                                  const Scene& scene) const {
+    m_envArt.draw(device, frame);   // converted sci-fi environment art over graybox
     m_weapon.drawPickup(device, frame, scene);
     m_corridor.drawAll(device, frame, scene);
     m_checkpoint.drawAll(device, frame, scene);

@@ -11,6 +11,7 @@ add_executable(X3Engine WIN32
     objective.cpp
     trigger.cpp
     level1_game.cpp
+    env_art.cpp
     fx.cpp
     hud.cpp)
 
