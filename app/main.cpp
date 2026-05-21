@@ -16,6 +16,7 @@
 #include "mesh_prims.h"
 #include "scene.h"
 #include "level.h"
+#include "player.h"
 
 #include <memory>
 #include <string_view>
@@ -25,7 +26,8 @@
 #include <cstdint>
 
 int main(int argc, char** argv) {
-    bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false, testGltf = false;
+    bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
+         testGltf = false, testPlayer = false;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
@@ -33,6 +35,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-console") testConsole = true;
         else if (a == "--test-physics") testPhysics = true;
         else if (a == "--test-gltf") testGltf = true;
+        else if (a == "--test-player") testPlayer = true;
     }
 
     // Headless self-tests (no window / Vulkan needed)
@@ -51,6 +54,10 @@ int main(int argc, char** argv) {
     if (testGltf) {
         x3::logInfo("running glTF/GLB model loader (M2) self-test...");
         return x3::asset::runModelLoaderSelfTest() ? 0 : 1;
+    }
+    if (testPlayer) {
+        x3::logInfo("running player/character-controller (S3) self-test...");
+        return x3::game::runPlayerSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -161,15 +168,25 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    x3::logInfo("entering main loop — WASD move, mouse look, Space/Ctrl up-down, Esc to quit");
+    x3::logInfo("entering main loop — WASD walk, mouse look, LeftShift sprint, Space jump, F noclip, Esc to quit");
 
-    // ---- FPS free-look (fly) camera. Walking is S3. ----
-    float camX = 0.0f, camY = 1.7f, camZ = 6.0f;
-    float yaw = -1.5708f, pitch = -0.15f;   // matches the device's forward convention
+    // ---- Walking player (S3). Spawn on open floor near the +Z doorway side,
+    // clear of the falling box (origin) and the step platform (around x=3,z=-3).
+    x3::game::Player player;
+    player.spawn(*physics, -3.0f, 0.05f, 4.0f);
+
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
     double prevTime = glfwGetTime();
+
+    // Rising-edge tracking for Space (jump) and F (noclip toggle).
+    bool prevSpace = false, prevF = false;
+
+    // ---- Optional debug noclip/fly camera (toggle with F). Not required by S3,
+    // handy for inspecting the level. Off by default — gameplay is the walker.
+    bool noclip = false;
+    float flyX = -3.0f, flyY = 1.7f, flyZ = 4.0f, flyYaw = 0.0f, flyPitch = 0.0f;
 
     // ---- Main loop ----
     int lastW = static_cast<int>(W), lastH = static_cast<int>(H);
@@ -179,34 +196,70 @@ int main(int argc, char** argv) {
 
         double nowT = glfwGetTime();
         float dt = static_cast<float>(nowT - prevTime); prevTime = nowT;
+        if (dt > 0.1f) dt = 0.1f; // clamp huge hitches (e.g. after a stall)
 
-        // Mouse look
+        // Mouse delta this frame.
         double mx, my; glfwGetCursorPos(window, &mx, &my);
         float ddx = static_cast<float>(mx - lastMX), ddy = static_cast<float>(my - lastMY);
         lastMX = mx; lastMY = my;
-        const float sens = 0.0025f;
-        yaw += ddx * sens; pitch -= ddy * sens;
-        if (pitch >  1.55f) pitch =  1.55f;
-        if (pitch < -1.55f) pitch = -1.55f;
 
-        // Forward + right (same convention the device uses)
-        float fx = std::cos(pitch) * std::cos(yaw);
-        float fy = std::sin(pitch);
-        float fz = std::cos(pitch) * std::sin(yaw);
-        float rl = std::sqrt(fx * fx + fz * fz); if (rl < 1e-4f) rl = 1e-4f;
-        float rx = -fz / rl, rz = fx / rl;
+        // F: toggle noclip on the rising edge. Seed the fly camera from the
+        // player's current view so the transition is seamless.
+        bool fNow = glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS;
+        if (fNow && !prevF) {
+            noclip = !noclip;
+            if (noclip) player.camera(flyX, flyY, flyZ, flyYaw, flyPitch);
+            x3::logInfo(noclip ? "noclip ON" : "noclip OFF");
+        }
+        prevF = fNow;
 
-        // Movement
-        float spd = 4.0f * dt;
-        if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) spd *= 3.0f;
-        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) { camX += fx*spd; camY += fy*spd; camZ += fz*spd; }
-        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) { camX -= fx*spd; camY -= fy*spd; camZ -= fz*spd; }
-        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) { camX += rx*spd; camZ += rz*spd; }
-        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) { camX -= rx*spd; camZ -= rz*spd; }
-        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) camY += spd;
-        if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) camY -= spd;
+        bool spaceNow = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
 
-        device->setCamera(camX, camY, camZ, yaw, pitch, 60.0f);
+        if (!noclip) {
+            // ---- Walking player input ----
+            x3::game::PlayerInput in;
+            if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) in.moveFwd    += 1.0f;
+            if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) in.moveFwd    -= 1.0f;
+            if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) in.moveStrafe += 1.0f;
+            if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) in.moveStrafe -= 1.0f;
+            in.sprint      = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
+            in.jumpPressed = spaceNow && !prevSpace;   // rising edge
+            in.lookDX = ddx;
+            in.lookDY = ddy;
+
+            player.update(in, dt, *physics);
+            physics->step(dt);
+            scene.update(*physics);
+
+            float cx, cy, cz, yaw, pitch;
+            player.camera(cx, cy, cz, yaw, pitch);
+            device->setCamera(cx, cy, cz, yaw, pitch, 60.0f);
+        } else {
+            // ---- Debug fly camera (does not move the player body) ----
+            const float sens = 0.0025f;
+            flyYaw += ddx * sens; flyPitch -= ddy * sens;
+            if (flyPitch >  1.55f) flyPitch =  1.55f;
+            if (flyPitch < -1.55f) flyPitch = -1.55f;
+            float fx = std::cos(flyPitch) * std::cos(flyYaw);
+            float fy = std::sin(flyPitch);
+            float fz = std::cos(flyPitch) * std::sin(flyYaw);
+            float rl = std::sqrt(fx * fx + fz * fz); if (rl < 1e-4f) rl = 1e-4f;
+            float rx = -fz / rl, rz = fx / rl;
+            float spd = 4.0f * dt;
+            if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) spd *= 3.0f;
+            if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) { flyX += fx*spd; flyY += fy*spd; flyZ += fz*spd; }
+            if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) { flyX -= fx*spd; flyY -= fy*spd; flyZ -= fz*spd; }
+            if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) { flyX += rx*spd; flyZ += rz*spd; }
+            if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) { flyX -= rx*spd; flyZ -= rz*spd; }
+            if (spaceNow) flyY += spd;
+            if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) flyY -= spd;
+
+            // World still advances so props keep simulating while inspecting.
+            physics->step(dt);
+            scene.update(*physics);
+            device->setCamera(flyX, flyY, flyZ, flyYaw, flyPitch, 60.0f);
+        }
+        prevSpace = spaceNow;
 
         int cw, ch;
         glfwGetFramebufferSize(window, &cw, &ch);
@@ -214,10 +267,6 @@ int main(int argc, char** argv) {
             lastW = cw; lastH = ch;
             if (cw > 0 && ch > 0) device->onResize(static_cast<uint32_t>(cw), static_cast<uint32_t>(ch));
         }
-
-        // Advance physics, sync entity transforms, then draw the scene.
-        physics->step(dt);
-        scene.update(*physics);
 
         auto frame = device->beginFrame();
         if (frame.valid) scene.render(*device, frame);
