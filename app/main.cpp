@@ -13,6 +13,7 @@
 
 #include <memory>
 #include <string_view>
+#include <cmath>
 
 int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false;
@@ -91,23 +92,60 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    x3::logInfo("entering main loop (close the window to exit)");
+    x3::logInfo("entering main loop — WASD move, mouse look, Space/Ctrl up-down, Esc to quit");
+
+    // ---- FPS free-look camera ----
+    float camX = 0.0f, camY = 1.5f, camZ = 4.0f;
+    float yaw = -1.5708f, pitch = -0.30f;   // matches the device's forward convention
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+    double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+    double prevTime = glfwGetTime();
 
     // ---- Main loop ----
     int lastW = static_cast<int>(W), lastH = static_cast<int>(H);
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) glfwSetWindowShouldClose(window, 1);
+
+        double nowT = glfwGetTime();
+        float dt = static_cast<float>(nowT - prevTime); prevTime = nowT;
+
+        // Mouse look
+        double mx, my; glfwGetCursorPos(window, &mx, &my);
+        float ddx = static_cast<float>(mx - lastMX), ddy = static_cast<float>(my - lastMY);
+        lastMX = mx; lastMY = my;
+        const float sens = 0.0025f;
+        yaw += ddx * sens; pitch -= ddy * sens;
+        if (pitch >  1.55f) pitch =  1.55f;
+        if (pitch < -1.55f) pitch = -1.55f;
+
+        // Forward + right (same convention the device uses)
+        float fx = std::cos(pitch) * std::cos(yaw);
+        float fy = std::sin(pitch);
+        float fz = std::cos(pitch) * std::sin(yaw);
+        float rl = std::sqrt(fx * fx + fz * fz); if (rl < 1e-4f) rl = 1e-4f;
+        float rx = -fz / rl, rz = fx / rl;
+
+        // Movement
+        float spd = 4.0f * dt;
+        if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) spd *= 3.0f;
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) { camX += fx*spd; camY += fy*spd; camZ += fz*spd; }
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) { camX -= fx*spd; camY -= fy*spd; camZ -= fz*spd; }
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) { camX += rx*spd; camZ += rz*spd; }
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) { camX -= rx*spd; camZ -= rz*spd; }
+        if (glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS) camY += spd;
+        if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) camY -= spd;
+
+        device->setCamera(camX, camY, camZ, yaw, pitch, 60.0f);
 
         int cw, ch;
         glfwGetFramebufferSize(window, &cw, &ch);
         if (cw != lastW || ch != lastH) {
             lastW = cw; lastH = ch;
-            if (cw > 0 && ch > 0) {
-                device->onResize(static_cast<uint32_t>(cw), static_cast<uint32_t>(ch));
-            }
+            if (cw > 0 && ch > 0) device->onResize(static_cast<uint32_t>(cw), static_cast<uint32_t>(ch));
         }
 
-        // TODO(13700K): real frame once D1 swapchain/rendering lands.
         auto frame = device->beginFrame();
         device->endFrame(frame);
     }

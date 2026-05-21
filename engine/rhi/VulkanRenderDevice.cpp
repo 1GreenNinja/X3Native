@@ -128,6 +128,11 @@ public:
         m_needsRecreate = true;
     }
 
+    void setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) override {
+        m_camPos = glm::vec3(x, y, z);
+        m_camYaw = yaw; m_camPitch = pitch; m_camFov = fovDeg;
+    }
+
     FrameContext beginFrame() override {
         FrameContext fc{};
         if (m_needsRecreate) { recreateSwapchain(); m_needsRecreate = false; }
@@ -199,11 +204,13 @@ public:
             vkCmdSetScissor(fr.cmd, 0, 1, &scis);
             vkCmdBindPipeline(fr.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_triPipeline);
 
-            float t = static_cast<float>(m_totalFrames) * 0.01f;
             float aspect = (float)m_extent.width / (float)std::max(1u, m_extent.height);
-            glm::mat4 model = glm::rotate(glm::mat4(1.0f), t, glm::vec3(0.3f, 1.0f, 0.2f));
-            glm::mat4 view  = glm::lookAt(glm::vec3(2.5f, 2.0f, 2.5f), glm::vec3(0.0f), glm::vec3(0,1,0));
-            glm::mat4 proj  = glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
+            glm::vec3 fwd(std::cos(m_camPitch) * std::cos(m_camYaw),
+                          std::sin(m_camPitch),
+                          std::cos(m_camPitch) * std::sin(m_camYaw));
+            glm::mat4 model = glm::mat4(1.0f); // static cube at origin
+            glm::mat4 view  = glm::lookAt(m_camPos, m_camPos + fwd, glm::vec3(0, 1, 0));
+            glm::mat4 proj  = glm::perspective(glm::radians(m_camFov), aspect, 0.1f, 100.0f);
             proj[1][1] *= -1.0f; // Vulkan clip-space Y points down
             struct Push { glm::mat4 mvp; glm::mat4 model; } push{ proj * view * model, model };
             vkCmdPushConstants(fr.cmd, m_triLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
@@ -597,6 +604,12 @@ private:
     bool m_vsync = true;
     bool m_needsRecreate = false;
     uint32_t m_width = 0, m_height = 0;
+
+    // Camera (FPS); defaults frame the cube at origin
+    glm::vec3 m_camPos{ 0.0f, 1.5f, 4.0f };
+    float m_camYaw = -1.5708f;   // look toward -Z
+    float m_camPitch = -0.30f;   // slightly down
+    float m_camFov = 60.0f;
 };
 
 } // namespace

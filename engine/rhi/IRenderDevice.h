@@ -30,6 +30,10 @@ public:
     virtual void shutdown() = 0;
     virtual void onResize(uint32_t w, uint32_t h) = 0;
 
+    // Camera (FPS-style). Angles in radians. The device builds view+proj.
+    // forward = (cos(pitch)*cos(yaw), sin(pitch), cos(pitch)*sin(yaw)).
+    virtual void setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) = 0;
+
     // Per-frame
     virtual FrameContext beginFrame() = 0;
     virtual void         endFrame(const FrameContext&) = 0;
