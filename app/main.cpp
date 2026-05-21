@@ -14,13 +14,10 @@
 #include "engine/asset/IModelLoader.h"
 #include "engine/audio/IAudioSystem.h"
 
-#include "mesh_prims.h"
 #include "scene.h"
-#include "level.h"
+#include "level1.h"
 #include "player.h"
-#include "door.h"
-#include "weapon.h"
-#include "monster.h"
+#include "level1_game.h"
 #include "fx.h"
 #include "hud.h"
 
@@ -130,7 +127,7 @@ void keyCallback(GLFWwindow* win, int key, int /*scancode*/, int action, int /*m
 int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
-         testCombat = false, testAudio = false;
+         testCombat = false, testAudio = false, testLevel1 = false;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
@@ -143,6 +140,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-pickup") testPickup = true;
         else if (a == "--test-combat") testCombat = true;
         else if (a == "--test-audio") testAudio = true;
+        else if (a == "--test-level1") testLevel1 = true;
     }
 
     // Headless self-tests (no window / Vulkan needed)
@@ -181,6 +179,10 @@ int main(int argc, char** argv) {
     if (testAudio) {
         x3::logInfo("running audio (M9) self-test...");
         return x3::audio::runAudioSelfTest() ? 0 : 1;
+    }
+    if (testLevel1) {
+        x3::logInfo("running EFLZ Level 1 (Awakening) self-test (T1-T6)...");
+        return x3::game::runLevel1SelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -267,54 +269,22 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ---- Build the S2 graybox test level into the scene ----
+    // ---- Build EFLZ Level 1 "Awakening" into the scene. The vertical slice now
+    // BECOMES Level 1: the Level1Game controller owns the graybox geometry, doors
+    // A-E, the armory pistol pickup, the checkpoint guards, the strength/arena/
+    // elevator trigger volumes, the objective list, and the corridor/Martinez
+    // enemies that spawn on their beats. (See app/level1_game.* + the spec §2/§3.)
     x3::game::Scene scene;
-    x3::game::buildTestLevel(scene, *device, *physics);
-
-    // ---- S4: a sliding door filling the doorway gap + a wall button linked to
-    // it. Press E while aiming at the button to slide the door open. ----
-    x3::game::DoorSystem doors;
-    x3::game::buildDoorAndButton(scene, doors, *device, *physics);
-
-    // ---- One dynamic box dropped above the floor: proves render+physics+entity
-    // sync work together (it falls and rests on the floor). ----
-    x3::rhi::TextureHandle boxTex;  // invalid => flat color via baseColor
+    x3::game::Level1Game game;
+    game.build(scene, *device, *physics, "G:/GameModels/rigged_glb");
+    // Audio hookups for Level 1 events (§9, nice-to-have; silent if no device).
     {
-        x3::prims::PrimMesh boxGeo = x3::prims::makeBox(0.4f, 0.4f, 0.4f, 0,0,0, 1.0f);
-        x3::game::Entity box;
-        box.mesh = device->createMesh(boxGeo.verts.data(), (uint32_t)boxGeo.verts.size(),
-                                      boxGeo.index.data(), (uint32_t)boxGeo.index.size());
-        box.tex = boxTex;
-        box.baseColor[0]=0.95f; box.baseColor[1]=0.35f; box.baseColor[2]=0.15f; box.baseColor[3]=1;
-        // Dynamic body: 0.4 m half-extent box, mass 5 kg, dropped at y=4.
-        const x3::phys::Vec3 dropPos{ 0.0f, 4.0f, 0.0f };
-        box.body = physics->addBox(x3::phys::Vec3{0.4f,0.4f,0.4f}, dropPos, 5.0f,
-                                   x3::phys::Layer::Dynamic);
-        box.tag  = (uint32_t)x3::game::Tag::Prop;
-        // Authored transform translation (overwritten each frame by Scene::update).
-        box.transform[12] = dropPos.x;
-        box.transform[13] = dropPos.y;
-        box.transform[14] = dropPos.z;
-        scene.add(box);
-        x3::logInfo("dynamic box added at y=4.0 (will fall and rest on floor)");
+        x3::game::Level1Audio la;
+        la.sys = audio.get(); la.door = sndDoor; la.pickup = sndPickup;
+        la.gun = sndGun; la.death = sndDeath;
+        game.setAudio(la);
     }
-
-    // ---- S5: weapon pickup. Load the purchased WeaponEnergyPistol.glb (fallback
-    // to a procedural box if it can't be loaded) and place a bobbing/spinning
-    // pickup in open floor between the spawn and the doorway. Walk into it (within
-    // ~1.2 m) to arm; the first-person viewmodel then appears. ----
-    x3::game::WeaponSystem weapon;
-    weapon.buildWeaponPickup(scene, *device, "G:/GameModels/rigged_glb",
-                             x3::phys::Vec3{ 0.0f, 1.0f, 2.0f });
-
-    // ---- S6: the monster to shoot. Load alien_crawler.glb (fallback to a
-    // procedural box), give it an Enemy-layer collision body for the shoot
-    // raycast, and place it on open floor on the far (-Z) side of the room so the
-    // player walks in, grabs the gun near the origin, then turns and shoots it.
-    // It starts with 100 HP; 34 dmg/shot => 3 shots to kill. ----
-    x3::game::MonsterSystem combat;
-    combat.buildMonster(scene, *device, *physics, "G:/GameModels/rigged_glb",
-                        x3::phys::Vec3{ 0.0f, 0.4f, -4.0f });
+    const x3::game::Level1Layout& L1 = game.layout();
 
     // ---- Combat FX (gameplay-feel pass): shot tracers + muzzle flash. The
     // crosshair now lives in the screen-space HUD layer (S7), not here. ----
@@ -333,35 +303,33 @@ int main(int argc, char** argv) {
     registerViewmodelCVars(*console);
 
     if (smoketest) {
-        x3::logInfo("smoketest: stepping physics + rendering 30 frames (+ a mid-run swapchain recreate)");
-        // Arm the player so the weapon GLB renders as the viewmodel this run
-        // (validates the real model loads + draws under validation). Use a fixed
-        // camera looking toward the room so the viewmodel + pickup are on screen.
-        weapon.forceArm(scene);
-        const float vmX = -3.0f, vmY = 1.7f, vmZ = 4.0f, vmYaw = -1.4f, vmPitch = 0.0f;
+        x3::logInfo("smoketest: stepping Level 1 + rendering 30 frames (+ a mid-run swapchain recreate)");
+        // Sit the camera in the armory looking at the pistol pickup so arming +
+        // the viewmodel exercise the real GLB load + draw under validation. The
+        // Level1Game tick arms the player when the camera is over the pickup, then
+        // unlocks/opens Door C, advancing the beat sequence under validation.
+        const float vmX = L1.armoryCenter.x - 1.0f, vmY = 1.7f, vmZ = L1.armoryCenter.z,
+                    vmYaw = 0.0f, vmPitch = 0.0f;
         device->setCamera(vmX, vmY, vmZ, vmYaw, vmPitch, 60.0f);
-        // M9: exercise the audio system under the smoketest path too (init already
-        // happened above; here we set the listener + start the music bed so the
-        // smoketest proves audio comes up + plays without crashing under validation).
         audio->setListener(vmX, vmY, vmZ, vmYaw, vmPitch);
         audio->playMusic(kMusicPath, /*loop*/true, /*vol*/0.25f);
+        const x3::phys::Vec3 eye{ vmX, vmY, vmZ };
         const float dt = 1.0f / 60.0f;
         for (int i = 0; i < 30; ++i) {
             glfwPollEvents();
             if (i == 15) { x3::logInfo("smoketest: triggering swapchain recreate"); device->onResize(960, 540); }
+            // Drive the Level 1 controller (doors/monsters/pickup/triggers) +
+            // physics + scene sync, exactly as the main loop does.
+            game.tick(dt, scene, *physics, eye, eye);
             physics->step(dt);
             scene.update(*physics);
-            weapon.update(dt, scene, x3::phys::Vec3{ vmX, vmY, vmZ });
-            combat.update(dt, scene, *physics, x3::phys::Vec3{ vmX, vmY, vmZ });
             audio->update(dt);
-            // Exercise the FX path under validation: fire once mid-run (tracer +
-            // muzzle flash) and crosshair every frame.
+            // Exercise the FX/fire path under validation: fire once mid-run.
             if (i == 10) {
-                x3::phys::Vec3 eye{ vmX, vmY, vmZ };
                 x3::phys::Vec3 dir{ std::cos(vmPitch) * std::cos(vmYaw),
                                     std::sin(vmPitch),
                                     std::cos(vmPitch) * std::sin(vmYaw) };
-                x3::game::FireResult r = combat.fire(eye, dir, scene, *physics);
+                x3::game::FireResult r = game.onFire(eye, dir, scene, *physics);
                 const x3::phys::Vec3 m = muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch);
                 combatFx.addTracer(m, r.endPoint);
                 audio->playSound3D(sndGun, m.x, m.y, m.z, 0.85f, 1.0f);
@@ -374,16 +342,16 @@ int main(int argc, char** argv) {
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
-                weapon.drawPickup(*device, frame, scene);
-                combat.drawMonster(*device, frame, scene);
+                game.drawWorldExtras(*device, frame, scene);
                 const VmPose vmPose = readViewmodelPose(*console);
-                weapon.drawViewmodel(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch,
-                                     vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
-                                     vmPose.fwd, vmPose.right, vmPose.down);
+                game.drawViewmodel(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch,
+                                   vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
+                                   vmPose.fwd, vmPose.right, vmPose.down);
                 combatFx.draw(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch);
-                // HUD overlay last: crosshair + FPS meter + console (when open).
+                // HUD overlay last: crosshair + FPS meter + objective + console.
                 hud.drawCrosshair(*device, frame);
                 hud.drawFps(*device, frame, *console, dt);
+                game.drawObjective(*device, frame);
                 hud.drawConsole(*device, frame, *console, dt);
                 // Also exercise a raw quad + text string every frame.
                 const float tag[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -392,17 +360,8 @@ int main(int argc, char** argv) {
             device->endFrame(frame);
         }
         x3::logInfo(std::string("smoketest: weapon viewmodel drawn (") +
-                    (weapon.usingRealModel() ? "real GLB" : "fallback box") + ")");
-        x3::logInfo(std::string("smoketest: monster drawn (") +
-                    (combat.usingRealModel() ? "real GLB" : "fallback box") + ")");
-        // Report where the dynamic box settled (proves physics drives the entity).
-        for (uint32_t id = 0; id < scene.size(); ++id) {
-            const auto& e = scene.get(id);
-            if (e.tag == (uint32_t)x3::game::Tag::Prop && e.body.valid()) {
-                x3::phys::Vec3 p = physics->getBodyPosition(e.body);
-                x3::logInfo("smoketest: dynamic box settled at y=" + std::to_string(p.y));
-            }
-        }
+                    (game.weapon().usingRealModel() ? "real GLB" : "fallback box") +
+                    "); armed=" + (game.armed() ? "yes" : "no"));
         x3::logInfo("smoketest: 30 frames + recreate OK");
         audio->shutdown();
         combatFx.shutdown(*device);
@@ -415,10 +374,10 @@ int main(int argc, char** argv) {
 
     x3::logInfo("entering main loop — WASD walk, mouse look, LeftShift sprint, Space jump, E use, F noclip, ` console, Esc to quit");
 
-    // ---- Walking player (S3). Spawn on open floor near the +Z doorway side,
-    // clear of the falling box (origin) and the step platform (around x=3,z=-3).
+    // ---- Walking player (S3). Spawn at the Level 1 cell spawn point (Jake wakes
+    // in the detention cell), facing +X down the level spine.
     x3::game::Player player;
-    player.spawn(*physics, -3.0f, 0.05f, 4.0f);
+    player.spawn(*physics, L1.spawn.x, L1.spawn.y, L1.spawn.z);
 
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
@@ -452,7 +411,7 @@ int main(int argc, char** argv) {
     // ---- Optional debug noclip/fly camera (toggle with F). Not required by S3,
     // handy for inspecting the level. Off by default — gameplay is the walker.
     bool noclip = false;
-    float flyX = -3.0f, flyY = 1.7f, flyZ = 4.0f, flyYaw = 0.0f, flyPitch = 0.0f;
+    float flyX = L1.spawn.x, flyY = 1.7f, flyZ = L1.spawn.z, flyYaw = 0.0f, flyPitch = 0.0f;
 
     // ---- Main loop ----
     int lastW = static_cast<int>(W), lastH = static_cast<int>(H);
@@ -502,22 +461,19 @@ int main(int argc, char** argv) {
         bool spaceNow = keyDown(GLFW_KEY_SPACE);
 
         // ---- E: "use" on the rising edge. Raycast from the eye along the facing
-        // direction; if it hits a button (within ~3 m) the linked door opens. ----
+        // direction; if it hits a button linked to an UNLOCKED door, it opens.
+        // (Door C refuses while locked — until the player is armed, §6.4.) ----
         bool eNow = keyDown(GLFW_KEY_E);
         if (eNow && !prevE) {
             float ex, ey, ez, yaw, pitch;
             player.camera(ex, ey, ez, yaw, pitch);   // in noclip the camera is the fly cam
             if (noclip) { ex = flyX; ey = flyY; ez = flyZ; yaw = flyYaw; pitch = flyPitch; }
-            // Device forward convention: fwd = (cos p cos y, sin p, cos p sin y).
             x3::phys::Vec3 eye{ ex, ey, ez };
             x3::phys::Vec3 dir{ std::cos(pitch) * std::cos(yaw),
                                 std::sin(pitch),
                                 std::cos(pitch) * std::sin(yaw) };
-            if (x3::game::tryUse(eye, dir, 3.0f, scene, doors, *physics)) {
+            if (game.onUse(eye, dir, scene, *physics))   // plays door SFX internally
                 x3::logInfo("use: button pressed — door opening");
-                // S4 door SFX at the eye (button is right in front of the player).
-                audio->playSound3D(sndDoor, eye.x, eye.y, eye.z, 0.9f, 1.0f);
-            }
         }
         prevE = eNow;
 
@@ -540,7 +496,6 @@ int main(int argc, char** argv) {
             in.lookDY = ddy;
 
             player.update(in, dt, *physics);
-            doors.update(dt, scene, *physics);   // advance any opening door first
             physics->step(dt);
             scene.update(*physics);
 
@@ -566,14 +521,19 @@ int main(int argc, char** argv) {
             if (spaceNow) flyY += spd;
             if (keyDown(GLFW_KEY_LEFT_CONTROL)) flyY -= spd;
 
-            // World still advances so props keep simulating while inspecting.
-            doors.update(dt, scene, *physics);   // advance any opening door first
+            // World still advances so the level keeps simulating while inspecting.
             physics->step(dt);
             scene.update(*physics);
             device->setCamera(flyX, flyY, flyZ, flyYaw, flyPitch, 60.0f);
             camX = flyX; camY = flyY; camZ = flyZ; camYaw = flyYaw; camPitch = flyPitch;
         }
         prevSpace = spaceNow;
+
+        // ---- Level 1 controller tick: advance doors, run triggers, spawn/clear
+        // enemies, arm on pickup, flip objectives, detect the win. Runs AFTER
+        // scene.update() so monster facing survives the per-frame physics sync. ----
+        const x3::phys::Vec3 camPos{ camX, camY, camZ };
+        game.tick(dt, scene, *physics, camPos, camPos);
 
         // ---- M9: drive the 3D listener from the player camera each frame ----
         audio->setListener(camX, camY, camZ, camYaw, camPitch);
@@ -598,40 +558,35 @@ int main(int argc, char** argv) {
         }
         prevCamX = camX; prevCamZ = camZ; prevCamValid = true;
 
-        // ---- S5: weapon pickup detection + viewmodel. Arm when the camera
-        // (player eye) is within pickup radius; once armed, draw the viewmodel.
-        weapon.update(dt, scene, x3::phys::Vec3{ camX, camY, camZ });
-        // M9: pickup chime on the arm rising edge (S5).
-        if (weapon.hasWeapon() && !prevArmed)
+        // M9: pickup chime on the arm rising edge (the controller also plays one
+        // on the beat-7 arm; keep this for the 2D UI chime feel).
+        if (game.armed() && !prevArmed)
             audio->playSound2D(sndPickup, 0.8f, 1.0f);
-        prevArmed = weapon.hasWeapon();
+        prevArmed = game.armed();
 
-        // ---- S6: combat. Decay the monster's hit-flash (+ optional chase), then
-        // handle FIRE on the left-mouse rising edge: only effective when armed,
-        // gated by a small cooldown. Raycast from the eye along the look dir;
-        // hitting the monster damages it (red flash) and eventually kills it.
-        combat.update(dt, scene, *physics, x3::phys::Vec3{ camX, camY, camZ });
+        // ---- Combat: FIRE on the left-mouse rising edge — only effective when
+        // armed, gated by a small cooldown. The controller raycasts across all
+        // Level-1 enemy groups; the first live monster the ray hits takes damage. ----
         if (fireCooldown > 0.0f) fireCooldown -= dt;
         bool fireNow = !consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-        if (fireNow && !prevFire && weapon.hasWeapon() && fireCooldown <= 0.0f) {
+        if (fireNow && !prevFire && game.armed() && fireCooldown <= 0.0f) {
             fireCooldown = kFireCooldown;
-            // Device forward convention: fwd = (cos p cos y, sin p, cos p sin y).
             x3::phys::Vec3 eye{ camX, camY, camZ };
             x3::phys::Vec3 dir{ std::cos(camPitch) * std::cos(camYaw),
                                 std::sin(camPitch),
                                 std::cos(camPitch) * std::sin(camYaw) };
-            x3::game::FireResult r = combat.fire(eye, dir, scene, *physics);
+            x3::game::FireResult r = game.onFire(eye, dir, scene, *physics);
             // Shot feedback: a tracer from the viewmodel muzzle to the hit point
             // (or max range on a miss) + a muzzle flash.
             const x3::phys::Vec3 muzzle = muzzleFromCamera(camX, camY, camZ, camYaw, camPitch);
             combatFx.addTracer(muzzle, r.endPoint);
-            // M9: gunshot SFX at the muzzle (3D).
+            // M9: gunshot SFX at the muzzle (3D); death SFX is played by the
+            // controller for Martinez; play one here for the per-shot kills too.
             audio->playSound3D(sndGun, muzzle.x, muzzle.y, muzzle.z, 0.85f, 1.0f);
-            // M9: monster death/impact SFX at the kill point (the ray hit point).
             if (r.killed)
                 audio->playSound3D(sndDeath, r.endPoint.x, r.endPoint.y, r.endPoint.z, 1.0f, 1.0f);
-            if (r.killed)          x3::logInfo("fire: monster killed!");
-            else if (r.hitMonster) x3::logInfo("fire: monster hit — HP " + std::to_string(r.hpAfter));
+            if (r.killed)          x3::logInfo("fire: enemy killed!");
+            else if (r.hitMonster) x3::logInfo("fire: enemy hit — HP " + std::to_string(r.hpAfter));
         }
         prevFire = fireNow;
 
@@ -650,18 +605,20 @@ int main(int argc, char** argv) {
         auto frame = device->beginFrame();
         if (frame.valid) {
             scene.render(*device, frame);
-            weapon.drawPickup(*device, frame, scene);   // bobbing pickup (until armed)
-            combat.drawMonster(*device, frame, scene);  // the monster (+ hit-flash / death-pop)
+            // Level 1 world extras: the bobbing armory pickup + all enemy models
+            // (corridor guards/drone, checkpoint guards, Martinez) with hit-flash.
+            game.drawWorldExtras(*device, frame, scene);
             const VmPose vmPose = readViewmodelPose(*console);
-            weapon.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,
-                                 vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
-                                 vmPose.fwd, vmPose.right, vmPose.down);
+            game.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,
+                               vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
+                               vmPose.fwd, vmPose.right, vmPose.down);
             // FX: active tracers + muzzle flash (world-space).
             combatFx.draw(*device, frame, camX, camY, camZ, camYaw, camPitch);
-            // ---- S7 HUD overlay last: crosshair (hidden while console open),
-            // FPS meter, then the console panel (when open). ----
+            // ---- HUD overlay last: crosshair (hidden while console open), FPS
+            // meter, the current objective line, then the console panel (when open).
             if (!consoleOpen) hud.drawCrosshair(*device, frame);
             hud.drawFps(*device, frame, *console, dt);
+            if (!consoleOpen) game.drawObjective(*device, frame);
             hud.drawConsole(*device, frame, *console, dt);
         }
         device->endFrame(frame);

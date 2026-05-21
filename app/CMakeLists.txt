@@ -2,10 +2,14 @@ add_executable(X3Engine WIN32
     main.cpp
     scene.cpp
     level.cpp
+    level1.cpp
     player.cpp
     door.cpp
     weapon.cpp
     monster.cpp
+    objective.cpp
+    trigger.cpp
+    level1_game.cpp
     fx.cpp
     hud.cpp)
 
