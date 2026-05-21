@@ -19,6 +19,7 @@
 
 #include "IRenderDevice.h"
 #include "../core/x3_log.h"
+#include "font8x8_basic.h"
 
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_win32.h>
@@ -117,11 +118,13 @@ public:
         if (!createSwapchain(m_width, m_height)) return false;
         if (!createPerFrame()) return false;
         if (!createGraphics()) return false;
+        if (!createHud()) return false;
         return true;
     }
 
     void shutdown() override {
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        destroyHud();
         destroyGraphics();
         destroyPerFrame();
         destroySwapchain();
@@ -161,9 +164,11 @@ public:
         vkResetCommandPool(m_dev.device, fr.pool, 0);
 
         // This frame's GPU work has retired (we waited on inFlight): it's safe to
-        // recycle its descriptor sets and reuse the factor-UBO ring from the top.
+        // recycle its descriptor sets and reuse the factor-UBO + HUD vertex rings.
         vkResetDescriptorPool(m_dev.device, fr.descPool, 0);
         fr.uboUsed = 0;
+        if (fr.hudDescPool) vkResetDescriptorPool(m_dev.device, fr.hudDescPool, 0);
+        fr.hudVertsUsed = 0;
 
         VkCommandBufferBeginInfo bi{};
         bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -399,6 +404,55 @@ public:
         vkCmdDrawIndexed(cmd, mh.indexCount, 1, 0, 0, 0);
     }
 
+    // ---- Screen-space 2D HUD overlay (S7) ----------------------------------
+    void drawHudQuad(const FrameContext& fc, float xPx, float yPx,
+                     float wPx, float hPx, const float rgba[4]) override {
+        if (!fc.valid || !m_hudPipeline) return;
+        const float c[4] = { rgba ? rgba[0] : 1.0f, rgba ? rgba[1] : 1.0f,
+                             rgba ? rgba[2] : 1.0f, rgba ? rgba[3] : 1.0f };
+        // Whole-quad UV (0,0)-(1,1) samples the 1x1 white texel everywhere.
+        HudVertex verts[6];
+        emitQuad(verts, xPx, yPx, wPx, hPx, 0.0f, 0.0f, 1.0f, 1.0f, c);
+        flushHud(verts, 6, /*useFont=*/false);
+    }
+
+    void drawHudText(const FrameContext& fc, const char* text, float xPx,
+                     float yPx, float pxPerGlyph, const float rgba[4]) override {
+        if (!fc.valid || !m_hudPipeline || !text || pxPerGlyph <= 0.0f) return;
+        const float c[4] = { rgba ? rgba[0] : 1.0f, rgba ? rgba[1] : 1.0f,
+                             rgba ? rgba[2] : 1.0f, rgba ? rgba[3] : 1.0f };
+        // Atlas layout: 16 cols x 8 rows of 8x8 glyphs in a 128x64 texture.
+        constexpr float kCols = 16.0f, kRows = 8.0f;
+        // Glyph cell is 8/128 wide, 8/64 tall; sample a 7/8 sub-rect to avoid the
+        // 1px gutter bleeding from the neighbouring glyph (atlas has no padding).
+        constexpr float kCellU = 1.0f / kCols, kCellV = 1.0f / kRows;
+        constexpr float kInsetU = (7.0f / 8.0f) * kCellU; // 7 of 8 columns used
+        constexpr float kInsetV = (7.0f / 8.0f) * kCellV;
+
+        m_hudScratch.clear();
+        float penX = xPx, penY = yPx;
+        for (const char* p = text; *p; ++p) {
+            unsigned char ch = static_cast<unsigned char>(*p);
+            if (ch == '\n') { penX = xPx; penY += pxPerGlyph; continue; }
+            if (ch >= 128) ch = '?';
+            if (ch > 32) { // skip space + control chars (blank glyphs)
+                int col = ch % 16, row = ch / 16;
+                float u0 = col * kCellU, v0 = row * kCellV;
+                HudVertex q[6];
+                emitQuad(q, penX, penY, pxPerGlyph, pxPerGlyph,
+                         u0, v0, u0 + kInsetU, v0 + kInsetV, c);
+                for (auto& v : q) m_hudScratch.push_back(v);
+            }
+            penX += pxPerGlyph;
+        }
+        if (!m_hudScratch.empty())
+            flushHud(m_hudScratch.data(), (uint32_t)m_hudScratch.size(), /*useFont=*/true);
+    }
+
+    void hudSize(uint32_t& outW, uint32_t& outH) const override {
+        outW = m_extent.width; outH = m_extent.height;
+    }
+
 private:
     struct Mesh {
         VkBuffer vbo = VK_NULL_HANDLE; VmaAllocation vboAlloc = nullptr;
@@ -410,7 +464,13 @@ private:
         VkImageView view = VK_NULL_HANDLE; VkSampler sampler = VK_NULL_HANDLE;
     };
 
+    // 2D HUD vertex: position already in clip space (NDC), uv, rgba color.
+    struct HudVertex { float pos[2]; float uv[2]; float color[4]; };
+
     static constexpr uint32_t kMaxDrawsPerFrame = 256;
+    // Per-frame HUD vertex ring capacity (verts). 6 verts/quad; a full-screen
+    // console with output + input is well under this.
+    static constexpr uint32_t kMaxHudVerts = 24576;
 
     struct Frame {
         VkCommandPool pool = VK_NULL_HANDLE;
@@ -423,6 +483,12 @@ private:
         VmaAllocation uboAlloc = nullptr;
         void*         uboMapped = nullptr;
         uint32_t      uboUsed = 0;
+        // Per-frame HUD descriptor pool (image-sampler only) + vertex ring.
+        VkDescriptorPool hudDescPool = VK_NULL_HANDLE;
+        VkBuffer      hudVbo = VK_NULL_HANDLE;
+        VmaAllocation hudVboAlloc = nullptr;
+        void*         hudVboMapped = nullptr;
+        uint32_t      hudVertsUsed = 0;  // write cursor into the vertex ring
     };
 
     void imageBarrier(VkCommandBuffer cmd, VkImage img,
@@ -459,6 +525,236 @@ private:
         dep.imageMemoryBarrierCount = 1;
         dep.pImageMemoryBarriers = &b;
         vkCmdPipelineBarrier2(cmd, &dep);
+    }
+
+    // ---- HUD helpers --------------------------------------------------------
+    // Fill 6 vertices (two triangles) for a pixel-space rect, converting to NDC
+    // using the current framebuffer extent (origin top-left -> NDC y flips).
+    void emitQuad(HudVertex out[6], float xPx, float yPx, float wPx, float hPx,
+                  float u0, float v0, float u1, float v1, const float c[4]) {
+        const float fw = (float)std::max(1u, m_extent.width);
+        const float fh = (float)std::max(1u, m_extent.height);
+        auto ndcX = [&](float px){ return (px / fw) * 2.0f - 1.0f; };
+        auto ndcY = [&](float py){ return (py / fh) * 2.0f - 1.0f; }; // top-left origin
+        const float x0 = ndcX(xPx),        y0 = ndcY(yPx);
+        const float x1 = ndcX(xPx + wPx),  y1 = ndcY(yPx + hPx);
+        const HudVertex tl{ { x0, y0 }, { u0, v0 }, { c[0], c[1], c[2], c[3] } };
+        const HudVertex tr{ { x1, y0 }, { u1, v0 }, { c[0], c[1], c[2], c[3] } };
+        const HudVertex bl{ { x0, y1 }, { u0, v1 }, { c[0], c[1], c[2], c[3] } };
+        const HudVertex br{ { x1, y1 }, { u1, v1 }, { c[0], c[1], c[2], c[3] } };
+        out[0] = tl; out[1] = bl; out[2] = br;   // CCW: tl->bl->br
+        out[3] = tl; out[4] = br; out[5] = tr;   //      tl->br->tr
+    }
+
+    // Append `count` vertices to this frame's HUD ring, bind the HUD pipeline +
+    // the requested texture (font atlas or white), and record one draw.
+    void flushHud(const HudVertex* verts, uint32_t count, bool useFont) {
+        auto& fr = m_frames[m_frameIdx];
+        if (!fr.hudVboMapped || fr.hudVertsUsed + count > kMaxHudVerts) return; // ring full
+        uint32_t first = fr.hudVertsUsed;
+        std::memcpy(static_cast<HudVertex*>(fr.hudVboMapped) + first,
+                    verts, (size_t)count * sizeof(HudVertex));
+        fr.hudVertsUsed += count;
+
+        const Texture* tex = useFont ? &m_fontTex : &m_whiteTex;
+
+        VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+        dsai.descriptorPool = fr.hudDescPool;
+        dsai.descriptorSetCount = 1;
+        dsai.pSetLayouts = &m_hudSetLayout;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        if (vkAllocateDescriptorSets(m_dev.device, &dsai, &set) != VK_SUCCESS) return;
+
+        VkDescriptorImageInfo dii{};
+        dii.sampler = tex->sampler;
+        dii.imageView = tex->view;
+        dii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        w.dstSet = set; w.dstBinding = 0; w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.pImageInfo = &dii;
+        vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+
+        VkCommandBuffer cmd = fr.cmd;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_hudPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_hudLayout,
+                                0, 1, &set, 0, nullptr);
+        VkDeviceSize off = (VkDeviceSize)first * sizeof(HudVertex);
+        vkCmdBindVertexBuffers(cmd, 0, 1, &fr.hudVbo, &off);
+        vkCmdDraw(cmd, count, 1, 0, 0);
+    }
+
+    // Build a 128x64 RGBA atlas (16 cols x 8 rows of 8x8 glyphs) from the
+    // embedded public-domain font8x8_basic bits: white texel, alpha = pixel-on.
+    bool buildFontAtlas() {
+        constexpr uint32_t kAtlasW = 128, kAtlasH = 64;
+        std::vector<uint8_t> rgba((size_t)kAtlasW * kAtlasH * 4, 0);
+        for (int ch = 0; ch < 128; ++ch) {
+            int col = ch % 16, row = ch / 16;
+            int baseX = col * 8, baseY = row * 8;
+            for (int gy = 0; gy < 8; ++gy) {
+                unsigned char bits = kFont8x8Basic[ch][gy];
+                for (int gx = 0; gx < 8; ++gx) {
+                    bool on = (bits >> gx) & 1u;  // bit0 = leftmost pixel
+                    size_t px = ((size_t)(baseY + gy) * kAtlasW + (baseX + gx)) * 4;
+                    uint8_t a = on ? 255 : 0;
+                    rgba[px+0] = 255; rgba[px+1] = 255; rgba[px+2] = 255; rgba[px+3] = a;
+                }
+            }
+        }
+        // UNORM (data): the per-vertex color already carries the desired tint, so
+        // no sRGB linearization of the mask is wanted. Nearest filtering keeps the
+        // pixel font crisp.
+        if (!createSampledTexture(rgba.data(), kAtlasW, kAtlasH, /*srgb=*/false, m_fontTex))
+            return false;
+        // Replace the linear sampler with a NEAREST, CLAMP one for crisp glyphs.
+        if (m_fontTex.sampler) vkDestroySampler(m_dev.device, m_fontTex.sampler, nullptr);
+        VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        sci.magFilter = VK_FILTER_NEAREST; sci.minFilter = VK_FILTER_NEAREST;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(m_dev.device, &sci, nullptr, &m_fontTex.sampler) != VK_SUCCESS) {
+            logError("[rhi] font sampler create failed"); return false;
+        }
+        return true;
+    }
+
+    // Create the 2D HUD pipeline: NDC quads, no depth, alpha blend, one combined-
+    // image-sampler set, per-frame HUD descriptor pools + vertex rings.
+    bool createHud() {
+        // Descriptor set layout: just the HUD texture at binding 0 (frag).
+        VkDescriptorSetLayoutBinding b{};
+        b.binding = 0; b.descriptorCount = 1;
+        b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        slci.bindingCount = 1; slci.pBindings = &b;
+        if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_hudSetLayout) != VK_SUCCESS) {
+            logError("[rhi] HUD set layout failed"); return false;
+        }
+
+        // Per-frame HUD descriptor pools + host-visible vertex rings.
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            auto& fr = m_frames[i];
+            VkDescriptorPoolSize sz{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxDrawsPerFrame };
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.maxSets = kMaxDrawsPerFrame; pci.poolSizeCount = 1; pci.pPoolSizes = &sz;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &fr.hudDescPool) != VK_SUCCESS) {
+                logError("[rhi] HUD descriptor pool failed"); return false;
+            }
+            VkBufferCreateInfo vbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            vbci.size = (VkDeviceSize)kMaxHudVerts * sizeof(HudVertex);
+            vbci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+            VmaAllocationCreateInfo vaci{};
+            vaci.usage = VMA_MEMORY_USAGE_AUTO;
+            vaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo vinfo{};
+            if (vmaCreateBuffer(m_alloc, &vbci, &vaci, &fr.hudVbo, &fr.hudVboAlloc, &vinfo) != VK_SUCCESS) {
+                logError("[rhi] HUD vertex ring create failed"); return false;
+            }
+            fr.hudVboMapped = vinfo.pMappedData;
+        }
+
+        // Font atlas (uploaded once).
+        if (!buildFontAtlas()) { logError("[rhi] font atlas build failed"); return false; }
+
+        // Shaders.
+        VkShaderModule vs = loadShaderModule("shaders\\hud.vert.spv");
+        VkShaderModule fs = loadShaderModule("shaders\\hud.frag.spv");
+        if (!vs || !fs) return false;
+
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = vs; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
+
+        VkVertexInputBindingDescription bind{ 0, sizeof(HudVertex), VK_VERTEX_INPUT_RATE_VERTEX };
+        VkVertexInputAttributeDescription attrs[3]{
+            { 0, 0, VK_FORMAT_R32G32_SFLOAT,       offsetof(HudVertex, pos)   },
+            { 1, 0, VK_FORMAT_R32G32_SFLOAT,       offsetof(HudVertex, uv)    },
+            { 2, 0, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(HudVertex, color) },
+        };
+        VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+        vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &bind;
+        vin.vertexAttributeDescriptionCount = 3; vin.pVertexAttributeDescriptions = attrs;
+
+        VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        vp.viewportCount = 1; vp.scissorCount = 1;
+
+        VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        // No depth test/write: the HUD draws on top of the 3D scene.
+        VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        dss.depthTestEnable = VK_FALSE; dss.depthWriteEnable = VK_FALSE;
+        dss.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+
+        // Straight (non-premultiplied) alpha blend.
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.blendEnable = VK_TRUE;
+        cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cba.colorBlendOp = VK_BLEND_OP_ADD;
+        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        cba.alphaBlendOp = VK_BLEND_OP_ADD;
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        cb.attachmentCount = 1; cb.pAttachments = &cba;
+
+        VkDynamicState dyn[2]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+
+        VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        plci.setLayoutCount = 1; plci.pSetLayouts = &m_hudSetLayout; // no push constants
+        if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_hudLayout) != VK_SUCCESS) {
+            logError("[rhi] HUD pipeline layout failed"); return false;
+        }
+
+        VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+        prci.colorAttachmentCount = 1; prci.pColorAttachmentFormats = &m_format;
+        prci.depthAttachmentFormat = m_depthFormat;  // pass has a depth attachment
+
+        VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        gpci.pNext = &prci;
+        gpci.stageCount = 2; gpci.pStages = stages;
+        gpci.pVertexInputState = &vin; gpci.pInputAssemblyState = &ia;
+        gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
+        gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
+        gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_hudLayout;
+        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_hudPipeline);
+
+        vkDestroyShaderModule(m_dev.device, vs, nullptr);
+        vkDestroyShaderModule(m_dev.device, fs, nullptr);
+        if (pr != VK_SUCCESS) { logError("[rhi] HUD pipeline create failed"); return false; }
+
+        logInfo("[rhi] HUD 2D pipeline ready (NDC quads + 8x8 font atlas, alpha-blended, no depth)");
+        return true;
+    }
+
+    void destroyHud() {
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            auto& fr = m_frames[i];
+            if (fr.hudVbo) { vmaDestroyBuffer(m_alloc, fr.hudVbo, fr.hudVboAlloc);
+                             fr.hudVbo = VK_NULL_HANDLE; fr.hudVboAlloc = nullptr; fr.hudVboMapped = nullptr; }
+            if (fr.hudDescPool) { vkDestroyDescriptorPool(m_dev.device, fr.hudDescPool, nullptr); fr.hudDescPool = VK_NULL_HANDLE; }
+        }
+        destroyTextureObj(m_fontTex);
+        if (m_hudPipeline)  vkDestroyPipeline(m_dev.device, m_hudPipeline, nullptr);
+        if (m_hudLayout)    vkDestroyPipelineLayout(m_dev.device, m_hudLayout, nullptr);
+        if (m_hudSetLayout) vkDestroyDescriptorSetLayout(m_dev.device, m_hudSetLayout, nullptr);
+        m_hudPipeline = VK_NULL_HANDLE; m_hudLayout = VK_NULL_HANDLE; m_hudSetLayout = VK_NULL_HANDLE;
     }
 
     bool createSwapchain(uint32_t w, uint32_t h) {
@@ -898,6 +1194,13 @@ private:
     VkPipeline       m_meshPipeline = VK_NULL_HANDLE;
     VkPipelineLayout m_meshLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_meshSetLayout = VK_NULL_HANDLE;
+
+    // 2D HUD overlay pipeline (NDC quads, no depth, alpha-blended)
+    VkPipeline       m_hudPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout m_hudLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_hudSetLayout = VK_NULL_HANDLE;
+    Texture          m_fontTex{};               // 8x8 bitmap font atlas (RGBA)
+    std::vector<HudVertex> m_hudScratch;        // CPU scratch for text batching
 
     // One-time staging upload (transient pool + fence)
     VkCommandPool m_uploadPool = VK_NULL_HANDLE;

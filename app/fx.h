@@ -1,24 +1,19 @@
 #pragma once
-// Combat FX: crosshair + shot tracers + muzzle flash (gameplay-feel pass).
+// Combat FX: shot tracers + muzzle flash (gameplay-feel pass).
 //
 // Game/slice code only — engine/ stays pure. Built from the IRenderDevice +
 // Vec3 interfaces only. No id Tech / RBDOOM source consulted.
 //
-// WHY world-space geometry: the slice has no 2D/UI/screen-space draw path — the
-// only thing the device can draw is a mesh at a column-major model transform.
-// So the crosshair and tracers are real world-space boxes:
-//   * Crosshair: a tiny bright "+" placed a short fixed distance in front of the
-//     camera and oriented to the camera basis, re-placed every frame so it tracks
-//     the view and reads as a fixed screen-center reticle.
+// WHY world-space geometry: tracers + muzzle flash are real world-space boxes
+// (the only thing the mesh path can draw is a mesh at a column-major transform):
 //   * Tracer: a thin bright box stretched from the muzzle to the hit point (or to
 //     max range on a miss), shown for a fraction of a second.
 //   * Muzzle flash: a brief bright box at the muzzle.
 //
-// CAVEAT (clip): because these are world-space and depth-tested, the crosshair
-// (and a tracer that starts inside the near geometry) can be occluded by or clip
-// into world geometry that is nearer than kCrosshairDist. There is no dedicated
-// overlay/no-depth pass in the slice, so this is accepted; the distances/sizes
-// are tuned small enough that it reads fine in the test level.
+// The crosshair USED to live here as a world-space "+"; as of S7 it moved to the
+// new screen-space HUD layer (app/hud.*), which draws a crisp, depth-free 2D
+// reticle at the framebuffer center via IRenderDevice::drawHudQuad. CombatFx no
+// longer draws a crosshair.
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -26,12 +21,6 @@
 #include <cstdint>
 
 namespace x3::game {
-
-// ---- Crosshair tuning ----
-// Distance (m) in front of the camera the crosshair "+" is placed.
-constexpr float kCrosshairDist = 0.6f;
-// Half-length (m) of each crosshair arm at kCrosshairDist (overall "+" extent).
-constexpr float kCrosshairSize = 0.012f;
 
 // ---- Tracer tuning ----
 // How long (seconds) a shot tracer beam stays visible.

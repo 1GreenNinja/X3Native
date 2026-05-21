@@ -62,6 +62,23 @@ public:
     virtual void          drawMesh(const FrameContext&, MeshHandle, TextureHandle baseColor,
                                    const float baseColorFactor[4], const float model[16]) = 0;
 
+    // ---- Screen-space 2D HUD overlay (S7) ----------------------------------
+    // A pixel-space overlay drawn over the 3D scene, inside the same dynamic-
+    // rendering pass (issue these AFTER drawMesh, before endFrame). Coordinates
+    // are in framebuffer pixels with the origin at the TOP-LEFT; +x right, +y
+    // down. Colors are linear rgba in [0,1]. No depth test; alpha-blended.
+    //
+    // drawHudQuad: a filled rectangle (backed by the built-in 1x1 white texture).
+    virtual void drawHudQuad(const FrameContext&, float xPx, float yPx,
+                             float wPx, float hPx, const float rgba[4]) = 0;
+    // drawHudText: render `text` starting at (xPx,yPx) with each glyph occupying
+    // pxPerGlyph x pxPerGlyph pixels, sampling the embedded 8x8 bitmap font atlas.
+    // Newlines advance a line; non-printable chars are skipped. `rgba` tints it.
+    virtual void drawHudText(const FrameContext&, const char* text, float xPx,
+                             float yPx, float pxPerGlyph, const float rgba[4]) = 0;
+    // Current framebuffer size in pixels (for HUD layout / centering).
+    virtual void hudSize(uint32_t& outW, uint32_t& outH) const = 0;
+
     // Capability query
     virtual bool supportsDescriptorIndexing() const = 0;
     virtual bool supportsMeshShaders() const = 0;

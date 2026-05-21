@@ -6,7 +6,8 @@ add_executable(X3Engine WIN32
     door.cpp
     weapon.cpp
     monster.cpp
-    fx.cpp)
+    fx.cpp
+    hud.cpp)
 
 target_link_libraries(X3Engine PRIVATE x3engine glfw)
 
@@ -24,7 +25,9 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/tri.vert
     ${CMAKE_SOURCE_DIR}/shaders/tri.frag
     ${CMAKE_SOURCE_DIR}/shaders/mesh.vert
-    ${CMAKE_SOURCE_DIR}/shaders/mesh.frag)
+    ${CMAKE_SOURCE_DIR}/shaders/mesh.frag
+    ${CMAKE_SOURCE_DIR}/shaders/hud.vert
+    ${CMAKE_SOURCE_DIR}/shaders/hud.frag)
 set(SPV_DIR ${CMAKE_BINARY_DIR}/shaders_spv)
 file(MAKE_DIRECTORY ${SPV_DIR})
 set(SPV_FILES "")
