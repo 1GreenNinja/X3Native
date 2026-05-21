@@ -60,8 +60,19 @@ bool applyDamage(int* hp, int damage) {
 void MonsterSystem::buildMonster(Scene& scene, x3::rhi::IRenderDevice& device,
                                  x3::phys::IPhysicsWorld& physics,
                                  std::string_view modelDir, const x3::phys::Vec3& pos) {
+    // Default tuning reproduces the original single-monster behaviour exactly.
+    buildMonsterTuned(scene, device, physics, modelDir, pos, Tuning{});
+}
+
+void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& device,
+                                      x3::phys::IPhysicsWorld& physics,
+                                      std::string_view modelDir, const x3::phys::Vec3& pos,
+                                      const Tuning& tuning) {
     m_pos = pos;
-    m_hp  = kMonsterHp;
+    m_maxHp = tuning.hp;
+    m_hp  = tuning.hp;
+    m_chaseSpeed = tuning.chaseSpeed;
+    for (int i = 0; i < 4; ++i) m_baseTint[i] = tuning.tint[i];
     m_alive = true;
     m_flash = 0.0f;
 
@@ -103,6 +114,10 @@ void MonsterSystem::buildMonster(Scene& scene, x3::rhi::IRenderDevice& device,
         d.baseColorFactor[2] = 0.30f; d.baseColorFactor[3] = 1.0f;  // sickly green
         m_drawables.push_back(d);
     }
+
+    // Per-instance model-scale override (Tuning.modelScale >= 0): lets a boss read
+    // bigger than a basic enemy while reusing the same crawler GLB.
+    if (tuning.modelScale > 0.0f) m_modelScale = tuning.modelScale;
 
     // ---- Enemy-layer collision body for the shoot raycast. mass 0 -> Static
     // motion type but keeps the Enemy ObjectLayer, so it stays put under gravity
@@ -241,7 +256,7 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // ---- Chase: weave toward the player while far, orbit when close, and STOP at
     // walls/props so it neither beelines-then-freezes nor phases through the box.
     // (Facing still tracks the player, above.) ----
-    if (kChaseSpeed > 0.0f && m_body.valid() && horiz > 1e-4f) {
+    if (m_chaseSpeed > 0.0f && m_body.valid() && horiz > 1e-4f) {
         m_wander += dt * kStrafeFreq;
         const float fxn = dx / horiz, fzn = dz / horiz;   // toward player (XZ)
         const float pxn = -fzn,       pzn = fxn;          // perpendicular (left)
@@ -262,7 +277,7 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         float ml = std::sqrt(mx * mx + mz * mz);
         if (ml > 1e-4f) { mx /= ml; mz /= ml; }
 
-        const float step  = kChaseSpeed * dt;
+        const float step  = m_chaseSpeed * dt;
         const float probe = step + kMonsterHalf.x + 0.05f;
         const x3::phys::Vec3 mdir{ mx, 0.0f, mz };
         // Don't walk through walls (Static) or props like the dynamic box (Dynamic).
@@ -308,12 +323,13 @@ void MonsterSystem::drawMonster(x3::rhi::IRenderDevice& device,
     if (!e.visible) return;
 
     // Hit-flash: lerp the per-primitive base color toward red as flash decays.
-    // flashAmt in [0,1]; 1 right after a hit, 0 once decayed.
+    // flashAmt in [0,1]; 1 right after a hit, 0 once decayed. Start from the
+    // per-instance base tint (Tuning.tint) so e.g. boss Martinez reads distinct.
     const float flashAmt = (kHitFlashTime > 0.0f) ? (m_flash / kHitFlashTime) : 0.0f;
-    float tint[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    float tint[4] = { m_baseTint[0], m_baseTint[1], m_baseTint[2], m_baseTint[3] };
     // Toward red: keep R, knock down G/B by the flash amount.
-    tint[1] = 1.0f - 0.85f * flashAmt;
-    tint[2] = 1.0f - 0.85f * flashAmt;
+    tint[1] *= (1.0f - 0.85f * flashAmt);
+    tint[2] *= (1.0f - 0.85f * flashAmt);
 
     if (m_dying) {
         // ---- Death pop: shrink the model toward zero and flash it bright white
@@ -354,6 +370,57 @@ void MonsterSystem::drawMonsterAt(x3::rhi::IRenderDevice& device,
                         color,
                         model);
     }
+}
+
+// ===========================================================================
+// Multi-monster manager (Level 1 / §6.1).
+// ===========================================================================
+uint32_t MonsterManager::spawn(Scene& scene, x3::rhi::IRenderDevice& device,
+                               x3::phys::IPhysicsWorld& physics,
+                               std::string_view modelDir, const x3::phys::Vec3& pos,
+                               const MonsterSystem::Tuning& tuning) {
+    auto m = std::make_unique<MonsterSystem>();
+    m->buildMonsterTuned(scene, device, physics, modelDir, pos, tuning);
+    uint32_t idx = (uint32_t)m_monsters.size();
+    m_monsters.push_back(std::move(m));
+    return idx;
+}
+
+uint32_t MonsterManager::aliveCount() const {
+    uint32_t n = 0;
+    for (const auto& m : m_monsters)
+        if (m->alive()) ++n;
+    return n;
+}
+
+void MonsterManager::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                            const x3::phys::Vec3& playerPos) {
+    for (auto& m : m_monsters)
+        m->update(dt, scene, physics, playerPos);
+}
+
+void MonsterManager::drawAll(x3::rhi::IRenderDevice& device,
+                             const x3::rhi::FrameContext& frame,
+                             const Scene& scene) const {
+    for (const auto& m : m_monsters)
+        m->drawMonster(device, frame, scene);
+}
+
+FireResult MonsterManager::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
+                                Scene& scene, x3::phys::IPhysicsWorld& physics) {
+    // Each MonsterSystem::fire() casts an Enemy-layer ray that returns the NEAREST
+    // enemy body, but only applies damage if that body is its own. So the first
+    // monster whose fire() reports a real monster hit is the one the ray actually
+    // struck (the nearest); the others see the same nearest body, recognise it as
+    // "not me", and no-op. We therefore take the first hitMonster result. We also
+    // keep the best non-monster result (a wall/miss tracer end) for FX.
+    FireResult best;
+    for (auto& m : m_monsters) {
+        FireResult r = m->fire(eye, dir, scene, physics);
+        if (r.hitMonster) return r;       // the nearest monster took the shot
+        if (r.hit && !best.hit) best = r; // remember a geometry hit for the tracer
+    }
+    return best;
 }
 
 // ===========================================================================

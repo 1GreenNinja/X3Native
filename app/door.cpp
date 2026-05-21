@@ -52,6 +52,7 @@ const Door* DoorSystem::findByEntity(uint32_t entityId) const {
 }
 
 bool DoorSystem::startOpening(Door& d) const {
+    if (d.locked) return false;                  // §6.4: locked doors stay shut
     if (d.state != DoorState::Closed) return false;
     d.state = DoorState::Opening;
     d.t = 0.0f;
@@ -172,6 +173,99 @@ uint32_t buildDoorAndButton(Scene& scene, DoorSystem& doors,
                 " + button entity " + std::to_string(btnEntId) +
                 " (button links to door)");
     return btnEntId;
+}
+
+// ---------------------------------------------------------------------------
+// Generalized door (+ optional button) at an arbitrary doorway (Level 1).
+// ---------------------------------------------------------------------------
+uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
+                        x3::rhi::IRenderDevice& device,
+                        x3::phys::IPhysicsWorld& physics,
+                        const DoorSpec& spec) {
+    const float hw = spec.halfWidth;
+    const float hh = spec.height * 0.5f;
+    const float ht = spec.thickness * 0.5f;
+    // Half-extents in (x,y,z) depend on which axis the host wall runs along: the
+    // door spans the doorway width along the wall run and is thin across it.
+    x3::phys::Vec3 half;
+    if (spec.axis == DoorAxis::AlongX) {
+        // Wall plane is Z = const: door is wide in X (the run), thin in Z.
+        half = x3::phys::Vec3{ hw, hh, ht };
+    } else {
+        // Wall plane is X = const: door is thin in X, wide in Z (the run).
+        half = x3::phys::Vec3{ ht, hh, hw };
+    }
+
+    // Closed body center: the doorway center, raised so the slab bottom sits at
+    // the floor (doorwayCenter.y). Open: slid straight UP by the door height.
+    const x3::phys::Vec3 closedPos{ spec.doorwayCenter.x,
+                                    spec.doorwayCenter.y + hh,
+                                    spec.doorwayCenter.z };
+    const x3::phys::Vec3 openPos{ closedPos.x, closedPos.y + spec.height, closedPos.z };
+
+    uint32_t doorEntId;
+    {
+        // Render mesh authored centered at the body origin (NOT world-baked) so
+        // the Entity transform translation drives its position as the body moves.
+        x3::prims::PrimMesh geo = x3::prims::makeBox(half.x, half.y, half.z, 0, 0, 0, 1.0f);
+        Entity e;
+        e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                   geo.index.data(), (uint32_t)geo.index.size());
+        e.baseColor[0] = spec.tint[0]; e.baseColor[1] = spec.tint[1];
+        e.baseColor[2] = spec.tint[2]; e.baseColor[3] = spec.tint[3];
+        e.tag  = (uint32_t)Tag::Door;
+        e.body = physics.addBox(half, closedPos, 0.0f, x3::phys::Layer::Static);
+        e.transform[12] = closedPos.x;
+        e.transform[13] = closedPos.y;
+        e.transform[14] = closedPos.z;
+        doorEntId = scene.add(e);
+    }
+
+    Door d;
+    d.entity    = doorEntId;
+    d.body      = scene.get(doorEntId).body;
+    d.closedPos = closedPos;
+    d.openPos   = openPos;
+    d.duration  = spec.duration;
+    d.state     = DoorState::Closed;
+    d.locked    = spec.locked;
+    uint32_t doorIdx = doors.add(d);
+
+    // Optional linked button, mounted on the wall beside the doorway, on the
+    // approach (−) side along the axis of travel so the player can press it from
+    // the room they arrive in. Cyan-green like the original button.
+    if (spec.withButton) {
+        const float kBtnHalf = 0.12f;
+        x3::phys::Vec3 btnPos;
+        if (spec.axis == DoorAxis::AlongX) {
+            // Doorway in a Z=const wall: button to +X of the opening, on the −Z face.
+            btnPos = x3::phys::Vec3{ spec.doorwayCenter.x + hw + 0.5f, 1.3f,
+                                     spec.doorwayCenter.z - ht - kBtnHalf };
+        } else {
+            // Doorway in an X=const wall: button to +Z of the opening, on the −X face.
+            btnPos = x3::phys::Vec3{ spec.doorwayCenter.x - ht - kBtnHalf, 1.3f,
+                                     spec.doorwayCenter.z + hw + 0.5f };
+        }
+        x3::prims::PrimMesh geo = x3::prims::makeBox(kBtnHalf, kBtnHalf, kBtnHalf, 0, 0, 0, 1.0f);
+        Entity e;
+        e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                   geo.index.data(), (uint32_t)geo.index.size());
+        e.baseColor[0] = 0.20f; e.baseColor[1] = 0.85f; e.baseColor[2] = 0.55f; e.baseColor[3] = 1.0f;
+        e.tag  = (uint32_t)Tag::Button;
+        e.link = doorEntId;
+        e.body = physics.addBox(x3::phys::Vec3{ kBtnHalf, kBtnHalf, kBtnHalf },
+                                btnPos, 0.0f, x3::phys::Layer::Static);
+        e.transform[12] = btnPos.x;
+        e.transform[13] = btnPos.y;
+        e.transform[14] = btnPos.z;
+        scene.add(e);
+    }
+
+    x3::logInfo("buildLevelDoor: door idx " + std::to_string(doorIdx) +
+                " entity " + std::to_string(doorEntId) +
+                (spec.locked ? " [LOCKED]" : "") +
+                (spec.withButton ? " + button" : ""));
+    return doorIdx;
 }
 
 // ===========================================================================

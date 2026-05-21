@@ -38,6 +38,13 @@ enum class DoorState : uint32_t {
 // One animated door. `entity` indexes the Scene; `body` is its physics box.
 // closedPos/openPos are the body-center world positions at the two extremes;
 // the door lerps between them over `duration` seconds while Opening.
+//
+// Lockable / open-on-event (Level 1 / §6.4): a `locked` door refuses to open via
+// startOpening() (and therefore via tryUse() on its button) until unlock() is
+// called. This models Door C (locked until the player is armed) and Door E
+// (opens only on Martinez's death) — game state, not a wall button. unlock()
+// alone does not open the door; the host calls startOpening() after unlocking
+// (or uses unlockAndOpen()).
 struct Door {
     uint32_t          entity   = kNoLink;
     x3::phys::BodyId  body;
@@ -46,6 +53,7 @@ struct Door {
     float             duration = 1.0f;   // seconds Closed -> Open
     float             t        = 0.0f;   // animation cursor [0..duration]
     DoorState         state    = DoorState::Closed;
+    bool              locked   = false;  // §6.4: refuse to open until unlock()
 };
 
 // Registry of doors in a level. Kept in the game layer (not the Scene) so the
@@ -63,9 +71,17 @@ public:
     Door*       findByEntity(uint32_t entityId);
     const Door* findByEntity(uint32_t entityId) const;
 
-    // Begin opening a door (no-op if already Opening/Open). Returns true if a
-    // transition Closed -> Opening happened.
+    // Begin opening a door (no-op if already Opening/Open, OR if the door is
+    // locked). Returns true if a transition Closed -> Opening happened.
     bool startOpening(Door& d) const;
+
+    // Clear a door's locked flag (does NOT open it). After unlock() the door can
+    // be opened by startOpening()/its button. Idempotent.
+    void unlock(Door& d) const { d.locked = false; }
+
+    // Unlock + immediately start opening (the "open on event" path). Used by the
+    // host for Door E on Martinez's death. Returns true if the door began opening.
+    bool unlockAndOpen(Door& d) const { unlock(d); return startOpening(d); }
 
     // Advance every animating door one frame: lerp the body toward openPos via
     // setBodyPosition(), then sync the owning Entity's transform translation.
@@ -89,6 +105,37 @@ bool tryUse(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir, float maxDist,
 uint32_t buildDoorAndButton(Scene& scene, DoorSystem& doors,
                             x3::rhi::IRenderDevice& device,
                             x3::phys::IPhysicsWorld& physics);
+
+// Which axis the door's host wall runs along — determines the door slab's thin
+// axis and the side a button mounts on.
+enum class DoorAxis : uint32_t {
+    AlongZ = 0,  // wall runs along Z (its plane is X = const); door is thin in X
+    AlongX = 1,  // wall runs along X (its plane is Z = const); door is thin in Z
+};
+
+// Parameters for a single Level-1 door (generalized buildDoorAndButton). The door
+// is a portcullis slab that fills a doorway gap in a wall and slides UP to open.
+struct DoorSpec {
+    x3::phys::Vec3 doorwayCenter{};        // world center of the doorway opening at floor level
+    DoorAxis       axis     = DoorAxis::AlongX;
+    float          halfWidth = 0.6f;       // half the doorway opening width (along the wall run)
+    float          height    = 2.1f;       // door slab height (passage clear height)
+    float          thickness = 0.2f;       // door slab thickness (across the wall)
+    float          duration  = 1.0f;       // seconds Closed -> Open
+    bool           locked    = false;      // §6.4 lockable
+    bool           withButton = true;      // place a linked wall button beside it
+    float          tint[4]   = { 0.85f, 0.30f, 0.18f, 1.0f };  // door slab color
+};
+
+// Build a generalized door (+ optional linked button) per `spec`, registering
+// render meshes via `device`, a static collision body via `physics`, and Entities
+// in `scene`. Records the Door in `doors`. Returns the door's index in `doors`
+// (NOT an entity id). The button (if any) is linked to the door entity, so tryUse
+// opens it exactly like the original buildDoorAndButton.
+uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
+                        x3::rhi::IRenderDevice& device,
+                        x3::phys::IPhysicsWorld& physics,
+                        const DoorSpec& spec);
 
 // Headless self-test (--test-interact). Builds a minimal room + door + button +
 // a body, asserts T1-T4, logs PASS/FAIL T#, returns true iff all pass. No

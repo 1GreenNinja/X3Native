@@ -119,6 +119,16 @@ bool applyDamage(int* hp, int damage);
 // extension.
 class MonsterSystem {
 public:
+    // Per-instance tuning so the same MonsterSystem can be a basic enemy or a
+    // boss-tier "Martinez" (more HP, a bit faster) WITHOUT new AI/phases this
+    // pass (§8). Defaults reproduce the original single-monster behaviour.
+    struct Tuning {
+        int   hp         = kMonsterHp;     // starting health
+        float chaseSpeed = kChaseSpeed;    // m/s toward the player (0 = stationary)
+        float modelScale = -1.0f;          // <0 => use the per-model default scale
+        float tint[4]    = { 1, 1, 1, 1 }; // multiplied into the model base color
+    };
+
     // Build the monster: load alien_crawler.glb from `modelDir` via a fresh
     // IAssetSource + the M2 model loader, upload its drawables through `device`,
     // add an Enemy-layer collision box body via `physics` (sized to roughly the
@@ -128,6 +138,13 @@ public:
     void buildMonster(Scene& scene, x3::rhi::IRenderDevice& device,
                       x3::phys::IPhysicsWorld& physics,
                       std::string_view modelDir, const x3::phys::Vec3& pos);
+
+    // As buildMonster(), but apply per-instance Tuning (HP / chase speed / scale /
+    // tint). Used for the corridor guards, the drone, and boss-tier Martinez.
+    void buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& device,
+                           x3::phys::IPhysicsWorld& physics,
+                           std::string_view modelDir, const x3::phys::Vec3& pos,
+                           const Tuning& tuning);
 
     // Fire one shot: raycast from `eye` along `dir` (need not be unit; normalized
     // internally) up to kFireMaxDist against the Enemy layer. If the hit body
@@ -154,6 +171,7 @@ public:
 
     // Gameplay state.
     int  hp() const { return m_hp; }
+    int  maxHp() const { return m_maxHp; }
     bool alive() const { return m_alive; }
     // True during the brief death "pop" after a kill: not alive, body already
     // removed, but the model is still being drawn (shrinking/flashing).
@@ -187,6 +205,9 @@ private:
     float            m_modelScale = 1.0f;     // uniform scale applied to the model
 
     int   m_hp        = kMonsterHp;
+    int   m_maxHp     = kMonsterHp;           // per-instance starting HP (Tuning)
+    float m_chaseSpeed = kChaseSpeed;         // per-instance chase speed (Tuning)
+    float m_baseTint[4] = { 1, 1, 1, 1 };     // per-instance color multiplier (Tuning)
     bool  m_alive     = true;
     float m_flash     = 0.0f;                 // remaining hit-flash time (s)
 
@@ -204,6 +225,49 @@ private:
     float m_wander    = 0.0f;   // weave oscillator phase
     float m_strafeDir = 1.0f;   // orbit direction (+1/-1) when close
     float m_retarget  = 1.8f;   // countdown to flip orbit direction
+};
+
+// ---------------------------------------------------------------------------
+// Multi-monster manager (Level 1 / §6.1). Holds N MonsterSystem instances and
+// fans the per-frame calls (update / draw) and a single fire() across them. Each
+// MonsterSystem stays a self-contained unit (its own model + body + state), so
+// the existing single-monster self-test (--test-combat) is unaffected. The
+// manager is intentionally thin: a list + iteration, not new combat logic.
+// ---------------------------------------------------------------------------
+class MonsterManager {
+public:
+    // Spawn a monster into the world with the given tuning. Returns its index.
+    // Each instance owns its own model load (so guards/drone/Martinez can differ).
+    uint32_t spawn(Scene& scene, x3::rhi::IRenderDevice& device,
+                   x3::phys::IPhysicsWorld& physics,
+                   std::string_view modelDir, const x3::phys::Vec3& pos,
+                   const MonsterSystem::Tuning& tuning);
+
+    uint32_t count() const { return (uint32_t)m_monsters.size(); }
+    MonsterSystem&       at(uint32_t i)       { return *m_monsters[i]; }
+    const MonsterSystem& at(uint32_t i) const { return *m_monsters[i]; }
+
+    // Number of monsters still alive (not dead). Used for objective/door gating.
+    uint32_t aliveCount() const;
+
+    // Advance every monster one frame (hit-flash decay, death-pop, chase).
+    void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                const x3::phys::Vec3& playerPos);
+
+    // Draw every monster (each owns its multi-primitive model).
+    void drawAll(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                 const Scene& scene) const;
+
+    // Fire one shot across all monsters: the first LIVE monster the ray hits takes
+    // the damage (the Enemy-layer rayCast inside each fire() returns the nearest
+    // body, but since fire() ignores hits that aren't THIS monster, we test each
+    // and keep the result that actually hit a monster). Returns that FireResult
+    // (or a default miss). At most one monster is damaged per call.
+    FireResult fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
+                    Scene& scene, x3::phys::IPhysicsWorld& physics);
+
+private:
+    std::vector<std::unique_ptr<MonsterSystem>> m_monsters;
 };
 
 // Headless self-test (--test-combat). Builds a physics world + an Enemy-layer
