@@ -12,6 +12,7 @@
 #include "engine/asset/IAssetSource.h"
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/asset/IModelLoader.h"
+#include "engine/audio/IAudioSystem.h"
 
 #include "mesh_prims.h"
 #include "scene.h"
@@ -129,7 +130,7 @@ void keyCallback(GLFWwindow* win, int key, int /*scancode*/, int action, int /*m
 int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
-         testCombat = false;
+         testCombat = false, testAudio = false;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
@@ -141,6 +142,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-interact") testInteract = true;
         else if (a == "--test-pickup") testPickup = true;
         else if (a == "--test-combat") testCombat = true;
+        else if (a == "--test-audio") testAudio = true;
     }
 
     // Headless self-tests (no window / Vulkan needed)
@@ -175,6 +177,10 @@ int main(int argc, char** argv) {
     if (testCombat) {
         x3::logInfo("running shoot-monster combat (S6) self-test...");
         return x3::game::runCombatSelfTest() ? 0 : 1;
+    }
+    if (testAudio) {
+        x3::logInfo("running audio (M9) self-test...");
+        return x3::audio::runAudioSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -219,6 +225,37 @@ int main(int argc, char** argv) {
     // ---- Asset source (stub until D5) ----
     std::unique_ptr<x3::asset::IAssetSource> assets(x3::asset::createAssetSource());
     assets->mountPak("base.x3pak", 0);  // stub: logs not-implemented for now
+
+    // ---- Audio system (M9 / miniaudio) ----
+    // init() is GRACEFUL: on a machine with no audio device it logs a warning and
+    // runs silently (all play calls become no-ops) — never crashes. We load REAL
+    // purchased WAV/music by ABSOLUTE G:\ path (like the GLBs); nothing is copied
+    // into the public repo. Missing files load() to invalid handles -> silent.
+    std::unique_ptr<x3::audio::IAudioSystem> audio(x3::audio::createAudioSystem());
+    audio->init();
+    // Concrete asset picks (see docs/ASSET_INVENTORY.md). Hardcoded absolute paths
+    // with graceful fallback: a missing/undecodable file -> invalid handle -> the
+    // corresponding event is simply silent (logged once at load).
+    const x3::audio::SoundHandle sndGun = audio->load(
+        "G:/Unity_Projects/EscapeFromLabZero/Assets/Sci-Fi_Guns_Game-Of-Weapons/"
+        "Audio/SFX/Wave/Single_Gunshots/Single_Gunshot_Sci-Fi_Gun-01.wav");
+    const x3::audio::SoundHandle sndDoor = audio->load(
+        "G:/Unity_Projects/EscapeFromLabZero/Assets/ModularScifiInterior/Sound/"
+        "S_ScifiDoor_A.WAV");
+    const x3::audio::SoundHandle sndPickup = audio->load(
+        "G:/Unity_Projects/EscapeLab48/Escape Lab 48/Assets/"
+        "Sci-fi Evolution Gift Pack/Health or Energy Game Recharge 2.wav");
+    const x3::audio::SoundHandle sndDeath = audio->load(
+        "G:/Unity_Projects/EscapeLab48/Escape Lab 48/Assets/Free Pack/Explosion 1.wav");
+    // Footsteps reuse the gunshot WAV pitched down + quiet (no dedicated footstep
+    // WAV in the inventory). It reads as a soft step; replace with a real footstep
+    // SFX later if one is added to the pack.
+    const x3::audio::SoundHandle sndStep = sndGun;
+    // Absolute path for the looping music/ambient bed (started after the world is
+    // built, below). Spaceship-ambience-style sci-fi action loop.
+    constexpr const char* kMusicPath =
+        "G:/Unity_Projects/EscapeLab48/Escape Lab 48/Assets/Sci-Fi Music Pack 1/"
+        "Loops/SMP1_LOOP_Zero8 _1.wav";
 
     // ---- Physics world (M3 / Jolt) ----
     std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
@@ -303,6 +340,11 @@ int main(int argc, char** argv) {
         weapon.forceArm(scene);
         const float vmX = -3.0f, vmY = 1.7f, vmZ = 4.0f, vmYaw = -1.4f, vmPitch = 0.0f;
         device->setCamera(vmX, vmY, vmZ, vmYaw, vmPitch, 60.0f);
+        // M9: exercise the audio system under the smoketest path too (init already
+        // happened above; here we set the listener + start the music bed so the
+        // smoketest proves audio comes up + plays without crashing under validation).
+        audio->setListener(vmX, vmY, vmZ, vmYaw, vmPitch);
+        audio->playMusic(kMusicPath, /*loop*/true, /*vol*/0.25f);
         const float dt = 1.0f / 60.0f;
         for (int i = 0; i < 30; ++i) {
             glfwPollEvents();
@@ -311,6 +353,7 @@ int main(int argc, char** argv) {
             scene.update(*physics);
             weapon.update(dt, scene, x3::phys::Vec3{ vmX, vmY, vmZ });
             combat.update(dt, scene, *physics, x3::phys::Vec3{ vmX, vmY, vmZ });
+            audio->update(dt);
             // Exercise the FX path under validation: fire once mid-run (tracer +
             // muzzle flash) and crosshair every frame.
             if (i == 10) {
@@ -319,7 +362,9 @@ int main(int argc, char** argv) {
                                     std::sin(vmPitch),
                                     std::cos(vmPitch) * std::sin(vmYaw) };
                 x3::game::FireResult r = combat.fire(eye, dir, scene, *physics);
-                combatFx.addTracer(muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch), r.endPoint);
+                const x3::phys::Vec3 m = muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch);
+                combatFx.addTracer(m, r.endPoint);
+                audio->playSound3D(sndGun, m.x, m.y, m.z, 0.85f, 1.0f);
             }
             combatFx.update(dt);
             // Exercise the HUD 2D path: drop some console output, and open the
@@ -359,6 +404,7 @@ int main(int argc, char** argv) {
             }
         }
         x3::logInfo("smoketest: 30 frames + recreate OK");
+        audio->shutdown();
         combatFx.shutdown(*device);
         physics->shutdown();
         device->shutdown();
@@ -393,6 +439,15 @@ int main(int argc, char** argv) {
     bool prevSpace = false, prevF = false, prevE = false, prevFire = false;
     float fireCooldown = 0.0f;          // seconds until the gun can fire again
     constexpr float kFireCooldown = 0.25f;
+
+    // ---- M9 audio event edge-tracking + footstep cadence -------------------
+    bool  prevArmed   = false;          // pickup chime on the arm rising edge
+    float stepTimer   = 0.0f;           // accumulates while moving on the ground
+    float prevCamX = 0.0f, prevCamZ = 0.0f; // for horizontal-speed footsteps
+    bool  prevCamValid = false;
+
+    // ---- M9: start the low-volume looping ambient/music bed at launch ----
+    audio->playMusic(kMusicPath, /*loop*/true, /*vol*/0.25f);
 
     // ---- Optional debug noclip/fly camera (toggle with F). Not required by S3,
     // handy for inspecting the level. Off by default — gameplay is the walker.
@@ -458,8 +513,11 @@ int main(int argc, char** argv) {
             x3::phys::Vec3 dir{ std::cos(pitch) * std::cos(yaw),
                                 std::sin(pitch),
                                 std::cos(pitch) * std::sin(yaw) };
-            if (x3::game::tryUse(eye, dir, 3.0f, scene, doors, *physics))
+            if (x3::game::tryUse(eye, dir, 3.0f, scene, doors, *physics)) {
                 x3::logInfo("use: button pressed — door opening");
+                // S4 door SFX at the eye (button is right in front of the player).
+                audio->playSound3D(sndDoor, eye.x, eye.y, eye.z, 0.9f, 1.0f);
+            }
         }
         prevE = eNow;
 
@@ -517,9 +575,36 @@ int main(int argc, char** argv) {
         }
         prevSpace = spaceNow;
 
+        // ---- M9: drive the 3D listener from the player camera each frame ----
+        audio->setListener(camX, camY, camZ, camYaw, camPitch);
+
+        // ---- M9: footsteps. Time them to horizontal speed while grounded (not in
+        // noclip): estimate speed from the camera's XZ delta this frame; while
+        // moving, play a quiet pitched-down step every kStepInterval seconds. ----
+        if (prevCamValid && !noclip && player.grounded() && dt > 0.0f) {
+            const float dxc = camX - prevCamX, dzc = camZ - prevCamZ;
+            const float speed = std::sqrt(dxc * dxc + dzc * dzc) / dt; // m/s
+            if (speed > 0.6f) {
+                // Cadence scales a little with speed (faster -> quicker steps).
+                const float kStepInterval = (speed > 6.5f) ? 0.32f : 0.45f;
+                stepTimer += dt;
+                if (stepTimer >= kStepInterval) {
+                    stepTimer = 0.0f;
+                    audio->playSound2D(sndStep, 0.22f, 0.55f); // quiet, pitched down
+                }
+            } else {
+                stepTimer = 0.0f; // reset cadence when stopped
+            }
+        }
+        prevCamX = camX; prevCamZ = camZ; prevCamValid = true;
+
         // ---- S5: weapon pickup detection + viewmodel. Arm when the camera
         // (player eye) is within pickup radius; once armed, draw the viewmodel.
         weapon.update(dt, scene, x3::phys::Vec3{ camX, camY, camZ });
+        // M9: pickup chime on the arm rising edge (S5).
+        if (weapon.hasWeapon() && !prevArmed)
+            audio->playSound2D(sndPickup, 0.8f, 1.0f);
+        prevArmed = weapon.hasWeapon();
 
         // ---- S6: combat. Decay the monster's hit-flash (+ optional chase), then
         // handle FIRE on the left-mouse rising edge: only effective when armed,
@@ -538,7 +623,13 @@ int main(int argc, char** argv) {
             x3::game::FireResult r = combat.fire(eye, dir, scene, *physics);
             // Shot feedback: a tracer from the viewmodel muzzle to the hit point
             // (or max range on a miss) + a muzzle flash.
-            combatFx.addTracer(muzzleFromCamera(camX, camY, camZ, camYaw, camPitch), r.endPoint);
+            const x3::phys::Vec3 muzzle = muzzleFromCamera(camX, camY, camZ, camYaw, camPitch);
+            combatFx.addTracer(muzzle, r.endPoint);
+            // M9: gunshot SFX at the muzzle (3D).
+            audio->playSound3D(sndGun, muzzle.x, muzzle.y, muzzle.z, 0.85f, 1.0f);
+            // M9: monster death/impact SFX at the kill point (the ray hit point).
+            if (r.killed)
+                audio->playSound3D(sndDeath, r.endPoint.x, r.endPoint.y, r.endPoint.z, 1.0f, 1.0f);
             if (r.killed)          x3::logInfo("fire: monster killed!");
             else if (r.hitMonster) x3::logInfo("fire: monster hit — HP " + std::to_string(r.hpAfter));
         }
@@ -546,6 +637,8 @@ int main(int argc, char** argv) {
 
         // Advance FX timers (tracer lifetimes + muzzle flash).
         combatFx.update(dt);
+        // M9: tick the audio system (reaps finished one-shot voices).
+        audio->update(dt);
 
         int cw, ch;
         glfwGetFramebufferSize(window, &cw, &ch);
@@ -575,6 +668,7 @@ int main(int argc, char** argv) {
     }
 
     x3::logInfo("shutting down");
+    audio->shutdown();
     combatFx.shutdown(*device);
     physics->shutdown();
     device->shutdown();
