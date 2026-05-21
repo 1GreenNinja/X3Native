@@ -6,7 +6,17 @@ namespace x3::game {
 uint32_t Scene::add(const Entity& e) {
     uint32_t id = (uint32_t)m_entities.size();
     m_entities.push_back(e);
+    // Maintain the BodyId -> entity reverse map for rayCast hit resolution.
+    // Skip invalid bodies (purely visual / static-no-collision entities).
+    if (e.body.valid())
+        m_bodyToEntity[e.body.id] = id;
     return id;
+}
+
+uint32_t Scene::entityForBody(x3::phys::BodyId body) const {
+    if (!body.valid()) return kNoLink;
+    auto it = m_bodyToEntity.find(body.id);
+    return it == m_bodyToEntity.end() ? kNoLink : it->second;
 }
 
 Entity& Scene::get(uint32_t id) {

@@ -17,6 +17,7 @@
 #include "scene.h"
 #include "level.h"
 #include "player.h"
+#include "door.h"
 
 #include <memory>
 #include <string_view>
@@ -27,7 +28,7 @@
 
 int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
-         testGltf = false, testPlayer = false;
+         testGltf = false, testPlayer = false, testInteract = false;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
@@ -36,6 +37,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-physics") testPhysics = true;
         else if (a == "--test-gltf") testGltf = true;
         else if (a == "--test-player") testPlayer = true;
+        else if (a == "--test-interact") testInteract = true;
     }
 
     // Headless self-tests (no window / Vulkan needed)
@@ -58,6 +60,10 @@ int main(int argc, char** argv) {
     if (testPlayer) {
         x3::logInfo("running player/character-controller (S3) self-test...");
         return x3::game::runPlayerSelfTest() ? 0 : 1;
+    }
+    if (testInteract) {
+        x3::logInfo("running button->door interaction (S4) self-test...");
+        return x3::game::runInteractSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -117,6 +123,11 @@ int main(int argc, char** argv) {
     x3::game::Scene scene;
     x3::game::buildTestLevel(scene, *device, *physics);
 
+    // ---- S4: a sliding door filling the doorway gap + a wall button linked to
+    // it. Press E while aiming at the button to slide the door open. ----
+    x3::game::DoorSystem doors;
+    x3::game::buildDoorAndButton(scene, doors, *device, *physics);
+
     // ---- One dynamic box dropped above the floor: proves render+physics+entity
     // sync work together (it falls and rests on the floor). ----
     x3::rhi::TextureHandle boxTex;  // invalid => flat color via baseColor
@@ -168,7 +179,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    x3::logInfo("entering main loop — WASD walk, mouse look, LeftShift sprint, Space jump, F noclip, Esc to quit");
+    x3::logInfo("entering main loop — WASD walk, mouse look, LeftShift sprint, Space jump, E use, F noclip, Esc to quit");
 
     // ---- Walking player (S3). Spawn on open floor near the +Z doorway side,
     // clear of the falling box (origin) and the step platform (around x=3,z=-3).
@@ -180,8 +191,8 @@ int main(int argc, char** argv) {
     double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
     double prevTime = glfwGetTime();
 
-    // Rising-edge tracking for Space (jump) and F (noclip toggle).
-    bool prevSpace = false, prevF = false;
+    // Rising-edge tracking for Space (jump), F (noclip toggle), E (use).
+    bool prevSpace = false, prevF = false, prevE = false;
 
     // ---- Optional debug noclip/fly camera (toggle with F). Not required by S3,
     // handy for inspecting the level. Off by default — gameplay is the walker.
@@ -215,6 +226,23 @@ int main(int argc, char** argv) {
 
         bool spaceNow = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
 
+        // ---- E: "use" on the rising edge. Raycast from the eye along the facing
+        // direction; if it hits a button (within ~3 m) the linked door opens. ----
+        bool eNow = glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS;
+        if (eNow && !prevE) {
+            float ex, ey, ez, yaw, pitch;
+            player.camera(ex, ey, ez, yaw, pitch);   // in noclip the camera is the fly cam
+            if (noclip) { ex = flyX; ey = flyY; ez = flyZ; yaw = flyYaw; pitch = flyPitch; }
+            // Device forward convention: fwd = (cos p cos y, sin p, cos p sin y).
+            x3::phys::Vec3 eye{ ex, ey, ez };
+            x3::phys::Vec3 dir{ std::cos(pitch) * std::cos(yaw),
+                                std::sin(pitch),
+                                std::cos(pitch) * std::sin(yaw) };
+            if (x3::game::tryUse(eye, dir, 3.0f, scene, doors, *physics))
+                x3::logInfo("use: button pressed — door opening");
+        }
+        prevE = eNow;
+
         if (!noclip) {
             // ---- Walking player input ----
             x3::game::PlayerInput in;
@@ -228,6 +256,7 @@ int main(int argc, char** argv) {
             in.lookDY = ddy;
 
             player.update(in, dt, *physics);
+            doors.update(dt, scene, *physics);   // advance any opening door first
             physics->step(dt);
             scene.update(*physics);
 
@@ -255,6 +284,7 @@ int main(int argc, char** argv) {
             if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) flyY -= spd;
 
             // World still advances so props keep simulating while inspecting.
+            doors.update(dt, scene, *physics);   // advance any opening door first
             physics->step(dt);
             scene.update(*physics);
             device->setCamera(flyX, flyY, flyZ, flyYaw, flyPitch, 60.0f);
