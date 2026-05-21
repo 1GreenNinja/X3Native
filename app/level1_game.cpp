@@ -20,18 +20,33 @@ namespace x3::game {
 namespace {
 constexpr float kEnemyY = 0.4f;
 
-// Boss-tier Martinez (§8): more HP + a bit faster + bigger + a distinct tint.
-// NO new AI/phases this pass — purely params over the basic monster.
+// Boss-tier Martinez (§8): more HP + a bit faster + bigger + a distinct tint +
+// stronger melee. NO new AI/phases this pass — purely params over the basic
+// monster (boss phases are Phase 2b).
 MonsterSystem::Tuning martinezTuning() {
     MonsterSystem::Tuning t;
     t.hp         = 340;     // ~10 pistol shots (basic monster is 100 / 3 shots)
     t.chaseSpeed = 3.4f;    // a bit faster than the basic 2.5 m/s
     t.modelScale = -1.0f;   // keep the per-model default scale (already reads big)
     t.tint[0] = 1.0f; t.tint[1] = 0.55f; t.tint[2] = 0.55f; t.tint[3] = 1.0f; // reddish
+    // Melee boss: hits harder + a touch faster than a guard.
+    t.type           = MonsterType::Boss;
+    t.damage         = 15;
+    t.attackRange    = 2.4f;
+    t.attackCooldown = 1.1f;
+    t.attackWindup   = 0.30f;
+    t.ranged         = false;
     return t;
 }
 MonsterSystem::Tuning guardTuning() {
     MonsterSystem::Tuning t;          // basic enemy stats (defaults), neutral tint
+    // Melee guard: baton-range chip damage on a ~1s cadence.
+    t.type           = MonsterType::Guard;
+    t.damage         = 8;
+    t.attackRange    = 1.9f;
+    t.attackCooldown = 1.0f;
+    t.attackWindup   = 0.25f;
+    t.ranged         = false;
     return t;
 }
 MonsterSystem::Tuning droneTuning() {
@@ -39,6 +54,14 @@ MonsterSystem::Tuning droneTuning() {
     t.hp         = 66;                 // squishier (2 shots)
     t.chaseSpeed = 3.0f;               // faster, flits about
     t.tint[0] = 0.6f; t.tint[1] = 0.8f; t.tint[2] = 1.0f; t.tint[3] = 1.0f; // pale blue
+    // Ranged drone: keeps a standoff distance and fires a taser hitscan.
+    t.type           = MonsterType::Drone;
+    t.damage         = 5;
+    t.attackRange    = 14.0f;          // can fire from across the corridor
+    t.attackCooldown = 1.4f;
+    t.attackWindup   = 0.35f;          // a beat of telegraph before the bolt
+    t.ranged         = true;
+    t.standoff       = 7.0f;
     return t;
 }
 } // namespace
@@ -174,6 +197,12 @@ void Level1Game::spawnMartinez(Scene& scene, x3::rhi::IRenderDevice& device,
 
 void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                       const x3::phys::Vec3& eye, const x3::phys::Vec3& playerPos) {
+    tick(dt, scene, physics, eye, playerPos, nullptr, AttackFxFn{});
+}
+
+void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                      const x3::phys::Vec3& eye, const x3::phys::Vec3& playerPos,
+                      IDamageSink* player, const AttackFxFn& attackFx) {
     if (!m_built || !m_devicePtr) return;
 
     // ---- Doors advance ----
@@ -208,10 +237,13 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
         x3::logInfo("Level1: ARMED — Door C unlocked + opening");
     }
 
-    // ---- Monsters update ----
-    m_corridor.update(dt, scene, physics, eye);
-    m_checkpoint.update(dt, scene, physics, eye);
-    if (m_martinezSpawned) m_martinez.update(dt, scene, physics, eye);
+    // ---- Monsters update (now attack the player on cooldown, Phase 2a). Enemies
+    // only attack while the player is alive; once dead they keep moving but stop
+    // dealing damage (the player is respawning). ----
+    IDamageSink* atkTarget = (player && player->isAlive()) ? player : nullptr;
+    m_corridor.update(dt, scene, physics, eye, atkTarget, attackFx);
+    m_checkpoint.update(dt, scene, physics, eye, atkTarget, attackFx);
+    if (m_martinezSpawned) m_martinez.update(dt, scene, physics, eye, atkTarget, attackFx);
 
     // ---- Beat 10: Martinez dies -> Door E unlock + open + objective 2 -> 3 ----
     if (m_martinezSpawned && !m_martinez.alive() && !m_martinezDeadLatch) {

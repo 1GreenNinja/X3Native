@@ -48,6 +48,7 @@
 //     M9. No sound is played on fire or death.
 
 #include "scene.h"
+#include "player.h"   // IDamageSink (enemies attack the player)
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -55,11 +56,28 @@
 #include "engine/asset/IAssetSource.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string_view>
 #include <vector>
 
 namespace x3::game {
+
+// Enemy archetype (Phase 2a, spec §6.5). Drives the attack behaviour in
+// MonsterSystem::update:
+//   * Guard — melee: chase, then deal `damage` every `attackCooldown` once within
+//     `attackRange` (after a short wind-up).
+//   * Drone — ranged: keep a standoff distance, periodically fire a hitscan toward
+//     the player (with a brief visible tracer/telegraph) for `damage` on cooldown.
+//   * Boss  — Chief Martinez: melee like a Guard but more HP/damage (NO phases this
+//     pass — that is Phase 2b).
+enum class MonsterType : uint32_t { Guard = 0, Drone = 1, Boss = 2 };
+
+// Callback the MonsterSystem invokes to spawn a visible attack effect (a ranged
+// drone's hitscan tracer / a melee wind-up telegraph). `from`->`to` is the beam;
+// the host wires this to CombatFx::addTracer. Optional (may be empty).
+using AttackFxFn = std::function<void(const x3::phys::Vec3& from,
+                                      const x3::phys::Vec3& to)>;
 
 // Monster starting health, and damage per shot. 100 / 34 => 3 shots to kill.
 constexpr int   kMonsterHp     = 100;
@@ -127,6 +145,17 @@ public:
         float chaseSpeed = kChaseSpeed;    // m/s toward the player (0 = stationary)
         float modelScale = -1.0f;          // <0 => use the per-model default scale
         float tint[4]    = { 1, 1, 1, 1 }; // multiplied into the model base color
+
+        // ---- Attack behaviour (Phase 2a, spec §6.5) -----------------------
+        MonsterType type          = MonsterType::Guard;
+        int   damage              = 0;     // HP dealt to the player per attack (0 = inert)
+        float attackRange         = 1.8f;  // melee reach (m) / drone fire range (m)
+        float attackCooldown      = 1.0f;  // seconds between attacks
+        float attackWindup        = 0.25f; // telegraph delay (s) before the hit lands
+        bool  ranged              = false; // true => hitscan toward the player (drone)
+        // Drone-only: preferred standoff distance (m). The drone strafes to keep
+        // roughly this far from the player instead of closing to melee.
+        float standoff            = 6.0f;
     };
 
     // Build the monster: load alien_crawler.glb from `modelDir` via a fresh
@@ -155,11 +184,28 @@ public:
     FireResult fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                     Scene& scene, x3::phys::IPhysicsWorld& physics);
 
-    // Advance one frame: decay the hit-flash timer and, if kChaseSpeed > 0 and the
-    // monster is alive, crawl it toward `playerPos` (translation only) via
-    // setBodyPosition + sync the Entity transform. No-op once dead.
+    // Advance one frame: decay the hit-flash timer and, if chaseSpeed > 0 and the
+    // monster is alive, move it relative to `playerPos` (chase for melee, hold a
+    // standoff for the drone) via setBodyPosition + sync the Entity transform, and
+    // run its attack (melee reach hit / ranged hitscan) against `target` on
+    // cooldown. `target` may be null (no attacks — pure movement, e.g. the legacy
+    // single-monster path). `fx`, if set, is invoked to spawn a visible attack beam
+    // (drone tracer / melee telegraph). No-op once dead.
+    void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                const x3::phys::Vec3& playerPos,
+                IDamageSink* target, const AttackFxFn& fx);
+
+    // Movement-only overload (no attacks): the legacy single-monster behaviour.
+    // Forwards to the full update() with a null target / empty fx.
     void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                 const x3::phys::Vec3& playerPos);
+
+    // Enemy archetype + attack params (read for the HUD / self-test / tuning).
+    MonsterType type() const { return m_type; }
+    int   attackDamage() const { return m_dmg; }
+    float attackRange() const { return m_attackRange; }
+    float attackCooldown() const { return m_attackCooldown; }
+    bool  ranged() const { return m_ranged; }
 
     // Draw all monster primitives at its current transform, tinted toward red by
     // the active hit-flash. No-op once dead / hidden. The monster Entity carries an
@@ -211,6 +257,18 @@ private:
     bool  m_alive     = true;
     float m_flash     = 0.0f;                 // remaining hit-flash time (s)
 
+    // ---- Attack behaviour (Phase 2a) --------------------------------------
+    MonsterType m_type          = MonsterType::Guard;
+    int   m_dmg                 = 0;          // damage per attack (0 = inert)
+    float m_attackRange         = 1.8f;       // melee reach / drone fire range (m)
+    float m_attackCooldown      = 1.0f;       // seconds between attacks
+    float m_attackWindup        = 0.25f;      // telegraph delay before the hit lands
+    bool  m_ranged              = false;      // hitscan toward the player (drone)
+    float m_standoff            = 6.0f;       // drone preferred distance (m)
+    float m_atkTimer            = 0.0f;       // cooldown countdown until next attack
+    float m_windupTimer         = 0.0f;       // >0 while winding up an attack
+    bool  m_winding             = false;      // currently in an attack wind-up
+
     // Death "pop": when killed, m_alive flips false and the body is removed, but
     // m_dying stays true and m_deathPop counts down from kDeathPopTime while the
     // model keeps drawing (shrinking + flashing). Once it reaches 0 the Entity is
@@ -250,7 +308,14 @@ public:
     // Number of monsters still alive (not dead). Used for objective/door gating.
     uint32_t aliveCount() const;
 
-    // Advance every monster one frame (hit-flash decay, death-pop, chase).
+    // Advance every monster one frame (hit-flash decay, death-pop, chase, and —
+    // if `target` is non-null — attacks against the player on cooldown). `fx`, if
+    // set, spawns a visible attack beam per attack (drone tracer / melee tell).
+    void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                const x3::phys::Vec3& playerPos,
+                IDamageSink* target, const AttackFxFn& fx);
+
+    // Movement-only overload (no attacks): forwards with a null target/empty fx.
     void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                 const x3::phys::Vec3& playerPos);
 

@@ -65,10 +65,85 @@ void Player::spawn(x3::phys::IPhysicsWorld& physics, float x, float y, float z) 
     m_coyote     = 0.0f;
     m_jumpBuffer = 0.0f;
     m_spawned    = true;
+    // Seed the cached feet so damageTargetPos()/camera() are valid before the
+    // first update() (e.g. a ranged enemy aiming on frame 0 of a test).
+    m_feetX = x; m_feetY = y; m_feetZ = z;
+    resetHealth();
+}
+
+// ---------------------------------------------------------------------------
+// Health / damage / death (Phase 2a, spec §6.6).
+// ---------------------------------------------------------------------------
+bool Player::takeDamage(int amount) {
+    // Gate: no damage while dead, during the iframe window, or for non-positive
+    // amounts. Returning false here is what makes iframes "absorb" extra hits
+    // that arrive in the same window (fair DPS).
+    if (!m_alive || m_iframe > 0.0f || amount <= 0) return false;
+
+    m_hp -= amount;
+    if (m_hp < 0) m_hp = 0;
+    m_iframe = kPlayerIFrame;            // open the invuln window
+    m_flash  = kDamageFlashTime;         // raise the red damage flash
+
+    if (m_hp == 0) {
+        m_alive   = false;
+        m_respawn = kRespawnDelay;       // start the death->respawn countdown
+        x3::logInfo("[player] HP 0 — YOU DIED (respawning in " +
+                    std::to_string(kRespawnDelay) + "s)");
+    } else {
+        x3::logInfo("[player] took " + std::to_string(amount) +
+                    " damage — HP now " + std::to_string(m_hp));
+    }
+    return true;
+}
+
+x3::phys::Vec3 Player::damageTargetPos() const {
+    return x3::phys::Vec3{ m_feetX, m_feetY + kEyeHeight, m_feetZ };
+}
+
+void Player::heal(int amount) {
+    if (amount <= 0) return;
+    m_hp += amount;
+    if (m_hp > m_maxHp) m_hp = m_maxHp;
+}
+
+void Player::resetHealth() {
+    m_hp      = m_maxHp;
+    m_alive   = true;
+    m_iframe  = 0.0f;
+    m_flash   = 0.0f;
+    m_respawn = 0.0f;
+}
+
+float Player::damageFlash() const {
+    if (kDamageFlashTime <= 0.0f) return 0.0f;
+    float f = m_flash / kDamageFlashTime;
+    return f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
+}
+
+void Player::updateHealth(float dt) {
+    if (dt <= 0.0f) return;
+    if (m_iframe > 0.0f) { m_iframe -= dt; if (m_iframe < 0.0f) m_iframe = 0.0f; }
+    if (m_flash  > 0.0f) { m_flash  -= dt; if (m_flash  < 0.0f) m_flash  = 0.0f; }
+    if (!m_alive && m_respawn > 0.0f) {
+        m_respawn -= dt;
+        if (m_respawn < 0.0f) m_respawn = 0.0f;
+    }
 }
 
 void Player::update(const PlayerInput& in, float dt, x3::phys::IPhysicsWorld& physics) {
     if (!m_spawned || !m_body.valid() || dt <= 0.0f) return;
+
+    // Advance health timers every frame (iframe / flash decay, respawn countdown).
+    updateHealth(dt);
+    // While dead, freeze movement: the host suppresses input + shows the death
+    // overlay until readyToRespawn(), then respawns the body. Still cache feet so
+    // camera()/damageTargetPos() stay valid at the death spot.
+    if (!m_alive) {
+        const x3::phys::Vec3 feet = physics.getBodyPosition(m_body);
+        m_feetX = feet.x; m_feetY = feet.y; m_feetZ = feet.z;
+        return;
+    }
 
     // ---- Mouse look: yaw from X delta, pitch from Y delta (inverted screen-Y).
     m_yaw   += in.lookDX * kMouseSens * kPxToRad;

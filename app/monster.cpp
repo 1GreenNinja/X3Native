@@ -76,6 +76,18 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     m_alive = true;
     m_flash = 0.0f;
 
+    // ---- Attack behaviour (Phase 2a, spec §6.5) ----
+    m_type           = tuning.type;
+    m_dmg            = tuning.damage;
+    m_attackRange    = tuning.attackRange;
+    m_attackCooldown = tuning.attackCooldown;
+    m_attackWindup   = tuning.attackWindup;
+    m_ranged         = tuning.ranged;
+    m_standoff       = tuning.standoff;
+    m_atkTimer       = tuning.attackCooldown;  // small initial delay before first hit
+    m_windupTimer    = 0.0f;
+    m_winding        = false;
+
     // ---- Try the real purchased GLB via a mounted loose-dir asset source. ----
     m_assets.reset(x3::asset::createAssetSource());
     bool mounted = m_assets->mountDir(modelDir, 0);
@@ -216,6 +228,12 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
 // ---------------------------------------------------------------------------
 void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                            const x3::phys::Vec3& playerPos) {
+    update(dt, scene, physics, playerPos, nullptr, AttackFxFn{});
+}
+
+void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                           const x3::phys::Vec3& playerPos,
+                           IDamageSink* target, const AttackFxFn& fx) {
     if (dt <= 0.0f) return;
 
     // Decay hit-flash.
@@ -223,6 +241,9 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         m_flash -= dt;
         if (m_flash < 0.0f) m_flash = 0.0f;
     }
+
+    // Attack cooldown always advances (so the first attack can land promptly).
+    if (m_atkTimer > 0.0f) { m_atkTimer -= dt; if (m_atkTimer < 0.0f) m_atkTimer = 0.0f; }
 
     // ---- Death pop: keep drawing (shrink + flash, in drawMonster) until the
     // timer runs out, then hide the Entity. The body is already gone. ----
@@ -255,14 +276,29 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
 
     // ---- Chase: weave toward the player while far, orbit when close, and STOP at
     // walls/props so it neither beelines-then-freezes nor phases through the box.
-    // (Facing still tracks the player, above.) ----
+    // The Drone (ranged) instead HOLDS a standoff distance: it approaches only
+    // until within m_standoff, then strafes/backs off to keep its distance and
+    // shoot. (Facing still tracks the player, above.) ----
     if (m_chaseSpeed > 0.0f && m_body.valid() && horiz > 1e-4f) {
         m_wander += dt * kStrafeFreq;
         const float fxn = dx / horiz, fzn = dz / horiz;   // toward player (XZ)
         const float pxn = -fzn,       pzn = fxn;          // perpendicular (left)
 
         float mx, mz;
-        if (horiz > kChaseStopDist) {
+        if (m_ranged) {
+            // Drone standoff: keep ~m_standoff away. Too close -> back off; too far
+            // -> approach; in the band -> strafe sideways (orbit) to feel alive.
+            const float band = 1.0f; // dead-band (m) around the standoff distance
+            if (horiz < m_standoff - band) {
+                mx = -fxn; mz = -fzn;                       // retreat
+            } else if (horiz > m_standoff + band) {
+                mx = fxn;  mz = fzn;                        // approach
+            } else {
+                mx = pxn * m_strafeDir; mz = pzn * m_strafeDir; // strafe / orbit
+                m_retarget -= dt;
+                if (m_retarget <= 0.0f) { m_strafeDir = -m_strafeDir; m_retarget = kOrbitRetarget; }
+            }
+        } else if (horiz > kChaseStopDist) {
             // Approach with a side-to-side weave (not a straight line).
             const float strafe = std::sin(m_wander) * kStrafeAmt;
             mx = fxn + pxn * strafe;
@@ -292,6 +328,73 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             m_pos.z += mz * step;
             physics.setBodyPosition(m_body, m_pos);
         }
+    }
+
+    // ---- Attack (Phase 2a, spec §6.5). Guard/Boss = melee within attackRange;
+    // Drone = ranged hitscan toward the player within attackRange. Both gate on a
+    // per-attack cooldown and a short wind-up telegraph so the hit reads/feels fair
+    // (the wind-up also gives the player a beat to react). `target` may be null
+    // (movement-only path), in which case no attacks run. ----
+    if (target && target->isAlive() && m_dmg > 0 && horiz <= m_attackRange) {
+        if (!m_winding && m_atkTimer <= 0.0f) {
+            // Begin a new attack: start the wind-up; the hit lands when it elapses.
+            m_winding     = true;
+            m_windupTimer = m_attackWindup;
+            // Telegraph FX up front (a beam toward the player) so the attack reads.
+            if (fx) {
+                x3::phys::Vec3 tp = target->damageTargetPos();
+                x3::phys::Vec3 from{ m_pos.x, m_pos.y + 0.3f, m_pos.z };
+                fx(from, tp);
+            }
+        }
+        if (m_winding) {
+            m_windupTimer -= dt;
+            if (m_windupTimer <= 0.0f) {
+                m_winding = false;
+                m_atkTimer = m_attackCooldown;   // start the cooldown
+                bool landed = true;
+                if (m_ranged) {
+                    // Ranged: hitscan toward the player; only land if line-of-sight
+                    // is clear (no Static wall between the drone and the player).
+                    // NOTE: the engine's Static-mask ray also matches Enemy bodies
+                    // (queryHitsLayer: Static/Enemy collide), so a ray from the
+                    // drone CENTER would self-hit its own Enemy box at distance 0.
+                    // Start the ray just BEYOND the drone's own half-extent along
+                    // the firing direction so the LOS check sees real walls only.
+                    x3::phys::Vec3 tp = target->damageTargetPos();
+                    const x3::phys::Vec3 muzzle{ m_pos.x, m_pos.y + 0.3f, m_pos.z };
+                    x3::phys::Vec3 d{ tp.x - muzzle.x, tp.y - muzzle.y, tp.z - muzzle.z };
+                    float dl = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
+                    if (dl < 1e-4f) dl = 1e-4f;
+                    x3::phys::Vec3 nd{ d.x/dl, d.y/dl, d.z/dl };
+                    // Clear our own collision box before testing for walls.
+                    const float skip = kMonsterHalf.x + 0.15f;
+                    x3::phys::Vec3 from{ muzzle.x + nd.x * skip,
+                                         muzzle.y + nd.y * skip,
+                                         muzzle.z + nd.z * skip };
+                    float losLen = dl - skip; if (losLen < 0.0f) losLen = 0.0f;
+                    x3::phys::RayHit wall = (losLen > 1e-3f)
+                        ? physics.rayCast(from, nd, losLen, x3::phys::Layer::Static)
+                        : x3::phys::RayHit{};
+                    landed = !wall.hit;
+                    if (fx) {
+                        // Tracer from the muzzle to the impact (player) or the wall.
+                        x3::phys::Vec3 end = wall.hit ? wall.point : tp;
+                        fx(muzzle, end);
+                    }
+                }
+                if (landed) {
+                    bool hit = target->takeDamage(m_dmg);
+                    if (hit)
+                        x3::logInfo(std::string("[monster] ") +
+                                    (m_ranged ? "drone ranged" : "melee") +
+                                    " hit player for " + std::to_string(m_dmg));
+                }
+            }
+        }
+    } else {
+        // Out of range / no target: cancel any pending wind-up.
+        m_winding = false;
     }
 
     // ---- Bake the facing yaw into the render transform's upper-left 3x3, keeping
@@ -395,8 +498,14 @@ uint32_t MonsterManager::aliveCount() const {
 
 void MonsterManager::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                             const x3::phys::Vec3& playerPos) {
+    update(dt, scene, physics, playerPos, nullptr, AttackFxFn{});
+}
+
+void MonsterManager::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                            const x3::phys::Vec3& playerPos,
+                            IDamageSink* target, const AttackFxFn& fx) {
     for (auto& m : m_monsters)
-        m->update(dt, scene, physics, playerPos);
+        m->update(dt, scene, physics, playerPos, target, fx);
 }
 
 void MonsterManager::drawAll(x3::rhi::IRenderDevice& device,
@@ -553,6 +662,168 @@ bool runCombatSelfTest() {
     x3::logInfo(std::string("[combat-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;
+}
+
+// ===========================================================================
+// Phase 2a self-test (--test-phase2a): player health + enemies that fight back.
+// T1 Guard melee within range drains player HP over time.
+// T2 Drone ranged at standoff distance drains player HP (ranged hitscan).
+// T3 player HP -> 0 enters death; after the respawn delay a respawn restores
+//    full HP (resetHealth, as the host does after readyToRespawn()).
+// T4 iframes: two takeDamage() calls in one frame land only one hit.
+// T5 Guard vs Drone tuning params differ (type / ranged / range).
+// No window / Vulkan. Mirrors the other self-tests.
+// ===========================================================================
+namespace {
+
+int p2_pass = 0, p2_fail = 0;
+void p2check(bool cond, const char* name) {
+    if (cond) { ++p2_pass; x3::logInfo(std::string("[phase2a-test] PASS ") + name); }
+    else      { ++p2_fail; x3::logError(std::string("[phase2a-test] FAIL ") + name); }
+}
+
+constexpr float kP2Dt = 1.0f / 60.0f;
+
+// Flat ground at y=0 (CCW so +Y is solid), `half` units to a side.
+x3::phys::BodyId p2Ground(x3::phys::IPhysicsWorld& w, float half) {
+    float v[] = {
+        -half, 0.0f, -half,  half, 0.0f, -half,
+         half, 0.0f,  half, -half, 0.0f,  half,
+    };
+    uint32_t idx[] = { 0,2,1, 0,3,2 };
+    return w.addStaticMesh(v, 4, idx, 6);
+}
+
+// Guard tuning (melee) for the test: small range, quick cadence, no wind-up so a
+// few stepped frames land a clear hit deterministically.
+MonsterSystem::Tuning testGuardTuning() {
+    MonsterSystem::Tuning t;
+    t.type = MonsterType::Guard;
+    t.hp = 100; t.chaseSpeed = 0.0f;   // stationary so the test geometry is stable
+    t.damage = 8; t.attackRange = 2.0f; t.attackCooldown = 0.5f; t.attackWindup = 0.0f;
+    t.ranged = false;
+    return t;
+}
+// Drone tuning (ranged): long range, no movement so it just fires from a distance.
+MonsterSystem::Tuning testDroneTuning() {
+    MonsterSystem::Tuning t;
+    t.type = MonsterType::Drone;
+    t.hp = 66; t.chaseSpeed = 0.0f;
+    t.damage = 5; t.attackRange = 20.0f; t.attackCooldown = 0.5f; t.attackWindup = 0.0f;
+    t.ranged = true; t.standoff = 8.0f;
+    return t;
+}
+
+} // namespace
+
+bool runPhase2aSelfTest() {
+    p2_pass = p2_fail = 0;
+
+    HeadlessDevice device;
+
+    // ---- T5: Guard vs Drone params differ (pure tuning check; no world needed). ----
+    {
+        MonsterSystem::Tuning g = testGuardTuning();
+        MonsterSystem::Tuning d = testDroneTuning();
+        bool differ = (g.type != d.type) && (g.ranged != d.ranged) &&
+                      (g.attackRange != d.attackRange) && (g.damage != d.damage);
+        p2check(differ, "T5 Guard vs Drone tuning params differ");
+    }
+
+    // ---- T4: iframes prevent two hits landing in one window. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init();
+        p2Ground(*w, 50.0f);
+        Player pl;
+        pl.spawn(*w, 0.0f, 0.05f, 0.0f);
+        int hp0 = pl.hp();
+        bool first  = pl.takeDamage(10);   // lands, opens the iframe window
+        bool second = pl.takeDamage(10);   // same window -> absorbed
+        bool onlyOne = first && !second && (pl.hp() == hp0 - 10) && pl.invulnerable();
+        p2check(onlyOne, "T4 iframes: only one hit lands per window");
+        w->shutdown();
+    }
+
+    // ---- T1: a Guard within melee range drains player HP over time. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init();
+        p2Ground(*w, 50.0f);
+        Scene scene;
+        Player pl;
+        pl.spawn(*w, 0.0f, 0.05f, 0.0f);
+        MonsterSystem guard;
+        // Place the guard ~1.2 m from the player (inside the 2.0 m attack range).
+        guard.buildMonsterTuned(scene, device, *w, "G:/GameModels/rigged_glb",
+                                x3::phys::Vec3{ 1.2f, 0.4f, 0.0f }, testGuardTuning());
+        int hp0 = pl.hp();
+        // Step ~3 s. The player position fed in is the eye; the guard attacks on its
+        // cooldown when within range. With iframes (0.5 s) gating, several hits land.
+        const x3::phys::Vec3 playerPos = pl.damageTargetPos();
+        for (int i = 0; i < 180; ++i) {
+            pl.updateHealth(kP2Dt);                    // decay iframes/flash
+            guard.update(kP2Dt, scene, *w, playerPos, &pl, AttackFxFn{});
+            w->step(kP2Dt);
+        }
+        bool drained = pl.hp() < hp0 && pl.isAlive();
+        p2check(drained, "T1 Guard in range drains player HP over time");
+    }
+
+    // ---- T2: a Drone at standoff range drains player HP (ranged hitscan). ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init();
+        p2Ground(*w, 50.0f);
+        Scene scene;
+        Player pl;
+        pl.spawn(*w, 0.0f, 0.05f, 0.0f);
+        MonsterSystem drone;
+        // Place the drone 8 m away (well beyond melee, inside the 20 m fire range).
+        drone.buildMonsterTuned(scene, device, *w, "G:/GameModels/rigged_glb",
+                                x3::phys::Vec3{ 8.0f, 0.6f, 0.0f }, testDroneTuning());
+        int hp0 = pl.hp();
+        const x3::phys::Vec3 playerPos = pl.damageTargetPos();
+        for (int i = 0; i < 180; ++i) {
+            pl.updateHealth(kP2Dt);
+            drone.update(kP2Dt, scene, *w, playerPos, &pl, AttackFxFn{});
+            w->step(kP2Dt);
+        }
+        bool drained = pl.hp() < hp0;
+        p2check(drained, "T2 Drone at range drains player HP (ranged)");
+    }
+
+    // ---- T3: HP -> 0 enters death; after the respawn delay a respawn restores
+    //          full HP (mirrors the host: resetHealth() once readyToRespawn()). ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init();
+        p2Ground(*w, 50.0f);
+        Player pl;
+        pl.spawn(*w, 0.0f, 0.05f, 0.0f);
+        // Kill the player: repeated big hits, ticking past the iframe window between
+        // each so they all land. kPlayerMaxHp/some chunk + spacing.
+        for (int i = 0; i < 20 && pl.isAlive(); ++i) {
+            pl.takeDamage(40);
+            // Advance past the iframe window so the next hit can land.
+            for (int k = 0; k < 40; ++k) pl.updateHealth(kP2Dt);
+        }
+        bool died = pl.dead() && pl.hp() == 0;
+        // Now run out the respawn countdown.
+        bool readyBefore = pl.readyToRespawn();   // should be false right after death
+        for (int k = 0; k < (int)(kRespawnDelay * 60.0f) + 5; ++k) pl.updateHealth(kP2Dt);
+        bool ready = pl.readyToRespawn();
+        // Host respawns: restore full HP (position handled by setBodyPosition).
+        if (ready) pl.resetHealth();
+        bool respawned = pl.isAlive() && pl.hp() == pl.maxHp() && pl.damageFlash() == 0.0f;
+        p2check(died && !readyBefore && ready && respawned,
+                "T3 HP 0 -> death -> respawn restores full HP");
+        w->shutdown();
+    }
+
+    x3::logInfo(std::string("[phase2a-test] ") + std::to_string(p2_pass) + " passed, " +
+                std::to_string(p2_fail) + " failed");
+    return p2_fail == 0;
 }
 
 } // namespace x3::game

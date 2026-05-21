@@ -127,7 +127,7 @@ void keyCallback(GLFWwindow* win, int key, int /*scancode*/, int action, int /*m
 int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
-         testCombat = false, testAudio = false, testLevel1 = false;
+         testCombat = false, testAudio = false, testLevel1 = false, testPhase2a = false;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
@@ -141,6 +141,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-combat") testCombat = true;
         else if (a == "--test-audio") testAudio = true;
         else if (a == "--test-level1") testLevel1 = true;
+        else if (a == "--test-phase2a") testPhase2a = true;
     }
 
     // Headless self-tests (no window / Vulkan needed)
@@ -183,6 +184,10 @@ int main(int argc, char** argv) {
     if (testLevel1) {
         x3::logInfo("running EFLZ Level 1 (Awakening) self-test (T1-T6)...");
         return x3::game::runLevel1SelfTest() ? 0 : 1;
+    }
+    if (testPhase2a) {
+        x3::logInfo("running EFLZ Phase 2a (player health + enemies fight back) self-test...");
+        return x3::game::runPhase2aSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -352,6 +357,11 @@ int main(int argc, char** argv) {
                 hud.drawCrosshair(*device, frame);
                 hud.drawFps(*device, frame, *console, dt);
                 game.drawObjective(*device, frame);
+                // Phase 2a: exercise the health bar + damage flash + death overlay
+                // draw paths under validation (fixed sample values, no real player).
+                hud.drawHealth(*device, frame, (i < 20 ? 100 : 35), x3::game::kPlayerMaxHp);
+                hud.drawDamageFlash(*device, frame, (i == 12) ? 1.0f : 0.0f);
+                if (i == 25) hud.drawDeathOverlay(*device, frame);
                 hud.drawConsole(*device, frame, *console, dt);
                 // Also exercise a raw quad + text string every frame.
                 const float tag[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -412,6 +422,14 @@ int main(int argc, char** argv) {
     // handy for inspecting the level. Off by default — gameplay is the walker.
     bool noclip = false;
     float flyX = L1.spawn.x, flyY = 1.7f, flyZ = L1.spawn.z, flyYaw = 0.0f, flyPitch = 0.0f;
+
+    // ---- Phase 2a: enemy-attack FX. Enemies invoke this to draw a tracer/telegraph
+    // beam (drone hitscan / melee tell) via the combat FX pool. Reuses the same
+    // world-space tracer the gun uses, tinted by the FX system. ----
+    x3::game::AttackFxFn enemyAttackFx =
+        [&combatFx](const x3::phys::Vec3& from, const x3::phys::Vec3& to) {
+            combatFx.addTracer(from, to);
+        };
 
     // ---- Main loop ----
     int lastW = static_cast<int>(W), lastH = static_cast<int>(H);
@@ -531,9 +549,23 @@ int main(int argc, char** argv) {
 
         // ---- Level 1 controller tick: advance doors, run triggers, spawn/clear
         // enemies, arm on pickup, flip objectives, detect the win. Runs AFTER
-        // scene.update() so monster facing survives the per-frame physics sync. ----
+        // scene.update() so monster facing survives the per-frame physics sync.
+        // Phase 2a: pass the player as the damage sink + the enemy-attack FX so
+        // guards/drone/Martinez hurt the player (enemies attack only while alive). ----
         const x3::phys::Vec3 camPos{ camX, camY, camZ };
-        game.tick(dt, scene, *physics, camPos, camPos);
+        game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
+
+        // ---- Phase 2a: death -> respawn. The player enters the death state at
+        // HP 0; player.update() freezes movement + ticks the respawn countdown.
+        // When it elapses, teleport the body back to the level-start checkpoint and
+        // restore full HP (the damage flash is cleared by resetHealth()). Enemies
+        // are NOT reset (documented in Level1Game::checkpoint()). ----
+        if (player.readyToRespawn()) {
+            const x3::phys::Vec3 cp = game.checkpoint();
+            physics->setBodyPosition(player.body(), cp);
+            player.resetHealth();
+            x3::logInfo("respawn: player restored at level start (full HP)");
+        }
 
         // ---- M9: drive the 3D listener from the player camera each frame ----
         audio->setListener(camX, camY, camZ, camYaw, camPitch);
@@ -569,7 +601,7 @@ int main(int argc, char** argv) {
         // Level-1 enemy groups; the first live monster the ray hits takes damage. ----
         if (fireCooldown > 0.0f) fireCooldown -= dt;
         bool fireNow = !consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-        if (fireNow && !prevFire && game.armed() && fireCooldown <= 0.0f) {
+        if (fireNow && !prevFire && game.armed() && player.isAlive() && fireCooldown <= 0.0f) {
             fireCooldown = kFireCooldown;
             x3::phys::Vec3 eye{ camX, camY, camZ };
             x3::phys::Vec3 dir{ std::cos(camPitch) * std::cos(camYaw),
@@ -615,10 +647,15 @@ int main(int argc, char** argv) {
             // FX: active tracers + muzzle flash (world-space).
             combatFx.draw(*device, frame, camX, camY, camZ, camYaw, camPitch);
             // ---- HUD overlay last: crosshair (hidden while console open), FPS
-            // meter, the current objective line, then the console panel (when open).
-            if (!consoleOpen) hud.drawCrosshair(*device, frame);
+            // meter, the current objective line, the health bar + damage flash,
+            // the death overlay (when dead), then the console panel (when open).
+            if (!consoleOpen && player.isAlive()) hud.drawCrosshair(*device, frame);
             hud.drawFps(*device, frame, *console, dt);
             if (!consoleOpen) game.drawObjective(*device, frame);
+            // Phase 2a: player health + damage feedback.
+            hud.drawHealth(*device, frame, player.hp(), player.maxHp());
+            hud.drawDamageFlash(*device, frame, player.damageFlash());
+            if (player.dead()) hud.drawDeathOverlay(*device, frame);
             hud.drawConsole(*device, frame, *console, dt);
         }
         device->endFrame(frame);
