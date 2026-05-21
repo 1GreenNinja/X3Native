@@ -5,14 +5,32 @@
 // per-frame command buffers + sync, dynamic-rendering clear-to-color, present,
 // resize/out-of-date recreation. Validation-clean on RTX A2000 (Vulkan 1.3).
 // S1: generic mesh/texture/draw API — staging-uploaded device-local vertex/index
-// buffers, sampled textures (sRGB/UNORM), a per-material combined-image-sampler
-// descriptor + per-draw factor UBO ring, and a textured-lit pipeline. Bindless /
-// multidraw-indirect are deliberately deferred to subsystem D (see roadmap).
+// buffers, sampled textures (sRGB/UNORM), and a textured-lit pipeline.
 //
-// Push-constant decision: the guaranteed push range is 128 bytes, exactly two
-// mat4 (mvp + model). baseColorFactor (vec4) will not fit, so it rides in a
-// per-frame UBO ring (set0/binding1) sub-allocated per draw; the texture is
-// set0/binding0. Descriptors are written into a per-frame pool reset each frame.
+// Subsystem D — GPU-DRIVEN RENDER CORE (this file): the per-draw descriptor
+// allocate/bind + per-draw push-constants that made the renderer CPU-bound are
+// GONE. The fast path is now:
+//   * BINDLESS textures: one large COMBINED_IMAGE_SAMPLER array (set 0, binding
+//     0; runtimeDescriptorArray + partiallyBound + updateAfterBind). Each
+//     createTexture() grabs a stable bindless index; the 1x1 white default is
+//     index 0. The shader samples textures[texIndex] (non-uniform).
+//   * PER-OBJECT data in a per-frame persistent-mapped SSBO ring (set 1, binding
+//     0): { mat4 model, vec4 baseColorFactor, uint texIndex }. The camera
+//     viewProj is one frame UBO (set 1, binding 1). drawMesh() binds NOTHING and
+//     pushes NOTHING — it just appends a CPU record.
+//   * MULTIDRAW-INDIRECT: endFrame() groups the frame's draws by mesh, fills the
+//     SSBO (instances of a mesh contiguous) + a VkDrawIndexedIndirectCommand
+//     buffer, and issues ONE vkCmdDrawIndexedIndirect per distinct mesh. The
+//     vertex shader reads its row via gl_InstanceIndex (firstInstance + instance).
+//     100k single-mesh cubes => ONE draw call instead of 100k.
+//   * Culling: NOT implemented here (neither CPU nor compute). The bottleneck the
+//     baseline exposed was per-draw CPU submission, which bindless+multidraw kills
+//     outright; the worst-case bench points the camera so the whole field is
+//     on-screen anyway, where culling would not help. Compute frustum culling is
+//     the documented stretch and is left for a follow-up (see RETURN notes).
+//
+// The HUD 2D overlay keeps its own pipeline + per-draw descriptor path unchanged
+// (few draws/frame; not a bottleneck).
 //
 // This file is the ONLY place Vulkan headers are included — IRenderDevice.h
 // stays graphics-API-free.
@@ -84,9 +102,27 @@ public:
         f12.descriptorIndexing = VK_TRUE;
         f12.timelineSemaphore  = VK_TRUE;
         f12.bufferDeviceAddress = VK_TRUE;
+        // ---- Bindless (Subsystem D): the descriptor-indexing sub-features that
+        // make a single large, partially-bound, update-after-bind texture array
+        // legal + a non-uniform shader index into it. All supported on Pascal
+        // (1080 Ti) and newer; required for the GPU-driven render core. ----
+        f12.runtimeDescriptorArray                          = VK_TRUE;
+        f12.descriptorBindingPartiallyBound                 = VK_TRUE;
+        f12.descriptorBindingSampledImageUpdateAfterBind    = VK_TRUE;
+        f12.descriptorBindingVariableDescriptorCount        = VK_TRUE;
+        f12.shaderSampledImageArrayNonUniformIndexing       = VK_TRUE;
+
+        // Core (1.0) features the GPU-driven path needs:
+        //   drawIndirectFirstInstance — our per-mesh indirect command sets
+        //     firstInstance = the SSBO base row so gl_InstanceIndex addresses the
+        //     object directly; non-zero firstInstance in an indirect draw requires
+        //     this feature. (multiDrawIndirect not needed: drawCount == 1 per call.)
+        VkPhysicalDeviceFeatures f10{};
+        f10.drawIndirectFirstInstance = VK_TRUE;
 
         vkb::PhysicalDeviceSelector sel{ m_inst };
         auto phys_ret = sel.set_surface(m_surface).set_minimum_version(1,3)
+                           .set_required_features(f10)
                            .set_required_features_13(f13).set_required_features_12(f12).select();
         if (!phys_ret) { logError(std::string("[rhi] phys: ") + phys_ret.error().message()); return false; }
         vkb::PhysicalDevice phys = phys_ret.value();
@@ -184,9 +220,10 @@ public:
         m_building = RenderStats{};
 
         // This frame's GPU work has retired (we waited on inFlight): it's safe to
-        // recycle its descriptor sets and reuse the factor-UBO + HUD vertex rings.
-        vkResetDescriptorPool(m_dev.device, fr.descPool, 0);
-        fr.uboUsed = 0;
+        // overwrite its per-frame object SSBO / camera UBO / indirect rings and to
+        // recycle the HUD descriptor pool + HUD vertex ring.
+        m_drawRecords.clear();
+        m_meshFlushed = false;
         if (fr.hudDescPool) vkResetDescriptorPool(m_dev.device, fr.hudDescPool, 0);
         fr.hudVertsUsed = 0;
 
@@ -266,6 +303,11 @@ public:
         if (!fc.valid) return;
         auto& fr = m_frames[m_frameIdx];
         uint32_t imageIndex = fc.backbuffer;
+
+        // Flush any deferred mesh multidraw that wasn't already triggered by a HUD
+        // draw this frame (e.g. a bench frame with the HUD off). Safe to call when
+        // already flushed (no-op).
+        flushMeshDraws();
 
         // Timestamp the end of the main pass (before we end rendering) at
         // BOTTOM_OF_PIPE so it captures all draws completing.
@@ -361,6 +403,12 @@ public:
         if (!rgba8 || w == 0 || h == 0) return {};
         Texture t{};
         if (!createSampledTexture(rgba8, w, h, srgb, t)) return {};
+        // Grab a stable bindless slot and write it into the bindless array. If the
+        // array is full the texture still exists but falls back to white (index 0).
+        if (!registerBindless(t)) {
+            x3::logError("[rhi] bindless texture array full; new texture uses white");
+            t.bindlessIndex = 0;
+        }
         uint32_t id = m_nextTexId++;
         m_textures.emplace(id, t);
         return { id };
@@ -370,6 +418,10 @@ public:
         auto it = m_textures.find(h.id);
         if (it == m_textures.end()) return;
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        // Repoint the freed bindless slot at the white default so any stale
+        // per-object texIndex referencing it samples white instead of a dead view.
+        const uint32_t slot = it->second.bindlessIndex;
+        if (slot != 0 && m_whiteTex.view) writeBindlessSlot(slot, m_whiteTex);
         destroyTextureObj(it->second);
         m_textures.erase(it);
     }
@@ -377,84 +429,28 @@ public:
     void drawMesh(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                   const float baseColorFactor[4], const float model[16]) override {
         if (!fc.valid || !m_meshPipeline) return;
-        // Count every attempted submission (incl. ones that fall through below).
+        // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
+        // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
+        // indirect. This is the CPU win (no per-draw vkAllocate/vkUpdate/vkCmd*).
         ++m_building.objectsSubmitted;
         auto mit = m_meshes.find(mesh.id);
-        if (mit == m_meshes.end()) return;
-        const Mesh& mh = mit->second;
+        if (mit == m_meshes.end()) return;          // unknown mesh -> skip
+        if (m_drawRecords.size() >= kMaxDrawsPerFrame) return; // ring full; skip safely
 
-        // Pick texture: requested base color, else built-in 1x1 white default.
-        const Texture* tex = &m_whiteTex;
+        // Resolve the bindless texture index (0 == built-in white default).
+        uint32_t texIndex = 0;
         if (baseColor.valid()) {
             auto tit = m_textures.find(baseColor.id);
-            if (tit != m_textures.end()) tex = &tit->second;
+            if (tit != m_textures.end()) texIndex = tit->second.bindlessIndex;
         }
 
-        auto& fr = m_frames[m_frameIdx];
-        VkCommandBuffer cmd = fr.cmd;
-
-        // Per-draw factor UBO (sub-allocated from this frame's ring).
-        glm::vec4 factor = baseColorFactor
-            ? glm::vec4(baseColorFactor[0], baseColorFactor[1], baseColorFactor[2], baseColorFactor[3])
-            : glm::vec4(1.0f);
-        if (fr.uboUsed >= kMaxDrawsPerFrame) return; // ring exhausted; skip safely
-        uint32_t slot = fr.uboUsed++;
-        VkDeviceSize uboOffset = (VkDeviceSize)slot * m_uboStride;
-        std::memcpy(static_cast<char*>(fr.uboMapped) + uboOffset, &factor, sizeof(glm::vec4));
-
-        // Allocate + write a descriptor set for this draw from the frame pool.
-        VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-        dsai.descriptorPool = fr.descPool;
-        dsai.descriptorSetCount = 1;
-        dsai.pSetLayouts = &m_meshSetLayout;
-        VkDescriptorSet set = VK_NULL_HANDLE;
-        if (vkAllocateDescriptorSets(m_dev.device, &dsai, &set) != VK_SUCCESS) return;
-
-        VkDescriptorImageInfo dii{};
-        dii.sampler = tex->sampler;
-        dii.imageView = tex->view;
-        dii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-
-        VkDescriptorBufferInfo dbi{};
-        dbi.buffer = fr.uboBuf;
-        dbi.offset = uboOffset;
-        dbi.range = sizeof(glm::vec4);
-
-        VkWriteDescriptorSet writes[2]{};
-        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = set; writes[0].dstBinding = 0; writes[0].descriptorCount = 1;
-        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[0].pImageInfo = &dii;
-        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[1].dstSet = set; writes[1].dstBinding = 1; writes[1].descriptorCount = 1;
-        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        writes[1].pBufferInfo = &dbi;
-        vkUpdateDescriptorSets(m_dev.device, 2, writes, 0, nullptr);
-
-        // mvp = proj * view * model (camera state + current aspect).
-        float aspect = (float)m_extent.width / (float)std::max(1u, m_extent.height);
-        glm::vec3 fwd(std::cos(m_camPitch) * std::cos(m_camYaw),
-                      std::sin(m_camPitch),
-                      std::cos(m_camPitch) * std::sin(m_camYaw));
-        glm::mat4 mdl = glm::make_mat4(model);
-        glm::mat4 view = glm::lookAt(m_camPos, m_camPos + fwd, glm::vec3(0, 1, 0));
-        glm::mat4 proj = glm::perspective(glm::radians(m_camFov), aspect, 0.1f, 200.0f);
-        proj[1][1] *= -1.0f;
-        struct Push { glm::mat4 mvp; glm::mat4 model; } push{ proj * view * mdl, mdl };
-
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshPipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshLayout,
-                                0, 1, &set, 0, nullptr);
-        vkCmdPushConstants(cmd, m_meshLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
-        VkDeviceSize off = 0;
-        vkCmdBindVertexBuffers(cmd, 0, 1, &mh.vbo, &off);
-        vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
-        vkCmdDrawIndexed(cmd, mh.indexCount, 1, 0, 0, 0);
-
-        // Per-frame perf counters: one draw call, indexCount/3 triangles.
-        ++m_building.drawCalls;
-        ++m_building.objectsDrawn;
-        m_building.triangles += mh.indexCount / 3;
+        DrawRecord r;
+        r.meshId   = mesh.id;
+        r.texIndex = texIndex;
+        std::memcpy(r.model, model, sizeof(r.model));
+        if (baseColorFactor) std::memcpy(r.factor, baseColorFactor, sizeof(r.factor));
+        else { r.factor[0] = r.factor[1] = r.factor[2] = r.factor[3] = 1.0f; }
+        m_drawRecords.push_back(r);
     }
 
     // ---- Screen-space 2D HUD overlay (S7) ----------------------------------
@@ -515,20 +511,40 @@ private:
     struct Texture {
         VkImage image = VK_NULL_HANDLE; VmaAllocation alloc = nullptr;
         VkImageView view = VK_NULL_HANDLE; VkSampler sampler = VK_NULL_HANDLE;
+        uint32_t bindlessIndex = 0;   // slot in the bindless texture array
     };
 
     // 2D HUD vertex: position already in clip space (NDC), uv, rgba color.
     struct HudVertex { float pos[2]; float uv[2]; float color[4]; };
 
-    // Per-frame mesh-draw capacity: sizes the per-draw factor-UBO ring + the
-    // per-frame descriptor pool (one combined-image-sampler + one UBO set per
-    // drawMesh). Raised to 128k to support the stress harness (spawn up to 100k
-    // cubes) so the renderer can actually be load-tested to the frame-budget
-    // ceiling; draws beyond this are skipped safely. The cost is ~32 MB of UBO
-    // ring per frame (stride*cap) — acceptable for a measurement build, and the
-    // per-draw descriptor allocation IS the CPU bottleneck we want to measure
-    // (bindless/multidraw, which remove it, are the next tier — see roadmap).
+    // Per-object GPU row (matches shaders/mesh.vert ObjectData; std430). The 3
+    // uint pads keep the struct 16-byte aligned after texIndex so std430's mat4
+    // base alignment is satisfied for the next row.
+    struct ObjectData {
+        glm::mat4 model;
+        glm::vec4 baseColorFactor;
+        uint32_t  texIndex;
+        uint32_t  _pad0, _pad1, _pad2;
+    };
+    static_assert(sizeof(ObjectData) == 96, "ObjectData must match std430 layout");
+
+    // CPU-side per-draw record accumulated by drawMesh(), consumed by endFrame().
+    struct DrawRecord {
+        uint32_t meshId;
+        uint32_t texIndex;
+        float    model[16];
+        float    factor[4];
+    };
+
+    // Per-frame mesh-draw capacity: sizes the per-object SSBO ring (one
+    // ObjectData row per drawMesh) + the indirect-command buffer. 128k supports
+    // the stress harness (spawn up to 100k cubes); records beyond this are
+    // skipped safely. Cost: ~12 MB of SSBO ring per frame (96 B * cap).
     static constexpr uint32_t kMaxDrawsPerFrame = 131072;
+    // Bindless texture array capacity (slot 0 == built-in white default). The
+    // array is PARTIALLY_BOUND so only the slots actually created are written;
+    // unused slots cost nothing. 4096 is ample for this game.
+    static constexpr uint32_t kMaxTextures = 4096;
     // Per-frame HUD draw + vertex capacity. HUD draws are few (one per text/quad
     // flush); kept small + independent of the mesh cap so the HUD descriptor pool
     // stays tiny. 6 verts/quad; a full-screen console is well under this.
@@ -540,12 +556,15 @@ private:
         VkCommandBuffer cmd = VK_NULL_HANDLE;
         VkSemaphore imageAvailable = VK_NULL_HANDLE;
         VkFence inFlight = VK_NULL_HANDLE;
-        // Per-frame descriptor pool (reset every frame) + factor-UBO ring.
-        VkDescriptorPool descPool = VK_NULL_HANDLE;
-        VkBuffer      uboBuf = VK_NULL_HANDLE;
-        VmaAllocation uboAlloc = nullptr;
-        void*         uboMapped = nullptr;
-        uint32_t      uboUsed = 0;
+        // GPU-driven per-frame rings (persistent-mapped, written each frame):
+        //   objBuf      : per-object SSBO  (set 1, binding 0) — kMaxDrawsPerFrame rows
+        //   camBuf      : camera viewProj UBO (set 1, binding 1)
+        //   indirectBuf : VkDrawIndexedIndirectCommand array (one per distinct mesh)
+        //   objSet      : the set-1 descriptor (points at objBuf+camBuf; written once)
+        VkBuffer      objBuf = VK_NULL_HANDLE;      VmaAllocation objAlloc = nullptr;  void* objMapped = nullptr;
+        VkBuffer      camBuf = VK_NULL_HANDLE;      VmaAllocation camAlloc = nullptr;  void* camMapped = nullptr;
+        VkBuffer      indirectBuf = VK_NULL_HANDLE; VmaAllocation indirectAlloc = nullptr; void* indirectMapped = nullptr;
+        VkDescriptorSet objSet = VK_NULL_HANDLE;
         // Per-frame HUD descriptor pool (image-sampler only) + vertex ring.
         VkDescriptorPool hudDescPool = VK_NULL_HANDLE;
         VkBuffer      hudVbo = VK_NULL_HANDLE;
@@ -615,9 +634,104 @@ private:
         out[3] = tl; out[4] = br; out[5] = tr;   //      tl->br->tr
     }
 
+    // ---- GPU-driven mesh flush (Subsystem D) -------------------------------
+    // Group this frame's drawMesh() records by mesh, write the per-object SSBO
+    // (instances of a mesh contiguous) + the camera UBO + a VkDrawIndexedIndirect
+    // command per mesh, then bind the bindless set + the per-frame object/camera
+    // set and issue ONE vkCmdDrawIndexedIndirect per distinct mesh. Idempotent:
+    // a second call in the same frame is a no-op (m_meshFlushed guards it).
+    void flushMeshDraws() {
+        if (m_meshFlushed) return;
+        m_meshFlushed = true;
+        if (m_drawRecords.empty() || !m_meshPipeline) return;
+
+        auto& fr = m_frames[m_frameIdx];
+        if (!fr.objMapped || !fr.indirectMapped || !fr.camMapped) return;
+
+        // Camera viewProj (right-handed, reverse-Y for Vulkan clip), built once
+        // per frame from the current camera + aspect.
+        const float aspect = (float)m_extent.width / (float)std::max(1u, m_extent.height);
+        const glm::vec3 fwd(std::cos(m_camPitch) * std::cos(m_camYaw),
+                            std::sin(m_camPitch),
+                            std::cos(m_camPitch) * std::sin(m_camYaw));
+        glm::mat4 view = glm::lookAt(m_camPos, m_camPos + fwd, glm::vec3(0, 1, 0));
+        glm::mat4 proj = glm::perspective(glm::radians(m_camFov), aspect, 0.1f, 200.0f);
+        proj[1][1] *= -1.0f;
+        glm::mat4 viewProj = proj * view;
+        std::memcpy(fr.camMapped, &viewProj, sizeof(glm::mat4));
+
+        // Group records by mesh (preserve first-seen order for determinism). Reuse
+        // a scratch map across frames to avoid per-frame allocation churn.
+        m_groupOrder.clear();
+        for (auto& kv : m_groups) kv.second.clear();
+        for (uint32_t i = 0; i < (uint32_t)m_drawRecords.size(); ++i) {
+            uint32_t mid = m_drawRecords[i].meshId;
+            auto it = m_groups.find(mid);
+            if (it == m_groups.end()) { m_groups.emplace(mid, std::vector<uint32_t>{}); m_groupOrder.push_back(mid); it = m_groups.find(mid); }
+            else if (it->second.empty()) m_groupOrder.push_back(mid);
+            it->second.push_back(i);
+        }
+
+        // Write the SSBO grouped (instances of each mesh contiguous) and build one
+        // indirect command per group; firstInstance = the group's SSBO base row, so
+        // gl_InstanceIndex in the shader indexes the object row directly.
+        ObjectData* objs = static_cast<ObjectData*>(fr.objMapped);
+        VkDrawIndexedIndirectCommand* cmds =
+            static_cast<VkDrawIndexedIndirectCommand*>(fr.indirectMapped);
+        uint32_t row = 0, cmdCount = 0;
+        for (uint32_t mid : m_groupOrder) {
+            auto mit = m_meshes.find(mid);
+            if (mit == m_meshes.end()) continue;
+            const std::vector<uint32_t>& list = m_groups[mid];
+            if (list.empty()) continue;
+            const uint32_t baseRow = row;
+            for (uint32_t ri : list) {
+                const DrawRecord& dr = m_drawRecords[ri];
+                ObjectData& o = objs[row++];
+                std::memcpy(&o.model, dr.model, sizeof(o.model));
+                o.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
+                o.texIndex = dr.texIndex;
+                o._pad0 = o._pad1 = o._pad2 = 0;
+            }
+            VkDrawIndexedIndirectCommand& c = cmds[cmdCount];
+            c.indexCount    = mit->second.indexCount;
+            c.instanceCount = (uint32_t)list.size();
+            c.firstIndex    = 0;
+            c.vertexOffset  = 0;
+            c.firstInstance = baseRow;
+            m_drawMeshOrder[cmdCount] = mid;
+            ++cmdCount;
+            m_building.drawCalls += 1;
+            m_building.objectsDrawn += (uint32_t)list.size();
+            m_building.triangles += (mit->second.indexCount / 3) * (uint32_t)list.size();
+        }
+        if (cmdCount == 0) return;
+
+        VkCommandBuffer cmd = fr.cmd;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshPipeline);
+        VkDescriptorSet sets[2] = { m_bindlessSet, fr.objSet };
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshLayout,
+                                0, 2, sets, 0, nullptr);
+        for (uint32_t i = 0; i < cmdCount; ++i) {
+            const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
+            VkDeviceSize off = 0;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &mh.vbo, &off);
+            vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
+            // ONE indirect draw per mesh: instanceCount instances, the GPU reads
+            // each instance's transform/texture from the SSBO via gl_InstanceIndex.
+            vkCmdDrawIndexedIndirect(cmd, fr.indirectBuf,
+                (VkDeviceSize)i * sizeof(VkDrawIndexedIndirectCommand), 1,
+                sizeof(VkDrawIndexedIndirectCommand));
+        }
+    }
+
     // Append `count` vertices to this frame's HUD ring, bind the HUD pipeline +
     // the requested texture (font atlas or white), and record one draw.
     void flushHud(const HudVertex* verts, uint32_t count, bool useFont) {
+        // The HUD draws ON TOP of the 3D scene, so the deferred mesh multidraw
+        // must be recorded into the command buffer first. Lazy-flush it here on
+        // the frame's first HUD draw (endFrame() flushes too if there was none).
+        flushMeshDraws();
         auto& fr = m_frames[m_frameIdx];
         if (!fr.hudVboMapped || fr.hudVertsUsed + count > kMaxHudVerts) return; // ring full
         uint32_t first = fr.hudVertsUsed;
@@ -1127,57 +1241,140 @@ private:
             logError("[rhi] upload fence create failed"); return false;
         }
 
-        // ---- Per-material descriptor set layout: combined-image-sampler + factor UBO ----
-        VkDescriptorSetLayoutBinding binds[2]{};
-        binds[0].binding = 0; binds[0].descriptorCount = 1;
-        binds[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        binds[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        binds[1].binding = 1; binds[1].descriptorCount = 1;
-        binds[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-        binds[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-        VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-        slci.bindingCount = 2; slci.pBindings = binds;
-        if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_meshSetLayout) != VK_SUCCESS) {
-            logError("[rhi] descriptor set layout failed"); return false;
-        }
+        // ====================================================================
+        // BINDLESS set (set 0): one large COMBINED_IMAGE_SAMPLER array. Flags make
+        // it partially-bound (only created slots written) + update-after-bind (we
+        // write slots lazily at createTexture, even after the set is bound). The
+        // pool carries UPDATE_AFTER_BIND_BIT to match.
+        // ====================================================================
+        {
+            VkDescriptorSetLayoutBinding b{};
+            b.binding = 0;
+            b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b.descriptorCount = kMaxTextures;
+            b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-        // ---- Per-frame descriptor pools + factor-UBO rings ----
-        VkPhysicalDeviceProperties props{};
-        vkGetPhysicalDeviceProperties(m_dev.physical_device, &props);
-        VkDeviceSize minAlign = props.limits.minUniformBufferOffsetAlignment;
-        m_uboStride = sizeof(glm::vec4);
-        if (minAlign > 0) m_uboStride = (m_uboStride + minAlign - 1) & ~(minAlign - 1);
+            VkDescriptorBindingFlags bf =
+                VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+                VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+            VkDescriptorSetLayoutBindingFlagsCreateInfo bfci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO };
+            bfci.bindingCount = 1; bfci.pBindingFlags = &bf;
 
-        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-            auto& fr = m_frames[i];
-            VkDescriptorPoolSize sizes[2]{};
-            sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; sizes[0].descriptorCount = kMaxDrawsPerFrame;
-            sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;         sizes[1].descriptorCount = kMaxDrawsPerFrame;
+            VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            slci.pNext = &bfci;
+            slci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
+            slci.bindingCount = 1; slci.pBindings = &b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_bindlessLayout) != VK_SUCCESS) {
+                logError("[rhi] bindless set layout failed"); return false;
+            }
+
+            VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxTextures };
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-            pci.maxSets = kMaxDrawsPerFrame; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
-            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &fr.descPool) != VK_SUCCESS) {
-                logError("[rhi] descriptor pool failed"); return false;
+            pci.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
+            pci.maxSets = 1; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_bindlessPool) != VK_SUCCESS) {
+                logError("[rhi] bindless pool failed"); return false;
             }
-            VkBufferCreateInfo ubci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-            ubci.size = m_uboStride * kMaxDrawsPerFrame;
-            ubci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-            VmaAllocationCreateInfo uvaci{};
-            uvaci.usage = VMA_MEMORY_USAGE_AUTO;
-            uvaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-            VmaAllocationInfo uinfo{};
-            if (vmaCreateBuffer(m_alloc, &ubci, &uvaci, &fr.uboBuf, &fr.uboAlloc, &uinfo) != VK_SUCCESS) {
-                logError("[rhi] factor UBO ring create failed"); return false;
+            VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            dsai.descriptorPool = m_bindlessPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &m_bindlessLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_bindlessSet) != VK_SUCCESS) {
+                logError("[rhi] bindless set alloc failed"); return false;
             }
-            fr.uboMapped = uinfo.pMappedData;
         }
 
-        // ---- Built-in 1x1 white default texture (sRGB) ----
+        // ====================================================================
+        // Object/camera set (set 1): SSBO (binding 0) + camera UBO (binding 1),
+        // one set per frame pointing at that frame's persistent-mapped rings.
+        // ====================================================================
+        {
+            VkDescriptorSetLayoutBinding binds[2]{};
+            binds[0].binding = 0; binds[0].descriptorCount = 1;
+            binds[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            binds[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+            binds[1].binding = 1; binds[1].descriptorCount = 1;
+            binds[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            binds[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+            VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            slci.bindingCount = 2; slci.pBindings = binds;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_objSetLayout) != VK_SUCCESS) {
+                logError("[rhi] object set layout failed"); return false;
+            }
+
+            VkDescriptorPoolSize sizes[2]{};
+            sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; sizes[0].descriptorCount = kFramesInFlight;
+            sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; sizes[1].descriptorCount = kFramesInFlight;
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.maxSets = kFramesInFlight; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_objPool) != VK_SUCCESS) {
+                logError("[rhi] object pool failed"); return false;
+            }
+
+            for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+                auto& fr = m_frames[i];
+                // Object SSBO ring.
+                VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+                bci.size = (VkDeviceSize)kMaxDrawsPerFrame * sizeof(ObjectData);
+                bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                VmaAllocationCreateInfo aci{};
+                aci.usage = VMA_MEMORY_USAGE_AUTO;
+                aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+                VmaAllocationInfo info{};
+                if (vmaCreateBuffer(m_alloc, &bci, &aci, &fr.objBuf, &fr.objAlloc, &info) != VK_SUCCESS) {
+                    logError("[rhi] object SSBO create failed"); return false;
+                }
+                fr.objMapped = info.pMappedData;
+
+                // Camera UBO.
+                VkBufferCreateInfo cbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+                cbci.size = sizeof(glm::mat4);
+                cbci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+                VmaAllocationInfo cinfo{};
+                if (vmaCreateBuffer(m_alloc, &cbci, &aci, &fr.camBuf, &fr.camAlloc, &cinfo) != VK_SUCCESS) {
+                    logError("[rhi] camera UBO create failed"); return false;
+                }
+                fr.camMapped = cinfo.pMappedData;
+
+                // Indirect-command buffer (one VkDrawIndexedIndirectCommand per
+                // distinct mesh; capped at kMaxTextures meshes which is plenty).
+                VkBufferCreateInfo ibci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+                ibci.size = (VkDeviceSize)kMaxDrawMeshes * sizeof(VkDrawIndexedIndirectCommand);
+                ibci.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+                VmaAllocationInfo iinfo{};
+                if (vmaCreateBuffer(m_alloc, &ibci, &aci, &fr.indirectBuf, &fr.indirectAlloc, &iinfo) != VK_SUCCESS) {
+                    logError("[rhi] indirect buffer create failed"); return false;
+                }
+                fr.indirectMapped = iinfo.pMappedData;
+
+                // Allocate + write the set-1 descriptor (points at this frame's
+                // SSBO + camera UBO; written once, buffers are persistent-mapped).
+                VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+                dsai.descriptorPool = m_objPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &m_objSetLayout;
+                if (vkAllocateDescriptorSets(m_dev.device, &dsai, &fr.objSet) != VK_SUCCESS) {
+                    logError("[rhi] object set alloc failed"); return false;
+                }
+                VkDescriptorBufferInfo sbi{ fr.objBuf, 0, VK_WHOLE_SIZE };
+                VkDescriptorBufferInfo cbi{ fr.camBuf, 0, sizeof(glm::mat4) };
+                VkWriteDescriptorSet writes[2]{};
+                writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[0].dstSet = fr.objSet; writes[0].dstBinding = 0; writes[0].descriptorCount = 1;
+                writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[0].pBufferInfo = &sbi;
+                writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[1].dstSet = fr.objSet; writes[1].dstBinding = 1; writes[1].descriptorCount = 1;
+                writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; writes[1].pBufferInfo = &cbi;
+                vkUpdateDescriptorSets(m_dev.device, 2, writes, 0, nullptr);
+            }
+        }
+
+        // ---- Built-in 1x1 white default texture (sRGB) -> bindless slot 0 ----
         const uint8_t white[4] = { 255, 255, 255, 255 };
         if (!createSampledTexture(white, 1, 1, true, m_whiteTex)) {
             logError("[rhi] default white texture create failed"); return false;
         }
+        if (!registerBindless(m_whiteTex) || m_whiteTex.bindlessIndex != 0) {
+            logError("[rhi] white default must occupy bindless slot 0"); return false;
+        }
 
-        // ---- Mesh pipeline (pos/normal/uv + texture + factor + depth + lighting) ----
+        // ---- Mesh pipeline (bindless texture + per-object SSBO + indirect) ----
         VkShaderModule vs = loadShaderModule("shaders\\mesh.vert.spv");
         VkShaderModule fs = loadShaderModule("shaders\\mesh.frag.spv");
         if (!vs || !fs) return false;
@@ -1224,11 +1421,11 @@ private:
         VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
         ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
 
-        // Push range = 2 mat4 = 128 bytes (vertex stage). baseColorFactor is in the UBO.
-        VkPushConstantRange pcr{ VK_SHADER_STAGE_VERTEX_BIT, 0, 2 * sizeof(glm::mat4) };
+        // GPU-driven layout: set 0 = bindless textures, set 1 = object SSBO +
+        // camera UBO. NO push constants (per-object data is in the SSBO).
+        VkDescriptorSetLayout setLayouts[2] = { m_bindlessLayout, m_objSetLayout };
         VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-        plci.setLayoutCount = 1; plci.pSetLayouts = &m_meshSetLayout;
-        plci.pushConstantRangeCount = 1; plci.pPushConstantRanges = &pcr;
+        plci.setLayoutCount = 2; plci.pSetLayouts = setLayouts;
         if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_meshLayout) != VK_SUCCESS) {
             logError("[rhi] pipeline layout failed"); return false;
         }
@@ -1250,7 +1447,32 @@ private:
         vkDestroyShaderModule(m_dev.device, fs, nullptr);
         if (pr != VK_SUCCESS) { logError("[rhi] graphics pipeline create failed"); return false; }
 
-        logInfo("[rhi] mesh pipeline ready (textured + factor + depth + lighting)");
+        logInfo("[rhi] GPU-driven mesh pipeline ready (bindless textures + per-object SSBO + multidraw-indirect)");
+        return true;
+    }
+
+    // Write one bindless array slot to point at `tex` (combined image+sampler).
+    // update-after-bind means this is legal even while the set is bound, as long
+    // as the slot isn't read by in-flight work (createTexture happens at load /
+    // between frames; destroyTexture waits idle first).
+    void writeBindlessSlot(uint32_t slot, const Texture& tex) {
+        VkDescriptorImageInfo dii{};
+        dii.sampler = tex.sampler;
+        dii.imageView = tex.view;
+        dii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        w.dstSet = m_bindlessSet; w.dstBinding = 0; w.dstArrayElement = slot;
+        w.descriptorCount = 1; w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.pImageInfo = &dii;
+        vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+    }
+
+    // Assign `tex` the next free bindless slot + write the descriptor. Returns
+    // false (and leaves bindlessIndex 0) if the array is full.
+    bool registerBindless(Texture& tex) {
+        if (m_nextBindless >= kMaxTextures) return false;
+        tex.bindlessIndex = m_nextBindless++;
+        writeBindlessSlot(tex.bindlessIndex, tex);
         return true;
     }
 
@@ -1267,17 +1489,22 @@ private:
 
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
             auto& fr = m_frames[i];
-            if (fr.uboBuf)   { vmaDestroyBuffer(m_alloc, fr.uboBuf, fr.uboAlloc); fr.uboBuf = VK_NULL_HANDLE; fr.uboAlloc = nullptr; fr.uboMapped = nullptr; }
-            if (fr.descPool) { vkDestroyDescriptorPool(m_dev.device, fr.descPool, nullptr); fr.descPool = VK_NULL_HANDLE; }
+            if (fr.objBuf)      { vmaDestroyBuffer(m_alloc, fr.objBuf, fr.objAlloc); fr.objBuf = VK_NULL_HANDLE; fr.objAlloc = nullptr; fr.objMapped = nullptr; }
+            if (fr.camBuf)      { vmaDestroyBuffer(m_alloc, fr.camBuf, fr.camAlloc); fr.camBuf = VK_NULL_HANDLE; fr.camAlloc = nullptr; fr.camMapped = nullptr; }
+            if (fr.indirectBuf) { vmaDestroyBuffer(m_alloc, fr.indirectBuf, fr.indirectAlloc); fr.indirectBuf = VK_NULL_HANDLE; fr.indirectAlloc = nullptr; fr.indirectMapped = nullptr; }
         }
+
+        if (m_objPool)        { vkDestroyDescriptorPool(m_dev.device, m_objPool, nullptr); m_objPool = VK_NULL_HANDLE; }
+        if (m_objSetLayout)   { vkDestroyDescriptorSetLayout(m_dev.device, m_objSetLayout, nullptr); m_objSetLayout = VK_NULL_HANDLE; }
+        if (m_bindlessPool)   { vkDestroyDescriptorPool(m_dev.device, m_bindlessPool, nullptr); m_bindlessPool = VK_NULL_HANDLE; }
+        if (m_bindlessLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_bindlessLayout, nullptr); m_bindlessLayout = VK_NULL_HANDLE; }
 
         if (m_meshPipeline)  vkDestroyPipeline(m_dev.device, m_meshPipeline, nullptr);
         if (m_meshLayout)    vkDestroyPipelineLayout(m_dev.device, m_meshLayout, nullptr);
-        if (m_meshSetLayout) vkDestroyDescriptorSetLayout(m_dev.device, m_meshSetLayout, nullptr);
         if (m_uploadFence)   vkDestroyFence(m_dev.device, m_uploadFence, nullptr);
         if (m_uploadPool)    vkDestroyCommandPool(m_dev.device, m_uploadPool, nullptr);
         m_meshPipeline = VK_NULL_HANDLE; m_meshLayout = VK_NULL_HANDLE;
-        m_meshSetLayout = VK_NULL_HANDLE; m_uploadFence = VK_NULL_HANDLE; m_uploadPool = VK_NULL_HANDLE;
+        m_uploadFence = VK_NULL_HANDLE; m_uploadPool = VK_NULL_HANDLE;
     }
 
     // Core objects
@@ -1292,7 +1519,29 @@ private:
     VmaAllocator  m_alloc = nullptr;
     VkPipeline       m_meshPipeline = VK_NULL_HANDLE;
     VkPipelineLayout m_meshLayout = VK_NULL_HANDLE;
-    VkDescriptorSetLayout m_meshSetLayout = VK_NULL_HANDLE;
+
+    // GPU-driven descriptor objects:
+    //   set 0 = bindless texture array (one shared set, update-after-bind)
+    //   set 1 = per-frame object SSBO + camera UBO (allocated in createGraphics)
+    VkDescriptorSetLayout m_bindlessLayout = VK_NULL_HANDLE;
+    VkDescriptorPool      m_bindlessPool   = VK_NULL_HANDLE;
+    VkDescriptorSet       m_bindlessSet    = VK_NULL_HANDLE;
+    uint32_t              m_nextBindless   = 0;   // next free bindless slot
+    VkDescriptorSetLayout m_objSetLayout   = VK_NULL_HANDLE;
+    VkDescriptorPool      m_objPool        = VK_NULL_HANDLE;
+
+    // Max distinct meshes per frame (sizes the indirect-command buffer).
+    static constexpr uint32_t kMaxDrawMeshes = 4096;
+
+    // Per-frame draw accumulation (GPU-driven). m_drawRecords is filled by
+    // drawMesh(); flushMeshDraws() groups it (m_groups/m_groupOrder reused to
+    // avoid per-frame allocs) and records the multidraw. m_meshFlushed guards the
+    // single flush per frame (HUD draw OR endFrame triggers it).
+    std::vector<DrawRecord> m_drawRecords;
+    std::unordered_map<uint32_t, std::vector<uint32_t>> m_groups;
+    std::vector<uint32_t>   m_groupOrder;
+    uint32_t                m_drawMeshOrder[kMaxDrawMeshes] = {};
+    bool                    m_meshFlushed = false;
 
     // 2D HUD overlay pipeline (NDC quads, no depth, alpha-blended)
     VkPipeline       m_hudPipeline = VK_NULL_HANDLE;
@@ -1304,9 +1553,6 @@ private:
     // One-time staging upload (transient pool + fence)
     VkCommandPool m_uploadPool = VK_NULL_HANDLE;
     VkFence       m_uploadFence = VK_NULL_HANDLE;
-
-    // Per-draw factor-UBO alignment stride (>= sizeof(vec4), aligned to device min)
-    VkDeviceSize  m_uboStride = 0;
 
     // Resource registries (created via the public mesh/texture API)
     std::unordered_map<uint32_t, Mesh>    m_meshes;
