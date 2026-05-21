@@ -7,6 +7,7 @@
 #include <GLFW/glfw3native.h>
 
 #include "engine/core/x3_log.h"
+#include "engine/core/IConsole.h"
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/asset/IAssetSource.h"
 
@@ -14,18 +15,22 @@
 #include <string_view>
 
 int main(int argc, char** argv) {
-    bool smoketest = false, testAsset = false;
+    bool smoketest = false, testAsset = false, testConsole = false;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
         else if (a == "--test-asset") testAsset = true;
+        else if (a == "--test-console") testConsole = true;
     }
 
     // Headless self-tests (no window / Vulkan needed)
     if (testAsset) {
         x3::logInfo("running asset (D5) self-test...");
-        bool ok = x3::asset::runAssetSelfTest();
-        return ok ? 0 : 1;
+        return x3::asset::runAssetSelfTest() ? 0 : 1;
+    }
+    if (testConsole) {
+        x3::logInfo("running console (D6) self-test...");
+        return x3::con::runConsoleSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
