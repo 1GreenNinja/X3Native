@@ -86,6 +86,8 @@ public:
         logInfo(std::string("[con] ") + std::string(msg));
     }
 
+    const std::vector<std::string>& outputLines() const override { return m_log; }
+
     void saveConfig(std::string_view path) const override {
         std::ofstream f{ std::string(path) };
         if (!f) return;

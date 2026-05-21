@@ -116,14 +116,15 @@ void CombatFx::drawBeam(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
 }
 
 // ---------------------------------------------------------------------------
-// draw: crosshair (always) + active tracers + muzzle flash.
+// draw: active tracers + muzzle flash. (The crosshair moved to the screen-space
+// HUD layer in S7 — see app/hud.* — so fx no longer draws a world-space "+".)
 // ---------------------------------------------------------------------------
 void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                     float eyeX, float eyeY, float eyeZ, float yaw, float pitch) const {
     if (!m_box.valid()) return;
+    (void)eyeX; (void)eyeY; (void)eyeZ;  // no longer needed without the crosshair
 
     // Bright FX colors (baseColorFactor multiplies the default white texel).
-    const float crosshairColor[4] = { 0.2f, 1.0f, 0.3f, 1.0f };  // bright green
     const float tracerColor[4]    = { 1.0f, 0.95f, 0.4f, 1.0f }; // hot yellow
     const float muzzleColor[4]    = { 1.0f, 0.85f, 0.4f, 1.0f }; // muzzle orange
 
@@ -132,28 +133,7 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
     const float cy = std::cos(yaw),   sy = std::sin(yaw);
     x3::phys::Vec3 forward{ cp * cy, sp, cp * sy };
     x3::phys::Vec3 right{ -sy, 0.0f, cy };
-    x3::phys::Vec3 up = cross(right, forward);
-
-    // ---- Crosshair "+": two thin boxes at screen center, kCrosshairDist ahead,
-    // oriented to the camera (horizontal arm along right, vertical along up). ----
-    x3::phys::Vec3 center{
-        eyeX + forward.x * kCrosshairDist,
-        eyeY + forward.y * kCrosshairDist,
-        eyeZ + forward.z * kCrosshairDist };
-    const float arm  = kCrosshairSize;          // half-length of each arm
-    const float thin = kCrosshairSize * 0.18f;  // half-thickness of each arm
-    {
-        // Horizontal bar: long along right, thin along up, thin along forward.
-        float m[16];
-        composeTRS3(m, right, up, forward, arm * 2.0f, thin * 2.0f, thin * 2.0f, center);
-        device.drawMesh(frame, m_box, x3::rhi::TextureHandle{}, crosshairColor, m);
-    }
-    {
-        // Vertical bar: thin along right, long along up, thin along forward.
-        float m[16];
-        composeTRS3(m, right, up, forward, thin * 2.0f, arm * 2.0f, thin * 2.0f, center);
-        device.drawMesh(frame, m_box, x3::rhi::TextureHandle{}, crosshairColor, m);
-    }
+    x3::phys::Vec3 up = cross(right, forward);  // used by the muzzle-flash basis
 
     // ---- Tracers: thin bright beams, fading thinner as they age. ----
     for (const auto& t : m_tracers) {

@@ -21,6 +21,7 @@
 #include "weapon.h"
 #include "monster.h"
 #include "fx.h"
+#include "hud.h"
 
 #include <memory>
 #include <string_view>
@@ -49,6 +50,42 @@ x3::phys::Vec3 muzzleFromCamera(float ex, float ey, float ez, float yaw, float p
         ex + forward.x * mFwd + right.x * mRight - up.x * mDown,
         ey + forward.y * mFwd + right.y * mRight - up.y * mDown,
         ez + forward.z * mFwd + right.z * mRight - up.z * mDown };
+}
+
+// Bundle passed to GLFW via the window user-pointer so the char/key callbacks
+// can route text input into the on-screen console.
+struct InputContext {
+    x3::game::Hud*       hud = nullptr;
+    x3::con::IConsole*   console = nullptr;
+};
+
+// GLFW character callback: feed printable codepoints to the console input line.
+void charCallback(GLFWwindow* win, unsigned int codepoint) {
+    auto* ctx = static_cast<InputContext*>(glfwGetWindowUserPointer(win));
+    if (ctx && ctx->hud) ctx->hud->onChar(codepoint);
+}
+
+// GLFW key callback: the '`'/'~' toggle (always), plus console editing keys when
+// the console is open. Gameplay keys are polled in the loop and gated separately.
+void keyCallback(GLFWwindow* win, int key, int /*scancode*/, int action, int /*mods*/) {
+    auto* ctx = static_cast<InputContext*>(glfwGetWindowUserPointer(win));
+    if (!ctx || !ctx->hud) return;
+    if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
+    x3::game::Hud& hud = *ctx->hud;
+
+    if (key == GLFW_KEY_GRAVE_ACCENT) { if (action == GLFW_PRESS) hud.toggleConsole(); return; }
+    if (!hud.consoleOpen()) return;
+
+    switch (key) {
+        case GLFW_KEY_ENTER:
+        case GLFW_KEY_KP_ENTER: if (ctx->console) hud.onEnter(*ctx->console); break;
+        case GLFW_KEY_BACKSPACE: hud.onBackspace(); break;
+        case GLFW_KEY_UP:        hud.historyPrev(); break;
+        case GLFW_KEY_DOWN:      hud.historyNext(); break;
+        case GLFW_KEY_TAB:       if (ctx->console) hud.complete(*ctx->console); break;
+        case GLFW_KEY_ESCAPE:    hud.closeConsole(); break;
+        default: break;
+    }
 }
 } // namespace
 
@@ -205,10 +242,16 @@ int main(int argc, char** argv) {
     combat.buildMonster(scene, *device, *physics, "G:/GameModels/rigged_glb",
                         x3::phys::Vec3{ 0.0f, 0.4f, -4.0f });
 
-    // ---- Combat FX (gameplay-feel pass): crosshair (always), shot tracers, and
-    // muzzle flash. World-space geometry (no 2D/UI path in the slice). ----
+    // ---- Combat FX (gameplay-feel pass): shot tracers + muzzle flash. The
+    // crosshair now lives in the screen-space HUD layer (S7), not here. ----
     x3::game::CombatFx combatFx;
     combatFx.init(*device);
+
+    // ---- S7: console backend (D6) + screen-space HUD (FPS, console, crosshair).
+    std::unique_ptr<x3::con::IConsole> console(x3::con::createConsole());
+    x3::game::Hud hud;
+    bool quitRequested = false;
+    hud.init(*console, &quitRequested);
 
     if (smoketest) {
         x3::logInfo("smoketest: stepping physics + rendering 30 frames (+ a mid-run swapchain recreate)");
@@ -237,6 +280,10 @@ int main(int argc, char** argv) {
                 combatFx.addTracer(muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch), r.endPoint);
             }
             combatFx.update(dt);
+            // Exercise the HUD 2D path: drop some console output, and open the
+            // console mid-run so the panel + scrollback + input line render too.
+            if (i == 5)  { console->exec("echo smoketest hud line"); hud.toggleConsole(); hud.onChar('a'); hud.onChar('b'); }
+            if (i == 20) { hud.closeConsole(); }
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
@@ -244,6 +291,13 @@ int main(int argc, char** argv) {
                 combat.drawMonster(*device, frame, scene);
                 weapon.drawViewmodel(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch);
                 combatFx.draw(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch);
+                // HUD overlay last: crosshair + FPS meter + console (when open).
+                hud.drawCrosshair(*device, frame);
+                hud.drawFps(*device, frame, *console, dt);
+                hud.drawConsole(*device, frame, *console);
+                // Also exercise a raw quad + text string every frame.
+                const float tag[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+                device->drawHudText(frame, "X3 HUD SMOKETEST 0123", 8.0f, 40.0f, 16.0f, tag);
             }
             device->endFrame(frame);
         }
@@ -268,7 +322,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    x3::logInfo("entering main loop — WASD walk, mouse look, LeftShift sprint, Space jump, E use, F noclip, Esc to quit");
+    x3::logInfo("entering main loop — WASD walk, mouse look, LeftShift sprint, Space jump, E use, F noclip, ` console, Esc to quit");
 
     // ---- Walking player (S3). Spawn on open floor near the +Z doorway side,
     // clear of the falling box (origin) and the step platform (around x=3,z=-3).
@@ -279,6 +333,15 @@ int main(int argc, char** argv) {
     if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
     double prevTime = glfwGetTime();
+
+    // ---- S7: route keyboard text + editing into the on-screen console. The
+    // char callback feeds printable codepoints; the key callback handles the
+    // '`' toggle + Enter/Backspace/Up/Down/Tab/Esc while the console is open.
+    InputContext inputCtx{ &hud, console.get() };
+    glfwSetWindowUserPointer(window, &inputCtx);
+    glfwSetCharCallback(window, charCallback);
+    glfwSetKeyCallback(window, keyCallback);
+    bool consoleWasOpen = false;   // tracks cursor-mode transitions
 
     // Rising-edge tracking for Space (jump), F (noclip toggle), E (use), and the
     // left mouse button (fire). A small fire cooldown gates the gun's rate.
@@ -295,20 +358,40 @@ int main(int argc, char** argv) {
     int lastW = static_cast<int>(W), lastH = static_cast<int>(H);
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
-        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) glfwSetWindowShouldClose(window, 1);
+
+        // ---- S7: console gating. While the console is open, gameplay input is
+        // suppressed and the cursor is shown so the user can read/type; Esc
+        // closes the console (handled in keyCallback) rather than quitting.
+        const bool consoleOpen = hud.consoleOpen();
+        if (consoleOpen != consoleWasOpen) {
+            glfwSetInputMode(window, GLFW_CURSOR,
+                             consoleOpen ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+            consoleWasOpen = consoleOpen;
+        }
+        // Esc quits only when the console is closed (the `quit` command also sets
+        // quitRequested via the HUD-registered command).
+        if (!consoleOpen && glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+            glfwSetWindowShouldClose(window, 1);
+        if (quitRequested) glfwSetWindowShouldClose(window, 1);
 
         double nowT = glfwGetTime();
         float dt = static_cast<float>(nowT - prevTime); prevTime = nowT;
         if (dt > 0.1f) dt = 0.1f; // clamp huge hitches (e.g. after a stall)
 
-        // Mouse delta this frame.
+        // Mouse delta this frame. Frozen (zeroed) while the console is open so
+        // the view does not swing under a visible cursor.
         double mx, my; glfwGetCursorPos(window, &mx, &my);
         float ddx = static_cast<float>(mx - lastMX), ddy = static_cast<float>(my - lastMY);
         lastMX = mx; lastMY = my;
+        if (consoleOpen) { ddx = 0.0f; ddy = 0.0f; }
+
+        // Gameplay key reads are gated off while the console is open so typing
+        // doesn't drive movement/use/jump/fire/noclip.
+        auto keyDown = [&](int k) { return !consoleOpen && glfwGetKey(window, k) == GLFW_PRESS; };
 
         // F: toggle noclip on the rising edge. Seed the fly camera from the
         // player's current view so the transition is seamless.
-        bool fNow = glfwGetKey(window, GLFW_KEY_F) == GLFW_PRESS;
+        bool fNow = keyDown(GLFW_KEY_F);
         if (fNow && !prevF) {
             noclip = !noclip;
             if (noclip) player.camera(flyX, flyY, flyZ, flyYaw, flyPitch);
@@ -316,11 +399,11 @@ int main(int argc, char** argv) {
         }
         prevF = fNow;
 
-        bool spaceNow = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
+        bool spaceNow = keyDown(GLFW_KEY_SPACE);
 
         // ---- E: "use" on the rising edge. Raycast from the eye along the facing
         // direction; if it hits a button (within ~3 m) the linked door opens. ----
-        bool eNow = glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS;
+        bool eNow = keyDown(GLFW_KEY_E);
         if (eNow && !prevE) {
             float ex, ey, ez, yaw, pitch;
             player.camera(ex, ey, ez, yaw, pitch);   // in noclip the camera is the fly cam
@@ -341,11 +424,11 @@ int main(int argc, char** argv) {
         if (!noclip) {
             // ---- Walking player input ----
             x3::game::PlayerInput in;
-            if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) in.moveFwd    += 1.0f;
-            if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) in.moveFwd    -= 1.0f;
-            if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) in.moveStrafe += 1.0f;
-            if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) in.moveStrafe -= 1.0f;
-            in.sprint      = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
+            if (keyDown(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+            if (keyDown(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+            if (keyDown(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+            if (keyDown(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+            in.sprint      = keyDown(GLFW_KEY_LEFT_SHIFT);
             in.jumpPressed = spaceNow && !prevSpace;   // rising edge
             in.lookDX = ddx;
             in.lookDY = ddy;
@@ -369,13 +452,13 @@ int main(int argc, char** argv) {
             float rl = std::sqrt(fx * fx + fz * fz); if (rl < 1e-4f) rl = 1e-4f;
             float rx = -fz / rl, rz = fx / rl;
             float spd = 4.0f * dt;
-            if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS) spd *= 3.0f;
-            if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) { flyX += fx*spd; flyY += fy*spd; flyZ += fz*spd; }
-            if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) { flyX -= fx*spd; flyY -= fy*spd; flyZ -= fz*spd; }
-            if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) { flyX += rx*spd; flyZ += rz*spd; }
-            if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) { flyX -= rx*spd; flyZ -= rz*spd; }
+            if (keyDown(GLFW_KEY_LEFT_SHIFT)) spd *= 3.0f;
+            if (keyDown(GLFW_KEY_W)) { flyX += fx*spd; flyY += fy*spd; flyZ += fz*spd; }
+            if (keyDown(GLFW_KEY_S)) { flyX -= fx*spd; flyY -= fy*spd; flyZ -= fz*spd; }
+            if (keyDown(GLFW_KEY_D)) { flyX += rx*spd; flyZ += rz*spd; }
+            if (keyDown(GLFW_KEY_A)) { flyX -= rx*spd; flyZ -= rz*spd; }
             if (spaceNow) flyY += spd;
-            if (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS) flyY -= spd;
+            if (keyDown(GLFW_KEY_LEFT_CONTROL)) flyY -= spd;
 
             // World still advances so props keep simulating while inspecting.
             doors.update(dt, scene, *physics);   // advance any opening door first
@@ -396,7 +479,7 @@ int main(int argc, char** argv) {
         // hitting the monster damages it (red flash) and eventually kills it.
         combat.update(dt, scene, *physics, x3::phys::Vec3{ camX, camY, camZ });
         if (fireCooldown > 0.0f) fireCooldown -= dt;
-        bool fireNow = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        bool fireNow = !consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         if (fireNow && !prevFire && weapon.hasWeapon() && fireCooldown <= 0.0f) {
             fireCooldown = kFireCooldown;
             // Device forward convention: fwd = (cos p cos y, sin p, cos p sin y).
@@ -429,8 +512,13 @@ int main(int argc, char** argv) {
             weapon.drawPickup(*device, frame, scene);   // bobbing pickup (until armed)
             combat.drawMonster(*device, frame, scene);  // the monster (+ hit-flash / death-pop)
             weapon.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch);
-            // FX last: crosshair (always) + active tracers + muzzle flash.
+            // FX: active tracers + muzzle flash (world-space).
             combatFx.draw(*device, frame, camX, camY, camZ, camYaw, camPitch);
+            // ---- S7 HUD overlay last: crosshair (hidden while console open),
+            // FPS meter, then the console panel (when open). ----
+            if (!consoleOpen) hud.drawCrosshair(*device, frame);
+            hud.drawFps(*device, frame, *console, dt);
+            hud.drawConsole(*device, frame, *console);
         }
         device->endFrame(frame);
     }

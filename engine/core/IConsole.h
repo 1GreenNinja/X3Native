@@ -25,6 +25,11 @@ public:
     virtual void exec(std::string_view line) = 0;
     virtual void print(std::string_view msg) = 0;
 
+    // Accumulated output log (everything passed to print(), oldest first). The
+    // on-screen console reads this to render its scrollback. Newest lines are at
+    // the back; callers typically display the last N.
+    virtual const std::vector<std::string>& outputLines() const = 0;
+
     virtual void saveConfig(std::string_view path) const = 0;
     virtual bool loadConfig(std::string_view path) = 0;
 
