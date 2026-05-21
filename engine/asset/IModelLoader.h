@@ -29,6 +29,20 @@ struct MeshPrimitive {
     uint32_t meshIndex    = 0;   // index of the glTF mesh this primitive came from
                                  // (lets makeDrawables() map nodes -> primitives so
                                  //  per-node TRS can be baked into each drawable)
+
+    // ---- CPU-skinning data (J1). Only populated for primitives that carry
+    // JOINTS_0 + WEIGHTS_0 (i.e. a skinned mesh) AND were uploaded to a real
+    // device, so the anim runtime can recompute their vertices each frame and
+    // re-upload via IRenderDevice::updateMesh(). For unskinned/static primitives
+    // these vectors are empty and the primitive is drawn untouched. The bind-pose
+    // positions/normals are kept (skinning is computed relative to them every
+    // frame, never accumulated). vertexCount == basePos.size()/3. ----
+    bool                 skinned = false;
+    std::vector<float>   basePos;    // bind-pose positions (vertexCount * 3)
+    std::vector<float>   baseNrm;    // bind-pose normals    (vertexCount * 3)
+    std::vector<float>   baseUv;     // uv0                  (vertexCount * 2)
+    std::vector<uint16_t>jointIdx;   // 4 joint indices per vertex (vertexCount * 4)
+    std::vector<float>   jointWt;    // 4 weights per vertex       (vertexCount * 4)
 };
 
 struct Material {
@@ -127,6 +141,12 @@ std::vector<ModelDrawable> makeDrawables(const Model& m);
 // callers can compose objectTransform (a) with a drawable's nodeTransform (b)
 // before handing the result to IRenderDevice::drawMesh(). out may NOT alias a/b.
 void mulMat4(const float a[16], const float b[16], float out[16]);
+
+// Decode a primitive's opaque vertexBuffer handle to the device MeshHandle id it
+// was uploaded to (0 if it carries no real device mesh — the headless seam). The
+// CPU-skinning runtime uses this to target IRenderDevice::updateMesh(). Mirrors the
+// id makeDrawables() puts in ModelDrawable::meshId.
+uint32_t meshIdOf(const MeshPrimitive& p);
 
 // Factory. `dev` may be null (headless path): in that case opaque GPU handles
 // are minted as monotonic non-zero fake IDs and no real upload is performed,

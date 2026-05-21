@@ -49,6 +49,7 @@
 
 #include "scene.h"
 #include "player.h"   // IDamageSink (enemies attack the player)
+#include "anim.h"     // J1: skeletal animation + CPU skinning runtime
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -324,6 +325,19 @@ private:
     x3::asset::Model                          m_model;
     std::vector<x3::asset::ModelDrawable>     m_drawables;
     bool                                      m_usingReal = false;
+
+    // ---- Skeletal animation (J1). If the loaded model is skinnable, m_skinner is
+    // valid and drives CPU skinning each update() via the device. m_idleClip /
+    // m_walkClip index the model's clips (-1 if none found); m_animTime accumulates
+    // the active clip's playback time (looped in the runtime). The device pointer is
+    // captured at build time so update() (which has no device param) can re-upload
+    // the skinned vertices. Unskinned models leave m_skinner invalid -> static draw. ----
+    x3::anim::Skinner        m_skinner;
+    x3::rhi::IRenderDevice*  m_device = nullptr;
+    int                      m_idleClip = -1;
+    int                      m_walkClip = -1;
+    float                    m_animTime = 0.0f;
+    bool                     m_animActive = false;   // a usable clip was found
     // Model-local fixup applied between the gameplay transform and each drawable's
     // node transform (final = model * fixup * nodeTransform). Identity for Y-up
     // models; a -90deg-X stand-up for the Z-up converted character GLBs. Also
