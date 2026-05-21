@@ -18,6 +18,7 @@
 #include "level.h"
 #include "player.h"
 #include "door.h"
+#include "weapon.h"
 
 #include <memory>
 #include <string_view>
@@ -28,7 +29,7 @@
 
 int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
-         testGltf = false, testPlayer = false, testInteract = false;
+         testGltf = false, testPlayer = false, testInteract = false, testPickup = false;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
@@ -38,6 +39,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-gltf") testGltf = true;
         else if (a == "--test-player") testPlayer = true;
         else if (a == "--test-interact") testInteract = true;
+        else if (a == "--test-pickup") testPickup = true;
     }
 
     // Headless self-tests (no window / Vulkan needed)
@@ -64,6 +66,10 @@ int main(int argc, char** argv) {
     if (testInteract) {
         x3::logInfo("running button->door interaction (S4) self-test...");
         return x3::game::runInteractSelfTest() ? 0 : 1;
+    }
+    if (testPickup) {
+        x3::logInfo("running weapon pickup + arming (S5) self-test...");
+        return x3::game::runPickupSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -151,18 +157,39 @@ int main(int argc, char** argv) {
         x3::logInfo("dynamic box added at y=4.0 (will fall and rest on floor)");
     }
 
+    // ---- S5: weapon pickup. Load the purchased WeaponEnergyPistol.glb (fallback
+    // to a procedural box if it can't be loaded) and place a bobbing/spinning
+    // pickup in open floor between the spawn and the doorway. Walk into it (within
+    // ~1.2 m) to arm; the first-person viewmodel then appears. ----
+    x3::game::WeaponSystem weapon;
+    weapon.buildWeaponPickup(scene, *device, "G:/GameModels/rigged_glb",
+                             x3::phys::Vec3{ 0.0f, 1.0f, 2.0f });
+
     if (smoketest) {
         x3::logInfo("smoketest: stepping physics + rendering 30 frames (+ a mid-run swapchain recreate)");
+        // Arm the player so the weapon GLB renders as the viewmodel this run
+        // (validates the real model loads + draws under validation). Use a fixed
+        // camera looking toward the room so the viewmodel + pickup are on screen.
+        weapon.forceArm(scene);
+        const float vmX = -3.0f, vmY = 1.7f, vmZ = 4.0f, vmYaw = -1.4f, vmPitch = 0.0f;
+        device->setCamera(vmX, vmY, vmZ, vmYaw, vmPitch, 60.0f);
         const float dt = 1.0f / 60.0f;
         for (int i = 0; i < 30; ++i) {
             glfwPollEvents();
             if (i == 15) { x3::logInfo("smoketest: triggering swapchain recreate"); device->onResize(960, 540); }
             physics->step(dt);
             scene.update(*physics);
+            weapon.update(dt, scene, x3::phys::Vec3{ vmX, vmY, vmZ });
             auto frame = device->beginFrame();
-            if (frame.valid) scene.render(*device, frame);
+            if (frame.valid) {
+                scene.render(*device, frame);
+                weapon.drawPickup(*device, frame, scene);
+                weapon.drawViewmodel(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch);
+            }
             device->endFrame(frame);
         }
+        x3::logInfo(std::string("smoketest: weapon viewmodel drawn (") +
+                    (weapon.usingRealModel() ? "real GLB" : "fallback box") + ")");
         // Report where the dynamic box settled (proves physics drives the entity).
         for (uint32_t id = 0; id < scene.size(); ++id) {
             const auto& e = scene.get(id);
@@ -243,6 +270,9 @@ int main(int argc, char** argv) {
         }
         prevE = eNow;
 
+        // Camera state this frame (set by whichever branch runs), reused below
+        // for the weapon viewmodel.
+        float camX, camY, camZ, camYaw, camPitch;
         if (!noclip) {
             // ---- Walking player input ----
             x3::game::PlayerInput in;
@@ -260,9 +290,8 @@ int main(int argc, char** argv) {
             physics->step(dt);
             scene.update(*physics);
 
-            float cx, cy, cz, yaw, pitch;
-            player.camera(cx, cy, cz, yaw, pitch);
-            device->setCamera(cx, cy, cz, yaw, pitch, 60.0f);
+            player.camera(camX, camY, camZ, camYaw, camPitch);
+            device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
         } else {
             // ---- Debug fly camera (does not move the player body) ----
             const float sens = 0.0025f;
@@ -288,8 +317,13 @@ int main(int argc, char** argv) {
             physics->step(dt);
             scene.update(*physics);
             device->setCamera(flyX, flyY, flyZ, flyYaw, flyPitch, 60.0f);
+            camX = flyX; camY = flyY; camZ = flyZ; camYaw = flyYaw; camPitch = flyPitch;
         }
         prevSpace = spaceNow;
+
+        // ---- S5: weapon pickup detection + viewmodel. Arm when the camera
+        // (player eye) is within pickup radius; once armed, draw the viewmodel.
+        weapon.update(dt, scene, x3::phys::Vec3{ camX, camY, camZ });
 
         int cw, ch;
         glfwGetFramebufferSize(window, &cw, &ch);
@@ -299,7 +333,11 @@ int main(int argc, char** argv) {
         }
 
         auto frame = device->beginFrame();
-        if (frame.valid) scene.render(*device, frame);
+        if (frame.valid) {
+            scene.render(*device, frame);
+            weapon.drawPickup(*device, frame, scene);   // bobbing pickup (until armed)
+            weapon.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch);
+        }
         device->endFrame(frame);
     }
 
