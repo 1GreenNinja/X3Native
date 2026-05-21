@@ -1,0 +1,52 @@
+# Build output
+/build/
+/out/
+cmake-build-*/
+/bin/
+/lib/
+*.obj
+*.o
+*.exe
+*.dll
+*.pdb
+*.ilk
+*.exp
+*.lib
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+CMakeSettings.json
+.vscode/
+
+# vcpkg
+/vcpkg/
+/vcpkg_installed/
+
+# Shader compile output
+*.spv
+
+# Pak build output
+*.x3pak
+
+# Large binary assets (shipped separately / via LFS)
+/assets/
+/games/*/content/
+
+# Doom 3 BFG base assets (commercial — never commit)
+/base/
+*.pk4
+
+# Tracy captures
+*.tracy
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Clean-room: the GPL quarantine is present on the 14900K (spec team) but
+# OMITTED on the 13700K clean-room checkout via sparse-checkout (see
+# tools/cleanroom-setup.ps1). It IS tracked in the main repo during the
+# prototype phase — do NOT gitignore it here, or the spec team loses it.
