@@ -1,12 +1,14 @@
 #version 450
 #extension GL_EXT_nonuniform_qualifier : require
 
-// GPU-driven mesh vertex shader (Subsystem D).
+// GPU-driven mesh vertex shader (Subsystem D + perf-stack E shadows).
 //
 // No per-draw push constants. Per-object data lives in a per-frame SSBO indexed
 // by gl_InstanceIndex (the indirect draw's firstInstance + instance), and the
 // camera viewProj is a single frame UBO. The fragment shader samples a bindless
-// texture array by the per-object texIndex carried through here.
+// texture array by the per-object texIndex carried through here. For shadow
+// mapping (E) the world-space position is forwarded so the fragment stage can
+// project it into the sun's light space and PCF-sample the shadow map.
 
 struct ObjectData {
     mat4 model;
@@ -23,6 +25,7 @@ layout(std430, set = 1, binding = 0) readonly buffer Objects {
 
 layout(set = 1, binding = 1) uniform Camera {
     mat4 viewProj;
+    mat4 lightViewProj;
 } cam;
 
 layout(location = 0) in vec3 inPos;
@@ -33,12 +36,15 @@ layout(location = 0) out vec3 vNormal;
 layout(location = 1) out vec2 vUV;
 layout(location = 2) flat out uint vTexIndex;
 layout(location = 3) flat out vec4 vFactor;
+layout(location = 4) out vec3 vWorldPos;
 
 void main() {
     ObjectData o = objBuf.objects[gl_InstanceIndex];
-    gl_Position = cam.viewProj * o.model * vec4(inPos, 1.0);
+    vec4 worldPos = o.model * vec4(inPos, 1.0);
+    gl_Position = cam.viewProj * worldPos;
     vNormal = mat3(o.model) * inNormal;
     vUV = inUV;
     vTexIndex = o.texIndex;
     vFactor = o.baseColorFactor;
+    vWorldPos = worldPos.xyz;
 }

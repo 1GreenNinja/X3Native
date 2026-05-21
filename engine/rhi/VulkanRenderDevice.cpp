@@ -153,7 +153,8 @@ public:
 
         if (!createSwapchain(m_width, m_height)) return false;
         if (!createPerFrame()) return false;
-        if (!createGraphics()) return false;
+        if (!createShadowImage()) return false;   // before createGraphics (mesh layout needs set 2)
+        if (!createGraphics()) return false;      // builds the shadow depth pipeline at the end
         if (!createHud()) return false;
         return true;
     }
@@ -224,6 +225,8 @@ public:
         // recycle the HUD descriptor pool + HUD vertex ring.
         m_drawRecords.clear();
         m_meshFlushed = false;
+        m_framePrepared = false;
+        m_frameCmdCount = 0;
         if (fr.hudDescPool) vkResetDescriptorPool(m_dev.device, fr.hudDescPool, 0);
         fr.hudVertsUsed = 0;
 
@@ -251,12 +254,66 @@ public:
                      VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                      VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
 
+        // Timestamp the start of the frame at TOP_OF_PIPE; paired with the
+        // BOTTOM_OF_PIPE stamp at endFrame this brackets the whole frame (shadow
+        // depth pass + main scene + HUD). (sync2 vkCmdWriteTimestamp2.)
+        if (m_tsSupported && fr.tsPool)
+            vkCmdWriteTimestamp2(fr.cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, fr.tsPool, 0);
+
+        // The main color pass is opened lazily (ensureMainPass) on the first mesh
+        // or HUD flush, AFTER the shadow depth pass has been recorded — dynamic
+        // rendering forbids nesting, so the shadow pass must precede it.
+        m_mainPassOpen = false;
+        m_curImageIndex = imageIndex;
+
+        fc.frameIndex = m_frameIdx;
+        fc.cmd = reinterpret_cast<uint64_t>(fr.cmd);
+        fc.backbuffer = imageIndex;
+        fc.valid = true;
+        return fc;
+    }
+
+    // Compute the sun's ortho viewProj for this frame. Single map (no CSM): an
+    // ortho box of half-extent kShadowOrtho centered on the camera position, with
+    // the light positioned kShadowDepthHalf back along the sun direction. The box
+    // follows the camera so the visible ~60 m level is always covered. Matches the
+    // sun L in mesh.frag: normalize(0.4, 1.0, 0.3).
+    glm::mat4 computeLightViewProj() const {
+        const glm::vec3 sunDir = glm::normalize(glm::vec3(0.4f, 1.0f, 0.3f));
+        const glm::vec3 center = m_camPos;
+        const glm::vec3 eye = center + sunDir * kShadowDepthHalf;
+        // Up vector not parallel to sunDir.
+        const glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
+        glm::vec3 upPick = (std::abs(glm::dot(sunDir, up)) > 0.99f) ? glm::vec3(0,0,1) : up;
+        glm::mat4 view = glm::lookAt(eye, center, upPick);
+        // Ortho with Vulkan's [0,1] Z (GLM_FORCE_DEPTH_ZERO_TO_ONE), reverse-Y clip.
+        glm::mat4 proj = glm::ortho(-kShadowOrtho, kShadowOrtho,
+                                    -kShadowOrtho, kShadowOrtho,
+                                    0.0f, 2.0f * kShadowDepthHalf);
+        proj[1][1] *= -1.0f;
+        return proj * view;
+    }
+
+    // Open the main color+depth rendering pass on demand (after the shadow pass).
+    // Idempotent within a frame. Records the shadow depth pass on first call so it
+    // completes (and is transitioned to SHADER_READ) before any color draw.
+    void ensureMainPass() {
+        if (m_mainPassOpen) return;
+        m_mainPassOpen = true;
+        auto& fr = m_frames[m_frameIdx];
+
+        // The shadow depth pass renders the same SSBO + indirect draws from the
+        // sun's POV; recordShadowPass() also fills the per-frame camera UBO + SSBO
+        // + indirect rings (so both passes share them) and barriers the shadow map
+        // to a sampleable layout.
+        recordShadowPass();
+
         VkClearValue clear{};
         clear.color = { { 0.04f, 0.05f, 0.08f, 1.0f } }; // dark slate backdrop
 
         VkRenderingAttachmentInfo color{};
         color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        color.imageView = m_swapViews[imageIndex];
+        color.imageView = m_swapViews[m_curImageIndex];
         color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -279,24 +336,10 @@ public:
         ri.pDepthAttachment = &depth;
         vkCmdBeginRendering(fr.cmd, &ri);
 
-        // Timestamp the start of the main pass. TOP_OF_PIPE marks "work entered the
-        // pipeline"; paired with the BOTTOM_OF_PIPE stamp at endFrame this brackets
-        // the whole scene+HUD pass. (sync2 vkCmdWriteTimestamp2.)
-        if (m_tsSupported && fr.tsPool)
-            vkCmdWriteTimestamp2(fr.cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, fr.tsPool, 0);
-
-        // Viewport + scissor for the whole frame; the app issues drawMesh() calls
-        // between beginFrame/endFrame (each binds the mesh pipeline + descriptors).
         VkViewport vp{ 0.0f, 0.0f, (float)m_extent.width, (float)m_extent.height, 0.0f, 1.0f };
         VkRect2D scis{ {0,0}, m_extent };
         vkCmdSetViewport(fr.cmd, 0, 1, &vp);
         vkCmdSetScissor(fr.cmd, 0, 1, &scis);
-
-        fc.frameIndex = m_frameIdx;
-        fc.cmd = reinterpret_cast<uint64_t>(fr.cmd);
-        fc.backbuffer = imageIndex;
-        fc.valid = true;
-        return fc;
     }
 
     void endFrame(const FrameContext& fc) override {
@@ -517,6 +560,15 @@ private:
     // 2D HUD vertex: position already in clip space (NDC), uv, rgba color.
     struct HudVertex { float pos[2]; float uv[2]; float color[4]; };
 
+    // Per-frame camera UBO (matches shaders/mesh.{vert,frag} + shadow.vert). Two
+    // mat4s: the camera viewProj and the sun's lightViewProj (perf-stack E). std140
+    // packs back-to-back mat4s with no padding, so 128 bytes total.
+    struct CameraUBO {
+        glm::mat4 viewProj;
+        glm::mat4 lightViewProj;
+    };
+    static_assert(sizeof(CameraUBO) == 128, "CameraUBO must be two tightly-packed mat4");
+
     // Per-object GPU row (matches shaders/mesh.vert ObjectData; std430). The 3
     // uint pads keep the struct 16-byte aligned after texIndex so std430's mat4
     // base alignment is satisfied for the next row.
@@ -550,6 +602,17 @@ private:
     // stays tiny. 6 verts/quad; a full-screen console is well under this.
     static constexpr uint32_t kMaxHudDraws = 256;
     static constexpr uint32_t kMaxHudVerts = 24576;
+
+    // ---- Directional shadow mapping (perf-stack E) ------------------------
+    // Square depth map resolution. 2048 is a good quality/cost balance for a
+    // single ~80 m cascade over a ~60 m level (4x the area of 1024 for one extra
+    // mip of crispness; still cheap on the A2000/1080 Ti).
+    static constexpr uint32_t kShadowDim = 2048;
+    // The sun's ortho half-extent (meters) centered on the camera, and the depth
+    // range along the sun direction. Sized to cover the level's working set; the
+    // box follows the camera so the visible area is always shadowed.
+    static constexpr float kShadowOrtho     = 45.0f;   // half-width/height
+    static constexpr float kShadowDepthHalf = 80.0f;   // +/- along the sun dir
 
     struct Frame {
         VkCommandPool pool = VK_NULL_HANDLE;
@@ -634,22 +697,23 @@ private:
         out[3] = tl; out[4] = br; out[5] = tr;   //      tl->br->tr
     }
 
-    // ---- GPU-driven mesh flush (Subsystem D) -------------------------------
-    // Group this frame's drawMesh() records by mesh, write the per-object SSBO
-    // (instances of a mesh contiguous) + the camera UBO + a VkDrawIndexedIndirect
-    // command per mesh, then bind the bindless set + the per-frame object/camera
-    // set and issue ONE vkCmdDrawIndexedIndirect per distinct mesh. Idempotent:
-    // a second call in the same frame is a no-op (m_meshFlushed guards it).
-    void flushMeshDraws() {
-        if (m_meshFlushed) return;
-        m_meshFlushed = true;
-        if (m_drawRecords.empty() || !m_meshPipeline) return;
+    // ---- GPU-driven per-frame data prep (Subsystem D + shadows E) ----------
+    // Build the camera+light UBO, group this frame's drawMesh() records by mesh,
+    // write the per-object SSBO (instances of a mesh contiguous), and fill one
+    // VkDrawIndexedIndirectCommand per mesh. Pure data; records NO commands. Runs
+    // once per frame (m_framePrepared) because BOTH the shadow depth pass and the
+    // main color pass consume the same SSBO + indirect buffer. Caches the produced
+    // command count in m_frameCmdCount.
+    void prepareFrameData() {
+        if (m_framePrepared) return;
+        m_framePrepared = true;
+        m_frameCmdCount = 0;
 
         auto& fr = m_frames[m_frameIdx];
         if (!fr.objMapped || !fr.indirectMapped || !fr.camMapped) return;
 
-        // Camera viewProj (right-handed, reverse-Y for Vulkan clip), built once
-        // per frame from the current camera + aspect.
+        // Camera viewProj (right-handed, reverse-Y for Vulkan clip) + the sun's
+        // ortho lightViewProj, written together into the per-frame camera UBO.
         const float aspect = (float)m_extent.width / (float)std::max(1u, m_extent.height);
         const glm::vec3 fwd(std::cos(m_camPitch) * std::cos(m_camYaw),
                             std::sin(m_camPitch),
@@ -657,8 +721,13 @@ private:
         glm::mat4 view = glm::lookAt(m_camPos, m_camPos + fwd, glm::vec3(0, 1, 0));
         glm::mat4 proj = glm::perspective(glm::radians(m_camFov), aspect, 0.1f, 200.0f);
         proj[1][1] *= -1.0f;
-        glm::mat4 viewProj = proj * view;
-        std::memcpy(fr.camMapped, &viewProj, sizeof(glm::mat4));
+        CameraUBO ubo{};
+        ubo.viewProj = proj * view;
+        m_lightViewProj = computeLightViewProj();
+        ubo.lightViewProj = m_lightViewProj;
+        std::memcpy(fr.camMapped, &ubo, sizeof(CameraUBO));
+
+        if (m_drawRecords.empty() || !m_meshPipeline) return;
 
         // Group records by mesh (preserve first-seen order for determinism). Reuse
         // a scratch map across frames to avoid per-frame allocation churn.
@@ -684,6 +753,7 @@ private:
             if (mit == m_meshes.end()) continue;
             const std::vector<uint32_t>& list = m_groups[mid];
             if (list.empty()) continue;
+            if (cmdCount >= kMaxDrawMeshes) break;
             const uint32_t baseRow = row;
             for (uint32_t ri : list) {
                 const DrawRecord& dr = m_drawRecords[ri];
@@ -705,14 +775,114 @@ private:
             m_building.objectsDrawn += (uint32_t)list.size();
             m_building.triangles += (mit->second.indexCount / 3) * (uint32_t)list.size();
         }
-        if (cmdCount == 0) return;
+        m_frameCmdCount = cmdCount;
+    }
 
+    // ---- Directional shadow depth pass (perf-stack E) ----------------------
+    // Render the scene depth from the sun's POV into the shadow map using the SAME
+    // SSBO + indirect commands as the color pass (prepared by prepareFrameData),
+    // with the depth-only pipeline (set 0 = object SSBO + camera UBO; shadow.vert
+    // reads model rows + lightViewProj). Always runs (even with zero occluders) so
+    // the map is cleared + left in DEPTH_READ_ONLY_OPTIMAL for the main pass to
+    // sample. Recorded BEFORE the main color pass begins (no nested rendering).
+    void recordShadowPass() {
+        prepareFrameData();
+        auto& fr = m_frames[m_frameIdx];
+        VkCommandBuffer cmd = fr.cmd;
+        if (!m_shadowPipeline) return;
+
+        // Transition the shadow map to DEPTH_ATTACHMENT_OPTIMAL before clearing it.
+        // We CLEAR the attachment (LOAD_OP_CLEAR), so the previous contents are
+        // discarded -> oldLayout UNDEFINED is always valid and we never need the
+        // exact prior layout. The src scope is the prior frame's sampling reads
+        // (FRAGMENT_SHADER) so this also serves as the WAR barrier protecting that
+        // sampling from this frame's depth writes; on the very first use there's no
+        // prior reader, so the src scope is TOP_OF_PIPE/none.
+        if (m_shadowFirstUse) {
+            depthBarrier(cmd, m_shadowImg,
+                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                         VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+            m_shadowFirstUse = false;
+        } else {
+            depthBarrier(cmd, m_shadowImg,
+                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+        }
+
+        VkRenderingAttachmentInfo depth{};
+        depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+        depth.imageView = m_shadowView;
+        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;     // sampled in the main pass
+        depth.clearValue.depthStencil = { 1.0f, 0 };
+
+        VkExtent2D shExt{ kShadowDim, kShadowDim };
+        VkRenderingInfo ri{};
+        ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+        ri.renderArea = { {0,0}, shExt };
+        ri.layerCount = 1;
+        ri.colorAttachmentCount = 0;
+        ri.pDepthAttachment = &depth;
+        vkCmdBeginRendering(cmd, &ri);
+
+        VkViewport vp{ 0.0f, 0.0f, (float)kShadowDim, (float)kShadowDim, 0.0f, 1.0f };
+        VkRect2D scis{ {0,0}, shExt };
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &scis);
+
+        if (m_frameCmdCount > 0) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowPipeline);
+            // set 0 = object SSBO + camera UBO (shadow.vert reads lightViewProj).
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowLayout,
+                                    0, 1, &fr.objSet, 0, nullptr);
+            for (uint32_t i = 0; i < m_frameCmdCount; ++i) {
+                const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
+                VkDeviceSize off = 0;
+                vkCmdBindVertexBuffers(cmd, 0, 1, &mh.vbo, &off);
+                vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
+                vkCmdDrawIndexedIndirect(cmd, fr.indirectBuf,
+                    (VkDeviceSize)i * sizeof(VkDrawIndexedIndirectCommand), 1,
+                    sizeof(VkDrawIndexedIndirectCommand));
+            }
+        }
+        vkCmdEndRendering(cmd);
+
+        // DEPTH_ATTACHMENT_OPTIMAL -> DEPTH_READ_ONLY_OPTIMAL so the main pass
+        // fragment shader can sample it. This is the #1 VUID-sensitive barrier:
+        // wait for late-fragment depth writes, make them available to the sampling
+        // fragment stage's reads.
+        depthBarrier(cmd, m_shadowImg,
+                     VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                     VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    }
+
+    // ---- GPU-driven mesh flush (Subsystem D) -------------------------------
+    // Open the main color pass (which records the shadow depth pass first), then
+    // bind the mesh pipeline + descriptor sets and issue ONE vkCmdDrawIndexedIndirect
+    // per distinct mesh. Idempotent: a second call in the same frame is a no-op.
+    void flushMeshDraws() {
+        if (m_meshFlushed) return;
+        m_meshFlushed = true;
+        // ensureMainPass() records the shadow pass + opens the color pass; it also
+        // triggers prepareFrameData() via recordShadowPass(). Always call it so the
+        // color pass is open even on a zero-draw frame (clears the backbuffer).
+        ensureMainPass();
+        if (m_frameCmdCount == 0 || !m_meshPipeline) return;
+
+        auto& fr = m_frames[m_frameIdx];
         VkCommandBuffer cmd = fr.cmd;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshPipeline);
-        VkDescriptorSet sets[2] = { m_bindlessSet, fr.objSet };
+        // set 0 = bindless textures, set 1 = object SSBO + camera UBO, set 2 = shadow map.
+        VkDescriptorSet sets[3] = { m_bindlessSet, fr.objSet, m_shadowSet };
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshLayout,
-                                0, 2, sets, 0, nullptr);
-        for (uint32_t i = 0; i < cmdCount; ++i) {
+                                0, 3, sets, 0, nullptr);
+        for (uint32_t i = 0; i < m_frameCmdCount; ++i) {
             const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
             VkDeviceSize off = 0;
             vkCmdBindVertexBuffers(cmd, 0, 1, &mh.vbo, &off);
@@ -1293,7 +1463,9 @@ private:
             binds[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
             binds[1].binding = 1; binds[1].descriptorCount = 1;
             binds[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-            binds[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+            // VERTEX: camera viewProj (mesh.vert) + lightViewProj (shadow.vert).
+            // FRAGMENT: lightViewProj for the per-pixel shadow projection (mesh.frag).
+            binds[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
             VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
             slci.bindingCount = 2; slci.pBindings = binds;
             if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_objSetLayout) != VK_SUCCESS) {
@@ -1324,9 +1496,9 @@ private:
                 }
                 fr.objMapped = info.pMappedData;
 
-                // Camera UBO.
+                // Camera UBO (camera viewProj + sun lightViewProj).
                 VkBufferCreateInfo cbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-                cbci.size = sizeof(glm::mat4);
+                cbci.size = sizeof(CameraUBO);
                 cbci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
                 VmaAllocationInfo cinfo{};
                 if (vmaCreateBuffer(m_alloc, &cbci, &aci, &fr.camBuf, &fr.camAlloc, &cinfo) != VK_SUCCESS) {
@@ -1353,7 +1525,7 @@ private:
                     logError("[rhi] object set alloc failed"); return false;
                 }
                 VkDescriptorBufferInfo sbi{ fr.objBuf, 0, VK_WHOLE_SIZE };
-                VkDescriptorBufferInfo cbi{ fr.camBuf, 0, sizeof(glm::mat4) };
+                VkDescriptorBufferInfo cbi{ fr.camBuf, 0, sizeof(CameraUBO) };
                 VkWriteDescriptorSet writes[2]{};
                 writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 writes[0].dstSet = fr.objSet; writes[0].dstBinding = 0; writes[0].descriptorCount = 1;
@@ -1422,10 +1594,11 @@ private:
         ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
 
         // GPU-driven layout: set 0 = bindless textures, set 1 = object SSBO +
-        // camera UBO. NO push constants (per-object data is in the SSBO).
-        VkDescriptorSetLayout setLayouts[2] = { m_bindlessLayout, m_objSetLayout };
+        // camera UBO, set 2 = the shadow map (perf-stack E). NO push constants
+        // (per-object data is in the SSBO).
+        VkDescriptorSetLayout setLayouts[3] = { m_bindlessLayout, m_objSetLayout, m_shadowSetLayout };
         VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-        plci.setLayoutCount = 2; plci.pSetLayouts = setLayouts;
+        plci.setLayoutCount = 3; plci.pSetLayouts = setLayouts;
         if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_meshLayout) != VK_SUCCESS) {
             logError("[rhi] pipeline layout failed"); return false;
         }
@@ -1448,6 +1621,170 @@ private:
         if (pr != VK_SUCCESS) { logError("[rhi] graphics pipeline create failed"); return false; }
 
         logInfo("[rhi] GPU-driven mesh pipeline ready (bindless textures + per-object SSBO + multidraw-indirect)");
+
+        // Now that m_objSetLayout exists, build the depth-only shadow pipeline.
+        if (!createShadowPipeline()) return false;
+        return true;
+    }
+
+    // ---- Directional shadow mapping (perf-stack E) -------------------------
+    // Create the shadow depth texture (+ view + compare sampler) and the set-2
+    // descriptor (sampler2DShadow) the mesh fragment shader reads. Resolution is
+    // fixed + swapchain-independent, so this is created once at init.
+    bool createShadowImage() {
+        VkImageCreateInfo ici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = m_shadowFormat;
+        ici.extent = { kShadowDim, kShadowDim, 1 };
+        ici.mipLevels = 1; ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VmaAllocationCreateInfo aci{};
+        aci.usage = VMA_MEMORY_USAGE_AUTO;
+        aci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        if (vmaCreateImage(m_alloc, &ici, &aci, &m_shadowImg, &m_shadowAlloc, nullptr) != VK_SUCCESS) {
+            logError("[rhi] shadow image create failed"); return false;
+        }
+        VkImageViewCreateInfo vci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        vci.image = m_shadowImg; vci.viewType = VK_IMAGE_VIEW_TYPE_2D; vci.format = m_shadowFormat;
+        vci.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(m_dev.device, &vci, nullptr, &m_shadowView) != VK_SUCCESS) {
+            logError("[rhi] shadow view create failed"); return false;
+        }
+
+        // Compare-enabled sampler: hardware PCF. LESS_OR_EQUAL means texture()
+        // returns 1 where refDepth <= storedDepth (lit). CLAMP_TO_EDGE + a white
+        // border avoids spurious shadowing at the map edges.
+        VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        sci.magFilter = VK_FILTER_LINEAR; sci.minFilter = VK_FILTER_LINEAR;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+        sci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE; // outside == lit
+        sci.compareEnable = VK_TRUE;
+        sci.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        sci.maxLod = 0.0f;
+        if (vkCreateSampler(m_dev.device, &sci, nullptr, &m_shadowSampler) != VK_SUCCESS) {
+            logError("[rhi] shadow sampler create failed"); return false;
+        }
+
+        // Set-2 layout: a single combined-image-sampler (sampler2DShadow) in frag.
+        VkDescriptorSetLayoutBinding b{};
+        b.binding = 0; b.descriptorCount = 1;
+        b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        slci.bindingCount = 1; slci.pBindings = &b;
+        if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_shadowSetLayout) != VK_SUCCESS) {
+            logError("[rhi] shadow set layout failed"); return false;
+        }
+        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
+        VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        pci.maxSets = 1; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
+        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_shadowDescPool) != VK_SUCCESS) {
+            logError("[rhi] shadow desc pool failed"); return false;
+        }
+        VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+        dsai.descriptorPool = m_shadowDescPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &m_shadowSetLayout;
+        if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_shadowSet) != VK_SUCCESS) {
+            logError("[rhi] shadow set alloc failed"); return false;
+        }
+        // The shadow map's sampled layout is DEPTH_READ_ONLY_OPTIMAL (it's never a
+        // color/general image); write the descriptor once with that layout. The
+        // per-frame barrier leaves the image in exactly this layout before the
+        // main pass samples it.
+        VkDescriptorImageInfo dii{};
+        dii.sampler = m_shadowSampler;
+        dii.imageView = m_shadowView;
+        dii.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        w.dstSet = m_shadowSet; w.dstBinding = 0; w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &dii;
+        vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        return true;
+    }
+
+    // Depth-only pipeline for the shadow pass: shadow.vert (lightViewProj*model),
+    // no fragment shader, no color attachment, depth write/test LESS. set 0 =
+    // the object SSBO + camera UBO (shadow.vert reads model rows + lightViewProj).
+    // A small rasterizer depth bias supplements the shader's slope-scaled bias.
+    bool createShadowPipeline() {
+        VkShaderModule vs = loadShaderModule("shaders\\shadow.vert.spv");
+        if (!vs) return false;
+
+        VkPipelineShaderStageCreateInfo stage{};
+        stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage.stage = VK_SHADER_STAGE_VERTEX_BIT; stage.module = vs; stage.pName = "main";
+
+        VkVertexInputBindingDescription bind{ 0, sizeof(MeshVertex), VK_VERTEX_INPUT_RATE_VERTEX };
+        VkVertexInputAttributeDescription attrs[3]{
+            { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, pos)    },
+            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, normal) },
+            { 2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(MeshVertex, uv)     },
+        };
+        VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+        vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &bind;
+        vin.vertexAttributeDescriptionCount = 3; vin.pVertexAttributeDescriptions = attrs;
+
+        VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        vp.viewportCount = 1; vp.scissorCount = 1;
+
+        // Front-face cull renders back faces into the shadow map: the depth values
+        // come from surfaces facing AWAY from the light, which pushes self-shadow
+        // acne behind the lit geometry (a standard, robust acne mitigation). A
+        // constant + slope depth bias supplements it.
+        VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_FRONT_BIT;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+        rs.depthBiasEnable = VK_TRUE;
+        rs.depthBiasConstantFactor = 1.25f;
+        rs.depthBiasSlopeFactor = 1.75f;
+
+        VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        dss.depthTestEnable = VK_TRUE; dss.depthWriteEnable = VK_TRUE;
+        dss.depthCompareOp = VK_COMPARE_OP_LESS;
+
+        // No color attachment in the shadow pass.
+        VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        cb.attachmentCount = 0; cb.pAttachments = nullptr;
+
+        VkDynamicState dyn[2]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+
+        // set 0 = the object SSBO + camera UBO (shadow.vert reads both).
+        VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        plci.setLayoutCount = 1; plci.pSetLayouts = &m_objSetLayout;
+        if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_shadowLayout) != VK_SUCCESS) {
+            logError("[rhi] shadow pipeline layout failed"); vkDestroyShaderModule(m_dev.device, vs, nullptr); return false;
+        }
+
+        // Dynamic rendering: depth-only (no color formats).
+        VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+        prci.colorAttachmentCount = 0;
+        prci.depthAttachmentFormat = m_shadowFormat;
+
+        VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        gpci.pNext = &prci;
+        gpci.stageCount = 1; gpci.pStages = &stage;
+        gpci.pVertexInputState = &vin; gpci.pInputAssemblyState = &ia;
+        gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
+        gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
+        gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_shadowLayout;
+        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_shadowPipeline);
+        vkDestroyShaderModule(m_dev.device, vs, nullptr);
+        if (pr != VK_SUCCESS) { logError("[rhi] shadow pipeline create failed"); return false; }
+
+        logInfo("[rhi] directional shadow pipeline ready (2048^2 depth, depth-only, PCF compare sampler)");
         return true;
     }
 
@@ -1499,6 +1836,15 @@ private:
         if (m_bindlessPool)   { vkDestroyDescriptorPool(m_dev.device, m_bindlessPool, nullptr); m_bindlessPool = VK_NULL_HANDLE; }
         if (m_bindlessLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_bindlessLayout, nullptr); m_bindlessLayout = VK_NULL_HANDLE; }
 
+        // Shadow mapping resources (perf-stack E).
+        if (m_shadowPipeline)  { vkDestroyPipeline(m_dev.device, m_shadowPipeline, nullptr); m_shadowPipeline = VK_NULL_HANDLE; }
+        if (m_shadowLayout)    { vkDestroyPipelineLayout(m_dev.device, m_shadowLayout, nullptr); m_shadowLayout = VK_NULL_HANDLE; }
+        if (m_shadowDescPool)  { vkDestroyDescriptorPool(m_dev.device, m_shadowDescPool, nullptr); m_shadowDescPool = VK_NULL_HANDLE; }
+        if (m_shadowSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_shadowSetLayout, nullptr); m_shadowSetLayout = VK_NULL_HANDLE; }
+        if (m_shadowSampler)   { vkDestroySampler(m_dev.device, m_shadowSampler, nullptr); m_shadowSampler = VK_NULL_HANDLE; }
+        if (m_shadowView)      { vkDestroyImageView(m_dev.device, m_shadowView, nullptr); m_shadowView = VK_NULL_HANDLE; }
+        if (m_shadowImg)       { vmaDestroyImage(m_alloc, m_shadowImg, m_shadowAlloc); m_shadowImg = VK_NULL_HANDLE; m_shadowAlloc = nullptr; }
+
         if (m_meshPipeline)  vkDestroyPipeline(m_dev.device, m_meshPipeline, nullptr);
         if (m_meshLayout)    vkDestroyPipelineLayout(m_dev.device, m_meshLayout, nullptr);
         if (m_uploadFence)   vkDestroyFence(m_dev.device, m_uploadFence, nullptr);
@@ -1542,6 +1888,11 @@ private:
     std::vector<uint32_t>   m_groupOrder;
     uint32_t                m_drawMeshOrder[kMaxDrawMeshes] = {};
     bool                    m_meshFlushed = false;
+    // Per-frame data preparation (camera/light UBO + SSBO + indirect) is shared by
+    // the shadow depth pass AND the main color pass, so it runs once (guarded) and
+    // caches the number of indirect commands produced.
+    bool                    m_framePrepared = false;
+    uint32_t                m_frameCmdCount = 0;
 
     // 2D HUD overlay pipeline (NDC quads, no depth, alpha-blended)
     VkPipeline       m_hudPipeline = VK_NULL_HANDLE;
@@ -1566,6 +1917,30 @@ private:
     VkImage       m_depthImg = VK_NULL_HANDLE;
     VkImageView   m_depthView = VK_NULL_HANDLE;
     VmaAllocation m_depthAlloc = nullptr;
+
+    // ---- Directional shadow mapping (perf-stack E) ------------------------
+    // A single fixed-resolution depth texture rendered from the sun's POV each
+    // frame (depth-only pipeline, same SSBO + indirect draws as the color pass),
+    // then sampled by mesh.frag via a compare sampler (sampler2DShadow). One map
+    // (no CSM); the ortho box follows the camera. Created once (resolution is
+    // swapchain-independent); the per-frame work is the depth pass + a barrier.
+    VkFormat              m_shadowFormat   = VK_FORMAT_D32_SFLOAT;
+    VkImage               m_shadowImg      = VK_NULL_HANDLE;
+    VmaAllocation         m_shadowAlloc    = nullptr;
+    VkImageView           m_shadowView     = VK_NULL_HANDLE;
+    VkSampler             m_shadowSampler  = VK_NULL_HANDLE;   // compare-enabled
+    VkPipeline            m_shadowPipeline = VK_NULL_HANDLE;   // depth-only
+    VkPipelineLayout      m_shadowLayout   = VK_NULL_HANDLE;   // set0 = objSet
+    VkDescriptorSetLayout m_shadowSetLayout = VK_NULL_HANDLE;  // set2: sampler2DShadow
+    VkDescriptorPool      m_shadowDescPool = VK_NULL_HANDLE;
+    VkDescriptorSet       m_shadowSet      = VK_NULL_HANDLE;   // points at the map
+    bool                  m_shadowFirstUse = true; // first transition is UNDEFINED->...
+    glm::mat4             m_lightViewProj{ 1.0f };  // computed each frame
+    // Main-pass deferral: with shadows we record the shadow depth pass BEFORE the
+    // main color rendering begins, so beginFrame no longer opens the main pass —
+    // ensureMainPass() opens it lazily on the first mesh/HUD flush (or endFrame).
+    bool                  m_mainPassOpen   = false;
+    uint32_t              m_curImageIndex  = 0;
 
     // Swapchain
     VkSwapchainKHR m_swapchain = VK_NULL_HANDLE;
