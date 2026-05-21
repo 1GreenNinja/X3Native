@@ -48,6 +48,20 @@ public:
                  x3::con::IConsole& console, float dt);
     // Crisp 2D crosshair at the framebuffer center.
     void drawCrosshair(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const;
+    // ---- Phase 2a: player health + damage feedback ------------------------
+    // Bottom-left health bar (background + fill scaled by hp/maxHp) + an "HP NNN"
+    // number. The fill tints green->amber->red as health drops. No-op if the HUD
+    // size is 0 (headless).
+    void drawHealth(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                    int hp, int maxHp) const;
+    // Brief translucent red full-screen flash when hit. `strength` in [0,1] (1 just
+    // after a hit, fading to 0); a 0 strength draws nothing.
+    void drawDamageFlash(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                         float strength) const;
+    // "YOU DIED" overlay while dead: a dark vignette + centered red text, plus a
+    // small "Respawning..." line. Drawn while the player is in the death state.
+    void drawDeathOverlay(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const;
+
     // Semi-transparent panel + scrollback + input line. Slides down from the top
     // edge when opening and back up when closing over ~0.18 s (smoothstep). The
     // panel is drawn whenever the slide animation is in progress (anim > 0) so the

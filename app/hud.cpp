@@ -156,6 +156,94 @@ void Hud::drawCrosshair(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
     device.drawHudQuad(frame, cx - thick * 0.5f, cy + gap,       thick, arm, color); // bottom
 }
 
+// ---- Phase 2a: player health + damage feedback ----------------------------
+void Hud::drawHealth(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                     int hp, int maxHp) const {
+    uint32_t w = 0, h = 0;
+    device.hudSize(w, h);
+    if (w == 0 || h == 0 || maxHp <= 0) return;
+
+    if (hp < 0) hp = 0;
+    if (hp > maxHp) hp = maxHp;
+    const float frac = (float)hp / (float)maxHp;
+
+    // Bar geometry: bottom-left, above the screen edge.
+    const float barW = 260.0f, barH = 20.0f;
+    const float x = 16.0f;
+    const float y = (float)h - barH - 16.0f;
+    const float border = 2.0f;
+
+    // Backing plate (dark) + inner empty track.
+    const float plate[4] = { 0.0f, 0.0f, 0.0f, 0.55f };
+    const float track[4] = { 0.10f, 0.10f, 0.12f, 0.85f };
+    device.drawHudQuad(frame, x - border, y - border,
+                       barW + 2 * border, barH + 2 * border, plate);
+    device.drawHudQuad(frame, x, y, barW, barH, track);
+
+    // Fill: green when healthy, amber mid, red when low.
+    float fill[4];
+    if (frac > 0.5f) {        // green -> amber across [1.0, 0.5]
+        float t = (1.0f - frac) / 0.5f;  // 0 at full, 1 at half
+        fill[0] = 0.2f + 0.7f * t; fill[1] = 0.9f; fill[2] = 0.2f; fill[3] = 0.95f;
+    } else {                  // amber -> red across [0.5, 0.0]
+        float t = (0.5f - frac) / 0.5f;  // 0 at half, 1 at empty
+        fill[0] = 0.9f; fill[1] = 0.9f * (1.0f - t); fill[2] = 0.15f; fill[3] = 0.95f;
+    }
+    device.drawHudQuad(frame, x, y, barW * frac, barH, fill);
+
+    // HP number to the right of the bar.
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "HP %3d", hp);
+    const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.7f };
+    const float white[4]  = { 1.0f, 1.0f, 1.0f, 1.0f };
+    const float tx = x + barW + 12.0f;
+    const float ty = y + (barH - kGlyphPx) * 0.5f;
+    device.drawHudText(frame, buf, tx + 1.0f, ty + 1.0f, kGlyphPx, shadow);
+    device.drawHudText(frame, buf, tx, ty, kGlyphPx, white);
+}
+
+void Hud::drawDamageFlash(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                          float strength) const {
+    if (strength <= 0.0f) return;
+    if (strength > 1.0f) strength = 1.0f;
+    uint32_t w = 0, h = 0;
+    device.hudSize(w, h);
+    if (w == 0 || h == 0) return;
+    // Translucent red wash over the whole screen, peaking at ~0.45 alpha.
+    const float red[4] = { 0.85f, 0.05f, 0.05f, 0.45f * strength };
+    device.drawHudQuad(frame, 0.0f, 0.0f, (float)w, (float)h, red);
+}
+
+void Hud::drawDeathOverlay(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const {
+    uint32_t w = 0, h = 0;
+    device.hudSize(w, h);
+    if (w == 0 || h == 0) return;
+    // Dark vignette over the scene.
+    const float dark[4] = { 0.0f, 0.0f, 0.0f, 0.6f };
+    device.drawHudQuad(frame, 0.0f, 0.0f, (float)w, (float)h, dark);
+
+    // Centered "YOU DIED" in big red text, with a drop shadow.
+    const char* msg = "YOU DIED";
+    const float bigGlyph = 48.0f;
+    const float msgW = (float)std::char_traits<char>::length(msg) * bigGlyph;
+    const float mx = ((float)w - msgW) * 0.5f;
+    const float my = (float)h * 0.5f - bigGlyph;
+    const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.85f };
+    const float red[4]    = { 0.9f, 0.12f, 0.12f, 1.0f };
+    device.drawHudText(frame, msg, mx + 3.0f, my + 3.0f, bigGlyph, shadow);
+    device.drawHudText(frame, msg, mx, my, bigGlyph, red);
+
+    // "Respawning..." subtitle.
+    const char* sub = "Respawning...";
+    const float subGlyph = 16.0f;
+    const float subW = (float)std::char_traits<char>::length(sub) * subGlyph;
+    const float sx = ((float)w - subW) * 0.5f;
+    const float sy = my + bigGlyph + 16.0f;
+    const float grey[4] = { 0.85f, 0.85f, 0.85f, 1.0f };
+    device.drawHudText(frame, sub, sx + 1.0f, sy + 1.0f, subGlyph, shadow);
+    device.drawHudText(frame, sub, sx, sy, subGlyph, grey);
+}
+
 void Hud::drawConsole(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                       x3::con::IConsole& console, float dt) {
     // Advance the slide animation toward the logical open state. Input handling

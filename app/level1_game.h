@@ -81,6 +81,17 @@ public:
     // `playerPos` the position used for triggers/pickup (feet or eye — XZ is what
     // matters). Doors + monsters + pickup + triggers are all stepped here; the host
     // still calls physics->step() and scene.update() around this (see main loop).
+    //
+    // `player` (Phase 2a) is the damage sink enemies attack — pass the Player so
+    // guards/drone/Martinez can hurt it. May be null (no combat damage; legacy /
+    // headless geometry tests). `attackFx`, if set, spawns a visible attack beam
+    // per enemy attack (drone tracer / melee tell); the host wires it to CombatFx.
+    void tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+              const x3::phys::Vec3& eye, const x3::phys::Vec3& playerPos,
+              IDamageSink* player, const AttackFxFn& attackFx);
+
+    // Legacy overload (no combat damage): forwards with a null player / empty fx.
+    // Keeps the geometry-only --test-level1 + old call sites unchanged.
     void tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
               const x3::phys::Vec3& eye, const x3::phys::Vec3& playerPos);
 
@@ -107,6 +118,14 @@ public:
 
     // ---- Queries (host HUD + the self-test) -------------------------------
     const Level1Layout& layout() const { return m_layout; }
+
+    // Respawn checkpoint (Phase 2a): the player respawns here (feet position) at
+    // full HP after death. The simplest checkpoint is the level-start cell spawn;
+    // documented in the header note below. Enemies are NOT reset on respawn —
+    // killed enemies stay dead and survivors keep their state, so the player picks
+    // the fight back up where they left off (a deliberate, documented choice).
+    x3::phys::Vec3 checkpoint() const { return m_layout.spawn; }
+
     bool armed() const { return m_weapon.hasWeapon(); }
     bool complete() const { return m_complete; }
     ObjectiveSystem&       objectives()       { return m_objectives; }
