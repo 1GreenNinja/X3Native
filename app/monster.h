@@ -81,6 +81,12 @@ constexpr float kChaseSpeed    = 2.5f;
 // while horizontal distance exceeds this, so it doesn't grind into the player.
 constexpr float kChaseStopDist = 1.5f;
 
+// Wander/strafe so the crawler weaves while approaching and orbits when close,
+// instead of beelining then freezing ("glued to player"). VISUAL TUNING.
+constexpr float kStrafeFreq    = 1.6f;   // weave oscillation rate (rad/s)
+constexpr float kStrafeAmt     = 0.7f;   // perpendicular weave strength while approaching
+constexpr float kOrbitRetarget = 1.8f;   // seconds before flipping orbit direction when close
+
 // Facing sign for the model's authored forward axis. glTF convention is local -Z
 // forward, so the default -1 makes local -Z point at the player. Flip to +1 if
 // the model turns its back to the player (authored +Z forward). VISUAL TUNING.
@@ -193,6 +199,11 @@ private:
 
     // Current yaw (radians) the model faces; baked into the render 3x3 each frame.
     float m_yaw       = 0.0f;
+
+    // Wander/strafe state so the chase weaves + orbits instead of beelining.
+    float m_wander    = 0.0f;   // weave oscillator phase
+    float m_strafeDir = 1.0f;   // orbit direction (+1/-1) when close
+    float m_retarget  = 1.8f;   // countdown to flip orbit direction
 };
 
 // Headless self-test (--test-combat). Builds a physics world + an Enemy-layer

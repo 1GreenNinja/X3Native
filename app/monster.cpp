@@ -238,12 +238,45 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         m_yaw = std::atan2(kFaceSign * dx, kFaceSign * dz);
     }
 
-    // ---- Chase: crawl toward the player (XZ) while beyond the stop distance. ----
-    if (kChaseSpeed > 0.0f && m_body.valid() && horiz > kChaseStopDist) {
-        float step = kChaseSpeed * dt;
-        m_pos.x += (dx / horiz) * step;
-        m_pos.z += (dz / horiz) * step;
-        physics.setBodyPosition(m_body, m_pos);
+    // ---- Chase: weave toward the player while far, orbit when close, and STOP at
+    // walls/props so it neither beelines-then-freezes nor phases through the box.
+    // (Facing still tracks the player, above.) ----
+    if (kChaseSpeed > 0.0f && m_body.valid() && horiz > 1e-4f) {
+        m_wander += dt * kStrafeFreq;
+        const float fxn = dx / horiz, fzn = dz / horiz;   // toward player (XZ)
+        const float pxn = -fzn,       pzn = fxn;          // perpendicular (left)
+
+        float mx, mz;
+        if (horiz > kChaseStopDist) {
+            // Approach with a side-to-side weave (not a straight line).
+            const float strafe = std::sin(m_wander) * kStrafeAmt;
+            mx = fxn + pxn * strafe;
+            mz = fzn + pzn * strafe;
+        } else {
+            // Close: circle the player instead of grinding to a halt.
+            mx = pxn * m_strafeDir;
+            mz = pzn * m_strafeDir;
+            m_retarget -= dt;
+            if (m_retarget <= 0.0f) { m_strafeDir = -m_strafeDir; m_retarget = kOrbitRetarget; }
+        }
+        float ml = std::sqrt(mx * mx + mz * mz);
+        if (ml > 1e-4f) { mx /= ml; mz /= ml; }
+
+        const float step  = kChaseSpeed * dt;
+        const float probe = step + kMonsterHalf.x + 0.05f;
+        const x3::phys::Vec3 mdir{ mx, 0.0f, mz };
+        // Don't walk through walls (Static) or props like the dynamic box (Dynamic).
+        const bool blocked =
+            physics.rayCast(m_pos, mdir, probe, x3::phys::Layer::Static).hit ||
+            physics.rayCast(m_pos, mdir, probe, x3::phys::Layer::Dynamic).hit;
+        if (blocked) {
+            m_strafeDir = -m_strafeDir;   // try a new line next frames
+            m_wander   += 1.7f;
+        } else {
+            m_pos.x += mx * step;
+            m_pos.z += mz * step;
+            physics.setBodyPosition(m_body, m_pos);
+        }
     }
 
     // ---- Bake the facing yaw into the render transform's upper-left 3x3, keeping

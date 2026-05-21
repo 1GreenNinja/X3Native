@@ -43,7 +43,7 @@ constexpr float kVmDown    = 0.2f;       // below the eye line
 //
 // "Points right" implies a ~90 deg yaw error, so the best-guess default is a
 // -90 deg (-pi/2) yaw to swing the barrel from right-facing to forward-facing.
-constexpr float kVmYawOffset   = -kPi * 0.5f;  // yaw about camera up   (default -90 deg)
+constexpr float kVmYawOffset   = -kPi * 0.25f; // yaw about camera up   (-45 deg: forward, between right-ear and left)
 constexpr float kVmPitchOffset = 0.0f;         // pitch about camera right
 constexpr float kVmRollOffset  = 0.0f;         // roll about camera forward
 
