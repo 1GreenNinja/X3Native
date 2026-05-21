@@ -4,6 +4,7 @@ add_library(x3engine STATIC
     rhi/VulkanRenderDevice.cpp
     rhi/vma_impl.cpp
     asset/PakAssetSource.cpp
+    physics/JoltPhysicsWorld.cpp
 )
 
 # Repo root on the include path so consumers use the namespaced prefix,
@@ -19,6 +20,7 @@ target_link_libraries(x3engine
         glfw
         miniz::miniz
         glm::glm
+        Jolt::Jolt
 )
 
 target_compile_features(x3engine PUBLIC cxx_std_20)

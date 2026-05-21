@@ -39,6 +39,7 @@ find_package(VulkanMemoryAllocator CONFIG REQUIRED)       # vcpkg (header-only)
 find_package(glfw3 CONFIG REQUIRED)                       # vcpkg
 find_package(miniz CONFIG REQUIRED)                       # vcpkg
 find_package(glm CONFIG REQUIRED)                         # vcpkg
+find_package(Jolt CONFIG REQUIRED)                        # vcpkg (joltphysics, MIT)
 
 # ---- Engine + app ----
 add_subdirectory(engine)
