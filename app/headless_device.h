@@ -68,6 +68,17 @@ public:
                          x3::rhi::IRenderDevice::ParticleBlend) override {}
     void submitDecals(const x3::rhi::IRenderDevice::DecalInstance*, uint32_t) override {}
 
+    // GPU-compute debris world (K-T2). No-op in the headless stub; the real
+    // compute/sim path is exercised against the live Vulkan device in --test-debris.
+    void gpuDebrisConfig(const x3::rhi::IRenderDevice::GpuDebrisParams&) override {}
+    uint32_t gpuDebrisSpawnBurst(const float[3], uint32_t count, float, float, float,
+                                 uint32_t) override { return count; }
+    void gpuDebrisStep(float) override {}
+    void gpuDebrisDraw(const x3::rhi::FrameContext&, const float[4]) override {}
+    uint32_t gpuDebrisAliveCount() const override { return 0; }
+    uint32_t gpuDebrisCapacity() const override { return 0; }
+    x3::rhi::IRenderDevice::GpuDebrisStats gpuDebrisReadback(float) const override { return {}; }
+
     void setPointLights(const x3::rhi::PointLight*, uint32_t) override {}
     void setSkyParams(const x3::rhi::IRenderDevice::SkyParams&) override {}
     void setSsaoParams(const x3::rhi::IRenderDevice::SsaoParams&) override {}
