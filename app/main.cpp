@@ -17,6 +17,7 @@
 #include "engine/audio/IAudioSystem.h"
 #include "engine/net/INetworkSystem.h"   // netcode Phase 0: --test-net + SimClock
 #include "engine/net/SimClock.h"         // deterministic fixed-step accumulator
+#include "engine/ai/INavigation.h"       // GENERAL navigation: nav grid + A* + --test-nav
 
 #include "scene.h"
 #include "mesh_prims.h"
@@ -176,7 +177,8 @@ int main(int argc, char** argv) {
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
-         testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false;
+         testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
+         testNav = false;
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
     // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
     // and confirm the joint palette changes. Asset-pipeline verification for the
@@ -306,6 +308,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-net") testNet = true;
         else if (a == "--test-rescue") testRescue = true;
         else if (a == "--test-destruction") testDestruction = true;
+        else if (a == "--test-nav") testNav = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -540,6 +543,10 @@ int main(int argc, char** argv) {
     if (testDestruction) {
         x3::logInfo("running K-T0/T1 destruction (fracture/impact/hit/explosion) self-test...");
         return x3::phys::runDestructionSelfTest() ? 0 : 1;
+    }
+    if (testNav) {
+        x3::logInfo("running GENERAL navigation (nav grid + A* + path-follow) self-test...");
+        return x3::ai::runNavSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
