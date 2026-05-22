@@ -6,6 +6,7 @@
 #include "mesh_prims.h"
 #include "elevator.h"
 #include "headless_device.h"
+#include "asset_root.h"
 
 #include "engine/core/x3_log.h"
 
@@ -29,19 +30,22 @@ constexpr float kEnemyY = 0.4f;
 // these tunings point the enemy meshes at the converted_glb Characters instead.
 // On load failure the MonsterSystem falls back to its procedural box (per-enemy),
 // so the level never breaks. Characters are Z-up (lying flat) -> standUpZtoY. -----
-const char* kConvertedDir = "G:/GameModels/converted_glb";
+// Portable asset roots (assets-LFS pass): resolved relative to the repo/exe via
+// assetRoot(), falling back to G:/GameModels on machines that still have it.
+// Lazy-resolved once (the exe path is stable at runtime).
+const std::string& convertedDir() { static const std::string d = convertedGlbRoot(); return d; }
 // The original rigged GLBs: these retain their skeleton AND an "Idle" animation
 // clip (the converted_glb/Characters export dropped the animation, leaving only a
 // bind-pose skin). For J1 (make the characters ANIMATE) the humanoid enemies load
 // the rigged source so they play their idle clip via CPU skinning. Authored Y-up
 // (feet at y=0, head ~1.8 m), so NO Z->Y stand-up is needed.
-const char* kRiggedDir = "G:/GameModels/rigged_glb";
+const std::string& riggedDir() { static const std::string d = riggedGlbRoot(); return d; }
 
 // Apply the converted-character model to a tuning (file under Characters/, the
 // converted dir, the Z->Y stand-up, and a real-scale humanoid size).
 void useCharacter(MonsterSystem::Tuning& t, const char* file, float scale) {
     t.modelFile        = std::string("Characters/") + file;
-    t.modelDirOverride = kConvertedDir;
+    t.modelDirOverride = convertedDir();
     t.standUpZtoY      = true;          // converted characters are authored Z-up
     t.modelScale       = scale;         // ~1.0 => ~1.77 m tall humanoid
 }
@@ -66,14 +70,14 @@ void useRiggedCharacter(MonsterSystem::Tuning& t, const char* file, float scale)
         ? base.substr(0, base.size() - 4) : base;
     const std::string animName = stem + "_anim.glb";
     std::error_code ec;
-    if (fs::exists(fs::path(kRiggedDir) / animName, ec)) {
+    if (fs::exists(fs::path(riggedDir()) / animName, ec)) {
         chosen = animName;
         x3::logInfo("[level1] using multi-clip locomotion asset: " + animName);
     } else {
         x3::logInfo("[level1] " + animName + " absent — falling back to Idle-only " + base);
     }
     t.modelFile        = chosen;
-    t.modelDirOverride = kRiggedDir;
+    t.modelDirOverride = riggedDir();
     t.standUpZtoY      = false;         // rigged sources are authored Y-up
     t.modelScale       = scale;
 }
@@ -154,7 +158,7 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
         seed.doorC = x3::phys::Vec3{ 14.0f, b1y, 0.0f };
         seed.doorD = x3::phys::Vec3{ 18.0f, b1y, 0.0f };
         seed.doorE = x3::phys::Vec3{ shaftX0, b1y, 0.0f };
-        m_artMask = m_envArt.build(device, kConvertedDir, seed);
+        m_artMask = m_envArt.build(device, convertedDir(), seed);
     }
 
     // ---- Lighting: register a forward point light at each Light_A ceiling fixture
@@ -672,7 +676,7 @@ bool runLevel1SelfTest() {
     Scene scene;
     Level1Game game;
     game.setDevice(device);     // cache device for event spawns (see header note)
-    game.build(scene, device, *physics, "G:/GameModels/rigged_glb");
+    game.build(scene, device, *physics, riggedDir());
 
     const Level1Layout& L = game.layout();
 
@@ -877,7 +881,7 @@ bool runDoorCodeSelfTest() {
     Scene scene;
     Level1Game game;
     game.setDevice(device);
-    game.build(scene, device, *physics, "G:/GameModels/rigged_glb");
+    game.build(scene, device, *physics, riggedDir());
 
     const Level1Layout& L = game.layout();
 
@@ -948,7 +952,7 @@ bool runDoorCodeSelfTest() {
         Scene s2;
         Level1Game g2;
         g2.setDevice(dev2);
-        g2.build(s2, dev2, *p2, "G:/GameModels/rigged_glb");
+        g2.build(s2, dev2, *p2, riggedDir());
         const Level1Layout& L2 = g2.layout();
         x3::phys::Vec3 far2{ L2.doorC.x, 1.7f, L2.doorC.z + 50.0f };
         bool opened = g2.tryDoorCode(far2, 1127);   // right code, but out of range

@@ -6,6 +6,7 @@
 #include "monster.h"
 #include "mesh_prims.h"
 #include "headless_device.h"
+#include "asset_root.h"
 
 #include "engine/core/x3_log.h"
 
@@ -1081,7 +1082,7 @@ bool runCombatSelfTest() {
     // model dir; the headless device path mints fake GPU handles so the loader
     // works without Vulkan (falls back to a box if the GLB can't be parsed).
     const x3::phys::Vec3 monsterPos{ 0.0f, 0.4f, 0.0f };
-    combat.buildMonster(scene, device, *physics, "G:/GameModels/rigged_glb", monsterPos);
+    combat.buildMonster(scene, device, *physics, riggedGlbRoot(), monsterPos);
 
     // Eye 3 m in front of the monster (toward -Z), at the monster's height.
     const x3::phys::Vec3 eye{ monsterPos.x, monsterPos.y, monsterPos.z - 3.0f };
@@ -1241,7 +1242,7 @@ bool runPhase2aSelfTest() {
         pl.spawn(*w, 0.0f, 0.05f, 0.0f);
         MonsterSystem guard;
         // Place the guard ~1.2 m from the player (inside the 2.0 m attack range).
-        guard.buildMonsterTuned(scene, device, *w, "G:/GameModels/rigged_glb",
+        guard.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
                                 x3::phys::Vec3{ 1.2f, 0.4f, 0.0f }, testGuardTuning());
         int hp0 = pl.hp();
         // Step ~3 s. The player position fed in is the eye; the guard attacks on its
@@ -1266,7 +1267,7 @@ bool runPhase2aSelfTest() {
         pl.spawn(*w, 0.0f, 0.05f, 0.0f);
         MonsterSystem drone;
         // Place the drone 8 m away (well beyond melee, inside the 20 m fire range).
-        drone.buildMonsterTuned(scene, device, *w, "G:/GameModels/rigged_glb",
+        drone.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
                                 x3::phys::Vec3{ 8.0f, 0.6f, 0.0f }, testDroneTuning());
         int hp0 = pl.hp();
         const x3::phys::Vec3 playerPos = pl.damageTargetPos();
@@ -1387,7 +1388,7 @@ bool runAiSelfTest() {
         // player, so the heading converges to headingToFace(dx,dz) regardless.
         MonsterSystem::Tuning t = aiGuardTuning(); t.chaseSpeed = 0.0f;
         Scene scene; MonsterSystem m; AiTargetStub tgt;
-        m.buildMonsterTuned(scene, device, *w, "G:/GameModels/rigged_glb",
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
                             x3::phys::Vec3{ 0,0.4f,0 }, t);
         // Player straight ahead (-Z). After enough ticks facingDir() ~ (0,0,-1).
         tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -5.0f };
@@ -1401,7 +1402,7 @@ bool runAiSelfTest() {
         // (forward = +X). The off-by-pi/2 trap (e.g. atan2(dz,dx)+pi/2) would point
         // forward at -X (faces LEFT) — caught here.
         Scene scene2; MonsterSystem m2; AiTargetStub tgt2;
-        m2.buildMonsterTuned(scene2, device, *w, "G:/GameModels/rigged_glb",
+        m2.buildMonsterTuned(scene2, device, *w, riggedGlbRoot(),
                              x3::phys::Vec3{ 0,0.4f,0 }, t);
         tgt2.eye = x3::phys::Vec3{ 6.0f, 1.6f, 0.0f };   // +X
         for (int i = 0; i < 120; ++i) {
@@ -1425,7 +1426,7 @@ bool runAiSelfTest() {
         std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
         w->init(); aiGround(*w, 60.0f);
         Scene scene; MonsterSystem m; AiTargetStub tgt;
-        m.buildMonsterTuned(scene, device, *w, "G:/GameModels/rigged_glb",
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
                             x3::phys::Vec3{ 0,0.4f,0 }, aiGuardTuning());
         tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -8.0f };   // 8 m ahead, clear LOS
         AiState seen = AiState::Idle; bool everEngaged = false;
@@ -1455,7 +1456,7 @@ bool runAiSelfTest() {
         Scene scene; MonsterSystem m; AiTargetStub tgt;
         MonsterSystem::Tuning t = aiGuardTuning();
         t.hp = 90;   // 2 shots (34 each) -> 22 HP = 24% (clearly <= kAiRetreatFrac)
-        m.buildMonsterTuned(scene, device, *w, "G:/GameModels/rigged_glb",
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
                             x3::phys::Vec3{ 0,0.4f,0 }, t);
         tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -4.0f };   // close, clear LOS
         // Damage it to low HP via shots (also stamps recent-damage memory). 90 HP,
@@ -1498,7 +1499,7 @@ bool runAiSelfTest() {
         std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
         w->init(); aiGround(*w, 60.0f);
         Scene scene; MonsterSystem m; AiTargetStub tgt;
-        m.buildMonsterTuned(scene, device, *w, "G:/GameModels/rigged_glb",
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
                             x3::phys::Vec3{ 0,0.4f,0 }, aiGuardTuning());
         // First, establish LOS so the enemy records a last-known position. Keep the
         // enemy STATIONARY (chaseSpeed 0) during this phase so its X stays ~0 and we
@@ -1550,7 +1551,7 @@ bool runAiSelfTest() {
         std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
         w->init(); aiGround(*w, 60.0f);
         Scene scene; MonsterSystem m; AiTargetStub tgt;
-        m.buildMonsterTuned(scene, device, *w, "G:/GameModels/rigged_glb",
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
                             x3::phys::Vec3{ 0,0.4f,0 }, aiGuardTuning());
         tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -4.0f };   // steady, in engage range
         AiState prev = m.aiState(); int transitions = 0; int maxRun = 0, run = 0;

@@ -5,6 +5,7 @@
 #include "headless_device.h"
 #include "level.h"
 #include "mesh_prims.h"
+#include "asset_root.h"
 
 #include "engine/core/x3_log.h"
 
@@ -36,7 +37,12 @@ constexpr float kOpenDuration   = 1.0f;                        // seconds
 // ---- Shared SM_Door_A GLB visual ------------------------------------------
 // Loose-GLB root + relative path of the real sci-fi door mesh (same kit as
 // env_art.cpp). The door mesh is drawn OVER the (now invisible) collision box.
-const char* kDoorGlbDir = "G:/GameModels/converted_glb";
+// Root resolved via assetRoot() (assets-LFS pass): repo-relative assets/ first,
+// G:/GameModels fallback. Lazy-resolved once (the exe path is stable).
+inline const std::string& kDoorGlbDir() {
+    static const std::string d = convertedGlbRoot();
+    return d;
+}
 const char* kDoorGlbRel = "ModularSciFi_Interior/SM_Door_A.glb";
 
 // Probed WORLD-space AABB of SM_Door_A AFTER the GLB node TRS is applied (the
@@ -309,7 +315,7 @@ uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
 
     // Load the shared real-door GLB once (idempotent). The visual is the GLB slab
     // drawn by drawMeshes(); the procedural box below stays as collision only.
-    doors.loadDoorMesh(device, kDoorGlbDir);
+    doors.loadDoorMesh(device, kDoorGlbDir());
 
     uint32_t doorEntId;
     {
