@@ -60,4 +60,4 @@ Verified DONE-CLEAN on I9DevPC (RTX A2000): **D1** (render device, validation-cl
 
 - **D1** — implement swapchain + per-frame acquire/clear/present (dynamic rendering) + VMA in `engine/rhi/VulkanRenderDevice.cpp` until `specs/D1-render-device.spec.md`'s 5 acceptance tests pass.
 - **D5** — implement `engine/asset/PakAssetSource.cpp` from `specs/D5-asset-source.spec.md` (miniz).
-- Update `GPL_DEBT.md` rows to DONE-CLEAN as each passes.
+- Record each subsystem in `PROVENANCE.md` as it passes its acceptance tests.

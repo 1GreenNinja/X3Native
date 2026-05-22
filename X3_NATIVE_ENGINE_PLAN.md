@@ -1,24 +1,43 @@
 # X3 Native Engine — Architecture Decision & Build Plan
 
-**Decision date:** 2026-05-19
-**Status:** APPROVED — **HYBRID path** — proceed to M0 spike on the 14900K
-**Supersedes the "BabylonNative port" recommendation in** `X3_NATIVE_FEASIBILITY_2026-04-27.md` **for these reasons:** Tim wants (b) a long-term engine that powers many games and (c) the ownership/portfolio value — not just the fastest path to ship X3. The BabylonNative port remains the lower-risk fallback if M0 stalls.
+> ## ⚠️ CORRECTION (2026-05-21) — the RBDOOM/hybrid path below was NOT taken
+>
+> This document originally proposed a **HYBRID** strategy: fork RBDOOM-3-BFG (GPL)
+> for speed, then clean-room rewrite the GPL parts before commercial ship.
+> **That path was never executed.** The engine was instead built **clean-room from
+> scratch** on the 13700K — from the `specs/`, public technical references, and the
+> author's own research — with **no id Tech / RBDOOM / Doom 3 (or any other engine)
+> source ever forked, copied, or consulted.** There is no GPL code, no
+> `engine/_gpl_rbdoom/` directory, and no GPL debt.
+>
+> The result: X3Native is **100% original work**, proprietary, and free to ship
+> closed-source / commercially. See `PROVENANCE.md`, `LICENSE`, and
+> `LICENSE-NOTICE.md`. The rest of this doc is kept for its still-valid technical
+> content (stack, runtime/pak model, milestones); read §5 for the corrected license
+> position and treat all "fork RBDOOM" / "de-GPL" / `_gpl_rbdoom` references below as
+> historical (superseded). The Babylon X3 remains the design reference + fallback.
 
-### Chosen strategy: HYBRID (fork-to-learn → clean-room rewrite before commercial ship)
+**Decision date:** 2026-05-19 · **Corrected:** 2026-05-21
+**Status:** BUILT — clean-room from scratch (no engine fork). Engine building + running with a playable Level 1 graybox.
+**Supersedes the "BabylonNative port" recommendation in** `X3_NATIVE_FEASIBILITY_2026-04-27.md` **for these reasons:** Tim wants (b) a long-term engine that powers many games and (c) the ownership/portfolio value — not just the fastest path to ship X3.
 
-Tim chose (2026-05-19) the **hybrid** path: fork RBDOOM-3-BFG to get a playable native X3 *fast*, then progressively replace the GPL-derived code with clean-room implementations before any commercial Steam ship. This gets speed now + clean commercial IP later.
+### Strategy as built: clean-room original engine
 
-**The hybrid's only real risk: "rewrite later" silently becomes "ship GPL by accident."** This plan makes the discipline STRUCTURAL via three safeguards (see §5.1). Do not skip them — they are the difference between hybrid working and hybrid being a GPL trap.
+Tim's goal was a long-term, **wholly-owned** engine powering many games. Rather than fork RBDOOM and carry GPL debt, the build went straight to a **clean-room original implementation**: define the interfaces, write behavioral specs, and implement each subsystem from those specs + public references + the author's own research. This yields clean commercial IP from day one — no de-GPL phase needed.
 
-> **For the Claude picking this up on the 14900K:** read this top-to-bottom, then read `X3_NATIVE_FEASIBILITY_2026-04-27.md` for the module-by-module porting tier breakdown. The RDOOM/RBDOOM-3-BFG source lives **on the 14900K** (this plan was authored on the I9DevPC Dell laptop, which does not have it). Start at "M0 — First actions on the 14900K" below.
+> **For the Claude picking this up:** read this top-to-bottom for the stack and milestones, but note the framing below (§1, §2, §5.1–5.4, §6 Phase 2, §7) was written for the abandoned RBDOOM-fork plan. The actual engine is original; see `PROVENANCE.md` for what was built.
 
 ---
 
 ## 1. The decision in one paragraph
 
-Build a **custom native game engine in C++20** that Tim owns, using **RBDOOM-3-BFG (id Tech 4, the "Ardoom 2019" source on the 14900K)** as the starting codebase rather than writing from scratch. Render with **Vulkan 1.3**. Script game logic in **Lua via sol3**. Ship as a **Source-engine-style runtime**: one `X3Engine.exe` + per-game `.x3pak` data files (id's `.pk4` model). Physics via **Jolt** (MIT) rather than Havok (commercial license). The engine is one product; X3, TTT 1995, Pin-Pull-Tomb, and future games are separate game-data packages that run on it.
+Build a **custom native game engine in C++20** that Tim owns — written **clean-room from scratch** (the original plan's "use RBDOOM-3-BFG as the starting codebase" was *not* taken; see the correction banner at the top). Render with **Vulkan 1.3**. Script game logic in **Lua via sol3**. Ship as a **Source-engine-style runtime**: one `X3Engine.exe` + per-game `.x3pak` data files. Physics via **Jolt** (MIT) rather than Havok (commercial license). The engine is one product; X3, TTT 1995, Pin-Pull-Tomb, and future games are separate game-data packages that run on it.
 
-## 2. Why RBDOOM-3-BFG as the base
+## 2. Why RBDOOM-3-BFG was *considered* as a base (historical — not used)
+
+> The table below was the rationale for the abandoned fork plan. It's retained to
+> show what the from-scratch build had to reproduce; **none of this code was used.**
+
 
 It already provides ~50-70% of an X3-class engine, battle-tested:
 
@@ -64,11 +83,34 @@ X3Engine.exe                 ← the engine binary (open-source on GitHub)
 - Launch a specific game: `X3Engine.exe +game x3` (cvar-driven, like `+set fs_game`).
 - This is the Quake 3 / Doom 3 / Counter-Strike model: engine open, game data sold on Steam.
 
-## 5. License strategy — HYBRID, GPL-isolated
+## 5. License strategy — CLEAN-ROOM ORIGINAL (no GPL)
 
-**id Tech 4 / Doom 3 BFG is GPL v3.** The hybrid path uses GPL code as a *temporary scaffold*, then removes it before commercial ship. Legal foundation (not legal advice, but well-established): **copyright protects expression, not concepts.** Reading RBDOOM to learn architecture and reimplementing your own code is independent creation, not a derivative work. Forking RBDOOM's actual code IS GPL-bound. The hybrid does the latter first (fast), then converts to the former (clean) before selling.
+**As built, X3Native contains no GPL or other copyleft code.** The engine was
+written clean-room from scratch — no id Tech / RBDOOM / Doom 3 (or any other
+engine) source was forked, copied, or consulted. Legal foundation (not legal
+advice, but well-established): **copyright protects expression, not concepts.**
+Studying public architecture material and writing your own implementation is
+independent creation, not a derivative work — and that is what happened here.
 
-### 5.1 The three structural safeguards (NON-NEGOTIABLE)
+**Current position:**
+- Engine = **original work, proprietary, all rights reserved** (`LICENSE`). Free to
+  ship closed-source and sell commercially with no copyleft obligation.
+- Third-party code = **permissive libraries only** (MIT/Apache/zlib/BSD/PD), tracked
+  in `THIRDPARTY_LICENSES.md`. No GPL/LGPL/CC-BY-SA dependencies.
+- Game data (`.x3pak`) = a separate work, commercial anytime.
+- Originality record + per-subsystem provenance: `PROVENANCE.md`.
+
+There is **no de-GPL phase, no `GPL_DEBT.md`, and no `engine/_gpl_rbdoom/`** — the
+"clean target" the hybrid plan aimed for is simply the starting (and current) state.
+
+> **§5.1–§5.4 below are HISTORICAL** — they describe the safeguards/process for the
+> abandoned RBDOOM-fork plan (quarantine dir, GPL debt ledger, two-machine
+> information barrier). None were needed because no GPL code was ever introduced.
+> The spec-driven discipline they describe *was* used — and is what makes the
+> independent-creation record (`PROVENANCE.md`, the in-file "no foreign source
+> consulted" notes, `specs/`) strong. Kept for reference only.
+
+### 5.1 The three structural safeguards (historical — for the abandoned fork plan)
 
 These make "rewrite later" actually happen instead of silently shipping GPL:
 
@@ -140,9 +182,12 @@ Tim's plan: dedicate the **13700K** (128GB DDR5, 2x 1080 Ti) as a clean-room rew
 
 **Total: ~15 weeks solo / ~5-6 weeks parallel.**
 
-### Phase 2 — De-GPL clean-room track (13700K, runs in parallel/overlapping from ~M4 onward)
+### Phase 2 — De-GPL clean-room track (HISTORICAL — not needed; engine was clean from the start)
 
-This track converts each GPL module to a clean impl behind its interface. It can start as soon as interfaces exist (M1-M2) and runs concurrently with gameplay work. Ship gate = `GPL_DEBT.md` empty.
+> This track existed to convert forked GPL modules to clean impls. **It was never
+> needed:** every subsystem (D1-D8 below) was written clean from the start, so there
+> was nothing to "de-GPL." The table is kept only as the subsystem checklist; for
+> actual status see `PROVENANCE.md`.
 
 | D# | GPL module to replace | Interface | Spec team (14900K) | Clean-room (13700K) |
 |---|---|---|---|---|

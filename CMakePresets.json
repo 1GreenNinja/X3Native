@@ -9,8 +9,7 @@
       "architecture": "x64",
       "binaryDir": "${sourceDir}/build",
       "cacheVariables": {
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-        "USE_GPL_SCAFFOLD": "OFF"
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
       },
       "environment": {
         "_NOTE": "Set VCPKG_ROOT to your vcpkg clone, e.g. C:/vcpkg. Vulkan SDK must be installed (winget install KhronosGroup.VulkanSDK)."
@@ -23,8 +22,7 @@
       "binaryDir": "${sourceDir}/build-ninja",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
-        "USE_GPL_SCAFFOLD": "OFF"
+        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
       }
     }
   ],

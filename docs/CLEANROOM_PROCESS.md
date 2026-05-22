@@ -1,24 +1,44 @@
-# native-scaffold/ — Clean-room machinery for X3Native
+# Clean-room process — building X3Native from specs
 
-This folder holds the **process scaffolding** for building X3Native (the custom C++ engine) under the HYBRID strategy from `../X3_NATIVE_ENGINE_PLAN.md`. At M1 bootstrap, copy these files into the new engine repo root (`C:\GameDev\X3Native\`).
+X3Native is **original work, written clean-room from scratch.** No id Tech /
+RBDOOM / Doom 3 (or any other engine) source was ever forked, copied, or
+consulted. This doc describes the spec-driven discipline used to build it — which
+doubles as the evidence record of independent creation (`PROVENANCE.md`).
+
+> **Historical note:** an earlier plan proposed forking RBDOOM (GPL) and then
+> "de-GPL-ing" it behind interfaces, guarded by a two-machine information barrier
+> and a `GPL_DEBT.md` ledger. **That fork never happened** — the engine went
+> straight to clean implementations. So the "barrier" is moot (there was never any
+> GPL source to wall off), but the spec-first method below is exactly how the
+> engine was built.
 
 ## What's here
 
 | File | Purpose | Who edits it |
 |---|---|---|
-| `GPL_DEBT.md` | The ledger of every GPL-derived module + replacement status. Ship gate = empty. | Both teams update status |
-| `specs/README.md` | The clean-room protocol — the information-barrier rules. **Read first.** | — |
-| `specs/_TEMPLATE.spec.md` | Template the spec team fills in per module. | Spec team (14900K) |
-| `specs/D1-render-device.spec.md` | Worked example spec (stub) showing the format. | Spec team (14900K) |
+| `PROVENANCE.md` (repo root) | Originality record + per-subsystem implementation status. | Updated as subsystems land |
+| `specs/README.md` | The spec-writing protocol — what may/may not go in a spec. **Read first.** | — |
+| `specs/_TEMPLATE.spec.md` | Template for a new subsystem spec. | Spec author |
+| `specs/D1-render-device.spec.md` (etc.) | Worked specs the implementations are built from. | Spec author |
 
-## The one rule that makes this legal
+## The method
 
-**The 13700K clean-room team must NEVER read the RBDOOM/GPL source.** It implements only from the `specs/*.spec.md` files (written by the 14900K spec team) plus public references. Enforce by repo topology: the 13700K clones a `*-cleanroom` branch that physically omits `engine/_gpl_rbdoom/`. See `specs/README.md`.
+1. **Define the interface** (`engine/<sys>/I*.h`) — clean, original, third-party
+   types kept out of the header.
+2. **Write a behavioral spec** (`specs/<name>.spec.md`) — what the subsystem does:
+   interface contract, inputs/outputs, edge cases, perf targets, acceptance tests.
+   Original prose + citations to **public** references only; never any third-party
+   engine source.
+3. **Implement** behind the interface, from the spec + public references + permissive
+   libraries. Add the in-file note (`// No id Tech / RBDOOM source consulted.`) — it
+   is part of the provenance record.
+4. **Test** against the spec's acceptance cases (the `--test-*` / `--smoketest`
+   self-tests in the app).
+5. **Record** it in `PROVENANCE.md`. git history shows where/when it was authored.
 
-## Quick start for the 14900K (M0/M1)
+## The one rule
 
-1. Build RBDOOM (M0 in the plan). Get vanilla Doom 3 BFG running.
-2. At M1, create `C:\GameDev\X3Native\`, copy this `native-scaffold/` content into its root.
-3. Define the abstract interfaces (`engine/rhi/IRenderDevice.h`, etc.) — these are CLEAN from day 1.
-4. Wire RBDOOM code in as the v0 impl behind each interface, quarantined in `engine/_gpl_rbdoom/`.
-5. As each interface stabilizes, the spec team writes its `.spec.md`; the 13700K clean-room team begins the clean impl.
+Implement only from `specs/*.spec.md` + **public** references + permissive-library
+docs. Never read, request, or transcribe any third-party game-engine source. Studying
+public talks/papers/specs is fine and encouraged; copying engine code is not (and has
+not been done).

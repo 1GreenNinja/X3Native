@@ -26,7 +26,7 @@ See `RENDERING_SPEED.md` for the concrete frame-rate technique stack (bindless, 
 | Rig | CPU | GPU | RT cores | Role |
 |---|---|---|---|---|
 | **13700K** (this clean-room box) | i7-13700K, 128GB | 2× GTX 1080 Ti (Pascal) | **none** | Clean-room engine build + GPU **compute** work |
-| **14900K** | i9-14900K | RTX 5090 (Blackwell) | yes | RBDOOM prototype + RT/PT tier + spec authoring |
+| **14900K** | i9-14900K | RTX 5090 (Blackwell) | yes | RT/PT high-end tier + spec authoring + verification |
 | A2000 laptop | — | RTX A2000 | yes | Original D1 verification |
 
 **Two consequences:**

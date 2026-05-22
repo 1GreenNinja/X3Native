@@ -163,8 +163,7 @@ public:
     virtual bool supportsMeshShaders() const = 0;
 };
 
-// Factory. Returns the GPL v0 impl when X3_USE_GPL_SCAFFOLD is defined and
-// available; otherwise returns the clean Vulkan impl. (For now: clean impl.)
+// Factory. Returns the (clean, original) Vulkan implementation of IRenderDevice.
 IRenderDevice* createRenderDevice();
 
 } // namespace x3::rhi

@@ -2,58 +2,74 @@
 
 Custom native game engine (C++20 / Vulkan 1.3) for the 1GreenNinja game portfolio — X3, TTT 1995, Pin-Pull-Tomb, and future titles. One engine, many games shipped as `.x3pak` data.
 
+**X3Native is 100% original work.** It was built clean-room from scratch — written from behavioral specs + public technical references (the Vulkan spec, *Real-Time Rendering 4th ed.*, GPU Gems, vkguide.dev, GDC/SIGGRAPH talks, library docs) plus the author's own research. **No id Tech / RBDOOM / Doom 3 — or any other third-party engine — source was forked, copied, or consulted.** The only third-party code is the permissively-licensed libraries listed in `THIRDPARTY_LICENSES.md`. See `PROVENANCE.md` and `LICENSE-NOTICE.md`.
+
 > **New here? Read in this order:**
-> 1. `X3_NATIVE_ENGINE_PLAN.md` — the decision, stack, license strategy, milestones (M0-M10 + de-GPL D1-D8)
-> 2. `X3_NATIVE_SLICES.md` — the 100-slice executable backlog
-> 3. `X3_NATIVE_QUESTIONS.md` — open questions / kickoff checklist (answer the quick-block to unblock M0)
-> 4. `docs/CLEANROOM_PROCESS.md` + `specs/README.md` — the de-GPL clean-room protocol
+> 1. `X3_NATIVE_ENGINE_PLAN.md` — the architecture decision, locked stack, runtime/pak model, milestones
+> 2. `X3_NATIVE_SLICES.md` — the executable backlog
+> 3. `PROVENANCE.md` — the originality record (how it was built, clean-room, what's done)
+> 4. `BUILD.md` + `docs/13700K_SETUP.md` — clone, build, run
 
 ## Status
 
-**Pre-M0.** This repo is seeded with planning + clean-room machinery from the I9DevPC laptop on 2026-05-20. The actual engine build happens on the **i9-14900K + RTX 5090** (where the RBDOOM / "Ardoom 2019" source lives). The Babylon-JS X3 (`1GreenNinja/X3Engine`) remains the **reference implementation + content source + shippable fallback** — not deleted.
+**Building + running** — a native windowed app with a playable graybox test level. Verified on RTX A2000 (laptop) and GTX 1080 Ti (13700K), runs on RTX 5090 (14900K).
+
+Done + verified: **render device** (Vulkan 1.3 dynamic rendering, bindless textures, multidraw-indirect), **pak / virtual filesystem** (`.x3pak`), **console + cvars**, **glTF/GLB loader** + PBR, **Jolt physics** world + character controller, **forward+ point lighting** (16 lights + ACES tonemap), **skeletal animation** (CPU skinning), free-look camera + input, PNG screenshot capture. The `app/` layer has a player, weapons, melee, monsters, doors, triggers, objectives, FX, and a HUD on a Level 1 graybox.
+
+The Babylon-JS X3 (`1GreenNinja/X3Engine`) remains the **design reference + content source + shippable fallback** — not deleted.
 
 ## Stack (locked 2026-05-19)
 
 | Layer | Choice |
 |---|---|
 | Language | C++20 |
-| Graphics | Vulkan 1.3 (dynamic rendering, descriptor indexing) |
-| Base codebase | RBDOOM-3-BFG / id Tech 4 (GPL v3) — **hybrid: fork now, clean-room rewrite before commercial ship** |
+| Graphics | Vulkan 1.3 (dynamic rendering, descriptor indexing / bindless, multidraw-indirect) |
+| Codebase origin | **Original — clean-room from scratch (no engine fork). See `PROVENANCE.md`.** |
 | Physics | Jolt (MIT) |
 | Scripting | Lua via sol3 |
 | Audio | miniaudio |
 | Assets | glTF/GLB + KTX2 |
-| Runtime | `X3Engine.exe` + `.x3pak` (Source/Doom3 model) |
+| Runtime | `X3Engine.exe` + `.x3pak` (Source/Quake-style: engine binary + game-data paks) |
 | Build | CMake + vcpkg, VS2026 |
 | Profiler | Tracy |
 
-## ⚠️ License — HYBRID, read before shipping
+## License
 
-This repo uses **GPL-v3 RBDOOM code as a temporary scaffold** (quarantined under `engine/_gpl_rbdoom/`). Commercial ship is gated on `GPL_DEBT.md` being empty — every GPL module replaced by a clean-room implementation. See `X3_NATIVE_ENGINE_PLAN.md` §5 and `docs/CLEANROOM_PROCESS.md`.
+X3Native is **original work — proprietary, all rights reserved** (see `LICENSE`). Because no GPL or other copyleft code is incorporated, there is **no obligation to keep it public and no bar to closed-source commercial release**.
 
-- **During prototype:** engine contains GPL code → keep public, do not sell builds.
-- **After de-GPL:** engine is 100% owned → closed-source + commercial OK.
+- **Engine** (`X3Engine.exe`) — Tim Smith's IP. May be shipped closed-source and sold commercially.
+- **Game data** (`.x3pak` — meshes, textures, audio, Lua) — separate work, commercial anytime (the Quake 3 / Doom 3 distribution model).
+- **Third-party libraries** — permissive only (MIT / Apache 2.0 / zlib / BSD / public-domain), tracked in `THIRDPARTY_LICENSES.md`. No GPL/LGPL/CC-BY-SA dependencies.
 
-## Repo layout (target)
+The repo is currently public for convenience; it can be made private at any time with no licensing consequence.
+
+## Repo layout
 
 ```
 engine/
-  _gpl_rbdoom/   ← quarantined GPL scaffold (deleted before commercial ship)
-  core/  platform/  rhi/  render/  physics/  audio/  asset/  anim/  ui/  script/
-games/
-  x3/  ttt1995/  ppt/   ← Lua + small C++ glue, shipped as .x3pak
-tools/
-  cleanroom-setup.ps1   ← 13700K clean-room bootstrap
-  x3pakbuild/           ← pak builder (M6)
-specs/                  ← clean-room behavioral specs (spec team writes, clean-room team implements)
-docs/
-GPL_DEBT.md             ← the de-GPL ledger; ship gate = empty
+  core/      console + cvars, job system, logging
+  rhi/       IRenderDevice + Vulkan 1.3 backend (bindless, multidraw-indirect)
+  asset/     IAssetSource (pak/VFS) + glTF/GLB model loader
+  physics/   IPhysicsWorld + Jolt backend + character controller
+  audio/     IAudioSystem + miniaudio backend
+app/         the X3Engine host + Level 1 graybox game (player, weapons, monsters, HUD, FX)
+shaders/     GLSL → SPIR-V (mesh, hud, shadow, tri)
+specs/       behavioral specs the implementations are built from (clean-room record)
+tools/       ktx2bake, pak builder, bootstrap
+docs/        setup, roadmaps, rendering notes
+PROVENANCE.md          originality record (engine is original; no foreign engine source)
+THIRDPARTY_LICENSES.md every third-party lib + its permissive license
 ```
 
-## First action (14900K)
+## Build
 
 ```powershell
 git clone https://github.com/1GreenNinja/X3Native.git
 cd X3Native
-# Read X3_NATIVE_ENGINE_PLAN.md, then start M0 (Slice 1: locate + survey the RBDOOM source).
+$env:VCPKG_ROOT = "C:\vcpkg"           # your vcpkg clone
+cmake --preset windows-vs2026          # or open the folder in VS2026
+cmake --build --preset windows-vs2026  # Release x64
+.\build\bin\Release\X3Engine.exe       # fly/walk the lit graybox level
 ```
+
+See `BUILD.md` and `docs/13700K_SETUP.md` for full setup (Vulkan SDK, vcpkg, toolchain).
