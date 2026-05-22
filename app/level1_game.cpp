@@ -115,6 +115,29 @@ MonsterSystem::Tuning guardTuning() {
     useRiggedCharacter(t, "marcus_webb.glb", 1.0f);   // real ~1.8 m animated guard
     return t;
 }
+// F7 rooftop finale boss (Act 1). Multi-phase Boss-tier — mirrors Martinez but
+// tougher/bigger, runs the SAME HP-keyed phase machine (Phase1/2/3 enrage+summon).
+// Data-light per the task: a Boss-type Tuning + a rigged Overlord GLB. On load
+// failure the MonsterSystem falls back to its procedural box (the level never
+// breaks). The Overlord GLBs in rigged_glb are authored Y-up (standUpZtoY=false).
+MonsterSystem::Tuning rooftopBossTuning() {
+    MonsterSystem::Tuning t;
+    t.hp         = 520;     // tougher than Martinez (340) — the Act 1 finale
+    t.chaseSpeed = 3.2f;
+    t.tint[0] = 1.0f; t.tint[1] = 0.40f; t.tint[2] = 0.45f; t.tint[3] = 1.0f; // menacing red
+    t.type           = MonsterType::Boss;
+    t.damage         = 18;
+    t.attackRange    = 2.6f;
+    t.attackCooldown = 1.0f;
+    t.attackWindup   = 0.30f;
+    t.ranged         = false;
+    // Rigged Overlord boss (Y-up), loaded from rigged_glb. Reads big on the helipad.
+    t.modelFile        = "OverLordEnforcer99.glb";
+    t.modelDirOverride = riggedDir();
+    t.standUpZtoY      = false;     // rigged source is authored Y-up
+    t.modelScale       = 1.6f;      // boss reads large in the open rooftop arena
+    return t;
+}
 MonsterSystem::Tuning droneTuning() {
     MonsterSystem::Tuning t;
     t.hp         = 66;                 // squishier (2 shots)
@@ -246,6 +269,25 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
                    x3::phys::Vec3{ m_layout.elevatorCenter.x + m_layout.elevatorHalf.x, 3.0f,
                                    m_layout.elevatorHalf.z },
                    (uint32_t)L1Trigger::Elevator, /*enabled*/false);
+    // F2 hub (spec §5): an AABB spanning the whole F2 plate. Fires ONCE the first
+    // frame the player's position lands on F2 (between the F2 floor base and the
+    // floor above) and starts the rescue countdowns. Standard AABB fire-once.
+    {
+        const L1RoomDef& f2 = level1Rooms()[(uint32_t)L1Floor::F2];
+        const float f2y0 = f2.y0;
+        m_triggers.add(x3::phys::Vec3{ f2.x0, f2y0 - 0.5f, -f2.zHalf },
+                       x3::phys::Vec3{ f2.x1, f2y0 + 3.0f,  f2.zHalf },
+                       (uint32_t)L1Trigger::F2Hub, /*enabled*/true);
+    }
+    // F7 rooftop (Act 1 finale): an AABB spanning the whole F7 plate. Fires ONCE on
+    // reaching F7 and spawns the multi-phase rooftop boss at rooftopCenter.
+    {
+        const L1RoomDef& f7 = level1Rooms()[(uint32_t)L1Floor::F7];
+        const float f7y0 = f7.y0;
+        m_triggers.add(x3::phys::Vec3{ f7.x0, f7y0 - 0.5f, -f7.zHalf },
+                       x3::phys::Vec3{ f7.x1, f7y0 + 4.0f,  f7.zHalf },
+                       (uint32_t)L1Trigger::Rooftop, /*enabled*/true);
+    }
 
     // ---- Objectives (§3): the ordered list, cursor at the first. D-content fills
     // out the middle so the on-screen text tracks the WHOLE path the player walks:
@@ -258,23 +300,23 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
                        "Defeat Chief Martinez",
                        "Take the elevator to Floor 2" });
 
-    // ---- F2 rescue system (spec §5): 3 victims (Aria/Keisha/Emily) on 5-min
-    // timers. The 7-floor Spire build will place these in wards A/B/C on F2; on the
-    // current graybox we anchor them in the arena room (a roomy space) at three
-    // distinct spots so the rescue/companion/expire loop is exercisable today. The
-    // timers run once the F2 hub is reached — set true at build for the graybox
-    // (the Spire build will flip this on the F2-floor transition instead). ----
+    // ---- F2 rescue system (spec §5): 3 victims (Aria/Keisha/Emily) in the F2
+    // medical wards. The Spire layout exposes the 3 ward centers (wardA/B/C); the
+    // rescue system is position-driven, so placement is just passing those centers
+    // (lifted to the enemy/feet Y so the victims stand on the F2 floor). The 5-min
+    // countdowns do NOT run yet — they start once the player reaches F2 (the F2 hub
+    // trigger below flips setHubReached(true) on first entry). ----
     {
-        const x3::phys::Vec3 ac = m_layout.arenaCenter;
-        const x3::phys::Vec3 wardA{ ac.x - 3.0f, kEnemyY, ac.z - 3.0f };
-        const x3::phys::Vec3 wardB{ ac.x,        kEnemyY, ac.z + 3.0f };
-        const x3::phys::Vec3 wardC{ ac.x + 3.0f, kEnemyY, ac.z - 3.0f };
-        m_rescue.build(scene, device, physics, m_modelDir, wardA, wardB, wardC);
-        m_rescue.setHubReached(true);
+        const auto onWard = [](const x3::phys::Vec3& w) {
+            return x3::phys::Vec3{ w.x, w.y + kEnemyY, w.z };   // w.y carries the F2 floor base
+        };
+        m_rescue.build(scene, device, physics, m_modelDir,
+                       onWard(m_layout.wardA), onWard(m_layout.wardB), onWard(m_layout.wardC));
+        // setHubReached is deferred to the F2-hub trigger (timers start at F2, not now).
     }
 
     m_built = true;
-    x3::logInfo("Level1Game::build complete — doors A-E, pistol pickup, 4 checkpoint enemies, 3 triggers, 3 rescue victims");
+    x3::logInfo("Level1Game::build complete — doors A-E, pistol pickup, 4 checkpoint enemies, 5 triggers, 3 F2-ward rescue victims, F7 rooftop boss gated");
 }
 
 uint32_t Level1Game::doorIndex(char letter) const {
@@ -369,6 +411,21 @@ void Level1Game::spawnMartinez(Scene& scene, x3::rhi::IRenderDevice& device,
                                                  m_layout.arenaCenter.z },
                                  martinezTuning());
     x3::logInfo("Level1: BOSS — Chief Martinez spawned in the arena (boss-tier HP/speed)");
+}
+
+void Level1Game::spawnRooftopBoss(Scene& scene, x3::rhi::IRenderDevice& device,
+                                  x3::phys::IPhysicsWorld& physics) {
+    if (m_rooftopBossSpawned) return;
+    m_rooftopBossSpawned = true;
+    // Spawn at the F7 rooftop center (helipad). rooftopCenter.y carries the F7 floor
+    // base; lift to the enemy/feet Y so the boss stands on the deck.
+    const x3::phys::Vec3 rc = m_layout.rooftopCenter;
+    m_rooftopBoss.buildMonsterTuned(scene, device, physics, m_modelDir,
+                                    x3::phys::Vec3{ rc.x, rc.y + 0.6f, rc.z },
+                                    rooftopBossTuning());
+    x3::logInfo("Level1: ROOFTOP BOSS — multi-phase finale boss spawned on F7 at ("
+                + std::to_string(rc.x) + ", " + std::to_string(rc.y) + ", "
+                + std::to_string(rc.z) + ")");
 }
 
 void Level1Game::spawnBossAdds(Scene& scene, x3::rhi::IRenderDevice& device,
@@ -478,6 +535,25 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
         m_martinez.update(dt, scene, physics, eye, atkTarget, attackFx, onPhase);
     }
 
+    // ---- F7 rooftop boss (Act 1 finale): same HP-keyed phase machine as Martinez.
+    // Raise the "PHASE N!" banner on a transition; on Phase 3 it could summon adds
+    // (kept data-light: no adds wired here — the encounter polish comes later). ----
+    if (m_rooftopBossSpawned) {
+        const float kPhaseBannerTime = 2.2f;
+        BossPhaseFn onPhase = [&](BossPhase p) {
+            if (p == BossPhase::Phase2) {
+                m_phaseBanner = "BOSS PHASE 2!  ENRAGED";
+                x3::logInfo("Level1: ROOFTOP BOSS PHASE 2 — ENRAGE");
+            } else if (p == BossPhase::Phase3) {
+                m_phaseBanner = "BOSS PHASE 3!  DESPERATE";
+                x3::logInfo("Level1: ROOFTOP BOSS PHASE 3 — DESPERATE");
+            }
+            m_phaseBannerTimer = kPhaseBannerTime;
+            playSfx(m_audio.death, m_layout.rooftopCenter, 0.7f);
+        };
+        m_rooftopBoss.update(dt, scene, physics, eye, atkTarget, attackFx, onPhase);
+    }
+
     // ---- Beat 10: Martinez dies -> Door E unlock + open + objective -> "Take the
     // elevator" (index 4). Advance the cursor up to the elevator step regardless of
     // where it currently sits, so the text is correct even if the player slipped
@@ -533,6 +609,19 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                     x3::logInfo("LEVEL 1 COMPLETE");
                 }
                 break;
+            case L1Trigger::F2Hub:
+                // Spec §5: the player reached the F2 rescue hub — start the 5-min
+                // countdowns now (debounced by the trigger's fire-once latch).
+                if (!m_hubReachedLatch) {
+                    m_hubReachedLatch = true;
+                    m_rescue.setHubReached(true);
+                    x3::logInfo("Level1: F2 HUB REACHED — rescue countdowns started");
+                }
+                break;
+            case L1Trigger::Rooftop:
+                // Act 1 finale: reached F7 — spawn the multi-phase rooftop boss.
+                spawnRooftopBoss(scene, *m_devicePtr, physics);
+                break;
         }
     }
 }
@@ -566,6 +655,11 @@ FireResult Level1Game::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& d
         if (r3.hitMonster) r = r3;
         else if (!r.hit && r3.hit) r = r3;
     }
+    if (!r.hitMonster && m_rooftopBossSpawned && m_rooftopBoss.alive()) {
+        FireResult r4 = m_rooftopBoss.fire(eye, dir, scene, physics);
+        if (r4.hitMonster) r = r4;
+        else if (!r.hit && r4.hit) r = r4;
+    }
     return r;
 }
 
@@ -594,6 +688,22 @@ MeleeResult Level1Game::onMelee(const x3::phys::Vec3& eye, const x3::phys::Vec3&
             if (killed) ++r.enemiesKilled;
         }
     }
+    // The F7 rooftop boss is likewise a single MonsterSystem — same inline arc test.
+    if (m_rooftopBossSpawned && m_rooftopBoss.alive()) {
+        const Entity& e = scene.get(m_rooftopBoss.entity());
+        const x3::phys::Vec3 c{ e.transform[12], e.transform[13], e.transform[14] };
+        if (inMeleeArc(eye, dir, c, kMeleeRange, kMeleeHalfAngle)) {
+            x3::phys::Vec3 kb{ c.x - eye.x, 0.0f, c.z - eye.z };
+            float kl = std::sqrt(kb.x * kb.x + kb.z * kb.z);
+            if (kl < 1e-4f) kl = 1.0f;
+            if (m_rooftopBoss.body().valid())
+                physics.applyImpulse(m_rooftopBoss.body(),
+                    x3::phys::Vec3{ kb.x / kl * kMeleeKnockback, 2.0f, kb.z / kl * kMeleeKnockback });
+            bool killed = m_rooftopBoss.takeMeleeDamage(kMeleeDamage, scene, physics);
+            ++r.enemiesHit;
+            if (killed) ++r.enemiesKilled;
+        }
+    }
     if (r.doorForced) playSfx(m_audio.door, eye, 1.0f);
     if (r.enemiesKilled > 0) playSfx(m_audio.death, eye, 0.9f);
     return r;
@@ -608,6 +718,7 @@ void Level1Game::drawWorldExtras(x3::rhi::IRenderDevice& device,
     m_checkpoint.drawAll(device, frame, scene);
     m_bossAdds.drawAll(device, frame, scene);
     if (m_martinezSpawned) m_martinez.drawMonster(device, frame, scene);
+    if (m_rooftopBossSpawned) m_rooftopBoss.drawMonster(device, frame, scene);  // F7 finale boss
     m_rescue.draw(device, frame, scene);   // F2 victims + transformed-victim bosses
 }
 
@@ -858,6 +969,52 @@ bool runLevel1SelfTest() {
 
     // ---- T7d: objective list finished after taking the elevator. ----
     check(game.objectives().allComplete(), "T7d all objectives complete at the end");
+
+    // ---- T8: F2 rescue victims are placed at the F2 ward centers (spec §5). The
+    // rescue is position-driven; assert each victim sits at its ward XZ + the F2
+    // floor base Y (the placement change). ----
+    {
+        const RescueSystem& rs = game.rescue();
+        const float f2y = L.wardA.y;  // ward Y carries the F2 floor base (==10 m)
+        auto atWard = [&](uint32_t vi, const x3::phys::Vec3& w) {
+            const x3::phys::Vec3 p = rs.victim(vi).pos();
+            return std::fabs(p.x - w.x) < 0.01f && std::fabs(p.z - w.z) < 0.01f &&
+                   p.y > f2y - 0.01f;   // lifted to feet Y on the F2 floor
+        };
+        bool placed = rs.victimCount() == 3 &&
+                      atWard(0, L.wardA) && atWard(1, L.wardB) && atWard(2, L.wardC) &&
+                      f2y > 9.0f;   // F2 base is ~10 m up the Spire
+        check(placed, "T8 rescue victims placed at the F2 ward centers");
+    }
+
+    // ---- T9: the F2 hub trigger starts the rescue countdowns ONCE on first F2
+    // entry (debounced). Before reaching F2 the hub is NOT reached (timers idle);
+    // standing on the F2 plate fires the hub trigger -> hubReached + timers run. ----
+    {
+        bool notYet = !game.rescue().hubReached();
+        const float f2y = L.wardA.y;
+        const float t0 = game.rescue().victim(0).timeLeft();
+        // Stand on the F2 plate (within the hub AABB), tick a few frames.
+        const x3::phys::Vec3 onF2{ L.wardB.x, f2y + 0.05f, L.wardB.z };
+        run(game, scene, *physics, device, onF2, 30);
+        bool hubNow = game.rescue().hubReached();
+        // A still-captive victim's timer should now be ticking down (Aria untouched).
+        const float t1 = game.rescue().victim(0).timeLeft();
+        bool counting = game.rescue().victim(0).captive() ? (t1 < t0 - 0.01f) : true;
+        check(notYet && hubNow && counting, "T9 F2 hub trigger starts the rescue countdowns once");
+    }
+
+    // ---- T10: reaching the F7 rooftop spawns the multi-phase finale boss ONCE,
+    // gated on the rooftop trigger (Boss-type, at rooftopCenter). ----
+    {
+        bool notSpawned = !game.rooftopBossSpawned();
+        const x3::phys::Vec3 onF7{ L.rooftopCenter.x, L.rooftopCenter.y + 0.05f, L.rooftopCenter.z };
+        run(game, scene, *physics, device, onF7, 5);
+        bool spawnedNow = game.rooftopBossSpawned() && game.rooftopBossAlive();
+        bool isBoss = spawnedNow && game.rooftopBoss().type() == MonsterType::Boss;
+        check(notSpawned && spawnedNow && isBoss,
+              "T10 reaching F7 spawns the multi-phase rooftop boss");
+    }
 
     physics->shutdown();
     x3::logInfo(std::string("[level1-test] ") + std::to_string(g_pass) + " passed, " +
