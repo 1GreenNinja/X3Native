@@ -1415,24 +1415,30 @@ int main(int argc, char** argv) {
             gi.push_back(base+0); gi.push_back(base+1); gi.push_back(base+2);
             gi.push_back(base+0); gi.push_back(base+2); gi.push_back(base+3);
         };
-        // Sloped ramp: y rises with +X (slope ~tan(12deg)=0.21). Spans X[-3,3], Z[-3,3].
-        const float slope = 0.21f;
-        auto rampY = [&](float x){ return slope * x; };  // ground height under (x,*)
+        // A SLOPE running along the Z axis (descends toward -Z, the camera side) so the
+        // character — facing the camera with feet spread in Z — has its front foot on
+        // lower ground than its back foot. slope ~tan(18deg)=0.33; spans X[-4,4], Z[-4,4].
+        // The character's TWO feet then land at clearly different heights -> the leg
+        // analytic solve + the lower-foot-governed pelvis drop both read in the capture.
+        const float slope = 0.22f;
+        auto groundY = [&](float /*x*/, float z){ return slope * z; };  // height under (x,z)
         {
-            float a[3]={-3,rampY(-3),-3}, b[3]={3,rampY(3),-3}, c[3]={3,rampY(3),3}, d[3]={-3,rampY(-3),3};
+            float a[3]={-4,groundY(-4,-4),-4}, b[3]={4,groundY(4,-4),-4},
+                  c[3]={4,groundY(4, 4), 4}, d[3]={-4,groundY(-4,4), 4};
             pushQuad(a,b,c,d);
         }
-        // A raised step block (top face) at X in [0.4,1.4], Z in [-1.5,1.5], height +0.18
-        // above the ramp — under the character's left foot to force a pelvis adjust.
-        const float stepX0=0.35f, stepX1=1.4f, stepZ0=-1.5f, stepZ1=1.5f, stepUp=0.18f;
-        auto stepTopY = [&](float x){ return rampY(x) + stepUp; };
+        // A single raised STEP block straddling the character's BACK (+Z) foot so one
+        // foot is on the step and the other on the slope below — the classic foot-IK
+        // stair case. Top at +0.16 above the slope, X[-1.5,1.5], Z[0.15,2.5].
+        const float stepZ0=0.15f, stepZ1=2.5f, stepX0=-1.5f, stepX1=1.5f, stepUp=0.16f;
+        auto stepTopY = [&](float z){ return groundY(0,z) + stepUp; };
         {
-            float a[3]={stepX0,stepTopY(stepX0),stepZ0}, b[3]={stepX1,stepTopY(stepX1),stepZ0},
-                  c[3]={stepX1,stepTopY(stepX1),stepZ1}, d[3]={stepX0,stepTopY(stepX0),stepZ1};
+            float a[3]={stepX0,stepTopY(stepZ0),stepZ0}, b[3]={stepX1,stepTopY(stepZ0),stepZ0},
+                  c[3]={stepX1,stepTopY(stepZ1),stepZ1}, d[3]={stepX0,stepTopY(stepZ1),stepZ1};
             pushQuad(a,b,c,d);
-            // step riser (facing -X) so it reads as a step in profile
-            float ra[3]={stepX0,rampY(stepX0),stepZ0}, rb[3]={stepX0,stepTopY(stepX0),stepZ0},
-                  rc[3]={stepX0,stepTopY(stepX0),stepZ1}, rd[3]={stepX0,rampY(stepX0),stepZ1};
+            // step riser (facing -Z toward the camera) so the step reads in profile.
+            float ra[3]={stepX0,groundY(0,stepZ0),stepZ0}, rb[3]={stepX1,groundY(0,stepZ0),stepZ0},
+                  rc[3]={stepX1,stepTopY(stepZ0),stepZ0}, rd[3]={stepX0,stepTopY(stepZ0),stepZ0};
             pushQuad(ra,rb,rc,rd);
         }
         // Collide the combined ground: addStaticMesh wants tightly-packed xyz floats.
@@ -1446,16 +1452,21 @@ int main(int argc, char** argv) {
         const float whiteTint[4] = { 1, 1, 1, 1 };
 
         x3::rhi::IRenderDevice::SkyParams sp{};
-        sp.enabled=true; sp.sunDir[0]=0.4f; sp.sunDir[1]=1.0f; sp.sunDir[2]=0.3f;
+        sp.enabled=true;
+        // Sun toward the CAMERA side (-Z) + up, so the front of the character is lit
+        // (a +Z sun backlights it into a silhouette from this -Z camera).
+        sp.sunDir[0]=0.25f; sp.sunDir[1]=0.85f; sp.sunDir[2]=-0.5f;
         sp.sunColor[0]=1.0f; sp.sunColor[1]=0.97f; sp.sunColor[2]=0.92f;
-        sp.sunIntensity=1.0f; sp.haze=0.4f; sp.exposure=1.0f;
+        sp.sunIntensity=1.0f; sp.haze=0.35f; sp.exposure=1.2f;
         device->setSkyParams(sp);
         { x3::rhi::PointLight pl[3];
           auto setL=[](x3::rhi::PointLight& l,float x,float y,float z,float r,float g,float b,float rng){
             l.pos[0]=x;l.pos[1]=y;l.pos[2]=z;l.range=rng;l.color[0]=r;l.color[1]=g;l.color[2]=b; };
-          setL(pl[0], 0.0f,4.0f, 3.0f, 5.5f,5.4f,5.0f, 30.0f);
-          setL(pl[1], 3.0f,3.0f,-2.0f, 3.0f,3.2f,3.6f, 30.0f);
-          setL(pl[2],-3.0f,3.0f, 1.0f, 3.0f,3.4f,3.0f, 30.0f);
+          // Key light on the CAMERA side (-Z) low so the front + the legs/feet read
+          // (the camera looks toward +Z, so a +Z light would only backlight).
+          setL(pl[0], 0.6f,2.2f,-3.0f, 7.0f,6.8f,6.4f, 30.0f);   // front key (camera side)
+          setL(pl[1], 2.5f,2.5f,-1.0f, 3.0f,3.0f,3.4f, 30.0f);   // front-right fill
+          setL(pl[2],-2.5f,2.5f,-1.0f, 3.0f,3.2f,3.0f, 30.0f);   // front-left fill
           device->setPointLights(pl, 3); }
 
         // Load the rigged character with the REAL device so its skinned meshes upload.
@@ -1492,11 +1503,18 @@ int main(int argc, char** argv) {
             sk.setLocomotion01(0.0f);   // standing -> idle, so the feet stay planted
         }
 
-        // Character placement: stand on the step area (x ~ 0.9) facing -X-ish so the
-        // slope + step read in profile. worldFromModel = this placement matrix.
-        const float charX = 0.8f, charZ = 0.0f;
-        const float charY = stepTopY(charX);   // start the model's origin at the ground
+        // Character placement: stand at the foot of the step on the slope, facing the
+        // camera (default -Z facing). The model origin sits at the slope height under
+        // its position; foot-IK then conforms each foot to the slope/step it's over.
+        // worldFromModel = this placement matrix.
+        const float charX = 0.0f, charZ = -0.1f;
+        const float charY = groundY(0, charZ);   // model origin on the slope
         float placement[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, charX, charY, charZ, 1 };
+
+        // Build the broadphase + settle the static world so the foot rays hit (mirrors
+        // the physics self-test, which steps twice before relying on rayCast).
+        fphys->optimizeBroadphase();
+        for (int i = 0; i < 2; ++i) fphys->step(1.0f/60.0f);
 
         // Ground raycast callback bridging the Skinner to the physics world.
         struct RayCtx { x3::phys::IPhysicsWorld* phys; };
@@ -1515,18 +1533,19 @@ int main(int argc, char** argv) {
             return true;
         };
 
-        // Camera: front-3/4, slightly elevated, framing the feet + ground.
+        // Camera: low + close 3/4 view from the front-right (-Z, +X) looking slightly
+        // down at the legs/feet so the slope + step + planting all read in profile.
         {
-            const float cx=2.6f, cy=1.4f, cz=3.2f;
-            const float lx=0.4f, ly=0.55f, lz=0.0f;
+            const float cx=2.4f, cy=1.0f, cz=-2.6f;     // front-right, low
+            const float lx=0.0f, ly=0.30f, lz=0.4f;     // look at the lower legs/feet
             const float dx=lx-cx, dy=ly-cy, dz=lz-cz;
             const float dl=std::sqrt(dx*dx+dy*dy+dz*dz);
-            device->setCamera(cx,cy,cz, std::atan2(dz,dx), std::asin(dl>1e-4f?dy/dl:0.0f), 50.0f);
+            device->setCamera(cx,cy,cz, std::atan2(dz,dx), std::asin(dl>1e-4f?dy/dl:0.0f), 45.0f);
         }
 
         const float dt = 1.0f/60.0f;
-        // Render two stills: IK ON (the deliverable) and IK OFF (reference). For each,
-        // settle the blend + IK a moment, then capture.
+        // Render a still with IK either ON or OFF. Settle the blend + IK a moment so the
+        // smoothed weights + pelvis converge, then capture the final frame.
         auto renderStill = [&](bool ikOn, const std::string& path) -> bool {
             if (skinnable) {
                 if (ikOn) sk.setFootIk(true, gray, placement);
@@ -1546,9 +1565,14 @@ int main(int argc, char** argv) {
                     for (const auto& dr : drawables) {
                         float fin[16];
                         x3::asset::mulMat4(placement, dr.nodeTransform, fin);
+                        // Brighten the (very dark tactical-gear) material so the legs/feet
+                        // read against the ground in the capture (visual only).
+                        float tint[4] = { dr.baseColorFactor[0]*2.2f + 0.25f,
+                                          dr.baseColorFactor[1]*2.2f + 0.25f,
+                                          dr.baseColorFactor[2]*2.2f + 0.25f, dr.baseColorFactor[3] };
                         device->drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
                                          x3::rhi::TextureHandle{ dr.baseColorTexId },
-                                         dr.baseColorFactor, fin);
+                                         tint, fin);
                     }
                 }
                 device->endFrame(frame);
@@ -1557,15 +1581,16 @@ int main(int argc, char** argv) {
             return wrote;
         };
 
-        bool wroteOn = renderStill(true, captureFootIkPath);
-        // Reference (IK OFF) alongside: "<stem>_noik.png".
+        // OFF (reference) first, then ON last so the final logged weights reflect the
+        // engaged IK. Reference path is "<stem>_noik.png".
         std::string offPath = captureFootIkPath;
         {
             auto dot = offPath.find_last_of('.');
             offPath = (dot==std::string::npos) ? offPath + "_noik" : offPath.substr(0,dot) + "_noik" + offPath.substr(dot);
         }
         bool wroteOff = renderStill(false, offPath);
-        x3::logInfo(std::string("--screenshot-footik: pelvisDrop=") + std::to_string(sk.footIkPelvisDrop()) +
+        bool wroteOn  = renderStill(true,  captureFootIkPath);
+        x3::logInfo(std::string("--screenshot-footik: IK-ON pelvisDrop=") + std::to_string(sk.footIkPelvisDrop()) +
                     " wL=" + std::to_string(sk.footIkLegWeight(0)) + " wR=" + std::to_string(sk.footIkLegWeight(1)));
         x3::logInfo(std::string("--screenshot-footik: ON -> ") + (wroteOn?captureFootIkPath:"FAILED") +
                     " | OFF -> " + (wroteOff?offPath:"FAILED"));
