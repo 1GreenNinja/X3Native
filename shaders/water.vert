@@ -1,0 +1,121 @@
+#version 450
+
+// Animated water-surface vertex shader (undersea-world foundation).
+//
+// CLEAN-ROOM, original work. The wave model is the standard public
+// Gerstner / trochoidal wave sum (sum-of-sines with horizontal pinch),
+// implemented from public references (Tessendorf "Simulating Ocean Water",
+// the Gerstner-wave chapter in GPU Gems, and public ocean-rendering articles).
+// No game-engine source was consulted.
+//
+// GEOMETRY: a flat unit-patch grid mesh (vertex = its XZ position in [-1,1]) is
+// uploaded once by the device. This VS expands the patch to a large world-space
+// tile CENTERED under the camera (so the player is always near the dense middle
+// of the grid) and SNAPPED to a coarse world grid each frame so the tessellation
+// doesn't visibly swim under camera motion. The plane sits at the sea level y.
+//
+// WAVES: a small fixed set of Gerstner waves of differing direction / wavelength
+// / amplitude is summed to displace each grid point (XZ pinch + Y lift) and to
+// build an ANALYTIC normal (the exact partial derivatives of the same sum), so no
+// normal map is needed for the macro shape. The fragment stage adds a cheap
+// high-frequency ripple on top. Phase scrolls with water.time.
+
+layout(set = 0, binding = 0) uniform WaterUBO {
+    mat4  viewProj;     // camera view*proj (same matrix the meshes use)
+    vec4  camPos;       // xyz = camera world position
+    vec4  sunDir;       // xyz = normalized direction toward the sun
+    vec4  deepColor;    // rgb = linear deep-water tint
+    vec4  shallowColor; // rgb = linear shallow tint
+    // x = seaLevel, y = time (s), z = amplitude (m), w = steepness (0..1)
+    vec4  p0;
+    // x = baseWavelength (m), y = speed, z = specular, w = fresnelBase
+    vec4  p1;
+    // x = patchHalfExtent (m), y = 1/screenW, z = 1/screenH, w = reserved
+    vec4  p2;
+} u;
+
+layout(location = 0) in vec2 inGrid;   // patch coord in [-1,1]
+
+layout(location = 0) out vec3 vWorldPos;   // displaced world position
+layout(location = 1) out vec3 vNormal;     // analytic surface normal
+layout(location = 2) out vec2 vGrid;       // [-1,1] patch coord (edge fade)
+
+// One Gerstner wave: displaces a flat point p (XZ) and accumulates the analytic
+// partial derivatives needed to build the surface normal. Direction d is a unit
+// XZ vector; w = spatial frequency; phi = phase speed; A = amplitude; Q = the
+// per-wave steepness (horizontal pinch). See the GPU Gems Gerstner formulation.
+void gerstner(vec2 d, float w, float A, float Q, float phi, float t,
+              vec2 basePos, inout vec3 disp, inout vec3 dPdx, inout vec3 dPdz) {
+    float dotd = dot(d, basePos);
+    float ph   = w * dotd + phi * t;
+    float c    = cos(ph);
+    float s    = sin(ph);
+    float WA   = w * A;
+    // Horizontal pinch toward the crest (Q) + vertical lift.
+    disp.x += Q * A * d.x * c;
+    disp.z += Q * A * d.y * c;
+    disp.y += A * s;
+    // Partial derivatives of the displaced position wrt the base x and z.
+    // d(disp)/dx
+    dPdx.x += -Q * WA * d.x * d.x * s;
+    dPdx.z += -Q * WA * d.x * d.y * s;
+    dPdx.y +=      WA * d.x * c;
+    // d(disp)/dz
+    dPdz.x += -Q * WA * d.x * d.y * s;
+    dPdz.z += -Q * WA * d.y * d.y * s;
+    dPdz.y +=      WA * d.y * c;
+}
+
+void main() {
+    float seaLevel = u.p0.x;
+    float time     = u.p0.y;
+    float amp      = u.p0.z;
+    float steep    = clamp(u.p0.w, 0.0, 1.0);
+    float baseLen  = max(u.p1.x, 0.5);
+    float speed    = u.p1.y;
+    float halfExt  = max(u.p2.x, 1.0);
+
+    // Expand the unit patch to a world tile centered under the camera, snapped to
+    // a coarse cell so the grid doesn't crawl as the camera moves.
+    float snap = (2.0 * halfExt) / 64.0;       // ~one cell of the coarse grid
+    vec2 center = floor(u.camPos.xz / snap) * snap;
+    vec2 basePos = center + inGrid * halfExt;  // flat world XZ before waves
+
+    // --- Sum a few Gerstner waves (varied dir/length/amp). The largest wave uses
+    // baseLen; successive waves shorten + steepen for chop. Each wave's per-crest
+    // steepness Q is normalized by (w*A*numWaves) so the surface never loops. ---
+    const int   N = 4;
+    vec2  dirs[4] = vec2[4](
+        normalize(vec2( 1.0,  0.25)),
+        normalize(vec2(-0.6,  0.8 )),
+        normalize(vec2( 0.2, -1.0 )),
+        normalize(vec2(-0.9, -0.35)));
+    float lenMul[4] = float[4](1.0, 0.55, 0.32, 0.18);
+    float ampMul[4] = float[4](1.0, 0.5,  0.28, 0.14);
+
+    vec3 disp = vec3(0.0);
+    vec3 dPdx = vec3(0.0);
+    vec3 dPdz = vec3(0.0);
+    for (int i = 0; i < N; ++i) {
+        float L  = baseLen * lenMul[i];
+        float w  = 6.28318530718 / L;          // 2*pi / wavelength
+        float A  = amp * ampMul[i];
+        // Deep-water dispersion: phase speed ~ sqrt(g/k); fold the user speed in.
+        float phi = sqrt(9.81 * w) * speed;
+        float Q  = steep / max(w * A * float(N), 1e-4);
+        gerstner(dirs[i], w, A, Q, phi, time, basePos, disp, dPdx, dPdz);
+    }
+
+    vec3 worldPos = vec3(basePos.x + disp.x, seaLevel + disp.y, basePos.y + disp.z);
+
+    // Tangent basis: the columns are d(worldPos)/d(basePos.x) and /d(basePos.z).
+    vec3 tx = vec3(1.0 + dPdx.x, dPdx.y, dPdx.z);
+    vec3 tz = vec3(dPdz.x, dPdz.y, 1.0 + dPdz.z);
+    vec3 nrm = normalize(cross(tz, tx));       // +Y up for a flat sea
+    if (nrm.y < 0.0) nrm = -nrm;
+
+    vWorldPos = worldPos;
+    vNormal   = nrm;
+    vGrid     = inGrid;
+    gl_Position = u.viewProj * vec4(worldPos, 1.0);
+}

@@ -179,6 +179,55 @@ public:
     // each frame, like setSkyParams). Calling with enabled=false disables SSAO.
     virtual void          setSsaoParams(const SsaoParams&) = 0;
 
+    // ---- Animated water / ocean surface (undersea-world foundation) --------
+    // A large animated water plane drawn in the MAIN pass (after opaque meshes,
+    // before bloom/composite) into the linear HDR scene target, so it composes
+    // with terrain, sky, shadows, point lights, HDR/bloom, and SSAO. The surface
+    // is a tessellated grid centered + clamped under the camera at `seaLevel`,
+    // displaced by a sum of Gerstner/trochoidal waves (a few summed directions)
+    // with analytic normals, scrolling over time. Shading (all pre-tonemap, in
+    // linear HDR): a Fresnel blend between a cheap REFLECTION (the analytic sky
+    // color sampled in the reflected direction — same gradient/sun as sky.frag)
+    // and a depth-based REFRACTION color (shallow->deep gradient from scene depth
+    // vs. the water surface depth, reusing the SSAO depth pre-pass's depth buffer),
+    // plus a sharp SUN GLINT specular (feeds bloom) and a subtle ripple normal
+    // perturbation; a distance/horizon fog blends the far water into the sky.
+    // POD only — no Vulkan types cross the boundary. Mirrors setSkyParams /
+    // setSsaoParams: cache a snapshot, re-applied each frame; enabled=false
+    // (default) means the whole water pass is skipped (zero GPU cost) so every
+    // existing flag/level looks exactly as before.
+    //
+    // Tunables: `enabled` gates the pass. `seaLevel` is the water plane height (m,
+    // world +Y). `time` is the animation clock (seconds) the host advances each
+    // frame (the device does NOT keep its own clock, so headless captures are
+    // deterministic). `amplitude` scales overall wave height (m); `steepness`
+    // (0..1) is the Gerstner sharpness (0 = round sine swell, ~1 = peaked chop);
+    // `waveLength` is the base wavelength (m) of the largest wave; `speed` scales
+    // the scroll/phase rate. `deepColor` / `shallowColor` are LINEAR RGB for the
+    // deep- and shallow-water refraction tint (the depth gradient lerps shallow->
+    // deep). `sunDir` is the direction TOWARD the sun (pass the same one as the
+    // sky/lighting). `specular` scales the sun-glint highlight (HDR, drives bloom).
+    // `fresnel` biases the base (face-on) reflectance. The camera + sun + sky come
+    // from the camera set via setCamera and the sky params; only water-specific
+    // knobs live here.
+    struct WaterParams {
+        bool  enabled        = false;
+        float seaLevel       = 0.0f;
+        float time           = 0.0f;
+        float amplitude      = 0.45f;
+        float steepness      = 0.55f;
+        float waveLength     = 14.0f;
+        float speed          = 1.0f;
+        float deepColor[3]   = { 0.02f, 0.07f, 0.11f };  // linear deep-water tint
+        float shallowColor[3]= { 0.10f, 0.32f, 0.38f };  // linear shallow tint
+        float sunDir[3]      = { 0.4f, 1.0f, 0.3f };      // toward the sun (normalized internally)
+        float specular       = 12.0f;                     // sun-glint strength (HDR -> bloom)
+        float fresnel        = 0.02f;                     // base (face-on) reflectance
+    };
+    // Set the active water parameters for subsequent frames (cached + re-applied
+    // each frame, like setSkyParams). Calling with enabled=false disables water.
+    virtual void          setWaterParams(const WaterParams&) = 0;
+
     // ---- Forward point lights (interior fill) ------------------------------
     // Set the active point lights for subsequent frames. The device copies the
     // array (does NOT retain the pointer) and uploads them into the per-frame

@@ -199,6 +199,15 @@ int main(int argc, char** argv) {
     // omitted: G:\X3Native-wt-terrain\terrain.png.
     bool        terrainShot = false;
     std::string terrainShotPath = "G:/X3Native-wt-terrain/terrain.png";
+    // Ocean vantage mode (--screenshot-ocean [path.png]): build the procedural
+    // terrain world + an animated ocean at sea level under the sky/sun, pose a
+    // camera on the shore looking out across the water toward the sun so the lit
+    // animated waves, sun glint, depth-based shallow/deep color, and the
+    // terrain->water shoreline all read, settle a few frames so the waves animate
+    // + the shadow map registers, and capture a PNG. EFLZ Level 1 is interior;
+    // this is the way to SEE the ocean. Default path: G:\X3Native-wt-water\ocean.png.
+    bool        oceanShot = false;
+    std::string oceanShotPath = "G:/X3Native-wt-water/ocean.png";
     // AI-action capture mode (--capture-ai [outDir]): build a clearly-lit demo arena
     // (lit ground + sky + point/sun fill) with a fixed player reference and a small
     // squad of enemies driven by the REAL combat-AI state machine (a Guard advances,
@@ -302,6 +311,11 @@ int main(int argc, char** argv) {
             // Optional output path arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') terrainShotPath = argv[++i];
         }
+        else if (a == "--screenshot-ocean") {
+            oceanShot = true;
+            // Optional output path arg (next token, if it isn't another flag).
+            if (i + 1 < argc && argv[i + 1][0] != '-') oceanShotPath = argv[++i];
+        }
         else if (a == "--capture-ai") {
             captureAi = true;
             // Optional output directory arg (next token, if it isn't another flag).
@@ -394,7 +408,7 @@ int main(int argc, char** argv) {
     // render fully offscreen — NO GLFW window, NO surface, NO swapchain, nothing
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
-    const bool headless = smoketest || screenshot || skyShot || terrainShot || captureAi;
+    const bool headless = smoketest || screenshot || skyShot || terrainShot || oceanShot || captureAi;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -618,6 +632,108 @@ int main(int argc, char** argv) {
         streamer.shutdown(tscene, *device, *tphys);
         tjobs->shutdown();
         tphys->shutdown();
+        device->shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return wrote ? 0 : 1;
+    }
+
+    // ---- Ocean vantage mode (--screenshot-ocean [path.png]) ----------------
+    // Build the procedural terrain world (streamed) + turn ON the animated ocean
+    // at a sea level part-way up the height range, so the lower terrain is
+    // submerged and the hills rise out of the sea (a real shoreline). The sky +
+    // sun are the same the rest of the engine uses, so the water's sky-reflection
+    // + sun glint agree with the backdrop. Pose a camera on high ground looking
+    // out across the water toward the sun, advance the wave clock a few frames so
+    // the surface animates + the shadow map registers, and capture a PNG. Built
+    // through the public render API + a local Jolt world, like --screenshot-terrain.
+    if (oceanShot) {
+        x3::logInfo("--screenshot-ocean: rendering terrain + animated ocean to " + oceanShotPath);
+
+        std::unique_ptr<x3::jobs::IJobSystem> ojobs(x3::jobs::createJobSystem());
+        ojobs->init(0);
+        std::unique_ptr<x3::phys::IPhysicsWorld> ophys(x3::phys::createPhysicsWorld());
+        ophys->init();
+        x3::game::Scene oscene;
+        x3::game::TerrainStreamer ostream;
+        x3::game::TerrainConfig ocfg;   // 32 m tiles; heightScale ~55 m
+
+        const float sunYaw = std::atan2(0.3f, 0.4f);  // toward the sun in XZ
+
+        // Sky (matches the engine sun) so the water reflection + sky agree.
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+        sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
+        device->setSkyParams(sp);
+
+        // Ocean: sea level part-way up the terrain height range so valleys flood
+        // and hills become shorelines. Tasteful Gerstner defaults.
+        const float seaLevel = 14.0f;
+        x3::rhi::IRenderDevice::WaterParams wp{};
+        wp.enabled = true;
+        wp.seaLevel = seaLevel;
+        wp.amplitude = 0.6f; wp.steepness = 0.6f; wp.waveLength = 16.0f; wp.speed = 1.0f;
+        wp.deepColor[0] = 0.015f; wp.deepColor[1] = 0.06f;  wp.deepColor[2] = 0.10f;
+        wp.shallowColor[0] = 0.10f; wp.shallowColor[1] = 0.32f; wp.shallowColor[2] = 0.36f;
+        wp.sunDir[0] = 0.4f; wp.sunDir[1] = 1.0f; wp.sunDir[2] = 0.3f;
+        wp.specular = 14.0f; wp.fresnel = 0.02f;
+
+        // Find a vantage on high ground: scan a few points for one well above sea
+        // level, then back the camera up the sun azimuth so the water spans the
+        // frame toward the sun. Bring up the residency ring around that focus.
+        float fx = 40.0f, fz = -10.0f;
+        ostream.init(oscene, *device, *ophys, ojobs.get(), ocfg, fx, fz, /*radius=*/8);
+        // Fill the resident ring fast so the shoreline + a generous expanse of
+        // terrain are visible in the single capture (interactive uses the default
+        // budget; this is a headless still).
+        ostream.setUploadBudget(64);
+
+        const float surfY = ostream.heightAt(fx, fz);
+        const float camY  = std::max(surfY, seaLevel) + 10.0f;
+        const float camPitch = -0.14f;                  // ~8deg down: water + shore + sky
+
+        const float dt = 1.0f / 60.0f;
+        const int kFrames = 220, kWarmup = 120;
+        double sumGpuMs = 0.0; int measured = 0;
+        for (int i = 0; i < kFrames; ++i) {
+            glfwPollEvents();
+            ophys->step(dt);
+            // The streamer only enqueues the FULL residency ring on a focus tile
+            // boundary cross (init seeds just the 3x3). Nudge the focus across one
+            // tile on frame 1 to trigger the ring request, then hold it at the
+            // vantage so the wide resident set drains in over the warmup window.
+            const float focusX = (i == 1) ? (fx + 40.0f) : fx;
+            ostream.update(oscene, *device, *ophys, focusX, fz);
+            wp.time = (float)i * dt;        // advance the wave animation clock
+            device->setWaterParams(wp);
+            device->setCamera(fx - 26.0f, camY, fz, sunYaw, camPitch, 70.0f);
+
+            if (i == kFrames - 1) device->armCapture(oceanShotPath.c_str());
+            auto frame = device->beginFrame();
+            if (frame.valid) oscene.render(*device, frame);
+            device->endFrame(frame);
+            const x3::rhi::RenderStats s = device->stats();
+            if (i >= kWarmup) { sumGpuMs += s.gpuFrameMs; ++measured; }
+        }
+        const bool wrote = device->captureFrame(oceanShotPath.c_str());
+        if (wrote) {
+            const x3::rhi::RenderStats st = device->stats();
+            const double avgGpu = measured ? sumGpuMs / measured : 0.0;
+            const double gpuFps = (avgGpu > 1e-6) ? (1000.0 / avgGpu) : 0.0;
+            char rb[256];
+            std::snprintf(rb, sizeof(rb),
+                "--screenshot-ocean: wrote %s | seaLevel=%.1f resident=%u draws=%u tris=%u | "
+                "GPU=%.3f ms (~%.0f fps GPU-bound)",
+                oceanShotPath.c_str(), seaLevel, ostream.residentCount(),
+                st.drawCalls, st.triangles, avgGpu, gpuFps);
+            x3::logInfo(rb);
+        } else x3::logError("--screenshot-ocean: capture FAILED");
+
+        ostream.shutdown(oscene, *device, *ophys);
+        ojobs->shutdown();
+        ophys->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -1004,7 +1120,12 @@ int main(int argc, char** argv) {
     // default and is built/ticked exactly as before when not in terrain mode. The
     // Level1Game object is still constructed (so the screenshot/bench/smoketest
     // early-return paths are unchanged) but is only BUILT + ticked for Level 1. ----
-    const bool terrainWorld = (worldMode == "terrain");
+    // `--world ocean` is the terrain world with the animated ocean turned ON (an
+    // outdoor sea scene). It reuses the entire streamed-terrain path (so terrain +
+    // sky + streaming all work identically) and additionally enables water at a
+    // sea level; the only ocean-specific bit is the per-frame setWaterParams below.
+    const bool oceanWorld   = (worldMode == "ocean");
+    const bool terrainWorld = (worldMode == "terrain") || oceanWorld;
     x3::game::Scene scene;
     x3::game::Level1Game game;
     // B3: the terrain world is now STREAMED around the player via a residency
@@ -1049,6 +1170,10 @@ int main(int argc, char** argv) {
     // engine's sun, and spawn near the world origin. The player walks it through
     // the SAME walking controller + physics as Level 1. ----
     x3::phys::Vec3 terrainSpawn{};
+    // Ocean sea level (used only in --world ocean): part-way up the height range so
+    // valleys flood + hills become shorelines. The per-frame water update is in the
+    // render loop.
+    const float oceanSeaLevel = 14.0f;
     if (terrainWorld) {
         terrainJobs.reset(x3::jobs::createJobSystem());
         terrainJobs->init(0);   // hw_concurrency-1 compute workers + an I/O lane
@@ -1062,13 +1187,23 @@ int main(int argc, char** argv) {
         device->setSkyParams(sp);
         // Spawn the player on the surface near the world origin, a little above so
         // the capsule settles onto the hill on the first frames. heightAt() is a
-        // pure function of the config, valid before any tile exists.
-        const float sx = 0.0f, sz = 0.0f;
-        terrainSpawn = x3::phys::Vec3{ sx, x3::game::terrainHeightAt(tcfg, sx, sz) + 2.0f, sz };
+        // pure function of the config, valid before any tile exists. In OCEAN mode,
+        // spawn on ground ABOVE the sea level so the player starts on a shore.
+        float sx = 0.0f, sz = 0.0f;
+        if (oceanWorld) {
+            for (float r = 0.0f; r < 600.0f; r += 24.0f) {
+                if (x3::game::terrainHeightAt(tcfg, r, 0.0f) > oceanSeaLevel + 4.0f) { sx = r; sz = 0.0f; break; }
+            }
+        }
+        terrainSpawn = x3::phys::Vec3{ sx,
+            std::max(x3::game::terrainHeightAt(tcfg, sx, sz), oceanSeaLevel) + 2.0f, sz };
         // Residency radius 8 tiles (= 256 m) => up to 17x17 = 289 tiles resident.
         terrainStreamer.init(scene, *device, *physics, terrainJobs.get(),
                              tcfg, sx, sz, /*radius=*/8);
-        x3::logInfo("--world terrain: STREAMED unbounded terrain world — walk/fly the hills (WASD)");
+        if (oceanWorld)
+            x3::logInfo("--world ocean: STREAMED terrain + animated ocean (walk the shore, WASD)");
+        else
+            x3::logInfo("--world terrain: STREAMED unbounded terrain world (walk/fly the hills, WASD)");
     }
 
     // ---- Combat FX (gameplay-feel pass): shot tracers + muzzle flash. The
@@ -1378,6 +1513,7 @@ int main(int argc, char** argv) {
 
     // ---- Main loop ----
     int lastW = static_cast<int>(W), lastH = static_cast<int>(H);
+    float oceanTime = 0.0f;   // --world ocean wave-animation clock (seconds)
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
 
@@ -1579,6 +1715,22 @@ int main(int argc, char** argv) {
             // LOD to the resident set. The under-focus 3x3 is generated
             // synchronously so collision is always present (no fall-through).
             terrainStreamer.update(scene, *device, *physics, camX, camZ);
+            // OCEAN: advance the wave clock + (re)apply the water params so the sea
+            // animates each frame. The water plane follows the camera (the device
+            // centers the grid under it), so it covers the whole visible sea.
+            if (oceanWorld) {
+                oceanTime += dt;
+                x3::rhi::IRenderDevice::WaterParams wp{};
+                wp.enabled = true;
+                wp.seaLevel = oceanSeaLevel;
+                wp.time = oceanTime;
+                wp.amplitude = 0.6f; wp.steepness = 0.6f; wp.waveLength = 16.0f; wp.speed = 1.0f;
+                wp.deepColor[0] = 0.015f; wp.deepColor[1] = 0.06f;  wp.deepColor[2] = 0.10f;
+                wp.shallowColor[0] = 0.10f; wp.shallowColor[1] = 0.32f; wp.shallowColor[2] = 0.36f;
+                wp.sunDir[0] = 0.4f; wp.sunDir[1] = 1.0f; wp.sunDir[2] = 0.3f;
+                wp.specular = 14.0f; wp.fresnel = 0.02f;
+                device->setWaterParams(wp);
+            }
         } else {
             game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
         }
