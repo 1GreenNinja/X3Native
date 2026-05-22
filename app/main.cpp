@@ -14,6 +14,8 @@
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/asset/IModelLoader.h"
 #include "engine/audio/IAudioSystem.h"
+#include "engine/net/INetworkSystem.h"   // netcode Phase 0: --test-net + SimClock
+#include "engine/net/SimClock.h"         // deterministic fixed-step accumulator
 
 #include "scene.h"
 #include "mesh_prims.h"
@@ -169,7 +171,7 @@ int main(int argc, char** argv) {
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
-         testTerrainPlace = false;
+         testTerrainPlace = false, testNet = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
@@ -263,6 +265,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-ai") testAi = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
+        else if (a == "--test-net") testNet = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -405,6 +408,11 @@ int main(int argc, char** argv) {
     if (testElevator) {
         x3::logInfo("running advanced elevator (call/travel/carry) self-test (E1-E6)...");
         return x3::game::runElevatorSelfTest() ? 0 : 1;
+    }
+    if (testNet) {
+        x3::logInfo("running netcode (Subsystem N, Phase 0) self-test "
+                    "(loopback round-trip + generation-stale reject + fixed-step determinism)...");
+        return x3::net::runNetworkSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -1472,6 +1480,9 @@ int main(int argc, char** argv) {
     if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
     double prevTime = glfwGetTime();
+    // Netcode Phase 0: the deterministic fixed-step sim accumulator (§3.1). Carries
+    // leftover real time between render frames; advance(dt) yields whole kSimDt steps.
+    x3::net::SimAccumulator simAcc;
 
     // ---- S7: route keyboard text + editing into the on-screen console. The
     // char callback feeds printable codepoints; the key callback handles the
@@ -1648,67 +1659,96 @@ int main(int argc, char** argv) {
         // Camera state this frame (set by whichever branch runs), reused below
         // for the weapon viewmodel.
         float camX, camY, camZ, camYaw, camPitch;
-        if (!noclip) {
-            // ---- Walking player input ----
-            x3::game::PlayerInput in;
-            if (keyDown(GLFW_KEY_W)) in.moveFwd    += 1.0f;
-            if (keyDown(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
-            if (keyDown(GLFW_KEY_D)) in.moveStrafe += 1.0f;
-            if (keyDown(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
-            // Right mouse button = walk forward (hold to autorun)
-            if (!consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
-                in.moveFwd += 1.0f;
-            in.sprint      = keyDown(GLFW_KEY_LEFT_SHIFT);
-            in.jumpPressed = spaceNow && !prevSpace;   // rising edge
-            in.lookDX = ddx;
-            in.lookDY = ddy;
 
-            player.update(in, dt, *physics);
+        // ===================================================================
+        // NETCODE PHASE 0 — DETERMINISTIC FIXED-STEP SIM ACCUMULATOR.
+        // Spec: specs/NETCODE-architecture.spec.md §3.1 (Fiedler "Fix Your
+        // Timestep!"). The sim (player movement + elevator + physics + scene sync)
+        // now advances in WHOLE x3::net::kSimDt (1/60) steps — exactly the cadence
+        // Jolt already steps internally — while rendering stays uncapped; leftover
+        // real time carries forward in simAcc. This is the ONLY structural main.cpp
+        // change for Phase 0 (kept localized so the 14900k's additive edits merge
+        // around it). BEHAVIOR PARITY: input handling + rendering are unchanged; at
+        // a 60 Hz render rate this runs exactly one sub-step/frame = identical to the
+        // old single variable-dt step. Mouse-look + the jump edge are consumed ONCE
+        // (first sub-step) so a multi-sub-step catch-up frame can't multiply them;
+        // continuous movement axes apply every sub-step.
+        // The full client/server input->snapshot routing (player.update fed by a
+        // decoded NetCommand over the loopback transport) is deferred to Phase 0b.
+        // ===================================================================
+        const uint32_t simSteps = simAcc.advance(dt);
+        for (uint32_t s = 0; s < simSteps; ++s) {
+            const bool firstSub = (s == 0);
+            if (!noclip) {
+                // ---- Walking player input (sampled this render frame) ----
+                x3::game::PlayerInput in;
+                if (keyDown(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+                if (keyDown(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+                if (keyDown(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+                if (keyDown(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+                // Right mouse button = walk forward (hold to autorun)
+                if (!consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
+                    in.moveFwd += 1.0f;
+                in.sprint      = keyDown(GLFW_KEY_LEFT_SHIFT);
+                // Edge + mouse-look apply only on the first sub-step of the frame.
+                in.jumpPressed = firstSub && spaceNow && !prevSpace;   // rising edge
+                in.lookDX = firstSub ? ddx : 0.0f;
+                in.lookDY = firstSub ? ddy : 0.0f;
 
-            // Advanced elevator: advance the cab, then carry the player if riding
-            // (add the cab's vertical delta before the physics step resolves so the
-            // capsule rides up with the platform instead of being left behind).
-            if (elevator.built()) {
-                float edy = elevator.update(dt, scene, *physics);
-                if (edy != 0.0f) {
-                    x3::phys::Vec3 pf = physics->getBodyPosition(player.body());
-                    if (elevator.playerRiding(pf)) {
-                        pf.y += edy;
-                        physics->setBodyPosition(player.body(), pf);
+                player.update(in, x3::net::kSimDt, *physics);
+
+                // Advanced elevator: advance the cab, then carry the player if riding
+                // (add the cab's vertical delta before the physics step resolves so
+                // the capsule rides up with the platform instead of being left behind).
+                if (elevator.built()) {
+                    float edy = elevator.update(x3::net::kSimDt, scene, *physics);
+                    if (edy != 0.0f) {
+                        x3::phys::Vec3 pf = physics->getBodyPosition(player.body());
+                        if (elevator.playerRiding(pf)) {
+                            pf.y += edy;
+                            physics->setBodyPosition(player.body(), pf);
+                        }
                     }
                 }
+
+                physics->step(x3::net::kSimDt);
+                scene.update(*physics);
+            } else {
+                // ---- Debug fly camera (does not move the player body) ----
+                // Mouse-look integrates once per frame (first sub-step) so look isn't
+                // multiplied across catch-up sub-steps.
+                if (firstSub) {
+                    const float sens = 0.0025f;
+                    flyYaw += ddx * sens; flyPitch -= ddy * sens;
+                    if (flyPitch >  1.55f) flyPitch =  1.55f;
+                    if (flyPitch < -1.55f) flyPitch = -1.55f;
+                }
+                float fx = std::cos(flyPitch) * std::cos(flyYaw);
+                float fy = std::sin(flyPitch);
+                float fz = std::cos(flyPitch) * std::sin(flyYaw);
+                float rl = std::sqrt(fx * fx + fz * fz); if (rl < 1e-4f) rl = 1e-4f;
+                float rx = -fz / rl, rz = fx / rl;
+                float spd = 4.0f * x3::net::kSimDt;
+                if (keyDown(GLFW_KEY_LEFT_SHIFT)) spd *= 3.0f;
+                if (keyDown(GLFW_KEY_W)) { flyX += fx*spd; flyY += fy*spd; flyZ += fz*spd; }
+                if (keyDown(GLFW_KEY_S)) { flyX -= fx*spd; flyY -= fy*spd; flyZ -= fz*spd; }
+                if (keyDown(GLFW_KEY_D)) { flyX += rx*spd; flyZ += rz*spd; }
+                if (keyDown(GLFW_KEY_A)) { flyX -= rx*spd; flyZ -= rz*spd; }
+                if (spaceNow) flyY += spd;
+                if (keyDown(GLFW_KEY_LEFT_CONTROL)) flyY -= spd;
+
+                // World still advances so the level keeps simulating while inspecting
+                // (advance the elevator too; no carry — the fly cam isn't a rider).
+                if (elevator.built()) elevator.update(x3::net::kSimDt, scene, *physics);
+                physics->step(x3::net::kSimDt);
+                scene.update(*physics);
             }
-
-            physics->step(dt);
-            scene.update(*physics);
-
+        }
+        // Camera readback once per render frame from the post-sim state.
+        if (!noclip) {
             player.camera(camX, camY, camZ, camYaw, camPitch);
             device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
         } else {
-            // ---- Debug fly camera (does not move the player body) ----
-            const float sens = 0.0025f;
-            flyYaw += ddx * sens; flyPitch -= ddy * sens;
-            if (flyPitch >  1.55f) flyPitch =  1.55f;
-            if (flyPitch < -1.55f) flyPitch = -1.55f;
-            float fx = std::cos(flyPitch) * std::cos(flyYaw);
-            float fy = std::sin(flyPitch);
-            float fz = std::cos(flyPitch) * std::sin(flyYaw);
-            float rl = std::sqrt(fx * fx + fz * fz); if (rl < 1e-4f) rl = 1e-4f;
-            float rx = -fz / rl, rz = fx / rl;
-            float spd = 4.0f * dt;
-            if (keyDown(GLFW_KEY_LEFT_SHIFT)) spd *= 3.0f;
-            if (keyDown(GLFW_KEY_W)) { flyX += fx*spd; flyY += fy*spd; flyZ += fz*spd; }
-            if (keyDown(GLFW_KEY_S)) { flyX -= fx*spd; flyY -= fy*spd; flyZ -= fz*spd; }
-            if (keyDown(GLFW_KEY_D)) { flyX += rx*spd; flyZ += rz*spd; }
-            if (keyDown(GLFW_KEY_A)) { flyX -= rx*spd; flyZ -= rz*spd; }
-            if (spaceNow) flyY += spd;
-            if (keyDown(GLFW_KEY_LEFT_CONTROL)) flyY -= spd;
-
-            // World still advances so the level keeps simulating while inspecting
-            // (advance the elevator too; no carry — the fly cam isn't a rider).
-            if (elevator.built()) elevator.update(dt, scene, *physics);
-            physics->step(dt);
-            scene.update(*physics);
             device->setCamera(flyX, flyY, flyZ, flyYaw, flyPitch, 60.0f);
             camX = flyX; camY = flyY; camZ = flyZ; camYaw = flyYaw; camPitch = flyPitch;
         }

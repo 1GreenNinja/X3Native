@@ -9,6 +9,9 @@ add_library(x3engine STATIC
     physics/JoltPhysicsWorld.cpp
     asset/ModelLoader.cpp
     audio/MiniaudioSystem.cpp
+    net/LoopbackTransport.cpp
+    net/Replication.cpp
+    net/NetworkSystem.cpp
 )
 
 # Header-only model-loader deps (M2): cgltf (glTF/GLB parse) + stb (image decode)

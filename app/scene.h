@@ -21,6 +21,32 @@ namespace x3::game {
 // Sentinel for Entity::link meaning "not linked to anything".
 constexpr uint32_t kNoLink = 0xFFFFFFFFu;
 
+// ---------------------------------------------------------------------------
+// Generation-counter handle (netcode Phase 0; spec NETCODE-architecture §4.1).
+//
+// A bare entity id is an array INDEX, and indices are RECYCLED (TerrainStreamer
+// reuses evicted tile slots via scene.get(id) = e). A uint32_t index held across
+// a stream-out/in can therefore silently alias a DIFFERENT entity — the latent
+// "index-recycling" defect. SceneHandle fixes it the netcode-correct way: a handle
+// pairs the slot index with the slot's GENERATION at the time the handle was
+// minted. Recycling a slot bumps its generation (Scene::recycle), so a stale
+// handle (carrying the OLD generation) is detectable and rejected by valid()/
+// getChecked(). This also gives a stable identity for the net entity layer.
+//
+// This is ADDITIVE: existing uint32_t-id call sites (level1/monster/terrain/etc.)
+// keep working unchanged via add()/get(uint32_t). New code that needs to survive
+// slot recycling uses handle()/getChecked(). generation 0 == invalid handle.
+// ---------------------------------------------------------------------------
+struct SceneHandle {
+    uint32_t index      = 0xFFFFFFFFu;  // slot index into the flat vector
+    uint32_t generation = 0;            // 0 == invalid; matched against the slot's gen
+    bool valid() const { return generation != 0 && index != 0xFFFFFFFFu; }
+    bool operator==(const SceneHandle& o) const {
+        return index == o.index && generation == o.generation;
+    }
+    bool operator!=(const SceneHandle& o) const { return !(*this == o); }
+};
+
 // Semantic tags for gameplay slices. S2 only uses None/Static/Prop; the rest
 // are reserved so S4-S6 can find entities by role without a separate registry.
 enum class Tag : uint32_t {
@@ -58,6 +84,32 @@ public:
 
     uint32_t size() const { return (uint32_t)m_entities.size(); }
 
+    // ---- Generation-checked handle API (netcode Phase 0; spec §4.1) --------
+    // Mint a CURRENT handle for an existing slot (its index + the slot's live
+    // generation). Use this to remember an entity that may outlive a stream-out/in
+    // — the handle detects if the slot was recycled out from under it.
+    SceneHandle handle(uint32_t index) const;
+
+    // True iff `h` still refers to the entity it was minted for (index in range AND
+    // the slot's generation still matches). A recycled slot fails this.
+    bool valid(SceneHandle h) const;
+
+    // Generation-checked access: returns &entity iff valid(h), else nullptr. This
+    // is the safe path for any reference held across possible slot recycling.
+    Entity*       getChecked(SceneHandle h);
+    const Entity* getChecked(SceneHandle h) const;
+
+    // Scene-owned slot recycle: overwrite slot `index` with `e` AND bump its
+    // generation so any SceneHandle minted before this call becomes stale. The
+    // BodyId->entity reverse map is updated. Returns a fresh handle to the reused
+    // slot. This is the recycle path the TerrainStreamer uses so the generation
+    // counter actually advances on reuse (without it, the fix would be inert for
+    // the real bug path). Caller must pass a valid index (< size()).
+    SceneHandle recycle(uint32_t index, const Entity& e);
+
+    // Current generation of a slot (diagnostics / tests). 0 if out of range.
+    uint32_t generationOf(uint32_t index) const;
+
     // Resolve a physics BodyId (e.g. from a rayCast hit) back to the entity id
     // that owns it. Returns kNoLink if no entity has that body. The map is
     // maintained by add(); bodies with id 0 (invalid) are skipped.
@@ -83,6 +135,10 @@ public:
 
 private:
     std::vector<Entity> m_entities;
+    // Per-slot generation counter, parallel to m_entities (1:1 by index). A fresh
+    // slot starts at generation 1 (so a minted handle is never the invalid gen 0);
+    // recycle() bumps it. Additive — untouched by the legacy uint32_t-id path.
+    std::vector<uint32_t> m_generation;
     // BodyId.id -> entity id, for rayCast-hit -> entity resolution. Built in add().
     std::unordered_map<uint32_t, uint32_t> m_bodyToEntity;
 };
