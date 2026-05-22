@@ -595,6 +595,7 @@ public:
     void setPointLights(const x3::rhi::PointLight*, uint32_t) override {}
     void setSkyParams(const x3::rhi::IRenderDevice::SkyParams&) override {}
     void setSsaoParams(const x3::rhi::IRenderDevice::SsaoParams&) override {}
+    void setGiParams(const x3::rhi::IRenderDevice::GiParams&) override {}
     void setWaterParams(const x3::rhi::IRenderDevice::WaterParams&) override {}
     void drawHudQuad(const x3::rhi::FrameContext&, float, float, float, float, const float[4]) override {}
     void drawHudText(const x3::rhi::FrameContext&, const char*, float, float, float, const float[4]) override {}

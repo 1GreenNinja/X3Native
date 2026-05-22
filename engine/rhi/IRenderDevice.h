@@ -179,6 +179,50 @@ public:
     // each frame, like setSkyParams). Calling with enabled=false disables SSAO.
     virtual void          setSsaoParams(const SsaoParams&) = 0;
 
+    // ---- Real-time dynamic global illumination (SSGI — indirect diffuse) -----
+    // A fully-dynamic, screen-space one-bounce indirect-diffuse pass so light
+    // BOUNCES: coloured bounce light, lit ambient in shadow, colour bleeding — no
+    // baking. Reuses the SSAO depth pre-pass + view-space reconstruction. The chain
+    // is: a half-res GATHER (reconstruct view pos/normal from depth, march a
+    // cosine-weighted hemisphere, sample the lit HDR scene colour as incoming
+    // radiance weighted by cosine + range/visibility) -> TEMPORAL accumulation
+    // (camera-reproject the previous frame's GI + EMA blend, reject on depth
+    // disocclusion, to kill noise) -> a depth-aware DENOISE blur -> APPLY (depth-
+    // aware up-sample + additive into the LINEAR HDR scene, modulated by the SSAO
+    // AO) BEFORE bloom/tonemap. Direct sun + point lights stay full-strength; GI
+    // lifts the bounce/ambient so shadowed areas get believable colour instead of
+    // flat ambient. POD only — no Vulkan types cross the boundary. Mirrors
+    // setSsaoParams: cache a snapshot, re-applied each frame.
+    //
+    // Tunables (an app's console cvars map 1:1): `enabled` gates the whole GI chain
+    // (default ON; off == no GI GPU cost + the pre-GI look). `intensity` scales the
+    // raw gathered radiance. `radius` is the view-space gather hemisphere radius in
+    // meters (larger = broader, softer bounce). `strength` scales the APPLIED GI in
+    // HDR (final knob). `numSamples` is the hemisphere taps per pixel per frame
+    // (1..24; lower = cheaper + noisier, temporal cleans it up). `temporalAlpha`
+    // is the history weight in the EMA (0 = no accumulation/most responsive,
+    // ~0.9 = very smooth but laggier). `maxRadiance` clamps a single bounce sample
+    // (firefly suppression). `aoModulate` (0..1) lerps how strongly the SSAO AO
+    // gates the bounce. `falloffPower` shapes the range falloff curve.
+    //
+    // LIMITATIONS (honest): screen-space only — light from surfaces NOT on screen
+    // (behind the camera / occluded) cannot bounce (the documented next tier is a
+    // voxel/probe GI grid). Camera-only reprojection can ghost fast dynamic objects.
+    struct GiParams {
+        bool  enabled       = true;
+        float intensity     = 1.0f;    // raw gathered-radiance scale
+        float radius        = 1.6f;    // view-space gather hemisphere radius (m)
+        float strength      = 1.0f;    // applied GI strength (HDR, final knob)
+        int   numSamples    = 16;      // hemisphere taps per pixel per frame (1..24)
+        float temporalAlpha = 0.90f;   // history weight (EMA); 0 = off
+        float maxRadiance   = 4.0f;    // per-sample radiance clamp (firefly suppress)
+        float aoModulate    = 0.7f;    // 0..1: how strongly SSAO AO gates the bounce
+        float falloffPower  = 1.5f;    // range-falloff curve exponent
+    };
+    // Set the active GI parameters for subsequent frames (cached + re-applied each
+    // frame, like setSsaoParams). Calling with enabled=false disables the GI chain.
+    virtual void          setGiParams(const GiParams&) = 0;
+
     // ---- Animated water / ocean surface (undersea-world foundation) --------
     // A large animated water plane drawn in the MAIN pass (after opaque meshes,
     // before bloom/composite) into the linear HDR scene target, so it composes

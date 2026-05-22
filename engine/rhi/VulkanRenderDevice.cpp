@@ -193,6 +193,13 @@ public:
         if (!createSsao()) return false;
         if (!createSsaoTargets()) return false;
         writeSsaoDescriptors();
+        // GI (real-time dynamic global illumination / screen-space indirect diffuse).
+        // Built after SSAO (it reuses the SSAO depth pre-pass + the blurred AO + the
+        // lit HDR scene as its radiance source). On by default with tasteful values.
+        buildGiKernelAndNoise();
+        if (!createGi()) return false;
+        if (!createGiTargets()) return false;
+        writeGiDescriptors();
         // Water (undersea-world foundation): a grid plane + Gerstner-wave pipeline
         // that samples the scene depth (above) for the depth-based color. Built
         // after the depth buffer exists; OFF by default (gated by setWaterParams).
@@ -203,6 +210,7 @@ public:
     void shutdown() override {
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
         destroyWater();
+        destroyGi();
         destroySsao();
         destroyPost();
         destroySky();
@@ -257,6 +265,14 @@ public:
         // UBO and buildAndExecuteGraph adds the water pass when enabled. Disabled
         // by default, so indoor levels + every existing flag are unchanged.
         m_water = wp;
+    }
+
+    void setGiParams(const GiParams& gp) override {
+        // Cache a snapshot; prepareFrameData() bakes the tunables into the per-frame
+        // GI UBO + temporal UBO, and buildAndExecuteGraph gates the GI chain on
+        // `enabled`. Enabled by default with tasteful values (no app wiring required
+        // for it to work, exactly like SSAO).
+        m_gi = gp;
     }
 
     FrameContext beginFrame() override {
@@ -1131,6 +1147,59 @@ private:
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
         }
 
+        // ---- GI per-frame UBOs (gather + temporal). The gather reconstructs view
+        // pos/normal from depth via invProj + projects samples via proj (the SAME
+        // camera projection as the meshes). The temporal pass camera-reprojects last
+        // frame's GI: it needs the CURRENT inverse viewProj (clip->world) + the
+        // PREVIOUS viewProj (world->prev clip). Choose this frame's ping-pong write
+        // buffer (read the OTHER as history) and wire the per-frame descriptor sets.
+        if (m_gi.enabled) {
+            GiUBO gu{};
+            gu.proj    = proj;
+            gu.invProj = glm::inverse(proj);
+            gu.params0 = glm::vec4(m_gi.radius, m_gi.intensity, m_gi.maxRadiance, m_gi.falloffPower);
+            const int nSamp = std::max(1, std::min(m_gi.numSamples, kGiKernel));
+            gu.params1 = glm::vec4((float)m_extent.width, (float)m_extent.height,
+                                   (float)nSamp, 0.05f /*cosine bias*/);
+            for (int i = 0; i < kGiKernel; ++i) gu.kernel[i] = m_giKernelCPU[i];
+            for (int i = 0; i < 16; ++i)        gu.noise[i]  = m_giNoiseCPU[i];
+            if (m_giUboMapped[m_frameIdx]) std::memcpy(m_giUboMapped[m_frameIdx], &gu, sizeof(GiUBO));
+
+            // Ping-pong: write into m_giAccumWrite, read the other as history.
+            const uint32_t writeIdx = m_giAccumWrite;
+            const uint32_t histIdx  = writeIdx ^ 1u;
+
+            GiTemporalUBO tu{};
+            tu.invViewProjCur = glm::inverse(ubo.viewProj);
+            tu.viewProjPrev   = m_giPrevViewProj;
+            // History invalid on the first frame after init/resize -> z = 0 forces
+            // the temporal pass to fall back to the raw gather (no stale reproject).
+            tu.params0 = glm::vec4(m_gi.temporalAlpha, 0.25f /*reject tol scale (m)*/,
+                                   m_giHistoryValid ? 1.0f : 0.0f, 0.0f);
+            if (m_giTempUboMapped[m_frameIdx]) std::memcpy(m_giTempUboMapped[m_frameIdx], &tu, sizeof(GiTemporalUBO));
+
+            // Denoise + apply push constants (half-res texel + tunables).
+            const float gw = 1.0f / (float)std::max(1u, m_giExtent.width);
+            const float gh = 1.0f / (float)std::max(1u, m_giExtent.height);
+            m_giBlurPush.giTexel[0] = gw; m_giBlurPush.giTexel[1] = gh;
+            m_giBlurPush.depthSigma = 0.0015f; m_giBlurPush.stepScale = 2.0f;
+            m_giApplyPush.giTexel[0] = gw; m_giApplyPush.giTexel[1] = gh;
+            m_giApplyPush.strength = m_gi.strength;
+            // AO modulation only when the SSAO chain actually produced AO this frame;
+            // otherwise force 0 (and bind a harmless valid image) so we never sample
+            // an unwritten/wrong-layout AO target.
+            const bool aoAvail = m_ssao.enabled;
+            m_giApplyPush.aoAmount = aoAvail ? m_gi.aoModulate : 0.0f;
+            VkImageView aoView = aoAvail ? m_ssaoBlurView : m_giDenoiseView;
+
+            // Wire the per-frame ping-pong descriptors for the temporal/blur/apply
+            // sets (allocation-free vkUpdateDescriptorSets).
+            writeGiFrameDescriptors(writeIdx, histIdx, aoView);
+
+            // Stash this frame's viewProj for next frame's reprojection.
+            m_giPrevViewProj = ubo.viewProj;
+        }
+
         m_lightViewProj = computeLightViewProj();
         ubo.lightViewProj = m_lightViewProj;
         // Forward point lights: a constant hemispheric-ish ambient lift in the rgb,
@@ -1304,12 +1373,14 @@ private:
     void recordMeshDraws(VkCommandBuffer cmd) {
         if (m_frameCmdCount == 0 || !m_meshPipeline) return;
         auto& fr = m_frames[m_frameIdx];
-        // SSAO on -> the EQUAL/no-write pipeline (depth pre-pass already wrote
-        // depth). SSAO off -> the original LESS/write pipeline (main pass owns
-        // depth, no pre-pass ran).
-        const bool ssaoOn = m_ssao.enabled;
+        // Pre-pass on (SSAO OR GI) -> the EQUAL/no-write pipeline (the depth pre-pass
+        // already wrote depth). Neither on -> the original LESS/write pipeline (main
+        // pass owns depth, no pre-pass ran). The mesh.frag AO sample is independently
+        // gated by the SSAO control UBO, so the EQUAL pipeline is safe when GI is on
+        // but SSAO is off (no AO is read in that case).
+        const bool prePassOn = m_ssao.enabled || m_gi.enabled;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          ssaoOn ? m_meshPipeline : m_meshPipelineNoSsao);
+                          prePassOn ? m_meshPipeline : m_meshPipelineNoSsao);
         // set 0 = bindless textures, set 1 = object SSBO + camera UBO, set 2 = shadow
         // map, set 3 = the SSAO AO texture + control UBO (this frame's set).
         VkDescriptorSet sets[4] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx] };
@@ -1562,13 +1633,40 @@ private:
         // SSAO images (half-res). Imported UNDEFINED each frame (fully overwritten
         // by their producing pass). Only used when SSAO is enabled this frame.
         const bool ssaoOn = m_ssao.enabled;
+        // GI (screen-space indirect diffuse). Adds a half-res gather/temporal/denoise
+        // chain after the main color pass + a full-res additive apply, before bloom.
+        const bool giOn = m_gi.enabled;
+        // The camera depth PRE-PASS runs when SSAO OR GI need a complete depth buffer
+        // before the post chain; the main pass then tests EQUAL (no depth write).
+        const bool prePassOn = ssaoOn || giOn;
         // Water adds a pass after the main mesh pass that samples + depth-tests the
         // scene depth this frame (gated; OFF == no water pass + zero cost).
         const bool waterOn = m_water.enabled;
+        // The scene depth must be STORED (not transient) when water OR GI read it.
+        const bool storeDepth = waterOn || giOn;
         RgResource rgSsaoRaw  = m_graph.importImage("ssao.raw",  m_ssaoRawImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgSsaoBlur = m_graph.importImage("ssao.blur", m_ssaoBlurImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        // GI half-res buffers + the prev-depth copy. Imported each frame; the accum
+        // buffers persist across frames (history), but the graph only tracks layout
+        // within a frame so importing UNDEFINED is correct (each is fully written by
+        // its producing pass before being read; the cross-frame data lives in the
+        // image memory, not the graph's per-frame layout state).
+        RgResource rgGiRaw = {}, rgGiAccumW = {}, rgGiAccumH = {}, rgGiDenoise = {}, rgGiPrevDepth = {};
+        if (giOn) {
+            const uint32_t writeIdx = m_giAccumWrite, histIdx = writeIdx ^ 1u;
+            rgGiRaw = m_graph.importImage("gi.raw", m_giRawImg,
+                ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+            rgGiAccumW = m_graph.importImage("gi.accumW", m_giAccumImg[writeIdx],
+                ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+            rgGiAccumH = m_graph.importImage("gi.accumH", m_giAccumImg[histIdx],
+                ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+            rgGiDenoise = m_graph.importImage("gi.denoise", m_giDenoiseImg,
+                ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+            rgGiPrevDepth = m_graph.importImage("gi.prevDepth", m_giPrevDepthImg,
+                ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        }
 
         // ---- Pass 1: shadow depth pass --------------------------------------
         {
@@ -1599,12 +1697,14 @@ private:
             m_graph.addPass(std::move(shadowPass));
         }
 
-        // ---- SSAO chain (only when enabled): depth pre-pass -> SSAO -> blur ----
-        // The depth pre-pass writes the camera depth buffer so SSAO has a complete
-        // depth image BEFORE lighting; the main color pass then runs depth-test
-        // EQUAL with depth-write off (same geometry, same depth). When SSAO is off,
-        // none of these run and the main pass clears+writes depth itself (LESS).
-        if (ssaoOn) {
+        // ---- Depth pre-pass + SSAO chain ------------------------------------
+        // The depth pre-pass writes the camera depth buffer so SSAO/GI have a
+        // complete depth image BEFORE lighting; the main color pass then runs
+        // depth-test EQUAL with depth-write off (same geometry, same depth). It runs
+        // whenever SSAO OR GI is enabled. When neither is on, none of these run and
+        // the main pass clears+writes depth itself (LESS). The SSAO + blur passes
+        // are nested under ssaoOn (GI needs the depth pre-pass but not the AO passes).
+        if (prePassOn) {
             // Pass: depth pre-pass (camera POV) -> m_depthImg (DEPTH_ATTACHMENT).
             {
                 m_depthPreAttach = VkRenderingAttachmentInfo{};
@@ -1633,6 +1733,7 @@ private:
                 dpre.record = [this](VkCommandBuffer c){ recordDepthPrePassBody(c); };
                 m_graph.addPass(std::move(dpre));
             }
+          if (ssaoOn) {
             // Pass: SSAO (read depth as DEPTH_READ_ONLY, write raw AO) -> half-res.
             {
                 m_ssaoAttach = VkRenderingAttachmentInfo{};
@@ -1716,7 +1817,8 @@ private:
                 };
                 m_graph.addPass(std::move(bp));
             }
-        }
+          } // if (ssaoOn) — SSAO + blur passes
+        } // if (prePassOn) — depth pre-pass (+ optional SSAO)
 
         // ---- Pass 2: main color pass (sky + meshes) -> LINEAR HDR target ----
         // Renders the lit scene into the R16G16B16A16_SFLOAT HDR target in linear
@@ -1732,18 +1834,18 @@ private:
             m_hdrColorAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             m_hdrColorAttach.clearValue.color = { { 0.04f, 0.05f, 0.08f, 1.0f } }; // dark slate (linear)
 
-            // Depth: with SSAO on, the depth pre-pass already populated depth, so
-            // LOAD it (preserve) + the EQUAL pipeline writes nothing. With SSAO off,
+            // Depth: with the pre-pass on (SSAO or GI), depth is already populated,
+            // so LOAD it (preserve) + the EQUAL pipeline writes nothing. Otherwise
             // this pass owns depth: CLEAR + the LESS/write pipeline.
             m_mainDepthAttach = VkRenderingAttachmentInfo{};
             m_mainDepthAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
             m_mainDepthAttach.imageView = m_depthView;
             m_mainDepthAttach.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-            m_mainDepthAttach.loadOp = ssaoOn ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
-            // Water (when enabled) samples + depth-tests against this depth in a
-            // following pass, so STORE it; otherwise the depth is transient.
-            m_mainDepthAttach.storeOp = waterOn ? VK_ATTACHMENT_STORE_OP_STORE
-                                                : VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            m_mainDepthAttach.loadOp = prePassOn ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
+            // Water OR GI (when enabled) sample + read this depth in a following pass,
+            // so STORE it; otherwise the depth is transient.
+            m_mainDepthAttach.storeOp = storeDepth ? VK_ATTACHMENT_STORE_OP_STORE
+                                                   : VK_ATTACHMENT_STORE_OP_DONT_CARE;
             m_mainDepthAttach.clearValue.depthStencil = { 1.0f, 0 };
 
             RenderPassDesc colorPass{};
@@ -1753,16 +1855,16 @@ private:
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
-            // Depth use: with SSAO on the pre-pass wrote it (we LOAD + test EQUAL,
-            // no write) so declare it READ; with SSAO off this pass writes depth.
-            // Either way it must end as DEPTH_ATTACHMENT for this pass; the graph
-            // derives the transition from the SSAO pass's DEPTH_READ_ONLY read.
+            // Depth use: with the pre-pass on it wrote depth (we LOAD + test EQUAL,
+            // no write) so declare it READ; otherwise this pass writes depth. Either
+            // way it must end as DEPTH_ATTACHMENT for this pass; the graph derives the
+            // transition from the pre-pass / SSAO pass's prior state.
             colorPass.uses.push_back(ResourceUse{
                 rgDepth, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                ssaoOn ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
-                       : VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/!ssaoOn });
+                prePassOn ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                          : VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/!prePassOn });
             // READ the shadow map in DEPTH_READ_ONLY — the graph derives the
             // DEPTH_ATTACHMENT->DEPTH_READ_ONLY transition from pass 1's write state.
             colorPass.uses.push_back(ResourceUse{
@@ -1842,6 +1944,229 @@ private:
             waterPass.renderInfo = m_waterRenderInfo;
             waterPass.record = [this](VkCommandBuffer c){ recordWaterPassBody(c); };
             m_graph.addPass(std::move(waterPass));
+        }
+
+        // ================================================================
+        // GI CHAIN (screen-space indirect diffuse) — after the lit scene exists,
+        // before bloom. gather (half-res) -> temporal -> denoise -> apply (additive
+        // into the HDR target) -> prev-depth copy (for next frame's reprojection).
+        // All half-res except the full-res additive apply. Gated by giOn (zero cost
+        // when disabled). The graph derives every layout transition.
+        // ----------------------------------------------------------------
+        if (giOn) {
+            // ---- GI gather: read depth + lit HDR scene -> half-res raw radiance.
+            {
+                m_giGatherAttach = VkRenderingAttachmentInfo{};
+                m_giGatherAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                m_giGatherAttach.imageView = m_giRawView;
+                m_giGatherAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                m_giGatherAttach.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+                m_giGatherAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+                RenderPassDesc gp{};
+                gp.name = "gi-gather";
+                gp.uses.push_back(ResourceUse{
+                    rgGiRaw, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+                gp.uses.push_back(ResourceUse{
+                    rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+                gp.uses.push_back(ResourceUse{
+                    rgHdr, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+                gp.usesDynamicRendering = true;
+                m_giGatherRenderInfo = VkRenderingInfo{};
+                m_giGatherRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+                m_giGatherRenderInfo.renderArea = { {0,0}, m_giExtent };
+                m_giGatherRenderInfo.layerCount = 1;
+                m_giGatherRenderInfo.colorAttachmentCount = 1;
+                m_giGatherRenderInfo.pColorAttachments = &m_giGatherAttach;
+                gp.renderInfo = m_giGatherRenderInfo;
+                gp.record = [this](VkCommandBuffer c){
+                    postViewport(c, m_giExtent);
+                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giGatherPipe);
+                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giGatherLayout,
+                                            0, 1, &m_giGatherSet[m_frameIdx], 0, nullptr);
+                    vkCmdDraw(c, 3, 1, 0, 0);
+                };
+                m_graph.addPass(std::move(gp));
+            }
+            // ---- GI temporal: blend raw with reprojected history -> accum[write].
+            {
+                m_giTemporalAttach = VkRenderingAttachmentInfo{};
+                m_giTemporalAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                m_giTemporalAttach.imageView = m_giAccumView[m_giAccumWrite];
+                m_giTemporalAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                m_giTemporalAttach.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+                m_giTemporalAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+                RenderPassDesc tp{};
+                tp.name = "gi-temporal";
+                tp.uses.push_back(ResourceUse{
+                    rgGiAccumW, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+                tp.uses.push_back(ResourceUse{
+                    rgGiRaw, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+                // History accum buffer (read-only this frame). On the first frame the
+                // shader ignores it (valid=0); the import-UNDEFINED is harmless then.
+                tp.uses.push_back(ResourceUse{
+                    rgGiAccumH, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+                tp.uses.push_back(ResourceUse{
+                    rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+                tp.uses.push_back(ResourceUse{
+                    rgGiPrevDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+                tp.usesDynamicRendering = true;
+                m_giTemporalRenderInfo = VkRenderingInfo{};
+                m_giTemporalRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+                m_giTemporalRenderInfo.renderArea = { {0,0}, m_giExtent };
+                m_giTemporalRenderInfo.layerCount = 1;
+                m_giTemporalRenderInfo.colorAttachmentCount = 1;
+                m_giTemporalRenderInfo.pColorAttachments = &m_giTemporalAttach;
+                tp.renderInfo = m_giTemporalRenderInfo;
+                tp.record = [this](VkCommandBuffer c){
+                    postViewport(c, m_giExtent);
+                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giTemporalPipe);
+                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giTemporalLayout,
+                                            0, 1, &m_giTemporalSet[m_frameIdx], 0, nullptr);
+                    vkCmdDraw(c, 3, 1, 0, 0);
+                };
+                m_graph.addPass(std::move(tp));
+            }
+            // ---- GI denoise: depth-aware bilateral -> denoise buffer.
+            {
+                m_giBlurAttach = VkRenderingAttachmentInfo{};
+                m_giBlurAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                m_giBlurAttach.imageView = m_giDenoiseView;
+                m_giBlurAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                m_giBlurAttach.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+                m_giBlurAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+                RenderPassDesc dp{};
+                dp.name = "gi-denoise";
+                dp.uses.push_back(ResourceUse{
+                    rgGiDenoise, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+                dp.uses.push_back(ResourceUse{
+                    rgGiAccumW, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+                dp.uses.push_back(ResourceUse{
+                    rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+                dp.usesDynamicRendering = true;
+                m_giBlurRenderInfo = VkRenderingInfo{};
+                m_giBlurRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+                m_giBlurRenderInfo.renderArea = { {0,0}, m_giExtent };
+                m_giBlurRenderInfo.layerCount = 1;
+                m_giBlurRenderInfo.colorAttachmentCount = 1;
+                m_giBlurRenderInfo.pColorAttachments = &m_giBlurAttach;
+                dp.renderInfo = m_giBlurRenderInfo;
+                dp.record = [this](VkCommandBuffer c){
+                    postViewport(c, m_giExtent);
+                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giBlurPipe);
+                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giBlurLayout,
+                                            0, 1, &m_giBlurSet[m_frameIdx], 0, nullptr);
+                    vkCmdPushConstants(c, m_giBlurLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                       0, sizeof(GiBlurPush), &m_giBlurPush);
+                    vkCmdDraw(c, 3, 1, 0, 0);
+                };
+                m_graph.addPass(std::move(dp));
+            }
+            // ---- GI apply: full-res depth-aware up-sample + ADDITIVE into the HDR
+            //      scene (modulated by SSAO AO). Writes rgHdr (load existing scene).
+            {
+                m_giApplyAttach = VkRenderingAttachmentInfo{};
+                m_giApplyAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                m_giApplyAttach.imageView = m_hdrView;
+                m_giApplyAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                m_giApplyAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;     // keep the lit scene
+                m_giApplyAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+                RenderPassDesc ap{};
+                ap.name = "gi-apply";
+                ap.uses.push_back(ResourceUse{
+                    rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+                ap.uses.push_back(ResourceUse{
+                    rgGiDenoise, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+                ap.uses.push_back(ResourceUse{
+                    rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+                // The AO read (binding 2) is the blurred SSAO when SSAO ran this frame
+                // (already in SHADER_READ_ONLY from the main pass); when SSAO is off the
+                // apply set binds the GI denoise image instead (already declared above)
+                // and forces aoAmount=0, so no extra/incorrect resource use is needed.
+                if (ssaoOn) {
+                    ap.uses.push_back(ResourceUse{
+                        rgSsaoBlur, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                        VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+                }
+                ap.usesDynamicRendering = true;
+                m_giApplyRenderInfo = VkRenderingInfo{};
+                m_giApplyRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+                m_giApplyRenderInfo.renderArea = { {0,0}, m_extent };
+                m_giApplyRenderInfo.layerCount = 1;
+                m_giApplyRenderInfo.colorAttachmentCount = 1;
+                m_giApplyRenderInfo.pColorAttachments = &m_giApplyAttach;
+                ap.renderInfo = m_giApplyRenderInfo;
+                ap.record = [this](VkCommandBuffer c){
+                    VkViewport vp{ 0.0f, 0.0f, (float)m_extent.width, (float)m_extent.height, 0.0f, 1.0f };
+                    VkRect2D scis{ {0,0}, m_extent };
+                    vkCmdSetViewport(c, 0, 1, &vp);
+                    vkCmdSetScissor(c, 0, 1, &scis);
+                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giApplyPipe);
+                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giApplyLayout,
+                                            0, 1, &m_giApplySet[m_frameIdx], 0, nullptr);
+                    vkCmdPushConstants(c, m_giApplyLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                       0, sizeof(GiApplyPush), &m_giApplyPush);
+                    vkCmdDraw(c, 3, 1, 0, 0);
+                };
+                m_graph.addPass(std::move(ap));
+            }
+            // ---- Prev-depth copy: snapshot THIS frame's depth into the persistent
+            //      prev-depth image for NEXT frame's temporal reprojection. Runs last
+            //      in the GI chain (after temporal consumed last frame's prev-depth).
+            {
+                RenderPassDesc cp{};
+                cp.name = "gi-prevdepth-copy";
+                cp.uses.push_back(ResourceUse{
+                    rgDepth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+                cp.uses.push_back(ResourceUse{
+                    rgGiPrevDepth, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/true });
+                VkExtent2D ext = m_extent;
+                cp.record = [this, ext](VkCommandBuffer c){
+                    VkImageCopy region{};
+                    region.srcSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 };
+                    region.dstSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 };
+                    region.extent = { ext.width, ext.height, 1 };
+                    vkCmdCopyImage(c, m_depthImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   m_giPrevDepthImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                };
+                m_graph.addPass(std::move(cp));
+            }
         }
 
         // ================================================================
@@ -1987,6 +2312,16 @@ private:
         // first use we never see UNDEFINED again — the WAR barrier protecting last
         // frame's sampling reads is derived from this stored read state.
         m_shadowState = m_graph.stateOf(rgShadow);
+
+        // GI ping-pong + history: this frame wrote accum[m_giAccumWrite] (now the
+        // freshest accumulated GI) + snapshotted depth into prev-depth. Next frame
+        // reads accum[m_giAccumWrite] as history and writes the OTHER buffer, so flip
+        // the index. History becomes valid after the first GI frame (reprojection
+        // safe once a previous frame + its depth + viewProj exist).
+        if (giOn) {
+            m_giAccumWrite ^= 1u;
+            m_giHistoryValid = true;
+        }
     }
 
     // Build a 128x64 RGBA atlas (16 cols x 8 rows of 8x8 glyphs) from the
@@ -2566,7 +2901,8 @@ private:
         dici.tiling = VK_IMAGE_TILING_OPTIMAL;
         // SAMPLED so the SSAO pass can read view-space depth from this buffer (the
         // depth pre-pass writes it; SSAO reconstructs view position + normals).
-        dici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        dici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                   | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;  // GI snapshots depth for temporal reproject
         VmaAllocationCreateInfo daci{};
         daci.usage = VMA_MEMORY_USAGE_AUTO;
         daci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
@@ -2603,6 +2939,11 @@ private:
         // rewrite every SSAO descriptor that references depth/AO views.
         createSsaoTargets();
         writeSsaoDescriptors();
+        // GI half-res targets + prev-depth track the extent; the depth/AO/scene
+        // views changed, so rebuild + rewrite. History is invalid after a resize.
+        createGiTargets();
+        writeGiDescriptors();
+        m_giHistoryValid = false;
         // Water samples the scene depth: the depth view changed -> rewire it.
         writeWaterDescriptors();
     }
@@ -2657,7 +2998,8 @@ private:
         dici.tiling = VK_IMAGE_TILING_OPTIMAL;
         // SAMPLED so the SSAO pass can read view-space depth from this buffer (the
         // depth pre-pass writes it; SSAO reconstructs view position + normals).
-        dici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        dici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                   | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;  // GI snapshots depth for temporal reproject
         VmaAllocationCreateInfo daci{};
         daci.usage = VMA_MEMORY_USAGE_AUTO;
         daci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
@@ -2696,6 +3038,10 @@ private:
         // SSAO half-res targets + depth-referencing descriptors track the extent.
         createSsaoTargets();
         writeSsaoDescriptors();
+        // GI half-res targets + prev-depth track the extent; rebuild + rewrite.
+        createGiTargets();
+        writeGiDescriptors();
+        m_giHistoryValid = false;
         // Water samples the scene depth: the depth view changed -> rewire it.
         writeWaterDescriptors();
     }
@@ -3297,6 +3643,292 @@ private:
         for (int i = 0; i < 16; ++i) {
             // Rotation vectors in the XY plane (z=0), uniform in [-1,1].
             m_ssaoNoiseCPU[i] = glm::vec4(rnd() * 2.0f - 1.0f, rnd() * 2.0f - 1.0f, 0.0f, 0.0f);
+        }
+    }
+
+    // ======================================================================
+    // GI — creation / targets / descriptors / teardown.
+    // ======================================================================
+    // Baked cosine-weighted hemisphere kernel (Malley's method: project a uniform
+    // disk to the hemisphere) so the gather is importance-sampled toward the normal
+    // — exactly the cosine weighting an irradiance integral wants. Deterministic
+    // LCG (clean-room, identical across runs). Plus a 4x4 rotation-noise table.
+    void buildGiKernelAndNoise() {
+        if (m_giKernelBuilt) return;
+        m_giKernelBuilt = true;
+        uint32_t s = 0x9E3779B9u;
+        auto rnd = [&]() { s = s * 1664525u + 1013904223u; return (float)(s >> 8) / (float)(1u << 24); };
+        for (int i = 0; i < kGiKernel; ++i) {
+            // Cosine-weighted hemisphere about +z (Malley): r = sqrt(u1), phi = 2pi u2.
+            float u1 = rnd(), u2 = rnd();
+            float r = std::sqrt(u1);
+            float phi = 6.2831853f * u2;
+            glm::vec3 v(r * std::cos(phi), r * std::sin(phi), std::sqrt(std::max(0.0f, 1.0f - u1)));
+            // Vary the radial reach so taps spread across the hemisphere shell, with
+            // a mild bias toward mid-range (broad soft bounce, not just contact).
+            float t = (float)i / (float)kGiKernel;
+            float scale = 0.25f + 0.75f * t;
+            m_giKernelCPU[i] = glm::vec4(v * scale, 0.0f);
+        }
+        for (int i = 0; i < 16; ++i)
+            m_giNoiseCPU[i] = glm::vec4(rnd() * 2.0f - 1.0f, rnd() * 2.0f - 1.0f, 0.0f, 0.0f);
+    }
+
+    // Build the GI samplers, descriptor-set layouts, pool + sets, per-frame UBOs,
+    // and the four full-screen GI pipelines. Extent-independent (dynamic viewport);
+    // the half-res IMAGES + per-frame descriptor writes are (re)done in
+    // createGiTargets()/writeGiDescriptors(). Reuses m_depthSampler (NEAREST) for
+    // depth and m_ssaoLinearSampler (CLAMP linear) for colour/AO — both created by
+    // createSsao(), which runs first.
+    bool createGi() {
+        // ---- Descriptor set layouts ----
+        auto makeLayout = [&](uint32_t nImg, bool hasUbo, VkDescriptorSetLayout& out) -> bool {
+            VkDescriptorSetLayoutBinding b[8]{};
+            uint32_t n = 0;
+            for (uint32_t i = 0; i < nImg; ++i) {
+                b[n].binding = n; b[n].descriptorCount = 1;
+                b[n].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                b[n].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT; ++n;
+            }
+            if (hasUbo) {
+                b[n].binding = n; b[n].descriptorCount = 1;
+                b[n].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                b[n].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT; ++n;
+            }
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = n; ci.pBindings = b;
+            return vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &out) == VK_SUCCESS;
+        };
+        // gather: depth + scene + GiUBO ; temporal: cur+hist+depth+prevDepth + UBO ;
+        // blur: gi + depth (push const) ; apply: gi + depth + ao (push const).
+        if (!makeLayout(2, true,  m_giGatherSetLayout))   { logError("[rhi] gi gather layout failed"); return false; }
+        if (!makeLayout(4, true,  m_giTemporalSetLayout)) { logError("[rhi] gi temporal layout failed"); return false; }
+        if (!makeLayout(2, false, m_giBlurSetLayout))     { logError("[rhi] gi blur layout failed"); return false; }
+        if (!makeLayout(3, false, m_giApplySetLayout))    { logError("[rhi] gi apply layout failed"); return false; }
+
+        // ---- Descriptor pool ----
+        {
+            const uint32_t nF = kFramesInFlight;
+            VkDescriptorPoolSize sizes[2]{};
+            sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            sizes[0].descriptorCount = nF * 2 /*gather*/ + nF * 4 /*temporal*/ + nF * 2 /*blur*/ + nF * 3 /*apply*/;
+            sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            sizes[1].descriptorCount = nF /*gather ubo*/ + nF /*temporal ubo*/;
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.maxSets = nF * 4; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_giPool) != VK_SUCCESS) {
+                logError("[rhi] gi desc pool failed"); return false;
+            }
+        }
+        // ---- Per-frame UBOs + gather/temporal sets ----
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VkBufferCreateInfo ub{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            ub.size = sizeof(GiUBO); ub.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationInfo info{};
+            if (vmaCreateBuffer(m_alloc, &ub, &aci, &m_giUboBuf[i], &m_giUboAlloc[i], &info) != VK_SUCCESS) {
+                logError("[rhi] gi ubo create failed"); return false;
+            }
+            m_giUboMapped[i] = info.pMappedData;
+            VkBufferCreateInfo tb{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            tb.size = sizeof(GiTemporalUBO); tb.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationInfo tinfo{};
+            if (vmaCreateBuffer(m_alloc, &tb, &aci, &m_giTempUboBuf[i], &m_giTempUboAlloc[i], &tinfo) != VK_SUCCESS) {
+                logError("[rhi] gi temporal ubo create failed"); return false;
+            }
+            m_giTempUboMapped[i] = tinfo.pMappedData;
+
+            VkDescriptorSetAllocateInfo ag{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            ag.descriptorPool = m_giPool; ag.descriptorSetCount = 1; ag.pSetLayouts = &m_giGatherSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &ag, &m_giGatherSet[i]) != VK_SUCCESS) {
+                logError("[rhi] gi gather set alloc failed"); return false;
+            }
+            VkDescriptorSetAllocateInfo at{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            at.descriptorPool = m_giPool; at.descriptorSetCount = 1; at.pSetLayouts = &m_giTemporalSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &at, &m_giTemporalSet[i]) != VK_SUCCESS) {
+                logError("[rhi] gi temporal set alloc failed"); return false;
+            }
+            VkDescriptorSetAllocateInfo ab{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            ab.descriptorPool = m_giPool; ab.descriptorSetCount = 1; ab.pSetLayouts = &m_giBlurSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &ab, &m_giBlurSet[i]) != VK_SUCCESS) {
+                logError("[rhi] gi blur set alloc failed"); return false;
+            }
+            VkDescriptorSetAllocateInfo aa{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            aa.descriptorPool = m_giPool; aa.descriptorSetCount = 1; aa.pSetLayouts = &m_giApplySetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &aa, &m_giApplySet[i]) != VK_SUCCESS) {
+                logError("[rhi] gi apply set alloc failed"); return false;
+            }
+        }
+        // ---- Pipeline layouts ----
+        auto makePipeLayout = [&](VkDescriptorSetLayout setL, uint32_t pcSize, VkPipelineLayout& out) -> bool {
+            VkPushConstantRange pcr{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, pcSize };
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pl.setLayoutCount = 1; pl.pSetLayouts = &setL;
+            if (pcSize > 0) { pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &pcr; }
+            return vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &out) == VK_SUCCESS;
+        };
+        if (!makePipeLayout(m_giGatherSetLayout,   0, m_giGatherLayout))   { logError("[rhi] gi gather pl failed"); return false; }
+        if (!makePipeLayout(m_giTemporalSetLayout, 0, m_giTemporalLayout)) { logError("[rhi] gi temporal pl failed"); return false; }
+        if (!makePipeLayout(m_giBlurSetLayout,  sizeof(GiBlurPush),  m_giBlurLayout))  { logError("[rhi] gi blur pl failed"); return false; }
+        if (!makePipeLayout(m_giApplySetLayout, sizeof(GiApplyPush), m_giApplyLayout)) { logError("[rhi] gi apply pl failed"); return false; }
+
+        // ---- Pipelines (full-screen triangle). Apply uses ADDITIVE blend into the
+        //      HDR target; the rest write their own half-res buffers (no blend). ----
+        if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\ssgi_gather.frag.spv",
+                                      m_giGatherLayout, kGiFormat, /*additiveBlend=*/false, m_giGatherPipe)) return false;
+        if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\ssgi_temporal.frag.spv",
+                                      m_giTemporalLayout, kGiFormat, /*additiveBlend=*/false, m_giTemporalPipe)) return false;
+        if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\ssgi_blur.frag.spv",
+                                      m_giBlurLayout, kGiFormat, /*additiveBlend=*/false, m_giBlurPipe)) return false;
+        if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\ssgi_apply.frag.spv",
+                                      m_giApplyLayout, kHdrFormat, /*additiveBlend=*/true, m_giApplyPipe)) return false;
+        return true;
+    }
+
+    // Create (or recreate) the half-res GI targets + the full-res prev-depth copy
+    // at the current frame extent. Called after createGi() at init + on resize.
+    bool createGiTargets() {
+        destroyGiTargets();
+        m_giExtent = { std::max(1u, m_extent.width / 2), std::max(1u, m_extent.height / 2) };
+        const VkImageUsageFlags use = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (!createColorTarget(kGiFormat, m_giExtent.width, m_giExtent.height, use,
+                               m_giRawImg, m_giRawAlloc, m_giRawView)) { logError("[rhi] gi raw target failed"); return false; }
+        for (int i = 0; i < 2; ++i)
+            if (!createColorTarget(kGiFormat, m_giExtent.width, m_giExtent.height, use,
+                                   m_giAccumImg[i], m_giAccumAlloc[i], m_giAccumView[i])) { logError("[rhi] gi accum target failed"); return false; }
+        if (!createColorTarget(kGiFormat, m_giExtent.width, m_giExtent.height, use,
+                               m_giDenoiseImg, m_giDenoiseAlloc, m_giDenoiseView)) { logError("[rhi] gi denoise target failed"); return false; }
+        // Prev-depth: a full-res copy of the depth buffer (TRANSFER_DST + SAMPLED).
+        // Same format as the main depth so vkCmdCopyImage is a straight blit.
+        VkImageCreateInfo dici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        dici.imageType = VK_IMAGE_TYPE_2D; dici.format = m_depthFormat;
+        dici.extent = { m_extent.width, m_extent.height, 1 }; dici.mipLevels = 1; dici.arrayLayers = 1;
+        dici.samples = VK_SAMPLE_COUNT_1_BIT; dici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        dici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        dici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VmaAllocationCreateInfo daci{}; daci.usage = VMA_MEMORY_USAGE_AUTO;
+        daci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        if (vmaCreateImage(m_alloc, &dici, &daci, &m_giPrevDepthImg, &m_giPrevDepthAlloc, nullptr) != VK_SUCCESS) {
+            logError("[rhi] gi prev-depth image failed"); return false;
+        }
+        VkImageViewCreateInfo dvci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        dvci.image = m_giPrevDepthImg; dvci.viewType = VK_IMAGE_VIEW_TYPE_2D; dvci.format = m_depthFormat;
+        dvci.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(m_dev.device, &dvci, nullptr, &m_giPrevDepthView) != VK_SUCCESS) {
+            logError("[rhi] gi prev-depth view failed"); return false;
+        }
+        m_giHistoryValid = false;   // no usable history until the second frame
+        m_giAccumWrite = 0;
+        return true;
+    }
+
+    void destroyGiTargets() {
+        auto killImg = [&](VkImage& im, VmaAllocation& al, VkImageView& v) {
+            if (v)  { vkDestroyImageView(m_dev.device, v, nullptr); v = VK_NULL_HANDLE; }
+            if (im) { vmaDestroyImage(m_alloc, im, al); im = VK_NULL_HANDLE; al = nullptr; }
+        };
+        killImg(m_giPrevDepthImg, m_giPrevDepthAlloc, m_giPrevDepthView);
+        killImg(m_giDenoiseImg, m_giDenoiseAlloc, m_giDenoiseView);
+        killImg(m_giAccumImg[0], m_giAccumAlloc[0], m_giAccumView[0]);
+        killImg(m_giAccumImg[1], m_giAccumAlloc[1], m_giAccumView[1]);
+        killImg(m_giRawImg, m_giRawAlloc, m_giRawView);
+    }
+
+    // (Re)write the GI descriptor sets to point at the current image views. The
+    // gather set (depth + scene + UBO) is stable per resize; the temporal/blur/
+    // apply sets reference ping-pong accum views and are rewritten each frame in
+    // prepareFrameData (cheap). Here we set the per-resize-stable bindings + the
+    // gather/temporal UBOs. Sampler reuse: m_depthSampler (NEAREST), m_ssaoLinearSampler (LINEAR).
+    void writeGiDescriptors() {
+        // Gather: 0=depth(NEAREST), 1=scene(LINEAR), 2=GiUBO. Stable per resize.
+        // Depth is sampled in DEPTH_READ_ONLY_OPTIMAL (the layout the graph leaves it
+        // in for the GI passes); colour images use SHADER_READ_ONLY_OPTIMAL.
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkDescriptorImageInfo d{ m_depthSampler, m_depthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo s{ m_ssaoLinearSampler, m_hdrView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorBufferInfo u{ m_giUboBuf[i], 0, sizeof(GiUBO) };
+            VkWriteDescriptorSet w[3]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[0].dstSet = m_giGatherSet[i];
+            w[0].dstBinding = 0; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &d;
+            w[1] = w[0]; w[1].dstBinding = 1; w[1].pImageInfo = &s;
+            w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[2].dstSet = m_giGatherSet[i];
+            w[2].dstBinding = 2; w[2].descriptorCount = 1;
+            w[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[2].pBufferInfo = &u;
+            vkUpdateDescriptorSets(m_dev.device, 3, w, 0, nullptr);
+        }
+        // The temporal/blur/apply sets are written per-frame (ping-pong) by
+        // writeGiFrameDescriptors(); nothing stable to do here for them.
+    }
+
+    // Per-frame: point the temporal/blur/apply descriptor sets at the right
+    // ping-pong accum buffers for this frame. `writeIdx` = accum we write this
+    // frame, `histIdx` = accum we read as history. Cheap vkUpdateDescriptorSets;
+    // no allocation. Called from prepareFrameData after m_giAccumWrite is chosen.
+    void writeGiFrameDescriptors(uint32_t writeIdx, uint32_t histIdx, VkImageView aoView) {
+        const VkImageLayout RO  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;  // colour
+        const VkImageLayout DRO = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;   // depth
+        // Temporal set (this frame's m_frameIdx): 0=cur(raw), 1=hist(accum[hist]),
+        // 2=depth, 3=prevDepth, 4=GiTemporalUBO.
+        {
+            VkDescriptorImageInfo cur { m_ssaoLinearSampler, m_giRawView,          RO  };
+            VkDescriptorImageInfo hist{ m_ssaoLinearSampler, m_giAccumView[histIdx], RO };
+            VkDescriptorImageInfo dep { m_depthSampler,      m_depthView,          DRO };
+            VkDescriptorImageInfo pdep{ m_depthSampler,      m_giPrevDepthView,    DRO };
+            VkDescriptorBufferInfo ub { m_giTempUboBuf[m_frameIdx], 0, sizeof(GiTemporalUBO) };
+            VkWriteDescriptorSet w[5]{};
+            for (int k = 0; k < 4; ++k) {
+                w[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[k].dstSet = m_giTemporalSet[m_frameIdx];
+                w[k].dstBinding = (uint32_t)k; w[k].descriptorCount = 1;
+                w[k].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            }
+            w[0].pImageInfo = &cur; w[1].pImageInfo = &hist; w[2].pImageInfo = &dep; w[3].pImageInfo = &pdep;
+            w[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[4].dstSet = m_giTemporalSet[m_frameIdx];
+            w[4].dstBinding = 4; w[4].descriptorCount = 1;
+            w[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[4].pBufferInfo = &ub;
+            vkUpdateDescriptorSets(m_dev.device, 5, w, 0, nullptr);
+        }
+        // Blur set: 0 = accum[writeIdx] (the temporal output), 1 = depth.
+        {
+            VkDescriptorImageInfo gi { m_ssaoLinearSampler, m_giAccumView[writeIdx], RO  };
+            VkDescriptorImageInfo dep{ m_depthSampler,      m_depthView,            DRO };
+            VkWriteDescriptorSet w[2]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[0].dstSet = m_giBlurSet[m_frameIdx];
+            w[0].dstBinding = 0; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &gi;
+            w[1] = w[0]; w[1].dstBinding = 1; w[1].pImageInfo = &dep;
+            vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+        }
+        // Apply set: 0 = denoised GI, 1 = depth, 2 = AO (the blurred SSAO when on,
+        // otherwise a harmless valid image — apply forces aoAmount=0 in that case).
+        {
+            VkDescriptorImageInfo gi { m_ssaoLinearSampler, m_giDenoiseView, RO  };
+            VkDescriptorImageInfo dep{ m_depthSampler,      m_depthView,     DRO };
+            VkDescriptorImageInfo ao { m_ssaoLinearSampler, aoView,          RO  };
+            VkWriteDescriptorSet w[3]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[0].dstSet = m_giApplySet[m_frameIdx];
+            w[0].dstBinding = 0; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &gi;
+            w[1] = w[0]; w[1].dstBinding = 1; w[1].pImageInfo = &dep;
+            w[2] = w[0]; w[2].dstBinding = 2; w[2].pImageInfo = &ao;
+            vkUpdateDescriptorSets(m_dev.device, 3, w, 0, nullptr);
+        }
+    }
+
+    void destroyGi() {
+        destroyGiTargets();
+        auto killPipe = [&](VkPipeline& p){ if (p) { vkDestroyPipeline(m_dev.device, p, nullptr); p = VK_NULL_HANDLE; } };
+        killPipe(m_giApplyPipe); killPipe(m_giBlurPipe); killPipe(m_giTemporalPipe); killPipe(m_giGatherPipe);
+        auto killPL = [&](VkPipelineLayout& l){ if (l) { vkDestroyPipelineLayout(m_dev.device, l, nullptr); l = VK_NULL_HANDLE; } };
+        killPL(m_giApplyLayout); killPL(m_giBlurLayout); killPL(m_giTemporalLayout); killPL(m_giGatherLayout);
+        if (m_giPool) { vkDestroyDescriptorPool(m_dev.device, m_giPool, nullptr); m_giPool = VK_NULL_HANDLE; }
+        auto killSL = [&](VkDescriptorSetLayout& l){ if (l) { vkDestroyDescriptorSetLayout(m_dev.device, l, nullptr); l = VK_NULL_HANDLE; } };
+        killSL(m_giApplySetLayout); killSL(m_giBlurSetLayout); killSL(m_giTemporalSetLayout); killSL(m_giGatherSetLayout);
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (m_giUboBuf[i])     { vmaDestroyBuffer(m_alloc, m_giUboBuf[i], m_giUboAlloc[i]); m_giUboBuf[i] = VK_NULL_HANDLE; }
+            if (m_giTempUboBuf[i]) { vmaDestroyBuffer(m_alloc, m_giTempUboBuf[i], m_giTempUboAlloc[i]); m_giTempUboBuf[i] = VK_NULL_HANDLE; }
         }
     }
 
@@ -4271,6 +4903,92 @@ private:
     bool      m_ssaoKernelBuilt = false;
     glm::vec4 m_ssaoKernelCPU[kSsaoKernel]{};
     glm::vec4 m_ssaoNoiseCPU[16]{};
+
+    // ======================================================================
+    // GI — real-time dynamic global illumination (screen-space indirect diffuse).
+    // CLEAN-ROOM, original. Built from public, non-engine references only: the
+    // Vulkan 1.3 spec; Real-Time Rendering 4th ed.; the screen-space directional
+    // occlusion / SSGI formulation (Ritschel/Grosch/Seidel, I3D 2009) where screen
+    // occluders carry surface radiance for indirect colour bleeding; temporal-
+    // reprojection / EMA accumulation + a-trous/bilateral denoise write-ups. No
+    // game-engine source consulted.
+    // ----------------------------------------------------------------------
+    // Chain (all added to the render graph after the main color pass, before the
+    // bloom chain): GATHER (half-res, ssgi_gather.frag — reconstruct view pos/normal
+    // from the SSAO depth pre-pass, march a cosine hemisphere, sample the lit HDR
+    // scene as incoming radiance) -> TEMPORAL (ssgi_temporal.frag — camera-reproject
+    // last frame's GI + EMA blend, reject disocclusion) -> DENOISE (ssgi_blur.frag —
+    // depth-aware bilateral) -> APPLY (full-res, ssgi_apply.frag — depth-aware
+    // up-sample + ADDITIVE into the linear HDR target, modulated by the SSAO AO).
+    // Half-res + a few taps + temporal target well under ~2 ms at 720p on a 1080 Ti.
+    static constexpr int      kGiKernel = 24;                       // hemisphere taps
+    static constexpr VkFormat kGiFormat = VK_FORMAT_R16G16B16A16_SFLOAT; // HDR indirect radiance
+    // GI gather UBO (std140; matches the Gi block in ssgi_gather.frag).
+    struct GiUBO {
+        glm::mat4 proj;
+        glm::mat4 invProj;
+        glm::vec4 params0;             // x=radius, y=intensity, z=maxRadiance, w=falloffPower
+        glm::vec4 params1;             // x=screenW, y=screenH, z=numSamples, w=bias
+        glm::vec4 kernel[kGiKernel];
+        glm::vec4 noise[16];
+    };
+    static_assert(sizeof(GiUBO) == 128 + 32 + (kGiKernel + 16) * 16,
+                  "GiUBO must match the std140 layout in ssgi_gather.frag");
+    // GI temporal UBO (matches GiTemporal in ssgi_temporal.frag).
+    struct GiTemporalUBO {
+        glm::mat4 invViewProjCur;
+        glm::mat4 viewProjPrev;
+        glm::vec4 params0;             // x=alpha, y=depthRejectScale, z=valid, w=unused
+    };
+    // Push constants for the denoise blur + apply passes.
+    struct GiBlurPush  { float giTexel[2]; float depthSigma, stepScale; };
+    struct GiApplyPush { float giTexel[2]; float strength, aoAmount; };
+    GiBlurPush  m_giBlurPush{};
+    GiApplyPush m_giApplyPush{};
+    // Half-res GI targets: raw gather, two ping-pong accumulation buffers (one is
+    // the live history across frames), and a denoised buffer. All RGBA16F.
+    VkImage m_giRawImg = VK_NULL_HANDLE; VmaAllocation m_giRawAlloc = nullptr; VkImageView m_giRawView = VK_NULL_HANDLE;
+    VkImage m_giAccumImg[2] = {}; VmaAllocation m_giAccumAlloc[2] = {}; VkImageView m_giAccumView[2] = {};
+    VkImage m_giDenoiseImg = VK_NULL_HANDLE; VmaAllocation m_giDenoiseAlloc = nullptr; VkImageView m_giDenoiseView = VK_NULL_HANDLE;
+    // Full-res previous-frame depth copy (for temporal disocclusion reject). Kept
+    // across frames; the main depth is overwritten each frame so we snapshot it.
+    VkImage m_giPrevDepthImg = VK_NULL_HANDLE; VmaAllocation m_giPrevDepthAlloc = nullptr; VkImageView m_giPrevDepthView = VK_NULL_HANDLE;
+    VkExtent2D m_giExtent{};                  // half the frame extent
+    uint32_t   m_giAccumWrite = 0;            // which accum buffer this frame writes (ping-pong)
+    bool       m_giHistoryValid = false;      // false on first frame / after resize
+    glm::mat4  m_giPrevViewProj{1.0f};        // last frame's camera viewProj (for reproject)
+    // Pipelines + layouts.
+    VkDescriptorSetLayout m_giGatherSetLayout   = VK_NULL_HANDLE; // depth + scene + GiUBO
+    VkDescriptorSetLayout m_giTemporalSetLayout = VK_NULL_HANDLE; // cur + hist + depth + prevDepth + UBO
+    VkDescriptorSetLayout m_giBlurSetLayout     = VK_NULL_HANDLE; // gi + depth
+    VkDescriptorSetLayout m_giApplySetLayout    = VK_NULL_HANDLE; // gi + depth + ao
+    VkPipelineLayout m_giGatherLayout   = VK_NULL_HANDLE;
+    VkPipelineLayout m_giTemporalLayout = VK_NULL_HANDLE;
+    VkPipelineLayout m_giBlurLayout     = VK_NULL_HANDLE;
+    VkPipelineLayout m_giApplyLayout    = VK_NULL_HANDLE;
+    VkPipeline m_giGatherPipe   = VK_NULL_HANDLE;
+    VkPipeline m_giTemporalPipe = VK_NULL_HANDLE;
+    VkPipeline m_giBlurPipe     = VK_NULL_HANDLE;
+    VkPipeline m_giApplyPipe    = VK_NULL_HANDLE;
+    VkDescriptorPool m_giPool = VK_NULL_HANDLE;
+    // Per-frame UBOs + their gather/temporal descriptor sets. The temporal +
+    // blur/apply sets reference ping-pong views, so they are rewritten each frame
+    // (cheap vkUpdateDescriptorSets, no allocation) to point at the right buffers.
+    VkBuffer m_giUboBuf[kFramesInFlight] = {}; VmaAllocation m_giUboAlloc[kFramesInFlight] = {}; void* m_giUboMapped[kFramesInFlight] = {};
+    VkBuffer m_giTempUboBuf[kFramesInFlight] = {}; VmaAllocation m_giTempUboAlloc[kFramesInFlight] = {}; void* m_giTempUboMapped[kFramesInFlight] = {};
+    VkDescriptorSet m_giGatherSet[kFramesInFlight] = {};
+    VkDescriptorSet m_giTemporalSet[kFramesInFlight] = {};
+    VkDescriptorSet m_giBlurSet[kFramesInFlight]  = {};   // per-frame: rewritten each frame (ping-pong)
+    VkDescriptorSet m_giApplySet[kFramesInFlight] = {};   // per-frame: rewritten each frame
+    // Stable storage for the GI VkRenderingInfo + attachments (one per pass).
+    VkRenderingAttachmentInfo m_giGatherAttach{};   VkRenderingInfo m_giGatherRenderInfo{};
+    VkRenderingAttachmentInfo m_giTemporalAttach{}; VkRenderingInfo m_giTemporalRenderInfo{};
+    VkRenderingAttachmentInfo m_giBlurAttach{};     VkRenderingInfo m_giBlurRenderInfo{};
+    VkRenderingAttachmentInfo m_giApplyAttach{};    VkRenderingInfo m_giApplyRenderInfo{};
+    GiParams  m_gi{};                  // cached tunables (setGiParams)
+    bool      m_giKernelBuilt = false;
+    glm::vec4 m_giKernelCPU[kGiKernel]{};
+    glm::vec4 m_giNoiseCPU[16]{};
 
     // ======================================================================
     // WATER — animated ocean surface (undersea-world foundation).
