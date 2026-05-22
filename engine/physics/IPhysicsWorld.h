@@ -10,6 +10,10 @@ namespace x3::phys {
 
 struct Vec3 { float x = 0, y = 0, z = 0; };
 struct BodyId { uint32_t id = 0; bool valid() const { return id != 0; } };
+// Opaque shape handle (K-T0). A pre-built collision shape (convex hull / compound)
+// the world keeps cached; a body can be created from it. 0 == invalid. Maps to a
+// JPH::ShapeRefC kept inside JoltPhysicsWorld.cpp (no JPH:: types leak here).
+struct ShapeId { uint32_t id = 0; bool valid() const { return id != 0; } };
 
 enum class Layer : uint8_t { Static, Dynamic, Player, Enemy, Projectile, Trigger };
 
@@ -62,6 +66,43 @@ public:
     // Trigger callbacks (overlap-only sensors)
     using TriggerFn = void(*)(BodyId trigger, BodyId other, bool entered, void* user);
     virtual void setTriggerCallback(TriggerFn, void* user) = 0;
+
+    // -----------------------------------------------------------------------
+    // K-T0 destruction foundation (opaque; NO JPH:: types leak through here).
+    // -----------------------------------------------------------------------
+
+    // Build a convex-hull SHAPE from `n` points (`pts` = n*3 tightly-packed xyz
+    // floats, LOCAL space). Returns an invalid ShapeId on a degenerate hull
+    // (too few / coplanar points) — callers should fall back to a box AABB.
+    // Maps to JPH::ConvexHullShape. The shape is cached and can back many bodies.
+    virtual ShapeId addConvexHull(const float* pts, uint32_t n) = 0;
+
+    // Build a COMPOUND shape from `n` previously-created child shapes, each placed
+    // by a column-major 4x4 LOCAL transform (`localXforms4x4` = n*16 floats; only
+    // the rotation + translation are honored — no scale/shear). Returns invalid on
+    // empty/invalid input. Maps to JPH::StaticCompoundShape (fast tree).
+    virtual ShapeId addCompound(const ShapeId* parts, const float* localXforms4x4,
+                                uint32_t n) = 0;
+
+    // Create a DYNAMIC body from a cached ShapeId at `pos` with `mass`. Returns an
+    // invalid BodyId on a bad shape. The body participates in the sim + contact
+    // callback exactly like addBox/addSphere bodies (this is how destruction spawns
+    // the intact compound parent and the convex child chunks).
+    virtual BodyId addBodyFromShape(ShapeId, Vec3 pos, float mass, Layer) = 0;
+
+    // Queue-based contact callback (K-T0 / spec §4b). The function is invoked once
+    // per contact POST-step (drained AFTER PhysicsSystem::Update returns) — NEVER
+    // inside Jolt's locked OnContactAdded. So it is SAFE to mutate the world (add /
+    // remove bodies, fracture) from inside this callback. `impulse` is an estimated
+    // collision impulse magnitude (approachSpeed * min(mass1,mass2) along the
+    // manifold normal). `point`/`normal` are world-space. Pass nullptr to disable.
+    using ContactFn = void(*)(BodyId a, BodyId b, const float point[3],
+                              const float normal[3], float impulse, void* user);
+    virtual void setContactCallback(ContactFn, void* user) = 0;
+
+    // Rebuild/optimize the broadphase quadtree after a big churn of body add/remove
+    // (e.g. a large fracture). Maps to JPH::PhysicsSystem::OptimizeBroadPhase.
+    virtual void optimizeBroadphase() = 0;
 };
 
 IPhysicsWorld* createPhysicsWorld();

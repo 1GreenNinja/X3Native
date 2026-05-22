@@ -29,6 +29,8 @@
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/RotatedTranslatedShape.h>
+#include <Jolt/Physics/Collision/Shape/ConvexHullShape.h>
+#include <Jolt/Physics/Collision/Shape/StaticCompoundShape.h>
 #include <Jolt/Physics/Collision/RayCast.h>
 #include <Jolt/Physics/Collision/CastResult.h>
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
@@ -42,11 +44,13 @@
 #include <Jolt/Physics/Character/CharacterVirtual.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -242,6 +246,16 @@ struct CharData {
     float vy = 0.0f;                             // integrated vertical velocity
 };
 
+// K-T0: a collision-contact record queued inside the locked OnContact* callback
+// and drained POST-step. POD (no JPH refs held past the callback) so it is safe to
+// keep across the step boundary. Bodies are stored as our opaque ids.
+struct ContactRecord {
+    uint32_t a = 0, b = 0;     // our BodyIds (0 if a body has no mapping)
+    float point[3]  = { 0, 0, 0 };
+    float normal[3] = { 0, 1, 0 };
+    float impulse   = 0.0f;    // estimated collision impulse magnitude
+};
+
 class JoltPhysicsWorld final : public IPhysicsWorld {
 public:
     bool init() override {
@@ -293,6 +307,11 @@ public:
         m_layerOf.clear();
         m_ownerOf.clear();
         m_triggerSet.clear();
+        m_shapes.clear();           // release cached convex/compound shapes
+        {
+            std::lock_guard<std::mutex> lk(m_contactMutex);
+            m_contactQueue.clear();
+        }
         m_contactListener.reset();
         m_system.reset();
         m_jobs.reset();        // bridge references m_engineJobs -> destroy it first
@@ -308,6 +327,10 @@ public:
         while (m_accumulator >= kFixedDt) {
             stepCharacters(kFixedDt);
             m_system->Update(kFixedDt, /*collisionSteps*/1, m_temp.get(), m_jobs.get());
+            // K-T0: bodies are now UNLOCKED. Drain the contacts queued during the
+            // (locked) contact callback and fire the user callback where mutation
+            // (fracture / add / remove) is safe. NEVER inside Jolt's callback.
+            flushContacts();
             m_accumulator -= kFixedDt;
         }
     }
@@ -558,14 +581,102 @@ public:
         m_triggerUser = user;
     }
 
+    // ---- K-T0 destruction foundation ----
+
+    ShapeId addConvexHull(const float* pts, uint32_t n) override {
+        if (!pts || n < 4) {                       // a hull needs >= 4 non-coplanar points
+            x3::logWarn("[phys] addConvexHull: too few points (<4)");
+            return {};
+        }
+        JPH::Array<JPH::Vec3> points;
+        points.reserve(n);
+        for (uint32_t i = 0; i < n; ++i)
+            points.push_back(JPH::Vec3(pts[i*3+0], pts[i*3+1], pts[i*3+2]));
+        JPH::ConvexHullShapeSettings ss(points, JPH::cDefaultConvexRadius);
+        ss.SetEmbedded();
+        JPH::ShapeSettings::ShapeResult res = ss.Create();
+        if (res.HasError()) {
+            // Degenerate (coplanar / collinear) hull: reject (caller falls back to a box).
+            x3::logWarn(std::string("[phys] convex hull rejected: ") + res.GetError().c_str());
+            return {};
+        }
+        uint32_t id = m_nextShapeId++;
+        m_shapes[id] = res.Get();
+        return ShapeId{ id };
+    }
+
+    ShapeId addCompound(const ShapeId* parts, const float* localXforms4x4,
+                        uint32_t n) override {
+        if (!parts || !localXforms4x4 || n == 0) {
+            x3::logWarn("[phys] addCompound: empty/invalid input");
+            return {};
+        }
+        JPH::StaticCompoundShapeSettings ss;
+        ss.SetEmbedded();
+        uint32_t added = 0;
+        for (uint32_t i = 0; i < n; ++i) {
+            auto sit = m_shapes.find(parts[i].id);
+            if (sit == m_shapes.end()) continue;          // skip a bad child
+            const float* m = localXforms4x4 + i * 16;     // column-major 4x4
+            JPH::Vec3 pos(m[12], m[13], m[14]);
+            // Extract the rotation from the upper-left 3x3 (columns 0,1,2) into a quat.
+            JPH::Mat44 rot = JPH::Mat44::sIdentity();
+            rot.SetColumn3(0, JPH::Vec3(m[0], m[1], m[2]));
+            rot.SetColumn3(1, JPH::Vec3(m[4], m[5], m[6]));
+            rot.SetColumn3(2, JPH::Vec3(m[8], m[9], m[10]));
+            JPH::Quat q = rot.GetQuaternion().Normalized();
+            ss.AddShape(pos, q, sit->second);
+            ++added;
+        }
+        if (added == 0) { x3::logWarn("[phys] addCompound: no valid child shapes"); return {}; }
+        JPH::ShapeSettings::ShapeResult res = ss.Create();
+        if (res.HasError()) {
+            x3::logError(std::string("[phys] compound shape error: ") + res.GetError().c_str());
+            return {};
+        }
+        uint32_t id = m_nextShapeId++;
+        m_shapes[id] = res.Get();
+        return ShapeId{ id };
+    }
+
+    BodyId addBodyFromShape(ShapeId shape, Vec3 pos, float mass, Layer layer) override {
+        auto sit = m_shapes.find(shape.id);
+        if (sit == m_shapes.end()) {
+            x3::logWarn("[phys] addBodyFromShape: invalid ShapeId");
+            return {};
+        }
+        return createBody(sit->second, pos, mass, layer);
+    }
+
+    void setContactCallback(ContactFn fn, void* user) override {
+        m_contactFn   = fn;
+        m_contactUser = user;
+    }
+
+    void optimizeBroadphase() override {
+        if (m_system) m_system->OptimizeBroadPhase();
+    }
+
 private:
-    // ---- contact listener for trigger overlap (enter/leave) ----
+    // ---- contact listener: trigger overlap (enter/leave) + the K-T0 queued
+    // collision contact callback. CRITICAL (spec §4b): OnContactAdded runs while
+    // bodies are LOCKED, so we must NOT mutate the world here. We only READ the
+    // manifold + body velocities/masses, estimate an impulse, and PUSH a record
+    // onto a queue. The queue is drained POST-step (after PhysicsSystem::Update)
+    // by flushContacts(), where mutation is safe. ----
     class TriggerContactListener final : public JPH::ContactListener {
     public:
         explicit TriggerContactListener(JoltPhysicsWorld* w) : m_w(w) {}
         void OnContactAdded(const JPH::Body& a, const JPH::Body& b,
-                            const JPH::ContactManifold&, JPH::ContactSettings&) override {
-            m_w->onContact(a, b, true);
+                            const JPH::ContactManifold& m, JPH::ContactSettings&) override {
+            m_w->onContact(a, b, true);              // trigger enter (unchanged)
+            m_w->queueCollisionContact(a, b, m);     // K-T0: estimate + enqueue
+        }
+        void OnContactPersisted(const JPH::Body& a, const JPH::Body& b,
+                                const JPH::ContactManifold& m, JPH::ContactSettings&) override {
+            // A resting/sliding contact also reports an impulse; enqueue so a body
+            // pushed hard into another after first touch can still break.
+            m_w->queueCollisionContact(a, b, m);
         }
         void OnContactRemoved(const JPH::SubShapeIDPair& pair) override {
             m_w->onContactRemoved(pair.GetBody1ID(), pair.GetBody2ID());
@@ -677,6 +788,81 @@ private:
         if (m_triggerFn) m_triggerFn(BodyId{trig}, BodyId{other}, false, m_triggerUser);
     }
 
+    // K-T0: called from inside the LOCKED contact callback (possibly on a Jolt
+    // worker thread). MUST NOT mutate the world — it only reads body state, builds
+    // a POD record, and appends it under a mutex. The estimate follows spec §4b:
+    // approachSpeed (relative velocity projected onto the manifold normal) times
+    // min(mass1, mass2). Triggers (sensors) generate no collision impulse, so they
+    // are skipped. The record is consumed POST-step by flushContacts().
+    void queueCollisionContact(const JPH::Body& a, const JPH::Body& b,
+                               const JPH::ContactManifold& man) {
+        if (!m_contactFn) return;                     // nobody listening
+        if (a.IsSensor() || b.IsSensor()) return;     // triggers aren't collisions
+        // Need at least one dynamic body for a meaningful impulse.
+        if (!a.IsDynamic() && !b.IsDynamic()) return;
+
+        JPH::Vec3 n = man.mWorldSpaceNormal;           // points from body1 -> body2
+        JPH::Vec3 va = a.GetLinearVelocity();
+        JPH::Vec3 vb = b.GetLinearVelocity();
+        // Approach speed along the normal: how fast the two surfaces close.
+        float approach = (va - vb).Dot(n);
+        if (approach < 0.0f) approach = -approach;     // magnitude of closing speed
+
+        // Masses from inverse mass (static/kinematic => "infinite"). When a dynamic
+        // body hits a static one (e.g. a thrown crate against a wall) min() would be
+        // the infinite static mass, so we use the dynamic body's mass as the
+        // effective inertia of the collision (the impulse scales with what's moving).
+        auto massOf = [](const JPH::Body& body) -> float {
+            if (!body.IsDynamic()) return 1e9f;        // static/kinematic => heavy
+            float im = body.GetMotionProperties()->GetInverseMass();
+            return (im > 1e-9f) ? (1.0f / im) : 1e9f;
+        };
+        float ma = massOf(a), mb = massOf(b);
+        float mMin = std::min(ma, mb);
+        if (mMin > 1e8f) mMin = std::max(ma, mb);      // both heavy: fall back to the larger finite (clamped below)
+        if (mMin > 1e8f) mMin = 1.0f;                  // pathological: avoid huge impulses
+        float impulse = approach * mMin;
+
+        ContactRecord rec;
+        rec.a = idOf(a.GetID());
+        rec.b = idOf(b.GetID());
+        // First manifold contact point (guard the empty case).
+        JPH::RVec3 pt = man.mRelativeContactPointsOn1.empty()
+                        ? man.mBaseOffset
+                        : man.GetWorldSpaceContactPointOn1(0);
+        rec.point[0] = (float)pt.GetX(); rec.point[1] = (float)pt.GetY(); rec.point[2] = (float)pt.GetZ();
+        rec.normal[0] = n.GetX(); rec.normal[1] = n.GetY(); rec.normal[2] = n.GetZ();
+        rec.impulse = impulse;
+
+        std::lock_guard<std::mutex> lk(m_contactMutex);
+        if (m_contactQueue.size() < kMaxQueuedContacts)
+            m_contactQueue.push_back(rec);
+    }
+
+    // K-T0: drain the queued contacts AFTER PhysicsSystem::Update() returns (bodies
+    // unlocked). It is SAFE for the user callback to mutate the world from here. We
+    // flip m_inContactFlush so any (mis)use that re-enters a mutating physics op via
+    // a *different* path during the LOCKED phase would be caught — see the assert in
+    // the queue helper's debug builds. Here mutation is intended + allowed.
+    void flushContacts() {
+        if (!m_contactFn) {
+            std::lock_guard<std::mutex> lk(m_contactMutex);
+            m_contactQueue.clear();
+            return;
+        }
+        // Swap the queue out under the lock so the callback can freely run (and even
+        // enqueue more for next step) without holding the mutex.
+        std::vector<ContactRecord> local;
+        {
+            std::lock_guard<std::mutex> lk(m_contactMutex);
+            local.swap(m_contactQueue);
+        }
+        for (const ContactRecord& r : local) {
+            m_contactFn(BodyId{ r.a }, BodyId{ r.b }, r.point, r.normal,
+                        r.impulse, m_contactUser);
+        }
+    }
+
     uint32_t idOf(const JPH::BodyID& bid) const {
         auto it = m_idOfBody.find(bid.GetIndexAndSequenceNumber());
         return it == m_idOfBody.end() ? 0u : it->second;
@@ -708,6 +894,19 @@ private:
 
     TriggerFn m_triggerFn = nullptr;
     void* m_triggerUser = nullptr;
+
+    // ---- K-T0 destruction foundation state ----
+    // Cached shapes (convex hulls / compounds) keyed by ShapeId.
+    uint32_t m_nextShapeId = 1;                                   // 0 == invalid
+    std::unordered_map<uint32_t, JPH::ShapeRefC> m_shapes;
+
+    // Queued contact callback. Records pushed inside the locked OnContact* callback
+    // (across Jolt worker threads -> mutex-guarded), drained POST-step in step().
+    static constexpr size_t kMaxQueuedContacts = 16384;          // bounded; no spiral
+    std::mutex                 m_contactMutex;
+    std::vector<ContactRecord> m_contactQueue;
+    ContactFn                  m_contactFn   = nullptr;
+    void*                      m_contactUser = nullptr;
 };
 
 // ===========================================================================
