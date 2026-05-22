@@ -293,6 +293,54 @@ public:
     // each frame, like setSkyParams). Calling with enabled=false disables water.
     virtual void          setWaterParams(const WaterParams&) = 0;
 
+    // ---- GPU-instanced billboard particles + impact decals (combat juice) ---
+    // A bounded, per-frame stream of CAMERA-FACING BILLBOARD particles drawn in
+    // the HDR pipeline AFTER opaque + water + GI, BEFORE bloom — so bright sparks /
+    // muzzle flashes feed the bloom chain. The CPU owns the simulation (a fixed
+    // pool; see app/fx.*) and each frame submits the live particles' POD instances;
+    // the device uploads them into a per-frame instance ring (NO per-frame heap
+    // alloc) and draws ONE instanced quad. Soft particles: the fragment shader
+    // fades each billboard against the scene depth buffer (the SSAO/water depth) so
+    // sparks/smoke don't hard-intersect geometry. Depth-TEST against the scene, no
+    // depth-WRITE (particles never occlude each other in depth). POD only.
+    //
+    // `mode` selects the blend: ADDITIVE (sparks/fire/muzzle — glows, feeds bloom)
+    // or ALPHA (smoke/dust/blood — translucent over the scene). Submit each batch
+    // with one call; the two modes are drawn in separate sub-batches so blend state
+    // is correct. Submitting count==0 (or never calling it) means NO particle pass
+    // is added that frame — zero GPU cost when idle. Call between beginFrame and
+    // endFrame, like drawMesh. The device COPIES the instances (does not retain the
+    // pointer). `count` is clamped to the device's per-frame particle cap.
+    struct ParticleInstance {
+        float pos[3]   = { 0.0f, 0.0f, 0.0f }; // world-space center
+        float size     = 0.1f;                 // billboard half-extent (meters)
+        float color[4] = { 1.0f, 1.0f, 1.0f, 1.0f }; // linear RGB * intensity, A = opacity
+    };
+    enum class ParticleBlend : uint32_t { Additive = 0, Alpha = 1 };
+    // Append a batch of particle instances for THIS frame, all drawn with `mode`.
+    // Multiple calls accumulate (additive + alpha batches kept separate internally).
+    virtual void submitParticles(const ParticleInstance* instances, uint32_t count,
+                                 ParticleBlend mode) = 0;
+
+    // Impact decals: small oriented quads projected onto a hit surface (bullet
+    // holes / scorch marks). Each is a world-space quad at `center`, oriented so
+    // its face normal is `normal` (the surface normal from the weapon raycast),
+    // sized `halfSize` (meters), rotated about the normal by `angle` (radians) for
+    // variety, tinted by `color` (linear RGBA; A = opacity for fade-out). Drawn in
+    // the same HDR transparent pass as particles, alpha-blended, depth-TESTED (so a
+    // decal behind geometry is occluded) with NO depth-write, slightly pushed along
+    // the normal to avoid z-fighting with the surface it sits on. The CPU owns a
+    // bounded ring (oldest recycled) and submits the live decals each frame. POD
+    // only; the device copies them. Submitting count==0 adds no decal draw.
+    struct DecalInstance {
+        float center[3] = { 0.0f, 0.0f, 0.0f }; // world-space hit point
+        float halfSize  = 0.1f;                  // quad half-extent (meters)
+        float normal[3] = { 0.0f, 1.0f, 0.0f };  // surface normal (face direction)
+        float angle     = 0.0f;                  // spin about the normal (radians)
+        float color[4]  = { 0.0f, 0.0f, 0.0f, 1.0f }; // linear RGBA; A = opacity
+    };
+    virtual void submitDecals(const DecalInstance* decals, uint32_t count) = 0;
+
     // ---- Forward point lights (interior fill) ------------------------------
     // Set the active point lights for subsequent frames. The device copies the
     // array (does NOT retain the pointer) and uploads them into the per-frame
