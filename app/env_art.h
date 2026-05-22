@@ -45,9 +45,13 @@ struct EnvAsset {
 
 // One placed instance: an index into the asset table + its world transform
 // (column-major 4x4). Drawn as objectTransform * nodeTransform per drawable.
+// `emissive` (HDR pipeline) is the per-instance emissive radiance: rgb = linear
+// color, w = strength. Default {0,0,0,0} = no glow; the Light_A ceiling fixtures
+// set it >0 so they read as bright HDR sources that drive the bloom chain.
 struct EnvInstance {
     uint32_t asset = 0;        // index into m_assets
     float    transform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    float    emissive[4] = {0,0,0,0}; // rgb = linear color, w = strength
 };
 
 class EnvArtSystem {
@@ -87,6 +91,10 @@ private:
 
     // Add an instance of asset `a` at the given world transform.
     void addInstance(uint32_t a, const float transform[16]);
+    // Add an instance with a per-instance EMISSIVE term (HDR pipeline): emissive =
+    // { r, g, b, strength } in linear light. Used for the Light_A fixtures so they
+    // glow as bright HDR sources (feeding bloom). emissive == nullptr -> no glow.
+    void addInstanceEmissive(uint32_t a, const float transform[16], const float emissive[4]);
 
     std::unique_ptr<x3::asset::IAssetSource> m_assets;
     std::unique_ptr<x3::asset::IModelLoader> m_loader;

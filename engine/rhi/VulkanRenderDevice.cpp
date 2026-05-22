@@ -181,11 +181,17 @@ public:
         if (!createGraphics()) return false;      // builds the shadow depth pipeline at the end
         if (!createHud()) return false;
         if (!createSky()) return false;           // analytic sky (open-world track, task A)
+        // HDR pipeline + bloom: build the post pipelines (extent-independent) then
+        // the HDR scene + bloom-mip targets at the current extent + their sets.
+        if (!createPost()) return false;
+        if (!createBloomTargets()) return false;
+        writePostDescriptors();
         return true;
     }
 
     void shutdown() override {
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        destroyPost();
         destroySky();
         destroyHud();
         destroyGraphics();
@@ -366,9 +372,11 @@ public:
             vkCmdDraw(cmd, 3, 1, 0, 0); // vertexless full-screen triangle
         }
 
-        // Mesh multidraw (Subsystem D) then the HUD overlay on top.
+        // Mesh multidraw (Subsystem D) into the linear HDR scene target. The HUD is
+        // NO LONGER drawn here — in the HDR pipeline it is drawn AFTER tonemap, in
+        // the composite pass, so it composites on the final LDR image (not bloomed
+        // and not double-tonemapped).
         recordMeshDraws(cmd);
-        recordHudDraws(cmd);
     }
 
     void endFrame(const FrameContext& fc) override {
@@ -746,6 +754,14 @@ public:
 
     void drawMesh(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                   const float baseColorFactor[4], const float model[16]) override {
+        // The 5-arg form is the no-emissive case (emissive = {0,0,0,0}).
+        const float noEmissive[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        drawMeshEmissive(fc, mesh, baseColor, baseColorFactor, noEmissive, model);
+    }
+
+    void drawMeshEmissive(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
+                          const float baseColorFactor[4], const float emissive[4],
+                          const float model[16]) override {
         if (!fc.valid || !m_meshPipeline) return;
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
@@ -768,6 +784,8 @@ public:
         std::memcpy(r.model, model, sizeof(r.model));
         if (baseColorFactor) std::memcpy(r.factor, baseColorFactor, sizeof(r.factor));
         else { r.factor[0] = r.factor[1] = r.factor[2] = r.factor[3] = 1.0f; }
+        if (emissive) std::memcpy(r.emissive, emissive, sizeof(r.emissive));
+        else { r.emissive[0] = r.emissive[1] = r.emissive[2] = r.emissive[3] = 0.0f; }
         m_drawRecords.push_back(r);
     }
 
@@ -900,14 +918,17 @@ private:
 
     // Per-object GPU row (matches shaders/mesh.vert ObjectData; std430). The 3
     // uint pads keep the struct 16-byte aligned after texIndex so std430's mat4
-    // base alignment is satisfied for the next row.
+    // base alignment is satisfied for the next row. `emissive` (HDR pipeline) is
+    // an extra vec4 (rgb = linear emissive color, a = strength) added on top of
+    // the lit result in linear HDR so fixtures glow + feed the bloom chain.
     struct ObjectData {
         glm::mat4 model;
         glm::vec4 baseColorFactor;
+        glm::vec4 emissive;          // rgb = linear color, a = strength
         uint32_t  texIndex;
         uint32_t  _pad0, _pad1, _pad2;
     };
-    static_assert(sizeof(ObjectData) == 96, "ObjectData must match std430 layout");
+    static_assert(sizeof(ObjectData) == 112, "ObjectData must match std430 layout");
 
     // CPU-side per-draw record accumulated by drawMesh(), consumed by endFrame().
     struct DrawRecord {
@@ -915,6 +936,7 @@ private:
         uint32_t texIndex;
         float    model[16];
         float    factor[4];
+        float    emissive[4];   // rgb = linear emissive color, a = strength
     };
 
     // Per-frame mesh-draw capacity: sizes the per-object SSBO ring (one
@@ -1118,6 +1140,7 @@ private:
                 ObjectData& o = objs[row++];
                 std::memcpy(&o.model, dr.model, sizeof(o.model));
                 o.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
+                o.emissive = glm::vec4(dr.emissive[0], dr.emissive[1], dr.emissive[2], dr.emissive[3]);
                 o.texIndex = dr.texIndex;
                 o._pad0 = o._pad1 = o._pad2 = 0;
             }
@@ -1274,6 +1297,131 @@ private:
     //                          TRANSFER_SRC, copies to the readback buffer, then to
     //                          PRESENT_SRC — all derived from declared uses.
     // ===================================================================
+    // Add the bloom downsample + upsample passes to the graph for this frame.
+    // `rgHdr` is the linear HDR scene target (already written by the main pass);
+    // `rgMip[]` are the kBloomMips bloom targets. Each pass is a full-screen
+    // triangle; the graph derives the COLOR_ATTACHMENT<->SHADER_READ_ONLY
+    // transitions between mips. No per-frame heap alloc: the push payloads live in
+    // member arrays captured by value into the record lambdas.
+    void addBloomPasses(RgResource rgHdr, RgResource* rgMip) {
+        // ---- Downsample chain ----
+        for (uint32_t i = 0; i < kBloomMips; ++i) {
+            const bool firstPass = (i == 0);
+            // Source: HDR scene (mip0) or the previous, larger mip.
+            RgResource srcRes = firstPass ? rgHdr : rgMip[i - 1];
+            VkDescriptorSet srcSet = firstPass ? m_setHdr : m_setMip[i - 1];
+            // Source resolution (1/texel) for the filter taps.
+            VkExtent2D srcExt = firstPass ? m_extent : m_bloomMips[i - 1].extent;
+            const VkExtent2D dstExt = m_bloomMips[i].extent;
+
+            BloomPush& pc = m_bloomDownPush[i];
+            pc.srcTexel[0] = 1.0f / (float)std::max(1u, srcExt.width);
+            pc.srcTexel[1] = 1.0f / (float)std::max(1u, srcExt.height);
+            pc.threshold = kBloomThreshold; pc.knee = kBloomKnee;
+            pc.intensity = 1.0f; pc.firstPass = firstPass ? 1 : 0;
+
+            m_bloomAttach[i] = VkRenderingAttachmentInfo{};
+            m_bloomAttach[i].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_bloomAttach[i].imageView = m_bloomMips[i].view;
+            m_bloomAttach[i].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_bloomAttach[i].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // fully written
+            m_bloomAttach[i].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            m_bloomRenderInfo[i] = VkRenderingInfo{};
+            m_bloomRenderInfo[i].sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_bloomRenderInfo[i].renderArea = { {0,0}, dstExt };
+            m_bloomRenderInfo[i].layerCount = 1;
+            m_bloomRenderInfo[i].colorAttachmentCount = 1;
+            m_bloomRenderInfo[i].pColorAttachments = &m_bloomAttach[i];
+
+            RenderPassDesc dp{};
+            dp.name = "bloom-down";
+            dp.uses.push_back(ResourceUse{
+                rgMip[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            dp.uses.push_back(ResourceUse{
+                srcRes, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            dp.usesDynamicRendering = true;
+            dp.renderInfo = m_bloomRenderInfo[i];
+            dp.record = [this, dstExt, srcSet, i](VkCommandBuffer c){
+                postViewport(c, dstExt);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomDownPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomLayout,
+                                        0, 1, &srcSet, 0, nullptr);
+                vkCmdPushConstants(c, m_bloomLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(BloomPush), &m_bloomDownPush[i]);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(dp));
+        }
+
+        // ---- Upsample chain (smallest -> largest), additively blended ----
+        for (int i = (int)kBloomMips - 2; i >= 0; --i) {
+            const uint32_t src = (uint32_t)i + 1;      // smaller mip we sample
+            const uint32_t dst = (uint32_t)i;          // larger mip we add into
+            const VkExtent2D srcExt = m_bloomMips[src].extent;
+            const VkExtent2D dstExt = m_bloomMips[dst].extent;
+
+            BloomPush& pc = m_bloomUpPush[dst];
+            pc.srcTexel[0] = 1.0f / (float)std::max(1u, srcExt.width);
+            pc.srcTexel[1] = 1.0f / (float)std::max(1u, srcExt.height);
+            pc.threshold = 0.0f; pc.knee = 0.0f;
+            pc.intensity = kBloomUpScale; pc.firstPass = 0;
+
+            // Reuse this mip's attachment struct but LOAD (keep) its content so the
+            // additive blend accumulates onto the downsampled value already there.
+            m_bloomUpAttach[dst] = VkRenderingAttachmentInfo{};
+            m_bloomUpAttach[dst].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_bloomUpAttach[dst].imageView = m_bloomMips[dst].view;
+            m_bloomUpAttach[dst].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_bloomUpAttach[dst].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;  // keep + accumulate
+            m_bloomUpAttach[dst].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            m_bloomUpRenderInfo[dst] = VkRenderingInfo{};
+            m_bloomUpRenderInfo[dst].sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_bloomUpRenderInfo[dst].renderArea = { {0,0}, dstExt };
+            m_bloomUpRenderInfo[dst].layerCount = 1;
+            m_bloomUpRenderInfo[dst].colorAttachmentCount = 1;
+            m_bloomUpRenderInfo[dst].pColorAttachments = &m_bloomUpAttach[dst];
+
+            VkDescriptorSet srcSet = m_setMip[src];
+            RenderPassDesc up{};
+            up.name = "bloom-up";
+            up.uses.push_back(ResourceUse{
+                rgMip[dst], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            up.uses.push_back(ResourceUse{
+                rgMip[src], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            up.usesDynamicRendering = true;
+            up.renderInfo = m_bloomUpRenderInfo[dst];
+            up.record = [this, dstExt, srcSet, dst](VkCommandBuffer c){
+                postViewport(c, dstExt);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomUpPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomLayout,
+                                        0, 1, &srcSet, 0, nullptr);
+                vkCmdPushConstants(c, m_bloomLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(BloomPush), &m_bloomUpPush[dst]);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(up));
+        }
+    }
+
+    // Set dynamic viewport+scissor to a post target's extent.
+    void postViewport(VkCommandBuffer c, VkExtent2D ext) {
+        VkViewport vp{ 0.0f, 0.0f, (float)ext.width, (float)ext.height, 0.0f, 1.0f };
+        VkRect2D scis{ {0,0}, ext };
+        vkCmdSetViewport(c, 0, 1, &vp);
+        vkCmdSetScissor(c, 0, 1, &scis);
+    }
+
     void buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imageIndex, bool wantCapture) {
         // The frame's COLOR target: the acquired swapchain image (windowed) or the
         // single persistent offscreen color image (headless). Both are imported
@@ -1292,6 +1440,17 @@ private:
         RgResource rgDepth = m_graph.importImage("scene.depth", m_depthImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgShadow = m_graph.importImage("shadow.map", m_shadowImg, m_shadowState);
+
+        // HDR pipeline resources: the linear HDR scene target (main pass writes it,
+        // bloom + composite read it) and the bloom mip chain. All imported UNDEFINED
+        // each frame (fully overwritten by their producing pass -> no cross-frame
+        // color dependency). The graph derives every transition between them.
+        RgResource rgHdr = m_graph.importImage("scene.hdr", m_hdrImg,
+            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        RgResource rgMip[kBloomMips];
+        for (uint32_t i = 0; i < kBloomMips; ++i)
+            rgMip[i] = m_graph.importImage("bloom.mip", m_bloomMips[i].img,
+                ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
 
         // ---- Pass 1: shadow depth pass --------------------------------------
         {
@@ -1322,15 +1481,19 @@ private:
             m_graph.addPass(std::move(shadowPass));
         }
 
-        // ---- Pass 2: main color pass (sky + meshes + HUD) -------------------
+        // ---- Pass 2: main color pass (sky + meshes) -> LINEAR HDR target ----
+        // Renders the lit scene into the R16G16B16A16_SFLOAT HDR target in linear
+        // light (no tonemap). The HUD is drawn later, in the composite pass, on the
+        // tonemapped LDR image. The clear color is the SAME dark slate as before but
+        // in LINEAR HDR (the composite's ACES curve maps it back to the prior look).
         {
-            m_mainColorAttach = VkRenderingAttachmentInfo{};
-            m_mainColorAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            m_mainColorAttach.imageView = colorTargetView;
-            m_mainColorAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            m_mainColorAttach.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-            m_mainColorAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-            m_mainColorAttach.clearValue.color = { { 0.04f, 0.05f, 0.08f, 1.0f } }; // dark slate
+            m_hdrColorAttach = VkRenderingAttachmentInfo{};
+            m_hdrColorAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_hdrColorAttach.imageView = m_hdrView;
+            m_hdrColorAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_hdrColorAttach.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            m_hdrColorAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            m_hdrColorAttach.clearValue.color = { { 0.04f, 0.05f, 0.08f, 1.0f } }; // dark slate (linear)
 
             m_mainDepthAttach = VkRenderingAttachmentInfo{};
             m_mainDepthAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
@@ -1343,7 +1506,7 @@ private:
             RenderPassDesc colorPass{};
             colorPass.name = "main-color";
             colorPass.uses.push_back(ResourceUse{
-                rgColor, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
@@ -1365,20 +1528,85 @@ private:
             m_mainRenderInfo.renderArea = { {0,0}, m_extent };
             m_mainRenderInfo.layerCount = 1;
             m_mainRenderInfo.colorAttachmentCount = 1;
-            m_mainRenderInfo.pColorAttachments = &m_mainColorAttach;
+            m_mainRenderInfo.pColorAttachments = &m_hdrColorAttach;
             m_mainRenderInfo.pDepthAttachment = &m_mainDepthAttach;
             colorPass.renderInfo = m_mainRenderInfo;
-            colorPass.record = [this](VkCommandBuffer c){
-                // Timestamp the main pass END at BOTTOM_OF_PIPE after all draws are
-                // recorded (still inside dynamic rendering, exactly as before).
-                recordMainPassBody(c);
+            colorPass.record = [this](VkCommandBuffer c){ recordMainPassBody(c); };
+            m_graph.addPass(std::move(colorPass));
+        }
+
+        // ================================================================
+        // BLOOM CHAIN + HDR COMPOSITE (HDR pipeline).
+        // ----------------------------------------------------------------
+        // Downsample: pass 0 bright-passes the HDR scene into mip0 (Karis-average
+        // 13-tap), passes 1..N-1 progressively downsample mip[i-1] -> mip[i].
+        // Upsample: from the smallest mip back up, each step tent-filters mip[i+1]
+        // and ADDITIVELY blends it onto mip[i] (pipeline ONE,ONE blend). Result:
+        // mip0 holds the full accumulated bloom. The graph derives every
+        // COLOR_ATTACHMENT <-> SHADER_READ_ONLY transition between the mips.
+        addBloomPasses(rgHdr, rgMip);
+
+        // Composite: HDR scene + bloom mip0 -> ACES tonemap -> LDR final target.
+        // The HUD is recorded here (after tonemap) so it composites on the LDR
+        // image. The pass writes the swapchain/offscreen color (rgColor).
+        {
+            m_compositeAttach = VkRenderingAttachmentInfo{};
+            m_compositeAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_compositeAttach.imageView = colorTargetView;
+            m_compositeAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_compositeAttach.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // fully overwritten
+            m_compositeAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            RenderPassDesc comp{};
+            comp.name = "composite";
+            // WRITE the final color target.
+            comp.uses.push_back(ResourceUse{
+                rgColor, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            // READ the HDR scene + bloom mip0 (both sampled in the fragment stage).
+            comp.uses.push_back(ResourceUse{
+                rgHdr, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            comp.uses.push_back(ResourceUse{
+                rgMip[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            comp.usesDynamicRendering = true;
+            m_compositeRenderInfo = VkRenderingInfo{};
+            m_compositeRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_compositeRenderInfo.renderArea = { {0,0}, m_extent };
+            m_compositeRenderInfo.layerCount = 1;
+            m_compositeRenderInfo.colorAttachmentCount = 1;
+            m_compositeRenderInfo.pColorAttachments = &m_compositeAttach;
+            comp.renderInfo = m_compositeRenderInfo;
+            comp.record = [this](VkCommandBuffer c){
+                VkViewport vp{ 0.0f, 0.0f, (float)m_extent.width, (float)m_extent.height, 0.0f, 1.0f };
+                VkRect2D scis{ {0,0}, m_extent };
+                vkCmdSetViewport(c, 0, 1, &vp);
+                vkCmdSetScissor(c, 0, 1, &scis);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_compositePipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_compositeLayout,
+                                        0, 1, &m_setComposite, 0, nullptr);
+                CompositePush cp{};
+                cp.bloomIntensity = kBloomIntensity;
+                cp.exposure = 1.0f;
+                vkCmdPushConstants(c, m_compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(cp), &cp);
+                vkCmdDraw(c, 3, 1, 0, 0);
+                // HUD on top of the tonemapped LDR image (drawn in the composite pass).
+                recordHudDraws(c);
+                // GPU-frame END timestamp after the WHOLE pipeline (incl. bloom +
+                // composite) so --bench measures the full added cost.
                 auto& f = m_frames[m_frameIdx];
                 if (m_tsSupported && f.tsPool) {
                     vkCmdWriteTimestamp2(c, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, f.tsPool, 1);
                     f.tsPending = true;
                 }
             };
-            m_graph.addPass(std::move(colorPass));
+            m_graph.addPass(std::move(comp));
         }
 
         // ---- Pass 3: present finalize (or in-frame capture copy) ------------
@@ -1590,9 +1818,12 @@ private:
             logError("[rhi] HUD pipeline layout failed"); return false;
         }
 
+        // HDR pipeline: the HUD is now drawn in the COMPOSITE pass (after tonemap),
+        // which writes the LDR final target (m_format) and has NO depth attachment.
+        // So the HUD pipeline declares the LDR color format + UNDEFINED depth.
         VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
         prci.colorAttachmentCount = 1; prci.pColorAttachmentFormats = &m_format;
-        prci.depthAttachmentFormat = m_depthFormat;  // pass has a depth attachment
+        prci.depthAttachmentFormat = VK_FORMAT_UNDEFINED;  // composite pass has no depth
 
         VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
         gpci.pNext = &prci;
@@ -1714,8 +1945,10 @@ private:
             logError("[rhi] sky pipeline layout failed"); return false;
         }
 
+        // HDR pipeline: the sky also renders into the linear HDR scene target.
+        const VkFormat hdrFmt = kHdrFormat;
         VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
-        prci.colorAttachmentCount = 1; prci.pColorAttachmentFormats = &m_format;
+        prci.colorAttachmentCount = 1; prci.pColorAttachmentFormats = &hdrFmt;
         prci.depthAttachmentFormat = m_depthFormat;  // pass has a depth attachment
 
         VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
@@ -1826,6 +2059,10 @@ private:
     void recreateSwapchain() {
         vkDeviceWaitIdle(m_dev.device);
         createSwapchain(m_width, m_height);
+        // HDR scene + bloom mips track the frame extent — rebuild + rewrite their
+        // descriptor sets after the swapchain (and m_extent) are updated.
+        createBloomTargets();
+        writePostDescriptors();
     }
 
     // ---- HEADLESS offscreen render target (no window, no swapchain) ---------
@@ -1908,6 +2145,285 @@ private:
     void recreateOffscreenTarget() {
         vkDeviceWaitIdle(m_dev.device);
         createOffscreenTarget(m_width, m_height);
+        // The HDR scene + bloom mips are sized to the frame extent — rebuild them
+        // (and rewrite the post descriptor sets) so they track the new size.
+        createBloomTargets();
+        writePostDescriptors();
+    }
+
+    // ---- HDR scene + bloom render targets ----------------------------------
+    // Create (or recreate) the linear HDR scene target + the bloom mip chain at
+    // the current frame extent. Called after the swapchain/offscreen target exists
+    // (so m_extent is valid) and on every resize. Images: COLOR_ATTACHMENT (render
+    // target) | SAMPLED (read by the next post pass) | TRANSFER_DST is not needed.
+    bool createBloomTargets() {
+        destroyBloomTargets();
+        const uint32_t W = m_extent.width, H = m_extent.height;
+        if (W == 0 || H == 0) { logError("[rhi] bloom: zero extent"); return false; }
+
+        // HDR scene target (full resolution).
+        if (!createColorTarget(kHdrFormat, W, H,
+                               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                               m_hdrImg, m_hdrAlloc, m_hdrView)) {
+            logError("[rhi] HDR scene target create failed"); return false;
+        }
+
+        // Bloom mips: mip0 = half res, each subsequent halves again (min 1px).
+        uint32_t mw = W, mh = H;
+        for (uint32_t i = 0; i < kBloomMips; ++i) {
+            mw = std::max(1u, mw / 2);
+            mh = std::max(1u, mh / 2);
+            m_bloomMips[i].extent = { mw, mh };
+            if (!createColorTarget(kHdrFormat, mw, mh,
+                                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                   m_bloomMips[i].img, m_bloomMips[i].alloc, m_bloomMips[i].view)) {
+                logError("[rhi] bloom mip create failed"); return false;
+            }
+        }
+        return true;
+    }
+
+    void destroyBloomTargets() {
+        for (uint32_t i = 0; i < kBloomMips; ++i) {
+            BloomMip& m = m_bloomMips[i];
+            if (m.view)  { vkDestroyImageView(m_dev.device, m.view, nullptr); m.view = VK_NULL_HANDLE; }
+            if (m.img)   { vmaDestroyImage(m_alloc, m.img, m.alloc); m.img = VK_NULL_HANDLE; m.alloc = nullptr; }
+            m.extent = {};
+        }
+        if (m_hdrView) { vkDestroyImageView(m_dev.device, m_hdrView, nullptr); m_hdrView = VK_NULL_HANDLE; }
+        if (m_hdrImg)  { vmaDestroyImage(m_alloc, m_hdrImg, m_hdrAlloc); m_hdrImg = VK_NULL_HANDLE; m_hdrAlloc = nullptr; }
+    }
+
+    // Helper: create a single-mip 2D color image + view (used for HDR + bloom mips).
+    bool createColorTarget(VkFormat fmt, uint32_t w, uint32_t h, VkImageUsageFlags usage,
+                           VkImage& outImg, VmaAllocation& outAlloc, VkImageView& outView) {
+        VkImageCreateInfo ici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        ici.imageType = VK_IMAGE_TYPE_2D; ici.format = fmt;
+        ici.extent = { w, h, 1 }; ici.mipLevels = 1; ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT; ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = usage; ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VmaAllocationCreateInfo aci{};
+        aci.usage = VMA_MEMORY_USAGE_AUTO;
+        aci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        if (vmaCreateImage(m_alloc, &ici, &aci, &outImg, &outAlloc, nullptr) != VK_SUCCESS) return false;
+        VkImageViewCreateInfo vci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        vci.image = outImg; vci.viewType = VK_IMAGE_VIEW_TYPE_2D; vci.format = fmt;
+        vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(m_dev.device, &vci, nullptr, &outView) != VK_SUCCESS) return false;
+        return true;
+    }
+
+    // ---- Post-process pipelines (bloom down/up + composite) ----------------
+    // Build the sampler, descriptor-set layouts (1 sampler for down/up, 2 for the
+    // composite), descriptor pool + sets, and the three full-screen-triangle
+    // pipelines. The pipelines are extent-independent (dynamic viewport/scissor),
+    // so they are created ONCE; only the target IMAGES + descriptor set writes are
+    // recreated on resize (via createBloomTargets + writePostDescriptors).
+    bool createPost() {
+        // CLAMP_TO_EDGE linear sampler so edge taps in the down/up filters do not
+        // wrap (avoids bloom bleeding across screen edges).
+        VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        sci.magFilter = VK_FILTER_LINEAR; sci.minFilter = VK_FILTER_LINEAR;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+        if (vkCreateSampler(m_dev.device, &sci, nullptr, &m_postSampler) != VK_SUCCESS) {
+            logError("[rhi] post sampler create failed"); return false;
+        }
+
+        // Descriptor set layout: 1 combined image sampler (down/up source).
+        VkDescriptorSetLayoutBinding b0{};
+        b0.binding = 0; b0.descriptorCount = 1;
+        b0.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b0.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo s1{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        s1.bindingCount = 1; s1.pBindings = &b0;
+        if (vkCreateDescriptorSetLayout(m_dev.device, &s1, nullptr, &m_postSetLayout1) != VK_SUCCESS) {
+            logError("[rhi] post set layout (1) failed"); return false;
+        }
+        // Descriptor set layout: 2 combined image samplers (composite: HDR + bloom).
+        VkDescriptorSetLayoutBinding b2[2]{};
+        b2[0].binding = 0; b2[0].descriptorCount = 1;
+        b2[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b2[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        b2[1].binding = 1; b2[1].descriptorCount = 1;
+        b2[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b2[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo s2{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        s2.bindingCount = 2; s2.pBindings = b2;
+        if (vkCreateDescriptorSetLayout(m_dev.device, &s2, nullptr, &m_postSetLayout2) != VK_SUCCESS) {
+            logError("[rhi] post set layout (2) failed"); return false;
+        }
+
+        // Descriptor pool: (HDR set + kBloomMips mip sets) single-sampler sets +
+        // 1 composite set (2 samplers). Sized exactly; no UPDATE_AFTER_BIND needed.
+        const uint32_t single = 1 + kBloomMips;     // HDR + each mip
+        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, single + 2 };
+        VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        pci.maxSets = single + 1; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
+        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_postPool) != VK_SUCCESS) {
+            logError("[rhi] post desc pool failed"); return false;
+        }
+        // Allocate the single-sampler sets (HDR + mips) and the composite set.
+        auto alloc1 = [&](VkDescriptorSet& out) -> bool {
+            VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            ai.descriptorPool = m_postPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_postSetLayout1;
+            return vkAllocateDescriptorSets(m_dev.device, &ai, &out) == VK_SUCCESS;
+        };
+        if (!alloc1(m_setHdr)) { logError("[rhi] post set alloc (hdr) failed"); return false; }
+        for (uint32_t i = 0; i < kBloomMips; ++i)
+            if (!alloc1(m_setMip[i])) { logError("[rhi] post set alloc (mip) failed"); return false; }
+        {
+            VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            ai.descriptorPool = m_postPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_postSetLayout2;
+            if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_setComposite) != VK_SUCCESS) {
+                logError("[rhi] post set alloc (composite) failed"); return false;
+            }
+        }
+
+        // Pipeline layouts (push constants for tunables).
+        VkPushConstantRange pcBloom{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(BloomPush) };
+        VkPipelineLayoutCreateInfo bl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        bl.setLayoutCount = 1; bl.pSetLayouts = &m_postSetLayout1;
+        bl.pushConstantRangeCount = 1; bl.pPushConstantRanges = &pcBloom;
+        if (vkCreatePipelineLayout(m_dev.device, &bl, nullptr, &m_bloomLayout) != VK_SUCCESS) {
+            logError("[rhi] bloom pipeline layout failed"); return false;
+        }
+        VkPushConstantRange pcComp{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(CompositePush) };
+        VkPipelineLayoutCreateInfo cl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        cl.setLayoutCount = 1; cl.pSetLayouts = &m_postSetLayout2;
+        cl.pushConstantRangeCount = 1; cl.pPushConstantRanges = &pcComp;
+        if (vkCreatePipelineLayout(m_dev.device, &cl, nullptr, &m_compositeLayout) != VK_SUCCESS) {
+            logError("[rhi] composite pipeline layout failed"); return false;
+        }
+
+        // Build the three full-screen-triangle pipelines.
+        if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\bloom_down.frag.spv",
+                                      m_bloomLayout, kHdrFormat, /*additiveBlend=*/false, m_bloomDownPipe))
+            return false;
+        // Upsample is ADDITIVELY blended onto the larger mip (ONE,ONE) so the
+        // graph's load-op keeps the existing content and the driver combines.
+        if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\bloom_up.frag.spv",
+                                      m_bloomLayout, kHdrFormat, /*additiveBlend=*/true, m_bloomUpPipe))
+            return false;
+        // Composite writes the LDR final target (m_format).
+        if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\composite.frag.spv",
+                                      m_compositeLayout, m_format, /*additiveBlend=*/false, m_compositePipe))
+            return false;
+
+        logInfo("[rhi] HDR post pipeline ready (R16G16B16A16_SFLOAT scene + " +
+                std::to_string(kBloomMips) + "-mip bloom + ACES composite)");
+        return true;
+    }
+
+    // Build a full-screen-triangle post pipeline (no vertex input, no depth, single
+    // color attachment of `colorFmt`). `additiveBlend` selects ONE,ONE additive
+    // blending (bloom upsample accumulation) vs. opaque write.
+    bool createFullscreenPipeline(const char* vsPath, const char* fsPath,
+                                  VkPipelineLayout layout, VkFormat colorFmt,
+                                  bool additiveBlend, VkPipeline& outPipe) {
+        VkShaderModule vs = loadShaderModule(vsPath);
+        VkShaderModule fs = loadShaderModule(fsPath);
+        if (!vs || !fs) return false;
+
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = vs; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
+
+        VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+        VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        vp.viewportCount = 1; vp.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        dss.depthTestEnable = VK_FALSE; dss.depthWriteEnable = VK_FALSE;
+        dss.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
+        if (additiveBlend) {
+            cba.blendEnable = VK_TRUE;
+            cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE; cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.colorBlendOp = VK_BLEND_OP_ADD;
+            cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE; cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.alphaBlendOp = VK_BLEND_OP_ADD;
+        } else {
+            cba.blendEnable = VK_FALSE;
+        }
+        VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        cb.attachmentCount = 1; cb.pAttachments = &cba;
+
+        VkDynamicState dyn[2]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+
+        VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+        prci.colorAttachmentCount = 1; prci.pColorAttachmentFormats = &colorFmt;
+        prci.depthAttachmentFormat = VK_FORMAT_UNDEFINED;   // no depth in post passes
+
+        VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        gpci.pNext = &prci;
+        gpci.stageCount = 2; gpci.pStages = stages;
+        gpci.pVertexInputState = &vin; gpci.pInputAssemblyState = &ia;
+        gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
+        gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
+        gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = layout;
+        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &outPipe);
+
+        vkDestroyShaderModule(m_dev.device, vs, nullptr);
+        vkDestroyShaderModule(m_dev.device, fs, nullptr);
+        if (pr != VK_SUCCESS) { logError("[rhi] post pipeline create failed"); return false; }
+        return true;
+    }
+
+    // (Re)write the post descriptor sets to point at the current HDR + bloom mip
+    // image views. Called after createBloomTargets() at init + every resize. The
+    // images are in SHADER_READ_ONLY when sampled (the graph transitions them), so
+    // the descriptor imageLayout is SHADER_READ_ONLY_OPTIMAL.
+    void writePostDescriptors() {
+        auto write1 = [&](VkDescriptorSet set, VkImageView view) {
+            VkDescriptorImageInfo dii{ m_postSampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.dstSet = set; w.dstBinding = 0; w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &dii;
+            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        };
+        write1(m_setHdr, m_hdrView);
+        for (uint32_t i = 0; i < kBloomMips; ++i) write1(m_setMip[i], m_bloomMips[i].view);
+
+        // Composite set: binding 0 = HDR scene, binding 1 = bloom mip0.
+        VkDescriptorImageInfo d0{ m_postSampler, m_hdrView,           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo d1{ m_postSampler, m_bloomMips[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkWriteDescriptorSet cw[2]{};
+        cw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        cw[0].dstSet = m_setComposite; cw[0].dstBinding = 0; cw[0].descriptorCount = 1;
+        cw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; cw[0].pImageInfo = &d0;
+        cw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        cw[1].dstSet = m_setComposite; cw[1].dstBinding = 1; cw[1].descriptorCount = 1;
+        cw[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; cw[1].pImageInfo = &d1;
+        vkUpdateDescriptorSets(m_dev.device, 2, cw, 0, nullptr);
+    }
+
+    void destroyPost() {
+        destroyBloomTargets();
+        if (m_compositePipe)  { vkDestroyPipeline(m_dev.device, m_compositePipe, nullptr); m_compositePipe = VK_NULL_HANDLE; }
+        if (m_bloomUpPipe)    { vkDestroyPipeline(m_dev.device, m_bloomUpPipe, nullptr); m_bloomUpPipe = VK_NULL_HANDLE; }
+        if (m_bloomDownPipe)  { vkDestroyPipeline(m_dev.device, m_bloomDownPipe, nullptr); m_bloomDownPipe = VK_NULL_HANDLE; }
+        if (m_compositeLayout){ vkDestroyPipelineLayout(m_dev.device, m_compositeLayout, nullptr); m_compositeLayout = VK_NULL_HANDLE; }
+        if (m_bloomLayout)    { vkDestroyPipelineLayout(m_dev.device, m_bloomLayout, nullptr); m_bloomLayout = VK_NULL_HANDLE; }
+        if (m_postPool)       { vkDestroyDescriptorPool(m_dev.device, m_postPool, nullptr); m_postPool = VK_NULL_HANDLE; }
+        if (m_postSetLayout2) { vkDestroyDescriptorSetLayout(m_dev.device, m_postSetLayout2, nullptr); m_postSetLayout2 = VK_NULL_HANDLE; }
+        if (m_postSetLayout1) { vkDestroyDescriptorSetLayout(m_dev.device, m_postSetLayout1, nullptr); m_postSetLayout1 = VK_NULL_HANDLE; }
+        if (m_postSampler)    { vkDestroySampler(m_dev.device, m_postSampler, nullptr); m_postSampler = VK_NULL_HANDLE; }
     }
 
     bool createPerFrame() {
@@ -2339,8 +2855,12 @@ private:
             logError("[rhi] pipeline layout failed"); return false;
         }
 
+        // HDR pipeline: the mesh pass now renders into the R16G16B16A16_SFLOAT
+        // linear HDR scene target (NOT the LDR swapchain). Tonemap moved to the
+        // composite pass. The depth attachment format is unchanged.
+        const VkFormat hdrFmt = kHdrFormat;
         VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
-        prci.colorAttachmentCount = 1; prci.pColorAttachmentFormats = &m_format;
+        prci.colorAttachmentCount = 1; prci.pColorAttachmentFormats = &hdrFmt;
         prci.depthAttachmentFormat = m_depthFormat;
 
         VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
@@ -2695,6 +3215,78 @@ private:
     VkImageView   m_depthView = VK_NULL_HANDLE;
     VmaAllocation m_depthAlloc = nullptr;
 
+    // ======================================================================
+    // HDR pipeline + bloom (task: HDR scene target + bloom + emissive).
+    // ----------------------------------------------------------------------
+    // The lit scene (sky + meshes) renders into an offscreen R16G16B16A16_SFLOAT
+    // target in LINEAR HDR (no tonemap). A bloom chain (bright-pass -> N-mip
+    // progressive Karis downsample -> tent upsample, all full-screen-triangle
+    // fragment passes in the render graph) extracts + blurs the bright HDR
+    // radiance. A final composite pass reads the HDR scene + bloom mip0, combines
+    // them, applies the shared ACES tonemap ONCE, and writes the LDR
+    // swapchain/offscreen image (which the HUD then draws on top of). All images
+    // are sized to the frame extent + recreated on resize; the descriptor sets are
+    // written once at create time so the per-frame path does NO heap allocation.
+    static constexpr uint32_t kBloomMips      = 5;     // 5 progressively-smaller mips
+    static constexpr VkFormat kHdrFormat      = VK_FORMAT_R16G16B16A16_SFLOAT;
+    // Bloom tunables (subtle/filmic defaults; could be promoted to cvars).
+    static constexpr float kBloomThreshold    = 1.10f; // bright-pass luminance threshold
+    static constexpr float kBloomKnee         = 0.55f; // soft-knee width
+    static constexpr float kBloomUpScale      = 0.85f; // per-mip upsample contribution
+    static constexpr float kBloomIntensity    = 0.06f; // final additive bloom strength
+
+    // Linear HDR scene target (sky + meshes render here; sampled by bloom mip0
+    // bright-pass + the composite). COLOR_ATTACHMENT | SAMPLED.
+    VkImage       m_hdrImg   = VK_NULL_HANDLE;
+    VmaAllocation m_hdrAlloc = nullptr;
+    VkImageView   m_hdrView  = VK_NULL_HANDLE;
+
+    // One bloom mip (its own image so each can be both a render target AND a
+    // sampled source for the next/prev pass). mip[0] is half the frame extent;
+    // each subsequent mip halves again.
+    struct BloomMip {
+        VkImage       img   = VK_NULL_HANDLE;
+        VmaAllocation alloc = nullptr;
+        VkImageView   view  = VK_NULL_HANDLE;
+        VkExtent2D    extent{};
+    };
+    BloomMip      m_bloomMips[kBloomMips];
+    VkSampler     m_postSampler = VK_NULL_HANDLE;   // CLAMP linear sampler (post passes)
+
+    // Post (HDR/bloom/composite) pipelines + layouts.
+    VkDescriptorSetLayout m_postSetLayout1 = VK_NULL_HANDLE; // 1 sampler (down/up)
+    VkDescriptorSetLayout m_postSetLayout2 = VK_NULL_HANDLE; // 2 samplers (composite)
+    VkPipelineLayout      m_bloomLayout    = VK_NULL_HANDLE; // set0=1 sampler + push
+    VkPipelineLayout      m_compositeLayout = VK_NULL_HANDLE;// set0=2 samplers + push
+    VkPipeline            m_bloomDownPipe  = VK_NULL_HANDLE;
+    VkPipeline            m_bloomUpPipe    = VK_NULL_HANDLE;
+    VkPipeline            m_compositePipe  = VK_NULL_HANDLE;
+
+    // Descriptor pool + pre-written sets for the post passes. One "1-sampler" set
+    // per distinct sampled source (HDR scene + each bloom mip) used by the down/up
+    // passes, plus one "2-sampler" composite set. Written once at create time.
+    VkDescriptorPool      m_postPool        = VK_NULL_HANDLE;
+    VkDescriptorSet       m_setHdr          = VK_NULL_HANDLE;             // samples HDR scene
+    VkDescriptorSet       m_setMip[kBloomMips] = {};                      // samples mip i
+    VkDescriptorSet       m_setComposite    = VK_NULL_HANDLE;            // HDR scene + bloom mip0
+
+    // Stable storage for the post passes' VkRenderingInfo + attachments (must
+    // outlive execute(); the graph holds pointers into these). One per bloom mip
+    // for down + up, plus the composite color attach.
+    VkRenderingAttachmentInfo m_bloomAttach[kBloomMips]{};       // downsample targets
+    VkRenderingInfo           m_bloomRenderInfo[kBloomMips]{};
+    VkRenderingAttachmentInfo m_bloomUpAttach[kBloomMips]{};     // upsample targets (LOAD)
+    VkRenderingInfo           m_bloomUpRenderInfo[kBloomMips]{};
+    VkRenderingAttachmentInfo m_hdrColorAttach{};   // main pass -> HDR target
+    VkRenderingAttachmentInfo m_compositeAttach{};
+    VkRenderingInfo           m_compositeRenderInfo{};
+    // Push-constant payloads for the post passes (stable storage referenced by the
+    // record lambdas; no per-frame heap alloc).
+    struct BloomPush { float srcTexel[2]; float threshold, knee, intensity; int firstPass; float pad0, pad1; };
+    struct CompositePush { float bloomIntensity, exposure, pad0, pad1; };
+    BloomPush m_bloomDownPush[kBloomMips]{};
+    BloomPush m_bloomUpPush[kBloomMips]{};
+
     // ---- Directional shadow mapping (perf-stack E) ------------------------
     // A single fixed-resolution depth texture rendered from the sun's POV each
     // frame (depth-only pipeline, same SSBO + indirect draws as the color pass),
@@ -2732,7 +3324,6 @@ private:
     VkRenderingInfo           m_shadowRenderInfo{};
     VkRenderingAttachmentInfo m_shadowDepthAttach{};
     VkRenderingInfo           m_mainRenderInfo{};
-    VkRenderingAttachmentInfo m_mainColorAttach{};
     VkRenderingAttachmentInfo m_mainDepthAttach{};
 
     // Swapchain (windowed mode only; all null/empty in headless mode)

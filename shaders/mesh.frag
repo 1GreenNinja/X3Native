@@ -9,17 +9,21 @@
 // the built-in 1x1 white default. baseColorFactor rides through from the SSBO
 // row (no per-draw UBO).
 //
-// Lighting model (all additive, accumulated in linear light then tonemapped):
+// Lighting model (all additive, accumulated in LINEAR light, output as HDR):
 //   * Directional sun (kSunDir): diffuse gated by the shadow map (perf-stack E).
 //   * Hemispheric ambient: a small up/down-blended constant lift (from the UBO)
 //     so shadowed surfaces / back-faces aren't pure black.
 //   * Forward point lights: a bounded loop over the per-frame light array (UBO,
 //     set1/binding1) with smooth windowed distance attenuation — the corridor's
 //     Light_A ceiling fixtures. Unshadowed (the single shadow map is the sun's).
-// A cheap ACES-approx tonemap at the end rolls off the bright-near-fixture
-// overshoot so the additive lights don't harshly clip. Swapchain is UNORM and
-// textures are sampled as-is (no sRGB decode), so we do NOT add a gamma encode
-// — that would double-correct and wash out the loaded GLB textures.
+//   * Emissive: a per-object emissive radiance (from the SSBO row) added on top
+//     so light fixtures / strips are bright HDR sources that feed bloom.
+//
+// HDR PIPELINE: this shader renders to an R16G16B16A16_SFLOAT scene target in
+// LINEAR light and does NOT tonemap. The ACES filmic curve now runs ONCE in the
+// composite pass (shaders/composite.frag), after bloom is added. (Previously the
+// tonemap was applied per-fragment here; it was moved out for the HDR + bloom
+// pipeline.)
 //
 // Shadows (E): the directional sun's lightViewProj (UBO, set1/binding1) projects
 // the fragment's world position into the shadow map's clip space; a 3x3 PCF
@@ -57,6 +61,7 @@ layout(location = 1) in vec2 vUV;
 layout(location = 2) flat in uint vTexIndex;
 layout(location = 3) flat in vec4 vFactor;
 layout(location = 4) in vec3 vWorldPos;
+layout(location = 5) flat in vec4 vEmissive;   // rgb = color, a = strength
 
 layout(location = 0) out vec4 outColor;
 
@@ -101,14 +106,6 @@ float pointAtten(float dist, float range) {
     return w / (dist * dist + 1.0);
 }
 
-// ACES filmic tonemap (Narkowicz approximation). Compresses the additive
-// point-light overshoot near fixtures into [0,1] with a filmic shoulder, and
-// lifts deep shadows a touch — without the wash of a separate gamma encode.
-vec3 tonemapACES(vec3 x) {
-    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
-
 void main() {
     vec3 N = normalize(vNormal);
     vec4 albedo = texture(textures[nonuniformEXT(vTexIndex)], vUV) * vFactor;
@@ -135,7 +132,12 @@ void main() {
         lighting  += cam.lights[i].colorPad.rgb * (pndl * att);
     }
 
+    // ---- Emissive: a per-object HDR radiance added on top (light fixtures /
+    // strips). Independent of incoming light so a fixture glows even in shadow;
+    // multiplied into HDR range by its strength so it drives the bloom chain. ----
     vec3 color = albedo.rgb * lighting;
-    color = tonemapACES(color);
+    color += vEmissive.rgb * vEmissive.a;
+
+    // HDR output in LINEAR light — NO tonemap here (moved to composite.frag).
     outColor = vec4(color, albedo.a);
 }

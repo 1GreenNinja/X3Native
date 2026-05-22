@@ -13,6 +13,7 @@
 struct ObjectData {
     mat4 model;
     vec4 baseColorFactor;
+    vec4 emissive;        // rgb = linear emissive color, a = strength (HDR source)
     uint texIndex;
     uint _pad0;
     uint _pad1;
@@ -47,6 +48,7 @@ layout(location = 1) out vec2 vUV;
 layout(location = 2) flat out uint vTexIndex;
 layout(location = 3) flat out vec4 vFactor;
 layout(location = 4) out vec3 vWorldPos;
+layout(location = 5) flat out vec4 vEmissive;   // rgb = color, a = strength
 
 void main() {
     ObjectData o = objBuf.objects[gl_InstanceIndex];
@@ -57,4 +59,5 @@ void main() {
     vTexIndex = o.texIndex;
     vFactor = o.baseColorFactor;
     vWorldPos = worldPos.xyz;
+    vEmissive = o.emissive;
 }

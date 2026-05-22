@@ -113,6 +113,18 @@ public:
     virtual void          drawMesh(const FrameContext&, MeshHandle, TextureHandle baseColor,
                                    const float baseColorFactor[4], const float model[16]) = 0;
 
+    // Emissive draw (HDR pipeline). Same as drawMesh() plus a per-object EMISSIVE
+    // term: `emissive` is { r, g, b, strength } — a LINEAR emissive color (rgb)
+    // scaled by `strength` (a) and added on top of the lit result in linear HDR,
+    // independent of incoming light (so the surface glows even in shadow). With
+    // strength > 1 the surface becomes a bright HDR source that drives the bloom
+    // chain — exactly right for light fixtures / light strips. POD only (no Vulkan
+    // types cross the boundary). The 5-arg drawMesh() above is equivalent to this
+    // with emissive = {0,0,0,0}. emissive == nullptr is treated as all-zero.
+    virtual void          drawMeshEmissive(const FrameContext&, MeshHandle, TextureHandle baseColor,
+                                           const float baseColorFactor[4], const float emissive[4],
+                                           const float model[16]) = 0;
+
     // ---- Analytic sky (open-world track, task A) ---------------------------
     // Parameters for the physically-plausible analytic sky drawn as the far-depth
     // backdrop wherever no opaque geometry covers a pixel (it composites against

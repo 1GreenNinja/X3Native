@@ -137,6 +137,14 @@ void EnvArtSystem::addInstance(uint32_t a, const float transform[16]) {
     m_instances.push_back(e);
 }
 
+void EnvArtSystem::addInstanceEmissive(uint32_t a, const float transform[16], const float emissive[4]) {
+    if (a >= m_assetTable.size() || !m_assetTable[a].ok) return; // skip failed assets
+    EnvInstance e; e.asset = a;
+    for (int i=0;i<16;++i) e.transform[i]=transform[i];
+    if (emissive) for (int i=0;i<4;++i) e.emissive[i]=emissive[i];
+    m_instances.push_back(e);
+}
+
 Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
                                   std::string_view convertedGlbDir,
                                   const Level1Layout& layout) {
@@ -357,6 +365,12 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
         const float kColR = 1.00f * kIntensity;
         const float kColG = 0.86f * kIntensity;
         const float kColB = 0.62f * kIntensity;       // warm tungsten-ish white
+        // HDR pipeline: the Light_A fixture MESH itself glows. An emissive radiance
+        // (linear, > 1 so it is a bright HDR source) is set on each fixture instance
+        // so it reads as a lit fixture + feeds the bloom chain. Matches the warm
+        // point-light tint; strength chosen so the panel blooms tastefully without
+        // blowing out the tonemap. (rgb = warm white, w = strength.)
+        const float kEmis[4] = { 1.00f, 0.86f, 0.62f, 6.0f };
         for (const Room& r : rooms) {
             const float lightY  = r.ceil - 0.05f;                 // fixture just below ceiling
             // Range covers the 4 m spacing AND reaches the floor in tall rooms.
@@ -372,7 +386,7 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
                     const float wx = r.x0 + (i + 0.5f) * 4.0f;
                     placeYaw(m, 0.0f, 1.0f, cx(kLightAabb), kLightAabb.maxy, cz(kLightAabb),
                              wx, lightY, wz);
-                    addInstance(lightA, m);
+                    addInstanceEmissive(lightA, m, kEmis);  // HDR: fixture glows + feeds bloom
                     // Point light a touch below the fixture so the ceiling panel above
                     // doesn't occlude the pool of light it casts on the floor/walls.
                     x3::rhi::PointLight pl;
@@ -399,11 +413,13 @@ void EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
         for (const auto& d : a.drawables) {
             float fin[16];
             x3::asset::mulMat4(inst.transform, d.nodeTransform, fin);
-            device.drawMesh(frame,
-                            x3::rhi::MeshHandle{ d.meshId },
-                            x3::rhi::TextureHandle{ d.baseColorTexId },
-                            d.baseColorFactor,
-                            fin);
+            // HDR pipeline: emissive instances (Light_A fixtures) glow + feed bloom.
+            device.drawMeshEmissive(frame,
+                                    x3::rhi::MeshHandle{ d.meshId },
+                                    x3::rhi::TextureHandle{ d.baseColorTexId },
+                                    d.baseColorFactor,
+                                    inst.emissive,
+                                    fin);
         }
     }
 }
