@@ -356,11 +356,16 @@ enum NetState : uint8_t {
     NetState_Firing    = PlayerState_Firing,
 };
 
+} // namespace (close the anon namespace so serverApplyCommand has EXTERNAL linkage)
+
 // Deterministic per-tick authoritative step for one player entity. Reads its
 // current RepTransform/RepVelocity from the store, runs the SHARED stepPlayer()
 // integrator (PlayerSimStep.h — the one function the client predicts/replays with),
 // then writes the post-tick RepTransform + RepVelocity + RepHealth state byte back.
 // This is the ONE place authoritative state changes (server-only), at exactly kSimDt.
+// Given EXTERNAL linkage (not in an anonymous namespace) so the Phase 1 predictor
+// self-test (ClientPredictor.cpp) drives the SAME authoritative integrator the
+// production server uses — proving predict/replay converge to the real authority.
 void serverApplyCommand(IReplication* rep, NetEntityId e, const NetCommand& cmd) {
     // Load the current sim state from the store (default to origin if not yet set).
     PlayerSimState s{};
@@ -380,8 +385,6 @@ void serverApplyCommand(IReplication* rep, NetEntityId e, const NetCommand& cmd)
     rep->setComponent(e, NetComp_Velocity,  &s.vel, sizeof(s.vel));
     rep->setComponent(e, NetComp_Health,    &hp,   sizeof(hp));
 }
-
-} // namespace
 
 INetworkSystem* createNetworkSystem() { return new NetworkSystem(); }
 
