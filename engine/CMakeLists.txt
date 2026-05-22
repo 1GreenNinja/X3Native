@@ -3,6 +3,7 @@ add_library(x3engine STATIC
     core/Console.cpp
     core/JobSystem.cpp
     rhi/VulkanRenderDevice.cpp
+    rhi/RenderGraph.cpp
     rhi/vma_impl.cpp
     asset/PakAssetSource.cpp
     physics/JoltPhysicsWorld.cpp
