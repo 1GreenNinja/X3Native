@@ -205,6 +205,10 @@ public:
         auto& fr = m_frames[m_frameIdx];
         vkWaitForFences(m_dev.device, 1, &fr.inFlight, VK_TRUE, UINT64_MAX);
 
+        // Retire any deferred buffer frees whose referencing frames have now
+        // completed (fix 2: promoting a mesh to dynamic queues its old vbo here).
+        drainPendingFrees();
+
         // The fence above retired this ring slot's PREVIOUS submission, so its
         // timestamps (written kFramesInFlight frames ago) are now guaranteed
         // available — read them back without a stall, then recycle the pool.
@@ -375,11 +379,25 @@ public:
 
         vkCmdEndRendering(fr.cmd);
 
-        // COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC
-        imageBarrier(fr.cmd, m_swapImages[imageIndex],
-                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                     VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
+        // Fix 1: if a capture is armed, copy this freshly-rendered, ACQUIRED color
+        // image into the host readback buffer inside this live frame. recordCaptureCopy
+        // does COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC -> PRESENT_SRC itself, so we
+        // skip the plain ->PRESENT_SRC transition below in that case.
+        bool capturedThisFrame = false;
+        if (m_captureArmed && m_captureBuf &&
+            m_captureW == m_extent.width && m_captureH == m_extent.height) {
+            recordCaptureCopy(fr.cmd, m_swapImages[imageIndex]);
+            capturedThisFrame = true;
+        }
+        m_captureArmed = false; // consume the arm regardless
+
+        if (!capturedThisFrame) {
+            // COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC
+            imageBarrier(fr.cmd, m_swapImages[imageIndex],
+                         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                         VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                         VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
+        }
 
         vkEndCommandBuffer(fr.cmd);
 
@@ -404,6 +422,14 @@ public:
         submit.signalSemaphoreInfoCount = 1; submit.pSignalSemaphoreInfos = &signalS;
         vkQueueSubmit2(m_gfxQueue, 1, &submit, fr.inFlight);
 
+        // Fix 1: if this frame recorded the capture copy, remember which fence to
+        // wait on (this frame's inFlight) so captureFrame() can finalize the PNG.
+        if (capturedThisFrame) {
+            m_captureReady = true;
+            m_captureFence = fr.inFlight;
+            m_captureFrameSlot = m_frameIdx;
+        }
+
         VkPresentInfoKHR present{};
         present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
         present.waitSemaphoreCount = 1;
@@ -426,30 +452,132 @@ public:
     RenderStats stats() const override { return m_lastStats; }
 
     // ---- Offscreen capture (--screenshot) ----------------------------------
-    // Copy the last presented swapchain color image into a host-visible buffer
-    // and write it as a PNG. Self-contained: it idles the device, does its own
-    // one-time-submit (PRESENT_SRC -> TRANSFER_SRC, copy, -> PRESENT_SRC), then
-    // maps the readback buffer, swizzles to RGBA per the swapchain format, and
-    // hands tightly-packed RGBA8 to stb_image_write. Validation-clean.
+    // Step 1: arm a capture for the NEXT frame. endFrame() will record the color-
+    // image -> host readback copy inside that frame's live command buffer, reading
+    // the freshly-rendered, properly-acquired swapchain image (no non-acquired
+    // image is ever touched). Allocates the host-visible readback buffer up front.
+    void armCapture(const char* path) override {
+        (void)path; // path is consumed by captureFrame() at finalize time
+        if (!m_swapchain || m_swapImages.empty()) {
+            logError("[rhi] armCapture: not ready (no swapchain)"); return;
+        }
+        const uint32_t W = m_extent.width, H = m_extent.height;
+        if (W == 0 || H == 0) { logError("[rhi] armCapture: zero extent"); return; }
+
+        // (Re)allocate the readback buffer if the extent changed or it's the first
+        // arm. Tightly packed: vkCmdCopyImageToBuffer(bufferRowLength=0) packs rows
+        // to image width, so pitch == W*4.
+        if (m_captureBuf && (m_captureW != W || m_captureH != H)) {
+            vmaDestroyBuffer(m_alloc, m_captureBuf, m_captureAlloc);
+            m_captureBuf = VK_NULL_HANDLE; m_captureAlloc = nullptr; m_captureMapped = nullptr;
+        }
+        if (!m_captureBuf) {
+            const VkDeviceSize bytes = (VkDeviceSize)W * H * 4;
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = bytes; bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            VmaAllocationCreateInfo vaci{};
+            vaci.usage = VMA_MEMORY_USAGE_AUTO;
+            vaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo rinfo{};
+            if (vmaCreateBuffer(m_alloc, &bci, &vaci, &m_captureBuf, &m_captureAlloc, &rinfo) != VK_SUCCESS) {
+                logError("[rhi] armCapture: readback buffer alloc failed");
+                m_captureBuf = VK_NULL_HANDLE; return;
+            }
+            m_captureMapped = rinfo.pMappedData;
+        }
+        m_captureW = W; m_captureH = H;
+        m_captureArmed = true;
+        m_captureReady = false;
+    }
+
+    // Record the in-frame copy of the freshly-rendered acquired color image into
+    // the host readback buffer. Called from endFrame() AFTER endRendering but
+    // BEFORE the COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC transition, so the image
+    // is in COLOR_ATTACHMENT_OPTIMAL and properly acquired for THIS frame. Adds:
+    //   COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC_OPTIMAL, copy, -> PRESENT_SRC.
+    // The copy retires when this frame's inFlight fence signals; captureFrame()
+    // waits on that fence before mapping. Validation-clean (acquired image only).
+    void recordCaptureCopy(VkCommandBuffer cmd, VkImage img) {
+        imageBarrier(cmd, img,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+        VkBufferImageCopy region{};
+        region.bufferOffset = 0;
+        region.bufferRowLength = 0;     // tightly packed to image width
+        region.bufferImageHeight = 0;
+        region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        region.imageOffset = { 0, 0, 0 };
+        region.imageExtent = { m_captureW, m_captureH, 1 };
+        vkCmdCopyImageToBuffer(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               m_captureBuf, 1, &region);
+        // TRANSFER_SRC_OPTIMAL -> PRESENT_SRC so the image can still be presented.
+        imageBarrier(cmd, img,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
+    }
+
+    // Step 3: finalize an armed capture. Wait on the captured frame's inFlight
+    // fence (its copy has retired), map the readback buffer, swizzle (BGRA->RGBA)
+    // and write the PNG. If no capture was armed/recorded, fall back to the legacy
+    // self-contained "last-presented image" copy (idles the device first). Returns
+    // true on success.
     bool captureFrame(const char* path) override {
-        if (!path || !m_swapchain || m_swapImages.empty()) {
+        if (!path) return false;
+        if (m_captureReady) {
+            // Wait for the frame that recorded the copy to retire (its fence).
+            if (m_captureFence)
+                vkWaitForFences(m_dev.device, 1, &m_captureFence, VK_TRUE, UINT64_MAX);
+            const bool ok = writeCapturePng(path, m_captureMapped, m_captureW, m_captureH);
+            m_captureReady = false;
+            return ok;
+        }
+        // Legacy fallback path (no arm): copy the last presented image. This still
+        // works for callers that don't use armCapture (kept for API safety).
+        return legacyCaptureLastPresented(path);
+    }
+
+    // Swizzle the mapped readback bytes to tightly-packed RGBA8 and write the PNG.
+    bool writeCapturePng(const char* path, const void* mapped, uint32_t W, uint32_t H) {
+        if (!mapped || W == 0 || H == 0) {
+            logError("[rhi] captureFrame: no captured data"); return false;
+        }
+        // The default swapchain format is B8G8R8A8_UNORM (raw bytes are exactly what
+        // is shown) — swap B<->R. Handle R/B-already-RGBA formats too.
+        const bool bgra = (m_format == VK_FORMAT_B8G8R8A8_UNORM ||
+                           m_format == VK_FORMAT_B8G8R8A8_SRGB);
+        const uint8_t* src = static_cast<const uint8_t*>(mapped);
+        std::vector<uint8_t> rgba((size_t)W * H * 4);
+        for (size_t p = 0; p < (size_t)W * H; ++p) {
+            const uint8_t* s = src + p * 4;
+            uint8_t* d = rgba.data() + p * 4;
+            if (bgra) { d[0] = s[2]; d[1] = s[1]; d[2] = s[0]; }
+            else      { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; }
+            d[3] = 255;  // force opaque (swapchain alpha is undefined for display)
+        }
+        const int rc = stbi_write_png(path, (int)W, (int)H, 4, rgba.data(), (int)(W * 4));
+        if (rc == 0) { logError(std::string("[rhi] captureFrame: PNG write failed: ") + path); return false; }
+        logInfo(std::string("[rhi] captureFrame: wrote ") + path + " (" +
+                std::to_string(W) + "x" + std::to_string(H) + ")");
+        return true;
+    }
+
+    // Legacy: copy the LAST presented image via a self-contained one-time-submit.
+    // Idles the device, transitions PRESENT_SRC -> TRANSFER_SRC -> PRESENT_SRC.
+    // Retained as a fallback for callers that don't arm a capture in-frame.
+    bool legacyCaptureLastPresented(const char* path) {
+        if (!m_swapchain || m_swapImages.empty()) {
             logError("[rhi] captureFrame: not ready (no swapchain)"); return false;
         }
-        // The last presented frame's image index (set each beginFrame). After
-        // endFrame() it still refers to the most recently presented image.
         const uint32_t imageIndex = m_curImageIndex;
         if (imageIndex >= m_swapImages.size()) {
             logError("[rhi] captureFrame: bad image index"); return false;
         }
         const uint32_t W = m_extent.width, H = m_extent.height;
         if (W == 0 || H == 0) { logError("[rhi] captureFrame: zero extent"); return false; }
-
-        // Make sure all rendering/presenting on the captured image has retired
-        // before we read it (also satisfies the one-time-submit's implicit sync).
         vkDeviceWaitIdle(m_dev.device);
 
-        // Host-visible readback buffer: tightly packed (vkCmdCopyImageToBuffer
-        // with bufferRowLength=0 packs rows to image width, so pitch == W*4).
         const VkDeviceSize bytes = (VkDeviceSize)W * H * 4;
         VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
         bci.size = bytes; bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
@@ -460,26 +588,18 @@ public:
         if (vmaCreateBuffer(m_alloc, &bci, &vaci, &readback, &readbackAlloc, &rinfo) != VK_SUCCESS) {
             logError("[rhi] captureFrame: readback buffer alloc failed"); return false;
         }
-
         VkImage img = m_swapImages[imageIndex];
         bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
-            // PRESENT_SRC -> TRANSFER_SRC_OPTIMAL
             imageBarrier(cmd, img,
                 VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                 VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
             VkBufferImageCopy region{};
-            region.bufferOffset = 0;
-            region.bufferRowLength = 0;     // tightly packed to image width
-            region.bufferImageHeight = 0;
+            region.bufferRowLength = 0; region.bufferImageHeight = 0;
             region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-            region.imageOffset = { 0, 0, 0 };
             region.imageExtent = { W, H, 1 };
             vkCmdCopyImageToBuffer(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                    readback, 1, &region);
-            // TRANSFER_SRC -> PRESENT_SRC so the image is back in a presentable
-            // layout (the next beginFrame transitions from UNDEFINED anyway, but
-            // this keeps the swapchain image in a defined, valid state).
             imageBarrier(cmd, img,
                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                 VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
@@ -489,28 +609,9 @@ public:
             vmaDestroyBuffer(m_alloc, readback, readbackAlloc);
             logError("[rhi] captureFrame: copy submit failed"); return false;
         }
-
-        // Map + swizzle into a tightly-packed RGBA8 image for the PNG. The default
-        // swapchain format is B8G8R8A8_UNORM (raw bytes are exactly what is shown,
-        // no gamma needed) — swap B<->R. Handle the R/B-already-RGBA formats too.
-        const bool bgra = (m_format == VK_FORMAT_B8G8R8A8_UNORM ||
-                           m_format == VK_FORMAT_B8G8R8A8_SRGB);
-        const uint8_t* src = static_cast<const uint8_t*>(rinfo.pMappedData);
-        std::vector<uint8_t> rgba((size_t)W * H * 4);
-        for (size_t p = 0; p < (size_t)W * H; ++p) {
-            const uint8_t* s = src + p * 4;
-            uint8_t* d = rgba.data() + p * 4;
-            if (bgra) { d[0] = s[2]; d[1] = s[1]; d[2] = s[0]; }
-            else      { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; }
-            d[3] = 255;  // force opaque (swapchain alpha is undefined for display)
-        }
+        const bool wrote = writeCapturePng(path, rinfo.pMappedData, W, H);
         vmaDestroyBuffer(m_alloc, readback, readbackAlloc);
-
-        const int rc = stbi_write_png(path, (int)W, (int)H, 4, rgba.data(), (int)(W * 4));
-        if (rc == 0) { logError(std::string("[rhi] captureFrame: PNG write failed: ") + path); return false; }
-        logInfo(std::string("[rhi] captureFrame: wrote ") + path + " (" +
-                std::to_string(W) + "x" + std::to_string(H) + ")");
-        return true;
+        return wrote;
     }
 
     bool supportsDescriptorIndexing() const override { return m_descriptorIndexing; }
@@ -540,19 +641,30 @@ public:
         auto it = m_meshes.find(h.id);
         if (it == m_meshes.end()) return;
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
-        if (it->second.dynamic && it->second.vboMapped)
-            vmaUnmapMemory(m_alloc, it->second.vboAlloc);
-        vmaDestroyBuffer(m_alloc, it->second.vbo, it->second.vboAlloc);
-        vmaDestroyBuffer(m_alloc, it->second.ibo, it->second.iboAlloc);
+        Mesh& m = it->second;
+        if (m.dynamic) {
+            // Free all per-frame dynamic vbos (idle above guarantees they're unused).
+            for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+                if (m.dynVbo[i]) vmaDestroyBuffer(m_alloc, m.dynVbo[i], m.dynVboAlloc[i]);
+            }
+        } else if (m.vbo) {
+            vmaDestroyBuffer(m_alloc, m.vbo, m.vboAlloc);
+        }
+        vmaDestroyBuffer(m_alloc, m.ibo, m.iboAlloc);
         m_meshes.erase(it);
     }
 
-    // ---- Dynamic mesh re-upload (CPU skinning, J1) --------------------------
-    // Overwrite an existing mesh's vertices in place. On the first call the vbo is
-    // swapped for a HOST_VISIBLE + persistently-mapped buffer (so re-uploads are a
-    // plain memcpy with no staging). vkDeviceWaitIdle before the swap/overwrite
-    // makes this validation-clean (no frame can still be reading the buffer); the
-    // handful of animated characters make this cheap enough.
+    // ---- Dynamic mesh re-upload (CPU skinning, J1; fix 2 frames-in-flight) ---
+    // Overwrite an existing mesh's vertices in place for the frame CURRENTLY being
+    // recorded (m_frameIdx). On the first call the mesh is promoted to dynamic:
+    // kFramesInFlight HOST_VISIBLE, persistently-mapped vertex buffers are
+    // allocated and seeded from the static buffer's source so every frame slot has
+    // valid contents even before its first per-slot write. Each call then writes
+    // ONLY the buffer for m_frameIdx — which the GPU finished reading kFramesInFlight
+    // frames ago (guaranteed by the inFlight fence waited in beginFrame), so there
+    // is NO device wait and NO write-while-read hazard. The draw path binds the
+    // matching per-frame buffer (Mesh::drawVbo(m_frameIdx)). Called per skinned
+    // character per frame; scales to many NPCs without a GPU stall.
     void updateMesh(MeshHandle h, const MeshVertex* verts, uint32_t vcount) override {
         if (!verts || vcount == 0) return;
         auto it = m_meshes.find(h.id);
@@ -561,38 +673,64 @@ public:
         if (vcount != m.vertexCount) return;  // count must match the original mesh
         const VkDeviceSize bytes = (VkDeviceSize)vcount * sizeof(MeshVertex);
 
-        // Ensure no in-flight GPU work still references this vertex buffer.
-        if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
-
         if (!m.dynamic) {
-            // Promote: replace the DEVICE_LOCAL vbo with a HOST_VISIBLE mapped one.
-            VkBuffer newVbo = VK_NULL_HANDLE; VmaAllocation newAlloc = nullptr;
-            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
-            bci.size = bytes; bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-            VmaAllocationCreateInfo vaci{};
-            vaci.usage = VMA_MEMORY_USAGE_AUTO;
-            vaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
-            VmaAllocationInfo ai{};
-            if (vmaCreateBuffer(m_alloc, &bci, &vaci, &newVbo, &newAlloc, &ai) != VK_SUCCESS) {
-                logError("[rhi] updateMesh: dynamic vbo alloc failed"); return;
-            }
-            // Persistent map (MAPPED flag gives pMappedData; keep it for reuse).
-            m.vboMapped = ai.pMappedData;
-            if (!m.vboMapped) {
-                if (vmaMapMemory(m_alloc, newAlloc, &m.vboMapped) != VK_SUCCESS) {
-                    vmaDestroyBuffer(m_alloc, newVbo, newAlloc);
-                    logError("[rhi] updateMesh: dynamic vbo map failed"); return;
+            // Promote: allocate kFramesInFlight HOST_VISIBLE mapped vbos and seed
+            // each with the incoming vertices (so any frame slot the draw path may
+            // bind before its own first write still holds a valid pose). The
+            // original DEVICE_LOCAL vbo is freed last; it is no longer referenced by
+            // any draw once `dynamic` is set (the draw path reads drawVbo()). It can
+            // still be in-flight from earlier frames, so we DON'T free it until all
+            // its referencing frames have retired — defer it to deferDestroyBuffer.
+            bool allocFailed = false;
+            for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+                VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+                bci.size = bytes; bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+                VmaAllocationCreateInfo vaci{};
+                vaci.usage = VMA_MEMORY_USAGE_AUTO;
+                vaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                             VMA_ALLOCATION_CREATE_MAPPED_BIT;
+                VmaAllocationInfo ai{};
+                VkBuffer nb = VK_NULL_HANDLE; VmaAllocation na = nullptr;
+                if (vmaCreateBuffer(m_alloc, &bci, &vaci, &nb, &na, &ai) != VK_SUCCESS) {
+                    logError("[rhi] updateMesh: dynamic vbo alloc failed"); allocFailed = true; break;
                 }
+                void* mapped = ai.pMappedData;
+                if (!mapped && vmaMapMemory(m_alloc, na, &mapped) != VK_SUCCESS) {
+                    vmaDestroyBuffer(m_alloc, nb, na);
+                    logError("[rhi] updateMesh: dynamic vbo map failed"); allocFailed = true; break;
+                }
+                m.dynVbo[i] = nb; m.dynVboAlloc[i] = na; m.dynMapped[i] = mapped;
+                std::memcpy(mapped, verts, (size_t)bytes);          // seed all slots
+                vmaFlushAllocation(m_alloc, na, 0, bytes);
             }
-            // Free the old device-local vbo (idle above guarantees it is unused).
-            vmaDestroyBuffer(m_alloc, m.vbo, m.vboAlloc);
-            m.vbo = newVbo; m.vboAlloc = newAlloc; m.dynamic = true;
+            if (allocFailed) {
+                // Roll back any partial allocation; leave the mesh static + intact.
+                for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+                    if (m.dynVbo[i]) {
+                        if (m.dynMapped[i]) vmaUnmapMemory(m_alloc, m.dynVboAlloc[i]);
+                        vmaDestroyBuffer(m_alloc, m.dynVbo[i], m.dynVboAlloc[i]);
+                        m.dynVbo[i] = VK_NULL_HANDLE; m.dynVboAlloc[i] = nullptr; m.dynMapped[i] = nullptr;
+                    }
+                }
+                return;
+            }
+            // Defer-free the old static vbo (may still be read by in-flight frames).
+            deferDestroyBuffer(m.vbo, m.vboAlloc);
+            m.vbo = VK_NULL_HANDLE; m.vboAlloc = nullptr;
+            m.dynamic = true;
+            // We already seeded the current frame's slot above; done.
+            return;
         }
-        std::memcpy(m.vboMapped, verts, (size_t)bytes);
+
+        // Steady state: write ONLY the current frame's buffer. The inFlight fence
+        // waited in beginFrame guarantees the GPU finished reading this slot's
+        // buffer (last bound kFramesInFlight frames ago), so this overwrite cannot
+        // race a GPU read — no device wait, no WAR/RAW hazard.
+        const uint32_t fi = m_frameIdx;
+        std::memcpy(m.dynMapped[fi], verts, (size_t)bytes);
         // HOST_VISIBLE allocations from VMA_MEMORY_USAGE_AUTO may not be coherent;
-        // flush the range so the GPU sees the write (no-op if host-coherent).
-        vmaFlushAllocation(m_alloc, m.vboAlloc, 0, bytes);
+        // flush so the GPU sees the write (no-op if host-coherent).
+        vmaFlushAllocation(m_alloc, m.dynVboAlloc[fi], 0, bytes);
     }
 
     TextureHandle createTexture(const void* rgba8, uint32_t w, uint32_t h, bool srgb) override {
@@ -703,12 +841,28 @@ private:
         VkBuffer vbo = VK_NULL_HANDLE; VmaAllocation vboAlloc = nullptr;
         VkBuffer ibo = VK_NULL_HANDLE; VmaAllocation iboAlloc = nullptr;
         uint32_t indexCount = 0;
-        // CPU-skinning support (J1): a mesh that has been updated at least once
-        // holds a HOST_VISIBLE, persistently-mapped vertex buffer so subsequent
-        // re-uploads are a plain memcpy (no staging). Static meshes leave these 0.
         uint32_t vertexCount = 0;       // vertices the vbo was sized for
-        bool     dynamic = false;       // vbo is HOST_VISIBLE + mapped
-        void*    vboMapped = nullptr;   // persistent map (only when dynamic)
+        // CPU-skinning support (J1, scaled for fix 2): a mesh that has been updated
+        // at least once becomes DYNAMIC and holds kFramesInFlight HOST_VISIBLE,
+        // persistently-mapped vertex buffers — one per frame-in-flight — instead of
+        // one shared buffer. updateMesh() writes the buffer for the frame being
+        // recorded; the draw path (recordShadowPass/flushMeshDraws) binds the same
+        // per-frame buffer. Because each frame's GPU work has retired (its inFlight
+        // fence was waited in beginFrame) before that slot is reused, we never
+        // overwrite a buffer the GPU may still be reading — NO vkDeviceWaitIdle and
+        // no write-while-read hazard. Static meshes leave dynamic=false and use
+        // only vbo (the device-local buffer); dynVbo[]/dynMapped[] stay null.
+        bool     dynamic = false;
+        VkBuffer      dynVbo[kFramesInFlight]    = {};   // per-frame HOST_VISIBLE vbos
+        VmaAllocation dynVboAlloc[kFramesInFlight] = {};
+        void*         dynMapped[kFramesInFlight] = {};   // persistent maps
+
+        // The vertex buffer the draw path must bind for the frame currently being
+        // recorded: the matching per-frame dynamic buffer when dynamic, else the
+        // single static device-local vbo.
+        VkBuffer drawVbo(uint32_t frameIdx) const {
+            return dynamic ? dynVbo[frameIdx] : vbo;
+        }
     };
     struct Texture {
         VkImage image = VK_NULL_HANDLE; VmaAllocation alloc = nullptr;
@@ -1030,7 +1184,8 @@ private:
             for (uint32_t i = 0; i < m_frameCmdCount; ++i) {
                 const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
                 VkDeviceSize off = 0;
-                vkCmdBindVertexBuffers(cmd, 0, 1, &mh.vbo, &off);
+                VkBuffer vb = mh.drawVbo(m_frameIdx); // fix 2: per-frame dynamic vbo
+                vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &off);
                 vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
                 vkCmdDrawIndexedIndirect(cmd, fr.indirectBuf,
                     (VkDeviceSize)i * sizeof(VkDrawIndexedIndirectCommand), 1,
@@ -1072,7 +1227,8 @@ private:
         for (uint32_t i = 0; i < m_frameCmdCount; ++i) {
             const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
             VkDeviceSize off = 0;
-            vkCmdBindVertexBuffers(cmd, 0, 1, &mh.vbo, &off);
+            VkBuffer vb = mh.drawVbo(m_frameIdx); // fix 2: per-frame dynamic vbo
+            vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &off);
             vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
             // ONE indirect draw per mesh: instanceCount instances, the GPU reads
             // each instance's transform/texture from the SSBO via gl_InstanceIndex.
@@ -2006,10 +2162,24 @@ private:
     void destroyGraphics() {
         // Mesh + texture registries (created by the app via the public API).
         for (auto& kv : m_meshes) {
-            vmaDestroyBuffer(m_alloc, kv.second.vbo, kv.second.vboAlloc);
-            vmaDestroyBuffer(m_alloc, kv.second.ibo, kv.second.iboAlloc);
+            Mesh& m = kv.second;
+            if (m.dynamic) {
+                for (uint32_t i = 0; i < kFramesInFlight; ++i)
+                    if (m.dynVbo[i]) vmaDestroyBuffer(m_alloc, m.dynVbo[i], m.dynVboAlloc[i]);
+            } else if (m.vbo) {
+                vmaDestroyBuffer(m_alloc, m.vbo, m.vboAlloc);
+            }
+            vmaDestroyBuffer(m_alloc, m.ibo, m.iboAlloc);
         }
         m_meshes.clear();
+        // Drain any still-pending deferred frees (shutdown waited idle first).
+        for (auto& pf : m_pendingFrees) vmaDestroyBuffer(m_alloc, pf.buf, pf.alloc);
+        m_pendingFrees.clear();
+        // Free the persistent capture readback buffer (fix 1).
+        if (m_captureBuf) {
+            vmaDestroyBuffer(m_alloc, m_captureBuf, m_captureAlloc);
+            m_captureBuf = VK_NULL_HANDLE; m_captureAlloc = nullptr; m_captureMapped = nullptr;
+        }
         for (auto& kv : m_textures) destroyTextureObj(kv.second);
         m_textures.clear();
         destroyTextureObj(m_whiteTex);
@@ -2095,6 +2265,22 @@ private:
     VkCommandPool m_uploadPool = VK_NULL_HANDLE;
     VkFence       m_uploadFence = VK_NULL_HANDLE;
 
+    // ---- Offscreen capture (fix 1: in-frame, acquired-image copy) ----------
+    // armCapture() arms a request; endFrame() then records the color-image -> host
+    // readback copy INSIDE the live frame (operating on the freshly-rendered,
+    // properly-acquired swapchain image, before the PRESENT_SRC transition). The
+    // copy completes when that frame's inFlight fence signals. captureFrame()
+    // (called after that endFrame) waits on the captured frame's fence, maps the
+    // readback buffer, swizzles + writes the PNG. No non-acquired image is read.
+    bool          m_captureArmed = false;     // a capture is pending for this frame
+    bool          m_captureReady = false;     // the in-frame copy was recorded
+    VkBuffer      m_captureBuf   = VK_NULL_HANDLE;
+    VmaAllocation m_captureAlloc = nullptr;
+    void*         m_captureMapped = nullptr;
+    uint32_t      m_captureW = 0, m_captureH = 0;
+    uint32_t      m_captureFrameSlot = 0;     // m_frameIdx the copy was recorded into
+    VkFence       m_captureFence = VK_NULL_HANDLE; // inFlight fence of that frame
+
     // Resource registries (created via the public mesh/texture API)
     std::unordered_map<uint32_t, Mesh>    m_meshes;
     std::unordered_map<uint32_t, Texture> m_textures;
@@ -2144,6 +2330,30 @@ private:
     Frame    m_frames[kFramesInFlight];
     uint32_t m_frameIdx = 0;
     uint64_t m_totalFrames = 0;
+
+    // ---- Deferred buffer destruction (fix 2) ------------------------------
+    // When updateMesh() promotes a static mesh to dynamic, its old device-local
+    // vbo may still be referenced by command buffers from up to kFramesInFlight-1
+    // earlier frames. Rather than vkDeviceWaitIdle, we queue the buffer for
+    // destruction tagged with the frame index it became unreferenced, and free it
+    // once kFramesInFlight more frames have started (all referencing frames retired).
+    struct PendingFree { VkBuffer buf; VmaAllocation alloc; uint64_t retireAtFrame; };
+    std::vector<PendingFree> m_pendingFrees;
+    void deferDestroyBuffer(VkBuffer buf, VmaAllocation alloc) {
+        if (!buf) return;
+        // Safe to free once kFramesInFlight frames have begun past the current one
+        // (every in-flight cmd buffer that could reference it will have retired).
+        m_pendingFrees.push_back({ buf, alloc, m_totalFrames + kFramesInFlight });
+    }
+    void drainPendingFrees() {
+        for (size_t i = 0; i < m_pendingFrees.size();) {
+            if (m_totalFrames >= m_pendingFrees[i].retireAtFrame) {
+                vmaDestroyBuffer(m_alloc, m_pendingFrees[i].buf, m_pendingFrees[i].alloc);
+                m_pendingFrees[i] = m_pendingFrees.back();
+                m_pendingFrees.pop_back();
+            } else { ++i; }
+        }
+    }
 
     // ---- Perf instrumentation ---------------------------------------------
     // GPU timestamps: the device's valid bit count + ns-per-tick (timestampPeriod).

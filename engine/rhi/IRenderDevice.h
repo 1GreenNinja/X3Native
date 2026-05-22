@@ -140,11 +140,22 @@ public:
     virtual RenderStats stats() const = 0;
 
     // ---- Offscreen capture (--screenshot) ---------------------------------
-    // Read back the LAST presented color (swapchain) image to the CPU and write
-    // it as a PNG at `path`. Call AFTER endFrame() has presented at least one
-    // frame (and no beginFrame/endFrame is in progress). Returns true on success.
+    // Two-step, validation-clean capture of a FRESHLY-RENDERED, properly-acquired
+    // frame (avoids reading a non-acquired/last-presented swapchain image):
+    //
+    //   1) Call armCapture(path) BEFORE the beginFrame() of the frame you want to
+    //      grab. This arms a pending request (the device copies the acquired color
+    //      image into a host-visible readback buffer INSIDE that frame's command
+    //      buffer, with correct sync2 barriers, as part of the live frame).
+    //   2) Render that one frame normally (beginFrame -> drawMesh... -> endFrame).
+    //   3) Call captureFrame(path) AFTER that endFrame() to wait for the armed
+    //      copy to retire, then swizzle (BGRA->RGBA) + write the PNG. Returns true
+    //      on success. If no capture was armed, captureFrame() falls back to the
+    //      legacy "last-presented image" copy (still functional, kept for safety).
+    //
     // The implementation handles the swapchain channel order (BGRA->RGBA) and the
     // row pitch so colors + dimensions are correct. No Vulkan types cross here.
+    virtual void armCapture(const char* path) = 0;
     virtual bool captureFrame(const char* path) = 0;
 
     // Capability query

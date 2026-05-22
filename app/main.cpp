@@ -474,6 +474,11 @@ int main(int argc, char** argv) {
             game.tick(dt, scene, *physics, ssEye, ssEye);
             physics->step(dt);
             scene.update(*physics);
+            // Fix 1: arm the capture just before the FINAL settle frame so the copy
+            // is recorded inside that frame's live command buffer (reads the
+            // freshly-rendered, properly-acquired image — validation-clean). The
+            // captureFrame() below then waits on that frame's fence + writes the PNG.
+            if (i == kSettleFrames - 1) device->armCapture(screenshotPath.c_str());
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
