@@ -179,15 +179,17 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
     const bool haveCons  = m_assetTable[consA].ok;
     const bool haveLight = m_assetTable[lightA].ok;
 
-    // ---- Room footprints + RAISED ceiling heights come from level1.cpp's shared
-    // canonical table (level1Rooms()), so the GLB floor/wall/ceiling/light tiling
-    // matches the collision geometry EXACTLY (bounds AND per-room height). ----
-    struct Room { float x0, x1, zHalf, ceil; };
-    Room rooms[(uint32_t)L1Room::Count];
+    // ---- Floor footprints + base Y + RAISED ceiling heights come from level1.cpp's
+    // shared canonical table (level1Rooms()), so the GLB floor/wall/ceiling/light
+    // tiling matches the collision geometry EXACTLY (bounds, base height AND per-
+    // floor ceiling). The Spire is a vertical stack: each floor plate sits at y0 and
+    // its ceiling at y0+ceil, so the art tiles up the whole tower. ----
+    struct Room { float x0, x1, zHalf, ceil, y0; };
+    Room rooms[(uint32_t)L1Floor::Count];
     {
         const L1RoomDef* tbl = level1Rooms();
-        for (uint32_t i = 0; i < (uint32_t)L1Room::Count; ++i)
-            rooms[i] = Room{ tbl[i].x0, tbl[i].x1, tbl[i].zHalf, tbl[i].ceil };
+        for (uint32_t i = 0; i < (uint32_t)L1Floor::Count; ++i)
+            rooms[i] = Room{ tbl[i].x0, tbl[i].x1, tbl[i].zHalf, tbl[i].ceil, tbl[i].y0 };
     }
 
     float m[16];
@@ -209,9 +211,9 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
                 for (int iz=0; iz<nz; ++iz) {
                     const float wxC = r.x0 + (ix + 0.5f) * tileX;
                     const float wzC = -r.zHalf + (iz + 0.5f) * tileZ;
-                    // Floor at y=0; ceiling at THIS room's raised height (so the
-                    // panel sits at the new ceiling, not floating at the old 3 m).
-                    const float wyC = ceiling ? r.ceil : 0.0f;
+                    // Floor at this floor's base y0; ceiling at y0+ceil (the Spire
+                    // is a vertical stack, so the panels follow each plate's height).
+                    const float wyC = ceiling ? (r.y0 + r.ceil) : r.y0;
                     // anchor: (ax, anchorY, az) -> (wxC, wyC, wzC), no yaw/scale.
                     placeYaw(m, 0.0f, 1.0f, ax, anchorY, az, wxC, wyC, wzC);
                     addInstance(asset, m);
@@ -243,7 +245,7 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
             const int n = (int)std::ceil((r.x1 - r.x0) / panelW);
             const int rows = (int)std::ceil(r.ceil / panelH);   // 1 row for <=4.45 m
             for (int row=0; row<rows; ++row) {
-                const float rowBaseY = (float)row * panelH;     // this row's floor
+                const float rowBaseY = r.y0 + (float)row * panelH; // this row's floor (plate base)
                 for (int s=0; s<2; ++s) {
                     const float wz = (s==0) ? -r.zHalf : r.zHalf;
                     // Opposite facing per side so the visible (front) face points INTO the
@@ -261,94 +263,80 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
         mask.walls = true;
     }
 
-    // ---- DOOR FRAMES: drop a frame at each of the five doorways. The frame is
-    // 6.25 wide; we scale it to ~1.6 m so it reads as a single doorway header and
-    // straddles the 1.2 m opening. The doorway is in a cross-wall (plane x=const),
-    // so the frame's wide axis (local X) should run along Z -> yaw +90deg. -------
+    // ---- DOOR FRAMES: drop a frame at the elevator-shaft doorway of every floor
+    // (the meaningful per-floor door up the tower) PLUS the B1 spine doors A-E (the
+    // Awakening beats). The frame is 6.25 wide; we scale it to ~2.0 m so it reads as
+    // a single doorway header straddling the 1.2 m opening. The doorway is in a
+    // cross-wall (plane x=const), so the frame's wide axis (local X) runs along Z ->
+    // yaw +90deg. Anchored at the floor's base Y (d.y carries y0). -------
     if (haveFrame) {
-        const x3::phys::Vec3 doors[5] = {
-            layout.doorA, layout.doorB, layout.doorC, layout.doorD, layout.doorE };
-        // The frame GLB is ~6.25 m wide; scale it so it reads as a ~2.0 m doorway
-        // header straddling the 1.2 m opening.
         const float fs = 2.0f / (kFrameAabb.maxx - kFrameAabb.minx);
-        for (const auto& d : doors) {
-            // anchor the frame width-center + floor onto the doorway center.
+        auto frameAt = [&](const x3::phys::Vec3& d) {
             placeYaw(m, kPi*0.5f, fs, cx(kFrameAabb), kFrameAabb.miny, cz(kFrameAabb),
-                     d.x, 0.0f, d.z);
+                     d.x, d.y, d.z);
             addInstance(frameA, m);
-        }
+        };
+        for (uint32_t fi = 0; fi < (uint32_t)L1Floor::Count; ++fi)
+            frameAt(layout.elevatorDoor[fi]);            // shaft doorway per floor
+        const x3::phys::Vec3 b1doors[5] = {
+            layout.doorA, layout.doorB, layout.doorC, layout.doorD, layout.doorE };
+        for (const auto& d : b1doors) frameAt(d);        // B1 spine doors A-E
     }
 
-    // ---- CONSOLE: a terminal beside Door A and Door B (the button doors), set
-    // against the +Z wall a bit so it reads as a wall terminal. Purely visual. ---
+    // ---- CONSOLE: terminals beside the B1 Door A / Door B (the Awakening button
+    // doors) + the strength terminal beat. Set against the +Z wall so they read as
+    // wall terminals. Purely visual. ---
     if (haveCons) {
         const x3::phys::Vec3 consoles[2] = { layout.doorA, layout.doorB };
         for (const auto& d : consoles) {
             // Place near the doorway, offset to the +Z side wall (z = d.z + 1.4),
-            // and face the console screen back into the room toward -Z so the player
-            // (who approaches from -Z / room center) sees its face. Per the facing
-            // convention above, facing world -Z is placeYaw yaw = 0 (NOT pi — the
-            // old "yaw 180" comment was wrong: pi faces +Z, into the wall).
+            // facing the console screen back into the room toward -Z (placeYaw yaw=0).
             placeYaw(m, 0.0f, 1.0f, cx(kConsAabb), kConsAabb.miny, cz(kConsAabb),
-                     d.x - 0.6f, 0.0f, d.z + 1.4f);
+                     d.x - 0.6f, d.y, d.z + 1.4f);
             addInstance(consA, m);
         }
     }
 
-    // ---- DETAIL PROPS (D-content): dress each room with crates / barrels /
-    // pallets / a wall fusebox / pipe runs so the cell, armory, checkpoint and
-    // arena read as distinct spaces instead of empty boxes. PURELY VISUAL (no
-    // collision) — placed clear of the z=0 walk spine + the doorways so they never
-    // block the player. Each prop is anchored at its floor (min-Y) onto the target
-    // world XZ, optionally yawed. A failed asset is silently skipped. ----
+    // ---- DETAIL PROPS (D-content): dress each FLOOR with crates / barrels /
+    // pallets / a wall fusebox / pipe runs so the wings read as distinct spaces
+    // instead of empty boxes. PURELY VISUAL (no collision) — placed clear of the
+    // z=0 walk spine + the elevator doorway so they never block the player. Each
+    // prop is anchored at its floor's base Y onto the target world XZ, optionally
+    // yawed. A failed asset is silently skipped. The Spire is a vertical stack, so
+    // every prop carries the floor's y0. ----
     auto placeProp = [&](uint32_t asset, const Aabb& ab, float yaw,
-                         float wx, float wz, float scale = 1.0f) {
+                         float wx, float baseY, float wz, float scale = 1.0f) {
         if (asset >= m_assetTable.size() || !m_assetTable[asset].ok) return;
-        placeYaw(m, yaw, scale, cx(ab), ab.miny, cz(ab), wx, 0.0f, wz);
+        placeYaw(m, yaw, scale, cx(ab), ab.miny, cz(ab), wx, baseY, wz);
         addInstance(asset, m);
     };
     // Wall-panel prop (fusebox): anchored on a side wall, raised so it reads as a
-    // mounted panel (its AABB dips below 0, so lift it ~1 m onto the wall).
+    // mounted panel (its AABB dips below 0, so lift it ~1 m onto the wall + base Y).
     auto placeWallPanel = [&](uint32_t asset, const Aabb& ab, float yaw,
                               float wx, float wy, float wz) {
         if (asset >= m_assetTable.size() || !m_assetTable[asset].ok) return;
         placeYaw(m, yaw, 1.0f, cx(ab), cy(ab), cz(ab), wx, wy, wz);
         addInstance(asset, m);
     };
-    {
-        const float cellZ = rooms[(uint32_t)L1Room::Cell].zHalf;
-        const float armZ  = rooms[(uint32_t)L1Room::Armory].zHalf;
-        const float chkZ  = rooms[(uint32_t)L1Room::Checkpoint].zHalf;
-        const float arZ   = rooms[(uint32_t)L1Room::Arena].zHalf;
-        // CELL: a barrel + a short crate tucked in the corner behind the spawn.
-        placeProp(barrel, kBarrelAabb, 0.0f,        4.6f, -cellZ + 0.7f);
-        placeProp(crateS, kCrateSAabb, 0.4f,        4.9f,  cellZ - 0.7f);
-        // CORRIDOR: pipe runs along both side walls (reads as a service corridor)
-        // + a wall fusebox between the guards' patrol.
-        placeProp(pipes,  kPipesAabb,  0.0f,        10.0f, -3.0f + 0.2f);
-        placeProp(pipes,  kPipesAabb,  0.0f,        17.0f,  3.0f - 0.2f);
-        placeWallPanel(fuse, kFuseAabb, kPi*0.5f,   14.0f, 1.6f, -3.0f + 0.15f);
-        // ARMORY: weapon-locker feel — a row of crates + a pallet flanking the
-        // pistol pedestal (armoryCenter), kept off the z=0 line to the pickup.
-        placeProp(pallet, kPalletAabb, 0.0f,        24.0f, -armZ + 1.1f);
-        placeProp(crateL, kCrateLAabb, kPi*0.5f,    24.0f, -armZ + 1.0f);
-        placeProp(crateS, kCrateSAabb, 0.0f,        24.7f, -armZ + 1.9f);
-        placeProp(crateS, kCrateSAabb, 0.7f,        28.0f,  armZ - 1.0f);
-        placeProp(barrel, kBarrelAabb, 0.0f,        28.6f,  armZ - 1.6f);
-        // CHECKPOINT: barricade crates the guards use as cover (off the spine).
-        placeProp(crateL, kCrateLAabb, 0.0f,        34.0f, -chkZ + 1.2f);
-        placeProp(crateS, kCrateSAabb, 0.0f,        34.0f, -chkZ + 2.0f);
-        placeProp(crateL, kCrateLAabb, 0.0f,        38.0f,  chkZ - 1.2f);
-        placeWallPanel(fuse, kFuseAabb, kPi*0.5f,   36.0f, 1.6f, -chkZ + 0.15f);
-        // ARENA: heavy crates + barrels around the perimeter so the boss room has
-        // cover/scenery; kept well back from the center where Martinez spawns.
-        placeProp(crateL, kCrateLAabb, kPi*0.5f,    45.0f, -arZ + 1.4f);
-        placeProp(crateS, kCrateSAabb, 0.0f,        45.8f, -arZ + 1.2f);
-        placeProp(barrel, kBarrelAabb, 0.0f,        53.0f, -arZ + 1.5f);
-        placeProp(crateL, kCrateLAabb, kPi*0.5f,    45.0f,  arZ - 1.4f);
-        placeProp(barrel, kBarrelAabb, 0.0f,        53.0f,  arZ - 1.5f);
-        placeProp(crateS, kCrateSAabb, 0.5f,        53.6f,  arZ - 2.2f);
-        placeProp(pallet, kPalletAabb, kPi*0.5f,    49.0f, -arZ + 1.1f);
+    // Per-floor dressing. A light, repeating kit so each plate reads as a real
+    // interior; the exact placements differ a touch by floor so they don't feel
+    // copy-pasted, but all stay off the z=0 spine and the +X elevator doorway.
+    for (uint32_t fi = 0; fi < (uint32_t)L1Floor::Count; ++fi) {
+        const Room& r = rooms[fi];
+        const float y0 = r.y0;
+        const float zH = r.zHalf;
+        // Crates + a pallet clustered along the -Z wall, mid-plate.
+        placeProp(pallet, kPalletAabb, 0.0f,     6.0f + (float)(fi % 3) * 2.0f, y0, -zH + 1.1f);
+        placeProp(crateL, kCrateLAabb, kPi*0.5f, 6.0f, y0, -zH + 1.0f);
+        placeProp(crateS, kCrateSAabb, 0.4f,     7.0f, y0, -zH + 1.9f);
+        // Barrels + a crate along the +Z wall.
+        placeProp(barrel, kBarrelAabb, 0.0f,     12.0f, y0,  zH - 1.0f);
+        placeProp(barrel, kBarrelAabb, 0.0f,     13.0f, y0,  zH - 1.6f);
+        placeProp(crateS, kCrateSAabb, 0.7f,     17.0f, y0,  zH - 1.1f);
+        // Pipe runs along both side walls + a wall fusebox (service look).
+        placeProp(pipes,  kPipesAabb,  0.0f,     9.0f,  y0, -zH + 0.3f);
+        placeProp(pipes,  kPipesAabb,  0.0f,     15.0f, y0,  zH - 0.3f);
+        placeWallPanel(fuse, kFuseAabb, kPi*0.5f, 11.0f, y0 + 1.6f, -zH + 0.15f);
     }
 
     // ---- CEILING LIGHTS: fixtures hung from EACH room's (now raised) ceiling. ----
@@ -376,11 +364,11 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
         // blowing out the tonemap. (rgb = warm white, w = strength.)
         const float kEmis[4] = { 1.00f, 0.86f, 0.62f, 6.0f };
         for (const Room& r : rooms) {
-            const float lightY  = r.ceil - 0.05f;                 // fixture just below ceiling
+            const float lightY  = r.y0 + r.ceil - 0.05f;          // just below THIS plate's ceiling
             // Range covers the 4 m spacing AND reaches the floor in tall rooms.
             const float range   = std::max(7.5f, r.ceil + 3.5f);
             const int   n       = (int)std::ceil((r.x1 - r.x0) / 4.0f);
-            // Wide rooms (arena) get two z-rows so the floor is evenly lit.
+            // Wide floors get two z-rows so the floor is evenly lit.
             const bool  twoRows = (r.zHalf >= 6.0f);
             const int   zr      = twoRows ? 2 : 1;
             const float zoff    = twoRows ? r.zHalf * 0.5f : 0.0f;

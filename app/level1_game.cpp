@@ -113,17 +113,24 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_devicePtr = &device;   // cached so tick() can spawn enemies on their beats
 
     // ---- EFLZ art pass: load the converted sci-fi GLBs and place visual props
-    // over the graybox. The door positions are deterministic (the cross-wall X
-    // boundaries at z=0), so we seed a minimal layout for EnvArt to anchor door
-    // frames/consoles; EnvArt returns a mask of which graybox surfaces real art
-    // now covers. If the GLBs are missing, the mask is all-false (full graybox). --
+    // over the Spire graybox. EnvArt tiles its GLB floors/walls/ceilings/lights
+    // from the shared per-floor table (level1Rooms()) and anchors door frames at
+    // each floor's elevator doorway + the B1 spine doors. Those positions are
+    // deterministic, so we seed a minimal layout (the same constants buildLevel1
+    // uses); EnvArt returns a mask of which graybox surfaces real art covers. If
+    // the GLBs are missing, the mask is all-false (full graybox). --
     {
         Level1Layout seed;
-        seed.doorA = x3::phys::Vec3{  6.0f, 0.0f, 0.0f };
-        seed.doorB = x3::phys::Vec3{ 22.0f, 0.0f, 0.0f };
-        seed.doorC = x3::phys::Vec3{ 30.0f, 0.0f, 0.0f };
-        seed.doorD = x3::phys::Vec3{ 42.0f, 0.0f, 0.0f };
-        seed.doorE = x3::phys::Vec3{ 56.0f, 0.0f, 0.0f };
+        const L1RoomDef* tbl = level1Rooms();
+        const float shaftX0 = 19.5f;     // matches level1.cpp kShaftX0
+        for (uint32_t fi = 0; fi < (uint32_t)L1Floor::Count; ++fi)
+            seed.elevatorDoor[fi] = x3::phys::Vec3{ shaftX0, tbl[fi].y0, 0.0f };
+        const float b1y = tbl[(uint32_t)L1Floor::B1].y0;
+        seed.doorA = x3::phys::Vec3{  5.0f, b1y, 0.0f };
+        seed.doorB = x3::phys::Vec3{ 10.0f, b1y, 0.0f };
+        seed.doorC = x3::phys::Vec3{ 14.0f, b1y, 0.0f };
+        seed.doorD = x3::phys::Vec3{ 18.0f, b1y, 0.0f };
+        seed.doorE = x3::phys::Vec3{ shaftX0, b1y, 0.0f };
         m_artMask = m_envArt.build(device, kConvertedDir, seed);
     }
 
@@ -184,15 +191,18 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // ---- Checkpoint encounter (built at level build; beat 8). Now the player is
     // armed, so this is a proper firefight: 3 Guards holding the line behind the
     // barricade crates + 1 Drone covering from the back of the room. ----
-    const x3::phys::Vec3 cc = m_layout.checkpointCenter;
+    // Spire B1: the checkpoint zone is the walled sub-room between Door C (x=14) and
+    // Door D (x=18); keep all 4 enemies inside it (and off the z=0 LOS spine) so they
+    // stay clear of the arena/shaft and the corridor encounter.
+    const x3::phys::Vec3 cc = m_layout.checkpointCenter;   // ~13.7 on B1
     m_checkpoint.spawn(scene, device, physics, m_modelDir,
-                       x3::phys::Vec3{ cc.x - 2.5f, kEnemyY, cc.z - 2.0f }, guardTuning());
+                       x3::phys::Vec3{ cc.x - 0.6f, kEnemyY, cc.z - 2.0f }, guardTuning());
     m_checkpoint.spawn(scene, device, physics, m_modelDir,
-                       x3::phys::Vec3{ cc.x - 2.0f, kEnemyY, cc.z + 2.0f }, guardTuning());
+                       x3::phys::Vec3{ cc.x - 0.4f, kEnemyY, cc.z + 2.0f }, guardTuning());
     m_checkpoint.spawn(scene, device, physics, m_modelDir,
-                       x3::phys::Vec3{ cc.x + 2.5f, kEnemyY, cc.z }, guardTuning());
+                       x3::phys::Vec3{ cc.x + 0.6f, kEnemyY, cc.z - 1.0f }, guardTuning());
     m_checkpoint.spawn(scene, device, physics, m_modelDir,
-                       x3::phys::Vec3{ cc.x + 4.0f, kEnemyY, cc.z - 1.5f }, droneTuning());
+                       x3::phys::Vec3{ cc.x + 0.8f, kEnemyY, cc.z + 2.5f }, droneTuning());
 
     // ---- Trigger volumes. Strength (cell), arena (boss entry), elevator (win,
     // disabled until the boss dies). ----
@@ -286,20 +296,25 @@ void Level1Game::spawnCorridorEnemies(Scene& scene, x3::rhi::IRenderDevice& devi
     // player, then a flanking Drone pair further down that keep a ranged standoff —
     // a sensible escalation as the player pushes from the cell toward the armory.
     // (3 guards + 2 drones = 5; was 2+1. The combat AI makes them advance/flank.)
+    // Spire B1: the corridor zone occupies low X (between the cell spawn and the
+    // armory pickup) so the alarm enemies stay clear of the later checkpoint fight
+    // (the firing ray hits the nearest Enemy-layer body, so the two encounters must
+    // not interleave in the compressed basement). Centered on corridorCenter.
+    const float cx = m_layout.corridorCenter.x;     // ~7.0 on B1
     const float cz = m_layout.corridorCenter.z;
     // Near guards — advance from just past Door A.
     m_corridor.spawn(scene, device, physics, m_modelDir,
-                     x3::phys::Vec3{ 10.0f, kEnemyY, cz - 1.6f }, guardTuning());
+                     x3::phys::Vec3{ cx - 1.2f, kEnemyY, cz - 1.6f }, guardTuning());
     m_corridor.spawn(scene, device, physics, m_modelDir,
-                     x3::phys::Vec3{ 12.0f, kEnemyY, cz + 1.6f }, guardTuning());
+                     x3::phys::Vec3{ cx - 0.6f, kEnemyY, cz + 1.6f }, guardTuning());
     // Mid guard — backs up the front pair.
     m_corridor.spawn(scene, device, physics, m_modelDir,
-                     x3::phys::Vec3{ 15.0f, kEnemyY, cz }, guardTuning());
-    // Flanking drones — hang back near Door B and snipe down the corridor.
+                     x3::phys::Vec3{ cx + 0.2f, kEnemyY, cz }, guardTuning());
+    // Flanking drones — hang back near the armory side and snipe down the corridor.
     m_corridor.spawn(scene, device, physics, m_modelDir,
-                     x3::phys::Vec3{ 19.0f, kEnemyY, cz - 2.0f }, droneTuning());
+                     x3::phys::Vec3{ cx + 1.0f, kEnemyY, cz - 2.0f }, droneTuning());
     m_corridor.spawn(scene, device, physics, m_modelDir,
-                     x3::phys::Vec3{ 19.0f, kEnemyY, cz + 2.0f }, droneTuning());
+                     x3::phys::Vec3{ cx + 1.0f, kEnemyY, cz + 2.0f }, droneTuning());
     x3::logInfo("Level1: ALARM — corridor enemies spawned (3 guards + 2 drones)");
 }
 
@@ -692,6 +707,28 @@ bool runLevel1SelfTest() {
     check(game.objectives().currentLabel() == "Fight to the armory and arm yourself",
           "T7b objective advances after Door A opens");
 
+    // ---- Corridor clear (gameplay-faithful): on the compact Spire B1, Jake fights
+    // through the alarm enemies en route to the armory. We're not armed yet here, so
+    // melee them down so they don't trail into the later checkpoint encounter (the
+    // fire ray hits the nearest Enemy body, so the encounters must not interleave).
+    {
+        const float cx = L.corridorCenter.x, cz = L.corridorCenter.z;
+        x3::phys::Vec3 eye{ cx - 4.0f, 0.6f, cz };
+        for (int guard = 0; guard < 200 && game.corridorEnemies().aliveCount() > 0; ++guard) {
+            MonsterManager& co = game.corridorEnemies();
+            for (uint32_t i = 0; i < co.count(); ++i) {
+                if (co.at(i).alive()) {
+                    const Entity& e = scene.get(co.at(i).entity());
+                    x3::phys::Vec3 t{ e.transform[12], e.transform[13], e.transform[14] };
+                    x3::phys::Vec3 ey{ t.x - 1.0f, 0.6f, t.z };   // melee range
+                    game.onMelee(ey, aimFromTo(ey, t), scene, *physics);
+                    break;
+                }
+            }
+            run(game, scene, *physics, device, eye, 2);
+        }
+    }
+
     // ---- T4 (locked gate, part 1): Door C does NOT open before armed. ----
     {
         // Aim a use-ray at Door C's button while UNARMED; it must refuse.
@@ -727,7 +764,11 @@ bool runLevel1SelfTest() {
     // point near the checkpoint, re-aiming per target. ----
     {
         bool spawned = game.checkpointEnemies().count() == 4;
-        x3::phys::Vec3 eye{ L.checkpointCenter.x - 6.0f, 0.6f, L.checkpointCenter.z };
+        // Spire B1: the checkpoint is a compact walled sub-room between Door C (x=12.5)
+        // and Door D (x=15). Fire from just INSIDE it (past Door C's collision slab)
+        // so the shots reach the checkpoint enemies without a door body intercepting
+        // the Enemy-layer ray (the alarm enemies were already cleared above).
+        x3::phys::Vec3 eye{ L.checkpointCenter.x - 0.9f, 0.6f, L.checkpointCenter.z };
         for (int guard = 0; guard < 100 && game.checkpointEnemies().aliveCount() > 0; ++guard) {
             // Aim at the first still-alive checkpoint enemy.
             MonsterManager& cp = game.checkpointEnemies();

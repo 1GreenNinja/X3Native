@@ -1030,11 +1030,16 @@ int main(int argc, char** argv) {
         la.gun = sndGun; la.death = sndDeath;
         game.setAudio(la);
 
+        // Spire elevator: one stop per floor (B1..F7), 5 m apart, so a ride lands on
+        // walkable floor geometry at every plate. The cab top sits flush with each
+        // floor's base Y (cab center = floorBaseY + cabHY). Driven by the layout's
+        // per-floor base heights so geometry + transport stay in lockstep.
         const x3::game::Level1Layout& Lb = game.layout();
         const float cabHY = 0.15f;
-        const float cabCenterGround = Lb.elevatorCenter.y + cabHY; // cab top at the room floor
-        const float topRise = 6.0f;                                // within the 9 m shaft
-        std::vector<float> elevStops{ cabCenterGround, cabCenterGround + topRise };
+        std::vector<float> elevStops;
+        elevStops.reserve(x3::game::kSpireFloorCount);
+        for (uint32_t fi = 0; fi < x3::game::kSpireFloorCount; ++fi)
+            elevStops.push_back(Lb.floorBaseY[fi] + cabHY);   // cab top at this floor
         elevator.build(scene, *device, *physics,
                        Lb.elevatorCenter.x, Lb.elevatorCenter.z,
                        1.4f, cabHY, 1.4f, elevStops, /*startStop*/0);
