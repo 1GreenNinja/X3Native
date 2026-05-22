@@ -536,7 +536,11 @@ void TerrainStreamer::upload(Scene& scene, x3::rhi::IRenderDevice& device,
     e.visible = true;
     if (!m_freeEntities.empty()) {
         uint32_t id = m_freeEntities.back(); m_freeEntities.pop_back();
-        scene.get(id) = e;
+        // Recycle through the Scene so the slot's generation counter advances
+        // (netcode Phase 0, §4.1): any SceneHandle held against this evicted slot
+        // becomes stale instead of silently aliasing the new tile. Equivalent to
+        // the old `scene.get(id) = e` for the legacy uint32_t-id path.
+        scene.recycle(id, e);
         t.entityId = id;
     } else {
         t.entityId = scene.add(e);
