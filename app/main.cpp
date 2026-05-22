@@ -167,7 +167,7 @@ int main(int argc, char** argv) {
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
-         testStreaming = false, testAi = false;
+         testStreaming = false, testAi = false, testDoorCode = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
@@ -223,6 +223,12 @@ int main(int argc, char** argv) {
     // the gate-standard view). Does NOT change any default behavior when omitted.
     bool        shotCamOverride = false;
     float       shotCam[5] = { 8.0f, 1.75f, -0.4f, 0.06f, -0.16f };
+    // Windowed-mode resolution (--width <px> / --height <px>). Defaults to the
+    // historical 1280x720 so the dev box + every headless/offscreen path are
+    // UNCHANGED. A high-DPI box can pass e.g. --width 2560 --height 1440. These
+    // affect ONLY the on-screen window: headless capture/screenshot resolution is
+    // forced back to 1280x720 below regardless of these flags.
+    uint32_t    winW = 1280, winH = 720;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
@@ -243,6 +249,13 @@ int main(int argc, char** argv) {
         else if (a == "--test-terrain") testTerrain = true;
         else if (a == "--test-streaming") testStreaming = true;
         else if (a == "--test-ai") testAi = true;
+        else if (a == "--test-doorcode") testDoorCode = true;
+        else if (a == "--width") {
+            if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
+        }
+        else if (a == "--height") {
+            if (i + 1 < argc) { winH = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
+        }
         else if (a == "--world") {
             if (i + 1 < argc && argv[i + 1][0] != '-') worldMode = argv[++i];
         }
@@ -363,6 +376,10 @@ int main(int argc, char** argv) {
         x3::logInfo("running D-ai monster combat behaviour state-machine self-test...");
         return x3::game::runAiSelfTest() ? 0 : 1;
     }
+    if (testDoorCode) {
+        x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
+        return x3::game::runDoorCodeSelfTest() ? 0 : 1;
+    }
 
     x3::logInfo("X3Engine starting...");
 
@@ -380,7 +397,15 @@ int main(int argc, char** argv) {
     // No OpenGL/GLES context — we drive Vulkan ourselves.
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
-    const uint32_t W = 1280, H = 720;
+    // Headless capture/screenshot resolution is FIXED at 1280x720 (so offscreen
+    // output stays byte-stable regardless of any --width/--height flags). The
+    // visible window uses the configurable winW/winH (default 1280x720), guarded
+    // to a sane minimum so a typo can't create a 0-size surface.
+    constexpr uint32_t kHeadlessW = 1280, kHeadlessH = 720;
+    if (winW < 320)  winW = 320;
+    if (winH < 240)  winH = 240;
+    const uint32_t W = headless ? kHeadlessW : winW;
+    const uint32_t H = headless ? kHeadlessH : winH;
     // In headless mode we create NO window (no glfwCreateWindow at all). GLFW is
     // still initialized (cheap; some paths poll events) but never opens a surface.
     GLFWwindow* window = nullptr;
@@ -392,8 +417,10 @@ int main(int argc, char** argv) {
             glfwTerminate();
             return 1;
         }
+        x3::logInfo("window: " + std::to_string(W) + "x" + std::to_string(H));
     } else {
-        x3::logInfo("headless mode: rendering offscreen (no window / no swapchain)");
+        x3::logInfo("headless mode: rendering offscreen (no window / no swapchain) at "
+                    + std::to_string(W) + "x" + std::to_string(H));
     }
 
     // ---- Render device ----
@@ -1291,6 +1318,17 @@ int main(int argc, char** argv) {
     float fireCooldown = 0.0f;          // seconds until the gun can fire again
     constexpr float kFireCooldown = 0.25f;
 
+    // ---- Door-code keypad host state (§6.4 keypad gate). When the player presses
+    // E next to a LOCKED coded door (Door C, code 1127), the host enters code-entry
+    // mode: digit keys (0-9) append to the shared KeypadEntry buffer, Backspace
+    // deletes, Enter submits (tryDoorCode), Esc cancels. A HUD prompt shows the
+    // entry. The keypad state machine itself lives in KeypadEntry (level1_game.h),
+    // exercised identically by --test-doorcode. ----
+    bool                   codeMode = false;
+    x3::game::KeypadEntry  keypad;
+    bool kpDigitPrev[10] = {};
+    bool kpEnterPrev = false, kpBackPrev = false, kpEscPrev = false;
+
     // ---- M9 audio event edge-tracking + footstep cadence -------------------
     bool  prevArmed   = false;          // pickup chime on the arm rising edge
     float stepTimer   = 0.0f;           // accumulates while moving on the ground
@@ -1327,10 +1365,15 @@ int main(int argc, char** argv) {
                              consoleOpen ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
             consoleWasOpen = consoleOpen;
         }
-        // Esc quits only when the console is closed (the `quit` command also sets
+        // Esc (edge-detected): cancel door-code entry if active, otherwise quit —
+        // only when the console is closed (the `quit` command also sets
         // quitRequested via the HUD-registered command).
-        if (!consoleOpen && glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-            glfwSetWindowShouldClose(window, 1);
+        bool kpEscNow = !consoleOpen && glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+        if (kpEscNow && !kpEscPrev) {
+            if (codeMode) { codeMode = false; keypad.clear(); }
+            else glfwSetWindowShouldClose(window, 1);
+        }
+        kpEscPrev = kpEscNow;
         if (quitRequested) glfwSetWindowShouldClose(window, 1);
 
         double nowT = glfwGetTime();
@@ -1381,10 +1424,44 @@ int main(int argc, char** argv) {
             x3::phys::Vec3 dir{ std::cos(pitch) * std::cos(yaw),
                                 std::sin(pitch),
                                 std::cos(pitch) * std::sin(yaw) };
-            if (game.onUse(eye, dir, scene, *physics))   // plays door SFX internally
+            if (game.onUse(eye, dir, scene, *physics)) {  // plays door SFX internally
                 x3::logInfo("use: button pressed — door opening");
+            } else if (!codeMode && game.nearLockedCodedDoor(eye)) {
+                // No button hit, but a locked keypad door is in reach: open the
+                // code-entry keypad (digits 0-9, Enter to submit, Esc to cancel).
+                codeMode = true; keypad.clear();
+                x3::logInfo("use: locked keypad door — type the code, Enter to submit, Esc to cancel");
+            }
         }
         prevE = eNow;
+
+        // ---- Door-code keypad: capture digit/backspace/enter edges while active.
+        // Esc-cancel is handled in the Esc block above. Uses the shared KeypadEntry
+        // state machine (also driven by --test-doorcode). ----
+        if (codeMode && !terrainWorld) {
+            for (int dgt = 0; dgt < 10; ++dgt) {
+                bool dn = keyDown(GLFW_KEY_0 + dgt) || keyDown(GLFW_KEY_KP_0 + dgt);
+                if (dn && !kpDigitPrev[dgt]) keypad.pushDigit(dgt);
+                kpDigitPrev[dgt] = dn;
+            }
+            bool backNow = keyDown(GLFW_KEY_BACKSPACE);
+            if (backNow && !kpBackPrev) keypad.backspace();
+            kpBackPrev = backNow;
+            bool enterNow = keyDown(GLFW_KEY_ENTER) || keyDown(GLFW_KEY_KP_ENTER);
+            if (enterNow && !kpEnterPrev) {
+                float pex, pey, pez, pyaw, ppitch;
+                player.camera(pex, pey, pez, pyaw, ppitch);
+                if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
+                if (game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value())) {
+                    x3::logInfo("keypad: ACCEPTED — door opening");
+                    codeMode = false; keypad.clear();
+                } else {
+                    x3::logInfo("keypad: rejected");
+                    keypad.clear();
+                }
+            }
+            kpEnterPrev = enterNow;
+        }
 
         // Camera state this frame (set by whichever branch runs), reused below
         // for the weapon viewmodel.
@@ -1584,6 +1661,14 @@ int main(int argc, char** argv) {
             // Perf stats overlay (top-right): gated by the r_stats cvar / F3.
             hud.drawStats(*device, frame, *console, dt);
             if (!consoleOpen && !terrainWorld) game.drawObjective(*device, frame);
+            // Door-code keypad prompt: centered, while code entry is active.
+            if (codeMode && !consoleOpen && !terrainWorld) {
+                uint32_t hudW = 0, hudH = 0; device->hudSize(hudW, hudH);
+                const std::string kpPrompt = keypad.prompt();
+                const float kpCol[4] = { 1.0f, 0.82f, 0.18f, 1.0f };
+                device->drawHudText(frame, kpPrompt.c_str(),
+                                    (float)hudW * 0.5f - 230.0f, (float)hudH * 0.5f - 60.0f, 3.0f, kpCol);
+            }
             // Phase 2b: boss "PHASE 2!/PHASE 3!" flash, centered near the top, while
             // the banner timer is live (a brief, attention-grabbing red string).
             if (!terrainWorld && game.phaseBannerTime() > 0.0f && !game.phaseBanner().empty()) {

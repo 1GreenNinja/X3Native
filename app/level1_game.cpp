@@ -146,31 +146,32 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
     {
         DoorSpec a; a.doorwayCenter = m_layout.doorA; a.axis = DoorAxis::AlongZ;
         a.withButton = true; a.locked = false;
-        a.tint[0]=0.85f; a.tint[1]=0.30f; a.tint[2]=0.18f;  // cell door (orange-red)
+        a.tint[0]=0.52f; a.tint[1]=0.30f; a.tint[2]=0.26f;  // cell door (industrial red, metallic)
         m_doorIdx[0] = buildLevelDoor(scene, m_doors, device, physics, a);
     }
     {
         DoorSpec b; b.doorwayCenter = m_layout.doorB; b.axis = DoorAxis::AlongZ;
         b.withButton = true; b.locked = false;
-        b.tint[0]=0.30f; b.tint[1]=0.55f; b.tint[2]=0.85f;  // corridor door (blue)
+        b.tint[0]=0.34f; b.tint[1]=0.44f; b.tint[2]=0.56f;  // corridor door (steel blue)
         m_doorIdx[1] = buildLevelDoor(scene, m_doors, device, physics, b);
     }
     {
         DoorSpec c; c.doorwayCenter = m_layout.doorC; c.axis = DoorAxis::AlongZ;
         c.withButton = true; c.locked = true;               // §6.4 locked until armed
-        c.tint[0]=0.85f; c.tint[1]=0.65f; c.tint[2]=0.20f;  // armory gate (amber)
+        c.code = 1127;                                       // keypad: enter 1127 to open early (lore code)
+        c.tint[0]=0.58f; c.tint[1]=0.48f; c.tint[2]=0.28f;  // armory gate (brushed brass)
         m_doorIdx[2] = buildLevelDoor(scene, m_doors, device, physics, c);
     }
     {
         DoorSpec d; d.doorwayCenter = m_layout.doorD; d.axis = DoorAxis::AlongZ;
         d.withButton = false; d.locked = true;              // auto on arena trigger
-        d.tint[0]=0.70f; d.tint[1]=0.30f; d.tint[2]=0.30f;
+        d.tint[0]=0.46f; d.tint[1]=0.38f; d.tint[2]=0.38f;  // dark steel
         m_doorIdx[3] = buildLevelDoor(scene, m_doors, device, physics, d);
     }
     {
         DoorSpec e; e.doorwayCenter = m_layout.doorE; e.axis = DoorAxis::AlongZ;
         e.withButton = false; e.locked = true;              // opens on Martinez death
-        e.tint[0]=0.40f; e.tint[1]=0.70f; e.tint[2]=0.90f;
+        e.tint[0]=0.38f; e.tint[1]=0.50f; e.tint[2]=0.56f;  // cyan steel
         m_doorIdx[4] = buildLevelDoor(scene, m_doors, device, physics, e);
     }
 
@@ -239,6 +240,36 @@ bool Level1Game::doorLocked(char letter) const {
     uint32_t i = doorIndex(letter);
     if (i == kNoLink || i >= m_doors.count()) return false;
     return m_doors.at(i).locked;
+}
+
+bool Level1Game::nearLockedCodedDoor(const x3::phys::Vec3& playerPos, float range) const {
+    const float r2 = range * range;
+    for (uint32_t i = 0; i < m_doors.count(); ++i) {
+        const Door& d = m_doors.at(i);
+        if (!d.locked || d.code == 0) continue;
+        const float dx = playerPos.x - d.closedPos.x;
+        const float dz = playerPos.z - d.closedPos.z;
+        if (dx * dx + dz * dz <= r2) return true;
+    }
+    return false;
+}
+
+bool Level1Game::tryDoorCode(const x3::phys::Vec3& playerPos, int code, float range) {
+    const float r2 = range * range;
+    int best = -1; float bestD2 = r2;
+    for (uint32_t i = 0; i < m_doors.count(); ++i) {
+        const Door& d = m_doors.at(i);
+        if (!d.locked || d.code == 0) continue;
+        const float dx = playerPos.x - d.closedPos.x;
+        const float dz = playerPos.z - d.closedPos.z;
+        const float d2 = dx * dx + dz * dz;
+        if (d2 <= bestD2) { bestD2 = d2; best = (int)i; }
+    }
+    if (best < 0) return false;
+    Door& d = m_doors.at((uint32_t)best);
+    if (d.code != code) return false;
+    m_doors.unlock(d);
+    return m_doors.startOpening(d);
 }
 
 void Level1Game::playSfx(x3::audio::SoundHandle h, const x3::phys::Vec3& at, float vol) {
@@ -764,6 +795,108 @@ bool runLevel1SelfTest() {
 
     physics->shutdown();
     x3::logInfo(std::string("[level1-test] ") + std::to_string(g_pass) + " passed, " +
+                std::to_string(g_fail) + " failed");
+    return g_fail == 0;
+}
+
+// ===========================================================================
+// Door-code keypad self-test (--test-doorcode). K1-K6.
+// Builds Level 1 and exercises Door C's keypad (code 1127) headlessly: proximity
+// gating, the wrong-code reject, the right-code open, and the KeypadEntry state
+// machine (digit/backspace/clear/value/prompt) the host wires to GLFW key edges.
+// ===========================================================================
+bool runDoorCodeSelfTest() {
+    g_pass = g_fail = 0;
+
+    std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+    physics->init();
+
+    HeadlessDevice device;
+    Scene scene;
+    Level1Game game;
+    game.setDevice(device);
+    game.build(scene, device, *physics, "G:/GameModels/rigged_glb");
+
+    const Level1Layout& L = game.layout();
+
+    // A point standing right at Door C's doorway (within the default 3.5 m range).
+    const x3::phys::Vec3 atDoorC{ L.doorC.x, 1.7f, L.doorC.z };
+    // A point far away from any coded door (out of range of Door C).
+    const x3::phys::Vec3 farAway{ L.doorC.x, 1.7f, L.doorC.z + 50.0f };
+
+    // ---- K1: Door C is the keypad door — locked, with a code, and the player is
+    // detected as "near a locked coded door" only when actually close to it. ----
+    check(game.doorLocked('C'), "K1a Door C starts LOCKED (keypad gate)");
+    check(game.nearLockedCodedDoor(atDoorC) && !game.nearLockedCodedDoor(farAway),
+          "K1b nearLockedCodedDoor true at Door C, false far away");
+
+    // ---- K2: the KeypadEntry state machine builds the code from key edges. ----
+    {
+        KeypadEntry kp;
+        check(kp.empty() && kp.value() == -1, "K2a fresh keypad is empty (value -1)");
+        kp.pushDigit(1); kp.pushDigit(1); kp.pushDigit(2); kp.pushDigit(7);
+        check(kp.buf == "1127" && kp.value() == 1127, "K2b digits 1,1,2,7 -> 1127");
+        kp.backspace();
+        check(kp.buf == "112" && kp.value() == 112, "K2c backspace removes last digit");
+        kp.pushDigit(7);
+        check(kp.value() == 1127, "K2d re-entered digit restores 1127");
+        // Cap at 6 digits (extra digits ignored).
+        KeypadEntry cap;
+        for (int i = 0; i < 9; ++i) cap.pushDigit(9);
+        check(cap.buf.size() == (size_t)KeypadEntry::kMaxLen, "K2e entry capped at 6 digits");
+        // Out-of-range digit is ignored; HUD prompt tracks the buffer.
+        KeypadEntry pr; pr.pushDigit(11); pr.pushDigit(1); pr.pushDigit(2);
+        check(pr.buf == "12" && pr.prompt() == "DOOR LOCKED   ENTER CODE: 12_",
+              "K2f bad digit ignored; prompt reflects entry");
+    }
+
+    // ---- K3: WRONG code does NOT open Door C (and it stays locked). ----
+    {
+        KeypadEntry kp; kp.pushDigit(9); kp.pushDigit(9); kp.pushDigit(9); kp.pushDigit(9);
+        bool opened = game.tryDoorCode(atDoorC, kp.value());
+        bool stillClosed = game.doorState('C') == DoorState::Closed;
+        check(!opened && stillClosed && game.doorLocked('C'),
+              "K3 wrong code (9999) does NOT open Door C; stays locked+closed");
+    }
+
+    // ---- K4: cancelling (clear) before submit leaves the door untouched. ----
+    {
+        KeypadEntry kp; kp.pushDigit(1); kp.pushDigit(1); kp.clear();
+        check(kp.empty() && game.doorState('C') == DoorState::Closed && game.doorLocked('C'),
+              "K4 cancel (clear) leaves Door C locked+closed");
+    }
+
+    // ---- K5: the RIGHT code (1127) unlocks + opens Door C. ----
+    {
+        KeypadEntry kp; kp.pushDigit(1); kp.pushDigit(1); kp.pushDigit(2); kp.pushDigit(7);
+        bool opened = game.tryDoorCode(atDoorC, kp.value());
+        // Step the door system so it animates to Open.
+        run(game, scene, *physics, device, atDoorC, 80);
+        bool nowOpen = game.doorState('C') == DoorState::Open;
+        check(opened && !game.doorLocked('C') && nowOpen,
+              "K5 correct code (1127) unlocks + opens Door C");
+    }
+
+    // ---- K6: out-of-range submit with the right code does NOT open a fresh door.
+    // (Use a brand-new level so Door C is closed/locked again.) ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> p2(x3::phys::createPhysicsWorld());
+        p2->init();
+        HeadlessDevice dev2;
+        Scene s2;
+        Level1Game g2;
+        g2.setDevice(dev2);
+        g2.build(s2, dev2, *p2, "G:/GameModels/rigged_glb");
+        const Level1Layout& L2 = g2.layout();
+        x3::phys::Vec3 far2{ L2.doorC.x, 1.7f, L2.doorC.z + 50.0f };
+        bool opened = g2.tryDoorCode(far2, 1127);   // right code, but out of range
+        check(!opened && g2.doorState('C') == DoorState::Closed && g2.doorLocked('C'),
+              "K6 right code out of range does NOT open Door C");
+        p2->shutdown();
+    }
+
+    physics->shutdown();
+    x3::logInfo(std::string("[doorcode-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;
 }
