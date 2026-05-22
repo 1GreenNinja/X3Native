@@ -33,6 +33,7 @@
 #include "terrain.h"
 #include "fx.h"
 #include "hud.h"
+#include "ui.h"                              // GENERAL game-UI: menus + production HUD + --test-ui
 #include "stress.h"
 #include "destruct_demo.h"                 // K-T1 destruction demo (--world destruct)
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
@@ -180,7 +181,8 @@ int main(int argc, char** argv) {
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
-         testNav = false, testWeapons = false, testVehicle = false, testFootIk = false;
+         testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
+         testUi = false;
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
     // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
     // and confirm the joint palette changes. Asset-pipeline verification for the
@@ -208,6 +210,17 @@ int main(int argc, char** argv) {
     // when omitted: G:\X3Native\screenshot.png.
     bool        screenshot = false;
     std::string screenshotPath = "G:/X3Native/screenshot.png";
+    // UI-demo capture (--ui-demo [path.png] / --screenshot-menu): build EFLZ Level 1,
+    // pose the gate-standard corridor camera, then draw the GENERAL game-UI MAIN MENU
+    // (title + START / QUIT, the START button focused/hot) over the rendered scene and
+    // capture a PNG — so the menu layer can be SEEN headlessly without being at the
+    // keyboard. Additive + offscreen, like --screenshot. Default path:
+    // G:/X3Native/captures/ui_menu.png.
+    bool        uiDemo = false;
+    std::string uiDemoPath = "G:/X3Native/captures/ui_menu.png";
+    // Which UI screen the --ui-demo capture shows: "main" (default), "pause", or
+    // "settings". Lets one flag document all three menu screens.
+    std::string uiDemoScreen = "main";
     // Sky vantage mode (--screenshot-sky [path.png]): build a minimal OUTDOOR test
     // scene (ground plane + the analytic sky lit by the existing sun), pose the
     // camera at the horizon looking slightly up toward the sun, render a few
@@ -321,6 +334,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-weapons") testWeapons = true;
         else if (a == "--test-vehicle") testVehicle = true;
         else if (a == "--test-footik") testFootIk = true;
+        else if (a == "--test-ui") testUi = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -360,6 +374,12 @@ int main(int argc, char** argv) {
                 }
                 shotCamOverride = (n == 5);
             }
+        }
+        else if (a == "--ui-demo" || a == "--screenshot-menu") {
+            uiDemo = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') uiDemoPath = argv[++i];
+            // Optional screen keyword: main | pause | settings.
+            if (i + 1 < argc && argv[i + 1][0] != '-') uiDemoScreen = argv[++i];
         }
         else if (a == "--fx-demo") fxDemo = true;
         else if (a == "--screenshot-sky") {
@@ -577,6 +597,11 @@ int main(int argc, char** argv) {
         x3::logInfo("running foot-IK (two-bone + plant + pelvis) self-test...");
         return x3::anim::runFootIkSelfTest() ? 0 : 1;
     }
+    if (testUi) {
+        x3::logInfo("running GENERAL game-UI self-test "
+                    "(button hit-test + Menu<->Playing<->Paused transitions + settings cvar wiring)...");
+        return x3::ui::runUiSelfTest() ? 0 : 1;
+    }
 
     x3::logInfo("X3Engine starting...");
 
@@ -585,7 +610,7 @@ int main(int argc, char** argv) {
     // render fully offscreen — NO GLFW window, NO surface, NO swapchain, nothing
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
-    const bool headless = smoketest || screenshot || skyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk;
+    const bool headless = smoketest || screenshot || skyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -2612,6 +2637,10 @@ int main(int argc, char** argv) {
             if (dh.hit) combatFx.addDecal(dh.point, dh.normal);
         }
 
+        // Production HUD for the capture (its own pulse clock; persists across the
+        // settle frames). Arm the player so a weapon + ammo show in the arsenal.
+        x3::ui::GameHud shotHud;
+        arsenal.select(0);   // pistol selected for the capture
         const int kSettleFrames = (screenshotSettle > 0) ? screenshotSettle : 16;
         for (int i = 0; i < kSettleFrames; ++i) {
             glfwPollEvents();
@@ -2643,12 +2672,97 @@ int main(int argc, char** argv) {
                     combatFx.draw(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch);
                     combatFx.submit(*device, frame);
                 }
+                // GENERAL production HUD over the Level 1 vantage: HP bar, current
+                // weapon + ammo (from the arsenal), the live objective line,
+                // crosshair, and the minimap stub — so the screenshot shows the
+                // real in-game HUD. Purely additive 2D draws (no sim/scene change).
+                x3::ui::UiContext shotUi;
+                shotUi.begin(*device, frame, x3::ui::UiInput{});
+                x3::ui::HudModel shm{};
+                shm.hp = 100; shm.maxHp = x3::game::kPlayerMaxHp; shm.alive = true;
+                shm.showCrosshair = true;
+                shm.objective = game.objectives().currentLabel().c_str();
+                const x3::game::WeaponDef&            shotWd = arsenal.current();
+                const x3::game::Arsenal::WeaponState& shotWs = arsenal.currentState();
+                shm.weapon = shotWd.name.c_str();
+                shm.ammoInMag = shotWs.ammoInMag; shm.ammoReserve = shotWs.reserve;
+                shotHud.draw(shotUi, shm, dt);
+                shotUi.end();
             }
             device->endFrame(frame);
         }
         const bool wrote = device->captureFrame(screenshotPath.c_str());
-        if (wrote) x3::logInfo("--screenshot: wrote " + screenshotPath);
+        if (wrote) x3::logInfo("--screenshot: wrote " + screenshotPath + " (with production HUD)");
         else       x3::logError("--screenshot: capture FAILED");
+
+        audio->shutdown();
+        combatFx.shutdown(*device);
+        physics->shutdown();
+        device->shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return wrote ? 0 : 1;
+    }
+
+    // ---- UI-demo capture (--ui-demo [path.png] / --screenshot-menu) ---------
+    // Build EFLZ Level 1, pose the gate-standard corridor camera so the menu sits
+    // over a real lit scene, then draw the GENERAL game-UI MAIN MENU (title +
+    // START / QUIT, START focused) and capture a PNG. Headless / offscreen, like
+    // --screenshot. Lets the menu layer be SEEN without being at the keyboard.
+    if (uiDemo) {
+        x3::logInfo("--ui-demo: rendering the main menu over Level 1 to " + uiDemoPath);
+        // Same corridor vantage as --screenshot (consistent backdrop).
+        const float ssX = 8.0f, ssY = 1.75f, ssZ = -0.4f, ssYaw = 0.06f, ssPitch = -0.16f;
+        device->setCamera(ssX, ssY, ssZ, ssYaw, ssPitch, 70.0f);
+        const x3::phys::Vec3 ssEye{ ssX, ssY, ssZ };
+        const float dt = 1.0f / 60.0f;
+
+        // Bring up the UI controller in MainMenu and synthesize a HOVER over START
+        // so the focused/hot button reads clearly in the still. (No click — we want
+        // to capture the menu, not enter the game.)
+        x3::ui::UiController demoUi;
+        { x3::ui::SettingsModel sm{}; sm.width = kHeadlessW; sm.height = kHeadlessH;
+          demoUi.init(*device, console.get(), sm); }
+        demoUi.setTitle("ESCAPE FROM LAB ZERO", "Level 1 - Awakening");
+        // Drive the controller to the requested screen (default MainMenu).
+        const float mw = (float)kHeadlessW, mh = (float)kHeadlessH, mcx = mw * 0.5f;
+        float hoverX = mcx, hoverY = mh * 0.5f;   // element to hover (focused/hot)
+        if (uiDemoScreen == "pause") {
+            demoUi.setState(x3::ui::GameState::Paused);
+            // RESUME is the first pause button; hover it.
+            hoverX = mcx; hoverY = mh * 0.5f - std::min(360.0f, mh*0.6f)*0.5f + 90.0f;
+        } else if (uiDemoScreen == "settings") {
+            demoUi.setState(x3::ui::GameState::Settings);
+            hoverX = mcx; hoverY = mh * 0.5f;   // hover a middle toggle row
+        } else {
+            // MainMenu: hover START so it reads as focused.
+            const float mbh = std::max(44.0f, mh * 0.075f);
+            hoverX = mcx; hoverY = mh * 0.48f + mbh * 0.5f;
+        }
+
+        const int kSettle = 12;
+        for (int i = 0; i < kSettle; ++i) {
+            glfwPollEvents();
+            game.tick(dt, scene, *physics, ssEye, ssEye);
+            physics->step(dt);
+            scene.update(*physics);
+            if (i == kSettle - 1) device->armCapture(uiDemoPath.c_str());
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                scene.render(*device, frame);
+                game.drawDoors(*device, frame);
+                game.drawWorldExtras(*device, frame, scene);
+                // Hover the focused element; no mousePressed (capture, don't act).
+                x3::ui::UiInput uin{};
+                uin.mouseX = hoverX; uin.mouseY = hoverY;
+                x3::ui::HudModel hm{};
+                demoUi.update(uin, *device, frame, hm, dt);
+            }
+            device->endFrame(frame);
+        }
+        const bool wrote = device->captureFrame(uiDemoPath.c_str());
+        if (wrote) x3::logInfo("--ui-demo: wrote " + uiDemoPath);
+        else       x3::logError("--ui-demo: capture FAILED");
 
         audio->shutdown();
         combatFx.shutdown(*device);
@@ -2859,6 +2973,38 @@ int main(int argc, char** argv) {
             combatFx.addTracer(from, to);
         };
 
+    // ---- GENERAL game-UI: main menu / pause / settings + production HUD --------
+    // The interactive windowed game launches into a MAIN MENU (title + START /
+    // QUIT). START enters the game; Esc toggles a PAUSE menu that freezes the
+    // sim/fixed-step; SETTINGS toggles render params (bloom/SSAO/SSGI/shadows/
+    // vsync) wired to cvars + the device. While Playing, the production HUD draws
+    // (HP / weapon+ammo / objective / crosshair / minimap stub). This whole layer
+    // exists ONLY in this interactive path: every headless --test-*/--smoketest/
+    // --screenshot path early-returns above, so they are unaffected.
+    x3::ui::UiController gameUi;
+    {
+        x3::ui::SettingsModel sm{};
+        // Seed from current engine defaults: SSAO + SSGI are ON by default in the
+        // device; bloom is always-on in the HDR pipeline; shadows on; vsync from
+        // the device desc; resolution = the actual window size.
+        sm.bloom = true; sm.ssao = true; sm.ssgi = true; sm.shadows = true;
+        sm.vsync = desc.vsync; sm.width = W; sm.height = H;
+        gameUi.init(*device, console.get(), sm);
+        gameUi.setTitle(terrainWorld ? "X3 ENGINE" : "ESCAPE FROM LAB ZERO",
+                        terrainWorld ? "open-world demo" : "Level 1 - Awakening");
+    }
+    // Cursor is shown in any menu OR while the console is open; hidden only while
+    // actively playing with the console closed. Tracked so we only call GLFW on a
+    // transition. Start in the menu => cursor visible.
+    bool cursorShown = true;
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    bool prevUiEsc = false;   // rising-edge for routing Esc into the UI controller
+    // Rising-edge trackers for the UI controller's input snapshot (menu mouse +
+    // keyboard nav). Kept across frames so click/nav register on the press edge.
+    bool prevUiMouse = false;
+    bool prevNavUp = false, prevNavDown = false, prevNavAct = false,
+         prevNavLeft = false, prevNavRight = false;
+
     // ---- Main loop ----
     int lastW = static_cast<int>(W), lastH = static_cast<int>(H);
     float oceanTime = 0.0f;   // --world ocean wave-animation clock (seconds)
@@ -2866,39 +3012,54 @@ int main(int argc, char** argv) {
         glfwPollEvents();
 
         // ---- S7: console gating. While the console is open, gameplay input is
-        // suppressed and the cursor is shown so the user can read/type; Esc
-        // closes the console (handled in keyCallback) rather than quitting.
+        // suppressed and the cursor is shown so the user can read/type. The cursor
+        // is ALSO shown by any UI menu (main/pause/settings); the UiController is
+        // the master for menu cursor state. Recompute the desired cursor each
+        // frame and only touch GLFW on a transition.
         const bool consoleOpen = hud.consoleOpen();
-        if (consoleOpen != consoleWasOpen) {
+        consoleWasOpen = consoleOpen;   // (retained for parity; cursor logic below)
+        const bool wantCursor = consoleOpen || gameUi.showCursor();
+        if (wantCursor != cursorShown) {
             glfwSetInputMode(window, GLFW_CURSOR,
-                             consoleOpen ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
-            consoleWasOpen = consoleOpen;
+                             wantCursor ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+            cursorShown = wantCursor;
         }
-        // Esc (edge-detected): cancel door-code entry if active, otherwise quit —
-        // only when the console is closed (the `quit` command also sets
-        // quitRequested via the HUD-registered command).
-        bool kpEscNow = !consoleOpen && glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
-        if (kpEscNow && !kpEscPrev) {
+        // Whether a UI menu (main/pause/settings) is currently up. While a menu is
+        // up, gameplay input + the sim are frozen and only the menu reads input.
+        const bool uiMenuActive = !gameUi.playing();
+        const bool simFrozen     = gameUi.shouldFreezeSim();
+
+        // Esc (edge-detected): route to the UI controller (toggle pause / back out
+        // of settings / resume) UNLESS the console is open or a door-code keypad is
+        // active (those consume Esc first). The legacy "Esc quits" is gone — quit is
+        // now an explicit menu choice (or the `quit` console command).
+        bool escNow = !consoleOpen && glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+        bool uiEscEdge = false;
+        if (escNow && !kpEscPrev) {
             if (codeMode) { codeMode = false; keypad.clear(); }
-            else glfwSetWindowShouldClose(window, 1);
+            else          { uiEscEdge = true; }   // hand the Esc edge to the UI below
         }
-        kpEscPrev = kpEscNow;
-        if (quitRequested) glfwSetWindowShouldClose(window, 1);
+        kpEscPrev = escNow;
+        (void)prevUiEsc;
+        // The `quit` console command (and the menu QUIT) request shutdown.
+        if (quitRequested || gameUi.wantQuit()) glfwSetWindowShouldClose(window, 1);
 
         double nowT = glfwGetTime();
         float dt = static_cast<float>(nowT - prevTime); prevTime = nowT;
         if (dt > 0.1f) dt = 0.1f; // clamp huge hitches (e.g. after a stall)
 
-        // Mouse delta this frame. Frozen (zeroed) while the console is open so
-        // the view does not swing under a visible cursor.
+        // Mouse delta this frame. Frozen (zeroed) while the console is open OR a UI
+        // menu is up, so the view does not swing under a visible cursor.
         double mx, my; glfwGetCursorPos(window, &mx, &my);
         float ddx = static_cast<float>(mx - lastMX), ddy = static_cast<float>(my - lastMY);
         lastMX = mx; lastMY = my;
-        if (consoleOpen) { ddx = 0.0f; ddy = 0.0f; }
+        if (consoleOpen || uiMenuActive) { ddx = 0.0f; ddy = 0.0f; }
 
-        // Gameplay key reads are gated off while the console is open so typing
-        // doesn't drive movement/use/jump/fire/noclip.
-        auto keyDown = [&](int k) { return !consoleOpen && glfwGetKey(window, k) == GLFW_PRESS; };
+        // Gameplay key reads are gated off while the console is open OR a UI menu is
+        // up so typing/navigation doesn't drive movement/use/jump/fire/noclip.
+        auto keyDown = [&](int k) {
+            return !consoleOpen && !uiMenuActive && glfwGetKey(window, k) == GLFW_PRESS;
+        };
 
         // F: toggle noclip on the rising edge. Seed the fly camera from the
         // player's current view so the transition is seamless.
@@ -3019,7 +3180,11 @@ int main(int argc, char** argv) {
         // The full client/server input->snapshot routing (player.update fed by a
         // decoded NetCommand over the loopback transport) is deferred to Phase 0b.
         // ===================================================================
-        const uint32_t simSteps = simAcc.advance(dt);
+        // FREEZE: while a UI menu (main/pause/settings) is up, the sim/fixed-step is
+        // frozen. We still drain the accumulator (advance + discard) so unpausing
+        // doesn't trigger a multi-step catch-up burst; zero sub-steps run.
+        const uint32_t simStepsRaw = simAcc.advance(dt);
+        const uint32_t simSteps = gameUi.shouldFreezeSim() ? 0u : simStepsRaw;
         for (uint32_t s = 0; s < simSteps; ++s) {
             const bool firstSub = (s == 0);
             if (!noclip) {
@@ -3112,7 +3277,11 @@ int main(int argc, char** argv) {
         // Phase 2a: pass the player as the damage sink + the enemy-attack FX so
         // guards/drone/Martinez hurt the player (enemies attack only while alive). ----
         const x3::phys::Vec3 camPos{ camX, camY, camZ };
-        if (terrainWorld) {
+        if (simFrozen) {
+            // Sim frozen by a UI menu: skip the level controller / streaming / ocean
+            // clock so doors/enemies/objectives/waves hold still. (Terrain tiles are
+            // already resident; nothing falls because physics isn't stepping.)
+        } else if (terrainWorld) {
             // Outdoor world: no Level 1 controller. STREAM tiles around the camera
             // focus — stream in newly-in-range tiles (async gen on jobs, budgeted
             // uploads here on the main thread), stream out receded ones, and apply
@@ -3267,7 +3436,7 @@ int main(int argc, char** argv) {
         // raycasts the segment against Enemy then Static; on an enemy hit it deals
         // damage via the enemy fire path (aimed straight at the bolt's travel dir);
         // on any surface hit it spawns an impact + despawns. Bolts despawn at range. ----
-        if (!terrainWorld && !projectiles.empty()) {
+        if (!simFrozen && !terrainWorld && !projectiles.empty()) {
             for (size_t pi = 0; pi < projectiles.size(); ) {
                 LiveProjectile& b = projectiles[pi];
                 float speed = std::sqrt(b.vel.x*b.vel.x + b.vel.y*b.vel.y + b.vel.z*b.vel.z);
@@ -3297,9 +3466,11 @@ int main(int argc, char** argv) {
             }
         }
 
-        // Advance FX timers (tracer lifetimes + muzzle flash).
-        combatFx.update(dt);
-        // M9: tick the audio system (reaps finished one-shot voices).
+        // Advance FX timers (tracer lifetimes + muzzle flash) only while the sim
+        // runs; frozen during a UI menu so particles/tracers hold still.
+        if (!simFrozen) combatFx.update(dt);
+        // M9: tick the audio system (reaps finished one-shot voices). Always ticked
+        // so audio voices don't pile up while paused.
         audio->update(dt);
 
         int cw, ch;
@@ -3347,72 +3518,133 @@ int main(int argc, char** argv) {
             // submit the live pool for this frame (HDR pass, soft against depth,
             // bright additive sparks feed bloom). No-op when the pool is empty.
             combatFx.submit(*device, frame);
-            // ---- HUD overlay last: crosshair (hidden while console open), FPS
-            // meter, the current objective line, the health bar + damage flash,
-            // the death overlay (when dead), then the console panel (when open).
-            if (!consoleOpen && player.isAlive()) hud.drawCrosshair(*device, frame);
-            hud.drawFps(*device, frame, *console, dt);
-            // Perf stats overlay (top-right): gated by the r_stats cvar / F3.
-            hud.drawStats(*device, frame, *console, dt);
-            if (!consoleOpen && !terrainWorld) game.drawObjective(*device, frame);
-            // Door-code keypad prompt: centered, while code entry is active.
-            if (codeMode && !consoleOpen && !terrainWorld) {
-                uint32_t hudW = 0, hudH = 0; device->hudSize(hudW, hudH);
-                const std::string kpPrompt = keypad.prompt();
-                const float kpCol[4] = { 1.0f, 0.82f, 0.18f, 1.0f };
-                device->drawHudText(frame, kpPrompt.c_str(),
-                                    (float)hudW * 0.5f - 230.0f, (float)hudH * 0.5f - 60.0f, 3.0f, kpCol);
-            }
-            // Strength terminal — the "Awakening" readout (EFLZ_SPIRE §3). Jake wakes
-            // at the B1 security terminal; flash his 400% augmentation for the opening
-            // seconds. Terminal-green text + a red restraint-failing warning line.
-            if (!consoleOpen && !terrainWorld) {
-                static float awakenTimer = 7.0f;
-                if (awakenTimer > 0.0f) {
-                    awakenTimer -= dt;
+            // ===========================================================
+            // 2D OVERLAY: the GENERAL game-UI layer + EFLZ-specific extras +
+            // the dev console. Order: production HUD / menus first (so the
+            // EFLZ banners + console draw ON TOP), then the always-on FPS /
+            // perf stats, then the console panel last.
+            // ===========================================================
+            const bool playingNow = gameUi.playing();
+
+            // EFLZ-specific HUD extras that the GENERAL GameHud doesn't own. These
+            // draw only while actively playing (not in any menu / console).
+            if (playingNow && !consoleOpen) {
+                // Door-code keypad prompt: centered, while code entry is active.
+                if (codeMode && !terrainWorld) {
+                    uint32_t hudW = 0, hudH = 0; device->hudSize(hudW, hudH);
+                    const std::string kpPrompt = keypad.prompt();
+                    const float kpCol[4] = { 1.0f, 0.82f, 0.18f, 1.0f };
+                    device->drawHudText(frame, kpPrompt.c_str(),
+                                        (float)hudW * 0.5f - 230.0f, (float)hudH * 0.5f - 60.0f, 3.0f, kpCol);
+                }
+                // Strength terminal — the "Awakening" readout (EFLZ_SPIRE §3).
+                if (!terrainWorld) {
+                    static float awakenTimer = 7.0f;
+                    if (awakenTimer > 0.0f) {
+                        awakenTimer -= dt;
+                        uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                        const float tx = (hw > 0) ? hw * 0.5f - 250.0f : 380.0f;
+                        const float ty = (hh > 0) ? hh * 0.30f : 200.0f;
+                        const float term[4] = { 0.20f, 1.00f, 0.55f, 1.0f };   // terminal green
+                        const float warn[4] = { 1.00f, 0.40f, 0.25f, 1.0f };   // failing = red
+                        device->drawHudText(frame, "SUBJECT: JAKE    STATUS: AUGMENTED", tx, ty,         2.4f, term);
+                        device->drawHudText(frame, "MUSCULOSKELETAL OUTPUT: +400%",      tx, ty + 34.0f, 2.4f, term);
+                        device->drawHudText(frame, "RESTRAINT INTEGRITY: FAILING",       tx, ty + 68.0f, 2.4f, warn);
+                    }
+                }
+                // Phase 2b: boss "PHASE 2!/PHASE 3!" flash near the top.
+                if (!terrainWorld && game.phaseBannerTime() > 0.0f && !game.phaseBanner().empty()) {
                     uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
-                    const float tx = (hw > 0) ? hw * 0.5f - 250.0f : 380.0f;
-                    const float ty = (hh > 0) ? hh * 0.30f : 200.0f;
-                    const float term[4] = { 0.20f, 1.00f, 0.55f, 1.0f };   // terminal green
-                    const float warn[4] = { 1.00f, 0.40f, 0.25f, 1.0f };   // failing = red
-                    device->drawHudText(frame, "SUBJECT: JAKE    STATUS: AUGMENTED", tx, ty,         2.4f, term);
-                    device->drawHudText(frame, "MUSCULOSKELETAL OUTPUT: +400%",      tx, ty + 34.0f, 2.4f, term);
-                    device->drawHudText(frame, "RESTRAINT INTEGRITY: FAILING",       tx, ty + 68.0f, 2.4f, warn);
+                    const float scale = 28.0f;
+                    const float bw = game.phaseBanner().size() * scale * 0.6f;
+                    const float px = (hw > 0) ? (hw * 0.5f - bw * 0.5f) : 420.0f;
+                    const float py = (hh > 0) ? (hh * 0.22f) : 120.0f;
+                    const float red[4] = { 1.0f, 0.25f, 0.2f, 1.0f };
+                    device->drawHudText(frame, game.phaseBanner().c_str(), px, py, scale, red);
+                }
+                // F2 rescue timers (spec §5): stacked, below the objective line.
+                if (!terrainWorld) {
+                    const auto rows = game.rescue().hudTimers();
+                    float ry = 96.0f;
+                    for (const auto& row : rows) {
+                        const int total = (int)(row.seconds + 0.5f);
+                        const int mm = total / 60, ss = total % 60;
+                        char buf[64];
+                        std::snprintf(buf, sizeof(buf), "RESCUE %s  %d:%02d",
+                                      row.name.c_str(), mm, ss);
+                        float col[4];
+                        if (row.urgent) { col[0]=1.0f; col[1]=0.25f; col[2]=0.20f; col[3]=1.0f; }
+                        else            { col[0]=0.55f; col[1]=0.85f; col[2]=1.0f; col[3]=1.0f; }
+                        device->drawHudText(frame, buf, 24.0f, ry, 2.0f, col);
+                        ry += 28.0f;
+                    }
                 }
             }
-            // Phase 2b: boss "PHASE 2!/PHASE 3!" flash, centered near the top, while
-            // the banner timer is live (a brief, attention-grabbing red string).
-            if (!terrainWorld && game.phaseBannerTime() > 0.0f && !game.phaseBanner().empty()) {
-                uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
-                const float scale = 28.0f;
-                const float w = game.phaseBanner().size() * scale * 0.6f;
-                const float px = (hw > 0) ? (hw * 0.5f - w * 0.5f) : 420.0f;
-                const float py = (hh > 0) ? (hh * 0.22f) : 120.0f;
-                const float red[4] = { 1.0f, 0.25f, 0.2f, 1.0f };
-                device->drawHudText(frame, game.phaseBanner().c_str(), px, py, scale, red);
-            }
-            // F2 rescue timers (spec §5): one row per running countdown (up to 3),
-            // stacked top-left. Urgent (< 60 s) draws red, otherwise pale cyan.
-            if (!consoleOpen && !terrainWorld) {
-                const auto rows = game.rescue().hudTimers();
-                float ry = 96.0f;
-                for (const auto& row : rows) {
-                    const int total = (int)(row.seconds + 0.5f);
-                    const int mm = total / 60, ss = total % 60;
-                    char buf[64];
-                    std::snprintf(buf, sizeof(buf), "RESCUE %s  %d:%02d",
-                                  row.name.c_str(), mm, ss);
-                    float col[4];
-                    if (row.urgent) { col[0]=1.0f; col[1]=0.25f; col[2]=0.20f; col[3]=1.0f; }  // red
-                    else            { col[0]=0.55f; col[1]=0.85f; col[2]=1.0f; col[3]=1.0f; }  // pale cyan
-                    device->drawHudText(frame, buf, 24.0f, ry, 2.0f, col);
-                    ry += 28.0f;
+
+            // ---- GENERAL game-UI: route input + draw the active screen / HUD ----
+            // Build the production-HUD model from the live gameplay state, then
+            // hand the UI controller this frame's input snapshot. While Playing it
+            // draws the HUD (HP / weapon+ammo / objective / crosshair / minimap);
+            // otherwise it draws the active menu (main / pause / settings).
+            x3::ui::HudModel hm{};
+            hm.hp = player.hp(); hm.maxHp = player.maxHp();
+            hm.alive = player.isAlive();
+            hm.damageFlash = player.damageFlash();
+            hm.showCrosshair = !consoleOpen;
+            if (!terrainWorld) {
+                hm.objective = game.objectives().currentLabel().c_str();
+                if (game.armed()) {
+                    const x3::game::WeaponDef&         wd = arsenal.current();
+                    const x3::game::Arsenal::WeaponState& ws = arsenal.currentState();
+                    hm.weapon = wd.name.c_str();
+                    hm.ammoInMag = ws.ammoInMag; hm.ammoReserve = ws.reserve;
+                    hm.reloading = arsenal.isReloading();
                 }
             }
-            // Phase 2a: player health + damage feedback.
-            hud.drawHealth(*device, frame, player.hp(), player.maxHp());
-            hud.drawDamageFlash(*device, frame, player.damageFlash());
-            if (player.dead()) hud.drawDeathOverlay(*device, frame);
+            // Compose the UI input snapshot. Mouse position in framebuffer pixels;
+            // nav edges from the same rising-edge tracking the menus need. Menu keys
+            // are read directly (NOT gated by keyDown's menu-suppression, since the
+            // menu IS the active surface). Suppressed while the console is open.
+            x3::ui::UiInput uin{};
+            if (!consoleOpen) {
+                double cmx = 0.0, cmy = 0.0; glfwGetCursorPos(window, &cmx, &cmy);
+                uin.mouseX = (float)cmx; uin.mouseY = (float)cmy;
+                const bool lmbNow = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+                uin.mouseDown = lmbNow;
+                uin.mousePressed = lmbNow && !prevUiMouse;
+                prevUiMouse = lmbNow;
+                // Keyboard nav (rising edges). Up/Down/W/S move, Enter/Space activate,
+                // Left/Right/A/D adjust toggles, Esc backs out / pauses.
+                auto rawDown = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+                const bool nUp  = rawDown(GLFW_KEY_UP)    || rawDown(GLFW_KEY_W);
+                const bool nDn  = rawDown(GLFW_KEY_DOWN)  || rawDown(GLFW_KEY_S);
+                const bool nAct = rawDown(GLFW_KEY_ENTER) || rawDown(GLFW_KEY_KP_ENTER) || rawDown(GLFW_KEY_SPACE);
+                const bool nL   = rawDown(GLFW_KEY_LEFT)  || rawDown(GLFW_KEY_A);
+                const bool nR   = rawDown(GLFW_KEY_RIGHT) || rawDown(GLFW_KEY_D);
+                // Only deliver nav edges while a menu is active (so they don't fight
+                // gameplay WASD). Edge-detect against the previous frame.
+                if (uiMenuActive) {
+                    uin.navUp       = nUp  && !prevNavUp;
+                    uin.navDown     = nDn  && !prevNavDown;
+                    uin.navActivate = nAct && !prevNavAct;
+                    uin.navLeft     = nL   && !prevNavLeft;
+                    uin.navRight    = nR   && !prevNavRight;
+                }
+                prevNavUp = nUp; prevNavDown = nDn; prevNavAct = nAct;
+                prevNavLeft = nL; prevNavRight = nR;
+                // Esc edge (computed above) toggles pause / backs out of settings.
+                uin.navBack = uiEscEdge;
+            } else {
+                // Console open: keep edge trackers fresh so opening/closing the
+                // console doesn't inject a stale nav edge.
+                prevUiMouse = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            }
+            gameUi.update(uin, *device, frame, hm, dt);
+
+            // Always-on overlays (independent of game state): FPS meter, the perf
+            // stats panel, and the dev console panel (drawn last so it sits on top).
+            hud.drawFps(*device, frame, *console, dt);
+            hud.drawStats(*device, frame, *console, dt);
             hud.drawConsole(*device, frame, *console, dt);
         }
         device->endFrame(frame);
