@@ -38,6 +38,7 @@
 #include "fx.h"
 #include "hud.h"
 #include "ui.h"                              // GENERAL game-UI: menus + production HUD + --test-ui
+#include "save.h"                            // GENERAL versioned checkpoint save/load + --test-saveload
 #include "stress.h"
 #include "destruct_demo.h"                 // K-T1 destruction demo (--world destruct)
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
@@ -300,6 +301,8 @@ int main(int argc, char** argv) {
     bool        testBestiary = false;
     // --test-ui (UI pass): general game-UI layer (menus + HUD). Additive flag.
     bool        testUi = false;
+    // --test-saveload (save/load pass): versioned checkpoint serialization. Additive.
+    bool        testSaveLoad = false;
     // --test-spiremid (Spire mid-floor content): F3/F4/F5 encounter authoring. Additive.
     bool        testSpireMid = false;
     // --test-debris (K-T2 GPU-compute debris): spawn a burst, step the compute sim
@@ -471,6 +474,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-vehicle") testVehicle = true;
         else if (a == "--test-footik") testFootIk = true;
         else if (a == "--test-ui") testUi = true;
+        else if (a == "--test-saveload") testSaveLoad = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -774,6 +778,11 @@ int main(int argc, char** argv) {
         x3::logInfo("running GENERAL game-UI self-test "
                     "(button hit-test + Menu<->Playing<->Paused transitions + settings cvar wiring)...");
         return x3::ui::runUiSelfTest() ? 0 : 1;
+    }
+    if (testSaveLoad) {
+        x3::logInfo("running GENERAL versioned checkpoint save/load self-test "
+                    "(round-trip field-by-field + magic/version/checksum/truncation reject)...");
+        return x3::save::runSaveLoadSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
