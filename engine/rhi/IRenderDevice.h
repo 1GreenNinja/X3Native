@@ -81,6 +81,12 @@ public:
     virtual void shutdown() = 0;
     virtual void onResize(uint32_t w, uint32_t h) = 0;
 
+    // Toggle vertical sync at runtime (settings UI). Switches the swapchain present
+    // mode (FIFO when on, MAILBOX when off) by flagging a swapchain recreate on the
+    // next beginFrame(); a no-op in headless mode (no swapchain) and when the value
+    // is unchanged. Additive: the interactive windowed path is otherwise unchanged.
+    virtual void setVsync(bool enabled) = 0;
+
     // Camera (FPS-style). Angles in radians. The device builds view+proj.
     // forward = (cos(pitch)*cos(yaw), sin(pitch), cos(pitch)*sin(yaw)).
     virtual void setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) = 0;

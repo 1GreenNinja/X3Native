@@ -33,6 +33,7 @@ public:
     bool init(const x3::rhi::DeviceDesc&) override { return true; }
     void shutdown() override {}
     void onResize(uint32_t, uint32_t) override {}
+    void setVsync(bool) override {}
     void setCamera(float, float, float, float, float, float) override {}
 
     x3::rhi::FrameContext beginFrame() override { return {}; }
