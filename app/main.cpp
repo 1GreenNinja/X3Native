@@ -1720,6 +1720,23 @@ int main(int argc, char** argv) {
                 device->drawHudText(frame, kpPrompt.c_str(),
                                     (float)hudW * 0.5f - 230.0f, (float)hudH * 0.5f - 60.0f, 3.0f, kpCol);
             }
+            // Strength terminal — the "Awakening" readout (EFLZ_SPIRE §3). Jake wakes
+            // at the B1 security terminal; flash his 400% augmentation for the opening
+            // seconds. Terminal-green text + a red restraint-failing warning line.
+            if (!consoleOpen && !terrainWorld) {
+                static float awakenTimer = 7.0f;
+                if (awakenTimer > 0.0f) {
+                    awakenTimer -= dt;
+                    uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                    const float tx = (hw > 0) ? hw * 0.5f - 250.0f : 380.0f;
+                    const float ty = (hh > 0) ? hh * 0.30f : 200.0f;
+                    const float term[4] = { 0.20f, 1.00f, 0.55f, 1.0f };   // terminal green
+                    const float warn[4] = { 1.00f, 0.40f, 0.25f, 1.0f };   // failing = red
+                    device->drawHudText(frame, "SUBJECT: JAKE    STATUS: AUGMENTED", tx, ty,         2.4f, term);
+                    device->drawHudText(frame, "MUSCULOSKELETAL OUTPUT: +400%",      tx, ty + 34.0f, 2.4f, term);
+                    device->drawHudText(frame, "RESTRAINT INTEGRITY: FAILING",       tx, ty + 68.0f, 2.4f, warn);
+                }
+            }
             // Phase 2b: boss "PHASE 2!/PHASE 3!" flash, centered near the top, while
             // the banner timer is live (a brief, attention-grabbing red string).
             if (!terrainWorld && game.phaseBannerTime() > 0.0f && !game.phaseBanner().empty()) {
