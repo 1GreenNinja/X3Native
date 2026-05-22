@@ -146,31 +146,32 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
     {
         DoorSpec a; a.doorwayCenter = m_layout.doorA; a.axis = DoorAxis::AlongZ;
         a.withButton = true; a.locked = false;
-        a.tint[0]=0.85f; a.tint[1]=0.30f; a.tint[2]=0.18f;  // cell door (orange-red)
+        a.tint[0]=0.52f; a.tint[1]=0.30f; a.tint[2]=0.26f;  // cell door (industrial red, metallic)
         m_doorIdx[0] = buildLevelDoor(scene, m_doors, device, physics, a);
     }
     {
         DoorSpec b; b.doorwayCenter = m_layout.doorB; b.axis = DoorAxis::AlongZ;
         b.withButton = true; b.locked = false;
-        b.tint[0]=0.30f; b.tint[1]=0.55f; b.tint[2]=0.85f;  // corridor door (blue)
+        b.tint[0]=0.34f; b.tint[1]=0.44f; b.tint[2]=0.56f;  // corridor door (steel blue)
         m_doorIdx[1] = buildLevelDoor(scene, m_doors, device, physics, b);
     }
     {
         DoorSpec c; c.doorwayCenter = m_layout.doorC; c.axis = DoorAxis::AlongZ;
         c.withButton = true; c.locked = true;               // §6.4 locked until armed
-        c.tint[0]=0.85f; c.tint[1]=0.65f; c.tint[2]=0.20f;  // armory gate (amber)
+        c.code = 1127;                                       // keypad: enter 1127 to open early (lore code)
+        c.tint[0]=0.58f; c.tint[1]=0.48f; c.tint[2]=0.28f;  // armory gate (brushed brass)
         m_doorIdx[2] = buildLevelDoor(scene, m_doors, device, physics, c);
     }
     {
         DoorSpec d; d.doorwayCenter = m_layout.doorD; d.axis = DoorAxis::AlongZ;
         d.withButton = false; d.locked = true;              // auto on arena trigger
-        d.tint[0]=0.70f; d.tint[1]=0.30f; d.tint[2]=0.30f;
+        d.tint[0]=0.46f; d.tint[1]=0.38f; d.tint[2]=0.38f;  // dark steel
         m_doorIdx[3] = buildLevelDoor(scene, m_doors, device, physics, d);
     }
     {
         DoorSpec e; e.doorwayCenter = m_layout.doorE; e.axis = DoorAxis::AlongZ;
         e.withButton = false; e.locked = true;              // opens on Martinez death
-        e.tint[0]=0.40f; e.tint[1]=0.70f; e.tint[2]=0.90f;
+        e.tint[0]=0.38f; e.tint[1]=0.50f; e.tint[2]=0.56f;  // cyan steel
         m_doorIdx[4] = buildLevelDoor(scene, m_doors, device, physics, e);
     }
 
@@ -229,6 +230,36 @@ bool Level1Game::doorLocked(char letter) const {
     uint32_t i = doorIndex(letter);
     if (i == kNoLink || i >= m_doors.count()) return false;
     return m_doors.at(i).locked;
+}
+
+bool Level1Game::nearLockedCodedDoor(const x3::phys::Vec3& playerPos, float range) const {
+    const float r2 = range * range;
+    for (uint32_t i = 0; i < m_doors.count(); ++i) {
+        const Door& d = m_doors.at(i);
+        if (!d.locked || d.code == 0) continue;
+        const float dx = playerPos.x - d.closedPos.x;
+        const float dz = playerPos.z - d.closedPos.z;
+        if (dx * dx + dz * dz <= r2) return true;
+    }
+    return false;
+}
+
+bool Level1Game::tryDoorCode(const x3::phys::Vec3& playerPos, int code, float range) {
+    const float r2 = range * range;
+    int best = -1; float bestD2 = r2;
+    for (uint32_t i = 0; i < m_doors.count(); ++i) {
+        const Door& d = m_doors.at(i);
+        if (!d.locked || d.code == 0) continue;
+        const float dx = playerPos.x - d.closedPos.x;
+        const float dz = playerPos.z - d.closedPos.z;
+        const float d2 = dx * dx + dz * dz;
+        if (d2 <= bestD2) { bestD2 = d2; best = (int)i; }
+    }
+    if (best < 0) return false;
+    Door& d = m_doors.at((uint32_t)best);
+    if (d.code != code) return false;
+    m_doors.unlock(d);
+    return m_doors.startOpening(d);
 }
 
 void Level1Game::playSfx(x3::audio::SoundHandle h, const x3::phys::Vec3& at, float vol) {

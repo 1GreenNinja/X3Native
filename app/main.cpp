@@ -257,7 +257,7 @@ int main(int argc, char** argv) {
     // No OpenGL/GLES context — we drive Vulkan ourselves.
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
-    const uint32_t W = 1280, H = 720;
+    const uint32_t W = 2560, H = 1440;
     GLFWwindow* window = glfwCreateWindow(static_cast<int>(W), static_cast<int>(H),
                                           "X3Engine", nullptr, nullptr);
     if (!window) {
@@ -648,10 +648,20 @@ int main(int argc, char** argv) {
                              consoleOpen ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
             consoleWasOpen = consoleOpen;
         }
-        // Esc quits only when the console is closed (the `quit` command also sets
-        // quitRequested via the HUD-registered command).
-        if (!consoleOpen && glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-            glfwSetWindowShouldClose(window, 1);
+        // ---- Door-code keypad state (persists across frames) ----
+        static bool        codeMode = false;
+        static std::string codeBuf;
+        static bool        kpDigitPrev[10] = {};
+        static bool        kpEnterPrev = false, kpBackPrev = false, kpEscPrev = false;
+
+        // Esc: cancel code entry if active, else quit (only when console closed; the
+        // `quit` command also sets quitRequested via the HUD-registered command).
+        bool kpEscNow = !consoleOpen && glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+        if (kpEscNow && !kpEscPrev) {
+            if (codeMode) { codeMode = false; codeBuf.clear(); }
+            else glfwSetWindowShouldClose(window, 1);
+        }
+        kpEscPrev = kpEscNow;
         if (quitRequested) glfwSetWindowShouldClose(window, 1);
 
         double nowT = glfwGetTime();
@@ -702,10 +712,40 @@ int main(int argc, char** argv) {
             x3::phys::Vec3 dir{ std::cos(pitch) * std::cos(yaw),
                                 std::sin(pitch),
                                 std::cos(pitch) * std::sin(yaw) };
-            if (game.onUse(eye, dir, scene, *physics))   // plays door SFX internally
+            if (game.onUse(eye, dir, scene, *physics)) {  // plays door SFX internally
                 x3::logInfo("use: button pressed — door opening");
+            } else if (!codeMode && game.nearLockedCodedDoor(eye)) {
+                codeMode = true; codeBuf.clear();
+                x3::logInfo("use: locked keypad door — type the code, Enter to submit, Esc to cancel");
+            }
         }
         prevE = eNow;
+
+        // ---- Door-code keypad: capture digits while in code-entry mode ----
+        if (codeMode) {
+            for (int dgt = 0; dgt < 10; ++dgt) {
+                bool dn = keyDown(GLFW_KEY_0 + dgt) || keyDown(GLFW_KEY_KP_0 + dgt);
+                if (dn && !kpDigitPrev[dgt] && codeBuf.size() < 6) codeBuf += char('0' + dgt);
+                kpDigitPrev[dgt] = dn;
+            }
+            bool backNow = keyDown(GLFW_KEY_BACKSPACE);
+            if (backNow && !kpBackPrev && !codeBuf.empty()) codeBuf.pop_back();
+            kpBackPrev = backNow;
+            bool enterNow = keyDown(GLFW_KEY_ENTER) || keyDown(GLFW_KEY_KP_ENTER);
+            if (enterNow && !kpEnterPrev) {
+                int entered = codeBuf.empty() ? -1 : std::atoi(codeBuf.c_str());
+                float pex, pey, pez, pyaw, ppitch;
+                player.camera(pex, pey, pez, pyaw, ppitch);
+                if (game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, entered)) {
+                    x3::logInfo("keypad: ACCEPTED — door opening");
+                    codeMode = false; codeBuf.clear();
+                } else {
+                    x3::logInfo("keypad: rejected");
+                    codeBuf.clear();
+                }
+            }
+            kpEnterPrev = enterNow;
+        }
 
         // Camera state this frame (set by whichever branch runs), reused below
         // for the weapon viewmodel.
@@ -893,6 +933,13 @@ int main(int argc, char** argv) {
             // Perf stats overlay (top-right): gated by the r_stats cvar / F3.
             hud.drawStats(*device, frame, *console, dt);
             if (!consoleOpen) game.drawObjective(*device, frame);
+            if (codeMode && !consoleOpen) {
+                uint32_t hudW = 0, hudH = 0; device->hudSize(hudW, hudH);
+                std::string kpPrompt = "DOOR LOCKED   ENTER CODE: " + codeBuf + "_";
+                const float kpCol[4] = { 1.0f, 0.82f, 0.18f, 1.0f };
+                device->drawHudText(frame, kpPrompt.c_str(),
+                                    (float)hudW * 0.5f - 230.0f, (float)hudH * 0.5f - 60.0f, 3.0f, kpCol);
+            }
             // Phase 2b: boss "PHASE 2!/PHASE 3!" flash, centered near the top, while
             // the banner timer is live (a brief, attention-grabbing red string).
             if (game.phaseBannerTime() > 0.0f && !game.phaseBanner().empty()) {

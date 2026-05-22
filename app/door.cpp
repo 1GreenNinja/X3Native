@@ -229,6 +229,7 @@ uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
     d.duration  = spec.duration;
     d.state     = DoorState::Closed;
     d.locked    = spec.locked;
+    d.code      = spec.code;
     uint32_t doorIdx = doors.add(d);
 
     // Optional linked button, mounted on the wall beside the doorway, on the

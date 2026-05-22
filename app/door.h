@@ -54,6 +54,8 @@ struct Door {
     float             t        = 0.0f;   // animation cursor [0..duration]
     DoorState         state    = DoorState::Closed;
     bool              locked   = false;  // §6.4: refuse to open until unlock()
+    int               code     = 0;      // keypad code (0 = no keypad); a LOCKED door with
+                                         // code != 0 opens when the matching code is entered
 };
 
 // Registry of doors in a level. Kept in the game layer (not the Scene) so the
@@ -123,6 +125,7 @@ struct DoorSpec {
     float          thickness = 0.2f;       // door slab thickness (across the wall)
     float          duration  = 1.0f;       // seconds Closed -> Open
     bool           locked    = false;      // §6.4 lockable
+    int            code      = 0;          // keypad code (0 = none); locked + code => keypad door
     bool           withButton = true;      // place a linked wall button beside it
     float          tint[4]   = { 0.85f, 0.30f, 0.18f, 1.0f };  // door slab color
 };

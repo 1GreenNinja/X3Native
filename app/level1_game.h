@@ -103,6 +103,13 @@ public:
     bool onUse(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                Scene& scene, x3::phys::IPhysicsWorld& physics);
 
+    // Door-code keypad (EFLZ_SPIRE): true if the player is within `range` of a LOCKED
+    // door carrying a keypad code (gates the host's code-entry mode).
+    bool nearLockedCodedDoor(const x3::phys::Vec3& playerPos, float range = 3.5f) const;
+    // Submit a keypad `code`: unlock + open the nearest locked coded door in range whose
+    // code matches. Returns true if a door began opening.
+    bool tryDoorCode(const x3::phys::Vec3& playerPos, int code, float range = 3.5f);
+
     // Handle a FIRE press (rising edge) along `dir` from `eye`: only effective when
     // armed. Damages the first live monster the ray hits. Returns the result so the
     // host can spawn FX. No-op (default miss) when not armed.
