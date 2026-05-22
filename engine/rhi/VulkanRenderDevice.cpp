@@ -77,6 +77,7 @@ public:
     bool init(const DeviceDesc& desc) override {
         m_vsync = desc.vsync;
         m_width = desc.width; m_height = desc.height;
+        m_headless = desc.headless;
 
         // ---- Instance ----
         vkb::InstanceBuilder ib;
@@ -90,13 +91,19 @@ public:
         m_inst = inst_ret.value();
 
         // ---- Win32 surface ----
-        if (!desc.nativeWindowHandle) { logError("[rhi] init: null HWND"); return false; }
-        VkWin32SurfaceCreateInfoKHR sci{};
-        sci.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-        sci.hinstance = ::GetModuleHandle(nullptr);
-        sci.hwnd = static_cast<HWND>(desc.nativeWindowHandle);
-        if (vkCreateWin32SurfaceKHR(m_inst.instance, &sci, nullptr, &m_surface) != VK_SUCCESS) {
-            logError("[rhi] vkCreateWin32SurfaceKHR failed"); return false;
+        // HEADLESS: skip surface creation entirely. No VK_KHR_surface / swapchain
+        // extension is needed for the offscreen path — we never present. The
+        // physical-device selector below uses defer_surface_initialization() so it
+        // does NOT require a presentable queue against a surface.
+        if (!m_headless) {
+            if (!desc.nativeWindowHandle) { logError("[rhi] init: null HWND"); return false; }
+            VkWin32SurfaceCreateInfoKHR sci{};
+            sci.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
+            sci.hinstance = ::GetModuleHandle(nullptr);
+            sci.hwnd = static_cast<HWND>(desc.nativeWindowHandle);
+            if (vkCreateWin32SurfaceKHR(m_inst.instance, &sci, nullptr, &m_surface) != VK_SUCCESS) {
+                logError("[rhi] vkCreateWin32SurfaceKHR failed"); return false;
+            }
         }
 
         // ---- Physical + logical device (Vulkan 1.3 features) ----
@@ -128,9 +135,17 @@ public:
         f10.drawIndirectFirstInstance = VK_TRUE;
 
         vkb::PhysicalDeviceSelector sel{ m_inst };
-        auto phys_ret = sel.set_surface(m_surface).set_minimum_version(1,3)
-                           .set_required_features(f10)
-                           .set_required_features_13(f13).set_required_features_12(f12).select();
+        sel.set_minimum_version(1,3)
+           .set_required_features(f10)
+           .set_required_features_13(f13).set_required_features_12(f12);
+        if (m_headless) {
+            // No surface: select a device without checking present support. The
+            // graphics queue we pick below is all the offscreen path needs.
+            sel.defer_surface_initialization();
+        } else {
+            sel.set_surface(m_surface);
+        }
+        auto phys_ret = sel.select();
         if (!phys_ret) { logError(std::string("[rhi] phys: ") + phys_ret.error().message()); return false; }
         vkb::PhysicalDevice phys = phys_ret.value();
         m_descriptorIndexing = true;
@@ -147,7 +162,8 @@ public:
         m_gfxFamily = qfi.value();
 
         logInfo(std::string("[rhi] device ready: ") + phys.name +
-                " (Vulkan 1.3, dynamic-rendering + sync2 + descriptor-indexing)");
+                " (Vulkan 1.3, dynamic-rendering + sync2 + descriptor-indexing)" +
+                (m_headless ? " [HEADLESS: offscreen target, no surface/swapchain]" : ""));
 
         // VMA allocator (needed by the swapchain's depth image + graphics buffers)
         VmaAllocatorCreateInfo aci{};
@@ -158,7 +174,8 @@ public:
         aci.vulkanApiVersion = VK_API_VERSION_1_3;
         if (vmaCreateAllocator(&aci, &m_alloc) != VK_SUCCESS) { logError("[rhi] VMA create failed"); return false; }
 
-        if (!createSwapchain(m_width, m_height)) return false;
+        if (m_headless) { if (!createOffscreenTarget(m_width, m_height)) return false; }
+        else            { if (!createSwapchain(m_width, m_height)) return false; }
         if (!createPerFrame()) return false;
         if (!createShadowImage()) return false;   // before createGraphics (mesh layout needs set 2)
         if (!createGraphics()) return false;      // builds the shadow depth pipeline at the end
@@ -173,7 +190,8 @@ public:
         destroyHud();
         destroyGraphics();
         destroyPerFrame();
-        destroySwapchain();
+        if (m_headless) destroyOffscreenTarget();
+        else            destroySwapchain();
         if (m_alloc)         { vmaDestroyAllocator(m_alloc); m_alloc = nullptr; }
         if (m_dev.device)    vkb::destroy_device(m_dev);
         if (m_surface)       vkDestroySurfaceKHR(m_inst.instance, m_surface, nullptr);
@@ -209,8 +227,13 @@ public:
 
     FrameContext beginFrame() override {
         FrameContext fc{};
-        if (m_needsRecreate) { recreateSwapchain(); m_needsRecreate = false; }
-        if (m_swapchain == VK_NULL_HANDLE) return fc;
+        if (m_needsRecreate) {
+            if (m_headless) recreateOffscreenTarget(); else recreateSwapchain();
+            m_needsRecreate = false;
+        }
+        // Windowed needs a live swapchain; headless needs a live offscreen image.
+        if (!m_headless && m_swapchain == VK_NULL_HANDLE) return fc;
+        if (m_headless && m_offscreenColorImg == VK_NULL_HANDLE) return fc;
 
         auto& fr = m_frames[m_frameIdx];
         vkWaitForFences(m_dev.device, 1, &fr.inFlight, VK_TRUE, UINT64_MAX);
@@ -236,11 +259,18 @@ public:
             fr.tsPending = false;
         }
 
+        // HEADLESS: there is no swapchain to acquire from — the single offscreen
+        // color image is the only "backbuffer" and is always available once its
+        // ring slot's prior submission has retired (the fence wait above). So we
+        // skip vkAcquireNextImageKHR entirely and the imageAvailable semaphore is
+        // not signalled/waited (endFrame() submits with no wait semaphore headless).
         uint32_t imageIndex = 0;
-        VkResult acq = vkAcquireNextImageKHR(m_dev.device, m_swapchain, UINT64_MAX,
-                                             fr.imageAvailable, VK_NULL_HANDLE, &imageIndex);
-        if (acq == VK_ERROR_OUT_OF_DATE_KHR) { m_needsRecreate = true; return fc; }
-        if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) { logError("[rhi] acquire failed"); return fc; }
+        if (!m_headless) {
+            VkResult acq = vkAcquireNextImageKHR(m_dev.device, m_swapchain, UINT64_MAX,
+                                                 fr.imageAvailable, VK_NULL_HANDLE, &imageIndex);
+            if (acq == VK_ERROR_OUT_OF_DATE_KHR) { m_needsRecreate = true; return fc; }
+            if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) { logError("[rhi] acquire failed"); return fc; }
+        }
 
         vkResetFences(m_dev.device, 1, &fr.inFlight);
         vkResetCommandPool(m_dev.device, fr.pool, 0);
@@ -365,6 +395,11 @@ public:
 
         vkEndCommandBuffer(fr.cmd);
 
+        // HEADLESS: no acquire semaphore to wait on and no present, so submit with
+        // NO wait/signal semaphores. The inFlight fence alone serializes the ring
+        // slot (beginFrame waits it before reusing the slot's offscreen image +
+        // command buffer). WINDOWED keeps the acquire-wait + renderFinished-signal
+        // that the present below consumes.
         VkSemaphoreSubmitInfo waitS{};
         waitS.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
         waitS.semaphore = fr.imageAvailable;
@@ -372,7 +407,7 @@ public:
 
         VkSemaphoreSubmitInfo signalS{};
         signalS.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-        signalS.semaphore = m_renderFinished[imageIndex];
+        signalS.semaphore = m_headless ? VK_NULL_HANDLE : m_renderFinished[imageIndex];
         signalS.stageMask = VK_PIPELINE_STAGE_2_ALL_GRAPHICS_BIT;
 
         VkCommandBufferSubmitInfo cmdS{};
@@ -381,9 +416,11 @@ public:
 
         VkSubmitInfo2 submit{};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-        submit.waitSemaphoreInfoCount = 1;   submit.pWaitSemaphoreInfos = &waitS;
-        submit.commandBufferInfoCount = 1;   submit.pCommandBufferInfos = &cmdS;
-        submit.signalSemaphoreInfoCount = 1; submit.pSignalSemaphoreInfos = &signalS;
+        submit.waitSemaphoreInfoCount   = m_headless ? 0u : 1u;
+        submit.pWaitSemaphoreInfos      = m_headless ? nullptr : &waitS;
+        submit.commandBufferInfoCount   = 1;   submit.pCommandBufferInfos = &cmdS;
+        submit.signalSemaphoreInfoCount = m_headless ? 0u : 1u;
+        submit.pSignalSemaphoreInfos    = m_headless ? nullptr : &signalS;
         vkQueueSubmit2(m_gfxQueue, 1, &submit, fr.inFlight);
 
         // Fix 1: if this frame recorded the capture copy, remember which fence to
@@ -394,15 +431,20 @@ public:
             m_captureFrameSlot = m_frameIdx;
         }
 
-        VkPresentInfoKHR present{};
-        present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
-        present.waitSemaphoreCount = 1;
-        present.pWaitSemaphores = &m_renderFinished[imageIndex];
-        present.swapchainCount = 1;
-        present.pSwapchains = &m_swapchain;
-        present.pImageIndices = &imageIndex;
-        VkResult pr = vkQueuePresentKHR(m_gfxQueue, &present);
-        if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) m_needsRecreate = true;
+        // HEADLESS: "present" is a no-op — there is no swapchain. The offscreen
+        // image's final state was set by the graph's finalize pass and the readback
+        // (if any) already copied it. WINDOWED presents the acquired image.
+        if (!m_headless) {
+            VkPresentInfoKHR present{};
+            present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            present.waitSemaphoreCount = 1;
+            present.pWaitSemaphores = &m_renderFinished[imageIndex];
+            present.swapchainCount = 1;
+            present.pSwapchains = &m_swapchain;
+            present.pImageIndices = &imageIndex;
+            VkResult pr = vkQueuePresentKHR(m_gfxQueue, &present);
+            if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) m_needsRecreate = true;
+        }
 
         m_frameIdx = (m_frameIdx + 1) % kFramesInFlight;
         ++m_totalFrames;
@@ -422,8 +464,10 @@ public:
     // image is ever touched). Allocates the host-visible readback buffer up front.
     void armCapture(const char* path) override {
         (void)path; // path is consumed by captureFrame() at finalize time
-        if (!m_swapchain || m_swapImages.empty()) {
-            logError("[rhi] armCapture: not ready (no swapchain)"); return;
+        const bool ready = m_headless ? (m_offscreenColorImg != VK_NULL_HANDLE)
+                                      : (m_swapchain && !m_swapImages.empty());
+        if (!ready) {
+            logError("[rhi] armCapture: not ready (no render target)"); return;
         }
         const uint32_t W = m_extent.width, H = m_extent.height;
         if (W == 0 || H == 0) { logError("[rhi] armCapture: zero extent"); return; }
@@ -1231,12 +1275,19 @@ private:
     //                          PRESENT_SRC — all derived from declared uses.
     // ===================================================================
     void buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imageIndex, bool wantCapture) {
-        // Import this frame's images with their correct ENTRY state. The swapchain
-        // image is freshly acquired -> UNDEFINED. The depth buffer is cleared each
-        // frame -> UNDEFINED is valid. The shadow map persists its prior-frame
-        // state across frames (DEPTH_READ_ONLY after the last main pass sampled it),
-        // except on the very first use where it is UNDEFINED.
-        RgResource rgColor = m_graph.importImage("swapchain.color", m_swapImages[imageIndex],
+        // The frame's COLOR target: the acquired swapchain image (windowed) or the
+        // single persistent offscreen color image (headless). Both are imported
+        // UNDEFINED at entry — the main pass CLEARs them, so prior contents are
+        // intentionally discarded; there is no cross-frame color dependency.
+        VkImage  colorTargetImg  = m_headless ? m_offscreenColorImg  : m_swapImages[imageIndex];
+        VkImageView colorTargetView = m_headless ? m_offscreenColorView : m_swapViews[imageIndex];
+
+        // Import this frame's images with their correct ENTRY state. The color
+        // target is freshly acquired/reused -> UNDEFINED. The depth buffer is
+        // cleared each frame -> UNDEFINED is valid. The shadow map persists its
+        // prior-frame state across frames (DEPTH_READ_ONLY after the last main pass
+        // sampled it), except on the very first use where it is UNDEFINED.
+        RgResource rgColor = m_graph.importImage("frame.color", colorTargetImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgDepth = m_graph.importImage("scene.depth", m_depthImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
@@ -1275,7 +1326,7 @@ private:
         {
             m_mainColorAttach = VkRenderingAttachmentInfo{};
             m_mainColorAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-            m_mainColorAttach.imageView = m_swapViews[imageIndex];
+            m_mainColorAttach.imageView = colorTargetView;
             m_mainColorAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             m_mainColorAttach.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
             m_mainColorAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1331,19 +1382,25 @@ private:
         }
 
         // ---- Pass 3: present finalize (or in-frame capture copy) ------------
+        // The finalize layout differs by mode: WINDOWED leaves the color image in
+        // PRESENT_SRC_KHR for vkQueuePresentKHR; HEADLESS never presents, so there
+        // is no PRESENT_SRC transition (that layout requires the swapchain ext).
+        const VkImageLayout finalLayout = m_headless
+            ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL  // headless: nothing presents
+            : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         if (wantCapture) {
-            // The capture copy reads the swapchain color as TRANSFER_SRC then leaves
-            // it PRESENT_SRC. Two uses on the same resource within one pass would be
-            // ambiguous, so express the capture as TWO tiny passes: one that
-            // transitions to TRANSFER_SRC + does the copy, one that transitions to
-            // PRESENT_SRC. The graph derives both transitions.
+            // The capture copy reads the color image as TRANSFER_SRC then leaves it
+            // in the finalize layout. Two uses on the same resource within one pass
+            // would be ambiguous, so express the capture as TWO tiny passes: one
+            // that transitions to TRANSFER_SRC + does the copy, one that transitions
+            // to the finalize layout. The graph derives both transitions.
             RenderPassDesc copyPass{};
             copyPass.name = "capture-copy";
             copyPass.uses.push_back(ResourceUse{
                 rgColor, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
-            VkImage colorImg = m_swapImages[imageIndex];
+            VkImage colorImg = colorTargetImg;
             copyPass.record = [this, colorImg](VkCommandBuffer c){
                 VkBufferImageCopy region{};
                 region.bufferOffset = 0;
@@ -1357,19 +1414,29 @@ private:
             };
             m_graph.addPass(std::move(copyPass));
 
+            // HEADLESS non-present: the copy already left the image TRANSFER_SRC and
+            // nothing reads it afterward, so the extra COLOR_ATTACHMENT transition is
+            // unnecessary work — skip the finalize pass entirely. WINDOWED still
+            // needs the TRANSFER_SRC -> PRESENT_SRC transition for the present.
+            if (!m_headless) {
+                RenderPassDesc presentPass{};
+                presentPass.name = "present";
+                presentPass.uses.push_back(ResourceUse{
+                    rgColor, finalLayout,
+                    VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+                presentPass.record = nullptr; // pure layout transition, no commands
+                m_graph.addPass(std::move(presentPass));
+            }
+        } else if (!m_headless) {
+            // WINDOWED no-capture: transition COLOR_ATTACHMENT -> PRESENT_SRC.
+            // HEADLESS no-capture: nothing reads the image, so leave it in
+            // COLOR_ATTACHMENT_OPTIMAL (no finalize pass; the image is re-imported
+            // UNDEFINED + cleared next frame anyway).
             RenderPassDesc presentPass{};
             presentPass.name = "present";
             presentPass.uses.push_back(ResourceUse{
-                rgColor, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
-                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
-            presentPass.record = nullptr; // pure layout transition, no commands
-            m_graph.addPass(std::move(presentPass));
-        } else {
-            RenderPassDesc presentPass{};
-            presentPass.name = "present";
-            presentPass.uses.push_back(ResourceUse{
-                rgColor, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                rgColor, finalLayout,
                 VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
             presentPass.record = nullptr;
@@ -1759,6 +1826,88 @@ private:
     void recreateSwapchain() {
         vkDeviceWaitIdle(m_dev.device);
         createSwapchain(m_width, m_height);
+    }
+
+    // ---- HEADLESS offscreen render target (no window, no swapchain) ---------
+    // Creates the offscreen COLOR image the render graph targets in place of an
+    // acquired swapchain image, plus the matching depth image. The color image
+    // uses the SAME default format the windowed swapchain used (B8G8R8A8_UNORM)
+    // and COLOR_ATTACHMENT | TRANSFER_SRC usage, so the existing capture readback
+    // + BGRA->RGBA swizzle produce byte-identical PNGs. This mirrors the depth
+    // image creation in createSwapchain() so both modes size their depth the same.
+    bool createOffscreenTarget(uint32_t w, uint32_t h) {
+        if (w == 0 || h == 0) { logError("[rhi] offscreen: zero extent"); return false; }
+        // Destroy any prior target first (recreate path); on first create these are
+        // all null and destroy is a no-op.
+        destroyOffscreenTarget();
+
+        m_extent = { w, h };
+        m_format = VK_FORMAT_B8G8R8A8_UNORM;   // match the windowed swapchain format
+
+        // Offscreen color image: COLOR_ATTACHMENT (graph target) + TRANSFER_SRC
+        // (vkCmdCopyImageToBuffer for --screenshot), single sample, optimal tiling.
+        VkImageCreateInfo cici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        cici.imageType = VK_IMAGE_TYPE_2D;
+        cici.format = m_format;
+        cici.extent = { w, h, 1 };
+        cici.mipLevels = 1; cici.arrayLayers = 1;
+        cici.samples = VK_SAMPLE_COUNT_1_BIT;
+        cici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        cici.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+        cici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VmaAllocationCreateInfo caci{};
+        caci.usage = VMA_MEMORY_USAGE_AUTO;
+        caci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        if (vmaCreateImage(m_alloc, &cici, &caci, &m_offscreenColorImg, &m_offscreenColorAlloc, nullptr) != VK_SUCCESS) {
+            logError("[rhi] offscreen color image create failed"); return false;
+        }
+        VkImageViewCreateInfo cvci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        cvci.image = m_offscreenColorImg; cvci.viewType = VK_IMAGE_VIEW_TYPE_2D; cvci.format = m_format;
+        cvci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(m_dev.device, &cvci, nullptr, &m_offscreenColorView) != VK_SUCCESS) {
+            logError("[rhi] offscreen color view create failed"); return false;
+        }
+
+        // Depth buffer sized to the offscreen color (identical to createSwapchain).
+        VkImageCreateInfo dici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        dici.imageType = VK_IMAGE_TYPE_2D;
+        dici.format = m_depthFormat;
+        dici.extent = { w, h, 1 };
+        dici.mipLevels = 1; dici.arrayLayers = 1;
+        dici.samples = VK_SAMPLE_COUNT_1_BIT;
+        dici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        dici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        VmaAllocationCreateInfo daci{};
+        daci.usage = VMA_MEMORY_USAGE_AUTO;
+        daci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        if (vmaCreateImage(m_alloc, &dici, &daci, &m_depthImg, &m_depthAlloc, nullptr) != VK_SUCCESS) {
+            logError("[rhi] offscreen depth image create failed"); return false;
+        }
+        VkImageViewCreateInfo dvci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        dvci.image = m_depthImg; dvci.viewType = VK_IMAGE_VIEW_TYPE_2D; dvci.format = m_depthFormat;
+        dvci.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(m_dev.device, &dvci, nullptr, &m_depthView) != VK_SUCCESS) {
+            logError("[rhi] offscreen depth view create failed"); return false;
+        }
+        return true;
+    }
+
+    void destroyOffscreenTarget() {
+        if (m_depthView) { vkDestroyImageView(m_dev.device, m_depthView, nullptr); m_depthView = VK_NULL_HANDLE; }
+        if (m_depthImg)  { vmaDestroyImage(m_alloc, m_depthImg, m_depthAlloc); m_depthImg = VK_NULL_HANDLE; m_depthAlloc = nullptr; }
+        if (m_offscreenColorView) { vkDestroyImageView(m_dev.device, m_offscreenColorView, nullptr); m_offscreenColorView = VK_NULL_HANDLE; }
+        if (m_offscreenColorImg)  { vmaDestroyImage(m_alloc, m_offscreenColorImg, m_offscreenColorAlloc); m_offscreenColorImg = VK_NULL_HANDLE; m_offscreenColorAlloc = nullptr; }
+    }
+
+    // Headless analogue of recreateSwapchain(): idle the device, destroy + recreate
+    // the offscreen color + depth images at the new size, and re-point the graph
+    // (the graph re-imports the offscreen image by handle each frame in
+    // buildAndExecuteGraph, so simply recreating the images here is enough — the
+    // next beginFrame/endFrame targets the new images). This exercises the same
+    // resize/recreate code path the windowed swapchain recreate does, validated.
+    void recreateOffscreenTarget() {
+        vkDeviceWaitIdle(m_dev.device);
+        createOffscreenTarget(m_width, m_height);
     }
 
     bool createPerFrame() {
@@ -2586,13 +2735,24 @@ private:
     VkRenderingAttachmentInfo m_mainColorAttach{};
     VkRenderingAttachmentInfo m_mainDepthAttach{};
 
-    // Swapchain
+    // Swapchain (windowed mode only; all null/empty in headless mode)
     VkSwapchainKHR m_swapchain = VK_NULL_HANDLE;
     VkExtent2D     m_extent{};
     VkFormat       m_format = VK_FORMAT_B8G8R8A8_UNORM;
     std::vector<VkImage>     m_swapImages;
     std::vector<VkImageView> m_swapViews;
     std::vector<VkSemaphore> m_renderFinished; // per swapchain image
+
+    // ---- Headless offscreen render target (headless mode only) -------------
+    // The single color image the render graph targets in place of an acquired
+    // swapchain image. Same format/extent the swapchain used (B8G8R8A8_UNORM,
+    // COLOR_ATTACHMENT | TRANSFER_SRC) so the capture readback is byte-identical.
+    // m_extent / m_format / m_depthImg / m_depthView above are shared with the
+    // windowed path (only ONE of the two target sets is ever live).
+    bool          m_headless = false;
+    VkImage       m_offscreenColorImg   = VK_NULL_HANDLE;
+    VmaAllocation m_offscreenColorAlloc = nullptr;
+    VkImageView   m_offscreenColorView  = VK_NULL_HANDLE;
 
     // Per-frame-in-flight
     Frame    m_frames[kFramesInFlight];

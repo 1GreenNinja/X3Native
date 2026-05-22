@@ -13,6 +13,13 @@ struct DeviceDesc {
     uint32_t height = 0;
     bool     vsync       = true;
     bool     validation  = false;          // Vulkan validation layers
+    // HEADLESS / OFFSCREEN mode (validation + screenshot paths). When true the
+    // device creates NO surface and NO swapchain — instead it renders into an
+    // offscreen color image (same format/extent the swapchain used) that the
+    // render graph targets. "Present" is a no-op; screenshot readback copies the
+    // offscreen image. nativeWindowHandle is ignored. The interactive windowed
+    // path (headless=false) is byte-for-byte unchanged. See the .cpp.
+    bool     headless    = false;
 };
 
 struct FrameContext {
