@@ -223,11 +223,17 @@ public:
         // the depth buffer exists (soft particles sample it). The whole pass is gated
         // per-frame on whether anything was submitted, so it costs nothing when idle.
         if (!createParticles()) return false;
+        // GPU-compute persistent debris world (K-T2): the FIRST compute pipeline in
+        // the renderer. A host-visible pool SSBO integrated by a compute dispatch +
+        // drawn via the same instanced pattern the particles use. Additive + opt-in:
+        // nothing happens unless the host spawns + steps + draws debris.
+        if (!createDebris()) return false;
         return true;
     }
 
     void shutdown() override {
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        destroyDebris();
         destroyParticles();
         destroyWater();
         destroyGi();
@@ -407,6 +413,9 @@ public:
         m_partAlpha.clear();
         m_decals.clear();
         m_partAddCount = m_partAlphaCount = m_decalCount = 0;
+        // Debris compute/draw are re-armed per frame by gpuDebrisStep/gpuDebrisDraw.
+        m_debrisStepPending = false;
+        m_debrisDrawPending = false;
         m_framePrepared = false;
         m_frameCmdCount = 0;
         if (fr.hudDescPool) vkResetDescriptorPool(m_dev.device, fr.hudDescPool, 0);
@@ -1249,6 +1258,7 @@ private:
         proj[1][1] *= -1.0f;
         FrameUBO ubo{};
         ubo.viewProj = proj * view;
+        m_lastViewProj = ubo.viewProj;  // cached for the debris instanced draw UBO
 
         // ---- SSAO per-frame UBO + mesh.frag control. The SSAO pass reconstructs
         // VIEW-space position from depth via invProj and projects samples via proj
@@ -1859,8 +1869,13 @@ private:
         // submitted this frame (zero GPU cost when idle). It samples the scene depth
         // (soft particles) + depth-tests against it, like water.
         const bool particlesOn = (m_partAddCount + m_partAlphaCount + m_decalCount) > 0;
-        // The scene depth must be STORED (not transient) when water/GI/particles read it.
-        const bool storeDepth = waterOn || giOn || particlesOn;
+        // GPU-compute debris (K-T2): a compute pass integrates the pool this frame
+        // (when stepped), and the live pool is drawn (when requested) into the HDR
+        // target with read-only scene depth — exactly like the particle pass.
+        const bool debrisStep = m_debrisStepPending && m_debrisComputePipeline;
+        const bool debrisDraw = m_debrisDrawPending && m_debrisDrawPipeline;
+        // The scene depth must be STORED (not transient) when water/GI/particles/debris read it.
+        const bool storeDepth = waterOn || giOn || particlesOn || debrisDraw;
         RgResource rgSsaoRaw  = m_graph.importImage("ssao.raw",  m_ssaoRawImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgSsaoBlur = m_graph.importImage("ssao.blur", m_ssaoBlurImg,
@@ -1883,6 +1898,24 @@ private:
                 ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
             rgGiPrevDepth = m_graph.importImage("gi.prevDepth", m_giPrevDepthImg,
                 ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        }
+
+        // ---- Pass 0: GPU-compute debris integrate (K-T2) --------------------
+        // The FIRST compute pass in the renderer. Integrates the persistent debris
+        // pool SSBO (gravity, ground/AABB collision, damping, sleep, lifetime free)
+        // with one vkCmdDispatch over the pool capacity. No graph-tracked IMAGE uses
+        // (the pool is an SSBO; the compute->draw and compute->host barrier is emitted
+        // inside the record body). Synchronous on the graphics queue — correct on
+        // Pascal where async-compute overlap is weak. Gated: zero cost when not stepped.
+        if (debrisStep) {
+            RenderPassDesc dc{};
+            dc.name = "debris-compute";
+            dc.queue = RgQueue::Compute;
+            dc.usesDynamicRendering = false;
+            dc.recordCtx = this;
+            dc.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordDebrisComputeBody(c); };
+            m_graph.addPass(std::move(dc));
         }
 
         // ---- Pass 1: shadow depth pass --------------------------------------
@@ -2405,6 +2438,53 @@ private:
                 };
                 m_graph.addPass(std::move(cp));
             }
+        }
+
+        // ---- GPU-compute debris draw pass (K-T2) ----------------------------
+        // ONE instanced unit-cube draw over the whole pool capacity into the SAME
+        // linear HDR target (LOAD), with read-only scene depth (depth-TEST, no write)
+        // — exactly the resource pattern the particle pass uses, so the graph derives
+        // the DEPTH_ATTACHMENT->DEPTH_READ_ONLY transition. Dead pool slots collapse
+        // to nothing in the vertex shader (no compaction). Gated: zero cost when idle.
+        if (debrisDraw) {
+            m_debrisColorAttach = VkRenderingAttachmentInfo{};
+            m_debrisColorAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_debrisColorAttach.imageView = m_hdrView;
+            m_debrisColorAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_debrisColorAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            m_debrisColorAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            m_debrisDepthAttach = VkRenderingAttachmentInfo{};
+            m_debrisDepthAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_debrisDepthAttach.imageView = m_depthView;
+            m_debrisDepthAttach.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+            m_debrisDepthAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            m_debrisDepthAttach.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
+
+            RenderPassDesc dp{};
+            dp.name = "debris-draw";
+            dp.addUse(ResourceUse{
+                rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            dp.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            dp.usesDynamicRendering = true;
+            m_debrisRenderInfo = VkRenderingInfo{};
+            m_debrisRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_debrisRenderInfo.renderArea = { {0,0}, m_extent };
+            m_debrisRenderInfo.layerCount = 1;
+            m_debrisRenderInfo.colorAttachmentCount = 1;
+            m_debrisRenderInfo.pColorAttachments = &m_debrisColorAttach;
+            m_debrisRenderInfo.pDepthAttachment = &m_debrisDepthAttach;
+            dp.renderInfo = m_debrisRenderInfo;
+            dp.recordCtx = this;
+            dp.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordDebrisDrawBody(c); };
+            m_graph.addPass(std::move(dp));
         }
 
         // ---- Particle + decal pass (combat juice) ---------------------------
@@ -3437,6 +3517,468 @@ private:
         if (m_partSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_partSetLayout, nullptr);  m_partSetLayout = VK_NULL_HANDLE; }
         if (m_decalSetLayout){ vkDestroyDescriptorSetLayout(m_dev.device, m_decalSetLayout, nullptr); m_decalSetLayout = VK_NULL_HANDLE; }
         if (m_partDepthSampler) { vkDestroySampler(m_dev.device, m_partDepthSampler, nullptr); m_partDepthSampler = VK_NULL_HANDLE; }
+    }
+
+    // =======================================================================
+    // GPU-compute persistent debris world (Subsystem K, tier T2).
+    // -----------------------------------------------------------------------
+    // CLEAN-ROOM, original work. Built ONLY from the K spec (§5/§7), the engine's
+    // own renderer patterns (the SSBO + persistent-mapped buffer + instanced-draw
+    // path used by particles/multidraw above), and the Vulkan 1.3 spec (compute
+    // pipelines, SSBOs, vkCmdDispatch). NO id Tech / RBDOOM source consulted.
+    //
+    // A fixed-size pool of debris fragments lives in ONE host-visible DEVICE_LOCAL
+    // SSBO (VMA HOST_ACCESS_RANDOM -> BAR/host-visible device memory; reads + writes
+    // both work, no staging needed for spawn/readback). A COMPUTE shader integrates
+    // the whole pool each step (gravity, ground + AABB collision, damping, sleep,
+    // lifetime free). The pool draws via ONE instanced unit-cube draw (instanceCount
+    // == capacity); each instance reads its row from the same SSBO and dead slots
+    // collapse to nothing in the vertex shader (no per-frame compaction).
+    //
+    // This is the SYNCHRONOUS path (graphics queue): correct on Pascal (1080 Ti)
+    // where async-compute overlap is weak. The compute dispatch and the draw run in
+    // the same frame's command buffer, ordered by an SSBO memory barrier.
+
+    // Mirror of shaders/debris.comp's Fragment (std430; four 16-byte vec4 rows).
+    struct GpuDebrisFragment {
+        glm::vec4 posLife;    // xyz position, w remaining lifetime (s)
+        glm::vec4 velScale;   // xyz velocity, w half-extent
+        glm::vec4 spinState;  // xyz angular velocity, w packed state+sleepCtr
+        glm::vec4 rot;        // orientation quaternion (x,y,z,w)
+    };
+    static_assert(sizeof(GpuDebrisFragment) == 64, "GpuDebrisFragment must be 4x vec4");
+
+    // Mirror of shaders/debris.comp's Params UBO (std140).
+    struct GpuDebrisParamsUBO {
+        glm::vec4 gravityDt;     // xyz gravity, w dt
+        glm::vec4 groundDamp;    // x groundY, y restitution, z friction, w linDamp
+        glm::vec4 sleepCap;      // x sleepLin, y sleepAng, z sleepFrames, w capacity
+        glm::vec4 aabbCount;     // x aabb count
+        glm::vec4 aabbMin[4];
+        glm::vec4 aabbMax[4];
+    };
+
+    // Mirror of shaders/debris.{vert} DebrisDrawUBO (std140).
+    struct GpuDebrisDrawUBO { glm::mat4 viewProj; glm::vec4 color; };
+
+    static constexpr uint32_t kDebrisCapacity = 65536;  // pool size (spec §11 target: 50k+)
+    static constexpr float    kDebrisDeadState = 0.0f;
+    static constexpr float    kDebrisActiveState = 1.0f;
+
+    bool createDebris() {
+        m_debrisParams = IRenderDevice::GpuDebrisParams{};   // device defaults
+        m_debrisAlive = 0;
+        m_debrisSpawnCursor = 0;
+
+        // --- Pool SSBO (host-visible, mapped; storage + the compute reads/writes it). ---
+        {
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = (VkDeviceSize)sizeof(GpuDebrisFragment) * kDebrisCapacity;
+            bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo info{};
+            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_debrisPoolBuf, &m_debrisPoolAlloc, &info) != VK_SUCCESS) {
+                logError("[rhi] debris pool SSBO create failed"); return false; }
+            m_debrisPoolMapped = info.pMappedData;
+            // Zero the pool -> every slot DEAD (spinState.w == 0).
+            std::memset(m_debrisPoolMapped, 0, (size_t)bci.size);
+        }
+        // --- Counters SSBO (host-visible; counters[0] = alive count). ---
+        {
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = sizeof(uint32_t) * 4;
+            bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo info{};
+            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_debrisCountBuf, &m_debrisCountAlloc, &info) != VK_SUCCESS) {
+                logError("[rhi] debris counters SSBO create failed"); return false; }
+            m_debrisCountMapped = info.pMappedData;
+            std::memset(m_debrisCountMapped, 0, (size_t)bci.size);
+        }
+        // --- Per-frame params UBO (compute) + draw UBO (graphics), host-visible. ---
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            auto makeMapped = [&](VkDeviceSize bytes, VkBufferUsageFlags usage,
+                                  VkBuffer& buf, VmaAllocation& alloc, void*& mapped) -> bool {
+                VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+                bci.size = bytes; bci.usage = usage;
+                VmaAllocationCreateInfo aci{};
+                aci.usage = VMA_MEMORY_USAGE_AUTO;
+                aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+                VmaAllocationInfo info{};
+                if (vmaCreateBuffer(m_alloc, &bci, &aci, &buf, &alloc, &info) != VK_SUCCESS) return false;
+                mapped = info.pMappedData; return true;
+            };
+            if (!makeMapped(sizeof(GpuDebrisParamsUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                            m_debrisParamsBuf[i], m_debrisParamsAlloc[i], m_debrisParamsMapped[i])) {
+                logError("[rhi] debris params UBO create failed"); return false; }
+            if (!makeMapped(sizeof(GpuDebrisDrawUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                            m_debrisDrawUboBuf[i], m_debrisDrawUboAlloc[i], m_debrisDrawUboMapped[i])) {
+                logError("[rhi] debris draw UBO create failed"); return false; }
+        }
+
+        // --- Shared unit cube (24 verts, per-face normals) for the instanced draw. ---
+        {
+            struct DV { glm::vec3 pos; glm::vec3 nrm; };
+            std::vector<DV> verts; std::vector<uint32_t> idx;
+            auto face = [&](glm::vec3 a, glm::vec3 b, glm::vec3 c, glm::vec3 d, glm::vec3 n) {
+                uint32_t base = (uint32_t)verts.size();
+                verts.push_back({a,n}); verts.push_back({b,n}); verts.push_back({c,n}); verts.push_back({d,n});
+                idx.insert(idx.end(), { base, base+1, base+2, base, base+2, base+3 });
+            };
+            const float h = 0.5f;
+            face({-h,-h, h},{ h,-h, h},{ h, h, h},{-h, h, h},{ 0, 0, 1});
+            face({ h,-h,-h},{-h,-h,-h},{-h, h,-h},{ h, h,-h},{ 0, 0,-1});
+            face({ h,-h, h},{ h,-h,-h},{ h, h,-h},{ h, h, h},{ 1, 0, 0});
+            face({-h,-h,-h},{-h,-h, h},{-h, h, h},{-h, h,-h},{-1, 0, 0});
+            face({-h, h, h},{ h, h, h},{ h, h,-h},{-h, h,-h},{ 0, 1, 0});
+            face({-h,-h,-h},{ h,-h,-h},{ h,-h, h},{-h,-h, h},{ 0,-1, 0});
+            m_debrisCubeIndexCount = (uint32_t)idx.size();
+            if (!createDeviceLocalBuffer(verts.data(), verts.size() * sizeof(DV),
+                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, m_debrisCubeVbo, m_debrisCubeAlloc)) {
+                logError("[rhi] debris cube vbo create failed"); return false; }
+            if (!createDeviceLocalBuffer(idx.data(), idx.size() * sizeof(uint32_t),
+                    VK_BUFFER_USAGE_INDEX_BUFFER_BIT, m_debrisCubeIbo, m_debrisCubeIboAlloc)) {
+                logError("[rhi] debris cube ibo create failed"); return false; }
+        }
+
+        // --- Descriptor pool: compute set (2 SSBO + 1 UBO) + draw sets (1 SSBO + 1 UBO each). ---
+        VkDescriptorPoolSize ps[2]{
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kFramesInFlight + 2 },   // pool x(comp+draw) + counters
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kFramesInFlight + 1 } }; // draw UBO x frames + params
+        VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        pci.maxSets = kFramesInFlight + 1; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
+        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_debrisPool) != VK_SUCCESS) {
+            logError("[rhi] debris desc pool failed"); return false; }
+
+        // --- Compute set layout: b0 pool SSBO, b1 counters SSBO, b2 params UBO. ---
+        {
+            VkDescriptorSetLayoutBinding b[3]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            b[2].binding = 2; b[2].descriptorCount = 1;
+            b[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; b[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            slci.bindingCount = 3; slci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_debrisComputeSetLayout) != VK_SUCCESS) {
+                logError("[rhi] debris compute set layout failed"); return false; }
+        }
+        // --- Draw set layout: b0 draw UBO (VS), b1 pool SSBO (VS readonly). ---
+        {
+            VkDescriptorSetLayoutBinding b[2]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; b[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; b[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+            VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            slci.bindingCount = 2; slci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_debrisDrawSetLayout) != VK_SUCCESS) {
+                logError("[rhi] debris draw set layout failed"); return false; }
+        }
+
+        // --- Compute pipeline. ---
+        {
+            VkShaderModule cs = loadShaderModule("shaders\\debris.comp.spv");
+            if (!cs) return false;
+            VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            plci.setLayoutCount = 1; plci.pSetLayouts = &m_debrisComputeSetLayout;
+            if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_debrisComputeLayout) != VK_SUCCESS) {
+                vkDestroyShaderModule(m_dev.device, cs, nullptr);
+                logError("[rhi] debris compute pipeline layout failed"); return false; }
+            VkComputePipelineCreateInfo cpci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+            cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
+            cpci.layout = m_debrisComputeLayout;
+            VkResult cr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_debrisComputePipeline);
+            vkDestroyShaderModule(m_dev.device, cs, nullptr);
+            if (cr != VK_SUCCESS) { logError("[rhi] debris compute pipeline create failed"); return false; }
+        }
+
+        // --- Compute descriptor set (one; the pool/counters/params persist). ---
+        {
+            VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            dsai.descriptorPool = m_debrisPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &m_debrisComputeSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_debrisComputeSet) != VK_SUCCESS) {
+                logError("[rhi] debris compute set alloc failed"); return false; }
+            VkDescriptorBufferInfo pool{ m_debrisPoolBuf, 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo cnt { m_debrisCountBuf, 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo prm { m_debrisParamsBuf[0], 0, sizeof(GpuDebrisParamsUBO) };
+            // The params UBO is per-frame; the compute set is rebound to the right
+            // frame's params each step (only one in-flight compute at a time here).
+            VkWriteDescriptorSet w[3]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[0].dstSet = m_debrisComputeSet;
+            w[0].dstBinding = 0; w[0].descriptorCount = 1; w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[0].pBufferInfo = &pool;
+            w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[1].dstSet = m_debrisComputeSet;
+            w[1].dstBinding = 1; w[1].descriptorCount = 1; w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[1].pBufferInfo = &cnt;
+            w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[2].dstSet = m_debrisComputeSet;
+            w[2].dstBinding = 2; w[2].descriptorCount = 1; w[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[2].pBufferInfo = &prm;
+            vkUpdateDescriptorSets(m_dev.device, 3, w, 0, nullptr);
+        }
+
+        // --- Draw pipeline (instanced cube, into the HDR scene target). ---
+        {
+            VkShaderModule vs = loadShaderModule("shaders\\debris.vert.spv");
+            VkShaderModule fs = loadShaderModule("shaders\\debris.frag.spv");
+            if (!vs || !fs) { if(vs) vkDestroyShaderModule(m_dev.device,vs,nullptr); if(fs) vkDestroyShaderModule(m_dev.device,fs,nullptr); return false; }
+            VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            plci.setLayoutCount = 1; plci.pSetLayouts = &m_debrisDrawSetLayout;
+            if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_debrisDrawLayout) != VK_SUCCESS) {
+                vkDestroyShaderModule(m_dev.device, vs, nullptr); vkDestroyShaderModule(m_dev.device, fs, nullptr);
+                logError("[rhi] debris draw pipeline layout failed"); return false; }
+
+            // Per-frame draw sets (UBO is per-frame; the pool SSBO is shared).
+            for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+                VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+                dsai.descriptorPool = m_debrisPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &m_debrisDrawSetLayout;
+                if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_debrisDrawSet[i]) != VK_SUCCESS) {
+                    vkDestroyShaderModule(m_dev.device, vs, nullptr); vkDestroyShaderModule(m_dev.device, fs, nullptr);
+                    logError("[rhi] debris draw set alloc failed"); return false; }
+                VkDescriptorBufferInfo ubi{ m_debrisDrawUboBuf[i], 0, sizeof(GpuDebrisDrawUBO) };
+                VkDescriptorBufferInfo pool{ m_debrisPoolBuf, 0, VK_WHOLE_SIZE };
+                VkWriteDescriptorSet w[2]{};
+                w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[0].dstSet = m_debrisDrawSet[i];
+                w[0].dstBinding = 0; w[0].descriptorCount = 1; w[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[0].pBufferInfo = &ubi;
+                w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[1].dstSet = m_debrisDrawSet[i];
+                w[1].dstBinding = 1; w[1].descriptorCount = 1; w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[1].pBufferInfo = &pool;
+                vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+            }
+
+            const VkFormat hdrFmt = kHdrFormat;
+            VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+            prci.colorAttachmentCount = 1; prci.pColorAttachmentFormats = &hdrFmt;
+            prci.depthAttachmentFormat = m_depthFormat;
+            VkPipelineShaderStageCreateInfo stages[2]{};
+            stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT; stages[0].module = vs; stages[0].pName = "main";
+            stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
+            VkVertexInputBindingDescription vib{ 0, sizeof(glm::vec3) * 2, VK_VERTEX_INPUT_RATE_VERTEX };
+            VkVertexInputAttributeDescription via[2]{
+                { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0 },
+                { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, sizeof(glm::vec3) } };
+            VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+            vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &vib;
+            vin.vertexAttributeDescriptionCount = 2; vin.pVertexAttributeDescriptions = via;
+            VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+            ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+            VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+            vp.viewportCount = 1; vp.scissorCount = 1;
+            VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+            rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_BACK_BIT;
+            rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+            VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+            ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+            VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+            dss.depthTestEnable = VK_TRUE; dss.depthWriteEnable = VK_FALSE;  // read-only scene depth in the part pass
+            dss.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+            VkPipelineColorBlendAttachmentState cba{};
+            cba.blendEnable = VK_FALSE;
+            cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
+            VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+            cb.attachmentCount = 1; cb.pAttachments = &cba;
+            VkDynamicState dyn[2]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+            VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+            ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+            VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+            gpci.pNext = &prci; gpci.stageCount = 2; gpci.pStages = stages;
+            gpci.pVertexInputState = &vin; gpci.pInputAssemblyState = &ia;
+            gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
+            gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
+            gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_debrisDrawLayout;
+            VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_debrisDrawPipeline);
+            vkDestroyShaderModule(m_dev.device, vs, nullptr);
+            vkDestroyShaderModule(m_dev.device, fs, nullptr);
+            if (pr != VK_SUCCESS) { logError("[rhi] debris draw pipeline create failed"); return false; }
+        }
+
+        logInfo("[rhi] GPU-compute debris world ready (compute integrate + instanced cube draw, capacity "
+                + std::to_string(kDebrisCapacity) + ")");
+        return true;
+    }
+
+    void destroyDebris() {
+        auto killBuf = [&](VkBuffer& b, VmaAllocation& a, void*& m) {
+            if (b) { vmaDestroyBuffer(m_alloc, b, a); b = VK_NULL_HANDLE; a = nullptr; m = nullptr; } };
+        auto killBuf2 = [&](VkBuffer& b, VmaAllocation& a) {
+            if (b) { vmaDestroyBuffer(m_alloc, b, a); b = VK_NULL_HANDLE; a = nullptr; } };
+        killBuf(m_debrisPoolBuf,  m_debrisPoolAlloc,  m_debrisPoolMapped);
+        killBuf(m_debrisCountBuf, m_debrisCountAlloc, m_debrisCountMapped);
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            killBuf(m_debrisParamsBuf[i],  m_debrisParamsAlloc[i],  m_debrisParamsMapped[i]);
+            killBuf(m_debrisDrawUboBuf[i], m_debrisDrawUboAlloc[i], m_debrisDrawUboMapped[i]);
+        }
+        killBuf2(m_debrisCubeVbo, m_debrisCubeAlloc);
+        killBuf2(m_debrisCubeIbo, m_debrisCubeIboAlloc);
+        if (m_debrisComputePipeline) { vkDestroyPipeline(m_dev.device, m_debrisComputePipeline, nullptr); m_debrisComputePipeline = VK_NULL_HANDLE; }
+        if (m_debrisDrawPipeline)    { vkDestroyPipeline(m_dev.device, m_debrisDrawPipeline, nullptr);    m_debrisDrawPipeline = VK_NULL_HANDLE; }
+        if (m_debrisComputeLayout)   { vkDestroyPipelineLayout(m_dev.device, m_debrisComputeLayout, nullptr); m_debrisComputeLayout = VK_NULL_HANDLE; }
+        if (m_debrisDrawLayout)      { vkDestroyPipelineLayout(m_dev.device, m_debrisDrawLayout, nullptr);    m_debrisDrawLayout = VK_NULL_HANDLE; }
+        if (m_debrisPool)            { vkDestroyDescriptorPool(m_dev.device, m_debrisPool, nullptr); m_debrisPool = VK_NULL_HANDLE; }
+        if (m_debrisComputeSetLayout){ vkDestroyDescriptorSetLayout(m_dev.device, m_debrisComputeSetLayout, nullptr); m_debrisComputeSetLayout = VK_NULL_HANDLE; }
+        if (m_debrisDrawSetLayout)   { vkDestroyDescriptorSetLayout(m_dev.device, m_debrisDrawSetLayout, nullptr);    m_debrisDrawSetLayout = VK_NULL_HANDLE; }
+    }
+
+    void gpuDebrisConfig(const IRenderDevice::GpuDebrisParams& p) override { m_debrisParams = p; }
+
+    uint32_t gpuDebrisAliveCount() const override {
+        if (m_debrisCountMapped) return ((const uint32_t*)m_debrisCountMapped)[0];
+        return m_debrisAlive;
+    }
+    uint32_t gpuDebrisCapacity() const override { return kDebrisCapacity; }
+
+    uint32_t gpuDebrisSpawnBurst(const float pos[3], uint32_t count, float speed,
+                                 float lifetime, float halfExtent, uint32_t seed) override {
+        if (!m_debrisPoolMapped || count == 0) return 0;
+        count = std::min(count, kDebrisCapacity);
+        // Deterministic PRNG (xorshift) seeded by `seed` so the same call reproduces.
+        uint32_t rng = seed ? seed : 0x9E3779B9u;
+        auto next = [&]() -> float {
+            rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+            return (rng & 0xFFFFFFu) / (float)0xFFFFFF;   // [0,1)
+        };
+        GpuDebrisFragment* pool = (GpuDebrisFragment*)m_debrisPoolMapped;
+        uint32_t* counters = (uint32_t*)m_debrisCountMapped;
+        uint32_t spawned = 0;
+        for (uint32_t k = 0; k < count; ++k) {
+            // Write into free (DEAD) slots starting at the recycle cursor; if the pool
+            // is full, overwrite the oldest (ring) — never blocks, never allocs.
+            uint32_t slot = m_debrisSpawnCursor;
+            m_debrisSpawnCursor = (m_debrisSpawnCursor + 1) % kDebrisCapacity;
+            bool wasDead = (floorf(pool[slot].spinState.w + 0.5f) == kDebrisDeadState);
+            // Outward direction on a hemisphere (upward bias) + speed jitter.
+            float az = next() * 6.2831853f;
+            float el = next() * 1.2566370f + 0.1f;          // ~6..78 deg above horizon
+            float sp = speed * (0.5f + 0.5f * next());
+            glm::vec3 dir(std::cos(az) * std::cos(el), std::sin(el), std::sin(az) * std::cos(el));
+            glm::vec3 v = dir * sp;
+            float he = halfExtent * (0.6f + 0.6f * next());
+            // Random unit quaternion (uniform) for the initial orientation.
+            float u1 = next(), u2 = next(), u3 = next();
+            float s1 = std::sqrt(1.0f - u1), s2 = std::sqrt(u1);
+            glm::vec4 q(s1 * std::sin(6.2831853f * u2), s1 * std::cos(6.2831853f * u2),
+                        s2 * std::sin(6.2831853f * u3), s2 * std::cos(6.2831853f * u3));
+            glm::vec3 spin((next() - 0.5f) * 12.0f, (next() - 0.5f) * 12.0f, (next() - 0.5f) * 12.0f);
+            pool[slot].posLife   = glm::vec4(pos[0], pos[1], pos[2], lifetime * (0.7f + 0.6f * next()));
+            pool[slot].velScale  = glm::vec4(v, he);
+            pool[slot].spinState = glm::vec4(spin, kDebrisActiveState); // ACTIVE, sleepCtr 0
+            pool[slot].rot       = q;
+            if (wasDead) { counters[0] += 1; ++m_debrisAlive; }
+            ++spawned;
+        }
+        // Make the host writes visible to the GPU before the next compute dispatch
+        // (no-op when the allocation is HOST_COHERENT; correct when it is not).
+        vmaFlushAllocation(m_alloc, m_debrisPoolAlloc, 0, VK_WHOLE_SIZE);
+        vmaFlushAllocation(m_alloc, m_debrisCountAlloc, 0, VK_WHOLE_SIZE);
+        return spawned;
+    }
+
+    void gpuDebrisStep(float dt) override {
+        if (!m_debrisComputePipeline) return;
+        // Write this frame's params UBO + (re)bind it to the compute set.
+        GpuDebrisParamsUBO u{};
+        const auto& p = m_debrisParams;
+        u.gravityDt  = glm::vec4(p.gravity[0], p.gravity[1], p.gravity[2], dt);
+        u.groundDamp = glm::vec4(p.groundY, p.restitution, p.friction, p.linearDamping);
+        u.sleepCap   = glm::vec4(p.sleepLinSpeed, p.sleepAngSpeed, (float)p.sleepFrames, (float)kDebrisCapacity);
+        u.aabbCount  = glm::vec4((float)std::min<uint32_t>(p.aabbCount, 4u), 0, 0, 0);
+        for (uint32_t a = 0; a < 4; ++a) {
+            u.aabbMin[a] = glm::vec4(p.aabbMin[a][0], p.aabbMin[a][1], p.aabbMin[a][2], 0);
+            u.aabbMax[a] = glm::vec4(p.aabbMax[a][0], p.aabbMax[a][1], p.aabbMax[a][2], 0);
+        }
+        if (m_debrisParamsMapped[m_frameIdx])
+            std::memcpy(m_debrisParamsMapped[m_frameIdx], &u, sizeof(u));
+        VkDescriptorBufferInfo prm{ m_debrisParamsBuf[m_frameIdx], 0, sizeof(GpuDebrisParamsUBO) };
+        VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        w.dstSet = m_debrisComputeSet; w.dstBinding = 2; w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w.pBufferInfo = &prm;
+        vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        m_debrisStepPending = true;  // buildAndExecuteGraph adds the compute pass this frame
+    }
+
+    void gpuDebrisDraw(const IRenderDevice::FrameContext& fc, const float tint[4]) override {
+        if (!fc.valid || !m_debrisDrawPipeline) return;
+        GpuDebrisDrawUBO u{};
+        u.viewProj = m_lastViewProj;
+        u.color = tint ? glm::vec4(tint[0], tint[1], tint[2], tint[3]) : glm::vec4(0.7f, 0.55f, 0.4f, 1.0f);
+        if (m_debrisDrawUboMapped[m_frameIdx])
+            std::memcpy(m_debrisDrawUboMapped[m_frameIdx], &u, sizeof(u));
+        m_debrisDrawPending = true;  // buildAndExecuteGraph records the instanced cube draw
+    }
+
+    IRenderDevice::GpuDebrisStats gpuDebrisReadback(float boundsLimit) const override {
+        IRenderDevice::GpuDebrisStats s{};
+        s.capacity = kDebrisCapacity;
+        if (!m_debrisPoolMapped) return s;
+        // Diagnostic / test path (NOT the hot path): make sure every in-flight compute
+        // dispatch has retired so the host-visible mapped pool reflects the final GPU
+        // state, then invalidate the allocation before reading (no-op when coherent).
+        if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        vmaInvalidateAllocation(m_alloc, m_debrisPoolAlloc, 0, VK_WHOLE_SIZE);
+        vmaInvalidateAllocation(m_alloc, m_debrisCountAlloc, 0, VK_WHOLE_SIZE);
+        // The pool SSBO is host-visible mapped; summarize live slots.
+        const GpuDebrisFragment* pool = (const GpuDebrisFragment*)m_debrisPoolMapped;
+        bool any = false;
+        float minY = 0, maxY = 0, maxSpeed = 0;
+        for (uint32_t i = 0; i < kDebrisCapacity; ++i) {
+            float state = floorf(pool[i].spinState.w + 0.5f);
+            if (state == kDebrisDeadState) continue;
+            ++s.alive;
+            if (state == 2.0f) ++s.settled;   // SLEEP
+            const glm::vec4& pl = pool[i].posLife;
+            const glm::vec4& vs = pool[i].velScale;
+            // NaN/Inf check on all motion components.
+            float comps[7] = { pl.x, pl.y, pl.z, vs.x, vs.y, vs.z, pl.w };
+            bool bad = false;
+            for (float c : comps) if (std::isnan(c) || std::isinf(c)) bad = true;
+            if (bad) { ++s.nanCount; continue; }
+            if (std::abs(pl.x) > boundsLimit || std::abs(pl.y) > boundsLimit || std::abs(pl.z) > boundsLimit)
+                ++s.outOfBounds;
+            float sp = std::sqrt(vs.x*vs.x + vs.y*vs.y + vs.z*vs.z);
+            if (!any) { minY = maxY = pl.y; maxSpeed = sp; any = true; }
+            else { minY = std::min(minY, pl.y); maxY = std::max(maxY, pl.y); maxSpeed = std::max(maxSpeed, sp); }
+        }
+        s.minY = minY; s.maxY = maxY; s.maxSpeed = maxSpeed;
+        return s;
+    }
+
+    // Record the debris compute dispatch (synchronous, graphics queue). Called by the
+    // graph's debris-compute pass (before the draw). An SSBO write->read barrier after
+    // the dispatch lets the instanced draw + the next-frame readback see the result.
+    void recordDebrisComputeBody(VkCommandBuffer cmd) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_debrisComputePipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_debrisComputeLayout,
+                                0, 1, &m_debrisComputeSet, 0, nullptr);
+        uint32_t groups = (kDebrisCapacity + 63u) / 64u;
+        vkCmdDispatch(cmd, groups, 1, 1);
+        // Barrier: compute SSBO write -> (vertex SSBO read for the draw) + (host read
+        // for the readback). Covers both the in-frame draw and the post-fence readback.
+        VkMemoryBarrier2 mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+        mb.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        mb.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        mb.dstStageMask  = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT;
+        mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_HOST_READ_BIT;
+        VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
+        vkCmdPipelineBarrier2(cmd, &di);
+    }
+
+    // Record the debris instanced cube draw into the (already-open) particle/transparent
+    // pass. ONE instanced draw over the whole pool; dead slots collapse in the VS.
+    void recordDebrisDrawBody(VkCommandBuffer cmd) {
+        if (!m_debrisDrawPending || !m_debrisDrawPipeline) return;
+        postViewport(cmd, m_extent);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_debrisDrawPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_debrisDrawLayout,
+                                0, 1, &m_debrisDrawSet[m_frameIdx], 0, nullptr);
+        VkDeviceSize zero = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &m_debrisCubeVbo, &zero);
+        vkCmdBindIndexBuffer(cmd, m_debrisCubeIbo, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, m_debrisCubeIndexCount, kDebrisCapacity, 0, 0, 0);
     }
 
     // Record the particle + decal draws into the (already-open) particle pass.
@@ -5751,6 +6293,38 @@ private:
     VkRenderingAttachmentInfo m_partColorAttach{};
     VkRenderingAttachmentInfo m_partDepthAttach{};
     VkRenderingInfo           m_partRenderInfo{};
+
+    // ---- GPU-compute persistent debris world (Subsystem K, tier T2) -------
+    // A host-visible DEVICE_LOCAL pool SSBO of GpuDebrisFragment rows integrated by
+    // a compute shader each step + drawn via ONE instanced unit-cube draw. The pool
+    // + counters persist across frames (debris is persistent); the params/draw UBOs
+    // are per-frame-in-flight. Spawn writes free slots on the CPU (mapped); readback
+    // summarizes the mapped pool. Pending flags gate this frame's compute/draw pass.
+    IRenderDevice::GpuDebrisParams m_debrisParams{};
+    VkBuffer      m_debrisPoolBuf   = VK_NULL_HANDLE; VmaAllocation m_debrisPoolAlloc  = nullptr; void* m_debrisPoolMapped  = nullptr;
+    VkBuffer      m_debrisCountBuf  = VK_NULL_HANDLE; VmaAllocation m_debrisCountAlloc = nullptr; void* m_debrisCountMapped = nullptr;
+    VkBuffer      m_debrisParamsBuf[kFramesInFlight]  = {}; VmaAllocation m_debrisParamsAlloc[kFramesInFlight]  = {}; void* m_debrisParamsMapped[kFramesInFlight]  = {};
+    VkBuffer      m_debrisDrawUboBuf[kFramesInFlight] = {}; VmaAllocation m_debrisDrawUboAlloc[kFramesInFlight] = {}; void* m_debrisDrawUboMapped[kFramesInFlight] = {};
+    VkBuffer      m_debrisCubeVbo = VK_NULL_HANDLE; VmaAllocation m_debrisCubeAlloc    = nullptr;
+    VkBuffer      m_debrisCubeIbo = VK_NULL_HANDLE; VmaAllocation m_debrisCubeIboAlloc = nullptr;
+    uint32_t      m_debrisCubeIndexCount = 0;
+    VkDescriptorPool      m_debrisPool             = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_debrisComputeSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_debrisDrawSetLayout    = VK_NULL_HANDLE;
+    VkDescriptorSet       m_debrisComputeSet       = VK_NULL_HANDLE;
+    VkDescriptorSet       m_debrisDrawSet[kFramesInFlight] = {};
+    VkPipelineLayout      m_debrisComputeLayout    = VK_NULL_HANDLE;
+    VkPipelineLayout      m_debrisDrawLayout       = VK_NULL_HANDLE;
+    VkPipeline            m_debrisComputePipeline  = VK_NULL_HANDLE;
+    VkPipeline            m_debrisDrawPipeline     = VK_NULL_HANDLE;
+    uint32_t              m_debrisSpawnCursor      = 0;   // recycle ring cursor
+    uint32_t              m_debrisAlive            = 0;   // CPU mirror (counters[0] is authoritative)
+    bool                  m_debrisStepPending      = false; // dispatch the compute pass this frame
+    bool                  m_debrisDrawPending      = false; // record the instanced draw this frame
+    glm::mat4             m_lastViewProj{ 1.0f };           // cached viewProj for the debris draw UBO
+    VkRenderingAttachmentInfo m_debrisColorAttach{};
+    VkRenderingAttachmentInfo m_debrisDepthAttach{};
+    VkRenderingInfo           m_debrisRenderInfo{};
 
     // ---- Directional shadow mapping (perf-stack E) ------------------------
     // A single fixed-resolution depth texture rendered from the sun's POV each

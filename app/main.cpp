@@ -173,6 +173,114 @@ void keyCallback(GLFWwindow* win, int key, int /*scancode*/, int action, int /*m
         default: break;
     }
 }
+// ---------------------------------------------------------------------------
+// --test-debris : K-T2 GPU-compute persistent debris world self-test.
+//
+// Drives the REAL Vulkan render device HEADLESS (no window) so the compute path is
+// actually exercised on the GPU (not a CPU stand-in). It spawns a burst of N
+// fragments above a ground plane, steps the compute sim M frames (each through a
+// real beginFrame -> gpuDebrisStep -> gpuDebrisDraw -> endFrame), and asserts:
+//   (a) count is correct right after spawn,
+//   (b) fragments FALL (minY drops) then SETTLE on the ground (no NaNs, bounded
+//       positions, most fragments asleep, ~zero residual speed),
+//   (c) LIFETIME expiry FREES fragments back to the pool (alive count drops to 0),
+//   (d) NO leaks: every fragment returns to the dead pool, alive == 0 at the end.
+// Prints "debris: X/Y passed" and returns true iff all pass.
+static bool runDebrisSelfTest() {
+    using namespace x3::rhi;
+    int passed = 0, total = 0;
+    auto check = [&](const char* name, bool ok) {
+        ++total; if (ok) ++passed;
+        x3::logInfo(std::string("  [debris] ") + (ok ? "PASS " : "FAIL ") + name);
+        return ok;
+    };
+
+    if (!glfwInit()) { x3::logError("[debris] glfwInit failed"); return false; }
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
+    std::unique_ptr<IRenderDevice> device(createRenderDevice());
+    DeviceDesc desc{};
+    desc.width = 640; desc.height = 360; desc.headless = true;
+#ifdef _DEBUG
+    desc.validation = true;
+#endif
+    if (!device->init(desc)) { x3::logError("[debris] device init failed"); glfwTerminate(); return false; }
+
+    // Ground plane at y=0; modest gravity world.
+    IRenderDevice::GpuDebrisParams p{};
+    p.groundY = 0.0f;
+    p.restitution = 0.25f;
+    p.friction = 0.5f;
+    p.linearDamping = 0.4f;
+    p.sleepLinSpeed = 0.25f;
+    p.sleepAngSpeed = 0.4f;
+    p.sleepFrames = 8;
+    device->gpuDebrisConfig(p);
+
+    const uint32_t N = 4096;          // far beyond the ~256 Jolt chunk budget
+    const float spawnPos[3] = { 0.0f, 6.0f, 0.0f };
+    uint32_t spawned = device->gpuDebrisSpawnBurst(spawnPos, N, /*speed*/4.0f,
+                                                   /*lifetime*/2.0f, /*halfExtent*/0.1f, /*seed*/12345u);
+    check("spawn count == requested", spawned == N);
+    check("alive == N right after spawn", device->gpuDebrisAliveCount() == N);
+    check("capacity >= N", device->gpuDebrisCapacity() >= N);
+
+    const float tint[4] = { 0.7f, 0.55f, 0.4f, 1.0f };
+    const float dt = 1.0f / 60.0f;
+    const float white[4] = { 1, 1, 1, 1 };
+
+    // Helper: run one device frame that steps + draws the debris.
+    auto stepFrame = [&]() {
+        device->setCamera(0.0f, 3.0f, 10.0f, -1.5708f, -0.2f, 60.0f);
+        FrameContext fc = device->beginFrame();
+        if (!fc.valid) return;
+        device->gpuDebrisStep(dt);
+        device->gpuDebrisDraw(fc, tint);
+        device->endFrame(fc);
+    };
+
+    // --- Step a few frames; fragments should be FALLING (minY below spawn). ---
+    for (int i = 0; i < 6; ++i) stepFrame();
+    IRenderDevice::GpuDebrisStats mid = device->gpuDebrisReadback(1.0e4f);
+    check("no NaNs while falling", mid.nanCount == 0);
+    check("bounded positions while falling", mid.outOfBounds == 0);
+    check("fragments fell below spawn height", mid.minY < spawnPos[1]);
+    check("alive unchanged before any expiry", mid.alive == N);
+
+    // --- Settle: step ~70 frames (>1s) so they hit the ground + sleep. The 2.0s
+    //     lifetime has NOT yet elapsed (we used dt=1/60, ~1.17s here). ---
+    for (int i = 0; i < 64; ++i) stepFrame();
+    IRenderDevice::GpuDebrisStats settled = device->gpuDebrisReadback(1.0e4f);
+    check("no NaNs after settling", settled.nanCount == 0);
+    check("bounded positions after settling", settled.outOfBounds == 0);
+    check("rest on/above the ground (minY >= groundY)", settled.minY >= p.groundY - 0.05f);
+    check("did not sink far (maxY bounded)", settled.maxY < spawnPos[1] + 1.0f);
+    check("most fragments settled to sleep", settled.settled > (N * 3) / 4);
+    check("settled debris is ~motionless", settled.maxSpeed < 1.0f);
+    check("still alive before lifetime expiry", settled.alive == N);
+
+    // --- Lifetime expiry: keep stepping past the 2.0s max lifetime so EVERY
+    //     fragment's life decays to 0 and is freed back to the pool. ---
+    for (int i = 0; i < 240; ++i) stepFrame();
+    IRenderDevice::GpuDebrisStats expired = device->gpuDebrisReadback(1.0e4f);
+    check("lifetime expiry freed all fragments", expired.alive == 0);
+    check("alive counter back to 0 (no leak)", device->gpuDebrisAliveCount() == 0);
+    check("no NaNs after full recycle", expired.nanCount == 0);
+
+    // --- Re-spawn into the recycled pool to prove slots are reusable (no leak/grow). ---
+    uint32_t resp = device->gpuDebrisSpawnBurst(spawnPos, 1000, 3.0f, 1.0f, 0.1f, 777u);
+    check("re-spawn into recycled pool", resp == 1000 && device->gpuDebrisAliveCount() == 1000);
+    for (int i = 0; i < 120; ++i) stepFrame();
+    check("re-spawned batch also expires cleanly", device->gpuDebrisAliveCount() == 0);
+
+    device->shutdown();
+    glfwTerminate();
+
+    std::printf("debris: %d/%d passed\n", passed, total);
+    x3::logInfo("debris: " + std::to_string(passed) + "/" + std::to_string(total) + " passed");
+    return passed == total;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -190,6 +298,9 @@ int main(int argc, char** argv) {
     bool        testUi = false;
     // --test-spiremid (Spire mid-floor content): F3/F4/F5 encounter authoring. Additive.
     bool        testSpireMid = false;
+    // --test-debris (K-T2 GPU-compute debris): spawn a burst, step the compute sim
+    // through the live headless device, assert fall+settle+expiry+no-leak. Additive.
+    bool        testDebris = false;
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
     // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
     // and confirm the joint palette changes. Asset-pipeline verification for the
@@ -340,6 +451,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-netsync") testNetSync = true;
         else if (a == "--test-rescue") testRescue = true;
         else if (a == "--test-destruction") testDestruction = true;
+        else if (a == "--test-debris") testDebris = true;
         else if (a == "--test-nav") testNav = true;
         else if (a == "--test-weapons") testWeapons = true;
         else if (a == "--test-vehicle") testVehicle = true;
@@ -604,6 +716,11 @@ int main(int argc, char** argv) {
     if (testDestruction) {
         x3::logInfo("running K-T0/T1 destruction (fracture/impact/hit/explosion) self-test...");
         return x3::phys::runDestructionSelfTest() ? 0 : 1;
+    }
+    if (testDebris) {
+        x3::logInfo("running K-T2 GPU-compute persistent debris world self-test "
+                    "(spawn burst -> compute integrate -> fall/settle/sleep -> lifetime free)...");
+        return runDebrisSelfTest() ? 0 : 1;
     }
     if (testNav) {
         x3::logInfo("running GENERAL navigation (nav grid + A* + path-follow) self-test...");
