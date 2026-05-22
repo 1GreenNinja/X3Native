@@ -4,6 +4,7 @@
 // and the engine interfaces only. No purchased C# / id Tech source consulted.
 #include "level1_game.h"
 #include "mesh_prims.h"
+#include "elevator.h"
 
 #include "engine/core/x3_log.h"
 
@@ -900,6 +901,96 @@ bool runDoorCodeSelfTest() {
 
     physics->shutdown();
     x3::logInfo(std::string("[doorcode-test] ") + std::to_string(g_pass) + " passed, " +
+                std::to_string(g_fail) + " failed");
+    return g_fail == 0;
+}
+
+// ===========================================================================
+// Advanced-elevator self-test (--test-elevator). E1-E6.
+// Builds an ElevatorSystem (cab platform = moved static body, same technique as
+// DoorSystem) with two stops in a 9 m shaft (ground + 6 m) on a headless device +
+// Jolt world, and exercises the call/travel/carry mechanism that mediates the
+// Level 1 exit lift. No window/Vulkan.
+// ===========================================================================
+bool runElevatorSelfTest() {
+    g_pass = g_fail = 0;
+
+    std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+    physics->init();
+
+    HeadlessDevice device;
+    Scene scene;
+
+    // Two-stop cab in a tall shaft at the origin: ground (cab center y=0.15, top at
+    // floor) + 6 m up. Cab half-extents 1.4 x 0.15 x 1.4 (matches main.cpp wiring).
+    const float cabHY = 0.15f;
+    const float groundY = cabHY;          // cab CENTER at the room floor
+    const float topY    = cabHY + 6.0f;   // cab CENTER 6 m up
+    ElevatorSystem elev;
+    bool built = elev.build(scene, device, *physics,
+                            /*shaftX*/0.0f, /*shaftZ*/0.0f,
+                            1.4f, cabHY, 1.4f, std::vector<float>{ groundY, topY }, /*startStop*/0);
+    // Speed up the ride so the test converges in a bounded frame count.
+    elev.setSpeed(8.0f);
+
+    // ---- E1: builds, idle at the low stop, 2 stops, cab center at the ground stop.
+    check(built && elev.built() && !elev.moving() && elev.stopCount() == 2 &&
+          std::fabs(elev.cabCenter().y - groundY) < 1e-3f,
+          "E1 elevator builds: idle at the ground stop, 2 stops");
+
+    // ---- E2: a rider standing on the cab top is detected; one beside it is not.
+    {
+        const x3::phys::Vec3 onTop{ 0.0f, elev.cabTopY() + 0.05f, 0.0f };
+        const x3::phys::Vec3 beside{ 5.0f, elev.cabTopY() + 0.05f, 0.0f };
+        check(elev.playerRiding(onTop) && !elev.playerRiding(beside),
+              "E2 playerRiding: feet ON the cab detected, feet OFF not");
+    }
+
+    // ---- E3: callNext() starts the cab moving toward the high stop.
+    {
+        elev.callNext();
+        check(elev.moving() && elev.targetStop() == 1,
+              "E3 callNext starts moving toward the top stop");
+    }
+
+    // ---- E4: stepping update() carries the cab UP and arrives at the high stop;
+    // a simulated rider's feet rise by the SAME total delta (the carry contract).
+    {
+        x3::phys::Vec3 feet{ 0.0f, elev.cabTopY() + 0.05f, 0.0f };
+        float carried = 0.0f;
+        int frames = 0;
+        for (; frames < 600 && elev.moving(); ++frames) {
+            float edy = elev.update(kFixedDt, scene, *physics);
+            if (edy != 0.0f && elev.playerRiding(feet)) { feet.y += edy; carried += edy; }
+        }
+        bool arrived = !elev.moving() && std::fabs(elev.cabCenter().y - topY) < 1e-3f;
+        bool carriedRight = std::fabs(carried - (topY - groundY)) < 1e-2f;
+        check(arrived && carriedRight,
+              "E4 update carries the cab up to the top stop; rider lifted by the full 6 m");
+    }
+
+    // ---- E5: the cab's physics body tracks the cab center (so it blocks/stands
+    // like ground at the new stop — what the level-exit lift relies on).
+    {
+        x3::phys::Vec3 bodyPos = physics->getBodyPosition(scene.get(0).body);
+        // Entity 0 is the cab (first thing added to the fresh scene).
+        check(std::fabs(bodyPos.y - elev.cabCenter().y) < 1e-3f &&
+              std::fabs(bodyPos.y - topY) < 1e-3f,
+              "E5 cab physics body tracks the cab center at the top stop");
+    }
+
+    // ---- E6: callNext() again returns the cab DOWN to the ground stop.
+    {
+        elev.callNext();
+        bool wraps = elev.moving() && elev.targetStop() == 0;
+        for (int i = 0; i < 600 && elev.moving(); ++i)
+            elev.update(kFixedDt, scene, *physics);
+        bool home = !elev.moving() && std::fabs(elev.cabCenter().y - groundY) < 1e-3f;
+        check(wraps && home, "E6 callNext wraps top->ground; cab returns to the floor stop");
+    }
+
+    physics->shutdown();
+    x3::logInfo(std::string("[elevator-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;
 }
