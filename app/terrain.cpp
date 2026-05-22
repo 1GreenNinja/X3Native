@@ -222,6 +222,48 @@ float terrainHeightAt(const TerrainConfig& cfg, float worldX, float worldZ) {
     return h * cfg.heightScale;
 }
 
+// ---------------------------------------------------------------------------
+// Placement API — the single canonical world config + the height/normal/place
+// helpers the 14900k anchors buildings (the Spire) + the cliffside pad with.
+// The config is the engine TerrainConfig defaults (matching what `--world
+// terrain`/`--world ocean` build the streamer from), exposed by const-ref so a
+// query and the rendered/streamed surface always agree.
+// ---------------------------------------------------------------------------
+const TerrainConfig& worldTerrainConfig() {
+    static const TerrainConfig kWorld{};   // defaults = the streamed world's config
+    return kWorld;
+}
+
+float terrainHeightAtWorld(float x, float z) {
+    return terrainHeightAt(worldTerrainConfig(), x, z);
+}
+
+void terrainNormalAtWorld(float x, float z, float outNormal[3]) {
+    // Central differences of the height field, the same construction the tile
+    // mesher uses (makeTerrainVertex): n = normalize(hl-hr, 2*eps, hd-hu). eps is
+    // scaled to the LOD0 cell so the slope it samples matches the
+    // rendered/collidable mesh's surface normal.
+    const TerrainConfig& cfg = worldTerrainConfig();
+    const float eps = cfg.tileSize / (float)(cfg.tileVerts - 1) * 0.5f;
+    const float hl = terrainHeightAt(cfg, x - eps, z);
+    const float hr = terrainHeightAt(cfg, x + eps, z);
+    const float hd = terrainHeightAt(cfg, x, z - eps);
+    const float hu = terrainHeightAt(cfg, x, z + eps);
+    float nx = (hl - hr);
+    float nz = (hd - hu);
+    float ny = 2.0f * eps;                  // always > 0 => normal points +Y up
+    const float inv = 1.0f / std::sqrt(nx * nx + ny * ny + nz * nz);
+    outNormal[0] = nx * inv;
+    outNormal[1] = ny * inv;
+    outNormal[2] = nz * inv;
+}
+
+void placeOnTerrain(float x, float z, float outPos[3]) {
+    outPos[0] = x;
+    outPos[1] = terrainHeightAtWorld(x, z);
+    outPos[2] = z;
+}
+
 // ===========================================================================
 // Terrain (B2 fixed grid) — unchanged behavior, now built on the shared free
 // helpers. Used by --screenshot-terrain + --test-terrain.
@@ -849,6 +891,106 @@ bool runTerrainSelfTest() {
     x3::logInfo(std::string("[terrain-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;
+}
+
+// ===========================================================================
+// Headless placement-API self-test (--test-terrainplace). Verifies the public
+// building/pad anchoring helpers the 14900k uses agree with the underlying
+// procedural surface. Pure math — no window/Vulkan/physics/jobs.
+//   P1 terrainHeightAtWorld == terrainHeightAt(worldTerrainConfig(), …) exactly.
+//   P2 placeOnTerrain yields {x, height, z} (Y == surface height) at the point.
+//   P3 terrainNormalAtWorld is unit-length and points generally +Y everywhere.
+//   P4 normal tilts INTO an uphill slope (sanity: not always straight up).
+// ===========================================================================
+bool runTerrainPlaceSelfTest() {
+    int pPass = 0, pFail = 0;
+    auto checkP = [&](bool cond, const char* name) {
+        if (cond) { ++pPass; x3::logInfo(std::string("[place-test] PASS ") + name); }
+        else      { ++pFail; x3::logError(std::string("[place-test] FAIL ") + name); }
+    };
+
+    const TerrainConfig& cfg = worldTerrainConfig();
+
+    // A spread of sample points (origin, the spawn neighborhood, far unbounded
+    // coords incl. negatives) so we cover the whole field, not just one tile.
+    const float pts[][2] = {
+        {   0.0f,    0.0f }, {  17.0f,  -9.0f }, { -123.0f,  88.0f },
+        { 512.0f,  333.0f }, { -777.0f, -41.0f }, {  31.5f,  31.5f },
+        { 1024.0f, -2048.0f }, { -3.3f, 600.1f },
+    };
+    const int nPts = (int)(sizeof(pts) / sizeof(pts[0]));
+
+    // ---- P1: convenience height == raw sampler on the canonical config --------
+    {
+        bool allMatch = true;
+        float maxErr = 0.0f;
+        for (int i = 0; i < nPts; ++i) {
+            const float a = terrainHeightAtWorld(pts[i][0], pts[i][1]);
+            const float b = terrainHeightAt(cfg, pts[i][0], pts[i][1]);
+            const float e = std::fabs(a - b);
+            maxErr = std::max(maxErr, e);
+            if (e != 0.0f) allMatch = false;   // same code path => bit-exact
+        }
+        if (!allMatch)
+            x3::logError("[place-test] height mismatch maxErr=" + std::to_string(maxErr));
+        checkP(allMatch, "P1 terrainHeightAtWorld == terrainHeightAt(worldTerrainConfig(),...)");
+    }
+
+    // ---- P2: placeOnTerrain sits exactly ON the surface (Y == height) ---------
+    {
+        bool onSurface = true;
+        for (int i = 0; i < nPts; ++i) {
+            float pos[3];
+            placeOnTerrain(pts[i][0], pts[i][1], pos);
+            const float h = terrainHeightAtWorld(pts[i][0], pts[i][1]);
+            if (pos[0] != pts[i][0] || pos[2] != pts[i][1] || pos[1] != h) onSurface = false;
+        }
+        checkP(onSurface, "P2 placeOnTerrain => {x, surfaceY, z} (Y == surface height)");
+    }
+
+    // ---- P3: normal is unit-length and points generally +Y --------------------
+    {
+        bool unit = true, upward = true;
+        float worstLen = 0.0f, minNy = 1.0f;
+        for (int i = 0; i < nPts; ++i) {
+            float n[3];
+            terrainNormalAtWorld(pts[i][0], pts[i][1], n);
+            const float len = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
+            worstLen = std::max(worstLen, std::fabs(len - 1.0f));
+            minNy = std::min(minNy, n[1]);
+            if (std::fabs(len - 1.0f) > 1e-4f) unit = false;
+            if (n[1] <= 0.0f) upward = false;          // generally +Y everywhere
+        }
+        if (!unit || !upward)
+            x3::logError("[place-test] normal: worst|len-1|=" + std::to_string(worstLen) +
+                         " minNy=" + std::to_string(minNy));
+        checkP(unit && upward, "P3 terrainNormalAtWorld unit-length + points +Y");
+    }
+
+    // ---- P4: normal actually tilts on a slope (not the trivial straight-up) ---
+    // Scan for a point with a non-trivial gradient and assert its normal leans
+    // toward the DOWNHILL direction (n.xz is the negative of the height gradient).
+    {
+        bool sawSlope = false, leansRight = true;
+        for (int i = 0; i < nPts && !sawSlope; ++i) {
+            const float x = pts[i][0], z = pts[i][1];
+            const float eps = cfg.tileSize / (float)(cfg.tileVerts - 1) * 0.5f;
+            const float gx = (terrainHeightAt(cfg, x + eps, z) - terrainHeightAt(cfg, x - eps, z));
+            const float gz = (terrainHeightAt(cfg, x, z + eps) - terrainHeightAt(cfg, x, z - eps));
+            if (std::fabs(gx) + std::fabs(gz) > 0.05f) {
+                sawSlope = true;
+                float n[3];
+                terrainNormalAtWorld(x, z, n);
+                // n.x should oppose the +x gradient; n.z oppose the +z gradient.
+                if (gx * n[0] > 1e-6f || gz * n[2] > 1e-6f) leansRight = false;
+            }
+        }
+        checkP(sawSlope && leansRight, "P4 normal tilts down-slope on a gradient");
+    }
+
+    x3::logInfo(std::string("[place-test] ") + std::to_string(pPass) + " passed, " +
+                std::to_string(pFail) + " failed");
+    return pFail == 0;
 }
 
 // ===========================================================================

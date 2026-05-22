@@ -168,7 +168,8 @@ int main(int argc, char** argv) {
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
-         testStreaming = false, testAi = false, testDoorCode = false, testElevator = false;
+         testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
+         testTerrainPlace = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
@@ -257,6 +258,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-phase2b") testPhase2b = true;
         else if (a == "--test-anim") testAnim = true;
         else if (a == "--test-terrain") testTerrain = true;
+        else if (a == "--test-terrainplace") testTerrainPlace = true;
         else if (a == "--test-streaming") testStreaming = true;
         else if (a == "--test-ai") testAi = true;
         else if (a == "--test-doorcode") testDoorCode = true;
@@ -383,6 +385,10 @@ int main(int argc, char** argv) {
     if (testTerrain) {
         x3::logInfo("running B2 tiled terrain world self-test (settle + LOD)...");
         return x3::game::runTerrainSelfTest() ? 0 : 1;
+    }
+    if (testTerrainPlace) {
+        x3::logInfo("running terrain placement API self-test (height/normal/place)...");
+        return x3::game::runTerrainPlaceSelfTest() ? 0 : 1;
     }
     if (testStreaming) {
         x3::logInfo("running B3 world-streaming self-test (residency ring + async gen)...");
@@ -1178,7 +1184,13 @@ int main(int argc, char** argv) {
         terrainJobs.reset(x3::jobs::createJobSystem());
         terrainJobs->init(0);   // hw_concurrency-1 compute workers + an I/O lane
 
-        x3::game::TerrainConfig tcfg;   // 32 m tiles; tilesX/Z ignored (unbounded)
+        // CONFIG-UNIFY: build the streamer from the canonical world config (the
+        // single source of truth, app/terrain.h) so a host-side height/normal/place
+        // query (terrainHeightAtWorld / placeOnTerrain — the 14900k's building +
+        // cliffside-pad anchoring API) matches exactly what is rendered + streamed
+        // underfoot. Same defaults as before (32 m tiles, heightScale 55 m, seed
+        // 1337) => behavior + look unchanged; this just shares the config.
+        const x3::game::TerrainConfig& tcfg = x3::game::worldTerrainConfig();
         x3::rhi::IRenderDevice::SkyParams sp{};
         sp.enabled = true;
         sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
