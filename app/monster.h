@@ -435,6 +435,13 @@ private:
     x3::rhi::IRenderDevice*  m_device = nullptr;
     int                      m_idleClip = -1;
     int                      m_walkClip = -1;
+    // T1: separate Run / Jump clips for the locomotion blend (multi-clip *_anim.glb).
+    // When a distinct Walk AND Run exist the 1D blend is driven by planar speed; on
+    // single-locomotion-clip models (only Idle, or Idle+one move clip) it degrades
+    // to the legacy idle/move switch via the Skinner's graceful blend collapse.
+    int                      m_runClip  = -1;
+    int                      m_jumpClip = -1;
+    bool                     m_useLocoBlend = false;  // a real idle(+walk/+run) set drives the blend
     float                    m_animTime = 0.0f;
     bool                     m_animActive = false;   // a usable clip was found
     // Model-local fixup applied between the gameplay transform and each drawable's

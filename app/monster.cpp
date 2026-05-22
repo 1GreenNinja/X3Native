@@ -183,16 +183,29 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
         x3::logWarn("[monster] mountDir failed: " + useDir);
     }
 
-    // ---- J1: bind the skeletal-animation runtime if this model is skinnable
-    // (has a skin + joints + at least one clip + skinned primitives). Pick an idle
-    // clip (fuzzy name match; fall back to the first clip) and, if present, a walk/
-    // run clip to play while moving. Models with no skin/anim (the Drone, the
-    // legacy crawler, the fallback box) leave the skinner invalid -> static draw. ----
+    // ---- J1/T1: bind the skeletal-animation runtime if this model is skinnable
+    // (has a skin + joints + at least one clip + skinned primitives). Locate the
+    // locomotion clip set by fuzzy name. When a distinct Walk AND Run exist (the
+    // retargeted multi-clip *_anim.glb) the 1D locomotion BLEND is driven by the
+    // monster's planar speed; otherwise it degrades to the legacy idle/move switch
+    // (the Skinner's blend collapses gracefully on a single locomotion clip).
+    // Models with no skin/anim (the Drone, the legacy crawler, the fallback box)
+    // leave the skinner invalid -> static draw. ----
     if (m_model.ok && m_skinner.bind(m_model)) {
         m_idleClip = m_skinner.findClip({ "idle", "stand", "breath", "loop" });
-        m_walkClip = m_skinner.findClip({ "walk", "run", "move", "jog" });
+        // Prefer a distinct WALK clip; fall back to any move clip for m_walkClip.
+        m_walkClip = m_skinner.findClip({ "walk" });
+        m_runClip  = m_skinner.findClip({ "run", "sprint", "jog" });
+        m_jumpClip = m_skinner.findClip({ "jump", "leap" });
+        if (m_walkClip < 0) m_walkClip = m_skinner.findClip({ "move", "jog", "run" });
         if (m_idleClip < 0) m_idleClip = 0;   // fall back to the first clip
         m_animActive = (m_idleClip >= 0);
+        // The locomotion blend is meaningful only when a real idle + at least one
+        // distinct move clip exist (so speed can sweep). Walk authored ~1.5 m/s,
+        // Run ~4 m/s (the AI maps planar speed to those bands).
+        m_useLocoBlend = m_animActive && (m_walkClip >= 0 || m_runClip >= 0);
+        if (m_useLocoBlend)
+            m_skinner.setLocomotionClips(m_idleClip, m_walkClip, m_runClip, 1.5f, 4.0f);
         std::string clipList;
         for (uint32_t c = 0; c < m_skinner.clipCount(); ++c) {
             clipList += (c ? ", " : "") + std::string(m_skinner.clipName(c)) +
@@ -200,11 +213,20 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
         }
         x3::logInfo("[monster] " + modelFile + " is animated — clips: " + clipList +
                     "; idle=" + std::to_string(m_idleClip) +
-                    " walk=" + std::to_string(m_walkClip));
-        // Pose the bind-pose mesh into the idle clip at t=0 once up front so the
+                    " walk=" + std::to_string(m_walkClip) +
+                    " run=" + std::to_string(m_runClip) +
+                    " jump=" + std::to_string(m_jumpClip) +
+                    " locoBlend=" + (m_useLocoBlend ? "1" : "0"));
+        // Pose the bind-pose mesh into the idle pose at t=0 once up front so the
         // very first rendered frame already shows the animated pose (not bind pose).
-        if (m_animActive && m_device)
-            m_skinner.apply(m_model, *m_device, (uint32_t)m_idleClip, 0.0f);
+        if (m_animActive && m_device) {
+            if (m_useLocoBlend) {
+                m_skinner.setLocomotionSpeed(0.0f);   // start idle
+                m_skinner.applyLocomotion(m_model, *m_device, 0.0f);
+            } else {
+                m_skinner.apply(m_model, *m_device, (uint32_t)m_idleClip, 0.0f);
+            }
+        }
     }
 
     // ---- Model-local fixup: the converted character GLBs are Z-up (lying flat),
@@ -843,18 +865,27 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         }
     }
 
-    // ---- J1: drive skeletal animation. Advance the active clip's time and CPU-
-    // skin the mesh. Use the walk/run clip while the planar velocity is non-trivial
-    // and a walk clip exists; otherwise the idle clip. Re-uploads the skinned
-    // vertices through the cached device. No-op for unskinned models. ----
+    // ---- J1/T1: drive skeletal animation from the AI's planar movement speed.
+    // Measure this frame's planar velocity (the same value the chase/strafe logic
+    // produced via setBodyPosition) and feed it into the locomotion blend so a
+    // moving enemy visibly walks/runs and a stopped one idles. The Skinner maps
+    // speed -> Idle/Walk/Run weight (walk ~1.5 m/s, run ~4 m/s) and keeps phase
+    // continuity. When no real walk/run set exists we fall back to the legacy
+    // idle/move clip switch. Re-uploads skinned vertices via the cached device. --
     if (m_animActive && m_device) {
         const float ddx = m_pos.x - prevPos.x, ddz = m_pos.z - prevPos.z;
         const float planarSpeed = (dt > 1e-5f)
             ? std::sqrt(ddx*ddx + ddz*ddz) / dt : 0.0f;
-        const bool moving = (m_walkClip >= 0) && (planarSpeed > 0.25f);
-        const int clip = moving ? m_walkClip : m_idleClip;
-        m_animTime += dt;
-        m_skinner.apply(m_model, *m_device, (uint32_t)clip, m_animTime);
+        if (m_useLocoBlend) {
+            m_skinner.setLocomotionSpeed(planarSpeed);
+            m_skinner.applyLocomotion(m_model, *m_device, dt);
+        } else {
+            // Legacy single-locomotion-clip path: switch idle/move on a threshold.
+            const bool moving = (m_walkClip >= 0) && (planarSpeed > 0.25f);
+            const int clip = moving ? m_walkClip : m_idleClip;
+            m_animTime += dt;
+            m_skinner.apply(m_model, *m_device, (uint32_t)clip, m_animTime);
+        }
     }
 }
 
