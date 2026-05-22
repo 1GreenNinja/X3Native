@@ -168,7 +168,8 @@ int main(int argc, char** argv) {
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
-         testStreaming = false, testAi = false, testDoorCode = false, testElevator = false;
+         testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
+         testRescue = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
@@ -252,6 +253,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-ai") testAi = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
+        else if (a == "--test-rescue") testRescue = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -385,6 +387,10 @@ int main(int argc, char** argv) {
     if (testElevator) {
         x3::logInfo("running advanced elevator (call/travel/carry) self-test (E1-E6)...");
         return x3::game::runElevatorSelfTest() ? 0 : 1;
+    }
+    if (testRescue) {
+        x3::logInfo("running F2 rescue (victim/companion/transform) self-test (R0-R5)...");
+        return x3::game::runRescueSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -1456,6 +1462,8 @@ int main(int argc, char** argv) {
                                 std::cos(pitch) * std::sin(yaw) };
             if (game.onUse(eye, dir, scene, *physics)) {  // plays door SFX internally
                 x3::logInfo("use: button pressed — door opening");
+            } else if (game.onRescue(eye)) {  // F2 rescue (spec §5): captive in reach -> companion
+                x3::logInfo("use: victim rescued — now a companion");
             } else if (!codeMode && game.nearLockedCodedDoor(eye)) {
                 // No button hit, but a locked keypad door is in reach: open the
                 // code-entry keypad (digits 0-9, Enter to submit, Esc to cancel).
@@ -1752,6 +1760,24 @@ int main(int argc, char** argv) {
                 const float py = (hh > 0) ? (hh * 0.22f) : 120.0f;
                 const float red[4] = { 1.0f, 0.25f, 0.2f, 1.0f };
                 device->drawHudText(frame, game.phaseBanner().c_str(), px, py, scale, red);
+            }
+            // F2 rescue timers (spec §5): one row per running countdown (up to 3),
+            // stacked top-left. Urgent (< 60 s) draws red, otherwise pale cyan.
+            if (!consoleOpen && !terrainWorld) {
+                const auto rows = game.rescue().hudTimers();
+                float ry = 96.0f;
+                for (const auto& row : rows) {
+                    const int total = (int)(row.seconds + 0.5f);
+                    const int mm = total / 60, ss = total % 60;
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf), "RESCUE %s  %d:%02d",
+                                  row.name.c_str(), mm, ss);
+                    float col[4];
+                    if (row.urgent) { col[0]=1.0f; col[1]=0.25f; col[2]=0.20f; col[3]=1.0f; }  // red
+                    else            { col[0]=0.55f; col[1]=0.85f; col[2]=1.0f; col[3]=1.0f; }  // pale cyan
+                    device->drawHudText(frame, buf, 24.0f, ry, 2.0f, col);
+                    ry += 28.0f;
+                }
             }
             // Phase 2a: player health + damage feedback.
             hud.drawHealth(*device, frame, player.hp(), player.maxHp());

@@ -231,8 +231,23 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
                        "Defeat Chief Martinez",
                        "Take the elevator to Floor 2" });
 
+    // ---- F2 rescue system (spec §5): 3 victims (Aria/Keisha/Emily) on 5-min
+    // timers. The 7-floor Spire build will place these in wards A/B/C on F2; on the
+    // current graybox we anchor them in the arena room (a roomy space) at three
+    // distinct spots so the rescue/companion/expire loop is exercisable today. The
+    // timers run once the F2 hub is reached — set true at build for the graybox
+    // (the Spire build will flip this on the F2-floor transition instead). ----
+    {
+        const x3::phys::Vec3 ac = m_layout.arenaCenter;
+        const x3::phys::Vec3 wardA{ ac.x - 3.0f, kEnemyY, ac.z - 3.0f };
+        const x3::phys::Vec3 wardB{ ac.x,        kEnemyY, ac.z + 3.0f };
+        const x3::phys::Vec3 wardC{ ac.x + 3.0f, kEnemyY, ac.z - 3.0f };
+        m_rescue.build(scene, device, physics, m_modelDir, wardA, wardB, wardC);
+        m_rescue.setHubReached(true);
+    }
+
     m_built = true;
-    x3::logInfo("Level1Game::build complete — doors A-E, pistol pickup, 4 checkpoint enemies, 3 triggers");
+    x3::logInfo("Level1Game::build complete — doors A-E, pistol pickup, 4 checkpoint enemies, 3 triggers, 3 rescue victims");
 }
 
 uint32_t Level1Game::doorIndex(char letter) const {
@@ -457,6 +472,12 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
         x3::logInfo("Level1: MARTINEZ DOWN — Door E opening; take the elevator");
     }
 
+    // ---- F2 rescue system (spec §5): tick the victims (countdowns / companion
+    // follow) + the transformed-victim bosses. Additive + self-contained: it spawns
+    // its own bosses on timer-expiry and follows the player when rescued. The host
+    // (main.cpp) pokes onRescue() on an E-edge and draws the timers/victims. ----
+    m_rescue.tick(dt, scene, physics, playerPos);
+
     // ---- Triggers (per-frame point test on the player position) ----
     for (uint32_t id : m_triggers.update(playerPos)) {
         switch ((L1Trigger)id) {
@@ -494,6 +515,12 @@ bool Level1Game::onUse(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
     bool opened = tryUse(eye, dir, 3.0f, scene, m_doors, physics);
     if (opened) playSfx(m_audio.door, eye, 0.9f);
     return opened;
+}
+
+bool Level1Game::onRescue(const x3::phys::Vec3& playerPos, float range) {
+    bool rescued = m_rescue.tryRescue(playerPos, range);
+    if (rescued) playSfx(m_audio.pickup, playerPos, 0.9f);   // reuse the pickup cue
+    return rescued;
 }
 
 FireResult Level1Game::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
@@ -554,6 +581,7 @@ void Level1Game::drawWorldExtras(x3::rhi::IRenderDevice& device,
     m_checkpoint.drawAll(device, frame, scene);
     m_bossAdds.drawAll(device, frame, scene);
     if (m_martinezSpawned) m_martinez.drawMonster(device, frame, scene);
+    m_rescue.draw(device, frame, scene);   // F2 victims + transformed-victim bosses
 }
 
 void Level1Game::drawViewmodel(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
