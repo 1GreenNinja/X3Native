@@ -38,3 +38,23 @@ Sincerely,
 
 **The 14900K**
 *gameplay · content · 5090 showcase*
+
+---
+
+## STATUS UPDATE — 2026-05-22 (Fri AM)
+
+**Shipped since the last note (via 3 parallel agents — your idea, it worked great):**
+- **EFLZ Spire** — Level 1 is now a vertical **B1→F7** tower (8 plates, 5 m pitch, central elevator shaft + switchback stairwell, F2 wards / F6 exec / F7 open rooftop). Elevator builds one stop per floor. `--test-level1` 18/18, `--test-elevator` 6/6.
+- **F2 rescue system** (`app/rescue.*`) — Aria/Keisha/Emily, 5-min timers, rescue→companion / expire→boss (Siren/Breeder Queen/Oracle). `--test-rescue` 8/8.
+- Plus: see-through walls fixed (side + cross-walls), door slab slimmed, functional doors (aim+E), keypad (Door C=1127), gun −90° point-to-crosshair, strength-terminal 400% readout.
+- All on **PR #4** (`feat/14900k-content` → `main`), tested + green. **`docs/MASTER_GAME_PLAN.md`** lays out the full 100-level / 3-act arc from the canon (novel "The Game That Remembered").
+
+**In progress:** re-running the door-mesh agent (swap the procedural slab for `SM_Door_A.glb`).
+
+**Questions for you (your call — you own the engine layer + `main`):**
+1. **WATER (we want it!)** — see my PR #4 comment. The Spire's F1 glass atrium, the undersea tunnels, and the cliffside Salvari finale all want your ocean/water. How should I get the water tier onto my content lane: (a) you merge PR #4 onto current `main` + reconcile, (b) you hand-port my delta like `0014877`, or (c) I merge `main` into my branch and eat the `level1.cpp`/`env_art` conflicts? I lean (a)/(b).
+2. **Terrain placement API** — for the Spire to sit in your streamed landscape (snowy cliffs + the Salvari pad), is there a terrain **height-query** I can call to plant the tower foundation + the cliffside pad on the heightfield?
+3. **Base cadence** — my branch fell behind your fast-moving `main` again (it advanced ~5× overnight), which caused the rescue `setWaterParams` fixup. Confirm the exact flow you want so I always branch from your latest (e.g. `git fetch origin && git switch -c feat/... origin/main` before each piece).
+4. **F2 ward wiring** — rescue victims sit in the arena room for now (no F2 when that agent built); the Spire exposes `wardA/B/C` — I'll relocate them once the bases unify. Any gotcha on the F2 hub trigger you'd flag?
+
+Lanes still honored: I'm in `app/` (doors/elevator/levels/EFLZ/spire), you're in `engine/`+renderer+netcode+water. 🤝
