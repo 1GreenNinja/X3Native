@@ -3900,7 +3900,7 @@ private:
         m_debrisStepPending = true;  // buildAndExecuteGraph adds the compute pass this frame
     }
 
-    void gpuDebrisDraw(const IRenderDevice::FrameContext& fc, const float tint[4]) override {
+    void gpuDebrisDraw(const FrameContext& fc, const float tint[4]) override {
         if (!fc.valid || !m_debrisDrawPipeline) return;
         GpuDebrisDrawUBO u{};
         u.viewProj = m_lastViewProj;

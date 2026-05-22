@@ -209,18 +209,19 @@ static bool runDebrisSelfTest() {
     // Ground plane at y=0; modest gravity world.
     IRenderDevice::GpuDebrisParams p{};
     p.groundY = 0.0f;
-    p.restitution = 0.25f;
-    p.friction = 0.5f;
-    p.linearDamping = 0.4f;
-    p.sleepLinSpeed = 0.25f;
-    p.sleepAngSpeed = 0.4f;
+    p.restitution = 0.10f;            // low bounce so fragments settle quickly
+    p.friction = 0.6f;
+    p.linearDamping = 0.6f;
+    p.sleepLinSpeed = 0.30f;
+    p.sleepAngSpeed = 0.6f;
     p.sleepFrames = 8;
     device->gpuDebrisConfig(p);
 
     const uint32_t N = 4096;          // far beyond the ~256 Jolt chunk budget
     const float spawnPos[3] = { 0.0f, 6.0f, 0.0f };
-    uint32_t spawned = device->gpuDebrisSpawnBurst(spawnPos, N, /*speed*/4.0f,
-                                                   /*lifetime*/2.0f, /*halfExtent*/0.1f, /*seed*/12345u);
+    // Lifetime well clear of the settle window below so none expire mid-settle.
+    uint32_t spawned = device->gpuDebrisSpawnBurst(spawnPos, N, /*speed*/3.0f,
+                                                   /*lifetime*/3.0f, /*halfExtent*/0.1f, /*seed*/12345u);
     check("spawn count == requested", spawned == N);
     check("alive == N right after spawn", device->gpuDebrisAliveCount() == N);
     check("capacity >= N", device->gpuDebrisCapacity() >= N);
@@ -247,9 +248,9 @@ static bool runDebrisSelfTest() {
     check("fragments fell below spawn height", mid.minY < spawnPos[1]);
     check("alive unchanged before any expiry", mid.alive == N);
 
-    // --- Settle: step ~70 frames (>1s) so they hit the ground + sleep. The 2.0s
-    //     lifetime has NOT yet elapsed (we used dt=1/60, ~1.17s here). ---
-    for (int i = 0; i < 64; ++i) stepFrame();
+    // --- Settle: step to ~1.9s total so every fragment hits the ground + sleeps.
+    //     The shortest lifetime is 0.7*3.0 = 2.1s, so NONE expire in this window. ---
+    for (int i = 0; i < 108; ++i) stepFrame();   // 6 + 108 = 114 frames ~ 1.9s
     IRenderDevice::GpuDebrisStats settled = device->gpuDebrisReadback(1.0e4f);
     check("no NaNs after settling", settled.nanCount == 0);
     check("bounded positions after settling", settled.outOfBounds == 0);

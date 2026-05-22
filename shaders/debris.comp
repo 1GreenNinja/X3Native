@@ -87,7 +87,7 @@ void main() {
     // ---- ACTIVE: semi-implicit Euler integrate ----
     vec3 vel = f.velScale.xyz;
     vec3 pos = f.posLife.xyz;
-    float half = f.velScale.w;
+    float halfExt = f.velScale.w;
 
     // Gravity + per-second linear damping (frame-rate-correct exp approximation).
     vel += u.gravityDt.xyz * dt;
@@ -99,7 +99,9 @@ void main() {
     float groundY = u.groundDamp.x;
     float rest    = u.groundDamp.y;
     float fric    = u.groundDamp.z;
-    float floorY  = groundY + half;            // cube rests its bottom face on the plane
+    float floorY  = groundY + halfExt;         // cube rests its bottom face on the plane
+    // Angular velocity (read here so ground contact can also brake the spin).
+    vec3 w = f.spinState.xyz * damp;           // free-flight angular damping
     if (pos.y < floorY) {
         pos.y = floorY;
         if (vel.y < 0.0) vel.y = -vel.y * rest; // bounce
@@ -108,13 +110,16 @@ void main() {
         vel.z *= (1.0 - fric);
         // Kill tiny residual vertical jitter so it can settle.
         if (abs(vel.y) < 0.05) vel.y = 0.0;
+        // Rolling/contact friction also brakes the spin so grounded debris stops
+        // tumbling and can sleep (a resting fragment does not keep spinning).
+        w *= (1.0 - fric);
     }
 
     // ---- Optional world AABB collision (small set; cheap push-out) ----
     int naabb = int(u.aabbCount.x + 0.5);
     for (int a = 0; a < naabb && a < 4; ++a) {
-        vec3 mn = u.aabbMin[a].xyz - vec3(half);
-        vec3 mx = u.aabbMax[a].xyz + vec3(half);
+        vec3 mn = u.aabbMin[a].xyz - vec3(halfExt);
+        vec3 mx = u.aabbMax[a].xyz + vec3(halfExt);
         if (all(greaterThan(pos, mn)) && all(lessThan(pos, mx))) {
             // Push out along the axis of least penetration.
             vec3 pLo = pos - mn;   // penetration from the min side
@@ -133,7 +138,6 @@ void main() {
     }
 
     // ---- Advance orientation by the angular velocity (small-angle quaternion) ----
-    vec3 w = f.spinState.xyz;
     vec4 q = f.rot;
     vec4 dq = 0.5 * dt * vec4(
         w.x*q.w + w.y*q.z - w.z*q.y,

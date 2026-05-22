@@ -48,8 +48,8 @@ void main() {
         vColor = vec4(0.0);
         return;
     }
-    float half = f.velScale.w;
-    vec3 local = inCorner * (half * 2.0);          // unit cube (half 0.5) -> 2*half
+    float halfExt = f.velScale.w;
+    vec3 local = inCorner * (halfExt * 2.0);       // unit cube (half 0.5) -> 2*halfExt
     vec3 world = f.posLife.xyz + qrot(f.rot, local);
     vNormal = normalize(qrot(f.rot, inNormal));
     vColor  = u.color;
