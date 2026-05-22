@@ -11,6 +11,7 @@
 #include "engine/net/INetTransport.h"
 #include "engine/net/IReplication.h"
 #include "engine/net/SimClock.h"
+#include "engine/net/PlayerSimStep.h"   // the shared deterministic player step (one fn, two callers)
 #include "engine/core/x3_log.h"
 
 #include <vector>
@@ -346,70 +347,44 @@ bool testEndToEnd() {
 // ---------------------------------------------------------------------------
 
 // State byte bits packed into RepHealth::flags by the authoritative sim, so the
-// snapshot carries a "state byte" the client mirror can verify converges.
+// snapshot carries a "state byte" the client mirror can verify converges. These
+// alias the shared PlayerStateBit values in PlayerSimStep.h (one source of truth):
+// the authoritative apply and the client prediction MUST resolve the SAME bits.
 enum NetState : uint8_t {
-    NetState_Moving   = 1u << 0,   // |move axes| above the deadzone this tick
-    NetState_Sprinting= 1u << 1,   // sprint button held
-    NetState_Firing   = 1u << 2,   // fire button held
+    NetState_Moving    = PlayerState_Moving,
+    NetState_Sprinting = PlayerState_Sprinting,
+    NetState_Firing    = PlayerState_Firing,
 };
 
+} // namespace (close the anon namespace so serverApplyCommand has EXTERNAL linkage)
+
 // Deterministic per-tick authoritative step for one player entity. Reads its
-// current RepTransform/RepVelocity from the store, integrates from `cmd`, writes
-// the post-tick RepTransform + RepVelocity + a RepHealth state byte back. This is
-// the ONE place authoritative state changes (server-only), at exactly kSimDt.
+// current RepTransform/RepVelocity from the store, runs the SHARED stepPlayer()
+// integrator (PlayerSimStep.h — the one function the client predicts/replays with),
+// then writes the post-tick RepTransform + RepVelocity + RepHealth state byte back.
+// This is the ONE place authoritative state changes (server-only), at exactly kSimDt.
+// Given EXTERNAL linkage (not in an anonymous namespace) so the Phase 1 predictor
+// self-test (ClientPredictor.cpp) drives the SAME authoritative integrator the
+// production server uses — proving predict/replay converge to the real authority.
 void serverApplyCommand(IReplication* rep, NetEntityId e, const NetCommand& cmd) {
-    // Read current transform (default to origin if not yet set).
-    RepTransform xf{};
+    // Load the current sim state from the store (default to origin if not yet set).
+    PlayerSimState s{};
     uint32_t len = 0;
     if (const void* p = rep->readComponent(e, NetComp_Transform, &len))
-        if (len == sizeof(RepTransform)) std::memcpy(&xf, p, sizeof(xf));
+        if (len == sizeof(RepTransform)) std::memcpy(&s.xf, p, sizeof(s.xf));
+    if (const void* p = rep->readComponent(e, NetComp_Velocity, &len))
+        if (len == sizeof(RepVelocity)) std::memcpy(&s.vel, p, sizeof(s.vel));
 
-    // Movement constants: a base speed, sprint multiplier. Deterministic scalars.
-    constexpr float kBaseSpeed   = 4.0f;   // m/s
-    constexpr float kSprintScale = 1.8f;
-    const bool sprint = (cmd.buttons & NetBtn_Sprint) != 0;
-    const float speed = kBaseSpeed * (sprint ? kSprintScale : 1.0f);
+    // Advance one tick with the shared deterministic integrator.
+    stepPlayer(s, cmd);
 
-    // Yaw-derived planar basis (CONVENTIONS.md §3 forward). Forward = (-sin y, 0,
-    // -cos y) style is engine-specific; for the deterministic test we only need a
-    // STABLE, reproducible basis, so use the standard right-handed yaw mapping:
-    //   forward = (sin yaw, 0, -cos yaw),  right = (cos yaw, 0, sin yaw)
-    const float s = std::sin(cmd.yaw);
-    const float c = std::cos(cmd.yaw);
-    const float fwd[3]   = {  s, 0.0f, -c };
-    const float right[3] = {  c, 0.0f,  s };
-
-    // Planar velocity from the command axes, integrated at the fixed dt.
-    float vx = (fwd[0] * cmd.moveFwd + right[0] * cmd.moveStrafe) * speed;
-    float vz = (fwd[2] * cmd.moveFwd + right[2] * cmd.moveStrafe) * speed;
-    xf.pos[0] += vx * kSimDt;
-    xf.pos[2] += vz * kSimDt;
-
-    // Rotation: the entity faces its look yaw (quaternion about +Y, x,y,z,w order).
-    const float half = cmd.yaw * 0.5f;
-    xf.rotQuat[0] = 0.0f;
-    xf.rotQuat[1] = std::sin(half);
-    xf.rotQuat[2] = 0.0f;
-    xf.rotQuat[3] = std::cos(half);
-
-    RepVelocity vel{};
-    vel.lin[0] = vx; vel.lin[1] = 0.0f; vel.lin[2] = vz;
-
-    // State byte (server-resolved from the held button bitfield + motion).
-    const float moveMag2 = cmd.moveFwd * cmd.moveFwd + cmd.moveStrafe * cmd.moveStrafe;
-    uint8_t state = 0;
-    if (moveMag2 > 1e-6f)              state |= NetState_Moving;
-    if (sprint)                       state |= NetState_Sprinting;
-    if (cmd.buttons & NetBtn_Fire)    state |= NetState_Firing;
     RepHealth hp{};
-    hp.hp = 100; hp.maxHp = 100; hp.flags = state;
+    hp.hp = 100; hp.maxHp = 100; hp.flags = s.state;
 
-    rep->setComponent(e, NetComp_Transform, &xf,  sizeof(xf));
-    rep->setComponent(e, NetComp_Velocity,  &vel, sizeof(vel));
-    rep->setComponent(e, NetComp_Health,    &hp,  sizeof(hp));
+    rep->setComponent(e, NetComp_Transform, &s.xf,  sizeof(s.xf));
+    rep->setComponent(e, NetComp_Velocity,  &s.vel, sizeof(s.vel));
+    rep->setComponent(e, NetComp_Health,    &hp,   sizeof(hp));
 }
-
-} // namespace
 
 INetworkSystem* createNetworkSystem() { return new NetworkSystem(); }
 
