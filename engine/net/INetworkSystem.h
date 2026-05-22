@@ -67,4 +67,17 @@ INetworkSystem* createNetworkSystem();
 // pass. Mirrors runPhysicsSelfTest() / runJobSystemSelfTest().
 bool runNetworkSelfTest();
 
+// Headless acceptance test (--test-netsync): Phase 0b client/server input->snapshot
+// routing. Spins up a loopback client+server (the server owns the authoritative
+// replication store; the client owns a separate render-mirror store), feeds a
+// deterministic sequence of NetCommands, and runs the FULL loop each tick:
+//   client samples input -> NetCommand -> send (client->server over transport)
+//   server poll/drain -> apply command authoritatively -> advance fixed-step sim
+//   server publishes a Snapshot of all net entities -> client receives + mirrors
+// Asserts the client mirror converges to the server's authoritative state
+// (positions within epsilon, ids correct, no leaked ids). Logs each property as
+// "[netsync-test] PASS ..." / "[netsync-test] FAIL ..." and prints
+// "netsync: X/Y passed". Returns true iff all pass.
+bool runNetSyncSelfTest();
+
 } // namespace x3::net
