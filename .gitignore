@@ -39,6 +39,11 @@ CMakeSettings.json
 *.pk4
 *.x3pak
 
+# --capture-ai tool output (generated PNG frame sequence + assembled GIF)
+/ai_action/
+/ai_action*/
+ai_action*.gif
+
 # Tracy captures
 *.tracy
 

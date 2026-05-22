@@ -19,6 +19,7 @@
 #include "mesh_prims.h"
 #include "level1.h"
 #include "player.h"
+#include "monster.h"
 #include "level1_game.h"
 #include "terrain.h"
 #include "fx.h"
@@ -33,6 +34,37 @@
 #include <cstdint>
 #include <cstdlib>
 #include <algorithm>
+#include <filesystem>
+#include <cstdio>
+
+// Public-domain single-header GIF encoder (Charlie Tangora) — vendored under
+// third_party/gif_h. Used ONLY by the headless --capture-ai tool below to assemble
+// the captured PNG frame sequence into an animated GIF. This is the SOLE
+// translation unit that includes gif.h, so its (non-inline) functions link cleanly.
+// It's vendored third-party code, so quiet its /W4 noise around the include only.
+#if defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable : 4334)   // 32-bit shift result implicitly widened to 64
+#endif
+#include "../third_party/gif_h/gif.h"
+#if defined(_MSC_VER)
+#  pragma warning(pop)
+#endif
+// stb_image (to read the captured PNGs back for GIF assembly). The engine already
+// hosts a STB_IMAGE_IMPLEMENTATION inside ModelLoader.cpp with FILE-LOCAL linkage,
+// so we cannot link to its stbi_load. Instead we instantiate our OWN file-local
+// copy here via STB_IMAGE_STATIC (no symbol clash, used only by this tool path).
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#if defined(_MSC_VER)
+#  pragma warning(push)
+#  pragma warning(disable : 4244 4456 4457)   // vendored stb_image /W4 noise
+#endif
+#include <stb_image.h>
+#if defined(_MSC_VER)
+#  pragma warning(pop)
+#endif
 
 namespace {
 // Approximate the viewmodel muzzle in world space from the eye + look angles, so
@@ -166,6 +198,16 @@ int main(int argc, char** argv) {
     // omitted: G:\X3Native-wt-terrain\terrain.png.
     bool        terrainShot = false;
     std::string terrainShotPath = "G:/X3Native-wt-terrain/terrain.png";
+    // AI-action capture mode (--capture-ai [outDir]): build a clearly-lit demo arena
+    // (lit ground + sky + point/sun fill) with a fixed player reference and a small
+    // squad of enemies driven by the REAL combat-AI state machine (a Guard advances,
+    // a Drone strafes, one enemy is damaged mid-run -> Retreat, one loses LOS ->
+    // Search), pose a fixed 3/4 elevated camera, step the sim at fixed dt for ~6 s,
+    // capture a numbered PNG frame every ~0.2 s into outDir, assemble an animated
+    // GIF (G:\X3Native\ai_action.gif), and print a per-phase state log. Headless /
+    // offscreen (no window), like --screenshot. Default outDir: G:\X3Native\ai_action.
+    bool        captureAi    = false;
+    std::string captureAiDir = "G:/X3Native/ai_action";
     // World selector (--world terrain): launch the playable OUTDOOR terrain world
     // (walk the hills) instead of the default interior Level 1. Anything else (or
     // omitted) keeps Level 1 as the default, unchanged.
@@ -244,6 +286,11 @@ int main(int argc, char** argv) {
             terrainShot = true;
             // Optional output path arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') terrainShotPath = argv[++i];
+        }
+        else if (a == "--capture-ai") {
+            captureAi = true;
+            // Optional output directory arg (next token, if it isn't another flag).
+            if (i + 1 < argc && argv[i + 1][0] != '-') captureAiDir = argv[++i];
         }
     }
 
@@ -324,7 +371,7 @@ int main(int argc, char** argv) {
     // render fully offscreen — NO GLFW window, NO surface, NO swapchain, nothing
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
-    const bool headless = smoketest || screenshot || skyShot || terrainShot;
+    const bool headless = smoketest || screenshot || skyShot || terrainShot || captureAi;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -542,6 +589,330 @@ int main(int argc, char** argv) {
         glfwDestroyWindow(window);
         glfwTerminate();
         return wrote ? 0 : 1;
+    }
+
+    // ---- AI-action capture mode (--capture-ai [outDir]) --------------------
+    // Render the REAL monster combat-AI state machine "in action" to a numbered
+    // PNG sequence + an animated GIF, entirely headless/offscreen (no window).
+    //
+    // Scene: a flat lit ground under the analytic sky, with the engine's sun plus a
+    // ring of point lights so the characters read clearly (no dark silhouettes). A
+    // fixed player REFERENCE (the AI's target) sits at the arena center; a small
+    // squad of enemies runs the actual game AI update (the same MonsterSystem the
+    // level uses) so their states + facing are genuine:
+    //   * Guard   — advances toward + faces the player (Advance/Attack).
+    //   * Drone   — ranged: holds standoff + circles the player (Strafe), facing it.
+    //   * Wounded — a Guard we DAMAGE mid-capture (takeMeleeDamage) so it drops below
+    //               the retreat threshold and turns away + backs off (Retreat).
+    //   * Scout   — a Guard that has LOS, then we CUT its target mid-capture so it
+    //               loses sight and walks to the last-known spot, scanning (Search).
+    // A fixed 3/4 elevated camera frames all four + the player so advance/circle/
+    // retreat read across the sequence. Steps at fixed dt for ~6 s, captures a frame
+    // every ~0.2 s, then assembles the GIF + prints a per-phase state log.
+    if (captureAi) {
+        namespace fs = std::filesystem;
+        x3::logInfo("--capture-ai: rendering monster combat-AI demo to " + captureAiDir);
+        std::error_code mkec;
+        fs::create_directories(captureAiDir, mkec);
+
+        // ---- Physics + scene + lit ground ---------------------------------
+        std::unique_ptr<x3::phys::IPhysicsWorld> cphys(x3::phys::createPhysicsWorld());
+        cphys->init();
+        // Flat collision ground at y=0 (CCW so +Y is solid), large enough for the
+        // whole fight (so the LOS / move probes never run off the edge).
+        {
+            const float h = 80.0f;
+            float gv[] = { -h,0,-h,  h,0,-h,  h,0,h,  -h,0,h };
+            uint32_t gidx[] = { 0,2,1, 0,3,2 };
+            cphys->addStaticMesh(gv, 4, gidx, 6);
+        }
+        x3::game::Scene cscene;
+
+        // Visible lit ground plane (render): a neutral checker so the floor + the
+        // characters' contact shadows-on-flat read. Drawn directly each frame.
+        std::vector<x3::rhi::MeshVertex> gvtx; std::vector<uint32_t> gixs;
+        x3::prims::makeGroundQuad(/*half=*/80.0f, /*tiles=*/40.0f, gvtx, gixs);
+        x3::rhi::MeshHandle groundMesh = device->createMesh(
+            gvtx.data(), (uint32_t)gvtx.size(), gixs.data(), (uint32_t)gixs.size());
+        auto groundPx = x3::prims::makeCheckerRGBA(64, 8, 120, 130, 120, 64, 72, 66);
+        x3::rhi::TextureHandle groundTex = device->createTexture(groundPx.data(), 64, 64, true);
+        const float modelGround[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        const float whiteTint[4] = { 1, 1, 1, 1 };
+
+        // A small bright marker box at the player reference so the "target" is
+        // visibly in-frame (the AI target itself is a logical stub).
+        x3::prims::PrimMesh markerM = x3::prims::makeBox(0.35f, 0.9f, 0.35f, 0, 0.9f, 0, 0.5f);
+        x3::rhi::MeshHandle markerMesh = device->createMesh(
+            markerM.verts.data(), (uint32_t)markerM.verts.size(),
+            markerM.index.data(), (uint32_t)markerM.index.size());
+        auto markerPx = x3::prims::makeSolidRGBA(4, 250, 235, 120);   // warm yellow pillar
+        x3::rhi::TextureHandle markerTex = device->createTexture(markerPx.data(), 4, 4, true);
+
+        // ---- Sky + lighting: the engine sun PLUS a ring of point lights so the
+        // characters are well-lit from several sides (avoid the dim-corner problem;
+        // they must NOT read as dark silhouettes). ----
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+        sp.sunIntensity = 1.0f; sp.haze = 0.45f; sp.exposure = 1.0f;
+        device->setSkyParams(sp);
+        {
+            // Bright fill lights placed above + around the action so every enemy is
+            // lit regardless of which way it faces. color[] is linear RGB * intensity.
+            x3::rhi::PointLight pl[5];
+            auto setL = [](x3::rhi::PointLight& l, float x, float y, float z,
+                           float r, float g, float b, float range) {
+                l.pos[0]=x; l.pos[1]=y; l.pos[2]=z; l.range=range;
+                l.color[0]=r; l.color[1]=g; l.color[2]=b;
+            };
+            setL(pl[0],   0.0f, 7.0f,  4.0f,  5.5f, 5.4f, 5.0f, 44.0f); // overhead key over the action
+            setL(pl[1],   9.0f, 4.0f, 10.0f,  4.0f, 3.8f, 3.4f, 40.0f); // +X+Z warm fill
+            setL(pl[2],  -9.0f, 4.0f, 10.0f,  3.4f, 3.8f, 4.4f, 40.0f); // -X+Z cool fill
+            setL(pl[3],   9.0f, 4.0f, -6.0f,  3.8f, 3.6f, 3.4f, 40.0f); // +X-Z fill
+            setL(pl[4],  -9.0f, 4.0f, -6.0f,  3.4f, 3.8f, 4.4f, 40.0f); // -X-Z fill
+            device->setPointLights(pl, 5);
+        }
+
+        // ---- Player reference (the AI target) at the arena center. ----
+        // A trivial always-alive damage sink at a fixed eye/foot, exactly like the
+        // --test-ai stub: the enemies track + face IT.
+        struct CapTarget final : public x3::game::IDamageSink {
+            x3::phys::Vec3 eye{ 0.0f, 1.6f, 0.0f };
+            bool takeDamage(int) override { return true; }
+            x3::phys::Vec3 damageTargetPos() const override { return eye; }
+            bool isAlive() const override { return true; }
+        };
+        CapTarget player;
+        player.eye = x3::phys::Vec3{ 0.0f, 1.6f, 0.0f };
+        const x3::phys::Vec3 playerFoot{ 0.0f, 0.0f, 0.0f };
+
+        // ---- The squad. Each is a self-contained MonsterSystem so we can drive its
+        // target / LOS independently. We use the rigged animated GLBs when present
+        // (marcus_webb for guards, Drone for the flanker); on load failure each
+        // falls back to a procedural box, so the capture never breaks. ----
+        using x3::game::MonsterSystem;
+        using x3::game::MonsterType;
+        using x3::game::AiState;
+        using x3::game::aiStateName;
+
+        auto guardTune = [](){
+            MonsterSystem::Tuning t;
+            t.type = MonsterType::Guard;
+            t.hp = 100; t.chaseSpeed = 3.2f;
+            // Brighten the (dark-material) guard mesh so it reads clearly under the
+            // arena lights — a warm steel-green so it isn't confused with the others.
+            t.tint[0]=1.6f; t.tint[1]=1.7f; t.tint[2]=1.4f; t.tint[3]=1.0f;
+            t.damage = 8; t.attackRange = 1.9f; t.attackCooldown = 1.0f; t.attackWindup = 0.25f;
+            t.ranged = false;
+            t.modelFile = "marcus_webb.glb"; t.modelDirOverride = "G:/GameModels/rigged_glb";
+            t.standUpZtoY = false; t.modelScale = 1.0f;
+            return t;
+        };
+        auto droneTune = [](){
+            MonsterSystem::Tuning t;
+            t.type = MonsterType::Drone;
+            t.hp = 66; t.chaseSpeed = 3.6f;
+            t.tint[0]=1.0f; t.tint[1]=1.4f; t.tint[2]=2.0f; t.tint[3]=1.0f;   // bright pale-blue flanker
+            t.damage = 5; t.attackRange = 14.0f; t.attackCooldown = 1.4f; t.attackWindup = 0.35f;
+            t.ranged = true; t.standoff = 7.0f;
+            t.modelFile = "Characters/Drone.glb"; t.modelDirOverride = "G:/GameModels/converted_glb";
+            t.standUpZtoY = true; t.modelScale = 1.0f;
+            return t;
+        };
+        auto scoutTune = [](){
+            MonsterSystem::Tuning t;
+            t.type = MonsterType::Guard;
+            t.hp = 100; t.chaseSpeed = 3.2f;
+            t.tint[0]=2.0f; t.tint[1]=1.2f; t.tint[2]=2.2f; t.tint[3]=1.0f; // bright violet scout
+            t.damage = 8; t.attackRange = 1.9f; t.attackCooldown = 1.0f; t.attackWindup = 0.25f;
+            t.ranged = false;
+            t.modelFile = "marcus_webb.glb"; t.modelDirOverride = "G:/GameModels/rigged_glb";
+            t.standUpZtoY = false; t.modelScale = 1.0f;
+            return t;
+        };
+        auto woundedTune = [](){
+            MonsterSystem::Tuning t;
+            t.type = MonsterType::Guard;
+            t.hp = 100; t.chaseSpeed = 3.0f;
+            t.tint[0]=2.2f; t.tint[1]=1.0f; t.tint[2]=0.8f; t.tint[3]=1.0f; // bright wounded red
+            t.damage = 8; t.attackRange = 1.9f; t.attackCooldown = 1.0f; t.attackWindup = 0.25f;
+            t.ranged = false;
+            t.modelFile = "marcus_webb.glb"; t.modelDirOverride = "G:/GameModels/rigged_glb";
+            t.standUpZtoY = false; t.modelScale = 1.0f;
+            return t;
+        };
+
+        const std::string modelDir = "G:/GameModels/rigged_glb";
+        MonsterSystem guard, drone, wounded, scout;
+        // Place each on its OWN lane around the player so the four behaviours stay
+        // spatially distinct (they don't all bunch on the target): the Guard starts
+        // FAR so it visibly advances the whole clip; the Drone holds a side standoff
+        // and circles; the Wounded sits mid-range then backs away; the Scout sits to
+        // the far side and walks off to search once its LOS is cut.
+        guard.buildMonsterTuned  (cscene, *device, *cphys, modelDir, x3::phys::Vec3{  -2.0f, 0.0f,  13.0f }, guardTune());
+        drone.buildMonsterTuned  (cscene, *device, *cphys, modelDir, x3::phys::Vec3{   7.5f, 0.0f,   2.0f }, droneTune());
+        wounded.buildMonsterTuned(cscene, *device, *cphys, modelDir, x3::phys::Vec3{   3.0f, 0.0f,   7.0f }, woundedTune());
+        scout.buildMonsterTuned  (cscene, *device, *cphys, modelDir, x3::phys::Vec3{  -7.5f, 0.0f,   4.0f }, scoutTune());
+
+        // ---- Fixed 3/4 elevated camera framing the player + all enemies. ----
+        // A true 3/4 view: stand back + offset to +X so depth separates the figures,
+        // elevated and looking down-across at the arena center, so advance (toward
+        // center), strafe (circling), retreat (away) + search (walking off) all read.
+        device->setCamera(11.0f, 8.0f, 15.0f, /*yaw=*/ -2.20f /* look toward -Z, angled -X */,
+                          /*pitch=*/ -0.40f, 60.0f);
+
+        // ---- Run the scripted fight. ~6 s at fixed dt; capture every ~0.2 s. ----
+        const float dt          = 1.0f / 60.0f;
+        const float captureEvery = 0.20f;        // seconds between captured frames
+        const float duration     = 6.0f;         // total seconds simulated
+        const float woundAtT     = 1.8f;         // damage the "wounded" guard here
+        const float loseLosAtT   = 2.6f;         // cut the "scout" target here
+        const int   totalSteps   = (int)(duration / dt + 0.5f);
+        const int   stepsPerCap  = (int)(captureEvery / dt + 0.5f);
+
+        int   frameNo = 0;
+        bool  wounded_done = false;
+        // Per-phase log lines (printed all together at the end as the "phase log").
+        std::vector<std::string> phaseLog;
+        std::vector<std::string> framePaths;
+
+        x3::game::AttackFxFn noFx{};            // no tracer FX needed for the capture
+        x3::game::BossPhaseFn noPhase{};
+        x3::game::AllyQueryFn noAllies{};
+
+        for (int step = 0; step <= totalSteps; ++step) {
+            const float t = step * dt;
+            glfwPollEvents();
+
+            // Scripted events: wound one enemy into Retreat; cut another's LOS into
+            // Search. Both exercise the REAL damage / targeting paths.
+            if (!wounded_done && t >= woundAtT) {
+                // Drop it well below the 30% retreat threshold (100 -> 22) so it
+                // enters Retreat and turns away. Mirrors a lethal-ish melee combo.
+                wounded.takeMeleeDamage(78, cscene, *cphys);
+                wounded_done = true;
+                x3::logInfo("[capture-ai] t=" + std::to_string(t) +
+                            "s: wounded guard takes 78 dmg (hp now " +
+                            std::to_string(wounded.hp()) + ")");
+            }
+            const bool scoutHasTarget = (t < loseLosAtT);   // cut LOS after this
+
+            // Advance the AI for each enemy with the SAME update the game uses.
+            // playerFoot is the planar tracking target; player.eye is the LOS end.
+            guard.update  (dt, cscene, *cphys, playerFoot, player.eye, &player, noFx, noPhase, noAllies);
+            drone.update  (dt, cscene, *cphys, playerFoot, player.eye, &player, noFx, noPhase, noAllies);
+            wounded.update(dt, cscene, *cphys, playerFoot, player.eye, &player, noFx, noPhase, noAllies);
+            // Scout: pass a live target until loseLosAtT, then null so it loses LOS
+            // and falls to Search (it already saw the player, so it searches the
+            // last-known spot rather than going Idle immediately).
+            if (scoutHasTarget)
+                scout.update(dt, cscene, *cphys, playerFoot, player.eye, &player, noFx, noPhase, noAllies);
+            else
+                scout.update(dt, cscene, *cphys, playerFoot, player.eye, nullptr, noFx, noPhase, noAllies);
+
+            cphys->step(dt);
+            // Sync entity translations from physics, THEN re-bake AI facing: the
+            // monster update already composed each transform this frame, but a
+            // scene.update() would overwrite the 3x3 with identity-rot; the game
+            // order is update()-after-scene.update(). Here we don't call
+            // scene.update() at all (the AI fully owns each enemy transform), so the
+            // baked facing stands.
+
+            // Capture a frame on the cadence (and always the final step).
+            const bool doCap = (step % stepsPerCap == 0) || (step == totalSteps);
+            char fpath[512];
+            if (doCap) {
+                std::snprintf(fpath, sizeof(fpath), "%s/frame_%03d.png",
+                              captureAiDir.c_str(), frameNo);
+                device->armCapture(fpath);
+            }
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                // Lit ground + the player marker pillar.
+                device->drawMesh(frame, groundMesh, groundTex, whiteTint, modelGround);
+                const float modelMarker[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0,
+                                                player.eye.x, 0.0f, player.eye.z, 1 };
+                device->drawMesh(frame, markerMesh, markerTex, whiteTint, modelMarker);
+                // Scene entities (the monster Entities carry invalid render meshes,
+                // so this is mostly a no-op for them) + each monster's own model.
+                cscene.render(*device, frame);
+                guard.drawMonster(*device, frame, cscene);
+                drone.drawMonster(*device, frame, cscene);
+                wounded.drawMonster(*device, frame, cscene);
+                scout.drawMonster(*device, frame, cscene);
+            }
+            device->endFrame(frame);
+
+            if (doCap) {
+                const bool wrote = device->captureFrame(fpath);
+                if (wrote) framePaths.emplace_back(fpath);
+                // Record the per-phase state line at this capture instant.
+                char line[256];
+                std::snprintf(line, sizeof(line),
+                    "t=%4.1f  guard=%-7s drone=%-7s wounded=%-7s(hp=%d) scout=%-7s",
+                    t, aiStateName(guard.aiState()), aiStateName(drone.aiState()),
+                    aiStateName(wounded.aiState()), wounded.hp(),
+                    aiStateName(scout.aiState()));
+                phaseLog.emplace_back(line);
+                ++frameNo;
+            }
+        }
+
+        // ---- Assemble the animated GIF from the captured PNG frames. -----------
+        // Read each PNG back (stb_image, already in the engine TU) and feed it to the
+        // public-domain gif.h encoder at ~10 fps (delay = 10 hundredths/frame), looping.
+        bool gifOk = false;
+        const std::string gifPath = "G:/X3Native/ai_action.gif";
+        if (!framePaths.empty()) {
+            int gw = 0, gh = 0, gc = 0;
+            unsigned char* first = stbi_load(framePaths.front().c_str(), &gw, &gh, &gc, 4);
+            if (first && gw > 0 && gh > 0) {
+                GifWriter gif{};
+                const uint32_t delayCs = 10;   // 10/100 s per frame => ~10 fps, looping
+                if (GifBegin(&gif, gifPath.c_str(), (uint32_t)gw, (uint32_t)gh, delayCs)) {
+                    GifWriteFrame(&gif, first, (uint32_t)gw, (uint32_t)gh, delayCs);
+                    for (size_t i = 1; i < framePaths.size(); ++i) {
+                        int w = 0, h = 0, c = 0;
+                        unsigned char* px = stbi_load(framePaths[i].c_str(), &w, &h, &c, 4);
+                        if (px && w == gw && h == gh) {
+                            GifWriteFrame(&gif, px, (uint32_t)gw, (uint32_t)gh, delayCs);
+                            stbi_image_free(px);
+                        } else if (px) {
+                            stbi_image_free(px);
+                        }
+                    }
+                    gifOk = GifEnd(&gif);
+                }
+                stbi_image_free(first);
+            }
+        }
+
+        // ---- Print the per-phase state log so the behaviours can be described. ---
+        x3::logInfo("================ --capture-ai per-phase AI state log ================");
+        for (const auto& l : phaseLog) x3::logInfo(l);
+        x3::logInfo("====================================================================");
+        {
+            char sb[256];
+            std::error_code szec;
+            uintmax_t gifBytes = gifOk ? fs::file_size(gifPath, szec) : 0;
+            std::snprintf(sb, sizeof(sb),
+                "--capture-ai: wrote %d PNG frames to %s | GIF %s (%llu bytes)",
+                frameNo, captureAiDir.c_str(),
+                gifOk ? gifPath.c_str() : "(FAILED)",
+                (unsigned long long)gifBytes);
+            x3::logInfo(sb);
+        }
+
+        device->destroyMesh(groundMesh);
+        device->destroyTexture(groundTex);
+        device->destroyMesh(markerMesh);
+        device->destroyTexture(markerTex);
+        cphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return (frameNo > 0 && gifOk) ? 0 : 1;
     }
 
     // ---- Asset source (stub until D5) ----
