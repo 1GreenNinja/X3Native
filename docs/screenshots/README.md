@@ -7,6 +7,7 @@ Visual reference / regression baselines of the engine layer (1280×720, captured
 | `level1_corridor.png` | EFLZ Level 1 corridor — real ModularSciFi art, **HDR + bloom + emissive** (glowing fixtures), **directional shadows**, **16 point lights**, **SSAO**, animated character. The current canonical interior look. | `X3Engine.exe --screenshot out.png` |
 | `terrain.png` | The streamed 1 km² procedural heightmap world (LOD, per-tile collision) under the sky. | `X3Engine.exe --screenshot-terrain out.png` |
 | `sky.png` | Analytic sky (gradient + sun disk/glow + horizon haze), sun-direction-consistent with shadows. | `X3Engine.exe --screenshot-sky out.png` |
+| `ocean.png` | Animated **ocean** at sea level under the sky — Gerstner waves, sky-reflection + depth-based shallow/deep refraction color, sun glint (feeds bloom), terrain→water shoreline. | `X3Engine.exe --screenshot-ocean out.png` |
 | `monster_ai.gif` | Combat-AI demo — guard advances, drone flanks, wounded retreats, scout searches (facing is a consequence of state). | `X3Engine.exe --capture-ai out_dir` |
 
 These are committed deliberately as dev reference (Tim's call). Loose scratch screenshots in the repo root are git-ignored; put anything worth keeping here with a descriptive name.

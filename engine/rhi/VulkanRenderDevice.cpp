@@ -193,11 +193,16 @@ public:
         if (!createSsao()) return false;
         if (!createSsaoTargets()) return false;
         writeSsaoDescriptors();
+        // Water (undersea-world foundation): a grid plane + Gerstner-wave pipeline
+        // that samples the scene depth (above) for the depth-based color. Built
+        // after the depth buffer exists; OFF by default (gated by setWaterParams).
+        if (!createWater()) return false;
         return true;
     }
 
     void shutdown() override {
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        destroyWater();
         destroySsao();
         destroyPost();
         destroySky();
@@ -245,6 +250,13 @@ public:
         // buildAndExecuteGraph gates the SSAO chain on `enabled`. Enabled by
         // default with tasteful values (no app wiring required for it to work).
         m_ssao = sp;
+    }
+
+    void setWaterParams(const WaterParams& wp) override {
+        // Cache a snapshot; prepareFrameData() writes it into the per-frame water
+        // UBO and buildAndExecuteGraph adds the water pass when enabled. Disabled
+        // by default, so indoor levels + every existing flag are unchanged.
+        m_water = wp;
     }
 
     FrameContext beginFrame() override {
@@ -1149,6 +1161,26 @@ private:
             std::memcpy(fr.skyMapped, &sky, sizeof(SkyUBO));
         }
 
+        // Water UBO (undersea-world foundation): the SAME camera viewProj the meshes
+        // use (so the water is registered with the world), the sun, the tunables,
+        // and the depth-reconstruction screen size. Written every frame whether or
+        // not water is enabled (the pass itself is gated by m_water.enabled).
+        if (m_waterUboMapped[m_frameIdx]) {
+            WaterUBO w{};
+            w.viewProj = ubo.viewProj;
+            w.camPos   = glm::vec4(m_camPos, 1.0f);
+            glm::vec3 wsd = glm::normalize(glm::vec3(m_water.sunDir[0], m_water.sunDir[1], m_water.sunDir[2]));
+            w.sunDir   = glm::vec4(wsd, 0.0f);
+            w.deepColor    = glm::vec4(m_water.deepColor[0], m_water.deepColor[1], m_water.deepColor[2], 1.0f);
+            w.shallowColor = glm::vec4(m_water.shallowColor[0], m_water.shallowColor[1], m_water.shallowColor[2], 1.0f);
+            w.p0 = glm::vec4(m_water.seaLevel, m_water.time, m_water.amplitude, m_water.steepness);
+            w.p1 = glm::vec4(m_water.waveLength, m_water.speed, m_water.specular, m_water.fresnel);
+            const float invW = (m_extent.width  > 0) ? 1.0f / (float)m_extent.width  : 0.0f;
+            const float invH = (m_extent.height > 0) ? 1.0f / (float)m_extent.height : 0.0f;
+            w.p2 = glm::vec4(kWaterPatchHalf, invW, invH, 0.0f);
+            std::memcpy(m_waterUboMapped[m_frameIdx], &w, sizeof(WaterUBO));
+        }
+
         if (m_drawRecords.empty() || !m_meshPipeline) return;
 
         // Group records by mesh (preserve first-seen order for determinism). Reuse
@@ -1530,6 +1562,9 @@ private:
         // SSAO images (half-res). Imported UNDEFINED each frame (fully overwritten
         // by their producing pass). Only used when SSAO is enabled this frame.
         const bool ssaoOn = m_ssao.enabled;
+        // Water adds a pass after the main mesh pass that samples + depth-tests the
+        // scene depth this frame (gated; OFF == no water pass + zero cost).
+        const bool waterOn = m_water.enabled;
         RgResource rgSsaoRaw  = m_graph.importImage("ssao.raw",  m_ssaoRawImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgSsaoBlur = m_graph.importImage("ssao.blur", m_ssaoBlurImg,
@@ -1705,7 +1740,10 @@ private:
             m_mainDepthAttach.imageView = m_depthView;
             m_mainDepthAttach.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
             m_mainDepthAttach.loadOp = ssaoOn ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
-            m_mainDepthAttach.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            // Water (when enabled) samples + depth-tests against this depth in a
+            // following pass, so STORE it; otherwise the depth is transient.
+            m_mainDepthAttach.storeOp = waterOn ? VK_ATTACHMENT_STORE_OP_STORE
+                                                : VK_ATTACHMENT_STORE_OP_DONT_CARE;
             m_mainDepthAttach.clearValue.depthStencil = { 1.0f, 0 };
 
             RenderPassDesc colorPass{};
@@ -1752,6 +1790,58 @@ private:
             colorPass.renderInfo = m_mainRenderInfo;
             colorPass.record = [this](VkCommandBuffer c){ recordMainPassBody(c); };
             m_graph.addPass(std::move(colorPass));
+        }
+
+        // ---- Water pass (undersea-world foundation) -------------------------
+        // Drawn AFTER the opaque mesh pass into the SAME linear HDR target (LOAD,
+        // so the lit scene + sky stay), depth-testing LESS_OR_EQUAL against the
+        // stored scene depth (so terrain in front of the sea occludes it) WITHOUT
+        // writing depth, and SAMPLING that same depth for the depth-based color.
+        // The depth is used in DEPTH_READ_ONLY layout for BOTH the read-only depth
+        // attachment and the texture sample — one declared use covers both (the
+        // graph derives the DEPTH_ATTACHMENT -> DEPTH_READ_ONLY transition). Only
+        // added when water is enabled (zero cost otherwise).
+        if (waterOn) {
+            m_waterColorAttach = VkRenderingAttachmentInfo{};
+            m_waterColorAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_waterColorAttach.imageView = m_hdrView;
+            m_waterColorAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_waterColorAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;   // keep the lit scene + sky
+            m_waterColorAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            m_waterDepthAttach = VkRenderingAttachmentInfo{};
+            m_waterDepthAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_waterDepthAttach.imageView = m_depthView;
+            m_waterDepthAttach.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL; // read-only depth
+            m_waterDepthAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            m_waterDepthAttach.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
+
+            RenderPassDesc waterPass{};
+            waterPass.name = "water";
+            waterPass.uses.push_back(ResourceUse{
+                rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            // Depth: read-only attachment AND sampled texture, same DEPTH_READ_ONLY
+            // layout. Combined fragment-test + fragment-shader stages, read access.
+            waterPass.uses.push_back(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT
+                    | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            waterPass.usesDynamicRendering = true;
+            m_waterRenderInfo = VkRenderingInfo{};
+            m_waterRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_waterRenderInfo.renderArea = { {0,0}, m_extent };
+            m_waterRenderInfo.layerCount = 1;
+            m_waterRenderInfo.colorAttachmentCount = 1;
+            m_waterRenderInfo.pColorAttachments = &m_waterColorAttach;
+            m_waterRenderInfo.pDepthAttachment = &m_waterDepthAttach;
+            waterPass.renderInfo = m_waterRenderInfo;
+            waterPass.record = [this](VkCommandBuffer c){ recordWaterPassBody(c); };
+            m_graph.addPass(std::move(waterPass));
         }
 
         // ================================================================
@@ -2199,6 +2289,231 @@ private:
         if (m_skySetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_skySetLayout, nullptr); m_skySetLayout = VK_NULL_HANDLE; }
     }
 
+    // ---- Water (undersea-world foundation) ---------------------------------
+    // Build the unit-patch grid mesh (vec2 grid coord per vertex, [-1,1]), the
+    // per-frame water UBO buffers + descriptor sets (set0: UBO + scene-depth
+    // sampler), and the water graphics pipeline (water.vert/.frag; depth-test
+    // LESS_OR_EQUAL, depth-write OFF — the water reads the depth the opaque pass
+    // produced and never writes it, so post passes are unharmed). Created once;
+    // the depth descriptor binding is (re)written by writeWaterDescriptors() at
+    // init + on resize (the depth view changes).
+    bool createWater() {
+        // --- Unit-patch grid mesh (device-local; built once via staging). ---
+        const uint32_t dim = kWaterGridDim;            // verts per edge
+        std::vector<glm::vec2> verts; verts.reserve((size_t)dim * dim);
+        for (uint32_t z = 0; z < dim; ++z) {
+            for (uint32_t x = 0; x < dim; ++x) {
+                float fx = (float)x / (float)(dim - 1) * 2.0f - 1.0f; // [-1,1]
+                float fz = (float)z / (float)(dim - 1) * 2.0f - 1.0f;
+                verts.emplace_back(fx, fz);
+            }
+        }
+        std::vector<uint32_t> idx; idx.reserve((size_t)(dim - 1) * (dim - 1) * 6);
+        for (uint32_t z = 0; z < dim - 1; ++z) {
+            for (uint32_t x = 0; x < dim - 1; ++x) {
+                uint32_t i0 = z * dim + x;
+                uint32_t i1 = z * dim + (x + 1);
+                uint32_t i2 = (z + 1) * dim + x;
+                uint32_t i3 = (z + 1) * dim + (x + 1);
+                // CCW from above (+Y); winding matches the device's front face.
+                idx.push_back(i0); idx.push_back(i2); idx.push_back(i1);
+                idx.push_back(i1); idx.push_back(i2); idx.push_back(i3);
+            }
+        }
+        m_waterIndexCount = (uint32_t)idx.size();
+        if (!createDeviceLocalBuffer(verts.data(), verts.size() * sizeof(glm::vec2),
+                                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, m_waterVbo, m_waterVboAlloc)) {
+            logError("[rhi] water vbo create failed"); return false;
+        }
+        if (!createDeviceLocalBuffer(idx.data(), idx.size() * sizeof(uint32_t),
+                                     VK_BUFFER_USAGE_INDEX_BUFFER_BIT, m_waterIbo, m_waterIboAlloc)) {
+            logError("[rhi] water ibo create failed"); return false;
+        }
+
+        // --- Scene-depth sampler (LINEAR, clamp): samples the depth buffer as data
+        // for the depth-based water color. ---
+        VkSamplerCreateInfo dsci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        dsci.magFilter = VK_FILTER_LINEAR; dsci.minFilter = VK_FILTER_LINEAR;
+        dsci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        dsci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        dsci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        dsci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(m_dev.device, &dsci, nullptr, &m_waterDepthSampler) != VK_SUCCESS) {
+            logError("[rhi] water depth sampler failed"); return false;
+        }
+
+        // --- Set-0 layout: WaterUBO (b0, VS+FS) + scene-depth sampler (b1, FS). ---
+        VkDescriptorSetLayoutBinding b[2]{};
+        b[0].binding = 0; b[0].descriptorCount = 1;
+        b[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        b[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        b[1].binding = 1; b[1].descriptorCount = 1;
+        b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        slci.bindingCount = 2; slci.pBindings = b;
+        if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_waterSetLayout) != VK_SUCCESS) {
+            logError("[rhi] water set layout failed"); return false;
+        }
+
+        // --- Descriptor pool: UBO + sampler per frame-in-flight. ---
+        VkDescriptorPoolSize ps[2]{
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight },
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kFramesInFlight } };
+        VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        pci.maxSets = kFramesInFlight; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
+        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_waterPool) != VK_SUCCESS) {
+            logError("[rhi] water desc pool failed"); return false;
+        }
+
+        // --- Per-frame UBO + descriptor set (depth binding written later). ---
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = sizeof(WaterUBO);
+            bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo info{};
+            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_waterUboBuf[i], &m_waterUboAlloc[i], &info) != VK_SUCCESS) {
+                logError("[rhi] water UBO create failed"); return false;
+            }
+            m_waterUboMapped[i] = info.pMappedData;
+
+            VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            dsai.descriptorPool = m_waterPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &m_waterSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_waterSet[i]) != VK_SUCCESS) {
+                logError("[rhi] water set alloc failed"); return false;
+            }
+            VkDescriptorBufferInfo dbi{ m_waterUboBuf[i], 0, sizeof(WaterUBO) };
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.dstSet = m_waterSet[i]; w.dstBinding = 0; w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w.pBufferInfo = &dbi;
+            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        }
+        writeWaterDescriptors();   // wire the scene-depth binding (depth view)
+
+        // --- Pipeline: vec2 grid vertex; depth-test LESS_OR_EQUAL, no write. ---
+        VkShaderModule vs = loadShaderModule("shaders\\water.vert.spv");
+        VkShaderModule fs = loadShaderModule("shaders\\water.frag.spv");
+        if (!vs || !fs) return false;
+
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = vs; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
+
+        VkVertexInputBindingDescription vib{ 0, sizeof(glm::vec2), VK_VERTEX_INPUT_RATE_VERTEX };
+        VkVertexInputAttributeDescription via{ 0, 0, VK_FORMAT_R32G32_SFLOAT, 0 };
+        VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+        vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &vib;
+        vin.vertexAttributeDescriptionCount = 1; vin.pVertexAttributeDescriptions = &via;
+
+        VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        vp.viewportCount = 1; vp.scissorCount = 1;
+
+        VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE; // sea seen from both sides
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        // Test against the opaque depth (so terrain in front of the water occludes
+        // it) but DON'T write — the depth buffer is also sampled for the depth color
+        // and post passes expect it unchanged. LESS_OR_EQUAL is robust at the seam.
+        VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        dss.depthTestEnable = VK_TRUE; dss.depthWriteEnable = VK_FALSE;
+        dss.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.blendEnable = VK_FALSE; // opaque water (depth-color carries the look)
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        cb.attachmentCount = 1; cb.pAttachments = &cba;
+
+        VkDynamicState dyn[2]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+
+        VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        plci.setLayoutCount = 1; plci.pSetLayouts = &m_waterSetLayout;
+        if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_waterLayout) != VK_SUCCESS) {
+            logError("[rhi] water pipeline layout failed"); return false;
+        }
+
+        const VkFormat hdrFmt = kHdrFormat;
+        VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+        prci.colorAttachmentCount = 1; prci.pColorAttachmentFormats = &hdrFmt;
+        prci.depthAttachmentFormat = m_depthFormat;
+
+        VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        gpci.pNext = &prci;
+        gpci.stageCount = 2; gpci.pStages = stages;
+        gpci.pVertexInputState = &vin; gpci.pInputAssemblyState = &ia;
+        gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
+        gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
+        gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_waterLayout;
+        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_waterPipeline);
+
+        vkDestroyShaderModule(m_dev.device, vs, nullptr);
+        vkDestroyShaderModule(m_dev.device, fs, nullptr);
+        if (pr != VK_SUCCESS) { logError("[rhi] water pipeline create failed"); return false; }
+
+        logInfo("[rhi] water pipeline ready (Gerstner grid, sky-reflection + depth-refraction + sun glint)");
+        return true;
+    }
+
+    // (Re)write the scene-depth binding of each frame's water set. Called at init
+    // + on resize (the depth image view changes). The depth is sampled in the
+    // DEPTH_READ_ONLY layout — the SAME layout it is bound as a read-only depth
+    // attachment in the water pass, so simultaneous test + sample is valid.
+    void writeWaterDescriptors() {
+        if (!m_depthView) return;
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (!m_waterSet[i]) continue;
+            VkDescriptorImageInfo di{ m_waterDepthSampler, m_depthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.dstSet = m_waterSet[i]; w.dstBinding = 1; w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &di;
+            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        }
+    }
+
+    void destroyWater() {
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (m_waterUboBuf[i]) { vmaDestroyBuffer(m_alloc, m_waterUboBuf[i], m_waterUboAlloc[i]);
+                                    m_waterUboBuf[i] = VK_NULL_HANDLE; m_waterUboAlloc[i] = nullptr; m_waterUboMapped[i] = nullptr; }
+        }
+        if (m_waterVbo) { vmaDestroyBuffer(m_alloc, m_waterVbo, m_waterVboAlloc); m_waterVbo = VK_NULL_HANDLE; m_waterVboAlloc = nullptr; }
+        if (m_waterIbo) { vmaDestroyBuffer(m_alloc, m_waterIbo, m_waterIboAlloc); m_waterIbo = VK_NULL_HANDLE; m_waterIboAlloc = nullptr; }
+        if (m_waterPipeline)  { vkDestroyPipeline(m_dev.device, m_waterPipeline, nullptr); m_waterPipeline = VK_NULL_HANDLE; }
+        if (m_waterLayout)    { vkDestroyPipelineLayout(m_dev.device, m_waterLayout, nullptr); m_waterLayout = VK_NULL_HANDLE; }
+        if (m_waterPool)      { vkDestroyDescriptorPool(m_dev.device, m_waterPool, nullptr); m_waterPool = VK_NULL_HANDLE; }
+        if (m_waterSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_waterSetLayout, nullptr); m_waterSetLayout = VK_NULL_HANDLE; }
+        if (m_waterDepthSampler) { vkDestroySampler(m_dev.device, m_waterDepthSampler, nullptr); m_waterDepthSampler = VK_NULL_HANDLE; }
+    }
+
+    // Record the water surface into the (already-open) water pass: bind the water
+    // pipeline + this frame's set (UBO + scene depth) and draw the grid mesh. The
+    // VS displaces the grid with Gerstner waves; the FS does sky-reflection +
+    // depth-refraction + sun glint into the linear HDR target.
+    void recordWaterPassBody(VkCommandBuffer cmd) {
+        if (!m_waterPipeline || !m_waterVbo || m_waterIndexCount == 0) return;
+        postViewport(cmd, m_extent);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_waterPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_waterLayout,
+                                0, 1, &m_waterSet[m_frameIdx], 0, nullptr);
+        VkDeviceSize off = 0;
+        vkCmdBindVertexBuffers(cmd, 0, 1, &m_waterVbo, &off);
+        vkCmdBindIndexBuffer(cmd, m_waterIbo, 0, VK_INDEX_TYPE_UINT32);
+        vkCmdDrawIndexed(cmd, m_waterIndexCount, 1, 0, 0, 0);
+    }
+
     void destroyHud() {
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
             auto& fr = m_frames[i];
@@ -2288,6 +2603,8 @@ private:
         // rewrite every SSAO descriptor that references depth/AO views.
         createSsaoTargets();
         writeSsaoDescriptors();
+        // Water samples the scene depth: the depth view changed -> rewire it.
+        writeWaterDescriptors();
     }
 
     // ---- HEADLESS offscreen render target (no window, no swapchain) ---------
@@ -2379,6 +2696,8 @@ private:
         // SSAO half-res targets + depth-referencing descriptors track the extent.
         createSsaoTargets();
         writeSsaoDescriptors();
+        // Water samples the scene depth: the depth view changed -> rewire it.
+        writeWaterDescriptors();
     }
 
     // ---- HDR scene + bloom render targets ----------------------------------
@@ -3952,6 +4271,54 @@ private:
     bool      m_ssaoKernelBuilt = false;
     glm::vec4 m_ssaoKernelCPU[kSsaoKernel]{};
     glm::vec4 m_ssaoNoiseCPU[16]{};
+
+    // ======================================================================
+    // WATER — animated ocean surface (undersea-world foundation).
+    // CLEAN-ROOM, original work. Wave model = the standard public Gerstner /
+    // sum-of-sines formulation (Tessendorf "Simulating Ocean Water", the GPU Gems
+    // Gerstner-wave chapter, public ocean-rendering articles); shading from public
+    // water-rendering references. No GPL / id Tech / RBDOOM source consulted.
+    // ----------------------------------------------------------------------
+    // A large tessellated grid plane centered + snapped under the camera at
+    // `seaLevel`, displaced by a sum of Gerstner waves (water.vert) with analytic
+    // normals, drawn in the MAIN pass AFTER opaque meshes into the linear HDR
+    // target. water.frag Fresnel-blends an analytic-sky reflection with a
+    // depth-based refraction color (reads the scene depth buffer — the SAME depth
+    // the SSAO pre-pass / main pass produced) and adds a sharp sun glint (HDR ->
+    // bloom). Gated by setWaterParams(enabled): default OFF, zero cost when off.
+    // The grid is a unit-patch mesh uploaded once; its own per-frame UBO + set.
+    static constexpr uint32_t kWaterGridDim = 192;   // verts per edge (191^2 quads)
+    static constexpr float    kWaterPatchHalf = 240.0f; // world half-extent (m)
+    struct WaterUBO {
+        glm::mat4 viewProj;       // 0
+        glm::vec4 camPos;         // 64
+        glm::vec4 sunDir;         // 80
+        glm::vec4 deepColor;      // 96
+        glm::vec4 shallowColor;   // 112
+        glm::vec4 p0;             // 128: x=seaLevel,y=time,z=amplitude,w=steepness
+        glm::vec4 p1;             // 144: x=baseWavelength,y=speed,z=specular,w=fresnelBase
+        glm::vec4 p2;             // 160: x=patchHalfExtent,y=1/W,z=1/H,w=reserved
+    };
+    static_assert(sizeof(WaterUBO) == 176, "WaterUBO must match the std140 layout in water.{vert,frag}");
+    WaterParams m_water{};   // cached tunables (setWaterParams)
+    // Unit-patch grid mesh (vec2 grid coord per vertex), built once at init.
+    VkBuffer      m_waterVbo = VK_NULL_HANDLE; VmaAllocation m_waterVboAlloc = nullptr;
+    VkBuffer      m_waterIbo = VK_NULL_HANDLE; VmaAllocation m_waterIboAlloc = nullptr;
+    uint32_t      m_waterIndexCount = 0;
+    VkDescriptorSetLayout m_waterSetLayout = VK_NULL_HANDLE; // UBO + scene depth
+    VkPipelineLayout      m_waterLayout    = VK_NULL_HANDLE;
+    VkPipeline            m_waterPipeline  = VK_NULL_HANDLE;
+    VkDescriptorPool      m_waterPool      = VK_NULL_HANDLE;
+    // Per-frame UBO + descriptor set (set0: WaterUBO + scene-depth sampler). The
+    // depth-binding write is refreshed each frame (depth view persists, but rewire
+    // on resize); the UBO is mapped + filled in prepareFrameData.
+    VkBuffer      m_waterUboBuf[kFramesInFlight] = {}; VmaAllocation m_waterUboAlloc[kFramesInFlight] = {}; void* m_waterUboMapped[kFramesInFlight] = {};
+    VkDescriptorSet m_waterSet[kFramesInFlight] = {};
+    VkSampler     m_waterDepthSampler = VK_NULL_HANDLE; // LINEAR clamp, samples scene depth
+    // Stable storage for the water pass's VkRenderingInfo + attachments.
+    VkRenderingAttachmentInfo m_waterColorAttach{};
+    VkRenderingAttachmentInfo m_waterDepthAttach{};
+    VkRenderingInfo           m_waterRenderInfo{};
 
     // ---- Directional shadow mapping (perf-stack E) ------------------------
     // A single fixed-resolution depth texture rendered from the sun's POV each

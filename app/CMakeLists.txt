@@ -38,6 +38,8 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/shadow.vert
     ${CMAKE_SOURCE_DIR}/shaders/sky.vert
     ${CMAKE_SOURCE_DIR}/shaders/sky.frag
+    ${CMAKE_SOURCE_DIR}/shaders/water.vert
+    ${CMAKE_SOURCE_DIR}/shaders/water.frag
     ${CMAKE_SOURCE_DIR}/shaders/hud.vert
     ${CMAKE_SOURCE_DIR}/shaders/hud.frag
     ${CMAKE_SOURCE_DIR}/shaders/fullscreen.vert
