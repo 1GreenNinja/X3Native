@@ -1,7 +1,9 @@
 # X3Native — idTech 8-Aligned Architecture Roadmap
 
 **Status:** living document. Started 2026-05-20.
-**Purpose:** X3Native targets the architectural philosophy of **id Tech 8** (Doom: The Dark Ages) — same stack as us (**C++ + Vulkan**) — as its north star. This doc records the decisions, the subsystem decomposition, the build sequence, and the per-machine hardware constraints so every session (and every parallel agent) shares one plan.
+**Purpose:** X3Native targets the architectural philosophy of **id Tech 8** (Doom: The Dark Ages) — same stack as us (**C++ + Vulkan**) — as its north star, and where it's cheap to exceed it, goes **beyond** (the **T3** features in §9). This doc records the decisions, the subsystem decomposition, the build sequence, and the per-machine hardware constraints so every session (and every parallel agent) shares one plan.
+
+> **Spec tiering:** subsystem specs now use explicit tiers — **T0** shipped · **T1** near-term · **T2** idTech 8 parity · **T3** beyond. See `specs/J-character-animation.spec.md` and `specs/K-gpu-destruction.spec.md` for the first two fully-tiered specs; §9 collects the cross-engine T3 "beyond" set.
 
 > **Clean-room note:** every idTech 8 reference here comes from **public** material — id Software interviews, Tiago Sousa's SIGGRAPH 2025 "Fast as Hell" GI talk, GDC talks, the Vulkan spec, public papers. None of it is RBDOOM/GPL source. Studying public architecture talks is exactly what the clean-room protocol (`specs/README.md`) permits.
 
@@ -58,17 +60,17 @@ Each is its own spec → plan → build cycle. Status: ✅ done · 🔜 next · 
 | **G** | Hardware-RT reflections / path-tracing tier | ⛔ after F | F | **5090 only** (no 1080 Ti) |
 | **H** | Streaming + LOD (vista LODs, contribution culling) | ⛔ after D | D, A | I/O on the job system's I/O pool |
 | **I** | CSG brush + patch editor → mesh/collision bake (M8) | ⛔ later | C, M3 | — |
-| **J** | GPU-skinned animation + ragdolls (D8) | ⛔ after C/D | C, D | glTF skins from M2 feed this |
-| **K** | **GPU destruction physics** (compute debris world) | ⛔ after render core | C, D, A, M3 | **compute on 1080 Ti OK; async overlap weak on Pascal** |
+| **J** | Character anim / GPU skinning / IK / **active ragdoll** (D8) — *v2 spec tiered T0→T3* | 🔜 **J1 (CPU skin + Idle) shipping** | C, D | `specs/J-character-animation.spec.md`; glTF skins from M2 feed this |
+| **K** | **GPU destruction physics** (compute debris world) — *v2 spec tiered T0→T3* | ⛔ after render core | C, D, A, M3 | `specs/K-gpu-destruction.spec.md`; compute on 1080 Ti OK, async overlap weak on Pascal |
 | — | M3 Jolt physics (CPU authoritative) | ✅ done | — | single-precision port (see Open Decisions) |
 | — | M2 glTF/GLB loader | ✅ done | D5 | GPU upload deferred (opaque-handle seam) |
 | — | KTX2 bake tool (`tools/ktx2bake`) | ✅ done | — | toktx v4.4.2 |
 
 ---
 
-## 5. Subsystem K — GPU destruction physics (seed spec)
+## 5. Subsystem K — GPU destruction physics
 
-Captures the design fed in 2026-05-20 (idTech 8 GPU offload). Detailed compute-shader code goes into `specs/K-gpu-destruction.spec.md` when K is reached; this is the architecture so nothing is lost.
+> **Now fully specced** in `specs/K-gpu-destruction.spec.md` (v2, tiered T0→T3, with interface contracts + acceptance tests). The architecture summary below is retained for the at-a-glance view.
 
 - **Two-world hybrid (per D-PHYS):** Jolt = authoritative; GPU = visual debris pool. Pre-allocated SSBO pool of "dead" bodies; CPU writes new debris via a staging buffer.
 - **Data layout:** Structure-of-Arrays in `STORAGE_BUFFER` / `DEVICE_LOCAL` SSBOs (position+invMass, quat rotation, linear/angular velocity, inertia, flags, sleepCounter, materialID). Batch like-material debris into the same dispatch for warp coherence.
@@ -107,3 +109,22 @@ The pasted Jolt/GPU references checked against the M3 implementation (`d830dfe`)
 3. **D — Bindless + multidraw + GPU culling** on top of C.
 4. **B — Frame graph** to formalize passes + async compute.
 5. Then the multipliers: **E** shadows, **F** compute GI, **H** streaming, **K** GPU destruction, **G** RT tier (5090), **J** animation, **I** editor.
+
+---
+
+## 9. Beyond idTech 8 (T3) — the "and beyond" set
+
+idTech 8 parity is the **T2** bar in each spec. These **T3** features intentionally exceed its published feature set. They are gated (post-parity, mostly 5090-tier) and firewalled behind the same clean interfaces, so they're additive — never a prerequisite for shipping a game.
+
+| T3 feature | Subsystem | What it adds beyond idTech 8 | Hardware |
+|---|---|---|---|
+| **Motion matching** locomotion | J | data-driven, near-zero-authoring movement from a motion DB (vs. hand-built blend trees) | CPU + jobs |
+| **Full-body IK pass** | J | pelvis + spine + look-at + hand-to-weapon solved together for grounded, gun-aware posing | CPU + jobs |
+| **GPU-skinned crowd ragdolls** | J | hundreds of dying actors skinned + ragdolled on the GPU at once | 5090 best; 1080 Ti compute OK |
+| **Deterministic anim replay** | J | fixed-dt pose stream reproducible across runs (replays/netcode foundation) | any |
+| **Structural-connectivity destruction** | K | support-graph → unsupported chunks wake & collapse; progressive building collapse (Red Faction Geo-Mod / Teardown tier) | compute |
+| **Nested / hierarchical fracture** | K | chunks re-fracture on later impacts, depth-limited | compute |
+| **1M+ debris** | K | mega-scale persistent debris with smart sleep/wake | **5090** |
+| **Deterministic GPU sim (opt-in)** | K | reproducible GPU debris for replay | any (perf cost) |
+
+**Discipline:** each T3 item ships only after its subsystem's T2 (idTech 8 parity) is stable and acceptance-tested. T3 is where X3Native earns "...AND BEYOND." Full contracts + acceptance tests live in the per-subsystem specs.
