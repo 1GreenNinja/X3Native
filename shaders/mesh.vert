@@ -15,9 +15,9 @@ struct ObjectData {
     vec4 baseColorFactor;
     vec4 emissive;        // rgb = linear emissive color, a = strength (HDR source)
     uint texIndex;
-    uint _pad0;
-    uint _pad1;
-    uint _pad2;
+    uint terrainFlag;     // 1 = procedural terrain splat (was _pad0)
+    uint terrainPack1;    // grass<<16 | rock detail bindless indices (was _pad1)
+    uint terrainPack2;    // snow<<16  | sand detail bindless indices (was _pad2)
 };
 
 layout(std430, set = 1, binding = 0) readonly buffer Objects {
@@ -49,6 +49,9 @@ layout(location = 2) flat out uint vTexIndex;
 layout(location = 3) flat out vec4 vFactor;
 layout(location = 4) out vec3 vWorldPos;
 layout(location = 5) flat out vec4 vEmissive;   // rgb = color, a = strength
+// Terrain splat payload (only meaningful when vTerrainFlag != 0):
+layout(location = 6) flat out uint vTerrainFlag;
+layout(location = 7) flat out uvec2 vTerrainPack; // x = grass<<16|rock, y = snow<<16|sand
 
 void main() {
     ObjectData o = objBuf.objects[gl_InstanceIndex];
@@ -60,4 +63,6 @@ void main() {
     vFactor = o.baseColorFactor;
     vWorldPos = worldPos.xyz;
     vEmissive = o.emissive;
+    vTerrainFlag = o.terrainFlag;
+    vTerrainPack = uvec2(o.terrainPack1, o.terrainPack2);
 }

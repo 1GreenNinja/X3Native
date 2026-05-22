@@ -107,6 +107,27 @@ public:
     // selects the storage format (sRGB for color, UNORM for data/linear).
     virtual TextureHandle createTexture(const void* rgba8, uint32_t w, uint32_t h, bool srgb) = 0;
     virtual void          destroyTexture(TextureHandle) = 0;
+
+    // ---- Terrain material splat (open-world ground) -------------------------
+    // Register a set of four already-created tiling DETAIL textures as the GROUND
+    // material set used for procedural height+slope splatting in mesh.frag. The
+    // call returns an opaque MARKER TextureHandle: any mesh subsequently drawn
+    // with this handle as its baseColor is flagged as TERRAIN in the per-object
+    // SSBO, and the fragment shader blends grass/rock/snow/sand by world height +
+    // slope + noise instead of sampling a single texture. NON-terrain meshes
+    // (anything drawn with any other texture) are completely unaffected — the
+    // terrain branch is gated by this per-object flag, so existing levels render
+    // byte-for-byte as before.
+    //
+    // This is a thin, additive boundary: it reuses the existing bindless array
+    // (the four textures keep their own bindless slots) and the existing draw
+    // path; only a previously-reserved pad field in the SSBO row is now used to
+    // carry the terrain flag + the four packed detail-texture indices. Passing
+    // any invalid handle returns an invalid marker (terrain falls back to flat).
+    // Each of grass/rock/snow/sand should be a small seamless RGBA8 sRGB tile.
+    virtual TextureHandle registerTerrainMaterial(TextureHandle grass, TextureHandle rock,
+                                                  TextureHandle snow,  TextureHandle sand) = 0;
+
     // Submit a draw between beginFrame/endFrame. An invalid baseColor falls back
     // to the built-in 1x1 white texture, so baseColorFactor alone gives a flat
     // color. `model` is a column-major 4x4. baseColorFactor multiplies the texel.

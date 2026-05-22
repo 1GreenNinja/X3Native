@@ -838,6 +838,32 @@ public:
         m_textures.erase(it);
     }
 
+    // ---- Terrain material splat (open-world ground) -----------------------
+    // Resolve the four detail textures' bindless indices, cache them, and hand
+    // back a synthetic MARKER handle. drawMeshEmissive() recognises this exact
+    // handle id and flags the per-object SSBO row as terrain, packing the four
+    // indices into the previously-reserved pad fields. No GPU resource is created
+    // here (the marker is purely a CPU sentinel), so there is nothing to destroy.
+    TextureHandle registerTerrainMaterial(TextureHandle grass, TextureHandle rock,
+                                          TextureHandle snow,  TextureHandle sand) override {
+        auto idxOf = [this](TextureHandle h) -> uint32_t {
+            if (!h.valid()) return 0;
+            auto it = m_textures.find(h.id);
+            return (it != m_textures.end()) ? it->second.bindlessIndex : 0u;
+        };
+        if (!grass.valid() || !rock.valid() || !snow.valid() || !sand.valid())
+            return {};                              // invalid set -> flat fallback
+        m_terrainTexIdx[0] = idxOf(grass);
+        m_terrainTexIdx[1] = idxOf(rock);
+        m_terrainTexIdx[2] = idxOf(snow);
+        m_terrainTexIdx[3] = idxOf(sand);
+        // Allocate a marker id that can never collide with a real texture id
+        // (createTexture hands out m_nextTexId++ starting at 1). A high reserved
+        // value keeps the two id spaces disjoint without touching m_nextTexId.
+        m_terrainMarkerId = 0xFFFF0001u;
+        return TextureHandle{ m_terrainMarkerId };
+    }
+
     void drawMesh(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                   const float baseColorFactor[4], const float model[16]) override {
         // The 5-arg form is the no-emissive case (emissive = {0,0,0,0}).
@@ -858,15 +884,28 @@ public:
         if (m_drawRecords.size() >= kMaxDrawsPerFrame) return; // ring full; skip safely
 
         // Resolve the bindless texture index (0 == built-in white default).
+        // A draw that uses the terrain MARKER handle is flagged as terrain: the
+        // fragment shader splats grass/rock/snow/sand by height+slope instead of
+        // sampling textures[texIndex], and the four detail indices ride along in
+        // the pad fields. All other draws set terrainFlag = 0 and are unchanged.
         uint32_t texIndex = 0;
-        if (baseColor.valid()) {
+        uint32_t terrainFlag = 0;
+        if (m_terrainMarkerId != 0 && baseColor.id == m_terrainMarkerId) {
+            terrainFlag = 1;
+            texIndex    = m_terrainTexIdx[0];   // grass index (sane default sample)
+        } else if (baseColor.valid()) {
             auto tit = m_textures.find(baseColor.id);
             if (tit != m_textures.end()) texIndex = tit->second.bindlessIndex;
         }
 
         DrawRecord r;
-        r.meshId   = mesh.id;
-        r.texIndex = texIndex;
+        r.meshId      = mesh.id;
+        r.texIndex    = texIndex;
+        r.terrainFlag = terrainFlag;
+        // Pack the four detail indices into two uints: pad1 = grass<<16 | rock,
+        // pad2 = snow<<16 | sand (each well under 65535 — kMaxTextures = 4096).
+        r.terrainPack1 = (m_terrainTexIdx[0] << 16) | (m_terrainTexIdx[1] & 0xFFFFu);
+        r.terrainPack2 = (m_terrainTexIdx[2] << 16) | (m_terrainTexIdx[3] & 0xFFFFu);
         std::memcpy(r.model, model, sizeof(r.model));
         if (baseColorFactor) std::memcpy(r.factor, baseColorFactor, sizeof(r.factor));
         else { r.factor[0] = r.factor[1] = r.factor[2] = r.factor[3] = 1.0f; }
@@ -1023,6 +1062,9 @@ private:
         float    model[16];
         float    factor[4];
         float    emissive[4];   // rgb = linear emissive color, a = strength
+        uint32_t terrainFlag;   // 1 = procedural terrain splat (mesh.frag branch)
+        uint32_t terrainPack1;  // grass<<16 | rock  (bindless detail indices)
+        uint32_t terrainPack2;  // snow<<16  | sand
     };
 
     // Per-frame mesh-draw capacity: sizes the per-object SSBO ring (one
@@ -1339,7 +1381,11 @@ private:
                 o.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
                 o.emissive = glm::vec4(dr.emissive[0], dr.emissive[1], dr.emissive[2], dr.emissive[3]);
                 o.texIndex = dr.texIndex;
-                o._pad0 = o._pad1 = o._pad2 = 0;
+                // Reuse the previously-reserved pads: pad0 = terrain flag, pad1/pad2
+                // = the four packed detail-texture indices (see mesh.{vert,frag}).
+                o._pad0 = dr.terrainFlag;
+                o._pad1 = dr.terrainPack1;
+                o._pad2 = dr.terrainPack2;
             }
             VkDrawIndexedIndirectCommand& c = cmds[cmdCount];
             c.indexCount    = mit->second.indexCount;
@@ -4782,6 +4828,11 @@ private:
     VkDescriptorPool      m_bindlessPool   = VK_NULL_HANDLE;
     VkDescriptorSet       m_bindlessSet    = VK_NULL_HANDLE;
     uint32_t              m_nextBindless   = 0;   // next free bindless slot
+    // Terrain material splat: the marker handle id returned by
+    // registerTerrainMaterial() + the four resolved detail bindless indices
+    // (grass, rock, snow, sand). 0 marker id == no terrain material registered.
+    uint32_t              m_terrainMarkerId = 0;
+    uint32_t              m_terrainTexIdx[4] = { 0, 0, 0, 0 };
     VkDescriptorSetLayout m_objSetLayout   = VK_NULL_HANDLE;
     VkDescriptorPool      m_objPool        = VK_NULL_HANDLE;
 
