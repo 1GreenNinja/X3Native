@@ -402,6 +402,77 @@ public:
         m_system->GetBodyInterface().AddImpulse(it->second, toJ(impulse));
     }
 
+    // ---- Orientation (D-phys) ----
+    // CONVENTIONS.md quaternion order is (x,y,z,w); JPH::Quat is also xyzw
+    // (constructor Quat(x,y,z,w), GetX/Y/Z/W, sIdentity()=={0,0,0,1}). So the
+    // boundary below is a straight component copy in both directions — no reorder.
+    void getBodyRotation(BodyId id, float outQuat[4]) const override {
+        if (!outQuat) return;
+        outQuat[0] = outQuat[1] = outQuat[2] = 0.0f; outQuat[3] = 1.0f; // identity default
+        auto it = m_bodies.find(id.id);
+        if (it == m_bodies.end()) return;
+        JPH::Quat q = m_system->GetBodyInterface().GetRotation(it->second);
+        outQuat[0] = q.GetX(); outQuat[1] = q.GetY(); outQuat[2] = q.GetZ(); outQuat[3] = q.GetW();
+    }
+
+    void setBodyRotation(BodyId id, const float quat[4]) override {
+        if (!quat) return;
+        auto it = m_bodies.find(id.id);
+        if (it == m_bodies.end()) return;
+        // (x,y,z,w) -> JPH::Quat(x,y,z,w). Normalize defensively; SetRotation
+        // expects a unit quaternion.
+        JPH::Quat q(quat[0], quat[1], quat[2], quat[3]);
+        if (q.LengthSq() < 1e-12f) q = JPH::Quat::sIdentity();
+        else                       q = q.Normalized();
+        m_system->GetBodyInterface().SetRotation(it->second, q, JPH::EActivation::Activate);
+    }
+
+    // ---- Velocities (D-phys) — world-space m/s and rad/s ----
+    void setBodyLinearVelocity(BodyId id, const float v[3]) override {
+        if (!v) return;
+        auto it = m_bodies.find(id.id);
+        if (it == m_bodies.end()) return;
+        m_system->GetBodyInterface().SetLinearVelocity(it->second, JPH::Vec3(v[0], v[1], v[2]));
+    }
+
+    void getBodyLinearVelocity(BodyId id, float out[3]) const override {
+        if (!out) return;
+        out[0] = out[1] = out[2] = 0.0f;
+        auto it = m_bodies.find(id.id);
+        if (it == m_bodies.end()) return;
+        JPH::Vec3 v = m_system->GetBodyInterface().GetLinearVelocity(it->second);
+        out[0] = v.GetX(); out[1] = v.GetY(); out[2] = v.GetZ();
+    }
+
+    void setBodyAngularVelocity(BodyId id, const float v[3]) override {
+        if (!v) return;
+        auto it = m_bodies.find(id.id);
+        if (it == m_bodies.end()) return;
+        m_system->GetBodyInterface().SetAngularVelocity(it->second, JPH::Vec3(v[0], v[1], v[2]));
+    }
+
+    void getBodyAngularVelocity(BodyId id, float out[3]) const override {
+        if (!out) return;
+        out[0] = out[1] = out[2] = 0.0f;
+        auto it = m_bodies.find(id.id);
+        if (it == m_bodies.end()) return;
+        JPH::Vec3 v = m_system->GetBodyInterface().GetAngularVelocity(it->second);
+        out[0] = v.GetX(); out[1] = v.GetY(); out[2] = v.GetZ();
+    }
+
+    // ---- Per-body user tag (D-phys) ----
+    void setBodyUserData(BodyId id, uint64_t data) override {
+        auto it = m_bodies.find(id.id);
+        if (it == m_bodies.end()) return;
+        m_system->GetBodyInterface().SetUserData(it->second, (JPH::uint64)data);
+    }
+
+    uint64_t getBodyUserData(BodyId id) const override {
+        auto it = m_bodies.find(id.id);
+        if (it == m_bodies.end()) return 0;
+        return (uint64_t)m_system->GetBodyInterface().GetUserData(it->second);
+    }
+
     BodyId createCharacter(float radius, float height, Vec3 pos) override {
         // Capsule: total height = cylinder height + 2*radius. "height" param is
         // the cylinder portion's half-height input convention here -> we treat
@@ -830,6 +901,90 @@ bool runPhysicsSelfTest() {
         Vec3 b = runDeterministic();
         bool same = approx(a.x, b.x, 1e-4f) && approx(a.y, b.y, 1e-4f) && approx(a.z, b.z, 1e-4f);
         check(same, "T8 determinism (two identical runs match)");
+    }
+
+    // ---- T9 (D-phys): setBodyRotation -> getBodyRotation round-trips (xyzw) ----
+    {
+        std::unique_ptr<IPhysicsWorld> w(createPhysicsWorld());
+        w->init();
+        // Static body so nothing perturbs the orientation between set and get.
+        BodyId b = w->addBox(Vec3{0.5f,0.5f,0.5f}, Vec3{0,2,0}, 0.0f, Layer::Static);
+        // A 90-deg yaw about +Y as a unit quaternion (x,y,z,w): (0, sin45, 0, cos45).
+        const float s = std::sin(0.7853981634f), c = std::cos(0.7853981634f);
+        const float qIn[4] = { 0.0f, s, 0.0f, c };
+        w->setBodyRotation(b, qIn);
+        float qOut[4] = {0,0,0,0};
+        w->getBodyRotation(b, qOut);
+        // Quaternions q and -q represent the same rotation; allow the sign flip.
+        bool same =
+            (approx(qOut[0], qIn[0], 1e-4f) && approx(qOut[1], qIn[1], 1e-4f) &&
+             approx(qOut[2], qIn[2], 1e-4f) && approx(qOut[3], qIn[3], 1e-4f)) ||
+            (approx(qOut[0],-qIn[0], 1e-4f) && approx(qOut[1],-qIn[1], 1e-4f) &&
+             approx(qOut[2],-qIn[2], 1e-4f) && approx(qOut[3],-qIn[3], 1e-4f));
+        // Default rotation of a fresh body must read back as identity (w=1).
+        BodyId d = w->addBox(Vec3{0.5f,0.5f,0.5f}, Vec3{3,2,0}, 0.0f, Layer::Static);
+        float qDef[4] = {9,9,9,9};
+        w->getBodyRotation(d, qDef);
+        bool ident = approx(qDef[0],0,1e-5f) && approx(qDef[1],0,1e-5f) &&
+                     approx(qDef[2],0,1e-5f) && approx(qDef[3],1,1e-5f);
+        check(same && ident, "T9 setBodyRotation/getBodyRotation round-trip (xyzw)");
+        w->shutdown();
+    }
+
+    // ---- T10 (D-phys): linear + angular velocity set/get; angular vel rotates ----
+    {
+        std::unique_ptr<IPhysicsWorld> w(createPhysicsWorld());
+        w->init();
+        // Gravity-free dynamic body in deep space: a sphere far above ground with no
+        // contacts. We zero gravity's effect by checking only the X/Z components and
+        // the rotation, which gravity (−Y) does not touch.
+        BodyId b = w->addSphere(0.5f, Vec3{0, 100.0f, 0}, 1.0f, Layer::Dynamic);
+
+        // Linear velocity set/get round-trip (immediate, pre-step).
+        const float linIn[3] = { 1.5f, 0.0f, -2.5f };
+        w->setBodyLinearVelocity(b, linIn);
+        float linOut[3] = {0,0,0};
+        w->getBodyLinearVelocity(b, linOut);
+        bool linRT = approx(linOut[0],1.5f,1e-3f) && approx(linOut[1],0.0f,1e-3f) &&
+                     approx(linOut[2],-2.5f,1e-3f);
+
+        // Angular velocity set/get round-trip, then verify it actually rotates the
+        // body over time. Spin about +Y at 2 rad/s for ~0.5s (~0.5 rad expected).
+        const float angIn[3] = { 0.0f, 2.0f, 0.0f };
+        w->setBodyAngularVelocity(b, angIn);
+        float angOut[3] = {0,0,0};
+        w->getBodyAngularVelocity(b, angOut);
+        bool angRT = approx(angOut[0],0.0f,1e-3f) && approx(angOut[1],2.0f,1e-3f) &&
+                     approx(angOut[2],0.0f,1e-3f);
+
+        float q0[4]; w->getBodyRotation(b, q0); // identity at start
+        // Keep re-asserting angular velocity each step so Jolt's damping/sleeping
+        // doesn't bleed it off; 30 steps * 1/60 = 0.5s.
+        for (int i = 0; i < 30; ++i) { w->setBodyAngularVelocity(b, angIn); w->step(kFixedDt); }
+        float q1[4]; w->getBodyRotation(b, q1);
+        // Body actually rotated about Y: the Y component grew well past noise and W
+        // dropped below 1. (~0.5 rad about Y -> qY ~ sin(0.25) ~ 0.247.)
+        bool rotated = std::fabs(q1[1]) > 0.05f && q1[3] < 0.999f &&
+                       std::fabs(q1[1]) > std::fabs(q0[1]) + 0.04f;
+        check(linRT && angRT && rotated, "T10 linear/angular velocity set+get + spin");
+        w->shutdown();
+    }
+
+    // ---- T11 (D-phys): setBodyUserData -> getBodyUserData round-trips ----
+    {
+        std::unique_ptr<IPhysicsWorld> w(createPhysicsWorld());
+        w->init();
+        BodyId b = w->addBox(Vec3{0.5f,0.5f,0.5f}, Vec3{0,2,0}, 1.0f, Layer::Enemy);
+        bool def0 = (w->getBodyUserData(b) == 0ull);            // default is 0
+        const uint64_t tag = 0xC0FFEE1234567890ull;             // full 64-bit value
+        w->setBodyUserData(b, tag);
+        bool rt = (w->getBodyUserData(b) == tag);
+        // A second body keeps its own (independent) tag.
+        BodyId b2 = w->addBox(Vec3{0.5f,0.5f,0.5f}, Vec3{3,2,0}, 1.0f, Layer::Enemy);
+        w->setBodyUserData(b2, 42ull);
+        bool indep = (w->getBodyUserData(b) == tag) && (w->getBodyUserData(b2) == 42ull);
+        check(def0 && rt && indep, "T11 setBodyUserData/getBodyUserData round-trip");
+        w->shutdown();
     }
 
     x3::logInfo(std::string("[phys-test] ") + std::to_string(g_pass) + " passed, " +

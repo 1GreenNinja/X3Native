@@ -53,8 +53,19 @@ void ident(float m[16]) {
 
 // Column-major TRS with a yaw about +Y (radians) and uniform scale s, placing the
 // transformed asset point that currently sits at (px,py,pz) at world (wx,wy,wz).
-// i.e. world = T(w) * Rয়(yaw) * S(s) * T(-p). This recenters an asset (whose
+// i.e. world = T(w) * R_y(yaw) * S(s) * T(-p). This recenters an asset (whose
 // chosen anchor point is p) onto the world anchor w, optionally yawed + scaled.
+//
+// FACING CONVENTION (see docs/CONVENTIONS.md §1 + §3):
+//   A model's default facing is its local -Z (glTF convention). Under this
+//   rotation, local -Z maps to world ( -sin(yaw), 0, -cos(yaw) ). Therefore:
+//     yaw = 0      -> faces world -Z  (forward / into the scene)   <-- default
+//     yaw = +pi/2  -> faces world -X  (left)
+//     yaw = +pi    -> faces world +Z  (toward viewer)              [NOT -Z!]
+//     yaw = -pi/2  -> faces world +X  (right)
+//   This local "yaw" is offset by +pi/2 from the §3 camera/AI yaw (whose 0 = +X):
+//     placeYaw_yaw = yaw_AI + pi/2,  where yaw_AI = atan2(dz, dx).
+//   So to face the §3 world-forward (-Z): yaw_AI = -pi/2 -> placeYaw_yaw = 0.
 void placeYaw(float m[16], float yaw, float s,
               float px, float py, float pz,
               float wx, float wy, float wz) {
@@ -219,8 +230,12 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
     if (haveCons) {
         const x3::phys::Vec3 consoles[2] = { layout.doorA, layout.doorB };
         for (const auto& d : consoles) {
-            // place near the doorway, offset to the +Z side, facing -Z (yaw 180).
-            placeYaw(m, kPi, 1.0f, cx(kConsAabb), kConsAabb.miny, cz(kConsAabb),
+            // Place near the doorway, offset to the +Z side wall (z = d.z + 1.4),
+            // and face the console screen back into the room toward -Z so the player
+            // (who approaches from -Z / room center) sees its face. Per the facing
+            // convention above, facing world -Z is placeYaw yaw = 0 (NOT pi — the
+            // old "yaw 180" comment was wrong: pi faces +Z, into the wall).
+            placeYaw(m, 0.0f, 1.0f, cx(kConsAabb), kConsAabb.miny, cz(kConsAabb),
                      d.x - 0.6f, 0.0f, d.z + 1.4f);
             addInstance(consA, m);
         }

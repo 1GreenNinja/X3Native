@@ -33,6 +33,24 @@ public:
     virtual Vec3   getBodyPosition(BodyId) const = 0;
     virtual void   applyImpulse(BodyId, Vec3) = 0;
 
+    // Body orientation (D-phys, K-T0 subset). Quaternion in glTF/CONVENTIONS.md
+    // order (x, y, z, w) — w LAST. Jolt's JPH::Quat is also xyzw (GetX/Y/Z/W),
+    // so the boundary is a 1:1 component copy; see JoltPhysicsWorld.cpp.
+    virtual void   getBodyRotation(BodyId, float outQuat[4]) const = 0; // -> (x,y,z,w)
+    virtual void   setBodyRotation(BodyId, const float quat[4]) = 0;    // (x,y,z,w)
+
+    // Linear / angular velocity (D-phys). Vectors are world-space (m/s, rad/s).
+    virtual void   setBodyLinearVelocity(BodyId, const float v[3]) = 0;
+    virtual void   getBodyLinearVelocity(BodyId, float out[3]) const = 0;
+    virtual void   setBodyAngularVelocity(BodyId, const float v[3]) = 0;
+    virtual void   getBodyAngularVelocity(BodyId, float out[3]) const = 0;
+
+    // Per-body user tag (D-phys). Fast opaque uint64 the game can stamp on a body
+    // (AI: "is this an enemy?"; later destruction: "is this destructible?"). 0 by
+    // default. Maps to JPH::Body::SetUserData / GetUserData.
+    virtual void     setBodyUserData(BodyId, uint64_t) = 0;
+    virtual uint64_t getBodyUserData(BodyId) const = 0;
+
     // Character controller (capsule)
     virtual BodyId createCharacter(float radius, float height, Vec3 pos) = 0;
     virtual void   moveCharacter(BodyId, Vec3 desiredVelocity, float dt) = 0;
