@@ -41,9 +41,9 @@ For a **validation-clean** check, build + run the **Debug** config's `--smoketes
 
 ## 4. What's done (so you don't redo it)
 
-DONE-CLEAN + verified: **D1** render device, **3D cube** (depth + MVP + lighting), **free-look camera + input**, **D5** pak/VFS, **D6** console. See `GPL_DEBT.md`.
+Done + verified: **render device**, **3D cube** (depth + MVP + lighting), **free-look camera + input**, **pak/VFS**, **console**, plus glTF loader, Jolt physics, forward+ lighting, and skeletal animation. See `PROVENANCE.md`.
 
-## 5. What to work on next (clean-room — never read RBDOOM source)
+## 5. What to work on next (clean-room — from specs + public refs only)
 
 Pick from `docs/13700K_PARALLEL_WORK.md`. Highest-value next, all spec-ready:
 
@@ -54,4 +54,4 @@ Pick from `docs/13700K_PARALLEL_WORK.md`. Highest-value next, all spec-ready:
 
 The bigger renderer features (bindless, multidraw-indirect, GPU-driven culling — see `RENDERING_SPEED.md`) layer onto the existing D1 device next.
 
-> Update `GPL_DEBT.md` as you complete each subsystem; commit small, build + run the self-tests before pushing.
+> Update `PROVENANCE.md` as you complete each subsystem; commit small, build + run the self-tests before pushing.

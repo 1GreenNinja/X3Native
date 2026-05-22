@@ -1,21 +1,25 @@
 # 13700K — Parallel Clean-Room Work Queue
 
-**The 13700K does not wait for the 14900K.** It builds the *clean* engine foundation (the eventual shipping engine) in parallel with the 14900K's RBDOOM prototype. Both converge: clean impls replace the GPL scaffold as they pass acceptance tests (`GPL_DEBT.md`).
+**The 13700K is the primary build machine.** It builds the original engine from
+scratch — from `specs/`, public references, and permissive libraries. (This was
+originally framed as a "clean foundation" running *parallel* to a planned RBDOOM
+prototype on the 14900K. That prototype never happened; the clean engine *is* the
+engine. See `PROVENANCE.md`.)
 
 **Machine:** i7-13700K, 128GB DDR5, 2x GTX 1080 Ti, 4TB NVMe (most disk of any rig).
-**Rule:** clean-room — NEVER read RBDOOM source. Build only from `specs/*.spec.md` + public references + permissive libs. Run `tools/cleanroom-setup.ps1` first (it physically omits the GPL dir and hard-fails if present).
+**Rule:** clean-room — build only from `specs/*.spec.md` + public references + permissive libs. Never read or transcribe any third-party game-engine source. Run `tools/bootstrap.ps1` to clone + verify.
 
 ---
 
 ## Why the 13700K can start immediately
 
-Most engine subsystems are **"adopt a permissive lib + write glue behind a clean interface."** Those need zero RBDOOM knowledge — they're standard, spec-able from public docs. Only the bespoke renderer internals (D2 materials, D3 shadows, D4 scene submission) need the 14900K spec team to study RBDOOM's approach first.
+Most engine subsystems are **"adopt a permissive lib + write glue behind a clean interface."** They're standard and spec-able from public docs. The bespoke renderer internals (materials, shadows, scene submission/culling) are written from public rendering references (Vulkan spec, RTR4, GPU Gems, GDC/SIGGRAPH talks) + the author's research.
 
 ```
-14900K (spec team + prototype)        13700K (clean-room foundation)
-  fork RBDOOM, get X3 playable    │     build clean engine from specs + perm libs
-  study RBDOOM for D2/D3/D4 specs │     D1 RHI, pak, glTF, Jolt, Lua, audio NOW
-            └──────── converge: clean impls swap in per GPL_DEBT.md ────────┘
+13700K (primary build machine)
+  build the original engine from specs + public refs + permissive libs
+  D1 RHI, pak, glTF, Jolt, Lua, audio → lighting, animation, renderer
+  (record each subsystem in PROVENANCE.md)
 ```
 
 ---
@@ -57,9 +61,9 @@ Most engine subsystems are **"adopt a permissive lib + write glue behind a clean
 - This is the job tailor-made for the 128GB/4TB machine: parallel-compress hundreds of textures.
 - Bonus: feeds straight into task 3 (glTF loader reads KTX2) and the eventual `.x3pak`.
 
-### Blocked-until-14900K (bespoke renderer — needs RBDOOM-derived specs)
-- D2 Material/shader pipeline, D3 Cascaded shadows, D4 Scene submission/culling.
-- The 14900K spec team writes these `*.spec.md` after surveying RBDOOM; then the 13700K implements them clean.
+### Bespoke renderer (spec from public rendering references)
+- Material/shader pipeline, cascaded shadows, scene submission/GPU-driven culling.
+- Spec these from public references (Vulkan spec, RTR4, GPU Gems, `RENDERING_SPEED.md`, public GDC/SIGGRAPH talks), then implement clean behind their interfaces.
 
 ---
 
@@ -76,5 +80,5 @@ Most engine subsystems are **"adopt a permissive lib + write glue behind a clean
 
 1. Implements its clean interface (`engine/<sys>/I*.h` — header has NO third-party types leaking).
 2. Passes the spec's acceptance tests.
-3. Builds with `USE_GPL_SCAFFOLD=OFF` (i.e., needs no RBDOOM code).
-4. Flips its `GPL_DEBT.md` row to DONE-CLEAN with SHA + machine = 13700K (independent-creation evidence).
+3. Uses only permissive libraries (no copyleft deps).
+4. Recorded in `PROVENANCE.md` with SHA + machine (independent-creation evidence); carries the in-file "no foreign source consulted" note.

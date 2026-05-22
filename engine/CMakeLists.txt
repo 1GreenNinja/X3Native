@@ -41,13 +41,3 @@ target_link_libraries(x3engine
 )
 
 target_compile_features(x3engine PUBLIC cxx_std_20)
-
-if(USE_GPL_SCAFFOLD)
-    # Present only on the 14900K prototype checkout; the 13700K clean-room
-    # checkout omits engine/_gpl_rbdoom/ via sparse-checkout.
-    target_compile_definitions(x3engine PUBLIC X3_USE_GPL_SCAFFOLD=1)
-    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/_gpl_rbdoom/CMakeLists.txt")
-        add_subdirectory(_gpl_rbdoom)
-        target_link_libraries(x3engine PRIVATE x3_gpl_rbdoom)
-    endif()
-endif()

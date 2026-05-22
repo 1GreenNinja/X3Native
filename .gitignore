@@ -34,9 +34,10 @@ CMakeSettings.json
 /assets/
 /games/*/content/
 
-# Doom 3 BFG base assets (commercial — never commit)
+# Large / commercial game assets (never commit)
 /base/
 *.pk4
+*.x3pak
 
 # Tracy captures
 *.tracy
@@ -46,10 +47,6 @@ CMakeSettings.json
 Thumbs.db
 desktop.ini
 
-# Clean-room: the GPL quarantine is present on the 14900K (spec team) but
-# OMITTED on the 13700K clean-room checkout via sparse-checkout (see
-# tools/cleanroom-setup.ps1). It IS tracked in the main repo during the
-# prototype phase — do NOT gitignore it here, or the spec team loses it.
 build-local.bat
 build-local.log
 configure.log

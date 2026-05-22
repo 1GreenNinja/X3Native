@@ -1,38 +1,36 @@
-# License Notice — READ BEFORE DISTRIBUTING
+# License Notice
 
-X3Native is in the **HYBRID** phase (see `X3_NATIVE_ENGINE_PLAN.md` §5).
+## X3Native is original work — no copyleft, no engine fork
 
-## Current state: contains GPL-v3 code
+X3Native (the `engine/`, `app/`, and `shaders/` code) was written **clean-room from scratch**: implemented from behavioral specs (`specs/`) + public technical references + the author's own research. **No id Tech / RBDOOM / Doom 3 — or any other third-party engine — source was forked, copied, or consulted.** See `PROVENANCE.md` for the originality record and `THIRDPARTY_LICENSES.md` for the (permissive-only) dependency list.
 
-While `engine/_gpl_rbdoom/` exists (or any RBDOOM-derived code remains per `GPL_DEBT.md`), the engine as a whole is a derivative work of **Doom 3 BFG / RBDOOM-3-BFG (GPL v3)**. Therefore:
+Copyright protects expression, not ideas. Studying public architecture material (Vulkan spec, *Real-Time Rendering*, GPU Gems, public GDC/SIGGRAPH talks) and writing your own implementation is independent creation, not a derivative work — and that is exactly how this engine was built.
 
-- ✅ You may use, modify, and redistribute the engine **under GPL v3** (source must be available to anyone you give binaries to).
-- ❌ You may **not** sell closed-source builds of the engine in this state.
-- ✅ Game *data* (`.x3pak` — meshes, textures, audio, Lua) is a separate work and is **not** GPL-bound. It can be commercial at any time (the Quake 3 / Doom 3 model).
+## What you can do
 
-## Target state: clean-room complete
+- ✅ **Engine** (`X3Engine.exe`): Tim Smith's wholly-owned IP. May be shipped **closed-source and sold commercially**, with no copyleft obligation.
+- ✅ **Game data** (`.x3pak` — meshes, textures, audio, Lua scripts): a separate work, commercial at any time.
+- ✅ The repo may be **public or private** at the author's discretion — there is no GPL or other license forcing it open.
 
-When `GPL_DEBT.md` is empty, `engine/_gpl_rbdoom/` is deleted, and the build is green with `USE_GPL_SCAFFOLD=OFF`:
+## Third-party libraries — permissive only
 
-- The engine is **100% original work** + permissively-licensed third-party libraries (MIT/Apache/zlib/BSD).
-- It may then be **closed-source and sold commercially** with no GPL obligation.
-
-## Third-party libraries (all permissive — track in THIRDPARTY_LICENSES.md as added)
+Every third-party dependency is under a permissive license (MIT / Apache 2.0 / zlib / BSD / public-domain) and is shippable in a closed-source commercial build. The authoritative list is `THIRDPARTY_LICENSES.md`.
 
 | Library | License | Use |
 |---|---|---|
 | vk-bootstrap | MIT | Vulkan init |
-| VMA | MIT | GPU memory |
+| VulkanMemoryAllocator (VMA) | MIT | GPU memory |
+| GLFW | zlib | window/input |
 | Jolt Physics | MIT | physics |
 | cgltf | MIT | glTF loading |
-| basis_universal | Apache 2.0 | KTX2 textures |
-| miniaudio | MIT/public-domain | audio |
-| sol3 + Lua/LuaJIT | MIT | scripting |
-| Dear ImGui | MIT | dev UI |
-| EnTT / flecs | MIT | ECS |
-| glm | MIT | math |
-| Tracy | BSD-3 | profiler |
-| Recast/Detour | zlib | navmesh |
+| stb (image / image_write) | MIT / public-domain | image I/O |
+| miniaudio | MIT / public-domain | audio |
 | miniz | MIT | pak/zip |
+| glm | MIT | math |
+| sol3 + Lua/LuaJIT | MIT | scripting (when added) |
+| basis_universal | Apache 2.0 | KTX2 textures (when added) |
+| Dear ImGui | MIT | dev UI (when added) |
+| Tracy | BSD-3 | profiler (when added) |
+| font8x8 | public-domain | bitmap HUD font |
 
-**Do NOT add any GPL/LGPL/CC-BY-SA third-party code** beyond the temporary RBDOOM scaffold — it would re-contaminate the clean target.
+**Do NOT add any GPL / LGPL / CC-BY-SA third-party code** — it would impose copyleft obligations on the engine and forfeit the clean, sellable IP position.

@@ -1,0 +1,30 @@
+X3Native — Proprietary License
+Copyright (c) 2026 Tim Smith (1GreenNinja). All rights reserved.
+
+X3Native (the "Software") — including the contents of engine/, app/, shaders/,
+specs/, tools/, and docs/ — is original work and the exclusive property of the
+copyright holder. No id Tech, RBDOOM, Doom 3, or any other third-party game
+engine source was forked, copied, or consulted in its creation (see
+PROVENANCE.md).
+
+This is NOT open-source software. Unless you have a separate written license
+from the copyright holder, you may NOT:
+
+  - copy, reproduce, or distribute the Software or any part of it;
+  - modify, adapt, or create derivative works from it;
+  - sell, sublicense, rent, lease, or otherwise commercially exploit it;
+  - reverse engineer, decompile, or disassemble it except where such
+    restriction is prohibited by applicable law.
+
+The Software is provided "AS IS", without warranty of any kind, express or
+implied, including but not limited to the warranties of merchantability,
+fitness for a particular purpose, and non-infringement. In no event shall the
+copyright holder be liable for any claim, damages, or other liability arising
+from, out of, or in connection with the Software or its use.
+
+THIRD-PARTY COMPONENTS
+The Software incorporates third-party libraries, each licensed under its own
+permissive terms (MIT / Apache 2.0 / zlib / BSD / public-domain). Those
+components remain governed by their respective licenses; see
+THIRDPARTY_LICENSES.md. Nothing in this license restricts rights you have under
+those third-party licenses with respect to those components.

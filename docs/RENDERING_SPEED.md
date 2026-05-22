@@ -6,12 +6,19 @@
 
 ---
 
-## Where RBDOOM sits (accurate version)
+## Where the well-known engines sit (public context — no source used)
 
-- **id Tech 4** = the 2004 base (Doom 3). The entity/material/frame *architecture* lineage.
-- **RBDOOM-3-BFG** (Robert Beckebans, ~2013→present) **modernized the renderer in ~2016-2021**: PBR, a **Vulkan backend**, soft shadow mapping (replacing stencil shadow volumes), image-based lighting / env probes, glTF2. So RBDOOM's rendering is genuinely modern (2016-2021) — a **solid, proven Vulkan+PBR baseline worth studying** (architecture notes on the 14900K).
+This is publicly-known architecture context for calibrating our targets; **none of it
+is derived from any engine's source.** X3Native is built clean from public references.
 
-What RBDOOM is **not**: the bleeding-edge frame-rate ceiling. Its Vulkan renderer is modern but still fairly traditional — per-draw descriptor binding, mostly CPU-side culling, forward/forward+. The 2021+ "GPU-driven" techniques (below) sit *above* it. So the plan is: **treat RBDOOM as the proven baseline reference, and add the GPU-driven layer on top for absolute max FPS.** Not "ignore RBDOOM" — extend past it where it matters for frame rate.
+- **id Tech 4** (2004, Doom 3) and **RBDOOM-3-BFG** (Robert Beckebans, ~2013→present)
+  are publicly documented points of comparison. RBDOOM modernized to a Vulkan+PBR
+  renderer (~2016-2021): PBR, soft shadow maps, IBL/env probes, glTF2 — a solid
+  *traditional* modern renderer (per-draw descriptor binding, mostly CPU-side culling,
+  forward/forward+).
+- **Our target sits above that:** the 2021+ "GPU-driven" techniques below (bindless +
+  multidraw-indirect + compute culling — already partly in our D1 device). We aim past
+  a traditional forward+ renderer for absolute max FPS, written from public references.
 
 ---
 

@@ -1,5 +1,10 @@
 # X3 Engine → BabylonNative — Feasibility Audit (2026-04-27)
 
+> **HISTORICAL (superseded 2026-05-19).** This April audit weighed a BabylonNative
+> port and an RBDOOM base. Neither was chosen: X3Native was built as an **original
+> clean-room C++/Vulkan engine** (no fork). Kept for its still-useful module-by-module
+> porting-difficulty analysis. See `X3_NATIVE_ENGINE_PLAN.md` and `PROVENANCE.md`.
+
 **Goal:** ship X3 as a native binary on Steam by porting it onto [BabylonNative](https://github.com/BabylonJS/BabylonNative) instead of Electron-wrapping the WebGL build.
 
 **Method:** static analysis of all 164 modules (~148.6K LOC) under `src/` for browser-API surface area; classification by porting difficulty.

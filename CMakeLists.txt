@@ -20,12 +20,6 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
 
-# ---- HYBRID license scaffold flag ----
-# ON  = build with the GPL RBDOOM scaffold present (engine/_gpl_rbdoom/)
-# OFF = clean build, no GPL code (the commercial-ship target).
-# The 13700K clean-room checkout has no GPL dir, so it always builds with OFF.
-option(USE_GPL_SCAFFOLD "Include the GPL RBDOOM scaffold (prototype only)" OFF)
-
 # ---- MSVC niceties ----
 if(MSVC)
     add_compile_options(/W4 /permissive- /utf-8 /MP /Zc:preprocessor)

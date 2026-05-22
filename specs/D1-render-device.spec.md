@@ -49,7 +49,7 @@ public:
     virtual bool supportsMeshShaders() const = 0;
 };
 
-IRenderDevice* createRenderDevice();  // factory — returns GPL v0 OR clean impl per build flag
+IRenderDevice* createRenderDevice();  // factory — returns the (clean, original) Vulkan impl
 } // namespace x3::rhi
 ```
 
@@ -93,4 +93,3 @@ IRenderDevice* createRenderDevice();  // factory — returns GPL v0 OR clean imp
 - Target Vulkan 1.3 dynamic rendering (`VK_KHR_dynamic_rendering`) to avoid VkRenderPass/VkFramebuffer boilerplate.
 - Use timeline semaphores (Synchronization2) for frame pacing.
 - Keep the public interface tiny; hide ALL Vulkan types in the .cpp. The header must not include `vulkan.h` (so game/Lua never see Vulkan).
-- Build flag `USE_GPL_SCAFFOLD`: ON → factory returns the RBDOOM-derived v0 impl; OFF → returns this clean impl. Final ship is OFF.

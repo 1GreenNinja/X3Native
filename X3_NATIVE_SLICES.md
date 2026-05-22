@@ -1,25 +1,36 @@
 # X3 Native Engine — 100-Slice Build Plan
 
 **Written**: 2026-05-20 by Opus 4.7, expanding the M0–M10 milestones in `X3_NATIVE_ENGINE_PLAN.md` into fine-grained, individually-shippable slices.
-**Target machine**: i9-14900K + RTX 5090 (the RBDOOM/Ardoom-2019 source lives here).
-**Engine repo (planned)**: `1GreenNinja/X3Engine` (public, GPL v3 — per license decision in the plan).
+**Engine repo**: `1GreenNinja/X3Native` — **original work, proprietary** (see `LICENSE` / `PROVENANCE.md`).
 
-**Read the plan first** (`X3_NATIVE_ENGINE_PLAN.md`) for the decision rationale, stack, and license analysis. This doc is the executable backlog.
+> ## ⚠️ CORRECTION (2026-05-21) — built clean-room, not from RBDOOM
+>
+> This backlog was written assuming an RBDOOM fork. **The engine was instead built
+> clean-room from scratch** (no id Tech / RBDOOM source). Two consequences:
+> - **License is settled:** the engine is **original + proprietary** (not GPL-open, not hybrid). The "license-path drift" question below is resolved.
+> - **M0 (Slices 1–8 — "clone/build/run RBDOOM") is OBSOLETE.** The foundation now in place is the *clean* one: render device, pak/VFS, console, glTF, physics, lighting, animation (see `PROVENANCE.md`). The de-GPL "D1–D8" track is also moot — those subsystems were written clean from the start.
+>
+> The feature slices from M1 onward (gameplay, content, FX, audio, UI, ship) remain a
+> useful backlog — read them as targets, ignoring the RBDOOM-bringup framing.
 
-> ⚠️ **License-path drift (2026-05-20):** this doc assumes GPL-open-forever. The plan was later updated to **HYBRID** (fork RBDOOM → clean-room rewrite GPL via the D1-D8 track before commercial ship). If HYBRID is authoritative, slices M0-M10 still apply as-is, plus the D1-D8 de-GPL track runs in parallel from ~M4. **See `X3_NATIVE_QUESTIONS.md` #0 — confirm A (HYBRID) or B (GPL-open) before M1.**
+**Read the plan first** (`X3_NATIVE_ENGINE_PLAN.md`) for rationale and stack. This doc is the executable backlog.
 
 **Legend**: ✅ shipped · 🚧 in progress · ⛔ blocked-on-decision · 📝 planned
 
 ---
 
-## ⛔ Gates before starting
+## Gates before starting — RESOLVED
 
-- **G1 — License decision**: GPL v3 (engine open) is the default-assumed answer. If Tim wants the engine *private*, swap the base to Wicked Engine (MIT) / O3DE (Apache) and slices 1–8 change substantially. **Confirm before M1.**
-- **G2 — M0 go/no-go**: after Slice 8, if RBDOOM doesn't build+run+pass the 3 risk checks on the 5090, fall back to BabylonNative port (the April plan) and this doc is shelved.
+- **G1 — License decision**: ✅ resolved — **original engine, proprietary** (all rights reserved). No fork, no GPL.
+- **G2 — Foundation**: ✅ resolved — the clean foundation is built and running (render device, pak/VFS, console, glTF, physics, lighting, animation). No RBDOOM bring-up was needed.
 
 ---
 
-# M0 — Foundation: clone, build, verify (Slices 1–8)
+# M0 — Foundation (Slices 1–8) — OBSOLETE (was RBDOOM bring-up)
+
+> These slices described locating/building/running RBDOOM. **Not applicable** — the
+> engine was built clean-room from scratch. Kept only for historical context; the
+> equivalent clean foundation is recorded in `PROVENANCE.md`.
 
 ## Slice 1 — Locate + survey the RBDOOM source
 **Goal**: Find the RDOOM/RBDOOM-3-BFG/"Ardoom 2019" tree on the 14900K. Document its delta from upstream RBDOOM-3-BFG + the Vulkan backend version.
@@ -479,7 +490,7 @@
 
 # Cross-cutting concerns
 
-- **GPL v3 boundary**: engine code is open; game data (`.x3pak`) + Lua (obfuscated) are the closed/sellable layer. Every game on the engine ships as a pak, not as engine forks.
+- **Engine/data boundary**: the engine (`X3Engine.exe`) is original, proprietary IP; game data (`.x3pak`) + Lua (obfuscated) are the per-game sellable layer. Every game ships as a pak, not as an engine fork.
 - **Babylon X3 is the reference, not deleted**: cribs gameplay feel, tuning values, level layouts, content. It's also the shippable fallback if native slips.
 - **Profiler-first**: Tracy from Slice 8. Every perf claim is measured, not guessed.
 - **Validation-clean always**: Vulkan validation is a CI gate (Slice 20). Never merge with new validation errors.

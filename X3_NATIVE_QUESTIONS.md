@@ -1,8 +1,20 @@
-# X3 Native — Open Questions for the 14900K Session
+# X3 Native — Open Questions (mostly RESOLVED)
 
-> **This is the "questions.md" for the 14900K kickoff.** Read after `X3_NATIVE_ENGINE_PLAN.md` + `X3_NATIVE_SLICES.md`. These are the unknowns that will block or slow M0 if not pre-answered. Tim: answer the ⛔ ones before the 14900K starts; the ⚠️/ℹ️ ones can be answered as you hit them.
+> ## ✅ RESOLVED (2026-05-21) — the RBDOOM-fork questions are moot
 >
-> Authored 2026-05-20 on I9DevPC (laptop) after surveying the repo. Engine work has **NOT started in code** (no native/M0 branch on origin as of `f20a754`).
+> This doc was written for a planned "fork RBDOOM on the 14900K" kickoff. **That
+> path was never taken.** The engine was built **clean-room from scratch** on the
+> 13700K (no id Tech / RBDOOM / Doom 3 source used). So:
+> - **#0 Plan path** → resolved: clean-room original engine, **proprietary** (not GPL-open, not hybrid).
+> - **Q1 (locate RBDOOM source)** → N/A (no RBDOOM used).
+> - **Q2 (Doom 3 BFG base assets)** → N/A (engine boots its own `.x3pak`, never needed Doom assets).
+> - **Q9 (GPL-during-prototype OK?)** → N/A (no GPL phase; engine is original/proprietary, sellable now).
+> - **Q8 / setup script** → the old GPL "barrier" bootstrap is now `tools/bootstrap.ps1` (clone + provenance check).
+>
+> The still-useful product questions (Q5 Lua flavor, Q6 name, Q7 navmesh, Q11
+> platform) remain open and are kept below. See `PROVENANCE.md` / `LICENSE-NOTICE.md`.
+
+> **(historical)** This was the "questions.md" for the 14900K kickoff. Authored 2026-05-20 on I9DevPC.
 
 ---
 

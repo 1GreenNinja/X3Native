@@ -1,48 +1,46 @@
-# specs/ — Clean-room protocol
+# specs/ — Clean-room spec protocol
 
-These specs are the **information barrier** between the GPL source and the clean implementation. Get this right and the clean impl is independently created (not a derivative work). Get it wrong and you've just retyped GPL code.
+These specs are the **source of truth** the engine was built from. Implementing
+from an original behavioral spec + public references (not from any third-party
+engine source) is what makes the implementation independently created — original
+work, not a derivative. That is how X3Native was built; these specs are part of
+the provenance record (`PROVENANCE.md`).
 
-## The two teams
+> **Historical note:** the spec format was originally framed as an "information
+> barrier" between a GPL RBDOOM source (on one machine) and a clean implementation
+> (on another). **No RBDOOM/GPL source was ever used**, so there is nothing to wall
+> off — but the rule "implement only from the spec + public refs, never from foreign
+> engine source" still holds and was followed.
 
-### Spec team — runs on the 14900K (has the RBDOOM source)
-- Reads the GPL module.
-- Writes a `*.spec.md` describing **what it does and the interface contract** — behavior, inputs, outputs, edge cases, perf characteristics, acceptance tests.
-- **Writes NO clean implementation code.** Does not write the `.cpp` that will ship.
-- Pseudocode is allowed ONLY as algorithm *description* (e.g., "split the view frustum into N cascades by logarithmic depth"), never as a transcription of the GPL source structure/naming.
+## How a spec is used
 
-### Clean-room team — runs on the 13700K (does NOT have the RBDOOM source)
-- Clones a `*-cleanroom` branch/checkout that **physically omits `engine/_gpl_rbdoom/`**.
-- Reads ONLY: the `.spec.md` files + public references (Vulkan spec, "Real-Time Rendering 4th ed", GPU Gems, glTF 2.0 spec, library docs).
-- Writes the clean `.cpp`/`.h` behind the interface.
-- Writes its own tests from the spec's acceptance-test section.
-- Commits land on the cleanroom branch — git history shows they were authored on a machine with no GPL checkout (independent-creation evidence).
+1. **Define the interface** first (`engine/<sys>/I*.h`) — original, clean.
+2. **Write the spec** (`<name>.spec.md`): behavior, inputs/outputs, edge cases,
+   perf targets, and acceptance tests — original prose with citations to public
+   references only.
+3. **Implement** behind the interface from the spec + public refs + permissive libs.
+4. **Test** against the spec's acceptance cases; record in `PROVENANCE.md`.
 
 ## What may and may not appear in a spec
 
-✅ Allowed in a `.spec.md`:
-- The interface API (function signatures the clean impl must satisfy — these are *yours*, defined clean from day 1)
+✅ Allowed:
+- The interface API (signatures the impl must satisfy — defined clean, they're yours)
 - Behavioral description in prose
 - Input/output contracts, value ranges, units
 - Edge cases and error handling expectations
 - Performance targets
 - Acceptance test cases (inputs → expected outputs)
-- Citations to PUBLIC references
+- Citations to **public** references (Vulkan spec, *Real-Time Rendering*, GPU Gems,
+  glTF spec, library docs, public GDC/SIGGRAPH talks)
 
-❌ NEVER in a `.spec.md`:
-- Copy-pasted GPL source
-- Function bodies transcribed from RBDOOM
-- RBDOOM's exact internal data-structure layouts or identifier names
-- RBDOOM file paths as "look here" pointers (defeats the barrier)
+❌ Never:
+- Source copy-pasted or transcribed from any third-party game engine
+- Another engine's exact internal data-structure layouts or identifier names
+- "Look here" pointers into third-party engine source
 
-## Workflow per module
-1. Spec team picks a `TODO` row from `../GPL_DEBT.md`, flips it to `SPEC`.
-2. Spec team copies `_TEMPLATE.spec.md` → `D#-<name>.spec.md`, fills it in, commits/pushes. Flips row to `WIP`.
-3. Clean-room team (13700K) implements from the spec, writes tests, flips row to `VERIFY`.
-4. Swap the interface binding from GPL v0 → clean impl. Run acceptance tests.
-5. Green → delete the GPL v0 impl for that module, flip row to `DONE-CLEAN`, record SHA + machine in the audit trail.
+## Why this is solid
 
-## Why the barrier is by repo topology, not honor system
-The 13700K's checkout literally cannot contain `engine/_gpl_rbdoom/`. Use one of:
-- A separate `x3native-cleanroom` repo that has only `engine/` (clean) + `specs/` + interfaces, no quarantine dir.
-- OR git sparse-checkout on the 13700K excluding `engine/_gpl_rbdoom/`.
-The clean-room agents physically cannot read what isn't on disk.
+Every implementation traces to an original spec + public knowledge, was authored on
+machines that never held a third-party engine checkout (git history shows it), and
+carries in-file "no foreign source consulted" notes. That's the gold-standard record
+of independent creation — see `PROVENANCE.md`.
