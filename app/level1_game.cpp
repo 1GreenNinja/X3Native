@@ -524,6 +524,7 @@ public:
     void drawHudText(const x3::rhi::FrameContext&, const char*, float, float, float, const float[4]) override {}
     void hudSize(uint32_t& w, uint32_t& h) const override { w = 0; h = 0; }
     x3::rhi::RenderStats stats() const override { return {}; }
+    void armCapture(const char*) override {}                    // headless: no swapchain
     bool captureFrame(const char*) override { return false; }  // headless: no swapchain
     bool supportsDescriptorIndexing() const override { return false; }
     bool supportsMeshShaders() const override { return false; }
