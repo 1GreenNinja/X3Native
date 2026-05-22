@@ -55,6 +55,7 @@
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/asset/IModelLoader.h"
 #include "engine/asset/IAssetSource.h"
+#include "engine/ai/INavigation.h"   // GENERAL navigation: route around walls (optional)
 
 #include <cstdint>
 #include <functional>
@@ -204,6 +205,13 @@ constexpr float kAiTurnRate        = 7.0f;
 constexpr float kAiDecisionPeriod  = 0.30f;  // re-evaluate state every ~0.3 s
 constexpr float kAiDecisionJitter  = 0.15f;  // +/- randomization on the cadence (s)
 constexpr float kAiStateMinTime    = 0.45f;  // min dwell before a non-forced switch
+
+// GENERAL navigation cadence: when a nav grid is attached, rebuild the A* path to
+// the move target every this-many seconds (NOT every frame — pathfinding is cheap
+// but not free, and waypoints stay valid between rebuilds). The agent steers toward
+// the current next waypoint each frame in between. VISUAL/PERF TUNING.
+constexpr float kNavRepathPeriod = 0.5f;     // re-run A* twice a second
+constexpr float kNavWaypointArrive = 0.6f;   // "reached" a waypoint within this (m)
 
 // Death "pop" duration (seconds): on death the physics body is removed
 // IMMEDIATELY (rays miss right away) but the model keeps DRAWING for this long,
@@ -400,6 +408,18 @@ public:
     // removed, but the model is still being drawn (shrinking/flashing).
     bool dying() const { return m_dying; }
 
+    // ---- GENERAL navigation (optional) ------------------------------------
+    // Give this monster a shared nav grid so it ROUTES AROUND walls/obstacles
+    // instead of beelining into them. When set, the Advance/Search states steer
+    // toward the next A* path WAYPOINT (rebuilt on a cadence, not every frame)
+    // rather than straight at the target. nullptr (default) keeps the original
+    // straight-line behaviour exactly (so --test-ai / --test-combat are unchanged).
+    // The grid is borrowed (not owned); the host owns its lifetime.
+    void setNavGrid(const x3::ai::INavGrid* grid) { m_navGrid = grid; }
+    bool usingNav() const { return m_navGrid != nullptr; }
+    // The number of waypoints in the current path (0 = none / direct). Diagnostics.
+    uint32_t pathWaypointCount() const { return m_follower.waypointCount(); }
+
     // The monster's entity id (kNoLink until built) and physics body.
     uint32_t entity() const { return m_entity; }
     x3::phys::BodyId body() const { return m_body; }
@@ -526,6 +546,14 @@ private:
     // enemies (no per-frame heap alloc; a tiny LCG advanced in the hot path).
     uint32_t m_rng          = 0x9E3779B9u;
     bool     m_aiInit       = false;         // seeded the RNG / decision timer yet
+
+    // ---- GENERAL navigation (optional, off by default) --------------------
+    // Borrowed shared nav grid (nullptr => straight-line, original behaviour).
+    const x3::ai::INavGrid* m_navGrid = nullptr;
+    x3::ai::PathFollower    m_follower;       // walks the current A* path's waypoints
+    float    m_repathTimer  = 0.0f;          // countdown to rebuild the path (cadence)
+    x3::phys::Vec3 m_pathGoal{};             // goal the current path was built toward
+    bool     m_hasPath      = false;         // a valid path is being followed
 };
 
 // ---------------------------------------------------------------------------

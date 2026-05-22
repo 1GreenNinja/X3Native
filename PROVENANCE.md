@@ -53,6 +53,7 @@ No machine used a third-party engine checkout as a source for this code.
 | Physics world + controller | `IPhysicsWorld` | DONE | Jolt backend + character controller |
 | Forward+ lighting | (in `rhi`) | DONE | 16 point lights + hemispheric ambient + ACES tonemap |
 | Skeletal animation | (in `app`/`engine`) | DONE | CPU skinning, glTF skins, idle clip |
+| Navigation + pathfinding | `INavigation` | DONE | nav grid (physics-sampled walkability) + 8-connected A* + string-pull + path-follow; from public A*/navmesh refs (no Recast source); 5/5 `--test-nav` |
 | Audio | `IAudioSystem` | IN PROGRESS | miniaudio backend |
 | Material/shader pipeline | `IMaterialSystem` | PLANNED | original GLSL→SPIR-V |
 | Cascaded shadow maps | `IShadowRenderer` | PLANNED | from RTR4 / GPU Gems |

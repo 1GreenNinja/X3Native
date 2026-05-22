@@ -653,15 +653,58 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     bool  wantMove = false;
     const float chaseSpeed = m_chaseSpeed * m_phaseSpeedMul;
 
+    // ---- GENERAL navigation (optional): when a nav grid is attached, the agent
+    // ROUTES AROUND walls instead of beelining. We rebuild an A* path to the move
+    // target on a cadence (kNavRepathPeriod), then steer toward the current next
+    // WAYPOINT. The "move target" depends on the state: engage states aim at the
+    // player; Search aims at the last-known position. nav* hold the resolved unit
+    // direction toward the next waypoint (or 0 if no usable path). The straight-line
+    // direction below is used as the fallback when no path exists. ----
+    float navDx = 0.0f, navDz = 0.0f; bool navSteer = false;
+    if (m_navGrid) {
+        m_repathTimer -= dt;
+        // Pick the nav goal for the current/likely state: engage -> player, Search ->
+        // last-known. (Both use the player's planar tracking position when engaging.)
+        const bool engaging = (m_ai == AiState::Advance || m_ai == AiState::Attack ||
+                               m_ai == AiState::Strafe);
+        x3::phys::Vec3 navGoal = engaging ? playerPos
+                                          : (m_everSawPlayer ? m_lastKnown : playerPos);
+        // Rebuild on the cadence, or immediately if the goal moved a lot / we have no
+        // path. Cheap A* over the bounded grid (pooled nodes; no per-frame alloc).
+        const float gdx = navGoal.x - m_pathGoal.x, gdz = navGoal.z - m_pathGoal.z;
+        const bool goalMoved = (gdx*gdx + gdz*gdz) > (1.5f * 1.5f);
+        if (m_repathTimer <= 0.0f || !m_hasPath || goalMoved) {
+            m_repathTimer = kNavRepathPeriod;
+            m_pathGoal = navGoal;
+            x3::ai::NavPath path = m_navGrid->findPath(
+                x3::ai::NavVec3{ m_pos.x, m_pos.y, m_pos.z },
+                x3::ai::NavVec3{ navGoal.x, navGoal.y, navGoal.z }, /*smooth*/ true);
+            m_follower.setPath(path);
+            m_hasPath = path.ok() && m_follower.hasPath();
+        }
+        if (m_hasPath && !m_follower.arrived()) {
+            // Desired velocity toward the next waypoint -> a unit planar direction.
+            x3::ai::NavVec3 v = m_follower.desiredVelocity(
+                x3::ai::NavVec3{ m_pos.x, m_pos.y, m_pos.z }, 1.0f, kNavWaypointArrive);
+            const float vl = std::sqrt(v.x*v.x + v.z*v.z);
+            if (vl > 1e-4f) { navDx = v.x / vl; navDz = v.z / vl; navSteer = true; }
+        }
+    }
+
     switch (m_ai) {
         case AiState::Advance: {
-            // Move toward + FACE the player, with a slight weave so it isn't a
-            // straight line. (Guards lean on this state.)
-            m_wander += dt * kStrafeFreq;
-            const float strafe = std::sin(m_wander) * kStrafeAmt;
-            mx = fxn + pxn * strafe; mz = fzn + pzn * strafe;
+            // Move toward + FACE the player. With a nav grid, steer along the A* path
+            // (around walls); otherwise the original straight-line approach + weave.
+            if (navSteer) {
+                mx = navDx; mz = navDz;        // follow the path waypoint (routes around)
+                m_yawTarget = headingToFace(navDx, navDz);  // face where we're going
+            } else {
+                m_wander += dt * kStrafeFreq;
+                const float strafe = std::sin(m_wander) * kStrafeAmt;
+                mx = fxn + pxn * strafe; mz = fzn + pzn * strafe;
+                m_yawTarget = headingToFace(dx, dz);
+            }
             wantMove = horiz > kChaseStopDist;
-            m_yawTarget = headingToFace(dx, dz);
         } break;
 
         case AiState::Attack: {
@@ -713,8 +756,12 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             float ll = std::sqrt(lx*lx + lz*lz);
             m_searchSweep += dt * kAiSearchSweepFreq;
             if (ll > kAiLastKnownReach) {
-                mx = lx/ll; mz = lz/ll; wantMove = true;
-                m_yawTarget = headingToFace(lx, lz) +
+                // Route around walls toward last-known if a nav path exists, else
+                // straight at it. The head still sweeps while moving.
+                if (navSteer) { mx = navDx; mz = navDz; }
+                else          { mx = lx/ll; mz = lz/ll; }
+                wantMove = true;
+                m_yawTarget = headingToFace(navSteer ? navDx : lx, navSteer ? navDz : lz) +
                               kAiSearchSweepAmp * std::sin(m_searchSweep);
             } else {
                 // Arrived at last-known: stand and sweep the head, scanning.
@@ -1568,6 +1615,60 @@ bool runAiSelfTest() {
         x3::logInfo(std::string("[ai-test] (e) transitions=") + std::to_string(transitions) +
                     " longestRun=" + std::to_string(maxRun) + " ticks");
         aicheck(noJitter, "Te hysteresis: state holds >= several ticks (no jitter)");
+        w->shutdown();
+    }
+
+    // ---- (f) NAV WIRING: an enemy with a nav grid ROUTES AROUND a wall to reach the
+    // player, where a straight-line enemy would stall against it. We use a LOW barrier
+    // (0.6 m) the enemy can SEE the player over (eye-level LOS clears it) but cannot
+    // WALK through (taller than the agent's step height -> nav marks it blocked). So
+    // the enemy stays engaged (Advance, keeps LOS) yet must detour around the barrier
+    // ends via the A* path. Barrier on the X~2 line, z in [-13,7] (gap toward +Z).
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); aiGround(*w, 60.0f);
+        // Low barrier centered at (2, 0.3, -3): spans x in [1.5,2.5], y in [0,0.6],
+        // z in [-13,7]. Top y=0.6 > maxStepHeight(0.5) -> blocked for walking; the
+        // eye-level chase LOS ray (from y~0.7 up to the player eye y=1.6) passes over.
+        w->addBox(x3::phys::Vec3{ 0.5f, 0.3f, 10.0f }, x3::phys::Vec3{ 2.0f, 0.3f, -3.0f },
+                  0.0f, x3::phys::Layer::Static);
+        // Nav grid over the area, sampled from physics (marks the barrier blocked).
+        x3::ai::NavBuildParams np;
+        np.minX = -6; np.maxX = 14; np.minZ = -16; np.maxZ = 12; np.cellSize = 1.0f;
+        np.agentRadius = 0.4f; np.agentHeight = 1.8f; np.sampleTopY = 8.0f;
+        np.sampleDepth = 20.0f; np.maxStepHeight = 0.5f;
+        std::unique_ptr<x3::ai::INavGrid> grid(x3::ai::buildNavGridFromPhysics(*w, np));
+        // Sanity: the barrier cell at (2,-3) is blocked, an open cell at (-3,-3) isn't.
+        uint32_t bc, br; grid->worldToCell(2.0f, -3.0f, bc, br);
+        uint32_t fc, fr; grid->worldToCell(-3.0f, -3.0f, fc, fr);
+        const bool gridOk = !grid->walkable(bc, br) && grid->walkable(fc, fr);
+
+        Scene scene; MonsterSystem m; AiTargetStub tgt;
+        MonsterSystem::Tuning t = aiGuardTuning(); t.chaseSpeed = 4.0f; t.attackRange = 1.5f;
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                            x3::phys::Vec3{ 0,0.4f,0 }, t);
+        m.setNavGrid(grid.get());
+        // Player on the FAR side of the barrier (x=8), roughly opposite the enemy.
+        tgt.eye = x3::phys::Vec3{ 8.0f, 1.6f, -3.0f };
+
+        float maxZ = m.pos().z; bool clearedWall = false; bool gotPath = false;
+        for (int i = 0; i < 1200; ++i) {       // up to 20 s
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, &tgt, AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            if (m.pos().z > maxZ) maxZ = m.pos().z;
+            if (m.pathWaypointCount() >= 2) gotPath = true;
+            if (m.pos().x > 2.6f) clearedWall = true;   // got past the barrier's far face
+        }
+        // Routed around: built a multi-waypoint path, deviated toward the +Z gap, and
+        // got past the barrier (x > 2.6) to the player's side — not stuck at the wall.
+        bool detouredZ = maxZ > 4.0f;
+        x3::logInfo(std::string("[ai-test] (f) usingNav=") + (m.usingNav()?"1":"0") +
+                    " gridOk=" + (gridOk?"1":"0") + " gotPath=" + (gotPath?"1":"0") +
+                    " maxZ=" + std::to_string(maxZ) +
+                    " clearedWall=" + (clearedWall?"1":"0") +
+                    " finalPos=(" + std::to_string(m.pos().x) + "," + std::to_string(m.pos().z) + ")");
+        aicheck(m.usingNav() && gridOk && gotPath && detouredZ && clearedWall,
+                "Tf nav-wired enemy routes AROUND a wall to reach the player");
         w->shutdown();
     }
 

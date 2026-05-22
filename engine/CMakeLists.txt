@@ -8,6 +8,7 @@ add_library(x3engine STATIC
     asset/PakAssetSource.cpp
     physics/JoltPhysicsWorld.cpp
     physics/Destruction.cpp
+    ai/Navigation.cpp
     asset/ModelLoader.cpp
     audio/MiniaudioSystem.cpp
     net/LoopbackTransport.cpp
