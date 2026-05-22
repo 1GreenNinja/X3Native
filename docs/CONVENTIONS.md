@@ -68,6 +68,8 @@ Consequences (memorize these — they're the source of past facing bugs):
 
 Consistent with this doc: world axes, gravity, up vector, the shared forward basis (camera/audio/fx/weapon), glTF import, the standUpZtoY fixup, terrain, lighting/shadow sun direction.
 
+**Reconciled:**
+- ✅ `app/env_art.cpp` (D-phys facing pass, 2026-05-21): the corridor consoles claimed "facing −Z (yaw 180)". The local `placeYaw` rotation parameterizes a model whose default facing is local −Z, where its yaw=0 already faces world −Z and **yaw = π faces +Z** (into the wall — screen hidden), so the old value pointed the terminal the wrong way. Fixed to `placeYaw` yaw = **0** so the console faces −Z back into the room toward the approaching player. `placeYaw` now documents the bridge to this doc's §3 basis: **`placeYaw_yaw = yaw_AI + π/2`**, with `yaw_AI = atan2(dz, dx)`; facing world-forward (−Z) is `yaw_AI = −π/2` ⇒ `placeYaw` yaw = 0. (The walls/door-frames in the same file use yaw 0 / +π/2 for axis alignment, not target-facing, and were already correct — left unchanged.)
+
 **To reconcile (tracked for the D facing pass):**
-- `app/env_art.cpp` has a comment "facing −Z (yaw 180)" — by the §3 basis, **yaw = π gives −X**, not −Z. The comment (and any code relying on it) must be corrected to the §3 rule (face −Z ⇒ yaw = −π/2).
 - Monster facing (the new combat-AI work) must derive yaw from the §3 basis (`atan2(dz, dx)`), so "advance/attack faces the player, retreat faces away," etc., are computed against this one convention.
