@@ -153,6 +153,68 @@ float smoothstep01(float x) {
     return x * x * (3.0f - 2.0f * x);
 }
 
+// ---- small vec3 / quat helpers for the foot-IK pass --------------------------
+float dot3(const float a[3], const float b[3]) { return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
+float len3(const float a[3]) { return std::sqrt(dot3(a, a)); }
+void sub3(const float a[3], const float b[3], float o[3]) { o[0]=a[0]-b[0]; o[1]=a[1]-b[1]; o[2]=a[2]-b[2]; }
+void add3(const float a[3], const float b[3], float o[3]) { o[0]=a[0]+b[0]; o[1]=a[1]+b[1]; o[2]=a[2]+b[2]; }
+void cross3(const float a[3], const float b[3], float o[3]) {
+    o[0] = a[1]*b[2] - a[2]*b[1];
+    o[1] = a[2]*b[0] - a[0]*b[2];
+    o[2] = a[0]*b[1] - a[1]*b[0];
+}
+bool norm3(float a[3]) {
+    float l = len3(a);
+    if (l < 1e-8f) return false;
+    a[0]/=l; a[1]/=l; a[2]/=l; return true;
+}
+// Quaternion multiply (q = a * b), Hamilton, components (x,y,z,w).
+void quatMul(const float a[4], const float b[4], float o[4]) {
+    o[0] = a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1];
+    o[1] = a[3]*b[1] - a[0]*b[2] + a[1]*b[3] + a[2]*b[0];
+    o[2] = a[3]*b[2] + a[0]*b[1] - a[1]*b[0] + a[2]*b[3];
+    o[3] = a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2];
+}
+// Rotate a vector v by quaternion q (x,y,z,w) -> o.
+void quatRotate(const float q[4], const float v[3], float o[3]) {
+    const float qx=q[0], qy=q[1], qz=q[2], qw=q[3];
+    float t[3];                      // t = 2 * cross(qxyz, v)
+    t[0] = 2.0f * (qy*v[2] - qz*v[1]);
+    t[1] = 2.0f * (qz*v[0] - qx*v[2]);
+    t[2] = 2.0f * (qx*v[1] - qy*v[0]);
+    o[0] = v[0] + qw*t[0] + (qy*t[2] - qz*t[1]);
+    o[1] = v[1] + qw*t[1] + (qz*t[0] - qx*t[2]);
+    o[2] = v[2] + qw*t[2] + (qx*t[1] - qy*t[0]);
+}
+void quatNormalize(float q[4]) {
+    float l = std::sqrt(q[0]*q[0]+q[1]*q[1]+q[2]*q[2]+q[3]*q[3]);
+    if (l > 1e-8f) { q[0]/=l; q[1]/=l; q[2]/=l; q[3]/=l; }
+    else { q[0]=q[1]=q[2]=0; q[3]=1; }
+}
+// Quaternion (x,y,z,w) rotating unit vector `from` onto unit vector `to` (shortest arc).
+void quatFromTo(const float from[3], const float to[3], float out[4]) {
+    float d = dot3(from, to);
+    if (d > 0.999999f) { out[0]=out[1]=out[2]=0; out[3]=1; return; } // already aligned
+    if (d < -0.999999f) {
+        // 180 deg: pick any axis orthogonal to `from`.
+        float axis[3] = { 1,0,0 };
+        float c[3]; cross3(from, axis, c);
+        if (len3(c) < 1e-4f) { axis[0]=0; axis[1]=1; axis[2]=0; cross3(from, axis, c); }
+        norm3(c);
+        out[0]=c[0]; out[1]=c[1]; out[2]=c[2]; out[3]=0; return; // 180 deg about c
+    }
+    float c[3]; cross3(from, to, c);
+    out[0]=c[0]; out[1]=c[1]; out[2]=c[2]; out[3]=1.0f + d;
+    quatNormalize(out);
+}
+// Extract the translation column (model-space position) of a column-major 4x4.
+void mat4Translation(const float m[16], float o[3]) { o[0]=m[12]; o[1]=m[13]; o[2]=m[14]; }
+// Lower-case substring test (case-insensitive contains).
+bool icontains(const std::string& hay, const char* needle) {
+    std::string h = toLower(hay);
+    return h.find(needle) != std::string::npos;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -227,6 +289,16 @@ bool Skinner::bind(const x3::asset::Model& model) {
     m_speedCmd = 0.0f; m_loco01Cmd = -1.0f; m_locoW = 0.0f; m_phase = 0.0f;
     m_xfadeActive = false; m_xfadeClip = -1; m_xfadeW = 0.0f; m_xfadeOut = false;
     m_xfadeTime = 0.0f; m_xfadeClipT = 0.0f;
+
+    // ---- Foot-IK: size scratch + resolve the leg/hips bones by name. A re-bind
+    // keeps the enabled flag/callback off until setFootIk() is called again. ----
+    m_ikGlobals.assign((size_t)m_nodeCount * 16, 0.0f);
+    m_footIkEnabled = false;
+    m_groundRay = GroundRay{};
+    mat4Identity(m_worldFromModel);
+    m_legW[0] = m_legW[1] = 0.0f;
+    m_pelvisDropSmoothed = 0.0f;
+    resolveFootIkBones(model);
 
     m_valid = true;
     return true;
@@ -608,6 +680,7 @@ bool Skinner::advanceBlend(const x3::asset::Model& model, float dt) {
 uint32_t Skinner::advanceAndComputePalette(const x3::asset::Model& model, float dt,
                                            std::vector<float>& outPalette) {
     if (!advanceBlend(model, dt)) { outPalette.clear(); return 0; }
+    applyFootIk(model, dt);   // IK runs AFTER blend, BEFORE the palette accumulate
     return paletteFromPose(model, m_blendT, m_blendR, m_blendS, outPalette);
 }
 
@@ -615,6 +688,7 @@ void Skinner::applyLocomotion(const x3::asset::Model& model,
                               x3::rhi::IRenderDevice& device, float dt) {
     if (!m_valid) return;
     if (!advanceBlend(model, dt)) return;
+    applyFootIk(model, dt);   // IK runs AFTER blend, BEFORE the palette accumulate
     uint32_t jcount = paletteFromPose(model, m_blendT, m_blendR, m_blendS, m_palette);
     if (jcount == 0) return;
 
@@ -713,6 +787,423 @@ void Skinner::apply(const x3::asset::Model& model, x3::rhi::IRenderDevice& devic
         }
         device.updateMesh(x3::rhi::MeshHandle{ meshId }, m_vertScratch.data(),
                           (uint32_t)vcount);
+    }
+}
+
+// ===========================================================================
+// Foot IK — general character grounding (slopes / stairs / uneven terrain).
+//
+// Clean-room: analytic two-bone IK (law of cosines for the knee bend + a pole
+// hint for the bend plane), a per-foot downward ground raycast for planting, and
+// a lower-foot-governs pelvis drop. Built from public IK references only.
+// ===========================================================================
+
+// Analytic two-bone solver (static; pure geometry). Solves hip->knee->foot so the
+// foot reaches `target` with the knee bending toward `pole`. Bone lengths come from
+// the supplied rest positions. Unreachable -> straight leg toward the target.
+void Skinner::solveTwoBone(const float hip[3], const float knee[3],
+                           const float foot[3], const float target[3],
+                           const float pole[3], float outKnee[3], float outFoot[3]) {
+    float u[3], l[3];
+    sub3(knee, hip, u);            // upper bone (hip->knee)
+    sub3(foot, knee, l);           // lower bone (knee->foot)
+    float L1 = len3(u);
+    float L2 = len3(l);
+    if (L1 < 1e-6f || L2 < 1e-6f) { // degenerate rig: pass through
+        outKnee[0]=knee[0]; outKnee[1]=knee[1]; outKnee[2]=knee[2];
+        outFoot[0]=foot[0]; outFoot[1]=foot[1]; outFoot[2]=foot[2];
+        return;
+    }
+
+    float toT[3]; sub3(target, hip, toT);
+    float dist = len3(toT);
+    float dir[3] = { toT[0], toT[1], toT[2] };
+    if (!norm3(dir)) {             // target == hip: keep the rest direction
+        sub3(knee, hip, dir); norm3(dir);
+    }
+
+    // Clamp the reach so an over/under-extended target never produces a NaN bend.
+    const float kEps = 1e-4f;
+    float minReach = std::fabs(L1 - L2) + kEps;
+    float maxReach = (L1 + L2) - kEps;
+    float reach = dist;
+    if (reach < minReach) reach = minReach;
+    if (reach > maxReach) reach = maxReach;   // unreachable -> straight leg (clamped)
+
+    // Law of cosines: angle at the hip between the upper bone and the hip->target line.
+    float cosHip = (L1*L1 + reach*reach - L2*L2) / (2.0f * L1 * reach);
+    if (cosHip > 1.0f) cosHip = 1.0f;
+    if (cosHip < -1.0f) cosHip = -1.0f;
+    float hipAng = std::acos(cosHip);
+
+    // Bend axis: perpendicular to dir, in the plane spanned by dir + pole. The knee
+    // bends toward `pole`. Fall back to a stable axis if pole is parallel to dir.
+    float poleDir[3] = { pole[0], pole[1], pole[2] };
+    float projp = dot3(poleDir, dir);
+    float poleFlat[3] = { poleDir[0]-projp*dir[0], poleDir[1]-projp*dir[1], poleDir[2]-projp*dir[2] };
+    if (!norm3(poleFlat)) {
+        // pole parallel to dir: pick any vector perpendicular to dir.
+        float ax[3] = { 1,0,0 };
+        if (std::fabs(dir[0]) > 0.9f) { ax[0]=0; ax[1]=1; ax[2]=0; }
+        float c[3]; cross3(dir, ax, c); norm3(c);
+        poleFlat[0]=c[0]; poleFlat[1]=c[1]; poleFlat[2]=c[2];
+    }
+    // bendAxis = dir x poleFlat (rotation axis); knee = hip + Rodrigues(dir, +hipAng)*L1
+    float bendAxis[3]; cross3(dir, poleFlat, bendAxis); norm3(bendAxis);
+
+    // Rotate `dir` about bendAxis by +hipAng (toward poleFlat) to get the upper-bone dir.
+    float s = std::sin(hipAng), c = std::cos(hipAng);
+    // Rodrigues: v' = v*c + (k x v)*s + k*(k.v)*(1-c)
+    float kxv[3]; cross3(bendAxis, dir, kxv);
+    float kdv = dot3(bendAxis, dir);
+    float ub[3] = {
+        dir[0]*c + kxv[0]*s + bendAxis[0]*kdv*(1-c),
+        dir[1]*c + kxv[1]*s + bendAxis[1]*kdv*(1-c),
+        dir[2]*c + kxv[2]*s + bendAxis[2]*kdv*(1-c),
+    };
+    norm3(ub);
+    outKnee[0] = hip[0] + ub[0]*L1;
+    outKnee[1] = hip[1] + ub[1]*L1;
+    outKnee[2] = hip[2] + ub[2]*L1;
+    // Foot sits at the (clamped) reach along dir from the hip.
+    outFoot[0] = hip[0] + dir[0]*reach;
+    outFoot[1] = hip[1] + dir[1]*reach;
+    outFoot[2] = hip[2] + dir[2]*reach;
+}
+
+// Resolve the humanoid leg + hips bones by name (case-insensitive). Common rigs:
+//   upper leg: "upperleg" / "thigh" / "upleg"
+//   lower leg: "lowerleg" / "shin"  / "calf"   (also "leg" as a last resort)
+//   foot:      "foot" / "ankle"
+//   hips:      "hips" / "pelvis"
+// Side: ".l"/".r" suffix or "left"/"right" substring. Bone lengths come from the
+// rest local-translation magnitudes of the knee/foot nodes.
+void Skinner::resolveFootIkBones(const x3::asset::Model& m) {
+    m_legResolved = false;
+    m_pelvisNode = m_rootNode = -1;
+    for (int sd = 0; sd < 2; ++sd) {
+        m_hipNode[sd] = m_kneeNode[sd] = m_footNode[sd] = -1;
+        m_sideOk[sd] = false;
+        for (int p = 0; p < 4; ++p) m_boneName[sd][p].clear();
+    }
+    if (m.nodes.empty()) return;
+
+    auto sideOf = [](const std::string& nm) -> int {
+        std::string n = toLower(nm);
+        // explicit side tokens (left/right) win; then .l/.r / _l/_r suffixes.
+        bool hasLeft  = n.find("left")  != std::string::npos;
+        bool hasRight = n.find("right") != std::string::npos;
+        if (hasLeft && !hasRight)  return 0;
+        if (hasRight && !hasLeft)  return 1;
+        // suffix / token forms: ".l", "_l", " l", "l." etc. Check word-ish boundaries.
+        auto endsWith = [&](const char* suf){ size_t L=std::strlen(suf);
+            return n.size()>=L && n.compare(n.size()-L, L, suf)==0; };
+        if (endsWith(".l") || endsWith("_l") || endsWith("-l") || endsWith(" l") || endsWith("left")) return 0;
+        if (endsWith(".r") || endsWith("_r") || endsWith("-r") || endsWith(" r") || endsWith("right")) return 1;
+        return -1;
+    };
+
+    // Pelvis / hips: prefer an exact-ish hips/pelvis bone.
+    for (uint32_t i = 0; i < (uint32_t)m.nodes.size(); ++i) {
+        const std::string& nm = m.nodes[i].name;
+        if (nm.empty()) continue;
+        if (icontains(nm, "pelvis") || icontains(nm, "hips") || icontains(nm, "hip ")) {
+            // Avoid matching "UpperLeg" via "hip"-less names; require pelvis/hips.
+            if (icontains(nm, "pelvis") || icontains(nm, "hips")) { m_pelvisNode = (int)i; break; }
+        }
+    }
+
+    // For each side, find upperleg/thigh, lowerleg/shin, foot/ankle.
+    auto findSided = [&](int side, std::initializer_list<const char*> keys,
+                         std::initializer_list<const char*> avoid) -> int {
+        for (const char* key : keys) {
+            for (uint32_t i = 0; i < (uint32_t)m.nodes.size(); ++i) {
+                const std::string& nm = m.nodes[i].name;
+                if (nm.empty()) continue;
+                if (!icontains(nm, key)) continue;
+                bool bad = false;
+                for (const char* av : avoid) if (icontains(nm, av)) { bad = true; break; }
+                if (bad) continue;
+                if (sideOf(nm) != side) continue;
+                return (int)i;
+            }
+        }
+        return -1;
+    };
+
+    for (int side = 0; side < 2; ++side) {
+        // Upper leg (thigh). Avoid matching the foot/toe accidentally.
+        m_hipNode[side]  = findSided(side, { "upperleg", "upper_leg", "thigh", "upleg" }, { "twist", "toe" });
+        // Lower leg (shin/calf). "leg" alone is a fallback but must not be the thigh.
+        m_kneeNode[side] = findSided(side, { "lowerleg", "lower_leg", "shin", "calf", "knee" }, { "upper", "twist", "toe", "thigh", "upleg" });
+        if (m_kneeNode[side] < 0)
+            m_kneeNode[side] = findSided(side, { "leg" }, { "upper", "thigh", "upleg", "twist", "toe" });
+        m_footNode[side] = findSided(side, { "foot", "ankle" }, { "toe", "ball", "twist" });
+
+        bool ok = m_hipNode[side] >= 0 && m_kneeNode[side] >= 0 && m_footNode[side] >= 0
+               && m_hipNode[side] != m_kneeNode[side] && m_kneeNode[side] != m_footNode[side];
+        if (ok) {
+            // Bone lengths from rest local-translation magnitudes of knee + foot.
+            float t[3], q[4], sc[3];
+            decompose(m.nodes[m_kneeNode[side]].localTransform, t, q, sc);
+            m_upperLen[side] = std::sqrt(t[0]*t[0]+t[1]*t[1]+t[2]*t[2]);
+            decompose(m.nodes[m_footNode[side]].localTransform, t, q, sc);
+            m_lowerLen[side] = std::sqrt(t[0]*t[0]+t[1]*t[1]+t[2]*t[2]);
+            ok = m_upperLen[side] > 1e-5f && m_lowerLen[side] > 1e-5f;
+        }
+        m_sideOk[side] = ok;
+        if (ok) {
+            m_boneName[side][0] = m.nodes[m_hipNode[side]].name;
+            m_boneName[side][1] = m.nodes[m_kneeNode[side]].name;
+            m_boneName[side][2] = m.nodes[m_footNode[side]].name;
+        }
+    }
+
+    // Pelvis fallback: if no explicit hips bone, use the common ancestor of the two
+    // hips (the parent of an upper-leg node) so the pelvis drop has something to move.
+    if (m_pelvisNode < 0) {
+        for (int side = 0; side < 2; ++side) {
+            if (m_sideOk[side]) {
+                int par = m.nodes[m_hipNode[side]].parent;
+                if (par >= 0) { m_pelvisNode = par; break; }
+            }
+        }
+    }
+    m_rootNode = m_pelvisNode;
+    for (int side = 0; side < 2; ++side)
+        if (m_sideOk[side] && m_pelvisNode >= 0)
+            m_boneName[side][3] = m.nodes[m_pelvisNode].name;
+
+    m_legResolved = m_sideOk[0] || m_sideOk[1];
+}
+
+void Skinner::setFootIk(bool enabled, const GroundRay& ray, const float worldFromModel[16]) {
+    m_footIkEnabled = enabled;
+    m_groundRay = ray;
+    if (worldFromModel) std::memcpy(m_worldFromModel, worldFromModel, sizeof(float)*16);
+}
+
+void Skinner::setFootIkWorldFromModel(const float worldFromModel[16]) {
+    if (worldFromModel) std::memcpy(m_worldFromModel, worldFromModel, sizeof(float)*16);
+}
+
+std::string_view Skinner::footIkBoneName(int side, int part) const {
+    if (side < 0 || side > 1 || part < 0 || part > 3) return {};
+    return std::string_view(m_boneName[side][part]);
+}
+
+// Run the foot-IK pass IN PLACE over the blended local pose (m_blendT/R). Builds
+// model-space globals, plants each foot via the ground ray, drops the pelvis so the
+// lower foot reaches (smoothed + clamped), then solves each leg with solveTwoBone
+// and writes corrected hip/knee LOCAL rotations + the pelvis offset back.
+void Skinner::applyFootIk(const x3::asset::Model& model, float dt) {
+    if (!m_valid || !m_footIkEnabled || !m_legResolved || !m_groundRay.fn) {
+        // Smoothly relax any residual IK weights when disabled (no pop).
+        for (int s = 0; s < 2; ++s) m_legW[s] += (0.0f - m_legW[s]) * std::min(1.0f, 10.0f*dt);
+        m_pelvisDropSmoothed += (0.0f - m_pelvisDropSmoothed) * std::min(1.0f, 10.0f*dt);
+        return;
+    }
+    if (dt < 0.0f) dt = 0.0f;
+
+    // Accumulate model-space globals from the current blended local pose into
+    // m_ikGlobals (same iterative, recursion-free walk as paletteFromPose; reuses
+    // the resolve scratch — no heap alloc in the steady path). Called once up front
+    // and again after the pelvis drop changes a node's local translation.
+    std::vector<float>& G = m_ikGlobals;
+    auto rebuildGlobals = [&]() {
+        if (G.size() != (size_t)m_nodeCount * 16) G.assign((size_t)m_nodeCount * 16, 0.0f);
+        else std::fill(G.begin(), G.end(), 0.0f);
+        if (m_resolveDone.size() != m_nodeCount)   m_resolveDone.assign(m_nodeCount, 0);
+        else std::fill(m_resolveDone.begin(), m_resolveDone.end(), (char)0);
+        if (m_resolveInProg.size() != m_nodeCount) m_resolveInProg.assign(m_nodeCount, 0);
+        else std::fill(m_resolveInProg.begin(), m_resolveInProg.end(), (char)0);
+        std::vector<char>& done = m_resolveDone; std::vector<char>& inprog = m_resolveInProg;
+        std::vector<int>& stack = m_resolveStack;
+        std::array<float,16> local;
+        for (uint32_t i = 0; i < m_nodeCount; ++i) {
+            if (done[i]) continue;
+            stack.clear(); int cur = (int)i;
+            while (cur >= 0 && !done[cur]) { if (inprog[cur]) break; inprog[cur]=1; stack.push_back(cur); cur = model.nodes[cur].parent; }
+            for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
+                int n = *it;
+                trsToMat4(&m_blendT[(size_t)n*3], &m_blendR[(size_t)n*4], &m_blendS[(size_t)n*3], local.data());
+                int parent = model.nodes[n].parent;
+                if (parent >= 0 && (uint32_t)parent < m_nodeCount && done[parent])
+                    mat4Mul(&G[(size_t)parent*16], local.data(), &G[(size_t)n*16]);
+                else std::memcpy(&G[(size_t)n*16], local.data(), sizeof(float)*16);
+                done[n]=1; inprog[n]=0;
+            }
+        }
+    };
+    rebuildGlobals();
+
+    // World-up direction (model is +Y up per CONVENTIONS.md). The ground ray casts
+    // straight DOWN in world space; we work the plant height back in model space by
+    // assuming the model->world transform has no roll on the up axis (typical for a
+    // standing character placed with a yaw + translation). Heights along model +Y.
+    const float modelUp[3] = { 0, 1, 0 };
+
+    // Helper: model-space point -> world-space point via m_worldFromModel.
+    auto toWorld = [&](const float p[3], float o[3]) { xformPoint(m_worldFromModel, p, o); };
+
+    // 2) Per-foot ground probe. Cast from a bit ABOVE the foot straight down.
+    struct Plant { bool hit=false; float footModelY=0; float groundN[3]={0,1,0}; float curFoot[3]={0,0,0}; };
+    Plant pl[2];
+    const float kProbeUp   = 0.6f;   // start the ray this far above the foot (m)
+    const float kProbeDown = 1.6f;   // ray length below that (m)
+    const float kLift      = 0.02f;  // keep the foot a hair above the surface (m)
+    for (int s = 0; s < 2; ++s) {
+        if (!m_sideOk[s]) continue;
+        float footM[3]; mat4Translation(&G[(size_t)m_footNode[s]*16], footM);
+        pl[s].curFoot[0]=footM[0]; pl[s].curFoot[1]=footM[1]; pl[s].curFoot[2]=footM[2];
+        float footW[3]; toWorld(footM, footW);
+        float origin[3] = { footW[0], footW[1] + kProbeUp, footW[2] };
+        float down[3]   = { 0, -1, 0 };
+        float hitW[3], nrm[3];
+        if (m_groundRay.fn(origin, down, kProbeUp + kProbeDown, hitW, nrm, m_groundRay.user)) {
+            pl[s].hit = true;
+            // Bring the hit height back to model space (uniform-ish placement: invert
+            // the Y translation/scale by projecting along world up). We only need the
+            // delta in model +Y, so map the world hit Y through the model's up scale.
+            // For the common case (placement = yaw rotation + translation, unit scale)
+            // model_y = world_y - worldFromModel[13].
+            float deltaWorldY = hitW[1] - footW[1];        // how far the ground is from the foot (world)
+            pl[s].footModelY = footM[1] + deltaWorldY + kLift;  // unit-scale up axis
+            pl[s].groundN[0]=nrm[0]; pl[s].groundN[1]=nrm[1]; pl[s].groundN[2]=nrm[2];
+            if (!norm3(pl[s].groundN)) { pl[s].groundN[0]=0; pl[s].groundN[1]=1; pl[s].groundN[2]=0; }
+        }
+    }
+
+    // 3) Pelvis adjust: the foot that must drop the MOST governs. We lower the pelvis
+    // by the largest downward correction so neither leg over-extends; raises are not
+    // applied to the pelvis (a foot that needs to go UP just bends its knee more).
+    float requiredDrop = 0.0f;          // >=0 lowers the hips
+    int hits = 0;
+    for (int s = 0; s < 2; ++s) {
+        if (!m_sideOk[s] || !pl[s].hit) continue;
+        ++hits;
+        float drop = pl[s].curFoot[1] - pl[s].footModelY;   // >0 if the ground is below the foot
+        if (drop > requiredDrop) requiredDrop = drop;
+    }
+    // Clamp the pelvis drop to a sane fraction of leg length so it never collapses.
+    float legLen = std::max(m_upperLen[0] + m_lowerLen[0], m_upperLen[1] + m_lowerLen[1]);
+    float maxDrop = std::max(0.05f, 0.5f * legLen);
+    if (requiredDrop > maxDrop) requiredDrop = maxDrop;
+    if (requiredDrop < 0.0f) requiredDrop = 0.0f;
+    if (hits == 0) requiredDrop = 0.0f;
+
+    // Smooth the pelvis drop (critically-damped-ish) so steps don't pop.
+    float pelvisRate = std::min(1.0f, 8.0f * dt);
+    m_pelvisDropSmoothed += (requiredDrop - m_pelvisDropSmoothed) * pelvisRate;
+    if (m_pelvisDropSmoothed < 1e-5f) m_pelvisDropSmoothed = (requiredDrop < 1e-5f ? 0.0f : m_pelvisDropSmoothed);
+
+    // Apply the pelvis drop to the pelvis/root LOCAL translation along model up. The
+    // pelvis local T is in its parent's space; for the typical pelvis (parent ~=
+    // identity/armature root) model up == parent up, so subtract along Y.
+    if (m_rootNode >= 0 && m_pelvisDropSmoothed > 1e-6f) {
+        m_blendT[(size_t)m_rootNode*3 + 1] -= m_pelvisDropSmoothed;
+        rebuildGlobals();   // pelvis local T changed -> re-accumulate globals
+    }
+
+    // 4) Solve each leg analytically toward its planted foot target, then convert the
+    // result into LOCAL hip/knee rotation deltas. We work in MODEL space and fold the
+    // delta into each joint's local rotation via its parent's model rotation.
+    for (int s = 0; s < 2; ++s) {
+        if (!m_sideOk[s]) continue;
+
+        // Smooth the per-leg weight toward 1 (planted) or down toward 0 (miss).
+        float targetW = pl[s].hit ? 1.0f : 0.0f;
+        float wr = std::min(1.0f, 10.0f * dt);
+        m_legW[s] += (targetW - m_legW[s]) * wr;
+        if (m_legW[s] <= 1e-4f) continue;       // nothing to apply yet
+
+        float hip[3], knee[3], foot[3];
+        mat4Translation(&G[(size_t)m_hipNode[s]*16],  hip);
+        mat4Translation(&G[(size_t)m_kneeNode[s]*16], knee);
+        mat4Translation(&G[(size_t)m_footNode[s]*16], foot);
+
+        // Foot target: keep the planar (XZ) position, set Y to the planted height.
+        float target[3] = { foot[0], pl[s].hit ? pl[s].footModelY : foot[1], foot[2] };
+        // Blend the target by the leg weight so enabling ramps in.
+        target[1] = foot[1] + (target[1] - foot[1]) * m_legW[s];
+
+        // Knee pole: the current knee-out direction projected away from the leg line,
+        // so the bend keeps its natural (anatomical) direction.
+        float legLine[3]; sub3(target, hip, legLine); norm3(legLine);
+        float kd[3]; sub3(knee, hip, kd);
+        float pdot = dot3(kd, legLine);
+        float pole[3] = { kd[0]-pdot*legLine[0], kd[1]-pdot*legLine[1], kd[2]-pdot*legLine[2] };
+        if (!norm3(pole)) { pole[0]=0; pole[1]=0; pole[2]=-1; } // forward (-Z) default
+
+        float newKnee[3], newFoot[3];
+        solveTwoBone(hip, knee, foot, target, pole, newKnee, newFoot);
+
+        // ---- Convert the analytic result to LOCAL rotation deltas. We apply each
+        // delta as a MODEL-space aim of the bone (current dir -> solved dir), folded
+        // into the joint's local rotation through its parent's model rotation:
+        //   M' = D_model * M  =>  L' = (conj(Pmodel) * D_model * Pmodel) * L
+        // We track the hip's UPDATED model rotation so the knee (its child) uses the
+        // correct parent frame instead of a stale one. ----
+        const float idq[4] = {0,0,0,1};
+
+        // Parent model rotation of a node (unit quat) read from the freshly-built G.
+        auto parentModelRot = [&](int node, float out[4]) {
+            int par = model.nodes[node].parent;
+            out[0]=0; out[1]=0; out[2]=0; out[3]=1;
+            if (par >= 0 && (uint32_t)par < m_nodeCount) {
+                float t[3], sc[3]; decompose(&G[(size_t)par*16], t, out, sc);
+            }
+            quatNormalize(out);
+        };
+        // Fold a weighted model-space delta D into node `node`'s local rotation, using
+        // the supplied parent model rotation Pm. Returns the node's NEW model rotation
+        // (D_w_model * oldModelRot) so a child can chain off it.
+        auto applyAim = [&](int node, const float Dmodel[4], const float Pm[4],
+                            float weight, float outNewModel[4]) {
+            float Dw[4]; slerp(idq, Dmodel, weight, Dw);     // weighted model delta
+            // local delta = conj(Pm) * Dw * Pm
+            float pConj[4] = { -Pm[0], -Pm[1], -Pm[2], Pm[3] };
+            float tmp[4], dLocal[4];
+            quatMul(pConj, Dw, tmp);
+            quatMul(tmp, Pm, dLocal);
+            quatNormalize(dLocal);
+            float cur[4] = { m_blendR[(size_t)node*4+0], m_blendR[(size_t)node*4+1],
+                             m_blendR[(size_t)node*4+2], m_blendR[(size_t)node*4+3] };
+            float nw[4]; quatMul(dLocal, cur, nw); quatNormalize(nw);
+            m_blendR[(size_t)node*4+0]=nw[0]; m_blendR[(size_t)node*4+1]=nw[1];
+            m_blendR[(size_t)node*4+2]=nw[2]; m_blendR[(size_t)node*4+3]=nw[3];
+            // new model rot = Dw * oldModelRot, oldModelRot = Pm * oldLocal
+            float oldModel[4]; quatMul(Pm, cur, oldModel);
+            quatMul(Dw, oldModel, outNewModel); quatNormalize(outNewModel);
+        };
+
+        // HIP: aim the upper bone (hip->knee) onto the solved direction.
+        float curU[3]; sub3(knee, hip, curU); norm3(curU);
+        float newU[3]; sub3(newKnee, hip, newU); norm3(newU);
+        float dHipModel[4]; quatFromTo(curU, newU, dHipModel);
+        float PmHip[4]; parentModelRot(m_hipNode[s], PmHip);
+        float hipNewModel[4];
+        applyAim(m_hipNode[s], dHipModel, PmHip, m_legW[s], hipNewModel);
+
+        // KNEE: aim the lower bone (knee->foot) onto the solved direction. The knee's
+        // parent is the hip, whose model rotation we just updated (hipNewModel).
+        float curL[3]; sub3(foot, knee, curL); norm3(curL);
+        float newL[3]; sub3(newFoot, newKnee, newL); norm3(newL);
+        float dKneeModel[4]; quatFromTo(curL, newL, dKneeModel);
+        float kneeNewModel[4];
+        applyAim(m_kneeNode[s], dKneeModel, hipNewModel, m_legW[s], kneeNewModel);
+
+        // FOOT: tilt the ankle so the sole follows the ground normal (model up -> N).
+        // Skipped when the surface is ~flat. The foot's parent is the knee (updated).
+        if (pl[s].hit) {
+            float gN[3] = { pl[s].groundN[0], pl[s].groundN[1], pl[s].groundN[2] };
+            if (dot3(gN, modelUp) < 0.9995f) {
+                float dFootModel[4]; quatFromTo(modelUp, gN, dFootModel);
+                float footNewModel[4];
+                applyAim(m_footNode[s], dFootModel, kneeNewModel, m_legW[s] * 0.75f, footNewModel);
+                (void)footNewModel;
+            }
+        }
     }
 }
 
@@ -1085,6 +1576,309 @@ bool runLocomotionSelfTest(const std::string& glbPath) {
     x3::logInfo(std::string("[loco-test] ") + std::to_string(pass) + " passed, " +
                 std::to_string(fail) + " failed");
     return fail == 0;
+}
+
+// ===========================================================================
+// Foot-IK self-test (--test-footik). Pure-geometry solver checks + a synthetic
+// two-leg rig for the joint-name resolution + plant/pelvis behavior, plus an
+// optional present-asset resolve on the real rig. No window / Vulkan.
+// ===========================================================================
+namespace {
+
+int g_fpass = 0, g_ffail = 0;
+void fcheck(bool cond, const char* name) {
+    if (cond) { ++g_fpass; x3::logInfo(std::string("[footik-test] PASS ") + name); }
+    else      { ++g_ffail; x3::logError(std::string("[footik-test] FAIL ") + name); }
+}
+
+// Build a minimal SKINNED, two-leg humanoid GLB with NAMED bones so the foot-IK
+// resolver can find Hips / UpperLeg.[LR] / LowerLeg.[LR] / Foot.[LR]. The mesh is
+// a single tiny quad weighted to the left foot joint (enough for bind() to accept
+// a skin); the bones carry an identity Idle clip so the Skinner binds + samples.
+// Layout (all local translations; +Y up):
+//   0 mesh node (skin 0)
+//   1 Hips            T(0, 0.9, 0)
+//   2 UpperLeg.L      child of 1, T(+0.1, 0,    0)
+//   3 LowerLeg.L      child of 2, T( 0,  -0.45, 0)   upperLen = 0.45
+//   4 Foot.L          child of 3, T( 0,  -0.45, 0)   lowerLen = 0.45
+//   5 UpperLeg.R      child of 1, T(-0.1, 0,    0)
+//   6 LowerLeg.R      child of 5, T( 0,  -0.45, 0)
+//   7 Foot.R          child of 6, T( 0,  -0.45, 0)
+std::vector<uint8_t> makeTwoLegGlb() {
+    // One quad (4 verts) weighted fully to joint index 2 (Foot.L = node 4, joint 2).
+    struct V { float p[3]; float n[3]; float uv[2]; uint16_t j[4]; float w[4]; };
+    std::vector<V> v = {
+        {{-0.1f, 0.05f, 0}, {0,0,1}, {0,0}, {2,0,0,0}, {1,0,0,0}},
+        {{ 0.1f, 0.05f, 0}, {0,0,1}, {1,0}, {2,0,0,0}, {1,0,0,0}},
+        {{-0.1f, 0.10f, 0}, {0,0,1}, {0,1}, {2,0,0,0}, {1,0,0,0}},
+        {{ 0.1f, 0.10f, 0}, {0,0,1}, {1,1}, {2,0,0,0}, {1,0,0,0}},
+    };
+    std::vector<uint16_t> idx = { 0,1,2, 2,1,3 };
+
+    std::vector<uint8_t> bin;
+    auto put = [&](const void* d, size_t n){ const uint8_t* p=(const uint8_t*)d; bin.insert(bin.end(), p, p+n); };
+    auto align4 = [&]{ while (bin.size()%4) bin.push_back(0); };
+    const size_t nv = v.size();
+    size_t posOfs = bin.size(); for (auto& vv:v) put(vv.p,12);
+    size_t nrmOfs = bin.size(); for (auto& vv:v) put(vv.n,12);
+    size_t uvOfs  = bin.size(); for (auto& vv:v) put(vv.uv,8);
+    size_t jOfs   = bin.size(); for (auto& vv:v) put(vv.j,8);
+    size_t wOfs   = bin.size(); for (auto& vv:v) put(vv.w,16);
+    size_t idxOfs = bin.size(); put(idx.data(), idx.size()*2); align4();
+    // 6 inverse-bind matrices (joints: UpperLeg.L, LowerLeg.L, Foot.L, UpperLeg.R,
+    // LowerLeg.R, Foot.R) — identity is fine for the resolve/plant test.
+    size_t ibmOfs = bin.size();
+    for (int k=0;k<6;++k){ float ibm[16]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}; put(ibm,64); }
+    // Idle clip: one rotation key (identity) on Hips so a clip + sampler exist.
+    size_t timeOfs = bin.size(); float times[1]={0.0f}; put(times,4);
+    size_t rotOfs  = bin.size(); float q[4]={0,0,0,1}; put(q,16);
+    align4();
+
+    char buf[4096];
+    std::string j = "{\"asset\":{\"version\":\"2.0\"},";
+    j += "\"scene\":0,\"scenes\":[{\"nodes\":[0,1]}],";
+    j += "\"nodes\":[";
+    j += "{\"mesh\":0,\"skin\":0},";                                          // 0
+    j += "{\"name\":\"Hips\",\"translation\":[0,0.9,0],\"children\":[2,5]},"; // 1
+    j += "{\"name\":\"UpperLeg.L\",\"translation\":[0.1,0,0],\"children\":[3]},";  // 2
+    j += "{\"name\":\"LowerLeg.L\",\"translation\":[0,-0.45,0],\"children\":[4]},";// 3
+    j += "{\"name\":\"Foot.L\",\"translation\":[0,-0.45,0]},";                // 4
+    j += "{\"name\":\"UpperLeg.R\",\"translation\":[-0.1,0,0],\"children\":[6]},"; // 5
+    j += "{\"name\":\"LowerLeg.R\",\"translation\":[0,-0.45,0],\"children\":[7]},";// 6
+    j += "{\"name\":\"Foot.R\",\"translation\":[0,-0.45,0]}";                 // 7
+    j += "],";
+    j += "\"meshes\":[{\"primitives\":[{\"attributes\":{";
+    j += "\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2,\"JOINTS_0\":3,\"WEIGHTS_0\":4},\"indices\":5}]}],";
+    j += "\"skins\":[{\"joints\":[2,3,4,5,6,7],\"inverseBindMatrices\":6}],";
+    j += "\"animations\":[{\"name\":\"Idle\",\"channels\":[{\"sampler\":0,\"target\":{\"node\":1,\"path\":\"rotation\"}}],";
+    j += "\"samplers\":[{\"input\":7,\"output\":8,\"interpolation\":\"STEP\"}]}],";
+    std::snprintf(buf, sizeof buf,
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":%zu,\"type\":\"VEC3\"},"
+        "{\"bufferView\":1,\"componentType\":5126,\"count\":%zu,\"type\":\"VEC3\"},"
+        "{\"bufferView\":2,\"componentType\":5126,\"count\":%zu,\"type\":\"VEC2\"},"
+        "{\"bufferView\":3,\"componentType\":5123,\"count\":%zu,\"type\":\"VEC4\"},"
+        "{\"bufferView\":4,\"componentType\":5126,\"count\":%zu,\"type\":\"VEC4\"},"
+        "{\"bufferView\":5,\"componentType\":5123,\"count\":%zu,\"type\":\"SCALAR\"},"
+        "{\"bufferView\":6,\"componentType\":5126,\"count\":6,\"type\":\"MAT4\"},"
+        "{\"bufferView\":7,\"componentType\":5126,\"count\":1,\"type\":\"SCALAR\",\"min\":[0],\"max\":[0]},"
+        "{\"bufferView\":8,\"componentType\":5126,\"count\":1,\"type\":\"VEC4\"}],",
+        nv,nv,nv,nv,nv, idx.size());
+    j += buf;
+    std::snprintf(buf, sizeof buf,
+        "\"bufferViews\":["
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":%zu},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":%zu},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":%zu},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":%zu},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":%zu},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":%zu},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":384},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":4},"
+        "{\"buffer\":0,\"byteOffset\":%zu,\"byteLength\":16}],",
+        posOfs,nv*12, nrmOfs,nv*12, uvOfs,nv*8, jOfs,nv*8, wOfs,nv*16,
+        idxOfs,idx.size()*2, ibmOfs, timeOfs, rotOfs);
+    j += buf;
+    std::snprintf(buf, sizeof buf, "\"buffers\":[{\"byteLength\":%zu}]}", bin.size());
+    j += buf;
+    return makeGlb(j, bin);
+}
+
+} // namespace
+
+bool runFootIkSelfTest() {
+    g_fpass = g_ffail = 0;
+    x3::logInfo("[footik-test] foot-IK (two-bone + plant + pelvis) self-test");
+
+    // ---- F1: reachable two-bone solve. Hip at origin, straight leg down the -Y
+    // axis (knee at -1, foot at -2; both bones length 1). Target a reachable point;
+    // assert the foot lands on it and the bone lengths are preserved. ----
+    {
+        float hip[3]  = { 0, 0, 0 };
+        float knee[3] = { 0, -1, 0 };
+        float foot[3] = { 0, -2, 0 };
+        float pole[3] = { 0, 0, -1 };        // bend the knee forward (-Z)
+        float target[3] = { 0.8f, -1.2f, 0.3f };  // clearly reachable (|t-hip|<2)
+        float ok[3], of[3];
+        x3::anim::Skinner::solveTwoBone(hip, knee, foot, target, pole, ok, of);
+        float df = std::sqrt((of[0]-target[0])*(of[0]-target[0]) +
+                             (of[1]-target[1])*(of[1]-target[1]) +
+                             (of[2]-target[2])*(of[2]-target[2]));
+        float l1 = std::sqrt((ok[0]-hip[0])*(ok[0]-hip[0]) + (ok[1]-hip[1])*(ok[1]-hip[1]) + (ok[2]-hip[2])*(ok[2]-hip[2]));
+        float l2 = std::sqrt((of[0]-ok[0])*(of[0]-ok[0]) + (of[1]-ok[1])*(of[1]-ok[1]) + (of[2]-ok[2])*(of[2]-ok[2]));
+        // Knee should bend toward the pole side (negative-ish Z) — sanity, not strict.
+        x3::logInfo("[footik-test] F1 footErr=" + std::to_string(df) +
+                    " L1=" + std::to_string(l1) + " L2=" + std::to_string(l2) +
+                    " kneeZ=" + std::to_string(ok[2]));
+        bool reach = df < 1e-3f && std::fabs(l1-1.0f) < 1e-3f && std::fabs(l2-1.0f) < 1e-3f;
+        fcheck(reach, "F1 reachable target: foot reaches within epsilon, bone lengths preserved");
+    }
+
+    // ---- F2: unreachable target -> straight leg pointing at the target, no jitter.
+    // Two over-reach targets at the same direction but different distances must give
+    // the SAME (fully extended, colinear) configuration. ----
+    {
+        float hip[3]  = { 0, 0, 0 };
+        float knee[3] = { 0, -1, 0 };
+        float foot[3] = { 0, -2, 0 };
+        float pole[3] = { 0, 0, -1 };
+        float tA[3] = { 3.0f, 0.0f, 0.0f };   // far past reach (dist 3 > 2)
+        float tB[3] = { 6.0f, 0.0f, 0.0f };   // even farther, same direction
+        float kA[3], fA[3], kB[3], fB[3];
+        x3::anim::Skinner::solveTwoBone(hip, knee, foot, tA, pole, kA, fA);
+        x3::anim::Skinner::solveTwoBone(hip, knee, foot, tB, pole, kB, fB);
+        // Straight: hip->foot ~= L1+L2 (full extension) and the knee lies essentially
+        // ON the hip->foot line (deviation tiny — the boundary clamp leaves at most a
+        // hair of bend by design, avoiding the fully-extended singularity).
+        float lhk = std::sqrt(kA[0]*kA[0]+kA[1]*kA[1]+kA[2]*kA[2]);   // |knee-hip|
+        float total = std::sqrt(fA[0]*fA[0]+fA[1]*fA[1]+fA[2]*fA[2]); // |foot-hip|
+        // Distance from the knee to the hip->foot line (0 = perfectly colinear).
+        float fdir[3] = { fA[0], fA[1], fA[2] }; float fl = std::sqrt(fdir[0]*fdir[0]+fdir[1]*fdir[1]+fdir[2]*fdir[2]);
+        if (fl > 1e-6f) { fdir[0]/=fl; fdir[1]/=fl; fdir[2]/=fl; }
+        float proj = kA[0]*fdir[0]+kA[1]*fdir[1]+kA[2]*fdir[2];
+        float perp[3] = { kA[0]-proj*fdir[0], kA[1]-proj*fdir[1], kA[2]-proj*fdir[2] };
+        float kneeOff = std::sqrt(perp[0]*perp[0]+perp[1]*perp[1]+perp[2]*perp[2]);
+        bool straight = std::fabs(total - 2.0f) < 1e-2f && std::fabs(lhk - 1.0f) < 1e-2f && kneeOff < 0.05f;
+        // Stable: the two over-reach distances produce the same knee/foot (no jitter).
+        float jit = std::sqrt((kA[0]-kB[0])*(kA[0]-kB[0])+(fA[0]-fB[0])*(fA[0]-fB[0]));
+        x3::logInfo("[footik-test] F2 total=" + std::to_string(total) +
+                    " kneeOffLine=" + std::to_string(kneeOff) + " jitter=" + std::to_string(jit));
+        fcheck(straight && jit < 1e-3f, "F2 unreachable target: straight extended leg, no jitter");
+    }
+
+    // ---- F3: synthetic two-leg rig — name resolution + plant + bounded pelvis drop.
+    {
+        std::error_code ec;
+        fs::path tmp = fs::temp_directory_path() / "x3native_footiktest";
+        fs::remove_all(tmp, ec);
+        fs::create_directories(tmp, ec);
+        { std::vector<uint8_t> glb = makeTwoLegGlb();
+          std::ofstream f(tmp / "twoleg.glb", std::ios::binary);
+          f.write((const char*)glb.data(), (std::streamsize)glb.size()); }
+
+        std::unique_ptr<x3::asset::IAssetSource> src(x3::asset::createAssetSource());
+        src->mountDir(tmp.string(), 0);
+        std::unique_ptr<x3::asset::IModelLoader> loader(
+            x3::asset::createModelLoader(nullptr, src.get()));   // headless
+        x3::asset::Model model = loader->load("twoleg.glb");
+
+        Skinner sk;
+        bool bound = sk.bind(model);
+        bool resolved = bound && sk.footIkResolved();
+        x3::logInfo(std::string("[footik-test] F3 resolved L=(") +
+                    std::string(sk.footIkBoneName(0,0)) + "," + std::string(sk.footIkBoneName(0,1)) +
+                    "," + std::string(sk.footIkBoneName(0,2)) + ") R=(" +
+                    std::string(sk.footIkBoneName(1,0)) + "," + std::string(sk.footIkBoneName(1,1)) +
+                    "," + std::string(sk.footIkBoneName(1,2)) + ") pelvis=" +
+                    std::string(sk.footIkBoneName(0,3)));
+        fcheck(resolved, "F3a synthetic rig resolves UpperLeg/LowerLeg/Foot/Hips by name");
+
+        if (resolved) {
+            sk.setLocomotionClips(0, -1, -1, 1.5f, 4.0f);   // idle-only blend
+            sk.setLocomotion01(0.0f);
+
+            // Ground heights, read by the (captureless) ground-ray callbacks via the
+            // user ptr. The rig in this rest pose has UpperLeg.L at +X, .R at -X.
+            struct Ground { float flatY; float leftY; float rightY; };
+            using GR = x3::anim::Skinner::GroundRay;
+
+            // Flat ground exactly at the rest foot height. Rest foot Y in model space:
+            // Hips 0.9 + UpperLeg 0 + LowerLeg -0.45 + Foot -0.45 = 0.0. So plant at 0.
+            Ground gFlat{ 0.0f, 0.0f, 0.0f };
+            GR grFlat;
+            grFlat.fn = [](const float o[3], const float d[3], float maxD,
+                           float hit[3], float n[3], void* u) -> bool {
+                (void)d; const Ground* g = (const Ground*)u;
+                hit[0]=o[0]; hit[1]=g->flatY; hit[2]=o[2]; n[0]=0; n[1]=1; n[2]=0;
+                return (o[1] - g->flatY) <= maxD;
+            };
+            grFlat.user = &gFlat;
+            const float identity[16] = {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+            sk.setFootIk(true, grFlat, identity);
+
+            std::vector<float> pal;
+            for (int i = 0; i < 60; ++i) sk.advanceAndComputePalette(model, 1.0f/60.0f, pal);
+            // Flat ground at rest height -> tiny pelvis drop, both legs weighted ~1.
+            float dropFlat = sk.footIkPelvisDrop();
+            bool flatOk = dropFlat < 0.06f && sk.footIkLegWeight(0) > 0.5f && sk.footIkLegWeight(1) > 0.5f;
+            x3::logInfo("[footik-test] F3 flat: pelvisDrop=" + std::to_string(dropFlat) +
+                        " wL=" + std::to_string(sk.footIkLegWeight(0)) +
+                        " wR=" + std::to_string(sk.footIkLegWeight(1)));
+            fcheck(flatOk, "F3b flat ground: feet planted, legs weighted, ~no pelvis drop");
+
+            // Step: raise the left side's ground so the LEFT foot would float; the
+            // lower (right) foot governs and the pelvis drops a bounded, smoothed amount.
+            Ground gStep{ 0.0f, 0.18f, -0.15f };   // leftY raised, rightY lowered
+            GR grStep; grStep.user = &gStep;
+            grStep.fn = [](const float o[3], const float d[3], float maxD,
+                           float hit[3], float n[3], void* u) -> bool {
+                (void)d; const Ground* g = (const Ground*)u;
+                float y = (o[0] >= 0.0f) ? g->leftY : g->rightY;
+                hit[0]=o[0]; hit[1]=y; hit[2]=o[2]; n[0]=0; n[1]=1; n[2]=0;
+                return (o[1] - y) <= maxD;
+            };
+            sk.setFootIk(true, grStep, identity);
+            float prevDrop = sk.footIkPelvisDrop();
+            float maxStep = 0.0f;
+            for (int i = 0; i < 120; ++i) {
+                sk.advanceAndComputePalette(model, 1.0f/60.0f, pal);
+                float d = std::fabs(sk.footIkPelvisDrop() - prevDrop);
+                if (d > maxStep) maxStep = d;
+                prevDrop = sk.footIkPelvisDrop();
+            }
+            float dropStep = sk.footIkPelvisDrop();
+            float legLen = 0.9f;   // 0.45 + 0.45
+            // The right foot is 0.15 below rest -> pelvis should drop toward ~0.15,
+            // bounded, and the per-frame change stays small (smoothed, no pop).
+            bool stepOk = dropStep > 0.05f && dropStep < 0.5f*legLen + 1e-3f && maxStep < 0.05f;
+            x3::logInfo("[footik-test] F3 step: pelvisDrop=" + std::to_string(dropStep) +
+                        " maxPerFrameStep=" + std::to_string(maxStep));
+            fcheck(stepOk, "F3c step/slope: lower foot governs a bounded, smoothed pelvis drop");
+
+            // Disable -> the IK weights relax back to ~0 (graceful, pop-free off).
+            GR none{};
+            sk.setFootIk(false, none, identity);
+            for (int i = 0; i < 60; ++i) sk.advanceAndComputePalette(model, 1.0f/60.0f, pal);
+            bool offOk = sk.footIkLegWeight(0) < 0.05f && sk.footIkLegWeight(1) < 0.05f
+                      && sk.footIkPelvisDrop() < 0.02f;
+            x3::logInfo("[footik-test] F3 off: wL=" + std::to_string(sk.footIkLegWeight(0)) +
+                        " drop=" + std::to_string(sk.footIkPelvisDrop()));
+            fcheck(offOk, "F3d disable: IK weights + pelvis relax to zero (no-op)");
+        }
+        loader->unload(model);
+        fs::remove_all(tmp, ec);
+    }
+
+    // ---- F4 (present-asset): resolve the real rig + log its bone names. Skipped
+    // (still PASS) on a clean checkout where the asset is absent. ----
+    {
+        const std::string kGlb = x3::game::riggedGlbRoot() + "/chief_martinez_anim.glb";
+        if (fs::exists(kGlb)) {
+            fs::path p(kGlb);
+            std::unique_ptr<x3::asset::IAssetSource> src(x3::asset::createAssetSource());
+            src->mountDir(p.parent_path().string(), 0);
+            std::unique_ptr<x3::asset::IModelLoader> loader(
+                x3::asset::createModelLoader(nullptr, src.get()));
+            x3::asset::Model model = loader->load(p.filename().string());
+            Skinner sk;
+            bool bound = sk.bind(model);
+            bool resolved = bound && sk.footIkResolved();
+            x3::logInfo(std::string("[footik-test] F4 real rig resolved L=(") +
+                        std::string(sk.footIkBoneName(0,0)) + "," + std::string(sk.footIkBoneName(0,1)) +
+                        "," + std::string(sk.footIkBoneName(0,2)) + ") R=(" +
+                        std::string(sk.footIkBoneName(1,0)) + "," + std::string(sk.footIkBoneName(1,1)) +
+                        "," + std::string(sk.footIkBoneName(1,2)) + ") pelvis=" +
+                        std::string(sk.footIkBoneName(0,3)));
+            fcheck(resolved, "F4 real rig (chief_martinez_anim.glb) resolves a leg chain by name");
+            loader->unload(model);
+        } else {
+            x3::logInfo("[footik-test] (real rig absent — skipping F4; clean checkout)");
+        }
+    }
+
+    x3::logInfo("[footik-test] " + std::to_string(g_fpass) + " passed, " +
+                std::to_string(g_ffail) + " failed");
+    return g_ffail == 0;
 }
 
 } // namespace x3::anim

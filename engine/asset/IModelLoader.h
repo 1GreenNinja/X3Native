@@ -63,10 +63,15 @@ struct Material {
 // meters); localTransform is the node's local TRS composed into a 4x4 matrix,
 // column-major (matches glTF + glm).
 struct Node {
-    int   parent = -1;
-    float localTransform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-    int   meshIndex = -1;
-    int   skinIndex = -1;
+    int         parent = -1;
+    float       localTransform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    int         meshIndex = -1;
+    int         skinIndex = -1;
+    // glTF node name (empty string if the source node was unnamed). Populated by
+    // the loader from cgltf_node::name so callers can resolve humanoid bones by
+    // name (e.g. foot-IK locating UpperLeg/LowerLeg/Foot/Hips). Additive: existing
+    // index-based code is unaffected.
+    std::string name;
 };
 
 struct Skin {
