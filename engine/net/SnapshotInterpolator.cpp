@@ -18,6 +18,7 @@
 // this and also re-runs jittered sequences to confirm reorder/drop invariance).
 
 #include "engine/net/ISnapshotInterpolator.h"
+#include "engine/net/SimClock.h"   // kSimHz / kSimDt — shared fixed-step cadence
 #include "engine/core/x3_log.h"
 
 #include <vector>
@@ -644,7 +645,7 @@ bool runNetInterpSelfTest() {
         bool okC = runJittered(0xC0FFEE, traceC);           // different jitter, still robust
         bool deterministic = (traceA.size() == traceB.size()) &&
                              std::equal(traceA.begin(), traceA.end(), traceB.begin());
-        iCheck(okA && okC, "P4 robust under reorder + variable delay + drops (finite, bounded)");
+        iCheck(okA && okB && okC, "P4 robust under reorder + variable delay + drops (finite, bounded)");
         iCheck(deterministic && !traceA.empty(),
                "P4 deterministic: identical jitter sequence yields identical output");
     }
