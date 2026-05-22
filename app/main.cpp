@@ -16,6 +16,7 @@
 #include "engine/audio/IAudioSystem.h"
 
 #include "scene.h"
+#include "mesh_prims.h"
 #include "level1.h"
 #include "player.h"
 #include "level1_game.h"
@@ -148,6 +149,14 @@ int main(int argc, char** argv) {
     // when omitted: G:\X3Native\screenshot.png.
     bool        screenshot = false;
     std::string screenshotPath = "G:/X3Native/screenshot.png";
+    // Sky vantage mode (--screenshot-sky [path.png]): build a minimal OUTDOOR test
+    // scene (ground plane + the analytic sky lit by the existing sun), pose the
+    // camera at the horizon looking slightly up toward the sun, render a few
+    // settle frames, and capture a PNG that shows the sky gradient + sun disk +
+    // horizon. EFLZ Level 1 is an enclosed interior, so this is the way to SEE the
+    // open-world sky. Default path when omitted: G:\X3Native\sky.png.
+    bool        skyShot = false;
+    std::string skyShotPath = "G:/X3Native/sky.png";
     // Optional settle-frame count for --screenshot (default 16 = unchanged
     // behavior). Larger values advance the world (and the characters' skeletal
     // animation) further before the capture, so two shots at different counts show
@@ -187,6 +196,11 @@ int main(int argc, char** argv) {
             // Optional settle-frame count (second positional, if numeric).
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
                 screenshotSettle = (int)std::strtol(argv[++i], nullptr, 10);
+        }
+        else if (a == "--screenshot-sky") {
+            skyShot = true;
+            // Optional output path arg (next token, if it isn't another flag).
+            if (i + 1 < argc && argv[i + 1][0] != '-') skyShotPath = argv[++i];
         }
     }
 
@@ -287,6 +301,82 @@ int main(int argc, char** argv) {
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
+    }
+
+    // ---- Sky vantage mode (--screenshot-sky [path.png]) --------------------
+    // The open-world sky's first verification gate. EFLZ Level 1 is an enclosed
+    // interior, so the sky never shows there; this builds a MINIMAL outdoor scene
+    // (a large checkered ground plane + a couple of boxes for ground-shadow proof)
+    // entirely through the public render API — no game/physics/audio stack — turns
+    // ON the analytic sky with the engine's existing sun direction + color, poses
+    // the camera at the horizon looking slightly up toward the sun, settles a few
+    // frames so the shadow map + sky register, captures a PNG, and exits.
+    if (skyShot) {
+        x3::logInfo("--screenshot-sky: rendering outdoor sky vantage to " + skyShotPath);
+
+        // Ground plane (large XZ quad) with a tiled checker so the horizon + ground
+        // shadows read clearly. A neutral mid-grey/green checker reads as terrain.
+        std::vector<x3::rhi::MeshVertex> gv; std::vector<uint32_t> gi;
+        x3::prims::makeGroundQuad(/*half=*/400.0f, /*tiles=*/200.0f, gv, gi);
+        x3::rhi::MeshHandle ground = device->createMesh(gv.data(), (uint32_t)gv.size(),
+                                                        gi.data(), (uint32_t)gi.size());
+        auto checker = x3::prims::makeCheckerRGBA(64, 8, 150, 165, 150, 70, 90, 75);
+        x3::rhi::TextureHandle groundTex = device->createTexture(checker.data(), 64, 64, /*srgb=*/true);
+
+        // A few boxes sitting on the ground so the sun casts visible shadows (proves
+        // the sky's sun direction matches the lighting/shadow pass).
+        x3::prims::PrimMesh boxM = x3::prims::makeBox(1.5f, 1.5f, 1.5f, 0, 1.5f, 0, 0.5f);
+        x3::rhi::MeshHandle box = device->createMesh(boxM.verts.data(), (uint32_t)boxM.verts.size(),
+                                                     boxM.index.data(), (uint32_t)boxM.index.size());
+        auto boxPx = x3::prims::makeSolidRGBA(4, 200, 200, 205);
+        x3::rhi::TextureHandle boxTex = device->createTexture(boxPx.data(), 4, 4, /*srgb=*/true);
+
+        // Turn ON the analytic sky with the SAME sun the shadow pass + mesh.frag use
+        // (normalize(0.4,1,0.3)) and a sun color matching mesh.frag's kSunColor, so
+        // the disk in the sky sits exactly where the world is lit from.
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+        sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
+        device->setSkyParams(sp);
+
+        // Camera: stand at eye height aimed toward the sun's azimuth and pitched UP
+        // toward its elevation so the sun disk + glow land in-frame with the
+        // gradient above and the horizon + ground shadows at the bottom. The sun
+        // dir is normalize(0.4,1,0.3): azimuth = atan2(0.3,0.4) in XZ, elevation =
+        // asin(0.898) ~ 64deg. Aim the yaw at the azimuth and pitch partway up to
+        // its elevation (a touch lower than the sun so the horizon stays visible).
+        const float sunYaw   = std::atan2(0.3f, 0.4f);  // toward the sun in XZ
+        const float camPitch = 0.52f;                   // ~30deg up: sun upper frame, horizon at bottom
+        device->setCamera(0.0f, 1.7f, 16.0f, sunYaw, camPitch, 72.0f);
+
+        const float modelGround[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        const float modelBoxA[16]   = { 1,0,0,0, 0,1,0,0, 0,0,1,0,  -6.0f, 0.0f,  2.0f, 1 };
+        const float modelBoxB[16]   = { 1,0,0,0, 0,1,0,0, 0,0,1,0,   5.0f, 0.0f, -3.0f, 1 };
+        const float white[4]  = { 1, 1, 1, 1 };
+        const float gtint[4]  = { 1, 1, 1, 1 };
+
+        const int kSettle = 12;
+        for (int i = 0; i < kSettle; ++i) {
+            glfwPollEvents();
+            if (i == kSettle - 1) device->armCapture(skyShotPath.c_str());
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                device->drawMesh(frame, ground, groundTex, gtint, modelGround);
+                device->drawMesh(frame, box, boxTex, white, modelBoxA);
+                device->drawMesh(frame, box, boxTex, white, modelBoxB);
+            }
+            device->endFrame(frame);
+        }
+        const bool wrote = device->captureFrame(skyShotPath.c_str());
+        if (wrote) x3::logInfo("--screenshot-sky: wrote " + skyShotPath);
+        else       x3::logError("--screenshot-sky: capture FAILED");
+
+        device->shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return wrote ? 0 : 1;
     }
 
     // ---- Asset source (stub until D5) ----

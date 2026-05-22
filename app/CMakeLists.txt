@@ -34,6 +34,8 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/mesh.vert
     ${CMAKE_SOURCE_DIR}/shaders/mesh.frag
     ${CMAKE_SOURCE_DIR}/shaders/shadow.vert
+    ${CMAKE_SOURCE_DIR}/shaders/sky.vert
+    ${CMAKE_SOURCE_DIR}/shaders/sky.frag
     ${CMAKE_SOURCE_DIR}/shaders/hud.vert
     ${CMAKE_SOURCE_DIR}/shaders/hud.frag)
 set(SPV_DIR ${CMAKE_BINARY_DIR}/shaders_spv)

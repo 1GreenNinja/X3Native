@@ -106,6 +106,31 @@ public:
     virtual void          drawMesh(const FrameContext&, MeshHandle, TextureHandle baseColor,
                                    const float baseColorFactor[4], const float model[16]) = 0;
 
+    // ---- Analytic sky (open-world track, task A) ---------------------------
+    // Parameters for the physically-plausible analytic sky drawn as the far-depth
+    // backdrop wherever no opaque geometry covers a pixel (it composites against
+    // the depth buffer, so geometry occludes it). POD only — no Vulkan types.
+    //
+    // `enabled` toggles the full-screen sky pass (default OFF, so indoor levels +
+    // every existing flag look exactly as before — the sky only shows when turned
+    // on for an outdoor vantage). `sunDir` is the direction TOWARD the sun; pass
+    // the SAME normalize(0.4,1,0.3) the lighting/shadow pass uses so the sun disk
+    // sits where the world is lit from. `sunColor` is linear RGB (match the
+    // directional light's color); `sunIntensity` scales the disk + glow.
+    // `haze` (0..1) controls the horizon haze strength; `exposure` scales the
+    // pre-tonemap sky radiance (the sky shares mesh.frag's ACES response).
+    struct SkyParams {
+        bool  enabled       = false;
+        float sunDir[3]     = { 0.4f, 1.0f, 0.3f };   // toward the sun (normalized internally)
+        float sunColor[3]   = { 1.0f, 0.97f, 0.92f }; // linear RGB; matches the sun light
+        float sunIntensity  = 1.0f;
+        float haze          = 0.5f;
+        float exposure      = 1.0f;
+    };
+    // Set the active sky parameters for subsequent frames (cached + re-applied
+    // each frame, like setPointLights). Calling with enabled=false disables it.
+    virtual void          setSkyParams(const SkyParams&) = 0;
+
     // ---- Forward point lights (interior fill) ------------------------------
     // Set the active point lights for subsequent frames. The device copies the
     // array (does NOT retain the pointer) and uploads them into the per-frame
