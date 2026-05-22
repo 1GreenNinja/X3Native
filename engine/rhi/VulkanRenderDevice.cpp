@@ -3645,12 +3645,14 @@ private:
                 logError("[rhi] debris cube ibo create failed"); return false; }
         }
 
-        // --- Descriptor pool: compute set (2 SSBO + 1 UBO) + draw sets (1 SSBO + 1 UBO each). ---
+        // --- Descriptor pool: per-frame compute sets (2 SSBO + 1 UBO each) + per-frame
+        //     draw sets (1 SSBO + 1 UBO each). Per-frame so a set updated this frame is
+        //     never one a still-pending command buffer references (avoids VUID 03047).
         VkDescriptorPoolSize ps[2]{
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kFramesInFlight + 2 },   // pool x(comp+draw) + counters
-            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kFramesInFlight + 1 } }; // draw UBO x frames + params
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, kFramesInFlight * 3 },   // compute: pool+counters; draw: pool
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kFramesInFlight * 2 } }; // compute params + draw UBO
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        pci.maxSets = kFramesInFlight + 1; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
+        pci.maxSets = kFramesInFlight * 2; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
         if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_debrisPool) != VK_SUCCESS) {
             logError("[rhi] debris desc pool failed"); return false; }
 
@@ -3699,23 +3701,23 @@ private:
             if (cr != VK_SUCCESS) { logError("[rhi] debris compute pipeline create failed"); return false; }
         }
 
-        // --- Compute descriptor set (one; the pool/counters/params persist). ---
-        {
+        // --- Per-frame compute descriptor sets. The pool/counters SSBOs are shared;
+        //     each set binds ITS OWN frame's params UBO at creation, so no per-step
+        //     vkUpdateDescriptorSets is needed (a pending set is never re-written). ---
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
             VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
             dsai.descriptorPool = m_debrisPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &m_debrisComputeSetLayout;
-            if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_debrisComputeSet) != VK_SUCCESS) {
+            if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_debrisComputeSet[i]) != VK_SUCCESS) {
                 logError("[rhi] debris compute set alloc failed"); return false; }
             VkDescriptorBufferInfo pool{ m_debrisPoolBuf, 0, VK_WHOLE_SIZE };
             VkDescriptorBufferInfo cnt { m_debrisCountBuf, 0, VK_WHOLE_SIZE };
-            VkDescriptorBufferInfo prm { m_debrisParamsBuf[0], 0, sizeof(GpuDebrisParamsUBO) };
-            // The params UBO is per-frame; the compute set is rebound to the right
-            // frame's params each step (only one in-flight compute at a time here).
+            VkDescriptorBufferInfo prm { m_debrisParamsBuf[i], 0, sizeof(GpuDebrisParamsUBO) };
             VkWriteDescriptorSet w[3]{};
-            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[0].dstSet = m_debrisComputeSet;
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[0].dstSet = m_debrisComputeSet[i];
             w[0].dstBinding = 0; w[0].descriptorCount = 1; w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[0].pBufferInfo = &pool;
-            w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[1].dstSet = m_debrisComputeSet;
+            w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[1].dstSet = m_debrisComputeSet[i];
             w[1].dstBinding = 1; w[1].descriptorCount = 1; w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[1].pBufferInfo = &cnt;
-            w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[2].dstSet = m_debrisComputeSet;
+            w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[2].dstSet = m_debrisComputeSet[i];
             w[2].dstBinding = 2; w[2].descriptorCount = 1; w[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[2].pBufferInfo = &prm;
             vkUpdateDescriptorSets(m_dev.device, 3, w, 0, nullptr);
         }
@@ -3890,13 +3892,11 @@ private:
             u.aabbMin[a] = glm::vec4(p.aabbMin[a][0], p.aabbMin[a][1], p.aabbMin[a][2], 0);
             u.aabbMax[a] = glm::vec4(p.aabbMax[a][0], p.aabbMax[a][1], p.aabbMax[a][2], 0);
         }
+        // Write THIS frame's params UBO (the per-frame compute set already points at
+        // it — no descriptor update needed, so no pending-set hazard). The compute
+        // dispatch is recorded by the graph's debris-compute pass this frame.
         if (m_debrisParamsMapped[m_frameIdx])
             std::memcpy(m_debrisParamsMapped[m_frameIdx], &u, sizeof(u));
-        VkDescriptorBufferInfo prm{ m_debrisParamsBuf[m_frameIdx], 0, sizeof(GpuDebrisParamsUBO) };
-        VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-        w.dstSet = m_debrisComputeSet; w.dstBinding = 2; w.descriptorCount = 1;
-        w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w.pBufferInfo = &prm;
-        vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
         m_debrisStepPending = true;  // buildAndExecuteGraph adds the compute pass this frame
     }
 
@@ -3952,16 +3952,21 @@ private:
     void recordDebrisComputeBody(VkCommandBuffer cmd) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_debrisComputePipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_debrisComputeLayout,
-                                0, 1, &m_debrisComputeSet, 0, nullptr);
+                                0, 1, &m_debrisComputeSet[m_frameIdx], 0, nullptr);
         uint32_t groups = (kDebrisCapacity + 63u) / 64u;
         vkCmdDispatch(cmd, groups, 1, 1);
         // Barrier: compute SSBO write -> (vertex SSBO read for the draw) + (host read
-        // for the readback). Covers both the in-frame draw and the post-fence readback.
+        // for the readback) + (next frame's compute read/write of the persistent pool).
+        // Covers the in-frame draw, the post-fence readback, AND the cross-frame pool
+        // read-modify-write hazard (the pool persists; consecutive compute dispatches
+        // on this single graphics queue must order against each other).
         VkMemoryBarrier2 mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
         mb.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
         mb.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-        mb.dstStageMask  = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT;
-        mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_HOST_READ_BIT;
+        mb.dstStageMask  = VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT
+                         | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_HOST_READ_BIT
+                         | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
         VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
         di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
         vkCmdPipelineBarrier2(cmd, &di);
@@ -6311,7 +6316,7 @@ private:
     VkDescriptorPool      m_debrisPool             = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_debrisComputeSetLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_debrisDrawSetLayout    = VK_NULL_HANDLE;
-    VkDescriptorSet       m_debrisComputeSet       = VK_NULL_HANDLE;
+    VkDescriptorSet       m_debrisComputeSet[kFramesInFlight] = {};  // per-frame (params UBO is per-frame)
     VkDescriptorSet       m_debrisDrawSet[kFramesInFlight] = {};
     VkPipelineLayout      m_debrisComputeLayout    = VK_NULL_HANDLE;
     VkPipelineLayout      m_debrisDrawLayout       = VK_NULL_HANDLE;
