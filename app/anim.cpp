@@ -186,6 +186,12 @@ bool Skinner::bind(const x3::asset::Model& model) {
 
     m_globalScratch.assign((size_t)m_nodeCount * 16, 0.0f);
     m_palette.assign(model.skins[0].joints.size() * 16, 0.0f);
+    // Pre-size the hierarchy-resolve scratch so computeGlobals() never reallocates
+    // in the steady per-frame path (it only resets/clears these each call).
+    m_resolveDone.assign(m_nodeCount, 0);
+    m_resolveInProg.assign(m_nodeCount, 0);
+    m_resolveStack.clear();
+    m_resolveStack.reserve(m_nodeCount);
     m_valid = true;
     return true;
 }
@@ -246,13 +252,24 @@ void Skinner::sampleNodeLocal(const x3::asset::Model& m, uint32_t clip, int node
 
 void Skinner::computeGlobals(const x3::asset::Model& m, uint32_t clip, float t,
                              std::vector<float>& globals) const {
-    globals.assign((size_t)m_nodeCount * 16, 0.0f);
-    std::vector<char> done(m_nodeCount, 0);
-    std::vector<char> inprog(m_nodeCount, 0);
+    // `globals` is the caller's pre-sized member scratch (nodeCount*16). Reset in
+    // place; do not reallocate. The resolve scratch (done/inprog/stack) are also
+    // pre-sized members — clear/zero them per call without heap allocation.
+    if (globals.size() != (size_t)m_nodeCount * 16)
+        globals.assign((size_t)m_nodeCount * 16, 0.0f);   // defensive (size mismatch)
+    else
+        std::fill(globals.begin(), globals.end(), 0.0f);
+
+    if (m_resolveDone.size() != m_nodeCount)   m_resolveDone.assign(m_nodeCount, 0);
+    else                                       std::fill(m_resolveDone.begin(), m_resolveDone.end(), (char)0);
+    if (m_resolveInProg.size() != m_nodeCount) m_resolveInProg.assign(m_nodeCount, 0);
+    else                                       std::fill(m_resolveInProg.begin(), m_resolveInProg.end(), (char)0);
+    std::vector<char>& done = m_resolveDone;
+    std::vector<char>& inprog = m_resolveInProg;
+    std::vector<int>& stack = m_resolveStack;
+
     // Iterative resolve (recursion-free) of each node's global = parent.global * local.
     std::array<float, 16> local;
-    // Helper: resolve node i, ensuring its ancestor chain is computed first.
-    std::vector<int> stack;
     for (uint32_t i = 0; i < m_nodeCount; ++i) {
         if (done[i]) continue;
         stack.clear();
@@ -289,15 +306,18 @@ uint32_t Skinner::computePalette(const x3::asset::Model& model, uint32_t clip,
     float t = (dur > 1e-6f) ? std::fmod(timeSec, dur) : 0.0f;
     if (t < 0) t += dur;
 
-    std::vector<float> globals;
-    computeGlobals(model, clip, t, globals);
+    // Reuse the pre-allocated member global-matrix scratch (sized in bind()); no
+    // per-frame heap allocation for the hierarchy globals.
+    computeGlobals(model, clip, t, m_globalScratch);
 
+    // outPalette is the caller's buffer. In the steady path (apply()) it is the
+    // pre-sized m_palette, so this assign reuses capacity and reallocates nothing.
     outPalette.assign((size_t)jcount * 16, 0.0f);
     for (uint32_t j = 0; j < jcount; ++j) {
         int node = skin.joints[j];
         if (node < 0 || (uint32_t)node >= m_nodeCount) { mat4Identity(&outPalette[(size_t)j*16]); continue; }
         const float* ib = &skin.inverseBind[(size_t)j * 16];
-        mat4Mul(&globals[(size_t)node*16], ib, &outPalette[(size_t)j*16]);
+        mat4Mul(&m_globalScratch[(size_t)node*16], ib, &outPalette[(size_t)j*16]);
     }
     return jcount;
 }

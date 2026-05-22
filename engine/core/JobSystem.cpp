@@ -43,6 +43,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <queue>
@@ -302,6 +303,21 @@ private:
         }
     }
 
+    // Per-thread RNG for victim selection. std::mt19937 is NOT thread-safe, so
+    // each thread (every worker AND any non-worker that calls wait()) gets its
+    // own engine, seeded once on first use from a hardware source mixed with the
+    // worker index (or a hashed thread id for non-workers). No shared mutable
+    // RNG state survives, so there is no data race on the steal path.
+    static std::mt19937& victimRng() {
+        thread_local std::mt19937 rng = [] {
+            unsigned idx = (t_workerIndex >= 0)
+                ? (unsigned)t_workerIndex
+                : (unsigned)std::hash<std::thread::id>{}(std::this_thread::get_id());
+            return std::mt19937(std::random_device{}() ^ idx);
+        }();
+        return rng;
+    }
+
     // Try to obtain one ready job from anywhere: priority queue, own deque,
     // global queue, then steal from a random victim. Returns false if idle.
     bool tryGetAnyJob(Job& out) {
@@ -326,9 +342,10 @@ private:
                 return true;
             }
         }
-        // 4) steal from a random victim
+        // 4) steal from a random victim. Each thread owns its RNG (thread_local),
+        // so there is no shared-RNG data race between workers + the main thread.
         if (m_workerCount > 1) {
-            int start = (wi >= 0) ? wi : (int)(m_rng() % (unsigned)m_workerCount);
+            int start = (wi >= 0) ? wi : (int)(victimRng()() % (unsigned)m_workerCount);
             for (int k = 1; k <= m_workerCount; ++k) {
                 int v = (start + k) % m_workerCount;
                 if (v == wi) continue;
@@ -340,8 +357,8 @@ private:
 
     void workerLoop(int index) {
         t_workerIndex = index;
-        std::random_device rd;
-        m_rng.seed(rd() ^ (unsigned)index);
+        // Victim-selection RNG is thread_local and lazily seeded on first use
+        // (see victimRng()); nothing to seed here.
 
         while (m_running.load(std::memory_order_acquire)) {
             Job j;
@@ -409,8 +426,6 @@ private:
 
     std::mutex m_counterMtx;
     std::vector<CounterImpl*> m_counters;
-
-    std::mt19937 m_rng{0xC0FFEEu};
 };
 
 thread_local int JobSystem::t_workerIndex = -1;
