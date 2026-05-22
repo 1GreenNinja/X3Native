@@ -657,6 +657,19 @@ public:
         if (m_system) m_system->OptimizeBroadPhase();
     }
 
+    // ---- Native-handle escape hatch (vehicle framework, see IPhysicsWorld.h) ----
+    void* nativeSystem() override { return m_system.get(); }
+
+    void* nativeBody(BodyId id) override {
+        auto it = m_bodies.find(id.id);
+        if (it == m_bodies.end()) return nullptr;            // invalid/stale (or a char)
+        // No-lock body access: the vehicle controller only uses this on the main
+        // thread, outside PhysicsSystem::Update, exactly like the rest of this TU's
+        // BodyInterface use. TryGetBody returns null if the id was destroyed.
+        const JPH::BodyLockInterfaceNoLock& bli = m_system->GetBodyLockInterfaceNoLock();
+        return bli.TryGetBody(it->second);
+    }
+
 private:
     // ---- contact listener: trigger overlap (enter/leave) + the K-T0 queued
     // collision contact callback. CRITICAL (spec §4b): OnContactAdded runs while

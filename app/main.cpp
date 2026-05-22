@@ -13,6 +13,7 @@
 #include "engine/asset/IAssetSource.h"
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/physics/Destruction.h"   // K-T0/T1 destructibles + --test-destruction
+#include "engine/physics/IVehicle.h"      // vehicle framework: --test-vehicle + --world drive/boat/fly
 #include "engine/asset/IModelLoader.h"
 #include "engine/audio/IAudioSystem.h"
 #include "engine/net/INetworkSystem.h"   // netcode Phase 0: --test-net + SimClock
@@ -33,6 +34,7 @@
 #include "hud.h"
 #include "stress.h"
 #include "destruct_demo.h"                 // K-T1 destruction demo (--world destruct)
+#include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
 
 #include <memory>
 #include <string_view>
@@ -176,7 +178,8 @@ int main(int argc, char** argv) {
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
-         testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false;
+         testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
+         testVehicle = false;
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
     // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
     // and confirm the joint palette changes. Asset-pipeline verification for the
@@ -306,6 +309,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-net") testNet = true;
         else if (a == "--test-rescue") testRescue = true;
         else if (a == "--test-destruction") testDestruction = true;
+        else if (a == "--test-vehicle") testVehicle = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -540,6 +544,11 @@ int main(int argc, char** argv) {
     if (testDestruction) {
         x3::logInfo("running K-T0/T1 destruction (fracture/impact/hit/explosion) self-test...");
         return x3::phys::runDestructionSelfTest() ? 0 : 1;
+    }
+    if (testVehicle) {
+        x3::logInfo("running vehicle framework self-test "
+                    "(wheeled accel/steer + buoyancy waterline + flight thrust/lift)...");
+        return x3::phys::runVehicleSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -1560,6 +1569,274 @@ int main(int argc, char** argv) {
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
+        return 0;
+    }
+
+    // ======================================================================
+    // ---- VEHICLE FRAMEWORK demos (--world drive / boat / fly) -------------
+    // GENERAL vehicle/flight/buoyancy framework (engine/physics/IVehicle.h) on
+    // Jolt. Each demo = a dynamic rigid body + one IVehicleController:
+    //   * drive : a wheeled car (Jolt VehicleConstraint) on the STREAMED terrain
+    //             — WASD throttle/brake/steer, Space handbrake, chase cam.
+    //   * boat  : a buoyant hull floating on a flat ocean (water plane) — the
+    //             buoyancy controller settles it at the waterline; WASD motors it.
+    //   * fly   : an aircraft (thrust + lift + drag + pitch/yaw/roll) — W/S throttle,
+    //             arrows/mouse attitude. Same framework, simple force model.
+    // Self-contained worlds (app/vehicle.*); low-conflict with Level 1. Headless
+    // `--world drive --screenshot <path>` / `--world boat --screenshot <path>`
+    // capture the gate stills. This is a small, clearly-marked flag block.
+    if (worldMode == "drive" || worldMode == "boat" || worldMode == "fly") {
+        const bool isDrive = (worldMode == "drive");
+        const bool isBoat  = (worldMode == "boat");
+        const bool isFly   = (worldMode == "fly");
+        x3::logInfo("--world " + worldMode + ": building the vehicle-framework demo");
+
+        std::unique_ptr<x3::jobs::IJobSystem> vjobs(x3::jobs::createJobSystem());
+        vjobs->init(0);
+        std::unique_ptr<x3::phys::IPhysicsWorld> vphys(x3::phys::createPhysicsWorld());
+        if (!vphys->init()) {
+            x3::logError("--world " + worldMode + ": physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        // Sky + sun (outdoor) for all three.
+        { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = true;
+          sp.sunDir[0]=0.4f; sp.sunDir[1]=1.0f; sp.sunDir[2]=0.3f;
+          sp.sunColor[0]=1.0f; sp.sunColor[1]=0.97f; sp.sunColor[2]=0.92f;
+          sp.sunIntensity=1.1f; sp.haze=0.4f; sp.exposure=1.0f;
+          device->setSkyParams(sp); }
+
+        // --- World ground: drive uses STREAMED terrain; boat/fly use a flat slab. ---
+        x3::game::Scene          vscene;
+        x3::game::TerrainStreamer vstream;
+        const float boatSeaLevel = 8.0f;   // flat ocean plane for the boat demo
+        float spawnX = 0.0f, spawnY = 2.0f, spawnZ = 0.0f;
+
+        if (isDrive) {
+            const x3::game::TerrainConfig& tcfg = x3::game::worldTerrainConfig();
+            // Spawn the car on the surface near the origin, a little above so the
+            // wheels settle onto the hill.
+            spawnX = 0.0f; spawnZ = 0.0f;
+            spawnY = x3::game::terrainHeightAt(tcfg, spawnX, spawnZ) + 1.5f;
+            vstream.init(vscene, *device, *vphys, vjobs.get(), tcfg, spawnX, spawnZ, /*radius=*/6);
+            vstream.setUploadBudget(64);
+        } else {
+            // Big flat static slab to bound the boat/fly world (so a raycast/contact
+            // has something), well below the boat sea level.
+            x3::prims::PrimMesh g = x3::prims::makeBox(400.0f, 0.5f, 400.0f, 0.0f, -0.5f, 0.0f, 0.02f);
+            vphys->addStaticMesh(g.cverts.data(), (uint32_t)(g.cverts.size()/3),
+                                 g.cindex.data(), (uint32_t)g.cindex.size());
+        }
+        if (isBoat) {
+            // Animated ocean at the sea level.
+            x3::rhi::IRenderDevice::WaterParams wp{};
+            wp.enabled = true; wp.seaLevel = boatSeaLevel;
+            wp.amplitude = 0.35f; wp.steepness = 0.5f; wp.waveLength = 12.0f; wp.speed = 1.0f;
+            wp.deepColor[0]=0.015f; wp.deepColor[1]=0.06f; wp.deepColor[2]=0.10f;
+            wp.shallowColor[0]=0.10f; wp.shallowColor[1]=0.32f; wp.shallowColor[2]=0.36f;
+            wp.sunDir[0]=0.4f; wp.sunDir[1]=1.0f; wp.sunDir[2]=0.3f;
+            wp.specular=14.0f; wp.fresnel=0.02f;
+            device->setWaterParams(wp);
+            spawnX = 0.0f; spawnY = boatSeaLevel + 4.0f; spawnZ = 0.0f; // drop onto the water
+        }
+        if (isFly) { spawnX = 0.0f; spawnY = 60.0f; spawnZ = 0.0f; }
+
+        // --- Build the vehicle. ---
+        x3::game::DriveDemo car;
+        x3::game::BoatDemo  boat;
+        x3::game::FlyDemo   plane;
+        bool built = false;
+        if (isDrive) built = car.build(*device, *vphys, spawnX, spawnY, spawnZ);
+        else if (isBoat) built = boat.build(*device, *vphys, spawnX, spawnY, spawnZ, boatSeaLevel, /*isSub*/false);
+        else built = plane.build(*device, *vphys, spawnX, spawnY, spawnZ);
+        if (!built) {
+            x3::logError("--world " + worldMode + ": vehicle build failed");
+            if (isDrive) vstream.shutdown(vscene, *device, *vphys);
+            vphys->shutdown(); device->shutdown();
+            if (window) glfwDestroyWindow(window); glfwTerminate();
+            return 1;
+        }
+        if (isFly) { // give the plane initial forward airspeed so lift develops
+            const float v0[3] = { 0, 0, -40.0f };
+            vphys->setBodyLinearVelocity(plane.airframe(), v0);
+        }
+        vphys->optimizeBroadphase();
+
+        const float dt = 1.0f / 60.0f;
+        auto vpos = [&](float out[3]) {
+            if (isDrive) car.chassisPos(out);
+            else if (isBoat) boat.hullPos(out);
+            else plane.airframePos(out);
+        };
+        auto vsetInput = [&](const x3::phys::VehicleInput& in) {
+            if (isDrive) car.setInput(in); else if (isBoat) boat.setInput(in); else plane.setInput(in);
+        };
+        auto vpre  = [&](float d){ if (isDrive) car.preStep(d);  else if (isBoat) boat.preStep(d);  else plane.preStep(d); };
+        auto vpost = [&](float d){ if (isDrive) car.postStep(d); else if (isBoat) boat.postStep(d); else plane.postStep(d); };
+        auto vrender = [&](const x3::rhi::FrameContext& f) {
+            if (isDrive) { vscene.render(*device, f); car.render(f); }
+            else if (isBoat) boat.render(f);
+            else plane.render(f);
+        };
+
+        // ===== Headless capture (--world <mode> --screenshot <path>). ==========
+        if (headless) {
+            const std::string outPath = screenshot ? screenshotPath
+                                       : (std::string("vehicle_") + worldMode + ".png");
+            // Settle a bit, drive forward, then frame a chase shot. Drive lingers
+            // longer so more terrain tiles stream in around the car for the still.
+            float waveT = 0.0f;
+            const int kSettle = isDrive ? 200 : 120;
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                x3::phys::VehicleInput in;
+                // Drive: a gentle forward creep (kept near the lit spawn hilltop so
+                // the still isn't a shadowed valley) + a touch of steer for a pose.
+                if (isDrive) { in.throttle = (i > 40 && i < 110) ? 0.45f : 0.0f; in.steer = 0.25f; }
+                else if (isBoat) { in.throttle = (i > 60) ? 0.6f : 0.0f; }
+                else { in.throttle = 1.0f; in.pitch = (i > 30 && i < 70) ? 0.3f : 0.0f; }
+                vsetInput(in);
+                vpre(dt);
+                if (isDrive) {
+                    // Stream tiles around the CAR (frame 1 nudges across a tile
+                    // boundary to trigger the full residency-ring request).
+                    float cp[3]; car.chassisPos(cp);
+                    float fX = (i == 1) ? (cp[0] + 40.0f) : cp[0];
+                    vstream.update(vscene, *device, *vphys, fX, cp[2]);
+                }
+                vphys->step(dt);
+                vpost(dt);
+                if (isBoat) {
+                    waveT = (float)i * dt;
+                    x3::rhi::IRenderDevice::WaterParams wp{};
+                    wp.enabled=true; wp.seaLevel=boatSeaLevel; wp.amplitude=0.35f; wp.steepness=0.5f;
+                    wp.waveLength=12.0f; wp.speed=1.0f; wp.time=waveT;
+                    wp.deepColor[0]=0.015f; wp.deepColor[1]=0.06f; wp.deepColor[2]=0.10f;
+                    wp.shallowColor[0]=0.10f; wp.shallowColor[1]=0.32f; wp.shallowColor[2]=0.36f;
+                    wp.sunDir[0]=0.4f; wp.sunDir[1]=1.0f; wp.sunDir[2]=0.3f;
+                    wp.specular=14.0f; wp.fresnel=0.02f;
+                    device->setWaterParams(wp);
+                }
+                float vp[3]; vpos(vp);
+                float cam[5];
+                if (isDrive) {
+                    // Close 3/4 chase from the SUN side looking back toward the sun
+                    // (sunDir XZ = (0.4,0.3)), so the car's lit faces + lit terrain
+                    // face the camera. Close in so the car fills the frame on the
+                    // lit spawn hilltop (not a distant shadowed valley).
+                    const float sunYaw = std::atan2(0.3f, 0.4f);
+                    const float back = 7.0f, height = 3.4f;
+                    cam[0] = vp[0] - std::cos(sunYaw) * back;
+                    cam[1] = vp[1] + height;
+                    cam[2] = vp[2] - std::sin(sunYaw) * back;
+                    cam[3] = sunYaw;       // look toward the sun (and the car)
+                    cam[4] = -0.26f;       // ~15deg down
+                } else {
+                    // Boat/fly: simple chase trailing the vehicle (behind = +Z).
+                    float camH    = isFly ? 4.0f  : 3.0f;
+                    float camBack = isFly ? 14.0f : 9.0f;
+                    cam[0] = vp[0] + 1.0f; cam[1] = vp[1] + camH; cam[2] = vp[2] + camBack;
+                    cam[3] = -1.5708f; cam[4] = isFly ? -0.12f : -0.22f;
+                }
+                if (shotCamOverride) for (int k=0;k<5;++k) cam[k]=shotCam[k];
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 70.0f);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) vrender(frame);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            float vp[3]; vpos(vp);
+            char rb[256];
+            std::snprintf(rb, sizeof(rb),
+                "--world %s --screenshot: wrote %s | pos=(%.1f,%.1f,%.1f) fwdSpeed=%.2f",
+                worldMode.c_str(), outPath.c_str(), vp[0], vp[1], vp[2],
+                isDrive ? car.forwardSpeed() : (isBoat ? 0.0f : plane.forwardSpeed()));
+            if (wrote) x3::logInfo(rb); else x3::logError("--world " + worldMode + ": capture FAILED");
+            if (isDrive) { car.shutdown(); vstream.shutdown(vscene, *device, *vphys); }
+            else if (isBoat) boat.shutdown(); else plane.shutdown();
+            vphys->shutdown(); device->shutdown();
+            if (window) glfwDestroyWindow(window); glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Interactive windowed: drive/steer with WASD, chase camera. ======
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        float camYaw = -1.5708f, camPitch = -0.22f;
+        float waveT = 0.0f;
+        if (isDrive) x3::logInfo("--world drive: W/S throttle, A/D steer, Space handbrake, mouse orbits, Esc quit");
+        else if (isBoat) x3::logInfo("--world boat: W/S motor, A/D steer, mouse orbits, Esc quit");
+        else x3::logInfo("--world fly: W/S throttle, A/D yaw, Up/Down pitch, Q/E roll, mouse orbits, Esc quit");
+        int lastWd = (int)W, lastHd = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            camYaw += (float)(mx - lastMX) * 0.0025f;
+            camPitch -= (float)(my - lastMY) * 0.0025f;
+            if (camPitch >  1.4f) camPitch =  1.4f;
+            if (camPitch < -1.4f) camPitch = -1.4f;
+            lastMX = mx; lastMY = my;
+            auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+
+            x3::phys::VehicleInput in;
+            if (isDrive || isBoat) {
+                in.throttle = (kd(GLFW_KEY_W)?1.0f:0.0f) - (kd(GLFW_KEY_S)?1.0f:0.0f);
+                in.steer    = (kd(GLFW_KEY_D)?1.0f:0.0f) - (kd(GLFW_KEY_A)?1.0f:0.0f);
+                if (isDrive) {
+                    if (kd(GLFW_KEY_SPACE)) in.handBrake = 1.0f;
+                    if (in.throttle < 0.0f && car.forwardSpeed() > 0.5f) { in.brake = 1.0f; in.throttle = 0.0f; }
+                }
+            } else { // fly
+                in.throttle = (kd(GLFW_KEY_W)?1.0f:0.0f) - (kd(GLFW_KEY_S)?0.5f:0.0f);
+                in.steer = (kd(GLFW_KEY_D)?1.0f:0.0f) - (kd(GLFW_KEY_A)?1.0f:0.0f);
+                in.pitch = (kd(GLFW_KEY_UP)?1.0f:0.0f) - (kd(GLFW_KEY_DOWN)?1.0f:0.0f);
+                in.roll  = (kd(GLFW_KEY_E)?1.0f:0.0f) - (kd(GLFW_KEY_Q)?1.0f:0.0f);
+            }
+            vsetInput(in);
+            vpre(fdt);
+            float vp0[3]; vpos(vp0);
+            if (isDrive) vstream.update(vscene, *device, *vphys, vp0[0], vp0[2]);
+            vphys->step(fdt);
+            vpost(fdt);
+            if (isBoat) {
+                waveT += fdt;
+                x3::rhi::IRenderDevice::WaterParams wp{};
+                wp.enabled=true; wp.seaLevel=boatSeaLevel; wp.amplitude=0.35f; wp.steepness=0.5f;
+                wp.waveLength=12.0f; wp.speed=1.0f; wp.time=waveT;
+                wp.deepColor[0]=0.015f; wp.deepColor[1]=0.06f; wp.deepColor[2]=0.10f;
+                wp.shallowColor[0]=0.10f; wp.shallowColor[1]=0.32f; wp.shallowColor[2]=0.36f;
+                wp.sunDir[0]=0.4f; wp.sunDir[1]=1.0f; wp.sunDir[2]=0.3f;
+                wp.specular=14.0f; wp.fresnel=0.02f;
+                device->setWaterParams(wp);
+            }
+
+            // Orbit/chase camera around the vehicle.
+            float vp[3]; vpos(vp);
+            float dist = isFly ? 16.0f : 10.0f, height = isFly ? 4.0f : 3.5f;
+            float cx = vp[0] - std::cos(camPitch)*std::cos(camYaw)*dist;
+            float cy = vp[1] + height - std::sin(camPitch)*dist;
+            float cz = vp[2] - std::cos(camPitch)*std::sin(camYaw)*dist;
+            int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
+            if (cw != lastWd || ch != lastHd) { lastWd=cw; lastHd=ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
+            device->setCamera(cx, cy, cz, camYaw, camPitch, 70.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) vrender(frame);
+            device->endFrame(frame);
+        }
+        if (isDrive) { car.shutdown(); vstream.shutdown(vscene, *device, *vphys); }
+        else if (isBoat) boat.shutdown(); else plane.shutdown();
+        vphys->shutdown(); device->shutdown();
+        if (window) glfwDestroyWindow(window); glfwTerminate();
         return 0;
     }
 
