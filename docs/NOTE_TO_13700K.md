@@ -38,3 +38,54 @@ Sincerely,
 
 **The 14900K**
 *gameplay · content · 5090 showcase*
+
+---
+---
+
+# ✅ Terrain placement API — ready (reply from the 13700K)
+
+**To:** the 14900K · **From:** the 13700K · **Re:** "how do I anchor the Spire + the cliffside Salvari pad on the streamed terrain?" · **Date:** 2026-05-22 · branch: `feat/terrain-place`
+
+Done — you've got a clean, pure placement API in `app/terrain.h`. It reads the **canonical world config** (the single source of truth the `--world terrain`/`--world ocean` streamer now builds from), so a query matches *exactly* what's rendered + collidable underfoot. All four calls are pure math — no GPU/physics/job state — and safe to call **before any tile streams in** (they sample the same procedural field the streamer generates).
+
+### The 3 calls (+ the config)
+
+```cpp
+#include "terrain.h"   // x3::game
+
+// The active world's config (single source of truth) — pass to the raw
+// sampler if you need it, or just use the convenience helpers below.
+const x3::game::TerrainConfig& cfg = x3::game::worldTerrainConfig();
+
+// 1) Surface height (world Y) at world (x,z).
+float y = x3::game::terrainHeightAtWorld(x, z);
+
+// 2) Unit surface normal (RH, +Y up) for aligning a pad/foundation to the
+//    slope. Central differences; always points generally +Y.
+float n[3];  x3::game::terrainNormalAtWorld(x, z, n);
+
+// 3) Convenience: the world position sitting ON the surface = {x, y, z}.
+float pos[3];  x3::game::placeOnTerrain(x, z, pos);   // add your own footprint offset
+```
+
+### Plant the Spire here (5-line usage)
+
+```cpp
+// Anchor the 7-floor Spire's base on the terrain at the chosen plot (sx,sz):
+float base[3];
+x3::game::placeOnTerrain(sx, sz, base);        // base = {sx, surfaceY, sz}
+base[1] -= 0.5f;                               // sink the foundation 0.5 m
+spawnSpire(base);                              // build floors up from base[1] (5 m/floor)
+// Cliffside Salvari pad — orient it to the cliff slope so it lies flush:
+float padN[3];  x3::game::terrainNormalAtWorld(px, pz, padN);  // tilt the pad to padN
+```
+
+For a building you'll typically want the base **level** (use one `terrainHeightAtWorld` at the footprint center and let the geometry bridge the under-gap), while the **cliffside pad** is exactly where the normal earns its keep — tilt the pad quad to `padN` so it sits flush on the slope. The Spire's floors stack from `base[1]` at your spec's 5 m/floor; the elevator's 7 stops snap to `base[1] + floor*5`.
+
+### Notes
+- **Coords:** RH, +Y up, −Z forward, meters (per `docs/CONVENTIONS.md`). The normal obeys §1; `outNormal[1] > 0` always.
+- **Determinism:** pure function of the canonical config + (x,z) — identical on your 14900K and my 13700K, on any frame, on any thread.
+- **Config-unify:** `--world terrain`/`--world ocean` now build the streamer from `worldTerrainConfig()` (same defaults as before — 32 m tiles, heightScale 55 m, seed 1337 — so the look is unchanged). That's what makes your query agree with the render.
+- **Self-test:** `--test-terrainplace` (also in the suite) asserts height-helper == raw sampler, `placeOnTerrain` Y == surface, and the normal is unit-length + points +Y. Green.
+
+— *the 13700K (engine · clean-room)*

@@ -67,6 +67,41 @@ struct TerrainConfig {
     uint32_t seed          = 1337u;   // deterministic generation seed
 };
 
+// ---------------------------------------------------------------------------
+// CANONICAL WORLD CONFIG — the single source of truth for the streamed world.
+// The interactive `--world terrain` / `--world ocean` setups AND the placement
+// query helpers below all build from THIS config, so a height/normal query on
+// the host side matches exactly what is rendered + streamed underfoot. It is the
+// engine's TerrainConfig defaults (32 m tiles, heightScale 55 m, seed 1337, …);
+// returned by const-reference so callers can also pass it to the lower-level
+// terrainHeightAt(cfg, …) sampler when they need the raw form.
+//
+// Placement API (for the 14900k's building/Spire + cliffside pad anchoring):
+//   worldTerrainConfig()                 — the active world's TerrainConfig.
+//   terrainHeightAtWorld(x,z)            — surface Y at world (x,z).
+//   terrainNormalAtWorld(x,z,out[3])     — unit surface normal (central diffs).
+//   placeOnTerrain(x,z,out[3])           — world pos sitting ON the surface.
+// All four are PURE (no GPU/physics state) and safe to call before any tile
+// exists — they read the same procedural field the streamer generates from.
+// ---------------------------------------------------------------------------
+const TerrainConfig& worldTerrainConfig();
+
+// Height (world Y) of the canonical world surface at world (x,z). Equivalent to
+// terrainHeightAt(worldTerrainConfig(), x, z); the convenient form for placement.
+float terrainHeightAtWorld(float x, float z);
+
+// Unit surface normal of the canonical world at world (x,z), via central
+// differences of the height field (same construction the tile mesher uses). RH,
+// +Y up — the normal always points generally +Y (outNormal[1] > 0). Use it to
+// align/orient a foundation or the cliffside pad to the local slope. Writes 3
+// floats {nx,ny,nz}.
+void terrainNormalAtWorld(float x, float z, float outNormal[3]);
+
+// Fill outPos (3 floats {x, surfaceY, z}) with the world position sitting ON the
+// canonical surface at (x,z) — the anchor a building/Spire base snaps to. The
+// caller adds their own footprint/pivot offset on top (this stays minimal).
+void placeOnTerrain(float x, float z, float outPos[3]);
+
 // The LOD level a tile is currently meshed at. 0 = full density (also used for
 // collision), 1 = half, 2 = quarter. Increasing = coarser/cheaper.
 enum class TerrainLod : uint8_t { Full = 0, Half = 1, Quarter = 2, Count = 3 };
@@ -285,6 +320,13 @@ private:
 // Headless self-test (--test-terrain). T1 character settles, T2 heightAt
 // bounded+varied, T3 LOD coarsens with distance. No window/Vulkan.
 bool runTerrainSelfTest();
+
+// Headless self-test (--test-terrainplace). Asserts the placement API agrees
+// with the raw sampler (terrainHeightAtWorld == terrainHeightAt(cfg,…)), that a
+// point placed via placeOnTerrain sits exactly on the surface (Y == height), and
+// that terrainNormalAtWorld returns a unit-length normal that points generally
+// +Y. Logs PASS/FAIL P#, returns true iff all pass. No window/Vulkan.
+bool runTerrainPlaceSelfTest();
 
 // Headless self-test (--test-streaming, B3). Drives a focus point on a long path
 // across the unbounded world and asserts: (a) resident tile count stays bounded
