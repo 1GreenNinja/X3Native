@@ -1,18 +1,23 @@
 #pragma once
-// Tiled procedural terrain world (B2 — the open-world substrate).
+// Tiled procedural terrain world (B2) + STREAMING (B3 — perf-stack H).
 //
 // Game/slice code only — engine/ stays pure. A large procedural heightmap is
 // split into a grid of square TILES, each an independent, addressable mesh +
-// static-collision body. This is the foundation the streaming pass (B3) builds
-// on: tiles are keyed by (tileX,tileZ) grid coords and own all their GPU/physics
-// resources, so a streaming layer can create/destroy them one at a time without
-// touching the rest of the world.
+// static-collision body. B2 built a fixed 32x32 grid up front; B3 makes the
+// world EFFECTIVELY INFINITE: tiles are keyed by SIGNED grid coords (tileX,tileZ)
+// and only a bounded, camera-centered RING of them is kept resident at any time.
+// As the focus point (player/camera) moves, newly-in-range tiles STREAM IN and
+// out-of-range ones STREAM OUT, so the resident count + memory stay constant no
+// matter how far the player travels.
 //
 // CLEAN-ROOM, original work. The heightfield uses a self-implemented value-noise
 // + fractal-Brownian-motion (fBm) sum — the standard public algorithm (Perlin's
 // fBm idea; value noise via an integer hash + smoothstep interpolation), built
 // from GPU Gems / Texturing & Modeling: A Procedural Approach references and the
-// public noise literature. No game-engine source was consulted.
+// public noise literature. The streaming residency-ring + async-generation
+// pipeline is built from the engine's OWN IJobSystem + IRenderDevice +
+// IPhysicsWorld interfaces and public open-world streaming talks/papers. No
+// game-engine source was consulted.
 //
 // Rendering: tiles are NORMAL meshes (createMesh) drawn through the existing
 // GPU-driven path (drawMesh), so they automatically get batching + the
@@ -27,123 +32,266 @@
 //
 // Collision: ONE static-mesh body per tile, built from the tile's FULL-density
 // (LOD0) triangles via IPhysicsWorld::addStaticMesh — reusing the existing
-// static-mesh path rather than adding a new heightfield shape. Justification in
-// the .cpp header: it keeps IPhysicsWorld unchanged + opaque, the per-tile body
-// is exactly the unit a streaming layer loads/unloads, and the triangle count
-// per tile stays modest. Collision always uses LOD0 so the player never falls
-// through a decimated far tile that later draws at a coarser LOD.
+// static-mesh path rather than adding a new heightfield shape. Collision always
+// uses LOD0 so the player never falls through a decimated far tile. On stream-out
+// the body is removed via IPhysicsWorld::removeBody and the meshes destroyMesh'd.
 
 #include "scene.h"
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
+#include "engine/core/IJobSystem.h"
 
 #include <cstdint>
 #include <vector>
+#include <unordered_map>
+#include <memory>
+#include <mutex>
 
 namespace x3::game {
 
 // ---------------------------------------------------------------------------
-// Terrain configuration. All sizes in meters. Defaults: a 32x32 grid of 32 m
-// tiles => ~1.05 km x 1.05 km world (~1.1 km^2), each tile 32x32 quads at LOD0.
-// Tunable for larger/denser worlds. Heights span [0, heightScale] meters.
+// Terrain configuration. All sizes in meters. The fixed-grid (B2) path uses
+// tilesX/tilesZ; the streamed (B3) path ignores them (the world is unbounded —
+// tiles are addressed by SIGNED grid coords and generated on demand). Heights
+// span [0, heightScale] meters.
 // ---------------------------------------------------------------------------
 struct TerrainConfig {
-    uint32_t tilesX        = 32;      // grid columns (X)
-    uint32_t tilesZ        = 32;      // grid rows    (Z)
+    uint32_t tilesX        = 32;      // grid columns (X) — fixed-grid path only
+    uint32_t tilesZ        = 32;      // grid rows    (Z) — fixed-grid path only
     float    tileSize      = 32.0f;   // world meters per tile edge
     uint32_t tileVerts     = 33;      // LOD0 vertices per tile edge (=> 32 quads)
     float    heightScale   = 55.0f;   // peak terrain height (meters)
     float    noiseFreq     = 0.0042f; // base noise frequency (cycles / meter)
     uint32_t octaves       = 5;       // fBm octaves (detail layers)
     uint32_t seed          = 1337u;   // deterministic generation seed
-    // World is centered on the origin so the player can spawn near (0,_,0).
-    // worldMin = -0.5 * (tiles * tileSize); worldMax = +that.
 };
 
 // The LOD level a tile is currently meshed at. 0 = full density (also used for
 // collision), 1 = half, 2 = quarter. Increasing = coarser/cheaper.
 enum class TerrainLod : uint8_t { Full = 0, Half = 1, Quarter = 2, Count = 3 };
 
-// One terrain tile: addressable by grid coords (gx,gz), owns its 3 LOD render
-// meshes, a collision body, and the scene entity that draws the active LOD.
+// ---------------------------------------------------------------------------
+// Pure procedural height sampler — usable BEFORE any tiles exist (to place the
+// spawn/camera) and from worker threads (no shared state). Deterministic in
+// (worldX, worldZ, cfg). Both the fixed-grid Terrain and the streamer use it.
+// ---------------------------------------------------------------------------
+float terrainHeightAt(const TerrainConfig& cfg, float worldX, float worldZ);
+
+// One terrain tile: addressable by SIGNED grid coords (gx,gz), owns its 3 LOD
+// render meshes, a collision body, and the scene entity that draws the active
+// LOD. Identical layout for the fixed-grid and streamed paths.
 struct TerrainTile {
-    uint32_t gx = 0, gz = 0;                 // grid coordinates (addressable)
-    float    originX = 0.0f, originZ = 0.0f; // world position of the tile's min corner
-    float    centerX = 0.0f, centerZ = 0.0f; // world center (for LOD distance)
-    float    minY = 0.0f, maxY = 0.0f;       // height bounds over the tile
+    int32_t  gx = 0, gz = 0;                  // SIGNED grid coordinates (unbounded)
+    float    originX = 0.0f, originZ = 0.0f;  // world position of the tile's min corner
+    float    centerX = 0.0f, centerZ = 0.0f;  // world center (for LOD distance)
+    float    minY = 0.0f, maxY = 0.0f;        // height bounds over the tile
 
     x3::rhi::MeshHandle lodMesh[(int)TerrainLod::Count]; // one mesh per LOD
-    x3::phys::BodyId    body;                 // static collision (LOD0 triangles)
-    uint32_t            entityId = kNoLink;   // scene entity drawing the active LOD
+    x3::phys::BodyId    body;                  // static collision (LOD0 triangles)
+    uint32_t            entityId = kNoLink;    // scene entity drawing the active LOD
     TerrainLod          activeLod = TerrainLod::Full;
 };
 
 // ---------------------------------------------------------------------------
-// The terrain world: builds + owns the tile grid. Static for this pass (all
-// tiles created up front); the tile structure is deliberately streaming-ready.
+// The terrain world (B2): builds + owns a FIXED tile grid (all tiles created up
+// front). Still used by --screenshot-terrain + --test-terrain. The streamed
+// world uses TerrainStreamer below.
 // ---------------------------------------------------------------------------
 class Terrain {
 public:
-    // Build the full tile grid into `scene` (render meshes via `device`, static
-    // collision via `physics`). One scene entity per tile (drawing LOD0 at first).
-    // A shared ground texture is created once and reused by every tile. Call once.
     void build(Scene& scene, x3::rhi::IRenderDevice& device,
                x3::phys::IPhysicsWorld& physics, const TerrainConfig& cfg);
 
-    // Sample the terrain surface height (world Y) at world (x,z). Pure function of
-    // the config + seed — usable BEFORE build() to place the spawn/camera on the
-    // ground. Bilinear over the same noise the meshes use, so it matches the mesh.
-    float heightAt(float worldX, float worldZ) const;
+    float heightAt(float worldX, float worldZ) const { return terrainHeightAt(m_cfg, worldX, worldZ); }
 
-    // Choose + apply the LOD for every tile from the camera world position. Swaps
-    // each tile's scene entity mesh to the chosen LOD level. Cheap (no GPU work —
-    // the 3 LOD meshes are pre-uploaded); call once per frame (or on a cadence).
-    // Returns the number of tiles whose LOD changed this call.
     uint32_t updateLod(Scene& scene, float camX, float camZ);
 
-    // ---- Queries (host + self-test) --------------------------------------
     const TerrainConfig& config() const { return m_cfg; }
     uint32_t tileCount() const { return (uint32_t)m_tiles.size(); }
     const TerrainTile& tile(uint32_t i) const { return m_tiles[i]; }
-    // Tile by grid coords (returns nullptr if out of range).
     const TerrainTile* tileAt(uint32_t gx, uint32_t gz) const;
 
-    // World extent (meters): min/max corner on each axis (Y is height bounds).
     void worldBounds(float& minX, float& minZ, float& maxX, float& maxZ) const;
 
-    // The LOD a tile at `dist` meters from the camera (center-to-center) would
-    // use. Exposed for the self-test (asserts LOD coarsens with distance).
     TerrainLod lodForDistance(float dist) const;
 
-    // Total triangle count across all tiles at their CURRENT active LOD (for the
-    // perf report). Recomputed from the stored per-LOD index counts.
     uint32_t activeTriangleCount() const;
 
 private:
-    // Generate one tile's render mesh at a given LOD (step = 1<<lod quad stride).
-    // Fills MeshVertex (pos/normal/uv) with a downward skirt around the border to
-    // hide LOD cracks. Returns the index count via outIdx.
-    void buildTileMesh(uint32_t gx, uint32_t gz, TerrainLod lod,
-                       std::vector<x3::rhi::MeshVertex>& outVerts,
-                       std::vector<uint32_t>& outIdx) const;
-
     TerrainConfig            m_cfg;
     std::vector<TerrainTile> m_tiles;        // row-major: gz * tilesX + gx
-    x3::rhi::TextureHandle    m_groundTex;    // shared grass/rock checker
-    // Cached per-LOD index counts (same for every tile of that LOD) for the
-    // active-triangle report. [lod] = indices.
+    x3::rhi::TextureHandle    m_groundTex;
     uint32_t                  m_lodIndexCount[(int)TerrainLod::Count] = {0,0,0};
     float                     m_worldMinX = 0.0f, m_worldMinZ = 0.0f;
 };
 
-// Headless self-test (--test-terrain). Builds a small terrain on a real Jolt
-// world + a headless device, drops a character capsule onto it, steps physics,
-// and asserts: (T1) the character SETTLES on the surface (doesn't fall through /
-// float), (T2) heightAt() matches the mesh under the settled character, and
-// (T3) LOD coarsens with distance (near tile = Full, far tile = Quarter). Logs
-// PASS/FAIL T#, returns true iff all pass. No window/Vulkan. Lives in
-// terrain.cpp (mirrors runPlayerSelfTest et al.).
+// ===========================================================================
+// TerrainStreamer (B3) — camera-centered residency ring over an unbounded,
+// procedurally-generated tiled world.
+//
+// Lifecycle / threading model:
+//   * The HEAVY per-tile CPU work — noise sampling + vertex/normal build for all
+//     3 LOD meshes + the collision triangle soup — runs on the IJobSystem (off
+//     the main thread). A finished job pushes a TileGenResult onto a thread-safe
+//     completion queue.
+//   * The main thread (single-threaded GPU/physics submit) drains that queue,
+//     BUDGETED per frame (<= maxUploadsPerFrame): for each result it calls
+//     createMesh x3 + addStaticMesh + scene.add(), producing a resident tile.
+//   * Stream-out destroys a tile's 3 meshes (destroyMesh) + removes its body
+//     (removeBody) + hides its scene entity (reused later).
+//
+// No fall-through: the immediate 3x3 neighborhood under the focus point is
+// generated SYNCHRONOUSLY on the first update (and any newly-entered under-tile
+// is forced synchronous), so the player always has collision beneath them.
+// ===========================================================================
+class TerrainStreamer {
+public:
+    // Bring up the streamer. Generates the immediate neighborhood under `focus`
+    // SYNCHRONOUSLY so the player has ground on the first frame. `radius` is the
+    // residency ring radius in TILES (Chebyshev). `jobs` may be null (then all
+    // generation runs synchronously on the main thread — used by the headless
+    // self-test without a job pool, still correct).
+    void init(Scene& scene, x3::rhi::IRenderDevice& device,
+              x3::phys::IPhysicsWorld& physics, x3::jobs::IJobSystem* jobs,
+              const TerrainConfig& cfg, float focusX, float focusZ, int radius = 6);
+
+    // Per-frame tick from the focus (player/camera) world position:
+    //   1) if the focus crossed a tile boundary, enqueue stream-in for newly
+    //      in-range tiles (nearest-first) and stream-out for now-out-of-range;
+    //   2) drain up to maxUploadsPerFrame completed gen jobs into resident tiles;
+    //   3) apply LOD to resident tiles by distance.
+    // Returns the number of tiles uploaded (made resident) this frame.
+    uint32_t update(Scene& scene, x3::rhi::IRenderDevice& device,
+                    x3::phys::IPhysicsWorld& physics, float focusX, float focusZ);
+
+    // Tear down: destroy every resident tile's GPU + physics resources and drain
+    // any in-flight jobs. Safe to call once; init() can follow.
+    void shutdown(Scene& scene, x3::rhi::IRenderDevice& device,
+                  x3::phys::IPhysicsWorld& physics);
+
+    float heightAt(float worldX, float worldZ) const { return terrainHeightAt(m_cfg, worldX, worldZ); }
+
+    // ---- Tuning ----------------------------------------------------------
+    void setRadius(int r) { m_radius = r; }
+    int  radius() const { return m_radius; }
+    void setUploadBudget(uint32_t n) { m_maxUploadsPerFrame = n; }
+    void setMaxInFlight(uint32_t n)  { m_maxInFlight = n; }
+
+    // ---- Queries (host + self-test) --------------------------------------
+    const TerrainConfig& config() const { return m_cfg; }
+    // Number of currently-resident (GPU/physics-live) tiles.
+    uint32_t residentCount() const { return (uint32_t)m_resident.size(); }
+    // Theoretical max resident tiles for the current radius: (2R+1)^2.
+    uint32_t maxResidentForRadius() const { uint32_t d = (uint32_t)(2*m_radius+1); return d*d; }
+    // Lifetime counters (for the leak check): tiles whose GPU resources were
+    // created vs destroyed. At a clean teardown created == destroyed.
+    uint64_t tilesCreated() const { return m_tilesCreated; }
+    uint64_t tilesDestroyed() const { return m_tilesDestroyed; }
+    // In-flight async generation jobs not yet drained.
+    uint32_t inFlight() const { return m_inFlight; }
+    // True iff a resident tile covers the focus' current tile (collision present).
+    bool focusTileResident(float worldX, float worldZ) const;
+
+    TerrainLod lodForDistance(float dist) const;
+
+    ~TerrainStreamer();
+
+private:
+    // 64-bit key packing two SIGNED 32-bit tile coords (for the resident map).
+    static uint64_t key(int32_t gx, int32_t gz) {
+        return ((uint64_t)(uint32_t)gx << 32) | (uint64_t)(uint32_t)gz;
+    }
+    int32_t tileFloor(float world) const; // world coord -> tile index (floor)
+
+    // CPU-side result of an async generation job: everything needed to create
+    // the GPU/physics resources on the main thread. Heap-owned vectors so the
+    // job can fill them on a worker, then the main thread consumes + frees.
+    struct TileGenResult {
+        int32_t gx = 0, gz = 0;
+        float originX = 0, originZ = 0, centerX = 0, centerZ = 0, minY = 0, maxY = 0;
+        std::vector<x3::rhi::MeshVertex> lodVerts[(int)TerrainLod::Count];
+        std::vector<uint32_t>            lodIdx  [(int)TerrainLod::Count];
+        std::vector<float>               collVerts;   // position-only LOD0 surface
+        std::vector<uint32_t>            collIdx;
+    };
+
+    // Generate one tile's CPU data (pure, thread-safe). Static so it can run on a
+    // worker with only the config + coords captured.
+    static void generate(const TerrainConfig& cfg, int32_t gx, int32_t gz,
+                         TileGenResult& out);
+
+    // Make a resident tile from a finished gen result (main thread: GPU+physics).
+    void upload(Scene& scene, x3::rhi::IRenderDevice& device,
+                x3::phys::IPhysicsWorld& physics, TileGenResult& r);
+
+    // Destroy a resident tile's GPU + physics resources (main thread).
+    void evict(Scene& scene, x3::rhi::IRenderDevice& device,
+               x3::phys::IPhysicsWorld& physics, TerrainTile& t);
+
+    // Request generation of a tile (async if a job system is present, else
+    // synchronous). `synchronous` forces immediate generation on the main thread
+    // (used for the under-player neighborhood to prevent fall-through).
+    void requestTile(int32_t gx, int32_t gz, bool synchronous);
+
+    // Recycle / obtain a TileGenResult buffer (keeps vector capacity to avoid
+    // steady-state heap churn).
+    std::unique_ptr<TileGenResult> obtainResult();
+    void recycleResult(std::unique_ptr<TileGenResult> r);
+
+    // --- async plumbing -----------------------------------------------------
+    struct GenJob;            // job payload (defined in the .cpp)
+    static void jobThunk(void* user);
+
+    TerrainConfig            m_cfg;
+    x3::jobs::IJobSystem*    m_jobs = nullptr;   // may be null (synchronous mode)
+    x3::jobs::Counter*       m_counter = nullptr;
+    x3::rhi::TextureHandle    m_groundTex;
+    int                       m_radius = 6;
+    uint32_t                  m_maxUploadsPerFrame = 4;
+    uint32_t                  m_maxInFlight = 24;
+
+    // Resident tiles, keyed by packed (gx,gz). Pointer-stable (heap nodes) so a
+    // tile reference stays valid while the map mutates.
+    std::unordered_map<uint64_t, std::unique_ptr<TerrainTile>> m_resident;
+    // Tiles requested (in-flight or queued) but not yet resident — dedupes
+    // re-requests across frames.
+    std::unordered_map<uint64_t, char> m_pending;
+
+    // Completion queue: jobs push finished results here; the main thread drains.
+    std::mutex                                  m_doneMtx;
+    std::vector<std::unique_ptr<TileGenResult>> m_done;
+    // Main-thread-only carry-over of results that were ready but exceeded this
+    // frame's upload budget; consumed first next frame (kept off m_inFlight so the
+    // count reflects only genuinely-outstanding async work).
+    std::vector<std::unique_ptr<TileGenResult>> m_deferred;
+
+    // Free-list of TileGenResult buffers to recycle (avoid per-tile heap churn in
+    // the steady state — vectors keep their capacity).
+    std::vector<std::unique_ptr<TileGenResult>> m_resultPool;
+    std::mutex                                  m_poolMtx;
+
+    // Free entity slots in the scene from evicted tiles, reused on the next
+    // upload so the scene's entity vector doesn't grow unbounded as we roam.
+    std::vector<uint32_t>     m_freeEntities;
+
+    uint32_t                  m_inFlight = 0;
+    int32_t                   m_lastFocusTX = INT32_MIN, m_lastFocusTZ = INT32_MIN;
+    uint32_t                  m_lodIndexCount[(int)TerrainLod::Count] = {0,0,0};
+
+    uint64_t                  m_tilesCreated = 0, m_tilesDestroyed = 0;
+};
+
+// Headless self-test (--test-terrain). T1 character settles, T2 heightAt
+// bounded+varied, T3 LOD coarsens with distance. No window/Vulkan.
 bool runTerrainSelfTest();
+
+// Headless self-test (--test-streaming, B3). Drives a focus point on a long path
+// across the unbounded world and asserts: (a) resident tile count stays bounded
+// (<= (2R+1)^2, does NOT grow with distance), (b) tiles load ahead + unload
+// behind, (c) no tile/mesh/body leak (created==destroyed at teardown), (d) a
+// character stays on the surface the whole way (no fall-through). Logs PASS/FAIL
+// T#, returns true iff all pass. No window/Vulkan. Lives in terrain.cpp.
+bool runStreamingSelfTest();
 
 } // namespace x3::game
