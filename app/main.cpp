@@ -21,6 +21,7 @@
 #include "player.h"
 #include "monster.h"
 #include "level1_game.h"
+#include "elevator.h"
 #include "terrain.h"
 #include "fx.h"
 #include "hud.h"
@@ -167,7 +168,7 @@ int main(int argc, char** argv) {
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
-         testStreaming = false, testAi = false, testDoorCode = false;
+         testStreaming = false, testAi = false, testDoorCode = false, testElevator = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
@@ -250,6 +251,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-streaming") testStreaming = true;
         else if (a == "--test-ai") testAi = true;
         else if (a == "--test-doorcode") testDoorCode = true;
+        else if (a == "--test-elevator") testElevator = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -379,6 +381,10 @@ int main(int argc, char** argv) {
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
         return x3::game::runDoorCodeSelfTest() ? 0 : 1;
+    }
+    if (testElevator) {
+        x3::logInfo("running advanced elevator (call/travel/carry) self-test (E1-E6)...");
+        return x3::game::runElevatorSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -1006,6 +1012,16 @@ int main(int argc, char** argv) {
     // in terrain mode; Level 1 is unaffected.
     x3::game::TerrainStreamer terrainStreamer;
     std::unique_ptr<x3::jobs::IJobSystem> terrainJobs;
+    // ---- Advanced elevator (core): a functional cab in Level 1's tall (~9 m)
+    // elevator room — the "Take the elevator to Floor 2" exit transport. Press E
+    // within ~4 m to call it; it carries the rider up/down (per-frame carry in the
+    // loop). Two stops sized to fit the 9 m shaft (room floor + ~6 m up); the full
+    // 7-floor spire (5 m/floor) lands with the Spire geometry (see
+    // specs/EFLZ_SPIRE_7FLOOR.spec.md). The level WIN still fires from the
+    // elevator-room trigger volume after Martinez dies — the elevator is the in-room
+    // transport that mediates that exit. Built with the level (Level 1 only, not
+    // terrain) so it appears in the screenshot/bench/smoketest paths too.
+    x3::game::ElevatorSystem elevator;
     if (!terrainWorld) {
         game.build(scene, *device, *physics, "G:/GameModels/rigged_glb");
         // Audio hookups for Level 1 events (§9, nice-to-have; silent if no device).
@@ -1013,6 +1029,15 @@ int main(int argc, char** argv) {
         la.sys = audio.get(); la.door = sndDoor; la.pickup = sndPickup;
         la.gun = sndGun; la.death = sndDeath;
         game.setAudio(la);
+
+        const x3::game::Level1Layout& Lb = game.layout();
+        const float cabHY = 0.15f;
+        const float cabCenterGround = Lb.elevatorCenter.y + cabHY; // cab top at the room floor
+        const float topRise = 6.0f;                                // within the 9 m shaft
+        std::vector<float> elevStops{ cabCenterGround, cabCenterGround + topRise };
+        elevator.build(scene, *device, *physics,
+                       Lb.elevatorCenter.x, Lb.elevatorCenter.z,
+                       1.4f, cabHY, 1.4f, elevStops, /*startStop*/0);
     }
     const x3::game::Level1Layout& L1 = game.layout();
 
@@ -1431,6 +1456,15 @@ int main(int argc, char** argv) {
                 // code-entry keypad (digits 0-9, Enter to submit, Esc to cancel).
                 codeMode = true; keypad.clear();
                 x3::logInfo("use: locked keypad door — type the code, Enter to submit, Esc to cancel");
+            } else if (elevator.built()) {
+                // Within ~4 m of the elevator shaft (XZ): call the cab to its next
+                // stop (cycles ground <-> top). Carries the rider on the way.
+                const x3::phys::Vec3 cc = elevator.cabCenter();
+                const float ecx = eye.x - cc.x, ecz = eye.z - cc.z;
+                if (ecx * ecx + ecz * ecz < 16.0f) {
+                    elevator.callNext();
+                    x3::logInfo("use: elevator called");
+                }
             }
         }
         prevE = eNow;
@@ -1482,6 +1516,21 @@ int main(int argc, char** argv) {
             in.lookDY = ddy;
 
             player.update(in, dt, *physics);
+
+            // Advanced elevator: advance the cab, then carry the player if riding
+            // (add the cab's vertical delta before the physics step resolves so the
+            // capsule rides up with the platform instead of being left behind).
+            if (elevator.built()) {
+                float edy = elevator.update(dt, scene, *physics);
+                if (edy != 0.0f) {
+                    x3::phys::Vec3 pf = physics->getBodyPosition(player.body());
+                    if (elevator.playerRiding(pf)) {
+                        pf.y += edy;
+                        physics->setBodyPosition(player.body(), pf);
+                    }
+                }
+            }
+
             physics->step(dt);
             scene.update(*physics);
 
@@ -1507,7 +1556,9 @@ int main(int argc, char** argv) {
             if (spaceNow) flyY += spd;
             if (keyDown(GLFW_KEY_LEFT_CONTROL)) flyY -= spd;
 
-            // World still advances so the level keeps simulating while inspecting.
+            // World still advances so the level keeps simulating while inspecting
+            // (advance the elevator too; no carry — the fly cam isn't a rider).
+            if (elevator.built()) elevator.update(dt, scene, *physics);
             physics->step(dt);
             scene.update(*physics);
             device->setCamera(flyX, flyY, flyZ, flyYaw, flyPitch, 60.0f);

@@ -262,4 +262,12 @@ bool runLevel1SelfTest();
 // all pass. No window/Vulkan.
 bool runDoorCodeSelfTest();
 
+// Headless self-test (--test-elevator). Builds an ElevatorSystem on a HeadlessDevice
+// + Jolt world with two stops, then asserts E1-E6: it starts idle at the low stop;
+// callNext() begins moving; update() carries the cab up and arrives at the high stop;
+// playerRiding() detects feet on/off the cab footprint; calling again returns it to
+// the low stop; the cab body tracks the cab center (mediates the level exit lift).
+// Logs PASS/FAIL E#, returns true iff all pass. No window/Vulkan.
+bool runElevatorSelfTest();
+
 } // namespace x3::game

@@ -246,9 +246,13 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
                 const float rowBaseY = (float)row * panelH;     // this row's floor
                 for (int s=0; s<2; ++s) {
                     const float wz = (s==0) ? -r.zHalf : r.zHalf;
+                    // Opposite facing per side so the visible (front) face points INTO the
+                    // room on BOTH walls. Single-sided panels were back-culled on the +Z
+                    // side (same yaw both sides) -> see-through. +90 for -Z wall, -90 for +Z.
+                    const float wYaw = (s==0) ? kPi*0.5f : -kPi*0.5f;
                     for (int i=0; i<n; ++i) {
                         const float wx = r.x0 + (i + 0.5f) * panelW;
-                        placeYaw(m, kPi*0.5f, 1.0f, wAnchorX, wallMinY, wAnchorZ, wx, rowBaseY, wz);
+                        placeYaw(m, wYaw, 1.0f, wAnchorX, wallMinY, wAnchorZ, wx, rowBaseY, wz);
                         addInstance(wallA, m);
                     }
                 }
