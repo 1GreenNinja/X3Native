@@ -20,6 +20,7 @@
 #include "level1.h"
 #include "player.h"
 #include "level1_game.h"
+#include "terrain.h"
 #include "fx.h"
 #include "hud.h"
 #include "stress.h"
@@ -133,7 +134,7 @@ int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
-         testPhase2a = false, testPhase2b = false, testAnim = false;
+         testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
@@ -157,6 +158,17 @@ int main(int argc, char** argv) {
     // open-world sky. Default path when omitted: G:\X3Native\sky.png.
     bool        skyShot = false;
     std::string skyShotPath = "G:/X3Native/sky.png";
+    // Terrain vantage mode (--screenshot-terrain [path.png]): build the tiled
+    // procedural terrain world (terrain + sky + sun), pose a camera up on the
+    // hills looking toward the sun so the lit rolling terrain + cast shadows +
+    // sky read clearly, settle a few frames, and capture a PNG. Default path when
+    // omitted: G:\X3Native-wt-terrain\terrain.png.
+    bool        terrainShot = false;
+    std::string terrainShotPath = "G:/X3Native-wt-terrain/terrain.png";
+    // World selector (--world terrain): launch the playable OUTDOOR terrain world
+    // (walk the hills) instead of the default interior Level 1. Anything else (or
+    // omitted) keeps Level 1 as the default, unchanged.
+    std::string worldMode = "level1";
     // Optional settle-frame count for --screenshot (default 16 = unchanged
     // behavior). Larger values advance the world (and the characters' skeletal
     // animation) further before the capture, so two shots at different counts show
@@ -179,6 +191,10 @@ int main(int argc, char** argv) {
         else if (a == "--test-phase2a") testPhase2a = true;
         else if (a == "--test-phase2b") testPhase2b = true;
         else if (a == "--test-anim") testAnim = true;
+        else if (a == "--test-terrain") testTerrain = true;
+        else if (a == "--world") {
+            if (i + 1 < argc && argv[i + 1][0] != '-') worldMode = argv[++i];
+        }
         else if (a == "--stress") {
             if (i + 1 < argc) { stressCount = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -201,6 +217,11 @@ int main(int argc, char** argv) {
             skyShot = true;
             // Optional output path arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') skyShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-terrain") {
+            terrainShot = true;
+            // Optional output path arg (next token, if it isn't another flag).
+            if (i + 1 < argc && argv[i + 1][0] != '-') terrainShotPath = argv[++i];
         }
     }
 
@@ -260,6 +281,10 @@ int main(int argc, char** argv) {
     if (testAnim) {
         x3::logInfo("running J1 skeletal animation + CPU skinning self-test...");
         return x3::anim::runAnimSelfTest() ? 0 : 1;
+    }
+    if (testTerrain) {
+        x3::logInfo("running B2 tiled terrain world self-test (settle + LOD)...");
+        return x3::game::runTerrainSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -379,6 +404,86 @@ int main(int argc, char** argv) {
         return wrote ? 0 : 1;
     }
 
+    // ---- Terrain vantage mode (--screenshot-terrain [path.png]) ------------
+    // Build the B2 tiled procedural terrain world (terrain meshes + the analytic
+    // sky lit by the existing sun), pose a camera up on the hills looking toward
+    // the sun so the lit rolling terrain, cast shadows, and sky all read, settle a
+    // few frames so the shadow map + LOD register, and capture a PNG. Built
+    // entirely through the public render API + a local Jolt world (so the terrain
+    // collision path is exercised too) — no game/audio stack. EFLZ Level 1 is an
+    // enclosed interior; this is how to SEE + verify the outdoor terrain.
+    if (terrainShot) {
+        x3::logInfo("--screenshot-terrain: rendering tiled terrain world to " + terrainShotPath);
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> tphys(x3::phys::createPhysicsWorld());
+        tphys->init();
+        x3::game::Scene tscene;
+        x3::game::Terrain terrain;
+        x3::game::TerrainConfig tcfg;   // default 32x32 @ 32 m => ~1 km^2
+        terrain.build(tscene, *device, *tphys, tcfg);
+
+        // Turn ON the analytic sky with the SAME sun the shadow pass + mesh.frag
+        // use (normalize(0.4,1,0.3)) so the disk sits where the world is lit from.
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+        sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
+        device->setSkyParams(sp);
+
+        // Camera: stand elevated on the hills and look DOWN-and-across toward the
+        // sun's azimuth, so the rolling relief + cast shadows read as 3D (a level
+        // look flattens the hills into a plane). The downward pitch frames the hills
+        // filling most of the view with the sky + sun in the upper band.
+        const float camWX = -90.0f, camWZ = -120.0f;
+        const float surfY = terrain.heightAt(camWX, camWZ);
+        const float camY  = surfY + 18.0f;              // up among the hills (relief looms)
+        const float sunYaw   = std::atan2(0.3f, 0.4f);  // toward the sun in XZ
+        const float camPitch = -0.16f;                  // ~9deg down: hills + shadows + sky
+        device->setCamera(camWX, camY, camWZ, sunYaw, camPitch, 70.0f);
+
+        // Pick LOD for this camera so far tiles decimate (proves the LOD path in
+        // the captured frame too).
+        terrain.updateLod(tscene, camWX, camWZ);
+
+        const float dt = 1.0f / 60.0f;
+        // Render a measured window of frames; report the averaged GPU-pass time
+        // (vsync-independent) so the perf report has a real terrain GPU cost. The
+        // capture is armed on the final frame.
+        const int kFrames = 80, kWarmup = 20;
+        double sumGpuMs = 0.0; int measured = 0;
+        for (int i = 0; i < kFrames; ++i) {
+            glfwPollEvents();
+            tphys->step(dt);
+            if (i == kFrames - 1) device->armCapture(terrainShotPath.c_str());
+            auto frame = device->beginFrame();
+            if (frame.valid) tscene.render(*device, frame);
+            device->endFrame(frame);
+            const x3::rhi::RenderStats s = device->stats();
+            if (i >= kWarmup) { sumGpuMs += s.gpuFrameMs; ++measured; }
+        }
+        const bool wrote = device->captureFrame(terrainShotPath.c_str());
+        if (wrote) {
+            const x3::rhi::RenderStats st = device->stats();
+            const double avgGpu = measured ? sumGpuMs / measured : 0.0;
+            const double gpuFps = (avgGpu > 1e-6) ? (1000.0 / avgGpu) : 0.0;
+            char rb[256];
+            std::snprintf(rb, sizeof(rb),
+                "--screenshot-terrain: wrote %s | tiles=%u activeTris=%u draws=%u tris=%u "
+                "| GPU=%.3f ms (~%.0f fps GPU-bound)",
+                terrainShotPath.c_str(), terrain.tileCount(),
+                terrain.activeTriangleCount(), st.drawCalls, st.triangles,
+                avgGpu, gpuFps);
+            x3::logInfo(rb);
+        } else x3::logError("--screenshot-terrain: capture FAILED");
+
+        tphys->shutdown();
+        device->shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return wrote ? 0 : 1;
+    }
+
     // ---- Asset source (stub until D5) ----
     std::unique_ptr<x3::asset::IAssetSource> assets(x3::asset::createAssetSource());
     assets->mountPak("base.x3pak", 0);  // stub: logs not-implemented for now
@@ -429,17 +534,46 @@ int main(int argc, char** argv) {
     // A-E, the armory pistol pickup, the checkpoint guards, the strength/arena/
     // elevator trigger volumes, the objective list, and the corridor/Martinez
     // enemies that spawn on their beats. (See app/level1_game.* + the spec §2/§3.)
+    // ---- World selection (additive): the default is the interior Level 1. With
+    // `--world terrain` the host instead builds the B2 outdoor TILED TERRAIN world
+    // (terrain + sky + sun) so the human can WALK the hills. Level 1 stays the
+    // default and is built/ticked exactly as before when not in terrain mode. The
+    // Level1Game object is still constructed (so the screenshot/bench/smoketest
+    // early-return paths are unchanged) but is only BUILT + ticked for Level 1. ----
+    const bool terrainWorld = (worldMode == "terrain");
     x3::game::Scene scene;
     x3::game::Level1Game game;
-    game.build(scene, *device, *physics, "G:/GameModels/rigged_glb");
-    // Audio hookups for Level 1 events (§9, nice-to-have; silent if no device).
-    {
+    x3::game::Terrain    terrain;     // only built in terrain mode
+    if (!terrainWorld) {
+        game.build(scene, *device, *physics, "G:/GameModels/rigged_glb");
+        // Audio hookups for Level 1 events (§9, nice-to-have; silent if no device).
         x3::game::Level1Audio la;
         la.sys = audio.get(); la.door = sndDoor; la.pickup = sndPickup;
         la.gun = sndGun; la.death = sndDeath;
         game.setAudio(la);
     }
     const x3::game::Level1Layout& L1 = game.layout();
+
+    // ---- Outdoor terrain world setup (--world terrain). Build the tiled terrain
+    // into the scene, enable the analytic sky with the engine's sun, and choose a
+    // spawn high on the hills. The player walks it through the SAME walking
+    // controller + physics as Level 1; terrain LOD is updated each frame below. ----
+    x3::phys::Vec3 terrainSpawn{};
+    if (terrainWorld) {
+        x3::game::TerrainConfig tcfg;   // default 32x32 @ 32 m => ~1 km^2
+        terrain.build(scene, *device, *physics, tcfg);
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+        sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
+        device->setSkyParams(sp);
+        // Spawn the player on the surface near the world center, a little above so
+        // the capsule settles onto the hill on the first frames.
+        const float sx = 0.0f, sz = 0.0f;
+        terrainSpawn = x3::phys::Vec3{ sx, terrain.heightAt(sx, sz) + 2.0f, sz };
+        x3::logInfo("--world terrain: outdoor tiled terrain world — walk the hills (WASD)");
+    }
 
     // ---- Combat FX (gameplay-feel pass): shot tracers + muzzle flash. The
     // crosshair now lives in the screen-space HUD layer (S7), not here. ----
@@ -681,9 +815,11 @@ int main(int argc, char** argv) {
     x3::logInfo("entering main loop — WASD walk, mouse look, LeftShift sprint, Space jump, E use, V super-strength melee (LMB fire when armed), F noclip, ` console, Esc to quit");
 
     // ---- Walking player (S3). Spawn at the Level 1 cell spawn point (Jake wakes
-    // in the detention cell), facing +X down the level spine.
+    // in the detention cell), facing +X down the level spine — or, in the terrain
+    // world, on the hills near the world center.
     x3::game::Player player;
-    player.spawn(*physics, L1.spawn.x, L1.spawn.y, L1.spawn.z);
+    if (terrainWorld) player.spawn(*physics, terrainSpawn.x, terrainSpawn.y, terrainSpawn.z);
+    else              player.spawn(*physics, L1.spawn.x, L1.spawn.y, L1.spawn.z);
 
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
@@ -789,7 +925,7 @@ int main(int argc, char** argv) {
         // direction; if it hits a button linked to an UNLOCKED door, it opens.
         // (Door C refuses while locked — until the player is armed, §6.4.) ----
         bool eNow = keyDown(GLFW_KEY_E);
-        if (eNow && !prevE) {
+        if (eNow && !prevE && !terrainWorld) {
             float ex, ey, ez, yaw, pitch;
             player.camera(ex, ey, ez, yaw, pitch);   // in noclip the camera is the fly cam
             if (noclip) { ex = flyX; ey = flyY; ez = flyZ; yaw = flyYaw; pitch = flyPitch; }
@@ -860,7 +996,14 @@ int main(int argc, char** argv) {
         // Phase 2a: pass the player as the damage sink + the enemy-attack FX so
         // guards/drone/Martinez hurt the player (enemies attack only while alive). ----
         const x3::phys::Vec3 camPos{ camX, camY, camZ };
-        game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
+        if (terrainWorld) {
+            // Outdoor world: no Level 1 controller. Just update terrain LOD from the
+            // camera so far tiles decimate as the player roams (cheap — pre-uploaded
+            // LOD meshes, no GPU work in the hot path).
+            terrain.updateLod(scene, camX, camZ);
+        } else {
+            game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
+        }
 
         // ---- Phase 2a: death -> respawn. The player enters the death state at
         // HP 0; player.update() freezes movement + ticks the respawn countdown.
@@ -868,10 +1011,10 @@ int main(int argc, char** argv) {
         // restore full HP (the damage flash is cleared by resetHealth()). Enemies
         // are NOT reset (documented in Level1Game::checkpoint()). ----
         if (player.readyToRespawn()) {
-            const x3::phys::Vec3 cp = game.checkpoint();
+            const x3::phys::Vec3 cp = terrainWorld ? terrainSpawn : game.checkpoint();
             physics->setBodyPosition(player.body(), cp);
             player.resetHealth();
-            x3::logInfo("respawn: player restored at level start (full HP)");
+            x3::logInfo("respawn: player restored at start (full HP)");
         }
 
         // ---- M9: drive the 3D listener from the player camera each frame ----
@@ -910,7 +1053,7 @@ int main(int argc, char** argv) {
         // MeleeSystem's own cooldown; only while alive. ----
         bool meleeNow = (keyDown(GLFW_KEY_V) ||
             (!consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS));
-        if (meleeNow && !prevMelee && player.isAlive()) {
+        if (meleeNow && !prevMelee && player.isAlive() && !terrainWorld) {
             x3::phys::Vec3 eye{ camX, camY, camZ };
             x3::phys::Vec3 dir{ std::cos(camPitch) * std::cos(camYaw),
                                 std::sin(camPitch),
@@ -973,11 +1116,14 @@ int main(int argc, char** argv) {
             scene.render(*device, frame);
             // Level 1 world extras: the bobbing armory pickup + all enemy models
             // (corridor guards/drone, checkpoint guards, Martinez) with hit-flash.
-            game.drawWorldExtras(*device, frame, scene);
-            const VmPose vmPose = readViewmodelPose(*console);
-            game.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,
-                               vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
-                               vmPose.fwd, vmPose.right, vmPose.down);
+            // Skipped in the outdoor terrain world (no Level 1 controller built).
+            if (!terrainWorld) {
+                game.drawWorldExtras(*device, frame, scene);
+                const VmPose vmPose = readViewmodelPose(*console);
+                game.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,
+                                   vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
+                                   vmPose.fwd, vmPose.right, vmPose.down);
+            }
             // FX: active tracers + muzzle flash (world-space).
             combatFx.draw(*device, frame, camX, camY, camZ, camYaw, camPitch);
             // ---- HUD overlay last: crosshair (hidden while console open), FPS
@@ -987,10 +1133,10 @@ int main(int argc, char** argv) {
             hud.drawFps(*device, frame, *console, dt);
             // Perf stats overlay (top-right): gated by the r_stats cvar / F3.
             hud.drawStats(*device, frame, *console, dt);
-            if (!consoleOpen) game.drawObjective(*device, frame);
+            if (!consoleOpen && !terrainWorld) game.drawObjective(*device, frame);
             // Phase 2b: boss "PHASE 2!/PHASE 3!" flash, centered near the top, while
             // the banner timer is live (a brief, attention-grabbing red string).
-            if (game.phaseBannerTime() > 0.0f && !game.phaseBanner().empty()) {
+            if (!terrainWorld && game.phaseBannerTime() > 0.0f && !game.phaseBanner().empty()) {
                 uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
                 const float scale = 28.0f;
                 const float w = game.phaseBanner().size() * scale * 0.6f;
