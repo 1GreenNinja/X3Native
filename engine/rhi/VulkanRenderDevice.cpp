@@ -186,11 +186,19 @@ public:
         if (!createPost()) return false;
         if (!createBloomTargets()) return false;
         writePostDescriptors();
+        // SSAO (depth pre-pass + half-res hemisphere AO + depth-aware blur). Built
+        // after the mesh layout (it adds set 3 to the mesh pipeline) + the extent
+        // is known. Enabled by default with tasteful tunables.
+        buildSsaoKernelAndNoise();
+        if (!createSsao()) return false;
+        if (!createSsaoTargets()) return false;
+        writeSsaoDescriptors();
         return true;
     }
 
     void shutdown() override {
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        destroySsao();
         destroyPost();
         destroySky();
         destroyHud();
@@ -229,6 +237,14 @@ public:
         // and ensureMainPass() draws the full-screen sky when enabled. Disabled by
         // default, so indoor levels + every existing flag are unchanged.
         m_sky = sp;
+    }
+
+    void setSsaoParams(const SsaoParams& sp) override {
+        // Cache a snapshot; prepareFrameData() bakes radius/bias/intensity/power
+        // into the per-frame SSAO UBO + the mesh.frag control block, and
+        // buildAndExecuteGraph gates the SSAO chain on `enabled`. Enabled by
+        // default with tasteful values (no app wiring required for it to work).
+        m_ssao = sp;
     }
 
     FrameContext beginFrame() override {
@@ -1077,6 +1093,32 @@ private:
         proj[1][1] *= -1.0f;
         FrameUBO ubo{};
         ubo.viewProj = proj * view;
+
+        // ---- SSAO per-frame UBO + mesh.frag control. The SSAO pass reconstructs
+        // VIEW-space position from depth via invProj and projects samples via proj
+        // (the SAME camera projection, reverse-Y, used by the meshes). Fill the
+        // baked kernel/noise + the tunables each frame so cvar edits take effect
+        // immediately. The depth/AO image views are wired by writeSsaoDescriptors. ----
+        {
+            SsaoUBO su{};
+            su.proj    = proj;
+            su.invProj = glm::inverse(proj);
+            su.params0 = glm::vec4(m_ssao.radius, m_ssao.bias, m_ssao.intensity, m_ssao.power);
+            su.params1 = glm::vec4((float)m_extent.width, (float)m_extent.height,
+                                   (float)m_extent.width / 4.0f, (float)m_extent.height / 4.0f);
+            for (int i = 0; i < kSsaoKernel; ++i) su.kernel[i] = m_ssaoKernelCPU[i];
+            for (int i = 0; i < 16; ++i)          su.noise[i]  = m_ssaoNoiseCPU[i];
+            if (m_ssaoUboMapped[m_frameIdx])
+                std::memcpy(m_ssaoUboMapped[m_frameIdx], &su, sizeof(SsaoUBO));
+
+            SsaoControl sc{};
+            const float invW = (m_extent.width  > 0) ? 1.0f / (float)m_extent.width  : 0.0f;
+            const float invH = (m_extent.height > 0) ? 1.0f / (float)m_extent.height : 0.0f;
+            sc.ctrl = glm::vec4(m_ssao.enabled ? 1.0f : 0.0f, m_ssao.strength, invW, invH);
+            if (m_ssaoCtrlMapped[m_frameIdx])
+                std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
+        }
+
         m_lightViewProj = computeLightViewProj();
         ubo.lightViewProj = m_lightViewProj;
         // Forward point lights: a constant hemispheric-ish ambient lift in the rgb,
@@ -1196,6 +1238,33 @@ private:
         }
     }
 
+    // ---- SSAO depth pre-pass body ------------------------------------------
+    // Record the camera depth-only pre-pass into the (already-open) depth pass:
+    // bind the depth pre-pass pipeline (depth.vert, set0 = objSet) and replay the
+    // SAME indirect draws as the main pass, so the depth buffer holds the exact
+    // camera depth before lighting. Runs only when SSAO is enabled.
+    void recordDepthPrePassBody(VkCommandBuffer cmd) {
+        if (!m_depthPrePipeline || m_frameCmdCount == 0) return;
+        auto& fr = m_frames[m_frameIdx];
+        VkViewport vp{ 0.0f, 0.0f, (float)m_extent.width, (float)m_extent.height, 0.0f, 1.0f };
+        VkRect2D scis{ {0,0}, m_extent };
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &scis);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_depthPrePipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowLayout,
+                                0, 1, &fr.objSet, 0, nullptr);
+        for (uint32_t i = 0; i < m_frameCmdCount; ++i) {
+            const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
+            VkDeviceSize off = 0;
+            VkBuffer vb = mh.drawVbo(m_frameIdx);
+            vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &off);
+            vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexedIndirect(cmd, fr.indirectBuf,
+                (VkDeviceSize)i * sizeof(VkDrawIndexedIndirectCommand), 1,
+                sizeof(VkDrawIndexedIndirectCommand));
+        }
+    }
+
     // ---- GPU-driven mesh multidraw (Subsystem D) ---------------------------
     // Record the mesh multidraw into the (already-open) main color pass: bind the
     // mesh pipeline + descriptor sets and issue ONE vkCmdDrawIndexedIndirect per
@@ -1203,11 +1272,17 @@ private:
     void recordMeshDraws(VkCommandBuffer cmd) {
         if (m_frameCmdCount == 0 || !m_meshPipeline) return;
         auto& fr = m_frames[m_frameIdx];
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshPipeline);
-        // set 0 = bindless textures, set 1 = object SSBO + camera UBO, set 2 = shadow map.
-        VkDescriptorSet sets[3] = { m_bindlessSet, fr.objSet, m_shadowSet };
+        // SSAO on -> the EQUAL/no-write pipeline (depth pre-pass already wrote
+        // depth). SSAO off -> the original LESS/write pipeline (main pass owns
+        // depth, no pre-pass ran).
+        const bool ssaoOn = m_ssao.enabled;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          ssaoOn ? m_meshPipeline : m_meshPipelineNoSsao);
+        // set 0 = bindless textures, set 1 = object SSBO + camera UBO, set 2 = shadow
+        // map, set 3 = the SSAO AO texture + control UBO (this frame's set).
+        VkDescriptorSet sets[4] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx] };
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshLayout,
-                                0, 3, sets, 0, nullptr);
+                                0, 4, sets, 0, nullptr);
         for (uint32_t i = 0; i < m_frameCmdCount; ++i) {
             const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
             VkDeviceSize off = 0;
@@ -1452,6 +1527,14 @@ private:
             rgMip[i] = m_graph.importImage("bloom.mip", m_bloomMips[i].img,
                 ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
 
+        // SSAO images (half-res). Imported UNDEFINED each frame (fully overwritten
+        // by their producing pass). Only used when SSAO is enabled this frame.
+        const bool ssaoOn = m_ssao.enabled;
+        RgResource rgSsaoRaw  = m_graph.importImage("ssao.raw",  m_ssaoRawImg,
+            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        RgResource rgSsaoBlur = m_graph.importImage("ssao.blur", m_ssaoBlurImg,
+            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+
         // ---- Pass 1: shadow depth pass --------------------------------------
         {
             m_shadowDepthAttach = VkRenderingAttachmentInfo{};
@@ -1481,6 +1564,125 @@ private:
             m_graph.addPass(std::move(shadowPass));
         }
 
+        // ---- SSAO chain (only when enabled): depth pre-pass -> SSAO -> blur ----
+        // The depth pre-pass writes the camera depth buffer so SSAO has a complete
+        // depth image BEFORE lighting; the main color pass then runs depth-test
+        // EQUAL with depth-write off (same geometry, same depth). When SSAO is off,
+        // none of these run and the main pass clears+writes depth itself (LESS).
+        if (ssaoOn) {
+            // Pass: depth pre-pass (camera POV) -> m_depthImg (DEPTH_ATTACHMENT).
+            {
+                m_depthPreAttach = VkRenderingAttachmentInfo{};
+                m_depthPreAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                m_depthPreAttach.imageView = m_depthView;
+                m_depthPreAttach.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+                m_depthPreAttach.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                m_depthPreAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;  // sampled by SSAO + reused by main pass
+                m_depthPreAttach.clearValue.depthStencil = { 1.0f, 0 };
+
+                RenderPassDesc dpre{};
+                dpre.name = "depth-prepass";
+                dpre.uses.push_back(ResourceUse{
+                    rgDepth, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/true });
+                dpre.usesDynamicRendering = true;
+                m_depthPreRenderInfo = VkRenderingInfo{};
+                m_depthPreRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+                m_depthPreRenderInfo.renderArea = { {0,0}, m_extent };
+                m_depthPreRenderInfo.layerCount = 1;
+                m_depthPreRenderInfo.colorAttachmentCount = 0;
+                m_depthPreRenderInfo.pDepthAttachment = &m_depthPreAttach;
+                dpre.renderInfo = m_depthPreRenderInfo;
+                dpre.record = [this](VkCommandBuffer c){ recordDepthPrePassBody(c); };
+                m_graph.addPass(std::move(dpre));
+            }
+            // Pass: SSAO (read depth as DEPTH_READ_ONLY, write raw AO) -> half-res.
+            {
+                m_ssaoAttach = VkRenderingAttachmentInfo{};
+                m_ssaoAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                m_ssaoAttach.imageView = m_ssaoRawView;
+                m_ssaoAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                m_ssaoAttach.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+                m_ssaoAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+                RenderPassDesc sp{};
+                sp.name = "ssao";
+                sp.uses.push_back(ResourceUse{
+                    rgSsaoRaw, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+                sp.uses.push_back(ResourceUse{
+                    rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+                sp.usesDynamicRendering = true;
+                m_ssaoRenderInfo = VkRenderingInfo{};
+                m_ssaoRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+                m_ssaoRenderInfo.renderArea = { {0,0}, m_ssaoExtent };
+                m_ssaoRenderInfo.layerCount = 1;
+                m_ssaoRenderInfo.colorAttachmentCount = 1;
+                m_ssaoRenderInfo.pColorAttachments = &m_ssaoAttach;
+                sp.renderInfo = m_ssaoRenderInfo;
+                sp.record = [this](VkCommandBuffer c){
+                    postViewport(c, m_ssaoExtent);
+                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ssaoPipe);
+                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ssaoLayout,
+                                            0, 1, &m_ssaoSet[m_frameIdx], 0, nullptr);
+                    vkCmdDraw(c, 3, 1, 0, 0);
+                };
+                m_graph.addPass(std::move(sp));
+            }
+            // Pass: SSAO blur (read raw AO + depth, write blurred AO) -> half-res.
+            {
+                m_ssaoBlurAttach = VkRenderingAttachmentInfo{};
+                m_ssaoBlurAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                m_ssaoBlurAttach.imageView = m_ssaoBlurView;
+                m_ssaoBlurAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                m_ssaoBlurAttach.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+                m_ssaoBlurAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+                m_ssaoBlurPush.aoTexel[0] = 1.0f / (float)std::max(1u, m_ssaoExtent.width);
+                m_ssaoBlurPush.aoTexel[1] = 1.0f / (float)std::max(1u, m_ssaoExtent.height);
+                m_ssaoBlurPush.depthSigma = 0.0008f;  // clip-z depth-similarity falloff
+                m_ssaoBlurPush.pad0 = 0.0f;
+
+                RenderPassDesc bp{};
+                bp.name = "ssao-blur";
+                bp.uses.push_back(ResourceUse{
+                    rgSsaoBlur, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+                bp.uses.push_back(ResourceUse{
+                    rgSsaoRaw, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+                bp.uses.push_back(ResourceUse{
+                    rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+                bp.usesDynamicRendering = true;
+                m_ssaoBlurRenderInfo = VkRenderingInfo{};
+                m_ssaoBlurRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+                m_ssaoBlurRenderInfo.renderArea = { {0,0}, m_ssaoExtent };
+                m_ssaoBlurRenderInfo.layerCount = 1;
+                m_ssaoBlurRenderInfo.colorAttachmentCount = 1;
+                m_ssaoBlurRenderInfo.pColorAttachments = &m_ssaoBlurAttach;
+                bp.renderInfo = m_ssaoBlurRenderInfo;
+                bp.record = [this](VkCommandBuffer c){
+                    postViewport(c, m_ssaoExtent);
+                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ssaoBlurPipe);
+                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ssaoBlurLayout,
+                                            0, 1, &m_ssaoBlurSet, 0, nullptr);
+                    vkCmdPushConstants(c, m_ssaoBlurLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                       0, sizeof(SsaoBlurPush), &m_ssaoBlurPush);
+                    vkCmdDraw(c, 3, 1, 0, 0);
+                };
+                m_graph.addPass(std::move(bp));
+            }
+        }
+
         // ---- Pass 2: main color pass (sky + meshes) -> LINEAR HDR target ----
         // Renders the lit scene into the R16G16B16A16_SFLOAT HDR target in linear
         // light (no tonemap). The HUD is drawn later, in the composite pass, on the
@@ -1495,11 +1697,14 @@ private:
             m_hdrColorAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
             m_hdrColorAttach.clearValue.color = { { 0.04f, 0.05f, 0.08f, 1.0f } }; // dark slate (linear)
 
+            // Depth: with SSAO on, the depth pre-pass already populated depth, so
+            // LOAD it (preserve) + the EQUAL pipeline writes nothing. With SSAO off,
+            // this pass owns depth: CLEAR + the LESS/write pipeline.
             m_mainDepthAttach = VkRenderingAttachmentInfo{};
             m_mainDepthAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
             m_mainDepthAttach.imageView = m_depthView;
             m_mainDepthAttach.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-            m_mainDepthAttach.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            m_mainDepthAttach.loadOp = ssaoOn ? VK_ATTACHMENT_LOAD_OP_LOAD : VK_ATTACHMENT_LOAD_OP_CLEAR;
             m_mainDepthAttach.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
             m_mainDepthAttach.clearValue.depthStencil = { 1.0f, 0 };
 
@@ -1510,11 +1715,16 @@ private:
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            // Depth use: with SSAO on the pre-pass wrote it (we LOAD + test EQUAL,
+            // no write) so declare it READ; with SSAO off this pass writes depth.
+            // Either way it must end as DEPTH_ATTACHMENT for this pass; the graph
+            // derives the transition from the SSAO pass's DEPTH_READ_ONLY read.
             colorPass.uses.push_back(ResourceUse{
                 rgDepth, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/true });
+                ssaoOn ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                       : VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/!ssaoOn });
             // READ the shadow map in DEPTH_READ_ONLY — the graph derives the
             // DEPTH_ATTACHMENT->DEPTH_READ_ONLY transition from pass 1's write state.
             colorPass.uses.push_back(ResourceUse{
@@ -1522,6 +1732,15 @@ private:
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            // When SSAO is on, mesh.frag samples the blurred AO texture — declare it
+            // so the graph transitions it COLOR_ATTACHMENT -> SHADER_READ_ONLY.
+            if (ssaoOn) {
+                colorPass.uses.push_back(ResourceUse{
+                    rgSsaoBlur, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            }
             colorPass.usesDynamicRendering = true;
             m_mainRenderInfo = VkRenderingInfo{};
             m_mainRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -2030,7 +2249,9 @@ private:
         dici.mipLevels = 1; dici.arrayLayers = 1;
         dici.samples = VK_SAMPLE_COUNT_1_BIT;
         dici.tiling = VK_IMAGE_TILING_OPTIMAL;
-        dici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        // SAMPLED so the SSAO pass can read view-space depth from this buffer (the
+        // depth pre-pass writes it; SSAO reconstructs view position + normals).
+        dici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         VmaAllocationCreateInfo daci{};
         daci.usage = VMA_MEMORY_USAGE_AUTO;
         daci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
@@ -2063,6 +2284,10 @@ private:
         // descriptor sets after the swapchain (and m_extent) are updated.
         createBloomTargets();
         writePostDescriptors();
+        // SSAO half-res targets track the extent; the depth view also changed, so
+        // rewrite every SSAO descriptor that references depth/AO views.
+        createSsaoTargets();
+        writeSsaoDescriptors();
     }
 
     // ---- HEADLESS offscreen render target (no window, no swapchain) ---------
@@ -2113,7 +2338,9 @@ private:
         dici.mipLevels = 1; dici.arrayLayers = 1;
         dici.samples = VK_SAMPLE_COUNT_1_BIT;
         dici.tiling = VK_IMAGE_TILING_OPTIMAL;
-        dici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        // SAMPLED so the SSAO pass can read view-space depth from this buffer (the
+        // depth pre-pass writes it; SSAO reconstructs view position + normals).
+        dici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         VmaAllocationCreateInfo daci{};
         daci.usage = VMA_MEMORY_USAGE_AUTO;
         daci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
@@ -2149,6 +2376,9 @@ private:
         // (and rewrite the post descriptor sets) so they track the new size.
         createBloomTargets();
         writePostDescriptors();
+        // SSAO half-res targets + depth-referencing descriptors track the extent.
+        createSsaoTargets();
+        writeSsaoDescriptors();
     }
 
     // ---- HDR scene + bloom render targets ----------------------------------
@@ -2424,6 +2654,331 @@ private:
         if (m_postSetLayout2) { vkDestroyDescriptorSetLayout(m_dev.device, m_postSetLayout2, nullptr); m_postSetLayout2 = VK_NULL_HANDLE; }
         if (m_postSetLayout1) { vkDestroyDescriptorSetLayout(m_dev.device, m_postSetLayout1, nullptr); m_postSetLayout1 = VK_NULL_HANDLE; }
         if (m_postSampler)    { vkDestroySampler(m_dev.device, m_postSampler, nullptr); m_postSampler = VK_NULL_HANDLE; }
+    }
+
+    // =====================================================================
+    // SSAO setup. Builds: a NEAREST depth sampler (sample the depth image as
+    // data), a CLAMP linear sampler (up-sample the AO), the depth pre-pass
+    // pipeline (depth.vert, reuses m_shadowLayout = objSet), the SSAO + blur
+    // full-screen pipelines, descriptor layouts/pool/sets, and the per-frame
+    // SSAO + control UBOs. Extent-dependent images are made in createSsaoTargets.
+    // =====================================================================
+    bool createSsao() {
+        // NEAREST sampler for reading the depth image as plain data (no compare).
+        VkSamplerCreateInfo dsci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        dsci.magFilter = VK_FILTER_NEAREST; dsci.minFilter = VK_FILTER_NEAREST;
+        dsci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        dsci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        dsci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        dsci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        dsci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+        if (vkCreateSampler(m_dev.device, &dsci, nullptr, &m_depthSampler) != VK_SUCCESS) {
+            logError("[rhi] ssao depth sampler failed"); return false;
+        }
+        // CLAMP linear sampler for up-sampling the half-res AO into mesh.frag.
+        VkSamplerCreateInfo lsci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        lsci.magFilter = VK_FILTER_LINEAR; lsci.minFilter = VK_FILTER_LINEAR;
+        lsci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        lsci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        lsci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        lsci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        lsci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+        if (vkCreateSampler(m_dev.device, &lsci, nullptr, &m_ssaoLinearSampler) != VK_SUCCESS) {
+            logError("[rhi] ssao linear sampler failed"); return false;
+        }
+
+        // ---- Descriptor set layout (ssao.frag): binding0 = depth sampler,
+        //      binding1 = SsaoUBO. ----
+        {
+            VkDescriptorSetLayoutBinding b[2]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 2; ci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_ssaoSetLayout) != VK_SUCCESS) {
+                logError("[rhi] ssao set layout failed"); return false;
+            }
+        }
+        // ---- Blur set layout: binding0 = raw AO, binding1 = depth. ----
+        {
+            VkDescriptorSetLayoutBinding b[2]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 2; ci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_ssaoBlurSetLayout) != VK_SUCCESS) {
+                logError("[rhi] ssao blur set layout failed"); return false;
+            }
+        }
+        // (mesh.frag set 3 layout m_meshAoSetLayout was created in createGraphics so
+        //  the mesh pipeline layout could include it; we only ALLOCATE its sets here.)
+
+        // ---- Descriptor pool: per-frame ssao sets + per-frame mesh-ao sets + 1
+        //      blur set. Samplers + uniform buffers sized exactly. ----
+        {
+            const uint32_t nFrames = kFramesInFlight;
+            VkDescriptorPoolSize sizes[2]{};
+            sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            sizes[0].descriptorCount = nFrames /*ssao depth*/ + nFrames /*mesh ao*/ + 2 /*blur*/;
+            sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            sizes[1].descriptorCount = nFrames /*ssao ubo*/ + nFrames /*ctrl ubo*/;
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.maxSets = nFrames + nFrames + 1; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_ssaoPool) != VK_SUCCESS) {
+                logError("[rhi] ssao desc pool failed"); return false;
+            }
+        }
+
+        // ---- Per-frame SSAO + control UBOs + their descriptor sets. ----
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkBufferCreateInfo ub{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            ub.size = sizeof(SsaoUBO); ub.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo info{};
+            if (vmaCreateBuffer(m_alloc, &ub, &aci, &m_ssaoUboBuf[i], &m_ssaoUboAlloc[i], &info) != VK_SUCCESS) {
+                logError("[rhi] ssao ubo create failed"); return false;
+            }
+            m_ssaoUboMapped[i] = info.pMappedData;
+
+            VkBufferCreateInfo cb{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            cb.size = sizeof(SsaoControl); cb.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationInfo cinfo{};
+            if (vmaCreateBuffer(m_alloc, &cb, &aci, &m_ssaoCtrlBuf[i], &m_ssaoCtrlAlloc[i], &cinfo) != VK_SUCCESS) {
+                logError("[rhi] ssao ctrl ubo create failed"); return false;
+            }
+            m_ssaoCtrlMapped[i] = cinfo.pMappedData;
+
+            VkDescriptorSetAllocateInfo a0{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            a0.descriptorPool = m_ssaoPool; a0.descriptorSetCount = 1; a0.pSetLayouts = &m_ssaoSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &a0, &m_ssaoSet[i]) != VK_SUCCESS) {
+                logError("[rhi] ssao set alloc failed"); return false;
+            }
+            VkDescriptorSetAllocateInfo a1{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            a1.descriptorPool = m_ssaoPool; a1.descriptorSetCount = 1; a1.pSetLayouts = &m_meshAoSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &a1, &m_meshAoSet[i]) != VK_SUCCESS) {
+                logError("[rhi] mesh ao set alloc failed"); return false;
+            }
+        }
+        {
+            VkDescriptorSetAllocateInfo ab{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            ab.descriptorPool = m_ssaoPool; ab.descriptorSetCount = 1; ab.pSetLayouts = &m_ssaoBlurSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &ab, &m_ssaoBlurSet) != VK_SUCCESS) {
+                logError("[rhi] ssao blur set alloc failed"); return false;
+            }
+        }
+
+        // ---- Depth pre-pass pipeline (depth.vert; depth-only, camera viewProj,
+        //      set0 = objSet via m_shadowLayout, writes m_depthImg). ----
+        if (!createDepthPrePipeline()) return false;
+
+        // ---- SSAO pipeline (ssao.frag -> R8). ----
+        {
+            VkPushConstantRange pcr{}; // none for ssao; params come from the UBO
+            (void)pcr;
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pl.setLayoutCount = 1; pl.pSetLayouts = &m_ssaoSetLayout;
+            if (vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_ssaoLayout) != VK_SUCCESS) {
+                logError("[rhi] ssao pipeline layout failed"); return false;
+            }
+            if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\ssao.frag.spv",
+                                          m_ssaoLayout, kSsaoFormat, /*additiveBlend=*/false, m_ssaoPipe))
+                return false;
+        }
+        // ---- SSAO blur pipeline (ssao_blur.frag -> R8, push constant). ----
+        {
+            VkPushConstantRange pcr{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(SsaoBlurPush) };
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pl.setLayoutCount = 1; pl.pSetLayouts = &m_ssaoBlurSetLayout;
+            pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &pcr;
+            if (vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_ssaoBlurLayout) != VK_SUCCESS) {
+                logError("[rhi] ssao blur pipeline layout failed"); return false;
+            }
+            if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\ssao_blur.frag.spv",
+                                          m_ssaoBlurLayout, kSsaoFormat, /*additiveBlend=*/false, m_ssaoBlurPipe))
+                return false;
+        }
+
+        logInfo("[rhi] SSAO ready (half-res 32-tap hemisphere + depth-aware blur, depth-reconstruction)");
+        return true;
+    }
+
+    // Depth-only CAMERA pre-pass pipeline (depth.vert): writes the main depth
+    // buffer from the camera's POV before lighting so SSAO has a full depth image.
+    // Reuses m_shadowLayout (set0 = objSet); renders to m_depthFormat, no color.
+    bool createDepthPrePipeline() {
+        VkShaderModule vs = loadShaderModule("shaders\\depth.vert.spv");
+        if (!vs) return false;
+        VkPipelineShaderStageCreateInfo stage{};
+        stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage.stage = VK_SHADER_STAGE_VERTEX_BIT; stage.module = vs; stage.pName = "main";
+
+        VkVertexInputBindingDescription bind{ 0, sizeof(MeshVertex), VK_VERTEX_INPUT_RATE_VERTEX };
+        VkVertexInputAttributeDescription attrs[3]{
+            { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, pos)    },
+            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, normal) },
+            { 2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(MeshVertex, uv)     },
+        };
+        VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+        vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &bind;
+        vin.vertexAttributeDescriptionCount = 3; vin.pVertexAttributeDescriptions = attrs;
+        VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        vp.viewportCount = 1; vp.scissorCount = 1;
+        // Same back-face cull + winding as the main mesh pass so the depth values
+        // match EXACTLY (the color pass then runs depth-test EQUAL).
+        VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_BACK_BIT;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        dss.depthTestEnable = VK_TRUE; dss.depthWriteEnable = VK_TRUE;
+        dss.depthCompareOp = VK_COMPARE_OP_LESS;
+        VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        cb.attachmentCount = 0; cb.pAttachments = nullptr;
+        VkDynamicState dyn[2]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+        VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+        prci.colorAttachmentCount = 0;
+        prci.depthAttachmentFormat = m_depthFormat;
+        VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        gpci.pNext = &prci;
+        gpci.stageCount = 1; gpci.pStages = &stage;
+        gpci.pVertexInputState = &vin; gpci.pInputAssemblyState = &ia;
+        gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
+        gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
+        gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_shadowLayout;
+        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_depthPrePipeline);
+        vkDestroyShaderModule(m_dev.device, vs, nullptr);
+        if (pr != VK_SUCCESS) { logError("[rhi] depth pre-pass pipeline create failed"); return false; }
+        return true;
+    }
+
+    // Create (or recreate) the half-res SSAO raw + blurred R8 targets at the
+    // current frame extent. Called after createBloomTargets() at init + on resize.
+    bool createSsaoTargets() {
+        destroySsaoTargets();
+        m_ssaoExtent = { std::max(1u, m_extent.width / 2), std::max(1u, m_extent.height / 2) };
+        const VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (!createColorTarget(kSsaoFormat, m_ssaoExtent.width, m_ssaoExtent.height, usage,
+                               m_ssaoRawImg, m_ssaoRawAlloc, m_ssaoRawView)) {
+            logError("[rhi] ssao raw target create failed"); return false;
+        }
+        if (!createColorTarget(kSsaoFormat, m_ssaoExtent.width, m_ssaoExtent.height, usage,
+                               m_ssaoBlurImg, m_ssaoBlurAlloc, m_ssaoBlurView)) {
+            logError("[rhi] ssao blur target create failed"); return false;
+        }
+        return true;
+    }
+
+    void destroySsaoTargets() {
+        if (m_ssaoBlurView) { vkDestroyImageView(m_dev.device, m_ssaoBlurView, nullptr); m_ssaoBlurView = VK_NULL_HANDLE; }
+        if (m_ssaoBlurImg)  { vmaDestroyImage(m_alloc, m_ssaoBlurImg, m_ssaoBlurAlloc); m_ssaoBlurImg = VK_NULL_HANDLE; m_ssaoBlurAlloc = nullptr; }
+        if (m_ssaoRawView)  { vkDestroyImageView(m_dev.device, m_ssaoRawView, nullptr); m_ssaoRawView = VK_NULL_HANDLE; }
+        if (m_ssaoRawImg)   { vmaDestroyImage(m_alloc, m_ssaoRawImg, m_ssaoRawAlloc); m_ssaoRawImg = VK_NULL_HANDLE; m_ssaoRawAlloc = nullptr; }
+    }
+
+    // (Re)write the SSAO descriptor sets that reference the depth + AO image views
+    // (these change on resize). Called after createSsaoTargets() at init + resize.
+    void writeSsaoDescriptors() {
+        // ssao.frag set: binding0 = depth (NEAREST), binding1 = per-frame SsaoUBO.
+        // The depth image is sampled while in DEPTH_READ_ONLY_OPTIMAL (the graph's
+        // SSAO/blur passes transition it there), so the descriptor layout MUST be
+        // DEPTH_READ_ONLY_OPTIMAL to satisfy VUID-vkCmdDraw-imageLayout-00344.
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkDescriptorImageInfo di{ m_depthSampler, m_depthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+            VkDescriptorBufferInfo bi{ m_ssaoUboBuf[i], 0, sizeof(SsaoUBO) };
+            VkWriteDescriptorSet w[2]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[0].dstSet = m_ssaoSet[i]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &di;
+            w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[1].dstSet = m_ssaoSet[i]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+            w[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[1].pBufferInfo = &bi;
+            vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+        }
+        // blur set: binding0 = raw AO (linear, SHADER_READ_ONLY), binding1 = depth
+        // (NEAREST, DEPTH_READ_ONLY — same layout-match requirement as above).
+        {
+            VkDescriptorImageInfo da{ m_ssaoLinearSampler, m_ssaoRawView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo dd{ m_depthSampler, m_depthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet w[2]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[0].dstSet = m_ssaoBlurSet; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &da;
+            w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[1].dstSet = m_ssaoBlurSet; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+            w[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[1].pImageInfo = &dd;
+            vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+        }
+        // mesh.frag set3: binding0 = blurred AO (linear), binding1 = per-frame ctrl.
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkDescriptorImageInfo da{ m_ssaoLinearSampler, m_ssaoBlurView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorBufferInfo bi{ m_ssaoCtrlBuf[i], 0, sizeof(SsaoControl) };
+            VkWriteDescriptorSet w[2]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[0].dstSet = m_meshAoSet[i]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &da;
+            w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[1].dstSet = m_meshAoSet[i]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+            w[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[1].pBufferInfo = &bi;
+            vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+        }
+    }
+
+    void destroySsao() {
+        destroySsaoTargets();
+        if (m_ssaoBlurPipe)   { vkDestroyPipeline(m_dev.device, m_ssaoBlurPipe, nullptr); m_ssaoBlurPipe = VK_NULL_HANDLE; }
+        if (m_ssaoPipe)       { vkDestroyPipeline(m_dev.device, m_ssaoPipe, nullptr); m_ssaoPipe = VK_NULL_HANDLE; }
+        if (m_depthPrePipeline){ vkDestroyPipeline(m_dev.device, m_depthPrePipeline, nullptr); m_depthPrePipeline = VK_NULL_HANDLE; }
+        if (m_ssaoBlurLayout) { vkDestroyPipelineLayout(m_dev.device, m_ssaoBlurLayout, nullptr); m_ssaoBlurLayout = VK_NULL_HANDLE; }
+        if (m_ssaoLayout)     { vkDestroyPipelineLayout(m_dev.device, m_ssaoLayout, nullptr); m_ssaoLayout = VK_NULL_HANDLE; }
+        if (m_ssaoPool)       { vkDestroyDescriptorPool(m_dev.device, m_ssaoPool, nullptr); m_ssaoPool = VK_NULL_HANDLE; }
+        if (m_meshAoSetLayout){ vkDestroyDescriptorSetLayout(m_dev.device, m_meshAoSetLayout, nullptr); m_meshAoSetLayout = VK_NULL_HANDLE; }
+        if (m_ssaoBlurSetLayout){ vkDestroyDescriptorSetLayout(m_dev.device, m_ssaoBlurSetLayout, nullptr); m_ssaoBlurSetLayout = VK_NULL_HANDLE; }
+        if (m_ssaoSetLayout)  { vkDestroyDescriptorSetLayout(m_dev.device, m_ssaoSetLayout, nullptr); m_ssaoSetLayout = VK_NULL_HANDLE; }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (m_ssaoUboBuf[i])  { vmaDestroyBuffer(m_alloc, m_ssaoUboBuf[i], m_ssaoUboAlloc[i]); m_ssaoUboBuf[i] = VK_NULL_HANDLE; }
+            if (m_ssaoCtrlBuf[i]) { vmaDestroyBuffer(m_alloc, m_ssaoCtrlBuf[i], m_ssaoCtrlAlloc[i]); m_ssaoCtrlBuf[i] = VK_NULL_HANDLE; }
+        }
+        if (m_ssaoLinearSampler){ vkDestroySampler(m_dev.device, m_ssaoLinearSampler, nullptr); m_ssaoLinearSampler = VK_NULL_HANDLE; }
+        if (m_depthSampler)   { vkDestroySampler(m_dev.device, m_depthSampler, nullptr); m_depthSampler = VK_NULL_HANDLE; }
+    }
+
+    // Build the baked hemisphere kernel + 4x4 rotation-noise tables ONCE (CPU,
+    // deterministic) and stash them; prepareFrameData copies them into each
+    // frame's SSAO UBO. Kernel: cosine-ish hemisphere samples, biased toward the
+    // origin so near-surface occlusion dominates (standard SSAO weighting).
+    void buildSsaoKernelAndNoise() {
+        if (m_ssaoKernelBuilt) return;
+        m_ssaoKernelBuilt = true;
+        // Deterministic LCG so the look is identical across runs (and clean-room).
+        uint32_t s = 0x13572468u;
+        auto rnd = [&]() { s = s * 1664525u + 1013904223u; return (float)(s >> 8) / (float)(1u << 24); };
+        for (int i = 0; i < kSsaoKernel; ++i) {
+            glm::vec3 v(rnd() * 2.0f - 1.0f, rnd() * 2.0f - 1.0f, rnd()); // hemisphere (+z)
+            v = glm::normalize(v) * rnd();
+            float t = (float)i / (float)kSsaoKernel;
+            float scale = 0.1f + 0.9f * t * t;            // accelerate toward 1 (cluster near origin)
+            v *= scale;
+            m_ssaoKernelCPU[i] = glm::vec4(v, 0.0f);
+        }
+        for (int i = 0; i < 16; ++i) {
+            // Rotation vectors in the XY plane (z=0), uniform in [-1,1].
+            m_ssaoNoiseCPU[i] = glm::vec4(rnd() * 2.0f - 1.0f, rnd() * 2.0f - 1.0f, 0.0f, 0.0f);
+        }
     }
 
     bool createPerFrame() {
@@ -2798,6 +3353,24 @@ private:
             logError("[rhi] white default must occupy bindless slot 0"); return false;
         }
 
+        // ---- mesh.frag SSAO set (set 3): AO sampler + SsaoControl UBO. Created
+        // here (only needs the device) so the mesh pipeline layout can include it;
+        // the rest of the SSAO objects are built later in createSsao(). ----
+        {
+            VkDescriptorSetLayoutBinding b[2]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 2; ci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_meshAoSetLayout) != VK_SUCCESS) {
+                logError("[rhi] mesh ao set layout failed"); return false;
+            }
+        }
+
         // ---- Mesh pipeline (bindless texture + per-object SSBO + indirect) ----
         VkShaderModule vs = loadShaderModule("shaders\\mesh.vert.spv");
         VkShaderModule fs = loadShaderModule("shaders\\mesh.frag.spv");
@@ -2832,9 +3405,13 @@ private:
         VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
         ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
+        // Depth: the SSAO depth pre-pass already wrote the EXACT camera depth, so
+        // the main pass tests EQUAL with depth-write OFF (no double depth write, no
+        // z-fight — same geometry, same transform). This also lets SSAO read a
+        // complete depth buffer before lighting.
         VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
-        dss.depthTestEnable = VK_TRUE; dss.depthWriteEnable = VK_TRUE;
-        dss.depthCompareOp = VK_COMPARE_OP_LESS;
+        dss.depthTestEnable = VK_TRUE; dss.depthWriteEnable = VK_FALSE;
+        dss.depthCompareOp = VK_COMPARE_OP_EQUAL;
 
         VkPipelineColorBlendAttachmentState cba{};
         cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
@@ -2846,11 +3423,11 @@ private:
         ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
 
         // GPU-driven layout: set 0 = bindless textures, set 1 = object SSBO +
-        // camera UBO, set 2 = the shadow map (perf-stack E). NO push constants
-        // (per-object data is in the SSBO).
-        VkDescriptorSetLayout setLayouts[3] = { m_bindlessLayout, m_objSetLayout, m_shadowSetLayout };
+        // camera UBO, set 2 = the shadow map (perf-stack E), set 3 = the SSAO AO
+        // texture + control UBO. NO push constants (per-object data is in the SSBO).
+        VkDescriptorSetLayout setLayouts[4] = { m_bindlessLayout, m_objSetLayout, m_shadowSetLayout, m_meshAoSetLayout };
         VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-        plci.setLayoutCount = 3; plci.pSetLayouts = setLayouts;
+        plci.setLayoutCount = 4; plci.pSetLayouts = setLayouts;
         if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_meshLayout) != VK_SUCCESS) {
             logError("[rhi] pipeline layout failed"); return false;
         }
@@ -2870,11 +3447,27 @@ private:
         gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
         gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
         gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_meshLayout;
+        // SSAO path pipeline: depth-test EQUAL, depth-write OFF (the depth pre-pass
+        // already wrote depth). Created with `dss` set above.
         VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_meshPipeline);
+        if (pr != VK_SUCCESS) {
+            vkDestroyShaderModule(m_dev.device, vs, nullptr);
+            vkDestroyShaderModule(m_dev.device, fs, nullptr);
+            logError("[rhi] graphics pipeline create failed"); return false;
+        }
+
+        // No-SSAO path pipeline: the ORIGINAL behavior (no depth pre-pass) — depth
+        // test LESS + depth write ON, so the main pass clears + writes depth itself.
+        // Selected at draw time when m_ssao.enabled is false (true zero SSAO cost).
+        VkPipelineDepthStencilStateCreateInfo dssNo = dss;
+        dssNo.depthWriteEnable = VK_TRUE;
+        dssNo.depthCompareOp   = VK_COMPARE_OP_LESS;
+        gpci.pDepthStencilState = &dssNo;
+        pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_meshPipelineNoSsao);
 
         vkDestroyShaderModule(m_dev.device, vs, nullptr);
         vkDestroyShaderModule(m_dev.device, fs, nullptr);
-        if (pr != VK_SUCCESS) { logError("[rhi] graphics pipeline create failed"); return false; }
+        if (pr != VK_SUCCESS) { logError("[rhi] no-ssao graphics pipeline create failed"); return false; }
 
         logInfo("[rhi] GPU-driven mesh pipeline ready (bindless textures + per-object SSBO + multidraw-indirect)");
 
@@ -3116,10 +3709,11 @@ private:
         if (m_shadowImg)       { vmaDestroyImage(m_alloc, m_shadowImg, m_shadowAlloc); m_shadowImg = VK_NULL_HANDLE; m_shadowAlloc = nullptr; }
 
         if (m_meshPipeline)  vkDestroyPipeline(m_dev.device, m_meshPipeline, nullptr);
+        if (m_meshPipelineNoSsao) vkDestroyPipeline(m_dev.device, m_meshPipelineNoSsao, nullptr);
         if (m_meshLayout)    vkDestroyPipelineLayout(m_dev.device, m_meshLayout, nullptr);
         if (m_uploadFence)   vkDestroyFence(m_dev.device, m_uploadFence, nullptr);
         if (m_uploadPool)    vkDestroyCommandPool(m_dev.device, m_uploadPool, nullptr);
-        m_meshPipeline = VK_NULL_HANDLE; m_meshLayout = VK_NULL_HANDLE;
+        m_meshPipeline = VK_NULL_HANDLE; m_meshPipelineNoSsao = VK_NULL_HANDLE; m_meshLayout = VK_NULL_HANDLE;
         m_uploadFence = VK_NULL_HANDLE; m_uploadPool = VK_NULL_HANDLE;
     }
 
@@ -3133,7 +3727,8 @@ private:
 
     // Graphics
     VmaAllocator  m_alloc = nullptr;
-    VkPipeline       m_meshPipeline = VK_NULL_HANDLE;
+    VkPipeline       m_meshPipeline = VK_NULL_HANDLE;        // SSAO path: depth EQUAL, no write
+    VkPipeline       m_meshPipelineNoSsao = VK_NULL_HANDLE;  // no-SSAO path: depth LESS, write
     VkPipelineLayout m_meshLayout = VK_NULL_HANDLE;
 
     // GPU-driven descriptor objects:
@@ -3286,6 +3881,77 @@ private:
     struct CompositePush { float bloomIntensity, exposure, pad0, pad1; };
     BloomPush m_bloomDownPush[kBloomMips]{};
     BloomPush m_bloomUpPush[kBloomMips]{};
+
+    // ======================================================================
+    // SSAO — screen-space ambient occlusion (idTech-8 grounding/contact AO).
+    // ----------------------------------------------------------------------
+    // A half-res hemisphere-kernel pass reconstructs each pixel's VIEW-SPACE
+    // position + normal FROM THE DEPTH BUFFER (no G-buffer), accumulates occlusion
+    // against a noise-rotated 32-sample kernel, and writes a single-channel R8 AO
+    // image; a depth-aware bilateral blur removes the 4x4 noise tiling. The result
+    // modulates ONLY mesh.frag's ambient term. Depth comes from a NEW depth
+    // pre-pass (depth.vert) so the full depth buffer exists before lighting; the
+    // main pass then runs depth-test EQUAL with depth-write off. Half-res + a
+    // 4x4-tap blur keep the cost well under ~1 ms at 1080p on a 1080 Ti.
+    static constexpr int      kSsaoKernel = 32;          // hemisphere samples
+    static constexpr VkFormat kSsaoFormat = VK_FORMAT_R8_UNORM;  // single-channel AO
+    // SSAO UBO (std140; matches the Ssao block in ssao.frag): proj + invProj, two
+    // param vec4s, then the baked kernel[32] + noise[16] tables.
+    struct SsaoUBO {
+        glm::mat4 proj;
+        glm::mat4 invProj;
+        glm::vec4 params0;             // x=radius, y=bias, z=intensity, w=power
+        glm::vec4 params1;             // x=screenW, y=screenH, z=noiseScale.x, w=noiseScale.y
+        glm::vec4 kernel[kSsaoKernel];
+        glm::vec4 noise[16];
+    };
+    static_assert(sizeof(SsaoUBO) == 128 + 32 + (kSsaoKernel + 16) * 16,
+                  "SsaoUBO must match the std140 layout in ssao.frag");
+    // Tiny control block fed to mesh.frag (set3/binding1): x=enabled, y=strength,
+    // z=1/screenW, w=1/screenH.
+    struct SsaoControl { glm::vec4 ctrl; };
+    // Half-res AO targets: raw (ssao.frag output) + blurred (ssao_blur output,
+    // sampled by mesh.frag). Both R8, recreated with the frame extent.
+    VkImage       m_ssaoRawImg  = VK_NULL_HANDLE; VmaAllocation m_ssaoRawAlloc  = nullptr; VkImageView m_ssaoRawView  = VK_NULL_HANDLE;
+    VkImage       m_ssaoBlurImg = VK_NULL_HANDLE; VmaAllocation m_ssaoBlurAlloc = nullptr; VkImageView m_ssaoBlurView = VK_NULL_HANDLE;
+    VkExtent2D    m_ssaoExtent{};                       // half the frame extent
+    // Depth pre-pass pipeline (depth.vert; set0 = objSet, reuses m_shadowLayout).
+    VkPipeline    m_depthPrePipeline = VK_NULL_HANDLE;
+    // SSAO + blur pipelines (full-screen-triangle fragment passes).
+    VkSampler             m_depthSampler  = VK_NULL_HANDLE;  // NEAREST, sample depth as data
+    VkDescriptorSetLayout m_ssaoSetLayout = VK_NULL_HANDLE;  // depth + SsaoUBO (ssao.frag)
+    VkDescriptorSetLayout m_ssaoBlurSetLayout = VK_NULL_HANDLE; // aoRaw + depth (blur)
+    VkPipelineLayout      m_ssaoLayout    = VK_NULL_HANDLE;
+    VkPipelineLayout      m_ssaoBlurLayout = VK_NULL_HANDLE;
+    VkPipeline            m_ssaoPipe      = VK_NULL_HANDLE;
+    VkPipeline            m_ssaoBlurPipe  = VK_NULL_HANDLE;
+    VkDescriptorPool      m_ssaoPool      = VK_NULL_HANDLE;
+    // Per-frame SSAO UBO + sets (the SsaoUBO is filled in prepareFrameData; the
+    // depth-sampling sets are rewritten on resize when the depth/AO views change).
+    VkBuffer      m_ssaoUboBuf[kFramesInFlight] = {}; VmaAllocation m_ssaoUboAlloc[kFramesInFlight] = {}; void* m_ssaoUboMapped[kFramesInFlight] = {};
+    VkDescriptorSet m_ssaoSet[kFramesInFlight]   = {};  // ssao.frag: depth + UBO
+    VkDescriptorSet m_ssaoBlurSet                = VK_NULL_HANDLE; // blur: aoRaw + depth
+    // mesh.frag set 3: AO texture + SsaoControl UBO (per-frame control buffer).
+    VkDescriptorSetLayout m_meshAoSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool      m_meshAoPool      = VK_NULL_HANDLE;
+    VkBuffer      m_ssaoCtrlBuf[kFramesInFlight] = {}; VmaAllocation m_ssaoCtrlAlloc[kFramesInFlight] = {}; void* m_ssaoCtrlMapped[kFramesInFlight] = {};
+    VkDescriptorSet m_meshAoSet[kFramesInFlight] = {};  // mesh.frag set3: AO + ctrl
+    VkSampler     m_ssaoLinearSampler = VK_NULL_HANDLE; // CLAMP linear (sample AO)
+    // Stable storage for the SSAO/blur/depth-prepass VkRenderingInfo + attachments.
+    VkRenderingAttachmentInfo m_depthPreAttach{};
+    VkRenderingInfo           m_depthPreRenderInfo{};
+    VkRenderingAttachmentInfo m_ssaoAttach{};
+    VkRenderingInfo           m_ssaoRenderInfo{};
+    VkRenderingAttachmentInfo m_ssaoBlurAttach{};
+    VkRenderingInfo           m_ssaoBlurRenderInfo{};
+    struct SsaoBlurPush { float aoTexel[2]; float depthSigma, pad0; };
+    SsaoBlurPush m_ssaoBlurPush{};
+    SsaoParams   m_ssao{};   // cached tunables (setSsaoParams)
+    // Baked (deterministic) hemisphere kernel + 4x4 rotation noise (CPU-side),
+    // copied into each frame's SSAO UBO by prepareFrameData.
+    bool      m_ssaoKernelBuilt = false;
+    glm::vec4 m_ssaoKernelCPU[kSsaoKernel]{};
+    glm::vec4 m_ssaoNoiseCPU[16]{};
 
     // ---- Directional shadow mapping (perf-stack E) ------------------------
     // A single fixed-resolution depth texture rendered from the sun's POV each

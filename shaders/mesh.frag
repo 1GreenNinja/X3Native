@@ -56,6 +56,17 @@ layout(set = 1, binding = 1) uniform Camera {
 // texture(...) returns the PCF-filtered "fragment is lit" fraction in [0,1].
 layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap;
 
+// Screen-space ambient occlusion (set3): the blurred half-res AO texture (R8,
+// 1 = unoccluded, 0 = occluded), sampled at the fragment's screen UV. AO darkens
+// ONLY the ambient/indirect term (NOT the direct sun or point lights) so corners,
+// crevices + contact points get soft occlusion without crushing lit surfaces.
+// binding1 (ctrl): x = enabled (0/1), y = strength (lerps the applied AO between
+// 1.0 and the sampled value), z = 1/screenW, w = 1/screenH (pixel -> UV).
+layout(set = 3, binding = 0) uniform sampler2D ssaoTex;
+layout(set = 3, binding = 1) uniform SsaoControl {
+    vec4 ctrl;
+} ssao;
+
 layout(location = 0) in vec3 vNormal;
 layout(location = 1) in vec2 vUV;
 layout(location = 2) flat in uint vTexIndex;
@@ -119,7 +130,17 @@ void main() {
     // base ambient by the surface's vertical facing so floors/ceilings differ. ----
     vec3 ambient = cam.ambientCount.rgb;
     float up = N.y * 0.5 + 0.5;                 // 0 = facing down, 1 = facing up
-    lighting += ambient * mix(0.85, 1.25, up);
+
+    // SSAO modulates ONLY this ambient/indirect term (the sun + point lights are
+    // direct light and stay full-strength). Sample the blurred AO at this
+    // fragment's screen UV; `strength` lerps the effect (1 = full AO, 0 = off).
+    float ao = 1.0;
+    if (ssao.ctrl.x > 0.5) {
+        vec2 aoUV = gl_FragCoord.xy * ssao.ctrl.zw;   // pixel -> [0,1] screen UV
+        float aoSample = texture(ssaoTex, aoUV).r;
+        ao = mix(1.0, aoSample, clamp(ssao.ctrl.y, 0.0, 1.0));
+    }
+    lighting += ambient * mix(0.85, 1.25, up) * ao;
 
     // ---- Forward point lights (Light_A ceiling fixtures) ----
     int n = int(cam.ambientCount.w);

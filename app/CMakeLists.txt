@@ -43,7 +43,10 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/fullscreen.vert
     ${CMAKE_SOURCE_DIR}/shaders/bloom_down.frag
     ${CMAKE_SOURCE_DIR}/shaders/bloom_up.frag
-    ${CMAKE_SOURCE_DIR}/shaders/composite.frag)
+    ${CMAKE_SOURCE_DIR}/shaders/composite.frag
+    ${CMAKE_SOURCE_DIR}/shaders/depth.vert
+    ${CMAKE_SOURCE_DIR}/shaders/ssao.frag
+    ${CMAKE_SOURCE_DIR}/shaders/ssao_blur.frag)
 set(SPV_DIR ${CMAKE_BINARY_DIR}/shaders_spv)
 file(MAKE_DIRECTORY ${SPV_DIR})
 set(SPV_FILES "")

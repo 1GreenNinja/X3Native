@@ -150,6 +150,35 @@ public:
     // each frame, like setPointLights). Calling with enabled=false disables it.
     virtual void          setSkyParams(const SkyParams&) = 0;
 
+    // ---- Screen-space ambient occlusion (SSAO, idTech-8 grounding/contact) --
+    // SSAO darkens the AMBIENT/indirect lighting term in corners, crevices, and
+    // contact points so objects feel grounded (fixes the "floating/flat" look,
+    // esp. tall arena corners). Computed in VIEW space before tonemap: a half-res
+    // hemisphere-kernel pass reconstructs view-space position + normal FROM THE
+    // DEPTH BUFFER (no G-buffer), accumulates occlusion, then a depth-aware blur
+    // removes banding. The result modulates ONLY the ambient term in mesh.frag
+    // (direct sun + point lights stay full-strength). POD only — no Vulkan types.
+    //
+    // Tunables (the renderer applies them each frame; an app's console cvars map
+    // 1:1 onto these): `enabled` gates the whole SSAO chain (default ON; off ==
+    // the pre-SSAO look + no SSAO GPU cost). `radius` is the view-space sample
+    // hemisphere radius in meters (larger = broader, softer occlusion). `bias`
+    // offsets the depth compare to suppress self-occlusion acne on flat surfaces.
+    // `intensity` scales the raw occlusion. `power` is a contrast exponent on the
+    // final AO. `strength` lerps the APPLIED AO (1 = full effect, 0 = none) so the
+    // ambient is never over-crushed.
+    struct SsaoParams {
+        bool  enabled   = true;
+        float radius    = 0.5f;   // view-space hemisphere radius (meters)
+        float bias      = 0.025f; // depth-compare bias (view-space units)
+        float intensity = 1.0f;   // raw occlusion scale
+        float power     = 1.5f;   // contrast exponent on final AO
+        float strength  = 0.9f;   // lerp the applied AO (1 = full, 0 = off)
+    };
+    // Set the active SSAO parameters for subsequent frames (cached + re-applied
+    // each frame, like setSkyParams). Calling with enabled=false disables SSAO.
+    virtual void          setSsaoParams(const SsaoParams&) = 0;
+
     // ---- Forward point lights (interior fill) ------------------------------
     // Set the active point lights for subsequent frames. The device copies the
     // array (does NOT retain the pointer) and uploads them into the per-frame
