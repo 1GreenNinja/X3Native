@@ -396,8 +396,8 @@ public:
     void setPointLights(const x3::rhi::PointLight*, uint32_t) override {}
     void setSkyParams(const x3::rhi::IRenderDevice::SkyParams&) override {}
     void setSsaoParams(const x3::rhi::IRenderDevice::SsaoParams&) override {}
-    // setWaterParams omitted: this branch's IRenderDevice predates the farm's water tier
-    // (added on main after this branch's base). Re-add when this branch merges latest main.
+    void setWaterParams(const x3::rhi::IRenderDevice::WaterParams&) override {}
+    void setGiParams(const x3::rhi::IRenderDevice::GiParams&) override {}
     void drawHudQuad(const x3::rhi::FrameContext&, float, float, float, float, const float[4]) override {}
     void drawHudText(const x3::rhi::FrameContext&, const char*, float, float, float, const float[4]) override {}
     void hudSize(uint32_t& w, uint32_t& h) const override { w = 0; h = 0; }
