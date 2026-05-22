@@ -48,7 +48,11 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/composite.frag
     ${CMAKE_SOURCE_DIR}/shaders/depth.vert
     ${CMAKE_SOURCE_DIR}/shaders/ssao.frag
-    ${CMAKE_SOURCE_DIR}/shaders/ssao_blur.frag)
+    ${CMAKE_SOURCE_DIR}/shaders/ssao_blur.frag
+    ${CMAKE_SOURCE_DIR}/shaders/ssgi_gather.frag
+    ${CMAKE_SOURCE_DIR}/shaders/ssgi_temporal.frag
+    ${CMAKE_SOURCE_DIR}/shaders/ssgi_blur.frag
+    ${CMAKE_SOURCE_DIR}/shaders/ssgi_apply.frag)
 set(SPV_DIR ${CMAKE_BINARY_DIR}/shaders_spv)
 file(MAKE_DIRECTORY ${SPV_DIR})
 set(SPV_FILES "")
