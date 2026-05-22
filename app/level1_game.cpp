@@ -10,6 +10,7 @@
 #include "engine/core/x3_log.h"
 
 #include <cmath>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -45,12 +46,33 @@ void useCharacter(MonsterSystem::Tuning& t, const char* file, float scale) {
     t.modelScale       = scale;         // ~1.0 => ~1.77 m tall humanoid
 }
 
-// Apply a RIGGED + ANIMATED source character (J1). Same role as useCharacter but
-// from rigged_glb (so the MonsterSystem's Skinner finds the "Idle" clip and plays
-// it). Y-up, so standUpZtoY stays false. On load failure the per-enemy box
-// fallback still applies (the level never breaks).
+// Apply a RIGGED + ANIMATED source character (J1/T1). Same role as useCharacter
+// but from rigged_glb (so the MonsterSystem's Skinner finds the locomotion clips
+// and plays/blends them). Y-up, so standUpZtoY stays false. On load failure the
+// per-enemy box fallback still applies (the level never breaks).
+//
+// T1 ASSET PREFERENCE (small, distinct block): prefer the MULTI-CLIP "<name>_anim
+// .glb" (Idle/Walk/Run/Jump — the retargeted artifact that enables the locomotion
+// blend) when it exists ON DISK; otherwise fall back to the Idle-only "<name>.glb".
+// The big *_anim.glb are generated artifacts and may be ABSENT in a clean checkout
+// — in that case we silently use the base GLB (which plays Idle), and if THAT is
+// also missing the MonsterSystem falls back to its procedural box. This keeps
+// clean checkouts working while light-up locomotion when the assets are present.
 void useRiggedCharacter(MonsterSystem::Tuning& t, const char* file, float scale) {
-    t.modelFile        = file;
+    namespace fs = std::filesystem;
+    std::string base(file);
+    std::string chosen = base;
+    const std::string stem = (base.size() > 4 && base.substr(base.size() - 4) == ".glb")
+        ? base.substr(0, base.size() - 4) : base;
+    const std::string animName = stem + "_anim.glb";
+    std::error_code ec;
+    if (fs::exists(fs::path(kRiggedDir) / animName, ec)) {
+        chosen = animName;
+        x3::logInfo("[level1] using multi-clip locomotion asset: " + animName);
+    } else {
+        x3::logInfo("[level1] " + animName + " absent — falling back to Idle-only " + base);
+    }
+    t.modelFile        = chosen;
     t.modelDirOverride = kRiggedDir;
     t.standUpZtoY      = false;         // rigged sources are authored Y-up
     t.modelScale       = scale;

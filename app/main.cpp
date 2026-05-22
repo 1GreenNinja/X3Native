@@ -181,6 +181,11 @@ int main(int argc, char** argv) {
     // not affect the existing self-test gate.
     bool        listClips = false;
     std::string listClipsPath;
+    // Locomotion-blend check (--test-locomotion [glb]): load a multi-clip GLB and
+    // exercise the 1D idle/walk/run blend + Jump crossfade headless. Defaults to
+    // chief_martinez_anim.glb if no path is given. No window / Vulkan. Additive.
+    bool        testLocomotion = false;
+    std::string testLocomotionPath;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
@@ -230,6 +235,13 @@ int main(int argc, char** argv) {
     // offscreen (no window), like --screenshot. Default outDir: G:\X3Native\ai_action.
     bool        captureAi    = false;
     std::string captureAiDir = "G:/X3Native/ai_action";
+    // Walk-capture mode (--capture-walk [outPath]): build ONE close-up animated
+    // guard (the multi-clip *_anim.glb when present), drive the T1 locomotion blend
+    // toward a steady WALK, settle the blend a fraction of a second, then capture a
+    // single PNG at a clearly mid-stride moment. Verifies the locomotion blend
+    // visibly in-engine. Headless / offscreen. Default outPath: build/walk_pose.png.
+    bool        captureWalk     = false;
+    std::string captureWalkPath = "G:/X3Native-wt-animt1/build/walk_pose.png";
     // World selector (--world terrain): launch the playable OUTDOOR terrain world
     // (walk the hills) instead of the default interior Level 1. Anything else (or
     // omitted) keeps Level 1 as the default, unchanged.
@@ -336,9 +348,17 @@ int main(int argc, char** argv) {
             // Optional output directory arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') captureAiDir = argv[++i];
         }
+        else if (a == "--capture-walk") {
+            captureWalk = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') captureWalkPath = argv[++i];
+        }
         else if (a == "--list-clips") {
             listClips = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') listClipsPath = argv[++i];
+        }
+        else if (a == "--test-locomotion") {
+            testLocomotion = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') testLocomotionPath = argv[++i];
         }
     }
 
@@ -398,6 +418,10 @@ int main(int argc, char** argv) {
     if (testAnim) {
         x3::logInfo("running J1 skeletal animation + CPU skinning self-test...");
         return x3::anim::runAnimSelfTest() ? 0 : 1;
+    }
+    if (testLocomotion) {
+        x3::logInfo("running T1 locomotion-blend (idle/walk/run + crossfade) self-test...");
+        return x3::anim::runLocomotionSelfTest(testLocomotionPath) ? 0 : 1;
     }
     if (listClips) {
         // Asset-pipeline check for the retargeted multi-clip character GLBs:
@@ -497,7 +521,7 @@ int main(int argc, char** argv) {
     // render fully offscreen — NO GLFW window, NO surface, NO swapchain, nothing
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
-    const bool headless = smoketest || screenshot || skyShot || terrainShot || oceanShot || captureAi;
+    const bool headless = smoketest || screenshot || skyShot || terrainShot || oceanShot || captureAi || captureWalk;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -934,7 +958,20 @@ int main(int argc, char** argv) {
         using x3::game::AiState;
         using x3::game::aiStateName;
 
-        auto guardTune = [](){
+        // Prefer the MULTI-CLIP "<name>_anim.glb" (Idle/Walk/Run/Jump) when present
+        // so the captured enemies actually WALK/RUN as they move (T1 locomotion
+        // blend); fall back to the Idle-only base GLB otherwise (clean checkout).
+        auto pickAnimGlb = [](const char* dir, const char* base) -> std::string {
+            namespace fs = std::filesystem;
+            std::string b(base);
+            std::string stem = (b.size() > 4 && b.substr(b.size()-4) == ".glb")
+                ? b.substr(0, b.size()-4) : b;
+            std::string anim = stem + "_anim.glb";
+            std::error_code ec;
+            if (fs::exists(fs::path(dir) / anim, ec)) return anim;
+            return b;
+        };
+        auto guardTune = [&](){
             MonsterSystem::Tuning t;
             t.type = MonsterType::Guard;
             t.hp = 100; t.chaseSpeed = 3.2f;
@@ -943,7 +980,8 @@ int main(int argc, char** argv) {
             t.tint[0]=1.6f; t.tint[1]=1.7f; t.tint[2]=1.4f; t.tint[3]=1.0f;
             t.damage = 8; t.attackRange = 1.9f; t.attackCooldown = 1.0f; t.attackWindup = 0.25f;
             t.ranged = false;
-            t.modelFile = "marcus_webb.glb"; t.modelDirOverride = "G:/GameModels/rigged_glb";
+            t.modelFile = pickAnimGlb("G:/GameModels/rigged_glb", "marcus_webb.glb");
+            t.modelDirOverride = "G:/GameModels/rigged_glb";
             t.standUpZtoY = false; t.modelScale = 1.0f;
             return t;
         };
@@ -958,25 +996,27 @@ int main(int argc, char** argv) {
             t.standUpZtoY = true; t.modelScale = 1.0f;
             return t;
         };
-        auto scoutTune = [](){
+        auto scoutTune = [&](){
             MonsterSystem::Tuning t;
             t.type = MonsterType::Guard;
             t.hp = 100; t.chaseSpeed = 3.2f;
             t.tint[0]=2.0f; t.tint[1]=1.2f; t.tint[2]=2.2f; t.tint[3]=1.0f; // bright violet scout
             t.damage = 8; t.attackRange = 1.9f; t.attackCooldown = 1.0f; t.attackWindup = 0.25f;
             t.ranged = false;
-            t.modelFile = "marcus_webb.glb"; t.modelDirOverride = "G:/GameModels/rigged_glb";
+            t.modelFile = pickAnimGlb("G:/GameModels/rigged_glb", "marcus_webb.glb");
+            t.modelDirOverride = "G:/GameModels/rigged_glb";
             t.standUpZtoY = false; t.modelScale = 1.0f;
             return t;
         };
-        auto woundedTune = [](){
+        auto woundedTune = [&](){
             MonsterSystem::Tuning t;
             t.type = MonsterType::Guard;
             t.hp = 100; t.chaseSpeed = 3.0f;
             t.tint[0]=2.2f; t.tint[1]=1.0f; t.tint[2]=0.8f; t.tint[3]=1.0f; // bright wounded red
             t.damage = 8; t.attackRange = 1.9f; t.attackCooldown = 1.0f; t.attackWindup = 0.25f;
             t.ranged = false;
-            t.modelFile = "marcus_webb.glb"; t.modelDirOverride = "G:/GameModels/rigged_glb";
+            t.modelFile = pickAnimGlb("G:/GameModels/rigged_glb", "marcus_webb.glb");
+            t.modelDirOverride = "G:/GameModels/rigged_glb";
             t.standUpZtoY = false; t.modelScale = 1.0f;
             return t;
         };
@@ -1151,6 +1191,150 @@ int main(int argc, char** argv) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return (frameNo > 0 && gifOk) ? 0 : 1;
+    }
+
+    // ---- Walk-pose capture (--capture-walk [outPath]) ----------------------
+    // A focused single-frame proof of the T1 locomotion blend: build ONE close-up
+    // animated guard, drive the locomotion blend to a steady WALK speed, settle a
+    // fraction of a second so the legs reach a clear mid-stride, capture a PNG.
+    // Headless / offscreen, like --screenshot. Uses the multi-clip "*_anim.glb"
+    // when present (Walk clip); on a clean checkout (asset absent) the base GLB
+    // plays Idle and the capture still succeeds (it just shows the idle pose).
+    if (captureWalk) {
+        namespace fs = std::filesystem;
+        x3::logInfo("--capture-walk: rendering a walking guard to " + captureWalkPath);
+        {
+            fs::path outp(captureWalkPath);
+            std::error_code mkec;
+            if (outp.has_parent_path()) fs::create_directories(outp.parent_path(), mkec);
+        }
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> wphys(x3::phys::createPhysicsWorld());
+        wphys->init();
+        {
+            const float h = 40.0f;
+            float gv[] = { -h,0,-h,  h,0,-h,  h,0,h,  -h,0,h };
+            uint32_t gidx[] = { 0,2,1, 0,3,2 };
+            wphys->addStaticMesh(gv, 4, gidx, 6);
+        }
+        x3::game::Scene wscene;
+
+        std::vector<x3::rhi::MeshVertex> gvtx; std::vector<uint32_t> gixs;
+        x3::prims::makeGroundQuad(/*half=*/40.0f, /*tiles=*/20.0f, gvtx, gixs);
+        x3::rhi::MeshHandle groundMesh = device->createMesh(
+            gvtx.data(), (uint32_t)gvtx.size(), gixs.data(), (uint32_t)gixs.size());
+        auto groundPx = x3::prims::makeCheckerRGBA(64, 8, 120, 130, 120, 64, 72, 66);
+        x3::rhi::TextureHandle groundTex = device->createTexture(groundPx.data(), 64, 64, true);
+        const float modelGround[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        const float whiteTint[4] = { 1, 1, 1, 1 };
+
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+        sp.sunIntensity = 1.0f; sp.haze = 0.40f; sp.exposure = 1.0f;
+        device->setSkyParams(sp);
+        {
+            x3::rhi::PointLight pl[3];
+            auto setL = [](x3::rhi::PointLight& l, float x, float y, float z,
+                           float r, float g, float b, float range) {
+                l.pos[0]=x; l.pos[1]=y; l.pos[2]=z; l.range=range;
+                l.color[0]=r; l.color[1]=g; l.color[2]=b;
+            };
+            setL(pl[0],  0.0f, 4.0f,  3.0f,  5.5f, 5.4f, 5.0f, 30.0f);  // key in front
+            setL(pl[1],  3.0f, 3.0f, -2.0f,  3.0f, 3.2f, 3.6f, 30.0f);  // back-right rim
+            setL(pl[2], -3.0f, 3.0f,  1.0f,  3.0f, 3.4f, 3.0f, 30.0f);  // left fill
+            device->setPointLights(pl, 3);
+        }
+
+        // The target the guard advances toward: straight ahead in -Z so it walks
+        // toward the camera-facing direction and the stride reads in profile.
+        struct WalkTarget final : public x3::game::IDamageSink {
+            x3::phys::Vec3 eye{ 0.0f, 1.6f, -12.0f };
+            bool takeDamage(int) override { return true; }
+            x3::phys::Vec3 damageTargetPos() const override { return eye; }
+            bool isAlive() const override { return true; }
+        };
+        WalkTarget tgt;
+
+        using x3::game::MonsterSystem;
+        using x3::game::MonsterType;
+        // Prefer the multi-clip animated GLB so the locomotion blend lights up.
+        auto pickAnimGlb = [](const char* dir, const char* base) -> std::string {
+            namespace fsx = std::filesystem;
+            std::string b(base);
+            std::string stem = (b.size() > 4 && b.substr(b.size()-4) == ".glb")
+                ? b.substr(0, b.size()-4) : b;
+            std::string anim = stem + "_anim.glb";
+            std::error_code ec;
+            if (fsx::exists(fsx::path(dir) / anim, ec)) return anim;
+            return b;
+        };
+        MonsterSystem::Tuning wt;
+        wt.type = MonsterType::Guard;
+        wt.hp = 100; wt.chaseSpeed = 1.5f;   // ~walk speed: the blend lands on WALK
+        wt.tint[0]=1.6f; wt.tint[1]=1.7f; wt.tint[2]=1.5f; wt.tint[3]=1.0f;
+        wt.damage = 0; wt.attackRange = 0.5f; wt.attackWindup = 0.0f; wt.ranged = false;
+        wt.modelFile = pickAnimGlb("G:/GameModels/rigged_glb", "marcus_webb.glb");
+        wt.modelDirOverride = "G:/GameModels/rigged_glb";
+        wt.standUpZtoY = false; wt.modelScale = 1.0f;
+
+        MonsterSystem guard;
+        // Start the guard a little back so it advances (walks) toward the target the
+        // whole time, never reaching attack range (damage 0, tiny attackRange). It
+        // ends near z~2.8 after the settle below; the camera frames that spot.
+        const x3::phys::Vec3 guardStart{ 0.0f, 0.0f, 4.0f };
+        guard.buildMonsterTuned(wscene, *device, *wphys, "G:/GameModels/rigged_glb",
+                                guardStart, wt);
+        x3::logInfo(std::string("--capture-walk: guard usingRealModel=") +
+                    (guard.usingRealModel() ? "1" : "0"));
+
+        // Close, slightly-elevated front-3/4 camera AIMED at the guard's expected
+        // mid-capture torso (~(0, 0.9, 2.8)). Camera at (3, 1.6, 5.2) looking back
+        // toward -X/-Z: yaw = atan2(dz,dx) of (look - cam), pitch from the rise.
+        {
+            const float cx = 3.0f, cy = 1.6f, cz = 5.4f;
+            const float lx = 0.0f, ly = 0.95f, lz = 2.8f;
+            const float ddx = lx - cx, ddy = ly - cy, ddz = lz - cz;
+            const float dlen = std::sqrt(ddx*ddx + ddy*ddy + ddz*ddz);
+            const float yaw = std::atan2(ddz, ddx);
+            const float pitch = std::asin(dlen > 1e-4f ? (ddy / dlen) : 0.0f);
+            device->setCamera(cx, cy, cz, yaw, pitch, 50.0f);
+        }
+
+        // Step ~1.5 s so the guard accelerates into a steady WALK and the legs reach
+        // a clear mid-stride; capture the final frame.
+        const float dt = 1.0f / 60.0f;
+        x3::game::AttackFxFn noFx{}; x3::game::BossPhaseFn noPhase{}; x3::game::AllyQueryFn noAllies{};
+        const int steps = 90;
+        bool wrote = false;
+        for (int step = 0; step <= steps; ++step) {
+            glfwPollEvents();
+            guard.update(dt, wscene, *wphys, tgt.eye /*planar*/, tgt.eye /*eye*/,
+                         &tgt, noFx, noPhase, noAllies);
+            wphys->step(dt);
+            const bool last = (step == steps);
+            if (last) device->armCapture(captureWalkPath.c_str());
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                device->drawMesh(frame, groundMesh, groundTex, whiteTint, modelGround);
+                wscene.render(*device, frame);
+                guard.drawMonster(*device, frame, wscene);
+            }
+            device->endFrame(frame);
+            if (last) wrote = device->captureFrame(captureWalkPath.c_str());
+        }
+        x3::logInfo(std::string("--capture-walk: aiState=") +
+                    x3::game::aiStateName(guard.aiState()) +
+                    (wrote ? "  wrote " + captureWalkPath : "  CAPTURE FAILED"));
+
+        device->destroyMesh(groundMesh);
+        device->destroyTexture(groundTex);
+        wphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return wrote ? 0 : 1;
     }
 
     // ---- Club 1127 + cave/tunnel network (--world club) --------------------
