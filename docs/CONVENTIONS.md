@@ -71,5 +71,21 @@ Consistent with this doc: world axes, gravity, up vector, the shared forward bas
 **Reconciled:**
 - ✅ `app/env_art.cpp` (D-phys facing pass, 2026-05-21): the corridor consoles claimed "facing −Z (yaw 180)". The local `placeYaw` rotation parameterizes a model whose default facing is local −Z, where its yaw=0 already faces world −Z and **yaw = π faces +Z** (into the wall — screen hidden), so the old value pointed the terminal the wrong way. Fixed to `placeYaw` yaw = **0** so the console faces −Z back into the room toward the approaching player. `placeYaw` now documents the bridge to this doc's §3 basis: **`placeYaw_yaw = yaw_AI + π/2`**, with `yaw_AI = atan2(dz, dx)`; facing world-forward (−Z) is `yaw_AI = −π/2` ⇒ `placeYaw` yaw = 0. (The walls/door-frames in the same file use yaw 0 / +π/2 for axis alignment, not target-facing, and were already correct — left unchanged.)
 
-**To reconcile (tracked for the D facing pass):**
-- Monster facing (the new combat-AI work) must derive yaw from the §3 basis (`atan2(dz, dx)`), so "advance/attack faces the player, retreat faces away," etc., are computed against this one convention.
+**Reconciled (cont.):**
+- ✅ Monster facing (D-ai combat behaviour state machine, 2026-05-21): the monster
+  AI now derives its heading from this doc's facing law. A model's default facing is
+  local **−Z**; under the render transform's yaw basis (composeTRS columns
+  `col0=(c,0,−s)`, `col2=(s,0,c)`, identical to `env_art.cpp`'s `placeYaw`), local
+  −Z maps to world `(−sin yaw, 0, −cos yaw)`. To point local −Z along a desired
+  planar direction `(dirX, dirZ)`, the heading is **`yaw = atan2(−dirX, −dirZ)`**
+  (helper `headingToFace` in `app/monster.cpp`). This is the SAME construction the
+  prior chase code used (`atan2(kFaceSign·dx, …)`, `kFaceSign=−1`) and is locked by
+  the `--test-ai` facing self-test (case d), which also catches the off-by-π/2 trap.
+  Facing is now a **consequence of the AI state** (Advance/Attack/Strafe face the
+  player; Retreat faces away; Regroup faces the rally dir; Search/Idle sweep the
+  heading), not an always-on swivel. The heading is baked into the rendered
+  transform AND pushed to the rigid body via `IPhysicsWorld::setBodyRotation`
+  (quat `(0, sin(yaw/2), 0, cos(yaw/2))`, x,y,z,w).
+  NOTE for future work: env_art's stated shorthand `placeYaw_yaw = atan2(dz,dx)+π/2`
+  is only correct for the axis-aligned wall/console placements it actually uses; for
+  TARGET-facing always use `headingToFace`/`atan2(−dirX,−dirZ)` (verified by test).

@@ -135,7 +135,7 @@ int main(int argc, char** argv) {
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
-         testStreaming = false;
+         testStreaming = false, testAi = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
@@ -194,6 +194,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-anim") testAnim = true;
         else if (a == "--test-terrain") testTerrain = true;
         else if (a == "--test-streaming") testStreaming = true;
+        else if (a == "--test-ai") testAi = true;
         else if (a == "--world") {
             if (i + 1 < argc && argv[i + 1][0] != '-') worldMode = argv[++i];
         }
@@ -291,6 +292,10 @@ int main(int argc, char** argv) {
     if (testStreaming) {
         x3::logInfo("running B3 world-streaming self-test (residency ring + async gen)...");
         return x3::game::runStreamingSelfTest() ? 0 : 1;
+    }
+    if (testAi) {
+        x3::logInfo("running D-ai monster combat behaviour state-machine self-test...");
+        return x3::game::runAiSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
