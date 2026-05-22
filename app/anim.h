@@ -79,8 +79,10 @@ private:
     void sampleNodeLocal(const x3::asset::Model& m, uint32_t clip, int node,
                          float t, float out[16]) const;
 
-    // Build global node matrices for all nodes at time t (m_globalScratch sized to
-    // node count). Resolves parents on the fly (nodes may be in any order).
+    // Build global node matrices for all nodes at time t into `globals` (caller
+    // sizes it to nodeCount*16; reused, not reallocated). Resolves parents on the
+    // fly (nodes may be in any order). Uses the member done/inprog/stack scratch
+    // so the steady per-frame path performs no heap allocation.
     void computeGlobals(const x3::asset::Model& m, uint32_t clip, float t,
                         std::vector<float>& globals) const;
 
@@ -92,10 +94,15 @@ private:
     // channel in the clip (-1 = none). Flattened [clip][node][3].
     std::vector<int>      m_channelLut;        // size = clipCount * nodeCount * 3
     uint32_t              m_nodeCount = 0;
-    // Scratch reused across apply() to avoid per-frame allocation.
+    // Scratch reused across apply() to avoid per-frame allocation. All sized in
+    // bind(); per-call code only resets/clears (no realloc) in the steady path.
     mutable std::vector<float>             m_globalScratch;  // nodeCount * 16
     mutable std::vector<float>             m_palette;        // jointCount * 16
     mutable std::vector<x3::rhi::MeshVertex> m_vertScratch;  // per-primitive
+    // computeGlobals() hierarchy-resolve scratch (sized to nodeCount in bind()).
+    mutable std::vector<char>              m_resolveDone;    // nodeCount
+    mutable std::vector<char>              m_resolveInProg;  // nodeCount
+    mutable std::vector<int>               m_resolveStack;   // up to nodeCount
 };
 
 // Headless self-test (--test-anim): synthesize a tiny rigged GLB (1 bone bending
