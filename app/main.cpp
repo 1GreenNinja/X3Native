@@ -180,7 +180,8 @@ int main(int argc, char** argv) {
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
-         testNav = false, testWeapons = false, testVehicle = false, testFootIk = false;
+         testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
+         testNetSync = false;
     // --test-bestiary (bestiary pass): the data-driven enemy roster. Additive flag.
     bool        testBestiary = false;
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
@@ -318,6 +319,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-net") testNet = true;
+        else if (a == "--test-netsync") testNetSync = true;
         else if (a == "--test-rescue") testRescue = true;
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-nav") testNav = true;
@@ -558,6 +560,12 @@ int main(int argc, char** argv) {
         x3::logInfo("running netcode (Subsystem N, Phase 0) self-test "
                     "(loopback round-trip + generation-stale reject + fixed-step determinism)...");
         return x3::net::runNetworkSelfTest() ? 0 : 1;
+    }
+    if (testNetSync) {
+        x3::logInfo("running netcode (Subsystem N, Phase 0b) client/server "
+                    "input->snapshot routing self-test "
+                    "(command send -> server apply+sim -> snapshot -> client mirror)...");
+        return x3::net::runNetSyncSelfTest() ? 0 : 1;
     }
     if (testRescue) {
         x3::logInfo("running F2 rescue (victim/companion/transform) self-test (R0-R5)...");
