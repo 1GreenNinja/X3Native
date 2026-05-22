@@ -28,6 +28,7 @@
 #include "player.h"
 #include "monster.h"
 #include "level1_game.h"
+#include "spire_mid.h"                      // EFLZ Spire F3/F4/F5 mid-floor content
 #include "elevator.h"
 #include "club1127.h"
 #include "terrain.h"
@@ -187,6 +188,8 @@ int main(int argc, char** argv) {
     bool        testBestiary = false;
     // --test-ui (UI pass): general game-UI layer (menus + HUD). Additive flag.
     bool        testUi = false;
+    // --test-spiremid (Spire mid-floor content): F3/F4/F5 encounter authoring. Additive.
+    bool        testSpireMid = false;
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
     // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
     // and confirm the joint palette changes. Asset-pipeline verification for the
@@ -330,6 +333,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-streaming") testStreaming = true;
         else if (a == "--test-ai") testAi = true;
         else if (a == "--test-bestiary") testBestiary = true;
+        else if (a == "--test-spiremid") testSpireMid = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-net") testNet = true;
@@ -568,6 +572,11 @@ int main(int argc, char** argv) {
     if (testBestiary) {
         x3::logInfo("running data-driven enemy bestiary roster self-test...");
         return x3::game::runBestiarySelfTest() ? 0 : 1;
+    }
+    if (testSpireMid) {
+        x3::logInfo("running EFLZ Spire mid-floor (F3 Labs / F4 Offices / F5 Synth bay) "
+                    "encounter-content self-test...");
+        return x3::game::runSpireMidSelfTest() ? 0 : 1;
     }
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
@@ -2382,6 +2391,14 @@ int main(int argc, char** argv) {
     // transport that mediates that exit. Built with the level (Level 1 only, not
     // terrain) so it appears in the screenshot/bench/smoketest paths too.
     x3::game::ElevatorSystem elevator;
+    // ---- Spire mid floors (F3 Labs / F4 Offices / F5 Synth bay) encounter content.
+    // Authored onto the same Spire plates buildLevel1() produced; reached via the
+    // per-floor elevator stops below. Has its own enemy groups + a gated F5 rescue
+    // captive + per-floor keypad doors + floor-hub triggers (a host-owned
+    // TriggerSystem dispatches the hub ids to midFloors.onTrigger). Level 1 only
+    // (not terrain). Independent of Level1Game's B1 beats. ----
+    x3::game::SpireMidFloors midFloors;
+    x3::game::TriggerSystem  midTriggers;
     if (!terrainWorld) {
         game.build(scene, *device, *physics, x3::game::riggedGlbRoot());
         // Audio hookups for Level 1 events (§9, nice-to-have; silent if no device).
@@ -2403,6 +2420,11 @@ int main(int argc, char** argv) {
         elevator.build(scene, *device, *physics,
                        Lb.elevatorCenter.x, Lb.elevatorCenter.z,
                        1.4f, cabHY, 1.4f, elevStops, /*startStop*/0);
+
+        // Author the F3/F4/F5 mid-floor encounters onto the Spire plates. The
+        // per-floor elevator stops above (one per floor) make them reachable.
+        midFloors.build(scene, *device, *physics, Lb, midTriggers,
+                        x3::game::riggedGlbRoot());
     }
     const x3::game::Level1Layout& L1 = game.layout();
 
@@ -2661,6 +2683,10 @@ int main(int argc, char** argv) {
         for (int i = 0; i < kSettleFrames; ++i) {
             glfwPollEvents();
             game.tick(dt, scene, *physics, ssEye, ssEye);
+            // Tick the Spire mid floors too (independent enemy groups + gated F5
+            // victim) so the screenshot/smoketest paths exercise the new content.
+            for (uint32_t tid : midTriggers.update(ssEye)) midFloors.onTrigger(tid);
+            midFloors.tick(dt, scene, *physics, ssEye, ssEye, nullptr, x3::game::AttackFxFn{});
             physics->step(dt);
             scene.update(*physics);
             // FX demo: with a SMALL settle (<=30) spawn a fresh muzzle + impact burst
@@ -2684,6 +2710,8 @@ int main(int argc, char** argv) {
                 scene.render(*device, frame);
                 game.drawDoors(*device, frame);   // real SM_Door_A slabs (box hidden)
                 game.drawWorldExtras(*device, frame, scene);
+                midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
+                midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
                 if (fxDemo) {
                     combatFx.draw(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch);
                     combatFx.submit(*device, frame);
@@ -2808,6 +2836,10 @@ int main(int argc, char** argv) {
             // Drive the Level 1 controller (doors/monsters/pickup/triggers) +
             // physics + scene sync, exactly as the main loop does.
             game.tick(dt, scene, *physics, eye, eye);
+            // Spire mid floors under validation: dispatch hub triggers + tick the
+            // F3/F4/F5 enemy groups + the gated F5 victim.
+            for (uint32_t tid : midTriggers.update(eye)) midFloors.onTrigger(tid);
+            midFloors.tick(dt, scene, *physics, eye, eye, nullptr, x3::game::AttackFxFn{});
             physics->step(dt);
             scene.update(*physics);
             audio->update(dt);
@@ -2854,7 +2886,10 @@ int main(int argc, char** argv) {
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
+                game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
+                midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
+                midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
                 const VmPose vmPose = readViewmodelPose(*console);
                 // WEAPONS: draw the SELECTED weapon's viewmodel via the arsenal so the
                 // per-weapon GLB draw path is exercised under Debug validation; fall
@@ -3130,7 +3165,10 @@ int main(int argc, char** argv) {
                 x3::logInfo("use: button pressed — door opening");
             } else if (game.onRescue(eye)) {  // F2 rescue (spec §5): captive in reach -> companion
                 x3::logInfo("use: victim rescued — now a companion");
-            } else if (!codeMode && game.nearLockedCodedDoor(eye)) {
+            } else if (midFloors.onRescue(eye)) {  // F5 synth-bay captive rescue
+                x3::logInfo("use: F5 captive rescued — now a companion");
+            } else if (!codeMode && (game.nearLockedCodedDoor(eye) ||
+                                     midFloors.nearLockedCodedDoor(eye))) {
                 // No button hit, but a locked keypad door is in reach: open the
                 // code-entry keypad (digits 0-9, Enter to submit, Esc to cancel).
                 codeMode = true; keypad.clear();
@@ -3165,7 +3203,8 @@ int main(int argc, char** argv) {
                 float pex, pey, pez, pyaw, ppitch;
                 player.camera(pex, pey, pez, pyaw, ppitch);
                 if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
-                if (game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value())) {
+                if (game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
+                    midFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value())) {
                     x3::logInfo("keypad: ACCEPTED — door opening");
                     codeMode = false; keypad.clear();
                 } else {
@@ -3322,6 +3361,10 @@ int main(int argc, char** argv) {
             }
         } else {
             game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
+            // Spire mid floors (F3/F4/F5): dispatch their floor-hub triggers (the F5
+            // hub starts the rescue clock) then tick their enemy groups + gated victim.
+            for (uint32_t tid : midTriggers.update(camPos)) midFloors.onTrigger(tid);
+            midFloors.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
         }
 
         // ---- Phase 2a: death -> respawn. The player enters the death state at
@@ -3430,6 +3473,12 @@ int main(int argc, char** argv) {
                 bool anyKill = false, anyHit = false; int lastHp = 0;
                 for (const auto& ray : shot.rays) {
                     x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics);
+                    // If the B1 groups didn't take it, try the F3/F4/F5 enemies (the
+                    // shot is already arm-gated by the arsenal/Level1Game::onFire).
+                    if (!r.hitMonster && game.armed()) {
+                        x3::game::FireResult rm = midFloors.onFire(eye, ray.dir, scene, *physics);
+                        if (rm.hitMonster || (!r.hit && rm.hit)) r = rm;
+                    }
                     combatFx.addTracer(muzzle, r.endPoint);   // tracer + muzzle burst per pellet
                     if (r.killed) { combatFx.spawnDeath(r.endPoint); anyKill = true; }
                     else if (r.hitMonster) { combatFx.spawnBlood(r.hitPoint, ray.dir); anyHit = true; lastHp = r.hpAfter; }
@@ -3463,6 +3512,10 @@ int main(int argc, char** argv) {
                 x3::phys::RayHit eh = physics->rayCast(b.pos, ndir, stepLen, x3::phys::Layer::Enemy);
                 if (eh.hit) {
                     x3::game::FireResult r = game.onFire(b.pos, ndir, scene, *physics);
+                    if (!r.hitMonster) {   // try the F3/F4/F5 enemies for this bolt
+                        x3::game::FireResult rm = midFloors.onFire(b.pos, ndir, scene, *physics);
+                        if (rm.hitMonster) r = rm;
+                    }
                     combatFx.addTracer(b.pos, eh.point);
                     if (r.killed) { combatFx.spawnDeath(eh.point);
                         audio->playSound3D(sndDeath, eh.point.x, eh.point.y, eh.point.z, 1.0f, 1.0f); }
@@ -3507,6 +3560,8 @@ int main(int argc, char** argv) {
                 // the procedural door box is collision-only (hidden).
                 game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
+                midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
+                midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
                 const VmPose vmPose = readViewmodelPose(*console);
                 if (arsenal.viewmodelsLoaded() && game.armed()) {
                     // WEAPONS: draw the SELECTED weapon's viewmodel (its own GLB +

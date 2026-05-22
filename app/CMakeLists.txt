@@ -14,6 +14,7 @@ add_executable(X3Engine WIN32
     trigger.cpp
     rescue.cpp
     level1_game.cpp
+    spire_mid.cpp
     env_art.cpp
     club1127.cpp
     terrain.cpp
