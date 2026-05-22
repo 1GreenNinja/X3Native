@@ -16,6 +16,7 @@ add_library(x3engine STATIC
     net/LoopbackTransport.cpp
     net/Replication.cpp
     net/NetworkSystem.cpp
+    net/SnapshotInterpolator.cpp
 )
 
 # Header-only model-loader deps (M2): cgltf (glTF/GLB parse) + stb (image decode)

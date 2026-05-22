@@ -19,6 +19,7 @@
 #include "engine/audio/IAudioSystem.h"
 #include "engine/net/INetworkSystem.h"   // netcode Phase 0: --test-net + SimClock
 #include "engine/net/SimClock.h"         // deterministic fixed-step accumulator
+#include "engine/net/ISnapshotInterpolator.h"  // netcode Phase 0c: --test-netinterp
 #include "engine/ai/INavigation.h"       // GENERAL navigation: nav grid + A* + --test-nav
 
 #include "scene.h"
@@ -294,7 +295,7 @@ int main(int argc, char** argv) {
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
-         testNetSync = false;
+         testNetSync = false, testNetInterp = false;
     // --test-bestiary (bestiary pass): the data-driven enemy roster. Additive flag.
     bool        testBestiary = false;
     // --test-ui (UI pass): general game-UI layer (menus + HUD). Additive flag.
@@ -460,6 +461,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-net") testNet = true;
         else if (a == "--test-netsync") testNetSync = true;
+        else if (a == "--test-netinterp") testNetInterp = true;
         else if (a == "--test-rescue") testRescue = true;
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-debris") testDebris = true;
@@ -725,6 +727,12 @@ int main(int argc, char** argv) {
                     "input->snapshot routing self-test "
                     "(command send -> server apply+sim -> snapshot -> client mirror)...");
         return x3::net::runNetSyncSelfTest() ? 0 : 1;
+    }
+    if (testNetInterp) {
+        x3::logInfo("running netcode (Subsystem N, Phase 0c) client snapshot "
+                    "interpolation + jitter-buffer self-test "
+                    "(jittered snapshots -> bracketed lerp/slerp -> smooth render)...");
+        return x3::net::runNetInterpSelfTest() ? 0 : 1;
     }
     if (testRescue) {
         x3::logInfo("running F2 rescue (victim/companion/transform) self-test (R0-R5)...");
