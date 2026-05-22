@@ -38,6 +38,7 @@
 #include "engine/audio/IAudioSystem.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <string>
 #include <string_view>
 
@@ -59,6 +60,29 @@ enum class L1Trigger : uint32_t {
     Strength = 1,   // beat 1: hide equipment, strength discovery
     Arena    = 2,   // beat 9: spawn Martinez + open Door D
     Elevator = 3,   // beat 11: win
+};
+
+// Pure keypad-entry buffer for the door-code keypad (no I/O, no Vulkan/GLFW). The
+// host (app/main.cpp) maps GLFW key edges onto these calls; the headless
+// --test-doorcode self-test drives the SAME state machine directly so both stay in
+// lockstep. A digit appends (capped at maxLen); backspace removes the last digit;
+// clear() resets. value() parses the buffer to an int (-1 when empty).
+struct KeypadEntry {
+    static constexpr int kMaxLen = 6;   // matches the host's 6-digit cap
+    std::string buf;
+
+    void pushDigit(int d) {             // d in [0..9]; ignored otherwise / when full
+        if (d < 0 || d > 9) return;
+        if ((int)buf.size() >= kMaxLen) return;
+        buf += char('0' + d);
+    }
+    void backspace() { if (!buf.empty()) buf.pop_back(); }
+    void clear()     { buf.clear(); }
+    bool empty() const { return buf.empty(); }
+    // Parsed numeric code, or -1 when nothing has been entered yet.
+    int value() const { return buf.empty() ? -1 : std::atoi(buf.c_str()); }
+    // HUD prompt string: "DOOR LOCKED   ENTER CODE: 11_" etc.
+    std::string prompt() const { return "DOOR LOCKED   ENTER CODE: " + buf + "_"; }
 };
 
 class Level1Game {
@@ -102,6 +126,13 @@ public:
     // door began opening. (Door C refuses until armed; that is enforced by lock.)
     bool onUse(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                Scene& scene, x3::phys::IPhysicsWorld& physics);
+
+    // Door-code keypad (§6.4 keypad gate): true if the player is within `range` of a
+    // LOCKED door carrying a keypad code (gates the host's code-entry mode).
+    bool nearLockedCodedDoor(const x3::phys::Vec3& playerPos, float range = 3.5f) const;
+    // Submit a keypad `code`: unlock + open the nearest locked coded door in range whose
+    // code matches. Returns true if a door began opening.
+    bool tryDoorCode(const x3::phys::Vec3& playerPos, int code, float range = 3.5f);
 
     // Handle a FIRE press (rising edge) along `dir` from `eye`: only effective when
     // armed. Damages the first live monster the ray hits. Returns the result so the
@@ -223,5 +254,12 @@ private:
 // and asserts T1-T6 (+ T7 objective flow) from spec §7. Logs PASS/FAIL T#, returns
 // true iff all pass. No window/Vulkan. Mirrors runInteractSelfTest/runCombatSelfTest.
 bool runLevel1SelfTest();
+
+// Headless self-test (--test-doorcode). Builds Level 1 and exercises the keypad-
+// coded locked door (Door C, code 1127): the wrong code does NOT open it, the right
+// code DOES, and the host-side keypad state machine (digit entry / backspace /
+// cancel) builds the entered code correctly. Logs PASS/FAIL K#, returns true iff
+// all pass. No window/Vulkan.
+bool runDoorCodeSelfTest();
 
 } // namespace x3::game
