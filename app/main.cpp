@@ -29,6 +29,7 @@
 #include "monster.h"
 #include "level1_game.h"
 #include "spire_mid.h"                      // EFLZ Spire F3/F4/F5 mid-floor content
+#include "spire_top.h"                      // EFLZ Spire F6/F7 top-floor content (Act-1 finale)
 #include "elevator.h"
 #include "club1127.h"
 #include "terrain.h"
@@ -190,6 +191,8 @@ int main(int argc, char** argv) {
     bool        testUi = false;
     // --test-spiremid (Spire mid-floor content): F3/F4/F5 encounter authoring. Additive.
     bool        testSpireMid = false;
+    // --test-spiretop (Spire top-floor content): F6/F7 (Act-1 finale) encounter authoring. Additive.
+    bool        testSpireTop = false;
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
     // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
     // and confirm the joint palette changes. Asset-pipeline verification for the
@@ -334,6 +337,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-ai") testAi = true;
         else if (a == "--test-bestiary") testBestiary = true;
         else if (a == "--test-spiremid") testSpireMid = true;
+        else if (a == "--test-spiretop") testSpireTop = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-net") testNet = true;
@@ -577,6 +581,11 @@ int main(int argc, char** argv) {
         x3::logInfo("running EFLZ Spire mid-floor (F3 Labs / F4 Offices / F5 Synth bay) "
                     "encounter-content self-test...");
         return x3::game::runSpireMidSelfTest() ? 0 : 1;
+    }
+    if (testSpireTop) {
+        x3::logInfo("running EFLZ Spire top-floor (F6 Executive / F7 Rooftop Act-1 finale) "
+                    "encounter-content self-test...");
+        return x3::game::runSpireTopSelfTest() ? 0 : 1;
     }
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
@@ -2399,6 +2408,14 @@ int main(int argc, char** argv) {
     // (not terrain). Independent of Level1Game's B1 beats. ----
     x3::game::SpireMidFloors midFloors;
     x3::game::TriggerSystem  midTriggers;
+    // ---- Spire top floors (F6 Executive / F7 Rooftop = the Act-1 finale) encounter
+    // content. Same authoring pattern as midFloors: own enemy groups (F6 7-strong
+    // strongpoint; F7 the Clone boss + a 7-strong escort), a gated F7 rescue captive
+    // (Sarah), per-floor keypad doors (F6 x2, F7 x1) + floor-hub triggers (a host-owned
+    // TriggerSystem dispatches the hub ids to topFloors.onTrigger; the F7 hub starts
+    // Sarah's clock). Level 1 only, reached via the top elevator stops. ----
+    x3::game::SpireTopFloors topFloors;
+    x3::game::TriggerSystem  topTriggers;
     if (!terrainWorld) {
         game.build(scene, *device, *physics, x3::game::riggedGlbRoot());
         // Audio hookups for Level 1 events (§9, nice-to-have; silent if no device).
@@ -2424,6 +2441,11 @@ int main(int argc, char** argv) {
         // Author the F3/F4/F5 mid-floor encounters onto the Spire plates. The
         // per-floor elevator stops above (one per floor) make them reachable.
         midFloors.build(scene, *device, *physics, Lb, midTriggers,
+                        x3::game::riggedGlbRoot());
+
+        // Author the F6/F7 top-floor encounters (the Act-1 finale: F6 strongpoint,
+        // F7 the Clone boss + Sarah rescue). Reached via the elevator's top stops.
+        topFloors.build(scene, *device, *physics, Lb, topTriggers,
                         x3::game::riggedGlbRoot());
     }
     const x3::game::Level1Layout& L1 = game.layout();
@@ -2687,6 +2709,10 @@ int main(int argc, char** argv) {
             // victim) so the screenshot/smoketest paths exercise the new content.
             for (uint32_t tid : midTriggers.update(ssEye)) midFloors.onTrigger(tid);
             midFloors.tick(dt, scene, *physics, ssEye, ssEye, nullptr, x3::game::AttackFxFn{});
+            // Tick the Spire top floors too (F6/F7 finale: own groups + the Clone boss
+            // + gated Sarah rescue) so the screenshot/smoketest paths exercise them.
+            for (uint32_t tid : topTriggers.update(ssEye)) topFloors.onTrigger(tid);
+            topFloors.tick(dt, scene, *physics, ssEye, ssEye, nullptr, x3::game::AttackFxFn{});
             physics->step(dt);
             scene.update(*physics);
             // FX demo: with a SMALL settle (<=30) spawn a fresh muzzle + impact burst
@@ -2712,6 +2738,8 @@ int main(int argc, char** argv) {
                 game.drawWorldExtras(*device, frame, scene);
                 midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
                 midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
+                topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
+                topFloors.draw(*device, frame, scene);        // F6/F7 enemies + Clone boss + Sarah
                 if (fxDemo) {
                     combatFx.draw(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch);
                     combatFx.submit(*device, frame);
@@ -2840,6 +2868,9 @@ int main(int argc, char** argv) {
             // F3/F4/F5 enemy groups + the gated F5 victim.
             for (uint32_t tid : midTriggers.update(eye)) midFloors.onTrigger(tid);
             midFloors.tick(dt, scene, *physics, eye, eye, nullptr, x3::game::AttackFxFn{});
+            // Spire top floors (F6/F7 finale) under validation too.
+            for (uint32_t tid : topTriggers.update(eye)) topFloors.onTrigger(tid);
+            topFloors.tick(dt, scene, *physics, eye, eye, nullptr, x3::game::AttackFxFn{});
             physics->step(dt);
             scene.update(*physics);
             audio->update(dt);
@@ -2890,6 +2921,8 @@ int main(int argc, char** argv) {
                 game.drawWorldExtras(*device, frame, scene);
                 midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
                 midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
+                topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
+                topFloors.draw(*device, frame, scene);        // F6/F7 enemies + Clone boss + Sarah
                 const VmPose vmPose = readViewmodelPose(*console);
                 // WEAPONS: draw the SELECTED weapon's viewmodel via the arsenal so the
                 // per-weapon GLB draw path is exercised under Debug validation; fall
@@ -3167,8 +3200,11 @@ int main(int argc, char** argv) {
                 x3::logInfo("use: victim rescued — now a companion");
             } else if (midFloors.onRescue(eye)) {  // F5 synth-bay captive rescue
                 x3::logInfo("use: F5 captive rescued — now a companion");
+            } else if (topFloors.onRescue(eye)) {  // F7 rooftop captive (Sarah) rescue
+                x3::logInfo("use: F7 captive 'Sarah' rescued — now a companion");
             } else if (!codeMode && (game.nearLockedCodedDoor(eye) ||
-                                     midFloors.nearLockedCodedDoor(eye))) {
+                                     midFloors.nearLockedCodedDoor(eye) ||
+                                     topFloors.nearLockedCodedDoor(eye))) {
                 // No button hit, but a locked keypad door is in reach: open the
                 // code-entry keypad (digits 0-9, Enter to submit, Esc to cancel).
                 codeMode = true; keypad.clear();
@@ -3204,7 +3240,8 @@ int main(int argc, char** argv) {
                 player.camera(pex, pey, pez, pyaw, ppitch);
                 if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
                 if (game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
-                    midFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value())) {
+                    midFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
+                    topFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value())) {
                     x3::logInfo("keypad: ACCEPTED — door opening");
                     codeMode = false; keypad.clear();
                 } else {
@@ -3365,6 +3402,11 @@ int main(int argc, char** argv) {
             // hub starts the rescue clock) then tick their enemy groups + gated victim.
             for (uint32_t tid : midTriggers.update(camPos)) midFloors.onTrigger(tid);
             midFloors.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
+            // Spire top floors (F6/F7 Act-1 finale): dispatch their hub triggers (the F7
+            // hub starts Sarah's rescue clock) then tick the enemy groups + Clone boss +
+            // gated victim.
+            for (uint32_t tid : topTriggers.update(camPos)) topFloors.onTrigger(tid);
+            topFloors.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
         }
 
         // ---- Phase 2a: death -> respawn. The player enters the death state at
@@ -3479,6 +3521,11 @@ int main(int argc, char** argv) {
                         x3::game::FireResult rm = midFloors.onFire(eye, ray.dir, scene, *physics);
                         if (rm.hitMonster || (!r.hit && rm.hit)) r = rm;
                     }
+                    // Then the F6/F7 top-floor enemies + the Clone boss.
+                    if (!r.hitMonster && game.armed()) {
+                        x3::game::FireResult rt = topFloors.onFire(eye, ray.dir, scene, *physics);
+                        if (rt.hitMonster || (!r.hit && rt.hit)) r = rt;
+                    }
                     combatFx.addTracer(muzzle, r.endPoint);   // tracer + muzzle burst per pellet
                     if (r.killed) { combatFx.spawnDeath(r.endPoint); anyKill = true; }
                     else if (r.hitMonster) { combatFx.spawnBlood(r.hitPoint, ray.dir); anyHit = true; lastHp = r.hpAfter; }
@@ -3515,6 +3562,10 @@ int main(int argc, char** argv) {
                     if (!r.hitMonster) {   // try the F3/F4/F5 enemies for this bolt
                         x3::game::FireResult rm = midFloors.onFire(b.pos, ndir, scene, *physics);
                         if (rm.hitMonster) r = rm;
+                    }
+                    if (!r.hitMonster) {   // then the F6/F7 enemies + the Clone boss
+                        x3::game::FireResult rt = topFloors.onFire(b.pos, ndir, scene, *physics);
+                        if (rt.hitMonster) r = rt;
                     }
                     combatFx.addTracer(b.pos, eh.point);
                     if (r.killed) { combatFx.spawnDeath(eh.point);
@@ -3562,6 +3613,8 @@ int main(int argc, char** argv) {
                 game.drawWorldExtras(*device, frame, scene);
                 midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
                 midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
+                topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
+                topFloors.draw(*device, frame, scene);        // F6/F7 enemies + Clone boss + Sarah
                 const VmPose vmPose = readViewmodelPose(*console);
                 if (arsenal.viewmodelsLoaded() && game.armed()) {
                     // WEAPONS: draw the SELECTED weapon's viewmodel (its own GLB +
