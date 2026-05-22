@@ -38,6 +38,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace x3::game {
@@ -333,6 +334,14 @@ public:
                               float extraRight = 0.0f, float extraDown = 0.0f) const;
 
     bool viewmodelsLoaded() const { return !m_views.empty(); }
+
+    // ---- Checkpoint restore (save/load) -----------------------------------
+    // Restore the selection + a per-weapon (ammoInMag,reserve) pair. `ammo` is
+    // applied in roster order, up to min(ammo.size(), count()); each entry is clamped
+    // to [0, magSize]/[0,reserveAmmo]. Cooldowns + reload timers are cleared (a clean
+    // checkpoint restore, not mid-reload). `sel` is clamped to a valid index. This is
+    // the load-time apply of an Arsenal checkpoint captured via state()/selected().
+    void restore(int sel, const std::vector<std::pair<int,int>>& ammo);
 
 private:
     std::vector<WeaponDef>   m_defs;

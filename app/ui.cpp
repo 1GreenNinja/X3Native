@@ -227,7 +227,8 @@ GameState MainMenu::update(UiContext& ui, const char* title, const char* subtitl
 // ===========================================================================
 // PauseMenu
 // ===========================================================================
-GameState PauseMenu::update(UiContext& ui) {
+GameState PauseMenu::update(UiContext& ui, PauseAction& outAction) {
+    outAction = PauseAction::None;
     const float w = (float)ui.screenW();
     const float h = (float)ui.screenH();
     if (w <= 0.0f || h <= 0.0f) return GameState::Paused;
@@ -237,9 +238,9 @@ GameState PauseMenu::update(UiContext& ui) {
     const float dim[4] = { 0.0f, 0.0f, 0.0f, 0.55f };
     ui.quad(0, 0, w, h, dim);
 
-    // Panel.
+    // Panel (taller now: RESUME / SAVE / LOAD / SETTINGS / QUIT = 5 buttons).
     const float pw = std::min(420.0f, w * 0.6f);
-    const float ph = std::min(360.0f, h * 0.6f);
+    const float ph = std::min(480.0f, h * 0.78f);
     const float px = cx - pw * 0.5f;
     const float py = h * 0.5f - ph * 0.5f;
     ui.panel(px, py, pw, ph, kColPanel);
@@ -249,12 +250,16 @@ GameState PauseMenu::update(UiContext& ui) {
     ui.textCentered("PAUSED", cx, py + 24.0f, titlePx, titleCol);
 
     const float bw = pw - 48.0f;
-    const float bh = std::max(40.0f, ph * 0.13f);
-    const float gap = bh * 0.30f;
-    float by = py + 24.0f + titlePx + 24.0f;
+    const float bh = std::max(38.0f, ph * 0.115f);
+    const float gap = bh * 0.26f;
+    float by = py + 24.0f + titlePx + 22.0f;
 
     GameState next = GameState::Paused;
     if (ui.button("RESUME", px + 24.0f, by, bw, bh))        next = GameState::Playing;
+    by += bh + gap;
+    if (ui.button("SAVE CHECKPOINT", px + 24.0f, by, bw, bh)) outAction = PauseAction::Save;
+    by += bh + gap;
+    if (ui.button("LOAD CHECKPOINT", px + 24.0f, by, bw, bh)) outAction = PauseAction::Load;
     by += bh + gap;
     if (ui.button("SETTINGS", px + 24.0f, by, bw, bh))      next = GameState::Settings;
     by += bh + gap;
@@ -501,7 +506,9 @@ void UiController::update(const UiInput& input, x3::rhi::IRenderDevice& device,
             // Esc resumes from pause.
             if (input.navBack) { m_state = GameState::Playing; }
             else {
-                const GameState next = m_pause.update(m_ui);
+                PauseAction action = PauseAction::None;
+                const GameState next = m_pause.update(m_ui, action);
+                if (action != PauseAction::None) m_pendingAction = action;  // host polls + clears
                 if (next != m_state) m_state = next;
             }
             break;

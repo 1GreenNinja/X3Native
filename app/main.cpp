@@ -38,6 +38,7 @@
 #include "fx.h"
 #include "hud.h"
 #include "ui.h"                              // GENERAL game-UI: menus + production HUD + --test-ui
+#include "save.h"                            // GENERAL versioned checkpoint save/load + --test-saveload
 #include "stress.h"
 #include "destruct_demo.h"                 // K-T1 destruction demo (--world destruct)
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
@@ -300,6 +301,8 @@ int main(int argc, char** argv) {
     bool        testBestiary = false;
     // --test-ui (UI pass): general game-UI layer (menus + HUD). Additive flag.
     bool        testUi = false;
+    // --test-saveload (save/load pass): versioned checkpoint serialization. Additive.
+    bool        testSaveLoad = false;
     // --test-spiremid (Spire mid-floor content): F3/F4/F5 encounter authoring. Additive.
     bool        testSpireMid = false;
     // --test-debris (K-T2 GPU-compute debris): spawn a burst, step the compute sim
@@ -471,6 +474,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-vehicle") testVehicle = true;
         else if (a == "--test-footik") testFootIk = true;
         else if (a == "--test-ui") testUi = true;
+        else if (a == "--test-saveload") testSaveLoad = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -774,6 +778,11 @@ int main(int argc, char** argv) {
         x3::logInfo("running GENERAL game-UI self-test "
                     "(button hit-test + Menu<->Playing<->Paused transitions + settings cvar wiring)...");
         return x3::ui::runUiSelfTest() ? 0 : 1;
+    }
+    if (testSaveLoad) {
+        x3::logInfo("running GENERAL versioned checkpoint save/load self-test "
+                    "(round-trip field-by-field + magic/version/checksum/truncation reject)...");
+        return x3::save::runSaveLoadSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -3193,6 +3202,43 @@ int main(int argc, char** argv) {
     bool kpDigitPrev[10] = {};
     bool kpEnterPrev = false, kpBackPrev = false, kpEscPrev = false;
 
+    // ---- GENERAL save/load (versioned checkpoint). The interactive host exposes a
+    // programmatic save/load API two ways: quick-save/quick-load on F5/F9, AND a
+    // SAVE/LOAD CHECKPOINT affordance in the pause menu (gameUi.wantSave/wantLoad).
+    // Both funnel through the same x3::game::captureCheckpoint/applyCheckpoint bridge
+    // + x3::save::saveCheckpoint/loadCheckpoint. The file lives next to the exe so a
+    // dev box always has a writable spot. Level 1 / interactive path only (every
+    // headless/screenshot path early-returned above). ----
+    const std::string savePath = "G:/X3Native-wt-saveload/build/eflz_checkpoint.x3save";
+    bool prevSaveKey = false, prevLoadKey = false;   // F5 quick-save / F9 quick-load edges
+    // Perform a save: snapshot the live game (current floor = the elevator's stop) and
+    // write it. Lambdas so the F5 key + the pause-menu button share one code path.
+    auto doSave = [&]() {
+        if (terrainWorld) { x3::logWarn("[save] save/load is Level-1 only (skipped in terrain world)"); return; }
+        const uint32_t curFloor = (uint32_t)(elevator.built() ? elevator.targetStop() : 0);
+        x3::save::SaveState st = x3::game::captureCheckpoint(player, arsenal, game,
+                                                            midFloors, topFloors, curFloor);
+        if (x3::save::saveCheckpoint(savePath, st))
+            x3::logInfo("[save] quick-saved checkpoint -> " + savePath);
+    };
+    // Perform a load: read + validate, then apply to the live game (and re-position
+    // the elevator to the recorded floor). Fails gracefully (logged) on a bad file.
+    auto doLoad = [&]() {
+        if (terrainWorld) { x3::logWarn("[save] save/load is Level-1 only (skipped in terrain world)"); return; }
+        x3::save::SaveState st;
+        if (!x3::save::loadCheckpoint(savePath, st)) {
+            x3::logWarn("[save] no valid checkpoint to load (ignored)");
+            return;
+        }
+        uint32_t loadedFloor = 0;
+        x3::game::applyCheckpoint(st, player, *physics, arsenal, game,
+                                  midFloors, topFloors, loadedFloor);
+        // Move the elevator to the recorded floor (clamped to its stop range) so the
+        // world matches the restored "current floor".
+        if (elevator.built() && (int)loadedFloor < elevator.stopCount())
+            elevator.callTo((int)loadedFloor);
+    };
+
     // ---- M9 audio event edge-tracking + footstep cadence -------------------
     bool  prevArmed   = false;          // pickup chime on the arm rising edge
     float stepTimer   = 0.0f;           // accumulates while moving on the ground
@@ -3922,6 +3968,20 @@ int main(int argc, char** argv) {
                 prevUiMouse = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
             }
             gameUi.update(uin, *device, frame, hm, dt);
+
+            // ---- Save/Load: pause-menu SAVE/LOAD buttons (polled from the UI) +
+            // F5 quick-save / F9 quick-load (when not typing in the console). The
+            // pause-menu buttons request via gameUi.wantSave()/wantLoad(); F5/F9 are
+            // edge-detected here. All routes funnel through doSave/doLoad. ----
+            if (gameUi.wantSave()) { doSave(); gameUi.clearSaveLoadRequest(); }
+            else if (gameUi.wantLoad()) { doLoad(); gameUi.clearSaveLoadRequest(); }
+            if (!consoleOpen) {
+                const bool f5Now = glfwGetKey(window, GLFW_KEY_F5) == GLFW_PRESS;
+                const bool f9Now = glfwGetKey(window, GLFW_KEY_F9) == GLFW_PRESS;
+                if (f5Now && !prevSaveKey) doSave();
+                if (f9Now && !prevLoadKey) doLoad();
+                prevSaveKey = f5Now; prevLoadKey = f9Now;
+            }
 
             // Always-on overlays (independent of game state): FPS meter, the perf
             // stats panel, and the dev console panel (drawn last so it sits on top).

@@ -16,6 +16,7 @@ add_executable(X3Engine WIN32
     level1_game.cpp
     spire_mid.cpp
     spire_top.cpp
+    save.cpp
     env_art.cpp
     club1127.cpp
     terrain.cpp

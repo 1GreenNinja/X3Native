@@ -187,12 +187,18 @@ public:
     GameState update(UiContext& ui, const char* title, const char* subtitle);
 };
 
+// A save/load action the pause menu can request back to the host (it is NOT a
+// GameState — saving/loading keeps you in the Paused screen). The host polls the
+// UiController for these (wantSave()/wantLoad()) and performs the file I/O itself.
+enum class PauseAction : uint8_t { None = 0, Save = 1, Load = 2 };
+
 // The pause overlay (drawn over a frozen, dimmed scene).
 class PauseMenu {
 public:
     // Returns: Paused (stay), Playing (RESUME), Settings (SETTINGS), MainMenu
-    // (QUIT TO MENU).
-    GameState update(UiContext& ui);
+    // (QUIT TO MENU). `outAction` is set to Save/Load on the frame the SAVE/LOAD
+    // button is activated (the returned state stays Paused in that case).
+    GameState update(UiContext& ui, PauseAction& outAction);
 };
 
 // The settings screen. Edits a SettingsModel in place (reflecting + toggling) and
@@ -257,6 +263,13 @@ public:
     // True while the game is actually being played (HUD shown, sim runs).
     bool playing() const { return m_state == GameState::Playing; }
 
+    // ---- Save/Load requests (pause-menu affordance) -----------------------
+    // True the frame the user picked SAVE / LOAD in the pause menu. The host reads
+    // these after update(), performs the file I/O, then calls clearSaveLoadRequest().
+    bool wantSave() const { return m_pendingAction == PauseAction::Save; }
+    bool wantLoad() const { return m_pendingAction == PauseAction::Load; }
+    void clearSaveLoadRequest() { m_pendingAction = PauseAction::None; }
+
     // Force a state (used by the host, e.g. when the player dies -> back to menu,
     // or by tests). Does NOT apply settings.
     void setState(GameState s) { m_state = s; }
@@ -277,6 +290,8 @@ private:
     SettingsMenu  m_settingsScreen;
     GameHud       m_hud;
     SettingsModel m_settings{};
+
+    PauseAction   m_pendingAction = PauseAction::None;  // SAVE/LOAD requested via the pause menu
 
     x3::con::IConsole* m_console = nullptr;   // bound in init (may be null)
 

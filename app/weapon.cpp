@@ -443,6 +443,27 @@ Arsenal::Arsenal(std::vector<WeaponDef> roster) : m_defs(std::move(roster)) {
     if (m_defs.empty()) m_sel = -1; else m_sel = 0;
 }
 
+void Arsenal::restore(int sel, const std::vector<std::pair<int,int>>& ammo) {
+    // Apply the per-weapon ammo first (so the selection clamp below sees the roster
+    // unchanged), then the selection. Cooldowns/reload timers are cleared — a
+    // checkpoint restore lands the arsenal in a settled, ready state.
+    const size_t n = (ammo.size() < m_state.size()) ? ammo.size() : m_state.size();
+    for (size_t i = 0; i < n; ++i) {
+        int mag = ammo[i].first;
+        int res = ammo[i].second;
+        if (mag < 0) mag = 0; if (mag > m_defs[i].magSize)     mag = m_defs[i].magSize;
+        if (res < 0) res = 0; if (res > m_defs[i].reserveAmmo) res = m_defs[i].reserveAmmo;
+        m_state[i].ammoInMag   = mag;
+        m_state[i].reserve     = res;
+        m_state[i].cooldown    = 0.0f;
+        m_state[i].reloadTimer = 0.0f;
+    }
+    if (m_defs.empty())            m_sel = -1;
+    else if (sel < 0)              m_sel = 0;
+    else if (sel >= (int)m_defs.size()) m_sel = (int)m_defs.size() - 1;
+    else                           m_sel = sel;
+}
+
 int Arsenal::select(int index) {
     if (index < 0 || index >= (int)m_defs.size()) return m_sel; // ignore out-of-range
     if (index == m_sel) return m_sel;
