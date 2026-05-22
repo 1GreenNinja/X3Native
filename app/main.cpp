@@ -181,6 +181,8 @@ int main(int argc, char** argv) {
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false;
+    // --test-bestiary (bestiary pass): the data-driven enemy roster. Additive flag.
+    bool        testBestiary = false;
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
     // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
     // and confirm the joint palette changes. Asset-pipeline verification for the
@@ -312,6 +314,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-terrainplace") testTerrainPlace = true;
         else if (a == "--test-streaming") testStreaming = true;
         else if (a == "--test-ai") testAi = true;
+        else if (a == "--test-bestiary") testBestiary = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-net") testNet = true;
@@ -538,6 +541,10 @@ int main(int argc, char** argv) {
     if (testAi) {
         x3::logInfo("running D-ai monster combat behaviour state-machine self-test...");
         return x3::game::runAiSelfTest() ? 0 : 1;
+    }
+    if (testBestiary) {
+        x3::logInfo("running data-driven enemy bestiary roster self-test...");
+        return x3::game::runBestiarySelfTest() ? 0 : 1;
     }
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");

@@ -77,6 +77,36 @@ namespace x3::game {
 enum class MonsterType : uint32_t { Guard = 0, Drone = 1, Boss = 2 };
 
 // ---------------------------------------------------------------------------
+// EnemyType — the DATA-DRIVEN bestiary roster (bestiary pass). Each value names a
+// distinct enemy *species* from the EFLZ bestiary; the per-species stats / model /
+// AI weighting live in a static MonsterDef table (see monsterDefs() / monsterDef()
+// + tuningFor()), NOT in code. Adding a new enemy is then DATA: append a row.
+//
+// The roster reuses the existing combat-AI state machine (advance/attack/strafe/
+// retreat/regroup/search), the combat:: balance bands, the locomotion blend, and
+// the nav path-follow — only the per-row stats/weights differ. Models resolve from
+// assets/rigged_glb (animated) or assets/converted_glb/Characters; a row whose GLB
+// is absent falls back to the MonsterSystem's per-enemy tinted procedural box, so
+// the bestiary never breaks a clean checkout. Values are grounded in the bible's
+// TASK_6 enemy bestiary (HP/damage/speed/ranged) — see tuningFor() comments.
+//
+//   * DominionTrooper — baseline humanoid soldier (bible "Security Guard (Basic)":
+//     HP 100, melee). The neutral reference enemy.
+//   * Verthani        — insectoid: faster, flanks more (strafe-heavy), melee
+//     (bible "Infected Human (Stage 1)" profile: fast, claw, erratic). Lower HP.
+//   * Illuminated     — elite: ranged + "shielded" (modeled as higher HP), holds a
+//     long standoff (bible "Security Guard (Elite)": HP 200, rifle 25). Standoff AI.
+//   * BlueSynth       — synthetic: ranged drone-like flier (bible "Combat Drone":
+//     HP 150, plasma, flanks). Uses blue_synth_seed*.glb if present (absent today
+//     -> falls back to Drone.glb tinted blue, then to the procedural box).
+enum class EnemyType : uint32_t {
+    DominionTrooper = 0, Verthani = 1, Illuminated = 2, BlueSynth = 3, Count = 4
+};
+
+// Human-readable EnemyType name (logs / --test-bestiary trace / HUD).
+const char* enemyTypeName(EnemyType t);
+
+// ---------------------------------------------------------------------------
 // Combat-AI behaviour state (D-ai). Each live enemy runs a per-instance state
 // machine; FACING IS A CONSEQUENCE OF THE STATE (the enemy does NOT always face
 // the player — that was the old swivel-turret behaviour we are replacing). The
@@ -333,6 +363,16 @@ public:
         // roughly this far from the player instead of closing to melee.
         float standoff            = 6.0f;
 
+        // ---- Data-driven AI weighting (bestiary pass) ---------------------
+        // Per-instance strafe/flank bias in [0,1]: the probability, at mid-range,
+        // that the enemy STRAFES (orbits/flanks) instead of straight-Advancing. A
+        // negative value (the default) means "use the MonsterType default" in the
+        // state machine (Guard 0.20, Drone 0.75, Boss 0.45) so existing enemies are
+        // unchanged. The MonsterDef roster sets this per archetype (e.g. Verthani
+        // strafe-heavy ~0.80, Illuminated standoff-low ~0.10) so AI weighting is
+        // DATA, not new code. Clamped to [0,1] when >= 0.
+        float aiStrafeBias        = -1.0f;
+
         // ---- Boss phases (Phase 2b, spec §8) ------------------------------
         // Only consulted for type == Boss. HP-fraction thresholds (of maxHp)
         // at which the boss enters Phase2 / Phase3. Defaults: 2/3 and 1/3.
@@ -567,6 +607,7 @@ private:
     float m_attackWindup        = 0.25f;      // telegraph delay before the hit lands
     bool  m_ranged              = false;      // hitscan toward the player (drone)
     float m_standoff            = 6.0f;       // drone preferred distance (m)
+    float m_aiStrafeBias        = -1.0f;      // per-instance strafe/flank bias (<0 = type default)
     float m_atkTimer            = 0.0f;       // cooldown countdown until next attack
     float m_windupTimer         = 0.0f;       // >0 while winding up an attack
     bool  m_winding             = false;      // currently in an attack wind-up
@@ -729,5 +770,47 @@ bool runPhase2bSelfTest();
 // Prints the state transitions. Logs PASS/FAIL T#, returns true iff all pass.
 // No window / Vulkan. Lives in monster.cpp. Mirrors the other self-tests.
 bool runAiSelfTest();
+
+// ---------------------------------------------------------------------------
+// MonsterDef — one row of the data-driven bestiary roster (bestiary pass). Pure
+// data: a species' display name + a fully-populated MonsterSystem::Tuning (stats /
+// model / AI weights). The static table monsterDefs() holds one row per EnemyType;
+// monsterDef(t) fetches a row and tuningFor(t) returns a spawn-ready Tuning copy.
+// New enemies are added by appending a row to the table in monster.cpp — no new
+// code paths. The Tuning still flows through buildMonsterTuned()/spawn() unchanged,
+// so the roster reuses the entire existing combat lane.
+struct MonsterDef {
+    EnemyType              type;     // which species (table is keyed by this)
+    const char*           name;      // display name (DominionTrooper, Verthani, ...)
+    MonsterSystem::Tuning tuning;    // stats / model / AI weighting for this species
+};
+
+// The full roster table (one row per EnemyType, in enum order). Built once and
+// returned by reference. Source of truth for the bestiary; mine the bible's TASK_6
+// enemy bestiary for the values (see tuningFor() comments in monster.cpp).
+const std::vector<MonsterDef>& monsterDefs();
+
+// Fetch a single roster row by species (asserts the table is in enum order).
+const MonsterDef& monsterDef(EnemyType t);
+
+// Convenience: a spawn-ready Tuning copy for a species. Equivalent to
+// monsterDef(t).tuning. Pass this straight to MonsterManager::spawn() /
+// buildMonsterTuned() to place that enemy.
+MonsterSystem::Tuning tuningFor(EnemyType t);
+
+// Headless self-test (--test-bestiary, the data-driven enemy roster). Asserts each
+// EnemyType in the roster:
+//   (a) BUILDS with its table stats (HP / type / ranged / damage all match the row,
+//       proving the data-driven path wires through buildMonsterTuned end-to-end);
+//   (b) its AI BEHAVES per its weighting under a steady LOS engagement — a melee
+//       species (Trooper/Verthani) closes/strafes and FACES the player; a ranged
+//       species (Illuminated/BlueSynth) holds a standoff (does NOT close to melee);
+//       a strafe-heavy species (Verthani) reaches the Strafe state, a standoff
+//       species (Illuminated) reaches Strafe/Advance at range — i.e. weights differ;
+//   (c) the roster rows are DISTINCT (no two identical stat blocks) — proving the
+//       table actually carries variety.
+// Logs PASS/FAIL T#, returns true iff all pass. No window / Vulkan. Lives in
+// monster.cpp. Mirrors the other self-tests. Reuses the existing combat AI verbatim.
+bool runBestiarySelfTest();
 
 } // namespace x3::game

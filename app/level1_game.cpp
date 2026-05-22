@@ -225,15 +225,23 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // Spire B1: the checkpoint zone is the walled sub-room between Door C (x=14) and
     // Door D (x=18); keep all 4 enemies inside it (and off the z=0 LOS spine) so they
     // stay clear of the arena/shaft and the corridor encounter.
+    // BESTIARY PASS: two of the four slots use the data-driven roster — a Verthani
+    // (insectoid flanker) holding the line and a BlueSynth (synthetic flier) covering
+    // from the back — alongside two baseline Dominion troopers. ADDITIVE: same COUNT
+    // (4) + same roles (3 melee + 1 ranged), so --test-level1's clear loop is intact.
     const x3::phys::Vec3 cc = m_layout.checkpointCenter;   // ~13.7 on B1
     m_checkpoint.spawn(scene, device, physics, m_modelDir,
-                       x3::phys::Vec3{ cc.x - 0.6f, kEnemyY, cc.z - 2.0f }, guardTuning());
+                       x3::phys::Vec3{ cc.x - 0.6f, kEnemyY, cc.z - 2.0f },
+                       tuningFor(EnemyType::DominionTrooper));
     m_checkpoint.spawn(scene, device, physics, m_modelDir,
-                       x3::phys::Vec3{ cc.x - 0.4f, kEnemyY, cc.z + 2.0f }, guardTuning());
+                       x3::phys::Vec3{ cc.x - 0.4f, kEnemyY, cc.z + 2.0f },
+                       tuningFor(EnemyType::Verthani));
     m_checkpoint.spawn(scene, device, physics, m_modelDir,
-                       x3::phys::Vec3{ cc.x + 0.6f, kEnemyY, cc.z - 1.0f }, guardTuning());
+                       x3::phys::Vec3{ cc.x + 0.6f, kEnemyY, cc.z - 1.0f },
+                       tuningFor(EnemyType::DominionTrooper));
     m_checkpoint.spawn(scene, device, physics, m_modelDir,
-                       x3::phys::Vec3{ cc.x + 0.8f, kEnemyY, cc.z + 2.5f }, droneTuning());
+                       x3::phys::Vec3{ cc.x + 0.8f, kEnemyY, cc.z + 2.5f },
+                       tuningFor(EnemyType::BlueSynth));
 
     // ---- Trigger volumes. Strength (cell), arena (boss entry), elevator (win,
     // disabled until the boss dies). ----
@@ -364,15 +372,23 @@ void Level1Game::spawnCorridorEnemies(Scene& scene, x3::rhi::IRenderDevice& devi
                      x3::phys::Vec3{ cx - 1.2f, kEnemyY, cz - 1.6f }, guardTuning());
     m_corridor.spawn(scene, device, physics, m_modelDir,
                      x3::phys::Vec3{ cx - 0.6f, kEnemyY, cz + 1.6f }, guardTuning());
-    // Mid guard — backs up the front pair.
+    // Mid attacker — backs up the front pair. BESTIARY PASS: this slot is now a
+    // Verthani (data-driven roster: insectoid, faster, strafe-heavy flanker) instead
+    // of a plain guard, so the alarm wave shows the new species in the actual level.
+    // ADDITIVE: same enemy COUNT (5) + same MELEE role, so --test-level1 is unchanged.
     m_corridor.spawn(scene, device, physics, m_modelDir,
-                     x3::phys::Vec3{ cx + 0.2f, kEnemyY, cz }, guardTuning());
-    // Flanking drones — hang back near the armory side and snipe down the corridor.
+                     x3::phys::Vec3{ cx + 0.2f, kEnemyY, cz },
+                     tuningFor(EnemyType::Verthani));
+    // Flanking synths — hang back near the armory side and snipe down the corridor.
+    // BESTIARY PASS: these two ranged slots are BlueSynth (synthetic flier from the
+    // roster) instead of the legacy drone tuning — same RANGED role + count.
     m_corridor.spawn(scene, device, physics, m_modelDir,
-                     x3::phys::Vec3{ cx + 1.0f, kEnemyY, cz - 2.0f }, droneTuning());
+                     x3::phys::Vec3{ cx + 1.0f, kEnemyY, cz - 2.0f },
+                     tuningFor(EnemyType::BlueSynth));
     m_corridor.spawn(scene, device, physics, m_modelDir,
-                     x3::phys::Vec3{ cx + 1.0f, kEnemyY, cz + 2.0f }, droneTuning());
-    x3::logInfo("Level1: ALARM — corridor enemies spawned (3 guards + 2 drones)");
+                     x3::phys::Vec3{ cx + 1.0f, kEnemyY, cz + 2.0f },
+                     tuningFor(EnemyType::BlueSynth));
+    x3::logInfo("Level1: ALARM — corridor enemies spawned (2 troopers + 1 Verthani + 2 BlueSynth)");
 }
 
 void Level1Game::spawnMartinez(Scene& scene, x3::rhi::IRenderDevice& device,

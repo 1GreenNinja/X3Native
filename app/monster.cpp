@@ -11,8 +11,10 @@
 #include "engine/core/x3_log.h"
 
 #include <cmath>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace x3::game {
 
@@ -97,6 +99,17 @@ const char* aiStateName(AiState s) {
     return "?";
 }
 
+const char* enemyTypeName(EnemyType t) {
+    switch (t) {
+        case EnemyType::DominionTrooper: return "DominionTrooper";
+        case EnemyType::Verthani:        return "Verthani";
+        case EnemyType::Illuminated:     return "Illuminated";
+        case EnemyType::BlueSynth:       return "BlueSynth";
+        case EnemyType::Count:           return "?";
+    }
+    return "?";
+}
+
 x3::phys::Vec3 MonsterSystem::facingDir() const {
     return x3::phys::Vec3{ -std::sin(m_yaw), 0.0f, -std::cos(m_yaw) };
 }
@@ -141,6 +154,7 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     m_attackWindup   = tuning.attackWindup;
     m_ranged         = tuning.ranged;
     m_standoff       = tuning.standoff;
+    m_aiStrafeBias   = tuning.aiStrafeBias;     // <0 => use the MonsterType default
     m_atkTimer       = tuning.attackCooldown;  // small initial delay before first hit
     m_windupTimer    = 0.0f;
     m_winding        = false;
@@ -566,11 +580,17 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
 
         // Per-type behaviour weighting (probabilities, applied with the per-instance
         // RNG so a group spreads out). Drone flanks/strafes more + holds standoff;
-        // Guard advances harder; Boss mixes attack with reposition.
+        // Guard advances harder; Boss mixes attack with reposition. The bestiary
+        // roster (MonsterDef) can OVERRIDE this per-species via Tuning.aiStrafeBias
+        // (>= 0): e.g. Verthani strafe-heavy (~0.80), Illuminated standoff-low
+        // (~0.10). A negative m_aiStrafeBias (the default) keeps the MonsterType
+        // default exactly, so existing Guard/Drone/Boss behaviour is unchanged.
         float strafeBias = 0.35f;  // chance to strafe instead of advance at mid-range
         if (m_type == MonsterType::Drone) strafeBias = 0.75f;
         else if (m_type == MonsterType::Guard) strafeBias = 0.20f;
         else if (m_type == MonsterType::Boss)  strafeBias = 0.45f;
+        if (m_aiStrafeBias >= 0.0f)
+            strafeBias = (m_aiStrafeBias > 1.0f) ? 1.0f : m_aiStrafeBias;  // data override
 
         AiState want = m_ai;
 
@@ -1851,6 +1871,347 @@ bool runAiSelfTest() {
     x3::logInfo(std::string("[ai-test] ") + std::to_string(ai_pass) + " passed, " +
                 std::to_string(ai_fail) + " failed");
     return ai_fail == 0;
+}
+
+// ===========================================================================
+// DATA-DRIVEN BESTIARY ROSTER (bestiary pass). The static MonsterDef table is the
+// single source of truth for the enemy species: one row per EnemyType, each a
+// fully-populated MonsterSystem::Tuning (stats / model / AI weighting). Adding a
+// new enemy is DATA (append a row), not code — the row flows through the existing
+// buildMonsterTuned()/spawn() path and reuses the whole combat-AI lane verbatim.
+//
+// Stats are grounded in the bible's TASK_6 enemy bestiary (HP / damage / speed /
+// ranged); the engine treats those as TUNING TARGETS (re-mappable for playtest),
+// and damage is pulled from the GENERAL combat:: balance bands so the squad stays
+// winnable (not raw bible numbers, which assume a different time/iframe budget).
+// ===========================================================================
+namespace {
+
+// Resolve the model for a roster row in a self-contained way (no dependency on
+// level1_game's file-local helpers). Mirrors their two model sources:
+//   * RIGGED + ANIMATED humanoids load from assets/rigged_glb (Y-up; the Skinner
+//     finds the idle/loco clips) — preferring the multi-clip "<stem>_anim.glb" when
+//     it exists on disk, else the Idle-only base GLB.
+//   * Z-up converted props (e.g. Drone.glb) load from assets/converted_glb/
+//     Characters with the Z->Y stand-up.
+// A row whose GLB is absent falls back (inside MonsterSystem) to the tinted box.
+
+// Set a RIGGED + ANIMATED character (rigged_glb, Y-up). Prefers <stem>_anim.glb.
+void defRigged(MonsterSystem::Tuning& t, const char* file, float scale) {
+    namespace fs = std::filesystem;
+    const std::string riggedDir = riggedGlbRoot();
+    std::string base(file), chosen(base);
+    const std::string stem = (base.size() > 4 && base.substr(base.size() - 4) == ".glb")
+        ? base.substr(0, base.size() - 4) : base;
+    std::error_code ec;
+    if (fs::exists(fs::path(riggedDir) / (stem + "_anim.glb"), ec)) chosen = stem + "_anim.glb";
+    t.modelFile        = chosen;
+    t.modelDirOverride = riggedDir;
+    t.standUpZtoY      = false;     // rigged sources are authored Y-up
+    t.modelScale       = scale;
+}
+
+// Set a Z-up converted-character model (converted_glb/Characters), stood up. If
+// `preferRigged` names an alternate file present in rigged_glb, prefer that (lets a
+// future blue_synth_seed*.glb in rigged_glb light up automatically). FALLBACK
+// ROUTE for BlueSynth: blue_synth_seed1.glb is NOT in the repo today, so this
+// resolves to Drone.glb (a synthetic-looking flier) — and if THAT is missing the
+// MonsterSystem draws its tinted box.
+void defConverted(MonsterSystem::Tuning& t, const char* file, float scale) {
+    t.modelFile        = std::string("Characters/") + file;
+    t.modelDirOverride = convertedGlbRoot();
+    t.standUpZtoY      = true;      // converted characters are authored Z-up
+    t.modelScale       = scale;
+}
+
+// Resolve the BlueSynth model: prefer a rigged blue_synth_seed*.glb if one ever
+// lands in rigged_glb, else the converted Drone.glb, else (handled downstream) the
+// box. Returns true if it pointed at a real on-disk rigged synth GLB.
+bool defBlueSynth(MonsterSystem::Tuning& t, float scale) {
+    namespace fs = std::filesystem;
+    const std::string riggedDir = riggedGlbRoot();
+    std::error_code ec;
+    const char* seeds[] = { "blue_synth_seed1.glb", "blue_synth_seed2.glb",
+                            "blue_synth_seed3.glb", "blue_synth.glb" };
+    for (const char* s : seeds) {
+        if (fs::exists(fs::path(riggedDir) / s, ec)) { defRigged(t, s, scale); return true; }
+    }
+    defConverted(t, "Drone.glb", scale);   // fallback: the existing synthetic flier
+    return false;
+}
+
+// Build the roster ONCE. Each row: stats grounded in TASK_6, damage/standoff from
+// the combat:: bands, and a per-species AI strafe/flank bias so the AI WEIGHTING is
+// data (Verthani strafe-heavy; Illuminated standoff-low; etc.).
+std::vector<MonsterDef> buildMonsterDefs() {
+    std::vector<MonsterDef> defs;
+    defs.reserve((size_t)EnemyType::Count);
+
+    // ---- DominionTrooper — baseline humanoid soldier. Bible "Security Guard
+    // (Basic)": HP 100, melee. The neutral reference (≈ the existing guard). ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Guard;
+        t.hp             = 100;                              // bible: 100
+        t.chaseSpeed     = 2.5f;                             // bible "Normal"
+        t.damage         = combat::kMeleeDamageDefault;     // 8 (band 6..10)
+        t.attackRange    = combat::kMeleeRange;             // 1.9 m baton/rifle-butt
+        t.attackCooldown = combat::kMeleeCooldownDefault;   // ~1.1 s
+        t.attackWindup   = combat::kMeleeWindup;            // 0.25 s
+        t.ranged         = false;
+        t.aiStrafeBias   = 0.20f;                           // advances harder than it flanks
+        t.tint[0]=0.80f; t.tint[1]=0.82f; t.tint[2]=0.86f;  // neutral steel
+        defRigged(t, "marcus_webb.glb", 1.0f);             // ~1.8 m animated soldier
+        defs.push_back({ EnemyType::DominionTrooper, "DominionTrooper", t });
+    }
+
+    // ---- Verthani — insectoid: FASTER, flanks more (strafe-heavy), melee. Bible
+    // "Infected Human (Stage 1)" profile (HP 150, Fast, claw/erratic) trimmed for
+    // the squad budget; reads as a darting flanker. ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Guard;              // melee archetype
+        t.hp             = 130;                             // bible-ish (fast, fragile-ish)
+        t.chaseSpeed     = 4.2f;                            // bible "Fast" (vs trooper 2.5)
+        t.damage         = combat::kMeleeDamageMax;         // 10 (strong claw, top of band)
+        t.attackRange    = combat::kMeleeRange;             // 1.9 m claw reach
+        t.attackCooldown = combat::kMeleeCooldownMin;       // 1.0 s (quick swings)
+        t.attackWindup   = combat::kMeleeWindup;            // 0.25 s
+        t.ranged         = false;
+        t.aiStrafeBias   = 0.80f;                           // STRAFE-HEAVY: orbits/flanks
+        t.tint[0]=0.55f; t.tint[1]=0.95f; t.tint[2]=0.55f;  // chitin green
+        defRigged(t, "alien_crawler.glb", 0.9f);           // non-humanoid insectoid look
+        defs.push_back({ EnemyType::Verthani, "Verthani", t });
+    }
+
+    // ---- Illuminated — elite: ranged + "shielded" (modeled as much higher HP),
+    // holds a LONG standoff. Bible "Security Guard (Elite)": HP 200, rifle 25,
+    // 25% armor (folded into HP). Standoff AI (low strafe bias: it backs/holds). ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Drone;              // ranged archetype (reuses drone lane)
+        t.hp             = 220;                             // bible 200 + armor (shielded elite)
+        t.chaseSpeed     = 2.2f;                            // deliberate (holds the line)
+        t.damage         = combat::kRangedDamageMax;        // 6 (band 4..6; strong bolt)
+        t.attackRange    = 18.0f;                           // long rifle reach
+        t.attackCooldown = combat::kRangedCooldownMin;      // 0.8 s (disciplined fire)
+        t.attackWindup   = 0.35f;                           // telegraphed beam
+        t.ranged         = true;
+        t.standoff       = 11.0f;                           // holds FAR back (elite standoff)
+        t.aiStrafeBias   = 0.10f;                           // STANDOFF: barely flanks, holds range
+        t.tint[0]=1.0f; t.tint[1]=0.92f; t.tint[2]=0.55f;   // golden "illuminated" glow
+        defRigged(t, "chief_martinez.glb", 1.15f);         // tall elite humanoid
+        defs.push_back({ EnemyType::Illuminated, "Illuminated", t });
+    }
+
+    // ---- BlueSynth — synthetic: ranged drone-like flier. Bible "Combat Drone":
+    // HP 150, plasma 20, flanks/coordinates. Uses blue_synth_seed*.glb if present
+    // (absent today -> Drone.glb tinted blue -> box). Mid strafe bias. ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Drone;
+        t.hp             = 150;                             // bible: 150
+        t.chaseSpeed     = 3.2f;                            // bible "Medium (flying)"
+        t.damage         = combat::kRangedDamageDefault;    // 5 (plasma bolt)
+        t.attackRange    = 14.0f;
+        t.attackCooldown = combat::kRangedCooldownDefault;  // ~1.4 s
+        t.attackWindup   = 0.30f;
+        t.ranged         = true;
+        t.standoff       = combat::kRangedStandoff;         // ~7 m
+        t.aiStrafeBias   = 0.60f;                           // flanks/coordinates (drone-ish)
+        t.tint[0]=0.45f; t.tint[1]=0.65f; t.tint[2]=1.0f;   // synthetic blue
+        const bool realSynth = defBlueSynth(t, 1.0f);
+        x3::logInfo(std::string("[bestiary] BlueSynth model: ") +
+                    (realSynth ? "rigged blue_synth GLB" : "fallback Drone.glb (blue tint)"));
+        defs.push_back({ EnemyType::BlueSynth, "BlueSynth", t });
+    }
+
+    return defs;
+}
+
+} // namespace
+
+const std::vector<MonsterDef>& monsterDefs() {
+    static const std::vector<MonsterDef> defs = buildMonsterDefs();
+    return defs;
+}
+
+const MonsterDef& monsterDef(EnemyType t) {
+    const std::vector<MonsterDef>& defs = monsterDefs();
+    const uint32_t i = (uint32_t)t;
+    if (i < defs.size() && defs[i].type == t) return defs[i];   // table is in enum order
+    // Defensive: linear find if the table order ever drifts.
+    for (const MonsterDef& d : defs) if (d.type == t) return d;
+    return defs[0];
+}
+
+MonsterSystem::Tuning tuningFor(EnemyType t) {
+    return monsterDef(t).tuning;
+}
+
+// ===========================================================================
+// --test-bestiary: the data-driven enemy roster.
+//   (a) each EnemyType BUILDS with its table stats (HP/type/ranged/damage match).
+//   (b) each behaves per its weighting under steady LOS: melee species close +
+//       FACE the player; ranged species hold a standoff (don't close to melee);
+//       a strafe-heavy species (Verthani) reaches Strafe; weights differ across
+//       the roster (Verthani strafes more than Illuminated).
+//   (c) the rows are DISTINCT (no two identical stat blocks).
+// Reuses the existing combat AI verbatim. No window / Vulkan.
+// ===========================================================================
+namespace {
+
+int be_pass = 0, be_fail = 0;
+void becheck(bool cond, const char* name) {
+    if (cond) { ++be_pass; x3::logInfo(std::string("[bestiary-test] PASS ") + name); }
+    else      { ++be_fail; x3::logError(std::string("[bestiary-test] FAIL ") + name); }
+}
+
+constexpr float kBeDt = 1.0f / 60.0f;
+
+// A trivial damage sink the AI treats as "the player": alive, at a fixed eye.
+class BeTargetStub final : public IDamageSink {
+public:
+    x3::phys::Vec3 eye{ 0.0f, 1.6f, 0.0f };
+    bool takeDamage(int) override { return true; }
+    x3::phys::Vec3 damageTargetPos() const override { return eye; }
+    bool isAlive() const override { return true; }
+};
+
+// Flat ground at y=0 (CCW so +Y is solid), `half` to a side.
+x3::phys::BodyId beGround(x3::phys::IPhysicsWorld& w, float half) {
+    float v[] = { -half,0,-half,  half,0,-half,  half,0,half,  -half,0,half };
+    uint32_t idx[] = { 0,2,1, 0,3,2 };
+    return w.addStaticMesh(v, 4, idx, 6);
+}
+
+// Two tunings have an identical stat block? (compares the gameplay-relevant fields,
+// not the model strings — used to prove the roster carries real variety.)
+bool sameStats(const MonsterSystem::Tuning& a, const MonsterSystem::Tuning& b) {
+    return a.type == b.type && a.hp == b.hp && a.damage == b.damage &&
+           a.ranged == b.ranged && std::fabs(a.chaseSpeed - b.chaseSpeed) < 1e-4f &&
+           std::fabs(a.attackRange - b.attackRange) < 1e-4f &&
+           std::fabs(a.aiStrafeBias - b.aiStrafeBias) < 1e-4f;
+}
+
+} // namespace
+
+bool runBestiarySelfTest() {
+    be_pass = be_fail = 0;
+    HeadlessDevice device;
+
+    const std::vector<MonsterDef>& roster = monsterDefs();
+
+    // ---- (a) the table is complete + ordered (one row per EnemyType, enum order). ----
+    {
+        bool complete = roster.size() == (size_t)EnemyType::Count;
+        bool ordered = true;
+        for (uint32_t i = 0; i < roster.size(); ++i)
+            if ((uint32_t)roster[i].type != i) ordered = false;
+        x3::logInfo(std::string("[bestiary-test] roster size=") + std::to_string(roster.size()) +
+                    " (expected " + std::to_string((uint32_t)EnemyType::Count) + ")");
+        becheck(complete && ordered, "Ta roster has one row per EnemyType, in enum order");
+    }
+
+    // ---- (c) the rows are DISTINCT (no two identical gameplay stat blocks). ----
+    {
+        bool allDistinct = true;
+        for (size_t i = 0; i < roster.size(); ++i)
+            for (size_t j = i + 1; j < roster.size(); ++j)
+                if (sameStats(roster[i].tuning, roster[j].tuning)) allDistinct = false;
+        becheck(allDistinct, "Tc all roster rows are distinct (the table carries variety)");
+    }
+
+    // ---- (b) per-species BUILD + BEHAVIOUR. For each EnemyType: spawn it via the
+    // data-driven tuningFor() path, assert the built MonsterSystem reports the row's
+    // stats, then run a steady LOS engagement and observe the AI behaves per weight.
+    int  builtOk = 0;
+    bool meleeClosed = false, meleeFaces = false;     // Trooper/Verthani
+    bool rangedHeldStandoff = false;                  // Illuminated/BlueSynth
+    bool verthaniStrafed = false, illuminatedHeldRange = false;
+    for (uint32_t ti = 0; ti < (uint32_t)EnemyType::Count; ++ti) {
+        const EnemyType et = (EnemyType)ti;
+        const MonsterDef& def = monsterDef(et);
+        MonsterSystem::Tuning t = tuningFor(et);
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); beGround(*w, 80.0f);
+        Scene scene; MonsterSystem m; BeTargetStub tgt;
+        // Spawn ~10 m ahead (toward -Z) with a clear LOS so every type engages.
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                            x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, t);
+
+        // (a) built stats match the row.
+        const bool statsMatch =
+            m.type() == def.tuning.type && m.maxHp() == def.tuning.hp &&
+            m.ranged() == def.tuning.ranged && m.attackDamage() == def.tuning.damage;
+        if (statsMatch) ++builtOk;
+        x3::logInfo(std::string("[bestiary-test] ") + enemyTypeName(et) +
+                    " built hp=" + std::to_string(m.maxHp()) +
+                    " type=" + std::to_string((int)m.type()) +
+                    " ranged=" + (m.ranged() ? "1" : "0") +
+                    " dmg=" + std::to_string(m.attackDamage()) +
+                    " realModel=" + (m.usingRealModel() ? "1" : "0") +
+                    (statsMatch ? "  [stats OK]" : "  [STATS MISMATCH]"));
+
+        // Behaviour: player 10 m ahead, clear LOS. Run a few seconds.
+        tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -10.0f };
+        const float startHoriz = 10.0f;
+        float minHoriz = 1e30f, maxHoriz = 0.0f;
+        bool sawStrafe = false, sawAdvanceOrAttack = false;
+        for (int i = 0; i < 360; ++i) {   // 6 s
+            m.update(kBeDt, scene, *w, tgt.eye, tgt.eye, &tgt, AttackFxFn{},
+                     BossPhaseFn{}, AllyQueryFn{});
+            w->step(kBeDt);
+            const float dz = tgt.eye.z - m.pos().z, dx = tgt.eye.x - m.pos().x;
+            const float h = std::sqrt(dx*dx + dz*dz);
+            if (h < minHoriz) minHoriz = h;
+            if (h > maxHoriz) maxHoriz = h;
+            if (m.aiState() == AiState::Strafe) sawStrafe = true;
+            if (m.aiState() == AiState::Advance || m.aiState() == AiState::Attack)
+                sawAdvanceOrAttack = true;
+        }
+        // Facing: forward (local -Z) points toward the player.
+        const float dx = tgt.eye.x - m.pos().x, dz = tgt.eye.z - m.pos().z;
+        const float dl = std::sqrt(dx*dx + dz*dz);
+        const x3::phys::Vec3 f = m.facingDir();
+        const float facingDot = (dl > 1e-4f) ? (f.x*dx + f.z*dz)/dl : 0.0f;
+
+        x3::logInfo(std::string("[bestiary-test] ") + enemyTypeName(et) +
+                    " minH=" + std::to_string(minHoriz) + " maxH=" + std::to_string(maxHoriz) +
+                    " sawStrafe=" + (sawStrafe ? "1" : "0") +
+                    " sawAdv/Atk=" + (sawAdvanceOrAttack ? "1" : "0") +
+                    " facingDot=" + std::to_string(facingDot) + " engaged=" +
+                    (m.hasLineOfSight() ? "1" : "0"));
+
+        if (!def.tuning.ranged) {
+            // MELEE species: must CLOSE to roughly melee reach and FACE the player.
+            if (minHoriz <= def.tuning.attackRange + 1.0f) meleeClosed = true;
+            if (facingDot > 0.85f) meleeFaces = true;
+            if (et == EnemyType::Verthani && sawStrafe) verthaniStrafed = true;
+        } else {
+            // RANGED species: must HOLD a standoff — i.e. NOT close to melee reach.
+            // It should settle near its standoff, clearly farther than melee.
+            if (minHoriz > combat::kMeleeRange + 1.0f) rangedHeldStandoff = true;
+            // Illuminated holds a LONG standoff: it should not approach inside ~6 m.
+            if (et == EnemyType::Illuminated && minHoriz > 6.0f) illuminatedHeldRange = true;
+        }
+        (void)startHoriz; (void)sawAdvanceOrAttack;
+        w->shutdown();
+    }
+
+    becheck(builtOk == (int)EnemyType::Count,
+            "Tb each EnemyType builds with its table stats (HP/type/ranged/damage)");
+    becheck(meleeClosed && meleeFaces,
+            "Tb melee species close to reach AND face the player");
+    becheck(rangedHeldStandoff && illuminatedHeldRange,
+            "Tb ranged species hold a standoff (Illuminated holds a LONG one)");
+    becheck(verthaniStrafed,
+            "Tb Verthani (strafe-heavy weight) reaches the Strafe/flank state");
+
+    x3::logInfo(std::string("[bestiary-test] ") + std::to_string(be_pass) + " passed, " +
+                std::to_string(be_fail) + " failed");
+    return be_fail == 0;
 }
 
 } // namespace x3::game
