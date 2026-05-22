@@ -218,11 +218,17 @@ public:
         // that samples the scene depth (above) for the depth-based color. Built
         // after the depth buffer exists; OFF by default (gated by setWaterParams).
         if (!createWater()) return false;
+        // Particles + impact decals (combat juice): the billboard + decal pipelines,
+        // the shared unit quad, and the per-frame instance rings / UBOs. Built after
+        // the depth buffer exists (soft particles sample it). The whole pass is gated
+        // per-frame on whether anything was submitted, so it costs nothing when idle.
+        if (!createParticles()) return false;
         return true;
     }
 
     void shutdown() override {
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        destroyParticles();
         destroyWater();
         destroyGi();
         destroySsao();
@@ -306,6 +312,30 @@ public:
         m_gi = gp;
     }
 
+    // ---- Particles + decals (combat juice) ---------------------------------
+    // Append this frame's particle instances into the additive / alpha CPU staging
+    // buffers (cleared each beginFrame). The buffers are FIXED-capacity (reserved
+    // once at init to kMaxParticles); appends past the cap are dropped — NO per-
+    // frame heap alloc. prepareFrameData() uploads them into the per-frame instance
+    // ring and buildAndExecuteGraph adds the particle pass when any are present.
+    void submitParticles(const ParticleInstance* instances, uint32_t count,
+                         ParticleBlend mode) override {
+        if (!instances || count == 0) return;
+        std::vector<ParticleInstance>& dst =
+            (mode == ParticleBlend::Alpha) ? m_partAlpha : m_partAdd;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (dst.size() >= kMaxParticles) break;   // bounded; drop the overflow
+            dst.push_back(instances[i]);
+        }
+    }
+    void submitDecals(const DecalInstance* decals, uint32_t count) override {
+        if (!decals || count == 0) return;
+        for (uint32_t i = 0; i < count; ++i) {
+            if (m_decals.size() >= kMaxDecals) break;
+            m_decals.push_back(decals[i]);
+        }
+    }
+
     FrameContext beginFrame() override {
         FrameContext fc{};
         if (m_needsRecreate) {
@@ -363,6 +393,11 @@ public:
         // overwrite its per-frame object SSBO / camera UBO / indirect rings and to
         // recycle the HUD descriptor pool + HUD vertex ring.
         m_drawRecords.clear();
+        // Particle/decal per-frame staging (capacity persists -> no heap churn).
+        m_partAdd.clear();
+        m_partAlpha.clear();
+        m_decals.clear();
+        m_partAddCount = m_partAlphaCount = m_decalCount = 0;
         m_framePrepared = false;
         m_frameCmdCount = 0;
         if (fr.hudDescPool) vkResetDescriptorPool(m_dev.device, fr.hudDescPool, 0);
@@ -1334,6 +1369,65 @@ private:
             std::memcpy(m_waterUboMapped[m_frameIdx], &w, sizeof(WaterUBO));
         }
 
+        // ---- Particles + impact decals (combat juice) ----------------------
+        // Stream this frame's submitted instances into the per-frame rings and fill
+        // the UBOs (camera viewProj + the screen-aligned billboard basis + depth-
+        // reconstruction near/far). Done BEFORE the early-out below so a mesh-less FX
+        // capture still uploads. Counts are clamped to the rings' capacity.
+        {
+            // Camera basis (device convention; matches fwd above). right is the XZ
+            // perpendicular; up = right x forward (orthonormal, screen-aligned).
+            const float cy = std::cos(m_camYaw),   sy = std::sin(m_camYaw);
+            const glm::vec3 camRight(-sy, 0.0f, cy);
+            const glm::vec3 camUp = glm::normalize(glm::cross(camRight, fwd));
+            const float invW = (m_extent.width  > 0) ? 1.0f / (float)m_extent.width  : 0.0f;
+            const float invH = (m_extent.height > 0) ? 1.0f / (float)m_extent.height : 0.0f;
+
+            m_partAddCount   = (uint32_t)std::min<size_t>(m_partAdd.size(),   kMaxParticles);
+            m_partAlphaCount = (uint32_t)std::min<size_t>(m_partAlpha.size(), kMaxParticles);
+            m_decalCount     = (uint32_t)std::min<size_t>(m_decals.size(),    kMaxDecals);
+
+            if (m_partUboMapped[m_frameIdx]) {
+                ParticleUBO pu{};
+                pu.viewProj = ubo.viewProj;
+                pu.camRight = glm::vec4(camRight, 0.0f);
+                pu.camUp    = glm::vec4(camUp, 0.0f);
+                pu.camPos   = glm::vec4(m_camPos, 1.0f);
+                pu.params   = glm::vec4(invW, invH, 0.1f, 200.0f);  // near/far match the proj
+                std::memcpy(m_partUboMapped[m_frameIdx], &pu, sizeof(ParticleUBO));
+            }
+            if (m_decalUboMapped[m_frameIdx]) {
+                DecalUBO du{};
+                du.viewProj = ubo.viewProj;
+                std::memcpy(m_decalUboMapped[m_frameIdx], &du, sizeof(DecalUBO));
+            }
+            if (m_partAddCount && m_partInstAddMapped[m_frameIdx]) {
+                ParticleGpu* d = (ParticleGpu*)m_partInstAddMapped[m_frameIdx];
+                for (uint32_t i = 0; i < m_partAddCount; ++i) {
+                    const ParticleInstance& s = m_partAdd[i];
+                    d[i].posSize = glm::vec4(s.pos[0], s.pos[1], s.pos[2], s.size);
+                    d[i].color   = glm::vec4(s.color[0], s.color[1], s.color[2], s.color[3]);
+                }
+            }
+            if (m_partAlphaCount && m_partInstAlphaMapped[m_frameIdx]) {
+                ParticleGpu* d = (ParticleGpu*)m_partInstAlphaMapped[m_frameIdx];
+                for (uint32_t i = 0; i < m_partAlphaCount; ++i) {
+                    const ParticleInstance& s = m_partAlpha[i];
+                    d[i].posSize = glm::vec4(s.pos[0], s.pos[1], s.pos[2], s.size);
+                    d[i].color   = glm::vec4(s.color[0], s.color[1], s.color[2], s.color[3]);
+                }
+            }
+            if (m_decalCount && m_decalInstMapped[m_frameIdx]) {
+                DecalGpu* d = (DecalGpu*)m_decalInstMapped[m_frameIdx];
+                for (uint32_t i = 0; i < m_decalCount; ++i) {
+                    const DecalInstance& s = m_decals[i];
+                    d[i].centerSize  = glm::vec4(s.center[0], s.center[1], s.center[2], s.halfSize);
+                    d[i].normalAngle = glm::vec4(s.normal[0], s.normal[1], s.normal[2], s.angle);
+                    d[i].color       = glm::vec4(s.color[0], s.color[1], s.color[2], s.color[3]);
+                }
+            }
+        }
+
         if (m_drawRecords.empty() || !m_meshPipeline) return;
 
         // Group records by mesh (preserve first-seen order for determinism). Reuse
@@ -1752,8 +1846,12 @@ private:
         // Water adds a pass after the main mesh pass that samples + depth-tests the
         // scene depth this frame (gated; OFF == no water pass + zero cost).
         const bool waterOn = m_water.enabled;
-        // The scene depth must be STORED (not transient) when water OR GI read it.
-        const bool storeDepth = waterOn || giOn;
+        // Particles/decals: add the HDR transparent pass only when something was
+        // submitted this frame (zero GPU cost when idle). It samples the scene depth
+        // (soft particles) + depth-tests against it, like water.
+        const bool particlesOn = (m_partAddCount + m_partAlphaCount + m_decalCount) > 0;
+        // The scene depth must be STORED (not transient) when water/GI/particles read it.
+        const bool storeDepth = waterOn || giOn || particlesOn;
         RgResource rgSsaoRaw  = m_graph.importImage("ssao.raw",  m_ssaoRawImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgSsaoBlur = m_graph.importImage("ssao.blur", m_ssaoBlurImg,
@@ -2298,6 +2396,57 @@ private:
                 };
                 m_graph.addPass(std::move(cp));
             }
+        }
+
+        // ---- Particle + decal pass (combat juice) ---------------------------
+        // Drawn AFTER opaque + water + the full GI chain into the SAME linear HDR
+        // target (LOAD, so the lit scene stays), BEFORE bloom (so bright additive
+        // sparks/muzzle feed the bloom chain). Depth-tests LESS_OR_EQUAL against the
+        // stored scene depth WITHOUT writing it, and SAMPLES that same depth for the
+        // soft-particle fade — both in DEPTH_READ_ONLY, one declared use covers both
+        // (the graph derives DEPTH_ATTACHMENT -> DEPTH_READ_ONLY). Only added when
+        // something was submitted this frame (gated by particlesOn -> zero idle cost).
+        if (particlesOn) {
+            m_partColorAttach = VkRenderingAttachmentInfo{};
+            m_partColorAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_partColorAttach.imageView = m_hdrView;
+            m_partColorAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_partColorAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;   // keep the lit scene
+            m_partColorAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            m_partDepthAttach = VkRenderingAttachmentInfo{};
+            m_partDepthAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_partDepthAttach.imageView = m_depthView;
+            m_partDepthAttach.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL; // read-only depth
+            m_partDepthAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            m_partDepthAttach.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
+
+            RenderPassDesc partPass{};
+            partPass.name = "particles";
+            partPass.addUse(ResourceUse{
+                rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            partPass.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT
+                    | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            partPass.usesDynamicRendering = true;
+            m_partRenderInfo = VkRenderingInfo{};
+            m_partRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_partRenderInfo.renderArea = { {0,0}, m_extent };
+            m_partRenderInfo.layerCount = 1;
+            m_partRenderInfo.colorAttachmentCount = 1;
+            m_partRenderInfo.pColorAttachments = &m_partColorAttach;
+            m_partRenderInfo.pDepthAttachment = &m_partDepthAttach;
+            partPass.renderInfo = m_partRenderInfo;
+            partPass.recordCtx = this;
+            partPass.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordParticlePassBody(c); };
+            m_graph.addPass(std::move(partPass));
         }
 
         // ================================================================
@@ -2986,6 +3135,334 @@ private:
         vkCmdDrawIndexed(cmd, m_waterIndexCount, 1, 0, 0, 0);
     }
 
+    // ---- Particles + impact decals (combat juice) --------------------------
+    // Build: the shared unit quad (4 corners, triangle strip), the per-frame
+    // instance rings (additive/alpha particles + decals) + UBOs + descriptor sets,
+    // and the three graphics pipelines (additive particles, alpha particles, alpha
+    // decals). All depth-TEST LESS_OR_EQUAL, depth-write OFF (the billboards/decals
+    // read the opaque depth the main pass produced and never overwrite it). The
+    // particle FS samples the scene depth for the soft-particle fade (set0,b1).
+    bool createParticles() {
+        // Reserve the CPU staging vectors ONCE so per-frame submitParticles/Decals
+        // appends never reallocate (the bounded "no per-frame heap alloc" promise).
+        m_partAdd.reserve(kMaxParticles);
+        m_partAlpha.reserve(kMaxParticles);
+        m_decals.reserve(kMaxDecals);
+
+        // --- Shared unit quad: 4 corners in [-0.5,0.5], drawn as a triangle strip. ---
+        const glm::vec2 quad[4] = {
+            { -0.5f, -0.5f }, {  0.5f, -0.5f }, { -0.5f,  0.5f }, {  0.5f,  0.5f } };
+        if (!createDeviceLocalBuffer(quad, sizeof(quad),
+                                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, m_partQuadVbo, m_partQuadAlloc)) {
+            logError("[rhi] particle quad vbo create failed"); return false;
+        }
+
+        // --- Scene-depth sampler (LINEAR clamp) for the soft-particle fade. ---
+        VkSamplerCreateInfo dsci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        dsci.magFilter = VK_FILTER_LINEAR; dsci.minFilter = VK_FILTER_LINEAR;
+        dsci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        dsci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        dsci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        dsci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(m_dev.device, &dsci, nullptr, &m_partDepthSampler) != VK_SUCCESS) {
+            logError("[rhi] particle depth sampler failed"); return false;
+        }
+
+        // --- Set-0 layouts. Particle: UBO(b0,VS+FS) + scene-depth(b1,FS). Decal: UBO(b0). ---
+        {
+            VkDescriptorSetLayoutBinding b[2]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            b[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            slci.bindingCount = 2; slci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_partSetLayout) != VK_SUCCESS) {
+                logError("[rhi] particle set layout failed"); return false;
+            }
+            VkDescriptorSetLayoutBinding db{};
+            db.binding = 0; db.descriptorCount = 1;
+            db.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            db.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+            VkDescriptorSetLayoutCreateInfo dslci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            dslci.bindingCount = 1; dslci.pBindings = &db;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &dslci, nullptr, &m_decalSetLayout) != VK_SUCCESS) {
+                logError("[rhi] decal set layout failed"); return false;
+            }
+        }
+
+        // --- Descriptor pool: per frame-in-flight, 2 UBO sets + 1 sampler. ---
+        VkDescriptorPoolSize ps[2]{
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight * 2 },
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kFramesInFlight } };
+        VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        pci.maxSets = kFramesInFlight * 2; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
+        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_partPool) != VK_SUCCESS) {
+            logError("[rhi] particle desc pool failed"); return false;
+        }
+
+        // --- Per-frame instance rings + UBOs + descriptor sets. ---
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            auto makeMapped = [&](VkDeviceSize bytes, VkBufferUsageFlags usage,
+                                  VkBuffer& buf, VmaAllocation& alloc, void*& mapped) -> bool {
+                VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+                bci.size = bytes; bci.usage = usage;
+                VmaAllocationCreateInfo aci{};
+                aci.usage = VMA_MEMORY_USAGE_AUTO;
+                aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+                VmaAllocationInfo info{};
+                if (vmaCreateBuffer(m_alloc, &bci, &aci, &buf, &alloc, &info) != VK_SUCCESS) return false;
+                mapped = info.pMappedData;
+                return true;
+            };
+            if (!makeMapped(sizeof(ParticleGpu) * kMaxParticles, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                            m_partInstAddBuf[i], m_partInstAddAlloc[i], m_partInstAddMapped[i])) {
+                logError("[rhi] particle add ring create failed"); return false; }
+            if (!makeMapped(sizeof(ParticleGpu) * kMaxParticles, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                            m_partInstAlphaBuf[i], m_partInstAlphaAlloc[i], m_partInstAlphaMapped[i])) {
+                logError("[rhi] particle alpha ring create failed"); return false; }
+            if (!makeMapped(sizeof(DecalGpu) * kMaxDecals, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                            m_decalInstBuf[i], m_decalInstAlloc[i], m_decalInstMapped[i])) {
+                logError("[rhi] decal ring create failed"); return false; }
+            if (!makeMapped(sizeof(ParticleUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                            m_partUboBuf[i], m_partUboAlloc[i], m_partUboMapped[i])) {
+                logError("[rhi] particle UBO create failed"); return false; }
+            if (!makeMapped(sizeof(DecalUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                            m_decalUboBuf[i], m_decalUboAlloc[i], m_decalUboMapped[i])) {
+                logError("[rhi] decal UBO create failed"); return false; }
+
+            VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            dsai.descriptorPool = m_partPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &m_partSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_partSet[i]) != VK_SUCCESS) {
+                logError("[rhi] particle set alloc failed"); return false; }
+            VkDescriptorSetAllocateInfo dsai2{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            dsai2.descriptorPool = m_partPool; dsai2.descriptorSetCount = 1; dsai2.pSetLayouts = &m_decalSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &dsai2, &m_decalSet[i]) != VK_SUCCESS) {
+                logError("[rhi] decal set alloc failed"); return false; }
+
+            // Bind the UBO (b0) of each set now; the depth (b1) is wired below/on resize.
+            VkDescriptorBufferInfo pbi{ m_partUboBuf[i], 0, sizeof(ParticleUBO) };
+            VkDescriptorBufferInfo dbi{ m_decalUboBuf[i], 0, sizeof(DecalUBO) };
+            VkWriteDescriptorSet w[2]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[0].dstSet = m_partSet[i]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[0].pBufferInfo = &pbi;
+            w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[1].dstSet = m_decalSet[i]; w[1].dstBinding = 0; w[1].descriptorCount = 1;
+            w[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[1].pBufferInfo = &dbi;
+            vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+        }
+        writeParticleDescriptors();   // wire the scene-depth binding (depth view)
+
+        // --- Pipelines. Shared: triangle strip, depth-test LESS_OR_EQUAL no write,
+        // vertex input = quad corner (binding 0, per-vertex) + instance (binding 1). ---
+        const VkFormat hdrFmt = kHdrFormat;
+        VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+        prci.colorAttachmentCount = 1; prci.pColorAttachmentFormats = &hdrFmt;
+        prci.depthAttachmentFormat = m_depthFormat;
+
+        VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;
+        VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        vp.viewportCount = 1; vp.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        dss.depthTestEnable = VK_TRUE; dss.depthWriteEnable = VK_FALSE;
+        dss.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        VkDynamicState dyn[2]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+
+        // Pipeline layouts.
+        VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        plci.setLayoutCount = 1; plci.pSetLayouts = &m_partSetLayout;
+        if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_partLayout) != VK_SUCCESS) {
+            logError("[rhi] particle pipeline layout failed"); return false; }
+        VkPipelineLayoutCreateInfo dplci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        dplci.setLayoutCount = 1; dplci.pSetLayouts = &m_decalSetLayout;
+        if (vkCreatePipelineLayout(m_dev.device, &dplci, nullptr, &m_decalLayout) != VK_SUCCESS) {
+            logError("[rhi] decal pipeline layout failed"); return false; }
+
+        // ---- Particle pipelines (additive + alpha): quad corner + ParticleGpu. ----
+        {
+            VkShaderModule vs = loadShaderModule("shaders\\particle.vert.spv");
+            VkShaderModule fs = loadShaderModule("shaders\\particle.frag.spv");
+            if (!vs || !fs) return false;
+            VkPipelineShaderStageCreateInfo stages[2]{};
+            stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = vs; stages[0].pName = "main";
+            stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
+
+            VkVertexInputBindingDescription vibs[2]{
+                { 0, sizeof(glm::vec2),   VK_VERTEX_INPUT_RATE_VERTEX   },   // quad corner
+                { 1, sizeof(ParticleGpu), VK_VERTEX_INPUT_RATE_INSTANCE } }; // instance
+            VkVertexInputAttributeDescription vias[3]{
+                { 0, 0, VK_FORMAT_R32G32_SFLOAT,       0 },                              // inCorner
+                { 1, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ParticleGpu, posSize) },// inPosSize
+                { 2, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(ParticleGpu, color)   }};// inColor
+            VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+            vin.vertexBindingDescriptionCount = 2; vin.pVertexBindingDescriptions = vibs;
+            vin.vertexAttributeDescriptionCount = 3; vin.pVertexAttributeDescriptions = vias;
+
+            // Additive blend (sparks/fire/muzzle): src*srcA + dst (glow, feeds bloom).
+            VkPipelineColorBlendAttachmentState addBlend{};
+            addBlend.blendEnable = VK_TRUE;
+            addBlend.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+            addBlend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            addBlend.colorBlendOp = VK_BLEND_OP_ADD;
+            addBlend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+            addBlend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            addBlend.alphaBlendOp = VK_BLEND_OP_ADD;
+            addBlend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
+            // Alpha blend (smoke/dust/blood): standard over.
+            VkPipelineColorBlendAttachmentState aBlend = addBlend;
+            aBlend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+
+            auto buildPart = [&](const VkPipelineColorBlendAttachmentState& cba, VkPipeline& out) -> bool {
+                VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+                cb.attachmentCount = 1; cb.pAttachments = &cba;
+                VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+                gpci.pNext = &prci; gpci.stageCount = 2; gpci.pStages = stages;
+                gpci.pVertexInputState = &vin; gpci.pInputAssemblyState = &ia;
+                gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
+                gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
+                gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_partLayout;
+                return vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &out) == VK_SUCCESS;
+            };
+            bool ok = buildPart(addBlend, m_partAddPipeline) && buildPart(aBlend, m_partAlphaPipeline);
+            vkDestroyShaderModule(m_dev.device, vs, nullptr);
+            vkDestroyShaderModule(m_dev.device, fs, nullptr);
+            if (!ok) { logError("[rhi] particle pipeline create failed"); return false; }
+        }
+
+        // ---- Decal pipeline (alpha): quad corner + DecalGpu. ----
+        {
+            VkShaderModule vs = loadShaderModule("shaders\\decal.vert.spv");
+            VkShaderModule fs = loadShaderModule("shaders\\decal.frag.spv");
+            if (!vs || !fs) return false;
+            VkPipelineShaderStageCreateInfo stages[2]{};
+            stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = vs; stages[0].pName = "main";
+            stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
+
+            VkVertexInputBindingDescription vibs[2]{
+                { 0, sizeof(glm::vec2), VK_VERTEX_INPUT_RATE_VERTEX   },
+                { 1, sizeof(DecalGpu),  VK_VERTEX_INPUT_RATE_INSTANCE } };
+            VkVertexInputAttributeDescription vias[4]{
+                { 0, 0, VK_FORMAT_R32G32_SFLOAT,       0 },
+                { 1, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(DecalGpu, centerSize)  },
+                { 2, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(DecalGpu, normalAngle) },
+                { 3, 1, VK_FORMAT_R32G32B32A32_SFLOAT, offsetof(DecalGpu, color)       }};
+            VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+            vin.vertexBindingDescriptionCount = 2; vin.pVertexBindingDescriptions = vibs;
+            vin.vertexAttributeDescriptionCount = 4; vin.pVertexAttributeDescriptions = vias;
+
+            VkPipelineColorBlendAttachmentState cba{};
+            cba.blendEnable = VK_TRUE;
+            cba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+            cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            cba.colorBlendOp = VK_BLEND_OP_ADD;
+            cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+            cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            cba.alphaBlendOp = VK_BLEND_OP_ADD;
+            cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
+            VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+            cb.attachmentCount = 1; cb.pAttachments = &cba;
+
+            VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+            gpci.pNext = &prci; gpci.stageCount = 2; gpci.pStages = stages;
+            gpci.pVertexInputState = &vin; gpci.pInputAssemblyState = &ia;
+            gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
+            gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
+            gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_decalLayout;
+            VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_decalPipeline);
+            vkDestroyShaderModule(m_dev.device, vs, nullptr);
+            vkDestroyShaderModule(m_dev.device, fs, nullptr);
+            if (pr != VK_SUCCESS) { logError("[rhi] decal pipeline create failed"); return false; }
+        }
+
+        logInfo("[rhi] particle + decal pipelines ready (instanced billboards, additive/alpha, soft vs scene depth)");
+        return true;
+    }
+
+    // (Re)write the scene-depth binding (b1) of each frame's particle set. Called at
+    // init + on resize (the depth image view changes). Sampled in DEPTH_READ_ONLY —
+    // the SAME layout it is bound as a read-only depth attachment in the pass.
+    void writeParticleDescriptors() {
+        if (!m_depthView) return;
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (!m_partSet[i]) continue;
+            VkDescriptorImageInfo di{ m_partDepthSampler, m_depthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.dstSet = m_partSet[i]; w.dstBinding = 1; w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &di;
+            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        }
+    }
+
+    void destroyParticles() {
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            auto kill = [&](VkBuffer& b, VmaAllocation& a, void*& m) {
+                if (b) { vmaDestroyBuffer(m_alloc, b, a); b = VK_NULL_HANDLE; a = nullptr; m = nullptr; } };
+            kill(m_partInstAddBuf[i],   m_partInstAddAlloc[i],   m_partInstAddMapped[i]);
+            kill(m_partInstAlphaBuf[i], m_partInstAlphaAlloc[i], m_partInstAlphaMapped[i]);
+            kill(m_decalInstBuf[i],     m_decalInstAlloc[i],     m_decalInstMapped[i]);
+            kill(m_partUboBuf[i],       m_partUboAlloc[i],       m_partUboMapped[i]);
+            kill(m_decalUboBuf[i],      m_decalUboAlloc[i],      m_decalUboMapped[i]);
+        }
+        if (m_partQuadVbo) { vmaDestroyBuffer(m_alloc, m_partQuadVbo, m_partQuadAlloc); m_partQuadVbo = VK_NULL_HANDLE; m_partQuadAlloc = nullptr; }
+        if (m_partAddPipeline)   { vkDestroyPipeline(m_dev.device, m_partAddPipeline, nullptr);   m_partAddPipeline = VK_NULL_HANDLE; }
+        if (m_partAlphaPipeline) { vkDestroyPipeline(m_dev.device, m_partAlphaPipeline, nullptr); m_partAlphaPipeline = VK_NULL_HANDLE; }
+        if (m_decalPipeline)     { vkDestroyPipeline(m_dev.device, m_decalPipeline, nullptr);     m_decalPipeline = VK_NULL_HANDLE; }
+        if (m_partLayout)    { vkDestroyPipelineLayout(m_dev.device, m_partLayout, nullptr);  m_partLayout = VK_NULL_HANDLE; }
+        if (m_decalLayout)   { vkDestroyPipelineLayout(m_dev.device, m_decalLayout, nullptr); m_decalLayout = VK_NULL_HANDLE; }
+        if (m_partPool)      { vkDestroyDescriptorPool(m_dev.device, m_partPool, nullptr); m_partPool = VK_NULL_HANDLE; }
+        if (m_partSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_partSetLayout, nullptr);  m_partSetLayout = VK_NULL_HANDLE; }
+        if (m_decalSetLayout){ vkDestroyDescriptorSetLayout(m_dev.device, m_decalSetLayout, nullptr); m_decalSetLayout = VK_NULL_HANDLE; }
+        if (m_partDepthSampler) { vkDestroySampler(m_dev.device, m_partDepthSampler, nullptr); m_partDepthSampler = VK_NULL_HANDLE; }
+    }
+
+    // Record the particle + decal draws into the (already-open) particle pass.
+    // Order: DECALS first (alpha, on surfaces) then ALPHA particles (smoke/dust)
+    // then ADDITIVE particles (sparks/muzzle — glow last so they sit brightest).
+    void recordParticlePassBody(VkCommandBuffer cmd) {
+        postViewport(cmd, m_extent);
+        VkDeviceSize zero = 0;
+
+        if (m_decalCount > 0 && m_decalPipeline) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_decalPipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_decalLayout,
+                                    0, 1, &m_decalSet[m_frameIdx], 0, nullptr);
+            vkCmdBindVertexBuffers(cmd, 0, 1, &m_partQuadVbo, &zero);
+            vkCmdBindVertexBuffers(cmd, 1, 1, &m_decalInstBuf[m_frameIdx], &zero);
+            vkCmdDraw(cmd, 4, m_decalCount, 0, 0);   // 4 verts (strip) x N instances
+        }
+        if (m_partAlphaCount > 0 && m_partAlphaPipeline) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_partAlphaPipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_partLayout,
+                                    0, 1, &m_partSet[m_frameIdx], 0, nullptr);
+            vkCmdBindVertexBuffers(cmd, 0, 1, &m_partQuadVbo, &zero);
+            vkCmdBindVertexBuffers(cmd, 1, 1, &m_partInstAlphaBuf[m_frameIdx], &zero);
+            vkCmdDraw(cmd, 4, m_partAlphaCount, 0, 0);
+        }
+        if (m_partAddCount > 0 && m_partAddPipeline) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_partAddPipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_partLayout,
+                                    0, 1, &m_partSet[m_frameIdx], 0, nullptr);
+            vkCmdBindVertexBuffers(cmd, 0, 1, &m_partQuadVbo, &zero);
+            vkCmdBindVertexBuffers(cmd, 1, 1, &m_partInstAddBuf[m_frameIdx], &zero);
+            vkCmdDraw(cmd, 4, m_partAddCount, 0, 0);
+        }
+    }
+
     void destroyHud() {
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
             auto& fr = m_frames[i];
@@ -3083,6 +3560,8 @@ private:
         m_giHistoryValid = false;
         // Water samples the scene depth: the depth view changed -> rewire it.
         writeWaterDescriptors();
+        // Particles sample the scene depth (soft fade): rewire on the new depth view.
+        writeParticleDescriptors();
     }
 
     // ---- HEADLESS offscreen render target (no window, no swapchain) ---------
@@ -3181,6 +3660,8 @@ private:
         m_giHistoryValid = false;
         // Water samples the scene depth: the depth view changed -> rewire it.
         writeWaterDescriptors();
+        // Particles sample the scene depth (soft fade): rewire on the new depth view.
+        writeParticleDescriptors();
     }
 
     // ---- HDR scene + bloom render targets ----------------------------------
@@ -5197,6 +5678,70 @@ private:
     VkRenderingAttachmentInfo m_waterColorAttach{};
     VkRenderingAttachmentInfo m_waterDepthAttach{};
     VkRenderingInfo           m_waterRenderInfo{};
+
+    // ---- GPU-instanced billboard particles + impact decals (combat juice) ---
+    // A bounded, per-frame stream of camera-facing billboards drawn into the linear
+    // HDR target AFTER opaque + water + GI, BEFORE bloom (so bright additive sparks
+    // feed the bloom chain), depth-TESTED against the scene (no depth-write), with
+    // a SOFT-PARTICLE fade vs. the scene depth (the SSAO/water depth buffer). Impact
+    // decals (oriented quads on the hit surface) are drawn in the SAME pass, alpha-
+    // blended, depth-tested, no write. CPU owns the sim (app/fx.*) + submits each
+    // frame; the device streams the instances into a per-frame ring + draws ONE
+    // instanced quad per sub-batch. The whole pass is added only when something was
+    // submitted this frame (zero GPU cost when idle).
+    static constexpr uint32_t kMaxParticles = 16384; // per-frame instance cap (each mode)
+    static constexpr uint32_t kMaxDecals    = 256;    // per-frame decal instance cap
+    // ParticleUBO (set0,b0): camera viewProj + screen-aligned billboard basis +
+    // depth-reconstruction params. std140; matches particle.{vert,frag}.
+    struct ParticleUBO {
+        glm::mat4 viewProj;   // 0
+        glm::vec4 camRight;   // 64
+        glm::vec4 camUp;      // 80
+        glm::vec4 camPos;     // 96
+        glm::vec4 params;     // 112: x=1/W, y=1/H, z=near, w=far
+    };
+    static_assert(sizeof(ParticleUBO) == 128, "ParticleUBO must match the std140 layout");
+    // DecalUBO (set0,b0): camera viewProj. std140; matches decal.{vert,frag}.
+    struct DecalUBO {
+        glm::mat4 viewProj;   // 0
+        glm::vec4 params;     // 64: reserved
+    };
+    static_assert(sizeof(DecalUBO) == 80, "DecalUBO must match the std140 layout");
+    // Per-instance GPU layout for the billboard pipeline: pos.xyz+halfSize, rgba.
+    struct ParticleGpu { glm::vec4 posSize; glm::vec4 color; };
+    // Per-instance GPU layout for the decal pipeline: center+halfSize, normal+angle, rgba.
+    struct DecalGpu { glm::vec4 centerSize; glm::vec4 normalAngle; glm::vec4 color; };
+
+    // CPU staging (fixed capacity; cleared each beginFrame -> no per-frame heap churn).
+    std::vector<ParticleInstance> m_partAdd;    // additive batch (sparks/fire/muzzle)
+    std::vector<ParticleInstance> m_partAlpha;  // alpha batch (smoke/dust/blood)
+    std::vector<DecalInstance>    m_decals;     // impact decals this frame
+    uint32_t m_partAddCount = 0, m_partAlphaCount = 0, m_decalCount = 0; // uploaded counts
+
+    // Shared unit quad (4 corners in [-0.5,0.5], triangle strip) for both pipelines.
+    VkBuffer      m_partQuadVbo = VK_NULL_HANDLE; VmaAllocation m_partQuadAlloc = nullptr;
+    // Per-frame instance rings (persistent-mapped): additive + alpha particles, decals.
+    VkBuffer m_partInstAddBuf[kFramesInFlight] = {};   VmaAllocation m_partInstAddAlloc[kFramesInFlight] = {};   void* m_partInstAddMapped[kFramesInFlight] = {};
+    VkBuffer m_partInstAlphaBuf[kFramesInFlight] = {}; VmaAllocation m_partInstAlphaAlloc[kFramesInFlight] = {}; void* m_partInstAlphaMapped[kFramesInFlight] = {};
+    VkBuffer m_decalInstBuf[kFramesInFlight] = {};     VmaAllocation m_decalInstAlloc[kFramesInFlight] = {};     void* m_decalInstMapped[kFramesInFlight] = {};
+    // Per-frame UBOs (particle + decal) + descriptor sets.
+    VkBuffer m_partUboBuf[kFramesInFlight] = {};  VmaAllocation m_partUboAlloc[kFramesInFlight] = {};  void* m_partUboMapped[kFramesInFlight] = {};
+    VkBuffer m_decalUboBuf[kFramesInFlight] = {}; VmaAllocation m_decalUboAlloc[kFramesInFlight] = {}; void* m_decalUboMapped[kFramesInFlight] = {};
+    VkDescriptorSet m_partSet[kFramesInFlight] = {};   // UBO + scene-depth sampler
+    VkDescriptorSet m_decalSet[kFramesInFlight] = {};  // UBO only
+    VkSampler             m_partDepthSampler = VK_NULL_HANDLE;  // LINEAR clamp, scene depth
+    VkDescriptorSetLayout m_partSetLayout    = VK_NULL_HANDLE;  // b0 UBO + b1 depth
+    VkDescriptorSetLayout m_decalSetLayout   = VK_NULL_HANDLE;  // b0 UBO
+    VkDescriptorPool      m_partPool         = VK_NULL_HANDLE;
+    VkPipelineLayout      m_partLayout       = VK_NULL_HANDLE;
+    VkPipelineLayout      m_decalLayout      = VK_NULL_HANDLE;
+    VkPipeline            m_partAddPipeline  = VK_NULL_HANDLE;  // additive blend
+    VkPipeline            m_partAlphaPipeline= VK_NULL_HANDLE;  // alpha blend
+    VkPipeline            m_decalPipeline    = VK_NULL_HANDLE;  // alpha blend
+    // Stable storage for the particle pass's VkRenderingInfo + attachments.
+    VkRenderingAttachmentInfo m_partColorAttach{};
+    VkRenderingAttachmentInfo m_partDepthAttach{};
+    VkRenderingInfo           m_partRenderInfo{};
 
     // ---- Directional shadow mapping (perf-stack E) ------------------------
     // A single fixed-resolution depth texture rendered from the sun's POV each

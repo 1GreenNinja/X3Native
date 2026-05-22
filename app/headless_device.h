@@ -63,6 +63,10 @@ public:
                           x3::rhi::TextureHandle, const float[4], const float[4],
                           const float[16]) override {}
 
+    void submitParticles(const x3::rhi::IRenderDevice::ParticleInstance*, uint32_t,
+                         x3::rhi::IRenderDevice::ParticleBlend) override {}
+    void submitDecals(const x3::rhi::IRenderDevice::DecalInstance*, uint32_t) override {}
+
     void setPointLights(const x3::rhi::PointLight*, uint32_t) override {}
     void setSkyParams(const x3::rhi::IRenderDevice::SkyParams&) override {}
     void setSsaoParams(const x3::rhi::IRenderDevice::SsaoParams&) override {}

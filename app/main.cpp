@@ -258,6 +258,12 @@ int main(int argc, char** argv) {
     // the gate-standard view). Does NOT change any default behavior when omitted.
     bool        shotCamOverride = false;
     float       shotCam[5] = { 8.0f, 1.75f, -0.4f, 0.06f, -0.16f };
+    // FX demo (--fx-demo): in --screenshot mode, spawn a combat particle/decal burst
+    // (muzzle flash + impact sparks + dust + a scorch decal) a couple meters in front
+    // of the screenshot camera each settle frame so the capture clearly shows the new
+    // GPU particles (glowing via bloom, soft against depth) + a bullet decal on the
+    // surface. Off by default — the standard --screenshot gate view is unchanged.
+    bool        fxDemo = false;
     // Windowed-mode resolution (--width <px> / --height <px>). Defaults to the
     // historical 1280x720 so the dev box + every headless/offscreen path are
     // UNCHANGED. A high-DPI box can pass e.g. --width 2560 --height 1440. These
@@ -329,6 +335,7 @@ int main(int argc, char** argv) {
                 shotCamOverride = (n == 5);
             }
         }
+        else if (a == "--fx-demo") fxDemo = true;
         else if (a == "--screenshot-sky") {
             skyShot = true;
             // Optional output path arg (next token, if it isn't another flag).
@@ -1723,14 +1730,38 @@ int main(int argc, char** argv) {
         double sumCpuMs = 0.0, sumGpuMs = 0.0; uint32_t measured = 0;
         double prevT = glfwGetTime();
         x3::rhi::RenderStats last{};
+        // --bench --fx-demo: split the run into a particle-OFF half then a heavy
+        // particle-ON half (a near-capacity burst spawned every frame in the camera's
+        // view) so the GPU-time delta isolates the particle pass cost.
+        const bool fxBench = fxDemo;
+        const uint32_t halfFrames = benchFrames / 2;
+        double sumGpuOff = 0.0, sumGpuOn = 0.0; uint32_t nOff = 0, nOn = 0;
+        // Burst origin: in front of the bench camera, in view of the cube field.
+        const x3::phys::Vec3 bEye{ bx, by, bz };
+        const x3::phys::Vec3 bLook{ std::cos(bpitch) * std::cos(byaw),
+                                    std::sin(bpitch), std::cos(bpitch) * std::sin(byaw) };
         for (uint32_t f = 0; f < benchFrames && !glfwWindowShouldClose(window); ++f) {
             glfwPollEvents();
             double nowT = glfwGetTime();
             double cpuMs = (nowT - prevT) * 1000.0; prevT = nowT;
 
+            const bool particlesThisFrame = fxBench && (f >= halfFrames);
+            if (particlesThisFrame) {
+                // Spawn a heavy burst spread across the view each frame so the pool
+                // stays near its kMaxParticles cap (worst-case particle draw load).
+                for (int s = 0; s < 24; ++s) {
+                    x3::phys::Vec3 o{ bEye.x + bLook.x * (6.0f + s * 0.6f),
+                                      bEye.y + bLook.y * (6.0f + s * 0.6f) + (float)((s % 5) - 2),
+                                      bEye.z + bLook.z * (6.0f + s * 0.6f) + (float)((s % 7) - 3) };
+                    combatFx.spawnImpact(o, x3::phys::Vec3{ -bLook.x, 1.0f, -bLook.z });
+                }
+                combatFx.update(1.0f / 120.0f);
+            }
+
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
+                if (particlesThisFrame) combatFx.submit(*device, frame);
                 // Stats overlay on so the HUD path is exercised under load too.
                 hud.drawStats(*device, frame, *console, (float)(cpuMs / 1000.0), /*force=*/true);
             }
@@ -1738,6 +1769,11 @@ int main(int argc, char** argv) {
 
             last = device->stats();
             if (f >= warmup) { sumCpuMs += cpuMs; sumGpuMs += last.gpuFrameMs; ++measured; }
+            // Split GPU sums for the particle delta (skip warmup in each half).
+            if (fxBench) {
+                if (f < halfFrames && f >= warmup) { sumGpuOff += last.gpuFrameMs; ++nOff; }
+                else if (f >= halfFrames + warmup)  { sumGpuOn  += last.gpuFrameMs; ++nOn;  }
+            }
         }
         const double avgCpu = measured ? sumCpuMs / measured : 0.0;
         const double avgGpu = measured ? sumGpuMs / measured : 0.0;
@@ -1747,6 +1783,15 @@ int main(int argc, char** argv) {
             "BENCH cubes=%u draws=%u tris=%u | FPS=%.1f  CPU=%.3f ms  GPU=%.3f ms  (avg over %u frames)",
             stressCount, last.drawCalls, last.triangles, avgFps, avgCpu, avgGpu, measured);
         x3::logInfo(rb);
+        if (fxBench) {
+            const double gOff = nOff ? sumGpuOff / nOff : 0.0;
+            const double gOn  = nOn  ? sumGpuOn  / nOn  : 0.0;
+            char pb[256];
+            std::snprintf(pb, sizeof(pb),
+                "BENCH-PARTICLES live=%d | GPU off=%.3f ms  on=%.3f ms  particle delta=%.3f ms",
+                combatFx.liveParticleCount(), gOff, gOn, gOn - gOff);
+            x3::logInfo(pb);
+        }
 
         audio->shutdown();
         combatFx.shutdown(*device);
@@ -1784,12 +1829,42 @@ int main(int argc, char** argv) {
             x3::phys::Vec3 dir{ 1.0f, 0.0f, 0.0f };
             game.onUse(x3::phys::Vec3{ 5.0f, 1.7f, 0.0f }, dir, scene, *physics);
         }
+        // --fx-demo: place a combat FX burst ~1 m in front of the camera along the
+        // actual look direction (so it sits in open space before any wall), and a
+        // scorch decal on the surface the look ray hits. The capture then shows the
+        // particles glowing via bloom + a soft fade against depth + a bullet decal on
+        // the surface. The burst is re-spawned each frame so short-lived sparks are
+        // alive at the captured frame.
+        const x3::phys::Vec3 fxLook{ std::cos(ssPitch) * std::cos(ssYaw),
+                                     std::sin(ssPitch),
+                                     std::cos(ssPitch) * std::sin(ssYaw) };
+        const x3::phys::Vec3 fxBurst{ ssX + fxLook.x * 1.0f,
+                                      ssY + fxLook.y * 1.0f,
+                                      ssZ + fxLook.z * 1.0f };
+        const x3::phys::Vec3 fxDir = fxLook;                     // muzzle aim along look
+        if (fxDemo) {
+            // Drop a decal where the look ray strikes a wall/floor (surface normal).
+            x3::phys::RayHit dh = physics->rayCast(ssEye, fxLook, 8.0f, x3::phys::Layer::Static);
+            if (dh.hit) combatFx.addDecal(dh.point, dh.normal);
+        }
+
         const int kSettleFrames = (screenshotSettle > 0) ? screenshotSettle : 16;
         for (int i = 0; i < kSettleFrames; ++i) {
             glfwPollEvents();
             game.tick(dt, scene, *physics, ssEye, ssEye);
             physics->step(dt);
             scene.update(*physics);
+            // FX demo: with a SMALL settle (<=30) spawn a fresh muzzle + impact burst
+            // on the last few frames so bright sparks/dust are alive at the captured
+            // frame (the LIVE-burst shot). With a LARGE settle (>30) skip the sparks
+            // entirely so only the PERSISTENT scorch decal on the surface remains
+            // visible (the decal-on-surface shot). One flag, two honest captures.
+            if (fxDemo && kSettleFrames <= 30 && i >= kSettleFrames - 3) {
+                combatFx.spawnMuzzleFlash(fxBurst, fxDir);
+                // Sparks spray back toward the camera (normal = -look) so they read.
+                combatFx.spawnImpact(fxBurst, x3::phys::Vec3{ -fxLook.x, -fxLook.y + 0.2f, -fxLook.z });
+            }
+            if (fxDemo) combatFx.update(dt);
             // Fix 1: arm the capture just before the FINAL settle frame so the copy
             // is recorded inside that frame's live command buffer (reads the
             // freshly-rendered, properly-acquired image — validation-clean). The
@@ -1800,6 +1875,10 @@ int main(int argc, char** argv) {
                 scene.render(*device, frame);
                 game.drawDoors(*device, frame);   // real SM_Door_A slabs (box hidden)
                 game.drawWorldExtras(*device, frame, scene);
+                if (fxDemo) {
+                    combatFx.draw(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch);
+                    combatFx.submit(*device, frame);
+                }
             }
             device->endFrame(frame);
         }
@@ -1847,6 +1926,11 @@ int main(int argc, char** argv) {
                 const x3::phys::Vec3 m = muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch);
                 combatFx.addTracer(m, r.endPoint);
                 audio->playSound3D(sndGun, m.x, m.y, m.z, 0.85f, 1.0f);
+                // Exercise EVERY particle/decal preset path under Debug validation:
+                // impact (sparks + dust + scorch decal), blood, and a death burst.
+                combatFx.spawnImpact(r.endPoint, x3::phys::Vec3{ -dir.x, -dir.y, -dir.z });
+                combatFx.spawnBlood(r.endPoint, dir);
+                combatFx.spawnDeath(eye);
             }
             combatFx.update(dt);
             // Exercise the HUD 2D path: drop some console output, and open the
@@ -1862,6 +1946,9 @@ int main(int argc, char** argv) {
                                    vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
                                    vmPose.fwd, vmPose.right, vmPose.down);
                 combatFx.draw(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch);
+                // Submit the GPU-instanced particles + decals (exercises the new HDR
+                // particle/decal pass under Debug validation).
+                combatFx.submit(*device, frame);
                 // HUD overlay last: crosshair + FPS meter + objective + console.
                 hud.drawCrosshair(*device, frame);
                 hud.drawFps(*device, frame, *console, dt);
@@ -2288,6 +2375,12 @@ int main(int argc, char** argv) {
                 combatFx.addTracer(muzzle, mr.swingTo);
                 // A heavy "thump" cue (reuse the gunshot WAV at low pitch).
                 audio->playSound3D(sndGun, muzzle.x, muzzle.y, muzzle.z, 0.7f, 0.6f);
+                // Melee juice: blood at the punch's far point per enemy hit; a
+                // death burst when the punch kills.
+                if (mr.enemiesHit) {
+                    combatFx.spawnBlood(mr.swingTo, dir);
+                    if (mr.enemiesKilled) combatFx.spawnDeath(mr.swingTo);
+                }
                 if (mr.doorForced)  x3::logInfo("melee: brute-forced a door open");
                 if (mr.enemiesHit)  x3::logInfo("melee: punched " + std::to_string(mr.enemiesHit) +
                                                 " enemy(ies), killed " + std::to_string(mr.enemiesKilled));
@@ -2308,9 +2401,24 @@ int main(int argc, char** argv) {
                                 std::cos(camPitch) * std::sin(camYaw) };
             x3::game::FireResult r = game.onFire(eye, dir, scene, *physics);
             // Shot feedback: a tracer from the viewmodel muzzle to the hit point
-            // (or max range on a miss) + a muzzle flash.
+            // (or max range on a miss) + a muzzle flash (the muzzle particle burst
+            // is spawned inside addTracer).
             const x3::phys::Vec3 muzzle = muzzleFromCamera(camX, camY, camZ, camYaw, camPitch);
             combatFx.addTracer(muzzle, r.endPoint);
+            // ---- Combat particle/decal juice from the shot result ----
+            if (r.killed) {
+                combatFx.spawnDeath(r.endPoint);          // debris + embers + smoke
+            } else if (r.hitMonster) {
+                combatFx.spawnBlood(r.hitPoint, dir);     // blood spray along the shot
+            } else {
+                // Missed the enemies: probe the WORLD (Static) for a surface hit so
+                // bullets that strike walls/floor get impact sparks + a scorch decal
+                // oriented to the surface normal. (The fire ray only tests Enemy.)
+                x3::phys::RayHit wallHit =
+                    physics->rayCast(eye, dir, x3::game::kFireMaxDist, x3::phys::Layer::Static);
+                if (wallHit.hit)
+                    combatFx.spawnImpact(wallHit.point, wallHit.normal);
+            }
             // M9: gunshot SFX at the muzzle (3D); death SFX is played by the
             // controller for Martinez; play one here for the per-shot kills too.
             audio->playSound3D(sndGun, muzzle.x, muzzle.y, muzzle.z, 0.85f, 1.0f);
@@ -2351,6 +2459,10 @@ int main(int argc, char** argv) {
             }
             // FX: active tracers + muzzle flash (world-space).
             combatFx.draw(*device, frame, camX, camY, camZ, camYaw, camPitch);
+            // GPU-instanced particles (sparks/blood/smoke/debris) + impact decals:
+            // submit the live pool for this frame (HDR pass, soft against depth,
+            // bright additive sparks feed bloom). No-op when the pool is empty.
+            combatFx.submit(*device, frame);
             // ---- HUD overlay last: crosshair (hidden while console open), FPS
             // meter, the current objective line, the health bar + damage flash,
             // the death overlay (when dead), then the console panel (when open).
