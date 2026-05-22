@@ -36,6 +36,7 @@
 // stays graphics-API-free.
 
 #include "IRenderDevice.h"
+#include "RenderGraph.h"
 #include "../core/x3_log.h"
 #include "font8x8_basic.h"
 
@@ -251,7 +252,6 @@ public:
         // overwrite its per-frame object SSBO / camera UBO / indirect rings and to
         // recycle the HUD descriptor pool + HUD vertex ring.
         m_drawRecords.clear();
-        m_meshFlushed = false;
         m_framePrepared = false;
         m_frameCmdCount = 0;
         if (fr.hudDescPool) vkResetDescriptorPool(m_dev.device, fr.hudDescPool, 0);
@@ -268,29 +268,19 @@ public:
         if (m_tsSupported && fr.tsPool)
             vkCmdResetQueryPool(fr.cmd, fr.tsPool, 0, 2);
 
-        // UNDEFINED -> COLOR_ATTACHMENT_OPTIMAL
-        imageBarrier(fr.cmd, m_swapImages[imageIndex],
-                     VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
-
-        // UNDEFINED -> DEPTH_ATTACHMENT_OPTIMAL (contents cleared, so UNDEFINED src is fine)
-        depthBarrier(fr.cmd, m_depthImg,
-                     VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                     VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
-
         // Timestamp the start of the frame at TOP_OF_PIPE; paired with the
         // BOTTOM_OF_PIPE stamp at endFrame this brackets the whole frame (shadow
         // depth pass + main scene + HUD). (sync2 vkCmdWriteTimestamp2.)
         if (m_tsSupported && fr.tsPool)
             vkCmdWriteTimestamp2(fr.cmd, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, fr.tsPool, 0);
 
-        // The main color pass is opened lazily (ensureMainPass) on the first mesh
-        // or HUD flush, AFTER the shadow depth pass has been recorded — dynamic
-        // rendering forbids nesting, so the shadow pass must precede it.
-        m_mainPassOpen = false;
+        // Per-frame render-graph build (perf-stack B): all pass barriers + layout
+        // transitions + begin/endRendering are now DERIVED + emitted by the graph
+        // in endFrame() from each pass's declared resource reads/writes. beginFrame
+        // no longer hand-codes the swapchain/depth UNDEFINED transitions — the
+        // graph's color pass declares them. Reset the transient graph build here.
+        m_graph.beginFrame();
+        m_hudRecords.clear();
         m_curImageIndex = imageIndex;
 
         fc.frameIndex = m_frameIdx;
@@ -321,52 +311,17 @@ public:
         return proj * view;
     }
 
-    // Open the main color+depth rendering pass on demand (after the shadow pass).
-    // Idempotent within a frame. Records the shadow depth pass on first call so it
-    // completes (and is transitioned to SHADER_READ) before any color draw.
-    void ensureMainPass() {
-        if (m_mainPassOpen) return;
-        m_mainPassOpen = true;
+    // Record the BODY of the main color pass into `cmd` (the graph has already
+    // begun dynamic rendering + emitted the swapchain/depth/shadow barriers). This
+    // draws: the analytic sky (if enabled), the deferred mesh multidraw, then the
+    // deferred HUD overlay — in exactly the order the hand-coded path used.
+    void recordMainPassBody(VkCommandBuffer cmd) {
         auto& fr = m_frames[m_frameIdx];
-
-        // The shadow depth pass renders the same SSBO + indirect draws from the
-        // sun's POV; recordShadowPass() also fills the per-frame camera UBO + SSBO
-        // + indirect rings (so both passes share them) and barriers the shadow map
-        // to a sampleable layout.
-        recordShadowPass();
-
-        VkClearValue clear{};
-        clear.color = { { 0.04f, 0.05f, 0.08f, 1.0f } }; // dark slate backdrop
-
-        VkRenderingAttachmentInfo color{};
-        color.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        color.imageView = m_swapViews[m_curImageIndex];
-        color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        color.clearValue = clear;
-
-        VkRenderingAttachmentInfo depth{};
-        depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        depth.imageView = m_depthView;
-        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-        depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depth.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depth.clearValue.depthStencil = { 1.0f, 0 };
-
-        VkRenderingInfo ri{};
-        ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        ri.renderArea = { {0,0}, m_extent };
-        ri.layerCount = 1;
-        ri.colorAttachmentCount = 1;
-        ri.pColorAttachments = &color;
-        ri.pDepthAttachment = &depth;
-        vkCmdBeginRendering(fr.cmd, &ri);
 
         VkViewport vp{ 0.0f, 0.0f, (float)m_extent.width, (float)m_extent.height, 0.0f, 1.0f };
         VkRect2D scis{ {0,0}, m_extent };
-        vkCmdSetViewport(fr.cmd, 0, 1, &vp);
-        vkCmdSetScissor(fr.cmd, 0, 1, &scis);
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &scis);
 
         // Analytic sky FIRST (open-world track, task A): a full-screen triangle at
         // far depth with depth-test LESS_OR_EQUAL + depth-write OFF. Drawn before
@@ -375,11 +330,15 @@ public:
         // Gated by setSkyParams(enabled): default OFF, so indoor levels are
         // unchanged (the dark-slate clear still shows where no geometry exists).
         if (m_sky.enabled && m_skyPipeline && fr.skyMapped) {
-            vkCmdBindPipeline(fr.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skyPipeline);
-            vkCmdBindDescriptorSets(fr.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skyLayout,
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skyPipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skyLayout,
                                     0, 1, &fr.skySet, 0, nullptr);
-            vkCmdDraw(fr.cmd, 3, 1, 0, 0); // vertexless full-screen triangle
+            vkCmdDraw(cmd, 3, 1, 0, 0); // vertexless full-screen triangle
         }
+
+        // Mesh multidraw (Subsystem D) then the HUD overlay on top.
+        recordMeshDraws(cmd);
+        recordHudDraws(cmd);
     }
 
     void endFrame(const FrameContext& fc) override {
@@ -387,39 +346,22 @@ public:
         auto& fr = m_frames[m_frameIdx];
         uint32_t imageIndex = fc.backbuffer;
 
-        // Flush any deferred mesh multidraw that wasn't already triggered by a HUD
-        // draw this frame (e.g. a bench frame with the HUD off). Safe to call when
-        // already flushed (no-op).
-        flushMeshDraws();
+        // ===================================================================
+        // Build + execute the render graph (perf-stack B). The whole per-frame
+        // GPU command sequence — shadow depth pass, main color pass (sky + mesh
+        // multidraw + HUD), and the present/capture finalize — is expressed as
+        // graph nodes that declare their resource reads/writes. The graph derives
+        // and emits every sync2 barrier + layout transition from those
+        // declarations and drives vkCmdBeginRendering/EndRendering. NO barriers or
+        // begin/end-rendering are hand-coded in this per-frame path anymore.
+        // ===================================================================
+        prepareFrameData();  // fill camera/light/sky UBO + SSBO + indirect (data only)
 
-        // Timestamp the end of the main pass (before we end rendering) at
-        // BOTTOM_OF_PIPE so it captures all draws completing.
-        if (m_tsSupported && fr.tsPool) {
-            vkCmdWriteTimestamp2(fr.cmd, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, fr.tsPool, 1);
-            fr.tsPending = true; // results read back when this slot recurs
-        }
-
-        vkCmdEndRendering(fr.cmd);
-
-        // Fix 1: if a capture is armed, copy this freshly-rendered, ACQUIRED color
-        // image into the host readback buffer inside this live frame. recordCaptureCopy
-        // does COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC -> PRESENT_SRC itself, so we
-        // skip the plain ->PRESENT_SRC transition below in that case.
-        bool capturedThisFrame = false;
-        if (m_captureArmed && m_captureBuf &&
-            m_captureW == m_extent.width && m_captureH == m_extent.height) {
-            recordCaptureCopy(fr.cmd, m_swapImages[imageIndex]);
-            capturedThisFrame = true;
-        }
+        const bool wantCapture = (m_captureArmed && m_captureBuf &&
+                                  m_captureW == m_extent.width && m_captureH == m_extent.height);
+        buildAndExecuteGraph(fr.cmd, imageIndex, wantCapture);
+        const bool capturedThisFrame = wantCapture;
         m_captureArmed = false; // consume the arm regardless
-
-        if (!capturedThisFrame) {
-            // COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC
-            imageBarrier(fr.cmd, m_swapImages[imageIndex],
-                         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                         VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                         VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
-        }
 
         vkEndCommandBuffer(fr.cmd);
 
@@ -512,33 +454,9 @@ public:
         m_captureReady = false;
     }
 
-    // Record the in-frame copy of the freshly-rendered acquired color image into
-    // the host readback buffer. Called from endFrame() AFTER endRendering but
-    // BEFORE the COLOR_ATTACHMENT_OPTIMAL -> PRESENT_SRC transition, so the image
-    // is in COLOR_ATTACHMENT_OPTIMAL and properly acquired for THIS frame. Adds:
-    //   COLOR_ATTACHMENT_OPTIMAL -> TRANSFER_SRC_OPTIMAL, copy, -> PRESENT_SRC.
-    // The copy retires when this frame's inFlight fence signals; captureFrame()
-    // waits on that fence before mapping. Validation-clean (acquired image only).
-    void recordCaptureCopy(VkCommandBuffer cmd, VkImage img) {
-        imageBarrier(cmd, img,
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
-        VkBufferImageCopy region{};
-        region.bufferOffset = 0;
-        region.bufferRowLength = 0;     // tightly packed to image width
-        region.bufferImageHeight = 0;
-        region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
-        region.imageOffset = { 0, 0, 0 };
-        region.imageExtent = { m_captureW, m_captureH, 1 };
-        vkCmdCopyImageToBuffer(cmd, img, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               m_captureBuf, 1, &region);
-        // TRANSFER_SRC_OPTIMAL -> PRESENT_SRC so the image can still be presented.
-        imageBarrier(cmd, img,
-            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
-            VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0);
-    }
+    // (The in-frame capture copy is now expressed as graph passes — see
+    // buildAndExecuteGraph()'s "capture-copy"/"present" nodes. The graph derives
+    // the COLOR_ATTACHMENT->TRANSFER_SRC->PRESENT_SRC transitions automatically.)
 
     // Step 3: finalize an armed capture. Wait on the captured frame's inFlight
     // fence (its copy has retired), map the readback buffer, swizzle (BGRA->RGBA)
@@ -1181,53 +1099,15 @@ private:
     // reads model rows + lightViewProj). Always runs (even with zero occluders) so
     // the map is cleared + left in DEPTH_READ_ONLY_OPTIMAL for the main pass to
     // sample. Recorded BEFORE the main color pass begins (no nested rendering).
-    void recordShadowPass() {
-        prepareFrameData();
-        auto& fr = m_frames[m_frameIdx];
-        VkCommandBuffer cmd = fr.cmd;
+    // Record the BODY of the shadow depth pass into `cmd` (the graph has begun
+    // dynamic rendering on the shadow map + emitted its UNDEFINED->DEPTH_ATTACHMENT
+    // barrier). Same SSBO + indirect draws as the color pass, from the sun's POV.
+    void recordShadowPassBody(VkCommandBuffer cmd) {
         if (!m_shadowPipeline) return;
-
-        // Transition the shadow map to DEPTH_ATTACHMENT_OPTIMAL before clearing it.
-        // We CLEAR the attachment (LOAD_OP_CLEAR), so the previous contents are
-        // discarded -> oldLayout UNDEFINED is always valid and we never need the
-        // exact prior layout. The src scope is the prior frame's sampling reads
-        // (FRAGMENT_SHADER) so this also serves as the WAR barrier protecting that
-        // sampling from this frame's depth writes; on the very first use there's no
-        // prior reader, so the src scope is TOP_OF_PIPE/none.
-        if (m_shadowFirstUse) {
-            depthBarrier(cmd, m_shadowImg,
-                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                         VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
-            m_shadowFirstUse = false;
-        } else {
-            depthBarrier(cmd, m_shadowImg,
-                         VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                         VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                         VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
-        }
-
-        VkRenderingAttachmentInfo depth{};
-        depth.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        depth.imageView = m_shadowView;
-        depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-        depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;     // sampled in the main pass
-        depth.clearValue.depthStencil = { 1.0f, 0 };
-
-        VkExtent2D shExt{ kShadowDim, kShadowDim };
-        VkRenderingInfo ri{};
-        ri.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
-        ri.renderArea = { {0,0}, shExt };
-        ri.layerCount = 1;
-        ri.colorAttachmentCount = 0;
-        ri.pDepthAttachment = &depth;
-        vkCmdBeginRendering(cmd, &ri);
+        auto& fr = m_frames[m_frameIdx];
 
         VkViewport vp{ 0.0f, 0.0f, (float)kShadowDim, (float)kShadowDim, 0.0f, 1.0f };
-        VkRect2D scis{ {0,0}, shExt };
+        VkRect2D scis{ {0,0}, { kShadowDim, kShadowDim } };
         vkCmdSetViewport(cmd, 0, 1, &vp);
         vkCmdSetScissor(cmd, 0, 1, &scis);
 
@@ -1247,33 +1127,15 @@ private:
                     sizeof(VkDrawIndexedIndirectCommand));
             }
         }
-        vkCmdEndRendering(cmd);
-
-        // DEPTH_ATTACHMENT_OPTIMAL -> DEPTH_READ_ONLY_OPTIMAL so the main pass
-        // fragment shader can sample it. This is the #1 VUID-sensitive barrier:
-        // wait for late-fragment depth writes, make them available to the sampling
-        // fragment stage's reads.
-        depthBarrier(cmd, m_shadowImg,
-                     VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
-                     VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     }
 
-    // ---- GPU-driven mesh flush (Subsystem D) -------------------------------
-    // Open the main color pass (which records the shadow depth pass first), then
-    // bind the mesh pipeline + descriptor sets and issue ONE vkCmdDrawIndexedIndirect
-    // per distinct mesh. Idempotent: a second call in the same frame is a no-op.
-    void flushMeshDraws() {
-        if (m_meshFlushed) return;
-        m_meshFlushed = true;
-        // ensureMainPass() records the shadow pass + opens the color pass; it also
-        // triggers prepareFrameData() via recordShadowPass(). Always call it so the
-        // color pass is open even on a zero-draw frame (clears the backbuffer).
-        ensureMainPass();
+    // ---- GPU-driven mesh multidraw (Subsystem D) ---------------------------
+    // Record the mesh multidraw into the (already-open) main color pass: bind the
+    // mesh pipeline + descriptor sets and issue ONE vkCmdDrawIndexedIndirect per
+    // distinct mesh. Called from recordMainPassBody (inside the graph's color pass).
+    void recordMeshDraws(VkCommandBuffer cmd) {
         if (m_frameCmdCount == 0 || !m_meshPipeline) return;
-
         auto& fr = m_frames[m_frameIdx];
-        VkCommandBuffer cmd = fr.cmd;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshPipeline);
         // set 0 = bindless textures, set 1 = object SSBO + camera UBO, set 2 = shadow map.
         VkDescriptorSet sets[3] = { m_bindlessSet, fr.objSet, m_shadowSet };
@@ -1293,46 +1155,234 @@ private:
         }
     }
 
-    // Append `count` vertices to this frame's HUD ring, bind the HUD pipeline +
-    // the requested texture (font atlas or white), and record one draw.
+    // A deferred HUD draw: a span of this frame's HUD vertex ring + which texture
+    // (font atlas vs white) to bind. drawHudQuad/drawHudText append these; they are
+    // replayed (in order, after the meshes) by recordHudDraws inside the graph's
+    // color pass — keeping HUD-on-top ordering identical to the hand-coded path.
+    struct HudRecord { uint32_t first; uint32_t count; bool useFont; };
+
+    // Append `count` vertices to this frame's HUD ring and queue a deferred HUD
+    // draw record (replayed inside the graph's color pass). No command recording
+    // here — the color pass is not open yet (commands are recorded in endFrame).
     void flushHud(const HudVertex* verts, uint32_t count, bool useFont) {
-        // The HUD draws ON TOP of the 3D scene, so the deferred mesh multidraw
-        // must be recorded into the command buffer first. Lazy-flush it here on
-        // the frame's first HUD draw (endFrame() flushes too if there was none).
-        flushMeshDraws();
         auto& fr = m_frames[m_frameIdx];
         if (!fr.hudVboMapped || fr.hudVertsUsed + count > kMaxHudVerts) return; // ring full
         uint32_t first = fr.hudVertsUsed;
         std::memcpy(static_cast<HudVertex*>(fr.hudVboMapped) + first,
                     verts, (size_t)count * sizeof(HudVertex));
         fr.hudVertsUsed += count;
+        m_hudRecords.push_back(HudRecord{ first, count, useFont });
+    }
 
-        const Texture* tex = useFont ? &m_fontTex : &m_whiteTex;
+    // Replay the frame's deferred HUD draws into the (already-open) color pass.
+    // Allocates the per-draw descriptor from the frame's HUD pool here, exactly as
+    // the old in-line flushHud did (same descriptor lifetime: recycled next reuse).
+    void recordHudDraws(VkCommandBuffer cmd) {
+        auto& fr = m_frames[m_frameIdx];
+        if (m_hudRecords.empty() || !m_hudPipeline) return;
+        for (const HudRecord& hr : m_hudRecords) {
+            const Texture* tex = hr.useFont ? &m_fontTex : &m_whiteTex;
 
-        VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-        dsai.descriptorPool = fr.hudDescPool;
-        dsai.descriptorSetCount = 1;
-        dsai.pSetLayouts = &m_hudSetLayout;
-        VkDescriptorSet set = VK_NULL_HANDLE;
-        if (vkAllocateDescriptorSets(m_dev.device, &dsai, &set) != VK_SUCCESS) return;
+            VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            dsai.descriptorPool = fr.hudDescPool;
+            dsai.descriptorSetCount = 1;
+            dsai.pSetLayouts = &m_hudSetLayout;
+            VkDescriptorSet set = VK_NULL_HANDLE;
+            if (vkAllocateDescriptorSets(m_dev.device, &dsai, &set) != VK_SUCCESS) return;
 
-        VkDescriptorImageInfo dii{};
-        dii.sampler = tex->sampler;
-        dii.imageView = tex->view;
-        dii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-        w.dstSet = set; w.dstBinding = 0; w.descriptorCount = 1;
-        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        w.pImageInfo = &dii;
-        vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+            VkDescriptorImageInfo dii{};
+            dii.sampler = tex->sampler;
+            dii.imageView = tex->view;
+            dii.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.dstSet = set; w.dstBinding = 0; w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            w.pImageInfo = &dii;
+            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
 
-        VkCommandBuffer cmd = fr.cmd;
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_hudPipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_hudLayout,
-                                0, 1, &set, 0, nullptr);
-        VkDeviceSize off = (VkDeviceSize)first * sizeof(HudVertex);
-        vkCmdBindVertexBuffers(cmd, 0, 1, &fr.hudVbo, &off);
-        vkCmdDraw(cmd, count, 1, 0, 0);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_hudPipeline);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_hudLayout,
+                                    0, 1, &set, 0, nullptr);
+            VkDeviceSize off = (VkDeviceSize)hr.first * sizeof(HudVertex);
+            vkCmdBindVertexBuffers(cmd, 0, 1, &fr.hudVbo, &off);
+            vkCmdDraw(cmd, hr.count, 1, 0, 0);
+        }
+    }
+
+    // ===================================================================
+    // Build the per-frame render graph + execute it (perf-stack B). This is the
+    // single place the frame's GPU command sequence is assembled. Each pass
+    // declares the resources it reads/writes (layout + stage + access); the graph
+    // derives + emits all sync2 barriers + layout transitions and drives
+    // begin/endRendering. Replaces every previously hand-coded barrier.
+    //
+    //   Pass 1  shadow-depth : WRITE shadow map (DEPTH_ATTACHMENT). The graph
+    //                          transitions it from its persistent prior-frame
+    //                          state (DEPTH_READ_ONLY, or UNDEFINED on first use).
+    //   Pass 2  main-color   : WRITE swapchain color (COLOR_ATTACHMENT) + depth
+    //                          (DEPTH_ATTACHMENT) + READ shadow map
+    //                          (DEPTH_READ_ONLY). The graph emits the
+    //                          shadow DEPTH_ATTACHMENT->DEPTH_READ_ONLY transition
+    //                          (the #1 VUID-sensitive barrier) automatically, plus
+    //                          the swapchain/depth UNDEFINED->attachment transitions.
+    //   Pass 3  present OR capture : transitions the swapchain color to
+    //                          PRESENT_SRC, or (if a capture is armed) to
+    //                          TRANSFER_SRC, copies to the readback buffer, then to
+    //                          PRESENT_SRC — all derived from declared uses.
+    // ===================================================================
+    void buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imageIndex, bool wantCapture) {
+        // Import this frame's images with their correct ENTRY state. The swapchain
+        // image is freshly acquired -> UNDEFINED. The depth buffer is cleared each
+        // frame -> UNDEFINED is valid. The shadow map persists its prior-frame
+        // state across frames (DEPTH_READ_ONLY after the last main pass sampled it),
+        // except on the very first use where it is UNDEFINED.
+        RgResource rgColor = m_graph.importImage("swapchain.color", m_swapImages[imageIndex],
+            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        RgResource rgDepth = m_graph.importImage("scene.depth", m_depthImg,
+            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        RgResource rgShadow = m_graph.importImage("shadow.map", m_shadowImg, m_shadowState);
+
+        // ---- Pass 1: shadow depth pass --------------------------------------
+        {
+            m_shadowDepthAttach = VkRenderingAttachmentInfo{};
+            m_shadowDepthAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_shadowDepthAttach.imageView = m_shadowView;
+            m_shadowDepthAttach.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            m_shadowDepthAttach.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            m_shadowDepthAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;  // sampled in main pass
+            m_shadowDepthAttach.clearValue.depthStencil = { 1.0f, 0 };
+
+            RenderPassDesc shadowPass{};
+            shadowPass.name = "shadow-depth";
+            shadowPass.uses.push_back(ResourceUse{
+                rgShadow, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/true });
+            shadowPass.usesDynamicRendering = true;
+            m_shadowRenderInfo = VkRenderingInfo{};
+            m_shadowRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_shadowRenderInfo.renderArea = { {0,0}, { kShadowDim, kShadowDim } };
+            m_shadowRenderInfo.layerCount = 1;
+            m_shadowRenderInfo.colorAttachmentCount = 0;
+            m_shadowRenderInfo.pDepthAttachment = &m_shadowDepthAttach;
+            shadowPass.renderInfo = m_shadowRenderInfo;
+            shadowPass.record = [this](VkCommandBuffer c){ recordShadowPassBody(c); };
+            m_graph.addPass(std::move(shadowPass));
+        }
+
+        // ---- Pass 2: main color pass (sky + meshes + HUD) -------------------
+        {
+            m_mainColorAttach = VkRenderingAttachmentInfo{};
+            m_mainColorAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_mainColorAttach.imageView = m_swapViews[imageIndex];
+            m_mainColorAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_mainColorAttach.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            m_mainColorAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            m_mainColorAttach.clearValue.color = { { 0.04f, 0.05f, 0.08f, 1.0f } }; // dark slate
+
+            m_mainDepthAttach = VkRenderingAttachmentInfo{};
+            m_mainDepthAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_mainDepthAttach.imageView = m_depthView;
+            m_mainDepthAttach.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            m_mainDepthAttach.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            m_mainDepthAttach.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            m_mainDepthAttach.clearValue.depthStencil = { 1.0f, 0 };
+
+            RenderPassDesc colorPass{};
+            colorPass.name = "main-color";
+            colorPass.uses.push_back(ResourceUse{
+                rgColor, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            colorPass.uses.push_back(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/true });
+            // READ the shadow map in DEPTH_READ_ONLY — the graph derives the
+            // DEPTH_ATTACHMENT->DEPTH_READ_ONLY transition from pass 1's write state.
+            colorPass.uses.push_back(ResourceUse{
+                rgShadow, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            colorPass.usesDynamicRendering = true;
+            m_mainRenderInfo = VkRenderingInfo{};
+            m_mainRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_mainRenderInfo.renderArea = { {0,0}, m_extent };
+            m_mainRenderInfo.layerCount = 1;
+            m_mainRenderInfo.colorAttachmentCount = 1;
+            m_mainRenderInfo.pColorAttachments = &m_mainColorAttach;
+            m_mainRenderInfo.pDepthAttachment = &m_mainDepthAttach;
+            colorPass.renderInfo = m_mainRenderInfo;
+            colorPass.record = [this](VkCommandBuffer c){
+                // Timestamp the main pass END at BOTTOM_OF_PIPE after all draws are
+                // recorded (still inside dynamic rendering, exactly as before).
+                recordMainPassBody(c);
+                auto& f = m_frames[m_frameIdx];
+                if (m_tsSupported && f.tsPool) {
+                    vkCmdWriteTimestamp2(c, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, f.tsPool, 1);
+                    f.tsPending = true;
+                }
+            };
+            m_graph.addPass(std::move(colorPass));
+        }
+
+        // ---- Pass 3: present finalize (or in-frame capture copy) ------------
+        if (wantCapture) {
+            // The capture copy reads the swapchain color as TRANSFER_SRC then leaves
+            // it PRESENT_SRC. Two uses on the same resource within one pass would be
+            // ambiguous, so express the capture as TWO tiny passes: one that
+            // transitions to TRANSFER_SRC + does the copy, one that transitions to
+            // PRESENT_SRC. The graph derives both transitions.
+            RenderPassDesc copyPass{};
+            copyPass.name = "capture-copy";
+            copyPass.uses.push_back(ResourceUse{
+                rgColor, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            VkImage colorImg = m_swapImages[imageIndex];
+            copyPass.record = [this, colorImg](VkCommandBuffer c){
+                VkBufferImageCopy region{};
+                region.bufferOffset = 0;
+                region.bufferRowLength = 0;     // tightly packed to image width
+                region.bufferImageHeight = 0;
+                region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                region.imageOffset = { 0, 0, 0 };
+                region.imageExtent = { m_captureW, m_captureH, 1 };
+                vkCmdCopyImageToBuffer(c, colorImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                       m_captureBuf, 1, &region);
+            };
+            m_graph.addPass(std::move(copyPass));
+
+            RenderPassDesc presentPass{};
+            presentPass.name = "present";
+            presentPass.uses.push_back(ResourceUse{
+                rgColor, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            presentPass.record = nullptr; // pure layout transition, no commands
+            m_graph.addPass(std::move(presentPass));
+        } else {
+            RenderPassDesc presentPass{};
+            presentPass.name = "present";
+            presentPass.uses.push_back(ResourceUse{
+                rgColor, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            presentPass.record = nullptr;
+            m_graph.addPass(std::move(presentPass));
+        }
+
+        m_graph.execute(cmd);
+
+        // Persist the shadow map's post-frame state so next frame imports it with
+        // the right entry layout (the main pass left it DEPTH_READ_ONLY). After the
+        // first use we never see UNDEFINED again — the WAR barrier protecting last
+        // frame's sampling reads is derived from this stored read state.
+        m_shadowState = m_graph.stateOf(rgShadow);
     }
 
     // Build a 128x64 RGBA atlas (16 cols x 8 rows of 8x8 glyphs) from the
@@ -2431,14 +2481,13 @@ private:
     static constexpr uint32_t kMaxDrawMeshes = 4096;
 
     // Per-frame draw accumulation (GPU-driven). m_drawRecords is filled by
-    // drawMesh(); flushMeshDraws() groups it (m_groups/m_groupOrder reused to
-    // avoid per-frame allocs) and records the multidraw. m_meshFlushed guards the
-    // single flush per frame (HUD draw OR endFrame triggers it).
+    // drawMesh(); prepareFrameData() groups it (m_groups/m_groupOrder reused to
+    // avoid per-frame allocs) into the SSBO + indirect buffer, and the graph's
+    // shadow/color passes replay the multidraw from it.
     std::vector<DrawRecord> m_drawRecords;
     std::unordered_map<uint32_t, std::vector<uint32_t>> m_groups;
     std::vector<uint32_t>   m_groupOrder;
     uint32_t                m_drawMeshOrder[kMaxDrawMeshes] = {};
-    bool                    m_meshFlushed = false;
     // Per-frame data preparation (camera/light UBO + SSBO + indirect) is shared by
     // the shadow depth pass AND the main color pass, so it runs once (guarded) and
     // caches the number of indirect commands produced.
@@ -2513,13 +2562,29 @@ private:
     VkDescriptorSetLayout m_shadowSetLayout = VK_NULL_HANDLE;  // set2: sampler2DShadow
     VkDescriptorPool      m_shadowDescPool = VK_NULL_HANDLE;
     VkDescriptorSet       m_shadowSet      = VK_NULL_HANDLE;   // points at the map
-    bool                  m_shadowFirstUse = true; // first transition is UNDEFINED->...
     glm::mat4             m_lightViewProj{ 1.0f };  // computed each frame
-    // Main-pass deferral: with shadows we record the shadow depth pass BEFORE the
-    // main color rendering begins, so beginFrame no longer opens the main pass —
-    // ensureMainPass() opens it lazily on the first mesh/HUD flush (or endFrame).
-    bool                  m_mainPassOpen   = false;
     uint32_t              m_curImageIndex  = 0;
+
+    // ---- Render graph (perf-stack B) --------------------------------------
+    // ONE persistent graph; rebuilt cheaply each frame in endFrame() from the
+    // passes' declared resource reads/writes (capacity persists -> no per-frame
+    // heap churn). It derives + emits every sync2 barrier + layout transition and
+    // drives begin/endRendering. The shadow map's state PERSISTS across frames
+    // (DEPTH_READ_ONLY after the main pass samples it; UNDEFINED on first use) and
+    // is fed back in via importImage so the cross-frame WAR barrier is derived.
+    RenderGraph           m_graph;
+    ResourceState         m_shadowState{ VK_IMAGE_LAYOUT_UNDEFINED,
+                                         VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
+    // Deferred HUD draws (appended by drawHudQuad/drawHudText, replayed inside the
+    // graph's color pass). Capacity persists across frames.
+    std::vector<HudRecord> m_hudRecords;
+    // Stable storage for the VkRenderingInfo + attachment structs the graph passes
+    // reference (must outlive execute(); the graph holds pointers into these).
+    VkRenderingInfo           m_shadowRenderInfo{};
+    VkRenderingAttachmentInfo m_shadowDepthAttach{};
+    VkRenderingInfo           m_mainRenderInfo{};
+    VkRenderingAttachmentInfo m_mainColorAttach{};
+    VkRenderingAttachmentInfo m_mainDepthAttach{};
 
     // Swapchain
     VkSwapchainKHR m_swapchain = VK_NULL_HANDLE;
