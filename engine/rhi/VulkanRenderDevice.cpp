@@ -57,6 +57,8 @@
 #include <fstream>
 #include <cstring>
 #include <cstddef>
+#include <cstdio>
+#include <cassert>
 #include <algorithm>
 #include <unordered_map>
 
@@ -81,12 +83,24 @@ public:
 
         // ---- Instance ----
         vkb::InstanceBuilder ib;
-        auto inst_ret = ib.set_app_name("X3Native")
-                          .set_engine_name("X3Native")
-                          .require_api_version(1, 3, 0)
-                          .request_validation_layers(desc.validation)
-                          .use_default_debug_messenger()
-                          .build();
+        ib.set_app_name("X3Native")
+          .set_engine_name("X3Native")
+          .require_api_version(1, 3, 0)
+          .request_validation_layers(desc.validation)
+          .use_default_debug_messenger();
+        // Fix 6 (b): standing best-practices validation guard. Wired but OFF BY
+        // DEFAULT — best-practices emits a flood of benign perf/style warnings that
+        // would break the smoketest's "0 VUID" gate. Define X3_VK_BEST_PRACTICES
+        // (e.g. /D X3_VK_BEST_PRACTICES) to opt in for a deliberate lifetime/usage
+        // audit; only active when validation is also enabled.
+#ifdef X3_VK_BEST_PRACTICES
+        if (desc.validation) {
+            ib.add_validation_feature_enable(VK_VALIDATION_FEATURE_ENABLE_BEST_PRACTICES_EXT);
+            logInfo("[rhi] best-practices validation ENABLED (X3_VK_BEST_PRACTICES) — "
+                    "expect benign perf warnings; not for the 0-VUID gate");
+        }
+#endif
+        auto inst_ret = ib.build();
         if (!inst_ret) { logError(std::string("[rhi] instance: ") + inst_ret.error().message()); return false; }
         m_inst = inst_ret.value();
 
@@ -219,7 +233,24 @@ public:
         destroyPerFrame();
         if (m_headless) destroyOffscreenTarget();
         else            destroySwapchain();
-        if (m_alloc)         { vmaDestroyAllocator(m_alloc); m_alloc = nullptr; }
+        // Fix 6 (a): standing GPU-allocation leak guard. By this point EVERYTHING
+        // the renderer allocated through VMA should be freed; ask VMA how many live
+        // allocations remain. Log the count always; in Debug ASSERT it is zero so a
+        // leaked image/buffer (one that survived teardown) is caught immediately.
+        if (m_alloc) {
+            VmaTotalStatistics vmaStats{};
+            vmaCalculateStatistics(m_alloc, &vmaStats);
+            const uint32_t liveAllocs = vmaStats.total.statistics.allocationCount;
+            char msg[160];
+            std::snprintf(msg, sizeof(msg),
+                "[rhi] VMA shutdown leak check: live allocationCount=%u (expect 0)",
+                liveAllocs);
+            if (liveAllocs == 0) logInfo(msg);
+            else                 logError(msg);
+            assert(liveAllocs == 0 &&
+                   "VMA leak: GPU allocations survived renderer teardown");
+            vmaDestroyAllocator(m_alloc); m_alloc = nullptr;
+        }
         if (m_dev.device)    vkb::destroy_device(m_dev);
         if (m_surface)       vkDestroySurfaceKHR(m_inst.instance, m_surface, nullptr);
         if (m_inst.instance) vkb::destroy_instance(m_inst);
@@ -676,18 +707,24 @@ public:
     void destroyMesh(MeshHandle h) override {
         auto it = m_meshes.find(h.id);
         if (it == m_meshes.end()) return;
-        if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        // Fix 2: NO vkDeviceWaitIdle. The mesh's buffers may still be referenced by
+        // command buffers from up to kFramesInFlight-1 earlier frames, so DEFER the
+        // free to drainPendingFrees() (retired after kFramesInFlight frames begin).
+        // During terrain-streaming eviction this turns dozens of full-GPU stalls per
+        // boundary-cross into a few cheap queue pushes. The mesh is erased from the
+        // registry immediately, so no future frame can issue a draw referencing it.
         Mesh& m = it->second;
         if (m.dynamic) {
-            // Free all per-frame dynamic vbos (idle above guarantees they're unused).
-            for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-                if (m.dynVbo[i]) vmaDestroyBuffer(m_alloc, m.dynVbo[i], m.dynVboAlloc[i]);
-            }
+            for (uint32_t i = 0; i < kFramesInFlight; ++i)
+                deferDestroyBuffer(m.dynVbo[i], m.dynVboAlloc[i]);
         } else if (m.vbo) {
-            vmaDestroyBuffer(m_alloc, m.vbo, m.vboAlloc);
+            deferDestroyBuffer(m.vbo, m.vboAlloc);
         }
-        vmaDestroyBuffer(m_alloc, m.ibo, m.iboAlloc);
+        deferDestroyBuffer(m.ibo, m.iboAlloc);
         m_meshes.erase(it);
+        // Drop this mesh's draw-group key so m_groups doesn't accumulate dead
+        // entries over a long terrain-streaming session (fix 4).
+        m_groups.erase(h.id);
     }
 
     // ---- Dynamic mesh re-upload (CPU skinning, J1; fix 2 frames-in-flight) ---
@@ -787,12 +824,17 @@ public:
     void destroyTexture(TextureHandle h) override {
         auto it = m_textures.find(h.id);
         if (it == m_textures.end()) return;
-        if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
-        // Repoint the freed bindless slot at the white default so any stale
-        // per-object texIndex referencing it samples white instead of a dead view.
-        const uint32_t slot = it->second.bindlessIndex;
+        // Fix 2: NO vkDeviceWaitIdle. The bindless-slot write-back to the default
+        // white texture MUST happen immediately (a host-side vkUpdateDescriptorSets
+        // is safe even while frames are in flight — it only rewrites the descriptor
+        // the NEXT frame reads; the in-flight frame already captured its handles).
+        // The ACTUAL image/view/sampler destruction is deferred to drainPendingFrees,
+        // because earlier in-flight frames may still sample the old view. This avoids
+        // a full-GPU stall per texture eviction during terrain streaming.
+        Texture& t = it->second;
+        const uint32_t slot = t.bindlessIndex;
         if (slot != 0 && m_whiteTex.view) writeBindlessSlot(slot, m_whiteTex);
-        destroyTextureObj(it->second);
+        deferDestroyImage(t.image, t.alloc, t.view, t.sampler);
         m_textures.erase(it);
     }
 
@@ -1254,8 +1296,20 @@ private:
 
         // Group records by mesh (preserve first-seen order for determinism). Reuse
         // a scratch map across frames to avoid per-frame allocation churn.
+        // Fix 4: also PRUNE dead keys so m_groups doesn't grow unbounded over a long
+        // terrain-streaming session (each evicted mesh would otherwise leave an empty
+        // vector behind forever). destroyMesh() erases the key directly; this is the
+        // belt-and-suspenders sweep that drops any key whose mesh is no longer live
+        // (and reuses the vector storage of surviving keys via clear()).
         m_groupOrder.clear();
-        for (auto& kv : m_groups) kv.second.clear();
+        for (auto it = m_groups.begin(); it != m_groups.end(); ) {
+            if (m_meshes.find(it->first) == m_meshes.end()) {
+                it = m_groups.erase(it);          // mesh gone -> drop the dead key
+            } else {
+                it->second.clear();               // live mesh -> reuse the vector
+                ++it;
+            }
+        }
         for (uint32_t i = 0; i < (uint32_t)m_drawRecords.size(); ++i) {
             uint32_t mid = m_drawRecords[i].meshId;
             auto it = m_groups.find(mid);
@@ -1514,23 +1568,28 @@ private:
 
             RenderPassDesc dp{};
             dp.name = "bloom-down";
-            dp.uses.push_back(ResourceUse{
+            dp.addUse(ResourceUse{
                 rgMip[i], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
-            dp.uses.push_back(ResourceUse{
+            dp.addUse(ResourceUse{
                 srcRes, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
             dp.usesDynamicRendering = true;
             dp.renderInfo = m_bloomRenderInfo[i];
-            dp.record = [this, dstExt, srcSet, i](VkCommandBuffer c){
-                postViewport(c, dstExt);
-                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomDownPipe);
-                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomLayout,
-                                        0, 1, &srcSet, 0, nullptr);
-                vkCmdPushConstants(c, m_bloomLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
-                                   0, sizeof(BloomPush), &m_bloomDownPush[i]);
+            // Stash this mip's params in stable per-pass storage; ctx points at it.
+            m_bloomDownCtx[i] = BloomPassCtx{ this, srcSet, dstExt, i };
+            dp.recordCtx = &m_bloomDownCtx[i];
+            dp.record = [](void* ctx, VkCommandBuffer c){
+                auto* pc = static_cast<BloomPassCtx*>(ctx);
+                auto* self = pc->self;
+                self->postViewport(c, pc->dstExt);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_bloomDownPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_bloomLayout,
+                                        0, 1, &pc->srcSet, 0, nullptr);
+                vkCmdPushConstants(c, self->m_bloomLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(BloomPush), &self->m_bloomDownPush[pc->mip]);
                 vkCmdDraw(c, 3, 1, 0, 0);
             };
             m_graph.addPass(std::move(dp));
@@ -1568,24 +1627,29 @@ private:
             VkDescriptorSet srcSet = m_setMip[src];
             RenderPassDesc up{};
             up.name = "bloom-up";
-            up.uses.push_back(ResourceUse{
+            up.addUse(ResourceUse{
                 rgMip[dst], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
-            up.uses.push_back(ResourceUse{
+            up.addUse(ResourceUse{
                 rgMip[src], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
             up.usesDynamicRendering = true;
             up.renderInfo = m_bloomUpRenderInfo[dst];
-            up.record = [this, dstExt, srcSet, dst](VkCommandBuffer c){
-                postViewport(c, dstExt);
-                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomUpPipe);
-                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_bloomLayout,
-                                        0, 1, &srcSet, 0, nullptr);
-                vkCmdPushConstants(c, m_bloomLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
-                                   0, sizeof(BloomPush), &m_bloomUpPush[dst]);
+            // Stash this mip's params in stable per-pass storage; ctx points at it.
+            m_bloomUpCtx[dst] = BloomPassCtx{ this, srcSet, dstExt, (uint32_t)dst };
+            up.recordCtx = &m_bloomUpCtx[dst];
+            up.record = [](void* ctx, VkCommandBuffer c){
+                auto* pc = static_cast<BloomPassCtx*>(ctx);
+                auto* self = pc->self;
+                self->postViewport(c, pc->dstExt);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_bloomUpPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_bloomLayout,
+                                        0, 1, &pc->srcSet, 0, nullptr);
+                vkCmdPushConstants(c, self->m_bloomLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(BloomPush), &self->m_bloomUpPush[pc->mip]);
                 vkCmdDraw(c, 3, 1, 0, 0);
             };
             m_graph.addPass(std::move(up));
@@ -1680,7 +1744,7 @@ private:
 
             RenderPassDesc shadowPass{};
             shadowPass.name = "shadow-depth";
-            shadowPass.uses.push_back(ResourceUse{
+            shadowPass.addUse(ResourceUse{
                 rgShadow, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                 VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
@@ -1693,7 +1757,9 @@ private:
             m_shadowRenderInfo.colorAttachmentCount = 0;
             m_shadowRenderInfo.pDepthAttachment = &m_shadowDepthAttach;
             shadowPass.renderInfo = m_shadowRenderInfo;
-            shadowPass.record = [this](VkCommandBuffer c){ recordShadowPassBody(c); };
+            shadowPass.recordCtx = this;
+            shadowPass.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordShadowPassBody(c); };
             m_graph.addPass(std::move(shadowPass));
         }
 
@@ -1717,7 +1783,7 @@ private:
 
                 RenderPassDesc dpre{};
                 dpre.name = "depth-prepass";
-                dpre.uses.push_back(ResourceUse{
+                dpre.addUse(ResourceUse{
                     rgDepth, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
@@ -1730,7 +1796,9 @@ private:
                 m_depthPreRenderInfo.colorAttachmentCount = 0;
                 m_depthPreRenderInfo.pDepthAttachment = &m_depthPreAttach;
                 dpre.renderInfo = m_depthPreRenderInfo;
-                dpre.record = [this](VkCommandBuffer c){ recordDepthPrePassBody(c); };
+                dpre.recordCtx = this;
+                dpre.record = [](void* ctx, VkCommandBuffer c){
+                    static_cast<VulkanRenderDevice*>(ctx)->recordDepthPrePassBody(c); };
                 m_graph.addPass(std::move(dpre));
             }
           if (ssaoOn) {
@@ -1745,11 +1813,11 @@ private:
 
                 RenderPassDesc sp{};
                 sp.name = "ssao";
-                sp.uses.push_back(ResourceUse{
+                sp.addUse(ResourceUse{
                     rgSsaoRaw, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
-                sp.uses.push_back(ResourceUse{
+                sp.addUse(ResourceUse{
                     rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
@@ -1761,11 +1829,13 @@ private:
                 m_ssaoRenderInfo.colorAttachmentCount = 1;
                 m_ssaoRenderInfo.pColorAttachments = &m_ssaoAttach;
                 sp.renderInfo = m_ssaoRenderInfo;
-                sp.record = [this](VkCommandBuffer c){
-                    postViewport(c, m_ssaoExtent);
-                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ssaoPipe);
-                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ssaoLayout,
-                                            0, 1, &m_ssaoSet[m_frameIdx], 0, nullptr);
+                sp.recordCtx = this;
+                sp.record = [](void* ctx, VkCommandBuffer c){
+                    auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                    self->postViewport(c, self->m_ssaoExtent);
+                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_ssaoPipe);
+                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_ssaoLayout,
+                                            0, 1, &self->m_ssaoSet[self->m_frameIdx], 0, nullptr);
                     vkCmdDraw(c, 3, 1, 0, 0);
                 };
                 m_graph.addPass(std::move(sp));
@@ -1786,15 +1856,15 @@ private:
 
                 RenderPassDesc bp{};
                 bp.name = "ssao-blur";
-                bp.uses.push_back(ResourceUse{
+                bp.addUse(ResourceUse{
                     rgSsaoBlur, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
-                bp.uses.push_back(ResourceUse{
+                bp.addUse(ResourceUse{
                     rgSsaoRaw, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
-                bp.uses.push_back(ResourceUse{
+                bp.addUse(ResourceUse{
                     rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
@@ -1806,13 +1876,15 @@ private:
                 m_ssaoBlurRenderInfo.colorAttachmentCount = 1;
                 m_ssaoBlurRenderInfo.pColorAttachments = &m_ssaoBlurAttach;
                 bp.renderInfo = m_ssaoBlurRenderInfo;
-                bp.record = [this](VkCommandBuffer c){
-                    postViewport(c, m_ssaoExtent);
-                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ssaoBlurPipe);
-                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_ssaoBlurLayout,
-                                            0, 1, &m_ssaoBlurSet, 0, nullptr);
-                    vkCmdPushConstants(c, m_ssaoBlurLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
-                                       0, sizeof(SsaoBlurPush), &m_ssaoBlurPush);
+                bp.recordCtx = this;
+                bp.record = [](void* ctx, VkCommandBuffer c){
+                    auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                    self->postViewport(c, self->m_ssaoExtent);
+                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_ssaoBlurPipe);
+                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_ssaoBlurLayout,
+                                            0, 1, &self->m_ssaoBlurSet, 0, nullptr);
+                    vkCmdPushConstants(c, self->m_ssaoBlurLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                       0, sizeof(SsaoBlurPush), &self->m_ssaoBlurPush);
                     vkCmdDraw(c, 3, 1, 0, 0);
                 };
                 m_graph.addPass(std::move(bp));
@@ -1850,7 +1922,7 @@ private:
 
             RenderPassDesc colorPass{};
             colorPass.name = "main-color";
-            colorPass.uses.push_back(ResourceUse{
+            colorPass.addUse(ResourceUse{
                 rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -1859,7 +1931,7 @@ private:
             // no write) so declare it READ; otherwise this pass writes depth. Either
             // way it must end as DEPTH_ATTACHMENT for this pass; the graph derives the
             // transition from the pre-pass / SSAO pass's prior state.
-            colorPass.uses.push_back(ResourceUse{
+            colorPass.addUse(ResourceUse{
                 rgDepth, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                 prePassOn ? VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
@@ -1867,7 +1939,7 @@ private:
                 VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/!prePassOn });
             // READ the shadow map in DEPTH_READ_ONLY — the graph derives the
             // DEPTH_ATTACHMENT->DEPTH_READ_ONLY transition from pass 1's write state.
-            colorPass.uses.push_back(ResourceUse{
+            colorPass.addUse(ResourceUse{
                 rgShadow, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
@@ -1875,7 +1947,7 @@ private:
             // When SSAO is on, mesh.frag samples the blurred AO texture — declare it
             // so the graph transitions it COLOR_ATTACHMENT -> SHADER_READ_ONLY.
             if (ssaoOn) {
-                colorPass.uses.push_back(ResourceUse{
+                colorPass.addUse(ResourceUse{
                     rgSsaoBlur, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
@@ -1890,7 +1962,9 @@ private:
             m_mainRenderInfo.pColorAttachments = &m_hdrColorAttach;
             m_mainRenderInfo.pDepthAttachment = &m_mainDepthAttach;
             colorPass.renderInfo = m_mainRenderInfo;
-            colorPass.record = [this](VkCommandBuffer c){ recordMainPassBody(c); };
+            colorPass.recordCtx = this;
+            colorPass.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordMainPassBody(c); };
             m_graph.addPass(std::move(colorPass));
         }
 
@@ -1920,14 +1994,14 @@ private:
 
             RenderPassDesc waterPass{};
             waterPass.name = "water";
-            waterPass.uses.push_back(ResourceUse{
+            waterPass.addUse(ResourceUse{
                 rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
             // Depth: read-only attachment AND sampled texture, same DEPTH_READ_ONLY
             // layout. Combined fragment-test + fragment-shader stages, read access.
-            waterPass.uses.push_back(ResourceUse{
+            waterPass.addUse(ResourceUse{
                 rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT
                     | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -1942,7 +2016,9 @@ private:
             m_waterRenderInfo.pColorAttachments = &m_waterColorAttach;
             m_waterRenderInfo.pDepthAttachment = &m_waterDepthAttach;
             waterPass.renderInfo = m_waterRenderInfo;
-            waterPass.record = [this](VkCommandBuffer c){ recordWaterPassBody(c); };
+            waterPass.recordCtx = this;
+            waterPass.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordWaterPassBody(c); };
             m_graph.addPass(std::move(waterPass));
         }
 
@@ -1965,15 +2041,15 @@ private:
 
                 RenderPassDesc gp{};
                 gp.name = "gi-gather";
-                gp.uses.push_back(ResourceUse{
+                gp.addUse(ResourceUse{
                     rgGiRaw, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
-                gp.uses.push_back(ResourceUse{
+                gp.addUse(ResourceUse{
                     rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
-                gp.uses.push_back(ResourceUse{
+                gp.addUse(ResourceUse{
                     rgHdr, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
@@ -1985,11 +2061,13 @@ private:
                 m_giGatherRenderInfo.colorAttachmentCount = 1;
                 m_giGatherRenderInfo.pColorAttachments = &m_giGatherAttach;
                 gp.renderInfo = m_giGatherRenderInfo;
-                gp.record = [this](VkCommandBuffer c){
-                    postViewport(c, m_giExtent);
-                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giGatherPipe);
-                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giGatherLayout,
-                                            0, 1, &m_giGatherSet[m_frameIdx], 0, nullptr);
+                gp.recordCtx = this;
+                gp.record = [](void* ctx, VkCommandBuffer c){
+                    auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                    self->postViewport(c, self->m_giExtent);
+                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_giGatherPipe);
+                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_giGatherLayout,
+                                            0, 1, &self->m_giGatherSet[self->m_frameIdx], 0, nullptr);
                     vkCmdDraw(c, 3, 1, 0, 0);
                 };
                 m_graph.addPass(std::move(gp));
@@ -2005,25 +2083,25 @@ private:
 
                 RenderPassDesc tp{};
                 tp.name = "gi-temporal";
-                tp.uses.push_back(ResourceUse{
+                tp.addUse(ResourceUse{
                     rgGiAccumW, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
-                tp.uses.push_back(ResourceUse{
+                tp.addUse(ResourceUse{
                     rgGiRaw, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
                 // History accum buffer (read-only this frame). On the first frame the
                 // shader ignores it (valid=0); the import-UNDEFINED is harmless then.
-                tp.uses.push_back(ResourceUse{
+                tp.addUse(ResourceUse{
                     rgGiAccumH, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
-                tp.uses.push_back(ResourceUse{
+                tp.addUse(ResourceUse{
                     rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
-                tp.uses.push_back(ResourceUse{
+                tp.addUse(ResourceUse{
                     rgGiPrevDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
@@ -2035,11 +2113,13 @@ private:
                 m_giTemporalRenderInfo.colorAttachmentCount = 1;
                 m_giTemporalRenderInfo.pColorAttachments = &m_giTemporalAttach;
                 tp.renderInfo = m_giTemporalRenderInfo;
-                tp.record = [this](VkCommandBuffer c){
-                    postViewport(c, m_giExtent);
-                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giTemporalPipe);
-                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giTemporalLayout,
-                                            0, 1, &m_giTemporalSet[m_frameIdx], 0, nullptr);
+                tp.recordCtx = this;
+                tp.record = [](void* ctx, VkCommandBuffer c){
+                    auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                    self->postViewport(c, self->m_giExtent);
+                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_giTemporalPipe);
+                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_giTemporalLayout,
+                                            0, 1, &self->m_giTemporalSet[self->m_frameIdx], 0, nullptr);
                     vkCmdDraw(c, 3, 1, 0, 0);
                 };
                 m_graph.addPass(std::move(tp));
@@ -2055,15 +2135,15 @@ private:
 
                 RenderPassDesc dp{};
                 dp.name = "gi-denoise";
-                dp.uses.push_back(ResourceUse{
+                dp.addUse(ResourceUse{
                     rgGiDenoise, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
-                dp.uses.push_back(ResourceUse{
+                dp.addUse(ResourceUse{
                     rgGiAccumW, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
-                dp.uses.push_back(ResourceUse{
+                dp.addUse(ResourceUse{
                     rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
@@ -2075,13 +2155,15 @@ private:
                 m_giBlurRenderInfo.colorAttachmentCount = 1;
                 m_giBlurRenderInfo.pColorAttachments = &m_giBlurAttach;
                 dp.renderInfo = m_giBlurRenderInfo;
-                dp.record = [this](VkCommandBuffer c){
-                    postViewport(c, m_giExtent);
-                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giBlurPipe);
-                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giBlurLayout,
-                                            0, 1, &m_giBlurSet[m_frameIdx], 0, nullptr);
-                    vkCmdPushConstants(c, m_giBlurLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
-                                       0, sizeof(GiBlurPush), &m_giBlurPush);
+                dp.recordCtx = this;
+                dp.record = [](void* ctx, VkCommandBuffer c){
+                    auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                    self->postViewport(c, self->m_giExtent);
+                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_giBlurPipe);
+                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_giBlurLayout,
+                                            0, 1, &self->m_giBlurSet[self->m_frameIdx], 0, nullptr);
+                    vkCmdPushConstants(c, self->m_giBlurLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                       0, sizeof(GiBlurPush), &self->m_giBlurPush);
                     vkCmdDraw(c, 3, 1, 0, 0);
                 };
                 m_graph.addPass(std::move(dp));
@@ -2098,15 +2180,15 @@ private:
 
                 RenderPassDesc ap{};
                 ap.name = "gi-apply";
-                ap.uses.push_back(ResourceUse{
+                ap.addUse(ResourceUse{
                     rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
-                ap.uses.push_back(ResourceUse{
+                ap.addUse(ResourceUse{
                     rgGiDenoise, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
-                ap.uses.push_back(ResourceUse{
+                ap.addUse(ResourceUse{
                     rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
@@ -2115,7 +2197,7 @@ private:
                 // apply set binds the GI denoise image instead (already declared above)
                 // and forces aoAmount=0, so no extra/incorrect resource use is needed.
                 if (ssaoOn) {
-                    ap.uses.push_back(ResourceUse{
+                    ap.addUse(ResourceUse{
                         rgSsaoBlur, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                         VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
@@ -2128,16 +2210,18 @@ private:
                 m_giApplyRenderInfo.colorAttachmentCount = 1;
                 m_giApplyRenderInfo.pColorAttachments = &m_giApplyAttach;
                 ap.renderInfo = m_giApplyRenderInfo;
-                ap.record = [this](VkCommandBuffer c){
-                    VkViewport vp{ 0.0f, 0.0f, (float)m_extent.width, (float)m_extent.height, 0.0f, 1.0f };
-                    VkRect2D scis{ {0,0}, m_extent };
+                ap.recordCtx = this;
+                ap.record = [](void* ctx, VkCommandBuffer c){
+                    auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                    VkViewport vp{ 0.0f, 0.0f, (float)self->m_extent.width, (float)self->m_extent.height, 0.0f, 1.0f };
+                    VkRect2D scis{ {0,0}, self->m_extent };
                     vkCmdSetViewport(c, 0, 1, &vp);
                     vkCmdSetScissor(c, 0, 1, &scis);
-                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giApplyPipe);
-                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_giApplyLayout,
-                                            0, 1, &m_giApplySet[m_frameIdx], 0, nullptr);
-                    vkCmdPushConstants(c, m_giApplyLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
-                                       0, sizeof(GiApplyPush), &m_giApplyPush);
+                    vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_giApplyPipe);
+                    vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_giApplyLayout,
+                                            0, 1, &self->m_giApplySet[self->m_frameIdx], 0, nullptr);
+                    vkCmdPushConstants(c, self->m_giApplyLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                       0, sizeof(GiApplyPush), &self->m_giApplyPush);
                     vkCmdDraw(c, 3, 1, 0, 0);
                 };
                 m_graph.addPass(std::move(ap));
@@ -2148,22 +2232,23 @@ private:
             {
                 RenderPassDesc cp{};
                 cp.name = "gi-prevdepth-copy";
-                cp.uses.push_back(ResourceUse{
+                cp.addUse(ResourceUse{
                     rgDepth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                     VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
-                cp.uses.push_back(ResourceUse{
+                cp.addUse(ResourceUse{
                     rgGiPrevDepth, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                     VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/true });
-                VkExtent2D ext = m_extent;
-                cp.record = [this, ext](VkCommandBuffer c){
+                cp.recordCtx = this;
+                cp.record = [](void* ctx, VkCommandBuffer c){
+                    auto* self = static_cast<VulkanRenderDevice*>(ctx);
                     VkImageCopy region{};
                     region.srcSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 };
                     region.dstSubresource = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1 };
-                    region.extent = { ext.width, ext.height, 1 };
-                    vkCmdCopyImage(c, m_depthImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                   m_giPrevDepthImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+                    region.extent = { self->m_extent.width, self->m_extent.height, 1 };
+                    vkCmdCopyImage(c, self->m_depthImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                   self->m_giPrevDepthImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
                 };
                 m_graph.addPass(std::move(cp));
             }
@@ -2194,17 +2279,17 @@ private:
             RenderPassDesc comp{};
             comp.name = "composite";
             // WRITE the final color target.
-            comp.uses.push_back(ResourceUse{
+            comp.addUse(ResourceUse{
                 rgColor, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
             // READ the HDR scene + bloom mip0 (both sampled in the fragment stage).
-            comp.uses.push_back(ResourceUse{
+            comp.addUse(ResourceUse{
                 rgHdr, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
-            comp.uses.push_back(ResourceUse{
+            comp.addUse(ResourceUse{
                 rgMip[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
@@ -2216,26 +2301,28 @@ private:
             m_compositeRenderInfo.colorAttachmentCount = 1;
             m_compositeRenderInfo.pColorAttachments = &m_compositeAttach;
             comp.renderInfo = m_compositeRenderInfo;
-            comp.record = [this](VkCommandBuffer c){
-                VkViewport vp{ 0.0f, 0.0f, (float)m_extent.width, (float)m_extent.height, 0.0f, 1.0f };
-                VkRect2D scis{ {0,0}, m_extent };
+            comp.recordCtx = this;
+            comp.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                VkViewport vp{ 0.0f, 0.0f, (float)self->m_extent.width, (float)self->m_extent.height, 0.0f, 1.0f };
+                VkRect2D scis{ {0,0}, self->m_extent };
                 vkCmdSetViewport(c, 0, 1, &vp);
                 vkCmdSetScissor(c, 0, 1, &scis);
-                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_compositePipe);
-                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, m_compositeLayout,
-                                        0, 1, &m_setComposite, 0, nullptr);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_compositePipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_compositeLayout,
+                                        0, 1, &self->m_setComposite, 0, nullptr);
                 CompositePush cp{};
                 cp.bloomIntensity = kBloomIntensity;
                 cp.exposure = 1.0f;
-                vkCmdPushConstants(c, m_compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                vkCmdPushConstants(c, self->m_compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(cp), &cp);
                 vkCmdDraw(c, 3, 1, 0, 0);
                 // HUD on top of the tonemapped LDR image (drawn in the composite pass).
-                recordHudDraws(c);
+                self->recordHudDraws(c);
                 // GPU-frame END timestamp after the WHOLE pipeline (incl. bloom +
                 // composite) so --bench measures the full added cost.
-                auto& f = m_frames[m_frameIdx];
-                if (m_tsSupported && f.tsPool) {
+                auto& f = self->m_frames[self->m_frameIdx];
+                if (self->m_tsSupported && f.tsPool) {
                     vkCmdWriteTimestamp2(c, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, f.tsPool, 1);
                     f.tsPending = true;
                 }
@@ -2258,21 +2345,25 @@ private:
             // to the finalize layout. The graph derives both transitions.
             RenderPassDesc copyPass{};
             copyPass.name = "capture-copy";
-            copyPass.uses.push_back(ResourceUse{
+            copyPass.addUse(ResourceUse{
                 rgColor, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
-            VkImage colorImg = colorTargetImg;
-            copyPass.record = [this, colorImg](VkCommandBuffer c){
+            // Stable per-pass storage for the color image handle (ctx points at the
+            // device; the handle lives in a member that outlives execute()).
+            m_captureColorImg = colorTargetImg;
+            copyPass.recordCtx = this;
+            copyPass.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
                 VkBufferImageCopy region{};
                 region.bufferOffset = 0;
                 region.bufferRowLength = 0;     // tightly packed to image width
                 region.bufferImageHeight = 0;
                 region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
                 region.imageOffset = { 0, 0, 0 };
-                region.imageExtent = { m_captureW, m_captureH, 1 };
-                vkCmdCopyImageToBuffer(c, colorImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                                       m_captureBuf, 1, &region);
+                region.imageExtent = { self->m_captureW, self->m_captureH, 1 };
+                vkCmdCopyImageToBuffer(c, self->m_captureColorImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                       self->m_captureBuf, 1, &region);
             };
             m_graph.addPass(std::move(copyPass));
 
@@ -2283,7 +2374,7 @@ private:
             if (!m_headless) {
                 RenderPassDesc presentPass{};
                 presentPass.name = "present";
-                presentPass.uses.push_back(ResourceUse{
+                presentPass.addUse(ResourceUse{
                     rgColor, finalLayout,
                     VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
@@ -2297,7 +2388,7 @@ private:
             // UNDEFINED + cleared next frame anyway).
             RenderPassDesc presentPass{};
             presentPass.name = "present";
-            presentPass.uses.push_back(ResourceUse{
+            presentPass.addUse(ResourceUse{
                 rgColor, finalLayout,
                 VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT, 0,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
@@ -4589,9 +4680,10 @@ private:
     }
 
     // Write one bindless array slot to point at `tex` (combined image+sampler).
-    // update-after-bind means this is legal even while the set is bound, as long
-    // as the slot isn't read by in-flight work (createTexture happens at load /
-    // between frames; destroyTexture waits idle first).
+    // update-after-bind means this is legal even while the set is bound: it only
+    // rewrites the descriptor the NEXT frame reads (createTexture happens at load /
+    // between frames; destroyTexture repoints the slot to white immediately, then
+    // DEFERS the old image/view destruction until the in-flight frames retire).
     void writeBindlessSlot(uint32_t slot, const Texture& tex) {
         VkDescriptorImageInfo dii{};
         dii.sampler = tex.sampler;
@@ -4626,9 +4718,10 @@ private:
             vmaDestroyBuffer(m_alloc, m.ibo, m.iboAlloc);
         }
         m_meshes.clear();
-        // Drain any still-pending deferred frees (shutdown waited idle first).
-        for (auto& pf : m_pendingFrees) vmaDestroyBuffer(m_alloc, pf.buf, pf.alloc);
-        m_pendingFrees.clear();
+        // Drain any still-pending deferred frees (buffers AND images/views/samplers
+        // queued by destroyMesh/destroyTexture). shutdown() waited idle first, so
+        // every referencing frame has retired and it is safe to free immediately.
+        flushPendingFrees();
         // Free the persistent capture readback buffer (fix 1).
         if (m_captureBuf) {
             vmaDestroyBuffer(m_alloc, m_captureBuf, m_captureAlloc);
@@ -4747,6 +4840,9 @@ private:
     uint32_t      m_captureW = 0, m_captureH = 0;
     uint32_t      m_captureFrameSlot = 0;     // m_frameIdx the copy was recorded into
     VkFence       m_captureFence = VK_NULL_HANDLE; // inFlight fence of that frame
+    // Stable storage for the capture-copy pass's source image (the function-pointer
+    // record path needs the handle in a member, not a lambda capture).
+    VkImage       m_captureColorImg = VK_NULL_HANDLE;
 
     // Resource registries (created via the public mesh/texture API)
     std::unordered_map<uint32_t, Mesh>    m_meshes;
@@ -4832,6 +4928,18 @@ private:
     struct CompositePush { float bloomIntensity, exposure, pad0, pad1; };
     BloomPush m_bloomDownPush[kBloomMips]{};
     BloomPush m_bloomUpPush[kBloomMips]{};
+    // Stable per-pass record context for the bloom down/up passes. The graph's
+    // record path is a raw function pointer + void* ctx (no std::function, no
+    // per-frame heap alloc); each pass's per-mip parameters (which descriptor set
+    // to bind, the dst extent, the mip index) live here, NOT in a lambda capture.
+    struct BloomPassCtx {
+        VulkanRenderDevice* self = nullptr;
+        VkDescriptorSet     srcSet = VK_NULL_HANDLE;
+        VkExtent2D          dstExt{};
+        uint32_t            mip = 0;
+    };
+    BloomPassCtx m_bloomDownCtx[kBloomMips]{};
+    BloomPassCtx m_bloomUpCtx[kBloomMips]{};
 
     // ======================================================================
     // SSAO — screen-space ambient occlusion (idTech-8 grounding/contact AO).
@@ -4883,8 +4991,9 @@ private:
     VkDescriptorSet m_ssaoSet[kFramesInFlight]   = {};  // ssao.frag: depth + UBO
     VkDescriptorSet m_ssaoBlurSet                = VK_NULL_HANDLE; // blur: aoRaw + depth
     // mesh.frag set 3: AO texture + SsaoControl UBO (per-frame control buffer).
+    // (The mesh-AO descriptor sets are allocated from m_ssaoPool — see createSsao();
+    //  there is no separate pool, so no m_meshAoPool member exists.)
     VkDescriptorSetLayout m_meshAoSetLayout = VK_NULL_HANDLE;
-    VkDescriptorPool      m_meshAoPool      = VK_NULL_HANDLE;
     VkBuffer      m_ssaoCtrlBuf[kFramesInFlight] = {}; VmaAllocation m_ssaoCtrlAlloc[kFramesInFlight] = {}; void* m_ssaoCtrlMapped[kFramesInFlight] = {};
     VkDescriptorSet m_meshAoSet[kFramesInFlight] = {};  // mesh.frag set3: AO + ctrl
     VkSampler     m_ssaoLinearSampler = VK_NULL_HANDLE; // CLAMP linear (sample AO)
@@ -5115,6 +5224,30 @@ private:
         // (every in-flight cmd buffer that could reference it will have retired).
         m_pendingFrees.push_back({ buf, alloc, m_totalFrames + kFramesInFlight });
     }
+
+    // ---- Deferred image/view/sampler destruction (fix 2) ------------------
+    // destroyTexture() / destroyMesh() used to vkDeviceWaitIdle before freeing —
+    // a full GPU stall PER destroy. During terrain-streaming eviction that is
+    // dozens of stalls per boundary-cross. Instead we queue the GPU objects with
+    // the frame index they became unreferenced and free them once kFramesInFlight
+    // frames have begun (every in-flight cmd buffer that could reference them has
+    // retired — same retirement rule as deferDestroyBuffer). The bindless-slot
+    // write-back to white (host-side vkUpdateDescriptorSets) is done IMMEDIATELY
+    // by the caller; only the actual destroy is deferred. Any of the handles may
+    // be VK_NULL_HANDLE (e.g. a mesh defers only buffers; a texture defers
+    // image+view+sampler) — the drain skips null handles.
+    struct PendingImageFree {
+        VkImage       image; VmaAllocation alloc;
+        VkImageView   view;  VkSampler     sampler;
+        uint64_t      retireAtFrame;
+    };
+    std::vector<PendingImageFree> m_pendingImageFrees;
+    void deferDestroyImage(VkImage image, VmaAllocation alloc,
+                           VkImageView view, VkSampler sampler) {
+        if (!image && !view && !sampler) return;
+        m_pendingImageFrees.push_back({ image, alloc, view, sampler,
+                                        m_totalFrames + kFramesInFlight });
+    }
     void drainPendingFrees() {
         for (size_t i = 0; i < m_pendingFrees.size();) {
             if (m_totalFrames >= m_pendingFrees[i].retireAtFrame) {
@@ -5123,6 +5256,28 @@ private:
                 m_pendingFrees.pop_back();
             } else { ++i; }
         }
+        for (size_t i = 0; i < m_pendingImageFrees.size();) {
+            PendingImageFree& p = m_pendingImageFrees[i];
+            if (m_totalFrames >= p.retireAtFrame) {
+                if (p.sampler) vkDestroySampler(m_dev.device, p.sampler, nullptr);
+                if (p.view)    vkDestroyImageView(m_dev.device, p.view, nullptr);
+                if (p.image)   vmaDestroyImage(m_alloc, p.image, p.alloc);
+                p = m_pendingImageFrees.back();
+                m_pendingImageFrees.pop_back();
+            } else { ++i; }
+        }
+    }
+    // Force-free EVERYTHING still queued (used at shutdown after a final
+    // vkDeviceWaitIdle, when all frames are guaranteed retired).
+    void flushPendingFrees() {
+        for (auto& pf : m_pendingFrees) vmaDestroyBuffer(m_alloc, pf.buf, pf.alloc);
+        m_pendingFrees.clear();
+        for (auto& p : m_pendingImageFrees) {
+            if (p.sampler) vkDestroySampler(m_dev.device, p.sampler, nullptr);
+            if (p.view)    vkDestroyImageView(m_dev.device, p.view, nullptr);
+            if (p.image)   vmaDestroyImage(m_alloc, p.image, p.alloc);
+        }
+        m_pendingImageFrees.clear();
     }
 
     // ---- Perf instrumentation ---------------------------------------------
