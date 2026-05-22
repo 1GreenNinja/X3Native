@@ -38,7 +38,11 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/sky.vert
     ${CMAKE_SOURCE_DIR}/shaders/sky.frag
     ${CMAKE_SOURCE_DIR}/shaders/hud.vert
-    ${CMAKE_SOURCE_DIR}/shaders/hud.frag)
+    ${CMAKE_SOURCE_DIR}/shaders/hud.frag
+    ${CMAKE_SOURCE_DIR}/shaders/fullscreen.vert
+    ${CMAKE_SOURCE_DIR}/shaders/bloom_down.frag
+    ${CMAKE_SOURCE_DIR}/shaders/bloom_up.frag
+    ${CMAKE_SOURCE_DIR}/shaders/composite.frag)
 set(SPV_DIR ${CMAKE_BINARY_DIR}/shaders_spv)
 file(MAKE_DIRECTORY ${SPV_DIR})
 set(SPV_FILES "")

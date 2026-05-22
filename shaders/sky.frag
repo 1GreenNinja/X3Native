@@ -16,8 +16,10 @@
 //
 // The sun direction + color come from the sky UBO; main.cpp feeds the SAME
 // normalize(0.4,1,0.3) the shadow pass + mesh.frag use, and a sun color matched
-// to mesh.frag's kSunColor. The result is ACES-tonemapped exactly like mesh.frag
-// so sky and lit geometry sit in the same response curve at the horizon seam.
+// to mesh.frag's kSunColor. HDR PIPELINE: the sky now outputs LINEAR HDR radiance
+// into the R16G16B16A16_SFLOAT scene target (same as mesh.frag); the shared ACES
+// tonemap runs ONCE in composite.frag so sky + lit geometry stay on one response
+// curve at the horizon seam. (The per-fragment tonemap here was moved out.)
 
 layout(set = 0, binding = 0) uniform SkyUBO {
     mat4 invViewProj;   // unproject NDC -> world ray
@@ -29,13 +31,6 @@ layout(set = 0, binding = 0) uniform SkyUBO {
 
 layout(location = 0) in vec2 vNdc;
 layout(location = 0) out vec4 outColor;
-
-// Same ACES filmic approximation (Narkowicz) used by mesh.frag, so the sky and
-// the lit geometry share one tonemapping response (no seam at the horizon).
-vec3 tonemapACES(vec3 x) {
-    const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
-    return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
-}
 
 void main() {
     // Reconstruct the world-space view ray for this pixel. Unproject a near and a
@@ -91,7 +86,8 @@ void main() {
         col = mix(col, ground, belowT);
     }
 
-    // Exposure + shared ACES response, matching the lit-geometry path.
-    col = tonemapACES(col * exposure);
+    // Exposure applied here; LINEAR HDR output (tonemap moved to composite.frag,
+    // applied once after bloom — matching the lit-geometry path's response).
+    col *= exposure;
     outColor = vec4(col, 1.0);
 }

@@ -746,6 +746,9 @@ public:
     void destroyTexture(x3::rhi::TextureHandle) override {}
     void drawMesh(const x3::rhi::FrameContext&, x3::rhi::MeshHandle,
                   x3::rhi::TextureHandle, const float[4], const float[16]) override {}
+    void drawMeshEmissive(const x3::rhi::FrameContext&, x3::rhi::MeshHandle,
+                          x3::rhi::TextureHandle, const float[4], const float[4],
+                          const float[16]) override {}
     void setPointLights(const x3::rhi::PointLight*, uint32_t) override {}
     void setSkyParams(const x3::rhi::IRenderDevice::SkyParams&) override {}
     void drawHudQuad(const x3::rhi::FrameContext&, float, float, float, float, const float[4]) override {}
