@@ -122,7 +122,8 @@ struct DoorSpec {
     DoorAxis       axis     = DoorAxis::AlongX;
     float          halfWidth = 0.6f;       // half the doorway opening width (along the wall run)
     float          height    = 2.1f;       // door slab height (passage clear height)
-    float          thickness = 0.2f;       // door slab thickness (across the wall)
+    float          thickness = 0.12f;      // door slab thickness — THINNER than the 0.2 wall so the
+                                           // slab slides up hidden INSIDE the wall (no z-fight shimmer)
     float          duration  = 1.0f;       // seconds Closed -> Open
     bool           locked    = false;      // §6.4 lockable
     int            code      = 0;          // keypad code (0 = none); locked + code => keypad door

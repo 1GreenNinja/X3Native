@@ -19,6 +19,7 @@
 #include "level1.h"
 #include "player.h"
 #include "level1_game.h"
+#include "elevator.h"
 #include "fx.h"
 #include "hud.h"
 #include "stress.h"
@@ -590,6 +591,20 @@ int main(int argc, char** argv) {
     x3::game::Player player;
     player.spawn(*physics, L1.spawn.x, L1.spawn.y, L1.spawn.z);
 
+    // ---- Advanced elevator (core): a cab in the elevator room with 2 stops
+    // (room floor + 6 m up). Press E within ~4 m to call it; it carries the rider. ----
+    x3::game::ElevatorSystem elevator;
+    {
+        const float cabHY = 0.15f;
+        const float cabCenterGround = L1.elevatorCenter.y + cabHY; // cab top at the room floor
+        const float floorH = 5.0f;                                 // story height (m)
+        std::vector<float> elevStops;                              // B1/ground + 6 floors = 7 stories
+        for (int f = 0; f < 7; ++f) elevStops.push_back(cabCenterGround + f * floorH);
+        elevator.build(scene, *device, *physics,
+                       L1.elevatorCenter.x, L1.elevatorCenter.z,
+                       1.4f, cabHY, 1.4f, elevStops, 0);
+    }
+
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
@@ -717,6 +732,13 @@ int main(int argc, char** argv) {
             } else if (!codeMode && game.nearLockedCodedDoor(eye)) {
                 codeMode = true; codeBuf.clear();
                 x3::logInfo("use: locked keypad door — type the code, Enter to submit, Esc to cancel");
+            } else if (elevator.built()) {
+                const x3::phys::Vec3 cc = elevator.cabCenter();
+                const float ecx = eye.x - cc.x, ecz = eye.z - cc.z;
+                if (ecx * ecx + ecz * ecz < 16.0f) {   // within ~4 m of the shaft
+                    elevator.callNext();
+                    x3::logInfo("use: elevator called");
+                }
             }
         }
         prevE = eNow;
@@ -766,6 +788,20 @@ int main(int argc, char** argv) {
             in.lookDY = ddy;
 
             player.update(in, dt, *physics);
+
+            // Advanced elevator: advance the cab, then carry the player if riding
+            // (add the cab's vertical delta before the physics step resolves).
+            {
+                float edy = elevator.update(dt, scene, *physics);
+                if (edy != 0.0f) {
+                    x3::phys::Vec3 pf = physics->getBodyPosition(player.body());
+                    if (elevator.playerRiding(pf)) {
+                        pf.y += edy;
+                        physics->setBodyPosition(player.body(), pf);
+                    }
+                }
+            }
+
             physics->step(dt);
             scene.update(*physics);
 

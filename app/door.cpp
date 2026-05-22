@@ -96,12 +96,19 @@ bool tryUse(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir, float maxDist,
     if (ent == kNoLink || ent >= scene.size()) return false;
 
     const Entity& e = scene.get(ent);
-    if (e.tag != (uint32_t)Tag::Button) return false;     // aimed at not-a-button
-    if (e.link == kNoLink || e.link >= scene.size()) return false;
 
-    Door* door = doors.findByEntity(e.link);
-    if (!door) return false;
-    return doors.startOpening(*door);
+    // Aim at a wall BUTTON linked to a door...
+    if (e.tag == (uint32_t)Tag::Button) {
+        if (e.link == kNoLink || e.link >= scene.size()) return false;
+        Door* door = doors.findByEntity(e.link);
+        return door ? doors.startOpening(*door) : false;
+    }
+    // ...OR aim directly at the DOOR slab itself (intuitive "open the door").
+    if (e.tag == (uint32_t)Tag::Door) {
+        Door* door = doors.findByEntity(ent);
+        return door ? doors.startOpening(*door) : false;
+    }
+    return false;
 }
 
 uint32_t buildDoorAndButton(Scene& scene, DoorSystem& doors,

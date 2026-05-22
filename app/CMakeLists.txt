@@ -5,6 +5,7 @@ add_executable(X3Engine WIN32
     level1.cpp
     player.cpp
     door.cpp
+    elevator.cpp
     weapon.cpp
     monster.cpp
     anim.cpp
