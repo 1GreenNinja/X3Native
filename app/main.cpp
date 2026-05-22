@@ -1846,6 +1846,17 @@ int main(int argc, char** argv) {
             const std::string outPath = destructShot ? destructShotPath
                                        : (screenshot ? screenshotPath : destructShotPath);
 
+            // ADDITIVE GPU-compute debris layer (K-T2): wire the cheap, large-scale
+            // GPU rubble onto the SAME fracture/explosion events that drive the Jolt
+            // chunks (the Jolt chunk path is untouched). Each break ALSO emits a GPU
+            // debris burst at the impact, simulated + drawn entirely on the GPU. This
+            // proves the compute path in the real windowed/screenshot render loop.
+            { x3::rhi::IRenderDevice::GpuDebrisParams gp{};
+              gp.groundY = 0.0f; gp.restitution = 0.2f; gp.friction = 0.5f;
+              gp.linearDamping = 0.3f; gp.sleepFrames = 16;
+              device->gpuDebrisConfig(gp); }
+            const float debrisTint[4] = { 0.78f, 0.55f, 0.36f, 1.0f };
+
             // Break the RIGHT crates (3rd + 4th) so the left two stay intact for the
             // before/after contrast, and capture while the chunks are still scattering
             // (modest kicks so the debris stays in frame, not launched to the horizon).
@@ -1858,24 +1869,32 @@ int main(int argc, char** argv) {
                     float eye[3] = { cr[2].center[0] - 3.0f, cr[2].center[1], cr[2].center[2] };
                     float dir[3] = { 1.0f, 0.0f, 0.0f };
                     demo.fire(eye, dir, 45.0f);
+                    // Additive GPU rubble burst at the crate (hundreds of cheap fragments).
+                    float bp[3] = { cr[2].center[0], cr[2].center[1], cr[2].center[2] };
+                    device->gpuDebrisSpawnBurst(bp, 600, 4.0f, 6.0f, 0.06f, 0xC0FFEEu);
                 }
                 // Frame 8: blow up the rightmost crate with an explosion right under it.
                 if (i == 8 && demo.crates().size() >= 4) {
                     const auto& cr = demo.crates();
                     float center[3] = { cr[cr.size()-1].center[0], 0.5f, 0.0f };
                     demo.explode(center, 3.0f, 28.0f);
+                    float bp[3] = { center[0], 0.6f, center[2] };
+                    device->gpuDebrisSpawnBurst(bp, 800, 6.0f, 6.0f, 0.06f, 0x1234567u);
                 }
                 dphys->step(dt);
                 demo.update(dt);
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 70.0f);
                 if (i == kSettle - 1) device->armCapture(outPath.c_str());
                 auto frame = device->beginFrame();
-                if (frame.valid) demo.render(frame);
+                device->gpuDebrisStep(dt);            // GPU compute integrate
+                if (frame.valid) demo.render(frame);  // Jolt chunks (existing path)
+                if (frame.valid) device->gpuDebrisDraw(frame, debrisTint); // GPU rubble
                 device->endFrame(frame);
             }
             const bool wrote = device->captureFrame(outPath.c_str());
             if (wrote) x3::logInfo("--screenshot-destruct: wrote " + outPath +
-                                   " (active debris=" + std::to_string(demo.activeDebris()) + ")");
+                                   " (Jolt debris=" + std::to_string(demo.activeDebris()) +
+                                   " GPU debris=" + std::to_string(device->gpuDebrisAliveCount()) + ")");
             else       x3::logError("--screenshot-destruct: capture FAILED");
             demo.shutdown();
             dphys->shutdown();
