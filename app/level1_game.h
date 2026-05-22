@@ -61,6 +61,8 @@ enum class L1Trigger : uint32_t {
     Strength = 1,   // beat 1: hide equipment, strength discovery
     Arena    = 2,   // beat 9: spawn Martinez + open Door D
     Elevator = 3,   // beat 11: win
+    F2Hub    = 4,   // spec §5: player enters F2 -> start the rescue countdowns (once)
+    Rooftop  = 5,   // F7 arrival -> spawn the rooftop multi-phase boss (once)
 };
 
 // Pure keypad-entry buffer for the door-code keypad (no I/O, no Vulkan/GLFW). The
@@ -196,6 +198,12 @@ public:
     bool martinezAlive()   const { return m_martinezSpawned && m_martinez.alive(); }
     bool martinezDead()    const { return m_martinezSpawned && !m_martinez.alive(); }
 
+    // ---- F7 rooftop boss (Act 1 finale, data-light). Spawned on reaching F7. ----
+    bool rooftopBossSpawned() const { return m_rooftopBossSpawned; }
+    bool rooftopBossAlive()   const { return m_rooftopBossSpawned && m_rooftopBoss.alive(); }
+    bool rooftopBossDead()    const { return m_rooftopBossSpawned && !m_rooftopBoss.alive(); }
+    const MonsterSystem& rooftopBoss() const { return m_rooftopBoss; }
+
     // ---- Boss phase HUD (Phase 2b) ----------------------------------------
     // The boss's current phase (Phase1 until it spawns). Drives a boss HP/phase
     // HUD element if the host wants one.
@@ -226,6 +234,10 @@ private:
                               x3::phys::IPhysicsWorld& physics);
     void spawnMartinez(Scene& scene, x3::rhi::IRenderDevice& device,
                        x3::phys::IPhysicsWorld& physics);
+    // F7 rooftop boss (Act 1 finale): spawn the multi-phase boss at rooftopCenter on
+    // reaching F7. Idempotent guard. Mirrors spawnMartinez.
+    void spawnRooftopBoss(Scene& scene, x3::rhi::IRenderDevice& device,
+                          x3::phys::IPhysicsWorld& physics);
     // Phase 2b: summon the boss's Phase-3 Guard adds (once). Idempotent guard.
     void spawnBossAdds(Scene& scene, x3::rhi::IRenderDevice& device,
                        x3::phys::IPhysicsWorld& physics);
@@ -242,6 +254,7 @@ private:
     MonsterManager m_checkpoint;   // 1-2 guards (built at level build)
     MonsterSystem  m_martinez;     // boss (beat 9)
     MonsterManager m_bossAdds;     // Phase 3 summoned Guard adds (Phase 2b)
+    MonsterSystem  m_rooftopBoss;  // F7 finale boss (Act 1) — spawned on reaching F7
     ObjectiveSystem m_objectives;
     TriggerSystem  m_triggers;
     RescueSystem   m_rescue;       // F2 victims (Aria/Keisha/Emily) — spec §5
@@ -266,6 +279,8 @@ private:
     bool m_martinezSpawned  = false; // beat 9
     bool m_martinezDeadLatch= false; // beat 10: unlock+open Door E once
     bool m_complete         = false; // beat 11: WIN (logged once)
+    bool m_hubReachedLatch  = false; // spec §5: F2 hub trigger fired once
+    bool m_rooftopBossSpawned = false; // F7 finale boss spawned once
     bool m_built            = false;
 };
 
