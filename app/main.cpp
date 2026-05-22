@@ -19,6 +19,7 @@
 
 #include "scene.h"
 #include "mesh_prims.h"
+#include "anim.h"                          // Skinner + --list-clips clip check
 #include "level1.h"
 #include "player.h"
 #include "monster.h"
@@ -172,6 +173,13 @@ int main(int argc, char** argv) {
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
          testTerrainPlace = false, testNet = false, testRescue = false;
+    // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
+    // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
+    // and confirm the joint palette changes. Asset-pipeline verification for the
+    // retargeted multi-clip character GLBs; no window / Vulkan. Additive — does
+    // not affect the existing self-test gate.
+    bool        listClips = false;
+    std::string listClipsPath;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
@@ -327,6 +335,10 @@ int main(int argc, char** argv) {
             // Optional output directory arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') captureAiDir = argv[++i];
         }
+        else if (a == "--list-clips") {
+            listClips = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') listClipsPath = argv[++i];
+        }
     }
 
     // Headless self-tests (no window / Vulkan needed)
@@ -385,6 +397,63 @@ int main(int argc, char** argv) {
     if (testAnim) {
         x3::logInfo("running J1 skeletal animation + CPU skinning self-test...");
         return x3::anim::runAnimSelfTest() ? 0 : 1;
+    }
+    if (listClips) {
+        // Asset-pipeline check for the retargeted multi-clip character GLBs:
+        // load the GLB headless, list its clips, and confirm Walk sampled at
+        // t=0 vs t=0.5 changes the joint palette (proves a real, distinct clip).
+        if (listClipsPath.empty()) {
+            x3::logError("--list-clips: need a GLB path");
+            return 1;
+        }
+        namespace fs = std::filesystem;
+        fs::path p(listClipsPath);
+        if (!fs::exists(p)) { x3::logError("--list-clips: no such file: " + listClipsPath); return 1; }
+        std::unique_ptr<x3::asset::IAssetSource> src(x3::asset::createAssetSource());
+        src->mountDir(p.parent_path().string(), 0);
+        std::unique_ptr<x3::asset::IModelLoader> loader(
+            x3::asset::createModelLoader(nullptr, src.get()));   // headless
+        x3::asset::Model model = loader->load(p.filename().string());
+        if (!model.ok) { x3::logError("--list-clips: load failed"); return 1; }
+        x3::logInfo("--list-clips: " + listClipsPath + " has " +
+                    std::to_string(model.animations.size()) + " animation clip(s):");
+        for (size_t c = 0; c < model.animations.size(); ++c)
+            x3::logInfo("  clip[" + std::to_string(c) + "] = \"" +
+                        model.animations[c].name + "\"  (" +
+                        std::to_string(model.animations[c].duration) + "s)");
+        x3::anim::Skinner sk;
+        bool bound = sk.bind(model);
+        if (!bound) { x3::logError("--list-clips: model not skinnable"); loader->unload(model); return 1; }
+        int idle = sk.findClip({ "idle" });
+        int walk = sk.findClip({ "walk" });
+        int run  = sk.findClip({ "run" });
+        x3::logInfo("--list-clips: findClip idle=" + std::to_string(idle) +
+                    " walk=" + std::to_string(walk) + " run=" + std::to_string(run));
+        bool ok = sk.clipCount() > 1 && walk >= 0 && run >= 0;
+        // Confirm Walk is a live clip: palette differs between t=0 and t=0.5,
+        // and (when an idle clip exists) Walk@0 differs from Idle@0.
+        if (walk >= 0) {
+            std::vector<float> w0, w5, i0;
+            sk.computePalette(model, (uint32_t)walk, 0.0f, w0);
+            sk.computePalette(model, (uint32_t)walk, 0.5f, w5);
+            float dWalk = 0.0f;
+            for (size_t i = 0; i < w0.size() && i < w5.size(); ++i)
+                dWalk = std::max(dWalk, std::fabs(w0[i] - w5[i]));
+            x3::logInfo("--list-clips: Walk palette max-delta t0->t0.5 = " + std::to_string(dWalk));
+            ok = ok && dWalk > 1e-3f;
+            if (idle >= 0) {
+                sk.computePalette(model, (uint32_t)idle, 0.0f, i0);
+                float dVsIdle = 0.0f;
+                for (size_t i = 0; i < w0.size() && i < i0.size(); ++i)
+                    dVsIdle = std::max(dVsIdle, std::fabs(w0[i] - i0[i]));
+                x3::logInfo("--list-clips: Walk@0 vs Idle@0 max-delta = " + std::to_string(dVsIdle));
+                ok = ok && dVsIdle > 1e-3f;
+            }
+        }
+        loader->unload(model);
+        x3::logInfo(std::string("--list-clips: ") + (ok ? "PASS (>1 clip, Walk+Run present, Walk animates)"
+                                                        : "FAIL"));
+        return ok ? 0 : 1;
     }
     if (testTerrain) {
         x3::logInfo("running B2 tiled terrain world self-test (settle + LOD)...");
