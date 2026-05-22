@@ -34,6 +34,8 @@
 #include "level1.h"
 #include "env_art.h"
 
+#include "save.h"      // engine-general checkpoint schema (the bridge maps onto it)
+
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/audio/IAudioSystem.h"
@@ -183,6 +185,9 @@ public:
 
     bool armed() const { return m_weapon.hasWeapon(); }
     bool complete() const { return m_complete; }
+    // Save/load restore: set the level-complete latch directly (does NOT re-run the
+    // WIN beat / re-log). Used by applyCheckpoint() to restore the recorded flag.
+    void setComplete(bool c) { m_complete = c; }
     ObjectiveSystem&       objectives()       { return m_objectives; }
     const ObjectiveSystem& objectives() const { return m_objectives; }
 
@@ -190,9 +195,11 @@ public:
     DoorState doorState(char letter) const;
     bool      doorLocked(char letter) const;
 
-    // Monster groups (for the self-test / objective gating).
-    MonsterManager&       corridorEnemies()       { return m_corridor; }
-    MonsterManager&       checkpointEnemies()     { return m_checkpoint; }
+    // Monster groups (for the self-test / objective gating + the save bridge).
+    MonsterManager&       corridorEnemies()         { return m_corridor; }
+    const MonsterManager& corridorEnemies()   const { return m_corridor; }
+    MonsterManager&       checkpointEnemies()       { return m_checkpoint; }
+    const MonsterManager& checkpointEnemies() const { return m_checkpoint; }
     bool martinezSpawned() const { return m_martinezSpawned; }
     bool martinezAlive()   const { return m_martinezSpawned && m_martinez.alive(); }
     bool martinezDead()    const { return m_martinezSpawned && !m_martinez.alive(); }
@@ -269,6 +276,52 @@ private:
     bool m_complete         = false; // beat 11: WIN (logged once)
     bool m_built            = false;
 };
+
+// ===========================================================================
+// EFLZ <-> save::SaveState BRIDGE (programmatic save/load API the host calls)
+// ===========================================================================
+// These map the LIVE EFLZ game systems onto the engine-general save::SaveState (and
+// back). save.h itself stays game-agnostic (plain PODs + file I/O); this is the
+// game-layer adapter. The host (app/main.cpp) calls captureCheckpoint() to snapshot
+// then save::saveCheckpoint(), and on load calls save::loadCheckpoint() then
+// applyCheckpoint().
+//
+// WHAT APPLY RESTORES (a pragmatic, resumable checkpoint):
+//   * player feet transform + look angles + HP        (directly re-seated)
+//   * arsenal: equipped weapon + per-weapon ammo/reserve
+//   * objective cursor + level-complete flag
+//   * rescue: hub-reached + every victim's lifecycle + remaining timer
+//   * the recorded current floor (the host re-positions the elevator to it)
+// The per-floor world FLAGS (doors opened / keypads solved / enemies cleared) are
+// always CAPTURED + persisted (and exposed for HUD / "% cleared"); apply does NOT
+// retroactively re-open doors or re-kill enemies in an already-built live level (that
+// would mean re-simulating the beat graph) — a documented checkpoint limitation. The
+// recorded flags are still authoritative for a future "rebuild the level at this
+// progress" path. The round-trip of the SaveState struct itself is fully covered by
+// --test-saveload.
+
+class SpireMidFloors;   // fwd (spire_mid.h)
+class SpireTopFloors;   // fwd (spire_top.h)
+class Arsenal;          // fwd (weapon.h — already included, but keep symmetry)
+class Player;           // fwd (player.h)
+
+// Snapshot the live game into a save::SaveState. `currentFloor` is the L1Floor index
+// the player is on (the host derives it from the elevator's current stop). The Spire
+// floor systems may be unbuilt (built()==false) — their flags are simply omitted.
+x3::save::SaveState captureCheckpoint(const Player& player, const Arsenal& arsenal,
+                                      const Level1Game& game,
+                                      const SpireMidFloors& mid, const SpireTopFloors& top,
+                                      uint32_t currentFloor);
+
+// Apply a loaded save::SaveState back onto the live game. Restores the player
+// transform/health (re-seating the capsule via `physics`), the arsenal, the objective
+// cursor + complete flag, and the rescue lifecycle/timers/hub. `outCurrentFloor`
+// receives the recorded floor so the host can move the elevator. Returns true (the
+// SaveState is assumed already validated by save::loadCheckpoint).
+bool applyCheckpoint(const x3::save::SaveState& s, Player& player,
+                     x3::phys::IPhysicsWorld& physics, Arsenal& arsenal,
+                     Level1Game& game, SpireMidFloors& mid, SpireTopFloors& top,
+                     uint32_t& outCurrentFloor);
 
 // Headless self-test (--test-level1). Builds Level 1 on a HeadlessDevice + Jolt
 // world, drives the player position + synthetic use/fire through the controller,

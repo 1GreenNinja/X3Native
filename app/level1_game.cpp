@@ -5,6 +5,10 @@
 #include "level1_game.h"
 #include "mesh_prims.h"
 #include "elevator.h"
+#include "player.h"        // Player (save/load bridge)
+#include "weapon.h"        // Arsenal (save/load bridge)
+#include "spire_mid.h"     // SpireMidFloors (save/load bridge)
+#include "spire_top.h"     // SpireTopFloors (save/load bridge)
 #include "headless_device.h"
 #include "asset_root.h"
 
@@ -1096,6 +1100,173 @@ bool runElevatorSelfTest() {
     x3::logInfo(std::string("[elevator-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;
+}
+
+// ===========================================================================
+// EFLZ <-> save::SaveState bridge (programmatic save/load API). See level1_game.h.
+// ===========================================================================
+namespace {
+
+// "enemies cleared" on a manager = spawned-so-far minus still-alive. count() is the
+// number ever spawned into the manager; aliveCount() is those not yet dead.
+uint32_t clearedOf(const MonsterManager& m) {
+    const uint32_t total = m.count();
+    const uint32_t alive = m.aliveCount();
+    return (alive <= total) ? (total - alive) : 0u;
+}
+
+// Count doors that have reached the Open state across a DoorSystem, and how many of
+// those carried a keypad code (== "keypads solved").
+void countDoors(const DoorSystem& doors, uint32_t& opened, uint32_t& keypadsSolved) {
+    opened = 0; keypadsSolved = 0;
+    for (uint32_t i = 0; i < doors.count(); ++i) {
+        const Door& d = doors.at(i);
+        if (d.state == DoorState::Open) {
+            ++opened;
+            if (d.code != 0) ++keypadsSolved;
+        }
+    }
+}
+
+} // namespace
+
+x3::save::SaveState captureCheckpoint(const Player& player, const Arsenal& arsenal,
+                                      const Level1Game& game,
+                                      const SpireMidFloors& mid, const SpireTopFloors& top,
+                                      uint32_t currentFloor) {
+    x3::save::SaveState s;
+
+    // ---- Player transform + look + health ----
+    const x3::phys::Vec3 feet = player.feet();
+    s.playerX = feet.x; s.playerY = feet.y; s.playerZ = feet.z;
+    s.playerYaw = player.yaw(); s.playerPitch = player.pitch();
+    s.playerHp = player.hp(); s.playerMaxHp = player.maxHp();
+
+    // ---- Inventory (arsenal) ----
+    s.equippedWeapon = (uint32_t)(arsenal.selected() < 0 ? 0 : arsenal.selected());
+    s.weapons.reserve((size_t)arsenal.count());
+    for (int i = 0; i < arsenal.count(); ++i) {
+        const Arsenal::WeaponState& ws = arsenal.state(i);
+        x3::save::WeaponSave w;
+        w.ammoInMag = (uint32_t)(ws.ammoInMag < 0 ? 0 : ws.ammoInMag);
+        w.reserve   = (uint32_t)(ws.reserve   < 0 ? 0 : ws.reserve);
+        s.weapons.push_back(w);
+    }
+
+    // ---- Progression ----
+    s.levelIndex     = 0;                  // EFLZ Level 1
+    s.currentFloor   = currentFloor;
+    s.objectiveIndex = game.objectives().current();   // kNoObjective (0xFFFFFFFF) when finished
+    s.levelComplete  = game.complete() ? 1u : 0u;
+
+    // ---- Rescue (F2 hub + per-victim lifecycle + remaining timer) ----
+    const RescueSystem& rescue = game.rescue();
+    s.rescueHubReached = rescue.hubReached() ? 1u : 0u;
+    s.rescue.reserve(rescue.victimCount());
+    for (uint32_t i = 0; i < rescue.victimCount(); ++i) {
+        const RescueVictim& v = rescue.victim(i);
+        x3::save::RescueSave r;
+        r.state    = (uint32_t)v.state();
+        r.timeLeft = v.timeLeft();
+        s.rescue.push_back(r);
+    }
+
+    // ---- Per-floor world flags (doors / keypads / enemies cleared) ----
+    // B1 (Level-1 base): the corridor + checkpoint + Martinez groups, and doors A-E.
+    {
+        x3::save::FloorFlags f;
+        f.floorIndex = (uint32_t)L1Floor::B1;
+        // The DoorSystem inside Level1Game isn't directly exposed, so derive door
+        // opened/solved from the per-letter door state queries (A..E).
+        uint32_t opened = 0, solved = 0;
+        for (char L = 'A'; L <= 'E'; ++L) {
+            if (game.doorState(L) == DoorState::Open) {
+                ++opened;
+                // Door C carries the keypad code in EFLZ Level 1; count it solved when open
+                // AND it was a coded/locked door (it is unlocked-then-opened via the keypad).
+                if (L == 'C') ++solved;
+            }
+        }
+        f.doorsOpened    = opened;
+        f.keypadsSolved  = solved;
+        f.enemiesCleared = clearedOf(game.corridorEnemies()) +
+                           clearedOf(game.checkpointEnemies()) +
+                           (game.martinezDead() ? 1u : 0u);
+        f.enemiesTotal   = game.corridorEnemies().count() +
+                           game.checkpointEnemies().count() +
+                           (game.martinezSpawned() ? 1u : 0u);
+        s.floors.push_back(f);
+    }
+    // F2: rescue floor — "enemies cleared" tracked via rescued/expired bookkeeping.
+    {
+        x3::save::FloorFlags f;
+        f.floorIndex     = (uint32_t)L1Floor::F2;
+        f.enemiesCleared = rescue.rescuedCount();        // victims secured
+        f.enemiesTotal   = rescue.victimCount();
+        s.floors.push_back(f);
+    }
+    // F3/F4/F5 (Spire mid floors), if built.
+    if (mid.built()) {
+        const SpireMidFloor order[3] = { SpireMidFloor::F3, SpireMidFloor::F4, SpireMidFloor::F5 };
+        for (SpireMidFloor mf : order) {
+            const SpireFloorPlan& plan = mid.plan(mf);
+            x3::save::FloorFlags f;
+            f.floorIndex     = (uint32_t)plan.floor;
+            f.enemiesCleared = clearedOf(mid.enemies(mf));
+            f.enemiesTotal   = plan.totalCount;
+            countDoors(mid.doors(), f.doorsOpened, f.keypadsSolved);
+            s.floors.push_back(f);
+        }
+    }
+    // F6/F7 (Spire top floors), if built.
+    if (top.built()) {
+        const SpireTopFloor order[2] = { SpireTopFloor::F6, SpireTopFloor::F7 };
+        for (SpireTopFloor tf : order) {
+            const SpireTopPlan& plan = top.plan(tf);
+            x3::save::FloorFlags f;
+            f.floorIndex     = (uint32_t)plan.floor;
+            f.enemiesCleared = clearedOf(top.enemies(tf)) + clearedOf(top.boss());
+            f.enemiesTotal   = plan.totalCount;
+            countDoors(top.doors(), f.doorsOpened, f.keypadsSolved);
+            s.floors.push_back(f);
+        }
+    }
+
+    return s;
+}
+
+bool applyCheckpoint(const x3::save::SaveState& s, Player& player,
+                     x3::phys::IPhysicsWorld& physics, Arsenal& arsenal,
+                     Level1Game& game, SpireMidFloors& mid, SpireTopFloors& top,
+                     uint32_t& outCurrentFloor) {
+    (void)mid; (void)top;   // floor flags are captured/persisted; live re-sim is out of scope (see header)
+
+    // ---- Player transform + look + health ----
+    player.setFeetPosition(physics, x3::phys::Vec3{ s.playerX, s.playerY, s.playerZ });
+    player.setLook(s.playerYaw, s.playerPitch);
+    player.setHp(s.playerHp);
+
+    // ---- Inventory (arsenal) ----
+    std::vector<std::pair<int,int>> ammo;
+    ammo.reserve(s.weapons.size());
+    for (const auto& w : s.weapons) ammo.emplace_back((int)w.ammoInMag, (int)w.reserve);
+    arsenal.restore((int)s.equippedWeapon, ammo);
+
+    // ---- Progression: objective cursor + complete flag ----
+    game.objectives().setCurrent(s.objectiveIndex);
+    game.setComplete(s.levelComplete != 0);
+
+    // ---- Rescue: hub + per-victim lifecycle + remaining timer ----
+    RescueSystem::SaveState rs;
+    rs.hubReached = (s.rescueHubReached != 0);
+    rs.victims.reserve(s.rescue.size());
+    for (const auto& r : s.rescue) rs.victims.push_back({ r.state, r.timeLeft });
+    game.rescue().deserialize(rs);
+
+    outCurrentFloor = s.currentFloor;
+    x3::logInfo("[save] checkpoint applied to live game (floor " +
+                std::to_string(s.currentFloor) + ", HP " + std::to_string(s.playerHp) + ")");
+    return true;
 }
 
 } // namespace x3::game

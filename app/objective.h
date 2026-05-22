@@ -47,6 +47,12 @@ public:
     // Index of the current objective, or kNoObjective if none/finished.
     uint32_t current() const { return m_current; }
 
+    // Save/load restore: set the cursor directly to `index` (or kNoObjective to mark
+    // the list finished). An in-range index points the cursor there and marks the
+    // list started; kNoObjective marks it started+finished; an out-of-range index is
+    // clamped to kNoObjective. Does not change the labels. Used by applyCheckpoint().
+    void setCurrent(uint32_t index);
+
     // True once every objective has been completed (cursor past the end after a
     // non-empty list was set). False before any set() and while objectives remain.
     bool allComplete() const { return m_started && m_current == kNoObjective; }

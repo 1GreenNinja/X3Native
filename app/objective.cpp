@@ -40,6 +40,19 @@ uint32_t ObjectiveSystem::advance() {
     return m_current;
 }
 
+void ObjectiveSystem::setCurrent(uint32_t index) {
+    if (index == kNoObjective) {
+        m_current = kNoObjective;
+        m_started = true;          // a finished list is a started list
+    } else if (index < (uint32_t)m_labels.size()) {
+        m_current = index;
+        m_started = true;
+    } else {
+        m_current = kNoObjective;  // out of range -> treat as finished
+        m_started = true;
+    }
+}
+
 const std::string& ObjectiveSystem::currentLabel() const {
     if (m_current == kNoObjective || m_current >= (uint32_t)m_labels.size())
         return kEmpty;
