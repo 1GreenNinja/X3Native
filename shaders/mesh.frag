@@ -73,11 +73,126 @@ layout(location = 2) flat in uint vTexIndex;
 layout(location = 3) flat in vec4 vFactor;
 layout(location = 4) in vec3 vWorldPos;
 layout(location = 5) flat in vec4 vEmissive;   // rgb = color, a = strength
+layout(location = 6) flat in uint vTerrainFlag;
+layout(location = 7) flat in uvec2 vTerrainPack; // x = grass<<16|rock, y = snow<<16|sand
 
 layout(location = 0) out vec4 outColor;
 
 const vec3 kSunDir   = normalize(vec3(0.4, 1.0, 0.3)); // matches the depth-pass sun
 const vec3 kSunColor = vec3(1.0, 0.97, 0.92);          // slightly warm white sun
+
+// ===========================================================================
+// Terrain material splat (open-world ground). Procedural height + slope blend of
+// four tiling detail textures (grass / rock / snow / sand) keyed off the
+// fragment's WORLD position + WORLD surface normal, with a little value noise to
+// break the tiling. Clean-room: built from the public height/slope-splat +
+// triplanar mapping technique (GPU Gems terrain, the standard height/slope splat
+// articles) — no engine source consulted. Only runs when vTerrainFlag != 0; all
+// other meshes skip this entirely and shade exactly as before.
+//
+// CONSTANTS (tunables): these mirror the host world config — kSeaLevel matches
+// `--world ocean`'s seaLevel (14 m) and the band heights are fractions of the
+// default heightScale (55 m). The sand band sits at the shoreline so it meets the
+// ocean cleanly; grass is low+flat; rock is steep slope; snow caps high peaks.
+// ---------------------------------------------------------------------------
+// NOTE these are calibrated to the actual streamed-world field (heightScale 55 m;
+// sampled height ~6..50 m, avg ~31 m; the fBm hills are GENTLE — slope normal.y
+// is almost never below ~0.85, so the rock thresholds sit high on purpose so the
+// steeper hillsides actually read as rock instead of rock never appearing).
+const float kSeaLevel    = 14.0;   // world Y of the ocean surface (matches host)
+const float kSandTop     = 18.0;   // sand fades out a few m above sea level
+const float kSnowBottom  = 36.0;   // snow begins on the high ground
+const float kSnowFull    = 47.0;   // fully snow by here
+const float kSlopeRockLo = 0.90;   // normal.y at/below this -> full rock (steep)
+const float kSlopeRockHi = 0.965;  // normal.y at/above this -> no rock (flat)
+const float kDetailScale = 0.18;   // world-space detail tiling (cycles / meter)
+const float kMacroScale  = 0.012;  // large-scale tint variation frequency
+
+// Cheap hash-based value noise on world XZ (self-contained; matches the CPU
+// terrain's value-noise idea so the breakup reads consistent). Returns [0,1).
+float thash(vec2 p) {
+    p = fract(p * vec2(127.1, 311.7));
+    p += dot(p, p + 34.23);
+    return fract(p.x * p.y);
+}
+float tnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = thash(i);
+    float b = thash(i + vec2(1.0, 0.0));
+    float c = thash(i + vec2(0.0, 1.0));
+    float d = thash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+// Sample a bindless detail texture by world XZ (top-down planar projection) at
+// the detail tiling scale. World-space UVs => tiles seam seamlessly across the
+// streamed terrain (no per-tile UV reset).
+vec3 detailXZ(uint idx, vec2 worldXZ) {
+    return texture(textures[nonuniformEXT(idx)], worldXZ * kDetailScale).rgb;
+}
+
+// Triplanar sample for steep rock so vertical cliffs don't get the smeared
+// top-down stretch. Blends the three world-axis planar projections by |normal|.
+vec3 triplanar(uint idx, vec3 wpos, vec3 wn) {
+    vec3 an = abs(wn);
+    an = an / max(an.x + an.y + an.z, 1e-4);
+    vec3 cx = texture(textures[nonuniformEXT(idx)], wpos.zy * kDetailScale).rgb;
+    vec3 cy = texture(textures[nonuniformEXT(idx)], wpos.xz * kDetailScale).rgb;
+    vec3 cz = texture(textures[nonuniformEXT(idx)], wpos.xy * kDetailScale).rgb;
+    return cx * an.x + cy * an.y + cz * an.z;
+}
+
+// Procedural height+slope splat. Returns the blended terrain albedo in linear-ish
+// sRGB (the detail textures are stored sRGB so the array already linearises them).
+vec3 terrainAlbedo(vec3 wpos, vec3 wn, uvec2 pack) {
+    uint grassIdx = pack.x >> 16;
+    uint rockIdx  = pack.x & 0xFFFFu;
+    uint snowIdx  = pack.y >> 16;
+    uint sandIdx  = pack.y & 0xFFFFu;
+
+    float h     = wpos.y;
+    float slope = clamp(wn.y, 0.0, 1.0);     // 1 = flat ground, 0 = vertical
+
+    // A bit of world noise to wobble the band boundaries so they don't read as
+    // perfectly horizontal contour lines.
+    float n   = tnoise(wpos.xz * kMacroScale) - 0.5;   // [-0.5,0.5]
+    float hN  = h + n * 6.0;                            // height jittered by noise
+
+    // ---- Base sample the four materials (world-space UVs) ----
+    vec3 grass = detailXZ(grassIdx, wpos.xz);
+    vec3 sand  = detailXZ(sandIdx,  wpos.xz);
+    vec3 snow  = detailXZ(snowIdx,  wpos.xz);
+    // Rock uses triplanar so cliffs aren't stretched.
+    vec3 rock  = triplanar(rockIdx, wpos, wn);
+
+    // ---- Height bands (smoothstep transitions, never hard) ----
+    // Start as grass everywhere, then layer sand low, snow high, rock on slope.
+    vec3 albedo = grass;
+
+    // Sand/dirt shoreline band: strongest right at/below sea level, fading out by
+    // kSandTop so it meets the ocean cleanly at the waterline.
+    float sandBand = 1.0 - smoothstep(kSeaLevel - 2.0, kSandTop, hN);
+    albedo = mix(albedo, sand, clamp(sandBand, 0.0, 1.0));
+
+    // Snow cap on the high ground.
+    float snowBand = smoothstep(kSnowBottom, kSnowFull, hN);
+    albedo = mix(albedo, snow, clamp(snowBand, 0.0, 1.0));
+
+    // ---- Slope rock: overrides whatever band where the surface is steep. The
+    // thresholds are high (see note above) because this terrain's hillsides are
+    // gentle; rock fades in below kSlopeRockHi and is full by kSlopeRockLo. ----
+    float rockBand = 1.0 - smoothstep(kSlopeRockLo, kSlopeRockHi, slope);
+    // Wobble the rock edge with noise so it isn't a clean contour line.
+    rockBand = clamp(rockBand + n * 0.18, 0.0, 1.0);
+    albedo = mix(albedo, rock, rockBand);
+
+    // Subtle macro tint variation so large flat areas aren't a flat colour.
+    float macro = tnoise(wpos.xz * (kMacroScale * 0.5));
+    albedo *= mix(0.88, 1.10, macro);
+
+    return albedo;
+}
 
 // 3x3 PCF: average 9 hardware-compare taps one texel apart. Returns the lit
 // fraction (1 = fully lit, 0 = fully shadowed). ndl drives a slope-scaled bias
@@ -119,7 +234,16 @@ float pointAtten(float dist, float range) {
 
 void main() {
     vec3 N = normalize(vNormal);
-    vec4 albedo = texture(textures[nonuniformEXT(vTexIndex)], vUV) * vFactor;
+
+    // Terrain meshes (flagged in the SSBO) splat grass/rock/snow/sand by world
+    // height + slope; everything else samples its single bindless texture exactly
+    // as before. The branch is uniform per draw (flat input), so no divergence.
+    vec4 albedo;
+    if (vTerrainFlag != 0u) {
+        albedo = vec4(terrainAlbedo(vWorldPos, N, vTerrainPack), 1.0) * vFactor;
+    } else {
+        albedo = texture(textures[nonuniformEXT(vTexIndex)], vUV) * vFactor;
+    }
 
     // ---- Directional sun (shadow-gated diffuse) ----
     float ndl = max(dot(N, kSunDir), 0.0);

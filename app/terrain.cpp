@@ -192,12 +192,83 @@ void buildTileMeshAbs(const TerrainConfig& cfg, float originX, float originZ,
     for (uint32_t j = 0; j < quads; ++j) addSkirtEdge(vpe - 1, j, vpe - 1, j + 1);
 }
 
-// Shared ground texture (a subtle grass/rock two-tone checker). Created once per
-// device per terrain/streamer; helper keeps the look identical to B2.
+// ---------------------------------------------------------------------------
+// Procedural ground DETAIL texture: a small seamless RGBA8 tile around a base
+// colour, perturbed by tileable value noise + a couple of fBm octaves so the
+// surface reads as a natural grain (grass blades / rock grit / snow sparkle /
+// sand) rather than a flat fill. `varR/G/B` is the per-channel +/- amplitude of
+// the noise around (baseR,baseG,baseB). Seamless: the value noise wraps modulo
+// `n` so adjacent world-space tiles abut without a visible seam. (CLEAN-ROOM —
+// the same value-noise/fBm idea used for the heightfield, applied to colour.)
+// ---------------------------------------------------------------------------
+std::vector<uint8_t> makeDetailRGBA(uint32_t n, uint32_t seed,
+                                    int baseR, int baseG, int baseB,
+                                    int varR, int varG, int varB) {
+    // Tileable value noise: hash on integer lattice coords taken modulo `period`
+    // so the field repeats every `period` texels (=> the tile is seamless).
+    auto vnoiseTile = [&](float x, float y, uint32_t period, uint32_t s) -> float {
+        const float fx = std::floor(x), fy = std::floor(y);
+        const int   ix = (int)fx,        iy = (int)fy;
+        const float tx = fade(x - fx),   ty = fade(y - fy);
+        auto h = [&](int a, int b) -> float {
+            uint32_t aa = (uint32_t)((a % (int)period + (int)period) % (int)period);
+            uint32_t bb = (uint32_t)((b % (int)period + (int)period) % (int)period);
+            return hash2((int)aa, (int)bb, s);
+        };
+        const float v00 = h(ix,     iy);
+        const float v10 = h(ix + 1, iy);
+        const float v01 = h(ix,     iy + 1);
+        const float v11 = h(ix + 1, iy + 1);
+        const float a = v00 + (v10 - v00) * tx;
+        const float b = v01 + (v11 - v01) * tx;
+        return a + (b - a) * ty;
+    };
+
+    std::vector<uint8_t> px((size_t)n * n * 4);
+    const uint32_t periodLo = 8, periodHi = 16;   // two octave wrap periods
+    for (uint32_t y = 0; y < n; ++y) {
+        for (uint32_t x = 0; x < n; ++x) {
+            const float fx = (float)x / (float)n;
+            const float fy = (float)y / (float)n;
+            // Two tileable octaves (low + high frequency) summed, centred at 0.
+            float nlo = vnoiseTile(fx * periodLo, fy * periodLo, periodLo, seed);
+            float nhi = vnoiseTile(fx * periodHi, fy * periodHi, periodHi, seed + 7u);
+            float nval = (nlo * 0.65f + nhi * 0.35f) - 0.5f;   // [-0.5,0.5]
+            uint8_t* p = &px[((size_t)y * n + x) * 4];
+            auto clampB = [](int v) -> uint8_t {
+                return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
+            };
+            p[0] = clampB(baseR + (int)(nval * 2.0f * (float)varR));
+            p[1] = clampB(baseG + (int)(nval * 2.0f * (float)varG));
+            p[2] = clampB(baseB + (int)(nval * 2.0f * (float)varB));
+            p[3] = 255;
+        }
+    }
+    return px;
+}
+
+// Build the four ground DETAIL textures (grass / rock / snow / sand), register
+// them as the terrain MATERIAL set, and return the opaque MARKER handle the
+// renderer uses to flag terrain draws for the height+slope splat in mesh.frag.
+// One marker per terrain/streamer instance; the four detail textures live in the
+// device's bindless array (freed at device shutdown, like the old ground tex).
+// If the device can't bind them (e.g. headless), the marker may be invalid and
+// terrain falls back to a flat tint — still correct, just not splatted.
 x3::rhi::TextureHandle makeGroundTexture(x3::rhi::IRenderDevice& device) {
-    auto grass = x3::prims::makeCheckerRGBA(64, 16,
-        /*light*/ 96, 132, 74,   /*dark*/ 72, 104, 58);
-    return device.createTexture(grass.data(), 64, 64, /*srgb=*/true);
+    const uint32_t kN = 64;
+    auto grassPx = makeDetailRGBA(kN, 1001u,  78, 116,  56,  18, 22, 16); // green
+    auto rockPx  = makeDetailRGBA(kN, 2002u, 104, 100,  92,  26, 24, 22); // grey-brown
+    auto snowPx  = makeDetailRGBA(kN, 3003u, 222, 226, 235,  16, 14, 12); // bright white-blue
+    auto sandPx  = makeDetailRGBA(kN, 4004u, 178, 158, 118,  20, 18, 14); // tan
+    auto grass = device.createTexture(grassPx.data(), kN, kN, /*srgb=*/true);
+    auto rock  = device.createTexture(rockPx.data(),  kN, kN, /*srgb=*/true);
+    auto snow  = device.createTexture(snowPx.data(),  kN, kN, /*srgb=*/true);
+    auto sand  = device.createTexture(sandPx.data(),  kN, kN, /*srgb=*/true);
+    x3::rhi::TextureHandle marker =
+        device.registerTerrainMaterial(grass, rock, snow, sand);
+    // Fallback: if the material set couldn't be registered (no bindless), use the
+    // grass tile directly so terrain is at least a believable green, not white.
+    return marker.valid() ? marker : grass;
 }
 
 // LOD by center-to-camera distance. Thresholds scale with tile size so the
@@ -790,6 +861,12 @@ public:
         return x3::rhi::TextureHandle{ m_next++ };
     }
     void destroyTexture(x3::rhi::TextureHandle) override {}
+    x3::rhi::TextureHandle registerTerrainMaterial(x3::rhi::TextureHandle,
+                                                   x3::rhi::TextureHandle,
+                                                   x3::rhi::TextureHandle,
+                                                   x3::rhi::TextureHandle) override {
+        return x3::rhi::TextureHandle{ m_next++ };
+    }
     void drawMesh(const x3::rhi::FrameContext&, x3::rhi::MeshHandle,
                   x3::rhi::TextureHandle, const float[4], const float[16]) override {}
     void drawMeshEmissive(const x3::rhi::FrameContext&, x3::rhi::MeshHandle,

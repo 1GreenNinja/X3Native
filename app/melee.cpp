@@ -145,6 +145,12 @@ public:
         return x3::rhi::TextureHandle{ m_next++ };
     }
     void destroyTexture(x3::rhi::TextureHandle) override {}
+    x3::rhi::TextureHandle registerTerrainMaterial(x3::rhi::TextureHandle,
+                                                   x3::rhi::TextureHandle,
+                                                   x3::rhi::TextureHandle,
+                                                   x3::rhi::TextureHandle) override {
+        return x3::rhi::TextureHandle{ m_next++ };
+    }
     void drawMesh(const x3::rhi::FrameContext&, x3::rhi::MeshHandle,
                   x3::rhi::TextureHandle, const float[4], const float[16]) override {}
     void drawMeshEmissive(const x3::rhi::FrameContext&, x3::rhi::MeshHandle,
