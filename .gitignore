@@ -63,3 +63,7 @@ run.log
 runerr.log
 run.pid
 *.log
+
+# Loose scratch screenshots in repo root (keep curated ones in docs/screenshots/)
+/*.png
+/*.gif
