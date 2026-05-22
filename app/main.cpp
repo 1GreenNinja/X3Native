@@ -30,6 +30,7 @@
 #include "elevator.h"
 #include "club1127.h"
 #include "terrain.h"
+#include "cliffs.h"                        // Salvari cliffs finale (--world cliffs)
 #include "fx.h"
 #include "hud.h"
 #include "stress.h"
@@ -178,7 +179,7 @@ int main(int argc, char** argv) {
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
-         testNav = false;
+         testNav = false, testCliffs = false;
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
     // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
     // and confirm the joint palette changes. Asset-pipeline verification for the
@@ -309,6 +310,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-rescue") testRescue = true;
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-nav") testNav = true;
+        else if (a == "--test-cliffs") testCliffs = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -539,6 +541,10 @@ int main(int argc, char** argv) {
     if (testRescue) {
         x3::logInfo("running F2 rescue (victim/companion/transform) self-test (R0-R5)...");
         return x3::game::runRescueSelfTest() ? 0 : 1;
+    }
+    if (testCliffs) {
+        x3::logInfo("running Salvari cliffs finale self-test (pad/sea/placement/streaming)...");
+        return x3::game::runCliffsSelfTest() ? 0 : 1;
     }
     if (testDestruction) {
         x3::logInfo("running K-T0/T1 destruction (fracture/impact/hit/explosion) self-test...");
@@ -886,6 +892,138 @@ int main(int argc, char** argv) {
         glfwDestroyWindow(window);
         glfwTerminate();
         return wrote ? 0 : 1;
+    }
+
+    // ---- Salvari cliffs finale (--world cliffs) ----------------------------
+    // The snowy mountain exterior past the F7 rooftop (Act 1 §2d): the STREAMED
+    // terrain heightfield (so the ground is the real cliffs), a flat landing PAD
+    // planted on it via placeOnTerrain, the SALVARI SHIP (SpaceShip.glb) set down
+    // on the pad, K'thara (SalvariPrincess.glb) + a couple of troopers anchored to
+    // the terrain, and the OCEAN driven well below the cliff-top pad. Self-contained
+    // (CliffsArea, app/cliffs.*) — low-conflict with Level 1 + the other worlds.
+    //   * SCREENSHOT (headless): `--world cliffs --screenshot <path>` — pose the
+    //     suggested cliff-top vantage, warm up the wave clock + the terrain ring,
+    //     capture a PNG. (`headless` is already set when --screenshot is present.)
+    //   * WALKABLE (windowed):  `--world cliffs` — fly the cliffs with WASD + mouse.
+    if (worldMode == "cliffs") {
+        x3::logInfo("--world cliffs: building the above-ground Salvari cliffs finale");
+        std::unique_ptr<x3::jobs::IJobSystem> cjobs(x3::jobs::createJobSystem());
+        cjobs->init(0);
+        std::unique_ptr<x3::phys::IPhysicsWorld> cphys(x3::phys::createPhysicsWorld());
+        if (!cphys->init()) {
+            x3::logError("--world cliffs: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        x3::game::Scene cscene;
+        x3::game::CliffsArea cliffs;
+        cliffs.build(cscene, *device, *cphys, cjobs.get());
+
+        const float dt = 1.0f / 60.0f;
+
+        // ===== Headless capture: warm the ring + waves, pose the vantage, grab. ==
+        if (headless) {
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("w_cliffs.png");
+            float eye[3]; float camYaw = 0.0f, camPitch = 0.0f;
+            cliffs.suggestCamera(eye, camYaw, camPitch);
+            if (shotCamOverride) {
+                eye[0]=shotCam[0]; eye[1]=shotCam[1]; eye[2]=shotCam[2];
+                camYaw=shotCam[3]; camPitch=shotCam[4];
+            }
+            const float focusX = cliffs.padCenter()[0], focusZ = cliffs.padCenter()[2];
+            const int kFrames = 220;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                cphys->step(dt);
+                // The streamer only enqueues the FULL ring on a focus-tile boundary
+                // cross (init seeds the 3x3). Nudge the focus across a tile on frame
+                // 1 to trigger the ring request, then hold it at the pad so the wide
+                // resident set drains in over the warmup window.
+                const float fX = (i == 1) ? (focusX + 40.0f) : focusX;
+                cliffs.update(cscene, *device, *cphys, dt, fX, focusZ);
+                device->setCamera(eye[0], eye[1], eye[2], camYaw, camPitch, 70.0f);
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) cliffs.render(*device, frame, cscene);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) {
+                const x3::rhi::RenderStats st = device->stats();
+                char rb[256];
+                std::snprintf(rb, sizeof(rb),
+                    "--world cliffs: wrote %s | seaLevel=%.1f padY=%.1f actors=%u "
+                    "resident=%u draws=%u tris=%u ship=%s",
+                    outPath.c_str(), cliffs.seaLevel(), cliffs.padCenter()[1],
+                    cliffs.actorCount(), cliffs.residentTiles(), st.drawCalls,
+                    st.triangles, cliffs.shipReal() ? "REAL" : "fallback");
+                x3::logInfo(rb);
+            } else x3::logError("--world cliffs: capture FAILED");
+
+            cliffs.shutdown(cscene, *device, *cphys);
+            cjobs->shutdown();
+            cphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: fly-cam over the cliffs. =================
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        float ceye[3]; float fyaw = 0.0f, fpitch = 0.0f;
+        cliffs.suggestCamera(ceye, fyaw, fpitch);
+        float fx = ceye[0], fy = ceye[1], fz = ceye[2];
+        x3::logInfo("--world cliffs: fly with WASD + mouse, Space/Ctrl up-down, Shift sprint, Esc to quit");
+        int lastWc = (int)W, lastHc = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+            auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+            const float sens = 0.0025f;
+            fyaw += ddx * sens; fpitch -= ddy * sens;
+            if (fpitch >  1.55f) fpitch =  1.55f;
+            if (fpitch < -1.55f) fpitch = -1.55f;
+            float dx = std::cos(fpitch)*std::cos(fyaw), dy = std::sin(fpitch), dz = std::cos(fpitch)*std::sin(fyaw);
+            float rl = std::sqrt(dx*dx + dz*dz); if (rl < 1e-4f) rl = 1e-4f;
+            float rx = -dz/rl, rz = dx/rl;
+            float spd = 8.0f * fdt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd *= 3.0f;
+            if (kd(GLFW_KEY_W)) { fx += dx*spd; fy += dy*spd; fz += dz*spd; }
+            if (kd(GLFW_KEY_S)) { fx -= dx*spd; fy -= dy*spd; fz -= dz*spd; }
+            if (kd(GLFW_KEY_D)) { fx += rx*spd; fz += rz*spd; }
+            if (kd(GLFW_KEY_A)) { fx -= rx*spd; fz -= rz*spd; }
+            if (kd(GLFW_KEY_SPACE)) fy += spd;
+            if (kd(GLFW_KEY_LEFT_CONTROL)) fy -= spd;
+
+            cphys->step(fdt);
+            cliffs.update(cscene, *device, *cphys, fdt, fx, fz);
+
+            int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
+            if (cw != lastWc || ch != lastHc) { lastWc=cw; lastHc=ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
+            device->setCamera(fx, fy, fz, fyaw, fpitch, 70.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) cliffs.render(*device, frame, cscene);
+            device->endFrame(frame);
+        }
+        cliffs.shutdown(cscene, *device, *cphys);
+        cjobs->shutdown();
+        cphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
     }
 
     // ---- AI-action capture mode (--capture-ai [outDir]) --------------------
