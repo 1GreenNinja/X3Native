@@ -1217,6 +1217,7 @@ int main(int argc, char** argv) {
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
+                game.drawDoors(*device, frame);   // real SM_Door_A slabs (box hidden)
                 game.drawWorldExtras(*device, frame, scene);
             }
             device->endFrame(frame);
@@ -1709,6 +1710,9 @@ int main(int argc, char** argv) {
             // (corridor guards/drone, checkpoint guards, Martinez) with hit-flash.
             // Skipped in the outdoor terrain world (no Level 1 controller built).
             if (!terrainWorld) {
+                // Real SM_Door_A door slabs at each door's current (sliding) pose —
+                // the procedural door box is collision-only (hidden).
+                game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
                 const VmPose vmPose = readViewmodelPose(*console);
                 game.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,

@@ -158,6 +158,12 @@ public:
     // ---- Draw helpers (host calls inside beginFrame/endFrame) --------------
     void drawWorldExtras(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                          const Scene& scene) const;  // pickup + all monsters
+    // Draw the real SM_Door_A slab at every door's CURRENT (animating) world
+    // transform. The procedural door box is collision-only (hidden); this draws the
+    // visual. Host calls it once per frame in the interactive draw block.
+    void drawDoors(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const {
+        m_doors.drawMeshes(device, frame);
+    }
     void drawViewmodel(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                        float ex, float ey, float ez, float yaw, float pitch,
                        float yawOff, float pitchOff, float rollOff,

@@ -31,6 +31,25 @@ constexpr float kDoorCenterY    = kDoorHalfY;                  // bottom sits at
 // passage (y in [0, 2.1]) is then clear.
 constexpr float kSlideUp        = kPassageTop;                 // 2.1 m
 constexpr float kOpenDuration   = 1.0f;                        // seconds
+
+// ---- Shared SM_Door_A GLB visual ------------------------------------------
+// Loose-GLB root + relative path of the real sci-fi door mesh (same kit as
+// env_art.cpp). The door mesh is drawn OVER the (now invisible) collision box.
+const char* kDoorGlbDir = "G:/GameModels/converted_glb";
+const char* kDoorGlbRel = "ModularSciFi_Interior/SM_Door_A.glb";
+
+// Probed WORLD-space AABB of SM_Door_A AFTER the GLB node TRS is applied (the
+// space makeDrawables() bakes into nodeTransform — measured with python parsing
+// the glb POSITION accessor min/max through the node hierarchy):
+//   min (-4.875, 0.054, -0.112)  max (-2.525, 3.554, 0.112)
+//   size 2.350 (X wide) x 3.500 (Y tall) x 0.224 (Z thick), centered at
+//   X=-3.700, Y=1.804, Z=0.0. The slab faces along Z (thin in Z, wide in X).
+struct GlbAabb { float minx,miny,minz, maxx,maxy,maxz; };
+constexpr GlbAabb kDoorAabb { -4.875f, 0.054f, -0.112f, -2.525f, 3.554f, 0.112f };
+inline float gcx(const GlbAabb& a){ return (a.minx+a.maxx)*0.5f; }
+inline float gcz(const GlbAabb& a){ return (a.minz+a.maxz)*0.5f; }
+constexpr float kDoorGlbW = kDoorAabb.maxx - kDoorAabb.minx;  // 2.35 natural width (X)
+constexpr float kDoorGlbH = kDoorAabb.maxy - kDoorAabb.miny;  // 3.50 natural height (Y)
 } // namespace
 
 uint32_t DoorSystem::add(const Door& d) {
@@ -82,6 +101,83 @@ void DoorSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics
             e.transform[13] = p.y;
             e.transform[14] = p.z;
             e.transform[15] = 1.0f;
+        }
+    }
+}
+
+void DoorSystem::loadDoorMesh(x3::rhi::IRenderDevice& device, std::string_view convertedGlbDir) {
+    if (m_meshOk || m_loader) return;   // already loaded (or already tried)
+
+    m_assets.reset(x3::asset::createAssetSource());
+    if (!m_assets->mountDir(convertedGlbDir, 0)) {
+        x3::logWarn("[door] mountDir failed: " + std::string(convertedGlbDir) +
+                    " — keeping graybox door box");
+        return;
+    }
+    m_loader.reset(x3::asset::createModelLoader(&device, m_assets.get()));
+    m_doorModel = m_loader->load(kDoorGlbRel);
+    if (m_doorModel.ok) {
+        m_doorDrawables = x3::asset::makeDrawables(m_doorModel);
+        m_meshOk = !m_doorDrawables.empty();
+    }
+    if (m_meshOk)
+        x3::logInfo("[door] loaded " + std::string(kDoorGlbRel) + " — " +
+                    std::to_string(m_doorDrawables.size()) + " drawable prim(s)");
+    else
+        x3::logWarn("[door] FAILED to load " + std::string(kDoorGlbRel) +
+                    " (graybox door box kept)");
+}
+
+void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const {
+    if (!m_meshOk) return;   // no real mesh -> the (still-visible) box renders instead
+
+    // Uniform scale to fit each door's opening height: the GLB slab is 3.50 m tall;
+    // scale so it stands at the door's clear-passage height (~2.1 m). The width then
+    // becomes ~1.41 m (a touch wider than the 1.2 m opening — reads as a real door
+    // straddling the frame, like env_art's 2.0 m door FRAME). Thickness ~0.13 m.
+    const float ax  = gcx(kDoorAabb);   // GLB anchor X (slab center, ~-3.70)
+    const float az  = gcz(kDoorAabb);   // GLB anchor Z (~0)
+    const float ay  = kDoorAabb.miny;   // GLB anchor Y (slab BOTTOM, ~0.054)
+
+    for (const Door& d : m_doors) {
+        // CURRENT world center of this door (the slide animation lerps closed->open
+        // by the same factor DoorSystem::update() uses). closedPos/openPos are the
+        // body CENTER positions; the slab bottom is center.y - height/2.
+        float u = 0.0f;
+        if (d.state == DoorState::Open) u = 1.0f;
+        else if (d.state == DoorState::Opening)
+            u = d.duration > 0.0f ? std::min(d.t / d.duration, 1.0f) : 1.0f;
+        const float cxw = d.closedPos.x + (d.openPos.x - d.closedPos.x) * u;
+        const float cyw = d.closedPos.y + (d.openPos.y - d.closedPos.y) * u;
+        const float czw = d.closedPos.z + (d.openPos.z - d.closedPos.z) * u;
+        const float bottomY = cyw - d.height * 0.5f;   // floor-level bottom of the slab
+
+        const float s = d.height / kDoorGlbH;          // uniform scale (height fit)
+        // Orient the slab to the host wall: GLB is wide in X / thin in Z by default.
+        //   AlongZ (axis 0): wall plane x=const, opening runs along Z -> yaw 90deg.
+        //   AlongX (axis 1): wall plane z=const, opening runs along X -> yaw 0.
+        const float yaw = (d.axis == 0) ? (3.14159265358979f * 0.5f) : 0.0f;
+        const float cs = std::cos(yaw), sn = std::sin(yaw);
+
+        // Column-major TRS: world = T(c) * R_y(yaw) * S(s) * T(-anchor), placing the
+        // GLB anchor (ax, ay, az) at the world bottom-center (cxw, bottomY, czw).
+        float m[16];
+        m[0]=cs*s;  m[1]=0;   m[2]=-sn*s; m[3]=0;
+        m[4]=0;     m[5]=s;   m[6]=0;     m[7]=0;
+        m[8]=sn*s;  m[9]=0;   m[10]=cs*s; m[11]=0;
+        const float rpx = (cs*ax + sn*az) * s;
+        const float rpy = (ay) * s;
+        const float rpz = (-sn*ax + cs*az) * s;
+        m[12]=cxw - rpx; m[13]=bottomY - rpy; m[14]=czw - rpz; m[15]=1.0f;
+
+        for (const auto& dr : m_doorDrawables) {
+            float fin[16];
+            x3::asset::mulMat4(m, dr.nodeTransform, fin);
+            device.drawMesh(frame,
+                            x3::rhi::MeshHandle{ dr.meshId },
+                            x3::rhi::TextureHandle{ dr.baseColorTexId },
+                            dr.baseColorFactor,
+                            fin);
         }
     }
 }
@@ -210,10 +306,17 @@ uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
                                     spec.doorwayCenter.z };
     const x3::phys::Vec3 openPos{ closedPos.x, closedPos.y + spec.height, closedPos.z };
 
+    // Load the shared real-door GLB once (idempotent). The visual is the GLB slab
+    // drawn by drawMeshes(); the procedural box below stays as collision only.
+    doors.loadDoorMesh(device, kDoorGlbDir);
+
     uint32_t doorEntId;
     {
         // Render mesh authored centered at the body origin (NOT world-baked) so
         // the Entity transform translation drives its position as the body moves.
+        // The box is now COLLISION-ONLY (visible=false): the real SM_Door_A GLB is
+        // drawn over it by DoorSystem::drawMeshes(). The box still blocks the
+        // player while closed and is repositioned each frame as the door slides.
         x3::prims::PrimMesh geo = x3::prims::makeBox(half.x, half.y, half.z, 0, 0, 0, 1.0f);
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
@@ -221,6 +324,9 @@ uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
         e.baseColor[0] = spec.tint[0]; e.baseColor[1] = spec.tint[1];
         e.baseColor[2] = spec.tint[2]; e.baseColor[3] = spec.tint[3];
         e.tag  = (uint32_t)Tag::Door;
+        // Hide the flat-color box when a real door mesh is available; if the GLB
+        // failed to load, keep the box visible so the level never breaks (fallback).
+        e.visible = !doors.hasDoorMesh();
         e.body = physics.addBox(half, closedPos, 0.0f, x3::phys::Layer::Static);
         e.transform[12] = closedPos.x;
         e.transform[13] = closedPos.y;
@@ -237,6 +343,9 @@ uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
     d.state     = DoorState::Closed;
     d.locked    = spec.locked;
     d.code      = spec.code;
+    d.axis      = (uint32_t)spec.axis;
+    d.halfWidth = spec.halfWidth;
+    d.height    = spec.height;
     uint32_t doorIdx = doors.add(d);
 
     // Optional linked button, mounted on the wall beside the doorway, on the
