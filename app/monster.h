@@ -75,6 +75,33 @@ namespace x3::game {
 //     multi-phase state machine keyed off HP thresholds (Phase 2b — see BossPhase).
 enum class MonsterType : uint32_t { Guard = 0, Drone = 1, Boss = 2 };
 
+// ---------------------------------------------------------------------------
+// Combat-AI behaviour state (D-ai). Each live enemy runs a per-instance state
+// machine; FACING IS A CONSEQUENCE OF THE STATE (the enemy does NOT always face
+// the player — that was the old swivel-turret behaviour we are replacing). The
+// machine decides movement + heading; the heading yaw is then baked into the
+// rendered transform (and, for rigid bodies, IPhysicsWorld::setBodyRotation).
+//
+//   * Idle    — no LOS, given up tracking: sit, occasional idle heading sweep.
+//   * Search  — just lost LOS: move to the player's last-known position while
+//               sweeping the heading left/right ("looking around"); times out to
+//               Idle. Does NOT track the live player.
+//   * Advance — has LOS, out of strike range: move toward + FACE the player.
+//   * Attack  — in strike range: FACE the player and run the existing attack
+//               (melee reach / drone hitscan) on its cooldown.
+//   * Strafe  — mid-range circling: orbit the player laterally while FACING the
+//               player (the only "face you while moving sideways" state).
+//   * Retreat — low HP / heavy recent damage / cornered: back off to a safer
+//               distance, FACING AWAY from the player (toward the retreat point).
+//   * Regroup — fall back toward nearby allies to re-form; FACE the rally
+//               direction while moving, then re-engage (-> Advance/Attack).
+enum class AiState : uint32_t {
+    Idle = 0, Search = 1, Advance = 2, Attack = 3, Strafe = 4, Retreat = 5, Regroup = 6
+};
+
+// Human-readable AI state name (for logs / the --test-ai transition trace).
+const char* aiStateName(AiState s);
+
 // Boss phase (Phase 2b, spec §8 + EFLZ_DESIGN.md Chief Martinez). A Boss-type
 // monster advances through phases as its HP drops past tuned thresholds. Each
 // phase scales speed/damage and re-tints/re-scales the model, plus fires a
@@ -99,6 +126,16 @@ using BossPhaseFn = std::function<void(BossPhase newPhase)>;
 // the host wires this to CombatFx::addTracer. Optional (may be empty).
 using AttackFxFn = std::function<void(const x3::phys::Vec3& from,
                                       const x3::phys::Vec3& to)>;
+
+// Ally query (D-ai, Regroup). The host fills `out` with up to `maxOut` nearby
+// LIVE ally positions within `radius` of `self`, EXCLUDING the querying enemy
+// (matched by `selfEntity`), and returns the count written. The MonsterManager
+// provides a default implementation over its own instances; Level 1 composes the
+// groups. Empty => no allies known => the enemy never regroups (still fights).
+// No heap alloc in the hot path: `out` is a caller-owned fixed buffer.
+using AllyQueryFn = std::function<uint32_t(const x3::phys::Vec3& self,
+                                           uint32_t selfEntity, float radius,
+                                           x3::phys::Vec3* out, uint32_t maxOut)>;
 
 // Monster starting health, and damage per shot. 100 / 34 => 3 shots to kill.
 constexpr int   kMonsterHp     = 100;
@@ -130,6 +167,43 @@ constexpr float kOrbitRetarget = 1.8f;   // seconds before flipping orbit direct
 // forward, so the default -1 makes local -Z point at the player. Flip to +1 if
 // the model turns its back to the player (authored +Z forward). VISUAL TUNING.
 constexpr float kFaceSign      = -1.0f;
+
+// ---------------------------------------------------------------------------
+// Combat-AI tuning (D-ai). Defaults; per-MonsterType weighting is applied in the
+// state machine (e.g. Drone strafes/flanks more, Guard advances harder). All are
+// VISUAL/BEHAVIOUR TUNING — safe to retune for playtest.
+// ---------------------------------------------------------------------------
+// Health fraction at/below which the enemy prefers to Retreat. Hysteresis: it
+// only LEAVES retreat once HP recovers above kAiRetreatExitFrac (it can't heal
+// here, so retreat is mainly broken by reaching a safe distance / a timer).
+constexpr float kAiRetreatFrac     = 0.30f;  // enter Retreat at <= 30% HP
+constexpr float kAiRetreatExitFrac = 0.45f;  // (would) leave Retreat above 45% HP
+// A burst of recent damage also triggers a brief flinch-retreat even at high HP.
+constexpr int   kAiHeavyDmgWindowHp = 50;    // HP lost within the window => flinch
+constexpr float kAiDamageMemory     = 1.2f;  // seconds the "recent damage" lingers
+constexpr float kAiRetreatMinTime   = 1.0f;  // min seconds to stay retreating (hysteresis)
+constexpr float kAiRetreatDist      = 9.0f;  // back off until at least this far (m)
+// Distance bands (m) for Advance vs Strafe. Closer than the strafe band -> Attack/
+// Strafe; farther -> Advance. The drone uses its own m_standoff instead.
+constexpr float kAiStrafeBandLo    = 2.5f;   // start orbiting when this close
+constexpr float kAiStrafeBandHi    = 6.0f;   // beyond this, just advance
+// LOS / Search. Lost LOS -> Search for kAiSearchTime, walking to the last-known
+// player position + sweeping the heading; then -> Idle.
+constexpr float kAiSearchTime      = 4.0f;   // seconds to search before giving up
+constexpr float kAiSearchSweepFreq = 2.2f;   // heading sweep rate while searching (rad/s)
+constexpr float kAiSearchSweepAmp  = 1.0f;   // heading sweep amplitude (rad)
+constexpr float kAiLastKnownReach  = 1.5f;   // "arrived" at last-known within this (m)
+// Regroup: if an ally is within this radius and the enemy is pressured, fall back
+// toward the ally to re-form, then re-engage. 0 allies in range -> no regroup.
+constexpr float kAiRegroupRadius   = 12.0f;  // look for allies within this (m)
+constexpr float kAiRegroupHold     = 1.2f;   // min seconds to stay regrouping
+// Turn rate (rad/s): the heading slews toward its target instead of snapping, so
+// turns read as a body rotation (and states don't visually jitter).
+constexpr float kAiTurnRate        = 7.0f;
+// Per-instance decision cadence + jitter so enemies don't all switch in lockstep.
+constexpr float kAiDecisionPeriod  = 0.30f;  // re-evaluate state every ~0.3 s
+constexpr float kAiDecisionJitter  = 0.15f;  // +/- randomization on the cadence (s)
+constexpr float kAiStateMinTime    = 0.45f;  // min dwell before a non-forced switch
 
 // Death "pop" duration (seconds): on death the physics body is removed
 // IMMEDIATELY (rays miss right away) but the model keeps DRAWING for this long,
@@ -252,6 +326,16 @@ public:
                 const x3::phys::Vec3& playerPos,
                 IDamageSink* target, const AttackFxFn& fx, const BossPhaseFn& onPhase);
 
+    // D-ai full overload: same as above PLUS an ally query (for Regroup) and the
+    // player's eye position used for the LOS rayCast. `playerPos` is the planar
+    // tracking target (foot/center) and `playerEye` is the LOS endpoint (may be
+    // the same). `allies` may be empty (no regroup). This is the canonical entry
+    // point; the shorter overloads forward to it with empty extras.
+    void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                const x3::phys::Vec3& playerPos, const x3::phys::Vec3& playerEye,
+                IDamageSink* target, const AttackFxFn& fx, const BossPhaseFn& onPhase,
+                const AllyQueryFn& allies);
+
     // As above but with no phase callback (still advances the phase machine).
     void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                 const x3::phys::Vec3& playerPos,
@@ -288,6 +372,18 @@ public:
     // host's phase callback). 0 for non-Boss.
     int   summonCount() const { return m_phase3SummonCount; }
 
+    // ---- Combat-AI state (D-ai) -------------------------------------------
+    // Current behaviour state + the heading (yaw, radians) the body is turning to.
+    // Read by the HUD / self-test to observe that facing follows state.
+    AiState aiState() const { return m_ai; }
+    float   heading() const { return m_yaw; }
+    // World-space planar forward the model is currently facing (local -Z under the
+    // heading), i.e. (-sin yaw, 0, -cos yaw). Used by the facing self-test.
+    x3::phys::Vec3 facingDir() const;
+    // Player position last seen with LOS (the Search target). Valid once LOS held.
+    x3::phys::Vec3 lastKnownPlayerPos() const { return m_lastKnown; }
+    bool    hasLineOfSight() const { return m_hasLos; }
+
     // Draw all monster primitives at its current transform, tinted toward red by
     // the active hit-flash. No-op once dead / hidden. The monster Entity carries an
     // invalid render mesh so Scene::render skips it; this is the single source of
@@ -307,6 +403,9 @@ public:
     // The monster's entity id (kNoLink until built) and physics body.
     uint32_t entity() const { return m_entity; }
     x3::phys::BodyId body() const { return m_body; }
+
+    // Current body-center world position (D-ai: read by the ally query / regroup).
+    x3::phys::Vec3 pos() const { return m_pos; }
 
     // True if the real GLB loaded; false if the procedural fallback box is in use.
     // Valid after buildMonster().
@@ -400,6 +499,26 @@ private:
     float m_wander    = 0.0f;   // weave oscillator phase
     float m_strafeDir = 1.0f;   // orbit direction (+1/-1) when close
     float m_retarget  = 1.8f;   // countdown to flip orbit direction
+
+    // ---- Combat-AI state machine (D-ai) -----------------------------------
+    AiState m_ai            = AiState::Idle; // current behaviour state
+    float   m_yawTarget     = 0.0f;          // desired heading (m_yaw slews toward it)
+    float   m_stateTime     = 0.0f;          // seconds spent in the current state
+    float   m_decisionTimer = 0.0f;          // countdown to the next state re-eval
+    float   m_dmgMemory     = 0.0f;          // seconds-left of "recently took damage"
+    int     m_dmgWindowHp   = 0;             // HP lost while m_dmgMemory active (flinch)
+    bool    m_hasLos        = false;         // had LOS to the player this decision
+    bool    m_everSawPlayer = false;         // seen the player at least once
+    x3::phys::Vec3 m_lastKnown{};            // last position the player was seen at
+    float   m_searchTimer   = 0.0f;          // seconds-left searching before Idle
+    float   m_searchSweep   = 0.0f;          // search heading-sweep oscillator phase
+    float   m_regroupTimer  = 0.0f;          // min-dwell timer while regrouping
+    x3::phys::Vec3 m_rallyPoint{};           // ally position to fall back toward
+    bool    m_hasRally      = false;         // a valid rally point was found
+    // Per-instance pseudo-random seed so decision cadence + jitter desync between
+    // enemies (no per-frame heap alloc; a tiny LCG advanced in the hot path).
+    uint32_t m_rng          = 0x9E3779B9u;
+    bool     m_aiInit       = false;         // seeded the RNG / decision timer yet
 };
 
 // ---------------------------------------------------------------------------
@@ -475,5 +594,20 @@ bool runCombatSelfTest();
 // Logs PASS/FAIL T#, returns true iff all pass. No window/Vulkan. Lives in
 // melee.cpp (where the MeleeSystem + a HeadlessDevice are). Mirrors the others.
 bool runPhase2bSelfTest();
+
+// Headless self-test (--test-ai, D-ai monster combat behaviour state machine).
+// Asserts:
+//   (a) a healthy enemy WITH LOS enters Advance/Attack and FACES the player
+//       (heading within epsilon of the atan2-derived facing);
+//   (b) a heavily-damaged / low-HP enemy enters Retreat and faces/moves AWAY
+//       from the player (not at it);
+//   (c) losing LOS -> Search: stops tracking the live player and moves toward the
+//       last-known position (then times out toward Idle);
+//   (d) the facing math is correct for a known target -> known heading (the
+//       off-by-pi/2 trap is caught);
+//   (e) states don't jitter: hysteresis holds a state for >= a few ticks.
+// Prints the state transitions. Logs PASS/FAIL T#, returns true iff all pass.
+// No window / Vulkan. Lives in monster.cpp. Mirrors the other self-tests.
+bool runAiSelfTest();
 
 } // namespace x3::game

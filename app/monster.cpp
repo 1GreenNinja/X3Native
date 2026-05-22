@@ -42,7 +42,62 @@ void composeTRS(float m[16],
     m[12] = t.x;      m[13] = t.y;      m[14] = t.z;      m[15] = 1.0f;
 }
 
+// ---------------------------------------------------------------------------
+// Facing math (D-ai). SET IN STONE per docs/CONVENTIONS.md + the verified env_art
+// construction: a model's default facing is local -Z. Under composeTRS's yaw
+// basis (col0=(c,0,-s), col2=(s,0,c)), the model's local -Z maps to world
+// (-sin yaw, 0, -cos yaw). Therefore, to point local -Z along a desired planar
+// direction (dirX, dirZ), the heading is yaw = atan2(-dirX, -dirZ). This is the
+// EXACT relationship the existing chase code used (atan2(kFaceSign*dx, ...) with
+// kFaceSign=-1) and it is verified by the facing self-test (--test-ai, case d).
+// Facing the player: dir = player - self. Facing AWAY (retreat): dir = self -
+// player. Do NOT reinvent this angle.
+float headingToFace(float dirX, float dirZ) {
+    if (dirX * dirX + dirZ * dirZ < 1e-12f) return 0.0f;
+    return std::atan2(-dirX, -dirZ);
+}
+
+// Smallest signed angular difference wrapped to (-pi, pi].
+float angWrap(float d) {
+    constexpr float kPi = 3.14159265358979323846f;
+    while (d >  kPi)  d -= 2.0f * kPi;
+    while (d <= -kPi) d += 2.0f * kPi;
+    return d;
+}
+
+// Slew `cur` toward `target` by at most rate*dt (radians), shortest way around.
+float slewAngle(float cur, float target, float rate, float dt) {
+    const float diff = angWrap(target - cur);
+    const float step = rate * dt;
+    if (diff >  step) return cur + step;
+    if (diff < -step) return cur - step;
+    return target;
+}
+
+// Tiny LCG -> float in [0,1). No heap, deterministic per seed; advances the seed.
+float rng01(uint32_t& s) {
+    s = s * 1664525u + 1013904223u;
+    return (float)(s >> 8) * (1.0f / 16777216.0f);
+}
+
 } // namespace
+
+const char* aiStateName(AiState s) {
+    switch (s) {
+        case AiState::Idle:    return "Idle";
+        case AiState::Search:  return "Search";
+        case AiState::Advance: return "Advance";
+        case AiState::Attack:  return "Attack";
+        case AiState::Strafe:  return "Strafe";
+        case AiState::Retreat: return "Retreat";
+        case AiState::Regroup: return "Regroup";
+    }
+    return "?";
+}
+
+x3::phys::Vec3 MonsterSystem::facingDir() const {
+    return x3::phys::Vec3{ -std::sin(m_yaw), 0.0f, -std::cos(m_yaw) };
+}
 
 // ---------------------------------------------------------------------------
 // Pure damage rule (testable; no rendering / physics).
@@ -264,6 +319,9 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
     bool dead = applyDamage(&m_hp, kDamagePerShot);
     m_flash = kHitFlashTime;
     r.hpAfter = m_hp;
+    // D-ai: remember recent damage so the state machine can flinch/retreat.
+    m_dmgMemory   = kAiDamageMemory;
+    m_dmgWindowHp += kDamagePerShot;
 
     if (dead) {
         // ---- Death: remove the physics body IMMEDIATELY (so subsequent rays
@@ -300,6 +358,9 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
     if (!m_alive) return false;
     bool dead = applyDamage(&m_hp, damage);
     m_flash = kHitFlashTime;
+    // D-ai: heavy melee is a strong flinch trigger.
+    m_dmgMemory   = kAiDamageMemory;
+    m_dmgWindowHp += damage;
     if (dead) {
         m_alive    = false;
         m_dying    = true;
@@ -326,19 +387,32 @@ int MonsterSystem::effectiveDamage() const {
 // ---------------------------------------------------------------------------
 void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                            const x3::phys::Vec3& playerPos) {
-    update(dt, scene, physics, playerPos, nullptr, AttackFxFn{}, BossPhaseFn{});
+    update(dt, scene, physics, playerPos, playerPos, nullptr,
+           AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
 }
 
 void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                            const x3::phys::Vec3& playerPos,
                            IDamageSink* target, const AttackFxFn& fx) {
-    update(dt, scene, physics, playerPos, target, fx, BossPhaseFn{});
+    update(dt, scene, physics, playerPos, playerPos, target,
+           fx, BossPhaseFn{}, AllyQueryFn{});
 }
 
 void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                            const x3::phys::Vec3& playerPos,
                            IDamageSink* target, const AttackFxFn& fx,
                            const BossPhaseFn& onPhase) {
+    // LOS endpoint: prefer the live target's eye if we have one, else the planar
+    // tracking position (the legacy callers pass the eye as playerPos already).
+    const x3::phys::Vec3 eye =
+        (target ? target->damageTargetPos() : playerPos);
+    update(dt, scene, physics, playerPos, eye, target, fx, onPhase, AllyQueryFn{});
+}
+
+void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                           const x3::phys::Vec3& playerPos, const x3::phys::Vec3& playerEye,
+                           IDamageSink* target, const AttackFxFn& fx,
+                           const BossPhaseFn& onPhase, const AllyQueryFn& allies) {
     if (dt <= 0.0f) return;
 
     // ---- Boss phase machine (Phase 2b). Monotone HP-fraction latch: only ever
@@ -399,66 +473,260 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // speed (used to choose idle vs walk for the skeletal animation, below).
     const x3::phys::Vec3 prevPos = m_pos;
 
-    // ---- Face the player (horizontal yaw) EVERY frame while alive. Computed
-    // from the body->player vector on the XZ plane. The render 3x3 is rebuilt
-    // below from this yaw + kFaceSign (which forward axis the model authored). ----
+    // One-time AI init: desync the per-instance decision cadence + RNG so a group
+    // of enemies does NOT switch states in lockstep, and seed the heading.
+    if (!m_aiInit) {
+        m_aiInit = true;
+        // Mix the entity id into the seed so each instance gets a distinct stream.
+        m_rng ^= (m_entity * 2654435761u) + 0x85EBCA6Bu;
+        m_decisionTimer = kAiDecisionPeriod * (0.3f + 0.7f * rng01(m_rng));
+        m_yawTarget = m_yaw;
+        m_strafeDir = (rng01(m_rng) < 0.5f) ? -1.0f : 1.0f;
+    }
+
+    // ---- Geometry to the player (planar) + LOS (rayCast against Static). ----
     float dx = playerPos.x - m_pos.x;
     float dz = playerPos.z - m_pos.z;
     float horiz = std::sqrt(dx * dx + dz * dz);
-    if (horiz > 1e-4f) {
-        // Yaw so the model's forward axis points toward the player. With
-        // kFaceSign = -1 (glTF -Z forward), aim local -Z at (dx,dz).
-        m_yaw = std::atan2(kFaceSign * dx, kFaceSign * dz);
+    const float fxn = (horiz > 1e-4f) ? dx / horiz : 0.0f;   // unit toward player
+    const float fzn = (horiz > 1e-4f) ? dz / horiz : 0.0f;
+    const float pxn = -fzn, pzn = fxn;                        // perpendicular (left)
+
+    // Recent-damage memory decays; the flinch HP-window resets when memory lapses.
+    if (m_dmgMemory > 0.0f) {
+        m_dmgMemory -= dt;
+        if (m_dmgMemory <= 0.0f) { m_dmgMemory = 0.0f; m_dmgWindowHp = 0; }
+    }
+    m_stateTime += dt;
+
+    // ---- Periodic decision: re-evaluate the behaviour state on a jittered cadence
+    // (NOT every frame) with hysteresis (a min dwell) so states don't jitter and a
+    // group doesn't switch in lockstep. The chosen state then drives movement +
+    // heading below every frame. ----
+    m_decisionTimer -= dt;
+    if (m_decisionTimer <= 0.0f) {
+        m_decisionTimer = kAiDecisionPeriod +
+                          kAiDecisionJitter * (2.0f * rng01(m_rng) - 1.0f);
+
+        // LOS: ray from our center toward the player's eye; clear if no Static wall
+        // blocks it before the player. Skip past our own collision box first (the
+        // Static mask also matches Enemy bodies, so a center-origin ray self-hits).
+        bool los = true;
+        if (target) {
+            const x3::phys::Vec3 from0{ m_pos.x, m_pos.y + 0.3f, m_pos.z };
+            x3::phys::Vec3 d{ playerEye.x - from0.x, playerEye.y - from0.y,
+                              playerEye.z - from0.z };
+            float dl = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
+            if (dl < 1e-4f) dl = 1e-4f;
+            const x3::phys::Vec3 nd{ d.x/dl, d.y/dl, d.z/dl };
+            const float skip = kMonsterHalf.x + 0.15f;
+            const x3::phys::Vec3 from{ from0.x + nd.x*skip, from0.y + nd.y*skip,
+                                       from0.z + nd.z*skip };
+            float losLen = dl - skip; if (losLen < 0.0f) losLen = 0.0f;
+            x3::phys::RayHit wall = (losLen > 1e-3f)
+                ? physics.rayCast(from, nd, losLen, x3::phys::Layer::Static)
+                : x3::phys::RayHit{};
+            los = !wall.hit;
+        } else {
+            los = false;   // no target -> nothing to see -> Search/Idle
+        }
+        m_hasLos = los;
+        if (los) { m_lastKnown = playerPos; m_everSawPlayer = true; }
+
+        // Pressure signals.
+        const float frac = (m_maxHp > 0) ? (float)m_hp / (float)m_maxHp : 1.0f;
+        const bool lowHp     = frac <= kAiRetreatFrac;
+        const bool flinch    = (m_dmgMemory > 0.0f) && (m_dmgWindowHp >= kAiHeavyDmgWindowHp);
+        const bool pressured = lowHp || flinch;
+
+        // Per-type behaviour weighting (probabilities, applied with the per-instance
+        // RNG so a group spreads out). Drone flanks/strafes more + holds standoff;
+        // Guard advances harder; Boss mixes attack with reposition.
+        float strafeBias = 0.35f;  // chance to strafe instead of advance at mid-range
+        if (m_type == MonsterType::Drone) strafeBias = 0.75f;
+        else if (m_type == MonsterType::Guard) strafeBias = 0.20f;
+        else if (m_type == MonsterType::Boss)  strafeBias = 0.45f;
+
+        AiState want = m_ai;
+
+        if (pressured && los) {
+            // Hurt + can see the player: prefer Retreat, but a pressured enemy with
+            // a nearby ally may Regroup toward them instead (re-form, then re-engage).
+            want = AiState::Retreat;
+            if (allies) {
+                x3::phys::Vec3 buf[8];
+                uint32_t n = allies(m_pos, m_entity, kAiRegroupRadius, buf, 8u);
+                if (n > 0) {
+                    // Fall back toward the nearest ally.
+                    float best = 1e30f; int bi = -1;
+                    for (uint32_t i = 0; i < n; ++i) {
+                        float ax = buf[i].x - m_pos.x, az = buf[i].z - m_pos.z;
+                        float d2 = ax*ax + az*az;
+                        if (d2 < best) { best = d2; bi = (int)i; }
+                    }
+                    if (bi >= 0) { m_rallyPoint = buf[bi]; m_hasRally = true; want = AiState::Regroup; }
+                }
+            }
+        } else if (los) {
+            // Healthy + visible: engage. Choose Attack / Strafe / Advance by range.
+            const float band = m_ranged ? m_standoff : kAiStrafeBandLo;
+            if (!m_ranged && horiz <= m_attackRange * 1.05f) {
+                want = AiState::Attack;
+            } else if (m_ranged && std::fabs(horiz - m_standoff) <= 1.5f) {
+                // Drone in its standoff band: strafe + fire.
+                want = (horiz <= m_attackRange) ? AiState::Strafe : AiState::Advance;
+            } else if (horiz <= kAiStrafeBandHi && horiz >= band) {
+                want = (rng01(m_rng) < strafeBias) ? AiState::Strafe : AiState::Advance;
+            } else {
+                want = AiState::Advance;
+            }
+        } else {
+            // No LOS. If we ever saw the player, Search the last-known spot for a
+            // while, then give up to Idle. Never saw them -> Idle.
+            if (m_everSawPlayer && m_searchTimer > 0.0f) {
+                want = AiState::Search;
+            } else if (m_everSawPlayer && m_ai != AiState::Search && m_ai != AiState::Idle) {
+                // Just lost LOS: begin a fresh Search.
+                want = AiState::Search;
+                m_searchTimer = kAiSearchTime;
+            } else if (m_searchTimer <= 0.0f) {
+                want = AiState::Idle;
+            }
+        }
+
+        // Hysteresis: don't switch away from a freshly-entered state too soon,
+        // unless the new state is a higher-priority safety transition (Retreat).
+        const bool forced = (want == AiState::Retreat);
+        if (want != m_ai && (forced || m_stateTime >= kAiStateMinTime)) {
+            // Retreat hysteresis: hold retreat at least kAiRetreatMinTime once entered.
+            if (m_ai == AiState::Retreat && m_stateTime < kAiRetreatMinTime &&
+                want != AiState::Retreat) {
+                want = AiState::Retreat;   // keep retreating a bit longer
+            }
+            if (m_ai == AiState::Regroup && m_regroupTimer > 0.0f &&
+                want != AiState::Retreat) {
+                want = AiState::Regroup;   // hold regroup its min dwell
+            }
+            if (want != m_ai) {
+                x3::logInfo(std::string("[ai] entity ") + std::to_string(m_entity) +
+                            " " + aiStateName(m_ai) + " -> " + aiStateName(want) +
+                            " (hp=" + std::to_string(m_hp) + "/" + std::to_string(m_maxHp) +
+                            " los=" + (los ? "1" : "0") +
+                            " d=" + std::to_string((int)horiz) + "m)");
+                m_ai = want;
+                m_stateTime = 0.0f;
+                if (m_ai == AiState::Search)  m_searchTimer = kAiSearchTime;
+                if (m_ai == AiState::Regroup) m_regroupTimer = kAiRegroupHold;
+            }
+        }
     }
 
-    // ---- Chase: weave toward the player while far, orbit when close, and STOP at
-    // walls/props so it neither beelines-then-freezes nor phases through the box.
-    // The Drone (ranged) instead HOLDS a standoff distance: it approaches only
-    // until within m_standoff, then strafes/backs off to keep its distance and
-    // shoot. (Facing still tracks the player, above.) ----
-    // Phase-scaled chase speed (Boss enrage moves faster; 1x for everyone else).
+    // ---- Per-frame state execution: pick a movement direction + a desired heading
+    // for the CURRENT state. Heading slews toward the target (kAiTurnRate) so the
+    // body turns; FACING IS A CONSEQUENCE OF THE STATE (see CONVENTIONS facing math
+    // in headingToFace()). ----
+    float mx = 0.0f, mz = 0.0f;          // desired planar move dir (un-normalized)
+    bool  wantMove = false;
     const float chaseSpeed = m_chaseSpeed * m_phaseSpeedMul;
-    if (chaseSpeed > 0.0f && m_body.valid() && horiz > 1e-4f) {
-        m_wander += dt * kStrafeFreq;
-        const float fxn = dx / horiz, fzn = dz / horiz;   // toward player (XZ)
-        const float pxn = -fzn,       pzn = fxn;          // perpendicular (left)
 
-        float mx, mz;
-        if (m_ranged) {
-            // Drone standoff: keep ~m_standoff away. Too close -> back off; too far
-            // -> approach; in the band -> strafe sideways (orbit) to feel alive.
-            const float band = 1.0f; // dead-band (m) around the standoff distance
-            if (horiz < m_standoff - band) {
-                mx = -fxn; mz = -fzn;                       // retreat
-            } else if (horiz > m_standoff + band) {
-                mx = fxn;  mz = fzn;                        // approach
-            } else {
-                mx = pxn * m_strafeDir; mz = pzn * m_strafeDir; // strafe / orbit
-                m_retarget -= dt;
-                if (m_retarget <= 0.0f) { m_strafeDir = -m_strafeDir; m_retarget = kOrbitRetarget; }
-            }
-        } else if (horiz > kChaseStopDist) {
-            // Approach with a side-to-side weave (not a straight line).
+    switch (m_ai) {
+        case AiState::Advance: {
+            // Move toward + FACE the player, with a slight weave so it isn't a
+            // straight line. (Guards lean on this state.)
+            m_wander += dt * kStrafeFreq;
             const float strafe = std::sin(m_wander) * kStrafeAmt;
-            mx = fxn + pxn * strafe;
-            mz = fzn + pzn * strafe;
-        } else {
-            // Close: circle the player instead of grinding to a halt.
-            mx = pxn * m_strafeDir;
-            mz = pzn * m_strafeDir;
+            mx = fxn + pxn * strafe; mz = fzn + pzn * strafe;
+            wantMove = horiz > kChaseStopDist;
+            m_yawTarget = headingToFace(dx, dz);
+        } break;
+
+        case AiState::Attack: {
+            // In strike range: hold position (the attack block below fires) and
+            // FACE the player. Drones keep their standoff (handled in Strafe).
+            wantMove = false;
+            m_yawTarget = headingToFace(dx, dz);
+        } break;
+
+        case AiState::Strafe: {
+            // Circle the player at mid-range while FACING the player (the only
+            // "face you while moving sideways" state). Flip orbit direction on a
+            // timer + add gentle range-keeping so it neither closes nor drifts.
+            const float ideal = m_ranged ? m_standoff
+                                         : 0.5f * (kAiStrafeBandLo + kAiStrafeBandHi);
+            const float radialErr = horiz - ideal;     // >0 too far, <0 too close
+            mx = pxn * m_strafeDir + fxn * (radialErr * 0.5f);
+            mz = pzn * m_strafeDir + fzn * (radialErr * 0.5f);
+            wantMove = true;
             m_retarget -= dt;
             if (m_retarget <= 0.0f) { m_strafeDir = -m_strafeDir; m_retarget = kOrbitRetarget; }
-        }
+            m_yawTarget = headingToFace(dx, dz);
+        } break;
+
+        case AiState::Retreat: {
+            // Back off to a safer distance, FACING AWAY from the player (toward the
+            // retreat point). Stop retreating once far enough (the decision logic
+            // will then re-engage or keep retreating if still hurt).
+            mx = -fxn; mz = -fzn;
+            wantMove = horiz < kAiRetreatDist;
+            // Face away: aim local -Z along the away direction (= self - player).
+            m_yawTarget = headingToFace(-dx, -dz);
+        } break;
+
+        case AiState::Regroup: {
+            // Fall back toward the rally ally; FACE the rally direction while moving.
+            m_regroupTimer -= dt;
+            float rx = m_rallyPoint.x - m_pos.x, rz = m_rallyPoint.z - m_pos.z;
+            float rl = std::sqrt(rx*rx + rz*rz);
+            if (rl > 0.6f) { mx = rx/rl; mz = rz/rl; wantMove = true; m_yawTarget = headingToFace(rx, rz); }
+            else { wantMove = false; m_yawTarget = headingToFace(dx, dz); } // re-formed: face player
+        } break;
+
+        case AiState::Search: {
+            // No LOS: walk to the last-known player position while SWEEPING the
+            // heading left/right ("looking around"). Times out toward Idle.
+            m_searchTimer -= dt;
+            float lx = m_lastKnown.x - m_pos.x, lz = m_lastKnown.z - m_pos.z;
+            float ll = std::sqrt(lx*lx + lz*lz);
+            m_searchSweep += dt * kAiSearchSweepFreq;
+            if (ll > kAiLastKnownReach) {
+                mx = lx/ll; mz = lz/ll; wantMove = true;
+                m_yawTarget = headingToFace(lx, lz) +
+                              kAiSearchSweepAmp * std::sin(m_searchSweep);
+            } else {
+                // Arrived at last-known: stand and sweep the head, scanning.
+                wantMove = false;
+                m_yawTarget = headingToFace(lx, lz) +
+                              kAiSearchSweepAmp * std::sin(m_searchSweep);
+            }
+            if (m_searchTimer <= 0.0f) m_searchTimer = 0.0f; // -> Idle next decision
+        } break;
+
+        case AiState::Idle:
+        default: {
+            // Idle: stand still, slow idle heading sweep so it doesn't look frozen.
+            wantMove = false;
+            m_searchSweep += dt * (kAiSearchSweepFreq * 0.3f);
+            m_yawTarget = m_yaw + 0.15f * std::sin(m_searchSweep) * dt;
+        } break;
+    }
+
+    // ---- Apply movement (shared, with wall/prop avoidance). The Boss enrage speed
+    // multiplier scales the step. NOTE (D-ai fix): the Static-mask ray also matches
+    // Enemy bodies (queryHitsLayer: Static<->Enemy collide), so a probe from m_pos
+    // self-hits THIS enemy's own box at distance ~0 and would block ALL movement.
+    // Start the probe just BEYOND our own half-extent along the move dir (the same
+    // technique the ranged LOS check uses) so it only sees real walls/props. ----
+    if (wantMove && chaseSpeed > 0.0f && m_body.valid()) {
         float ml = std::sqrt(mx * mx + mz * mz);
         if (ml > 1e-4f) { mx /= ml; mz /= ml; }
-
         const float step  = chaseSpeed * dt;
-        const float probe = step + kMonsterHalf.x + 0.05f;
+        const float skip  = kMonsterHalf.x + 0.05f;     // clear our own box first
+        const float probe = step + 0.10f;               // look this far past the box
         const x3::phys::Vec3 mdir{ mx, 0.0f, mz };
-        // Don't walk through walls (Static) or props like the dynamic box (Dynamic).
+        const x3::phys::Vec3 from{ m_pos.x + mx * skip, m_pos.y, m_pos.z + mz * skip };
         const bool blocked =
-            physics.rayCast(m_pos, mdir, probe, x3::phys::Layer::Static).hit ||
-            physics.rayCast(m_pos, mdir, probe, x3::phys::Layer::Dynamic).hit;
+            physics.rayCast(from, mdir, probe, x3::phys::Layer::Static).hit ||
+            physics.rayCast(from, mdir, probe, x3::phys::Layer::Dynamic).hit;
         if (blocked) {
             m_strafeDir = -m_strafeDir;   // try a new line next frames
             m_wander   += 1.7f;
@@ -468,6 +736,11 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             physics.setBodyPosition(m_body, m_pos);
         }
     }
+
+    // ---- Turn the body: slew the heading toward the state's target heading. This
+    // is what actually rotates the rendered model (and, for rigid bodies, the
+    // physics body — see the setBodyRotation call after the transform bake). ----
+    m_yaw = slewAngle(m_yaw, m_yawTarget, kAiTurnRate, dt);
 
     // ---- Attack (Phase 2a, spec §6.5). Guard/Boss = melee within attackRange;
     // Drone = ranged hitscan toward the player within attackRange. Both gate on a
@@ -554,6 +827,19 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                    x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
                    x3::phys::Vec3{ s, 0.0f, c },
                    scale, m_pos);
+
+        // ---- Also turn the rigid body (D-ai). Our heading is a pure rotation about
+        // +Y; the quaternion (x,y,z,w) for yaw `m_yaw` about +Y is
+        // (0, sin(yaw/2), 0, cos(yaw/2)) — CONVENTIONS.md quat order, w LAST. This
+        // keeps the physics body's orientation in sync with the visual heading so
+        // any system reading getBodyRotation() (or future capsule push) agrees with
+        // what's drawn. The character-capsule case has no rigid box, so this is a
+        // no-op there (m_body invalid); the visual heading above is what turns it. -
+        if (m_body.valid()) {
+            const float h = m_yaw * 0.5f;
+            const float q[4] = { 0.0f, std::sin(h), 0.0f, std::cos(h) }; // (x,y,z,w)
+            physics.setBodyRotation(m_body, q);
+        }
     }
 
     // ---- J1: drive skeletal animation. Advance the active clip's time and CPU-
@@ -680,8 +966,26 @@ void MonsterManager::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phy
                             const x3::phys::Vec3& playerPos,
                             IDamageSink* target, const AttackFxFn& fx,
                             const BossPhaseFn& onPhase) {
+    // D-ai: ally query over THIS manager's own live members (so a pressured enemy
+    // can Regroup toward squadmates). No per-frame heap alloc — the lambda only
+    // reads positions into the caller's fixed buffer. The LOS endpoint is the
+    // target's eye (or the planar pos when there's no target).
+    const x3::phys::Vec3 eye = (target ? target->damageTargetPos() : playerPos);
+    AllyQueryFn allies = [this](const x3::phys::Vec3& self, uint32_t selfEntity,
+                                float radius, x3::phys::Vec3* out, uint32_t maxOut) -> uint32_t {
+        uint32_t n = 0;
+        const float r2 = radius * radius;
+        for (const auto& a : m_monsters) {
+            if (n >= maxOut) break;
+            if (!a->alive() || a->entity() == selfEntity) continue;
+            const x3::phys::Vec3 p = a->pos();
+            const float ddx = p.x - self.x, ddz = p.z - self.z;
+            if (ddx*ddx + ddz*ddz <= r2) out[n++] = p;
+        }
+        return n;
+    };
     for (auto& m : m_monsters)
-        m->update(dt, scene, physics, playerPos, target, fx, onPhase);
+        m->update(dt, scene, physics, playerPos, eye, target, fx, onPhase, allies);
 }
 
 void MonsterManager::drawAll(x3::rhi::IRenderDevice& device,
@@ -1006,6 +1310,269 @@ bool runPhase2aSelfTest() {
     x3::logInfo(std::string("[phase2a-test] ") + std::to_string(p2_pass) + " passed, " +
                 std::to_string(p2_fail) + " failed");
     return p2_fail == 0;
+}
+
+// ===========================================================================
+// D-ai self-test (--test-ai): monster combat behaviour state machine.
+//   (a) healthy + LOS  -> Advance/Attack, FACES the player.
+//   (b) low HP         -> Retreat, faces/moves AWAY.
+//   (c) lost LOS       -> Search: stops tracking, moves to last-known.
+//   (d) facing math    -> known target -> known heading (off-by-pi/2 trap caught).
+//   (e) hysteresis     -> a state holds for >= a few ticks (no jitter).
+// Prints the state transitions. No window / Vulkan.
+// ===========================================================================
+namespace {
+
+int ai_pass = 0, ai_fail = 0;
+void aicheck(bool cond, const char* name) {
+    if (cond) { ++ai_pass; x3::logInfo(std::string("[ai-test] PASS ") + name); }
+    else      { ++ai_fail; x3::logError(std::string("[ai-test] FAIL ") + name); }
+}
+
+constexpr float kAiDt = 1.0f / 60.0f;
+constexpr float kAiPi = 3.14159265358979323846f;
+
+// A trivial damage sink the AI treats as "the player": alive, at a fixed eye.
+class AiTargetStub final : public IDamageSink {
+public:
+    x3::phys::Vec3 eye{ 0.0f, 1.6f, 0.0f };
+    bool takeDamage(int) override { return true; }
+    x3::phys::Vec3 damageTargetPos() const override { return eye; }
+    bool isAlive() const override { return true; }
+};
+
+// Flat ground at y=0 (CCW so +Y is solid), `half` to a side.
+x3::phys::BodyId aiGround(x3::phys::IPhysicsWorld& w, float half) {
+    float v[] = { -half,0,-half,  half,0,-half,  half,0,half,  -half,0,half };
+    uint32_t idx[] = { 0,2,1, 0,3,2 };
+    return w.addStaticMesh(v, 4, idx, 6);
+}
+
+// AI tuning for the test: a Guard, stationary-free (real chase speed), no wind-up
+// so behaviour reads quickly. Uses the box fallback (no GLB needed here, but the
+// loader is tolerant either way).
+MonsterSystem::Tuning aiGuardTuning() {
+    MonsterSystem::Tuning t;
+    t.type = MonsterType::Guard;
+    t.hp = 100; t.chaseSpeed = 3.0f;
+    t.damage = 8; t.attackRange = 1.9f; t.attackCooldown = 0.6f; t.attackWindup = 0.0f;
+    t.ranged = false;
+    return t;   // empty modelFile -> alien_crawler.glb / box fallback
+}
+
+// Smallest |a-b| wrapped to [0,pi].
+float aiAngErr(float a, float b) {
+    float d = a - b;
+    while (d >  kAiPi) d -= 2.0f * kAiPi;
+    while (d <= -kAiPi) d += 2.0f * kAiPi;
+    return std::fabs(d);
+}
+
+} // namespace
+
+bool runAiSelfTest() {
+    ai_pass = ai_fail = 0;
+    HeadlessDevice device;
+
+    // ---- (d) FACING MATH: known target -> known heading (the off-by-pi/2 trap).
+    // headingToFace is in an anon namespace; verify via a built monster's heading
+    // accessor instead (drives the same construction). Place an enemy at origin,
+    // the player straight ahead (-Z) and to the right (+X), and assert the model's
+    // forward (local -Z) under the resolved heading points AT the player. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); aiGround(*w, 60.0f);
+        // STATIONARY enemy (chaseSpeed 0) so the heading is a pure facing solve with
+        // no movement/strafe displacement: every engage state aims local -Z at the
+        // player, so the heading converges to headingToFace(dx,dz) regardless.
+        MonsterSystem::Tuning t = aiGuardTuning(); t.chaseSpeed = 0.0f;
+        Scene scene; MonsterSystem m; AiTargetStub tgt;
+        m.buildMonsterTuned(scene, device, *w, "G:/GameModels/rigged_glb",
+                            x3::phys::Vec3{ 0,0.4f,0 }, t);
+        // Player straight ahead (-Z). After enough ticks facingDir() ~ (0,0,-1).
+        tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -5.0f };
+        for (int i = 0; i < 120; ++i) {
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, &tgt, AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+        }
+        x3::phys::Vec3 f = m.facingDir();
+        bool facesAhead = (f.z < -0.95f) && std::fabs(f.x) < 0.1f;
+        // Target +X (right): the CORRECT heading is atan2(-dx,-dz)=atan2(-1,0)=-pi/2
+        // (forward = +X). The off-by-pi/2 trap (e.g. atan2(dz,dx)+pi/2) would point
+        // forward at -X (faces LEFT) — caught here.
+        Scene scene2; MonsterSystem m2; AiTargetStub tgt2;
+        m2.buildMonsterTuned(scene2, device, *w, "G:/GameModels/rigged_glb",
+                             x3::phys::Vec3{ 0,0.4f,0 }, t);
+        tgt2.eye = x3::phys::Vec3{ 6.0f, 1.6f, 0.0f };   // +X
+        for (int i = 0; i < 120; ++i) {
+            m2.update(kAiDt, scene2, *w, tgt2.eye, tgt2.eye, &tgt2, AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+        }
+        x3::phys::Vec3 f2 = m2.facingDir();
+        const float wantYaw = std::atan2(-1.0f, 0.0f);   // = -pi/2 (faces +X)
+        bool facesRight = (f2.x > 0.95f) && std::fabs(f2.z) < 0.1f &&
+                          aiAngErr(m2.heading(), wantYaw) < 0.05f;
+        x3::logInfo(std::string("[ai-test] (d) faceAheadZ=") + std::to_string(f.z) +
+                    " faceRightX=" + std::to_string(f2.x) +
+                    " headingErr=" + std::to_string(aiAngErr(m2.heading(), wantYaw)));
+        aicheck(facesAhead && facesRight,
+                "Td facing math: -Z target -> faces -Z; +X target -> faces +X (no off-by-pi/2)");
+        w->shutdown();
+    }
+
+    // ---- (a) HEALTHY + LOS -> Advance/Attack, FACES the player. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); aiGround(*w, 60.0f);
+        Scene scene; MonsterSystem m; AiTargetStub tgt;
+        m.buildMonsterTuned(scene, device, *w, "G:/GameModels/rigged_glb",
+                            x3::phys::Vec3{ 0,0.4f,0 }, aiGuardTuning());
+        tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -8.0f };   // 8 m ahead, clear LOS
+        AiState seen = AiState::Idle; bool everEngaged = false;
+        for (int i = 0; i < 240; ++i) {
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, &tgt, AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            seen = m.aiState();
+            if (seen == AiState::Advance || seen == AiState::Attack || seen == AiState::Strafe)
+                everEngaged = true;
+        }
+        // Faces the player: forward (local -Z) points toward (player - self).
+        float dx = tgt.eye.x - m.pos().x, dz = tgt.eye.z - m.pos().z;
+        float dl = std::sqrt(dx*dx + dz*dz);
+        x3::phys::Vec3 f = m.facingDir();
+        float dot = (dl > 1e-4f) ? (f.x*dx + f.z*dz)/dl : 0.0f;
+        bool engaged = everEngaged && m.hasLineOfSight();
+        bool facing  = dot > 0.9f;       // facing within ~25 deg of the player
+        x3::logInfo(std::string("[ai-test] (a) final state=") + aiStateName(m.aiState()) +
+                    " facingdot=" + std::to_string(dot));
+        aicheck(engaged && facing, "Ta healthy+LOS enters Advance/Attack and FACES player");
+    }
+
+    // ---- (b) LOW HP -> Retreat, faces/moves AWAY. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); aiGround(*w, 60.0f);
+        Scene scene; MonsterSystem m; AiTargetStub tgt;
+        MonsterSystem::Tuning t = aiGuardTuning();
+        t.hp = 90;   // 2 shots (34 each) -> 22 HP = 24% (clearly <= kAiRetreatFrac)
+        m.buildMonsterTuned(scene, device, *w, "G:/GameModels/rigged_glb",
+                            x3::phys::Vec3{ 0,0.4f,0 }, t);
+        tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -4.0f };   // close, clear LOS
+        // Damage it to low HP via shots (also stamps recent-damage memory). 90 HP,
+        // 34/shot -> 2 shots = 22 HP (<= 30% threshold). Aim along +Z toward enemy.
+        const x3::phys::Vec3 eye{ 0,0.4f,-4.0f };
+        const x3::phys::Vec3 aim{ 0,0,1 };               // +Z toward the enemy at origin
+        m.fire(eye, aim, scene, *w);
+        m.fire(eye, aim, scene, *w);                     // ~22 HP now (24%)
+        float startDist = std::sqrt(m.pos().x*m.pos().x +
+                                    (m.pos().z - tgt.eye.z)*(m.pos().z - tgt.eye.z));
+        bool everRetreat = false; float minDot = 1e30f;
+        for (int i = 0; i < 180; ++i) {
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, &tgt, AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            if (m.aiState() == AiState::Retreat) {
+                everRetreat = true;
+                float dx = tgt.eye.x - m.pos().x, dz = tgt.eye.z - m.pos().z;
+                float dl = std::sqrt(dx*dx+dz*dz);
+                x3::phys::Vec3 f = m.facingDir();
+                float dot = (dl>1e-4f) ? (f.x*dx+f.z*dz)/dl : 0.0f;
+                if (dot < minDot) minDot = dot;
+            }
+        }
+        float endDist = std::sqrt(m.pos().x*m.pos().x +
+                                  (m.pos().z - tgt.eye.z)*(m.pos().z - tgt.eye.z));
+        bool movedAway = endDist > startDist + 0.5f;      // backed off
+        bool facesAway = everRetreat && minDot < -0.5f;   // forward points AWAY from player
+        x3::logInfo(std::string("[ai-test] (b) hp=") + std::to_string(m.hp()) +
+                    " retreat=" + (everRetreat?"1":"0") +
+                    " startDist=" + std::to_string(startDist) +
+                    " endDist=" + std::to_string(endDist) +
+                    " minFacingdot=" + std::to_string(minDot));
+        aicheck(everRetreat && movedAway && facesAway,
+                "Tb low-HP enters Retreat and faces/moves AWAY");
+        w->shutdown();
+    }
+
+    // ---- (c) LOST LOS -> Search: stops tracking, moves to last-known. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); aiGround(*w, 60.0f);
+        Scene scene; MonsterSystem m; AiTargetStub tgt;
+        m.buildMonsterTuned(scene, device, *w, "G:/GameModels/rigged_glb",
+                            x3::phys::Vec3{ 0,0.4f,0 }, aiGuardTuning());
+        // First, establish LOS so the enemy records a last-known position. Keep the
+        // enemy STATIONARY (chaseSpeed 0) during this phase so its X stays ~0 and we
+        // can build a blocking wall on the X=0 line afterward. Player straight ahead.
+        tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -10.0f };
+        for (int i = 0; i < 60; ++i) {
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, &tgt, AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+        }
+        bool sawFirst = m.hasLineOfSight();
+        x3::phys::Vec3 lastKnown = m.lastKnownPlayerPos();
+        // Drop a BIG tall Static wall between the enemy (~origin) and the player,
+        // perpendicular to the line of sight, then move the player BEHIND it on the
+        // SAME -Z line. The wall blocks LOS -> the enemy should Search and head to
+        // last-known (-Z), NOT teleport-track the live player. Wall at z=-6 spanning
+        // x in [-20,20], y in [0,5], double-sided so the ray is caught either way.
+        {
+            float wx0=-20, wx1=20, wy0=0, wy1=5, wz=-6.0f;
+            float v[] = { wx0,wy0,wz, wx1,wy0,wz, wx1,wy1,wz, wx0,wy1,wz };
+            uint32_t idx[] = { 0,1,2, 0,2,3,  0,2,1, 0,3,2 }; // double-sided
+            w->addStaticMesh(v, 4, idx, 12);
+        }
+        tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -30.0f };   // player retreated far behind the wall
+        x3::phys::Vec3 startPos = m.pos();
+        bool everSearch = false;
+        for (int i = 0; i < 240; ++i) {
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, &tgt, AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            if (m.aiState() == AiState::Search) everSearch = true;
+        }
+        bool lostLos = !m.hasLineOfSight();
+        // Moved toward the LAST-KNOWN spot (-Z, toward z=-10). The wall stops it ~z=-5
+        // (it can't pass through), but it must clearly head that way (z decreases).
+        float towardLastKnown = m.pos().z - startPos.z;   // last-known is more -Z (negative)
+        bool trackedLastKnown = (towardLastKnown < -0.3f);
+        x3::logInfo(std::string("[ai-test] (c) sawFirst=") + (sawFirst?"1":"0") +
+                    " lostLos=" + (lostLos?"1":"0") + " search=" + (everSearch?"1":"0") +
+                    " dz=" + std::to_string(towardLastKnown) +
+                    " lastKnownZ=" + std::to_string(lastKnown.z));
+        aicheck(sawFirst && lostLos && everSearch && trackedLastKnown,
+                "Tc lost LOS enters Search and moves to last-known (not live pos)");
+        w->shutdown();
+    }
+
+    // ---- (e) HYSTERESIS: a state holds for >= a few ticks (no per-frame jitter).
+    // With a steady, healthy, LOS engagement, the state must not flip every tick.
+    // Count transitions over many ticks: should be small (no thrash). ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); aiGround(*w, 60.0f);
+        Scene scene; MonsterSystem m; AiTargetStub tgt;
+        m.buildMonsterTuned(scene, device, *w, "G:/GameModels/rigged_glb",
+                            x3::phys::Vec3{ 0,0.4f,0 }, aiGuardTuning());
+        tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -4.0f };   // steady, in engage range
+        AiState prev = m.aiState(); int transitions = 0; int maxRun = 0, run = 0;
+        for (int i = 0; i < 300; ++i) {                  // 5 s @ 60 Hz
+            m.update(kAiDt, scene, *w, tgt.eye, tgt.eye, &tgt, AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kAiDt);
+            AiState s = m.aiState();
+            if (s != prev) { ++transitions; prev = s; run = 0; } else { ++run; if (run>maxRun) maxRun=run; }
+        }
+        // Decisions fire ~every 0.3 s (18 ticks), and a state must dwell >= ~27
+        // ticks (kAiStateMinTime). Over 300 ticks, far fewer than 300 transitions,
+        // and the longest single-state run must clearly exceed a few ticks.
+        bool noJitter = (transitions < 40) && (maxRun >= 10);
+        x3::logInfo(std::string("[ai-test] (e) transitions=") + std::to_string(transitions) +
+                    " longestRun=" + std::to_string(maxRun) + " ticks");
+        aicheck(noJitter, "Te hysteresis: state holds >= several ticks (no jitter)");
+        w->shutdown();
+    }
+
+    x3::logInfo(std::string("[ai-test] ") + std::to_string(ai_pass) + " passed, " +
+                std::to_string(ai_fail) + " failed");
+    return ai_fail == 0;
 }
 
 } // namespace x3::game
