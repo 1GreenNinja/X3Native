@@ -7,6 +7,7 @@ add_library(x3engine STATIC
     rhi/vma_impl.cpp
     asset/PakAssetSource.cpp
     physics/JoltPhysicsWorld.cpp
+    physics/JoltVehicle.cpp
     physics/Destruction.cpp
     ai/Navigation.cpp
     asset/ModelLoader.cpp

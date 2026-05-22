@@ -103,6 +103,21 @@ public:
     // Rebuild/optimize the broadphase quadtree after a big churn of body add/remove
     // (e.g. a large fracture). Maps to JPH::PhysicsSystem::OptimizeBroadPhase.
     virtual void optimizeBroadphase() = 0;
+
+    // -----------------------------------------------------------------------
+    // Native-handle escape hatch (vehicle framework). Returns the underlying
+    // Jolt objects as void* so the type stays out of this header. This is ONLY
+    // for in-engine subsystems that MUST integrate with Jolt at a level the POD
+    // API can't express — specifically the WHEELED vehicle controller, which has
+    // to construct a JPH::VehicleConstraint on the chassis JPH::Body and register
+    // it as a step listener on the JPH::PhysicsSystem. Game/app code must NOT use
+    // these; it talks to IVehicleController instead.
+    //   nativeSystem()      -> JPH::PhysicsSystem*  (never null after init()).
+    //   nativeBody(BodyId)  -> JPH::Body*           (null for an invalid/stale id
+    //                          or a character-controller id).
+    // The pointers are owned by the world and valid until shutdown()/removeBody().
+    virtual void* nativeSystem() = 0;
+    virtual void* nativeBody(BodyId) = 0;
 };
 
 IPhysicsWorld* createPhysicsWorld();
