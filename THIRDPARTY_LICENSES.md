@@ -25,6 +25,7 @@ obligations on the engine).
 | Component | License | Use | Notes |
 |---|---|---|---|
 | font8x8 (`engine/rhi/font8x8_basic.h`) | public-domain | bitmap HUD/console font | Daniel Hepper's public-domain 8x8 font |
+| gif.h (`third_party/gif_h/gif.h`) | public-domain | animated GIF encode (headless `--capture-ai` tool only) | Charlie Tangora's public-domain single-header GIF writer |
 
 ## Planned (not yet linked)
 

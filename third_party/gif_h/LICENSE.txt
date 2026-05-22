@@ -1,0 +1,9 @@
+gif.h
+by Charlie Tangora
+Public domain.
+Email me : ctangora -at- gmail -dot- com
+
+This file (gif.h) is released into the public domain by its author. There are no
+restrictions on its use. It is vendored into X3Native under third_party/gif_h/ and
+used only by the headless --capture-ai tool to assemble an animated GIF from the
+captured PNG frame sequence. See ../../THIRDPARTY_LICENSES.md.
