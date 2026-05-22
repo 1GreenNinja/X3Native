@@ -7,6 +7,7 @@
 
 #include "engine/core/x3_log.h"
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -23,6 +24,16 @@ const char* kRelWall      = "ModularSciFi_Interior/SM_Wall_A.glb";
 const char* kRelDoorFrame = "ModularSciFi_Interior/SM_DoorFrame_A.glb";
 const char* kRelConsole   = "ModularSciFi_Interior/SM_Console.glb";
 const char* kRelLight     = "ModularSciFi_Interior/SM_Light_A.glb";
+// ---- Detail props (D-content) so rooms read as distinct spaces, not empty boxes.
+// All purely visual (no collision) — the graybox boxes remain the truth. Reused
+// from the converted SciFi_Warehouse_Kit catalog. Per-asset fallback: a missing
+// GLB simply isn't drawn (the room still works), exactly like the kit pieces. ----
+const char* kRelCrateShort = "SciFi_Warehouse_Kit/Crate Short.glb";
+const char* kRelCrateLong  = "SciFi_Warehouse_Kit/Crate Long.glb";
+const char* kRelBarrel     = "SciFi_Warehouse_Kit/Barrel.glb";
+const char* kRelPallet     = "SciFi_Warehouse_Kit/Pallet.glb";
+const char* kRelFusebox    = "SciFi_Warehouse_Kit/Fusebox 01.glb";
+const char* kRelPipes      = "ModularSciFi_Interior/SM_Pipes_A.glb";
 
 // ---- Probed world-space AABBs of each kit piece (meters), AFTER the GLB node
 // transforms are applied (matches the M2 node-TRS loader). Used to recenter each
@@ -41,6 +52,19 @@ constexpr Aabb kWallAabb  { -1.43f, -0.04f, 0.00f,  0.00f, 4.40f, 3.00f };
 constexpr Aabb kFrameAabb { -6.25f, -0.04f,-0.28f,  0.00f, 4.40f, 0.28f };
 constexpr Aabb kConsAabb  { -0.47f,  0.00f,-0.31f,  0.31f, 1.55f, 0.29f };
 constexpr Aabb kLightAabb { -0.22f,  0.00f, 0.00f,  0.00f, 0.03f, 2.26f };
+// Detail props (probed via trimesh; Y-up, floor at min-Y ~ 0). See CATALOG.md.
+//   Crate Short : 0.67(X) x 0.60(Y) x 0.67(Z)
+//   Crate Long  : 0.64(X) x 0.60(Y) x 1.27(Z)
+//   Barrel      : 0.88(X) x 1.23(Y) x 0.88(Z)
+//   Pallet      : 1.56(X) x 0.20(Y) x 1.52(Z)
+//   Fusebox 01  : 0.18(X) x 2.24(Y) x 0.64(Z) (a wall panel; sits low on the wall)
+//   Pipes_A     : 0.66(X) x 0.18(Y) x 3.00(Z) (a ceiling/wall pipe run)
+constexpr Aabb kCrateSAabb { -0.668f, 0.000f,-0.000f, 0.000f, 0.600f, 0.671f };
+constexpr Aabb kCrateLAabb { -0.640f, 0.000f, 0.000f, 0.000f, 0.600f, 1.274f };
+constexpr Aabb kBarrelAabb { -0.441f, 0.000f,-0.456f, 0.440f, 1.225f, 0.425f };
+constexpr Aabb kPalletAabb { -1.559f, 0.000f,-0.005f, 0.003f, 0.198f, 1.519f };
+constexpr Aabb kFuseAabb   { -0.329f,-0.936f,-0.245f,-0.144f, 1.308f, 0.396f };
+constexpr Aabb kPipesAabb  { -0.123f,-0.011f,-0.000f, 0.539f, 0.164f, 3.000f };
 
 inline float cx(const Aabb& a){ return (a.minx+a.maxx)*0.5f; }
 inline float cy(const Aabb& a){ return (a.miny+a.maxy)*0.5f; }
@@ -132,6 +156,13 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
     const uint32_t frameA = loadAsset(kRelDoorFrame);
     const uint32_t consA  = loadAsset(kRelConsole);
     const uint32_t lightA = loadAsset(kRelLight);
+    // Detail props (D-content). Each may fail to load independently.
+    const uint32_t crateS = loadAsset(kRelCrateShort);
+    const uint32_t crateL = loadAsset(kRelCrateLong);
+    const uint32_t barrel = loadAsset(kRelBarrel);
+    const uint32_t pallet = loadAsset(kRelPallet);
+    const uint32_t fuse   = loadAsset(kRelFusebox);
+    const uint32_t pipes  = loadAsset(kRelPipes);
 
     const bool haveFloor = m_assetTable[floorA].ok;
     const bool haveCeil  = m_assetTable[ceilA].ok;
@@ -140,17 +171,16 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
     const bool haveCons  = m_assetTable[consA].ok;
     const bool haveLight = m_assetTable[lightA].ok;
 
-    // ---- Room footprints must match level1.cpp (along +X, z in [-zHalf,+zHalf]). ----
-    struct Room { float x0, x1, zHalf; };
-    const Room rooms[] = {
-        { 0.0f,  6.0f, 3.0f }, // cell
-        { 6.0f, 22.0f, 3.0f }, // corridor
-        {22.0f, 30.0f, 4.0f }, // armory
-        {30.0f, 42.0f, 4.0f }, // checkpoint
-        {42.0f, 56.0f, 7.0f }, // arena
-        {56.0f, 59.0f, 1.5f }, // elevator
-    };
-    constexpr float kWallTopY = 3.0f;   // graybox wall height (collision) — art is taller, fine
+    // ---- Room footprints + RAISED ceiling heights come from level1.cpp's shared
+    // canonical table (level1Rooms()), so the GLB floor/wall/ceiling/light tiling
+    // matches the collision geometry EXACTLY (bounds AND per-room height). ----
+    struct Room { float x0, x1, zHalf, ceil; };
+    Room rooms[(uint32_t)L1Room::Count];
+    {
+        const L1RoomDef* tbl = level1Rooms();
+        for (uint32_t i = 0; i < (uint32_t)L1Room::Count; ++i)
+            rooms[i] = Room{ tbl[i].x0, tbl[i].x1, tbl[i].zHalf, tbl[i].ceil };
+    }
 
     float m[16];
 
@@ -171,7 +201,9 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
                 for (int iz=0; iz<nz; ++iz) {
                     const float wxC = r.x0 + (ix + 0.5f) * tileX;
                     const float wzC = -r.zHalf + (iz + 0.5f) * tileZ;
-                    const float wyC = ceiling ? kWallTopY : 0.0f;
+                    // Floor at y=0; ceiling at THIS room's raised height (so the
+                    // panel sits at the new ceiling, not floating at the old 3 m).
+                    const float wyC = ceiling ? r.ceil : 0.0f;
                     // anchor: (ax, anchorY, az) -> (wxC, wyC, wzC), no yaw/scale.
                     placeYaw(m, 0.0f, 1.0f, ax, anchorY, az, wxC, wyC, wzC);
                     addInstance(asset, m);
@@ -190,17 +222,27 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
     if (haveWall) {
         const float panelW   = kWallAabb.maxz - kWallAabb.minz;  // 3.0 (local Z)
         const float wallMinY = kWallAabb.miny;                   // -0.04 -> floor
+        const float panelH   = kWallAabb.maxy - kWallAabb.miny;  // ~4.45 (local Y)
         const float wAnchorX = cx(kWallAabb);                    // local X center
         const float wAnchorZ = cz(kWallAabb);                    // local Z center (width)
         // Side walls: tile along X at z = ±zHalf, yaw +90deg (local +Z -> world +X).
+        // STACK rows of the 4.45 m panel up to each room's (raised) ceiling so the
+        // taller rooms (arena 8 m, elevator 9 m) have no gap above a single panel.
+        // Row r's panel bottom sits at y = r*panelH; we add a row while its bottom
+        // is still below the ceiling (the topmost row overhangs into the ceiling
+        // panel above — hidden, and the collision lid seals it).
         for (const Room& r : rooms) {
             const int n = (int)std::ceil((r.x1 - r.x0) / panelW);
-            for (int s=0; s<2; ++s) {
-                const float wz = (s==0) ? -r.zHalf : r.zHalf;
-                for (int i=0; i<n; ++i) {
-                    const float wx = r.x0 + (i + 0.5f) * panelW;
-                    placeYaw(m, kPi*0.5f, 1.0f, wAnchorX, wallMinY, wAnchorZ, wx, 0.0f, wz);
-                    addInstance(wallA, m);
+            const int rows = (int)std::ceil(r.ceil / panelH);   // 1 row for <=4.45 m
+            for (int row=0; row<rows; ++row) {
+                const float rowBaseY = (float)row * panelH;     // this row's floor
+                for (int s=0; s<2; ++s) {
+                    const float wz = (s==0) ? -r.zHalf : r.zHalf;
+                    for (int i=0; i<n; ++i) {
+                        const float wx = r.x0 + (i + 0.5f) * panelW;
+                        placeYaw(m, kPi*0.5f, 1.0f, wAnchorX, wallMinY, wAnchorZ, wx, rowBaseY, wz);
+                        addInstance(wallA, m);
+                    }
                 }
             }
         }
@@ -241,37 +283,104 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
         }
     }
 
-    // ---- CEILING LIGHTS: a strip light down the corridor + arena centers. ------
+    // ---- DETAIL PROPS (D-content): dress each room with crates / barrels /
+    // pallets / a wall fusebox / pipe runs so the cell, armory, checkpoint and
+    // arena read as distinct spaces instead of empty boxes. PURELY VISUAL (no
+    // collision) — placed clear of the z=0 walk spine + the doorways so they never
+    // block the player. Each prop is anchored at its floor (min-Y) onto the target
+    // world XZ, optionally yawed. A failed asset is silently skipped. ----
+    auto placeProp = [&](uint32_t asset, const Aabb& ab, float yaw,
+                         float wx, float wz, float scale = 1.0f) {
+        if (asset >= m_assetTable.size() || !m_assetTable[asset].ok) return;
+        placeYaw(m, yaw, scale, cx(ab), ab.miny, cz(ab), wx, 0.0f, wz);
+        addInstance(asset, m);
+    };
+    // Wall-panel prop (fusebox): anchored on a side wall, raised so it reads as a
+    // mounted panel (its AABB dips below 0, so lift it ~1 m onto the wall).
+    auto placeWallPanel = [&](uint32_t asset, const Aabb& ab, float yaw,
+                              float wx, float wy, float wz) {
+        if (asset >= m_assetTable.size() || !m_assetTable[asset].ok) return;
+        placeYaw(m, yaw, 1.0f, cx(ab), cy(ab), cz(ab), wx, wy, wz);
+        addInstance(asset, m);
+    };
+    {
+        const float cellZ = rooms[(uint32_t)L1Room::Cell].zHalf;
+        const float armZ  = rooms[(uint32_t)L1Room::Armory].zHalf;
+        const float chkZ  = rooms[(uint32_t)L1Room::Checkpoint].zHalf;
+        const float arZ   = rooms[(uint32_t)L1Room::Arena].zHalf;
+        // CELL: a barrel + a short crate tucked in the corner behind the spawn.
+        placeProp(barrel, kBarrelAabb, 0.0f,        4.6f, -cellZ + 0.7f);
+        placeProp(crateS, kCrateSAabb, 0.4f,        4.9f,  cellZ - 0.7f);
+        // CORRIDOR: pipe runs along both side walls (reads as a service corridor)
+        // + a wall fusebox between the guards' patrol.
+        placeProp(pipes,  kPipesAabb,  0.0f,        10.0f, -3.0f + 0.2f);
+        placeProp(pipes,  kPipesAabb,  0.0f,        17.0f,  3.0f - 0.2f);
+        placeWallPanel(fuse, kFuseAabb, kPi*0.5f,   14.0f, 1.6f, -3.0f + 0.15f);
+        // ARMORY: weapon-locker feel — a row of crates + a pallet flanking the
+        // pistol pedestal (armoryCenter), kept off the z=0 line to the pickup.
+        placeProp(pallet, kPalletAabb, 0.0f,        24.0f, -armZ + 1.1f);
+        placeProp(crateL, kCrateLAabb, kPi*0.5f,    24.0f, -armZ + 1.0f);
+        placeProp(crateS, kCrateSAabb, 0.0f,        24.7f, -armZ + 1.9f);
+        placeProp(crateS, kCrateSAabb, 0.7f,        28.0f,  armZ - 1.0f);
+        placeProp(barrel, kBarrelAabb, 0.0f,        28.6f,  armZ - 1.6f);
+        // CHECKPOINT: barricade crates the guards use as cover (off the spine).
+        placeProp(crateL, kCrateLAabb, 0.0f,        34.0f, -chkZ + 1.2f);
+        placeProp(crateS, kCrateSAabb, 0.0f,        34.0f, -chkZ + 2.0f);
+        placeProp(crateL, kCrateLAabb, 0.0f,        38.0f,  chkZ - 1.2f);
+        placeWallPanel(fuse, kFuseAabb, kPi*0.5f,   36.0f, 1.6f, -chkZ + 0.15f);
+        // ARENA: heavy crates + barrels around the perimeter so the boss room has
+        // cover/scenery; kept well back from the center where Martinez spawns.
+        placeProp(crateL, kCrateLAabb, kPi*0.5f,    45.0f, -arZ + 1.4f);
+        placeProp(crateS, kCrateSAabb, 0.0f,        45.8f, -arZ + 1.2f);
+        placeProp(barrel, kBarrelAabb, 0.0f,        53.0f, -arZ + 1.5f);
+        placeProp(crateL, kCrateLAabb, kPi*0.5f,    45.0f,  arZ - 1.4f);
+        placeProp(barrel, kBarrelAabb, 0.0f,        53.0f,  arZ - 1.5f);
+        placeProp(crateS, kCrateSAabb, 0.5f,        53.6f,  arZ - 2.2f);
+        placeProp(pallet, kPalletAabb, kPi*0.5f,    49.0f, -arZ + 1.1f);
+    }
+
+    // ---- CEILING LIGHTS: fixtures hung from EACH room's (now raised) ceiling. ----
     // Each placed Light_A fixture also registers a forward POINT LIGHT (captured in
-    // m_lightFixtures) so the corridor is actually lit, not just decorated with dark
+    // m_lightFixtures) so the rooms are actually lit, not just decorated with dark
     // fixture meshes. The light emits from just below the fixture (so the ceiling
-    // doesn't occlude it and the cone reaches the floor ~3 m down). Warm-white, the
-    // color premultiplied by an intensity so a fixture reads as a bright pool of
-    // light with sensible overlap (placed every 4 m; range ~7.5 m).
+    // doesn't occlude it). Warm-white, color premultiplied by an intensity so a
+    // fixture reads as a bright pool of light with sensible overlap.
+    //   - Lights now follow the room ceiling height (no longer floating at 3 m).
+    //   - The point-light RANGE scales with the room ceiling so the floor of the
+    //     tall arena/elevator (8-9 m down) still receives light.
+    //   - The big arena gets a 2-row grid across its width (z = ±zHalf*0.5) so the
+    //     boss room is evenly lit instead of a single lonely strip overhead.
     if (haveLight && haveCeil) {
-        const float lightY = kWallTopY - 0.05f;       // fixture mesh Y (~2.95)
         // Warm-white emitter, premultiplied by intensity (kept in linear light;
-        // mesh.frag accumulates additively then tonemaps). Tuned so the corridor
-        // reads bright + atmospheric without blowing out the hazard stripes.
+        // mesh.frag accumulates additively then tonemaps).
         const float kIntensity = 3.2f;
         const float kColR = 1.00f * kIntensity;
         const float kColG = 0.86f * kIntensity;
         const float kColB = 0.62f * kIntensity;       // warm tungsten-ish white
-        const float kRange = 7.5f;                     // meters; covers the 4 m spacing
         for (const Room& r : rooms) {
-            const int n = (int)std::ceil((r.x1 - r.x0) / 4.0f);
-            for (int i=0;i<n;++i) {
-                const float wx = r.x0 + (i + 0.5f) * 4.0f;
-                placeYaw(m, 0.0f, 1.0f, cx(kLightAabb), kLightAabb.maxy, cz(kLightAabb),
-                         wx, lightY, 0.0f);
-                addInstance(lightA, m);
-                // Point light a touch below the fixture so the ceiling panel above
-                // doesn't occlude the pool of light it casts on the floor/walls.
-                x3::rhi::PointLight pl;
-                pl.pos[0] = wx; pl.pos[1] = lightY - 0.25f; pl.pos[2] = 0.0f;
-                pl.range  = kRange;
-                pl.color[0] = kColR; pl.color[1] = kColG; pl.color[2] = kColB;
-                m_lightFixtures.push_back(pl);
+            const float lightY  = r.ceil - 0.05f;                 // fixture just below ceiling
+            // Range covers the 4 m spacing AND reaches the floor in tall rooms.
+            const float range   = std::max(7.5f, r.ceil + 3.5f);
+            const int   n       = (int)std::ceil((r.x1 - r.x0) / 4.0f);
+            // Wide rooms (arena) get two z-rows so the floor is evenly lit.
+            const bool  twoRows = (r.zHalf >= 6.0f);
+            const int   zr      = twoRows ? 2 : 1;
+            const float zoff    = twoRows ? r.zHalf * 0.5f : 0.0f;
+            for (int j=0;j<zr;++j) {
+                const float wz = twoRows ? ((j==0) ? -zoff : zoff) : 0.0f;
+                for (int i=0;i<n;++i) {
+                    const float wx = r.x0 + (i + 0.5f) * 4.0f;
+                    placeYaw(m, 0.0f, 1.0f, cx(kLightAabb), kLightAabb.maxy, cz(kLightAabb),
+                             wx, lightY, wz);
+                    addInstance(lightA, m);
+                    // Point light a touch below the fixture so the ceiling panel above
+                    // doesn't occlude the pool of light it casts on the floor/walls.
+                    x3::rhi::PointLight pl;
+                    pl.pos[0] = wx; pl.pos[1] = lightY - 0.25f; pl.pos[2] = wz;
+                    pl.range  = range;
+                    pl.color[0] = kColR; pl.color[1] = kColG; pl.color[2] = kColB;
+                    m_lightFixtures.push_back(pl);
+                }
             }
         }
         x3::logInfo("[env-art] registered " + std::to_string(m_lightFixtures.size()) +

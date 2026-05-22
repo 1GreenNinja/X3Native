@@ -211,6 +211,7 @@ private:
     bool m_doorAWasOpen     = false; // beat 3: corridor spawn on Door A reaching Open
     bool m_corridorSpawned  = false;
     bool m_armedLatch       = false; // beat 7: unlock Door C the frame we arm
+    bool m_checkpointClearLatch = false; // checkpoint cleared -> objective -> boss
     bool m_martinezSpawned  = false; // beat 9
     bool m_martinezDeadLatch= false; // beat 10: unlock+open Door E once
     bool m_complete         = false; // beat 11: WIN (logged once)
