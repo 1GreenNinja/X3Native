@@ -13,6 +13,7 @@
 #include "engine/asset/IAssetSource.h"
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/physics/Destruction.h"   // K-T0/T1 destructibles + --test-destruction
+#include "engine/physics/StructuralCollapse.h" // K-T3 support-graph collapse + --test-collapse
 #include "engine/physics/IVehicle.h"      // vehicle framework: --test-vehicle + --world drive/boat/fly
 #include "engine/asset/IModelLoader.h"
 #include "engine/audio/IAudioSystem.h"
@@ -305,6 +306,11 @@ int main(int argc, char** argv) {
     bool        testDebris = false;
     // --test-spiretop (Spire top-floor content): F6/F7 (Act-1 finale) encounter authoring. Additive.
     bool        testSpireTop = false;
+    // --test-collapse (K-T3 structural collapse): build a small structure (column /
+    // beam on two supports), destroy a support, step the sim, and assert the
+    // unsupported pieces fall (static->dynamic), anchored pieces stay stable, the
+    // rubble settles bounded/NaN-free, GPU debris fires, and it's leak-clean. Additive.
+    bool        testCollapse = false;
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
     // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
     // and confirm the joint palette changes. Asset-pipeline verification for the
@@ -457,6 +463,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-rescue") testRescue = true;
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-debris") testDebris = true;
+        else if (a == "--test-collapse") testCollapse = true;
         else if (a == "--test-nav") testNav = true;
         else if (a == "--test-weapons") testWeapons = true;
         else if (a == "--test-vehicle") testVehicle = true;
@@ -731,6 +738,12 @@ int main(int argc, char** argv) {
         x3::logInfo("running K-T2 GPU-compute persistent debris world self-test "
                     "(spawn burst -> compute integrate -> fall/settle/sleep -> lifetime free)...");
         return runDebrisSelfTest() ? 0 : 1;
+    }
+    if (testCollapse) {
+        x3::logInfo("running K-T3 structural collapse (support graph) self-test "
+                    "(destroy a support -> unsupported sub-graph falls, anchored stays, "
+                    "rubble settles, GPU debris fires)...");
+        return x3::phys::runCollapseSelfTest() ? 0 : 1;
     }
     if (testNav) {
         x3::logInfo("running GENERAL navigation (nav grid + A* + path-follow) self-test...");
