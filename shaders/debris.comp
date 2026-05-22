@@ -1,0 +1,179 @@
+#version 450
+// GPU-compute persistent debris world (Subsystem K, tier T2).
+//
+// CLEAN-ROOM, original work. Built ONLY from the K spec (specs/K-gpu-destruction.spec.md
+// §5), the Vulkan 1.3 spec (compute, SSBOs, atomics), and public real-time
+// references (Harada "Real-Time Rigid Body Simulation on GPUs", GPU Gems 3 ch.29;
+// Mueller et al. position-based dynamics; semi-implicit Euler). No id Tech / RBDOOM
+// source consulted.
+//
+// WHAT THIS DOES: integrates a fixed pool of debris fragments each fixed step:
+//   * semi-implicit Euler with gravity + linear velocity damping,
+//   * simple collision against an infinite GROUND PLANE at y=groundY (restitution +
+//     tangential friction), plus an optional small set of world AABBs,
+//   * a per-fragment angular spin advanced linearly (visual tumble only),
+//   * SLEEP when both linear + angular speed stay below a threshold for N steps
+//     (a settled fragment skips integration -> persistent debris stays cheap),
+//   * LIFETIME decay; when life runs out the slot is FREED back to the pool (state
+//     set to DEAD) and the global alive counter is atomically decremented.
+//
+// DETERMINISM: given the same pool contents + the same params + dt, the per-thread
+// math is identical run-to-run (no atomics affect the integrated values; the only
+// atomic is the alive-count decrement on free, which does not feed the sim).
+
+layout(local_size_x = 64) in;
+
+// One debris fragment. SoA-ish packed into vec4s for std430 friendliness; matches
+// the GpuDebrisFragment struct in VulkanRenderDevice.cpp EXACTLY (16-byte rows).
+struct Fragment {
+    vec4 posLife;   // xyz = world position, w = remaining lifetime (seconds)
+    vec4 velScale;  // xyz = linear velocity (m/s), w = half-extent (uniform cube)
+    vec4 spinState; // xyz = angular velocity (rad/s), w = packed: floor(state) + frac(sleepCtr/256)
+    vec4 rot;       // xyzw = orientation quaternion (x,y,z,w)
+};
+
+// State values packed into spinState.w integer part.
+const float STATE_DEAD   = 0.0;
+const float STATE_ACTIVE = 1.0;
+const float STATE_SLEEP  = 2.0;
+
+layout(std430, set = 0, binding = 0) buffer Pool { Fragment frags[]; };
+// Global counters: [0] = current alive count (active+sleeping). Atomically updated.
+layout(std430, set = 0, binding = 1) buffer Counters { uint counters[]; };
+
+layout(set = 0, binding = 2) uniform Params {
+    vec4 gravityDt;     // xyz = gravity (m/s^2), w = dt (seconds)
+    vec4 groundDamp;    // x = groundY, y = restitution, z = friction, w = linear damping/sec
+    vec4 sleepCap;      // x = sleepLinSpeed, y = sleepAngSpeed, z = sleepFrames, w = capacity (count)
+    vec4 aabbCount;     // x = number of world AABBs to test (<= 4)
+    vec4 aabbMin[4];    // xyz = AABB min corner
+    vec4 aabbMax[4];    // xyz = AABB max corner
+} u;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= uint(u.sleepCap.w)) return;
+
+    Fragment f = frags[i];
+    float state = floor(f.spinState.w + 0.5);
+    if (state == STATE_DEAD) return;          // free slot: nothing to do
+
+    float dt = u.gravityDt.w;
+
+    // ---- Lifetime decay + free ----
+    f.posLife.w -= dt;
+    if (f.posLife.w <= 0.0) {
+        // Free this slot back to the pool: mark DEAD + decrement the alive count.
+        f.spinState.w = STATE_DEAD;
+        // Park it far below so a stale draw never shows it (draw also skips DEAD).
+        f.posLife.xyz = vec3(0.0, -1.0e6, 0.0);
+        f.velScale.xyz = vec3(0.0);
+        frags[i] = f;
+        atomicAdd(counters[0], 0xFFFFFFFFu); // -1 (wraps; alive>0 guaranteed here)
+        return;
+    }
+
+    // Recover the sleep counter (frac part * 256, rounded).
+    float sleepCtr = floor(fract(f.spinState.w) * 256.0 + 0.5);
+
+    // ---- SLEEP fast-path: skip integration, keep the slot persistent ----
+    if (state == STATE_SLEEP) {
+        // Re-pack (lifetime already decayed) and keep sleeping.
+        f.spinState.w = STATE_SLEEP + (sleepCtr / 256.0);
+        frags[i] = f;
+        return;
+    }
+
+    // ---- ACTIVE: semi-implicit Euler integrate ----
+    vec3 vel = f.velScale.xyz;
+    vec3 pos = f.posLife.xyz;
+    float halfExt = f.velScale.w;
+
+    // Gravity + per-second linear damping (frame-rate-correct exp approximation).
+    vel += u.gravityDt.xyz * dt;
+    float damp = clamp(1.0 - u.groundDamp.w * dt, 0.0, 1.0);
+    vel *= damp;
+    pos += vel * dt;
+
+    // ---- Ground-plane collision (infinite plane at groundY) ----
+    float groundY = u.groundDamp.x;
+    float rest    = u.groundDamp.y;
+    float fric    = u.groundDamp.z;
+    float floorY  = groundY + halfExt;         // cube rests its bottom face on the plane
+    // Angular velocity (read here so ground contact can also brake the spin).
+    vec3 w = f.spinState.xyz * damp;           // free-flight angular damping
+    if (pos.y < floorY) {
+        pos.y = floorY;
+        if (vel.y < 0.0) vel.y = -vel.y * rest; // bounce
+        // Tangential friction on the ground.
+        vel.x *= (1.0 - fric);
+        vel.z *= (1.0 - fric);
+        // Kill tiny residual vertical jitter so it can settle.
+        if (abs(vel.y) < 0.05) vel.y = 0.0;
+        // Rolling/contact friction also brakes the spin so grounded debris stops
+        // tumbling and can sleep (a resting fragment does not keep spinning).
+        w *= (1.0 - fric);
+    }
+
+    // ---- Optional world AABB collision (small set; cheap push-out) ----
+    int naabb = int(u.aabbCount.x + 0.5);
+    for (int a = 0; a < naabb && a < 4; ++a) {
+        vec3 mn = u.aabbMin[a].xyz - vec3(halfExt);
+        vec3 mx = u.aabbMax[a].xyz + vec3(halfExt);
+        if (all(greaterThan(pos, mn)) && all(lessThan(pos, mx))) {
+            // Push out along the axis of least penetration.
+            vec3 pLo = pos - mn;   // penetration from the min side
+            vec3 pHi = mx - pos;   // penetration from the max side
+            float m = 1.0e30; int axis = 1; float dir = 1.0;
+            if (pLo.x < m) { m = pLo.x; axis = 0; dir = -1.0; }
+            if (pHi.x < m) { m = pHi.x; axis = 0; dir =  1.0; }
+            if (pLo.y < m) { m = pLo.y; axis = 1; dir = -1.0; }
+            if (pHi.y < m) { m = pHi.y; axis = 1; dir =  1.0; }
+            if (pLo.z < m) { m = pLo.z; axis = 2; dir = -1.0; }
+            if (pHi.z < m) { m = pHi.z; axis = 2; dir =  1.0; }
+            if (axis == 0) { pos.x += dir * m; vel.x = -vel.x * rest; }
+            else if (axis == 1) { pos.y += dir * m; vel.y = -vel.y * rest; }
+            else { pos.z += dir * m; vel.z = -vel.z * rest; }
+        }
+    }
+
+    // ---- Advance orientation by the angular velocity (small-angle quaternion) ----
+    vec4 q = f.rot;
+    vec4 dq = 0.5 * dt * vec4(
+        w.x*q.w + w.y*q.z - w.z*q.y,
+        w.y*q.w + w.z*q.x - w.x*q.z,
+        w.z*q.w + w.x*q.y - w.y*q.x,
+       -w.x*q.x - w.y*q.y - w.z*q.z);
+    q += dq;
+    q = normalize(q);
+
+    // ---- Sleep detection ----
+    float linSpeed = length(vel);
+    float angSpeed = length(w);
+    bool slow = (linSpeed < u.sleepCap.x) && (angSpeed < u.sleepCap.y) && (pos.y <= floorY + 0.02);
+    if (slow) {
+        sleepCtr += 1.0;
+        if (sleepCtr >= u.sleepCap.z) {
+            // Settle: zero the motion + flip to SLEEP (skips future integration).
+            vel = vec3(0.0);
+            w   = vec3(0.0);
+            f.spinState.xyz = w;
+            f.velScale.xyz = vel;
+            f.posLife.xyz = pos;
+            f.rot = q;
+            f.spinState.w = STATE_SLEEP; // sleepCtr reset implicitly (frac == 0)
+            frags[i] = f;
+            return;
+        }
+    } else {
+        sleepCtr = 0.0;
+    }
+
+    // ---- Write back (still ACTIVE) ----
+    f.posLife.xyz  = pos;
+    f.velScale.xyz = vel;
+    f.spinState.xyz = w;
+    f.rot = q;
+    f.spinState.w = STATE_ACTIVE + (clamp(sleepCtr, 0.0, 255.0) / 256.0);
+    frags[i] = f;
+}

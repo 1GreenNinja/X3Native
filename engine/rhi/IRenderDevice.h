@@ -347,6 +347,79 @@ public:
     };
     virtual void submitDecals(const DecalInstance* decals, uint32_t count) = 0;
 
+    // ---- GPU-compute persistent debris world (Subsystem K, tier T2) ---------
+    // A GPU-resident pool of thousands of cheap debris fragments simulated entirely
+    // in a COMPUTE shader and drawn via the existing GPU-driven INSTANCED path. This
+    // is an ADDITIVE, opt-in layer ON TOP of the Jolt chunk destruction (K-T0/T1):
+    // the authoritative ~256 Jolt bodies stay exactly as they are; this carries the
+    // far cheaper, far larger persistent rubble (settles + sleeps so it stays cheap).
+    //
+    // Lifecycle: configure once (gpuDebrisConfig), spawn bursts at fracture/explosion
+    // events (gpuDebrisSpawnBurst), step the sim each frame AFTER beginFrame and
+    // BEFORE the draw (gpuDebrisStep dispatches the compute pass), then draw the live
+    // pool between beginFrame/endFrame (gpuDebrisDraw issues ONE instanced cube draw
+    // over the whole pool capacity; dead slots collapse to nothing in the shader).
+    //
+    // PASCAL (1080 Ti): plain compute only — NO hardware ray tracing. The compute is
+    // a synchronous pass on the graphics queue (the spec's async path is a 5090
+    // optimization; the synchronous fallback is correct everywhere). POD only — no
+    // Vulkan types cross this boundary.
+
+    // Simulation tunables (spec §5/§15). All cached by the device; re-applied each
+    // gpuDebrisStep. Defaults are sensible for a ~1m-scale ground world.
+    struct GpuDebrisParams {
+        float gravity[3]   = { 0.0f, -9.81f, 0.0f }; // m/s^2
+        float groundY      = 0.0f;    // infinite ground plane height (world +Y)
+        float restitution  = 0.30f;   // bounce on ground/AABB contact (0..1)
+        float friction     = 0.40f;   // tangential ground friction per contact (0..1)
+        float linearDamping= 0.20f;   // per-second linear velocity damping
+        float sleepLinSpeed= 0.20f;   // below this linear speed -> sleep-eligible (m/s)
+        float sleepAngSpeed= 0.30f;   // below this angular speed -> sleep-eligible (rad/s)
+        uint32_t sleepFrames = 12;    // consecutive slow steps before settling to sleep
+        // Optional small set of world AABBs the fragments collide against (besides the
+        // ground plane). Up to 4; aabbCount==0 = ground plane only.
+        uint32_t aabbCount = 0;
+        float aabbMin[4][3] = {};
+        float aabbMax[4][3] = {};
+    };
+    // Per-fragment readback snapshot (tests / HUD). Computed by gpuDebrisReadback()
+    // from the live GPU pool (the device reads the pool back to host memory; intended
+    // for verification, not the hot path).
+    struct GpuDebrisStats {
+        uint32_t alive    = 0;        // active + sleeping fragments
+        uint32_t settled  = 0;        // fragments in the SLEEP state
+        uint32_t capacity = 0;        // pool capacity
+        float    minY     = 0.0f;     // lowest live-fragment y (settling proof)
+        float    maxY     = 0.0f;     // highest live-fragment y
+        float    maxSpeed = 0.0f;     // largest live linear speed (boundedness proof)
+        uint32_t nanCount = 0;        // live fragments with any NaN/Inf component (must be 0)
+        uint32_t outOfBounds = 0;     // live fragments outside +/- boundsLimit (must be 0)
+    };
+
+    // Configure the debris simulation. Cheap; cache + re-apply each step.
+    virtual void gpuDebrisConfig(const GpuDebrisParams&) = 0;
+    // Emit a burst of `count` fragments at `pos` with an outward velocity spread of
+    // magnitude ~`speed` (+ an upward bias) and a random spin, each living `lifetime`
+    // seconds with half-extent `halfExtent`. `seed` makes the burst deterministic.
+    // Recycles the oldest fragments if the pool is full (never blocks, never allocs).
+    // Returns the number actually spawned (== count unless clamped to capacity).
+    virtual uint32_t gpuDebrisSpawnBurst(const float pos[3], uint32_t count, float speed,
+                                         float lifetime, float halfExtent, uint32_t seed) = 0;
+    // Advance the debris sim by `dt` (dispatches the compute pass over the pool).
+    // Call once per frame between beginFrame and gpuDebrisDraw.
+    virtual void gpuDebrisStep(float dt) = 0;
+    // Draw the live debris pool (one instanced cube draw over the pool capacity).
+    // Call between beginFrame/endFrame, after gpuDebrisStep. `tint` is linear RGBA.
+    virtual void gpuDebrisDraw(const FrameContext&, const float tint[4]) = 0;
+    // Current alive (active + sleeping) fragment count (cheap; no GPU readback).
+    virtual uint32_t gpuDebrisAliveCount() const = 0;
+    // Pool capacity (the configured maximum simultaneous fragments).
+    virtual uint32_t gpuDebrisCapacity() const = 0;
+    // Read the live pool back to host memory + summarize (tests). `boundsLimit` is
+    // the absolute-coordinate bound a live fragment must stay within. Returns a
+    // zeroed snapshot if the device has no debris pool (e.g. a headless stub).
+    virtual GpuDebrisStats gpuDebrisReadback(float boundsLimit = 1.0e5f) const = 0;
+
     // ---- Forward point lights (interior fill) ------------------------------
     // Set the active point lights for subsequent frames. The device copies the
     // array (does NOT retain the pointer) and uploads them into the per-frame
