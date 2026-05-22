@@ -13,6 +13,8 @@
 // the same correct sync it did before.
 
 #include "RenderGraph.h"
+#include "../core/x3_log.h"
+#include <cassert>
 
 namespace x3::rhi {
 
@@ -50,8 +52,8 @@ void RenderGraph::setState(RgResource r, const ResourceState& s) {
 void RenderGraph::execute(VkCommandBuffer cmd) {
     // Stack scratch for the per-pass barrier batch. A pass touches at most a
     // handful of resources, so a small fixed array avoids any per-frame heap use.
-    // (kMaxUsesPerPass comfortably covers shadow/color/capture passes.)
-    constexpr uint32_t kMaxUsesPerPass = 8;
+    // kMaxUsesPerPass (shared from RenderGraph.h) bounds both a pass's declared
+    // uses[] and this barrier batch, so they can never disagree.
     VkImageMemoryBarrier2 barriers[kMaxUsesPerPass];
 
     for (RenderPassDesc& pass : m_passes) {
@@ -64,9 +66,21 @@ void RenderGraph::execute(VkCommandBuffer cmd) {
         // always wait on the resource's last stage/access (src scope) and make the
         // memory available/visible to this pass's stage/access (dst scope) — this
         // is the same dependency the hand-code expressed, derived generically.
-        for (const ResourceUse& use : pass.uses) {
+        for (uint32_t ui = 0; ui < pass.useCount; ++ui) {
+            const ResourceUse& use = pass.uses[ui];
             if (!use.res.valid() || use.res.id >= m_resources.size()) continue;
-            if (bcount >= kMaxUsesPerPass) break;
+            // Fix 5: a pass that needs MORE barriers than the batch can hold is a
+            // silent sync hazard if we just `break`. bcount can never exceed
+            // useCount, and useCount is capped at kMaxUsesPerPass by addUse(), so
+            // this is structurally impossible — but guard it loudly anyway: assert
+            // in Debug, logError + skip (don't emit garbage) in Release.
+            if (bcount >= kMaxUsesPerPass) {
+                assert(bcount < kMaxUsesPerPass &&
+                       "RenderGraph: pass exceeded kMaxUsesPerPass barriers — raise the cap");
+                x3::logError("[rhi] RenderGraph: pass barrier batch exceeded "
+                             "kMaxUsesPerPass — a sync barrier was dropped (raise the cap)");
+                break;
+            }
             Resource& r = m_resources[use.res.id];
             const ResourceState& cur = r.state;
 
@@ -117,7 +131,8 @@ void RenderGraph::execute(VkCommandBuffer cmd) {
         // barrier) so a later pass derives its src scope correctly. For a pure
         // read-after-read we still record the latest reader's stage/access so a
         // subsequent writer waits on ALL readers.
-        for (const ResourceUse& use : pass.uses) {
+        for (uint32_t ui = 0; ui < pass.useCount; ++ui) {
+            const ResourceUse& use = pass.uses[ui];
             if (!use.res.valid() || use.res.id >= m_resources.size()) continue;
             Resource& r = m_resources[use.res.id];
             r.state.layout = use.layout;
@@ -125,11 +140,12 @@ void RenderGraph::execute(VkCommandBuffer cmd) {
             r.state.access = use.access;
         }
 
-        // ---- Drive dynamic rendering + record the pass body.
+        // ---- Drive dynamic rendering + record the pass body (function pointer +
+        // ctx — no std::function, no per-frame heap alloc).
         if (pass.usesDynamicRendering)
             vkCmdBeginRendering(cmd, &pass.renderInfo);
         if (pass.record)
-            pass.record(cmd);
+            pass.record(pass.recordCtx, cmd);
         if (pass.usesDynamicRendering)
             vkCmdEndRendering(cmd);
     }

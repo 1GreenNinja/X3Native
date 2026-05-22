@@ -38,10 +38,17 @@
 
 #include <vulkan/vulkan.h>
 #include <cstdint>
-#include <functional>
+#include <cassert>
 #include <vector>
 
 namespace x3::rhi {
+
+// Max resource uses a single pass may declare (and the per-pass barrier batch
+// size in execute()). Shared by RenderPassDesc::uses[] and execute()'s scratch
+// array so they can never disagree. The busiest pass today (the GI terrain pass)
+// declares 5; 8 leaves comfortable headroom. Bump here if a future pass needs
+// more — both the inline array and the barrier batch grow together.
+inline constexpr uint32_t kMaxUsesPerPass = 8;
 
 // ---------------------------------------------------------------------------
 // Resource model. A graph resource is an IMAGE (the only thing needing layout
@@ -82,24 +89,46 @@ enum class RgQueue : uint8_t { Graphics, Compute };
 // graph emits all required barriers BEFORE invoking `record`, and (for raster
 // passes that set `render`) drives vkCmdBeginRendering/EndRendering around it.
 struct RenderPassDesc {
+    // The command recorder. A RAW function pointer + an opaque ctx pointer instead
+    // of a std::function: a std::function whose captures exceed its small-buffer
+    // size heap-allocates ON CONSTRUCTION, which for ~20 passes/frame is ~20 hidden
+    // allocs/frame. A plain function pointer never allocates. `ctx` points at STABLE
+    // per-pass storage the renderer already keeps (e.g. a per-pass member struct, or
+    // simply `this`); the trampoline casts it back. Receives the live command buffer
+    // (already inside vkCmdBeginRendering when usesDynamicRendering). Must not record
+    // barriers for graph-tracked resources — those are derived. `record == nullptr`
+    // is allowed (a pure layout-transition pass, e.g. present finalize).
+    using RecordFn = void(*)(void* ctx, VkCommandBuffer cmd);
+
     const char*               name = "pass";
     RgQueue                   queue = RgQueue::Graphics;
-    std::vector<ResourceUse>  uses;
+
+    // Fixed inline array of resource uses (NO per-frame heap allocation; the old
+    // std::vector push_back'd fresh every frame for every pass). Fill via addUse().
+    ResourceUse               uses[kMaxUsesPerPass]{};
+    uint32_t                  useCount = 0;
 
     // Optional dynamic-rendering description. If `usesDynamicRendering` is true the
     // graph calls vkCmdBeginRendering(renderInfo) after barriers and
     // vkCmdEndRendering() after `record`. Leave false for non-raster passes
     // (e.g. a transfer/capture copy or a compute dispatch) that issue their own
     // commands directly. The VkRenderingInfo + attachment infos must outlive
-    // execute() (the renderer keeps them on the stack across the addPass+execute).
+    // execute() (the renderer keeps them in stable members across addPass+execute).
     bool                      usesDynamicRendering = false;
     VkRenderingInfo           renderInfo{};
 
-    // The command recorder. Receives the live command buffer (already inside
-    // vkCmdBeginRendering when usesDynamicRendering). Must not record barriers for
-    // graph-tracked resources — those are derived. Allocation-free in the steady
-    // path (the renderer captures by reference into stack lambdas).
-    std::function<void(VkCommandBuffer)> record;
+    RecordFn                  record = nullptr;
+    void*                     recordCtx = nullptr;
+
+    // Append a resource use into the inline array. In Debug an over-cap append
+    // trips the assert (catches a pass that outgrew the cap at the source); in
+    // Release it is dropped (and execute()'s guard also logs) — kMaxUsesPerPass is
+    // sized with headroom so this never fires in practice.
+    void addUse(const ResourceUse& u) {
+        assert(useCount < kMaxUsesPerPass &&
+               "RenderPassDesc: too many uses — raise kMaxUsesPerPass in RenderGraph.h");
+        if (useCount < kMaxUsesPerPass) uses[useCount++] = u;
+    }
 };
 
 // ---------------------------------------------------------------------------
