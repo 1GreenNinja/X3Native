@@ -5,6 +5,7 @@
 // purchased C# / id Tech / RBDOOM source consulted. Mirrors monster.cpp.
 #include "rescue.h"
 #include "mesh_prims.h"
+#include "headless_device.h"
 
 #include "engine/core/x3_log.h"
 
@@ -368,51 +369,10 @@ void rcheck(bool cond, const char* name) {
     else      { ++g_rfail; x3::logError(std::string("[rescue-test] FAIL ") + name); }
 }
 
-// Minimal headless IRenderDevice (same shape as monster.cpp / door.cpp). Mints
-// valid handles so build() runs without Vulkan; draw/frame calls are no-ops.
-class HeadlessDevice final : public x3::rhi::IRenderDevice {
-public:
-    bool init(const x3::rhi::DeviceDesc&) override { return true; }
-    void shutdown() override {}
-    void onResize(uint32_t, uint32_t) override {}
-    void setCamera(float, float, float, float, float, float) override {}
-    x3::rhi::FrameContext beginFrame() override { return {}; }
-    void endFrame(const x3::rhi::FrameContext&) override {}
-    x3::rhi::MeshHandle createMesh(const x3::rhi::MeshVertex*, uint32_t,
-                                   const uint32_t*, uint32_t) override {
-        return x3::rhi::MeshHandle{ m_next++ };
-    }
-    void destroyMesh(x3::rhi::MeshHandle) override {}
-    void updateMesh(x3::rhi::MeshHandle, const x3::rhi::MeshVertex*, uint32_t) override {}
-    x3::rhi::TextureHandle createTexture(const void*, uint32_t, uint32_t, bool) override {
-        return x3::rhi::TextureHandle{ m_next++ };
-    }
-    void destroyTexture(x3::rhi::TextureHandle) override {}
-    void drawMesh(const x3::rhi::FrameContext&, x3::rhi::MeshHandle,
-                  x3::rhi::TextureHandle, const float[4], const float[16]) override {}
-    void drawMeshEmissive(const x3::rhi::FrameContext&, x3::rhi::MeshHandle,
-                          x3::rhi::TextureHandle, const float[4], const float[4],
-                          const float[16]) override {}
-    void setPointLights(const x3::rhi::PointLight*, uint32_t) override {}
-    void setSkyParams(const x3::rhi::IRenderDevice::SkyParams&) override {}
-    void setSsaoParams(const x3::rhi::IRenderDevice::SsaoParams&) override {}
-    void setWaterParams(const x3::rhi::IRenderDevice::WaterParams&) override {}
-    void setGiParams(const x3::rhi::IRenderDevice::GiParams&) override {}
-    x3::rhi::TextureHandle registerTerrainMaterial(x3::rhi::TextureHandle, x3::rhi::TextureHandle,
-                                                   x3::rhi::TextureHandle, x3::rhi::TextureHandle) override {
-        return x3::rhi::TextureHandle{ m_next++ };
-    }
-    void drawHudQuad(const x3::rhi::FrameContext&, float, float, float, float, const float[4]) override {}
-    void drawHudText(const x3::rhi::FrameContext&, const char*, float, float, float, const float[4]) override {}
-    void hudSize(uint32_t& w, uint32_t& h) const override { w = 0; h = 0; }
-    x3::rhi::RenderStats stats() const override { return {}; }
-    void armCapture(const char*) override {}
-    bool captureFrame(const char*) override { return false; }
-    bool supportsDescriptorIndexing() const override { return false; }
-    bool supportsMeshShaders() const override { return false; }
-private:
-    uint32_t m_next = 1;
-};
+// Headless IRenderDevice: the shared no-op test-double (app/headless_device.h).
+// Mints valid handles so build() runs without Vulkan; draw/frame calls are
+// no-ops.
+using HeadlessDevice = x3::game::HeadlessRenderDevice;
 
 } // namespace
 
