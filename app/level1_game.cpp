@@ -179,13 +179,18 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                x3::phys::Vec3{ m_layout.armoryCenter.x, 1.0f,
                                                m_layout.armoryCenter.z });
 
-    // ---- Checkpoint guards (built at level build; beat 8). 2 guards. ----
+    // ---- Checkpoint encounter (built at level build; beat 8). Now the player is
+    // armed, so this is a proper firefight: 3 Guards holding the line behind the
+    // barricade crates + 1 Drone covering from the back of the room. ----
+    const x3::phys::Vec3 cc = m_layout.checkpointCenter;
     m_checkpoint.spawn(scene, device, physics, m_modelDir,
-                       x3::phys::Vec3{ m_layout.checkpointCenter.x - 2.0f, kEnemyY,
-                                       m_layout.checkpointCenter.z - 2.0f }, guardTuning());
+                       x3::phys::Vec3{ cc.x - 2.5f, kEnemyY, cc.z - 2.0f }, guardTuning());
     m_checkpoint.spawn(scene, device, physics, m_modelDir,
-                       x3::phys::Vec3{ m_layout.checkpointCenter.x + 2.0f, kEnemyY,
-                                       m_layout.checkpointCenter.z + 2.0f }, guardTuning());
+                       x3::phys::Vec3{ cc.x - 2.0f, kEnemyY, cc.z + 2.0f }, guardTuning());
+    m_checkpoint.spawn(scene, device, physics, m_modelDir,
+                       x3::phys::Vec3{ cc.x + 2.5f, kEnemyY, cc.z }, guardTuning());
+    m_checkpoint.spawn(scene, device, physics, m_modelDir,
+                       x3::phys::Vec3{ cc.x + 4.0f, kEnemyY, cc.z - 1.5f }, droneTuning());
 
     // ---- Trigger volumes. Strength (cell), arena (boss entry), elevator (win,
     // disabled until the boss dies). ----
@@ -203,14 +208,19 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                    m_layout.elevatorHalf.z },
                    (uint32_t)L1Trigger::Elevator, /*enabled*/false);
 
-    // ---- Objectives (§3): the ordered list, cursor at the first. ----
+    // ---- Objectives (§3): the ordered list, cursor at the first. D-content fills
+    // out the middle so the on-screen text tracks the WHOLE path the player walks:
+    // escape -> arm in the armory -> clear the checkpoint -> beat the boss -> ride
+    // the elevator. Five steps; each transition is wired in tick() below.
+    //   0 escape | 1 arm | 2 checkpoint | 3 boss | 4 elevator
     m_objectives.set({ "Escape the detention cell",
-                       "Find weapons in the armory",
-                       "Reach the elevator to Floor 2",
-                       "Take the elevator" });
+                       "Fight to the armory and arm yourself",
+                       "Clear the security checkpoint",
+                       "Defeat Chief Martinez",
+                       "Take the elevator to Floor 2" });
 
     m_built = true;
-    x3::logInfo("Level1Game::build complete — doors A-E, pistol pickup, 2 checkpoint guards, 3 triggers");
+    x3::logInfo("Level1Game::build complete — doors A-E, pistol pickup, 4 checkpoint enemies, 3 triggers");
 }
 
 uint32_t Level1Game::doorIndex(char letter) const {
@@ -240,15 +250,25 @@ void Level1Game::spawnCorridorEnemies(Scene& scene, x3::rhi::IRenderDevice& devi
                                       x3::phys::IPhysicsWorld& physics) {
     if (m_corridorSpawned) return;
     m_corridorSpawned = true;
-    // 2 Security Guards + 1 Surveillance Drone in the corridor (x in [6,22]).
+    // The alarm encounter (x in [6,22]): a near pair of Guards that advance on the
+    // player, then a flanking Drone pair further down that keep a ranged standoff —
+    // a sensible escalation as the player pushes from the cell toward the armory.
+    // (3 guards + 2 drones = 5; was 2+1. The combat AI makes them advance/flank.)
     const float cz = m_layout.corridorCenter.z;
+    // Near guards — advance from just past Door A.
     m_corridor.spawn(scene, device, physics, m_modelDir,
-                     x3::phys::Vec3{ 12.0f, kEnemyY, cz - 1.5f }, guardTuning());
+                     x3::phys::Vec3{ 10.0f, kEnemyY, cz - 1.6f }, guardTuning());
     m_corridor.spawn(scene, device, physics, m_modelDir,
-                     x3::phys::Vec3{ 15.0f, kEnemyY, cz + 1.5f }, guardTuning());
+                     x3::phys::Vec3{ 12.0f, kEnemyY, cz + 1.6f }, guardTuning());
+    // Mid guard — backs up the front pair.
     m_corridor.spawn(scene, device, physics, m_modelDir,
-                     x3::phys::Vec3{ 18.0f, kEnemyY, cz }, droneTuning());
-    x3::logInfo("Level1: ALARM — corridor enemies spawned (2 guards + 1 drone)");
+                     x3::phys::Vec3{ 15.0f, kEnemyY, cz }, guardTuning());
+    // Flanking drones — hang back near Door B and snipe down the corridor.
+    m_corridor.spawn(scene, device, physics, m_modelDir,
+                     x3::phys::Vec3{ 19.0f, kEnemyY, cz - 2.0f }, droneTuning());
+    m_corridor.spawn(scene, device, physics, m_modelDir,
+                     x3::phys::Vec3{ 19.0f, kEnemyY, cz + 2.0f }, droneTuning());
+    x3::logInfo("Level1: ALARM — corridor enemies spawned (3 guards + 2 drones)");
 }
 
 void Level1Game::spawnMartinez(Scene& scene, x3::rhi::IRenderDevice& device,
@@ -317,11 +337,22 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
             m_doors.unlockAndOpen(m_doors.at(ci));
             playSfx(m_audio.door, m_layout.doorC, 0.9f);
         }
-        // objective 1 -> 2 ("Reach the elevator to Floor 2")
+        // objective 1 -> 2 ("Clear the security checkpoint")
         if (m_objectives.current() == 1) m_objectives.advance();
         if (m_audio.sys && m_audio.pickup.valid())
             m_audio.sys->playSound2D(m_audio.pickup, 0.8f, 1.0f);
         x3::logInfo("Level1: ARMED — Door C unlocked + opening");
+    }
+
+    // ---- Checkpoint cleared -> objective 2 -> 3 ("Defeat Chief Martinez"). Only
+    // fires once the player is armed (they cannot meaningfully clear it before),
+    // and only after every checkpoint enemy is dead. This advances the on-screen
+    // text the moment the firefight is won, pointing the player at the boss arena. -
+    if (m_armedLatch && !m_checkpointClearLatch &&
+        m_checkpoint.count() > 0 && m_checkpoint.aliveCount() == 0) {
+        m_checkpointClearLatch = true;
+        if (m_objectives.current() == 2) m_objectives.advance();
+        x3::logInfo("Level1: CHECKPOINT CLEAR — advance to the boss arena");
     }
 
     // ---- Phase banner flash decay (Phase 2b: "PHASE 2!/PHASE 3!"). ----
@@ -358,7 +389,10 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
         m_martinez.update(dt, scene, physics, eye, atkTarget, attackFx, onPhase);
     }
 
-    // ---- Beat 10: Martinez dies -> Door E unlock + open + objective 2 -> 3 ----
+    // ---- Beat 10: Martinez dies -> Door E unlock + open + objective -> "Take the
+    // elevator" (index 4). Advance the cursor up to the elevator step regardless of
+    // where it currently sits, so the text is correct even if the player slipped
+    // past the checkpoint without clearing it (the boss is the gate that matters). -
     if (m_martinezSpawned && !m_martinez.alive() && !m_martinezDeadLatch) {
         m_martinezDeadLatch = true;
         uint32_t ei = doorIndex('E');
@@ -367,7 +401,11 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
             playSfx(m_audio.door, m_layout.doorE, 0.9f);
         }
         m_triggers.setEnabled((uint32_t)L1Trigger::Elevator, true);  // arm the win
-        if (m_objectives.current() == 2) m_objectives.advance();
+        // Catch the objective cursor up to the final "Take the elevator" step.
+        constexpr uint32_t kElevatorObjective = 4;
+        while (m_objectives.current() != kNoObjective &&
+               m_objectives.current() < kElevatorObjective)
+            m_objectives.advance();
         playSfx(m_audio.death, m_layout.arenaCenter, 1.0f);
         x3::logInfo("Level1: MARTINEZ DOWN — Door E opening; take the elevator");
     }
@@ -605,16 +643,17 @@ bool runLevel1SelfTest() {
         check(used && open, "T1 use Door A button -> Door A opens");
     }
 
-    // ---- T2: once Door A is open, >=2 guards + 1 drone exist in the corridor. ----
+    // ---- T2: once Door A is open, the alarm encounter exists in the corridor
+    // (>=2 guards + >=1 drone). D-content escalates this to 3 guards + 2 drones. ----
     {
-        bool spawned = game.corridorEnemies().count() == 3;
-        // 2 guards + 1 drone => 3 monsters, all alive at spawn.
-        bool allAlive = game.corridorEnemies().aliveCount() == 3;
-        check(spawned && allAlive, "T2 alarm spawns 2 guards + 1 drone in corridor");
+        bool spawned = game.corridorEnemies().count() == 5;
+        // 3 guards + 2 drones => 5 monsters, all alive at spawn.
+        bool allAlive = game.corridorEnemies().aliveCount() == 5;
+        check(spawned && allAlive, "T2 alarm spawns 3 guards + 2 drones in corridor");
     }
 
-    // ---- T7b: objective advanced to "Find weapons in the armory" after Door A. ----
-    check(game.objectives().currentLabel() == "Find weapons in the armory",
+    // ---- T7b: objective advanced to the armory step after Door A. ----
+    check(game.objectives().currentLabel() == "Fight to the armory and arm yourself",
           "T7b objective advances after Door A opens");
 
     // ---- T4 (locked gate, part 1): Door C does NOT open before armed. ----
@@ -643,9 +682,34 @@ bool runLevel1SelfTest() {
         check(!game.doorLocked('C') && openedAfter, "T4b Door C opens after armed");
     }
 
-    // ---- T7c: objective advanced to "Reach the elevator to Floor 2" after pickup. ----
-    check(game.objectives().currentLabel() == "Reach the elevator to Floor 2",
+    // ---- T7c: objective advanced to "Clear the security checkpoint" after pickup. ----
+    check(game.objectives().currentLabel() == "Clear the security checkpoint",
           "T7c objective advances after pickup");
+
+    // ---- Checkpoint encounter: it exists (4 enemies) and clearing it advances the
+    // objective to "Defeat Chief Martinez". Shoot each checkpoint enemy dead from a
+    // point near the checkpoint, re-aiming per target. ----
+    {
+        bool spawned = game.checkpointEnemies().count() == 4;
+        x3::phys::Vec3 eye{ L.checkpointCenter.x - 6.0f, 0.6f, L.checkpointCenter.z };
+        for (int guard = 0; guard < 100 && game.checkpointEnemies().aliveCount() > 0; ++guard) {
+            // Aim at the first still-alive checkpoint enemy.
+            MonsterManager& cp = game.checkpointEnemies();
+            for (uint32_t i = 0; i < cp.count(); ++i) {
+                if (cp.at(i).alive()) {
+                    const Entity& e = scene.get(cp.at(i).entity());
+                    x3::phys::Vec3 t{ e.transform[12], e.transform[13], e.transform[14] };
+                    game.onFire(eye, aimFromTo(eye, t), scene, *physics);
+                    break;
+                }
+            }
+            run(game, scene, *physics, device, eye, 2);
+        }
+        bool cleared = game.checkpointEnemies().aliveCount() == 0;
+        check(spawned && cleared, "checkpoint encounter (4 enemies) can be cleared");
+        check(game.objectives().currentLabel() == "Defeat Chief Martinez",
+              "T7c2 objective advances to the boss after checkpoint cleared");
+    }
 
     // ---- Cross the arena trigger -> Door D opens + Martinez spawns. ----
     {
@@ -675,6 +739,10 @@ bool runLevel1SelfTest() {
         check(closedBefore && deadNow && openAfter,
               "T5 Door E closed until Martinez dead, then opens");
     }
+
+    // ---- T7c3: after the boss dies the objective points at the elevator. ----
+    check(game.objectives().currentLabel() == "Take the elevator to Floor 2",
+          "T7c3 objective advances to the elevator after Martinez dies");
 
     // ---- T6: entering the elevator trigger AFTER the boss is dead -> complete once.
     {

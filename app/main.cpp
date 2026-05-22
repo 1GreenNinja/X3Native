@@ -175,6 +175,12 @@ int main(int argc, char** argv) {
     // animation) further before the capture, so two shots at different counts show
     // different animated poses — used to prove J1 animation is live.
     int         screenshotSettle = 16;
+    // Optional --screenshot camera override (--shot-cam x,y,z,yaw,pitch). When set,
+    // the screenshot uses this vantage instead of the default corridor pose — used
+    // to capture the tall arena / elevator shaft (the default corridor pose stays
+    // the gate-standard view). Does NOT change any default behavior when omitted.
+    bool        shotCamOverride = false;
+    float       shotCam[5] = { 8.0f, 1.75f, -0.4f, 0.06f, -0.16f };
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
@@ -215,6 +221,19 @@ int main(int argc, char** argv) {
             // Optional settle-frame count (second positional, if numeric).
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
                 screenshotSettle = (int)std::strtol(argv[++i], nullptr, 10);
+        }
+        else if (a == "--shot-cam") {
+            // Parse "x,y,z,yaw,pitch" into shotCam[]; enables the override.
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                const char* s = argv[++i];
+                int n = 0; char* end = nullptr;
+                while (n < 5 && *s) {
+                    shotCam[n++] = std::strtof(s, &end);
+                    s = (end && *end == ',') ? end + 1 : end;
+                    if (!end || (*end != ',' && *end != '\0')) break;
+                }
+                shotCamOverride = (n == 5);
+            }
         }
         else if (a == "--screenshot-sky") {
             skyShot = true;
@@ -735,8 +754,12 @@ int main(int argc, char** argv) {
         // so the corridor walls + doorway + floor recede into the frame. A slight
         // downward pitch puts floor shadows in view; the sun is normalize(0.4,1,0.3)
         // (matches the shadow pass) so the down-corridor look shows cast shadows.
-        const float ssX = 8.0f, ssY = 1.75f, ssZ = -0.4f;
-        const float ssYaw = 0.06f, ssPitch = -0.16f, ssFov = 70.0f;
+        const float ssX = shotCamOverride ? shotCam[0] : 8.0f;
+        const float ssY = shotCamOverride ? shotCam[1] : 1.75f;
+        const float ssZ = shotCamOverride ? shotCam[2] : -0.4f;
+        const float ssYaw = shotCamOverride ? shotCam[3] : 0.06f;
+        const float ssPitch = shotCamOverride ? shotCam[4] : -0.16f;
+        const float ssFov = 70.0f;
         device->setCamera(ssX, ssY, ssZ, ssYaw, ssPitch, ssFov);
         const x3::phys::Vec3 ssEye{ ssX, ssY, ssZ };
         const float dt = 1.0f / 60.0f;
