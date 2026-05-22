@@ -103,12 +103,15 @@ MonsterSystem::Tuning martinezTuning() {
 }
 MonsterSystem::Tuning guardTuning() {
     MonsterSystem::Tuning t;          // basic enemy stats (defaults), neutral tint
-    // Melee guard: baton-range chip damage on a ~1s cadence.
+    // Melee guard: baton-range chip damage on a ~1 s cadence. Pulls from the GENERAL
+    // combat balance params (monster.h, namespace combat) so the squad's hit-rate +
+    // damage stay inside the sane, winnable bands — not magic numbers buried here.
+    // The dogpile cap (combat::kMaxMeleeAttackers) is enforced by MonsterManager.
     t.type           = MonsterType::Guard;
-    t.damage         = 8;
-    t.attackRange    = 1.9f;
-    t.attackCooldown = 1.0f;
-    t.attackWindup   = 0.25f;
+    t.damage         = combat::kMeleeDamageDefault;   // 8 HP per swing (band 6..10)
+    t.attackRange    = combat::kMeleeRange;           // 1.9 m baton reach
+    t.attackCooldown = combat::kMeleeCooldownDefault; // ~1.1 s between swings
+    t.attackWindup   = combat::kMeleeWindup;          // 0.25 s telegraph
     t.ranged         = false;
     // J1: rigged + ANIMATED guard (the rigged source plays an Idle clip; the
     // converted_glb/Characters/Security_Chief.glb has only a bind-pose skin).
@@ -120,14 +123,15 @@ MonsterSystem::Tuning droneTuning() {
     t.hp         = 66;                 // squishier (2 shots)
     t.chaseSpeed = 3.0f;               // faster, flits about
     t.tint[0] = 0.6f; t.tint[1] = 0.8f; t.tint[2] = 1.0f; t.tint[3] = 1.0f; // pale blue
-    // Ranged drone: keeps a standoff distance and fires a taser hitscan.
+    // Ranged drone: keeps a standoff distance and fires a taser hitscan. Damage +
+    // standoff pull from the GENERAL combat balance params (monster.h, combat::*).
     t.type           = MonsterType::Drone;
-    t.damage         = 5;
+    t.damage         = combat::kRangedDamageDefault;  // 5 HP per bolt (band 4..6)
     t.attackRange    = 14.0f;          // can fire from across the corridor
-    t.attackCooldown = 1.4f;
+    t.attackCooldown = combat::kRangedCooldownDefault;// ~1.4 s between bolts
     t.attackWindup   = 0.35f;          // a beat of telegraph before the bolt
     t.ranged         = true;
-    t.standoff       = 7.0f;
+    t.standoff       = combat::kRangedStandoff;       // hold ~7 m out
     // Drone GLB is NOT rigged and authored Z-up like the characters; stand it up.
     useCharacter(t, "Drone.glb", 1.0f);
     return t;
@@ -261,20 +265,31 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // ---- F2 rescue system (spec §5): 3 victims (Aria/Keisha/Emily) on 5-min
     // timers. The 7-floor Spire build will place these in wards A/B/C on F2; on the
     // current graybox we anchor them in the arena room (a roomy space) at three
-    // distinct spots so the rescue/companion/expire loop is exercisable today. The
-    // timers run once the F2 hub is reached — set true at build for the graybox
-    // (the Spire build will flip this on the F2-floor transition instead). ----
+    // distinct spots so the rescue/companion/expire loop is exercisable today.
+    //
+    // PLAYTEST-FIX (Issue 2): the countdowns are GATED on the F2 ward hub being
+    // reached and DEFAULT OFF — we do NOT call activate()/setHubReached at build, or
+    // the 5-min timers count down from load and expire instantly, spawning all three
+    // bosses (Siren/BreederQueen/Oracle) on the first frame. Instead we register an
+    // L1Trigger::Hub volume around the ward area; entering it (see tick()) calls
+    // m_rescue.activate(), which starts the clocks. Until then the victims stay
+    // captive with no countdown. (For the future Spire build the F2-floor transition
+    // flips the same activate() instead of this graybox trigger.) ----
     {
         const x3::phys::Vec3 ac = m_layout.arenaCenter;
         const x3::phys::Vec3 wardA{ ac.x - 3.0f, kEnemyY, ac.z - 3.0f };
         const x3::phys::Vec3 wardB{ ac.x,        kEnemyY, ac.z + 3.0f };
         const x3::phys::Vec3 wardC{ ac.x + 3.0f, kEnemyY, ac.z - 3.0f };
         m_rescue.build(scene, device, physics, m_modelDir, wardA, wardB, wardC);
-        m_rescue.setHubReached(true);
+        // Hub trigger: a box covering the ward cluster (the arena room). The first
+        // frame the player steps into it, tick() fires activate() and the timers run.
+        m_triggers.add(x3::phys::Vec3{ ac.x - 6.0f, 0.0f, ac.z - 6.0f },
+                       x3::phys::Vec3{ ac.x + 6.0f, 3.0f, ac.z + 6.0f },
+                       (uint32_t)L1Trigger::Hub, true);
     }
 
     m_built = true;
-    x3::logInfo("Level1Game::build complete — doors A-E, pistol pickup, 4 checkpoint enemies, 3 triggers, 3 rescue victims");
+    x3::logInfo("Level1Game::build complete — doors A-E, pistol pickup, 4 checkpoint enemies, 4 triggers, 3 rescue victims (timers gated on F2-hub trigger)");
 }
 
 uint32_t Level1Game::doorIndex(char letter) const {
@@ -531,6 +546,16 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                     m_complete = true;
                     m_objectives.complete();  // clear "Take the elevator"
                     x3::logInfo("LEVEL 1 COMPLETE");
+                }
+                break;
+            case L1Trigger::Hub:
+                // PLAYTEST-FIX (Issue 2): the player reached the F2 ward hub — START
+                // the rescue countdowns now (not at load). Idempotent + latched by the
+                // trigger so it only fires once. Until this, the victims had no timer.
+                if (!m_rescue.hubReached()) {
+                    m_rescue.activate();
+                    x3::logInfo("Level1: F2 WARD HUB REACHED — rescue timers started "
+                                "(Aria/Keisha/Emily now counting down)");
                 }
                 break;
         }

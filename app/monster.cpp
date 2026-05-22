@@ -512,6 +512,7 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     float dx = playerPos.x - m_pos.x;
     float dz = playerPos.z - m_pos.z;
     float horiz = std::sqrt(dx * dx + dz * dz);
+    m_lastHoriz = horiz;   // cache for the manager's nearest-attacker selection
     const float fxn = (horiz > 1e-4f) ? dx / horiz : 0.0f;   // unit toward player
     const float fzn = (horiz > 1e-4f) ? dz / horiz : 0.0f;
     const float pxn = -fzn, pzn = fxn;                        // perpendicular (left)
@@ -704,14 +705,28 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                 mx = fxn + pxn * strafe; mz = fzn + pzn * strafe;
                 m_yawTarget = headingToFace(dx, dz);
             }
-            wantMove = horiz > kChaseStopDist;
+            // Dogpile limiting (playtest-fix): a melee enemy WITHOUT an attack permit
+            // holds at the standoff ring (just beyond reach) instead of closing onto
+            // the player's tile — it waits its turn while a capped number swing. A
+            // permitted melee enemy (or a ranged one) closes to its normal stop dist.
+            const bool meleeWaiting = !m_ranged && m_dmg > 0 && !m_meleePermit;
+            const float stop = meleeWaiting ? combat::kStandoffRing : kChaseStopDist;
+            wantMove = horiz > stop;
         } break;
 
         case AiState::Attack: {
-            // In strike range: hold position (the attack block below fires) and
-            // FACE the player. Drones keep their standoff (handled in Strafe).
-            wantMove = false;
+            // In strike range: FACE the player. A permitted melee enemy holds position
+            // and the attack block below fires; a melee enemy DENIED a permit (dogpile
+            // cap) backs off to the standoff ring so it doesn't stack on the player
+            // while waiting its turn. Drones keep their standoff (handled in Strafe).
             m_yawTarget = headingToFace(dx, dz);
+            const bool meleeWaiting = !m_ranged && m_dmg > 0 && !m_meleePermit;
+            if (meleeWaiting && horiz < combat::kStandoffRing) {
+                mx = -fxn; mz = -fzn;          // ease back to the standoff ring
+                wantMove = true;
+            } else {
+                wantMove = false;
+            }
         } break;
 
         case AiState::Strafe: {
@@ -818,7 +833,14 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // per-attack cooldown and a short wind-up telegraph so the hit reads/feels fair
     // (the wind-up also gives the player a beat to react). `target` may be null
     // (movement-only path), in which case no attacks run. ----
-    if (target && target->isAlive() && m_dmg > 0 && horiz <= m_attackRange) {
+    // Dogpile limiting (playtest-fix): a MELEE enemy may only swing this frame if it
+    // holds an attack permit (granted by MonsterManager to the nearest
+    // combat::kMaxMeleeAttackers melee enemies). Ranged enemies ignore the permit
+    // (they keep their distance, so they don't contribute to a melee dogpile). A
+    // melee enemy without a permit cancels any wind-up below (it's holding/backing
+    // off in the state block above), so it cannot land a hit until it earns a permit.
+    const bool mayAttack = m_ranged || m_meleePermit;
+    if (target && target->isAlive() && m_dmg > 0 && horiz <= m_attackRange && mayAttack) {
         if (!m_winding && m_atkTimer <= 0.0f) {
             // Begin a new attack: start the wind-up; the hit lands when it elapses.
             m_winding     = true;
@@ -1064,6 +1086,40 @@ void MonsterManager::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phy
         }
         return n;
     };
+
+    // ---- Dogpile limiting (playtest-fix). Before ticking, arbitrate MELEE attack
+    // permits across the whole squad: only the NEAREST combat::kMaxMeleeAttackers
+    // live melee enemies that are within (a little beyond) their reach of the player
+    // get a permit to swing this frame; everyone else is denied and holds at the
+    // standoff ring. Ranged enemies are not part of this cap (they keep distance).
+    // This is what stops 3+ guards melting the player in a few seconds while keeping
+    // the rest of the squad pressuring/flanking. Distance is measured here from the
+    // current positions (so the very first frame is correct too). No heap alloc:
+    // a small fixed scan, O(N * cap). ----
+    {
+        // Default: deny every melee enemy a permit; ranged always allowed.
+        for (auto& m : m_monsters) m->setMeleeAttackPermit(m->ranged());
+        // Greedily grant the cap to the nearest in-reach melee enemies.
+        for (uint32_t granted = 0; granted < combat::kMaxMeleeAttackers; ++granted) {
+            MonsterSystem* best = nullptr; float bestD2 = 1e30f;
+            for (auto& m : m_monsters) {
+                if (!m->alive() || m->ranged() || m->attackDamage() <= 0) continue;
+                if (m->meleeAttackPermit()) continue;   // already granted this frame
+                const x3::phys::Vec3 p = m->pos();
+                const float ddx = p.x - playerPos.x, ddz = p.z - playerPos.z;
+                const float d2 = ddx*ddx + ddz*ddz;
+                // Only contest a permit if roughly within reach (a small slack so an
+                // enemy easing in still earns the next open slot). Beyond that it
+                // would just be advancing anyway, so leave the slot for a closer one.
+                const float reach = m->attackRange() + 0.5f;
+                if (d2 > reach * reach) continue;
+                if (d2 < bestD2) { bestD2 = d2; best = m.get(); }
+            }
+            if (!best) break;                 // no more in-reach melee enemies
+            best->setMeleeAttackPermit(true);
+        }
+    }
+
     for (auto& m : m_monsters)
         m->update(dt, scene, physics, playerPos, eye, target, fx, onPhase, allies);
 }
@@ -1111,6 +1167,26 @@ using HeadlessDevice = x3::game::HeadlessRenderDevice;
 
 x3::phys::Vec3 sub(const x3::phys::Vec3& a, const x3::phys::Vec3& b) {
     return x3::phys::Vec3{ a.x - b.x, a.y - b.y, a.z - b.z };
+}
+
+// A damage sink that COUNTS landed hits (and total HP) with NO iframe gating, so a
+// test can measure an enemy's OWN attack cadence / the squad's attacker cap without
+// the player's invuln window confounding the count. Always alive, fixed eye.
+class CountingSink final : public IDamageSink {
+public:
+    int hits = 0;
+    int totalDmg = 0;
+    x3::phys::Vec3 eye{ 0.0f, 1.6f, 0.0f };
+    bool takeDamage(int amount) override { ++hits; totalDmg += amount; return true; }
+    x3::phys::Vec3 damageTargetPos() const override { return eye; }
+    bool isAlive() const override { return true; }
+};
+
+// Flat ground for the balance tests (CCW so +Y is solid), `half` to a side.
+x3::phys::BodyId combatGround(x3::phys::IPhysicsWorld& w, float half) {
+    float v[] = { -half,0,-half,  half,0,-half,  half,0,half,  -half,0,half };
+    uint32_t idx[] = { 0,2,1, 0,3,2 };
+    return w.addStaticMesh(v, 4, idx, 6);
 }
 
 } // namespace
@@ -1192,6 +1268,106 @@ bool runCombatSelfTest() {
     }
 
     physics->shutdown();
+
+    // =======================================================================
+    // PLAYTEST-FIX balance behaviour (Issue 1). These assert the SYSTEM, not the
+    // exact numbers: (T5) an enemy cannot damage the player twice within its attack
+    // cooldown; (T6) at most combat::kMaxMeleeAttackers melee enemies swing at once
+    // (the dogpile cap), so a corridor squad can't melt the player every frame.
+    // =======================================================================
+
+    // ---- T5: per-enemy attack COOLDOWN gates damage. A single melee Guard at
+    // point-blank, with NO wind-up and a counting (iframe-free) sink, lands a hit
+    // then must WAIT its cooldown before the next — so over a fixed window the hit
+    // count is bounded by window/cooldown, NOT one-per-frame. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init();
+        combatGround(*w, 50.0f);
+        Scene scene5; MonsterSystem guard; CountingSink sink;
+        MonsterSystem::Tuning t;
+        t.type = MonsterType::Guard; t.hp = 100; t.chaseSpeed = 0.0f;
+        t.damage = combat::kMeleeDamageDefault;
+        t.attackRange = 2.0f;
+        t.attackCooldown = combat::kMeleeCooldownDefault;  // ~1.1 s
+        t.attackWindup = 0.0f;                              // land immediately on cooldown
+        t.ranged = false;
+        // Place the guard ~1.2 m from the sink (inside the 2 m range).
+        sink.eye = x3::phys::Vec3{ 0.0f, 1.6f, 0.0f };
+        guard.buildMonsterTuned(scene5, device, *w, riggedGlbRoot(),
+                                x3::phys::Vec3{ 1.2f, 0.4f, 0.0f }, t);
+        const float dtc = 1.0f / 60.0f;
+        const float window = 3.0f;                          // 3 s
+        const int steps = (int)(window / dtc);
+        for (int i = 0; i < steps; ++i) {
+            guard.update(dtc, scene5, *w, sink.eye, &sink, AttackFxFn{});
+            w->step(dtc);
+        }
+        // Over 3 s on a ~1.1 s cooldown, expect ~3 hits (3.0/1.1 ~= 2-3), and CRUCIALLY
+        // far fewer than one-per-frame (180 frames). Bound: hits <= window/cooldown + 1.
+        const int maxExpected = (int)(window / combat::kMeleeCooldownDefault) + 1;
+        bool someHits   = sink.hits >= 1;
+        bool notEveryFrame = sink.hits <= maxExpected;       // cooldown actually gates
+        x3::logInfo(std::string("[combat-test] T5 hits=") + std::to_string(sink.hits) +
+                    " over " + std::to_string(steps) + " frames (cap " +
+                    std::to_string(maxExpected) + ")");
+        check(someHits && notEveryFrame,
+              "T5 attack cooldown: enemy cannot damage twice within its cooldown");
+        w->shutdown();
+    }
+
+    // ---- T6: dogpile CAP. Five melee Guards all stacked in melee range of the sink,
+    // driven by a MonsterManager (which arbitrates permits). In a single update tick
+    // at most combat::kMaxMeleeAttackers may hold a melee permit, so over one cooldown
+    // window the number of DISTINCT swinging guards is capped. We verify the permit
+    // arbitration directly (the robust, frame-exact signal) AND that the landed-hit
+    // rate is bounded by the cap, not the squad size. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init();
+        combatGround(*w, 50.0f);
+        Scene scene6; MonsterManager squad; CountingSink sink;
+        sink.eye = x3::phys::Vec3{ 0.0f, 1.6f, 0.0f };
+        MonsterSystem::Tuning t;
+        t.type = MonsterType::Guard; t.hp = 100; t.chaseSpeed = 0.0f;
+        t.damage = combat::kMeleeDamageDefault;
+        t.attackRange = 2.0f;
+        t.attackCooldown = combat::kMeleeCooldownDefault;
+        t.attackWindup = 0.0f;
+        t.ranged = false;
+        // Ring of 5 guards all within 1.5 m of the sink (all in melee range).
+        const int N = 5;
+        for (int i = 0; i < N; ++i) {
+            const float ang = (float)i * (2.0f * 3.14159265f / (float)N);
+            const x3::phys::Vec3 p{ 1.3f * std::cos(ang), 0.4f, 1.3f * std::sin(ang) };
+            squad.spawn(scene6, device, *w, riggedGlbRoot(), p, t);
+        }
+        const float dtc = 1.0f / 60.0f;
+        // One update tick arbitrates permits; count how many guards hold one.
+        squad.update(dtc, scene6, *w, sink.eye, &sink, AttackFxFn{});
+        uint32_t permitted = 0;
+        for (uint32_t i = 0; i < squad.count(); ++i)
+            if (!squad.at(i).ranged() && squad.at(i).meleeAttackPermit()) ++permitted;
+        bool capRespected = permitted <= combat::kMaxMeleeAttackers;
+        bool capActive    = permitted == combat::kMaxMeleeAttackers; // 5 in range -> cap is full
+        // And the landed-damage rate over a cooldown window reflects the cap, not N.
+        sink.hits = 0; sink.totalDmg = 0;
+        const float window = combat::kMeleeCooldownDefault * 1.05f;  // ~one cooldown
+        const int steps = (int)(window / dtc);
+        for (int i = 0; i < steps; ++i) {
+            squad.update(dtc, scene6, *w, sink.eye, &sink, AttackFxFn{});
+            w->step(dtc);
+        }
+        // Within ~one cooldown each permitted guard swings ~once -> hits ~ cap (allow
+        // a small slack for the first-frame initial-cooldown stagger). NOT ~N.
+        bool hitsBounded = sink.hits <= (int)combat::kMaxMeleeAttackers + 1;
+        x3::logInfo(std::string("[combat-test] T6 permitted=") + std::to_string(permitted) +
+                    "/" + std::to_string(N) + " (cap " + std::to_string(combat::kMaxMeleeAttackers) +
+                    ") hitsInWindow=" + std::to_string(sink.hits));
+        check(capRespected && capActive && hitsBounded,
+              "T6 dogpile cap: at most kMaxMeleeAttackers melee enemies swing at once");
+        w->shutdown();
+    }
 
     x3::logInfo(std::string("[combat-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");

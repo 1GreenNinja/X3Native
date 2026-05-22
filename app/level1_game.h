@@ -61,6 +61,7 @@ enum class L1Trigger : uint32_t {
     Strength = 1,   // beat 1: hide equipment, strength discovery
     Arena    = 2,   // beat 9: spawn Martinez + open Door D
     Elevator = 3,   // beat 11: win
+    Hub      = 4,   // playtest-fix: F2 ward hub reached -> start the rescue timers
 };
 
 // Pure keypad-entry buffer for the door-code keypad (no I/O, no Vulkan/GLFW). The
