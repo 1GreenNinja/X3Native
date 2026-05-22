@@ -167,10 +167,22 @@ public:
                const x3::phys::Vec3& wardA, const x3::phys::Vec3& wardB,
                const x3::phys::Vec3& wardC, float timer = kRescueTimer);
 
-    // Mark the F2 rescue hub reached: the countdowns only run once this is set
-    // (spec §5: "timers run once the rescue hub is reached"). Idempotent.
+    // ---- Timer gating (playtest-fix) --------------------------------------
+    // The rescue countdowns are GATED on this flag, which defaults to FALSE: until
+    // the player reaches the F2 ward hub the victims stay captive with NO countdown
+    // (so the 5-min timers can't expire at load and spawn all three bosses on the
+    // first frame — the playtest bug). The host wires the F2-hub trigger volume to
+    // activate() (see level1_game.cpp). After activate(), the timers run + expire ->
+    // boss exactly as before.
+    //
+    // activate() is the canonical "the hub was reached, start the clocks" call;
+    // setHubReached(bool) is the explicit setter kept for the existing API + the
+    // save/restore path (and tests that drive the flag directly). Both are idempotent.
+    void activate() { m_hubReached = true; }
     void setHubReached(bool reached) { m_hubReached = reached; }
     bool hubReached() const { return m_hubReached; }
+    // True iff the rescue clocks are running (the hub was reached / activate()d).
+    bool active() const { return m_hubReached; }
 
     // Advance one frame: tick every victim (timers / companion follow) and, for any
     // whose timer expired THIS frame, spawn its boss via the MonsterManager. The

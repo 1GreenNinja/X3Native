@@ -169,6 +169,65 @@ constexpr float kOrbitRetarget = 1.8f;   // seconds before flipping orbit direct
 // the model turns its back to the player (authored +Z forward). VISUAL TUNING.
 constexpr float kFaceSign      = -1.0f;
 
+// ===========================================================================
+// GENERAL COMBAT BALANCE PARAMS (playtest-fix). Named, reusable across games —
+// these are the single source of truth for "how hard does a squad hit, and how
+// many can pile on at once", so a level never has to bury magic numbers in its
+// per-enemy Tuning. The corridor squad (3 guards + 2 drones) is balanced against
+// these: an enemy can only damage the player ONCE per (its) cooldown (enforced
+// in MonsterSystem::update via m_atkTimer + the wind-up), and only a CAPPED
+// number of melee attackers may swing at once (enforced in MonsterManager::update
+// via per-frame melee-attack permits) so the player isn't melted by a dogpile.
+//
+// Level tunings should pull their per-enemy damage/cooldown from these bands
+// rather than hand-rolling values (guardTuning/droneTuning in level1_game.cpp do).
+// All are gameplay tuning — safe to retune for playtest; the self-tests assert the
+// BEHAVIOUR (cooldown gating + attacker cap), not the exact numbers.
+// ---------------------------------------------------------------------------
+namespace combat {
+
+// ---- Melee (Guard / Boss) ----
+// Per-swing damage band. A focused player (100 HP, 0.5 s iframes) survives a
+// small squad: with the attacker cap below, at most kMaxMeleeAttackers swing, each
+// on its own ~1 s cooldown, and the player's iframe window further gates DPS.
+constexpr int   kMeleeDamageMin     = 6;     // weakest melee swing (HP)
+constexpr int   kMeleeDamageMax     = 10;    // strongest basic melee swing (HP)
+constexpr int   kMeleeDamageDefault = 8;     // the value Level 1 guards use
+// Seconds between melee swings (the per-enemy attack cooldown). >= ~1 s so an
+// enemy CANNOT deal damage every frame (the playtest "8 dmg every tick" bug).
+constexpr float kMeleeCooldownMin     = 1.0f;
+constexpr float kMeleeCooldownMax     = 1.3f;
+constexpr float kMeleeCooldownDefault = 1.1f;
+// Melee reach (m): how close a melee enemy must be to land a hit.
+constexpr float kMeleeRange         = 1.9f;
+// Telegraph (s) before a melee hit lands, so the swing reads + is dodgeable.
+constexpr float kMeleeWindup        = 0.25f;
+
+// ---- Ranged (Drone) ----
+constexpr int   kRangedDamageMin     = 4;    // weakest ranged bolt (HP)
+constexpr int   kRangedDamageMax     = 6;    // strongest ranged bolt (HP)
+constexpr int   kRangedDamageDefault = 5;    // the value Level 1 drones use
+constexpr float kRangedCooldownMin     = 0.8f;
+constexpr float kRangedCooldownMax     = 1.2f;
+constexpr float kRangedCooldownDefault = 1.4f; // Level 1 drones fire a touch slower
+constexpr float kRangedStandoff      = 7.0f; // preferred distance the drone keeps
+
+// ---- Dogpile limiting ----
+// The hard cap on how many MELEE enemies may be actively swinging at the player at
+// the same time. Others hold at a standoff ring (kStandoffRing) and wait their turn
+// — they still advance/flank/face the player, they just don't get an attack permit.
+// Ranged enemies are NOT counted by this cap (they keep their distance anyway).
+constexpr uint32_t kMaxMeleeAttackers = 2;
+// Standoff ring (m): a melee enemy that did NOT get an attack permit holds roughly
+// this far out (just beyond melee reach) instead of stacking onto the player's tile.
+constexpr float kStandoffRing       = 2.6f;
+
+// Clamp a value to [lo,hi] (used to keep level tunings inside the sane bands).
+constexpr int   clampDamage(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+constexpr float clampCooldown(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+} // namespace combat
+
 // ---------------------------------------------------------------------------
 // Combat-AI tuning (D-ai). Defaults; per-MonsterType weighting is applied in the
 // state machine (e.g. Drone strafes/flanks more, Guard advances harder). All are
@@ -369,6 +428,24 @@ public:
     float attackCooldown() const { return m_attackCooldown; }
     bool  ranged() const { return m_ranged; }
 
+    // ---- Dogpile limiting (playtest-fix) ----------------------------------
+    // Per-frame MELEE attack permit. MonsterManager grants a permit to only the
+    // nearest combat::kMaxMeleeAttackers melee enemies each frame; the rest are
+    // DENIED a permit and hold at the standoff ring instead of swinging. A denied
+    // melee enemy never lands a melee hit that frame (it still advances/faces the
+    // player). Ranged enemies ignore this (always permitted — they keep distance).
+    // Default true reproduces the original "everyone may attack" behaviour when no
+    // manager arbitrates (e.g. the single-monster --test-combat path).
+    void setMeleeAttackPermit(bool allow) { m_meleePermit = allow; }
+    bool meleeAttackPermit() const { return m_meleePermit; }
+    // True iff this is a melee enemy currently inside its attack reach of the player
+    // (read by MonsterManager to decide who competes for an attack permit). Uses the
+    // last-known planar distance computed in update().
+    bool inMeleeRange() const { return !m_ranged && m_dmg > 0 && m_lastHoriz <= m_attackRange; }
+    // Horizontal distance to the player measured at the last update() (diagnostics +
+    // the manager's nearest-attacker selection). Large until first update().
+    float distToPlayer() const { return m_lastHoriz; }
+
     // ---- Boss phase state (Phase 2b) --------------------------------------
     // Current boss phase (always Phase1 for non-Boss monsters).
     BossPhase phase() const { return m_phase; }
@@ -493,6 +570,14 @@ private:
     float m_atkTimer            = 0.0f;       // cooldown countdown until next attack
     float m_windupTimer         = 0.0f;       // >0 while winding up an attack
     bool  m_winding             = false;      // currently in an attack wind-up
+
+    // ---- Dogpile limiting (playtest-fix) ----------------------------------
+    // Per-frame melee attack permit (set by MonsterManager each frame). When false,
+    // a melee enemy does NOT swing this frame and holds at the standoff ring. Always
+    // effectively true for ranged enemies. Default true = unmanaged single-monster.
+    bool  m_meleePermit         = true;
+    // Planar distance to the player from the last update() (drives inMeleeRange()).
+    float m_lastHoriz           = 1e30f;
 
     // ---- Boss phases (Phase 2b) -------------------------------------------
     BossPhase m_phase           = BossPhase::Phase1; // current phase (HP-keyed)

@@ -393,8 +393,26 @@ bool runRescueSelfTest() {
     const x3::phys::Vec3 wC{ 40.0f, 0.4f, 0.0f };
     // Short timer so the expiry test runs fast (the 5-min default is a build param).
     rescue.build(scene, device, *physics, riggedGlbRoot(), wA, wB, wC, /*timer*/2.0f);
-    rescue.setHubReached(true);
     rcheck(rescue.victimCount() == 3, "R0 three victims built");
+
+    // ---- R6 (playtest-fix): the timers are GATED — NO countdown / NO transform
+    // before activate(). Right after build the hub is NOT reached (default off), so
+    // ticking for well past the 2 s timer must NOT count any victim down or spawn a
+    // boss. This is the bug we fixed: timers must not run from load. ----
+    {
+        const bool gatedOff = !rescue.hubReached() && !rescue.active();
+        const float t0 = rescue.victim(0).timeLeft();
+        const x3::phys::Vec3 farPlayer{ 999.0f, 0.4f, 999.0f };  // nowhere near a ward
+        for (int i = 0; i < 240; ++i) rescue.tick(1.0f / 60.0f, scene, *physics, farPlayer); // 4 s
+        const bool noCountdown = std::abs(rescue.victim(0).timeLeft() - t0) < 1e-3f;
+        const bool noBoss      = rescue.bosses().count() == 0 && rescue.expiredCount() == 0;
+        rcheck(gatedOff && noCountdown && noBoss,
+               "R6 no countdown / no transform before activate() (timers gated at load)");
+    }
+
+    // Now reach the hub via the explicit activate() path: the timers start here.
+    rescue.activate();
+    rcheck(rescue.hubReached() && rescue.active(), "R7 activate() starts the rescue clocks");
 
     // R4a: cannot rescue an OUT-OF-RANGE captive (player far from ward A).
     {
