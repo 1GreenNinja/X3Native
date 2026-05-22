@@ -148,7 +148,11 @@ Level1Layout buildLevel1(Scene& scene,
     x3::logInfo("buildLevel1: EFLZ 'Awakening' — 6 graybox rooms (cell/corridor/armory/checkpoint/arena/elevator)"
                 + std::string(artMask.walls ? " [GLB walls]" : "")
                 + std::string(artMask.floors ? " [GLB floors]" : ""));
-    const bool wallVis  = !artMask.walls;   // graybox wall render on iff no GLB wall art
+    const bool wallVis  = !artMask.walls;   // graybox SIDE-wall render on iff no GLB wall art
+    // Cross-walls (room end-caps + the doorway walls) are NOT covered by GLB art (only the
+    // door FRAMES are), so keep their graybox render ON regardless of the wall mask —
+    // otherwise the suppressed cross-walls show the void (the "see-through walls" bug).
+    const bool crossWallVis = true;
     const bool floorVis = !artMask.floors;  // graybox floor render on iff no GLB floor art
 
     // ---- Shared graybox textures (a couple of checkers reused per surface). ----
@@ -206,14 +210,14 @@ Level1Layout buildLevel1(Scene& scene,
     // neighbor — no gap above a shorter room where the player could see/escape. ----
     const float wallTint[4] = { 0.62f, 0.66f, 0.78f, 1.0f };
     // Cell back wall (solid end cap), spans the cell width + height.
-    addCrossWall(scene, device, physics, cell.x0, -cell.zHalf, cell.zHalf, 0.0f, false, cell.ceil, wallTex, wallTint, wallVis);
+    addCrossWall(scene, device, physics, cell.x0, -cell.zHalf, cell.zHalf, 0.0f, false, cell.ceil, wallTex, wallTint, crossWallVis);
     // Elevator far wall (solid end cap).
-    addCrossWall(scene, device, physics, elevator.x1, -elevator.zHalf, elevator.zHalf, 0.0f, false, elevator.ceil, wallTex, wallTint, wallVis);
+    addCrossWall(scene, device, physics, elevator.x1, -elevator.zHalf, elevator.zHalf, 0.0f, false, elevator.ceil, wallTex, wallTint, crossWallVis);
     // Interior boundaries with doorways. For each, span the wider/taller neighbor.
     auto boundary = [&](float x, const Room& a, const Room& b) {
         const float zh = (a.zHalf > b.zHalf) ? a.zHalf : b.zHalf;
         const float h  = (a.ceil  > b.ceil ) ? a.ceil  : b.ceil;
-        addCrossWall(scene, device, physics, x, -zh, zh, 0.0f, true, h, wallTex, wallTint, wallVis);
+        addCrossWall(scene, device, physics, x, -zh, zh, 0.0f, true, h, wallTex, wallTint, crossWallVis);
     };
     boundary(corridor.x0,   cell,       corridor);   // Door A x=6
     boundary(armory.x0,     corridor,   armory);     // Door B x=22
