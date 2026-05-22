@@ -134,7 +134,8 @@ int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
-         testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false;
+         testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
+         testStreaming = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
@@ -192,6 +193,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-phase2b") testPhase2b = true;
         else if (a == "--test-anim") testAnim = true;
         else if (a == "--test-terrain") testTerrain = true;
+        else if (a == "--test-streaming") testStreaming = true;
         else if (a == "--world") {
             if (i + 1 < argc && argv[i + 1][0] != '-') worldMode = argv[++i];
         }
@@ -285,6 +287,10 @@ int main(int argc, char** argv) {
     if (testTerrain) {
         x3::logInfo("running B2 tiled terrain world self-test (settle + LOD)...");
         return x3::game::runTerrainSelfTest() ? 0 : 1;
+    }
+    if (testStreaming) {
+        x3::logInfo("running B3 world-streaming self-test (residency ring + async gen)...");
+        return x3::game::runStreamingSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -413,14 +419,21 @@ int main(int argc, char** argv) {
     // collision path is exercised too) — no game/audio stack. EFLZ Level 1 is an
     // enclosed interior; this is how to SEE + verify the outdoor terrain.
     if (terrainShot) {
-        x3::logInfo("--screenshot-terrain: rendering tiled terrain world to " + terrainShotPath);
+        x3::logInfo("--screenshot-terrain: rendering STREAMED terrain world to " + terrainShotPath);
 
+        // B3: this path now exercises the STREAMER under validation. A job system
+        // generates tiles async; the focus is SWEPT across the world during the
+        // frame loop so stream-IN (createMesh + addStaticMesh) AND stream-OUT
+        // (destroyMesh + removeBody) both run inside validated frames, proving the
+        // async upload + teardown barriers are validation-clean. The camera trails
+        // the swept focus so the final capture is a lit terrain vista.
+        std::unique_ptr<x3::jobs::IJobSystem> tjobs(x3::jobs::createJobSystem());
+        tjobs->init(0);
         std::unique_ptr<x3::phys::IPhysicsWorld> tphys(x3::phys::createPhysicsWorld());
         tphys->init();
         x3::game::Scene tscene;
-        x3::game::Terrain terrain;
-        x3::game::TerrainConfig tcfg;   // default 32x32 @ 32 m => ~1 km^2
-        terrain.build(tscene, *device, *tphys, tcfg);
+        x3::game::TerrainStreamer streamer;
+        x3::game::TerrainConfig tcfg;   // 32 m tiles; unbounded (streamed)
 
         // Turn ON the analytic sky with the SAME sun the shadow pass + mesh.frag
         // use (normalize(0.4,1,0.3)) so the disk sits where the world is lit from.
@@ -431,30 +444,32 @@ int main(int argc, char** argv) {
         sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
         device->setSkyParams(sp);
 
-        // Camera: stand elevated on the hills and look DOWN-and-across toward the
-        // sun's azimuth, so the rolling relief + cast shadows read as 3D (a level
-        // look flattens the hills into a plane). The downward pitch frames the hills
-        // filling most of the view with the sky + sun in the upper band.
-        const float camWX = -90.0f, camWZ = -120.0f;
-        const float surfY = terrain.heightAt(camWX, camWZ);
-        const float camY  = surfY + 18.0f;              // up among the hills (relief looms)
+        // Start the focus well away from the origin (proves unbounded coords) and
+        // bring up the ring there.
+        float fx = -90.0f, fz = -120.0f;
+        streamer.init(tscene, *device, *tphys, tjobs.get(), tcfg, fx, fz, /*radius=*/8);
+
         const float sunYaw   = std::atan2(0.3f, 0.4f);  // toward the sun in XZ
         const float camPitch = -0.16f;                  // ~9deg down: hills + shadows + sky
-        device->setCamera(camWX, camY, camWZ, sunYaw, camPitch, 70.0f);
-
-        // Pick LOD for this camera so far tiles decimate (proves the LOD path in
-        // the captured frame too).
-        terrain.updateLod(tscene, camWX, camWZ);
 
         const float dt = 1.0f / 60.0f;
         // Render a measured window of frames; report the averaged GPU-pass time
-        // (vsync-independent) so the perf report has a real terrain GPU cost. The
-        // capture is armed on the final frame.
-        const int kFrames = 80, kWarmup = 20;
+        // (vsync-independent). Sweep the focus +X so tiles stream in/out during the
+        // validated loop. The capture is armed on the final frame.
+        const int kFrames = 140, kWarmup = 40;
         double sumGpuMs = 0.0; int measured = 0;
         for (int i = 0; i < kFrames; ++i) {
             glfwPollEvents();
+            // Sweep the streaming focus across tile boundaries (in/out churn).
+            fx += 4.0f;   // ~4 m/frame => crosses a 32 m tile every ~8 frames
             tphys->step(dt);
+            streamer.update(tscene, *device, *tphys, fx, fz);
+
+            // Camera trails the focus, elevated + looking down-across toward the sun.
+            const float surfY = streamer.heightAt(fx, fz);
+            const float camY  = surfY + 18.0f;
+            device->setCamera(fx, camY, fz, sunYaw, camPitch, 70.0f);
+
             if (i == kFrames - 1) device->armCapture(terrainShotPath.c_str());
             auto frame = device->beginFrame();
             if (frame.valid) tscene.render(*device, frame);
@@ -469,14 +484,20 @@ int main(int argc, char** argv) {
             const double gpuFps = (avgGpu > 1e-6) ? (1000.0 / avgGpu) : 0.0;
             char rb[256];
             std::snprintf(rb, sizeof(rb),
-                "--screenshot-terrain: wrote %s | tiles=%u activeTris=%u draws=%u tris=%u "
-                "| GPU=%.3f ms (~%.0f fps GPU-bound)",
-                terrainShotPath.c_str(), terrain.tileCount(),
-                terrain.activeTriangleCount(), st.drawCalls, st.triangles,
-                avgGpu, gpuFps);
+                "--screenshot-terrain: wrote %s | resident=%u (max %u) created=%llu destroyed=%llu "
+                "draws=%u tris=%u | GPU=%.3f ms (~%.0f fps GPU-bound)",
+                terrainShotPath.c_str(), streamer.residentCount(),
+                streamer.maxResidentForRadius(),
+                (unsigned long long)streamer.tilesCreated(),
+                (unsigned long long)streamer.tilesDestroyed(),
+                st.drawCalls, st.triangles, avgGpu, gpuFps);
             x3::logInfo(rb);
         } else x3::logError("--screenshot-terrain: capture FAILED");
 
+        // Tear down the streamer (destroys resident meshes + bodies) before the
+        // device/physics, then stop the job system.
+        streamer.shutdown(tscene, *device, *tphys);
+        tjobs->shutdown();
         tphys->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -543,7 +564,11 @@ int main(int argc, char** argv) {
     const bool terrainWorld = (worldMode == "terrain");
     x3::game::Scene scene;
     x3::game::Level1Game game;
-    x3::game::Terrain    terrain;     // only built in terrain mode
+    // B3: the terrain world is now STREAMED around the player via a residency
+    // ring (TerrainStreamer) fed by the engine job system. Both are only created
+    // in terrain mode; Level 1 is unaffected.
+    x3::game::TerrainStreamer terrainStreamer;
+    std::unique_ptr<x3::jobs::IJobSystem> terrainJobs;
     if (!terrainWorld) {
         game.build(scene, *device, *physics, "G:/GameModels/rigged_glb");
         // Audio hookups for Level 1 events (§9, nice-to-have; silent if no device).
@@ -554,25 +579,34 @@ int main(int argc, char** argv) {
     }
     const x3::game::Level1Layout& L1 = game.layout();
 
-    // ---- Outdoor terrain world setup (--world terrain). Build the tiled terrain
-    // into the scene, enable the analytic sky with the engine's sun, and choose a
-    // spawn high on the hills. The player walks it through the SAME walking
-    // controller + physics as Level 1; terrain LOD is updated each frame below. ----
+    // ---- Outdoor terrain world setup (--world terrain). Bring up the job system
+    // + the camera-centered STREAMER (B3): an UNBOUNDED procedural world where
+    // only a bounded ring of tiles around the player is resident. Tiles are
+    // generated async on jobs and uploaded (createMesh + addStaticMesh) budgeted
+    // per frame; out-of-range tiles stream out. Enable the analytic sky with the
+    // engine's sun, and spawn near the world origin. The player walks it through
+    // the SAME walking controller + physics as Level 1. ----
     x3::phys::Vec3 terrainSpawn{};
     if (terrainWorld) {
-        x3::game::TerrainConfig tcfg;   // default 32x32 @ 32 m => ~1 km^2
-        terrain.build(scene, *device, *physics, tcfg);
+        terrainJobs.reset(x3::jobs::createJobSystem());
+        terrainJobs->init(0);   // hw_concurrency-1 compute workers + an I/O lane
+
+        x3::game::TerrainConfig tcfg;   // 32 m tiles; tilesX/Z ignored (unbounded)
         x3::rhi::IRenderDevice::SkyParams sp{};
         sp.enabled = true;
         sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
         sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
         sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
         device->setSkyParams(sp);
-        // Spawn the player on the surface near the world center, a little above so
-        // the capsule settles onto the hill on the first frames.
+        // Spawn the player on the surface near the world origin, a little above so
+        // the capsule settles onto the hill on the first frames. heightAt() is a
+        // pure function of the config, valid before any tile exists.
         const float sx = 0.0f, sz = 0.0f;
-        terrainSpawn = x3::phys::Vec3{ sx, terrain.heightAt(sx, sz) + 2.0f, sz };
-        x3::logInfo("--world terrain: outdoor tiled terrain world — walk the hills (WASD)");
+        terrainSpawn = x3::phys::Vec3{ sx, x3::game::terrainHeightAt(tcfg, sx, sz) + 2.0f, sz };
+        // Residency radius 8 tiles (= 256 m) => up to 17x17 = 289 tiles resident.
+        terrainStreamer.init(scene, *device, *physics, terrainJobs.get(),
+                             tcfg, sx, sz, /*radius=*/8);
+        x3::logInfo("--world terrain: STREAMED unbounded terrain world — walk/fly the hills (WASD)");
     }
 
     // ---- Combat FX (gameplay-feel pass): shot tracers + muzzle flash. The
@@ -997,10 +1031,12 @@ int main(int argc, char** argv) {
         // guards/drone/Martinez hurt the player (enemies attack only while alive). ----
         const x3::phys::Vec3 camPos{ camX, camY, camZ };
         if (terrainWorld) {
-            // Outdoor world: no Level 1 controller. Just update terrain LOD from the
-            // camera so far tiles decimate as the player roams (cheap — pre-uploaded
-            // LOD meshes, no GPU work in the hot path).
-            terrain.updateLod(scene, camX, camZ);
+            // Outdoor world: no Level 1 controller. STREAM tiles around the camera
+            // focus — stream in newly-in-range tiles (async gen on jobs, budgeted
+            // uploads here on the main thread), stream out receded ones, and apply
+            // LOD to the resident set. The under-focus 3x3 is generated
+            // synchronously so collision is always present (no fall-through).
+            terrainStreamer.update(scene, *device, *physics, camX, camZ);
         } else {
             game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
         }
@@ -1155,6 +1191,13 @@ int main(int argc, char** argv) {
     }
 
     x3::logInfo("shutting down");
+    // B3: tear the streamer down BEFORE physics/device (it removes its bodies +
+    // destroys its meshes), then stop the terrain job system. Both are no-ops
+    // when not in terrain mode.
+    if (terrainWorld) {
+        terrainStreamer.shutdown(scene, *device, *physics);
+        if (terrainJobs) terrainJobs->shutdown();
+    }
     audio->shutdown();
     combatFx.shutdown(*device);
     physics->shutdown();
