@@ -162,11 +162,13 @@ public:
         if (!createShadowImage()) return false;   // before createGraphics (mesh layout needs set 2)
         if (!createGraphics()) return false;      // builds the shadow depth pipeline at the end
         if (!createHud()) return false;
+        if (!createSky()) return false;           // analytic sky (open-world track, task A)
         return true;
     }
 
     void shutdown() override {
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        destroySky();
         destroyHud();
         destroyGraphics();
         destroyPerFrame();
@@ -195,6 +197,13 @@ public:
         // static lights only need one call. count==0 clears them.
         const uint32_t n = std::min<uint32_t>(count, kMaxPointLights);
         m_pointLights.assign(lights, lights + n);
+    }
+
+    void setSkyParams(const SkyParams& sp) override {
+        // Cache a snapshot; prepareFrameData() writes it into the per-frame sky UBO
+        // and ensureMainPass() draws the full-screen sky when enabled. Disabled by
+        // default, so indoor levels + every existing flag are unchanged.
+        m_sky = sp;
     }
 
     FrameContext beginFrame() override {
@@ -358,6 +367,19 @@ public:
         VkRect2D scis{ {0,0}, m_extent };
         vkCmdSetViewport(fr.cmd, 0, 1, &vp);
         vkCmdSetScissor(fr.cmd, 0, 1, &scis);
+
+        // Analytic sky FIRST (open-world track, task A): a full-screen triangle at
+        // far depth with depth-test LESS_OR_EQUAL + depth-write OFF. Drawn before
+        // any mesh so opaque geometry (depth-test LESS, depth-write ON) overwrites
+        // it wherever it's nearer — the sky composites correctly behind the world.
+        // Gated by setSkyParams(enabled): default OFF, so indoor levels are
+        // unchanged (the dark-slate clear still shows where no geometry exists).
+        if (m_sky.enabled && m_skyPipeline && fr.skyMapped) {
+            vkCmdBindPipeline(fr.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skyPipeline);
+            vkCmdBindDescriptorSets(fr.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_skyLayout,
+                                    0, 1, &fr.skySet, 0, nullptr);
+            vkCmdDraw(fr.cmd, 3, 1, 0, 0); // vertexless full-screen triangle
+        }
     }
 
     void endFrame(const FrameContext& fc) override {
@@ -900,6 +922,20 @@ private:
     static_assert(sizeof(FrameUBO) == 144 + kMaxPointLights * 32,
                   "FrameUBO must match the std140 layout in mesh.frag");
 
+    // ---- Analytic sky UBO (open-world track, task A) -----------------------
+    // Matches the SkyUBO block in shaders/sky.frag (std140). One mat4 (inverse
+    // viewProj for per-pixel ray reconstruction) + four vec4s of sun/haze params.
+    // Its own per-frame buffer + descriptor set (set 0 of the sky pipeline) — it
+    // does NOT touch the shared mesh FrameUBO, so the locked mesh layout is safe.
+    struct SkyUBO {
+        glm::mat4 invViewProj;   // offset 0
+        glm::vec4 camPos;        // offset 64: xyz = camera world pos
+        glm::vec4 sunDir;        // offset 80: xyz = normalized toward-sun direction
+        glm::vec4 sunColor;      // offset 96: rgb = sun color, a = intensity
+        glm::vec4 params;        // offset 112: x = haze, y = exposure, z/w reserved
+    };
+    static_assert(sizeof(SkyUBO) == 128, "SkyUBO must match the std140 layout in sky.frag");
+
     // Per-object GPU row (matches shaders/mesh.vert ObjectData; std430). The 3
     // uint pads keep the struct 16-byte aligned after texIndex so std430's mat4
     // base alignment is satisfied for the next row.
@@ -959,6 +995,9 @@ private:
         VkBuffer      camBuf = VK_NULL_HANDLE;      VmaAllocation camAlloc = nullptr;  void* camMapped = nullptr;
         VkBuffer      indirectBuf = VK_NULL_HANDLE; VmaAllocation indirectAlloc = nullptr; void* indirectMapped = nullptr;
         VkDescriptorSet objSet = VK_NULL_HANDLE;
+        // Per-frame analytic-sky UBO (set 0 of the sky pipeline) + its descriptor.
+        VkBuffer      skyBuf = VK_NULL_HANDLE;      VmaAllocation skyAlloc = nullptr;  void* skyMapped = nullptr;
+        VkDescriptorSet skySet = VK_NULL_HANDLE;
         // Per-frame HUD descriptor pool (image-sampler only) + vertex ring.
         VkDescriptorPool hudDescPool = VK_NULL_HANDLE;
         VkBuffer      hudVbo = VK_NULL_HANDLE;
@@ -1067,6 +1106,22 @@ private:
             ubo.lights[i].colorPad = glm::vec4(s.color[0], s.color[1], s.color[2], 0.0f);
         }
         std::memcpy(fr.camMapped, &ubo, sizeof(FrameUBO));
+
+        // Analytic sky UBO (open-world track, task A): the camera's INVERSE viewProj
+        // (for per-pixel world-ray reconstruction) + the sun/haze params. Uses the
+        // SAME camera matrix the meshes use, so the sky and the lit world are
+        // perfectly registered. Cheap; written every frame whether or not the sky is
+        // enabled (the draw itself is gated by m_sky.enabled in ensureMainPass).
+        if (fr.skyMapped) {
+            SkyUBO sky{};
+            sky.invViewProj = glm::inverse(ubo.viewProj);
+            sky.camPos   = glm::vec4(m_camPos, 1.0f);
+            glm::vec3 sd = glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2]));
+            sky.sunDir   = glm::vec4(sd, 0.0f);
+            sky.sunColor = glm::vec4(m_sky.sunColor[0], m_sky.sunColor[1], m_sky.sunColor[2], m_sky.sunIntensity);
+            sky.params   = glm::vec4(m_sky.haze, m_sky.exposure, 0.0f, 0.0f);
+            std::memcpy(fr.skyMapped, &sky, sizeof(SkyUBO));
+        }
 
         if (m_drawRecords.empty() || !m_meshPipeline) return;
 
@@ -1437,6 +1492,142 @@ private:
 
         logInfo("[rhi] HUD 2D pipeline ready (NDC quads + 8x8 font atlas, alpha-blended, no depth)");
         return true;
+    }
+
+    // ---- Analytic sky (open-world track, task A) ---------------------------
+    // Create the per-frame sky UBO buffers + descriptor sets and the full-screen
+    // sky pipeline. The pipeline has NO vertex input (the vertex shader generates a
+    // covering triangle from gl_VertexIndex), draws at far depth with depth test
+    // LESS_OR_EQUAL + depth write OFF so opaque geometry occludes it and the sky
+    // writes nothing to depth, and does not blend (opaque background fill).
+    bool createSky() {
+        // Set-0 layout: a single UBO (the SkyUBO) read by the fragment stage.
+        VkDescriptorSetLayoutBinding b{};
+        b.binding = 0; b.descriptorCount = 1;
+        b.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        slci.bindingCount = 1; slci.pBindings = &b;
+        if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_skySetLayout) != VK_SUCCESS) {
+            logError("[rhi] sky set layout failed"); return false;
+        }
+
+        // One UBO descriptor per frame-in-flight.
+        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kFramesInFlight };
+        VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        pci.maxSets = kFramesInFlight; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
+        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_skyPool) != VK_SUCCESS) {
+            logError("[rhi] sky desc pool failed"); return false;
+        }
+
+        // Per-frame UBO buffer (persistently mapped) + its descriptor set.
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            auto& fr = m_frames[i];
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = sizeof(SkyUBO);
+            bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo info{};
+            if (vmaCreateBuffer(m_alloc, &bci, &aci, &fr.skyBuf, &fr.skyAlloc, &info) != VK_SUCCESS) {
+                logError("[rhi] sky UBO create failed"); return false;
+            }
+            fr.skyMapped = info.pMappedData;
+
+            VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            dsai.descriptorPool = m_skyPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &m_skySetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &dsai, &fr.skySet) != VK_SUCCESS) {
+                logError("[rhi] sky set alloc failed"); return false;
+            }
+            VkDescriptorBufferInfo dbi{ fr.skyBuf, 0, sizeof(SkyUBO) };
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.dstSet = fr.skySet; w.dstBinding = 0; w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w.pBufferInfo = &dbi;
+            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        }
+
+        // Shaders.
+        VkShaderModule vs = loadShaderModule("shaders\\sky.vert.spv");
+        VkShaderModule fs = loadShaderModule("shaders\\sky.frag.spv");
+        if (!vs || !fs) return false;
+
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = vs; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
+
+        // No vertex input: the vertex shader builds the triangle from gl_VertexIndex.
+        VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+
+        VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        vp.viewportCount = 1; vp.scissorCount = 1;
+
+        VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        // Far-depth fill: the sky's gl_Position.z == w (depth 1.0). LESS_OR_EQUAL
+        // passes only where the cleared depth (1.0) still stands (no nearer
+        // geometry). depthWrite OFF leaves the depth buffer untouched for later use.
+        VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        dss.depthTestEnable = VK_TRUE; dss.depthWriteEnable = VK_FALSE;
+        dss.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.blendEnable = VK_FALSE; // opaque background fill
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
+        VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        cb.attachmentCount = 1; cb.pAttachments = &cba;
+
+        VkDynamicState dyn[2]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+
+        VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        plci.setLayoutCount = 1; plci.pSetLayouts = &m_skySetLayout; // no push constants
+        if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_skyLayout) != VK_SUCCESS) {
+            logError("[rhi] sky pipeline layout failed"); return false;
+        }
+
+        VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+        prci.colorAttachmentCount = 1; prci.pColorAttachmentFormats = &m_format;
+        prci.depthAttachmentFormat = m_depthFormat;  // pass has a depth attachment
+
+        VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        gpci.pNext = &prci;
+        gpci.stageCount = 2; gpci.pStages = stages;
+        gpci.pVertexInputState = &vin; gpci.pInputAssemblyState = &ia;
+        gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
+        gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
+        gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_skyLayout;
+        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_skyPipeline);
+
+        vkDestroyShaderModule(m_dev.device, vs, nullptr);
+        vkDestroyShaderModule(m_dev.device, fs, nullptr);
+        if (pr != VK_SUCCESS) { logError("[rhi] sky pipeline create failed"); return false; }
+
+        logInfo("[rhi] analytic sky pipeline ready (full-screen tri, far-depth, depth-test no-write)");
+        return true;
+    }
+
+    void destroySky() {
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            auto& fr = m_frames[i];
+            if (fr.skyBuf) { vmaDestroyBuffer(m_alloc, fr.skyBuf, fr.skyAlloc);
+                             fr.skyBuf = VK_NULL_HANDLE; fr.skyAlloc = nullptr; fr.skyMapped = nullptr; }
+        }
+        if (m_skyPipeline)  { vkDestroyPipeline(m_dev.device, m_skyPipeline, nullptr); m_skyPipeline = VK_NULL_HANDLE; }
+        if (m_skyLayout)    { vkDestroyPipelineLayout(m_dev.device, m_skyLayout, nullptr); m_skyLayout = VK_NULL_HANDLE; }
+        if (m_skyPool)      { vkDestroyDescriptorPool(m_dev.device, m_skyPool, nullptr); m_skyPool = VK_NULL_HANDLE; }
+        if (m_skySetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_skySetLayout, nullptr); m_skySetLayout = VK_NULL_HANDLE; }
     }
 
     void destroyHud() {
@@ -2253,6 +2444,18 @@ private:
     // caches the number of indirect commands produced.
     bool                    m_framePrepared = false;
     uint32_t                m_frameCmdCount = 0;
+
+    // ---- Analytic sky pipeline (open-world track, task A) ------------------
+    // A vertexless full-screen triangle drawn at the START of the main color pass
+    // (after the clear, before meshes) at far depth with depthTest=LESS_OR_EQUAL +
+    // depthWrite=OFF, so it fills only un-covered pixels and geometry occludes it.
+    // set 0 = the per-frame sky UBO (invViewProj + sun/haze params). Disabled by
+    // default; only drawn when setSkyParams(enabled=true).
+    VkPipeline            m_skyPipeline  = VK_NULL_HANDLE;
+    VkPipelineLayout      m_skyLayout    = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_skySetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool      m_skyPool      = VK_NULL_HANDLE;
+    SkyParams             m_sky{};   // cached params (enabled=false by default)
 
     // 2D HUD overlay pipeline (NDC quads, no depth, alpha-blended)
     VkPipeline       m_hudPipeline = VK_NULL_HANDLE;
