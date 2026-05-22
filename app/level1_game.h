@@ -30,6 +30,7 @@
 #include "melee.h"
 #include "objective.h"
 #include "trigger.h"
+#include "rescue.h"
 #include "level1.h"
 #include "env_art.h"
 
@@ -127,6 +128,11 @@ public:
     bool onUse(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                Scene& scene, x3::phys::IPhysicsWorld& physics);
 
+    // F2 rescue interact (spec §5): try to rescue the nearest captive within range
+    // of `playerPos` (E-interact). Returns true iff a victim was rescued (the host
+    // logs / plays SFX). Small additive hook around the existing onUse path.
+    bool onRescue(const x3::phys::Vec3& playerPos, float range = kRescueReach);
+
     // Door-code keypad (§6.4 keypad gate): true if the player is within `range` of a
     // LOCKED door carrying a keypad code (gates the host's code-entry mode).
     bool nearLockedCodedDoor(const x3::phys::Vec3& playerPos, float range = 3.5f) const;
@@ -198,6 +204,13 @@ public:
     // The weapon system (host reads usingRealModel() for logging).
     const WeaponSystem& weapon() const { return m_weapon; }
 
+    // ---- F2 rescue system (spec §5) ---------------------------------------
+    // The rescue system (3 victims on 5-min timers; rescue -> companion, expire ->
+    // boss). The host pokes tryRescue() on an E-interact edge and reads hudTimers()
+    // for the HUD. Exposed mutable + const so main.cpp can drive + draw it.
+    RescueSystem&       rescue()       { return m_rescue; }
+    const RescueSystem& rescue() const { return m_rescue; }
+
 private:
     // Map a door letter to its DoorSystem index (set in build()).
     uint32_t doorIndex(char letter) const;
@@ -225,6 +238,7 @@ private:
     MonsterManager m_bossAdds;     // Phase 3 summoned Guard adds (Phase 2b)
     ObjectiveSystem m_objectives;
     TriggerSystem  m_triggers;
+    RescueSystem   m_rescue;       // F2 victims (Aria/Keisha/Emily) — spec §5
 
     // Boss phase HUD flash (Phase 2b): banner text + countdown set on a transition.
     std::string    m_phaseBanner;          // "PHASE 2!" / "PHASE 3!" (empty = none)

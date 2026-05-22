@@ -12,6 +12,7 @@ add_executable(X3Engine WIN32
     melee.cpp
     objective.cpp
     trigger.cpp
+    rescue.cpp
     level1_game.cpp
     env_art.cpp
     terrain.cpp
