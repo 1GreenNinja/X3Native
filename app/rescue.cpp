@@ -398,6 +398,10 @@ public:
     void setSsaoParams(const x3::rhi::IRenderDevice::SsaoParams&) override {}
     void setWaterParams(const x3::rhi::IRenderDevice::WaterParams&) override {}
     void setGiParams(const x3::rhi::IRenderDevice::GiParams&) override {}
+    x3::rhi::TextureHandle registerTerrainMaterial(x3::rhi::TextureHandle, x3::rhi::TextureHandle,
+                                                   x3::rhi::TextureHandle, x3::rhi::TextureHandle) override {
+        return x3::rhi::TextureHandle{ m_next++ };
+    }
     void drawHudQuad(const x3::rhi::FrameContext&, float, float, float, float, const float[4]) override {}
     void drawHudText(const x3::rhi::FrameContext&, const char*, float, float, float, const float[4]) override {}
     void hudSize(uint32_t& w, uint32_t& h) const override { w = 0; h = 0; }
