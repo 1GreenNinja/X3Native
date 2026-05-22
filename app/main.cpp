@@ -20,6 +20,7 @@
 #include "engine/net/INetworkSystem.h"   // netcode Phase 0: --test-net + SimClock
 #include "engine/net/SimClock.h"         // deterministic fixed-step accumulator
 #include "engine/net/ISnapshotInterpolator.h"  // netcode Phase 0c: --test-netinterp
+#include "engine/net/IClientPredictor.h"        // netcode Phase 1: --test-netpredict
 #include "engine/ai/INavigation.h"       // GENERAL navigation: nav grid + A* + --test-nav
 
 #include "scene.h"
@@ -295,7 +296,7 @@ int main(int argc, char** argv) {
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
-         testNetSync = false, testNetInterp = false;
+         testNetSync = false, testNetInterp = false, testNetPredict = false;
     // --test-bestiary (bestiary pass): the data-driven enemy roster. Additive flag.
     bool        testBestiary = false;
     // --test-ui (UI pass): general game-UI layer (menus + HUD). Additive flag.
@@ -462,6 +463,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-net") testNet = true;
         else if (a == "--test-netsync") testNetSync = true;
         else if (a == "--test-netinterp") testNetInterp = true;
+        else if (a == "--test-netpredict") testNetPredict = true;
         else if (a == "--test-rescue") testRescue = true;
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-debris") testDebris = true;
@@ -733,6 +735,12 @@ int main(int argc, char** argv) {
                     "interpolation + jitter-buffer self-test "
                     "(jittered snapshots -> bracketed lerp/slerp -> smooth render)...");
         return x3::net::runNetInterpSelfTest() ? 0 : 1;
+    }
+    if (testNetPredict) {
+        x3::logInfo("running netcode (Subsystem N, Phase 1) client prediction + "
+                    "server reconciliation self-test "
+                    "(predict immediately -> lagged authority+ack -> rollback/resim)...");
+        return x3::net::runNetPredictSelfTest() ? 0 : 1;
     }
     if (testRescue) {
         x3::logInfo("running F2 rescue (victim/companion/transform) self-test (R0-R5)...");
