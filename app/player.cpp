@@ -202,6 +202,33 @@ void Player::update(const PlayerInput& in, float dt, x3::phys::IPhysicsWorld& ph
     m_feetX = feet.x; m_feetY = feet.y; m_feetZ = feet.z;
 }
 
+// ---------------------------------------------------------------------------
+// Checkpoint restore (save/load). Direct, unclamped-except-pitch setters so the
+// save layer can put the player state back exactly as it was captured.
+// ---------------------------------------------------------------------------
+void Player::setLook(float yaw, float pitch) {
+    m_yaw = yaw;
+    if (pitch >  kPitchClamp) pitch =  kPitchClamp;
+    if (pitch < -kPitchClamp) pitch = -kPitchClamp;
+    m_pitch = pitch;
+}
+
+void Player::setHp(int hp) {
+    if (hp < 0) hp = 0;
+    if (hp > m_maxHp) hp = m_maxHp;
+    m_hp      = hp;
+    m_alive   = hp > 0;
+    m_iframe  = 0.0f;
+    m_flash   = 0.0f;
+    m_respawn = 0.0f;
+}
+
+void Player::setFeetPosition(x3::phys::IPhysicsWorld& physics, const x3::phys::Vec3& feet) {
+    if (!m_spawned || !m_body.valid()) return;
+    physics.setBodyPosition(m_body, feet);
+    m_feetX = feet.x; m_feetY = feet.y; m_feetZ = feet.z;
+}
+
 void Player::camera(float& x, float& y, float& z, float& yaw, float& pitch) const {
     x = m_feetX;
     y = m_feetY + kEyeHeight;

@@ -127,6 +127,23 @@ public:
     // independently (e.g. while dead, when movement input is suppressed).
     void updateHealth(float dt);
 
+    // ---- Checkpoint restore (save/load) -----------------------------------
+    // Restore the look angles (radians) directly. Used by the save layer to put the
+    // camera back exactly where it was at the saved checkpoint. No clamping beyond
+    // the normal pitch clamp; gameplay is otherwise unaffected.
+    void setLook(float yaw, float pitch);
+    // Restore current HP to an exact value (clamped to [0,maxHp]) and mark the
+    // player alive iff hp>0, clearing the iframe/flash/respawn timers. This is the
+    // load-time restore of a checkpoint's health (a clean restore, not "heal").
+    void setHp(int hp);
+    // Re-seat the capsule at `feet` world position (teleport). Wraps
+    // physics.setBodyPosition + refreshes the cached feet so camera() is valid
+    // immediately. Requires spawn() to have run.
+    void setFeetPosition(x3::phys::IPhysicsWorld& physics, const x3::phys::Vec3& feet);
+    // Cached feet (capsule reference) world position from the last update()/spawn().
+    // The save layer reads this to capture the player transform.
+    x3::phys::Vec3 feet() const { return x3::phys::Vec3{ m_feetX, m_feetY, m_feetZ }; }
+
 private:
     x3::phys::BodyId m_body;
     float m_yaw   = 0.0f;   // around +Y; 0 looks toward +X
