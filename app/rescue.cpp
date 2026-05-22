@@ -6,6 +6,7 @@
 #include "rescue.h"
 #include "mesh_prims.h"
 #include "headless_device.h"
+#include "asset_root.h"
 
 #include "engine/core/x3_log.h"
 
@@ -391,7 +392,7 @@ bool runRescueSelfTest() {
     const x3::phys::Vec3 wB{ 20.0f, 0.4f, 0.0f };
     const x3::phys::Vec3 wC{ 40.0f, 0.4f, 0.0f };
     // Short timer so the expiry test runs fast (the 5-min default is a build param).
-    rescue.build(scene, device, *physics, "G:/GameModels/rigged_glb", wA, wB, wC, /*timer*/2.0f);
+    rescue.build(scene, device, *physics, riggedGlbRoot(), wA, wB, wC, /*timer*/2.0f);
     rescue.setHubReached(true);
     rcheck(rescue.victimCount() == 3, "R0 three victims built");
 

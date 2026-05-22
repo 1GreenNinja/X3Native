@@ -19,6 +19,7 @@
 
 #include "scene.h"
 #include "mesh_prims.h"
+#include "asset_root.h"                    // portable assetRoot() (assets-LFS)
 #include "anim.h"                          // Skinner + --list-clips clip check
 #include "level1.h"
 #include "player.h"
@@ -961,7 +962,7 @@ int main(int argc, char** argv) {
         // Prefer the MULTI-CLIP "<name>_anim.glb" (Idle/Walk/Run/Jump) when present
         // so the captured enemies actually WALK/RUN as they move (T1 locomotion
         // blend); fall back to the Idle-only base GLB otherwise (clean checkout).
-        auto pickAnimGlb = [](const char* dir, const char* base) -> std::string {
+        auto pickAnimGlb = [](const std::string& dir, const char* base) -> std::string {
             namespace fs = std::filesystem;
             std::string b(base);
             std::string stem = (b.size() > 4 && b.substr(b.size()-4) == ".glb")
@@ -980,8 +981,8 @@ int main(int argc, char** argv) {
             t.tint[0]=1.6f; t.tint[1]=1.7f; t.tint[2]=1.4f; t.tint[3]=1.0f;
             t.damage = 8; t.attackRange = 1.9f; t.attackCooldown = 1.0f; t.attackWindup = 0.25f;
             t.ranged = false;
-            t.modelFile = pickAnimGlb("G:/GameModels/rigged_glb", "marcus_webb.glb");
-            t.modelDirOverride = "G:/GameModels/rigged_glb";
+            t.modelFile = pickAnimGlb(x3::game::riggedGlbRoot(), "marcus_webb.glb");
+            t.modelDirOverride = x3::game::riggedGlbRoot();
             t.standUpZtoY = false; t.modelScale = 1.0f;
             return t;
         };
@@ -992,7 +993,7 @@ int main(int argc, char** argv) {
             t.tint[0]=1.0f; t.tint[1]=1.4f; t.tint[2]=2.0f; t.tint[3]=1.0f;   // bright pale-blue flanker
             t.damage = 5; t.attackRange = 14.0f; t.attackCooldown = 1.4f; t.attackWindup = 0.35f;
             t.ranged = true; t.standoff = 7.0f;
-            t.modelFile = "Characters/Drone.glb"; t.modelDirOverride = "G:/GameModels/converted_glb";
+            t.modelFile = "Characters/Drone.glb"; t.modelDirOverride = x3::game::convertedGlbRoot();
             t.standUpZtoY = true; t.modelScale = 1.0f;
             return t;
         };
@@ -1003,8 +1004,8 @@ int main(int argc, char** argv) {
             t.tint[0]=2.0f; t.tint[1]=1.2f; t.tint[2]=2.2f; t.tint[3]=1.0f; // bright violet scout
             t.damage = 8; t.attackRange = 1.9f; t.attackCooldown = 1.0f; t.attackWindup = 0.25f;
             t.ranged = false;
-            t.modelFile = pickAnimGlb("G:/GameModels/rigged_glb", "marcus_webb.glb");
-            t.modelDirOverride = "G:/GameModels/rigged_glb";
+            t.modelFile = pickAnimGlb(x3::game::riggedGlbRoot(), "marcus_webb.glb");
+            t.modelDirOverride = x3::game::riggedGlbRoot();
             t.standUpZtoY = false; t.modelScale = 1.0f;
             return t;
         };
@@ -1015,13 +1016,13 @@ int main(int argc, char** argv) {
             t.tint[0]=2.2f; t.tint[1]=1.0f; t.tint[2]=0.8f; t.tint[3]=1.0f; // bright wounded red
             t.damage = 8; t.attackRange = 1.9f; t.attackCooldown = 1.0f; t.attackWindup = 0.25f;
             t.ranged = false;
-            t.modelFile = pickAnimGlb("G:/GameModels/rigged_glb", "marcus_webb.glb");
-            t.modelDirOverride = "G:/GameModels/rigged_glb";
+            t.modelFile = pickAnimGlb(x3::game::riggedGlbRoot(), "marcus_webb.glb");
+            t.modelDirOverride = x3::game::riggedGlbRoot();
             t.standUpZtoY = false; t.modelScale = 1.0f;
             return t;
         };
 
-        const std::string modelDir = "G:/GameModels/rigged_glb";
+        const std::string modelDir = x3::game::riggedGlbRoot();
         MonsterSystem guard, drone, wounded, scout;
         // Place each on its OWN lane around the player so the four behaviours stay
         // spatially distinct (they don't all bunch on the target): the Guard starts
@@ -1260,7 +1261,7 @@ int main(int argc, char** argv) {
         using x3::game::MonsterSystem;
         using x3::game::MonsterType;
         // Prefer the multi-clip animated GLB so the locomotion blend lights up.
-        auto pickAnimGlb = [](const char* dir, const char* base) -> std::string {
+        auto pickAnimGlb = [](const std::string& dir, const char* base) -> std::string {
             namespace fsx = std::filesystem;
             std::string b(base);
             std::string stem = (b.size() > 4 && b.substr(b.size()-4) == ".glb")
@@ -1275,8 +1276,8 @@ int main(int argc, char** argv) {
         wt.hp = 100; wt.chaseSpeed = 1.5f;   // ~walk speed: the blend lands on WALK
         wt.tint[0]=1.6f; wt.tint[1]=1.7f; wt.tint[2]=1.5f; wt.tint[3]=1.0f;
         wt.damage = 0; wt.attackRange = 0.5f; wt.attackWindup = 0.0f; wt.ranged = false;
-        wt.modelFile = pickAnimGlb("G:/GameModels/rigged_glb", "marcus_webb.glb");
-        wt.modelDirOverride = "G:/GameModels/rigged_glb";
+        wt.modelFile = pickAnimGlb(x3::game::riggedGlbRoot(), "marcus_webb.glb");
+        wt.modelDirOverride = x3::game::riggedGlbRoot();
         wt.standUpZtoY = false; wt.modelScale = 1.0f;
 
         MonsterSystem guard;
@@ -1284,7 +1285,7 @@ int main(int argc, char** argv) {
         // whole time, never reaching attack range (damage 0, tiny attackRange). It
         // ends near z~2.8 after the settle below; the camera frames that spot.
         const x3::phys::Vec3 guardStart{ 0.0f, 0.0f, 4.0f };
-        guard.buildMonsterTuned(wscene, *device, *wphys, "G:/GameModels/rigged_glb",
+        guard.buildMonsterTuned(wscene, *device, *wphys, x3::game::riggedGlbRoot(),
                                 guardStart, wt);
         x3::logInfo(std::string("--capture-walk: guard usingRealModel=") +
                     (guard.usingRealModel() ? "1" : "0"));
@@ -1370,7 +1371,7 @@ int main(int argc, char** argv) {
 
         x3::game::Scene cscene;
         x3::game::Club1127World club;
-        club.build(cscene, *device, *cphys, "G:/GameModels/rigged_glb");
+        club.build(cscene, *device, *cphys, x3::game::riggedGlbRoot());
 
         // Apply the neon/cave point-light set (static; the device re-uploads each
         // frame). The club has NO sky (it's an enclosed interior + caves).
@@ -1589,7 +1590,7 @@ int main(int argc, char** argv) {
     // terrain) so it appears in the screenshot/bench/smoketest paths too.
     x3::game::ElevatorSystem elevator;
     if (!terrainWorld) {
-        game.build(scene, *device, *physics, "G:/GameModels/rigged_glb");
+        game.build(scene, *device, *physics, x3::game::riggedGlbRoot());
         // Audio hookups for Level 1 events (§9, nice-to-have; silent if no device).
         x3::game::Level1Audio la;
         la.sys = audio.get(); la.door = sndDoor; la.pickup = sndPickup;

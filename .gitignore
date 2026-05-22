@@ -30,8 +30,9 @@ CMakeSettings.json
 # Pak build output
 *.x3pak
 
-# Large binary assets (shipped separately / via LFS)
-/assets/
+# Curated game-model assets are now COMMITTED via Git LFS (see .gitattributes:
+# *.glb/*.gltf/*.fbx/*.ktx2/*.bin) so the repo is portable across machines.
+# (Previously /assets/ was ignored and shipped separately.)
 /games/*/content/
 
 # Large / commercial game assets (never commit)

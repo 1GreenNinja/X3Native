@@ -5,6 +5,7 @@
 // 4x4 (glTF/glm convention) throughout, matching the M2 loader's node transforms.
 
 #include "anim.h"
+#include "asset_root.h"
 #include "engine/asset/IAssetSource.h"
 #include "engine/core/x3_log.h"
 
@@ -907,7 +908,7 @@ bool runAnimSelfTest() {
     // (The big *_anim.glb are generated artifacts — may be absent in a clean
     // checkout. When absent we skip these checks and the J1 test still PASSES.) ----
     {
-        const char* kLocoGlb = "G:/GameModels/rigged_glb/chief_martinez_anim.glb";
+        const std::string kLocoGlb = x3::game::riggedGlbRoot() + "/chief_martinez_anim.glb";
         if (fs::exists(kLocoGlb)) {
             x3::logInfo("[anim-test] T1 locomotion blend present-asset checks");
             bool ok = runLocomotionSelfTest(kLocoGlb);
@@ -943,7 +944,7 @@ bool runLocomotionSelfTest(const std::string& glbPath) {
     };
 
     std::string path = glbPath.empty()
-        ? std::string("G:/GameModels/rigged_glb/chief_martinez_anim.glb") : glbPath;
+        ? (x3::game::riggedGlbRoot() + "/chief_martinez_anim.glb") : glbPath;
     if (!fs::exists(path)) {
         x3::logError("[loco-test] GLB not found: " + path);
         return false;

@@ -6,6 +6,7 @@
 #include "player.h"
 #include "level1_game.h"
 #include "headless_device.h"
+#include "asset_root.h"
 
 #include "engine/core/x3_log.h"
 
@@ -176,11 +177,11 @@ bool runPhase2bSelfTest() {
 
         // Front enemy ~1.5 m ahead (+X); behind enemy ~1.5 m back (-X);
         // far enemy 6 m ahead (out of range).
-        uint32_t front = mm.spawn(scene, device, *w, "G:/GameModels/rigged_glb",
+        uint32_t front = mm.spawn(scene, device, *w, riggedGlbRoot(),
                                   x3::phys::Vec3{ 1.5f, 0.6f, 0.0f }, inertGuard());
-        uint32_t behind = mm.spawn(scene, device, *w, "G:/GameModels/rigged_glb",
+        uint32_t behind = mm.spawn(scene, device, *w, riggedGlbRoot(),
                                    x3::phys::Vec3{ -1.5f, 0.6f, 0.0f }, inertGuard());
-        uint32_t farAway = mm.spawn(scene, device, *w, "G:/GameModels/rigged_glb",
+        uint32_t farAway = mm.spawn(scene, device, *w, riggedGlbRoot(),
                                     x3::phys::Vec3{ 6.0f, 0.6f, 0.0f }, inertGuard());
 
         // Pure-helper sanity: front in arc, behind + far not.
@@ -231,7 +232,7 @@ bool runPhase2bSelfTest() {
         Scene scene;
         Level1Game game;
         game.setDevice(device);
-        game.build(scene, device, *w, "G:/GameModels/rigged_glb");
+        game.build(scene, device, *w, riggedGlbRoot());
         const Level1Layout& L = game.layout();
 
         bool lockedBefore = game.doorLocked('C') && game.doorState('C') == DoorState::Closed;
@@ -261,7 +262,7 @@ bool runPhase2bSelfTest() {
         w->init();
         Scene scene;
         MonsterSystem boss;
-        boss.buildMonsterTuned(scene, device, *w, "G:/GameModels/rigged_glb",
+        boss.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
                                x3::phys::Vec3{ 0.0f, 0.6f, 0.0f }, testBoss());
         const x3::phys::Vec3 player{ 0.0f, 0.6f, 0.0f };
 
@@ -306,7 +307,7 @@ bool runPhase2bSelfTest() {
         Scene scene;
         Level1Game game;
         game.setDevice(device);
-        game.build(scene, device, *w, "G:/GameModels/rigged_glb");
+        game.build(scene, device, *w, riggedGlbRoot());
         const Level1Layout& L = game.layout();
 
         // Cross the arena trigger to spawn Martinez.
