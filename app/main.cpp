@@ -1620,6 +1620,7 @@ int main(int argc, char** argv) {
             for (int i = 0; i < kSettle; ++i) {
                 glfwPollEvents();
                 club.update(dt, cscene, *cphys);
+                club.tickWater(dt, *device);   // animate the flooded section's REAL water
                 cphys->step(dt);
                 cscene.update(*cphys);
                 // Re-pose each frame (scene.update doesn't move the camera).
@@ -1689,6 +1690,7 @@ int main(int argc, char** argv) {
                 in.lookDX = ddx; in.lookDY = ddy;
                 cplayer.update(in, dt, *cphys);
                 club.update(dt, cscene, *cphys);
+                club.tickWater(dt, *device);   // animate the flooded section's REAL water
                 cphys->step(dt);
                 cscene.update(*cphys);
                 cplayer.camera(camX, camY, camZ, camYaw, camPitch);
@@ -1710,6 +1712,7 @@ int main(int argc, char** argv) {
                 if (spaceNow) flyYc += spd;
                 if (kd(GLFW_KEY_LEFT_CONTROL)) flyYc -= spd;
                 club.update(dt, cscene, *cphys);
+                club.tickWater(dt, *device);   // animate the flooded section's REAL water
                 cphys->step(dt);
                 cscene.update(*cphys);
                 camX = flyXc; camY = flyYc; camZ = flyZc; camYaw = flyYawC; camPitch = flyPitchC;
