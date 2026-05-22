@@ -535,6 +535,9 @@ private:
         for (size_t i = 0; i < data.nodes_count; ++i) {
             const cgltf_node& cn = data.nodes[i];
             Node n;
+            // Node name (empty string if unnamed) — lets callers resolve humanoid
+            // bones by name (foot-IK leg/hips lookup). Additive; index paths unchanged.
+            n.name = cn.name ? cn.name : "";
             n.parent = cn.parent
                 ? static_cast<int>(cgltf_node_index(&data, cn.parent)) : -1;
             if (cn.has_matrix) {

@@ -130,6 +130,68 @@ public:
     float crossfadeWeight() const { return m_xfadeActive ? m_xfadeW : 0.0f; }
     bool  hasLocomotion()   const { return m_idleClip >= 0 || m_walkClip >= 0 || m_runClip >= 0; }
 
+    // ======================================================================
+    // Foot IK — GENERAL character grounding (slopes, stairs, uneven terrain).
+    // ======================================================================
+    // Sits AFTER the pose blend and BEFORE the final model-space accumulate. For
+    // each resolved leg (hip->knee->foot) it: (1) raycasts DOWN from the foot's
+    // current model-space plant position to find the ground, (2) plants the foot
+    // at the hit + a small lift and aligns its sole to the ground normal, and (3)
+    // lowers the PELVIS (model root) so both feet can reach on a slope/step (the
+    // lower foot governs), smoothed to avoid pops and clamped to a sane range.
+    // The leg is then solved with an analytic TWO-BONE solver. Each contribution
+    // is scaled by a smoothed 0..1 weight. If the rig's leg/hips bones don't
+    // resolve by name the whole pass gracefully no-ops (no regression).
+    //
+    // The raycast is supplied as a callback so anim never depends on the physics
+    // lib directly: given a world-space origin + a (downward) dir + maxDist, fill
+    // hitY/normal and return true on a hit. `worldFromModel` (the character's
+    // placement matrix, column-major) maps the model-space foot to world for the
+    // ray and the hit back to model space. Pass an identity matrix if the model is
+    // already authored in world space.
+    struct GroundRay {
+        // origin/dir are WORLD space; maxDist meters. On a hit, write the world-space
+        // hit point into hit[3] and the surface normal into normal[3] and return true.
+        using Fn = bool(*)(const float origin[3], const float dir[3], float maxDist,
+                           float hit[3], float normal[3], void* user);
+        Fn    fn   = nullptr;
+        void* user = nullptr;
+    };
+
+    // Enable/disable foot IK and supply the ground-ray callback. `worldFromModel`
+    // is the character's model->world transform (column-major 4x4); the IK uses it
+    // to cast in world space and bring hits back to model space. When `ray.fn` is
+    // null the pass is inert. Cheap; resolution happens lazily on the next apply.
+    void setFootIk(bool enabled, const GroundRay& ray,
+                   const float worldFromModel[16] = nullptr);
+
+    // Update just the placement matrix (e.g. the character moved) without changing
+    // the enabled state or callback. Column-major 4x4.
+    void setFootIkWorldFromModel(const float worldFromModel[16]);
+
+    bool  footIkEnabled() const { return m_footIkEnabled; }
+    // Did the LAST bind() resolve at least one full leg chain (hip+knee+foot)? For
+    // tests/HUD. Resolution is by humanoid bone name (see resolveFootIkBones()).
+    bool  footIkResolved() const { return m_legResolved; }
+    // Resolved bone node-name for the test report; side 0=left,1=right,
+    // part 0=hip(upperleg) 1=knee(lowerleg) 2=foot 3=pelvis/hips. "" if unresolved.
+    std::string_view footIkBoneName(int side, int part) const;
+    // The smoothed per-leg IK weight and the pelvis drop applied last frame (HUD).
+    float footIkLegWeight(int side) const { return (side >= 0 && side < 2) ? m_legW[side] : 0.0f; }
+    float footIkPelvisDrop() const { return m_pelvisDropSmoothed; }
+
+    // ---- Analytic two-bone IK (public + static so --test-footik can exercise it
+    // in isolation). Given the hip joint world position, the rest world positions
+    // of the knee + foot (which define the two bone lengths), a foot TARGET, and a
+    // knee POLE hint, compute the corrected WORLD positions of the knee + foot so
+    // the foot reaches the target with a natural bend in the pole direction. The
+    // bone lengths are taken from |knee-hip| and |foot-knee|. An unreachable target
+    // yields a straight (fully extended) leg pointing at the target (no jitter).
+    // outKnee/outFoot may equal the corresponding inputs. Pure geometry; no rig.
+    static void solveTwoBone(const float hip[3], const float knee[3],
+                             const float foot[3], const float target[3],
+                             const float pole[3], float outKnee[3], float outFoot[3]);
+
 private:
     // Sample one node's local TRS from the clip at time t (bind-pose fallback),
     // composing the result into a column-major 4x4.
@@ -169,6 +231,22 @@ private:
     // so the steady per-frame path performs no heap allocation.
     void computeGlobals(const x3::asset::Model& m, uint32_t clip, float t,
                         std::vector<float>& globals) const;
+
+    // ---- Foot IK internals ----
+    // Resolve the humanoid leg + hips bones by name (case-insensitive, common
+    // conventions: UpperLeg/thigh/UpLeg, LowerLeg/shin/Leg, Foot/ankle, Hips/pelvis;
+    // .L/.R or Left/Right). Called from bind(); sets m_legResolved + the bone-length
+    // members. Idempotent; a rig that doesn't resolve leaves m_legResolved=false so
+    // the IK pass no-ops.
+    void resolveFootIkBones(const x3::asset::Model& m);
+
+    // Run the foot-IK pass over the blended LOCAL pose (m_blendT/R/S) IN PLACE:
+    // accumulate globals, plant each foot via the ground ray, adjust the pelvis,
+    // and solve each leg analytically, writing corrected hip/knee/foot LOCAL
+    // rotations + the pelvis offset back into m_blendT/R. dt drives the weight +
+    // pelvis smoothing. No-op (returns) if !enabled / unresolved / no ray. Reuses
+    // m_globalScratch + member IK scratch (no per-frame heap alloc in the steady path).
+    void applyFootIk(const x3::asset::Model& m, float dt);
 
     bool                  m_valid = false;
     int                   m_skinIndex = -1;
@@ -219,6 +297,30 @@ private:
     mutable std::vector<float> m_poseBT, m_poseBR, m_poseBS;  // bracket B T/R/S
     mutable std::vector<float> m_blendT, m_blendR, m_blendS;  // blended T/R/S
     mutable std::vector<float> m_xfadeT, m_xfadeR, m_xfadeS;  // crossfade target pose
+
+    // ---- Foot-IK state. Resolved once in bind(); the per-frame pass reads these
+    // + writes corrected rotations into m_blend*. No per-frame heap alloc. ----
+    bool        m_footIkEnabled = false;
+    GroundRay   m_groundRay{};
+    float       m_worldFromModel[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    bool        m_legResolved = false;        // any full leg chain resolved?
+    // Per side (0=L,1=R): node indices for hip(upperleg)/knee(lowerleg)/foot, the
+    // pelvis (shared), and the rest bone lengths (knee = |knee-hip|, foot=|foot-knee|).
+    int         m_hipNode[2]  = { -1, -1 };
+    int         m_kneeNode[2] = { -1, -1 };
+    int         m_footNode[2] = { -1, -1 };
+    int         m_pelvisNode  = -1;
+    int         m_rootNode    = -1;           // pelvis or topmost ancestor used for the lift
+    float       m_upperLen[2] = { 0, 0 };     // |knee - hip| in rest pose (model units)
+    float       m_lowerLen[2] = { 0, 0 };     // |foot - knee| in rest pose
+    bool        m_sideOk[2]   = { false, false };
+    std::string m_boneName[2][4];             // [side][hip,knee,foot,pelvis] for the report
+    // Smoothed per-leg weights (ramp in/out so enabling/disabling never pops) and
+    // the smoothed pelvis drop (model units, >=0 lowers the hips).
+    float       m_legW[2] = { 0, 0 };
+    float       m_pelvisDropSmoothed = 0.0f;
+    // IK scratch (sized in bind()): a working copy of the blended globals.
+    mutable std::vector<float> m_ikGlobals;   // nodeCount * 16
 };
 
 // Headless self-test (--test-anim): synthesize a tiny rigged GLB (1 bone bending
@@ -239,5 +341,20 @@ bool runAnimSelfTest();
 // monotonic sweep + pop-free Jump crossfade). Returns true iff all checks pass.
 // If `glbPath` is empty it defaults to chief_martinez_anim.glb. No window/Vulkan.
 bool runLocomotionSelfTest(const std::string& glbPath);
+
+// Headless self-test (--test-footik): exercises the foot-IK suite with NO window:
+//   F1 two-bone solver reaches a REACHABLE target within epsilon (foot==target,
+//      both bone lengths preserved, knee bent toward the pole).
+//   F2 an UNREACHABLE target yields a straight (fully-extended) leg pointing at
+//      the target, with no jitter (two distinct over-reach targets give a stable,
+//      colinear hip->knee->foot).
+//   F3 a synthetic two-leg rig resolves hip/knee/foot/pelvis by bone name, and a
+//      flat-ground plant + a sloped plant leave the feet on the surface (not
+//      floating/sinking) with a bounded, smoothed pelvis drop on the step.
+//   F4 (present-asset) the REAL rig (chief_martinez_anim.glb when on disk) resolves
+//      at least one full leg chain; the resolved bone names are logged. Skipped
+//      (still PASS) on a clean checkout where the asset is absent.
+// Returns true iff all checks pass. No window / Vulkan.
+bool runFootIkSelfTest();
 
 } // namespace x3::anim
