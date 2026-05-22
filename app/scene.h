@@ -63,6 +63,12 @@ struct Entity {
     x3::rhi::MeshHandle    mesh;            // render mesh (invalid => not drawn)
     x3::rhi::TextureHandle tex;             // invalid => default white (flat color)
     float                  baseColor[4] = {1, 1, 1, 1}; // tint (multiplies texel)
+    // Optional per-entity HDR EMISSIVE term { r, g, b, strength } added on top of
+    // the lit result (independent of light). Default {0,0,0,0} == no glow, so
+    // Scene::render's drawMeshEmissive is identical to the old drawMesh for every
+    // existing entity. strength > 1 makes the surface a bright bloom source — used
+    // by club1127's neon strips / cave crystals. (See app/club1127.cpp.)
+    float                  emissive[4] = {0, 0, 0, 0};
     x3::phys::BodyId       body;            // invalid => purely visual / static
     float                  transform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; // column-major model
     bool                   visible = true;

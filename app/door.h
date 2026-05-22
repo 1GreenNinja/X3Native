@@ -22,8 +22,12 @@
 #include "scene.h"
 
 #include "engine/physics/IPhysicsWorld.h"
+#include "engine/asset/IModelLoader.h"
+#include "engine/asset/IAssetSource.h"
 
 #include <cstdint>
+#include <memory>
+#include <string_view>
 #include <vector>
 
 namespace x3::game {
@@ -56,6 +60,12 @@ struct Door {
     bool              locked   = false;  // §6.4: refuse to open until unlock()
     int               code     = 0;      // keypad code (0 = no keypad); a LOCKED door with
                                          // code != 0 opens when the matching code is entered
+    // ---- Visual GLB placement (the real SM_Door_A slab is drawn over the
+    // collision-only box). These let drawMeshes() orient + size the shared GLB to
+    // fit this door's opening and follow the slide animation. ----
+    uint32_t          axis     = 0;      // 0 = AlongZ (thin in X), 1 = AlongX (thin in Z)
+    float             halfWidth = 0.6f;  // doorway half-width (== DoorSpec::halfWidth)
+    float             height    = 2.1f;  // door slab height (== DoorSpec::height)
 };
 
 // Registry of doors in a level. Kept in the game layer (not the Scene) so the
@@ -89,8 +99,32 @@ public:
     // setBodyPosition(), then sync the owning Entity's transform translation.
     void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics);
 
+    // Load the shared real-door GLB (SM_Door_A) ONCE from `convertedGlbDir` (the
+    // loose-GLB root, e.g. "G:/GameModels/converted_glb"), bound to `device`. Safe
+    // to call repeatedly (idempotent). On failure the door keeps its (now hidden)
+    // procedural box look fallback — drawMeshes() simply draws nothing. Called by
+    // buildLevelDoor() so the visual swap happens automatically.
+    void loadDoorMesh(x3::rhi::IRenderDevice& device, std::string_view convertedGlbDir);
+
+    // Draw the shared real door GLB at EVERY door's CURRENT world transform (so the
+    // mesh follows the slide animation), oriented + scaled to fit each door's
+    // opening. No-op if the GLB failed to load. Mirrors EnvArtSystem::draw().
+    void drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const;
+
+    // True once the shared door GLB has loaded ok (a real mesh will be drawn).
+    bool hasDoorMesh() const { return m_meshOk; }
+
 private:
     std::vector<Door> m_doors;
+
+    // ---- Shared real-door GLB (loaded once; reused for every door). Owns the
+    // asset source + loader so the GPU handles stay valid for the app lifetime,
+    // exactly like EnvArtSystem. ----
+    std::unique_ptr<x3::asset::IAssetSource> m_assets;
+    std::unique_ptr<x3::asset::IModelLoader> m_loader;
+    x3::asset::Model                         m_doorModel;
+    std::vector<x3::asset::ModelDrawable>    m_doorDrawables;
+    bool m_meshOk = false;
 };
 
 // Handle a "use" press: raycast from the eye along `dir` (need not be unit;

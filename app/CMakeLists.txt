@@ -15,6 +15,7 @@ add_executable(X3Engine WIN32
     rescue.cpp
     level1_game.cpp
     env_art.cpp
+    club1127.cpp
     terrain.cpp
     fx.cpp
     hud.cpp)

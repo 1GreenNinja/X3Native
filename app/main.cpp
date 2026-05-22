@@ -25,6 +25,7 @@
 #include "monster.h"
 #include "level1_game.h"
 #include "elevator.h"
+#include "club1127.h"
 #include "terrain.h"
 #include "fx.h"
 #include "hud.h"
@@ -1152,6 +1153,178 @@ int main(int argc, char** argv) {
         return (frameNo > 0 && gifOk) ? 0 : 1;
     }
 
+    // ---- Club 1127 + cave/tunnel network (--world club) --------------------
+    // A NEW self-contained area (the hidden neon HUB + flooded caves, lore code
+    // 1127). Built entirely through the public Scene/device/physics API by
+    // Club1127World (app/club1127.*) so it stays LOW-CONFLICT with Level 1 / the
+    // Spire. Two ways in:
+    //   * WALKABLE (windowed): `--world club` — WASD / mouse-look / Space jump /
+    //     F noclip, exactly the Level-1 walking controller + physics.
+    //   * SCREENSHOT (headless): `--world club --screenshot <path>` — pose the
+    //     showcase camera, settle a few frames (so the characters skin + the bloom
+    //     registers), capture the PNG, exit.
+    //
+    // CODE-1127 HOOK POINT (Spire link, intentionally not fully wired to avoid a
+    // level1.cpp conflict): the Spire's keypad already accepts 1127 (see
+    // level1_game.cpp tryDoorCode + the codeMode block in this loop). To make the
+    // in-game secret entry land here, on a successful 1127 at the *secret club*
+    // keypad the host would build a Club1127World + teleport the player to
+    // club.spawn() instead of opening Door C. The `--world club` flag below is the
+    // standalone build/verify path for that same area.
+    if (worldMode == "club") {
+        x3::logInfo("--world club: building Club 1127 + the flooded cave/tunnel network");
+
+        // Physics world for the club area (separate from the Level-1 path below).
+        std::unique_ptr<x3::phys::IPhysicsWorld> cphys(x3::phys::createPhysicsWorld());
+        if (!cphys->init()) {
+            x3::logError("--world club: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        x3::game::Scene cscene;
+        x3::game::Club1127World club;
+        club.build(cscene, *device, *cphys, "G:/GameModels/rigged_glb");
+
+        // Apply the neon/cave point-light set (static; the device re-uploads each
+        // frame). The club has NO sky (it's an enclosed interior + caves).
+        const auto& clights = club.pointLights();
+        device->setPointLights(clights.data(), (uint32_t)clights.size());
+        { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
+
+        const x3::phys::Vec3 spawn = club.spawn();
+
+        // ===== Headless screenshot path: pose the showcase camera, settle, grab. =
+        if (headless) {
+            float cam[5]; club.showcaseCamera(cam);
+            // Allow an explicit --shot-cam x,y,z,yaw,pitch override (handy for
+            // capturing the caves/boss arena from a custom vantage during verify).
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+            const int kSettle = 24;   // advance enough for character skinning + bloom
+            const float dt = 1.0f / 60.0f;
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("C:/GameDev/X3Native-engine/agent_club.png");
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                club.update(dt, cscene, *cphys);
+                cphys->step(dt);
+                cscene.update(*cphys);
+                // Re-pose each frame (scene.update doesn't move the camera).
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    cscene.render(*device, frame);
+                    club.drawCharacters(*device, frame, cscene);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world club: wrote screenshot " + outPath);
+            else       x3::logError("--world club: capture FAILED");
+            cphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: full first-person controller + physics. ===
+        x3::game::Player cplayer;
+        cplayer.spawn(*cphys, spawn.x, spawn.y, spawn.z);
+
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        bool prevSpaceC = false, prevFC = false;
+        bool noclipC = false;
+        float flyXc = spawn.x, flyYc = spawn.y + 1.6f, flyZc = spawn.z, flyYawC = 3.14159f, flyPitchC = -0.2f;
+        x3::logInfo("--world club: WASD walk, mouse look, Space jump, LeftShift sprint, F noclip, Esc to quit");
+
+        int lastWc = (int)W, lastHc = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+
+            double now = glfwGetTime();
+            float dt = (float)(now - prevTime); prevTime = now;
+            if (dt > 0.1f) dt = 0.1f;
+
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+
+            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            bool spaceNow = kd(GLFW_KEY_SPACE);
+            bool fNow = kd(GLFW_KEY_F);
+            if (fNow && !prevFC) {
+                noclipC = !noclipC;
+                if (noclipC) { float yy, pp; cplayer.camera(flyXc, flyYc, flyZc, yy, pp); flyYawC = yy; flyPitchC = pp; }
+            }
+            prevFC = fNow;
+
+            float camX, camY, camZ, camYaw, camPitch;
+            if (!noclipC) {
+                x3::game::PlayerInput in;
+                if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+                if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+                if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+                if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+                in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+                in.jumpPressed = spaceNow && !prevSpaceC;
+                in.lookDX = ddx; in.lookDY = ddy;
+                cplayer.update(in, dt, *cphys);
+                club.update(dt, cscene, *cphys);
+                cphys->step(dt);
+                cscene.update(*cphys);
+                cplayer.camera(camX, camY, camZ, camYaw, camPitch);
+            } else {
+                const float sens = 0.0025f;
+                flyYawC += ddx * sens; flyPitchC -= ddy * sens;
+                if (flyPitchC >  1.55f) flyPitchC =  1.55f;
+                if (flyPitchC < -1.55f) flyPitchC = -1.55f;
+                float fx = std::cos(flyPitchC) * std::cos(flyYawC);
+                float fy = std::sin(flyPitchC);
+                float fz = std::cos(flyPitchC) * std::sin(flyYawC);
+                float rl = std::sqrt(fx*fx + fz*fz); if (rl < 1e-4f) rl = 1e-4f;
+                float rx = -fz/rl, rz = fx/rl;
+                float spd = 6.0f * dt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd *= 3.0f;
+                if (kd(GLFW_KEY_W)) { flyXc += fx*spd; flyYc += fy*spd; flyZc += fz*spd; }
+                if (kd(GLFW_KEY_S)) { flyXc -= fx*spd; flyYc -= fy*spd; flyZc -= fz*spd; }
+                if (kd(GLFW_KEY_D)) { flyXc += rx*spd; flyZc += rz*spd; }
+                if (kd(GLFW_KEY_A)) { flyXc -= rx*spd; flyZc -= rz*spd; }
+                if (spaceNow) flyYc += spd;
+                if (kd(GLFW_KEY_LEFT_CONTROL)) flyYc -= spd;
+                club.update(dt, cscene, *cphys);
+                cphys->step(dt);
+                cscene.update(*cphys);
+                camX = flyXc; camY = flyYc; camZ = flyZc; camYaw = flyYawC; camPitch = flyPitchC;
+            }
+            prevSpaceC = spaceNow;
+
+            int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
+            if (cw != lastWc || ch != lastHc) { lastWc = cw; lastHc = ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
+
+            device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                cscene.render(*device, frame);
+                club.drawCharacters(*device, frame, cscene);
+            }
+            device->endFrame(frame);
+        }
+
+        cphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
     // ---- Asset source (stub until D5) ----
     std::unique_ptr<x3::asset::IAssetSource> assets(x3::asset::createAssetSource());
     assets->mountPak("base.x3pak", 0);  // stub: logs not-implemented for now
@@ -1440,6 +1613,7 @@ int main(int argc, char** argv) {
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
+                game.drawDoors(*device, frame);   // real SM_Door_A slabs (box hidden)
                 game.drawWorldExtras(*device, frame, scene);
             }
             device->endFrame(frame);
@@ -1981,6 +2155,9 @@ int main(int argc, char** argv) {
             // (corridor guards/drone, checkpoint guards, Martinez) with hit-flash.
             // Skipped in the outdoor terrain world (no Level 1 controller built).
             if (!terrainWorld) {
+                // Real SM_Door_A door slabs at each door's current (sliding) pose —
+                // the procedural door box is collision-only (hidden).
+                game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
                 const VmPose vmPose = readViewmodelPose(*console);
                 game.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,

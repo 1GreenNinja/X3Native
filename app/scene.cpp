@@ -94,7 +94,10 @@ void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
     for (const Entity& e : m_entities) {
         if (!e.visible || !e.mesh.valid())
             continue;
-        device.drawMesh(frame, e.mesh, e.tex, e.baseColor, e.transform);
+        // Emissive-aware draw. The default emissive {0,0,0,0} makes this identical
+        // to the old drawMesh() for every existing entity; club1127's neon/crystal
+        // boxes set a non-zero emissive so they glow + feed the bloom chain.
+        device.drawMeshEmissive(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.transform);
     }
 }
 
