@@ -295,6 +295,13 @@ int main(int argc, char** argv) {
 
     x3::logInfo("X3Engine starting...");
 
+    // HEADLESS / OFFSCREEN routing: the non-interactive verification + screenshot
+    // paths (--smoketest, --screenshot, --screenshot-sky, --screenshot-terrain)
+    // render fully offscreen — NO GLFW window, NO surface, NO swapchain, nothing
+    // shown on screen. Everything a human actually watches (no-arg game,
+    // --world terrain, --bench) keeps a real window + swapchain exactly as before.
+    const bool headless = smoketest || screenshot || skyShot || terrainShot;
+
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
         return 1;
@@ -303,21 +310,29 @@ int main(int argc, char** argv) {
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 
     const uint32_t W = 1280, H = 720;
-    GLFWwindow* window = glfwCreateWindow(static_cast<int>(W), static_cast<int>(H),
-                                          "X3Engine", nullptr, nullptr);
-    if (!window) {
-        x3::logError("glfwCreateWindow failed");
-        glfwTerminate();
-        return 1;
+    // In headless mode we create NO window (no glfwCreateWindow at all). GLFW is
+    // still initialized (cheap; some paths poll events) but never opens a surface.
+    GLFWwindow* window = nullptr;
+    if (!headless) {
+        window = glfwCreateWindow(static_cast<int>(W), static_cast<int>(H),
+                                  "X3Engine", nullptr, nullptr);
+        if (!window) {
+            x3::logError("glfwCreateWindow failed");
+            glfwTerminate();
+            return 1;
+        }
+    } else {
+        x3::logInfo("headless mode: rendering offscreen (no window / no swapchain)");
     }
 
     // ---- Render device ----
     std::unique_ptr<x3::rhi::IRenderDevice> device(x3::rhi::createRenderDevice());
 
     x3::rhi::DeviceDesc desc{};
-    desc.nativeWindowHandle = glfwGetWin32Window(window);
+    desc.nativeWindowHandle = window ? glfwGetWin32Window(window) : nullptr;
     desc.width  = W;
     desc.height = H;
+    desc.headless = headless;
     // Benchmark mode runs with vsync OFF so it measures the true frame ceiling,
     // not the display refresh cap.
     desc.vsync  = !bench;
@@ -329,7 +344,7 @@ int main(int argc, char** argv) {
 
     if (!device->init(desc)) {
         x3::logError("render device init failed");
-        glfwDestroyWindow(window);
+        if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
     }
