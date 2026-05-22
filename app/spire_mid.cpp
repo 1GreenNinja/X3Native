@@ -320,9 +320,13 @@ bool SpireMidFloors::nearLockedCodedDoor(const x3::phys::Vec3& playerPos, float 
     for (uint32_t i = 0; i < m_doors.count(); ++i) {
         const Door& d = m_doors.at(i);
         if (!d.locked || d.code == 0) continue;
+        // 3D distance: the mid-floor doors STACK at the same XZ on the vertical
+        // tower (F3/F4/F5 at x=8,z=0, differing only in Y), so Y must distinguish
+        // them — an XZ-only test would treat all three as the same spot.
         const float dx = playerPos.x - d.closedPos.x;
+        const float dy = playerPos.y - d.closedPos.y;
         const float dz = playerPos.z - d.closedPos.z;
-        if (dx * dx + dz * dz <= r2) return true;
+        if (dx * dx + dy * dy + dz * dz <= r2) return true;
     }
     return false;
 }
@@ -333,9 +337,12 @@ bool SpireMidFloors::tryDoorCode(const x3::phys::Vec3& playerPos, int code, floa
     for (uint32_t i = 0; i < m_doors.count(); ++i) {
         const Door& d = m_doors.at(i);
         if (!d.locked || d.code == 0) continue;
+        // 3D distance (include Y) so the nearest LOCKED coded door is the one on the
+        // player's CURRENT floor, not whichever stacked door wins an XZ tie.
         const float dx = playerPos.x - d.closedPos.x;
+        const float dy = playerPos.y - d.closedPos.y;
         const float dz = playerPos.z - d.closedPos.z;
-        const float d2 = dx * dx + dz * dz;
+        const float d2 = dx * dx + dy * dy + dz * dz;
         if (d2 <= bestD2) { bestD2 = d2; best = (int)i; }
     }
     if (best < 0) return false;
