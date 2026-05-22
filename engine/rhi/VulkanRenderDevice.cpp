@@ -269,6 +269,15 @@ public:
         m_needsRecreate = true;
     }
 
+    void setVsync(bool enabled) override {
+        // Headless has no swapchain: just record the desired state. Windowed:
+        // flag a recreate so createSwapchain() picks the new present mode. No-op if
+        // the value is unchanged (avoids a pointless device-idle stall).
+        if (enabled == m_vsync) return;
+        m_vsync = enabled;
+        if (!m_headless) m_needsRecreate = true;
+    }
+
     void setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) override {
         m_camPos = glm::vec3(x, y, z);
         m_camYaw = yaw; m_camPitch = pitch; m_camFov = fovDeg;
