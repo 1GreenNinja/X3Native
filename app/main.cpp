@@ -176,7 +176,8 @@ int main(int argc, char** argv) {
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
-         testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false;
+         testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
+         testWeapons = false;
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
     // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
     // and confirm the joint palette changes. Asset-pipeline verification for the
@@ -306,6 +307,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-net") testNet = true;
         else if (a == "--test-rescue") testRescue = true;
         else if (a == "--test-destruction") testDestruction = true;
+        else if (a == "--test-weapons") testWeapons = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -540,6 +542,10 @@ int main(int argc, char** argv) {
     if (testDestruction) {
         x3::logInfo("running K-T0/T1 destruction (fracture/impact/hit/explosion) self-test...");
         return x3::phys::runDestructionSelfTest() ? 0 : 1;
+    }
+    if (testWeapons) {
+        x3::logInfo("running data-driven weapon arsenal (switch/fire/reload/spread) self-test...");
+        return x3::game::runWeaponsSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -1893,6 +1899,25 @@ int main(int argc, char** argv) {
     x3::game::CombatFx combatFx;
     combatFx.init(*device);
 
+    // =====================================================================
+    // WEAPONS: data-driven arsenal (pistol / SMG / shotgun / plasma). The
+    // Arsenal owns the roster + per-weapon ammo/cooldown/reload state and the
+    // fire/switch/reload logic; the existing pickup (game.armed()) still gates
+    // whether the player may fire at all. Number keys 1..N switch; the fire path
+    // below routes the existing combat raycast through the selected WeaponDef
+    // (fire rate / ammo / reload / spread / pellets / recoil / hitscan-vs-bolt).
+    // --test-weapons covers the logic headlessly. Viewmodels load per weapon
+    // (missing GLBs fall back to the energy pistol). ====================
+    x3::game::Arsenal arsenal;
+    arsenal.loadViewmodels(*device, x3::game::riggedGlbRoot());
+    // Live projectile bolts (plasma): host-owned; advanced + impact-resolved each
+    // frame. Bounded by gameplay (a handful in flight); a plain vector is fine.
+    struct LiveProjectile { x3::phys::Vec3 pos, vel; int damage; float traveled, range; };
+    std::vector<LiveProjectile> projectiles;
+    uint32_t weaponRng = 0xA11CE5u;   // deterministic spread stream
+    float    weaponRecoilPitch = 0.0f; // accumulated upward camera kick (rad), decays
+    constexpr float kRecoilRecover = 6.0f; // recoil recovery rate (rad/s decay)
+
     // ---- S7: console backend (D6) + screen-space HUD (FPS, console, crosshair).
     std::unique_ptr<x3::con::IConsole> console(x3::con::createConsole());
     x3::game::Hud hud;
@@ -2150,6 +2175,26 @@ int main(int argc, char** argv) {
                 combatFx.spawnBlood(r.endPoint, dir);
                 combatFx.spawnDeath(eye);
             }
+            // WEAPONS: exercise the data-driven arsenal under Debug validation —
+            // switch to the shotgun (pellets) at i==8, fire one resolved volley at
+            // i==12 (8 pellet rays through the combat path), then switch to plasma
+            // (projectile) at i==16 and fire a bolt at i==18 (live-projectile path).
+            if (i == 8)  arsenal.selectByName("shotgun");
+            if (i == 16) arsenal.selectByName("plasma");
+            if (i == 12 || i == 18) {
+                x3::phys::Vec3 dir{ std::cos(vmPitch) * std::cos(vmYaw),
+                                    std::sin(vmPitch),
+                                    std::cos(vmPitch) * std::sin(vmYaw) };
+                x3::game::ResolvedFire shot = arsenal.fire(eye, dir, weaponRng);
+                const x3::phys::Vec3 m = muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch);
+                for (const auto& ray : shot.rays) {
+                    x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics);
+                    combatFx.addTracer(m, r.endPoint);
+                }
+                for (const auto& pj : shot.projectiles)
+                    combatFx.addTracer(m, x3::phys::Vec3{ m.x + pj.vel.x*0.1f, m.y + pj.vel.y*0.1f, m.z + pj.vel.z*0.1f });
+            }
+            arsenal.tick(dt);
             combatFx.update(dt);
             // Exercise the HUD 2D path: drop some console output, and open the
             // console mid-run so the panel + scrollback + input line render too.
@@ -2160,9 +2205,22 @@ int main(int argc, char** argv) {
                 scene.render(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
                 const VmPose vmPose = readViewmodelPose(*console);
-                game.drawViewmodel(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch,
-                                   vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
-                                   vmPose.fwd, vmPose.right, vmPose.down);
+                // WEAPONS: draw the SELECTED weapon's viewmodel via the arsenal so the
+                // per-weapon GLB draw path is exercised under Debug validation; fall
+                // back to the original pickup viewmodel if the arsenal didn't load.
+                if (arsenal.viewmodelsLoaded()) {
+                    arsenal.drawCurrentViewmodel(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch,
+                        vmPose.yawRad   - x3::game::kVmDefYawDeg   * kDegToRad,
+                        vmPose.pitchRad - x3::game::kVmDefPitchDeg * kDegToRad,
+                        vmPose.rollRad  - x3::game::kVmDefRollDeg  * kDegToRad,
+                        vmPose.fwd   - x3::game::kVmDefFwd,
+                        vmPose.right - x3::game::kVmDefRight,
+                        vmPose.down  - x3::game::kVmDefDown);
+                } else {
+                    game.drawViewmodel(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch,
+                                       vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
+                                       vmPose.fwd, vmPose.right, vmPose.down);
+                }
                 combatFx.draw(*device, frame, vmX, vmY, vmZ, vmYaw, vmPitch);
                 // Submit the GPU-instanced particles + decals (exercises the new HDR
                 // particle/decal pass under Debug validation).
@@ -2243,6 +2301,9 @@ int main(int argc, char** argv) {
     bool prevF3 = false;                 // F3 toggles the perf stats overlay
     float fireCooldown = 0.0f;          // seconds until the gun can fire again
     constexpr float kFireCooldown = 0.25f;
+    // WEAPONS: rising-edge tracking for the number keys 1..N (weapon switch) + R (reload).
+    bool prevWeaponKey[9] = {};
+    bool prevReload = false;
 
     // ---- Door-code keypad host state (§6.4 keypad gate). When the player presses
     // E next to a LOCKED coded door (Door C, code 1127), the host enters code-entry
@@ -2336,6 +2397,22 @@ int main(int argc, char** argv) {
             x3::logInfo(std::string("r_stats = ") + console->getString("r_stats"));
         }
         prevF3 = f3Now;
+
+        // ---- WEAPONS: number keys 1..N switch the selected weapon; R reloads.
+        // Suppressed while a door-code keypad is active (digits go to the keypad).
+        if (!codeMode && !terrainWorld) {
+            const int n = arsenal.count() < 9 ? arsenal.count() : 9;
+            for (int wi = 0; wi < n; ++wi) {
+                bool down = keyDown(GLFW_KEY_1 + wi);
+                if (down && !prevWeaponKey[wi]) arsenal.select(wi);
+                prevWeaponKey[wi] = down;
+            }
+            bool rNow = keyDown(GLFW_KEY_R);
+            if (rNow && !prevReload && game.armed()) arsenal.reload();
+            prevReload = rNow;
+        }
+        // Advance the arsenal timers (fire cooldowns + reload completion) every frame.
+        arsenal.tick(dt);
 
         bool spaceNow = keyDown(GLFW_KEY_SPACE);
 
@@ -2492,11 +2569,20 @@ int main(int argc, char** argv) {
         // Camera readback once per render frame from the post-sim state.
         if (!noclip) {
             player.camera(camX, camY, camZ, camYaw, camPitch);
-            device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
         } else {
-            device->setCamera(flyX, flyY, flyZ, flyYaw, flyPitch, 60.0f);
             camX = flyX; camY = flyY; camZ = flyZ; camYaw = flyYaw; camPitch = flyPitch;
         }
+        // WEAPONS: apply + recover the weapon recoil kick. The kick is a transient
+        // upward pitch offset added on top of the look pitch; it decays back to 0 so
+        // the view recovers (recoil -> camera). Applied uniformly to setCamera, the
+        // fire direction, the audio listener, and the viewmodel below.
+        if (weaponRecoilPitch > 0.0f) {
+            weaponRecoilPitch -= kRecoilRecover * dt;
+            if (weaponRecoilPitch < 0.0f) weaponRecoilPitch = 0.0f;
+        }
+        camPitch += weaponRecoilPitch;
+        if (camPitch >  1.55f) camPitch =  1.55f;   // keep within the look clamp
+        device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
         prevSpace = spaceNow;
 
         // ---- Level 1 controller tick: advance doors, run triggers, spawn/clear
@@ -2606,46 +2692,89 @@ int main(int argc, char** argv) {
         }
         prevMelee = meleeNow;
 
-        // ---- Combat: FIRE on the left-mouse rising edge — only effective when
-        // armed, gated by a small cooldown. The controller raycasts across all
-        // Level-1 enemy groups; the first live monster the ray hits takes damage. ----
-        if (fireCooldown > 0.0f) fireCooldown -= dt;
-        bool fireNow = !consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
-        if (fireNow && !prevFire && game.armed() && player.isAlive() && fireCooldown <= 0.0f) {
-            fireCooldown = kFireCooldown;
+        // ---- Combat: FIRE — only effective when armed. The DATA-DRIVEN ARSENAL
+        // gates the shot (fire rate / ammo / reload), resolves it (1 ray, N spread
+        // pellets, or a projectile bolt) per the selected WeaponDef, and applies
+        // recoil. Each resolved hitscan ray runs through the existing Level-1 combat
+        // path (game.onFire -> per-group enemy raycast + the existing CombatFx);
+        // projectiles are spawned into a host-owned list advanced below. Automatic
+        // weapons fire while held; others fire on the LMB rising edge. ----
+        (void)fireCooldown; (void)kFireCooldown;   // (legacy cooldown — arsenal owns timing now)
+        bool fireHeld = !consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        bool wantFire = arsenal.current().automatic ? fireHeld : (fireHeld && !prevFire);
+        if (wantFire && game.armed() && player.isAlive() && arsenal.canFire()) {
             x3::phys::Vec3 eye{ camX, camY, camZ };
             x3::phys::Vec3 dir{ std::cos(camPitch) * std::cos(camYaw),
                                 std::sin(camPitch),
                                 std::cos(camPitch) * std::sin(camYaw) };
-            x3::game::FireResult r = game.onFire(eye, dir, scene, *physics);
-            // Shot feedback: a tracer from the viewmodel muzzle to the hit point
-            // (or max range on a miss) + a muzzle flash (the muzzle particle burst
-            // is spawned inside addTracer).
+            x3::game::ResolvedFire shot = arsenal.fire(eye, dir, weaponRng);
             const x3::phys::Vec3 muzzle = muzzleFromCamera(camX, camY, camZ, camYaw, camPitch);
-            combatFx.addTracer(muzzle, r.endPoint);
-            // ---- Combat particle/decal juice from the shot result ----
-            if (r.killed) {
-                combatFx.spawnDeath(r.endPoint);          // debris + embers + smoke
-            } else if (r.hitMonster) {
-                combatFx.spawnBlood(r.hitPoint, dir);     // blood spray along the shot
+            // Recoil -> camera (transient upward kick; recovered in the camera block).
+            weaponRecoilPitch += shot.recoilPitchDeg * (3.14159265f / 180.0f);
+
+            if (!shot.projectiles.empty()) {
+                // ---- Projectile weapon (plasma): spawn a travelling bolt. ----
+                const auto& pj = shot.projectiles[0];
+                projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pj.damage, 0.0f, pj.range });
+                combatFx.spawnMuzzleFlash(muzzle, dir);
+                audio->playSound3D(sndGun, muzzle.x, muzzle.y, muzzle.z, 0.85f, 0.9f);
+                x3::logInfo("fire: " + arsenal.current().name + " bolt launched");
             } else {
-                // Missed the enemies: probe the WORLD (Static) for a surface hit so
-                // bullets that strike walls/floor get impact sparks + a scorch decal
-                // oriented to the surface normal. (The fire ray only tests Enemy.)
-                x3::phys::RayHit wallHit =
-                    physics->rayCast(eye, dir, x3::game::kFireMaxDist, x3::phys::Layer::Static);
-                if (wallHit.hit)
-                    combatFx.spawnImpact(wallHit.point, wallHit.normal);
+                // ---- Hitscan weapon (pistol/SMG/shotgun): one onFire per pellet. ----
+                bool anyKill = false, anyHit = false; int lastHp = 0;
+                for (const auto& ray : shot.rays) {
+                    x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics);
+                    combatFx.addTracer(muzzle, r.endPoint);   // tracer + muzzle burst per pellet
+                    if (r.killed) { combatFx.spawnDeath(r.endPoint); anyKill = true; }
+                    else if (r.hitMonster) { combatFx.spawnBlood(r.hitPoint, ray.dir); anyHit = true; lastHp = r.hpAfter; }
+                    else {
+                        x3::phys::RayHit wallHit =
+                            physics->rayCast(eye, ray.dir, x3::game::kFireMaxDist, x3::phys::Layer::Static);
+                        if (wallHit.hit) combatFx.spawnImpact(wallHit.point, wallHit.normal);
+                    }
+                    if (r.killed)
+                        audio->playSound3D(sndDeath, r.endPoint.x, r.endPoint.y, r.endPoint.z, 1.0f, 1.0f);
+                }
+                audio->playSound3D(sndGun, muzzle.x, muzzle.y, muzzle.z, 0.85f, 1.0f);
+                if (anyKill)      x3::logInfo("fire: enemy killed! (" + arsenal.current().name + ")");
+                else if (anyHit)  x3::logInfo("fire: enemy hit — HP " + std::to_string(lastHp));
             }
-            // M9: gunshot SFX at the muzzle (3D); death SFX is played by the
-            // controller for Martinez; play one here for the per-shot kills too.
-            audio->playSound3D(sndGun, muzzle.x, muzzle.y, muzzle.z, 0.85f, 1.0f);
-            if (r.killed)
-                audio->playSound3D(sndDeath, r.endPoint.x, r.endPoint.y, r.endPoint.z, 1.0f, 1.0f);
-            if (r.killed)          x3::logInfo("fire: enemy killed!");
-            else if (r.hitMonster) x3::logInfo("fire: enemy hit — HP " + std::to_string(r.hpAfter));
         }
-        prevFire = fireNow;
+        prevFire = fireHeld;
+
+        // ---- WEAPONS: advance live projectile bolts. Each step moves the bolt and
+        // raycasts the segment against Enemy then Static; on an enemy hit it deals
+        // damage via the enemy fire path (aimed straight at the bolt's travel dir);
+        // on any surface hit it spawns an impact + despawns. Bolts despawn at range. ----
+        if (!terrainWorld && !projectiles.empty()) {
+            for (size_t pi = 0; pi < projectiles.size(); ) {
+                LiveProjectile& b = projectiles[pi];
+                float speed = std::sqrt(b.vel.x*b.vel.x + b.vel.y*b.vel.y + b.vel.z*b.vel.z);
+                float stepLen = speed * dt;
+                if (stepLen < 1e-5f) stepLen = 1e-5f;
+                x3::phys::Vec3 ndir{ b.vel.x/speed, b.vel.y/speed, b.vel.z/speed };
+                bool consumed = false;
+                x3::phys::RayHit eh = physics->rayCast(b.pos, ndir, stepLen, x3::phys::Layer::Enemy);
+                if (eh.hit) {
+                    x3::game::FireResult r = game.onFire(b.pos, ndir, scene, *physics);
+                    combatFx.addTracer(b.pos, eh.point);
+                    if (r.killed) { combatFx.spawnDeath(eh.point);
+                        audio->playSound3D(sndDeath, eh.point.x, eh.point.y, eh.point.z, 1.0f, 1.0f); }
+                    else combatFx.spawnBlood(eh.point, ndir);
+                    consumed = true;
+                } else {
+                    x3::phys::RayHit sh = physics->rayCast(b.pos, ndir, stepLen, x3::phys::Layer::Static);
+                    if (sh.hit) { combatFx.spawnImpact(sh.point, sh.normal); combatFx.addTracer(b.pos, sh.point); consumed = true; }
+                }
+                if (!consumed) {
+                    b.pos = x3::phys::Vec3{ b.pos.x + b.vel.x*dt, b.pos.y + b.vel.y*dt, b.pos.z + b.vel.z*dt };
+                    b.traveled += stepLen;
+                    if (b.traveled >= b.range) consumed = true;   // out of range -> despawn
+                }
+                if (consumed) { projectiles[pi] = projectiles.back(); projectiles.pop_back(); }
+                else ++pi;
+            }
+        }
 
         // Advance FX timers (tracer lifetimes + muzzle flash).
         combatFx.update(dt);
@@ -2671,9 +2800,25 @@ int main(int argc, char** argv) {
                 game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
                 const VmPose vmPose = readViewmodelPose(*console);
-                game.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,
-                                   vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
-                                   vmPose.fwd, vmPose.right, vmPose.down);
+                if (arsenal.viewmodelsLoaded() && game.armed()) {
+                    // WEAPONS: draw the SELECTED weapon's viewmodel (its own GLB +
+                    // convention-correct base offsets). The live vm_* cvars are passed
+                    // as DELTAS from the baked default so console tuning still nudges
+                    // whatever weapon is held (delta 0 at defaults -> per-weapon pose).
+                    arsenal.drawCurrentViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,
+                        vmPose.yawRad   - x3::game::kVmDefYawDeg   * kDegToRad,
+                        vmPose.pitchRad - x3::game::kVmDefPitchDeg * kDegToRad,
+                        vmPose.rollRad  - x3::game::kVmDefRollDeg  * kDegToRad,
+                        vmPose.fwd   - x3::game::kVmDefFwd,
+                        vmPose.right - x3::game::kVmDefRight,
+                        vmPose.down  - x3::game::kVmDefDown);
+                } else {
+                    // Fallback: arsenal viewmodels didn't load -> the original pickup
+                    // viewmodel (unchanged behavior).
+                    game.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,
+                                       vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
+                                       vmPose.fwd, vmPose.right, vmPose.down);
+                }
             }
             // FX: active tracers + muzzle flash (world-space).
             combatFx.draw(*device, frame, camX, camY, camZ, camYaw, camPitch);
