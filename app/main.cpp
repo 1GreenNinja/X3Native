@@ -523,6 +523,9 @@ int main(int argc, char** argv) {
     bool        testGpuSkin = false;
     // --test-spiretop (Spire top-floor content): F6/F7 (Act-1 finale) encounter authoring. Additive.
     bool        testSpireTop = false;
+    // --test-dronehack (F5 Drone Manufacturing): Sarah's master hack strips the Swarm
+    // Controller AI's HP fraction + flips the drone set to allied (gated, not at load). Additive.
+    bool        testDroneHack = false;
     // --test-collapse (K-T3 structural collapse): build a small structure (column /
     // beam on two supports), destroy a support, step the sim, and assert the
     // unsupported pieces fall (static->dynamic), anchored pieces stay stable, the
@@ -684,6 +687,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-bosses") testBosses = true;
         else if (a == "--test-spiremid") testSpireMid = true;
         else if (a == "--test-spiretop") testSpireTop = true;
+        else if (a == "--test-dronehack") testDroneHack = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-net") testNet = true;
@@ -945,9 +949,14 @@ int main(int argc, char** argv) {
         return x3::game::runSpireMidSelfTest() ? 0 : 1;
     }
     if (testSpireTop) {
-        x3::logInfo("running EFLZ Spire top-floor (F6 Executive / F7 Rooftop Act-1 finale) "
-                    "encounter-content self-test...");
+        x3::logInfo("running EFLZ Spire top-floor (F6 Alien Technology Lab / F7 Executive "
+                    "Laboratory Act-1 finale) encounter-content self-test...");
         return x3::game::runSpireTopSelfTest() ? 0 : 1;
+    }
+    if (testDroneHack) {
+        x3::logInfo("running EFLZ F5 Drone Manufacturing — Sarah's master hack "
+                    "(strip Swarm AI HP + flip the drone army) self-test...");
+        return x3::game::runDroneHackSelfTest() ? 0 : 1;
     }
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");

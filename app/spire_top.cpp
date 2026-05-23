@@ -94,29 +94,29 @@ void SpireTopFloors::build(Scene& scene, x3::rhi::IRenderDevice& device,
     };
 
     // ===================================================================
-    // F6 — EXECUTIVE (occupation strongpoint). The PENULTIMATE floor: hardest STANDARD
-    // encounter, escalating beyond F5's 6 enemies to 7. A mixed-species push so it is
-    // dense but winnable (not a melee dogpile): 3 melee (2 DominionTrooper + 1 Verthani
-    // flanker) advancing through the exec suites + 4 ranged (2 BlueSynth + 2 Illuminated
-    // elites) holding standoff lines across the floor. Placed in the +X / open half of
-    // the plate, off the elevator-doorway spine (x=19.5 shaft) so an arriving rider
-    // isn't ambushed in the shaft mouth, and CLEAR of Sarah-style partitions. TWO keypad
-    // doors gate the exec suites (the master plan's door-override puzzle).
+    // F6 — ALIEN TECHNOLOGY LAB (first contact). The penultimate floor: a mixed
+    // occupation / Salvari-holding push escalating beyond F5's standard set — 7
+    // standard enemies (3 melee: 2 DominionTrooper + 1 Verthani flanker; 4 ranged:
+    // 2 BlueSynth + 2 Illuminated) PLUS the floor BOSS **Alien Overseer**, the ranged
+    // psychic invasion commander anchoring the cure-synthesis lab. Placed in the +X /
+    // open half of the plate, off the elevator-doorway spine (x=19.5 shaft) so an
+    // arriving rider isn't ambushed in the shaft mouth, and CLEAR of the -Z partition.
+    // TWO keypad doors gate the cure-synthesis labs (the door-override puzzle).
     // ===================================================================
     {
         const uint32_t fi = (uint32_t)SpireTopFloor::F6;
         const L1Floor   f = L1Floor::F6;
         SpireTopPlan&   p = m_plan[fi];
         p.floor    = f;
+        p.name     = "Alien Technology Lab";
         p.elevStop = (uint32_t)f;                       // one elevator stop per floor
         p.baseY    = layout.floorBaseY[(uint32_t)f];
         p.arrival  = at(f, 17.5f, 0.05f, 0.0f);         // step off the shaft (x=19.5) onto the plate
 
-        // Occupation strongpoint: a melee push fronted by two troopers + a Verthani
-        // flanker, backed by a ranged firing line of two synths + two Illuminated
-        // elites holding the far standoff. The far -X / +Z quadrant stays clear of the
-        // exec-office partition that buildLevel1 puts in the -Z corner (x in [0,8],
-        // z<=-3), so no enemy spawns inside a wall.
+        // Occupation push: a melee front of two troopers + a Verthani flanker, backed
+        // by a ranged firing line of two synths + two Illuminated elites holding the far
+        // standoff. The far -X / +Z quadrant stays clear of the partition buildLevel1
+        // puts in the -Z corner (x in [0,8], z<=-3), so no enemy spawns inside a wall.
         m_enemies[fi].spawn(scene, device, physics, m_modelDir,
                             at(f, 15.0f, kEnemyYOff, -4.0f), tuningFor(EnemyType::DominionTrooper));
         m_enemies[fi].spawn(scene, device, physics, m_modelDir,
@@ -133,28 +133,36 @@ void SpireTopFloors::build(Scene& scene, x3::rhi::IRenderDevice& device,
                             at(f, 13.0f, kEnemyYOff,  6.5f), tuningFor(EnemyType::Illuminated));
         p.meleeCount  = 3;   // 2 DominionTrooper + 1 Verthani (Guard archetype)
         p.rangedCount = 4;   // 2 BlueSynth + 2 Illuminated (Drone archetype)
-        p.bossCount   = 0;
-        p.totalCount  = p.meleeCount + p.rangedCount + p.bossCount;   // 7
 
-        // Door-override puzzle: TWO locked keypad doors gating the exec suites. The
-        // OUTER suite door (code 6600) at x=14, and the INNER vault door (code 6611)
-        // at x=10. Both AlongZ (wall runs along Z, door thin in X), like the spine
+        // ---- F6 BOSS: Alien Overseer. The ranged psychic invasion commander — its
+        // own manager (like the F7 Clone). Reuse the Wave-1 Boss tuning (a ranged Boss
+        // that commands from a standoff + runs the phase machine, summons in P3). Anchors
+        // the cure-synthesis lab in the far -X / +Z open quadrant, off the shaft spine
+        // and clear of the -Z partition.
+        m_overseer.spawn(scene, device, physics, m_modelDir,
+                         at(f, 5.0f, kEnemyYOff, 6.0f), bossTuning(BossType::AlienOverseer));
+        p.bossCount   = 1;
+        p.hasBoss     = true;
+        p.totalCount  = p.meleeCount + p.rangedCount + p.bossCount;   // 8
+
+        // Door-override puzzle: TWO locked keypad doors gating the cure-synthesis labs.
+        // The OUTER lab door (code 6600) at x=14, and the INNER archive vault (code
+        // 6611) at x=10. Both AlongZ (wall runs along Z, door thin in X), like the spine
         // doors. Distinct X so the 3D proximity test on this stacked vertical tower
         // resolves the right one.
         DoorSpec d1; d1.doorwayCenter = at(f, 14.0f, 0.0f, 0.0f); d1.axis = DoorAxis::AlongZ;
-        d1.withButton = false; d1.locked = true; d1.code = 6600;     // outer exec-suite code
-        d1.tint[0]=0.72f; d1.tint[1]=0.62f; d1.tint[2]=0.45f;        // executive warm
+        d1.withButton = false; d1.locked = true; d1.code = 6600;     // outer cure-lab code
+        d1.tint[0]=0.50f; d1.tint[1]=0.62f; d1.tint[2]=0.70f;        // alien-tech teal
         buildLevelDoor(scene, m_doors, device, physics, d1);
 
         DoorSpec d2; d2.doorwayCenter = at(f, 10.0f, 0.0f, 0.0f); d2.axis = DoorAxis::AlongZ;
-        d2.withButton = false; d2.locked = true; d2.code = 6611;     // inner vault override code
-        d2.tint[0]=0.60f; d2.tint[1]=0.52f; d2.tint[2]=0.40f;        // darker vault tone
+        d2.withButton = false; d2.locked = true; d2.code = 6611;     // inner archive override code
+        d2.tint[0]=0.40f; d2.tint[1]=0.50f; d2.tint[2]=0.58f;        // darker archive tone
         buildLevelDoor(scene, m_doors, device, physics, d2);
 
         p.doorCode  = 6600;
         p.doorCode2 = 6611;
         p.hasVictim = false;
-        p.hasBoss   = false;
 
         // Hub trigger where the rider arrives (alarm/objective hook).
         triggers.add(x3::phys::Vec3{ tbl[(uint32_t)f].x1 - 8.0f, p.baseY,        -6.0f },
@@ -163,37 +171,39 @@ void SpireTopFloors::build(Scene& scene, x3::rhi::IRenderDevice& device,
     }
 
     // ===================================================================
-    // F7 — ROOFTOP (the ACT-1 SUMMIT / FINALE). The climactic setpiece: a Boss-type
-    // "The Clone" (Jake's duplicate) anchors the open helipad, flanked by an honor
+    // F7 — EXECUTIVE LABORATORY (the ACT-1 SUMMIT / FINALE). The climactic setpiece: a
+    // Boss-type "The Clone" (Jake's duplicate) anchors the exec lab, flanked by an honor
     // guard / outer ring escort. 8 combatants total = 1 Boss + a 7-strong escort, so
-    // the floor cleanly exceeds F6's 7 (F5 6 < F6 7 < F7 8). The escort is 2 melee
+    // the floor cleanly exceeds F6's escort (F5 < F6 < F7). The escort is 2 melee
     // (1 Verthani enforcer + 1 DominionTrooper) + 5 ranged (2 Illuminated honor guard
     // + 3 BlueSynth), keeping the melee count low so the dogpile cap is never strained
     // while the Clone boss is the real threat. PLUS the F7 rescue objective: Sarah,
-    // held in a rooftop holding cell, present-but-not-active-at-load and gated on the
-    // F7 hub. A keypad door gates the rooftop airlock (code 7700). F7 is the elevator's
-    // TOP stop.
+    // held in a lab holding cell, present-but-not-active-at-load and gated on the F7
+    // hub. A keypad door gates the lab airlock (code 7700). F7 is the elevator's TOP
+    // stop. (The Sarah outcome is the canon Alpha/Beta/Omega timeline lock; the rescue
+    // lifecycle drives it — kept exactly as the Wave-1 Clone+Sarah finale.)
     // ===================================================================
     {
         const uint32_t fi = (uint32_t)SpireTopFloor::F7;
         const L1Floor   f = L1Floor::F7;
         SpireTopPlan&   p = m_plan[fi];
         p.floor    = f;
+        p.name     = "Executive Laboratory";
         p.elevStop = (uint32_t)f;                       // F7's stop is the elevator TOP stop
         p.baseY    = layout.floorBaseY[(uint32_t)f];
         p.arrival  = at(f, 17.5f, 0.05f, 0.0f);
 
-        // ---- The Clone boss anchors the helipad center (off the shaft spine). ----
+        // ---- The Clone boss anchors the exec-lab center (off the shaft spine). ----
         m_boss.spawn(scene, device, physics, m_modelDir,
                      at(f, 8.0f, kEnemyYOff, 0.0f), cloneBossTuning(m_modelDir));
         p.bossCount = 1;
 
-        // ---- The honor guard + outer ring (the boss's escort), 7 strong. 2 Illuminated
+        // ---- The honor guard + outer ring (the boss's escort), 8 strong. 2 Illuminated
         // honor guard hold close standoff, a Verthani enforcer + a DominionTrooper press
         // melee (the only two melee units — the cap is relevant but never strained), and
-        // 3 BlueSynths lay down ranged fire across the helipad. Escort 7 + boss 1 = 8
-        // combatants > F6's 7. All off the shaft spine; clear of the holding-cell
-        // partition (x in [0,8], z<=-3) where Sarah is held.
+        // 4 BlueSynths lay down ranged fire across the lab. Escort 8 + boss 1 = 9
+        // combatants > F6's 8 (the Act-1 FINALE is the densest floor). All off the shaft
+        // spine; clear of the holding-cell partition (x in [0,8], z<=-3) where Sarah is held.
         m_enemies[fi].spawn(scene, device, physics, m_modelDir,
                             at(f, 11.0f, kEnemyYOff, -3.0f), tuningFor(EnemyType::Illuminated));
         m_enemies[fi].spawn(scene, device, physics, m_modelDir,
@@ -208,26 +218,29 @@ void SpireTopFloors::build(Scene& scene, x3::rhi::IRenderDevice& device,
                             at(f,  5.0f, kEnemyYOff,  5.0f), tuningFor(EnemyType::BlueSynth));
         m_enemies[fi].spawn(scene, device, physics, m_modelDir,
                             at(f,  6.0f, kEnemyYOff,  6.5f), tuningFor(EnemyType::BlueSynth));
+        m_enemies[fi].spawn(scene, device, physics, m_modelDir,
+                            at(f,  6.0f, kEnemyYOff, -6.5f), tuningFor(EnemyType::BlueSynth));
         p.meleeCount  = 2;   // 1 Verthani + 1 DominionTrooper (Guard archetype)
-        p.rangedCount = 5;   // 2 Illuminated honor guard + 3 BlueSynth (Drone archetype)
+        p.rangedCount = 6;   // 2 Illuminated honor guard + 4 BlueSynth (Drone archetype)
         // totalCount counts EVERY combatant on the floor including the Clone boss:
-        // escort 7 (2 melee + 5 ranged) + boss 1 = 8, clearing F6's 7.
+        // escort 8 (2 melee + 6 ranged) + boss 1 = 9, clearing F6's 8.
         p.totalCount  = p.meleeCount + p.rangedCount + p.bossCount;
 
-        // ---- Rooftop airlock keypad door: locked, code 7700. Gates the holding cell
-        // partition. AlongZ at x=8 (the helipad partition). The boss spawns at x=8 too
-        // but the door body is a thin slab in the doorway gap; the boss center sits on
-        // the open side. Distinct from the F6 doors' X so the 3D proximity resolves it.
+        // ---- Exec-lab airlock keypad door: locked, code 7700. Gates the holding cell
+        // partition. AlongZ at x=6 (the lab partition). The boss spawns at x=8; the door
+        // body is a thin slab in the doorway gap, on the holding-cell side. Distinct from
+        // the F6 doors' X so the 3D proximity resolves it.
         DoorSpec d; d.doorwayCenter = at(f, 6.0f, 0.0f, 0.0f); d.axis = DoorAxis::AlongZ;
         d.withButton = false; d.locked = true; d.code = 7700;       // rooftop airlock code
-        d.tint[0]=0.60f; d.tint[1]=0.66f; d.tint[2]=0.80f;          // sky/rooftop tone
+        d.tint[0]=0.60f; d.tint[1]=0.66f; d.tint[2]=0.80f;          // exec-lab steel tone
         buildLevelDoor(scene, m_doors, device, physics, d);
         p.doorCode  = 7700;
         p.doorCode2 = 0;
         p.hasBoss   = true;
 
-        // ---- F7 rescue captive: SARAH (master plan: rescued F7, becomes co-fighter).
-        // Held in a rooftop holding cell in the -Z corner. The timer is GATED on the F7
+        // ---- F7 rescue captive: SARAH (canon: rescued F7, becomes co-fighter; her
+        // outcome is the Alpha/Beta/Omega timeline lock). Held in an exec-lab holding
+        // cell in the -Z corner. The timer is GATED on the F7
         // hub being reached (m_f7HubReached, default FALSE) — we do NOT activate it
         // here, so the 5-min clock cannot expire at load and spawn the mini-boss on the
         // first frame (the playtest bug spire_mid fixed). The host registers the F7Hub
@@ -250,9 +263,11 @@ void SpireTopFloors::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_doors.loadDoorMesh(device, convertedDir());
 
     m_built = true;
-    x3::logInfo("SpireTopFloors::build complete — F6(7 enemies, codes 6600/6611), "
-                "F7(boss 'The Clone' + 7 escort = 8 combatants + 1 rescue captive 'Sarah' "
-                "[timer gated on F7 hub], code 7700); 3 keypad doors, 2 floor-hub triggers");
+    x3::logInfo("SpireTopFloors::build complete — F6 ALIEN TECHNOLOGY LAB (7 enemies + "
+                "boss 'Alien Overseer' = 8 combatants, codes 6600/6611), "
+                "F7 EXECUTIVE LABORATORY (boss 'The Clone' + 7 escort = 8 combatants + "
+                "1 rescue captive 'Sarah' [timer gated on F7 hub], code 7700); "
+                "3 keypad doors, 2 floor-hub triggers");
 }
 
 void SpireTopFloors::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
@@ -263,11 +278,12 @@ void SpireTopFloors::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physi
     // Keypad doors animate.
     m_doors.update(dt, scene, physics);
 
-    // Enemies + the boss attack only while the player is alive (matches the others).
+    // Enemies + the bosses attack only while the player is alive (matches the others).
     IDamageSink* atkTarget = (player && player->isAlive()) ? player : nullptr;
     for (uint32_t i = 0; i < (uint32_t)SpireTopFloor::Count; ++i)
         m_enemies[i].update(dt, scene, physics, eye, atkTarget, attackFx);
-    m_boss.update(dt, scene, physics, eye, atkTarget, attackFx);
+    m_overseer.update(dt, scene, physics, eye, atkTarget, attackFx);  // F6 Alien Overseer
+    m_boss.update(dt, scene, physics, eye, atkTarget, attackFx);      // F7 Clone
 
     // F7 rescue victim (Sarah): tick the timer (gated on m_f7HubReached) + companion
     // follow, and spawn the mini-boss the FRAME the timer expires (mirrors the F5
@@ -291,7 +307,8 @@ void SpireTopFloors::onTrigger(uint32_t triggerId) {
         case SpireTopTrigger::F6Hub:
             if (!m_f6HubReached) {
                 m_f6HubReached = true;
-                x3::logInfo("SpireTop: F6 EXECUTIVE hub reached — occupation-strongpoint encounter armed");
+                x3::logInfo("SpireTop: F6 ALIEN TECHNOLOGY LAB hub reached — first-contact "
+                            "encounter armed (Alien Overseer commands the cure-synth lab)");
             }
             break;
         case SpireTopTrigger::F7Hub:
@@ -299,8 +316,8 @@ void SpireTopFloors::onTrigger(uint32_t triggerId) {
             // Sarah's rescue clock NOW (not at load). Idempotent.
             if (!m_f7HubReached) {
                 m_f7HubReached = true;
-                x3::logInfo("SpireTop: F7 ROOFTOP summit hub reached — Sarah's rescue timer started "
-                            "(the Act-1 finale begins)");
+                x3::logInfo("SpireTop: F7 EXECUTIVE LABORATORY summit hub reached — Sarah's "
+                            "rescue timer started (the Act-1 finale + timeline lock begins)");
             }
             break;
     }
@@ -319,7 +336,11 @@ FireResult SpireTopFloors::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec
         if (ri.hitMonster) return ri;          // a live enemy took it — done
         if (!r.hit && ri.hit) r = ri;          // remember the nearest geometry hit
     }
-    // The Clone boss.
+    // The F6 Alien Overseer boss.
+    FireResult rovr = m_overseer.fire(eye, dir, scene, physics);
+    if (rovr.hitMonster) return rovr;
+    if (!r.hit && rovr.hit) r = rovr;
+    // The F7 Clone boss.
     FireResult rboss = m_boss.fire(eye, dir, scene, physics);
     if (rboss.hitMonster) return rboss;
     if (!r.hit && rboss.hit) r = rboss;
@@ -334,7 +355,8 @@ void SpireTopFloors::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCo
                           const Scene& scene) const {
     for (uint32_t i = 0; i < (uint32_t)SpireTopFloor::Count; ++i)
         m_enemies[i].drawAll(device, frame, scene);
-    m_boss.drawAll(device, frame, scene);
+    m_overseer.drawAll(device, frame, scene);   // F6 Alien Overseer
+    m_boss.drawAll(device, frame, scene);       // F7 Clone
     if (m_victim) m_victim->draw(device, frame, scene);
     m_victimBoss.drawAll(device, frame, scene);
 }
@@ -440,23 +462,43 @@ bool runSpireTopSelfTest() {
 
     check(top.built(), "S0 top floors built");
 
+    // ---- Canon floor identities (the Wave-2 re-theme). ----
+    {
+        bool names = std::string(top.plan(SpireTopFloor::F6).name) == "Alien Technology Lab" &&
+                     std::string(top.plan(SpireTopFloor::F7).name) == "Executive Laboratory";
+        check(names, "S1a canon floor identities (Alien Technology Lab / Executive Laboratory)");
+    }
+
     // ---- Per-floor placement COUNTS + ROLE split. ----
     {
         const SpireTopPlan& f6 = top.plan(SpireTopFloor::F6);
         uint32_t m6 = 0, r6 = 0; roleSplit(top.enemies(SpireTopFloor::F6), m6, r6);
-        check(top.enemies(SpireTopFloor::F6).count() == 7 && f6.totalCount == 7 &&
-              f6.bossCount == 0 &&
-              m6 == 3 && r6 == 4 && f6.meleeCount == 3 && f6.rangedCount == 4,
-              "S1 F6 = 7 enemies (3 melee + 4 ranged, no boss)");
+        // F6 standard push (in m_enemies): 3 melee + 4 ranged = 7, plus the Alien
+        // Overseer boss in its own manager (overseerBoss()): 1. Total combatants = 8.
+        check(top.enemies(SpireTopFloor::F6).count() == 7 &&
+              m6 == 3 && r6 == 4 && f6.meleeCount == 3 && f6.rangedCount == 4 &&
+              f6.bossCount == 1 && f6.totalCount == 8 && top.overseerBoss().count() == 1,
+              "S1 F6 push = 7 (3 melee + 4 ranged) + 1 Alien Overseer boss (total 8)");
 
         const SpireTopPlan& f7 = top.plan(SpireTopFloor::F7);
         uint32_t m7 = 0, r7 = 0; roleSplit(top.enemies(SpireTopFloor::F7), m7, r7);
-        // F7 escort (in m_enemies): 2 melee + 5 ranged = 7, plus the Clone boss in its
-        // own manager (boss()): 1. Total combatants = 8. totalCount records 8.
-        check(top.enemies(SpireTopFloor::F7).count() == 7 &&
-              m7 == 2 && r7 == 5 && f7.meleeCount == 2 && f7.rangedCount == 5 &&
-              f7.bossCount == 1 && f7.totalCount == 8 && top.boss().count() == 1,
-              "S2 F7 escort = 7 (2 melee + 5 ranged) + 1 Clone boss (total 8)");
+        // F7 escort (in m_enemies): 2 melee + 6 ranged = 8, plus the Clone boss in its
+        // own manager (boss()): 1. Total combatants = 9. totalCount records 9.
+        check(top.enemies(SpireTopFloor::F7).count() == 8 &&
+              m7 == 2 && r7 == 6 && f7.meleeCount == 2 && f7.rangedCount == 6 &&
+              f7.bossCount == 1 && f7.totalCount == 9 && top.boss().count() == 1,
+              "S2 F7 escort = 8 (2 melee + 6 ranged) + 1 Clone boss (total 9)");
+    }
+
+    // ---- F6 carries the Alien Overseer boss (live Boss-type leader) at load. ----
+    {
+        bool hasOverseer = top.plan(SpireTopFloor::F6).hasBoss &&
+                           top.overseerBoss().count() == 1 &&
+                           top.overseerBoss().at(0).type() == MonsterType::Boss &&
+                           top.overseerBoss().at(0).alive() &&
+                           top.overseerBoss().aliveCount() == 1 &&
+                           top.overseerBoss().at(0).maxHp() == bossTuning(BossType::AlienOverseer).hp;
+        check(hasOverseer, "S2b F6 carries the Alien Overseer boss (live Boss-type)");
     }
 
     // ---- The F7 finale carries a BOSS-type leader (The Clone), alive at load. ----
@@ -469,27 +511,29 @@ bool runSpireTopSelfTest() {
         check(hasBoss, "S3 F7 finale Clone is a live Boss-type leader");
     }
 
-    // ---- Difficulty escalates F5 < F6 < F7 (TOTAL combatant counts). F7's totalCount
-    // counts the escort + the boss; spire_mid supplies the F5 baseline. ----
+    // ---- Difficulty escalates F5 < F6 < F7 (TOTAL combatant counts incl. each floor
+    // boss). spire_mid supplies the F5 baseline (now 7: standard 6 + the Swarm AI boss). ----
     {
-        const uint32_t c5 = mid.plan(SpireMidFloor::F5).totalCount;            // 6
-        const uint32_t c6 = top.plan(SpireTopFloor::F6).totalCount;            // 7
-        const uint32_t c7 = top.plan(SpireTopFloor::F7).totalCount;            // 8 (7 escort + boss)
-        // Cross-check the plan total against the live managers (escort + boss).
+        const uint32_t c5 = mid.plan(SpireMidFloor::F5).totalCount;            // 7 (6 + Swarm AI)
+        const uint32_t c6 = top.plan(SpireTopFloor::F6).totalCount;            // 8 (7 + Overseer)
+        const uint32_t c7 = top.plan(SpireTopFloor::F7).totalCount;            // 9 (8 escort + Clone)
+        // Cross-check the plan totals against the live managers (push/escort + boss).
+        const uint32_t c6live = top.enemies(SpireTopFloor::F6).count() + top.overseerBoss().count();
         const uint32_t c7live = top.enemies(SpireTopFloor::F7).count() + top.boss().count();
-        bool escalates = c5 < c6 && c6 < c7 && c7 == c7live &&
+        bool escalates = c5 < c6 && c6 < c7 && c6 == c6live && c7 == c7live &&
+                         top.plan(SpireTopFloor::F6).hasBoss &&
                          top.plan(SpireTopFloor::F7).hasBoss &&
-                         top.plan(SpireTopFloor::F7).hasVictim &&
-                         !top.plan(SpireTopFloor::F6).hasBoss;
-        check(escalates, "S4 difficulty escalates F5(6) < F6(7) < F7(8, +boss +rescue)");
+                         top.plan(SpireTopFloor::F7).hasVictim;
+        check(escalates, "S4 difficulty escalates F5(7) < F6(8, +Overseer) < F7(9, +Clone +rescue)");
     }
 
     // ---- All top-floor enemies are alive at load (placed, not pre-killed). ----
     {
         bool allAlive = top.enemies(SpireTopFloor::F6).aliveCount() == 7 &&
-                        top.enemies(SpireTopFloor::F7).aliveCount() == 7 &&
+                        top.enemies(SpireTopFloor::F7).aliveCount() == 8 &&
+                        top.overseerBoss().aliveCount() == 1 &&
                         top.boss().aliveCount() == 1;
-        check(allAlive, "S5 all placed enemies + the boss alive at load");
+        check(allAlive, "S5 all placed enemies + the F6/F7 bosses alive at load");
     }
 
     // ---- F7 rescue victim (Sarah) PRESENT but NOT active at load. ----
@@ -510,7 +554,7 @@ bool runSpireTopSelfTest() {
             scene.update(*physics);
         }
         bool stillCaptive = top.victimCaptive();
-        bool noBoss = top.enemies(SpireTopFloor::F7).count() == 7;   // no extra spawn
+        bool noBoss = top.enemies(SpireTopFloor::F7).count() == 8;   // no extra spawn
         check(stillCaptive && noBoss,
               "S7 victim stays captive while hub unreached (no early expiry)");
     }

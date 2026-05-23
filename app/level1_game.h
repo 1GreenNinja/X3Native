@@ -225,6 +225,28 @@ public:
     RescueSystem&       rescue()       { return m_rescue; }
     const RescueSystem& rescue() const { return m_rescue; }
 
+    // ---- F2 Medical Bay boss: Dr. Chen (Corrupted) — Wave-2 placement ------
+    // The F2 floor boss, placed ALONGSIDE the 3-victim rescue (the Medical Bay floor).
+    // A single-body Boss via the Wave-1 roster (bossTuning(BossType::DrChen)): 3 phases
+    // + the KILL-vs-CURE outcome (incapacitate+cure spares him -> 100% cure ally). His
+    // own manager so his role/phase are distinct from the rescue victims' transformed
+    // bosses. Spawned on the F2 plate gated on the F2 ward hub (NOT at load), mirroring
+    // the rescue-clock gating, so he doesn't pursue a player who hasn't reached F2.
+    const MonsterManager& chen() const { return m_chen; }
+    MonsterManager&       chen()       { return m_chen; }
+    bool chenSpawned() const { return m_chenSpawned; }
+    bool chenAlive()   const { return m_chenSpawned && m_chen.count() > 0 && m_chen.at(0).alive(); }
+    // True iff Chen is in his curable window (Phase3 "Monster"); the host offers the
+    // "incapacitate + cure" prompt then. Drives the F2 KILL-vs-CURE choice.
+    bool chenCanCure() const { return m_chenSpawned && m_chen.count() > 0 && m_chen.at(0).canCure(); }
+    bool chenCured()   const { return m_chenSpawned && m_chen.count() > 0 && m_chen.at(0).wasCured(); }
+    // CURE / spare Chen (vs. killing him). No-op unless chenCanCure(). Returns true if
+    // cured. The host wires this to a "cure" interact at the downed-to-Phase3 boss.
+    bool cureChen(Scene& scene, x3::phys::IPhysicsWorld& physics);
+
+    // The canon F2 floor identity ("Medical Bay") for the HUD / objective text.
+    const char* f2FloorName() const { return "Medical Bay"; }
+
 private:
     // Map a door letter to its DoorSystem index (set in build()).
     uint32_t doorIndex(char letter) const;
@@ -234,6 +256,9 @@ private:
                               x3::phys::IPhysicsWorld& physics);
     void spawnMartinez(Scene& scene, x3::rhi::IRenderDevice& device,
                        x3::phys::IPhysicsWorld& physics);
+    // F2 Medical Bay boss: spawn Dr. Chen on the F2 plate (gated on the F2 hub). Idempotent.
+    void spawnChen(Scene& scene, x3::rhi::IRenderDevice& device,
+                   x3::phys::IPhysicsWorld& physics);
     // Phase 2b: summon the boss's Phase-3 Guard adds (once). Idempotent guard.
     void spawnBossAdds(Scene& scene, x3::rhi::IRenderDevice& device,
                        x3::phys::IPhysicsWorld& physics);
@@ -253,6 +278,8 @@ private:
     ObjectiveSystem m_objectives;
     TriggerSystem  m_triggers;
     RescueSystem   m_rescue;       // F2 victims (Aria/Keisha/Emily) — spec §5
+    MonsterManager m_chen;         // F2 Medical Bay boss: Dr. Chen (Wave-2; gated on the F2 hub)
+    bool           m_chenSpawned = false;  // Dr. Chen placed on the F2 plate (on the F2 hub)
 
     // Boss phase HUD flash (Phase 2b): banner text + countdown set on a transition.
     std::string    m_phaseBanner;          // "PHASE 2!" / "PHASE 3!" (empty = none)
