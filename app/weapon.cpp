@@ -85,6 +85,68 @@ bool shouldArm(const x3::phys::Vec3& playerPos, const x3::phys::Vec3& pickupPos,
 }
 
 // ---------------------------------------------------------------------------
+// ViewKick: recoil + screen-shake on fire (game-feel). Headless-testable.
+// ---------------------------------------------------------------------------
+namespace {
+// Deterministic xorshift -> [-1,1] for the shake jitter (no <random> churn).
+inline uint32_t vkXorshift(uint32_t& s) { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return s; }
+inline float vkSym(uint32_t& s) { return ((vkXorshift(s) >> 8) * (1.0f / 16777216.0f)) * 2.0f - 1.0f; }
+} // namespace
+
+void ViewKick::fire(float weaponRecoilDeg) {
+    // Recoil pitch: weapon's recoilDeg -> rad, scaled, accumulated + clamped.
+    m_pitch += weaponRecoilDeg * (kPi / 180.0f) * kRecoilPitchScale;
+    if (m_pitch > kRecoilPitchMax) m_pitch = kRecoilPitchMax;
+    // Back-push: viewmodel kicks toward the player, clamped so auto-fire is sane.
+    m_back += kRecoilBackPush;
+    if (m_back > kRecoilBackMax) m_back = kRecoilBackMax;
+    // Arm a fresh screen-shake burst (refresh the window + bump amplitude).
+    m_shake    = kShakeTime;
+    m_shakeAmp += kShakeAmp;
+    if (m_shakeAmp > kShakeAmpMax) m_shakeAmp = kShakeAmpMax;
+}
+
+void ViewKick::tick(float dt) {
+    if (dt <= 0.0f) return;
+    // Exponential-ish relax of the recoil pitch + back-push toward 0.
+    const float k = kRecoilRecover * dt;
+    const float decay = (k >= 1.0f) ? 0.0f : (1.0f - k);
+    // Snap small residuals to 0 so the kick cleanly settles (the exponential relax
+    // otherwise asymptotes to a tiny non-zero value forever). Thresholds match
+    // active() so "recovered" is unambiguous.
+    m_pitch *= decay; if (m_pitch < 1e-4f) m_pitch = 0.0f;
+    m_back  *= decay; if (m_back  < 1e-4f) m_back  = 0.0f;
+    // Age the shake window; its amplitude scales with the remaining fraction.
+    if (m_shake > 0.0f) {
+        m_shake -= dt;
+        m_shakeT += dt;
+        if (m_shake <= 0.0f) { m_shake = 0.0f; m_shakeAmp = 0.0f; m_shakeT = 0.0f; }
+    }
+}
+
+float ViewKick::shakeYaw() const {
+    if (m_shake <= 0.0f || kShakeTime <= 0.0f) return 0.0f;
+    const float frac = m_shake / kShakeTime;              // 1 -> 0 over the window
+    // Deterministic-but-jittery: oscillator * decaying amplitude * a per-call noise.
+    uint32_t s = m_rng ^ 0xA53Cu;
+    const float jitter = vkSym(s);
+    return m_shakeAmp * frac * std::sin(m_shakeT * kShakeFreq) * jitter;
+}
+
+float ViewKick::shakePitch() const {
+    if (m_shake <= 0.0f || kShakeTime <= 0.0f) return 0.0f;
+    const float frac = m_shake / kShakeTime;
+    uint32_t s = m_rng ^ 0x1B9Du;
+    const float jitter = vkSym(s);
+    // Cosine + a different noise seed so yaw/pitch don't move in lockstep.
+    return m_shakeAmp * frac * std::cos(m_shakeT * kShakeFreq * 1.13f) * jitter;
+}
+
+bool ViewKick::active() const {
+    return m_pitch > 1e-4f || m_back > 1e-4f || m_shake > 0.0f;
+}
+
+// ---------------------------------------------------------------------------
 // Build the pickup (load the real GLB, or fall back to a box).
 // ---------------------------------------------------------------------------
 void WeaponSystem::buildWeaponPickup(Scene& scene, x3::rhi::IRenderDevice& device,

@@ -357,6 +357,18 @@ void Level1Game::playSfx(x3::audio::SoundHandle h, const x3::phys::Vec3& at, flo
         m_audio.sys->playSound3D(h, at.x, at.y, at.z, vol, 1.0f);
 }
 
+void Level1Game::setCueSink(const GameCueFn& sink) {
+    m_cueSink = sink;
+    // Fan to every enemy group (managers store + re-apply to future spawns) and the
+    // single boss instance. Corridor / Martinez / adds may not exist yet — the
+    // managers carry the sink onto on-beat spawns; the boss is wired at spawn time
+    // (and here too, harmlessly, if it's already up).
+    m_corridor.setCueSink(sink);
+    m_checkpoint.setCueSink(sink);
+    m_bossAdds.setCueSink(sink);
+    if (m_martinezSpawned) m_martinez.setCueSink(sink);
+}
+
 void Level1Game::spawnCorridorEnemies(Scene& scene, x3::rhi::IRenderDevice& device,
                                       x3::phys::IPhysicsWorld& physics) {
     if (m_corridorSpawned) return;
@@ -403,6 +415,7 @@ void Level1Game::spawnMartinez(Scene& scene, x3::rhi::IRenderDevice& device,
                                  x3::phys::Vec3{ m_layout.arenaCenter.x, 0.6f,
                                                  m_layout.arenaCenter.z },
                                  martinezTuning());
+    if (m_cueSink) m_martinez.setCueSink(m_cueSink);   // inherit footstep/impact cues
     x3::logInfo("Level1: BOSS — Chief Martinez spawned in the arena (boss-tier HP/speed)");
 }
 
