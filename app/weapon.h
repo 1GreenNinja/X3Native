@@ -53,11 +53,11 @@ constexpr float kPickupRadius = 1.2f;
 // main.cpp can register the cvars without converting. The pistol GLB's barrel
 // reads "to the right" with a plain camera-basis orientation, so a -90 deg yaw
 // swings it FULLY to forward = traditional point-to-crosshair. Dial vm_* live to converge.
-constexpr float kVmDefYawDeg   = -90.0f; // yaw about camera up (degrees) — barrel -> forward
+constexpr float kVmDefYawDeg   = 180.0f; // yaw about camera up (degrees) — barrel -> forward (Tim-tuned)
 constexpr float kVmDefPitchDeg = 0.0f;   // pitch about camera right (degrees)
 constexpr float kVmDefRollDeg  = 0.0f;   // roll about camera forward (degrees)
-constexpr float kVmDefFwd      = 0.5f;   // forward along look dir (meters)
-constexpr float kVmDefRight    = 0.25f;  // to the right (meters)
+constexpr float kVmDefFwd      = 1.0f;   // forward along look dir (meters) (Tim-tuned)
+constexpr float kVmDefRight    = 0.5f;   // to the right (meters) (Tim-tuned)
 constexpr float kVmDefDown     = 0.2f;   // below the eye line (meters)
 
 // ---------------------------------------------------------------------------
