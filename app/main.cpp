@@ -4183,7 +4183,10 @@ int main(int argc, char** argv) {
                         float sx = 0.0f, sy = 0.0f;
                         if (!device->worldToScreen(head.x, head.y, head.z, sx, sy)) return;
                         const float frac = (float)hpv / (float)mx;
-                        const float bw = 70.0f, bh = 8.0f, x0 = sx - bw * 0.5f, y0 = sy;
+                        uint32_t hw=0, hh=0; device->hudSize(hw, hh);
+                        const float bw = 70.0f, bh = 8.0f, x0 = sx - bw * 0.5f;
+                        float y0 = sy; if (y0 < 14.0f) y0 = 14.0f;            // clamp on-screen (close enemies)
+                        if (hh > 30 && y0 > (float)hh - 30.0f) y0 = (float)hh - 30.0f;
                         const float frameC[4] = { 0.90f, 0.95f, 1.00f, 0.95f };   // bright frame (shiny)
                         const float backC[4]  = { 0.04f, 0.05f, 0.08f, 0.85f };   // dark bg
                         const float rr = (frac > 0.5f) ? (2.0f - frac * 2.0f) : 1.0f;  // green->yellow->red
