@@ -400,7 +400,8 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
     if (m.objective && m.objective[0]) {
         char objBuf[160];
         std::snprintf(objBuf, sizeof(objBuf), "OBJECTIVE: %s", m.objective);
-        ui.text(objBuf, 18.0f, 14.0f, 16.0f, kColText);
+        // Below the (8,8) 16px FPS meter so the two top-left lines never collide.
+        ui.text(objBuf, 18.0f, 38.0f, 16.0f, kColText);
     }
 
     // ---- Minimap stub (top-right box; full minimap later) ------------------

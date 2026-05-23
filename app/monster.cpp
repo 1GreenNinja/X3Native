@@ -997,6 +997,19 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // continuity. When no real walk/run set exists we fall back to the legacy
     // idle/move clip switch. Re-uploads skinned vertices via the cached device. --
     if (m_animActive && m_device) {
+        // PERF (distance cull): CPU skinning re-skins + RE-UPLOADS the whole vertex
+        // buffer every frame via updateMesh — costly per character (and the upload can
+        // stall the GPU). A level full of rigged NPCs (other floors, the F2 rescue
+        // victims, distant guards) otherwise drowns the frame in per-frame skin uploads
+        // while the player is nowhere near them. Skip the re-skin for characters far
+        // from the player; they simply hold their last pose until you approach. The
+        // real fix is GPU skinning (engine lane) — this is the content-side guard.
+        {
+            const float cdx = m_pos.x - playerPos.x, cdy = m_pos.y - playerPos.y,
+                        cdz = m_pos.z - playerPos.z;
+            constexpr float kSkinCullDist = 32.0f;   // meters; beyond this, don't re-skin
+            if (cdx*cdx + cdy*cdy + cdz*cdz > kSkinCullDist * kSkinCullDist) return;
+        }
         const float ddx = m_pos.x - prevPos.x, ddz = m_pos.z - prevPos.z;
         const float planarSpeed = (dt > 1e-5f)
             ? std::sqrt(ddx*ddx + ddz*ddz) / dt : 0.0f;
