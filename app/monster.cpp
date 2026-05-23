@@ -177,6 +177,13 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     m_phaseScaleMul    = 1.0f;
     m_phaseTintMul[0] = m_phaseTintMul[1] = m_phaseTintMul[2] = 1.0f;
 
+    // ---- Act-1 boss gimmicks (Wave 1). Inert by default (Martinez unchanged). ----
+    m_hasCureOption       = tuning.hasCureOption;
+    m_cured               = false;
+    m_memoryFlashTime     = tuning.memoryFlashTime;
+    m_memoryFlashDamageMul = tuning.memoryFlashDamageMul;
+    m_flashTimer          = 0.0f;
+
     // ---- Try the real purchased GLB via a mounted loose-dir asset source. The
     // model file + dir are tuning-overridable (EFLZ art pass): Level 1 points the
     // characters at converted_glb/Characters/*.glb; the tests keep the legacy
@@ -359,13 +366,16 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
     if (ent != m_entity) return r;                 // (multi-monster: not this one)
 
     // ---- Hit a live monster: apply damage + start the red hit-flash. ----
+    // Act-1 boss gimmick (FE#7): a memory-flash window amplifies incoming damage
+    // (incomingDamageMul()). 1x for every non-flashing monster (no behaviour change).
     r.hitMonster = true;
-    bool dead = applyDamage(&m_hp, kDamagePerShot);
+    const int shotDmg = (int)(kDamagePerShot * incomingDamageMul() + 0.5f);
+    bool dead = applyDamage(&m_hp, shotDmg);
     m_flash = kHitFlashTime;
     r.hpAfter = m_hp;
     // D-ai: remember recent damage so the state machine can flinch/retreat.
     m_dmgMemory   = kAiDamageMemory;
-    m_dmgWindowHp += kDamagePerShot;
+    m_dmgWindowHp += shotDmg;
 
     if (dead) {
         // ---- Death: remove the physics body IMMEDIATELY (so subsequent rays
@@ -385,7 +395,7 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
         m_body = x3::phys::BodyId{};
         x3::logInfo("[monster] killed (HP 0) — body removed, death-pop started");
     } else {
-        x3::logInfo("[monster] hit for " + std::to_string(kDamagePerShot) +
+        x3::logInfo("[monster] hit for " + std::to_string(shotDmg) +
                     " — HP now " + std::to_string(m_hp));
     }
     return r;
@@ -400,11 +410,13 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
 bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
                                     x3::phys::IPhysicsWorld& physics) {
     if (!m_alive) return false;
-    bool dead = applyDamage(&m_hp, damage);
+    // Act-1 boss gimmick (FE#7): memory-flash amplifies incoming melee too (1x else).
+    const int dmg = (int)(damage * incomingDamageMul() + 0.5f);
+    bool dead = applyDamage(&m_hp, dmg);
     m_flash = kHitFlashTime;
     // D-ai: heavy melee is a strong flinch trigger.
     m_dmgMemory   = kAiDamageMemory;
-    m_dmgWindowHp += damage;
+    m_dmgWindowHp += dmg;
     if (dead) {
         m_alive    = false;
         m_dying    = true;
@@ -415,10 +427,48 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
         m_body = x3::phys::BodyId{};
         x3::logInfo("[monster] melee-killed (HP 0) — body removed, death-pop started");
     } else {
-        x3::logInfo("[monster] melee hit for " + std::to_string(damage) +
+        x3::logInfo("[monster] melee hit for " + std::to_string(dmg) +
                     " — HP now " + std::to_string(m_hp));
     }
     return dead;
+}
+
+// ---------------------------------------------------------------------------
+// CURE / spare path (Dr. Chen, F2 — KILL-vs-CURE gimmick). Incapacitate the boss
+// WITHOUT a kill: same removal as a death (body gone + death-pop hides the model),
+// but flagged m_cured (not killed). Only valid once canCure() (has the option, is
+// alive, reached Phase3). The floor module wires the narrative (Chen survives ->
+// 100% cure ally) off wasCured(). Inert for every boss without the cure option.
+// ---------------------------------------------------------------------------
+bool MonsterSystem::cure(Scene& scene, x3::phys::IPhysicsWorld& physics) {
+    if (!canCure()) return false;
+    m_cured    = true;
+    m_alive    = false;     // out of the fight, but NOT killed (m_cured distinguishes)
+    m_dying    = true;
+    m_deathPop = kDeathPopTime;
+    if (m_entity != kNoLink && m_entity < scene.size())
+        scene.get(m_entity).body = x3::phys::BodyId{};
+    if (m_body.valid()) physics.removeBody(m_body);
+    m_body = x3::phys::BodyId{};
+    x3::logInfo("[monster] BOSS CURED — incapacitated (spared, not killed)");
+    return true;
+}
+
+// Non-lethal SPARE (multi-pod "save" path). Removes a LIVE monster from the fight
+// (body gone + death-pop hides the model) and flags it spared (m_cured) so it counts
+// as saved, NOT killed. No phase precondition (unlike cure()).
+bool MonsterSystem::spare(Scene& scene, x3::phys::IPhysicsWorld& physics) {
+    if (!m_alive) return false;
+    m_cured    = true;      // reuse the "not killed" flag for spared pods
+    m_alive    = false;
+    m_dying    = true;
+    m_deathPop = kDeathPopTime;
+    if (m_entity != kNoLink && m_entity < scene.size())
+        scene.get(m_entity).body = x3::phys::BodyId{};
+    if (m_body.valid()) physics.removeBody(m_body);
+    m_body = x3::phys::BodyId{};
+    x3::logInfo("[monster] SPARED — freed from the fight (not killed)");
+    return true;
 }
 
 int MonsterSystem::effectiveDamage() const {
@@ -483,9 +533,20 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                 m_phaseTintMul[0] = 1.0f; m_phaseTintMul[1] = 0.35f; m_phaseTintMul[2] = 0.35f;
                 x3::logInfo("[monster] BOSS PHASE 3 — DESPERATE (summon + charge)");
             }
+            // Act-1 boss gimmick (FE#7): a phase transition opens a brief MEMORY-
+            // FLASH window — the boss is staggered (cannot attack, see mayAttack)
+            // and takes amplified damage (incomingDamageMul) for memoryFlashTime.
+            // Inert when memoryFlashTime is 0 (every other boss).
+            if (m_memoryFlashTime > 0.0f) {
+                m_flashTimer = m_memoryFlashTime;
+                x3::logInfo("[monster] BOSS MEMORY FLASH — staggered + vulnerable");
+            }
             if (onPhase) onPhase(m_phase);
         }
     }
+
+    // Act-1 boss gimmick (FE#7): tick down the memory-flash vulnerability window.
+    if (m_flashTimer > 0.0f) { m_flashTimer -= dt; if (m_flashTimer < 0.0f) m_flashTimer = 0.0f; }
 
     // Decay hit-flash.
     if (m_flash > 0.0f) {
@@ -865,7 +926,10 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // (they keep their distance, so they don't contribute to a melee dogpile). A
     // melee enemy without a permit cancels any wind-up below (it's holding/backing
     // off in the state block above), so it cannot land a hit until it earns a permit.
-    const bool mayAttack = m_ranged || m_meleePermit;
+    // Act-1 boss gimmick (FE#7): during a MEMORY-FLASH window the boss is STAGGERED
+    // and cannot attack (the clarity beat) — it just stands vulnerable. Inert for
+    // every non-flashing monster (m_flashTimer is 0).
+    const bool mayAttack = (m_ranged || m_meleePermit) && m_flashTimer <= 0.0f;
     if (target && target->isAlive() && m_dmg > 0 && horiz <= m_attackRange && mayAttack) {
         if (!m_winding && m_atkTimer <= 0.0f) {
             // Begin a new attack: start the wind-up; the hit lands when it elapses.
@@ -2056,6 +2120,306 @@ MonsterSystem::Tuning tuningFor(EnemyType t) {
 }
 
 // ===========================================================================
+// ACT-1 MID-BOSS ROSTER + MACHINE EXTENSIONS (Wave 1).
+//
+// The 3 single-body bosses (Dr. Chen / Failed Experiment #7 / Alien Overseer) are
+// DATA rows on the existing Boss phase machine; the Chorus (multi-pod) + Swarm
+// (scripted hook) are the two general machine extensions. All HP/damage are tuned
+// RELATIVE TO MARTINEZ (HP 340, dmg 15; see level1_game.cpp martinezTuning) and the
+// combat:: bands, NOT the bible's raw values, so each fight is winnable.
+// ===========================================================================
+
+const char* bossTypeName(BossType t) {
+    switch (t) {
+        case BossType::DrChen:            return "Dr. Chen";
+        case BossType::FailedExperiment7: return "Failed Experiment #7";
+        case BossType::AlienOverseer:     return "Alien Overseer";
+        case BossType::Count:             return "?";
+    }
+    return "?";
+}
+
+namespace {
+
+// Build the single-body Act-1 boss roster ONCE. Each row is a Boss-type Tuning that
+// flows through buildMonsterTuned() like Martinez. Stats are Martinez-relative.
+std::vector<BossDef> buildBossDefs() {
+    std::vector<BossDef> defs;
+    defs.reserve((size_t)BossType::Count);
+
+    // ---- DR. CHEN (F2) — transforming oncologist; KILL-vs-CURE. A touch tankier
+    // than Martinez (you fight him second). 3 phases (Scientist -> Injection ->
+    // Monster); the cure path opens in Phase3 ("Monster"). Reddish toxin tint. ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Boss;
+        t.hp             = 380;                 // Martinez 340; slightly tankier
+        t.chaseSpeed     = 3.2f;               // deliberate scientist; ramps via phases
+        t.damage         = 14;                 // ~Martinez (15); chemical/mutant slam
+        t.attackRange    = 2.3f;
+        t.attackCooldown = 1.1f;
+        t.attackWindup   = 0.30f;
+        t.ranged         = false;
+        t.tint[0]=0.75f; t.tint[1]=1.0f; t.tint[2]=0.70f; t.tint[3]=1.0f;  // sickly green
+        // Phases mirror the bible's 800/500/200 thresholds -> our HP fractions.
+        t.phase2Frac     = 0.62f;              // ~500/800 (Injection)
+        t.phase3Frac     = 0.25f;              // ~200/800 (Monster)
+        t.phase2SpeedMul = 1.30f; t.phase2DamageMul = 1.4f;
+        t.phase3SpeedMul = 1.7f;  t.phase3DamageMul = 1.8f;
+        t.phase3SummonCount = 2;               // summons 2 corrupted scientists (P1 flavor)
+        t.hasCureOption  = true;               // KILL vs INCAPACITATE+CURE
+        defRigged(t, "chief_martinez.glb", 1.30f);
+        defs.push_back({ BossType::DrChen, "Dr. Chen", t });
+    }
+
+    // ---- FAILED EXPERIMENT #7 / Marcus Webb (F3) — tragic predecessor; 8ft, heavy
+    // armor (folded into higher HP). MEMORY-FLASH gimmick: each phase transition
+    // opens a brief stagger + vulnerability window. Bigger + slower-but-hits-hard. ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Boss;
+        t.hp             = 460;                 // 8ft armored brute (bible 1200 + 50% armor)
+        t.chaseSpeed     = 3.0f;               // heavy; charges in phases
+        t.damage         = 18;                 // devastating melee (> Martinez)
+        t.attackRange    = 2.6f;               // long reach
+        t.attackCooldown = 1.25f;              // slower, telegraphed swings
+        t.attackWindup   = 0.35f;
+        t.ranged         = false;
+        t.tint[0]=0.85f; t.tint[1]=0.70f; t.tint[2]=0.95f; t.tint[3]=1.0f;  // bruised violet
+        t.phase2Frac     = 0.66f;              // Rage -> Despair (~800/1200)
+        t.phase3Frac     = 0.33f;              // Despair -> Release (~400/1200)
+        t.phase2SpeedMul = 0.85f; t.phase2DamageMul = 1.2f;  // "slower but +20% dmg" (Despair)
+        t.phase3SpeedMul = 1.2f;  t.phase3DamageMul = 1.3f;  // erratic self-control (Release)
+        t.phase3SummonCount = 0;               // tragic solo fight; no summons
+        // MEMORY FLASH: on each phase transition, ~2 s staggered + takes 2x damage.
+        t.memoryFlashTime      = 2.0f;
+        t.memoryFlashDamageMul = 2.0f;
+        defRigged(t, "marcus_webb.glb", 1.45f);  // 8ft predecessor reads tall
+        defs.push_back({ BossType::FailedExperiment7, "Failed Experiment #7", t });
+    }
+
+    // ---- ALIEN OVERSEER (F6) — psychic alien commander. RANGED (homing psi-blast)
+    // boss: holds a standoff and pelts the player, summons in P3. Tankiest single
+    // body of Act 1 (you fight it late). Golden psychic glow. ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Boss;
+        t.hp             = 420;                 // bible 400 + 200 barrier (folded)
+        t.chaseSpeed     = 2.6f;               // floats/repositions, keeps range
+        t.damage         = 12;                 // psi-blast (ranged chip; band-aware)
+        t.attackRange    = 16.0f;              // long psychic reach
+        t.attackCooldown = 1.0f;
+        t.attackWindup   = 0.40f;              // telegraphed homing blast
+        t.ranged         = true;
+        t.standoff       = 12.0f;              // commands from afar
+        t.aiStrafeBias   = 0.30f;
+        t.tint[0]=1.0f; t.tint[1]=0.85f; t.tint[2]=0.45f; t.tint[3]=1.0f;  // psychic gold
+        t.phase2Frac     = 0.66f;
+        t.phase3Frac     = 0.33f;
+        t.phase2SpeedMul = 1.25f; t.phase2DamageMul = 1.35f;
+        t.phase3SpeedMul = 1.5f;  t.phase3DamageMul = 1.6f;
+        t.phase3SummonCount = 3;               // summons minions in desperation
+        defRigged(t, "chief_martinez.glb", 1.40f);  // tall commander (humanoid stand-in)
+        defs.push_back({ BossType::AlienOverseer, "Alien Overseer", t });
+    }
+
+    return defs;
+}
+
+} // namespace
+
+const std::vector<BossDef>& bossDefs() {
+    static const std::vector<BossDef> defs = buildBossDefs();
+    return defs;
+}
+
+const BossDef& bossDef(BossType t) {
+    const std::vector<BossDef>& defs = bossDefs();
+    const uint32_t i = (uint32_t)t;
+    if (i < defs.size() && defs[i].type == t) return defs[i];   // table is in enum order
+    for (const BossDef& d : defs) if (d.type == t) return d;     // defensive
+    return defs[0];
+}
+
+MonsterSystem::Tuning bossTuning(BossType t) {
+    return bossDef(t).tuning;
+}
+
+// ===========================================================================
+// MULTI-POD BOSS (machine extension #2) — The Collective / The Chorus.
+// ===========================================================================
+
+void MultiPodBoss::build(const Config& cfg, Scene& scene, x3::rhi::IRenderDevice& device,
+                         x3::phys::IPhysicsWorld& physics, std::string_view modelDir,
+                         const x3::phys::Vec3& origin) {
+    m_pods.clear();
+    m_podNames.clear();
+    m_saved = 0;
+    m_maxSaved = cfg.maxSaved;
+    for (const PodConfig& pc : cfg.pods) {
+        auto m = std::make_unique<MonsterSystem>();
+        const x3::phys::Vec3 p{ origin.x + pc.offset.x, origin.y + pc.offset.y,
+                                origin.z + pc.offset.z };
+        m->buildMonsterTuned(scene, device, physics, modelDir, p, pc.tuning);
+        m_pods.push_back(std::move(m));
+        m_podNames.push_back(pc.name ? std::string(pc.name) : std::string("Pod"));
+    }
+    // Resolve the fall threshold: 0 in the config means "all pods".
+    m_fallThreshold = (cfg.fallThreshold == 0) ? (uint32_t)m_pods.size()
+                                               : cfg.fallThreshold;
+    if (m_fallThreshold > (uint32_t)m_pods.size())
+        m_fallThreshold = (uint32_t)m_pods.size();
+    x3::logInfo("[multipod] built " + std::to_string(m_pods.size()) +
+                " pods; fallThreshold=" + std::to_string(m_fallThreshold) +
+                " maxSaved=" + std::to_string(m_maxSaved));
+}
+
+bool MultiPodBoss::sparePod(uint32_t i, Scene& scene, x3::phys::IPhysicsWorld& physics) {
+    if (i >= m_pods.size()) return false;
+    MonsterSystem& p = *m_pods[i];
+    if (!p.alive()) return false;                          // already down (killed/spared)
+    if (m_maxSaved != 0 && m_saved >= m_maxSaved) return false;  // save budget spent
+    // Non-lethal removal: spare() flags the pod as saved (m_cured) so it is NOT
+    // counted as killed. The save COUNT lives here (the morality budget); the pod
+    // bookkeeping (killed vs spared) lives on the MonsterSystem.
+    const bool removed = p.spare(scene, physics);
+    if (removed) {
+        ++m_saved;
+        x3::logInfo("[multipod] SPARED pod " + std::to_string(i) + " (" +
+                    m_podNames[i] + "); saved=" + std::to_string(m_saved));
+    }
+    return removed;
+}
+
+void MultiPodBoss::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                          const x3::phys::Vec3& playerPos, IDamageSink* target,
+                          const AttackFxFn& fx, const BossPhaseFn& onPhase) {
+    for (auto& p : m_pods)
+        p->update(dt, scene, physics, playerPos, target, fx, onPhase);
+}
+
+void MultiPodBoss::drawAll(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                           const Scene& scene) const {
+    for (const auto& p : m_pods) p->drawMonster(device, frame, scene);
+}
+
+FireResult MultiPodBoss::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
+                              Scene& scene, x3::phys::IPhysicsWorld& physics) {
+    FireResult best;
+    for (auto& p : m_pods) {
+        FireResult r = p->fire(eye, dir, scene, physics);
+        if (r.hitMonster) return r;   // a pod took the shot; at most one per call
+        if (r.hit && !best.hit) best = r;  // remember a wall hit for the tracer
+    }
+    return best;
+}
+
+uint32_t MultiPodBoss::killedCount() const {
+    uint32_t n = 0;
+    for (const auto& p : m_pods)
+        if (!p->alive() && !p->wasCured()) ++n;   // down by lethal damage (not spared)
+    return n;
+}
+
+uint32_t MultiPodBoss::downedCount() const {
+    uint32_t n = 0;
+    for (const auto& p : m_pods) if (!p->alive()) ++n;
+    return n;
+}
+
+uint32_t MultiPodBoss::aliveCount() const {
+    uint32_t n = 0;
+    for (const auto& p : m_pods) if (p->alive()) ++n;
+    return n;
+}
+
+// Canonical Chorus config: 5 fused minds (Subject Zero/Maya = core, then Harmon /
+// Patel / Vasquez / Klein), save up to 4 (the core remains). HP per pod is
+// Martinez-relative and small (5 simultaneous targets); each pod is melee-ish so
+// the fight reads as a swarm of voices. The Wave-2 Nexus module may use this
+// verbatim or build its own Config.
+MultiPodBoss::Config chorusConfig() {
+    MultiPodBoss::Config cfg;
+    cfg.fallThreshold = 0;   // 0 => all 5 pods (down/save all to end the fight)
+    cfg.maxSaved      = 4;   // save up to 4 voices; Subject Zero/Maya remains
+    struct Voice { const char* name; int hp; float dx, dz; bool ranged; };
+    const Voice voices[] = {
+        { "Subject Zero (Maya)", 160, 0.0f,  0.0f, false },  // core, suffering
+        { "Dr. Harmon",          120, 2.5f,  1.0f, false },  // offense
+        { "Dr. Patel",           120, -2.5f, 1.0f, true  },  // defense (ranged)
+        { "Dr. Vasquez",         100, 2.0f, -2.0f, false },  // sometimes sabotages
+        { "Dr. Klein",           100, -2.0f,-2.0f, true  },  // zealot (ranged)
+    };
+    for (const Voice& v : voices) {
+        MultiPodBoss::PodConfig pc;
+        pc.name = v.name;
+        pc.offset = x3::phys::Vec3{ v.dx, 0.0f, v.dz };
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Guard;   // pods are NOT the phase-machine Boss
+        t.hp             = v.hp;
+        t.chaseSpeed     = v.ranged ? 2.4f : 3.0f;
+        t.ranged         = v.ranged;
+        if (v.ranged) {
+            t.damage         = combat::kRangedDamageDefault;
+            t.attackRange    = 12.0f;
+            t.attackCooldown = combat::kRangedCooldownDefault;
+            t.standoff       = 8.0f;
+        } else {
+            t.damage         = combat::kMeleeDamageDefault;
+            t.attackRange    = combat::kMeleeRange;
+            t.attackCooldown = combat::kMeleeCooldownDefault;
+        }
+        t.tint[0]=0.6f; t.tint[1]=0.4f; t.tint[2]=0.9f; t.tint[3]=1.0f;  // cyber-horror violet
+        defRigged(t, "marcus_webb.glb", 1.0f);   // humanoid stand-in (falls back to box)
+        pc.tuning = t;
+        cfg.pods.push_back(pc);
+    }
+    return cfg;
+}
+
+// ===========================================================================
+// SCRIPTED PRE-FIGHT HOOK (machine extension #3) — Sarah's master hack (F5).
+// ===========================================================================
+
+int ScriptedFightHook::stripBossHp(MonsterSystem& boss, float fraction) {
+    if (fraction <= 0.0f) return 0;
+    if (fraction > 1.0f) fraction = 1.0f;
+    const int before = boss.hp();
+    if (before <= 0) return 0;
+    int strip = (int)(boss.maxHp() * fraction + 0.5f);
+    // Never kill outright: leave at least 1 HP so the boss still spawns/fights.
+    if (strip > before - 1) strip = before - 1;
+    if (strip < 0) strip = 0;
+    // Direct HP debuff (no death path): setHp drops the boss to its post-hack HP so
+    // it still spawns + fights, and its own update() advances phases from there.
+    if (strip > 0) boss.setHp(before - strip);
+    x3::logInfo("[scripted-hook] stripped " + std::to_string(strip) +
+                " boss HP (" + std::to_string(before) + " -> " +
+                std::to_string(boss.hp()) + ")");
+    return strip;
+}
+
+uint32_t ScriptedFightHook::flipToAllied(const std::vector<MonsterSystem*>& enemies) {
+    uint32_t n = 0;
+    for (MonsterSystem* e : enemies) {
+        if (!e) continue;
+        e->convertToAllied();
+        ++n;
+    }
+    x3::logInfo("[scripted-hook] flipped " + std::to_string(n) + " enemies to allied");
+    return n;
+}
+
+ScriptedFightHook::Result ScriptedFightHook::masterHack(
+        MonsterSystem& boss, float bossHpFraction,
+        const std::vector<MonsterSystem*>& drones) {
+    Result r;
+    r.hpStripped    = stripBossHp(boss, bossHpFraction);
+    r.dronesFlipped = flipToAllied(drones);
+    return r;
+}
+
+// ===========================================================================
 // --test-bestiary: the data-driven enemy roster.
 //   (a) each EnemyType BUILDS with its table stats (HP/type/ranged/damage match).
 //   (b) each behaves per its weighting under steady LOS: melee species close +
@@ -2218,6 +2582,326 @@ bool runBestiarySelfTest() {
     x3::logInfo(std::string("[bestiary-test] ") + std::to_string(be_pass) + " passed, " +
                 std::to_string(be_fail) + " failed");
     return be_fail == 0;
+}
+
+// ===========================================================================
+// --test-bosses: Act-1 mid-boss roster + machine extensions (Wave 1).
+//   (a) the 5 mid-bosses exist with sane phase/HP/damage and BUILD; the 3 single-
+//       body bosses transition phases on the HP-keyed machine; Chen exposes the cure
+//       path in Phase3; FE#7's Memory-Flash window opens on a phase transition.
+//   (b) the multi-pod Chorus DOWNS only when the fall-threshold is met; the SAVE path
+//       increments savedCount (not killedCount) and respects the maxSaved cap.
+//   (c) the scripted hook strips the right HP fraction AND flips enemies to allied.
+//   (d) Chief Martinez still constructs + behaves as before (regression guard).
+// No window / Vulkan. Mirrors the other self-tests.
+// ===========================================================================
+namespace {
+
+int bo_pass = 0, bo_fail = 0;
+void bocheck(bool cond, const char* name) {
+    if (cond) { ++bo_pass; x3::logInfo(std::string("[bosses-test] PASS ") + name); }
+    else      { ++bo_fail; x3::logError(std::string("[bosses-test] FAIL ") + name); }
+}
+
+constexpr float kBoDt = 1.0f / 60.0f;
+
+// A trivial player stand-in the AI treats as the target (alive, fixed eye).
+class BoTargetStub final : public IDamageSink {
+public:
+    x3::phys::Vec3 eye{ 0.0f, 1.6f, 0.0f };
+    int hits = 0;
+    bool takeDamage(int) override { ++hits; return true; }
+    x3::phys::Vec3 damageTargetPos() const override { return eye; }
+    bool isAlive() const override { return true; }
+};
+
+x3::phys::BodyId boGround(x3::phys::IPhysicsWorld& w, float half) {
+    float v[] = { -half,0,-half,  half,0,-half,  half,0,half,  -half,0,half };
+    uint32_t idx[] = { 0,2,1, 0,3,2 };
+    return w.addStaticMesh(v, 4, idx, 6);
+}
+
+// Drive a boss's HP down in steps + tick its update() so the phase machine latches.
+// Returns the highest phase reached. Tracks whether a memory-flash ever opened.
+BossPhase driveBossToHp(MonsterSystem& m, Scene& scene, x3::phys::IPhysicsWorld& w,
+                        BoTargetStub& tgt, int targetHp, bool* sawFlash) {
+    while (m.hp() > targetHp && m.alive()) {
+        m.setHp(m.hp() - 1);
+        m.update(kBoDt, scene, w, tgt.eye, tgt.eye, &tgt, AttackFxFn{},
+                 BossPhaseFn{}, AllyQueryFn{});
+        if (sawFlash && m.inMemoryFlash()) *sawFlash = true;
+    }
+    return m.phase();
+}
+
+} // namespace
+
+bool runBossesSelfTest() {
+    bo_pass = bo_fail = 0;
+    HeadlessDevice device;
+
+    // ---- (a1) the single-body boss table is complete + ordered, with sane stats. ----
+    {
+        const std::vector<BossDef>& roster = bossDefs();
+        bool complete = roster.size() == (size_t)BossType::Count;
+        bool ordered = true, sane = true;
+        for (uint32_t i = 0; i < roster.size(); ++i) {
+            if ((uint32_t)roster[i].type != i) ordered = false;
+            const MonsterSystem::Tuning& t = roster[i].tuning;
+            // Sane = Boss type, positive HP, positive damage, valid phase thresholds.
+            if (t.type != MonsterType::Boss) sane = false;
+            if (t.hp <= 0 || t.damage <= 0) sane = false;
+            if (!(t.phase3Frac > 0.0f && t.phase3Frac < t.phase2Frac && t.phase2Frac < 1.0f))
+                sane = false;
+            x3::logInfo(std::string("[bosses-test] ") + roster[i].name +
+                        " hp=" + std::to_string(t.hp) + " dmg=" + std::to_string(t.damage) +
+                        " p2=" + std::to_string(t.phase2Frac) +
+                        " p3=" + std::to_string(t.phase3Frac) +
+                        " ranged=" + (t.ranged ? "1" : "0"));
+        }
+        bocheck(complete && ordered && sane,
+                "Ta single-body boss roster complete/ordered with sane phase/HP/damage");
+    }
+
+    // ---- (a2) each single-body boss BUILDS, reports its stats, and the 3-phase
+    // HP-keyed machine advances Phase1 -> Phase2 -> Phase3. ----
+    {
+        int builtOk = 0, phasedOk = 0;
+        for (uint32_t bi = 0; bi < (uint32_t)BossType::Count; ++bi) {
+            const BossType bt = (BossType)bi;
+            const BossDef& def = bossDef(bt);
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            w->init(); boGround(*w, 80.0f);
+            Scene scene; MonsterSystem m; BoTargetStub tgt;
+            tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -8.0f };
+            m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                                x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, bossTuning(bt));
+            const bool statsMatch = m.type() == MonsterType::Boss &&
+                m.maxHp() == def.tuning.hp && m.attackDamage() == def.tuning.damage &&
+                m.phase() == BossPhase::Phase1;
+            if (statsMatch) ++builtOk;
+            // Drive HP down through the thresholds.
+            const int p2hp = (int)(m.maxHp() * def.tuning.phase2Frac) - 1;
+            driveBossToHp(m, scene, *w, tgt, p2hp, nullptr);
+            const bool reachedP2 = m.phase() == BossPhase::Phase2;
+            const int p3hp = (int)(m.maxHp() * def.tuning.phase3Frac) - 1;
+            driveBossToHp(m, scene, *w, tgt, p3hp, nullptr);
+            const bool reachedP3 = m.phase() == BossPhase::Phase3;
+            if (reachedP2 && reachedP3) ++phasedOk;
+            x3::logInfo(std::string("[bosses-test] ") + bossTypeName(bt) +
+                        " built statsOK=" + (statsMatch ? "1" : "0") +
+                        " reachedP2=" + (reachedP2 ? "1" : "0") +
+                        " reachedP3=" + (reachedP3 ? "1" : "0"));
+            w->shutdown();
+        }
+        bocheck(builtOk == (int)BossType::Count,
+                "Ta each single-body boss builds Boss-type with its table HP/damage");
+        bocheck(phasedOk == (int)BossType::Count,
+                "Ta each single-body boss advances P1->P2->P3 on the HP machine");
+    }
+
+    // ---- (a3) Dr. Chen exposes the CURE path in Phase3, and cure() spares (not
+    // kills) him; a boss WITHOUT the option (FE#7) cannot be cured. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); boGround(*w, 80.0f);
+        Scene scene; MonsterSystem chen; BoTargetStub tgt;
+        tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -8.0f };
+        chen.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                               x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, bossTuning(BossType::DrChen));
+        const bool hasOpt = chen.hasCureOption();
+        const bool noCureEarly = !chen.canCure();          // Phase1 -> not yet curable
+        const int p3hp = (int)(chen.maxHp() * bossTuning(BossType::DrChen).phase3Frac) - 1;
+        driveBossToHp(chen, scene, *w, tgt, p3hp, nullptr);
+        const bool curableInP3 = chen.canCure();           // Phase3 -> curable
+        const bool cured = chen.cure(scene, *w);
+        const bool sparedNotKilled = cured && !chen.alive() && chen.wasCured();
+        bocheck(hasOpt && noCureEarly && curableInP3 && sparedNotKilled,
+                "Ta Dr. Chen: cure option opens in Phase3 + cure() spares (not kills)");
+
+        // FE#7 has NO cure option.
+        Scene scene2; MonsterSystem fe7;
+        fe7.buildMonsterTuned(scene2, device, *w, riggedGlbRoot(),
+                              x3::phys::Vec3{ 20.0f, 0.4f, 0.0f },
+                              bossTuning(BossType::FailedExperiment7));
+        driveBossToHp(fe7, scene2, *w, tgt,
+                      (int)(fe7.maxHp() * 0.20f), nullptr);
+        bocheck(!fe7.hasCureOption() && !fe7.canCure() && !fe7.cure(scene2, *w),
+                "Ta Failed Experiment #7 has NO cure option (cure() refused)");
+        w->shutdown();
+    }
+
+    // ---- (a4) FE#7 MEMORY FLASH: a phase transition opens a stagger + amplified-
+    // damage window. Assert the window opens AND incoming damage is amplified. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); boGround(*w, 80.0f);
+        Scene scene; MonsterSystem fe7; BoTargetStub tgt;
+        tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -8.0f };
+        fe7.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                              x3::phys::Vec3{ 0.0f, 0.4f, 0.0f },
+                              bossTuning(BossType::FailedExperiment7));
+        const float flashMul = bossTuning(BossType::FailedExperiment7).memoryFlashDamageMul;
+        // Drive into Phase2 (a transition) and catch the flash window.
+        bool sawFlash = false;
+        const int p2hp = (int)(fe7.maxHp() * bossTuning(BossType::FailedExperiment7).phase2Frac) - 1;
+        driveBossToHp(fe7, scene, *w, tgt, p2hp, &sawFlash);
+        const bool flashOpen = fe7.inMemoryFlash();
+        const float mulNow = fe7.incomingDamageMul();
+        // While flashing: an incoming shot does amplified damage.
+        const int hpBefore = fe7.hp();
+        const bool wasFlashing = fe7.inMemoryFlash();
+        fe7.takeMeleeDamage(10, scene, *w);   // 10 base -> ~20 while flashing
+        const int dealt = hpBefore - fe7.hp();
+        const bool amplified = !wasFlashing || dealt >= (int)(10 * flashMul) - 1;
+        x3::logInfo(std::string("[bosses-test] FE#7 sawFlash=") + (sawFlash ? "1" : "0") +
+                    " flashOpenAtP2=" + (flashOpen ? "1" : "0") +
+                    " mul=" + std::to_string(mulNow) + " dealt=" + std::to_string(dealt));
+        bocheck(sawFlash && flashOpen && mulNow > 1.5f && amplified,
+                "Ta Failed Experiment #7 Memory-Flash: staggered window + amplified damage");
+        w->shutdown();
+    }
+
+    // ---- (b) MULTI-POD Chorus: builds 5 pods; falls only at the threshold; the SAVE
+    // path increments savedCount (not killedCount) and respects the cap. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); boGround(*w, 80.0f);
+        Scene scene; MultiPodBoss chorus;
+        MultiPodBoss::Config cfg = chorusConfig();
+        chorus.build(cfg, device, *w, riggedGlbRoot(), x3::phys::Vec3{ 0.0f, 0.4f, -6.0f });
+        const uint32_t n = chorus.podCount();
+        const uint32_t thresh = chorus.fallThreshold();
+        bocheck(n == 5 && thresh == 5 && !chorus.hasFallen(),
+                "Tb Chorus builds 5 pods; not fallen with 0 down");
+
+        // Down pods one at a time; the boss must NOT fall until the threshold.
+        bool fellEarly = false;
+        for (uint32_t i = 0; i < n - 1; ++i) {
+            chorus.pod(i).takeMeleeDamage(chorus.pod(i).hp() + 1, scene, *w);  // kill pod i
+            if (chorus.hasFallen()) fellEarly = true;   // must NOT fall before all down
+        }
+        const bool notFallenBelowThreshold = !fellEarly && !chorus.hasFallen();
+        // Down the last pod -> now the boss falls.
+        chorus.pod(n - 1).takeMeleeDamage(chorus.pod(n - 1).hp() + 1, scene, *w);
+        const bool fallenAtThreshold = chorus.hasFallen();
+        bocheck(notFallenBelowThreshold && fallenAtThreshold,
+                "Tb Chorus falls ONLY when the pod fall-threshold is met");
+        bocheck(chorus.killedCount() == 5 && chorus.savedCount() == 0,
+                "Tb killing all pods => killedCount=5, savedCount=0");
+    }
+
+    // ---- (b2) SAVE path: spare counts as saved (not killed); the maxSaved cap holds. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); boGround(*w, 80.0f);
+        Scene scene; MultiPodBoss chorus;
+        chorus.build(chorusConfig(), device, *w, riggedGlbRoot(),
+                     x3::phys::Vec3{ 0.0f, 0.4f, -6.0f });
+        // Spare 4 voices (the max). Each must increment saved, not killed.
+        uint32_t spared = 0;
+        for (uint32_t i = 0; i < 4; ++i) if (chorus.sparePod(i, scene, *w)) ++spared;
+        // A 5th spare must be REFUSED (cap = 4).
+        const bool fifthRefused = !chorus.sparePod(4, scene, *w);
+        const bool saveCounts = chorus.savedCount() == 4 && chorus.killedCount() == 0;
+        // Kill the remaining (5th) pod -> killedCount=1, savedCount stays 4, fallen.
+        chorus.pod(4).takeMeleeDamage(chorus.pod(4).hp() + 1, scene, *w);
+        const bool mixOk = chorus.savedCount() == 4 && chorus.killedCount() == 1 &&
+                           chorus.downedCount() == 5 && chorus.hasFallen();
+        x3::logInfo(std::string("[bosses-test] Chorus spared=") + std::to_string(spared) +
+                    " saved=" + std::to_string(chorus.savedCount()) +
+                    " killed=" + std::to_string(chorus.killedCount()) +
+                    " fifthRefused=" + (fifthRefused ? "1" : "0"));
+        bocheck(spared == 4 && fifthRefused && saveCounts && mixOk,
+                "Tb SAVE path: spare increments saved (not killed) + maxSaved cap holds");
+    }
+
+    // ---- (c) SCRIPTED PRE-FIGHT HOOK: strips the right HP fraction + flips the
+    // designated enemies to allied (their damage zeroed). ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); boGround(*w, 80.0f);
+        Scene scene;
+        MonsterSystem boss;
+        boss.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                               x3::phys::Vec3{ 0.0f, 0.4f, -10.0f },
+                               bossTuning(BossType::AlienOverseer));   // any boss as the F5 stand-in
+        const int maxHp = boss.maxHp();
+        // Build 3 hostile drones (Combat Drone = BlueSynth) to flip.
+        std::vector<std::unique_ptr<MonsterSystem>> droneOwn;
+        std::vector<MonsterSystem*> drones;
+        for (int i = 0; i < 3; ++i) {
+            auto d = std::make_unique<MonsterSystem>();
+            d->buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                                 x3::phys::Vec3{ (float)(i*3 + 3), 0.4f, -4.0f },
+                                 tuningFor(EnemyType::BlueSynth));
+            drones.push_back(d.get());
+            droneOwn.push_back(std::move(d));
+        }
+        bool allHostileBefore = true;
+        for (auto* d : drones) if (d->attackDamage() <= 0 || d->isAllied()) allHostileBefore = false;
+
+        // The master hack: strip 75% of the boss + flip the 3 drones.
+        ScriptedFightHook::Result res = ScriptedFightHook::masterHack(boss, 0.75f, drones);
+
+        const int expectStrip = (int)(maxHp * 0.75f + 0.5f);
+        const bool hpStripOk = res.hpStripped == expectStrip &&
+                               boss.hp() == maxHp - expectStrip && boss.hp() >= 1;
+        const bool flipCountOk = res.dronesFlipped == 3;
+        bool allAlliedAfter = true;
+        for (auto* d : drones) if (!d->isAllied() || d->attackDamage() != 0) allAlliedAfter = false;
+        x3::logInfo(std::string("[bosses-test] hack stripped=") + std::to_string(res.hpStripped) +
+                    " (expect " + std::to_string(expectStrip) + ") bossHP=" +
+                    std::to_string(boss.hp()) + "/" + std::to_string(maxHp) +
+                    " flipped=" + std::to_string(res.dronesFlipped));
+        bocheck(allHostileBefore && hpStripOk && flipCountOk && allAlliedAfter,
+                "Tc scripted hook strips the right HP fraction + flips enemies to allied");
+        w->shutdown();
+    }
+
+    // ---- (d) REGRESSION: Chief Martinez still builds + behaves (Boss, 3-phase, the
+    // P3 summon callback fires once, no cure option, no memory flash). Mirrors his
+    // canonical level1_game tuning so we don't depend on that file. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); boGround(*w, 80.0f);
+        Scene scene; MonsterSystem martinez; BoTargetStub tgt;
+        tgt.eye = x3::phys::Vec3{ 0.0f, 1.6f, -8.0f };
+        MonsterSystem::Tuning t;     // == level1_game.cpp martinezTuning() essentials
+        t.type = MonsterType::Boss; t.hp = 340; t.chaseSpeed = 3.4f;
+        t.damage = 15; t.attackRange = 2.4f; t.attackCooldown = 1.1f; t.attackWindup = 0.30f;
+        t.ranged = false; t.phase3SummonCount = 2;
+        martinez.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                                   x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, t);
+        const bool builtOk = martinez.type() == MonsterType::Boss && martinez.maxHp() == 340 &&
+                             martinez.attackDamage() == 15 && martinez.phase() == BossPhase::Phase1 &&
+                             !martinez.hasCureOption() && !martinez.inMemoryFlash();
+        int summonFired = 0; BossPhase lastPhase = BossPhase::Phase1;
+        BossPhaseFn onPhase = [&](BossPhase p) {
+            lastPhase = p;
+            if (p == BossPhase::Phase3) summonFired += martinez.summonCount();
+        };
+        // Drive HP to 0 with the phase callback wired.
+        while (martinez.hp() > 0 && martinez.alive()) {
+            martinez.setHp(martinez.hp() - 2);
+            martinez.update(kBoDt, scene, *w, tgt.eye, tgt.eye, &tgt, AttackFxFn{},
+                            onPhase, AllyQueryFn{});
+        }
+        const bool phasedAndSummoned = lastPhase == BossPhase::Phase3 && summonFired == 2;
+        x3::logInfo(std::string("[bosses-test] Martinez builtOk=") + (builtOk ? "1" : "0") +
+                    " lastPhase=" + std::to_string((int)lastPhase) +
+                    " summonFired=" + std::to_string(summonFired));
+        bocheck(builtOk && phasedAndSummoned,
+                "Td Chief Martinez still builds Boss + phases + P3 summon (regression)");
+        w->shutdown();
+    }
+
+    const int total = bo_pass + bo_fail;
+    x3::logInfo(std::string("bosses: ") + std::to_string(bo_pass) + "/" +
+                std::to_string(total) + " passed");
+    x3::logInfo(std::string("[bosses-test] ") + std::to_string(bo_pass) + " passed, " +
+                std::to_string(bo_fail) + " failed");
+    return bo_fail == 0;
 }
 
 } // namespace x3::game

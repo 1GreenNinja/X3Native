@@ -504,6 +504,9 @@ int main(int argc, char** argv) {
          testNetSync = false, testNetInterp = false, testNetPredict = false;
     // --test-bestiary (bestiary pass): the data-driven enemy roster. Additive flag.
     bool        testBestiary = false;
+    // --test-bosses (Act-1 bosses, Wave 1): the 5 mid-boss defs + the multi-pod
+    // machine + the scripted pre-fight hook + the Martinez regression guard. Additive.
+    bool        testBosses = false;
     // --test-ui (UI pass): general game-UI layer (menus + HUD). Additive flag.
     bool        testUi = false;
     // --test-saveload (save/load pass): versioned checkpoint serialization. Additive.
@@ -677,6 +680,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-streaming") testStreaming = true;
         else if (a == "--test-ai") testAi = true;
         else if (a == "--test-bestiary") testBestiary = true;
+        else if (a == "--test-bosses") testBosses = true;
         else if (a == "--test-spiremid") testSpireMid = true;
         else if (a == "--test-spiretop") testSpireTop = true;
         else if (a == "--test-doorcode") testDoorCode = true;
@@ -928,6 +932,11 @@ int main(int argc, char** argv) {
     if (testBestiary) {
         x3::logInfo("running data-driven enemy bestiary roster self-test...");
         return x3::game::runBestiarySelfTest() ? 0 : 1;
+    }
+    if (testBosses) {
+        x3::logInfo("running EFLZ Act-1 mid-boss roster + machine-extension "
+                    "(multi-pod + scripted pre-fight hook) self-test...");
+        return x3::game::runBossesSelfTest() ? 0 : 1;
     }
     if (testSpireMid) {
         x3::logInfo("running EFLZ Spire mid-floor (F3 Labs / F4 Offices / F5 Synth bay) "

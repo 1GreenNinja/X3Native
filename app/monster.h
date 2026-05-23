@@ -392,6 +392,23 @@ public:
         // entering Phase3 (the bible's "summons" beat). The host owns the actual
         // spawn (it has the MonsterManager); this is just the count it should use.
         int   phase3SummonCount   = 2;
+
+        // ---- Act-1 boss gimmicks (Wave 1). DATA-DRIVEN per-boss hooks, all inert
+        // by default so Chief Martinez and every existing monster are unchanged. ----
+        // KILL-vs-CURE outcome (Dr. Chen, F2). When true the boss exposes an
+        // incapacitate/cure path: instead of dying on HP<=0, it can be "cured" once
+        // it reaches its Phase3 ("Monster") window — the host calls cure() to spare
+        // it (Chen survives -> 100% cure ally) rather than fire()-killing it (50%
+        // cure formula). The machine just tracks the outcome; the floor module wires
+        // the narrative. False (default) => the normal lethal death path only.
+        bool  hasCureOption       = false;
+        // MEMORY FLASH vulnerability (Failed Experiment #7, F3). When > 0, on EACH
+        // phase transition the boss enters a brief "memory flash": for this many
+        // seconds it is STAGGERED (cannot attack) and takes amplified damage
+        // (memoryFlashDamageMul). Models the bible's clarity/Memory-Flash windows as
+        // a simple, data-driven vulnerability beat. 0 (default) => no flash.
+        float memoryFlashTime     = 0.0f;
+        float memoryFlashDamageMul = 1.0f;  // damage multiplier while flashing (>1 = vulnerable)
     };
 
     // Build the monster: load alien_crawler.glb from `modelDir` via a fresh
@@ -497,6 +514,36 @@ public:
     // host's phase callback). 0 for non-Boss.
     int   summonCount() const { return m_phase3SummonCount; }
 
+    // ---- Act-1 boss gimmicks (Wave 1) -------------------------------------
+    // KILL-vs-CURE (Dr. Chen, F2). True iff this boss was built with the cure
+    // option (Tuning::hasCureOption). The floor module reads this to offer the
+    // "incapacitate + cure" prompt instead of (only) killing.
+    bool  hasCureOption() const { return m_hasCureOption; }
+    // True iff the boss is currently in a state where it MAY be cured: it has the
+    // cure option AND has reached its Phase3 ("Monster") window AND is still alive.
+    bool  canCure() const { return m_hasCureOption && m_alive && m_phase == BossPhase::Phase3; }
+    // CURE / spare path (vs. killing). Incapacitates the boss WITHOUT a kill: it is
+    // removed from the fight (body gone, model hidden via the death-pop) but flagged
+    // as CURED, not killed. No-op + returns false unless canCure(). The floor wires
+    // the narrative outcome (Chen survives -> 100% cure ally). Returns true if cured.
+    bool  cure(Scene& scene, x3::phys::IPhysicsWorld& physics);
+    bool  wasCured() const { return m_cured; }
+    // SPARE / free a live monster non-lethally (multi-pod "save" path). Like cure()
+    // but with NO phase precondition: removes it from the fight (body gone, model
+    // hidden via the death-pop) and flags it spared (m_cured) so it is NOT counted as
+    // killed. No-op (returns false) if already down. Used by MultiPodBoss::sparePod.
+    bool  spare(Scene& scene, x3::phys::IPhysicsWorld& physics);
+
+    // MEMORY FLASH (Failed Experiment #7, F3). True while the boss is in its brief
+    // post-phase-transition vulnerability window: it cannot attack and takes
+    // amplified damage. Read by the HUD (clarity/stagger tell) + the self-test.
+    bool  inMemoryFlash() const { return m_flashTimer > 0.0f; }
+    float memoryFlashRemaining() const { return m_flashTimer > 0.0f ? m_flashTimer : 0.0f; }
+    // Damage multiplier an incoming hit should use right now (>1 during a memory
+    // flash, else 1). fire()/takeMeleeDamage() apply this automatically; exposed so
+    // the host/self-test can observe the amplified-vulnerability beat.
+    float incomingDamageMul() const { return inMemoryFlash() ? m_memoryFlashDamageMul : 1.0f; }
+
     // ---- Combat-AI state (D-ai) -------------------------------------------
     // Current behaviour state + the heading (yaw, radians) the body is turning to.
     // Read by the HUD / self-test to observe that facing follows state.
@@ -521,6 +568,18 @@ public:
     int  hp() const { return m_hp; }
     int  maxHp() const { return m_maxHp; }
     bool alive() const { return m_alive; }
+
+    // ---- Scripted-hook support (Wave 1) -----------------------------------
+    // Set HP directly (clamped to [0, maxHp]) WITHOUT running the death path — used
+    // by ScriptedFightHook::stripBossHp to debuff a boss pre-fight (the master hack).
+    // Does NOT kill: if you set 0 the monster stays "alive" until a real damage call
+    // resolves death. Callers strip to >=1 so the boss still fights.
+    void setHp(int hp) { m_hp = hp < 0 ? 0 : (hp > m_maxHp ? m_maxHp : hp); }
+    // Flip from hostile to ALLIED: zero this monster's attack damage so it no longer
+    // harms the player (the gameplay half of the drone-army conversion), and flag it
+    // allied. Idempotent. The host owns any re-tinting / re-targeting.
+    void convertToAllied() { m_dmg = 0; m_allied = true; }
+    bool isAllied() const { return m_allied; }
     // True during the brief death "pop" after a kill: not alive, body already
     // removed, but the model is still being drawn (shrinking/flashing).
     bool dying() const { return m_dying; }
@@ -637,6 +696,14 @@ private:
     float m_phaseDamageMul      = 1.0f;
     float m_phaseScaleMul       = 1.0f;
     float m_phaseTintMul[3]     = { 1.0f, 1.0f, 1.0f }; // extra red push per phase
+
+    // ---- Act-1 boss gimmicks (Wave 1) -------------------------------------
+    bool  m_allied              = false;  // flipped hostile->allied (drone conversion)
+    bool  m_hasCureOption       = false;  // Dr. Chen: KILL-vs-CURE outcome available
+    bool  m_cured               = false;  // spared via cure() (not killed)
+    float m_memoryFlashTime     = 0.0f;   // FE#7: flash duration per phase transition (s)
+    float m_memoryFlashDamageMul = 1.0f;  // FE#7: incoming-damage mul while flashing
+    float m_flashTimer          = 0.0f;   // >0 while in a memory-flash window (s)
 
     // Death "pop": when killed, m_alive flips false and the body is removed, but
     // m_dying stays true and m_deathPop counts down from kDeathPopTime while the
@@ -812,5 +879,188 @@ MonsterSystem::Tuning tuningFor(EnemyType t);
 // Logs PASS/FAIL T#, returns true iff all pass. No window / Vulkan. Lives in
 // monster.cpp. Mirrors the other self-tests. Reuses the existing combat AI verbatim.
 bool runBestiarySelfTest();
+
+// ===========================================================================
+// ACT-1 MID-BOSS ROSTER (Wave 1). The five canon Act-1 mid-bosses, as DATA on top
+// of the existing single-body multi-phase Boss machine + two general machine
+// EXTENSIONS (multi-pod + scripted pre-fight hook) the Wave-2 floor modules stage.
+//
+// Floor map (EFLZ_MASTER_PLAN §Act 1):
+//   F1  Chief Martinez       — already implemented (the Boss archetype template).
+//   F2  Dr. Chen             — single body, 3 phases, KILL-vs-CURE outcome.
+//   F3  Failed Experiment #7 — single body, 3 phases, MEMORY-FLASH vuln window.
+//   F4.5 The Collective/Chorus — MULTI-POD (5 fused minds), save up to 4.
+//   F5  Swarm Controller AI  — SCRIPTED PRE-FIGHT HOOK (Sarah's master hack).
+//   F6  Alien Overseer       — single body, 3 phases, ranged psychic commander.
+//   F7  Jake's Clone         — design-noted (out of this wave's scope).
+//
+// All HP/damage are tuned RELATIVE TO MARTINEZ (HP 340, dmg 15) and to the
+// combat:: bands, NOT the bible's raw values, so each fight stays winnable under
+// the engine's time/iframe budget.
+// ===========================================================================
+
+// The Act-1 mid-bosses that ride the SINGLE-BODY phase machine (Boss type). The
+// multi-pod Chorus + scripted Swarm are their own machines (below), not rows here.
+enum class BossType : uint32_t {
+    DrChen = 0,            // F2 — transforming oncologist; KILL-vs-CURE
+    FailedExperiment7 = 1, // F3 — Marcus Webb; tragic predecessor; Memory-Flash
+    AlienOverseer = 2,     // F6 — psychic alien commander (ranged)
+    Count = 3
+};
+
+// Human-readable boss name (logs / --test-bosses trace / HUD).
+const char* bossTypeName(BossType t);
+
+// One row of the single-body Act-1 boss roster. Pure data: a display name + a
+// fully-populated Boss-type MonsterSystem::Tuning (HP / phases / gimmicks). Built
+// by buildBossDefs(); a row spawns through buildMonsterTuned() exactly like any
+// other Tuning, so these bosses reuse the whole existing combat + phase lane.
+struct BossDef {
+    BossType              type;    // which boss (table is keyed by this, enum order)
+    const char*           name;    // display name (Dr. Chen, Failed Experiment #7, ...)
+    MonsterSystem::Tuning tuning;  // Boss-type stats / phases / gimmick config
+};
+
+// The single-body boss table (one row per BossType, enum order). Built once.
+const std::vector<BossDef>& bossDefs();
+// Fetch one row by boss id (asserts enum order; defensive linear fallback).
+const BossDef& bossDef(BossType t);
+// Convenience: a spawn-ready Boss Tuning copy. Equivalent to bossDef(t).tuning.
+MonsterSystem::Tuning bossTuning(BossType t);
+
+// ---------------------------------------------------------------------------
+// MULTI-POD BOSS (machine extension #2). A boss that consists of N independently-
+// damageable PODS (The Collective / The Chorus = 5 fused minds in 5 pods). Each pod
+// is a self-contained MonsterSystem (its own model + body + HP), so pods reuse the
+// whole combat lane. The boss "falls" when a THRESHOLD of pods are DOWNED, and a
+// pod may be SPARED (freed) instead of killed — the "save up to N" morality count.
+//
+// GENERAL + DATA-DRIVEN (not Chorus-specific): the Wave-2 Nexus module configures
+// pod count / threshold / per-pod tuning via PodConfig and instantiates it. The
+// single-body path is untouched — this is an ADD, not a change to MonsterSystem.
+// ---------------------------------------------------------------------------
+class MultiPodBoss {
+public:
+    // Config for one pod. A small offset from the boss origin + a full Tuning so
+    // every pod can differ (the Chorus voices have different HP/role).
+    struct PodConfig {
+        const char*           name   = "Pod";  // voice/pod display name
+        x3::phys::Vec3        offset{};         // spawn offset from the boss origin
+        MonsterSystem::Tuning tuning;           // this pod's stats (its own MonsterSystem)
+    };
+    // Whole-boss config. Pods + the down-threshold at which the boss falls + the
+    // max number of pods that may be SAVED (spared). General: the floor fills it.
+    struct Config {
+        std::vector<PodConfig> pods;            // the N pods (>=1)
+        // The boss FALLS once this many pods are DOWNED (killed OR spared). Default
+        // 0 => all pods (the Chorus: down/save all 5). The Wave-2 module may set a
+        // lower threshold (e.g. "fall when the core + 2 others are out").
+        uint32_t               fallThreshold = 0;
+        // Cap on how many pods may be SPARED via sparePod() (the "save up to N"
+        // morality budget). The Chorus saves up to 4 (Subject Zero/Maya remains).
+        uint32_t               maxSaved      = 0;  // 0 => no cap (any pod sparable)
+    };
+
+    // Build all pods into the world at `origin` (+ each pod's offset). Each pod is
+    // its own MonsterSystem load. Call once.
+    void build(const Config& cfg, Scene& scene, x3::rhi::IRenderDevice& device,
+               x3::phys::IPhysicsWorld& physics, std::string_view modelDir,
+               const x3::phys::Vec3& origin);
+
+    uint32_t podCount() const { return (uint32_t)m_pods.size(); }
+    MonsterSystem&       pod(uint32_t i)       { return *m_pods[i]; }
+    const MonsterSystem& pod(uint32_t i) const { return *m_pods[i]; }
+    const char*          podName(uint32_t i) const { return m_podNames[i].c_str(); }
+
+    // SPARE (free) pod `i` instead of killing it — counts toward the save total, NOT
+    // the kill total. No-op (returns false) if the pod is already down, if `i` is out
+    // of range, or if the maxSaved cap is already reached. Removes the pod from the
+    // fight (body gone, model hidden) like a non-lethal incapacitation. Returns true
+    // if the pod was spared. The Wave-2 module calls this for the morality choice.
+    bool sparePod(uint32_t i, Scene& scene, x3::phys::IPhysicsWorld& physics);
+
+    // Per-frame: advance every LIVE pod (chase / attack / phase). Forwards to each
+    // pod's MonsterSystem::update. `onPhase` fires per pod phase transition.
+    void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                const x3::phys::Vec3& playerPos, IDamageSink* target,
+                const AttackFxFn& fx, const BossPhaseFn& onPhase);
+
+    // Draw every pod's model.
+    void drawAll(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                 const Scene& scene) const;
+
+    // Fire one shot across all pods (the first live pod the ray hits takes damage).
+    // A pod that DIES this way counts as KILLED (not spared). Returns the result.
+    FireResult fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
+                    Scene& scene, x3::phys::IPhysicsWorld& physics);
+
+    // ---- Outcome counts (the morality quest) ------------------------------
+    uint32_t killedCount() const;            // pods downed by lethal damage
+    uint32_t savedCount()  const { return m_saved; }   // pods spared via sparePod()
+    uint32_t downedCount() const;            // killed + saved (out of the fight)
+    uint32_t aliveCount()  const;            // pods still fighting
+    uint32_t fallThreshold() const { return m_fallThreshold; }
+    // The boss has FALLEN once downed pods >= the fall threshold.
+    bool      hasFallen()  const { return downedCount() >= m_fallThreshold; }
+
+private:
+    std::vector<std::unique_ptr<MonsterSystem>> m_pods;
+    std::vector<std::string>                    m_podNames;
+    uint32_t m_fallThreshold = 0;   // resolved threshold (cfg.fallThreshold or podCount)
+    uint32_t m_maxSaved      = 0;   // 0 => uncapped
+    uint32_t m_saved         = 0;   // pods spared so far
+};
+
+// Convenience: the canonical Chorus config (5 fused minds, save up to 4). DATA only
+// — the Wave-2 Nexus module may use this verbatim or build its own Config. Models
+// fall back to the tinted box when the GLBs are absent (clean checkout safe).
+MultiPodBoss::Config chorusConfig();
+
+// ---------------------------------------------------------------------------
+// SCRIPTED PRE-FIGHT HOOK (machine extension #3). A general "scripted debuff +
+// faction-flip" action a floor module triggers on a boss + a set of enemies — used
+// by the F5 Swarm Controller AI for Sarah's 90-second master hack: it (a) strips a
+// fraction of the boss's max HP and (b) flips a designated set of enemies from
+// hostile to ALLIED (the drone-army conversion). GENERAL + DATA-DRIVEN: no F5
+// specifics live here; the Wave-2 module supplies the boss, the HP fraction, and
+// the enemy set. Pure gameplay-state mutation — fully testable headless.
+// ---------------------------------------------------------------------------
+struct ScriptedFightHook {
+    // Strip `fraction` (0..1) of `boss`'s MAX HP off its CURRENT HP, clamped to
+    // [1, current] (never kills outright — the boss still spawns/fights). Returns
+    // the HP actually removed. Used for the master-hack "boss spawns at -75% HP".
+    // No phase side-effects here; the boss's own update() advances phases from the
+    // new (lower) HP fraction on the next tick.
+    static int stripBossHp(MonsterSystem& boss, float fraction);
+
+    // Flip a set of enemies from hostile to ALLIED: each MonsterSystem in `enemies`
+    // is neutralized as a threat (its attack damage zeroed so it no longer harms the
+    // player) and reported as converted. Returns how many were flipped. The host
+    // owns any re-tinting / re-targeting; this is the gameplay-state half of the
+    // drone-army conversion. A null entry is skipped.
+    static uint32_t flipToAllied(const std::vector<MonsterSystem*>& enemies);
+
+    // The whole master-hack action in one call: strip `bossHpFraction` of the boss
+    // AND flip `drones` to allied. Returns {hpStripped, dronesFlipped}. The Wave-2
+    // F5 module calls this when Sarah's hack completes.
+    struct Result { int hpStripped = 0; uint32_t dronesFlipped = 0; };
+    static Result masterHack(MonsterSystem& boss, float bossHpFraction,
+                             const std::vector<MonsterSystem*>& drones);
+};
+
+// Headless self-test (--test-bosses, Act-1 mid-boss roster + machine extensions).
+// Asserts:
+//   (a) each of the 5 mid-bosses exists with sane phase/HP/damage and BUILDS;
+//       the 3 single-body bosses (Chen/FE#7/Overseer) transition phases on the
+//       existing HP-keyed machine; Chen exposes the cure path in Phase3; FE#7's
+//       Memory-Flash window opens on a phase transition (staggered + vulnerable);
+//   (b) the multi-pod Chorus DOWNS only when the pod fall-threshold is met, and the
+//       SAVE path increments savedCount (not killedCount) and respects the cap;
+//   (c) the scripted hook strips the right HP fraction AND flips the right enemies
+//       to allied (their damage zeroed);
+//   (d) Chief Martinez still constructs + behaves as before (regression guard).
+// Logs PASS/FAIL T#, prints "bosses: X/Y passed", returns true iff all pass. No
+// window / Vulkan. Lives in monster.cpp. Mirrors the other self-tests.
+bool runBossesSelfTest();
 
 } // namespace x3::game
