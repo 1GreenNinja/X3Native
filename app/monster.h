@@ -50,6 +50,7 @@
 #include "scene.h"
 #include "player.h"   // IDamageSink (enemies attack the player)
 #include "anim.h"     // J1: skeletal animation + CPU skinning runtime
+#include "cues.h"     // game-feel footstep / impact cue hooks
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -148,6 +149,21 @@ constexpr float kFireMaxDist   = 100.0f;
 // Hit-flash duration (seconds): the monster tints toward red for this long after
 // a hit, then decays back to its base color.
 constexpr float kHitFlashTime  = 0.1f;
+
+// ---------------------------------------------------------------------------
+// Game-feel attack-anim crossfade (J1/T1 follow-up). When a monster commits to
+// an attack we fire a ONE-SHOT inertialized crossfade (Skinner::triggerClip) to
+// the attack clip (or the jump clip as a stand-in), which auto-returns to the
+// locomotion blend. These tune that transition + the footstep cadence.
+// ---------------------------------------------------------------------------
+// Crossfade ramp (seconds) into the one-shot attack clip. Short = snappy tell.
+constexpr float kAttackFadeSec  = 0.18f;
+// Footstep cadence: a footstep cue fires each time the locomotion phase crosses
+// one of this-many evenly-spaced marks per cycle (2 = a step on each half-cycle,
+// i.e. a left/right foot plant). VISUAL/AUDIO TUNING.
+constexpr int   kFootstepsPerCycle = 2;
+// Minimum planar speed (m/s) to emit footsteps (don't tick steps while idling).
+constexpr float kFootstepMinSpeed  = 0.4f;
 
 // Gentle chase speed (m/s) toward the player (player walks 5 m/s). Set > 0 to
 // enable chasing. Translation toward the player + facing rotation baked into the
@@ -400,6 +416,31 @@ public:
     void drawMonster(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                      const Scene& scene) const;
 
+    // ---- Game-feel cues (footstep / impact). The host wires a single sink that
+    // maps cues onto audio/FX; unset => a throttled-log stub (see app/cues.h), so
+    // the trigger points are live now and audio drops in as a one-line lambda. The
+    // MonsterSystem emits Footstep cues at locomotion phase crossings (foot plants)
+    // while moving. Borrowed by value-copy of the std::function (cheap). ----
+    void setCueSink(const GameCueFn& sink) { m_cueSink = sink; }
+
+    // ---- Hit-react flash (mirrors Player::damageFlash). Strength in [0,1]: 1 the
+    // instant the monster takes damage, decaying to 0 over kHitFlashTime. The draw
+    // path brightens/tints the enemy by this so a hit reads on screen. Exposed so a
+    // host draw/HUD layer (or a test) can read the same value the model uses. ----
+    float hitFlash() const;
+
+    // True while the one-shot attack-anim crossfade is playing (Skinner triggered a
+    // non-looping attack/jump clip that hasn't yet auto-returned to locomotion).
+    // Read by the self-test to assert an attack actually drives the crossfade.
+    bool attackAnimActive() const { return m_attackAnimActive; }
+
+    // True iff the locomotion blend is live (a skinnable model with idle + a move
+    // clip), so the attack crossfade + phase-synced footsteps are meaningful. The
+    // self-test skips those checks gracefully on the fallback box (no skin/anim).
+    bool locoBlendActive() const { return m_animActive && m_useLocoBlend; }
+    // True iff a one-shot attack clip (or the jump fallback) is available to trigger.
+    bool hasAttackClip() const { return m_attackClip >= 0 || m_jumpClip >= 0; }
+
     // Gameplay state.
     int  hp() const { return m_hp; }
     int  maxHp() const { return m_maxHp; }
@@ -453,6 +494,8 @@ private:
     // the skinned vertices. Unskinned models leave m_skinner invalid -> static draw. ----
     x3::anim::Skinner        m_skinner;
     x3::rhi::IRenderDevice*  m_device = nullptr;
+    // Game-feel cue sink (footstep / impact). Empty => throttled-log stub.
+    GameCueFn                m_cueSink;
     int                      m_idleClip = -1;
     int                      m_walkClip = -1;
     // T1: separate Run / Jump clips for the locomotion blend (multi-clip *_anim.glb).
@@ -461,9 +504,17 @@ private:
     // to the legacy idle/move switch via the Skinner's graceful blend collapse.
     int                      m_runClip  = -1;
     int                      m_jumpClip = -1;
+    // Attack one-shot clip (fuzzy: attack/melee/punch/swing/bite/shoot/cast). On an
+    // attack commit we triggerClip() this (or m_jumpClip as a stand-in) via the
+    // inertialized crossfade, which auto-returns to the locomotion blend. -1 = none.
+    int                      m_attackClip = -1;
+    bool                     m_attackAnimActive = false; // a one-shot attack crossfade is playing
     bool                     m_useLocoBlend = false;  // a real idle(+walk/+run) set drives the blend
     float                    m_animTime = 0.0f;
     bool                     m_animActive = false;   // a usable clip was found
+    // Footstep cue tracking: the last sampled locomotion phase, so update() can
+    // detect a phase crossing (foot plant) between frames and emit a Footstep cue.
+    float                    m_lastFootPhase = 0.0f;
     // Model-local fixup applied between the gameplay transform and each drawable's
     // node transform (final = model * fixup * nodeTransform). Identity for Y-up
     // models; a -90deg-X stand-up for the Z-up converted character GLBs. Also
@@ -576,6 +627,11 @@ public:
     MonsterSystem&       at(uint32_t i)       { return *m_monsters[i]; }
     const MonsterSystem& at(uint32_t i) const { return *m_monsters[i]; }
 
+    // Set the game-feel cue sink (footstep/impact) on every monster — current AND
+    // future spawns (stored so spawn() applies it to new instances). Empty => the
+    // per-monster throttled-log stub. See app/cues.h.
+    void setCueSink(const GameCueFn& sink);
+
     // Number of monsters still alive (not dead). Used for objective/door gating.
     uint32_t aliveCount() const;
 
@@ -610,6 +666,7 @@ public:
 
 private:
     std::vector<std::unique_ptr<MonsterSystem>> m_monsters;
+    GameCueFn m_cueSink;   // applied to every spawn (current + future)
 };
 
 // Headless self-test (--test-combat). Builds a physics world + an Enemy-layer
@@ -644,5 +701,17 @@ bool runPhase2bSelfTest();
 // Prints the state transitions. Logs PASS/FAIL T#, returns true iff all pass.
 // No window / Vulkan. Lives in monster.cpp. Mirrors the other self-tests.
 bool runAiSelfTest();
+
+// Headless self-test (--test-gamefeel, game-FEEL micro-polish pass). Asserts:
+//   (a) an enemy that commits an attack drives the one-shot attack-anim crossfade
+//       (attackAnimActive() goes true, debounced — fired once per attack);
+//   (b) the enemy hit-react flash spikes to ~1 on damage and decays to ~0 over
+//       kHitFlashTime (mirrors Player's damage-flash decay);
+//   (c) a moving enemy emits Footstep cues at locomotion phase crossings (the cue
+//       sink fires) while a stationary one does not;
+//   (d) the weapon ViewKick recoil + screen-shake decay to ~0 over their window.
+// Logs PASS/FAIL T#, returns true iff all pass. No window/Vulkan. Lives in
+// monster.cpp (alongside the other combat tests). Mirrors the other self-tests.
+bool runGameFeelSelfTest();
 
 } // namespace x3::game

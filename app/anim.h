@@ -130,6 +130,12 @@ public:
     float crossfadeWeight() const { return m_xfadeActive ? m_xfadeW : 0.0f; }
     bool  hasLocomotion()   const { return m_idleClip >= 0 || m_walkClip >= 0 || m_runClip >= 0; }
 
+    // Current shared normalized locomotion phase in [0,1). Foot-synced across the
+    // bracketing clips, so a caller can detect a FOOT-PLANT by watching this wrap
+    // (or cross the 0.0 / 0.5 half-cycle marks) and fire a footstep cue. Read-only
+    // (the blend owns advancement); 0 when the blend isn't driving (idle collapse).
+    float locomotionPhase() const { return m_phase; }
+
 private:
     // Sample one node's local TRS from the clip at time t (bind-pose fallback),
     // composing the result into a column-major 4x4.

@@ -59,6 +59,71 @@ constexpr float kVmDefFwd      = 0.5f;   // forward along look dir (meters)
 constexpr float kVmDefRight    = 0.25f;  // to the right (meters)
 constexpr float kVmDefDown     = 0.2f;   // below the eye line (meters)
 
+// ---------------------------------------------------------------------------
+// Weapon ViewKick (game-feel): recoil + screen-shake on fire.
+// ---------------------------------------------------------------------------
+// A small self-contained, headless-testable feel layer the host drives on each
+// weapon FIRE. It accumulates a transient (1) viewmodel/camera RECOIL kick — an
+// upward pitch + a backward push along the look dir — and (2) a brief CAMERA
+// SHAKE (a decaying random jitter). Both DECAY to ~0 over a short window so the
+// view recovers. The host reads the offsets each frame and folds them into the
+// camera + viewmodel transform (the recoil pitch matches the existing
+// weaponRecoilPitch path in main.cpp). NO gameplay effect — feel only (the fire
+// ray uses the un-kicked look dir). Magnitudes are named tunables below.
+// ---------------------------------------------------------------------------
+// Per-shot recoil kick magnitudes (added on fire). The pitch kick is scaled by
+// the weapon's own recoilDeg at the call site; these are the viewmodel pushes.
+constexpr float kRecoilPitchScale = 1.0f;    // multiplier on the weapon's recoilDeg (-> rad)
+constexpr float kRecoilBackPush   = 0.05f;   // meters the viewmodel kicks back per shot
+constexpr float kRecoilBackMax    = 0.12f;   // clamp on accumulated back-push (m)
+constexpr float kRecoilPitchMax   = 0.20f;   // clamp on accumulated recoil pitch (rad ~11.5 deg)
+// Decay: recoil + back-push relax toward 0 at this exponential-ish rate (per s).
+// ~6/s gives a ~0.15-0.2 s recovery (matches main.cpp's kRecoilRecover feel).
+constexpr float kRecoilRecover    = 6.0f;    // pitch + back-push recovery rate (1/s)
+// Screen-shake: a per-shot amplitude (radians of camera yaw/pitch jitter) that
+// decays over kShakeTime. Brief + subtle so it punches without nausea.
+constexpr float kShakeAmp         = 0.012f;  // rad peak jitter added per shot (clamped)
+constexpr float kShakeAmpMax      = 0.03f;   // clamp on accumulated shake amplitude (rad)
+constexpr float kShakeTime        = 0.18f;   // seconds for one shot's shake to fully decay
+constexpr float kShakeFreq        = 38.0f;   // jitter oscillation rate (rad/s) — fast = punchy
+
+// Transient view-kick state. Construct once per held-weapon context; call fire()
+// on each shot, tick(dt) each frame, then read pitchOffset()/backOffset() and
+// shakeYaw()/shakePitch() to fold into the camera + viewmodel. Fully headless:
+// no device / physics / Scene. Deterministic shake (seeded xorshift) so captures
+// + the self-test repeat.
+class ViewKick {
+public:
+    // Apply one shot's kick. `weaponRecoilDeg` is the firing weapon's recoilDeg
+    // (degrees) — converted to radians + scaled by kRecoilPitchScale. Adds the
+    // back-push + arms a fresh screen-shake burst. Clamped to the *Max ceilings so
+    // rapid auto-fire can't run the offsets away.
+    void fire(float weaponRecoilDeg);
+
+    // Advance the decay by dt: relax the recoil pitch + back-push toward 0 and age
+    // the shake window. No-op at dt <= 0. Call once per frame.
+    void tick(float dt);
+
+    // Current accumulated transient offsets (read each frame; fold into the view).
+    float pitchOffset() const { return m_pitch; }   // upward camera/viewmodel pitch (rad)
+    float backOffset()  const { return m_back; }    // viewmodel back-push along look (m)
+    // Current screen-shake yaw/pitch jitter (rad), 0 once the burst decays.
+    float shakeYaw()   const;
+    float shakePitch() const;
+
+    // True while any kick is still active (offsets / shake non-negligible). For the
+    // self-test (assert it returns to rest) + to skip the fold when fully recovered.
+    bool active() const;
+
+private:
+    float    m_pitch   = 0.0f;   // accumulated recoil pitch (rad), decays
+    float    m_back    = 0.0f;   // accumulated back-push (m), decays
+    float    m_shake   = 0.0f;   // remaining shake time (s); shake amp scales with this
+    float    m_shakeAmp= 0.0f;   // current shake amplitude (rad), set on fire, clamped
+    float    m_shakeT  = 0.0f;   // phase accumulator for the jitter oscillator
+    uint32_t m_rng     = 0x5EED1234u; // deterministic jitter stream
+};
+
 // Pure arming rule, factored out so it is testable headlessly (see
 // runPickupSelfTest). Given the player position, the pickup position and the
 // current armed flag, returns true iff the player should become armed THIS call

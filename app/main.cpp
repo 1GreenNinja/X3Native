@@ -178,7 +178,7 @@ int main(int argc, char** argv) {
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
-         testNav = false, testWeapons = false;
+         testNav = false, testWeapons = false, testGameFeel = false;
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
     // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
     // and confirm the joint palette changes. Asset-pipeline verification for the
@@ -310,6 +310,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-nav") testNav = true;
         else if (a == "--test-weapons") testWeapons = true;
+        else if (a == "--test-gamefeel") testGameFeel = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -552,6 +553,10 @@ int main(int argc, char** argv) {
     if (testWeapons) {
         x3::logInfo("running data-driven weapon arsenal (switch/fire/reload/spread) self-test...");
         return x3::game::runWeaponsSelfTest() ? 0 : 1;
+    }
+    if (testGameFeel) {
+        x3::logInfo("running game-feel (attack crossfade / hit-flash / footsteps / recoil) self-test...");
+        return x3::game::runGameFeelSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -1834,6 +1839,31 @@ int main(int argc, char** argv) {
         la.gun = sndGun; la.death = sndDeath;
         game.setAudio(la);
 
+        // Game-feel CUE sink: route enemy footstep / impact cues onto 3D audio.
+        // Footsteps reuse the (pitched-down, quiet) step WAV at the enemy's foot;
+        // impacts use the gunshot transient. This is the audio drop-in the cue
+        // hooks were built for — the trigger points live in monster.cpp; here the
+        // host maps them onto whatever sounds it has. Intensity -> volume.
+        {
+            x3::audio::IAudioSystem* asys = audio.get();
+            game.setCueSink([asys, sndStep, sndGun](const x3::game::GameCue& c) {
+                if (!asys) return;
+                switch (c.kind) {
+                    case x3::game::CueKind::Footstep:
+                        if (sndStep.valid())
+                            asys->playSound3D(sndStep, c.pos.x, c.pos.y, c.pos.z,
+                                              0.12f * c.intensity, 0.55f);
+                        break;
+                    case x3::game::CueKind::BulletImpact:
+                    case x3::game::CueKind::MeleeImpact:
+                        if (sndGun.valid())
+                            asys->playSound3D(sndGun, c.pos.x, c.pos.y, c.pos.z,
+                                              0.5f * c.intensity, 0.7f);
+                        break;
+                }
+            });
+        }
+
         // Spire elevator: one stop per floor (B1..F7), 5 m apart, so a ride lands on
         // walkable floor geometry at every plate. The cab top sits flush with each
         // floor's base Y (cab center = floorBaseY + cabHY). Driven by the layout's
@@ -1921,8 +1951,10 @@ int main(int argc, char** argv) {
     struct LiveProjectile { x3::phys::Vec3 pos, vel; int damage; float traveled, range; };
     std::vector<LiveProjectile> projectiles;
     uint32_t weaponRng = 0xA11CE5u;   // deterministic spread stream
-    float    weaponRecoilPitch = 0.0f; // accumulated upward camera kick (rad), decays
-    constexpr float kRecoilRecover = 6.0f; // recoil recovery rate (rad/s decay)
+    // WEAPONS view-kick (game-feel): per-shot recoil (pitch + viewmodel back-push)
+    // + a brief decaying camera shake. Driven on fire(); read each frame into the
+    // camera + viewmodel. NO gameplay effect (the fire ray uses the un-kicked dir).
+    x3::game::ViewKick viewKick;
 
     // ---- S7: console backend (D6) + screen-space HUD (FPS, console, crosshair).
     std::unique_ptr<x3::con::IConsole> console(x3::con::createConsole());
@@ -2578,15 +2610,15 @@ int main(int argc, char** argv) {
         } else {
             camX = flyX; camY = flyY; camZ = flyZ; camYaw = flyYaw; camPitch = flyPitch;
         }
-        // WEAPONS: apply + recover the weapon recoil kick. The kick is a transient
-        // upward pitch offset added on top of the look pitch; it decays back to 0 so
-        // the view recovers (recoil -> camera). Applied uniformly to setCamera, the
-        // fire direction, the audio listener, and the viewmodel below.
-        if (weaponRecoilPitch > 0.0f) {
-            weaponRecoilPitch -= kRecoilRecover * dt;
-            if (weaponRecoilPitch < 0.0f) weaponRecoilPitch = 0.0f;
-        }
-        camPitch += weaponRecoilPitch;
+        // WEAPONS: apply + recover the view-kick. The recoil is a transient upward
+        // pitch offset on top of the look pitch; the camera shake is a brief decaying
+        // yaw/pitch jitter. Both relax back to 0 so the view recovers (kick -> camera).
+        // Applied uniformly to setCamera, the audio listener, and the viewmodel below
+        // (the viewmodel also pulls back by backOffset()). NO gameplay effect — the
+        // fire dir is sampled from the un-kicked camYaw/camPitch above, before this.
+        viewKick.tick(dt);
+        camPitch += viewKick.pitchOffset() + viewKick.shakePitch();
+        camYaw   += viewKick.shakeYaw();
         if (camPitch >  1.55f) camPitch =  1.55f;   // keep within the look clamp
         device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
         prevSpace = spaceNow;
@@ -2715,8 +2747,10 @@ int main(int argc, char** argv) {
                                 std::cos(camPitch) * std::sin(camYaw) };
             x3::game::ResolvedFire shot = arsenal.fire(eye, dir, weaponRng);
             const x3::phys::Vec3 muzzle = muzzleFromCamera(camX, camY, camZ, camYaw, camPitch);
-            // Recoil -> camera (transient upward kick; recovered in the camera block).
-            weaponRecoilPitch += shot.recoilPitchDeg * (3.14159265f / 180.0f);
+            // View-kick -> recoil (pitch + viewmodel back-push) + a brief camera
+            // shake. Decayed/recovered in the camera block; folded into the view +
+            // viewmodel below. Feel only — the resolved shot dir above is un-kicked.
+            viewKick.fire(shot.recoilPitchDeg);
 
             if (!shot.projectiles.empty()) {
                 // ---- Projectile weapon (plasma): spawn a travelling bolt. ----
@@ -2732,11 +2766,22 @@ int main(int argc, char** argv) {
                     x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics);
                     combatFx.addTracer(muzzle, r.endPoint);   // tracer + muzzle burst per pellet
                     if (r.killed) { combatFx.spawnDeath(r.endPoint); anyKill = true; }
-                    else if (r.hitMonster) { combatFx.spawnBlood(r.hitPoint, ray.dir); anyHit = true; lastHp = r.hpAfter; }
+                    else if (r.hitMonster) {
+                        combatFx.spawnBlood(r.hitPoint, ray.dir); anyHit = true; lastHp = r.hpAfter;
+                        // Impact CUE on a weapon hit (game-feel hook): the trigger
+                        // point for a hit sound/FX. No sink wired here -> throttled
+                        // log stub (audio drops in by passing a GameCueFn).
+                        x3::game::emitCueOrLog(x3::game::GameCueFn{}, x3::game::GameCue{
+                            x3::game::CueKind::BulletImpact, r.hitPoint, 1.0f });
+                    }
                     else {
                         x3::phys::RayHit wallHit =
                             physics->rayCast(eye, ray.dir, x3::game::kFireMaxDist, x3::phys::Layer::Static);
-                        if (wallHit.hit) combatFx.spawnImpact(wallHit.point, wallHit.normal);
+                        if (wallHit.hit) {
+                            combatFx.spawnImpact(wallHit.point, wallHit.normal);
+                            x3::game::emitCueOrLog(x3::game::GameCueFn{}, x3::game::GameCue{
+                                x3::game::CueKind::BulletImpact, wallHit.point, 0.7f });
+                        }
                     }
                     if (r.killed)
                         audio->playSound3D(sndDeath, r.endPoint.x, r.endPoint.y, r.endPoint.z, 1.0f, 1.0f);
@@ -2806,6 +2851,10 @@ int main(int argc, char** argv) {
                 game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
                 const VmPose vmPose = readViewmodelPose(*console);
+                // Recoil back-push: pull the viewmodel toward the player along the
+                // look dir by the current kick (decays to 0). Subtract from the
+                // forward offset so the gun reads as kicking back, then settling.
+                const float vmBack = viewKick.backOffset();
                 if (arsenal.viewmodelsLoaded() && game.armed()) {
                     // WEAPONS: draw the SELECTED weapon's viewmodel (its own GLB +
                     // convention-correct base offsets). The live vm_* cvars are passed
@@ -2815,15 +2864,15 @@ int main(int argc, char** argv) {
                         vmPose.yawRad   - x3::game::kVmDefYawDeg   * kDegToRad,
                         vmPose.pitchRad - x3::game::kVmDefPitchDeg * kDegToRad,
                         vmPose.rollRad  - x3::game::kVmDefRollDeg  * kDegToRad,
-                        vmPose.fwd   - x3::game::kVmDefFwd,
+                        vmPose.fwd   - x3::game::kVmDefFwd - vmBack,
                         vmPose.right - x3::game::kVmDefRight,
                         vmPose.down  - x3::game::kVmDefDown);
                 } else {
                     // Fallback: arsenal viewmodels didn't load -> the original pickup
-                    // viewmodel (unchanged behavior).
+                    // viewmodel (unchanged behavior, plus the recoil back-push).
                     game.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,
                                        vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
-                                       vmPose.fwd, vmPose.right, vmPose.down);
+                                       vmPose.fwd - vmBack, vmPose.right, vmPose.down);
                 }
             }
             // FX: active tracers + muzzle flash (world-space).
