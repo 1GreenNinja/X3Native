@@ -38,3 +38,35 @@ TEST: add `--test-act2` in main.cpp (pattern of `--test-spiremid`/`--test-terrai
 
 ## REPORT STATUS (append below, then push the branch)
 <!-- STATUS: branch HEAD hash, files added/changed, "act2: X/Y passed", all-flags-0 + VUID 0 + allocationCount=0 confirmation, and "READY FOR INTEGRATION" (or BLOCKED + why). -->
+
+### STATUS — Snake (13700K clean-room rig) — **READY FOR INTEGRATION**
+
+**Branch:** `feat/act2-world` (branched off `origin/main` @ `1da0b75`). Implementation commit `ac266c3`; this status note is the branch tip. Integrator: merge the branch tip.
+
+**Files ADDED:**
+- `app/act2_world.h` — `Act2World` host interface + `Act2Level` (L8..L20) + `Act2AreaPlan` + `HazardZone` + `Act2Trigger` (ids 80/81/82) + `runAct2WorldSelfTest()`.
+- `app/act2_world.cpp` — implementation + the `--test-act2` headless self-test (16 asserts).
+
+**Files CHANGED (wiring only — no behavior touched elsewhere):**
+- `app/CMakeLists.txt` — added `act2_world.cpp` to the X3Engine target (after `spire_sublevels.cpp`).
+- `app/main.cpp` — `#include "act2_world.h"`; `--test-act2` bool + arg-parse + dispatch (`runAct2WorldSelfTest`).
+
+**What it does** (CLEAN-ROOM — built ONLY on Scene / monster / trigger / terrain / mesh_prims + engine interfaces + the EFLZ `docs/design/` IP; NO RBDOOM / id Tech / Doom / Quake source consulted):
+- **Surface stands up:** the engine's own `TerrainStreamer` (jobs==null => synchronous, headless-safe) under an ALIEN analytic sky (violet sun + thick haze via the existing `SkyParams` — no new engine tech). Desert => no water built ("water where needed").
+- **Biome/area framework:** `Act2Level` L8..L20 + per-level `Act2AreaPlan` (footprint / biome / spawn / objective). L8 + L9 carry content; L10..L20 are named/stubbed so later lanes slot in.
+- **L8 Surface Emergence:** 100 m lab-exit gauntlet — 5 Pursuit Drones (BlueSynth, ranged) + 3 Infected Soldiers (DominionTrooper, melee), EXISTING roster types — opening onto **The Emergence Point** safe zone (500 m reveal) with 4 allied companion markers (Sarah/Aria/Keisha/Emily via `convertToAllied()`).
+- **L9 Crystalline Desert Edge:** 6 emissive singing-crystal props + 3 neutral (allied) fauna placeholders + a heat/sandstorm `HazardZone` (AABB + tracked exposure) — PRESENT but INERT until entered (gated, never at load).
+- **Reachability:** labelled L8->L9 transition trigger at the Emergence-Point edge; shares the host `TriggerSystem` (distinct id range 80-82).
+- Did **NOT** touch Act-1 floor files or `monster.*`; the Act-2-specific roster/bosses are the separate (DJBOOTH) lane.
+
+**Self-test:** `act2: 16/16 passed` (`--test-act2` exit 0). Terrain streamer leak check at test end: `created=9 destroyed=9 (no leak)`.
+
+**Full gate** (Release exe, each flag a SEPARATE invocation): **ALL 44 flags exit 0** — `--test-asset ... --test-act2` — zero regressions.
+
+**Smoketests:**
+- Release `--smoketest`: exit 0, **0 VUID**, `live allocationCount=0`.
+- Debug `--smoketest`: exit 0, **0 VUID** AND `live allocationCount=0`.
+
+Notes: `--test-gltf` left `docs/GLB_IMPORT_REPORT.md` unchanged this run (tree clean). The `Weapon*.glb missing` lines in `--smoketest` are pre-existing asset-absent fallbacks on this rig, unrelated to Act 2.
+
+**Out of this slice (no gate impact):** an interactive `--world act2` host loop (apply `alienSky()` + tick/update `Act2World` around the player) for an on-screen vantage — the headless `--test-act2` already exercises the whole module.
