@@ -4061,18 +4061,19 @@ int main(int argc, char** argv) {
             } else {
                 // ---- Hitscan weapon (pistol/SMG/shotgun): one onFire per pellet. ----
                 bool anyKill = false, anyHit = false; int lastHp = 0;
+                const int wdmg = arsenal.current().damage;   // PER-WEAPON damage to monsters
                 combatFx.spawnMuzzleFlash(muzzle, dir);   // flash at the gun barrel (hitscan)
                 for (const auto& ray : shot.rays) {
-                    x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics);
+                    x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics, wdmg);
                     // If the B1 groups didn't take it, try the F3/F4/F5 enemies (the
                     // shot is already arm-gated by the arsenal/Level1Game::onFire).
                     if (!r.hitMonster && game.armed()) {
-                        x3::game::FireResult rm = midFloors.onFire(eye, ray.dir, scene, *physics);
+                        x3::game::FireResult rm = midFloors.onFire(eye, ray.dir, scene, *physics, wdmg);
                         if (rm.hitMonster || (!r.hit && rm.hit)) r = rm;
                     }
                     // Then the F6/F7 top-floor enemies + the Clone boss.
                     if (!r.hitMonster && game.armed()) {
-                        x3::game::FireResult rt = topFloors.onFire(eye, ray.dir, scene, *physics);
+                        x3::game::FireResult rt = topFloors.onFire(eye, ray.dir, scene, *physics, wdmg);
                         if (rt.hitMonster || (!r.hit && rt.hit)) r = rt;
                     }
                     combatFx.addTracer(muzzle, r.endPoint);   // tracer + muzzle burst per pellet
@@ -4118,13 +4119,13 @@ int main(int argc, char** argv) {
                 bool consumed = false;
                 x3::phys::RayHit eh = physics->rayCast(b.pos, ndir, stepLen, x3::phys::Layer::Enemy);
                 if (eh.hit) {
-                    x3::game::FireResult r = game.onFire(b.pos, ndir, scene, *physics);
+                    x3::game::FireResult r = game.onFire(b.pos, ndir, scene, *physics, b.damage);
                     if (!r.hitMonster) {   // try the F3/F4/F5 enemies for this bolt
-                        x3::game::FireResult rm = midFloors.onFire(b.pos, ndir, scene, *physics);
+                        x3::game::FireResult rm = midFloors.onFire(b.pos, ndir, scene, *physics, b.damage);
                         if (rm.hitMonster) r = rm;
                     }
                     if (!r.hitMonster) {   // then the F6/F7 enemies + the Clone boss
-                        x3::game::FireResult rt = topFloors.onFire(b.pos, ndir, scene, *physics);
+                        x3::game::FireResult rt = topFloors.onFire(b.pos, ndir, scene, *physics, b.damage);
                         if (rt.hitMonster) r = rt;
                     }
                     combatFx.addTracer(b.pos, eh.point);

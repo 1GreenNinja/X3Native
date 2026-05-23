@@ -626,18 +626,19 @@ bool Level1Game::onRescue(const x3::phys::Vec3& playerPos, float range) {
 }
 
 FireResult Level1Game::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                              Scene& scene, x3::phys::IPhysicsWorld& physics) {
+                              Scene& scene, x3::phys::IPhysicsWorld& physics,
+                              int damage) {
     FireResult r;
     if (!m_weapon.hasWeapon()) return r;   // gate: only effective when armed
     // Fire across all three monster groups; the first live monster hit takes it.
-    r = m_corridor.fire(eye, dir, scene, physics);
+    r = m_corridor.fire(eye, dir, scene, physics, damage);
     if (!r.hitMonster) {
-        FireResult r2 = m_checkpoint.fire(eye, dir, scene, physics);
+        FireResult r2 = m_checkpoint.fire(eye, dir, scene, physics, damage);
         if (r2.hitMonster) r = r2;
         else if (!r.hit && r2.hit) r = r2;
     }
     if (!r.hitMonster && m_martinezSpawned && m_martinez.alive()) {
-        FireResult r3 = m_martinez.fire(eye, dir, scene, physics);
+        FireResult r3 = m_martinez.fire(eye, dir, scene, physics, damage);
         if (r3.hitMonster) r = r3;
         else if (!r.hit && r3.hit) r = r3;
     }

@@ -153,7 +153,8 @@ public:
     // armed. Damages the first live monster the ray hits. Returns the result so the
     // host can spawn FX. No-op (default miss) when not armed.
     FireResult onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                      Scene& scene, x3::phys::IPhysicsWorld& physics);
+                      Scene& scene, x3::phys::IPhysicsWorld& physics,
+                      int damage = kDamagePerShot);
 
     // Handle a MELEE press (rising edge) along `dir` from `eye` — the super-strength
     // punch (Phase 2b). Damages + knocks back every live enemy across all Level-1

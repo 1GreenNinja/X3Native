@@ -375,7 +375,8 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
 // Fire one shot: raycast the Enemy layer, resolve to this monster, damage it.
 // ---------------------------------------------------------------------------
 FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                               Scene& scene, x3::phys::IPhysicsWorld& physics) {
+                               Scene& scene, x3::phys::IPhysicsWorld& physics,
+                               int damage) {
     FireResult r;
     r.hpAfter = m_hp;
 
@@ -413,7 +414,7 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
     // HEAD zone = the top quarter of the (scaled) hitbox -> a distinct head area.
     // Box center is at m_pos.y + m_hitCenterOff; its top is +m_hitHalfY above that.
     const bool headshot = (hit.point.y - m_pos.y) > m_hitCenterOff + m_hitHalfY * 0.5f;
-    const int  shotDmg  = headshot ? kDamagePerShot * 3 : kDamagePerShot;
+    const int  shotDmg  = headshot ? damage * 3 : damage;   // per-weapon damage (3x on headshot)
     if (headshot) x3::logInfo("[monster] HEADSHOT! 3x damage");
     bool dead = applyDamage(&m_hp, shotDmg);
     m_flash = kHitFlashTime;
@@ -1293,7 +1294,8 @@ void MonsterManager::drawAll(x3::rhi::IRenderDevice& device,
 }
 
 FireResult MonsterManager::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                                Scene& scene, x3::phys::IPhysicsWorld& physics) {
+                                Scene& scene, x3::phys::IPhysicsWorld& physics,
+                                int damage) {
     // Each MonsterSystem::fire() casts an Enemy-layer ray that returns the NEAREST
     // enemy body, but only applies damage if that body is its own. So the first
     // monster whose fire() reports a real monster hit is the one the ray actually
@@ -1302,7 +1304,7 @@ FireResult MonsterManager::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3&
     // keep the best non-monster result (a wall/miss tracer end) for FX.
     FireResult best;
     for (auto& m : m_monsters) {
-        FireResult r = m->fire(eye, dir, scene, physics);
+        FireResult r = m->fire(eye, dir, scene, physics, damage);
         if (r.hitMonster) return r;       // the nearest monster took the shot
         if (r.hit && !best.hit) best = r; // remember a geometry hit for the tracer
     }

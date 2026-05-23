@@ -438,7 +438,8 @@ public:
     // Returns what happened (see FireResult). The caller is responsible for the
     // "only if armed" gate (WeaponSystem::hasWeapon()); a no-op here when dead.
     FireResult fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                    Scene& scene, x3::phys::IPhysicsWorld& physics);
+                    Scene& scene, x3::phys::IPhysicsWorld& physics,
+                    int damage = kDamagePerShot);
 
     // Advance one frame: decay the hit-flash timer and, if chaseSpeed > 0 and the
     // monster is alive, move it relative to `playerPos` (chase for melee, hold a
@@ -795,7 +796,8 @@ public:
     // and keep the result that actually hit a monster). Returns that FireResult
     // (or a default miss). At most one monster is damaged per call.
     FireResult fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                    Scene& scene, x3::phys::IPhysicsWorld& physics);
+                    Scene& scene, x3::phys::IPhysicsWorld& physics,
+                    int damage = kDamagePerShot);
 
 private:
     std::vector<std::unique_ptr<MonsterSystem>> m_monsters;
