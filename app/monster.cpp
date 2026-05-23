@@ -964,7 +964,12 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // preserves the 3x3, so this facing survives the per-frame physics sync as
     // long as the host calls update() after scene.update() (see main loop). ----
     {
-        const float c = std::cos(m_yaw), s = std::sin(m_yaw);
+        // Rigged character GLBs are authored facing +Z, but facingDir()/AI assume local
+        // -Z forward (CONVENTIONS) — so the MESH renders with its back to the player.
+        // Flip the VISUAL yaw 180 deg here (facingDir()/aim math are unchanged, so the
+        // AI + the --test-ai facing case stay correct).
+        const float ry = m_yaw + 3.14159265358979323846f;
+        const float c = std::cos(ry), s = std::sin(ry);
         // Yaw about +Y: local +X -> (c,0,-s), +Z -> (s,0,c). The phase scale
         // multiplier up-scales the boss as it enrages (graybox phase feedback).
         const float scale = m_modelScale * m_phaseScaleMul;
