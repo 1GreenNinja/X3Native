@@ -4147,7 +4147,8 @@ private:
             // dispatch (or a pass that reads a not-yet-dispatched slot) shows valid
             // geometry rather than garbage.
             if (!createDeviceLocalBuffer(bindVerts, bytes,
-                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
+                    | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,   // readbackSkinnedMesh copies from it (test path)
                     made[i], madeA[i])) {
                 for (uint32_t k = 0; k < i; ++k) vmaDestroyBuffer(m_alloc, made[k], madeA[k]);
                 logError("[rhi] skin: output vbo alloc failed"); return false;
