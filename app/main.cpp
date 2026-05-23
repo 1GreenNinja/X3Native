@@ -4124,7 +4124,7 @@ int main(int argc, char** argv) {
                     const std::string kpPrompt = keypad.prompt();
                     const float kpCol[4] = { 1.0f, 0.82f, 0.18f, 1.0f };
                     device->drawHudText(frame, kpPrompt.c_str(),
-                                        (float)hudW * 0.5f - 230.0f, (float)hudH * 0.5f - 60.0f, 3.0f, kpCol);
+                                        (float)hudW * 0.5f - 230.0f, (float)hudH * 0.5f - 60.0f, 22.0f, kpCol);
                 }
                 // Strength terminal — the "Awakening" readout (EFLZ_SPIRE §3).
                 if (!terrainWorld) {
@@ -4136,9 +4136,9 @@ int main(int argc, char** argv) {
                         const float ty = (hh > 0) ? hh * 0.30f : 200.0f;
                         const float term[4] = { 0.20f, 1.00f, 0.55f, 1.0f };   // terminal green
                         const float warn[4] = { 1.00f, 0.40f, 0.25f, 1.0f };   // failing = red
-                        device->drawHudText(frame, "SUBJECT: JAKE    STATUS: AUGMENTED", tx, ty,         2.4f, term);
-                        device->drawHudText(frame, "MUSCULOSKELETAL OUTPUT: +400%",      tx, ty + 34.0f, 2.4f, term);
-                        device->drawHudText(frame, "RESTRAINT INTEGRITY: FAILING",       tx, ty + 68.0f, 2.4f, warn);
+                        device->drawHudText(frame, "SUBJECT: JAKE    STATUS: AUGMENTED", tx, ty,         24.0f, term);
+                        device->drawHudText(frame, "MUSCULOSKELETAL OUTPUT: +400%",      tx, ty + 34.0f, 24.0f, term);
+                        device->drawHudText(frame, "RESTRAINT INTEGRITY: FAILING",       tx, ty + 68.0f, 24.0f, warn);
                     }
                 }
                 // Phase 2b: boss "PHASE 2!/PHASE 3!" flash near the top.
@@ -4164,7 +4164,7 @@ int main(int argc, char** argv) {
                         float col[4];
                         if (row.urgent) { col[0]=1.0f; col[1]=0.25f; col[2]=0.20f; col[3]=1.0f; }
                         else            { col[0]=0.55f; col[1]=0.85f; col[2]=1.0f; col[3]=1.0f; }
-                        device->drawHudText(frame, buf, 24.0f, ry, 2.0f, col);
+                        device->drawHudText(frame, buf, 24.0f, ry, 20.0f, col);
                         ry += 28.0f;
                     }
                 }
