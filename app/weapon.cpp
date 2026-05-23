@@ -446,6 +446,47 @@ std::vector<WeaponDef> makeDefaultRoster() {
         r.push_back(w);
     }
 
+    // ===== EL48 "PhotoRealistic Weapons" roster (specs/EFLZ_WEAPONS.spec.md) =====
+    // Stats from the shipped web game (v9.921 WeaponSystem.js), re-tuned for the
+    // native combat lane. Specials (overheat / DoT / freeze / chain / splash / pierce)
+    // are approximated by stats for now; full status effects are a follow-up. All reuse
+    // the energy-pistol viewmodel until per-weapon GLBs land.
+    auto base = [](WeaponDef& w){ w.viewmodelGlb = "WeaponEnergyPistol.glb"; w.vmScale = 0.18f;
+                                  w.muzzleFx = "muzzle_default"; w.impactFx = "impact_default"; };
+
+    // 5) Bazooka — heavy rocket: huge damage, slow, travels, splash (approx single-hit).
+    { WeaponDef w; w.name="bazooka"; w.kind=FireKind::Projectile; w.damage=95; w.fireRate=0.7f;
+      w.pellets=1; w.spreadDeg=0.2f; w.recoilDeg=7.0f; w.range=100.0f; w.magSize=4; w.reserveAmmo=16;
+      w.reloadTime=2.6f; w.projSpeed=35.0f; base(w); w.muzzleFx="muzzle_plasma"; w.impactFx="impact_plasma"; r.push_back(w); }
+    // 6) Laser Gun — continuous beam (overheat ~ big mag), low per-hit, pinpoint.
+    { WeaponDef w; w.name="laser"; w.kind=FireKind::Hitscan; w.automatic=true; w.damage=15; w.fireRate=10.0f;
+      w.pellets=1; w.spreadDeg=0.1f; w.recoilDeg=0.15f; w.range=80.0f; w.magSize=120; w.reserveAmmo=120;
+      w.reloadTime=2.0f; base(w); r.push_back(w); }
+    // 7) Lightning Gun — rapid chaining bolts (chain approx single-target), low dmg.
+    { WeaponDef w; w.name="lightning"; w.kind=FireKind::Hitscan; w.automatic=true; w.damage=12; w.fireRate=12.0f;
+      w.pellets=1; w.spreadDeg=0.8f; w.recoilDeg=0.25f; w.range=45.0f; w.magSize=150; w.reserveAmmo=150;
+      w.reloadTime=2.2f; base(w); r.push_back(w); }
+    // 8) Flamethrower — short-range cone, very high ROF, low per-tick (DoT approx).
+    { WeaponDef w; w.name="flamethrower"; w.kind=FireKind::Hitscan; w.automatic=true; w.damage=8; w.fireRate=16.0f;
+      w.pellets=2; w.spreadDeg=7.0f; w.recoilDeg=0.1f; w.range=12.0f; w.magSize=250; w.reserveAmmo=250;
+      w.reloadTime=2.5f; base(w); r.push_back(w); }
+    // 9) Freeze Ray — slows on hit (slow approx); solid damage, medium range.
+    { WeaponDef w; w.name="freeze"; w.kind=FireKind::Hitscan; w.damage=30; w.fireRate=4.0f;
+      w.pellets=1; w.spreadDeg=0.5f; w.recoilDeg=0.4f; w.range=35.0f; w.magSize=100; w.reserveAmmo=100;
+      w.reloadTime=2.0f; base(w); r.push_back(w); }
+    // 10) BFG-11K — the big one: massive blast (AoE approx single-hit), tiny ammo.
+    { WeaponDef w; w.name="bfg"; w.kind=FireKind::Projectile; w.damage=200; w.fireRate=0.4f;
+      w.pellets=1; w.spreadDeg=0.0f; w.recoilDeg=9.0f; w.range=110.0f; w.magSize=4; w.reserveAmmo=8;
+      w.reloadTime=3.0f; w.projSpeed=28.0f; base(w); w.muzzleFx="muzzle_plasma"; w.impactFx="impact_plasma"; r.push_back(w); }
+    // 11) RailGun — piercing high-velocity slug (pierce approx single-hit), big damage.
+    { WeaponDef w; w.name="railgun"; w.kind=FireKind::Hitscan; w.damage=150; w.fireRate=1.0f;
+      w.pellets=1; w.spreadDeg=0.0f; w.recoilDeg=5.0f; w.range=130.0f; w.magSize=5; w.reserveAmmo=30;
+      w.reloadTime=2.4f; base(w); r.push_back(w); }
+    // 12) Napalm Launcher — lobbed projectile + lingering fire (pool approx single-hit).
+    { WeaponDef w; w.name="napalm"; w.kind=FireKind::Projectile; w.damage=40; w.fireRate=1.5f;
+      w.pellets=1; w.spreadDeg=0.5f; w.recoilDeg=3.0f; w.range=60.0f; w.magSize=8; w.reserveAmmo=40;
+      w.reloadTime=2.4f; w.projSpeed=30.0f; base(w); w.muzzleFx="muzzle_plasma"; w.impactFx="impact_plasma"; r.push_back(w); }
+
     return r;
 }
 
