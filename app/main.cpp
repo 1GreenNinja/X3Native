@@ -34,6 +34,7 @@
 #include "level1_game.h"
 #include "spire_mid.h"                      // EFLZ Spire F3/F4/F5 mid-floor content
 #include "spire_top.h"                      // EFLZ Spire F6/F7 top-floor content (Act-1 finale)
+#include "spire_sublevels.h"                // EFLZ hidden Floor-7 sub-levels + Dr. Chen Return Mission
 #include "elevator.h"
 #include "club1127.h"
 #include "terrain.h"
@@ -523,6 +524,10 @@ int main(int argc, char** argv) {
     bool        testGpuSkin = false;
     // --test-spiretop (Spire top-floor content): F6/F7 (Act-1 finale) encounter authoring. Additive.
     bool        testSpireTop = false;
+    // --test-sublevels (hidden Floor-7 sub-levels + Dr. Chen Return Mission): asserts the
+    // descent is HIDDEN/inert until the F7-complete gate (Clone fallen + Sarah saved), then
+    // SL1/SL2/SL3 build with the Frozen Collective mini-boss + a rescuable Dr. Chen. Additive.
+    bool        testSubLevels = false;
     // --test-collapse (K-T3 structural collapse): build a small structure (column /
     // beam on two supports), destroy a support, step the sim, and assert the
     // unsupported pieces fall (static->dynamic), anchored pieces stay stable, the
@@ -684,6 +689,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-bosses") testBosses = true;
         else if (a == "--test-spiremid") testSpireMid = true;
         else if (a == "--test-spiretop") testSpireTop = true;
+        else if (a == "--test-sublevels") testSubLevels = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-net") testNet = true;
@@ -948,6 +954,12 @@ int main(int argc, char** argv) {
         x3::logInfo("running EFLZ Spire top-floor (F6 Executive / F7 Rooftop Act-1 finale) "
                     "encounter-content self-test...");
         return x3::game::runSpireTopSelfTest() ? 0 : 1;
+    }
+    if (testSubLevels) {
+        x3::logInfo("running EFLZ hidden Floor-7 sub-levels (Waste Disposal / Cryo Storage "
+                    "[Frozen Collective] / Enhanced Interrogation -> Dr. Chen Return Mission) "
+                    "self-test...");
+        return x3::game::runSubLevelsSelfTest() ? 0 : 1;
     }
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
@@ -2828,6 +2840,21 @@ int main(int argc, char** argv) {
     // Sarah's clock). Level 1 only, reached via the top elevator stops. ----
     x3::game::SpireTopFloors topFloors;
     x3::game::TriggerSystem  topTriggers;
+    // ---- Hidden Floor-7 SUB-LEVELS + the Dr. Chen RETURN MISSION. Authored as new
+    // graybox plates BELOW B1 (descending -Y), reached via a hidden lift behind the
+    // executive desk that ARMS ONLY after the F7 finale is complete (the Clone has fallen
+    // AND Sarah is saved). At build the descent is HIDDEN/inert; the host opens it once
+    // (subLevels.openDescent) from spire_top's PUBLIC queries — it never modifies
+    // spire_top. SL1 Waste Disposal (hazard) / SL2 Cryo Storage (Frozen Collective
+    // mini-boss) / SL3 Enhanced Interrogation (free Dr. Chen). Its own TriggerSystem
+    // (subTriggers) dispatches the hidden-lift + per-sub-level hub ids. Level 1 only. ----
+    x3::game::SpireSubLevels subLevels;
+    x3::game::TriggerSystem  subTriggers;
+    // Host-tracked latch: Sarah was rescued on F7 (set true when topFloors.onRescue()
+    // succeeds). Combined with "the Clone boss is dead" it is the descent gate. We track
+    // it host-side because spire_top exposes victimCaptive() (not a companion query), and
+    // we must not modify spire_top.
+    bool sarahSaved = false;
     if (!terrainWorld) {
         game.build(scene, *device, *physics, x3::game::riggedGlbRoot());
         // Audio hookups for Level 1 events (§9, nice-to-have; silent if no device).
@@ -2858,6 +2885,11 @@ int main(int argc, char** argv) {
         // Author the F6/F7 top-floor encounters (the Act-1 finale: F6 strongpoint,
         // F7 the Clone boss + Sarah rescue). Reached via the elevator's top stops.
         topFloors.build(scene, *device, *physics, Lb, topTriggers,
+                        x3::game::riggedGlbRoot());
+
+        // Author the hidden Floor-7 sub-levels BELOW B1 (built HIDDEN/inert; the descent
+        // is not armed until the F7-complete gate is satisfied below in the loop).
+        subLevels.build(scene, *device, *physics, Lb, subTriggers,
                         x3::game::riggedGlbRoot());
     }
     const x3::game::Level1Layout& L1 = game.layout();
@@ -3120,6 +3152,8 @@ int main(int argc, char** argv) {
                     midFloors.draw(*device, frame, scene);
                     topFloors.drawDoors(*device, frame);
                     topFloors.draw(*device, frame, scene);
+                    subLevels.drawDoors(*device, frame);          // hidden sub-level door slabs (no-op while closed)
+                    subLevels.draw(*device, frame, scene);        // sub-level enemies + Frozen Collective + Dr. Chen
                     // Production HUD over the vantage (HP / weapon / objective / crosshair).
                     x3::ui::UiContext capUi;
                     capUi.begin(*device, frame, x3::ui::UiInput{});
@@ -3307,6 +3341,10 @@ int main(int argc, char** argv) {
             // + gated Sarah rescue) so the screenshot/smoketest paths exercise them.
             for (uint32_t tid : topTriggers.update(ssEye)) topFloors.onTrigger(tid);
             topFloors.tick(dt, scene, *physics, ssEye, ssEye, nullptr, x3::game::AttackFxFn{});
+            // Hidden sub-levels: stay HIDDEN/inert in the screenshot path (the F7 gate is
+            // never satisfied here), so this tick is a pure no-op — kept for parity.
+            for (uint32_t tid : subTriggers.update(ssEye)) subLevels.onTrigger(tid);
+            subLevels.tick(dt, scene, *physics, ssEye, ssEye, nullptr, x3::game::AttackFxFn{});
             physics->step(dt);
             scene.update(*physics);
             // FX demo: with a SMALL settle (<=30) spawn a fresh muzzle + impact burst
@@ -3334,6 +3372,8 @@ int main(int argc, char** argv) {
                 midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
                 topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
                 topFloors.draw(*device, frame, scene);        // F6/F7 enemies + Clone boss + Sarah
+                subLevels.drawDoors(*device, frame);          // hidden sub-level door slabs (no-op while closed)
+                subLevels.draw(*device, frame, scene);        // sub-level enemies + Frozen Collective + Dr. Chen (no-op while closed)
                 if (fxDemo) {
                     combatFx.draw(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch);
                     combatFx.submit(*device, frame);
@@ -3465,6 +3505,10 @@ int main(int argc, char** argv) {
             // Spire top floors (F6/F7 finale) under validation too.
             for (uint32_t tid : topTriggers.update(eye)) topFloors.onTrigger(tid);
             topFloors.tick(dt, scene, *physics, eye, eye, nullptr, x3::game::AttackFxFn{});
+            // Hidden sub-levels under validation (HIDDEN/inert: the F7 gate is unmet here,
+            // so this tick is a pure no-op) — kept for parity with the live loop.
+            for (uint32_t tid : subTriggers.update(eye)) subLevels.onTrigger(tid);
+            subLevels.tick(dt, scene, *physics, eye, eye, nullptr, x3::game::AttackFxFn{});
             physics->step(dt);
             scene.update(*physics);
             audio->update(dt);
@@ -3517,6 +3561,8 @@ int main(int argc, char** argv) {
                 midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
                 topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
                 topFloors.draw(*device, frame, scene);        // F6/F7 enemies + Clone boss + Sarah
+                subLevels.drawDoors(*device, frame);          // hidden sub-level door slabs (no-op while closed)
+                subLevels.draw(*device, frame, scene);        // sub-level enemies + Frozen Collective + Dr. Chen (no-op while closed)
                 const VmPose vmPose = readViewmodelPose(*console);
                 // WEAPONS: draw the SELECTED weapon's viewmodel via the arsenal so the
                 // per-weapon GLB draw path is exercised under Debug validation; fall
@@ -3832,10 +3878,14 @@ int main(int argc, char** argv) {
             } else if (midFloors.onRescue(eye)) {  // F5 synth-bay captive rescue
                 x3::logInfo("use: F5 captive rescued — now a companion");
             } else if (topFloors.onRescue(eye)) {  // F7 rooftop captive (Sarah) rescue
-                x3::logInfo("use: F7 captive 'Sarah' rescued — now a companion");
+                sarahSaved = true;   // latch the descent gate input (the host's only Sarah-saved signal)
+                x3::logInfo("use: F7 captive 'Sarah' rescued — now a companion (Return-Mission gate armed)");
+            } else if (subLevels.onRescue(eye)) {  // SL3 Dr. Chen rescue (the Return-Mission payoff)
+                x3::logInfo("use: Dr. Chen freed — the Return Mission is complete");
             } else if (!codeMode && (game.nearLockedCodedDoor(eye) ||
                                      midFloors.nearLockedCodedDoor(eye) ||
-                                     topFloors.nearLockedCodedDoor(eye))) {
+                                     topFloors.nearLockedCodedDoor(eye) ||
+                                     subLevels.nearLockedCodedDoor(eye))) {
                 // No button hit, but a locked keypad door is in reach: open the
                 // code-entry keypad (digits 0-9, Enter to submit, Esc to cancel).
                 codeMode = true; keypad.clear();
@@ -3872,7 +3922,8 @@ int main(int argc, char** argv) {
                 if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
                 if (game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     midFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
-                    topFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value())) {
+                    topFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
+                    subLevels.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value())) {
                     x3::logInfo("keypad: ACCEPTED — door opening");
                     codeMode = false; keypad.clear();
                 } else {
@@ -4038,6 +4089,17 @@ int main(int argc, char** argv) {
             // gated victim.
             for (uint32_t tid : topTriggers.update(camPos)) topFloors.onTrigger(tid);
             topFloors.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
+            // Hidden Floor-7 sub-levels: GATE the hidden descent on the F7 finale being
+            // complete (the Clone boss is dead AND Sarah was saved). openDescent() is a
+            // one-way no-op until BOTH hold; reading spire_top here is READ-ONLY. Once the
+            // descent opens, dispatch its triggers (hidden lift + per-sub-level hubs, the
+            // SL3 hub starts Chen's clock) and tick the sub-level encounters + hazard.
+            const bool cloneFallen =
+                topFloors.plan(x3::game::SpireTopFloor::F7).hasBoss &&
+                topFloors.boss().aliveCount() == 0;
+            subLevels.openDescent(cloneFallen, sarahSaved);
+            for (uint32_t tid : subTriggers.update(camPos)) subLevels.onTrigger(tid);
+            subLevels.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
         }
 
         // ---- Phase 2a: death -> respawn. The player enters the death state at
@@ -4157,6 +4219,12 @@ int main(int argc, char** argv) {
                         x3::game::FireResult rt = topFloors.onFire(eye, ray.dir, scene, *physics);
                         if (rt.hitMonster || (!r.hit && rt.hit)) r = rt;
                     }
+                    // Then the hidden sub-level enemies + the Frozen Collective (a clean
+                    // miss until the descent has opened).
+                    if (!r.hitMonster && game.armed()) {
+                        x3::game::FireResult rs = subLevels.onFire(eye, ray.dir, scene, *physics);
+                        if (rs.hitMonster || (!r.hit && rs.hit)) r = rs;
+                    }
                     combatFx.addTracer(muzzle, r.endPoint);   // tracer + muzzle burst per pellet
                     if (r.killed) { combatFx.spawnDeath(r.endPoint); anyKill = true; }
                     else if (r.hitMonster) { combatFx.spawnBlood(r.hitPoint, ray.dir); anyHit = true; lastHp = r.hpAfter; }
@@ -4197,6 +4265,10 @@ int main(int argc, char** argv) {
                     if (!r.hitMonster) {   // then the F6/F7 enemies + the Clone boss
                         x3::game::FireResult rt = topFloors.onFire(b.pos, ndir, scene, *physics);
                         if (rt.hitMonster) r = rt;
+                    }
+                    if (!r.hitMonster) {   // then the hidden sub-level enemies + Frozen Collective
+                        x3::game::FireResult rs = subLevels.onFire(b.pos, ndir, scene, *physics);
+                        if (rs.hitMonster) r = rs;
                     }
                     combatFx.addTracer(b.pos, eh.point);
                     if (r.killed) { combatFx.spawnDeath(eh.point);
@@ -4246,6 +4318,8 @@ int main(int argc, char** argv) {
                 midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
                 topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
                 topFloors.draw(*device, frame, scene);        // F6/F7 enemies + Clone boss + Sarah
+                subLevels.drawDoors(*device, frame);          // hidden sub-level door slabs (no-op while closed)
+                subLevels.draw(*device, frame, scene);        // sub-level enemies + Frozen Collective + Dr. Chen (no-op while closed)
                 const VmPose vmPose = readViewmodelPose(*console);
                 if (arsenal.viewmodelsLoaded() && game.armed()) {
                     // WEAPONS: draw the SELECTED weapon's viewmodel (its own GLB +
