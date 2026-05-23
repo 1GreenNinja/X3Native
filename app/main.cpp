@@ -2830,6 +2830,17 @@ int main(int argc, char** argv) {
                     pls.push_back(pl);
                 }
             }
+            // A bright cool fill light a few meters in front of the camera (down -X)
+            // so the encounter reads clearly in the still even on the dim plates. Dev
+            // tool only — it lights the CAPTURE, not gameplay (the set is re-issued
+            // fresh per floor and the game owns its own lights at runtime).
+            {
+                x3::rhi::PointLight fill;
+                fill.pos[0] = r.x1 - 12.0f; fill.pos[1] = r.y0 + 2.4f; fill.pos[2] = 0.0f;
+                fill.range  = 16.0f;
+                fill.color[0] = 3.6f; fill.color[1] = 3.8f; fill.color[2] = 4.2f;
+                pls.push_back(fill);
+            }
             device->setPointLights(pls.data(), (uint32_t)pls.size());
         };
 
@@ -2840,22 +2851,31 @@ int main(int argc, char** argv) {
         for (const SpireShot& s : shots) {
             const x3::game::L1RoomDef& r = tbl[(uint32_t)s.floor];
             const float baseY = Lc.floorBaseY[(uint32_t)s.floor];
-            // Vantage: stand near the +X arrival/hub end at standing eye height and
-            // look across the plate toward -X (the encounter sits in x[3..17]), pitched
-            // slightly down so the floor + props + enemies frame cleanly. yaw=PI =>
-            // forward (cos,0,sin) = (-1,0,0). For F3..F7 the arrival X matches plan().
-            const float camX   = r.x1 - 6.0f;          // ~18 m, near the shaft arrival
-            const float camY   = baseY + 1.7f;          // standing eye height
+            // Vantage: stand near the +X arrival/hub end, slightly elevated, and look
+            // across the plate toward -X (the encounter sits in x[3..17]), pitched down
+            // so the floor + props + enemies frame cleanly. yaw=PI => forward
+            // (cos,0,sin) = (-1,0,0). For F3..F7 this matches plan().arrival (x=17.5);
+            // F1/F2 are open plates so the same X works. B1 is the ONLY plate with
+            // internal spine cross-walls (cell/corridor/armory/checkpoint/arena, doors
+            // at x=5/9/12.5/15) so an open-plate vantage just stares at a wall: instead
+            // frame the CHECKPOINT room (x[12.5,15]) where the 4 build-time guards live,
+            // standing just -X of the Door D wall looking back toward the squad + Door C.
+            // This deliberately stays OUT of the arena trigger (x[16,19]) so the capture
+            // is the checkpoint encounter, not Martinez filling the lens (he spawns on
+            // the arena beat at runtime; the report documents the B1 boss separately).
+            const bool  isB1   = (s.floor == x3::game::L1Floor::B1);
+            const float camX   = isB1 ? 14.85f : (r.x1 - 6.0f); // checkpoint (B1) / ~18 m (others)
+            const float camY   = baseY + 2.2f;          // slightly above standing eye for an overview
             const float camZ   = 0.0f;
             const float camYaw = 3.14159265f;           // look toward -X across the room
-            const float camPit = -0.14f;
-            const float camFov = 75.0f;
+            const float camPit = -0.20f;
+            const float camFov = 80.0f;
             device->setCamera(camX, camY, camZ, camYaw, camPit, camFov);
             const x3::phys::Vec3 camEye{ camX, camY, camZ };
             lightFloor(s.floor);
 
             const std::string outPath = captureSpireDir + "/spire_" + s.tag + ".png";
-            const int kSettle = 12;   // a few frames so shadows + skinning + doors settle
+            const int kSettle = 24;   // enough frames for shadows + skinning + doors to fully open
             for (int i = 0; i < kSettle; ++i) {
                 glfwPollEvents();
                 game.tick(dt, scene, *physics, camEye, camEye);
