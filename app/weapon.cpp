@@ -384,6 +384,105 @@ std::vector<WeaponDef> makeDefaultRoster() {
         r.push_back(w);
     }
 
+    // =====================================================================
+    // ACT-1 WEAPON LADDER (canon progression — see docs/EFLZ_DESIGN.md §
+    // weapons table + docs/design/EFLZ_MASTER_PLAN.md / EFLZ_WORLD_STRUCTURE.md
+    // "Act-1 weapon ladder"). Each tier is a clear step above the pistol
+    // (15 dmg, 3/s = 45 DPS) WITHOUT trivializing the Act-1 bosses (The
+    // Collective F4, Swarm Controller F5, Alien Overseer F6 — 200..400 HP per
+    // the bestiary), so a boss still costs a deliberate magazine+, not a
+    // one-burst delete. Built only from the data-driven model + design numbers.
+    // =====================================================================
+
+    // ---- 5) ChainGun — F4 drop (The Collective/Chorus). High-ROF auto -------
+    // hitscan with a short SPIN-UP before full rate; large mag/reserve; moderate
+    // per-hit damage; a little spread. Docs: "tier-4 high-ROF auto". Sustained
+    // DPS at full spin (~14 dmg * 14/s = ~196) clears trash fast but a 400-HP
+    // boss is still ~15 sustained hits — a real magazine, not a melt. The 0.6 s
+    // spin-up (starting at 40% rate) is the canon "wind-up" feel.
+    {
+        WeaponDef w;
+        w.name        = "chaingun";
+        w.kind        = FireKind::Hitscan;
+        w.automatic   = true;
+        w.damage      = 14;
+        w.fireRate    = 14.0f;        // ~840 rpm at full spin
+        w.pellets     = 1;
+        w.spreadDeg   = 2.5f;         // some bloom (heavy auto)
+        w.recoilDeg   = 0.4f;         // low per-shot kick, but it adds up fast
+        w.range       = 70.0f;
+        w.magSize     = 100;          // large belt
+        w.reserveAmmo = 400;          // large reserve
+        w.reloadTime  = 3.0f;         // slow to reload the belt
+        w.spinUpTime     = 0.6f;      // 0.6 s of fire to reach full RoF
+        w.spinUpStartFrac= 0.4f;      // starts at 40% of fireRate (cold barrel)
+        w.viewmodelGlb = "WeaponChainGun.glb";  // not in repo -> pistol fallback
+        w.vmScale     = 0.18f;
+        w.muzzleFx    = "muzzle_chaingun";
+        w.impactFx    = "impact_default";
+        r.push_back(w);
+    }
+
+    // ---- 6) Plasma Rifle — F5 unlock (Drone Manufacturing). -----------------
+    // A faster, harder-hitting plasma than the plasma pistol: a real travelling
+    // bolt (projectile) with a SMALL impact splash. Medium RoF. ~40 dmg direct +
+    // 15 splash @ 2 m. At ~4/s that's ~160 direct DPS — a tier above the pistol,
+    // and the splash punishes clustered drones without one-shotting the F5 boss.
+    {
+        WeaponDef w;
+        w.name        = "plasma_rifle";
+        w.kind        = FireKind::Projectile;
+        w.automatic   = true;         // full-auto bolt stream
+        w.damage      = 40;           // direct-hit damage
+        w.fireRate    = 4.0f;         // medium RoF
+        w.pellets     = 1;
+        w.spreadDeg   = 0.6f;
+        w.recoilDeg   = 0.8f;
+        w.range       = 90.0f;
+        w.magSize     = 30;
+        w.reserveAmmo = 120;
+        w.reloadTime  = 2.2f;
+        w.projSpeed   = 60.0f;        // faster bolt than the plasma pistol
+        w.splashRadius= 2.0f;         // small AoE on impact
+        w.splashDamage= 15;           // splash damage at the center
+        w.viewmodelGlb = "WeaponPlasmaRifle.glb";  // not in repo -> pistol fallback
+        w.vmScale     = 0.18f;
+        w.muzzleFx    = "muzzle_plasma";
+        w.impactFx    = "impact_plasma";
+        r.push_back(w);
+    }
+
+    // ---- 7) Lightning Gun — F6 unlock (Salvari tech). -----------------------
+    // A continuous instant-hit BEAM: high sustained DPS, SHORT range with damage
+    // falloff, and (per the bible: "chains 3 targets") a chain-to-nearby-enemies
+    // behavior — the primary beam plus up to 2 extra chain rays (3 targets total).
+    // High fire rate models the "continuous" feel. ~10 dmg * 16/s = ~160 single-
+    // target sustained DPS, multiplied across chained targets in a crowd, but the
+    // short 28 m range (falloff from 14 m) keeps it a close-quarters power tool.
+    {
+        WeaponDef w;
+        w.name        = "lightning";
+        w.kind        = FireKind::Hitscan;   // instant-hit beam = hitscan path
+        w.automatic   = true;                // held = continuous beam
+        w.damage      = 10;                  // per beam tick / per chained target
+        w.fireRate    = 16.0f;               // "continuous" — many ticks/s
+        w.pellets     = 1;                   // 1 primary; chains add rays
+        w.spreadDeg   = 0.0f;                // a beam is dead-accurate
+        w.recoilDeg   = 0.15f;               // almost none (steady beam)
+        w.range       = 28.0f;               // SHORT range
+        w.magSize     = 80;                  // a "cell" of charge
+        w.reserveAmmo = 240;
+        w.reloadTime  = 2.4f;
+        w.beam        = true;                // render as a solid beam (host hint)
+        w.chainTargets= 2;                   // primary + 2 chains = 3 targets
+        w.falloffStart= 14.0f;               // half-range: damage falls off past 14 m
+        w.viewmodelGlb = "WeaponLightningGun.glb"; // not in repo -> pistol fallback
+        w.vmScale     = 0.18f;
+        w.muzzleFx    = "muzzle_lightning";
+        w.impactFx    = "impact_lightning";
+        r.push_back(w);
+    }
+
     return r;
 }
 
@@ -439,6 +538,7 @@ Arsenal::Arsenal(std::vector<WeaponDef> roster) : m_defs(std::move(roster)) {
         m_state[i].reserve   = m_defs[i].reserveAmmo;
         m_state[i].cooldown  = 0.0f;
         m_state[i].reloadTimer = 0.0f;
+        m_state[i].spinUp      = 0.0f;               // cold barrel
     }
     if (m_defs.empty()) m_sel = -1; else m_sel = 0;
 }
@@ -457,6 +557,7 @@ void Arsenal::restore(int sel, const std::vector<std::pair<int,int>>& ammo) {
         m_state[i].reserve     = res;
         m_state[i].cooldown    = 0.0f;
         m_state[i].reloadTimer = 0.0f;
+        m_state[i].spinUp      = 0.0f;   // settled checkpoint: cold barrel
     }
     if (m_defs.empty())            m_sel = -1;
     else if (sel < 0)              m_sel = 0;
@@ -468,8 +569,10 @@ int Arsenal::select(int index) {
     if (index < 0 || index >= (int)m_defs.size()) return m_sel; // ignore out-of-range
     if (index == m_sel) return m_sel;
     // Cancel an in-progress reload on the weapon we're leaving (don't lose a round;
-    // the reload simply didn't complete).
-    if (m_sel >= 0) m_state[(size_t)m_sel].reloadTimer = 0.0f;
+    // the reload simply didn't complete). Also bleed off its spin-up so you can't
+    // bank a spun-up barrel by switching away and back.
+    if (m_sel >= 0) { m_state[(size_t)m_sel].reloadTimer = 0.0f;
+                      m_state[(size_t)m_sel].spinUp = 0.0f; }
     m_sel = index;
     // Reset the new weapon's cooldown to its full inter-shot time so a switch can't
     // be used to fire faster than the new weapon's rate.
@@ -508,19 +611,53 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
     const WeaponDef&  d = m_defs[(size_t)m_sel];
     WeaponState&      s = m_state[(size_t)m_sel];
 
-    // Consume a round, arm the fire-rate cooldown, apply recoil.
+    // ChainGun spin-up: the EFFECTIVE fire rate ramps from spinUpStartFrac*fireRate
+    // (cold) up to fireRate as s.spinUp climbs 0 -> 1. The cooldown is set from the
+    // effective rate, so the first shots come slower and the gun "winds up". Firing
+    // advances the spin (one cooldown's worth of charge); tick() decays it when idle.
+    float effRate = d.fireRate;
+    if (d.spinUpTime > 0.0f && d.fireRate > 0.0f) {
+        const float frac = (d.spinUpStartFrac < 0.0f) ? 0.0f
+                         : (d.spinUpStartFrac > 1.0f) ? 1.0f : d.spinUpStartFrac;
+        effRate = d.fireRate * (frac + (1.0f - frac) * s.spinUp);
+        // Charge the spin by the inter-shot time this shot consumes.
+        const float dShot = (effRate > 0.0f) ? (1.0f / effRate) : d.spinUpTime;
+        s.spinUp += dShot / d.spinUpTime;
+        if (s.spinUp > 1.0f) s.spinUp = 1.0f;
+    }
+
+    // Consume a round, arm the fire-rate cooldown (from the effective rate), recoil.
     s.ammoInMag -= 1;
-    s.cooldown   = (d.fireRate > 0.0f) ? (1.0f / d.fireRate) : 0.0f;
+    s.cooldown   = (effRate > 0.0f) ? (1.0f / effRate) : 0.0f;
     out.fired    = true;
     out.recoilPitchDeg = d.recoilDeg;
 
     if (d.kind == FireKind::Hitscan) {
-        out.rays.reserve((size_t)d.pellets);
+        // Primary ray(s): `pellets` spread rays (1 for a single-ray weapon).
+        const int total = d.pellets + ((d.chainTargets > 0) ? d.chainTargets : 0);
+        out.rays.reserve((size_t)total);
         for (int p = 0; p < d.pellets; ++p) {
             HitscanRay ray;
-            ray.dir    = applySpread(dir, d.spreadDeg, rngState);
-            ray.damage = d.damage;
-            ray.range  = d.range;
+            ray.dir          = applySpread(dir, d.spreadDeg, rngState);
+            ray.damage       = d.damage;
+            ray.range        = d.range;
+            ray.beam         = d.beam;
+            ray.chain        = false;
+            ray.falloffStart = d.falloffStart;
+            out.rays.push_back(ray);
+        }
+        // Lightning Gun chain: extra rays the host resolves against NEARBY enemies
+        // (chain links). They share the beam dir as a seed; the host re-aims each
+        // chain at the next-closest enemy. Each carries the per-target damage so a
+        // crowd takes chainTargets+1 hits. Marked chain=true so the host/FX know.
+        for (int c = 0; c < d.chainTargets; ++c) {
+            HitscanRay ray;
+            ray.dir          = dir;          // host re-aims at the next chained enemy
+            ray.damage       = d.damage;
+            ray.range        = d.range;
+            ray.beam         = d.beam;
+            ray.chain        = true;
+            ray.falloffStart = d.falloffStart;
             out.rays.push_back(ray);
         }
     } else { // Projectile
@@ -530,6 +667,8 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
         pj.vel    = x3::phys::Vec3{ nd.x * d.projSpeed, nd.y * d.projSpeed, nd.z * d.projSpeed };
         pj.damage = d.damage;
         pj.range  = d.range;
+        pj.splashRadius = d.splashRadius;   // Plasma Rifle: small AoE on impact
+        pj.splashDamage = d.splashDamage;
         out.projectiles.push_back(pj);
     }
     return out;
@@ -552,6 +691,18 @@ void Arsenal::tick(float dt) {
     for (size_t i = 0; i < m_state.size(); ++i) {
         WeaponState& s = m_state[i];
         if (s.cooldown > 0.0f) { s.cooldown -= dt; if (s.cooldown < 0.0f) s.cooldown = 0.0f; }
+        // Spin-up wind-down: once the inter-shot cooldown has fully elapsed (the
+        // player stopped firing this weapon), the barrel bleeds spin back toward 0.
+        // The wind-down is GENTLER than the per-shot charge (decay over 1.5x
+        // spinUpTime) so a sustained burst still climbs to full spin even though
+        // tick() runs between shots; a real idle gap (~2 s) drains it fully. While
+        // firing, fire() re-arms the cooldown each shot so this branch is skipped
+        // for the frames the cooldown is still counting down.
+        const WeaponDef& dd = m_defs[i];
+        if (dd.spinUpTime > 0.0f && s.spinUp > 0.0f && s.cooldown <= 0.0f) {
+            s.spinUp -= dt / (dd.spinUpTime * 1.5f);
+            if (s.spinUp < 0.0f) s.spinUp = 0.0f;
+        }
         if (s.reloadTimer > 0.0f) {
             s.reloadTimer -= dt;
             if (s.reloadTimer <= 0.0f) {
@@ -765,6 +916,40 @@ bool runWeaponsSelfTest() {
                "W0 roster: pistol/smg/shotgun/plasma present with doc-sourced stats");
     }
 
+    // ---- W0b: the Act-1 ladder (chaingun/plasma_rifle/lightning) exists, is ---
+    // constructible + selectable, and each has sane fire-rate / damage / ammo. ---
+    {
+        Arsenal a;
+        int ic = a.indexOf("chaingun"), ir = a.indexOf("plasma_rifle"),
+            iz = a.indexOf("lightning");
+        bool present = ic >= 0 && ir >= 0 && iz >= 0;
+        // ChainGun: auto hitscan with a spin-up + a large belt.
+        bool cgOK = present &&
+            a.def(ic).kind == FireKind::Hitscan && a.def(ic).automatic &&
+            a.def(ic).spinUpTime > 0.0f && a.def(ic).fireRate > 6.0f &&
+            a.def(ic).damage > 0 && a.def(ic).magSize >= 50 && a.def(ic).reserveAmmo >= 100;
+        // Plasma Rifle: projectile with a real travel speed + a small splash.
+        bool prOK = present &&
+            a.def(ir).kind == FireKind::Projectile && a.def(ir).projSpeed > 0.0f &&
+            a.def(ir).splashRadius > 0.0f && a.def(ir).splashDamage > 0 &&
+            a.def(ir).damage > 0 && a.def(ir).fireRate > 0.0f && a.def(ir).magSize > 0;
+        // Lightning Gun: a beam (hitscan) that chains, with short-range falloff,
+        // and a SHORT range (shorter than the pistol's 50 m).
+        int ip = a.indexOf("pistol");
+        bool lgOK = present && ip >= 0 &&
+            a.def(iz).kind == FireKind::Hitscan && a.def(iz).beam &&
+            a.def(iz).chainTargets >= 1 && a.def(iz).falloffStart > 0.0f &&
+            a.def(iz).falloffStart < a.def(iz).range &&
+            a.def(iz).range < a.def(ip).range &&   // short range vs pistol
+            a.def(iz).damage > 0 && a.def(iz).fireRate > 0.0f && a.def(iz).magSize > 0;
+        // Selectable by name (the host maps number keys 1..N onto these).
+        bool selectable = a.selectByName("chaingun") && a.current().name == "chaingun" &&
+                          a.selectByName("plasma_rifle") && a.current().name == "plasma_rifle" &&
+                          a.selectByName("lightning") && a.current().name == "lightning";
+        wcheck(present && cgOK && prOK && lgOK && selectable,
+               "W0b Act-1 ladder: chaingun/plasma_rifle/lightning present, sane + selectable");
+    }
+
     // ---- W1: switching selects the right WeaponDef (number keys 1..N) --------
     {
         Arsenal a;
@@ -887,6 +1072,111 @@ bool runWeaponsSelfTest() {
         ResolvedFire f = a.fire(eye, fwd, rng);
         wcheck(reloadCancelled && !f.fired,
                "W7 switch cancels reload + resets cooldown (no switch-fire exploit)");
+    }
+
+    // ---- W8: ChainGun spin-up — fires (records a shot), the effective cooldown
+    // STARTS slow (cold barrel) and gets FASTER as the barrel spins up, and the
+    // spin decays when idle. ------------------------------------------------------
+    {
+        Arsenal a;
+        a.selectByName("chaingun");
+        a.tick(2.0f);                    // clear the select cooldown; barrel still cold
+        const float full = 1.0f / a.def(a.selected()).fireRate;  // hot inter-shot time
+        // First (cold) shot: it fires, and its cooldown is LONGER than the hot rate
+        // (spin-up start fraction < 1).
+        ResolvedFire s1 = a.fire(eye, fwd, rng);
+        float coldCd = a.currentState().cooldown;
+        bool firedCold   = s1.fired && (int)s1.rays.size() == 1;
+        bool coldIsSlow  = coldCd > full + 1e-4f;       // cold cooldown slower than hot
+        // Spin the barrel up: fire a sustained burst (advance past each cooldown).
+        for (int i = 0; i < 30; ++i) { a.tick(a.currentState().cooldown + 1e-3f); a.fire(eye, fwd, rng); }
+        float hotCd = a.currentState().cooldown;
+        bool spunUp   = a.currentState().spinUp > 0.9f; // near full spin
+        bool hotIsFast = hotCd < coldCd - 1e-4f && std::fabs(hotCd - full) < 5e-3f;
+        // Let go: idle long enough for the spin to bleed off.
+        a.tick(a.currentState().cooldown + 1e-3f);      // clear cooldown
+        a.tick(2.0f);                                    // idle >> spinUpTime
+        bool spunDown = a.currentState().spinUp < 0.05f;
+        wcheck(firedCold && coldIsSlow && spunUp && hotIsFast && spunDown,
+               "W8 chaingun: fires, spins up (cold slow -> hot fast), winds down idle");
+    }
+
+    // ---- W9: Plasma Rifle — fires a bolt (projectile) carrying the small splash
+    // (radius + splash damage), at the medium fire rate, above the pistol's DPS. --
+    {
+        Arsenal a;
+        a.selectByName("plasma_rifle");
+        a.tick(2.0f);                    // clear the select cooldown
+        ResolvedFire f = a.fire(eye, fwd, rng);
+        bool boltOK = f.fired && f.rays.empty() && (int)f.projectiles.size() == 1;
+        bool splashOK = false, velOK = false;
+        if (boltOK) {
+            const ProjectileSpawn& pj = f.projectiles[0];
+            const WeaponDef& d = a.def(a.selected());
+            splashOK = pj.splashRadius == d.splashRadius && pj.splashDamage == d.splashDamage &&
+                       pj.splashRadius > 0.0f && pj.splashDamage > 0;
+            float vlen = std::sqrt(pj.vel.x*pj.vel.x + pj.vel.y*pj.vel.y + pj.vel.z*pj.vel.z);
+            velOK = std::fabs(vlen - d.projSpeed) < 0.5f && pj.damage == d.damage &&
+                    std::fabs(pj.pos.x - eye.x) < 1e-4f;   // spawns at the muzzle/eye
+        }
+        // Power ladder: plasma rifle DPS clearly above the pistol's 45 DPS.
+        Arsenal b;
+        const WeaponDef& pr = a.def(a.indexOf("plasma_rifle"));
+        const WeaponDef& ps = b.def(b.indexOf("pistol"));
+        float prDps = pr.damage * pr.fireRate, psDps = ps.damage * ps.fireRate;
+        bool strongerThanPistol = prDps > psDps;
+        wcheck(boltOK && splashOK && velOK && strongerThanPistol,
+               "W9 plasma_rifle: fires a splash bolt (vel=speed), DPS > pistol");
+    }
+
+    // ---- W10: Lightning Gun — fires a BEAM that chains (primary + chain rays =
+    // chainTargets+1 total), every ray flagged beam, chain rays flagged chain, and
+    // each carries the per-target damage + falloff threshold. ---------------------
+    {
+        Arsenal a;
+        a.selectByName("lightning");
+        a.tick(2.0f);                    // clear the select cooldown
+        const WeaponDef& d = a.def(a.selected());
+        ResolvedFire f = a.fire(eye, fwd, rng);
+        int expect = d.pellets + d.chainTargets;   // 1 + 2 = 3 targets
+        bool countOK = f.fired && (int)f.rays.size() == expect && f.projectiles.empty();
+        bool allBeam = countOK, dmgOK = countOK, falloffOK = countOK;
+        int chainCount = 0, primaryCount = 0;
+        if (countOK) {
+            for (const auto& ray : f.rays) {
+                if (!ray.beam) allBeam = false;
+                if (ray.damage != d.damage) dmgOK = false;
+                if (ray.falloffStart != d.falloffStart) falloffOK = false;
+                if (ray.chain) ++chainCount; else ++primaryCount;
+            }
+        }
+        bool linkOK = primaryCount == d.pellets && chainCount == d.chainTargets;
+        wcheck(countOK && allBeam && dmgOK && falloffOK && linkOK,
+               "W10 lightning: beam fires, chains to chainTargets+1 rays w/ falloff");
+    }
+
+    // ---- W11: the ladder is a clear POWER ordering above the pistol (sustained
+    // single-target DPS), without any tier being a trivial one-shot melt. ---------
+    {
+        Arsenal a;
+        auto sustainedDps = [&](const char* nm) -> float {
+            const WeaponDef& d = a.def(a.indexOf(nm));
+            // chaingun's headline DPS is at full spin; others fire at their rate.
+            return (float)d.damage * d.fireRate * (float)(d.pellets > 0 ? d.pellets : 1);
+        };
+        float pistol  = sustainedDps("pistol");      // 45
+        float chain   = sustainedDps("chaingun");
+        float prifle  = sustainedDps("plasma_rifle");
+        float lightSt = sustainedDps("lightning");   // single-target (chains add more)
+        bool abovePistol = chain > pistol && prifle > pistol && lightSt > pistol;
+        // None of the three deletes a 200-HP Act-1 boss in a single shot.
+        const WeaponDef& cg = a.def(a.indexOf("chaingun"));
+        const WeaponDef& pr = a.def(a.indexOf("plasma_rifle"));
+        const WeaponDef& lg = a.def(a.indexOf("lightning"));
+        int prShot = pr.damage + pr.splashDamage;    // worst-case single plasma bolt
+        bool noOneShot = cg.damage < 200 && prShot < 200 && lg.damage < 200;
+        wcheck(abovePistol && noOneShot,
+               "W11 power ladder: all 3 > pistol DPS, none one-shots a 200-HP boss");
     }
 
     x3::logInfo(std::string("[weapons-test] ") + std::to_string(w_pass) + " passed, " +

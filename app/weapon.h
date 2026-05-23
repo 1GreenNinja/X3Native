@@ -197,6 +197,26 @@ struct WeaponDef {
     int         reserveAmmo = 60;       // spare rounds carried (refills the mag on reload)
     float       reloadTime  = 1.5f;     // seconds to reload a full magazine
     float       projSpeed   = 0.0f;     // projectile travel speed (m/s); 0 for hitscan
+    // ---- Act-1 weapon-ladder mechanics (additive; default 0 = old behaviour) ----
+    // ChainGun spin-up: seconds of continuous firing before the weapon reaches its
+    // full fireRate. While spinning up the EFFECTIVE rate ramps linearly from
+    // (fireRate * spinUpStartFrac) to fireRate; the spin decays when not firing.
+    // spinUpTime <= 0 -> no spin-up (instant full rate), so existing weapons are
+    // unchanged. Pure timing data; the host needs no new wiring.
+    float       spinUpTime     = 0.0f;  // s of sustained fire to reach full RoF (0=off)
+    float       spinUpStartFrac= 0.4f;  // fraction of fireRate at a cold start
+    // Plasma Rifle splash: a small radius (m) of area damage on projectile impact.
+    // The host reads splashRadius/splashDamage on a ProjectileSpawn to optionally
+    // apply AoE; 0 radius -> plain single-target (no behaviour change for plasma).
+    float       splashRadius   = 0.0f;  // AoE radius on impact (m); 0 = none
+    int         splashDamage   = 0;     // AoE damage at the impact center
+    // Lightning Gun beam: a continuous instant-hit beam that can chain to nearby
+    // enemies and falls off past a range threshold. chainTargets>0 emits up to that
+    // many extra rays flagged as chain links; falloffStart begins linear damage
+    // falloff (to 0 at `range`). All default to "no chain / no falloff".
+    bool        beam           = false; // true: continuous instant beam (lightning)
+    int         chainTargets   = 0;     // extra chain rays beyond the primary (0=single)
+    float       falloffStart   = 0.0f;  // m at which damage begins falling off (0=none)
     // Viewmodel: the GLB filename (in the rigged-GLB dir) + the convention-correct
     // viewmodel pose offsets (degrees / meters about the camera basis — same basis
     // the existing pistol viewmodel uses; see WeaponSystem::drawViewmodel + §3 of
@@ -224,6 +244,11 @@ struct ProjectileSpawn {
     x3::phys::Vec3 vel{};      // unit dir * projSpeed (m/s)
     int            damage = 0; // damage on impact
     float          range  = 0; // max travel distance before despawn (m)
+    // Plasma Rifle splash: if splashRadius > 0 the host may apply splashDamage to
+    // every enemy within splashRadius of the impact point (in addition to the
+    // direct-hit `damage`). 0 radius -> plain single-target bolt.
+    float          splashRadius = 0; // AoE radius on impact (m)
+    int            splashDamage = 0; // AoE damage at the impact center
 };
 
 // One resolved hitscan ray (after spread). The host raycasts each one and applies
@@ -232,6 +257,14 @@ struct HitscanRay {
     x3::phys::Vec3 dir{};      // unit fire direction (spread already applied)
     int            damage = 0; // damage this ray deals on a hit
     float          range  = 0; // max ray distance (m)
+    // Lightning Gun beam metadata (default = a plain ray, so existing weapons are
+    // unaffected). `beam` marks an instant-hit beam (continuous-feel) the host may
+    // render as a solid line rather than a tracer; `chain` is true for the extra
+    // chain-link rays past the primary; `falloffStart` is the distance past which
+    // `damage` falls off linearly to 0 at `range` (0 = no falloff, full damage).
+    bool           beam  = false;
+    bool           chain = false;
+    float          falloffStart = 0; // m where damage starts falling off (0 = none)
 };
 
 // Result of a successful fire (gating already passed). Exactly one of the two
@@ -246,7 +279,9 @@ struct ResolvedFire {
 };
 
 // Build the default roster: pistol, SMG (auto), shotgun (pellets), plasma
-// (projectile). Values pulled from the design docs (see weapon.cpp provenance).
+// (projectile), then the Act-1 ladder — ChainGun (spin-up auto hitscan),
+// Plasma Rifle (splash projectile) and Lightning Gun (chaining beam).
+// Values pulled from the design docs (see weapon.cpp provenance).
 std::vector<WeaponDef> makeDefaultRoster();
 
 // Apply a uniform random cone of half-angle `spreadDeg` around unit `dir`, using
@@ -266,6 +301,10 @@ public:
         int   reserve     = 0;     // spare rounds left
         float cooldown    = 0.0f;  // seconds until this weapon can fire again
         float reloadTimer = 0.0f;  // > 0 while reloading; refills the mag at 0
+        // ChainGun spin-up charge in [0,1]: 0 = cold (fires at spinUpStartFrac of
+        // fireRate), 1 = fully spun up (full fireRate). Climbs while firing, decays
+        // when idle. Stays 0/unused for weapons with spinUpTime <= 0.
+        float spinUp      = 0.0f;
     };
 
     // Construct with a roster (defaults to makeDefaultRoster()). Each weapon starts
@@ -365,6 +404,8 @@ private:
 // def, fire respects fireRate (can't fire faster than the cooldown) + ammo (can't
 // fire on an empty mag), reload refills the mag from reserve, the shotgun emits N
 // pellets, and hitscan vs projectile shots both resolve into the right payload.
+// Also covers the Act-1 ladder (W8..W11): ChainGun spin-up ramp, Plasma Rifle
+// splash bolt, Lightning Gun chaining beam, and the ladder power ordering.
 // Logs PASS/FAIL W#, returns true iff all pass.
 bool runWeaponsSelfTest();
 
