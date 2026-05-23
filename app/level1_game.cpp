@@ -289,10 +289,27 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // flips the same activate() instead of this graybox trigger.) ----
     {
         const x3::phys::Vec3 ac = m_layout.arenaCenter;
-        const x3::phys::Vec3 wardA{ ac.x - 3.0f, kEnemyY, ac.z - 3.0f };
-        const x3::phys::Vec3 wardB{ ac.x,        kEnemyY, ac.z + 3.0f };
-        const x3::phys::Vec3 wardC{ ac.x + 3.0f, kEnemyY, ac.z - 3.0f };
+        // Feet on the FLOOR (Y=0), NOT the kEnemyY=0.4 box-lift: a feet-origin
+        // character placed at 0.4 floats, putting her shoulders at the top of the
+        // doorway (read as "super tall"). The model is a normal 1.8 m.
+        const x3::phys::Vec3 wardA{ ac.x - 3.0f, 0.0f, ac.z - 3.0f };
+        const x3::phys::Vec3 wardB{ ac.x,        0.0f, ac.z + 3.0f };
+        const x3::phys::Vec3 wardC{ ac.x + 3.0f, 0.0f, ac.z - 3.0f };
         m_rescue.build(scene, device, physics, m_modelDir, wardA, wardB, wardC);
+        // Light the ward area so the captives aren't lost in the dark: append a warm
+        // fill light above each ward to the corridor fixture set and re-upload once.
+        {
+            std::vector<x3::rhi::PointLight> lights = m_envArt.lightFixtures();
+            auto wardLight = [&](const x3::phys::Vec3& w) {
+                x3::rhi::PointLight L;
+                L.pos[0] = w.x; L.pos[1] = w.y + 2.4f; L.pos[2] = w.z;   // above her head
+                L.range  = 8.0f;
+                L.color[0] = 1.6f; L.color[1] = 1.45f; L.color[2] = 1.2f; // bright warm fill
+                lights.push_back(L);
+            };
+            wardLight(wardA); wardLight(wardB); wardLight(wardC);
+            device.setPointLights(lights.data(), (uint32_t)lights.size());
+        }
         // Hub trigger: a box covering the ward cluster (the arena room). The first
         // frame the player steps into it, tick() fires activate() and the timers run.
         m_triggers.add(x3::phys::Vec3{ ac.x - 6.0f, 0.0f, ac.z - 6.0f },

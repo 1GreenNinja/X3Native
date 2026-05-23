@@ -643,6 +643,7 @@ private:
     x3::phys::BodyId m_body;                  // Enemy-layer collision box
     float            m_modelScale = 1.0f;     // uniform scale applied to the model
     float            m_hitHalfY   = 0.95f;    // Enemy hitbox half-height (scaled); top quarter = head zone
+    float            m_hitCenterOff = 0.0f;   // box center offset above m_pos (feet-origin ground enemies raise it)
 
     int   m_hp        = kMonsterHp;
     int   m_maxHp     = kMonsterHp;           // per-instance starting HP (Tuning)

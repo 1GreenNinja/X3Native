@@ -37,6 +37,10 @@ constexpr float kBoxModelScale  = 1.0f;
 // at this size).
 constexpr x3::phys::Vec3 kMonsterHalf{ 0.5f, 0.4f, 0.5f };
 
+// Hover height (m) added to a Drone-type enemy's spawn Y so flyers float in the
+// air (above the player's eye line) instead of walking the floor.
+constexpr float kDroneHoverY = 1.8f;
+
 // Build a column-major 4x4 from a 3x3 basis (columns bx,by,bz), uniform scale s,
 // and translation t. Column-major: m[0..3]=col0, m[4..7]=col1, etc.
 void composeTRS(float m[16],
@@ -165,6 +169,11 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     m_ranged         = tuning.ranged;
     m_standoff       = tuning.standoff;
     m_aiStrafeBias   = tuning.aiStrafeBias;     // <0 => use the MonsterType default
+
+    // ---- Flyers (drones) HOVER: lift the spawn position off the floor so the model
+    // floats in the air instead of walking the ground. The AI only moves in x/z
+    // (m_pos.y is never touched), so this hover holds for the enemy's whole life.
+    if (m_type == MonsterType::Drone) m_pos.y += kDroneHoverY;
     m_atkTimer       = tuning.attackCooldown;  // small initial delay before first hit
     m_windupTimer    = 0.0f;
     m_winding        = false;
@@ -310,13 +319,24 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     // yet is hittable by a rayCast(Layer::Enemy) and movable by setBodyPosition
     // (same approach as the S4 door). ----
     // Hitbox sized to the (possibly scaled) VISUAL so aiming at the body actually
-    // connects. The old fixed kMonsterHalf (~0.8 m tall) let scaled-up humanoids be shot
-    // "through" — only the small drone was hittable. Taller box, scaled by modelScale.
+    // connects. The old box was CENTERED on m_pos — but ground models have their
+    // origin at the FEET (see the grounding note above), so the box sat half
+    // underground and only covered the shins: chest/head shots flew clean over it
+    // (humanoids were nearly unhittable; only the centre-origin hovering drone was
+    // hit). Fix: raise the box for ground enemies so it spans feet..head; keep the
+    // drone's box centered on m_pos (its model origin IS its center).
     {
         const float hs = (m_modelScale > 0.1f) ? m_modelScale : 1.0f;
-        m_hitHalfY = 0.95f * hs;   // body box half-height; top quarter = the HEAD zone
-        const x3::phys::Vec3 hitHalf{ 0.55f * hs, m_hitHalfY, 0.55f * hs };
-        m_body = physics.addBox(hitHalf, m_pos, 0.0f, x3::phys::Layer::Enemy);
+        if (m_type == MonsterType::Drone) {
+            m_hitHalfY     = 0.95f * hs;   // hovering flyer: centered box (unchanged)
+            m_hitCenterOff = 0.0f;
+        } else {
+            m_hitHalfY     = 1.00f * hs;   // ~2.0 m standing body box...
+            m_hitCenterOff = m_hitHalfY;   // ...sitting on the floor, rising to the head
+        }
+        const x3::phys::Vec3 hitHalf{ 0.60f * hs, m_hitHalfY, 0.60f * hs };
+        const x3::phys::Vec3 center{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z };
+        m_body = physics.addBox(hitHalf, center, 0.0f, x3::phys::Layer::Enemy);
     }
 
     // ---- Monster Entity: bookkeeping (tag/body/visibility/transform). Its render
@@ -379,7 +399,8 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
     // the upper part of the body box) deals 3x. ----
     r.hitMonster = true;
     // HEAD zone = the top quarter of the (scaled) hitbox -> a distinct head area.
-    const bool headshot = (hit.point.y - m_pos.y) > m_hitHalfY * 0.5f;
+    // Box center is at m_pos.y + m_hitCenterOff; its top is +m_hitHalfY above that.
+    const bool headshot = (hit.point.y - m_pos.y) > m_hitCenterOff + m_hitHalfY * 0.5f;
     const int  shotDmg  = headshot ? kDamagePerShot * 3 : kDamagePerShot;
     if (headshot) x3::logInfo("[monster] HEADSHOT! 3x damage");
     bool dead = applyDamage(&m_hp, shotDmg);
@@ -642,13 +663,16 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             }
         } else if (los) {
             // Healthy + visible: engage. Choose Attack / Strafe / Advance by range.
-            const float band = m_ranged ? m_standoff : kAiStrafeBandLo;
-            if (!m_ranged && horiz <= m_attackRange * 1.05f) {
+            if (m_ranged) {
+                // RANGED (drone/flyer): hold the standoff ring and STAY AWAY. Strafe
+                // maintains range via its radial term — backing OUT when too close,
+                // easing IN when slightly far — so it never charges the player. Only
+                // Advance when very far (well past the ring) to close the initial gap.
+                want = (horiz > m_standoff + 4.0f && horiz > kAiStrafeBandHi)
+                           ? AiState::Advance : AiState::Strafe;
+            } else if (horiz <= m_attackRange * 1.05f) {
                 want = AiState::Attack;
-            } else if (m_ranged && std::fabs(horiz - m_standoff) <= 1.5f) {
-                // Drone in its standoff band: strafe + fire.
-                want = (horiz <= m_attackRange) ? AiState::Strafe : AiState::Advance;
-            } else if (horiz <= kAiStrafeBandHi && horiz >= band) {
+            } else if (horiz <= kAiStrafeBandHi && horiz >= kAiStrafeBandLo) {
                 want = (rng01(m_rng) < strafeBias) ? AiState::Strafe : AiState::Advance;
             } else {
                 want = AiState::Advance;
@@ -867,7 +891,8 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         } else {
             m_pos.x += mx * step;
             m_pos.z += mz * step;
-            physics.setBodyPosition(m_body, m_pos);
+            physics.setBodyPosition(m_body,
+                x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z });
         }
     }
 
@@ -2125,6 +2150,10 @@ std::vector<MonsterDef> buildMonsterDefs() {
         t.aiStrafeBias   = 0.60f;                           // flanks/coordinates (drone-ish)
         t.tint[0]=0.45f; t.tint[1]=0.65f; t.tint[2]=1.0f;   // synthetic blue
         const bool realSynth = defBlueSynth(t, 1.0f);
+        // The fallback Drone.glb is authored UPRIGHT (Y-up), NOT lying-flat like the
+        // human characters — applying the Z->Y stand-up tipped it onto its side
+        // ("sideways" drone). Force it off; rigged synths are Y-up too.
+        t.standUpZtoY = false;
         x3::logInfo(std::string("[bestiary] BlueSynth model: ") +
                     (realSynth ? "rigged blue_synth GLB" : "fallback Drone.glb (blue tint)"));
         defs.push_back({ EnemyType::BlueSynth, "BlueSynth", t });

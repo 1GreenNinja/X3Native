@@ -129,7 +129,11 @@ void RescueVictim::build(Scene& scene, x3::rhi::IRenderDevice& device,
 
 void RescueVictim::bakeTransform(Scene& scene) {
     if (m_entity == kNoLink || m_entity >= scene.size()) return;
-    const float c = std::cos(m_yaw), s = std::sin(m_yaw);
+    // Rigged Anna GLBs are authored facing +Z, but m_yaw/headingToFace() use the
+    // -Z-forward CONVENTION — flip the VISUAL yaw 180 deg (same as monster.cpp) or
+    // the captive/companion renders with her BACK to the player.
+    const float ry = m_yaw + 3.14159265358979323846f;
+    const float c = std::cos(ry), s = std::sin(ry);
     Entity& me = scene.get(m_entity);
     composeTRS(me.transform,
                x3::phys::Vec3{ c, 0.0f, -s },
@@ -164,6 +168,13 @@ bool RescueVictim::tick(float dt, bool hubReached, Scene& scene,
         if (m_body.valid()) physics.setBodyPosition(m_body, m_pos);
         bakeTransform(scene);
         return false;
+    }
+
+    // ---- Captive: turn to FACE the player so you see her front as you approach
+    // (no walking around her). bakeTransform applies the +pi visual flip. ----
+    {
+        const float dx = playerPos.x - m_pos.x, dz = playerPos.z - m_pos.z;
+        if (dx * dx + dz * dz > 1e-4f) { m_yaw = headingToFace(dx, dz); bakeTransform(scene); }
     }
 
     // ---- Captive: run the countdown once the hub is reached. ----
