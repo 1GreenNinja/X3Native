@@ -68,3 +68,6 @@ run.pid
 # Loose scratch screenshots in repo root (keep curated ones in docs/screenshots/)
 /*.png
 /*.gif
+
+# Claude Code agent worktrees / local
+.claude/

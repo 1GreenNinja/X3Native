@@ -35,6 +35,7 @@
 #include "spire_top.h"                      // EFLZ Spire F6/F7 top-floor content (Act-1 finale)
 #include "elevator.h"
 #include "club1127.h"
+#include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
 #include "terrain.h"
 #include "fx.h"
 #include "hud.h"
@@ -296,7 +297,7 @@ int main(int argc, char** argv) {
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
-         testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
+         testNav = false, testWeapons = false, testValley = false, testVehicle = false, testFootIk = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false;
     // --test-bestiary (bestiary pass): the data-driven enemy roster. Additive flag.
     bool        testBestiary = false;
@@ -477,6 +478,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-footik") testFootIk = true;
         else if (a == "--test-ui") testUi = true;
         else if (a == "--test-saveload") testSaveLoad = true;
+        else if (a == "--test-valley") testValley = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -791,6 +793,11 @@ int main(int argc, char** argv) {
         x3::logInfo("running GENERAL versioned checkpoint save/load self-test "
                     "(round-trip field-by-field + magic/version/checksum/truncation reject)...");
         return x3::save::runSaveLoadSelfTest() ? 0 : 1;
+    }
+    if (testValley) {
+        x3::logInfo("running Crystal Valleys (Act 2, L15) self-test "
+                    "(terrain placement + crash/K'thara on surface + Dominion + water)...");
+        return x3::game::runValleySelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -2490,6 +2497,203 @@ int main(int argc, char** argv) {
         }
 
         cphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    // ---- Crystal Valleys — Act 2, Level 15 (--world valley) ----------------
+    // The FIRST open surface biome of Act 2 (canon: docs/MASTER_GAME_PLAN.md
+    // "L15-20 Crystal Valleys"), AFTER the cliffs finale of Act 1. A NEW self-
+    // contained world (app/valley.*), kept LOW-CONFLICT exactly like `--world club`:
+    // it does NOT touch level1.cpp / the Spire. It REUSES the streamed terrain path
+    // (TerrainStreamer + analytic sky, like `--world terrain`) and places its
+    // content — the crashed Salvari ship, K'thara (ally), the Dominion patrol, the
+    // crystal formations — ONTO that surface via the terrain placement API, plus a
+    // lake via setWaterParams. Two ways in (mirrors club):
+    //   * WALKABLE (windowed): `--world valley` — WASD / mouse / Space / F noclip.
+    //   * SCREENSHOT (headless): `--world valley --screenshot <path>` — pose the
+    //     showcase camera, settle, capture the PNG, exit.
+    if (worldMode == "valley") {
+        x3::logInfo("--world valley: building Crystal Valleys (Act 2, L15 — open biome)");
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> vphys(x3::phys::createPhysicsWorld());
+        if (!vphys->init()) {
+            x3::logError("--world valley: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        // Streamed terrain around the valley + analytic sky (same as --world terrain).
+        std::unique_ptr<x3::jobs::IJobSystem> vjobs(x3::jobs::createJobSystem());
+        vjobs->init(0);
+        x3::game::Scene vscene;
+        const x3::game::TerrainConfig& vcfg = x3::game::worldTerrainConfig();
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
+            sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+            sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
+            device->setSkyParams(sp);
+        }
+        x3::game::TerrainStreamer vstream;
+        // Seed the residency ring at the origin so the valley content has ground.
+        vstream.init(vscene, *device, *vphys, vjobs.get(), vcfg, 0.0f, 0.0f, /*radius=*/8);
+
+        // Build the valley content onto the streamed terrain.
+        x3::game::ValleyWorld valley;
+        valley.build(vscene, *device, *vphys, x3::game::riggedGlbRoot());
+
+        // Crystal point lights, and the lake water plane.
+        const auto& vlights = valley.pointLights();
+        device->setPointLights(vlights.data(), (uint32_t)vlights.size());
+        const float vSeaLevel = valley.waterSeaLevel();
+        auto applyWater = [&](float t) {
+            x3::rhi::IRenderDevice::WaterParams wp{};
+            wp.enabled = true; wp.seaLevel = vSeaLevel; wp.time = t;
+            wp.amplitude = 0.4f; wp.steepness = 0.5f; wp.waveLength = 12.0f; wp.speed = 1.0f;
+            wp.deepColor[0] = 0.02f; wp.deepColor[1] = 0.08f; wp.deepColor[2] = 0.12f;
+            wp.shallowColor[0] = 0.10f; wp.shallowColor[1] = 0.34f; wp.shallowColor[2] = 0.40f;
+            wp.sunDir[0] = 0.4f; wp.sunDir[1] = 1.0f; wp.sunDir[2] = 0.3f;
+            wp.specular = 14.0f; wp.fresnel = 0.02f;
+            device->setWaterParams(wp);
+        };
+
+        const x3::phys::Vec3 vspawn = valley.spawn();
+
+        // ===== Headless screenshot path: pose the showcase camera, settle, grab. =
+        if (headless) {
+            float cam[5]; valley.showcaseCamera(cam);
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const int kSettle = 48;   // let the ring stream in + characters skin
+            const float dt = 1.0f / 60.0f;
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("C:/GameDev/X3Native-engine/agent_valley.png");
+            vstream.setUploadBudget(64);   // fill the visible ring fast for the still
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                // Nudge the focus across one tile early to trigger the full ring.
+                const float focusX = (i == 1) ? 32.0f : cam[0];
+                vstream.update(vscene, *device, *vphys, focusX, cam[2]);
+                valley.update(dt, vscene, *vphys, vspawn, nullptr);
+                vphys->step(dt);
+                vscene.update(*vphys);
+                applyWater((float)i * dt);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    vscene.render(*device, frame);
+                    valley.drawCharacters(*device, frame, vscene);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world valley: wrote screenshot " + outPath);
+            else       x3::logError("--world valley: capture FAILED");
+            vstream.shutdown(vscene, *device, *vphys);
+            vphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: full first-person controller + physics. ===
+        x3::game::Player vplayer;
+        vplayer.spawn(*vphys, vspawn.x, vspawn.y, vspawn.z);
+
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        bool prevSpaceV = false, prevFV = false, noclipV = false;
+        float flyXv = vspawn.x, flyYv = vspawn.y + 1.6f, flyZv = vspawn.z, flyYawV = 0.0f, flyPitchV = -0.2f;
+        float vWaterTime = 0.0f;
+        x3::logInfo("--world valley: WASD walk, mouse look, Space jump, LeftShift sprint, F noclip, Esc to quit");
+
+        int lastWv = (int)W, lastHv = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+
+            double now = glfwGetTime();
+            float dt = (float)(now - prevTime); prevTime = now;
+            if (dt > 0.1f) dt = 0.1f;
+
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+
+            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            bool spaceNow = kd(GLFW_KEY_SPACE);
+            bool fNow = kd(GLFW_KEY_F);
+            if (fNow && !prevFV) {
+                noclipV = !noclipV;
+                if (noclipV) { float yy, pp; vplayer.camera(flyXv, flyYv, flyZv, yy, pp); flyYawV = yy; flyPitchV = pp; }
+            }
+            prevFV = fNow;
+
+            float camX, camY, camZ, camYaw, camPitch;
+            if (!noclipV) {
+                x3::game::PlayerInput in;
+                if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+                if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+                if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+                if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+                in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+                in.jumpPressed = spaceNow && !prevSpaceV;
+                in.lookDX = ddx; in.lookDY = ddy;
+                vplayer.update(in, dt, *vphys);
+                vplayer.camera(camX, camY, camZ, camYaw, camPitch);
+            } else {
+                const float sens = 0.0025f;
+                flyYawV += ddx * sens; flyPitchV -= ddy * sens;
+                if (flyPitchV >  1.55f) flyPitchV =  1.55f;
+                if (flyPitchV < -1.55f) flyPitchV = -1.55f;
+                float fx = std::cos(flyPitchV) * std::cos(flyYawV);
+                float fy = std::sin(flyPitchV);
+                float fz = std::cos(flyPitchV) * std::sin(flyYawV);
+                float rl = std::sqrt(fx*fx + fz*fz); if (rl < 1e-4f) rl = 1e-4f;
+                float rx = -fz/rl, rz = fx/rl;
+                float spd = 6.0f * dt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd *= 3.0f;
+                if (kd(GLFW_KEY_W)) { flyXv += fx*spd; flyYv += fy*spd; flyZv += fz*spd; }
+                if (kd(GLFW_KEY_S)) { flyXv -= fx*spd; flyYv -= fy*spd; flyZv -= fz*spd; }
+                if (kd(GLFW_KEY_D)) { flyXv += rx*spd; flyZv += rz*spd; }
+                if (kd(GLFW_KEY_A)) { flyXv -= rx*spd; flyZv -= rz*spd; }
+                if (spaceNow) flyYv += spd;
+                if (kd(GLFW_KEY_LEFT_CONTROL)) flyYv -= spd;
+                camX = flyXv; camY = flyYv; camZ = flyZv; camYaw = flyYawV; camPitch = flyPitchV;
+            }
+            prevSpaceV = spaceNow;
+
+            // Stream terrain around the camera, tick the valley NPCs (hostile chase
+            // the player), step physics, sync the scene, animate the lake.
+            vstream.update(vscene, *device, *vphys, camX, camZ);
+            const x3::phys::Vec3 vp{ camX, camY, camZ };
+            valley.update(dt, vscene, *vphys, vp, &vplayer);
+            vphys->step(dt);
+            vscene.update(*vphys);
+            vWaterTime += dt; applyWater(vWaterTime);
+
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWv || chh != lastHv) { lastWv = cw; lastHv = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+
+            device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                vscene.render(*device, frame);
+                valley.drawCharacters(*device, frame, vscene);
+            }
+            device->endFrame(frame);
+        }
+
+        vstream.shutdown(vscene, *device, *vphys);
+        vphys->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
