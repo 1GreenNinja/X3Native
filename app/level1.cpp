@@ -494,26 +494,106 @@ Level1Layout buildLevel1(Scene& scene,
     }
 
     // ===================================================================
-    // 4) F2-F7 PER-FLOOR DISTINCT PARTITIONS (collision graybox; extra, not in the
-    //    env_art floor table). F2-F7 share the grown open plate; these add a couple of
-    //    distinct sub-rooms per the spec WITHOUT slicing the whole 72 m-deep plate
-    //    (partitions are confined to a small band near the elevator-arrival lane).
+    // 4) F2-F7 PER-FLOOR IDENTITY INTERIORS (collision graybox). Each floor now has its
+    //    OWN real-scale plate (kFloors). The EASTERN third (x in [-2,25]) is kept OPEN as
+    //    the arrival + combat hall where the spire_mid/top encounters play (content is
+    //    authored at absolute x in [0,18]); the WESTERN space (x < -2) is partitioned into
+    //    a wing of identity rooms from the LevelArchitect room vocabulary (cells/labs
+    //    ~6-8 m, a big signature hall, a large open bay for the drone floor). Rooms open
+    //    onto the central west corridor (the z in [-3,3] lane, itself open at its east end
+    //    into the arrival hall), so every room is reachable and nothing is sealed.
     // ===================================================================
-    // ---- F2 Medical wards: 3 ward markers (Aria/Keisha/Emily). The rescue hub places
-    //      the victims at the ward centers; lightweight partition near the spine band.
+    // One graybox room: 4 floor-to-ceiling walls with an optional 1.2 m doorway on ONE
+    // side ('W'=-X, 'E'=+X, 'S'=-Z, 'N'=+Z; 0 = sealed). Absolute world coords. Reuses
+    // the shared wall helpers (addCrossWall handles the Z-running walls + doorway/lintel;
+    // the X-running walls are split manually for a doorway, mirroring buildDetentionRoom).
+    auto roomBox = [&](float rx0, float rx1, float rz0, float rz1, float ry0, float rh, char door) {
+        const float zc = (rz0 + rz1) * 0.5f, xc = (rx0 + rx1) * 0.5f;
+        addCrossWall(scene, device, physics, rx0, rz0, rz1, zc, door == 'W', ry0, rh, wallTex, kWallTint, crossWallVis);
+        addCrossWall(scene, device, physics, rx1, rz0, rz1, zc, door == 'E', ry0, rh, wallTex, kWallTint, crossWallVis);
+        auto wallXDoor = [&](float zf, bool d) {
+            if (!d) { addWallX(scene, device, physics, rx0, rx1, zf, ry0, rh, wallTex, kWallTint, crossWallVis); return; }
+            addWallX(scene, device, physics, rx0, xc - kDoorHalf, zf, ry0, rh, wallTex, kWallTint, crossWallVis);
+            addWallX(scene, device, physics, xc + kDoorHalf, rx1, zf, ry0, rh, wallTex, kWallTint, crossWallVis);
+            const float lh = (rh - kLintelBottom) * 0.5f;
+            if (lh > 0.0f)
+                addBox(scene, device, physics, kDoorHalf, lh, kWallT * 0.5f, xc, ry0 + kLintelBottom + lh, zf,
+                       wallTex, kWallTint, (uint32_t)Tag::Static, true, crossWallVis);
+        };
+        wallXDoor(rz0, door == 'S');
+        wallXDoor(rz1, door == 'N');
+    };
+    // A floor's WEST wing: a set of identity rooms, each centered at (cx,cz) with
+    // half-extents (hw,hd) + a doorway side, built at the floor's y0 + ceiling height.
+    struct WingRoom { float cx, cz, hw, hd; char door; };
+    auto buildWing = [&](L1Floor fl, const std::vector<WingRoom>& rooms) {
+        const L1RoomDef& f = kFloors[(uint32_t)fl];
+        for (const WingRoom& r : rooms)
+            roomBox(r.cx - r.hw, r.cx + r.hw, r.cz - r.hd, r.cz + r.hd, f.y0, f.ceil, r.door);
+    };
+
+    // ---- F2 Medical Bay: 3 ward markers (Aria/Keisha/Emily) in the east hall (rescue
+    //      hub places victims here) + a west wing: big Recovery Ward + Medbay/Lab/Cure
+    //      Lab/Observation rooms.
     {
         const L1RoomDef& f2 = kFloors[(uint32_t)L1Floor::F2];
-        const float y0 = f2.y0, h = f2.ceil;
-        const float wx1 = 8.0f, wx2 = 15.0f;     // partition X positions (split the +X arrival half)
-        addCrossWall(scene, device, physics, wx1, -6.0f, 6.0f, 0.0f, true, y0, h,
-                     wallTex, kWallTint, crossWallVis);
-        addCrossWall(scene, device, physics, wx2, -6.0f, 6.0f, 0.0f, true, y0, h,
-                     wallTex, kWallTint, crossWallVis);
-        L.wardA = x3::phys::Vec3{  4.0f, y0, -3.0f };  // Ward A (Aria)
-        L.wardB = x3::phys::Vec3{ 11.5f, y0,  3.0f };  // Ward B (Keisha)
-        L.wardC = x3::phys::Vec3{ 18.0f, y0, -3.0f };  // Ward C (Emily)
+        L.wardA = x3::phys::Vec3{  4.0f, f2.y0, -3.0f };  // Ward A (Aria)
+        L.wardB = x3::phys::Vec3{ 11.5f, f2.y0,  3.0f };  // Ward B (Keisha)
+        L.wardC = x3::phys::Vec3{ 18.0f, f2.y0, -3.0f };  // Ward C (Emily)
     }
-    // ---- F6 Executive: Sarah's holding office partitioned in a -Z pocket near the lane.
+    buildWing(L1Floor::F2, {
+        { -38.0f,  0.0f, 10.0f, 14.0f, 'E' },  // Recovery Ward (big signature hall)
+        { -18.0f,  8.0f,  6.0f,  5.0f, 'S' },  // Medbay
+        { -18.0f, -8.0f,  6.0f,  5.0f, 'N' },  // Surgery / Lab
+        {  -7.0f,  8.0f,  4.0f,  5.0f, 'S' },  // Cure Lab
+        {  -7.0f, -8.0f,  4.0f,  5.0f, 'N' },  // Observation
+    });
+    // ---- F3 Genetics Lab: gene-vat hall + clone/cure labs + research office (FE-#7
+    //      arena stays in the east hall).
+    buildWing(L1Floor::F3, {
+        { -38.0f,  0.0f, 10.0f, 14.0f, 'E' },  // Gene-Vat Hall (big)
+        { -18.0f,  8.0f,  6.0f,  5.0f, 'S' },  // Clone Lab
+        { -18.0f, -8.0f,  6.0f,  5.0f, 'N' },  // Cure Lab
+        {  -7.0f,  8.0f,  4.0f,  5.0f, 'S' },  // Specimen Storage
+        {  -7.0f, -8.0f,  4.0f,  5.0f, 'N' },  // Research Office
+    });
+    // ---- F4 Cybernetics Workshop: server room + augmentation bays + a (flavor) Nexus
+    //      connector room (the real F4->4.5 hook is at x=1.5 in the east, set by spire_mid).
+    buildWing(L1Floor::F4, {
+        { -40.0f,  0.0f, 11.0f, 15.0f, 'E' },  // Server Room (big)
+        { -18.0f,  9.0f,  6.0f,  6.0f, 'S' },  // Augmentation Bay
+        { -18.0f, -9.0f,  6.0f,  6.0f, 'N' },  // Augmentation Bay 2
+        {  -7.0f,  9.0f,  4.0f,  5.0f, 'S' },  // Nexus Connector (to Floor 4.5)
+        {  -7.0f, -9.0f,  4.0f,  5.0f, 'N' },  // Control Room
+    });
+    // ---- F5 Drone Manufacturing: one LARGE open assembly bay + a couple of control
+    //      rooms (the Swarm-AI arena stays in the east hall). The bay is the floor's
+    //      signature: a big hangar, not many small rooms.
+    buildWing(L1Floor::F5, {
+        { -44.0f,  0.0f, 26.0f, 26.0f, 'E' },  // Assembly Bay (huge open hangar)
+        {  -8.0f, 12.0f,  5.0f,  6.0f, 'S' },  // Drone Control
+        {  -8.0f,-12.0f,  5.0f,  6.0f, 'N' },  // Power Plant
+    });
+    // ---- F6 Alien Technology Lab: containment hall + archive vault + observation + tech
+    //      lab (the Alien-Overseer arena + the 2 keypad doors stay in the east hall).
+    buildWing(L1Floor::F6, {
+        { -42.0f,  0.0f, 13.0f, 18.0f, 'E' },  // Containment Hall (big)
+        { -18.0f, 10.0f,  6.0f,  6.0f, 'S' },  // Archive Vault
+        { -18.0f,-10.0f,  6.0f,  6.0f, 'N' },  // Observation
+        {  -7.0f, 10.0f,  4.0f,  5.0f, 'S' },  // Tech Lab
+        {  -7.0f,-10.0f,  4.0f,  5.0f, 'N' },  // Specimen Bay
+    });
+    // ---- F7 Executive Laboratory: boardroom + exec offices + archive + server (the
+    //      Clone/Sarah finale stays in the east hall; the open helipad center is recorded).
+    buildWing(L1Floor::F7, {
+        { -40.0f,  0.0f, 11.0f, 15.0f, 'E' },  // Boardroom (big)
+        { -18.0f,  8.0f,  6.0f,  5.0f, 'S' },  // Executive Office
+        { -18.0f, -8.0f,  6.0f,  5.0f, 'N' },  // Executive Office 2
+        {  -7.0f,  8.0f,  4.0f,  5.0f, 'S' },  // Archive
+        {  -7.0f, -8.0f,  4.0f,  5.0f, 'N' },  // Server
+    });
+    // ---- F6 Executive holding office (Sarah's 4th-rescue marker) in a -Z pocket of the
+    //      east hall + F7 rooftop finale-arena center (the open eastern plate). ----
     {
         const L1RoomDef& f6 = kFloors[(uint32_t)L1Floor::F6];
         const float y0 = f6.y0, h = f6.ceil;
@@ -522,10 +602,9 @@ Level1Layout buildLevel1(Scene& scene,
                      wallTex, kWallTint, crossWallVis);
         L.execOffice = x3::phys::Vec3{ 4.0f, y0, -5.5f };
     }
-    // ---- F7 rooftop: the finale arena center (helipad) is just the open plate. ----
     {
         const L1RoomDef& f7 = kFloors[(uint32_t)L1Floor::F7];
-        L.rooftopCenter = x3::phys::Vec3{ (f7.x0 + f7.x1) * 0.5f, f7.y0, 0.0f };
+        L.rooftopCenter = x3::phys::Vec3{ 10.0f, f7.y0, 0.0f };  // finale arena (east hall, by the Clone at x=8)
     }
 
     // ===================================================================
