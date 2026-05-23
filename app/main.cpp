@@ -55,6 +55,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <cstdio>
+#include <fstream>
 
 // Public-domain single-header GIF encoder (Charlie Tangora) — vendored under
 // third_party/gif_h. Used ONLY by the headless --capture-ai tool below to assemble
@@ -106,6 +107,33 @@ x3::phys::Vec3 muzzleFromCamera(float ex, float ey, float ez, float yaw, float p
         ex + forward.x * mFwd + right.x * mRight - up.x * mDown,
         ey + forward.y * mFwd + right.y * mRight - up.y * mDown,
         ez + forward.z * mFwd + right.z * mRight - up.z * mDown };
+}
+
+// ---- Settings persistence (window size) in %LOCALAPPDATA%\x3native_settings.cfg ----
+// readWindowSize() overrides winW/winH at startup (returns true if a saved size exists,
+// so the host skips maximize-by-default); writeWindowSize() is the menu "SET AS DEFAULT"
+// action. Plain key=value text; a missing/garbled file is simply ignored.
+static std::string x3SettingsPath() {
+    const char* base = std::getenv("LOCALAPPDATA");
+    return std::string(base && *base ? base : ".") + "\\x3native_settings.cfg";
+}
+static bool readWindowSize(uint32_t& w, uint32_t& h) {
+    std::ifstream f(x3SettingsPath());
+    if (!f) return false;
+    bool found = false; std::string line;
+    while (std::getline(f, line)) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string k = line.substr(0, eq);
+        const uint32_t v = (uint32_t)std::strtoul(line.c_str() + eq + 1, nullptr, 10);
+        if (k == "width"  && v >= 320) { w = v; found = true; }
+        else if (k == "height" && v >= 240) { h = v; found = true; }
+    }
+    return found;
+}
+static void writeWindowSize(uint32_t w, uint32_t h) {
+    std::ofstream f(x3SettingsPath());
+    if (f) f << "width=" << w << "\nheight=" << h << "\n";
 }
 
 // Bundle passed to GLFW via the window user-pointer so the char/key callbacks
@@ -445,7 +473,8 @@ int main(int argc, char** argv) {
     // UNCHANGED. A high-DPI box can pass e.g. --width 2560 --height 1440. These
     // affect ONLY the on-screen window: headless capture/screenshot resolution is
     // forced back to 1280x720 below regardless of these flags.
-    uint32_t    winW = 1600, winH = 900;   // bigger default (opens MAXIMIZED below)
+    uint32_t    winW = 1600, winH = 900;   // bigger default (opens MAXIMIZED unless overridden)
+    const bool  loadedWinSize = readWindowSize(winW, winH);   // saved "SET AS DEFAULT" size
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
@@ -842,7 +871,7 @@ int main(int argc, char** argv) {
     // still initialized (cheap; some paths poll events) but never opens a surface.
     GLFWwindow* window = nullptr;
     if (!headless) {
-        glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);   // open big by default (no more dragging)
+        if (!loadedWinSize) glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE); // big by default unless a size was saved
         window = glfwCreateWindow(static_cast<int>(W), static_cast<int>(H),
                                   "X3Engine", nullptr, nullptr);
         if (!window) {
@@ -4242,6 +4271,7 @@ int main(int argc, char** argv) {
             hm.alive = player.isAlive();
             hm.damageFlash = player.damageFlash();
             hm.showCrosshair = !consoleOpen;
+            hm.dispW = cw; hm.dispH = ch;   // live framebuffer size -> menu RESOLUTION readout
             if (!terrainWorld) {
                 hm.objective = game.objectives().currentLabel().c_str();
                 if (game.armed()) {
@@ -4291,6 +4321,13 @@ int main(int argc, char** argv) {
                 prevUiMouse = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
             }
             gameUi.update(uin, *device, frame, hm, dt);
+            // Main-menu "SET AS DEFAULT" -> persist the current framebuffer size.
+            if (gameUi.wantSaveDefaults()) {
+                gameUi.clearSaveDefaults();
+                writeWindowSize((uint32_t)cw, (uint32_t)ch);
+                x3::logInfo("[settings] saved default resolution " +
+                            std::to_string(cw) + "x" + std::to_string(ch));
+            }
 
             // ---- Save/Load: pause-menu SAVE/LOAD buttons (polled from the UI) +
             // F5 quick-save / F9 quick-load (when not typing in the console). The

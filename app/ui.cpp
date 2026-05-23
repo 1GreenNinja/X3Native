@@ -185,7 +185,8 @@ void UiContext::bar(float x, float y, float w, float h, float frac,
 // ===========================================================================
 // MainMenu
 // ===========================================================================
-GameState MainMenu::update(UiContext& ui, const char* title, const char* subtitle) {
+GameState MainMenu::update(UiContext& ui, const char* title, const char* subtitle,
+                           int dispW, int dispH, bool& outSaveDefault) {
     const float w = (float)ui.screenW();
     const float h = (float)ui.screenH();
     if (w <= 0.0f || h <= 0.0f) return GameState::MainMenu;
@@ -222,10 +223,13 @@ GameState MainMenu::update(UiContext& ui, const char* title, const char* subtitl
     ui.textCentered("Mouse or Arrows/WASD to navigate, Enter to select",
                     cx, h - hintPx * 2.2f, hintPx, kColTextDim);
 
-    // Live framebuffer resolution readout (bottom-left).
-    char resBuf[48];
-    std::snprintf(resBuf, sizeof(resBuf), "RESOLUTION: %d x %d", (int)(w + 0.5f), (int)(h + 0.5f));
-    ui.text(resBuf, 12.0f, h - hintPx * 1.4f, hintPx, kColTextDim);
+    // Live framebuffer resolution (updates as the window is dragged) + a button that
+    // asks the host to persist the current size as the startup default.
+    char resBuf[64];
+    std::snprintf(resBuf, sizeof(resBuf), "RESOLUTION:  %d x %d", dispW, dispH);
+    ui.text(resBuf, 16.0f, h - 100.0f, 18.0f, kColText);
+    if (ui.button("SET AS DEFAULT", 16.0f, h - 68.0f, 240.0f, 36.0f))
+        outSaveDefault = true;
     return next;
 }
 
@@ -498,7 +502,10 @@ void UiController::update(const UiInput& input, x3::rhi::IRenderDevice& device,
 
     switch (m_state) {
         case GameState::MainMenu: {
-            const GameState next = m_main.update(m_ui, m_title.c_str(), m_subtitle.c_str());
+            bool saveDef = false;
+            const GameState next = m_main.update(m_ui, m_title.c_str(), m_subtitle.c_str(),
+                                                 hud.dispW, hud.dispH, saveDef);
+            if (saveDef) m_saveDefaults = true;
             if (next != m_state) m_state = next;
             break;
         }
