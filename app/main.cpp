@@ -26,6 +26,7 @@
 #include "scene.h"
 #include "mesh_prims.h"
 #include "asset_root.h"                    // portable assetRoot() (assets-LFS)
+#include "audio_root.h"                    // portable resolveAudio() (D: mirror / G: packs)
 #include "anim.h"                          // Skinner + --list-clips clip check
 #include "level1.h"
 #include "player.h"
@@ -2741,33 +2742,31 @@ int main(int argc, char** argv) {
     // ---- Audio system (M9 / miniaudio) ----
     // init() is GRACEFUL: on a machine with no audio device it logs a warning and
     // runs silently (all play calls become no-ops) — never crashes. We load REAL
-    // purchased WAV/music by ABSOLUTE G:\ path (like the GLBs); nothing is copied
-    // into the public repo. Missing files load() to invalid handles -> silent.
+    // purchased WAV/music resolved per-machine via resolveAudio() (laptop D: mirror
+    // or the other machines' G: packs); nothing is copied into the public repo.
+    // Missing files load() to invalid handles -> silent.
     std::unique_ptr<x3::audio::IAudioSystem> audio(x3::audio::createAudioSystem());
     audio->init();
-    // Concrete asset picks (see docs/ASSET_INVENTORY.md). Hardcoded absolute paths
-    // with graceful fallback: a missing/undecodable file -> invalid handle -> the
+    // Concrete asset picks (see docs/ASSET_INVENTORY.md). Pack-relative paths with
+    // graceful fallback: a missing/undecodable file -> invalid handle -> the
     // corresponding event is simply silent (logged once at load).
-    const x3::audio::SoundHandle sndGun = audio->load(
-        "G:/Unity_Projects/EscapeFromLabZero/Assets/Sci-Fi_Guns_Game-Of-Weapons/"
-        "Audio/SFX/Wave/Single_Gunshots/Single_Gunshot_Sci-Fi_Gun-01.wav");
-    const x3::audio::SoundHandle sndDoor = audio->load(
-        "G:/Unity_Projects/EscapeFromLabZero/Assets/ModularScifiInterior/Sound/"
-        "S_ScifiDoor_A.WAV");
-    const x3::audio::SoundHandle sndPickup = audio->load(
-        "G:/Unity_Projects/EscapeLab48/Escape Lab 48/Assets/"
-        "Sci-fi Evolution Gift Pack/Health or Energy Game Recharge 2.wav");
-    const x3::audio::SoundHandle sndDeath = audio->load(
-        "G:/Unity_Projects/EscapeLab48/Escape Lab 48/Assets/Free Pack/Explosion 1.wav");
+    const x3::audio::SoundHandle sndGun = audio->load(x3::game::resolveAudio(
+        "Sci-Fi_Guns_Game-Of-Weapons/Audio/SFX/Wave/Single_Gunshots/"
+        "Single_Gunshot_Sci-Fi_Gun-01.wav"));
+    const x3::audio::SoundHandle sndDoor = audio->load(x3::game::resolveAudio(
+        "ModularScifiInterior/Sound/S_ScifiDoor_A.WAV"));
+    const x3::audio::SoundHandle sndPickup = audio->load(x3::game::resolveAudio(
+        "Sci-fi Evolution Gift Pack/Health or Energy Game Recharge 2.wav"));
+    const x3::audio::SoundHandle sndDeath = audio->load(x3::game::resolveAudio(
+        "Free Pack/Explosion 1.wav"));
     // Footsteps reuse the gunshot WAV pitched down + quiet (no dedicated footstep
     // WAV in the inventory). It reads as a soft step; replace with a real footstep
     // SFX later if one is added to the pack.
     const x3::audio::SoundHandle sndStep = sndGun;
-    // Absolute path for the looping music/ambient bed (started after the world is
+    // Resolved path for the looping music/ambient bed (started after the world is
     // built, below). Spaceship-ambience-style sci-fi action loop.
-    constexpr const char* kMusicPath =
-        "G:/Unity_Projects/EscapeLab48/Escape Lab 48/Assets/Sci-Fi Music Pack 1/"
-        "Loops/SMP1_LOOP_Zero8 _1.wav";
+    const std::string kMusicPath = x3::game::resolveAudio(
+        "Sci-Fi Music Pack 1/Loops/SMP1_LOOP_Zero8 _1.wav");
 
     // ---- Physics world (M3 / Jolt) ----
     std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
