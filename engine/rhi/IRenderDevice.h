@@ -177,6 +177,11 @@ public:
     // each frame, like setPointLights). Calling with enabled=false disables it.
     virtual void          setSkyParams(const SkyParams&) = 0;
 
+    // Global tonemap EXPOSURE (brightness), applied in the composite/ACES pass: >1
+    // brightens, <1 darkens. Re-applied each frame like setSkyParams. Non-pure (default
+    // no-op) so headless / non-Vulkan impls ignore it.
+    virtual void          setExposure(float /*exposure*/) {}
+
     // ---- Screen-space ambient occlusion (SSAO, idTech-8 grounding/contact) --
     // SSAO darkens the AMBIENT/indirect lighting term in corners, crevices, and
     // contact points so objects feel grounded (fixes the "floating/flat" look,

@@ -140,6 +140,8 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
                          "viewmodel offset to the right (meters)");
     console.registerCVar("vm_down",  std::to_string(x3::game::kVmDefDown),
                          "viewmodel offset below the eye line (meters)");
+    // Global brightness: scales the composite/ACES exposure. >1 brighter, <1 darker.
+    console.registerCVar("r_exposure", "1.4", "global brightness / tonemap exposure (>1 brighter)");
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.
@@ -3845,6 +3847,7 @@ int main(int argc, char** argv) {
         camYaw   += viewKick.shakeYaw();
         if (camPitch >  1.55f) camPitch =  1.55f;   // keep within the look clamp
         device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+        device->setExposure((float)std::atof(console->getString("r_exposure").c_str())); // brightness
         prevSpace = spaceNow;
 
         // ---- Level 1 controller tick: advance doors, run triggers, spawn/clear

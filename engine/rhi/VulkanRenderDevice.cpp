@@ -304,6 +304,12 @@ public:
         m_sky = sp;
     }
 
+    // Global tonemap EXPOSURE (brightness). Driven by the app's r_exposure cvar each
+    // frame; applied in the composite/ACES pass so it brightens the WHOLE scene —
+    // indoor levels included, independent of the sky. Default >1 lifts the dim look.
+    void setExposure(float e) override { m_exposure = (e > 0.0f) ? e : 1.0f; }
+    float m_exposure = 1.3f;
+
     void setSsaoParams(const SsaoParams& sp) override {
         // Cache a snapshot; prepareFrameData() bakes radius/bias/intensity/power
         // into the per-frame SSAO UBO + the mesh.frag control block, and
@@ -2597,7 +2603,7 @@ private:
                                         0, 1, &self->m_setComposite, 0, nullptr);
                 CompositePush cp{};
                 cp.bloomIntensity = kBloomIntensity;
-                cp.exposure = 1.0f;
+                cp.exposure = self->m_exposure;   // global brightness (r_exposure cvar)
                 vkCmdPushConstants(c, self->m_compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(cp), &cp);
                 vkCmdDraw(c, 3, 1, 0, 0);
