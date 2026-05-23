@@ -411,20 +411,26 @@ void EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
     // all (headless / screenshot paths).
     // NOTE: perf is handled by the sim substep cap (main.cpp dt clamp), so this cull is
     // gentle on purpose — behind-only + far — to avoid popping walls at the screen edge.
-    constexpr float kFarCull2  = 110.0f * 110.0f; // hard far cutoff (m^2)
-    constexpr float kNearKeep2 = 12.0f  * 12.0f;  // always draw within 12 m (peripheral)
-    constexpr float kConeCos   = -0.35f;          // only cull what's clearly BEHIND (~110 deg)
+    // FLOOR-BAND + horizontal cull — the big draw-call win. The Spire stacks 8 floors
+    // ~5 m apart; from one floor the other 7 floors' env-art is out of view yet was still
+    // submitted (935 immediate draws/frame -> CPU-bound, GPU idle at ~4%). Keep only the
+    // player's floor (a vertical band around the eye) within a horizontal radius. (Looking
+    // up/down the open shaft may briefly omit an adjacent floor's props — fine for fps.)
+    // camEye==nullptr => draw all (headless / screenshot).
+    constexpr float kBandUp   = 5.5f;          // keep instances up to 5.5 m above eye
+    constexpr float kBandDown = 4.0f;          // ...and 4 m below (the current floor)
+    constexpr float kHoriz2   = 48.0f * 48.0f; // horizontal cull radius^2 (m^2)
+    constexpr float kNear2    = 6.0f  * 6.0f;  // always keep within 6 m (peripheral)
+    (void)camFwd;
     for (const EnvInstance& inst : m_instances) {
         if (camEye) {
-            const float vx = inst.transform[12] - camEye[0];
-            const float vy = inst.transform[13] - camEye[1];
-            const float vz = inst.transform[14] - camEye[2];
-            const float d2 = vx*vx + vy*vy + vz*vz;
-            if (d2 > kFarCull2) continue;                       // too far
-            if (camFwd && d2 > kNearKeep2) {
-                const float inv  = 1.0f / std::sqrt(d2);
-                const float cosA = (vx*camFwd[0] + vy*camFwd[1] + vz*camFwd[2]) * inv;
-                if (cosA < kConeCos) continue;                  // outside the view cone
+            const float dy = inst.transform[13] - camEye[1];
+            const float dx = inst.transform[12] - camEye[0];
+            const float dz = inst.transform[14] - camEye[2];
+            const float h2 = dx*dx + dz*dz;
+            if (h2 > kNear2) {                                  // near props always drawn
+                if (dy > kBandUp || dy < -kBandDown) continue; // a different floor
+                if (h2 > kHoriz2) continue;                    // too far horizontally
             }
         }
         const EnvAsset& a = m_assetTable[inst.asset];
