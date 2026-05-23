@@ -274,10 +274,12 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
                        "Defeat Chief Martinez",
                        "Take the elevator to Floor 2" });
 
-    // ---- F2 rescue system (spec §5): 3 victims (Aria/Keisha/Emily) on 5-min
-    // timers. The 7-floor Spire build will place these in wards A/B/C on F2; on the
-    // current graybox we anchor them in the arena room (a roomy space) at three
-    // distinct spots so the rescue/companion/expire loop is exercisable today.
+    // ---- F2 MEDICAL BAY rescue system (spec §5): 3 victims (Aria/Keisha/Emily) on
+    // 5-min timers — the floor's signature triage. The 7-floor Spire build places these
+    // in wards A/B/C on F2; on the current graybox we anchor them in the arena room (a
+    // roomy space) at three distinct spots so the rescue/companion/expire loop is
+    // exercisable today. The F2 floor BOSS — Dr. Chen (Corrupted) — is placed ALONGSIDE
+    // this rescue on the F2 plate, gated on the same F2 ward hub (see tick() / spawnChen).
     //
     // PLAYTEST-FIX (Issue 2): the countdowns are GATED on the F2 ward hub being
     // reached and DEFAULT OFF — we do NOT call activate()/setHubReached at build, or
@@ -406,6 +408,33 @@ void Level1Game::spawnMartinez(Scene& scene, x3::rhi::IRenderDevice& device,
     x3::logInfo("Level1: BOSS — Chief Martinez spawned in the arena (boss-tier HP/speed)");
 }
 
+// ---- F2 Medical Bay boss: Dr. Chen (Corrupted), Wave-2 placement. Spawns on the F2
+// plate, gated on the F2 ward hub (NOT at load), so he is part of the Medical Bay
+// floor alongside the 3-victim rescue but never pursues a player still on B1. Single-
+// body Boss via the Wave-1 roster (bossTuning(BossType::DrChen)): 3 phases + the
+// KILL-vs-CURE outcome. Idempotent. ----
+void Level1Game::spawnChen(Scene& scene, x3::rhi::IRenderDevice& device,
+                           x3::phys::IPhysicsWorld& physics) {
+    if (m_chenSpawned) return;
+    m_chenSpawned = true;
+    // Place on the F2 plate, off the elevator-doorway spine, in the +X open half (the
+    // ward cluster sits on the F2 floor; Chen anchors the Medical Bay across from it).
+    const float f2y = m_layout.floorBaseY[(uint32_t)L1Floor::F2];
+    m_chen.spawn(scene, device, physics, m_modelDir,
+                 x3::phys::Vec3{ 10.0f, f2y + kEnemyY, 0.0f },
+                 bossTuning(BossType::DrChen));
+    x3::logInfo("Level1: F2 MEDICAL BAY BOSS — Dr. Chen (Corrupted) spawned "
+                "(3 phases; KILL-vs-CURE outcome)");
+}
+
+bool Level1Game::cureChen(Scene& scene, x3::phys::IPhysicsWorld& physics) {
+    if (!m_chenSpawned || m_chen.count() == 0) return false;
+    const bool cured = m_chen.at(0).cure(scene, physics);
+    if (cured)
+        x3::logInfo("Level1: F2 — Dr. Chen INCAPACITATED + CURED (100% cure; Chen survives as ally)");
+    return cured;
+}
+
 void Level1Game::spawnBossAdds(Scene& scene, x3::rhi::IRenderDevice& device,
                                x3::phys::IPhysicsWorld& physics) {
     if (m_bossSummoned) return;
@@ -492,6 +521,9 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     m_corridor.update(dt, scene, physics, eye, atkTarget, attackFx);
     m_checkpoint.update(dt, scene, physics, eye, atkTarget, attackFx);
     m_bossAdds.update(dt, scene, physics, eye, atkTarget, attackFx);
+    // F2 Medical Bay boss (Dr. Chen): runs the same HP-keyed phase machine as Martinez
+    // (3 phases; the cure window opens in Phase3). Spawned on the F2 hub (below).
+    m_chen.update(dt, scene, physics, eye, atkTarget, attackFx);
 
     // ---- Beat 9b (Phase 2b): Martinez runs its HP-keyed phase machine. On a
     // phase transition the callback raises the "PHASE N!" HUD banner + plays a cue,
@@ -569,13 +601,16 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
                 }
                 break;
             case L1Trigger::Hub:
-                // PLAYTEST-FIX (Issue 2): the player reached the F2 ward hub — START
-                // the rescue countdowns now (not at load). Idempotent + latched by the
-                // trigger so it only fires once. Until this, the victims had no timer.
+                // PLAYTEST-FIX (Issue 2): the player reached the F2 MEDICAL BAY ward hub
+                // — START the rescue countdowns now (not at load) AND place the F2 floor
+                // boss Dr. Chen on the F2 plate (Wave-2). Idempotent + latched by the
+                // trigger so it only fires once. Until this, the victims had no timer and
+                // Chen was unplaced (so he never pursues a player still down on B1).
                 if (!m_rescue.hubReached()) {
                     m_rescue.activate();
-                    x3::logInfo("Level1: F2 WARD HUB REACHED — rescue timers started "
-                                "(Aria/Keisha/Emily now counting down)");
+                    spawnChen(scene, *m_devicePtr, physics);
+                    x3::logInfo("Level1: F2 MEDICAL BAY HUB REACHED — rescue timers started "
+                                "(Aria/Keisha/Emily counting down) + Dr. Chen boss placed");
                 }
                 break;
         }
@@ -611,6 +646,12 @@ FireResult Level1Game::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& d
         if (r3.hitMonster) r = r3;
         else if (!r.hit && r3.hit) r = r3;
     }
+    // F2 Medical Bay boss (Dr. Chen), if placed.
+    if (!r.hitMonster && m_chenSpawned) {
+        FireResult r4 = m_chen.fire(eye, dir, scene, physics);
+        if (r4.hitMonster) r = r4;
+        else if (!r.hit && r4.hit) r = r4;
+    }
     return r;
 }
 
@@ -618,7 +659,7 @@ MeleeResult Level1Game::onMelee(const x3::phys::Vec3& eye, const x3::phys::Vec3&
                                 Scene& scene, x3::phys::IPhysicsWorld& physics) {
     // Super-strength punch across all manager-held enemy groups + the doors (the
     // brute-force). Works whether or not armed (the pistol is a separate verb).
-    std::vector<MonsterManager*> groups{ &m_corridor, &m_checkpoint, &m_bossAdds };
+    std::vector<MonsterManager*> groups{ &m_corridor, &m_checkpoint, &m_bossAdds, &m_chen };
     MeleeResult r = m_melee.strike(eye, dir, scene, physics, groups, &m_doors);
     if (r.onCooldown) return r;   // the strike was suppressed; nothing else to do
 
@@ -653,6 +694,7 @@ void Level1Game::drawWorldExtras(x3::rhi::IRenderDevice& device,
     m_checkpoint.drawAll(device, frame, scene);
     m_bossAdds.drawAll(device, frame, scene);
     if (m_martinezSpawned) m_martinez.drawMonster(device, frame, scene);
+    m_chen.drawAll(device, frame, scene);  // F2 Medical Bay boss: Dr. Chen (if placed)
     m_rescue.draw(device, frame, scene);   // F2 victims + transformed-victim bosses
 }
 

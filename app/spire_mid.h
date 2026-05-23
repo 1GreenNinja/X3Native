@@ -1,33 +1,50 @@
 #pragma once
-// EFLZ Act 1 "The Spire" — MID-FLOOR encounter content for F3 (Labs), F4 (Offices)
-// and F5 (R&D / Synth bay). Game/slice code only — engine/ stays pure.
+// EFLZ Act 1 "The Spire" — MID-FLOOR encounter content for F3 (Genetics Lab),
+// F4 (Cybernetics Workshop) and F5 (Drone Manufacturing). Game/slice code only —
+// engine/ stays pure.
+//
+// WAVE-2 RE-THEME (EFLZ_WORLD_STRUCTURE.md §2 + EFLZ_BESTIARY.md §2): the mid floors
+// are brought to their canon Act-1 identities and given their designed bosses, on top
+// of the EXISTING Wave-1 boss machine (monster.h: bossTuning(BossType) single-body
+// bosses + ScriptedFightHook for Sarah's master hack). The multi-pod Chorus / the
+// off-elevator F4.5 Nexus is a SEPARATE module (spire_nexus.*, another agent) — NOT
+// placed here; this module only leaves a labeled F4 -> Floor 4.5 transition hook.
 //
 // CONTENT/LEVEL-SCRIPT ONLY. This module does NOT touch the renderer or any core
 // engine system: it composes the EXISTING data-driven roster (monster.* —
-// DominionTrooper/Verthani/Illuminated/BlueSynth), the rescue system (rescue.*),
-// the door/keypad system (door.*) and the trigger system (trigger.*) onto the
-// vertical Spire graybox stack already built by buildLevel1() (level1.*). The
-// floor plates F3/F4/F5 already exist as geometry (footprints + base Y in the
-// canonical floor table level1Rooms()); here we author the per-floor ENCOUNTERS:
+// DominionTrooper/Verthani/Illuminated/BlueSynth + the Act-1 BossType roster), the
+// rescue system (rescue.*), the door/keypad system (door.*) and the trigger system
+// (trigger.*) onto the vertical Spire graybox stack already built by buildLevel1()
+// (level1.*). The floor plates F3/F4/F5 already exist as geometry (footprints + base Y
+// in the canonical floor table level1Rooms()); here we author the per-floor ENCOUNTERS:
 //
-//   * F3 Labs       — research wing: infected enemies (melee-led), a keypad door
-//                     into the inner lab (lab keycode). Difficulty floor (entry).
-//   * F4 Offices    — cubicle combat sprawl: occupation troopers + cover, a ranged
-//                     elite added, a door-override (keypad) puzzle. Escalates F3.
-//   * F5 Synth bay  — high-bay synth waves: BlueSynth-led ranged pressure + an
-//                     Illuminated elite, plus ONE rescue victim (a captured lab
-//                     tech) on a timer that activates ONLY when the floor's hub
-//                     trigger is reached — never armed at load (mirrors the F2
-//                     RescueSystem::activate() gating). If the timer expires the
-//                     victim transforms into a mini-boss (spec §2 F5 row).
+//   * F3 Genetics Lab        — hybrid-horror research wing: infected/hybrid enemies
+//                     (melee-led) + the floor BOSS **Failed Experiment #7 (Marcus
+//                     Webb)**, the tragic 400% predecessor (3 phases, Memory-Flash
+//                     vulnerability window — see bossTuning(BossType::FailedExperiment7)).
+//                     A keypad door gates the inner spawning chamber (lab keycode).
+//   * F4 Cybernetics Workshop — human-machine fusion: occupation cyborgs + cover, a
+//                     ranged elite, a door-override (keypad) puzzle. Carries the
+//                     **Humanity meter** (0..100) + an AUGMENTATION-CHAIR choice
+//                     (use = power but a Humanity cost; refuse = keep Humanity). The
+//                     floor boss "The Collective"/Chorus is the Nexus agent's lane —
+//                     NOT placed here; a labeled F4 -> Floor 4.5 transition hook is left.
+//   * F5 Drone Manufacturing  — THE drone level: a Swarm-drone set + the floor BOSS
+//                     **Swarm Controller AI**. **Sarah's master hack** is a scripted
+//                     pre-fight beat (gated on the F5 hub / a hack interact, NOT at
+//                     load) that calls ScriptedFightHook::masterHack — stripping ~75%
+//                     of the Swarm AI's HP and FLIPPING the drone set from hostile to
+//                     allied (the drone-army payoff). Plus ONE rescue captive (a lab
+//                     tech) on a hub-gated timer that transforms into a mini-boss on
+//                     expiry (mirrors the F2 RescueSystem::activate() gating).
 //
-// Escalation by design (no unwinnable dogpiles): the counts climb F3(4) -> F4(5)
-// -> F5(6) and the species mix shifts from melee toward ranged + elite, but every
-// enemy pulls its stats/cooldowns from the SAME combat-balance bands the rest of
-// the level uses (monster.h namespace combat), and the manager's per-frame melee
-// attacker cap (combat::kMaxMeleeAttackers) still arbitrates so the player is
-// never melted. Enemies are placed off the elevator-doorway spine so an arriving
-// player isn't ambushed inside the shaft.
+// Escalation by design (no unwinnable dogpiles): the standard enemy counts climb
+// F3 -> F4 -> F5 and the species mix shifts from melee toward ranged + elite, but
+// every enemy pulls its stats/cooldowns from the SAME combat-balance bands the rest
+// of the level uses (monster.h namespace combat), and the manager's per-frame melee
+// attacker cap (combat::kMaxMeleeAttackers) still arbitrates so the player is never
+// melted. Enemies are placed off the elevator-doorway spine so an arriving player
+// isn't ambushed inside the shaft.
 //
 // REACHABILITY: the floors are reached by the existing central elevator, which the
 // host (main.cpp) builds with one stop per floor from the layout's per-floor base
@@ -49,6 +66,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace x3::game {
 
@@ -58,27 +76,36 @@ namespace x3::game {
 // (mirrors L1Trigger::Hub on F2). F3/F4 hubs are reserved for objective/encounter
 // activation hooks (alarm beats) and keep the pattern uniform across the wing.
 enum class SpireMidTrigger : uint32_t {
-    F3Hub = 30,   // F3 Labs hub reached (encounter armed)
-    F4Hub = 40,   // F4 Offices hub reached (encounter armed)
-    F5Hub = 50,   // F5 Synth bay hub reached -> START the rescue timer (gated!)
+    F3Hub = 30,   // F3 Genetics Lab hub reached (encounter armed)
+    F4Hub = 40,   // F4 Cybernetics Workshop hub reached (encounter armed)
+    F5Hub = 50,   // F5 Drone Manufacturing hub reached -> START the rescue timer (gated!)
 };
 
 // The mid floors this module authors, in elevator-stop order. Index maps to the
 // L1Floor enum (F3=3, F4=4, F5=5) so the elevator stop index == (uint32_t)floor.
 enum class SpireMidFloor : uint32_t { F3 = 0, F4 = 1, F5 = 2, Count = 3 };
 
+// Default starting Humanity (F4 Cybernetics meter, EFLZ canon: too many augments lock
+// out the good endings). 0..100; starts full (no augments taken yet).
+constexpr int kHumanityMax   = 100;
+// Humanity lost per augmentation chair the player USES (the F4 power-vs-self choice).
+constexpr int kAugmentHumanityCost = 20;
+
 // One floor's authored encounter summary (read by the host HUD + the self-test to
 // assert placement counts/roles + reachability without re-deriving them).
 struct SpireFloorPlan {
     L1Floor      floor      = L1Floor::F3;  // which Spire plate
+    const char*  name       = "";           // canon floor identity ("Genetics Lab", ...)
     uint32_t     elevStop   = 3;            // elevator stop index (== (uint32_t)floor)
     float        baseY      = 0.0f;         // floor walkable Y (== layout floorBaseY[floor])
     x3::phys::Vec3 arrival{};               // where an elevator rider steps onto the plate
     uint32_t     meleeCount = 0;            // melee (Guard-archetype) enemies placed
     uint32_t     rangedCount= 0;            // ranged (Drone-archetype) enemies placed
-    uint32_t     totalCount = 0;            // meleeCount + rangedCount
+    uint32_t     bossCount  = 0;            // Boss-archetype enemies placed (F3 FE#7, F5 Swarm AI)
+    uint32_t     totalCount = 0;            // meleeCount + rangedCount + bossCount
     int          doorCode   = 0;            // keypad code on this floor's locked door (0 = none)
     bool         hasVictim  = false;        // a rescue captive is present on this floor
+    bool         hasBoss    = false;        // a designed floor boss anchors this floor
 };
 
 // F3..F5 encounter authoring system. Build once after buildLevel1(); it places the
@@ -97,11 +124,11 @@ public:
                x3::phys::IPhysicsWorld& physics, const Level1Layout& layout,
                TriggerSystem& triggers, std::string_view modelDir);
 
-    // Advance one frame: the enemy groups (movement + attacks against `player`) and
-    // the F5 rescue victim (timer/companion, gated on its hub). `attackFx` (optional)
-    // spawns the per-attack beam FX, exactly like Level1Game::tick. `player` may be
-    // null (geometry/headless movement only). The host calls this once per frame
-    // after Level1Game::tick (they are independent — different enemy groups).
+    // Advance one frame: the enemy groups + the floor bosses (F3 FE#7, F5 Swarm AI),
+    // movement + attacks against `player`, and the F5 rescue victim (timer/companion,
+    // gated on its hub). `attackFx` (optional) spawns the per-attack beam FX, exactly
+    // like Level1Game::tick. `player` may be null (geometry/headless movement only).
+    // The host calls this once per frame after Level1Game::tick (independent groups).
     void tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
               const x3::phys::Vec3& eye, const x3::phys::Vec3& playerPos,
               IDamageSink* player, const AttackFxFn& attackFx);
@@ -114,14 +141,15 @@ public:
     // Interact (E in range): try to rescue the F5 captive. Returns true iff rescued.
     bool onRescue(const x3::phys::Vec3& playerPos, float range = kRescueReach);
 
-    // Fire one shot across all mid-floor enemy groups (the first live enemy hit
-    // takes it). The host folds this into its onFire path so the pistol works on the
-    // mid floors too. Returns the result for FX/HUD. No arm-gate here (the host
-    // owns the WeaponSystem::hasWeapon() gate, as it does for Level1Game::onFire).
+    // Fire one shot across all mid-floor enemy groups + the floor bosses (the first
+    // live enemy hit takes it). The host folds this into its onFire path so the pistol
+    // works on the mid floors too. Returns the result for FX/HUD. No arm-gate here
+    // (the host owns the WeaponSystem::hasWeapon() gate, as it does for Level1Game).
     FireResult onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                       Scene& scene, x3::phys::IPhysicsWorld& physics);
 
-    // Draw all mid-floor enemies + the F5 victim/boss (host calls in its draw block).
+    // Draw all mid-floor enemies + the floor bosses + the F5 victim/boss (host calls
+    // in its draw block).
     void draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
               const Scene& scene) const;
     // Draw the mid-floor keypad door slabs at their current (animating) transforms.
@@ -140,12 +168,57 @@ public:
 
     // ---- Queries (host HUD + the self-test) -------------------------------
     bool built() const { return m_built; }
-    // The authored plan for a mid floor (counts/roles/code/victim/reachability).
+    // The authored plan for a mid floor (counts/roles/code/victim/boss/reachability).
     const SpireFloorPlan& plan(SpireMidFloor f) const { return m_plan[(uint32_t)f]; }
 
-    // Enemy managers per mid floor (read for placement-count/role assertions).
+    // Enemy managers per mid floor (read for placement-count/role assertions). These
+    // hold the STANDARD enemies; each floor's BOSS lives in its own manager (below).
     const MonsterManager& enemies(SpireMidFloor f) const { return m_enemies[(uint32_t)f]; }
     MonsterManager&       enemies(SpireMidFloor f)       { return m_enemies[(uint32_t)f]; }
+
+    // ---- F3 boss: Failed Experiment #7 (Marcus Webb) ----------------------
+    // The F3 boss is its own manager (like spire_top's Clone) so its count/role/phase
+    // can be asserted distinctly from the standard hybrid pack.
+    const MonsterManager& f3Boss() const { return m_f3Boss; }
+    MonsterManager&       f3Boss()       { return m_f3Boss; }
+
+    // ---- F4 Cybernetics — the Humanity meter (EFLZ canon) -----------------
+    // A simple tracked stat in [0, kHumanityMax]. Starts full; each augmentation chair
+    // the player USES on F4 deducts kAugmentHumanityCost. Refusing keeps it intact.
+    int  humanity() const { return m_humanity; }
+    // Adjust Humanity by `delta` (clamped to [0, kHumanityMax]); returns the new value.
+    int  adjustHumanity(int delta);
+    // The F4 augmentation-chair CHOICE. `accept`==true: the player sat in the chair and
+    // took the augment (Humanity cost, the power-vs-self trade); false: refused (no
+    // cost). Latched per-chair so a chair can only be used once. Returns true iff the
+    // choice was newly applied this call. The host wires this to an E-interact at a
+    // chair; the self-test drives it directly.
+    bool augmentChairChoice(bool accept);
+    bool augmentChairUsed() const { return m_augmentChairUsed; }
+    // The labeled F4 -> Floor 4.5 (Nexus Chamber / The Chorus) transition hook. This
+    // module does NOT build the Chorus (that is the spire_nexus agent's lane); it only
+    // exposes a named, queryable transition point so the host can route the F4 exit to
+    // the off-elevator Nexus. Position is the F4 plate's inner edge (post-puzzle).
+    x3::phys::Vec3 nexusTransition() const { return m_nexusTransition; }
+
+    // ---- F5 boss: Swarm Controller AI + Sarah's master hack ----------------
+    // The Swarm Controller AI boss (its own manager). The drone set it commands lives
+    // in enemies(F5) — those are the drones Sarah's hack flips to allied.
+    const MonsterManager& swarmBoss() const { return m_swarmBoss; }
+    MonsterManager&       swarmBoss()       { return m_swarmBoss; }
+    // Has the player triggered Sarah's master hack yet? (false at load; flips true on
+    // the hack interact / once the F5 hack beat fires — never at load).
+    bool sarahHackDone() const { return m_sarahHackDone; }
+    // The DRONE set Sarah's hack flips (the F5 standard enemies that are ranged drones).
+    // Read by the self-test to assert they were hostile before / allied after the hack.
+    uint32_t f5DroneCount() const;
+    // Run Sarah's 90-second master hack as a scripted PRE-FIGHT beat: strip ~75% of the
+    // Swarm Controller AI's HP and FLIP the F5 drone set from hostile to ALLIED (the
+    // drone-army payoff). Uses ScriptedFightHook::masterHack. Idempotent (no-op after
+    // the first call). GATED: the host calls this from a trigger/interact (the F5 hub /
+    // a hack-console E-press), NOT at load. Returns the masterHack Result (HP stripped +
+    // drones flipped); a no-op call returns {0,0}.
+    ScriptedFightHook::Result runSarahMasterHack();
 
     // The F5 rescue victim (read to assert it is present but NOT active at load).
     bool   victimPresent() const { return m_victim != nullptr; }
@@ -167,6 +240,19 @@ private:
     MonsterManager m_enemies[(uint32_t)SpireMidFloor::Count];
     DoorSystem     m_doors;            // the per-floor keypad doors (F3/F4/F5)
 
+    // F3 floor boss: Failed Experiment #7 (its own manager, like the F7 Clone).
+    MonsterManager m_f3Boss;
+
+    // F4 Cybernetics: the Humanity meter + the augmentation-chair choice latch + the
+    // labeled F4 -> Floor 4.5 (Nexus / Chorus) transition hook.
+    int            m_humanity = kHumanityMax;   // 0..100, starts full
+    bool           m_augmentChairUsed = false;  // the F4 chair has been chosen (used/refused) once
+    x3::phys::Vec3 m_nexusTransition{};         // F4 -> Floor 4.5 hook (Nexus agent owns the boss)
+
+    // F5 Drone Manufacturing: the Swarm Controller AI boss + Sarah's master-hack latch.
+    MonsterManager m_swarmBoss;
+    bool           m_sarahHackDone = false;     // Sarah's master hack performed (never at load)
+
     // F5 rescue captive (single victim, gated on the F5 hub). Owned here; drawn via
     // RescueVictim::draw. Transforms into a mini-boss on timer expiry (spec §2 F5).
     std::unique_ptr<RescueVictim> m_victim;
@@ -181,8 +267,14 @@ private:
 
 // Headless self-test (--test-spiremid). Builds the Spire (buildLevel1) + the mid
 // floors on a HeadlessDevice + Jolt world and asserts, per F3/F4/F5:
-//   * the expected enemy COUNT and the melee/ranged ROLE split per floor;
-//   * difficulty escalates (F3 < F4 < F5 total counts);
+//   * the expected enemy COUNT and the melee/ranged/boss ROLE split per floor;
+//   * the canon floor identities (Genetics Lab / Cybernetics Workshop / Drone Mfg);
+//   * F3 carries the Failed Experiment #7 boss; F5 carries the Swarm Controller AI;
+//   * difficulty escalates (F3 < F4 < F5 standard-enemy totals);
+//   * the F4 Humanity meter starts full, drops on a chair USE, and is unchanged on a
+//     REFUSE; the F4 -> Floor 4.5 transition hook is exposed (Chorus NOT placed here);
+//   * Sarah's master hack is gated (not at load), and when run strips the Swarm AI's
+//     HP fraction + flips the F5 drone set to allied;
 //   * the F5 rescue victim is PRESENT but its timer is NOT running at load (it only
 //     starts once the F5 hub trigger fires) and it is still a captive;
 //   * each floor is REACHABLE via the elevator (its stop index is within the stop
@@ -190,5 +282,17 @@ private:
 //   * the keypad door per floor is LOCKED with the authored code.
 // Prints "spiremid: X/Y passed"; returns true iff all pass. No window/Vulkan.
 bool runSpireMidSelfTest();
+
+// Headless self-test (--test-dronehack). Focused on the F5 Drone Manufacturing
+// signature beat — Sarah's master hack — built on the SpireMidFloors content. Asserts:
+//   * the hack is GATED: not performed at load (sarahHackDone()==false) and the F5
+//     drone set is HOSTILE (non-zero attack damage, not allied) + the Swarm Controller
+//     AI boss is at FULL HP before the hack;
+//   * running the hack (gated trigger/interact, NOT at load) STRIPS the Swarm AI's
+//     ~75% HP fraction (boss survives at >= 1 HP, still fights) AND FLIPS the entire
+//     drone set from hostile to ALLIED (attack damage zeroed, isAllied()==true);
+//   * the hack is idempotent (a second call is a no-op).
+// Prints "dronehack: X/Y passed"; returns true iff all pass. No window/Vulkan.
+bool runDroneHackSelfTest();
 
 } // namespace x3::game

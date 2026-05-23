@@ -1,36 +1,41 @@
 #pragma once
-// EFLZ Act 1 "The Spire" — TOP-FLOOR encounter content for F6 (Executive) and F7
-// (Rooftop — the Act-1 summit / finale). Game/slice code only — engine/ stays pure.
+// EFLZ Act 1 "The Spire" — TOP-FLOOR encounter content for F6 (Alien Technology Lab)
+// and F7 (Executive Laboratory — the Act-1 summit / finale). Game/slice code only —
+// engine/ stays pure.
+//
+// WAVE-2 RE-THEME (EFLZ_WORLD_STRUCTURE.md §2 + EFLZ_BESTIARY.md §2): the top floors
+// are brought to their canon Act-1 identities and given their designed boss, on top of
+// the EXISTING Wave-1 boss machine (monster.h: bossTuning(BossType)). F6 becomes the
+// Alien Technology Lab with the **Alien Overseer** boss; F7 keeps the canon Clone +
+// Sarah finale (it was already the Executive Lab summit, just re-labeled).
 //
 // CONTENT/LEVEL-SCRIPT ONLY. This module does NOT touch the renderer or any core
 // engine system: like spire_mid.* (the F3/F4/F5 mid-floor content it copies its
 // authoring pattern from), it composes the EXISTING data-driven roster (monster.* —
-// DominionTrooper/Verthani/Illuminated/BlueSynth + a Boss-type "Clone"), the rescue
-// system (rescue.*), the door/keypad system (door.*) and the trigger system
-// (trigger.*) onto the vertical Spire graybox stack already built by buildLevel1()
-// (level1.*). The floor plates F6/F7 already exist as geometry (footprints + base Y
-// in the canonical floor table level1Rooms()); here we author the per-floor
-// ENCOUNTERS that close out Act 1 per docs/MASTER_GAME_PLAN.md:
+// DominionTrooper/Verthani/Illuminated/BlueSynth + the Act-1 BossType roster + a
+// Boss-type "Clone"), the rescue system (rescue.*), the door/keypad system (door.*)
+// and the trigger system (trigger.*) onto the vertical Spire graybox stack already
+// built by buildLevel1() (level1.*). The floor plates F6/F7 already exist as geometry
+// (footprints + base Y in the canonical floor table level1Rooms()); here we author the
+// per-floor ENCOUNTERS that close out Act 1:
 //
-//   * F6 Executive — the PENULTIMATE floor, the hardest STANDARD encounter of the
-//                    Spire: an occupation strongpoint. 7 enemies escalating beyond
-//                    F5's 6 — a mixed-species push (3 melee DominionTrooper/Verthani
-//                    + 4 ranged BlueSynth/Illuminated) so the floor is dense without
-//                    becoming an unwinnable melee dogpile (the melee cap still caps
-//                    swingers). TWO keypad doors gate the exec suites (the master
-//                    plan's "door-override puzzle"): an outer suite door + an inner
-//                    vault door.
-//   * F7 Rooftop   — the ACT-1 SUMMIT / FINALE (master plan L7 "Executive Laboratory
-//                    -> boss: The Clone"). The climactic setpiece: a Boss-type "The
-//                    Clone" (Jake's duplicate) anchoring the helipad, flanked by an
-//                    Illuminated elite honor-guard pair (8 combatants total — boss +
-//                    honor guard), PLUS the F7 rescue objective — Sarah, held in a
-//                    rooftop holding cell, present-but-not-active-at-load and gated on
-//                    the F7 hub (mirrors the F2 / F5 RescueSystem::activate() gating).
-//                    Reaching the F7 hub starts her clock; rescuing her (E in range)
-//                    makes her a companion (the canon "Sarah wakes, arms up, fights
-//                    beside Jake" beat); if her timer expires she transforms into a
-//                    mini-boss. A single keypad door gates the rooftop airlock.
+//   * F6 Alien Technology Lab — first-contact floor: a mixed Salvari-holding /
+//                    occupation push (3 melee DominionTrooper/Verthani + 4 ranged
+//                    BlueSynth/Illuminated) PLUS the floor BOSS **Alien Overseer**, the
+//                    ranged psychic invasion commander (see bossTuning(BossType::
+//                    AlienOverseer)). TWO keypad doors gate the cure-synthesis labs
+//                    (the "door-override puzzle"): an outer lab door + an inner archive
+//                    vault. The melee cap still arbitrates so the floor isn't a dogpile.
+//   * F7 Executive Laboratory — the ACT-1 SUMMIT / FINALE (canon L7: Clone + Sarah).
+//                    The climactic setpiece: a Boss-type "The Clone" (Jake's duplicate)
+//                    anchoring the exec lab, flanked by an Illuminated honor-guard pair
+//                    (8 combatants total — boss + escort), PLUS the F7 rescue objective
+//                    — Sarah, held in a holding cell, present-but-not-active-at-load and
+//                    gated on the F7 hub (mirrors the F2 / F5 RescueSystem::activate()
+//                    gating). Reaching the F7 hub starts her clock; rescuing her (E in
+//                    range) makes her a companion (the canon "Sarah wakes, arms up,
+//                    fights beside Jake" beat); if her timer expires she transforms into
+//                    a mini-boss. A single keypad door gates the lab airlock.
 //
 // Escalation by design (no unwinnable dogpiles): the counts climb F5(6) -> F6(7) ->
 // F7(8) and the species mix tilts toward ranged + elite + a Boss, but every enemy
@@ -85,17 +90,18 @@ enum class SpireTopFloor : uint32_t { F6 = 0, F7 = 1, Count = 2 };
 // a boss flag for F7's finale.
 struct SpireTopPlan {
     L1Floor      floor      = L1Floor::F6;  // which Spire plate
+    const char*  name       = "";           // canon floor identity ("Alien Technology Lab", ...)
     uint32_t     elevStop   = 6;            // elevator stop index (== (uint32_t)floor)
     float        baseY      = 0.0f;         // floor walkable Y (== layout floorBaseY[floor])
     x3::phys::Vec3 arrival{};               // where an elevator rider steps onto the plate
     uint32_t     meleeCount = 0;            // melee (Guard-archetype) enemies placed
     uint32_t     rangedCount= 0;            // ranged (Drone-archetype) enemies placed
-    uint32_t     bossCount  = 0;            // Boss-archetype enemies placed (F7 finale)
+    uint32_t     bossCount  = 0;            // Boss-archetype enemies placed (F6 Overseer, F7 Clone)
     uint32_t     totalCount = 0;            // meleeCount + rangedCount + bossCount
     int          doorCode   = 0;            // keypad code on this floor's FIRST locked door (0 = none)
     int          doorCode2  = 0;            // keypad code on this floor's SECOND locked door (0 = none)
     bool         hasVictim  = false;        // a rescue captive is present on this floor (F7 Sarah)
-    bool         hasBoss    = false;        // a Boss-type leader anchors this floor (F7 Clone)
+    bool         hasBoss    = false;        // a Boss-type leader anchors this floor (F6 Overseer / F7 Clone)
 };
 
 // F6..F7 encounter authoring system. Build once after buildLevel1(); it places the
@@ -167,6 +173,11 @@ public:
     const MonsterManager& enemies(SpireTopFloor f) const { return m_enemies[(uint32_t)f]; }
     MonsterManager&       enemies(SpireTopFloor f)       { return m_enemies[(uint32_t)f]; }
 
+    // The F6 Alien Overseer boss manager (its own manager, like the F7 Clone) so its
+    // count/role/phase can be asserted distinctly from the F6 occupation push.
+    const MonsterManager& overseerBoss() const { return m_overseer; }
+    MonsterManager&       overseerBoss()       { return m_overseer; }
+
     // The F7 Clone boss manager (read to assert a Boss-type leader is present + alive).
     const MonsterManager& boss() const { return m_boss; }
     MonsterManager&       boss()       { return m_boss; }
@@ -190,6 +201,7 @@ private:
 
     SpireTopPlan   m_plan[(uint32_t)SpireTopFloor::Count];
     MonsterManager m_enemies[(uint32_t)SpireTopFloor::Count];
+    MonsterManager m_overseer;         // the F6 "Alien Overseer" Boss-type leader (its own group)
     MonsterManager m_boss;             // the F7 "Clone" Boss-type leader (its own group)
     DoorSystem     m_doors;            // the per-floor keypad doors (F6 x2, F7 x1)
 
@@ -208,7 +220,9 @@ private:
 // Headless self-test (--test-spiretop). Builds the Spire (buildLevel1) + the mid
 // floors (spire_mid) + the top floors on a HeadlessDevice + Jolt world and asserts,
 // per F6/F7:
+//   * the canon floor identities (Alien Technology Lab / Executive Laboratory);
 //   * the expected enemy COUNT and the melee/ranged/boss ROLE split per floor;
+//   * F6 carries the Alien Overseer boss (live Boss-type); F7 carries the Clone boss;
 //   * difficulty escalates F5 < F6 < F7 (across spire_mid + spire_top totals);
 //   * the F7 finale carries a Boss-type leader (The Clone) alive at load;
 //   * the F7 rescue victim (Sarah) is PRESENT but its timer is NOT running at load
