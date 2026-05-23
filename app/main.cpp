@@ -3476,6 +3476,12 @@ int main(int argc, char** argv) {
         game.cheatArm(scene); arsenal.setInfiniteAmmo(true);
         console->print("IDFA - all weapons + unlimited ammo");
     }, "arm all weapons + unlimited ammo");
+    console->registerCommand("idclip", [&player, &console](const std::vector<std::string>& a) {
+        const bool on = a.empty() ? !player.noclip() : (a[0] != "0");
+        player.setNoclip(on);
+        if (on && !player.god()) player.setGod(true);   // don't take env damage while flying
+        console->print(std::string("noclip ") + (on ? "ON  (IDCLIP) — fly with WASD, look up/down to climb" : "OFF"));
+    }, "idclip [0|1] - toggle noclip free-flight (no collision)");
 
     // ---- S7: route keyboard text + editing into the on-screen console. The
     // char callback feeds printable codepoints; the key callback handles the

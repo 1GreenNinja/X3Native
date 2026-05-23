@@ -152,6 +152,23 @@ void Player::update(const PlayerInput& in, float dt, x3::phys::IPhysicsWorld& ph
     if (m_pitch >  kPitchClamp) m_pitch =  kPitchClamp;
     if (m_pitch < -kPitchClamp) m_pitch = -kPitchClamp;
 
+    // ---- IDCLIP: free-fly. Move along the FULL look direction (pitch included, so
+    // looking up + forward ascends), no gravity, no collision — teleport the body
+    // each frame (the same setBodyPosition trick doors/monsters use). 2x speed.
+    if (m_noclip) {
+        const float cp = std::cos(m_pitch), sp = std::sin(m_pitch);
+        const float fX = std::cos(m_yaw) * cp, fY = sp, fZ = std::sin(m_yaw) * cp;
+        const float rX = -std::sin(m_yaw),     rZ = std::cos(m_yaw);
+        const float spd = (in.sprint ? kSprintSpeed : kWalkSpeed) * 2.0f;
+        x3::phys::Vec3 feet = physics.getBodyPosition(m_body);
+        feet.x += (fX * in.moveFwd + rX * in.moveStrafe) * spd * dt;
+        feet.y += (fY * in.moveFwd) * spd * dt;          // look up/down to climb/descend
+        feet.z += (fZ * in.moveFwd + rZ * in.moveStrafe) * spd * dt;
+        physics.setBodyPosition(m_body, feet);
+        m_feetX = feet.x; m_feetY = feet.y; m_feetZ = feet.z;
+        return;
+    }
+
     // ---- Horizontal basis from yaw (device forward convention, pitch ignored
     // for movement so looking up/down doesn't slow you on the ground).
     const float fx = std::cos(m_yaw), fz = std::sin(m_yaw);  // forward (XZ)
