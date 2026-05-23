@@ -4179,7 +4179,7 @@ int main(int argc, char** argv) {
                 // (so they also prove a shot landed: no bar appears => the shot missed). --
                 {
                     auto hpBar = [&](const x3::phys::Vec3& head, int hpv, int mx, float flash) {
-                        if (mx <= 0 || hpv >= mx || hpv <= 0) return;   // only living + damaged
+                        if (mx <= 0 || hpv <= 0) return;   // show for ALL living enemies (drops as hit)
                         float sx = 0.0f, sy = 0.0f;
                         if (!device->worldToScreen(head.x, head.y, head.z, sx, sy)) return;
                         const float frac = (float)hpv / (float)mx;
@@ -4189,10 +4189,9 @@ int main(int argc, char** argv) {
                         if (hh > 30 && y0 > (float)hh - 30.0f) y0 = (float)hh - 30.0f;
                         const float frameC[4] = { 0.90f, 0.95f, 1.00f, 0.95f };   // bright frame (shiny)
                         const float backC[4]  = { 0.04f, 0.05f, 0.08f, 0.85f };   // dark bg
-                        const float rr = (frac > 0.5f) ? (2.0f - frac * 2.0f) : 1.0f;  // green->yellow->red
-                        const float gg = (frac > 0.5f) ? 1.0f : (frac * 2.0f);
-                        const float fillC[4]  = { std::min(1.0f, rr + flash), gg, 0.10f, 1.0f };
-                        const float shineC[4] = { 1.0f, 1.0f, 1.0f, 0.40f };       // top highlight
+                        // Silver/white fill (flares hot-white briefly on a fresh hit).
+                        const float fillC[4]  = { 0.82f + 0.18f * flash, 0.85f, 0.92f, 1.0f };
+                        const float shineC[4] = { 1.0f, 1.0f, 1.0f, 0.55f };       // bright top highlight
                         device->drawHudQuad(frame, x0 - 1.5f, y0 - 1.5f, bw + 3.0f, bh + 3.0f, frameC);
                         device->drawHudQuad(frame, x0, y0, bw, bh, backC);
                         device->drawHudQuad(frame, x0, y0, bw * frac, bh, fillC);
