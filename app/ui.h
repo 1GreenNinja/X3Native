@@ -163,6 +163,8 @@ struct HudModel {
     float damageFlash  = 0.0f;   // [0,1] red hit flash strength
     bool  showCrosshair= true;
     bool  alive        = true;
+    int   dispW        = 0;      // live framebuffer size (drives the menu RESOLUTION readout)
+    int   dispH        = 0;
 };
 
 // Render-setting state the SettingsMenu reflects + toggles. Mirrors the engine's
@@ -184,7 +186,11 @@ class MainMenu {
 public:
     // Draw + handle input. Returns the next GameState (MainMenu = stay; Playing =
     // START chosen; Quit = QUIT chosen). `title`/`subtitle` are display strings.
-    GameState update(UiContext& ui, const char* title, const char* subtitle);
+    // dispW/dispH = the LIVE framebuffer size (shown as the resolution readout, updates
+    // as the window is dragged). outSaveDefault is set true the frame the "SET AS
+    // DEFAULT" button is clicked (host writes the settings file).
+    GameState update(UiContext& ui, const char* title, const char* subtitle,
+                     int dispW, int dispH, bool& outSaveDefault);
 };
 
 // A save/load action the pause menu can request back to the host (it is NOT a
@@ -269,6 +275,11 @@ public:
     bool wantSave() const { return m_pendingAction == PauseAction::Save; }
     bool wantLoad() const { return m_pendingAction == PauseAction::Load; }
     void clearSaveLoadRequest() { m_pendingAction = PauseAction::None; }
+    // True the frame the user clicked "SET AS DEFAULT" on the main menu — the host
+    // writes the settings file (window size + r_exposure), then calls clearSaveDefaults().
+    bool wantSaveDefaults() const { return m_saveDefaults; }
+    void clearSaveDefaults() { m_saveDefaults = false; }
+    bool m_saveDefaults = false;
 
     // Force a state (used by the host, e.g. when the player dies -> back to menu,
     // or by tests). Does NOT apply settings.
