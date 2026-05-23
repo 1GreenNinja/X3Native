@@ -35,6 +35,7 @@
 #include "spire_mid.h"                      // EFLZ Spire F3/F4/F5 mid-floor content
 #include "spire_top.h"                      // EFLZ Spire F6/F7 top-floor content (Act-1 finale)
 #include "spire_nexus.h"                    // EFLZ Floor 4.5 Nexus Chamber / The Chorus (off-elevator boss)
+#include "spire_sublevels.h"                // EFLZ hidden Floor-7 sub-levels + Dr. Chen Return Mission
 #include "elevator.h"
 #include "club1127.h"
 #include "terrain.h"
@@ -529,6 +530,10 @@ int main(int argc, char** argv) {
     // --test-dronehack (F5 Drone Manufacturing): Sarah's master hack strips the Swarm
     // Controller AI's HP fraction + flips the drone set to allied (gated, not at load). Additive.
     bool        testDroneHack = false;
+    // --test-sublevels (hidden Floor-7 sub-levels + Dr. Chen Return Mission): asserts the
+    // descent is HIDDEN/inert until the F7-complete gate (Clone fallen + Sarah saved), then
+    // SL1/SL2/SL3 build with the Frozen Collective mini-boss + a rescuable Dr. Chen. Additive.
+    bool        testSubLevels = false;
     // --test-collapse (K-T3 structural collapse): build a small structure (column /
     // beam on two supports), destroy a support, step the sim, and assert the
     // unsupported pieces fall (static->dynamic), anchored pieces stay stable, the
@@ -692,6 +697,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-nexus") testNexus = true;
         else if (a == "--test-spiretop") testSpireTop = true;
         else if (a == "--test-dronehack") testDroneHack = true;
+        else if (a == "--test-sublevels") testSubLevels = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-net") testNet = true;
@@ -966,6 +972,12 @@ int main(int argc, char** argv) {
         x3::logInfo("running EFLZ F5 Drone Manufacturing — Sarah's master hack "
                     "(strip Swarm AI HP + flip the drone army) self-test...");
         return x3::game::runDroneHackSelfTest() ? 0 : 1;
+    }
+    if (testSubLevels) {
+        x3::logInfo("running EFLZ hidden Floor-7 sub-levels (Waste Disposal / Cryo Storage "
+                    "[Frozen Collective] / Enhanced Interrogation -> Dr. Chen Return Mission) "
+                    "self-test...");
+        return x3::game::runSubLevelsSelfTest() ? 0 : 1;
     }
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
@@ -2855,6 +2867,21 @@ int main(int argc, char** argv) {
     // through its own TriggerSystem back to nexus.onTrigger(). Level 1 only. ----
     x3::game::SpireNexus    nexus;
     x3::game::TriggerSystem nexusTriggers;
+    // ---- Hidden Floor-7 SUB-LEVELS + the Dr. Chen RETURN MISSION. Authored as new
+    // graybox plates BELOW B1 (descending -Y), reached via a hidden lift behind the
+    // executive desk that ARMS ONLY after the F7 finale is complete (the Clone has fallen
+    // AND Sarah is saved). At build the descent is HIDDEN/inert; the host opens it once
+    // (subLevels.openDescent) from spire_top's PUBLIC queries — it never modifies
+    // spire_top. SL1 Waste Disposal (hazard) / SL2 Cryo Storage (Frozen Collective
+    // mini-boss) / SL3 Enhanced Interrogation (free Dr. Chen). Its own TriggerSystem
+    // (subTriggers) dispatches the hidden-lift + per-sub-level hub ids. Level 1 only. ----
+    x3::game::SpireSubLevels subLevels;
+    x3::game::TriggerSystem  subTriggers;
+    // Host-tracked latch: Sarah was rescued on F7 (set true when topFloors.onRescue()
+    // succeeds). Combined with "the Clone boss is dead" it is the descent gate. We track
+    // it host-side because spire_top exposes victimCaptive() (not a companion query), and
+    // we must not modify spire_top.
+    bool sarahSaved = false;
     if (!terrainWorld) {
         game.build(scene, *device, *physics, x3::game::riggedGlbRoot());
         // Audio hookups for Level 1 events (§9, nice-to-have; silent if no device).
@@ -2895,6 +2922,11 @@ int main(int argc, char** argv) {
         // (the F4 hub fires) so the Nexus becomes discoverable on the way to F5.
         nexus.build(scene, *device, *physics, Lb, nexusTriggers,
                     x3::game::riggedGlbRoot());
+        // Author the hidden Floor-7 sub-levels BELOW B1 (built HIDDEN/inert; the descent
+        // is not armed until the F7-complete gate is satisfied below in the loop).
+        subLevels.build(scene, *device, *physics, Lb, subTriggers,
+                        x3::game::riggedGlbRoot());
+
     }
     const x3::game::Level1Layout& L1 = game.layout();
 
@@ -3159,6 +3191,8 @@ int main(int argc, char** argv) {
                     topFloors.drawDoors(*device, frame);
                     topFloors.draw(*device, frame, scene);
                     nexus.draw(*device, frame, scene);            // Floor 4.5 Chorus pods
+                    subLevels.drawDoors(*device, frame);          // hidden sub-level door slabs (no-op while closed)
+                    subLevels.draw(*device, frame, scene);        // sub-level enemies + Frozen Collective + Dr. Chen
                     // Production HUD over the vantage (HP / weapon / objective / crosshair).
                     x3::ui::UiContext capUi;
                     capUi.begin(*device, frame, x3::ui::UiInput{});
@@ -3349,6 +3383,10 @@ int main(int argc, char** argv) {
             // Floor 4.5 Nexus (gated; inert until its connector discovers it).
             for (uint32_t tid : nexusTriggers.update(ssEye)) nexus.onTrigger(tid);
             nexus.tick(dt, scene, *physics, ssEye, nullptr, x3::game::AttackFxFn{});
+            // Hidden sub-levels: stay HIDDEN/inert in the screenshot path (the F7 gate is
+            // never satisfied here), so this tick is a pure no-op — kept for parity.
+            for (uint32_t tid : subTriggers.update(ssEye)) subLevels.onTrigger(tid);
+            subLevels.tick(dt, scene, *physics, ssEye, ssEye, nullptr, x3::game::AttackFxFn{});
             physics->step(dt);
             scene.update(*physics);
             // FX demo: with a SMALL settle (<=30) spawn a fresh muzzle + impact burst
@@ -3377,6 +3415,8 @@ int main(int argc, char** argv) {
                 topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
                 topFloors.draw(*device, frame, scene);        // F6/F7 enemies + Clone boss + Sarah
                 nexus.draw(*device, frame, scene);            // Floor 4.5 Chorus pods
+                subLevels.drawDoors(*device, frame);          // hidden sub-level door slabs (no-op while closed)
+                subLevels.draw(*device, frame, scene);        // sub-level enemies + Frozen Collective + Dr. Chen (no-op while closed)
                 if (fxDemo) {
                     combatFx.draw(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch);
                     combatFx.submit(*device, frame);
@@ -3511,6 +3551,10 @@ int main(int argc, char** argv) {
             // Floor 4.5 Nexus (gated; inert until discovered) under validation.
             for (uint32_t tid : nexusTriggers.update(eye)) nexus.onTrigger(tid);
             nexus.tick(dt, scene, *physics, eye, nullptr, x3::game::AttackFxFn{});
+            // Hidden sub-levels under validation (HIDDEN/inert: the F7 gate is unmet here,
+            // so this tick is a pure no-op) — kept for parity with the live loop.
+            for (uint32_t tid : subTriggers.update(eye)) subLevels.onTrigger(tid);
+            subLevels.tick(dt, scene, *physics, eye, eye, nullptr, x3::game::AttackFxFn{});
             physics->step(dt);
             scene.update(*physics);
             audio->update(dt);
@@ -3564,6 +3608,8 @@ int main(int argc, char** argv) {
                 topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
                 topFloors.draw(*device, frame, scene);        // F6/F7 enemies + Clone boss + Sarah
                 nexus.draw(*device, frame, scene);            // Floor 4.5 Chorus pods
+                subLevels.drawDoors(*device, frame);          // hidden sub-level door slabs (no-op while closed)
+                subLevels.draw(*device, frame, scene);        // sub-level enemies + Frozen Collective + Dr. Chen (no-op while closed)
                 const VmPose vmPose = readViewmodelPose(*console);
                 // WEAPONS: draw the SELECTED weapon's viewmodel via the arsenal so the
                 // per-weapon GLB draw path is exercised under Debug validation; fall
@@ -3879,13 +3925,17 @@ int main(int argc, char** argv) {
             } else if (midFloors.onRescue(eye)) {  // F5 synth-bay captive rescue
                 x3::logInfo("use: F5 captive rescued — now a companion");
             } else if (topFloors.onRescue(eye)) {  // F7 rooftop captive (Sarah) rescue
-                x3::logInfo("use: F7 captive 'Sarah' rescued — now a companion");
+                sarahSaved = true;   // latch the descent gate input (the host's only Sarah-saved signal)
+                x3::logInfo("use: F7 captive 'Sarah' rescued — now a companion (Return-Mission gate armed)");
             } else if (nexus.onInteract(eye, scene, *physics)) {  // Floor 4.5: SPARE a Chorus voice
                 x3::logInfo("use: Chorus voice SPARED (save up to 4) — saved=" +
                             std::to_string(nexus.savedCount()));
+            } else if (subLevels.onRescue(eye)) {  // SL3 Dr. Chen rescue (the Return-Mission payoff)
+                x3::logInfo("use: Dr. Chen freed — the Return Mission is complete");
             } else if (!codeMode && (game.nearLockedCodedDoor(eye) ||
                                      midFloors.nearLockedCodedDoor(eye) ||
-                                     topFloors.nearLockedCodedDoor(eye))) {
+                                     topFloors.nearLockedCodedDoor(eye) ||
+                                     subLevels.nearLockedCodedDoor(eye))) {
                 // No button hit, but a locked keypad door is in reach: open the
                 // code-entry keypad (digits 0-9, Enter to submit, Esc to cancel).
                 codeMode = true; keypad.clear();
@@ -3922,7 +3972,8 @@ int main(int argc, char** argv) {
                 if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
                 if (game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     midFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
-                    topFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value())) {
+                    topFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
+                    subLevels.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value())) {
                     x3::logInfo("keypad: ACCEPTED — door opening");
                     codeMode = false; keypad.clear();
                 } else {
@@ -4099,6 +4150,17 @@ int main(int argc, char** argv) {
             // arms the Chorus) then tick the multi-pod boss (inert until armed).
             for (uint32_t tid : nexusTriggers.update(camPos)) nexus.onTrigger(tid);
             nexus.tick(dt, scene, *physics, camPos, &player, enemyAttackFx);
+            // Hidden Floor-7 sub-levels: GATE the hidden descent on the F7 finale being
+            // complete (the Clone boss is dead AND Sarah was saved). openDescent() is a
+            // one-way no-op until BOTH hold; reading spire_top here is READ-ONLY. Once the
+            // descent opens, dispatch its triggers (hidden lift + per-sub-level hubs, the
+            // SL3 hub starts Chen's clock) and tick the sub-level encounters + hazard.
+            const bool cloneFallen =
+                topFloors.plan(x3::game::SpireTopFloor::F7).hasBoss &&
+                topFloors.boss().aliveCount() == 0;
+            subLevels.openDescent(cloneFallen, sarahSaved);
+            for (uint32_t tid : subTriggers.update(camPos)) subLevels.onTrigger(tid);
+            subLevels.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
         }
 
         // ---- Phase 2a: death -> respawn. The player enters the death state at
@@ -4224,6 +4286,12 @@ int main(int argc, char** argv) {
                         x3::game::FireResult rn = nexus.onFire(eye, ray.dir, scene, *physics);
                         if (rn.hitMonster || (!r.hit && rn.hit)) r = rn;
                     }
+                    // Then the hidden sub-level enemies + the Frozen Collective (a clean
+                    // miss until the descent has opened).
+                    if (!r.hitMonster && game.armed()) {
+                        x3::game::FireResult rs = subLevels.onFire(eye, ray.dir, scene, *physics);
+                        if (rs.hitMonster || (!r.hit && rs.hit)) r = rs;
+                    }
                     combatFx.addTracer(muzzle, r.endPoint);   // tracer + muzzle burst per pellet
                     if (r.killed) { combatFx.spawnDeath(r.endPoint); anyKill = true; }
                     else if (r.hitMonster) { combatFx.spawnBlood(r.hitPoint, ray.dir); anyHit = true; lastHp = r.hpAfter; }
@@ -4268,6 +4336,10 @@ int main(int argc, char** argv) {
                     if (!r.hitMonster) {   // then the Floor 4.5 Chorus pods (if armed)
                         x3::game::FireResult rn = nexus.onFire(b.pos, ndir, scene, *physics);
                         if (rn.hitMonster) r = rn;
+                    }
+                    if (!r.hitMonster) {   // then the hidden sub-level enemies + Frozen Collective
+                        x3::game::FireResult rs = subLevels.onFire(b.pos, ndir, scene, *physics);
+                        if (rs.hitMonster) r = rs;
                     }
                     combatFx.addTracer(b.pos, eh.point);
                     if (r.killed) { combatFx.spawnDeath(eh.point);
@@ -4318,6 +4390,8 @@ int main(int argc, char** argv) {
                 topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
                 topFloors.draw(*device, frame, scene);        // F6/F7 enemies + Clone boss + Sarah
                 nexus.draw(*device, frame, scene);            // Floor 4.5 Chorus pods
+                subLevels.drawDoors(*device, frame);          // hidden sub-level door slabs (no-op while closed)
+                subLevels.draw(*device, frame, scene);        // sub-level enemies + Frozen Collective + Dr. Chen (no-op while closed)
                 const VmPose vmPose = readViewmodelPose(*console);
                 if (arsenal.viewmodelsLoaded() && game.armed()) {
                     // WEAPONS: draw the SELECTED weapon's viewmodel (its own GLB +
