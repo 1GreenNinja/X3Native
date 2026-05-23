@@ -56,6 +56,8 @@
 #include <filesystem>
 #include <cstdio>
 #include <fstream>
+#include <thread>     // r_maxfps frame limiter
+#include <chrono>
 
 // Public-domain single-header GIF encoder (Charlie Tangora) — vendored under
 // third_party/gif_h. Used ONLY by the headless --capture-ai tool below to assemble
@@ -174,6 +176,10 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // (not far forward) and clearly down/right so the tracer leaves the gun at an
     // angle the camera can SEE — a far-forward origin sits on the view axis (end-on)
     // and the beam vanishes. Live-tunable.
+    // Frame cap (FPS limiter). Only bites with vsync OFF (FIFO already paces to the
+    // refresh); 0 = uncapped. Stops vsync-off from needlessly maxing the GPU on
+    // frames the display never shows. Live-tunable: `r_maxfps 0` for uncapped.
+    console.registerCVar("r_maxfps",     "240",  "frame cap when vsync off (0 = uncapped)");
     console.registerCVar("muzzle_fwd",   "1.3",  "muzzle forward offset from eye (m)");
     console.registerCVar("muzzle_right", "0.26", "muzzle right offset from eye (m)");
     console.registerCVar("muzzle_down",  "0.30", "muzzle down offset from eye (m)");
@@ -3608,7 +3614,28 @@ int main(int argc, char** argv) {
     // ---- Main loop ----
     int lastW = static_cast<int>(W), lastH = static_cast<int>(H);
     float oceanTime = 0.0f;   // --world ocean wave-animation clock (seconds)
+    double frameCapPrev = glfwGetTime();   // r_maxfps limiter cursor
     while (!glfwWindowShouldClose(window)) {
+        // ---- Frame cap (r_maxfps): sleep out the remainder of the frame budget so
+        // vsync-off doesn't churn the GPU on invisible frames. No-op when vsync is on
+        // (FIFO already blocks) since we'll already be slower than the cap, and when
+        // r_maxfps<=0. Sleep most of the wait, spin the last ~1 ms for accuracy. ----
+        {
+            const float maxfps = (float)std::atof(console->getString("r_maxfps").c_str());
+            if (maxfps > 0.0f) {
+                const double target = frameCapPrev + 1.0 / (double)maxfps;
+                double nowc = glfwGetTime();
+                if (nowc < target) {
+                    const double remain = target - nowc;
+                    if (remain > 0.002)
+                        std::this_thread::sleep_for(std::chrono::duration<double>(remain - 0.001));
+                    while (glfwGetTime() < target) { /* short spin to the deadline */ }
+                }
+                frameCapPrev = glfwGetTime();
+            } else {
+                frameCapPrev = glfwGetTime();
+            }
+        }
         glfwPollEvents();
 
         // ---- S7: console gating. While the console is open, gameplay input is
