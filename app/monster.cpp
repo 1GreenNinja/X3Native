@@ -352,6 +352,7 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
             m_hitCenterOff = m_hitHalfY - skirt;     // box bottom = origin - skirt
         }
         const float hw = 0.60f * std::max(hs, 0.8f);
+        m_hitHalfXZ = hw;                        // chase wall-probe must clear this width
         const x3::phys::Vec3 hitHalf{ hw, m_hitHalfY, hw };
         const x3::phys::Vec3 center{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z };
         m_body = physics.addBox(hitHalf, center, 0.0f, x3::phys::Layer::Enemy);
@@ -365,6 +366,10 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     e.tag     = (uint32_t)Tag::Monster;
     e.visible = true;
     e.body    = m_body;                          // also registers body->entity map
+    // The hitbox body is centered at m_pos + m_hitCenterOff (raised so a feet-origin
+    // humanoid's box spans feet..head); tell Scene::update to anchor the VISUAL +
+    // melee/draw transform back at the feet (m_pos) so the raised box stays invisible.
+    e.bodyVisualOffsetY = m_hitCenterOff;
     composeTRS(e.transform,
                x3::phys::Vec3{1, 0, 0}, x3::phys::Vec3{0, 1, 0}, x3::phys::Vec3{0, 0, 1},
                m_modelScale, m_pos);
@@ -952,10 +957,16 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         float ml = std::sqrt(mx * mx + mz * mz);
         if (ml > 1e-4f) { mx /= ml; mz /= ml; }
         const float step  = chaseSpeed * dt;
-        const float skip  = kMonsterHalf.x + 0.05f;     // clear our own box first
+        // Clear our OWN (now generously-sized) hitbox before probing for walls: the
+        // Static mask also matches Enemy bodies, so a probe starting inside our box
+        // self-hits at ~0 and would block ALL movement. skip past the box half-width
+        // (m_hitHalfXZ, set in build()) + a margin, and probe at a mid-body height
+        // (the box spans m_pos.y - skirt .. + so feet-Y is inside it).
+        const float skip  = m_hitHalfXZ + 0.10f;        // clear our own (wider) box first
         const float probe = step + 0.10f;               // look this far past the box
         const x3::phys::Vec3 mdir{ mx, 0.0f, mz };
-        const x3::phys::Vec3 from{ m_pos.x + mx * skip, m_pos.y, m_pos.z + mz * skip };
+        const float probeY = m_pos.y + m_hitCenterOff;  // mid-body (where a wall blocks)
+        const x3::phys::Vec3 from{ m_pos.x + mx * skip, probeY, m_pos.z + mz * skip };
         const bool blocked =
             physics.rayCast(from, mdir, probe, x3::phys::Layer::Static).hit ||
             physics.rayCast(from, mdir, probe, x3::phys::Layer::Dynamic).hit;
