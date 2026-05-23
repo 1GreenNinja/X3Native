@@ -70,7 +70,9 @@ const float kWallClub[4]   = { 0.13f, 0.12f, 0.18f, 1.0f }; // moody club wall
 const float kBarTop[4]     = { 0.20f, 0.16f, 0.10f, 1.0f }; // warm bar wood/metal
 const float kRock[4]       = { 0.16f, 0.13f, 0.11f, 1.0f }; // cave rock (LevelArchitect caveMat)
 const float kRockFloor[4]  = { 0.13f, 0.11f, 0.09f, 1.0f }; // cave floor
-const float kWater[4]      = { 0.06f, 0.16f, 0.20f, 1.0f }; // flooded slab
+// (The flooded section now uses the engine's REAL animated water — driven per
+//  frame via setWaterParams in Club1127World::tickWater() — not a static slab,
+//  so the old kWater slab tint + kEmitWaterSheen glow are gone.)
 
 // Emissive helpers: { r, g, b, strength }. strength > 1 => bright HDR bloom source.
 const float kEmitOff[4]    = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -82,7 +84,6 @@ const float kEmitCrystal[4]= { 0.15f, 0.95f, 0.85f, 4.0f }; // teal cave crystal
 const float kEmitCore[4]   = { 0.40f, 0.85f, 1.00f, 7.0f }; // power core (very bright)
 const float kEmitLore[4]   = { 0.95f, 0.80f, 0.20f, 4.0f }; // lore-cache amber
 const float kEmitBoss[4]   = { 1.00f, 0.18f, 0.12f, 5.0f }; // boss-arena red
-const float kEmitWaterSheen[4]={0.10f, 0.40f, 0.55f, 1.2f }; // faint flooded glow
 
 // Push a point light (premultiplied color) into the set.
 void addLight(std::vector<x3::rhi::PointLight>& v, float x, float y, float z,
@@ -355,12 +356,18 @@ void Club1127World::build(Scene& scene, x3::rhi::IRenderDevice& device,
     }
 
     // ===================================================================
-    // FLOODED SECTION — a shallow water slab spanning the core cavern's -Z side,
+    // FLOODED SECTION — REAL animated water spanning the core cavern's -Z side,
     // extending toward the boss arena, with lurking sea creatures + lore nooks.
+    //
+    // No static slab: the surface is the engine's Gerstner-wave water plane driven
+    // every frame via setWaterParams (see tickWater() + app/main.cpp's --world
+    // ocean). The water plane is camera-centered + depth-tested against the scene,
+    // so it fills the flooded cavern floor wherever the rock dips below the flood
+    // surface Y and is occluded by the club floor / tunnel above. We only record
+    // the surface Y here (the sea level) and underlight the pool for local glow.
     // ===================================================================
-    const float waterY = coreFloorY + 0.35f;     // shallow water surface
-    addBox(scene, device, physics, coreCx + 6.0f, waterY, coreCz - 2.0f,
-           7.0f, 0.05f, 6.0f, kWater, kEmitWaterSheen, false, 0.5f);  // flooded slab (no collision -> wade through)
+    const float waterY = coreFloorY + 0.35f;     // shallow flood surface (sea level)
+    m_waterY = waterY;                            // tickWater() drives water at this Y
     addLight(m_lights, coreCx + 6.0f, waterY + 2.0f, coreCz - 2.0f, 0.3f, 1.4f, 1.7f, 12.0f);
     // Lore-cache nooks: glowing amber data-cache boxes set in the wall recesses.
     addBox(scene, device, physics, coreCx + 7.0f, coreFloorY + 1.0f, coreCz - 7.5f, 0.4f, 0.4f, 0.4f, kRock, kEmitLore, true);
@@ -455,6 +462,41 @@ void Club1127World::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // chaseSpeed 0 + null target => it never moves; only the animation advances.
     for (auto& c : m_chars)
         c->update(dt, scene, physics, c->pos());
+}
+
+void Club1127World::tickWater(float dt, x3::rhi::IRenderDevice& device) {
+    if (!m_built) return;
+    // Advance the wave animation clock + (re)apply the engine's REAL water at the
+    // flood surface Y. Same usage as app/main.cpp's --world ocean per-frame driver:
+    // the device CACHES these params + re-applies them each frame (like the sky), so
+    // we re-submit every frame with an advanced `time` to keep the surface moving.
+    //
+    // This is an ENCLOSED flooded cavern (not the open sea), so the waves are gentle:
+    // a short wavelength + low amplitude so it reads as a still-ish flooded pool with
+    // a live, rippling surface rather than rolling ocean swell. The water plane is
+    // camera-centered + depth-tested against the scene, so it fills only where the
+    // cavern floor sits below `seaLevel` and is occluded by the rock/club above.
+    m_waterTime += dt;
+
+    x3::rhi::IRenderDevice::WaterParams wp{};
+    wp.enabled    = true;
+    wp.seaLevel   = m_waterY;       // the flood surface Y (set in build())
+    wp.time       = m_waterTime;    // advance -> the Gerstner waves animate
+    wp.amplitude  = 0.14f;          // gentle chop: a flooded pool, not ocean swell
+    wp.steepness  = 0.55f;          // visible horizontal pinch on the small waves
+    wp.waveLength = 3.0f;           // short waves to fit the ~14 x 12 m pool
+    wp.speed      = 0.9f;           // calm, slow ripple
+    // Teal flood-water tint: deep murky teal -> brighter shallow teal (the engine
+    // blends shallow->deep by how much water the view ray crosses, so shallow edges
+    // near the cavern floor glow brighter than the deep middle).
+    wp.deepColor[0]    = 0.015f; wp.deepColor[1]    = 0.10f; wp.deepColor[2]    = 0.13f;
+    wp.shallowColor[0] = 0.06f;  wp.shallowColor[1] = 0.34f; wp.shallowColor[2] = 0.40f;
+    // No real sun underground; aim the glint UP toward the teal core/pool light so
+    // the surface picks up a moving specular sparkle + a Fresnel sky-ish reflection.
+    wp.sunDir[0] = 0.15f; wp.sunDir[1] = 1.0f; wp.sunDir[2] = 0.30f;
+    wp.specular  = 9.0f;            // sun/light glint strength (HDR -> bloom)
+    wp.fresnel   = 0.05f;          // a touch more face-on reflectance for a glassy cave pool
+    device.setWaterParams(wp);
 }
 
 void Club1127World::drawCharacters(x3::rhi::IRenderDevice& device,

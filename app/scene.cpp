@@ -84,7 +84,7 @@ void Scene::update(const x3::phys::IPhysicsWorld& physics) {
         // orientation. For our axis-aligned falling box this matches exactly.
         x3::phys::Vec3 p = physics.getBodyPosition(e.body);
         e.transform[12] = p.x;
-        e.transform[13] = p.y;
+        e.transform[13] = p.y - e.bodyVisualOffsetY;  // raised-hitbox body -> visual origin
         e.transform[14] = p.z;
         e.transform[15] = 1.0f;
     }

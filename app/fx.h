@@ -23,10 +23,13 @@
 namespace x3::game {
 
 // ---- Tracer tuning ----
-// How long (seconds) a shot tracer beam stays visible.
-constexpr float kTracerTime      = 0.06f;
-// Half-thickness (m) of the tracer beam box (cross-section is 2*thickness).
-constexpr float kTracerThickness = 0.012f;
+// How long (seconds) a shot tracer beam stays visible. Long enough to actually
+// READ as a streak leaving the barrel (0.06 was ~3 frames -> invisible).
+constexpr float kTracerTime      = 0.12f;
+// Half-thickness (m) of the tracer beam box (cross-section is 2*thickness). A
+// hair-thin beam viewed nearly end-on (it leaves the gun toward the crosshair)
+// is invisible; fatten it so the shot clearly comes out of the weapon.
+constexpr float kTracerThickness = 0.035f;
 // Max concurrent tracers (pool). Excess shots overwrite the oldest slot.
 constexpr int   kMaxTracers      = 8;
 

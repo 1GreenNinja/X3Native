@@ -53,12 +53,12 @@ constexpr float kPickupRadius = 1.2f;
 // main.cpp can register the cvars without converting. The pistol GLB's barrel
 // reads "to the right" with a plain camera-basis orientation, so a -90 deg yaw
 // swings it FULLY to forward = traditional point-to-crosshair. Dial vm_* live to converge.
-constexpr float kVmDefYawDeg   = -90.0f; // yaw about camera up (degrees) — barrel -> forward
-constexpr float kVmDefPitchDeg = 0.0f;   // pitch about camera right (degrees)
+constexpr float kVmDefYawDeg   = 193.0f; // yaw about camera up (degrees) — barrel -> forward (Tim-tuned)
+constexpr float kVmDefPitchDeg = 7.0f;   // pitch about camera right (degrees) (Tim-tuned)
 constexpr float kVmDefRollDeg  = 0.0f;   // roll about camera forward (degrees)
-constexpr float kVmDefFwd      = 0.5f;   // forward along look dir (meters)
-constexpr float kVmDefRight    = 0.25f;  // to the right (meters)
-constexpr float kVmDefDown     = 0.2f;   // below the eye line (meters)
+constexpr float kVmDefFwd      = 1.0f;   // forward along look dir (meters) (Tim-tuned)
+constexpr float kVmDefRight    = 0.25f;  // to the right (meters) (Tim-tuned; more-right pass)
+constexpr float kVmDefDown     = 0.35f;  // below the eye line (meters) (Tim-tuned)
 
 // Pure arming rule, factored out so it is testable headlessly (see
 // runPickupSelfTest). Given the player position, the pickup position and the
@@ -349,6 +349,11 @@ public:
     bool reload();
     bool isReloading() const { return currentState().reloadTimer > 0.0f; }
 
+    // IDKFA infinite ammo: when set, fire() never depletes the mag and canFire()
+    // ignores an empty mag (the fire-rate cooldown still applies). Console cheat.
+    void setInfiniteAmmo(bool b) { m_infiniteAmmo = b; }
+    bool infiniteAmmo() const { return m_infiniteAmmo; }
+
     // Advance the per-weapon timers by dt: decay the current weapon's fire cooldown
     // and, if reloading, the reload timer (completing the reload — moving rounds
     // from reserve into the mag — when it hits 0). Other weapons' cooldowns are also
@@ -386,6 +391,7 @@ private:
     std::vector<WeaponDef>   m_defs;
     std::vector<WeaponState> m_state;
     int                      m_sel = 0;
+    bool                     m_infiniteAmmo = false;   // IDKFA infinite-ammo flag
 
     // One loaded viewmodel per roster slot (drawables + scale). `fallbackIndex` is
     // the slot it actually draws (its own load, or the pistol fallback).

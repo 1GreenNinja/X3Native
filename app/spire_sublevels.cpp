@@ -400,20 +400,21 @@ bool SpireSubLevels::onRescue(const x3::phys::Vec3& playerPos, float range) {
 }
 
 FireResult SpireSubLevels::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                                  Scene& scene, x3::phys::IPhysicsWorld& physics) {
+                                  Scene& scene, x3::phys::IPhysicsWorld& physics,
+                                  int damage) {
     FireResult r;
     if (!m_descentOpen) return r;     // the sub-levels aren't in play yet — a clean miss
     for (uint32_t i = 0; i < (uint32_t)SpireSubLevel::Count; ++i) {
-        FireResult ri = m_enemies[i].fire(eye, dir, scene, physics);
+        FireResult ri = m_enemies[i].fire(eye, dir, scene, physics, damage);
         if (ri.hitMonster) return ri;          // a live enemy took it — done
         if (!r.hit && ri.hit) r = ri;          // remember the nearest geometry hit
     }
     // The Frozen Collective mini-boss.
-    FireResult rboss = m_miniBoss.fire(eye, dir, scene, physics);
+    FireResult rboss = m_miniBoss.fire(eye, dir, scene, physics, damage);
     if (rboss.hitMonster) return rboss;
     if (!r.hit && rboss.hit) r = rboss;
     // The (rare) Chen-lost mini-boss, if any.
-    FireResult rb = m_chenBoss.fire(eye, dir, scene, physics);
+    FireResult rb = m_chenBoss.fire(eye, dir, scene, physics, damage);
     if (rb.hitMonster) return rb;
     if (!r.hit && rb.hit) r = rb;
     return r;

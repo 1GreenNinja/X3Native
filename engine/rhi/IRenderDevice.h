@@ -177,6 +177,10 @@ public:
     // each frame, like setPointLights). Calling with enabled=false disables it.
     virtual void          setSkyParams(const SkyParams&) = 0;
 
+    // Project a world point to HUD pixel coords (top-left origin); false if behind the
+    // camera / off-screen. Uses the most recent render viewProj. Non-pure (headless: false).
+    virtual bool          worldToScreen(float, float, float, float& sx, float& sy) const { sx = sy = 0.0f; return false; }
+
     // ---- Screen-space ambient occlusion (SSAO, idTech-8 grounding/contact) --
     // SSAO darkens the AMBIENT/indirect lighting term in corners, crevices, and
     // contact points so objects feel grounded (fixes the "floating/flat" look,

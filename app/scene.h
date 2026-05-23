@@ -71,6 +71,11 @@ struct Entity {
     float                  emissive[4] = {0, 0, 0, 0};
     x3::phys::BodyId       body;            // invalid => purely visual / static
     float                  transform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; // column-major model
+    // Vertical offset (m) SUBTRACTED from the physics body Y when Scene::update syncs
+    // the transform translation: lets a body sit at a raised CENTER (e.g. a monster's
+    // generous feet..head hitbox is centered above the feet) while the rendered/queried
+    // transform still anchors at the visual origin (the feet). Default 0 == no offset.
+    float                  bodyVisualOffsetY = 0.0f;
     bool                   visible = true;
     uint32_t               tag = (uint32_t)Tag::None;
     // Generic gameplay linkage (S4): the entity id this one targets, or kNoLink.

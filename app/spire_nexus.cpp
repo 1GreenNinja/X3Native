@@ -140,9 +140,10 @@ bool SpireNexus::onInteract(const x3::phys::Vec3& playerPos, Scene& scene,
 }
 
 FireResult SpireNexus::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                              Scene& scene, x3::phys::IPhysicsWorld& physics) {
+                              Scene& scene, x3::phys::IPhysicsWorld& physics,
+                              int damage) {
     if (!m_built || !m_armed) return FireResult{};   // no Chorus to hit before discovery
-    return m_chorus.fire(eye, dir, scene, physics);
+    return m_chorus.fire(eye, dir, scene, physics, damage);
 }
 
 void SpireNexus::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
