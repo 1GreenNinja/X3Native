@@ -3919,13 +3919,18 @@ int main(int argc, char** argv) {
             game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
             // Spire mid floors (F3/F4/F5): dispatch their floor-hub triggers (the F5
             // hub starts the rescue clock) then tick their enemy groups + gated victim.
+            // PERF: only tick the F3-F5 / F6-F7 content when the player is on/near those
+            // floors (it otherwise ran every frame on B1). Triggers still run (cheap) so
+            // arrival fires. Gate on eye Y vs the layout's per-floor base Y.
+            const auto& Lb_ = game.layout();
+            const bool nearMid = (camPos.y > Lb_.floorBaseY[3] - 6.0f && camPos.y < Lb_.floorBaseY[5] + 7.0f);
+            const bool nearTop = (camPos.y > Lb_.floorBaseY[6] - 6.0f && camPos.y < Lb_.floorBaseY[7] + 7.0f);
             for (uint32_t tid : midTriggers.update(camPos)) midFloors.onTrigger(tid);
-            midFloors.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
+            if (nearMid) midFloors.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
             // Spire top floors (F6/F7 Act-1 finale): dispatch their hub triggers (the F7
-            // hub starts Sarah's rescue clock) then tick the enemy groups + Clone boss +
-            // gated victim.
+            // hub starts Sarah's rescue clock) then tick the enemy groups + Clone boss.
             for (uint32_t tid : topTriggers.update(camPos)) topFloors.onTrigger(tid);
-            topFloors.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
+            if (nearTop) topFloors.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
         }
 
         // ---- Phase 2a: death -> respawn. The player enters the death state at
@@ -4163,10 +4168,13 @@ int main(int argc, char** argv) {
                 const float cullEye[3] = { cuEx, cuEy, cuEz };
                 const float cullFwd[3] = { cuCp * cuCy, cuSp, cuCp * cuSy };
                 game.drawWorldExtras(*device, frame, scene, cullEye, cullFwd);
-                midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
-                midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
-                topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
-                topFloors.draw(*device, frame, scene);        // F6/F7 enemies + Clone boss + Sarah
+                // PERF: only draw the F3-F5 / F6-F7 floor content when on/near those
+                // floors (matches the tick gate) — they were drawn every frame on B1.
+                const auto& Lbd = game.layout();
+                const bool drawMid = (cullEye[1] > Lbd.floorBaseY[3] - 6.0f && cullEye[1] < Lbd.floorBaseY[5] + 7.0f);
+                const bool drawTop = (cullEye[1] > Lbd.floorBaseY[6] - 6.0f && cullEye[1] < Lbd.floorBaseY[7] + 7.0f);
+                if (drawMid) { midFloors.drawDoors(*device, frame); midFloors.draw(*device, frame, scene); }
+                if (drawTop) { topFloors.drawDoors(*device, frame); topFloors.draw(*device, frame, scene); }
                 const VmPose vmPose = readViewmodelPose(*console);
                 // Recoil back-push: pull the viewmodel toward the player along the
                 // look dir by the current kick (decays to 0). Subtract from the
