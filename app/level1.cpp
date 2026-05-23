@@ -33,29 +33,40 @@ constexpr float kCeilT = 0.2f;        // ceiling cap thickness (collision lid)
 // 5 m floor pitch so plates never overlap (collision-clean); the rooftop F7 is open
 // to the sky so it gets a genuinely tall cap.
 //
-// FLOOR-1 RELAY (2026-05): the shared plate was grown from the old 24x16 m placeholder
-// to the REAL Floor-1 detention footprint (docs/design/SPIRE_LEVELARCHITECT_DIMS.md):
+// FLOOR-1 RELAY (2026-05): the B1 plate was grown from the old 24x16 m placeholder to
+// the REAL Floor-1 detention footprint (docs/design/SPIRE_LEVELARCHITECT_DIMS.md):
 // X -24..+60 (~84 m, covering the detention core X -20..+18 AND the eastern stairs->
-// caves arm out to the Side Grotto at x=55) and zHalf=38 (covering the detention Z
-// span -36..+7 with margin — the plate fully contains every room's AABB). The B1 plate
-// carries the full 29-room interior (built in
-// buildLevel1); F2-F7 share this larger plate (no longer cramped) until they get their
-// own authored geometry. The DETENTION content bounding box is ~75 x 43 m (asserted by
-// the self-test via level1DetentionFootprint()); the raw plate is a superset (the
-// L1RoomDef plate is Z-symmetric about 0, so zHalf must cover the larger -36 side).
-// The 5 m vertical pitch is UNCHANGED (the elevator + the spire_mid/top/sublevel content
-// that reads floorBaseY[] stay in lockstep); ceilings stay <= 5 m so plates never
-// overlap.
+// caves arm out to the Side Grotto at x=55) and zHalf=38 (covering the detention Z span
+// -36..+7 with margin). The B1 plate carries the full 29-room interior (built in
+// buildLevel1). The DETENTION content bounding box is ~75 x 43 m (asserted by the
+// self-test via level1DetentionFootprint()); the raw plate is a superset.
+//
+// FLOORS 2-7 DIMENSIONING (2026-05): F2-F7 no longer share B1's plate — each gets its
+// OWN identity-appropriate footprint at REAL LevelArchitect scale (Floor 1 is ~75x43 m;
+// the v10.9 source has NO authored geometry for F2-7, so they are authored fresh at that
+// scale or larger — see SPIRE_LEVELARCHITECT_DIMS.md). KEY LAYOUT INVARIANT: the elevator
+// shaft (kShaftCx=21) stays at the EAST edge of every floor (x1 ~= 25, just past the
+// shaft), so a rider always arrives at x~=17.5 right at the shaft mouth AND the per-floor
+// "hub" arrival trigger (spire_mid/top place it at [x1-8, x1]) lands ON the arrival point
+// (it was detached at x~52-60 while F2-7 shared B1's x1=60 plate). Each floor then grows
+// WESTWARD (x0 negative) + DEEP (zHalf) to its real size; the existing encounters sit in
+// the eastern arrival third (content is authored at absolute x in [0,18], z in [-6.5,6.5]
+// — all inside every new plate) and the western space is partitioned into identity rooms
+// (see SS4). F5 Drone Manufacturing is the largest (a high-bay assembly hall). B1 + F1 are
+// UNCHANGED (F1 Atrium has no LevelArchitect source; B1's footprint is read by the
+// sub-levels). The 5 m vertical pitch is UNCHANGED (elevator + spire_*/sublevel content
+// that reads floorBaseY[] stay in lockstep); ceilings stay <= 4.8 m (except the open-sky
+// rooftop F7) so stacked plates never overlap.
 //   x0,    x1,    zHalf,  ceil, y0 (= floor index * 5 m)
 const L1RoomDef kFloors[(uint32_t)L1Floor::Count] = {
-    { -24.0f, 60.0f, 38.0f, 4.0f,  0.0f },  // B1 — Detention Level (the full 29-room interior)
-    { -24.0f, 60.0f, 38.0f, 4.6f,  5.0f },  // F1 — Atrium / lobby (tallest interior)
-    { -24.0f, 60.0f, 38.0f, 3.8f, 10.0f },  // F2 — Medical wards
-    { -24.0f, 60.0f, 38.0f, 4.0f, 15.0f },  // F3 — Labs
-    { -24.0f, 60.0f, 38.0f, 3.6f, 20.0f },  // F4 — Offices
-    { -24.0f, 60.0f, 38.0f, 4.5f, 25.0f },  // F5 — Synth bay (high-bay feel)
-    { -24.0f, 60.0f, 38.0f, 4.2f, 30.0f },  // F6 — Executive
-    { -24.0f, 60.0f, 38.0f, 7.0f, 35.0f },  // F7 — Rooftop (open sky, tall)
+    { -24.0f, 60.0f, 38.0f, 4.0f,  0.0f },  // B1 — Detention Level (full 29-room interior) [unchanged]
+    { -24.0f, 60.0f, 38.0f, 4.6f,  5.0f },  // F1 — Atrium / lobby (no LevelArchitect source) [unchanged]
+    { -50.0f, 25.0f, 22.0f, 3.8f, 10.0f },  // F2 — Medical Bay          (75 x 44; wards wing)
+    { -50.0f, 25.0f, 22.0f, 4.0f, 15.0f },  // F3 — Genetics Lab         (75 x 44; research + gene-vats)
+    { -54.0f, 25.0f, 23.0f, 3.8f, 20.0f },  // F4 — Cybernetics Workshop (79 x 46; + Nexus connector W)
+    { -72.0f, 25.0f, 32.0f, 4.8f, 25.0f },  // F5 — Drone Manufacturing  (97 x 64; large high-bay)
+    { -58.0f, 25.0f, 26.0f, 4.4f, 30.0f },  // F6 — Alien Technology Lab (83 x 52; tech halls)
+    { -54.0f, 25.0f, 23.0f, 7.0f, 35.0f },  // F7 — Executive Laboratory (79 x 46; open finale)
 };
 
 // ---- FLOOR 1 "Detention Level" — the authoritative LevelArchitect transcription
@@ -450,13 +461,15 @@ Level1Layout buildLevel1(Scene& scene,
     // ===================================================================
     // 3) EMERGENCY STAIRWELL — a straight ramp column linking every adjacent pair of
     //    floors. Each 5 m rise is a straight stair of 10 stepped boxes (0.5 m rise
-    //    each). Relocated onto an OPEN corner of the grown plate (x in [30,34], z=20),
-    //    clear of the F1 detention rooms (all at z<=7) AND the eastern cave arm, so the
-    //    shaft is a consistent clear XZ on every plate. Purely collision graybox + tint.
+    //    each). Placed in a NORTH BAND (x in [10,14], z=15) that is inside EVERY floor's
+    //    plate — B1's big detention plate (rooms all at z<=9.5) AND the resized F2-F7
+    //    plates (zHalf>=22) — and clear of the elevator shaft (x=21,z=0) + all encounter
+    //    content (z in [-6.5,6.5]). (Was x in [30,34],z=20, which fell OUTSIDE the
+    //    resized F2-F7 plates.) Purely collision graybox + tint.
     // ===================================================================
     {
-        const float stairX0 = 30.0f, stairX1 = 34.0f;    // stair well footprint (X), open corner
-        const float stairZ  = 20.0f;                     // open +Z corner of the grown plate
+        const float stairX0 = 10.0f, stairX1 = 14.0f;    // stair well footprint (X) — north band, inside every plate
+        const float stairZ  = 15.0f;                     // +Z north band: clear of detention (z<=9.5) + content (|z|<=6.5)
         const float stepRun = (stairX1 - stairX0) / 10.0f; // 0.4 m run/step
         const float stepRise = kFloorSpacing / 10.0f;     // 0.5 m rise/step
         // Stair-well floor + outer walls spanning all floors (a single tall shaft).
