@@ -174,9 +174,9 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // (not far forward) and clearly down/right so the tracer leaves the gun at an
     // angle the camera can SEE — a far-forward origin sits on the view axis (end-on)
     // and the beam vanishes. Live-tunable.
-    console.registerCVar("muzzle_fwd",   "0.7",  "muzzle forward offset from eye (m)");
-    console.registerCVar("muzzle_right", "0.30", "muzzle right offset from eye (m)");
-    console.registerCVar("muzzle_down",  "0.40", "muzzle down offset from eye (m)");
+    console.registerCVar("muzzle_fwd",   "1.3",  "muzzle forward offset from eye (m)");
+    console.registerCVar("muzzle_right", "0.26", "muzzle right offset from eye (m)");
+    console.registerCVar("muzzle_down",  "0.30", "muzzle down offset from eye (m)");
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.
