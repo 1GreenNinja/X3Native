@@ -2769,7 +2769,7 @@ bool runBossesSelfTest() {
         w->init(); boGround(*w, 80.0f);
         Scene scene; MultiPodBoss chorus;
         MultiPodBoss::Config cfg = chorusConfig();
-        chorus.build(cfg, device, *w, riggedGlbRoot(), x3::phys::Vec3{ 0.0f, 0.4f, -6.0f });
+        chorus.build(cfg, scene, device, *w, riggedGlbRoot(), x3::phys::Vec3{ 0.0f, 0.4f, -6.0f });
         const uint32_t n = chorus.podCount();
         const uint32_t thresh = chorus.fallThreshold();
         bocheck(n == 5 && thresh == 5 && !chorus.hasFallen(),
@@ -2796,7 +2796,7 @@ bool runBossesSelfTest() {
         std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
         w->init(); boGround(*w, 80.0f);
         Scene scene; MultiPodBoss chorus;
-        chorus.build(chorusConfig(), device, *w, riggedGlbRoot(),
+        chorus.build(chorusConfig(), scene, device, *w, riggedGlbRoot(),
                      x3::phys::Vec3{ 0.0f, 0.4f, -6.0f });
         // Spare 4 voices (the max). Each must increment saved, not killed.
         uint32_t spared = 0;
