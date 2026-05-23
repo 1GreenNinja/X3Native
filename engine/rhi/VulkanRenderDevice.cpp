@@ -1070,6 +1070,29 @@ private:
         uint32_t bindlessIndex = 0;   // slot in the bindless texture array
     };
 
+    // ---- GPU compute skinning TYPES (GPU SKINNING OF MODELS) --------------
+    // Declared here (with Mesh/Texture) so method signatures that take a SkinnedMesh&
+    // are in complete-class context. The std430 row layouts match shaders/skin.comp
+    // EXACTLY. The runtime member variables (maps, pool, pipeline) live in the
+    // members section further down with the other subsystem state.
+    struct SkinSrcVertex { glm::vec4 posPad; glm::vec4 nrmPad; glm::vec4 uvPad; }; // 48B
+    struct SkinSrcInfluence { glm::uvec4 idx; glm::vec4 wt; };                     // 32B
+    static_assert(sizeof(SkinSrcVertex) == 48, "SkinSrcVertex must be 3x vec4");
+    static_assert(sizeof(SkinSrcInfluence) == 32, "SkinSrcInfluence must be uvec4+vec4");
+    static constexpr uint32_t kMaxSkinJoints = 256;  // palette cap per instance
+    struct SkinnedMesh {
+        uint32_t      vertexCount = 0;
+        VkBuffer      srcVbo   = VK_NULL_HANDLE; VmaAllocation srcAlloc = nullptr; // bind-pose verts (immutable)
+        VkBuffer      infBuf   = VK_NULL_HANDLE; VmaAllocation infAlloc = nullptr; // influences (immutable)
+        VkBuffer      palBuf[kFramesInFlight]   = {};  // per-frame palette SSBO (host-visible)
+        VmaAllocation palAlloc[kFramesInFlight] = {};
+        void*         palMapped[kFramesInFlight] = {};
+        VkDescriptorSet set[kFramesInFlight] = {};     // per-frame compute set
+        uint32_t      jointCount = 0;                  // palette joints set THIS frame
+        uint32_t      lastSkinnedFrame = ~0u;          // m_frameIdx the output was last written
+    };
+    struct SkinPush { uint32_t vertexCount; uint32_t jointCount; };
+
     // 2D HUD vertex: position already in clip space (NDC), uv, rgba color.
     struct HudVertex { float pos[2]; float uv[2]; float color[4]; };
 
@@ -6703,22 +6726,9 @@ private:
     // compute descriptor set. The skinned OUTPUT is the Mesh's dynVbo[frameIdx]
     // (promoted to dynamic + given STORAGE usage so the compute can write it AND the
     // draw can read it as a vertex buffer). One vkCmdDispatch per pending instance.
-    struct SkinSrcVertex { glm::vec4 posPad; glm::vec4 nrmPad; glm::vec4 uvPad; }; // 48B
-    struct SkinSrcInfluence { glm::uvec4 idx; glm::vec4 wt; };                     // 32B
-    static_assert(sizeof(SkinSrcVertex) == 48, "SkinSrcVertex must be 3x vec4");
-    static_assert(sizeof(SkinSrcInfluence) == 32, "SkinSrcInfluence must be uvec4+vec4");
-    static constexpr uint32_t kMaxSkinJoints = 256;  // palette cap per instance
-    struct SkinnedMesh {
-        uint32_t      vertexCount = 0;
-        VkBuffer      srcVbo   = VK_NULL_HANDLE; VmaAllocation srcAlloc = nullptr; // bind-pose verts (immutable)
-        VkBuffer      infBuf   = VK_NULL_HANDLE; VmaAllocation infAlloc = nullptr; // influences (immutable)
-        VkBuffer      palBuf[kFramesInFlight]   = {};  // per-frame palette SSBO (host-visible)
-        VmaAllocation palAlloc[kFramesInFlight] = {};
-        void*         palMapped[kFramesInFlight] = {};
-        VkDescriptorSet set[kFramesInFlight] = {};     // per-frame compute set
-        uint32_t      jointCount = 0;                  // palette joints set THIS frame (per-frame latch below)
-        uint32_t      lastSkinnedFrame = ~0u;          // m_frameIdx the output was last written
-    };
+    // (The SkinSrcVertex / SkinSrcInfluence / SkinnedMesh / SkinPush TYPES are
+    // declared up near the Mesh/Texture structs so the method signatures that take
+    // them are visible — see the private struct block after Texture.)
     std::unordered_map<uint32_t, SkinnedMesh> m_skinnedMeshes;       // keyed by mesh id
     std::vector<uint32_t>  m_skinPending;                            // mesh ids to dispatch this frame
     VkDescriptorPool       m_skinPool          = VK_NULL_HANDLE;
@@ -6726,7 +6736,6 @@ private:
     VkPipelineLayout       m_skinPipelineLayout= VK_NULL_HANDLE;
     VkPipeline             m_skinPipeline      = VK_NULL_HANDLE;
     bool                   m_skinStepPending   = false;              // any skinning to dispatch this frame
-    struct SkinPush { uint32_t vertexCount; uint32_t jointCount; };
 
     // ---- Directional shadow mapping (perf-stack E) ------------------------
     // A single fixed-resolution depth texture rendered from the sun's POV each

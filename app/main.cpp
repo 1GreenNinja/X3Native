@@ -287,6 +287,210 @@ static bool runDebrisSelfTest() {
     return passed == total;
 }
 
+// --test-gpuskin : GPU compute-skinning self-test (GPU SKINNING OF MODELS).
+//
+// Drives the REAL Vulkan render device HEADLESS (no window) so the compute skinning
+// path is actually exercised on the GPU (not a CPU stand-in). It registers a small
+// skinned mesh, sets KNOWN palettes, runs the compute skinning pre-pass through a
+// real beginFrame -> setSkinnedPalette -> (graph dispatches skin.comp) -> endFrame,
+// reads back the skinned-output buffer, and asserts it matches a CPU linear-blend-
+// skinning reference within epsilon:
+//   (a) IDENTITY palette  => output == bind pose EXACTLY,
+//   (b) a known joint TRANSLATION => weighted verts move by the expected amount,
+//   (c) a known joint ROTATION (+ translation) => verts land where the CPU LBS
+//       reference (p' = sum_i w_i * J[idx_i] * p) places them.
+// Prints "gpuskin: X/Y passed" and returns true iff all pass.
+static bool runGpuSkinSelfTest() {
+    using namespace x3::rhi;
+    int passed = 0, total = 0;
+    auto check = [&](const char* name, bool ok) {
+        ++total; if (ok) ++passed;
+        x3::logInfo(std::string("  [gpuskin] ") + (ok ? "PASS " : "FAIL ") + name);
+        return ok;
+    };
+
+    // ---- column-major 4x4 helpers (glTF/glm convention) for the CPU reference. ----
+    auto trsToMat4 = [](const float t[3], const float q[4], const float s[3], float* m) {
+        const float x=q[0], y=q[1], z=q[2], w=q[3];
+        const float xx=x*x, yy=y*y, zz=z*z, xy=x*y, xz=x*z, yz=y*z, wx=w*x, wy=w*y, wz=w*z;
+        m[0]=(1-2*(yy+zz))*s[0]; m[1]=(2*(xy+wz))*s[0]; m[2]=(2*(xz-wy))*s[0]; m[3]=0;
+        m[4]=(2*(xy-wz))*s[1]; m[5]=(1-2*(xx+zz))*s[1]; m[6]=(2*(yz+wx))*s[1]; m[7]=0;
+        m[8]=(2*(xz+wy))*s[2]; m[9]=(2*(yz-wx))*s[2]; m[10]=(1-2*(xx+yy))*s[2]; m[11]=0;
+        m[12]=t[0]; m[13]=t[1]; m[14]=t[2]; m[15]=1;
+    };
+    auto xformPoint = [](const float m[16], const float p[3], float o[3]) {
+        o[0]=m[0]*p[0]+m[4]*p[1]+m[8] *p[2]+m[12];
+        o[1]=m[1]*p[0]+m[5]*p[1]+m[9] *p[2]+m[13];
+        o[2]=m[2]*p[0]+m[6]*p[1]+m[10]*p[2]+m[14];
+    };
+    auto xformDir = [](const float m[16], const float d[3], float o[3]) {
+        o[0]=m[0]*d[0]+m[4]*d[1]+m[8] *d[2];
+        o[1]=m[1]*d[0]+m[5]*d[1]+m[9] *d[2];
+        o[2]=m[2]*d[0]+m[6]*d[1]+m[10]*d[2];
+    };
+
+    // ---- A small synthetic skinned mesh: 4 verts, 2 joints. The first two verts are
+    // rigidly bound to joint 0, the last two to joint 1, and the MIDDLE-ish weights
+    // exercise the blend (a 50/50 vertex). ----
+    const uint32_t V = 4;
+    const uint32_t J = 2;
+    std::vector<MeshVertex> bind(V);
+    bind[0] = { {0.0f, 0.0f, 0.0f}, {0,1,0}, {0,0} };
+    bind[1] = { {1.0f, 0.0f, 0.0f}, {0,1,0}, {1,0} };
+    bind[2] = { {2.0f, 0.0f, 0.0f}, {0,0,1}, {0,1} };
+    bind[3] = { {3.0f, 1.0f, 0.0f}, {1,0,0}, {1,1} };   // 50/50 between joint 0 and 1
+    std::vector<uint16_t> jidx = {
+        0,0,0,0,   // v0 -> joint 0
+        0,0,0,0,   // v1 -> joint 0
+        1,0,0,0,   // v2 -> joint 1
+        0,1,0,0,   // v3 -> 50% joint0 + 50% joint1
+    };
+    std::vector<float> jwt = {
+        1,0,0,0,
+        1,0,0,0,
+        1,0,0,0,
+        0.5f,0.5f,0,0,
+    };
+    // Index buffer (two tris) — only needed so createMesh succeeds; the test reads
+    // back vertices, it does not rasterize.
+    std::vector<uint32_t> idx = { 0,1,2, 0,2,3 };
+
+    // CPU LBS reference: skin `bind` with a flat palette of J column-major mat4s.
+    auto cpuSkin = [&](const std::vector<float>& palette, std::vector<MeshVertex>& out) {
+        out.resize(V);
+        for (uint32_t v = 0; v < V; ++v) {
+            const float* bp = bind[v].pos;
+            const float* bn = bind[v].normal;
+            const uint16_t* ji = &jidx[v*4];
+            const float* jw = &jwt[v*4];
+            float wsum = jw[0]+jw[1]+jw[2]+jw[3];
+            float pAcc[3]={0,0,0}, nAcc[3]={0,0,0};
+            if (wsum < 1e-6f) { pAcc[0]=bp[0]; pAcc[1]=bp[1]; pAcc[2]=bp[2]; nAcc[0]=bn[0]; nAcc[1]=bn[1]; nAcc[2]=bn[2]; }
+            else {
+                for (int i = 0; i < 4; ++i) {
+                    float w = jw[i]; if (w <= 0.0f) continue;
+                    uint16_t j = ji[i]; if (j >= J) continue;
+                    const float* jm = &palette[(size_t)j*16];
+                    float tp[3], tn[3]; xformPoint(jm, bp, tp); xformDir(jm, bn, tn);
+                    pAcc[0]+=w*tp[0]; pAcc[1]+=w*tp[1]; pAcc[2]+=w*tp[2];
+                    nAcc[0]+=w*tn[0]; nAcc[1]+=w*tn[1]; nAcc[2]+=w*tn[2];
+                }
+                float inv = 1.0f/wsum; pAcc[0]*=inv; pAcc[1]*=inv; pAcc[2]*=inv;
+            }
+            float nl = std::sqrt(nAcc[0]*nAcc[0]+nAcc[1]*nAcc[1]+nAcc[2]*nAcc[2]);
+            if (nl > 1e-8f) { nAcc[0]/=nl; nAcc[1]/=nl; nAcc[2]/=nl; }
+            out[v] = { {pAcc[0],pAcc[1],pAcc[2]}, {nAcc[0],nAcc[1],nAcc[2]}, {bind[v].uv[0],bind[v].uv[1]} };
+        }
+    };
+
+    if (!glfwInit()) { x3::logError("[gpuskin] glfwInit failed"); return false; }
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
+    std::unique_ptr<IRenderDevice> device(createRenderDevice());
+    DeviceDesc desc{};
+    desc.width = 320; desc.height = 240; desc.headless = true;
+#ifdef _DEBUG
+    desc.validation = true;
+#endif
+    if (!device->init(desc)) { x3::logError("[gpuskin] device init failed"); glfwTerminate(); return false; }
+
+    check("device supports GPU skinning", device->supportsGpuSkinning());
+
+    MeshHandle mesh = device->createMesh(bind.data(), V, idx.data(), (uint32_t)idx.size());
+    check("createMesh ok", mesh.valid());
+    bool reg = device->registerSkinnedMesh(mesh, bind.data(), V, jidx.data(), jwt.data());
+    check("registerSkinnedMesh ok", reg);
+
+    // Helper: run one frame that uploads a palette + dispatches the compute skin, then
+    // read back + compare to the CPU reference.
+    auto runCase = [&](const char* name, const std::vector<float>& palette, float eps) -> bool {
+        FrameContext fc = device->beginFrame();
+        if (!fc.valid) { check((std::string(name)+": beginFrame").c_str(), false); return false; }
+        device->setSkinnedPalette(mesh, palette.data(), J);
+        device->endFrame(fc);   // the graph records + executes the skin compute pass
+
+        std::vector<MeshVertex> gpu(V);
+        if (!device->readbackSkinnedMesh(mesh, gpu.data(), V)) {
+            check((std::string(name)+": readback").c_str(), false); return false;
+        }
+        std::vector<MeshVertex> ref; cpuSkin(palette, ref);
+        float maxErr = 0.0f;
+        for (uint32_t v = 0; v < V; ++v) {
+            for (int k = 0; k < 3; ++k) maxErr = std::max(maxErr, std::fabs(gpu[v].pos[k]    - ref[v].pos[k]));
+            for (int k = 0; k < 3; ++k) maxErr = std::max(maxErr, std::fabs(gpu[v].normal[k] - ref[v].normal[k]));
+            for (int k = 0; k < 2; ++k) maxErr = std::max(maxErr, std::fabs(gpu[v].uv[k]     - ref[v].uv[k]));
+        }
+        x3::logInfo(std::string("    [gpuskin] ") + name + " maxErr=" + std::to_string(maxErr));
+        return check((std::string(name)+": GPU == CPU LBS").c_str(), maxErr < eps);
+    };
+
+    // (a) IDENTITY palette => output == bind pose EXACTLY.
+    {
+        std::vector<float> pal((size_t)J*16, 0.0f);
+        for (uint32_t j = 0; j < J; ++j) { float* m = &pal[(size_t)j*16]; for (int e=0;e<16;++e) m[e]=(e%5==0)?1.0f:0.0f; }
+        // Run the identity case, then ALSO assert it equals the bind pose exactly.
+        FrameContext fc = device->beginFrame();
+        device->setSkinnedPalette(mesh, pal.data(), J);
+        device->endFrame(fc);
+        std::vector<MeshVertex> gpu(V);
+        bool rb = device->readbackSkinnedMesh(mesh, gpu.data(), V);
+        check("identity: readback", rb);
+        if (rb) {
+            float maxErr = 0.0f;
+            for (uint32_t v = 0; v < V; ++v) {
+                for (int k=0;k<3;++k) maxErr = std::max(maxErr, std::fabs(gpu[v].pos[k]    - bind[v].pos[k]));
+                for (int k=0;k<3;++k) maxErr = std::max(maxErr, std::fabs(gpu[v].normal[k] - bind[v].normal[k]));
+            }
+            x3::logInfo("    [gpuskin] identity maxErr=" + std::to_string(maxErr));
+            check("identity palette => bind pose (exact)", maxErr < 1e-5f);
+        }
+    }
+
+    // (b) Known joint TRANSLATION: joint 0 translated +Y by 2, joint 1 by -X 1.
+    {
+        std::vector<float> pal((size_t)J*16, 0.0f);
+        float t0[3]={0,2,0}, t1[3]={-1,0,0}, q[4]={0,0,0,1}, s[3]={1,1,1};
+        trsToMat4(t0, q, s, &pal[0]);
+        trsToMat4(t1, q, s, &pal[16]);
+        runCase("translation", pal, 1e-4f);
+    }
+
+    // (c) Known joint ROTATION + translation: joint 0 rotated 90deg about +Z, joint 1
+    //     rotated -45deg about +X and translated +Z by 0.5 (exercises the upper 3x3
+    //     normal transform + the 50/50 blend vertex).
+    {
+        std::vector<float> pal((size_t)J*16, 0.0f);
+        const float a0 = 1.5707963f;            // 90 deg about Z
+        float q0[4] = { 0, 0, std::sin(a0*0.5f), std::cos(a0*0.5f) };
+        float t0[3] = { 0.0f, 0.0f, 0.0f }, s[3] = {1,1,1};
+        trsToMat4(t0, q0, s, &pal[0]);
+        const float a1 = -0.7853981f;           // -45 deg about X
+        float q1[4] = { std::sin(a1*0.5f), 0, 0, std::cos(a1*0.5f) };
+        float t1[3] = { 0.0f, 0.0f, 0.5f };
+        trsToMat4(t1, q1, s, &pal[16]);
+        runCase("rotation+translation", pal, 1e-4f);
+    }
+
+    // Re-run a second translation to prove the per-frame palette is honoured frame to
+    // frame (the double-buffered output + descriptor sets work across frames-in-flight).
+    {
+        std::vector<float> pal((size_t)J*16, 0.0f);
+        float t0[3]={3,0,0}, t1[3]={0,0,-2}, q[4]={0,0,0,1}, s[3]={1,1,1};
+        trsToMat4(t0, q, s, &pal[0]);
+        trsToMat4(t1, q, s, &pal[16]);
+        runCase("translation (frame 2)", pal, 1e-4f);
+    }
+
+    device->unregisterSkinnedMesh(mesh);
+    device->destroyMesh(mesh);
+    device->shutdown();
+    glfwTerminate();
+
+    std::printf("gpuskin: %d/%d passed\n", passed, total);
+    x3::logInfo("gpuskin: " + std::to_string(passed) + "/" + std::to_string(total) + " passed");
+    return passed == total;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -309,6 +513,10 @@ int main(int argc, char** argv) {
     // --test-debris (K-T2 GPU-compute debris): spawn a burst, step the compute sim
     // through the live headless device, assert fall+settle+expiry+no-leak. Additive.
     bool        testDebris = false;
+    // --test-gpuskin (GPU SKINNING OF MODELS): register a skinned mesh on the live
+    // headless device, set a known palette, run the compute skinning pass, read back
+    // the skinned output, and assert it matches a CPU LBS reference. Additive.
+    bool        testGpuSkin = false;
     // --test-spiretop (Spire top-floor content): F6/F7 (Act-1 finale) encounter authoring. Additive.
     bool        testSpireTop = false;
     // --test-collapse (K-T3 structural collapse): build a small structure (column /
@@ -480,6 +688,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-rescue") testRescue = true;
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-debris") testDebris = true;
+        else if (a == "--test-gpuskin") testGpuSkin = true;
         else if (a == "--test-collapse") testCollapse = true;
         else if (a == "--test-nav") testNav = true;
         else if (a == "--test-weapons") testWeapons = true;
@@ -773,6 +982,11 @@ int main(int argc, char** argv) {
         x3::logInfo("running K-T2 GPU-compute persistent debris world self-test "
                     "(spawn burst -> compute integrate -> fall/settle/sleep -> lifetime free)...");
         return runDebrisSelfTest() ? 0 : 1;
+    }
+    if (testGpuSkin) {
+        x3::logInfo("running GPU compute-skinning self-test (register skinned mesh -> "
+                    "set known palette -> compute skin -> readback -> assert vs CPU LBS)...");
+        return runGpuSkinSelfTest() ? 0 : 1;
     }
     if (testCollapse) {
         x3::logInfo("running K-T3 structural collapse (support graph) self-test "
