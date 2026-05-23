@@ -410,6 +410,16 @@ int main(int argc, char** argv) {
     // the slope/step (vs floating). Headless / offscreen. Default: build/footik_pose.png.
     bool        captureFootIk     = false;
     std::string captureFootIkPath = "G:/X3Native-wt-footik/build/footik_pose.png";
+    // Spire per-floor capture (--capture-spire [outDir]): build the FULL Act-1 host
+    // (Level1Game + SpireMidFloors + SpireTopFloors, the same real lit scene the game
+    // builds), then for EACH Spire floor B1,F1,F2,F3,F4,F5,F6,F7 pose the camera at
+    // that floor's arrival/hub vantage looking across the main room, light the plate,
+    // settle a few frames, and capture <outDir>/spire_<floor>.png. A dev/playtest
+    // tool: it CHANGES NO gameplay/balance — it only renders + reads back the scene
+    // each floor already builds. Headless / offscreen (no window), like --screenshot.
+    // Prints one line per floor (path + that floor's enemy count). 0 VUID under Debug.
+    bool        captureSpire    = false;
+    std::string captureSpireDir = "captures/spire";
     // World selector (--world terrain): launch the playable OUTDOOR terrain world
     // (walk the hills) instead of the default interior Level 1. Anything else (or
     // omitted) keeps Level 1 as the default, unchanged.
@@ -556,6 +566,11 @@ int main(int argc, char** argv) {
         else if (a == "--screenshot-footik") {
             captureFootIk = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') captureFootIkPath = argv[++i];
+        }
+        else if (a == "--capture-spire") {
+            captureSpire = true;
+            // Optional output directory arg (next token, if it isn't another flag).
+            if (i + 1 < argc && argv[i + 1][0] != '-') captureSpireDir = argv[++i];
         }
         else if (a == "--list-clips") {
             listClips = true;
@@ -800,7 +815,7 @@ int main(int argc, char** argv) {
     // render fully offscreen — NO GLFW window, NO surface, NO swapchain, nothing
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
-    const bool headless = smoketest || screenshot || skyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo;
+    const bool headless = smoketest || screenshot || skyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -2736,6 +2751,188 @@ int main(int argc, char** argv) {
     if (stressCount > 0) {
         x3::logInfo("--stress " + std::to_string(stressCount) + ": adding cubes around spawn");
         stress.spawn(scene, *device, stressCount, L1.spawn.x, L1.spawn.y, L1.spawn.z, 40.0f);
+    }
+
+    // ---- Spire per-floor capture (--capture-spire [outDir]) ----------------
+    // DEV/PLAYTEST TOOL — captures one PNG per Spire floor (B1,F1..F7) of the SAME
+    // full Act-1 host the game builds (Level1Game + SpireMidFloors + SpireTopFloors),
+    // so a coordinator can eyeball every floor's encounter without walking it. It
+    // changes NO gameplay/balance: it only poses the camera, lights the plate, settles
+    // a few frames, and reads the rendered image back — like the --screenshot path.
+    //
+    // Per floor it: (1) parks the camera near that floor's +X arrival/hub vantage,
+    // looking across the room toward the encounter (enemies sit in x[3..17]); (2)
+    // re-issues setPointLights with just THIS floor's ceiling fixtures (the device's
+    // 64-light cap can't hold all 8 floors at once, so the upper plates would be dark
+    // otherwise) computed from the canonical floor table — same warm tungsten kit
+    // env_art uses; (3) ticks the host a few settle frames (enemies/doors/victims
+    // animate, the floor's hub trigger fires); (4) captures spire_<floor>.png. Counts
+    // are read from the live managers/plans. Headless / offscreen (no window).
+    if (captureSpire) {
+        namespace fs = std::filesystem;
+        std::error_code mkec; fs::create_directories(captureSpireDir, mkec);
+        x3::logInfo("--capture-spire: rendering all 8 Spire floors to " + captureSpireDir);
+
+        const x3::game::Level1Layout& Lc = game.layout();
+        const x3::game::L1RoomDef*    tbl = x3::game::level1Rooms();
+        const float dt = 1.0f / 60.0f;
+
+        struct SpireShot {
+            const char* tag;          // file suffix: b1,f1,...,f7
+            x3::game::L1Floor floor;  // which plate
+        };
+        const SpireShot shots[] = {
+            { "b1", x3::game::L1Floor::B1 }, { "f1", x3::game::L1Floor::F1 },
+            { "f2", x3::game::L1Floor::F2 }, { "f3", x3::game::L1Floor::F3 },
+            { "f4", x3::game::L1Floor::F4 }, { "f5", x3::game::L1Floor::F5 },
+            { "f6", x3::game::L1Floor::F6 }, { "f7", x3::game::L1Floor::F7 },
+        };
+
+        // How many combatants are placed on a given plate AT CAPTURE TIME (read from
+        // the live systems). B1 reports the checkpoint guards built at load (the
+        // corridor wave + Martinez spawn later on their beats, so they're absent in a
+        // settle-only capture); F3..F7 report their authored plan totals.
+        auto enemyCountFor = [&](x3::game::L1Floor f) -> uint32_t {
+            switch (f) {
+                case x3::game::L1Floor::B1:
+                    return game.checkpointEnemies().count() + game.corridorEnemies().count()
+                         + (game.martinezSpawned() ? 1u : 0u);
+                case x3::game::L1Floor::F3: return midFloors.plan(x3::game::SpireMidFloor::F3).totalCount;
+                case x3::game::L1Floor::F4: return midFloors.plan(x3::game::SpireMidFloor::F4).totalCount;
+                case x3::game::L1Floor::F5: return midFloors.plan(x3::game::SpireMidFloor::F5).totalCount;
+                case x3::game::L1Floor::F6: return topFloors.plan(x3::game::SpireTopFloor::F6).totalCount;
+                case x3::game::L1Floor::F7: return topFloors.plan(x3::game::SpireTopFloor::F7).totalCount;
+                default: return 0u;   // F1 atrium / F2 plate carry no on-plate enemies
+            }
+        };
+
+        // Build THIS floor's point-light set the same way env_art lights a plate:
+        // a row (or two, for wide plates) of warm tungsten omnis hung just below the
+        // ceiling, range scaled to reach the floor. Re-issued per floor so the cap
+        // never starves the upper plates of light.
+        auto lightFloor = [&](x3::game::L1Floor f) {
+            const x3::game::L1RoomDef& r = tbl[(uint32_t)f];
+            const float kIntensity = 3.2f;
+            const float colR = 1.00f * kIntensity, colG = 0.86f * kIntensity, colB = 0.62f * kIntensity;
+            const float lightY = r.y0 + r.ceil - 0.30f;            // just below the ceiling
+            const float range  = std::max(7.5f, r.ceil + 3.5f);
+            const int   n      = (int)std::ceil((r.x1 - r.x0) / 4.0f);
+            const bool  twoRows= (r.zHalf >= 6.0f);
+            const float zoff   = twoRows ? r.zHalf * 0.5f : 0.0f;
+            std::vector<x3::rhi::PointLight> pls;
+            for (int j = 0; j < (twoRows ? 2 : 1); ++j) {
+                const float wz = twoRows ? ((j == 0) ? -zoff : zoff) : 0.0f;
+                for (int i = 0; i < n; ++i) {
+                    x3::rhi::PointLight pl;
+                    pl.pos[0] = r.x0 + (i + 0.5f) * 4.0f; pl.pos[1] = lightY; pl.pos[2] = wz;
+                    pl.range  = range;
+                    pl.color[0] = colR; pl.color[1] = colG; pl.color[2] = colB;
+                    pls.push_back(pl);
+                }
+            }
+            // A bright cool fill light a few meters in front of the camera (down -X)
+            // so the encounter reads clearly in the still even on the dim plates. Dev
+            // tool only — it lights the CAPTURE, not gameplay (the set is re-issued
+            // fresh per floor and the game owns its own lights at runtime).
+            {
+                x3::rhi::PointLight fill;
+                fill.pos[0] = r.x1 - 12.0f; fill.pos[1] = r.y0 + 2.4f; fill.pos[2] = 0.0f;
+                fill.range  = 16.0f;
+                fill.color[0] = 3.6f; fill.color[1] = 3.8f; fill.color[2] = 4.2f;
+                pls.push_back(fill);
+            }
+            device->setPointLights(pls.data(), (uint32_t)pls.size());
+        };
+
+        x3::ui::GameHud capHud;
+        arsenal.select(0);   // pistol selected so the HUD arsenal reads in the still
+        bool allOk = true;
+
+        for (const SpireShot& s : shots) {
+            const x3::game::L1RoomDef& r = tbl[(uint32_t)s.floor];
+            const float baseY = Lc.floorBaseY[(uint32_t)s.floor];
+            // Vantage: stand near the +X arrival/hub end, slightly elevated, and look
+            // across the plate toward -X (the encounter sits in x[3..17]), pitched down
+            // so the floor + props + enemies frame cleanly. yaw=PI => forward
+            // (cos,0,sin) = (-1,0,0). For F3..F7 this matches plan().arrival (x=17.5);
+            // F1/F2 are open plates so the same X works. B1 is the ONLY plate with
+            // internal spine cross-walls (cell/corridor/armory/checkpoint/arena, doors
+            // at x=5/9/12.5/15) so an open-plate vantage just stares at a wall: instead
+            // frame the CHECKPOINT room (x[12.5,15]) where the 4 build-time guards live,
+            // standing just -X of the Door D wall looking back toward the squad + Door C.
+            // This deliberately stays OUT of the arena trigger (x[16,19]) so the capture
+            // is the checkpoint encounter, not Martinez filling the lens (he spawns on
+            // the arena beat at runtime; the report documents the B1 boss separately).
+            const bool  isB1   = (s.floor == x3::game::L1Floor::B1);
+            const float camX   = isB1 ? 14.85f : (r.x1 - 6.0f); // checkpoint (B1) / ~18 m (others)
+            const float camY   = baseY + 2.2f;          // slightly above standing eye for an overview
+            const float camZ   = 0.0f;
+            const float camYaw = 3.14159265f;           // look toward -X across the room
+            const float camPit = -0.20f;
+            const float camFov = 80.0f;
+            device->setCamera(camX, camY, camZ, camYaw, camPit, camFov);
+            const x3::phys::Vec3 camEye{ camX, camY, camZ };
+            lightFloor(s.floor);
+
+            const std::string outPath = captureSpireDir + "/spire_" + s.tag + ".png";
+            const int kSettle = 24;   // enough frames for shadows + skinning + doors to fully open
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                game.tick(dt, scene, *physics, camEye, camEye);
+                for (uint32_t tid : midTriggers.update(camEye)) midFloors.onTrigger(tid);
+                midFloors.tick(dt, scene, *physics, camEye, camEye, nullptr, x3::game::AttackFxFn{});
+                for (uint32_t tid : topTriggers.update(camEye)) topFloors.onTrigger(tid);
+                topFloors.tick(dt, scene, *physics, camEye, camEye, nullptr, x3::game::AttackFxFn{});
+                physics->step(dt);
+                scene.update(*physics);
+                // Re-pose + re-light each frame (scene.update() doesn't move the camera,
+                // and another floor's draw could be interleaved in principle).
+                device->setCamera(camX, camY, camZ, camYaw, camPit, camFov);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    scene.render(*device, frame);
+                    game.drawDoors(*device, frame);
+                    game.drawWorldExtras(*device, frame, scene);
+                    midFloors.drawDoors(*device, frame);
+                    midFloors.draw(*device, frame, scene);
+                    topFloors.drawDoors(*device, frame);
+                    topFloors.draw(*device, frame, scene);
+                    // Production HUD over the vantage (HP / weapon / objective / crosshair).
+                    x3::ui::UiContext capUi;
+                    capUi.begin(*device, frame, x3::ui::UiInput{});
+                    x3::ui::HudModel hm{};
+                    hm.hp = 100; hm.maxHp = x3::game::kPlayerMaxHp; hm.alive = true;
+                    hm.showCrosshair = true;
+                    hm.objective = game.objectives().currentLabel().c_str();
+                    const x3::game::WeaponDef&            wd = arsenal.current();
+                    const x3::game::Arsenal::WeaponState& ws = arsenal.currentState();
+                    hm.weapon = wd.name.c_str();
+                    hm.ammoInMag = ws.ammoInMag; hm.ammoReserve = ws.reserve;
+                    capHud.draw(capUi, hm, dt);
+                    capUi.end();
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            const uint32_t ecount = enemyCountFor(s.floor);
+            if (wrote)
+                x3::logInfo("--capture-spire: wrote " + outPath + " | enemies=" +
+                            std::to_string(ecount));
+            else {
+                allOk = false;
+                x3::logError("--capture-spire: capture FAILED for " + outPath);
+            }
+        }
+
+        x3::logInfo(std::string("--capture-spire: ") + (allOk ? "all 8 floors captured" : "one or more captures FAILED"));
+        audio->shutdown();
+        combatFx.shutdown(*device);
+        physics->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return allOk ? 0 : 1;
     }
 
     // ---- Benchmark mode (--bench N [frames]) -------------------------------
