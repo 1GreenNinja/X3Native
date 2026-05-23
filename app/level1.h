@@ -61,6 +61,54 @@ struct L1RoomDef {
 // (uint32_t)L1Floor::Count.
 const L1RoomDef* level1Rooms();
 
+// ---- Floor-1 "Detention Level" room table (the authoritative Babylon LevelArchitect
+// transcription — docs/design/SPIRE_LEVELARCHITECT_DIMS.md). One entry per room: a
+// name + a TYPE flag + an axis-aligned box. Coordinates are transcribed DIRECTLY from
+// the LevelArchitect (both RH, +X right / +Y up / -Z forward, meters): `cx,cz` is the
+// room CENTER in XZ, `floorY` the room's walkable floor (relative to the B1 plate base,
+// 0 for the ground rooms, negative for the descending cave arm), `w,d` the FULL extents
+// (x,z), `h` the ceiling height. Half-extents are w/2, d/2 — NO axis flip. The
+// detention complex is laid on the native B1 plate (Jake's spawn / the legacy beats).
+struct L1DetentionRoom {
+    const char* name;
+    float cx, cz;     // room center in XZ (world, B1-plate-relative for Y)
+    float floorY;     // room floor offset from the B1 plate base (0 = ground; <0 = caves)
+    float w, h, d;    // FULL extents: width(x) x height(y) x depth(z)
+    bool  monster;    // a "Cell (Monster)" / hazard room
+    bool  npc;        // Sarah's empty cell (the npc flag)
+};
+
+// The 29-room Floor-1 detention table + its count, and the door connections (index
+// pairs into the room table) — both transcribed from the LevelArchitect. Shared by
+// buildLevel1() (interior graybox) and runLevel1SelfTest() (room/footprint asserts).
+const L1DetentionRoom* level1DetentionRooms();
+uint32_t               level1DetentionRoomCount();
+const uint32_t*        level1DetentionDoors();     // flat pairs: [a0,b0, a1,b1, ...]
+uint32_t               level1DetentionDoorPairCount();
+
+// Named indices into the detention room table (for the legacy-accessor mapping + the
+// self-test). These pin the rooms the existing Level-1 beats re-anchor onto.
+enum L1DetRoom : uint32_t {
+    kDetJakeCell      = 0,    // Jake's Cell (spawn)
+    kDetMainHallway   = 4,    // Main Hallway (the spine)
+    kDetGuardStation  = 5,
+    kDetStorage       = 6,
+    kDetMedicalBay    = 7,
+    kDetArmory        = 8,    // the pistol pickup room
+    kDetElevatorLobby = 9,    // the elevator stop / win room
+    kDetSarahCell     = 18,   // Cell 10 (Sarah's — Empty)
+    kDetDescStairs    = 25,
+    kDetCaveTunnel    = 26,
+    kDetCrystalCavern = 27,
+    kDetSideGrotto    = 28,
+};
+
+// The Floor-1 detention CONTENT footprint (the bounding box of all 29 rooms, meters).
+// ~75 (X) x ~43 (Z) per the authoritative dims — distinct from the raw B1 plate, which
+// is a slightly larger superset. Filled by buildLevel1(); also computable standalone.
+struct L1Footprint { float minX, maxX, minZ, maxZ; float width() const { return maxX - minX; } float depth() const { return maxZ - minZ; } };
+L1Footprint level1DetentionFootprint();
+
 // Authored Spire coordinates (meters), filled by buildLevel1(). Floor coords carry
 // their world Y (y0 of the floor). The legacy door/room accessors map onto the
 // bottom floors (B1/F1) so the existing Level-1 beats (cell -> corridor -> armory
