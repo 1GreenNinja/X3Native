@@ -640,6 +640,21 @@ bool Level1Game::onUse(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
     return opened;
 }
 
+bool Level1Game::aimedDoorPrompt(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
+                                 Scene& scene, x3::phys::IPhysicsWorld& physics,
+                                 float reach, x3::phys::Vec3& anchor, bool& isOpen) {
+    Door* d = pickAimedDoor(eye, dir, reach, scene, m_doors, physics);
+    if (!d) return false;
+    // A locked, fully-closed door can't be toggled by E (the keypad/event path
+    // owns it) — don't promise "Press E to open" on it.
+    if (d->locked && d->state == DoorState::Closed) return false;
+    isOpen = (d->state == DoorState::Open || d->state == DoorState::Opening);
+    // Stable anchor at the doorway opening (does NOT ride up with the slab), a
+    // touch above the closed slab center so the text sits ~head height.
+    anchor = x3::phys::Vec3{ d->closedPos.x, d->closedPos.y + 0.3f, d->closedPos.z };
+    return true;
+}
+
 bool Level1Game::onRescue(const x3::phys::Vec3& playerPos, float range) {
     bool rescued = m_rescue.tryRescue(playerPos, range);
     if (rescued) playSfx(m_audio.pickup, playerPos, 0.9f);   // reuse the pickup cue

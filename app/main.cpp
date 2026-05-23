@@ -4951,6 +4951,36 @@ int main(int argc, char** argv) {
                     device->drawHudText(frame, kpPrompt.c_str(),
                                         (float)hudW * 0.5f - 230.0f, (float)hudH * 0.5f - 60.0f, 3.0f, kpCol);
                 }
+                // Door interaction prompt: a "[E] Open" / "[E] Close" tag floating at
+                // the doorway the player is looking at (within use range), fading in
+                // with proximity. Mirrors the health-bar world->screen anchoring.
+                if (!terrainWorld && !codeMode) {
+                    float pex, pey, pez, pyaw, ppitch;
+                    player.camera(pex, pey, pez, pyaw, ppitch);
+                    if (noclip) { pex = flyX; pey = flyY; pez = flyZ; pyaw = flyYaw; ppitch = flyPitch; }
+                    const x3::phys::Vec3 peye{ pex, pey, pez };
+                    const x3::phys::Vec3 pdir{ std::cos(ppitch) * std::cos(pyaw),
+                                               std::sin(ppitch),
+                                               std::cos(ppitch) * std::sin(pyaw) };
+                    x3::phys::Vec3 anchor{}; bool doorOpen = false;
+                    if (game.aimedDoorPrompt(peye, pdir, scene, *physics, 3.0f, anchor, doorOpen)) {
+                        float sx = 0.0f, sy = 0.0f;
+                        if (device->worldToScreen(anchor.x, anchor.y, anchor.z, sx, sy)) {
+                            const float pdx = anchor.x - peye.x, pdy = anchor.y - peye.y, pdz = anchor.z - peye.z;
+                            const float dd = std::sqrt(pdx * pdx + pdy * pdy + pdz * pdz);
+                            float a = 1.0f - (dd - 2.0f);            // 1 @<=2 m -> 0 @3 m
+                            if (a > 1.0f) a = 1.0f; if (a < 0.0f) a = 0.0f;
+                            a = 0.30f + 0.70f * a;                   // soft floor so it reads at reach edge
+                            const char* label = doorOpen ? "[E] Close" : "[E] Open";
+                            const float sz = 2.4f;
+                            const float tx = sx - 46.0f, ty = sy;
+                            const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f * a };
+                            const float col[4]    = { 0.66f, 0.92f, 1.0f, a };   // cyan-white
+                            device->drawHudText(frame, label, tx + 1.5f, ty + 1.5f, sz, shadow);
+                            device->drawHudText(frame, label, tx, ty, sz, col);
+                        }
+                    }
+                }
                 // Strength terminal — the "Awakening" readout (EFLZ_SPIRE §3).
                 if (!terrainWorld) {
                     static float awakenTimer = 7.0f;

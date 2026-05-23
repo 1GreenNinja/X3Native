@@ -85,13 +85,39 @@ bool DoorSystem::startOpening(Door& d) const {
     return true;
 }
 
+bool DoorSystem::toggle(Door& d) const {
+    switch (d.state) {
+        case DoorState::Closed:
+            if (d.locked) return false;          // locked doors stay shut (§6.4)
+            d.state = DoorState::Opening;         // t is already 0
+            return true;
+        case DoorState::Open:
+            d.state = DoorState::Closing;         // t is already == duration
+            return true;
+        case DoorState::Opening:
+            d.state = DoorState::Closing;         // reverse mid-slide (keep t)
+            return true;
+        case DoorState::Closing:
+            d.state = DoorState::Opening;         // reverse mid-slide (keep t)
+            return true;
+    }
+    return false;
+}
+
 void DoorSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics) {
     if (dt <= 0.0f) return;
     for (Door& d : m_doors) {
-        if (d.state != DoorState::Opening) continue;
-        d.t += dt;
-        float u = d.duration > 0.0f ? (d.t / d.duration) : 1.0f;
-        if (u >= 1.0f) { u = 1.0f; d.state = DoorState::Open; }
+        // Move the shared progress cursor and settle to the terminal states.
+        if (d.state == DoorState::Opening) {
+            d.t += dt;
+            if (d.t >= d.duration) { d.t = d.duration; d.state = DoorState::Open; }
+        } else if (d.state == DoorState::Closing) {
+            d.t -= dt;
+            if (d.t <= 0.0f) { d.t = 0.0f; d.state = DoorState::Closed; }
+        } else {
+            continue;   // Closed / Open: nothing to animate this frame
+        }
+        const float u = d.duration > 0.0f ? (d.t / d.duration) : 1.0f;
         // Lerp closed -> open and drive the body.
         x3::phys::Vec3 p{
             d.closedPos.x + (d.openPos.x - d.closedPos.x) * u,
@@ -150,10 +176,11 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
         // CURRENT world center of this door (the slide animation lerps closed->open
         // by the same factor DoorSystem::update() uses). closedPos/openPos are the
         // body CENTER positions; the slab bottom is center.y - height/2.
-        float u = 0.0f;
-        if (d.state == DoorState::Open) u = 1.0f;
-        else if (d.state == DoorState::Opening)
-            u = d.duration > 0.0f ? std::min(d.t / d.duration, 1.0f) : 1.0f;
+        // Slide factor from the shared cursor — works for Opening, Closing AND
+        // the terminal Open/Closed states (Open pins to 1, Closed to 0).
+        const float u = (d.state == DoorState::Open)
+            ? 1.0f
+            : (d.duration > 0.0f ? std::min(std::max(d.t / d.duration, 0.0f), 1.0f) : 0.0f);
         const float cxw = d.closedPos.x + (d.openPos.x - d.closedPos.x) * u;
         const float cyw = d.closedPos.y + (d.openPos.y - d.closedPos.y) * u;
         const float czw = d.closedPos.z + (d.openPos.z - d.closedPos.z) * u;
@@ -189,29 +216,32 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
     }
 }
 
-bool tryUse(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir, float maxDist,
-            Scene& scene, DoorSystem& doors, x3::phys::IPhysicsWorld& physics) {
+Door* pickAimedDoor(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir, float maxDist,
+                    Scene& scene, DoorSystem& doors, x3::phys::IPhysicsWorld& physics) {
     // Ray against static geometry (walls, button, door are all Static-layer).
     x3::phys::RayHit hit = physics.rayCast(eye, dir, maxDist, x3::phys::Layer::Static);
-    if (!hit.hit || !hit.body.valid()) return false;
+    if (!hit.hit || !hit.body.valid()) return nullptr;
 
     uint32_t ent = scene.entityForBody(hit.body);
-    if (ent == kNoLink || ent >= scene.size()) return false;
+    if (ent == kNoLink || ent >= scene.size()) return nullptr;
 
     const Entity& e = scene.get(ent);
 
     // Aim at a wall BUTTON linked to a door...
     if (e.tag == (uint32_t)Tag::Button) {
-        if (e.link == kNoLink || e.link >= scene.size()) return false;
-        Door* door = doors.findByEntity(e.link);
-        return door ? doors.startOpening(*door) : false;
+        if (e.link == kNoLink || e.link >= scene.size()) return nullptr;
+        return doors.findByEntity(e.link);
     }
-    // ...OR aim directly at the DOOR slab itself (intuitive "open the door").
-    if (e.tag == (uint32_t)Tag::Door) {
-        Door* door = doors.findByEntity(ent);
-        return door ? doors.startOpening(*door) : false;
-    }
-    return false;
+    // ...OR aim directly at the DOOR slab itself (intuitive "open/close the door").
+    if (e.tag == (uint32_t)Tag::Door)
+        return doors.findByEntity(ent);
+    return nullptr;
+}
+
+bool tryUse(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir, float maxDist,
+            Scene& scene, DoorSystem& doors, x3::phys::IPhysicsWorld& physics) {
+    Door* door = pickAimedDoor(eye, dir, maxDist, scene, doors, physics);
+    return door ? doors.toggle(*door) : false;   // open if closed, close if open
 }
 
 uint32_t buildDoorAndButton(Scene& scene, DoorSystem& doors,
@@ -536,6 +566,32 @@ bool runInteractSelfTest() {
         bool blocked = zClosed < 8.0f;      // never reached the door plane
         bool passed  = zOpen   > 8.2f;      // walked out through the doorway
         check(blocked && passed, "T4 closed door blocks doorway, open door passes");
+    }
+
+    // ---- T5: toggle OPENS then CLOSES a door (E to open AND close) -----------
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> p5(x3::phys::createPhysicsWorld());
+        p5->init();
+        HeadlessDevice dev5;
+        Scene s5;
+        DoorSystem d5;
+        buildTestLevel(s5, dev5, *p5);
+        buildDoorAndButton(s5, d5, dev5, *p5);
+        Door& dr = d5.at(0);
+        // First toggle: Closed -> Opening; step it fully open.
+        d5.toggle(dr);
+        for (int i = 0; i < 70; ++i) { d5.update(kFixedDt, s5, *p5); p5->step(kFixedDt); }
+        bool wasOpen = dr.state == DoorState::Open;
+        // Second toggle: Open -> Closing; step it fully closed.
+        bool tog = d5.toggle(dr);
+        bool closing = dr.state == DoorState::Closing;
+        for (int i = 0; i < 70; ++i) { d5.update(kFixedDt, s5, *p5); p5->step(kFixedDt); }
+        bool backClosed = dr.state == DoorState::Closed;
+        x3::phys::Vec3 now = p5->getBodyPosition(dr.body);
+        bool downAgain = now.y < kPassageTop;   // slab dropped back to fill the doorway
+        check(wasOpen && tog && closing && backClosed && downAgain,
+              "T5 toggle opens then closes the door (E open/close)");
+        p5->shutdown();
     }
 
     physics->shutdown();
