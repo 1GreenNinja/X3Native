@@ -36,6 +36,7 @@
 #include "spire_top.h"                      // EFLZ Spire F6/F7 top-floor content (Act-1 finale)
 #include "spire_nexus.h"                    // EFLZ Floor 4.5 Nexus Chamber / The Chorus (off-elevator boss)
 #include "spire_sublevels.h"                // EFLZ hidden Floor-7 sub-levels + Dr. Chen Return Mission
+#include "act2_world.h"                      // EFLZ Act-2 open-world surface host + L8/L9 (--test-act2)
 #include "elevator.h"
 #include "club1127.h"
 #include "terrain.h"
@@ -534,6 +535,10 @@ int main(int argc, char** argv) {
     // descent is HIDDEN/inert until the F7-complete gate (Clone fallen + Sarah saved), then
     // SL1/SL2/SL3 build with the Frozen Collective mini-boss + a rescuable Dr. Chen. Additive.
     bool        testSubLevels = false;
+    // --test-act2 (EFLZ Act-2 open-world surface): the alien-planet host + L8 Surface
+    // Emergence (lab-exit gauntlet -> Emergence Point safe zone) + L9 Crystalline Desert
+    // Edge (crystal props + neutral fauna + an inert-until-entered hazard zone). Additive.
+    bool        testAct2 = false;
     // --test-collapse (K-T3 structural collapse): build a small structure (column /
     // beam on two supports), destroy a support, step the sim, and assert the
     // unsupported pieces fall (static->dynamic), anchored pieces stay stable, the
@@ -698,6 +703,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-spiretop") testSpireTop = true;
         else if (a == "--test-dronehack") testDroneHack = true;
         else if (a == "--test-sublevels") testSubLevels = true;
+        else if (a == "--test-act2") testAct2 = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-net") testNet = true;
@@ -978,6 +984,13 @@ int main(int argc, char** argv) {
                     "[Frozen Collective] / Enhanced Interrogation -> Dr. Chen Return Mission) "
                     "self-test...");
         return x3::game::runSubLevelsSelfTest() ? 0 : 1;
+    }
+    if (testAct2) {
+        x3::logInfo("running EFLZ Act-2 open-world surface (L8 Surface Emergence "
+                    "+ L9 Crystalline Desert Edge: alien terrain/sky host, lab-exit "
+                    "gauntlet, Emergence-Point companions, crystal desert + hazard zone) "
+                    "self-test...");
+        return x3::game::runAct2WorldSelfTest() ? 0 : 1;
     }
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
