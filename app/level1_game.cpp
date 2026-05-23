@@ -157,15 +157,18 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
     {
         Level1Layout seed;
         const L1RoomDef* tbl = level1Rooms();
-        const float shaftX0 = 19.5f;     // matches level1.cpp kShaftX0
+        // Door-FRAME X positions come from the SAME shared header constants the
+        // geometry builder uses (kB1Door*X), so the GLB frames sit exactly in the
+        // real doorway gaps. (Past bug: this seed used 10/14/18 while buildLevel1
+        // used 9/12.5/15 → frames floated mid-room.)
         for (uint32_t fi = 0; fi < (uint32_t)L1Floor::Count; ++fi)
-            seed.elevatorDoor[fi] = x3::phys::Vec3{ shaftX0, tbl[fi].y0, 0.0f };
+            seed.elevatorDoor[fi] = x3::phys::Vec3{ kB1ShaftDoorX, tbl[fi].y0, 0.0f };
         const float b1y = tbl[(uint32_t)L1Floor::B1].y0;
-        seed.doorA = x3::phys::Vec3{  5.0f, b1y, 0.0f };
-        seed.doorB = x3::phys::Vec3{ 10.0f, b1y, 0.0f };
-        seed.doorC = x3::phys::Vec3{ 14.0f, b1y, 0.0f };
-        seed.doorD = x3::phys::Vec3{ 18.0f, b1y, 0.0f };
-        seed.doorE = x3::phys::Vec3{ shaftX0, b1y, 0.0f };
+        seed.doorA = x3::phys::Vec3{ kB1DoorAX, b1y, 0.0f };
+        seed.doorB = x3::phys::Vec3{ kB1DoorBX, b1y, 0.0f };
+        seed.doorC = x3::phys::Vec3{ kB1DoorCX, b1y, 0.0f };
+        seed.doorD = x3::phys::Vec3{ kB1DoorDX, b1y, 0.0f };
+        seed.doorE = x3::phys::Vec3{ kB1ShaftDoorX, b1y, 0.0f };
         m_artMask = m_envArt.build(device, convertedDir(), seed);
     }
 
@@ -617,6 +620,21 @@ bool Level1Game::onUse(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
     bool opened = tryUse(eye, dir, 3.0f, scene, m_doors, physics);
     if (opened) playSfx(m_audio.door, eye, 0.9f);
     return opened;
+}
+
+bool Level1Game::aimedDoorPrompt(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
+                                 Scene& scene, x3::phys::IPhysicsWorld& physics,
+                                 float reach, x3::phys::Vec3& anchor, bool& isOpen) {
+    Door* d = pickAimedDoor(eye, dir, reach, scene, m_doors, physics);
+    if (!d) return false;
+    // A locked, fully-closed door can't be toggled by E (the keypad/event path
+    // owns it) — don't promise "Press E to open" on it.
+    if (d->locked && d->state == DoorState::Closed) return false;
+    isOpen = (d->state == DoorState::Open || d->state == DoorState::Opening);
+    // Stable anchor at the doorway opening (does NOT ride up with the slab), a
+    // touch above the closed slab center so the text sits ~head height.
+    anchor = x3::phys::Vec3{ d->closedPos.x, d->closedPos.y + 0.3f, d->closedPos.z };
+    return true;
 }
 
 bool Level1Game::onRescue(const x3::phys::Vec3& playerPos, float range) {

@@ -137,6 +137,16 @@ public:
     bool onUse(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                Scene& scene, x3::phys::IPhysicsWorld& physics);
 
+    // Interaction-prompt query (HUD): is the player aiming at a door (or its
+    // linked button) within `reach` that E can toggle? If so, fill `anchor` (a
+    // stable world point at the doorway to float the prompt over) and `isOpen`
+    // (true when the door is Open/Opening → the prompt should read "close") and
+    // return true. A locked, still-closed door returns false (the keypad path
+    // owns that case). Pure query — does not change door state.
+    bool aimedDoorPrompt(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
+                         Scene& scene, x3::phys::IPhysicsWorld& physics,
+                         float reach, x3::phys::Vec3& anchor, bool& isOpen);
+
     // F2 rescue interact (spec §5): try to rescue the nearest captive within range
     // of `playerPos` (E-interact). Returns true iff a victim was rescued (the host
     // logs / plays SFX). Small additive hook around the existing onUse path.

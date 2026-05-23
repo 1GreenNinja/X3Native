@@ -47,6 +47,21 @@ enum class L1Floor : uint32_t {
 constexpr uint32_t kSpireFloorCount = (uint32_t)L1Floor::Count;
 constexpr float    kFloorSpacing    = 5.0f;   // m between floor plates (elevator stop pitch)
 
+// ---- B1 detention spine — the X positions of doors A-E along the 24 m basement
+// plate (each doorway is at z=0). SINGLE SOURCE OF TRUTH: both buildLevel1()
+// (collision cross-walls + the DoorSystem slabs) AND env_art.cpp's door-FRAME
+// seed read these, so the GLB door frames always line up with the real doorway
+// gaps. (Past bug: a frame floated in the middle of a room because the geometry
+// builder and the art seed used DIFFERENT X values — 9/12.5/15 vs 10/14/18.)
+// Spacing also widens the cramped middle sub-rooms: cell 4.5 / corridor 4.5 /
+// armory 4.0 / checkpoint 3.0 / arena 3.5 m deep in X (all 16 m deep in Z).
+constexpr float kB1ShaftDoorX = 19.5f;          // shaft -X face into B1 (== kShaftX0 in level1.cpp)
+constexpr float kB1DoorAX     = 4.5f;           // cell       -> corridor
+constexpr float kB1DoorBX     = 9.0f;           // corridor   -> armory
+constexpr float kB1DoorCX     = 13.0f;          // armory     -> checkpoint (locked / keypad 1127)
+constexpr float kB1DoorDX     = 16.0f;          // checkpoint -> arena (auto on arena trigger)
+constexpr float kB1DoorEX     = kB1ShaftDoorX;  // arena      -> elevator (opens on Martinez death)
+
 // One floor's authored footprint + base height + ceiling height (meters). The
 // plate spans x in [x0,x1], z in [-zHalf,+zHalf], its WALKABLE FLOOR at world
 // y=y0, ceiling at y=y0+ceil. Returned by level1Rooms() so both the geometry

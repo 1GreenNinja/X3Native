@@ -342,17 +342,22 @@ Level1Layout buildLevel1(Scene& scene,
     // B1 spine zones laid left->right inside the 24 m plate, ending in a real arena
     // in front of the elevator shaft (x>=19.5) so Martinez has clearance (not inside
     // the shaft). Doors A-D partition the sub-rooms; Door E is the shaft doorway.
-    L.doorA = x3::phys::Vec3{  5.0f, b1y, 0.0f };
-    L.doorB = x3::phys::Vec3{  9.0f, b1y, 0.0f };
-    L.doorC = x3::phys::Vec3{ 12.5f, b1y, 0.0f };
-    L.doorD = x3::phys::Vec3{ 15.0f, b1y, 0.0f };
+    // Door X positions come from the shared header constants (kB1Door*X) so the
+    // env_art GLB door FRAMES (seeded in level1_game.cpp from the same constants)
+    // line up exactly with these doorway gaps — no more frame floating mid-room.
+    L.doorA = x3::phys::Vec3{ kB1DoorAX, b1y, 0.0f };
+    L.doorB = x3::phys::Vec3{ kB1DoorBX, b1y, 0.0f };
+    L.doorC = x3::phys::Vec3{ kB1DoorCX, b1y, 0.0f };
+    L.doorD = x3::phys::Vec3{ kB1DoorDX, b1y, 0.0f };
     L.doorE = L.elevatorDoor[(uint32_t)L1Floor::B1];  // arena -> elevator shaft (x=19.5)
 
-    L.cellCenter       = x3::phys::Vec3{  3.0f, b1y, 0.0f };
-    L.corridorCenter   = x3::phys::Vec3{  7.0f, b1y, 0.0f };
-    L.armoryCenter     = x3::phys::Vec3{ 11.0f, b1y, 0.0f };
-    L.checkpointCenter = x3::phys::Vec3{ 13.7f, b1y, 0.0f };
-    L.arenaCenter      = x3::phys::Vec3{ 17.5f, b1y, 0.0f };
+    // Sub-room centers sit mid-zone between adjacent doors (widened spacing):
+    //   cell [0,4.5] corridor [4.5,9] armory [9,13] checkpoint [13,16] arena [16,19.5].
+    L.cellCenter       = x3::phys::Vec3{  2.25f, b1y, 0.0f };
+    L.corridorCenter   = x3::phys::Vec3{  6.75f, b1y, 0.0f };
+    L.armoryCenter     = x3::phys::Vec3{ 11.0f,  b1y, 0.0f };
+    L.checkpointCenter = x3::phys::Vec3{ 14.5f,  b1y, 0.0f };
+    L.arenaCenter      = x3::phys::Vec3{ 17.75f, b1y, 0.0f };
 
     // ---- B1 interior partitions: cross-walls (with 1.2 m doorway gaps at z=0) at
     //      each spine door X, so the Awakening sub-rooms (cell/corridor/armory/
@@ -369,11 +374,13 @@ Level1Layout buildLevel1(Scene& scene,
                          wallTex, kWallTint, crossWallVis);
     }
 
-    L.cellHalf       = x3::phys::Vec3{ 3.0f, b1ceil, 8.0f };
-    L.corridorHalf   = x3::phys::Vec3{ 2.5f, b1ceil, 8.0f };
-    L.armoryHalf     = x3::phys::Vec3{ 2.0f, b1ceil, 8.0f };
-    L.checkpointHalf = x3::phys::Vec3{ 2.0f, b1ceil, 8.0f };
-    L.arenaHalf      = x3::phys::Vec3{ 2.0f, b1ceil, 8.0f };
+    // Half-extents fit WITHIN each widened sub-room (no longer overshoot the
+    // partition walls the way the old 3.0/2.5 cell/corridor extents did).
+    L.cellHalf       = x3::phys::Vec3{ 2.0f, b1ceil, 8.0f };
+    L.corridorHalf   = x3::phys::Vec3{ 2.0f, b1ceil, 8.0f };
+    L.armoryHalf     = x3::phys::Vec3{ 1.8f, b1ceil, 8.0f };
+    L.checkpointHalf = x3::phys::Vec3{ 1.3f, b1ceil, 8.0f };
+    L.arenaHalf      = x3::phys::Vec3{ 1.5f, b1ceil, 8.0f };
 
     L.ceilCell = L.ceilCorridor = L.ceilArmory = L.ceilCheckpoint = b1ceil;
     L.ceilArena = b1ceil;

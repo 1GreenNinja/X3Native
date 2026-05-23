@@ -323,6 +323,12 @@ constexpr float kNavWaypointArrive = 0.6f;   // "reached" a waypoint within this
 // shrinking toward zero and flashing bright, then hides. Gives shot feedback.
 constexpr float kDeathPopTime  = 0.25f;
 
+// Death TOPPLE duration (seconds): replaces the old shrink-poof. On death the
+// model falls over (rotates ~90° about its feet) across this window with a brief
+// white flash, then LINGERS as a corpse on the ground (no longer vanishes). Reads
+// as a real kill instead of a sprite popping out of existence.
+constexpr float kDeathToppleTime = 0.7f;
+
 // Result of a fire() call, returned for HUD/FX/logging and used by the self-test.
 struct FireResult {
     bool hitMonster = false;  // the ray hit a live monster
@@ -702,7 +708,8 @@ private:
     // model keeps drawing (shrinking + flashing). Once it reaches 0 the Entity is
     // hidden and m_dying clears.
     bool  m_dying     = false;
-    float m_deathPop  = 0.0f;                 // remaining death-pop time (s)
+    float m_deathPop  = 0.0f;                 // remaining topple time (s) while m_dying
+    bool  m_corpse    = false;                // topple finished -> lingering body on the floor
 
     // Current yaw (radians) the model faces; baked into the render 3x3 each frame.
     float m_yaw       = 0.0f;
