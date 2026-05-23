@@ -642,6 +642,7 @@ private:
     uint32_t         m_entity = kNoLink;      // index into the Scene
     x3::phys::BodyId m_body;                  // Enemy-layer collision box
     float            m_modelScale = 1.0f;     // uniform scale applied to the model
+    float            m_hitHalfY   = 0.95f;    // Enemy hitbox half-height (scaled); top quarter = head zone
 
     int   m_hp        = kMonsterHp;
     int   m_maxHp     = kMonsterHp;           // per-instance starting HP (Tuning)

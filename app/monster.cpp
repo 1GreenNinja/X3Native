@@ -309,7 +309,15 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     // motion type but keeps the Enemy ObjectLayer, so it stays put under gravity
     // yet is hittable by a rayCast(Layer::Enemy) and movable by setBodyPosition
     // (same approach as the S4 door). ----
-    m_body = physics.addBox(kMonsterHalf, m_pos, 0.0f, x3::phys::Layer::Enemy);
+    // Hitbox sized to the (possibly scaled) VISUAL so aiming at the body actually
+    // connects. The old fixed kMonsterHalf (~0.8 m tall) let scaled-up humanoids be shot
+    // "through" — only the small drone was hittable. Taller box, scaled by modelScale.
+    {
+        const float hs = (m_modelScale > 0.1f) ? m_modelScale : 1.0f;
+        m_hitHalfY = 0.95f * hs;   // body box half-height; top quarter = the HEAD zone
+        const x3::phys::Vec3 hitHalf{ 0.55f * hs, m_hitHalfY, 0.55f * hs };
+        m_body = physics.addBox(hitHalf, m_pos, 0.0f, x3::phys::Layer::Enemy);
+    }
 
     // ---- Monster Entity: bookkeeping (tag/body/visibility/transform). Its render
     // mesh handle is left INVALID so Scene::render skips it; drawMonster() renders
@@ -370,7 +378,8 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
     // ---- Hit a live monster: apply damage + start the red hit-flash. HEADSHOT (hit in
     // the upper part of the body box) deals 3x. ----
     r.hitMonster = true;
-    const bool headshot = (hit.point.y - m_pos.y) > kMonsterHalf.y * 0.45f;
+    // HEAD zone = the top quarter of the (scaled) hitbox -> a distinct head area.
+    const bool headshot = (hit.point.y - m_pos.y) > m_hitHalfY * 0.5f;
     const int  shotDmg  = headshot ? kDamagePerShot * 3 : kDamagePerShot;
     if (headshot) x3::logInfo("[monster] HEADSHOT! 3x damage");
     bool dead = applyDamage(&m_hp, shotDmg);
