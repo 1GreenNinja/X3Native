@@ -111,9 +111,15 @@ void SpireSubLevels::build(Scene& scene, x3::rhi::IRenderDevice& device,
     const L1RoomDef* tbl = level1Rooms();
     const L1RoomDef& b1  = tbl[(uint32_t)L1Floor::B1];
 
+    // The sub-levels descend from B1's ACTUAL base Y (read from the layout — the single
+    // source of truth for floor heights), so they line up under the basement regardless of
+    // where B1 sits. kSubBaseY[] are the relative offsets (-5/-10/-15 below B1).
+    const float b1BaseY = layout.floorBaseY[(uint32_t)L1Floor::B1];
+    auto subBaseY = [&](SpireSubLevel s) { return b1BaseY + kSubBaseY[(uint32_t)s]; };
+
     // Convenience: a world point on a given sub-level at (x, baseY+yOff, z).
     auto at = [&](SpireSubLevel s, float x, float yOff, float z) {
-        return x3::phys::Vec3{ x, kSubBaseY[(uint32_t)s] + yOff, z };
+        return x3::phys::Vec3{ x, subBaseY(s) + yOff, z };
     };
 
     // ===================================================================
@@ -130,7 +136,7 @@ void SpireSubLevels::build(Scene& scene, x3::rhi::IRenderDevice& device,
         const SpireSubLevel s = SpireSubLevel::SL1;
         SpireSubPlan& p = m_plan[si];
         p.sub      = s;
-        p.baseY    = kSubBaseY[si];
+        p.baseY    = subBaseY(s);
         p.arrival  = at(s, 17.5f, 0.05f, 0.0f);   // step off the hidden lift onto the plate
 
         // Corrupted Janitors (melee) shamble forward; a Disposal Drone snipes from the back.
@@ -183,7 +189,7 @@ void SpireSubLevels::build(Scene& scene, x3::rhi::IRenderDevice& device,
         const SpireSubLevel s = SpireSubLevel::SL2;
         SpireSubPlan& p = m_plan[si];
         p.sub      = s;
-        p.baseY    = kSubBaseY[si];
+        p.baseY    = subBaseY(s);
         p.arrival  = at(s, 17.5f, 0.05f, 0.0f);
 
         // The Frozen Collective mini-boss anchors the hall center (off the lift spine).
@@ -231,7 +237,7 @@ void SpireSubLevels::build(Scene& scene, x3::rhi::IRenderDevice& device,
         const SpireSubLevel s = SpireSubLevel::SL3;
         SpireSubPlan& p = m_plan[si];
         p.sub      = s;
-        p.baseY    = kSubBaseY[si];
+        p.baseY    = subBaseY(s);
         p.arrival  = at(s, 17.5f, 0.05f, 0.0f);
 
         m_enemies[si].spawn(scene, device, physics, m_modelDir,
@@ -274,8 +280,8 @@ void SpireSubLevels::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // catch a player who steps into the hidden lift behind the executive desk. We REMEMBER
     // its bounds here but DO NOT register it yet: it is added to the host's TriggerSystem
     // only in openDescent(), so it can never fire while the descent is hidden.
-    m_descentVolMin = x3::phys::Vec3{ b1.x1 - 6.0f, 0.0f - 1.0f, -4.0f };
-    m_descentVolMax = x3::phys::Vec3{ b1.x1,        0.0f + 3.0f,  4.0f };
+    m_descentVolMin = x3::phys::Vec3{ b1.x1 - 6.0f, b1BaseY - 1.0f, -4.0f };
+    m_descentVolMax = x3::phys::Vec3{ b1.x1,        b1BaseY + 3.0f,  4.0f };
 
     // Try to load the shared real-door GLB so the keypad doors render as meshes (the
     // collision box stays). No-op/harmless if the GLB is absent (graybox fallback).
@@ -552,8 +558,8 @@ bool runSubLevelsSelfTest() {
     {
         TestSink sink; sink.hp = 100;
         // Stand the (would-be) player INSIDE the SL1 hazard footprint — at load it must NOT
-        // bite (the descent is closed). SL1 is at y = -5; the hazard spans the -X half.
-        const float hazY = layout.floorBaseY ? -1.0f * x3::game::kFloorSpacing : -5.0f;
+        // bite (the descent is closed). The hazard spans the -X half of the SL1 plate.
+        const float hazY = sub.plan(SpireSubLevel::SL1).baseY;
         x3::phys::Vec3 inHazard{ level1Rooms()[(uint32_t)L1Floor::B1].x0 + 4.0f, hazY + 0.5f, 0.0f };
         sink.p = inHazard;
         for (int i = 0; i < 120; ++i) {
@@ -651,16 +657,16 @@ bool runSubLevelsSelfTest() {
             sub.tick(kFixedDt, scene, *physics, inHazard, inHazard, &sink, AttackFxFn{});
         bool drained = sink.hp < 100 && sink.isAlive();   // lost HP but not instakilled
         bool hazardActive = sub.hazardActive();
-        check(drained && hazardActive,
+        bool insideVol = sub.inHazardVolume(inHazard);     // the drained spot IS in the volume
+        check(drained && hazardActive && insideVol,
               "S12 SL1 hazard drains a player standing in it once the descent is open");
 
-        // A player OUTSIDE the hazard takes none.
-        TestSink dry; dry.hp = 100;
+        // The hazard VOLUME is BOUNDED: a point OUTSIDE the incinerator footprint is not
+        // "in hazard" (so it takes no hazard damage). Tested via the boundary query so the
+        // enemies-chasing-a-live-target confound can't muddy the assertion.
         x3::phys::Vec3 outside{ level1Rooms()[(uint32_t)L1Floor::B1].x1 - 2.0f, hazY + 0.5f, 0.0f };
-        dry.p = outside;
-        for (int i = 0; i < 120; ++i)
-            sub.tick(kFixedDt, scene, *physics, outside, outside, &dry, AttackFxFn{});
-        check(dry.hp == 100, "S13 a player OUTSIDE the hazard footprint takes no hazard damage");
+        check(!sub.inHazardVolume(outside),
+              "S13 the hazard volume is BOUNDED — a point outside the incinerator is not in hazard");
     }
 
     // ---- The SL3 hub starts Chen's clock; the rescue (E in range) FREES him. ----
@@ -678,8 +684,8 @@ bool runSubLevelsSelfTest() {
 
         // The rescue: out of range fails; in range frees Chen (companion).
         const SpireSubPlan& s3 = sub.plan(SpireSubLevel::SL3);
-        x3::phys::Vec3 far{ s3.arrival.x, s3.baseY + 0.5f, s3.arrival.z };  // arrival is far from the cell
-        bool farFails = !sub.onRescue(far, kRescueReach);
+        x3::phys::Vec3 farPos{ s3.arrival.x, s3.baseY + 0.5f, s3.arrival.z };  // arrival is far from the cell
+        bool farFails = !sub.onRescue(farPos, kRescueReach);
         // Chen's cell is at (B1.x0 + 3, baseY, -5.5). Walk right up to him.
         x3::phys::Vec3 nearChen{ level1Rooms()[(uint32_t)L1Floor::B1].x0 + 3.0f, s3.baseY + kEnemyYOff, -5.5f };
         bool freed = sub.onRescue(nearChen, kRescueReach);

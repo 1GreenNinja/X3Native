@@ -195,6 +195,12 @@ public:
     // is open). Read by the HUD + the self-test.
     bool   hazardPresent() const { return m_hazardPresent; }
     bool   hazardActive()  const { return m_descentOpen && m_hazardPresent; }
+    // True iff `pos` is inside the SL1 hazard volume (the toxic incinerator zone). The
+    // HUD uses this for a "TOXIC" warning; the self-test uses it to assert the volume is
+    // bounded (a point outside it is not "in hazard") without the enemy-attack confound.
+    bool   inHazardVolume(const x3::phys::Vec3& pos) const {
+        return m_hazardPresent && pointInBox(pos, m_hazardMin, m_hazardMax);
+    }
 
 private:
     bool m_built = false;
