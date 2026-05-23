@@ -399,8 +399,32 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
     return mask;
 }
 
-void EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const {
+void EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                        const float camEye[3], const float camFwd[3]) const {
+    // PERF — view-cone cull. Each instance is an individual immediate draw submission;
+    // with hundreds of instances spread across a vertically-stacked tower (all 8 floors
+    // submit every frame) the per-call CPU dominates the frame (GPU sits idle). When a
+    // camera is supplied, skip instances OUTSIDE a generous cone around the look dir
+    // (the floors directly above/below at ~90deg, and everything behind) and beyond a
+    // hard far distance — but always keep very-near props (peripheral vision). The cone
+    // is wider than the real frustum so nothing visible pops. camEye==nullptr => draw
+    // all (headless / screenshot paths).
+    constexpr float kFarCull2  = 75.0f * 75.0f;  // hard far cutoff (m^2)
+    constexpr float kNearKeep2 = 6.0f  * 6.0f;   // always draw within 6 m (peripheral)
+    constexpr float kConeCos   = 0.40f;          // keep within ~66 deg of forward
     for (const EnvInstance& inst : m_instances) {
+        if (camEye) {
+            const float vx = inst.transform[12] - camEye[0];
+            const float vy = inst.transform[13] - camEye[1];
+            const float vz = inst.transform[14] - camEye[2];
+            const float d2 = vx*vx + vy*vy + vz*vz;
+            if (d2 > kFarCull2) continue;                       // too far
+            if (camFwd && d2 > kNearKeep2) {
+                const float inv  = 1.0f / std::sqrt(d2);
+                const float cosA = (vx*camFwd[0] + vy*camFwd[1] + vz*camFwd[2]) * inv;
+                if (cosA < kConeCos) continue;                  // outside the view cone
+            }
+        }
         const EnvAsset& a = m_assetTable[inst.asset];
         for (const auto& d : a.drawables) {
             float fin[16];

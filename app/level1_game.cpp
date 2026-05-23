@@ -657,10 +657,13 @@ MeleeResult Level1Game::onMelee(const x3::phys::Vec3& eye, const x3::phys::Vec3&
     return r;
 }
 
+void Level1Game::cheatArm(Scene& scene) { m_weapon.forceArm(scene); }  // IDKFA/IDFA
+
 void Level1Game::drawWorldExtras(x3::rhi::IRenderDevice& device,
                                  const x3::rhi::FrameContext& frame,
-                                 const Scene& scene) const {
-    m_envArt.draw(device, frame);   // converted sci-fi environment art over graybox
+                                 const Scene& scene,
+                                 const float camEye[3], const float camFwd[3]) const {
+    m_envArt.draw(device, frame, camEye, camFwd);   // converted sci-fi environment art (view-culled)
     m_weapon.drawPickup(device, frame, scene);
     m_corridor.drawAll(device, frame, scene);
     m_checkpoint.drawAll(device, frame, scene);

@@ -68,7 +68,12 @@ public:
 
     // Draw all placed environment instances (static; call alongside scene.render()
     // each frame, before the viewmodel). No-op if nothing loaded.
-    void draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const;
+    // camEye/camFwd (optional, world-space): when supplied, view-cone-cull instances
+    // (skip those outside a generous cone around the look dir + beyond a far cutoff,
+    // keeping near props) — a big draw-submission win in the vertically-stacked Spire.
+    // nullptr => draw all (headless / screenshot paths).
+    void draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+              const float camEye[3] = nullptr, const float camFwd[3] = nullptr) const;
 
     // Diagnostics for logging / the host: how many assets loaded ok / instances.
     uint32_t assetsLoaded() const;

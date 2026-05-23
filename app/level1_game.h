@@ -166,7 +166,9 @@ public:
 
     // ---- Draw helpers (host calls inside beginFrame/endFrame) --------------
     void drawWorldExtras(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
-                         const Scene& scene) const;  // pickup + all monsters
+                         const Scene& scene,
+                         const float camEye[3] = nullptr,
+                         const float camFwd[3] = nullptr) const;  // pickup + all monsters (env-art view-culled)
     // Draw the real SM_Door_A slab at every door's CURRENT (animating) world
     // transform. The procedural door box is collision-only (hidden); this draws the
     // visual. Host calls it once per frame in the interactive draw block.
@@ -190,6 +192,9 @@ public:
     x3::phys::Vec3 checkpoint() const { return m_layout.spawn; }
 
     bool armed() const { return m_weapon.hasWeapon(); }
+    // IDKFA/IDFA cheat: force-arm the player (gives the weapon; arsenal weapons start
+    // full, so this enables firing the whole arsenal). See app/main.cpp console cmds.
+    void cheatArm(Scene& scene);
     bool complete() const { return m_complete; }
     // Save/load restore: set the level-complete latch directly (does NOT re-run the
     // WIN beat / re-log). Used by applyCheckpoint() to restore the recorded flag.

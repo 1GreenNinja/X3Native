@@ -78,6 +78,7 @@ bool Player::takeDamage(int amount) {
     // Gate: no damage while dead, during the iframe window, or for non-positive
     // amounts. Returning false here is what makes iframes "absorb" extra hits
     // that arrive in the same window (fair DPS).
+    if (m_god) return false;   // IDDQD: degreelessness mode — absorb all damage
     if (!m_alive || m_iframe > 0.0f || amount <= 0) return false;
 
     m_hp -= amount;

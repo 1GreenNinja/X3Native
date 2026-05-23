@@ -112,6 +112,10 @@ public:
     // True for kPlayerIFrame seconds after a hit (no new damage lands).
     bool invulnerable() const { return m_iframe > 0.0f; }
 
+    // IDDQD god mode (console cheat): while on, takeDamage() absorbs everything.
+    void setGod(bool g) { m_god = g; }
+    bool god() const { return m_god; }
+
     // Damage-flash strength in [0,1] for the HUD red flash (1 right after a hit,
     // decays to 0 over kDamageFlashTime). Drives drawDamageFlash().
     float damageFlash() const;
@@ -166,6 +170,7 @@ private:
     float m_iframe    = 0.0f;           // remaining invuln window (s)
     float m_flash     = 0.0f;           // remaining damage-flash time (s)
     float m_respawn   = 0.0f;           // remaining respawn countdown while dead (s)
+    bool  m_god       = false;          // IDDQD: ignore all incoming damage
 };
 
 // Headless self-test (T1 walk, T2 wall-stop, T3 jump, T4 coyote). Builds its own

@@ -3415,6 +3415,26 @@ int main(int argc, char** argv) {
     // leftover real time between render frames; advance(dt) yields whole kSimDt steps.
     x3::net::SimAccumulator simAcc;
 
+    // ---- DOOM-style cheat console commands (playtest aid). Capture the live systems
+    // by reference (they outlive the loop). Open the console with ` then type e.g. iddqd.
+    console->registerCommand("iddqd", [&player, &console](const std::vector<std::string>&) {
+        const bool on = !player.god(); player.setGod(on); if (on) player.heal();
+        console->print(std::string("god mode ") + (on ? "ON  (IDDQD)" : "OFF"));
+    }, "toggle god mode (invulnerable)");
+    console->registerCommand("god", [&player, &console](const std::vector<std::string>& a) {
+        const bool on = a.empty() ? !player.god() : (a[0] != "0");
+        player.setGod(on); if (on) player.heal();
+        console->print(std::string("god = ") + (on ? "1" : "0"));
+    }, "god [0|1] - toggle/set invulnerability");
+    console->registerCommand("idkfa", [&player, &game, &scene, &console](const std::vector<std::string>&) {
+        player.setGod(true); player.heal(); game.cheatArm(scene);
+        console->print("IDKFA - god + full health + all weapons armed");
+    }, "god + full health + all weapons");
+    console->registerCommand("idfa", [&game, &scene, &console](const std::vector<std::string>&) {
+        game.cheatArm(scene);
+        console->print("IDFA - all weapons armed");
+    }, "arm all weapons");
+
     // ---- S7: route keyboard text + editing into the on-screen console. The
     // char callback feeds printable codepoints; the key callback handles the
     // '`' toggle + Enter/Backspace/Up/Down/Tab/Esc while the console is open.
@@ -3578,7 +3598,11 @@ int main(int argc, char** argv) {
 
         double nowT = glfwGetTime();
         float dt = static_cast<float>(nowT - prevTime); prevTime = nowT;
-        if (dt > 0.1f) dt = 0.1f; // clamp huge hitches (e.g. after a stall)
+        // Clamp to <= ~2 sim sub-steps. The fixed-step accumulator otherwise locks
+        // into a 6-sub-step death-spiral after a load hitch (each frame legitimately
+        // takes ~6x the sim cost -> stuck at ~11 fps). Capping the catch-up here breaks
+        // the lock (perf stopgap; the real fix is a cheaper sim step + GPU skinning).
+        if (dt > 0.034f) dt = 0.034f;
 
         // Mouse delta this frame. Frozen (zeroed) while the console is open OR a UI
         // menu is up, so the view does not swing under a visible cursor.
@@ -3723,6 +3747,7 @@ int main(int argc, char** argv) {
         // FREEZE: while a UI menu (main/pause/settings) is up, the sim/fixed-step is
         // frozen. We still drain the accumulator (advance + discard) so unpausing
         // doesn't trigger a multi-step catch-up burst; zero sub-steps run.
+        const double _perfSimT0 = glfwGetTime();   // PERF probe (temp)
         const uint32_t simStepsRaw = simAcc.advance(dt);
         const uint32_t simSteps = gameUi.shouldFreezeSim() ? 0u : simStepsRaw;
         for (uint32_t s = 0; s < simSteps; ++s) {
@@ -3792,6 +3817,11 @@ int main(int argc, char** argv) {
                 scene.update(*physics);
             }
         }
+        // PERF probe (temp): split sim vs the rest (tick + render) + step count.
+        static double _perfSimMs = 0.0, _perfRestMs = 0.0;
+        static uint32_t _perfFrames = 0, _perfSteps = 0;
+        _perfSimMs += (glfwGetTime() - _perfSimT0) * 1000.0; _perfSteps += simSteps;
+        const double _perfRestT0 = glfwGetTime();
         // Camera readback once per render frame from the post-sim state.
         if (!noclip) {
             player.camera(camX, camY, camZ, camYaw, camPitch);
@@ -4071,7 +4101,14 @@ int main(int argc, char** argv) {
                 // Real SM_Door_A door slabs at each door's current (sliding) pose —
                 // the procedural door box is collision-only (hidden).
                 game.drawDoors(*device, frame);
-                game.drawWorldExtras(*device, frame, scene);
+                // View-cone cull the env-art (big draw-call win in the Spire): pass the
+                // live camera eye + forward derived from the player look angles.
+                float cuEx, cuEy, cuEz, cuYaw, cuPit; player.camera(cuEx, cuEy, cuEz, cuYaw, cuPit);
+                const float cuCp = std::cos(cuPit), cuSp = std::sin(cuPit),
+                            cuCy = std::cos(cuYaw), cuSy = std::sin(cuYaw);
+                const float cullEye[3] = { cuEx, cuEy, cuEz };
+                const float cullFwd[3] = { cuCp * cuCy, cuSp, cuCp * cuSy };
+                game.drawWorldExtras(*device, frame, scene, cullEye, cullFwd);
                 midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
                 midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
                 topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
@@ -4251,6 +4288,15 @@ int main(int argc, char** argv) {
             hud.drawConsole(*device, frame, *console, dt);
         }
         device->endFrame(frame);
+        // PERF probe (temp): report the sim/rest split every 60 frames.
+        _perfRestMs += (glfwGetTime() - _perfRestT0) * 1000.0;
+        if (++_perfFrames >= 60) {
+            const double simAvg = _perfSimMs / 60.0, restAvg = _perfRestMs / 60.0;
+            x3::logError("[perf] frame~" + std::to_string(simAvg + restAvg) + "ms  SIM=" +
+                        std::to_string(simAvg) + "ms (" + std::to_string((double)_perfSteps / 60.0) +
+                        " steps/f)  REST tick+render=" + std::to_string(restAvg) + "ms");
+            _perfSimMs = _perfRestMs = 0.0; _perfFrames = 0; _perfSteps = 0;
+        }
     }
 
     x3::logInfo("shutting down");
