@@ -79,6 +79,17 @@ public:
     uint32_t gpuDebrisCapacity() const override { return 0; }
     x3::rhi::IRenderDevice::GpuDebrisStats gpuDebrisReadback(float) const override { return {}; }
 
+    // GPU compute skinning (GPU SKINNING OF MODELS). No-op in the headless stub;
+    // the real compute path is exercised against the live Vulkan device in
+    // --test-gpuskin. registerSkinnedMesh returns false so callers fall back to the
+    // CPU skinning path (which the headless --test-anim / --test-locomotion use).
+    bool registerSkinnedMesh(x3::rhi::MeshHandle, const x3::rhi::MeshVertex*, uint32_t,
+                             const uint16_t*, const float*) override { return false; }
+    void unregisterSkinnedMesh(x3::rhi::MeshHandle) override {}
+    void setSkinnedPalette(x3::rhi::MeshHandle, const float*, uint32_t) override {}
+    bool readbackSkinnedMesh(x3::rhi::MeshHandle, x3::rhi::MeshVertex*, uint32_t) override { return false; }
+    bool supportsGpuSkinning() const override { return false; }
+
     void setPointLights(const x3::rhi::PointLight*, uint32_t) override {}
     void setSkyParams(const x3::rhi::IRenderDevice::SkyParams&) override {}
     void setSsaoParams(const x3::rhi::IRenderDevice::SsaoParams&) override {}

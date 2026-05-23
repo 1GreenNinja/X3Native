@@ -66,7 +66,8 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/ssgi_apply.frag
     ${CMAKE_SOURCE_DIR}/shaders/debris.comp
     ${CMAKE_SOURCE_DIR}/shaders/debris.vert
-    ${CMAKE_SOURCE_DIR}/shaders/debris.frag)
+    ${CMAKE_SOURCE_DIR}/shaders/debris.frag
+    ${CMAKE_SOURCE_DIR}/shaders/skin.comp)
 set(SPV_DIR ${CMAKE_BINARY_DIR}/shaders_spv)
 file(MAKE_DIRECTORY ${SPV_DIR})
 set(SPV_FILES "")

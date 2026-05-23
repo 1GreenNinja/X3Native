@@ -300,8 +300,41 @@ bool Skinner::bind(const x3::asset::Model& model) {
     m_pelvisDropSmoothed = 0.0f;
     resolveFootIkBones(model);
 
+    m_gpuSkin = false;   // a re-bind drops any prior GPU-skin registration
     m_valid = true;
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// GPU compute skinning: register every skinned primitive's bind-pose verts +
+// per-vertex joint idx/weights with the device, so apply/applyLocomotion can skin
+// on the GPU (upload palette) instead of CPU-LBS + updateMesh.
+bool Skinner::enableGpuSkinning(x3::rhi::IRenderDevice& device,
+                                const x3::asset::Model& model) {
+    if (!m_valid) return false;
+    if (!device.supportsGpuSkinning()) return false;   // headless / non-compute -> CPU path
+    bool any = false;
+    std::vector<x3::rhi::MeshVertex> bind;   // bind-pose MeshVertex scratch
+    for (const auto& p : model.primitives) {
+        if (!p.skinned) continue;
+        const uint32_t meshId = x3::asset::meshIdOf(p);
+        if (meshId == 0) continue;                       // headless primitive: skip
+        const size_t vcount = p.basePos.size() / 3;
+        if (vcount == 0 || p.jointIdx.size() < vcount * 4 || p.jointWt.size() < vcount * 4)
+            continue;
+        bind.resize(vcount);
+        for (size_t v = 0; v < vcount; ++v) {
+            x3::rhi::MeshVertex& mv = bind[v];
+            mv.pos[0] = p.basePos[v*3+0]; mv.pos[1] = p.basePos[v*3+1]; mv.pos[2] = p.basePos[v*3+2];
+            mv.normal[0] = p.baseNrm[v*3+0]; mv.normal[1] = p.baseNrm[v*3+1]; mv.normal[2] = p.baseNrm[v*3+2];
+            mv.uv[0] = p.baseUv[v*2+0]; mv.uv[1] = p.baseUv[v*2+1];
+        }
+        if (device.registerSkinnedMesh(x3::rhi::MeshHandle{ meshId }, bind.data(),
+                                       (uint32_t)vcount, p.jointIdx.data(), p.jointWt.data()))
+            any = true;
+    }
+    m_gpuSkin = any;
+    return any;
 }
 
 float Skinner::clipDuration(uint32_t clip) const {
@@ -692,6 +725,18 @@ void Skinner::applyLocomotion(const x3::asset::Model& model,
     uint32_t jcount = paletteFromPose(model, m_blendT, m_blendR, m_blendS, m_palette);
     if (jcount == 0) return;
 
+    // ---- GPU path: upload the CPU-computed palette; the device's compute pre-pass
+    // skins on the GPU into each mesh's skinned-output vbo (no CPU LBS, no updateMesh).
+    if (m_gpuSkin) {
+        for (const auto& p : model.primitives) {
+            if (!p.skinned) continue;
+            const uint32_t meshId = x3::asset::meshIdOf(p);
+            if (meshId == 0) continue;
+            device.setSkinnedPalette(x3::rhi::MeshHandle{ meshId }, m_palette.data(), jcount);
+        }
+        return;
+    }
+
     for (const auto& p : model.primitives) {
         if (!p.skinned) continue;
         const uint32_t meshId = x3::asset::meshIdOf(p);
@@ -742,6 +787,18 @@ void Skinner::apply(const x3::asset::Model& model, x3::rhi::IRenderDevice& devic
     if (!m_valid) return;
     uint32_t jcount = computePalette(model, clip, timeSec, m_palette);
     if (jcount == 0) return;
+
+    // ---- GPU path: upload the CPU-computed palette; the device's compute pre-pass
+    // skins on the GPU into each mesh's skinned-output vbo (no CPU LBS, no updateMesh).
+    if (m_gpuSkin) {
+        for (const auto& p : model.primitives) {
+            if (!p.skinned) continue;
+            const uint32_t meshId = x3::asset::meshIdOf(p);
+            if (meshId == 0) continue;
+            device.setSkinnedPalette(x3::rhi::MeshHandle{ meshId }, m_palette.data(), jcount);
+        }
+        return;
+    }
 
     for (const auto& p : model.primitives) {
         if (!p.skinned) continue;

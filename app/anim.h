@@ -47,6 +47,29 @@ public:
 
     bool valid() const { return m_valid; }
 
+    // ======================================================================
+    // GPU compute skinning (GPU SKINNING OF MODELS).
+    // ======================================================================
+    // After bind(), call enableGpuSkinning() ONCE with the device to register every
+    // skinned primitive's bind-pose verts + per-vertex joint idx/weights with the
+    // device's compute-skinning path (IRenderDevice::registerSkinnedMesh). When this
+    // succeeds, apply()/applyLocomotion() switch from per-frame CPU linear-blend-
+    // skinning + full updateMesh() (the "doesn't scale past a handful of NPCs"
+    // bottleneck) to: compute the joint palette on the CPU (cheap, unchanged) and
+    // UPLOAD it to the GPU (setSkinnedPalette); the device's compute pre-pass skins
+    // on the GPU. The existing draw passes draw the SAME mesh handles unchanged.
+    //
+    // Returns true if GPU skinning was enabled for at least one primitive (the device
+    // supports it AND a real device mesh exists). Returns false on a headless / non-
+    // compute device, in which case the CPU path stays in effect (no regression — so
+    // --test-anim / --test-locomotion, which run headless palette-only, are unchanged).
+    // Safe to call when !valid() (returns false). Idempotent.
+    bool enableGpuSkinning(x3::rhi::IRenderDevice& device, const x3::asset::Model& model);
+
+    // True if enableGpuSkinning() registered at least one primitive (apply/
+    // applyLocomotion will upload the palette + skin on the GPU instead of CPU LBS).
+    bool gpuSkinning() const { return m_gpuSkin; }
+
     // Number of clips + a clip's name/duration (for selecting idle vs walk and for
     // logging). clipIndex is clamped/ignored if out of range.
     uint32_t   clipCount() const { return (uint32_t)m_clipDurations.size(); }
@@ -249,6 +272,11 @@ private:
     void applyFootIk(const x3::asset::Model& m, float dt);
 
     bool                  m_valid = false;
+    // GPU compute skinning: set by enableGpuSkinning(). When true, apply/
+    // applyLocomotion upload the joint palette (setSkinnedPalette) instead of CPU-
+    // LBS + updateMesh. Holds no GPU resources itself (the device owns them, keyed
+    // by mesh handle, freed on destroyMesh / unregisterSkinnedMesh).
+    bool                  m_gpuSkin = false;
     int                   m_skinIndex = -1;
     std::vector<float>    m_clipDurations;     // seconds, per clip
     std::vector<std::string> m_clipNames;
