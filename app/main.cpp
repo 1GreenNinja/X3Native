@@ -90,7 +90,8 @@ namespace {
 // the FX tracer starts near the gun barrel (lower-right of the view) rather than
 // dead center. Mirrors the camera-basis offsets used by WeaponSystem; tuned to
 // sit just in front of and below/right of the eye.
-x3::phys::Vec3 muzzleFromCamera(float ex, float ey, float ez, float yaw, float pitch) {
+x3::phys::Vec3 muzzleFromCamera(float ex, float ey, float ez, float yaw, float pitch,
+                                float mFwd, float mRight, float mDown) {
     const float cp = std::cos(pitch), sp = std::sin(pitch);
     const float cy = std::cos(yaw),   sy = std::sin(yaw);
     const x3::phys::Vec3 forward{ cp * cy, sp, cp * sy };
@@ -99,11 +100,8 @@ x3::phys::Vec3 muzzleFromCamera(float ex, float ey, float ez, float yaw, float p
         right.y * forward.z - right.z * forward.y,
         right.z * forward.x - right.x * forward.z,
         right.x * forward.y - right.y * forward.x };
-    // Muzzle offset (m) in the camera basis: a bit forward, a bit right + down.
-    // Matched to the Tim-tuned viewmodel pose (vm_right 0.25 / vm_down 0.35, gun body
-    // ~1.0 m forward) + the barrel tip a bit further forward, so tracers + muzzle flash
-    // visibly originate from the held gun rather than screen-center.
-    const float mFwd = 1.4f, mRight = 0.25f, mDown = 0.28f;
+    // Muzzle offset (m) in the camera basis (caller supplies it via the muzzle_* cvars
+    // so the shot always originates from the held gun + can be tuned live).
     return x3::phys::Vec3{
         ex + forward.x * mFwd + right.x * mRight - up.x * mDown,
         ey + forward.y * mFwd + right.y * mRight - up.y * mDown,
@@ -142,6 +140,11 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
                          "viewmodel offset below the eye line (meters)");
     // Global brightness: scales the composite/ACES exposure. >1 brighter, <1 darker.
     console.registerCVar("r_exposure", "1.4", "global brightness / tonemap exposure (>1 brighter)");
+    // Muzzle origin (camera-basis offset from the eye): where shots/tracers/flash spawn,
+    // so the fire comes from the HELD GUN. Tune live to match your viewmodel pose.
+    console.registerCVar("muzzle_fwd",   "1.5",  "muzzle forward offset from eye (m)");
+    console.registerCVar("muzzle_right", "0.25", "muzzle right offset from eye (m)");
+    console.registerCVar("muzzle_down",  "0.32", "muzzle down offset from eye (m)");
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.
@@ -3297,7 +3300,7 @@ int main(int argc, char** argv) {
                                     std::sin(vmPitch),
                                     std::cos(vmPitch) * std::sin(vmYaw) };
                 x3::game::FireResult r = game.onFire(eye, dir, scene, *physics);
-                const x3::phys::Vec3 m = muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch);
+                const x3::phys::Vec3 m = muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch, 1.5f, 0.25f, 0.32f);
                 combatFx.addTracer(m, r.endPoint);
                 audio->playSound3D(sndGun, m.x, m.y, m.z, 0.85f, 1.0f);
                 // Exercise EVERY particle/decal preset path under Debug validation:
@@ -3317,7 +3320,7 @@ int main(int argc, char** argv) {
                                     std::sin(vmPitch),
                                     std::cos(vmPitch) * std::sin(vmYaw) };
                 x3::game::ResolvedFire shot = arsenal.fire(eye, dir, weaponRng);
-                const x3::phys::Vec3 m = muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch);
+                const x3::phys::Vec3 m = muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch, 1.5f, 0.25f, 0.32f);
                 for (const auto& ray : shot.rays) {
                     x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics);
                     combatFx.addTracer(m, r.endPoint);
@@ -3942,6 +3945,12 @@ int main(int argc, char** argv) {
         // short forward arc, and brute-forces a closed door you punch. Works whether
         // or not armed (the pistol is the separate LMB verb). Gated by the
         // MeleeSystem's own cooldown; only while alive. ----
+        // Muzzle offset (camera basis) from the live cvars — shared by the melee swing
+        // FX and the gun fire below, so all FX originate from the held gun.
+        const float mzF = (float)std::atof(console->getString("muzzle_fwd").c_str());
+        const float mzR = (float)std::atof(console->getString("muzzle_right").c_str());
+        const float mzD = (float)std::atof(console->getString("muzzle_down").c_str());
+
         // Verbs: V (punch) or X (kick) or middle-mouse, AND — when UNARMED ("fists are
         // the weapon") — the LEFT mouse button, so clicking throws punches. Held-fire:
         // the MeleeSystem's own cooldown rate-limits, so holding = repeated swings
@@ -3959,7 +3968,7 @@ int main(int argc, char** argv) {
             if (!mr.onCooldown) {
                 // Melee swing FX: a short tracer from the muzzle out to the punch's
                 // far point so the strength swing reads (reuses the CombatFx beam).
-                const x3::phys::Vec3 muzzle = muzzleFromCamera(camX, camY, camZ, camYaw, camPitch);
+                const x3::phys::Vec3 muzzle = muzzleFromCamera(camX, camY, camZ, camYaw, camPitch, mzF, mzR, mzD);
                 combatFx.addTracer(muzzle, mr.swingTo);
                 // A heavy "thump" cue (reuse the gunshot WAV at low pitch).
                 audio->playSound3D(sndGun, muzzle.x, muzzle.y, muzzle.z, 0.7f, 0.6f);
@@ -3992,7 +4001,7 @@ int main(int argc, char** argv) {
                                 std::sin(camPitch),
                                 std::cos(camPitch) * std::sin(camYaw) };
             x3::game::ResolvedFire shot = arsenal.fire(eye, dir, weaponRng);
-            const x3::phys::Vec3 muzzle = muzzleFromCamera(camX, camY, camZ, camYaw, camPitch);
+            const x3::phys::Vec3 muzzle = muzzleFromCamera(camX, camY, camZ, camYaw, camPitch, mzF, mzR, mzD);
             // View-kick -> recoil (pitch + viewmodel back-push) + a brief camera
             // shake. Decayed/recovered in the camera block; folded into the view +
             // viewmodel below. Feel only — the resolved shot dir above is un-kicked.
