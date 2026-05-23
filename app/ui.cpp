@@ -221,6 +221,11 @@ GameState MainMenu::update(UiContext& ui, const char* title, const char* subtitl
     const float hintPx = std::max(12.0f, subPx * 0.8f);
     ui.textCentered("Mouse or Arrows/WASD to navigate, Enter to select",
                     cx, h - hintPx * 2.2f, hintPx, kColTextDim);
+
+    // Live framebuffer resolution readout (bottom-left).
+    char resBuf[48];
+    std::snprintf(resBuf, sizeof(resBuf), "RESOLUTION: %d x %d", (int)(w + 0.5f), (int)(h + 0.5f));
+    ui.text(resBuf, 12.0f, h - hintPx * 1.4f, hintPx, kColTextDim);
     return next;
 }
 

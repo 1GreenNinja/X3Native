@@ -440,7 +440,7 @@ int main(int argc, char** argv) {
     // UNCHANGED. A high-DPI box can pass e.g. --width 2560 --height 1440. These
     // affect ONLY the on-screen window: headless capture/screenshot resolution is
     // forced back to 1280x720 below regardless of these flags.
-    uint32_t    winW = 1280, winH = 720;
+    uint32_t    winW = 1600, winH = 900;   // bigger default (opens MAXIMIZED below)
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
@@ -837,6 +837,7 @@ int main(int argc, char** argv) {
     // still initialized (cheap; some paths poll events) but never opens a surface.
     GLFWwindow* window = nullptr;
     if (!headless) {
+        glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);   // open big by default (no more dragging)
         window = glfwCreateWindow(static_cast<int>(W), static_cast<int>(H),
                                   "X3Engine", nullptr, nullptr);
         if (!window) {
@@ -3766,6 +3767,7 @@ int main(int argc, char** argv) {
                 if (!consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
                     in.moveFwd += 1.0f;
                 in.sprint      = keyDown(GLFW_KEY_LEFT_SHIFT);
+                if (keyDown(GLFW_KEY_C)) { in.sprint = false; in.moveFwd *= 0.45f; in.moveStrafe *= 0.45f; } // C: crouch (slower)
                 // Edge + mouse-look apply only on the first sub-step of the frame.
                 in.jumpPressed = firstSub && spaceNow && !prevSpace;   // rising edge
                 in.lookDX = firstSub ? ddx : 0.0f;
@@ -3828,6 +3830,7 @@ int main(int argc, char** argv) {
         // Camera readback once per render frame from the post-sim state.
         if (!noclip) {
             player.camera(camX, camY, camZ, camYaw, camPitch);
+            if (keyDown(GLFW_KEY_C)) camY -= 0.55f;   // C: crouch — dip the eye height
         } else {
             camX = flyX; camY = flyY; camZ = flyZ; camYaw = flyYaw; camPitch = flyPitch;
         }
@@ -3936,9 +3939,15 @@ int main(int argc, char** argv) {
         // short forward arc, and brute-forces a closed door you punch. Works whether
         // or not armed (the pistol is the separate LMB verb). Gated by the
         // MeleeSystem's own cooldown; only while alive. ----
-        bool meleeNow = (keyDown(GLFW_KEY_V) ||
-            (!consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS));
-        if (meleeNow && !prevMelee && player.isAlive() && !terrainWorld) {
+        // Verbs: V (punch) or X (kick) or middle-mouse, AND — when UNARMED ("fists are
+        // the weapon") — the LEFT mouse button, so clicking throws punches. Held-fire:
+        // the MeleeSystem's own cooldown rate-limits, so holding = repeated swings
+        // ("shooting punches"). Console-suppressed; alive + not the terrain world.
+        bool meleeNow = !consoleOpen && player.isAlive() && !terrainWorld && (
+            keyDown(GLFW_KEY_V) || keyDown(GLFW_KEY_X) ||
+            glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS ||
+            (!game.armed() && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS));
+        if (meleeNow) {
             x3::phys::Vec3 eye{ camX, camY, camZ };
             x3::phys::Vec3 dir{ std::cos(camPitch) * std::cos(camYaw),
                                 std::sin(camPitch),
