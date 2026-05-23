@@ -207,6 +207,12 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     // Models with no skin/anim (the Drone, the legacy crawler, the fallback box)
     // leave the skinner invalid -> static draw. ----
     if (m_model.ok && m_skinner.bind(m_model)) {
+        // GPU SKINNING OF MODELS: register this character's skinned primitives with
+        // the device's compute-skinning path. When supported, apply/applyLocomotion
+        // upload the joint palette + the GPU skins (no per-frame CPU LBS + full vertex
+        // re-upload) — the scalability fix for crowds of NPCs. Falls back to CPU
+        // skinning transparently on a non-compute / headless device.
+        m_skinner.enableGpuSkinning(device, m_model);
         m_idleClip = m_skinner.findClip({ "idle", "stand", "breath", "loop" });
         // Prefer a distinct WALK clip; fall back to any move clip for m_walkClip.
         m_walkClip = m_skinner.findClip({ "walk" });

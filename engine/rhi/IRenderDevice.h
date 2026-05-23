@@ -420,6 +420,55 @@ public:
     // zeroed snapshot if the device has no debris pool (e.g. a headless stub).
     virtual GpuDebrisStats gpuDebrisReadback(float boundsLimit = 1.0e5f) const = 0;
 
+    // ---- GPU compute skinning of models (GPU SKINNING OF MODELS) -----------
+    // Moves skeletal skinning from the CPU to a COMPUTE pre-pass so crowds of
+    // animated NPCs scale: the CPU keeps computing the (cheap) joint-matrix
+    // palette, but instead of CPU linear-blend-skinning every vertex + re-uploading
+    // the whole vertex buffer each frame (the J1 updateMesh path that "doesn't scale
+    // past a handful of NPCs"), the host UPLOADS the per-instance palette and a
+    // compute shader skins on the GPU into a per-frame skinned-output buffer that
+    // the existing depth/shadow/color passes draw unchanged. POD only — no Vulkan
+    // types cross this boundary. Pascal-safe (plain compute, no hardware RT).
+    //
+    // Lifecycle:
+    //   1) Create the drawable mesh as usual (createMesh with the BIND-POSE verts).
+    //   2) registerSkinnedMesh() ONCE: hands the device the bind-pose verts again
+    //      plus per-vertex joint indices (4x u16) + weights (4x f). The device keeps
+    //      an immutable bind-pose+attrs buffer and allocates a per-frame, compute-
+    //      written SKINNED-OUTPUT vertex buffer for this mesh (double-buffered for
+    //      frames-in-flight). The mesh now draws from that output buffer.
+    //   3) setSkinnedPalette() EACH FRAME (between beginFrame and endFrame, BEFORE
+    //      the draw): upload the mat4 joint palette (column-major, 16 floats/joint)
+    //      this instance should be skinned with this frame. This flags the mesh for
+    //      a compute dispatch in the skinning pre-pass added BEFORE the depth/shadow/
+    //      color passes (with the correct SSBO->vertex-read barrier).
+    //   4) drawMesh()/drawMeshEmissive() the SAME mesh handle as always — it now
+    //      renders the GPU-skinned output. No per-frame CPU LBS, no updateMesh.
+    //   5) unregisterSkinnedMesh() (or destroyMesh) frees the skinning resources.
+    //
+    // A device that cannot do compute skinning returns false from registerSkinnedMesh
+    // (and supportsGpuSkinning()), so callers transparently fall back to CPU skinning.
+    virtual bool registerSkinnedMesh(MeshHandle mesh, const MeshVertex* bindVerts,
+                                     uint32_t vcount, const uint16_t* jointIdx4,
+                                     const float* jointWt4) = 0;
+    // Free the GPU-skinning resources for a mesh (idempotent; no-op if unregistered).
+    // destroyMesh() also releases them, so an explicit call is optional.
+    virtual void unregisterSkinnedMesh(MeshHandle mesh) = 0;
+    // Upload this instance's joint-matrix palette for THIS frame and flag the mesh
+    // for the compute skinning pre-pass. `palette` is jointCount column-major mat4s
+    // (16 floats each). No-op if the mesh was not registered. The device copies the
+    // palette (does not retain the pointer).
+    virtual void setSkinnedPalette(MeshHandle mesh, const float* palette,
+                                   uint32_t jointCount) = 0;
+    // Test/diagnostic readback: wait for in-flight skinning to retire, then copy the
+    // most-recently-skinned output vertices of `mesh` into `out` (vcount MeshVertex).
+    // Returns false if the mesh is not registered or vcount mismatches. NOT a hot
+    // path (it stalls the GPU); used by --test-gpuskin to verify the compute output.
+    virtual bool readbackSkinnedMesh(MeshHandle mesh, MeshVertex* out, uint32_t vcount) = 0;
+    // True if this device supports the GPU compute-skinning path (a real Vulkan
+    // device with the skin compute pipeline; false for the headless stub).
+    virtual bool supportsGpuSkinning() const = 0;
+
     // ---- Forward point lights (interior fill) ------------------------------
     // Set the active point lights for subsequent frames. The device copies the
     // array (does NOT retain the pointer) and uploads them into the per-frame

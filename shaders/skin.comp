@@ -1,0 +1,99 @@
+#version 450
+// GPU compute linear-blend-skinning pre-pass (GPU SKINNING OF MODELS).
+//
+// CLEAN-ROOM, original work. Built ONLY from the engine's own IRenderDevice /
+// IModelLoader skin data, the Vulkan 1.3 spec (compute, SSBOs), and public
+// glTF 2.0 linear-blend-skinning math (p' = sum_i w_i * J[idx_i] * p; normal via
+// the upper-left 3x3). No id Tech / RBDOOM / other-engine source consulted.
+//
+// WHAT THIS DOES: one thread per output vertex. It reads an IMMUTABLE bind-pose
+// vertex (pos/normal/uv) plus its 4 joint indices + 4 weights, fetches the 4 joint
+// matrices from a per-instance PALETTE SSBO (the column-major mat4 array the CPU
+// Skinner already computes), accumulates the linear-blend-skinned position +
+// normal, and writes the result to a per-instance SKINNED-OUTPUT vertex buffer
+// whose memory layout is byte-identical to rhi::MeshVertex {pos[3],normal[3],uv[2]}
+// (32-byte stride). The existing depth/shadow/color passes then draw that output
+// buffer with their UNCHANGED vertex shaders — so the geometry is skinned ONCE per
+// frame for all three passes (no per-frame CPU LBS, no full vertex re-upload).
+//
+// The palette being identity reproduces the bind pose EXACTLY (J*p == p for I).
+
+layout(local_size_x = 64) in;
+
+// Bind-pose vertex attributes (IMMUTABLE; uploaded once at registration). Packed as
+// std430-friendly vec4 rows: posPad.xyz = bind position, nrmPad.xyz = bind normal,
+// uvPad.xy = uv0 (the .w lanes are padding to keep 16-byte alignment). Matches the
+// SkinSrcVertex struct in VulkanRenderDevice.cpp EXACTLY.
+struct SrcVertex {
+    vec4 posPad;   // xyz = bind-pose position
+    vec4 nrmPad;   // xyz = bind-pose normal
+    vec4 uvPad;    // xy  = uv0
+};
+layout(std430, set = 0, binding = 0) readonly buffer SrcVerts { SrcVertex src[]; };
+
+// 4 joint indices + 4 weights per vertex (uvec4 idx, vec4 weight). Matches the
+// SkinSrcInfluence struct in VulkanRenderDevice.cpp EXACTLY.
+struct Influence {
+    uvec4 idx;     // 4 joint indices (only .x..w used)
+    vec4  wt;      // 4 weights
+};
+layout(std430, set = 0, binding = 1) readonly buffer Influences { Influence inf[]; };
+
+// Per-instance joint-matrix palette (column-major mat4 per joint), uploaded each
+// frame by the CPU Skinner via setSkinnedPalette().
+layout(std430, set = 0, binding = 2) readonly buffer Palette { mat4 joints[]; };
+
+// Skinned output. Each vertex is 8 floats == 32 bytes == sizeof(rhi::MeshVertex),
+// so the draw passes bind this buffer directly as a MeshVertex vertex buffer:
+//   floats[0..2] = pos, [3..5] = normal, [6..7] = uv.
+layout(std430, set = 0, binding = 3) writeonly buffer DstVerts { float dst[]; };
+
+layout(push_constant) uniform Push {
+    uint vertexCount;   // number of output vertices (threads)
+    uint jointCount;    // palette size (joints); idx >= this is ignored
+} pc;
+
+void main() {
+    uint v = gl_GlobalInvocationID.x;
+    if (v >= pc.vertexCount) return;
+
+    vec3 bp = src[v].posPad.xyz;
+    vec3 bn = src[v].nrmPad.xyz;
+    vec2 uv = src[v].uvPad.xy;
+
+    uvec4 ji = inf[v].idx;
+    vec4  jw = inf[v].wt;
+    float wsum = jw.x + jw.y + jw.z + jw.w;
+
+    vec3 pAcc = vec3(0.0);
+    vec3 nAcc = vec3(0.0);
+
+    if (wsum < 1e-6) {
+        // Unweighted vertex: leave it at bind pose (matches the CPU reference).
+        pAcc = bp;
+        nAcc = bn;
+    } else {
+        // p' = sum_i w_i * J[idx_i] * p ; normal via the upper-left 3x3 of J.
+        for (int i = 0; i < 4; ++i) {
+            float w = jw[i];
+            if (w <= 0.0) continue;
+            uint jidx = ji[i];
+            if (jidx >= pc.jointCount) continue;
+            mat4 J = joints[jidx];
+            vec4 tp = J * vec4(bp, 1.0);
+            vec3 tn = mat3(J) * bn;
+            pAcc += w * tp.xyz;
+            nAcc += w * tn;
+        }
+        // Normalize by the (possibly non-unit) weight sum, matching the CPU path.
+        pAcc /= wsum;
+    }
+
+    float nl = length(nAcc);
+    if (nl > 1e-8) nAcc /= nl;
+
+    uint o = v * 8u;
+    dst[o + 0u] = pAcc.x; dst[o + 1u] = pAcc.y; dst[o + 2u] = pAcc.z;
+    dst[o + 3u] = nAcc.x; dst[o + 4u] = nAcc.y; dst[o + 5u] = nAcc.z;
+    dst[o + 6u] = uv.x;   dst[o + 7u] = uv.y;
+}

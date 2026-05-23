@@ -228,11 +228,17 @@ public:
         // drawn via the same instanced pattern the particles use. Additive + opt-in:
         // nothing happens unless the host spawns + steps + draws debris.
         if (!createDebris()) return false;
+        // GPU compute skinning (GPU SKINNING OF MODELS): a compute LBS pre-pass that
+        // skins registered meshes into their per-frame skinned-output vbo BEFORE the
+        // depth/shadow/color passes (which draw it unchanged). Additive + opt-in:
+        // nothing runs unless a mesh is registered + a palette uploaded each frame.
+        if (!createSkinning()) return false;
         return true;
     }
 
     void shutdown() override {
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        destroySkinning();
         destroyDebris();
         destroyParticles();
         destroyWater();
@@ -416,6 +422,9 @@ public:
         // Debris compute/draw are re-armed per frame by gpuDebrisStep/gpuDebrisDraw.
         m_debrisStepPending = false;
         m_debrisDrawPending = false;
+        // GPU skinning is re-armed per frame by setSkinnedPalette().
+        m_skinPending.clear();
+        m_skinStepPending = false;
         m_framePrepared = false;
         m_frameCmdCount = 0;
         if (fr.hudDescPool) vkResetDescriptorPool(m_dev.device, fr.hudDescPool, 0);
@@ -774,6 +783,17 @@ public:
             deferDestroyBuffer(m.vbo, m.vboAlloc);
         }
         deferDestroyBuffer(m.ibo, m.iboAlloc);
+        // GPU-skinning resources keyed to this mesh (if any). The descriptor sets
+        // reference the dynVbo we just deferred, so wait idle before freeing them
+        // (eviction is off the hot path; this matches unregisterSkinnedMesh).
+        auto skIt = m_skinnedMeshes.find(h.id);
+        if (skIt != m_skinnedMeshes.end()) {
+            if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+            destroySkinnedMeshResources(skIt->second);
+            m_skinnedMeshes.erase(skIt);
+            for (auto p = m_skinPending.begin(); p != m_skinPending.end(); )
+                p = (*p == h.id) ? m_skinPending.erase(p) : p + 1;
+        }
         m_meshes.erase(it);
         // Drop this mesh's draw-group key so m_groups doesn't accumulate dead
         // entries over a long terrain-streaming session (fix 4).
@@ -1898,6 +1918,26 @@ private:
                 ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
             rgGiPrevDepth = m_graph.importImage("gi.prevDepth", m_giPrevDepthImg,
                 ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        }
+
+        // ---- Pass 0a: GPU compute skinning pre-pass (GPU SKINNING OF MODELS) --
+        // Skin every registered+palette-set mesh into its per-frame skinned-output
+        // vbo with one vkCmdDispatch per instance, BEFORE the shadow/depth/color
+        // passes (which then draw the skinned geometry through their unchanged vertex
+        // shaders — so the mesh is skinned ONCE for all three passes). An SSBO write
+        // -> vertex-read barrier inside the record body orders the dispatch before the
+        // draws. Synchronous on the graphics queue (correct on Pascal). Gated: zero
+        // cost when no skinned palette was set this frame.
+        const bool skinStep = m_skinStepPending && m_skinPipeline && !m_skinPending.empty();
+        if (skinStep) {
+            RenderPassDesc sc{};
+            sc.name = "skin-compute";
+            sc.queue = RgQueue::Compute;
+            sc.usesDynamicRendering = false;
+            sc.recordCtx = this;
+            sc.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordSkinComputeBody(c); };
+            m_graph.addPass(std::move(sc));
         }
 
         // ---- Pass 0: GPU-compute debris integrate (K-T2) --------------------
@@ -3984,6 +4024,328 @@ private:
         vkCmdBindVertexBuffers(cmd, 0, 1, &m_debrisCubeVbo, &zero);
         vkCmdBindIndexBuffer(cmd, m_debrisCubeIbo, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd, m_debrisCubeIndexCount, kDebrisCapacity, 0, 0, 0);
+    }
+
+    // ======================================================================
+    // GPU compute skinning of models (GPU SKINNING OF MODELS).
+    //
+    // Clean-room, original work. Built ONLY from the engine's own RHI/loader
+    // interfaces, the Vulkan 1.3 spec (compute pipelines, SSBOs, barriers), and
+    // public glTF 2.0 linear-blend-skinning math. No id Tech / RBDOOM source.
+    //
+    // Create the compute pipeline + descriptor pool/layout once at init. Each
+    // registered skinned mesh allocates its own buffers + per-frame descriptor sets.
+    // ======================================================================
+    bool createSkinning() {
+        // Descriptor pool: per skinned mesh we allocate kFramesInFlight sets, each
+        // with 4 storage buffers (src verts, influences, palette, dst output). Size
+        // for a generous number of simultaneously-registered skinned instances.
+        const uint32_t kMaxSkinnedMeshes = 256;
+        const uint32_t maxSets = kMaxSkinnedMeshes * kFramesInFlight;
+        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, maxSets * 4 };
+        VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        // FREE_DESCRIPTOR_SET so unregisterSkinnedMesh can return sets to the pool
+        // (a long session may register/free many characters).
+        pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        pci.maxSets = maxSets; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
+        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_skinPool) != VK_SUCCESS) {
+            logError("[rhi] skin desc pool failed"); return false; }
+
+        // Set layout: b0 src verts (RO), b1 influences (RO), b2 palette (RO), b3 dst (RW).
+        VkDescriptorSetLayoutBinding b[4]{};
+        for (uint32_t i = 0; i < 4; ++i) {
+            b[i].binding = i; b[i].descriptorCount = 1;
+            b[i].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        slci.bindingCount = 4; slci.pBindings = b;
+        if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_skinSetLayout) != VK_SUCCESS) {
+            logError("[rhi] skin set layout failed"); return false; }
+
+        // Pipeline layout: 1 set + a push constant (vertexCount, jointCount).
+        VkPushConstantRange pcr{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SkinPush) };
+        VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        plci.setLayoutCount = 1; plci.pSetLayouts = &m_skinSetLayout;
+        plci.pushConstantRangeCount = 1; plci.pPushConstantRanges = &pcr;
+        if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_skinPipelineLayout) != VK_SUCCESS) {
+            logError("[rhi] skin pipeline layout failed"); return false; }
+
+        VkShaderModule cs = loadShaderModule("shaders\\skin.comp.spv");
+        if (!cs) return false;
+        VkComputePipelineCreateInfo cpci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+        cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
+        cpci.layout = m_skinPipelineLayout;
+        VkResult cr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_skinPipeline);
+        vkDestroyShaderModule(m_dev.device, cs, nullptr);
+        if (cr != VK_SUCCESS) { logError("[rhi] skin compute pipeline create failed"); return false; }
+
+        logInfo("[rhi] GPU compute skinning ready (compute LBS pre-pass into per-frame skinned vbo)");
+        return true;
+    }
+
+    void destroySkinning() {
+        // Free all registered skinned meshes' resources first.
+        for (auto& kv : m_skinnedMeshes) destroySkinnedMeshResources(kv.second);
+        m_skinnedMeshes.clear();
+        m_skinPending.clear();
+        if (m_skinPipeline)       { vkDestroyPipeline(m_dev.device, m_skinPipeline, nullptr); m_skinPipeline = VK_NULL_HANDLE; }
+        if (m_skinPipelineLayout) { vkDestroyPipelineLayout(m_dev.device, m_skinPipelineLayout, nullptr); m_skinPipelineLayout = VK_NULL_HANDLE; }
+        if (m_skinSetLayout)      { vkDestroyDescriptorSetLayout(m_dev.device, m_skinSetLayout, nullptr); m_skinSetLayout = VK_NULL_HANDLE; }
+        if (m_skinPool)           { vkDestroyDescriptorPool(m_dev.device, m_skinPool, nullptr); m_skinPool = VK_NULL_HANDLE; }
+    }
+
+    // Free one skinned mesh's GPU resources (immediate; callers ensure the GPU is
+    // idle for this buffer set — registration-time rollback, unregister waits idle,
+    // and shutdown already waited idle).
+    void destroySkinnedMeshResources(SkinnedMesh& sm) {
+        if (sm.srcVbo) { vmaDestroyBuffer(m_alloc, sm.srcVbo, sm.srcAlloc); sm.srcVbo = VK_NULL_HANDLE; sm.srcAlloc = nullptr; }
+        if (sm.infBuf) { vmaDestroyBuffer(m_alloc, sm.infBuf, sm.infAlloc); sm.infBuf = VK_NULL_HANDLE; sm.infAlloc = nullptr; }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (sm.palBuf[i]) { vmaDestroyBuffer(m_alloc, sm.palBuf[i], sm.palAlloc[i]); sm.palBuf[i] = VK_NULL_HANDLE; sm.palAlloc[i] = nullptr; sm.palMapped[i] = nullptr; }
+        }
+        if (m_skinPool && sm.set[0]) {
+            vkFreeDescriptorSets(m_dev.device, m_skinPool, kFramesInFlight, sm.set);
+            for (uint32_t i = 0; i < kFramesInFlight; ++i) sm.set[i] = VK_NULL_HANDLE;
+        }
+    }
+
+    // Promote a mesh to a compute-skinned dynamic mesh: allocate kFramesInFlight
+    // skinned-output vertex buffers with STORAGE usage (so the compute can write them
+    // and the draw can read them as vertex buffers) and seed them from the bind pose.
+    // Mirrors updateMesh's dynamic promotion but the buffers are GPU-written, so they
+    // are DEVICE_LOCAL + STORAGE | VERTEX (no host mapping needed).
+    bool promoteMeshForSkinning(Mesh& m, const MeshVertex* bindVerts, uint32_t vcount) {
+        const VkDeviceSize bytes = (VkDeviceSize)vcount * sizeof(MeshVertex);
+        VkBuffer made[kFramesInFlight] = {}; VmaAllocation madeA[kFramesInFlight] = {};
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            // Seed from the bind pose via a staging copy so a draw before the first
+            // dispatch (or a pass that reads a not-yet-dispatched slot) shows valid
+            // geometry rather than garbage.
+            if (!createDeviceLocalBuffer(bindVerts, bytes,
+                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                    made[i], madeA[i])) {
+                for (uint32_t k = 0; k < i; ++k) vmaDestroyBuffer(m_alloc, made[k], madeA[k]);
+                logError("[rhi] skin: output vbo alloc failed"); return false;
+            }
+        }
+        // If the mesh was already dynamic (CPU-skinning had run), defer-free those.
+        if (m.dynamic) {
+            for (uint32_t i = 0; i < kFramesInFlight; ++i)
+                deferDestroyBuffer(m.dynVbo[i], m.dynVboAlloc[i]);
+        } else if (m.vbo) {
+            deferDestroyBuffer(m.vbo, m.vboAlloc);
+            m.vbo = VK_NULL_HANDLE; m.vboAlloc = nullptr;
+        }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            m.dynVbo[i] = made[i]; m.dynVboAlloc[i] = madeA[i]; m.dynMapped[i] = nullptr;
+        }
+        m.dynamic = true;
+        return true;
+    }
+
+    bool registerSkinnedMesh(MeshHandle mesh, const MeshVertex* bindVerts, uint32_t vcount,
+                             const uint16_t* jointIdx4, const float* jointWt4) override {
+        if (!m_skinPipeline) return false;          // no compute skinning support
+        if (!bindVerts || !jointIdx4 || !jointWt4 || vcount == 0) return false;
+        auto mit = m_meshes.find(mesh.id);
+        if (mit == m_meshes.end()) return false;
+        Mesh& m = mit->second;
+        if (vcount != m.vertexCount) { logError("[rhi] registerSkinnedMesh: vcount mismatch"); return false; }
+        // Re-register: free the prior skinning resources (after the GPU drains them).
+        auto existing = m_skinnedMeshes.find(mesh.id);
+        if (existing != m_skinnedMeshes.end()) {
+            vkDeviceWaitIdle(m_dev.device);
+            destroySkinnedMeshResources(existing->second);
+            m_skinnedMeshes.erase(existing);
+        }
+
+        SkinnedMesh sm{};
+        sm.vertexCount = vcount;
+
+        // --- Immutable bind-pose source verts (SkinSrcVertex rows). ---
+        {
+            std::vector<SkinSrcVertex> src(vcount);
+            for (uint32_t v = 0; v < vcount; ++v) {
+                const MeshVertex& iv = bindVerts[v];
+                src[v].posPad = glm::vec4(iv.pos[0], iv.pos[1], iv.pos[2], 0.0f);
+                src[v].nrmPad = glm::vec4(iv.normal[0], iv.normal[1], iv.normal[2], 0.0f);
+                src[v].uvPad  = glm::vec4(iv.uv[0], iv.uv[1], 0.0f, 0.0f);
+            }
+            if (!createDeviceLocalBuffer(src.data(), (VkDeviceSize)vcount * sizeof(SkinSrcVertex),
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, sm.srcVbo, sm.srcAlloc)) {
+                logError("[rhi] skin: src vbo alloc failed"); return false; }
+        }
+        // --- Immutable influences (SkinSrcInfluence rows). ---
+        {
+            std::vector<SkinSrcInfluence> inf(vcount);
+            for (uint32_t v = 0; v < vcount; ++v) {
+                inf[v].idx = glm::uvec4(jointIdx4[v*4+0], jointIdx4[v*4+1],
+                                        jointIdx4[v*4+2], jointIdx4[v*4+3]);
+                inf[v].wt  = glm::vec4(jointWt4[v*4+0], jointWt4[v*4+1],
+                                       jointWt4[v*4+2], jointWt4[v*4+3]);
+            }
+            if (!createDeviceLocalBuffer(inf.data(), (VkDeviceSize)vcount * sizeof(SkinSrcInfluence),
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, sm.infBuf, sm.infAlloc)) {
+                logError("[rhi] skin: influence buffer alloc failed");
+                vmaDestroyBuffer(m_alloc, sm.srcVbo, sm.srcAlloc); return false; }
+        }
+        // --- Per-frame palette SSBO (host-visible mapped; seeded to identity). ---
+        const VkDeviceSize palBytes = (VkDeviceSize)kMaxSkinJoints * 16 * sizeof(float);
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = palBytes; bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo info{};
+            if (vmaCreateBuffer(m_alloc, &bci, &aci, &sm.palBuf[i], &sm.palAlloc[i], &info) != VK_SUCCESS) {
+                logError("[rhi] skin: palette SSBO alloc failed");
+                destroySkinnedMeshResources(sm); return false; }
+            sm.palMapped[i] = info.pMappedData;
+            // Seed identity so a pre-palette dispatch reproduces the bind pose.
+            float* pal = (float*)sm.palMapped[i];
+            for (uint32_t j = 0; j < kMaxSkinJoints; ++j) {
+                float* mm = pal + j * 16;
+                for (int e = 0; e < 16; ++e) mm[e] = (e % 5 == 0) ? 1.0f : 0.0f;
+            }
+            vmaFlushAllocation(m_alloc, sm.palAlloc[i], 0, palBytes);
+        }
+
+        // --- Promote the drawable mesh's vbo to a compute-written skinned output. ---
+        if (!promoteMeshForSkinning(m, bindVerts, vcount)) {
+            destroySkinnedMeshResources(sm); return false; }
+
+        // --- Per-frame descriptor sets (b0 src, b1 inf, b2 palette[i], b3 dst[i]). ---
+        VkDescriptorSetLayout layouts[kFramesInFlight];
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) layouts[i] = m_skinSetLayout;
+        VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+        dsai.descriptorPool = m_skinPool; dsai.descriptorSetCount = kFramesInFlight; dsai.pSetLayouts = layouts;
+        if (vkAllocateDescriptorSets(m_dev.device, &dsai, sm.set) != VK_SUCCESS) {
+            logError("[rhi] skin: descriptor set alloc failed");
+            destroySkinnedMeshResources(sm); return false; }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkDescriptorBufferInfo srcI{ sm.srcVbo, 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo infI{ sm.infBuf, 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo palI{ sm.palBuf[i], 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo dstI{ m.dynVbo[i], 0, VK_WHOLE_SIZE };
+            VkWriteDescriptorSet w[4]{};
+            const VkDescriptorBufferInfo* infos[4] = { &srcI, &infI, &palI, &dstI };
+            for (uint32_t k = 0; k < 4; ++k) {
+                w[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[k].dstSet = sm.set[i];
+                w[k].dstBinding = k; w[k].descriptorCount = 1;
+                w[k].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[k].pBufferInfo = infos[k];
+            }
+            vkUpdateDescriptorSets(m_dev.device, 4, w, 0, nullptr);
+        }
+
+        m_skinnedMeshes.emplace(mesh.id, sm);
+        return true;
+    }
+
+    void unregisterSkinnedMesh(MeshHandle mesh) override {
+        auto it = m_skinnedMeshes.find(mesh.id);
+        if (it == m_skinnedMeshes.end()) return;
+        if (m_dev.device) vkDeviceWaitIdle(m_dev.device);   // ensure no in-flight use
+        destroySkinnedMeshResources(it->second);
+        m_skinnedMeshes.erase(it);
+        // Drop any pending dispatch for it this frame.
+        for (auto p = m_skinPending.begin(); p != m_skinPending.end(); ) {
+            if (*p == mesh.id) p = m_skinPending.erase(p); else ++p;
+        }
+    }
+
+    void setSkinnedPalette(MeshHandle mesh, const float* palette, uint32_t jointCount) override {
+        if (!palette || jointCount == 0) return;
+        auto it = m_skinnedMeshes.find(mesh.id);
+        if (it == m_skinnedMeshes.end()) return;
+        SkinnedMesh& sm = it->second;
+        const uint32_t jc = std::min(jointCount, kMaxSkinJoints);
+        const uint32_t fi = m_frameIdx;
+        if (!sm.palMapped[fi]) return;
+        std::memcpy(sm.palMapped[fi], palette, (size_t)jc * 16 * sizeof(float));
+        vmaFlushAllocation(m_alloc, sm.palAlloc[fi], 0, (VkDeviceSize)jc * 16 * sizeof(float));
+        sm.jointCount = jc;
+        // Queue the dispatch for this frame (dedup: only once per frame per mesh).
+        bool queued = false;
+        for (uint32_t id : m_skinPending) if (id == mesh.id) { queued = true; break; }
+        if (!queued) m_skinPending.push_back(mesh.id);
+        m_skinStepPending = true;
+    }
+
+    bool readbackSkinnedMesh(MeshHandle mesh, MeshVertex* out, uint32_t vcount) override {
+        auto it = m_skinnedMeshes.find(mesh.id);
+        if (it == m_skinnedMeshes.end() || !out) return false;
+        SkinnedMesh& sm = it->second;
+        if (vcount != sm.vertexCount) return false;
+        auto mit = m_meshes.find(mesh.id);
+        if (mit == m_meshes.end()) return false;
+        // The most-recently-skinned slot (set by the last dispatch). If skinning has
+        // never run for this mesh, fall back to the current frame's slot (bind pose).
+        uint32_t slot = (sm.lastSkinnedFrame < kFramesInFlight) ? sm.lastSkinnedFrame : m_frameIdx;
+        VkBuffer srcBuf = mit->second.dynVbo[slot];
+        if (!srcBuf) return false;
+        const VkDeviceSize bytes = (VkDeviceSize)vcount * sizeof(MeshVertex);
+        // Wait for all in-flight GPU work (the dispatch that wrote this slot) to retire.
+        if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        // Copy the DEVICE_LOCAL skinned output into a host-visible readback buffer.
+        VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        bci.size = bytes; bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        VmaAllocationCreateInfo aci{};
+        aci.usage = VMA_MEMORY_USAGE_AUTO;
+        aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        VkBuffer rb = VK_NULL_HANDLE; VmaAllocation rbA = nullptr; VmaAllocationInfo rbI{};
+        if (vmaCreateBuffer(m_alloc, &bci, &aci, &rb, &rbA, &rbI) != VK_SUCCESS) {
+            logError("[rhi] readbackSkinnedMesh: readback buffer alloc failed"); return false; }
+        bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
+            VkBufferCopy region{ 0, 0, bytes };
+            vkCmdCopyBuffer(cmd, srcBuf, rb, 1, &region);
+        });
+        if (ok) {
+            vmaInvalidateAllocation(m_alloc, rbA, 0, bytes);
+            std::memcpy(out, rbI.pMappedData, (size_t)bytes);
+        }
+        vmaDestroyBuffer(m_alloc, rb, rbA);
+        return ok;
+    }
+
+    bool supportsGpuSkinning() const override { return m_skinPipeline != VK_NULL_HANDLE; }
+
+    // Record the skinning compute pass: ONE dispatch per pending skinned instance,
+    // each writing its mesh's per-frame skinned-output vbo. A single SSBO write ->
+    // vertex-read barrier after all dispatches lets the depth/shadow/color passes
+    // read the skinned vertices. Recorded as the FIRST graphics-queue pass each frame
+    // (before shadow/depth/color), so all three passes draw the skinned geometry.
+    void recordSkinComputeBody(VkCommandBuffer cmd) {
+        if (m_skinPending.empty() || !m_skinPipeline) return;
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_skinPipeline);
+        for (uint32_t id : m_skinPending) {
+            auto it = m_skinnedMeshes.find(id);
+            if (it == m_skinnedMeshes.end()) continue;
+            SkinnedMesh& sm = it->second;
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_skinPipelineLayout,
+                                    0, 1, &sm.set[m_frameIdx], 0, nullptr);
+            SkinPush pc{ sm.vertexCount, sm.jointCount };
+            vkCmdPushConstants(cmd, m_skinPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                               0, sizeof(pc), &pc);
+            uint32_t groups = (sm.vertexCount + 63u) / 64u;
+            vkCmdDispatch(cmd, groups, 1, 1);
+            sm.lastSkinnedFrame = m_frameIdx;     // this slot now holds the skinned output
+        }
+        // Barrier: compute SSBO write -> vertex-attribute read (the draw passes bind
+        // the output as a vertex buffer) + host read (the test readback) + index/
+        // vertex stages of the upcoming shadow/depth/color passes.
+        VkMemoryBarrier2 mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+        mb.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        mb.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        mb.dstStageMask  = VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT
+                         | VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_HOST_BIT;
+        mb.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT
+                         | VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_HOST_READ_BIT;
+        VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
+        vkCmdPipelineBarrier2(cmd, &di);
     }
 
     // Record the particle + decal draws into the (already-open) particle pass.
@@ -6330,6 +6692,41 @@ private:
     VkRenderingAttachmentInfo m_debrisColorAttach{};
     VkRenderingAttachmentInfo m_debrisDepthAttach{};
     VkRenderingInfo           m_debrisRenderInfo{};
+
+    // ---- GPU compute skinning of models (GPU SKINNING OF MODELS) ----------
+    // A compute pre-pass that linear-blend-skins registered meshes into their
+    // per-frame dynamic vbo BEFORE the depth/shadow/color passes (which then draw
+    // that buffer with their unchanged vertex shaders). Each registered skinned mesh
+    // owns: an IMMUTABLE bind-pose+attrs SSBO + an IMMUTABLE influences SSBO
+    // (uploaded once), a per-frame-in-flight palette SSBO (host-visible; the CPU
+    // Skinner uploads the joint-matrix palette into it each frame), and a per-frame
+    // compute descriptor set. The skinned OUTPUT is the Mesh's dynVbo[frameIdx]
+    // (promoted to dynamic + given STORAGE usage so the compute can write it AND the
+    // draw can read it as a vertex buffer). One vkCmdDispatch per pending instance.
+    struct SkinSrcVertex { glm::vec4 posPad; glm::vec4 nrmPad; glm::vec4 uvPad; }; // 48B
+    struct SkinSrcInfluence { glm::uvec4 idx; glm::vec4 wt; };                     // 32B
+    static_assert(sizeof(SkinSrcVertex) == 48, "SkinSrcVertex must be 3x vec4");
+    static_assert(sizeof(SkinSrcInfluence) == 32, "SkinSrcInfluence must be uvec4+vec4");
+    static constexpr uint32_t kMaxSkinJoints = 256;  // palette cap per instance
+    struct SkinnedMesh {
+        uint32_t      vertexCount = 0;
+        VkBuffer      srcVbo   = VK_NULL_HANDLE; VmaAllocation srcAlloc = nullptr; // bind-pose verts (immutable)
+        VkBuffer      infBuf   = VK_NULL_HANDLE; VmaAllocation infAlloc = nullptr; // influences (immutable)
+        VkBuffer      palBuf[kFramesInFlight]   = {};  // per-frame palette SSBO (host-visible)
+        VmaAllocation palAlloc[kFramesInFlight] = {};
+        void*         palMapped[kFramesInFlight] = {};
+        VkDescriptorSet set[kFramesInFlight] = {};     // per-frame compute set
+        uint32_t      jointCount = 0;                  // palette joints set THIS frame (per-frame latch below)
+        uint32_t      lastSkinnedFrame = ~0u;          // m_frameIdx the output was last written
+    };
+    std::unordered_map<uint32_t, SkinnedMesh> m_skinnedMeshes;       // keyed by mesh id
+    std::vector<uint32_t>  m_skinPending;                            // mesh ids to dispatch this frame
+    VkDescriptorPool       m_skinPool          = VK_NULL_HANDLE;
+    VkDescriptorSetLayout  m_skinSetLayout     = VK_NULL_HANDLE;
+    VkPipelineLayout       m_skinPipelineLayout= VK_NULL_HANDLE;
+    VkPipeline             m_skinPipeline      = VK_NULL_HANDLE;
+    bool                   m_skinStepPending   = false;              // any skinning to dispatch this frame
+    struct SkinPush { uint32_t vertexCount; uint32_t jointCount; };
 
     // ---- Directional shadow mapping (perf-stack E) ------------------------
     // A single fixed-resolution depth texture rendered from the sun's POV each
