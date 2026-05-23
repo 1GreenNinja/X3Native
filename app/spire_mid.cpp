@@ -354,23 +354,24 @@ bool SpireMidFloors::onRescue(const x3::phys::Vec3& playerPos, float range) {
 }
 
 FireResult SpireMidFloors::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                                  Scene& scene, x3::phys::IPhysicsWorld& physics) {
+                                  Scene& scene, x3::phys::IPhysicsWorld& physics,
+                                  int damage) {
     FireResult r;
     for (uint32_t i = 0; i < (uint32_t)SpireMidFloor::Count; ++i) {
-        FireResult ri = m_enemies[i].fire(eye, dir, scene, physics);
+        FireResult ri = m_enemies[i].fire(eye, dir, scene, physics, damage);
         if (ri.hitMonster) return ri;          // a live enemy took it — done
         if (!r.hit && ri.hit) r = ri;          // remember the nearest geometry hit
     }
     // F3 boss (Failed Experiment #7).
-    FireResult rf3 = m_f3Boss.fire(eye, dir, scene, physics);
+    FireResult rf3 = m_f3Boss.fire(eye, dir, scene, physics, damage);
     if (rf3.hitMonster) return rf3;
     if (!r.hit && rf3.hit) r = rf3;
     // F5 boss (Swarm Controller AI).
-    FireResult rsw = m_swarmBoss.fire(eye, dir, scene, physics);
+    FireResult rsw = m_swarmBoss.fire(eye, dir, scene, physics, damage);
     if (rsw.hitMonster) return rsw;
     if (!r.hit && rsw.hit) r = rsw;
     // The transformed mini-boss, if any.
-    FireResult rb = m_victimBoss.fire(eye, dir, scene, physics);
+    FireResult rb = m_victimBoss.fire(eye, dir, scene, physics, damage);
     if (rb.hitMonster) return rb;
     if (!r.hit && rb.hit) r = rb;
     return r;

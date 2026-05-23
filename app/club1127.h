@@ -61,6 +61,17 @@ public:
     // club/cave geometry is fully static, so this only ticks the NPCs/creatures.
     void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics);
 
+    // Advance the flooded-section water clock one frame and (re)apply the engine's
+    // REAL animated water to the device — Gerstner waves + Fresnel sky-reflection +
+    // sun glint at the flood surface Y (see app/main.cpp's --world ocean usage). The
+    // device caches WaterParams + re-applies them each frame, so this MUST be called
+    // every frame (with the live dt) so the surface actually animates. Call once per
+    // frame alongside update(), before beginFrame(). No-op until build() has run.
+    void tickWater(float dt, x3::rhi::IRenderDevice& device);
+
+    // The flood surface world-Y (the sea level of the flooded cavern section).
+    float floodSurfaceY() const { return m_waterY; }
+
     // Draw the loaded GLB characters (bartender, bouncer, sea creatures, boss).
     // Call alongside scene.render() each frame, like Level1Game::drawWorldExtras.
     void drawCharacters(x3::rhi::IRenderDevice& device,
@@ -102,6 +113,10 @@ private:
 
     bool                                          m_built = false;
     x3::phys::Vec3                                m_spawn{};
+    // Flooded-section water: the surface world-Y (sea level) + the running wave
+    // animation clock advanced by tickWater(). Set in build()'s flooded section.
+    float                                         m_waterY = 0.0f;
+    float                                         m_waterTime = 0.0f;
     std::vector<x3::rhi::PointLight>              m_lights;
     // Cached unique meshes/textures are owned by the device; we keep no GPU
     // handles here beyond what the Scene entities + character systems hold.

@@ -101,6 +101,12 @@ public:
     // Optional: attach audio for event SFX (§9). Safe to skip (silent).
     void setAudio(const Level1Audio& audio) { m_audio = audio; }
 
+    // Optional: wire a game-feel cue sink (footstep / impact) onto every enemy
+    // group — current AND future spawns (corridor / checkpoint / Martinez / boss
+    // adds / Chen). Empty => the per-monster throttled-log stub. The host maps cues
+    // onto audio/FX. Stored so on-beat spawns inherit it; call after build(). See cues.h.
+    void setCueSink(const GameCueFn& sink);
+
     // Cache the render device so tick() can spawn enemies on their beats (those
     // need to create GPU meshes for the crawler model). build() also records it,
     // but this lets the host/test set it explicitly. The pointer must outlive the
@@ -147,7 +153,8 @@ public:
     // armed. Damages the first live monster the ray hits. Returns the result so the
     // host can spawn FX. No-op (default miss) when not armed.
     FireResult onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                      Scene& scene, x3::phys::IPhysicsWorld& physics);
+                      Scene& scene, x3::phys::IPhysicsWorld& physics,
+                      int damage = kDamagePerShot);
 
     // Handle a MELEE press (rising edge) along `dir` from `eye` — the super-strength
     // punch (Phase 2b). Damages + knocks back every live enemy across all Level-1
@@ -184,6 +191,9 @@ public:
     x3::phys::Vec3 checkpoint() const { return m_layout.spawn; }
 
     bool armed() const { return m_weapon.hasWeapon(); }
+    // IDKFA/IDFA cheat: force-arm the player (gives the weapon; the arsenal weapons
+    // start full, so this enables firing the whole arsenal). See app/main.cpp cmds.
+    void cheatArm(Scene& scene);
     bool complete() const { return m_complete; }
     // Save/load restore: set the level-complete latch directly (does NOT re-run the
     // WIN beat / re-log). Used by applyCheckpoint() to restore the recorded flag.
@@ -287,6 +297,7 @@ private:
     bool           m_bossSummoned = false;  // Phase 3 adds spawned once
 
     Level1Audio    m_audio;
+    GameCueFn      m_cueSink;       // game-feel footstep/impact sink (fanned to enemies)
     std::string    m_modelDir;
     x3::rhi::IRenderDevice* m_devicePtr = nullptr; // cached for event-time spawns
 

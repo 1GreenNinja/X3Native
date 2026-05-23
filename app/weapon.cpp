@@ -352,8 +352,8 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.magSize     = 8;
         w.reserveAmmo = 32;
         w.reloadTime  = 2.5f;
-        w.viewmodelGlb = "WeaponShotGun.glb";  // not in repo -> pistol fallback
-        w.vmScale     = 0.18f;
+        w.viewmodelGlb = "WeaponShotGun.glb";  // real shotgun GLB (longer barrel -> smaller scale)
+        w.vmScale     = 0.10f;
         w.muzzleFx    = "muzzle_default";
         w.impactFx    = "impact_default";
         r.push_back(w);
@@ -600,7 +600,7 @@ bool Arsenal::canFire() const {
     const WeaponState& s = m_state[(size_t)m_sel];
     if (s.reloadTimer > 0.0f) return false;   // mid-reload: can't fire
     if (s.cooldown    > 0.0f) return false;   // fire-rate gate
-    if (s.ammoInMag  <= 0)    return false;   // empty mag
+    if (s.ammoInMag  <= 0 && !m_infiniteAmmo) return false;   // empty mag (IDKFA bypasses)
     return true;
 }
 
@@ -627,7 +627,7 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
     }
 
     // Consume a round, arm the fire-rate cooldown (from the effective rate), recoil.
-    s.ammoInMag -= 1;
+    if (!m_infiniteAmmo) s.ammoInMag -= 1;   // IDKFA: never deplete
     s.cooldown   = (effRate > 0.0f) ? (1.0f / effRate) : 0.0f;
     out.fired    = true;
     out.recoilPitchDeg = d.recoilDeg;

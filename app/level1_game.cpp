@@ -130,13 +130,13 @@ MonsterSystem::Tuning droneTuning() {
     // Ranged drone: keeps a standoff distance and fires a taser hitscan. Damage +
     // standoff pull from the GENERAL combat balance params (monster.h, combat::*).
     t.type           = MonsterType::Drone;
+    t.flyer          = true;           // ACTUAL flier: hovers, center-origin model
     t.damage         = combat::kRangedDamageDefault;  // 5 HP per bolt (band 4..6)
     t.attackRange    = 14.0f;          // can fire from across the corridor
     t.attackCooldown = combat::kRangedCooldownDefault;// ~1.4 s between bolts
     t.attackWindup   = 0.35f;          // a beat of telegraph before the bolt
     t.ranged         = true;
     t.standoff       = combat::kRangedStandoff;       // hold ~7 m out
-    // Drone GLB is NOT rigged and authored Z-up like the characters; stand it up.
     useCharacter(t, "Drone.glb", 1.0f);
     return t;
 }
@@ -359,6 +359,21 @@ void Level1Game::playSfx(x3::audio::SoundHandle h, const x3::phys::Vec3& at, flo
         m_audio.sys->playSound3D(h, at.x, at.y, at.z, vol, 1.0f);
 }
 
+void Level1Game::setCueSink(const GameCueFn& sink) {
+    m_cueSink = sink;
+    // Fan to every enemy group (managers store + re-apply to future spawns) and the
+    // single boss instance. Corridor / Martinez / adds may not exist yet — the
+    // managers carry the sink onto on-beat spawns; the boss is wired at spawn time
+    // (and here too, harmlessly, if it's already up).
+    m_corridor.setCueSink(sink);
+    m_checkpoint.setCueSink(sink);
+    m_bossAdds.setCueSink(sink);
+    m_chen.setCueSink(sink);
+    if (m_martinezSpawned) m_martinez.setCueSink(sink);
+}
+
+void Level1Game::cheatArm(Scene& scene) { m_weapon.forceArm(scene); }  // IDKFA/IDFA
+
 void Level1Game::spawnCorridorEnemies(Scene& scene, x3::rhi::IRenderDevice& device,
                                       x3::phys::IPhysicsWorld& physics) {
     if (m_corridorSpawned) return;
@@ -405,6 +420,7 @@ void Level1Game::spawnMartinez(Scene& scene, x3::rhi::IRenderDevice& device,
                                  x3::phys::Vec3{ m_layout.arenaCenter.x, 0.6f,
                                                  m_layout.arenaCenter.z },
                                  martinezTuning());
+    if (m_cueSink) m_martinez.setCueSink(m_cueSink);   // inherit footstep/impact cues
     x3::logInfo("Level1: BOSS — Chief Martinez spawned in the arena (boss-tier HP/speed)");
 }
 
@@ -631,24 +647,25 @@ bool Level1Game::onRescue(const x3::phys::Vec3& playerPos, float range) {
 }
 
 FireResult Level1Game::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                              Scene& scene, x3::phys::IPhysicsWorld& physics) {
+                              Scene& scene, x3::phys::IPhysicsWorld& physics,
+                              int damage) {
     FireResult r;
     if (!m_weapon.hasWeapon()) return r;   // gate: only effective when armed
     // Fire across all three monster groups; the first live monster hit takes it.
-    r = m_corridor.fire(eye, dir, scene, physics);
+    r = m_corridor.fire(eye, dir, scene, physics, damage);
     if (!r.hitMonster) {
-        FireResult r2 = m_checkpoint.fire(eye, dir, scene, physics);
+        FireResult r2 = m_checkpoint.fire(eye, dir, scene, physics, damage);
         if (r2.hitMonster) r = r2;
         else if (!r.hit && r2.hit) r = r2;
     }
     if (!r.hitMonster && m_martinezSpawned && m_martinez.alive()) {
-        FireResult r3 = m_martinez.fire(eye, dir, scene, physics);
+        FireResult r3 = m_martinez.fire(eye, dir, scene, physics, damage);
         if (r3.hitMonster) r = r3;
         else if (!r.hit && r3.hit) r = r3;
     }
     // F2 Medical Bay boss (Dr. Chen), if placed.
     if (!r.hitMonster && m_chenSpawned) {
-        FireResult r4 = m_chen.fire(eye, dir, scene, physics);
+        FireResult r4 = m_chen.fire(eye, dir, scene, physics, damage);
         if (r4.hitMonster) r = r4;
         else if (!r.hit && r4.hit) r = r4;
     }

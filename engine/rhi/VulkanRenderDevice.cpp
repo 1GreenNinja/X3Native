@@ -310,6 +310,18 @@ public:
         m_sky = sp;
     }
 
+    // Project a world point -> HUD pixel coords (top-left origin) using the cached render
+    // viewProj. false if behind the camera / well off-screen. For monster health bars etc.
+    bool worldToScreen(float wx, float wy, float wz, float& sx, float& sy) const override {
+        const glm::vec4 clip = m_lastViewProj * glm::vec4(wx, wy, wz, 1.0f);
+        if (clip.w <= 1e-4f) return false;
+        const float nx = clip.x / clip.w, ny = clip.y / clip.w;
+        if (nx < -1.3f || nx > 1.3f || ny < -1.3f || ny > 1.3f) return false;
+        sx = (nx * 0.5f + 0.5f) * (float)m_extent.width;
+        sy = (ny * 0.5f + 0.5f) * (float)m_extent.height;
+        return true;
+    }
+
     void setSsaoParams(const SsaoParams& sp) override {
         // Cache a snapshot; prepareFrameData() bakes radius/bias/intensity/power
         // into the per-frame SSAO UBO + the mesh.frag control block, and

@@ -144,7 +144,8 @@ public:
     // works on the top floors too. Returns the result for FX/HUD. No arm-gate here
     // (the host owns the WeaponSystem::hasWeapon() gate).
     FireResult onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                      Scene& scene, x3::phys::IPhysicsWorld& physics);
+                      Scene& scene, x3::phys::IPhysicsWorld& physics,
+                      int damage = kDamagePerShot);
 
     // Draw all top-floor enemies + the F7 boss + Sarah (host calls in its draw block).
     void draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,

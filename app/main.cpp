@@ -38,6 +38,8 @@
 #include "spire_sublevels.h"                // EFLZ hidden Floor-7 sub-levels + Dr. Chen Return Mission
 #include "elevator.h"
 #include "club1127.h"
+#include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
+#include "cliffs.h"                          // Salvari cliffs finale (--world cliffs)
 #include "terrain.h"
 #include "fx.h"
 #include "hud.h"
@@ -57,6 +59,8 @@
 #include <algorithm>
 #include <filesystem>
 #include <cstdio>
+#include <thread>     // r_maxfps frame limiter
+#include <chrono>
 
 // Public-domain single-header GIF encoder (Charlie Tangora) — vendored under
 // third_party/gif_h. Used ONLY by the headless --capture-ai tool below to assemble
@@ -92,7 +96,8 @@ namespace {
 // the FX tracer starts near the gun barrel (lower-right of the view) rather than
 // dead center. Mirrors the camera-basis offsets used by WeaponSystem; tuned to
 // sit just in front of and below/right of the eye.
-x3::phys::Vec3 muzzleFromCamera(float ex, float ey, float ez, float yaw, float pitch) {
+x3::phys::Vec3 muzzleFromCamera(float ex, float ey, float ez, float yaw, float pitch,
+                                float mFwd = 1.3f, float mRight = 0.26f, float mDown = 0.30f) {
     const float cp = std::cos(pitch), sp = std::sin(pitch);
     const float cy = std::cos(yaw),   sy = std::sin(yaw);
     const x3::phys::Vec3 forward{ cp * cy, sp, cp * sy };
@@ -101,8 +106,9 @@ x3::phys::Vec3 muzzleFromCamera(float ex, float ey, float ez, float yaw, float p
         right.y * forward.z - right.z * forward.y,
         right.z * forward.x - right.x * forward.z,
         right.x * forward.y - right.y * forward.x };
-    // Muzzle offset (m) in the camera basis: a bit forward, a bit right + down.
-    const float mFwd = 0.6f, mRight = 0.18f, mDown = 0.12f;
+    // Muzzle = barrel tip of the held viewmodel: forward + clearly down/right of the
+    // eye so the tracer/flash visibly LEAVE the gun (a near-on-axis origin sits
+    // end-on and the beam vanishes). Caller may override via the params.
     return x3::phys::Vec3{
         ex + forward.x * mFwd + right.x * mRight - up.x * mDown,
         ey + forward.y * mFwd + right.y * mRight - up.y * mDown,
@@ -139,6 +145,10 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
                          "viewmodel offset to the right (meters)");
     console.registerCVar("vm_down",  std::to_string(x3::game::kVmDefDown),
                          "viewmodel offset below the eye line (meters)");
+    // Frame cap (FPS limiter). Only bites with vsync OFF (FIFO already paces to the
+    // refresh); 0 = uncapped. Stops vsync-off from needlessly maxing the GPU on
+    // frames the display never shows. Live-tunable: `r_maxfps 0` for uncapped.
+    console.registerCVar("r_maxfps", "240", "frame cap when vsync off (0 = uncapped)");
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.
@@ -514,6 +524,8 @@ int main(int argc, char** argv) {
     bool        testUi = false;
     // --test-saveload (save/load pass): versioned checkpoint serialization. Additive.
     bool        testSaveLoad = false;
+    // --test-valley (Crystal Valleys Act-2 L15) + --test-cliffs (Salvari cliffs finale).
+    bool        testValley = false, testCliffs = false;
     // --test-spiremid (Spire mid-floor content): F3/F4/F5 encounter authoring. Additive.
     bool        testSpireMid = false;
     // --test-nexus (Floor 4.5 Nexus / The Chorus): off-elevator multi-pod boss. Additive.
@@ -715,6 +727,8 @@ int main(int argc, char** argv) {
         else if (a == "--test-footik") testFootIk = true;
         else if (a == "--test-ui") testUi = true;
         else if (a == "--test-saveload") testSaveLoad = true;
+        else if (a == "--test-valley") testValley = true;
+        else if (a == "--test-cliffs") testCliffs = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -1060,6 +1074,15 @@ int main(int argc, char** argv) {
         x3::logInfo("running GENERAL versioned checkpoint save/load self-test "
                     "(round-trip field-by-field + magic/version/checksum/truncation reject)...");
         return x3::save::runSaveLoadSelfTest() ? 0 : 1;
+    }
+    if (testValley) {
+        x3::logInfo("running Crystal Valleys (Act 2, L15) self-test "
+                    "(terrain placement + crash/K'thara on surface + Dominion + water)...");
+        return x3::game::runValleySelfTest() ? 0 : 1;
+    }
+    if (testCliffs) {
+        x3::logInfo("running Salvari cliffs finale self-test (pad/sea/placement/streaming)...");
+        return x3::game::runCliffsSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -2650,6 +2673,7 @@ int main(int argc, char** argv) {
             for (int i = 0; i < kSettle; ++i) {
                 glfwPollEvents();
                 club.update(dt, cscene, *cphys);
+                club.tickWater(dt, *device);   // animate the flooded section's REAL water
                 cphys->step(dt);
                 cscene.update(*cphys);
                 // Re-pose each frame (scene.update doesn't move the camera).
@@ -2719,6 +2743,7 @@ int main(int argc, char** argv) {
                 in.lookDX = ddx; in.lookDY = ddy;
                 cplayer.update(in, dt, *cphys);
                 club.update(dt, cscene, *cphys);
+                club.tickWater(dt, *device);   // animate the flooded section's REAL water
                 cphys->step(dt);
                 cscene.update(*cphys);
                 cplayer.camera(camX, camY, camZ, camYaw, camPitch);
@@ -2740,6 +2765,7 @@ int main(int argc, char** argv) {
                 if (spaceNow) flyYc += spd;
                 if (kd(GLFW_KEY_LEFT_CONTROL)) flyYc -= spd;
                 club.update(dt, cscene, *cphys);
+                club.tickWater(dt, *device);   // animate the flooded section's REAL water
                 cphys->step(dt);
                 cscene.update(*cphys);
                 camX = flyXc; camY = flyYc; camZ = flyZc; camYaw = flyYawC; camPitch = flyPitchC;
@@ -2758,6 +2784,327 @@ int main(int argc, char** argv) {
             device->endFrame(frame);
         }
 
+        cphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    // ---- Crystal Valleys — Act 2, Level 15 (--world valley) ----------------
+    // The FIRST open surface biome of Act 2, AFTER the cliffs finale of Act 1. A NEW
+    // self-contained world (app/valley.*), kept LOW-CONFLICT exactly like `--world
+    // club`: it does NOT touch level1.cpp / the Spire. It REUSES the streamed terrain
+    // path (TerrainStreamer + analytic sky, like `--world terrain`) and places its
+    // content — the crashed Salvari ship, K'thara (ally), the Dominion patrol, the
+    // crystal formations — ONTO that surface, plus a lake via setWaterParams. Two ways
+    // in (mirrors club): WALKABLE (windowed) + SCREENSHOT (headless).
+    if (worldMode == "valley") {
+        x3::logInfo("--world valley: building Crystal Valleys (Act 2, L15 — open biome)");
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> vphys(x3::phys::createPhysicsWorld());
+        if (!vphys->init()) {
+            x3::logError("--world valley: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        // Streamed terrain around the valley + analytic sky (same as --world terrain).
+        std::unique_ptr<x3::jobs::IJobSystem> vjobs(x3::jobs::createJobSystem());
+        vjobs->init(0);
+        x3::game::Scene vscene;
+        const x3::game::TerrainConfig& vcfg = x3::game::worldTerrainConfig();
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
+            sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+            sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
+            device->setSkyParams(sp);
+        }
+        x3::game::TerrainStreamer vstream;
+        // Seed the residency ring at the origin so the valley content has ground.
+        vstream.init(vscene, *device, *vphys, vjobs.get(), vcfg, 0.0f, 0.0f, /*radius=*/8);
+
+        // Build the valley content onto the streamed terrain.
+        x3::game::ValleyWorld valley;
+        valley.build(vscene, *device, *vphys, x3::game::riggedGlbRoot());
+
+        // Crystal point lights, and the lake water plane.
+        const auto& vlights = valley.pointLights();
+        device->setPointLights(vlights.data(), (uint32_t)vlights.size());
+        const float vSeaLevel = valley.waterSeaLevel();
+        auto applyWater = [&](float t) {
+            x3::rhi::IRenderDevice::WaterParams wp{};
+            wp.enabled = true; wp.seaLevel = vSeaLevel; wp.time = t;
+            wp.amplitude = 0.4f; wp.steepness = 0.5f; wp.waveLength = 12.0f; wp.speed = 1.0f;
+            wp.deepColor[0] = 0.02f; wp.deepColor[1] = 0.08f; wp.deepColor[2] = 0.12f;
+            wp.shallowColor[0] = 0.10f; wp.shallowColor[1] = 0.34f; wp.shallowColor[2] = 0.40f;
+            wp.sunDir[0] = 0.4f; wp.sunDir[1] = 1.0f; wp.sunDir[2] = 0.3f;
+            wp.specular = 14.0f; wp.fresnel = 0.02f;
+            device->setWaterParams(wp);
+        };
+
+        const x3::phys::Vec3 vspawn = valley.spawn();
+
+        // ===== Headless screenshot path: pose the showcase camera, settle, grab. =
+        if (headless) {
+            float cam[5]; valley.showcaseCamera(cam);
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const int kSettle = 48;   // let the ring stream in + characters skin
+            const float dt = 1.0f / 60.0f;
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_valley.png");
+            vstream.setUploadBudget(64);   // fill the visible ring fast for the still
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                // Nudge the focus across one tile early to trigger the full ring.
+                const float focusX = (i == 1) ? 32.0f : cam[0];
+                vstream.update(vscene, *device, *vphys, focusX, cam[2]);
+                valley.update(dt, vscene, *vphys, vspawn, nullptr);
+                vphys->step(dt);
+                vscene.update(*vphys);
+                applyWater((float)i * dt);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    vscene.render(*device, frame);
+                    valley.drawCharacters(*device, frame, vscene);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world valley: wrote screenshot " + outPath);
+            else       x3::logError("--world valley: capture FAILED");
+            vstream.shutdown(vscene, *device, *vphys);
+            vphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: full first-person controller + physics. ===
+        x3::game::Player vplayer;
+        vplayer.spawn(*vphys, vspawn.x, vspawn.y, vspawn.z);
+
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        bool prevSpaceV = false, prevFV = false, noclipV = false;
+        float flyXv = vspawn.x, flyYv = vspawn.y + 1.6f, flyZv = vspawn.z, flyYawV = 0.0f, flyPitchV = -0.2f;
+        float vWaterTime = 0.0f;
+        x3::logInfo("--world valley: WASD walk, mouse look, Space jump, LeftShift sprint, F noclip, Esc to quit");
+
+        int lastWv = (int)W, lastHv = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+
+            double now = glfwGetTime();
+            float dt = (float)(now - prevTime); prevTime = now;
+            if (dt > 0.1f) dt = 0.1f;
+
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+
+            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            bool spaceNow = kd(GLFW_KEY_SPACE);
+            bool fNow = kd(GLFW_KEY_F);
+            if (fNow && !prevFV) {
+                noclipV = !noclipV;
+                if (noclipV) { float yy, pp; vplayer.camera(flyXv, flyYv, flyZv, yy, pp); flyYawV = yy; flyPitchV = pp; }
+            }
+            prevFV = fNow;
+
+            float camX, camY, camZ, camYaw, camPitch;
+            if (!noclipV) {
+                x3::game::PlayerInput in;
+                if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+                if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+                if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+                if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+                in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+                in.jumpPressed = spaceNow && !prevSpaceV;
+                in.lookDX = ddx; in.lookDY = ddy;
+                vplayer.update(in, dt, *vphys);
+                vplayer.camera(camX, camY, camZ, camYaw, camPitch);
+            } else {
+                const float sens = 0.0025f;
+                flyYawV += ddx * sens; flyPitchV -= ddy * sens;
+                if (flyPitchV >  1.55f) flyPitchV =  1.55f;
+                if (flyPitchV < -1.55f) flyPitchV = -1.55f;
+                float fxv = std::cos(flyPitchV) * std::cos(flyYawV);
+                float fyv = std::sin(flyPitchV);
+                float fzv = std::cos(flyPitchV) * std::sin(flyYawV);
+                float rl = std::sqrt(fxv*fxv + fzv*fzv); if (rl < 1e-4f) rl = 1e-4f;
+                float rx = -fzv/rl, rz = fxv/rl;
+                float spd = 6.0f * dt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd *= 3.0f;
+                if (kd(GLFW_KEY_W)) { flyXv += fxv*spd; flyYv += fyv*spd; flyZv += fzv*spd; }
+                if (kd(GLFW_KEY_S)) { flyXv -= fxv*spd; flyYv -= fyv*spd; flyZv -= fzv*spd; }
+                if (kd(GLFW_KEY_D)) { flyXv += rx*spd; flyZv += rz*spd; }
+                if (kd(GLFW_KEY_A)) { flyXv -= rx*spd; flyZv -= rz*spd; }
+                if (spaceNow) flyYv += spd;
+                if (kd(GLFW_KEY_LEFT_CONTROL)) flyYv -= spd;
+                camX = flyXv; camY = flyYv; camZ = flyZv; camYaw = flyYawV; camPitch = flyPitchV;
+            }
+            prevSpaceV = spaceNow;
+
+            // Stream terrain around the camera, tick the valley NPCs (hostile chase
+            // the player), step physics, sync the scene, animate the lake.
+            vstream.update(vscene, *device, *vphys, camX, camZ);
+            const x3::phys::Vec3 vp{ camX, camY, camZ };
+            valley.update(dt, vscene, *vphys, vp, &vplayer);
+            vphys->step(dt);
+            vscene.update(*vphys);
+            vWaterTime += dt; applyWater(vWaterTime);
+
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWv || chh != lastHv) { lastWv = cw; lastHv = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+
+            device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                vscene.render(*device, frame);
+                valley.drawCharacters(*device, frame, vscene);
+            }
+            device->endFrame(frame);
+        }
+
+        vstream.shutdown(vscene, *device, *vphys);
+        vphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    // ---- Salvari cliffs finale (--world cliffs) ----------------------------
+    // The snowy mountain exterior past the F7 rooftop (Act 1 §2d): the STREAMED
+    // terrain heightfield, a flat landing PAD planted on it, the SALVARI SHIP set
+    // down on the pad, K'thara + a couple of troopers anchored to the terrain, and
+    // the OCEAN well below the cliff-top pad. Self-contained (CliffsArea, app/cliffs.*).
+    //   * SCREENSHOT (headless): `--world cliffs --screenshot <path>`.
+    //   * WALKABLE (windowed):  `--world cliffs` — fly the cliffs with WASD + mouse.
+    if (worldMode == "cliffs") {
+        x3::logInfo("--world cliffs: building the above-ground Salvari cliffs finale");
+        std::unique_ptr<x3::jobs::IJobSystem> cjobs(x3::jobs::createJobSystem());
+        cjobs->init(0);
+        std::unique_ptr<x3::phys::IPhysicsWorld> cphys(x3::phys::createPhysicsWorld());
+        if (!cphys->init()) {
+            x3::logError("--world cliffs: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        x3::game::Scene cscene;
+        x3::game::CliffsArea cliffs;
+        cliffs.build(cscene, *device, *cphys, cjobs.get());
+
+        const float dt = 1.0f / 60.0f;
+
+        // ===== Headless capture: warm the ring + waves, pose the vantage, grab. ==
+        if (headless) {
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("w_cliffs.png");
+            float eye[3]; float camYaw = 0.0f, camPitch = 0.0f;
+            cliffs.suggestCamera(eye, camYaw, camPitch);
+            if (shotCamOverride) {
+                eye[0]=shotCam[0]; eye[1]=shotCam[1]; eye[2]=shotCam[2];
+                camYaw=shotCam[3]; camPitch=shotCam[4];
+            }
+            const float focusX = cliffs.padCenter()[0], focusZ = cliffs.padCenter()[2];
+            const int kFrames = 220;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                cphys->step(dt);
+                // The streamer only enqueues the FULL ring on a focus-tile boundary
+                // cross (init seeds the 3x3). Nudge the focus across a tile on frame 1
+                // to trigger the ring request, then hold it at the pad so the wide
+                // resident set drains in over the warmup window.
+                const float fX = (i == 1) ? (focusX + 40.0f) : focusX;
+                cliffs.update(cscene, *device, *cphys, dt, fX, focusZ);
+                device->setCamera(eye[0], eye[1], eye[2], camYaw, camPitch, 70.0f);
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) cliffs.render(*device, frame, cscene);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) {
+                const x3::rhi::RenderStats st = device->stats();
+                char rb[256];
+                std::snprintf(rb, sizeof(rb),
+                    "--world cliffs: wrote %s | seaLevel=%.1f padY=%.1f actors=%u "
+                    "resident=%u draws=%u tris=%u ship=%s",
+                    outPath.c_str(), cliffs.seaLevel(), cliffs.padCenter()[1],
+                    cliffs.actorCount(), cliffs.residentTiles(), st.drawCalls,
+                    st.triangles, cliffs.shipReal() ? "REAL" : "fallback");
+                x3::logInfo(rb);
+            } else x3::logError("--world cliffs: capture FAILED");
+
+            cliffs.shutdown(cscene, *device, *cphys);
+            cjobs->shutdown();
+            cphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: fly-cam over the cliffs. =================
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        float ceye[3]; float fyaw = 0.0f, fpitch = 0.0f;
+        cliffs.suggestCamera(ceye, fyaw, fpitch);
+        float fx = ceye[0], fy = ceye[1], fz = ceye[2];
+        x3::logInfo("--world cliffs: fly with WASD + mouse, Space/Ctrl up-down, Shift sprint, Esc to quit");
+        int lastWc = (int)W, lastHc = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+            auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+            const float sens = 0.0025f;
+            fyaw += ddx * sens; fpitch -= ddy * sens;
+            if (fpitch >  1.55f) fpitch =  1.55f;
+            if (fpitch < -1.55f) fpitch = -1.55f;
+            float dx = std::cos(fpitch)*std::cos(fyaw), dy = std::sin(fpitch), dz = std::cos(fpitch)*std::sin(fyaw);
+            float rl = std::sqrt(dx*dx + dz*dz); if (rl < 1e-4f) rl = 1e-4f;
+            float rx = -dz/rl, rz = dx/rl;
+            float spd = 8.0f * fdt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd *= 3.0f;
+            if (kd(GLFW_KEY_W)) { fx += dx*spd; fy += dy*spd; fz += dz*spd; }
+            if (kd(GLFW_KEY_S)) { fx -= dx*spd; fy -= dy*spd; fz -= dz*spd; }
+            if (kd(GLFW_KEY_D)) { fx += rx*spd; fz += rz*spd; }
+            if (kd(GLFW_KEY_A)) { fx -= rx*spd; fz -= rz*spd; }
+            if (kd(GLFW_KEY_SPACE)) fy += spd;
+            if (kd(GLFW_KEY_LEFT_CONTROL)) fy -= spd;
+
+            cphys->step(fdt);
+            cliffs.update(cscene, *device, *cphys, fdt, fx, fz);
+
+            int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
+            if (cw != lastWc || ch != lastHc) { lastWc=cw; lastHc=ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
+            device->setCamera(fx, fy, fz, fyaw, fpitch, 70.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) cliffs.render(*device, frame, cscene);
+            device->endFrame(frame);
+        }
+        cliffs.shutdown(cscene, *device, *cphys);
+        cjobs->shutdown();
         cphys->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
@@ -2889,6 +3236,30 @@ int main(int argc, char** argv) {
         la.sys = audio.get(); la.door = sndDoor; la.pickup = sndPickup;
         la.gun = sndGun; la.death = sndDeath;
         game.setAudio(la);
+
+        // Game-feel CUE sink: route enemy footstep / impact cues onto 3D audio.
+        // Footsteps reuse the (pitched-down, quiet) step WAV at the enemy's foot;
+        // impacts use the gunshot transient. The trigger points live in monster.cpp;
+        // here the host maps them onto whatever sounds it has. Intensity -> volume.
+        {
+            x3::audio::IAudioSystem* asys = audio.get();
+            game.setCueSink([asys, sndStep, sndGun](const x3::game::GameCue& c) {
+                if (!asys) return;
+                switch (c.kind) {
+                    case x3::game::CueKind::Footstep:
+                        if (sndStep.valid())
+                            asys->playSound3D(sndStep, c.pos.x, c.pos.y, c.pos.z,
+                                              0.12f * c.intensity, 0.55f);
+                        break;
+                    case x3::game::CueKind::BulletImpact:
+                    case x3::game::CueKind::MeleeImpact:
+                        if (sndGun.valid())
+                            asys->playSound3D(sndGun, c.pos.x, c.pos.y, c.pos.z,
+                                              0.5f * c.intensity, 0.7f);
+                        break;
+                }
+            });
+        }
 
         // Spire elevator: one stop per floor (B1..F7), 5 m apart, so a ride lands on
         // walkable floor geometry at every plate. The cab top sits flush with each
@@ -3691,6 +4062,32 @@ int main(int argc, char** argv) {
     // leftover real time between render frames; advance(dt) yields whole kSimDt steps.
     x3::net::SimAccumulator simAcc;
 
+    // ---- DOOM-style cheat console commands (playtest aid). Capture the live systems
+    // by reference (they outlive the loop). Open the console with ` then type e.g. iddqd.
+    console->registerCommand("iddqd", [&player, &console](const std::vector<std::string>&) {
+        const bool on = !player.god(); player.setGod(on); if (on) player.heal();
+        console->print(std::string("god mode ") + (on ? "ON  (IDDQD)" : "OFF"));
+    }, "toggle god mode (invulnerable)");
+    console->registerCommand("god", [&player, &console](const std::vector<std::string>& a) {
+        const bool on = a.empty() ? !player.god() : (a[0] != "0");
+        player.setGod(on); if (on) player.heal();
+        console->print(std::string("god = ") + (on ? "1" : "0"));
+    }, "god [0|1] - toggle/set invulnerability");
+    console->registerCommand("idkfa", [&player, &game, &scene, &arsenal, &console](const std::vector<std::string>&) {
+        player.setGod(true); player.heal(); game.cheatArm(scene); arsenal.setInfiniteAmmo(true);
+        console->print("IDKFA - god + full health + all weapons + UNLIMITED ammo");
+    }, "god + full health + all weapons + unlimited ammo");
+    console->registerCommand("idfa", [&game, &scene, &arsenal, &console](const std::vector<std::string>&) {
+        game.cheatArm(scene); arsenal.setInfiniteAmmo(true);
+        console->print("IDFA - all weapons + unlimited ammo");
+    }, "arm all weapons + unlimited ammo");
+    console->registerCommand("idclip", [&player, &console](const std::vector<std::string>& a) {
+        const bool on = a.empty() ? !player.noclip() : (a[0] != "0");
+        player.setNoclip(on);
+        if (on && !player.god()) player.setGod(true);   // don't take env damage while flying
+        console->print(std::string("noclip ") + (on ? "ON  (IDCLIP) — fly with WASD, look up/down to climb" : "OFF"));
+    }, "idclip [0|1] - toggle noclip free-flight (no collision)");
+
     // ---- S7: route keyboard text + editing into the on-screen console. The
     // char callback feeds printable codepoints; the key callback handles the
     // '`' toggle + Enter/Backspace/Up/Down/Tab/Esc while the console is open.
@@ -3816,7 +4213,28 @@ int main(int argc, char** argv) {
     // ---- Main loop ----
     int lastW = static_cast<int>(W), lastH = static_cast<int>(H);
     float oceanTime = 0.0f;   // --world ocean wave-animation clock (seconds)
+    double frameCapPrev = glfwGetTime();   // r_maxfps limiter cursor
     while (!glfwWindowShouldClose(window)) {
+        // ---- Frame cap (r_maxfps): sleep out the remainder of the frame budget so
+        // vsync-off doesn't churn the GPU on invisible frames. No-op when vsync is on
+        // (FIFO already blocks) since we'll already be slower than the cap, and when
+        // r_maxfps<=0. Sleep most of the wait, spin the last ~1 ms for accuracy. ----
+        {
+            const float maxfps = (float)std::atof(console->getString("r_maxfps").c_str());
+            if (maxfps > 0.0f) {
+                const double target = frameCapPrev + 1.0 / (double)maxfps;
+                double nowc = glfwGetTime();
+                if (nowc < target) {
+                    const double remain = target - nowc;
+                    if (remain > 0.002)
+                        std::this_thread::sleep_for(std::chrono::duration<double>(remain - 0.001));
+                    while (glfwGetTime() < target) { /* short spin to the deadline */ }
+                }
+                frameCapPrev = glfwGetTime();
+            } else {
+                frameCapPrev = glfwGetTime();
+            }
+        }
         glfwPollEvents();
 
         // ---- S7: console gating. While the console is open, gameplay input is
@@ -4266,30 +4684,36 @@ int main(int argc, char** argv) {
                 x3::logInfo("fire: " + arsenal.current().name + " bolt launched");
             } else {
                 // ---- Hitscan weapon (pistol/SMG/shotgun): one onFire per pellet. ----
+                // PER-WEAPON damage to monsters: each ray carries the firing weapon's
+                // WeaponDef damage (set by the arsenal; includes beam falloff/chain),
+                // so a shotgun pellet, an SMG round, and a plasma bolt all deal their
+                // OWN damage instead of a single shared constant.
                 bool anyKill = false, anyHit = false; int lastHp = 0;
+                combatFx.spawnMuzzleFlash(muzzle, dir);   // flash at the gun barrel (hitscan)
                 for (const auto& ray : shot.rays) {
-                    x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics);
+                    const int wdmg = ray.damage;          // this pellet/ray's damage
+                    x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics, wdmg);
                     // If the B1 groups didn't take it, try the F3/F4/F5 enemies (the
                     // shot is already arm-gated by the arsenal/Level1Game::onFire).
                     if (!r.hitMonster && game.armed()) {
-                        x3::game::FireResult rm = midFloors.onFire(eye, ray.dir, scene, *physics);
+                        x3::game::FireResult rm = midFloors.onFire(eye, ray.dir, scene, *physics, wdmg);
                         if (rm.hitMonster || (!r.hit && rm.hit)) r = rm;
                     }
                     // Then the F6/F7 top-floor enemies + the Clone boss.
                     if (!r.hitMonster && game.armed()) {
-                        x3::game::FireResult rt = topFloors.onFire(eye, ray.dir, scene, *physics);
+                        x3::game::FireResult rt = topFloors.onFire(eye, ray.dir, scene, *physics, wdmg);
                         if (rt.hitMonster || (!r.hit && rt.hit)) r = rt;
                     }
                     // Then the Floor 4.5 Chorus pods (no-op until the Nexus is armed; a
                     // pod killed this way counts as KILLED, not saved).
                     if (!r.hitMonster && game.armed()) {
-                        x3::game::FireResult rn = nexus.onFire(eye, ray.dir, scene, *physics);
+                        x3::game::FireResult rn = nexus.onFire(eye, ray.dir, scene, *physics, wdmg);
                         if (rn.hitMonster || (!r.hit && rn.hit)) r = rn;
                     }
                     // Then the hidden sub-level enemies + the Frozen Collective (a clean
                     // miss until the descent has opened).
                     if (!r.hitMonster && game.armed()) {
-                        x3::game::FireResult rs = subLevels.onFire(eye, ray.dir, scene, *physics);
+                        x3::game::FireResult rs = subLevels.onFire(eye, ray.dir, scene, *physics, wdmg);
                         if (rs.hitMonster || (!r.hit && rs.hit)) r = rs;
                     }
                     combatFx.addTracer(muzzle, r.endPoint);   // tracer + muzzle burst per pellet
@@ -4324,21 +4748,22 @@ int main(int argc, char** argv) {
                 bool consumed = false;
                 x3::phys::RayHit eh = physics->rayCast(b.pos, ndir, stepLen, x3::phys::Layer::Enemy);
                 if (eh.hit) {
-                    x3::game::FireResult r = game.onFire(b.pos, ndir, scene, *physics);
+                    // PER-WEAPON damage: the bolt carries its WeaponDef projectile damage.
+                    x3::game::FireResult r = game.onFire(b.pos, ndir, scene, *physics, b.damage);
                     if (!r.hitMonster) {   // try the F3/F4/F5 enemies for this bolt
-                        x3::game::FireResult rm = midFloors.onFire(b.pos, ndir, scene, *physics);
+                        x3::game::FireResult rm = midFloors.onFire(b.pos, ndir, scene, *physics, b.damage);
                         if (rm.hitMonster) r = rm;
                     }
                     if (!r.hitMonster) {   // then the F6/F7 enemies + the Clone boss
-                        x3::game::FireResult rt = topFloors.onFire(b.pos, ndir, scene, *physics);
+                        x3::game::FireResult rt = topFloors.onFire(b.pos, ndir, scene, *physics, b.damage);
                         if (rt.hitMonster) r = rt;
                     }
                     if (!r.hitMonster) {   // then the Floor 4.5 Chorus pods (if armed)
-                        x3::game::FireResult rn = nexus.onFire(b.pos, ndir, scene, *physics);
+                        x3::game::FireResult rn = nexus.onFire(b.pos, ndir, scene, *physics, b.damage);
                         if (rn.hitMonster) r = rn;
                     }
                     if (!r.hitMonster) {   // then the hidden sub-level enemies + Frozen Collective
-                        x3::game::FireResult rs = subLevels.onFire(b.pos, ndir, scene, *physics);
+                        x3::game::FireResult rs = subLevels.onFire(b.pos, ndir, scene, *physics, b.damage);
                         if (rs.hitMonster) r = rs;
                     }
                     combatFx.addTracer(b.pos, eh.point);
@@ -4392,6 +4817,81 @@ int main(int argc, char** argv) {
                 nexus.draw(*device, frame, scene);            // Floor 4.5 Chorus pods
                 subLevels.drawDoors(*device, frame);          // hidden sub-level door slabs (no-op while closed)
                 subLevels.draw(*device, frame, scene);        // sub-level enemies + Frozen Collective + Dr. Chen (no-op while closed)
+                // ---- Monster HEALTH BARS — shiny metallic, world-anchored, with a
+                // sweeping specular sheen (shimmer). LOS-culled so a bar NEVER shows
+                // through a wall. Above every living enemy; flares white on a fresh hit
+                // and warms toward red as HP drops (length still reads the exact value). --
+                {
+                    const double barT = glfwGetTime();
+                    const x3::phys::Vec3 hbEye{ camX, camY, camZ };
+                    auto hpBar = [&](const x3::phys::Vec3& head, int hpv, int mx, float flash) {
+                        if (mx <= 0 || hpv <= 0) return;   // living enemies only
+                        float sx = 0.0f, sy = 0.0f;
+                        if (!device->worldToScreen(head.x, head.y, head.z, sx, sy)) return;  // behind camera
+                        const float frac = (hpv >= mx) ? 1.0f : (float)hpv / (float)mx;
+                        uint32_t hw=0, hh=0; device->hudSize(hw, hh);
+                        const float bw = 64.0f, bh = 7.0f, x0 = sx - bw * 0.5f;
+                        float y0 = sy; if (y0 < 14.0f) y0 = 14.0f;            // clamp on-screen (close enemies)
+                        if (hh > 30 && y0 > (float)hh - 30.0f) y0 = (float)hh - 30.0f;
+                        const float lowH = 1.0f - frac;                       // 0 healthy -> 1 dying
+                        // Per-bar phase from world X so bars don't pulse/shimmer in lockstep.
+                        const float ph    = head.x * 0.7f;
+                        const float pulse = 0.86f + 0.14f * (float)std::sin(barT * 3.2 + ph);
+                        const float outl[4]   = { 0.00f, 0.00f, 0.00f, 0.65f };                       // black definition outline
+                        const float frameC[4] = { 0.78f*pulse, 0.86f*pulse, 1.00f*pulse, 0.95f };      // breathing steel frame
+                        const float backC[4]  = { 0.04f, 0.05f, 0.08f, 0.85f };                        // dark inset bg
+                        // Metallic fill: darker base + lighter top band fakes a vertical
+                        // gradient; warms toward red at low HP; flares white on a hit.
+                        const float baseC[4]  = { 0.52f + 0.30f*lowH + 0.18f*flash, 0.55f - 0.20f*lowH, 0.62f - 0.30f*lowH, 1.0f };
+                        const float topC[4]   = { 0.90f + 0.10f*flash,              0.92f - 0.30f*lowH, 0.98f - 0.45f*lowH, 1.0f };
+                        const float fillW = bw * frac;
+                        device->drawHudQuad(frame, x0 - 2.0f, y0 - 2.0f, bw + 4.0f, bh + 4.0f, outl);
+                        device->drawHudQuad(frame, x0 - 1.5f, y0 - 1.5f, bw + 3.0f, bh + 3.0f, frameC);
+                        device->drawHudQuad(frame, x0, y0, bw, bh, backC);
+                        device->drawHudQuad(frame, x0, y0, fillW, bh, baseC);            // body
+                        device->drawHudQuad(frame, x0, y0, fillW, bh * 0.45f, topC);     // top sheen band
+                        // Sweeping specular sliver = the "shimmer", looping across the fill.
+                        if (fillW > 6.0f) {
+                            const float sw = 7.0f;
+                            const float swp = (float)std::fmod(barT * 0.55 + head.x * 0.05, 1.0);
+                            float sxx = x0 + swp * fillW - sw * 0.5f;
+                            if (sxx < x0)              sxx = x0;
+                            if (sxx > x0 + fillW - sw) sxx = x0 + fillW - sw;
+                            const float sheen[4] = { 1.0f, 1.0f, 1.0f, 0.40f };
+                            device->drawHudQuad(frame, sxx, y0, sw, bh, sheen);
+                        }
+                    };
+                    auto barsFor = [&](x3::game::MonsterManager& mm) {
+                        for (uint32_t i = 0; i < mm.count(); ++i) {
+                            x3::game::MonsterSystem& m = mm.at(i);
+                            if (!m.alive()) continue;
+                            x3::phys::Vec3 c = m.pos();
+                            // LOS cull: skip the bar if a static wall sits between the
+                            // camera and the enemy's chest (no more bars through walls).
+                            const x3::phys::Vec3 chest{ c.x, c.y + 1.0f, c.z };
+                            const x3::phys::Vec3 d{ chest.x - hbEye.x, chest.y - hbEye.y, chest.z - hbEye.z };
+                            const float dist = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
+                            if (dist > 0.001f) {
+                                const x3::phys::Vec3 nd{ d.x/dist, d.y/dist, d.z/dist };
+                                const x3::phys::RayHit los = physics->rayCast(hbEye, nd, dist - 0.3f, x3::phys::Layer::Static);
+                                if (los.hit) continue;   // wall in the way -> hidden
+                            }
+                            c.y += 2.2f;                 // anchor above the head
+                            hpBar(c, m.hp(), m.maxHp(), m.hitFlash());
+                        }
+                    };
+                    // B1 groups + the active Spire-floor enemy groups + bosses.
+                    barsFor(game.corridorEnemies());
+                    barsFor(game.checkpointEnemies());
+                    for (uint32_t f = 0; f < (uint32_t)x3::game::SpireMidFloor::Count; ++f)
+                        barsFor(midFloors.enemies((x3::game::SpireMidFloor)f));
+                    barsFor(midFloors.f3Boss());
+                    barsFor(midFloors.swarmBoss());
+                    for (uint32_t f = 0; f < (uint32_t)x3::game::SpireTopFloor::Count; ++f)
+                        barsFor(topFloors.enemies((x3::game::SpireTopFloor)f));
+                    barsFor(topFloors.overseerBoss());
+                    barsFor(topFloors.boss());
+                }
                 const VmPose vmPose = readViewmodelPose(*console);
                 if (arsenal.viewmodelsLoaded() && game.armed()) {
                     // WEAPONS: draw the SELECTED weapon's viewmodel (its own GLB +

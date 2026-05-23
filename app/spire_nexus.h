@@ -118,7 +118,8 @@ public:
     // before the Nexus is armed. No arm-gate on the WEAPON here (the host owns the
     // WeaponSystem::hasWeapon() gate, as it does for the floors).
     FireResult onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                      Scene& scene, x3::phys::IPhysicsWorld& physics);
+                      Scene& scene, x3::phys::IPhysicsWorld& physics,
+                      int damage = kDamagePerShot);
 
     // Draw the Chorus pods (host calls in its draw block). Pods are placed at load so
     // the arena reads even before discovery; they simply don't act until armed.

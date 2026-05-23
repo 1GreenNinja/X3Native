@@ -50,6 +50,7 @@
 #include "scene.h"
 #include "player.h"   // IDamageSink (enemies attack the player)
 #include "anim.h"     // J1: skeletal animation + CPU skinning runtime
+#include "cues.h"     // game-feel footstep / impact cue hooks
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -178,6 +179,13 @@ constexpr float kFireMaxDist   = 100.0f;
 // Hit-flash duration (seconds): the monster tints toward red for this long after
 // a hit, then decays back to its base color.
 constexpr float kHitFlashTime  = 0.1f;
+
+// Footstep cadence: a footstep cue fires each time the locomotion phase crosses
+// one of this-many evenly-spaced marks per cycle (2 = a step on each half-cycle,
+// i.e. a left/right foot plant). VISUAL/AUDIO TUNING.
+constexpr int   kFootstepsPerCycle = 2;
+// Minimum planar speed (m/s) to emit footsteps (don't tick steps while idling).
+constexpr float kFootstepMinSpeed  = 0.4f;
 
 // Gentle chase speed (m/s) toward the player (player walks 5 m/s). Set > 0 to
 // enable chasing. Translation toward the player + facing rotation baked into the
@@ -362,6 +370,10 @@ public:
         // Drone-only: preferred standoff distance (m). The drone strafes to keep
         // roughly this far from the player instead of closing to melee.
         float standoff            = 6.0f;
+        // FLYER: hovers off the floor with a model origin at its CENTER (not the
+        // feet). Distinct from `type==Drone`, which is just the ranged AI lane and
+        // is ALSO used by ground elites (e.g. Illuminated). Drives hover + hitbox.
+        bool  flyer               = false;
 
         // ---- Data-driven AI weighting (bestiary pass) ---------------------
         // Per-instance strafe/flank bias in [0,1]: the probability, at mid-range,
@@ -434,8 +446,11 @@ public:
     // and — if HP drops to 0 — kill it (hide Entity, remove body, mark dead).
     // Returns what happened (see FireResult). The caller is responsible for the
     // "only if armed" gate (WeaponSystem::hasWeapon()); a no-op here when dead.
+    // `damage` is the firing weapon's per-shot damage (defaults to kDamagePerShot
+    // for legacy/test paths); a HEADSHOT (hit in the upper hitbox) deals 3x.
     FireResult fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                    Scene& scene, x3::phys::IPhysicsWorld& physics);
+                    Scene& scene, x3::phys::IPhysicsWorld& physics,
+                    int damage = kDamagePerShot);
 
     // Advance one frame: decay the hit-flash timer and, if chaseSpeed > 0 and the
     // monster is alive, move it relative to `playerPos` (chase for melee, hold a
@@ -569,6 +584,17 @@ public:
     int  maxHp() const { return m_maxHp; }
     bool alive() const { return m_alive; }
 
+    // Hit-react flash strength in [0,1] (mirrors Player::damageFlash): 1 the instant
+    // the monster takes damage, decaying to 0 over kHitFlashTime. The draw path tints
+    // by this; the HUD health-bar layer flares white on a fresh hit by reading it.
+    float hitFlash() const;
+
+    // ---- Game-feel cues (footstep / impact). The host wires a single sink that
+    // maps cues onto audio/FX; unset => a throttled-log stub (see app/cues.h). The
+    // MonsterSystem emits Footstep cues at locomotion phase crossings (foot plants)
+    // while moving, and BulletImpact/MeleeImpact when its attack lands. ----
+    void setCueSink(const GameCueFn& sink) { m_cueSink = sink; }
+
     // ---- Scripted-hook support (Wave 1) -----------------------------------
     // Set HP directly (clamped to [0, maxHp]) WITHOUT running the death path — used
     // by ScriptedFightHook::stripBossHp to debuff a boss pre-fight (the master hack).
@@ -629,6 +655,8 @@ private:
     // the skinned vertices. Unskinned models leave m_skinner invalid -> static draw. ----
     x3::anim::Skinner        m_skinner;
     x3::rhi::IRenderDevice*  m_device = nullptr;
+    // Game-feel cue sink (footstep / impact). Empty => throttled-log stub.
+    GameCueFn                m_cueSink;
     int                      m_idleClip = -1;
     int                      m_walkClip = -1;
     // T1: separate Run / Jump clips for the locomotion blend (multi-clip *_anim.glb).
@@ -640,6 +668,9 @@ private:
     bool                     m_useLocoBlend = false;  // a real idle(+walk/+run) set drives the blend
     float                    m_animTime = 0.0f;
     bool                     m_animActive = false;   // a usable clip was found
+    // Footstep cue tracking: the last sampled locomotion phase, so update() can
+    // detect a phase crossing (foot plant) between frames and emit a Footstep cue.
+    float                    m_lastFootPhase = 0.0f;
     // Model-local fixup applied between the gameplay transform and each drawable's
     // node transform (final = model * fixup * nodeTransform). Identity for Y-up
     // models; a -90deg-X stand-up for the Z-up converted character GLBs. Also
@@ -650,6 +681,9 @@ private:
     uint32_t         m_entity = kNoLink;      // index into the Scene
     x3::phys::BodyId m_body;                  // Enemy-layer collision box
     float            m_modelScale = 1.0f;     // uniform scale applied to the model
+    float            m_hitHalfY   = 0.95f;    // Enemy hitbox half-height (scaled); top half = head zone
+    float            m_hitCenterOff = 0.0f;   // box center offset above m_pos (feet-origin ground enemies raise it)
+    bool             m_flyer       = false;   // hovering, center-origin enemy (vs ground feet/center-origin)
 
     int   m_hp        = kMonsterHp;
     int   m_maxHp     = kMonsterHp;           // per-instance starting HP (Tuning)
@@ -769,6 +803,11 @@ public:
     MonsterSystem&       at(uint32_t i)       { return *m_monsters[i]; }
     const MonsterSystem& at(uint32_t i) const { return *m_monsters[i]; }
 
+    // Set the game-feel cue sink (footstep/impact) on every monster — current AND
+    // future spawns (stored so spawn() applies it to new instances). Empty => the
+    // per-monster throttled-log stub. See app/cues.h.
+    void setCueSink(const GameCueFn& sink);
+
     // Number of monsters still alive (not dead). Used for objective/door gating.
     uint32_t aliveCount() const;
 
@@ -797,12 +836,15 @@ public:
     // the damage (the Enemy-layer rayCast inside each fire() returns the nearest
     // body, but since fire() ignores hits that aren't THIS monster, we test each
     // and keep the result that actually hit a monster). Returns that FireResult
-    // (or a default miss). At most one monster is damaged per call.
+    // (or a default miss). At most one monster is damaged per call. `damage` is the
+    // firing weapon's per-shot damage (defaults to kDamagePerShot).
     FireResult fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                    Scene& scene, x3::phys::IPhysicsWorld& physics);
+                    Scene& scene, x3::phys::IPhysicsWorld& physics,
+                    int damage = kDamagePerShot);
 
 private:
     std::vector<std::unique_ptr<MonsterSystem>> m_monsters;
+    GameCueFn m_cueSink;   // applied to every spawn (current + future)
 };
 
 // Headless self-test (--test-combat). Builds a physics world + an Enemy-layer
@@ -991,8 +1033,10 @@ public:
 
     // Fire one shot across all pods (the first live pod the ray hits takes damage).
     // A pod that DIES this way counts as KILLED (not spared). Returns the result.
+    // `damage` is the firing weapon's per-shot damage (defaults to kDamagePerShot).
     FireResult fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                    Scene& scene, x3::phys::IPhysicsWorld& physics);
+                    Scene& scene, x3::phys::IPhysicsWorld& physics,
+                    int damage = kDamagePerShot);
 
     // ---- Outcome counts (the morality quest) ------------------------------
     uint32_t killedCount() const;            // pods downed by lethal damage

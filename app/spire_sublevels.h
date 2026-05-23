@@ -146,7 +146,8 @@ public:
     // enemy hit takes it). The host folds this into its onFire path. No-op (a miss) while
     // the descent is closed (the sub-levels aren't in play). Returns the result for FX/HUD.
     FireResult onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                      Scene& scene, x3::phys::IPhysicsWorld& physics);
+                      Scene& scene, x3::phys::IPhysicsWorld& physics,
+                      int damage = kDamagePerShot);
 
     // Draw all sub-level enemies + the Frozen Collective + Dr. Chen. No-op while the
     // descent is closed (nothing to show — the sub-levels are hidden). Host calls in its

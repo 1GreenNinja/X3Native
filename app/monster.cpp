@@ -10,6 +10,7 @@
 
 #include "engine/core/x3_log.h"
 
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <memory>
@@ -34,6 +35,10 @@ constexpr float kBoxModelScale  = 1.0f;
 // (the model is drawn over this volume) and the fallback box (which also renders
 // at this size).
 constexpr x3::phys::Vec3 kMonsterHalf{ 0.5f, 0.4f, 0.5f };
+
+// Hover height (m) added to a Drone-type enemy's spawn Y so flyers float in the
+// air (above the player's eye line) instead of walking the floor.
+constexpr float kDroneHoverY = 1.8f;
 
 // Build a column-major 4x4 from a 3x3 basis (columns bx,by,bz), uniform scale s,
 // and translation t. Column-major: m[0..3]=col0, m[4..7]=col1, etc.
@@ -114,6 +119,14 @@ x3::phys::Vec3 MonsterSystem::facingDir() const {
     return x3::phys::Vec3{ -std::sin(m_yaw), 0.0f, -std::cos(m_yaw) };
 }
 
+// Hit-react flash strength in [0,1] (mirrors Player::damageFlash): 1 right after a
+// hit, decaying to 0 over kHitFlashTime. The draw path + HUD health bars read this.
+float MonsterSystem::hitFlash() const {
+    if (kHitFlashTime <= 0.0f) return 0.0f;
+    const float f = m_flash / kHitFlashTime;
+    return f < 0.0f ? 0.0f : (f > 1.0f ? 1.0f : f);
+}
+
 // ---------------------------------------------------------------------------
 // Pure damage rule (testable; no rendering / physics).
 // ---------------------------------------------------------------------------
@@ -155,6 +168,13 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     m_ranged         = tuning.ranged;
     m_standoff       = tuning.standoff;
     m_aiStrafeBias   = tuning.aiStrafeBias;     // <0 => use the MonsterType default
+    m_flyer          = tuning.flyer;            // hovering, center-origin enemy
+
+    // ---- Flyers HOVER: lift the spawn position off the floor so the model floats
+    // in the air instead of walking the ground. The AI only moves in x/z (m_pos.y
+    // is never touched), so this hover holds for the enemy's whole life. Keyed on
+    // m_flyer, NOT type==Drone (that type is also used by GROUND elites).
+    if (m_flyer) m_pos.y += kDroneHoverY;
     m_atkTimer       = tuning.attackCooldown;  // small initial delay before first hit
     m_windupTimer    = 0.0f;
     m_winding        = false;
@@ -307,7 +327,35 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     // motion type but keeps the Enemy ObjectLayer, so it stays put under gravity
     // yet is hittable by a rayCast(Layer::Enemy) and movable by setBodyPosition
     // (same approach as the S4 door). ----
-    m_body = physics.addBox(kMonsterHalf, m_pos, 0.0f, x3::phys::Layer::Enemy);
+    // Hitbox sized to the (possibly scaled) VISUAL so aiming at the body actually
+    // connects. The old box was CENTERED on m_pos — but ground models have their
+    // origin at the FEET, so the box sat half underground and only covered the shins:
+    // chest/head shots flew clean over it (humanoids were nearly unhittable; only the
+    // centre-origin hovering drone was hit). Fix: raise the box for ground enemies so
+    // it spans feet..head; keep the drone's box centered on m_pos (origin IS center).
+    {
+        const float hs = (m_modelScale > 0.1f) ? m_modelScale : 1.0f;
+        if (m_flyer) {
+            // Hovering flyer (Drone.glb): model origin is its CENTER -> centered box.
+            m_hitHalfY     = 0.95f * hs;
+            m_hitCenterOff = 0.0f;
+        } else {
+            // GROUND enemy: a GENEROUS box from a little below the origin up to well
+            // above it, so it covers the visible body whether the model's origin is
+            // at the FEET (humanoids) or the CENTER (low insectoid "beasts"). The old
+            // box assumed feet-origin and sat above a center-origin crawler's body,
+            // making it impossible to hit. std::max keeps small-scaled models hittable.
+            const float sc     = std::max(hs, 0.8f);
+            const float topY   = 2.0f * sc;          // reach the head of a tall model
+            const float skirt  = 0.4f;               // dip below the origin (low crawlers)
+            m_hitHalfY     = (topY + skirt) * 0.5f;
+            m_hitCenterOff = m_hitHalfY - skirt;     // box bottom = origin - skirt
+        }
+        const float hw = 0.60f * std::max(hs, 0.8f);
+        const x3::phys::Vec3 hitHalf{ hw, m_hitHalfY, hw };
+        const x3::phys::Vec3 center{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z };
+        m_body = physics.addBox(hitHalf, center, 0.0f, x3::phys::Layer::Enemy);
+    }
 
     // ---- Monster Entity: bookkeeping (tag/body/visibility/transform). Its render
     // mesh handle is left INVALID so Scene::render skips it; drawMonster() renders
@@ -333,7 +381,8 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
 // Fire one shot: raycast the Enemy layer, resolve to this monster, damage it.
 // ---------------------------------------------------------------------------
 FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                               Scene& scene, x3::phys::IPhysicsWorld& physics) {
+                               Scene& scene, x3::phys::IPhysicsWorld& physics,
+                               int damage) {
     FireResult r;
     r.hpAfter = m_hp;
 
@@ -366,10 +415,17 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
     if (ent != m_entity) return r;                 // (multi-monster: not this one)
 
     // ---- Hit a live monster: apply damage + start the red hit-flash. ----
-    // Act-1 boss gimmick (FE#7): a memory-flash window amplifies incoming damage
-    // (incomingDamageMul()). 1x for every non-flashing monster (no behaviour change).
+    // PER-WEAPON damage: the caller passes the firing weapon's WeaponDef damage
+    // (defaults to kDamagePerShot for legacy/test paths). Act-1 boss gimmick (FE#7):
+    // a memory-flash window amplifies incoming damage (incomingDamageMul()); 1x for
+    // every non-flashing monster (no behaviour change). HEADSHOT (a hit in the upper
+    // part of the hitbox) deals 3x — box center is m_pos.y + m_hitCenterOff, its top
+    // is +m_hitHalfY above that, so the top half is the head zone.
     r.hitMonster = true;
-    const int shotDmg = (int)(kDamagePerShot * incomingDamageMul() + 0.5f);
+    const bool headshot = (hit.point.y - m_pos.y) > m_hitCenterOff + m_hitHalfY * 0.5f;
+    const int  baseDmg  = headshot ? damage * 3 : damage;
+    const int shotDmg = (int)(baseDmg * incomingDamageMul() + 0.5f);
+    if (headshot) x3::logInfo("[monster] HEADSHOT! 3x damage");
     bool dead = applyDamage(&m_hp, shotDmg);
     m_flash = kHitFlashTime;
     r.hpAfter = m_hp;
@@ -681,13 +737,16 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             }
         } else if (los) {
             // Healthy + visible: engage. Choose Attack / Strafe / Advance by range.
-            const float band = m_ranged ? m_standoff : kAiStrafeBandLo;
-            if (!m_ranged && horiz <= m_attackRange * 1.05f) {
+            if (m_ranged) {
+                // RANGED (drone/flyer): hold the standoff ring and STAY AWAY. Strafe
+                // maintains range via its radial term — backing OUT when too close,
+                // easing IN when slightly far — so it never charges the player. Only
+                // Advance when very far (well past the ring) to close the initial gap.
+                want = (horiz > m_standoff + 4.0f && horiz > kAiStrafeBandHi)
+                           ? AiState::Advance : AiState::Strafe;
+            } else if (horiz <= m_attackRange * 1.05f) {
                 want = AiState::Attack;
-            } else if (m_ranged && std::fabs(horiz - m_standoff) <= 1.5f) {
-                // Drone in its standoff band: strafe + fire.
-                want = (horiz <= m_attackRange) ? AiState::Strafe : AiState::Advance;
-            } else if (horiz <= kAiStrafeBandHi && horiz >= band) {
+            } else if (horiz <= kAiStrafeBandHi && horiz >= kAiStrafeBandLo) {
                 want = (rng01(m_rng) < strafeBias) ? AiState::Strafe : AiState::Advance;
             } else {
                 want = AiState::Advance;
@@ -906,7 +965,8 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         } else {
             m_pos.x += mx * step;
             m_pos.z += mz * step;
-            physics.setBodyPosition(m_body, m_pos);
+            physics.setBodyPosition(m_body,
+                x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z });
         }
     }
 
@@ -982,10 +1042,15 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                     // Phase-scaled damage (Boss enrage hits harder; 1x otherwise).
                     const int dmg = effectiveDamage();
                     bool hit = target->takeDamage(dmg);
-                    if (hit)
+                    if (hit) {
                         x3::logInfo(std::string("[monster] ") +
                                     (m_ranged ? "drone ranged" : "melee") +
                                     " hit player for " + std::to_string(dmg));
+                        // Impact cue at the player so audio/FX can land a hit sound.
+                        emitCueOrLog(m_cueSink, GameCue{
+                            m_ranged ? CueKind::BulletImpact : CueKind::MeleeImpact,
+                            target->damageTargetPos(), 1.0f });
+                    }
                 }
             }
         }
@@ -1039,6 +1104,26 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         if (m_useLocoBlend) {
             m_skinner.setLocomotionSpeed(planarSpeed);
             m_skinner.applyLocomotion(m_model, *m_device, dt);
+
+            // ---- Footstep cues at locomotion phase crossings (foot plants). The
+            // shared phase wraps [0,1); a left/right step lands each time it crosses
+            // one of kFootstepsPerCycle evenly-spaced marks. We compare this frame's
+            // phase to last frame's and fire a cue per mark crossed (handles wrap +
+            // multi-mark steps in one frame). Gated on moving fast enough. ----
+            const float phase = m_skinner.locomotionPhase();
+            if (planarSpeed > kFootstepMinSpeed && kFootstepsPerCycle > 0) {
+                const float marks = (float)kFootstepsPerCycle;
+                int prevMark = (int)std::floor(m_lastFootPhase * marks);
+                int curMark  = (int)std::floor(phase * marks);
+                // Phase wrapped this frame (cur < prev): add a full cycle of marks.
+                if (phase < m_lastFootPhase) curMark += kFootstepsPerCycle;
+                for (int s = prevMark; s < curMark; ++s) {
+                    // Intensity scales with speed (faster -> louder/firmer step).
+                    const float inten = std::min(1.0f, 0.4f + 0.2f * planarSpeed);
+                    emitCueOrLog(m_cueSink, GameCue{ CueKind::Footstep, m_pos, inten });
+                }
+            }
+            m_lastFootPhase = phase;
         } else {
             // Legacy single-locomotion-clip path: switch idle/move on a threshold.
             const bool moving = (m_walkClip >= 0) && (planarSpeed > 0.25f);
@@ -1131,9 +1216,15 @@ uint32_t MonsterManager::spawn(Scene& scene, x3::rhi::IRenderDevice& device,
                                const MonsterSystem::Tuning& tuning) {
     auto m = std::make_unique<MonsterSystem>();
     m->buildMonsterTuned(scene, device, physics, modelDir, pos, tuning);
+    if (m_cueSink) m->setCueSink(m_cueSink);   // wire footstep/impact cues on new spawns
     uint32_t idx = (uint32_t)m_monsters.size();
     m_monsters.push_back(std::move(m));
     return idx;
+}
+
+void MonsterManager::setCueSink(const GameCueFn& sink) {
+    m_cueSink = sink;
+    for (auto& m : m_monsters) m->setCueSink(sink);   // apply to existing too
 }
 
 uint32_t MonsterManager::aliveCount() const {
@@ -1222,7 +1313,8 @@ void MonsterManager::drawAll(x3::rhi::IRenderDevice& device,
 }
 
 FireResult MonsterManager::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                                Scene& scene, x3::phys::IPhysicsWorld& physics) {
+                                Scene& scene, x3::phys::IPhysicsWorld& physics,
+                                int damage) {
     // Each MonsterSystem::fire() casts an Enemy-layer ray that returns the NEAREST
     // enemy body, but only applies damage if that body is its own. So the first
     // monster whose fire() reports a real monster hit is the one the ray actually
@@ -1231,7 +1323,7 @@ FireResult MonsterManager::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3&
     // keep the best non-monster result (a wall/miss tracer end) for FX.
     FireResult best;
     for (auto& m : m_monsters) {
-        FireResult r = m->fire(eye, dir, scene, physics);
+        FireResult r = m->fire(eye, dir, scene, physics, damage);
         if (r.hitMonster) return r;       // the nearest monster took the shot
         if (r.hit && !best.hit) best = r; // remember a geometry hit for the tracer
     }
@@ -2080,6 +2172,7 @@ std::vector<MonsterDef> buildMonsterDefs() {
     {
         MonsterSystem::Tuning t;
         t.type           = MonsterType::Drone;
+        t.flyer          = true;                            // ACTUAL flier (hovers, center-origin)
         t.hp             = 150;                             // bible: 150
         t.chaseSpeed     = 3.2f;                            // bible "Medium (flying)"
         t.damage         = combat::kRangedDamageDefault;    // 5 (plasma bolt)
@@ -2091,6 +2184,10 @@ std::vector<MonsterDef> buildMonsterDefs() {
         t.aiStrafeBias   = 0.60f;                           // flanks/coordinates (drone-ish)
         t.tint[0]=0.45f; t.tint[1]=0.65f; t.tint[2]=1.0f;   // synthetic blue
         const bool realSynth = defBlueSynth(t, 1.0f);
+        // The fallback Drone.glb is authored UPRIGHT (Y-up), NOT lying-flat like the
+        // human characters — applying the Z->Y stand-up tipped it onto its side
+        // ("sideways" drone). Force it off; rigged synths are Y-up too.
+        t.standUpZtoY = false;
         x3::logInfo(std::string("[bestiary] BlueSynth model: ") +
                     (realSynth ? "rigged blue_synth GLB" : "fallback Drone.glb (blue tint)"));
         defs.push_back({ EnemyType::BlueSynth, "BlueSynth", t });
@@ -2304,10 +2401,11 @@ void MultiPodBoss::drawAll(x3::rhi::IRenderDevice& device, const x3::rhi::FrameC
 }
 
 FireResult MultiPodBoss::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                              Scene& scene, x3::phys::IPhysicsWorld& physics) {
+                              Scene& scene, x3::phys::IPhysicsWorld& physics,
+                              int damage) {
     FireResult best;
     for (auto& p : m_pods) {
-        FireResult r = p->fire(eye, dir, scene, physics);
+        FireResult r = p->fire(eye, dir, scene, physics, damage);
         if (r.hitMonster) return r;   // a pod took the shot; at most one per call
         if (r.hit && !best.hit) best = r;  // remember a wall hit for the tracer
     }

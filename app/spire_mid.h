@@ -146,7 +146,8 @@ public:
     // works on the mid floors too. Returns the result for FX/HUD. No arm-gate here
     // (the host owns the WeaponSystem::hasWeapon() gate, as it does for Level1Game).
     FireResult onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                      Scene& scene, x3::phys::IPhysicsWorld& physics);
+                      Scene& scene, x3::phys::IPhysicsWorld& physics,
+                      int damage = kDamagePerShot);
 
     // Draw all mid-floor enemies + the floor bosses + the F5 victim/boss (host calls
     // in its draw block).
