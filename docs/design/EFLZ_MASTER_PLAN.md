@@ -73,10 +73,10 @@ Locked 60+ FPS / zero-stutter; movement feel (coyote time, jump buffer, air cont
 ---
 
 ## OPEN RECONCILIATION DECISIONS (need Tim's confirmation before the Act-1 rebuild)
-1. **Faction/enemy canon names.** The engine roster (`monster.h`) is 4 generic stand-ins — **DominionTrooper / Verthani / Illuminated / BlueSynth** — exercising 4 AI shapes. The bible canon is the **Overlord** empire + lab security/scientists + the **Infected** line + **drones** + **Salvari** (+ Void Pirates, Collaborators, fauna). Proposal: adopt the bible canon and **map the 4 stand-ins** onto real species (e.g. keep them as the in-engine AI archetypes but rename to canon: lab Security Guard / Infected Stage-1 / Elite Guard / Combat Drone), then add the missing species + the 5 mid-bosses as new data rows. **Confirm the canon faction list + whether to rename or keep "Dominion/Verthani/Illuminated" as the Overlord's subject races.**
+1. **Faction/enemy canon names — ✅ RESOLVED (Tim, 2026-05-22): KEEP.** Turns out **Dominion / Verthani / Illuminated / Salvari are real bible factions** (TASK_6 bestiary, 78 mentions; defined in `MASTER_GAME_PLAN.md`): Dominion = multi-armed greys who built Lab Zero / run the breeding program; Verthani = insectoid warriors; Illuminated = energy-being elite; Salvari = refugee allies — all under the **Overlord** hive. `BlueSynth` is the engine's synth/drone term. The engine roster keeps these names; the work is adding per-faction enemy *variety* + the bosses as new `MonsterDef` rows (not renaming).
 2. **"The Mirror" placement.** Old plan made it the Act-2 climax (web-game ending homage); the bible's L48 is the Overlord Mothership. Proposal: keep the Mirror as an Act-2 **set-piece room** (homage), put the Mothership at **L100**. Confirm, or keep a literal "Level 48 Mirror."
 3. **Per-act level counts (to total 100).** Proposed split — Act 1 ~12 (+hidden), Act 2 ~27 (L9–35), Act 3 ~40 (L36–75, the space expansion), Act 4 ~25 (L76–100). Confirm or reweight (esp. how big the space act should be).
-4. **Martinez floor.** Engine + merged narrative = **Floor 1** (used here); one source floats him to F2. Confirm F1.
+4. **Martinez floor — ✅ RESOLVED (Tim, 2026-05-22): Floor 1.** Locked.
 
 ## Build order (engine/13700K lane, off current `main`)
 **Phase A — bring Act 1 to canon (highest value; partially built):**
