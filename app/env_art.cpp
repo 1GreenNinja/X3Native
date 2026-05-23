@@ -409,9 +409,11 @@ void EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
     // hard far distance — but always keep very-near props (peripheral vision). The cone
     // is wider than the real frustum so nothing visible pops. camEye==nullptr => draw
     // all (headless / screenshot paths).
-    constexpr float kFarCull2  = 75.0f * 75.0f;  // hard far cutoff (m^2)
-    constexpr float kNearKeep2 = 6.0f  * 6.0f;   // always draw within 6 m (peripheral)
-    constexpr float kConeCos   = 0.40f;          // keep within ~66 deg of forward
+    // NOTE: perf is handled by the sim substep cap (main.cpp dt clamp), so this cull is
+    // gentle on purpose — behind-only + far — to avoid popping walls at the screen edge.
+    constexpr float kFarCull2  = 110.0f * 110.0f; // hard far cutoff (m^2)
+    constexpr float kNearKeep2 = 12.0f  * 12.0f;  // always draw within 12 m (peripheral)
+    constexpr float kConeCos   = -0.35f;          // only cull what's clearly BEHIND (~110 deg)
     for (const EnvInstance& inst : m_instances) {
         if (camEye) {
             const float vx = inst.transform[12] - camEye[0];
