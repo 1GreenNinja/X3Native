@@ -4175,6 +4175,37 @@ int main(int argc, char** argv) {
                 const bool drawTop = (cullEye[1] > Lbd.floorBaseY[6] - 6.0f && cullEye[1] < Lbd.floorBaseY[7] + 7.0f);
                 if (drawMid) { midFloors.drawDoors(*device, frame); midFloors.draw(*device, frame, scene); }
                 if (drawTop) { topFloors.drawDoors(*device, frame); topFloors.draw(*device, frame, scene); }
+                // ---- Monster HEALTH BARS — shiny, world-anchored, shown when DAMAGED
+                // (so they also prove a shot landed: no bar appears => the shot missed). --
+                {
+                    auto hpBar = [&](const x3::phys::Vec3& head, int hpv, int mx, float flash) {
+                        if (mx <= 0 || hpv >= mx || hpv <= 0) return;   // only living + damaged
+                        float sx = 0.0f, sy = 0.0f;
+                        if (!device->worldToScreen(head.x, head.y, head.z, sx, sy)) return;
+                        const float frac = (float)hpv / (float)mx;
+                        const float bw = 70.0f, bh = 8.0f, x0 = sx - bw * 0.5f, y0 = sy;
+                        const float frameC[4] = { 0.90f, 0.95f, 1.00f, 0.95f };   // bright frame (shiny)
+                        const float backC[4]  = { 0.04f, 0.05f, 0.08f, 0.85f };   // dark bg
+                        const float rr = (frac > 0.5f) ? (2.0f - frac * 2.0f) : 1.0f;  // green->yellow->red
+                        const float gg = (frac > 0.5f) ? 1.0f : (frac * 2.0f);
+                        const float fillC[4]  = { std::min(1.0f, rr + flash), gg, 0.10f, 1.0f };
+                        const float shineC[4] = { 1.0f, 1.0f, 1.0f, 0.40f };       // top highlight
+                        device->drawHudQuad(frame, x0 - 1.5f, y0 - 1.5f, bw + 3.0f, bh + 3.0f, frameC);
+                        device->drawHudQuad(frame, x0, y0, bw, bh, backC);
+                        device->drawHudQuad(frame, x0, y0, bw * frac, bh, fillC);
+                        device->drawHudQuad(frame, x0, y0, bw * frac, 2.5f, shineC);
+                    };
+                    auto barsFor = [&](x3::game::MonsterManager& mm) {
+                        for (uint32_t i = 0; i < mm.count(); ++i) {
+                            x3::game::MonsterSystem& m = mm.at(i);
+                            if (!m.alive()) continue;
+                            x3::phys::Vec3 p = m.pos(); p.y += 2.2f;   // above the head
+                            hpBar(p, m.hp(), m.maxHp(), m.hitFlash());
+                        }
+                    };
+                    barsFor(game.corridorEnemies());
+                    barsFor(game.checkpointEnemies());
+                }
                 const VmPose vmPose = readViewmodelPose(*console);
                 // Recoil back-push: pull the viewmodel toward the player along the
                 // look dir by the current kick (decays to 0). Subtract from the

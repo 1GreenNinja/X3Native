@@ -367,9 +367,13 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
     if (e.tag != (uint32_t)Tag::Monster) return r; // hit something that isn't a monster
     if (ent != m_entity) return r;                 // (multi-monster: not this one)
 
-    // ---- Hit a live monster: apply damage + start the red hit-flash. ----
+    // ---- Hit a live monster: apply damage + start the red hit-flash. HEADSHOT (hit in
+    // the upper part of the body box) deals 3x. ----
     r.hitMonster = true;
-    bool dead = applyDamage(&m_hp, kDamagePerShot);
+    const bool headshot = (hit.point.y - m_pos.y) > kMonsterHalf.y * 0.45f;
+    const int  shotDmg  = headshot ? kDamagePerShot * 3 : kDamagePerShot;
+    if (headshot) x3::logInfo("[monster] HEADSHOT! 3x damage");
+    bool dead = applyDamage(&m_hp, shotDmg);
     m_flash = kHitFlashTime;
     r.hpAfter = m_hp;
     // D-ai: remember recent damage so the state machine can flinch/retreat.
