@@ -34,6 +34,7 @@
 #include "level1_game.h"
 #include "spire_mid.h"                      // EFLZ Spire F3/F4/F5 mid-floor content
 #include "spire_top.h"                      // EFLZ Spire F6/F7 top-floor content (Act-1 finale)
+#include "spire_nexus.h"                    // EFLZ Floor 4.5 Nexus Chamber / The Chorus (off-elevator boss)
 #include "elevator.h"
 #include "club1127.h"
 #include "terrain.h"
@@ -514,6 +515,8 @@ int main(int argc, char** argv) {
     bool        testSaveLoad = false;
     // --test-spiremid (Spire mid-floor content): F3/F4/F5 encounter authoring. Additive.
     bool        testSpireMid = false;
+    // --test-nexus (Floor 4.5 Nexus / The Chorus): off-elevator multi-pod boss. Additive.
+    bool        testNexus = false;
     // --test-debris (K-T2 GPU-compute debris): spawn a burst, step the compute sim
     // through the live headless device, assert fall+settle+expiry+no-leak. Additive.
     bool        testDebris = false;
@@ -683,6 +686,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-bestiary") testBestiary = true;
         else if (a == "--test-bosses") testBosses = true;
         else if (a == "--test-spiremid") testSpireMid = true;
+        else if (a == "--test-nexus") testNexus = true;
         else if (a == "--test-spiretop") testSpireTop = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
@@ -943,6 +947,11 @@ int main(int argc, char** argv) {
         x3::logInfo("running EFLZ Spire mid-floor (F3 Labs / F4 Offices / F5 Synth bay) "
                     "encounter-content self-test...");
         return x3::game::runSpireMidSelfTest() ? 0 : 1;
+    }
+    if (testNexus) {
+        x3::logInfo("running EFLZ Floor 4.5 Nexus Chamber / The Chorus "
+                    "(off-elevator multi-pod boss) self-test...");
+        return x3::game::runNexusSelfTest() ? 0 : 1;
     }
     if (testSpireTop) {
         x3::logInfo("running EFLZ Spire top-floor (F6 Executive / F7 Rooftop Act-1 finale) "
@@ -2828,6 +2837,15 @@ int main(int argc, char** argv) {
     // Sarah's clock). Level 1 only, reached via the top elevator stops. ----
     x3::game::SpireTopFloors topFloors;
     x3::game::TriggerSystem  topTriggers;
+    // ---- Floor 4.5 — the NEXUS CHAMBER / The Chorus (off-elevator boss). A discrete
+    // half-step arena hung OFF the elevator spine between the F4 and F5 plates (NOT a
+    // numbered elevator stop). It stages the Wave-1 multi-pod boss (MultiPodBoss +
+    // chorusConfig: 5 fused minds, save up to 4). It is NOT armed at load: an F4->F5
+    // CONNECTOR trigger (registered DISABLED) "discovers" the Nexus and arms the
+    // Chorus (mirror of how the F5 hub gates the rescue clock). Its hub id dispatches
+    // through its own TriggerSystem back to nexus.onTrigger(). Level 1 only. ----
+    x3::game::SpireNexus    nexus;
+    x3::game::TriggerSystem nexusTriggers;
     if (!terrainWorld) {
         game.build(scene, *device, *physics, x3::game::riggedGlbRoot());
         // Audio hookups for Level 1 events (§9, nice-to-have; silent if no device).
@@ -2859,6 +2877,15 @@ int main(int argc, char** argv) {
         // F7 the Clone boss + Sarah rescue). Reached via the elevator's top stops.
         topFloors.build(scene, *device, *physics, Lb, topTriggers,
                         x3::game::riggedGlbRoot());
+
+        // Stage the off-elevator Floor 4.5 NEXUS (The Chorus). The connector trigger
+        // is added DISABLED inside build() — the encounter is found later on the
+        // F4->F5 path, not armed at load. The host enables that connector once the
+        // F4->F5 progression opens (e.g. on reaching the F4 hub); until then the
+        // Chorus is inert. We open the connector when the player has cleared past F4
+        // (the F4 hub fires) so the Nexus becomes discoverable on the way to F5.
+        nexus.build(scene, *device, *physics, Lb, nexusTriggers,
+                    x3::game::riggedGlbRoot());
     }
     const x3::game::Level1Layout& L1 = game.layout();
 
@@ -3105,6 +3132,8 @@ int main(int argc, char** argv) {
                 midFloors.tick(dt, scene, *physics, camEye, camEye, nullptr, x3::game::AttackFxFn{});
                 for (uint32_t tid : topTriggers.update(camEye)) topFloors.onTrigger(tid);
                 topFloors.tick(dt, scene, *physics, camEye, camEye, nullptr, x3::game::AttackFxFn{});
+                for (uint32_t tid : nexusTriggers.update(camEye)) nexus.onTrigger(tid);
+                nexus.tick(dt, scene, *physics, camEye, nullptr, x3::game::AttackFxFn{});
                 physics->step(dt);
                 scene.update(*physics);
                 // Re-pose + re-light each frame (scene.update() doesn't move the camera,
@@ -3120,6 +3149,7 @@ int main(int argc, char** argv) {
                     midFloors.draw(*device, frame, scene);
                     topFloors.drawDoors(*device, frame);
                     topFloors.draw(*device, frame, scene);
+                    nexus.draw(*device, frame, scene);            // Floor 4.5 Chorus pods
                     // Production HUD over the vantage (HP / weapon / objective / crosshair).
                     x3::ui::UiContext capUi;
                     capUi.begin(*device, frame, x3::ui::UiInput{});
@@ -3307,6 +3337,9 @@ int main(int argc, char** argv) {
             // + gated Sarah rescue) so the screenshot/smoketest paths exercise them.
             for (uint32_t tid : topTriggers.update(ssEye)) topFloors.onTrigger(tid);
             topFloors.tick(dt, scene, *physics, ssEye, ssEye, nullptr, x3::game::AttackFxFn{});
+            // Floor 4.5 Nexus (gated; inert until its connector discovers it).
+            for (uint32_t tid : nexusTriggers.update(ssEye)) nexus.onTrigger(tid);
+            nexus.tick(dt, scene, *physics, ssEye, nullptr, x3::game::AttackFxFn{});
             physics->step(dt);
             scene.update(*physics);
             // FX demo: with a SMALL settle (<=30) spawn a fresh muzzle + impact burst
@@ -3334,6 +3367,7 @@ int main(int argc, char** argv) {
                 midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
                 topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
                 topFloors.draw(*device, frame, scene);        // F6/F7 enemies + Clone boss + Sarah
+                nexus.draw(*device, frame, scene);            // Floor 4.5 Chorus pods
                 if (fxDemo) {
                     combatFx.draw(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch);
                     combatFx.submit(*device, frame);
@@ -3465,6 +3499,9 @@ int main(int argc, char** argv) {
             // Spire top floors (F6/F7 finale) under validation too.
             for (uint32_t tid : topTriggers.update(eye)) topFloors.onTrigger(tid);
             topFloors.tick(dt, scene, *physics, eye, eye, nullptr, x3::game::AttackFxFn{});
+            // Floor 4.5 Nexus (gated; inert until discovered) under validation.
+            for (uint32_t tid : nexusTriggers.update(eye)) nexus.onTrigger(tid);
+            nexus.tick(dt, scene, *physics, eye, nullptr, x3::game::AttackFxFn{});
             physics->step(dt);
             scene.update(*physics);
             audio->update(dt);
@@ -3517,6 +3554,7 @@ int main(int argc, char** argv) {
                 midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
                 topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
                 topFloors.draw(*device, frame, scene);        // F6/F7 enemies + Clone boss + Sarah
+                nexus.draw(*device, frame, scene);            // Floor 4.5 Chorus pods
                 const VmPose vmPose = readViewmodelPose(*console);
                 // WEAPONS: draw the SELECTED weapon's viewmodel via the arsenal so the
                 // per-weapon GLB draw path is exercised under Debug validation; fall
@@ -3833,6 +3871,9 @@ int main(int argc, char** argv) {
                 x3::logInfo("use: F5 captive rescued — now a companion");
             } else if (topFloors.onRescue(eye)) {  // F7 rooftop captive (Sarah) rescue
                 x3::logInfo("use: F7 captive 'Sarah' rescued — now a companion");
+            } else if (nexus.onInteract(eye, scene, *physics)) {  // Floor 4.5: SPARE a Chorus voice
+                x3::logInfo("use: Chorus voice SPARED (save up to 4) — saved=" +
+                            std::to_string(nexus.savedCount()));
             } else if (!codeMode && (game.nearLockedCodedDoor(eye) ||
                                      midFloors.nearLockedCodedDoor(eye) ||
                                      topFloors.nearLockedCodedDoor(eye))) {
@@ -4031,13 +4072,24 @@ int main(int argc, char** argv) {
             game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
             // Spire mid floors (F3/F4/F5): dispatch their floor-hub triggers (the F5
             // hub starts the rescue clock) then tick their enemy groups + gated victim.
-            for (uint32_t tid : midTriggers.update(camPos)) midFloors.onTrigger(tid);
+            // Reaching the F4 hub OPENS the F4->F5 connector that "finds" the off-
+            // elevator Floor 4.5 Nexus (the encounter is discoverable only once the
+            // player has worked past F4 — never at load).
+            for (uint32_t tid : midTriggers.update(camPos)) {
+                midFloors.onTrigger(tid);
+                if (tid == (uint32_t)x3::game::SpireMidTrigger::F4Hub)
+                    nexusTriggers.setEnabled((uint32_t)x3::game::NexusTrigger::Connector, true);
+            }
             midFloors.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
             // Spire top floors (F6/F7 Act-1 finale): dispatch their hub triggers (the F7
             // hub starts Sarah's rescue clock) then tick the enemy groups + Clone boss +
             // gated victim.
             for (uint32_t tid : topTriggers.update(camPos)) topFloors.onTrigger(tid);
             topFloors.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
+            // Floor 4.5 Nexus / The Chorus: dispatch its connector (which discovers +
+            // arms the Chorus) then tick the multi-pod boss (inert until armed).
+            for (uint32_t tid : nexusTriggers.update(camPos)) nexus.onTrigger(tid);
+            nexus.tick(dt, scene, *physics, camPos, &player, enemyAttackFx);
         }
 
         // ---- Phase 2a: death -> respawn. The player enters the death state at
@@ -4157,6 +4209,12 @@ int main(int argc, char** argv) {
                         x3::game::FireResult rt = topFloors.onFire(eye, ray.dir, scene, *physics);
                         if (rt.hitMonster || (!r.hit && rt.hit)) r = rt;
                     }
+                    // Then the Floor 4.5 Chorus pods (no-op until the Nexus is armed; a
+                    // pod killed this way counts as KILLED, not saved).
+                    if (!r.hitMonster && game.armed()) {
+                        x3::game::FireResult rn = nexus.onFire(eye, ray.dir, scene, *physics);
+                        if (rn.hitMonster || (!r.hit && rn.hit)) r = rn;
+                    }
                     combatFx.addTracer(muzzle, r.endPoint);   // tracer + muzzle burst per pellet
                     if (r.killed) { combatFx.spawnDeath(r.endPoint); anyKill = true; }
                     else if (r.hitMonster) { combatFx.spawnBlood(r.hitPoint, ray.dir); anyHit = true; lastHp = r.hpAfter; }
@@ -4197,6 +4255,10 @@ int main(int argc, char** argv) {
                     if (!r.hitMonster) {   // then the F6/F7 enemies + the Clone boss
                         x3::game::FireResult rt = topFloors.onFire(b.pos, ndir, scene, *physics);
                         if (rt.hitMonster) r = rt;
+                    }
+                    if (!r.hitMonster) {   // then the Floor 4.5 Chorus pods (if armed)
+                        x3::game::FireResult rn = nexus.onFire(b.pos, ndir, scene, *physics);
+                        if (rn.hitMonster) r = rn;
                     }
                     combatFx.addTracer(b.pos, eh.point);
                     if (r.killed) { combatFx.spawnDeath(eh.point);
@@ -4246,6 +4308,7 @@ int main(int argc, char** argv) {
                 midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
                 topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
                 topFloors.draw(*device, frame, scene);        // F6/F7 enemies + Clone boss + Sarah
+                nexus.draw(*device, frame, scene);            // Floor 4.5 Chorus pods
                 const VmPose vmPose = readViewmodelPose(*console);
                 if (arsenal.viewmodelsLoaded() && game.armed()) {
                     // WEAPONS: draw the SELECTED weapon's viewmodel (its own GLB +
