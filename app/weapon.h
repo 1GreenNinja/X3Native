@@ -57,7 +57,7 @@ constexpr float kVmDefYawDeg   = 193.0f; // yaw about camera up (degrees) — ba
 constexpr float kVmDefPitchDeg = 7.0f;   // pitch about camera right (degrees) (Tim-tuned)
 constexpr float kVmDefRollDeg  = 0.0f;   // roll about camera forward (degrees)
 constexpr float kVmDefFwd      = 1.0f;   // forward along look dir (meters) (Tim-tuned)
-constexpr float kVmDefRight    = 0.14f;  // to the right (meters) (Tim-tuned)
+constexpr float kVmDefRight    = 0.25f;  // to the right (meters) (Tim-tuned; more-right pass)
 constexpr float kVmDefDown     = 0.35f;  // below the eye line (meters) (Tim-tuned)
 
 // ---------------------------------------------------------------------------
@@ -374,6 +374,12 @@ public:
     // reaches 0 in tick().
     bool reload();
     bool isReloading() const { return currentState().reloadTimer > 0.0f; }
+
+    // IDKFA infinite ammo: when set, fire() never depletes the mag and canFire()
+    // ignores an empty mag (the fire-rate cooldown still applies). Console cheat.
+    void setInfiniteAmmo(bool b) { m_infiniteAmmo = b; }
+    bool infiniteAmmo() const { return m_infiniteAmmo; }
+    bool m_infiniteAmmo = false;   // IDKFA infinite-ammo flag
 
     // Advance the per-weapon timers by dt: decay the current weapon's fire cooldown
     // and, if reloading, the reload timer (completing the reload — moving rounds

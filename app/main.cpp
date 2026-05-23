@@ -100,7 +100,10 @@ x3::phys::Vec3 muzzleFromCamera(float ex, float ey, float ez, float yaw, float p
         right.z * forward.x - right.x * forward.z,
         right.x * forward.y - right.y * forward.x };
     // Muzzle offset (m) in the camera basis: a bit forward, a bit right + down.
-    const float mFwd = 0.6f, mRight = 0.18f, mDown = 0.12f;
+    // Matched to the Tim-tuned viewmodel pose (vm_right 0.25 / vm_down 0.35, gun body
+    // ~1.0 m forward) + the barrel tip a bit further forward, so tracers + muzzle flash
+    // visibly originate from the held gun rather than screen-center.
+    const float mFwd = 1.4f, mRight = 0.25f, mDown = 0.28f;
     return x3::phys::Vec3{
         ex + forward.x * mFwd + right.x * mRight - up.x * mDown,
         ey + forward.y * mFwd + right.y * mRight - up.y * mDown,
@@ -3426,14 +3429,14 @@ int main(int argc, char** argv) {
         player.setGod(on); if (on) player.heal();
         console->print(std::string("god = ") + (on ? "1" : "0"));
     }, "god [0|1] - toggle/set invulnerability");
-    console->registerCommand("idkfa", [&player, &game, &scene, &console](const std::vector<std::string>&) {
-        player.setGod(true); player.heal(); game.cheatArm(scene);
-        console->print("IDKFA - god + full health + all weapons armed");
-    }, "god + full health + all weapons");
-    console->registerCommand("idfa", [&game, &scene, &console](const std::vector<std::string>&) {
-        game.cheatArm(scene);
-        console->print("IDFA - all weapons armed");
-    }, "arm all weapons");
+    console->registerCommand("idkfa", [&player, &game, &scene, &arsenal, &console](const std::vector<std::string>&) {
+        player.setGod(true); player.heal(); game.cheatArm(scene); arsenal.setInfiniteAmmo(true);
+        console->print("IDKFA - god + full health + all weapons + UNLIMITED ammo");
+    }, "god + full health + all weapons + unlimited ammo");
+    console->registerCommand("idfa", [&game, &scene, &arsenal, &console](const std::vector<std::string>&) {
+        game.cheatArm(scene); arsenal.setInfiniteAmmo(true);
+        console->print("IDFA - all weapons + unlimited ammo");
+    }, "arm all weapons + unlimited ammo");
 
     // ---- S7: route keyboard text + editing into the on-screen console. The
     // char callback feeds printable codepoints; the key callback handles the
@@ -3993,6 +3996,7 @@ int main(int argc, char** argv) {
             } else {
                 // ---- Hitscan weapon (pistol/SMG/shotgun): one onFire per pellet. ----
                 bool anyKill = false, anyHit = false; int lastHp = 0;
+                combatFx.spawnMuzzleFlash(muzzle, dir);   // flash at the gun barrel (hitscan)
                 for (const auto& ray : shot.rays) {
                     x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics);
                     // If the B1 groups didn't take it, try the F3/F4/F5 enemies (the

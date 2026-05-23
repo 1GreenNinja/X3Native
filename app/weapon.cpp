@@ -559,7 +559,7 @@ bool Arsenal::canFire() const {
     const WeaponState& s = m_state[(size_t)m_sel];
     if (s.reloadTimer > 0.0f) return false;   // mid-reload: can't fire
     if (s.cooldown    > 0.0f) return false;   // fire-rate gate
-    if (s.ammoInMag  <= 0)    return false;   // empty mag
+    if (s.ammoInMag  <= 0 && !m_infiniteAmmo) return false;   // empty mag (IDKFA bypasses)
     return true;
 }
 
@@ -571,7 +571,7 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
     WeaponState&      s = m_state[(size_t)m_sel];
 
     // Consume a round, arm the fire-rate cooldown, apply recoil.
-    s.ammoInMag -= 1;
+    if (!m_infiniteAmmo) s.ammoInMag -= 1;   // IDKFA: never deplete
     s.cooldown   = (d.fireRate > 0.0f) ? (1.0f / d.fireRate) : 0.0f;
     out.fired    = true;
     out.recoilPitchDeg = d.recoilDeg;
