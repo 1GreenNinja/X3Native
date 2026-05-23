@@ -4175,34 +4175,67 @@ int main(int argc, char** argv) {
                 const bool drawTop = (cullEye[1] > Lbd.floorBaseY[6] - 6.0f && cullEye[1] < Lbd.floorBaseY[7] + 7.0f);
                 if (drawMid) { midFloors.drawDoors(*device, frame); midFloors.draw(*device, frame, scene); }
                 if (drawTop) { topFloors.drawDoors(*device, frame); topFloors.draw(*device, frame, scene); }
-                // ---- Monster HEALTH BARS — shiny, world-anchored, shown when DAMAGED
-                // (so they also prove a shot landed: no bar appears => the shot missed). --
+                // ---- Monster HEALTH BARS — shiny metallic, world-anchored, with a
+                // sweeping specular sheen (shimmer). LOS-culled so a bar NEVER shows
+                // through a wall. Above every living enemy; flares white on a fresh hit
+                // and warms toward red as HP drops (length still reads the exact value). --
                 {
+                    const double barT = glfwGetTime();
                     auto hpBar = [&](const x3::phys::Vec3& head, int hpv, int mx, float flash) {
-                        if (mx <= 0 || hpv <= 0) return;   // show for ALL living enemies (drops as hit)
+                        if (mx <= 0 || hpv <= 0) return;   // living enemies only
                         float sx = 0.0f, sy = 0.0f;
-                        if (!device->worldToScreen(head.x, head.y, head.z, sx, sy)) return;
-                        const float frac = (float)hpv / (float)mx;
+                        if (!device->worldToScreen(head.x, head.y, head.z, sx, sy)) return;  // behind camera
+                        const float frac = (hpv >= mx) ? 1.0f : (float)hpv / (float)mx;
                         uint32_t hw=0, hh=0; device->hudSize(hw, hh);
-                        const float bw = 70.0f, bh = 8.0f, x0 = sx - bw * 0.5f;
+                        const float bw = 64.0f, bh = 7.0f, x0 = sx - bw * 0.5f;
                         float y0 = sy; if (y0 < 14.0f) y0 = 14.0f;            // clamp on-screen (close enemies)
                         if (hh > 30 && y0 > (float)hh - 30.0f) y0 = (float)hh - 30.0f;
-                        const float frameC[4] = { 0.90f, 0.95f, 1.00f, 0.95f };   // bright frame (shiny)
-                        const float backC[4]  = { 0.04f, 0.05f, 0.08f, 0.85f };   // dark bg
-                        // Silver/white fill (flares hot-white briefly on a fresh hit).
-                        const float fillC[4]  = { 0.82f + 0.18f * flash, 0.85f, 0.92f, 1.0f };
-                        const float shineC[4] = { 1.0f, 1.0f, 1.0f, 0.55f };       // bright top highlight
+                        const float lowH = 1.0f - frac;                       // 0 healthy -> 1 dying
+                        // Per-bar phase from world X so bars don't pulse/shimmer in lockstep.
+                        const float ph    = head.x * 0.7f;
+                        const float pulse = 0.86f + 0.14f * (float)std::sin(barT * 3.2 + ph);
+                        const float outl[4]   = { 0.00f, 0.00f, 0.00f, 0.65f };                       // black definition outline
+                        const float frameC[4] = { 0.78f*pulse, 0.86f*pulse, 1.00f*pulse, 0.95f };      // breathing steel frame
+                        const float backC[4]  = { 0.04f, 0.05f, 0.08f, 0.85f };                        // dark inset bg
+                        // Metallic fill: darker base + lighter top band fakes a vertical
+                        // gradient; warms toward red at low HP; flares white on a hit.
+                        const float baseC[4]  = { 0.52f + 0.30f*lowH + 0.18f*flash, 0.55f - 0.20f*lowH, 0.62f - 0.30f*lowH, 1.0f };
+                        const float topC[4]   = { 0.90f + 0.10f*flash,              0.92f - 0.30f*lowH, 0.98f - 0.45f*lowH, 1.0f };
+                        const float fillW = bw * frac;
+                        device->drawHudQuad(frame, x0 - 2.0f, y0 - 2.0f, bw + 4.0f, bh + 4.0f, outl);
                         device->drawHudQuad(frame, x0 - 1.5f, y0 - 1.5f, bw + 3.0f, bh + 3.0f, frameC);
                         device->drawHudQuad(frame, x0, y0, bw, bh, backC);
-                        device->drawHudQuad(frame, x0, y0, bw * frac, bh, fillC);
-                        device->drawHudQuad(frame, x0, y0, bw * frac, 2.5f, shineC);
+                        device->drawHudQuad(frame, x0, y0, fillW, bh, baseC);            // body
+                        device->drawHudQuad(frame, x0, y0, fillW, bh * 0.45f, topC);     // top sheen band
+                        // Sweeping specular sliver = the "shimmer", looping across the fill.
+                        if (fillW > 6.0f) {
+                            const float sw = 7.0f;
+                            const float swp = (float)std::fmod(barT * 0.55 + head.x * 0.05, 1.0);
+                            float sxx = x0 + swp * fillW - sw * 0.5f;
+                            if (sxx < x0)              sxx = x0;
+                            if (sxx > x0 + fillW - sw) sxx = x0 + fillW - sw;
+                            const float sheen[4] = { 1.0f, 1.0f, 1.0f, 0.40f };
+                            device->drawHudQuad(frame, sxx, y0, sw, bh, sheen);
+                        }
                     };
                     auto barsFor = [&](x3::game::MonsterManager& mm) {
+                        const x3::phys::Vec3 eye{ cullEye[0], cullEye[1], cullEye[2] };
                         for (uint32_t i = 0; i < mm.count(); ++i) {
                             x3::game::MonsterSystem& m = mm.at(i);
                             if (!m.alive()) continue;
-                            x3::phys::Vec3 p = m.pos(); p.y += 2.2f;   // above the head
-                            hpBar(p, m.hp(), m.maxHp(), m.hitFlash());
+                            x3::phys::Vec3 c = m.pos();
+                            // LOS cull: skip the bar if a static wall sits between the
+                            // camera and the enemy's chest (no more bars through walls).
+                            const x3::phys::Vec3 chest{ c.x, c.y + 1.0f, c.z };
+                            const x3::phys::Vec3 d{ chest.x - eye.x, chest.y - eye.y, chest.z - eye.z };
+                            const float dist = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
+                            if (dist > 0.001f) {
+                                const x3::phys::Vec3 nd{ d.x/dist, d.y/dist, d.z/dist };
+                                const x3::phys::RayHit los = physics->rayCast(eye, nd, dist - 0.3f, x3::phys::Layer::Static);
+                                if (los.hit) continue;   // wall in the way -> hidden
+                            }
+                            c.y += 2.2f;                 // anchor above the head
+                            hpBar(c, m.hp(), m.maxHp(), m.hitFlash());
                         }
                     };
                     barsFor(game.corridorEnemies());
