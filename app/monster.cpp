@@ -169,11 +169,13 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     m_ranged         = tuning.ranged;
     m_standoff       = tuning.standoff;
     m_aiStrafeBias   = tuning.aiStrafeBias;     // <0 => use the MonsterType default
+    m_flyer          = tuning.flyer;            // hovering, center-origin enemy
 
-    // ---- Flyers (drones) HOVER: lift the spawn position off the floor so the model
-    // floats in the air instead of walking the ground. The AI only moves in x/z
-    // (m_pos.y is never touched), so this hover holds for the enemy's whole life.
-    if (m_type == MonsterType::Drone) m_pos.y += kDroneHoverY;
+    // ---- Flyers HOVER: lift the spawn position off the floor so the model floats
+    // in the air instead of walking the ground. The AI only moves in x/z (m_pos.y
+    // is never touched), so this hover holds for the enemy's whole life. Keyed on
+    // m_flyer, NOT type==Drone (that type is also used by GROUND elites).
+    if (m_flyer) m_pos.y += kDroneHoverY;
     m_atkTimer       = tuning.attackCooldown;  // small initial delay before first hit
     m_windupTimer    = 0.0f;
     m_winding        = false;
@@ -327,14 +329,24 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     // drone's box centered on m_pos (its model origin IS its center).
     {
         const float hs = (m_modelScale > 0.1f) ? m_modelScale : 1.0f;
-        if (m_type == MonsterType::Drone) {
-            m_hitHalfY     = 0.95f * hs;   // hovering flyer: centered box (unchanged)
+        if (m_flyer) {
+            // Hovering flyer (Drone.glb): model origin is its CENTER -> centered box.
+            m_hitHalfY     = 0.95f * hs;
             m_hitCenterOff = 0.0f;
         } else {
-            m_hitHalfY     = 1.00f * hs;   // ~2.0 m standing body box...
-            m_hitCenterOff = m_hitHalfY;   // ...sitting on the floor, rising to the head
+            // GROUND enemy: a GENEROUS box from a little below the origin up to well
+            // above it, so it covers the visible body whether the model's origin is
+            // at the FEET (humanoids) or the CENTER (low insectoid "beasts"). The old
+            // box assumed feet-origin and sat above a center-origin crawler's body,
+            // making it impossible to hit. std::max keeps small-scaled models hittable.
+            const float sc     = std::max(hs, 0.8f);
+            const float topY   = 2.0f * sc;          // reach the head of a tall model
+            const float skirt  = 0.4f;               // dip below the origin (low crawlers)
+            m_hitHalfY     = (topY + skirt) * 0.5f;
+            m_hitCenterOff = m_hitHalfY - skirt;     // box bottom = origin - skirt
         }
-        const x3::phys::Vec3 hitHalf{ 0.60f * hs, m_hitHalfY, 0.60f * hs };
+        const float hw = 0.60f * std::max(hs, 0.8f);
+        const x3::phys::Vec3 hitHalf{ hw, m_hitHalfY, hw };
         const x3::phys::Vec3 center{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z };
         m_body = physics.addBox(hitHalf, center, 0.0f, x3::phys::Layer::Enemy);
     }
@@ -2139,6 +2151,7 @@ std::vector<MonsterDef> buildMonsterDefs() {
     {
         MonsterSystem::Tuning t;
         t.type           = MonsterType::Drone;
+        t.flyer          = true;                            // ACTUAL flier (hovers, center-origin)
         t.hp             = 150;                             // bible: 150
         t.chaseSpeed     = 3.2f;                            // bible "Medium (flying)"
         t.damage         = combat::kRangedDamageDefault;    // 5 (plasma bolt)

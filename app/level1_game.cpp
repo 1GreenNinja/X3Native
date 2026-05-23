@@ -130,13 +130,13 @@ MonsterSystem::Tuning droneTuning() {
     // Ranged drone: keeps a standoff distance and fires a taser hitscan. Damage +
     // standoff pull from the GENERAL combat balance params (monster.h, combat::*).
     t.type           = MonsterType::Drone;
+    t.flyer          = true;           // ACTUAL flier: hovers, center-origin model
     t.damage         = combat::kRangedDamageDefault;  // 5 HP per bolt (band 4..6)
     t.attackRange    = 14.0f;          // can fire from across the corridor
     t.attackCooldown = combat::kRangedCooldownDefault;// ~1.4 s between bolts
     t.attackWindup   = 0.35f;          // a beat of telegraph before the bolt
     t.ranged         = true;
     t.standoff       = combat::kRangedStandoff;       // hold ~7 m out
-    // Drone GLB is NOT rigged and authored Z-up like the characters; stand it up.
     useCharacter(t, "Drone.glb", 1.0f);
     return t;
 }

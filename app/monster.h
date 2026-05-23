@@ -378,6 +378,10 @@ public:
         // Drone-only: preferred standoff distance (m). The drone strafes to keep
         // roughly this far from the player instead of closing to melee.
         float standoff            = 6.0f;
+        // FLYER: hovers off the floor with a model origin at its CENTER (not the
+        // feet). Distinct from `type==Drone`, which is just the ranged AI lane and
+        // is ALSO used by ground elites (e.g. Illuminated). Drives hover + hitbox.
+        bool  flyer               = false;
 
         // ---- Data-driven AI weighting (bestiary pass) ---------------------
         // Per-instance strafe/flank bias in [0,1]: the probability, at mid-range,
@@ -644,6 +648,7 @@ private:
     float            m_modelScale = 1.0f;     // uniform scale applied to the model
     float            m_hitHalfY   = 0.95f;    // Enemy hitbox half-height (scaled); top quarter = head zone
     float            m_hitCenterOff = 0.0f;   // box center offset above m_pos (feet-origin ground enemies raise it)
+    bool             m_flyer       = false;   // hovering, center-origin enemy (vs ground feet/center-origin)
 
     int   m_hp        = kMonsterHp;
     int   m_maxHp     = kMonsterHp;           // per-instance starting HP (Tuning)
