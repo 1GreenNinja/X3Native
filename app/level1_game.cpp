@@ -777,6 +777,72 @@ bool runLevel1SelfTest() {
           game.objectives().currentLabel() == "Escape the detention cell",
           "T7a first objective = escape the cell");
 
+    // ======================================================================
+    // FLOOR-1 RELAY: the detention layout (docs/design/SPIRE_LEVELARCHITECT_DIMS.md)
+    // is now built at real scale. Assert the footprint + key rooms + elevator align.
+    // ======================================================================
+    // ---- D1: the B1 plate grew from the old 24x16 placeholder to the real footprint;
+    //          the DETENTION room-center span is ~75 (X) x ~43 (Z) m (the doc's stated
+    //          footprint: X -20..+55 = 75 m, Z -36..+7 = 43 m). The raw plate + the
+    //          half-extent AABB are larger supersets. ----
+    {
+        const L1RoomDef* tbl = level1Rooms();
+        const L1RoomDef& b1 = tbl[(uint32_t)L1Floor::B1];
+        const float plateW = b1.x1 - b1.x0, plateD = 2.0f * b1.zHalf;
+        const L1DetentionRoom* dr = level1DetentionRooms();
+        float minCx = 1e9f, maxCx = -1e9f, minCz = 1e9f, maxCz = -1e9f;
+        for (uint32_t i = 0; i < level1DetentionRoomCount(); ++i) {
+            minCx = std::min(minCx, dr[i].cx); maxCx = std::max(maxCx, dr[i].cx);
+            minCz = std::min(minCz, dr[i].cz); maxCz = std::max(maxCz, dr[i].cz);
+        }
+        const float spanX = maxCx - minCx, spanZ = maxCz - minCz;
+        bool plateGrew = plateW >= 70.0f && plateD >= 40.0f;            // no longer 24x16
+        bool spanOk = spanX >= 73.0f && spanX <= 77.0f &&               // ~75 m wide (X -20..+55)
+                      spanZ >= 41.0f && spanZ <= 45.0f;                 // ~43 m deep (Z -36..+7)
+        // The half-extent AABB is a sane superset that fits inside the raw B1 plate.
+        L1Footprint fp = level1DetentionFootprint();
+        bool aabbInPlate = fp.minX >= b1.x0 - 0.01f && fp.maxX <= b1.x1 + 0.01f &&
+                           fp.minZ >= -b1.zHalf - 0.01f && fp.maxZ <= b1.zHalf + 0.01f;
+        check(plateGrew && spanOk && aabbInPlate,
+              "D1 F1 footprint grew to ~75x43 m detention complex (was 24x16)");
+    }
+    // ---- D2: the 29 authored rooms are present with the right key dimensions. ----
+    {
+        const L1DetentionRoom* dr = level1DetentionRooms();
+        bool count29 = level1DetentionRoomCount() == 29;
+        auto dim = [&](uint32_t i, float w, float h, float d) {
+            const L1DetentionRoom& r = dr[i];
+            return std::fabs(r.w - w) < 0.01f && std::fabs(r.h - h) < 0.01f &&
+                   std::fabs(r.d - d) < 0.01f;
+        };
+        constexpr uint32_t kCellBlockBHall = 23;              // Cell Block B Hallway index
+        bool jake   = std::string(dr[kDetJakeCell].name) == "Jake's Cell" && dim(kDetJakeCell, 7,4,6);
+        bool mainHall = dim(kDetMainHallway, 3,3.5f,26);      // Main Hallway 3x3.5x26
+        bool cbHall   = dim(kCellBlockBHall, 4,3.5f,32);      // Cell Block B Hallway 4x3.5x32
+        bool cavern   = dim(kDetCrystalCavern, 18,8,16);      // Crystal Cavern 18x8x16
+        bool armory   = dim(kDetArmory, 5,3.5f,5);
+        check(count29 && jake && mainHall && cbHall && cavern && armory,
+              "D2 29 rooms present with key dims (Jake 7x4x6, MainHall 3x3.5x26, CBHall 4x3.5x32, Cavern 18x8x16)");
+    }
+    // ---- D3: Sarah's empty cell (npc flag) + a monster cell exist; the elevator-lobby
+    //          room is authored and the functional elevator shaft lands on walkable
+    //          floor (z=0 lane, x at the shaft) so a ride arrives in the complex. ----
+    {
+        const L1DetentionRoom* dr = level1DetentionRooms();
+        bool sarah = std::string(dr[kDetSarahCell].name).find("Sarah") != std::string::npos &&
+                     dr[kDetSarahCell].npc;
+        uint32_t monsters = 0;
+        for (uint32_t i = 0; i < level1DetentionRoomCount(); ++i) if (dr[i].monster) ++monsters;
+        bool elevLobby = std::string(dr[kDetElevatorLobby].name) == "Elevator Lobby";
+        // The functional shaft (legacy elevatorCenter) is at z=0 inside the plate so the
+        // ride lands on the playable spine lane (walkable on every floor).
+        const L1RoomDef& b1r = level1Rooms()[(uint32_t)L1Floor::B1];
+        bool shaftWalkable = std::fabs(L.elevatorCenter.z) < 0.01f &&
+                             L.elevatorCenter.x > b1r.x0 && L.elevatorCenter.x < b1r.x1;
+        check(sarah && monsters >= 4 && elevLobby && shaftWalkable,
+              "D3 Sarah's empty cell (npc) + monster cells + Elevator Lobby; shaft lands on walkable floor");
+    }
+
     // ---- Beat 1: walk to the strength trigger; equipment hidden. ----
     {
         // Equipment prop is at (1.5,0.4,-1.8); the trigger box covers it.

@@ -686,8 +686,12 @@ bool runSubLevelsSelfTest() {
         const SpireSubPlan& s3 = sub.plan(SpireSubLevel::SL3);
         x3::phys::Vec3 farPos{ s3.arrival.x, s3.baseY + 0.5f, s3.arrival.z };  // arrival is far from the cell
         bool farFails = !sub.onRescue(farPos, kRescueReach);
-        // Chen's cell is at (B1.x0 + 3, baseY, -5.5). Walk right up to him.
-        x3::phys::Vec3 nearChen{ level1Rooms()[(uint32_t)L1Floor::B1].x0 + 3.0f, s3.baseY + kEnemyYOff, -5.5f };
+        // Chen's cell is at (x=3.0, baseY, -5.5) — the SL3 build places him with
+        // at(s, 3.0f, kEnemyYOff, -5.5f) (an ABSOLUTE plate X, not B1.x0-relative).
+        // Walk right up to him. (FLOOR-1 RELAY: was B1.x0+3, which only matched when the
+        // old placeholder B1.x0 was 0; the grown plate moved B1.x0 to -24, so pin the
+        // literal build position.)
+        x3::phys::Vec3 nearChen{ 3.0f, s3.baseY + kEnemyYOff, -5.5f };
         bool freed = sub.onRescue(nearChen, kRescueReach);
         check(farFails && freed && sub.chenRescued() && !sub.chenCaptive(),
               "S15 Dr. Chen rescue: out-of-range fails, in-range FREES him (Return-Mission payoff)");
