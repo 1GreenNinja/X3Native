@@ -19,6 +19,7 @@ add_executable(X3Engine WIN32
     spire_nexus.cpp
     spire_sublevels.cpp
     act2_world.cpp
+    act2_caves.cpp
     save.cpp
     env_art.cpp
     club1127.cpp
