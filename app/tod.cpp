@@ -248,9 +248,19 @@ bool runTodSelfTest() {
         for (int i = 0; i < steps; ++i) { seen[(int)walk.phase()] = true; walk.advance(dt); }
         tcheck(seen[0] && seen[1] && seen[2] && seen[3],
                "T2 a full real-time day advances through every phase");
-        // After a full day the clock has wrapped back near the origin (dawn).
-        tcheck(walk.phase() == TodPhase::Dawn,
-               "T3 the cycle wraps: after one full day it is dawn again");
+        // The clock WRAPS: advancing by exactly one full day (in one call, no
+        // accumulation drift) returns to the same fraction + phase; and advancing
+        // 1.5 days from dusk lands in night again.
+        TimeOfDay wrapA(cfg); wrapA.setDayFraction(0.40f);   // mid-day
+        wrapA.advance(cfg.dayLengthSeconds);                  // exactly one day
+        bool wrappedSame = std::fabs(wrapA.dayFraction() - 0.40f) < 1e-3f &&
+                           wrapA.phase() == TodPhase::Day;
+        // +1.5 days from dusk (0.56) -> +0.5 day -> 0.06 -> dawn region.
+        TimeOfDay wrapB(cfg); wrapB.setDayFraction(cfg.duskStart + 0.01f); // dusk @ 0.56
+        wrapB.advance(cfg.dayLengthSeconds * 1.5f);           // wraps to ~0.06
+        bool wrappedPhase = wrapB.phase() == TodPhase::Dawn;
+        tcheck(wrappedSame && wrappedPhase,
+               "T3 the clock wraps: +1 day returns to the same phase, +1.5 days advances half a day");
     }
 
     // ---- T4: sun ELEVATION rises monotonically sunrise->midday, then falls
