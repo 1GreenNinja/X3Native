@@ -7,6 +7,7 @@ add_executable(X3Engine WIN32
     door.cpp
     physprops.cpp
     ragdoll.cpp
+    barrels.cpp
     editor/editor.cpp
     elevator.cpp
     weapon.cpp
