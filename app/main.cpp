@@ -512,7 +512,7 @@ static bool runGpuSkinSelfTest() {
 int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
-         testPhysprops = false, testRagdoll = false,
+         testPhysprops = false, testRagdoll = false, testRagdollSkin = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
@@ -702,6 +702,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-interact") testInteract = true;
         else if (a == "--test-physprops") testPhysprops = true;
         else if (a == "--test-ragdoll") testRagdoll = true;
+        else if (a == "--test-ragdollskin") testRagdollSkin = true;
         else if (a == "--test-pickup") testPickup = true;
         else if (a == "--test-combat") testCombat = true;
         else if (a == "--test-audio") testAudio = true;
@@ -871,6 +872,10 @@ int main(int argc, char** argv) {
     if (testRagdoll) {
         x3::logInfo("running ragdoll (physics death) self-test...");
         return x3::game::runRagdollSelfTest() ? 0 : 1;
+    }
+    if (testRagdollSkin) {
+        x3::logInfo("running ragdoll-skin (rigid bone attach) self-test...");
+        return x3::game::runRagdollSkinSelfTest() ? 0 : 1;
     }
     if (testPickup) {
         x3::logInfo("running weapon pickup + arming (S5) self-test...");

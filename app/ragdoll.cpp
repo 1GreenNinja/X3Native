@@ -9,6 +9,8 @@
 #include "engine/core/x3_log.h"
 
 #include <cmath>
+#include <cstring>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -62,7 +64,91 @@ void yawXZ(float yaw, float lx, float lz, float& ox, float& oz) {
     ox = c * lx + s * lz;
     oz = -s * lx + c * lz;
 }
+
+// Inverse of a RIGID column-major 4x4 (rotation R + translation t, no scale):
+// inv = [ R^T | -R^T t ]. Cheap + exact for body poses.
+void invRigid(const float m[16], float out[16]) {
+    // Column-major: basis columns are m[0..2], m[4..6], m[8..10]; translation m[12..14].
+    out[0]=m[0]; out[1]=m[4]; out[2]=m[8];  out[3]=0;
+    out[4]=m[1]; out[5]=m[5]; out[6]=m[9];  out[7]=0;
+    out[8]=m[2]; out[9]=m[6]; out[10]=m[10];out[11]=0;
+    const float tx=m[12], ty=m[13], tz=m[14];
+    out[12] = -(out[0]*tx + out[4]*ty + out[8]*tz);
+    out[13] = -(out[1]*tx + out[5]*ty + out[9]*tz);
+    out[14] = -(out[2]*tx + out[6]*ty + out[10]*tz);
+    out[15] = 1.0f;
+}
 } // namespace
+
+// ---------------------------------------------------------------------------
+// RagdollSkin — rigid-attach bone driver.
+// ---------------------------------------------------------------------------
+bool RagdollSkin::bind(const x3::asset::Model& model) {
+    m_nodeCount = (uint32_t)model.nodes.size();
+    m_assign.clear();
+    if (m_nodeCount == 0) return false;
+    m_bindGlobal.assign((size_t)m_nodeCount * 16, 0.0f);
+
+    // Compose each node's bind-pose global (parent-first, memoized; nodes may be
+    // in any order). global[n] = global[parent] * local[n] (column-major).
+    std::vector<char> done(m_nodeCount, 0);
+    std::function<void(int)> resolve = [&](int n) {
+        if (n < 0 || (uint32_t)n >= m_nodeCount || done[n]) return;
+        const x3::asset::Node& nd = model.nodes[n];
+        if (nd.parent < 0) {
+            std::memcpy(&m_bindGlobal[(size_t)n*16], nd.localTransform, 16*sizeof(float));
+        } else {
+            resolve(nd.parent);
+            x3::asset::mulMat4(&m_bindGlobal[(size_t)nd.parent*16], nd.localTransform,
+                               &m_bindGlobal[(size_t)n*16]);
+        }
+        done[n] = 1;
+    };
+    for (uint32_t n = 0; n < m_nodeCount; ++n) resolve((int)n);
+    return true;
+}
+
+void RagdollSkin::mapToParts(const float* partInit, uint32_t partCount) {
+    if (m_nodeCount == 0 || !partInit || partCount == 0) return;
+    m_partCount = partCount;
+    m_partInitInv.assign((size_t)partCount * 16, 0.0f);
+    for (uint32_t p = 0; p < partCount; ++p)
+        invRigid(&partInit[(size_t)p*16], &m_partInitInv[(size_t)p*16]);
+
+    // Assign each node to the nearest part center (bind-pose positions).
+    m_assign.assign(m_nodeCount, 0);
+    for (uint32_t n = 0; n < m_nodeCount; ++n) {
+        const float nx = m_bindGlobal[(size_t)n*16+12];
+        const float ny = m_bindGlobal[(size_t)n*16+13];
+        const float nz = m_bindGlobal[(size_t)n*16+14];
+        float best = 1e30f; int bp = 0;
+        for (uint32_t p = 0; p < partCount; ++p) {
+            const float px = partInit[(size_t)p*16+12];
+            const float py = partInit[(size_t)p*16+13];
+            const float pz = partInit[(size_t)p*16+14];
+            const float d = (nx-px)*(nx-px) + (ny-py)*(ny-py) + (nz-pz)*(nz-pz);
+            if (d < best) { best = d; bp = (int)p; }
+        }
+        m_assign[n] = bp;
+    }
+}
+
+uint32_t RagdollSkin::computeNodeGlobals(const float* partCur, uint32_t partCount,
+                                         std::vector<float>& outNodeGlobals) const {
+    if (m_nodeCount == 0 || m_assign.empty() || !partCur || partCount != m_partCount) {
+        outNodeGlobals.clear(); return 0;
+    }
+    // Per-part delta = cur * initInv (rigid motion since bind).
+    std::vector<float> delta((size_t)partCount * 16);
+    for (uint32_t p = 0; p < partCount; ++p)
+        x3::asset::mulMat4(&partCur[(size_t)p*16], &m_partInitInv[(size_t)p*16],
+                           &delta[(size_t)p*16]);
+    outNodeGlobals.assign((size_t)m_nodeCount * 16, 0.0f);
+    for (uint32_t n = 0; n < m_nodeCount; ++n)
+        x3::asset::mulMat4(&delta[(size_t)m_assign[n]*16], &m_bindGlobal[(size_t)n*16],
+                           &outNodeGlobals[(size_t)n*16]);
+    return m_nodeCount;
+}
 
 void RagdollSystem::build(Scene& scene, x3::rhi::IRenderDevice& device,
                           x3::phys::IPhysicsWorld& physics,
@@ -220,6 +306,71 @@ bool runRagdollSelfTest() {
 
     w->shutdown();
     x3::logInfo(std::string("[ragdoll-test] ") + std::to_string(g_pass) + " passed, " +
+                std::to_string(g_fail) + " failed");
+    return g_fail == 0;
+}
+
+// ===========================================================================
+// Headless self-test (--test-ragdollskin). S0-S3 — the rigid-attach math.
+// ===========================================================================
+bool runRagdollSkinSelfTest() {
+    g_pass = g_fail = 0;
+
+    // Synthetic model: a 3-node vertical chain (root at y=0, mid y=1, top y=2),
+    // each a child of the previous (local translate +1 in Y). No skin needed for
+    // the math test — we exercise bind globals + rigid attach directly.
+    x3::asset::Model model;
+    auto idLocalY = [](float y, x3::asset::Node& n, int parent) {
+        for (int i = 0; i < 16; ++i) n.localTransform[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+        n.localTransform[13] = y;   // local +Y offset from parent
+        n.parent = parent;
+    };
+    model.nodes.resize(3);
+    idLocalY(0.0f, model.nodes[0], -1);
+    idLocalY(1.0f, model.nodes[1], 0);
+    idLocalY(1.0f, model.nodes[2], 1);
+
+    RagdollSkin skin;
+    bool bound = skin.bind(model);
+    // Bind globals should put node 0 at y=0, node 1 at y=1, node 2 at y=2.
+    std::vector<float> ident;  // 2 parts identity at the bind centers of node0 & node2.
+    check(bound && skin.nodeCount() == 3, "S0 RagdollSkin bound a 3-node chain");
+
+    // Two parts: part 0 at (0,0,0) [near node 0/1], part 1 at (0,2,0) [near node 2].
+    float partInit[32];
+    for (int i = 0; i < 32; ++i) partInit[i] = (i % 5 == 0) ? 1.0f : 0.0f; // two identities
+    partInit[13] = 0.0f;   // part 0 translation y=0
+    partInit[16+13] = 2.0f; // part 1 translation y=2
+    skin.mapToParts(partInit, 2);
+
+    // S1: parts AT their bind transform -> node globals reproduce the bind globals.
+    std::vector<float> g0;
+    skin.computeNodeGlobals(partInit, 2, g0);
+    bool reproduced = g0.size() == 48 &&
+                      std::fabs(g0[0*16+13] - 0.0f) < 1e-4f &&
+                      std::fabs(g0[1*16+13] - 1.0f) < 1e-4f &&
+                      std::fabs(g0[2*16+13] - 2.0f) < 1e-4f;
+    check(reproduced, "S1 parts at bind reproduce the bind globals (no drift)");
+
+    // S2: translate part 1 by +3 in X -> node 2 (assigned to part 1) moves +3 in X,
+    // node 0 (assigned to part 0) does NOT move.
+    float partCur[32]; std::memcpy(partCur, partInit, sizeof(partCur));
+    partCur[16+12] += 3.0f;   // part 1 translation x += 3
+    std::vector<float> g1;
+    skin.computeNodeGlobals(partCur, 2, g1);
+    bool node2Moved = std::fabs(g1[2*16+12] - 3.0f) < 1e-4f;     // node2.x == 3
+    bool node0Still = std::fabs(g1[0*16+12] - 0.0f) < 1e-4f;     // node0.x == 0
+    check(node2Moved && node0Still, "S2 moving a part rigidly moves only its assigned nodes");
+
+    // S3: a part TRANSLATION carries the assigned node's Y too (rigid, not just X).
+    float partCur2[32]; std::memcpy(partCur2, partInit, sizeof(partCur2));
+    partCur2[16+13] += 0.5f;  // part 1 up 0.5
+    std::vector<float> g2;
+    skin.computeNodeGlobals(partCur2, 2, g2);
+    bool node2Up = std::fabs(g2[2*16+13] - 2.5f) < 1e-4f;       // node2.y 2 -> 2.5
+    check(node2Up, "S3 part translation carries its node rigidly (Y)");
+
+    x3::logInfo(std::string("[ragdollskin-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;
 }

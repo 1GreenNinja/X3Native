@@ -12,11 +12,51 @@
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
+#include "engine/asset/IModelLoader.h"
 
 #include <vector>
 #include <cstdint>
 
 namespace x3::game {
+
+// ---------------------------------------------------------------------------
+// RagdollSkin — drive a skinned model's bones from ragdoll parts (rigid attach).
+//
+// Each skeleton bone follows its nearest ragdoll part by a RIGID delta:
+//   nodeGlobal[n] = (partCur[p] * partInit[p]^-1) * bindGlobal[n]
+// where p = the part assigned to node n. All transforms are in the model's SKIN
+// space (the same space the normal joint palette is built in), so the result feeds
+// Skinner::applyExternalGlobals() and draws through the model's existing
+// object*fixup*node transform unchanged. Pure math — no physics/render deps beyond
+// the Model + the per-part transforms the caller supplies. Headless-testable.
+// ---------------------------------------------------------------------------
+class RagdollSkin {
+public:
+    // Compute + cache each node's BIND-pose global (model/skin space) by composing
+    // node local TRS down the hierarchy. Returns false if the model has no nodes.
+    bool bind(const x3::asset::Model& model);
+
+    // Assign every node to the nearest part by bind-pose node position. `partInit`
+    // = each part's initial (bind-time) skin-space 4x4 (count*16, column-major) —
+    // its center is used for the nearest test and as the rigid-delta reference.
+    void mapToParts(const float* partInit, uint32_t partCount);
+
+    // Produce per-node globals into `outNodeGlobals` (nodeCount*16) from each part's
+    // CURRENT skin-space 4x4 (`partCur` = partCount*16). out[n] = delta[assign[n]] *
+    // bindGlobal[n]. Reuses internal scratch. No-op (returns 0) if unbound/mismatch.
+    uint32_t computeNodeGlobals(const float* partCur, uint32_t partCount,
+                                std::vector<float>& outNodeGlobals) const;
+
+    uint32_t nodeCount() const { return m_nodeCount; }
+    bool     ready() const { return m_nodeCount > 0 && !m_assign.empty(); }
+
+private:
+    uint32_t              m_nodeCount = 0;
+    uint32_t              m_partCount = 0;
+    std::vector<float>    m_bindGlobal;   // nodeCount*16
+    std::vector<float>    m_partInitInv;  // partCount*16 (inverse of each part's init)
+    std::vector<int>      m_assign;       // node -> part index
+};
 
 // One ragdoll limb/segment: a dynamic box body drawn at its live transform.
 struct RagdollPart {
@@ -59,5 +99,11 @@ private:
 // the torso — it doesn't explode), and it comes to rest. Asserts T0-T3; returns
 // true iff all pass. No window/Vulkan.
 bool runRagdollSelfTest();
+
+// Headless self-test (--test-ragdollskin): exercises the rigid-attach math on a
+// tiny synthetic node chain + parts — parts at their bind transform reproduce the
+// bind globals (no drift), and translating/rotating a part rigidly moves its
+// assigned nodes by the same delta. Asserts S0-S3. No window / Vulkan.
+bool runRagdollSkinSelfTest();
 
 } // namespace x3::game

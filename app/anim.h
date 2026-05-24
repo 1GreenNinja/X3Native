@@ -97,6 +97,29 @@ public:
                             float timeSec, std::vector<float>& outPalette) const;
 
     // ======================================================================
+    // RAGDOLL drive — skin from EXTERNAL per-node world matrices (physics).
+    // ======================================================================
+    // Bypass the clip sampler entirely: the caller supplies a full set of per-node
+    // GLOBAL (model-space) matrices (`nodeGlobals` = nodeCount*16 column-major) —
+    // e.g. produced by rigidly attaching each bone to a ragdoll body — and this
+    // builds the joint palette (palette[j] = nodeGlobals[joint[j]] * inverseBind[j])
+    // and CPU-skins + re-uploads (or uploads the palette on the GPU path), exactly
+    // like apply(). No-op if !valid() or nodeCount mismatches the model. This is how
+    // a dead enemy's actual skinned mesh flops to the ragdoll pose.
+    void applyExternalGlobals(const x3::asset::Model& model, x3::rhi::IRenderDevice& device,
+                              const float* nodeGlobals, uint32_t nodeCount);
+
+    // Headless diagnostic: build the palette from external node globals into
+    // `outPalette` WITHOUT a device. Returns the joint count. Lets the ragdoll-skin
+    // test assert bind-pose globals reproduce the bind palette + a moved bone moves
+    // its joint matrix.
+    uint32_t buildPaletteFromGlobals(const x3::asset::Model& model, const float* nodeGlobals,
+                                     uint32_t nodeCount, std::vector<float>& outPalette) const;
+
+    // Node count the skinner was bound over (for the caller sizing nodeGlobals).
+    uint32_t nodeCount() const { return m_nodeCount; }
+
+    // ======================================================================
     // T1 — locomotion blend + crossfade / inertialization (Animation T1).
     // ======================================================================
     // The blend layer sits on top of the clip sampler. It keeps a single
@@ -222,6 +245,13 @@ public:
     float locomotionPhase() const { return m_phase; }
 
 private:
+    // Shared tail of apply()/applyExternalGlobals(): given the joint palette already
+    // built into m_palette (jcount joints), either upload it (GPU path) or CPU
+    // linear-blend-skin every skinned primitive + updateMesh. Factored so the clip
+    // and ragdoll drive paths skin identically.
+    void skinAndUpload(const x3::asset::Model& model, x3::rhi::IRenderDevice& device,
+                       uint32_t jcount);
+
     // Sample one node's local TRS from the clip at time t (bind-pose fallback),
     // composing the result into a column-major 4x4.
     void sampleNodeLocal(const x3::asset::Model& m, uint32_t clip, int node,
