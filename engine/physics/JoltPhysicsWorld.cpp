@@ -1349,37 +1349,39 @@ bool runPhysJointSelfTest() {
         else      {          x3::logError(std::string("[physjoint] FAIL ") + name); }
     };
 
-    // ---- J1: a cube hung by a POINT constraint hangs + swings + settles ----
+    // ---- J1: a body hung by a POINT constraint hangs + swings + settles ----
+    // A POINT constraint pins a point ON the body to the world anchor and leaves all
+    // rotation free, so the body swings as a PENDULUM about that pinned point. To get
+    // a real pendulum the pinned point must be OFFSET from the center of mass: we use
+    // a tall thin "plank" (half-height 1 m) and pin its TOP, so the center hangs ~1 m
+    // below the pin and swings about it.
     {
         std::unique_ptr<IPhysicsWorld> w(createPhysicsWorld());
         w->init();
-        // Anchor 4 m up; cube starts OFFSET horizontally from directly-below so it
-        // begins as a raised pendulum and must swing down + oscillate.
-        const Vec3 anchor{ 0.0f, 4.0f, 0.0f };
-        const float halfX = 0.5f;
-        // Cube center starts to the +X side, same height as anchor, so the rod from
-        // the anchor to the cube's top is near-horizontal -> a big initial swing.
-        const Vec3 startCenter{ 2.0f, 4.0f, 0.0f };
-        BodyId cube = w->addBox(Vec3{halfX,halfX,halfX}, startCenter, 5.0f, Layer::Dynamic);
-        // Pin the cube's left-top point to the anchor (the attach point ON the body
-        // that coincides with the anchor-ward side at spawn would be the far side;
-        // we simply pin the cube's CENTER-LEVEL near edge — use the center so the
-        // rod length = |startCenter - anchor| = 2 m).
-        Vec3 attach = startCenter;            // pin the cube's center to swing about the anchor
-        ConstraintId c = w->addPointConstraint(cube, anchor, attach);
+        const Vec3 anchor{ 0.0f, 5.0f, 0.0f };
+        const float halfH = 1.0f;             // plank half-height -> pendulum length ~1 m
+        // Plank center starts 1 m below the anchor (top pinned at the anchor), i.e.
+        // hanging straight down. We then kick it sideways to start the swing.
+        const Vec3 startCenter{ 0.0f, anchor.y - halfH, 0.0f };
+        BodyId plank = w->addBox(Vec3{0.15f, halfH, 0.15f}, startCenter, 5.0f, Layer::Dynamic);
+        // Pin the TOP-CENTER of the plank (center + halfH up) to the anchor.
+        Vec3 attach{ startCenter.x, startCenter.y + halfH, startCenter.z };  // == anchor
+        ConstraintId c = w->addPointConstraint(plank, anchor, attach);
         P(c.valid(), "J1a point constraint created");
         // Low damping so it visibly swings for a while.
-        w->setBodyDamping(cube, 0.05f, 0.05f);
+        w->setBodyDamping(plank, 0.05f, 0.05f);
+        // Kick it sideways so the pendulum swings up to ~horizontal then back.
+        w->applyImpulse(plank, Vec3{ 30.0f, 0.0f, 0.0f });
 
-        // Track the horizontal offset (x) of the cube relative to the anchor each
-        // step; a pendulum's x must change SIGN (swing through the bottom) at low
-        // damping, and the rod length stays ~constant (constraint holds).
+        // Track the horizontal offset (x) of the center vs the anchor each step; a
+        // pendulum's center x must change SIGN (swing through the bottom) at low
+        // damping, and the pin->center distance stays ~constant (the pin holds).
         float minX = 1e9f, maxX = -1e9f;
         float ropeMin = 1e9f, ropeMax = -1e9f;
         bool nan = false;
         for (int i = 0; i < 600; ++i) {       // 10 s
             w->step(kFixedDt);
-            Vec3 p = w->getBodyPosition(cube);
+            Vec3 p = w->getBodyPosition(plank);
             if (!finite3(p)) { nan = true; break; }
             float dx = p.x - anchor.x;
             float dy = p.y - anchor.y;
@@ -1389,33 +1391,32 @@ bool runPhysJointSelfTest() {
             ropeMin = std::min(ropeMin, rope); ropeMax = std::max(ropeMax, rope);
         }
         P(!nan, "J1b no NaNs over 10 s");
-        // It swung past the bottom: x went both positive (start side) and clearly
-        // negative (other side).
-        P(maxX > 0.5f && minX < -0.2f, "J1c cube swings through the bottom (x sign change)");
-        // The rod (constraint) held: distance to anchor stayed near its 2 m length
-        // (point constraint pins the attach point exactly -> distance from CENTER to
-        // anchor is rigid here, so very tight tolerance).
-        P(ropeMax - ropeMin < 0.05f, "J1d constraint holds (rope length constant)");
+        // It swung to BOTH sides of the bottom: center x went clearly positive (kick
+        // side) and clearly negative (other side).
+        P(maxX > 0.2f && minX < -0.2f, "J1c body swings through the bottom (x sign change)");
+        // The pin held: distance from the pin (anchor) to the center stayed ~1 m
+        // (the rigid plank's center is a fixed distance from its pinned top).
+        P(ropeMax - ropeMin < 0.08f, "J1d point constraint holds (pendulum length constant)");
 
-        // Settle check: let it run with the same low damping a long time; the swing
-        // amplitude must DECAY. Compare early-window vs late-window x amplitude.
+        // Settle check: run on with the same low damping; the swing amplitude must
+        // DECAY. Compare an early-window vs a late-window x amplitude.
         auto windowAmp = [&](int steps) {
             float lo = 1e9f, hi = -1e9f;
             for (int i = 0; i < steps; ++i) {
                 w->step(kFixedDt);
-                float dx = w->getBodyPosition(cube).x - anchor.x;
+                float dx = w->getBodyPosition(plank).x - anchor.x;
                 lo = std::min(lo, dx); hi = std::max(hi, dx);
             }
             return hi - lo;
         };
         float ampEarly = windowAmp(120);     // next 2 s
-        for (int i = 0; i < 1800; ++i) w->step(kFixedDt);  // damp 30 s
+        for (int i = 0; i < 3000; ++i) w->step(kFixedDt);  // damp 50 s
         float ampLate = windowAmp(120);
         P(ampLate < ampEarly * 0.5f, "J1e swing decays under damping");
-        // Finally it should hang roughly straight DOWN from the anchor (x ~ 0,
-        // y well below the anchor by the ~2 m rod).
-        Vec3 rest = w->getBodyPosition(cube);
-        P(std::fabs(rest.x - anchor.x) < 0.25f && rest.y < anchor.y - 1.0f,
+        // Finally it hangs roughly straight DOWN from the anchor (center x ~ 0, y a
+        // pendulum-length below the anchor).
+        Vec3 rest = w->getBodyPosition(plank);
+        P(std::fabs(rest.x - anchor.x) < 0.25f && rest.y < anchor.y - 0.5f,
           "J1f settles hanging below the anchor");
         w->shutdown();
     }
