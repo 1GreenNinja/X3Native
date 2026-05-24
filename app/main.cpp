@@ -43,6 +43,9 @@
 #include "act2_caves.h"                      // EFLZ Act-2 mid biomes L12-15 (--test-act2caves)
 #include "tod.h"                             // EFLZ Time-of-Day cycle (sky/sun via SkyParams — --test-tod)
 #include "weather.h"                         // EFLZ Weather (7 states, biome-gated, hazard — --test-weather)
+#include "world_regions.h"                   // EFLZ open-world surrounding regions + 4 mountain ranges (--test-worldregions)
+#include "city.h"                            // EFLZ open-world metropolis: districts + roads + freeway tunnels (--test-city)
+#include "ocean_base.h"                      // EFLZ open-world ocean + undersea base + submarine combat (--test-oceanbase)
 #include "elevator.h"
 #include "club1127.h"
 #include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
@@ -704,6 +707,9 @@ int main(int argc, char** argv) {
     // flag. Asserts gating, interpolated transitions, hazard set only in hazardous states
     // (incl. swamp poison-fog), midpoint hazard flip, and determinism. Additive.
     bool        testWeather = false;
+    bool        testWorldRegions = false;   // --test-worldregions (open-world surface regions + mountains)
+    bool        testCity = false;           // --test-city (open-world metropolis: districts + roads + tunnels)
+    bool        testOceanBase = false;      // --test-oceanbase (ocean + undersea base + submarine combat)
     // --test-collapse (K-T3 structural collapse): build a small structure (column /
     // beam on two supports), destroy a support, step the sim, and assert the
     // unsupported pieces fall (static->dynamic), anchored pieces stay stable, the
@@ -885,6 +891,9 @@ int main(int argc, char** argv) {
         else if (a == "--test-act2caves") testAct2Caves = true;
         else if (a == "--test-tod") testTod = true;
         else if (a == "--test-weather") testWeather = true;
+        else if (a == "--test-worldregions") testWorldRegions = true;
+        else if (a == "--test-city") testCity = true;
+        else if (a == "--test-oceanbase") testOceanBase = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-elevatorfsm") testElevatorFsm = true;
@@ -1240,6 +1249,19 @@ int main(int argc, char** argv) {
                     "self-test...");
         return x3::game::runAct2CavesSelfTest() ? 0 : 1;
     }
+    if (testWorldRegions) {
+        x3::logInfo("running EFLZ open-world surface regions (crash site + outposts + "
+                    "4 mountain ranges) self-test...");
+        return x3::game::runWorldRegionsSelfTest() ? 0 : 1;
+    }
+    if (testCity) {
+        x3::logInfo("running EFLZ open-world metropolis (Scrapyard / New District / Industrial "
+                    "+ road grid + 4 freeway tunnels) self-test...");
+        return x3::game::runCitySelfTest() ? 0 : 1;
+    }
+    if (testOceanBase) {
+        x3::logInfo("running EFLZ open-world ocean + undersea base + submarine combat self-test...");
+        return x3::game::runOceanBaseSelfTest() ? 0 : 1;
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
         return x3::game::runDoorCodeSelfTest() ? 0 : 1;

@@ -24,6 +24,9 @@ add_executable(X3Engine WIN32
     act2_caves.cpp
     tod.cpp
     weather.cpp
+    world_regions.cpp
+    city.cpp
+    ocean_base.cpp
     save.cpp
     dialog.cpp
     env_art.cpp
