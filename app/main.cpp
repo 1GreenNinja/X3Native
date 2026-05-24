@@ -36,6 +36,7 @@
 #include "ragdoll.h"                        // FEATURE_GOALS §2: physics death ragdoll
 #include "editor/editor.h"                  // native Level Editor E1 (brain + self-test)
 #include "barrels.h"                        // explosive barrels (shoot -> chain explosion)
+#include "holo_terminal.h"                  // Jake's cell holographic terminal (text + input)
 #include "spire_mid.h"                      // EFLZ Spire F3/F4/F5 mid-floor content
 #include "spire_top.h"                      // EFLZ Spire F6/F7 top-floor content (Act-1 finale)
 #include "spire_nexus.h"                    // EFLZ Floor 4.5 Nexus Chamber / The Chorus (off-elevator boss)
@@ -515,7 +516,7 @@ int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
-         testBarrels = false,
+         testBarrels = false, testHoloterm = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
@@ -708,6 +709,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-ragdollskin") testRagdollSkin = true;
         else if (a == "--test-editor") testEditor = true;
         else if (a == "--test-barrels") testBarrels = true;
+        else if (a == "--test-holoterm") testHoloterm = true;
         else if (a == "--test-pickup") testPickup = true;
         else if (a == "--test-combat") testCombat = true;
         else if (a == "--test-audio") testAudio = true;
@@ -889,6 +891,10 @@ int main(int argc, char** argv) {
     if (testBarrels) {
         x3::logInfo("running explosive-barrels self-test...");
         return x3::game::runBarrelSelfTest() ? 0 : 1;
+    }
+    if (testHoloterm) {
+        x3::logInfo("running holo-terminal (text + input) self-test...");
+        return x3::game::runHoloTerminalSelfTest() ? 0 : 1;
     }
     if (testPickup) {
         x3::logInfo("running weapon pickup + arming (S5) self-test...");

@@ -8,6 +8,7 @@ add_executable(X3Engine WIN32
     physprops.cpp
     ragdoll.cpp
     barrels.cpp
+    holo_terminal.cpp
     editor/editor.cpp
     elevator.cpp
     weapon.cpp
