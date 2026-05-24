@@ -169,6 +169,32 @@ void addFloor(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWo
            (uint32_t)Tag::Static, /*collide*/true, visible);
 }
 
+// Floor slab WITH a rectangular hole carved out (4 segments around the hole) — used
+// for the B1 plate so the cell trapdoor (secret_room.*) can drop the player into the
+// secret room below. holeCx/holeCz/holeHalf define the (square) opening; the slab is
+// built as up to 4 rim segments (-X, +X, then the -Z/+Z bands across the hole's X
+// span). If the hole is outside the plate this degrades to a normal full slab.
+void addFloorWithCutout(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                        float cx, float cz, float hx, float hz, float floorY,
+                        x3::rhi::TextureHandle tex, const float color[4], bool visible,
+                        float holeCx, float holeCz, float holeHalf) {
+    const float x0 = cx - hx, x1 = cx + hx, z0 = cz - hz, z1 = cz + hz;
+    const float hx0 = holeCx - holeHalf, hx1 = holeCx + holeHalf;
+    const float hz0 = holeCz - holeHalf, hz1 = holeCz + holeHalf;
+    auto slab = [&](float a, float b, float c, float d) {  // x in [a,b], z in [c,d]
+        if (b - a < 0.01f || d - c < 0.01f) return;
+        addBox(scene, device, physics, (b-a)*0.5f, 0.05f, (d-c)*0.5f,
+               (a+b)*0.5f, floorY - 0.05f, (c+d)*0.5f, tex, color,
+               (uint32_t)Tag::Static, /*collide*/true, visible);
+    };
+    // -X segment (full depth), +X segment (full depth), then the -Z / +Z bands across
+    // the hole's X span. Together they tile the slab minus the [hx0,hx1]x[hz0,hz1] hole.
+    slab(x0, hx0, z0, z1);
+    slab(hx1, x1, z0, z1);
+    slab(hx0, hx1, z0, hz0);
+    slab(hx0, hx1, hz1, z1);
+}
+
 // A solid wall running along X (its plane is z = const). Spans x in [x0,x1] and
 // rises from floorY to floorY+wallH (floor-to-ceiling on this plate).
 void addWallX(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
@@ -395,9 +421,16 @@ Level1Layout buildLevel1(Scene& scene,
         const float* tint = kFloorTints[fi];
         const bool isRooftop = (fi == (uint32_t)L1Floor::F7);
 
-        // Floor slab (every floor including B1; the rooftop still has a deck).
-        addFloor(scene, device, physics, cx, 0.0f, (f.x1 - f.x0) * 0.5f, f.zHalf, f.y0,
-                 floorTex, tint, floorVis);
+        // Floor slab (every floor including B1; the rooftop still has a deck). B1 gets
+        // a HOLE carved under Jake's cell for the code-locked trapdoor (secret_room.*),
+        // so an open hatch actually drops the player into the secret room below.
+        if (fi == (uint32_t)L1Floor::B1) {
+            addFloorWithCutout(scene, device, physics, cx, 0.0f, (f.x1 - f.x0) * 0.5f, f.zHalf, f.y0,
+                               floorTex, tint, floorVis, kCellHatchCx, kCellHatchCz, kCellHatchHalf);
+        } else {
+            addFloor(scene, device, physics, cx, 0.0f, (f.x1 - f.x0) * 0.5f, f.zHalf, f.y0,
+                     floorTex, tint, floorVis);
+        }
         // Two long side walls (z = ±zHalf), floor-to-ceiling.
         addWallX(scene, device, physics, f.x0, f.x1, -f.zHalf, f.y0, f.ceil, wallTex, tint, wallVis);
         addWallX(scene, device, physics, f.x0, f.x1,  f.zHalf, f.y0, f.ceil, wallTex, tint, wallVis);

@@ -37,6 +37,7 @@
 #include "editor/editor.h"                  // native Level Editor E1 (brain + self-test)
 #include "barrels.h"                        // explosive barrels (shoot -> chain explosion)
 #include "holo_terminal.h"                  // Jake's cell holographic terminal (text + input)
+#include "secret_room.h"                    // code-locked trapdoor -> stocked secret room
 #include "engine/ecs/Ecs.h"                 // sparse-set ECS core (10k+ entities)
 #include "ecs_render.h"                     // ECS -> GPU-driven render feed
 #include "spire_mid.h"                      // EFLZ Spire F3/F4/F5 mid-floor content
@@ -587,6 +588,9 @@ int main(int argc, char** argv) {
     bool        testSaveLoad = false;
     // --test-valley (Crystal Valleys Act-2 L15) + --test-cliffs (Salvari cliffs finale).
     bool        testValley = false, testCliffs = false;
+    // --test-secretroom (code-locked trapdoor -> secret room): the cell HoloTerminal
+    // override code opens a floor-hatch to a stocked secret room below. Additive flag.
+    bool        testSecretRoom = false;
     // --test-spiremid (Spire mid-floor content): F3/F4/F5 encounter authoring. Additive.
     bool        testSpireMid = false;
     // --test-nexus (Floor 4.5 Nexus / The Chorus): off-elevator multi-pod boss. Additive.
@@ -765,6 +769,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-editor") testEditor = true;
         else if (a == "--test-barrels") testBarrels = true;
         else if (a == "--test-holoterm") testHoloterm = true;
+        else if (a == "--test-secretroom") testSecretRoom = true;
         else if (a == "--test-ecs") testEcs = true;
         else if (a == "--test-ecsrender") testEcsRender = true;
         else if (a == "--test-pickup") testPickup = true;
@@ -952,6 +957,10 @@ int main(int argc, char** argv) {
     if (testHoloterm) {
         x3::logInfo("running holo-terminal (text + input) self-test...");
         return x3::game::runHoloTerminalSelfTest() ? 0 : 1;
+    }
+    if (testSecretRoom) {
+        x3::logInfo("running secret-room (code-locked trapdoor) self-test...");
+        return x3::game::runSecretRoomSelfTest() ? 0 : 1;
     }
     if (testEcs) {
         x3::logInfo("running ECS (sparse-set, 50k entities) self-test...");
@@ -4236,6 +4245,17 @@ int main(int argc, char** argv) {
     bool kpDigitPrev[10] = {};
     bool kpEnterPrev = false, kpBackPrev = false, kpEscPrev = false;
 
+    // ---- SECRET ROOM: terminal-entry host state + collected-effect deltas. When the
+    // player presses E near the cell HoloTerminal, termMode opens (digit/backspace/Enter
+    // edges route into the terminal; Enter submits to the sink which opens the trapdoor
+    // on code 1127). prevSecretHealth/Nano track which loot effects we've already applied
+    // (the SecretRoom latches collection; the host owns the Player to apply heals). ----
+    bool      termMode = false;
+    bool      tmDigitPrev[10] = {};
+    bool      tmEnterPrev = false, tmBackPrev = false;
+    uint32_t  prevSecretHealth = 0;
+    bool      prevSecretNano = false;
+
     // ---- GENERAL save/load (versioned checkpoint). The interactive host exposes a
     // programmatic save/load API two ways: quick-save/quick-load on F5/F9, AND a
     // SAVE/LOAD CHECKPOINT affordance in the pause menu (gameUi.wantSave/wantLoad).
@@ -4380,6 +4400,7 @@ int main(int argc, char** argv) {
         bool uiEscEdge = false;
         if (escNow && !kpEscPrev) {
             if (codeMode) { codeMode = false; keypad.clear(); }
+            else if (termMode) { termMode = false; game.secret().terminal().setActive(false); }
             else          { uiEscEdge = true; }   // hand the Esc edge to the UI below
         }
         kpEscPrev = escNow;
@@ -4467,6 +4488,14 @@ int main(int argc, char** argv) {
                             std::to_string(nexus.savedCount()));
             } else if (subLevels.onRescue(eye)) {  // SL3 Dr. Chen rescue (the Return-Mission payoff)
                 x3::logInfo("use: Dr. Chen freed — the Return Mission is complete");
+            } else if (!termMode && game.secret().terminal().built() &&
+                       [&]{ const x3::phys::Vec3 a = game.secret().terminal().anchor();
+                            const float ddx = eye.x - a.x, ddz = eye.z - a.z;
+                            return ddx*ddx + ddz*ddz < 9.0f; }()) {
+                // Near the cell HoloTerminal: open terminal-entry mode (type the override
+                // code, Enter submits to the sink -> the trapdoor opens on 1127).
+                termMode = true; game.secret().terminal().setActive(true);
+                x3::logInfo("use: cell terminal — type the override code, Enter to submit, Esc to cancel");
             } else if (!codeMode && (game.nearLockedCodedDoor(eye) ||
                                      midFloors.nearLockedCodedDoor(eye) ||
                                      topFloors.nearLockedCodedDoor(eye) ||
@@ -4517,6 +4546,29 @@ int main(int argc, char** argv) {
                 }
             }
             kpEnterPrev = enterNow;
+        }
+
+        // ---- Cell HoloTerminal entry: capture digit/backspace/Enter edges while the
+        // terminal is active. Enter calls submit() -> the terminal's sink (which opens
+        // the floor-hatch trapdoor on the correct code 1127). Esc-cancel handled below. --
+        if (termMode && !terrainWorld) {
+            x3::game::HoloTerminal& term = game.secret().terminal();
+            for (int dgt = 0; dgt < 10; ++dgt) {
+                bool dn = keyDown(GLFW_KEY_0 + dgt) || keyDown(GLFW_KEY_KP_0 + dgt);
+                if (dn && !tmDigitPrev[dgt]) term.pushChar((char)('0' + dgt));
+                tmDigitPrev[dgt] = dn;
+            }
+            bool tbackNow = keyDown(GLFW_KEY_BACKSPACE);
+            if (tbackNow && !tmBackPrev) term.backspace();
+            tmBackPrev = tbackNow;
+            bool tEnterNow = keyDown(GLFW_KEY_ENTER) || keyDown(GLFW_KEY_KP_ENTER);
+            if (tEnterNow && !tmEnterPrev) {
+                bool ok = term.submit();   // fires the sink -> opens the trapdoor on 1127
+                if (ok) { termMode = false; term.setActive(false);
+                          x3::logInfo("terminal: code ACCEPTED — trapdoor opening"); }
+                else      x3::logInfo("terminal: code rejected");
+            }
+            tmEnterPrev = tEnterNow;
         }
 
         // Camera state this frame (set by whichever branch runs), reused below
@@ -4667,6 +4719,21 @@ int main(int argc, char** argv) {
             { const double _pt0 = glfwGetTime();
               game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
               g_perf.tick += glfwGetTime() - _pt0; }
+            // ---- SECRET ROOM payoff: game.tick() ticks the cell terminal + the room's
+            // loot collection (latching counts). Apply the gameplay EFFECTS here, where
+            // we own the concrete Player: each newly-collected HEALTH pack heals +50, and
+            // the NANO-BOOSTER (a tech/bio augment) triggers a full bio-surge heal as a
+            // stand-in effect (see secret_room.cpp's upgrade-system TODO). ----
+            {
+                const x3::game::SecretRoom& sr = game.secret();
+                uint32_t hg = sr.healthCollected();
+                if (hg > prevSecretHealth) { player.heal(50 * (int)(hg - prevSecretHealth)); prevSecretHealth = hg; }
+                if (sr.nanoBoosterActive() && !prevSecretNano) {
+                    prevSecretNano = true;
+                    player.heal();   // full bio-surge (TODO: a real Augment system raises maxHP/abilities)
+                    x3::logInfo("secret: NANO-BOOSTER augment online — bio surge");
+                }
+            }
             // Spire mid floors (F3/F4/F5): dispatch their floor-hub triggers (the F5
             // hub starts the rescue clock) then tick their enemy groups + gated victim.
             // Reaching the F4 hub OPENS the F4->F5 connector that "finds" the off-
@@ -4929,6 +4996,7 @@ int main(int argc, char** argv) {
                 // the procedural door box is collision-only (hidden).
                 game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
+                game.secret().drawExtras(*device, frame, scene);   // secret-room weapon pickup (bob/spin)
                 midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
                 midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
                 topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
@@ -5058,6 +5126,33 @@ int main(int argc, char** argv) {
                     const float kpCol[4] = { 1.0f, 0.82f, 0.18f, 1.0f };
                     device->drawHudText(frame, kpPrompt.c_str(),
                                         (float)hudW * 0.5f - 230.0f, (float)hudH * 0.5f - 60.0f, 3.0f, kpCol);
+                }
+                // CELL HOLO-TERMINAL readout: the boot text + the live input line drawn
+                // over the panel (worldToScreen anchor). The terminal's submit sink opens
+                // the floor-hatch trapdoor on the override code (1127). TODO(main-lane):
+                // a true ON-GLASS large-text pass (curved/inset to the panel) belongs in
+                // the HUD layer here — this is the flat worldToScreen overlay placeholder.
+                if (termMode && !terrainWorld && game.secret().terminal().built()) {
+                    const auto& term = game.secret().terminal();
+                    const x3::phys::Vec3 a = term.anchor();
+                    float sx = 0.0f, sy = 0.0f;
+                    if (device->worldToScreen(a.x, a.y + 0.45f, a.z, sx, sy)) {
+                        const float* col = term.textColor();
+                        const float c4[4] = { col[0], col[1], col[2], col[3] };
+                        const float sh[4] = { 0.0f, 0.0f, 0.0f, 0.7f };
+                        float ty = sy - 70.0f;
+                        for (const std::string& ln : term.lines()) {
+                            device->drawHudText(frame, ln.c_str(), sx - 150.0f + 1.5f, ty + 1.5f, 1.6f, sh);
+                            device->drawHudText(frame, ln.c_str(), sx - 150.0f, ty, 1.6f, c4);
+                            ty += 18.0f;
+                        }
+                        // The editable input line + blinking cursor.
+                        const std::string inLine = std::string("> ") + term.input() +
+                                                   (term.cursorOn() ? "_" : " ");
+                        const float ic[4] = { 1.0f, 0.9f, 0.3f, 1.0f };
+                        device->drawHudText(frame, inLine.c_str(), sx - 150.0f + 1.5f, ty + 1.5f, 2.0f, sh);
+                        device->drawHudText(frame, inLine.c_str(), sx - 150.0f, ty, 2.0f, ic);
+                    }
                 }
                 // Door interaction prompt: a "[E] Open" / "[E] Close" tag floating at
                 // the doorway the player is looking at (within use range), fading in

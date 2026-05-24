@@ -33,6 +33,7 @@
 #include "rescue.h"
 #include "level1.h"
 #include "env_art.h"
+#include "secret_room.h"   // code-locked trapdoor -> secret room (cell HoloTerminal)
 
 #include "save.h"      // engine-general checkpoint schema (the bridge maps onto it)
 
@@ -237,6 +238,14 @@ public:
     // The weapon system (host reads usingRealModel() for logging).
     const WeaponSystem& weapon() const { return m_weapon; }
 
+    // ---- Code-locked trapdoor -> SECRET ROOM (cell HoloTerminal) -----------
+    // The secret-room feature: the cell holographic terminal, the floor-hatch
+    // trapdoor (opened by the override code 1127), and the stocked room below.
+    // The host (main.cpp) routes typed chars into secret().terminal() and draws
+    // its readout/input over the panel; tick() ticks its blink + pickup logic.
+    SecretRoom&       secret()       { return m_secretRoom; }
+    const SecretRoom& secret() const { return m_secretRoom; }
+
     // ---- F2 rescue system (spec §5) ---------------------------------------
     // The rescue system (3 victims on 5-min timers; rescue -> companion, expire ->
     // boss). The host pokes tryRescue() on an E-interact edge and reads hudTimers()
@@ -297,6 +306,7 @@ private:
     ObjectiveSystem m_objectives;
     TriggerSystem  m_triggers;
     RescueSystem   m_rescue;       // F2 victims (Aria/Keisha/Emily) — spec §5
+    SecretRoom     m_secretRoom;   // code-locked trapdoor -> secret room (cell HoloTerminal)
     MonsterManager m_chen;         // F2 Medical Bay boss: Dr. Chen (Wave-2; gated on the F2 hub)
     bool           m_chenSpawned = false;  // Dr. Chen placed on the F2 plate (on the F2 hub)
 
