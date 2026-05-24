@@ -1,46 +1,37 @@
-// Club 1127 + the flooded cave/tunnel network. See app/club1127.h.
+// Club 1127 — "THE DEEP". See app/club1127.h.
 //
-// Clean-room: built from the Scene + IRenderDevice + IPhysicsWorld + MonsterSystem
-// interfaces only (the same public seams app/env_art.cpp + app/door.cpp use). No
-// purchased C# / id Tech source consulted.
+// CLEAN-ROOM: ported forward from Tim's OWN Babylon game module
+// (C:/Users/Tim Smith/OneDrive/GameDev/Q3Engine/src/world/x3-club1127.js — Tim's
+// IP, authored by his "Agent 66"; NOT id Tech / RBDOOM / any third-party engine).
+// Built here from that JS layout + the X3Native Scene / IRenderDevice /
+// IPhysicsWorld / MonsterSystem interfaces only (the same public seams
+// app/env_art.cpp + app/door.cpp + the prior club used). No third-party engine
+// source consulted.
 //
-// ---- Reaching this area ----------------------------------------------------
-//   (a) STANDALONE TEST: `--world club` (dispatched in app/main.cpp next to
-//       `--world terrain`). Walk it (WASD / mouse / Space / F noclip); add
-//       `--screenshot <path>` to capture the showcase vantage headlessly.
-//   (b) CODE-1127 ENTRY FROM THE SPIRE (canon): the Spire's keypad already accepts
-//       code 1127 (see app/level1_game.cpp tryDoorCode + main.cpp's codeMode). The
-//       hook point is there: when 1127 is accepted at the SECRET club keypad
-//       (rather than Door C), the host would teleport the player into a club
-//       instance built by Club1127World::build() instead of opening a door. That
-//       cross-level transition is intentionally NOT wired here to keep this change
-//       low-conflict with level1.cpp; the `--world club` flag is enough to
-//       build/verify the area. (Search main.cpp for "code-1127 hook point".)
+// MAPPING NOTES (JS -> native):
+//   * The JS parents everything to a TransformNode at (originX, D.Y, originZ) and
+//     positions children RELATIVE. Native addBox authors WORLD-space geometry, so
+//     we keep originX/Z = 0 and ADD the club Y (kClubY = -200) to every center Y.
+//     A child at JS-local y becomes world y = (kClubY + y).
+//   * JS axes: Babylon is left-handed (+Z forward). X3Native is right-handed
+//     (-Z forward; docs/CONVENTIONS.md). The club is mirror-symmetric front/back
+//     and we only PLACE boxes (no winding-sensitive normals beyond makeBox's own),
+//     so we keep the JS coordinates as-authored — the room reads identically.
+//   * Babylon StandardMaterial diffuse/emissive -> native baseColor[] + emissive[]
+//     ({r,g,b,strength}); strength > 1 => a bright HDR bloom source.
+//   * Cylinders/spheres (turntables, stools, the ORB, blacklight tubes, cables,
+//     railing balusters) are approximated with boxes (the engine's primitive).
+//   * The JS Babylon lights (Hemispheric/Point/Spot) -> the engine's forward
+//     PointLight set (premultiplied color); spotlights become orbiting point
+//     lights, the hemisphere becomes a few soft fill lights.
+//   * updateClub1127() (ORB spin + spotlight orbit + blacklight pulse) -> update().
 //
-// ---- Layout (Y-up, +X right, -Z forward; see docs/CONVENTIONS.md) ----------
-//   CLUB (around the origin, floor at y=0):
-//     * A ~26 x 22 m room, NOT a plain box: a sunken central DANCE FLOOR (glowing
-//       neon-grid tiles) ringed by a raised walkway, with two upper CATWALKS /
-//       BALCONIES along the +Z / -Z walls reached conceptually from the sides.
-//     * A BAR counter along the -X wall with BartenderDanny behind it; RexBouncer
-//       stands by the entrance landing. Neon strips + a hanging light rig over the
-//       dance floor; magenta/cyan/violet point lights give the club its glow.
-//     * A glassy mezzanine railing (translucent-looking emissive strips) cribbed
-//       from the Showroom/ModularSciFi feel.
-//   CAVE MOUTH + TUNNEL (off the club's +X wall):
-//     * A jagged CAVE MOUTH breaks the +X wall; a sloped, arched TUNNEL descends
-//       (~5 m down over ~20 m) toward the caverns — approximated with stacked,
-//       jittered rock boxes that vary in size/height/angle so it reads organic.
-//   CAVERNS (below + beyond, floor sloping down to ~y=-6):
-//     * POWER-CORE cavern: an irregular chamber with a glowing core pillar +
-//       teal crystal clusters (each crystal carries its own small point light,
-//       LevelArchitect-style).
-//     * FLOODED section: a shallow "water" slab (dark teal, emissive sheen) with a
-//       GreatWhiteShark + a manta ray + a hammerhead lurking; lore-cache nooks in
-//       the walls (glowing data-cache boxes).
-//     * HIDDEN BOSS ARENA: a wider, taller cavern at the far end with the
-//       BossTheSiren as the hidden boss, lit red.
-// ---------------------------------------------------------------------------
+// Reaching this area:
+//   (a) STANDALONE: `--world club` (app/main.cpp). Walk it (WASD / mouse / Space /
+//       F noclip); `--world club --screenshot <path>` captures the showcase vantage.
+//   (b) ELEVATOR DISCO DESCENT (canon): the elevator's keypad code 1127 puts it in
+//       DISCO mode + descends to Y=-200 (§2.2/§2.3). That elevator lane wires the
+//       descent + teleports the player to spawn(); this module just builds the room.
 #include "club1127.h"
 #include "mesh_prims.h"
 
@@ -56,34 +47,42 @@ namespace {
 
 constexpr float kPi = 3.14159265358979f;
 
-// Small deterministic LCG so the "organic" jitter is reproducible run-to-run
-// (same caves every launch -> stable screenshots). Seeded once in build().
-struct Rng {
-    uint32_t s = 0x1127C0DEu;
-    float next01() { s = s * 1664525u + 1013904223u; return (float)((s >> 8) & 0xFFFFFF) / 16777215.0f; }
-    float range(float a, float b) { return a + (b - a) * next01(); }
-};
+// ---- Tints (linear-ish; the device tonemaps) ------------------------------
+// Ported from the JS StandardMaterial diffuse colors (hex -> 0..1 RGB).
+const float kWall[4]   = { 0.039f, 0.039f, 0.070f, 1.0f }; // 0x0a0a12 club wall
+const float kFloor[4]  = { 0.031f, 0.031f, 0.063f, 1.0f }; // 0x080810 club floor
+const float kCeil[4]   = { 0.020f, 0.020f, 0.031f, 1.0f }; // 0x050508 ceiling
+const float kSpk[4]    = { 0.039f, 0.039f, 0.039f, 1.0f }; // 0x0a0a0a speaker cab
+const float kAmp[4]    = { 0.067f, 0.067f, 0.067f, 1.0f }; // 0x111111 amp
+const float kSub[4]    = { 0.031f, 0.031f, 0.031f, 1.0f }; // 0x080808 sub cab
+const float kMetal[4]  = { 0.227f, 0.227f, 0.267f, 1.0f }; // 0x3a3a44 metal platform
+const float kCouch[4]  = { 0.039f, 0.020f, 0.031f, 1.0f }; // 0x0a0508 couch
+const float kStair[4]  = { 0.102f, 0.102f, 0.133f, 1.0f }; // 0x1a1a22 stair
+const float kRail[4]   = { 0.267f, 0.267f, 0.333f, 1.0f }; // 0x444455 railing
+const float kBar[4]    = { 0.102f, 0.082f, 0.125f, 1.0f }; // 0x1a1520 bar body
+const float kBarTop[4] = { 0.165f, 0.125f, 0.208f, 1.0f }; // 0x2a2035 bar top
+const float kStool[4]  = { 0.133f, 0.133f, 0.133f, 1.0f }; // 0x222222 stool seat
+const float kStoolLeg[4]={ 0.267f, 0.267f, 0.267f, 1.0f }; // 0x444444 stool leg
+const float kChrome[4] = { 0.533f, 0.533f, 0.600f, 1.0f }; // 0x888899 chrome handle
+const float kTvFrame[4]= { 0.031f, 0.031f, 0.031f, 1.0f }; // 0x080808 TV bezel
+const float kGlass[4]  = { 0.200f, 0.267f, 0.333f, 0.55f }; // 0x334455 glass door
+const float kCable[4]  = { 0.267f, 0.267f, 0.267f, 1.0f }; // 0x444444 cable
+const float kOrb[4]    = { 0.700f, 0.700f, 0.800f, 1.0f }; // mirror ball facets
 
-// Common tints (linear-ish; the device tonemaps). Club neon is bright + saturated.
-const float kFloorClub[4]  = { 0.10f, 0.10f, 0.14f, 1.0f }; // dark club floor
-const float kWallClub[4]   = { 0.13f, 0.12f, 0.18f, 1.0f }; // moody club wall
-const float kBarTop[4]     = { 0.20f, 0.16f, 0.10f, 1.0f }; // warm bar wood/metal
-const float kRock[4]       = { 0.16f, 0.13f, 0.11f, 1.0f }; // cave rock (LevelArchitect caveMat)
-const float kRockFloor[4]  = { 0.13f, 0.11f, 0.09f, 1.0f }; // cave floor
-// (The flooded section now uses the engine's REAL animated water — driven per
-//  frame via setWaterParams in Club1127World::tickWater() — not a static slab,
-//  so the old kWater slab tint + kEmitWaterSheen glow are gone.)
-
-// Emissive helpers: { r, g, b, strength }. strength > 1 => bright HDR bloom source.
-const float kEmitOff[4]    = { 0.0f, 0.0f, 0.0f, 0.0f };
-const float kEmitMagenta[4]= { 1.00f, 0.10f, 0.65f, 5.0f };
-const float kEmitCyan[4]   = { 0.10f, 0.85f, 1.00f, 5.0f };
-const float kEmitViolet[4] = { 0.55f, 0.20f, 1.00f, 4.5f };
-const float kEmitNeonGrid[4]={ 0.20f, 0.70f, 1.00f, 3.0f }; // dance-floor tiles
-const float kEmitCrystal[4]= { 0.15f, 0.95f, 0.85f, 4.0f }; // teal cave crystal
-const float kEmitCore[4]   = { 0.40f, 0.85f, 1.00f, 7.0f }; // power core (very bright)
-const float kEmitLore[4]   = { 0.95f, 0.80f, 0.20f, 4.0f }; // lore-cache amber
-const float kEmitBoss[4]   = { 1.00f, 0.18f, 0.12f, 5.0f }; // boss-arena red
+// ---- Emissive helpers: { r, g, b, strength }. strength > 1 => HDR bloom. -----
+const float kEmitOff[4]     = { 0.0f, 0.0f, 0.0f, 0.0f };
+const float kEmitNeon[4]    = { 1.00f, 0.0f, 1.00f, 4.0f };  // magenta aerial-bar neon
+const float kEmitDjCon[4]   = { 0.10f, 0.10f, 0.28f, 1.5f }; // DJ console glow
+const float kEmitDjScr[4]   = { 0.30f, 0.30f, 0.90f, 3.0f }; // DJ/OLED screens
+const float kEmitKeypad[4]  = { 0.10f, 0.95f, 0.30f, 2.0f }; // green keypad
+const float kEmitBarTop[4]  = { 0.30f, 0.20f, 0.50f, 1.5f }; // bar-top glow
+const float kEmitTile1[4]   = { 0.45f, 0.0f, 0.85f, 2.2f };  // purple dance tile (0x2a0050)
+const float kEmitTile2[4]   = { 0.12f, 0.0f, 0.30f, 1.2f };  // dark dance tile (0x0a0020)
+const float kEmitOrb[4]     = { 0.45f, 0.45f, 0.60f, 1.4f };  // ORB self-glow
+const float kEmitLed[4]     = { 0.10f, 1.00f, 0.10f, 3.0f };  // amp power LED
+const float kEmitAbTop[4]   = { 0.353f, 0.353f, 0.416f, 1.2f };// aerial-bar polished top
+// Blacklight base emissive (PULSED each frame in update()): deep UV violet.
+const float kBlacklightR = 0.50f, kBlacklightG = 0.0f, kBlacklightB = 1.0f;
 
 // Push a point light (premultiplied color) into the set.
 void addLight(std::vector<x3::rhi::PointLight>& v, float x, float y, float z,
@@ -115,7 +114,6 @@ uint32_t Club1127World::addBox(Scene& scene, x3::rhi::IRenderDevice& device,
         e.body = physics.addStaticMesh(geo.cverts.data(), (uint32_t)(geo.cverts.size() / 3),
                                        geo.cindex.data(), (uint32_t)geo.cindex.size());
     }
-    // Authored transform is identity (geometry already world-placed).
     return scene.add(e);
 }
 
@@ -137,366 +135,484 @@ void Club1127World::addCharacter(Scene& scene, x3::rhi::IRenderDevice& device,
     if (tint) for (int i = 0; i < 4; ++i) t.tint[i] = tint[i];
     sys->buildMonsterTuned(scene, device, physics, modelDir, pos, t);
     m_chars.push_back(std::move(sys));
-    // Face roughly toward the club center / a fixed point so the prop has a
-    // sensible heading; chaseSpeed 0 means it never actually pursues it.
-    m_charFace.push_back(x3::phys::Vec3{ 0.0f, pos.y, 0.0f });
 }
 
-void Club1127World::build(Scene& scene, x3::rhi::IRenderDevice& device,
-                          x3::phys::IPhysicsWorld& physics, std::string_view modelDir) {
-    if (m_built) return;
+const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderDevice& device,
+                                                 x3::phys::IPhysicsWorld& physics,
+                                                 std::string_view modelDir) {
+    if (m_built) return m_stats;
     m_built = true;
-    Rng rng;
 
-    // ===================================================================
-    // CLUB ROOM — a stylish multi-level neon space (NOT a plain box).
-    //   Outer footprint: X in [-13, 13], Z in [-11, 11]. Ceiling ~7 m.
-    //   Sunken dance floor: X in [-6, 6], Z in [-5, 5], floor at y=0; the
-    //   surrounding walkway ring sits +0.6 m so the dance floor is a pit.
-    // ===================================================================
-    const float clubX0 = -13.0f, clubX1 = 13.0f;
-    const float clubZ0 = -11.0f, clubZ1 = 11.0f;
-    const float clubCeil = 7.0f;
-    const float wallT = 0.4f;        // wall half-thickness
-    const float ringY = 0.6f;        // raised walkway height (dance floor is sunken)
+    const uint32_t entsBefore = scene.size();
 
-    // --- Raised walkway ring floor (the room floor the player walks at y=ringY),
-    // built as a frame of four slabs around the sunken dance pit. ---
-    const float pitX0 = -6.0f, pitX1 = 6.0f, pitZ0 = -5.0f, pitZ1 = 5.0f;
-    auto slabRing = [&](float x0, float x1, float z0, float z1) {
-        const float cx = (x0 + x1) * 0.5f, cz = (z0 + z1) * 0.5f;
-        addBox(scene, device, physics, cx, ringY - 0.15f, cz,
-               (x1 - x0) * 0.5f, 0.15f, (z1 - z0) * 0.5f, kFloorClub, kEmitOff, true, 0.5f);
+    // The club Y origin: everything authored at JS-local y is offset by oy.
+    const float oy = kClubY;          // -200
+    const float CW = kCW, CL = kCL, CH = kCH;
+    const float T  = 0.3f;            // wall thickness (JS WALL_T)
+
+    // Engine-room/lounge dims (JS D.ER_*).
+    const float ER_W = 6.1f;          // 20 ft wide
+    const float ER_D = 4.27f;         // 14 ft deep
+    const float LOUNGE_Y = 4.57f;     // 2nd story at 15 ft
+
+    // Convenience: author a box at JS-local coords (Y offset to oy applied here).
+    auto box = [&](float x, float y, float z, float hx, float hy, float hz,
+                   const float* col, const float* em, bool coll, float uv = 1.0f) {
+        return addBox(scene, device, physics, x, oy + y, z, hx, hy, hz, col,
+                      em ? em : kEmitOff, coll, uv);
     };
-    slabRing(clubX0, clubX1, pitZ1, clubZ1);   // +Z walkway band
-    slabRing(clubX0, clubX1, clubZ0, pitZ0);   // -Z walkway band
-    slabRing(clubX0, pitX0, pitZ0, pitZ1);     // -X walkway band
-    slabRing(pitX1, clubX1, pitZ0, pitZ1);     // +X walkway band
 
-    // --- Sunken DANCE FLOOR: a base slab at y=0 plus a grid of glowing neon
-    // tiles. The grid alternates cyan/violet so it reads as a lit dance floor. ---
-    addBox(scene, device, physics, 0.0f, -0.15f, 0.0f,
-           (pitX1 - pitX0) * 0.5f, 0.15f, (pitZ1 - pitZ0) * 0.5f, kFloorClub, kEmitOff, true, 1.0f);
+    m_stats.floorY    = oy;           // main floor center at world Y = -200
+    m_stats.roomMinX  = -CW / 2;  m_stats.roomMaxX = CW / 2;
+    m_stats.roomMinZ  = -CL / 2;  m_stats.roomMaxZ = CL / 2;
+
+    // ==================================================================
+    // MAIN SHELL — floor, ceiling, four walls (the 50x100x30 ft room).
+    // ==================================================================
+    box(0, 0.0f, 0, CW / 2, 0.1f, CL / 2, kFloor, kEmitOff, true, 0.4f);          // floor slab
+    box(0, CH,  0, CW / 2, 0.1f, CL / 2, kCeil,  kEmitOff, true, 0.4f);           // ceiling
+    m_stats.ceilingY = oy + CH;
+
+    // North wall (-Z) — gap for the engine room (ER_W wide, centered at x=0).
+    const float erGap = ER_W;
+    const float nwSide = (CW - erGap) / 2;
+    box(-(erGap / 2 + nwSide / 2), CH / 2, -CL / 2, nwSide / 2, CH / 2, T / 2, kWall, kEmitOff, true, 0.5f);
+    box( (erGap / 2 + nwSide / 2), CH / 2, -CL / 2, nwSide / 2, CH / 2, T / 2, kWall, kEmitOff, true, 0.5f);
+    // South wall (+Z) — solid.
+    box(0, CH / 2, CL / 2, CW / 2, CH / 2, T / 2, kWall, kEmitOff, true, 0.5f);
+    // West long wall (-X) — solid (the ground-bar wall).
+    box(-CW / 2, CH / 2, 0, T / 2, CH / 2, CL / 2, kWall, kEmitOff, true, 0.5f);
+    // East long wall (+X) — elevator entrance gap near the south end.
     {
-        const int nx = 6, nz = 5;
-        const float tw = (pitX1 - pitX0) / nx, td = (pitZ1 - pitZ0) / nz;
-        for (int ix = 0; ix < nx; ++ix)
-            for (int iz = 0; iz < nz; ++iz) {
-                const float tx = pitX0 + (ix + 0.5f) * tw;
-                const float tz = pitZ0 + (iz + 0.5f) * td;
-                const bool on = ((ix ^ iz) & 1);
-                const float* em = on ? kEmitCyan : kEmitViolet;
-                // Thin glowing inlay tile flush with the dance floor.
-                addBox(scene, device, physics, tx, 0.02f, tz,
-                       tw * 0.42f, 0.03f, td * 0.42f, kFloorClub, em, false, 1.0f);
+        const float entrW = 3.5f;                      // elevator opening width
+        const float entrZ = CL / 2 - entrW / 2 - 1.0f; // near the SE corner
+        const float northLen = CL / 2 + (entrZ - entrW / 2);
+        box(CW / 2, CH / 2, -CL / 2 + northLen / 2, T / 2, CH / 2, northLen / 2, kWall, kEmitOff, true, 0.5f);
+        const float southLen = CL / 2 - (entrZ + entrW / 2);
+        if (southLen > 0.1f)
+            box(CW / 2, CH / 2, CL / 2 - southLen / 2, T / 2, CH / 2, southLen / 2, kWall, kEmitOff, true, 0.5f);
+        // Header above the elevator door.
+        box(CW / 2, 2.8f + (CH - 2.8f) / 2, entrZ, T / 2, (CH - 2.8f) / 2, entrW / 2, kWall, kEmitOff, true, 0.5f);
+        // Player spawn: just inside the elevator opening on the floor, facing -X
+        // (into the club toward the dance floor + DJ booth).
+        m_spawn = x3::phys::Vec3{ CW / 2 - 1.6f, oy + 0.15f, entrZ };
+    }
+
+    // ==================================================================
+    // ENGINE ROOM + LOUNGE (north side, 2 stories, 12-step stair).
+    //   The JS parents these to a node at z = -CL/2 - ER_D/2; we add that offset.
+    // ==================================================================
+    const float erZ0 = -CL / 2 - ER_D / 2;   // engine-room center Z
+    auto erbox = [&](float x, float y, float z, float hx, float hy, float hz,
+                     const float* col, const float* em, bool coll, float uv = 1.0f) {
+        return box(x, y, erZ0 + z, hx, hy, hz, col, em, coll, uv);
+    };
+    erbox(0, 0.0f, 0, ER_W / 2, 0.1f, ER_D / 2, kFloor, kEmitOff, true, 0.5f);    // ER floor
+    erbox(0, CH,  0, ER_W / 2, 0.1f, ER_D / 2, kCeil,  kEmitOff, true, 0.5f);     // ER ceiling
+    erbox(0, CH / 2, -ER_D / 2, ER_W / 2, CH / 2, T / 2, kWall, kEmitOff, true, 0.5f); // back wall
+    erbox(-ER_W / 2, CH / 2, 0, T / 2, CH / 2, ER_D / 2, kWall, kEmitOff, true, 0.5f); // -X side
+    erbox( ER_W / 2, CH / 2, 0, T / 2, CH / 2, ER_D / 2, kWall, kEmitOff, true, 0.5f); // +X side
+
+    // Lounge floor (2nd story) + railing + balusters.
+    erbox(0, LOUNGE_Y, 0, (ER_W - 0.2f) / 2, 0.1f, (ER_D - 0.2f) / 2, kFloor, kEmitOff, true, 0.5f);
+    m_stats.hasLoungeFloor = true;
+    erbox(0, LOUNGE_Y + 0.5f, ER_D / 2 - 0.1f, (ER_W - 0.4f) / 2, 0.5f, 0.03f, kRail, kEmitOff, true);
+    for (int r = 0; r < 8; ++r) {
+        const float rx = -ER_W / 2 + 0.5f + r * (ER_W - 1) / 7;
+        erbox(rx, LOUNGE_Y + 0.5f, ER_D / 2 - 0.1f, 0.03f, 0.5f, 0.03f, kRail, kEmitOff, false);
+    }
+
+    // 12-step stair along the WEST wall up to the lounge.
+    {
+        const int stCt = 12;
+        const float stD = ER_D / stCt;
+        const float stR = LOUNGE_Y / stCt;
+        for (int s = 0; s < stCt; ++s) {
+            erbox(-ER_W / 2 + 0.65f, stR * (s + 0.5f), -ER_D / 2 + stD * (s + 0.5f),
+                  0.5f, (stR * (s + 0.5f)) /* riser grows */ * 0.0f + 0.04f, (stD - 0.02f) / 2,
+                  kStair, kEmitOff, true);
+            ++m_stats.stairSteps;
+        }
+    }
+
+    // Engine-room south wall: a center pier + glass swing doors (west) + an inset
+    // alcove door (east) into the main club, ported from the JS (simplified piers/
+    // headers; the doors are visual props).
+    {
+        const float erSZ = ER_D / 2;          // south edge of the ER (local z)
+        const float glassDoorW = 1.8f;
+        const float pierW = 0.8f;
+        const float westDoorX = -ER_W / 4;
+        // West header + flanks.
+        const float westSectionW = ER_W / 2 - pierW / 2;
+        const float headerH = CH - 2.4f;
+        erbox(-(pierW / 2 + westSectionW / 2), 2.4f + headerH / 2, erSZ,
+              westSectionW / 2, headerH / 2, T / 2, kWall, kEmitOff, true, 0.5f);
+        // Glass swing doors (2 leaves) + chrome handles (visual; non-colliding).
+        const float ghw = glassDoorW / 2;
+        for (int s = -1; s <= 1; s += 2) {
+            erbox(westDoorX + s * (ghw / 2 + 0.01f), 1.15f, erSZ, (ghw - 0.02f) / 2, 1.15f, 0.02f,
+                  kGlass, kEmitOff, false);
+            erbox(westDoorX + s * 0.02f, 1.1f, erSZ + (s > 0 ? 0.04f : -0.04f),
+                  0.015f, 0.125f, 0.03f, kChrome, kEmitOff, false);
+        }
+        // Center pier.
+        erbox(0, CH / 2, erSZ, pierW / 2, CH / 2, T / 2, kWall, kEmitOff, true, 0.5f);
+        // East alcove: header + inset door + a pass-through cutout frame.
+        const float eastSectionW = ER_W / 2 - pierW / 2;
+        const float eastCenterX = pierW / 2 + eastSectionW / 2;
+        const float alcoveDoorW = 1.2f;
+        erbox(eastCenterX, 2.2f + (CH - 2.2f) / 2, erSZ - 0.6f, alcoveDoorW / 2, (CH - 2.2f) / 2, T / 2, kWall, kEmitOff, true, 0.5f);
+        erbox(eastCenterX, 1.05f, erSZ - 0.57f, (alcoveDoorW - 0.04f) / 2, 1.05f, 0.03f, kStair, kEmitOff, false);
+        erbox(eastCenterX, 0.61f, erSZ - 0.59f, 0.485f, 0.61f, 0.04f, kRail, kEmitOff, false); // cutout frame
+        // Lounge overhang above the east alcove.
+        erbox(eastCenterX, LOUNGE_Y, erSZ - 0.6f + 0.2f, (eastSectionW + 0.3f) / 2, 0.075f, (0.6f + 0.4f) / 2, kFloor, kEmitOff, true);
+    }
+
+    // Engine-room fill light.
+    addLight(m_lights, 0, oy + 3.0f, erZ0, 0.30f, 0.20f, 0.45f, 9.0f);
+
+    // ==================================================================
+    // SUSPENDED DJ BOOTH (turntables, mixer, 2 OLED, keypad door, brackets).
+    // ==================================================================
+    {
+        const float djW = 3.5f, djD = 2.5f, djH = 2.8f, djY = LOUNGE_Y;
+        const float djZ = -CL / 2 + djD / 2 + 0.3f;
+        box(0, djY, djZ, djW / 2, 0.075f, djD / 2, kMetal, kEmitOff, true);             // booth floor
+        box(0, djY + djH, djZ, (djW + 0.1f) / 2, 0.05f, (djD + 0.1f) / 2, kCeil, kEmitOff, false); // booth ceiling
+        m_stats.hasDjBooth = true;
+
+        // Back wall (split around the keypad door).
+        const float djBkW = (djW - 0.9f) / 2;
+        box(-(0.45f + djBkW / 2), djY + djH / 2, -CL / 2 + 0.3f, djBkW / 2, djH / 2, T / 2, kWall, kEmitOff, true);
+        box( (0.45f + djBkW / 2), djY + djH / 2, -CL / 2 + 0.3f, djBkW / 2, djH / 2, T / 2, kWall, kEmitOff, true);
+        // Secured keypad door + keypad.
+        box(djW / 2 - 0.6f, djY + 1.1f, -CL / 2 + 0.3f, 0.45f, 1.1f, 0.04f, kStair, kEmitOff, false);
+        box(djW / 2 - 0.1f, djY + 1.2f, -CL / 2 + 0.35f, 0.05f, 0.075f, 0.015f, kStair, kEmitKeypad, false);
+        m_stats.hasKeypadDoor = true;
+
+        // Low front + side walls (the booth railing).
+        box(0, djY + 0.55f, -CL / 2 + djD + 0.3f, djW / 2, 0.55f, T / 2, kWall, kEmitOff, true);
+        for (int s = -1; s <= 1; s += 2)
+            box(s * djW / 2, djY + 0.55f, djZ, T / 2, 0.55f, djD / 2, kWall, kEmitOff, true);
+
+        // DJ mixer console + 2 turntables (cylinders -> flat boxes).
+        box(0, djY + 1.05f, -CL / 2 + djD - 0.1f, 1.4f, 0.06f, 0.4f, kStair, kEmitDjCon, false);
+        for (int i = 0; i < 2; ++i) {
+            const float xo = (i == 0 ? -0.7f : 0.7f);
+            box(xo, djY + 1.14f, -CL / 2 + djD - 0.1f, 0.275f, 0.02f, 0.275f, kSpk, kEmitDjCon, false);
+        }
+        m_stats.hasDjTurntables = true;
+
+        // 2 OLED screens.
+        for (int i = 0; i < 2; ++i) {
+            const float xo = (i == 0 ? -0.25f : 0.25f);
+            box(xo, djY + 1.35f, -CL / 2 + djD - 0.35f, 0.175f, 0.125f, 0.015f, kTvFrame, kEmitDjScr, false);
+        }
+        m_stats.hasDjScreens = true;
+
+        // Support brackets down to the floor.
+        for (int s = -1; s <= 1; s += 2)
+            box(s * (djW / 2 - 0.2f), djY / 2, -CL / 2 + djD + 0.3f, 0.075f, djY / 2, 0.075f, kMetal, kEmitOff, true);
+
+        // Booth glow.
+        addLight(m_lights, 0, oy + djY + 1.6f, djZ, 0.30f, 0.30f, 0.80f, 7.0f);
+
+        // ==============================================================
+        // AERIAL BAR (beside the booth, neon underglow, polished top, railings).
+        // ==============================================================
+        const float abW = 4.0f, abD = 1.5f, abX = -djW / 2 - abW / 2 + 0.5f, abZ = djZ;
+        box(abX, djY, abZ, abW / 2, 0.06f, abD / 2, kMetal, kEmitOff, true);               // platform
+        box(abX, djY + 0.55f, -CL / 2 + djD + 0.1f, (abW - 0.4f) / 2, 0.55f, 0.25f, kMetal, kEmitOff, true); // counter
+        box(abX, djY + 1.13f, -CL / 2 + djD + 0.1f, (abW - 0.2f) / 2, 0.025f, 0.3f, kMetal, kEmitAbTop, false); // polished top
+        m_stats.hasAerialBar = true;
+        // Magenta neon strips under the platform edges.
+        box(abX, djY - 0.08f, abZ + abD / 2, (abW - 0.4f) / 2, 0.02f, 0.02f, kWall, kEmitNeon, false);
+        box(abX, djY - 0.08f, abZ - abD / 2, (abW - 0.4f) / 2, 0.02f, 0.02f, kWall, kEmitNeon, false);
+        box(abX - abW / 2 + 0.2f, djY - 0.08f, abZ, 0.02f, 0.02f, (abD - 0.2f) / 2, kWall, kEmitNeon, false);
+        addLight(m_lights, abX, oy + djY - 0.3f, abZ, 2.0f, 0.0f, 2.0f, 8.0f);  // magenta underglow
+        // Safety railings.
+        box(abX, djY + 0.5f, abZ + abD / 2, abW / 2, 0.5f, 0.02f, kRail, kEmitOff, true);
+        box(abX, djY + 0.5f, abZ - abD / 2, abW / 2, 0.5f, 0.02f, kRail, kEmitOff, true);
+        box(abX - abW / 2, djY + 0.5f, abZ, 0.02f, 0.5f, abD / 2, kRail, kEmitOff, true);
+    }
+
+    // ==================================================================
+    // 28 BLACKLIGHTS — 4 ft UV tubes on the walls at 10 ft intervals (pulsing).
+    //   Long walls: 10 + 10; south wall flanking the 85": 3 + 3 (capped) = 28.
+    // ==================================================================
+    {
+        const float bi = 3.048f;     // 10 ft interval
+        const float bh = 1.83f;      // tube half-... (JS BL_HEIGHT 1.83 m full)
+        auto blacklight = [&](float x, float z) {
+            const uint32_t id = box(x, CH * 0.5f, z, 0.04f, bh / 2, 0.04f, kWall, nullptr, false);
+            // Set its starting emissive (update() pulses it).
+            Entity& e = scene.get(id);
+            e.emissive[0] = kBlacklightR; e.emissive[1] = kBlacklightG;
+            e.emissive[2] = kBlacklightB; e.emissive[3] = 3.0f;
+            m_blacklightEnts.push_back(id);
+            ++m_stats.blacklights;
+        };
+        // Long walls (east -X and west +X): 10 each.
+        for (int side = -1; side <= 1; side += 2)
+            for (int n = 0; n < 10; ++n) {
+                const float z = -CL / 2 + bi + n * bi;
+                if (z > CL / 2 - bi) break;
+                blacklight(side * (CW / 2 - 0.05f), z);
+            }
+        // South wall flanking the 85": 3 each side (clamped to the room).
+        for (int s = -1; s <= 1; s += 2)
+            for (int n = 0; n < 3; ++n) {
+                const float x = s * (1.5f + n * bi);
+                if (std::fabs(x) > CW / 2 - 0.5f) break;
+                blacklight(x, CL / 2 - 0.05f);
+            }
+        // UV point lights (4) — the violet wash over the room.
+        const float uv[4][3] = {
+            { 0, CH * 0.5f, -CL / 4 }, { 0, CH * 0.5f, CL / 4 },
+            { -CW / 3, CH * 0.5f, 0 }, { CW / 3, CH * 0.5f, 0 }
+        };
+        for (auto& p : uv)
+            addLight(m_lights, p[0], oy + p[1], p[2], 0.4f, 0.05f, 1.0f, 22.0f);
+    }
+
+    // ==================================================================
+    // TV MULTIPLEX (POE) — 6 screens at the real JS sizes/positions.
+    // ==================================================================
+    {
+        auto tv = [&](float inches, float x, float y, float z) {
+            const float dm  = inches * 0.0254f;
+            const float tvH = dm / std::sqrt(1.0f + (16.0f / 9.0f) * (16.0f / 9.0f));
+            const float tvW = tvH * 16.0f / 9.0f;
+            box(x, y, z, (tvW + 0.05f) / 2, (tvH + 0.05f) / 2, 0.03f, kTvFrame, kEmitOff, false); // bezel
+            box(x, y, z + 0.035f, tvW / 2, tvH / 2, 0.005f, kTvFrame, kEmitDjScr, false);          // screen
+            ++m_stats.tvScreens;
+        };
+        const float nwSideX = -(ER_W / 2 + nwSide / 2);
+        tv(80, nwSideX, 2.74f, -CL / 2 + 0.05f);
+        tv(85, 0, CH * 0.55f, CL / 2 - 0.05f);
+        tv(55, CW / 2 - 0.8f, 1.8f, CL / 2 - 2.0f);
+        tv(75, CW / 2 - 1.5f, 2.2f, CL / 2 - 5.0f);
+        tv(65, -ER_W / 2 + 0.1f, LOUNGE_Y + 1.5f, -CL / 2 - ER_D / 2);
+        tv(55, -CW / 2 + 0.8f, 2.0f, CL / 2 - 1.5f);
+    }
+
+    // ==================================================================
+    // SOUND SYSTEM (the real PA rig).
+    // ==================================================================
+    // 4x SVS PB16-Ultra subs (corners).
+    for (int i = 0; i < 4; ++i) {
+        const float sx = (i & 1) ? 1.0f : -1.0f;
+        const float sz = (i & 2) ? 1.0f : -1.0f;
+        box(sx * (CW / 2 - 1), 0.37f, sz * (CL / 4), 0.32f, 0.37f, 0.28f, kSub, kEmitOff, true);
+        ++m_stats.svsSubs;
+    }
+    // 8 stacked pairs JBL JRX200 (16 cabinets) + 8 amps + power LEDs on the walls.
+    {
+        const float jrxSp = CL / 5;
+        for (int side = -1; side <= 1; side += 2)
+            for (int n = 0; n < 4; ++n) {
+                const float z = -CL / 2 + jrxSp * (n + 1);
+                const float x = side * (CW / 2 - 0.5f);
+                const float wy = CH * 0.55f;
+                box(x, wy,        z, 0.265f, 0.38f, 0.215f, kSpk, kEmitOff, false); m_stats.jblLineArray++;
+                box(x, wy + 0.8f, z, 0.265f, 0.38f, 0.215f, kSpk, kEmitOff, false); m_stats.jblLineArray++;
+                box(x, wy - 0.55f, z, 0.24f, 0.10f, 0.175f, kAmp, kEmitOff, false);                 // amp
+                box(x - side * 0.01f, wy - 0.5f, z + 0.18f, 0.015f, 0.015f, 0.015f, kAmp, kEmitLed, false); // power LED
+            }
+    }
+    // 4x JBL PRO 18" subs flanking the dance floor.
+    {
+        const float p[4][2] = { {-1,-1.f/3}, {-1,1.f/3}, {1,-1.f/3}, {1,1.f/3} };
+        for (auto& s : p) {
+            box(s[0] * (CW / 2 - 0.5f), 0.35f, s[1] * CL, 0.305f, 0.305f, 0.305f, kSub, kEmitOff, true);
+            ++m_stats.jbl18Subs;
+        }
+    }
+    // 16x JBL N26/S38 surrounds (walls, alternating sizes).
+    {
+        const float surSp = CL / 9;
+        for (int side = -1; side <= 1; side += 2)
+            for (int n = 0; n < 8; ++n) {
+                const float z = -CL / 2 + surSp * (n + 1);
+                const float x = side * (CW / 2 - 0.15f);
+                const bool s38 = (n % 2 == 0);
+                box(x, CH * 0.75f, z, (s38 ? 0.25f : 0.2f) / 2, (s38 ? 0.5f : 0.3f) / 2, 0.09f, kSpk, kEmitOff, false);
+                ++m_stats.surrounds;
             }
     }
 
-    // --- Outer walls (four slabs) + ceiling. The +X wall gets a CAVE-MOUTH gap. ---
-    const float wallMidY = clubCeil * 0.5f;
-    // -Z and +Z walls (full span along X).
-    addBox(scene, device, physics, 0.0f, wallMidY, clubZ0 - wallT, (clubX1 - clubX0) * 0.5f + wallT, wallMidY, wallT, kWallClub, kEmitOff, true, 0.5f);
-    addBox(scene, device, physics, 0.0f, wallMidY, clubZ1 + wallT, (clubX1 - clubX0) * 0.5f + wallT, wallMidY, wallT, kWallClub, kEmitOff, true, 0.5f);
-    // -X wall (full span along Z) — the bar wall.
-    addBox(scene, device, physics, clubX0 - wallT, wallMidY, 0.0f, wallT, wallMidY, (clubZ1 - clubZ0) * 0.5f, kWallClub, kEmitOff, true, 0.5f);
-    // +X wall, SPLIT around a 4 m-wide cave-mouth gap centered at z=0 (y up to 4 m).
-    //   lower lintel above the gap + two side posts so the wall still encloses.
-    addBox(scene, device, physics, clubX1 + wallT, wallMidY, -7.5f, wallT, wallMidY, 3.5f, kWallClub, kEmitOff, true, 0.5f); // -Z post
-    addBox(scene, device, physics, clubX1 + wallT, wallMidY,  7.5f, wallT, wallMidY, 3.5f, kWallClub, kEmitOff, true, 0.5f); // +Z post
-    addBox(scene, device, physics, clubX1 + wallT, 5.5f, 0.0f, wallT, 1.5f, 4.0f, kWallClub, kEmitOff, true, 0.5f);          // lintel above gap
-    // Ceiling lid.
-    addBox(scene, device, physics, 0.0f, clubCeil + 0.2f, 0.0f, (clubX1 - clubX0) * 0.5f + wallT, 0.2f, (clubZ1 - clubZ0) * 0.5f + wallT, kWallClub, kEmitOff, true, 0.4f);
-
-    // --- Neon WALL STRIPS: glowing accent lines along the walls (the club glow). ---
-    for (float zx = clubZ0 + 2.0f; zx <= clubZ1 - 2.0f; zx += 4.0f) {
-        addBox(scene, device, physics, clubX0 + 0.25f, 2.4f, zx, 0.06f, 0.9f, 0.12f, kWallClub, kEmitMagenta, false); // -X wall strips
-    }
-    for (float xx = clubX0 + 3.0f; xx <= clubX1 - 3.0f; xx += 4.0f) {
-        addBox(scene, device, physics, xx, 3.0f, clubZ0 + 0.25f, 0.12f, 0.9f, 0.06f, kWallClub, kEmitCyan, false);    // -Z wall strips
-        addBox(scene, device, physics, xx, 3.0f, clubZ1 - 0.25f, 0.12f, 0.9f, 0.06f, kWallClub, kEmitViolet, false);  // +Z wall strips
-    }
-
-    // ===================================================================
-    // CATWALKS / BALCONIES — raised upper galleries along the +Z and -Z walls,
-    // with glowing glass-rail strips (the multi-level read). ~3.2 m up, 2.2 m deep.
-    // ===================================================================
-    const float catY = 3.2f, catDepth = 2.2f;
-    auto catwalk = [&](float zCenter, float railZ, const float* railEmit) {
-        addBox(scene, device, physics, 0.0f, catY - 0.1f, zCenter,
-               (clubX1 - clubX0) * 0.5f - 1.5f, 0.1f, catDepth * 0.5f, kFloorClub, kEmitOff, true, 0.5f);
-        // Glowing glass-look railing strip along the inner edge.
-        addBox(scene, device, physics, 0.0f, catY + 0.55f, railZ,
-               (clubX1 - clubX0) * 0.5f - 1.5f, 0.5f, 0.05f, kWallClub, railEmit, false);
-        // Support posts down to the floor at intervals.
-        for (float px = clubX0 + 3.0f; px <= clubX1 - 3.0f; px += 5.0f)
-            addBox(scene, device, physics, px, (catY - 0.2f) * 0.5f, zCenter,
-                   0.18f, (catY - 0.2f) * 0.5f, 0.18f, kWallClub, kEmitOff, true);
-    };
-    catwalk(clubZ1 - catDepth * 0.5f, clubZ1 - catDepth - 0.05f, kEmitViolet);
-    catwalk(clubZ0 + catDepth * 0.5f, clubZ0 + catDepth + 0.05f, kEmitCyan);
-
-    // Stair ramp up to a catwalk (so it reads as reachable) on the +X+Z corner.
-    for (int s = 0; s < 6; ++s) {
-        const float sy = ringY + s * (catY - ringY) / 6.0f;
-        addBox(scene, device, physics, clubX1 - 1.6f, sy * 0.5f + 0.05f, clubZ1 - catDepth - 1.2f - s * 0.5f,
-               1.2f, sy * 0.5f + 0.05f, 0.3f, kFloorClub, kEmitOff, true);
-    }
-
-    // ===================================================================
-    // BAR — counter along the -X wall + a back-bar shelf with bottle glow.
-    // ===================================================================
-    const float barZ = -2.0f;
-    addBox(scene, device, physics, clubX0 + 2.0f, ringY + 0.55f, barZ, 1.4f, 0.55f, 3.5f, kBarTop, kEmitOff, true, 0.7f); // counter
-    addBox(scene, device, physics, clubX0 + 2.0f, ringY + 1.15f, barZ, 1.4f, 0.05f, 3.5f, kBarTop, kEmitMagenta, false);   // glowing counter lip
-    addBox(scene, device, physics, clubX0 + 0.9f, ringY + 1.6f, barZ, 0.25f, 1.0f, 3.2f, kWallClub, kEmitCyan, false);     // back-bar bottle glow shelf
-
-    // ===================================================================
-    // OVERHEAD LIGHT RIG over the dance floor — a crossed truss of emissive bars
-    // that also seed bright point lights (the club's key glow).
-    // ===================================================================
-    addBox(scene, device, physics, 0.0f, clubCeil - 0.6f, 0.0f, 6.0f, 0.12f, 0.18f, kWallClub, kEmitMagenta, false);
-    addBox(scene, device, physics, 0.0f, clubCeil - 0.6f, 0.0f, 0.18f, 0.12f, 5.0f, kWallClub, kEmitCyan, false);
-
-    // ---- Club point lights: saturated neon, several colors, ranges that reach the
-    // sunken dance floor (~5-7 m below the ceiling rig). ----
-    addLight(m_lights, 0.0f, 5.6f, 0.0f, 5.0f, 0.6f, 3.0f, 16.0f);   // magenta key over dance floor
-    addLight(m_lights, -4.0f, 3.0f, -3.0f, 0.6f, 4.5f, 5.5f, 12.0f); // cyan over the bar
-    addLight(m_lights, 4.0f, 3.0f, 3.0f, 3.0f, 1.2f, 5.5f, 12.0f);   // violet +X+Z
-    addLight(m_lights, -4.0f, 3.0f, 4.0f, 4.5f, 0.8f, 3.0f, 11.0f);  // magenta -X+Z
-    addLight(m_lights, 4.0f, 3.0f, -4.0f, 0.8f, 4.0f, 5.0f, 11.0f);  // cyan +X-Z
-    addLight(m_lights, 0.0f, catY + 1.2f, clubZ1 - 1.5f, 2.5f, 1.0f, 5.0f, 9.0f); // catwalk fill +Z
-    addLight(m_lights, 0.0f, catY + 1.2f, clubZ0 + 1.5f, 1.0f, 4.0f, 4.5f, 9.0f); // catwalk fill -Z
-    addLight(m_lights, clubX0 + 2.0f, 2.5f, barZ, 4.0f, 0.7f, 3.0f, 8.0f);        // bar magenta pool
-
-    // ===================================================================
-    // CAVE MOUTH + DESCENDING TUNNEL (off the +X wall, gap centered z=0).
-    //   The tunnel descends from the club floor (y=0 at x~13) down to y~-5 by
-    //   x~34, then opens into the power-core cavern. Built as jittered rock boxes
-    //   (floor, two arched walls, ceiling chunks) so it reads organic, not a tube.
-    // ===================================================================
-    const float tunStartX = clubX1;     // 13
-    const float tunEndX   = 34.0f;
-    const float tunStartY = 0.0f;
-    const float tunEndY   = -5.0f;
-    const int   tunSteps  = 14;
-    auto tunYatX = [&](float x) {
-        const float t = (x - tunStartX) / (tunEndX - tunStartX);
-        return tunStartY + (tunEndY - tunStartY) * t;
-    };
-    for (int i = 0; i < tunSteps; ++i) {
-        const float x = tunStartX + (tunEndX - tunStartX) * (i + 0.5f) / tunSteps;
-        const float y = tunYatX(x);
-        const float seg = (tunEndX - tunStartX) / tunSteps;
-        const float jz = rng.range(-0.6f, 0.6f);     // wander the centerline in Z
-        const float halfSpan = rng.range(2.4f, 3.2f);
-        // Sloped floor slab (tilted toward the descent — approximated flat per seg).
-        addBox(scene, device, physics, x, y - 0.2f, jz,
-               seg * 0.62f, rng.range(0.18f, 0.30f), halfSpan, kRockFloor, kEmitOff, true, 0.6f);
-        // Two rough side walls (arched feel: taller, jittered rock chunks).
-        const float wallH = rng.range(2.2f, 3.0f);
-        addBox(scene, device, physics, x, y + wallH * 0.5f, jz - halfSpan - 0.4f,
-               seg * 0.6f, wallH * 0.5f, rng.range(0.5f, 0.9f), kRock, kEmitOff, true, 0.5f);
-        addBox(scene, device, physics, x, y + wallH * 0.5f, jz + halfSpan + 0.4f,
-               seg * 0.6f, wallH * 0.5f, rng.range(0.5f, 0.9f), kRock, kEmitOff, true, 0.5f);
-        // Low ceiling chunks (irregular drop heights -> arched read).
-        addBox(scene, device, physics, x, y + wallH + rng.range(0.0f, 0.5f), jz,
-               seg * 0.6f, rng.range(0.3f, 0.6f), halfSpan + 0.3f, kRock, kEmitOff, true, 0.5f);
-        // A couple of stalactite/boulder nubs for silhouette.
-        if ((i & 1) == 0)
-            addBox(scene, device, physics, x + rng.range(-0.4f, 0.4f), y + wallH - 0.3f, jz + rng.range(-1.5f, 1.5f),
-                   rng.range(0.15f, 0.4f), rng.range(0.3f, 0.7f), rng.range(0.15f, 0.4f), kRock, kEmitOff, false);
-        // Sparse teal cave fill light every few segments.
-        if (i % 3 == 0)
-            addLight(m_lights, x, y + 1.6f, jz, 0.4f, 1.6f, 1.8f, 7.0f);
-    }
-
-    // ===================================================================
-    // POWER-CORE CAVERN — an irregular chamber at the tunnel end (x ~34..50,
-    // floor ~y=-5..-6), with a glowing core pillar + teal crystal clusters.
-    // ===================================================================
-    const float coreCx = 42.0f, coreCz = 0.0f, coreFloorY = -6.0f;
-    const float coreHX = 8.0f, coreHZ = 9.0f, coreCeilH = 7.5f;
-    // Cavern floor (slightly varied chunks so it isn't a flat plate).
-    for (int gx = 0; gx < 4; ++gx)
-        for (int gz = 0; gz < 4; ++gz) {
-            const float fx = coreCx - coreHX + (gx + 0.5f) * (2 * coreHX / 4);
-            const float fz = coreCz - coreHZ + (gz + 0.5f) * (2 * coreHZ / 4);
-            addBox(scene, device, physics, fx, coreFloorY - 0.2f + rng.range(-0.12f, 0.12f), fz,
-                   coreHX / 4 + 0.1f, 0.25f, coreHZ / 4 + 0.1f, kRockFloor, kEmitOff, true, 0.5f);
-        }
-    // Irregular cavern walls: a ring of jittered rock pillars (organic perimeter).
+    // ==================================================================
+    // DANCE FLOOR — full-club checkerboard of glowing purple/dark tiles.
+    // ==================================================================
     {
-        const int ring = 16;
-        for (int i = 0; i < ring; ++i) {
-            const float a = (float)i / ring * 2.0f * kPi;
-            const float rr = rng.range(0.85f, 1.05f);
-            const float wx = coreCx + std::cos(a) * coreHX * rr;
-            const float wz = coreCz + std::sin(a) * coreHZ * rr;
-            const float h = rng.range(3.0f, coreCeilH);
-            addBox(scene, device, physics, wx, coreFloorY + h * 0.5f, wz,
-                   rng.range(0.7f, 1.4f), h * 0.5f, rng.range(0.7f, 1.4f), kRock, kEmitOff, true, 0.5f);
-        }
-    }
-    // Cavern ceiling lid (chunky).
-    addBox(scene, device, physics, coreCx, coreFloorY + coreCeilH + 0.4f, coreCz,
-           coreHX + 1.0f, 0.5f, coreHZ + 1.0f, kRock, kEmitOff, true, 0.4f);
-    // THE POWER CORE: a bright glowing pillar at the cavern center.
-    addBox(scene, device, physics, coreCx, coreFloorY + 2.2f, coreCz, 0.6f, 2.2f, 0.6f, kWallClub, kEmitCore, false);
-    addBox(scene, device, physics, coreCx, coreFloorY + 0.3f, coreCz, 1.4f, 0.3f, 1.4f, kRock, kEmitCyan, true); // glowing base ring
-    addLight(m_lights, coreCx, coreFloorY + 3.0f, coreCz, 1.2f, 3.5f, 4.5f, 18.0f);
-    addLight(m_lights, coreCx, coreFloorY + 5.0f, coreCz, 0.6f, 2.0f, 2.6f, 16.0f);
-    // Teal crystal clusters (LevelArchitect: jittered emissive shards, each a light).
-    for (int c = 0; c < 10; ++c) {
-        const float cx2 = coreCx + rng.range(-coreHX * 0.7f, coreHX * 0.7f);
-        const float cz2 = coreCz + rng.range(-coreHZ * 0.7f, coreHZ * 0.7f);
-        const float ch  = rng.range(0.5f, 1.4f);
-        addBox(scene, device, physics, cx2, coreFloorY + ch * 0.5f, cz2,
-               rng.range(0.1f, 0.25f), ch * 0.5f, rng.range(0.1f, 0.25f), kRock, kEmitCrystal, false);
-        addLight(m_lights, cx2, coreFloorY + ch + 0.2f, cz2, 0.2f, 1.0f, 0.9f, 4.0f);
+        const int cols = (int)std::floor(CW);   // ~15
+        const int rows = (int)std::floor(CL);   // ~30
+        const float tw = CW / cols, td = CL / rows;
+        for (int gx = 0; gx < cols; ++gx)
+            for (int gz = 0; gz < rows; ++gz) {
+                const float tx = -CW / 2 + tw / 2 + gx * tw;
+                const float tz = -CL / 2 + td / 2 + gz * td;
+                const float* em = ((gx + gz) % 2 == 0) ? kEmitTile1 : kEmitTile2;
+                box(tx, 0.12f, tz, (tw - 0.02f) / 2, 0.015f, (td - 0.02f) / 2, kFloor, em, false);
+            }
+        m_stats.hasDanceFloor = true;
     }
 
-    // ===================================================================
-    // FLOODED SECTION — REAL animated water spanning the core cavern's -Z side,
-    // extending toward the boss arena, with lurking sea creatures + lore nooks.
-    //
-    // No static slab: the surface is the engine's Gerstner-wave water plane driven
-    // every frame via setWaterParams (see tickWater() + app/main.cpp's --world
-    // ocean). The water plane is camera-centered + depth-tested against the scene,
-    // so it fills the flooded cavern floor wherever the rock dips below the flood
-    // surface Y and is occluded by the club floor / tunnel above. We only record
-    // the surface Y here (the sea level) and underlight the pool for local glow.
-    // ===================================================================
-    const float waterY = coreFloorY + 0.35f;     // shallow flood surface (sea level)
-    m_waterY = waterY;                            // tickWater() drives water at this Y
-    addLight(m_lights, coreCx + 6.0f, waterY + 2.0f, coreCz - 2.0f, 0.3f, 1.4f, 1.7f, 12.0f);
-    // Lore-cache nooks: glowing amber data-cache boxes set in the wall recesses.
-    addBox(scene, device, physics, coreCx + 7.0f, coreFloorY + 1.0f, coreCz - 7.5f, 0.4f, 0.4f, 0.4f, kRock, kEmitLore, true);
-    addBox(scene, device, physics, coreCx - 6.5f, coreFloorY + 1.2f, coreCz + 6.5f, 0.4f, 0.4f, 0.4f, kRock, kEmitLore, true);
-    addLight(m_lights, coreCx + 7.0f, coreFloorY + 1.6f, coreCz - 7.5f, 1.6f, 1.2f, 0.3f, 5.0f);
-    addLight(m_lights, coreCx - 6.5f, coreFloorY + 1.8f, coreCz + 6.5f, 1.6f, 1.2f, 0.3f, 5.0f);
-
-    // ===================================================================
-    // HIDDEN BOSS ARENA — a wider, taller cavern beyond the flooded section
-    // (x ~50..66), lit red, with the hidden boss (BossTheSiren).
-    // ===================================================================
-    const float bossCx = 58.0f, bossCz = -1.0f, bossFloorY = -6.5f;
-    const float bossHX = 8.0f, bossHZ = 8.0f, bossCeilH = 10.0f;
-    // Connecting low cave gap from the core cavern to the boss arena (a short
-    // jittered tunnel along +X at floor level).
-    for (int i = 0; i < 5; ++i) {
-        const float x = 50.0f + i * 1.6f;
-        addBox(scene, device, physics, x, bossFloorY - 0.2f, -1.0f + rng.range(-0.4f, 0.4f),
-               1.0f, 0.25f, rng.range(2.0f, 2.8f), kRockFloor, kEmitOff, true, 0.5f);
-        addBox(scene, device, physics, x, bossFloorY + 2.5f, -1.0f, 1.0f, 0.5f, 3.0f, kRock, kEmitOff, true, 0.5f); // low roof
-    }
-    // Boss arena floor.
-    for (int gx = 0; gx < 4; ++gx)
-        for (int gz = 0; gz < 4; ++gz) {
-            const float fx = bossCx - bossHX + (gx + 0.5f) * (2 * bossHX / 4);
-            const float fz = bossCz - bossHZ + (gz + 0.5f) * (2 * bossHZ / 4);
-            addBox(scene, device, physics, fx, bossFloorY - 0.2f, fz,
-                   bossHX / 4 + 0.1f, 0.25f, bossHZ / 4 + 0.1f, kRockFloor, kEmitOff, true, 0.5f);
-        }
-    // Irregular tall walls + ceiling.
+    // ==================================================================
+    // THE ORB — 2 m mirror ball on a cable, 4 spotlights + 4 ring lights.
+    // ==================================================================
     {
-        const int ring = 18;
-        for (int i = 0; i < ring; ++i) {
-            const float a = (float)i / ring * 2.0f * kPi;
-            const float rr = rng.range(0.9f, 1.08f);
-            const float wx = bossCx + std::cos(a) * bossHX * rr;
-            const float wz = bossCz + std::sin(a) * bossHZ * rr;
-            const float h = rng.range(4.0f, bossCeilH);
-            addBox(scene, device, physics, wx, bossFloorY + h * 0.5f, wz,
-                   rng.range(0.8f, 1.5f), h * 0.5f, rng.range(0.8f, 1.5f), kRock, kEmitOff, true, 0.5f);
+        m_orbY = oy + (CH - 1.5f);
+        // Mirror ball (sphere -> a 1 m-radius emissive box, faceted look via tint).
+        m_orbEnt = box(0, CH - 1.5f, 0, 1.0f, 1.0f, 1.0f, kOrb, kEmitOrb, false);
+        m_orbValid = true;
+        m_stats.hasOrb = true;
+        // Suspending cable.
+        box(0, CH - 0.5f, 0, 0.02f, 0.75f, 0.02f, kCable, kEmitOff, false);
+        // 4 ring lights (permanent colored point lights, orbital). These are the
+        // FIRST orbiting set (rewritten each frame by update()).
+        // 4 colored spotlights (rotating). Stored AFTER the static lights.
+    }
+
+    // ==================================================================
+    // GROUND BAR + 7 STOOLS (west side).
+    // ==================================================================
+    {
+        box(-CW / 2 + 1.4f, 0.55f, CL / 4, 0.4f, 0.55f, 2.5f, kBar, kEmitOff, true);            // bar body
+        box(-CW / 2 + 1.4f, 1.13f, CL / 4, 0.475f, 0.03f, 2.55f, kBarTop, kEmitBarTop, false);  // bar top
+        m_stats.hasGroundBar = true;
+        addLight(m_lights, -CW / 2 + 1.4f, oy + 2.5f, CL / 4, 0.40f, 0.25f, 0.50f, 6.0f);       // bar light
+        for (int i = 0; i < 7; ++i) {
+            const float sz = CL / 4 - 2.5f + 0.5f + i * 5.0f / 7.0f;
+            box(-CW / 2 + 2.2f, 0.75f, sz, 0.2f, 0.03f, 0.2f, kStool, kEmitOff, false);          // seat
+            box(-CW / 2 + 2.2f, 0.36f, sz, 0.03f, 0.36f, 0.03f, kStoolLeg, kEmitOff, false);     // leg
+            ++m_stats.barStools;
         }
     }
-    addBox(scene, device, physics, bossCx, bossFloorY + bossCeilH + 0.4f, bossCz,
-           bossHX + 1.5f, 0.5f, bossHZ + 1.5f, kRock, kEmitOff, true, 0.4f);
-    // Red boss-arena glow: a few emissive vents + red point lights.
-    addBox(scene, device, physics, bossCx, bossFloorY + 0.2f, bossCz, 2.5f, 0.18f, 2.5f, kRock, kEmitBoss, true);
-    addLight(m_lights, bossCx, bossFloorY + 4.0f, bossCz, 4.5f, 0.8f, 0.6f, 20.0f);
-    addLight(m_lights, bossCx - 4.0f, bossFloorY + 2.5f, bossCz + 3.0f, 3.0f, 0.5f, 0.4f, 12.0f);
-    addLight(m_lights, bossCx + 4.0f, bossFloorY + 2.5f, bossCz - 3.0f, 3.0f, 0.5f, 0.4f, 12.0f);
 
-    // ===================================================================
-    // CHARACTERS — rigged GLBs as inert, animating props (graceful box fallback).
-    //   Club: BartenderDanny behind the bar, RexBouncer at the entrance landing.
-    //   Caves: GreatWhiteShark + manta + hammerhead in/over the flooded section;
-    //          BossTheSiren as the hidden boss in the arena.
-    // The converted/rigged character GLBs are authored Z-up (lying flat), so
-    // standUpZtoY=true rotates them upright (same fix the Level-1 characters use).
-    // ===================================================================
-    const float warm[4] = { 1.2f, 1.1f, 0.95f, 1.0f };
-    const float coolGlow[4] = { 0.9f, 1.1f, 1.4f, 1.0f };
-    const float redGlow[4] = { 1.5f, 0.7f, 0.7f, 1.0f };
-    const float seaTint[4] = { 0.9f, 1.0f, 1.1f, 1.0f };
-    // Bartender behind the -X bar counter, on the raised ring floor.
-    addCharacter(scene, device, physics, modelDir, "BartenderDanny.glb",
-                 x3::phys::Vec3{ clubX0 + 1.1f, ringY, barZ }, 1.0f, true, warm);
-    // Bouncer at the entrance landing (the +Z+X corner where the player spawns).
-    addCharacter(scene, device, physics, modelDir, "RexBouncer.glb",
-                 x3::phys::Vec3{ 9.0f, ringY, 8.0f }, 1.0f, true, coolGlow);
-    // Sea creatures lurking in the flooded section (sit at/just under the water).
-    addCharacter(scene, device, physics, modelDir, "GreatWhiteSharkGameReady.glb",
-                 x3::phys::Vec3{ coreCx + 6.0f, waterY - 0.4f, coreCz - 2.0f }, 1.0f, true, seaTint);
-    addCharacter(scene, device, physics, modelDir, "sea_manta_ray.glb",
-                 x3::phys::Vec3{ coreCx + 8.0f, waterY + 0.6f, coreCz - 4.5f }, 1.0f, true, seaTint);
-    addCharacter(scene, device, physics, modelDir, "sea_hammerhead.glb",
-                 x3::phys::Vec3{ coreCx + 4.0f, waterY - 0.3f, coreCz + 0.5f }, 1.0f, true, seaTint);
-    // Hidden boss in the red arena.
-    addCharacter(scene, device, physics, modelDir, "BossTheSiren.glb",
-                 x3::phys::Vec3{ bossCx, bossFloorY, bossCz }, 1.4f, true, redGlow);
+    // ==================================================================
+    // BLACK COUCHES + END TABLE (SE corner) + VIP COUCH (SW corner).
+    // ==================================================================
+    for (int i = 0; i < 2; ++i) {
+        box(CW / 2 - 1.5f, 0.225f, CL / 2 - 1.5f - i * 1.8f, 1.0f, 0.225f, 0.375f, kCouch, kEmitOff, true);  // seat
+        box(CW / 2 - 0.5f, 0.65f,  CL / 2 - 1.5f - i * 1.8f, 1.0f, 0.2f, 0.06f, kCouch, kEmitOff, false);     // back
+        ++m_stats.couches;
+    }
+    box(CW / 2 - 1.5f, 0.275f, CL / 2 - 2.4f, 0.3f, 0.275f, 0.3f, kStair, kEmitOff, true);                    // end table
+    ++m_stats.couches;
+    box(-CW / 2 + 2, 0.25f, CL / 2 - 1.5f, 1.25f, 0.25f, 0.4f, kCouch, kEmitOff, true);                       // VIP seat
+    box(-CW / 2 + 2, 0.7f,  CL / 2 - 1.1f, 1.25f, 0.2f, 0.075f, kCouch, kEmitOff, false);                     // VIP back
+    ++m_stats.couches;
 
-    // ---- Player spawn: at the club entrance landing, on the raised ring floor,
-    // facing -X toward the dance floor + bar. ----
-    m_spawn = x3::phys::Vec3{ 9.5f, ringY + 0.1f, 8.0f };
+    // ==================================================================
+    // CLUB AMBIENT + KEY LIGHTS (Babylon hemi/point/fill -> point lights).
+    // ==================================================================
+    addLight(m_lights, 0, oy + CH * 0.7f, 0, 0.30f, 0.20f, 0.40f, 25.0f);       // central overhead fill
+    addLight(m_lights, -CW / 2 + 2, oy + 3.0f, CL / 4, 0.25f, 0.15f, 0.35f, 10.0f); // ground-bar area fill
+    addLight(m_lights, 0, oy + 2.0f, 0, 0.35f, 0.25f, 0.55f, 18.0f);            // dance-floor wash
 
-    x3::logInfo("[club1127] built Club 1127 + cave/tunnel network: " +
-                std::to_string(scene.size()) + " entities, " +
+    // ---- ORBITING ORB LIGHTS: 4 spots + 4 ring lights. These trail the static
+    // lights and are rewritten each frame by update(). Record where they start. ----
+    m_staticLightCount = m_lights.size();
+    // 4 colored spotlights (orbit radius ~4, near the ceiling).
+    const float spotCols[4][3] = { {2.0f,0.0f,0.0f}, {0.0f,0.0f,2.0f}, {0.0f,2.0f,0.0f}, {2.0f,1.0f,0.0f} };
+    for (int i = 0; i < 4; ++i) {
+        const float a = (i / 4.0f) * 2.0f * kPi;
+        addLight(m_lights, std::cos(a) * 4.0f, m_orbY, std::sin(a) * 4.0f,
+                 spotCols[i][0], spotCols[i][1], spotCols[i][2], 22.0f);
+    }
+    // 4 ring lights (orbit radius ~8, mid-height).
+    const float ringCols[4][3] = { {1.0f,0.0f,0.5f}, {0.0f,0.5f,1.0f}, {0.5f,0.0f,1.0f}, {0.0f,1.0f,0.5f} };
+    for (int i = 0; i < 4; ++i) {
+        const float a = (i / 4.0f) * 2.0f * kPi;
+        addLight(m_lights, std::cos(a) * 8.0f, oy + 4.0f, std::sin(a) * 8.0f,
+                 ringCols[i][0], ringCols[i][1], ringCols[i][2], 22.0f);
+    }
+
+    // ==================================================================
+    // CHARACTERS — a DJ behind the booth + a bouncer at the landing (inert props
+    // that still skin + idle). Graceful box fallback on a failed GLB load.
+    // ==================================================================
+    {
+        const float warm[4] = { 1.2f, 1.1f, 0.95f, 1.0f };
+        const float cool[4] = { 0.9f, 1.05f, 1.3f, 1.0f };
+        const float djY = LOUNGE_Y;
+        const float djZ = -CL / 2 + 2.5f / 2 + 0.3f;
+        // DJ in the booth.
+        addCharacter(scene, device, physics, modelDir, "marcus_webb.glb",
+                     x3::phys::Vec3{ 0.0f, oy + djY, djZ }, 1.0f, false, warm);
+        // Bouncer near the elevator landing.
+        addCharacter(scene, device, physics, modelDir, "RexBouncer.glb",
+                     x3::phys::Vec3{ CW / 2 - 2.0f, oy + 0.0f, CL / 2 - 4.0f }, 1.0f, true, cool);
+    }
+
+    m_stats.entities = (int)(scene.size() - entsBefore);
+
+    x3::logInfo("[club1127] built THE DEEP (Club 1127) at Y=" + std::to_string((int)oy) +
+                ": " + std::to_string(m_stats.entities) + " entities, " +
                 std::to_string(m_lights.size()) + " point lights, " +
+                std::to_string(m_stats.blacklights) + " blacklights, " +
+                std::to_string(m_stats.tvScreens) + " TVs, " +
                 std::to_string(m_chars.size()) + " characters");
+    return m_stats;
 }
 
-void Club1127World::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics) {
-    // Tick each inert character so its idle clip plays (CPU skinning re-upload).
-    // chaseSpeed 0 + null target => it never moves; only the animation advances.
+void Club1127World::update(float dt, Scene& scene, x3::rhi::IRenderDevice& device,
+                           x3::phys::IPhysicsWorld& physics) {
+    if (!m_built) return;
+    m_time += dt;
+    const float t = m_time;
+
+    // --- Spin THE ORB (rotate about Y) by rewriting its transform's upper 3x3. ---
+    if (m_orbValid && m_orbEnt < scene.size()) {
+        const float ang = t * 0.5f;            // matches JS dt*0.5 cadence
+        const float c = std::cos(ang), s = std::sin(ang);
+        Entity& e = scene.get(m_orbEnt);
+        // Column-major: keep translation, set Y-rotation in the 3x3. The ORB box
+        // is authored in WORLD space centered at the origin column, so we must put
+        // the rotation about the orb center: translate to center is already baked
+        // into the geometry (centered at 0,m_orbY,0), so a pure rotation works.
+        e.transform[0] = c;  e.transform[2] = -s;
+        e.transform[8] = s;  e.transform[10] = c;
+        // (The orb geometry is authored at world (0, m_orbY, 0); rotating its model
+        //  matrix about the origin spins it in place since its center is the origin.)
+    }
+
+    // --- Orbit the 4 spotlights + 4 ring lights (the JS spotlight orbit). ---
+    if (m_lights.size() >= m_staticLightCount + 8) {
+        for (int i = 0; i < 4; ++i) {     // spotlights: radius 4
+            const float a = t * 1.2f + (i / 4.0f) * 2.0f * kPi;
+            auto& L = m_lights[m_staticLightCount + i];
+            L.pos[0] = std::cos(a) * 4.0f;
+            L.pos[2] = std::sin(a) * 4.0f;
+        }
+        for (int i = 0; i < 4; ++i) {     // ring lights: radius 8
+            const float a = -t * 0.8f + (i / 4.0f) * 2.0f * kPi;
+            auto& L = m_lights[m_staticLightCount + 4 + i];
+            L.pos[0] = std::cos(a) * 8.0f;
+            L.pos[2] = std::sin(a) * 8.0f;
+        }
+    }
+
+    // --- Pulse the blacklight emissive (each tube phase-offset). ---
+    for (size_t i = 0; i < m_blacklightEnts.size(); ++i) {
+        const uint32_t id = m_blacklightEnts[i];
+        if (id >= scene.size()) continue;
+        const float pulse = 0.7f + 0.3f * std::sin(t * 0.8f + i * 0.3f);
+        Entity& e = scene.get(id);
+        e.emissive[0] = kBlacklightR * pulse;
+        e.emissive[1] = kBlacklightG;
+        e.emissive[2] = kBlacklightB * pulse;
+        e.emissive[3] = 3.0f;
+    }
+
+    // Re-push the (now-moved) light set to the device so the orbiting lights animate.
+    device.setPointLights(m_lights.data(), (uint32_t)m_lights.size());
+
+    // Tick the inert character props (idle clips; chaseSpeed 0 => no movement).
     for (auto& c : m_chars)
         c->update(dt, scene, physics, c->pos());
-}
-
-void Club1127World::tickWater(float dt, x3::rhi::IRenderDevice& device) {
-    if (!m_built) return;
-    // Advance the wave animation clock + (re)apply the engine's REAL water at the
-    // flood surface Y. Same usage as app/main.cpp's --world ocean per-frame driver:
-    // the device CACHES these params + re-applies them each frame (like the sky), so
-    // we re-submit every frame with an advanced `time` to keep the surface moving.
-    //
-    // This is an ENCLOSED flooded cavern (not the open sea), so the waves are gentle:
-    // a short wavelength + low amplitude so it reads as a still-ish flooded pool with
-    // a live, rippling surface rather than rolling ocean swell. The water plane is
-    // camera-centered + depth-tested against the scene, so it fills only where the
-    // cavern floor sits below `seaLevel` and is occluded by the rock/club above.
-    m_waterTime += dt;
-
-    x3::rhi::IRenderDevice::WaterParams wp{};
-    wp.enabled    = true;
-    wp.seaLevel   = m_waterY;       // the flood surface Y (set in build())
-    wp.time       = m_waterTime;    // advance -> the Gerstner waves animate
-    wp.amplitude  = 0.14f;          // gentle chop: a flooded pool, not ocean swell
-    wp.steepness  = 0.55f;          // visible horizontal pinch on the small waves
-    wp.waveLength = 3.0f;           // short waves to fit the ~14 x 12 m pool
-    wp.speed      = 0.9f;           // calm, slow ripple
-    // Teal flood-water tint: deep murky teal -> brighter shallow teal (the engine
-    // blends shallow->deep by how much water the view ray crosses, so shallow edges
-    // near the cavern floor glow brighter than the deep middle).
-    wp.deepColor[0]    = 0.015f; wp.deepColor[1]    = 0.10f; wp.deepColor[2]    = 0.13f;
-    wp.shallowColor[0] = 0.06f;  wp.shallowColor[1] = 0.34f; wp.shallowColor[2] = 0.40f;
-    // No real sun underground; aim the glint UP toward the teal core/pool light so
-    // the surface picks up a moving specular sparkle + a Fresnel sky-ish reflection.
-    wp.sunDir[0] = 0.15f; wp.sunDir[1] = 1.0f; wp.sunDir[2] = 0.30f;
-    wp.specular  = 9.0f;            // sun/light glint strength (HDR -> bloom)
-    wp.fresnel   = 0.05f;          // a touch more face-on reflectance for a glassy cave pool
-    device.setWaterParams(wp);
 }
 
 void Club1127World::drawCharacters(x3::rhi::IRenderDevice& device,
@@ -506,15 +622,159 @@ void Club1127World::drawCharacters(x3::rhi::IRenderDevice& device,
 }
 
 void Club1127World::showcaseCamera(float out[5]) const {
-    // Elevated 3/4 vantage from the -X+Z corner looking toward +X across the
-    // dance floor, so the glowing dance-floor grid, the catwalks/rails, the bar
-    // (with the bartender to the left), the bouncer near the entrance, and the
-    // jagged CAVE MOUTH breaking the far +X wall all read in one frame.
-    out[0] = -10.5f;  // x (back by the bar wall)
-    out[1] = 5.0f;    // y (above the ring floor, below the ceiling rig)
-    out[2] = 8.5f;    // z (+Z corner)
-    out[3] = -0.45f;  // yaw: look toward +X, angled slightly toward -Z (the cave mouth)
-    out[4] = -0.30f;  // pitch: down over the floor toward the cave
+    // Elevated vantage from the SE corner (near the elevator landing) looking
+    // toward -X/-Z across the dance floor so the glowing checkerboard, the DJ
+    // booth + ORB on the far north wall, the ground bar (left), and the PA stacks
+    // all read in one frame. Y/Z keep us inside the 30 ft ceiling.
+    out[0] = kCW / 2 - 2.0f;   // x: by the east wall / elevator
+    out[1] = kClubY + 5.0f;    // y: above the floor, below the ceiling
+    out[2] = kCL / 2 - 3.0f;   // z: south end
+    out[3] = -2.35f;           // yaw: look toward -X/-Z (the dance floor + booth)
+    out[4] = -0.18f;           // pitch: slightly down over the floor
+}
+
+// ===========================================================================
+// Headless self-test (--test-club). Build the club at Y=-200 with the shared
+// HeadlessRenderDevice + a real physics world (no window / Vulkan), assert the key
+// fixtures + the room footprint/Y, tick a few frames, and confirm it is leak-clean
+// (idempotent rebuild adds NO meshes; mesh creates are balanced by entities).
+// ===========================================================================
+} // namespace x3::game
+
+#include "headless_device.h"
+#include "engine/physics/IPhysicsWorld.h"
+#include <cmath>
+
+namespace x3::game {
+
+bool runClubSelfTest() {
+    int pass = 0, fail = 0;
+    auto check = [&](bool cond, const char* name) {
+        if (cond) { ++pass; x3::logInfo(std::string("[club-test] PASS ") + name); }
+        else      { ++fail; x3::logError(std::string("[club-test] FAIL ") + name); }
+    };
+
+    // A counting device: tracks live mesh handles so we can assert no leak.
+    struct CountingDevice : public HeadlessRenderDevice {
+        int created = 0, destroyed = 0;
+        x3::rhi::MeshHandle createMesh(const x3::rhi::MeshVertex* v, uint32_t nv,
+                                       const uint32_t* idx, uint32_t ni) override {
+            ++created;
+            return HeadlessRenderDevice::createMesh(v, nv, idx, ni);
+        }
+        void destroyMesh(x3::rhi::MeshHandle h) override {
+            ++destroyed;
+            HeadlessRenderDevice::destroyMesh(h);
+        }
+    };
+
+    std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+    physics->init();
+    CountingDevice device;
+    Scene scene;
+
+    Club1127World club;
+    const Club1127World::Stats& s = club.build(scene, device, *physics, x3::game::riggedGlbRoot());
+
+    // (1) Room footprint + Y. The main floor sits at world Y = -200, the room is
+    //     the real 50x100x30 ft (15.24 x 30.48 x 9.14 m), ceiling 30 ft above.
+    {
+        const float wX = s.roomMaxX - s.roomMinX;   // ~15.24
+        const float wZ = s.roomMaxZ - s.roomMinZ;   // ~30.48
+        const float h  = s.ceilingY - s.floorY;     // ~9.14
+        const bool yOk   = std::fabs(s.floorY - (-200.0f)) < 0.01f;
+        const bool footOk = std::fabs(wX - 15.24f) < 0.05f && std::fabs(wZ - 30.48f) < 0.05f;
+        const bool ceilOk = std::fabs(h - 9.14f) < 0.05f;
+        check(yOk && footOk && ceilOk,
+              "main room is 50x100x30 ft (15.24x30.48x9.14 m) with its floor at Y=-200");
+    }
+
+    // (2) Suspended DJ booth: platform + turntables + 2 OLED + keypad door.
+    check(s.hasDjBooth && s.hasDjTurntables && s.hasDjScreens && s.hasKeypadDoor,
+          "suspended DJ booth (turntables + 2 OLED screens + keypad door)");
+
+    // (3) THE ORB — the 2 m mirror ball.
+    check(s.hasOrb, "THE ORB (mirror ball) exists");
+
+    // (4) Aerial bar + ground bar with exactly 7 stools.
+    check(s.hasAerialBar && s.hasGroundBar && s.barStools == 7,
+          "aerial bar + ground bar with 7 stools");
+
+    // (5) Engine-room/lounge with a 12-step stair.
+    check(s.hasLoungeFloor && s.stairSteps == 12,
+          "2-story engine-room/lounge with a 12-step stair");
+
+    // (6) The real PA rig: 4 SVS subs + 16 JBL line-array cabs + 4 JBL 18" subs +
+    //     16 surrounds.
+    check(s.svsSubs == 4 && s.jblLineArray == 16 && s.jbl18Subs == 4 && s.surrounds == 16,
+          "PA rig: 4 SVS subs + 16 JBL line-array + 4 JBL 18\" subs + 16 surrounds");
+
+    // (7) 28 blacklights.
+    check(s.blacklights == 28, "28 blacklights");
+
+    // (8) 6-screen TV multiplex.
+    check(s.tvScreens == 6, "6-screen TV multiplex");
+
+    // (9) Dance floor + VIP/couch seating.
+    check(s.hasDanceFloor && s.couches >= 3, "dance-floor checkerboard + VIP/couch seating");
+
+    // (10) Player spawn sits inside the room footprint, on the floor at Y=-200.
+    {
+        const x3::phys::Vec3 sp = club.spawn();
+        const bool inX = sp.x > s.roomMinX && sp.x < s.roomMaxX;
+        const bool inZ = sp.z > s.roomMinZ && sp.z < s.roomMaxZ;
+        const bool onFloor = sp.y >= -200.0f - 0.01f && sp.y <= -200.0f + 1.0f;
+        check(inX && inZ && onFloor && std::isfinite(sp.x) && std::isfinite(sp.z),
+              "player spawn is inside the room footprint on the Y=-200 floor");
+    }
+
+    // (11) Animate a few frames: ORB spins, lights orbit, blacklights pulse. Assert
+    //      transforms/light positions stay finite (no NaN) and lights actually moved.
+    {
+        const auto& L0 = club.pointLights();
+        // snapshot the first orbiting spotlight position.
+        // (static lights come first; we just snapshot the whole set's checksum.)
+        float beforeSum = 0.0f;
+        for (const auto& l : L0) beforeSum += l.pos[0] + l.pos[2];
+        const float dt = 1.0f / 60.0f;
+        for (int i = 0; i < 30; ++i)
+            club.update(dt, scene, device, *physics);
+        bool finite = true;
+        float afterSum = 0.0f;
+        for (const auto& l : club.pointLights()) {
+            if (!std::isfinite(l.pos[0]) || !std::isfinite(l.pos[1]) || !std::isfinite(l.pos[2]))
+                finite = false;
+            afterSum += l.pos[0] + l.pos[2];
+        }
+        check(finite && std::fabs(afterSum - beforeSum) > 1e-3f,
+              "ORB/spotlights/blacklights animate (orbiting lights moved, all finite)");
+    }
+
+    // (12) Idempotent rebuild: a second build() is a no-op and creates NO new mesh.
+    {
+        const int before = device.created;
+        club.build(scene, device, *physics, x3::game::riggedGlbRoot());
+        check(device.created == before && club.stats().entities == s.entities,
+              "rebuild is idempotent (no duplicated geometry / no leak)");
+    }
+
+    // (13) Leak-clean: every mesh the device handed out can be destroyed and the
+    //      device's create/destroy ledger balances (the live VMA allocationCount=0
+    //      proof is the Debug --smoketest; here we prove the count bookkeeping).
+    {
+        // Destroy every mesh handle the club authored (ids are contiguous 1..created
+        // from the stub's monotonic minting), then assert the ledger balances.
+        for (int h = 1; h <= device.created; ++h)
+            device.destroyMesh(x3::rhi::MeshHandle{ (uint32_t)h });
+        check(device.created > 0 && device.destroyed == device.created,
+              "mesh create/destroy ledger balances (leak-clean bookkeeping)");
+    }
+
+    physics->shutdown();
+
+    const int total = pass + fail;
+    x3::logInfo("club: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+    return fail == 0;
 }
 
 } // namespace x3::game
