@@ -24,12 +24,19 @@ public:
     // to reject (flashes + clears). Optional — default accepts.
     using SubmitFn = std::function<bool(const std::string& value)>;
 
-    // Build the screen in the world: a thin translucent emissive panel centered at
-    // `pos`, facing -Z by default (toward Jake's spawn), `width` x `height` metres.
-    // Registers the render entity in `scene` via `device`. Seeds the boot readout
-    // (so it's no longer blank).
+    // Build the screen in the world: a thin SHINY translucent-blue panel centered at
+    // `pos` (facing -Z toward Jake's spawn), `width` x `height` m, with an emissive
+    // rounded-look frame bezel, AND a glass ARM dropping from the ceiling (`ceilingY`,
+    // 0 = auto pos.y+1.7) carrying emissive fiber-optic (cyan) + copper (amber) traces
+    // inside the glass. Registers all render entities in `scene` via `device`. Seeds
+    // the boot readout (so it's no longer blank).
     void build(Scene& scene, x3::rhi::IRenderDevice& device,
-               x3::phys::Vec3 pos, float yaw = 0.0f, float width = 1.4f, float height = 0.9f);
+               x3::phys::Vec3 pos, float yaw = 0.0f, float width = 1.4f, float height = 0.9f,
+               float ceilingY = 0.0f);
+
+    // High-contrast readout color the host uses for drawHudText (bright vs the blue
+    // glass). Exposed so the in-app render layer matches the art direction.
+    const float* textColor() const { return m_textColor; }
 
     void setSubmitSink(SubmitFn fn) { m_submit = std::move(fn); }
 
@@ -67,6 +74,8 @@ private:
     float          m_blink = 0.0f;        // cursor blink timer
     bool           m_cursorOn = true;
     SubmitFn       m_submit;
+    float          m_textColor[4] = { 0.85f, 0.97f, 1.0f, 1.0f };  // bright cyan-white, high contrast
+    std::vector<uint32_t> m_decor;        // bezel / arm / trace entity ids (visual only)
     static constexpr size_t kMaxInput = 32;
 };
 

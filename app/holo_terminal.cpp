@@ -14,24 +14,72 @@
 namespace x3::game {
 
 void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
-                         x3::phys::Vec3 pos, float yaw, float width, float height) {
+                         x3::phys::Vec3 pos, float yaw, float width, float height,
+                         float ceilingY) {
     m_pos = pos; m_width = width; m_height = height;
+    const float cs = std::cos(yaw), sn = std::sin(yaw);
 
-    // Thin panel: wide in X, tall in Y, paper-thin in Z (a screen). Authored
-    // centered at the origin; the Entity transform places + yaws it.
-    x3::prims::PrimMesh geo = x3::prims::makeBox(width * 0.5f, height * 0.5f, 0.02f, 0, 0, 0, 1.0f);
+    // Place a box child: half-extents (hx,hy,hz) at a LOCAL offset (ox,oy,oz) from
+    // pos, yaw-rotated into world; translucent `alpha`, emissive {r,g,b,strength}.
+    auto addBox = [&](float hx, float hy, float hz, float ox, float oy, float oz,
+                      float r, float g, float b, float alpha, float er, float eg, float eb, float es) {
+        x3::prims::PrimMesh geo = x3::prims::makeBox(hx, hy, hz, 0, 0, 0, 1.0f);
+        Entity e;
+        e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                   geo.index.data(), (uint32_t)geo.index.size());
+        e.baseColor[0]=r; e.baseColor[1]=g; e.baseColor[2]=b; e.baseColor[3]=alpha;
+        e.emissive[0]=er; e.emissive[1]=eg; e.emissive[2]=eb; e.emissive[3]=es;
+        e.tag = (uint32_t)Tag::Prop;
+        // world offset = R_y(yaw) * (ox,oy,oz)
+        const float wx = cs*ox + sn*oz, wz = -sn*ox + cs*oz;
+        e.transform[0]=cs; e.transform[2]=-sn; e.transform[8]=sn; e.transform[10]=cs;
+        e.transform[12]=pos.x+wx; e.transform[13]=pos.y+oy; e.transform[14]=pos.z+wz;
+        return scene.add(e);
+    };
+
+    const float hw = width * 0.5f, hh = height * 0.5f;
+
+    // ---- Frame BEZEL behind the screen: a slightly larger dark glass slab with a
+    // bright emissive cyan edge (evokes a shiny rounded-corner frame; true rounded
+    // corners need a rounded-rect mesh — graybox approximates with the inset). ----
+    m_decor.push_back(addBox(hw+0.07f, hh+0.07f, 0.015f, 0,0,-0.012f,
+                             0.04f,0.10f,0.16f, 0.85f,  0.15f,0.70f,1.0f, 0.6f));  // bezel
+    // Thin bright emissive border bars (top/bottom/left/right) = the glowing frame.
+    m_decor.push_back(addBox(hw+0.07f, 0.02f, 0.02f, 0,  hh+0.05f, 0, 0,0,0,1, 0.2f,0.9f,1.0f, 2.2f));
+    m_decor.push_back(addBox(hw+0.07f, 0.02f, 0.02f, 0, -hh-0.05f, 0, 0,0,0,1, 0.2f,0.9f,1.0f, 2.2f));
+    m_decor.push_back(addBox(0.02f, hh+0.05f, 0.02f, -hw-0.05f, 0, 0, 0,0,0,1, 0.2f,0.9f,1.0f, 2.2f));
+    m_decor.push_back(addBox(0.02f, hh+0.05f, 0.02f,  hw+0.05f, 0, 0, 0,0,0,1, 0.2f,0.9f,1.0f, 2.2f));
+
+    // ---- Glass ARM from the ceiling down to the top of the screen, carrying
+    // emissive traces (fiber-optic cyan + copper amber) visible inside the glass. ----
+    const float ceil = (ceilingY > 0.0f) ? ceilingY : pos.y + 1.7f;
+    const float armTopY = ceil;
+    const float armBotY = pos.y + hh + 0.05f;
+    const float armH = (armTopY - armBotY) * 0.5f;
+    if (armH > 0.05f) {
+        const float armMidY = (armTopY + armBotY) * 0.5f - pos.y;  // local oy
+        const float armBackZ = -0.06f;                              // behind the screen plane
+        // Clear glass tube (translucent, faint blue, slight emissive sheen).
+        m_decor.push_back(addBox(0.06f, armH, 0.06f, 0, armMidY, armBackZ,
+                                 0.55f,0.75f,0.85f, 0.22f,  0.3f,0.5f,0.7f, 0.3f));
+        // Fiber-optic trace (cyan) + copper trace (amber) threaded inside the glass.
+        m_decor.push_back(addBox(0.008f, armH, 0.008f, -0.02f, armMidY, armBackZ,
+                                 0,0,0,1,  0.2f,0.9f,1.0f, 2.6f));   // cyan fiber
+        m_decor.push_back(addBox(0.008f, armH, 0.008f,  0.02f, armMidY, armBackZ,
+                                 0,0,0,1,  1.0f,0.55f,0.2f, 2.0f));  // copper trace
+    }
+
+    // ---- The SHINY translucent-blue screen panel (drawn last, in front). ----
+    x3::prims::PrimMesh geo = x3::prims::makeBox(hw, hh, 0.02f, 0, 0, 0, 1.0f);
     Entity e;
     e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                geo.index.data(), (uint32_t)geo.index.size());
-    // Translucent cyan glass + an HDR emissive cyan glow (strength>1 -> bloom),
-    // so it reads as a holographic projection, not a solid panel.
-    e.baseColor[0] = 0.20f; e.baseColor[1] = 0.85f; e.baseColor[2] = 1.0f; e.baseColor[3] = 0.42f;
-    e.emissive[0]  = 0.20f; e.emissive[1]  = 0.85f; e.emissive[2]  = 1.0f; e.emissive[3]  = 1.6f;
+    // Translucent blue glass + a strong HDR cyan glow (shiny bloom source).
+    e.baseColor[0] = 0.16f; e.baseColor[1] = 0.62f; e.baseColor[2] = 1.0f; e.baseColor[3] = 0.46f;
+    e.emissive[0]  = 0.18f; e.emissive[1]  = 0.70f; e.emissive[2]  = 1.0f; e.emissive[3]  = 1.8f;
     e.tag = (uint32_t)Tag::Prop;
-    // Yaw about +Y so it faces the player; column-major rotation + translation.
-    const float c = std::cos(yaw), s = std::sin(yaw);
-    e.transform[0]=c;  e.transform[2]=-s;
-    e.transform[8]=s;  e.transform[10]=c;
+    e.transform[0]=cs;  e.transform[2]=-sn;
+    e.transform[8]=sn;  e.transform[10]=cs;
     e.transform[12]=pos.x; e.transform[13]=pos.y; e.transform[14]=pos.z;
     m_entity = scene.add(e);
 
