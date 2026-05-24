@@ -1,28 +1,88 @@
 #pragma once
-// Advanced elevator (core) — a cab platform that travels between floor stops and
-// carries the player. Game/slice code only; engine/ stays pure.
-// Full design + the player-carry approach: specs/ELEVATOR.spec.md.
+// Souped-up strata / disco elevator (core). A cab platform that travels between
+// floor stops and carries the player, PLUS the full "premium glass elevator"
+// experience ported from Tim's OWN Babylon game module
+// (Q3Engine/src/features/x3-elevator.js — Tim's IP, NOT id Tech / RBDOOM /
+// Quake; clean-room intact). Design summary: docs/design/X3_WORLD_BLUEPRINT.md
+// §2.2; motion contract + the player-carry approach: specs/ELEVATOR.spec.md.
 //
-// Mirrors DoorSystem's proven motion: the cab is a Static-layer body (mass 0)
-// repositioned each frame via setBodyPosition() (so while still it blocks like
-// ground), animated between an ordered list of stop heights. The host carries
-// riders by adding the cab's per-frame vertical delta (returned by update()) to
-// any body standing on the cab (see playerRiding()).
+// TWO LAYERS, both in this one class:
+//   * CORE LIFT (unchanged): the cab is a Static-layer body (mass 0) repositioned
+//     each frame via setBodyPosition() (so while still it blocks like ground),
+//     animated between an ordered list of stop heights. update() returns the cab's
+//     per-frame vertical delta so the host carries riders (see playerRiding()).
+//     With the FSM disabled (the default) the motion is byte-identical to the old
+//     linear-ramp lift, so --test-elevator (E1-E6) stays green.
+//   * SOUPED-UP FSM (additive, opt-in via enableFsm()): a 10-state machine
+//     (IDLE..FREEFALL) with MAX_SPEED/accel/decel ramps + doors, an earth-strata
+//     scroll display behind a glass wall (9 layers), twin OLED viewscreens, a
+//     back-wall mirror, a blue access terminal + keypad, a ceiling light, and
+//     DISCO MODE on keypad code 1127 (mirror-ball / spots / strobe cue), which
+//     then drives the car DOWN to Club 1127 at Y = clubStopY (the club lane builds
+//     the room there; we just drive the cab + open the doors into it).
+//
+// Built ONLY from X3Native's own IRenderDevice + IPhysicsWorld + Scene +
+// IAudioSystem interfaces, mirroring DoorSystem's moved-static-body technique.
 
 #include "scene.h"
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
 
+#include <array>
 #include <cstdint>
+#include <string>
 #include <vector>
+
+namespace x3::audio { class IAudioSystem; }
 
 namespace x3::game {
 
-enum class ElevState : uint32_t { Idle = 0, Moving = 1 };
+// ---------------------------------------------------------------------------
+// The 10-state machine (ported 1:1 from x3-elevator.js STATE{}). The CORE lift
+// only ever uses Idle/Moving (mapped from these), so the legacy moving()/state
+// accessors keep working.
+// ---------------------------------------------------------------------------
+enum class ElevState : uint32_t {
+    Idle          = 0,
+    Accelerating  = 1,
+    Cruising      = 2,
+    Decelerating  = 3,
+    Arriving      = 4,
+    DoorsOpening  = 5,
+    DoorsOpen     = 6,
+    DoorsClosing  = 7,
+    EmergencyStop = 8,
+    Freefall      = 9,
+};
+
+// One earth-strata layer for the scroll display (ported from CFG.STRATA). Y
+// values are RELATIVE to the facility (atmospheric geology — see blueprint
+// §2.2 note: the display runs to -400 m even though the shaft bottoms higher).
+struct StrataLayer {
+    float       yMin, yMax;       // facility-relative Y band
+    const char* name;             // layer label
+    float       rgb[3];           // base color (linear)
+    bool        glow;             // emissive vein layer?
+    float       glowRgb[3];       // glow color when glow==true
+};
+
+// FSM tuning (ported from CFG). Public so a test / the host can tweak the ride.
+struct ElevTuning {
+    float maxSpeed  = 14.0f;   // m/s cruise clamp
+    float accel     = 6.0f;    // m/s^2
+    float decel     = 8.0f;    // m/s^2
+    float decelDist = 8.0f;    // start decel within this distance of target
+    float doorSpeed = 1.8f;    // seconds for a full open/close
+    float doorHold  = 3.0f;    // seconds doors stay open with no rider call
+    float motorIdleHz = 40.0f; // motor hum at rest
+    float motorMoveHz = 120.0f;// motor hum at full speed
+    float dingHz      = 880.0f;// floor-passing ding pitch reference
+};
 
 class ElevatorSystem {
 public:
+    // -------- CORE LIFT (unchanged API; --test-elevator depends on this) -----
     // Build one cab at shaft XZ, sitting at stopsCenterY[startStop]. cabHalf* are
     // the platform half-extents (m); stopsCenterY = ordered cab-CENTER world Y per
     // stop (low -> high). Returns true on success. Call once.
@@ -44,16 +104,94 @@ public:
     float update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics);
 
     bool  built() const { return m_built; }
-    bool  moving() const { return m_state == ElevState::Moving; }
+    // "moving" == any travel/door/emergency/freefall state (NOT Idle / DoorsOpen).
+    bool  moving() const;
     int   targetStop() const { return m_target; }
     int   stopCount() const { return (int)m_stopsY.size(); }
     x3::phys::Vec3 cabCenter() const { return m_pos; }
     float cabTopY() const { return m_pos.y + m_halfY; }
 
-    // Tuning (m/s). The ride feel is dialed in live (see spec §3).
+    // Tuning (m/s). With the FSM OFF this is the constant travel speed (legacy).
     void  setSpeed(float s) { m_speed = s; }
 
+    // -------- SOUPED-UP FSM + visuals (additive; opt-in) ---------------------
+    // Turn on the 10-state FSM. While enabled, update() runs the full ramp/door
+    // machine instead of the legacy linear move (still returns the per-frame
+    // vertical delta + keeps the body synced). Off by default so the core test is
+    // unaffected. clubStopY defaults so the cab descends to Club 1127 at Y=-200.
+    void enableFsm(bool on = true);
+    bool fsmEnabled() const { return m_fsm; }
+    ElevState state() const { return m_state; }
+    const char* stateName() const { return stateName(m_state); }
+    static const char* stateName(ElevState s);
+
+    ElevTuning& tuning() { return m_tune; }
+    const ElevTuning& tuning() const { return m_tune; }
+
+    // Build the in-car visuals (glass + strata plane + twin OLEDs + mirror + blue
+    // terminal/keypad + ceiling light + disco ball) as child Scene entities offset
+    // around the cab center every update(), and register the car's interior point
+    // light. Safe to call after build(); a second call is a no-op.
+    void buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device);
+
+    // The car interior + disco point lights the host should push via
+    // IRenderDevice::setPointLights (re-applied each frame by the host; the disco
+    // cue animates their intensity/color in update()). Empty until buildVisuals().
+    const std::vector<x3::rhi::PointLight>& pointLights() const { return m_lights; }
+
+    // Attach an audio system for the procedural-audio hooks (motor hum sweep,
+    // floor-passing dings, door SFX, disco kit). The miniaudio backend is sample-
+    // based (not an oscillator graph like the JS Web-Audio source), so the hooks
+    // map onto loaded one-shots where a WAV resolves and are otherwise silent
+    // no-ops — exactly the "stub the calls" path the task allows. May be null.
+    void setAudio(x3::audio::IAudioSystem* audio) { m_audio = audio; }
+
+    // Floor labels for the directory OLED (optional; defaults to "S0..Sn").
+    void setFloorLabels(const std::vector<std::string>& labels) { m_floorLabels = labels; }
+
+    // Set the Club-1127 descent target (cab-center world Y). The 1127 keypad code
+    // makes the cab travel here. Default = kDefaultClubFloorY + cab half-height.
+    void setClubStopY(float centerY);
+    float clubStopY() const { return m_clubStopY; }
+
+    // ----- Keypad (terminal code entry; 1127 = DISCO + descend to the club) ---
+    // Push one digit (0-9) into the 4-slot code buffer. On the 4th digit the buffer
+    // is checked: "1127" toggles disco mode + (when turning ON) issues a descent to
+    // the club stop; any other 4-digit code clears with a buzz. Returns true iff
+    // this digit completed the disco code. No-op unless the FSM is enabled.
+    bool keypadDigit(int digit);
+    void keypadClear() { m_codeBuf.clear(); }
+    const std::string& keypadBuffer() const { return m_codeBuf; }
+    bool  disco() const { return m_disco; }
+
+    // Force the EMERGENCY_STOP / FREEFALL states (horror events; reachable for the
+    // test). emergencyStop() halts the cab + shakes; freefall() drops it. Both no-op
+    // unless the FSM is enabled.
+    void emergencyStop();
+    void freefall();
+
+    // The current facility-relative stratum name for the cab Y (geo-survey OLED).
+    const char* currentStratum() const;
+    // Total distance travelled (odometer; m). Read by the geo-survey OLED.
+    float odometer() const { return m_totalDist; }
+    // The 9 earth-strata layers (atmospheric geology; ported from CFG.STRATA).
+    static const std::array<StrataLayer, 9>& strata();
+
+    // Default Club 1127 cab-center Y reference: room floor at world Y=-200
+    // (blueprint §2.2). setClubStopY()/enableFsm() add the cab half-height so the
+    // cab top sits flush with the club floor.
+    static constexpr float kDefaultClubFloorY = -200.0f;
+
 private:
+    void  startTravelTo(int stopIndex);   // FSM: begin a ride to a stop
+    void  syncBodyAndTransform(Scene& scene, x3::phys::IPhysicsWorld& physics);
+    float fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics);
+    float legacyUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics);
+    void  updateMotorAudio(float dt);     // procedural-audio hook
+    void  layoutVisuals(Scene& scene);    // reposition child entities at the cab
+    void  applyDiscoCue(float dt, float t); // disco light/strata/glass cue
+
+    // ---- Core lift state ----
     bool     m_built = false;
     uint32_t m_entity = kNoLink;
     x3::phys::BodyId m_body;
@@ -61,8 +199,52 @@ private:
     float    m_halfX = 1.5f, m_halfY = 0.15f, m_halfZ = 1.5f;
     std::vector<float> m_stopsY;              // cab-center Y per stop (low -> high)
     int      m_target = 0;
+    int      m_curStop = 0;                   // last-arrived/nearest stop (FSM tracking)
     ElevState m_state = ElevState::Idle;
-    float    m_speed = 3.0f;                  // m/s travel speed (tune live)
+    float    m_speed = 3.0f;                  // m/s travel speed (legacy constant)
+
+    // ---- Souped-up FSM state ----
+    bool     m_fsm = false;
+    ElevTuning m_tune{};
+    float    m_fsmSpeed = 0.0f;               // FSM ramped speed (m/s, always >=0)
+    float    m_stateTime = 0.0f;
+    float    m_doorPct = 1.0f;                // 1=open, 0=closed
+    float    m_totalDist = 0.0f;
+    float    m_shakeX = 0.0f;                 // emergency-stop shake offset
+    bool     m_descendToClub = false;         // a club descent is queued/active
+    float    m_clubStopY = kUninit;           // cab-center Y of the Club 1127 stop
+
+    // ---- Disco / keypad ----
+    bool        m_disco = false;
+    float       m_discoTime = 0.0f;
+    bool        m_discoSlow = false;          // 1/4-speed glide while descending in disco
+    std::string m_codeBuf;
+
+    // ---- Visuals / audio ----
+    bool   m_visualsBuilt = false;
+    x3::audio::IAudioSystem* m_audio = nullptr;
+    std::vector<std::string> m_floorLabels;
+    std::vector<x3::rhi::PointLight> m_lights;   // [0]=ceiling, [1..4]=disco spots
+    // Visual child entity ids (offset around the cab center each frame). kNoLink
+    // until buildVisuals(). The strata plane + disco ball glow via their emissive
+    // term; the OLED / terminal / mirror are tinted boxes (graybox) the car carries.
+    uint32_t m_eGlass = kNoLink, m_eStrata = kNoLink, m_eMirror = kNoLink;
+    uint32_t m_eOledL = kNoLink, m_eOledR = kNoLink, m_eTerm = kNoLink;
+    uint32_t m_eDiscoBall = kNoLink, m_eCeil = kNoLink;
+    // Per-frame audio bookkeeping.
+    float  m_motorHz = 40.0f;
+    int    m_lastDingStop = -1;
+
+    // Sentinel for "club stop not set yet".
+    static constexpr float kUninit = -1.0e30f;
 };
+
+// Headless self-test (--test-elevatorfsm). Drives the FSM through a normal ride
+// (IDLE->ACCEL->CRUISE->DECEL->ARRIVING->DOORS->IDLE), asserts the state sequence
+// + that the cab reaches the target floor Y + the speed ramps/clamps, asserts the
+// 1127 keypad triggers DISCO + a descent target of Y=-200, and that FREEFALL /
+// EMERGENCY are reachable. Prints "elevatorfsm: X/Y passed". Leak-clean; returns
+// true iff all assertions pass.
+bool runElevatorFsmSelfTest();
 
 } // namespace x3::game
