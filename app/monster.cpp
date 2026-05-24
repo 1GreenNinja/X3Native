@@ -239,7 +239,10 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
         // upload the joint palette + the GPU skins (no per-frame CPU LBS + full vertex
         // re-upload) — the scalability fix for crowds of NPCs. Falls back to CPU
         // skinning transparently on a non-compute / headless device.
-        m_skinner.enableGpuSkinning(device, m_model);
+        const bool gpuSkin = m_skinner.enableGpuSkinning(device, m_model);
+        x3::logInfo(std::string("[monster] ") + std::string(modelFile) +
+                    (gpuSkin ? "  ->  GPU-SKINNED (compute pre-pass)"
+                             : "  ->  CPU-SKINNED FALLBACK (per-frame updateMesh — PERF)"));
         m_idleClip = m_skinner.findClip({ "idle", "stand", "breath", "loop" });
         // Prefer a distinct WALK clip; fall back to any move clip for m_walkClip.
         m_walkClip = m_skinner.findClip({ "walk" });
