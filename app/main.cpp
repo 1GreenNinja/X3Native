@@ -37,6 +37,7 @@
 #include "spire_top.h"                      // EFLZ Spire F6/F7 top-floor content (Act-1 finale)
 #include "spire_nexus.h"                    // EFLZ Floor 4.5 Nexus Chamber / The Chorus (off-elevator boss)
 #include "spire_sublevels.h"                // EFLZ hidden Floor-7 sub-levels + Dr. Chen Return Mission
+#include "timeline.h"                        // EFLZ morality/timeline backbone for the 12 endings (--test-timeline)
 #include "act2_world.h"                      // EFLZ Act-2 open-world surface host + L8/L9 (--test-act2)
 #include "tod.h"                             // EFLZ Time-of-Day cycle (sky/sun via SkyParams — --test-tod)
 #include "weather.h"                         // EFLZ Weather (7 states, biome-gated, hazard — --test-weather)
@@ -554,6 +555,10 @@ int main(int argc, char** argv) {
     bool        testGpuSkin = false;
     // --test-spiretop (Spire top-floor content): F6/F7 (Act-1 finale) encounter authoring. Additive.
     bool        testSpireTop = false;
+    // --test-timeline (EFLZ morality/timeline backbone): infection 4-stage timers + cure
+    // rates, the Omega/Alpha/Beta/Gamma timeline selector, the morality axes, and the
+    // 12-ending eligibility map. Additive.
+    bool        testTimeline = false;
     // --test-dronehack (F5 Drone Manufacturing): Sarah's master hack strips the Swarm
     // Controller AI's HP fraction + flips the drone set to allied (gated, not at load). Additive.
     bool        testDroneHack = false;
@@ -748,6 +753,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-spiremid") testSpireMid = true;
         else if (a == "--test-nexus") testNexus = true;
         else if (a == "--test-spiretop") testSpireTop = true;
+        else if (a == "--test-timeline") testTimeline = true;
         else if (a == "--test-dronehack") testDroneHack = true;
         else if (a == "--test-sublevels") testSubLevels = true;
         else if (a == "--test-act2") testAct2 = true;
@@ -1050,6 +1056,12 @@ int main(int argc, char** argv) {
         x3::logInfo("running EFLZ Spire top-floor (F6 Alien Technology Lab / F7 Executive "
                     "Laboratory Act-1 finale) encounter-content self-test...");
         return x3::game::runSpireTopSelfTest() ? 0 : 1;
+    }
+    if (testTimeline) {
+        x3::logInfo("running EFLZ morality/timeline backbone (infection 4-stage timers + "
+                    "cure rates, Omega/Alpha/Beta/Gamma selector, morality axes, 12-ending "
+                    "eligibility) self-test...");
+        return x3::game::runTimelineSelfTest() ? 0 : 1;
     }
     if (testDroneHack) {
         x3::logInfo("running EFLZ F5 Drone Manufacturing — Sarah's master hack "

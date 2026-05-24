@@ -18,6 +18,7 @@ add_executable(X3Engine WIN32
     spire_top.cpp
     spire_nexus.cpp
     spire_sublevels.cpp
+    timeline.cpp
     act2_world.cpp
     tod.cpp
     weather.cpp
