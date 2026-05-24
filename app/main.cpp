@@ -40,6 +40,7 @@
 #include "act2_world.h"                      // EFLZ Act-2 open-world surface host + L8/L9 (--test-act2)
 #include "world_regions.h"                   // EFLZ open-world surrounding regions + 4 mountain ranges (--test-worldregions)
 #include "city.h"                            // EFLZ open-world metropolis: districts + roads + freeway tunnels (--test-city)
+#include "ocean_base.h"                      // EFLZ open-world ocean + undersea base + submarine combat (--test-oceanbase)
 #include "elevator.h"
 #include "club1127.h"
 #include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
@@ -567,6 +568,7 @@ int main(int argc, char** argv) {
     bool        testAct2 = false;
     bool        testWorldRegions = false;   // --test-worldregions (open-world surface regions + mountains)
     bool        testCity = false;           // --test-city (open-world metropolis: districts + roads + tunnels)
+    bool        testOceanBase = false;      // --test-oceanbase (ocean + undersea base + submarine combat)
     // --test-collapse (K-T3 structural collapse): build a small structure (column /
     // beam on two supports), destroy a support, step the sim, and assert the
     // unsupported pieces fall (static->dynamic), anchored pieces stay stable, the
@@ -745,6 +747,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-act2") testAct2 = true;
         else if (a == "--test-worldregions") testWorldRegions = true;
         else if (a == "--test-city") testCity = true;
+        else if (a == "--test-oceanbase") testOceanBase = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-elevatorfsm") testElevatorFsm = true;
@@ -1070,6 +1073,10 @@ int main(int argc, char** argv) {
         x3::logInfo("running EFLZ open-world metropolis (Scrapyard / New District / Industrial "
                     "+ road grid + 4 freeway tunnels) self-test...");
         return x3::game::runCitySelfTest() ? 0 : 1;
+    }
+    if (testOceanBase) {
+        x3::logInfo("running EFLZ open-world ocean + undersea base + submarine combat self-test...");
+        return x3::game::runOceanBaseSelfTest() ? 0 : 1;
     }
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
