@@ -97,10 +97,24 @@ post; C19-C21 reachability latching + `allTransitionsReachable()`; C22 trigger-i
 non-collision range check. Prints `act2caves: X/Y passed`; exit 0 on full pass,
 nonzero on any fail.
 
-### Gate / build
+### Gate / build — **READY FOR INTEGRATION** ✅ (gated locally on DJBOOTH 2026-05-24)
 
-**Gate pending — toolchain present on DJBOOTH but not yet executed. Awaiting
-human decision on local gate vs 13700K integrator gate.**
+Local gate executed on DJBOOTH (4790K / 1080Ti) — full chain green:
+
+| Phase | Result |
+|---|---|
+| Configure (`cmake --preset windows-vs2026`) | exit 0 — 9 vcpkg ports installed (binary cache), Vulkan 1.4.350 found |
+| Release build (`cmake --build --preset windows-vs2026`) | exit 0 |
+| **Full `--test-*` gauntlet — 52/52 PASS** (every flag parsed in `app/main.cpp`) | all exit 0 |
+| `--test-act2caves` (this task's self-test) | **PASS in 28.9s — `act2caves: 24/24 passed`** |
+| Release `--smoketest` | exit 0, **VUID mentions = 0** |
+| Debug build (`cmake --build build --config Debug`) | exit 0 |
+| Debug `--smoketest` | exit 0, **VUID = 0**, **`live allocationCount=0 (expect 0)`** |
+
+Gauntlet flag list run (52, derived from `else if (a == "--test-*")` in main.cpp):
+`--test-jobs --test-asset --test-console --test-physics --test-gltf --test-player --test-interact --test-pickup --test-combat --test-audio --test-level1 --test-phase2a --test-phase2b --test-anim --test-terrain --test-terrainplace --test-streaming --test-ai --test-bestiary --test-bosses --test-act2bosses --test-spiremid --test-nexus --test-spiretop --test-dronehack --test-sublevels --test-act2 --test-act2caves --test-doorcode --test-elevator --test-elevatorfsm --test-net --test-netsync --test-netinterp --test-netpredict --test-rescue --test-destruction --test-debris --test-gpuskin --test-collapse --test-physjoint --test-ragdoll --test-nav --test-weapons --test-vehicle --test-footik --test-ui --test-saveload --test-valley --test-cliffs --test-club --test-locomotion`
+
+After `--test-gltf` regenerated `docs/GLB_IMPORT_REPORT.md`, the file was reverted via `git checkout -- docs/GLB_IMPORT_REPORT.md` (no spurious diff in this branch).
 
 Source-correct, compilable-looking, design-aligned C++ on pushed branch. No
 engine/CMake-shader/Act-1/Act-2-world/Act-2-desert/`monster.*` files touched.
