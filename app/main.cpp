@@ -3476,6 +3476,12 @@ int main(int argc, char** argv) {
     // sea level; the only ocean-specific bit is the per-frame setWaterParams below.
     const bool oceanWorld   = (worldMode == "ocean");
     const bool terrainWorld = (worldMode == "terrain") || oceanWorld;
+    // --world elevator: a souped-up-elevator showcase. It reuses the Level-1 build
+    // path (the strata/disco elevator lives in the Level-1 spire shaft), then logs
+    // a hint + spawns the player AT the elevator so you can ride it and enter the
+    // 1127 disco code right away. Any unrecognized --world value also lands here
+    // (Level 1), so this is purely additive guidance.
+    const bool elevatorWorld = (worldMode == "elevator");
     x3::game::Scene scene;
     x3::game::Level1Game game;
     // B3: the terrain world is now STREAMED around the player via a residency
@@ -4378,8 +4384,19 @@ int main(int argc, char** argv) {
     // in the detention cell), facing +X down the level spine — or, in the terrain
     // world, on the hills near the world center.
     x3::game::Player player;
-    if (terrainWorld) player.spawn(*physics, terrainSpawn.x, terrainSpawn.y, terrainSpawn.z);
-    else              player.spawn(*physics, L1.spawn.x, L1.spawn.y, L1.spawn.z);
+    if (terrainWorld) {
+        player.spawn(*physics, terrainSpawn.x, terrainSpawn.y, terrainSpawn.z);
+    } else if (elevatorWorld && elevator.built()) {
+        // --world elevator: drop the player ONTO the cab so they ride immediately.
+        const x3::phys::Vec3 cc = elevator.cabCenter();
+        player.spawn(*physics, cc.x, elevator.cabTopY() + 0.1f, cc.z);
+        x3::logInfo("--world elevator: souped-up strata/disco elevator showcase. "
+                    "Press E by the shaft to ride; open the keypad + enter 1127 for "
+                    "DISCO MODE -> descend to Club 1127 (Y=-200). 10-state FSM + "
+                    "9-layer earth-strata display + twin OLEDs + mirror + terminal.");
+    } else {
+        player.spawn(*physics, L1.spawn.x, L1.spawn.y, L1.spawn.z);
+    }
 
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
