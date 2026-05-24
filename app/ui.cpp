@@ -415,6 +415,22 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         ui.text(objBuf, (w - objW) * 0.5f, 14.0f, objPx, kColText);
     }
 
+    // ---- Enemies-remaining counter (centered, just under the objective). <0 hides
+    // it (non-combat HUDs / vantages). Reads "AREA CLEAR" in green when none remain. ----
+    if (m.enemiesRemaining >= 0) {
+        char enBuf[48];
+        const bool clear = (m.enemiesRemaining == 0);
+        if (clear) std::snprintf(enBuf, sizeof(enBuf), "AREA CLEAR");
+        else       std::snprintf(enBuf, sizeof(enBuf), "ENEMIES: %d", m.enemiesRemaining);
+        const float enPx = 15.0f;
+        const float enW  = UiContext::textWidth(enBuf, enPx);
+        float enCol[4];
+        if (clear) { enCol[0]=0.45f; enCol[1]=1.0f;  enCol[2]=0.55f; enCol[3]=1.0f; }
+        else       { enCol[0]=1.0f;  enCol[1]=0.62f; enCol[2]=0.30f; enCol[3]=1.0f; }
+        // y = objective top (14) + objective px (16) + 6px gap.
+        ui.text(enBuf, (w - enW) * 0.5f, 14.0f + 16.0f + 6.0f, enPx, enCol);
+    }
+
     // ---- Minimap stub (top-right box; full minimap later) ------------------
     {
         const float mmW = 150.0f, mmH = 150.0f;

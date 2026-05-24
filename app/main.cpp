@@ -5146,6 +5146,10 @@ int main(int argc, char** argv) {
             hm.dispW = cw; hm.dispH = ch;   // live framebuffer size -> menu RESOLUTION readout
             if (!terrainWorld) {
                 hm.objective = game.objectives().currentLabel().c_str();
+                // Live enemy-remaining counter (HUD, under the objective): corridor +
+                // checkpoint squads still alive. -1 (default) hides it elsewhere.
+                hm.enemiesRemaining = (int)(game.corridorEnemies().aliveCount()
+                                          + game.checkpointEnemies().aliveCount());
                 if (game.armed()) {
                     const x3::game::WeaponDef&         wd = arsenal.current();
                     const x3::game::Arsenal::WeaponState& ws = arsenal.currentState();

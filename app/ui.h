@@ -160,6 +160,7 @@ struct HudModel {
     int   ammoReserve  = 0;
     bool  reloading    = false;
     const char* objective = "";  // current objective text (may be empty)
+    int   enemiesRemaining = -1; // live enemy count under the objective; <0 = hide
     float damageFlash  = 0.0f;   // [0,1] red hit flash strength
     bool  showCrosshair= true;
     bool  alive        = true;
