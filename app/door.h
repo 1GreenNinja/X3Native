@@ -32,11 +32,14 @@
 
 namespace x3::game {
 
-// Door animation state machine. Open is terminal (closing is out of scope for S4).
+// Door animation state machine. A single progress cursor `t` in [0, duration]
+// drives the lerp closed(t=0) -> open(t=duration): Opening increases t, Closing
+// decreases it, so a toggle mid-slide reverses seamlessly without a pop.
 enum class DoorState : uint32_t {
     Closed  = 0,
     Opening = 1,
     Open    = 2,
+    Closing = 3,
 };
 
 // One animated door. `entity` indexes the Scene; `body` is its physics box.
@@ -87,6 +90,12 @@ public:
     // locked). Returns true if a transition Closed -> Opening happened.
     bool startOpening(Door& d) const;
 
+    // Toggle a door open <-> closed (the E "use" path). Closed -> Opening (unless
+    // locked), Open -> Closing, and a mid-slide Opening <-> Closing reversal (the
+    // shared `t` cursor makes the reverse seamless). Returns true if a transition
+    // happened (false only for a locked, fully-Closed door).
+    bool toggle(Door& d) const;
+
     // Clear a door's locked flag (does NOT open it). After unlock() the door can
     // be opened by startOpening()/its button. Idempotent.
     void unlock(Door& d) const { d.locked = false; }
@@ -127,10 +136,16 @@ private:
     bool m_meshOk = false;
 };
 
-// Handle a "use" press: raycast from the eye along `dir` (need not be unit;
-// normalized internally) up to `maxDist`. If the hit body resolves to a Button
-// entity that links to a door, start that door Opening. Returns true if a door
-// began opening. Aiming at not-a-button / out of range does nothing.
+// Resolve which door (if any) a use-ray is aiming at: raycast from `eye` along
+// `dir` (normalized internally) up to `maxDist`; if it hits the door slab itself
+// OR a Button linked to a door, return that Door (else nullptr). Shared by
+// tryUse() (to toggle) and the HUD interaction prompt. Pure query.
+Door* pickAimedDoor(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir, float maxDist,
+                    Scene& scene, DoorSystem& doors, x3::phys::IPhysicsWorld& physics);
+
+// Handle a "use" press: pickAimedDoor() then TOGGLE it (open if closed, close if
+// open). Returns true if a door changed state. Aiming at not-a-door / out of
+// range, or at a locked closed door, does nothing.
 bool tryUse(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir, float maxDist,
             Scene& scene, DoorSystem& doors, x3::phys::IPhysicsWorld& physics);
 

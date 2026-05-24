@@ -460,7 +460,7 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
         m_alive = false;
         r.killed = true;
         m_dying    = true;
-        m_deathPop = kDeathPopTime;
+        m_deathPop = kDeathToppleTime;
         if (m_entity != kNoLink && m_entity < scene.size()) {
             Entity& me = scene.get(m_entity);
             me.body = x3::phys::BodyId{};         // entity no longer owns a body
@@ -494,7 +494,7 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
     if (dead) {
         m_alive    = false;
         m_dying    = true;
-        m_deathPop = kDeathPopTime;
+        m_deathPop = kDeathToppleTime;
         if (m_entity != kNoLink && m_entity < scene.size())
             scene.get(m_entity).body = x3::phys::BodyId{};
         if (m_body.valid()) physics.removeBody(m_body);
@@ -631,16 +631,16 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // Attack cooldown always advances (so the first attack can land promptly).
     if (m_atkTimer > 0.0f) { m_atkTimer -= dt; if (m_atkTimer < 0.0f) m_atkTimer = 0.0f; }
 
-    // ---- Death pop: keep drawing (shrink + flash, in drawMonster) until the
-    // timer runs out, then hide the Entity. The body is already gone. ----
+    // ---- Death: keep drawing the TOPPLE (fall-over + flash, in drawMonster)
+    // until the timer runs out, then settle into a lingering corpse (the body is
+    // already gone from physics; the corpse is draw-only and never re-skins). ----
     if (!m_alive) {
         if (m_dying) {
             m_deathPop -= dt;
             if (m_deathPop <= 0.0f) {
                 m_deathPop = 0.0f;
-                m_dying = false;
-                if (m_entity != kNoLink && m_entity < scene.size())
-                    scene.get(m_entity).visible = false;
+                m_dying  = false;
+                m_corpse = true;   // settled flat; keep drawing it on the floor
             }
         }
         return;
@@ -1149,10 +1149,17 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             }
             m_lastFootPhase = phase;
         } else {
-            // Legacy single-locomotion-clip path: switch idle/move on a threshold.
-            const bool moving = (m_walkClip >= 0) && (planarSpeed > 0.25f);
-            const int clip = moving ? m_walkClip : m_idleClip;
-            m_animTime += dt;
+            // Legacy single-clip path (rig has no Walk/Run blend). Use Walk if one
+            // somehow exists; otherwise play Idle — but PUMP it faster while moving so
+            // an Idle-only rig reads as agitated/advancing instead of dead-static
+            // (the real fix is a retargeted multi-clip *_anim.glb for that enemy).
+            const bool hasWalk = (m_walkClip >= 0);
+            const bool moving  = planarSpeed > 0.25f;
+            const int  clip    = (hasWalk && moving) ? m_walkClip : m_idleClip;
+            const float rate   = (!hasWalk && moving)
+                ? (1.0f + std::min(planarSpeed, 4.0f) * 0.35f)   // 1x idle .. ~2.4x chasing
+                : 1.0f;
+            m_animTime += dt * rate;
             m_skinner.apply(m_model, *m_device, (uint32_t)clip, m_animTime);
         }
     }
@@ -1164,8 +1171,8 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
 void MonsterSystem::drawMonster(x3::rhi::IRenderDevice& device,
                                 const x3::rhi::FrameContext& frame,
                                 const Scene& scene) const {
-    // Draw while alive OR during the brief death pop (m_dying). Skip otherwise.
-    if ((!m_alive && !m_dying) || m_entity == kNoLink || m_entity >= scene.size()) return;
+    // Draw while alive, mid-topple (m_dying), OR as a lingering corpse (m_corpse).
+    if ((!m_alive && !m_dying && !m_corpse) || m_entity == kNoLink || m_entity >= scene.size()) return;
     const Entity& e = scene.get(m_entity);
     if (!e.visible) return;
 
@@ -1183,22 +1190,31 @@ void MonsterSystem::drawMonster(x3::rhi::IRenderDevice& device,
     tint[1] *= (1.0f - 0.85f * flashAmt);
     tint[2] *= (1.0f - 0.85f * flashAmt);
 
-    if (m_dying) {
-        // ---- Death pop: shrink the model toward zero and flash it bright white
-        // over the pop window, so the kill reads as a distinct event. popAmt goes
-        // 1 -> 0 across kDeathPopTime. ----
-        const float popAmt = (kDeathPopTime > 0.0f) ? (m_deathPop / kDeathPopTime) : 0.0f;
-        // Flash bright: push tint up toward white-hot as it dies.
-        const float bright = 1.0f + 1.5f * popAmt;
-        tint[0] = bright; tint[1] = bright; tint[2] = bright;
-        // Scale the whole transform down (uniform shrink) while keeping the center.
+    if (m_dying || m_corpse) {
+        // ---- Death TOPPLE: the body falls over (rotates about its feet) and
+        // settles flat as a lingering corpse — replaces the old shrink-poof. `fall`
+        // eases 0 (upright) -> 1 (flat) across the topple window; a corpse is pinned
+        // at 1. A brief white flash punches the very start so the kill still reads. -
+        const float fall = m_corpse ? 1.0f
+            : (kDeathToppleTime > 0.0f ? (1.0f - m_deathPop / kDeathToppleTime) : 1.0f);
+        const float fe   = 1.0f - (1.0f - fall) * (1.0f - fall);   // easeOut (gravity-ish)
+        const float ang  = fe * 1.5707963f * 0.92f;                // up to ~83deg — lying down
+        // White flash only in the first third of the fall, then back to tint.
+        const float flash  = (fall < 0.35f) ? (1.0f - fall / 0.35f) : 0.0f;
+        const float bright = 1.0f + 1.3f * flash;
+        tint[0] *= bright; tint[1] *= bright; tint[2] *= bright;
+        // World-space topple about X through the feet (the entity translation): strip
+        // the translation, rotate, then restore it so the feet stay planted and the
+        // head swings down to the floor.
+        const float tx = e.transform[12], ty = e.transform[13], tz = e.transform[14];
+        float base[16];
+        for (int i = 0; i < 16; ++i) base[i] = e.transform[i];
+        base[12] = base[13] = base[14] = 0.0f;
+        const float c = std::cos(ang), s = std::sin(ang);
+        const float Rx[16] = { 1, 0, 0, 0,   0, c, s, 0,   0, -s, c, 0,   0, 0, 0, 1 };
         float m[16];
-        for (int i = 0; i < 16; ++i) m[i] = e.transform[i];
-        for (int col = 0; col < 3; ++col) {        // scale the 3 basis columns
-            m[col * 4 + 0] *= popAmt;
-            m[col * 4 + 1] *= popAmt;
-            m[col * 4 + 2] *= popAmt;
-        }
+        x3::asset::mulMat4(Rx, base, m);
+        m[12] = tx; m[13] = ty; m[14] = tz;
         drawMonsterAt(device, frame, m, tint);
         return;
     }
