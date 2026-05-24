@@ -109,3 +109,37 @@ Clean-room: only X3Native headers + EFLZ design docs in `docs/design/`
 `EFLZ_BESTIARY.md`). G:\ TASK_3 file not present on this box — design docs
 served as the source of truth. No RBDOOM / id Tech / Doom / Quake source
 consulted.
+
+---
+
+## HARDWARE — DJBOOTH snapshot (2026-05-24)
+
+Tag for fleet comparison: **garage 4790K / 1080Ti / Z97**. Formerly the
+Club 1127 DJ booth PC. Sits on the Blue Toolbox (one of many).
+
+| Component | Value |
+|---|---|
+| **CPU** | Intel i7-4790K (Haswell, 2014) — 4C/8T, 4.0GHz base, LGA1150 |
+| **Motherboard** | ASUS Z97-PRO GAMER (Z97 chipset, **NOT** a newer board — original era) |
+| **BIOS** | AMI v2107, dated 2015-11-10 (eligible for update; mobo last firmware was 2018) |
+| **RAM** | 32GB DDR3-1866 = 4×8GB. 2×G.Skill F3-1866C10-8GAB + 2×Crucial BLS8G3D1609DS1S00 (DDR3-1600 sticks running at 1866 via XMP) |
+| **GPU** | NVIDIA GeForce GTX 1080 Ti, 11GB GDDR5X. Driver 32.0.15.6094 (2024-08-13) |
+| **Monitors** | 2× Dell U2719D / U2719DX (27", 2020 mfr), both **2560×1440** @ 59Hz |
+| **Storage** | C: Samsung 970 EVO Plus **2TB NVMe** (888GB free) · D: Samsung 850 EVO M.2 **500GB SATA** (434GB free). Earlier "3TB NVMe" was a misremember — actual total is 2.5TB SSD across the two drives |
+| **NIC** | Intel I218-V onboard, link 1 Gbps, 802.3 |
+| **WAN throughput** | **219 Mbps ↓ / 41 Mbps ↑** measured. ⚠️ Fleet TODO: move ALL PCs onto the **1200 Mbps fiber** — DJBOOTH is currently ~18% of target down, ~3% up |
+| **OS** | Windows 10 Pro 22H2 (build 19045), installed 2022-04-05, last-boot uptime ~272 hrs |
+| **Power plan** | High performance |
+
+### Build env installed on DJBOOTH (2026-05-23)
+- `C:\Program Files\Microsoft Visual Studio\18\Insiders\` — VS 2026 Community Insiders 18.7.11819.209 (Native Desktop workload, Win11 SDK 22621, VC CMake Project)
+- `C:\VulkanSDK\1.4.350.0\` — exact spec match
+- `C:\vcpkg\` — bootstrapped + pinned to baseline `f7f94113c3b629c01df3d49d5edebae6d598c78c`
+- `C:\Program Files\GitHub CLI\gh.exe` — authed as `1GreenNinja`
+- `D:\GameDev\X3Native` — local clone
+
+### Fleet-relevance notes for the integrator
+- **First-time vcpkg dep compile on this 4790K** is the slowest gauntlet step in the fleet — expect ~1–3 hrs for the 9 ports (joltphysics dominates). All later builds reuse cached binaries.
+- **Vulkan 1.3 feature support on GTX 1080 Ti**: per `BUILD.md`, expected to pass `set_required_features_*` checks; if not, `init()` logs which selection failed.
+- **2× 27" 1440p panels** = comfortable side-by-side dev layout (code on one, debugger / RenderDoc on the other).
+- **Wired 1 Gbps NIC** is fine for LAN/Git, but WAN bandwidth (219/41) bottlenecks first-time git clones of larger feature branches + any vcpkg binary-cache pulls. Moving to the 1200 Mbps fiber should remove that as a fleet-wide concern.
