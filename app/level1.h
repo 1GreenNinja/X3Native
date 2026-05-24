@@ -6,9 +6,12 @@
 // plates (B1 basement security, F1 atrium, F2 medical wards, F3 labs, F4 offices,
 // F5 synth bay, F6 executive, F7 rooftop) as boxes with distinct tints + static
 // Jolt collision, connected by a central elevator shaft (a vertical column with a
-// doorway opening on each floor) and an emergency stairwell. Floors are spaced
-// 5 m apart in +Y so the elevator's 5 m stops land on walkable floor geometry at
-// each floor (see specs/ELEVATOR.spec.md + main.cpp's elevator build).
+// doorway opening on each floor) and an emergency stairwell. Floors stack in +Y at
+// the REAL NON-UNIFORM canon pitch (docs/design/X3_WORLD_BLUEPRINT.md §2.1 — B1=0,
+// F1=5, F2=10, F3=20, F4=30, F5=65, F6=78, F7=91 m; ~91 m, was an 8x-compressed
+// uniform 5 m / 35 m stack). The elevator builds one stop per floor straight from
+// floorBaseY[] (elevStops = floorBaseY[fi]+cabHY) so the stops auto-follow the real
+// heights (see specs/ELEVATOR.spec.md + main.cpp's elevator build).
 //
 // Per the conventions doc: +X right, +Y up, -Z forward. Floors stack along +Y.
 // Each floor's plate shares the SAME XZ footprint so the elevator/stair shafts
@@ -31,21 +34,28 @@ namespace x3::game {
 // The 8 floors of the Spire, low -> high (B1 at the bottom, F7 the rooftop). Index
 // shared by buildLevel1() (collision/graybox) and env_art.cpp (GLB tiling) so the
 // floor footprints, base heights and ceiling heights are authored in ONE place.
+// Canon Y (X3_WORLD_BLUEPRINT §2.1): B1=Detention(0), F1=Atrium(5), F2=Medical(10),
+// F3=Genetics(20), F4=Cybernetics(30), F5=Drone(65), F6=Alien(78), F7=Executive(91).
 enum class L1Floor : uint32_t {
-    B1 = 0,  // Basement security — Jake's spawn + strength terminal + Martinez gate
-    F1,      // Atrium / lobby — glass curtain-wall breather
-    F2,      // Medical wards — 3 rescue rooms (Aria / Keisha / Emily)
-    F3,      // Labs — research / hazards / crafting
-    F4,      // Offices — cubicle combat sprawl
-    F5,      // Synth bay — synth waves (tall high-bay)
-    F6,      // Executive — exec suites (Sarah)
-    F7,      // Rooftop — helipad / finale (tall)
+    B1 = 0,  // Detention Level (canon "F1") — Jake's spawn + Martinez gate            [Y=0]
+    F1,      // Atrium / lobby — glass curtain-wall breather                            [Y=5]
+    F2,      // Medical Bay — 3 rescue rooms (Aria / Keisha / Emily); Dr. Chen          [Y=10]
+    F3,      // Genetics Lab — gene-vats / nursery; Failed Experiment #7                [Y=20]
+    F4,      // Cybernetics Workshop — augmentation; Humanity meter (-> F4.5 Nexus)     [Y=30]
+    F5,      // Drone Manufacturing — the drone level; Swarm Controller + Sarah's hack  [Y=65]
+    F6,      // Alien Technology Lab — Salvari first contact, the cure; Alien Overseer  [Y=78]
+    F7,      // Executive Laboratory — finale, Sarah, timeline LOCK; Jake's Clone       [Y=91]
     Count
 };
 
-// Floors that the elevator stops at (== L1Floor::Count == 8 stops, 5 m apart).
+// Floors that the elevator stops at (== L1Floor::Count == 8 stops). The pitch is now
+// NON-UNIFORM (real canon Y per floor in level1.cpp kFloors[]) — the elevator derives
+// its stops from floorBaseY[] so the per-floor gaps (5/5/10/10/35/13/13 m) auto-follow.
 constexpr uint32_t kSpireFloorCount = (uint32_t)L1Floor::Count;
-constexpr float    kFloorSpacing    = 5.0f;   // m between floor plates (elevator stop pitch)
+// Nominal reference floor spacing (the OLD uniform pitch, retained as the sub-level
+// stack's reference unit + a default step granularity). It is NO LONGER the inter-floor
+// pitch of the main tower (that is now non-uniform, read from kFloors[].y0).
+constexpr float    kFloorSpacing    = 5.0f;   // m — nominal reference unit (NOT the tower pitch)
 
 // One floor's authored footprint + base height + ceiling height (meters). The
 // plate spans x in [x0,x1], z in [-zHalf,+zHalf], its WALKABLE FLOOR at world
@@ -114,9 +124,9 @@ L1Footprint level1DetentionFootprint();
 // bottom floors (B1/F1) so the existing Level-1 beats (cell -> corridor -> armory
 // -> checkpoint -> arena -> elevator) keep working on the basement + atrium.
 struct Level1Layout {
-    // ---- Per-floor base Y (world floor height) + center, low -> high. The host
-    // builds the elevator with one stop per entry (cab top at the floor) so a ride
-    // arrives at walkable geometry on every floor. floorBaseY[B1]=0.
+    // ---- Per-floor base Y (REAL non-uniform canon height) + center, low -> high. The
+    // host builds the elevator with one stop per entry (cab top at the floor) so a ride
+    // arrives at walkable geometry on every floor. floorBaseY[B1]=0 .. floorBaseY[F7]=91.
     float          floorBaseY[kSpireFloorCount] = {};
     x3::phys::Vec3 floorCenter[kSpireFloorCount] = {};  // (cx, y0, cz) per floor
     float          floorCeil[kSpireFloorCount]   = {};  // ceiling height per floor
