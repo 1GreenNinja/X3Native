@@ -14,6 +14,10 @@ struct BodyId { uint32_t id = 0; bool valid() const { return id != 0; } };
 // the world keeps cached; a body can be created from it. 0 == invalid. Maps to a
 // JPH::ShapeRefC kept inside JoltPhysicsWorld.cpp (no JPH:: types leak here).
 struct ShapeId { uint32_t id = 0; bool valid() const { return id != 0; } };
+// Opaque constraint handle (Physics §1 — suspended/constrained bodies). A joint
+// the world keeps cached (point/distance to a fixed world anchor). 0 == invalid.
+// Maps to a JPH::Ref<JPH::Constraint> kept inside JoltPhysicsWorld.cpp.
+struct ConstraintId { uint32_t id = 0; bool valid() const { return id != 0; } };
 
 enum class Layer : uint8_t { Static, Dynamic, Player, Enemy, Projectile, Trigger };
 
@@ -105,6 +109,43 @@ public:
     virtual void optimizeBroadphase() = 0;
 
     // -----------------------------------------------------------------------
+    // Physics §1 — suspended / constrained bodies (swinging cubes). Hang a
+    // dynamic body from a FIXED world-space anchor so it swings like a pendulum
+    // under gravity and settles via damping. Opaque; NO JPH:: types leak here.
+    // Built on Jolt's PointConstraint / DistanceConstraint against the implicit
+    // world body (JPH::Body::sFixedToWorld) — no fake anchor body needed.
+    // -----------------------------------------------------------------------
+
+    // Attach a dynamic `body` to a fixed world-space point `anchorWorld` with a
+    // BALL/POINT joint: the body's current attach point (a world-space offset
+    // `bodyAttachWorld`) is pinned to `anchorWorld`, leaving all 3 rotational
+    // DOF free so it swings + spins like a hung cube. `bodyAttachWorld` is the
+    // world-space point ON the body that gets pinned (usually a top corner/edge
+    // of the cube) — at constraint time it should coincide with the body's
+    // current pose. Returns invalid on a bad/static body. The joint is owned by
+    // the world and torn down at shutdown() or removeConstraint().
+    virtual ConstraintId addPointConstraint(BodyId body, Vec3 anchorWorld,
+                                            Vec3 bodyAttachWorld) = 0;
+
+    // Attach a dynamic `body` to a fixed world-space point `anchorWorld` with a
+    // DISTANCE joint (a rope/rod of length [minLen,maxLen] between the body's
+    // current attach point and the anchor). With minLen==maxLen it is a rigid
+    // rod; with minLen<maxLen it is a rope that lets the body fall to maxLen then
+    // swing. Returns invalid on a bad/static body.
+    virtual ConstraintId addDistanceConstraint(BodyId body, Vec3 anchorWorld,
+                                               Vec3 bodyAttachWorld,
+                                               float minLen, float maxLen) = 0;
+
+    // Remove + destroy a previously-created constraint. Safe on an invalid/stale
+    // id (no-op). The two bodies are left free.
+    virtual void removeConstraint(ConstraintId) = 0;
+
+    // Set a dynamic body's linear + angular damping (dv/dt = -c*v, dw/dt = -c*w;
+    // both >= 0, usually small e.g. 0.05). Higher values settle a swing faster.
+    // No-op for a static/character/invalid body.
+    virtual void setBodyDamping(BodyId, float linear, float angular) = 0;
+
+    // -----------------------------------------------------------------------
     // Native-handle escape hatch (vehicle framework). Returns the underlying
     // Jolt objects as void* so the type stays out of this header. This is ONLY
     // for in-engine subsystems that MUST integrate with Jolt at a level the POD
@@ -127,5 +168,13 @@ IPhysicsWorld* createPhysicsWorld();
 // JoltPhysicsWorld.cpp (where JPH:: types are available). Mirrors
 // runAssetSelfTest()/runConsoleSelfTest().
 bool runPhysicsSelfTest();
+
+// Physics §1 self-test (--test-physjoint): create a dynamic body on a point
+// constraint, step the sim, and assert it (1) hangs + swings under gravity
+// (the swing angle oscillates about the anchor), (2) settles with damping, and
+// (3) re-settles after an impulse displaces it; no NaNs; leak-clean. Prints
+// "physjoint: X/Y passed" and returns true iff all pass. Implemented in
+// JoltPhysicsWorld.cpp (where JPH:: types are available).
+bool runPhysJointSelfTest();
 
 } // namespace x3::phys
