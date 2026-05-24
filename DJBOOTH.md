@@ -33,3 +33,79 @@ IMPLEMENT `app/act2_caves.{h,cpp}` (mirror `act2_world`/`spire_mid` authoring): 
 
 ## REPORT STATUS (append below, then push the branch)
 <!-- STATUS: branch HEAD, files added/changed, "act2caves: X/Y passed" (or "gate pending"), VUID/leak if gated, "READY FOR INTEGRATION" or BLOCKED+why. -->
+
+---
+
+## STATUS — DJBOOTH (2026-05-23) — Act-2 mid biomes (L12-15)
+
+- **Branch:** `feat/act2-caves` (pushed to origin)
+- **HEAD:** `53e58f15a418ac16b4bc97fcdf33f7aed939d358`
+- **Files changed (vs origin/main):**
+  ```
+   app/CMakeLists.txt |   1 +
+   app/act2_caves.cpp | 822 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+   app/act2_caves.h   | 361 +++++++++++++++++++++++
+   app/main.cpp       |  17 ++
+   4 files changed, 1201 insertions(+)
+  ```
+- **Module sizes:** `app/act2_caves.h` ~361 lines (public API + `Act2CaveAreaPlan`
+  + `PoisonHazardZone` + `CrystalHeartChamber` + self-test prototype);
+  `app/act2_caves.cpp` ~822 lines (build/tick/onTrigger/onFire/draw +
+  reachability helpers + `runAct2CavesSelfTest` running TWO full builds with
+  24 assertions covering every spec gate).
+- **Touched ONLY:** `app/act2_caves.{h,cpp}` (new) + `app/main.cpp` (test flag +
+  include) + `app/CMakeLists.txt` (source list). `act2_world.*`, `act2_desert.*`,
+  Act-1 files, `monster.*` — UNTOUCHED.
+
+### Levels authored (L12-15)
+- **L12 Advanced Cave System** — 4 hostile cave-fauna (`NativeDesertFauna`
+  re-tinted cave-blue), 3 allied Salvari Archives markers (`SalvariAlly` row),
+  the **Crystal Heart Chamber** (dual-gate: strength AND hack required; story-
+  branch latch on activation), the **Memory Hunter** boss in the abyss arena
+  (uses `act2BossTuning(MemoryHunter)` so `copyFeintPhase>0` is wired by the row).
+- **L13 Toxic Swamplands Edge** — 5 stationary `MutatedFlora` lashers +
+  `PoisonHazardZone` AABB present-but-inert-until-entered (mirrors
+  `act2_world.HazardZone` exactly; same `kPoisonExposureRate = 8.0f` so the HUD
+  reads consistently across Act-2 hazards).
+- **L14 Research Station** — 4 `MutatedScientist` (ranged chemical attackers)
+  ALWAYS present; **Beta Siren ambush** placed only when `setSirenAmbushGate(true)`
+  was called before `build()` (i.e. F2 women lost in Act 1). The host flips this
+  flag before build; the test rebuilds both halves to exercise both branches.
+- **L15 Tree Cities** — 3 canopy platforms at RISING Y heights (climb route
+  graybox) + a trading-post pillar prop on the top platform (host wires E-interact
+  to `tradingPostPos()`).
+
+### Trigger range (non-colliding)
+- Reserved **100..108** (`kAct2CavesTrigBase`, 9 ids). Below: Act-1 L1Trigger
+  (10..29), SpireMid hubs (30/40/50), Act-2 host (80..82). 83..99 left as the
+  safe gap for `act2_desert.*` (L10/L11) — next machine's lane.
+- IDs: `L11toL12Portal=100`, `L12CrystalHeartRoom=101`,
+  `L12MemoryHunterArena=102`, `L12toL13Transition=103`, `L13PoisonHazard=104`,
+  `L13toL14Transition=105`, `L14SirenAmbush=106`, `L14toL15Transition=107`,
+  `L15TradingPost=108`.
+
+### Self-test (`--test-act2caves`) — 24 assertions, 2 builds
+C0 module builds; C1 all 4 levels named/objective'd/implemented; C2-C5 per-level
+plan shape (footprints/counts/flags); C6 Memory Hunter present with
+`copyFeintPhase>0`; C7 Salvari Archives allied + 0 dmg; **C8-C13 Crystal Heart
+gates** (inert at load -> stays inert on one gate -> ARMS on both -> `activate()`
+latches `activated+storyBranch` -> idempotent); **C14-C16 L13 poison hazard**
+(present+inert at load -> stays inert outside -> arms+exposure climbs inside);
+**C17+C23 timeline-gated Siren** (flag=true => Siren placed; flag=false => NO
+Siren but scientists still there); C18 Tree Cities 3 rising platforms + trading
+post; C19-C21 reachability latching + `allTransitionsReachable()`; C22 trigger-id
+non-collision range check. Prints `act2caves: X/Y passed`; exit 0 on full pass,
+nonzero on any fail.
+
+### Gate / build
+
+**Gate pending — toolchain present on DJBOOTH but not yet executed. Awaiting
+human decision on local gate vs 13700K integrator gate.**
+
+Source-correct, compilable-looking, design-aligned C++ on pushed branch. No
+engine/CMake-shader/Act-1/Act-2-world/Act-2-desert/`monster.*` files touched.
+Clean-room: only X3Native headers + EFLZ design docs in `docs/design/`
+(`X3_WORLD_BLUEPRINT.md` §4.2, `EFLZ_WORLD_STRUCTURE.md` L12-L15 rows,
+`EFLZ_BESTIARY.md`). G:\ TASK_3 file not present on this box — design docs
+served as the source of truth. No RBDOOM / id Tech / Doom / Quake source
+consulted.
