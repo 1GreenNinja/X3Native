@@ -512,6 +512,29 @@ static bool runGpuSkinSelfTest() {
     return passed == total;
 }
 
+// ---- Per-system frame timers (perf hunt: where do the ~100ms/frame go?). Scoped
+// accumulators summed over a window, logged as a per-section breakdown + FPS every
+// kPerfWindow frames. Cheap (a few glfwGetTime() calls/frame). See docs/PERF_LOG.md.
+namespace {
+struct PerfTimers {
+    double tick = 0, healthbars = 0, frameDt = 0;  // seconds, summed over the window
+    int    frames = 0;
+    static constexpr int kWindow = 120;
+    void addFrame(double dtSec) {
+        frameDt += dtSec;
+        if (++frames < kWindow) return;
+        const double inv = 1.0 / (double)frames;
+        const double fps = (frameDt > 1e-6) ? (frames / frameDt) : 0.0;
+        x3::logInfo("[perf] " + std::to_string((int)(fps + 0.5)) + " FPS  frame=" +
+                    std::to_string(frameDt * inv * 1000.0) + "ms | game.tick=" +
+                    std::to_string(tick * inv * 1000.0) + "ms  healthbars=" +
+                    std::to_string(healthbars * inv * 1000.0) + "ms  (rest=render+physics+hud)");
+        tick = healthbars = frameDt = 0; frames = 0;
+    }
+};
+PerfTimers g_perf;
+} // namespace
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -4609,7 +4632,9 @@ int main(int argc, char** argv) {
                 device->setWaterParams(wp);
             }
         } else {
-            game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
+            { const double _pt0 = glfwGetTime();
+              game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
+              g_perf.tick += glfwGetTime() - _pt0; }
             // Spire mid floors (F3/F4/F5): dispatch their floor-hub triggers (the F5
             // hub starts the rescue clock) then tick their enemy groups + gated victim.
             // Reaching the F4 hub OPENS the F4->F5 connector that "finds" the off-
@@ -4943,8 +4968,10 @@ int main(int argc, char** argv) {
                         }
                     };
                     // B1 groups + the active Spire-floor enemy groups + bosses.
+                    const double _pbar0 = glfwGetTime();
                     barsFor(game.corridorEnemies());
                     barsFor(game.checkpointEnemies());
+                    g_perf.healthbars += glfwGetTime() - _pbar0;
                     for (uint32_t f = 0; f < (uint32_t)x3::game::SpireMidFloor::Count; ++f)
                         barsFor(midFloors.enemies((x3::game::SpireMidFloor)f));
                     barsFor(midFloors.f3Boss());
@@ -5155,6 +5182,7 @@ int main(int argc, char** argv) {
             hud.drawConsole(*device, frame, *console, dt);
         }
         device->endFrame(frame);
+        g_perf.addFrame((double)dt);   // per-system perf breakdown logged every 120 frames
     }
 
     x3::logInfo("shutting down");

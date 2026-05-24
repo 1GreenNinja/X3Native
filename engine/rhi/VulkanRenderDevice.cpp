@@ -6943,7 +6943,12 @@ private:
     // m_ambient is a small constant lift so shadowed/back-faces aren't pure black
     // (a touch cool/blue to read as a sci-fi interior without washing out).
     std::vector<PointLight> m_pointLights;
-    glm::vec3               m_ambient{ 0.10f, 0.11f, 0.14f };
+    // Hemispheric ambient FLOOR (mesh.frag ambientCount.rgb). The original 0.10/0.11/
+    // 0.14 was tuned far too dark for a SUNLESS indoor scene (B1 has no directional
+    // sun, so unlit areas fell to near-black — "incredibly dark"). Lifted ~2.6x to a
+    // readable cool-sci-fi floor. PERF: render-cost-neutral (a shader constant; no
+    // extra draws/work). See docs/PERF_LOG.md.
+    glm::vec3               m_ambient{ 0.26f, 0.28f, 0.34f };
 };
 
 } // namespace
