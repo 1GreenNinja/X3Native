@@ -39,6 +39,7 @@
 #include "RenderGraph.h"
 #include "../core/x3_log.h"
 #include "font8x8_basic.h"
+#include "font_robotomono.h"   // embedded Roboto Mono TTF (Apache-2.0) — modern HUD font
 
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_win32.h>
@@ -50,6 +51,11 @@
 // STB_IMAGE_IMPLEMENTATION for the reader — they are separate stb headers).
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
+
+// stb_truetype: bake a crisp glyph atlas from a real TTF at device init (modern
+// HUD/menu font). This is the ONLY translation unit that defines the impl macro.
+#define STB_TRUETYPE_IMPLEMENTATION
+#include <stb_truetype.h>
 
 #include <vector>
 #include <string>
@@ -1016,6 +1022,10 @@ public:
         if (!fc.valid || !m_hudPipeline || !text || pxPerGlyph <= 0.0f) return;
         const float c[4] = { rgba ? rgba[0] : 1.0f, rgba ? rgba[1] : 1.0f,
                              rgba ? rgba[2] : 1.0f, rgba ? rgba[3] : 1.0f };
+
+        if (m_ttfFontReady) { drawHudTextTtf(text, xPx, yPx, pxPerGlyph, c); return; }
+
+        // ---- Legacy 8x8 bitmap fallback (only if the TTF bake failed) ----------
         // Atlas layout: 16 cols x 8 rows of 8x8 glyphs in a 128x64 texture.
         constexpr float kCols = 16.0f, kRows = 8.0f;
         // Glyph cell is 8/128 wide, 8/64 tall; sample a 7/8 sub-rect to avoid the
@@ -1036,6 +1046,47 @@ public:
                 HudVertex q[6];
                 emitQuad(q, penX, penY, pxPerGlyph, pxPerGlyph,
                          u0, v0, u0 + kInsetU, v0 + kInsetV, c);
+                for (auto& v : q) m_hudScratch.push_back(v);
+            }
+            penX += pxPerGlyph;
+        }
+        if (!m_hudScratch.empty())
+            flushHud(m_hudScratch.data(), (uint32_t)m_hudScratch.size(), /*useFont=*/true);
+    }
+
+    // Render `text` from the baked Roboto Mono TTF atlas. The font is MONOSPACE:
+    // each glyph advances by exactly `pxPerGlyph`, so UiContext::textWidth's
+    // N*pxPerGlyph math (and all the centering/right-alignment built on it) stays
+    // exact — no ui.cpp layout change required. Within each cell the real glyph
+    // shape (with proper bearings/baseline) is placed and horizontally centered,
+    // so it reads as a clean modern font, not a fixed grid of blocks.
+    void drawHudTextTtf(const char* text, float xPx, float yPx,
+                        float pxPerGlyph, const float c[4]) {
+        // bake-pixel units -> requested pixels. The cell advance maps to pxPerGlyph.
+        const float s = pxPerGlyph / std::max(1.0f, m_ttfCellAdvance);
+        const float baseline = m_ttfAscent * s;   // baseline below the cell top (yPx)
+
+        m_hudScratch.clear();
+        float penX = xPx, penY = yPx;
+        for (const char* p = text; *p; ++p) {
+            unsigned char ch = static_cast<unsigned char>(*p);
+            if (ch == '\n') { penX = xPx; penY += pxPerGlyph; continue; }
+            if (ch < kTtfFirstChar || ch >= kTtfFirstChar + kTtfCharCount) ch = '?';
+            if (ch > 32) { // space + control glyphs are blank
+                const TtfGlyph& g = m_ttfGlyphs[ch - kTtfFirstChar];
+                // Glyph natural width in this cell + centering offset so the shape
+                // sits centered in the monospace cell (keeps proportional shapes
+                // looking right inside fixed advances).
+                const float glyphW   = (g.x1 - g.x0) * s;
+                const float advance  = g.advance * s;
+                const float centerOff = (pxPerGlyph - advance) * 0.5f;
+                const float gx0 = penX + centerOff + g.x0 * s;
+                const float gy0 = penY + baseline + g.y0 * s;
+                const float gw  = (g.x1 - g.x0) * s;
+                const float gh  = (g.y1 - g.y0) * s;
+                (void)glyphW;
+                HudVertex q[6];
+                emitQuad(q, gx0, gy0, gw, gh, g.u0, g.v0, g.u1, g.v1, c);
                 for (auto& v : q) m_hudScratch.push_back(v);
             }
             penX += pxPerGlyph;
@@ -2774,9 +2825,113 @@ private:
         }
     }
 
+    // Font atlas builder. Prefers a CRISP modern font baked from a real TTF
+    // (Roboto Mono, embedded) via stb_truetype; on ANY failure it falls back to
+    // the legacy 8x8 bitmap font so text is NEVER blank. Sets m_ttfFontReady to
+    // tell drawHudText which path to render. Logs the active path.
+    bool buildFontAtlas() {
+        m_ttfFontReady = false;
+        if (buildTtfFontAtlas()) {
+            m_ttfFontReady = true;
+            logInfo("[rhi] HUD font: Roboto Mono (TTF, stb_truetype glyph atlas) — modern path active");
+            return true;
+        }
+        logError("[rhi] HUD font: TTF bake failed — falling back to legacy 8x8 bitmap font");
+        return buildBitmapFontAtlas();
+    }
+
+    // Bake ASCII 32..126 from the embedded Roboto Mono TTF into an antialiased
+    // R8 coverage atlas via stb_truetype's packer (with oversampling for crisp
+    // small text), then expand to RGBA (white, alpha=coverage) so the existing
+    // createSampledTexture/LINEAR sampler path renders smooth, alpha-blended
+    // glyphs tinted by the per-vertex HUD color. Records per-glyph atlas UVs +
+    // offsets + advance (in bake-pixel units) for drawHudText.
+    bool buildTtfFontAtlas() {
+        const unsigned char* ttf = kRobotoMonoTTF;
+        const size_t ttfSize = kRobotoMonoTTFSize;
+        if (!ttf || ttfSize < 4) { logError("[rhi] TTF: empty font data"); return false; }
+
+        stbtt_fontinfo info{};
+        const int off = stbtt_GetFontOffsetForIndex(ttf, 0);
+        if (off < 0) { logError("[rhi] TTF: GetFontOffsetForIndex failed"); return false; }
+        if (!stbtt_InitFont(&info, ttf, off)) { logError("[rhi] TTF: InitFont failed"); return false; }
+
+        // Global vertical metrics at the bake size (so the baseline + cell height
+        // are consistent across glyphs and match the monospace cell layout).
+        const float scale = stbtt_ScaleForPixelHeight(&info, kTtfBakePx);
+        int asc = 0, desc = 0, lineGap = 0;
+        stbtt_GetFontVMetrics(&info, &asc, &desc, &lineGap);
+        m_ttfAscent = asc * scale;   // baseline distance from the cell top
+
+        // Monospace cell advance: Roboto Mono is fixed-pitch, so any glyph's
+        // advance works; use 'M' for a robust value.
+        {
+            int adv = 0, lsb = 0;
+            stbtt_GetCodepointHMetrics(&info, 'M', &adv, &lsb);
+            m_ttfCellAdvance = adv * scale;
+            if (m_ttfCellAdvance <= 0.0f) m_ttfCellAdvance = kTtfBakePx; // sane fallback
+        }
+
+        // Pack the glyph range into an 8-bit coverage atlas.
+        std::vector<unsigned char> coverage((size_t)kTtfAtlasW * kTtfAtlasH, 0);
+        std::vector<stbtt_packedchar> packed(kTtfCharCount);
+        stbtt_pack_context spc{};
+        if (!stbtt_PackBegin(&spc, coverage.data(), kTtfAtlasW, kTtfAtlasH,
+                             /*stride=*/0, /*padding=*/1, nullptr)) {
+            logError("[rhi] TTF: PackBegin failed"); return false;
+        }
+        stbtt_PackSetOversampling(&spc, 2, 2);   // 2x2 supersample for crisp small text
+        if (!stbtt_PackFontRange(&spc, ttf, 0, kTtfBakePx,
+                                 kTtfFirstChar, kTtfCharCount, packed.data())) {
+            logError("[rhi] TTF: PackFontRange failed (atlas too small?)");
+            stbtt_PackEnd(&spc);
+            return false;
+        }
+        stbtt_PackEnd(&spc);
+
+        // Record per-glyph atlas rects + quad offsets + advance (bake-pixel units).
+        for (int i = 0; i < kTtfCharCount; ++i) {
+            const stbtt_packedchar& pc = packed[i];
+            TtfGlyph& g = m_ttfGlyphs[i];
+            g.u0 = (float)pc.x0 / (float)kTtfAtlasW;
+            g.v0 = (float)pc.y0 / (float)kTtfAtlasH;
+            g.u1 = (float)pc.x1 / (float)kTtfAtlasW;
+            g.v1 = (float)pc.y1 / (float)kTtfAtlasH;
+            // pc.xoff/yoff are offsets from the pen (baseline) to the glyph's top-left.
+            g.x0 = pc.xoff;  g.y0 = pc.yoff;
+            g.x1 = pc.xoff2; g.y1 = pc.yoff2;
+            g.advance = pc.xadvance;
+        }
+
+        // Expand coverage -> RGBA (white, alpha=coverage) and upload.
+        std::vector<uint8_t> rgba((size_t)kTtfAtlasW * kTtfAtlasH * 4, 0);
+        for (size_t p = 0; p < coverage.size(); ++p) {
+            rgba[p*4+0] = 255; rgba[p*4+1] = 255; rgba[p*4+2] = 255;
+            rgba[p*4+3] = coverage[p];
+        }
+        if (!createSampledTexture(rgba.data(), kTtfAtlasW, kTtfAtlasH, /*srgb=*/false, m_fontTex)) {
+            logError("[rhi] TTF: atlas texture upload failed"); return false;
+        }
+
+        // LINEAR + CLAMP sampler: smooth glyph edges (antialiased), no wrap bleed.
+        if (m_fontTex.sampler) vkDestroySampler(m_dev.device, m_fontTex.sampler, nullptr);
+        m_fontTex.sampler = VK_NULL_HANDLE;
+        VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        sci.magFilter = VK_FILTER_LINEAR; sci.minFilter = VK_FILTER_LINEAR;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(m_dev.device, &sci, nullptr, &m_fontTex.sampler) != VK_SUCCESS) {
+            logError("[rhi] TTF font sampler create failed"); return false;
+        }
+        return true;
+    }
+
     // Build a 128x64 RGBA atlas (16 cols x 8 rows of 8x8 glyphs) from the
     // embedded public-domain font8x8_basic bits: white texel, alpha = pixel-on.
-    bool buildFontAtlas() {
+    // Legacy fallback used only if the TTF bake fails (NEVER ship blank text).
+    bool buildBitmapFontAtlas() {
         constexpr uint32_t kAtlasW = 128, kAtlasH = 64;
         std::vector<uint8_t> rgba((size_t)kAtlasW * kAtlasH * 4, 0);
         for (int ch = 0; ch < 128; ++ch) {
@@ -2799,6 +2954,7 @@ private:
             return false;
         // Replace the linear sampler with a NEAREST, CLAMP one for crisp glyphs.
         if (m_fontTex.sampler) vkDestroySampler(m_dev.device, m_fontTex.sampler, nullptr);
+        m_fontTex.sampler = VK_NULL_HANDLE;
         VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
         sci.magFilter = VK_FILTER_NEAREST; sci.minFilter = VK_FILTER_NEAREST;
         sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
@@ -2932,7 +3088,7 @@ private:
         vkDestroyShaderModule(m_dev.device, fs, nullptr);
         if (pr != VK_SUCCESS) { logError("[rhi] HUD pipeline create failed"); return false; }
 
-        logInfo("[rhi] HUD 2D pipeline ready (NDC quads + 8x8 font atlas, alpha-blended, no depth)");
+        logInfo("[rhi] HUD 2D pipeline ready (NDC quads + TTF/bitmap glyph atlas, alpha-blended, no depth)");
         return true;
     }
 
@@ -6304,8 +6460,30 @@ private:
     VkPipeline       m_hudPipeline = VK_NULL_HANDLE;
     VkPipelineLayout m_hudLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_hudSetLayout = VK_NULL_HANDLE;
-    Texture          m_fontTex{};               // 8x8 bitmap font atlas (RGBA)
+    Texture          m_fontTex{};               // glyph atlas (RGBA): TTF-baked, or 8x8 bitmap fallback
     std::vector<HudVertex> m_hudScratch;        // CPU scratch for text batching
+
+    // ---- TTF glyph atlas (modern HUD font) ---------------------------------
+    // Baked once at init from the embedded Roboto Mono TTF via stb_truetype.
+    // m_ttfFontReady gates drawHudText: true => render baked, proportional-quality
+    // glyphs placed inside a MONOSPACE cell (advance == pxPerGlyph, so UiContext::
+    // textWidth's N*px math stays exact); false => fall back to the 8x8 bitmap path.
+    // We store per-glyph atlas rects + offsets normalized to the bake pixel size so
+    // they scale to any requested pxPerGlyph at draw time.
+    static constexpr int   kTtfFirstChar = 32;   // ASCII space
+    static constexpr int   kTtfCharCount = 95;   // 32..126 inclusive
+    static constexpr int   kTtfAtlasW    = 1024;  // fits 95 glyphs @ 48px w/ 2x2 oversampling
+    static constexpr int   kTtfAtlasH    = 1024;
+    static constexpr float kTtfBakePx    = 48.0f; // bake size (oversampled for crispness)
+    struct TtfGlyph {
+        float u0, v0, u1, v1;   // atlas UVs
+        float x0, y0, x1, y1;   // quad offsets in bake-pixel units (relative to pen, baseline at y=0)
+        float advance;          // horizontal advance in bake-pixel units
+    };
+    TtfGlyph m_ttfGlyphs[kTtfCharCount]{};
+    float    m_ttfCellAdvance = kTtfBakePx; // the monospace cell width in bake-pixel units
+    float    m_ttfAscent      = kTtfBakePx; // baseline offset from cell top, in bake-pixel units
+    bool     m_ttfFontReady   = false;
 
     // One-time staging upload (transient pool + fence)
     VkCommandPool m_uploadPool = VK_NULL_HANDLE;
