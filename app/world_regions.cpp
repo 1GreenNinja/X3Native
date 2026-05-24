@@ -122,9 +122,9 @@ uint32_t WorldRegions::mountainCount() const {
 namespace {
 
 int g_pass = 0, g_fail = 0;
-void check(bool cond, const char* name) {
-    if (cond) { ++g_pass; x3::logInfo(std::string("[worldregions-test] PASS ") + name); }
-    else      { ++g_fail; x3::logError(std::string("[worldregions-test] FAIL ") + name); }
+void check(bool cond, const std::string& name) {
+    if (cond) { ++g_pass; x3::logInfo("[worldregions-test] PASS " + name); }
+    else      { ++g_fail; x3::logError("[worldregions-test] FAIL " + name); }
 }
 using HeadlessDevice = x3::game::HeadlessRenderDevice;
 bool nonEmpty(const char* s) { return s && s[0] != '\0'; }
