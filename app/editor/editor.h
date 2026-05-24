@@ -51,8 +51,62 @@ struct LevelDoc {
     bool        fromJson(const std::string& json);
 };
 
-// Move-gizmo axes.
+// Transform-gizmo axes.
 enum class Axis : uint8_t { None = 0, X, Y, Z };
+
+// UE-style tool modes, bound to Q/W/E/R (Task9D used W/E/R for the gizmos).
+//   Q Select · W Move · E Rotate · R Scale.
+enum class Tool : uint8_t { Select = 0, Move, Rotate, Scale };
+
+// ---------------------------------------------------------------------------
+// Theme — the Lab Architect / Task9D palette (dark navy + cyan accents + the
+// per-tool gizmo colors W=green/E=blue/R=pink), as DATA so the in-app HUD layer
+// just reads it. RGBA floats 0..1.
+// ---------------------------------------------------------------------------
+struct EditorTheme {
+    float bg[4]      = { 0.024f, 0.024f, 0.059f, 0.95f };  // #06060f panels
+    float panel[4]   = { 0.039f, 0.055f, 0.094f, 0.95f };  // rgba(10,14,24)
+    float border[4]  = { 0.102f, 0.165f, 0.227f, 1.0f };   // #1a2a3a steel
+    float accent[4]  = { 0.267f, 0.667f, 1.0f, 1.0f };     // #44aaff cyan
+    float text[4]    = { 0.80f, 0.86f, 0.95f, 1.0f };
+    float textDim[4] = { 0.50f, 0.56f, 0.66f, 1.0f };
+    float warn[4]    = { 1.0f, 0.53f, 0.30f, 1.0f };        // pathway/exit orange-red
+    // Per-tool gizmo accents (match Task9D btnGiz colors).
+    float gizMove[4]   = { 0.53f, 1.0f, 0.53f, 1.0f };      // #8f8 green  (W)
+    float gizRotate[4] = { 0.53f, 0.67f, 1.0f, 1.0f };      // #8af blue   (E)
+    float gizScale[4]  = { 1.0f, 0.53f, 0.67f, 1.0f };      // #f8a pink   (R)
+    float selected[4]  = { 1.0f, 0.82f, 0.18f, 1.0f };      // selection highlight (amber)
+    // The three world axes (X red / Y green / Z blue — UE/industry standard).
+    float axisX[4] = { 0.93f, 0.27f, 0.30f, 1.0f };
+    float axisY[4] = { 0.40f, 0.86f, 0.40f, 1.0f };
+    float axisZ[4] = { 0.30f, 0.55f, 0.95f, 1.0f };
+};
+
+// A legend / palette row (Task9D's right-hand legend): a room/entity TYPE name +
+// its color. Doubles as the drag-and-drop content palette (drag a row into the
+// viewport to place that type). Returned by editorPalette().
+struct PaletteItem { const char* type; const char* label; float color[4]; };
+
+// The Lab-Architect-derived content palette (room/entity types + colors). Stable
+// array; count via editorPaletteCount().
+const PaletteItem* editorPalette();
+uint32_t           editorPaletteCount();
+
+// A menu / toolbar command (data-driven so the HUD renders it + the test checks
+// it). `shortcut` is a display hint ("W", "Ctrl+S"); `id` drives dispatch.
+enum class Cmd : uint16_t {
+    None = 0,
+    ToolSelect, ToolMove, ToolRotate, ToolScale,
+    Duplicate, Delete, Focus, ToggleSnap, ToggleSpace,
+    Undo, Redo, Save, Load, NewLevel,
+    CamOrbit, CamFly, CamFpsWalk, ToggleWireframe,
+};
+struct MenuItem { const char* label; const char* tooltip; const char* shortcut; Cmd id; };
+struct Menu     { const char* title; const MenuItem* items; uint32_t count; };
+// The top menu bar (File / Edit / Tools / View), data-driven. menuBar() returns
+// the array, menuBarCount() its length.
+const Menu* editorMenuBar();
+uint32_t    editorMenuBarCount();
 
 // Editor interaction state over a LevelDoc. Pure logic — no rendering.
 class EditorState {

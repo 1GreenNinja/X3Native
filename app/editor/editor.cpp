@@ -16,6 +16,72 @@
 namespace x3::editor {
 
 // ---------------------------------------------------------------------------
+// Lab Architect content palette (room/entity types + legend colors, transcribed
+// from the Task9D legend) — doubles as the drag-and-drop content list.
+// ---------------------------------------------------------------------------
+const PaletteItem* editorPalette() {
+    static const PaletteItem k[] = {
+        { "cell",      "Cell",            { 0.33f, 0.53f, 0.67f, 1.0f } }, // #5588aa
+        { "hall",      "Main Hall",       { 0.67f, 0.53f, 0.27f, 1.0f } }, // #aa8844
+        { "security",  "Security Stn",    { 0.23f, 0.54f, 0.41f, 1.0f } }, // #3a8a6a
+        { "lab",       "Research Lab",    { 0.23f, 0.42f, 0.54f, 1.0f } }, // #3a6a8a
+        { "medical",   "Medical Bay",     { 0.41f, 0.23f, 0.54f, 1.0f } }, // #6a3a8a
+        { "nexus",     "Nexus Chamber",   { 0.80f, 0.27f, 1.0f,  1.0f } }, // #cc44ff magenta
+        { "armory",    "Armory",          { 0.54f, 0.41f, 0.23f, 1.0f } }, // #8a6a3a
+        { "boss",      "Boss Arena",      { 0.67f, 0.27f, 0.27f, 1.0f } }, // #aa4444 red
+        { "elevator",  "Elevator Shaft",  { 0.40f, 0.47f, 0.53f, 1.0f } }, // #667788
+        { "exterior",  "Exterior",        { 0.53f, 0.40f, 0.27f, 1.0f } }, // #886644
+        { "enemy",     "Enemy",           { 0.85f, 0.35f, 0.30f, 1.0f } },
+        { "npc",       "NPC",             { 0.40f, 0.80f, 0.55f, 1.0f } },
+        { "item",      "Item / Pickup",   { 1.0f,  0.82f, 0.30f, 1.0f } },
+        { "light",     "Light",           { 1.0f,  0.95f, 0.70f, 1.0f } },
+        { "prop",      "Prop",            { 0.80f, 0.55f, 0.20f, 1.0f } },
+    };
+    return k;
+}
+uint32_t editorPaletteCount() { return 15; }
+
+// ---------------------------------------------------------------------------
+// Top menu bar (File / Edit / Tools / View) — data the HUD renders + dispatches.
+// ---------------------------------------------------------------------------
+const Menu* editorMenuBar() {
+    static const MenuItem file[] = {
+        { "New Level",   "Start an empty level",                 "Ctrl+N", Cmd::NewLevel },
+        { "Load...",     "Load a level JSON",                    "Ctrl+O", Cmd::Load },
+        { "Save",        "Save the level JSON",                  "Ctrl+S", Cmd::Save },
+    };
+    static const MenuItem edit[] = {
+        { "Undo",        "Undo the last action",                 "Ctrl+Z", Cmd::Undo },
+        { "Redo",        "Redo",                                 "Ctrl+Y", Cmd::Redo },
+        { "Duplicate",   "Duplicate the selection",              "Ctrl+D", Cmd::Duplicate },
+        { "Delete",      "Delete the selection",                 "Del",    Cmd::Delete },
+    };
+    static const MenuItem tools[] = {
+        { "Select",      "Selection tool (no transform)",        "Q",      Cmd::ToolSelect },
+        { "Move",        "Translate gizmo",                      "W",      Cmd::ToolMove },
+        { "Rotate",      "Rotate gizmo",                         "E",      Cmd::ToolRotate },
+        { "Scale",       "Scale gizmo",                          "R",      Cmd::ToolScale },
+        { "Snap",        "Toggle grid / angle snap",             "X",      Cmd::ToggleSnap },
+        { "World/Local", "Toggle gizmo space",                   "Tab",    Cmd::ToggleSpace },
+        { "Focus",       "Frame the selection",                  "F",      Cmd::Focus },
+    };
+    static const MenuItem view[] = {
+        { "Orbit",       "Orbit camera (drag)",                  "1",      Cmd::CamOrbit },
+        { "Fly",         "Free-fly camera",                      "2",      Cmd::CamFly },
+        { "FPS Walk",    "Walk the level",                       "3",      Cmd::CamFpsWalk },
+        { "Wireframe",   "Toggle solid / wireframe",             "Z",      Cmd::ToggleWireframe },
+    };
+    static const Menu bar[] = {
+        { "File",  file,  3 },
+        { "Edit",  edit,  4 },
+        { "Tools", tools, 7 },
+        { "View",  view,  4 },
+    };
+    return bar;
+}
+uint32_t editorMenuBarCount() { return 4; }
+
+// ---------------------------------------------------------------------------
 // JSON emit
 // ---------------------------------------------------------------------------
 namespace {
@@ -307,6 +373,16 @@ bool runEditorSelfTest() {
         LevelDoc empty; empty.name = "blank";
         LevelDoc rt; bool ok = rt.fromJson(empty.toJson());
         check(ok && rt.name == "blank" && rt.entities.empty(), "E5 empty level round-trips");
+    }
+
+    // ---- E6: theme/palette/menu data are present + well-formed. ----
+    {
+        bool pal = editorPaletteCount() == 15 && editorPalette()[0].type != nullptr;
+        bool men = editorMenuBarCount() == 4 &&
+                   std::string(editorMenuBar()[2].title) == "Tools" &&
+                   editorMenuBar()[2].items[1].id == Cmd::ToolMove &&      // W = Move
+                   std::string(editorMenuBar()[2].items[1].shortcut) == "W";
+        check(pal && men, "E6 Lab-Architect palette + UE-style menu data present");
     }
 
     x3::logInfo(std::string("[editor-test] ") + std::to_string(g_pass) + " passed, " +
