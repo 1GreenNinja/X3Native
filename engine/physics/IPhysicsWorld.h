@@ -14,6 +14,10 @@ struct BodyId { uint32_t id = 0; bool valid() const { return id != 0; } };
 // the world keeps cached; a body can be created from it. 0 == invalid. Maps to a
 // JPH::ShapeRefC kept inside JoltPhysicsWorld.cpp (no JPH:: types leak here).
 struct ShapeId { uint32_t id = 0; bool valid() const { return id != 0; } };
+// Opaque constraint handle (physics props / ragdoll). A two-body joint the world
+// keeps; 0 == invalid. Maps to a JPH::Ref<JPH::TwoBodyConstraint> kept inside
+// JoltPhysicsWorld.cpp (no JPH:: types leak here).
+struct ConstraintId { uint32_t id = 0; bool valid() const { return id != 0; } };
 
 enum class Layer : uint8_t { Static, Dynamic, Player, Enemy, Projectile, Trigger };
 
@@ -48,6 +52,21 @@ public:
     virtual void   getBodyLinearVelocity(BodyId, float out[3]) const = 0;
     virtual void   setBodyAngularVelocity(BodyId, const float v[3]) = 0;
     virtual void   getBodyAngularVelocity(BodyId, float out[3]) const = 0;
+
+    // Per-body damping (physics props / ragdoll settle). 0 = no damping; ~0.1-0.6
+    // reads as air/joint friction so a swinging body settles instead of perpetual
+    // motion. Maps to JPH::MotionProperties Set{Linear,Angular}Damping.
+    virtual void   setBodyDamping(BodyId, float linear, float angular) = 0;
+
+    // -----------------------------------------------------------------------
+    // Two-body JOINTS (physics props §1 "hanging cubes" + ragdoll §2 chains).
+    // Opaque ConstraintId; no JPH:: types leak. A point (ball) joint pins the two
+    // bodies together at one world anchor — they can swing freely about it. Pass an
+    // invalid BodyId for `a` to pin `b` to the WORLD at `worldAnchor` (a fixed
+    // point), which is how a cube "hangs from above".
+    // -----------------------------------------------------------------------
+    virtual ConstraintId addPointConstraint(BodyId a, BodyId b, Vec3 worldAnchor) = 0;
+    virtual void         removeConstraint(ConstraintId) = 0;
 
     // Per-body user tag (D-phys). Fast opaque uint64 the game can stamp on a body
     // (AI: "is this an enemy?"; later destruction: "is this destructible?"). 0 by

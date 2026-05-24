@@ -32,6 +32,8 @@
 #include "player.h"
 #include "monster.h"
 #include "level1_game.h"
+#include "physprops.h"                      // FEATURE_GOALS §1: hanging cubes / joints (ragdoll foundation)
+#include "ragdoll.h"                        // FEATURE_GOALS §2: physics death ragdoll
 #include "spire_mid.h"                      // EFLZ Spire F3/F4/F5 mid-floor content
 #include "spire_top.h"                      // EFLZ Spire F6/F7 top-floor content (Act-1 finale)
 #include "spire_nexus.h"                    // EFLZ Floor 4.5 Nexus Chamber / The Chorus (off-elevator boss)
@@ -510,6 +512,7 @@ static bool runGpuSkinSelfTest() {
 int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
+         testPhysprops = false, testRagdoll = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
@@ -697,6 +700,8 @@ int main(int argc, char** argv) {
         else if (a == "--test-gltf") testGltf = true;
         else if (a == "--test-player") testPlayer = true;
         else if (a == "--test-interact") testInteract = true;
+        else if (a == "--test-physprops") testPhysprops = true;
+        else if (a == "--test-ragdoll") testRagdoll = true;
         else if (a == "--test-pickup") testPickup = true;
         else if (a == "--test-combat") testCombat = true;
         else if (a == "--test-audio") testAudio = true;
@@ -858,6 +863,14 @@ int main(int argc, char** argv) {
     if (testInteract) {
         x3::logInfo("running button->door interaction (S4) self-test...");
         return x3::game::runInteractSelfTest() ? 0 : 1;
+    }
+    if (testPhysprops) {
+        x3::logInfo("running physics-props (hanging cubes / joints) self-test...");
+        return x3::game::runPhysPropsSelfTest() ? 0 : 1;
+    }
+    if (testRagdoll) {
+        x3::logInfo("running ragdoll (physics death) self-test...");
+        return x3::game::runRagdollSelfTest() ? 0 : 1;
     }
     if (testPickup) {
         x3::logInfo("running weapon pickup + arming (S5) self-test...");

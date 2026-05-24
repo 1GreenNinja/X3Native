@@ -37,6 +37,8 @@
 #include <Jolt/Physics/Collision/ObjectLayer.h>
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseLayer.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Constraints/PointConstraint.h>
+#include <Jolt/Physics/Constraints/TwoBodyConstraint.h>
 #include <Jolt/Physics/Body/BodyActivationListener.h>
 #include <Jolt/Physics/Body/BodyLockInterface.h>
 #include <Jolt/Physics/Body/BodyLock.h>
@@ -297,6 +299,9 @@ public:
         // Release characters first (they reference bodies/shapes).
         m_chars.clear();
         if (m_system) {
+            // Joints reference bodies — remove them BEFORE destroying the bodies.
+            for (auto& kv : m_constraints) m_system->RemoveConstraint(kv.second);
+            m_constraints.clear();
             JPH::BodyInterface& bi = m_system->GetBodyInterface();
             for (auto& kv : m_bodies) {
                 bi.RemoveBody(kv.second);
@@ -425,6 +430,59 @@ public:
         m_system->GetBodyInterface().AddImpulse(it->second, toJ(impulse));
     }
 
+    // ---- Damping + two-body joints (physics props / ragdoll) ----
+    void setBodyDamping(BodyId id, float linear, float angular) override {
+        auto it = m_bodies.find(id.id);
+        if (it == m_bodies.end() || !m_system) return;
+        JPH::Body* b = m_system->GetBodyLockInterfaceNoLock().TryGetBody(it->second);
+        if (b && b->GetMotionPropertiesUnchecked()) {
+            b->GetMotionPropertiesUnchecked()->SetLinearDamping(linear);
+            b->GetMotionPropertiesUnchecked()->SetAngularDamping(angular);
+        }
+    }
+
+    ConstraintId addPointConstraint(BodyId a, BodyId b, Vec3 worldAnchor) override {
+        if (!m_system) return {};
+        auto itb = m_bodies.find(b.id);
+        if (itb == m_bodies.end()) return {};
+        const JPH::BodyLockInterfaceNoLock& li = m_system->GetBodyLockInterfaceNoLock();
+        JPH::Body* body2 = li.TryGetBody(itb->second);
+        if (!body2) return {};
+        JPH::Body* body1 = &JPH::Body::sFixedToWorld;   // pin to WORLD when `a` invalid
+        if (a.valid()) {
+            auto ita = m_bodies.find(a.id);
+            if (ita != m_bodies.end()) {
+                JPH::Body* ba = li.TryGetBody(ita->second);
+                if (ba) body1 = ba;
+            }
+        }
+        JPH::PointConstraintSettings s;
+        s.mSpace = JPH::EConstraintSpace::WorldSpace;
+        s.mPoint1 = s.mPoint2 = toRJ(worldAnchor);
+        JPH::Ref<JPH::TwoBodyConstraint> c =
+            static_cast<JPH::TwoBodyConstraint*>(s.Create(*body1, *body2));
+        if (!c) return {};
+        m_system->AddConstraint(c);
+        uint32_t id = m_nextConstraintId++;
+        m_constraints[id] = c;
+        return ConstraintId{ id };
+    }
+
+    void removeConstraint(ConstraintId c) override {
+        auto it = m_constraints.find(c.id);
+        if (it == m_constraints.end()) return;
+        if (m_system) {
+            // Wake the freed bodies so they react to losing the joint (e.g. fall).
+            JPH::BodyInterface& bi = m_system->GetBodyInterface();
+            JPH::Body* b1 = it->second->GetBody1();
+            JPH::Body* b2 = it->second->GetBody2();
+            m_system->RemoveConstraint(it->second);
+            if (b1 && !b1->IsStatic()) bi.ActivateBody(b1->GetID());
+            if (b2 && !b2->IsStatic()) bi.ActivateBody(b2->GetID());
+        }
+        m_constraints.erase(it);
+    }
+
     // ---- Orientation (D-phys) ----
     // CONVENTIONS.md quaternion order is (x,y,z,w); JPH::Quat is also xyzw
     // (constructor Quat(x,y,z,w), GetX/Y/Z/W, sIdentity()=={0,0,0,1}). So the
@@ -455,7 +513,9 @@ public:
         if (!v) return;
         auto it = m_bodies.find(id.id);
         if (it == m_bodies.end()) return;
-        m_system->GetBodyInterface().SetLinearVelocity(it->second, JPH::Vec3(v[0], v[1], v[2]));
+        JPH::BodyInterface& bi = m_system->GetBodyInterface();
+        bi.SetLinearVelocity(it->second, JPH::Vec3(v[0], v[1], v[2]));
+        bi.ActivateBody(it->second);   // a velocity change must wake a sleeping body
     }
 
     void getBodyLinearVelocity(BodyId id, float out[3]) const override {
@@ -471,7 +531,9 @@ public:
         if (!v) return;
         auto it = m_bodies.find(id.id);
         if (it == m_bodies.end()) return;
-        m_system->GetBodyInterface().SetAngularVelocity(it->second, JPH::Vec3(v[0], v[1], v[2]));
+        JPH::BodyInterface& bi = m_system->GetBodyInterface();
+        bi.SetAngularVelocity(it->second, JPH::Vec3(v[0], v[1], v[2]));
+        bi.ActivateBody(it->second);   // a velocity change must wake a sleeping body
     }
 
     void getBodyAngularVelocity(BodyId id, float out[3]) const override {
@@ -912,6 +974,10 @@ private:
     // Cached shapes (convex hulls / compounds) keyed by ShapeId.
     uint32_t m_nextShapeId = 1;                                   // 0 == invalid
     std::unordered_map<uint32_t, JPH::ShapeRefC> m_shapes;
+
+    // ---- Two-body joints (physics props / ragdoll) keyed by ConstraintId. ----
+    uint32_t m_nextConstraintId = 1;                             // 0 == invalid
+    std::unordered_map<uint32_t, JPH::Ref<JPH::TwoBodyConstraint>> m_constraints;
 
     // Queued contact callback. Records pushed inside the locked OnContact* callback
     // (across Jolt worker threads -> mutex-guarded), drained POST-step in step().
