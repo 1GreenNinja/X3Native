@@ -2878,8 +2878,36 @@ private:
     // glyphs tinted by the per-vertex HUD color. Records per-glyph atlas UVs +
     // offsets + advance (in bake-pixel units) for drawHudText.
     bool buildTtfFontAtlas() {
+        // FONT SOURCE (easy swap, stays baked-in by default):
+        //   1. A drop-in TTF in assets/fonts/ overrides the embedded font at runtime
+        //      — drop a .ttf there and restart, NO rebuild needed. First match wins.
+        //   2. Otherwise the baked-in embedded typeface (kRobotoMonoTTF) is used.
+        // To change the SHIPPED baked-in font permanently: run tools/embed_font.ps1 on
+        // a new .ttf (regenerates engine/rhi/font_*.h) and rebuild.
+        std::vector<unsigned char> fileBytes;
         const unsigned char* ttf = kRobotoMonoTTF;
-        const size_t ttfSize = kRobotoMonoTTFSize;
+        size_t ttfSize = kRobotoMonoTTFSize;
+        {
+            static const char* kFontCandidates[] = {
+                "assets/fonts/hud.ttf",          // generic drop-in slot
+                "assets/fonts/Accelerator.ttf",  // named slot
+            };
+            for (const char* path : kFontCandidates) {
+                std::ifstream f(path, std::ios::binary | std::ios::ate);
+                if (!f) continue;
+                const std::streamsize n = f.tellg();
+                if (n <= 4) continue;
+                f.seekg(0);
+                fileBytes.resize((size_t)n);
+                if (f.read(reinterpret_cast<char*>(fileBytes.data()), n)) {
+                    ttf = fileBytes.data();
+                    ttfSize = (size_t)n;
+                    logInfo(std::string("[rhi] HUD font: drop-in override ") + path
+                            + " (" + std::to_string((long)n) + " bytes)");
+                    break;
+                }
+            }
+        }
         if (!ttf || ttfSize < 4) { logError("[rhi] TTF: empty font data"); return false; }
 
         stbtt_fontinfo info{};
