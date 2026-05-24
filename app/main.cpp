@@ -38,6 +38,7 @@
 #include "spire_nexus.h"                    // EFLZ Floor 4.5 Nexus Chamber / The Chorus (off-elevator boss)
 #include "spire_sublevels.h"                // EFLZ hidden Floor-7 sub-levels + Dr. Chen Return Mission
 #include "act2_world.h"                      // EFLZ Act-2 open-world surface host + L8/L9 (--test-act2)
+#include "act2_caves.h"                      // EFLZ Act-2 mid biomes L12-15 (--test-act2caves)
 #include "elevator.h"
 #include "club1127.h"
 #include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
@@ -563,6 +564,13 @@ int main(int argc, char** argv) {
     // Emergence (lab-exit gauntlet -> Emergence Point safe zone) + L9 Crystalline Desert
     // Edge (crystal props + neutral fauna + an inert-until-entered hazard zone). Additive.
     bool        testAct2 = false;
+    // --test-act2caves (EFLZ Act-2 mid biomes L12-15): the bioluminescent Advanced Cave
+    // System (Crystal Heart dual-gated interactable + Memory Hunter abyss boss) + the
+    // Toxic Swamplands edge (poison hazard zone, inert at load) + the Research Station
+    // (timeline-gated Siren ambush) + the Tree Cities (vertical canopy + trading-post
+    // interactable). Asserts the gates, the hazard, the timeline gate, reachability
+    // L11->L12->L13->L14->L15, and trigger-id non-collision. Additive flag.
+    bool        testAct2Caves = false;
     // --test-collapse (K-T3 structural collapse): build a small structure (column /
     // beam on two supports), destroy a support, step the sim, and assert the
     // unsupported pieces fall (static->dynamic), anchored pieces stay stable, the
@@ -739,6 +747,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-dronehack") testDroneHack = true;
         else if (a == "--test-sublevels") testSubLevels = true;
         else if (a == "--test-act2") testAct2 = true;
+        else if (a == "--test-act2caves") testAct2Caves = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-elevatorfsm") testElevatorFsm = true;
@@ -1054,6 +1063,14 @@ int main(int argc, char** argv) {
                     "gauntlet, Emergence-Point companions, crystal desert + hazard zone) "
                     "self-test...");
         return x3::game::runAct2WorldSelfTest() ? 0 : 1;
+    }
+    if (testAct2Caves) {
+        x3::logInfo("running EFLZ Act-2 mid biomes (L12 Advanced Cave System + Crystal "
+                    "Heart dual-gated interactable + Memory Hunter abyss boss; L13 Toxic "
+                    "Swamplands Edge + poison hazard [inert at load]; L14 Research Station "
+                    "+ timeline-gated Siren ambush; L15 Tree Cities + trading post) "
+                    "self-test...");
+        return x3::game::runAct2CavesSelfTest() ? 0 : 1;
     }
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
