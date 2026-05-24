@@ -81,9 +81,20 @@ TEST: add `--test-act2bosses` in main.cpp (pattern of `--test-bosses`). Assert e
 
 ### Gate / build
 
-**BLOCKED on local gate: VS 2026 Insiders + Vulkan SDK not yet installed
-on DJBOOTH (4790K). Installs in flight. Source ready for 13700K
-integrator re-gate.**
+**HANDED OFF to 13700K integrator for smoke test (per 2026-05-23 agreement).**
+
+Local build env on DJBOOTH (4790K) is NOW installed and future-ready:
+- VS 2026 Community Insiders 18.7.11819.209 at
+  `C:\Program Files\Microsoft Visual Studio\18\Insiders\` (Native Desktop
+  workload, Win11 SDK 22621, VC CMake Project)
+- Vulkan SDK 1.4.350.0 at `C:\VulkanSDK\1.4.350.0\` (exact spec match)
+- vcpkg at `C:\vcpkg\` bootstrapped + pinned to baseline
+  `f7f94113c3b629c01df3d49d5edebae6d598c78c` (matches `vcpkg.json`)
+
+Local 42-flag gauntlet + Release/Debug smoketest NOT executed here —
+13700K agreed to gate. If 13700K kicks back, DJBOOTH can now gate locally
+on a follow-up pass (first vcpkg dep build will take ~1–4 hrs on this 4790K
+since none cached yet).
 
 Source-correct, compilable-looking, design-aligned C++ on pushed branch.
 No engine/CMake/Act-1/world-module files touched. Clean-room: no external
