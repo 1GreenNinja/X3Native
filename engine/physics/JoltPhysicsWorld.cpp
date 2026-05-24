@@ -42,6 +42,10 @@
 #include <Jolt/Physics/Body/BodyLock.h>
 #include <Jolt/Physics/Collision/NarrowPhaseQuery.h>
 #include <Jolt/Physics/Character/CharacterVirtual.h>
+// Physics §1 — suspended/constrained bodies (swinging cubes).
+#include <Jolt/Physics/Constraints/PointConstraint.h>
+#include <Jolt/Physics/Constraints/DistanceConstraint.h>
+#include <Jolt/Physics/Constraints/Constraint.h>
 
 #include <algorithm>
 #include <atomic>
@@ -296,6 +300,14 @@ public:
     void shutdown() override {
         // Release characters first (they reference bodies/shapes).
         m_chars.clear();
+        // Physics §1: remove constraints from the system before their bodies are
+        // destroyed (a constraint references its two bodies). The Refs drop after.
+        if (m_system) {
+            for (auto& kv : m_constraints)
+                m_system->RemoveConstraint(kv.second.GetPtr());
+        }
+        m_constraints.clear();
+        m_constraintBody.clear();
         if (m_system) {
             JPH::BodyInterface& bi = m_system->GetBodyInterface();
             for (auto& kv : m_bodies) {
@@ -394,6 +406,9 @@ public:
             }
             return;
         }
+        // Physics §1: tear down any constraints attached to this body first so the
+        // constraint never references a destroyed body.
+        removeConstraintsForBody(id.id);
         JPH::BodyInterface& bi = m_system->GetBodyInterface();
         bi.RemoveBody(it->second);
         bi.DestroyBody(it->second);
@@ -657,6 +672,59 @@ public:
         if (m_system) m_system->OptimizeBroadPhase();
     }
 
+    // ---- Physics §1: suspended / constrained bodies (swinging cubes) ----
+    // We constrain the body to the implicit world body (JPH::Body::sFixedToWorld),
+    // so no fake static anchor is needed. The constraint reference frame is given
+    // in WORLD space: point1 = the world anchor (on the fixed world body), point2 =
+    // the world-space attach point on the dynamic body. PointConstraint pins the
+    // two points together but leaves all 3 rotational DOF free -> a free-swinging
+    // pendulum. DistanceConstraint keeps the two points a [min,max] distance apart
+    // -> a rope/rod.
+    ConstraintId addPointConstraint(BodyId body, Vec3 anchorWorld,
+                                    Vec3 bodyAttachWorld) override {
+        JPH::Body* b = lockedDynamicBody(body, "addPointConstraint");
+        if (!b) return {};
+        JPH::PointConstraintSettings s;
+        s.mSpace  = JPH::EConstraintSpace::WorldSpace;
+        s.mPoint1 = toRJ(anchorWorld);        // on the fixed world body
+        s.mPoint2 = toRJ(bodyAttachWorld);    // on the dynamic body
+        return registerConstraint(s.Create(JPH::Body::sFixedToWorld, *b), body);
+    }
+
+    ConstraintId addDistanceConstraint(BodyId body, Vec3 anchorWorld,
+                                       Vec3 bodyAttachWorld,
+                                       float minLen, float maxLen) override {
+        JPH::Body* b = lockedDynamicBody(body, "addDistanceConstraint");
+        if (!b) return {};
+        if (minLen < 0.0f) minLen = 0.0f;
+        if (maxLen < minLen) maxLen = minLen;
+        JPH::DistanceConstraintSettings s;
+        s.mSpace        = JPH::EConstraintSpace::WorldSpace;
+        s.mPoint1       = toRJ(anchorWorld);
+        s.mPoint2       = toRJ(bodyAttachWorld);
+        s.mMinDistance  = minLen;
+        s.mMaxDistance  = maxLen;
+        return registerConstraint(s.Create(JPH::Body::sFixedToWorld, *b), body);
+    }
+
+    void removeConstraint(ConstraintId id) override {
+        auto it = m_constraints.find(id.id);
+        if (it == m_constraints.end()) return;
+        if (m_system) m_system->RemoveConstraint(it->second.GetPtr());
+        m_constraints.erase(it);
+        m_constraintBody.erase(id.id);
+    }
+
+    void setBodyDamping(BodyId id, float linear, float angular) override {
+        if (linear  < 0.0f) linear  = 0.0f;
+        if (angular < 0.0f) angular = 0.0f;
+        JPH::Body* b = lockedDynamicBody(id, "setBodyDamping");
+        if (!b || !b->GetMotionPropertiesUnchecked()) return;
+        JPH::MotionProperties* mp = b->GetMotionProperties();
+        mp->SetLinearDamping(linear);
+        mp->SetAngularDamping(angular);
+    }
+
     // ---- Native-handle escape hatch (vehicle framework, see IPhysicsWorld.h) ----
     void* nativeSystem() override { return m_system.get(); }
 
@@ -744,6 +812,59 @@ private:
         m_layerOf[id] = layer;
         if (isTrigger) m_triggerSet.insert(id);
         return BodyId{ id };
+    }
+
+    // Physics §1 helper: resolve an opaque BodyId to a live JPH::Body* that is a
+    // real (non-character) DYNAMIC body, or null (with a one-warning) otherwise.
+    // Uses the no-lock body interface like the rest of this TU (main-thread only,
+    // outside Update).
+    JPH::Body* lockedDynamicBody(BodyId id, const char* who) {
+        auto it = m_bodies.find(id.id);
+        if (it == m_bodies.end()) {
+            x3::logWarn(std::string("[phys] ") + who + ": invalid/stale body id");
+            return nullptr;
+        }
+        const JPH::BodyLockInterfaceNoLock& bli = m_system->GetBodyLockInterfaceNoLock();
+        JPH::Body* b = bli.TryGetBody(it->second);
+        if (!b) return nullptr;
+        if (!b->IsDynamic()) {
+            x3::logWarn(std::string("[phys] ") + who + ": body is not dynamic");
+            return nullptr;
+        }
+        return b;
+    }
+
+    // Physics §1 helper: add a freshly-created constraint to the system, cache it
+    // under a new ConstraintId, and (re)activate the dynamic body so it starts
+    // swinging immediately. Returns invalid if creation failed.
+    ConstraintId registerConstraint(JPH::Constraint* c, BodyId body) {
+        if (!c) { x3::logError("[phys] constraint Create() failed"); return {}; }
+        JPH::Ref<JPH::Constraint> ref(c);
+        m_system->AddConstraint(c);
+        // Make sure the body is awake (a settled/sleeping body wouldn't react).
+        auto it = m_bodies.find(body.id);
+        if (it != m_bodies.end())
+            m_system->GetBodyInterface().ActivateBody(it->second);
+        uint32_t id = m_nextConstraintId++;
+        m_constraints[id] = ref;
+        m_constraintBody[id] = body.id;
+        return ConstraintId{ id };
+    }
+
+    // Remove every constraint attached to bodyId (called from removeBody).
+    void removeConstraintsForBody(uint32_t bodyId) {
+        if (m_constraintBody.empty()) return;
+        std::vector<uint32_t> toErase;
+        for (auto& kv : m_constraintBody)
+            if (kv.second == bodyId) toErase.push_back(kv.first);
+        for (uint32_t cid : toErase) {
+            auto it = m_constraints.find(cid);
+            if (it != m_constraints.end()) {
+                if (m_system) m_system->RemoveConstraint(it->second.GetPtr());
+                m_constraints.erase(it);
+            }
+            m_constraintBody.erase(cid);
+        }
     }
 
     void stepCharacters(float dt) {
@@ -912,6 +1033,13 @@ private:
     // Cached shapes (convex hulls / compounds) keyed by ShapeId.
     uint32_t m_nextShapeId = 1;                                   // 0 == invalid
     std::unordered_map<uint32_t, JPH::ShapeRefC> m_shapes;
+
+    // ---- Physics §1 constraint state (suspended/swinging bodies) ----
+    // Cached joints keyed by ConstraintId. The Ref keeps the constraint alive;
+    // shutdown()/removeConstraint() removes it from the system first.
+    uint32_t m_nextConstraintId = 1;                             // 0 == invalid
+    std::unordered_map<uint32_t, JPH::Ref<JPH::Constraint>> m_constraints;
+    std::unordered_map<uint32_t, uint32_t> m_constraintBody;     // ConstraintId -> BodyId
 
     // Queued contact callback. Records pushed inside the locked OnContact* callback
     // (across Jolt worker threads -> mutex-guarded), drained POST-step in step().
@@ -1202,6 +1330,138 @@ bool runPhysicsSelfTest() {
     x3::logInfo(std::string("[phys-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;
+}
+
+// ===========================================================================
+// Physics §1 self-test (--test-physjoint): suspended / swinging bodies.
+// ===========================================================================
+namespace {
+bool finite3(Vec3 v) {
+    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
+}
+} // namespace
+
+bool runPhysJointSelfTest() {
+    int pass = 0, total = 0;
+    auto P = [&](bool cond, const char* name) {
+        ++total;
+        if (cond) { ++pass; x3::logInfo(std::string("[physjoint] PASS ") + name); }
+        else      {          x3::logError(std::string("[physjoint] FAIL ") + name); }
+    };
+
+    // ---- J1: a body hung by a POINT constraint hangs + swings + settles ----
+    // A POINT constraint pins a point ON the body to the world anchor and leaves all
+    // rotation free, so the body swings as a PENDULUM about that pinned point. To get
+    // a real pendulum the pinned point must be OFFSET from the center of mass: we use
+    // a tall thin "plank" (half-height 1 m) and pin its TOP, so the center hangs ~1 m
+    // below the pin and swings about it.
+    {
+        std::unique_ptr<IPhysicsWorld> w(createPhysicsWorld());
+        w->init();
+        const Vec3 anchor{ 0.0f, 5.0f, 0.0f };
+        const float halfH = 1.0f;             // plank half-height -> pendulum length ~1 m
+        // Plank center starts 1 m below the anchor (top pinned at the anchor), i.e.
+        // hanging straight down. We then kick it sideways to start the swing.
+        const Vec3 startCenter{ 0.0f, anchor.y - halfH, 0.0f };
+        BodyId plank = w->addBox(Vec3{0.15f, halfH, 0.15f}, startCenter, 5.0f, Layer::Dynamic);
+        // Pin the TOP-CENTER of the plank (center + halfH up) to the anchor.
+        Vec3 attach{ startCenter.x, startCenter.y + halfH, startCenter.z };  // == anchor
+        ConstraintId c = w->addPointConstraint(plank, anchor, attach);
+        P(c.valid(), "J1a point constraint created");
+        // Low damping so it visibly swings for a while.
+        w->setBodyDamping(plank, 0.05f, 0.05f);
+        // Kick it sideways so the pendulum swings up to ~horizontal then back.
+        w->applyImpulse(plank, Vec3{ 30.0f, 0.0f, 0.0f });
+
+        // Track the horizontal offset (x) of the center vs the anchor each step; a
+        // pendulum's center x must change SIGN (swing through the bottom) at low
+        // damping, and the pin->center distance stays ~constant (the pin holds).
+        float minX = 1e9f, maxX = -1e9f;
+        float ropeMin = 1e9f, ropeMax = -1e9f;
+        bool nan = false;
+        for (int i = 0; i < 600; ++i) {       // 10 s
+            w->step(kFixedDt);
+            Vec3 p = w->getBodyPosition(plank);
+            if (!finite3(p)) { nan = true; break; }
+            float dx = p.x - anchor.x;
+            float dy = p.y - anchor.y;
+            float dz = p.z - anchor.z;
+            float rope = std::sqrt(dx*dx + dy*dy + dz*dz);
+            minX = std::min(minX, dx); maxX = std::max(maxX, dx);
+            ropeMin = std::min(ropeMin, rope); ropeMax = std::max(ropeMax, rope);
+        }
+        P(!nan, "J1b no NaNs over 10 s");
+        // It swung to BOTH sides of the bottom: center x went clearly positive (kick
+        // side) and clearly negative (other side).
+        P(maxX > 0.2f && minX < -0.2f, "J1c body swings through the bottom (x sign change)");
+        // The pin held: distance from the pin (anchor) to the center stayed ~1 m
+        // (the rigid plank's center is a fixed distance from its pinned top).
+        P(ropeMax - ropeMin < 0.08f, "J1d point constraint holds (pendulum length constant)");
+
+        // Settle check: run on with the same low damping; the swing amplitude must
+        // DECAY. Compare an early-window vs a late-window x amplitude.
+        auto windowAmp = [&](int steps) {
+            float lo = 1e9f, hi = -1e9f;
+            for (int i = 0; i < steps; ++i) {
+                w->step(kFixedDt);
+                float dx = w->getBodyPosition(plank).x - anchor.x;
+                lo = std::min(lo, dx); hi = std::max(hi, dx);
+            }
+            return hi - lo;
+        };
+        float ampEarly = windowAmp(120);     // next 2 s
+        for (int i = 0; i < 3000; ++i) w->step(kFixedDt);  // damp 50 s
+        float ampLate = windowAmp(120);
+        P(ampLate < ampEarly * 0.5f, "J1e swing decays under damping");
+        // Finally it hangs roughly straight DOWN from the anchor (center x ~ 0, y a
+        // pendulum-length below the anchor).
+        Vec3 rest = w->getBodyPosition(plank);
+        P(std::fabs(rest.x - anchor.x) < 0.25f && rest.y < anchor.y - 0.5f,
+          "J1f settles hanging below the anchor");
+        w->shutdown();
+    }
+
+    // ---- J2: impulse displaces a settled cube, then it re-settles ----
+    {
+        std::unique_ptr<IPhysicsWorld> w(createPhysicsWorld());
+        w->init();
+        const Vec3 anchor{ 0.0f, 4.0f, 0.0f };
+        // Start directly below the anchor (the rest pose), rod length 2 m.
+        const Vec3 startCenter{ 0.0f, 2.0f, 0.0f };
+        BodyId cube = w->addBox(Vec3{0.5f,0.5f,0.5f}, startCenter, 5.0f, Layer::Dynamic);
+        ConstraintId c = w->addDistanceConstraint(cube, anchor, startCenter, 2.0f, 2.0f);
+        P(c.valid(), "J2a distance constraint created");
+        w->setBodyDamping(cube, 0.4f, 0.4f);  // moderate so it settles quickly
+        // Let it settle at rest.
+        for (int i = 0; i < 600; ++i) w->step(kFixedDt);
+        Vec3 atRest = w->getBodyPosition(cube);
+        // Kick it sideways (a "player walks through it" impulse along +X).
+        w->applyImpulse(cube, Vec3{ 40.0f, 0.0f, 0.0f });
+        float peakDx = 0.0f;
+        bool nan = false;
+        for (int i = 0; i < 120; ++i) {       // 2 s — observe the displacement
+            w->step(kFixedDt);
+            Vec3 p = w->getBodyPosition(cube);
+            if (!finite3(p)) { nan = true; break; }
+            peakDx = std::max(peakDx, std::fabs(p.x - atRest.x));
+        }
+        P(!nan, "J2b no NaNs after impulse");
+        P(peakDx > 0.3f, "J2c impulse displaces the cube");
+        // Re-settle: run with damping; it returns near its original rest x.
+        for (int i = 0; i < 1800; ++i) w->step(kFixedDt);
+        Vec3 reSettled = w->getBodyPosition(cube);
+        bool back = std::fabs(reSettled.x - atRest.x) < 0.2f &&
+                    std::fabs(reSettled.y - atRest.y) < 0.2f;
+        P(back, "J2d cube re-settles after the impulse");
+        // Distance constraint kept it on the 2 m rope the whole time.
+        float dx = reSettled.x - anchor.x, dy = reSettled.y - anchor.y, dz = reSettled.z - anchor.z;
+        float rope = std::sqrt(dx*dx + dy*dy + dz*dz);
+        P(std::fabs(rope - 2.0f) < 0.1f, "J2e distance constraint holds the rope length");
+        w->shutdown();
+    }
+
+    x3::logInfo("physjoint: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+    return pass == total;
 }
 
 } // namespace x3::phys
