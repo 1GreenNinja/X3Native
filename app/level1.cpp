@@ -397,10 +397,28 @@ Level1Layout buildLevel1(Scene& scene,
     const bool floorVis = !artMask.floors;  // graybox floor render on iff no GLB floor art
 
     // ---- Shared graybox textures. ----
-    auto floorPx = x3::prims::makeCheckerRGBA(256, 32, 200,205,215, 45,55,80);
-    x3::rhi::TextureHandle floorTex = device.createTexture(floorPx.data(), 256, 256, true);
-    auto wallPx = x3::prims::makeCheckerRGBA(256, 32, 170,175,185, 60,65,80);
-    x3::rhi::TextureHandle wallTex = device.createTexture(wallPx.data(), 256, 256, true);
+    // RICHER PROCEDURAL SCI-FI surfaces (S2 art uplift) replacing the old flat blue/
+    // grey CHECKER. These are NEUTRAL/untinted maps: the per-floor + per-surface tint
+    // (kFloorTints / kWallTint / detTint / kShaftTint, passed as the entity baseColor)
+    // is MULTIPLIED over them by the mesh shader (mesh.frag: albedo = texture * vFactor),
+    // so each plate still reads as a distinct wing while every surface now shows real
+    // detention-facility detail instead of a checkerboard. 512px + mips for crispness;
+    // all three generators are SEAMLESS so they tile across the big plates.
+    //   - FLOORS  : dark grated/tiled deck with seams + tread + edge hazard trim.
+    //   - WALLS   : gunmetal inset metal panels (seam grooves, corner bolts, grime) +
+    //               a faint cool emissive accent conduit line.
+    //   - CEILINGS: recessed panel coffers with a soft central light-fixture motif.
+    // FUTURE (real PBR): swap any of these for SD-3.5-generated tiling albedo PNGs —
+    // generate via the diffusers script (model C:\GameDev\SD_Models\sd35), save under
+    // assets/textures/, load with stbi_load, feed the RGBA8 to createTexture here.
+    constexpr uint32_t kTexN = 512;
+    auto floorPx = x3::prims::makeFloorGrateRGBA(kTexN, /*tiles*/4, x3::prims::detail::kNoTint, /*hazard*/true);
+    x3::rhi::TextureHandle floorTex = device.createTexture(floorPx.data(), kTexN, kTexN, true);
+    auto wallPx = x3::prims::makeSciFiPanelRGBA(kTexN, /*panels*/3, x3::prims::detail::kNoTint,
+                                                /*accent*/60, 170, 200, /*accentH*/0.18f);
+    x3::rhi::TextureHandle wallTex = device.createTexture(wallPx.data(), kTexN, kTexN, true);
+    auto ceilPx = x3::prims::makeCeilingPanelRGBA(kTexN, /*coffers*/4, x3::prims::detail::kNoTint, /*lit*/true);
+    x3::rhi::TextureHandle ceilTex = device.createTexture(ceilPx.data(), kTexN, kTexN, true);
 
     Level1Layout L;
 
@@ -432,7 +450,7 @@ Level1Layout buildLevel1(Scene& scene,
         // Ceiling lid (skip the rooftop: F7 is open to the sky). Collision-only.
         if (!isRooftop)
             addCeiling(scene, device, physics, cx, 0.0f, (f.x1 - f.x0) * 0.5f, f.zHalf,
-                       f.y0 + f.ceil, floorTex);
+                       f.y0 + f.ceil, ceilTex);
 
         // Fill the per-floor layout result.
         L.floorBaseY[fi]  = f.y0;
