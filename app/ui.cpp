@@ -396,11 +396,14 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         ui.text(m.weapon, w - nameW - px, ay - namePx - 6.0f, namePx, kColTextDim);
     }
 
-    // ---- Objective (top-left) ----------------------------------------------
+    // ---- Objective (TOP-CENTER; was top-left, where it collided with the FPS
+    // meter). Horizontally centered so it reads clean. ----
     if (m.objective && m.objective[0]) {
         char objBuf[160];
         std::snprintf(objBuf, sizeof(objBuf), "OBJECTIVE: %s", m.objective);
-        ui.text(objBuf, 18.0f, 14.0f, 16.0f, kColText);
+        const float objPx = 16.0f;
+        const float objW  = UiContext::textWidth(objBuf, objPx);
+        ui.text(objBuf, (w - objW) * 0.5f, 14.0f, objPx, kColText);
     }
 
     // ---- Minimap stub (top-right box; full minimap later) ------------------

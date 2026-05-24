@@ -6948,7 +6948,9 @@ private:
     // sun, so unlit areas fell to near-black — "incredibly dark"). Lifted ~2.6x to a
     // readable cool-sci-fi floor. PERF: render-cost-neutral (a shader constant; no
     // extra draws/work). See docs/PERF_LOG.md.
-    glm::vec3               m_ambient{ 0.26f, 0.28f, 0.34f };
+    // 2nd lift (still "couldn't see"): 0.26 -> 0.42. Sunless B1 needs a real ambient
+    // floor; point lights only pool under fixtures, leaving floor/walls black between.
+    glm::vec3               m_ambient{ 0.42f, 0.44f, 0.50f };
 };
 
 } // namespace
