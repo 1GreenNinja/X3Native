@@ -314,14 +314,23 @@ GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState ba
     if (ui.toggle("Shadows",     model.shadows, rx, ry, rw, rh)) { model.shadows = !model.shadows; outChanged = true; } ry += rh + gap;
     if (ui.toggle("VSync",       model.vsync,   rx, ry, rw, rh)) { model.vsync   = !model.vsync;   outChanged = true; } ry += rh + gap;
 
-    // Resolution note (read-only line; full resolution switching deferred). Sized
-    // to fit within the panel width with a margin.
-    char resBuf[80];
-    std::snprintf(resBuf, sizeof(resBuf), "Resolution: %u x %u  (--width/--height)",
-                  model.width, model.height);
-    const float fitPx = (rw - 8.0f) / std::max(1.0f, (float)std::strlen(resBuf));
-    const float notePx = std::min(std::max(12.0f, rh * 0.34f), fitPx);
-    ui.label(resBuf, rx + 4.0f, ry + 6.0f, notePx, kColTextDim);
+    // Resolution row: LIVE framebuffer size on the left (updates as the window is
+    // dragged) + a "SET DEFAULT" button on the RIGHT (where the old --width/--height
+    // note used to sit). The button persists the current size as the startup default.
+    {
+        const uint32_t dw = model.dispW ? model.dispW : model.width;
+        const uint32_t dh = model.dispH ? model.dispH : model.height;
+        char resBuf[64];
+        std::snprintf(resBuf, sizeof(resBuf), "RESOLUTION:  %u x %u", dw, dh);
+        const float notePx = std::min(20.0f, std::max(14.0f, rh * 0.40f));
+        ui.label(resBuf, rx + 4.0f, ry + (rh - notePx) * 0.5f, notePx, kColText);
+        const float sdw = std::min(190.0f, rw * 0.46f);
+        if (ui.button("SET DEFAULT", rx + rw - sdw, ry, sdw, rh)) {
+            model.width = dw; model.height = dh;   // capture the current window size
+            model.saveDefault = true;              // host persists it as the new default
+            outChanged = true;
+        }
+    }
     ry += rh + gap;
 
     // Back button (one focus slot).
@@ -405,17 +414,10 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         ui.text(m.weapon, w - nameW - px, ay - namePx - 6.0f, namePx, kColTextDim);
     }
 
-    // ---- Objective (TOP-CENTER; was top-left, where it collided with the FPS
-    // meter). Horizontally centered so it reads clean. ----
-    if (m.objective && m.objective[0]) {
-        char objBuf[160];
-        std::snprintf(objBuf, sizeof(objBuf), "OBJECTIVE: %s", m.objective);
-        const float objPx = 16.0f;
-        const float objW  = UiContext::textWidth(objBuf, objPx);
-        ui.text(objBuf, (w - objW) * 0.5f, 14.0f, objPx, kColText);
-    }
+    // ---- Objective: drawn GTA/Cyberpunk-style UNDER THE MINIMAP (see below, after
+    // the minimap box is laid out). ----
 
-    // ---- Enemies-remaining counter (centered, just under the objective). <0 hides
+    // ---- Enemies-remaining counter (TOP-LEFT, just under the FPS meter). <0 hides
     // it (non-combat HUDs / vantages). Reads "AREA CLEAR" in green when none remain. ----
     if (m.enemiesRemaining >= 0) {
         char enBuf[48];
@@ -423,12 +425,11 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         if (clear) std::snprintf(enBuf, sizeof(enBuf), "AREA CLEAR");
         else       std::snprintf(enBuf, sizeof(enBuf), "ENEMIES: %d", m.enemiesRemaining);
         const float enPx = 15.0f;
-        const float enW  = UiContext::textWidth(enBuf, enPx);
         float enCol[4];
         if (clear) { enCol[0]=0.45f; enCol[1]=1.0f;  enCol[2]=0.55f; enCol[3]=1.0f; }
         else       { enCol[0]=1.0f;  enCol[1]=0.62f; enCol[2]=0.30f; enCol[3]=1.0f; }
-        // y = objective top (14) + objective px (16) + 6px gap.
-        ui.text(enBuf, (w - enW) * 0.5f, 14.0f + 16.0f + 6.0f, enPx, enCol);
+        // Top-left, below the FPS/ms stats line (~y 8, ~24 tall).
+        ui.text(enBuf, 10.0f, 40.0f, enPx, enCol);
     }
 
     // ---- Minimap stub (top-right box; full minimap later) ------------------
@@ -448,6 +449,48 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         const float blip[4] = { 0.2f, 1.0f, 0.35f, 0.9f };
         ui.quad(mmx + mmW * 0.5f - 2.0f, mmy + mmH * 0.5f - 2.0f, 4.0f, 4.0f, blip);
         ui.textCentered("MAP", mmx + mmW * 0.5f, mmy + mmH - 18.0f, 12.0f, kColTextDim);
+    }
+
+    // ---- Objective (GTA/Cyberpunk style): UNDER THE MINIMAP, right-aligned to the
+    // map's right edge, a cyan header + the objective word-wrapped to <=3 lines in
+    // Cyberpunk yellow (non-white). ----
+    if (m.objective && m.objective[0]) {
+        const float mmW = 150.0f, mmH = 150.0f, mmy = 16.0f;
+        const float right = w - 16.0f;            // map's right edge
+        const float maxW  = mmW + 90.0f;          // allow a touch wider than the map
+        float oy = mmy + mmH + 8.0f;              // just under the map box
+        // Header chip.
+        const float hdrPx = 12.0f;
+        const float hdrCol[4] = { 0.32f, 0.86f, 1.0f, 0.95f };   // cyan
+        ui.text("OBJECTIVE", right - UiContext::textWidth("OBJECTIVE", hdrPx), oy, hdrPx, hdrCol);
+        oy += hdrPx + 5.0f;
+        // Word-wrap the body to up to 3 lines, Cyberpunk yellow.
+        const float bodyPx = 15.0f;
+        const float bodyCol[4] = { 0.99f, 0.92f, 0.07f, 1.0f };  // CP yellow
+        std::string text = m.objective;
+        std::string lines[3];
+        int nLines = 0;
+        std::string cur;
+        size_t i = 0;
+        while (i <= text.size() && nLines < 3) {
+            size_t sp = text.find(' ', i);
+            std::string word = text.substr(i, sp == std::string::npos ? text.size() - i : sp - i);
+            std::string trial = cur.empty() ? word : cur + " " + word;
+            if (cur.empty() || UiContext::textWidth(trial.c_str(), bodyPx) <= maxW) {
+                cur = trial;
+            } else {
+                lines[nLines++] = cur;
+                cur = word;
+            }
+            if (sp == std::string::npos) break;
+            i = sp + 1;
+        }
+        if (!cur.empty() && nLines < 3) lines[nLines++] = cur;
+        for (int li = 0; li < nLines; ++li) {
+            ui.text(lines[li].c_str(), right - UiContext::textWidth(lines[li].c_str(), bodyPx),
+                    oy, bodyPx, bodyCol);
+            oy += bodyPx + 3.0f;
+        }
     }
 
     // ---- Death banner ------------------------------------------------------
@@ -546,10 +589,17 @@ void UiController::update(const UiInput& input, x3::rhi::IRenderDevice& device,
         }
         case GameState::Settings: {
             bool changed = false;
+            // Feed the LIVE framebuffer size so the resolution readout updates as the
+            // window is dragged (mirrors the MainMenu readout).
+            m_settings.dispW = (uint32_t)hud.dispW;
+            m_settings.dispH = (uint32_t)hud.dispH;
             // Esc backs out to pause.
             GameState next = m_state;
             if (input.navBack) next = GameState::Paused;
             else               next = m_settingsScreen.update(m_ui, m_settings, GameState::Paused, changed);
+            // "SET DEFAULT" button -> persist the current window size (same sink the
+            // MainMenu SET-AS-DEFAULT uses).
+            if (m_settings.saveDefault) { m_saveDefaults = true; m_settings.saveDefault = false; }
             if (changed) applySettings(device, m_console);
             if (next != m_state) m_state = next;
             break;

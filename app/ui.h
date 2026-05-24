@@ -178,8 +178,11 @@ struct SettingsModel {
     bool ssgi    = true;
     bool shadows = true;
     bool vsync   = true;
-    uint32_t width  = 1280;
+    uint32_t width  = 1280;        // the "set as default" startup size (persisted)
     uint32_t height = 720;
+    uint32_t dispW  = 0;           // LIVE framebuffer size (host sets each frame) -> Settings readout
+    uint32_t dispH  = 0;
+    bool saveDefault = false;      // Settings "SET DEFAULT" button -> host persists the current size
 };
 
 // The main menu screen. Pure UI: returns an action via the state it requests.
