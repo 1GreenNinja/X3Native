@@ -204,6 +204,19 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     m_memoryFlashDamageMul = tuning.memoryFlashDamageMul;
     m_flashTimer          = 0.0f;
 
+    // ---- Act-2 gimmicks (Wave 2). Inert by default. Data tags read by act2_world. ----
+    m_copyFeintPhase      = tuning.copyFeintPhase;
+    m_escapeTimer         = tuning.escapeTimerSeconds;
+    // START ALLIED (Salvari ally, L11+): pre-flip so the monster fights beside the
+    // player and CANNOT damage them. Matches the post-build convertToAllied()
+    // result so the rest of the system (AI / draw / death) is unchanged.
+    if (tuning.startAllied) {
+        m_allied = true;
+        m_dmg    = 0;
+    } else {
+        m_allied = false;
+    }
+
     // ---- Try the real purchased GLB via a mounted loose-dir asset source. The
     // model file + dir are tuning-overridable (EFLZ art pass): Level 1 points the
     // characters at converted_glb/Characters/*.glb; the tests keep the legacy
@@ -3011,6 +3024,644 @@ bool runBossesSelfTest() {
     x3::logInfo(std::string("[bosses-test] ") + std::to_string(bo_pass) + " passed, " +
                 std::to_string(bo_fail) + " failed");
     return bo_fail == 0;
+}
+
+// ===========================================================================
+// ACT-2 ROSTER (Wave 2) — alien-planet surface (Keth'zar Prime), Levels 8-20.
+//
+// 5 enemy rows + 4 single-body boss rows. All ride the existing MonsterSystem
+// + Boss phase machine; only the new Wave-2 Tuning tags (startAllied /
+// copyFeintPhase / escapeTimerSeconds) are read by the floor module. HP/damage
+// are MARTINEZ-RELATIVE (Act-1 final ref HP 340 / dmg 15) and bounded by the
+// combat:: bands — NOT the bible's raw values — so each Act-2 fight stays
+// winnable under the engine's time/iframe budget.
+// ===========================================================================
+
+const char* act2EnemyTypeName(Act2EnemyType t) {
+    switch (t) {
+        case Act2EnemyType::SalvariAlly:         return "Salvari Ally";
+        case Act2EnemyType::NativeDesertFauna:   return "Native Desert Fauna";
+        case Act2EnemyType::MutatedScientist:    return "Mutated Scientist";
+        case Act2EnemyType::MutatedFlora:        return "Mutated Flora";
+        case Act2EnemyType::SurfacePursuitDrone: return "Surface Pursuit Drone";
+        case Act2EnemyType::Count:               return "?";
+    }
+    return "?";
+}
+
+const char* act2BossTypeName(Act2BossType t) {
+    switch (t) {
+        case Act2BossType::MemoryHunter:        return "Memory Hunter";
+        case Act2BossType::TheSiren:            return "The Siren";
+        case Act2BossType::BreederQueen:        return "Breeder Queen";
+        case Act2BossType::GarrisonCommander:   return "Planetary Garrison Commander";
+        case Act2BossType::Count:               return "?";
+    }
+    return "?";
+}
+
+namespace {
+
+// Build the Act-2 ENEMY roster ONCE. Each row maps the bible's surface fauna /
+// Salvari / mutated-swamp / surface-drone profiles onto the existing combat AI
+// lanes (Guard/Drone), with the Act-2 Tuning tags set per-row.
+std::vector<Act2EnemyDef> buildAct2EnemyDefs() {
+    std::vector<Act2EnemyDef> defs;
+    defs.reserve((size_t)Act2EnemyType::Count);
+
+    // ---- SALVARI ALLY (L11) — refugee/companion who fights beside the player.
+    // ALLIED at spawn: m_allied=true, m_dmg=0 (cannot harm the player). Tuned
+    // similar to a Salvari Scout (bible HP 200, energy-rifle ranged) but with a
+    // SMALL "team-up" footprint so it doesn't out-damage Jake. Standoff drone-
+    // lane AI (it pelts hostiles at range; the player is not a valid target). ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Drone;              // ranged AI shape (rifle)
+        t.hp             = 220;                             // bible Salvari Scout ~200 (+earth bonus)
+        t.chaseSpeed     = 3.6f;                            // earth-O2 enhanced (fast)
+        t.damage         = 0;                               // ALLIED: cannot harm the player
+        t.attackRange    = 14.0f;                           // energy rifle
+        t.attackCooldown = combat::kRangedCooldownDefault;
+        t.attackWindup   = 0.30f;
+        t.ranged         = true;
+        t.standoff       = 9.0f;                            // covers the player from range
+        t.aiStrafeBias   = 0.25f;                           // disciplined, tactical fire
+        t.tint[0]=0.55f; t.tint[1]=0.95f; t.tint[2]=0.85f;  // bioluminescent teal
+        t.startAllied    = true;                            // FLIPPED ALLIED at build time
+        defRigged(t, "marcus_webb.glb", 1.0f);              // humanoid stand-in (box fallback)
+        defs.push_back({ Act2EnemyType::SalvariAlly, "Salvari Ally", t });
+    }
+
+    // ---- NATIVE DESERT FAUNA (L9-10) — crystalline-desert predator. Burrow-ambush
+    // shape (bible Crystal Stalker: HP 180, claw 25, shard-spit; packs). Modeled
+    // as a Guard-lane fast melee with high strafe (it darts/flanks like Verthani
+    // but a touch tankier — crystal armor). Hostile by default; the floor module
+    // chooses whether to spawn it neutral or hunting. ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Guard;
+        t.hp             = 180;                             // bible: 180 (Crystal Stalker)
+        t.chaseSpeed     = 4.0f;                            // ambush dart speed
+        t.damage         = combat::kMeleeDamageMax;         // 10 (strong claw)
+        t.attackRange    = combat::kMeleeRange;
+        t.attackCooldown = combat::kMeleeCooldownMin;       // 1.0 s (rapid claws)
+        t.attackWindup   = combat::kMeleeWindup;
+        t.ranged         = false;
+        t.aiStrafeBias   = 0.85f;                           // pack-flanker, very darty
+        t.tint[0]=0.95f; t.tint[1]=0.75f; t.tint[2]=1.0f;   // crystalline violet
+        defRigged(t, "alien_crawler.glb", 1.05f);           // non-humanoid crawler
+        defs.push_back({ Act2EnemyType::NativeDesertFauna, "Native Desert Fauna", t });
+    }
+
+    // ---- MUTATED SCIENTIST (L13-14) — toxic-swamp hostile. Was a researcher;
+    // failed-terraforming chemistry warped them. Mid HP, slow chase, chemical-
+    // throw at MEDIUM range (modeled as ranged so they hold position and pelt;
+    // walks like an Illuminated but cheaper). ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Drone;              // ranged-AI (chemical throw)
+        t.hp             = 150;                             // bible Corrupted Scientist ~80; tougher post-mutation
+        t.chaseSpeed     = 2.4f;                            // slow, deteriorated
+        t.damage         = combat::kRangedDamageDefault;    // 5 (chemical splash)
+        t.attackRange    = 10.0f;
+        t.attackCooldown = combat::kRangedCooldownMax;      // 1.2 s
+        t.attackWindup   = 0.35f;
+        t.ranged         = true;
+        t.standoff       = 7.5f;
+        t.aiStrafeBias   = 0.20f;                           // panicky, holds short standoff
+        t.tint[0]=0.65f; t.tint[1]=0.95f; t.tint[2]=0.55f;  // toxic green
+        defRigged(t, "chief_martinez.glb", 1.0f);           // humanoid stand-in (box fallback)
+        defs.push_back({ Act2EnemyType::MutatedScientist, "Mutated Scientist", t });
+    }
+
+    // ---- MUTATED FLORA (L13-14) — toxic-swamp hostile, STATIONARY. Rooted lash-
+    // arm hazard: chase speed = 0 so it never moves; attacks at long melee reach
+    // (a whip/tendril). The AI lane is Guard (melee) so the state machine still
+    // attacks anyone in reach; combined with chaseSpeed=0 the body never closes —
+    // exactly the "stationary but dangerous in its bubble" behaviour the spec asks. ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Guard;              // melee swing (lash)
+        t.hp             = 220;                             // tough plant body (bible-flavored)
+        t.chaseSpeed     = 0.0f;                            // STATIONARY — never moves
+        t.damage         = combat::kMeleeDamageDefault;     // 8 (tendril lash)
+        t.attackRange    = 3.5f;                            // long lash reach (vs 1.9 m default)
+        t.attackCooldown = combat::kMeleeCooldownMax;       // 1.3 s (slow, heavy lashes)
+        t.attackWindup   = 0.40f;                           // big telegraphed swipe
+        t.ranged         = false;
+        t.aiStrafeBias   = 0.0f;                            // can't strafe (stationary)
+        t.tint[0]=0.45f; t.tint[1]=0.70f; t.tint[2]=0.40f;  // dark mossy green
+        defRigged(t, "alien_crawler.glb", 1.30f);           // bulky organic mass (box fallback)
+        defs.push_back({ Act2EnemyType::MutatedFlora, "Mutated Flora", t });
+    }
+
+    // ---- SURFACE PURSUIT DRONE (L8) — fast ranged FLYER for the escape encounter.
+    // BlueSynth profile pushed harder: higher chase speed (hunts the running
+    // player), tighter standoff (it CHASES, doesn't loiter at range), short
+    // cooldown plasma-bolt. Sky-grey tint to distinguish from indoor BlueSynth. ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Drone;
+        t.flyer          = true;                            // hovers off the floor
+        t.hp             = 120;                             // fragile pursuit drone
+        t.chaseSpeed     = 5.0f;                            // FAST (faster than player walk)
+        t.damage         = combat::kRangedDamageDefault;    // 5 (plasma bolt)
+        t.attackRange    = 16.0f;                           // long reach
+        t.attackCooldown = combat::kRangedCooldownMin;      // 0.8 s (relentless)
+        t.attackWindup   = 0.25f;
+        t.ranged         = true;
+        t.standoff       = 5.0f;                            // closes in — not a sniper
+        t.aiStrafeBias   = 0.70f;                           // active pursuit, flanks
+        t.tint[0]=0.85f; t.tint[1]=0.85f; t.tint[2]=0.95f;  // sky-grey
+        // Use the BlueSynth model-resolution helper (rigged blue_synth if present;
+        // else Drone.glb fallback). Force standUpZtoY off (Drone.glb is Y-up).
+        const bool realSynth = defBlueSynth(t, 1.0f);
+        t.standUpZtoY = false;
+        (void)realSynth;
+        defs.push_back({ Act2EnemyType::SurfacePursuitDrone, "Surface Pursuit Drone", t });
+    }
+
+    return defs;
+}
+
+// Build the Act-2 BOSS roster ONCE. Each row is a Boss-type Tuning that flows
+// through buildMonsterTuned() like Martinez + the Act-1 bosses. Stats are
+// Martinez-relative (HP 340 / dmg 15) with each fight tuned a notch tankier
+// than the last Act-1 boss to read as escalation.
+std::vector<Act2BossDef> buildAct2BossDefs() {
+    std::vector<Act2BossDef> defs;
+    defs.reserve((size_t)Act2BossType::Count);
+
+    // ---- MEMORY HUNTER (L12) — Act-2 cave-system boss. PSYCHOLOGICAL / IDENTITY
+    // gimmick: in Phase2 it copies a previously-fought enemy's moveset and feints
+    // (the bible's "memory warfare" — illusions of the player's dead). The boss
+    // machine carries the PHASE TAG (copyFeintPhase = 2) so act2_world reads it
+    // and spawns the illusion adds + HUD; the boss itself is a tanky Boss-type
+    // melee/short-range chaser with the FE#7 memory-flash window borrowed in P2
+    // (clarity moments interrupt the copy). ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Boss;
+        t.hp             = 500;                             // tanky cave-system boss
+        t.chaseSpeed     = 3.4f;                            // matches Martinez
+        t.damage         = 14;                              // psychic strike
+        t.attackRange    = 3.0f;                            // mid reach
+        t.attackCooldown = 1.05f;
+        t.attackWindup   = 0.30f;
+        t.ranged         = false;
+        t.tint[0]=0.70f; t.tint[1]=0.55f; t.tint[2]=1.0f; t.tint[3]=1.0f;  // psi-violet
+        t.phase2Frac     = 0.66f;                           // P1 Illusions -> P2 Copy/Feint
+        t.phase3Frac     = 0.33f;                           // P2 -> P3 Identity Crisis
+        t.phase2SpeedMul = 1.20f; t.phase2DamageMul = 1.30f;
+        t.phase3SpeedMul = 1.55f; t.phase3DamageMul = 1.70f;
+        t.phase3SummonCount = 3;                            // illusion-army revenants in P3
+        // Wave-2 tag: P2 is the COPY/FEINT phase (act2_world reads this).
+        t.copyFeintPhase     = 2;                           // Phase2 = copy/feint
+        // Borrow the memory-flash beat for the clarity-moment tells.
+        t.memoryFlashTime      = 1.5f;
+        t.memoryFlashDamageMul = 1.75f;
+        defRigged(t, "chief_martinez.glb", 1.35f);          // tall psychic stand-in
+        defs.push_back({ Act2BossType::MemoryHunter, "Memory Hunter", t });
+    }
+
+    // ---- THE SIREN (Beta, L14) — transformed Aria. Sonic/psychic lure boss;
+    // Beta-class tier (a step beyond Martinez/Chen). Ranged-AI lane (her "voice"
+    // is the long-range hit), summons parasite adds in P3. Reuses the existing
+    // rescue-boss GLB if present. ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Boss;
+        t.hp             = 440;                             // Beta-tier (Martinez 340)
+        t.chaseSpeed     = 2.8f;                            // floats, repositions
+        t.damage         = 13;                              // sonic blast (ranged chip)
+        t.attackRange    = 14.0f;                           // long psychic voice
+        t.attackCooldown = 1.0f;
+        t.attackWindup   = 0.45f;                           // sustained-scream telegraph
+        t.ranged         = true;
+        t.standoff       = 10.0f;
+        t.aiStrafeBias   = 0.40f;
+        t.tint[0]=1.0f; t.tint[1]=0.50f; t.tint[2]=0.85f; t.tint[3]=1.0f;  // siren magenta
+        t.phase2Frac     = 0.66f;                           // Lure -> Mother (parasites)
+        t.phase3Frac     = 0.33f;                           // Mother -> Final (spawning core)
+        t.phase2SpeedMul = 1.25f; t.phase2DamageMul = 1.30f;
+        t.phase3SpeedMul = 1.55f; t.phase3DamageMul = 1.60f;
+        t.phase3SummonCount = 4;                            // parasite swarm in final phase
+        // Existing BossTheSiren.glb is in rigged_glb (Y-up); use directly.
+        t.modelFile        = "BossTheSiren.glb";
+        t.modelDirOverride = riggedGlbRoot();
+        t.standUpZtoY      = false;
+        t.modelScale       = 1.30f;
+        defs.push_back({ Act2BossType::TheSiren, "The Siren", t });
+    }
+
+    // ---- BREEDER QUEEN (Beta, L16) — transformed Keisha. Tactical mind; SUMMONS
+    // (Stage-2 infected adds). Beta-tier tankier than the Siren; melee charger
+    // with heavy armor (folded into HP). High P2/P3 summon count (the spec calls
+    // out "summons" explicitly). ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Boss;
+        t.hp             = 520;                             // bible 2000; band-scaled (heavy armor)
+        t.chaseSpeed     = 3.2f;                            // rage-charge in P2+
+        t.damage         = 17;                              // brutal claw / slam
+        t.attackRange    = 2.6f;                            // long reach (12ft frame)
+        t.attackCooldown = 1.15f;
+        t.attackWindup   = 0.35f;
+        t.ranged         = false;
+        t.tint[0]=0.85f; t.tint[1]=0.45f; t.tint[2]=0.55f; t.tint[3]=1.0f;  // bloody crimson
+        t.phase2Frac     = 0.66f;                           // General -> Mother (summons more)
+        t.phase3Frac     = 0.33f;                           // Mother -> Final (weak flank)
+        t.phase2SpeedMul = 1.30f; t.phase2DamageMul = 1.35f;
+        t.phase3SpeedMul = 1.55f; t.phase3DamageMul = 1.60f;
+        t.phase3SummonCount = 5;                            // SUMMONS — the spec's headline beat
+        // Existing BossBreederQueen.glb is in rigged_glb (Y-up); use directly.
+        t.modelFile        = "BossBreederQueen.glb";
+        t.modelDirOverride = riggedGlbRoot();
+        t.standUpZtoY      = false;
+        t.modelScale       = 1.55f;                         // 12ft frame reads tall
+        defs.push_back({ Act2BossType::BreederQueen, "Breeder Queen", t });
+    }
+
+    // ---- PLANETARY GARRISON COMMANDER (L20 finale) — Act-2 escape finale.
+    // 3 phases, mapped onto the existing HP-keyed machine + the Wave-2 escape-
+    // timer tag:
+    //   P1 (>66%)  TROOPS         — commander on foot with rifle, summons squad adds.
+    //   P2 (66-33%) MECH-SUIT     — bigger/tougher (scale up via phase2ScaleMul,
+    //                               damage up via phase2DamageMul); melee+ranged.
+    //   P3 (<33%)  ORBITAL STRIKE — boss broadcasts the strike; escapeTimerSeconds
+    //                               drives the level-exit countdown ("escape or
+    //                               die"). The floor module reads escapeTimer() in
+    //                               P3 and starts a HUD timer + the trigger.
+    // Tankiest Act-2 fight; sets up the Act-3 transition. ----
+    {
+        MonsterSystem::Tuning t;
+        t.type           = MonsterType::Boss;
+        t.hp             = 600;                             // Act-2 finale: tankiest
+        t.chaseSpeed     = 3.0f;                            // disciplined; ramps in mech
+        t.damage         = 16;                              // plasma rifle / mech fist
+        t.attackRange    = 12.0f;                           // ranged in P1, longer in P2 effectively
+        t.attackCooldown = 1.0f;
+        t.attackWindup   = 0.30f;
+        t.ranged         = true;                            // commander pelts; mech adds melee
+        t.standoff       = 8.0f;
+        t.aiStrafeBias   = 0.30f;
+        t.tint[0]=0.90f; t.tint[1]=0.65f; t.tint[2]=0.35f; t.tint[3]=1.0f;  // gold-bronze command
+        t.phase2Frac     = 0.66f;                           // TROOPS -> MECH-SUIT
+        t.phase3Frac     = 0.33f;                           // MECH-SUIT -> ORBITAL-STRIKE escape
+        // P2 MECH-SUIT: bigger AND tougher. Scale + damage push, with a slight
+        // speed dip (heavy chassis) -> the mech reads as a different fight.
+        t.phase2SpeedMul = 0.95f; t.phase2DamageMul = 1.50f;
+        t.phase2ScaleMul = 1.45f;                           // MECH = visibly bigger
+        // P3 ESCAPE: the commander vents the mech and calls the orbital strike —
+        // damage & speed spike for a brief desperation push before the timer.
+        t.phase3SpeedMul = 1.35f; t.phase3DamageMul = 1.70f;
+        t.phase3ScaleMul = 1.30f;
+        t.phase3SummonCount = 2;                            // last-ditch elite guards
+        // Wave-2 tag: P3 starts the orbital-strike escape timer (sec).
+        t.escapeTimerSeconds = 30.0f;                       // 30 s level-exit window
+        defRigged(t, "chief_martinez.glb", 1.45f);          // tall commander stand-in
+        defs.push_back({ Act2BossType::GarrisonCommander, "Planetary Garrison Commander", t });
+    }
+
+    return defs;
+}
+
+} // namespace
+
+const std::vector<Act2EnemyDef>& act2EnemyDefs() {
+    static const std::vector<Act2EnemyDef> defs = buildAct2EnemyDefs();
+    return defs;
+}
+
+const Act2EnemyDef& act2EnemyDef(Act2EnemyType t) {
+    const std::vector<Act2EnemyDef>& defs = act2EnemyDefs();
+    const uint32_t i = (uint32_t)t;
+    if (i < defs.size() && defs[i].type == t) return defs[i];
+    for (const Act2EnemyDef& d : defs) if (d.type == t) return d;
+    return defs[0];
+}
+
+MonsterSystem::Tuning act2EnemyTuning(Act2EnemyType t) {
+    return act2EnemyDef(t).tuning;
+}
+
+const std::vector<Act2BossDef>& act2BossDefs() {
+    static const std::vector<Act2BossDef> defs = buildAct2BossDefs();
+    return defs;
+}
+
+const Act2BossDef& act2BossDef(Act2BossType t) {
+    const std::vector<Act2BossDef>& defs = act2BossDefs();
+    const uint32_t i = (uint32_t)t;
+    if (i < defs.size() && defs[i].type == t) return defs[i];
+    for (const Act2BossDef& d : defs) if (d.type == t) return d;
+    return defs[0];
+}
+
+MonsterSystem::Tuning act2BossTuning(Act2BossType t) {
+    return act2BossDef(t).tuning;
+}
+
+// ===========================================================================
+// --test-act2bosses: the Act-2 enemy + boss roster (Wave 2).
+//   (a) the 5 Act-2 enemy defs exist + BUILD with sane stats; the Salvari ally
+//       is flagged ALLIED and deals 0 damage; mutated flora is STATIONARY; the
+//       surface pursuit drone is fast / ranged / flyer.
+//   (b) the 4 Act-2 boss defs exist + BUILD with Boss-type stats + valid phase
+//       thresholds, and the HP-keyed machine advances P1 -> P2 -> P3.
+//   (c) Memory Hunter carries a copy/feint phase descriptor + reports the tag
+//       once driven into that phase.
+//   (d) Garrison Commander has 3 phases AND an escape-timer tag (> 0); the
+//       floor module reads it in P3.
+//   (e) Breeder Queen summons in P3 (phase3SummonCount > 0).
+//   (f) REGRESSION: Chief Martinez + all 3 single-body Act-1 bosses still build.
+// No window / Vulkan. Mirrors the other self-tests.
+// ===========================================================================
+namespace {
+
+int a2_pass = 0, a2_fail = 0;
+void a2check(bool cond, const char* name) {
+    if (cond) { ++a2_pass; x3::logInfo(std::string("[act2bosses-test] PASS ") + name); }
+    else      { ++a2_fail; x3::logError(std::string("[act2bosses-test] FAIL ") + name); }
+}
+
+constexpr float kA2Dt = 1.0f / 60.0f;
+
+class A2TargetStub final : public IDamageSink {
+public:
+    x3::phys::Vec3 eye{ 0.0f, 1.6f, -8.0f };
+    int hits = 0;
+    bool takeDamage(int) override { ++hits; return true; }
+    x3::phys::Vec3 damageTargetPos() const override { return eye; }
+    bool isAlive() const override { return true; }
+};
+
+x3::phys::BodyId a2Ground(x3::phys::IPhysicsWorld& w, float half) {
+    float v[] = { -half,0,-half,  half,0,-half,  half,0,half,  -half,0,half };
+    uint32_t idx[] = { 0,2,1, 0,3,2 };
+    return w.addStaticMesh(v, 4, idx, 6);
+}
+
+// Drive a boss's HP down by setHp + update ticks until <= targetHp. Returns the
+// highest phase reached. Mirrors driveBossToHp() from the Act-1 self-test.
+BossPhase a2DriveBossToHp(MonsterSystem& m, Scene& scene, x3::phys::IPhysicsWorld& w,
+                          A2TargetStub& tgt, int targetHp) {
+    while (m.hp() > targetHp && m.alive()) {
+        m.setHp(m.hp() - 1);
+        m.update(kA2Dt, scene, w, tgt.eye, tgt.eye, &tgt, AttackFxFn{},
+                 BossPhaseFn{}, AllyQueryFn{});
+    }
+    return m.phase();
+}
+
+} // namespace
+
+bool runAct2BossesSelfTest() {
+    a2_pass = a2_fail = 0;
+    HeadlessDevice device;
+
+    // ---- (a1) The Act-2 enemy table is complete + ordered. ----
+    {
+        const std::vector<Act2EnemyDef>& roster = act2EnemyDefs();
+        bool complete = roster.size() == (size_t)Act2EnemyType::Count;
+        bool ordered = true;
+        for (uint32_t i = 0; i < roster.size(); ++i)
+            if ((uint32_t)roster[i].type != i) ordered = false;
+        x3::logInfo(std::string("[act2bosses-test] enemy roster size=") +
+                    std::to_string(roster.size()) + " (expected " +
+                    std::to_string((uint32_t)Act2EnemyType::Count) + ")");
+        a2check(complete && ordered,
+                "Ta enemy roster has one row per Act2EnemyType, in enum order");
+    }
+
+    // ---- (a2) Each Act-2 enemy BUILDS with its table stats, and per-row tags
+    // are observable on the built MonsterSystem. ----
+    {
+        int builtOk = 0;
+        bool salvariAllied = false, salvariZeroDmg = false;
+        bool floraStationary = false;
+        bool droneIsFastRangedFlyer = false;
+        for (uint32_t ei = 0; ei < (uint32_t)Act2EnemyType::Count; ++ei) {
+            const Act2EnemyType et = (Act2EnemyType)ei;
+            const Act2EnemyDef& def = act2EnemyDef(et);
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            w->init(); a2Ground(*w, 80.0f);
+            Scene scene; MonsterSystem m;
+            m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                                x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, act2EnemyTuning(et));
+            // Built stats match the row, with the allied flip applied when set.
+            const bool statsMatch =
+                m.type() == def.tuning.type && m.maxHp() == def.tuning.hp &&
+                m.ranged() == def.tuning.ranged;
+            if (statsMatch) ++builtOk;
+            x3::logInfo(std::string("[act2bosses-test] ") + act2EnemyTypeName(et) +
+                        " hp=" + std::to_string(m.maxHp()) +
+                        " type=" + std::to_string((int)m.type()) +
+                        " ranged=" + (m.ranged() ? "1" : "0") +
+                        " dmg=" + std::to_string(m.attackDamage()) +
+                        " allied=" + (m.isAllied() ? "1" : "0"));
+            if (et == Act2EnemyType::SalvariAlly) {
+                salvariAllied  = m.isAllied();
+                salvariZeroDmg = m.attackDamage() == 0;
+            }
+            if (et == Act2EnemyType::MutatedFlora) {
+                // Stationary: chase-speed pulled from the tuning is 0.
+                floraStationary = (def.tuning.chaseSpeed == 0.0f);
+            }
+            if (et == Act2EnemyType::SurfacePursuitDrone) {
+                // Fast ranged flyer (data tags on the def).
+                droneIsFastRangedFlyer = def.tuning.flyer && def.tuning.ranged &&
+                                         def.tuning.chaseSpeed >= 4.5f;
+            }
+            w->shutdown();
+        }
+        a2check(builtOk == (int)Act2EnemyType::Count,
+                "Ta each Act-2 enemy builds with its table stats");
+        a2check(salvariAllied && salvariZeroDmg,
+                "Ta Salvari ally is ALLIED + 0 damage to player");
+        a2check(floraStationary,
+                "Ta Mutated Flora is STATIONARY (chaseSpeed == 0)");
+        a2check(droneIsFastRangedFlyer,
+                "Ta Surface Pursuit Drone is fast ranged flyer");
+    }
+
+    // ---- (b1) The Act-2 boss table is complete + ordered + has sane phase/HP/damage. ----
+    {
+        const std::vector<Act2BossDef>& roster = act2BossDefs();
+        bool complete = roster.size() == (size_t)Act2BossType::Count;
+        bool ordered = true, sane = true;
+        for (uint32_t i = 0; i < roster.size(); ++i) {
+            if ((uint32_t)roster[i].type != i) ordered = false;
+            const MonsterSystem::Tuning& t = roster[i].tuning;
+            if (t.type != MonsterType::Boss) sane = false;
+            if (t.hp <= 0 || t.damage <= 0) sane = false;
+            if (!(t.phase3Frac > 0.0f && t.phase3Frac < t.phase2Frac && t.phase2Frac < 1.0f))
+                sane = false;
+            x3::logInfo(std::string("[act2bosses-test] ") + roster[i].name +
+                        " hp=" + std::to_string(t.hp) + " dmg=" + std::to_string(t.damage) +
+                        " p2=" + std::to_string(t.phase2Frac) +
+                        " p3=" + std::to_string(t.phase3Frac) +
+                        " ranged=" + (t.ranged ? "1" : "0"));
+        }
+        a2check(complete && ordered && sane,
+                "Tb Act-2 boss roster complete/ordered with sane phase/HP/damage");
+    }
+
+    // ---- (b2) Each Act-2 boss BUILDS Boss-type and advances P1 -> P2 -> P3. ----
+    {
+        int builtOk = 0, phasedOk = 0;
+        for (uint32_t bi = 0; bi < (uint32_t)Act2BossType::Count; ++bi) {
+            const Act2BossType bt = (Act2BossType)bi;
+            const Act2BossDef& def = act2BossDef(bt);
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            w->init(); a2Ground(*w, 80.0f);
+            Scene scene; MonsterSystem m; A2TargetStub tgt;
+            m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                                x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, act2BossTuning(bt));
+            const bool statsMatch = m.type() == MonsterType::Boss &&
+                m.maxHp() == def.tuning.hp && m.attackDamage() == def.tuning.damage &&
+                m.phase() == BossPhase::Phase1;
+            if (statsMatch) ++builtOk;
+            const int p2hp = (int)(m.maxHp() * def.tuning.phase2Frac) - 1;
+            a2DriveBossToHp(m, scene, *w, tgt, p2hp);
+            const bool reachedP2 = m.phase() == BossPhase::Phase2;
+            const int p3hp = (int)(m.maxHp() * def.tuning.phase3Frac) - 1;
+            a2DriveBossToHp(m, scene, *w, tgt, p3hp);
+            const bool reachedP3 = m.phase() == BossPhase::Phase3;
+            if (reachedP2 && reachedP3) ++phasedOk;
+            x3::logInfo(std::string("[act2bosses-test] ") + act2BossTypeName(bt) +
+                        " built statsOK=" + (statsMatch ? "1" : "0") +
+                        " reachedP2=" + (reachedP2 ? "1" : "0") +
+                        " reachedP3=" + (reachedP3 ? "1" : "0"));
+            w->shutdown();
+        }
+        a2check(builtOk == (int)Act2BossType::Count,
+                "Tb each Act-2 boss builds Boss-type with its table HP/damage");
+        a2check(phasedOk == (int)Act2BossType::Count,
+                "Tb each Act-2 boss advances P1->P2->P3 on the HP machine");
+    }
+
+    // ---- (c) MEMORY HUNTER copy/feint phase descriptor (data tag). ----
+    {
+        const MonsterSystem::Tuning mh = act2BossTuning(Act2BossType::MemoryHunter);
+        const bool tagSet = mh.copyFeintPhase != 0;
+        // Drive a built Memory Hunter into the tagged phase and check the live tag.
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); a2Ground(*w, 80.0f);
+        Scene scene; MonsterSystem m; A2TargetStub tgt;
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                            x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, mh);
+        const uint32_t tag = m.copyFeintPhase();
+        // Drive to the tagged phase (copyFeintPhase==2 -> Phase2).
+        const int p2hp = (int)(m.maxHp() * mh.phase2Frac) - 1;
+        a2DriveBossToHp(m, scene, *w, tgt, p2hp);
+        const bool inTaggedPhase = m.inCopyFeintPhase();
+        x3::logInfo(std::string("[act2bosses-test] MemoryHunter copyFeintPhase tag=") +
+                    std::to_string(tag) + " inCopyFeintPhase=" +
+                    (inTaggedPhase ? "1" : "0") + " phase=" + std::to_string((int)m.phase()));
+        a2check(tagSet && tag == mh.copyFeintPhase && inTaggedPhase,
+                "Tc Memory Hunter carries a copy/feint phase descriptor (active in P2)");
+        w->shutdown();
+    }
+
+    // ---- (d) GARRISON COMMANDER has 3 phases AND an escape-timer tag. ----
+    {
+        const MonsterSystem::Tuning gc = act2BossTuning(Act2BossType::GarrisonCommander);
+        const bool timerSet = gc.escapeTimerSeconds > 0.0f;
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); a2Ground(*w, 80.0f);
+        Scene scene; MonsterSystem m; A2TargetStub tgt;
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                            x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, gc);
+        // The 3 phases: Phase1 at spawn; drive to Phase2; drive to Phase3.
+        const bool spawnP1 = m.phase() == BossPhase::Phase1;
+        a2DriveBossToHp(m, scene, *w, tgt, (int)(m.maxHp() * gc.phase2Frac) - 1);
+        const bool reachedP2 = m.phase() == BossPhase::Phase2;
+        a2DriveBossToHp(m, scene, *w, tgt, (int)(m.maxHp() * gc.phase3Frac) - 1);
+        const bool reachedP3 = m.phase() == BossPhase::Phase3;
+        const bool timerLive = m.hasEscapeTimer() && m.escapeTimerSeconds() == gc.escapeTimerSeconds;
+        x3::logInfo(std::string("[act2bosses-test] Garrison spawnP1=") +
+                    (spawnP1 ? "1" : "0") + " P2=" + (reachedP2 ? "1" : "0") +
+                    " P3=" + (reachedP3 ? "1" : "0") +
+                    " escapeTimer=" + std::to_string(m.escapeTimerSeconds()));
+        a2check(spawnP1 && reachedP2 && reachedP3,
+                "Td Garrison Commander has 3 phases (P1 troops / P2 mech / P3 escape)");
+        a2check(timerSet && timerLive,
+                "Td Garrison Commander carries an orbital-strike escape timer");
+        w->shutdown();
+    }
+
+    // ---- (e) BREEDER QUEEN summons (phase3SummonCount > 0). ----
+    {
+        const MonsterSystem::Tuning bq = act2BossTuning(Act2BossType::BreederQueen);
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); a2Ground(*w, 80.0f);
+        Scene scene; MonsterSystem m; A2TargetStub tgt;
+        m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                            x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, bq);
+        // Drive to P3 and read the summonCount() the host would use.
+        a2DriveBossToHp(m, scene, *w, tgt, (int)(m.maxHp() * bq.phase3Frac) - 1);
+        const int summons = m.summonCount();
+        x3::logInfo(std::string("[act2bosses-test] BreederQueen summonCount=") +
+                    std::to_string(summons));
+        a2check(bq.phase3SummonCount > 0 && summons > 0,
+                "Te Breeder Queen summons in P3 (phase3SummonCount > 0)");
+        w->shutdown();
+    }
+
+    // ---- (f) REGRESSION: Chief Martinez + all 3 Act-1 single-body bosses still
+    // build (Boss-type, table HP/damage, Phase1 at spawn). ----
+    {
+        // The 3 Act-1 bosses (DrChen / FE7 / AlienOverseer):
+        int act1Ok = 0;
+        for (uint32_t bi = 0; bi < (uint32_t)BossType::Count; ++bi) {
+            const BossType bt = (BossType)bi;
+            const BossDef& def = bossDef(bt);
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            w->init(); a2Ground(*w, 80.0f);
+            Scene scene; MonsterSystem m;
+            m.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                                x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, bossTuning(bt));
+            const bool ok = m.type() == MonsterType::Boss &&
+                            m.maxHp() == def.tuning.hp &&
+                            m.attackDamage() == def.tuning.damage &&
+                            m.phase() == BossPhase::Phase1;
+            if (ok) ++act1Ok;
+            x3::logInfo(std::string("[act2bosses-test] Act-1 ") + bossTypeName(bt) +
+                        " regression " + (ok ? "OK" : "FAIL"));
+            w->shutdown();
+        }
+        // Chief Martinez (no enum row — mirrors level1_game's martinezTuning essentials).
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init(); a2Ground(*w, 80.0f);
+        Scene scene; MonsterSystem martinez;
+        MonsterSystem::Tuning t;
+        t.type = MonsterType::Boss; t.hp = 340; t.chaseSpeed = 3.4f;
+        t.damage = 15; t.attackRange = 2.4f; t.attackCooldown = 1.1f; t.attackWindup = 0.30f;
+        t.ranged = false; t.phase3SummonCount = 2;
+        martinez.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                                   x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, t);
+        const bool martinezOk = martinez.type() == MonsterType::Boss &&
+                                martinez.maxHp() == 340 &&
+                                martinez.attackDamage() == 15 &&
+                                martinez.phase() == BossPhase::Phase1 &&
+                                !martinez.hasCureOption() &&
+                                !martinez.inMemoryFlash() &&
+                                !martinez.hasEscapeTimer() &&
+                                martinez.copyFeintPhase() == 0;
+        x3::logInfo(std::string("[act2bosses-test] Martinez regression ") +
+                    (martinezOk ? "OK" : "FAIL"));
+        a2check(act1Ok == (int)BossType::Count && martinezOk,
+                "Tf REGRESSION: Martinez + all 3 Act-1 bosses still construct");
+        w->shutdown();
+    }
+
+    const int total = a2_pass + a2_fail;
+    x3::logInfo(std::string("act2bosses: ") + std::to_string(a2_pass) + "/" +
+                std::to_string(total) + " passed");
+    x3::logInfo(std::string("[act2bosses-test] ") + std::to_string(a2_pass) + " passed, " +
+                std::to_string(a2_fail) + " failed");
+    return a2_fail == 0;
 }
 
 } // namespace x3::game

@@ -35,3 +35,68 @@ TEST: add `--test-act2bosses` in main.cpp (pattern of `--test-bosses`). Assert e
 
 ## REPORT STATUS (append below, then push the branch)
 <!-- STATUS: branch HEAD hash, files changed, "act2bosses: X/Y passed", all-flags-0 + VUID 0 + allocationCount=0 confirmation, and "READY FOR INTEGRATION" (or BLOCKED + why). -->
+
+---
+
+## STATUS — DJBOOTH (2026-05-23)
+
+- **Branch:** `feat/act2-roster` (pushed to origin)
+- **HEAD:** `f54768fbdd5f2260edf7037dd436f7733653e9e0`
+- **Files changed (vs origin/main):**
+  ```
+   app/main.cpp    |  11 +
+   app/monster.cpp | 651 ++++++++++++++++++++++++++++++++++++++++++++++++++++++
+   app/monster.h   | 136 ++++++++++++
+   3 files changed, 798 insertions(+)
+  ```
+- **Counts:** 5 Act-2 enemy defs + 4 Act-2 boss defs + 1 `--test-act2bosses` flag.
+
+### Act-2 enemy defs (Act2EnemyType, monster.{h,cpp})
+- `SalvariAlly` — ALLIED (startAllied=true; m_dmg=0 to player)
+- `NativeDesertFauna` — crystalline-desert fast melee (Guard)
+- `MutatedScientist` — toxic-swamp ranged hostile (Drone-lane)
+- `MutatedFlora` — toxic-swamp stationary lash hostile (chaseSpeed=0)
+- `SurfacePursuitDrone` — fast ranged flyer (L8 escape)
+
+### Act-2 boss defs (Act2BossType, monster.{h,cpp})
+- `MemoryHunter` (L12) — copyFeintPhase=2 (Memory Hunter copy/feint tag)
+- `TheSiren` (L14 Beta) — ranged sonic; uses existing `BossTheSiren.glb`
+- `BreederQueen` (L16 Beta) — phase3SummonCount=5; uses `BossBreederQueen.glb`
+- `GarrisonCommander` (L20 finale) — 3 phases (troops/mech/escape);
+  escapeTimerSeconds=30 (orbital-strike P3 countdown)
+
+### Wave-2 Tuning hooks added (all inert by default; Act-1 unchanged)
+- `Tuning::startAllied` — pre-flip to allied at build time
+- `Tuning::copyFeintPhase` — phase tag for psychological-warfare gimmick
+- `Tuning::escapeTimerSeconds` — P3 level-exit countdown carrier
+
+### Self-test (`--test-act2bosses`)
+- Asserts each enemy/boss def builds with sane stats; Salvari ally is
+  allied + 0 damage; Mutated Flora is stationary; Surface Pursuit Drone
+  is fast ranged flyer; each boss advances P1→P2→P3 on the HP machine;
+  Memory Hunter inCopyFeintPhase() at P2; Garrison Commander has 3
+  phases + escapeTimer>0; Breeder Queen summons in P3; Martinez + all
+  Act-1 bosses still construct (regression).
+- Prints `act2bosses: X/Y passed`; exit 0 on full pass, nonzero on any fail.
+
+### Gate / build
+
+**HANDED OFF to 13700K integrator for smoke test (per 2026-05-23 agreement).**
+
+Local build env on DJBOOTH (4790K) is NOW installed and future-ready:
+- VS 2026 Community Insiders 18.7.11819.209 at
+  `C:\Program Files\Microsoft Visual Studio\18\Insiders\` (Native Desktop
+  workload, Win11 SDK 22621, VC CMake Project)
+- Vulkan SDK 1.4.350.0 at `C:\VulkanSDK\1.4.350.0\` (exact spec match)
+- vcpkg at `C:\vcpkg\` bootstrapped + pinned to baseline
+  `f7f94113c3b629c01df3d49d5edebae6d598c78c` (matches `vcpkg.json`)
+
+Local 42-flag gauntlet + Release/Debug smoketest NOT executed here —
+13700K agreed to gate. If 13700K kicks back, DJBOOTH can now gate locally
+on a follow-up pass (first vcpkg dep build will take ~1–4 hrs on this 4790K
+since none cached yet).
+
+Source-correct, compilable-looking, design-aligned C++ on pushed branch.
+No engine/CMake/Act-1/world-module files touched. Clean-room: no external
+game-engine source consulted (only X3Native headers + EFLZ design docs).
+
