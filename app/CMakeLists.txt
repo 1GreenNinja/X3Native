@@ -20,6 +20,7 @@ add_executable(X3Engine WIN32
     spire_sublevels.cpp
     act2_world.cpp
     world_regions.cpp
+    city.cpp
     save.cpp
     env_art.cpp
     club1127.cpp

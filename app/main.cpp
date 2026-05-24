@@ -39,6 +39,7 @@
 #include "spire_sublevels.h"                // EFLZ hidden Floor-7 sub-levels + Dr. Chen Return Mission
 #include "act2_world.h"                      // EFLZ Act-2 open-world surface host + L8/L9 (--test-act2)
 #include "world_regions.h"                   // EFLZ open-world surrounding regions + 4 mountain ranges (--test-worldregions)
+#include "city.h"                            // EFLZ open-world metropolis: districts + roads + freeway tunnels (--test-city)
 #include "elevator.h"
 #include "club1127.h"
 #include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
@@ -565,6 +566,7 @@ int main(int argc, char** argv) {
     // Edge (crystal props + neutral fauna + an inert-until-entered hazard zone). Additive.
     bool        testAct2 = false;
     bool        testWorldRegions = false;   // --test-worldregions (open-world surface regions + mountains)
+    bool        testCity = false;           // --test-city (open-world metropolis: districts + roads + tunnels)
     // --test-collapse (K-T3 structural collapse): build a small structure (column /
     // beam on two supports), destroy a support, step the sim, and assert the
     // unsupported pieces fall (static->dynamic), anchored pieces stay stable, the
@@ -742,6 +744,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-sublevels") testSubLevels = true;
         else if (a == "--test-act2") testAct2 = true;
         else if (a == "--test-worldregions") testWorldRegions = true;
+        else if (a == "--test-city") testCity = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-elevatorfsm") testElevatorFsm = true;
@@ -1062,6 +1065,11 @@ int main(int argc, char** argv) {
         x3::logInfo("running EFLZ open-world surface regions (crash site + outposts + "
                     "4 mountain ranges) self-test...");
         return x3::game::runWorldRegionsSelfTest() ? 0 : 1;
+    }
+    if (testCity) {
+        x3::logInfo("running EFLZ open-world metropolis (Scrapyard / New District / Industrial "
+                    "+ road grid + 4 freeway tunnels) self-test...");
+        return x3::game::runCitySelfTest() ? 0 : 1;
     }
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
