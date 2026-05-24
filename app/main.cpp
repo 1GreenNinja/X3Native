@@ -14,6 +14,7 @@
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/physics/Destruction.h"   // K-T0/T1 destructibles + --test-destruction
 #include "engine/physics/StructuralCollapse.h" // K-T3 support-graph collapse + --test-collapse
+#include "engine/physics/Ragdoll.h"       // Physics §2 ragdoll+blend: --test-ragdoll + --world ragdoll
 #include "engine/physics/IVehicle.h"      // vehicle framework: --test-vehicle + --world drive/boat/fly
 #include "engine/asset/IModelLoader.h"
 #include "engine/audio/IAudioSystem.h"
@@ -556,6 +557,16 @@ int main(int argc, char** argv) {
     // unsupported pieces fall (static->dynamic), anchored pieces stay stable, the
     // rubble settles bounded/NaN-free, GPU debris fires, and it's leak-clean. Additive.
     bool        testCollapse = false;
+    // --test-physjoint (Physics §1): create a dynamic body on a point/distance
+    // constraint, step the sim, and assert it hangs + swings under gravity then
+    // settles with damping, and re-settles after an impulse; no NaNs; leak-clean.
+    // Additive.
+    bool        testPhysJoint = false;
+    // --test-ragdoll (Physics §2): build a ragdoll from a synthetic skeleton, step,
+    // assert it falls + settles (bounded, no NaN), the constraint chain holds (bone
+    // lengths preserved), and the anim<->ragdoll blend 0->1 interpolates the palette
+    // monotonically. Additive.
+    bool        testRagdoll = false;
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
     // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
     // and confirm the joint palette changes. Asset-pipeline verification for the
@@ -727,6 +738,8 @@ int main(int argc, char** argv) {
         else if (a == "--test-debris") testDebris = true;
         else if (a == "--test-gpuskin") testGpuSkin = true;
         else if (a == "--test-collapse") testCollapse = true;
+        else if (a == "--test-physjoint") testPhysJoint = true;
+        else if (a == "--test-ragdoll") testRagdoll = true;
         else if (a == "--test-nav") testNav = true;
         else if (a == "--test-weapons") testWeapons = true;
         else if (a == "--test-vehicle") testVehicle = true;
@@ -846,6 +859,14 @@ int main(int argc, char** argv) {
     if (testPhysics) {
         x3::logInfo("running physics (M3) self-test...");
         return x3::phys::runPhysicsSelfTest() ? 0 : 1;
+    }
+    if (testPhysJoint) {
+        x3::logInfo("running Physics §1 suspended/constrained-body (--test-physjoint) self-test...");
+        return x3::phys::runPhysJointSelfTest() ? 0 : 1;
+    }
+    if (testRagdoll) {
+        x3::logInfo("running Physics §2 ragdoll+blend (--test-ragdoll) self-test...");
+        return x3::phys::runRagdollSelfTest() ? 0 : 1;
     }
     if (testGltf) {
         x3::logInfo("running glTF/GLB model loader (M2) self-test...");
