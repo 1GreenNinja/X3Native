@@ -353,18 +353,19 @@ const Club1127World::Stats& Club1127World::build(Scene& scene, x3::rhi::IRenderD
             m_blacklightEnts.push_back(id);
             ++m_stats.blacklights;
         };
-        // Long walls (east -X and west +X): 10 each.
+        // 28 blacklights total (canon §2.3): 10 per long wall (20) + 4 per side of
+        // the south wall (8). The long-wall tubes are evenly spread along Z inside
+        // the room; the south-wall tubes flank the 85" centered display.
+        const float zLo = -CL / 2 + bi, zHi = CL / 2 - bi;   // inner Z band
         for (int side = -1; side <= 1; side += 2)
             for (int n = 0; n < 10; ++n) {
-                const float z = -CL / 2 + bi + n * bi;
-                if (z > CL / 2 - bi) break;
+                const float z = zLo + (zHi - zLo) * n / 9.0f;  // 10 tubes, n=0..9
                 blacklight(side * (CW / 2 - 0.05f), z);
             }
-        // South wall flanking the 85": 3 each side (clamped to the room).
+        // South wall: 4 per side, snug within the room half-width.
         for (int s = -1; s <= 1; s += 2)
-            for (int n = 0; n < 3; ++n) {
-                const float x = s * (1.5f + n * bi);
-                if (std::fabs(x) > CW / 2 - 0.5f) break;
+            for (int n = 0; n < 4; ++n) {
+                const float x = s * (1.5f + n * 1.7f);          // max |x| = 6.6 < CW/2
                 blacklight(x, CL / 2 - 0.05f);
             }
         // UV point lights (4) — the violet wash over the room.
@@ -642,6 +643,7 @@ void Club1127World::showcaseCamera(float out[5]) const {
 } // namespace x3::game
 
 #include "headless_device.h"
+#include "asset_root.h"        // x3::game::riggedGlbRoot()
 #include "engine/physics/IPhysicsWorld.h"
 #include <cmath>
 
@@ -732,22 +734,21 @@ bool runClubSelfTest() {
     //      transforms/light positions stay finite (no NaN) and lights actually moved.
     {
         const auto& L0 = club.pointLights();
-        // snapshot the first orbiting spotlight position.
-        // (static lights come first; we just snapshot the whole set's checksum.)
-        float beforeSum = 0.0f;
-        for (const auto& l : L0) beforeSum += l.pos[0] + l.pos[2];
+        // Snapshot ONE orbiting spotlight (the last 8 lights orbit; a ring of
+        // symmetric lights has an invariant coordinate SUM, so track a single one).
+        const size_t orbIdx = L0.size() >= 8 ? L0.size() - 8 : 0;
+        const float bx = L0[orbIdx].pos[0], bz = L0[orbIdx].pos[2];
         const float dt = 1.0f / 60.0f;
         for (int i = 0; i < 30; ++i)
             club.update(dt, scene, device, *physics);
         bool finite = true;
-        float afterSum = 0.0f;
-        for (const auto& l : club.pointLights()) {
+        for (const auto& l : club.pointLights())
             if (!std::isfinite(l.pos[0]) || !std::isfinite(l.pos[1]) || !std::isfinite(l.pos[2]))
                 finite = false;
-            afterSum += l.pos[0] + l.pos[2];
-        }
-        check(finite && std::fabs(afterSum - beforeSum) > 1e-3f,
-              "ORB/spotlights/blacklights animate (orbiting lights moved, all finite)");
+        const auto& L1 = club.pointLights();
+        const float moved = std::fabs(L1[orbIdx].pos[0] - bx) + std::fabs(L1[orbIdx].pos[2] - bz);
+        check(finite && moved > 1e-3f,
+              "ORB/spotlights/blacklights animate (an orbiting light moved, all finite)");
     }
 
     // (12) Idempotent rebuild: a second build() is a no-op and creates NO new mesh.
