@@ -173,6 +173,7 @@ void DoorSystem::drawMeshes(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
     const float ay  = kDoorAabb.miny;   // GLB anchor Y (slab BOTTOM, ~0.054)
 
     for (const Door& d : m_doors) {
+        if (d.floorHatch) continue;   // horizontal hatch draws its own graybox box
         // CURRENT world center of this door (the slide animation lerps closed->open
         // by the same factor DoorSystem::update() uses). closedPos/openPos are the
         // body CENTER positions; the slab bottom is center.y - height/2.
@@ -325,23 +326,26 @@ uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
     const float hw = spec.halfWidth;
     const float hh = spec.height * 0.5f;
     const float ht = spec.thickness * 0.5f;
-    // Half-extents in (x,y,z) depend on which axis the host wall runs along: the
-    // door spans the doorway width along the wall run and is thin across it.
-    x3::phys::Vec3 half;
-    if (spec.axis == DoorAxis::AlongX) {
-        // Wall plane is Z = const: door is wide in X (the run), thin in Z.
-        half = x3::phys::Vec3{ hw, hh, ht };
+    // Half-extents + slide direction.
+    x3::phys::Vec3 half, closedPos, openPos;
+    if (spec.floorHatch) {
+        // FLOOR HATCH: a flat slab lying in the XZ plane (thin in Y), filling a
+        // square opening at floor level (doorwayCenter.y). It slides ASIDE along +X
+        // by its full width so the opening clears — you pass DOWN through it.
+        half      = x3::phys::Vec3{ hw, ht, hw };
+        closedPos = x3::phys::Vec3{ spec.doorwayCenter.x, spec.doorwayCenter.y + ht, spec.doorwayCenter.z };
+        openPos   = x3::phys::Vec3{ closedPos.x + 2.0f * hw, closedPos.y, closedPos.z };
+    } else if (spec.axis == DoorAxis::AlongX) {
+        // Wall plane is Z = const: door is wide in X (the run), thin in Z. Slides UP.
+        half      = x3::phys::Vec3{ hw, hh, ht };
+        closedPos = x3::phys::Vec3{ spec.doorwayCenter.x, spec.doorwayCenter.y + hh, spec.doorwayCenter.z };
+        openPos   = x3::phys::Vec3{ closedPos.x, closedPos.y + spec.height, closedPos.z };
     } else {
-        // Wall plane is X = const: door is thin in X, wide in Z (the run).
-        half = x3::phys::Vec3{ ht, hh, hw };
+        // Wall plane is X = const: door is thin in X, wide in Z (the run). Slides UP.
+        half      = x3::phys::Vec3{ ht, hh, hw };
+        closedPos = x3::phys::Vec3{ spec.doorwayCenter.x, spec.doorwayCenter.y + hh, spec.doorwayCenter.z };
+        openPos   = x3::phys::Vec3{ closedPos.x, closedPos.y + spec.height, closedPos.z };
     }
-
-    // Closed body center: the doorway center, raised so the slab bottom sits at
-    // the floor (doorwayCenter.y). Open: slid straight UP by the door height.
-    const x3::phys::Vec3 closedPos{ spec.doorwayCenter.x,
-                                    spec.doorwayCenter.y + hh,
-                                    spec.doorwayCenter.z };
-    const x3::phys::Vec3 openPos{ closedPos.x, closedPos.y + spec.height, closedPos.z };
 
     // Load the shared real-door GLB once (idempotent). The visual is the GLB slab
     // drawn by drawMeshes(); the procedural box below stays as collision only.
@@ -361,9 +365,10 @@ uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
         e.baseColor[0] = spec.tint[0]; e.baseColor[1] = spec.tint[1];
         e.baseColor[2] = spec.tint[2]; e.baseColor[3] = spec.tint[3];
         e.tag  = (uint32_t)Tag::Door;
-        // Hide the flat-color box when a real door mesh is available; if the GLB
-        // failed to load, keep the box visible so the level never breaks (fallback).
-        e.visible = !doors.hasDoorMesh();
+        // Hide the flat-color box when a real (vertical) door mesh is available; if
+        // the GLB failed to load, keep the box. A FLOOR HATCH always shows its box —
+        // the vertical SM_Door GLB doesn't fit a horizontal hatch (drawMeshes skips it).
+        e.visible = spec.floorHatch || !doors.hasDoorMesh();
         e.body = physics.addBox(half, closedPos, 0.0f, x3::phys::Layer::Static);
         e.transform[12] = closedPos.x;
         e.transform[13] = closedPos.y;
@@ -383,6 +388,7 @@ uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
     d.axis      = (uint32_t)spec.axis;
     d.halfWidth = spec.halfWidth;
     d.height    = spec.height;
+    d.floorHatch = spec.floorHatch;
     uint32_t doorIdx = doors.add(d);
 
     // Optional linked button, mounted on the wall beside the doorway, on the
@@ -592,6 +598,38 @@ bool runInteractSelfTest() {
         check(wasOpen && tog && closing && backClosed && downAgain,
               "T5 toggle opens then closes the door (E open/close)");
         p5->shutdown();
+    }
+
+    // ---- T6: a FLOOR HATCH blocks a body resting on it when CLOSED, and lets it
+    // fall through when OPEN (the hatch slides aside). "The door on the floor." ----
+    {
+        auto runHatch = [](bool openIt) -> float {
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            w->init();
+            HeadlessDevice dev;
+            Scene s;
+            DoorSystem dd;
+            // A floor hatch: 1.0 m half-size square opening at y=0, in open floor.
+            DoorSpec spec;
+            spec.doorwayCenter = x3::phys::Vec3{ 0.0f, 0.0f, 0.0f };
+            spec.halfWidth = 1.0f; spec.thickness = 0.2f; spec.withButton = false;
+            spec.floorHatch = true;
+            buildLevelDoor(s, dd, dev, *w, spec);
+            Door& h = dd.at(0);
+            if (openIt) { dd.toggle(h); for (int i = 0; i < 70; ++i) { dd.update(kFixedDt, s, *w); w->step(kFixedDt); } }
+            // Drop a dynamic box from just above the hatch centre.
+            x3::phys::BodyId b = w->addBox(x3::phys::Vec3{0.2f,0.2f,0.2f}, x3::phys::Vec3{0,1.0f,0},
+                                           2.0f, x3::phys::Layer::Dynamic);
+            for (int i = 0; i < 120; ++i) { dd.update(kFixedDt, s, *w); w->step(kFixedDt); }
+            float y = w->getBodyPosition(b).y;
+            w->shutdown();
+            return y;
+        };
+        float yClosed = runHatch(false);   // rests ON the closed hatch (stays up ~0.3+)
+        float yOpen   = runHatch(true);    // falls THROUGH the open opening (goes well below 0)
+        bool held = yClosed > 0.0f;
+        bool fell = yOpen   < -1.0f;
+        check(held && fell, "T6 floor hatch holds when closed, drops you through when open");
     }
 
     physics->shutdown();
