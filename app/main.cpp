@@ -40,6 +40,7 @@
 #include "timeline.h"                        // EFLZ morality/timeline backbone for the 12 endings (--test-timeline)
 #include "act2_world.h"                      // EFLZ Act-2 open-world surface host + L8/L9 (--test-act2)
 #include "act2_desert.h"                     // EFLZ Act-2 desert depths + Salvari camp L10/L11 (--test-act2desert)
+#include "act2_caves.h"                      // EFLZ Act-2 mid biomes L12-15 (--test-act2caves)
 #include "tod.h"                             // EFLZ Time-of-Day cycle (sky/sun via SkyParams — --test-tod)
 #include "weather.h"                         // EFLZ Weather (7 states, biome-gated, hazard — --test-weather)
 #include "elevator.h"
@@ -686,6 +687,13 @@ int main(int argc, char** argv) {
     // Camp "Refugee Haven" (cave settlement, survivor markers incl. K'thara, an
     // upgrade-station interact + cultural-exchange beat). Reachable L9->L10->L11. Additive.
     bool        testAct2Desert = false;
+    // --test-act2caves (EFLZ Act-2 mid biomes L12-15): the bioluminescent Advanced Cave
+    // System (Crystal Heart dual-gated interactable + Memory Hunter abyss boss) + the
+    // Toxic Swamplands edge (poison hazard zone, inert at load) + the Research Station
+    // (timeline-gated Siren ambush) + the Tree Cities (vertical canopy + trading-post
+    // interactable). Asserts the gates, the hazard, the timeline gate, reachability
+    // L11->L12->L13->L14->L15, and trigger-id non-collision. Additive flag.
+    bool        testAct2Caves = false;
     // --test-tod (EFLZ Time-of-Day): a 4-phase day cycle (dawn/day/dusk/night) that
     // drives the analytic sky/sun (dir/color/intensity/haze + ambient) via SkyParams.
     // Asserts the cycle visits all phases + wraps, the sun arc + intensity vary
@@ -874,6 +882,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-sublevels") testSubLevels = true;
         else if (a == "--test-act2") testAct2 = true;
         else if (a == "--test-act2desert") testAct2Desert = true;
+        else if (a == "--test-act2caves") testAct2Caves = true;
         else if (a == "--test-tod") testTod = true;
         else if (a == "--test-weather") testWeather = true;
         else if (a == "--test-doorcode") testDoorCode = true;
@@ -1222,6 +1231,14 @@ int main(int argc, char** argv) {
                     "'Refugee Haven': cave settlement, survivors incl. K'thara, upgrade "
                     "station + cultural-exchange beat; reachable L9->L10->L11) self-test...");
         return x3::game::runAct2DesertSelfTest() ? 0 : 1;
+    }
+    if (testAct2Caves) {
+        x3::logInfo("running EFLZ Act-2 mid biomes (L12 Advanced Cave System + Crystal "
+                    "Heart dual-gated interactable + Memory Hunter abyss boss; L13 Toxic "
+                    "Swamplands Edge + poison hazard [inert at load]; L14 Research Station "
+                    "+ timeline-gated Siren ambush; L15 Tree Cities + trading post) "
+                    "self-test...");
+        return x3::game::runAct2CavesSelfTest() ? 0 : 1;
     }
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");

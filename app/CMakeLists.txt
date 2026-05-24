@@ -21,6 +21,7 @@ add_executable(X3Engine WIN32
     timeline.cpp
     act2_world.cpp
     act2_desert.cpp
+    act2_caves.cpp
     tod.cpp
     weather.cpp
     save.cpp
