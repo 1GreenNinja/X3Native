@@ -164,6 +164,35 @@ public:
         vkb::PhysicalDevice phys = phys_ret.value();
         m_descriptorIndexing = true;
 
+        // ---- Hardware ray tracing (RT Phase 0) — OPTIONAL + non-breaking. We do NOT
+        // require these in the selector (that would refuse a non-RT GPU); instead we
+        // enable them on the ALREADY-selected device only if present. If absent,
+        // m_rtSupported stays false and device creation proceeds exactly as before
+        // (SSAO/CSM raster fallback). We use RAY QUERY (inline RT in compute/fragment)
+        // — no RT pipeline / shader binding table — so the AS feeds the existing
+        // lighting pass. bufferDeviceAddress (needed for AS builds) is already on. ----
+        {
+            const std::vector<const char*> rtExts = {
+                "VK_KHR_acceleration_structure",
+                "VK_KHR_ray_query",
+                "VK_KHR_deferred_host_operations",
+            };
+            if (phys.enable_extensions_if_present(rtExts)) {
+                VkPhysicalDeviceAccelerationStructureFeaturesKHR asf{};
+                asf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+                asf.accelerationStructure = VK_TRUE;
+                VkPhysicalDeviceRayQueryFeaturesKHR rqf{};
+                rqf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+                rqf.rayQuery = VK_TRUE;
+                const bool a = phys.enable_extension_features_if_present(asf);
+                const bool b = phys.enable_extension_features_if_present(rqf);
+                m_rtSupported = a && b;
+            }
+            logInfo(m_rtSupported
+                ? "[rhi] RT: ray-query SUPPORTED (VK_KHR_ray_query + acceleration_structure) — RT shadows/reflections/GI available"
+                : "[rhi] RT: not available on this device — SSAO/CSM raster fallback");
+        }
+
         vkb::DeviceBuilder db{ phys };
         auto dev_ret = db.build();
         if (!dev_ret) { logError(std::string("[rhi] device: ") + dev_ret.error().message()); return false; }
@@ -312,6 +341,8 @@ public:
 
     // Project a world point -> HUD pixel coords (top-left origin) using the cached render
     // viewProj. false if behind the camera / well off-screen. For monster health bars etc.
+    bool rayTracingSupported() const override { return m_rtSupported; }
+
     bool worldToScreen(float wx, float wy, float wz, float& sx, float& sy) const override {
         const glm::vec4 clip = m_lastViewProj * glm::vec4(wx, wy, wz, 1.0f);
         if (clip.w <= 1e-4f) return false;
@@ -6249,6 +6280,7 @@ private:
     VkQueue       m_gfxQueue = VK_NULL_HANDLE;
     uint32_t      m_gfxFamily = 0;
     bool          m_descriptorIndexing = false;
+    bool          m_rtSupported = false;   // VK_KHR_ray_query + acceleration_structure enabled (RT P0)
 
     // Graphics
     VmaAllocator  m_alloc = nullptr;

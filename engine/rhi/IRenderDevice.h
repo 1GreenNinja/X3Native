@@ -181,6 +181,12 @@ public:
     // camera / off-screen. Uses the most recent render viewProj. Non-pure (headless: false).
     virtual bool          worldToScreen(float, float, float, float& sx, float& sy) const { sx = sy = 0.0f; return false; }
 
+    // Hardware ray tracing (RT Phase 0): true once VK_KHR_ray_query +
+    // acceleration_structure are enabled on the device. The future RT
+    // shadow/reflection/GI passes gate on this (SSAO/CSM raster fallback when
+    // false). Default false (headless / non-RT devices).
+    virtual bool          rayTracingSupported() const { return false; }
+
     // ---- Screen-space ambient occlusion (SSAO, idTech-8 grounding/contact) --
     // SSAO darkens the AMBIENT/indirect lighting term in corners, crevices, and
     // contact points so objects feel grounded (fixes the "floating/flat" look,
