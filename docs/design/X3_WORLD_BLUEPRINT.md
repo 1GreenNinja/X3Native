@@ -102,6 +102,11 @@ Each floor = **open eastern arrival/combat hall** (the existing encounters) + **
 - **(a) Salvari crystals in the caves** — the −178 m cave story beat (singing/lore crystals, alien markings). *Not implemented anywhere; author fresh.*
 - **(b) The later-discovered hidden sub-levels** — F7 hidden descent **SL1 Waste Disposal / SL2 Cryo Storage [Frozen Collective] / SL3 Enhanced Interrogation → Dr. Chen Return**, gated on Clone-dead + Sarah-saved; + the Act-4 **L45 "Return to Lab Zero"** 3 NEW sub-levels (Breeding Core / Chen's True Lab / the 65-Myr Original Artifact). *Already built in native `app/spire_sublevels.*` — reconcile into the real-scale world.*
 
+### 2.6 Vertical canon (Tim, 2026-05-23 — RESOLVED)
+- **Club 1127 is the BOTTOM** of the facility (Y=−200) — the lowest social hub.
+- **The "descent tube" is canonically the ALIEN TUNNELS** — a network of **MASSIVE alien slide-tubes** connecting **F1 Detention (Y=0) down to Club 1127 (Y=−200)**; a human "easily slides down them" (~200 m, ~12 s slide). The −178 m **caves** + the hidden **SUB level (−170)** branch off these tunnels (the **Salvari crystals** live in these caves).
+- **The elevator strata are LITERAL / reachable** (not merely atmospheric): the deep layers — Crystal Veins → Magma → **Alien Substrate (down to −400)** — are **real explorable zones** reached via the alien-tunnel network (the alien / Overlord-origin depths beneath the facility). The native world must extend down into them — not stop at the elevator's −175 SUB stop.
+
 ---
 
 ## 3. SYSTEMS CATALOG — native: HAS / EXTEND / NEW
@@ -117,7 +122,7 @@ Each floor = **open eastern arrival/combat hall** (the existing encounters) + **
 | **SPH fluid** (meltwater) | `x3-sph-fluid.js` | 600-particle spatial-hash, flow/evaporate, GPU fluid render |
 | **NPC mood + schedule sim** | `x3-npc-system.js`, `x3-npc-schedules.js` | 4-layer (awareness 1Hz / fuzzy mood 2Hz / FSM 5Hz / anim), 200 pool, patrol/work/flee |
 | **Procedural NPC gen** | `x3-npc-{face,hair,body,outfits}.js` | faces/hair/bodies + 8 outfit palettes |
-| **AI-powered dialog** | `x3-ai-dialog.js` | Claude/Grok calls for Sarah/K'thara/Ashley (fallback to trees) |
+| **AI-powered dialog** | `x3-ai-dialog.js` | **3 selectable in-game modes (RESOLVED): scripted trees / live Claude+Grok / hybrid.** Claude/Grok calls for Sarah/K'thara/Ashley; built mode-agnostic |
 | **Submarine combat** | `x3-submarine-combat.js` | enemy subs, torpedoes (40 dmg), depth charges, hull regen, Leviathan |
 | **Infection timer → branching** | `x3-infection.js`, `x3-story.js`, `x3-karma.js` | 9-min 4-stage, cure rates [0,90,60,30,0]%, timeline locks |
 | **Damage-type system** | `x3-damage-types.js` | ballistic/explosive/energy/fire/electric/cryo + resist/DOT/slow/chain |
@@ -205,11 +210,11 @@ The native engine already nailed Act-1-to-canon. The blueprint adds **scale + wo
 
 ---
 
-## 7. OPEN DECISIONS (carry-overs to confirm)
-- **"The Mirror"** set-piece — Act-2 homage room vs literal level; Mothership at L100. *(open)*
-- **Exact per-act level counts** to total 100 (Act 2 to L20 vs L35; space act size). *(open)*
-- **AI-dialog dependency** — keep the live Claude/Grok NPC conversations, or ship static dialogue trees with AI as an optional layer? *(new — affects offline play)*
-- **Elevator strata vs native vertical scale** — the strata display runs to −400 m (Alien Substrate) while the shaft bottoms at −175; confirm the strata are atmospheric (geology Jake never visits) vs literal reachable depth.
+## 7. DESIGN DECISIONS — RESOLVED (Tim, 2026-05-23)
+- **Level count — NO CAP.** Blueprint split is the baseline (Act1 ~8 / Act2 L8–35 / Act3 space L36–75 / Act4 Earth L76–100), but the game **may exceed 100 levels** — design expandable; the space act (Act 3) can grow. ✅
+- **AI dialog — ALL THREE, selectable in-game.** Ship (1) scripted trees, (2) **live Claude + Grok conversations** (Tim: "hilarious/crazy"), and (3) hybrid as a player-selectable option. Scripted-only is the "boring" floor; live AI is the headline. Build the dialog system mode-agnostic. ✅ (see §3)
+- **The Mirror — a literal numbered level** (not just a set-piece). ✅
+- **Vertical / strata — LITERAL reachable depth.** Club 1127 is the bottom (−200); **massive alien tunnels** (slide-down, ~200 m) connect Detention↔Club; the deep **alien substrate (−400) is a real explorable zone** reached via the tunnels. ✅ (see §2.6)
 
 ---
 
