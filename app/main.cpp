@@ -515,6 +515,7 @@ int main(int argc, char** argv) {
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
+         testElevatorFsm = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false;
@@ -736,6 +737,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-act2") testAct2 = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
+        else if (a == "--test-elevatorfsm") testElevatorFsm = true;
         else if (a == "--test-net") testNet = true;
         else if (a == "--test-netsync") testNetSync = true;
         else if (a == "--test-netinterp") testNetInterp = true;
@@ -1055,6 +1057,11 @@ int main(int argc, char** argv) {
     if (testElevator) {
         x3::logInfo("running advanced elevator (call/travel/carry) self-test (E1-E6)...");
         return x3::game::runElevatorSelfTest() ? 0 : 1;
+    }
+    if (testElevatorFsm) {
+        x3::logInfo("running souped-up strata/disco elevator FSM self-test "
+                    "(10-state FSM + strata + 1127 disco -> Club 1127)...");
+        return x3::game::runElevatorFsmSelfTest() ? 0 : 1;
     }
     if (testNet) {
         x3::logInfo("running netcode (Subsystem N, Phase 0) self-test "
@@ -3572,6 +3579,29 @@ int main(int argc, char** argv) {
                        Lb.elevatorCenter.x, Lb.elevatorCenter.z,
                        1.4f, cabHY, 1.4f, elevStops, /*startStop*/0);
 
+        // ---- Souped-up strata/disco elevator (ported from Tim's x3-elevator.js;
+        // blueprint §2.2). Turn ON the 10-state FSM (ramped accel/cruise/decel +
+        // doors), build the in-car visuals (glass + earth-strata scroll display +
+        // twin OLEDs + back-wall mirror + blue access terminal/keypad + ceiling
+        // light + disco ball), wire the procedural-audio hooks, and set the
+        // Club-1127 descent target at Y=-200 (the Club 1127 lane builds that room).
+        // The 1127 keypad code (handled in the use/keypad block below) toggles
+        // DISCO + drives the cab down to the club. Keeps the floorBaseY[]-driven
+        // stops, so the Phase-0 283 m re-scale auto-applies.
+        elevator.enableFsm(true);
+        elevator.setAudio(audio.get());
+        elevator.setClubStopY(x3::game::ElevatorSystem::kDefaultClubFloorY + cabHY);
+        {
+            static const char* kFloorLabels[] =
+                { "B1", "F1", "F2", "F3", "F4", "F5", "F6", "F7" };
+            std::vector<std::string> labels;
+            for (uint32_t fi = 0; fi < x3::game::kSpireFloorCount &&
+                                  fi < (uint32_t)(sizeof(kFloorLabels)/sizeof(kFloorLabels[0])); ++fi)
+                labels.emplace_back(kFloorLabels[fi]);
+            elevator.setFloorLabels(labels);
+        }
+        elevator.buildVisuals(scene, *device);
+
         // Author the F3/F4/F5 mid-floor encounters onto the Spire plates. The
         // per-floor elevator stops above (one per floor) make them reachable.
         midFloors.build(scene, *device, *physics, Lb, midTriggers,
@@ -4685,7 +4715,33 @@ int main(int argc, char** argv) {
                 float pex, pey, pez, pyaw, ppitch;
                 player.camera(pex, pey, pez, pyaw, ppitch);
                 if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
-                if (game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
+                // ---- Souped-up elevator DISCO code (1127). If the player is near
+                // the elevator shaft, the entered code is also offered to the
+                // elevator's keypad: 1127 toggles DISCO MODE + drives the cab down
+                // to Club 1127 (Y=-200). Checked BEFORE the door codes so the
+                // elevator owns 1127 while you're riding it (the Spire door keypads
+                // use other codes); falls through to doors otherwise.
+                bool elevDisco = false;
+                if (elevator.built() && elevator.fsmEnabled()) {
+                    const x3::phys::Vec3 cc = elevator.cabCenter();
+                    const float dcx = pex - cc.x, dcz = pez - cc.z;
+                    if (dcx * dcx + dcz * dcz < 16.0f) {
+                        const uint32_t code = keypad.value();
+                        elevator.keypadClear();
+                        // Feed the 4 digits MSB-first into the elevator keypad.
+                        elevator.keypadDigit((int)((code / 1000) % 10));
+                        elevator.keypadDigit((int)((code / 100) % 10));
+                        elevator.keypadDigit((int)((code / 10) % 10));
+                        bool completed = elevator.keypadDigit((int)(code % 10));
+                        if (completed) {
+                            x3::logInfo("keypad: DISCO 1127 — descending to Club 1127");
+                            elevDisco = true;
+                        }
+                    }
+                }
+                if (elevDisco) {
+                    codeMode = false; keypad.clear();
+                } else if (game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     midFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     topFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     subLevels.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value())) {
