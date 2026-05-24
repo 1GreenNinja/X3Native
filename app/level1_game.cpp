@@ -302,8 +302,19 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
                        (uint32_t)L1Trigger::Hub, true);
     }
 
+    // ---- CODE-LOCKED TRAPDOOR -> SECRET ROOM (cell HoloTerminal). The cell floor is
+    // at the B1 plate base (y0); Jake's Cell center is the legacy cellCenter (XZ at
+    // the spawn). Build the cell terminal + the floor-hatch trapdoor + the stocked
+    // secret room below, wiring the terminal's submit sink to unlock+open the hatch
+    // on code 1127. Additive — its own HoloTerminal + a hatch registered in m_doors. ----
+    {
+        const float b1y = level1Rooms()[(uint32_t)L1Floor::B1].y0;
+        const x3::phys::Vec3 cellCenter{ m_layout.cellCenter.x, b1y, m_layout.cellCenter.z };
+        m_secretRoom.build(scene, device, physics, m_doors, cellCenter, riggedDir());
+    }
+
     m_built = true;
-    x3::logInfo("Level1Game::build complete — doors A-E, pistol pickup, 4 checkpoint enemies, 4 triggers, 3 rescue victims (timers gated on F2-hub trigger)");
+    x3::logInfo("Level1Game::build complete — doors A-E, pistol pickup, 4 checkpoint enemies, 4 triggers, 3 rescue victims (timers gated on F2-hub trigger), cell trapdoor + secret room");
 }
 
 uint32_t Level1Game::doorIndex(char letter) const {
@@ -587,6 +598,13 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     // its own bosses on timer-expiry and follows the player when rescued. The host
     // (main.cpp) pokes onRescue() on an E-edge and draws the timers/victims. ----
     m_rescue.tick(dt, scene, physics, playerPos);
+
+    // ---- Code-locked trapdoor -> SECRET ROOM: tick the cell terminal blink + the
+    // secret weapon pickup + the room's loot collection. Heals are applied here via
+    // the IDamageSink when it exposes a heal hook; otherwise the host applies them
+    // off the collected-count deltas (it owns the concrete Player). The hatch itself
+    // animates via m_doors.update() above (it's registered in the same DoorSystem). ----
+    m_secretRoom.tick(dt, scene, playerPos);
 
     // ---- Triggers (per-frame point test on the player position) ----
     for (uint32_t id : m_triggers.update(playerPos)) {
