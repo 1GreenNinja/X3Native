@@ -2,6 +2,7 @@ add_library(x3engine STATIC
     core/x3_log.cpp
     core/Console.cpp
     core/JobSystem.cpp
+    ecs/Ecs.cpp
     rhi/VulkanRenderDevice.cpp
     rhi/RenderGraph.cpp
     rhi/vma_impl.cpp
