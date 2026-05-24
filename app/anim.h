@@ -97,6 +97,53 @@ public:
                             float timeSec, std::vector<float>& outPalette) const;
 
     // ======================================================================
+    // Ragdoll blend — drive the skin from an EXTERNAL physics pose (Physics §2).
+    // ======================================================================
+    // An external pose source (a phys::IRagdoll) supplies per-bone WORLD transforms
+    // (column-major 4x4, 16 floats each) keyed by bone NAME. resolveExternalBones()
+    // matches each external bone name to a model skin-joint (case-insensitive) ONCE
+    // after bind(); the per-frame blend then needs no string work. The blend weight
+    // (0 = pure animated pose, 1 = pure ragdoll) is applied per matched joint by
+    // interpolating the model-space joint transform between the animated global and
+    // the ragdoll world transform (translation lerp + rotation nlerp), so the SAME
+    // skinned mesh follows the ragdoll. Unmatched joints keep the animated pose, so a
+    // PARTIAL ragdoll (e.g. only the limbs physical) blends naturally.
+    //
+    // IMPORTANT: the ragdoll's world transforms must be in the SAME space the skin
+    // joints' model-space globals live in (i.e. the character authored at world
+    // origin, or the caller pre-transforms ragdoll->model space). For the demo +
+    // self-test the character is authored at the origin so model==world.
+
+    // Resolve the external bone names to model skin joints (once, after bind()).
+    // `boneNames`/`count` is the ragdoll's bone list (order matches the world-matrix
+    // array passed to applyRagdollBlend). Returns the number of bones that matched a
+    // skin joint. Safe to call when !valid() (returns 0). Idempotent.
+    uint32_t resolveExternalBones(const x3::asset::Model& model,
+                                  const char* const* boneNames, uint32_t count);
+
+    // Number of external bones resolved by the last resolveExternalBones().
+    uint32_t externalBonesResolved() const { return m_extResolvedCount; }
+
+    // Compute the blended palette at (clip,timeSec) with the external ragdoll world
+    // transforms `extWorld` (count*16 floats, same order as resolveExternalBones())
+    // mixed in by `weight` (clamped 0..1), into outPalette. WITHOUT a device — the
+    // self-test uses this to assert the blend interpolates monotonically. Returns the
+    // joint count. weight<=0 -> pure animated palette; weight>=1 -> pure ragdoll for
+    // matched joints. extWorld may be null (treated as weight 0).
+    uint32_t computeRagdollBlendedPalette(const x3::asset::Model& model, uint32_t clip,
+                                          float timeSec, const float* extWorld,
+                                          uint32_t extCount, float weight,
+                                          std::vector<float>& outPalette) const;
+
+    // Apply the ragdoll-blended pose: compute the blended palette and upload/skin it
+    // exactly like apply() (GPU palette upload when enabled, else CPU LBS + updateMesh).
+    // No-op if !valid(). This is the runtime path a death/impact ragdoll drives each
+    // frame; ramp `weight` 0->1 to fall into ragdoll and 1->0 to blend back.
+    void applyRagdollBlend(const x3::asset::Model& model, x3::rhi::IRenderDevice& device,
+                           uint32_t clip, float timeSec, const float* extWorld,
+                           uint32_t extCount, float weight);
+
+    // ======================================================================
     // T1 — locomotion blend + crossfade / inertialization (Animation T1).
     // ======================================================================
     // The blend layer sits on top of the clip sampler. It keeps a single
@@ -353,8 +400,19 @@ private:
     // the smoothed pelvis drop (model units, >=0 lowers the hips).
     float       m_legW[2] = { 0, 0 };
     float       m_pelvisDropSmoothed = 0.0f;
+    // Upload (GPU) or CPU-LBS + updateMesh every skinned primitive from m_palette.
+    // The shared tail of apply()/applyRagdollBlend (avoids duplicating the skin loop).
+    void skinWithCurrentPalette(const x3::asset::Model& model,
+                                x3::rhi::IRenderDevice& device, uint32_t jcount);
+
     // IK scratch (sized in bind()): a working copy of the blended globals.
     mutable std::vector<float> m_ikGlobals;   // nodeCount * 16
+
+    // ---- Ragdoll-blend state (Physics §2). resolveExternalBones() fills a map
+    // from external-bone index -> skin-joint index (-1 if unmatched). The per-frame
+    // blend reads it; no string work in the steady path. ----
+    std::vector<int> m_extToJoint;       // size = external bone count; joint idx or -1
+    uint32_t         m_extResolvedCount = 0;  // # matched bones
 };
 
 // Headless self-test (--test-anim): synthesize a tiny rigged GLB (1 bone bending

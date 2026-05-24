@@ -49,6 +49,7 @@
 #include "save.h"                            // GENERAL versioned checkpoint save/load + --test-saveload
 #include "stress.h"
 #include "destruct_demo.h"                 // K-T1 destruction demo (--world destruct)
+#include "ragdoll_demo.h"                  // Physics §2 ragdoll demo (--world ragdoll) + blend check
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
 
 #include <memory>
@@ -866,7 +867,16 @@ int main(int argc, char** argv) {
     }
     if (testRagdoll) {
         x3::logInfo("running Physics §2 ragdoll+blend (--test-ragdoll) self-test...");
-        return x3::phys::runRagdollSelfTest() ? 0 : 1;
+        // Engine-side: the Jolt ragdoll fall/settle/chain-hold + blend-math check.
+        bool engineOk = x3::phys::runRagdollSelfTest();
+        // App-side: drive the REAL anim::Skinner ragdoll-blend across weight 0->1
+        // over a synthetic skinned model and assert the palette interpolates
+        // monotonically (the §2 skin-follows-ragdoll acceptance, end to end).
+        int bPass = 0, bTotal = 0;
+        bool blendOk = x3::game::runRagdollBlendCheck(bPass, bTotal);
+        x3::logInfo("ragdoll-blend: " + std::to_string(bPass) + "/" +
+                    std::to_string(bTotal) + " passed");
+        return (engineOk && blendOk) ? 0 : 1;
     }
     if (testGltf) {
         x3::logInfo("running glTF/GLB model loader (M2) self-test...");
