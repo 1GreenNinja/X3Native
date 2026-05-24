@@ -534,6 +534,10 @@ int main(int argc, char** argv) {
     bool        testSaveLoad = false;
     // --test-valley (Crystal Valleys Act-2 L15) + --test-cliffs (Salvari cliffs finale).
     bool        testValley = false, testCliffs = false;
+    // --test-club (the full Club 1127 "THE DEEP" at Y=-200): build headless + assert
+    // the key fixtures (DJ booth, ORB, bars, 12-step stair, PA rig, 28 blacklights,
+    // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.
+    bool        testClub = false;
     // --test-spiremid (Spire mid-floor content): F3/F4/F5 encounter authoring. Additive.
     bool        testSpireMid = false;
     // --test-nexus (Floor 4.5 Nexus / The Chorus): off-elevator multi-pod boss. Additive.
@@ -755,6 +759,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-saveload") testSaveLoad = true;
         else if (a == "--test-valley") testValley = true;
         else if (a == "--test-cliffs") testCliffs = true;
+        else if (a == "--test-club") testClub = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -1138,6 +1143,11 @@ int main(int argc, char** argv) {
     if (testCliffs) {
         x3::logInfo("running Salvari cliffs finale self-test (pad/sea/placement/streaming)...");
         return x3::game::runCliffsSelfTest() ? 0 : 1;
+    }
+    if (testClub) {
+        x3::logInfo("running Club 1127 (\"THE DEEP\") self-test "
+                    "(build at Y=-200; assert DJ booth/ORB/bars/stair/PA/blacklights/TVs/footprint; leak-clean)...");
+        return x3::game::runClubSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -2932,7 +2942,7 @@ int main(int argc, char** argv) {
     // club.spawn() instead of opening Door C. The `--world club` flag below is the
     // standalone build/verify path for that same area.
     if (worldMode == "club") {
-        x3::logInfo("--world club: building Club 1127 + the flooded cave/tunnel network");
+        x3::logInfo("--world club: building the full Club 1127 (\"THE DEEP\") at Y=-200");
 
         // Physics world for the club area (separate from the Level-1 path below).
         std::unique_ptr<x3::phys::IPhysicsWorld> cphys(x3::phys::createPhysicsWorld());
@@ -2948,8 +2958,8 @@ int main(int argc, char** argv) {
         x3::game::Club1127World club;
         club.build(cscene, *device, *cphys, x3::game::riggedGlbRoot());
 
-        // Apply the neon/cave point-light set (static; the device re-uploads each
-        // frame). The club has NO sky (it's an enclosed interior + caves).
+        // Apply the neon/UV point-light set once (the orbiting spot/ring lights are
+        // re-pushed each frame by club.update()). The club has NO sky (deep interior).
         const auto& clights = club.pointLights();
         device->setPointLights(clights.data(), (uint32_t)clights.size());
         { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
@@ -2969,8 +2979,7 @@ int main(int argc, char** argv) {
                                                    : std::string("C:/GameDev/X3Native-engine/agent_club.png");
             for (int i = 0; i < kSettle; ++i) {
                 glfwPollEvents();
-                club.update(dt, cscene, *cphys);
-                club.tickWater(dt, *device);   // animate the flooded section's REAL water
+                club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
                 cphys->step(dt);
                 cscene.update(*cphys);
                 // Re-pose each frame (scene.update doesn't move the camera).
@@ -3004,7 +3013,7 @@ int main(int argc, char** argv) {
         bool prevSpaceC = false, prevFC = false;
         bool noclipC = false;
         float flyXc = spawn.x, flyYc = spawn.y + 1.6f, flyZc = spawn.z, flyYawC = 3.14159f, flyPitchC = -0.2f;
-        x3::logInfo("--world club: WASD walk, mouse look, Space jump, LeftShift sprint, F noclip, Esc to quit");
+        x3::logInfo("--world club: walk THE DEEP at Y=-200 — WASD, mouse look, Space jump, LeftShift sprint, F noclip, Esc to quit");
 
         int lastWc = (int)W, lastHc = (int)H;
         while (!glfwWindowShouldClose(window)) {
@@ -3039,8 +3048,7 @@ int main(int argc, char** argv) {
                 in.jumpPressed = spaceNow && !prevSpaceC;
                 in.lookDX = ddx; in.lookDY = ddy;
                 cplayer.update(in, dt, *cphys);
-                club.update(dt, cscene, *cphys);
-                club.tickWater(dt, *device);   // animate the flooded section's REAL water
+                club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
                 cphys->step(dt);
                 cscene.update(*cphys);
                 cplayer.camera(camX, camY, camZ, camYaw, camPitch);
@@ -3061,8 +3069,7 @@ int main(int argc, char** argv) {
                 if (kd(GLFW_KEY_A)) { flyXc -= rx*spd; flyZc -= rz*spd; }
                 if (spaceNow) flyYc += spd;
                 if (kd(GLFW_KEY_LEFT_CONTROL)) flyYc -= spd;
-                club.update(dt, cscene, *cphys);
-                club.tickWater(dt, *device);   // animate the flooded section's REAL water
+                club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
                 cphys->step(dt);
                 cscene.update(*cphys);
                 camX = flyXc; camY = flyYc; camZ = flyZc; camYaw = flyYawC; camPitch = flyPitchC;
