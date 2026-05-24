@@ -20,6 +20,7 @@ add_executable(X3Engine WIN32
     spire_sublevels.cpp
     act2_world.cpp
     save.cpp
+    dialog.cpp
     env_art.cpp
     club1127.cpp
     cues.cpp

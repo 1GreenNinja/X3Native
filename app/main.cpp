@@ -47,6 +47,7 @@
 #include "hud.h"
 #include "ui.h"                              // GENERAL game-UI: menus + production HUD + --test-ui
 #include "save.h"                            // GENERAL versioned checkpoint save/load + --test-saveload
+#include "dialog.h"                          // AI-dialog + TTS voice on skinned NPCs (§3) + --test-dialog
 #include "stress.h"
 #include "destruct_demo.h"                 // K-T1 destruction demo (--world destruct)
 #include "ragdoll_demo.h"                  // Physics §2 ragdoll demo (--world ragdoll) + blend check
@@ -533,6 +534,11 @@ int main(int argc, char** argv) {
     bool        testUi = false;
     // --test-saveload (save/load pass): versioned checkpoint serialization. Additive.
     bool        testSaveLoad = false;
+    // --test-dialog (AI-dialog + TTS pass, §3): the authored dialogue TREE advances
+    // through nodes + player-choice branches OFFLINE; a stub AI provider hook is used
+    // when set (else falls back to the tree); a stub TTS hook drives the NPC into/out
+    // of the SPEAKING state. Fully offline + leak-clean; no network. Additive.
+    bool        testDialog = false;
     // --test-valley (Crystal Valleys Act-2 L15) + --test-cliffs (Salvari cliffs finale).
     bool        testValley = false, testCliffs = false;
     // --test-club (the full Club 1127 "THE DEEP" at Y=-200): build headless + assert
@@ -759,6 +765,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-footik") testFootIk = true;
         else if (a == "--test-ui") testUi = true;
         else if (a == "--test-saveload") testSaveLoad = true;
+        else if (a == "--test-dialog") testDialog = true;
         else if (a == "--test-valley") testValley = true;
         else if (a == "--test-cliffs") testCliffs = true;
         else if (a == "--test-club") testClub = true;
@@ -1141,6 +1148,12 @@ int main(int argc, char** argv) {
         x3::logInfo("running GENERAL versioned checkpoint save/load self-test "
                     "(round-trip field-by-field + magic/version/checksum/truncation reject)...");
         return x3::save::runSaveLoadSelfTest() ? 0 : 1;
+    }
+    if (testDialog) {
+        x3::logInfo("running AI-dialog + TTS self-test "
+                    "(offline tree advance + branches; stub AI provider used/fallback; "
+                    "stub TTS drives NPC speaking state; no network; leak-clean)...");
+        return x3::dialog::runDialogSelfTest() ? 0 : 1;
     }
     if (testValley) {
         x3::logInfo("running Crystal Valleys (Act 2, L15) self-test "
