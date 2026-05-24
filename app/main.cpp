@@ -38,6 +38,8 @@
 #include "spire_nexus.h"                    // EFLZ Floor 4.5 Nexus Chamber / The Chorus (off-elevator boss)
 #include "spire_sublevels.h"                // EFLZ hidden Floor-7 sub-levels + Dr. Chen Return Mission
 #include "act2_world.h"                      // EFLZ Act-2 open-world surface host + L8/L9 (--test-act2)
+#include "tod.h"                             // EFLZ Time-of-Day cycle (sky/sun via SkyParams — --test-tod)
+#include "weather.h"                         // EFLZ Weather (7 states, biome-gated, hazard — --test-weather)
 #include "elevator.h"
 #include "club1127.h"
 #include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
@@ -563,6 +565,16 @@ int main(int argc, char** argv) {
     // Emergence (lab-exit gauntlet -> Emergence Point safe zone) + L9 Crystalline Desert
     // Edge (crystal props + neutral fauna + an inert-until-entered hazard zone). Additive.
     bool        testAct2 = false;
+    // --test-tod (EFLZ Time-of-Day): a 4-phase day cycle (dawn/day/dusk/night) that
+    // drives the analytic sky/sun (dir/color/intensity/haze + ambient) via SkyParams.
+    // Asserts the cycle visits all phases + wraps, the sun arc + intensity vary
+    // monotonically across the day, city-lights/aurora gate on night, deterministic. Additive.
+    bool        testTod = false;
+    // --test-weather (EFLZ Weather): 7 states (clear/cloudy/rain/storm/fog/sandstorm/snow)
+    // with smooth 30 s transitions, biome-gated, each nudging sky/fog/ambient + a hazard
+    // flag. Asserts gating, interpolated transitions, hazard set only in hazardous states
+    // (incl. swamp poison-fog), midpoint hazard flip, and determinism. Additive.
+    bool        testWeather = false;
     // --test-collapse (K-T3 structural collapse): build a small structure (column /
     // beam on two supports), destroy a support, step the sim, and assert the
     // unsupported pieces fall (static->dynamic), anchored pieces stay stable, the
@@ -739,6 +751,8 @@ int main(int argc, char** argv) {
         else if (a == "--test-dronehack") testDroneHack = true;
         else if (a == "--test-sublevels") testSubLevels = true;
         else if (a == "--test-act2") testAct2 = true;
+        else if (a == "--test-tod") testTod = true;
+        else if (a == "--test-weather") testWeather = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-elevatorfsm") testElevatorFsm = true;
@@ -1047,6 +1061,18 @@ int main(int argc, char** argv) {
                     "[Frozen Collective] / Enhanced Interrogation -> Dr. Chen Return Mission) "
                     "self-test...");
         return x3::game::runSubLevelsSelfTest() ? 0 : 1;
+    }
+    if (testTod) {
+        x3::logInfo("running EFLZ Time-of-Day cycle (4-phase dawn/day/dusk/night driving "
+                    "sky/sun dir+color+intensity+haze+ambient via SkyParams; deterministic) "
+                    "self-test...");
+        return x3::game::runTodSelfTest() ? 0 : 1;
+    }
+    if (testWeather) {
+        x3::logInfo("running EFLZ Weather (7 states clear/cloudy/rain/storm/fog/sandstorm/snow; "
+                    "smooth timed transitions; biome-gated; hazard flag for HazardZone) "
+                    "self-test...");
+        return x3::game::runWeatherSelfTest() ? 0 : 1;
     }
     if (testAct2) {
         x3::logInfo("running EFLZ Act-2 open-world surface (L8 Surface Emergence "
