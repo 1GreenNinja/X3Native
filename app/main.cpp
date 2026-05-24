@@ -38,6 +38,7 @@
 #include "barrels.h"                        // explosive barrels (shoot -> chain explosion)
 #include "holo_terminal.h"                  // Jake's cell holographic terminal (text + input)
 #include "engine/ecs/Ecs.h"                 // sparse-set ECS core (10k+ entities)
+#include "ecs_render.h"                     // ECS -> GPU-driven render feed
 #include "spire_mid.h"                      // EFLZ Spire F3/F4/F5 mid-floor content
 #include "spire_top.h"                      // EFLZ Spire F6/F7 top-floor content (Act-1 finale)
 #include "spire_nexus.h"                    // EFLZ Floor 4.5 Nexus Chamber / The Chorus (off-elevator boss)
@@ -517,7 +518,7 @@ int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
-         testBarrels = false, testHoloterm = false, testEcs = false,
+         testBarrels = false, testHoloterm = false, testEcs = false, testEcsRender = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
@@ -712,6 +713,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-barrels") testBarrels = true;
         else if (a == "--test-holoterm") testHoloterm = true;
         else if (a == "--test-ecs") testEcs = true;
+        else if (a == "--test-ecsrender") testEcsRender = true;
         else if (a == "--test-pickup") testPickup = true;
         else if (a == "--test-combat") testCombat = true;
         else if (a == "--test-audio") testAudio = true;
@@ -901,6 +903,10 @@ int main(int argc, char** argv) {
     if (testEcs) {
         x3::logInfo("running ECS (sparse-set, 50k entities) self-test...");
         return x3::ecs::runEcsSelfTest() ? 0 : 1;
+    }
+    if (testEcsRender) {
+        x3::logInfo("running ECS->GPU render-feed self-test...");
+        return x3::game::runEcsRenderSelfTest() ? 0 : 1;
     }
     if (testPickup) {
         x3::logInfo("running weapon pickup + arming (S5) self-test...");
