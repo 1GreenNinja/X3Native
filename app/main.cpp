@@ -39,6 +39,7 @@
 #include "spire_sublevels.h"                // EFLZ hidden Floor-7 sub-levels + Dr. Chen Return Mission
 #include "timeline.h"                        // EFLZ morality/timeline backbone for the 12 endings (--test-timeline)
 #include "act2_world.h"                      // EFLZ Act-2 open-world surface host + L8/L9 (--test-act2)
+#include "act2_desert.h"                     // EFLZ Act-2 desert depths + Salvari camp L10/L11 (--test-act2desert)
 #include "tod.h"                             // EFLZ Time-of-Day cycle (sky/sun via SkyParams — --test-tod)
 #include "weather.h"                         // EFLZ Weather (7 states, biome-gated, hazard — --test-weather)
 #include "elevator.h"
@@ -679,6 +680,12 @@ int main(int argc, char** argv) {
     // Emergence (lab-exit gauntlet -> Emergence Point safe zone) + L9 Crystalline Desert
     // Edge (crystal props + neutral fauna + an inert-until-entered hazard zone). Additive.
     bool        testAct2 = false;
+    // --test-act2desert (EFLZ Act-2 desert depths): L10 Crystalline Desert Depths
+    // (deeper desert, first-contact allied Salvari + an injured-Salvari side-quest,
+    // a hidden crystal-cave camp entrance, a light Overlord patrol) + L11 Salvari
+    // Camp "Refugee Haven" (cave settlement, survivor markers incl. K'thara, an
+    // upgrade-station interact + cultural-exchange beat). Reachable L9->L10->L11. Additive.
+    bool        testAct2Desert = false;
     // --test-tod (EFLZ Time-of-Day): a 4-phase day cycle (dawn/day/dusk/night) that
     // drives the analytic sky/sun (dir/color/intensity/haze + ambient) via SkyParams.
     // Asserts the cycle visits all phases + wraps, the sun arc + intensity vary
@@ -866,6 +873,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-dronehack") testDroneHack = true;
         else if (a == "--test-sublevels") testSubLevels = true;
         else if (a == "--test-act2") testAct2 = true;
+        else if (a == "--test-act2desert") testAct2Desert = true;
         else if (a == "--test-tod") testTod = true;
         else if (a == "--test-weather") testWeather = true;
         else if (a == "--test-doorcode") testDoorCode = true;
@@ -1206,6 +1214,14 @@ int main(int argc, char** argv) {
                     "gauntlet, Emergence-Point companions, crystal desert + hazard zone) "
                     "self-test...");
         return x3::game::runAct2WorldSelfTest() ? 0 : 1;
+    }
+    if (testAct2Desert) {
+        x3::logInfo("running EFLZ Act-2 desert depths (L10 Crystalline Desert Depths: "
+                    "first-contact allied Salvari + injured-Salvari side-quest, hidden "
+                    "crystal-cave camp entrance, light Overlord patrol; + L11 Salvari Camp "
+                    "'Refugee Haven': cave settlement, survivors incl. K'thara, upgrade "
+                    "station + cultural-exchange beat; reachable L9->L10->L11) self-test...");
+        return x3::game::runAct2DesertSelfTest() ? 0 : 1;
     }
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
