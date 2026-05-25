@@ -306,8 +306,10 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.reloadTime  = 1.5f;
         w.viewmodelGlb = "WeaponEnergyPistol.glb";  // GLB exists
         w.vmScale     = 0.18f;
-        w.muzzleFx    = "muzzle_default";
-        w.impactFx    = "impact_default";
+        w.muzzleFx    = "muzzle_pistol";
+        w.impactFx    = "impact_bullet";
+        // Punchy single sci-fi shot.
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-01.wav";
         r.push_back(w);
     }
 
@@ -331,8 +333,11 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.reloadTime  = 2.0f;
         w.viewmodelGlb = "WeaponEnergyPistol.glb";  // no SMG GLB -> pistol fallback
         w.vmScale     = 0.18f;
-        w.muzzleFx    = "muzzle_default";
-        w.impactFx    = "impact_default";
+        w.muzzleFx    = "muzzle_smg";
+        w.impactFx    = "impact_bullet";
+        // Rapid/auto burst SFX (one-shot per round; reads as a fast cadence at 11/s).
+        w.fireSfx     = "weapons/rapid/Rapid-Fires_Sci-Fi_Gun-01.wav";
+        w.fireSfxLoop = true;   // auto weapon: loopable rapid set
         r.push_back(w);
     }
 
@@ -354,8 +359,10 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.reloadTime  = 2.5f;
         w.viewmodelGlb = "WeaponShotGun.glb";  // real shotgun GLB (longer barrel -> smaller scale)
         w.vmScale     = 0.10f;
-        w.muzzleFx    = "muzzle_default";
-        w.impactFx    = "impact_default";
+        w.muzzleFx    = "muzzle_shotgun";
+        w.impactFx    = "impact_bullet";
+        // Heavy single boom (a fuller/longer single shot reads as a shotgun blast).
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-57.wav";
         r.push_back(w);
     }
 
@@ -381,6 +388,8 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.vmScale     = 0.18f;
         w.muzzleFx    = "muzzle_plasma";
         w.impactFx    = "impact_plasma";
+        // Sci-fi energy single (a distinct, higher-tech single shot).
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-30.wav";
         r.push_back(w);
     }
 
@@ -419,7 +428,10 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.viewmodelGlb = "WeaponChainGun.glb";  // not in repo -> pistol fallback
         w.vmScale     = 0.18f;
         w.muzzleFx    = "muzzle_chaingun";
-        w.impactFx    = "impact_default";
+        w.impactFx    = "impact_bullet";
+        // Sustained rapid-fire belt (the longest rapid take = a meatier auto roar).
+        w.fireSfx     = "weapons/rapid/Rapid-Fires_Sci-Fi_Gun-49.wav";
+        w.fireSfxLoop = true;   // auto weapon: loopable rapid set
         r.push_back(w);
     }
 
@@ -449,6 +461,8 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.vmScale     = 0.18f;
         w.muzzleFx    = "muzzle_plasma";
         w.impactFx    = "impact_plasma";
+        // Bigger energy single than the plasma pistol (largest single = fuller bolt).
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-66.wav";
         r.push_back(w);
     }
 
@@ -480,6 +494,9 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.vmScale     = 0.18f;
         w.muzzleFx    = "muzzle_lightning";
         w.impactFx    = "impact_lightning";
+        // Continuous loopable zap/beam (the loop reads as a sustained electric crackle).
+        w.fireSfx     = "weapons/loops/Loopable_Rapid-Fires_Sci-Fi_Gun_7.wav";
+        w.fireSfxLoop = true;   // continuous beam: loopable
         r.push_back(w);
     }
 

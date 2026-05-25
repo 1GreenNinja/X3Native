@@ -231,8 +231,19 @@ struct WeaponDef {
     float       vmScale      = 0.18f;   // model scale for the held viewmodel
     // FX preset hints (string keys the host maps onto CombatFx muzzle/impact). Kept
     // as data so designers can retune which preset a weapon uses; the host reads them.
+    // The host maps these onto a WeaponFxKind (see app/fx.h fxKindFromId) so each gun
+    // reads with its own tint/scale (plasma blue, chaingun hot/sparky, etc.).
     std::string muzzleFx     = "muzzle_default";
     std::string impactFx     = "impact_default";
+    // Per-weapon FIRE sound (sci-fi weapon SFX from the Sci-Fi Guns pack). Pack-relative
+    // path resolved by resolveAudio() (the repo-local assets/audio mirror or the
+    // per-machine D:/G: roots). Empty -> the host falls back to the shared gunshot SFX.
+    // The host loads each distinct fireSfx once into a name->SoundHandle cache at init
+    // and plays the CURRENT weapon's handle when it fires (headless: silent, no crash).
+    std::string fireSfx      = "";
+    // Loopable fire SFX? (auto weapons can use a loop). Currently a hint only — the host
+    // plays fireSfx as a per-shot one-shot regardless; reserved for future loop voices.
+    bool        fireSfxLoop  = false;
 };
 
 // One travelling projectile spawned by a Projectile-kind weapon. Pure data the

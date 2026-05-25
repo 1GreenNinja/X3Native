@@ -64,6 +64,7 @@
 #include <string>
 #include <cmath>
 #include <vector>
+#include <unordered_map>   // per-weapon fire-sound cache (name -> SoundHandle)
 #include <cstdint>
 #include <cstdlib>
 #include <algorithm>
@@ -3674,9 +3675,45 @@ int main(int argc, char** argv) {
     // (missing GLBs fall back to the energy pistol). ====================
     x3::game::Arsenal arsenal;
     arsenal.loadViewmodels(*device, x3::game::riggedGlbRoot());
+
+    // ---- PER-WEAPON FIRE SOUNDS (the user's "every gun sounds the same" fix) ----
+    // Each WeaponDef carries a distinct sci-fi fireSfx (pack-relative WAV). Load each
+    // unique one ONCE into a name->handle cache (keyed by the weapon name) so firing
+    // plays the CURRENT weapon's sound instead of the single shared gunshot. The
+    // distinct WAVs are deduped by their pack-rel path (several weapons may reuse a
+    // file). A weapon with an empty fireSfx (or a missing WAV -> invalid handle) falls
+    // back to the shared sndGun. Headless / no-device: load() + play are graceful
+    // no-ops, so this stays silent without crashing.
+    std::unordered_map<std::string, x3::audio::SoundHandle> fireSfxByName;
+    {
+        std::unordered_map<std::string, x3::audio::SoundHandle> byPath; // dedupe by WAV
+        for (int wi = 0; wi < arsenal.count(); ++wi) {
+            const x3::game::WeaponDef& wd = arsenal.def(wi);
+            x3::audio::SoundHandle h = sndGun;   // fallback: shared gunshot
+            if (!wd.fireSfx.empty()) {
+                auto it = byPath.find(wd.fireSfx);
+                if (it != byPath.end()) {
+                    h = it->second;
+                } else {
+                    x3::audio::SoundHandle loaded =
+                        audio->load(x3::game::resolveAudio(wd.fireSfx));
+                    if (loaded.valid()) h = loaded;     // else keep sndGun fallback
+                    byPath.emplace(wd.fireSfx, h);
+                }
+            }
+            fireSfxByName[wd.name] = h;
+        }
+    }
+    // Resolve the current weapon's fire sound (fallback: the shared gunshot).
+    auto currentFireSfx = [&]() -> x3::audio::SoundHandle {
+        auto it = fireSfxByName.find(arsenal.current().name);
+        return (it != fireSfxByName.end() && it->second.valid()) ? it->second : sndGun;
+    };
+
     // Live projectile bolts (plasma): host-owned; advanced + impact-resolved each
     // frame. Bounded by gameplay (a handful in flight); a plain vector is fine.
-    struct LiveProjectile { x3::phys::Vec3 pos, vel; int damage; float traveled, range; };
+    struct LiveProjectile { x3::phys::Vec3 pos, vel; int damage; float traveled, range;
+                            x3::game::WeaponFxKind impactKind = x3::game::WeaponFxKind::Default; };
     std::vector<LiveProjectile> projectiles;
     uint32_t weaponRng = 0xA11CE5u;   // deterministic spread stream
     float    weaponRecoilPitch = 0.0f; // accumulated upward camera kick (rad), decays
@@ -4327,10 +4364,14 @@ int main(int argc, char** argv) {
                 x3::game::FireResult r = game.onFire(eye, dir, scene, *physics);
                 const x3::phys::Vec3 m = muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch);
                 combatFx.addTracer(m, r.endPoint);
-                audio->playSound3D(sndGun, m.x, m.y, m.z, 0.85f, 1.0f);
+                // Exercise the PER-WEAPON fire sound + FX-kind path under validation.
+                audio->playSound3D(currentFireSfx(), m.x, m.y, m.z, 0.85f, 1.0f);
+                const x3::game::WeaponFxKind vMuz = x3::game::fxKindFromId(arsenal.current().muzzleFx);
+                const x3::game::WeaponFxKind vImp = x3::game::fxKindFromId(arsenal.current().impactFx);
+                combatFx.spawnMuzzleFlash(m, dir, vMuz);
                 // Exercise EVERY particle/decal preset path under Debug validation:
                 // impact (sparks + dust + scorch decal), blood, and a death burst.
-                combatFx.spawnImpact(r.endPoint, x3::phys::Vec3{ -dir.x, -dir.y, -dir.z });
+                combatFx.spawnImpact(r.endPoint, x3::phys::Vec3{ -dir.x, -dir.y, -dir.z }, vImp);
                 combatFx.spawnBlood(r.endPoint, dir);
                 combatFx.spawnDeath(eye);
             }
@@ -5237,12 +5278,19 @@ int main(int argc, char** argv) {
             // Recoil -> camera (transient upward kick; recovered in the camera block).
             weaponRecoilPitch += shot.recoilPitchDeg * (3.14159265f / 180.0f);
 
+            // Per-weapon FX kind (plasma blue / chaingun sparky / shotgun wide / ...)
+            // + the CURRENT weapon's distinct fire sound (instead of one shared gun).
+            const x3::game::WeaponFxKind muzzleKind =
+                x3::game::fxKindFromId(arsenal.current().muzzleFx);
+            const x3::game::WeaponFxKind impactKind =
+                x3::game::fxKindFromId(arsenal.current().impactFx);
+            const x3::audio::SoundHandle fireSnd = currentFireSfx();
             if (!shot.projectiles.empty()) {
                 // ---- Projectile weapon (plasma): spawn a travelling bolt. ----
                 const auto& pj = shot.projectiles[0];
-                projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pj.damage, 0.0f, pj.range });
-                combatFx.spawnMuzzleFlash(muzzle, dir);
-                audio->playSound3D(sndGun, muzzle.x, muzzle.y, muzzle.z, 0.85f, 0.9f);
+                projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pj.damage, 0.0f, pj.range, impactKind });
+                combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);
+                audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 0.9f);
                 x3::logInfo("fire: " + arsenal.current().name + " bolt launched");
             } else {
                 // ---- Hitscan weapon (pistol/SMG/shotgun): one onFire per pellet. ----
@@ -5251,7 +5299,7 @@ int main(int argc, char** argv) {
                 // so a shotgun pellet, an SMG round, and a plasma bolt all deal their
                 // OWN damage instead of a single shared constant.
                 bool anyKill = false, anyHit = false; int lastHp = 0;
-                combatFx.spawnMuzzleFlash(muzzle, dir);   // flash at the gun barrel (hitscan)
+                combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);   // per-weapon flash (hitscan)
                 for (const auto& ray : shot.rays) {
                     const int wdmg = ray.damage;          // this pellet/ray's damage
                     x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics, wdmg);
@@ -5284,12 +5332,12 @@ int main(int argc, char** argv) {
                     else {
                         x3::phys::RayHit wallHit =
                             physics->rayCast(eye, ray.dir, x3::game::kFireMaxDist, x3::phys::Layer::Static);
-                        if (wallHit.hit) combatFx.spawnImpact(wallHit.point, wallHit.normal);
+                        if (wallHit.hit) combatFx.spawnImpact(wallHit.point, wallHit.normal, impactKind);
                     }
                     if (r.killed)
                         audio->playSound3D(sndDeath, r.endPoint.x, r.endPoint.y, r.endPoint.z, 1.0f, 1.0f);
                 }
-                audio->playSound3D(sndGun, muzzle.x, muzzle.y, muzzle.z, 0.85f, 1.0f);
+                audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 1.0f);
                 if (anyKill)      x3::logInfo("fire: enemy killed! (" + arsenal.current().name + ")");
                 else if (anyHit)  x3::logInfo("fire: enemy hit — HP " + std::to_string(lastHp));
             }
@@ -5335,7 +5383,7 @@ int main(int argc, char** argv) {
                     consumed = true;
                 } else {
                     x3::phys::RayHit sh = physics->rayCast(b.pos, ndir, stepLen, x3::phys::Layer::Static);
-                    if (sh.hit) { combatFx.spawnImpact(sh.point, sh.normal); combatFx.addTracer(b.pos, sh.point); consumed = true; }
+                    if (sh.hit) { combatFx.spawnImpact(sh.point, sh.normal, b.impactKind); combatFx.addTracer(b.pos, sh.point); consumed = true; }
                 }
                 if (!consumed) {
                     b.pos = x3::phys::Vec3{ b.pos.x + b.vel.x*dt, b.pos.y + b.vel.y*dt, b.pos.z + b.vel.z*dt };
