@@ -5697,9 +5697,15 @@ int main(int argc, char** argv) {
             std::vector<x3::rhi::PointLight> fl = game.lightFixtures();
             if (flashlight) {
                 x3::rhi::PointLight pl{};
-                pl.pos[0] = camX; pl.pos[1] = camY; pl.pos[2] = camZ;
-                pl.range  = 16.0f;
-                pl.color[0] = 2.4f; pl.color[1] = 2.2f; pl.color[2] = 1.9f;  // bright warm-white (HDR)
+                // Project the light a few meters FORWARD along the view so the bright
+                // soft-edged circle lands where you're LOOKING (a flashlight pool that
+                // lights monsters ahead), not just a lantern glow at the eye.
+                const float fX = std::cos(camPitch) * std::cos(camYaw);
+                const float fY = std::sin(camPitch);
+                const float fZ = std::cos(camPitch) * std::sin(camYaw);
+                pl.pos[0] = camX + fX * 3.0f; pl.pos[1] = camY + fY * 3.0f; pl.pos[2] = camZ + fZ * 3.0f;
+                pl.range  = 38.0f;   // HUGE circle; point-light attenuation gives the SOFT edge
+                pl.color[0] = 6.0f; pl.color[1] = 5.6f; pl.color[2] = 4.9f;  // much brighter warm-white (HDR)
                 fl.insert(fl.begin(), pl);
             }
             if (fl.size() > 64) fl.resize(64);
