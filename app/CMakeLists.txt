@@ -80,7 +80,13 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/debris.comp
     ${CMAKE_SOURCE_DIR}/shaders/debris.vert
     ${CMAKE_SOURCE_DIR}/shaders/debris.frag
-    ${CMAKE_SOURCE_DIR}/shaders/skin.comp)
+    ${CMAKE_SOURCE_DIR}/shaders/skin.comp
+    ${CMAKE_SOURCE_DIR}/shaders/rtao_apply.frag)
+# Hardware ray-tracing (ray-query) shaders need SPIR-V 1.4+ and the ray-query
+# extension target; compiled with explicit target flags below. Listed separately
+# so the default glslc invocation (which targets an older SPIR-V) is not used.
+set(SHADER_SRCS_RT
+    ${CMAKE_SOURCE_DIR}/shaders/rtao.comp)
 set(SPV_DIR ${CMAKE_BINARY_DIR}/shaders_spv)
 file(MAKE_DIRECTORY ${SPV_DIR})
 set(SPV_FILES "")
@@ -92,6 +98,18 @@ foreach(s ${SHADER_SRCS})
         COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${s} -o ${out}
         DEPENDS ${s}
         COMMENT "glslc ${fn}"
+        VERBATIM)
+    list(APPEND SPV_FILES ${out})
+endforeach()
+# Ray-query shaders: target Vulkan 1.3 + SPIR-V 1.4 (required for GL_EXT_ray_query).
+foreach(s ${SHADER_SRCS_RT})
+    get_filename_component(fn ${s} NAME)
+    set(out ${SPV_DIR}/${fn}.spv)
+    add_custom_command(
+        OUTPUT ${out}
+        COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.3 --target-spv=spv1.4 ${s} -o ${out}
+        DEPENDS ${s}
+        COMMENT "glslc (ray-query) ${fn}"
         VERBATIM)
     list(APPEND SPV_FILES ${out})
 endforeach()

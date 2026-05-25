@@ -37,6 +37,7 @@
 
 #include "IRenderDevice.h"
 #include "RenderGraph.h"
+#include "VulkanRT.h"          // hardware ray-tracing AS manager (ray-query path)
 #include "../core/x3_log.h"
 #include "font8x8_basic.h"
 #include "font_robotomono.h"   // embedded Roboto Mono TTF (Apache-2.0) — modern HUD font
@@ -275,6 +276,7 @@ public:
 
     void shutdown() override {
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        destroyRt();          // RT AO pipelines/targets + AS module (no-op if never built)
         destroySkinning();
         destroyDebris();
         destroyParticles();
@@ -350,6 +352,15 @@ public:
     // Project a world point -> HUD pixel coords (top-left origin) using the cached render
     // viewProj. false if behind the camera / well off-screen. For monster health bars etc.
     bool rayTracingSupported() const override { return m_rtSupported; }
+
+    void setRtaoParams(const RtaoParams& p) override {
+        // Cache a snapshot (re-applied each frame, like setSsaoParams). When RT is
+        // unsupported this is a harmless no-op store: the graph never adds the RT
+        // chain because m_rtSupported is false. The first time it is enabled on an
+        // RT device, beginFrame() lazily inits the AS module + RT-AO pipelines.
+        m_rtao = p;
+        m_rtao.rays = std::max(1, std::min(32, m_rtao.rays));
+    }
 
     bool worldToScreen(float wx, float wy, float wz, float& sx, float& sy) const override {
         const glm::vec4 clip = m_lastViewProj * glm::vec4(wx, wy, wz, 1.0f);
@@ -583,6 +594,23 @@ public:
         // ===================================================================
         prepareFrameData();  // fill camera/light/sky UBO + SSBO + indirect (data only)
 
+        // ---- Hardware ray-tracing (RT AO) build, gated + default OFF ----------
+        // Only when r_rtao is on AND the device supports RT: lazily build the RT-AO
+        // pipelines/targets, then (re)build the scene BLAS/TLAS from THIS frame's
+        // draw list (still valid here) + fill the compute UBO. The AS builds are
+        // synchronous one-time submits on the graphics queue (separate command pool
+        // + fence) that complete BEFORE the frame command buffer is submitted, so
+        // the TLAS is ready when the ray-query compute pass runs. If anything fails,
+        // m_rtaoActiveThisFrame stays false and the graph adds NO RT passes — the
+        // raster/SSAO path is byte-for-byte unchanged.
+        m_rtaoActiveThisFrame = false;
+        if (m_rtSupported && m_rtao.enabled) {
+            if (ensureRtaoReady() && buildRtSceneAS() && m_rt.lastInstanceCount() > 0) {
+                prepareRtaoUbo();
+                m_rtaoActiveThisFrame = true;
+            }
+        }
+
         const bool wantCapture = (m_captureArmed && m_captureBuf &&
                                   m_captureW == m_extent.width && m_captureH == m_extent.height);
         buildAndExecuteGraph(fr.cmd, imageIndex, wantCapture);
@@ -804,10 +832,23 @@ public:
         Mesh m{};
         const VkDeviceSize vbBytes = (VkDeviceSize)vcount * sizeof(MeshVertex);
         const VkDeviceSize ibBytes = (VkDeviceSize)icount * sizeof(uint32_t);
-        if (!createDeviceLocalBuffer(verts, vbBytes,
-                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, m.vbo, m.vboAlloc)) return {};
-        if (!createDeviceLocalBuffer(idx, ibBytes,
-                VK_BUFFER_USAGE_INDEX_BUFFER_BIT, m.ibo, m.iboAlloc)) {
+        // When hardware RT is available, the mesh's vertex/index buffers must be
+        // readable as BLAS build inputs (SHADER_DEVICE_ADDRESS) + flagged as AS
+        // build input. These extra usage flags do NOT change how the raster path
+        // binds/draws the buffers (a vertex buffer with extra usage is still a
+        // vertex buffer), so the rasterized output is byte-for-byte identical; they
+        // are only added at all when RT is supported (non-RT devices get the exact
+        // original usage). The BLAS itself is built lazily on first RT use.
+        VkBufferUsageFlags vbUsage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        VkBufferUsageFlags ibUsage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        if (m_rtSupported) {
+            const VkBufferUsageFlags rtUsage =
+                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+            vbUsage |= rtUsage; ibUsage |= rtUsage;
+        }
+        if (!createDeviceLocalBuffer(verts, vbBytes, vbUsage, m.vbo, m.vboAlloc)) return {};
+        if (!createDeviceLocalBuffer(idx, ibBytes, ibUsage, m.ibo, m.iboAlloc)) {
             vmaDestroyBuffer(m_alloc, m.vbo, m.vboAlloc); return {};
         }
         m.indexCount = icount;
@@ -844,6 +885,14 @@ public:
             m_skinnedMeshes.erase(skIt);
             for (auto p = m_skinPending.begin(); p != m_skinPending.end(); )
                 p = (*p == h.id) ? m_skinPending.erase(p) : p + 1;
+        }
+        // Drop this mesh's RT BLAS (if one was built). The TLAS no longer references
+        // a destroyed mesh because m_drawRecords for it stop arriving; the next
+        // TLAS rebuild simply omits it. Safe to free now — the AS build is a
+        // synchronous one-time submit, never in flight on the render queue.
+        if (m_rtSupported && m_rt.hasBlas(h.id)) {
+            if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+            m_rt.destroyBlas(h.id);
         }
         m_meshes.erase(it);
         // Drop this mesh's draw-group key so m_groups doesn't accumulate dead
@@ -2060,9 +2109,12 @@ private:
         // GI (screen-space indirect diffuse). Adds a half-res gather/temporal/denoise
         // chain after the main color pass + a full-res additive apply, before bloom.
         const bool giOn = m_gi.enabled;
-        // The camera depth PRE-PASS runs when SSAO OR GI need a complete depth buffer
-        // before the post chain; the main pass then tests EQUAL (no depth write).
-        const bool prePassOn = ssaoOn || giOn;
+        // RT ambient occlusion (hardware ray query). Active only when r_rtao is on,
+        // the device supports RT, and the TLAS built this frame (set in endFrame).
+        const bool rtaoOn = m_rtaoActiveThisFrame;
+        // The camera depth PRE-PASS runs when SSAO, GI, OR RT AO need a complete depth
+        // buffer before the post chain; the main pass then tests EQUAL (no depth write).
+        const bool prePassOn = ssaoOn || giOn || rtaoOn;
         // Water adds a pass after the main mesh pass that samples + depth-tests the
         // scene depth this frame (gated; OFF == no water pass + zero cost).
         const bool waterOn = m_water.enabled;
@@ -2075,11 +2127,17 @@ private:
         // target with read-only scene depth — exactly like the particle pass.
         const bool debrisStep = m_debrisStepPending && m_debrisComputePipeline;
         const bool debrisDraw = m_debrisDrawPending && m_debrisDrawPipeline;
-        // The scene depth must be STORED (not transient) when water/GI/particles/debris read it.
-        const bool storeDepth = waterOn || giOn || particlesOn || debrisDraw;
+        // The scene depth must be STORED (not transient) when water/GI/particles/debris
+        // OR RT AO (its compute + apply passes sample it) read it.
+        const bool storeDepth = waterOn || giOn || particlesOn || debrisDraw || rtaoOn;
         RgResource rgSsaoRaw  = m_graph.importImage("ssao.raw",  m_ssaoRawImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgSsaoBlur = m_graph.importImage("ssao.blur", m_ssaoBlurImg,
+            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        // RT-AO half-res storage image (compute writes GENERAL, apply samples it).
+        // Imported UNDEFINED each frame (fully overwritten by the compute pass).
+        RgResource rgRtao = {};
+        if (rtaoOn) rgRtao = m_graph.importImage("rtao.ao", m_rtaoImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         // GI half-res buffers + the prev-depth copy. Imported each frame; the accum
         // buffers persist across frames (history), but the graph only tracks layout
@@ -2298,6 +2356,32 @@ private:
             }
           } // if (ssaoOn) — SSAO + blur passes
         } // if (prePassOn) — depth pre-pass (+ optional SSAO)
+
+        // ---- RT-AO compute pass (hardware ray query) ------------------------
+        // After the depth pre-pass populated the camera depth buffer, trace the
+        // TLAS with rayQueryEXT from each pixel's depth-reconstructed world position
+        // and write the half-res AO storage image. Reads depth (DEPTH_READ_ONLY) +
+        // writes the AO image (GENERAL). The TLAS itself was built in endFrame() as
+        // a synchronous submit before this command buffer; no graph dependency is
+        // needed for it. Gated on rtaoOn (zero cost / no pass when off).
+        if (rtaoOn) {
+            RenderPassDesc rp{};
+            rp.name = "rtao-compute";
+            rp.queue = RgQueue::Compute;
+            rp.usesDynamicRendering = false;
+            rp.addUse(ResourceUse{
+                rgRtao, VK_IMAGE_LAYOUT_GENERAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            rp.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            rp.recordCtx = this;
+            rp.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordRtaoComputeBody(c); };
+            m_graph.addPass(std::move(rp));
+        }
 
         // ---- Pass 2: main color pass (sky + meshes) -> LINEAR HDR target ----
         // Renders the lit scene into the R16G16B16A16_SFLOAT HDR target in linear
@@ -2659,6 +2743,60 @@ private:
                 };
                 m_graph.addPass(std::move(cp));
             }
+        }
+
+        // ---- RT-AO apply pass (hardware ray query) --------------------------
+        // After the lit scene (+ optional GI) exists, MULTIPLY the linear HDR target
+        // by the ray-traced AO (depth-aware up-sampled from the half-res RT AO image).
+        // The pipeline uses a dstColor*srcColor blend, so this pass writes the AO
+        // darkening factor and the blender multiplies it into the HDR scene without
+        // reading it back. Reads the AO image (SHADER_READ_ONLY) + depth; writes HDR.
+        // Runs before bloom so the darkened scene drives the bloom chain correctly.
+        if (rtaoOn) {
+            m_rtaoApplyAttach = VkRenderingAttachmentInfo{};
+            m_rtaoApplyAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_rtaoApplyAttach.imageView = m_hdrView;
+            m_rtaoApplyAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_rtaoApplyAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;     // keep the lit scene
+            m_rtaoApplyAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            RenderPassDesc ap{};
+            ap.name = "rtao-apply";
+            ap.addUse(ResourceUse{
+                rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            ap.addUse(ResourceUse{
+                rgRtao, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            ap.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            ap.usesDynamicRendering = true;
+            m_rtaoApplyRenderInfo = VkRenderingInfo{};
+            m_rtaoApplyRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_rtaoApplyRenderInfo.renderArea = { {0,0}, m_extent };
+            m_rtaoApplyRenderInfo.layerCount = 1;
+            m_rtaoApplyRenderInfo.colorAttachmentCount = 1;
+            m_rtaoApplyRenderInfo.pColorAttachments = &m_rtaoApplyAttach;
+            ap.renderInfo = m_rtaoApplyRenderInfo;
+            ap.recordCtx = this;
+            ap.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                VkViewport vp{ 0.0f, 0.0f, (float)self->m_extent.width, (float)self->m_extent.height, 0.0f, 1.0f };
+                VkRect2D scis{ {0,0}, self->m_extent };
+                vkCmdSetViewport(c, 0, 1, &vp);
+                vkCmdSetScissor(c, 0, 1, &scis);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_rtaoApplyPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_rtaoApplyLayout,
+                                        0, 1, &self->m_rtaoApplySet[self->m_frameIdx], 0, nullptr);
+                vkCmdPushConstants(c, self->m_rtaoApplyLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(RtaoApplyPush), &self->m_rtaoApplyPush);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(ap));
         }
 
         // ---- GPU-compute debris draw pass (K-T2) ----------------------------
@@ -4896,6 +5034,9 @@ private:
         writeWaterDescriptors();
         // Particles sample the scene depth (soft fade): rewire on the new depth view.
         writeParticleDescriptors();
+        // RT AO (if built): half-res target tracks the extent + the depth view
+        // changed, so recreate the target + rewrite all RT-AO descriptors.
+        if (m_rtaoBuilt) { createRtaoTargets(); writeRtaoDescriptors(); }
     }
 
     // ---- HEADLESS offscreen render target (no window, no swapchain) ---------
@@ -5572,6 +5713,400 @@ private:
         }
         if (m_ssaoLinearSampler){ vkDestroySampler(m_dev.device, m_ssaoLinearSampler, nullptr); m_ssaoLinearSampler = VK_NULL_HANDLE; }
         if (m_depthSampler)   { vkDestroySampler(m_dev.device, m_depthSampler, nullptr); m_depthSampler = VK_NULL_HANDLE; }
+    }
+
+    // ======================================================================
+    // RT AMBIENT OCCLUSION (hardware ray query) — lazy init / targets /
+    // descriptors / per-frame TLAS build / compute dispatch / teardown.
+    // ----------------------------------------------------------------------
+    // Built LAZILY the first time RT AO is enabled on an RT-capable device (so a
+    // run that never turns r_rtao on pays zero init cost). All teardown is in
+    // destroyRt(), called from shutdown(). The compute pass writes a half-res R8 AO
+    // image (GENERAL layout) via rayQueryEXT; a full-screen MULTIPLY apply pass then
+    // darkens the linear HDR scene by the up-sampled AO before bloom.
+
+    // Static trampolines so the C-style VulkanRT logger pointers reach x3::log*.
+    static void rtLogInfo(const char* m)  { x3::logInfo(m ? m : ""); }
+    static void rtLogError(const char* m) { x3::logError(m ? m : ""); }
+
+    // Lazily init the AS module + RT-AO pipelines/targets. Returns true when the RT
+    // chain is ready to use this frame. No-op (returns false) without RT support.
+    bool ensureRtaoReady() {
+        if (!m_rtSupported) return false;
+        if (!m_rtInitTried) {
+            m_rtInitTried = true;
+            if (!m_rt.init(m_dev.device, m_dev.physical_device, m_alloc, m_gfxQueue,
+                           m_gfxFamily, &rtLogInfo, &rtLogError)) {
+                logError("[rhi] RT AO: AS module init failed — staying on raster/SSAO");
+                m_rtSupported = false;   // disable RT entirely; never retry
+                return false;
+            }
+        }
+        if (!m_rt.ready()) return false;
+        if (!m_rtaoBuilt) {
+            if (!createRtao()) { logError("[rhi] RT AO: pipeline create failed"); m_rtSupported = false; return false; }
+            if (!createRtaoTargets()) { logError("[rhi] RT AO: target create failed"); m_rtSupported = false; return false; }
+            writeRtaoDescriptors();
+            m_rtaoBuilt = true;
+            logInfo("[rhi] RT AO ready (ray-query inline AO: BLAS/TLAS + half-res compute + multiply apply)");
+        }
+        return true;
+    }
+
+    bool createRtao() {
+        // NEAREST sampler for reading depth as plain data; LINEAR for AO up-sample.
+        VkSamplerCreateInfo n{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        n.magFilter = VK_FILTER_NEAREST; n.minFilter = VK_FILTER_NEAREST;
+        n.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        n.addressModeU = n.addressModeV = n.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        n.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+        if (vkCreateSampler(m_dev.device, &n, nullptr, &m_rtaoDepthSampler) != VK_SUCCESS) return false;
+        VkSamplerCreateInfo l = n; l.magFilter = VK_FILTER_LINEAR; l.minFilter = VK_FILTER_LINEAR;
+        if (vkCreateSampler(m_dev.device, &l, nullptr, &m_rtaoLinearSampler) != VK_SUCCESS) return false;
+
+        // ---- Compute set layout: 0=depth sampler, 1=AO storage image, 2=TLAS,
+        //      3=Rtao UBO. ----
+        {
+            VkDescriptorSetLayoutBinding b[4]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            b[2].binding = 2; b[2].descriptorCount = 1;
+            b[2].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            b[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            b[3].binding = 3; b[3].descriptorCount = 1;
+            b[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            b[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 4; ci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_rtaoSetLayout) != VK_SUCCESS) return false;
+        }
+        // ---- Apply set layout: 0=AO (linear), 1=depth (nearest). ----
+        {
+            VkDescriptorSetLayoutBinding b[2]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 2; ci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_rtaoApplySetLayout) != VK_SUCCESS) return false;
+        }
+        // ---- Descriptor pool: per-frame compute + apply sets. ----
+        {
+            const uint32_t nF = kFramesInFlight;
+            VkDescriptorPoolSize sizes[4]{};
+            sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; sizes[0].descriptorCount = nF /*compute depth*/ + nF * 2 /*apply*/;
+            sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;          sizes[1].descriptorCount = nF;
+            sizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; sizes[2].descriptorCount = nF;
+            sizes[3].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;         sizes[3].descriptorCount = nF;
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.maxSets = nF * 2; pci.poolSizeCount = 4; pci.pPoolSizes = sizes;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_rtaoPool) != VK_SUCCESS) return false;
+        }
+        // ---- Per-frame UBOs + sets. ----
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkBufferCreateInfo ub{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            ub.size = sizeof(RtaoUBO); ub.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo info{};
+            if (vmaCreateBuffer(m_alloc, &ub, &aci, &m_rtaoUboBuf[i], &m_rtaoUboAlloc[i], &info) != VK_SUCCESS) return false;
+            m_rtaoUboMapped[i] = info.pMappedData;
+            VkDescriptorSetAllocateInfo a0{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            a0.descriptorPool = m_rtaoPool; a0.descriptorSetCount = 1; a0.pSetLayouts = &m_rtaoSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &a0, &m_rtaoSet[i]) != VK_SUCCESS) return false;
+            VkDescriptorSetAllocateInfo a1{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            a1.descriptorPool = m_rtaoPool; a1.descriptorSetCount = 1; a1.pSetLayouts = &m_rtaoApplySetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &a1, &m_rtaoApplySet[i]) != VK_SUCCESS) return false;
+        }
+        // ---- Compute pipeline (rtao.comp). ----
+        {
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pl.setLayoutCount = 1; pl.pSetLayouts = &m_rtaoSetLayout;
+            if (vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_rtaoLayout) != VK_SUCCESS) return false;
+            VkShaderModule cs = loadShaderModule("shaders\\rtao.comp.spv");
+            if (!cs) return false;
+            VkComputePipelineCreateInfo cpci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+            cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
+            cpci.layout = m_rtaoLayout;
+            VkResult pr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_rtaoPipe);
+            vkDestroyShaderModule(m_dev.device, cs, nullptr);
+            if (pr != VK_SUCCESS) return false;
+        }
+        // ---- Apply pipeline (rtao_apply.frag -> HDR, MULTIPLY blend). ----
+        {
+            VkPushConstantRange pcr{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(RtaoApplyPush) };
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pl.setLayoutCount = 1; pl.pSetLayouts = &m_rtaoApplySetLayout;
+            pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &pcr;
+            if (vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_rtaoApplyLayout) != VK_SUCCESS) return false;
+            if (!createMultiplyFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\rtao_apply.frag.spv",
+                                                  m_rtaoApplyLayout, kHdrFormat, m_rtaoApplyPipe))
+                return false;
+        }
+        return true;
+    }
+
+    // Full-screen-triangle pipeline whose single color attachment uses a MULTIPLY
+    // blend (dstColor * srcColor): the apply pass outputs the AO darkening factor
+    // and the blender multiplies it into the existing HDR target (no read-back).
+    bool createMultiplyFullscreenPipeline(const char* vsPath, const char* fsPath,
+                                          VkPipelineLayout layout, VkFormat colorFmt,
+                                          VkPipeline& outPipe) {
+        VkShaderModule vs = loadShaderModule(vsPath);
+        VkShaderModule fs = loadShaderModule(fsPath);
+        if (!vs || !fs) { if (vs) vkDestroyShaderModule(m_dev.device, vs, nullptr); if (fs) vkDestroyShaderModule(m_dev.device, fs, nullptr); return false; }
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = vs; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
+        VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+        VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        vp.viewportCount = 1; vp.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        dss.depthTestEnable = VK_FALSE; dss.depthWriteEnable = VK_FALSE; dss.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
+        cba.blendEnable = VK_TRUE;
+        cba.srcColorBlendFactor = VK_BLEND_FACTOR_DST_COLOR; cba.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba.colorBlendOp = VK_BLEND_OP_ADD;
+        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE; cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba.alphaBlendOp = VK_BLEND_OP_ADD;
+        VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        cb.attachmentCount = 1; cb.pAttachments = &cba;
+        VkDynamicState dyn[2]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+        VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+        prci.colorAttachmentCount = 1; prci.pColorAttachmentFormats = &colorFmt;
+        prci.depthAttachmentFormat = VK_FORMAT_UNDEFINED;
+        VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        gpci.pNext = &prci; gpci.stageCount = 2; gpci.pStages = stages;
+        gpci.pVertexInputState = &vin; gpci.pInputAssemblyState = &ia;
+        gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
+        gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
+        gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = layout;
+        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &outPipe);
+        vkDestroyShaderModule(m_dev.device, vs, nullptr);
+        vkDestroyShaderModule(m_dev.device, fs, nullptr);
+        return pr == VK_SUCCESS;
+    }
+
+    // Create (or recreate) the half-res RT-AO R8 storage target at the current
+    // extent. STORAGE (compute write) | SAMPLED (apply read).
+    bool createRtaoTargets() {
+        destroyRtaoTargets();
+        m_rtaoExtent = { std::max(1u, m_extent.width / 2), std::max(1u, m_extent.height / 2) };
+        const VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (!createColorTarget(kRtaoFormat, m_rtaoExtent.width, m_rtaoExtent.height, usage,
+                               m_rtaoImg, m_rtaoAlloc, m_rtaoView)) return false;
+        return true;
+    }
+
+    void destroyRtaoTargets() {
+        if (m_rtaoView) { vkDestroyImageView(m_dev.device, m_rtaoView, nullptr); m_rtaoView = VK_NULL_HANDLE; }
+        if (m_rtaoImg)  { vmaDestroyImage(m_alloc, m_rtaoImg, m_rtaoAlloc); m_rtaoImg = VK_NULL_HANDLE; m_rtaoAlloc = nullptr; }
+    }
+
+    // (Re)write the RT-AO descriptor sets (depth/AO image views + TLAS + UBO).
+    // The TLAS write is refreshed each time the TLAS handle changes; called once
+    // at build + whenever targets/TLAS are recreated.
+    void writeRtaoDescriptors() {
+        VkAccelerationStructureKHR tlas = m_rt.tlas();
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkDescriptorImageInfo depthInfo{ m_rtaoDepthSampler, m_depthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo aoInfo{ VK_NULL_HANDLE, m_rtaoView, VK_IMAGE_LAYOUT_GENERAL };
+            VkDescriptorBufferInfo ubo{ m_rtaoUboBuf[i], 0, sizeof(RtaoUBO) };
+            VkWriteDescriptorSetAccelerationStructureKHR asW{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
+            asW.accelerationStructureCount = 1; asW.pAccelerationStructures = &tlas;
+            VkWriteDescriptorSet w[4]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[0].dstSet = m_rtaoSet[i]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &depthInfo;
+            w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[1].dstSet = m_rtaoSet[i]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+            w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w[1].pImageInfo = &aoInfo;
+            w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[2].dstSet = m_rtaoSet[i]; w[2].dstBinding = 3; w[2].descriptorCount = 1;
+            w[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[2].pBufferInfo = &ubo;
+            // Always write the depth/AO/UBO bindings; add the TLAS binding only when
+            // a TLAS exists (it's built later this frame, so rewriteRtaoTlas() fills
+            // binding 2 once available — the set is never used before then).
+            w[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[3].dstSet = m_rtaoSet[i]; w[3].dstBinding = 2; w[3].descriptorCount = 1;
+            w[3].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; w[3].pNext = &asW;
+            vkUpdateDescriptorSets(m_dev.device, tlas ? 4u : 3u, w, 0, nullptr);
+
+            VkDescriptorImageInfo aoSampled{ m_rtaoLinearSampler, m_rtaoView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo depthSampled{ m_rtaoDepthSampler, m_depthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet a[2]{};
+            a[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; a[0].dstSet = m_rtaoApplySet[i]; a[0].dstBinding = 0; a[0].descriptorCount = 1;
+            a[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; a[0].pImageInfo = &aoSampled;
+            a[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; a[1].dstSet = m_rtaoApplySet[i]; a[1].dstBinding = 1; a[1].descriptorCount = 1;
+            a[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; a[1].pImageInfo = &depthSampled;
+            vkUpdateDescriptorSets(m_dev.device, 2, a, 0, nullptr);
+        }
+    }
+
+    // Re-write ONLY the TLAS binding (binding 2) into each compute set. Called after
+    // a TLAS rebuild when the TLAS handle changed (a grow); steady same-size
+    // rebuilds keep the same handle so this is skipped.
+    void rewriteRtaoTlas() {
+        VkAccelerationStructureKHR tlas = m_rt.tlas();
+        if (!tlas) return;
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkWriteDescriptorSetAccelerationStructureKHR asW{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
+            asW.accelerationStructureCount = 1; asW.pAccelerationStructures = &tlas;
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.dstSet = m_rtaoSet[i]; w.dstBinding = 2; w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; w.pNext = &asW;
+            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        }
+    }
+
+    // Build (or refit) the scene acceleration structures for THIS frame from the
+    // per-frame draw list (m_drawRecords, still valid in endFrame after
+    // prepareFrameData). Ensures a BLAS exists for every distinct mesh, then
+    // rebuilds the TLAS with one instance per draw. Returns true if a usable TLAS
+    // is ready. Called from endFrame BEFORE the graph records the frame.
+    bool buildRtSceneAS() {
+        // Ensure a BLAS for each distinct mesh referenced this frame.
+        for (uint32_t mid : m_groupOrder) {
+            if (m_rt.hasBlas(mid)) continue;
+            auto it = m_meshes.find(mid);
+            if (it == m_meshes.end()) continue;
+            const Mesh& m = it->second;
+            // Dynamic (CPU-skinned) meshes change their vertex buffer each frame; the
+            // per-frame skinned/updated VBO would need a per-frame BLAS rebuild. For
+            // v1 (static-first) we BLAS only the static device-local meshes; dynamic
+            // characters are simply absent from the TLAS (they don't cast RT AO yet —
+            // a documented next tier). This keeps the build cheap + correct.
+            if (m.dynamic || m.vbo == VK_NULL_HANDLE) continue;
+            VkBufferDeviceAddressInfo vi{ VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO }; vi.buffer = m.vbo;
+            VkBufferDeviceAddressInfo ii{ VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO }; ii.buffer = m.ibo;
+            const VkDeviceAddress vbAddr = vkGetBufferDeviceAddress(m_dev.device, &vi);
+            const VkDeviceAddress ibAddr = vkGetBufferDeviceAddress(m_dev.device, &ii);
+            m_rt.ensureBlas(mid, vbAddr, m.vertexCount, (uint32_t)sizeof(MeshVertex), ibAddr, m.indexCount);
+        }
+
+        // Build the TLAS from this frame's instances (skip dynamic meshes — no BLAS).
+        m_rtInstScratch.clear();
+        m_rtInstScratch.reserve(m_drawRecords.size());
+        for (const DrawRecord& dr : m_drawRecords) {
+            if (!m_rt.hasBlas(dr.meshId)) continue;
+            VulkanRT::TlasInstance inst{};
+            inst.meshId = dr.meshId;
+            std::memcpy(inst.model, dr.model, sizeof(inst.model));
+            m_rtInstScratch.push_back(inst);
+        }
+
+        // Decide whether to (re)build the TLAS this frame. Rebuilding into the SAME
+        // backing buffer while a previous frame's RT-AO compute may still be READING
+        // it is a cross-frame WAR hazard. To stay correct + cheap:
+        //   * STATIC-FIRST (default, rebuildTlasEachFrame=false): build only when the
+        //     instance set CHANGES (a cheap signature over mesh ids + transforms). A
+        //     change is rare, so we idle the device before that rare rebuild — no
+        //     in-flight reader can touch the backing. The common static frame does NO
+        //     build (and thus no hazard, no stall).
+        //   * rebuildTlasEachFrame=true (moving geometry): rebuild every frame, idling
+        //     first so the prior frame's compute has retired before the backing is
+        //     overwritten. Correct (if heavier) — for dynamic scenes.
+        const uint64_t sig = tlasSignature(m_rtInstScratch);
+        const bool firstBuild = !m_rt.tlasBuilt();
+        const bool changed    = (sig != m_rtTlasSig);
+        if (!firstBuild && !changed && !m_rtao.rebuildTlasEachFrame)
+            return m_rt.tlas() != VK_NULL_HANDLE;   // unchanged static TLAS: reuse as-is
+
+        // A real (re)build follows: ensure no in-flight GPU work is still reading the
+        // TLAS backing we may overwrite. Cheap because rebuilds are rare (static) —
+        // and necessary for correctness when they do happen.
+        if (!firstBuild) vkDeviceWaitIdle(m_dev.device);
+
+        const VkAccelerationStructureKHR before = m_rt.tlas();
+        if (!m_rt.buildTlas(m_rtInstScratch)) return false;
+        m_rtTlasSig = sig;
+        // If the TLAS handle changed (first build or a grow), re-point the descriptors.
+        if (m_rt.tlas() != before) rewriteRtaoTlas();
+        return m_rt.tlasBuilt() && m_rt.tlas() != VK_NULL_HANDLE;
+    }
+
+    // Cheap order-sensitive signature of the TLAS instance set (mesh ids + packed
+    // transforms) so a static scene's TLAS is rebuilt only when it actually changes.
+    static uint64_t tlasSignature(const std::vector<VulkanRT::TlasInstance>& inst) {
+        uint64_t h = 1469598103934665603ull;        // FNV-1a 64
+        auto mix = [&](uint64_t v){ h ^= v; h *= 1099511628211ull; };
+        mix(inst.size());
+        for (const auto& in : inst) {
+            mix(in.meshId);
+            for (int k = 0; k < 16; ++k) {
+                uint32_t bits; std::memcpy(&bits, &in.model[k], sizeof(bits));
+                mix(bits);
+            }
+        }
+        return h;
+    }
+
+    // Fill the per-frame RT-AO compute UBO (invViewProj + camPos + tunables). Uses
+    // the SAME viewProj prepareFrameData cached this frame.
+    void prepareRtaoUbo() {
+        auto& fr = m_frames[m_frameIdx];
+        if (!m_rtaoUboMapped[m_frameIdx]) (void)fr;
+        RtaoUBO u{};
+        u.invViewProj = glm::inverse(m_lastViewProj);
+        u.camPos = glm::vec4(m_camPos, 1.0f);
+        u.params0 = glm::vec4(m_rtao.radius, (float)m_rtao.rays, m_rtao.bias, m_rtao.strength);
+        u.params1 = glm::vec4((float)m_rtaoExtent.width, (float)m_rtaoExtent.height,
+                              (float)(m_rtFrameSeed++), m_rtao.power);
+        if (m_rtaoUboMapped[m_frameIdx])
+            std::memcpy(m_rtaoUboMapped[m_frameIdx], &u, sizeof(u));
+        m_rtaoApplyPush.aoTexel[0] = 1.0f / (float)std::max(1u, m_rtaoExtent.width);
+        m_rtaoApplyPush.aoTexel[1] = 1.0f / (float)std::max(1u, m_rtaoExtent.height);
+        m_rtaoApplyPush.strength = m_rtao.strength;
+        m_rtaoApplyPush.pad0 = 0.0f;
+    }
+
+    // Record the RT-AO compute dispatch body (the graph has emitted the AO-image
+    // GENERAL transition + the depth READ_ONLY transition). Traces rayQueryEXT
+    // against the TLAS and writes the half-res AO image.
+    void recordRtaoComputeBody(VkCommandBuffer c) {
+        if (!m_rtaoPipe) return;
+        vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_rtaoPipe);
+        vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_rtaoLayout,
+                                0, 1, &m_rtaoSet[m_frameIdx], 0, nullptr);
+        const uint32_t gx = (m_rtaoExtent.width  + 7) / 8;
+        const uint32_t gy = (m_rtaoExtent.height + 7) / 8;
+        vkCmdDispatch(c, gx, gy, 1);
+    }
+
+    void destroyRt() {
+        if (!m_dev.device) { m_rt.shutdown(); return; }
+        destroyRtaoTargets();
+        if (m_rtaoApplyPipe) { vkDestroyPipeline(m_dev.device, m_rtaoApplyPipe, nullptr); m_rtaoApplyPipe = VK_NULL_HANDLE; }
+        if (m_rtaoPipe)      { vkDestroyPipeline(m_dev.device, m_rtaoPipe, nullptr); m_rtaoPipe = VK_NULL_HANDLE; }
+        if (m_rtaoApplyLayout){ vkDestroyPipelineLayout(m_dev.device, m_rtaoApplyLayout, nullptr); m_rtaoApplyLayout = VK_NULL_HANDLE; }
+        if (m_rtaoLayout)    { vkDestroyPipelineLayout(m_dev.device, m_rtaoLayout, nullptr); m_rtaoLayout = VK_NULL_HANDLE; }
+        if (m_rtaoPool)      { vkDestroyDescriptorPool(m_dev.device, m_rtaoPool, nullptr); m_rtaoPool = VK_NULL_HANDLE; }
+        if (m_rtaoApplySetLayout){ vkDestroyDescriptorSetLayout(m_dev.device, m_rtaoApplySetLayout, nullptr); m_rtaoApplySetLayout = VK_NULL_HANDLE; }
+        if (m_rtaoSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_rtaoSetLayout, nullptr); m_rtaoSetLayout = VK_NULL_HANDLE; }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (m_rtaoUboBuf[i]) { vmaDestroyBuffer(m_alloc, m_rtaoUboBuf[i], m_rtaoUboAlloc[i]); m_rtaoUboBuf[i] = VK_NULL_HANDLE; }
+        }
+        if (m_rtaoLinearSampler){ vkDestroySampler(m_dev.device, m_rtaoLinearSampler, nullptr); m_rtaoLinearSampler = VK_NULL_HANDLE; }
+        if (m_rtaoDepthSampler) { vkDestroySampler(m_dev.device, m_rtaoDepthSampler, nullptr); m_rtaoDepthSampler = VK_NULL_HANDLE; }
+        m_rtaoBuilt = false;
+        m_rt.shutdown();
     }
 
     // Build the baked hemisphere kernel + 4x4 rotation-noise tables ONCE (CPU,
@@ -6630,6 +7165,58 @@ private:
     uint32_t      m_gfxFamily = 0;
     bool          m_descriptorIndexing = false;
     bool          m_rtSupported = false;   // VK_KHR_ray_query + acceleration_structure enabled (RT P0)
+
+    // ======================================================================
+    // Hardware ray tracing (RT Phase 1+: BLAS/TLAS + ray-query RT AO).
+    // ----------------------------------------------------------------------
+    // The AS manager (BLAS per mesh + per-frame TLAS) lives in VulkanRT; the
+    // ray-query RT-AO compute pass + its full-screen MULTIPLY apply pass live in
+    // this class. EVERYTHING is gated behind m_rtao.enabled (the r_rtao cvar) AND
+    // m_rtSupported; when off, none of this is built/dispatched and the raster +
+    // SSAO/SSGI path is byte-for-byte unchanged.
+    VulkanRT          m_rt;                                  // AS manager (ray-query)
+    bool              m_rtInitTried = false;                 // lazy one-time module init
+    RtaoParams        m_rtao{};                              // cached tunables (default OFF)
+    bool              m_rtaoBuilt = false;                   // RT-AO pipelines created
+    uint32_t          m_rtFrameSeed = 0;                     // per-frame noise seed
+    // RT-AO half-res target (R8 storage image written by the compute pass; sampled
+    // by the apply pass). GENERAL layout while the compute writes it.
+    VkImage           m_rtaoImg   = VK_NULL_HANDLE; VmaAllocation m_rtaoAlloc = nullptr; VkImageView m_rtaoView = VK_NULL_HANDLE;
+    VkExtent2D        m_rtaoExtent{};
+    static constexpr VkFormat kRtaoFormat = VK_FORMAT_R8_UNORM;
+    // RT-AO compute pass (rayQueryEXT): set0 = depth sampler + AO storage image +
+    // TLAS + Rtao UBO.
+    VkSampler             m_rtaoDepthSampler  = VK_NULL_HANDLE; // NEAREST depth
+    VkSampler             m_rtaoLinearSampler = VK_NULL_HANDLE; // LINEAR AO up-sample
+    VkDescriptorSetLayout m_rtaoSetLayout     = VK_NULL_HANDLE;
+    VkPipelineLayout      m_rtaoLayout        = VK_NULL_HANDLE;
+    VkPipeline            m_rtaoPipe          = VK_NULL_HANDLE;  // compute
+    VkDescriptorSetLayout m_rtaoApplySetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout      m_rtaoApplyLayout    = VK_NULL_HANDLE;
+    VkPipeline            m_rtaoApplyPipe      = VK_NULL_HANDLE; // full-screen MULTIPLY
+    VkDescriptorPool      m_rtaoPool           = VK_NULL_HANDLE;
+    VkDescriptorSet       m_rtaoSet[kFramesInFlight]      = {};  // compute set (per frame)
+    VkDescriptorSet       m_rtaoApplySet[kFramesInFlight] = {};  // apply set (per frame)
+    // Rtao compute UBO (std140; matches shaders/rtao.comp).
+    struct RtaoUBO {
+        glm::mat4 invViewProj;   // clip -> world
+        glm::vec4 camPos;        // xyz = camera world pos
+        glm::vec4 params0;       // x = radius, y = numRays, z = bias, w = strength
+        glm::vec4 params1;       // x = outW, y = outH, z = frameSeed, w = power
+    };
+    static_assert(sizeof(RtaoUBO) == 64 + 16 * 3, "RtaoUBO std140 layout");
+    VkBuffer      m_rtaoUboBuf[kFramesInFlight]  = {}; VmaAllocation m_rtaoUboAlloc[kFramesInFlight] = {}; void* m_rtaoUboMapped[kFramesInFlight] = {};
+    // Apply-pass push constant (matches shaders/rtao_apply.frag).
+    struct RtaoApplyPush { float aoTexel[2]; float strength; float pad0; };
+    RtaoApplyPush m_rtaoApplyPush{};
+    // Per-frame TLAS-instance scratch (capacity persists; no per-frame heap churn).
+    std::vector<VulkanRT::TlasInstance> m_rtInstScratch;
+    uint64_t m_rtTlasSig = 0;             // signature of the last-built TLAS instance set
+    bool m_rtaoActiveThisFrame = false;   // RT-AO chain added to the graph this frame
+    // Stable storage for the RT-AO apply pass's VkRenderingInfo + attachment (the
+    // graph holds pointers into these across execute()).
+    VkRenderingAttachmentInfo m_rtaoApplyAttach{};
+    VkRenderingInfo           m_rtaoApplyRenderInfo{};
 
     // Graphics
     VmaAllocator  m_alloc = nullptr;
