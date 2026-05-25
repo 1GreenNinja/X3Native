@@ -262,6 +262,17 @@ public:
     // the rescue-clock gating, so he doesn't pursue a player who hasn't reached F2.
     const MonsterManager& chen() const { return m_chen; }
     MonsterManager&       chen()       { return m_chen; }
+
+    // Total LIVE hostiles across every group (HUD "ENEMIES" counter). Includes the
+    // Phase-3 boss adds + the bosses so the count never reads "AREA CLEAR" while
+    // something is still alive (the bossAdds bug).
+    int enemiesRemaining() const {
+        int n = (int)(m_corridor.aliveCount() + m_checkpoint.aliveCount()
+                    + m_bossAdds.aliveCount());
+        if (m_martinezSpawned && m_martinez.alive()) n += 1;
+        if (m_chenSpawned) n += (int)m_chen.aliveCount();
+        return n;
+    }
     bool chenSpawned() const { return m_chenSpawned; }
     bool chenAlive()   const { return m_chenSpawned && m_chen.count() > 0 && m_chen.at(0).alive(); }
     // True iff Chen is in his curable window (Phase3 "Monster"); the host offers the

@@ -696,6 +696,14 @@ FireResult Level1Game::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& d
         if (r3.hitMonster) r = r3;
         else if (!r.hit && r3.hit) r = r3;
     }
+    // Phase-3 boss ADDS (summoned during the Martinez fight). These were invincible
+    // to GUNFIRE — onFire never included them (only melee did), so they could never
+    // die and the area never cleared. Include them in the gun-damage chain.
+    if (!r.hitMonster && m_bossAdds.count() > 0) {
+        FireResult ra = m_bossAdds.fire(eye, dir, scene, physics, damage);
+        if (ra.hitMonster) r = ra;
+        else if (!r.hit && ra.hit) r = ra;
+    }
     // F2 Medical Bay boss (Dr. Chen), if placed.
     if (!r.hitMonster && m_chenSpawned) {
         FireResult r4 = m_chen.fire(eye, dir, scene, physics, damage);
