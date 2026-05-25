@@ -19,73 +19,338 @@ namespace {
 // ---------------------------------------------------------------------------
 // PROCEDURAL HOLOGRAM UI TEXTURE (RGBA8). The screen is drawn as a strongly
 // EMISSIVE quad whose COLOR comes from this texture, so the panel reads as a
-// projected sci-fi UI (env-art console vibe) instead of a flat MS-Paint slab:
-//   * a deep-blue glass base with a vertical inner GRADIENT (brighter at the top,
-//     like backlit glass),
-//   * fine cyan SCANLINES (horizontal) + a faint vertical GRID (data-readout feel),
-//   * a bright HEADER bar across the top (a title strip),
-//   * a soft inner VIGNETTE + ROUNDED-CORNER fade (the corners dim toward black so,
-//     with the strong emissive + bloom, the panel edges read as a translucent
-//     hologram that falls off at rounded corners rather than a hard rectangle).
+// projected sci-fi SECURITY CONSOLE — a crisp cyan/white LINE-ART HUD printed
+// on a dark translucent-blue glass plate (matching the reference photos), not a
+// flat MS-Paint slab. Layout (drawn procedurally into the buffer below):
+//   * a deep-blue glass BASE with a top->bottom backlit gradient, fine cyan
+//     SCANLINES + a faint data-grid + soft vignette UNDER the line-art (so it
+//     still reads as a shimmering hologram),
+//   * a TOP HEADER bar (rule + hexagon emblem; the live title text is rendered
+//     ON-GLASS by the host's drawHoloReadout over a clear header strip),
+//   * a BRACKET-CORNERED frame around the whole UI with one chamfered corner,
+//   * a LEFT column of small icon squares + rows of fine "data text" tick-marks,
+//   * a CENTER schematic — a rounded-rect node with branching lines + labels and
+//     a downward chevron below it,
+//   * a RIGHT column with three warning-triangle icons, 2-3 label+value-bar data
+//     fields, and a solid bright indicator square,
+//   * a BOTTOM dotted/coded data strip across the width.
 // The main mesh pass is opaque, so translucency is FAKED by darkening the texture
-// (dark + emissive*color -> glows over the dark scene = reads like glowing glass).
+// (dark base + bright emissive line-art glows over the dark scene = glowing glass).
 // Tileable is irrelevant (one quad, UV 0..1). Output srgb=true (color texture).
 // ---------------------------------------------------------------------------
+
+// Float RGB framebuffer the line-art is composited into. Lines ADD light (so the
+// cyan strokes bloom over the dark glass). One channel triple per pixel.
+struct Canvas {
+    uint32_t n;
+    std::vector<float> r, g, b;
+    explicit Canvas(uint32_t nn) : n(nn), r((size_t)nn*nn,0), g((size_t)nn*nn,0), b((size_t)nn*nn,0) {}
+    inline void add(int x, int y, float rr, float gg, float bb, float a) {
+        if (x < 0 || y < 0 || x >= (int)n || y >= (int)n) return;
+        const size_t i = (size_t)y * n + x;
+        r[i] += rr * a; g[i] += gg * a; b[i] += bb * a;
+    }
+};
+
+// Additive 1px-soft point (a 2x2 footprint with sub-pixel coverage) so diagonal /
+// thin strokes don't alias into dotted lines — cheap anti-aliasing for the HUD.
+inline void plot(Canvas& c, float fx, float fy, float r, float g, float b, float a) {
+    const int x0 = (int)std::floor(fx), y0 = (int)std::floor(fy);
+    const float tx = fx - x0, ty = fy - y0;
+    c.add(x0,   y0,   r,g,b, a*(1-tx)*(1-ty));
+    c.add(x0+1, y0,   r,g,b, a*(tx)*(1-ty));
+    c.add(x0,   y0+1, r,g,b, a*(1-tx)*(ty));
+    c.add(x0+1, y0+1, r,g,b, a*(tx)*(ty));
+}
+
+// Anti-aliased line of given thickness (in px) from (x0,y0) to (x1,y1).
+inline void line(Canvas& c, float x0, float y0, float x1, float y1,
+                 float r, float g, float b, float a, float thick = 1.6f) {
+    const float dx = x1 - x0, dy = y1 - y0;
+    const float len = std::sqrt(dx*dx + dy*dy);
+    if (len < 0.001f) { plot(c, x0, y0, r,g,b, a); return; }
+    const float nx = dx / len, ny = dy / len;       // step direction
+    const float px = -ny, py = nx;                   // perpendicular (for thickness)
+    const int steps = (int)(len + 1.0f);
+    const int half = (int)std::ceil(thick * 0.5f);
+    for (int s = 0; s <= steps; ++s) {
+        const float cxp = x0 + nx * s, cyp = y0 + ny * s;
+        for (int t = -half; t <= half; ++t) {
+            const float d = std::fabs((float)t);
+            const float cov = 1.0f - std::max(0.0f, (d - thick*0.5f + 0.5f)); // soft edge
+            if (cov <= 0.0f) continue;
+            plot(c, cxp + px * t, cyp + py * t, r,g,b, a * (cov > 1 ? 1 : cov));
+        }
+    }
+}
+
+// Axis-aligned rectangle OUTLINE (thin stroke).
+inline void rectFrame(Canvas& c, float x0, float y0, float x1, float y1,
+                      float r, float g, float b, float a, float thick = 1.6f) {
+    line(c, x0,y0, x1,y0, r,g,b,a,thick);
+    line(c, x1,y0, x1,y1, r,g,b,a,thick);
+    line(c, x1,y1, x0,y1, r,g,b,a,thick);
+    line(c, x0,y1, x0,y0, r,g,b,a,thick);
+}
+
+// FILLED rectangle (solid additive block — value bars / indicators).
+inline void rectFill(Canvas& c, float x0, float y0, float x1, float y1,
+                     float r, float g, float b, float a) {
+    const int ix0 = (int)x0, iy0 = (int)y0, ix1 = (int)x1, iy1 = (int)y1;
+    for (int y = iy0; y <= iy1; ++y)
+        for (int x = ix0; x <= ix1; ++x)
+            c.add(x, y, r,g,b, a);
+}
+
+// Rounded-rect OUTLINE (a "node" box) — straight edges + quarter-arc corners.
+inline void roundRectFrame(Canvas& c, float x0, float y0, float x1, float y1, float rad,
+                           float r, float g, float b, float a, float thick = 1.6f) {
+    line(c, x0+rad,y0, x1-rad,y0, r,g,b,a,thick);   // top
+    line(c, x0+rad,y1, x1-rad,y1, r,g,b,a,thick);   // bottom
+    line(c, x0,y0+rad, x0,y1-rad, r,g,b,a,thick);   // left
+    line(c, x1,y0+rad, x1,y1-rad, r,g,b,a,thick);   // right
+    struct Cn { float cx, cy, a0; } cn[4] = {
+        { x1-rad, y0+rad, -1.57079633f }, { x1-rad, y1-rad, 0.0f },
+        { x0+rad, y1-rad, 1.57079633f }, { x0+rad, y0+rad, 3.14159265f },
+    };
+    for (auto& k : cn) {
+        const int seg = 8;
+        float pxp = k.cx + std::cos(k.a0) * rad, pyp = k.cy + std::sin(k.a0) * rad;
+        for (int s = 1; s <= seg; ++s) {
+            const float aa = k.a0 + 1.57079633f * ((float)s/seg);
+            const float nxp = k.cx + std::cos(aa) * rad, nyp = k.cy + std::sin(aa) * rad;
+            line(c, pxp,pyp, nxp,nyp, r,g,b,a,thick);
+            pxp = nxp; pyp = nyp;
+        }
+    }
+}
+
+// Bracket-corner HUD frame: instead of a full rectangle, draw right-angle corner
+// brackets (L-shapes) at each corner + short edge ticks. One corner (top-right) is
+// CHAMFERED (clipped at 45 deg) for the sci-fi "cut corner" look in the reference.
+inline void bracketFrame(Canvas& c, float x0, float y0, float x1, float y1,
+                         float arm, float chamf, float r, float g, float b, float a, float thick) {
+    // top-left
+    line(c, x0,y0, x0+arm,y0, r,g,b,a,thick);
+    line(c, x0,y0, x0,y0+arm, r,g,b,a,thick);
+    // bottom-left
+    line(c, x0,y1, x0+arm,y1, r,g,b,a,thick);
+    line(c, x0,y1, x0,y1-arm, r,g,b,a,thick);
+    // bottom-right
+    line(c, x1,y1, x1-arm,y1, r,g,b,a,thick);
+    line(c, x1,y1, x1,y1-arm, r,g,b,a,thick);
+    // top-right CHAMFERED corner: the two arms stop short of the corner and a 45-deg
+    // cut joins them (the clipped/beveled corner from the reference).
+    line(c, x1-chamf,y0, x1-arm-chamf,y0, r,g,b,a,thick);  // short top arm
+    line(c, x1,y0+chamf, x1,y0+arm+chamf, r,g,b,a,thick);  // short right arm
+    line(c, x1-chamf,y0, x1,y0+chamf, r,g,b,a,thick);      // the 45-deg chamfer cut
+    // faint connecting edges so the frame reads as a continuous border (dim).
+    line(c, x0+arm,y0, x1-arm-chamf,y0, r,g,b,a*0.30f,thick*0.7f); // top
+    line(c, x0+arm,y1, x1-arm,y1, r,g,b,a*0.30f,thick*0.7f);       // bottom
+    line(c, x0,y0+arm, x0,y1-arm, r,g,b,a*0.30f,thick*0.7f);       // left
+    line(c, x1,y0+arm+chamf, x1,y1-arm, r,g,b,a*0.30f,thick*0.7f); // right
+}
+
+// Hexagon OUTLINE (the small header emblem).
+inline void hexagon(Canvas& c, float cx, float cy, float rad,
+                    float r, float g, float b, float a, float thick) {
+    float pxp = 0, pyp = 0;
+    for (int s = 0; s <= 6; ++s) {
+        const float aa = 0.5235988f + 1.04719755f * s;   // 30deg start, 60deg steps
+        const float nxp = cx + std::cos(aa) * rad, nyp = cy + std::sin(aa) * rad;
+        if (s > 0) line(c, pxp,pyp, nxp,nyp, r,g,b,a,thick);
+        pxp = nxp; pyp = nyp;
+    }
+}
+
+// Warning triangle (△ with a "!" inside) — outline + a vertical bar + a dot.
+inline void warnTriangle(Canvas& c, float cx, float topY, float halfW, float h,
+                        float r, float g, float b, float a, float thick) {
+    const float apexX = cx, apexY = topY;
+    const float blX = cx - halfW, brX = cx + halfW, baseY = topY + h;
+    line(c, apexX,apexY, blX,baseY, r,g,b,a,thick);
+    line(c, apexX,apexY, brX,baseY, r,g,b,a,thick);
+    line(c, blX,baseY, brX,baseY, r,g,b,a,thick);
+    // exclamation bar + dot
+    const float exTop = apexY + h*0.34f, exBot = apexY + h*0.66f;
+    line(c, cx, exTop, cx, exBot, r,g,b,a, thick);
+    rectFill(c, cx-thick*0.5f, apexY + h*0.76f, cx+thick*0.5f, apexY + h*0.82f, r,g,b,a);
+}
+
+// Downward chevron (▽ open arrow).
+inline void chevronDown(Canvas& c, float cx, float topY, float halfW, float h,
+                       float r, float g, float b, float a, float thick) {
+    line(c, cx-halfW, topY, cx, topY+h, r,g,b,a,thick);
+    line(c, cx+halfW, topY, cx, topY+h, r,g,b,a,thick);
+}
+
 std::vector<uint8_t> makeHologramRGBA(uint32_t n) {
-    std::vector<uint8_t> px((size_t)n * n * 4);
     const float fn = (float)n;
-    const float r2corner = 0.30f;          // rounded-corner radius (fraction of half-size)
+
+    // ---- 1) GLASS BASE (under the line-art): deep-blue gradient + scanlines +
+    // grid + vignette, EXACTLY as before so it still reads as a hologram. ----
+    Canvas c(n);
     for (uint32_t y = 0; y < n; ++y) {
         for (uint32_t x = 0; x < n; ++x) {
-            uint8_t* p = &px[((size_t)y * n + x) * 4];
-            const float u = (x + 0.5f) / fn;          // 0..1 left->right
-            const float v = (y + 0.5f) / fn;          // 0..1 top->bottom
-
-            // Deep-blue glass base with a top->bottom backlit gradient.
-            float br = 0.05f, bg = 0.16f, bb = 0.34f;   // base glass (low, so emissive carries it)
-            const float grad = 1.0f - v * 0.55f;        // brighter toward the top
+            const float u = (x + 0.5f) / fn, v = (y + 0.5f) / fn;
+            float br = 0.05f, bg = 0.16f, bb = 0.34f;
+            const float grad = 1.0f - v * 0.55f;            // brighter toward the top
             br *= grad; bg *= grad; bb *= grad;
-
-            // Fine horizontal SCANLINES (every few px) + faint vertical GRID lines.
             const float scan = 0.78f + 0.22f * ((y % 4u) < 2u ? 1.0f : 0.55f);
             br *= scan; bg *= scan; bb *= scan;
-            if ((x % 28u) < 1u || (y % 28u) < 1u) {     // sparse data-grid
-                bg += 0.10f; bb += 0.16f;
-            }
-
-            // Bright HEADER strip across the top (a title bar) + a thin underline.
-            if (v < 0.12f)              { bg += 0.30f; bb += 0.42f; br += 0.06f; }
-            else if (v < 0.135f)        { bg += 0.55f; bb += 0.70f; }   // header underline glow
-
-            // Soft inner VIGNETTE so the center reads brightest.
+            if ((x % 28u) < 1u || (y % 28u) < 1u) { bg += 0.10f; bb += 0.16f; } // data-grid
             const float cx = (u - 0.5f), cy = (v - 0.5f);
-            const float rad = std::sqrt(cx * cx + cy * cy) * 1.42f;     // 0 center -> ~1 corner
+            const float rad = std::sqrt(cx*cx + cy*cy) * 1.42f;
             const float vig = 1.0f - 0.45f * rad * rad;
             br *= vig; bg *= vig; bb *= vig;
+            const size_t i = (size_t)y * n + x;
+            c.r[i] = br; c.g[i] = bg; c.b[i] = bb;
+        }
+    }
 
-            // ROUNDED-CORNER fade: distance into each corner past the rounding radius
-            // crushes toward black so the silhouette reads as a rounded translucent
-            // panel (the strong emissive makes the lit area glow; the corners die).
-            const float ax = std::fabs(cx) * 2.0f, ay = std::fabs(cy) * 2.0f; // 0..1 each axis
+    // ---- 2) LINE-ART HUD (additive cyan/white). All coordinates in pixels, scaled
+    // off n so it stays crisp at 1024^2. Layout follows the reference photos.
+    // Strokes are pushed HOT (cyan well above the glass base) so the printed HUD
+    // survives the flat additive emissive flood + reads under scene lighting. ----
+    auto P = [&](float f){ return f * fn; };                // fraction -> pixels
+    const float CY_R = 0.55f, CY_G = 1.30f, CY_B = 1.45f;   // hot cyan stroke (HDR-ish)
+    const float WT_R = 1.30f, WT_G = 1.55f, WT_B = 1.65f;   // hot cyan-white
+    const float th  = std::max(1.4f, fn / 512.0f);          // base stroke thickness
+    const float thh = th * 1.5f;                            // heavier strokes
+
+    // Whole-UI bracket frame with a chamfered top-right corner.
+    bracketFrame(c, P(0.045f), P(0.05f), P(0.955f), P(0.95f),
+                 P(0.075f), P(0.055f), CY_R,CY_G,CY_B, 0.95f, thh);
+
+    // --- TOP HEADER: rule + hexagon emblem at the left end. The TITLE TEXT itself is
+    // rendered on-glass by the host (drawHoloReadout) over this clear strip. ---
+    const float hdrY = P(0.135f);
+    hexagon(c, P(0.085f), P(0.092f), P(0.030f), WT_R,WT_G,WT_B, 1.0f, thh);
+    line(c, P(0.085f)-P(0.012f), P(0.092f), P(0.085f)+P(0.012f), P(0.092f), WT_R,WT_G,WT_B,0.9f, th); // emblem tick
+    line(c, P(0.130f), hdrY, P(0.92f), hdrY, WT_R,WT_G,WT_B, 1.0f, thh);   // header rule
+    line(c, P(0.130f), hdrY+P(0.010f), P(0.55f), hdrY+P(0.010f), CY_R,CY_G,CY_B, 0.5f, th); // sub-rule
+
+    // --- LEFT COLUMN: icon squares + rows of fine "data text" tick blocks. ---
+    const float lx0 = P(0.075f), lx1 = P(0.345f);
+    // three little icon squares
+    for (int i = 0; i < 3; ++i) {
+        const float ix = lx0 + i * P(0.055f);
+        rectFrame(c, ix, P(0.20f), ix + P(0.035f), P(0.235f), CY_R,CY_G,CY_B, 0.9f, th);
+        if (i == 1) line(c, ix, P(0.20f), ix+P(0.035f), P(0.235f), CY_R,CY_G,CY_B,0.7f,th); // diag detail
+    }
+    // paragraphs of short tick-marks (read as fine data text from a distance)
+    {
+        float ty = P(0.275f);
+        const float rowH = P(0.026f);
+        for (int row = 0; row < 14; ++row) {
+            // each row is a run of short blocks of varied length (like words)
+            float cxr = lx0;
+            const int words = 3 + (row * 7 + 2) % 4;
+            for (int w = 0; w < words; ++w) {
+                const float wlen = P(0.018f) + P(0.010f) * ((row*5 + w*3) % 4);
+                if (cxr + wlen > lx1) break;
+                const float bright = (row % 5 == 0 && w == 0) ? 0.85f : 0.45f; // first word of some rows brighter
+                line(c, cxr, ty, cxr + wlen, ty, CY_R,CY_G,CY_B, bright, th);
+                cxr += wlen + P(0.012f);
+            }
+            ty += rowH;
+            if (ty > P(0.86f)) break;
+        }
+    }
+    // a faint vertical divider after the left column
+    line(c, lx1 + P(0.015f), P(0.19f), lx1 + P(0.015f), P(0.87f), CY_R,CY_G,CY_B, 0.25f, th);
+
+    // --- CENTER SCHEMATIC: a rounded-rect node + branching horizontal lines with
+    // tiny end-nodes + labels, and a downward chevron below it. Kept LEFT of the
+    // right column (branches stop before x=0.66) so the two zones don't collide. ---
+    const float ncx = P(0.500f), ncy = P(0.41f);
+    const float nhw = P(0.072f), nhh = P(0.058f);
+    roundRectFrame(c, ncx-nhw, ncy-nhh, ncx+nhw, ncy+nhh, P(0.020f), WT_R,WT_G,WT_B, 0.95f, thh);
+    // a couple of inner detail lines (the node "label rows")
+    line(c, ncx-nhw+P(0.012f), ncy-P(0.018f), ncx+nhw-P(0.012f), ncy-P(0.018f), CY_R,CY_G,CY_B,0.6f,th);
+    line(c, ncx-nhw+P(0.012f), ncy+P(0.010f), ncx+nhw-P(0.025f), ncy+P(0.010f), CY_R,CY_G,CY_B,0.5f,th);
+    // three branching lines off the right side with small node squares + label ticks
+    const float bx0 = ncx + nhw;
+    for (int i = 0; i < 3; ++i) {
+        const float by = ncy - P(0.032f) + i * P(0.032f);
+        const float bxEnd = P(0.625f);
+        line(c, bx0, ncy, bx0 + P(0.016f), by, CY_R,CY_G,CY_B, 0.7f, th);  // angled spur
+        line(c, bx0 + P(0.016f), by, bxEnd, by, CY_R,CY_G,CY_B, 0.7f, th); // horizontal run
+        rectFrame(c, bxEnd, by-P(0.009f), bxEnd+P(0.018f), by+P(0.009f), CY_R,CY_G,CY_B,0.8f,th); // end node
+    }
+    // a branch DOWN to the chevron
+    line(c, ncx, ncy+nhh, ncx, ncy+nhh+P(0.030f), CY_R,CY_G,CY_B, 0.7f, th);
+    chevronDown(c, ncx, ncy+nhh+P(0.030f), P(0.028f), P(0.026f), WT_R,WT_G,WT_B, 0.95f, thh);
+
+    // --- RIGHT COLUMN: three warning triangles, data fields (label + value bar),
+    // and a solid indicator square. ---
+    const float rx0 = P(0.70f), rx1 = P(0.92f);
+    for (int i = 0; i < 3; ++i) {
+        const float tx = rx0 + i * P(0.075f);
+        warnTriangle(c, tx + P(0.030f), P(0.205f), P(0.030f), P(0.052f), WT_R,WT_G,WT_B, 0.95f, th);
+    }
+    // 3 data fields: a label tick + a bright value bar
+    {
+        float fy = P(0.33f);
+        const float fieldH = P(0.06f);
+        const float barLens[3] = { 0.62f, 0.40f, 0.85f };
+        for (int i = 0; i < 3; ++i) {
+            line(c, rx0, fy, rx0 + P(0.06f), fy, CY_R,CY_G,CY_B, 0.6f, th);          // label tick
+            // bar track (dim) + bright fill
+            const float barY = fy + P(0.014f);
+            rectFrame(c, rx0, barY, rx1, barY + P(0.018f), CY_R,CY_G,CY_B, 0.4f, th);
+            const float fillX = rx0 + (rx1 - rx0) * barLens[i];
+            rectFill(c, rx0+th, barY+th, fillX, barY + P(0.018f) - th, WT_R,WT_G,WT_B, 0.85f);
+            fy += fieldH;
+        }
+        // solid bright indicator square at the bottom of the right column
+        rectFill(c, rx1 - P(0.030f), fy + P(0.005f), rx1, fy + P(0.035f), WT_R,WT_G,WT_B, 1.0f);
+        line(c, rx0, fy + P(0.020f), rx1 - P(0.045f), fy + P(0.020f), CY_R,CY_G,CY_B, 0.5f, th);
+    }
+
+    // --- BOTTOM dotted/coded data strip across the width. ---
+    {
+        const float by = P(0.875f);
+        line(c, P(0.075f), by - P(0.014f), P(0.92f), by - P(0.014f), CY_R,CY_G,CY_B, 0.6f, th);
+        float dx = P(0.075f);
+        int k = 0;
+        while (dx < P(0.92f)) {
+            const float dlen = (k % 3 == 0) ? P(0.020f) : ((k % 3 == 1) ? P(0.008f) : P(0.013f));
+            const float bright = (k % 4 == 0) ? 0.95f : 0.55f;
+            line(c, dx, by, dx + dlen, by, CY_R,CY_G,CY_B, bright, thh);
+            dx += dlen + P(0.009f);
+            ++k;
+        }
+    }
+
+    // ---- 3) ROUNDED-CORNER + edge FADE applied to the composited result, so the
+    // silhouette reads as a rounded translucent panel (corners die toward black). ----
+    const float r2corner = 0.30f;
+    std::vector<uint8_t> px((size_t)n * n * 4);
+    auto to8 = [](float c0) -> uint8_t {
+        int v = (int)(c0 * 255.0f + 0.5f);
+        return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
+    };
+    for (uint32_t y = 0; y < n; ++y) {
+        for (uint32_t x = 0; x < n; ++x) {
+            const float u = (x + 0.5f) / fn, v = (y + 0.5f) / fn;
+            const float cx = (u - 0.5f), cy = (v - 0.5f);
+            const float ax = std::fabs(cx) * 2.0f, ay = std::fabs(cy) * 2.0f;
             float fade = 1.0f;
             const float inx = 1.0f - r2corner, iny = 1.0f - r2corner;
             if (ax > inx && ay > iny) {
                 const float dx = (ax - inx) / r2corner, dy = (ay - iny) / r2corner;
-                const float cd = std::sqrt(dx * dx + dy * dy);           // 0 at radius -> >1 outside
-                fade = 1.0f - cd;
-                if (fade < 0.0f) fade = 0.0f;
+                const float cd = std::sqrt(dx*dx + dy*dy);
+                fade = 1.0f - cd; if (fade < 0.0f) fade = 0.0f;
             }
-            // Also fade the extreme outer rim a touch so even straight edges feather.
             const float edge = 1.0f - 0.6f * std::max(0.0f, std::max(ax, ay) - 0.92f) / 0.08f;
             fade *= (edge < 0.0f ? 0.0f : edge);
-
-            br *= fade; bg *= fade; bb *= fade;
-
-            auto to8 = [](float c) -> uint8_t {
-                int v = (int)(c * 255.0f + 0.5f);
-                return (uint8_t)(v < 0 ? 0 : v > 255 ? 255 : v);
-            };
-            p[0] = to8(br); p[1] = to8(bg); p[2] = to8(bb); p[3] = 255;
+            const size_t i = (size_t)y * n + x;
+            uint8_t* p = &px[i * 4];
+            p[0] = to8(c.r[i] * fade);
+            p[1] = to8(c.g[i] * fade);
+            p[2] = to8(c.b[i] * fade);
+            p[3] = 255;
         }
     }
     return px;
@@ -129,6 +394,26 @@ x3::prims::PrimMesh makeRoundedPanel(float hw, float hh, float corner) {
         // CCW so it faces +Z (matches VK_FRONT_FACE_COUNTER_CLOCKWISE).
         m.index.push_back(0); m.index.push_back(a); m.index.push_back(b);
     }
+    // DOUBLE-SIDED: the terminal is mounted with yaw that points the +Z front face
+    // away from the player. The mesh pipeline uses VK_CULL_MODE_NONE so a single fan
+    // would still draw, but a back fan with its OWN -Z normal makes the lit term read
+    // correctly (the diffuse N.L stays positive) from the player side too. Same UVs so
+    // the line-art HUD reads upright no matter which side faces the viewer. ----
+    const uint32_t base = (uint32_t)m.verts.size();
+    const float backZ = -0.001f;     // a hair behind in LOCAL -Z (avoids coplanar z-fight)
+    auto pushBack = [&](float x, float y){
+        const float uu = (x + hw) / (2.0f * hw);
+        const float vv = 1.0f - (y + hh) / (2.0f * hh);
+        m.verts.push_back({{x, y, backZ}, {0.0f, 0.0f, -1.0f}, {uu, vv}});
+    };
+    pushBack(0.0f, 0.0f);             // back center (index base)
+    for (uint32_t i = 0; i < rn; ++i) pushBack(ring[i*2], ring[i*2+1]);
+    for (uint32_t i = 0; i < rn; ++i) {
+        const uint32_t a = base + 1 + i, b = base + 1 + ((i + 1) % rn);
+        // Reversed winding (b,a) so this fan's visible side is the -Z LOCAL face,
+        // which after the terminal's yaw rotation faces the player.
+        m.index.push_back(base); m.index.push_back(b); m.index.push_back(a);
+    }
     return m;
 }
 } // namespace
@@ -161,8 +446,10 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     const float hw = width * 0.5f, hh = height * 0.5f;
 
     // Build the procedural hologram UI texture once (shared by the screen quad).
+    // 1024^2 so the fine cyan line-art (brackets, schematic, tick-row data text,
+    // warning triangles, dotted strip) stays crisp on the projected glass.
     {
-        const uint32_t TN = 256;
+        const uint32_t TN = 1024;
         std::vector<uint8_t> holo = makeHologramRGBA(TN);
         m_holoTex = device.createTexture(holo.data(), TN, TN, /*srgb*/true);
     }
@@ -170,9 +457,15 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // ---- Thin emissive sci-fi BEZEL: four slim glowing rounded-look rails framing
     // the glass (NOT a chunky gray box). A faint dark backplate sits just behind so
     // the glow rim reads against it. The rails are thin + bright so they bloom like
-    // the env-art console trim. ----
-    m_decor.push_back(addBox(hw+0.05f, hh+0.05f, 0.010f, 0,0,-0.018f,
-                             0.02f,0.05f,0.10f, 1.0f,  0.05f,0.18f,0.32f, 0.5f));  // dark backplate (glow catcher)
+    // the env-art console trim.
+    // NOTE on Z SIGN: the terminal is mounted with yaw=PI, which maps a NEGATIVE local
+    // oz to the +Z world (the PLAYER) side. The full-size backplate must sit BEHIND the
+    // glass (away from the player) or it occludes the line-art HUD, so its oz is
+    // POSITIVE (local +Z -> world -Z, into the wall). The thin perimeter rails stay a
+    // hair toward the player (negative oz) so they read as a frame without covering the
+    // glass center. ----
+    m_decor.push_back(addBox(hw+0.05f, hh+0.05f, 0.010f, 0,0,+0.022f,
+                             0.02f,0.05f,0.10f, 1.0f,  0.05f,0.18f,0.32f, 0.5f));  // dark backplate (behind glass)
     m_decor.push_back(addBox(hw+0.06f, 0.012f, 0.018f, 0,  hh+0.045f, -0.004f, 0,0,0,1, 0.25f,0.85f,1.0f, 2.6f)); // top rail
     m_decor.push_back(addBox(hw+0.06f, 0.012f, 0.018f, 0, -hh-0.045f, -0.004f, 0,0,0,1, 0.25f,0.85f,1.0f, 2.6f)); // bottom rail
     m_decor.push_back(addBox(0.012f, hh+0.045f, 0.018f, -hw-0.045f, 0, -0.004f, 0,0,0,1, 0.25f,0.85f,1.0f, 2.6f)); // left rail
@@ -192,7 +485,7 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     const float armH = (armTopY - armBotY) * 0.5f;
     if (armH > 0.05f) {
         const float armMidY = (armTopY + armBotY) * 0.5f - pos.y;  // local oy
-        const float armBackZ = -0.06f;                              // behind the screen plane
+        const float armBackZ = +0.06f;                              // BEHIND the glass (into the wall, away from player)
         // Slim glass spar (faint blue, slight emissive sheen) — not a fat gray bar.
         m_decor.push_back(addBox(0.035f, armH, 0.035f, 0, armMidY, armBackZ,
                                  0.10f,0.20f,0.30f, 1.0f,  0.12f,0.35f,0.55f, 0.6f));
@@ -213,10 +506,15 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                geo.index.data(), (uint32_t)geo.index.size());
     e.tex = m_holoTex;                                  // procedural hologram UI
-    // Dark, slightly-blue base so the lit albedo stays low and the EMISSIVE glow is
-    // what you see (a translucent-looking glowing hologram, not an opaque cyan box).
-    e.baseColor[0] = 0.45f; e.baseColor[1] = 0.70f; e.baseColor[2] = 1.0f; e.baseColor[3] = 1.0f;
-    m_emBase[0] = 0.22f; m_emBase[1] = 0.72f; m_emBase[2] = 1.0f; m_emBase[3] = 1.9f;
+    // The mesh shader adds a FLAT per-object emissive on top of (albedo*lighting), so
+    // a high uniform emissive floods the whole quad and DROWNS the textured line-art.
+    // To let the SECURITY-CONSOLE line-art read, keep baseColor bright (full albedo so
+    // the bright cyan strokes survive the lit term) + use a MODERATE emissive that
+    // gives the glass a hologram glow/bloom without washing out the printed HUD.
+    e.baseColor[0] = 1.0f; e.baseColor[1] = 1.0f; e.baseColor[2] = 1.0f; e.baseColor[3] = 1.0f;
+    // Moderate emissive: gives the glass a hologram glow / bloom WITHOUT flooding out
+    // the textured line-art (which rides the full-albedo lit term). Pulsed in update().
+    m_emBase[0] = 0.10f; m_emBase[1] = 0.34f; m_emBase[2] = 0.52f; m_emBase[3] = 0.45f;
     e.emissive[0]=m_emBase[0]; e.emissive[1]=m_emBase[1]; e.emissive[2]=m_emBase[2]; e.emissive[3]=m_emBase[3];
     e.tag = (uint32_t)Tag::Prop;
     e.transform[0]=cs;  e.transform[2]=-sn;
@@ -243,8 +541,10 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_scanEntity = scene.add(se);
 
     // Boot readout — replaces "old and blank". The Awakening terminal (EFLZ §3).
+    // Line 0 is the HEADER TITLE rendered on-glass over the procedural header strip
+    // (matches the reference: "SECURITY CELL 07 — STATUS: SECURE").
     m_lines = {
-        "DETENTION TERMINAL  // CELL 01",
+        "SECURITY CELL 07  --  STATUS: SECURE",
         "----------------------------------",
         "SUBJECT: JAKE        STATUS: AUGMENTED",
         "MUSCULOSKELETAL OUTPUT: +400%",
