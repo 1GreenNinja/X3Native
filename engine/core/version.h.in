@@ -1,0 +1,36 @@
+// ============================================================================
+// X3Native — generated version header (DO NOT EDIT, DO NOT COMMIT).
+//
+// This file is produced from engine/core/version.h.in by cmake/GitVersion.cmake
+// at every build. The MAJOR.MINOR pair lives in ONE editable place (the
+// X3_VERSION_MAJOR / X3_VERSION_MINOR CMake cache vars in the root CMakeLists,
+// see docs/VERSIONING.md). BUILD is the zero-padded (5-digit) git commit count
+// `git rev-list --count HEAD`; the short hash comes from `git rev-parse --short HEAD`.
+//
+// Scheme: MAJOR.MINOR.BUILD = 0.3.NNNNN  e.g. "0.3.00284"
+// Full:   "0.3.00284 (c3c74e1)"
+//
+// Clean-room: no third-party engine source. Pure CMake + git + configure_file.
+// ============================================================================
+#pragma once
+
+#define X3_VERSION_MAJOR  @X3_VERSION_MAJOR@
+#define X3_VERSION_MINOR  @X3_VERSION_MINOR@
+#define X3_VERSION_BUILD  @X3_VERSION_BUILD@           // integer commit count
+
+// Zero-padded 5-digit build, the short git hash, and the pre-baked strings.
+#define X3_VERSION_BUILD_STR "@X3_VERSION_BUILD_STR@"  // "00284"
+#define X3_GIT_HASH          "@X3_GIT_HASH@"           // "c3c74e1" or "nogit"
+
+// "0.3.00284"
+#define X3_VERSION_STRING "@X3_VERSION_STRING@"
+
+// "0.3.00284 (c3c74e1)"
+#define X3_VERSION_FULL "@X3_VERSION_FULL@"
+
+namespace x3 {
+// The human-readable full identity, e.g. "0.3.00284 (c3c74e1)".
+inline const char* versionFull()   { return X3_VERSION_FULL; }
+// Just the MAJOR.MINOR.BUILD triple, e.g. "0.3.00284".
+inline const char* versionString() { return X3_VERSION_STRING; }
+} // namespace x3

@@ -6,6 +6,7 @@
 #include "headless_device.h"   // shared no-op IRenderDevice (for --test-ui)
 
 #include "engine/core/x3_log.h"
+#include "engine/core/version.h"   // generated: X3_VERSION_FULL (menu version line)
 
 #include <cstdio>
 #include <cstring>
@@ -204,7 +205,14 @@ GameState MainMenu::update(UiContext& ui, const char* title, const char* subtitl
     ui.textCentered(title, cx, h * 0.20f, titlePx, titleCol);
     const float subPx = std::max(14.0f, titlePx * 0.26f);
     const float subCol[4] = { 0.70f, 0.78f, 0.80f, 1.0f };
-    ui.textCentered(subtitle, cx, h * 0.20f + titlePx + 12.0f, subPx, subCol);
+    const float subY = h * 0.20f + titlePx + 12.0f;
+    ui.textCentered(subtitle, cx, subY, subPx, subCol);
+
+    // Version line, small + dim, just under the subtitle (so the menu identifies
+    // the build). Source: generated engine/core/version.h. See docs/VERSIONING.md.
+    const float verPx = std::max(11.0f, subPx * 0.62f);
+    const float verCol[4] = { 0.45f, 0.60f, 0.68f, 0.85f };
+    ui.textCentered("X3 v" X3_VERSION_FULL, cx, subY + subPx + 8.0f, verPx, verCol);
 
     // Buttons stacked + centered.
     const float bw = std::min(360.0f, w * 0.5f);
@@ -430,6 +438,17 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         const float red[4] = { 0.9f, 0.12f, 0.12f, 1.0f };
         ui.textCentered("YOU DIED", w * 0.5f, h * 0.5f - big, big, red);
         ui.textCentered("Respawning...", w * 0.5f, h * 0.5f + 8.0f, 16.0f, kColTextDim);
+    }
+
+    // ---- Version watermark (bottom-right corner) ---------------------------
+    // Tiny build-id so every screenshot self-identifies. Source: generated
+    // engine/core/version.h. See docs/VERSIONING.md.
+    if (m.showVersion) {
+        const char* ver = "v" X3_VERSION_STRING;   // "v0.3.00284" (corner stays compact)
+        const float verPx = 12.0f;
+        const float verW = UiContext::textWidth(ver, verPx);
+        const float verCol[4] = { 0.55f, 0.65f, 0.70f, 0.55f };
+        ui.text(ver, w - verW - 8.0f, h - verPx - 4.0f, verPx, verCol);
     }
 }
 

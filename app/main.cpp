@@ -9,6 +9,7 @@
 #include "engine/core/x3_log.h"
 #include "engine/core/IConsole.h"
 #include "engine/core/IJobSystem.h"
+#include "engine/core/version.h"   // generated build identity: --version / --test-version / startup banner
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/asset/IAssetSource.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -68,6 +69,7 @@
 #include <cstdio>
 #include <thread>     // r_maxfps frame limiter
 #include <chrono>
+#include <regex>      // --test-version well-formedness check
 
 // Public-domain single-header GIF encoder (Charlie Tangora) — vendored under
 // third_party/gif_h. Used ONLY by the headless --capture-ai tool below to assemble
@@ -606,9 +608,79 @@ private:
     float  m_maxDelta  = 0.0f;
 };
 
+// ---------------------------------------------------------------------------
+// Version reporting (--version) + its self-test (--test-version).
+// See docs/VERSIONING.md. The string is compiled in from the generated
+// engine/core/version.h (CMake stamps it from git at build time).
+// ---------------------------------------------------------------------------
+
+// The exact text printed by --version (also exercised by --test-version).
+// e.g. "X3 v0.3.00284 (c3c74e1)".
+std::string versionLine() { return std::string("X3 v") + X3_VERSION_FULL; }
+
+// --version: print the build identity and exit 0.
+int runVersionFlag() {
+    std::printf("%s\n", versionLine().c_str());
+    std::fflush(stdout);
+    return 0;
+}
+
+// --test-version: assert the version string is non-empty + well-formed
+// (^0\.3\.\d{5}$), that the console `version` command reports it, and that the
+// --version path produces it. Prints "version: X/Y passed". Returns true if all pass.
+bool runVersionSelfTest() {
+    int pass = 0, total = 0;
+    auto check = [&](bool c, const char* name) {
+        ++total;
+        if (c) { ++pass; x3::logInfo(std::string("[ver-test] PASS ") + name); }
+        else   {          x3::logError(std::string("[ver-test] FAIL ") + name); }
+    };
+
+    // T1: X3_VERSION_STRING non-empty.
+    const std::string vstr = X3_VERSION_STRING;
+    check(!vstr.empty(), "T1 X3_VERSION_STRING non-empty");
+
+    // T2: well-formed "^0\.3\.\d{5}$" (MAJOR.MINOR fixed at 0.3; BUILD = 5 digits).
+    check(std::regex_match(vstr, std::regex(R"(^0\.3\.\d{5}$)")), "T2 matches ^0\\.3\\.\\d{5}$");
+
+    // T3: full string is "<string> (<hash>)" and contains the version string + a hash.
+    const std::string vfull = X3_VERSION_FULL;
+    check(std::regex_match(vfull, std::regex(R"(^0\.3\.\d{5} \([0-9a-f]+|nogit\)$)")) ||
+          vfull == (vstr + " (" X3_GIT_HASH ")"),
+          "T3 X3_VERSION_FULL well-formed");
+
+    // T4: the console `version` command (the real registration path) reports the
+    // version. Register exactly as Hud::init does and exec it; read it back from
+    // the console output log.
+    {
+        x3::con::IConsole* c = x3::con::createConsole();
+        c->registerCommand("version", [c](const std::vector<std::string>&) {
+            c->print(std::string("X3 v") + X3_VERSION_FULL);
+        }, "print version");
+        c->exec("version");
+        const auto& lines = c->outputLines();
+        bool found = !lines.empty() && lines.back() == versionLine();
+        check(found, "T4 console `version` reports X3_VERSION_FULL");
+        delete c;
+    }
+
+    // T5: the --version code path yields exit 0 and prints versionLine().
+    check(runVersionFlag() == 0 && versionLine() == (std::string("X3 v") + X3_VERSION_FULL),
+          "T5 --version path");
+
+    x3::logInfo("version: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+    std::printf("version: %d/%d passed\n", pass, total);
+    std::fflush(stdout);
+    return pass == total;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
+    // --version : print the build identity ("X3 v0.3.NNNNN (hash)") and exit 0.
+    // --test-version : assert the version string is well-formed + the console
+    //   `version` cmd + the --version path work; print "version: X/Y passed".
+    bool showVersion = false, testVersion = false;
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
@@ -837,7 +909,9 @@ int main(int argc, char** argv) {
     uint32_t    winW = 1280, winH = 720;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
-        if (a == "--smoketest") smoketest = true;
+        if (a == "--version") showVersion = true;
+        else if (a == "--test-version") testVersion = true;
+        else if (a == "--smoketest") smoketest = true;
         else if (a == "--test-jobs") testJobs = true;
         else if (a == "--test-asset") testAsset = true;
         else if (a == "--test-console") testConsole = true;
@@ -989,6 +1063,16 @@ int main(int argc, char** argv) {
             testLocomotion = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') testLocomotionPath = argv[++i];
         }
+    }
+
+    // --version : print build identity + exit 0 (before any window/Vulkan work).
+    if (showVersion) {
+        return runVersionFlag();
+    }
+    // --test-version : version-string well-formedness + console cmd + --version path.
+    if (testVersion) {
+        x3::logInfo("running version (--test-version) self-test...");
+        return runVersionSelfTest() ? 0 : 1;
     }
 
     // Headless self-tests (no window / Vulkan needed)
@@ -1402,6 +1486,9 @@ int main(int argc, char** argv) {
         return x3::game::runClubSelfTest() ? 0 : 1;
     }
 
+    // First log line: the build identity, so --smoketest / --bench logs (and any
+    // screenshot run) self-identify which build produced them. See docs/VERSIONING.md.
+    x3::logInfo(versionLine());
     x3::logInfo("X3Engine starting...");
 
     // HEADLESS / OFFSCREEN routing: the non-interactive verification + screenshot

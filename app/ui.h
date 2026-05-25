@@ -163,6 +163,7 @@ struct HudModel {
     float damageFlash  = 0.0f;   // [0,1] red hit flash strength
     bool  showCrosshair= true;
     bool  alive        = true;
+    bool  showVersion  = true;   // tiny build-id watermark in a screen corner
 };
 
 // Render-setting state the SettingsMenu reflects + toggles. Mirrors the engine's

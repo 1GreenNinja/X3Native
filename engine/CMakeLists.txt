@@ -33,6 +33,13 @@ find_path(MINIAUDIO_INCLUDE_DIRS "miniaudio.h")
 # e.g. #include "engine/rhi/IRenderDevice.h"
 target_include_directories(x3engine PUBLIC ${CMAKE_SOURCE_DIR})
 
+# Generated version header lives at <build>/generated/engine/core/version.h.
+# PUBLIC so engine + app both resolve #include "engine/core/version.h". The
+# x3_version target (root CMakeLists) regenerates it each build; depend on it so
+# it's stamped before anything that includes it compiles.
+target_include_directories(x3engine PUBLIC ${X3_GENERATED_DIR})
+add_dependencies(x3engine x3_version)
+
 # cgltf + stb live only inside ModelLoader.cpp (Pimpl) and miniaudio lives only
 # inside MiniaudioSystem.cpp — all header-only, so they're PRIVATE include dirs
 # and never leak to engine consumers (the audio header exposes no ma_* types).

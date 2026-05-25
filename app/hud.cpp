@@ -4,6 +4,8 @@
 // No id Tech / RBDOOM source consulted.
 #include "hud.h"
 
+#include "engine/core/version.h"   // generated: X3_VERSION_FULL / x3::versionFull()
+
 #include <cstdio>
 #include <algorithm>
 
@@ -53,6 +55,12 @@ void Hud::init(x3::con::IConsole& console, bool* quitFlag) {
     };
     console.registerCommand("stats",    statsToggle, "toggle/set the renderer stats panel");
     console.registerCommand("r_speeds", statsToggle, "toggle/set the renderer stats panel (alias)");
+
+    // `version`: print the compiled-in build identity (MAJOR.MINOR.BUILD + hash),
+    // e.g. "X3 v0.3.00284 (c3c74e1)". See docs/VERSIONING.md.
+    console.registerCommand("version", [&console](const std::vector<std::string>&) {
+        console.print(std::string("X3 v") + X3_VERSION_FULL);
+    }, "print the engine version (major.minor.commitcount + git hash)");
 
     console.print("X3 console ready. type 'help' for commands, '~' to close.");
 }
