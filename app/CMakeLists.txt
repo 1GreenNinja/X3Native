@@ -45,6 +45,13 @@ add_executable(X3Engine WIN32
 
 target_link_libraries(X3Engine PRIVATE x3engine glfw)
 
+# holo_terminal.cpp rasterizes its on-glass readout text into the hologram
+# texture with stb_truetype (the same single-header lib the engine font atlas
+# uses). The implementation lives in the engine TU, so the app only needs the
+# header on its include path (declarations, no STB_TRUETYPE_IMPLEMENTATION here).
+find_package(Stb REQUIRED)
+target_include_directories(X3Engine PRIVATE ${Stb_INCLUDE_DIR})
+
 # WIN32 subsystem but we want a console for logs during dev:
 if(MSVC)
     set_target_properties(X3Engine PROPERTIES

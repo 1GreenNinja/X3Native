@@ -4768,10 +4768,15 @@ int main(int argc, char** argv) {
                 // the interactive on-glass overlay via the shared helper.
                 if (game.secret().terminal().built()) {
                     const auto& term = game.secret().terminal();
-                    const x3::phys::Vec3 a = term.anchor();
-                    const float sdx = a.x - ssX, sdy = a.y - ssY, sdz = a.z - ssZ;
-                    if (std::sqrt(sdx*sdx + sdy*sdy + sdz*sdz) < 14.0f)
-                        drawHoloReadout(*device, frame, term, a, /*showInput*/false);
+                    // The readout text is now baked ON the glass (stb_truetype into the
+                    // hologram texture) so it tilts with the panel. Only fall back to the
+                    // legacy 2D worldToScreen overlay if the on-glass bake is unavailable.
+                    if (!term.textOnGlass()) {
+                        const x3::phys::Vec3 a = term.anchor();
+                        const float sdx = a.x - ssX, sdy = a.y - ssY, sdz = a.z - ssZ;
+                        if (std::sqrt(sdx*sdx + sdy*sdy + sdz*sdz) < 14.0f)
+                            drawHoloReadout(*device, frame, term, a, /*showInput*/false);
+                    }
                 }
             }
             device->endFrame(frame);
@@ -6176,7 +6181,11 @@ int main(int argc, char** argv) {
                 // + blinking cursor appear once the player is in termMode (pressed E).
                 // The text SIZE is derived from the panel's on-screen height so it scales
                 // to the glass at any distance — clearly readable from a few meters.
-                if (!terrainWorld && game.secret().terminal().built()) {
+                if (!terrainWorld && game.secret().terminal().built() &&
+                    !game.secret().terminal().textOnGlass()) {
+                    // FALLBACK only: the readout normally lives ON the glass (baked into
+                    // the hologram texture so it tilts with the panel). This 2D overlay
+                    // runs solely if the on-glass font bake failed.
                     const auto& term = game.secret().terminal();
                     const x3::phys::Vec3 a = term.anchor();
                     // Player eye for the range/visibility gate.

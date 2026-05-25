@@ -7,7 +7,18 @@
 #include "mesh_prims.h"
 
 #include "engine/core/x3_log.h"
+#include "engine/rhi/font_robotomono.h"   // kRobotoMonoTTF — baked into the on-glass text
 
+// stb_truetype: DECLARATIONS ONLY here. The implementation
+// (STB_TRUETYPE_IMPLEMENTATION) is compiled once inside the engine TU
+// (VulkanRenderDevice.cpp); these extern symbols link against it. We use it on the
+// CPU to rasterize the readout strings directly into the hologram's RGBA pixels so
+// the text lives ON the glass surface (tilts in 3D with the panel), exactly like a
+// Babylon DynamicTexture — instead of a flat worldToScreen overlay that swings to
+// face the camera.
+#include <stb_truetype.h>
+
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -184,7 +195,86 @@ inline void chevronDown(Canvas& c, float cx, float topY, float halfW, float h,
     line(c, cx+halfW, topY, cx, topY+h, r,g,b,a,thick);
 }
 
-std::vector<uint8_t> makeHologramRGBA(uint32_t n) {
+// ---------------------------------------------------------------------------
+// ON-GLASS TEXT — stb_truetype CPU rasterizer (the Babylon DynamicTexture move).
+// A shared font handle (Roboto Mono, embedded) initialized lazily, and a routine
+// that ADDS each glyph's coverage as glowing cyan/white ink into the Canvas at a
+// given top-left pixel pos + pixel height. Because the text is baked into the
+// hologram texture, it sits on the glass plate and tilts in 3D with the panel.
+// ---------------------------------------------------------------------------
+struct GlassFont {
+    stbtt_fontinfo info{};
+    bool ready = false;
+    GlassFont() {
+        const unsigned char* ttf = x3::rhi::kRobotoMonoTTF;
+        const int off = stbtt_GetFontOffsetForIndex(ttf, 0);
+        if (off >= 0 && stbtt_InitFont(&info, ttf, off)) ready = true;
+    }
+};
+const GlassFont& glassFont() { static GlassFont f; return f; }
+
+// Pixel advance width of `s` at pixel height `px` (for fitting / centering).
+float textWidthPx(const std::string& s, float px) {
+    const GlassFont& f = glassFont();
+    if (!f.ready) return px * 0.6f * (float)s.size();   // mono fallback estimate
+    const float scale = stbtt_ScaleForPixelHeight(&f.info, px);
+    float w = 0.0f;
+    for (size_t i = 0; i < s.size(); ++i) {
+        int adv = 0, lsb = 0;
+        stbtt_GetCodepointHMetrics(&f.info, (unsigned char)s[i], &adv, &lsb);
+        w += adv * scale;
+        if (i + 1 < s.size())
+            w += stbtt_GetCodepointKernAdvance(&f.info, (unsigned char)s[i], (unsigned char)s[i+1]) * scale;
+    }
+    return w;
+}
+
+// Rasterize `s` at pixel height `px` with its top-left at (penX, topY). Each glyph's
+// 8-bit coverage is ADDED as glowing ink (so it blooms over the dark glass like the
+// rest of the line-art). Returns the advance width in pixels.
+float drawTextGlass(Canvas& c, const std::string& s, float penX, float topY, float px,
+                    float r, float g, float b, float a) {
+    const GlassFont& f = glassFont();
+    if (!f.ready) return 0.0f;
+    const float scale = stbtt_ScaleForPixelHeight(&f.info, px);
+    int asc = 0, desc = 0, lineGap = 0;
+    stbtt_GetFontVMetrics(&f.info, &asc, &desc, &lineGap);
+    const float baseline = topY + asc * scale;          // cell top -> baseline
+    float pen = penX;
+    for (size_t i = 0; i < s.size(); ++i) {
+        const int ch = (unsigned char)s[i];
+        int adv = 0, lsb = 0;
+        stbtt_GetCodepointHMetrics(&f.info, ch, &adv, &lsb);
+        if (ch != ' ') {
+            int gw = 0, gh = 0, gxo = 0, gyo = 0;
+            unsigned char* bmp = stbtt_GetCodepointBitmap(&f.info, scale, scale, ch, &gw, &gh, &gxo, &gyo);
+            if (bmp) {
+                const float gx0 = pen + lsb * scale;     // glyph left edge on the pen line
+                for (int yy = 0; yy < gh; ++yy) {
+                    for (int xx = 0; xx < gw; ++xx) {
+                        const float cov = bmp[yy * gw + xx] / 255.0f;
+                        if (cov <= 0.003f) continue;
+                        c.add((int)std::lround(gx0 + gxo + xx),
+                              (int)std::lround(baseline + gyo + yy),
+                              r, g, b, a * cov);
+                    }
+                }
+                stbtt_FreeBitmap(bmp, nullptr);
+            }
+        }
+        pen += adv * scale;
+        if (i + 1 < s.size())
+            pen += stbtt_GetCodepointKernAdvance(&f.info, ch, (unsigned char)s[i+1]) * scale;
+    }
+    return pen - penX;
+}
+
+// `lines` = the readout (line 0 is the header title, 1+ are the left-column data
+// rows). `inputLine` (if non-empty) is the live "> code_" prompt, baked in amber
+// below the data rows. Passing them in lets the text be rasterized ON the glass.
+std::vector<uint8_t> makeHologramRGBA(uint32_t n,
+                                      const std::vector<std::string>& lines,
+                                      const std::string& inputLine) {
     const float fn = (float)n;
 
     // ---- 1) GLASS BASE (under the line-art): deep-blue gradient + scanlines +
@@ -323,6 +413,49 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n) {
         }
     }
 
+    // ---- 2b) ON-GLASS READOUT TEXT (rasterized with stb_truetype). This is the
+    // text that used to be a worldToScreen overlay; baking it into the texture makes
+    // it sit ON the glass + tilt with the panel. Positions mirror the old overlay:
+    //   * line 0 = HEADER TITLE, wide + bright across the top header strip,
+    //   * lines 1+ = LEFT-column data rows (clipped to the left ~52% so the center
+    //     schematic + right column line-art stay readable),
+    //   * inputLine = amber "> code_" prompt below the last data row.
+    if (glassFont().ready && !lines.empty()) {
+        const float HOT = 1.0f;                       // ink alpha (additive glow ink)
+        // --- HEADER TITLE: fit to the header strip width, bright cyan-white. ---
+        {
+            const float titleBudget = P(0.86f - 0.13f);   // header rule span ~ x[0.13..0.92]
+            float tpx = P(0.052f);                          // start height (~53 px @1024)
+            const float tw = textWidthPx(lines[0], tpx);
+            if (tw > P(0.79f) && tw > 1.0f) tpx *= P(0.79f) / tw;   // shrink to span
+            (void)titleBudget;
+            drawTextGlass(c, lines[0], P(0.130f), P(0.060f), tpx, WT_R, WT_G, WT_B, HOT);
+        }
+        // --- BODY rows (1+) down the left column. Shrink to the left zone width. ---
+        const float lx0b = P(0.075f);
+        const float zoneW = P(0.345f) - lx0b;          // left data-column width
+        float bpx = P(0.033f);                          // ~34 px @1024
+        for (size_t li = 1; li < lines.size(); ++li) {
+            const float w = textWidthPx(lines[li], bpx);
+            if (w > zoneW && w > 1.0f) bpx *= zoneW / w;
+        }
+        if (bpx < P(0.018f)) bpx = P(0.018f);
+        const float rowH = bpx * 1.30f;
+        float ty = P(0.205f);                           // below the header strip
+        for (size_t li = 1; li < lines.size(); ++li) {
+            // first data row a touch brighter (the "SUBJECT" line), rest steady cyan.
+            const float aRow = (li == 1) ? HOT : 0.92f;
+            drawTextGlass(c, lines[li], lx0b, ty, bpx, CY_R*1.15f, CY_G, CY_B, aRow);
+            ty += rowH;
+        }
+        // --- LIVE INPUT LINE in amber, just below the last data row. ---
+        if (!inputLine.empty()) {
+            const float ipx = bpx * 1.18f;
+            drawTextGlass(c, inputLine, lx0b, ty + rowH * 0.25f, ipx,
+                          1.30f, 0.78f, 0.22f, HOT);    // hot amber prompt
+        }
+    }
+
     // ---- 3) ROUNDED-CORNER + edge FADE applied to the composited result, so the
     // silhouette reads as a rounded translucent panel (corners die toward black). ----
     const float r2corner = 0.30f;
@@ -416,6 +549,59 @@ x3::prims::PrimMesh makeRoundedPanel(float hw, float hh, float corner) {
     }
     return m;
 }
+
+// A thin ROUNDED-RECTANGLE RIM (a closed glass bevel ring) framing the panel: an
+// outer rounded contour at (hw+t, hh+t) and an inner one at (hw, hh), triangulated
+// as a quad strip between the two so it reads as a continuous polished glass edge
+// with ROUNDED CORNERS — NOT a thick neon rectangle with square corner blocks. The
+// rim is double-sided (both faces) so it catches light from the player side. UVs are
+// flat (whole rim shares the texture's bright top — unused; the rim is untextured
+// glass tinted by baseColor + a soft emissive sheen).
+x3::prims::PrimMesh makeRoundedRim(float hw, float hh, float corner, float thickness) {
+    x3::prims::PrimMesh m;
+    const int seg = 6;                              // arc segments per corner (smooth)
+    const float rIn  = std::min(corner, std::min(hw, hh) * 0.9f);
+    const float rOut = rIn + thickness;
+    struct C { float cx, cy, a0; } corners[4] = {
+        {  hw - rIn,  hh - rIn, 0.0f             },  // top-right
+        { -hw + rIn,  hh - rIn, 3.14159265f*0.5f },  // top-left
+        { -hw + rIn, -hh + rIn, 3.14159265f      },  // bottom-left
+        {  hw - rIn, -hh + rIn, 3.14159265f*1.5f },  // bottom-right
+    };
+    std::vector<float> inX, inY, outX, outY;        // matched inner/outer contours
+    for (int cc = 0; cc < 4; ++cc) {
+        for (int s = 0; s <= seg; ++s) {
+            const float a = corners[cc].a0 + (3.14159265f * 0.5f) * ((float)s / (float)seg);
+            const float ca = std::cos(a), sa = std::sin(a);
+            inX.push_back(corners[cc].cx + ca * rIn);  inY.push_back(corners[cc].cy + sa * rIn);
+            outX.push_back(corners[cc].cx + ca * rOut); outY.push_back(corners[cc].cy + sa * rOut);
+        }
+    }
+    const uint32_t rn2 = (uint32_t)inX.size();
+    const float zf =  0.0f;     // front face plane (local +Z normal)
+    auto V = [&](float x, float y, float z, float nz){
+        m.verts.push_back({{x, y, z}, {0.0f, 0.0f, nz}, {0.5f, 0.04f}});
+    };
+    // Front strip (normal +Z): inner[i], outer[i] pairs.
+    const uint32_t fbase = (uint32_t)m.verts.size();
+    for (uint32_t i = 0; i < rn2; ++i) { V(inX[i], inY[i], zf, 1.0f); V(outX[i], outY[i], zf, 1.0f); }
+    for (uint32_t i = 0; i < rn2; ++i) {
+        const uint32_t i0 = fbase + i*2, i1 = fbase + ((i+1)%rn2)*2;
+        // CCW (faces +Z): (in_i, out_i, out_{i+1}) + (in_i, out_{i+1}, in_{i+1})
+        m.index.push_back(i0);   m.index.push_back(i0+1); m.index.push_back(i1+1);
+        m.index.push_back(i0);   m.index.push_back(i1+1); m.index.push_back(i1);
+    }
+    // Back strip (normal -Z, reversed winding) so the rim is visible from both sides.
+    const uint32_t bbase = (uint32_t)m.verts.size();
+    const float zb = -0.012f;   // slight depth so the rim has a little glassy thickness
+    for (uint32_t i = 0; i < rn2; ++i) { V(inX[i], inY[i], zb, -1.0f); V(outX[i], outY[i], zb, -1.0f); }
+    for (uint32_t i = 0; i < rn2; ++i) {
+        const uint32_t i0 = bbase + i*2, i1 = bbase + ((i+1)%rn2)*2;
+        m.index.push_back(i0);   m.index.push_back(i1+1); m.index.push_back(i0+1);
+        m.index.push_back(i0);   m.index.push_back(i1);   m.index.push_back(i1+1);
+    }
+    return m;
+}
 } // namespace
 
 void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
@@ -423,6 +609,7 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
                          float ceilingY) {
     m_pos = pos; m_width = width; m_height = height;
     m_scene = &scene;
+    m_device = &device;
     const float cs = std::cos(yaw), sn = std::sin(yaw);
 
     // Place a box child: half-extents (hx,hy,hz) at a LOCAL offset (ox,oy,oz) from
@@ -443,39 +630,82 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
         return scene.add(e);
     };
 
+    // Place a custom-mesh child at a LOCAL +Z offset (oz) from pos (yaw-rotated),
+    // with a translucent baseColor + soft emissive (for the glass rim).
+    auto addMesh = [&](const x3::prims::PrimMesh& geo, float oz,
+                       float r, float g, float b, float alpha,
+                       float er, float eg, float eb, float es) {
+        Entity e;
+        e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                   geo.index.data(), (uint32_t)geo.index.size());
+        e.baseColor[0]=r; e.baseColor[1]=g; e.baseColor[2]=b; e.baseColor[3]=alpha;
+        e.emissive[0]=er; e.emissive[1]=eg; e.emissive[2]=eb; e.emissive[3]=es;
+        e.tag = (uint32_t)Tag::Prop;
+        const float wx = sn*oz, wz = cs*oz;
+        e.transform[0]=cs; e.transform[2]=-sn; e.transform[8]=sn; e.transform[10]=cs;
+        e.transform[12]=pos.x+wx; e.transform[13]=pos.y; e.transform[14]=pos.z+wz;
+        return scene.add(e);
+    };
+
     const float hw = width * 0.5f, hh = height * 0.5f;
 
-    // Build the procedural hologram UI texture once (shared by the screen quad).
+    // Seed the boot readout BEFORE baking the texture so the static lines are
+    // rasterized into the glass on the very first frame (the dynamic input line is
+    // appended/re-baked later via regenTexture()). The Awakening terminal (EFLZ §3).
+    // Line 0 is the HEADER TITLE; lines 1+ are the left-column data rows.
+    m_lines = {
+        "SECURITY CELL 07  --  STATUS: SECURE",
+        "SUBJECT: JAKE",
+        "STATUS: AUGMENTED",
+        "MUSCULOSKELETAL OUTPUT: +400%",
+        "RESTRAINT INTEGRITY: FAILING",
+        "MAINTENANCE: AUTO-DIAG OK",
+        "",
+        "ENTER OVERRIDE CODE TO UNLOCK CELL:",
+    };
+
+    // Build the procedural hologram UI texture once (shared by the screen quad). The
+    // readout TEXT is rasterized INTO it (stb_truetype) so it sits ON the glass.
     // 1024^2 so the fine cyan line-art (brackets, schematic, tick-row data text,
-    // warning triangles, dotted strip) stays crisp on the projected glass.
+    // warning triangles, dotted strip) AND the baked text stay crisp on the glass.
     {
-        const uint32_t TN = 1024;
-        std::vector<uint8_t> holo = makeHologramRGBA(TN);
-        m_holoTex = device.createTexture(holo.data(), TN, TN, /*srgb*/true);
+        m_texN = 1024;
+        m_textOnGlass = glassFont().ready;   // text baked in -> host skips its overlay
+        std::vector<uint8_t> holo = makeHologramRGBA(m_texN, m_lines, /*inputLine*/"");
+        m_holoTex = device.createTexture(holo.data(), m_texN, m_texN, /*srgb*/true);
+        m_lastInputShown = false;
+        m_texDirty = false;
     }
 
-    // ---- Thin emissive sci-fi BEZEL: four slim glowing rounded-look rails framing
-    // the glass (NOT a chunky gray box). A faint dark backplate sits just behind so
-    // the glow rim reads against it. The rails are thin + bright so they bloom like
-    // the env-art console trim.
-    // NOTE on Z SIGN: the terminal is mounted with yaw=PI, which maps a NEGATIVE local
-    // oz to the +Z world (the PLAYER) side. The full-size backplate must sit BEHIND the
-    // glass (away from the player) or it occludes the line-art HUD, so its oz is
-    // POSITIVE (local +Z -> world -Z, into the wall). The thin perimeter rails stay a
-    // hair toward the player (negative oz) so they read as a frame without covering the
-    // glass center. ----
-    m_decor.push_back(addBox(hw+0.05f, hh+0.05f, 0.010f, 0,0,+0.022f,
-                             0.02f,0.05f,0.10f, 1.0f,  0.05f,0.18f,0.32f, 0.5f));  // dark backplate (behind glass)
-    m_decor.push_back(addBox(hw+0.06f, 0.012f, 0.018f, 0,  hh+0.045f, -0.004f, 0,0,0,1, 0.25f,0.85f,1.0f, 2.6f)); // top rail
-    m_decor.push_back(addBox(hw+0.06f, 0.012f, 0.018f, 0, -hh-0.045f, -0.004f, 0,0,0,1, 0.25f,0.85f,1.0f, 2.6f)); // bottom rail
-    m_decor.push_back(addBox(0.012f, hh+0.045f, 0.018f, -hw-0.045f, 0, -0.004f, 0,0,0,1, 0.25f,0.85f,1.0f, 2.6f)); // left rail
-    m_decor.push_back(addBox(0.012f, hh+0.045f, 0.018f,  hw+0.045f, 0, -0.004f, 0,0,0,1, 0.25f,0.85f,1.0f, 2.6f)); // right rail
-    // Bright corner accent nubs (the rounded-corner "cap" highlights).
-    const float cnx = hw+0.045f, cny = hh+0.045f;
-    m_decor.push_back(addBox(0.022f,0.022f,0.020f,  cnx, cny,-0.004f, 0,0,0,1, 0.5f,0.95f,1.0f, 3.0f));
-    m_decor.push_back(addBox(0.022f,0.022f,0.020f, -cnx, cny,-0.004f, 0,0,0,1, 0.5f,0.95f,1.0f, 3.0f));
-    m_decor.push_back(addBox(0.022f,0.022f,0.020f,  cnx,-cny,-0.004f, 0,0,0,1, 0.5f,0.95f,1.0f, 3.0f));
-    m_decor.push_back(addBox(0.022f,0.022f,0.020f, -cnx,-cny,-0.004f, 0,0,0,1, 0.5f,0.95f,1.0f, 3.0f));
+    // ---- SHINY GLASS RIM (replaces the old kindergarten frame: a thick solid-cyan
+    // rectangle outline + opaque WHITE SQUARE corner blocks). A real glass plate's
+    // edge catches light SUBTLY — so this is a thin TRANSLUCENT ROUNDED-CORNER bevel
+    // ring that follows the panel's rounded silhouette, with a soft cyan glass tint +
+    // a GENTLE emissive sheen (low strength, NOT a neon outline). Two concentric rims
+    // give the polished-edge read: an inner near-clear glass bevel hugging the glass,
+    // and a slightly larger, dimmer outer halo so the edge glows faintly into the dark
+    // like light caught on a real plate. NO opaque white square corners. ----
+    {
+        const float corner = std::min(hw, hh) * 0.30f;     // match the panel's rounding
+        // Inner bevel: hugs the glass edge, faint cyan glass tint, low translucent alpha
+        // + a soft sheen so it reads as a polished lit edge (not a solid bright line).
+        x3::prims::PrimMesh innerRim = makeRoundedRim(hw + 0.006f, hh + 0.006f, corner, 0.022f);
+        m_decor.push_back(addMesh(innerRim, -0.004f,
+                                  0.55f, 0.85f, 1.0f, 0.32f,    // translucent cyan-white glass
+                                  0.18f, 0.55f, 0.85f, 0.9f));  // GENTLE sheen (was 2.6-3.0 neon)
+        // Outer halo: a hair larger + dimmer, sitting just behind, so the rim fades
+        // softly into the surround like a glass edge catching ambient light.
+        x3::prims::PrimMesh outerRim = makeRoundedRim(hw + 0.028f, hh + 0.028f, corner + 0.020f, 0.020f);
+        m_decor.push_back(addMesh(outerRim, +0.006f,
+                                  0.10f, 0.28f, 0.45f, 0.18f,   // very translucent dark-cyan glass
+                                  0.06f, 0.22f, 0.38f, 0.55f)); // dim outer glow
+        // Faint dark backplate BEHIND the glass so the rim + line-art read against it
+        // (kept — it's a subtle backer, not a frame). Rounded silhouette to match.
+        x3::prims::PrimMesh backPanel = makeRoundedPanel(hw + 0.03f, hh + 0.03f, corner + 0.02f);
+        m_decor.push_back(addMesh(backPanel, +0.024f,
+                                  0.02f, 0.05f, 0.10f, 1.0f,
+                                  0.03f, 0.12f, 0.22f, 0.30f));
+    }
 
     // ---- Glass ARM from the ceiling down to the top of the screen, carrying
     // emissive traces (fiber-optic cyan + copper amber) visible inside the glass. ----
@@ -540,21 +770,17 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     se.transform[12]=pos.x+fwx; se.transform[13]=pos.y; se.transform[14]=pos.z+fwz;
     m_scanEntity = scene.add(se);
 
-    // Boot readout — replaces "old and blank". The Awakening terminal (EFLZ §3).
-    // Line 0 is the HEADER TITLE rendered on-glass over the procedural header strip
-    // (matches the reference: "SECURITY CELL 07 — STATUS: SECURE").
-    m_lines = {
-        "SECURITY CELL 07  --  STATUS: SECURE",
-        "----------------------------------",
-        "SUBJECT: JAKE        STATUS: AUGMENTED",
-        "MUSCULOSKELETAL OUTPUT: +400%",
-        "RESTRAINT INTEGRITY: FAILING",
-        "",
-        "ENTER OVERRIDE CODE TO UNLOCK CELL:",
-    };
+    // (Boot readout seeded above, before the texture bake, so the on-glass text is
+    // rasterized into the first hologram frame.)
     x3::logInfo("[holoterm] built cell-01 terminal (translucent emissive) at (" +
                 std::to_string((int)pos.x) + "," + std::to_string((int)pos.y) + "," +
                 std::to_string((int)pos.z) + ")");
+}
+
+void HoloTerminal::setActive(bool on) {
+    if (m_active == on) return;
+    m_active = on;
+    m_texDirty = true;   // show/hide the live input line ON the glass
 }
 
 void HoloTerminal::pushChar(char c) {
@@ -563,11 +789,13 @@ void HoloTerminal::pushChar(char c) {
     if (c < 32 || c > 126) return;
     if (m_input.size() >= kMaxInput) return;
     m_input += c;
+    m_texDirty = true;   // re-bake the on-glass input line on change (not every frame)
 }
 
 void HoloTerminal::backspace() {
     if (!m_active || m_input.empty()) return;
     m_input.pop_back();
+    m_texDirty = true;
 }
 
 bool HoloTerminal::submit() {
@@ -580,7 +808,34 @@ bool HoloTerminal::submit() {
         m_lines.push_back("> " + v + "   [REJECTED]");
     }
     m_input.clear();
+    m_texDirty = true;   // readout grew + input cleared -> re-bake the glass
     return accept;
+}
+
+// Re-rasterize the readout (static lines + live input line) into the hologram
+// texture and re-upload it, then point both glass quads at the new handle. The old
+// texture is destroyed. Called from update() only when m_texDirty.
+void HoloTerminal::regenTexture() {
+    if (!m_device || m_entity == kNoLink) { m_texDirty = false; return; }
+    // The live input line is baked on-glass while active (the typed override code).
+    // A static '_' caret marks the field (the blink stays on the host's tiny fallback
+    // only — we don't re-bake 2x/sec just to flash a cursor).
+    std::string inputLine;
+    if (m_active) inputLine = "> " + m_input + "_";
+    m_lastInputShown = m_active;
+
+    std::vector<uint8_t> holo = makeHologramRGBA(m_texN, m_lines, inputLine);
+    x3::rhi::TextureHandle fresh = m_device->createTexture(holo.data(), m_texN, m_texN, /*srgb*/true);
+    if (!fresh.valid()) { m_texDirty = false; return; }   // keep the old tex on failure
+
+    x3::rhi::TextureHandle old = m_holoTex;
+    m_holoTex = fresh;
+    if (m_scene) {
+        if (m_entity     != kNoLink && m_entity     < m_scene->size()) m_scene->get(m_entity).tex     = m_holoTex;
+        if (m_scanEntity != kNoLink && m_scanEntity < m_scene->size()) m_scene->get(m_scanEntity).tex = m_holoTex;
+    }
+    if (old.valid()) m_device->destroyTexture(old);
+    m_texDirty = false;
 }
 
 void HoloTerminal::update(float dt) {
@@ -588,6 +843,11 @@ void HoloTerminal::update(float dt) {
     if (m_blink >= 0.5f) { m_blink -= 0.5f; m_cursorOn = !m_cursorOn; }
 
     m_clock += dt;
+
+    // Re-bake the on-glass readout ONLY when it changed (input typed/cleared, lines
+    // added, mode toggled) — never every frame. Skipped on the headless self-test path
+    // (no device/scene).
+    if (m_texDirty) regenTexture();
 
     // ---- Holographic SHIMMER (only when built into a Scene; the self-test path
     // never calls build() so m_scene stays null and this is skipped). ----

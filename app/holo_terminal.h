@@ -41,13 +41,16 @@ public:
     void setSubmitSink(SubmitFn fn) { m_submit = std::move(fn); }
 
     // ---- Readout (the displayed lines above the input field). ----
-    void setLines(std::vector<std::string> lines) { m_lines = std::move(lines); }
-    void addLine(const std::string& s) { m_lines.push_back(s); }
+    // setLines/addLine mark the on-glass texture DIRTY so the next update() re-bakes
+    // the readout into the hologram pixels (see regenTexture()). The text lives ON the
+    // glass — it tilts with the panel — instead of as a flat camera-facing overlay.
+    void setLines(std::vector<std::string> lines) { m_lines = std::move(lines); m_texDirty = true; }
+    void addLine(const std::string& s) { m_lines.push_back(s); m_texDirty = true; }
     const std::vector<std::string>& lines() const { return m_lines; }
 
     // ---- Interaction / input mode. ----
     bool active() const { return m_active; }
-    void setActive(bool on) { m_active = on; }          // host toggles on E near the screen
+    void setActive(bool on);                             // host toggles on E near the screen
     // Feed input while active (rising-edge handled by the host):
     void pushChar(char c);                               // append a printable char
     void backspace();
@@ -70,7 +73,18 @@ public:
     uint32_t entity() const { return m_entity; }
     bool built() const { return m_entity != kNoLink; }
 
+    // True when the readout text is baked ON THE GLASS (stb_truetype rasterized it
+    // into the hologram texture). The host uses this to SKIP its legacy 2D overlay so
+    // the text isn't drawn twice. Only false if the embedded font failed to load, in
+    // which case the host falls back to the worldToScreen overlay.
+    bool textOnGlass() const { return m_textOnGlass; }
+
 private:
+    // Re-bake the readout (static lines + live input line) INTO the hologram texture
+    // and re-upload it, then point both the base + scanline quads at the new handle.
+    // Called from update() when m_texDirty (input/readout changed) — NOT every frame.
+    void regenTexture();
+
     uint32_t       m_entity = kNoLink;
     x3::phys::Vec3 m_pos{};
     float          m_width = 1.4f, m_height = 0.9f;
@@ -82,6 +96,15 @@ private:
     float          m_clock = 0.0f;           // shimmer animation clock (seconds)
     float          m_emBase[4] = { 0.18f, 0.70f, 1.0f, 1.9f };  // base screen emissive
     x3::rhi::TextureHandle m_holoTex{};       // the procedural hologram UI texture
+    // ON-GLASS TEXT bake state. The readout is rasterized into m_holoTex via
+    // stb_truetype so it sits ON the glass (tilts with the panel) like a Babylon
+    // DynamicTexture — NOT as a camera-facing 2D overlay. We keep the device + texture
+    // resolution so regenTexture() can re-create + re-upload on change.
+    x3::rhi::IRenderDevice* m_device = nullptr;
+    uint32_t       m_texN = 1024;             // hologram texture resolution (square)
+    bool           m_texDirty = false;        // set when lines/input change; cleared on regen
+    bool           m_lastInputShown = false;  // whether the live input line was baked last regen
+    bool           m_textOnGlass = false;     // true once text baked into the texture (font ok)
 
     std::vector<std::string> m_lines;     // readout
     std::string    m_input;               // the editable input line
