@@ -65,6 +65,21 @@ struct L1RoomDef {
     float x0, x1, zHalf, ceil, y0;
 };
 
+// ---- Cell trapdoor cutout (secret-room feature, app/secret_room.*) ----------
+// A rectangular HOLE carved in the B1 plate floor under Jake's cell so the
+// code-locked floor-hatch trapdoor actually drops the player into the secret room
+// below. The hatch slab (built by SecretRoom) fills this hole when closed and
+// slides aside to reveal it. SINGLE SOURCE OF TRUTH for the hole rect, shared by
+// level1.cpp (which carves the B1 floor around it) and secret_room.cpp (which
+// places the hatch + room here). Centered in XZ, half-extents kCellHatch*Half.
+// Coordinates are world. Jake's Cell spans x[-3.5,3.5], z[-3,3]; the spawn is at
+// (1.5,0) and the terminal at (3.0,-2.6), so the hatch is tucked into the cell's -X/+Z
+// quadrant — clear of the spawn capsule and the terminal — at (-1.5, 1.8). It slides
+// +X to open (toward x=1.2), staying inside the cell.
+constexpr float kCellHatchCx     = -1.5f;
+constexpr float kCellHatchCz     =  1.8f;
+constexpr float kCellHatchHalf   =  0.9f;   // 1.8 m square opening
+
 // The canonical Spire floor table (footprints + base heights + ceiling heights).
 // Single source of truth shared by level1.cpp (collision/graybox) and env_art.cpp
 // (GLB floor/wall/ceiling/light tiling). Index with L1Floor. Array length =

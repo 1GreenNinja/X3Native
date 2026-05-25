@@ -37,6 +37,8 @@
 #include <Jolt/Physics/Collision/ObjectLayer.h>
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseLayer.h>
 #include <Jolt/Physics/Body/BodyCreationSettings.h>
+#include <Jolt/Physics/Constraints/PointConstraint.h>
+#include <Jolt/Physics/Constraints/TwoBodyConstraint.h>
 #include <Jolt/Physics/Body/BodyActivationListener.h>
 #include <Jolt/Physics/Body/BodyLockInterface.h>
 #include <Jolt/Physics/Body/BodyLock.h>
@@ -309,6 +311,7 @@ public:
         m_constraints.clear();
         m_constraintBody.clear();
         if (m_system) {
+            // Joints already removed above — now destroy the bodies.
             JPH::BodyInterface& bi = m_system->GetBodyInterface();
             for (auto& kv : m_bodies) {
                 bi.RemoveBody(kv.second);
@@ -440,6 +443,40 @@ public:
         m_system->GetBodyInterface().AddImpulse(it->second, toJ(impulse));
     }
 
+    // ---- Two-body joints (physics props / ragdoll). setBodyDamping lives with
+    // the Physics §1 single-body joints further below (single definition). ----
+    ConstraintId addPointConstraint(BodyId a, BodyId b, Vec3 worldAnchor) override {
+        if (!m_system) return {};
+        auto itb = m_bodies.find(b.id);
+        if (itb == m_bodies.end()) return {};
+        const JPH::BodyLockInterfaceNoLock& li = m_system->GetBodyLockInterfaceNoLock();
+        JPH::Body* body2 = li.TryGetBody(itb->second);
+        if (!body2) return {};
+        JPH::Body* body1 = &JPH::Body::sFixedToWorld;   // pin to WORLD when `a` invalid
+        if (a.valid()) {
+            auto ita = m_bodies.find(a.id);
+            if (ita != m_bodies.end()) {
+                JPH::Body* ba = li.TryGetBody(ita->second);
+                if (ba) body1 = ba;
+            }
+        }
+        JPH::PointConstraintSettings s;
+        s.mSpace = JPH::EConstraintSpace::WorldSpace;
+        s.mPoint1 = s.mPoint2 = toRJ(worldAnchor);
+        JPH::Ref<JPH::TwoBodyConstraint> c =
+            static_cast<JPH::TwoBodyConstraint*>(s.Create(*body1, *body2));
+        if (!c) return {};
+        m_system->AddConstraint(c);
+        uint32_t id = m_nextConstraintId++;
+        m_constraints[id] = c;   // Ref<TwoBodyConstraint> -> Ref<Constraint> (upcast)
+        // Track the DYNAMIC body (b) so removeConstraint() can wake it (so it
+        // reacts/falls when the joint is cut) and removeBody(b) tears the joint
+        // down. (When `a` is also a real dynamic body we still track b — waking
+        // either body is enough for the contact solver to re-activate the pair.)
+        m_constraintBody[id] = b.id;
+        return ConstraintId{ id };
+    }
+
     // ---- Orientation (D-phys) ----
     // CONVENTIONS.md quaternion order is (x,y,z,w); JPH::Quat is also xyzw
     // (constructor Quat(x,y,z,w), GetX/Y/Z/W, sIdentity()=={0,0,0,1}). So the
@@ -470,7 +507,9 @@ public:
         if (!v) return;
         auto it = m_bodies.find(id.id);
         if (it == m_bodies.end()) return;
-        m_system->GetBodyInterface().SetLinearVelocity(it->second, JPH::Vec3(v[0], v[1], v[2]));
+        JPH::BodyInterface& bi = m_system->GetBodyInterface();
+        bi.SetLinearVelocity(it->second, JPH::Vec3(v[0], v[1], v[2]));
+        bi.ActivateBody(it->second);   // a velocity change must wake a sleeping body
     }
 
     void getBodyLinearVelocity(BodyId id, float out[3]) const override {
@@ -486,7 +525,9 @@ public:
         if (!v) return;
         auto it = m_bodies.find(id.id);
         if (it == m_bodies.end()) return;
-        m_system->GetBodyInterface().SetAngularVelocity(it->second, JPH::Vec3(v[0], v[1], v[2]));
+        JPH::BodyInterface& bi = m_system->GetBodyInterface();
+        bi.SetAngularVelocity(it->second, JPH::Vec3(v[0], v[1], v[2]));
+        bi.ActivateBody(it->second);   // a velocity change must wake a sleeping body
     }
 
     void getBodyAngularVelocity(BodyId id, float out[3]) const override {
@@ -710,7 +751,21 @@ public:
     void removeConstraint(ConstraintId id) override {
         auto it = m_constraints.find(id.id);
         if (it == m_constraints.end()) return;
-        if (m_system) m_system->RemoveConstraint(it->second.GetPtr());
+        // Wake the freed body (if we know it) so it reacts to losing the joint
+        // (e.g. falls). NOTE: do NOT C++ dynamic_cast the constraint to a
+        // TwoBodyConstraint to fetch its bodies — Jolt is compiled with C++ RTTI
+        // OFF (it uses its own JPH RTTI), so dynamic_cast crashes. For §1 joints
+        // we have the body in m_constraintBody; two-body joints reactivate
+        // naturally on the next force change.
+        if (m_system) {
+            auto bodyIt = m_constraintBody.find(id.id);
+            if (bodyIt != m_constraintBody.end()) {
+                auto b = m_bodies.find(bodyIt->second);
+                if (b != m_bodies.end())
+                    m_system->GetBodyInterface().ActivateBody(b->second);
+            }
+            m_system->RemoveConstraint(it->second.GetPtr());
+        }
         m_constraints.erase(it);
         m_constraintBody.erase(id.id);
     }
@@ -1034,9 +1089,13 @@ private:
     uint32_t m_nextShapeId = 1;                                   // 0 == invalid
     std::unordered_map<uint32_t, JPH::ShapeRefC> m_shapes;
 
-    // ---- Physics §1 constraint state (suspended/swinging bodies) ----
-    // Cached joints keyed by ConstraintId. The Ref keeps the constraint alive;
-    // shutdown()/removeConstraint() removes it from the system first.
+    // ---- Constraint state: two-body joints (physics props / ragdoll) AND
+    // Physics §1 suspended/swinging single-body-to-world joints, keyed by
+    // ConstraintId. Base type JPH::Ref<JPH::Constraint> holds BOTH (a
+    // TwoBodyConstraint is-a Constraint). The Ref keeps it alive; shutdown()/
+    // removeConstraint()/removeConstraintsForBody() removes it from the system
+    // first. m_constraintBody maps a single-body §1 joint back to its body so
+    // removeBody() can tear it down. ----
     uint32_t m_nextConstraintId = 1;                             // 0 == invalid
     std::unordered_map<uint32_t, JPH::Ref<JPH::Constraint>> m_constraints;
     std::unordered_map<uint32_t, uint32_t> m_constraintBody;     // ConstraintId -> BodyId

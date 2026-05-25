@@ -37,9 +37,13 @@ constexpr float kColTrack[4]    = { 0.10f, 0.10f, 0.12f, 0.85f };
 // ===========================================================================
 // UiContext
 // ===========================================================================
+// Live device the STATIC textWidth() queries for true per-role glyph metrics.
+x3::rhi::IRenderDevice* UiContext::s_metricsDevice = nullptr;
+
 void UiContext::begin(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                       const UiInput& input) {
     m_device = &device;
+    s_metricsDevice = &device;   // textWidth() reads real per-role advances from here
     m_frame  = frame;
     m_in     = input;
     m_draw   = frame.valid;
@@ -64,8 +68,13 @@ void UiContext::end() {
     if (m_focus >= m_lastFocusCount) m_focus = m_lastFocusCount - 1;
 }
 
-float UiContext::textWidth(const char* s, float px) {
+float UiContext::textWidth(FontRole role, const char* s, float px) {
     if (!s) return 0.0f;
+    // Real per-role advances from the live device (proportional-aware). This keeps
+    // centering/right-alignment pixel-exact for Title/Menu/Enemy. If no device is
+    // bound yet (pre-begin / headless logic before begin), fall back to the legacy
+    // monospace estimate N*px so layout math stays deterministic.
+    if (s_metricsDevice) return s_metricsDevice->textAdvance(role, s, px);
     return (float)std::strlen(s) * px * kFontAspect;
 }
 
@@ -78,29 +87,39 @@ void UiContext::quad(float x, float y, float w, float h, const float rgba[4]) co
     if (m_draw && m_device) m_device->drawHudQuad(m_frame, x, y, w, h, rgba);
 }
 
-float UiContext::text(const char* s, float x, float y, float px, const float rgba[4]) const {
+float UiContext::text(const char* s, float x, float y, float px, const float rgba[4],
+                      FontRole role) const {
     if (m_draw && m_device && s) {
         // 1px drop shadow for legibility over bright scene pixels.
-        m_device->drawHudText(m_frame, s, x + 1.0f, y + 1.0f, px, kColShadow);
-        m_device->drawHudText(m_frame, s, x, y, px, rgba);
+        m_device->drawHudTextF(m_frame, role, s, x + 1.0f, y + 1.0f, px, kColShadow);
+        m_device->drawHudTextF(m_frame, role, s, x, y, px, rgba);
     }
-    return textWidth(s, px);
+    return textWidth(role, s, px);
 }
 
-float UiContext::textCentered(const char* s, float cx, float y, float px, const float rgba[4]) const {
-    const float w = textWidth(s, px);
+float UiContext::textCentered(const char* s, float cx, float y, float px, const float rgba[4],
+                              FontRole role) const {
+    const float w = textWidth(role, s, px);
     const float left = cx - w * 0.5f;
-    text(s, left, y, px, rgba);
+    text(s, left, y, px, rgba, role);
     return left;
 }
 
-void UiContext::label(const char* s, float x, float y, float px, const float rgba[4]) const {
-    text(s, x, y, px, rgba);
+void UiContext::label(const char* s, float x, float y, float px, const float rgba[4],
+                      FontRole role) const {
+    text(s, x, y, px, rgba, role);
 }
 
 void UiContext::panel(float x, float y, float w, float h, const float rgba[4]) const {
     quad(x, y, w, h, rgba);
     quad(x, y, w, 2.0f, kColPanelEdge);   // bright top edge
+}
+
+float UiContext::enemyNameplate(const char* s, float cx, float top, float px,
+                                const float rgba[4]) const {
+    // Centered in the Enemy font (Tektur Condensed Bold). textCentered already lays
+    // a drop shadow + the tinted text; the role gives the condensed threat look.
+    return textCentered(s, cx, top, px, rgba, FontRole::Enemy);
 }
 
 bool UiContext::button(const char* label, float x, float y, float w, float h) {
@@ -185,7 +204,8 @@ void UiContext::bar(float x, float y, float w, float h, float frac,
 // ===========================================================================
 // MainMenu
 // ===========================================================================
-GameState MainMenu::update(UiContext& ui, const char* title, const char* subtitle) {
+GameState MainMenu::update(UiContext& ui, const char* title, const char* subtitle,
+                           int dispW, int dispH, bool& outSaveDefault) {
     const float w = (float)ui.screenW();
     const float h = (float)ui.screenH();
     if (w <= 0.0f || h <= 0.0f) return GameState::MainMenu;
@@ -195,16 +215,21 @@ GameState MainMenu::update(UiContext& ui, const char* title, const char* subtitl
     const float wash[4] = { 0.02f, 0.03f, 0.05f, 0.55f };
     ui.quad(0, 0, w, h, wash);
 
-    // Title + subtitle. Scale the title down so it always fits the width with a
-    // margin (8x8 font: width == chars * px), capped at 72 px.
-    const int   titleLen = title ? (int)std::strlen(title) : 1;
-    const float maxTitlePx = (titleLen > 0) ? (w * 0.92f / (float)titleLen) : 72.0f;
-    const float titlePx = std::min(72.0f, maxTitlePx);
+    // Title (ORBITRON) + subtitle (Space Grotesk). Scale the title down so it always
+    // fits the width with a margin, capped at 72 px. Orbitron is PROPORTIONAL + wide,
+    // so size it from its TRUE rendered width at a probe size, not chars*px.
+    using FontRole = UiContext::FontRole;
     const float titleCol[4] = { 0.35f, 0.85f, 1.0f, 1.0f };
-    ui.textCentered(title, cx, h * 0.20f, titlePx, titleCol);
+    float titlePx = 72.0f;
+    if (title && title[0]) {
+        const float probe = 72.0f;
+        const float probeW = UiContext::textWidth(FontRole::Title, title, probe);
+        if (probeW > 1.0f) titlePx = std::min(72.0f, probe * (w * 0.92f) / probeW);
+    }
+    ui.textCentered(title, cx, h * 0.20f, titlePx, titleCol, FontRole::Title);
     const float subPx = std::max(14.0f, titlePx * 0.26f);
     const float subCol[4] = { 0.70f, 0.78f, 0.80f, 1.0f };
-    ui.textCentered(subtitle, cx, h * 0.20f + titlePx + 12.0f, subPx, subCol);
+    ui.textCentered(subtitle, cx, h * 0.20f + titlePx + 12.0f, subPx, subCol, FontRole::Menu);
 
     // Buttons stacked + centered.
     const float bw = std::min(360.0f, w * 0.5f);
@@ -221,6 +246,14 @@ GameState MainMenu::update(UiContext& ui, const char* title, const char* subtitl
     const float hintPx = std::max(12.0f, subPx * 0.8f);
     ui.textCentered("Mouse or Arrows/WASD to navigate, Enter to select",
                     cx, h - hintPx * 2.2f, hintPx, kColTextDim);
+
+    // Live framebuffer resolution (updates as the window is dragged) + a button that
+    // asks the host to persist the current size as the startup default.
+    char resBuf[64];
+    std::snprintf(resBuf, sizeof(resBuf), "RESOLUTION:  %d x %d", dispW, dispH);
+    ui.text(resBuf, 16.0f, h - 100.0f, 18.0f, kColText);
+    if (ui.button("SET AS DEFAULT", 16.0f, h - 68.0f, 240.0f, 36.0f))
+        outSaveDefault = true;
     return next;
 }
 
@@ -247,7 +280,7 @@ GameState PauseMenu::update(UiContext& ui, PauseAction& outAction) {
 
     const float titlePx = std::max(24.0f, pw / 14.0f);
     const float titleCol[4] = { 0.40f, 0.88f, 1.0f, 1.0f };
-    ui.textCentered("PAUSED", cx, py + 24.0f, titlePx, titleCol);
+    ui.textCentered("PAUSED", cx, py + 24.0f, titlePx, titleCol, UiContext::FontRole::Title);
 
     const float bw = pw - 48.0f;
     const float bh = std::max(38.0f, ph * 0.115f);
@@ -290,7 +323,7 @@ GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState ba
 
     const float titlePx = std::max(24.0f, pw / 18.0f);
     const float titleCol[4] = { 0.40f, 0.88f, 1.0f, 1.0f };
-    ui.textCentered("SETTINGS", cx, py + 20.0f, titlePx, titleCol);
+    ui.textCentered("SETTINGS", cx, py + 20.0f, titlePx, titleCol, UiContext::FontRole::Title);
 
     const float rw = pw - 48.0f;
     const float rh = std::max(38.0f, ph * 0.085f);
@@ -304,15 +337,25 @@ GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState ba
     if (ui.toggle("SSGI (GI)",   model.ssgi,    rx, ry, rw, rh)) { model.ssgi    = !model.ssgi;    outChanged = true; } ry += rh + gap;
     if (ui.toggle("Shadows",     model.shadows, rx, ry, rw, rh)) { model.shadows = !model.shadows; outChanged = true; } ry += rh + gap;
     if (ui.toggle("VSync",       model.vsync,   rx, ry, rw, rh)) { model.vsync   = !model.vsync;   outChanged = true; } ry += rh + gap;
+    if (ui.toggle("RT AO (ray-traced)", model.rtao, rx, ry, rw, rh)) { model.rtao = !model.rtao;   outChanged = true; } ry += rh + gap;
 
-    // Resolution note (read-only line; full resolution switching deferred). Sized
-    // to fit within the panel width with a margin.
-    char resBuf[80];
-    std::snprintf(resBuf, sizeof(resBuf), "Resolution: %u x %u  (--width/--height)",
-                  model.width, model.height);
-    const float fitPx = (rw - 8.0f) / std::max(1.0f, (float)std::strlen(resBuf));
-    const float notePx = std::min(std::max(12.0f, rh * 0.34f), fitPx);
-    ui.label(resBuf, rx + 4.0f, ry + 6.0f, notePx, kColTextDim);
+    // Resolution row: LIVE framebuffer size on the left (updates as the window is
+    // dragged) + a "SET DEFAULT" button on the RIGHT (where the old --width/--height
+    // note used to sit). The button persists the current size as the startup default.
+    {
+        const uint32_t dw = model.dispW ? model.dispW : model.width;
+        const uint32_t dh = model.dispH ? model.dispH : model.height;
+        char resBuf[64];
+        std::snprintf(resBuf, sizeof(resBuf), "RESOLUTION:  %u x %u", dw, dh);
+        const float notePx = std::min(20.0f, std::max(14.0f, rh * 0.40f));
+        ui.label(resBuf, rx + 4.0f, ry + (rh - notePx) * 0.5f, notePx, kColText);
+        const float sdw = std::min(190.0f, rw * 0.46f);
+        if (ui.button("SET DEFAULT", rx + rw - sdw, ry, sdw, rh)) {
+            model.width = dw; model.height = dh;   // capture the current window size
+            model.saveDefault = true;              // host persists it as the new default
+            outChanged = true;
+        }
+    }
     ry += rh + gap;
 
     // Back button (one focus slot).
@@ -369,7 +412,9 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         char hpBuf[32];
         std::snprintf(hpBuf, sizeof(hpBuf), "HP %3d", hp);
         const float hpPx = 16.0f;
-        ui.text(hpBuf, bx + barW + 12.0f, by + (barH - hpPx) * 0.5f, hpPx, kColText);
+        // HP numeric -> the mono HUD font (fixed-width digits read steady).
+        ui.text(hpBuf, bx + barW + 12.0f, by + (barH - hpPx) * 0.5f, hpPx, kColText,
+                UiContext::FontRole::HudMono);
     }
 
     // ---- Weapon + ammo (bottom-right) --------------------------------------
@@ -380,7 +425,8 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         if (m.reloading) std::snprintf(ammoBuf, sizeof(ammoBuf), "RELOADING...");
         else             std::snprintf(ammoBuf, sizeof(ammoBuf), "%d / %d", m.ammoInMag, m.ammoReserve);
         const float ammoPx = 30.0f;
-        const float ammoW  = UiContext::textWidth(ammoBuf, ammoPx);
+        // Ammo readout -> mono HUD font (steady-width digits); width query MATCHES role.
+        const float ammoW  = UiContext::textWidth(UiContext::FontRole::HudMono, ammoBuf, ammoPx);
         const float ax = w - ammoW - px;
         const float ay = h - ammoPx - 22.0f;
         // Low-ammo pulse (mag empty-ish): tint amber/red and pulse alpha.
@@ -389,21 +435,40 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
             const float pulse = 0.5f + 0.5f * std::sin(m_t * 8.0f);
             col[0] = 1.0f; col[1] = 0.3f; col[2] = 0.25f; col[3] = 0.6f + 0.4f * pulse;
         }
-        ui.text(ammoBuf, ax, ay, ammoPx, col);
-        // Weapon name above, right-aligned to the ammo line.
+        ui.text(ammoBuf, ax, ay, ammoPx, col, UiContext::FontRole::HudMono);
+        // Weapon name above, right-aligned to the ammo line (Menu/Space Grotesk).
         const float namePx = 16.0f;
-        const float nameW = UiContext::textWidth(m.weapon, namePx);
-        ui.text(m.weapon, w - nameW - px, ay - namePx - 6.0f, namePx, kColTextDim);
+        const float nameW = UiContext::textWidth(UiContext::FontRole::Menu, m.weapon, namePx);
+        ui.text(m.weapon, w - nameW - px, ay - namePx - 6.0f, namePx, kColTextDim,
+                UiContext::FontRole::Menu);
     }
 
-    // ---- Objective (top-left) ----------------------------------------------
-    if (m.objective && m.objective[0]) {
-        char objBuf[160];
-        std::snprintf(objBuf, sizeof(objBuf), "OBJECTIVE: %s", m.objective);
-        ui.text(objBuf, 18.0f, 14.0f, 16.0f, kColText);
+    // ---- Objective: drawn GTA/Cyberpunk-style UNDER THE MINIMAP (see below, after
+    // the minimap box is laid out). ----
+
+    // ---- Enemies-remaining counter (TOP-LEFT, just under the FPS meter). <0 hides
+    // it (non-combat HUDs / vantages). Reads "AREA CLEAR" in green when none remain. ----
+    if (m.enemiesRemaining >= 0) {
+        char enBuf[48];
+        const bool clear = (m.enemiesRemaining == 0);
+        if (clear) std::snprintf(enBuf, sizeof(enBuf), "AREA CLEAR");
+        else       std::snprintf(enBuf, sizeof(enBuf), "ENEMIES: %d", m.enemiesRemaining);
+        const float enPx = 15.0f;
+        float enCol[4];
+        if (clear) { enCol[0]=0.45f; enCol[1]=1.0f;  enCol[2]=0.55f; enCol[3]=1.0f; }
+        else       { enCol[0]=1.0f;  enCol[1]=0.62f; enCol[2]=0.30f; enCol[3]=1.0f; }
+        // Top-left, below the FPS/ms stats line (~y 8, ~24 tall). News font (Space
+        // Mono Bold) — the event/ticker voice for pickups / "AREA CLEAR".
+        ui.text(enBuf, 10.0f, 40.0f, enPx, enCol, UiContext::FontRole::News);
     }
 
-    // ---- Minimap stub (top-right box; full minimap later) ------------------
+    // ---- Minimap RADAR (top-right box) -------------------------------------
+    // Player-centered top-down radar. World XZ is translated by -player then rotated
+    // by -yaw so the player's FORWARD points UP in the box; a fixed meters->pixels
+    // scale maps the local offset to box pixels (anything outside the box is culled).
+    // Draw order: faint room outlines (under) -> enemy (red) / ally (pulsing green)
+    // blips -> player blip (always centered, on top). Falls back to the old stub
+    // box + "MAP" caption when the host hasn't fed the radar (radarValid=false).
     {
         const float mmW = 150.0f, mmH = 150.0f;
         const float mmx = w - mmW - 16.0f;
@@ -416,10 +481,158 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         ui.quad(mmx, mmy + mmH - 1.0f, mmW, 1.0f, edgeCol);
         ui.quad(mmx, mmy, 1.0f, mmH, edgeCol);
         ui.quad(mmx + mmW - 1.0f, mmy, 1.0f, mmH, edgeCol);
-        // Player blip at center + a "MAP" caption.
-        const float blip[4] = { 0.2f, 1.0f, 0.35f, 0.9f };
-        ui.quad(mmx + mmW * 0.5f - 2.0f, mmy + mmH * 0.5f - 2.0f, 4.0f, 4.0f, blip);
-        ui.textCentered("MAP", mmx + mmW * 0.5f, mmy + mmH - 18.0f, 12.0f, kColTextDim);
+
+        const float cxp = mmx + mmW * 0.5f;   // box center (player) in pixels
+        const float cyp = mmy + mmH * 0.5f;
+        const float half = mmW * 0.5f - 3.0f;  // usable radius inside the border
+
+        if (m.radarValid) {
+            // World->radar transform. Rotate the player-relative offset by -yaw so
+            // forward (yaw dir) maps to screen-UP. With yaw 0 looking +X (world), the
+            // player forward is (cos,sin) in XZ; we want forward -> -Y (up) on screen.
+            // Screen Y grows DOWN, so up = -forward-distance. Right (screen +X) = the
+            // player's right-hand side.
+            const float mPerPx = 28.0f / half;       // ~28 m radius fits the box edge
+            const float s = std::sin(m.playerYaw), c = std::cos(m.playerYaw);
+            // Map a world XZ to a box pixel; returns false if outside the box.
+            auto toRadar = [&](float wx, float wz, float& ox, float& oy) -> bool {
+                const float dx = wx - m.playerX;     // world offset from player
+                const float dz = wz - m.playerZ;
+                // Forward component (along yaw dir) and right component.
+                const float fwd   =  dx * c + dz * s;    // + = ahead of the player
+                const float right = -dx * s + dz * c;    // + = to the player's right
+                ox = cxp + (right / mPerPx);
+                oy = cyp - (fwd   / mPerPx);             // ahead -> up (smaller y)
+                return ox >= mmx + 1.0f && ox <= mmx + mmW - 1.0f &&
+                       oy >= mmy + 1.0f && oy <= mmy + mmH - 1.0f;
+            };
+
+            // --- Faint room outlines (drawn first, under the blips). Each room is an
+            // axis-aligned world rect; its 4 corners transform into the rotated radar
+            // space, so we draw it as 4 thin edges between the projected corners. To
+            // stay cheap + allocation-free we approximate each edge as a short run of
+            // 1px dots (the radar is small; a handful of dots reads as a faint line).
+            const float roomCol[4] = { 0.40f, 0.55f, 0.70f, 0.30f };  // dim blue-grey
+            for (int r = 0; r < m.roomCount && r < HudModel::kMaxRooms; ++r) {
+                const float rx = m.roomCx[r], rz = m.roomCz[r];
+                const float hx = m.roomHx[r], hz = m.roomHz[r];
+                // 4 corners in world XZ.
+                const float cxw[4] = { rx - hx, rx + hx, rx + hx, rx - hx };
+                const float czw[4] = { rz - hz, rz - hz, rz + hz, rz + hz };
+                float px[4], py[4];
+                for (int k = 0; k < 4; ++k) toRadar(cxw[k], czw[k], px[k], py[k]);
+                // Draw each of the 4 edges as a dotted line, clamped into the box.
+                for (int e = 0; e < 4; ++e) {
+                    const int a = e, b = (e + 1) & 3;
+                    const float ex = px[b] - px[a], ey = py[b] - py[a];
+                    const float len = std::sqrt(ex * ex + ey * ey);
+                    const int steps = (int)std::min(40.0f, std::max(1.0f, len / 4.0f));
+                    for (int t = 0; t <= steps; ++t) {
+                        const float f = (float)t / (float)steps;
+                        const float dxp = px[a] + ex * f;
+                        const float dyp = py[a] + ey * f;
+                        if (dxp < mmx + 1.0f || dxp > mmx + mmW - 1.0f ||
+                            dyp < mmy + 1.0f || dyp > mmy + mmH - 1.0f) continue;
+                        ui.quad(dxp, dyp, 1.0f, 1.0f, roomCol);
+                    }
+                }
+            }
+
+            // --- Enemy blips (RED). Cull anything outside the box.
+            const float enemyCol[4] = { 1.0f, 0.22f, 0.18f, 0.95f };
+            for (int i = 0; i < m.enemyCount && i < HudModel::kMaxBlips; ++i) {
+                float bx, by;
+                if (!toRadar(m.enemyX[i], m.enemyZ[i], bx, by)) continue;
+                ui.quad(bx - 2.0f, by - 2.0f, 4.0f, 4.0f, enemyCol);
+            }
+
+            // --- Ally (companion) blips (GREEN, SLOW FLASH). Pulse alpha at ~0.7 Hz
+            // off the HUD clock so allies read as friendly + "active".
+            const float pulse = 0.5f + 0.5f * std::sin(m_t * 4.4f);   // ~0.7 Hz
+            const float allyCol[4] = { 0.25f, 1.0f, 0.40f, 0.35f + 0.6f * pulse };
+            for (int i = 0; i < m.allyCount && i < HudModel::kMaxBlips; ++i) {
+                float bx, by;
+                if (!toRadar(m.allyX[i], m.allyZ[i], bx, by)) continue;
+                ui.quad(bx - 2.5f, by - 2.5f, 5.0f, 5.0f, allyCol);
+            }
+
+            // --- Player blip (always centered, on top) + a forward "nose" tick.
+            const float blip[4] = { 0.2f, 1.0f, 0.35f, 0.95f };
+            ui.quad(cxp - 2.0f, cyp - 2.0f, 4.0f, 4.0f, blip);
+            ui.quad(cxp - 1.0f, cyp - 8.0f, 2.0f, 6.0f, blip);   // points UP = forward
+        } else {
+            // No radar feed -> the legacy stub: a centered player blip + "MAP" caption.
+            const float blip[4] = { 0.2f, 1.0f, 0.35f, 0.9f };
+            ui.quad(cxp - 2.0f, cyp - 2.0f, 4.0f, 4.0f, blip);
+            ui.textCentered("MAP", cxp, mmy + mmH - 18.0f, 12.0f, kColTextDim);
+        }
+    }
+
+    // ---- Enemy NAMEPLATES (world-anchored threat labels) -------------------
+    // Over each live, on-screen enemy within range, project the head position (body
+    // center + ~1.8 m up) to the screen and draw a small Tektur-Condensed label.
+    // worldToScreen returns false for points behind the camera / off-screen, so those
+    // are skipped for free; we also distance-cull so far enemies don't clutter.
+    if (m.radarValid && m.alive) {
+        const float maxDist = 45.0f;             // metres; skip enemies farther than this
+        for (int i = 0; i < m.enemyCount && i < HudModel::kMaxBlips; ++i) {
+            if (!m.enemyVisible[i]) continue;         // occluded by a wall/door -> no label (radar still shows it)
+            const float dx = m.enemyX[i] - m.playerX;
+            const float dz = m.enemyZ[i] - m.playerZ;
+            const float d2 = dx * dx + dz * dz;
+            if (d2 > maxDist * maxDist) continue;
+            float sx = 0.0f, sy = 0.0f;
+            if (!ui.worldToScreen(m.enemyX[i], m.enemyY[i] + 1.8f, m.enemyZ[i], sx, sy))
+                continue;                         // behind camera / off-screen
+            const char* label = (m.enemyLabel[i] && m.enemyLabel[i][0]) ? m.enemyLabel[i]
+                                                                        : "HOSTILE";
+            // Fade slightly with distance so near threats read strongest.
+            float a = 1.0f - (std::sqrt(d2) / maxDist) * 0.5f;   // 1.0 near -> 0.5 far
+            const float plate[4] = { 1.0f, 0.32f, 0.28f, a };    // reddish threat tint
+            ui.enemyNameplate(label, sx, sy, 15.0f, plate);
+        }
+    }
+
+    // ---- Objective (GTA/Cyberpunk style): UNDER THE MINIMAP, right-aligned to the
+    // map's right edge, a cyan header + the objective word-wrapped to <=3 lines in
+    // Cyberpunk yellow (non-white). ----
+    if (m.objective && m.objective[0]) {
+        const float mmW = 150.0f, mmH = 150.0f, mmy = 16.0f;
+        const float right = w - 16.0f;            // map's right edge
+        const float maxW  = mmW + 90.0f;          // allow a touch wider than the map
+        float oy = mmy + mmH + 8.0f;              // just under the map box
+        // Header chip.
+        const float hdrPx = 12.0f;
+        const float hdrCol[4] = { 0.32f, 0.86f, 1.0f, 0.95f };   // cyan
+        ui.text("OBJECTIVE", right - UiContext::textWidth("OBJECTIVE", hdrPx), oy, hdrPx, hdrCol);
+        oy += hdrPx + 5.0f;
+        // Word-wrap the body to up to 3 lines, Cyberpunk yellow.
+        const float bodyPx = 15.0f;
+        const float bodyCol[4] = { 0.99f, 0.92f, 0.07f, 1.0f };  // CP yellow
+        std::string text = m.objective;
+        std::string lines[3];
+        int nLines = 0;
+        std::string cur;
+        size_t i = 0;
+        while (i <= text.size() && nLines < 3) {
+            size_t sp = text.find(' ', i);
+            std::string word = text.substr(i, sp == std::string::npos ? text.size() - i : sp - i);
+            std::string trial = cur.empty() ? word : cur + " " + word;
+            if (cur.empty() || UiContext::textWidth(trial.c_str(), bodyPx) <= maxW) {
+                cur = trial;
+            } else {
+                lines[nLines++] = cur;
+                cur = word;
+            }
+            if (sp == std::string::npos) break;
+            i = sp + 1;
+        }
+        if (!cur.empty() && nLines < 3) lines[nLines++] = cur;
+        for (int li = 0; li < nLines; ++li) {
+            ui.text(lines[li].c_str(), right - UiContext::textWidth(lines[li].c_str(), bodyPx),
+                    oy, bodyPx, bodyCol);
+            oy += bodyPx + 3.0f;
+        }
     }
 
     // ---- Death banner ------------------------------------------------------
@@ -428,8 +641,9 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         ui.quad(0, 0, w, h, dark);
         const float big = std::min(64.0f, w / 12.0f);
         const float red[4] = { 0.9f, 0.12f, 0.12f, 1.0f };
-        ui.textCentered("YOU DIED", w * 0.5f, h * 0.5f - big, big, red);
-        ui.textCentered("Respawning...", w * 0.5f, h * 0.5f + 8.0f, 16.0f, kColTextDim);
+        ui.textCentered("YOU DIED", w * 0.5f, h * 0.5f - big, big, red, UiContext::FontRole::Title);
+        ui.textCentered("Respawning...", w * 0.5f, h * 0.5f + 8.0f, 16.0f, kColTextDim,
+                        UiContext::FontRole::Menu);
     }
 }
 
@@ -483,6 +697,7 @@ void UiController::applySettings(x3::rhi::IRenderDevice& device, x3::con::IConso
         console->set("r_ssgi",    m_settings.ssgi    ? "1" : "0");
         console->set("r_shadows", m_settings.shadows ? "1" : "0");
         console->set("r_vsync",   m_settings.vsync   ? "1" : "0");
+        console->set("r_rtao",    m_settings.rtao    ? "1" : "0");   // hardware RT ambient occlusion
     }
 }
 
@@ -492,7 +707,10 @@ void UiController::update(const UiInput& input, x3::rhi::IRenderDevice& device,
 
     switch (m_state) {
         case GameState::MainMenu: {
-            const GameState next = m_main.update(m_ui, m_title.c_str(), m_subtitle.c_str());
+            bool saveDef = false;
+            const GameState next = m_main.update(m_ui, m_title.c_str(), m_subtitle.c_str(),
+                                                 hud.dispW, hud.dispH, saveDef);
+            if (saveDef) m_saveDefaults = true;
             if (next != m_state) m_state = next;
             break;
         }
@@ -515,10 +733,17 @@ void UiController::update(const UiInput& input, x3::rhi::IRenderDevice& device,
         }
         case GameState::Settings: {
             bool changed = false;
+            // Feed the LIVE framebuffer size so the resolution readout updates as the
+            // window is dragged (mirrors the MainMenu readout).
+            m_settings.dispW = (uint32_t)hud.dispW;
+            m_settings.dispH = (uint32_t)hud.dispH;
             // Esc backs out to pause.
             GameState next = m_state;
             if (input.navBack) next = GameState::Paused;
             else               next = m_settingsScreen.update(m_ui, m_settings, GameState::Paused, changed);
+            // "SET DEFAULT" button -> persist the current window size (same sink the
+            // MainMenu SET-AS-DEFAULT uses).
+            if (m_settings.saveDefault) { m_saveDefaults = true; m_settings.saveDefault = false; }
             if (changed) applySettings(device, m_console);
             if (next != m_state) m_state = next;
             break;

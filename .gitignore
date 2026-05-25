@@ -48,6 +48,11 @@ ai_action*.gif
 # Tracy captures
 *.tracy
 
+# Claude Code background sub-agent worktrees — each is a FULL repo checkout
+# (gigabytes of duplicated assets + build dirs). Local-only, never commit.
+# Clean periodically: tools/clean_worktrees.ps1  (see README warning).
+.claude/worktrees/
+
 # OS junk
 .DS_Store
 Thumbs.db

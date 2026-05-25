@@ -100,21 +100,59 @@ void CombatFx::addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to) {
 // Colors are LINEAR HDR — additive sparks/muzzle use >1 intensity so they feed
 // the renderer's bloom chain. Sizes are billboard half-extents in meters.
 // ---------------------------------------------------------------------------
+// Per-kind muzzle-flash tuning. Returns a tint (linear HDR), per-spark count + size
+// + speed multipliers, and a soft-flash tint/scale, so each weapon's flash reads
+// distinctly. Default/Pistol keep the original hot-orange ballistic look.
+namespace {
+struct MuzzleStyle {
+    float sparkR, sparkG, sparkB;     // spark tint (linear HDR -> bloom)
+    float flashR, flashG, flashB;     // soft-flash sprite tint
+    int   sparkCount;                 // number of cone sparks
+    float sizeMul;                    // spark + flash size multiplier
+    float speedMul;                   // spark cone speed multiplier
+    float coneJitter;                 // lateral spark spread (m/s)
+    float flashSize;                  // soft-flash half-extent (m) at birth
+};
+MuzzleStyle muzzleStyleFor(WeaponFxKind k) {
+    switch (k) {
+        case WeaponFxKind::Smg:       // leaner/cooler, many small fast sparks
+            return { 4.5f, 3.0f, 1.2f,  5.5f, 3.8f, 1.8f, 12, 0.8f, 1.15f, 2.0f, 0.22f };
+        case WeaponFxKind::Shotgun:   // WIDE fat boom: big flash, broad spray
+            return { 6.0f, 3.6f, 1.0f,  7.5f, 4.6f, 1.6f, 16, 1.6f, 1.0f,  3.6f, 0.52f };
+        case WeaponFxKind::Chaingun:  // hot + extra-sparky (busy auto roar)
+            return { 6.0f, 3.0f, 0.7f,  7.0f, 4.0f, 1.2f, 18, 0.95f,1.25f, 2.6f, 0.30f };
+        case WeaponFxKind::Plasma:    // BLUE energy: soft round flash, no metal sparks
+            return { 0.8f, 2.4f, 6.0f,  1.2f, 3.0f, 7.0f,  8, 1.2f, 0.85f, 1.4f, 0.40f };
+        case WeaponFxKind::Lightning: // electric crackle: white-cyan, twitchy fast
+            return { 3.5f, 6.0f, 6.5f,  4.0f, 6.5f, 7.0f, 14, 0.7f, 1.5f,  3.2f, 0.26f };
+        case WeaponFxKind::Pistol:
+        case WeaponFxKind::Default:
+        default:                      // original hot orange-white ballistic look
+            return { 5.0f, 3.2f, 1.0f,  6.0f, 4.0f, 1.6f, 10, 1.0f, 1.0f,  2.0f, 0.28f };
+    }
+}
+} // namespace
+
 void CombatFx::spawnMuzzleFlash(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir) {
+    spawnMuzzleFlash(pos, dir, WeaponFxKind::Default);
+}
+
+void CombatFx::spawnMuzzleFlash(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir,
+                                WeaponFxKind kind) {
     x3::phys::Vec3 d = normalize(dir);
+    const MuzzleStyle st = muzzleStyleFor(kind);
     // A few hot, fast, short-lived additive sparks shooting out of the barrel.
-    const int n = 10;
-    for (int i = 0; i < n; ++i) {
+    for (int i = 0; i < st.sparkCount; ++i) {
         Particle p;
         p.pos = pos;
-        const float speed = 5.0f + frand() * 7.0f;
-        p.vel = x3::phys::Vec3{ d.x * speed + frandSym() * 2.0f,
-                                d.y * speed + frandSym() * 2.0f,
-                                d.z * speed + frandSym() * 2.0f };
+        const float speed = (5.0f + frand() * 7.0f) * st.speedMul;
+        p.vel = x3::phys::Vec3{ d.x * speed + frandSym() * st.coneJitter,
+                                d.y * speed + frandSym() * st.coneJitter,
+                                d.z * speed + frandSym() * st.coneJitter };
         p.life = p.maxLife = 0.06f + frand() * 0.06f;
-        p.size0 = 0.10f + frand() * 0.05f;
-        p.size1 = 0.02f;
-        p.r = 5.0f; p.g = 3.2f; p.b = 1.0f;   // hot orange-white (HDR -> bloom)
+        p.size0 = (0.10f + frand() * 0.05f) * st.sizeMul;
+        p.size1 = 0.02f * st.sizeMul;
+        p.r = st.sparkR; p.g = st.sparkG; p.b = st.sparkB;   // per-weapon tint
         p.a0 = 1.0f;
         p.gravity = 0.0f; p.drag = 6.0f; p.additive = true;
         spawnParticle(p);
@@ -123,17 +161,50 @@ void CombatFx::spawnMuzzleFlash(const x3::phys::Vec3& pos, const x3::phys::Vec3&
     Particle flash;
     flash.pos = pos;
     flash.life = flash.maxLife = 0.05f;
-    flash.size0 = 0.28f; flash.size1 = 0.10f;
-    flash.r = 6.0f; flash.g = 4.0f; flash.b = 1.6f;
+    flash.size0 = st.flashSize; flash.size1 = st.flashSize * 0.36f;
+    flash.r = st.flashR; flash.g = st.flashG; flash.b = st.flashB;
     flash.a0 = 1.0f; flash.additive = true;
     spawnParticle(flash);
 }
 
+// Per-kind impact tuning: spark tint + count, and whether the dust puff is the grey
+// metal-debris look (ballistic) or suppressed (energy weapons just splash light).
+namespace {
+struct ImpactStyle {
+    float sparkR, sparkG, sparkB;  // spark tint
+    int   sparkCount;
+    float sizeMul;
+    bool  dust;                    // grey alpha dust puff (metal hit) vs energy splash
+};
+ImpactStyle impactStyleFor(WeaponFxKind k) {
+    switch (k) {
+        case WeaponFxKind::Plasma:    // blue energy splash, no metal dust
+            return { 0.7f, 2.2f, 6.0f, 16, 1.25f, false };
+        case WeaponFxKind::Lightning: // white-cyan crackle, no dust
+            return { 3.0f, 5.5f, 6.5f, 18, 0.8f,  false };
+        case WeaponFxKind::Shotgun:   // wide hot spark spray + dust
+            return { 4.5f, 2.6f, 0.8f, 20, 1.2f,  true  };
+        case WeaponFxKind::Chaingun:  // busy hot sparks + dust
+            return { 5.0f, 2.6f, 0.7f, 18, 0.9f,  true  };
+        case WeaponFxKind::Smg:
+        case WeaponFxKind::Pistol:
+        case WeaponFxKind::Default:
+        default:                      // original hot spark + grey dust
+            return { 4.5f, 2.6f, 0.8f, 14, 1.0f,  true  };
+    }
+}
+} // namespace
+
 void CombatFx::spawnImpact(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal) {
+    spawnImpact(pos, normal, WeaponFxKind::Default);
+}
+
+void CombatFx::spawnImpact(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal,
+                           WeaponFxKind kind) {
     x3::phys::Vec3 nrm = normalize(normal);
+    const ImpactStyle st = impactStyleFor(kind);
     // Additive sparks sprayed back along the surface normal in a cone.
-    const int nSpark = 14;
-    for (int i = 0; i < nSpark; ++i) {
+    for (int i = 0; i < st.sparkCount; ++i) {
         Particle p;
         p.pos = pos;
         const float speed = 3.0f + frand() * 6.0f;
@@ -141,29 +212,32 @@ void CombatFx::spawnImpact(const x3::phys::Vec3& pos, const x3::phys::Vec3& norm
                                 nrm.y * speed + frandSym() * 3.5f,
                                 nrm.z * speed + frandSym() * 3.5f };
         p.life = p.maxLife = 0.18f + frand() * 0.22f;
-        p.size0 = 0.045f + frand() * 0.03f;
-        p.size1 = 0.01f;
-        p.r = 4.5f; p.g = 2.6f; p.b = 0.8f;   // hot spark
+        p.size0 = (0.045f + frand() * 0.03f) * st.sizeMul;
+        p.size1 = 0.01f * st.sizeMul;
+        p.r = st.sparkR; p.g = st.sparkG; p.b = st.sparkB;   // per-weapon tint
         p.a0 = 1.0f;
         p.gravity = 0.6f; p.drag = 2.0f; p.additive = true;
         spawnParticle(p);
     }
-    // An alpha dust puff that drifts off the surface + rises slightly.
-    const int nDust = 8;
-    for (int i = 0; i < nDust; ++i) {
-        Particle p;
-        p.pos = x3::phys::Vec3{ pos.x + frandSym() * 0.06f,
-                                pos.y + frandSym() * 0.06f,
-                                pos.z + frandSym() * 0.06f };
-        p.vel = x3::phys::Vec3{ nrm.x * 0.8f + frandSym() * 0.6f,
-                                nrm.y * 0.8f + 0.4f + frandSym() * 0.3f,
-                                nrm.z * 0.8f + frandSym() * 0.6f };
-        p.life = p.maxLife = 0.5f + frand() * 0.5f;
-        p.size0 = 0.08f; p.size1 = 0.32f;     // grows as it disperses
-        p.r = 0.35f; p.g = 0.33f; p.b = 0.30f; // grey dust
-        p.a0 = 0.5f;
-        p.gravity = -0.05f; p.drag = 1.5f; p.additive = false;
-        spawnParticle(p);
+    // An alpha dust puff that drifts off the surface + rises slightly. Energy weapons
+    // (plasma/lightning) skip the grey metal dust — they just splash light.
+    if (st.dust) {
+        const int nDust = 8;
+        for (int i = 0; i < nDust; ++i) {
+            Particle p;
+            p.pos = x3::phys::Vec3{ pos.x + frandSym() * 0.06f,
+                                    pos.y + frandSym() * 0.06f,
+                                    pos.z + frandSym() * 0.06f };
+            p.vel = x3::phys::Vec3{ nrm.x * 0.8f + frandSym() * 0.6f,
+                                    nrm.y * 0.8f + 0.4f + frandSym() * 0.3f,
+                                    nrm.z * 0.8f + frandSym() * 0.6f };
+            p.life = p.maxLife = 0.5f + frand() * 0.5f;
+            p.size0 = 0.08f; p.size1 = 0.32f;     // grows as it disperses
+            p.r = 0.35f; p.g = 0.33f; p.b = 0.30f; // grey dust
+            p.a0 = 0.5f;
+            p.gravity = -0.05f; p.drag = 1.5f; p.additive = false;
+            spawnParticle(p);
+        }
     }
     // Persistent scorch mark on the surface.
     addDecal(pos, nrm);

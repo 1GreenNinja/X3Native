@@ -37,8 +37,10 @@
 
 #include "IRenderDevice.h"
 #include "RenderGraph.h"
+#include "VulkanRT.h"          // hardware ray-tracing AS manager (ray-query path)
 #include "../core/x3_log.h"
 #include "font8x8_basic.h"
+#include "font_robotomono.h"   // embedded Roboto Mono TTF (Apache-2.0) — modern HUD font
 
 #include <vulkan/vulkan.h>
 #include <vulkan/vulkan_win32.h>
@@ -51,10 +53,17 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
+// stb_truetype: bake a crisp glyph atlas from a real TTF at device init (modern
+// HUD/menu font). This is the ONLY translation unit that defines the impl macro.
+#define STB_TRUETYPE_IMPLEMENTATION
+#include <stb_truetype.h>
+
 #include <vector>
 #include <string>
 #include <cmath>
 #include <fstream>
+#include <filesystem>
+#include <system_error>
 #include <cstring>
 #include <cstddef>
 #include <cstdio>
@@ -164,6 +173,35 @@ public:
         vkb::PhysicalDevice phys = phys_ret.value();
         m_descriptorIndexing = true;
 
+        // ---- Hardware ray tracing (RT Phase 0) — OPTIONAL + non-breaking. We do NOT
+        // require these in the selector (that would refuse a non-RT GPU); instead we
+        // enable them on the ALREADY-selected device only if present. If absent,
+        // m_rtSupported stays false and device creation proceeds exactly as before
+        // (SSAO/CSM raster fallback). We use RAY QUERY (inline RT in compute/fragment)
+        // — no RT pipeline / shader binding table — so the AS feeds the existing
+        // lighting pass. bufferDeviceAddress (needed for AS builds) is already on. ----
+        {
+            const std::vector<const char*> rtExts = {
+                "VK_KHR_acceleration_structure",
+                "VK_KHR_ray_query",
+                "VK_KHR_deferred_host_operations",
+            };
+            if (phys.enable_extensions_if_present(rtExts)) {
+                VkPhysicalDeviceAccelerationStructureFeaturesKHR asf{};
+                asf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+                asf.accelerationStructure = VK_TRUE;
+                VkPhysicalDeviceRayQueryFeaturesKHR rqf{};
+                rqf.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+                rqf.rayQuery = VK_TRUE;
+                const bool a = phys.enable_extension_features_if_present(asf);
+                const bool b = phys.enable_extension_features_if_present(rqf);
+                m_rtSupported = a && b;
+            }
+            logInfo(m_rtSupported
+                ? "[rhi] RT: ray-query SUPPORTED (VK_KHR_ray_query + acceleration_structure) — RT shadows/reflections/GI available"
+                : "[rhi] RT: not available on this device — SSAO/CSM raster fallback");
+        }
+
         vkb::DeviceBuilder db{ phys };
         auto dev_ret = db.build();
         if (!dev_ret) { logError(std::string("[rhi] device: ") + dev_ret.error().message()); return false; }
@@ -238,6 +276,7 @@ public:
 
     void shutdown() override {
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        destroyRt();          // RT AO pipelines/targets + AS module (no-op if never built)
         destroySkinning();
         destroyDebris();
         destroyParticles();
@@ -312,6 +351,17 @@ public:
 
     // Project a world point -> HUD pixel coords (top-left origin) using the cached render
     // viewProj. false if behind the camera / well off-screen. For monster health bars etc.
+    bool rayTracingSupported() const override { return m_rtSupported; }
+
+    void setRtaoParams(const RtaoParams& p) override {
+        // Cache a snapshot (re-applied each frame, like setSsaoParams). When RT is
+        // unsupported this is a harmless no-op store: the graph never adds the RT
+        // chain because m_rtSupported is false. The first time it is enabled on an
+        // RT device, beginFrame() lazily inits the AS module + RT-AO pipelines.
+        m_rtao = p;
+        m_rtao.rays = std::max(1, std::min(32, m_rtao.rays));
+    }
+
     bool worldToScreen(float wx, float wy, float wz, float& sx, float& sy) const override {
         const glm::vec4 clip = m_lastViewProj * glm::vec4(wx, wy, wz, 1.0f);
         if (clip.w <= 1e-4f) return false;
@@ -544,6 +594,23 @@ public:
         // ===================================================================
         prepareFrameData();  // fill camera/light/sky UBO + SSBO + indirect (data only)
 
+        // ---- Hardware ray-tracing (RT AO) build, gated + default OFF ----------
+        // Only when r_rtao is on AND the device supports RT: lazily build the RT-AO
+        // pipelines/targets, then (re)build the scene BLAS/TLAS from THIS frame's
+        // draw list (still valid here) + fill the compute UBO. The AS builds are
+        // synchronous one-time submits on the graphics queue (separate command pool
+        // + fence) that complete BEFORE the frame command buffer is submitted, so
+        // the TLAS is ready when the ray-query compute pass runs. If anything fails,
+        // m_rtaoActiveThisFrame stays false and the graph adds NO RT passes — the
+        // raster/SSAO path is byte-for-byte unchanged.
+        m_rtaoActiveThisFrame = false;
+        if (m_rtSupported && m_rtao.enabled) {
+            if (ensureRtaoReady() && buildRtSceneAS() && m_rt.lastInstanceCount() > 0) {
+                prepareRtaoUbo();
+                m_rtaoActiveThisFrame = true;
+            }
+        }
+
         const bool wantCapture = (m_captureArmed && m_captureBuf &&
                                   m_captureW == m_extent.width && m_captureH == m_extent.height);
         buildAndExecuteGraph(fr.cmd, imageIndex, wantCapture);
@@ -765,10 +832,23 @@ public:
         Mesh m{};
         const VkDeviceSize vbBytes = (VkDeviceSize)vcount * sizeof(MeshVertex);
         const VkDeviceSize ibBytes = (VkDeviceSize)icount * sizeof(uint32_t);
-        if (!createDeviceLocalBuffer(verts, vbBytes,
-                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, m.vbo, m.vboAlloc)) return {};
-        if (!createDeviceLocalBuffer(idx, ibBytes,
-                VK_BUFFER_USAGE_INDEX_BUFFER_BIT, m.ibo, m.iboAlloc)) {
+        // When hardware RT is available, the mesh's vertex/index buffers must be
+        // readable as BLAS build inputs (SHADER_DEVICE_ADDRESS) + flagged as AS
+        // build input. These extra usage flags do NOT change how the raster path
+        // binds/draws the buffers (a vertex buffer with extra usage is still a
+        // vertex buffer), so the rasterized output is byte-for-byte identical; they
+        // are only added at all when RT is supported (non-RT devices get the exact
+        // original usage). The BLAS itself is built lazily on first RT use.
+        VkBufferUsageFlags vbUsage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+        VkBufferUsageFlags ibUsage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        if (m_rtSupported) {
+            const VkBufferUsageFlags rtUsage =
+                VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
+                VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+            vbUsage |= rtUsage; ibUsage |= rtUsage;
+        }
+        if (!createDeviceLocalBuffer(verts, vbBytes, vbUsage, m.vbo, m.vboAlloc)) return {};
+        if (!createDeviceLocalBuffer(idx, ibBytes, ibUsage, m.ibo, m.iboAlloc)) {
             vmaDestroyBuffer(m_alloc, m.vbo, m.vboAlloc); return {};
         }
         m.indexCount = icount;
@@ -805,6 +885,14 @@ public:
             m_skinnedMeshes.erase(skIt);
             for (auto p = m_skinPending.begin(); p != m_skinPending.end(); )
                 p = (*p == h.id) ? m_skinPending.erase(p) : p + 1;
+        }
+        // Drop this mesh's RT BLAS (if one was built). The TLAS no longer references
+        // a destroyed mesh because m_drawRecords for it stop arriving; the next
+        // TLAS rebuild simply omits it. Safe to free now — the AS build is a
+        // synchronous one-time submit, never in flight on the render queue.
+        if (m_rtSupported && m_rt.hasBlas(h.id)) {
+            if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+            m_rt.destroyBlas(h.id);
         }
         m_meshes.erase(it);
         // Drop this mesh's draw-group key so m_groups doesn't accumulate dead
@@ -1008,18 +1096,32 @@ public:
         // Whole-quad UV (0,0)-(1,1) samples the 1x1 white texel everywhere.
         HudVertex verts[6];
         emitQuad(verts, xPx, yPx, wPx, hPx, 0.0f, 0.0f, 1.0f, 1.0f, c);
-        flushHud(verts, 6, /*useFont=*/false);
+        flushHud(verts, 6, /*texFont=*/-1);
     }
 
+    // Back-compat: render with the DEFAULT mono role (Console/HudMono — embedded
+    // Roboto Mono). All existing non-UI callers route here unchanged.
     void drawHudText(const FrameContext& fc, const char* text, float xPx,
                      float yPx, float pxPerGlyph, const float rgba[4]) override {
-        if (!fc.valid || !m_hudPipeline || !text || pxPerGlyph <= 0.0f) return;
+        drawHudTextF(fc, x3::rhi::FontRole::Console, text, xPx, yPx, pxPerGlyph, rgba);
+    }
+
+    // Role-aware HUD text. Picks the role's baked atlas; PROPORTIONAL roles advance
+    // by each glyph's real width, monospace roles advance by a fixed cell. Falls
+    // back to the 8x8 bitmap path only if no TTF baked at all (NEVER blank text).
+    void drawHudTextF(const FrameContext& fc, x3::rhi::FontRole role, const char* text,
+                      float xPx, float yPx, float px, const float rgba[4]) override {
+        if (!fc.valid || !m_hudPipeline || !text || px <= 0.0f) return;
         const float c[4] = { rgba ? rgba[0] : 1.0f, rgba ? rgba[1] : 1.0f,
                              rgba ? rgba[2] : 1.0f, rgba ? rgba[3] : 1.0f };
+        const int r = (int)role;
+        if (r >= 0 && r < kFontRoleCount && m_fonts[r].ready) {
+            drawHudTextAtlas(r, text, xPx, yPx, px, c);
+            return;
+        }
+        // ---- Legacy 8x8 bitmap fallback (only if NO TTF baked for this role) ---
         // Atlas layout: 16 cols x 8 rows of 8x8 glyphs in a 128x64 texture.
         constexpr float kCols = 16.0f, kRows = 8.0f;
-        // Glyph cell is 8/128 wide, 8/64 tall; sample a 7/8 sub-rect to avoid the
-        // 1px gutter bleeding from the neighbouring glyph (atlas has no padding).
         constexpr float kCellU = 1.0f / kCols, kCellV = 1.0f / kRows;
         constexpr float kInsetU = (7.0f / 8.0f) * kCellU; // 7 of 8 columns used
         constexpr float kInsetV = (7.0f / 8.0f) * kCellV;
@@ -1028,20 +1130,101 @@ public:
         float penX = xPx, penY = yPx;
         for (const char* p = text; *p; ++p) {
             unsigned char ch = static_cast<unsigned char>(*p);
-            if (ch == '\n') { penX = xPx; penY += pxPerGlyph; continue; }
+            if (ch == '\n') { penX = xPx; penY += px; continue; }
             if (ch >= 128) ch = '?';
             if (ch > 32) { // skip space + control chars (blank glyphs)
                 int col = ch % 16, row = ch / 16;
                 float u0 = col * kCellU, v0 = row * kCellV;
                 HudVertex q[6];
-                emitQuad(q, penX, penY, pxPerGlyph, pxPerGlyph,
+                emitQuad(q, penX, penY, px, px,
                          u0, v0, u0 + kInsetU, v0 + kInsetV, c);
                 for (auto& v : q) m_hudScratch.push_back(v);
             }
-            penX += pxPerGlyph;
+            penX += px;
         }
         if (!m_hudScratch.empty())
-            flushHud(m_hudScratch.data(), (uint32_t)m_hudScratch.size(), /*useFont=*/true);
+            flushHud(m_hudScratch.data(), (uint32_t)m_hudScratch.size(), /*texFont=*/r);
+    }
+
+    // Render `text` from role `role`'s baked TTF atlas. For PROPORTIONAL roles the
+    // pen advances by each glyph's real advance; for MONOSPACE roles every glyph
+    // advances by a fixed cell and the (already-fixed-pitch) shape is placed
+    // directly. `px` is the cap pixel size; the role index is also the texFont to
+    // bind. (Takes the index, not a FontAtlas&, so the signature needs no early type
+    // visibility — FontAtlas is declared with the other members further below.)
+    void drawHudTextAtlas(int role, const char* text,
+                          float xPx, float yPx, float px, const float c[4]) {
+        const FontAtlas& fa = m_fonts[role];
+        const int texFont = role;
+        // bake-pixel units -> requested pixels (the cell advance maps to px).
+        const float s = px / std::max(1.0f, fa.cellAdvance);
+        const float baseline = fa.ascent * s;   // baseline below the cell top (yPx)
+        const float lineH = px * 1.2f;           // newline step
+
+        m_hudScratch.clear();
+        float penX = xPx, penY = yPx;
+        for (const char* p = text; *p; ++p) {
+            unsigned char ch = static_cast<unsigned char>(*p);
+            if (ch == '\n') { penX = xPx; penY += lineH; continue; }
+            if (ch < kTtfFirstChar || ch >= kTtfFirstChar + kTtfCharCount) ch = '?';
+            const TtfGlyph& g = fa.glyphs[ch - kTtfFirstChar];
+            const float advance = g.advance * s;
+            if (ch > 32) { // space + control glyphs have no quad
+                // Proportional: place the glyph at the pen using its real bearings.
+                // Monospace: center the (fixed-pitch) shape inside the cell so it
+                // reads exactly as the cell layout expects.
+                const float cellOff = fa.proportional ? 0.0f
+                                                      : (px - advance) * 0.5f;
+                const float gx0 = penX + cellOff + g.x0 * s;
+                const float gy0 = penY + baseline + g.y0 * s;
+                const float gw  = (g.x1 - g.x0) * s;
+                const float gh  = (g.y1 - g.y0) * s;
+                HudVertex q[6];
+                emitQuad(q, gx0, gy0, gw, gh, g.u0, g.v0, g.u1, g.v1, c);
+                for (auto& v : q) m_hudScratch.push_back(v);
+            }
+            // PROPORTIONAL advances by the glyph's real width; MONOSPACE by the cell.
+            penX += fa.proportional ? advance : px;
+        }
+        if (!m_hudScratch.empty())
+            flushHud(m_hudScratch.data(), (uint32_t)m_hudScratch.size(), /*texFont=*/texFont);
+    }
+
+    // The TRUE rendered width of `text` for `role` at glyph size `px`. Pure metrics
+    // (no GPU work, safe before a frame). Proportional roles sum per-glyph advances;
+    // mono roles (and the bitmap fallback) return N*px so legacy layout stays exact.
+    float textAdvance(x3::rhi::FontRole role, const char* text, float px) const override {
+        if (!text || px <= 0.0f) return 0.0f;
+        const int r = (int)role;
+        if (r >= 0 && r < kFontRoleCount && m_fonts[r].ready) {
+            const FontAtlas& fa = m_fonts[r];
+            const float s = px / std::max(1.0f, fa.cellAdvance);
+            if (!fa.proportional) {
+                // Monospace: N printable+space cells of width px (newlines reset).
+                float maxLine = 0.0f, line = 0.0f;
+                for (const char* p = text; *p; ++p) {
+                    if (*p == '\n') { maxLine = std::max(maxLine, line); line = 0.0f; }
+                    else            { line += px; }
+                }
+                return std::max(maxLine, line);
+            }
+            // Proportional: sum each glyph's real advance (longest line for newlines).
+            float maxLine = 0.0f, line = 0.0f;
+            for (const char* p = text; *p; ++p) {
+                unsigned char ch = static_cast<unsigned char>(*p);
+                if (ch == '\n') { maxLine = std::max(maxLine, line); line = 0.0f; continue; }
+                if (ch < kTtfFirstChar || ch >= kTtfFirstChar + kTtfCharCount) ch = '?';
+                line += fa.glyphs[ch - kTtfFirstChar].advance * s;
+            }
+            return std::max(maxLine, line);
+        }
+        // No TTF for this role: N*px (matches the 8x8 cell + the old static math).
+        float maxLine = 0.0f, line = 0.0f;
+        for (const char* p = text; *p; ++p) {
+            if (*p == '\n') { maxLine = std::max(maxLine, line); line = 0.0f; }
+            else            { line += px; }
+        }
+        return std::max(maxLine, line);
     }
 
     void hudSize(uint32_t& outW, uint32_t& outH) const override {
@@ -1669,22 +1852,34 @@ private:
     }
 
     // A deferred HUD draw: a span of this frame's HUD vertex ring + which texture
-    // (font atlas vs white) to bind. drawHudQuad/drawHudText append these; they are
-    // replayed (in order, after the meshes) by recordHudDraws inside the graph's
-    // color pass — keeping HUD-on-top ordering identical to the hand-coded path.
-    struct HudRecord { uint32_t first; uint32_t count; bool useFont; };
+    // to bind. `texFont` selects the atlas: -1 => the 1x1 white texel (filled
+    // quads); >=0 => that FontRole's glyph atlas (or the 8x8 bitmap fallback if the
+    // role didn't bake). drawHudQuad/drawHudText(F) append these; they are replayed
+    // (in order, after the meshes) by recordHudDraws inside the graph's color pass —
+    // keeping HUD-on-top ordering identical to the hand-coded path.
+    struct HudRecord { uint32_t first; uint32_t count; int texFont; };
 
     // Append `count` vertices to this frame's HUD ring and queue a deferred HUD
     // draw record (replayed inside the graph's color pass). No command recording
     // here — the color pass is not open yet (commands are recorded in endFrame).
-    void flushHud(const HudVertex* verts, uint32_t count, bool useFont) {
+    // `texFont`: -1 = white texel; otherwise a FontRole index whose atlas to bind.
+    void flushHud(const HudVertex* verts, uint32_t count, int texFont) {
         auto& fr = m_frames[m_frameIdx];
         if (!fr.hudVboMapped || fr.hudVertsUsed + count > kMaxHudVerts) return; // ring full
         uint32_t first = fr.hudVertsUsed;
         std::memcpy(static_cast<HudVertex*>(fr.hudVboMapped) + first,
                     verts, (size_t)count * sizeof(HudVertex));
         fr.hudVertsUsed += count;
-        m_hudRecords.push_back(HudRecord{ first, count, useFont });
+        m_hudRecords.push_back(HudRecord{ first, count, texFont });
+    }
+
+    // Resolve a HudRecord's texFont to the Texture to bind: white texel for -1, the
+    // role's baked atlas if ready, else the 8x8 bitmap fallback, else white.
+    const Texture* hudRecordTexture(int texFont) const {
+        if (texFont < 0) return &m_whiteTex;
+        if (texFont < kFontRoleCount && m_fonts[texFont].ready) return &m_fonts[texFont].tex;
+        if (m_bitmapFontReady && m_bitmapFontTex.view) return &m_bitmapFontTex;
+        return &m_whiteTex;
     }
 
     // Replay the frame's deferred HUD draws into the (already-open) color pass.
@@ -1694,7 +1889,7 @@ private:
         auto& fr = m_frames[m_frameIdx];
         if (m_hudRecords.empty() || !m_hudPipeline) return;
         for (const HudRecord& hr : m_hudRecords) {
-            const Texture* tex = hr.useFont ? &m_fontTex : &m_whiteTex;
+            const Texture* tex = hudRecordTexture(hr.texFont);
 
             VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
             dsai.descriptorPool = fr.hudDescPool;
@@ -1914,9 +2109,12 @@ private:
         // GI (screen-space indirect diffuse). Adds a half-res gather/temporal/denoise
         // chain after the main color pass + a full-res additive apply, before bloom.
         const bool giOn = m_gi.enabled;
-        // The camera depth PRE-PASS runs when SSAO OR GI need a complete depth buffer
-        // before the post chain; the main pass then tests EQUAL (no depth write).
-        const bool prePassOn = ssaoOn || giOn;
+        // RT ambient occlusion (hardware ray query). Active only when r_rtao is on,
+        // the device supports RT, and the TLAS built this frame (set in endFrame).
+        const bool rtaoOn = m_rtaoActiveThisFrame;
+        // The camera depth PRE-PASS runs when SSAO, GI, OR RT AO need a complete depth
+        // buffer before the post chain; the main pass then tests EQUAL (no depth write).
+        const bool prePassOn = ssaoOn || giOn || rtaoOn;
         // Water adds a pass after the main mesh pass that samples + depth-tests the
         // scene depth this frame (gated; OFF == no water pass + zero cost).
         const bool waterOn = m_water.enabled;
@@ -1929,11 +2127,17 @@ private:
         // target with read-only scene depth — exactly like the particle pass.
         const bool debrisStep = m_debrisStepPending && m_debrisComputePipeline;
         const bool debrisDraw = m_debrisDrawPending && m_debrisDrawPipeline;
-        // The scene depth must be STORED (not transient) when water/GI/particles/debris read it.
-        const bool storeDepth = waterOn || giOn || particlesOn || debrisDraw;
+        // The scene depth must be STORED (not transient) when water/GI/particles/debris
+        // OR RT AO (its compute + apply passes sample it) read it.
+        const bool storeDepth = waterOn || giOn || particlesOn || debrisDraw || rtaoOn;
         RgResource rgSsaoRaw  = m_graph.importImage("ssao.raw",  m_ssaoRawImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgSsaoBlur = m_graph.importImage("ssao.blur", m_ssaoBlurImg,
+            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        // RT-AO half-res storage image (compute writes GENERAL, apply samples it).
+        // Imported UNDEFINED each frame (fully overwritten by the compute pass).
+        RgResource rgRtao = {};
+        if (rtaoOn) rgRtao = m_graph.importImage("rtao.ao", m_rtaoImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         // GI half-res buffers + the prev-depth copy. Imported each frame; the accum
         // buffers persist across frames (history), but the graph only tracks layout
@@ -2152,6 +2356,32 @@ private:
             }
           } // if (ssaoOn) — SSAO + blur passes
         } // if (prePassOn) — depth pre-pass (+ optional SSAO)
+
+        // ---- RT-AO compute pass (hardware ray query) ------------------------
+        // After the depth pre-pass populated the camera depth buffer, trace the
+        // TLAS with rayQueryEXT from each pixel's depth-reconstructed world position
+        // and write the half-res AO storage image. Reads depth (DEPTH_READ_ONLY) +
+        // writes the AO image (GENERAL). The TLAS itself was built in endFrame() as
+        // a synchronous submit before this command buffer; no graph dependency is
+        // needed for it. Gated on rtaoOn (zero cost / no pass when off).
+        if (rtaoOn) {
+            RenderPassDesc rp{};
+            rp.name = "rtao-compute";
+            rp.queue = RgQueue::Compute;
+            rp.usesDynamicRendering = false;
+            rp.addUse(ResourceUse{
+                rgRtao, VK_IMAGE_LAYOUT_GENERAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            rp.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            rp.recordCtx = this;
+            rp.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordRtaoComputeBody(c); };
+            m_graph.addPass(std::move(rp));
+        }
 
         // ---- Pass 2: main color pass (sky + meshes) -> LINEAR HDR target ----
         // Renders the lit scene into the R16G16B16A16_SFLOAT HDR target in linear
@@ -2515,6 +2745,60 @@ private:
             }
         }
 
+        // ---- RT-AO apply pass (hardware ray query) --------------------------
+        // After the lit scene (+ optional GI) exists, MULTIPLY the linear HDR target
+        // by the ray-traced AO (depth-aware up-sampled from the half-res RT AO image).
+        // The pipeline uses a dstColor*srcColor blend, so this pass writes the AO
+        // darkening factor and the blender multiplies it into the HDR scene without
+        // reading it back. Reads the AO image (SHADER_READ_ONLY) + depth; writes HDR.
+        // Runs before bloom so the darkened scene drives the bloom chain correctly.
+        if (rtaoOn) {
+            m_rtaoApplyAttach = VkRenderingAttachmentInfo{};
+            m_rtaoApplyAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_rtaoApplyAttach.imageView = m_hdrView;
+            m_rtaoApplyAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_rtaoApplyAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;     // keep the lit scene
+            m_rtaoApplyAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            RenderPassDesc ap{};
+            ap.name = "rtao-apply";
+            ap.addUse(ResourceUse{
+                rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            ap.addUse(ResourceUse{
+                rgRtao, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            ap.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            ap.usesDynamicRendering = true;
+            m_rtaoApplyRenderInfo = VkRenderingInfo{};
+            m_rtaoApplyRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_rtaoApplyRenderInfo.renderArea = { {0,0}, m_extent };
+            m_rtaoApplyRenderInfo.layerCount = 1;
+            m_rtaoApplyRenderInfo.colorAttachmentCount = 1;
+            m_rtaoApplyRenderInfo.pColorAttachments = &m_rtaoApplyAttach;
+            ap.renderInfo = m_rtaoApplyRenderInfo;
+            ap.recordCtx = this;
+            ap.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                VkViewport vp{ 0.0f, 0.0f, (float)self->m_extent.width, (float)self->m_extent.height, 0.0f, 1.0f };
+                VkRect2D scis{ {0,0}, self->m_extent };
+                vkCmdSetViewport(c, 0, 1, &vp);
+                vkCmdSetScissor(c, 0, 1, &scis);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_rtaoApplyPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_rtaoApplyLayout,
+                                        0, 1, &self->m_rtaoApplySet[self->m_frameIdx], 0, nullptr);
+                vkCmdPushConstants(c, self->m_rtaoApplyLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(RtaoApplyPush), &self->m_rtaoApplyPush);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(ap));
+        }
+
         // ---- GPU-compute debris draw pass (K-T2) ----------------------------
         // ONE instanced unit-cube draw over the whole pool capacity into the SAME
         // linear HDR target (LOAD), with read-only scene depth (depth-TEST, no write)
@@ -2774,9 +3058,237 @@ private:
         }
     }
 
-    // Build a 128x64 RGBA atlas (16 cols x 8 rows of 8x8 glyphs) from the
-    // embedded public-domain font8x8_basic bits: white texel, alpha = pixel-on.
+    // ---- ROLE -> FONT FILE MAP (the ONE place to reassign a role's font) -------
+    // To change which typeface a role uses: edit the path string here and restart
+    // (no rebuild of the engine logic needed — the file ships in assets/). The
+    // *static* (non-VariableFont) weights are used. `proportional=false` forces a
+    // monospace cell (News/Console are genuinely mono; the proportional roles get
+    // real per-glyph advances). The embedded Roboto Mono is the guaranteed fallback
+    // for ANY role whose file is missing/unreadable, so text is NEVER blank.
+    //
+    // To EMBED a role's font for a single-binary ship: run
+    //   tools/embed_font.ps1 -InFont assets/fonts/<dir>/<file>.ttf -Symbol k<Name>TTF
+    // and point that role's load at the generated blob (see kRobotoMonoTTF usage).
+    // Read a font file by trying a few roots so the load works regardless of the
+    // process CWD (run-from-repo-root, run-from-build-dir, assets-next-to-exe). The
+    // relative path (e.g. "Orbitron/static/Orbitron-Bold.ttf") is joined onto each
+    // candidate prefix; the first readable hit wins. Returns the resolved path in
+    // `outResolved`. Mirrors app/asset_root.h's candidate order but stays self-
+    // contained in the engine layer (no app dependency). Empty vector => not found.
+    std::vector<unsigned char> readFontFile(const char* relPath, std::string& outResolved) {
+        std::vector<unsigned char> bytes;
+        if (!relPath) return bytes;
+        std::filesystem::path exeDir(".");
+#ifdef _WIN32
+        {
+            char buf[1024];
+            DWORD n = GetModuleFileNameA(nullptr, buf, (DWORD)sizeof(buf));
+            if (n > 0 && n < sizeof(buf))
+                exeDir = std::filesystem::path(std::string(buf, n)).parent_path();
+        }
+#endif
+        const std::filesystem::path rel(relPath);
+        const std::filesystem::path candidates[] = {
+            std::filesystem::path("assets/fonts") / rel,                       // CWD = repo root
+            exeDir / ".." / ".." / ".." / "assets" / "fonts" / rel,            // build/bin/<Config>
+            exeDir / "assets" / "fonts" / rel,                                 // assets next to exe
+            std::filesystem::path("../assets/fonts") / rel,                    // CWD = a subdir
+        };
+        for (const auto& c : candidates) {
+            std::ifstream f(c, std::ios::binary | std::ios::ate);
+            if (!f) continue;
+            const std::streamsize sz = f.tellg();
+            if (sz <= 4) continue;
+            f.seekg(0);
+            bytes.resize((size_t)sz);
+            if (f.read(reinterpret_cast<char*>(bytes.data()), sz)) {
+                std::error_code ec; auto norm = std::filesystem::weakly_canonical(c, ec);
+                outResolved = (ec ? c : norm).string();
+                return bytes;
+            }
+            bytes.clear();
+        }
+        return bytes;
+    }
+
+    struct RoleFontDesc { const char* path; bool proportional; const char* label; };
+    static const RoleFontDesc* roleFontTable() {
+        // Indexed by FontRole. Console==HudMono share index 0 (embedded mono).
+        static const RoleFontDesc kRoleFontPaths[kFontRoleCount] = {
+            /* 0 Console/HudMono */ { "Consolas.ttf",                                 false, "Consolas" }, // matches the BabylonJS x3-console (Consolas,Courier New,monospace); embedded Roboto Mono is the fallback
+            /* 1 Title           */ { "Orbitron/static/Orbitron-Bold.ttf",           true,  "Orbitron-Bold" },
+            /* 2 Menu            */ { "Space_Grotesk/static/SpaceGrotesk-Medium.ttf", true,  "SpaceGrotesk-Medium" },
+            /* 3 Enemy           */ { "Tektur/static/Tektur_Condensed-Bold.ttf",      true,  "Tektur_Condensed-Bold" },
+            /* 4 News            */ { "Space_Mono/SpaceMono-Bold.ttf",                false, "SpaceMono-Bold" },
+        };
+        return kRoleFontPaths;
+    }
+
+    // Font atlas builder. Bakes ONE crisp glyph atlas PER FontRole from a real TTF
+    // (assets/fonts/, embedded Roboto Mono fallback) via stb_truetype, and bakes the
+    // legacy 8x8 bitmap font as the universal last-resort so text is NEVER blank.
+    // Logs which typeface actually loaded for each role.
     bool buildFontAtlas() {
+        // Universal last-resort bitmap atlas (used if a role's TTF AND the embedded
+        // fallback both fail — extremely unlikely, but never ship blank text).
+        m_bitmapFontReady = buildBitmapFontAtlas(m_bitmapFontTex);
+        if (!m_bitmapFontReady)
+            logError("[rhi] HUD font: 8x8 bitmap fallback atlas failed to build");
+
+        const RoleFontDesc* table = roleFontTable();
+        int roleOk = 0;
+        for (int r = 0; r < kFontRoleCount; ++r) {
+            // HudMono is an ALIAS of Console (same enum value 0); the loop visits each
+            // distinct index once, so no special-casing is needed.
+            FontAtlas& fa = m_fonts[r];
+            fa = FontAtlas{};
+            fa.proportional = table[r].proportional;
+
+            // Load the role's TTF bytes from assets/fonts/, else the embedded Roboto
+            // Mono. (Index 0 has no file => always embedded.)
+            std::vector<unsigned char> fileBytes;
+            const unsigned char* ttf = kRobotoMonoTTF;
+            size_t ttfSize = kRobotoMonoTTFSize;
+            std::string loaded = "Roboto Mono (embedded)";
+            if (table[r].path) {
+                std::string resolved;
+                fileBytes = readFontFile(table[r].path, resolved);
+                if (!fileBytes.empty()) {
+                    ttf = fileBytes.data(); ttfSize = fileBytes.size();
+                    loaded = std::string(table[r].label) + " (" + resolved + ")";
+                } else {
+                    loaded = std::string("Roboto Mono (embedded; ") + table[r].path +
+                             " not found)";
+                }
+            }
+
+            if (bakeTtfAtlas(r, ttf, ttfSize)) {
+                fa.ready = true; ++roleOk;
+                logInfo("[rhi] HUD font role " + roleName(r) + " -> " + loaded +
+                        (fa.proportional ? " [proportional]" : " [monospace]"));
+            } else {
+                // The role's chosen TTF failed — fall back to the EMBEDDED font so the
+                // role still has a proper atlas (mono), rather than the 8x8 bitmap.
+                fa = FontAtlas{}; fa.proportional = false;
+                if (ttf != kRobotoMonoTTF && bakeTtfAtlas(r, kRobotoMonoTTF, kRobotoMonoTTFSize)) {
+                    fa.ready = true; ++roleOk;
+                    logError("[rhi] HUD font role " + roleName(r) + " -> " + loaded +
+                             " FAILED to bake; using Roboto Mono (embedded) [monospace]");
+                } else {
+                    logError("[rhi] HUD font role " + roleName(r) +
+                             ": TTF bake failed entirely — using 8x8 bitmap fallback");
+                }
+            }
+        }
+        logInfo("[rhi] HUD fonts: " + std::to_string(roleOk) + "/" +
+                std::to_string(kFontRoleCount) + " role atlases baked from TTF");
+        // Success as long as SOMETHING can render text (a role atlas or the bitmap).
+        return roleOk > 0 || m_bitmapFontReady;
+    }
+
+    static std::string roleName(int r) {
+        switch (r) {
+            case 0: return "Console/HudMono";
+            case 1: return "Title";
+            case 2: return "Menu";
+            case 3: return "Enemy";
+            case 4: return "News";
+            default: return std::to_string(r);
+        }
+    }
+
+    // Bake ASCII 32..126 from `ttf` into an antialiased R8 coverage atlas via
+    // stb_truetype's packer (2x2 oversample for crisp small text), then expand to
+    // RGBA (white, alpha=coverage) so the existing LINEAR-sampler HUD path renders
+    // smooth, alpha-blended, per-vertex-tinted glyphs. Records per-glyph atlas UVs +
+    // offsets + advance (bake-pixel units) into m_fonts[role]. Does NOT set ready.
+    // (Takes the role index, not a FontAtlas&, so the signature needs no early type
+    // visibility — FontAtlas is declared with the other members further below.)
+    bool bakeTtfAtlas(int role, const unsigned char* ttf, size_t ttfSize) {
+        FontAtlas& fa = m_fonts[role];
+        if (!ttf || ttfSize < 4) { logError("[rhi] TTF: empty font data"); return false; }
+
+        stbtt_fontinfo info{};
+        const int off = stbtt_GetFontOffsetForIndex(ttf, 0);
+        if (off < 0) { logError("[rhi] TTF: GetFontOffsetForIndex failed"); return false; }
+        if (!stbtt_InitFont(&info, ttf, off)) { logError("[rhi] TTF: InitFont failed"); return false; }
+
+        // Global vertical metrics at the bake size (consistent baseline/cell height).
+        const float scale = stbtt_ScaleForPixelHeight(&info, kTtfBakePx);
+        int asc = 0, desc = 0, lineGap = 0;
+        stbtt_GetFontVMetrics(&info, &asc, &desc, &lineGap);
+        fa.ascent = asc * scale;   // baseline distance from the cell top
+
+        // Reference cell advance (drives bake-px -> requested-px scale `s`). For mono
+        // fonts every glyph shares this; for proportional fonts it's just the scale
+        // reference ('M' advance), with real per-glyph advances stored per glyph.
+        {
+            int adv = 0, lsb = 0;
+            stbtt_GetCodepointHMetrics(&info, 'M', &adv, &lsb);
+            fa.cellAdvance = adv * scale;
+            if (fa.cellAdvance <= 0.0f) fa.cellAdvance = kTtfBakePx; // sane fallback
+        }
+
+        // Pack the glyph range into an 8-bit coverage atlas.
+        std::vector<unsigned char> coverage((size_t)kTtfAtlasW * kTtfAtlasH, 0);
+        std::vector<stbtt_packedchar> packed(kTtfCharCount);
+        stbtt_pack_context spc{};
+        if (!stbtt_PackBegin(&spc, coverage.data(), kTtfAtlasW, kTtfAtlasH,
+                             /*stride=*/0, /*padding=*/1, nullptr)) {
+            logError("[rhi] TTF: PackBegin failed"); return false;
+        }
+        stbtt_PackSetOversampling(&spc, 2, 2);   // 2x2 supersample for crisp small text
+        if (!stbtt_PackFontRange(&spc, ttf, 0, kTtfBakePx,
+                                 kTtfFirstChar, kTtfCharCount, packed.data())) {
+            logError("[rhi] TTF: PackFontRange failed (atlas too small?)");
+            stbtt_PackEnd(&spc);
+            return false;
+        }
+        stbtt_PackEnd(&spc);
+
+        // Record per-glyph atlas rects + quad offsets + advance (bake-pixel units).
+        for (int i = 0; i < kTtfCharCount; ++i) {
+            const stbtt_packedchar& pc = packed[i];
+            TtfGlyph& g = fa.glyphs[i];
+            g.u0 = (float)pc.x0 / (float)kTtfAtlasW;
+            g.v0 = (float)pc.y0 / (float)kTtfAtlasH;
+            g.u1 = (float)pc.x1 / (float)kTtfAtlasW;
+            g.v1 = (float)pc.y1 / (float)kTtfAtlasH;
+            // pc.xoff/yoff are offsets from the pen (baseline) to the glyph's top-left.
+            g.x0 = pc.xoff;  g.y0 = pc.yoff;
+            g.x1 = pc.xoff2; g.y1 = pc.yoff2;
+            g.advance = pc.xadvance;
+        }
+
+        // Expand coverage -> RGBA (white, alpha=coverage) and upload.
+        std::vector<uint8_t> rgba((size_t)kTtfAtlasW * kTtfAtlasH * 4, 0);
+        for (size_t p = 0; p < coverage.size(); ++p) {
+            rgba[p*4+0] = 255; rgba[p*4+1] = 255; rgba[p*4+2] = 255;
+            rgba[p*4+3] = coverage[p];
+        }
+        if (!createSampledTexture(rgba.data(), kTtfAtlasW, kTtfAtlasH, /*srgb=*/false, fa.tex)) {
+            logError("[rhi] TTF: atlas texture upload failed"); return false;
+        }
+
+        // LINEAR + CLAMP sampler: smooth glyph edges (antialiased), no wrap bleed.
+        if (fa.tex.sampler) vkDestroySampler(m_dev.device, fa.tex.sampler, nullptr);
+        fa.tex.sampler = VK_NULL_HANDLE;
+        VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        sci.magFilter = VK_FILTER_LINEAR; sci.minFilter = VK_FILTER_LINEAR;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(m_dev.device, &sci, nullptr, &fa.tex.sampler) != VK_SUCCESS) {
+            logError("[rhi] TTF font sampler create failed"); return false;
+        }
+        return true;
+    }
+
+    // Build a 128x64 RGBA atlas (16 cols x 8 rows of 8x8 glyphs) from the embedded
+    // public-domain font8x8_basic bits (white texel, alpha = pixel-on) into `dst`.
+    // Universal last-resort fallback (NEVER ship blank text).
+    bool buildBitmapFontAtlas(Texture& dst) {
         constexpr uint32_t kAtlasW = 128, kAtlasH = 64;
         std::vector<uint8_t> rgba((size_t)kAtlasW * kAtlasH * 4, 0);
         for (int ch = 0; ch < 128; ++ch) {
@@ -2795,17 +3307,18 @@ private:
         // UNORM (data): the per-vertex color already carries the desired tint, so
         // no sRGB linearization of the mask is wanted. Nearest filtering keeps the
         // pixel font crisp.
-        if (!createSampledTexture(rgba.data(), kAtlasW, kAtlasH, /*srgb=*/false, m_fontTex))
+        if (!createSampledTexture(rgba.data(), kAtlasW, kAtlasH, /*srgb=*/false, dst))
             return false;
         // Replace the linear sampler with a NEAREST, CLAMP one for crisp glyphs.
-        if (m_fontTex.sampler) vkDestroySampler(m_dev.device, m_fontTex.sampler, nullptr);
+        if (dst.sampler) vkDestroySampler(m_dev.device, dst.sampler, nullptr);
+        dst.sampler = VK_NULL_HANDLE;
         VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
         sci.magFilter = VK_FILTER_NEAREST; sci.minFilter = VK_FILTER_NEAREST;
         sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
         sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        if (vkCreateSampler(m_dev.device, &sci, nullptr, &m_fontTex.sampler) != VK_SUCCESS) {
+        if (vkCreateSampler(m_dev.device, &sci, nullptr, &dst.sampler) != VK_SUCCESS) {
             logError("[rhi] font sampler create failed"); return false;
         }
         return true;
@@ -2932,7 +3445,7 @@ private:
         vkDestroyShaderModule(m_dev.device, fs, nullptr);
         if (pr != VK_SUCCESS) { logError("[rhi] HUD pipeline create failed"); return false; }
 
-        logInfo("[rhi] HUD 2D pipeline ready (NDC quads + 8x8 font atlas, alpha-blended, no depth)");
+        logInfo("[rhi] HUD 2D pipeline ready (NDC quads + TTF/bitmap glyph atlas, alpha-blended, no depth)");
         return true;
     }
 
@@ -4424,7 +4937,12 @@ private:
                              fr.hudVbo = VK_NULL_HANDLE; fr.hudVboAlloc = nullptr; fr.hudVboMapped = nullptr; }
             if (fr.hudDescPool) { vkDestroyDescriptorPool(m_dev.device, fr.hudDescPool, nullptr); fr.hudDescPool = VK_NULL_HANDLE; }
         }
-        destroyTextureObj(m_fontTex);
+        for (int r = 0; r < kFontRoleCount; ++r) {
+            destroyTextureObj(m_fonts[r].tex);
+            m_fonts[r].ready = false;
+        }
+        destroyTextureObj(m_bitmapFontTex);
+        m_bitmapFontReady = false;
         if (m_hudPipeline)  vkDestroyPipeline(m_dev.device, m_hudPipeline, nullptr);
         if (m_hudLayout)    vkDestroyPipelineLayout(m_dev.device, m_hudLayout, nullptr);
         if (m_hudSetLayout) vkDestroyDescriptorSetLayout(m_dev.device, m_hudSetLayout, nullptr);
@@ -4516,6 +5034,9 @@ private:
         writeWaterDescriptors();
         // Particles sample the scene depth (soft fade): rewire on the new depth view.
         writeParticleDescriptors();
+        // RT AO (if built): half-res target tracks the extent + the depth view
+        // changed, so recreate the target + rewrite all RT-AO descriptors.
+        if (m_rtaoBuilt) { createRtaoTargets(); writeRtaoDescriptors(); }
     }
 
     // ---- HEADLESS offscreen render target (no window, no swapchain) ---------
@@ -5192,6 +5713,400 @@ private:
         }
         if (m_ssaoLinearSampler){ vkDestroySampler(m_dev.device, m_ssaoLinearSampler, nullptr); m_ssaoLinearSampler = VK_NULL_HANDLE; }
         if (m_depthSampler)   { vkDestroySampler(m_dev.device, m_depthSampler, nullptr); m_depthSampler = VK_NULL_HANDLE; }
+    }
+
+    // ======================================================================
+    // RT AMBIENT OCCLUSION (hardware ray query) — lazy init / targets /
+    // descriptors / per-frame TLAS build / compute dispatch / teardown.
+    // ----------------------------------------------------------------------
+    // Built LAZILY the first time RT AO is enabled on an RT-capable device (so a
+    // run that never turns r_rtao on pays zero init cost). All teardown is in
+    // destroyRt(), called from shutdown(). The compute pass writes a half-res R8 AO
+    // image (GENERAL layout) via rayQueryEXT; a full-screen MULTIPLY apply pass then
+    // darkens the linear HDR scene by the up-sampled AO before bloom.
+
+    // Static trampolines so the C-style VulkanRT logger pointers reach x3::log*.
+    static void rtLogInfo(const char* m)  { x3::logInfo(m ? m : ""); }
+    static void rtLogError(const char* m) { x3::logError(m ? m : ""); }
+
+    // Lazily init the AS module + RT-AO pipelines/targets. Returns true when the RT
+    // chain is ready to use this frame. No-op (returns false) without RT support.
+    bool ensureRtaoReady() {
+        if (!m_rtSupported) return false;
+        if (!m_rtInitTried) {
+            m_rtInitTried = true;
+            if (!m_rt.init(m_dev.device, m_dev.physical_device, m_alloc, m_gfxQueue,
+                           m_gfxFamily, &rtLogInfo, &rtLogError)) {
+                logError("[rhi] RT AO: AS module init failed — staying on raster/SSAO");
+                m_rtSupported = false;   // disable RT entirely; never retry
+                return false;
+            }
+        }
+        if (!m_rt.ready()) return false;
+        if (!m_rtaoBuilt) {
+            if (!createRtao()) { logError("[rhi] RT AO: pipeline create failed"); m_rtSupported = false; return false; }
+            if (!createRtaoTargets()) { logError("[rhi] RT AO: target create failed"); m_rtSupported = false; return false; }
+            writeRtaoDescriptors();
+            m_rtaoBuilt = true;
+            logInfo("[rhi] RT AO ready (ray-query inline AO: BLAS/TLAS + half-res compute + multiply apply)");
+        }
+        return true;
+    }
+
+    bool createRtao() {
+        // NEAREST sampler for reading depth as plain data; LINEAR for AO up-sample.
+        VkSamplerCreateInfo n{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        n.magFilter = VK_FILTER_NEAREST; n.minFilter = VK_FILTER_NEAREST;
+        n.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        n.addressModeU = n.addressModeV = n.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        n.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+        if (vkCreateSampler(m_dev.device, &n, nullptr, &m_rtaoDepthSampler) != VK_SUCCESS) return false;
+        VkSamplerCreateInfo l = n; l.magFilter = VK_FILTER_LINEAR; l.minFilter = VK_FILTER_LINEAR;
+        if (vkCreateSampler(m_dev.device, &l, nullptr, &m_rtaoLinearSampler) != VK_SUCCESS) return false;
+
+        // ---- Compute set layout: 0=depth sampler, 1=AO storage image, 2=TLAS,
+        //      3=Rtao UBO. ----
+        {
+            VkDescriptorSetLayoutBinding b[4]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            b[2].binding = 2; b[2].descriptorCount = 1;
+            b[2].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            b[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            b[3].binding = 3; b[3].descriptorCount = 1;
+            b[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            b[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 4; ci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_rtaoSetLayout) != VK_SUCCESS) return false;
+        }
+        // ---- Apply set layout: 0=AO (linear), 1=depth (nearest). ----
+        {
+            VkDescriptorSetLayoutBinding b[2]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 2; ci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_rtaoApplySetLayout) != VK_SUCCESS) return false;
+        }
+        // ---- Descriptor pool: per-frame compute + apply sets. ----
+        {
+            const uint32_t nF = kFramesInFlight;
+            VkDescriptorPoolSize sizes[4]{};
+            sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; sizes[0].descriptorCount = nF /*compute depth*/ + nF * 2 /*apply*/;
+            sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;          sizes[1].descriptorCount = nF;
+            sizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; sizes[2].descriptorCount = nF;
+            sizes[3].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;         sizes[3].descriptorCount = nF;
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.maxSets = nF * 2; pci.poolSizeCount = 4; pci.pPoolSizes = sizes;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_rtaoPool) != VK_SUCCESS) return false;
+        }
+        // ---- Per-frame UBOs + sets. ----
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkBufferCreateInfo ub{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            ub.size = sizeof(RtaoUBO); ub.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo info{};
+            if (vmaCreateBuffer(m_alloc, &ub, &aci, &m_rtaoUboBuf[i], &m_rtaoUboAlloc[i], &info) != VK_SUCCESS) return false;
+            m_rtaoUboMapped[i] = info.pMappedData;
+            VkDescriptorSetAllocateInfo a0{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            a0.descriptorPool = m_rtaoPool; a0.descriptorSetCount = 1; a0.pSetLayouts = &m_rtaoSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &a0, &m_rtaoSet[i]) != VK_SUCCESS) return false;
+            VkDescriptorSetAllocateInfo a1{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            a1.descriptorPool = m_rtaoPool; a1.descriptorSetCount = 1; a1.pSetLayouts = &m_rtaoApplySetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &a1, &m_rtaoApplySet[i]) != VK_SUCCESS) return false;
+        }
+        // ---- Compute pipeline (rtao.comp). ----
+        {
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pl.setLayoutCount = 1; pl.pSetLayouts = &m_rtaoSetLayout;
+            if (vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_rtaoLayout) != VK_SUCCESS) return false;
+            VkShaderModule cs = loadShaderModule("shaders\\rtao.comp.spv");
+            if (!cs) return false;
+            VkComputePipelineCreateInfo cpci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+            cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
+            cpci.layout = m_rtaoLayout;
+            VkResult pr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_rtaoPipe);
+            vkDestroyShaderModule(m_dev.device, cs, nullptr);
+            if (pr != VK_SUCCESS) return false;
+        }
+        // ---- Apply pipeline (rtao_apply.frag -> HDR, MULTIPLY blend). ----
+        {
+            VkPushConstantRange pcr{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(RtaoApplyPush) };
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pl.setLayoutCount = 1; pl.pSetLayouts = &m_rtaoApplySetLayout;
+            pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &pcr;
+            if (vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_rtaoApplyLayout) != VK_SUCCESS) return false;
+            if (!createMultiplyFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\rtao_apply.frag.spv",
+                                                  m_rtaoApplyLayout, kHdrFormat, m_rtaoApplyPipe))
+                return false;
+        }
+        return true;
+    }
+
+    // Full-screen-triangle pipeline whose single color attachment uses a MULTIPLY
+    // blend (dstColor * srcColor): the apply pass outputs the AO darkening factor
+    // and the blender multiplies it into the existing HDR target (no read-back).
+    bool createMultiplyFullscreenPipeline(const char* vsPath, const char* fsPath,
+                                          VkPipelineLayout layout, VkFormat colorFmt,
+                                          VkPipeline& outPipe) {
+        VkShaderModule vs = loadShaderModule(vsPath);
+        VkShaderModule fs = loadShaderModule(fsPath);
+        if (!vs || !fs) { if (vs) vkDestroyShaderModule(m_dev.device, vs, nullptr); if (fs) vkDestroyShaderModule(m_dev.device, fs, nullptr); return false; }
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = vs; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
+        VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+        VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        vp.viewportCount = 1; vp.scissorCount = 1;
+        VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_NONE;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        dss.depthTestEnable = VK_FALSE; dss.depthWriteEnable = VK_FALSE; dss.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
+        cba.blendEnable = VK_TRUE;
+        cba.srcColorBlendFactor = VK_BLEND_FACTOR_DST_COLOR; cba.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba.colorBlendOp = VK_BLEND_OP_ADD;
+        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE; cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        cba.alphaBlendOp = VK_BLEND_OP_ADD;
+        VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        cb.attachmentCount = 1; cb.pAttachments = &cba;
+        VkDynamicState dyn[2]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+        VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+        prci.colorAttachmentCount = 1; prci.pColorAttachmentFormats = &colorFmt;
+        prci.depthAttachmentFormat = VK_FORMAT_UNDEFINED;
+        VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        gpci.pNext = &prci; gpci.stageCount = 2; gpci.pStages = stages;
+        gpci.pVertexInputState = &vin; gpci.pInputAssemblyState = &ia;
+        gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
+        gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
+        gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = layout;
+        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &outPipe);
+        vkDestroyShaderModule(m_dev.device, vs, nullptr);
+        vkDestroyShaderModule(m_dev.device, fs, nullptr);
+        return pr == VK_SUCCESS;
+    }
+
+    // Create (or recreate) the half-res RT-AO R8 storage target at the current
+    // extent. STORAGE (compute write) | SAMPLED (apply read).
+    bool createRtaoTargets() {
+        destroyRtaoTargets();
+        m_rtaoExtent = { std::max(1u, m_extent.width / 2), std::max(1u, m_extent.height / 2) };
+        const VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (!createColorTarget(kRtaoFormat, m_rtaoExtent.width, m_rtaoExtent.height, usage,
+                               m_rtaoImg, m_rtaoAlloc, m_rtaoView)) return false;
+        return true;
+    }
+
+    void destroyRtaoTargets() {
+        if (m_rtaoView) { vkDestroyImageView(m_dev.device, m_rtaoView, nullptr); m_rtaoView = VK_NULL_HANDLE; }
+        if (m_rtaoImg)  { vmaDestroyImage(m_alloc, m_rtaoImg, m_rtaoAlloc); m_rtaoImg = VK_NULL_HANDLE; m_rtaoAlloc = nullptr; }
+    }
+
+    // (Re)write the RT-AO descriptor sets (depth/AO image views + TLAS + UBO).
+    // The TLAS write is refreshed each time the TLAS handle changes; called once
+    // at build + whenever targets/TLAS are recreated.
+    void writeRtaoDescriptors() {
+        VkAccelerationStructureKHR tlas = m_rt.tlas();
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkDescriptorImageInfo depthInfo{ m_rtaoDepthSampler, m_depthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo aoInfo{ VK_NULL_HANDLE, m_rtaoView, VK_IMAGE_LAYOUT_GENERAL };
+            VkDescriptorBufferInfo ubo{ m_rtaoUboBuf[i], 0, sizeof(RtaoUBO) };
+            VkWriteDescriptorSetAccelerationStructureKHR asW{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
+            asW.accelerationStructureCount = 1; asW.pAccelerationStructures = &tlas;
+            VkWriteDescriptorSet w[4]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[0].dstSet = m_rtaoSet[i]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &depthInfo;
+            w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[1].dstSet = m_rtaoSet[i]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+            w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w[1].pImageInfo = &aoInfo;
+            w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[2].dstSet = m_rtaoSet[i]; w[2].dstBinding = 3; w[2].descriptorCount = 1;
+            w[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[2].pBufferInfo = &ubo;
+            // Always write the depth/AO/UBO bindings; add the TLAS binding only when
+            // a TLAS exists (it's built later this frame, so rewriteRtaoTlas() fills
+            // binding 2 once available — the set is never used before then).
+            w[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[3].dstSet = m_rtaoSet[i]; w[3].dstBinding = 2; w[3].descriptorCount = 1;
+            w[3].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; w[3].pNext = &asW;
+            vkUpdateDescriptorSets(m_dev.device, tlas ? 4u : 3u, w, 0, nullptr);
+
+            VkDescriptorImageInfo aoSampled{ m_rtaoLinearSampler, m_rtaoView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo depthSampled{ m_rtaoDepthSampler, m_depthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet a[2]{};
+            a[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; a[0].dstSet = m_rtaoApplySet[i]; a[0].dstBinding = 0; a[0].descriptorCount = 1;
+            a[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; a[0].pImageInfo = &aoSampled;
+            a[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; a[1].dstSet = m_rtaoApplySet[i]; a[1].dstBinding = 1; a[1].descriptorCount = 1;
+            a[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; a[1].pImageInfo = &depthSampled;
+            vkUpdateDescriptorSets(m_dev.device, 2, a, 0, nullptr);
+        }
+    }
+
+    // Re-write ONLY the TLAS binding (binding 2) into each compute set. Called after
+    // a TLAS rebuild when the TLAS handle changed (a grow); steady same-size
+    // rebuilds keep the same handle so this is skipped.
+    void rewriteRtaoTlas() {
+        VkAccelerationStructureKHR tlas = m_rt.tlas();
+        if (!tlas) return;
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkWriteDescriptorSetAccelerationStructureKHR asW{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
+            asW.accelerationStructureCount = 1; asW.pAccelerationStructures = &tlas;
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.dstSet = m_rtaoSet[i]; w.dstBinding = 2; w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; w.pNext = &asW;
+            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        }
+    }
+
+    // Build (or refit) the scene acceleration structures for THIS frame from the
+    // per-frame draw list (m_drawRecords, still valid in endFrame after
+    // prepareFrameData). Ensures a BLAS exists for every distinct mesh, then
+    // rebuilds the TLAS with one instance per draw. Returns true if a usable TLAS
+    // is ready. Called from endFrame BEFORE the graph records the frame.
+    bool buildRtSceneAS() {
+        // Ensure a BLAS for each distinct mesh referenced this frame.
+        for (uint32_t mid : m_groupOrder) {
+            if (m_rt.hasBlas(mid)) continue;
+            auto it = m_meshes.find(mid);
+            if (it == m_meshes.end()) continue;
+            const Mesh& m = it->second;
+            // Dynamic (CPU-skinned) meshes change their vertex buffer each frame; the
+            // per-frame skinned/updated VBO would need a per-frame BLAS rebuild. For
+            // v1 (static-first) we BLAS only the static device-local meshes; dynamic
+            // characters are simply absent from the TLAS (they don't cast RT AO yet —
+            // a documented next tier). This keeps the build cheap + correct.
+            if (m.dynamic || m.vbo == VK_NULL_HANDLE) continue;
+            VkBufferDeviceAddressInfo vi{ VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO }; vi.buffer = m.vbo;
+            VkBufferDeviceAddressInfo ii{ VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO }; ii.buffer = m.ibo;
+            const VkDeviceAddress vbAddr = vkGetBufferDeviceAddress(m_dev.device, &vi);
+            const VkDeviceAddress ibAddr = vkGetBufferDeviceAddress(m_dev.device, &ii);
+            m_rt.ensureBlas(mid, vbAddr, m.vertexCount, (uint32_t)sizeof(MeshVertex), ibAddr, m.indexCount);
+        }
+
+        // Build the TLAS from this frame's instances (skip dynamic meshes — no BLAS).
+        m_rtInstScratch.clear();
+        m_rtInstScratch.reserve(m_drawRecords.size());
+        for (const DrawRecord& dr : m_drawRecords) {
+            if (!m_rt.hasBlas(dr.meshId)) continue;
+            VulkanRT::TlasInstance inst{};
+            inst.meshId = dr.meshId;
+            std::memcpy(inst.model, dr.model, sizeof(inst.model));
+            m_rtInstScratch.push_back(inst);
+        }
+
+        // Decide whether to (re)build the TLAS this frame. Rebuilding into the SAME
+        // backing buffer while a previous frame's RT-AO compute may still be READING
+        // it is a cross-frame WAR hazard. To stay correct + cheap:
+        //   * STATIC-FIRST (default, rebuildTlasEachFrame=false): build only when the
+        //     instance set CHANGES (a cheap signature over mesh ids + transforms). A
+        //     change is rare, so we idle the device before that rare rebuild — no
+        //     in-flight reader can touch the backing. The common static frame does NO
+        //     build (and thus no hazard, no stall).
+        //   * rebuildTlasEachFrame=true (moving geometry): rebuild every frame, idling
+        //     first so the prior frame's compute has retired before the backing is
+        //     overwritten. Correct (if heavier) — for dynamic scenes.
+        const uint64_t sig = tlasSignature(m_rtInstScratch);
+        const bool firstBuild = !m_rt.tlasBuilt();
+        const bool changed    = (sig != m_rtTlasSig);
+        if (!firstBuild && !changed && !m_rtao.rebuildTlasEachFrame)
+            return m_rt.tlas() != VK_NULL_HANDLE;   // unchanged static TLAS: reuse as-is
+
+        // A real (re)build follows: ensure no in-flight GPU work is still reading the
+        // TLAS backing we may overwrite. Cheap because rebuilds are rare (static) —
+        // and necessary for correctness when they do happen.
+        if (!firstBuild) vkDeviceWaitIdle(m_dev.device);
+
+        const VkAccelerationStructureKHR before = m_rt.tlas();
+        if (!m_rt.buildTlas(m_rtInstScratch)) return false;
+        m_rtTlasSig = sig;
+        // If the TLAS handle changed (first build or a grow), re-point the descriptors.
+        if (m_rt.tlas() != before) rewriteRtaoTlas();
+        return m_rt.tlasBuilt() && m_rt.tlas() != VK_NULL_HANDLE;
+    }
+
+    // Cheap order-sensitive signature of the TLAS instance set (mesh ids + packed
+    // transforms) so a static scene's TLAS is rebuilt only when it actually changes.
+    static uint64_t tlasSignature(const std::vector<VulkanRT::TlasInstance>& inst) {
+        uint64_t h = 1469598103934665603ull;        // FNV-1a 64
+        auto mix = [&](uint64_t v){ h ^= v; h *= 1099511628211ull; };
+        mix(inst.size());
+        for (const auto& in : inst) {
+            mix(in.meshId);
+            for (int k = 0; k < 16; ++k) {
+                uint32_t bits; std::memcpy(&bits, &in.model[k], sizeof(bits));
+                mix(bits);
+            }
+        }
+        return h;
+    }
+
+    // Fill the per-frame RT-AO compute UBO (invViewProj + camPos + tunables). Uses
+    // the SAME viewProj prepareFrameData cached this frame.
+    void prepareRtaoUbo() {
+        auto& fr = m_frames[m_frameIdx];
+        if (!m_rtaoUboMapped[m_frameIdx]) (void)fr;
+        RtaoUBO u{};
+        u.invViewProj = glm::inverse(m_lastViewProj);
+        u.camPos = glm::vec4(m_camPos, 1.0f);
+        u.params0 = glm::vec4(m_rtao.radius, (float)m_rtao.rays, m_rtao.bias, m_rtao.strength);
+        u.params1 = glm::vec4((float)m_rtaoExtent.width, (float)m_rtaoExtent.height,
+                              (float)(m_rtFrameSeed++), m_rtao.power);
+        if (m_rtaoUboMapped[m_frameIdx])
+            std::memcpy(m_rtaoUboMapped[m_frameIdx], &u, sizeof(u));
+        m_rtaoApplyPush.aoTexel[0] = 1.0f / (float)std::max(1u, m_rtaoExtent.width);
+        m_rtaoApplyPush.aoTexel[1] = 1.0f / (float)std::max(1u, m_rtaoExtent.height);
+        m_rtaoApplyPush.strength = m_rtao.strength;
+        m_rtaoApplyPush.pad0 = 0.0f;
+    }
+
+    // Record the RT-AO compute dispatch body (the graph has emitted the AO-image
+    // GENERAL transition + the depth READ_ONLY transition). Traces rayQueryEXT
+    // against the TLAS and writes the half-res AO image.
+    void recordRtaoComputeBody(VkCommandBuffer c) {
+        if (!m_rtaoPipe) return;
+        vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_rtaoPipe);
+        vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_rtaoLayout,
+                                0, 1, &m_rtaoSet[m_frameIdx], 0, nullptr);
+        const uint32_t gx = (m_rtaoExtent.width  + 7) / 8;
+        const uint32_t gy = (m_rtaoExtent.height + 7) / 8;
+        vkCmdDispatch(c, gx, gy, 1);
+    }
+
+    void destroyRt() {
+        if (!m_dev.device) { m_rt.shutdown(); return; }
+        destroyRtaoTargets();
+        if (m_rtaoApplyPipe) { vkDestroyPipeline(m_dev.device, m_rtaoApplyPipe, nullptr); m_rtaoApplyPipe = VK_NULL_HANDLE; }
+        if (m_rtaoPipe)      { vkDestroyPipeline(m_dev.device, m_rtaoPipe, nullptr); m_rtaoPipe = VK_NULL_HANDLE; }
+        if (m_rtaoApplyLayout){ vkDestroyPipelineLayout(m_dev.device, m_rtaoApplyLayout, nullptr); m_rtaoApplyLayout = VK_NULL_HANDLE; }
+        if (m_rtaoLayout)    { vkDestroyPipelineLayout(m_dev.device, m_rtaoLayout, nullptr); m_rtaoLayout = VK_NULL_HANDLE; }
+        if (m_rtaoPool)      { vkDestroyDescriptorPool(m_dev.device, m_rtaoPool, nullptr); m_rtaoPool = VK_NULL_HANDLE; }
+        if (m_rtaoApplySetLayout){ vkDestroyDescriptorSetLayout(m_dev.device, m_rtaoApplySetLayout, nullptr); m_rtaoApplySetLayout = VK_NULL_HANDLE; }
+        if (m_rtaoSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_rtaoSetLayout, nullptr); m_rtaoSetLayout = VK_NULL_HANDLE; }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (m_rtaoUboBuf[i]) { vmaDestroyBuffer(m_alloc, m_rtaoUboBuf[i], m_rtaoUboAlloc[i]); m_rtaoUboBuf[i] = VK_NULL_HANDLE; }
+        }
+        if (m_rtaoLinearSampler){ vkDestroySampler(m_dev.device, m_rtaoLinearSampler, nullptr); m_rtaoLinearSampler = VK_NULL_HANDLE; }
+        if (m_rtaoDepthSampler) { vkDestroySampler(m_dev.device, m_rtaoDepthSampler, nullptr); m_rtaoDepthSampler = VK_NULL_HANDLE; }
+        m_rtaoBuilt = false;
+        m_rt.shutdown();
     }
 
     // Build the baked hemisphere kernel + 4x4 rotation-noise tables ONCE (CPU,
@@ -6249,6 +7164,59 @@ private:
     VkQueue       m_gfxQueue = VK_NULL_HANDLE;
     uint32_t      m_gfxFamily = 0;
     bool          m_descriptorIndexing = false;
+    bool          m_rtSupported = false;   // VK_KHR_ray_query + acceleration_structure enabled (RT P0)
+
+    // ======================================================================
+    // Hardware ray tracing (RT Phase 1+: BLAS/TLAS + ray-query RT AO).
+    // ----------------------------------------------------------------------
+    // The AS manager (BLAS per mesh + per-frame TLAS) lives in VulkanRT; the
+    // ray-query RT-AO compute pass + its full-screen MULTIPLY apply pass live in
+    // this class. EVERYTHING is gated behind m_rtao.enabled (the r_rtao cvar) AND
+    // m_rtSupported; when off, none of this is built/dispatched and the raster +
+    // SSAO/SSGI path is byte-for-byte unchanged.
+    VulkanRT          m_rt;                                  // AS manager (ray-query)
+    bool              m_rtInitTried = false;                 // lazy one-time module init
+    RtaoParams        m_rtao{};                              // cached tunables (default OFF)
+    bool              m_rtaoBuilt = false;                   // RT-AO pipelines created
+    uint32_t          m_rtFrameSeed = 0;                     // per-frame noise seed
+    // RT-AO half-res target (R8 storage image written by the compute pass; sampled
+    // by the apply pass). GENERAL layout while the compute writes it.
+    VkImage           m_rtaoImg   = VK_NULL_HANDLE; VmaAllocation m_rtaoAlloc = nullptr; VkImageView m_rtaoView = VK_NULL_HANDLE;
+    VkExtent2D        m_rtaoExtent{};
+    static constexpr VkFormat kRtaoFormat = VK_FORMAT_R8_UNORM;
+    // RT-AO compute pass (rayQueryEXT): set0 = depth sampler + AO storage image +
+    // TLAS + Rtao UBO.
+    VkSampler             m_rtaoDepthSampler  = VK_NULL_HANDLE; // NEAREST depth
+    VkSampler             m_rtaoLinearSampler = VK_NULL_HANDLE; // LINEAR AO up-sample
+    VkDescriptorSetLayout m_rtaoSetLayout     = VK_NULL_HANDLE;
+    VkPipelineLayout      m_rtaoLayout        = VK_NULL_HANDLE;
+    VkPipeline            m_rtaoPipe          = VK_NULL_HANDLE;  // compute
+    VkDescriptorSetLayout m_rtaoApplySetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout      m_rtaoApplyLayout    = VK_NULL_HANDLE;
+    VkPipeline            m_rtaoApplyPipe      = VK_NULL_HANDLE; // full-screen MULTIPLY
+    VkDescriptorPool      m_rtaoPool           = VK_NULL_HANDLE;
+    VkDescriptorSet       m_rtaoSet[kFramesInFlight]      = {};  // compute set (per frame)
+    VkDescriptorSet       m_rtaoApplySet[kFramesInFlight] = {};  // apply set (per frame)
+    // Rtao compute UBO (std140; matches shaders/rtao.comp).
+    struct RtaoUBO {
+        glm::mat4 invViewProj;   // clip -> world
+        glm::vec4 camPos;        // xyz = camera world pos
+        glm::vec4 params0;       // x = radius, y = numRays, z = bias, w = strength
+        glm::vec4 params1;       // x = outW, y = outH, z = frameSeed, w = power
+    };
+    static_assert(sizeof(RtaoUBO) == 64 + 16 * 3, "RtaoUBO std140 layout");
+    VkBuffer      m_rtaoUboBuf[kFramesInFlight]  = {}; VmaAllocation m_rtaoUboAlloc[kFramesInFlight] = {}; void* m_rtaoUboMapped[kFramesInFlight] = {};
+    // Apply-pass push constant (matches shaders/rtao_apply.frag).
+    struct RtaoApplyPush { float aoTexel[2]; float strength; float pad0; };
+    RtaoApplyPush m_rtaoApplyPush{};
+    // Per-frame TLAS-instance scratch (capacity persists; no per-frame heap churn).
+    std::vector<VulkanRT::TlasInstance> m_rtInstScratch;
+    uint64_t m_rtTlasSig = 0;             // signature of the last-built TLAS instance set
+    bool m_rtaoActiveThisFrame = false;   // RT-AO chain added to the graph this frame
+    // Stable storage for the RT-AO apply pass's VkRenderingInfo + attachment (the
+    // graph holds pointers into these across execute()).
+    VkRenderingAttachmentInfo m_rtaoApplyAttach{};
+    VkRenderingInfo           m_rtaoApplyRenderInfo{};
 
     // Graphics
     VmaAllocator  m_alloc = nullptr;
@@ -6304,8 +7272,38 @@ private:
     VkPipeline       m_hudPipeline = VK_NULL_HANDLE;
     VkPipelineLayout m_hudLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_hudSetLayout = VK_NULL_HANDLE;
-    Texture          m_fontTex{};               // 8x8 bitmap font atlas (RGBA)
     std::vector<HudVertex> m_hudScratch;        // CPU scratch for text batching
+
+    // ---- Role-based glyph atlases (modern HUD/UI fonts) --------------------
+    // One baked atlas per FontRole (see IRenderDevice.h). Each is baked once at
+    // init from a TTF in assets/fonts/ (kRoleFontPaths) via stb_truetype, with the
+    // embedded Roboto Mono as the guaranteed fallback so text is NEVER blank.
+    // Proportional roles advance the pen by each glyph's real width; monospace
+    // roles advance by a fixed cell (cellAdvance) so legacy N*px layout stays exact.
+    // Per-glyph atlas rects/offsets/advance are stored in bake-pixel units so they
+    // scale to any requested px at draw time.
+    static constexpr int   kTtfFirstChar = 32;   // ASCII space
+    static constexpr int   kTtfCharCount = 95;   // 32..126 inclusive
+    static constexpr int   kTtfAtlasW    = 1024;  // fits 95 glyphs @ 48px w/ 2x2 oversampling
+    static constexpr int   kTtfAtlasH    = 1024;
+    static constexpr float kTtfBakePx    = 48.0f; // bake size (oversampled for crispness)
+    struct TtfGlyph {
+        float u0, v0, u1, v1;   // atlas UVs
+        float x0, y0, x1, y1;   // quad offsets in bake-pixel units (relative to pen, baseline at y=0)
+        float advance;          // horizontal advance in bake-pixel units
+    };
+    struct FontAtlas {
+        Texture  tex{};                       // R8-coverage-as-RGBA glyph atlas
+        TtfGlyph glyphs[kTtfCharCount]{};
+        float    cellAdvance  = kTtfBakePx;   // monospace cell width (bake px); proportional uses per-glyph advance
+        float    ascent       = kTtfBakePx;   // baseline offset from cell top (bake px)
+        bool     proportional = false;        // true => advance per glyph; false => fixed cell
+        bool     ready        = false;        // a TTF atlas baked OK for this role
+    };
+    static constexpr int kFontRoleCount = (int)x3::rhi::FontRole::Count;  // 5
+    FontAtlas m_fonts[kFontRoleCount]{};
+    bool      m_bitmapFontReady = false;       // legacy 8x8 fallback baked (no TTF at all)
+    Texture   m_bitmapFontTex{};               // 8x8 atlas used when a role has no TTF
 
     // One-time staging upload (transient pool + fence)
     VkCommandPool m_uploadPool = VK_NULL_HANDLE;
@@ -6911,7 +7909,14 @@ private:
     // m_ambient is a small constant lift so shadowed/back-faces aren't pure black
     // (a touch cool/blue to read as a sci-fi interior without washing out).
     std::vector<PointLight> m_pointLights;
-    glm::vec3               m_ambient{ 0.10f, 0.11f, 0.14f };
+    // Hemispheric ambient FLOOR (mesh.frag ambientCount.rgb). The original 0.10/0.11/
+    // 0.14 was tuned far too dark for a SUNLESS indoor scene (B1 has no directional
+    // sun, so unlit areas fell to near-black — "incredibly dark"). Lifted ~2.6x to a
+    // readable cool-sci-fi floor. PERF: render-cost-neutral (a shader constant; no
+    // extra draws/work). See docs/PERF_LOG.md.
+    // 2nd lift (still "couldn't see"): 0.26 -> 0.42. Sunless B1 needs a real ambient
+    // floor; point lights only pool under fixtures, leaving floor/walls black between.
+    glm::vec3               m_ambient{ 0.42f, 0.44f, 0.50f };
 };
 
 } // namespace

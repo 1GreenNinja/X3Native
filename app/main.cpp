@@ -33,6 +33,15 @@
 #include "player.h"
 #include "monster.h"
 #include "level1_game.h"
+#include "npc_dialog.h"                     // rescued-NPC talk/dialog -> companion (the captive girl)
+#include "physprops.h"                      // FEATURE_GOALS §1: hanging cubes / joints (ragdoll foundation)
+#include "ragdoll.h"                        // FEATURE_GOALS §2: physics death ragdoll
+#include "editor/editor.h"                  // native Level Editor E1 (brain + self-test)
+#include "barrels.h"                        // explosive barrels (shoot -> chain explosion)
+#include "holo_terminal.h"                  // Jake's cell holographic terminal (text + input)
+#include "secret_room.h"                    // code-locked trapdoor -> stocked secret room
+#include "engine/ecs/Ecs.h"                 // sparse-set ECS core (10k+ entities)
+#include "ecs_render.h"                     // ECS -> GPU-driven render feed
 #include "spire_mid.h"                      // EFLZ Spire F3/F4/F5 mid-floor content
 #include "spire_top.h"                      // EFLZ Spire F6/F7 top-floor content (Act-1 finale)
 #include "spire_nexus.h"                    // EFLZ Floor 4.5 Nexus Chamber / The Chorus (off-elevator boss)
@@ -66,6 +75,7 @@
 #include <string>
 #include <cmath>
 #include <vector>
+#include <unordered_map>   // per-weapon fire-sound cache (name -> SoundHandle)
 #include <cstdint>
 #include <cstdlib>
 #include <algorithm>
@@ -73,6 +83,7 @@
 #include <cstdio>
 #include <thread>     // r_maxfps frame limiter
 #include <chrono>
+#include <fstream>    // window-size settings persistence (SET AS DEFAULT)
 
 // Public-domain single-header GIF encoder (Charlie Tangora) — vendored under
 // third_party/gif_h. Used ONLY by the headless --capture-ai tool below to assemble
@@ -127,6 +138,113 @@ x3::phys::Vec3 muzzleFromCamera(float ex, float ey, float ez, float yaw, float p
         ez + forward.z * mFwd + right.z * mRight - up.z * mDown };
 }
 
+// ---- ON-GLASS HOLO-TERMINAL readout (large, high-contrast, fit to the panel) ----
+// Project the cell HoloTerminal panel center + top edge, then lay out the boot
+// readout (and, while typing, the input line) as LARGE proportional-font text sized
+// to fit WITHIN the glass: the body size auto-shrinks so the widest line spans ~92%
+// of the projected panel width, so it never overflows the bezel yet stays as big as
+// possible. Bright cyan-white over the glowing blue glass with a dark drop shadow.
+// Purely additive 2D HUD draws; safe to call from both the interactive loop and the
+// --screenshot capture. `anchor` is the panel center; `showInput` adds the prompt.
+void drawHoloReadout(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                     const x3::game::HoloTerminal& term, const x3::phys::Vec3& anchor,
+                     bool showInput) {
+    const float panelHalfH = 0.45f;   // half of the 0.9 m panel height
+    const float panelHalfW = 0.70f;   // half of the 1.4 m panel width
+    float sx = 0.0f, sy = 0.0f, sxT = 0.0f, syT = 0.0f;
+    if (!device.worldToScreen(anchor.x, anchor.y, anchor.z, sx, sy) ||
+        !device.worldToScreen(anchor.x, anchor.y + panelHalfH, anchor.z, sxT, syT))
+        return;
+    float halfPxH = std::fabs(syT - sy);
+    if (halfPxH < 22.0f)  halfPxH = 22.0f;
+    if (halfPxH > 360.0f) halfPxH = 360.0f;
+    const float halfPxW = halfPxH * (panelHalfW / panelHalfH);   // glass half-width in px
+    const float innerW  = halfPxW * 2.0f * 0.90f;                // usable width inside the bezel
+
+    // The procedural hologram texture now draws a full SECURITY-CONSOLE line-art HUD
+    // (header rule + emblem, bracket frame, center schematic, warning triangles, data
+    // bars, dotted strip). The on-glass TEXT composites WITH it, not over it:
+    //   * line 0 is the HEADER TITLE — drawn wide + bright across the top header strip,
+    //   * the remaining readout lines are the LEFT-column "live data text" — drawn
+    //     SMALLER and clipped to the left ~56% so the center schematic + right column
+    //     line-art stay readable (matching the reference composition).
+    const float sh[4] = { 0.0f, 0.0f, 0.0f, 0.88f };
+    const float leftPx = sx - halfPxW * 0.88f;                   // left margin inside the bezel
+
+    const auto& L = term.lines();
+    if (L.empty()) return;
+
+    // ---- HEADER TITLE (line 0): sized to span most of the header strip width. ----
+    {
+        const float titleBudget = innerW * 0.96f;
+        float titlePx = halfPxH * 0.30f;                         // start tall
+        const float tw = device.textAdvance(x3::rhi::FontRole::Menu, L[0].c_str(), titlePx);
+        if (tw > titleBudget && tw > 1.0f) titlePx *= titleBudget / tw;
+        if (titlePx < 9.0f) titlePx = 9.0f;
+        const float ty = sy - halfPxH * 0.82f;                   // up on the header strip
+        const float col[4] = { 0.82f, 0.99f, 1.0f, 1.0f };       // bright cyan-white title
+        const float off = std::max(1.5f, titlePx * 0.07f);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, L[0].c_str(), leftPx + off, ty + off, titlePx, sh);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, L[0].c_str(), leftPx, ty, titlePx, col);
+    }
+
+    // ---- BODY readout (lines 1+) as the left-column data text. Constrain width to
+    // the left zone so it doesn't cross the center schematic. ----
+    const float bodyZoneW = innerW * 0.56f;                      // left data-column width
+    const float lineH0 = (halfPxH * 2.0f) / 13.0f;
+    float bodyPx = lineH0 * 0.86f;
+    for (size_t li = 1; li < L.size(); ++li) {
+        const float w = device.textAdvance(x3::rhi::FontRole::Menu, L[li].c_str(), bodyPx);
+        if (w > bodyZoneW && w > 1.0f) bodyPx *= bodyZoneW / w;  // shrink to the left zone
+    }
+    if (bodyPx < 8.0f) bodyPx = 8.0f;
+    const float lineH = bodyPx * 1.22f;
+    float ty = sy - halfPxH * 0.46f;                             // below the header, down the left column
+    for (size_t li = 1; li < L.size(); ++li) {
+        const float col[4] = { 0.80f, 0.97f, 1.0f, 1.0f };       // cyan-white data text
+        const float off = std::max(1.2f, bodyPx * 0.07f);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, L[li].c_str(), leftPx + off, ty + off, bodyPx, sh);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, L[li].c_str(), leftPx, ty, bodyPx, col);
+        ty += lineH;
+    }
+    if (showInput) {
+        const std::string inLine = std::string("> ") + term.input() +
+                                   (term.cursorOn() ? "_" : " ");
+        const float ic[4] = { 1.0f, 0.92f, 0.32f, 1.0f };        // bright amber prompt
+        const float ipx = bodyPx * 1.18f;
+        const float ioff = std::max(1.2f, ipx * 0.07f);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, inLine.c_str(), leftPx + ioff, ty + ioff, ipx, sh);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, inLine.c_str(), leftPx, ty, ipx, ic);
+    }
+}
+
+// ---- Settings persistence (window size) in %LOCALAPPDATA%\x3native_settings.cfg ----
+// readWindowSize() overrides winW/winH at startup (returns true if a saved size exists,
+// so the host skips maximize-by-default); writeWindowSize() is the menu "SET AS DEFAULT"
+// action. Plain key=value text; a missing/garbled file is simply ignored.
+static std::string x3SettingsPath() {
+    const char* base = std::getenv("LOCALAPPDATA");
+    return std::string(base && *base ? base : ".") + "\\x3native_settings.cfg";
+}
+static bool readWindowSize(uint32_t& w, uint32_t& h) {
+    std::ifstream f(x3SettingsPath());
+    if (!f) return false;
+    bool found = false; std::string line;
+    while (std::getline(f, line)) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string k = line.substr(0, eq);
+        const uint32_t v = (uint32_t)std::strtoul(line.c_str() + eq + 1, nullptr, 10);
+        if (k == "width"  && v >= 320) { w = v; found = true; }
+        else if (k == "height" && v >= 240) { h = v; found = true; }
+    }
+    return found;
+}
+static void writeWindowSize(uint32_t w, uint32_t h) {
+    std::ofstream f(x3SettingsPath());
+    if (f) f << "width=" << w << "\nheight=" << h << "\n";
+}
+
 // Bundle passed to GLFW via the window user-pointer so the char/key callbacks
 // can route text input into the on-screen console.
 struct InputContext {
@@ -161,6 +279,25 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // refresh); 0 = uncapped. Stops vsync-off from needlessly maxing the GPU on
     // frames the display never shows. Live-tunable: `r_maxfps 0` for uncapped.
     console.registerCVar("r_maxfps", "240", "frame cap when vsync off (0 = uncapped)");
+    // Hardware ray-traced ambient occlusion (RT AO — Vulkan ray-query path). Gated
+    // + DEFAULT OFF: only takes effect on a device that supports ray tracing. Live-
+    // tunable: `r_rtao 1` turns on ground-truth ray-traced contact occlusion (BLAS/
+    // TLAS + inline rayQueryEXT), `r_rtao 0` returns to the SSAO/raster look exactly.
+    console.registerCVar("r_rtao",          "0",    "hardware RT ambient occlusion (ray query); 0 = off (raster/SSAO)");
+    console.registerCVar("r_rtao_radius",   "0.5",  "RT AO ray length (meters)");
+    console.registerCVar("r_rtao_rays",     "8",    "RT AO hemisphere rays per pixel (1..32)");
+    console.registerCVar("r_rtao_strength", "0.85", "RT AO applied darkening (1 = full, 0 = off)");
+}
+
+// Read the r_rtao* cvars and push them onto the device (no-op on a non-RT device).
+void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& device) {
+    x3::rhi::IRenderDevice::RtaoParams p{};
+    p.enabled  = console.getInt("r_rtao") != 0;
+    p.radius   = console.getFloat("r_rtao_radius");
+    p.rays     = console.getInt("r_rtao_rays");
+    p.strength = console.getFloat("r_rtao_strength");
+    if (p.radius <= 0.0f) p.radius = 1.2f;
+    device.setRtaoParams(p);
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.
@@ -180,6 +317,11 @@ void charCallback(GLFWwindow* win, unsigned int codepoint) {
     auto* ctx = static_cast<InputContext*>(glfwGetWindowUserPointer(win));
     if (ctx && ctx->hud) ctx->hud->onChar(codepoint);
 }
+
+// Mouse-wheel accumulator (weapon cycling). The scroll callback adds the wheel
+// delta; the main loop consumes it once per frame to switch weapons.
+static double g_weaponScroll = 0.0;
+void scrollCallback(GLFWwindow* /*win*/, double /*xoff*/, double yoff) { g_weaponScroll += yoff; }
 
 // GLFW key callback: the '`'/'~' toggle (always), plus console editing keys when
 // the console is open. Gameplay keys are polled in the loop and gated separately.
@@ -516,6 +658,28 @@ static bool runGpuSkinSelfTest() {
     return passed == total;
 }
 
+// ---- Per-system frame timers (perf hunt: where do the ~100ms/frame go?). Scoped
+// accumulators summed over a window, logged as a per-section breakdown + FPS every
+// kPerfWindow frames. Cheap (a few glfwGetTime() calls/frame). See docs/PERF_LOG.md.
+// (Lives in the same anonymous namespace opened above — no nested re-open.)
+struct PerfTimers {
+    double tick = 0, healthbars = 0, frameDt = 0;  // seconds, summed over the window
+    int    frames = 0;
+    static constexpr int kWindow = 120;
+    void addFrame(double dtSec) {
+        frameDt += dtSec;
+        if (++frames < kWindow) return;
+        const double inv = 1.0 / (double)frames;
+        const double fps = (frameDt > 1e-6) ? (frames / frameDt) : 0.0;
+        x3::logInfo("[perf] " + std::to_string((int)(fps + 0.5)) + " FPS  frame=" +
+                    std::to_string(frameDt * inv * 1000.0) + "ms | game.tick=" +
+                    std::to_string(tick * inv * 1000.0) + "ms  healthbars=" +
+                    std::to_string(healthbars * inv * 1000.0) + "ms  (rest=render+physics+hud)");
+        tick = healthbars = frameDt = 0; frames = 0;
+    }
+};
+PerfTimers g_perf;
+
 // ---------------------------------------------------------------------------
 // SpeakingMonster — the HOST adapter that wires the dialog system's speaking
 // state onto a SKINNED NPC (X3_WORLD_BLUEPRINT §3, requirement 4). It implements
@@ -610,19 +774,25 @@ private:
     bool   m_havePrev  = false;
     float  m_maxDelta  = 0.0f;
 };
-
 } // namespace
 
 int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
+         testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
+         testBarrels = false, testHoloterm = false, testEcs = false, testEcsRender = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
          testElevatorFsm = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
-         testNetSync = false, testNetInterp = false, testNetPredict = false;
+         testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
+         testDeathRagdoll = false;
+    // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
+    // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
+    // apply passes are exercised under Vulkan validation on an RT-capable device.
+    bool        testRt = false;
     // --test-bestiary (bestiary pass): the data-driven enemy roster. Additive flag.
     bool        testBestiary = false;
     // --test-bosses (Act-1 bosses, Wave 1): the 5 mid-boss defs + the multi-pod
@@ -652,6 +822,9 @@ int main(int argc, char** argv) {
     std::string demoDialogPath;
     // --test-valley (Crystal Valleys Act-2 L15) + --test-cliffs (Salvari cliffs finale).
     bool        testValley = false, testCliffs = false;
+    // --test-secretroom (code-locked trapdoor -> secret room): the cell HoloTerminal
+    // override code opens a floor-hatch to a stocked secret room below. Additive flag.
+    bool        testSecretRoom = false;
     // --test-club (the full Club 1127 "THE DEEP" at Y=-200): build headless + assert
     // the key fixtures (DJ booth, ORB, bars, 12-step stair, PA rig, 28 blacklights,
     // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.
@@ -723,8 +896,7 @@ int main(int argc, char** argv) {
     // --test-ragdoll (Physics §2): build a ragdoll from a synthetic skeleton, step,
     // assert it falls + settles (bounded, no NaN), the constraint chain holds (bone
     // lengths preserved), and the anim<->ragdoll blend 0->1 interpolates the palette
-    // monotonically. Additive.
-    bool        testRagdoll = false;
+    // monotonically. Additive. (testRagdoll is declared in the block above.)
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
     // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
     // and confirm the joint palette changes. Asset-pipeline verification for the
@@ -855,10 +1027,13 @@ int main(int argc, char** argv) {
     // UNCHANGED. A high-DPI box can pass e.g. --width 2560 --height 1440. These
     // affect ONLY the on-screen window: headless capture/screenshot resolution is
     // forced back to 1280x720 below regardless of these flags.
-    uint32_t    winW = 1280, winH = 720;
+    uint32_t    winW = 1600, winH = 900;   // bigger windowed default (NOT maximized)
+    const bool  loadedWinSize = readWindowSize(winW, winH);   // saved "SET AS DEFAULT" size
+    (void)loadedWinSize;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
+        else if (a == "--test-rt") { smoketest = true; testRt = true; }
         else if (a == "--test-jobs") testJobs = true;
         else if (a == "--test-asset") testAsset = true;
         else if (a == "--test-console") testConsole = true;
@@ -866,8 +1041,18 @@ int main(int argc, char** argv) {
         else if (a == "--test-gltf") testGltf = true;
         else if (a == "--test-player") testPlayer = true;
         else if (a == "--test-interact") testInteract = true;
+        else if (a == "--test-physprops") testPhysprops = true;
+        else if (a == "--test-ragdoll") testRagdoll = true;
+        else if (a == "--test-ragdollskin") testRagdollSkin = true;
+        else if (a == "--test-editor") testEditor = true;
+        else if (a == "--test-barrels") testBarrels = true;
+        else if (a == "--test-holoterm") testHoloterm = true;
+        else if (a == "--test-secretroom") testSecretRoom = true;
+        else if (a == "--test-ecs") testEcs = true;
+        else if (a == "--test-ecsrender") testEcsRender = true;
         else if (a == "--test-pickup") testPickup = true;
         else if (a == "--test-combat") testCombat = true;
+        else if (a == "--test-deathragdoll") testDeathRagdoll = true;
         else if (a == "--test-audio") testAudio = true;
         else if (a == "--test-level1") testLevel1 = true;
         else if (a == "--test-phase2a") testPhase2a = true;
@@ -902,12 +1087,12 @@ int main(int argc, char** argv) {
         else if (a == "--test-netinterp") testNetInterp = true;
         else if (a == "--test-netpredict") testNetPredict = true;
         else if (a == "--test-rescue") testRescue = true;
+        else if (a == "--test-npctalk") testNpcTalk = true;
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-debris") testDebris = true;
         else if (a == "--test-gpuskin") testGpuSkin = true;
         else if (a == "--test-collapse") testCollapse = true;
         else if (a == "--test-physjoint") testPhysJoint = true;
-        else if (a == "--test-ragdoll") testRagdoll = true;
         else if (a == "--test-nav") testNav = true;
         else if (a == "--test-weapons") testWeapons = true;
         else if (a == "--test-vehicle") testVehicle = true;
@@ -1049,7 +1234,9 @@ int main(int argc, char** argv) {
         bool blendOk = x3::game::runRagdollBlendCheck(bPass, bTotal);
         x3::logInfo("ragdoll-blend: " + std::to_string(bPass) + "/" +
                     std::to_string(bTotal) + " passed");
-        return (engineOk && blendOk) ? 0 : 1;
+        // App-side physics-death ragdoll (this session's app/ragdoll.cpp path).
+        bool deathOk = x3::game::runRagdollSelfTest();
+        return (engineOk && blendOk && deathOk) ? 0 : 1;
     }
     if (testGltf) {
         x3::logInfo("running glTF/GLB model loader (M2) self-test...");
@@ -1063,6 +1250,38 @@ int main(int argc, char** argv) {
         x3::logInfo("running button->door interaction (S4) self-test...");
         return x3::game::runInteractSelfTest() ? 0 : 1;
     }
+    if (testPhysprops) {
+        x3::logInfo("running physics-props (hanging cubes / joints) self-test...");
+        return x3::game::runPhysPropsSelfTest() ? 0 : 1;
+    }
+    if (testRagdollSkin) {
+        x3::logInfo("running ragdoll-skin (rigid bone attach) self-test...");
+        return x3::game::runRagdollSkinSelfTest() ? 0 : 1;
+    }
+    if (testEditor) {
+        x3::logInfo("running Level Editor E1 (JSON/pick/gizmo) self-test...");
+        return x3::editor::runEditorSelfTest() ? 0 : 1;
+    }
+    if (testBarrels) {
+        x3::logInfo("running explosive-barrels self-test...");
+        return x3::game::runBarrelSelfTest() ? 0 : 1;
+    }
+    if (testHoloterm) {
+        x3::logInfo("running holo-terminal (text + input) self-test...");
+        return x3::game::runHoloTerminalSelfTest() ? 0 : 1;
+    }
+    if (testSecretRoom) {
+        x3::logInfo("running secret-room (code-locked trapdoor) self-test...");
+        return x3::game::runSecretRoomSelfTest() ? 0 : 1;
+    }
+    if (testEcs) {
+        x3::logInfo("running ECS (sparse-set, 50k entities) self-test...");
+        return x3::ecs::runEcsSelfTest() ? 0 : 1;
+    }
+    if (testEcsRender) {
+        x3::logInfo("running ECS->GPU render-feed self-test...");
+        return x3::game::runEcsRenderSelfTest() ? 0 : 1;
+    }
     if (testPickup) {
         x3::logInfo("running weapon pickup + arming (S5) self-test...");
         return x3::game::runPickupSelfTest() ? 0 : 1;
@@ -1070,6 +1289,10 @@ int main(int argc, char** argv) {
     if (testCombat) {
         x3::logInfo("running shoot-monster combat (S6) self-test...");
         return x3::game::runCombatSelfTest() ? 0 : 1;
+    }
+    if (testDeathRagdoll) {
+        x3::logInfo("running skinned death-ragdoll (TASK#12) self-test...");
+        return x3::game::runDeathRagdollSelfTest() ? 0 : 1;
     }
     if (testAudio) {
         x3::logInfo("running audio (M9) self-test...");
@@ -1303,6 +1526,10 @@ int main(int argc, char** argv) {
         x3::logInfo("running F2 rescue (victim/companion/transform) self-test (R0-R5)...");
         return x3::game::runRescueSelfTest() ? 0 : 1;
     }
+    if (testNpcTalk) {
+        x3::logInfo("running rescued-NPC talk/dialog -> companion self-test (T1-T7)...");
+        return x3::game::runNpcTalkSelfTest() ? 0 : 1;
+    }
     if (testDestruction) {
         x3::logInfo("running K-T0/T1 destruction (fracture/impact/hit/explosion) self-test...");
         return x3::phys::runDestructionSelfTest() ? 0 : 1;
@@ -1487,6 +1714,8 @@ int main(int argc, char** argv) {
     // still initialized (cheap; some paths poll events) but never opens a surface.
     GLFWwindow* window = nullptr;
     if (!headless) {
+        // NO maximize-by-default (per Tim): open windowed at winW x H (or the saved
+        // "SET AS DEFAULT" size). Fullscreen is opt-in via the settings checkbox.
         window = glfwCreateWindow(static_cast<int>(W), static_cast<int>(H),
                                   "X3Engine", nullptr, nullptr);
         if (!window) {
@@ -3997,6 +4226,72 @@ int main(int argc, char** argv) {
     x3::game::CombatFx combatFx;
     combatFx.init(*device);
 
+    // Explosive barrels FX: a cluster of impact bursts at the blast center so a shot
+    // barrel reads as a violent fireball (on top of its own scattering debris chunks).
+    game.barrels().setFxSink([&combatFx](const float c[3], float radius) {
+        const x3::phys::Vec3 ctr{ c[0], c[1], c[2] };
+        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f });
+        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.7f, 0.5f, 0.0f });
+        combatFx.spawnImpact(ctr, x3::phys::Vec3{ -0.7f, 0.5f, 0.0f });
+        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 0.5f, 0.7f });
+    });
+
+    // ---- GIBS: monsters EXPLODE into chunks + blood when they die. -----------
+    // Configure the GPU-compute debris pool ONCE (the same cheap fragment sim the
+    // destruction self-test uses) so monster-death gib bursts have somewhere to land.
+    // Then wire a single DEATH FX sink that the host fans to every enemy group below.
+    // The sink spawns: (1) a GPU debris BURST of cheap chunks flung outward from the
+    // body center, and (2) a cluster of blood impacts (CombatFx::spawnImpact) so the
+    // kill reads as a violent gib explosion. Flyer/drone deaths spark a touch faster.
+    {
+        x3::rhi::IRenderDevice::GpuDebrisParams gp{};
+        gp.groundY = 0.0f; gp.restitution = 0.25f; gp.friction = 0.5f;
+        gp.linearDamping = 0.35f; gp.sleepFrames = 14;
+        device->gpuDebrisConfig(gp);
+    }
+    {
+        x3::rhi::IRenderDevice* dev = device.get();
+        // The gib explosion: a capped GPU debris burst flung outward from the body
+        // center + a tight cluster of blood impacts so the kill reads bloody, not just
+        // dusty. Flyers/drones burst a touch more + faster (they pop in the air). The
+        // burst seed varies by position so two kills don't fling identically. GPU-
+        // simulated chunks are cheap (one compute pass + one instanced draw, below).
+        x3::game::DeathFxFn deathFx = [&combatFx, dev](const float pos[3], bool flying) {
+            const x3::phys::Vec3 ctr{ pos[0], pos[1], pos[2] };
+            const uint32_t chunks = flying ? 20u : 16u;
+            const float    kick   = flying ? 8.5f : 7.0f;   // m/s outward spread
+            const uint32_t seed   = 0x91B0u ^ (uint32_t)(ctr.x * 131.0f)
+                                            ^ ((uint32_t)(ctr.z * 977.0f) << 8);
+            const float bp[3] = { pos[0], pos[1], pos[2] };
+            dev->gpuDebrisSpawnBurst(bp, chunks, kick, /*lifetime*/4.5f,
+                                     /*halfExtent*/0.07f, seed);
+            combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f });
+            combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.8f, 0.4f, 0.0f });
+            combatFx.spawnImpact(ctr, x3::phys::Vec3{ -0.8f, 0.4f, 0.0f });
+            combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 0.4f, 0.8f });
+            combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 0.4f, -0.8f });
+            combatFx.spawnBlood(ctr, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f });
+            combatFx.spawnSmoke(ctr);   // lingering puff so the burst point lingers
+        };
+        // Level1Game fans the sink to its own groups (corridor/checkpoint/bossAdds/
+        // Martinez/Chen) — current AND future spawns.
+        game.setDeathFxSink(deathFx);
+        // Also fan it to the Spire-floor enemy groups + their bosses (those managers
+        // live on the floor controllers, not Level1Game, so they don't get the fan
+        // above). Each MonsterManager stores the sink + applies it to current + future
+        // spawns, so kills on any floor gib the same way.
+        if (!terrainWorld) {
+            for (uint32_t f = 0; f < (uint32_t)x3::game::SpireMidFloor::Count; ++f)
+                midFloors.enemies((x3::game::SpireMidFloor)f).setDeathFxSink(deathFx);
+            midFloors.f3Boss().setDeathFxSink(deathFx);
+            midFloors.swarmBoss().setDeathFxSink(deathFx);
+            for (uint32_t f = 0; f < (uint32_t)x3::game::SpireTopFloor::Count; ++f)
+                topFloors.enemies((x3::game::SpireTopFloor)f).setDeathFxSink(deathFx);
+            topFloors.overseerBoss().setDeathFxSink(deathFx);
+            topFloors.boss().setDeathFxSink(deathFx);
+        }
+    }
+
     // =====================================================================
     // WEAPONS: data-driven arsenal (pistol / SMG / shotgun / plasma). The
     // Arsenal owns the roster + per-weapon ammo/cooldown/reload state and the
@@ -4008,9 +4303,45 @@ int main(int argc, char** argv) {
     // (missing GLBs fall back to the energy pistol). ====================
     x3::game::Arsenal arsenal;
     arsenal.loadViewmodels(*device, x3::game::riggedGlbRoot());
+
+    // ---- PER-WEAPON FIRE SOUNDS (the user's "every gun sounds the same" fix) ----
+    // Each WeaponDef carries a distinct sci-fi fireSfx (pack-relative WAV). Load each
+    // unique one ONCE into a name->handle cache (keyed by the weapon name) so firing
+    // plays the CURRENT weapon's sound instead of the single shared gunshot. The
+    // distinct WAVs are deduped by their pack-rel path (several weapons may reuse a
+    // file). A weapon with an empty fireSfx (or a missing WAV -> invalid handle) falls
+    // back to the shared sndGun. Headless / no-device: load() + play are graceful
+    // no-ops, so this stays silent without crashing.
+    std::unordered_map<std::string, x3::audio::SoundHandle> fireSfxByName;
+    {
+        std::unordered_map<std::string, x3::audio::SoundHandle> byPath; // dedupe by WAV
+        for (int wi = 0; wi < arsenal.count(); ++wi) {
+            const x3::game::WeaponDef& wd = arsenal.def(wi);
+            x3::audio::SoundHandle h = sndGun;   // fallback: shared gunshot
+            if (!wd.fireSfx.empty()) {
+                auto it = byPath.find(wd.fireSfx);
+                if (it != byPath.end()) {
+                    h = it->second;
+                } else {
+                    x3::audio::SoundHandle loaded =
+                        audio->load(x3::game::resolveAudio(wd.fireSfx));
+                    if (loaded.valid()) h = loaded;     // else keep sndGun fallback
+                    byPath.emplace(wd.fireSfx, h);
+                }
+            }
+            fireSfxByName[wd.name] = h;
+        }
+    }
+    // Resolve the current weapon's fire sound (fallback: the shared gunshot).
+    auto currentFireSfx = [&]() -> x3::audio::SoundHandle {
+        auto it = fireSfxByName.find(arsenal.current().name);
+        return (it != fireSfxByName.end() && it->second.valid()) ? it->second : sndGun;
+    };
+
     // Live projectile bolts (plasma): host-owned; advanced + impact-resolved each
     // frame. Bounded by gameplay (a handful in flight); a plain vector is fine.
-    struct LiveProjectile { x3::phys::Vec3 pos, vel; int damage; float traveled, range; };
+    struct LiveProjectile { x3::phys::Vec3 pos, vel; int damage; float traveled, range;
+                            x3::game::WeaponFxKind impactKind = x3::game::WeaponFxKind::Default; };
     std::vector<LiveProjectile> projectiles;
     uint32_t weaponRng = 0xA11CE5u;   // deterministic spread stream
     float    weaponRecoilPitch = 0.0f; // accumulated upward camera kick (rad), decays
@@ -4026,6 +4357,19 @@ int main(int argc, char** argv) {
     // and vm_fwd/vm_right/vm_down (m); read them each frame and feed the pose to
     // drawViewmodel so typing e.g. `vm_pitch 10` moves the held gun immediately.
     registerViewmodelCVars(*console);
+
+    // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
+    // render path so the BLAS/TLAS build + ray-query AO compute + apply passes are
+    // exercised under Vulkan validation. No-op if the device lacks RT support (the
+    // device silently stays on the raster/SSAO path). The cvar is also live-tunable.
+    if (testRt) {
+        console->set("r_rtao", "1");
+        x3::rhi::IRenderDevice::RtaoParams rp{};
+        rp.enabled = true;
+        device->setRtaoParams(rp);
+        x3::logInfo(std::string("--test-rt: RT AO requested; device rayTracingSupported=") +
+                    (device->rayTracingSupported() ? "YES" : "NO"));
+    }
 
     // ---- Stress-test injection (perf instrumentation layer) ----------------
     // `spawn N` adds N procedural cubes around the level spawn so the renderer can
@@ -4447,8 +4791,55 @@ int main(int argc, char** argv) {
                 const x3::game::Arsenal::WeaponState& shotWs = arsenal.currentState();
                 shm.weapon = shotWd.name.c_str();
                 shm.ammoInMag = shotWs.ammoInMag; shm.ammoReserve = shotWs.reserve;
+                // Feed the minimap RADAR + nameplates from the (capture) camera pose so
+                // the still shows the real radar: room outlines, any live enemy/ally
+                // blips, and head-anchored nameplates over on-screen hostiles.
+                shm.playerX = ssX; shm.playerZ = ssZ; shm.playerYaw = ssYaw;
+                shm.radarValid = true;
+                {
+                    x3::game::Level1Game::EnemyMark marks[x3::ui::HudModel::kMaxBlips];
+                    const uint32_t ne = game.liveEnemyMarks(marks, x3::ui::HudModel::kMaxBlips);
+                    shm.enemyCount = (int)ne;
+                    for (uint32_t e = 0; e < ne; ++e) {
+                        shm.enemyX[e] = marks[e].pos.x; shm.enemyY[e] = marks[e].pos.y;
+                        shm.enemyZ[e] = marks[e].pos.z; shm.enemyLabel[e] = marks[e].label;
+                    }
+                    x3::phys::Vec3 allies[x3::ui::HudModel::kMaxBlips];
+                    const uint32_t na = game.liveCompanionPositions(allies, x3::ui::HudModel::kMaxBlips);
+                    shm.allyCount = (int)na;
+                    for (uint32_t a = 0; a < na; ++a) { shm.allyX[a] = allies[a].x; shm.allyZ[a] = allies[a].z; }
+                    const x3::game::Level1Layout& slay = game.layout();
+                    auto addShotRoom = [&](const x3::phys::Vec3& c, const x3::phys::Vec3& hf) {
+                        if (shm.roomCount >= x3::ui::HudModel::kMaxRooms) return;
+                        const int r = shm.roomCount++;
+                        shm.roomCx[r] = c.x; shm.roomCz[r] = c.z; shm.roomHx[r] = hf.x; shm.roomHz[r] = hf.z;
+                    };
+                    addShotRoom(slay.cellCenter, slay.cellHalf);
+                    addShotRoom(slay.corridorCenter, slay.corridorHalf);
+                    addShotRoom(slay.armoryCenter, slay.armoryHalf);
+                    addShotRoom(slay.checkpointCenter, slay.checkpointHalf);
+                    addShotRoom(slay.arenaCenter, slay.arenaHalf);
+                }
                 shotHud.draw(shotUi, shm, dt);
                 shotUi.end();
+
+                // ON-GLASS HOLO-TERMINAL readout for the capture: when the shot camera
+                // is aimed at the cell terminal it shows the LARGE high-contrast boot
+                // text sized to the projected panel (so --screenshot --shot-cam at the
+                // cell verifies the on-glass text, not just the glowing panel). Mirrors
+                // the interactive on-glass overlay via the shared helper.
+                if (game.secret().terminal().built()) {
+                    const auto& term = game.secret().terminal();
+                    // The readout text is now baked ON the glass (stb_truetype into the
+                    // hologram texture) so it tilts with the panel. Only fall back to the
+                    // legacy 2D worldToScreen overlay if the on-glass bake is unavailable.
+                    if (!term.textOnGlass()) {
+                        const x3::phys::Vec3 a = term.anchor();
+                        const float sdx = a.x - ssX, sdy = a.y - ssY, sdz = a.z - ssZ;
+                        if (std::sqrt(sdx*sdx + sdy*sdy + sdz*sdz) < 14.0f)
+                            drawHoloReadout(*device, frame, term, a, /*showInput*/false);
+                    }
+                }
             }
             device->endFrame(frame);
         }
@@ -4495,6 +4886,10 @@ int main(int argc, char** argv) {
         } else if (uiDemoScreen == "settings") {
             demoUi.setState(x3::ui::GameState::Settings);
             hoverX = mcx; hoverY = mh * 0.5f;   // hover a middle toggle row
+        } else if (uiDemoScreen == "fonts") {
+            // Font role sampler: Playing state draws an (empty) HUD; the sampler text
+            // below renders every FontRole over the scene with nothing obscuring it.
+            demoUi.setState(x3::ui::GameState::Playing);
         } else {
             // MainMenu: hover START so it reads as focused.
             const float mbh = std::max(44.0f, mh * 0.075f);
@@ -4518,6 +4913,30 @@ int main(int argc, char** argv) {
                 uin.mouseX = hoverX; uin.mouseY = hoverY;
                 x3::ui::HudModel hm{};
                 demoUi.update(uin, *device, frame, hm, dt);
+                // --ui-demo fonts: a role sampler so every FontRole is eyeballable in
+                // one still (Title/Menu proportional, News/Console/Enemy). Each line
+                // names its role + font and prints a representative HUD string.
+                if (uiDemoScreen == "fonts") {
+                    using FR = x3::rhi::FontRole;
+                    const float wht[4] = { 0.95f, 0.97f, 0.95f, 1.0f };
+                    const float cyn[4] = { 0.35f, 0.85f, 1.0f, 1.0f };
+                    const float amb[4] = { 1.0f, 0.62f, 0.30f, 1.0f };
+                    const float grn[4] = { 0.45f, 1.0f, 0.55f, 1.0f };
+                    const float red[4] = { 1.0f, 0.30f, 0.25f, 1.0f };
+                    const float sh[4] = { 0.0f, 0.0f, 0.0f, 0.7f };
+                    float fy = 60.0f;
+                    auto row = [&](FR role, const char* s, const float* col, float px) {
+                        device->drawHudTextF(frame, role, s, 60.0f + 1.5f, fy + 1.5f, px, sh);
+                        device->drawHudTextF(frame, role, s, 60.0f, fy, px, col);
+                        fy += px + 22.0f;
+                    };
+                    row(FR::Title, "TITLE: Orbitron-Bold  ESCAPE FROM LAB ZERO", cyn, 34.0f);
+                    row(FR::Menu,  "Menu: Space Grotesk  Buttons / Objective / Labels", wht, 26.0f);
+                    row(FR::Enemy, "ENEMY: Tektur Condensed  MARCUS WEBB  THREAT LV3", red, 26.0f);
+                    row(FR::News,  "NEWS: Space Mono  ENEMIES: 4   AREA CLEAR", amb, 24.0f);
+                    row(FR::News,  "AREA CLEAR", grn, 30.0f);
+                    row(FR::Console, "Console/HudMono: Roboto Mono  HP 100  37 / 120", grn, 24.0f);
+                }
             }
             device->endFrame(frame);
         }
@@ -4578,10 +4997,14 @@ int main(int argc, char** argv) {
                 x3::game::FireResult r = game.onFire(eye, dir, scene, *physics);
                 const x3::phys::Vec3 m = muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch);
                 combatFx.addTracer(m, r.endPoint);
-                audio->playSound3D(sndGun, m.x, m.y, m.z, 0.85f, 1.0f);
+                // Exercise the PER-WEAPON fire sound + FX-kind path under validation.
+                audio->playSound3D(currentFireSfx(), m.x, m.y, m.z, 0.85f, 1.0f);
+                const x3::game::WeaponFxKind vMuz = x3::game::fxKindFromId(arsenal.current().muzzleFx);
+                const x3::game::WeaponFxKind vImp = x3::game::fxKindFromId(arsenal.current().impactFx);
+                combatFx.spawnMuzzleFlash(m, dir, vMuz);
                 // Exercise EVERY particle/decal preset path under Debug validation:
                 // impact (sparks + dust + scorch decal), blood, and a death burst.
-                combatFx.spawnImpact(r.endPoint, x3::phys::Vec3{ -dir.x, -dir.y, -dir.z });
+                combatFx.spawnImpact(r.endPoint, x3::phys::Vec3{ -dir.x, -dir.y, -dir.z }, vImp);
                 combatFx.spawnBlood(r.endPoint, dir);
                 combatFx.spawnDeath(eye);
             }
@@ -4747,6 +5170,7 @@ int main(int argc, char** argv) {
     glfwSetWindowUserPointer(window, &inputCtx);
     glfwSetCharCallback(window, charCallback);
     glfwSetKeyCallback(window, keyCallback);
+    glfwSetScrollCallback(window, scrollCallback);   // mouse wheel cycles weapons
     bool consoleWasOpen = false;   // tracks cursor-mode transitions
 
     // Rising-edge tracking for Space (jump), F (noclip toggle), E (use), V/MMB
@@ -4770,6 +5194,47 @@ int main(int argc, char** argv) {
     x3::game::KeypadEntry  keypad;
     bool kpDigitPrev[10] = {};
     bool kpEnterPrev = false, kpBackPrev = false, kpEscPrev = false;
+
+    // ---- SECRET ROOM: terminal-entry host state + collected-effect deltas. When the
+    // player presses E near the cell HoloTerminal, termMode opens (digit/backspace/Enter
+    // edges route into the terminal; Enter submits to the sink which opens the trapdoor
+    // on code 1127). prevSecretHealth/Nano track which loot effects we've already applied
+    // (the SecretRoom latches collection; the host owns the Player to apply heals). ----
+    bool      termMode = false;
+    bool      tmDigitPrev[10] = {};
+    bool      tmEnterPrev = false, tmBackPrev = false;
+    uint32_t  prevSecretHealth = 0;
+    bool      prevSecretNano = false;
+
+    // ---- RESCUED-NPC TALK (the captive girl). When the player presses E within
+    // talk range of a LIVE captive, an exchange opens: she goes terrified ->
+    // relieved -> grateful -> flirty over a short script, advancing on each E.
+    // Completing the last line RESCUES her (RescueSystem::tryRescue -> she becomes a
+    // following Companion) and surfaces a warm one-liner bark. The state machine is
+    // the headless-tested NpcDialog (--test-npctalk); the host just feeds it the
+    // in-range fact + the E edge and reads it back for the prompt/box. The dialog
+    // takes PRIORITY in the E dispatch over the bare onRescue so the player always
+    // gets the exchange (never an instant silent rescue). ----
+    x3::game::NpcDialog npcDialog;
+    float     npcBarkTimer = 0.0f;   // >0 while her companion one-liner is shown
+    std::string npcBarkText;
+    // Find the nearest LIVE captive within `reach` of `at` (XZ). Returns true + its
+    // name/world-pos. Shared by the E dispatch and the prompt/box draw so both see
+    // exactly the same target. (Companions/expired victims are skipped.)
+    auto nearestLiveCaptive = [&](const x3::phys::Vec3& at, float reach,
+                                  std::string& whoOut, x3::phys::Vec3& posOut) -> bool {
+        const x3::game::RescueSystem& rs = game.rescue();
+        float best = reach * reach; bool found = false;
+        for (uint32_t i = 0; i < rs.victimCount(); ++i) {
+            const x3::game::RescueVictim& v = rs.victim(i);
+            if (!v.captive()) continue;
+            const x3::phys::Vec3 vp = v.pos();
+            const float dx = at.x - vp.x, dz = at.z - vp.z;
+            const float d2 = dx * dx + dz * dz;
+            if (d2 <= best) { best = d2; whoOut = v.name(); posOut = vp; found = true; }
+        }
+        return found;
+    };
 
     // ---- GENERAL save/load (versioned checkpoint). The interactive host exposes a
     // programmatic save/load API two ways: quick-save/quick-load on F5/F9, AND a
@@ -4820,6 +5285,8 @@ int main(int argc, char** argv) {
     // ---- Optional debug noclip/fly camera (toggle with F). Not required by S3,
     // handy for inspecting the level. Off by default — gameplay is the walker.
     bool noclip = false;
+    bool flashlight = true;   // player-following light (L toggles) — default ON for the dark halls
+    bool prevL = false;
     float flyX = L1.spawn.x, flyY = 1.7f, flyZ = L1.spawn.z, flyYaw = 0.0f, flyPitch = 0.0f;
 
     // ---- Phase 2a: enemy-attack FX. Enemies invoke this to draw a tracer/telegraph
@@ -4846,6 +5313,7 @@ int main(int argc, char** argv) {
         // the device desc; resolution = the actual window size.
         sm.bloom = true; sm.ssao = true; sm.ssgi = true; sm.shadows = true;
         sm.vsync = desc.vsync; sm.width = W; sm.height = H;
+        sm.rtao = (console->getInt("r_rtao") != 0);   // RT AO: reflect the cvar (default OFF)
         gameUi.init(*device, console.get(), sm);
         gameUi.setTitle(terrainWorld ? "X3 ENGINE" : "ESCAPE FROM LAB ZERO",
                         terrainWorld ? "open-world demo" : "Level 1 - Awakening");
@@ -4887,6 +5355,9 @@ int main(int argc, char** argv) {
                 frameCapPrev = glfwGetTime();
             }
         }
+        // Push the live r_rtao* cvars onto the device (hardware RT ambient occlusion).
+        // No-op on a non-RT GPU; default OFF so the visual build is unchanged.
+        applyRtaoCVars(*console, *device);
         glfwPollEvents();
 
         // ---- S7: console gating. While the console is open, gameplay input is
@@ -4915,6 +5386,7 @@ int main(int argc, char** argv) {
         bool uiEscEdge = false;
         if (escNow && !kpEscPrev) {
             if (codeMode) { codeMode = false; keypad.clear(); }
+            else if (termMode) { termMode = false; game.secret().terminal().setActive(false); }
             else          { uiEscEdge = true; }   // hand the Esc edge to the UI below
         }
         kpEscPrev = escNow;
@@ -4939,15 +5411,29 @@ int main(int argc, char** argv) {
             return !consoleOpen && !uiMenuActive && glfwGetKey(window, k) == GLFW_PRESS;
         };
 
-        // F: toggle noclip on the rising edge. Seed the fly camera from the
-        // player's current view so the transition is seamless.
+        // F toggles noclip via the SAME Player flag the `idclip` console command drives
+        // (single source of truth — previously F drove a local var and idclip drove
+        // player.noclip(), so the console command did nothing for movement).
         bool fNow = keyDown(GLFW_KEY_F);
-        if (fNow && !prevF) {
-            noclip = !noclip;
-            if (noclip) player.camera(flyX, flyY, flyZ, flyYaw, flyPitch);
-            x3::logInfo(noclip ? "noclip ON" : "noclip OFF");
-        }
+        if (fNow && !prevF) player.setNoclip(!player.noclip());
         prevF = fNow;
+        // Mirror the Player's noclip flag (set by F OR idclip) into the local `noclip`
+        // the movement uses; seed the fly camera from the current view on the rising
+        // edge so the transition is seamless either way.
+        if (player.noclip() != noclip) {
+            noclip = player.noclip();
+            if (noclip) {
+                player.camera(flyX, flyY, flyZ, flyYaw, flyPitch);   // ON: seed fly cam from the view
+            } else {
+                // OFF: drop the player WHERE THE FLY CAM ENDED (feet 1.6m below the eye) so
+                // you stay put and can explore other floors — don't snap back to the
+                // pre-noclip spot. Keep the look direction continuous.
+                player.setFeetPosition(*physics, x3::phys::Vec3{ flyX, flyY - 1.6f, flyZ });
+                player.setLook(flyYaw, flyPitch);
+            }
+            x3::logInfo(noclip ? "noclip ON (fly: WASD + Space up / Ctrl down, look to steer)"
+                               : "noclip OFF (landed at fly position)");
+        }
 
         // F3: toggle the perf stats overlay (drives the r_stats cvar) on the rising
         // edge. Polled even with the console open so it always works.
@@ -4970,6 +5456,13 @@ int main(int argc, char** argv) {
             bool rNow = keyDown(GLFW_KEY_R);
             if (rNow && !prevReload && game.armed()) arsenal.reload();
             prevReload = rNow;
+            // MOUSE WHEEL cycles weapons (up = next, down = previous), wrapping.
+            if (!termMode && !consoleOpen && g_weaponScroll != 0.0 && arsenal.count() > 0) {
+                const int cnt = arsenal.count();
+                const int dir = (g_weaponScroll > 0.0) ? 1 : -1;
+                arsenal.select(((arsenal.selected() + dir) % cnt + cnt) % cnt);
+            }
+            g_weaponScroll = 0.0;   // consume the wheel delta each frame
         }
         // Advance the arsenal timers (fire cooldowns + reload completion) every frame.
         arsenal.tick(dt);
@@ -4988,10 +5481,28 @@ int main(int argc, char** argv) {
             x3::phys::Vec3 dir{ std::cos(pitch) * std::cos(yaw),
                                 std::sin(pitch),
                                 std::cos(pitch) * std::sin(yaw) };
-            if (game.onUse(eye, dir, scene, *physics)) {  // plays door SFX internally
+            // RESCUED-NPC TALK takes priority over the bare door/rescue handlers so
+            // the captive girl always gets her exchange. If a live captive is in talk
+            // range, this E starts/advances the dialog; completing it performs the
+            // actual rescue (so she becomes a following companion) + queues her bark.
+            std::string talkWho; x3::phys::Vec3 talkPos{};
+            const bool talkInRange = nearestLiveCaptive(eye, x3::game::kTalkReach, talkWho, talkPos);
+            const bool talkHandled = npcDialog.active() || talkInRange;
+            if (talkHandled) {
+                const std::string barkName = talkWho.empty() ? npcDialog.partner() : talkWho;
+                const bool rescued = npcDialog.interact(
+                    talkInRange, talkWho, talkPos,
+                    [&]() -> bool { return game.onRescue(eye); });
+                if (rescued) {
+                    npcBarkText  = x3::game::companionBark(barkName);
+                    npcBarkTimer = 4.0f;
+                    x3::logInfo("talk: " + barkName + " rescued — now a companion (\"" + npcBarkText + "\")");
+                } else if (npcDialog.active()) {
+                    const auto& ln = npcDialog.currentLine();
+                    x3::logInfo("talk: [" + ln.speaker + "] " + ln.text);
+                }
+            } else if (game.onUse(eye, dir, scene, *physics)) {  // plays door SFX internally
                 x3::logInfo("use: button pressed — door opening");
-            } else if (game.onRescue(eye)) {  // F2 rescue (spec §5): captive in reach -> companion
-                x3::logInfo("use: victim rescued — now a companion");
             } else if (midFloors.onRescue(eye)) {  // F5 synth-bay captive rescue
                 x3::logInfo("use: F5 captive rescued — now a companion");
             } else if (topFloors.onRescue(eye)) {  // F7 rooftop captive (Sarah) rescue
@@ -5002,6 +5513,14 @@ int main(int argc, char** argv) {
                             std::to_string(nexus.savedCount()));
             } else if (subLevels.onRescue(eye)) {  // SL3 Dr. Chen rescue (the Return-Mission payoff)
                 x3::logInfo("use: Dr. Chen freed — the Return Mission is complete");
+            } else if (!termMode && game.secret().terminal().built() &&
+                       [&]{ const x3::phys::Vec3 a = game.secret().terminal().anchor();
+                            const float ddx = eye.x - a.x, ddz = eye.z - a.z;
+                            return ddx*ddx + ddz*ddz < 9.0f; }()) {
+                // Near the cell HoloTerminal: open terminal-entry mode (type the override
+                // code, Enter submits to the sink -> the trapdoor opens on 1127).
+                termMode = true; game.secret().terminal().setActive(true);
+                x3::logInfo("use: cell terminal — type the override code, Enter to submit, Esc to cancel");
             } else if (!codeMode && (game.nearLockedCodedDoor(eye) ||
                                      midFloors.nearLockedCodedDoor(eye) ||
                                      topFloors.nearLockedCodedDoor(eye) ||
@@ -5022,6 +5541,23 @@ int main(int argc, char** argv) {
             }
         }
         prevE = eNow;
+
+        // ---- RESCUED-NPC TALK upkeep (every frame, edge-independent): if an exchange
+        // is running, keep its box anchored to the captive, and CANCEL it the moment
+        // the player wanders out of talk range (so the box never strands on screen).
+        // Also age out her companion one-liner bark.
+        if (!terrainWorld) {
+            if (npcDialog.active()) {
+                float pex, pey, pez, pyaw, ppitch;
+                player.camera(pex, pey, pez, pyaw, ppitch);
+                if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
+                const x3::phys::Vec3 peye{ pex, pey, pez };
+                std::string w; x3::phys::Vec3 cp{};
+                if (nearestLiveCaptive(peye, x3::game::kTalkReach, w, cp)) npcDialog.setAnchor(cp);
+                else                                                       npcDialog.cancel();
+            }
+            if (npcBarkTimer > 0.0f) npcBarkTimer -= dt;
+        }
 
         // ---- Door-code keypad: capture digit/backspace/enter edges while active.
         // Esc-cancel is handled in the Esc block above. Uses the shared KeypadEntry
@@ -5078,6 +5614,29 @@ int main(int argc, char** argv) {
                 }
             }
             kpEnterPrev = enterNow;
+        }
+
+        // ---- Cell HoloTerminal entry: capture digit/backspace/Enter edges while the
+        // terminal is active. Enter calls submit() -> the terminal's sink (which opens
+        // the floor-hatch trapdoor on the correct code 1127). Esc-cancel handled below. --
+        if (termMode && !terrainWorld) {
+            x3::game::HoloTerminal& term = game.secret().terminal();
+            for (int dgt = 0; dgt < 10; ++dgt) {
+                bool dn = keyDown(GLFW_KEY_0 + dgt) || keyDown(GLFW_KEY_KP_0 + dgt);
+                if (dn && !tmDigitPrev[dgt]) term.pushChar((char)('0' + dgt));
+                tmDigitPrev[dgt] = dn;
+            }
+            bool tbackNow = keyDown(GLFW_KEY_BACKSPACE);
+            if (tbackNow && !tmBackPrev) term.backspace();
+            tmBackPrev = tbackNow;
+            bool tEnterNow = keyDown(GLFW_KEY_ENTER) || keyDown(GLFW_KEY_KP_ENTER);
+            if (tEnterNow && !tmEnterPrev) {
+                bool ok = term.submit();   // fires the sink -> opens the trapdoor on 1127
+                if (ok) { termMode = false; term.setActive(false);
+                          x3::logInfo("terminal: code ACCEPTED — trapdoor opening"); }
+                else      x3::logInfo("terminal: code rejected");
+            }
+            tmEnterPrev = tEnterNow;
         }
 
         // Camera state this frame (set by whichever branch runs), reused below
@@ -5189,6 +5748,31 @@ int main(int argc, char** argv) {
         camPitch += weaponRecoilPitch;
         if (camPitch >  1.55f) camPitch =  1.55f;   // keep within the look clamp
         device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+        // FLASHLIGHT (L toggles, default ON): re-issue the level's static ceiling
+        // fixtures + a bright player-following light at the eye, so the dark halls
+        // light up around you. Inserted FIRST so the 64-light cap never drops it.
+        if (!terrainWorld) {
+            bool lNow = keyDown(GLFW_KEY_L);
+            if (lNow && !prevL) { flashlight = !flashlight;
+                                  x3::logInfo(flashlight ? "flashlight ON" : "flashlight OFF"); }
+            prevL = lNow;
+            std::vector<x3::rhi::PointLight> fl = game.lightFixtures();
+            if (flashlight) {
+                x3::rhi::PointLight pl{};
+                // Project the light a few meters FORWARD along the view so the bright
+                // soft-edged circle lands where you're LOOKING (a flashlight pool that
+                // lights monsters ahead), not just a lantern glow at the eye.
+                const float fX = std::cos(camPitch) * std::cos(camYaw);
+                const float fY = std::sin(camPitch);
+                const float fZ = std::cos(camPitch) * std::sin(camYaw);
+                pl.pos[0] = camX + fX * 3.0f; pl.pos[1] = camY + fY * 3.0f; pl.pos[2] = camZ + fZ * 3.0f;
+                pl.range  = 38.0f;   // HUGE circle; point-light attenuation gives the SOFT edge
+                pl.color[0] = 6.0f; pl.color[1] = 5.6f; pl.color[2] = 4.9f;  // much brighter warm-white (HDR)
+                fl.insert(fl.begin(), pl);
+            }
+            if (fl.size() > 64) fl.resize(64);
+            device->setPointLights(fl.data(), (uint32_t)fl.size());
+        }
         prevSpace = spaceNow;
 
         // ---- Level 1 controller tick: advance doors, run triggers, spawn/clear
@@ -5225,7 +5809,24 @@ int main(int argc, char** argv) {
                 device->setWaterParams(wp);
             }
         } else {
-            game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
+            { const double _pt0 = glfwGetTime();
+              game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
+              g_perf.tick += glfwGetTime() - _pt0; }
+            // ---- SECRET ROOM payoff: game.tick() ticks the cell terminal + the room's
+            // loot collection (latching counts). Apply the gameplay EFFECTS here, where
+            // we own the concrete Player: each newly-collected HEALTH pack heals +50, and
+            // the NANO-BOOSTER (a tech/bio augment) triggers a full bio-surge heal as a
+            // stand-in effect (see secret_room.cpp's upgrade-system TODO). ----
+            {
+                const x3::game::SecretRoom& sr = game.secret();
+                uint32_t hg = sr.healthCollected();
+                if (hg > prevSecretHealth) { player.heal(50 * (int)(hg - prevSecretHealth)); prevSecretHealth = hg; }
+                if (sr.nanoBoosterActive() && !prevSecretNano) {
+                    prevSecretNano = true;
+                    player.heal();   // full bio-surge (TODO: a real Augment system raises maxHP/abilities)
+                    x3::logInfo("secret: NANO-BOOSTER augment online — bio surge");
+                }
+            }
             // Spire mid floors (F3/F4/F5): dispatch their floor-hub triggers (the F5
             // hub starts the rescue clock) then tick their enemy groups + gated victim.
             // Reaching the F4 hub OPENS the F4->F5 connector that "finds" the off-
@@ -5353,12 +5954,19 @@ int main(int argc, char** argv) {
             // Recoil -> camera (transient upward kick; recovered in the camera block).
             weaponRecoilPitch += shot.recoilPitchDeg * (3.14159265f / 180.0f);
 
+            // Per-weapon FX kind (plasma blue / chaingun sparky / shotgun wide / ...)
+            // + the CURRENT weapon's distinct fire sound (instead of one shared gun).
+            const x3::game::WeaponFxKind muzzleKind =
+                x3::game::fxKindFromId(arsenal.current().muzzleFx);
+            const x3::game::WeaponFxKind impactKind =
+                x3::game::fxKindFromId(arsenal.current().impactFx);
+            const x3::audio::SoundHandle fireSnd = currentFireSfx();
             if (!shot.projectiles.empty()) {
                 // ---- Projectile weapon (plasma): spawn a travelling bolt. ----
                 const auto& pj = shot.projectiles[0];
-                projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pj.damage, 0.0f, pj.range });
-                combatFx.spawnMuzzleFlash(muzzle, dir);
-                audio->playSound3D(sndGun, muzzle.x, muzzle.y, muzzle.z, 0.85f, 0.9f);
+                projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pj.damage, 0.0f, pj.range, impactKind });
+                combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);
+                audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 0.9f);
                 x3::logInfo("fire: " + arsenal.current().name + " bolt launched");
             } else {
                 // ---- Hitscan weapon (pistol/SMG/shotgun): one onFire per pellet. ----
@@ -5367,7 +5975,7 @@ int main(int argc, char** argv) {
                 // so a shotgun pellet, an SMG round, and a plasma bolt all deal their
                 // OWN damage instead of a single shared constant.
                 bool anyKill = false, anyHit = false; int lastHp = 0;
-                combatFx.spawnMuzzleFlash(muzzle, dir);   // flash at the gun barrel (hitscan)
+                combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);   // per-weapon flash (hitscan)
                 for (const auto& ray : shot.rays) {
                     const int wdmg = ray.damage;          // this pellet/ray's damage
                     x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics, wdmg);
@@ -5400,12 +6008,12 @@ int main(int argc, char** argv) {
                     else {
                         x3::phys::RayHit wallHit =
                             physics->rayCast(eye, ray.dir, x3::game::kFireMaxDist, x3::phys::Layer::Static);
-                        if (wallHit.hit) combatFx.spawnImpact(wallHit.point, wallHit.normal);
+                        if (wallHit.hit) combatFx.spawnImpact(wallHit.point, wallHit.normal, impactKind);
                     }
                     if (r.killed)
                         audio->playSound3D(sndDeath, r.endPoint.x, r.endPoint.y, r.endPoint.z, 1.0f, 1.0f);
                 }
-                audio->playSound3D(sndGun, muzzle.x, muzzle.y, muzzle.z, 0.85f, 1.0f);
+                audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 1.0f);
                 if (anyKill)      x3::logInfo("fire: enemy killed! (" + arsenal.current().name + ")");
                 else if (anyHit)  x3::logInfo("fire: enemy hit — HP " + std::to_string(lastHp));
             }
@@ -5451,7 +6059,7 @@ int main(int argc, char** argv) {
                     consumed = true;
                 } else {
                     x3::phys::RayHit sh = physics->rayCast(b.pos, ndir, stepLen, x3::phys::Layer::Static);
-                    if (sh.hit) { combatFx.spawnImpact(sh.point, sh.normal); combatFx.addTracer(b.pos, sh.point); consumed = true; }
+                    if (sh.hit) { combatFx.spawnImpact(sh.point, sh.normal, b.impactKind); combatFx.addTracer(b.pos, sh.point); consumed = true; }
                 }
                 if (!consumed) {
                     b.pos = x3::phys::Vec3{ b.pos.x + b.vel.x*dt, b.pos.y + b.vel.y*dt, b.pos.z + b.vel.z*dt };
@@ -5479,6 +6087,10 @@ int main(int argc, char** argv) {
 
         auto frame = device->beginFrame();
         if (frame.valid) {
+            // GIBS: integrate the GPU-compute debris pool (monster-death chunks +
+            // any other bursts) one step. Frozen during a UI menu so chunks hold mid-
+            // air with the rest of the sim. No-op cost when the pool is empty.
+            device->gpuDebrisStep(simFrozen ? 0.0f : dt);
             scene.render(*device, frame);
             // Level 1 world extras: the bobbing armory pickup + all enemy models
             // (corridor guards/drone, checkpoint guards, Martinez) with hit-flash.
@@ -5488,6 +6100,7 @@ int main(int argc, char** argv) {
                 // the procedural door box is collision-only (hidden).
                 game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
+                game.secret().drawExtras(*device, frame, scene);   // secret-room weapon pickup (bob/spin)
                 midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
                 midFloors.draw(*device, frame, scene);        // F3/F4/F5 enemies + F5 victim
                 topFloors.drawDoors(*device, frame);          // F6/F7 keypad door slabs
@@ -5504,11 +6117,15 @@ int main(int argc, char** argv) {
                     const x3::phys::Vec3 hbEye{ camX, camY, camZ };
                     auto hpBar = [&](const x3::phys::Vec3& head, int hpv, int mx, float flash) {
                         if (mx <= 0 || hpv <= 0) return;   // living enemies only
+                        // Only show a bar for NEARBY enemies — fades out by ~18 m, gone by 22 m
+                        // (no bars from across the room / 50 ft away).
+                        const float hdx=head.x-hbEye.x, hdy=head.y-hbEye.y, hdz=head.z-hbEye.z;
+                        if (hdx*hdx+hdy*hdy+hdz*hdz > 22.0f*22.0f) return;   // >22 m: no bar
                         float sx = 0.0f, sy = 0.0f;
                         if (!device->worldToScreen(head.x, head.y, head.z, sx, sy)) return;  // behind camera
                         const float frac = (hpv >= mx) ? 1.0f : (float)hpv / (float)mx;
                         uint32_t hw=0, hh=0; device->hudSize(hw, hh);
-                        const float bw = 64.0f, bh = 7.0f, x0 = sx - bw * 0.5f;
+                        const float bw = 40.0f, bh = 3.0f, x0 = sx - bw * 0.5f;   // thin line (was 64x7)
                         float y0 = sy; if (y0 < 14.0f) y0 = 14.0f;            // clamp on-screen (close enemies)
                         if (hh > 30 && y0 > (float)hh - 30.0f) y0 = (float)hh - 30.0f;
                         const float lowH = 1.0f - frac;                       // 0 healthy -> 1 dying
@@ -5559,8 +6176,10 @@ int main(int argc, char** argv) {
                         }
                     };
                     // B1 groups + the active Spire-floor enemy groups + bosses.
+                    const double _pbar0 = glfwGetTime();
                     barsFor(game.corridorEnemies());
                     barsFor(game.checkpointEnemies());
+                    g_perf.healthbars += glfwGetTime() - _pbar0;
                     for (uint32_t f = 0; f < (uint32_t)x3::game::SpireMidFloor::Count; ++f)
                         barsFor(midFloors.enemies((x3::game::SpireMidFloor)f));
                     barsFor(midFloors.f3Boss());
@@ -5592,6 +6211,13 @@ int main(int argc, char** argv) {
                 }
             }
             // FX: active tracers + muzzle flash (world-space).
+            // GIBS: draw the live GPU debris pool (one instanced cube draw; dead
+            // slots collapse in the shader). Dark fleshy-red tint so gib chunks read
+            // as gore. No-op when the pool is empty (zero cost until something dies).
+            {
+                const float gibTint[4] = { 0.42f, 0.06f, 0.05f, 1.0f };
+                device->gpuDebrisDraw(frame, gibTint);
+            }
             combatFx.draw(*device, frame, camX, camY, camZ, camYaw, camPitch);
             // GPU-instanced particles (sparks/blood/smoke/debris) + impact decals:
             // submit the live pool for this frame (HDR pass, soft against depth,
@@ -5616,6 +6242,29 @@ int main(int argc, char** argv) {
                     device->drawHudText(frame, kpPrompt.c_str(),
                                         (float)hudW * 0.5f - 230.0f, (float)hudH * 0.5f - 60.0f, 3.0f, kpCol);
                 }
+                // CELL HOLO-TERMINAL readout: LARGE high-contrast on-glass text drawn
+                // over the projected hologram panel (worldToScreen anchor). The boot
+                // readout shows WHENEVER the panel is built + visible + within reach-ish
+                // range (so the hologram is never a blank slab); the editable input line
+                // + blinking cursor appear once the player is in termMode (pressed E).
+                // The text SIZE is derived from the panel's on-screen height so it scales
+                // to the glass at any distance — clearly readable from a few meters.
+                if (!terrainWorld && game.secret().terminal().built() &&
+                    !game.secret().terminal().textOnGlass()) {
+                    // FALLBACK only: the readout normally lives ON the glass (baked into
+                    // the hologram texture so it tilts with the panel). This 2D overlay
+                    // runs solely if the on-glass font bake failed.
+                    const auto& term = game.secret().terminal();
+                    const x3::phys::Vec3 a = term.anchor();
+                    // Player eye for the range/visibility gate.
+                    float pex, pey, pez, pyaw, ppitch;
+                    player.camera(pex, pey, pez, pyaw, ppitch);
+                    if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
+                    const float tdx = a.x - pex, tdy = a.y - pey, tdz = a.z - pez;
+                    const float distM = std::sqrt(tdx*tdx + tdy*tdy + tdz*tdz);
+                    if (distM < 14.0f)
+                        drawHoloReadout(*device, frame, term, a, termMode);
+                }
                 // Door interaction prompt: a "[E] Open" / "[E] Close" tag floating at
                 // the doorway the player is looking at (within use range), fading in
                 // with proximity. Mirrors the health-bar world->screen anchoring.
@@ -5637,13 +6286,133 @@ int main(int argc, char** argv) {
                             if (a > 1.0f) a = 1.0f; if (a < 0.0f) a = 0.0f;
                             a = 0.30f + 0.70f * a;                   // soft floor so it reads at reach edge
                             const char* label = doorOpen ? "[E] Close" : "[E] Open";
-                            const float sz = 2.4f;
+                            const float sz = 18.0f;   // readable prompt (was 2.4 = microscopic)
                             const float tx = sx - 46.0f, ty = sy;
                             const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f * a };
                             const float col[4]    = { 0.66f, 0.92f, 1.0f, a };   // cyan-white
                             device->drawHudText(frame, label, tx + 1.5f, ty + 1.5f, sz, shadow);
                             device->drawHudText(frame, label, tx, ty, sz, col);
                         }
+                    }
+                }
+                // Elevator + cell-terminal prompts (so the player KNOWS they're in range
+                // and which key — same world->screen anchoring as the door prompt). ----
+                if (!terrainWorld && !codeMode && !termMode) {
+                    float pex, pey, pez, pyaw, ppitch;
+                    player.camera(pex, pey, pez, pyaw, ppitch);
+                    if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
+                    auto floatPrompt = [&](const x3::phys::Vec3& at, const char* label, float xoff) {
+                        float sx = 0.0f, sy = 0.0f;
+                        if (!device->worldToScreen(at.x, at.y, at.z, sx, sy)) return;
+                        const float col[4]    = { 0.66f, 0.92f, 1.0f, 0.95f };
+                        const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
+                        device->drawHudText(frame, label, sx - xoff + 1.5f, sy + 1.5f, 18.0f, shadow);
+                        device->drawHudText(frame, label, sx - xoff, sy, 18.0f, col);
+                    };
+                    // Elevator: within ~4 m of the cab.
+                    if (elevator.built()) {
+                        const x3::phys::Vec3 cc = elevator.cabCenter();
+                        const float ex = pex - cc.x, ez = pez - cc.z;
+                        if (ex*ex + ez*ez < 16.0f)
+                            floatPrompt(x3::phys::Vec3{ cc.x, cc.y + 1.6f, cc.z }, "[E] Call Elevator", 84.0f);
+                    }
+                    // Cell HoloTerminal: within ~3 m of its anchor.
+                    if (game.secret().terminal().built()) {
+                        const x3::phys::Vec3 a = game.secret().terminal().anchor();
+                        const float dx = pex - a.x, dz = pez - a.z;
+                        if (dx*dx + dz*dz < 9.0f)
+                            floatPrompt(x3::phys::Vec3{ a.x, a.y + 0.55f, a.z }, "[E] Use Terminal (code 1278)", 110.0f);
+                    }
+                }
+                // ---- RESCUED-NPC TALK: floating "[E] Talk" prompt + the dialog box.
+                // The prompt floats over a nearby LIVE captive's head (worldToScreen,
+                // mirroring the door prompt). Once an exchange is open the prompt gives
+                // way to a centered dialog box (speaker + line, large Menu-role font),
+                // and the captive's warm one-liner bark fades after she joins you. ----
+                if (!terrainWorld && !codeMode && !termMode) {
+                    float pex, pey, pez, pyaw, ppitch;
+                    player.camera(pex, pey, pez, pyaw, ppitch);
+                    if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
+                    const x3::phys::Vec3 peye{ pex, pey, pez };
+                    uint32_t hudW = 0, hudH = 0; device->hudSize(hudW, hudH);
+
+                    if (npcDialog.active()) {
+                        // The exchange box: a translucent panel near the screen bottom
+                        // with the speaker label + the current line, large + readable.
+                        const auto& ln = npcDialog.currentLine();
+                        const std::string speaker = ln.speaker.empty() ? npcDialog.partner() : ln.speaker;
+                        const std::string& body = ln.text;
+                        const float cx = (hudW > 0) ? hudW * 0.5f : 640.0f;
+                        const float boxW = (hudW > 0) ? hudW * 0.66f : 840.0f;
+                        const float boxH = 118.0f;
+                        const float boxX = cx - boxW * 0.5f;
+                        const float boxY = (hudH > 0) ? hudH - 190.0f : 540.0f;
+                        const float panel[4]  = { 0.05f, 0.07f, 0.12f, 0.82f };
+                        const float border[4] = { 0.40f, 0.78f, 1.0f, 0.85f };   // cyan rim
+                        device->drawHudQuad(frame, boxX - 3.0f, boxY - 3.0f, boxW + 6.0f, boxH + 6.0f, border);
+                        device->drawHudQuad(frame, boxX, boxY, boxW, boxH, panel);
+                        // Speaker name (warm tint for her, cool for the player "YOU").
+                        const bool isYou = (speaker == "YOU");
+                        const float namePx = 26.0f;
+                        const float herCol[4]  = { 1.0f, 0.62f, 0.78f, 1.0f };   // warm rose (her)
+                        const float youCol[4]  = { 0.66f, 0.92f, 1.0f, 1.0f };   // cool cyan (player)
+                        const float nshadow[4] = { 0.0f, 0.0f, 0.0f, 0.75f };
+                        const float nameX = boxX + 24.0f, nameY = boxY + 18.0f;
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, (speaker + ":").c_str(),
+                                             nameX + 1.5f, nameY + 1.5f, namePx, nshadow);
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, (speaker + ":").c_str(),
+                                             nameX, nameY, namePx, isYou ? youCol : herCol);
+                        // The spoken line, larger, white.
+                        const float linePx = 30.0f;
+                        const float lineX = boxX + 24.0f, lineY = boxY + 58.0f;
+                        const float lshadow[4] = { 0.0f, 0.0f, 0.0f, 0.8f };
+                        const float lineCol[4] = { 0.96f, 0.97f, 1.0f, 1.0f };
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, body.c_str(),
+                                             lineX + 1.5f, lineY + 1.5f, linePx, lshadow);
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, body.c_str(),
+                                             lineX, lineY, linePx, lineCol);
+                        // Advance hint, right-aligned in the box.
+                        const char* hint = (npcDialog.lineIndex() + 1 >= npcDialog.lineCount())
+                                           ? "[E] Free her" : "[E] Continue";
+                        const float hintPx = 18.0f;
+                        const float hw = device->textAdvance(x3::rhi::FontRole::Menu, hint, hintPx);
+                        const float hintX = boxX + boxW - hw - 22.0f, hintY = boxY + boxH - 28.0f;
+                        const float hintCol[4] = { 0.75f, 0.85f, 0.95f, 0.85f };
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, hint, hintX, hintY, hintPx, hintCol);
+                    } else {
+                        // No exchange yet: float "[E] Talk" over the nearest live captive.
+                        std::string who; x3::phys::Vec3 cpos{};
+                        if (nearestLiveCaptive(peye, x3::game::kTalkReach, who, cpos)) {
+                            float sx = 0.0f, sy = 0.0f;
+                            if (device->worldToScreen(cpos.x, cpos.y + 1.85f, cpos.z, sx, sy)) {
+                                const float dx = cpos.x - peye.x, dz = cpos.z - peye.z;
+                                const float dd = std::sqrt(dx * dx + dz * dz);
+                                float a = 1.0f - (dd - 2.0f);
+                                if (a > 1.0f) a = 1.0f; if (a < 0.0f) a = 0.0f;
+                                a = 0.35f + 0.65f * a;
+                                const float sz = 18.0f;   // readable prompt (was 2.4 = microscopic)
+                                const float tx = sx - 40.0f, ty = sy;
+                                const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f * a };
+                                const float col[4]    = { 1.0f, 0.72f, 0.84f, a };   // warm rose (a person, not a door)
+                                device->drawHudText(frame, "[E] Talk", tx + 1.5f, ty + 1.5f, sz, shadow);
+                                device->drawHudText(frame, "[E] Talk", tx, ty, sz, col);
+                            }
+                        }
+                    }
+
+                    // Her companion one-liner bark, just under the crosshair, fading out.
+                    if (npcBarkTimer > 0.0f && !npcBarkText.empty()) {
+                        float a = npcBarkTimer; if (a > 1.0f) a = 1.0f;   // fade in last second
+                        const float barkPx = 22.0f;
+                        const float bw = device->textAdvance(x3::rhi::FontRole::Menu, npcBarkText.c_str(), barkPx);
+                        const float bx = ((hudW > 0) ? hudW * 0.5f : 640.0f) - bw * 0.5f;
+                        const float by = (hudH > 0) ? hudH * 0.62f : 420.0f;
+                        const float bshadow[4] = { 0.0f, 0.0f, 0.0f, 0.7f * a };
+                        const float bcol[4]    = { 1.0f, 0.72f, 0.84f, a };
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, npcBarkText.c_str(),
+                                             bx + 1.5f, by + 1.5f, barkPx, bshadow);
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, npcBarkText.c_str(),
+                                             bx, by, barkPx, bcol);
                     }
                 }
                 // Strength terminal — the "Awakening" readout (EFLZ_SPIRE §3).
@@ -5700,14 +6469,84 @@ int main(int argc, char** argv) {
             hm.alive = player.isAlive();
             hm.damageFlash = player.damageFlash();
             hm.showCrosshair = !consoleOpen;
+            hm.dispW = cw; hm.dispH = ch;   // live framebuffer size -> menu RESOLUTION readout
             if (!terrainWorld) {
                 hm.objective = game.objectives().currentLabel().c_str();
+                // Live enemy-remaining counter (HUD): ALL live hostile groups (corridor
+                // + checkpoint + Phase-3 boss adds + bosses), so it never reads "AREA
+                // CLEAR" while a boss add is still alive. -1 (default) hides it elsewhere.
+                hm.enemiesRemaining = game.enemiesRemaining();
                 if (game.armed()) {
                     const x3::game::WeaponDef&         wd = arsenal.current();
                     const x3::game::Arsenal::WeaponState& ws = arsenal.currentState();
                     hm.weapon = wd.name.c_str();
                     hm.ammoInMag = ws.ammoInMag; hm.ammoReserve = ws.reserve;
                     hm.reloading = arsenal.isReloading();
+                }
+
+                // ---- Minimap RADAR + enemy NAMEPLATE feed ----------------------
+                // Player pose (radar center + heading). Use the noclip fly pose when
+                // free-flying so the radar tracks the camera, else the player camera.
+                {
+                    float rpx, rpy, rpz, rpyaw, rppitch;
+                    player.camera(rpx, rpy, rpz, rpyaw, rppitch);
+                    if (noclip) { rpx = flyX; rpy = flyY; rpz = flyZ; rpyaw = flyYaw; }
+                    hm.playerX = rpx; hm.playerZ = rpz; hm.playerYaw = rpyaw;
+                    hm.radarValid = true;
+
+                    // Live hostile marks (positions + short threat labels). The labels
+                    // are static string literals owned by Level1Game, so storing the
+                    // const char* in the (frame-scoped) HudModel is safe.
+                    x3::game::Level1Game::EnemyMark marks[x3::ui::HudModel::kMaxBlips];
+                    const uint32_t ne = game.liveEnemyMarks(marks, x3::ui::HudModel::kMaxBlips);
+                    hm.enemyCount = (int)ne;
+                    for (uint32_t i = 0; i < ne; ++i) {
+                        hm.enemyX[i] = marks[i].pos.x;
+                        hm.enemyY[i] = marks[i].pos.y;
+                        hm.enemyZ[i] = marks[i].pos.z;
+                        hm.enemyLabel[i] = marks[i].label;
+                        // Line-of-sight for the NAMEPLATE: ray from the eye to the enemy's
+                        // head; if static geometry (wall/door) blocks it first, hide the
+                        // label. The minimap blip ignores this (radar sees through walls).
+                        const x3::phys::Vec3 eye{ camX, camY, camZ };
+                        const float hx = marks[i].pos.x - eye.x;
+                        const float hy = (marks[i].pos.y + 1.4f) - eye.y;
+                        const float hz = marks[i].pos.z - eye.z;
+                        const float dist = std::sqrt(hx*hx + hy*hy + hz*hz);
+                        bool vis = true;
+                        if (dist > 0.01f) {
+                            const x3::phys::Vec3 dir{ hx/dist, hy/dist, hz/dist };
+                            x3::phys::RayHit rh = physics->rayCast(eye, dir, dist - 0.5f,
+                                                                   x3::phys::Layer::Static);
+                            if (rh.hit) vis = false;   // a wall/door is between the eye and this enemy
+                        }
+                        hm.enemyVisible[i] = vis;
+                    }
+
+                    // Live companion (rescued-victim) positions -> green pulsing blips.
+                    x3::phys::Vec3 allies[x3::ui::HudModel::kMaxBlips];
+                    const uint32_t na = game.liveCompanionPositions(allies, x3::ui::HudModel::kMaxBlips);
+                    hm.allyCount = (int)na;
+                    for (uint32_t i = 0; i < na; ++i) {
+                        hm.allyX[i] = allies[i].x;
+                        hm.allyZ[i] = allies[i].z;
+                    }
+
+                    // Faint room outlines: the B1 combat-zone rects (cell / corridor /
+                    // armory / checkpoint / arena) from the authored layout. XZ center
+                    // + half-extents; the HUD transforms them player-relative.
+                    const x3::game::Level1Layout& lay = game.layout();
+                    auto addRoom = [&](const x3::phys::Vec3& c, const x3::phys::Vec3& hf) {
+                        if (hm.roomCount >= x3::ui::HudModel::kMaxRooms) return;
+                        const int r = hm.roomCount++;
+                        hm.roomCx[r] = c.x; hm.roomCz[r] = c.z;
+                        hm.roomHx[r] = hf.x; hm.roomHz[r] = hf.z;
+                    };
+                    addRoom(lay.cellCenter,       lay.cellHalf);
+                    addRoom(lay.corridorCenter,   lay.corridorHalf);
+                    addRoom(lay.armoryCenter,     lay.armoryHalf);
+                    addRoom(lay.checkpointCenter, lay.checkpointHalf);
+                    addRoom(lay.arenaCenter,      lay.arenaHalf);
                 }
             }
             // Compose the UI input snapshot. Mouse position in framebuffer pixels;
@@ -5749,6 +6588,13 @@ int main(int argc, char** argv) {
                 prevUiMouse = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
             }
             gameUi.update(uin, *device, frame, hm, dt);
+            // Main-menu "SET AS DEFAULT" -> persist the current framebuffer size.
+            if (gameUi.wantSaveDefaults()) {
+                gameUi.clearSaveDefaults();
+                writeWindowSize((uint32_t)cw, (uint32_t)ch);
+                x3::logInfo("[settings] saved default resolution " +
+                            std::to_string(cw) + "x" + std::to_string(ch));
+            }
 
             // ---- Save/Load: pause-menu SAVE/LOAD buttons (polled from the UI) +
             // F5 quick-save / F9 quick-load (when not typing in the console). The
@@ -5771,6 +6617,7 @@ int main(int argc, char** argv) {
             hud.drawConsole(*device, frame, *console, dt);
         }
         device->endFrame(frame);
+        g_perf.addFrame((double)dt);   // per-system perf breakdown logged every 120 frames
     }
 
     x3::logInfo("shutting down");
@@ -5783,6 +6630,13 @@ int main(int argc, char** argv) {
     }
     audio->shutdown();
     combatFx.shutdown(*device);
+    // TASK#12: tear down any in-flight SKINNED death ragdolls (Jolt bodies) BEFORE
+    // physics shuts down, so a monster killed in the last ~0.7 s (mid-flop) doesn't
+    // touch a dead Jolt system when its IRagdoll is later destroyed. Fans across the
+    // Level1Game enemy groups; a no-op when nothing is ragdolling.
+    game.corridorEnemies().shutdown();
+    game.checkpointEnemies().shutdown();
+    game.chen().shutdown();
     physics->shutdown();
     device->shutdown();
     glfwDestroyWindow(window);

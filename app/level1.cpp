@@ -192,6 +192,32 @@ void addFloor(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWo
            (uint32_t)Tag::Static, /*collide*/true, visible);
 }
 
+// Floor slab WITH a rectangular hole carved out (4 segments around the hole) — used
+// for the B1 plate so the cell trapdoor (secret_room.*) can drop the player into the
+// secret room below. holeCx/holeCz/holeHalf define the (square) opening; the slab is
+// built as up to 4 rim segments (-X, +X, then the -Z/+Z bands across the hole's X
+// span). If the hole is outside the plate this degrades to a normal full slab.
+void addFloorWithCutout(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                        float cx, float cz, float hx, float hz, float floorY,
+                        x3::rhi::TextureHandle tex, const float color[4], bool visible,
+                        float holeCx, float holeCz, float holeHalf) {
+    const float x0 = cx - hx, x1 = cx + hx, z0 = cz - hz, z1 = cz + hz;
+    const float hx0 = holeCx - holeHalf, hx1 = holeCx + holeHalf;
+    const float hz0 = holeCz - holeHalf, hz1 = holeCz + holeHalf;
+    auto slab = [&](float a, float b, float c, float d) {  // x in [a,b], z in [c,d]
+        if (b - a < 0.01f || d - c < 0.01f) return;
+        addBox(scene, device, physics, (b-a)*0.5f, 0.05f, (d-c)*0.5f,
+               (a+b)*0.5f, floorY - 0.05f, (c+d)*0.5f, tex, color,
+               (uint32_t)Tag::Static, /*collide*/true, visible);
+    };
+    // -X segment (full depth), +X segment (full depth), then the -Z / +Z bands across
+    // the hole's X span. Together they tile the slab minus the [hx0,hx1]x[hz0,hz1] hole.
+    slab(x0, hx0, z0, z1);
+    slab(hx1, x1, z0, z1);
+    slab(hx0, hx1, z0, hz0);
+    slab(hx0, hx1, hz1, z1);
+}
+
 // A solid wall running along X (its plane is z = const). Spans x in [x0,x1] and
 // rises from floorY to floorY+wallH (floor-to-ceiling on this plate).
 void addWallX(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
@@ -397,10 +423,50 @@ Level1Layout buildLevel1(Scene& scene,
     const bool floorVis = !artMask.floors;  // graybox floor render on iff no GLB floor art
 
     // ---- Shared graybox textures. ----
-    auto floorPx = x3::prims::makeCheckerRGBA(256, 32, 200,205,215, 45,55,80);
-    x3::rhi::TextureHandle floorTex = device.createTexture(floorPx.data(), 256, 256, true);
-    auto wallPx = x3::prims::makeCheckerRGBA(256, 32, 170,175,185, 60,65,80);
-    x3::rhi::TextureHandle wallTex = device.createTexture(wallPx.data(), 256, 256, true);
+    // RICHER PROCEDURAL SCI-FI surfaces (S2 art uplift) replacing the old flat blue/
+    // grey CHECKER. These are NEUTRAL/untinted maps: the per-floor + per-surface tint
+    // (kFloorTints / kWallTint / detTint / kShaftTint, passed as the entity baseColor)
+    // is MULTIPLIED over them by the mesh shader (mesh.frag: albedo = texture * vFactor),
+    // so each plate still reads as a distinct wing while every surface now shows real
+    // detention-facility detail instead of a checkerboard. 512px + mips for crispness;
+    // all three generators are SEAMLESS so they tile across the big plates.
+    //   - FLOORS  : dark grated/tiled deck with seams + tread + edge hazard trim.
+    //   - WALLS   : gunmetal inset metal panels (seam grooves, corner bolts, grime) +
+    //               a faint cool emissive accent conduit line.
+    //   - CEILINGS: recessed panel coffers with a soft central light-fixture motif.
+    // FUTURE (real PBR): swap any of these for SD-3.5-generated tiling albedo PNGs —
+    // generate via the diffusers script (model C:\GameDev\SD_Models\sd35), save under
+    // assets/textures/, load with stbi_load, feed the RGBA8 to createTexture here.
+    constexpr uint32_t kTexN = 512;
+    // FLOOR: BIG top-down deck plates (2x2 → large plates, deliberately a LARGER scale
+    // than the wall panels so the floor reads as a walkable deck, not a wall). Hazard
+    // trim is OFF for the main fill: the texture tiles many times across each big plate,
+    // so an edge-of-texture caution band would repeat on every tile (a loud yellow grid).
+    // The deep seams + diamond tread already read unmistakably as a deck.
+    auto floorPx = x3::prims::makeFloorGrateRGBA(kTexN, /*tiles*/2, x3::prims::detail::kNoTint, /*hazard*/false);
+    x3::rhi::TextureHandle floorTex = device.createTexture(floorPx.data(), kTexN, kTexN, true);
+    // WALLS: three calm, large-scale (2x2 panel) variants so adjacent corridor surfaces
+    // don't read as one repeating tile (the "all walls identical" complaint). The accent
+    // conduit line is kept subtle. Variant A = plain panel (default everywhere a specific
+    // variant isn't requested), B = floor-to-ceiling cable conduit, C = louvered vent.
+    auto wallPxA = x3::prims::makeSciFiPanelRGBA(kTexN, /*panels*/2, x3::prims::detail::kNoTint,
+                                                 /*accent*/60, 170, 200, /*accentH*/0.16f,
+                                                 x3::prims::WallVariant::Plain);
+    x3::rhi::TextureHandle wallTexA = device.createTexture(wallPxA.data(), kTexN, kTexN, true);
+    auto wallPxB = x3::prims::makeSciFiPanelRGBA(kTexN, /*panels*/2, x3::prims::detail::kNoTint,
+                                                 /*accent*/60, 170, 200, /*accentH*/0.0f,
+                                                 x3::prims::WallVariant::Conduit);
+    x3::rhi::TextureHandle wallTexB = device.createTexture(wallPxB.data(), kTexN, kTexN, true);
+    auto wallPxC = x3::prims::makeSciFiPanelRGBA(kTexN, /*panels*/2, x3::prims::detail::kNoTint,
+                                                 /*accent*/60, 170, 200, /*accentH*/0.0f,
+                                                 x3::prims::WallVariant::Vent);
+    x3::rhi::TextureHandle wallTexC = device.createTexture(wallPxC.data(), kTexN, kTexN, true);
+    // The 3 wall variants in a small table; surfaces pick one by index so neighbors differ.
+    const x3::rhi::TextureHandle wallVariants[3] = { wallTexA, wallTexB, wallTexC };
+    // Default wall handle (the plain variant) for the few surfaces that don't vary.
+    x3::rhi::TextureHandle wallTex = wallTexA;
+    auto ceilPx = x3::prims::makeCeilingPanelRGBA(kTexN, /*coffers*/3, x3::prims::detail::kNoTint, /*lit*/true);
+    x3::rhi::TextureHandle ceilTex = device.createTexture(ceilPx.data(), kTexN, kTexN, true);
 
     Level1Layout L;
 
@@ -418,21 +484,34 @@ Level1Layout buildLevel1(Scene& scene,
         const float* tint = kFloorTints[fi];
         const bool isRooftop = (fi == (uint32_t)L1Floor::F7);
 
-        // Floor slab (every floor including B1; the rooftop still has a deck).
-        addFloor(scene, device, physics, cx, 0.0f, (f.x1 - f.x0) * 0.5f, f.zHalf, f.y0,
-                 floorTex, tint, floorVis);
-        // Two long side walls (z = ±zHalf), floor-to-ceiling.
-        addWallX(scene, device, physics, f.x0, f.x1, -f.zHalf, f.y0, f.ceil, wallTex, tint, wallVis);
-        addWallX(scene, device, physics, f.x0, f.x1,  f.zHalf, f.y0, f.ceil, wallTex, tint, wallVis);
+        // Floor slab (every floor including B1; the rooftop still has a deck). B1 gets
+        // a HOLE carved under Jake's cell for the code-locked trapdoor (secret_room.*),
+        // so an open hatch actually drops the player into the secret room below.
+        if (fi == (uint32_t)L1Floor::B1) {
+            addFloorWithCutout(scene, device, physics, cx, 0.0f, (f.x1 - f.x0) * 0.5f, f.zHalf, f.y0,
+                               floorTex, tint, floorVis, kCellHatchCx, kCellHatchCz, kCellHatchHalf);
+        } else {
+            addFloor(scene, device, physics, cx, 0.0f, (f.x1 - f.x0) * 0.5f, f.zHalf, f.y0,
+                     floorTex, tint, floorVis);
+        }
+        // Two long side walls (z = ±zHalf), floor-to-ceiling. Pick DIFFERENT wall
+        // variants for the two facing side walls AND stagger by floor so no two adjacent
+        // corridor walls read as the same tile (fixes the "all walls identical" look).
+        const x3::rhi::TextureHandle sideZneg = wallVariants[fi % 3];
+        const x3::rhi::TextureHandle sideZpos = wallVariants[(fi + 1) % 3];
+        addWallX(scene, device, physics, f.x0, f.x1, -f.zHalf, f.y0, f.ceil, sideZneg, tint, wallVis);
+        addWallX(scene, device, physics, f.x0, f.x1,  f.zHalf, f.y0, f.ceil, sideZpos, tint, wallVis);
         // -X and +X end caps (now fully SOLID perimeter walls — the shaft is interior).
+        // Give the two end caps the remaining two variants so all four perimeter walls
+        // of a plate differ from one another.
         addCrossWall(scene, device, physics, f.x0, -f.zHalf, f.zHalf, 0.0f,
-                     /*withDoorway*/false, f.y0, f.ceil, wallTex, kWallTint, crossWallVis);
+                     /*withDoorway*/false, f.y0, f.ceil, wallVariants[(fi + 2) % 3], kWallTint, crossWallVis);
         addCrossWall(scene, device, physics, f.x1, -f.zHalf, f.zHalf, 0.0f,
-                     /*withDoorway*/false, f.y0, f.ceil, wallTex, kWallTint, crossWallVis);
+                     /*withDoorway*/false, f.y0, f.ceil, wallVariants[fi % 3], kWallTint, crossWallVis);
         // Ceiling lid (skip the rooftop: F7 is open to the sky). Collision-only.
         if (!isRooftop)
             addCeiling(scene, device, physics, cx, 0.0f, (f.x1 - f.x0) * 0.5f, f.zHalf,
-                       f.y0 + f.ceil, floorTex);
+                       f.y0 + f.ceil, ceilTex);
 
         // Fill the per-floor layout result.
         L.floorBaseY[fi]  = f.y0;
@@ -557,9 +636,15 @@ Level1Layout buildLevel1(Scene& scene,
     //      Lab/Observation rooms.
     {
         const L1RoomDef& f2 = kFloors[(uint32_t)L1Floor::F2];
-        L.wardA = x3::phys::Vec3{  4.0f, f2.y0, -3.0f };  // Ward A (Aria)
-        L.wardB = x3::phys::Vec3{ 11.5f, f2.y0,  3.0f };  // Ward B (Keisha)
-        L.wardC = x3::phys::Vec3{ 18.0f, f2.y0, -3.0f };  // Ward C (Emily)
+        const float y0 = f2.y0, h = f2.ceil;
+        const float wx1 = 8.0f, wx2 = 15.0f;     // partition X positions (split the +X arrival half)
+        addCrossWall(scene, device, physics, wx1, -6.0f, 6.0f, 0.0f, true, y0, h,
+                     wallVariants[2], kWallTint, crossWallVis);
+        addCrossWall(scene, device, physics, wx2, -6.0f, 6.0f, 0.0f, true, y0, h,
+                     wallVariants[1], kWallTint, crossWallVis);
+        L.wardA = x3::phys::Vec3{  4.0f, y0, -3.0f };  // Ward A (Aria)
+        L.wardB = x3::phys::Vec3{ 11.5f, y0,  3.0f };  // Ward B (Keisha)
+        L.wardC = x3::phys::Vec3{ 18.0f, y0, -3.0f };  // Ward C (Emily)
     }
     buildWing(L1Floor::F2, {
         { -38.0f,  0.0f, 10.0f, 14.0f, 'E' },  // Recovery Ward (big signature hall)
@@ -617,9 +702,9 @@ Level1Layout buildLevel1(Scene& scene,
     {
         const L1RoomDef& f6 = kFloors[(uint32_t)L1Floor::F6];
         const float y0 = f6.y0, h = f6.ceil;
-        addWallX(scene, device, physics, 0.0f, 8.0f, -3.0f, y0, h, wallTex, kWallTint, crossWallVis);
+        addWallX(scene, device, physics, 0.0f, 8.0f, -3.0f, y0, h, wallVariants[1], kWallTint, crossWallVis);
         addCrossWall(scene, device, physics, 8.0f, -8.0f, -3.0f, -5.5f, true, y0, h,
-                     wallTex, kWallTint, crossWallVis);
+                     wallVariants[2], kWallTint, crossWallVis);
         L.execOffice = x3::phys::Vec3{ 4.0f, y0, -5.5f };
     }
     {
@@ -662,9 +747,11 @@ Level1Layout buildLevel1(Scene& scene,
             if (r.floorY < -0.01f)
                 addFloor(scene, device, physics, r.cx, r.cz, r.w * 0.5f, r.d * 0.5f, floorY,
                          floorTex, detTint, floorVis);
+            // Vary the wall motif per room so neighbouring detention cells/halls don't
+            // all read as the same panel (each room's 4 walls share one variant).
             buildDetentionRoom(scene, device, physics, kDetention, kDetCount,
                                kDetDoors, kDetDoorPairCount, ri, floorY, ceilH,
-                               wallTex, detTint, crossWallVis, carve);
+                               wallVariants[ri % 3], detTint, crossWallVis, carve);
         }
     }
 
@@ -715,12 +802,14 @@ Level1Layout buildLevel1(Scene& scene,
     //      cell blocks (at |z|>4) intact. ----
     {
         const float bh = b1ceil;
-        addWallX(scene, device, physics, 0.0f, 19.5f, -kSpineZ, b1y, bh, wallTex, kWallTint, crossWallVis);
-        addWallX(scene, device, physics, 0.0f, 19.5f,  kSpineZ, b1y, bh, wallTex, kWallTint, crossWallVis);
+        // The two long spine lane walls get different variants; the door partitions cycle
+        // through all three so each Awakening sub-room reads a little different.
+        addWallX(scene, device, physics, 0.0f, 19.5f, -kSpineZ, b1y, bh, wallVariants[1], kWallTint, crossWallVis);
+        addWallX(scene, device, physics, 0.0f, 19.5f,  kSpineZ, b1y, bh, wallVariants[2], kWallTint, crossWallVis);
         const float partX[4] = { L.doorA.x, L.doorB.x, L.doorC.x, L.doorD.x };
-        for (float px : partX)
-            addCrossWall(scene, device, physics, px, -kSpineZ, kSpineZ, 0.0f, true, b1y, bh,
-                         wallTex, kWallTint, crossWallVis);
+        for (uint32_t pi = 0; pi < 4; ++pi)
+            addCrossWall(scene, device, physics, partX[pi], -kSpineZ, kSpineZ, 0.0f, true, b1y, bh,
+                         wallVariants[pi % 3], kWallTint, crossWallVis);
     }
 
     L.cellHalf       = x3::phys::Vec3{ 3.0f, b1ceil, kSpineZ };

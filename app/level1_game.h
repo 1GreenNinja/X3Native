@@ -28,11 +28,13 @@
 #include "weapon.h"
 #include "monster.h"
 #include "melee.h"
+#include "barrels.h"   // explosive barrels (shoot -> violent detonation + chain)
 #include "objective.h"
 #include "trigger.h"
 #include "rescue.h"
 #include "level1.h"
 #include "env_art.h"
+#include "secret_room.h"   // code-locked trapdoor -> secret room (cell HoloTerminal)
 
 #include "save.h"      // engine-general checkpoint schema (the bridge maps onto it)
 
@@ -106,6 +108,14 @@ public:
     // adds / Chen). Empty => the per-monster throttled-log stub. The host maps cues
     // onto audio/FX. Stored so on-beat spawns inherit it; call after build(). See cues.h.
     void setCueSink(const GameCueFn& sink);
+
+    // Optional: wire a DEATH FX sink (gib burst) onto every enemy group — current AND
+    // future spawns (corridor / checkpoint / Martinez / boss adds / Chen). The monster
+    // fires it ONCE the instant it is KILLED (HP->0), passing its body-center world
+    // position + a flying flag. The host turns it into the gib explosion (GPU debris +
+    // blood). Empty => no extra death FX (the topple/corpse path is unchanged). Stored
+    // so on-beat spawns inherit it; call after build(). See app/monster.h DeathFxFn.
+    void setDeathFxSink(const DeathFxFn& sink);
 
     // Cache the render device so tick() can spawn enemies on their beats (those
     // need to create GPU meshes for the crawler model). build() also records it,
@@ -215,6 +225,10 @@ public:
     bool      doorLocked(char letter) const;
 
     // Monster groups (for the self-test / objective gating + the save bridge).
+    BarrelSystem&         barrels()                 { return m_barrels; }   // host wires FX/damage sinks
+    // Static ceiling-fixture point lights (env-art Light_A). The host re-issues these
+    // + a player FLASHLIGHT each frame so the light follows the player through dark halls.
+    const std::vector<x3::rhi::PointLight>& lightFixtures() const { return m_envArt.lightFixtures(); }
     MonsterManager&       corridorEnemies()         { return m_corridor; }
     const MonsterManager& corridorEnemies()   const { return m_corridor; }
     MonsterManager&       checkpointEnemies()       { return m_checkpoint; }
@@ -237,6 +251,14 @@ public:
     // The weapon system (host reads usingRealModel() for logging).
     const WeaponSystem& weapon() const { return m_weapon; }
 
+    // ---- Code-locked trapdoor -> SECRET ROOM (cell HoloTerminal) -----------
+    // The secret-room feature: the cell holographic terminal, the floor-hatch
+    // trapdoor (opened by the override code 1127), and the stocked room below.
+    // The host (main.cpp) routes typed chars into secret().terminal() and draws
+    // its readout/input over the panel; tick() ticks its blink + pickup logic.
+    SecretRoom&       secret()       { return m_secretRoom; }
+    const SecretRoom& secret() const { return m_secretRoom; }
+
     // ---- F2 rescue system (spec §5) ---------------------------------------
     // The rescue system (3 victims on 5-min timers; rescue -> companion, expire ->
     // boss). The host pokes tryRescue() on an E-interact edge and reads hudTimers()
@@ -253,6 +275,17 @@ public:
     // the rescue-clock gating, so he doesn't pursue a player who hasn't reached F2.
     const MonsterManager& chen() const { return m_chen; }
     MonsterManager&       chen()       { return m_chen; }
+
+    // Total LIVE hostiles across every group (HUD "ENEMIES" counter). Includes the
+    // Phase-3 boss adds + the bosses so the count never reads "AREA CLEAR" while
+    // something is still alive (the bossAdds bug).
+    int enemiesRemaining() const {
+        int n = (int)(m_corridor.aliveCount() + m_checkpoint.aliveCount()
+                    + m_bossAdds.aliveCount());
+        if (m_martinezSpawned && m_martinez.alive()) n += 1;
+        if (m_chenSpawned) n += (int)m_chen.aliveCount();
+        return n;
+    }
     bool chenSpawned() const { return m_chenSpawned; }
     bool chenAlive()   const { return m_chenSpawned && m_chen.count() > 0 && m_chen.at(0).alive(); }
     // True iff Chen is in his curable window (Phase3 "Monster"); the host offers the
@@ -265,6 +298,43 @@ public:
 
     // The canon F2 floor identity ("Medical Bay") for the HUD / objective text.
     const char* f2FloorName() const { return "Medical Bay"; }
+
+    // ---- HUD radar/nameplate feed (read-only world-position enumeration) ----
+    // One spot a hostile occupies on the radar / under a nameplate.
+    struct EnemyMark {
+        x3::phys::Vec3 pos;     // body-center world position
+        const char*    label;   // short threat label (enemy type / boss name)
+    };
+    // Write up to `cap` LIVE hostile positions+labels (corridor guards/drone,
+    // checkpoint guards, Phase-3 boss adds, Martinez, Dr. Chen) into `out`; returns
+    // the count written. Read-only: enumerates the existing monster groups, no state
+    // change. The host (main.cpp) feeds these into the HUD radar + enemy nameplates.
+    uint32_t liveEnemyMarks(EnemyMark* out, uint32_t cap) const {
+        uint32_t n = 0;
+        auto add = [&](const x3::phys::Vec3& p, const char* lbl) {
+            if (n < cap) { out[n].pos = p; out[n].label = lbl; ++n; }
+        };
+        auto addManager = [&](const MonsterManager& mm, const char* lbl) {
+            for (uint32_t i = 0; i < mm.count() && n < cap; ++i)
+                if (mm.at(i).alive()) add(mm.at(i).pos(), lbl);
+        };
+        addManager(m_corridor,   "HOSTILE");
+        addManager(m_checkpoint, "GUARD");
+        addManager(m_bossAdds,   "ADD");
+        if (m_martinezSpawned && m_martinez.alive()) add(m_martinez.pos(), "MARTINEZ");
+        if (m_chenSpawned) addManager(m_chen, "DR. CHEN");
+        return n;
+    }
+    // Write up to `cap` LIVE COMPANION (rescued victim) world positions into `out`;
+    // returns the count written. Read-only enumeration of the rescue system.
+    uint32_t liveCompanionPositions(x3::phys::Vec3* out, uint32_t cap) const {
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < m_rescue.victimCount() && n < cap; ++i) {
+            const RescueVictim& v = m_rescue.victim(i);
+            if (v.companion()) out[n++] = v.pos();
+        }
+        return n;
+    }
 
 private:
     // Map a door letter to its DoorSystem index (set in build()).
@@ -290,6 +360,7 @@ private:
     DoorSystem     m_doors;
     WeaponSystem   m_weapon;
     MeleeSystem    m_melee;        // super-strength punch (Phase 2b)
+    BarrelSystem   m_barrels;      // explosive barrels (shoot -> detonate + chain)
     MonsterManager m_corridor;     // 2 guards + 1 drone (beat 3)
     MonsterManager m_checkpoint;   // 1-2 guards (built at level build)
     MonsterSystem  m_martinez;     // boss (beat 9)
@@ -297,6 +368,7 @@ private:
     ObjectiveSystem m_objectives;
     TriggerSystem  m_triggers;
     RescueSystem   m_rescue;       // F2 victims (Aria/Keisha/Emily) — spec §5
+    SecretRoom     m_secretRoom;   // code-locked trapdoor -> secret room (cell HoloTerminal)
     MonsterManager m_chen;         // F2 Medical Bay boss: Dr. Chen (Wave-2; gated on the F2 hub)
     bool           m_chenSpawned = false;  // Dr. Chen placed on the F2 plate (on the F2 hub)
 
@@ -307,6 +379,7 @@ private:
 
     Level1Audio    m_audio;
     GameCueFn      m_cueSink;       // game-feel footstep/impact sink (fanned to enemies)
+    DeathFxFn      m_deathFx;       // gib-burst death FX sink (fanned to enemies)
     std::string    m_modelDir;
     x3::rhi::IRenderDevice* m_devicePtr = nullptr; // cached for event-time spawns
 

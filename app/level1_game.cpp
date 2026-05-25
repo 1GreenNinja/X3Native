@@ -137,7 +137,9 @@ MonsterSystem::Tuning droneTuning() {
     t.attackWindup   = 0.35f;          // a beat of telegraph before the bolt
     t.ranged         = true;
     t.standoff       = combat::kRangedStandoff;       // hold ~7 m out
-    useCharacter(t, "Drone.glb", 1.0f);
+    // Animated drone (Tim's authored model — rotors spin via the GLB's baked motion).
+    // Falls back to the procedural box if the load fails. Scale may need a tweak.
+    useCharacter(t, "DroneExportWMotion.glb", 1.0f);
     return t;
 }
 } // namespace
@@ -247,6 +249,19 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
                        x3::phys::Vec3{ cc.x + 0.8f, kEnemyY, cc.z + 2.5f },
                        tuningFor(EnemyType::BlueSynth));
 
+    // ---- Explosive barrels: shootable, scattered along the corridor + a checkpoint
+    // cluster (a hit detonates violently + chains to neighbors). ----
+    {
+        m_barrels.init(device, physics);
+        const float by = level1Rooms()[(uint32_t)L1Floor::B1].y0;
+        const x3::phys::Vec3 co = m_layout.corridorCenter;
+        m_barrels.spawn(co.x - 2.0f, by, co.z + 1.6f);
+        m_barrels.spawn(co.x + 3.0f, by, co.z - 1.6f);
+        m_barrels.spawn(cc.x - 1.8f, by, cc.z + 0.2f);   // checkpoint pair -> chain reaction
+        m_barrels.spawn(cc.x - 1.1f, by, cc.z + 0.9f);
+        x3::logInfo("[level1] spawned " + std::to_string(m_barrels.count()) + " explosive barrels");
+    }
+
     // ---- Trigger volumes. Strength (cell), arena (boss entry), elevator (win,
     // disabled until the boss dies). ----
     // Strength: a box around the equipment prop at (1.5, 0.4, -1.8) in the cell.
@@ -302,8 +317,19 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
                        (uint32_t)L1Trigger::Hub, true);
     }
 
+    // ---- CODE-LOCKED TRAPDOOR -> SECRET ROOM (cell HoloTerminal). The cell floor is
+    // at the B1 plate base (y0); Jake's Cell center is the legacy cellCenter (XZ at
+    // the spawn). Build the cell terminal + the floor-hatch trapdoor + the stocked
+    // secret room below, wiring the terminal's submit sink to unlock+open the hatch
+    // on code 1127. Additive — its own HoloTerminal + a hatch registered in m_doors. ----
+    {
+        const float b1y = level1Rooms()[(uint32_t)L1Floor::B1].y0;
+        const x3::phys::Vec3 cellCenter{ m_layout.cellCenter.x, b1y, m_layout.cellCenter.z };
+        m_secretRoom.build(scene, device, physics, m_doors, cellCenter, riggedDir());
+    }
+
     m_built = true;
-    x3::logInfo("Level1Game::build complete — doors A-E, pistol pickup, 4 checkpoint enemies, 4 triggers, 3 rescue victims (timers gated on F2-hub trigger)");
+    x3::logInfo("Level1Game::build complete — doors A-E, pistol pickup, 4 checkpoint enemies, 4 triggers, 3 rescue victims (timers gated on F2-hub trigger), cell trapdoor + secret room");
 }
 
 uint32_t Level1Game::doorIndex(char letter) const {
@@ -372,6 +398,19 @@ void Level1Game::setCueSink(const GameCueFn& sink) {
     if (m_martinezSpawned) m_martinez.setCueSink(sink);
 }
 
+void Level1Game::setDeathFxSink(const DeathFxFn& sink) {
+    m_deathFx = sink;
+    // Fan the gib-burst death FX to every enemy group (managers store + re-apply to
+    // future spawns) and the single Martinez boss instance — exactly like setCueSink.
+    // Groups not yet spawned carry the sink onto their on-beat spawns; Martinez is
+    // wired here once up. The monster fires it ONCE at the kill moment (HP->0).
+    m_corridor.setDeathFxSink(sink);
+    m_checkpoint.setDeathFxSink(sink);
+    m_bossAdds.setDeathFxSink(sink);
+    m_chen.setDeathFxSink(sink);
+    if (m_martinezSpawned) m_martinez.setDeathFxSink(sink);
+}
+
 void Level1Game::cheatArm(Scene& scene) { m_weapon.forceArm(scene); }  // IDKFA/IDFA
 
 void Level1Game::spawnCorridorEnemies(Scene& scene, x3::rhi::IRenderDevice& device,
@@ -421,6 +460,7 @@ void Level1Game::spawnMartinez(Scene& scene, x3::rhi::IRenderDevice& device,
                                                  m_layout.arenaCenter.z },
                                  martinezTuning());
     if (m_cueSink) m_martinez.setCueSink(m_cueSink);   // inherit footstep/impact cues
+    if (m_deathFx) m_martinez.setDeathFxSink(m_deathFx); // inherit the gib-burst death FX
     x3::logInfo("Level1: BOSS — Chief Martinez spawned in the arena (boss-tier HP/speed)");
 }
 
@@ -480,6 +520,9 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
 
     // ---- Melee cooldown advances (Phase 2b super-strength punch). ----
     m_melee.update(dt);
+
+    // ---- Explosive barrels: detonate any shot this frame (scatter + chain + FX). ----
+    m_barrels.update(dt);
 
     // ---- Doors advance ----
     m_doors.update(dt, scene, physics);
@@ -588,6 +631,13 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     // (main.cpp) pokes onRescue() on an E-edge and draws the timers/victims. ----
     m_rescue.tick(dt, scene, physics, playerPos);
 
+    // ---- Code-locked trapdoor -> SECRET ROOM: tick the cell terminal blink + the
+    // secret weapon pickup + the room's loot collection. Heals are applied here via
+    // the IDamageSink when it exposes a heal hook; otherwise the host applies them
+    // off the collected-count deltas (it owns the concrete Player). The hatch itself
+    // animates via m_doors.update() above (it's registered in the same DoorSystem). ----
+    m_secretRoom.tick(dt, scene, playerPos);
+
     // ---- Triggers (per-frame point test on the player position) ----
     for (uint32_t id : m_triggers.update(playerPos)) {
         switch ((L1Trigger)id) {
@@ -666,6 +716,13 @@ FireResult Level1Game::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& d
                               int damage) {
     FireResult r;
     if (!m_weapon.hasWeapon()) return r;   // gate: only effective when armed
+    // Explosive barrels: a shot that hits a barrel detonates it (independent of
+    // whether it also hits a monster — the ray can pass a barrel on the way).
+    {
+        const float e3[3] = { eye.x, eye.y, eye.z };
+        const float d3[3] = { dir.x, dir.y, dir.z };
+        m_barrels.onShot(e3, d3);
+    }
     // Fire across all three monster groups; the first live monster hit takes it.
     r = m_corridor.fire(eye, dir, scene, physics, damage);
     if (!r.hitMonster) {
@@ -677,6 +734,14 @@ FireResult Level1Game::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& d
         FireResult r3 = m_martinez.fire(eye, dir, scene, physics, damage);
         if (r3.hitMonster) r = r3;
         else if (!r.hit && r3.hit) r = r3;
+    }
+    // Phase-3 boss ADDS (summoned during the Martinez fight). These were invincible
+    // to GUNFIRE — onFire never included them (only melee did), so they could never
+    // die and the area never cleared. Include them in the gun-damage chain.
+    if (!r.hitMonster && m_bossAdds.count() > 0) {
+        FireResult ra = m_bossAdds.fire(eye, dir, scene, physics, damage);
+        if (ra.hitMonster) r = ra;
+        else if (!r.hit && ra.hit) r = ra;
     }
     // F2 Medical Bay boss (Dr. Chen), if placed.
     if (!r.hitMonster && m_chenSpawned) {
@@ -721,6 +786,7 @@ void Level1Game::drawWorldExtras(x3::rhi::IRenderDevice& device,
                                  const x3::rhi::FrameContext& frame,
                                  const Scene& scene) const {
     m_envArt.draw(device, frame);   // converted sci-fi environment art over graybox
+    m_barrels.render(frame);        // intact barrels + their tumbling debris
     m_weapon.drawPickup(device, frame, scene);
     m_corridor.drawAll(device, frame, scene);
     m_checkpoint.drawAll(device, frame, scene);

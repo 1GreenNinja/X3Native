@@ -69,6 +69,11 @@ struct Door {
     uint32_t          axis     = 0;      // 0 = AlongZ (thin in X), 1 = AlongX (thin in Z)
     float             halfWidth = 0.6f;  // doorway half-width (== DoorSpec::halfWidth)
     float             height    = 2.1f;  // door slab height (== DoorSpec::height)
+    bool              floorHatch = false;// horizontal floor hatch: flat slab in the
+                                         // XZ plane that slides ASIDE; keeps its
+                                         // graybox box (the vertical SM_Door GLB is
+                                         // not drawn over it). Open => you can pass
+                                         // DOWN through the floor opening.
 };
 
 // Registry of doors in a level. Kept in the game layer (not the Scene) so the
@@ -178,6 +183,11 @@ struct DoorSpec {
     int            code      = 0;          // keypad code (0 = none); locked + code => keypad door
     bool           withButton = true;      // place a linked wall button beside it
     float          tint[4]   = { 0.85f, 0.30f, 0.18f, 1.0f };  // door slab color
+    // Floor HATCH ("the door on the floor"): a horizontal slab lying flat in the
+    // floor that slides ASIDE to open (you pass DOWN through the opening). When set,
+    // `halfWidth` is the half-size of the SQUARE opening, `thickness` the slab's Y
+    // thinness, `height` is ignored, and the slab keeps its graybox box (no GLB).
+    bool           floorHatch = false;
 };
 
 // Build a generalized door (+ optional linked button) per `spec`, registering
