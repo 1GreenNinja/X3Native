@@ -19,8 +19,43 @@
 #include "engine/physics/IPhysicsWorld.h"
 
 #include <cstdint>
+#include <string_view>
 
 namespace x3::game {
+
+// Per-weapon FX look. The WeaponDef carries string FX-id hints (muzzleFx/impactFx);
+// the host maps those onto one of these via fxKindFromId() so each gun's muzzle
+// flash + impact read distinctly (color/size) instead of one shared generic burst.
+//   Default  : the original hot orange-white ballistic look (pistol-grade).
+//   Pistol   : the same ballistic look (an explicit alias so the roster is readable).
+//   Smg      : leaner/cooler ballistic — fast small sparks (auto bloom).
+//   Shotgun  : a WIDE, fat muzzle flash + a broad spark spray (heavy boom).
+//   Chaingun : hot + extra-sparky (a busy, glowing auto roar).
+//   Plasma   : BLUE energy — cool tint, soft round flash, no metal sparks.
+//   Lightning: electric CRACKLE — white-cyan, twitchy fast sparks (beam zap).
+enum class WeaponFxKind : uint8_t {
+    Default = 0,
+    Pistol,
+    Smg,
+    Shotgun,
+    Chaingun,
+    Plasma,
+    Lightning,
+};
+
+// Map a WeaponDef FX-id string (e.g. "muzzle_plasma", "impact_bullet") onto a
+// WeaponFxKind. Recognizes the substrings the roster uses; anything unknown ->
+// Default. Pure + header-inline so both the host and tests can call it.
+inline WeaponFxKind fxKindFromId(std::string_view id) {
+    auto has = [&](std::string_view s) { return id.find(s) != std::string_view::npos; };
+    if (has("plasma"))    return WeaponFxKind::Plasma;
+    if (has("lightning")) return WeaponFxKind::Lightning;
+    if (has("chaingun"))  return WeaponFxKind::Chaingun;
+    if (has("shotgun"))   return WeaponFxKind::Shotgun;
+    if (has("smg"))       return WeaponFxKind::Smg;
+    if (has("pistol"))    return WeaponFxKind::Pistol;
+    return WeaponFxKind::Default;
+}
 
 // ---- Tracer tuning ----
 // How long (seconds) a shot tracer beam stays visible. Long enough to actually
@@ -74,11 +109,19 @@ public:
     // existing combat hooks (weapon fire, melee, monster hit/death). `dir` is the
     // shot/impact direction (need not be unit); `normal` is the surface normal.
 
-    // Muzzle flash burst at the muzzle, biased along the fire `dir` (additive).
+    // Muzzle flash burst at the muzzle, biased along the fire `dir` (additive). The
+    // default overload keeps the original hot-orange ballistic look; the `kind`
+    // overload tints + scales the burst per weapon (plasma blue, shotgun wide,
+    // lightning crackle, ...) so each gun reads distinctly. The default forwards to
+    // kind=Default, so existing callers (melee/monster) are unchanged.
     void spawnMuzzleFlash(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir);
+    void spawnMuzzleFlash(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir, WeaponFxKind kind);
     // Bullet hit on a hard surface: a cone of additive sparks + an alpha dust puff,
     // sprayed back along the surface `normal`. Also drops a scorch DECAL at the hit.
+    // The `kind` overload tints the sparks per weapon (plasma = blue energy splash,
+    // lightning = white-cyan, etc.); the default keeps the original metal-spark look.
     void spawnImpact(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal);
+    void spawnImpact(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal, WeaponFxKind kind);
     // Hit on an enemy: a short spray of dark-red alpha blood along the shot `dir`.
     void spawnBlood(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir);
     // Enemy death: a burst of debris chunks (alpha, gravity) + a lingering smoke
