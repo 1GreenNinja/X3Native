@@ -12,12 +12,14 @@
 #include "spire_top.h"     // self-test composes the F7 finale to derive the descent gate
 #include "asset_root.h"
 #include "headless_device.h"
+#include "mesh_prims.h"    // makeBox — the Salvari-cave graybox + crystal props
 
 #include "engine/core/x3_log.h"
 
 #include <cmath>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace x3::game {
 
@@ -27,14 +29,28 @@ namespace {
 // use) — added to the sub-level base Y so a placement lands on the plate, not the ground.
 constexpr float kEnemyYOff = 0.4f;
 
-// The three sub-levels stack DOWNWARD below B1 (whose base Y is 0), 5 m apart like the
-// Spire floors (kFloorSpacing). SL1 sits one floor below B1, SL2 two below, SL3 three
-// below. They are NOT elevator stops (the hidden descent is off the main floor list).
+// The three sub-levels stack DOWNWARD FAR below B1 (whose base Y is 0) at the REAL canon
+// depth (X3_WORLD_BLUEPRINT §2.1/§2.5: "SUB hidden = Y≈-170"; the caves at Y≈-178). The
+// old graybox put them at -5/-10/-15 (a token descent); they now sit at the real -170 m
+// band, a deep hidden vertical drop reached only via the gated hidden lift behind the
+// executive desk. SL1 is the topmost (-170, just below the facility), SL2 below it, SL3
+// the deepest at the -178 m cave horizon (where the Salvari crystals sing — see
+// kCaveBaseY / buildCaves). They are NOT elevator stops (the hidden descent is off the
+// main floor list); the descent volume drops the player the full ~170 m.
 constexpr float kSubBaseY[(uint32_t)SpireSubLevel::Count] = {
-    -1.0f * kFloorSpacing,   // SL1 Waste Disposal      (y = -5)
-    -2.0f * kFloorSpacing,   // SL2 Cryogenic Storage   (y = -10)
-    -3.0f * kFloorSpacing,   // SL3 Enhanced Interrogation (y = -15)
+    -170.0f,   // SL1 Waste Disposal          (Y = -170; the canon "SUB hidden" plane, just below F1)
+    -174.0f,   // SL2 Cryogenic Storage       (Y = -174; The Frozen Collective)
+    -178.0f,   // SL3 Enhanced Interrogation  (Y = -178; the cave horizon — Dr. Chen + the Salvari caves)
 };
+
+// ---- §2.5(a) THE SALVARI CAVES (Y≈-178). Authored FRESH per the blueprint (NOT in the
+// SRC trove): the -178 m cave story beat that adjoins SL3 — singing/lore "Salvari crystals"
+// with alien markings, an emissive graybox grotto carved off the deepest sub-level. We
+// build it as collision graybox (a cavern slab + perimeter + a cluster of glowing crystal
+// props) at the cave horizon, WEST of (off) the SL3 combat spine so it reads as a discovered
+// side-grotto. Hidden + inert with the rest of the sub-levels until the descent opens.
+// (kCaveBaseY / kSalvariCrystalCount are declared in the header for the inline cave queries.)
+constexpr float kCaveCeil = 9.0f;         // tall echoing grotto
 
 // Portable converted-GLB root (same lazy resolve SpireTopFloors uses for the door mesh
 // swap). The roster tunings carry their own model dir; the Chen captive build needs the
@@ -93,6 +109,31 @@ MonsterSystem::Tuning chenLostBossTuning(std::string_view modelDir) {
     bt.standUpZtoY      = false;
     bt.modelScale       = 1.35f;
     return bt;
+}
+
+// ---- A world-baked graybox box (render mesh + optional static collision + optional HDR
+// emissive glow) for the Salvari caves. Mirrors club1127's addBox (Tim's own pattern) —
+// geometry authored in WORLD space (identity transform). `emissive` may be null (no glow).
+// Returns the scene entity id so the caller can toggle its visibility on descent-open.
+uint32_t addCaveBox(Scene& scene, x3::rhi::IRenderDevice& device,
+                    x3::phys::IPhysicsWorld& physics,
+                    float cx, float cy, float cz, float hx, float hy, float hz,
+                    const float color[4], const float emissive[4], bool collide,
+                    bool visible) {
+    x3::prims::PrimMesh geo = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, 0.5f);
+    Entity e;
+    // ALWAYS build the render mesh so visibility can be TOGGLED later (revealed on
+    // descent-open); `visible` only sets the initial draw flag.
+    e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                               geo.index.data(), (uint32_t)geo.index.size());
+    for (int i = 0; i < 4; ++i) e.baseColor[i] = color[i];
+    if (emissive) for (int i = 0; i < 4; ++i) e.emissive[i] = emissive[i];
+    e.tag = (uint32_t)Tag::Static;
+    e.visible = visible;
+    if (collide)
+        e.body = physics.addStaticMesh(geo.cverts.data(), (uint32_t)(geo.cverts.size() / 3),
+                                       geo.cindex.data(), (uint32_t)geo.cindex.size());
+    return scene.add(e);
 }
 
 } // namespace
@@ -276,6 +317,18 @@ void SpireSubLevels::build(Scene& scene, x3::rhi::IRenderDevice& device,
                      (uint32_t)SpireSubTrigger::SL3Hub, true);
     }
 
+    // ===================================================================
+    // THE SALVARI CAVES (§2.5(a)) — the Y≈-178 m cave story beat, authored FRESH (NOT in
+    // the SRC trove). A glowing grotto carved off the WEST (-X) end of the deepest sub-level
+    // (SL3, Y=-178), reached as a discovered side-cavern: singing/lore "Salvari crystals"
+    // with alien markings. Built as collision graybox (a cavern floor slab + a perimeter
+    // ring + a tall echoing cap) PLUS a cluster of HDR-EMISSIVE crystal shards (the singing
+    // crystals) and a small "alien-markings" obelisk. The render meshes start INVISIBLE +
+    // are revealed in openDescent() (consistent with the rest of the hidden sub-levels);
+    // collision is always present. Read by the HUD + the self-test via the cave queries.
+    // ===================================================================
+    buildCaves(scene, device, physics, b1);
+
     // The hidden-lift DESCENT trigger volume — at B1's elevator/spine arrival, sized to
     // catch a player who steps into the hidden lift behind the executive desk. We REMEMBER
     // its bounds here but DO NOT register it yet: it is added to the host's TriggerSystem
@@ -292,6 +345,64 @@ void SpireSubLevels::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 "(4 enemies + hazard, code 8100), SL2 Cryo Storage (3 escort + 'The Frozen "
                 "Collective' mini-boss, code 8200), SL3 Enhanced Interrogation (3 guards + "
                 "Dr. Chen captive [gated], code 8300). Descent NOT armed until openDescent().");
+}
+
+void SpireSubLevels::buildCaves(Scene& scene, x3::rhi::IRenderDevice& device,
+                                x3::phys::IPhysicsWorld& physics, const L1RoomDef& b1) {
+    // The grotto sits at the cave horizon (Y=-178, == SL3 base) off the WEST (-X) end of the
+    // SL3 plate, beyond the combat spine (SL3 content lives at x in [3,12]). The cavern is a
+    // ~24 x 22 m chamber centered west of the spine; collision is always present, render
+    // meshes start INVISIBLE (revealed on openDescent).
+    const float cy   = kCaveBaseY;
+    const float cavCx = b1.x0 + 6.0f;   // west of the SL3 combat spine, inside B1's borrowed footprint
+    const float cavCz = 0.0f;
+    const float cavHX = 12.0f, cavHZ = 11.0f;
+
+    const float rock[4]      = { 0.30f, 0.32f, 0.40f, 1.0f };   // dim cavern rock
+    const float crystalCol[4]= { 0.45f, 0.85f, 0.95f, 1.0f };   // Salvari cyan
+    const float crystalGlow[4]= { 0.35f, 1.10f, 1.40f, 2.6f };  // HDR emissive (bloom source) — the "singing" glow
+    const float obeliskCol[4]= { 0.55f, 0.50f, 0.70f, 1.0f };   // alien-markings obelisk
+    const float obeliskGlow[4]= { 0.70f, 0.55f, 1.20f, 1.8f };  // faint violet glyph glow
+
+    // Cavern floor slab + perimeter ring + a tall echoing cap (collision graybox).
+    m_caveEntities.push_back(addCaveBox(scene, device, physics, cavCx, cy - 0.1f, cavCz,
+                                        cavHX, 0.1f, cavHZ, rock, nullptr, true, false));   // floor
+    m_caveEntities.push_back(addCaveBox(scene, device, physics, cavCx, cy + kCaveCeil, cavCz,
+                                        cavHX, 0.2f, cavHZ, rock, nullptr, true, false));   // cap
+    // Four perimeter walls (a sealed grotto — the lift/SL3 connects at the +X mouth which
+    // the SL3 spine already opens onto; the ring just bounds the cavern).
+    m_caveEntities.push_back(addCaveBox(scene, device, physics, cavCx - cavHX, cy + kCaveCeil*0.5f, cavCz,
+                                        0.3f, kCaveCeil*0.5f, cavHZ, rock, nullptr, true, false)); // -X
+    m_caveEntities.push_back(addCaveBox(scene, device, physics, cavCx, cy + kCaveCeil*0.5f, cavCz - cavHZ,
+                                        cavHX, kCaveCeil*0.5f, 0.3f, rock, nullptr, true, false)); // -Z
+    m_caveEntities.push_back(addCaveBox(scene, device, physics, cavCx, cy + kCaveCeil*0.5f, cavCz + cavHZ,
+                                        cavHX, kCaveCeil*0.5f, 0.3f, rock, nullptr, true, false)); // +Z
+
+    // The SINGING SALVARI CRYSTALS: kSalvariCrystalCount emissive shards in a loose cluster
+    // across the cavern floor (jittered, varied heights). Each is a glowing collision shard.
+    // We remember the cluster center + count for the HUD/self-test.
+    const float jitterX[kSalvariCrystalCount] = { -7.0f, -3.0f,  1.0f,  4.0f, -5.0f,  6.0f, -1.0f };
+    const float jitterZ[kSalvariCrystalCount] = { -4.0f,  3.0f, -6.0f,  2.0f,  6.0f, -2.0f, -8.0f };
+    const float heights [kSalvariCrystalCount] = { 2.2f,  3.0f,  1.6f,  2.6f,  3.4f,  1.9f,  2.8f };
+    float sumX = 0.0f, sumZ = 0.0f;
+    for (int i = 0; i < kSalvariCrystalCount; ++i) {
+        const float sx = cavCx + jitterX[i];
+        const float sz = cavCz + jitterZ[i];
+        const float sh = heights[i];
+        m_caveEntities.push_back(addCaveBox(scene, device, physics, sx, cy + sh * 0.5f, sz,
+                                            0.45f, sh * 0.5f, 0.45f, crystalCol, crystalGlow, true, false));
+        sumX += sx; sumZ += sz;
+    }
+    // The alien-markings obelisk (lore beat) at the cavern's far -X focal point.
+    m_caveEntities.push_back(addCaveBox(scene, device, physics, cavCx - 9.0f, cy + 2.0f, cavCz,
+                                        0.7f, 2.0f, 0.7f, obeliskCol, obeliskGlow, true, false));
+
+    m_cavesPresent = true;
+    m_salvariCrystalCenter = x3::phys::Vec3{ sumX / (float)kSalvariCrystalCount, cy,
+                                             sumZ / (float)kSalvariCrystalCount };
+    x3::logInfo("SpireSubLevels: Salvari caves authored at Y=-178 (hidden) — " +
+                std::to_string(kSalvariCrystalCount) +
+                " singing crystals + alien-markings obelisk (revealed on descent-open).");
 }
 
 bool SpireSubLevels::openDescent(bool cloneFallen, bool sarahSaved) {
@@ -319,6 +430,15 @@ void SpireSubLevels::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physi
     // HIDDEN/INERT until the descent is opened: nothing in the sub-levels moves, the
     // hazard does not bite, and Chen's clock cannot run. This is the load-time state.
     if (!m_descentOpen) return;
+
+    // One-shot REVEAL of the Salvari caves the first tick after the descent opens (the
+    // cave render meshes were built invisible; collision was always present). Flipping
+    // here keeps openDescent()'s signature stable (no Scene& needed there).
+    if (!m_cavesRevealed) {
+        for (uint32_t id : m_caveEntities)
+            if (id < scene.size()) scene.get(id).visible = true;
+        m_cavesRevealed = true;
+    }
 
     // Keypad doors animate (only meaningful once the player is down here).
     m_doors.update(dt, scene, physics);
@@ -555,6 +675,35 @@ bool runSubLevelsSelfTest() {
               "S1 descent HIDDEN at load (closed, hazard inert, Chen captive, no descent trigger armed)");
     }
 
+    // ---- REAL canon depth (§2.1/§2.5): the sub-levels sit at the -170 m band (NOT the old
+    // -5/-10/-15), descending SL1 > SL2 > SL3, below B1's base, with SL3 at the -178 cave
+    // horizon. The plan baseY is the single source of truth (auto-follows kSubBaseY). ----
+    {
+        const float b1y = layout.floorBaseY[(uint32_t)L1Floor::B1];
+        const float s1y = sub.plan(SpireSubLevel::SL1).baseY;
+        const float s2y = sub.plan(SpireSubLevel::SL2).baseY;
+        const float s3y = sub.plan(SpireSubLevel::SL3).baseY;
+        bool atCanonDepth = std::fabs(s1y - (-170.0f)) < 1e-3f &&
+                            std::fabs(s2y - (-174.0f)) < 1e-3f &&
+                            std::fabs(s3y - (-178.0f)) < 1e-3f;
+        bool descending = s1y < b1y && s2y < s1y && s3y < s2y;   // far below B1, monotonically deeper
+        bool deepDrop   = (b1y - s1y) > 160.0f;                  // the hidden lift drops the full ~170 m
+        check(atCanonDepth && descending && deepDrop,
+              "S1b sub-levels at the REAL -170 m band (SL1=-170, SL2=-174, SL3=-178; was -5/-10/-15)");
+    }
+
+    // ---- §2.5(a) Salvari caves authored at the -178 m horizon, PRESENT but HIDDEN at load
+    // (render meshes invisible until the descent opens + the first tick reveals them). ----
+    {
+        bool present = sub.cavesPresent() && !sub.cavesRevealed() &&
+                       sub.salvariCrystalCount() == (uint32_t)kSalvariCrystalCount &&
+                       std::fabs(sub.caveBaseY() - (-178.0f)) < 1e-3f;
+        // The crystal cluster sits at the cave horizon (Y=-178).
+        bool atHorizon = std::fabs(sub.salvariCrystalCenter().y - (-178.0f)) < 1e-3f;
+        check(present && atHorizon,
+              "S1c Salvari caves authored at Y=-178 (7 singing crystals) — present but HIDDEN at load");
+    }
+
     // ---- Inert ticking at load: many frames change nothing; Chen never starts/ends. ----
     {
         TestSink sink; sink.hp = 100;
@@ -605,6 +754,15 @@ bool runSubLevelsSelfTest() {
         // Idempotent: a second open is a no-op (still open).
         check(!sub.openDescent(true, true) && sub.descentOpen(),
               "S6 openDescent is idempotent (second call no-op)");
+    }
+
+    // ---- §2.5(a) The Salvari caves REVEAL the first tick after the descent opens (the
+    // render meshes flip visible; the cave entities are now drawn by the scene). ----
+    {
+        bool hiddenBeforeTick = !sub.cavesRevealed();
+        sub.tick(kFixedDt, scene, *physics, layout.spawn, layout.spawn, nullptr, AttackFxFn{});
+        check(hiddenBeforeTick && sub.cavesRevealed() && sub.cavesPresent(),
+              "S6b Salvari caves REVEALED on the first post-descent tick (singing crystals lit)");
     }
 
     // ---- Once OPEN: SL1/SL2/SL3 built with expected counts + role split. ----

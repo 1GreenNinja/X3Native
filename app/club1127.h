@@ -1,35 +1,56 @@
 #pragma once
-// Club 1127 + the flooded cave/tunnel network (EFLZ secret hub, lore code 1127).
+// Club 1127 — "THE DEEP". Tim's real ~4,000 sq ft underground Miami nightclub,
+// ported forward to native C++/Vulkan from his OWN Babylon game module
+// (Q3Engine/src/world/x3-club1127.js — Tim's IP, NOT id Tech). The hidden club at
+// the bottom of the EFLZ Spire, reached via the elevator's DISCO descent (keypad
+// code 1127) down to Y=-200 (docs/design/X3_WORLD_BLUEPRINT.md §2.3).
 //
-// Game/slice code only — engine/ stays pure. A NEW self-contained area, kept
-// LOW-CONFLICT: it does NOT touch level1.cpp / the Spire. The host reaches it via
-// the `--world club` CLI flag (mirrors `--world terrain`); the in-game code-1127
-// entry from the Spire would hook here later (see club1127.cpp header notes).
+// Game/slice code only — engine/ stays pure. A self-contained area, kept
+// LOW-CONFLICT: it does NOT touch level1.cpp / elevator.* / the Spire. The host
+// reaches it via the `--world club` CLI flag (mirrors `--world terrain`); the
+// elevator's in-game 1127 disco descent wires the trip down + drops the player at
+// spawn() (this module just builds the room at Y=-200 + exposes the build/draw API).
 //
-// What it builds (canon — docs/MASTER_GAME_PLAN.md "Secrets & hubs" + the
-// EFLZ_SPIRE_7FLOOR spec §2b): a persistent NEON HUB — a multi-level club with a
-// central dance floor, raised catwalks/balconies, a bar with a fixer NPC + a
-// bouncer — then an ORGANIC flooded cave/tunnel network descending off the club:
-// a sloped entry tunnel, an irregular cavern (power core), a flooded section with
-// lurking sea creatures, a hidden boss arena, and lore-cache nooks.
+// What it builds (porting x3-club1127.js 1:1, real Club 1127 measurements):
+//   * MAIN SHELL — 50x100x30 ft room (15.24 x 30.48 x 9.14 m), floor at Y=-200.
+//   * ENGINE ROOM + LOUNGE — 2-story room on the north (-Z) side: a ground floor,
+//     a second-story lounge floor at 15 ft with a railing, and a 12-STEP STAIR up
+//     the west wall; glass swing doors + an inset alcove door into the main club.
+//   * SUSPENDED DJ BOOTH — elevated booth (turntables, mixer console, 2 OLED
+//     screens, a secured KEYPAD DOOR), hung on support brackets over the floor.
+//   * THE ORB — a 2 m mirror ball on a cable at the ceiling, 4 rotating colored
+//     spotlights + 4 ring lights orbiting it.
+//   * AERIAL BAR — neon-lit suspended bar beside the DJ booth, polished counter +
+//     safety railings + a magenta neon underglow.
+//   * GROUND BAR — counter along the west wall + 7 stools + a bar light.
+//   * DANCE FLOOR — full-club purple/dark checkerboard of glowing tiles.
+//   * PA RIG — 4x SVS PB16-Ultra subs (corners), 16x JBL JRX200 (8 stacked pairs)
+//     + 8 amps on the walls, 4x JBL 18" subs flanking the floor, 16x JBL surrounds.
+//   * 28 BLACKLIGHTS — 4 ft UV tubes on the walls at 10 ft intervals, pulsing.
+//   * TV MULTIPLEX — 6 screens (80/85/75/65/55/55") on a POE network.
+//   * VIP / COUCHES — black couches + end table (SE corner) + a VIP couch (SW).
 //
-// SHAPE/feel cribbed from the team's Babylon "LevelArchitect" walk-mode (cave +
-// tunnel materials, descending arched tunnels, glowing cave crystals each with a
-// small point light, emissive sconces). Box-engine approximation: many VARIED,
-// jittered boxes (size/height/angle) so the caves read as organic rock, not a
-// corridor; neon via the engine's forward point lights + emissive draws.
-//
-// Construction mirrors app/env_art.cpp + app/door.cpp:
+// Construction mirrors app/env_art.cpp + app/door.cpp + the prior club:
 //   * Geometry: x3::prims::makeBox -> device->createMesh (render) + physics->
 //     addStaticMesh (collision), registered as Scene entities (Tag::Static). The
-//     Scene draws/syncs them like any other static geometry.
-//   * Characters (bartender / bouncer / sharks / sea creatures): loaded + drawn +
-//     animated via MonsterSystem with damage 0 / chaseSpeed 0 (inert "props" that
-//     still skin + play their idle clip). A failed GLB load falls back to a box,
-//     so the area never breaks.
-//   * Lights: the world hands the host a vector<PointLight> (neon for the club,
-//     cool/teal for the caves, magenta accents) to push via setPointLights, plus
-//     emissive fixture/crystal meshes for bloom.
+//     Scene draws/syncs them like any other static geometry. Cylinders/spheres in
+//     the JS (turntables, stools, the ORB, blacklight tubes, cables) are
+//     approximated with boxes (the engine's primitive) — graybox-faithful.
+//   * Characters (a DJ behind the booth + a bouncer at the landing): loaded + drawn
+//     + animated via MonsterSystem with damage 0 / chaseSpeed 0 (inert "props" that
+//     still skin + play their idle clip). A failed GLB load falls back to a box, so
+//     the area never breaks.
+//   * Lights: the world hands the host a vector<PointLight> (neon magenta/cyan/
+//     violet + UV + the orbiting ring/spot lights + warm bar fills) to push via
+//     setPointLights, plus emissive fixture/tile/blacklight meshes for bloom.
+//   * Animation: the ORB spins, the spotlights orbit, the blacklights pulse — all
+//     ported from updateClub1127(); the lights ride the device's per-frame set.
+//
+// Performance (per the JS + §2.3): the entire club lives BELOW Y=-200, far from
+// any other world, so it is naturally distance-culled; emissive materials are
+// authored once (frozen) and the geometry is static. The ~80 m cull distance is
+// recorded for the host. Box counts are kept modest (merged-equivalent: one mesh
+// per fixture-class instance, low tessellation).
 
 #include "scene.h"
 #include "monster.h"
@@ -47,57 +68,99 @@ namespace x3::game {
 
 // Build result / handle for the Club 1127 area. Owns the inert character systems
 // (so their loaded GLB GPU handles stay alive for the app lifetime) and exposes
-// the spawn point + the neon/cave point-light set the host must apply.
+// the spawn point + the neon point-light set the host must apply, plus a small
+// fixture census the headless `--test-club` self-test asserts against.
 class Club1127World {
 public:
-    // Build the whole area (club room + cave/tunnel network) into `scene` /
-    // `physics`, uploading meshes through `device`. `modelDir` is the rigged-GLB
-    // root (G:/GameModels/rigged_glb) used for the bartender / bouncer / sea
-    // creatures. Call once. Idempotent guard: a second call is a no-op.
-    void build(Scene& scene, x3::rhi::IRenderDevice& device,
-               x3::phys::IPhysicsWorld& physics, std::string_view modelDir);
+    // The club's world Y (floor of the main room). Canon: Y = -200 (§2.3).
+    static constexpr float kClubY = -200.0f;
 
-    // Advance the animated characters one frame (skeletal idle playback). The
-    // club/cave geometry is fully static, so this only ticks the NPCs/creatures.
-    void update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics);
+    // Real Club 1127 main-room footprint (Tim's measurements; meters).
+    //   CW = 50 ft depth (east-west, X)    = 15.24 m
+    //   CL = 100 ft length (north-south, Z) = 30.48 m
+    //   CH = 30 ft ceiling                  =  9.14 m
+    static constexpr float kCW = 15.24f;   // X span (50 ft)
+    static constexpr float kCL = 30.48f;   // Z span (100 ft)
+    static constexpr float kCH = 9.14f;    // ceiling height (30 ft)
+    static constexpr float kCullDist = 80.0f;   // §2.3 distance cull (m)
 
-    // Advance the flooded-section water clock one frame and (re)apply the engine's
-    // REAL animated water to the device — Gerstner waves + Fresnel sky-reflection +
-    // sun glint at the flood surface Y (see app/main.cpp's --world ocean usage). The
-    // device caches WaterParams + re-applies them each frame, so this MUST be called
-    // every frame (with the live dt) so the surface actually animates. Call once per
-    // frame alongside update(), before beginFrame(). No-op until build() has run.
-    void tickWater(float dt, x3::rhi::IRenderDevice& device);
+    // A census of the fixtures the test asserts. Populated by build().
+    struct Stats {
+        int   entities      = 0;   // total Scene entities authored by the club
+        int   blacklights   = 0;   // 4 ft UV tubes (target: 28)
+        int   tvScreens     = 0;   // POE multiplex displays (target: 6)
+        int   stairSteps    = 0;   // engine-room stair steps (target: 12)
+        int   barStools     = 0;   // ground-bar stools (target: 7)
+        int   svsSubs       = 0;   // SVS PB16-Ultra corner subs (target: 4)
+        int   jblLineArray  = 0;   // JBL JRX200 cabinets (target: 16 = 8 pairs)
+        int   jbl18Subs     = 0;   // JBL PRO 18" subs (target: 4)
+        int   surrounds     = 0;   // JBL N26/S38 surrounds (target: 16)
+        int   couches       = 0;   // couch/VIP seating pieces (target: >=3)
+        bool  hasDjBooth    = false;
+        bool  hasDjTurntables = false;
+        bool  hasDjScreens  = false;   // 2 OLED screens on the booth
+        bool  hasKeypadDoor = false;   // DJ booth keypad door
+        bool  hasOrb        = false;   // the 2 m mirror ball
+        bool  hasAerialBar  = false;
+        bool  hasGroundBar  = false;
+        bool  hasLoungeFloor = false;  // 2nd-story engine-room lounge floor
+        bool  hasDanceFloor = false;   // checkerboard tiles
+        // Authored main-room floor center Y (asserted ~ -200) + footprint bounds.
+        float floorY        = 0.0f;
+        float roomMinX = 0.0f, roomMaxX = 0.0f;   // X extent of the main shell
+        float roomMinZ = 0.0f, roomMaxZ = 0.0f;   // Z extent of the main shell
+        float ceilingY      = 0.0f;               // authored ceiling slab center Y
+    };
 
-    // The flood surface world-Y (the sea level of the flooded cavern section).
-    float floodSurfaceY() const { return m_waterY; }
+    // Build the whole club into `scene` / `physics`, uploading meshes through
+    // `device`, at world Y = kClubY (-200). `modelDir` is the rigged-GLB root used
+    // for the DJ / bouncer character props. Call once. Idempotent: a second call is
+    // a no-op (returns the cached Stats).
+    const Stats& build(Scene& scene, x3::rhi::IRenderDevice& device,
+                       x3::phys::IPhysicsWorld& physics, std::string_view modelDir);
 
-    // Draw the loaded GLB characters (bartender, bouncer, sea creatures, boss).
-    // Call alongside scene.render() each frame, like Level1Game::drawWorldExtras.
+    // Advance the club one frame: spin the ORB, orbit the spotlights, pulse the
+    // blacklight emissive, and tick the inert character idle clips. Re-uploads the
+    // animated point-light set to the device (the orbiting spot/ring lights move),
+    // so this must be called every frame before beginFrame() in the live path.
+    void update(float dt, Scene& scene, x3::rhi::IRenderDevice& device,
+                x3::phys::IPhysicsWorld& physics);
+
+    // Draw the loaded GLB characters (DJ, bouncer). Call alongside scene.render()
+    // each frame, like Level1Game::drawWorldExtras.
     void drawCharacters(x3::rhi::IRenderDevice& device,
                         const x3::rhi::FrameContext& frame, const Scene& scene) const;
 
-    // Player spawn (feet position) — at the club entrance landing, facing the
-    // dance floor. The host poses the camera/character here.
+    // Player spawn (feet position) — at the elevator-entrance landing on the east
+    // wall, facing into the club toward the dance floor + DJ booth. The host poses
+    // the camera/character here (the elevator's disco descent drops the player in).
     x3::phys::Vec3 spawn() const { return m_spawn; }
 
     // A good fixed showcase camera pose for the headless screenshot: an elevated
-    // 3/4 vantage over the dance floor that frames the catwalks + bar, with the
-    // cave-mouth visible beyond. Fills the 5 floats (x,y,z,yaw,pitch).
+    // vantage over the dance floor that frames the DJ booth + the ORB + the bars.
+    // Fills the 5 floats (x,y,z,yaw,pitch).
     void showcaseCamera(float out[5]) const;
 
-    // The neon (club) + cool/teal (cave) point lights the host should apply with
-    // IRenderDevice::setPointLights once after build (static; re-uploaded each
-    // frame by the device). color[] is linear RGB premultiplied by intensity.
+    // The neon/UV/orbiting point lights the host should apply with
+    // IRenderDevice::setPointLights. STATIC ones are set once after build; the
+    // ORBITING spot/ring lights move each frame, so update() re-pushes the whole
+    // set — the host can also just push pointLights() once and call update().
     const std::vector<x3::rhi::PointLight>& pointLights() const { return m_lights; }
+
+    // The fixture census (valid after build()).
+    const Stats& stats() const { return m_stats; }
+
+    // Recommended cull distance (m): hide the club beyond this from the player.
+    float cullDistance() const { return kCullDist; }
 
     bool built() const { return m_built; }
 
 private:
-    // --- Geometry helpers (defined in the .cpp) ---
+    // --- Geometry helper (defined in the .cpp) ---
     // A solid static box (render mesh + Jolt collision + Scene entity), tinted,
-    // optionally emissive (for neon strips / crystals / fixtures). Center + half
-    // extents in world meters. Returns the new entity id.
+    // optionally emissive (for neon strips / tiles / blacklights / fixtures).
+    // Center + half extents in world meters (Y already offset to kClubY by the
+    // caller). `collide=false` for thin decorative inlays. Returns the entity id.
     uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device,
                     x3::phys::IPhysicsWorld& physics,
                     float cx, float cy, float cz, float hx, float hy, float hz,
@@ -105,25 +168,37 @@ private:
                     float uvScale = 1.0f);
 
     // Inert character prop: a MonsterSystem with damage 0 / chaseSpeed 0 that
-    // loads + draws + animates `modelFile`. Returns the system index in m_chars.
+    // loads + draws + animates `modelFile`. Appends to m_chars.
     void addCharacter(Scene& scene, x3::rhi::IRenderDevice& device,
                       x3::phys::IPhysicsWorld& physics, std::string_view modelDir,
                       const std::string& modelFile, const x3::phys::Vec3& pos,
                       float scale, bool standUpZtoY, const float tint[4]);
 
     bool                                          m_built = false;
+    Stats                                         m_stats{};
     x3::phys::Vec3                                m_spawn{};
-    // Flooded-section water: the surface world-Y (sea level) + the running wave
-    // animation clock advanced by tickWater(). Set in build()'s flooded section.
-    float                                         m_waterY = 0.0f;
-    float                                         m_waterTime = 0.0f;
     std::vector<x3::rhi::PointLight>              m_lights;
-    // Cached unique meshes/textures are owned by the device; we keep no GPU
-    // handles here beyond what the Scene entities + character systems hold.
+    // Count of STATIC lights at the front of m_lights; the orbiting spot/ring
+    // lights (the last kOrbit*) are rewritten each frame by update().
+    size_t                                        m_staticLightCount = 0;
+    // Scene-entity ids of the animated emissive blacklight tubes (their emissive
+    // pulses each frame) + the ORB (it spins) so update() can touch just those.
+    std::vector<uint32_t>                         m_blacklightEnts;
+    uint32_t                                       m_orbEnt = 0xFFFFFFFFu;
+    bool                                           m_orbValid = false;
+    float                                          m_orbY = 0.0f; // ORB center world-Y
+    // Running animation clock (seconds) advanced by update().
+    float                                         m_time = 0.0f;
+    // Inert character prop systems (own the GLB GPU handles for the app lifetime).
     std::vector<std::unique_ptr<MonsterSystem>>   m_chars;
-    // Per-character animation target position for update() (props track a far,
-    // unreachable point so they face a fixed direction and just idle in place).
-    std::vector<x3::phys::Vec3>                   m_charFace;
 };
+
+// Headless self-test for `--test-club`: build the club at Y=-200 with a stub
+// render/physics device (no window / no Vulkan), assert the key fixtures exist
+// (DJ booth + turntables + OLED + keypad door, the ORB, aerial + ground bar with 7
+// stools, the 12-step stair, the PA rig, 28 blacklights, 6 TVs, the dance floor,
+// the room footprint + Y=-200), tick a few frames, and confirm it is leak-clean.
+// Logs "club: X/Y passed" and returns true iff all pass. Lives in club1127.cpp.
+bool runClubSelfTest();
 
 } // namespace x3::game

@@ -436,6 +436,31 @@ public:
         // a simple, data-driven vulnerability beat. 0 (default) => no flash.
         float memoryFlashTime     = 0.0f;
         float memoryFlashDamageMul = 1.0f;  // damage multiplier while flashing (>1 = vulnerable)
+
+        // ---- Act-2 boss/enemy gimmicks (Wave 2). DATA-DRIVEN per-row hooks, all
+        // inert by default so Act-1 bosses and existing enemies are unchanged. ----
+        // START ALLIED (Salvari ally, L8+). When true, the spawned MonsterSystem is
+        // FLIPPED TO ALLIED at build time: m_allied = true, m_dmg forced to 0 so it
+        // cannot harm the player (matches the post-build convertToAllied() result).
+        // The host owns any re-tinting / re-targeting; the gameplay-state half of
+        // "this monster fights beside the player" is right here. False (default) =>
+        // normal hostile spawn (the Act-1 + existing roster behaviour, unchanged).
+        bool  startAllied         = false;
+
+        // COPY / FEINT phase descriptor (Memory Hunter, Act-2 L12). 0 (default) => no
+        // copy-phase. 1 / 2 / 3 nominate WHICH boss phase the copy/feint mechanic is
+        // active in (typically Phase2: the boss copies a previously-defeated enemy's
+        // moveset and feints — the bible's "memory warfare"). DATA-DRIVEN: this is a
+        // phase TAG the floor module reads (HUD + spawn the illusion adds); the boss
+        // machine itself does not implement the copy logic, only labels the phase.
+        uint32_t copyFeintPhase    = 0;
+
+        // ESCAPE TIMER (Planetary Garrison Commander, Act-2 L20 finale). When > 0,
+        // the boss broadcasts an "orbital strike" countdown the moment it enters
+        // Phase3: this many seconds before the strike lands. The floor module reads
+        // it to drive a HUD timer + the level-exit trigger ("escape or die"); the
+        // boss machine just carries the value. 0 (default) => no escape timer.
+        float escapeTimerSeconds   = 0.0f;
     };
 
     // Build the monster: load alien_crawler.glb from `modelDir` via a fresh
@@ -573,6 +598,19 @@ public:
     // flash, else 1). fire()/takeMeleeDamage() apply this automatically; exposed so
     // the host/self-test can observe the amplified-vulnerability beat.
     float incomingDamageMul() const { return inMemoryFlash() ? m_memoryFlashDamageMul : 1.0f; }
+
+    // ---- Act-2 boss tags (Wave 2) -----------------------------------------
+    // Memory Hunter (Act-2 L12): which phase runs the copy/feint gimmick (0 = none).
+    uint32_t copyFeintPhase() const { return m_copyFeintPhase; }
+    // True iff THIS boss is currently in its copy/feint phase (data tag only — the
+    // floor module owns the actual illusion spawns + HUD).
+    bool  inCopyFeintPhase() const {
+        return m_copyFeintPhase != 0 && (uint32_t)m_phase + 1u == m_copyFeintPhase;
+    }
+    // Garrison Commander (Act-2 L20): the configured orbital-strike timer (sec).
+    float escapeTimerSeconds() const { return m_escapeTimer; }
+    // True iff this boss carries an escape timer at all (data tag).
+    bool  hasEscapeTimer() const { return m_escapeTimer > 0.0f; }
 
     // ---- Combat-AI state (D-ai) -------------------------------------------
     // Current behaviour state + the heading (yaw, radians) the body is turning to.
@@ -763,6 +801,9 @@ private:
     float m_memoryFlashTime     = 0.0f;   // FE#7: flash duration per phase transition (s)
     float m_memoryFlashDamageMul = 1.0f;  // FE#7: incoming-damage mul while flashing
     float m_flashTimer          = 0.0f;   // >0 while in a memory-flash window (s)
+    // Act-2 boss tags carried as DATA (read by the floor module / HUD / self-test).
+    uint32_t m_copyFeintPhase   = 0;      // Memory Hunter: which boss phase runs copy/feint
+    float    m_escapeTimer      = 0.0f;   // Garrison Commander: P3 orbital-strike countdown (s)
 
     // Death "pop": when killed, m_alive flips false and the body is removed, but
     // m_dying stays true and m_deathPop counts down from kDeathPopTime while the
@@ -1138,5 +1179,100 @@ struct ScriptedFightHook {
 // Logs PASS/FAIL T#, prints "bosses: X/Y passed", returns true iff all pass. No
 // window / Vulkan. Lives in monster.cpp. Mirrors the other self-tests.
 bool runBossesSelfTest();
+
+// ===========================================================================
+// ACT-2 ENEMY + BOSS ROSTER (Wave 2). Alien-planet surface (Keth'zar Prime,
+// Levels 8-20). Pure DATA on top of the existing single-body multi-phase Boss
+// machine + the Tuning::startAllied / copyFeintPhase / escapeTimerSeconds tags
+// added for this wave. Read by act2_world.{h,cpp} (owned by another machine).
+//
+// Level map (EFLZ_MASTER_PLAN §Act 2 + EFLZ_WORLD_STRUCTURE §4):
+//   L8     Surface Emergence    — SURFACE PURSUIT DRONE (fast ranged flyer; escape).
+//   L9-10  Crystalline Desert   — NATIVE DESERT FAUNA   (crystal-shard predator).
+//   L11    Salvari Camp         — SALVARI ALLY          (refugee/companion, ALLIED).
+//   L12    Advanced Cave System — MEMORY HUNTER         (psychological/identity boss).
+//   L13-14 Toxic Swamplands     — MUTATED SCIENTIST     + MUTATED FLORA (stationary).
+//   L14    Research Station     — THE SIREN (Beta)      — transformed Aria.
+//   L16    Ruined Metropolis    — BREEDER QUEEN (Beta)  — transformed Keisha (summons).
+//   L20    The Spaceport        — PLANETARY GARRISON COMMANDER (3-phase finale).
+//
+// All HP/damage map to the combat:: bands relative to Martinez (Act-1 final ref
+// HP 340 / dmg 15) — NOT the bible's raw values — so each fight stays winnable
+// under the engine's iframe/cooldown budget.
+// ===========================================================================
+
+// Act-2 ENEMY rows (data-driven bestiary, mirrors EnemyType but in a separate
+// enum so the Act-1 roster + --test-bestiary stay unchanged).
+enum class Act2EnemyType : uint32_t {
+    SalvariAlly         = 0,  // L11 — refugee/companion, ALLIED (0 dmg to player)
+    NativeDesertFauna   = 1,  // L9-10 — crystalline-desert predator (neutral-or-hostile)
+    MutatedScientist    = 2,  // L13-14 — toxic-swamp hostile (chemical attacks)
+    MutatedFlora        = 3,  // L13-14 — toxic-swamp hostile, STATIONARY (lash reach)
+    SurfacePursuitDrone = 4,  // L8 — fast ranged flyer (escape encounter)
+    Count               = 5
+};
+
+// Human-readable Act-2 enemy name (logs / --test-act2bosses trace / HUD).
+const char* act2EnemyTypeName(Act2EnemyType t);
+
+// One row of the Act-2 enemy roster. Same shape as MonsterDef; kept separate so
+// the Act-1 EnemyType-keyed table stays single-sourced and ordered cleanly.
+struct Act2EnemyDef {
+    Act2EnemyType         type;
+    const char*           name;
+    MonsterSystem::Tuning tuning;
+};
+
+// The full Act-2 enemy table (one row per Act2EnemyType, in enum order). Built once.
+const std::vector<Act2EnemyDef>& act2EnemyDefs();
+// Fetch one row by enum id (asserts enum order; defensive linear fallback).
+const Act2EnemyDef& act2EnemyDef(Act2EnemyType t);
+// Convenience: a spawn-ready Tuning copy. Equivalent to act2EnemyDef(t).tuning.
+MonsterSystem::Tuning act2EnemyTuning(Act2EnemyType t);
+
+// Act-2 BOSS rows (single-body, ride the existing phase machine). Separate from
+// BossType so the Act-1 boss roster + --test-bosses stay unchanged.
+enum class Act2BossType : uint32_t {
+    MemoryHunter        = 0,  // L12 — psychological/identity gimmick (copy/feint phase)
+    TheSiren            = 1,  // L14 Beta — transformed Aria (sonic/psychic lure)
+    BreederQueen        = 2,  // L16 Beta — transformed Keisha (summons; tactical mind)
+    GarrisonCommander   = 3,  // L20 finale — troops -> mech-suit -> orbital-strike timer
+    Count               = 4
+};
+
+// Human-readable Act-2 boss name (logs / --test-act2bosses trace / HUD).
+const char* act2BossTypeName(Act2BossType t);
+
+// One row of the Act-2 boss roster (single-body, Boss-type Tuning). Same shape as
+// BossDef; kept in a separate enum/table so the Act-1 boss roster is unchanged.
+struct Act2BossDef {
+    Act2BossType          type;
+    const char*           name;
+    MonsterSystem::Tuning tuning;
+};
+
+// The full Act-2 boss table (one row per Act2BossType, in enum order). Built once.
+const std::vector<Act2BossDef>& act2BossDefs();
+const Act2BossDef& act2BossDef(Act2BossType t);
+MonsterSystem::Tuning act2BossTuning(Act2BossType t);
+
+// Headless self-test (--test-act2bosses, Act-2 roster + Wave-2 data hooks).
+// Asserts:
+//   (a) each of the 5 Act-2 enemy defs exists and BUILDS with sane stats; the
+//       Salvari ally reports allied==true AND attack damage == 0 (cannot harm
+//       the player); mutated flora is stationary (chaseSpeed == 0); the surface
+//       pursuit drone is a fast ranged flyer (ranged && flyer && fast chase).
+//   (b) each of the 4 Act-2 bosses exists with Boss-type stats + valid phase
+//       thresholds AND advances Phase1 -> Phase2 -> Phase3 on the HP machine.
+//   (c) Memory Hunter carries a copy/feint phase descriptor (copyFeintPhase>0)
+//       AND reports inCopyFeintPhase() once driven into that phase.
+//   (d) Garrison Commander has its 3 phases AND carries an escape-timer tag
+//       (escapeTimerSeconds > 0) that the floor module reads in P3.
+//   (e) Breeder Queen summons in P3 (phase3SummonCount > 0).
+//   (f) REGRESSION: Chief Martinez + all 3 single-body Act-1 bosses still build
+//       (Boss-type, table HP/damage, Phase1 at spawn).
+// Logs PASS/FAIL T#, prints "act2bosses: X/Y passed", returns true iff all pass.
+// No window / Vulkan. Lives in monster.cpp. Mirrors the other self-tests.
+bool runAct2BossesSelfTest();
 
 } // namespace x3::game
