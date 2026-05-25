@@ -3932,6 +3932,35 @@ int main(int argc, char** argv) {
                 const x3::game::Arsenal::WeaponState& shotWs = arsenal.currentState();
                 shm.weapon = shotWd.name.c_str();
                 shm.ammoInMag = shotWs.ammoInMag; shm.ammoReserve = shotWs.reserve;
+                // Feed the minimap RADAR + nameplates from the (capture) camera pose so
+                // the still shows the real radar: room outlines, any live enemy/ally
+                // blips, and head-anchored nameplates over on-screen hostiles.
+                shm.playerX = ssX; shm.playerZ = ssZ; shm.playerYaw = ssYaw;
+                shm.radarValid = true;
+                {
+                    x3::game::Level1Game::EnemyMark marks[x3::ui::HudModel::kMaxBlips];
+                    const uint32_t ne = game.liveEnemyMarks(marks, x3::ui::HudModel::kMaxBlips);
+                    shm.enemyCount = (int)ne;
+                    for (uint32_t e = 0; e < ne; ++e) {
+                        shm.enemyX[e] = marks[e].pos.x; shm.enemyY[e] = marks[e].pos.y;
+                        shm.enemyZ[e] = marks[e].pos.z; shm.enemyLabel[e] = marks[e].label;
+                    }
+                    x3::phys::Vec3 allies[x3::ui::HudModel::kMaxBlips];
+                    const uint32_t na = game.liveCompanionPositions(allies, x3::ui::HudModel::kMaxBlips);
+                    shm.allyCount = (int)na;
+                    for (uint32_t a = 0; a < na; ++a) { shm.allyX[a] = allies[a].x; shm.allyZ[a] = allies[a].z; }
+                    const x3::game::Level1Layout& slay = game.layout();
+                    auto addShotRoom = [&](const x3::phys::Vec3& c, const x3::phys::Vec3& hf) {
+                        if (shm.roomCount >= x3::ui::HudModel::kMaxRooms) return;
+                        const int r = shm.roomCount++;
+                        shm.roomCx[r] = c.x; shm.roomCz[r] = c.z; shm.roomHx[r] = hf.x; shm.roomHz[r] = hf.z;
+                    };
+                    addShotRoom(slay.cellCenter, slay.cellHalf);
+                    addShotRoom(slay.corridorCenter, slay.corridorHalf);
+                    addShotRoom(slay.armoryCenter, slay.armoryHalf);
+                    addShotRoom(slay.checkpointCenter, slay.checkpointHalf);
+                    addShotRoom(slay.arenaCenter, slay.arenaHalf);
+                }
                 shotHud.draw(shotUi, shm, dt);
                 shotUi.end();
             }
@@ -5279,6 +5308,55 @@ int main(int argc, char** argv) {
                     hm.weapon = wd.name.c_str();
                     hm.ammoInMag = ws.ammoInMag; hm.ammoReserve = ws.reserve;
                     hm.reloading = arsenal.isReloading();
+                }
+
+                // ---- Minimap RADAR + enemy NAMEPLATE feed ----------------------
+                // Player pose (radar center + heading). Use the noclip fly pose when
+                // free-flying so the radar tracks the camera, else the player camera.
+                {
+                    float rpx, rpy, rpz, rpyaw, rppitch;
+                    player.camera(rpx, rpy, rpz, rpyaw, rppitch);
+                    if (noclip) { rpx = flyX; rpy = flyY; rpz = flyZ; rpyaw = flyYaw; }
+                    hm.playerX = rpx; hm.playerZ = rpz; hm.playerYaw = rpyaw;
+                    hm.radarValid = true;
+
+                    // Live hostile marks (positions + short threat labels). The labels
+                    // are static string literals owned by Level1Game, so storing the
+                    // const char* in the (frame-scoped) HudModel is safe.
+                    x3::game::Level1Game::EnemyMark marks[x3::ui::HudModel::kMaxBlips];
+                    const uint32_t ne = game.liveEnemyMarks(marks, x3::ui::HudModel::kMaxBlips);
+                    hm.enemyCount = (int)ne;
+                    for (uint32_t i = 0; i < ne; ++i) {
+                        hm.enemyX[i] = marks[i].pos.x;
+                        hm.enemyY[i] = marks[i].pos.y;
+                        hm.enemyZ[i] = marks[i].pos.z;
+                        hm.enemyLabel[i] = marks[i].label;
+                    }
+
+                    // Live companion (rescued-victim) positions -> green pulsing blips.
+                    x3::phys::Vec3 allies[x3::ui::HudModel::kMaxBlips];
+                    const uint32_t na = game.liveCompanionPositions(allies, x3::ui::HudModel::kMaxBlips);
+                    hm.allyCount = (int)na;
+                    for (uint32_t i = 0; i < na; ++i) {
+                        hm.allyX[i] = allies[i].x;
+                        hm.allyZ[i] = allies[i].z;
+                    }
+
+                    // Faint room outlines: the B1 combat-zone rects (cell / corridor /
+                    // armory / checkpoint / arena) from the authored layout. XZ center
+                    // + half-extents; the HUD transforms them player-relative.
+                    const x3::game::Level1Layout& lay = game.layout();
+                    auto addRoom = [&](const x3::phys::Vec3& c, const x3::phys::Vec3& hf) {
+                        if (hm.roomCount >= x3::ui::HudModel::kMaxRooms) return;
+                        const int r = hm.roomCount++;
+                        hm.roomCx[r] = c.x; hm.roomCz[r] = c.z;
+                        hm.roomHx[r] = hf.x; hm.roomHz[r] = hf.z;
+                    };
+                    addRoom(lay.cellCenter,       lay.cellHalf);
+                    addRoom(lay.corridorCenter,   lay.corridorHalf);
+                    addRoom(lay.armoryCenter,     lay.armoryHalf);
+                    addRoom(lay.checkpointCenter, lay.checkpointHalf);
+                    addRoom(lay.arenaCenter,      lay.arenaHalf);
                 }
             }
             // Compose the UI input snapshot. Mouse position in framebuffer pixels;

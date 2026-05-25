@@ -286,6 +286,43 @@ public:
     // The canon F2 floor identity ("Medical Bay") for the HUD / objective text.
     const char* f2FloorName() const { return "Medical Bay"; }
 
+    // ---- HUD radar/nameplate feed (read-only world-position enumeration) ----
+    // One spot a hostile occupies on the radar / under a nameplate.
+    struct EnemyMark {
+        x3::phys::Vec3 pos;     // body-center world position
+        const char*    label;   // short threat label (enemy type / boss name)
+    };
+    // Write up to `cap` LIVE hostile positions+labels (corridor guards/drone,
+    // checkpoint guards, Phase-3 boss adds, Martinez, Dr. Chen) into `out`; returns
+    // the count written. Read-only: enumerates the existing monster groups, no state
+    // change. The host (main.cpp) feeds these into the HUD radar + enemy nameplates.
+    uint32_t liveEnemyMarks(EnemyMark* out, uint32_t cap) const {
+        uint32_t n = 0;
+        auto add = [&](const x3::phys::Vec3& p, const char* lbl) {
+            if (n < cap) { out[n].pos = p; out[n].label = lbl; ++n; }
+        };
+        auto addManager = [&](const MonsterManager& mm, const char* lbl) {
+            for (uint32_t i = 0; i < mm.count() && n < cap; ++i)
+                if (mm.at(i).alive()) add(mm.at(i).pos(), lbl);
+        };
+        addManager(m_corridor,   "HOSTILE");
+        addManager(m_checkpoint, "GUARD");
+        addManager(m_bossAdds,   "ADD");
+        if (m_martinezSpawned && m_martinez.alive()) add(m_martinez.pos(), "MARTINEZ");
+        if (m_chenSpawned) addManager(m_chen, "DR. CHEN");
+        return n;
+    }
+    // Write up to `cap` LIVE COMPANION (rescued victim) world positions into `out`;
+    // returns the count written. Read-only enumeration of the rescue system.
+    uint32_t liveCompanionPositions(x3::phys::Vec3* out, uint32_t cap) const {
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < m_rescue.victimCount() && n < cap; ++i) {
+            const RescueVictim& v = m_rescue.victim(i);
+            if (v.companion()) out[n++] = v.pos();
+        }
+        return n;
+    }
+
 private:
     // Map a door letter to its DoorSystem index (set in build()).
     uint32_t doorIndex(char letter) const;
