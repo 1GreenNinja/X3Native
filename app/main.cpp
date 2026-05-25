@@ -149,29 +149,50 @@ void drawHoloReadout(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
     const float halfPxW = halfPxH * (panelHalfW / panelHalfH);   // glass half-width in px
     const float innerW  = halfPxW * 2.0f * 0.90f;                // usable width inside the bezel
 
-    const auto& L = term.lines();
-    // Pick a body pixel size that (a) fits ~12 rows down the glass and (b) keeps the
-    // widest line within innerW. Start from the height budget, shrink to fit width.
-    const float lineH0 = (halfPxH * 2.0f) / 12.0f;
-    float bodyPx = lineH0 * 0.95f;
-    for (const std::string& ln : L) {
-        const float w = device.textAdvance(x3::rhi::FontRole::Menu, ln.c_str(), bodyPx);
-        if (w > innerW && w > 1.0f) bodyPx *= innerW / w;        // shrink to fit the widest line
-    }
-    if (bodyPx < 9.0f) bodyPx = 9.0f;
-    const float lineH  = bodyPx * 1.18f;
-    const float titlePx = bodyPx * 1.08f;
-    const float leftPx = sx - halfPxW * 0.90f;                   // left margin inside the bezel
-    const float totalH = lineH * (float)(L.size() + (showInput ? 1u : 0u));
-    float ty = sy - std::min(halfPxH * 0.92f, totalH * 0.55f);   // vertically centered-ish near top
+    // The procedural hologram texture now draws a full SECURITY-CONSOLE line-art HUD
+    // (header rule + emblem, bracket frame, center schematic, warning triangles, data
+    // bars, dotted strip). The on-glass TEXT composites WITH it, not over it:
+    //   * line 0 is the HEADER TITLE — drawn wide + bright across the top header strip,
+    //   * the remaining readout lines are the LEFT-column "live data text" — drawn
+    //     SMALLER and clipped to the left ~56% so the center schematic + right column
+    //     line-art stay readable (matching the reference composition).
     const float sh[4] = { 0.0f, 0.0f, 0.0f, 0.88f };
-    for (size_t li = 0; li < L.size(); ++li) {
-        const bool header = (li == 0);
-        const float px = header ? titlePx : bodyPx;
-        const float col[4] = { header ? 0.78f : 0.88f, 0.98f, 1.0f, 1.0f };  // bright cyan-white
-        const float off = std::max(1.5f, px * 0.07f);
-        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, L[li].c_str(), leftPx + off, ty + off, px, sh);
-        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, L[li].c_str(), leftPx, ty, px, col);
+    const float leftPx = sx - halfPxW * 0.88f;                   // left margin inside the bezel
+
+    const auto& L = term.lines();
+    if (L.empty()) return;
+
+    // ---- HEADER TITLE (line 0): sized to span most of the header strip width. ----
+    {
+        const float titleBudget = innerW * 0.96f;
+        float titlePx = halfPxH * 0.30f;                         // start tall
+        const float tw = device.textAdvance(x3::rhi::FontRole::Menu, L[0].c_str(), titlePx);
+        if (tw > titleBudget && tw > 1.0f) titlePx *= titleBudget / tw;
+        if (titlePx < 9.0f) titlePx = 9.0f;
+        const float ty = sy - halfPxH * 0.82f;                   // up on the header strip
+        const float col[4] = { 0.82f, 0.99f, 1.0f, 1.0f };       // bright cyan-white title
+        const float off = std::max(1.5f, titlePx * 0.07f);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, L[0].c_str(), leftPx + off, ty + off, titlePx, sh);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, L[0].c_str(), leftPx, ty, titlePx, col);
+    }
+
+    // ---- BODY readout (lines 1+) as the left-column data text. Constrain width to
+    // the left zone so it doesn't cross the center schematic. ----
+    const float bodyZoneW = innerW * 0.56f;                      // left data-column width
+    const float lineH0 = (halfPxH * 2.0f) / 13.0f;
+    float bodyPx = lineH0 * 0.86f;
+    for (size_t li = 1; li < L.size(); ++li) {
+        const float w = device.textAdvance(x3::rhi::FontRole::Menu, L[li].c_str(), bodyPx);
+        if (w > bodyZoneW && w > 1.0f) bodyPx *= bodyZoneW / w;  // shrink to the left zone
+    }
+    if (bodyPx < 8.0f) bodyPx = 8.0f;
+    const float lineH = bodyPx * 1.22f;
+    float ty = sy - halfPxH * 0.46f;                             // below the header, down the left column
+    for (size_t li = 1; li < L.size(); ++li) {
+        const float col[4] = { 0.80f, 0.97f, 1.0f, 1.0f };       // cyan-white data text
+        const float off = std::max(1.2f, bodyPx * 0.07f);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, L[li].c_str(), leftPx + off, ty + off, bodyPx, sh);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, L[li].c_str(), leftPx, ty, bodyPx, col);
         ty += lineH;
     }
     if (showInput) {
@@ -179,7 +200,7 @@ void drawHoloReadout(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
                                    (term.cursorOn() ? "_" : " ");
         const float ic[4] = { 1.0f, 0.92f, 0.32f, 1.0f };        // bright amber prompt
         const float ipx = bodyPx * 1.18f;
-        const float ioff = std::max(1.5f, ipx * 0.07f);
+        const float ioff = std::max(1.2f, ipx * 0.07f);
         device.drawHudTextF(frame, x3::rhi::FontRole::Menu, inLine.c_str(), leftPx + ioff, ty + ioff, ipx, sh);
         device.drawHudTextF(frame, x3::rhi::FontRole::Menu, inLine.c_str(), leftPx, ty, ipx, ic);
     }
