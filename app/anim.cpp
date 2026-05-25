@@ -472,6 +472,18 @@ uint32_t Skinner::computePalette(const x3::asset::Model& model, uint32_t clip,
     return jcount;
 }
 
+uint32_t Skinner::currentGlobals(const x3::asset::Model& model, uint32_t clip,
+                                 float timeSec, std::vector<float>& outGlobals) const {
+    if (!m_valid || clip >= m_clipDurations.size()) { outGlobals.clear(); return 0; }
+    // Wrap time over the clip duration (loop), same as computePalette().
+    float dur = m_clipDurations[clip];
+    float t = (dur > 1e-6f) ? std::fmod(timeSec, dur) : 0.0f;
+    if (t < 0) t += dur;
+    outGlobals.assign((size_t)m_nodeCount * 16, 0.0f);
+    computeGlobals(model, clip, t, outGlobals);
+    return m_nodeCount;
+}
+
 // ===========================================================================
 // Ragdoll blend — drive the skin from an external physics pose (Physics §2).
 // ===========================================================================

@@ -51,9 +51,11 @@
 #include "player.h"   // IDamageSink (enemies attack the player)
 #include "anim.h"     // J1: skeletal animation + CPU skinning runtime
 #include "cues.h"     // game-feel footstep / impact cue hooks
+#include "ragdoll.h"  // TASK#12: RagdollSkin (drive the skin from physics parts)
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
+#include "engine/physics/Ragdoll.h"  // TASK#12: IRagdoll (skinned death ragdoll)
 #include "engine/asset/IModelLoader.h"
 #include "engine/asset/IAssetSource.h"
 #include "engine/ai/INavigation.h"   // GENERAL navigation: route around walls (optional)
@@ -670,6 +672,24 @@ public:
     // removed, but the model is still being drawn (shrinking/flashing).
     bool dying() const { return m_dying; }
 
+    // ---- SKINNED DEATH RAGDOLL accessors (TASK#12, for the self-test) ------
+    // True while a physics ragdoll is driving the (rigged) corpse's skin instead of
+    // the legacy rigid topple. False for unrigged monsters (they topple) and after
+    // the ragdoll is torn down on corpse-expire.
+    bool ragdollActive() const { return m_ragdollActive; }
+    // The death ragdoll (null unless a skinned ragdoll was spawned). Lets the test
+    // read bone world transforms / inWorld() to assert the bones fall + tear down.
+    const x3::phys::IRagdoll* deathRagdoll() const { return m_deathRagdoll.get(); }
+    // The skinning runtime (for the death-ragdoll self-test to read lastPalette()).
+    const x3::anim::Skinner&  skinner() const { return m_skinner; }
+    // True if this monster bound a usable skeleton (drives the skinned-ragdoll path).
+    bool skinnable() const { return m_skinner.valid() && m_skinner.nodeCount() > 0; }
+    // Remove any live death-ragdoll bodies NOW (idempotent). The host should call this
+    // (via MonsterManager::shutdown) BEFORE tearing down the physics world if a monster
+    // could still be mid-flop, so the Jolt bodies are removed while the world is alive
+    // (mirrors RagdollDemo::shutdown). Harmless if no ragdoll is active.
+    void shutdownRagdoll() { clearDeathRagdoll(); }
+
     // ---- GENERAL navigation (optional) ------------------------------------
     // Give this monster a shared nav grid so it ROUTES AROUND walls/obstacles
     // instead of beelining into them. When set, the Advance/Search states steer
@@ -698,6 +718,19 @@ private:
     // `tint` multiplied into each primitive's base color (for the hit-flash).
     void drawMonsterAt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                        const float model[16], const float tint[4]) const;
+
+    // ---- SKINNED DEATH RAGDOLL helpers (TASK#12) --------------------------
+    // Try to spawn the physics ragdoll at the kill moment (rigged models only). On
+    // success m_deathRagdoll is built+added to `physics` with a death impulse and
+    // m_ragdollActive becomes true. On a non-skinnable model it is a no-op (the
+    // legacy rigid topple draws instead). `shove` is the existing topple's directional
+    // hit (world dir; may be zero).
+    void spawnDeathRagdoll(x3::phys::IPhysicsWorld& physics, const x3::phys::Vec3& shove);
+    // Per-frame: read the ragdoll bone world transforms, map them onto the skin nodes
+    // and feed the Skinner's external-pose path so the model flops with the bones.
+    void driveSkinFromRagdoll();
+    // Remove the ragdoll bodies (corpse cleanup). Idempotent. Leaves the corpse drawable.
+    void clearDeathRagdoll();
 
     // Loaded model + its draw records (one per primitive). Loader kept alive so the
     // GPU handles in m_drawables stay valid for the app's lifetime.
@@ -813,6 +846,27 @@ private:
     float m_deathPop  = 0.0f;                 // remaining topple time (s) while m_dying
     bool  m_corpse    = false;                // topple finished -> lingering body on the floor
 
+    // ---- SKINNED DEATH RAGDOLL (TASK#12) ----------------------------------
+    // On the KILL of a RIGGED monster (m_skinner.valid()) we build a physics
+    // ragdoll from the canonical humanoid rig, positioned/yawed/scaled to match the
+    // monster, and add it to the shared world with a death impulse. Each frame while
+    // m_dying we step is driven by the host, read the bone WORLD transforms out, map
+    // them onto the model's skin nodes (RagdollSkin, rigid-attach) and feed the
+    // result to the Skinner's external-pose path (applyExternalGlobals) so the GPU-
+    // skinned MODEL flops physically. The ragdoll is torn down (bodies removed) when
+    // the corpse settles / times out — no leaked Jolt bodies. If the model has no
+    // usable skeleton, m_deathRagdoll stays null and the legacy rigid TOPPLE draws.
+    std::unique_ptr<x3::phys::IRagdoll>      m_deathRagdoll;   // null => no skinned ragdoll
+    RagdollSkin                              m_ragdollSkin;    // rigid bone->skin driver
+    std::vector<x3::phys::RagdollBoneDesc>   m_ragdollBones;   // the rig the ragdoll was built from
+    std::vector<float>                       m_ragPartInit;    // per-bone INIT skin-local 4x4 (boneCount*16)
+    std::vector<float>                       m_ragWorldScratch;// per-bone CURRENT world 4x4 scratch
+    std::vector<float>                       m_ragPartCur;     // per-bone CURRENT skin-local 4x4 scratch
+    std::vector<float>                       m_ragNodeGlobals; // RagdollSkin output (nodeCount*16)
+    float                                    m_deathModelInv[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; // inverse of the frozen death model matrix
+    bool                                     m_ragdollActive = false; // a skinned ragdoll is driving the skin
+    bool                                     m_ragdolled     = false; // this corpse FLOPPED via ragdoll (skip the rigid topple draw)
+
     // Current yaw (radians) the model faces; baked into the render 3x3 each frame.
     float m_yaw       = 0.0f;
 
@@ -883,6 +937,12 @@ public:
     // Number of monsters still alive (not dead). Used for objective/door gating.
     uint32_t aliveCount() const;
 
+    // Remove any live death-ragdoll bodies across ALL monsters (idempotent). Call
+    // BEFORE the physics world is shut down if a monster could be mid-flop on quit,
+    // so no Jolt ragdoll bodies are touched after the world is gone. Safe to call any
+    // time; a no-op when nothing is ragdolling.
+    void shutdown();
+
     // Advance every monster one frame (hit-flash decay, death-pop, chase, boss
     // phase machine, and — if `target` is non-null — attacks against the player on
     // cooldown). `fx`, if set, spawns a visible attack beam per attack (drone
@@ -926,6 +986,16 @@ private:
 // away does no damage), T4 (firing when NOT armed does nothing). Logs PASS/FAIL
 // T#, returns true iff all pass. No window/Vulkan. Mirrors the S4/S5 self-tests.
 bool runCombatSelfTest();
+
+// Headless self-test (--test-deathragdoll, TASK#12). Builds a physics world + a
+// RIGGED monster + a Scene, kills it, and asserts: (D1) the kill spawns a skinned
+// death ragdoll (ragdollActive()); (D2) its bones FALL under gravity over the
+// death window (top bone Y drops); (D3) the monster's Skinner receives the external
+// ragdoll pose (the joint palette diverges from the static animated palette); and
+// (D4) the ragdoll is TORN DOWN on corpse-expire (ragdollActive() false, ragdoll
+// removed from the world — no leaked bodies). Logs PASS/FAIL D#, returns true iff
+// all pass. No window/Vulkan (headless skin path). Lives in monster.cpp.
+bool runDeathRagdollSelfTest();
 
 // Headless self-test (--test-phase2b, EFLZ Phase 2b). Asserts:
 //   (a) a super-strength melee damages an enemy in FRONT but not one BEHIND / out

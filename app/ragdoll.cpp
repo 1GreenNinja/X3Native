@@ -108,6 +108,20 @@ bool RagdollSkin::bind(const x3::asset::Model& model) {
     return true;
 }
 
+bool RagdollSkin::bindFromGlobals(const x3::asset::Model& model,
+                                  const float* nodeGlobals, uint32_t nodeCount) {
+    m_nodeCount = (uint32_t)model.nodes.size();
+    m_assign.clear();
+    if (m_nodeCount == 0 || !nodeGlobals || nodeCount != m_nodeCount) {
+        // Fall back to the static bind pose so we never leave the skin unbound.
+        return bind(model);
+    }
+    // Seed the reference globals directly from the supplied (current animated) pose.
+    m_bindGlobal.assign((size_t)m_nodeCount * 16, 0.0f);
+    std::memcpy(m_bindGlobal.data(), nodeGlobals, (size_t)m_nodeCount * 16 * sizeof(float));
+    return true;
+}
+
 void RagdollSkin::mapToParts(const float* partInit, uint32_t partCount) {
     if (m_nodeCount == 0 || !partInit || partCount == 0) return;
     m_partCount = partCount;

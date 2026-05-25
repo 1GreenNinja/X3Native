@@ -119,6 +119,21 @@ public:
     // Node count the skinner was bound over (for the caller sizing nodeGlobals).
     uint32_t nodeCount() const { return m_nodeCount; }
 
+    // Snapshot the CURRENT animated per-node GLOBAL (model-space) matrices at
+    // (clip, timeSec) into `outGlobals` (nodeCount*16, column-major). This is the
+    // SAME pose the next apply()/computePalette() would draw — the death ragdoll
+    // (TASK#12) captures it as the seamless starting pose so the model flops from
+    // exactly where the animation left off. Returns the node count (0 if !valid()).
+    uint32_t currentGlobals(const x3::asset::Model& model, uint32_t clip, float timeSec,
+                            std::vector<float>& outGlobals) const;
+
+    // The joint palette (jointCount*16, column-major) most recently built by apply()/
+    // applyLocomotion()/applyExternalGlobals()/applyRagdollBlend(). Lets a test assert
+    // that the external (ragdoll) pose actually reached the Skinner — i.e. the palette
+    // CHANGED away from the animated pose once the ragdoll drove it. Empty until the
+    // first apply. Read-only snapshot of the internal scratch.
+    const std::vector<float>& lastPalette() const { return m_palette; }
+
     // ======================================================================
     // Ragdoll blend — drive the skin from an EXTERNAL physics pose (Physics §2).
     // ======================================================================

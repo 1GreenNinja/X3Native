@@ -36,6 +36,16 @@ public:
     // node local TRS down the hierarchy. Returns false if the model has no nodes.
     bool bind(const x3::asset::Model& model);
 
+    // As bind(), but seed the reference globals from a CALLER-supplied set of per-node
+    // GLOBAL (model/skin space) matrices (`nodeGlobals` = nodeCount*16, column-major)
+    // instead of the static bind pose — e.g. the animation's CURRENT pose, captured via
+    // anim::Skinner::currentGlobals(). The rigid bone->skin delta is then identity at
+    // frame 0, so a death ragdoll (TASK#12) flops SEAMLESSLY from exactly where the
+    // animation left off (no one-frame pop to bind pose). `nodeCount` must match the
+    // model's node count. Returns false on mismatch / empty model.
+    bool bindFromGlobals(const x3::asset::Model& model,
+                         const float* nodeGlobals, uint32_t nodeCount);
+
     // Assign every node to the nearest part by bind-pose node position. `partInit`
     // = each part's initial (bind-time) skin-space 4x4 (count*16, column-major) —
     // its center is used for the nearest test and as the rigid-delta reference.
