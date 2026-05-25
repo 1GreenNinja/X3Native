@@ -109,6 +109,14 @@ public:
     // onto audio/FX. Stored so on-beat spawns inherit it; call after build(). See cues.h.
     void setCueSink(const GameCueFn& sink);
 
+    // Optional: wire a DEATH FX sink (gib burst) onto every enemy group — current AND
+    // future spawns (corridor / checkpoint / Martinez / boss adds / Chen). The monster
+    // fires it ONCE the instant it is KILLED (HP->0), passing its body-center world
+    // position + a flying flag. The host turns it into the gib explosion (GPU debris +
+    // blood). Empty => no extra death FX (the topple/corpse path is unchanged). Stored
+    // so on-beat spawns inherit it; call after build(). See app/monster.h DeathFxFn.
+    void setDeathFxSink(const DeathFxFn& sink);
+
     // Cache the render device so tick() can spawn enemies on their beats (those
     // need to create GPU meshes for the crawler model). build() also records it,
     // but this lets the host/test set it explicitly. The pointer must outlive the
@@ -368,6 +376,7 @@ private:
 
     Level1Audio    m_audio;
     GameCueFn      m_cueSink;       // game-feel footstep/impact sink (fanned to enemies)
+    DeathFxFn      m_deathFx;       // gib-burst death FX sink (fanned to enemies)
     std::string    m_modelDir;
     x3::rhi::IRenderDevice* m_devicePtr = nullptr; // cached for event-time spawns
 

@@ -398,6 +398,19 @@ void Level1Game::setCueSink(const GameCueFn& sink) {
     if (m_martinezSpawned) m_martinez.setCueSink(sink);
 }
 
+void Level1Game::setDeathFxSink(const DeathFxFn& sink) {
+    m_deathFx = sink;
+    // Fan the gib-burst death FX to every enemy group (managers store + re-apply to
+    // future spawns) and the single Martinez boss instance — exactly like setCueSink.
+    // Groups not yet spawned carry the sink onto their on-beat spawns; Martinez is
+    // wired here once up. The monster fires it ONCE at the kill moment (HP->0).
+    m_corridor.setDeathFxSink(sink);
+    m_checkpoint.setDeathFxSink(sink);
+    m_bossAdds.setDeathFxSink(sink);
+    m_chen.setDeathFxSink(sink);
+    if (m_martinezSpawned) m_martinez.setDeathFxSink(sink);
+}
+
 void Level1Game::cheatArm(Scene& scene) { m_weapon.forceArm(scene); }  // IDKFA/IDFA
 
 void Level1Game::spawnCorridorEnemies(Scene& scene, x3::rhi::IRenderDevice& device,
@@ -447,6 +460,7 @@ void Level1Game::spawnMartinez(Scene& scene, x3::rhi::IRenderDevice& device,
                                                  m_layout.arenaCenter.z },
                                  martinezTuning());
     if (m_cueSink) m_martinez.setCueSink(m_cueSink);   // inherit footstep/impact cues
+    if (m_deathFx) m_martinez.setDeathFxSink(m_deathFx); // inherit the gib-burst death FX
     x3::logInfo("Level1: BOSS — Chief Martinez spawned in the arena (boss-tier HP/speed)");
 }
 
