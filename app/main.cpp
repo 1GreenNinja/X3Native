@@ -39,6 +39,7 @@
 #include "spire_sublevels.h"                // EFLZ hidden Floor-7 sub-levels + Dr. Chen Return Mission
 #include "timeline.h"                        // EFLZ morality/timeline backbone for the 12 endings (--test-timeline)
 #include "act2_world.h"                      // EFLZ Act-2 open-world surface host + L8/L9 (--test-act2)
+#include "rotor_demo.h"                       // procedural rotor/propeller spin prototype (--test-rotorspin)
 #include "tod.h"                             // EFLZ Time-of-Day cycle (sky/sun via SkyParams — --test-tod)
 #include "weather.h"                         // EFLZ Weather (7 states, biome-gated, hazard — --test-weather)
 #include "elevator.h"
@@ -679,6 +680,11 @@ int main(int argc, char** argv) {
     // Emergence (lab-exit gauntlet -> Emergence Point safe zone) + L9 Crystalline Desert
     // Edge (crystal props + neutral fauna + an inert-until-entered hazard zone). Additive.
     bool        testAct2 = false;
+    // --test-rotorspin (rotor/propeller spin prototype): a graybox quadcopter (box body +
+    // 4 counter-rotating blade rotors) whose rotors spin procedurally by rewriting each
+    // rotor entity's transform = Translate(hub)·Rotate(axis,θ) each tick. Asserts the spin
+    // matrix + angle accumulation + counter-rotation + determinism. Additive; no engine change.
+    bool        testRotorSpin = false;
     // --test-tod (EFLZ Time-of-Day): a 4-phase day cycle (dawn/day/dusk/night) that
     // drives the analytic sky/sun (dir/color/intensity/haze + ambient) via SkyParams.
     // Asserts the cycle visits all phases + wraps, the sun arc + intensity vary
@@ -866,6 +872,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-dronehack") testDroneHack = true;
         else if (a == "--test-sublevels") testSubLevels = true;
         else if (a == "--test-act2") testAct2 = true;
+        else if (a == "--test-rotorspin") testRotorSpin = true;
         else if (a == "--test-tod") testTod = true;
         else if (a == "--test-weather") testWeather = true;
         else if (a == "--test-doorcode") testDoorCode = true;
@@ -1206,6 +1213,12 @@ int main(int argc, char** argv) {
                     "gauntlet, Emergence-Point companions, crystal desert + hazard zone) "
                     "self-test...");
         return x3::game::runAct2WorldSelfTest() ? 0 : 1;
+    }
+    if (testRotorSpin) {
+        x3::logInfo("running rotor-spin prototype (graybox quadcopter: box body + 4 "
+                    "counter-rotating blade rotors; procedural Translate(hub)·Rotate(axis,θ) "
+                    "node-spin) self-test...");
+        return x3::game::runRotorSpinSelfTest() ? 0 : 1;
     }
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
