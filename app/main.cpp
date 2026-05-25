@@ -9401,6 +9401,181 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // ---- Portal Hub (--world rifthub) --------------------------------------
+    // A small graybox HUB with 8 visible cosmetic rift portals — one per known
+    // --world target. Each portal is two stacked emissive ring slabs + a
+    // glowing floor plate arranged in a clockwise circle around the spawn.
+    // DRAFT scope: walking into a portal latches its trigger + logs the
+    // relaunch hint; no runtime world-switching yet (the player still has to
+    // exit + relaunch with --world <name>). HUD prompt within 5 m.
+    if (worldMode == "rifthub") {
+        x3::logInfo("--world rifthub: building the portal-hub discovery area");
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> hphys(x3::phys::createPhysicsWorld());
+        if (!hphys->init()) {
+            x3::logError("--world rifthub: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        x3::game::Scene hscene;
+        x3::game::TriggerSystem htriggers;
+
+        // Neutral overhead sky — the portals do the lighting work via emission.
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.3f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.2f;
+            sp.sunColor[0] = 0.85f; sp.sunColor[1] = 0.85f; sp.sunColor[2] = 0.95f;
+            sp.sunIntensity = 0.65f; sp.haze = 0.45f; sp.exposure = 1.0f;
+            device->setSkyParams(sp);
+        }
+
+        x3::game::Rifthub hub;
+        hub.build(hscene, *device, *hphys, htriggers);
+
+        const x3::phys::Vec3 hubSpawn = hub.spawn();
+        const float dt = 1.0f / 60.0f;
+
+        // ===== Headless screenshot path: pose, settle, grab. ====================
+        if (headless) {
+            // Vantage: a slightly elevated 3/4 view so several portals read in
+            // the same frame (the ring sits at y=0..2.5).
+            float cam[5] = { 0.0f, 8.0f, 18.0f, -1.5708f, -0.35f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const int kSettle = 24;
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_rifthub.png");
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                hphys->step(dt);
+                hscene.update(*hphys);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 65.0f);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) hscene.render(*device, frame);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world rifthub: wrote screenshot " + outPath);
+            else       x3::logError("--world rifthub: capture FAILED");
+            hub.shutdown(*device);
+            hphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: first-person controller. =================
+        x3::game::Player hplayer;
+        hplayer.spawn(*hphys, hubSpawn.x, hubSpawn.y, hubSpawn.z);
+
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        bool prevSpaceH = false, prevFH = false, noclipH = false;
+        float flyXh = hubSpawn.x, flyYh = hubSpawn.y + 1.6f, flyZh = hubSpawn.z,
+              flyYawH = 0.0f, flyPitchH = -0.10f;
+        std::string lastHudPrompt;
+        x3::logInfo("--world rifthub: WASD walk, mouse look, Space jump, "
+                    "LeftShift sprint, F noclip, Esc to quit — orbit the ring "
+                    "to discover the rifts");
+
+        int lastWh = (int)W, lastHh = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+
+            double now = glfwGetTime();
+            float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+
+            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            bool spaceNow = kd(GLFW_KEY_SPACE);
+            bool fNow     = kd(GLFW_KEY_F);
+            if (fNow && !prevFH) {
+                noclipH = !noclipH;
+                if (noclipH) { float yy, pp; hplayer.camera(flyXh, flyYh, flyZh, yy, pp); flyYawH = yy; flyPitchH = pp; }
+            }
+            prevFH = fNow;
+
+            float camX, camY, camZ, camYaw, camPitch;
+            if (!noclipH) {
+                x3::game::PlayerInput in;
+                if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+                if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+                if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+                if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+                in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+                in.jumpPressed = spaceNow && !prevSpaceH;
+                in.lookDX = ddx; in.lookDY = ddy;
+                hplayer.update(in, fdt, *hphys);
+                hplayer.camera(camX, camY, camZ, camYaw, camPitch);
+            } else {
+                const float sens = 0.0025f;
+                flyYawH += ddx * sens; flyPitchH -= ddy * sens;
+                if (flyPitchH >  1.55f) flyPitchH =  1.55f;
+                if (flyPitchH < -1.55f) flyPitchH = -1.55f;
+                float fxv = std::cos(flyPitchH) * std::cos(flyYawH);
+                float fyv = std::sin(flyPitchH);
+                float fzv = std::cos(flyPitchH) * std::sin(flyYawH);
+                float rl = std::sqrt(fxv*fxv + fzv*fzv); if (rl < 1e-4f) rl = 1e-4f;
+                float rx = -fzv/rl, rz = fxv/rl;
+                float spd = 6.0f * fdt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd *= 3.0f;
+                if (kd(GLFW_KEY_W)) { flyXh += fxv*spd; flyYh += fyv*spd; flyZh += fzv*spd; }
+                if (kd(GLFW_KEY_S)) { flyXh -= fxv*spd; flyYh -= fyv*spd; flyZh -= fzv*spd; }
+                if (kd(GLFW_KEY_D)) { flyXh += rx*spd; flyZh += rz*spd; }
+                if (kd(GLFW_KEY_A)) { flyXh -= rx*spd; flyZh -= rz*spd; }
+                if (spaceNow) flyYh += spd;
+                if (kd(GLFW_KEY_LEFT_CONTROL)) flyYh -= spd;
+                camX = flyXh; camY = flyYh; camZ = flyZh; camYaw = flyYawH; camPitch = flyPitchH;
+            }
+            prevSpaceH = spaceNow;
+
+            const x3::phys::Vec3 ppos{ camX, camY, camZ };
+            const auto fired = htriggers.update(ppos);
+            for (uint32_t id : fired) hub.onTrigger(id);
+
+            // HUD prompt: log a single line whenever the nearest-in-range portal
+            // CHANGES so the player gets the discovery signposting without spam.
+            std::string prompt;
+            if (hub.hudPromptForEye(ppos, prompt, /*hudRadiusM=*/5.0f)) {
+                if (prompt != lastHudPrompt) {
+                    x3::logInfo(std::string("[rifthub HUD] ") + prompt);
+                    lastHudPrompt = prompt;
+                }
+            } else if (!lastHudPrompt.empty()) {
+                lastHudPrompt.clear();
+            }
+
+            hphys->step(fdt);
+            hscene.update(*hphys);
+
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWh || chh != lastHh) { lastWh = cw; lastHh = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+
+            device->setCamera(camX, camY, camZ, camYaw, camPitch, 65.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) hscene.render(*device, frame);
+            device->endFrame(frame);
+        }
+
+        hub.shutdown(*device);
+        hphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
     // ---- Salvari cliffs finale (--world cliffs) ----------------------------
     // The snowy mountain exterior past the F7 rooftop (Act 1 §2d): the STREAMED
     // terrain heightfield, a flat landing PAD planted on it, the SALVARI SHIP set
