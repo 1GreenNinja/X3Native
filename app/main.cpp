@@ -3980,6 +3980,10 @@ int main(int argc, char** argv) {
         } else if (uiDemoScreen == "settings") {
             demoUi.setState(x3::ui::GameState::Settings);
             hoverX = mcx; hoverY = mh * 0.5f;   // hover a middle toggle row
+        } else if (uiDemoScreen == "fonts") {
+            // Font role sampler: Playing state draws an (empty) HUD; the sampler text
+            // below renders every FontRole over the scene with nothing obscuring it.
+            demoUi.setState(x3::ui::GameState::Playing);
         } else {
             // MainMenu: hover START so it reads as focused.
             const float mbh = std::max(44.0f, mh * 0.075f);
@@ -4003,6 +4007,30 @@ int main(int argc, char** argv) {
                 uin.mouseX = hoverX; uin.mouseY = hoverY;
                 x3::ui::HudModel hm{};
                 demoUi.update(uin, *device, frame, hm, dt);
+                // --ui-demo fonts: a role sampler so every FontRole is eyeballable in
+                // one still (Title/Menu proportional, News/Console/Enemy). Each line
+                // names its role + font and prints a representative HUD string.
+                if (uiDemoScreen == "fonts") {
+                    using FR = x3::rhi::FontRole;
+                    const float wht[4] = { 0.95f, 0.97f, 0.95f, 1.0f };
+                    const float cyn[4] = { 0.35f, 0.85f, 1.0f, 1.0f };
+                    const float amb[4] = { 1.0f, 0.62f, 0.30f, 1.0f };
+                    const float grn[4] = { 0.45f, 1.0f, 0.55f, 1.0f };
+                    const float red[4] = { 1.0f, 0.30f, 0.25f, 1.0f };
+                    const float sh[4] = { 0.0f, 0.0f, 0.0f, 0.7f };
+                    float fy = 60.0f;
+                    auto row = [&](FR role, const char* s, const float* col, float px) {
+                        device->drawHudTextF(frame, role, s, 60.0f + 1.5f, fy + 1.5f, px, sh);
+                        device->drawHudTextF(frame, role, s, 60.0f, fy, px, col);
+                        fy += px + 22.0f;
+                    };
+                    row(FR::Title, "TITLE: Orbitron-Bold  ESCAPE FROM LAB ZERO", cyn, 34.0f);
+                    row(FR::Menu,  "Menu: Space Grotesk  Buttons / Objective / Labels", wht, 26.0f);
+                    row(FR::Enemy, "ENEMY: Tektur Condensed  MARCUS WEBB  THREAT LV3", red, 26.0f);
+                    row(FR::News,  "NEWS: Space Mono  ENEMIES: 4   AREA CLEAR", amb, 24.0f);
+                    row(FR::News,  "AREA CLEAR", grn, 30.0f);
+                    row(FR::Console, "Console/HudMono: Roboto Mono  HP 100  37 / 120", grn, 24.0f);
+                }
             }
             device->endFrame(frame);
         }

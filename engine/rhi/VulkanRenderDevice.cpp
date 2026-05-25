@@ -61,6 +61,8 @@
 #include <string>
 #include <cmath>
 #include <fstream>
+#include <filesystem>
+#include <system_error>
 #include <cstring>
 #include <cstddef>
 #include <cstdio>
@@ -1045,22 +1047,32 @@ public:
         // Whole-quad UV (0,0)-(1,1) samples the 1x1 white texel everywhere.
         HudVertex verts[6];
         emitQuad(verts, xPx, yPx, wPx, hPx, 0.0f, 0.0f, 1.0f, 1.0f, c);
-        flushHud(verts, 6, /*useFont=*/false);
+        flushHud(verts, 6, /*texFont=*/-1);
     }
 
+    // Back-compat: render with the DEFAULT mono role (Console/HudMono — embedded
+    // Roboto Mono). All existing non-UI callers route here unchanged.
     void drawHudText(const FrameContext& fc, const char* text, float xPx,
                      float yPx, float pxPerGlyph, const float rgba[4]) override {
-        if (!fc.valid || !m_hudPipeline || !text || pxPerGlyph <= 0.0f) return;
+        drawHudTextF(fc, x3::rhi::FontRole::Console, text, xPx, yPx, pxPerGlyph, rgba);
+    }
+
+    // Role-aware HUD text. Picks the role's baked atlas; PROPORTIONAL roles advance
+    // by each glyph's real width, monospace roles advance by a fixed cell. Falls
+    // back to the 8x8 bitmap path only if no TTF baked at all (NEVER blank text).
+    void drawHudTextF(const FrameContext& fc, x3::rhi::FontRole role, const char* text,
+                      float xPx, float yPx, float px, const float rgba[4]) override {
+        if (!fc.valid || !m_hudPipeline || !text || px <= 0.0f) return;
         const float c[4] = { rgba ? rgba[0] : 1.0f, rgba ? rgba[1] : 1.0f,
                              rgba ? rgba[2] : 1.0f, rgba ? rgba[3] : 1.0f };
-
-        if (m_ttfFontReady) { drawHudTextTtf(text, xPx, yPx, pxPerGlyph, c); return; }
-
-        // ---- Legacy 8x8 bitmap fallback (only if the TTF bake failed) ----------
+        const int r = (int)role;
+        if (r >= 0 && r < kFontRoleCount && m_fonts[r].ready) {
+            drawHudTextAtlas(r, text, xPx, yPx, px, c);
+            return;
+        }
+        // ---- Legacy 8x8 bitmap fallback (only if NO TTF baked for this role) ---
         // Atlas layout: 16 cols x 8 rows of 8x8 glyphs in a 128x64 texture.
         constexpr float kCols = 16.0f, kRows = 8.0f;
-        // Glyph cell is 8/128 wide, 8/64 tall; sample a 7/8 sub-rect to avoid the
-        // 1px gutter bleeding from the neighbouring glyph (atlas has no padding).
         constexpr float kCellU = 1.0f / kCols, kCellV = 1.0f / kRows;
         constexpr float kInsetU = (7.0f / 8.0f) * kCellU; // 7 of 8 columns used
         constexpr float kInsetV = (7.0f / 8.0f) * kCellV;
@@ -1069,61 +1081,101 @@ public:
         float penX = xPx, penY = yPx;
         for (const char* p = text; *p; ++p) {
             unsigned char ch = static_cast<unsigned char>(*p);
-            if (ch == '\n') { penX = xPx; penY += pxPerGlyph; continue; }
+            if (ch == '\n') { penX = xPx; penY += px; continue; }
             if (ch >= 128) ch = '?';
             if (ch > 32) { // skip space + control chars (blank glyphs)
                 int col = ch % 16, row = ch / 16;
                 float u0 = col * kCellU, v0 = row * kCellV;
                 HudVertex q[6];
-                emitQuad(q, penX, penY, pxPerGlyph, pxPerGlyph,
+                emitQuad(q, penX, penY, px, px,
                          u0, v0, u0 + kInsetU, v0 + kInsetV, c);
                 for (auto& v : q) m_hudScratch.push_back(v);
             }
-            penX += pxPerGlyph;
+            penX += px;
         }
         if (!m_hudScratch.empty())
-            flushHud(m_hudScratch.data(), (uint32_t)m_hudScratch.size(), /*useFont=*/true);
+            flushHud(m_hudScratch.data(), (uint32_t)m_hudScratch.size(), /*texFont=*/r);
     }
 
-    // Render `text` from the baked Roboto Mono TTF atlas. The font is MONOSPACE:
-    // each glyph advances by exactly `pxPerGlyph`, so UiContext::textWidth's
-    // N*pxPerGlyph math (and all the centering/right-alignment built on it) stays
-    // exact — no ui.cpp layout change required. Within each cell the real glyph
-    // shape (with proper bearings/baseline) is placed and horizontally centered,
-    // so it reads as a clean modern font, not a fixed grid of blocks.
-    void drawHudTextTtf(const char* text, float xPx, float yPx,
-                        float pxPerGlyph, const float c[4]) {
-        // bake-pixel units -> requested pixels. The cell advance maps to pxPerGlyph.
-        const float s = pxPerGlyph / std::max(1.0f, m_ttfCellAdvance);
-        const float baseline = m_ttfAscent * s;   // baseline below the cell top (yPx)
+    // Render `text` from role `role`'s baked TTF atlas. For PROPORTIONAL roles the
+    // pen advances by each glyph's real advance; for MONOSPACE roles every glyph
+    // advances by a fixed cell and the (already-fixed-pitch) shape is placed
+    // directly. `px` is the cap pixel size; the role index is also the texFont to
+    // bind. (Takes the index, not a FontAtlas&, so the signature needs no early type
+    // visibility — FontAtlas is declared with the other members further below.)
+    void drawHudTextAtlas(int role, const char* text,
+                          float xPx, float yPx, float px, const float c[4]) {
+        const FontAtlas& fa = m_fonts[role];
+        const int texFont = role;
+        // bake-pixel units -> requested pixels (the cell advance maps to px).
+        const float s = px / std::max(1.0f, fa.cellAdvance);
+        const float baseline = fa.ascent * s;   // baseline below the cell top (yPx)
+        const float lineH = px * 1.2f;           // newline step
 
         m_hudScratch.clear();
         float penX = xPx, penY = yPx;
         for (const char* p = text; *p; ++p) {
             unsigned char ch = static_cast<unsigned char>(*p);
-            if (ch == '\n') { penX = xPx; penY += pxPerGlyph; continue; }
+            if (ch == '\n') { penX = xPx; penY += lineH; continue; }
             if (ch < kTtfFirstChar || ch >= kTtfFirstChar + kTtfCharCount) ch = '?';
-            if (ch > 32) { // space + control glyphs are blank
-                const TtfGlyph& g = m_ttfGlyphs[ch - kTtfFirstChar];
-                // Glyph natural width in this cell + centering offset so the shape
-                // sits centered in the monospace cell (keeps proportional shapes
-                // looking right inside fixed advances).
-                const float glyphW   = (g.x1 - g.x0) * s;
-                const float advance  = g.advance * s;
-                const float centerOff = (pxPerGlyph - advance) * 0.5f;
-                const float gx0 = penX + centerOff + g.x0 * s;
+            const TtfGlyph& g = fa.glyphs[ch - kTtfFirstChar];
+            const float advance = g.advance * s;
+            if (ch > 32) { // space + control glyphs have no quad
+                // Proportional: place the glyph at the pen using its real bearings.
+                // Monospace: center the (fixed-pitch) shape inside the cell so it
+                // reads exactly as the cell layout expects.
+                const float cellOff = fa.proportional ? 0.0f
+                                                      : (px - advance) * 0.5f;
+                const float gx0 = penX + cellOff + g.x0 * s;
                 const float gy0 = penY + baseline + g.y0 * s;
                 const float gw  = (g.x1 - g.x0) * s;
                 const float gh  = (g.y1 - g.y0) * s;
-                (void)glyphW;
                 HudVertex q[6];
                 emitQuad(q, gx0, gy0, gw, gh, g.u0, g.v0, g.u1, g.v1, c);
                 for (auto& v : q) m_hudScratch.push_back(v);
             }
-            penX += pxPerGlyph;
+            // PROPORTIONAL advances by the glyph's real width; MONOSPACE by the cell.
+            penX += fa.proportional ? advance : px;
         }
         if (!m_hudScratch.empty())
-            flushHud(m_hudScratch.data(), (uint32_t)m_hudScratch.size(), /*useFont=*/true);
+            flushHud(m_hudScratch.data(), (uint32_t)m_hudScratch.size(), /*texFont=*/texFont);
+    }
+
+    // The TRUE rendered width of `text` for `role` at glyph size `px`. Pure metrics
+    // (no GPU work, safe before a frame). Proportional roles sum per-glyph advances;
+    // mono roles (and the bitmap fallback) return N*px so legacy layout stays exact.
+    float textAdvance(x3::rhi::FontRole role, const char* text, float px) const override {
+        if (!text || px <= 0.0f) return 0.0f;
+        const int r = (int)role;
+        if (r >= 0 && r < kFontRoleCount && m_fonts[r].ready) {
+            const FontAtlas& fa = m_fonts[r];
+            const float s = px / std::max(1.0f, fa.cellAdvance);
+            if (!fa.proportional) {
+                // Monospace: N printable+space cells of width px (newlines reset).
+                float maxLine = 0.0f, line = 0.0f;
+                for (const char* p = text; *p; ++p) {
+                    if (*p == '\n') { maxLine = std::max(maxLine, line); line = 0.0f; }
+                    else            { line += px; }
+                }
+                return std::max(maxLine, line);
+            }
+            // Proportional: sum each glyph's real advance (longest line for newlines).
+            float maxLine = 0.0f, line = 0.0f;
+            for (const char* p = text; *p; ++p) {
+                unsigned char ch = static_cast<unsigned char>(*p);
+                if (ch == '\n') { maxLine = std::max(maxLine, line); line = 0.0f; continue; }
+                if (ch < kTtfFirstChar || ch >= kTtfFirstChar + kTtfCharCount) ch = '?';
+                line += fa.glyphs[ch - kTtfFirstChar].advance * s;
+            }
+            return std::max(maxLine, line);
+        }
+        // No TTF for this role: N*px (matches the 8x8 cell + the old static math).
+        float maxLine = 0.0f, line = 0.0f;
+        for (const char* p = text; *p; ++p) {
+            if (*p == '\n') { maxLine = std::max(maxLine, line); line = 0.0f; }
+            else            { line += px; }
+        }
+        return std::max(maxLine, line);
     }
 
     void hudSize(uint32_t& outW, uint32_t& outH) const override {
@@ -1751,22 +1803,34 @@ private:
     }
 
     // A deferred HUD draw: a span of this frame's HUD vertex ring + which texture
-    // (font atlas vs white) to bind. drawHudQuad/drawHudText append these; they are
-    // replayed (in order, after the meshes) by recordHudDraws inside the graph's
-    // color pass — keeping HUD-on-top ordering identical to the hand-coded path.
-    struct HudRecord { uint32_t first; uint32_t count; bool useFont; };
+    // to bind. `texFont` selects the atlas: -1 => the 1x1 white texel (filled
+    // quads); >=0 => that FontRole's glyph atlas (or the 8x8 bitmap fallback if the
+    // role didn't bake). drawHudQuad/drawHudText(F) append these; they are replayed
+    // (in order, after the meshes) by recordHudDraws inside the graph's color pass —
+    // keeping HUD-on-top ordering identical to the hand-coded path.
+    struct HudRecord { uint32_t first; uint32_t count; int texFont; };
 
     // Append `count` vertices to this frame's HUD ring and queue a deferred HUD
     // draw record (replayed inside the graph's color pass). No command recording
     // here — the color pass is not open yet (commands are recorded in endFrame).
-    void flushHud(const HudVertex* verts, uint32_t count, bool useFont) {
+    // `texFont`: -1 = white texel; otherwise a FontRole index whose atlas to bind.
+    void flushHud(const HudVertex* verts, uint32_t count, int texFont) {
         auto& fr = m_frames[m_frameIdx];
         if (!fr.hudVboMapped || fr.hudVertsUsed + count > kMaxHudVerts) return; // ring full
         uint32_t first = fr.hudVertsUsed;
         std::memcpy(static_cast<HudVertex*>(fr.hudVboMapped) + first,
                     verts, (size_t)count * sizeof(HudVertex));
         fr.hudVertsUsed += count;
-        m_hudRecords.push_back(HudRecord{ first, count, useFont });
+        m_hudRecords.push_back(HudRecord{ first, count, texFont });
+    }
+
+    // Resolve a HudRecord's texFont to the Texture to bind: white texel for -1, the
+    // role's baked atlas if ready, else the 8x8 bitmap fallback, else white.
+    const Texture* hudRecordTexture(int texFont) const {
+        if (texFont < 0) return &m_whiteTex;
+        if (texFont < kFontRoleCount && m_fonts[texFont].ready) return &m_fonts[texFont].tex;
+        if (m_bitmapFontReady && m_bitmapFontTex.view) return &m_bitmapFontTex;
+        return &m_whiteTex;
     }
 
     // Replay the frame's deferred HUD draws into the (already-open) color pass.
@@ -1776,7 +1840,7 @@ private:
         auto& fr = m_frames[m_frameIdx];
         if (m_hudRecords.empty() || !m_hudPipeline) return;
         for (const HudRecord& hr : m_hudRecords) {
-            const Texture* tex = hr.useFont ? &m_fontTex : &m_whiteTex;
+            const Texture* tex = hudRecordTexture(hr.texFont);
 
             VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
             dsai.descriptorPool = fr.hudDescPool;
@@ -2856,58 +2920,154 @@ private:
         }
     }
 
-    // Font atlas builder. Prefers a CRISP modern font baked from a real TTF
-    // (Roboto Mono, embedded) via stb_truetype; on ANY failure it falls back to
-    // the legacy 8x8 bitmap font so text is NEVER blank. Sets m_ttfFontReady to
-    // tell drawHudText which path to render. Logs the active path.
-    bool buildFontAtlas() {
-        m_ttfFontReady = false;
-        if (buildTtfFontAtlas()) {
-            m_ttfFontReady = true;
-            logInfo("[rhi] HUD font: Roboto Mono (TTF, stb_truetype glyph atlas) — modern path active");
-            return true;
+    // ---- ROLE -> FONT FILE MAP (the ONE place to reassign a role's font) -------
+    // To change which typeface a role uses: edit the path string here and restart
+    // (no rebuild of the engine logic needed — the file ships in assets/). The
+    // *static* (non-VariableFont) weights are used. `proportional=false` forces a
+    // monospace cell (News/Console are genuinely mono; the proportional roles get
+    // real per-glyph advances). The embedded Roboto Mono is the guaranteed fallback
+    // for ANY role whose file is missing/unreadable, so text is NEVER blank.
+    //
+    // To EMBED a role's font for a single-binary ship: run
+    //   tools/embed_font.ps1 -InFont assets/fonts/<dir>/<file>.ttf -Symbol k<Name>TTF
+    // and point that role's load at the generated blob (see kRobotoMonoTTF usage).
+    // Read a font file by trying a few roots so the load works regardless of the
+    // process CWD (run-from-repo-root, run-from-build-dir, assets-next-to-exe). The
+    // relative path (e.g. "Orbitron/static/Orbitron-Bold.ttf") is joined onto each
+    // candidate prefix; the first readable hit wins. Returns the resolved path in
+    // `outResolved`. Mirrors app/asset_root.h's candidate order but stays self-
+    // contained in the engine layer (no app dependency). Empty vector => not found.
+    std::vector<unsigned char> readFontFile(const char* relPath, std::string& outResolved) {
+        std::vector<unsigned char> bytes;
+        if (!relPath) return bytes;
+        std::filesystem::path exeDir(".");
+#ifdef _WIN32
+        {
+            char buf[1024];
+            DWORD n = GetModuleFileNameA(nullptr, buf, (DWORD)sizeof(buf));
+            if (n > 0 && n < sizeof(buf))
+                exeDir = std::filesystem::path(std::string(buf, n)).parent_path();
         }
-        logError("[rhi] HUD font: TTF bake failed — falling back to legacy 8x8 bitmap font");
-        return buildBitmapFontAtlas();
+#endif
+        const std::filesystem::path rel(relPath);
+        const std::filesystem::path candidates[] = {
+            std::filesystem::path("assets/fonts") / rel,                       // CWD = repo root
+            exeDir / ".." / ".." / ".." / "assets" / "fonts" / rel,            // build/bin/<Config>
+            exeDir / "assets" / "fonts" / rel,                                 // assets next to exe
+            std::filesystem::path("../assets/fonts") / rel,                    // CWD = a subdir
+        };
+        for (const auto& c : candidates) {
+            std::ifstream f(c, std::ios::binary | std::ios::ate);
+            if (!f) continue;
+            const std::streamsize sz = f.tellg();
+            if (sz <= 4) continue;
+            f.seekg(0);
+            bytes.resize((size_t)sz);
+            if (f.read(reinterpret_cast<char*>(bytes.data()), sz)) {
+                std::error_code ec; auto norm = std::filesystem::weakly_canonical(c, ec);
+                outResolved = (ec ? c : norm).string();
+                return bytes;
+            }
+            bytes.clear();
+        }
+        return bytes;
     }
 
-    // Bake ASCII 32..126 from the embedded Roboto Mono TTF into an antialiased
-    // R8 coverage atlas via stb_truetype's packer (with oversampling for crisp
-    // small text), then expand to RGBA (white, alpha=coverage) so the existing
-    // createSampledTexture/LINEAR sampler path renders smooth, alpha-blended
-    // glyphs tinted by the per-vertex HUD color. Records per-glyph atlas UVs +
-    // offsets + advance (in bake-pixel units) for drawHudText.
-    bool buildTtfFontAtlas() {
-        // FONT SOURCE (easy swap, stays baked-in by default):
-        //   1. A drop-in TTF in assets/fonts/ overrides the embedded font at runtime
-        //      — drop a .ttf there and restart, NO rebuild needed. First match wins.
-        //   2. Otherwise the baked-in embedded typeface (kRobotoMonoTTF) is used.
-        // To change the SHIPPED baked-in font permanently: run tools/embed_font.ps1 on
-        // a new .ttf (regenerates engine/rhi/font_*.h) and rebuild.
-        std::vector<unsigned char> fileBytes;
-        const unsigned char* ttf = kRobotoMonoTTF;
-        size_t ttfSize = kRobotoMonoTTFSize;
-        {
-            static const char* kFontCandidates[] = {
-                "assets/fonts/hud.ttf",          // generic drop-in slot
-                "assets/fonts/Accelerator.ttf",  // named slot
-            };
-            for (const char* path : kFontCandidates) {
-                std::ifstream f(path, std::ios::binary | std::ios::ate);
-                if (!f) continue;
-                const std::streamsize n = f.tellg();
-                if (n <= 4) continue;
-                f.seekg(0);
-                fileBytes.resize((size_t)n);
-                if (f.read(reinterpret_cast<char*>(fileBytes.data()), n)) {
-                    ttf = fileBytes.data();
-                    ttfSize = (size_t)n;
-                    logInfo(std::string("[rhi] HUD font: drop-in override ") + path
-                            + " (" + std::to_string((long)n) + " bytes)");
-                    break;
+    struct RoleFontDesc { const char* path; bool proportional; const char* label; };
+    static const RoleFontDesc* roleFontTable() {
+        // Indexed by FontRole. Console==HudMono share index 0 (embedded mono).
+        static const RoleFontDesc kRoleFontPaths[kFontRoleCount] = {
+            /* 0 Console/HudMono */ { nullptr /* embedded Roboto Mono */,           false, "Roboto Mono (embedded)" },
+            /* 1 Title           */ { "Orbitron/static/Orbitron-Bold.ttf",           true,  "Orbitron-Bold" },
+            /* 2 Menu            */ { "Space_Grotesk/static/SpaceGrotesk-Medium.ttf", true,  "SpaceGrotesk-Medium" },
+            /* 3 Enemy           */ { "Tektur/static/Tektur_Condensed-Bold.ttf",      true,  "Tektur_Condensed-Bold" },
+            /* 4 News            */ { "Space_Mono/SpaceMono-Bold.ttf",                false, "SpaceMono-Bold" },
+        };
+        return kRoleFontPaths;
+    }
+
+    // Font atlas builder. Bakes ONE crisp glyph atlas PER FontRole from a real TTF
+    // (assets/fonts/, embedded Roboto Mono fallback) via stb_truetype, and bakes the
+    // legacy 8x8 bitmap font as the universal last-resort so text is NEVER blank.
+    // Logs which typeface actually loaded for each role.
+    bool buildFontAtlas() {
+        // Universal last-resort bitmap atlas (used if a role's TTF AND the embedded
+        // fallback both fail — extremely unlikely, but never ship blank text).
+        m_bitmapFontReady = buildBitmapFontAtlas(m_bitmapFontTex);
+        if (!m_bitmapFontReady)
+            logError("[rhi] HUD font: 8x8 bitmap fallback atlas failed to build");
+
+        const RoleFontDesc* table = roleFontTable();
+        int roleOk = 0;
+        for (int r = 0; r < kFontRoleCount; ++r) {
+            // HudMono is an ALIAS of Console (same enum value 0); the loop visits each
+            // distinct index once, so no special-casing is needed.
+            FontAtlas& fa = m_fonts[r];
+            fa = FontAtlas{};
+            fa.proportional = table[r].proportional;
+
+            // Load the role's TTF bytes from assets/fonts/, else the embedded Roboto
+            // Mono. (Index 0 has no file => always embedded.)
+            std::vector<unsigned char> fileBytes;
+            const unsigned char* ttf = kRobotoMonoTTF;
+            size_t ttfSize = kRobotoMonoTTFSize;
+            std::string loaded = "Roboto Mono (embedded)";
+            if (table[r].path) {
+                std::string resolved;
+                fileBytes = readFontFile(table[r].path, resolved);
+                if (!fileBytes.empty()) {
+                    ttf = fileBytes.data(); ttfSize = fileBytes.size();
+                    loaded = std::string(table[r].label) + " (" + resolved + ")";
+                } else {
+                    loaded = std::string("Roboto Mono (embedded; ") + table[r].path +
+                             " not found)";
+                }
+            }
+
+            if (bakeTtfAtlas(r, ttf, ttfSize)) {
+                fa.ready = true; ++roleOk;
+                logInfo("[rhi] HUD font role " + roleName(r) + " -> " + loaded +
+                        (fa.proportional ? " [proportional]" : " [monospace]"));
+            } else {
+                // The role's chosen TTF failed — fall back to the EMBEDDED font so the
+                // role still has a proper atlas (mono), rather than the 8x8 bitmap.
+                fa = FontAtlas{}; fa.proportional = false;
+                if (ttf != kRobotoMonoTTF && bakeTtfAtlas(r, kRobotoMonoTTF, kRobotoMonoTTFSize)) {
+                    fa.ready = true; ++roleOk;
+                    logError("[rhi] HUD font role " + roleName(r) + " -> " + loaded +
+                             " FAILED to bake; using Roboto Mono (embedded) [monospace]");
+                } else {
+                    logError("[rhi] HUD font role " + roleName(r) +
+                             ": TTF bake failed entirely — using 8x8 bitmap fallback");
                 }
             }
         }
+        logInfo("[rhi] HUD fonts: " + std::to_string(roleOk) + "/" +
+                std::to_string(kFontRoleCount) + " role atlases baked from TTF");
+        // Success as long as SOMETHING can render text (a role atlas or the bitmap).
+        return roleOk > 0 || m_bitmapFontReady;
+    }
+
+    static std::string roleName(int r) {
+        switch (r) {
+            case 0: return "Console/HudMono";
+            case 1: return "Title";
+            case 2: return "Menu";
+            case 3: return "Enemy";
+            case 4: return "News";
+            default: return std::to_string(r);
+        }
+    }
+
+    // Bake ASCII 32..126 from `ttf` into an antialiased R8 coverage atlas via
+    // stb_truetype's packer (2x2 oversample for crisp small text), then expand to
+    // RGBA (white, alpha=coverage) so the existing LINEAR-sampler HUD path renders
+    // smooth, alpha-blended, per-vertex-tinted glyphs. Records per-glyph atlas UVs +
+    // offsets + advance (bake-pixel units) into m_fonts[role]. Does NOT set ready.
+    // (Takes the role index, not a FontAtlas&, so the signature needs no early type
+    // visibility — FontAtlas is declared with the other members further below.)
+    bool bakeTtfAtlas(int role, const unsigned char* ttf, size_t ttfSize) {
+        FontAtlas& fa = m_fonts[role];
         if (!ttf || ttfSize < 4) { logError("[rhi] TTF: empty font data"); return false; }
 
         stbtt_fontinfo info{};
@@ -2915,20 +3075,20 @@ private:
         if (off < 0) { logError("[rhi] TTF: GetFontOffsetForIndex failed"); return false; }
         if (!stbtt_InitFont(&info, ttf, off)) { logError("[rhi] TTF: InitFont failed"); return false; }
 
-        // Global vertical metrics at the bake size (so the baseline + cell height
-        // are consistent across glyphs and match the monospace cell layout).
+        // Global vertical metrics at the bake size (consistent baseline/cell height).
         const float scale = stbtt_ScaleForPixelHeight(&info, kTtfBakePx);
         int asc = 0, desc = 0, lineGap = 0;
         stbtt_GetFontVMetrics(&info, &asc, &desc, &lineGap);
-        m_ttfAscent = asc * scale;   // baseline distance from the cell top
+        fa.ascent = asc * scale;   // baseline distance from the cell top
 
-        // Monospace cell advance: Roboto Mono is fixed-pitch, so any glyph's
-        // advance works; use 'M' for a robust value.
+        // Reference cell advance (drives bake-px -> requested-px scale `s`). For mono
+        // fonts every glyph shares this; for proportional fonts it's just the scale
+        // reference ('M' advance), with real per-glyph advances stored per glyph.
         {
             int adv = 0, lsb = 0;
             stbtt_GetCodepointHMetrics(&info, 'M', &adv, &lsb);
-            m_ttfCellAdvance = adv * scale;
-            if (m_ttfCellAdvance <= 0.0f) m_ttfCellAdvance = kTtfBakePx; // sane fallback
+            fa.cellAdvance = adv * scale;
+            if (fa.cellAdvance <= 0.0f) fa.cellAdvance = kTtfBakePx; // sane fallback
         }
 
         // Pack the glyph range into an 8-bit coverage atlas.
@@ -2951,7 +3111,7 @@ private:
         // Record per-glyph atlas rects + quad offsets + advance (bake-pixel units).
         for (int i = 0; i < kTtfCharCount; ++i) {
             const stbtt_packedchar& pc = packed[i];
-            TtfGlyph& g = m_ttfGlyphs[i];
+            TtfGlyph& g = fa.glyphs[i];
             g.u0 = (float)pc.x0 / (float)kTtfAtlasW;
             g.v0 = (float)pc.y0 / (float)kTtfAtlasH;
             g.u1 = (float)pc.x1 / (float)kTtfAtlasW;
@@ -2968,29 +3128,29 @@ private:
             rgba[p*4+0] = 255; rgba[p*4+1] = 255; rgba[p*4+2] = 255;
             rgba[p*4+3] = coverage[p];
         }
-        if (!createSampledTexture(rgba.data(), kTtfAtlasW, kTtfAtlasH, /*srgb=*/false, m_fontTex)) {
+        if (!createSampledTexture(rgba.data(), kTtfAtlasW, kTtfAtlasH, /*srgb=*/false, fa.tex)) {
             logError("[rhi] TTF: atlas texture upload failed"); return false;
         }
 
         // LINEAR + CLAMP sampler: smooth glyph edges (antialiased), no wrap bleed.
-        if (m_fontTex.sampler) vkDestroySampler(m_dev.device, m_fontTex.sampler, nullptr);
-        m_fontTex.sampler = VK_NULL_HANDLE;
+        if (fa.tex.sampler) vkDestroySampler(m_dev.device, fa.tex.sampler, nullptr);
+        fa.tex.sampler = VK_NULL_HANDLE;
         VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
         sci.magFilter = VK_FILTER_LINEAR; sci.minFilter = VK_FILTER_LINEAR;
         sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
         sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        if (vkCreateSampler(m_dev.device, &sci, nullptr, &m_fontTex.sampler) != VK_SUCCESS) {
+        if (vkCreateSampler(m_dev.device, &sci, nullptr, &fa.tex.sampler) != VK_SUCCESS) {
             logError("[rhi] TTF font sampler create failed"); return false;
         }
         return true;
     }
 
-    // Build a 128x64 RGBA atlas (16 cols x 8 rows of 8x8 glyphs) from the
-    // embedded public-domain font8x8_basic bits: white texel, alpha = pixel-on.
-    // Legacy fallback used only if the TTF bake fails (NEVER ship blank text).
-    bool buildBitmapFontAtlas() {
+    // Build a 128x64 RGBA atlas (16 cols x 8 rows of 8x8 glyphs) from the embedded
+    // public-domain font8x8_basic bits (white texel, alpha = pixel-on) into `dst`.
+    // Universal last-resort fallback (NEVER ship blank text).
+    bool buildBitmapFontAtlas(Texture& dst) {
         constexpr uint32_t kAtlasW = 128, kAtlasH = 64;
         std::vector<uint8_t> rgba((size_t)kAtlasW * kAtlasH * 4, 0);
         for (int ch = 0; ch < 128; ++ch) {
@@ -3009,18 +3169,18 @@ private:
         // UNORM (data): the per-vertex color already carries the desired tint, so
         // no sRGB linearization of the mask is wanted. Nearest filtering keeps the
         // pixel font crisp.
-        if (!createSampledTexture(rgba.data(), kAtlasW, kAtlasH, /*srgb=*/false, m_fontTex))
+        if (!createSampledTexture(rgba.data(), kAtlasW, kAtlasH, /*srgb=*/false, dst))
             return false;
         // Replace the linear sampler with a NEAREST, CLAMP one for crisp glyphs.
-        if (m_fontTex.sampler) vkDestroySampler(m_dev.device, m_fontTex.sampler, nullptr);
-        m_fontTex.sampler = VK_NULL_HANDLE;
+        if (dst.sampler) vkDestroySampler(m_dev.device, dst.sampler, nullptr);
+        dst.sampler = VK_NULL_HANDLE;
         VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
         sci.magFilter = VK_FILTER_NEAREST; sci.minFilter = VK_FILTER_NEAREST;
         sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
         sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        if (vkCreateSampler(m_dev.device, &sci, nullptr, &m_fontTex.sampler) != VK_SUCCESS) {
+        if (vkCreateSampler(m_dev.device, &sci, nullptr, &dst.sampler) != VK_SUCCESS) {
             logError("[rhi] font sampler create failed"); return false;
         }
         return true;
@@ -4639,7 +4799,12 @@ private:
                              fr.hudVbo = VK_NULL_HANDLE; fr.hudVboAlloc = nullptr; fr.hudVboMapped = nullptr; }
             if (fr.hudDescPool) { vkDestroyDescriptorPool(m_dev.device, fr.hudDescPool, nullptr); fr.hudDescPool = VK_NULL_HANDLE; }
         }
-        destroyTextureObj(m_fontTex);
+        for (int r = 0; r < kFontRoleCount; ++r) {
+            destroyTextureObj(m_fonts[r].tex);
+            m_fonts[r].ready = false;
+        }
+        destroyTextureObj(m_bitmapFontTex);
+        m_bitmapFontReady = false;
         if (m_hudPipeline)  vkDestroyPipeline(m_dev.device, m_hudPipeline, nullptr);
         if (m_hudLayout)    vkDestroyPipelineLayout(m_dev.device, m_hudLayout, nullptr);
         if (m_hudSetLayout) vkDestroyDescriptorSetLayout(m_dev.device, m_hudSetLayout, nullptr);
@@ -6520,16 +6685,16 @@ private:
     VkPipeline       m_hudPipeline = VK_NULL_HANDLE;
     VkPipelineLayout m_hudLayout = VK_NULL_HANDLE;
     VkDescriptorSetLayout m_hudSetLayout = VK_NULL_HANDLE;
-    Texture          m_fontTex{};               // glyph atlas (RGBA): TTF-baked, or 8x8 bitmap fallback
     std::vector<HudVertex> m_hudScratch;        // CPU scratch for text batching
 
-    // ---- TTF glyph atlas (modern HUD font) ---------------------------------
-    // Baked once at init from the embedded Roboto Mono TTF via stb_truetype.
-    // m_ttfFontReady gates drawHudText: true => render baked, proportional-quality
-    // glyphs placed inside a MONOSPACE cell (advance == pxPerGlyph, so UiContext::
-    // textWidth's N*px math stays exact); false => fall back to the 8x8 bitmap path.
-    // We store per-glyph atlas rects + offsets normalized to the bake pixel size so
-    // they scale to any requested pxPerGlyph at draw time.
+    // ---- Role-based glyph atlases (modern HUD/UI fonts) --------------------
+    // One baked atlas per FontRole (see IRenderDevice.h). Each is baked once at
+    // init from a TTF in assets/fonts/ (kRoleFontPaths) via stb_truetype, with the
+    // embedded Roboto Mono as the guaranteed fallback so text is NEVER blank.
+    // Proportional roles advance the pen by each glyph's real width; monospace
+    // roles advance by a fixed cell (cellAdvance) so legacy N*px layout stays exact.
+    // Per-glyph atlas rects/offsets/advance are stored in bake-pixel units so they
+    // scale to any requested px at draw time.
     static constexpr int   kTtfFirstChar = 32;   // ASCII space
     static constexpr int   kTtfCharCount = 95;   // 32..126 inclusive
     static constexpr int   kTtfAtlasW    = 1024;  // fits 95 glyphs @ 48px w/ 2x2 oversampling
@@ -6540,10 +6705,18 @@ private:
         float x0, y0, x1, y1;   // quad offsets in bake-pixel units (relative to pen, baseline at y=0)
         float advance;          // horizontal advance in bake-pixel units
     };
-    TtfGlyph m_ttfGlyphs[kTtfCharCount]{};
-    float    m_ttfCellAdvance = kTtfBakePx; // the monospace cell width in bake-pixel units
-    float    m_ttfAscent      = kTtfBakePx; // baseline offset from cell top, in bake-pixel units
-    bool     m_ttfFontReady   = false;
+    struct FontAtlas {
+        Texture  tex{};                       // R8-coverage-as-RGBA glyph atlas
+        TtfGlyph glyphs[kTtfCharCount]{};
+        float    cellAdvance  = kTtfBakePx;   // monospace cell width (bake px); proportional uses per-glyph advance
+        float    ascent       = kTtfBakePx;   // baseline offset from cell top (bake px)
+        bool     proportional = false;        // true => advance per glyph; false => fixed cell
+        bool     ready        = false;        // a TTF atlas baked OK for this role
+    };
+    static constexpr int kFontRoleCount = (int)x3::rhi::FontRole::Count;  // 5
+    FontAtlas m_fonts[kFontRoleCount]{};
+    bool      m_bitmapFontReady = false;       // legacy 8x8 fallback baked (no TTF at all)
+    Texture   m_bitmapFontTex{};               // 8x8 atlas used when a role has no TTF
 
     // One-time staging upload (transient pool + fence)
     VkCommandPool m_uploadPool = VK_NULL_HANDLE;

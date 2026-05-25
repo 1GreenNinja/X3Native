@@ -37,9 +37,13 @@ constexpr float kColTrack[4]    = { 0.10f, 0.10f, 0.12f, 0.85f };
 // ===========================================================================
 // UiContext
 // ===========================================================================
+// Live device the STATIC textWidth() queries for true per-role glyph metrics.
+x3::rhi::IRenderDevice* UiContext::s_metricsDevice = nullptr;
+
 void UiContext::begin(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                       const UiInput& input) {
     m_device = &device;
+    s_metricsDevice = &device;   // textWidth() reads real per-role advances from here
     m_frame  = frame;
     m_in     = input;
     m_draw   = frame.valid;
@@ -64,8 +68,13 @@ void UiContext::end() {
     if (m_focus >= m_lastFocusCount) m_focus = m_lastFocusCount - 1;
 }
 
-float UiContext::textWidth(const char* s, float px) {
+float UiContext::textWidth(FontRole role, const char* s, float px) {
     if (!s) return 0.0f;
+    // Real per-role advances from the live device (proportional-aware). This keeps
+    // centering/right-alignment pixel-exact for Title/Menu/Enemy. If no device is
+    // bound yet (pre-begin / headless logic before begin), fall back to the legacy
+    // monospace estimate N*px so layout math stays deterministic.
+    if (s_metricsDevice) return s_metricsDevice->textAdvance(role, s, px);
     return (float)std::strlen(s) * px * kFontAspect;
 }
 
@@ -78,29 +87,39 @@ void UiContext::quad(float x, float y, float w, float h, const float rgba[4]) co
     if (m_draw && m_device) m_device->drawHudQuad(m_frame, x, y, w, h, rgba);
 }
 
-float UiContext::text(const char* s, float x, float y, float px, const float rgba[4]) const {
+float UiContext::text(const char* s, float x, float y, float px, const float rgba[4],
+                      FontRole role) const {
     if (m_draw && m_device && s) {
         // 1px drop shadow for legibility over bright scene pixels.
-        m_device->drawHudText(m_frame, s, x + 1.0f, y + 1.0f, px, kColShadow);
-        m_device->drawHudText(m_frame, s, x, y, px, rgba);
+        m_device->drawHudTextF(m_frame, role, s, x + 1.0f, y + 1.0f, px, kColShadow);
+        m_device->drawHudTextF(m_frame, role, s, x, y, px, rgba);
     }
-    return textWidth(s, px);
+    return textWidth(role, s, px);
 }
 
-float UiContext::textCentered(const char* s, float cx, float y, float px, const float rgba[4]) const {
-    const float w = textWidth(s, px);
+float UiContext::textCentered(const char* s, float cx, float y, float px, const float rgba[4],
+                              FontRole role) const {
+    const float w = textWidth(role, s, px);
     const float left = cx - w * 0.5f;
-    text(s, left, y, px, rgba);
+    text(s, left, y, px, rgba, role);
     return left;
 }
 
-void UiContext::label(const char* s, float x, float y, float px, const float rgba[4]) const {
-    text(s, x, y, px, rgba);
+void UiContext::label(const char* s, float x, float y, float px, const float rgba[4],
+                      FontRole role) const {
+    text(s, x, y, px, rgba, role);
 }
 
 void UiContext::panel(float x, float y, float w, float h, const float rgba[4]) const {
     quad(x, y, w, h, rgba);
     quad(x, y, w, 2.0f, kColPanelEdge);   // bright top edge
+}
+
+float UiContext::enemyNameplate(const char* s, float cx, float top, float px,
+                                const float rgba[4]) const {
+    // Centered in the Enemy font (Tektur Condensed Bold). textCentered already lays
+    // a drop shadow + the tinted text; the role gives the condensed threat look.
+    return textCentered(s, cx, top, px, rgba, FontRole::Enemy);
 }
 
 bool UiContext::button(const char* label, float x, float y, float w, float h) {
@@ -196,16 +215,21 @@ GameState MainMenu::update(UiContext& ui, const char* title, const char* subtitl
     const float wash[4] = { 0.02f, 0.03f, 0.05f, 0.55f };
     ui.quad(0, 0, w, h, wash);
 
-    // Title + subtitle. Scale the title down so it always fits the width with a
-    // margin (8x8 font: width == chars * px), capped at 72 px.
-    const int   titleLen = title ? (int)std::strlen(title) : 1;
-    const float maxTitlePx = (titleLen > 0) ? (w * 0.92f / (float)titleLen) : 72.0f;
-    const float titlePx = std::min(72.0f, maxTitlePx);
+    // Title (ORBITRON) + subtitle (Space Grotesk). Scale the title down so it always
+    // fits the width with a margin, capped at 72 px. Orbitron is PROPORTIONAL + wide,
+    // so size it from its TRUE rendered width at a probe size, not chars*px.
+    using FontRole = UiContext::FontRole;
     const float titleCol[4] = { 0.35f, 0.85f, 1.0f, 1.0f };
-    ui.textCentered(title, cx, h * 0.20f, titlePx, titleCol);
+    float titlePx = 72.0f;
+    if (title && title[0]) {
+        const float probe = 72.0f;
+        const float probeW = UiContext::textWidth(FontRole::Title, title, probe);
+        if (probeW > 1.0f) titlePx = std::min(72.0f, probe * (w * 0.92f) / probeW);
+    }
+    ui.textCentered(title, cx, h * 0.20f, titlePx, titleCol, FontRole::Title);
     const float subPx = std::max(14.0f, titlePx * 0.26f);
     const float subCol[4] = { 0.70f, 0.78f, 0.80f, 1.0f };
-    ui.textCentered(subtitle, cx, h * 0.20f + titlePx + 12.0f, subPx, subCol);
+    ui.textCentered(subtitle, cx, h * 0.20f + titlePx + 12.0f, subPx, subCol, FontRole::Menu);
 
     // Buttons stacked + centered.
     const float bw = std::min(360.0f, w * 0.5f);
@@ -256,7 +280,7 @@ GameState PauseMenu::update(UiContext& ui, PauseAction& outAction) {
 
     const float titlePx = std::max(24.0f, pw / 14.0f);
     const float titleCol[4] = { 0.40f, 0.88f, 1.0f, 1.0f };
-    ui.textCentered("PAUSED", cx, py + 24.0f, titlePx, titleCol);
+    ui.textCentered("PAUSED", cx, py + 24.0f, titlePx, titleCol, UiContext::FontRole::Title);
 
     const float bw = pw - 48.0f;
     const float bh = std::max(38.0f, ph * 0.115f);
@@ -299,7 +323,7 @@ GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState ba
 
     const float titlePx = std::max(24.0f, pw / 18.0f);
     const float titleCol[4] = { 0.40f, 0.88f, 1.0f, 1.0f };
-    ui.textCentered("SETTINGS", cx, py + 20.0f, titlePx, titleCol);
+    ui.textCentered("SETTINGS", cx, py + 20.0f, titlePx, titleCol, UiContext::FontRole::Title);
 
     const float rw = pw - 48.0f;
     const float rh = std::max(38.0f, ph * 0.085f);
@@ -387,7 +411,9 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         char hpBuf[32];
         std::snprintf(hpBuf, sizeof(hpBuf), "HP %3d", hp);
         const float hpPx = 16.0f;
-        ui.text(hpBuf, bx + barW + 12.0f, by + (barH - hpPx) * 0.5f, hpPx, kColText);
+        // HP numeric -> the mono HUD font (fixed-width digits read steady).
+        ui.text(hpBuf, bx + barW + 12.0f, by + (barH - hpPx) * 0.5f, hpPx, kColText,
+                UiContext::FontRole::HudMono);
     }
 
     // ---- Weapon + ammo (bottom-right) --------------------------------------
@@ -398,7 +424,8 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         if (m.reloading) std::snprintf(ammoBuf, sizeof(ammoBuf), "RELOADING...");
         else             std::snprintf(ammoBuf, sizeof(ammoBuf), "%d / %d", m.ammoInMag, m.ammoReserve);
         const float ammoPx = 30.0f;
-        const float ammoW  = UiContext::textWidth(ammoBuf, ammoPx);
+        // Ammo readout -> mono HUD font (steady-width digits); width query MATCHES role.
+        const float ammoW  = UiContext::textWidth(UiContext::FontRole::HudMono, ammoBuf, ammoPx);
         const float ax = w - ammoW - px;
         const float ay = h - ammoPx - 22.0f;
         // Low-ammo pulse (mag empty-ish): tint amber/red and pulse alpha.
@@ -407,11 +434,12 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
             const float pulse = 0.5f + 0.5f * std::sin(m_t * 8.0f);
             col[0] = 1.0f; col[1] = 0.3f; col[2] = 0.25f; col[3] = 0.6f + 0.4f * pulse;
         }
-        ui.text(ammoBuf, ax, ay, ammoPx, col);
-        // Weapon name above, right-aligned to the ammo line.
+        ui.text(ammoBuf, ax, ay, ammoPx, col, UiContext::FontRole::HudMono);
+        // Weapon name above, right-aligned to the ammo line (Menu/Space Grotesk).
         const float namePx = 16.0f;
-        const float nameW = UiContext::textWidth(m.weapon, namePx);
-        ui.text(m.weapon, w - nameW - px, ay - namePx - 6.0f, namePx, kColTextDim);
+        const float nameW = UiContext::textWidth(UiContext::FontRole::Menu, m.weapon, namePx);
+        ui.text(m.weapon, w - nameW - px, ay - namePx - 6.0f, namePx, kColTextDim,
+                UiContext::FontRole::Menu);
     }
 
     // ---- Objective: drawn GTA/Cyberpunk-style UNDER THE MINIMAP (see below, after
@@ -428,8 +456,9 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         float enCol[4];
         if (clear) { enCol[0]=0.45f; enCol[1]=1.0f;  enCol[2]=0.55f; enCol[3]=1.0f; }
         else       { enCol[0]=1.0f;  enCol[1]=0.62f; enCol[2]=0.30f; enCol[3]=1.0f; }
-        // Top-left, below the FPS/ms stats line (~y 8, ~24 tall).
-        ui.text(enBuf, 10.0f, 40.0f, enPx, enCol);
+        // Top-left, below the FPS/ms stats line (~y 8, ~24 tall). News font (Space
+        // Mono Bold) — the event/ticker voice for pickups / "AREA CLEAR".
+        ui.text(enBuf, 10.0f, 40.0f, enPx, enCol, UiContext::FontRole::News);
     }
 
     // ---- Minimap stub (top-right box; full minimap later) ------------------
@@ -499,8 +528,9 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         ui.quad(0, 0, w, h, dark);
         const float big = std::min(64.0f, w / 12.0f);
         const float red[4] = { 0.9f, 0.12f, 0.12f, 1.0f };
-        ui.textCentered("YOU DIED", w * 0.5f, h * 0.5f - big, big, red);
-        ui.textCentered("Respawning...", w * 0.5f, h * 0.5f + 8.0f, 16.0f, kColTextDim);
+        ui.textCentered("YOU DIED", w * 0.5f, h * 0.5f - big, big, red, UiContext::FontRole::Title);
+        ui.textCentered("Respawning...", w * 0.5f, h * 0.5f + 8.0f, 16.0f, kColTextDim,
+                        UiContext::FontRole::Menu);
     }
 }
 

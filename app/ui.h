@@ -78,18 +78,34 @@ public:
     uint32_t screenW() const { return m_w; }
     uint32_t screenH() const { return m_h; }
 
+    // ---- Font roles --------------------------------------------------------
+    // Convenience aliases so call sites read clearly. These map onto the RHI's
+    // FontRole. PROPORTIONAL roles (Title/Menu/Enemy) advance per-glyph; mono
+    // roles (News/Console/HudMono) keep fixed cells.
+    using FontRole = x3::rhi::FontRole;
+
     // ---- Primitive draws (thin wrappers; no allocation) -------------------
     void quad(float x, float y, float w, float h, const float rgba[4]) const;
-    // Text at (x,y) top-left, glyph size px. Returns the pixel width drawn.
-    float text(const char* s, float x, float y, float px, const float rgba[4]) const;
-    // Centered text: x is the CENTER x; returns the left x used.
-    float textCentered(const char* s, float cx, float y, float px, const float rgba[4]) const;
-    // Pixel width a string would occupy at glyph size px (8x8 atlas: 1:1 cells).
-    static float textWidth(const char* s, float px);
+    // Text at (x,y) top-left, glyph size px, in the given font role. Returns the
+    // TRUE pixel width drawn (proportional-aware). The role defaults to Menu (the
+    // general HUD/label font) so existing call sites read as Space Grotesk.
+    float text(const char* s, float x, float y, float px, const float rgba[4],
+               FontRole role = FontRole::Menu) const;
+    // Centered text: x is the CENTER x; returns the left x used. Role-aware.
+    float textCentered(const char* s, float cx, float y, float px, const float rgba[4],
+                       FontRole role = FontRole::Menu) const;
+    // TRUE pixel width a string occupies at glyph size px for `role` — proportional
+    // roles sum per-glyph advances, mono roles return N*px. Reads live device font
+    // metrics (set in begin()) so centering/right-align stays pixel-exact. The
+    // role-less overload defaults to Menu for back-compat with existing callers.
+    static float textWidth(FontRole role, const char* s, float px);
+    static float textWidth(const char* s, float px) { return textWidth(FontRole::Menu, s, px); }
 
     // ---- Widgets -----------------------------------------------------------
-    // A non-interactive label (left/center). Does not take focus.
-    void label(const char* s, float x, float y, float px, const float rgba[4]) const;
+    // A non-interactive label (left/center). Does not take focus. Role-aware
+    // (defaults to Menu — the general label font).
+    void label(const char* s, float x, float y, float px, const float rgba[4],
+               FontRole role = FontRole::Menu) const;
 
     // A clickable button filling [x,y,w,h] with centered `text`. Returns true on
     // the frame it is activated (mouse click inside OR keyboard-activate while
@@ -113,6 +129,14 @@ public:
     // a 1px bright top edge). Non-interactive.
     void panel(float x, float y, float w, float h, const float rgba[4]) const;
 
+    // An enemy nameplate / threat label: `s` drawn CENTERED at screen (cx, top) in
+    // the Enemy font (Tektur Condensed — the aggressive, condensed threat voice),
+    // with a drop shadow. `px` is the cap height; `rgba` tints it. The monster/HUD
+    // lane calls this once enemies expose a world->screen anchor. Returns the drawn
+    // width. (Wired now so the role + helper exist for the combat lane to adopt.)
+    float enemyNameplate(const char* s, float cx, float top, float px,
+                         const float rgba[4]) const;
+
     // ---- Focus ------------------------------------------------------------
     int  focus() const { return m_focus; }
     void setFocus(int i) { m_focus = i; }
@@ -120,6 +144,13 @@ public:
 
 private:
     bool pointIn(float x, float y, float w, float h) const;
+
+    // Device used by the STATIC textWidth() to query true per-role glyph metrics.
+    // Set in begin() to the live device so centering/right-align is pixel-exact for
+    // proportional fonts. Null (e.g. before the first begin) => textWidth falls back
+    // to N*px (the legacy monospace estimate), which keeps headless layout tests
+    // deterministic. A static pointer is fine: the UI is single-threaded per frame.
+    static x3::rhi::IRenderDevice* s_metricsDevice;
 
     x3::rhi::IRenderDevice* m_device = nullptr;
     x3::rhi::FrameContext   m_frame{};
