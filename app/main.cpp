@@ -782,7 +782,8 @@ int main(int argc, char** argv) {
          testElevatorFsm = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
-         testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false;
+         testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
+         testDeathRagdoll = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1030,6 +1031,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-ecsrender") testEcsRender = true;
         else if (a == "--test-pickup") testPickup = true;
         else if (a == "--test-combat") testCombat = true;
+        else if (a == "--test-deathragdoll") testDeathRagdoll = true;
         else if (a == "--test-audio") testAudio = true;
         else if (a == "--test-level1") testLevel1 = true;
         else if (a == "--test-phase2a") testPhase2a = true;
@@ -1261,6 +1263,10 @@ int main(int argc, char** argv) {
     if (testCombat) {
         x3::logInfo("running shoot-monster combat (S6) self-test...");
         return x3::game::runCombatSelfTest() ? 0 : 1;
+    }
+    if (testDeathRagdoll) {
+        x3::logInfo("running skinned death-ragdoll (TASK#12) self-test...");
+        return x3::game::runDeathRagdollSelfTest() ? 0 : 1;
     }
     if (testAudio) {
         x3::logInfo("running audio (M9) self-test...");
@@ -6568,6 +6574,13 @@ int main(int argc, char** argv) {
     }
     audio->shutdown();
     combatFx.shutdown(*device);
+    // TASK#12: tear down any in-flight SKINNED death ragdolls (Jolt bodies) BEFORE
+    // physics shuts down, so a monster killed in the last ~0.7 s (mid-flop) doesn't
+    // touch a dead Jolt system when its IRagdoll is later destroyed. Fans across the
+    // Level1Game enemy groups; a no-op when nothing is ragdolling.
+    game.corridorEnemies().shutdown();
+    game.checkpointEnemies().shutdown();
+    game.chen().shutdown();
     physics->shutdown();
     device->shutdown();
     glfwDestroyWindow(window);
