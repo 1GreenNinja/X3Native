@@ -26,6 +26,7 @@ add_executable(X3Engine WIN32
     cues.cpp
     valley.cpp
     cliffs.cpp
+    rifthub.cpp
     terrain.cpp
     vehicle.cpp
     fx.cpp
