@@ -347,8 +347,9 @@ void Hud::drawConsole(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
     device.drawHudQuad(frame, 0.0f, top, (float)w, panelH, panel);
     device.drawHudQuad(frame, 0.0f, top + panelH - 2.0f, (float)w, 2.0f, edge);
 
-    // Input line at the bottom of the (slid) panel.
-    const float inputY = top + panelH - pad - kGlyphPx;
+    // Input line near the bottom of the (slid) panel — offset by the full line height
+    // (not just the glyph size) so the text clears the bright bottom-edge separator.
+    const float inputY = top + panelH - pad - lineH;
     const float inText[4] = { 1.0f, 1.0f, 0.6f, 1.0f };
     std::string inLine = "] " + m_input + "_";   // blinking-ish caret marker
     device.drawHudText(frame, inLine.c_str(), pad, inputY, kGlyphPx, inText);
