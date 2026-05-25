@@ -61,7 +61,7 @@ lowest GPU here (1080 Ti) is the dev floor (see `docs/NOTE_TO_14900K.md`).
 |---|---|
 | **CPU** | Intel Core i7-4790K (Haswell) — 4 cores / 8 threads, 4.0 GHz base (~4.4 turbo) |
 | **GPU** | 2 × NVIDIA GTX 980 Ti — 6 GB GDDR5 each, **PCIe 3.0 ×16**, driver 32.0.15.6094 *(Maxwell; **below the 1080 Ti dev floor** — the fleet's true raster/compute floor, no hardware RT)* |
-| **RAM** | 32 GB DDR3-1600 (4 × 8 GB) |
+| **RAM** | 32 GB G.Skill DDR3-2400 (4 × 8 GB, PC3-19200, F3-2400C11-8GXM) — running **2400 MT/s** via XMP (11-13-13-31 @ 1.65 V) |
 | **Storage** | Samsung 980 PRO 2 TB **NVMe** (PCIe 4.0; X3Native repo, `E:`) + 960 EVO 1 TB NVMe (`C:`) + 860 EVO 1 TB SATA (`D:`) |
 | **Monitors** | 1 × 32" 4K — **3840×2160 @ 60 Hz** |
 | **Motherboard** | ASUS Z97-A (BIOS 3503) |
