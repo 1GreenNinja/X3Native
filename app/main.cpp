@@ -5444,6 +5444,35 @@ int main(int argc, char** argv) {
                         }
                     }
                 }
+                // Elevator + cell-terminal prompts (so the player KNOWS they're in range
+                // and which key — same world->screen anchoring as the door prompt). ----
+                if (!terrainWorld && !codeMode && !termMode) {
+                    float pex, pey, pez, pyaw, ppitch;
+                    player.camera(pex, pey, pez, pyaw, ppitch);
+                    if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
+                    auto floatPrompt = [&](const x3::phys::Vec3& at, const char* label, float xoff) {
+                        float sx = 0.0f, sy = 0.0f;
+                        if (!device->worldToScreen(at.x, at.y, at.z, sx, sy)) return;
+                        const float col[4]    = { 0.66f, 0.92f, 1.0f, 0.95f };
+                        const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
+                        device->drawHudText(frame, label, sx - xoff + 1.5f, sy + 1.5f, 2.4f, shadow);
+                        device->drawHudText(frame, label, sx - xoff, sy, 2.4f, col);
+                    };
+                    // Elevator: within ~4 m of the cab.
+                    if (elevator.built()) {
+                        const x3::phys::Vec3 cc = elevator.cabCenter();
+                        const float ex = pex - cc.x, ez = pez - cc.z;
+                        if (ex*ex + ez*ez < 16.0f)
+                            floatPrompt(x3::phys::Vec3{ cc.x, cc.y + 1.6f, cc.z }, "[E] Call Elevator", 84.0f);
+                    }
+                    // Cell HoloTerminal: within ~3 m of its anchor.
+                    if (game.secret().terminal().built()) {
+                        const x3::phys::Vec3 a = game.secret().terminal().anchor();
+                        const float dx = pex - a.x, dz = pez - a.z;
+                        if (dx*dx + dz*dz < 9.0f)
+                            floatPrompt(x3::phys::Vec3{ a.x, a.y + 0.55f, a.z }, "[E] Use Terminal (code 1127)", 110.0f);
+                    }
+                }
                 // ---- RESCUED-NPC TALK: floating "[E] Talk" prompt + the dialog box.
                 // The prompt floats over a nearby LIVE captive's head (worldToScreen,
                 // mirroring the door prompt). Once an exchange is open the prompt gives
