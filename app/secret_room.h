@@ -33,7 +33,7 @@ namespace x3::game {
 // The override code that opens the cell trapdoor (the lore code, matching the
 // detention-terminal readout). Entering exactly this on the HoloTerminal unlocks
 // + opens the floor hatch.
-inline constexpr const char* kSecretRoomCode = "1127";
+inline constexpr const char* kSecretRoomCode = "1278";   // (1127 is Door C / Club 1127 — keep this distinct)
 
 // One collectible in the secret room. A pickup prop with a kind, an emissive look,
 // and a collected latch (the player walking within radius collects it). HEALTH and

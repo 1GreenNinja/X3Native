@@ -5555,7 +5555,7 @@ int main(int argc, char** argv) {
                         const x3::phys::Vec3 a = game.secret().terminal().anchor();
                         const float dx = pex - a.x, dz = pez - a.z;
                         if (dx*dx + dz*dz < 9.0f)
-                            floatPrompt(x3::phys::Vec3{ a.x, a.y + 0.55f, a.z }, "[E] Use Terminal (code 1127)", 110.0f);
+                            floatPrompt(x3::phys::Vec3{ a.x, a.y + 0.55f, a.z }, "[E] Use Terminal (code 1278)", 110.0f);
                     }
                 }
                 // ---- RESCUED-NPC TALK: floating "[E] Talk" prompt + the dialog box.

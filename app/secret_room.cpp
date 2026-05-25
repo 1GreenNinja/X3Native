@@ -116,7 +116,7 @@ void SecretRoom::build(Scene& scene, x3::rhi::IRenderDevice& device,
         h.duration      = 1.2f;
         h.withButton    = false;       // opened by the terminal code, not a wall button
         h.locked        = true;        // ONLY the override code opens it
-        h.code          = 1127;        // the lore override code (matches kSecretRoomCode)
+        h.code          = 1278;        // the override code (matches kSecretRoomCode; 1127 is taken)
         h.tint[0]=0.30f; h.tint[1]=0.34f; h.tint[2]=0.40f; h.tint[3]=1.0f;  // dark steel hatch
         m_hatchIdx = buildLevelDoor(scene, doors, device, physics, h);
     }
