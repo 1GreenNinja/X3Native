@@ -55,19 +55,19 @@ lowest GPU here (1080 Ti) is the dev floor (see `docs/NOTE_TO_14900K.md`).
 | **Network** | _TODO_ |
 | **Role** | clean-room gameplay (Act-2 roster, etc.) |
 
-## 🖥️ i5000 — worker  *(STUB — please complete)*
+## 🖥️ i5000 — worker  *(COMPLETE)*
 
 | Component | Spec |
 |---|---|
-| **CPU** | _TODO_ |
-| **GPU** | _TODO_ |
-| **RAM** | _TODO_ |
-| **Storage** | _TODO_ |
-| **Monitors** | _TODO_ |
-| **Motherboard** | _TODO_ |
-| **OS** | _TODO_ |
-| **Network** | _TODO_ |
-| **Role** | _TODO_ |
+| **CPU** | Intel Core i7-4790K (Haswell) — 4 cores / 8 threads, 4.0 GHz base (~4.4 turbo) |
+| **GPU** | 2 × NVIDIA GTX 980 Ti — 6 GB GDDR5 each, **PCIe 3.0 ×16**, driver 32.0.15.6094 *(Maxwell; **below the 1080 Ti dev floor** — the fleet's true raster/compute floor, no hardware RT)* |
+| **RAM** | 32 GB DDR3-1600 (4 × 8 GB) |
+| **Storage** | Samsung 980 PRO 2 TB **NVMe** (PCIe 4.0; X3Native repo, `E:`) + 960 EVO 1 TB NVMe (`C:`) + 860 EVO 1 TB SATA (`D:`) |
+| **Monitors** | 1 × 32" 4K — **3840×2160 @ 60 Hz** |
+| **Motherboard** | ASUS Z97-A (BIOS 3503) |
+| **OS** | Windows 11 Pro **23H2** (build 22631.6199) |
+| **Network** | Wyyerd fiber — **510 ↓ / 564 ↑ Mbps** (Phoenix AZ) |
+| **Role** | worker — Act-2 desert lane (`act2_desert` L10/L11) + prototypes (rotor-spin); pushes feature branches, integrator re-gates |
 
 ---
 
