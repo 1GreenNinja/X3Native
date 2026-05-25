@@ -157,3 +157,26 @@ Club 1127 DJ booth PC. Sits on the Blue Toolbox (one of many).
 - **Vulkan 1.3 feature support on GTX 1080 Ti**: per `BUILD.md`, expected to pass `set_required_features_*` checks; if not, `init()` logs which selection failed.
 - **2× 27" 1440p panels** = comfortable side-by-side dev layout (code on one, debugger / RenderDoc on the other).
 - **Wired 1 Gbps NIC** is fine for LAN/Git, but WAN bandwidth (239/138 as of 2026-05-23) still bottlenecks first-time git clones of larger feature branches + any vcpkg binary-cache pulls vs. the 1200 Mbps fiber target. **Cat6 fleet upgrade in flight** to put predictable gigabit LAN between all dev PCs, so the WAN gap stops affecting inter-machine syncs even before the fiber move.
+
+---
+
+## STATUS — feat/portal-hub (2026-05-23, agent session)
+
+**Branch:** `feat/portal-hub` (forked from `feat/act2-caves`).
+**Deliverables landed (clean-room — NO RBDOOM / id Tech / Doom / Quake source consulted):**
+- NEW `app/rifthub.{h,cpp}` — portal-hub module: 8 cosmetic emissive rifts (one per known `--world` target), trigger id range 200..207 (clear of all existing ranges), `Rifthub::onTrigger` latches per-portal activation + logs the relaunch hint, `Rifthub::hudPromptForEye` emits a 5 m HUD prompt.
+- EDIT `app/main.cpp` — added `--world act2caves` direct-boot block (mirrors `--world valley` shape: flat 200x200 m physics ground at the L12 spawn elevation + `Act2Caves::build()` + first-person controller + LMB -> `onFire` + trigger forwarding + headless screenshot path + full cleanup) AND `--world rifthub` block (first-person walk of the portal ring + nearest-portal HUD prompt + headless 3/4 vantage screenshot). Also extended the `--world` doc comment with the known-value list.
+- EDIT `app/CMakeLists.txt` — appended `rifthub.cpp` to the X3Engine source list.
+
+**Build/gate:** GATE PENDING — toolchain ready (VS 2026 Insiders + Vulkan SDK 1.4.350.0 + vcpkg `f7f9411` all installed on DJBOOTH), NOT YET RUN this session per the integrator's instruction (user is waiting for the deliverable). Fire the gate with the standard preset:
+```powershell
+$env:VCPKG_ROOT="C:\vcpkg"; $env:VULKAN_SDK="C:\VulkanSDK\1.4.350.0"
+$cmake="C:\Program Files\Microsoft Visual Studio\18\Insiders\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+& $cmake --preset windows-vs2026; & $cmake --build --preset windows-vs2026
+& "$PWD\build\bin\X3Engine.exe" --world rifthub --screenshot agent_rifthub.png
+& "$PWD\build\bin\X3Engine.exe" --world act2caves --screenshot agent_act2caves.png
+```
+
+**Portal layout (clockwise from +X, radius 14 m):** position 0 = `act2caves` (violet), 1 = `act2` (orange-amber), 2 = `valley` (cyan), 3 = `cliffs` (white-gold), 4 = `club` (magenta), 5 = `destruct` (red), 6 = `ragdoll` (green), 7 = `terrain` (sky-blue).
+
+**Future task (not in this draft):** turn `Rifthub::onTrigger` into an actual in-process world swap (tear down hub physics+scene, build the linked world's host) so the player doesn't have to relaunch — the trigger id -> world-name table already in `rifthub.cpp` is the pivot.
