@@ -285,6 +285,11 @@ void charCallback(GLFWwindow* win, unsigned int codepoint) {
     if (ctx && ctx->hud) ctx->hud->onChar(codepoint);
 }
 
+// Mouse-wheel accumulator (weapon cycling). The scroll callback adds the wheel
+// delta; the main loop consumes it once per frame to switch weapons.
+static double g_weaponScroll = 0.0;
+void scrollCallback(GLFWwindow* /*win*/, double /*xoff*/, double yoff) { g_weaponScroll += yoff; }
+
 // GLFW key callback: the '`'/'~' toggle (always), plus console editing keys when
 // the console is open. Gameplay keys are polled in the loop and gated separately.
 void keyCallback(GLFWwindow* win, int key, int /*scancode*/, int action, int /*mods*/) {
@@ -4459,6 +4464,7 @@ int main(int argc, char** argv) {
     glfwSetWindowUserPointer(window, &inputCtx);
     glfwSetCharCallback(window, charCallback);
     glfwSetKeyCallback(window, keyCallback);
+    glfwSetScrollCallback(window, scrollCallback);   // mouse wheel cycles weapons
     bool consoleWasOpen = false;   // tracks cursor-mode transitions
 
     // Rising-edge tracking for Space (jump), F (noclip toggle), E (use), V/MMB
@@ -4744,6 +4750,13 @@ int main(int argc, char** argv) {
             bool rNow = keyDown(GLFW_KEY_R);
             if (rNow && !prevReload && game.armed()) arsenal.reload();
             prevReload = rNow;
+            // MOUSE WHEEL cycles weapons (up = next, down = previous), wrapping.
+            if (!termMode && !consoleOpen && g_weaponScroll != 0.0 && arsenal.count() > 0) {
+                const int cnt = arsenal.count();
+                const int dir = (g_weaponScroll > 0.0) ? 1 : -1;
+                arsenal.select(((arsenal.selected() + dir) % cnt + cnt) % cnt);
+            }
+            g_weaponScroll = 0.0;   // consume the wheel delta each frame
         }
         // Advance the arsenal timers (fire cooldowns + reload completion) every frame.
         arsenal.tick(dt);
