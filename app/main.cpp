@@ -6044,11 +6044,15 @@ int main(int argc, char** argv) {
                     const x3::phys::Vec3 hbEye{ camX, camY, camZ };
                     auto hpBar = [&](const x3::phys::Vec3& head, int hpv, int mx, float flash) {
                         if (mx <= 0 || hpv <= 0) return;   // living enemies only
+                        // Only show a bar for NEARBY enemies — fades out by ~18 m, gone by 22 m
+                        // (no bars from across the room / 50 ft away).
+                        const float hdx=head.x-hbEye.x, hdy=head.y-hbEye.y, hdz=head.z-hbEye.z;
+                        if (hdx*hdx+hdy*hdy+hdz*hdz > 22.0f*22.0f) return;   // >22 m: no bar
                         float sx = 0.0f, sy = 0.0f;
                         if (!device->worldToScreen(head.x, head.y, head.z, sx, sy)) return;  // behind camera
                         const float frac = (hpv >= mx) ? 1.0f : (float)hpv / (float)mx;
                         uint32_t hw=0, hh=0; device->hudSize(hw, hh);
-                        const float bw = 64.0f, bh = 7.0f, x0 = sx - bw * 0.5f;
+                        const float bw = 40.0f, bh = 3.0f, x0 = sx - bw * 0.5f;   // thin line (was 64x7)
                         float y0 = sy; if (y0 < 14.0f) y0 = 14.0f;            // clamp on-screen (close enemies)
                         if (hh > 30 && y0 > (float)hh - 30.0f) y0 = (float)hh - 30.0f;
                         const float lowH = 1.0f - frac;                       // 0 healthy -> 1 dying
@@ -6205,7 +6209,7 @@ int main(int argc, char** argv) {
                             if (a > 1.0f) a = 1.0f; if (a < 0.0f) a = 0.0f;
                             a = 0.30f + 0.70f * a;                   // soft floor so it reads at reach edge
                             const char* label = doorOpen ? "[E] Close" : "[E] Open";
-                            const float sz = 2.4f;
+                            const float sz = 18.0f;   // readable prompt (was 2.4 = microscopic)
                             const float tx = sx - 46.0f, ty = sy;
                             const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f * a };
                             const float col[4]    = { 0.66f, 0.92f, 1.0f, a };   // cyan-white
@@ -6225,8 +6229,8 @@ int main(int argc, char** argv) {
                         if (!device->worldToScreen(at.x, at.y, at.z, sx, sy)) return;
                         const float col[4]    = { 0.66f, 0.92f, 1.0f, 0.95f };
                         const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
-                        device->drawHudText(frame, label, sx - xoff + 1.5f, sy + 1.5f, 2.4f, shadow);
-                        device->drawHudText(frame, label, sx - xoff, sy, 2.4f, col);
+                        device->drawHudText(frame, label, sx - xoff + 1.5f, sy + 1.5f, 18.0f, shadow);
+                        device->drawHudText(frame, label, sx - xoff, sy, 18.0f, col);
                     };
                     // Elevator: within ~4 m of the cab.
                     if (elevator.built()) {
@@ -6309,7 +6313,7 @@ int main(int argc, char** argv) {
                                 float a = 1.0f - (dd - 2.0f);
                                 if (a > 1.0f) a = 1.0f; if (a < 0.0f) a = 0.0f;
                                 a = 0.35f + 0.65f * a;
-                                const float sz = 2.4f;
+                                const float sz = 18.0f;   // readable prompt (was 2.4 = microscopic)
                                 const float tx = sx - 40.0f, ty = sy;
                                 const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f * a };
                                 const float col[4]    = { 1.0f, 0.72f, 0.84f, a };   // warm rose (a person, not a door)
