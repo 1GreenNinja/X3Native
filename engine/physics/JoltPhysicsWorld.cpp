@@ -469,6 +469,11 @@ public:
         m_system->AddConstraint(c);
         uint32_t id = m_nextConstraintId++;
         m_constraints[id] = c;   // Ref<TwoBodyConstraint> -> Ref<Constraint> (upcast)
+        // Track the DYNAMIC body (b) so removeConstraint() can wake it (so it
+        // reacts/falls when the joint is cut) and removeBody(b) tears the joint
+        // down. (When `a` is also a real dynamic body we still track b — waking
+        // either body is enough for the contact solver to re-activate the pair.)
+        m_constraintBody[id] = b.id;
         return ConstraintId{ id };
     }
 
@@ -746,19 +751,20 @@ public:
     void removeConstraint(ConstraintId id) override {
         auto it = m_constraints.find(id.id);
         if (it == m_constraints.end()) return;
+        // Wake the freed body (if we know it) so it reacts to losing the joint
+        // (e.g. falls). NOTE: do NOT C++ dynamic_cast the constraint to a
+        // TwoBodyConstraint to fetch its bodies — Jolt is compiled with C++ RTTI
+        // OFF (it uses its own JPH RTTI), so dynamic_cast crashes. For §1 joints
+        // we have the body in m_constraintBody; two-body joints reactivate
+        // naturally on the next force change.
         if (m_system) {
-            // Wake the freed bodies so they react to losing the joint (e.g. fall).
-            // Only a two-body joint exposes its bodies; §1 world joints don't.
-            JPH::BodyInterface& bi = m_system->GetBodyInterface();
-            if (auto* tbc = dynamic_cast<JPH::TwoBodyConstraint*>(it->second.GetPtr())) {
-                JPH::Body* b1 = tbc->GetBody1();
-                JPH::Body* b2 = tbc->GetBody2();
-                m_system->RemoveConstraint(it->second.GetPtr());
-                if (b1 && !b1->IsStatic()) bi.ActivateBody(b1->GetID());
-                if (b2 && !b2->IsStatic()) bi.ActivateBody(b2->GetID());
-            } else {
-                m_system->RemoveConstraint(it->second.GetPtr());
+            auto bodyIt = m_constraintBody.find(id.id);
+            if (bodyIt != m_constraintBody.end()) {
+                auto b = m_bodies.find(bodyIt->second);
+                if (b != m_bodies.end())
+                    m_system->GetBodyInterface().ActivateBody(b->second);
             }
+            m_system->RemoveConstraint(it->second.GetPtr());
         }
         m_constraints.erase(it);
         m_constraintBody.erase(id.id);
