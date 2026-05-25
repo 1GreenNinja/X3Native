@@ -337,6 +337,7 @@ GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState ba
     if (ui.toggle("SSGI (GI)",   model.ssgi,    rx, ry, rw, rh)) { model.ssgi    = !model.ssgi;    outChanged = true; } ry += rh + gap;
     if (ui.toggle("Shadows",     model.shadows, rx, ry, rw, rh)) { model.shadows = !model.shadows; outChanged = true; } ry += rh + gap;
     if (ui.toggle("VSync",       model.vsync,   rx, ry, rw, rh)) { model.vsync   = !model.vsync;   outChanged = true; } ry += rh + gap;
+    if (ui.toggle("RT AO (ray-traced)", model.rtao, rx, ry, rw, rh)) { model.rtao = !model.rtao;   outChanged = true; } ry += rh + gap;
 
     // Resolution row: LIVE framebuffer size on the left (updates as the window is
     // dragged) + a "SET DEFAULT" button on the RIGHT (where the old --width/--height
@@ -696,6 +697,7 @@ void UiController::applySettings(x3::rhi::IRenderDevice& device, x3::con::IConso
         console->set("r_ssgi",    m_settings.ssgi    ? "1" : "0");
         console->set("r_shadows", m_settings.shadows ? "1" : "0");
         console->set("r_vsync",   m_settings.vsync   ? "1" : "0");
+        console->set("r_rtao",    m_settings.rtao    ? "1" : "0");   // hardware RT ambient occlusion
     }
 }
 

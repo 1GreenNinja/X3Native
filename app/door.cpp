@@ -376,40 +376,6 @@ uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
         doorEntId = scene.add(e);
     }
 
-    // ---- DOOR FRAME (jamb posts + lintel): fixed steel trim around the opening so it
-    // reads as a real framed doorway, not a gap with a floating slab. Sits just OUTSIDE
-    // the clear passage (±halfWidth) so it never blocks walking through; does not slide.
-    // Skipped for the floor hatch (horizontal). ----
-    if (!spec.floorHatch) {
-        const float pp = 0.13f;                       // post half-thickness (in the run dir)
-        const float fd = ht + 0.06f;                  // frame depth (slightly proud of the wall)
-        const float dy = spec.doorwayCenter.y;        // opening bottom (floor)
-        const float cyMid = dy + hh;                  // post center height
-        const float cyTop = dy + 2.0f * hh + pp;      // lintel center (just above the opening)
-        const float cx = spec.doorwayCenter.x, cz = spec.doorwayCenter.z;
-        const float fc[4] = { 0.46f, 0.50f, 0.56f, 1.0f };   // brushed-steel frame
-        auto addFrame = [&](const x3::phys::Vec3& c, const x3::phys::Vec3& h) {
-            x3::prims::PrimMesh g = x3::prims::makeBox(h.x, h.y, h.z, 0, 0, 0, 1.0f);
-            Entity fe;
-            fe.mesh = device.createMesh(g.verts.data(), (uint32_t)g.verts.size(),
-                                        g.index.data(), (uint32_t)g.index.size());
-            fe.baseColor[0]=fc[0]; fe.baseColor[1]=fc[1]; fe.baseColor[2]=fc[2]; fe.baseColor[3]=fc[3];
-            fe.tag = (uint32_t)Tag::Static; fe.visible = true;
-            fe.body = physics.addBox(h, c, 0.0f, x3::phys::Layer::Static);
-            fe.transform[12]=c.x; fe.transform[13]=c.y; fe.transform[14]=c.z;
-            scene.add(fe);
-        };
-        if (spec.axis == DoorAxis::AlongX) {          // opening runs along X (wall plane z=const)
-            addFrame({ cx - hw - pp, cyMid, cz }, { pp, hh, fd });           // left post
-            addFrame({ cx + hw + pp, cyMid, cz }, { pp, hh, fd });           // right post
-            addFrame({ cx,           cyTop, cz }, { hw + 2.0f*pp, pp, fd }); // lintel
-        } else {                                      // opening runs along Z (wall plane x=const)
-            addFrame({ cx, cyMid, cz - hw - pp }, { fd, hh, pp });           // post
-            addFrame({ cx, cyMid, cz + hw + pp }, { fd, hh, pp });           // post
-            addFrame({ cx, cyTop, cz           }, { fd, pp, hw + 2.0f*pp }); // lintel
-        }
-    }
-
     Door d;
     d.entity    = doorEntId;
     d.body      = scene.get(doorEntId).body;

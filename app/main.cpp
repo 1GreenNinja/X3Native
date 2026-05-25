@@ -4527,6 +4527,7 @@ int main(int argc, char** argv) {
         // the device desc; resolution = the actual window size.
         sm.bloom = true; sm.ssao = true; sm.ssgi = true; sm.shadows = true;
         sm.vsync = desc.vsync; sm.width = W; sm.height = H;
+        sm.rtao = (console->getInt("r_rtao") != 0);   // RT AO: reflect the cvar (default OFF)
         gameUi.init(*device, console.get(), sm);
         gameUi.setTitle(terrainWorld ? "X3 ENGINE" : "ESCAPE FROM LAB ZERO",
                         terrainWorld ? "open-world demo" : "Level 1 - Awakening");
@@ -4635,8 +4636,17 @@ int main(int argc, char** argv) {
         // edge so the transition is seamless either way.
         if (player.noclip() != noclip) {
             noclip = player.noclip();
-            if (noclip) player.camera(flyX, flyY, flyZ, flyYaw, flyPitch);
-            x3::logInfo(noclip ? "noclip ON (fly: WASD + Space up / Ctrl down, look to steer)" : "noclip OFF");
+            if (noclip) {
+                player.camera(flyX, flyY, flyZ, flyYaw, flyPitch);   // ON: seed fly cam from the view
+            } else {
+                // OFF: drop the player WHERE THE FLY CAM ENDED (feet 1.6m below the eye) so
+                // you stay put and can explore other floors — don't snap back to the
+                // pre-noclip spot. Keep the look direction continuous.
+                player.setFeetPosition(*physics, x3::phys::Vec3{ flyX, flyY - 1.6f, flyZ });
+                player.setLook(flyYaw, flyPitch);
+            }
+            x3::logInfo(noclip ? "noclip ON (fly: WASD + Space up / Ctrl down, look to steer)"
+                               : "noclip OFF (landed at fly position)");
         }
 
         // F3: toggle the perf stats overlay (drives the r_stats cvar) on the rising

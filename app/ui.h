@@ -250,6 +250,7 @@ struct SettingsModel {
     bool ssgi    = true;
     bool shadows = true;
     bool vsync   = true;
+    bool rtao    = false;          // hardware ray-traced AO (r_rtao) — OFF by default; no-op without RT
     uint32_t width  = 1280;        // the "set as default" startup size (persisted)
     uint32_t height = 720;
     uint32_t dispW  = 0;           // LIVE framebuffer size (host sets each frame) -> Settings readout
