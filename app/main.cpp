@@ -1262,6 +1262,7 @@ int main(int argc, char** argv) {
     if (testOceanBase) {
         x3::logInfo("running EFLZ open-world ocean + undersea base + submarine combat self-test...");
         return x3::game::runOceanBaseSelfTest() ? 0 : 1;
+    }
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
         return x3::game::runDoorCodeSelfTest() ? 0 : 1;
