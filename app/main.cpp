@@ -85,6 +85,7 @@ namespace x3::game {
 #include "companion.h"                      // companion reflex AI (--test-companion)
 #include "companion_squad.h"                // companion Slice B: squad integration (--test-companion-squad + --world companion)
 #include "companion_controller.h"           // companion Slice C seam: single-companion wrapper (--test-companion-controller)
+#include "rifthub.h"                         // Portal hub: discoverable rifts (--world rifthub)
 #include "terrain.h"
 #include "fx.h"
 #include "hud.h"
@@ -1631,9 +1632,17 @@ int main(int argc, char** argv) {
     // Prints one line per floor (path + that floor's enemy count). 0 VUID under Debug.
     bool        captureSpire    = false;
     std::string captureSpireDir = "captures/spire";
-    // World selector (--world terrain): launch the playable OUTDOOR terrain world
-    // (walk the hills) instead of the default interior Level 1. Anything else (or
-    // omitted) keeps Level 1 as the default, unchanged.
+    // World selector (--world <name>): launch one of the playable worlds instead of
+    // the default interior Level 1. Anything else (or omitted) keeps Level 1 as the
+    // default, unchanged. Known values include:
+    //   terrain | ocean | elevator      — outdoor terrain / ocean / interior elevator hosts
+    //   club | valley | cliffs           — Act-1 cliffs finale + Act-2 surface biomes
+    //   act2caves                        — direct-boot into the EFLZ Act-2 caves L12-15 slice
+    //   destruct | ragdoll | physjoint   — physics/destruction demos
+    //   drive | boat | fly               — vehicle framework demos
+    //   rifthub                          — portal-hub: a discoverable ring of cosmetic
+    //                                       rifts, one per --world target above (DRAFT;
+    //                                       signposts only, no runtime world switch yet)
     std::string worldMode = "level1";
     // Optional settle-frame count for --screenshot (default 16 = unchanged
     // behavior). Larger values advance the world (and the characters' skeletal
@@ -9164,6 +9173,228 @@ int main(int argc, char** argv) {
 
         vstream.shutdown(vscene, *device, *vphys);
         vphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    // ---- Act-2 mid biomes direct boot (--world act2caves) -------------------
+    // Direct-boot into the EFLZ Act-2 mid-biomes content (L12 Advanced Cave System
+    // -> L13 Toxic Swamplands Edge -> L14 Research Station -> L15 Tree Cities).
+    // The caves are subterranean and authored at hand-picked Y (no streamed terrain
+    // — see act2_caves.cpp kL12CaveBaseY etc.), so the host here builds a FLAT
+    // physics ground at the L12 spawn elevation + a soft emissive sky and lets
+    // Act2Caves::build() author every prop / pack / boss on top. WALKABLE
+    // (WASD/mouse, Space jump, LeftShift sprint, F noclip) + headless screenshot.
+    if (worldMode == "act2caves") {
+        x3::logInfo("--world act2caves: building the EFLZ Act-2 mid biomes (L12-L15)");
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> aphys(x3::phys::createPhysicsWorld());
+        if (!aphys->init()) {
+            x3::logError("--world act2caves: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        // Scene + shared trigger system the caves module forwards firings into.
+        x3::game::Scene ascene;
+        x3::game::TriggerSystem atriggers;
+
+        // Soft cave/sky lighting: a dimmer sun + heavy haze so the bioluminescent
+        // emissives on cave-fauna + the Crystal Heart read against the dark caves.
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.2f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.1f;
+            sp.sunColor[0] = 0.55f; sp.sunColor[1] = 0.60f; sp.sunColor[2] = 0.85f;
+            sp.sunIntensity = 0.55f; sp.haze = 0.85f; sp.exposure = 1.0f;
+            device->setSkyParams(sp);
+        }
+
+        // Build the caves content (places L12..L15 + triggers + the Crystal Heart
+        // prop + the Tree-City platforms). The plan().spawn for L12 is the player
+        // entry point we'll seat the capsule at.
+        x3::game::Act2Caves caves;
+        caves.build(ascene, *device, *aphys, atriggers, x3::game::riggedGlbRoot());
+
+        // Flat physics ground at the L12 spawn elevation: a wide, thin static slab
+        // beneath the player so the capsule doesn't fall through (the caves
+        // content itself is authored at hand-picked Y and has no ground mesh —
+        // this is the underground "floor" for the player capsule). 200x200 m so
+        // walking forward over the authored level deltas keeps a surface to land on.
+        const x3::phys::Vec3 cavesSpawn =
+            caves.plan(x3::game::Act2CaveLevel::L12_AdvancedCaveSystem).spawn;
+        {
+            x3::prims::PrimMesh g = x3::prims::makeBox(100.0f, 0.25f, 100.0f,
+                                                       cavesSpawn.x, cavesSpawn.y - 0.30f,
+                                                       cavesSpawn.z, 0.25f);
+            aphys->addStaticMesh(g.cverts.data(),
+                                 (uint32_t)(g.cverts.size() / 3),
+                                 g.cindex.data(), (uint32_t)g.cindex.size());
+            auto gtex = x3::prims::makeCheckerRGBA(64, 8, 70, 80, 100, 30, 36, 50);
+            x3::rhi::TextureHandle gth =
+                device->createTexture(gtex.data(), 64, 64, true);
+            x3::rhi::MeshHandle gmh = device->createMesh(
+                g.verts.data(), (uint32_t)g.verts.size(),
+                g.index.data(), (uint32_t)g.index.size());
+            x3::game::Entity ge;
+            ge.mesh = gmh;
+            ge.tex  = gth;
+            ge.baseColor[0] = 1.0f; ge.baseColor[1] = 1.0f; ge.baseColor[2] = 1.0f;
+            ge.baseColor[3] = 1.0f;
+            ge.tag = (uint32_t)x3::game::Tag::Static;
+            ascene.add(ge);
+        }
+        aphys->optimizeBroadphase();
+
+        // No-op attack FX hook — the caves' MonsterManager pipeline tolerates an
+        // empty function (the host can wire CombatFx tracers later if needed).
+        x3::game::AttackFxFn noopFx;
+
+        const float dt = 1.0f / 60.0f;
+
+        // ===== Headless screenshot path: settle the boss/pack/triggers, grab. ====
+        if (headless) {
+            // Vantage: hover slightly above the L12 spawn, looking down the cave
+            // spine (+X) so the cave-fauna pack + the Crystal Heart glow read.
+            float cam[5] = { cavesSpawn.x - 4.0f, cavesSpawn.y + 2.5f, cavesSpawn.z,
+                             0.0f, -0.18f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const int kSettle = 32;
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_act2caves.png");
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                const x3::phys::Vec3 eye{ cam[0], cam[1], cam[2] };
+                caves.tick(dt, ascene, *aphys, eye, eye, /*player=*/nullptr, noopFx);
+                aphys->step(dt);
+                ascene.update(*aphys);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    ascene.render(*device, frame);
+                    caves.draw(*device, frame, ascene);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world act2caves: wrote screenshot " + outPath);
+            else       x3::logError("--world act2caves: capture FAILED");
+            aphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: first-person controller (mirrors valley). =
+        x3::game::Player aplayer;
+        aplayer.spawn(*aphys, cavesSpawn.x, cavesSpawn.y, cavesSpawn.z);
+
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        bool prevSpaceA = false, prevFA = false, noclipA = false, prevLMBA = false;
+        float flyXa = cavesSpawn.x, flyYa = cavesSpawn.y + 1.6f, flyZa = cavesSpawn.z,
+              flyYawA = 0.0f, flyPitchA = -0.10f;
+        x3::logInfo("--world act2caves: WASD walk, mouse look, Space jump, "
+                    "LeftShift sprint, F noclip, LMB fire, Esc to quit");
+
+        int lastWa = (int)W, lastHa = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+
+            double now = glfwGetTime();
+            float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+
+            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            bool spaceNow = kd(GLFW_KEY_SPACE);
+            bool fNow     = kd(GLFW_KEY_F);
+            if (fNow && !prevFA) {
+                noclipA = !noclipA;
+                if (noclipA) { float yy, pp; aplayer.camera(flyXa, flyYa, flyZa, yy, pp); flyYawA = yy; flyPitchA = pp; }
+            }
+            prevFA = fNow;
+
+            float camX, camY, camZ, camYaw, camPitch;
+            if (!noclipA) {
+                x3::game::PlayerInput in;
+                if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+                if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+                if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+                if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+                in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+                in.jumpPressed = spaceNow && !prevSpaceA;
+                in.lookDX = ddx; in.lookDY = ddy;
+                aplayer.update(in, fdt, *aphys);
+                aplayer.camera(camX, camY, camZ, camYaw, camPitch);
+            } else {
+                const float sens = 0.0025f;
+                flyYawA += ddx * sens; flyPitchA -= ddy * sens;
+                if (flyPitchA >  1.55f) flyPitchA =  1.55f;
+                if (flyPitchA < -1.55f) flyPitchA = -1.55f;
+                float fxv = std::cos(flyPitchA) * std::cos(flyYawA);
+                float fyv = std::sin(flyPitchA);
+                float fzv = std::cos(flyPitchA) * std::sin(flyYawA);
+                float rl = std::sqrt(fxv*fxv + fzv*fzv); if (rl < 1e-4f) rl = 1e-4f;
+                float rx = -fzv/rl, rz = fxv/rl;
+                float spd = 6.0f * fdt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd *= 3.0f;
+                if (kd(GLFW_KEY_W)) { flyXa += fxv*spd; flyYa += fyv*spd; flyZa += fzv*spd; }
+                if (kd(GLFW_KEY_S)) { flyXa -= fxv*spd; flyYa -= fyv*spd; flyZa -= fzv*spd; }
+                if (kd(GLFW_KEY_D)) { flyXa += rx*spd; flyZa += rz*spd; }
+                if (kd(GLFW_KEY_A)) { flyXa -= rx*spd; flyZa -= rz*spd; }
+                if (spaceNow) flyYa += spd;
+                if (kd(GLFW_KEY_LEFT_CONTROL)) flyYa -= spd;
+                camX = flyXa; camY = flyYa; camZ = flyZa; camYaw = flyYawA; camPitch = flyPitchA;
+            }
+            prevSpaceA = spaceNow;
+
+            // LMB fire: forward to Act2Caves::onFire (the first live hostile takes it).
+            const bool lmbNow = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            if (lmbNow && !prevLMBA) {
+                const float dxL = std::cos(camPitch) * std::cos(camYaw);
+                const float dyL = std::sin(camPitch);
+                const float dzL = std::cos(camPitch) * std::sin(camYaw);
+                caves.onFire(x3::phys::Vec3{ camX, camY, camZ },
+                             x3::phys::Vec3{ dxL, dyL, dzL }, ascene, *aphys);
+            }
+            prevLMBA = lmbNow;
+
+            // Tick caves (enemies + boss + L13 hazard) with the player as the
+            // damage sink + the eye/player position, step physics, dispatch
+            // any triggers the player tripped this frame.
+            const x3::phys::Vec3 ppos{ camX, camY, camZ };
+            caves.tick(fdt, ascene, *aphys, ppos, ppos, &aplayer, noopFx);
+            const auto fired = atriggers.update(ppos);
+            for (uint32_t id : fired) caves.onTrigger(id);
+
+            aphys->step(fdt);
+            ascene.update(*aphys);
+
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWa || chh != lastHa) { lastWa = cw; lastHa = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+
+            device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                ascene.render(*device, frame);
+                caves.draw(*device, frame, ascene);
+            }
+            device->endFrame(frame);
+        }
+
+        aphys->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
