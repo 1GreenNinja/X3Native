@@ -7,6 +7,8 @@
 NEVER read/reference/copy from RBDOOM, id Tech, Doom, Quake, or ANY other game-ENGINE source. The Cyberpunk City packs in `G:\Assets` are Tim's **licensed Unity Asset Store** content — fine to convert + use (like the ModularSciFi kit that `env_art.cpp` already uses). Build the native impl from X3Native's own interfaces.
 
 ## YOUR TASK: make the open-world metropolis look like CYBERPUNK 2077
+> **INVOKE THE SKILL `x3native-environments`** — it is the authoritative native how-to for this (demo-scene→placement-manifest, FBX→GLB **with textures**, the `env_art`-style overlay with **hard emissive neon**, curated layout, neon-noir lighting). The sections below are the task-specific specifics; the skill is the method.
+
 The graybox metropolis STRUCTURE shipped in `app/city.{h,cpp}` (Scrapyard City / New District / Industrial Zone + a road grid + 4 freeway tunnels — districts at Scrapyard (-600,500), New District (200,500), Industrial (-200,350)). Dress it with the real Cyberpunk assets — exactly the way `app/env_art.cpp` drapes converted GLBs over the Level-1 graybox (graybox stays as collision/fallback; the art is a visual overlay, per-piece fallback if a GLB is missing).
 
 **Two parts:**
