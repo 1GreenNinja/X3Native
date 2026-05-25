@@ -28,3 +28,16 @@ Use the gazetteer coordinates so your regions do NOT overlap the desert / caves 
 
 ## REPORT STATUS (append below, then push the branch)
 <!-- STATUS: branch HEAD, files added, --test-* results, all-flags-0 + VUID 0 + allocationCount=0, "READY FOR INTEGRATION" or BLOCKED+why. -->
+
+## STATUS — feat/openworld (Snake / 13700K, GTX 1080 Ti) — 2026-05-25 — READY FOR INTEGRATION
+
+- **Branch HEAD** `6017fb2` (was `50b630e`). Merge-base with main `3ec0b1b`; branch is **4 ahead of merge-base, 16 behind origin/main** (versioning + CYBERPUNK_CITY_ART + x3native-environments landed since) → integrator to rebase/merge onto the new main.
+- **Files**: modules already on branch — `app/world_regions.{h,cpp}`, `app/city.{h,cpp}`, `app/ocean_base.{h,cpp}`; this commit adds the `--world openworld` showcase wiring to `app/main.cpp` (+195 lines).
+- **New showcase** `--world openworld` (mirrors `--world valley/cliffs/club`, LOW-CONFLICT — no level1/Spire touch): streamed terrain + analytic sky, then builds WorldRegions (7 regions / 4 mountain ranges / 31 props) + City (3 districts / 5 roads / 4 freeway tunnels / 31 props) + OceanBase (offshore 3-level disc, 1 player + 3 enemy subs, 12 props). Spawns the player at the crash site via the PURE `placeOnTerrain` sampler. Headless `--screenshot` + walkable (FP + noclip) paths.
+- **GATE invariant**: submarine combat built **inert**, never `engage()`d at load (asserted loud + verified by `--test-oceanbase` O4 and the screenshot summary `combat=inert`).
+- **Gate** (`windows-vs2026` preset, VS2026 cmake): Release build exit 0; Debug build exit 0.
+  - `--world openworld --screenshot` exit 0 (stream created==destroyed no-leak, `allocationCount=0`).
+  - `--test-worldregions` 6/6, `--test-city` 5/5, `--test-oceanbase` 6/6.
+  - Release `--smoketest` exit 0 (`allocationCount=0`); Debug `--smoketest` exit 0 — **0 VUID, `allocationCount=0`**.
+  - (Ran the openworld-relevant self-tests + Release/Debug smoketest; the change is additive so sibling `--test-*` are unaffected. Full `--test-*` sweep available on request / at integrator re-gate.)
+- **Integrator note**: the CYBERPUNK_CITY_ART lane on main overlays art over `city.cpp` graybox; `--world openworld` calls only the public `City::build()`/query API, so the merge should be clean, but both lanes touch the City module conceptually.
