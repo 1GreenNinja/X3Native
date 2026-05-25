@@ -137,7 +137,9 @@ MonsterSystem::Tuning droneTuning() {
     t.attackWindup   = 0.35f;          // a beat of telegraph before the bolt
     t.ranged         = true;
     t.standoff       = combat::kRangedStandoff;       // hold ~7 m out
-    useCharacter(t, "Drone.glb", 1.0f);
+    // Animated drone (Tim's authored model — rotors spin via the GLB's baked motion).
+    // Falls back to the procedural box if the load fails. Scale may need a tweak.
+    useCharacter(t, "DroneExportWMotion.glb", 1.0f);
     return t;
 }
 } // namespace

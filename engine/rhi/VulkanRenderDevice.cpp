@@ -2977,7 +2977,7 @@ private:
     static const RoleFontDesc* roleFontTable() {
         // Indexed by FontRole. Console==HudMono share index 0 (embedded mono).
         static const RoleFontDesc kRoleFontPaths[kFontRoleCount] = {
-            /* 0 Console/HudMono */ { nullptr /* embedded Roboto Mono */,           false, "Roboto Mono (embedded)" },
+            /* 0 Console/HudMono */ { "Consolas.ttf",                                 false, "Consolas" }, // matches the BabylonJS x3-console (Consolas,Courier New,monospace); embedded Roboto Mono is the fallback
             /* 1 Title           */ { "Orbitron/static/Orbitron-Bold.ttf",           true,  "Orbitron-Bold" },
             /* 2 Menu            */ { "Space_Grotesk/static/SpaceGrotesk-Medium.ttf", true,  "SpaceGrotesk-Medium" },
             /* 3 Enemy           */ { "Tektur/static/Tektur_Condensed-Bold.ttf",      true,  "Tektur_Condensed-Bold" },
