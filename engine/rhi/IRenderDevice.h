@@ -30,6 +30,33 @@ struct FrameContext {
 };
 
 // ---------------------------------------------------------------------------
+// Role-based HUD/UI fonts. Each role binds its own baked glyph atlas (loaded
+// from assets/fonts/ at init, with the embedded Roboto Mono as the guaranteed
+// fallback). Some roles are PROPORTIONAL (per-glyph advance widths); the mono
+// roles keep a fixed cell advance so the legacy N*px layout math stays exact.
+//
+//   Title   -> Orbitron-Bold         (proportional) — menu titles, big banners
+//   Menu    -> SpaceGrotesk-Medium    (proportional) — buttons/toggles/objective/labels
+//   Enemy   -> Tektur_Condensed-Bold  (proportional) — enemy nameplates / threat tags
+//   News    -> SpaceMono-Bold         (monospace)    — event popups, "AREA CLEAR", tickers
+//   Console -> Roboto Mono (embedded) (monospace)    — dev `~` console + HP/ammo numerics
+//   HudMono -> alias of Console (the standard game-console mono — "is GOOD")
+//
+// To reassign a role's font: edit the ONE path string in kRoleFontPaths[] in
+// VulkanRenderDevice.cpp and restart (no rebuild of the rest needed). To ship a
+// role embedded in the single binary, run tools/embed_font.ps1 on its .ttf (see
+// that file's header) and point that role at the generated embedded blob.
+enum class FontRole : uint32_t {
+    Console = 0,   // embedded Roboto Mono (mono) — default for drawHudText()
+    HudMono = 0,   // alias: HP/ammo numerics use the same mono atlas as Console
+    Title   = 1,   // Orbitron (proportional)
+    Menu    = 2,   // Space Grotesk (proportional)
+    Enemy   = 3,   // Tektur Condensed (proportional)
+    News    = 4,   // Space Mono (monospace)
+    Count   = 5,
+};
+
+// ---------------------------------------------------------------------------
 // Mesh + texture API (S1). Vulkan types stay hidden in the .cpp; the public
 // boundary uses POD vertices and small opaque handles (id == 0 means invalid).
 // ---------------------------------------------------------------------------
@@ -498,11 +525,27 @@ public:
     // drawHudQuad: a filled rectangle (backed by the built-in 1x1 white texture).
     virtual void drawHudQuad(const FrameContext&, float xPx, float yPx,
                              float wPx, float hPx, const float rgba[4]) = 0;
-    // drawHudText: render `text` starting at (xPx,yPx) with each glyph occupying
-    // pxPerGlyph x pxPerGlyph pixels, sampling the embedded 8x8 bitmap font atlas.
-    // Newlines advance a line; non-printable chars are skipped. `rgba` tints it.
+    // drawHudText: render `text` starting at (xPx,yPx) at glyph size `pxPerGlyph`.
+    // Uses the DEFAULT mono role (FontRole::Console / HudMono — the embedded Roboto
+    // Mono). Each glyph advances by a fixed cell (== pxPerGlyph), so the legacy
+    // N*px layout math (centering / right-align) stays exact. Newlines advance a
+    // line; non-printable chars are skipped; `rgba` tints it. Non-UI callers that
+    // do not care about role keep using this unchanged.
     virtual void drawHudText(const FrameContext&, const char* text, float xPx,
                              float yPx, float pxPerGlyph, const float rgba[4]) = 0;
+    // drawHudTextF: role-aware HUD text. `role` selects the baked atlas. PROPORTIONAL
+    // roles advance the pen by each glyph's REAL width; monospace roles advance by a
+    // fixed cell. To keep centering/right-align exact, query the true rendered width
+    // with textAdvance(role, ...) (UiContext::textWidth wraps this). `px` is the cap
+    // pixel height; `rgba` tints it.
+    virtual void drawHudTextF(const FrameContext&, FontRole role, const char* text,
+                              float xPx, float yPx, float px, const float rgba[4]) = 0;
+    // textAdvance: the TRUE rendered pixel width `text` occupies for `role` at glyph
+    // size `px` — sums per-glyph advances (proportional) or N*cell (mono). The UI
+    // layer's textWidth() reads this so centering/right-alignment is pixel-exact.
+    // Safe to call before a frame is begun (pure metrics; no GPU work). If the role's
+    // atlas is unavailable it falls back to the mono cell metric.
+    virtual float textAdvance(FontRole role, const char* text, float px) const = 0;
     // Current framebuffer size in pixels (for HUD layout / centering).
     virtual void hudSize(uint32_t& outW, uint32_t& outH) const = 0;
 
