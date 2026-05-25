@@ -570,7 +570,7 @@ static bool runGpuSkinSelfTest() {
 // ---- Per-system frame timers (perf hunt: where do the ~100ms/frame go?). Scoped
 // accumulators summed over a window, logged as a per-section breakdown + FPS every
 // kPerfWindow frames. Cheap (a few glfwGetTime() calls/frame). See docs/PERF_LOG.md.
-namespace {
+// (Lives in the same anonymous namespace opened above — no nested re-open.)
 struct PerfTimers {
     double tick = 0, healthbars = 0, frameDt = 0;  // seconds, summed over the window
     int    frames = 0;
@@ -788,8 +788,7 @@ int main(int argc, char** argv) {
     // --test-ragdoll (Physics §2): build a ragdoll from a synthetic skeleton, step,
     // assert it falls + settles (bounded, no NaN), the constraint chain holds (bone
     // lengths preserved), and the anim<->ragdoll blend 0->1 interpolates the palette
-    // monotonically. Additive.
-    bool        testRagdoll = false;
+    // monotonically. Additive. (testRagdoll is declared in the block above.)
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
     // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
     // and confirm the joint palette changes. Asset-pipeline verification for the
@@ -980,7 +979,6 @@ int main(int argc, char** argv) {
         else if (a == "--test-gpuskin") testGpuSkin = true;
         else if (a == "--test-collapse") testCollapse = true;
         else if (a == "--test-physjoint") testPhysJoint = true;
-        else if (a == "--test-ragdoll") testRagdoll = true;
         else if (a == "--test-nav") testNav = true;
         else if (a == "--test-weapons") testWeapons = true;
         else if (a == "--test-vehicle") testVehicle = true;
@@ -1122,7 +1120,9 @@ int main(int argc, char** argv) {
         bool blendOk = x3::game::runRagdollBlendCheck(bPass, bTotal);
         x3::logInfo("ragdoll-blend: " + std::to_string(bPass) + "/" +
                     std::to_string(bTotal) + " passed");
-        return (engineOk && blendOk) ? 0 : 1;
+        // App-side physics-death ragdoll (this session's app/ragdoll.cpp path).
+        bool deathOk = x3::game::runRagdollSelfTest();
+        return (engineOk && blendOk && deathOk) ? 0 : 1;
     }
     if (testGltf) {
         x3::logInfo("running glTF/GLB model loader (M2) self-test...");
@@ -1139,10 +1139,6 @@ int main(int argc, char** argv) {
     if (testPhysprops) {
         x3::logInfo("running physics-props (hanging cubes / joints) self-test...");
         return x3::game::runPhysPropsSelfTest() ? 0 : 1;
-    }
-    if (testRagdoll) {
-        x3::logInfo("running ragdoll (physics death) self-test...");
-        return x3::game::runRagdollSelfTest() ? 0 : 1;
     }
     if (testRagdollSkin) {
         x3::logInfo("running ragdoll-skin (rigid bone attach) self-test...");
