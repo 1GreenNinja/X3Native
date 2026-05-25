@@ -8,6 +8,7 @@
 #include "engine/core/x3_log.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -27,35 +28,57 @@ constexpr float kCeilT = 0.2f;        // ceiling cap thickness (collision lid)
 // Single source of truth shared with env_art.cpp (via level1Rooms()): the art
 // overlay tiles its GLB floors/walls/ceilings/lights to these EXACT bounds + base
 // height + ceiling, so geometry, art and lights stay in lockstep across the whole
-// tower. Floors stack along +Y at kFloorSpacing (5 m) so the elevator's 5 m stops
-// land on each plate. All floors share the SAME XZ footprint so the elevator + stair
-// shafts line up vertically. Ceilings are varied (NOT uniform) but stay within the
-// 5 m floor pitch so plates never overlap (collision-clean); the rooftop F7 is open
-// to the sky so it gets a genuinely tall cap.
+// tower. Floors stack along +Y at the REAL NON-UNIFORM pitch from the authoritative
+// Task9D floor table (docs/design/X3_WORLD_BLUEPRINT.md §2.1) — the elevator builds
+// one stop per floor from floorBaseY[] so the stops auto-follow. All floors share the
+// SAME XZ footprint at the +X end so the elevator + stair shafts line up vertically.
 //
-// FLOOR-1 RELAY (2026-05): the shared plate was grown from the old 24x16 m placeholder
-// to the REAL Floor-1 detention footprint (docs/design/SPIRE_LEVELARCHITECT_DIMS.md):
+// REAL VERTICAL RE-SCALE (2026-05-23, X3_WORLD_BLUEPRINT §2.1): the Spire was an
+// 8x-compressed UNIFORM 5 m pitch (B1..F7 = 0..35 m). It is now the REAL canon
+// NON-UNIFORM stack: B1 Detention=0, F1 Atrium=5 (breather), F2 Medical=10, F3
+// Genetics=20, F4 Cybernetics=30, F5 Drone=65, F6 Alien=78, F7 Executive=91 m. (The
+// off-elevator F4.5 Nexus auto-follows spire_nexus.cpp midway between F4 and F5; the
+// canon ROOF/Helipad at 104 m is a future stop, not one of the 8 enum floors.) Per-
+// floor ceilings are RAISED to exploit the now-generous non-uniform clearance while
+// always leaving >=1 m for the slab above so stacked plates never overlap (the tight
+// 5 m B1->F1->F2 gaps keep their <5 m ceilings; the wide 10/13/35 m gaps get taller
+// halls). Footprints are UNCHANGED (Tim 2026-05-23: the big 75-97 m plates stay).
+// The rooftop F7 is open to the sky so it gets a genuinely tall cap.
+//
+// FLOOR-1 RELAY (2026-05): the B1 plate was grown from the old 24x16 m placeholder to
+// the REAL Floor-1 detention footprint (docs/design/SPIRE_LEVELARCHITECT_DIMS.md):
 // X -24..+60 (~84 m, covering the detention core X -20..+18 AND the eastern stairs->
-// caves arm out to the Side Grotto at x=55) and zHalf=38 (covering the detention Z
-// span -36..+7 with margin — the plate fully contains every room's AABB). The B1 plate
-// carries the full 29-room interior (built in
-// buildLevel1); F2-F7 share this larger plate (no longer cramped) until they get their
-// own authored geometry. The DETENTION content bounding box is ~75 x 43 m (asserted by
-// the self-test via level1DetentionFootprint()); the raw plate is a superset (the
-// L1RoomDef plate is Z-symmetric about 0, so zHalf must cover the larger -36 side).
-// The 5 m vertical pitch is UNCHANGED (the elevator + the spire_mid/top/sublevel content
-// that reads floorBaseY[] stay in lockstep); ceilings stay <= 5 m so plates never
-// overlap.
-//   x0,    x1,    zHalf,  ceil, y0 (= floor index * 5 m)
+// caves arm out to the Side Grotto at x=55) and zHalf=38 (covering the detention Z span
+// -36..+7 with margin). The B1 plate carries the full 29-room interior (built in
+// buildLevel1). The DETENTION content bounding box is ~75 x 43 m (asserted by the
+// self-test via level1DetentionFootprint()); the raw plate is a superset.
+//
+// FLOORS 2-7 DIMENSIONING (2026-05): F2-F7 no longer share B1's plate — each gets its
+// OWN identity-appropriate footprint at REAL LevelArchitect scale (Floor 1 is ~75x43 m;
+// the v10.9 source has NO authored geometry for F2-7, so they are authored fresh at that
+// scale or larger — see SPIRE_LEVELARCHITECT_DIMS.md). KEY LAYOUT INVARIANT: the elevator
+// shaft (kShaftCx=21) stays at the EAST edge of every floor (x1 ~= 25, just past the
+// shaft), so a rider always arrives at x~=17.5 right at the shaft mouth AND the per-floor
+// "hub" arrival trigger (spire_mid/top place it at [x1-8, x1]) lands ON the arrival point
+// (it was detached at x~52-60 while F2-7 shared B1's x1=60 plate). Each floor then grows
+// WESTWARD (x0 negative) + DEEP (zHalf) to its real size; the existing encounters sit in
+// the eastern arrival third (content is authored at absolute x in [0,18], z in [-6.5,6.5]
+// — all inside every new plate) and the western space is partitioned into identity rooms
+// (see SS4). F5 Drone Manufacturing is the largest (a high-bay assembly hall). B1 + F1 are
+// UNCHANGED (F1 Atrium has no LevelArchitect source; B1's footprint is read by the
+// sub-levels). The 5 m vertical pitch is UNCHANGED (elevator + spire_*/sublevel content
+// that reads floorBaseY[] stay in lockstep); ceilings stay <= 4.8 m (except the open-sky
+// rooftop F7) so stacked plates never overlap.
+//   x0,    x1,    zHalf,  ceil,  y0 (REAL non-uniform canon Y, X3_WORLD_BLUEPRINT §2.1)
 const L1RoomDef kFloors[(uint32_t)L1Floor::Count] = {
-    { -24.0f, 60.0f, 38.0f, 4.0f,  0.0f },  // B1 — Detention Level (the full 29-room interior)
-    { -24.0f, 60.0f, 38.0f, 4.6f,  5.0f },  // F1 — Atrium / lobby (tallest interior)
-    { -24.0f, 60.0f, 38.0f, 3.8f, 10.0f },  // F2 — Medical wards
-    { -24.0f, 60.0f, 38.0f, 4.0f, 15.0f },  // F3 — Labs
-    { -24.0f, 60.0f, 38.0f, 3.6f, 20.0f },  // F4 — Offices
-    { -24.0f, 60.0f, 38.0f, 4.5f, 25.0f },  // F5 — Synth bay (high-bay feel)
-    { -24.0f, 60.0f, 38.0f, 4.2f, 30.0f },  // F6 — Executive
-    { -24.0f, 60.0f, 38.0f, 7.0f, 35.0f },  // F7 — Rooftop (open sky, tall)
+    { -24.0f, 60.0f, 38.0f,  4.0f,  0.0f },  // B1 — Detention Level (canon F1; 29-room interior); gap->F1 = 5 m
+    { -24.0f, 60.0f, 38.0f,  4.6f,  5.0f },  // F1 — Atrium / lobby (breather);                    gap->F2 = 5 m
+    { -50.0f, 25.0f, 22.0f,  8.0f, 10.0f },  // F2 — Medical Bay          (75 x 44; wards wing);   gap->F3 = 10 m
+    { -50.0f, 25.0f, 22.0f,  8.0f, 20.0f },  // F3 — Genetics Lab         (75 x 44; gene-vats);    gap->F4 = 10 m
+    { -54.0f, 25.0f, 23.0f,  9.0f, 30.0f },  // F4 — Cybernetics Workshop (79 x 46; +Nexus W);     gap->F5 = 35 m (Nexus@~47.5)
+    { -72.0f, 25.0f, 32.0f, 11.0f, 65.0f },  // F5 — Drone Manufacturing  (97 x 64; high-bay);     gap->F6 = 13 m
+    { -58.0f, 25.0f, 26.0f, 11.0f, 78.0f },  // F6 — Alien Technology Lab (83 x 52; tech halls);   gap->F7 = 13 m
+    { -54.0f, 25.0f, 23.0f, 12.0f, 91.0f },  // F7 — Executive Laboratory (79 x 46; open finale, sky cap)
 };
 
 // ---- FLOOR 1 "Detention Level" — the authoritative LevelArchitect transcription
@@ -528,16 +551,20 @@ Level1Layout buildLevel1(Scene& scene,
 
     // ===================================================================
     // 3) EMERGENCY STAIRWELL — a straight ramp column linking every adjacent pair of
-    //    floors. Each 5 m rise is a straight stair of 10 stepped boxes (0.5 m rise
-    //    each). Relocated onto an OPEN corner of the grown plate (x in [30,34], z=20),
-    //    clear of the F1 detention rooms (all at z<=7) AND the eastern cave arm, so the
-    //    shaft is a consistent clear XZ on every plate. Purely collision graybox + tint.
+    //    floors. With the REAL non-uniform pitch the inter-floor gap VARIES (5/5/10/10/
+    //    35/13/13 m), so each transition's run is split into a number of steps PROPORTIONAL
+    //    to its gap (a fixed ~0.5 m rise/step), and the top step always lands EXACTLY on
+    //    the next floor's plate — keeping the stairs a connected, walkable ramp regardless
+    //    of pitch (the elevator is the primary path; these are reachability stairs). Placed
+    //    in a NORTH BAND (x in [10,14], z=15) that is inside EVERY floor's plate — B1's big
+    //    detention plate (rooms all at z<=9.5) AND the resized F2-F7 plates (zHalf>=22) —
+    //    and clear of the elevator shaft (x=21,z=0) + all encounter content (z in
+    //    [-6.5,6.5]). Purely collision graybox + tint.
     // ===================================================================
     {
-        const float stairX0 = 30.0f, stairX1 = 34.0f;    // stair well footprint (X), open corner
-        const float stairZ  = 20.0f;                     // open +Z corner of the grown plate
-        const float stepRun = (stairX1 - stairX0) / 10.0f; // 0.4 m run/step
-        const float stepRise = kFloorSpacing / 10.0f;     // 0.5 m rise/step
+        const float stairX0 = 10.0f, stairX1 = 14.0f;    // stair well footprint (X) — north band, inside every plate
+        const float stairZ  = 15.0f;                     // +Z north band: clear of detention (z<=9.5) + content (|z|<=6.5)
+        const float kTargetRise = 0.5f;                  // ~0.5 m rise/step target (steps scale with the gap)
         // Stair-well floor + outer walls spanning all floors (a single tall shaft).
         const float swBottom = shaftBottom;
         const float swTop     = kFloors[(uint32_t)L1Floor::F7].y0;
@@ -546,11 +573,17 @@ Level1Layout buildLevel1(Scene& scene,
         addBox(scene, device, physics, kWallT * 0.5f, swH * 0.5f, 2.0f,
                stairX0, swBottom + swH * 0.5f, stairZ,
                wallTex, kStairTint, (uint32_t)Tag::Static, true, crossWallVis);
-        // Steps: one straight run per floor transition (B1->F1 ... F6->F7).
+        // Steps: one straight run per floor transition (B1->F1 ... F6->F7); step COUNT is
+        // proportional to that transition's (non-uniform) gap so the top lands on the next
+        // floor.
         for (uint32_t fi = 0; fi + 1 < (uint32_t)L1Floor::Count; ++fi) {
             const float baseY = kFloors[fi].y0;
-            for (int s = 0; s < 10; ++s) {
-                const float topY = baseY + (float)(s + 1) * stepRise;     // step top surface
+            const float gap   = kFloors[fi + 1].y0 - baseY;            // this transition's rise
+            const int   nSteps = std::max(1, (int)std::lround(gap / kTargetRise));
+            const float stepRise = gap / (float)nSteps;                // exact rise/step (lands on next floor)
+            const float stepRun  = (stairX1 - stairX0) / (float)nSteps; // run/step (fixed X footprint reused per run)
+            for (int s = 0; s < nSteps; ++s) {
+                const float topY = baseY + (float)(s + 1) * stepRise;  // step top surface
                 const float sx   = stairX0 + ((float)s + 0.5f) * stepRun; // step center X
                 addBox(scene, device, physics, stepRun * 0.5f, topY * 0.5f - swBottom * 0.5f, 1.4f,
                        sx, (topY + swBottom) * 0.5f, stairZ,
@@ -560,13 +593,47 @@ Level1Layout buildLevel1(Scene& scene,
     }
 
     // ===================================================================
-    // 4) F2-F7 PER-FLOOR DISTINCT PARTITIONS (collision graybox; extra, not in the
-    //    env_art floor table). F2-F7 share the grown open plate; these add a couple of
-    //    distinct sub-rooms per the spec WITHOUT slicing the whole 72 m-deep plate
-    //    (partitions are confined to a small band near the elevator-arrival lane).
+    // 4) F2-F7 PER-FLOOR IDENTITY INTERIORS (collision graybox). Each floor now has its
+    //    OWN real-scale plate (kFloors). The EASTERN third (x in [-2,25]) is kept OPEN as
+    //    the arrival + combat hall where the spire_mid/top encounters play (content is
+    //    authored at absolute x in [0,18]); the WESTERN space (x < -2) is partitioned into
+    //    a wing of identity rooms from the LevelArchitect room vocabulary (cells/labs
+    //    ~6-8 m, a big signature hall, a large open bay for the drone floor). Rooms open
+    //    onto the central west corridor (the z in [-3,3] lane, itself open at its east end
+    //    into the arrival hall), so every room is reachable and nothing is sealed.
     // ===================================================================
-    // ---- F2 Medical wards: 3 ward markers (Aria/Keisha/Emily). The rescue hub places
-    //      the victims at the ward centers; lightweight partition near the spine band.
+    // One graybox room: 4 floor-to-ceiling walls with an optional 1.2 m doorway on ONE
+    // side ('W'=-X, 'E'=+X, 'S'=-Z, 'N'=+Z; 0 = sealed). Absolute world coords. Reuses
+    // the shared wall helpers (addCrossWall handles the Z-running walls + doorway/lintel;
+    // the X-running walls are split manually for a doorway, mirroring buildDetentionRoom).
+    auto roomBox = [&](float rx0, float rx1, float rz0, float rz1, float ry0, float rh, char door) {
+        const float zc = (rz0 + rz1) * 0.5f, xc = (rx0 + rx1) * 0.5f;
+        addCrossWall(scene, device, physics, rx0, rz0, rz1, zc, door == 'W', ry0, rh, wallTex, kWallTint, crossWallVis);
+        addCrossWall(scene, device, physics, rx1, rz0, rz1, zc, door == 'E', ry0, rh, wallTex, kWallTint, crossWallVis);
+        auto wallXDoor = [&](float zf, bool d) {
+            if (!d) { addWallX(scene, device, physics, rx0, rx1, zf, ry0, rh, wallTex, kWallTint, crossWallVis); return; }
+            addWallX(scene, device, physics, rx0, xc - kDoorHalf, zf, ry0, rh, wallTex, kWallTint, crossWallVis);
+            addWallX(scene, device, physics, xc + kDoorHalf, rx1, zf, ry0, rh, wallTex, kWallTint, crossWallVis);
+            const float lh = (rh - kLintelBottom) * 0.5f;
+            if (lh > 0.0f)
+                addBox(scene, device, physics, kDoorHalf, lh, kWallT * 0.5f, xc, ry0 + kLintelBottom + lh, zf,
+                       wallTex, kWallTint, (uint32_t)Tag::Static, true, crossWallVis);
+        };
+        wallXDoor(rz0, door == 'S');
+        wallXDoor(rz1, door == 'N');
+    };
+    // A floor's WEST wing: a set of identity rooms, each centered at (cx,cz) with
+    // half-extents (hw,hd) + a doorway side, built at the floor's y0 + ceiling height.
+    struct WingRoom { float cx, cz, hw, hd; char door; };
+    auto buildWing = [&](L1Floor fl, const std::vector<WingRoom>& rooms) {
+        const L1RoomDef& f = kFloors[(uint32_t)fl];
+        for (const WingRoom& r : rooms)
+            roomBox(r.cx - r.hw, r.cx + r.hw, r.cz - r.hd, r.cz + r.hd, f.y0, f.ceil, r.door);
+    };
+
+    // ---- F2 Medical Bay: 3 ward markers (Aria/Keisha/Emily) in the east hall (rescue
+    //      hub places victims here) + a west wing: big Recovery Ward + Medbay/Lab/Cure
+    //      Lab/Observation rooms.
     {
         const L1RoomDef& f2 = kFloors[(uint32_t)L1Floor::F2];
         const float y0 = f2.y0, h = f2.ceil;
@@ -579,7 +646,59 @@ Level1Layout buildLevel1(Scene& scene,
         L.wardB = x3::phys::Vec3{ 11.5f, y0,  3.0f };  // Ward B (Keisha)
         L.wardC = x3::phys::Vec3{ 18.0f, y0, -3.0f };  // Ward C (Emily)
     }
-    // ---- F6 Executive: Sarah's holding office partitioned in a -Z pocket near the lane.
+    buildWing(L1Floor::F2, {
+        { -38.0f,  0.0f, 10.0f, 14.0f, 'E' },  // Recovery Ward (big signature hall)
+        { -18.0f,  8.0f,  6.0f,  5.0f, 'S' },  // Medbay
+        { -18.0f, -8.0f,  6.0f,  5.0f, 'N' },  // Surgery / Lab
+        {  -7.0f,  8.0f,  4.0f,  5.0f, 'S' },  // Cure Lab
+        {  -7.0f, -8.0f,  4.0f,  5.0f, 'N' },  // Observation
+    });
+    // ---- F3 Genetics Lab: gene-vat hall + clone/cure labs + research office (FE-#7
+    //      arena stays in the east hall).
+    buildWing(L1Floor::F3, {
+        { -38.0f,  0.0f, 10.0f, 14.0f, 'E' },  // Gene-Vat Hall (big)
+        { -18.0f,  8.0f,  6.0f,  5.0f, 'S' },  // Clone Lab
+        { -18.0f, -8.0f,  6.0f,  5.0f, 'N' },  // Cure Lab
+        {  -7.0f,  8.0f,  4.0f,  5.0f, 'S' },  // Specimen Storage
+        {  -7.0f, -8.0f,  4.0f,  5.0f, 'N' },  // Research Office
+    });
+    // ---- F4 Cybernetics Workshop: server room + augmentation bays + a (flavor) Nexus
+    //      connector room (the real F4->4.5 hook is at x=1.5 in the east, set by spire_mid).
+    buildWing(L1Floor::F4, {
+        { -40.0f,  0.0f, 11.0f, 15.0f, 'E' },  // Server Room (big)
+        { -18.0f,  9.0f,  6.0f,  6.0f, 'S' },  // Augmentation Bay
+        { -18.0f, -9.0f,  6.0f,  6.0f, 'N' },  // Augmentation Bay 2
+        {  -7.0f,  9.0f,  4.0f,  5.0f, 'S' },  // Nexus Connector (to Floor 4.5)
+        {  -7.0f, -9.0f,  4.0f,  5.0f, 'N' },  // Control Room
+    });
+    // ---- F5 Drone Manufacturing: one LARGE open assembly bay + a couple of control
+    //      rooms (the Swarm-AI arena stays in the east hall). The bay is the floor's
+    //      signature: a big hangar, not many small rooms.
+    buildWing(L1Floor::F5, {
+        { -44.0f,  0.0f, 26.0f, 26.0f, 'E' },  // Assembly Bay (huge open hangar)
+        {  -8.0f, 12.0f,  5.0f,  6.0f, 'S' },  // Drone Control
+        {  -8.0f,-12.0f,  5.0f,  6.0f, 'N' },  // Power Plant
+    });
+    // ---- F6 Alien Technology Lab: containment hall + archive vault + observation + tech
+    //      lab (the Alien-Overseer arena + the 2 keypad doors stay in the east hall).
+    buildWing(L1Floor::F6, {
+        { -42.0f,  0.0f, 13.0f, 18.0f, 'E' },  // Containment Hall (big)
+        { -18.0f, 10.0f,  6.0f,  6.0f, 'S' },  // Archive Vault
+        { -18.0f,-10.0f,  6.0f,  6.0f, 'N' },  // Observation
+        {  -7.0f, 10.0f,  4.0f,  5.0f, 'S' },  // Tech Lab
+        {  -7.0f,-10.0f,  4.0f,  5.0f, 'N' },  // Specimen Bay
+    });
+    // ---- F7 Executive Laboratory: boardroom + exec offices + archive + server (the
+    //      Clone/Sarah finale stays in the east hall; the open helipad center is recorded).
+    buildWing(L1Floor::F7, {
+        { -40.0f,  0.0f, 11.0f, 15.0f, 'E' },  // Boardroom (big)
+        { -18.0f,  8.0f,  6.0f,  5.0f, 'S' },  // Executive Office
+        { -18.0f, -8.0f,  6.0f,  5.0f, 'N' },  // Executive Office 2
+        {  -7.0f,  8.0f,  4.0f,  5.0f, 'S' },  // Archive
+        {  -7.0f, -8.0f,  4.0f,  5.0f, 'N' },  // Server
+    });
+    // ---- F6 Executive holding office (Sarah's 4th-rescue marker) in a -Z pocket of the
+    //      east hall + F7 rooftop finale-arena center (the open eastern plate). ----
     {
         const L1RoomDef& f6 = kFloors[(uint32_t)L1Floor::F6];
         const float y0 = f6.y0, h = f6.ceil;
@@ -588,10 +707,9 @@ Level1Layout buildLevel1(Scene& scene,
                      wallVariants[2], kWallTint, crossWallVis);
         L.execOffice = x3::phys::Vec3{ 4.0f, y0, -5.5f };
     }
-    // ---- F7 rooftop: the finale arena center (helipad) is just the open plate. ----
     {
         const L1RoomDef& f7 = kFloors[(uint32_t)L1Floor::F7];
-        L.rooftopCenter = x3::phys::Vec3{ (f7.x0 + f7.x1) * 0.5f, f7.y0, 0.0f };
+        L.rooftopCenter = x3::phys::Vec3{ 10.0f, f7.y0, 0.0f };  // finale arena (east hall, by the Clone at x=8)
     }
 
     // ===================================================================
@@ -714,8 +832,8 @@ Level1Layout buildLevel1(Scene& scene,
                 + std::to_string(L.spawn.x) + ", " + std::to_string(L.spawn.y) + ", "
                 + std::to_string(L.spawn.z) + "); floors B1..F7 baseY = "
                 + std::to_string((int)L.floorBaseY[0]) + ".."
-                + std::to_string((int)L.floorBaseY[(uint32_t)L1Floor::F7]) + " m, pitch "
-                + std::to_string((int)kFloorSpacing) + " m; shaft @ ("
+                + std::to_string((int)L.floorBaseY[(uint32_t)L1Floor::F7]) + " m (REAL non-uniform"
+                " canon stack: 0/5/10/20/30/65/78/91); shaft @ ("
                 + std::to_string((int)kShaftCx) + "," + std::to_string((int)kShaftCz) + ")");
     return L;
 }

@@ -32,12 +32,15 @@
 // Sarah no longer a captive after a successful F7 rescue) and calls openDescent() once;
 // only then does armDescent latch and the hidden lift trigger arm. NEVER armed at load.
 //
-// Coords per docs/CONVENTIONS.md: +X right, +Y up, -Z forward. The three sub-level
-// plates stack DOWNWARD (−Y) below B1 (whose base Y is 0), 5 m apart like the Spire
-// floors, sharing B1's XZ footprint so a hidden lift column lines up vertically. They
-// are NOT elevator stops on the main 0..kSpireFloorCount-1 list (the hidden descent is
-// off that list — see WORLD_STRUCTURE §3b "the elevator's main floor-list does not
-// advertise"), so they cannot be reached until the descent opens.
+// Coords per docs/CONVENTIONS.md: +X right, +Y up, -Z forward. The three sub-level plates
+// stack DOWNWARD (−Y) FAR below B1 at the REAL canon depth (X3_WORLD_BLUEPRINT §2.1/§2.5:
+// SL1=-170, SL2=-174, SL3=-178 m — the "SUB hidden ≈ -170" plane + the -178 cave horizon;
+// the old graybox put them at a token -5/-10/-15). They share B1's XZ footprint so a hidden
+// lift column lines up vertically, and the gated hidden lift drops the player the full ~170
+// m. They are NOT elevator stops on the main 0..kSpireFloorCount-1 list (the hidden descent
+// is off that list — see WORLD_STRUCTURE §3b "the elevator's main floor-list does not
+// advertise"), so they cannot be reached until the descent opens. SL3's -178 m horizon also
+// hosts the FRESH-authored §2.5(a) Salvari caves (singing crystals + alien-markings obelisk).
 
 #include "scene.h"
 #include "monster.h"
@@ -53,6 +56,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace x3::game {
 
@@ -70,6 +74,12 @@ enum class SpireSubTrigger : uint32_t {
 
 // The three sub-levels this module authors, descent order (SL1 highest, SL3 lowest).
 enum class SpireSubLevel : uint32_t { SL1 = 0, SL2 = 1, SL3 = 2, Count = 3 };
+
+// §2.5(a) Salvari-cave constants (X3_WORLD_BLUEPRINT). Public so the inline cave queries
+// + the self-test can reference them. The caves sit at the canon -178 m horizon (== the
+// deepest sub-level base), with a cluster of singing/lore crystals.
+constexpr float kCaveBaseY           = -178.0f;  // the Salvari cave floor (canon -178 m)
+constexpr int   kSalvariCrystalCount = 7;        // singing/lore crystals authored in the cavern
 
 // One sub-level's authored encounter summary (read by the host HUD + the self-test to
 // assert placement counts/roles + the descent gate without re-deriving them). Mirrors
@@ -192,6 +202,19 @@ public:
     bool   chenTimerRunning() const { return m_sl3HubReached; }   // clock gated on the SL3 hub
     float  chenTimeLeft() const;
 
+    // ---- §2.5(a) THE SALVARI CAVES (Y≈-178) queries (HUD + self-test) -------------
+    // The caves are authored FRESH off the deepest sub-level. They are present at build
+    // (collision graybox + glowing crystal props) but HIDDEN (render meshes invisible)
+    // until the descent opens + the first tick reveals them.
+    bool     cavesPresent() const { return m_cavesPresent; }
+    bool     cavesRevealed() const { return m_cavesRevealed; }
+    // Count of singing/lore Salvari crystals authored in the cavern.
+    uint32_t salvariCrystalCount() const { return m_cavesPresent ? (uint32_t)kSalvariCrystalCount : 0u; }
+    // The crystal-cluster center (the cavern focal point), at the -178 m cave horizon.
+    const x3::phys::Vec3& salvariCrystalCenter() const { return m_salvariCrystalCenter; }
+    // The cave floor Y (the canon -178 m horizon).
+    float    caveBaseY() const { return kCaveBaseY; }
+
     // The SL1 standing hazard: present (authored) + active (only ticks once the descent
     // is open). Read by the HUD + the self-test.
     bool   hazardPresent() const { return m_hazardPresent; }
@@ -204,9 +227,24 @@ public:
     }
 
 private:
+    // §2.5(a) Build the Salvari caves (collision graybox + emissive crystal props) at the
+    // -178 m horizon off the SL3 plate. Called once from build(); render meshes start
+    // invisible, revealed on the first tick after the descent opens. `b1` is B1's borrowed
+    // footprint (the sub-levels share the tower XZ).
+    void buildCaves(Scene& scene, x3::rhi::IRenderDevice& device,
+                    x3::phys::IPhysicsWorld& physics, const L1RoomDef& b1);
+
     bool m_built = false;
     std::string m_modelDir;
     x3::rhi::IRenderDevice* m_device = nullptr;  // cached for the on-expiry boss spawn
+
+    // §2.5(a) Salvari caves: collision graybox + glowing crystal/obelisk props at Y=-178,
+    // authored at build but HIDDEN (render meshes invisible) until revealed the first tick
+    // after the descent opens. m_caveEntities holds the scene ids so visibility can toggle.
+    bool                  m_cavesPresent  = false;
+    bool                  m_cavesRevealed = false;
+    std::vector<uint32_t> m_caveEntities;
+    x3::phys::Vec3        m_salvariCrystalCenter{};
 
     // The HIDDEN-DESCENT gate. False at build (never armed at load); set true ONCE by
     // openDescent() when the F7-complete gate is satisfied. While false the whole system

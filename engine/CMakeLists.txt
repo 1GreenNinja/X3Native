@@ -11,6 +11,7 @@ add_library(x3engine STATIC
     physics/JoltVehicle.cpp
     physics/Destruction.cpp
     physics/StructuralCollapse.cpp
+    physics/Ragdoll.cpp
     ai/Navigation.cpp
     asset/ModelLoader.cpp
     audio/MiniaudioSystem.cpp

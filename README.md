@@ -20,7 +20,7 @@
 
 Custom native game engine (C++20 / Vulkan 1.3) for the 1GreenNinja game portfolio — X3, TTT 1995, Pin-Pull-Tomb, and future titles. One engine, many games shipped as `.x3pak` data.
 
-**X3Native is 100% original work.** It was built clean-room from scratch — written from behavioral specs + public technical references (the Vulkan spec, *Real-Time Rendering 4th ed.*, GPU Gems, vkguide.dev, GDC/SIGGRAPH talks, library docs) plus the author's own research. **No id Tech / RBDOOM / Doom 3 — or any other third-party engine — source was forked, copied, or consulted.** The only third-party code is the permissively-licensed libraries listed in `THIRDPARTY_LICENSES.md`. See `PROVENANCE.md` and `LICENSE-NOTICE.md`.
+**X3Native is 100% original work.** It was built clean-room from scratch — written from behavioral specs + public technical references (the Vulkan spec, *Real-Time Rendering 4th ed.*, GPU Gems, vkguide.dev, GDC/SIGGRAPH talks, library docs) plus the author's own research. The only third-party code is the permissively-licensed libraries listed in `THIRDPARTY_LICENSES.md`. See `PROVENANCE.md` and `LICENSE-NOTICE.md`.
 
 > **New here? Read in this order:**
 > 1. `X3_NATIVE_ENGINE_PLAN.md` — the architecture decision, locked stack, runtime/pak model, milestones

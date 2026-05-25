@@ -14,6 +14,7 @@
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/physics/Destruction.h"   // K-T0/T1 destructibles + --test-destruction
 #include "engine/physics/StructuralCollapse.h" // K-T3 support-graph collapse + --test-collapse
+#include "engine/physics/Ragdoll.h"       // Physics §2 ragdoll+blend: --test-ragdoll + --world ragdoll
 #include "engine/physics/IVehicle.h"      // vehicle framework: --test-vehicle + --world drive/boat/fly
 #include "engine/asset/IModelLoader.h"
 #include "engine/audio/IAudioSystem.h"
@@ -45,7 +46,10 @@
 #include "spire_top.h"                      // EFLZ Spire F6/F7 top-floor content (Act-1 finale)
 #include "spire_nexus.h"                    // EFLZ Floor 4.5 Nexus Chamber / The Chorus (off-elevator boss)
 #include "spire_sublevels.h"                // EFLZ hidden Floor-7 sub-levels + Dr. Chen Return Mission
+#include "timeline.h"                        // EFLZ morality/timeline backbone for the 12 endings (--test-timeline)
 #include "act2_world.h"                      // EFLZ Act-2 open-world surface host + L8/L9 (--test-act2)
+#include "tod.h"                             // EFLZ Time-of-Day cycle (sky/sun via SkyParams — --test-tod)
+#include "weather.h"                         // EFLZ Weather (7 states, biome-gated, hazard — --test-weather)
 #include "elevator.h"
 #include "club1127.h"
 #include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
@@ -55,8 +59,10 @@
 #include "hud.h"
 #include "ui.h"                              // GENERAL game-UI: menus + production HUD + --test-ui
 #include "save.h"                            // GENERAL versioned checkpoint save/load + --test-saveload
+#include "dialog.h"                          // AI-dialog + TTS voice on skinned NPCs (§3) + --test-dialog
 #include "stress.h"
 #include "destruct_demo.h"                 // K-T1 destruction demo (--world destruct)
+#include "ragdoll_demo.h"                  // Physics §2 ragdoll demo (--world ragdoll) + blend check
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
 
 #include <memory>
@@ -650,7 +656,7 @@ static bool runGpuSkinSelfTest() {
 // ---- Per-system frame timers (perf hunt: where do the ~100ms/frame go?). Scoped
 // accumulators summed over a window, logged as a per-section breakdown + FPS every
 // kPerfWindow frames. Cheap (a few glfwGetTime() calls/frame). See docs/PERF_LOG.md.
-namespace {
+// (Lives in the same anonymous namespace opened above — no nested re-open.)
 struct PerfTimers {
     double tick = 0, healthbars = 0, frameDt = 0;  // seconds, summed over the window
     int    frames = 0;
@@ -668,8 +674,101 @@ struct PerfTimers {
     }
 };
 PerfTimers g_perf;
-} // namespace
 
+// ---------------------------------------------------------------------------
+// SpeakingMonster — the HOST adapter that wires the dialog system's speaking
+// state onto a SKINNED NPC (X3_WORLD_BLUEPRINT §3, requirement 4). It implements
+// x3::dialog::ISpeakingNpc and drives an x3::anim::Skinner READ-ONLY: on
+// beginSpeaking it starts a "talk"/idle clip + records the subtitle; each frame
+// while speaking it advances a head-bob (a small extra time scrub layered over
+// the idle clip so the character reads as "talking"); on endSpeaking it returns
+// to rest. It owns its OWN Skinner bound to the NPC's Model so it never mutates
+// the MonsterSystem (read-only use of anim). Lip-sync is not required — a talk
+// pose / bob is the spec'd behaviour.
+//
+// Headless-safe: with a non-skinnable / absent model it still tracks the speaking
+// lifecycle (begin/tick/end) so the demo + wiring are observable without a device.
+class SpeakingMonster final : public x3::dialog::ISpeakingNpc {
+public:
+    // Bind to a loaded skinned Model (e.g. chief_martinez_anim.glb). The model must
+    // outlive this adapter (the demo owns it). Picks a talk/idle clip by name.
+    bool bind(const x3::asset::Model& model) {
+        m_model = &model;
+        m_skinnable = m_skinner.bind(model);
+        if (m_skinnable) {
+            // Prefer a "talk"/"idle" clip for the speaking pose; fall back to clip 0.
+            m_talkClip = m_skinner.findClip({ "talk", "idle" });
+            if (m_talkClip < 0 && m_skinner.clipCount() > 0) m_talkClip = 0;
+        }
+        return m_skinnable;
+    }
+
+    bool skinnable()  const { return m_skinnable; }
+    bool speaking()   const { return m_speaking; }
+    int  beginCount() const { return m_begins; }
+    int  endCount()   const { return m_ends; }
+    const std::string& subtitle() const { return m_subtitle; }
+    // Max per-component change of the joint palette observed between consecutive
+    // ticks while speaking — proves the talk-bob actually animated the skeleton.
+    float maxPaletteDelta() const { return m_maxDelta; }
+
+    void beginSpeaking(std::string_view line, x3::dialog::VoiceId voice,
+                       float estDurationSec) override {
+        (void)voice;
+        ++m_begins;
+        m_speaking = true;
+        m_subtitle.assign(line);
+        m_animTime = 0.0f;
+        m_estDur   = estDurationSec > 0.0f ? estDurationSec : 1.0f;
+        m_havePrev = false;
+        // Show the subtitle on the console (the HUD path would call
+        // IRenderDevice::drawHudText with this string each frame).
+        x3::logInfo(std::string("[dialog] ") + std::string(line));
+    }
+
+    void tickSpeaking(float dt, float phase01) override {
+        if (!m_speaking) return;
+        // Talk bob: advance the clip time, modulated by a small sinusoid so the
+        // head visibly bobs across the line (peaks mid-line, settles at the end).
+        const float bob = 1.0f + 0.6f * std::sin(phase01 * 6.2831853f);
+        m_animTime += dt * bob;
+        if (m_skinnable && m_model && m_talkClip >= 0) {
+            // READ-ONLY anim use: compute the palette at the talk-clip time WITHOUT a
+            // device (the demo is headless). A real windowed host would instead call
+            // m_skinner.apply(model, device, talkClip, time) to skin + draw.
+            m_skinner.computePalette(*m_model, (uint32_t)m_talkClip, m_animTime, m_curPal);
+            if (m_havePrev && m_prevPal.size() == m_curPal.size()) {
+                float d = 0.0f;
+                for (size_t i = 0; i < m_curPal.size(); ++i)
+                    d = std::max(d, std::fabs(m_curPal[i] - m_prevPal[i]));
+                m_maxDelta = std::max(m_maxDelta, d);
+            }
+            m_prevPal = m_curPal;
+            m_havePrev = true;
+        }
+    }
+
+    void endSpeaking() override {
+        ++m_ends;
+        m_speaking = false;
+        m_subtitle.clear();
+    }
+
+private:
+    const x3::asset::Model* m_model = nullptr;
+    x3::anim::Skinner       m_skinner;
+    bool   m_skinnable = false;
+    int    m_talkClip  = -1;
+    bool   m_speaking  = false;
+    int    m_begins    = 0;
+    int    m_ends      = 0;
+    float  m_animTime  = 0.0f;
+    float  m_estDur    = 1.0f;
+    std::string m_subtitle;
+    std::vector<float> m_curPal, m_prevPal;
+    bool   m_havePrev  = false;
+    float  m_maxDelta  = 0.0f;
+};
 } // namespace
 
 int main(int argc, char** argv) {
@@ -680,6 +779,7 @@ int main(int argc, char** argv) {
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
+         testElevatorFsm = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false;
@@ -692,15 +792,37 @@ int main(int argc, char** argv) {
     // --test-bosses (Act-1 bosses, Wave 1): the 5 mid-boss defs + the multi-pod
     // machine + the scripted pre-fight hook + the Martinez regression guard. Additive.
     bool        testBosses = false;
+    // --test-act2bosses (Act-2 roster, Wave 2): the 5 alien-planet-surface enemy
+    // defs + 4 single-body bosses (Memory Hunter / Siren / Breeder Queen / Garrison
+    // Commander) + the Wave-2 Tuning tags (startAllied / copyFeintPhase /
+    // escapeTimerSeconds) + the Act-1 + Martinez regression guard. Additive.
+    bool        testAct2Bosses = false;
     // --test-ui (UI pass): general game-UI layer (menus + HUD). Additive flag.
     bool        testUi = false;
     // --test-saveload (save/load pass): versioned checkpoint serialization. Additive.
     bool        testSaveLoad = false;
+    // --test-dialog (AI-dialog + TTS pass, §3): the authored dialogue TREE advances
+    // through nodes + player-choice branches OFFLINE; a stub AI provider hook is used
+    // when set (else falls back to the tree); a stub TTS hook drives the NPC into/out
+    // of the SPEAKING state. Fully offline + leak-clean; no network. Additive.
+    bool        testDialog = false;
+    // --demo-dialog [glb] (headless, offline): run the sample Sarah conversation
+    // through a REAL skinned-NPC adapter (SpeakingMonster) that drives an anim
+    // Skinner talk-bob (read-only) over a character GLB, with an offline stub TTS
+    // hook pacing the speaking state. Prints each subtitle + the speaking
+    // transitions + asserts the talk-bob actually animated the skeleton. Defaults
+    // to chief_martinez_anim.glb. No window / Vulkan / network. Additive.
+    bool        demoDialog = false;
+    std::string demoDialogPath;
     // --test-valley (Crystal Valleys Act-2 L15) + --test-cliffs (Salvari cliffs finale).
     bool        testValley = false, testCliffs = false;
     // --test-secretroom (code-locked trapdoor -> secret room): the cell HoloTerminal
     // override code opens a floor-hatch to a stocked secret room below. Additive flag.
     bool        testSecretRoom = false;
+    // --test-club (the full Club 1127 "THE DEEP" at Y=-200): build headless + assert
+    // the key fixtures (DJ booth, ORB, bars, 12-step stair, PA rig, 28 blacklights,
+    // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.
+    bool        testClub = false;
     // --test-spiremid (Spire mid-floor content): F3/F4/F5 encounter authoring. Additive.
     bool        testSpireMid = false;
     // --test-nexus (Floor 4.5 Nexus / The Chorus): off-elevator multi-pod boss. Additive.
@@ -714,6 +836,10 @@ int main(int argc, char** argv) {
     bool        testGpuSkin = false;
     // --test-spiretop (Spire top-floor content): F6/F7 (Act-1 finale) encounter authoring. Additive.
     bool        testSpireTop = false;
+    // --test-timeline (EFLZ morality/timeline backbone): infection 4-stage timers + cure
+    // rates, the Omega/Alpha/Beta/Gamma timeline selector, the morality axes, and the
+    // 12-ending eligibility map. Additive.
+    bool        testTimeline = false;
     // --test-dronehack (F5 Drone Manufacturing): Sarah's master hack strips the Swarm
     // Controller AI's HP fraction + flips the drone set to allied (gated, not at load). Additive.
     bool        testDroneHack = false;
@@ -725,11 +851,30 @@ int main(int argc, char** argv) {
     // Emergence (lab-exit gauntlet -> Emergence Point safe zone) + L9 Crystalline Desert
     // Edge (crystal props + neutral fauna + an inert-until-entered hazard zone). Additive.
     bool        testAct2 = false;
+    // --test-tod (EFLZ Time-of-Day): a 4-phase day cycle (dawn/day/dusk/night) that
+    // drives the analytic sky/sun (dir/color/intensity/haze + ambient) via SkyParams.
+    // Asserts the cycle visits all phases + wraps, the sun arc + intensity vary
+    // monotonically across the day, city-lights/aurora gate on night, deterministic. Additive.
+    bool        testTod = false;
+    // --test-weather (EFLZ Weather): 7 states (clear/cloudy/rain/storm/fog/sandstorm/snow)
+    // with smooth 30 s transitions, biome-gated, each nudging sky/fog/ambient + a hazard
+    // flag. Asserts gating, interpolated transitions, hazard set only in hazardous states
+    // (incl. swamp poison-fog), midpoint hazard flip, and determinism. Additive.
+    bool        testWeather = false;
     // --test-collapse (K-T3 structural collapse): build a small structure (column /
     // beam on two supports), destroy a support, step the sim, and assert the
     // unsupported pieces fall (static->dynamic), anchored pieces stay stable, the
     // rubble settles bounded/NaN-free, GPU debris fires, and it's leak-clean. Additive.
     bool        testCollapse = false;
+    // --test-physjoint (Physics §1): create a dynamic body on a point/distance
+    // constraint, step the sim, and assert it hangs + swings under gravity then
+    // settles with damping, and re-settles after an impulse; no NaNs; leak-clean.
+    // Additive.
+    bool        testPhysJoint = false;
+    // --test-ragdoll (Physics §2): build a ragdoll from a synthetic skeleton, step,
+    // assert it falls + settles (bounded, no NaN), the constraint chain holds (bone
+    // lengths preserved), and the anim<->ragdoll blend 0->1 interpolates the palette
+    // monotonically. Additive. (testRagdoll is declared in the block above.)
     // Clip-listing check (--list-clips <glb>): load a skinned GLB headless and
     // report its animation clip count + names, then sample Walk at t=0 vs t=0.5
     // and confirm the joint palette changes. Asset-pipeline verification for the
@@ -896,14 +1041,19 @@ int main(int argc, char** argv) {
         else if (a == "--test-ai") testAi = true;
         else if (a == "--test-bestiary") testBestiary = true;
         else if (a == "--test-bosses") testBosses = true;
+        else if (a == "--test-act2bosses") testAct2Bosses = true;
         else if (a == "--test-spiremid") testSpireMid = true;
         else if (a == "--test-nexus") testNexus = true;
         else if (a == "--test-spiretop") testSpireTop = true;
+        else if (a == "--test-timeline") testTimeline = true;
         else if (a == "--test-dronehack") testDroneHack = true;
         else if (a == "--test-sublevels") testSubLevels = true;
         else if (a == "--test-act2") testAct2 = true;
+        else if (a == "--test-tod") testTod = true;
+        else if (a == "--test-weather") testWeather = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
+        else if (a == "--test-elevatorfsm") testElevatorFsm = true;
         else if (a == "--test-net") testNet = true;
         else if (a == "--test-netsync") testNetSync = true;
         else if (a == "--test-netinterp") testNetInterp = true;
@@ -914,14 +1064,21 @@ int main(int argc, char** argv) {
         else if (a == "--test-debris") testDebris = true;
         else if (a == "--test-gpuskin") testGpuSkin = true;
         else if (a == "--test-collapse") testCollapse = true;
+        else if (a == "--test-physjoint") testPhysJoint = true;
         else if (a == "--test-nav") testNav = true;
         else if (a == "--test-weapons") testWeapons = true;
         else if (a == "--test-vehicle") testVehicle = true;
         else if (a == "--test-footik") testFootIk = true;
         else if (a == "--test-ui") testUi = true;
         else if (a == "--test-saveload") testSaveLoad = true;
+        else if (a == "--test-dialog") testDialog = true;
+        else if (a == "--demo-dialog") {
+            demoDialog = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') demoDialogPath = argv[++i];
+        }
         else if (a == "--test-valley") testValley = true;
         else if (a == "--test-cliffs") testCliffs = true;
+        else if (a == "--test-club") testClub = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -1034,6 +1191,25 @@ int main(int argc, char** argv) {
         x3::logInfo("running physics (M3) self-test...");
         return x3::phys::runPhysicsSelfTest() ? 0 : 1;
     }
+    if (testPhysJoint) {
+        x3::logInfo("running Physics §1 suspended/constrained-body (--test-physjoint) self-test...");
+        return x3::phys::runPhysJointSelfTest() ? 0 : 1;
+    }
+    if (testRagdoll) {
+        x3::logInfo("running Physics §2 ragdoll+blend (--test-ragdoll) self-test...");
+        // Engine-side: the Jolt ragdoll fall/settle/chain-hold + blend-math check.
+        bool engineOk = x3::phys::runRagdollSelfTest();
+        // App-side: drive the REAL anim::Skinner ragdoll-blend across weight 0->1
+        // over a synthetic skinned model and assert the palette interpolates
+        // monotonically (the §2 skin-follows-ragdoll acceptance, end to end).
+        int bPass = 0, bTotal = 0;
+        bool blendOk = x3::game::runRagdollBlendCheck(bPass, bTotal);
+        x3::logInfo("ragdoll-blend: " + std::to_string(bPass) + "/" +
+                    std::to_string(bTotal) + " passed");
+        // App-side physics-death ragdoll (this session's app/ragdoll.cpp path).
+        bool deathOk = x3::game::runRagdollSelfTest();
+        return (engineOk && blendOk && deathOk) ? 0 : 1;
+    }
     if (testGltf) {
         x3::logInfo("running glTF/GLB model loader (M2) self-test...");
         return x3::asset::runModelLoaderSelfTest() ? 0 : 1;
@@ -1049,10 +1225,6 @@ int main(int argc, char** argv) {
     if (testPhysprops) {
         x3::logInfo("running physics-props (hanging cubes / joints) self-test...");
         return x3::game::runPhysPropsSelfTest() ? 0 : 1;
-    }
-    if (testRagdoll) {
-        x3::logInfo("running ragdoll (physics death) self-test...");
-        return x3::game::runRagdollSelfTest() ? 0 : 1;
     }
     if (testRagdollSkin) {
         x3::logInfo("running ragdoll-skin (rigid bone attach) self-test...");
@@ -1196,6 +1368,11 @@ int main(int argc, char** argv) {
                     "(multi-pod + scripted pre-fight hook) self-test...");
         return x3::game::runBossesSelfTest() ? 0 : 1;
     }
+    if (testAct2Bosses) {
+        x3::logInfo("running EFLZ Act-2 roster (5 alien-planet-surface enemies + "
+                    "4 single-body bosses on the existing phase machine) self-test...");
+        return x3::game::runAct2BossesSelfTest() ? 0 : 1;
+    }
     if (testSpireMid) {
         x3::logInfo("running EFLZ Spire mid-floor (F3 Labs / F4 Offices / F5 Synth bay) "
                     "encounter-content self-test...");
@@ -1211,6 +1388,12 @@ int main(int argc, char** argv) {
                     "Laboratory Act-1 finale) encounter-content self-test...");
         return x3::game::runSpireTopSelfTest() ? 0 : 1;
     }
+    if (testTimeline) {
+        x3::logInfo("running EFLZ morality/timeline backbone (infection 4-stage timers + "
+                    "cure rates, Omega/Alpha/Beta/Gamma selector, morality axes, 12-ending "
+                    "eligibility) self-test...");
+        return x3::game::runTimelineSelfTest() ? 0 : 1;
+    }
     if (testDroneHack) {
         x3::logInfo("running EFLZ F5 Drone Manufacturing — Sarah's master hack "
                     "(strip Swarm AI HP + flip the drone army) self-test...");
@@ -1221,6 +1404,18 @@ int main(int argc, char** argv) {
                     "[Frozen Collective] / Enhanced Interrogation -> Dr. Chen Return Mission) "
                     "self-test...");
         return x3::game::runSubLevelsSelfTest() ? 0 : 1;
+    }
+    if (testTod) {
+        x3::logInfo("running EFLZ Time-of-Day cycle (4-phase dawn/day/dusk/night driving "
+                    "sky/sun dir+color+intensity+haze+ambient via SkyParams; deterministic) "
+                    "self-test...");
+        return x3::game::runTodSelfTest() ? 0 : 1;
+    }
+    if (testWeather) {
+        x3::logInfo("running EFLZ Weather (7 states clear/cloudy/rain/storm/fog/sandstorm/snow; "
+                    "smooth timed transitions; biome-gated; hazard flag for HazardZone) "
+                    "self-test...");
+        return x3::game::runWeatherSelfTest() ? 0 : 1;
     }
     if (testAct2) {
         x3::logInfo("running EFLZ Act-2 open-world surface (L8 Surface Emergence "
@@ -1236,6 +1431,11 @@ int main(int argc, char** argv) {
     if (testElevator) {
         x3::logInfo("running advanced elevator (call/travel/carry) self-test (E1-E6)...");
         return x3::game::runElevatorSelfTest() ? 0 : 1;
+    }
+    if (testElevatorFsm) {
+        x3::logInfo("running souped-up strata/disco elevator FSM self-test "
+                    "(10-state FSM + strata + 1127 disco -> Club 1127)...");
+        return x3::game::runElevatorFsmSelfTest() ? 0 : 1;
     }
     if (testNet) {
         x3::logInfo("running netcode (Subsystem N, Phase 0) self-test "
@@ -1315,6 +1515,99 @@ int main(int argc, char** argv) {
                     "(round-trip field-by-field + magic/version/checksum/truncation reject)...");
         return x3::save::runSaveLoadSelfTest() ? 0 : 1;
     }
+    if (testDialog) {
+        x3::logInfo("running AI-dialog + TTS self-test "
+                    "(offline tree advance + branches; stub AI provider used/fallback; "
+                    "stub TTS drives NPC speaking state; no network; leak-clean)...");
+        return x3::dialog::runDialogSelfTest() ? 0 : 1;
+    }
+    if (demoDialog) {
+        // Headless, fully offline demo: drive the sample Sarah conversation onto a
+        // REAL skinned NPC (chief_martinez_anim.glb) via the SpeakingMonster adapter
+        // + an offline stub TTS hook. Proves requirement 4 end-to-end against the
+        // actual anim Skinner (read-only) without a window / device / network.
+        namespace fs = std::filesystem;
+        std::string glb = demoDialogPath.empty()
+            ? (x3::game::riggedGlbRoot() + "/chief_martinez_anim.glb")
+            : demoDialogPath;
+        x3::logInfo("--demo-dialog: NPC model = " + glb);
+
+        // Load the skinned model headlessly (loader pattern from --list-clips).
+        x3::asset::Model model;
+        std::unique_ptr<x3::asset::IAssetSource> src;
+        std::unique_ptr<x3::asset::IModelLoader> loader;
+        bool haveModel = false;
+        if (fs::exists(glb)) {
+            fs::path p(glb);
+            src.reset(x3::asset::createAssetSource());
+            src->mountDir(p.parent_path().string(), 0);
+            loader.reset(x3::asset::createModelLoader(nullptr, src.get())); // headless
+            model = loader->load(p.filename().string());
+            haveModel = model.ok;
+        }
+        if (!haveModel) {
+            x3::logInfo("--demo-dialog: model absent/failed (clean checkout) — running "
+                        "subtitle-only (the conversation + speaking lifecycle still run).");
+        }
+
+        SpeakingMonster npc;
+        if (haveModel) {
+            bool sk = npc.bind(model);
+            x3::logInfo(std::string("--demo-dialog: NPC skinnable = ") + (sk ? "yes" : "no"));
+        }
+
+        // Offline stub TTS: deterministic clip duration from the line length; NO
+        // file I/O, NO network. (Tim's real voice vendor drops in here as the hook.)
+        auto stubTts = [](const std::string& line, x3::dialog::VoiceId v) {
+            x3::dialog::AudioClip c;
+            c.path = std::string("stub://voice/") + x3::dialog::voiceName(v);
+            c.durationSec = 0.6f + 0.012f * (float)line.size();
+            return c;
+        };
+
+        std::unique_ptr<x3::dialog::IDialogSystem> d(x3::dialog::createDialogSystem());
+        d->setTtsProvider(stubTts);
+        d->setSpeakingNpc(&npc);
+        // No AI provider set -> the authored tree is used (offline baseline). Mode
+        // stays Tree; the demo shows the guaranteed path.
+        x3::dialog::Tree tree = x3::dialog::sampleSarahTree();
+
+        if (!d->start(tree)) { x3::logError("--demo-dialog: tree failed to start"); return 1; }
+
+        // Drive the conversation: tick each line to completion, print the choices,
+        // auto-pick choice 0 (deterministic), until the conversation ends.
+        int safety = 0;
+        while (d->active() && safety++ < 64) {
+            // Tick the current line to completion (the speaking state runs here).
+            int t = 0;
+            while (d->speaking() && t++ < 4000) { d->update(0.02f); }
+            const auto& ch = d->choices();
+            if (ch.empty()) {
+                // Terminal node: the line finished, conversation will end on the next
+                // active() check (the system ended it inside the final exitSpeaking()).
+                break;
+            }
+            x3::logInfo("  [choices]");
+            for (size_t k = 0; k < ch.size(); ++k)
+                x3::logInfo("    " + std::to_string(k) + ") " + ch[k].text);
+            d->choose(0);   // auto-advance down the first branch
+        }
+
+        bool ok = npc.beginCount() >= 1 && npc.beginCount() == npc.endCount() && !d->active();
+        x3::logInfo("--demo-dialog: lines spoken = " + std::to_string(npc.beginCount()) +
+                    ", speaking enter==exit = " + (npc.beginCount() == npc.endCount() ? "yes" : "NO") +
+                    ", conversation ended = " + (!d->active() ? "yes" : "NO"));
+        if (haveModel && npc.skinnable()) {
+            // The talk-bob must have actually moved the skeleton while speaking.
+            bool moved = npc.maxPaletteDelta() > 1e-4f;
+            x3::logInfo("--demo-dialog: talk-bob palette max-delta = " +
+                        std::to_string(npc.maxPaletteDelta()) + (moved ? " (animated)" : " (STATIC!)"));
+            ok = ok && moved;
+        }
+        if (loader && haveModel) loader->unload(model);
+        x3::logInfo(std::string("--demo-dialog: ") + (ok ? "PASS" : "FAIL"));
+        return ok ? 0 : 1;
+    }
     if (testValley) {
         x3::logInfo("running Crystal Valleys (Act 2, L15) self-test "
                     "(terrain placement + crash/K'thara on surface + Dominion + water)...");
@@ -1323,6 +1616,11 @@ int main(int argc, char** argv) {
     if (testCliffs) {
         x3::logInfo("running Salvari cliffs finale self-test (pad/sea/placement/streaming)...");
         return x3::game::runCliffsSelfTest() ? 0 : 1;
+    }
+    if (testClub) {
+        x3::logInfo("running Club 1127 (\"THE DEEP\") self-test "
+                    "(build at Y=-200; assert DJ booth/ORB/bars/stair/PA/blacklights/TVs/footprint; leak-clean)...");
+        return x3::game::runClubSelfTest() ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -2591,6 +2889,248 @@ int main(int argc, char** argv) {
     }
 
     // ======================================================================
+    // ---- Physics §1 demo (--world physjoint) ------------------------------
+    // A row of cubes each hung from a fixed anchor above by a Jolt PointConstraint
+    // so they hang + swing like pendulums under gravity. Fly into them (or, in the
+    // headless capture, a scripted sweep) imparts a sideways impulse and they swing;
+    // damping settles them. Self-contained world built on the public IPhysicsWorld
+    // constraint API. Headless `--world physjoint --screenshot <path>` captures a
+    // still mid-swing. Jolt (MIT) only.
+    if (worldMode == "physjoint") {
+        x3::logInfo("--world physjoint: building the suspended swinging-cube row");
+        std::unique_ptr<x3::phys::IPhysicsWorld> pjphys(x3::phys::createPhysicsWorld());
+        if (!pjphys->init()) {
+            x3::logError("--world physjoint: physics init failed");
+            device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate(); return 1;
+        }
+        // Shared cube mesh + textures + a lit ground.
+        std::vector<x3::rhi::MeshVertex> cv; std::vector<uint32_t> ci;
+        x3::prims::makeCube(0.5f, cv, ci);
+        auto cubeMesh = device->createMesh(cv.data(), (uint32_t)cv.size(), ci.data(), (uint32_t)ci.size());
+        auto cubeTexD = x3::prims::makeCheckerRGBA(64, 8, 200, 120, 90, 150, 80, 60);
+        auto cubeTex  = device->createTexture(cubeTexD.data(), 64, 64, true);
+        auto grTexD = x3::prims::makeCheckerRGBA(64, 8, 150, 150, 160, 60, 62, 74);
+        auto grTex  = device->createTexture(grTexD.data(), 64, 64, true);
+        x3::prims::PrimMesh g = x3::prims::makeBox(12.0f, 0.25f, 12.0f, 0.0f, -0.25f, 0.0f, 0.25f);
+        auto grMesh = device->createMesh(g.verts.data(), (uint32_t)g.verts.size(),
+                                         g.index.data(), (uint32_t)g.index.size());
+        pjphys->addStaticMesh(g.cverts.data(), (uint32_t)(g.cverts.size()/3),
+                              g.cindex.data(), (uint32_t)g.cindex.size());
+
+        // A row of N cubes hung from anchors at y=4. Each cube's TOP is pinned to its
+        // anchor so it swings as a pendulum about the pin.
+        const int N = 5;
+        const float anchorY = 4.0f, half = 0.4f;
+        struct Hung { x3::phys::BodyId body; float ax, az; };
+        std::vector<Hung> hung;
+        for (int i = 0; i < N; ++i) {
+            float ax = -4.0f + i * 2.0f, az = 0.0f;
+            x3::phys::Vec3 center{ ax, anchorY - 1.2f, az };  // hang 1.2 m below the anchor
+            x3::phys::BodyId b = pjphys->addBox(x3::phys::Vec3{half,half,half}, center, 4.0f, x3::phys::Layer::Dynamic);
+            x3::phys::Vec3 anchor{ ax, anchorY, az };
+            x3::phys::Vec3 attach{ ax, center.y + half, az };  // a point near the top of the cube
+            pjphys->addPointConstraint(b, anchor, attach);
+            pjphys->setBodyDamping(b, 0.15f, 0.15f);
+            hung.push_back({ b, ax, az });
+        }
+        pjphys->optimizeBroadphase();
+
+        { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = true; sp.sunIntensity = 1.3f; sp.haze = 0.3f;
+          device->setSkyParams(sp); }
+        { x3::rhi::PointLight pl[2];
+          pl[0].pos[0]=0; pl[0].pos[1]=4.0f; pl[0].pos[2]=5.0f; pl[0].range=20.0f;
+          pl[0].color[0]=5.0f; pl[0].color[1]=4.8f; pl[0].color[2]=4.4f;
+          pl[1].pos[0]=0; pl[1].pos[1]=5.0f; pl[1].pos[2]=-3.0f; pl[1].range=18.0f;
+          pl[1].color[0]=3.0f; pl[1].color[1]=3.0f; pl[1].color[2]=3.2f;
+          device->setPointLights(pl, 2); }
+
+        const float dt = 1.0f / 60.0f;
+        auto drawScene = [&](const x3::rhi::FrameContext& frame) {
+            const float white[4] = {1,1,1,1};
+            const float idG[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+            device->drawMesh(frame, grMesh, grTex, white, idG);
+            const float cubeCol[4] = { 0.95f, 0.8f, 0.7f, 1.0f };
+            for (const auto& h : hung) {
+                x3::phys::Vec3 p = pjphys->getBodyPosition(h.body);
+                float q[4]; pjphys->getBodyRotation(h.body, q);
+                // Compose a TRS matrix (quat -> 3x3, then scale to the cube size).
+                float x=q[0],y=q[1],z=q[2],w=q[3];
+                float m[16] = {
+                    (1-2*(y*y+z*z)), (2*(x*y+z*w)),   (2*(x*z-y*w)),   0,
+                    (2*(x*y-z*w)),   (1-2*(x*x+z*z)), (2*(y*z+x*w)),   0,
+                    (2*(x*z+y*w)),   (2*(y*z-x*w)),   (1-2*(x*x+y*y)), 0,
+                    p.x, p.y, p.z, 1 };
+                const float s = half * 2.0f / 0.5f;
+                m[0]*=s;m[1]*=s;m[2]*=s; m[4]*=s;m[5]*=s;m[6]*=s; m[8]*=s;m[9]*=s;m[10]*=s;
+                device->drawMesh(frame, cubeMesh, cubeTex, cubeCol, m);
+            }
+        };
+
+        // ===== Headless capture: push the row, capture mid-swing. =====
+        if (headless) {
+            float cam[5] = { 0.0f, 3.0f, 9.0f, -1.5708f, -0.18f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const std::string outPath = screenshot ? screenshotPath : std::string("G:/X3Native/captures/physjoint.png");
+            const int kFrames = 45;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                if (i == 3) for (auto& h : hung) pjphys->applyImpulse(h.body, x3::phys::Vec3{ 18.0f, 0, 0 });
+                pjphys->step(dt);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 65.0f);
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) drawScene(frame);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world physjoint: wrote " + outPath);
+            else       x3::logError("--world physjoint: capture FAILED");
+            device->destroyMesh(cubeMesh); device->destroyMesh(grMesh);
+            device->destroyTexture(cubeTex); device->destroyTexture(grTex);
+            pjphys->shutdown(); device->shutdown();
+            if (window) glfwDestroyWindow(window); glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: fly-cam; Space pushes the whole row. =====
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        float fx = 0.0f, fy = 2.5f, fz = 9.0f, fyaw = -1.5708f, fpitch = -0.1f;
+        bool prevSpace = false;
+        x3::logInfo("--world physjoint: fly WASD + mouse, Space to push the cubes, Esc to quit");
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime(); float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx=(float)(mx-lastMX), ddy=(float)(my-lastMY); lastMX=mx; lastMY=my;
+            auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+            fyaw += ddx*0.0025f; fpitch -= ddy*0.0025f;
+            if (fpitch> 1.55f) fpitch= 1.55f; if (fpitch<-1.55f) fpitch=-1.55f;
+            float dx=std::cos(fpitch)*std::cos(fyaw), dy=std::sin(fpitch), dz=std::cos(fpitch)*std::sin(fyaw);
+            float rl=std::sqrt(dx*dx+dz*dz); if (rl<1e-4f) rl=1e-4f;
+            float rx=-dz/rl, rz=dx/rl; float spd=6.0f*fdt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd*=3.0f;
+            if (kd(GLFW_KEY_W)){fx+=dx*spd;fy+=dy*spd;fz+=dz*spd;}
+            if (kd(GLFW_KEY_S)){fx-=dx*spd;fy-=dy*spd;fz-=dz*spd;}
+            if (kd(GLFW_KEY_D)){fx+=rx*spd;fz+=rz*spd;}
+            if (kd(GLFW_KEY_A)){fx-=rx*spd;fz-=rz*spd;}
+            bool sp = kd(GLFW_KEY_SPACE);
+            if (sp && !prevSpace) for (auto& h : hung) pjphys->applyImpulse(h.body, x3::phys::Vec3{ 18.0f, 0, 0 });
+            prevSpace = sp;
+            pjphys->step(fdt);
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh);
+            device->setCamera(fx, fy, fz, fyaw, fpitch, 65.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) drawScene(frame);
+            device->endFrame(frame);
+        }
+        device->destroyMesh(cubeMesh); device->destroyMesh(grMesh);
+        device->destroyTexture(cubeTex); device->destroyTexture(grTex);
+        pjphys->shutdown(); device->shutdown();
+        if (window) glfwDestroyWindow(window); glfwTerminate();
+        return 0;
+    }
+
+    // ---- Physics §2 demo (--world ragdoll) --------------------------------
+    // A humanoid built from the canonical 11-bone Jolt ragdoll rig stands on a lit
+    // ground; press R to RAGDOLL (the Jolt ragdoll takes over and it collapses
+    // naturally), T to nudge it again. Each bone is drawn as a scaled box at its
+    // physics world transform. Headless `--world ragdoll --screenshot <path>`
+    // triggers the ragdoll + captures the mid-collapse still. Jolt (MIT) only.
+    if (worldMode == "ragdoll") {
+        x3::logInfo("--world ragdoll: building the ragdoll demo character");
+        std::unique_ptr<x3::phys::IPhysicsWorld> rphys(x3::phys::createPhysicsWorld());
+        if (!rphys->init()) {
+            x3::logError("--world ragdoll: physics init failed");
+            device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate(); return 1;
+        }
+        x3::game::RagdollDemo demo;
+        demo.build(*device, *rphys);
+
+        { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = true; sp.sunIntensity = 1.3f; sp.haze = 0.3f;
+          device->setSkyParams(sp); }
+        { x3::rhi::PointLight pl[2];
+          pl[0].pos[0]=2.0f; pl[0].pos[1]=3.0f; pl[0].pos[2]=4.0f; pl[0].range=16.0f;
+          pl[0].color[0]=5.0f; pl[0].color[1]=4.8f; pl[0].color[2]=4.4f;
+          pl[1].pos[0]=-2.0f; pl[1].pos[1]=3.0f; pl[1].pos[2]=2.0f; pl[1].range=16.0f;
+          pl[1].color[0]=3.2f; pl[1].color[1]=3.2f; pl[1].color[2]=3.5f;
+          device->setPointLights(pl, 2); }
+
+        const float dt = 1.0f / 60.0f;
+
+        // ===== Headless capture: trigger the ragdoll, let it collapse, capture. =====
+        if (headless) {
+            float cam[5] = { 0.0f, 1.2f, 3.2f, -1.5708f, -0.10f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const std::string outPath = screenshot ? screenshotPath : std::string("G:/X3Native/captures/ragdoll.png");
+            const int kFrames = 60;   // ~1 s into the collapse
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                if (i == 3) demo.ragdollize();
+                rphys->step(dt);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) demo.render(frame);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world ragdoll: wrote " + outPath);
+            else       x3::logError("--world ragdoll: capture FAILED");
+            demo.shutdown(); rphys->shutdown(); device->shutdown();
+            if (window) glfwDestroyWindow(window); glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: fly-cam; R ragdolls, T nudges. =====
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        float fx = 0.0f, fy = 1.2f, fz = 3.5f, fyaw = -1.5708f, fpitch = -0.05f;
+        bool prevR = false, prevT = false;
+        x3::logInfo("--world ragdoll: fly WASD + mouse, R to ragdoll, T to nudge, Esc to quit");
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime(); float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx=(float)(mx-lastMX), ddy=(float)(my-lastMY); lastMX=mx; lastMY=my;
+            auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+            fyaw += ddx*0.0025f; fpitch -= ddy*0.0025f;
+            if (fpitch> 1.55f) fpitch= 1.55f; if (fpitch<-1.55f) fpitch=-1.55f;
+            float dx=std::cos(fpitch)*std::cos(fyaw), dy=std::sin(fpitch), dz=std::cos(fpitch)*std::sin(fyaw);
+            float rl=std::sqrt(dx*dx+dz*dz); if (rl<1e-4f) rl=1e-4f;
+            float rx=-dz/rl, rz=dx/rl; float spd=5.0f*fdt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd*=3.0f;
+            if (kd(GLFW_KEY_W)){fx+=dx*spd;fy+=dy*spd;fz+=dz*spd;}
+            if (kd(GLFW_KEY_S)){fx-=dx*spd;fy-=dy*spd;fz-=dz*spd;}
+            if (kd(GLFW_KEY_D)){fx+=rx*spd;fz+=rz*spd;}
+            if (kd(GLFW_KEY_A)){fx-=rx*spd;fz-=rz*spd;}
+            bool rNow = kd(GLFW_KEY_R);
+            if (rNow && !prevR) demo.ragdollize();
+            prevR = rNow;
+            bool tNow = kd(GLFW_KEY_T);
+            if (tNow && !prevT && demo.ragdoll()) demo.ragdoll()->applyImpulseAll(x3::phys::Vec3{ 2.0f, 1.0f, 0 });
+            prevT = tNow;
+            rphys->step(fdt);
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh);
+            device->setCamera(fx, fy, fz, fyaw, fpitch, 60.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) demo.render(frame);
+            device->endFrame(frame);
+        }
+        demo.shutdown(); rphys->shutdown(); device->shutdown();
+        if (window) glfwDestroyWindow(window); glfwTerminate();
+        return 0;
+    }
+
+    // ======================================================================
     // ---- VEHICLE FRAMEWORK demos (--world drive / boat / fly) -------------
     // GENERAL vehicle/flight/buoyancy framework (engine/physics/IVehicle.h) on
     // Jolt. Each demo = a dynamic rigid body + one IVehicleController:
@@ -2877,7 +3417,7 @@ int main(int argc, char** argv) {
     // club.spawn() instead of opening Door C. The `--world club` flag below is the
     // standalone build/verify path for that same area.
     if (worldMode == "club") {
-        x3::logInfo("--world club: building Club 1127 + the flooded cave/tunnel network");
+        x3::logInfo("--world club: building the full Club 1127 (\"THE DEEP\") at Y=-200");
 
         // Physics world for the club area (separate from the Level-1 path below).
         std::unique_ptr<x3::phys::IPhysicsWorld> cphys(x3::phys::createPhysicsWorld());
@@ -2893,8 +3433,8 @@ int main(int argc, char** argv) {
         x3::game::Club1127World club;
         club.build(cscene, *device, *cphys, x3::game::riggedGlbRoot());
 
-        // Apply the neon/cave point-light set (static; the device re-uploads each
-        // frame). The club has NO sky (it's an enclosed interior + caves).
+        // Apply the neon/UV point-light set once (the orbiting spot/ring lights are
+        // re-pushed each frame by club.update()). The club has NO sky (deep interior).
         const auto& clights = club.pointLights();
         device->setPointLights(clights.data(), (uint32_t)clights.size());
         { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
@@ -2914,8 +3454,7 @@ int main(int argc, char** argv) {
                                                    : std::string("C:/GameDev/X3Native-engine/agent_club.png");
             for (int i = 0; i < kSettle; ++i) {
                 glfwPollEvents();
-                club.update(dt, cscene, *cphys);
-                club.tickWater(dt, *device);   // animate the flooded section's REAL water
+                club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
                 cphys->step(dt);
                 cscene.update(*cphys);
                 // Re-pose each frame (scene.update doesn't move the camera).
@@ -2949,7 +3488,7 @@ int main(int argc, char** argv) {
         bool prevSpaceC = false, prevFC = false;
         bool noclipC = false;
         float flyXc = spawn.x, flyYc = spawn.y + 1.6f, flyZc = spawn.z, flyYawC = 3.14159f, flyPitchC = -0.2f;
-        x3::logInfo("--world club: WASD walk, mouse look, Space jump, LeftShift sprint, F noclip, Esc to quit");
+        x3::logInfo("--world club: walk THE DEEP at Y=-200 — WASD, mouse look, Space jump, LeftShift sprint, F noclip, Esc to quit");
 
         int lastWc = (int)W, lastHc = (int)H;
         while (!glfwWindowShouldClose(window)) {
@@ -2984,8 +3523,7 @@ int main(int argc, char** argv) {
                 in.jumpPressed = spaceNow && !prevSpaceC;
                 in.lookDX = ddx; in.lookDY = ddy;
                 cplayer.update(in, dt, *cphys);
-                club.update(dt, cscene, *cphys);
-                club.tickWater(dt, *device);   // animate the flooded section's REAL water
+                club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
                 cphys->step(dt);
                 cscene.update(*cphys);
                 cplayer.camera(camX, camY, camZ, camYaw, camPitch);
@@ -3006,8 +3544,7 @@ int main(int argc, char** argv) {
                 if (kd(GLFW_KEY_A)) { flyXc -= rx*spd; flyZc -= rz*spd; }
                 if (spaceNow) flyYc += spd;
                 if (kd(GLFW_KEY_LEFT_CONTROL)) flyYc -= spd;
-                club.update(dt, cscene, *cphys);
-                club.tickWater(dt, *device);   // animate the flooded section's REAL water
+                club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
                 cphys->step(dt);
                 cscene.update(*cphys);
                 camX = flyXc; camY = flyYc; camZ = flyZc; camYaw = flyYawC; camPitch = flyPitchC;
@@ -3414,6 +3951,12 @@ int main(int argc, char** argv) {
     // sea level; the only ocean-specific bit is the per-frame setWaterParams below.
     const bool oceanWorld   = (worldMode == "ocean");
     const bool terrainWorld = (worldMode == "terrain") || oceanWorld;
+    // --world elevator: a souped-up-elevator showcase. It reuses the Level-1 build
+    // path (the strata/disco elevator lives in the Level-1 spire shaft), then logs
+    // a hint + spawns the player AT the elevator so you can ride it and enter the
+    // 1127 disco code right away. Any unrecognized --world value also lands here
+    // (Level 1), so this is purely additive guidance.
+    const bool elevatorWorld = (worldMode == "elevator");
     x3::game::Scene scene;
     x3::game::Level1Game game;
     // B3: the terrain world is now STREAMED around the player via a residency
@@ -3516,6 +4059,29 @@ int main(int argc, char** argv) {
         elevator.build(scene, *device, *physics,
                        Lb.elevatorCenter.x, Lb.elevatorCenter.z,
                        1.4f, cabHY, 1.4f, elevStops, /*startStop*/0);
+
+        // ---- Souped-up strata/disco elevator (ported from Tim's x3-elevator.js;
+        // blueprint §2.2). Turn ON the 10-state FSM (ramped accel/cruise/decel +
+        // doors), build the in-car visuals (glass + earth-strata scroll display +
+        // twin OLEDs + back-wall mirror + blue access terminal/keypad + ceiling
+        // light + disco ball), wire the procedural-audio hooks, and set the
+        // Club-1127 descent target at Y=-200 (the Club 1127 lane builds that room).
+        // The 1127 keypad code (handled in the use/keypad block below) toggles
+        // DISCO + drives the cab down to the club. Keeps the floorBaseY[]-driven
+        // stops, so the Phase-0 283 m re-scale auto-applies.
+        elevator.enableFsm(true);
+        elevator.setAudio(audio.get());
+        elevator.setClubStopY(x3::game::ElevatorSystem::kDefaultClubFloorY + cabHY);
+        {
+            static const char* kFloorLabels[] =
+                { "B1", "F1", "F2", "F3", "F4", "F5", "F6", "F7" };
+            std::vector<std::string> labels;
+            for (uint32_t fi = 0; fi < x3::game::kSpireFloorCount &&
+                                  fi < (uint32_t)(sizeof(kFloorLabels)/sizeof(kFloorLabels[0])); ++fi)
+                labels.emplace_back(kFloorLabels[fi]);
+            elevator.setFloorLabels(labels);
+        }
+        elevator.buildVisuals(scene, *device);
 
         // Author the F3/F4/F5 mid-floor encounters onto the Spire plates. The
         // per-floor elevator stops above (one per floor) make them reachable.
@@ -4482,8 +5048,19 @@ int main(int argc, char** argv) {
     // in the detention cell), facing +X down the level spine — or, in the terrain
     // world, on the hills near the world center.
     x3::game::Player player;
-    if (terrainWorld) player.spawn(*physics, terrainSpawn.x, terrainSpawn.y, terrainSpawn.z);
-    else              player.spawn(*physics, L1.spawn.x, L1.spawn.y, L1.spawn.z);
+    if (terrainWorld) {
+        player.spawn(*physics, terrainSpawn.x, terrainSpawn.y, terrainSpawn.z);
+    } else if (elevatorWorld && elevator.built()) {
+        // --world elevator: drop the player ONTO the cab so they ride immediately.
+        const x3::phys::Vec3 cc = elevator.cabCenter();
+        player.spawn(*physics, cc.x, elevator.cabTopY() + 0.1f, cc.z);
+        x3::logInfo("--world elevator: souped-up strata/disco elevator showcase. "
+                    "Press E by the shaft to ride; open the keypad + enter 1127 for "
+                    "DISCO MODE -> descend to Club 1127 (Y=-200). 10-state FSM + "
+                    "9-layer earth-strata display + twin OLEDs + mirror + terminal.");
+    } else {
+        player.spawn(*physics, L1.spawn.x, L1.spawn.y, L1.spawn.z);
+    }
 
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
@@ -4932,7 +5509,33 @@ int main(int argc, char** argv) {
                 float pex, pey, pez, pyaw, ppitch;
                 player.camera(pex, pey, pez, pyaw, ppitch);
                 if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
-                if (game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
+                // ---- Souped-up elevator DISCO code (1127). If the player is near
+                // the elevator shaft, the entered code is also offered to the
+                // elevator's keypad: 1127 toggles DISCO MODE + drives the cab down
+                // to Club 1127 (Y=-200). Checked BEFORE the door codes so the
+                // elevator owns 1127 while you're riding it (the Spire door keypads
+                // use other codes); falls through to doors otherwise.
+                bool elevDisco = false;
+                if (elevator.built() && elevator.fsmEnabled()) {
+                    const x3::phys::Vec3 cc = elevator.cabCenter();
+                    const float dcx = pex - cc.x, dcz = pez - cc.z;
+                    if (dcx * dcx + dcz * dcz < 16.0f) {
+                        const uint32_t code = keypad.value();
+                        elevator.keypadClear();
+                        // Feed the 4 digits MSB-first into the elevator keypad.
+                        elevator.keypadDigit((int)((code / 1000) % 10));
+                        elevator.keypadDigit((int)((code / 100) % 10));
+                        elevator.keypadDigit((int)((code / 10) % 10));
+                        bool completed = elevator.keypadDigit((int)(code % 10));
+                        if (completed) {
+                            x3::logInfo("keypad: DISCO 1127 — descending to Club 1127");
+                            elevDisco = true;
+                        }
+                    }
+                }
+                if (elevDisco) {
+                    codeMode = false; keypad.clear();
+                } else if (game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     midFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     topFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     subLevels.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value())) {

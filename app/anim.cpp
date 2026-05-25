@@ -300,6 +300,10 @@ bool Skinner::bind(const x3::asset::Model& model) {
     m_pelvisDropSmoothed = 0.0f;
     resolveFootIkBones(model);
 
+    // Ragdoll-blend: a re-bind drops any prior external-bone resolution.
+    m_extToJoint.clear();
+    m_extResolvedCount = 0;
+
     m_gpuSkin = false;   // a re-bind drops any prior GPU-skin registration
     m_valid = true;
     return true;
@@ -466,6 +470,166 @@ uint32_t Skinner::computePalette(const x3::asset::Model& model, uint32_t clip,
         mat4Mul(&m_globalScratch[(size_t)node*16], ib, &outPalette[(size_t)j*16]);
     }
     return jcount;
+}
+
+// ===========================================================================
+// Ragdoll blend — drive the skin from an external physics pose (Physics §2).
+// ===========================================================================
+
+uint32_t Skinner::resolveExternalBones(const x3::asset::Model& model,
+                                       const char* const* boneNames, uint32_t count) {
+    m_extToJoint.assign(count, -1);
+    m_extResolvedCount = 0;
+    if (!m_valid || !boneNames || count == 0 || model.skins.empty()) return 0;
+    const x3::asset::Skin& skin = model.skins[0];
+    const uint32_t jcount = (uint32_t)skin.joints.size();
+    for (uint32_t e = 0; e < count; ++e) {
+        if (!boneNames[e]) continue;
+        std::string want = toLower(boneNames[e]);
+        if (want.empty()) continue;
+        // Match the external bone name to the skin joint whose node name matches
+        // (exact, case-insensitive; else a substring either way for exporter quirks).
+        int best = -1;
+        for (uint32_t j = 0; j < jcount; ++j) {
+            int node = skin.joints[j];
+            if (node < 0 || (uint32_t)node >= m_nodeCount) continue;
+            std::string have = toLower(model.nodes[node].name);
+            if (have.empty()) continue;
+            if (have == want) { best = (int)j; break; }
+            if (best < 0 && (have.find(want) != std::string::npos ||
+                             want.find(have) != std::string::npos))
+                best = (int)j;
+        }
+        m_extToJoint[e] = best;
+        if (best >= 0) ++m_extResolvedCount;
+    }
+    return m_extResolvedCount;
+}
+
+uint32_t Skinner::computeRagdollBlendedPalette(const x3::asset::Model& model, uint32_t clip,
+                                               float timeSec, const float* extWorld,
+                                               uint32_t extCount, float weight,
+                                               std::vector<float>& outPalette) const {
+    if (!m_valid || clip >= m_clipDurations.size()) { outPalette.clear(); return 0; }
+    const x3::asset::Skin& skin = model.skins[0];
+    const uint32_t jcount = (uint32_t)skin.joints.size();
+    if (weight < 0.0f) weight = 0.0f; if (weight > 1.0f) weight = 1.0f;
+
+    // 1) Animated global node matrices at (clip, wrapped time).
+    float dur = m_clipDurations[clip];
+    float t = (dur > 1e-6f) ? std::fmod(timeSec, dur) : 0.0f;
+    if (t < 0) t += dur;
+    computeGlobals(model, clip, t, m_globalScratch);
+
+    // 2) Build a joint-indexed override: jointGlobalOverride[j] = the ragdoll WORLD
+    //    matrix for the bone mapped to joint j (else absent). We blend it with the
+    //    animated global per joint.
+    const bool useExt = (extWorld != nullptr && weight > 0.0f && !m_extToJoint.empty());
+
+    outPalette.assign((size_t)jcount * 16, 0.0f);
+    for (uint32_t j = 0; j < jcount; ++j) {
+        int node = skin.joints[j];
+        if (node < 0 || (uint32_t)node >= m_nodeCount) { mat4Identity(&outPalette[(size_t)j*16]); continue; }
+        const float* animGlobal = &m_globalScratch[(size_t)node*16];
+        const float* ib = &skin.inverseBind[(size_t)j * 16];
+
+        // Find an external bone mapped to this joint (linear scan over the small
+        // ext->joint map; the chain is small so this is cheap and string-free).
+        const float* ext = nullptr;
+        if (useExt) {
+            for (uint32_t e = 0; e < m_extToJoint.size() && e < extCount; ++e) {
+                if (m_extToJoint[e] == (int)j) { ext = &extWorld[(size_t)e*16]; break; }
+            }
+        }
+
+        if (!ext) {
+            // No ragdoll influence on this joint: pure animated pose.
+            mat4Mul(animGlobal, ib, &outPalette[(size_t)j*16]);
+            continue;
+        }
+
+        // Blend the model-space joint transform between the animated global and the
+        // ragdoll world transform: lerp translation, nlerp rotation (scale assumed 1
+        // for skeletal bones). weight=1 -> pure ragdoll; weight=0 -> pure animated.
+        float at[3], aq[4], as[3];  decompose(animGlobal, at, aq, as);
+        float rt[3], rq[4], rs[3];  decompose(ext,        rt, rq, rs);
+        float bt[3], bq[4];
+        lerp3(at, rt, weight, bt);
+        blendQuat(aq, rq, weight, bq);   // nlerp w/ hemisphere fix + renormalize
+        float one[3] = { 1, 1, 1 };
+        float blended[16];
+        trsToMat4(bt, bq, one, blended);
+        mat4Mul(blended, ib, &outPalette[(size_t)j*16]);
+    }
+    return jcount;
+}
+
+void Skinner::applyRagdollBlend(const x3::asset::Model& model, x3::rhi::IRenderDevice& device,
+                                uint32_t clip, float timeSec, const float* extWorld,
+                                uint32_t extCount, float weight) {
+    if (!m_valid) return;
+    uint32_t jcount = computeRagdollBlendedPalette(model, clip, timeSec, extWorld,
+                                                   extCount, weight, m_palette);
+    if (jcount == 0) return;
+    skinWithCurrentPalette(model, device, jcount);
+}
+
+// Upload (GPU) or CPU-LBS + updateMesh every skinned primitive from m_palette. The
+// shared tail of apply()/applyRagdollBlend so they don't duplicate the skin loop.
+void Skinner::skinWithCurrentPalette(const x3::asset::Model& model,
+                                     x3::rhi::IRenderDevice& device, uint32_t jcount) {
+    if (m_gpuSkin) {
+        for (const auto& p : model.primitives) {
+            if (!p.skinned) continue;
+            const uint32_t meshId = x3::asset::meshIdOf(p);
+            if (meshId == 0) continue;
+            device.setSkinnedPalette(x3::rhi::MeshHandle{ meshId }, m_palette.data(), jcount);
+        }
+        return;
+    }
+    for (const auto& p : model.primitives) {
+        if (!p.skinned) continue;
+        const uint32_t meshId = x3::asset::meshIdOf(p);
+        if (meshId == 0) continue;
+        const size_t vcount = p.basePos.size() / 3;
+        if (vcount == 0) continue;
+        m_vertScratch.resize(vcount);
+        for (size_t v = 0; v < vcount; ++v) {
+            const float* bp = &p.basePos[v*3];
+            const float* bn = &p.baseNrm[v*3];
+            const uint16_t* ji = &p.jointIdx[v*4];
+            const float* jw = &p.jointWt[v*4];
+            float wsum = jw[0] + jw[1] + jw[2] + jw[3];
+            float pAcc[3] = {0,0,0}, nAcc[3] = {0,0,0};
+            if (wsum < 1e-6f) {
+                pAcc[0] = bp[0]; pAcc[1] = bp[1]; pAcc[2] = bp[2];
+                nAcc[0] = bn[0]; nAcc[1] = bn[1]; nAcc[2] = bn[2];
+            } else {
+                for (int i = 0; i < 4; ++i) {
+                    float w = jw[i];
+                    if (w <= 0.0f) continue;
+                    uint16_t jidx = ji[i];
+                    if (jidx >= jcount) continue;
+                    const float* jm = &m_palette[(size_t)jidx * 16];
+                    float tp[3], tn[3];
+                    xformPoint(jm, bp, tp);
+                    xformDir(jm, bn, tn);
+                    pAcc[0] += w*tp[0]; pAcc[1] += w*tp[1]; pAcc[2] += w*tp[2];
+                    nAcc[0] += w*tn[0]; nAcc[1] += w*tn[1]; nAcc[2] += w*tn[2];
+                }
+                float inv = 1.0f / wsum;
+                pAcc[0] *= inv; pAcc[1] *= inv; pAcc[2] *= inv;
+            }
+            float nl = std::sqrt(nAcc[0]*nAcc[0] + nAcc[1]*nAcc[1] + nAcc[2]*nAcc[2]);
+            if (nl > 1e-8f) { nAcc[0]/=nl; nAcc[1]/=nl; nAcc[2]/=nl; }
+            x3::rhi::MeshVertex& mv = m_vertScratch[v];
+            mv.pos[0] = pAcc[0]; mv.pos[1] = pAcc[1]; mv.pos[2] = pAcc[2];
+            mv.normal[0] = nAcc[0]; mv.normal[1] = nAcc[1]; mv.normal[2] = nAcc[2];
+            mv.uv[0] = p.baseUv[v*2+0]; mv.uv[1] = p.baseUv[v*2+1];
+        }
+        device.updateMesh(x3::rhi::MeshHandle{ meshId }, m_vertScratch.data(),
+                          (uint32_t)vcount);
+    }
 }
 
 // ===========================================================================
