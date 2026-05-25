@@ -461,7 +461,13 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         ui.text(enBuf, 10.0f, 40.0f, enPx, enCol, UiContext::FontRole::News);
     }
 
-    // ---- Minimap stub (top-right box; full minimap later) ------------------
+    // ---- Minimap RADAR (top-right box) -------------------------------------
+    // Player-centered top-down radar. World XZ is translated by -player then rotated
+    // by -yaw so the player's FORWARD points UP in the box; a fixed meters->pixels
+    // scale maps the local offset to box pixels (anything outside the box is culled).
+    // Draw order: faint room outlines (under) -> enemy (red) / ally (pulsing green)
+    // blips -> player blip (always centered, on top). Falls back to the old stub
+    // box + "MAP" caption when the host hasn't fed the radar (radarValid=false).
     {
         const float mmW = 150.0f, mmH = 150.0f;
         const float mmx = w - mmW - 16.0f;
@@ -474,10 +480,115 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         ui.quad(mmx, mmy + mmH - 1.0f, mmW, 1.0f, edgeCol);
         ui.quad(mmx, mmy, 1.0f, mmH, edgeCol);
         ui.quad(mmx + mmW - 1.0f, mmy, 1.0f, mmH, edgeCol);
-        // Player blip at center + a "MAP" caption.
-        const float blip[4] = { 0.2f, 1.0f, 0.35f, 0.9f };
-        ui.quad(mmx + mmW * 0.5f - 2.0f, mmy + mmH * 0.5f - 2.0f, 4.0f, 4.0f, blip);
-        ui.textCentered("MAP", mmx + mmW * 0.5f, mmy + mmH - 18.0f, 12.0f, kColTextDim);
+
+        const float cxp = mmx + mmW * 0.5f;   // box center (player) in pixels
+        const float cyp = mmy + mmH * 0.5f;
+        const float half = mmW * 0.5f - 3.0f;  // usable radius inside the border
+
+        if (m.radarValid) {
+            // World->radar transform. Rotate the player-relative offset by -yaw so
+            // forward (yaw dir) maps to screen-UP. With yaw 0 looking +X (world), the
+            // player forward is (cos,sin) in XZ; we want forward -> -Y (up) on screen.
+            // Screen Y grows DOWN, so up = -forward-distance. Right (screen +X) = the
+            // player's right-hand side.
+            const float mPerPx = 28.0f / half;       // ~28 m radius fits the box edge
+            const float s = std::sin(m.playerYaw), c = std::cos(m.playerYaw);
+            // Map a world XZ to a box pixel; returns false if outside the box.
+            auto toRadar = [&](float wx, float wz, float& ox, float& oy) -> bool {
+                const float dx = wx - m.playerX;     // world offset from player
+                const float dz = wz - m.playerZ;
+                // Forward component (along yaw dir) and right component.
+                const float fwd   =  dx * c + dz * s;    // + = ahead of the player
+                const float right = -dx * s + dz * c;    // + = to the player's right
+                ox = cxp + (right / mPerPx);
+                oy = cyp - (fwd   / mPerPx);             // ahead -> up (smaller y)
+                return ox >= mmx + 1.0f && ox <= mmx + mmW - 1.0f &&
+                       oy >= mmy + 1.0f && oy <= mmy + mmH - 1.0f;
+            };
+
+            // --- Faint room outlines (drawn first, under the blips). Each room is an
+            // axis-aligned world rect; its 4 corners transform into the rotated radar
+            // space, so we draw it as 4 thin edges between the projected corners. To
+            // stay cheap + allocation-free we approximate each edge as a short run of
+            // 1px dots (the radar is small; a handful of dots reads as a faint line).
+            const float roomCol[4] = { 0.40f, 0.55f, 0.70f, 0.30f };  // dim blue-grey
+            for (int r = 0; r < m.roomCount && r < HudModel::kMaxRooms; ++r) {
+                const float rx = m.roomCx[r], rz = m.roomCz[r];
+                const float hx = m.roomHx[r], hz = m.roomHz[r];
+                // 4 corners in world XZ.
+                const float cxw[4] = { rx - hx, rx + hx, rx + hx, rx - hx };
+                const float czw[4] = { rz - hz, rz - hz, rz + hz, rz + hz };
+                float px[4], py[4];
+                for (int k = 0; k < 4; ++k) toRadar(cxw[k], czw[k], px[k], py[k]);
+                // Draw each of the 4 edges as a dotted line, clamped into the box.
+                for (int e = 0; e < 4; ++e) {
+                    const int a = e, b = (e + 1) & 3;
+                    const float ex = px[b] - px[a], ey = py[b] - py[a];
+                    const float len = std::sqrt(ex * ex + ey * ey);
+                    const int steps = (int)std::min(40.0f, std::max(1.0f, len / 4.0f));
+                    for (int t = 0; t <= steps; ++t) {
+                        const float f = (float)t / (float)steps;
+                        const float dxp = px[a] + ex * f;
+                        const float dyp = py[a] + ey * f;
+                        if (dxp < mmx + 1.0f || dxp > mmx + mmW - 1.0f ||
+                            dyp < mmy + 1.0f || dyp > mmy + mmH - 1.0f) continue;
+                        ui.quad(dxp, dyp, 1.0f, 1.0f, roomCol);
+                    }
+                }
+            }
+
+            // --- Enemy blips (RED). Cull anything outside the box.
+            const float enemyCol[4] = { 1.0f, 0.22f, 0.18f, 0.95f };
+            for (int i = 0; i < m.enemyCount && i < HudModel::kMaxBlips; ++i) {
+                float bx, by;
+                if (!toRadar(m.enemyX[i], m.enemyZ[i], bx, by)) continue;
+                ui.quad(bx - 2.0f, by - 2.0f, 4.0f, 4.0f, enemyCol);
+            }
+
+            // --- Ally (companion) blips (GREEN, SLOW FLASH). Pulse alpha at ~0.7 Hz
+            // off the HUD clock so allies read as friendly + "active".
+            const float pulse = 0.5f + 0.5f * std::sin(m_t * 4.4f);   // ~0.7 Hz
+            const float allyCol[4] = { 0.25f, 1.0f, 0.40f, 0.35f + 0.6f * pulse };
+            for (int i = 0; i < m.allyCount && i < HudModel::kMaxBlips; ++i) {
+                float bx, by;
+                if (!toRadar(m.allyX[i], m.allyZ[i], bx, by)) continue;
+                ui.quad(bx - 2.5f, by - 2.5f, 5.0f, 5.0f, allyCol);
+            }
+
+            // --- Player blip (always centered, on top) + a forward "nose" tick.
+            const float blip[4] = { 0.2f, 1.0f, 0.35f, 0.95f };
+            ui.quad(cxp - 2.0f, cyp - 2.0f, 4.0f, 4.0f, blip);
+            ui.quad(cxp - 1.0f, cyp - 8.0f, 2.0f, 6.0f, blip);   // points UP = forward
+        } else {
+            // No radar feed -> the legacy stub: a centered player blip + "MAP" caption.
+            const float blip[4] = { 0.2f, 1.0f, 0.35f, 0.9f };
+            ui.quad(cxp - 2.0f, cyp - 2.0f, 4.0f, 4.0f, blip);
+            ui.textCentered("MAP", cxp, mmy + mmH - 18.0f, 12.0f, kColTextDim);
+        }
+    }
+
+    // ---- Enemy NAMEPLATES (world-anchored threat labels) -------------------
+    // Over each live, on-screen enemy within range, project the head position (body
+    // center + ~1.8 m up) to the screen and draw a small Tektur-Condensed label.
+    // worldToScreen returns false for points behind the camera / off-screen, so those
+    // are skipped for free; we also distance-cull so far enemies don't clutter.
+    if (m.radarValid && m.alive) {
+        const float maxDist = 45.0f;             // metres; skip enemies farther than this
+        for (int i = 0; i < m.enemyCount && i < HudModel::kMaxBlips; ++i) {
+            const float dx = m.enemyX[i] - m.playerX;
+            const float dz = m.enemyZ[i] - m.playerZ;
+            const float d2 = dx * dx + dz * dz;
+            if (d2 > maxDist * maxDist) continue;
+            float sx = 0.0f, sy = 0.0f;
+            if (!ui.worldToScreen(m.enemyX[i], m.enemyY[i] + 1.8f, m.enemyZ[i], sx, sy))
+                continue;                         // behind camera / off-screen
+            const char* label = (m.enemyLabel[i] && m.enemyLabel[i][0]) ? m.enemyLabel[i]
+                                                                        : "HOSTILE";
+            // Fade slightly with distance so near threats read strongest.
+            float a = 1.0f - (std::sqrt(d2) / maxDist) * 0.5f;   // 1.0 near -> 0.5 far
+            const float plate[4] = { 1.0f, 0.32f, 0.28f, a };    // reddish threat tint
+            ui.enemyNameplate(label, sx, sy, 15.0f, plate);
+        }
     }
 
     // ---- Objective (GTA/Cyberpunk style): UNDER THE MINIMAP, right-aligned to the

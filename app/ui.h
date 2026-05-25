@@ -78,6 +78,14 @@ public:
     uint32_t screenW() const { return m_w; }
     uint32_t screenH() const { return m_h; }
 
+    // Project a world point to framebuffer pixels via the live device's camera
+    // (same projection the host uses for door/holo-terminal anchors). Returns false
+    // if the point is behind the camera / off-screen (or in headless tests). Lets the
+    // HUD layer place world-anchored labels (enemy nameplates) without touching GLFW.
+    bool worldToScreen(float wx, float wy, float wz, float& sx, float& sy) const {
+        return m_device ? m_device->worldToScreen(wx, wy, wz, sx, sy) : false;
+    }
+
     // ---- Font roles --------------------------------------------------------
     // Convenience aliases so call sites read clearly. These map onto the RHI's
     // FontRole. PROPORTIONAL roles (Title/Menu/Enemy) advance per-glyph; mono
@@ -197,6 +205,37 @@ struct HudModel {
     bool  alive        = true;
     int   dispW        = 0;      // live framebuffer size (drives the menu RESOLUTION readout)
     int   dispH        = 0;
+
+    // -----------------------------------------------------------------------
+    // MINIMAP RADAR + ENEMY NAMEPLATE feed. Plain arrays (fixed cap, no heap) the
+    // host (main.cpp) fills each frame from the live world. All XZ are WORLD meters;
+    // the HUD does the player-relative translate+rotate (so "up" = forward) itself.
+    // Leave radarValid=false (default) to keep the old minimap stub + skip nameplates
+    // (headless test/screenshot paths that don't feed it are unaffected).
+    // -----------------------------------------------------------------------
+    static constexpr int kMaxBlips = 32;   // enemies / allies drawn on the radar
+    static constexpr int kMaxRooms = 16;   // faint room outlines
+
+    bool  radarValid = false;       // host filled the radar feed this frame
+    float playerX = 0.0f;           // player world X (radar center)
+    float playerZ = 0.0f;           // player world Z
+    float playerYaw = 0.0f;         // player yaw (rad, 0 looks toward +X) -> rotates radar so up=forward
+
+    int   enemyCount = 0;
+    float enemyX[kMaxBlips] = {};   // enemy world X
+    float enemyY[kMaxBlips] = {};   // enemy world Y (body center; nameplate adds head offset)
+    float enemyZ[kMaxBlips] = {};   // enemy world Z
+    const char* enemyLabel[kMaxBlips] = {};  // short threat label per enemy (nullptr -> "HOSTILE")
+
+    int   allyCount = 0;
+    float allyX[kMaxBlips] = {};    // companion world X
+    float allyZ[kMaxBlips] = {};    // companion world Z
+
+    int   roomCount = 0;
+    float roomCx[kMaxRooms] = {};   // room center X (world)
+    float roomCz[kMaxRooms] = {};   // room center Z (world)
+    float roomHx[kMaxRooms] = {};   // room half-extent X (meters)
+    float roomHz[kMaxRooms] = {};   // room half-extent Z (meters)
 };
 
 // Render-setting state the SettingsMenu reflects + toggles. Mirrors the engine's
