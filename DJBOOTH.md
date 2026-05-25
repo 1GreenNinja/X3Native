@@ -141,7 +141,7 @@ Club 1127 DJ booth PC. Sits on the Blue Toolbox (one of many).
 | **Monitors** | 2× Dell U2719D / U2719DX (27", 2020 mfr), both **2560×1440** @ 59Hz |
 | **Storage** | C: Samsung 970 EVO Plus **2TB NVMe** (888GB free) · D: Samsung 850 EVO M.2 **500GB SATA** (434GB free). Earlier "3TB NVMe" was a misremember — actual total is 2.5TB SSD across the two drives |
 | **NIC** | Intel I218-V onboard, link 1 Gbps, 802.3 |
-| **WAN throughput** | **219 Mbps ↓ / 41 Mbps ↑** measured. ⚠️ Fleet TODO: move ALL PCs onto the **1200 Mbps fiber** — DJBOOTH is currently ~18% of target down, ~3% up |
+| **WAN throughput** | **239.35 Mbps ↓ / 138.74 Mbps ↑** to Google (Phoenix, Optimum Online, 6 ms ping, jitter 55↓/276↑) — fresh 2026-05-23 speedtest. ⚠️ Fleet TODO: move ALL PCs onto the **1200 Mbps fiber** — DJBOOTH is currently ~20% of target down, ~12% up. Cat6 fleet upgrade in flight (predictable gigabit LAN between PCs soon, so the WAN gap stops bottlenecking inter-machine syncs) |
 | **OS** | Windows 10 Pro 22H2 (build 19045), installed 2022-04-05, last-boot uptime ~272 hrs |
 | **Power plan** | High performance |
 
@@ -156,4 +156,4 @@ Club 1127 DJ booth PC. Sits on the Blue Toolbox (one of many).
 - **First-time vcpkg dep compile on this 4790K** is the slowest gauntlet step in the fleet — expect ~1–3 hrs for the 9 ports (joltphysics dominates). All later builds reuse cached binaries.
 - **Vulkan 1.3 feature support on GTX 1080 Ti**: per `BUILD.md`, expected to pass `set_required_features_*` checks; if not, `init()` logs which selection failed.
 - **2× 27" 1440p panels** = comfortable side-by-side dev layout (code on one, debugger / RenderDoc on the other).
-- **Wired 1 Gbps NIC** is fine for LAN/Git, but WAN bandwidth (219/41) bottlenecks first-time git clones of larger feature branches + any vcpkg binary-cache pulls. Moving to the 1200 Mbps fiber should remove that as a fleet-wide concern.
+- **Wired 1 Gbps NIC** is fine for LAN/Git, but WAN bandwidth (239/138 as of 2026-05-23) still bottlenecks first-time git clones of larger feature branches + any vcpkg binary-cache pulls vs. the 1200 Mbps fiber target. **Cat6 fleet upgrade in flight** to put predictable gigabit LAN between all dev PCs, so the WAN gap stops affecting inter-machine syncs even before the fiber move.
