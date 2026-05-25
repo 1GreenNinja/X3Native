@@ -54,9 +54,16 @@ public:
     bool submit();                                       // commit the input line (calls the sink)
     const std::string& input() const { return m_input; }
 
-    // Advance the cursor blink. Call each frame.
+    // Advance the cursor blink AND the holographic shimmer. Call each frame. When
+    // built() (a Scene + screen entity exist), this also drives a slow time-based
+    // EMISSIVE pulse + scanline-scroll on the glass so the hologram shimmers (subtle,
+    // not seizure-y). Safe to call with no build (the self-test): shimmer is skipped.
     void update(float dt);
     bool cursorOn() const { return m_cursorOn; }
+
+    // Animation clock (seconds) the host can read to scroll the on-glass scanlines /
+    // pulse the text alpha in lockstep with the panel shimmer.
+    float clock() const { return m_clock; }
 
     // World anchor (panel center) for the host's worldToScreen text placement.
     x3::phys::Vec3 anchor() const { return m_pos; }
@@ -67,6 +74,14 @@ private:
     uint32_t       m_entity = kNoLink;
     x3::phys::Vec3 m_pos{};
     float          m_width = 1.4f, m_height = 0.9f;
+    // Scene + screen-entity bookkeeping for the time-driven shimmer (set in build()).
+    // update() modulates this entity's emissive each frame; null Scene => no shimmer
+    // (the headless self-test path, which never calls build()).
+    Scene*         m_scene = nullptr;
+    uint32_t       m_scanEntity = kNoLink;   // the scrolling scanline overlay quad
+    float          m_clock = 0.0f;           // shimmer animation clock (seconds)
+    float          m_emBase[4] = { 0.18f, 0.70f, 1.0f, 1.9f };  // base screen emissive
+    x3::rhi::TextureHandle m_holoTex{};       // the procedural hologram UI texture
 
     std::vector<std::string> m_lines;     // readout
     std::string    m_input;               // the editable input line

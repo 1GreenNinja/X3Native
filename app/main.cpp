@@ -126,6 +126,65 @@ x3::phys::Vec3 muzzleFromCamera(float ex, float ey, float ez, float yaw, float p
         ez + forward.z * mFwd + right.z * mRight - up.z * mDown };
 }
 
+// ---- ON-GLASS HOLO-TERMINAL readout (large, high-contrast, fit to the panel) ----
+// Project the cell HoloTerminal panel center + top edge, then lay out the boot
+// readout (and, while typing, the input line) as LARGE proportional-font text sized
+// to fit WITHIN the glass: the body size auto-shrinks so the widest line spans ~92%
+// of the projected panel width, so it never overflows the bezel yet stays as big as
+// possible. Bright cyan-white over the glowing blue glass with a dark drop shadow.
+// Purely additive 2D HUD draws; safe to call from both the interactive loop and the
+// --screenshot capture. `anchor` is the panel center; `showInput` adds the prompt.
+void drawHoloReadout(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                     const x3::game::HoloTerminal& term, const x3::phys::Vec3& anchor,
+                     bool showInput) {
+    const float panelHalfH = 0.45f;   // half of the 0.9 m panel height
+    const float panelHalfW = 0.70f;   // half of the 1.4 m panel width
+    float sx = 0.0f, sy = 0.0f, sxT = 0.0f, syT = 0.0f;
+    if (!device.worldToScreen(anchor.x, anchor.y, anchor.z, sx, sy) ||
+        !device.worldToScreen(anchor.x, anchor.y + panelHalfH, anchor.z, sxT, syT))
+        return;
+    float halfPxH = std::fabs(syT - sy);
+    if (halfPxH < 22.0f)  halfPxH = 22.0f;
+    if (halfPxH > 360.0f) halfPxH = 360.0f;
+    const float halfPxW = halfPxH * (panelHalfW / panelHalfH);   // glass half-width in px
+    const float innerW  = halfPxW * 2.0f * 0.90f;                // usable width inside the bezel
+
+    const auto& L = term.lines();
+    // Pick a body pixel size that (a) fits ~12 rows down the glass and (b) keeps the
+    // widest line within innerW. Start from the height budget, shrink to fit width.
+    const float lineH0 = (halfPxH * 2.0f) / 12.0f;
+    float bodyPx = lineH0 * 0.95f;
+    for (const std::string& ln : L) {
+        const float w = device.textAdvance(x3::rhi::FontRole::Menu, ln.c_str(), bodyPx);
+        if (w > innerW && w > 1.0f) bodyPx *= innerW / w;        // shrink to fit the widest line
+    }
+    if (bodyPx < 9.0f) bodyPx = 9.0f;
+    const float lineH  = bodyPx * 1.18f;
+    const float titlePx = bodyPx * 1.08f;
+    const float leftPx = sx - halfPxW * 0.90f;                   // left margin inside the bezel
+    const float totalH = lineH * (float)(L.size() + (showInput ? 1u : 0u));
+    float ty = sy - std::min(halfPxH * 0.92f, totalH * 0.55f);   // vertically centered-ish near top
+    const float sh[4] = { 0.0f, 0.0f, 0.0f, 0.88f };
+    for (size_t li = 0; li < L.size(); ++li) {
+        const bool header = (li == 0);
+        const float px = header ? titlePx : bodyPx;
+        const float col[4] = { header ? 0.78f : 0.88f, 0.98f, 1.0f, 1.0f };  // bright cyan-white
+        const float off = std::max(1.5f, px * 0.07f);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, L[li].c_str(), leftPx + off, ty + off, px, sh);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, L[li].c_str(), leftPx, ty, px, col);
+        ty += lineH;
+    }
+    if (showInput) {
+        const std::string inLine = std::string("> ") + term.input() +
+                                   (term.cursorOn() ? "_" : " ");
+        const float ic[4] = { 1.0f, 0.92f, 0.32f, 1.0f };        // bright amber prompt
+        const float ipx = bodyPx * 1.18f;
+        const float ioff = std::max(1.5f, ipx * 0.07f);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, inLine.c_str(), leftPx + ioff, ty + ioff, ipx, sh);
+        device.drawHudTextF(frame, x3::rhi::FontRole::Menu, inLine.c_str(), leftPx, ty, ipx, ic);
+    }
+}
+
 // ---- Settings persistence (window size) in %LOCALAPPDATA%\x3native_settings.cfg ----
 // readWindowSize() overrides winW/winH at startup (returns true if a saved size exists,
 // so the host skips maximize-by-default); writeWindowSize() is the menu "SET AS DEFAULT"
@@ -4072,6 +4131,19 @@ int main(int argc, char** argv) {
                 }
                 shotHud.draw(shotUi, shm, dt);
                 shotUi.end();
+
+                // ON-GLASS HOLO-TERMINAL readout for the capture: when the shot camera
+                // is aimed at the cell terminal it shows the LARGE high-contrast boot
+                // text sized to the projected panel (so --screenshot --shot-cam at the
+                // cell verifies the on-glass text, not just the glowing panel). Mirrors
+                // the interactive on-glass overlay via the shared helper.
+                if (game.secret().terminal().built()) {
+                    const auto& term = game.secret().terminal();
+                    const x3::phys::Vec3 a = term.anchor();
+                    const float sdx = a.x - ssX, sdy = a.y - ssY, sdz = a.z - ssZ;
+                    if (std::sqrt(sdx*sdx + sdy*sdy + sdz*sdz) < 14.0f)
+                        drawHoloReadout(*device, frame, term, a, /*showInput*/false);
+                }
             }
             device->endFrame(frame);
         }
@@ -5408,32 +5480,24 @@ int main(int argc, char** argv) {
                     device->drawHudText(frame, kpPrompt.c_str(),
                                         (float)hudW * 0.5f - 230.0f, (float)hudH * 0.5f - 60.0f, 3.0f, kpCol);
                 }
-                // CELL HOLO-TERMINAL readout: the boot text + the live input line drawn
-                // over the panel (worldToScreen anchor). The terminal's submit sink opens
-                // the floor-hatch trapdoor on the override code (1127). TODO(main-lane):
-                // a true ON-GLASS large-text pass (curved/inset to the panel) belongs in
-                // the HUD layer here — this is the flat worldToScreen overlay placeholder.
-                if (termMode && !terrainWorld && game.secret().terminal().built()) {
+                // CELL HOLO-TERMINAL readout: LARGE high-contrast on-glass text drawn
+                // over the projected hologram panel (worldToScreen anchor). The boot
+                // readout shows WHENEVER the panel is built + visible + within reach-ish
+                // range (so the hologram is never a blank slab); the editable input line
+                // + blinking cursor appear once the player is in termMode (pressed E).
+                // The text SIZE is derived from the panel's on-screen height so it scales
+                // to the glass at any distance — clearly readable from a few meters.
+                if (!terrainWorld && game.secret().terminal().built()) {
                     const auto& term = game.secret().terminal();
                     const x3::phys::Vec3 a = term.anchor();
-                    float sx = 0.0f, sy = 0.0f;
-                    if (device->worldToScreen(a.x, a.y + 0.45f, a.z, sx, sy)) {
-                        const float* col = term.textColor();
-                        const float c4[4] = { col[0], col[1], col[2], col[3] };
-                        const float sh[4] = { 0.0f, 0.0f, 0.0f, 0.7f };
-                        float ty = sy - 70.0f;
-                        for (const std::string& ln : term.lines()) {
-                            device->drawHudText(frame, ln.c_str(), sx - 150.0f + 1.5f, ty + 1.5f, 1.6f, sh);
-                            device->drawHudText(frame, ln.c_str(), sx - 150.0f, ty, 1.6f, c4);
-                            ty += 18.0f;
-                        }
-                        // The editable input line + blinking cursor.
-                        const std::string inLine = std::string("> ") + term.input() +
-                                                   (term.cursorOn() ? "_" : " ");
-                        const float ic[4] = { 1.0f, 0.9f, 0.3f, 1.0f };
-                        device->drawHudText(frame, inLine.c_str(), sx - 150.0f + 1.5f, ty + 1.5f, 2.0f, sh);
-                        device->drawHudText(frame, inLine.c_str(), sx - 150.0f, ty, 2.0f, ic);
-                    }
+                    // Player eye for the range/visibility gate.
+                    float pex, pey, pez, pyaw, ppitch;
+                    player.camera(pex, pey, pez, pyaw, ppitch);
+                    if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
+                    const float tdx = a.x - pex, tdy = a.y - pey, tdz = a.z - pez;
+                    const float distM = std::sqrt(tdx*tdx + tdy*tdy + tdz*tdz);
+                    if (distM < 14.0f)
+                        drawHoloReadout(*device, frame, term, a, termMode);
                 }
                 // Door interaction prompt: a "[E] Open" / "[E] Close" tag floating at
                 // the doorway the player is looking at (within use range), fading in
