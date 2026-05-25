@@ -159,6 +159,15 @@ using BossPhaseFn = std::function<void(BossPhase newPhase)>;
 using AttackFxFn = std::function<void(const x3::phys::Vec3& from,
                                       const x3::phys::Vec3& to)>;
 
+// Death FX sink (gib burst). The MonsterSystem fires this ONCE at the moment it is
+// KILLED (HP hits 0 via fire()/melee) — NOT on a cure/spare. `pos` is the body-center
+// world position (m_pos + the box-center offset); `flying` is true for a flyer/drone
+// (the host can spark a flyer death differently). The host wires this to a violent gib
+// explosion: a GPU debris burst (gpuDebrisSpawnBurst) + a cluster of blood impacts
+// (CombatFx::spawnImpact). Optional (may be empty => no extra FX; the existing death-
+// pop/topple is unaffected). Cheap to copy (a std::function).
+using DeathFxFn = std::function<void(const float pos[3], bool flying)>;
+
 // Ally query (D-ai, Regroup). The host fills `out` with up to `maxOut` nearby
 // LIVE ally positions within `radius` of `self`, EXCLUDING the querying enemy
 // (matched by `selfEntity`), and returns the count written. The MonsterManager
@@ -601,6 +610,13 @@ public:
     // while moving, and BulletImpact/MeleeImpact when its attack lands. ----
     void setCueSink(const GameCueFn& sink) { m_cueSink = sink; }
 
+    // ---- Death FX sink (gib burst) ----------------------------------------
+    // Wire a callback the monster fires ONCE the instant it is KILLED (HP->0 via a
+    // shot or melee), passing its body-center world position + a flying flag. The
+    // host turns this into the gib explosion (GPU debris + blood). Empty => no extra
+    // FX. Does NOT fire on a cure()/spare() (those are non-kills). See app/monster.h.
+    void setDeathFxSink(const DeathFxFn& sink) { m_deathFx = sink; }
+
     // ---- Scripted-hook support (Wave 1) -----------------------------------
     // Set HP directly (clamped to [0, maxHp]) WITHOUT running the death path — used
     // by ScriptedFightHook::stripBossHp to debuff a boss pre-fight (the master hack).
@@ -663,6 +679,8 @@ private:
     x3::rhi::IRenderDevice*  m_device = nullptr;
     // Game-feel cue sink (footstep / impact). Empty => throttled-log stub.
     GameCueFn                m_cueSink;
+    // Death FX sink (gib burst). Empty => no extra FX. Fired once at the kill moment.
+    DeathFxFn                m_deathFx;
     int                      m_idleClip = -1;
     int                      m_walkClip = -1;
     // T1: separate Run / Jump clips for the locomotion blend (multi-clip *_anim.glb).
@@ -816,6 +834,11 @@ public:
     // per-monster throttled-log stub. See app/cues.h.
     void setCueSink(const GameCueFn& sink);
 
+    // Set the death FX sink (gib burst) on every monster — current AND future spawns
+    // (stored so spawn() applies it to new instances). Empty => no extra death FX.
+    // Mirrors setCueSink. See app/monster.h DeathFxFn.
+    void setDeathFxSink(const DeathFxFn& sink);
+
     // Number of monsters still alive (not dead). Used for objective/door gating.
     uint32_t aliveCount() const;
 
@@ -853,6 +876,7 @@ public:
 private:
     std::vector<std::unique_ptr<MonsterSystem>> m_monsters;
     GameCueFn m_cueSink;   // applied to every spawn (current + future)
+    DeathFxFn m_deathFx;   // gib-burst sink applied to every spawn (current + future)
 };
 
 // Headless self-test (--test-combat). Builds a physics world + an Enemy-layer

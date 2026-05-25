@@ -458,6 +458,12 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
         physics.removeBody(m_body);
         m_body = x3::phys::BodyId{};
         x3::logInfo("[monster] killed (HP 0) — body removed, death-pop started");
+        // GIBS: fire the death FX sink ONCE at the kill moment so the host explodes
+        // the monster into debris chunks + blood at its body center (not its feet).
+        if (m_deathFx) {
+            const float center[3] = { m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z };
+            m_deathFx(center, m_type == MonsterType::Drone);
+        }
     } else {
         x3::logInfo("[monster] hit for " + std::to_string(shotDmg) +
                     " — HP now " + std::to_string(m_hp));
@@ -490,6 +496,11 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
         if (m_body.valid()) physics.removeBody(m_body);
         m_body = x3::phys::BodyId{};
         x3::logInfo("[monster] melee-killed (HP 0) — body removed, death-pop started");
+        // GIBS: same death-FX hook as the shot path (gib burst at the body center).
+        if (m_deathFx) {
+            const float center[3] = { m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z };
+            m_deathFx(center, m_type == MonsterType::Drone);
+        }
     } else {
         x3::logInfo("[monster] melee hit for " + std::to_string(dmg) +
                     " — HP now " + std::to_string(m_hp));
@@ -1252,6 +1263,7 @@ uint32_t MonsterManager::spawn(Scene& scene, x3::rhi::IRenderDevice& device,
     auto m = std::make_unique<MonsterSystem>();
     m->buildMonsterTuned(scene, device, physics, modelDir, pos, tuning);
     if (m_cueSink) m->setCueSink(m_cueSink);   // wire footstep/impact cues on new spawns
+    if (m_deathFx) m->setDeathFxSink(m_deathFx); // wire the gib-burst death FX on new spawns
     uint32_t idx = (uint32_t)m_monsters.size();
     m_monsters.push_back(std::move(m));
     return idx;
@@ -1260,6 +1272,11 @@ uint32_t MonsterManager::spawn(Scene& scene, x3::rhi::IRenderDevice& device,
 void MonsterManager::setCueSink(const GameCueFn& sink) {
     m_cueSink = sink;
     for (auto& m : m_monsters) m->setCueSink(sink);   // apply to existing too
+}
+
+void MonsterManager::setDeathFxSink(const DeathFxFn& sink) {
+    m_deathFx = sink;
+    for (auto& m : m_monsters) m->setDeathFxSink(sink);   // apply to existing too
 }
 
 uint32_t MonsterManager::aliveCount() const {

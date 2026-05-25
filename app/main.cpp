@@ -3522,6 +3522,62 @@ int main(int argc, char** argv) {
         combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 0.5f, 0.7f });
     });
 
+    // ---- GIBS: monsters EXPLODE into chunks + blood when they die. -----------
+    // Configure the GPU-compute debris pool ONCE (the same cheap fragment sim the
+    // destruction self-test uses) so monster-death gib bursts have somewhere to land.
+    // Then wire a single DEATH FX sink that the host fans to every enemy group below.
+    // The sink spawns: (1) a GPU debris BURST of cheap chunks flung outward from the
+    // body center, and (2) a cluster of blood impacts (CombatFx::spawnImpact) so the
+    // kill reads as a violent gib explosion. Flyer/drone deaths spark a touch faster.
+    {
+        x3::rhi::IRenderDevice::GpuDebrisParams gp{};
+        gp.groundY = 0.0f; gp.restitution = 0.25f; gp.friction = 0.5f;
+        gp.linearDamping = 0.35f; gp.sleepFrames = 14;
+        device->gpuDebrisConfig(gp);
+    }
+    {
+        x3::rhi::IRenderDevice* dev = device.get();
+        // The gib explosion: a capped GPU debris burst flung outward from the body
+        // center + a tight cluster of blood impacts so the kill reads bloody, not just
+        // dusty. Flyers/drones burst a touch more + faster (they pop in the air). The
+        // burst seed varies by position so two kills don't fling identically. GPU-
+        // simulated chunks are cheap (one compute pass + one instanced draw, below).
+        x3::game::DeathFxFn deathFx = [&combatFx, dev](const float pos[3], bool flying) {
+            const x3::phys::Vec3 ctr{ pos[0], pos[1], pos[2] };
+            const uint32_t chunks = flying ? 20u : 16u;
+            const float    kick   = flying ? 8.5f : 7.0f;   // m/s outward spread
+            const uint32_t seed   = 0x91B0u ^ (uint32_t)(ctr.x * 131.0f)
+                                            ^ ((uint32_t)(ctr.z * 977.0f) << 8);
+            const float bp[3] = { pos[0], pos[1], pos[2] };
+            dev->gpuDebrisSpawnBurst(bp, chunks, kick, /*lifetime*/4.5f,
+                                     /*halfExtent*/0.07f, seed);
+            combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f });
+            combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.8f, 0.4f, 0.0f });
+            combatFx.spawnImpact(ctr, x3::phys::Vec3{ -0.8f, 0.4f, 0.0f });
+            combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 0.4f, 0.8f });
+            combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 0.4f, -0.8f });
+            combatFx.spawnBlood(ctr, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f });
+            combatFx.spawnSmoke(ctr);   // lingering puff so the burst point lingers
+        };
+        // Level1Game fans the sink to its own groups (corridor/checkpoint/bossAdds/
+        // Martinez/Chen) — current AND future spawns.
+        game.setDeathFxSink(deathFx);
+        // Also fan it to the Spire-floor enemy groups + their bosses (those managers
+        // live on the floor controllers, not Level1Game, so they don't get the fan
+        // above). Each MonsterManager stores the sink + applies it to current + future
+        // spawns, so kills on any floor gib the same way.
+        if (!terrainWorld) {
+            for (uint32_t f = 0; f < (uint32_t)x3::game::SpireMidFloor::Count; ++f)
+                midFloors.enemies((x3::game::SpireMidFloor)f).setDeathFxSink(deathFx);
+            midFloors.f3Boss().setDeathFxSink(deathFx);
+            midFloors.swarmBoss().setDeathFxSink(deathFx);
+            for (uint32_t f = 0; f < (uint32_t)x3::game::SpireTopFloor::Count; ++f)
+                topFloors.enemies((x3::game::SpireTopFloor)f).setDeathFxSink(deathFx);
+            topFloors.overseerBoss().setDeathFxSink(deathFx);
+            topFloors.boss().setDeathFxSink(deathFx);
+        }
+    }
+
     // =====================================================================
     // WEAPONS: data-driven arsenal (pistol / SMG / shotgun / plasma). The
     // Arsenal owns the roster + per-weapon ammo/cooldown/reload state and the
@@ -5170,6 +5226,10 @@ int main(int argc, char** argv) {
 
         auto frame = device->beginFrame();
         if (frame.valid) {
+            // GIBS: integrate the GPU-compute debris pool (monster-death chunks +
+            // any other bursts) one step. Frozen during a UI menu so chunks hold mid-
+            // air with the rest of the sim. No-op cost when the pool is empty.
+            device->gpuDebrisStep(simFrozen ? 0.0f : dt);
             scene.render(*device, frame);
             // Level 1 world extras: the bobbing armory pickup + all enemy models
             // (corridor guards/drone, checkpoint guards, Martinez) with hit-flash.
@@ -5286,6 +5346,13 @@ int main(int argc, char** argv) {
                 }
             }
             // FX: active tracers + muzzle flash (world-space).
+            // GIBS: draw the live GPU debris pool (one instanced cube draw; dead
+            // slots collapse in the shader). Dark fleshy-red tint so gib chunks read
+            // as gore. No-op when the pool is empty (zero cost until something dies).
+            {
+                const float gibTint[4] = { 0.42f, 0.06f, 0.05f, 1.0f };
+                device->gpuDebrisDraw(frame, gibTint);
+            }
             combatFx.draw(*device, frame, camX, camY, camZ, camYaw, camPitch);
             // GPU-instanced particles (sparks/blood/smoke/debris) + impact decals:
             // submit the live pool for this frame (HDR pass, soft against depth,
