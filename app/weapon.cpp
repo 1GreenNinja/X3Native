@@ -304,12 +304,11 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.magSize     = 12;
         w.reserveAmmo = 60;
         w.reloadTime  = 1.5f;
-        w.viewmodelGlb = "WeaponEnergyPistol.glb";  // GLB exists
-        w.vmScale     = 0.18f;
+        w.viewmodelGlb = "WeaponEnergyPistol2.glb";  // real energy_pistol.obj (PBR-textured)
+        w.vmScale     = 0.18f;                        // proven pistol read (~0.33 m held)
         w.muzzleFx    = "muzzle_pistol";
         w.impactFx    = "impact_bullet";
-        // Punchy single sci-fi shot.
-        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-01.wav";
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-01.wav";   // punchy single shot
         r.push_back(w);
     }
 
@@ -331,12 +330,11 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.magSize     = 40;
         w.reserveAmmo = 200;
         w.reloadTime  = 2.0f;
-        w.viewmodelGlb = "WeaponEnergyPistol.glb";  // no SMG GLB -> pistol fallback
-        w.vmScale     = 0.18f;
+        w.viewmodelGlb = "WeaponRailgun.glb";  // railgun reads as a rifle for the auto SMG
+        w.vmScale     = 0.24f;                 // longarm (~0.46 m held)
         w.muzzleFx    = "muzzle_smg";
         w.impactFx    = "impact_bullet";
-        // Rapid/auto burst SFX (one-shot per round; reads as a fast cadence at 11/s).
-        w.fireSfx     = "weapons/rapid/Rapid-Fires_Sci-Fi_Gun-01.wav";
+        w.fireSfx     = "weapons/rapid/Rapid-Fires_Sci-Fi_Gun-01.wav";   // rapid/auto burst
         w.fireSfxLoop = true;   // auto weapon: loopable rapid set
         r.push_back(w);
     }
@@ -357,12 +355,11 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.magSize     = 8;
         w.reserveAmmo = 32;
         w.reloadTime  = 2.5f;
-        w.viewmodelGlb = "WeaponShotGun.glb";  // real shotgun GLB (longer barrel -> smaller scale)
-        w.vmScale     = 0.10f;
+        w.viewmodelGlb = "WeaponShotgun2.glb";  // real shotgun.obj (PBR-textured; long barrel -> small scale)
+        w.vmScale     = 0.11f;                   // longest source model (4.4 m) -> ~0.48 m held
         w.muzzleFx    = "muzzle_shotgun";
         w.impactFx    = "impact_bullet";
-        // Heavy single boom (a fuller/longer single shot reads as a shotgun blast).
-        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-57.wav";
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-57.wav";   // heavy single boom
         r.push_back(w);
     }
 
@@ -384,8 +381,8 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.reserveAmmo = 80;
         w.reloadTime  = 2.2f;
         w.projSpeed   = 45.0f;    // m/s bolt
-        w.viewmodelGlb = "WeaponEnergyPistol.glb";  // reuse the energy pistol look
-        w.vmScale     = 0.18f;
+        w.viewmodelGlb = "WeaponBFG.glb";  // bfg.obj energy-cannon look for the plasma bolt
+        w.vmScale     = 0.24f;             // bulky energy weapon (~0.42 m held)
         w.muzzleFx    = "muzzle_plasma";
         w.impactFx    = "impact_plasma";
         // Sci-fi energy single (a distinct, higher-tech single shot).
@@ -425,8 +422,8 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.reloadTime  = 3.0f;         // slow to reload the belt
         w.spinUpTime     = 0.6f;      // 0.6 s of fire to reach full RoF
         w.spinUpStartFrac= 0.4f;      // starts at 40% of fireRate (cold barrel)
-        w.viewmodelGlb = "WeaponChainGun.glb";  // not in repo -> pistol fallback
-        w.vmScale     = 0.18f;
+        w.viewmodelGlb = "WeaponRocketLauncher.glb";  // heaviest model -> the chaingun read
+        w.vmScale     = 0.26f;                        // heavy weapon (~0.49 m held)
         w.muzzleFx    = "muzzle_chaingun";
         w.impactFx    = "impact_bullet";
         // Sustained rapid-fire belt (the longest rapid take = a meatier auto roar).
@@ -457,8 +454,8 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.projSpeed   = 60.0f;        // faster bolt than the plasma pistol
         w.splashRadius= 2.0f;         // small AoE on impact
         w.splashDamage= 15;           // splash damage at the center
-        w.viewmodelGlb = "WeaponPlasmaRifle.glb";  // not in repo -> pistol fallback
-        w.vmScale     = 0.18f;
+        w.viewmodelGlb = "WeaponBFG.glb";  // bfg.obj energy-cannon look (shared with plasma)
+        w.vmScale     = 0.24f;             // bulky energy weapon (~0.42 m held)
         w.muzzleFx    = "muzzle_plasma";
         w.impactFx    = "impact_plasma";
         // Bigger energy single than the plasma pistol (largest single = fuller bolt).
@@ -490,8 +487,8 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.beam        = true;                // render as a solid beam (host hint)
         w.chainTargets= 2;                   // primary + 2 chains = 3 targets
         w.falloffStart= 14.0f;               // half-range: damage falls off past 14 m
-        w.viewmodelGlb = "WeaponLightningGun.glb"; // not in repo -> pistol fallback
-        w.vmScale     = 0.18f;
+        w.viewmodelGlb = "WeaponRailgun.glb"; // railgun rifle for the precision beam
+        w.vmScale     = 0.24f;                // longarm (~0.46 m held)
         w.muzzleFx    = "muzzle_lightning";
         w.impactFx    = "impact_lightning";
         // Continuous loopable zap/beam (the loop reads as a sustained electric crackle).
