@@ -575,6 +575,7 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
     if (m.radarValid && m.alive) {
         const float maxDist = 45.0f;             // metres; skip enemies farther than this
         for (int i = 0; i < m.enemyCount && i < HudModel::kMaxBlips; ++i) {
+            if (!m.enemyVisible[i]) continue;         // occluded by a wall/door -> no label (radar still shows it)
             const float dx = m.enemyX[i] - m.playerX;
             const float dz = m.enemyZ[i] - m.playerZ;
             const float d2 = dx * dx + dz * dz;

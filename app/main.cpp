@@ -4482,15 +4482,20 @@ int main(int argc, char** argv) {
             return !consoleOpen && !uiMenuActive && glfwGetKey(window, k) == GLFW_PRESS;
         };
 
-        // F: toggle noclip on the rising edge. Seed the fly camera from the
-        // player's current view so the transition is seamless.
+        // F toggles noclip via the SAME Player flag the `idclip` console command drives
+        // (single source of truth — previously F drove a local var and idclip drove
+        // player.noclip(), so the console command did nothing for movement).
         bool fNow = keyDown(GLFW_KEY_F);
-        if (fNow && !prevF) {
-            noclip = !noclip;
-            if (noclip) player.camera(flyX, flyY, flyZ, flyYaw, flyPitch);
-            x3::logInfo(noclip ? "noclip ON" : "noclip OFF");
-        }
+        if (fNow && !prevF) player.setNoclip(!player.noclip());
         prevF = fNow;
+        // Mirror the Player's noclip flag (set by F OR idclip) into the local `noclip`
+        // the movement uses; seed the fly camera from the current view on the rising
+        // edge so the transition is seamless either way.
+        if (player.noclip() != noclip) {
+            noclip = player.noclip();
+            if (noclip) player.camera(flyX, flyY, flyZ, flyYaw, flyPitch);
+            x3::logInfo(noclip ? "noclip ON (fly: WASD + Space up / Ctrl down, look to steer)" : "noclip OFF");
+        }
 
         // F3: toggle the perf stats overlay (drives the r_stats cvar) on the rising
         // edge. Polled even with the console open so it always works.
@@ -5331,6 +5336,22 @@ int main(int argc, char** argv) {
                         hm.enemyY[i] = marks[i].pos.y;
                         hm.enemyZ[i] = marks[i].pos.z;
                         hm.enemyLabel[i] = marks[i].label;
+                        // Line-of-sight for the NAMEPLATE: ray from the eye to the enemy's
+                        // head; if static geometry (wall/door) blocks it first, hide the
+                        // label. The minimap blip ignores this (radar sees through walls).
+                        const x3::phys::Vec3 eye{ camX, camY, camZ };
+                        const float hx = marks[i].pos.x - eye.x;
+                        const float hy = (marks[i].pos.y + 1.4f) - eye.y;
+                        const float hz = marks[i].pos.z - eye.z;
+                        const float dist = std::sqrt(hx*hx + hy*hy + hz*hz);
+                        bool vis = true;
+                        if (dist > 0.01f) {
+                            const x3::phys::Vec3 dir{ hx/dist, hy/dist, hz/dist };
+                            x3::phys::RayHit rh = physics->rayCast(eye, dir, dist - 0.5f,
+                                                                   x3::phys::Layer::Static);
+                            if (rh.hit) vis = false;   // a wall/door is between the eye and this enemy
+                        }
+                        hm.enemyVisible[i] = vis;
                     }
 
                     // Live companion (rescued-victim) positions -> green pulsing blips.

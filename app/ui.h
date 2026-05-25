@@ -226,6 +226,8 @@ struct HudModel {
     float enemyY[kMaxBlips] = {};   // enemy world Y (body center; nameplate adds head offset)
     float enemyZ[kMaxBlips] = {};   // enemy world Z
     const char* enemyLabel[kMaxBlips] = {};  // short threat label per enemy (nullptr -> "HOSTILE")
+    bool  enemyVisible[kMaxBlips] = {};  // eye line-of-sight: NAMEPLATE shows only if true.
+                                         // The minimap blip IGNORES this (radar sees through walls).
 
     int   allyCount = 0;
     float allyX[kMaxBlips] = {};    // companion world X
