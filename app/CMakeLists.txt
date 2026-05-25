@@ -57,6 +57,7 @@ add_executable(X3Engine WIN32
     companion.cpp
     companion_squad.cpp
     companion_controller.cpp
+    rifthub.cpp
     terrain.cpp
     vehicle.cpp
     fx.cpp
