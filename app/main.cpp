@@ -3446,6 +3446,201 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // ---- Open world — surrounding regions + city + ocean base (--world openworld) -
+    // The Act-2 open world stitched together onto ONE streamed surface (like
+    // `--world terrain`): the surrounding REGIONS (crash site, 2 outposts, the 4
+    // mountain ranges — app/world_regions.*), the CITY / industrial metropolis +
+    // road grid + 4 freeway tunnels (app/city.*), and the offshore OCEAN + undersea
+    // disc base (app/ocean_base.*). The graybox props are plain Scene entities laid
+    // ON the canonical terrain surface via the PURE placeOnTerrain sampler, so they
+    // render through the host's scene.render() with no per-frame module tick.
+    // Self-contained + LOW-CONFLICT exactly like `--world valley/cliffs/club` (it
+    // does NOT touch level1.cpp / the Spire). GATE: submarine combat is built INERT
+    // and is NEVER engaged at load (oocean.engage() is not called). Two ways in:
+    //   * SCREENSHOT (headless): `--world openworld --screenshot <path>`.
+    //   * WALKABLE (windowed):  `--world openworld` — spawns at the crash site.
+    if (worldMode == "openworld") {
+        x3::logInfo("--world openworld: building the Act-2 open world (regions + city + ocean base)");
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> ophys(x3::phys::createPhysicsWorld());
+        if (!ophys->init()) {
+            x3::logError("--world openworld: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        // Streamed terrain + analytic sky (same canonical world as --world terrain).
+        std::unique_ptr<x3::jobs::IJobSystem> ojobs(x3::jobs::createJobSystem());
+        ojobs->init(0);
+        x3::game::Scene oscene;
+        const x3::game::TerrainConfig& ocfg = x3::game::worldTerrainConfig();
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
+            sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+            sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
+            device->setSkyParams(sp);
+        }
+        // Seed the residency ring at the crash site (origin — the surface start).
+        x3::game::TerrainStreamer ostream;
+        ostream.init(oscene, *device, *ophys, ojobs.get(), ocfg, 0.0f, 0.0f, /*radius=*/8);
+
+        // Build the open-world content ONTO that surface. Each mirrors act2_world.*:
+        // a one-shot build() that places graybox Scene entities. OceanBase lays the
+        // undersea zone at absolute deep Y and leaves submarine combat INERT.
+        x3::game::WorldRegions oregions; oregions.build(oscene, *device, *ophys);
+        x3::game::City        ocity;    ocity.build(oscene, *device, *ophys);
+        x3::game::OceanBase   oocean;   oocean.build(oscene, *device, *ophys);
+        // GATE assertion (loud, non-fatal): combat must be inert at load.
+        if (oocean.combat().engaged)
+            x3::logError("--world openworld: submarine combat engaged at load (GATE violation)");
+
+        // Spawn at the crash site, sitting ON the terrain surface (PURE sampler).
+        const x3::game::WorldRegionPlan& crash = oregions.plan(x3::game::WorldRegion::CrashSite);
+        float crashPos[3]; x3::game::placeOnTerrain(crash.cx, crash.cz, crashPos);
+        const x3::phys::Vec3 ospawn{ crashPos[0], crashPos[1] + 1.0f, crashPos[2] };
+
+        auto logSummary = [&](const char* tag) {
+            char rb[320];
+            std::snprintf(rb, sizeof(rb),
+                "--world openworld: %s | regions=%u (mountains=%u) props=%u | "
+                "city districts=3 tunnels=%u props=%u | ocean props=%u subs=%u combat=%s",
+                tag, x3::game::kWorldRegionCount, oregions.mountainCount(), oregions.propCount(),
+                ocity.tunnelCount(), ocity.propCount(),
+                oocean.propCount(), oocean.enemySubCount(),
+                oocean.combat().engaged ? "ENGAGED" : "inert");
+            x3::logInfo(rb);
+        };
+
+        // ===== Headless screenshot path: pose a vantage, settle the ring, grab. ==
+        if (headless) {
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_openworld.png");
+            // Elevated vantage behind the crash site, looking out over the surface.
+            float cam[5] = { crashPos[0] - 25.0f, crashPos[1] + 15.0f, crashPos[2] - 25.0f,
+                             0.7f, -0.30f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const int kSettle = 64;          // let the ring stream in
+            const float dt = 1.0f / 60.0f;
+            ostream.setUploadBudget(64);     // fill the visible ring fast for the still
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                // Nudge the focus across a tile on frame 1 to trigger the full ring,
+                // then hold it at the crash site so the wide resident set drains in.
+                const float focusX = (i == 1) ? (crash.cx + 40.0f) : crash.cx;
+                ostream.update(oscene, *device, *ophys, focusX, crash.cz);
+                ophys->step(dt);
+                oscene.update(*ophys);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) oscene.render(*device, frame);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) logSummary(("wrote " + outPath).c_str());
+            else       x3::logError("--world openworld: capture FAILED");
+            ostream.shutdown(oscene, *device, *ophys);
+            ophys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: first-person controller + noclip fly. =====
+        x3::game::Player oplayer;
+        oplayer.spawn(*ophys, ospawn.x, ospawn.y, ospawn.z);
+
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        bool prevSpaceO = false, prevFO = false, noclipO = false;
+        float flyXo = ospawn.x, flyYo = ospawn.y + 1.6f, flyZo = ospawn.z, flyYawO = 0.0f, flyPitchO = -0.2f;
+        logSummary("walk it");
+        x3::logInfo("--world openworld: WASD walk, mouse look, Space jump, LeftShift sprint, F noclip, Esc to quit");
+
+        int lastWo = (int)W, lastHo = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+
+            double now = glfwGetTime();
+            float dt = (float)(now - prevTime); prevTime = now;
+            if (dt > 0.1f) dt = 0.1f;
+
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+
+            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            bool spaceNow = kd(GLFW_KEY_SPACE);
+            bool fNow = kd(GLFW_KEY_F);
+            if (fNow && !prevFO) {
+                noclipO = !noclipO;
+                if (noclipO) { float yy, pp; oplayer.camera(flyXo, flyYo, flyZo, yy, pp); flyYawO = yy; flyPitchO = pp; }
+            }
+            prevFO = fNow;
+
+            float camX, camY, camZ, camYaw, camPitch;
+            if (!noclipO) {
+                x3::game::PlayerInput in;
+                if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+                if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+                if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+                if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+                in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+                in.jumpPressed = spaceNow && !prevSpaceO;
+                in.lookDX = ddx; in.lookDY = ddy;
+                oplayer.update(in, dt, *ophys);
+                oplayer.camera(camX, camY, camZ, camYaw, camPitch);
+            } else {
+                const float sens = 0.0025f;
+                flyYawO += ddx * sens; flyPitchO -= ddy * sens;
+                if (flyPitchO >  1.55f) flyPitchO =  1.55f;
+                if (flyPitchO < -1.55f) flyPitchO = -1.55f;
+                float fxo = std::cos(flyPitchO) * std::cos(flyYawO);
+                float fyo = std::sin(flyPitchO);
+                float fzo = std::cos(flyPitchO) * std::sin(flyYawO);
+                float rl = std::sqrt(fxo*fxo + fzo*fzo); if (rl < 1e-4f) rl = 1e-4f;
+                float rx = -fzo/rl, rz = fxo/rl;
+                float spd = 6.0f * dt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd *= 3.0f;
+                if (kd(GLFW_KEY_W)) { flyXo += fxo*spd; flyYo += fyo*spd; flyZo += fzo*spd; }
+                if (kd(GLFW_KEY_S)) { flyXo -= fxo*spd; flyYo -= fyo*spd; flyZo -= fzo*spd; }
+                if (kd(GLFW_KEY_D)) { flyXo += rx*spd; flyZo += rz*spd; }
+                if (kd(GLFW_KEY_A)) { flyXo -= rx*spd; flyZo -= rz*spd; }
+                if (spaceNow) flyYo += spd;
+                if (kd(GLFW_KEY_LEFT_CONTROL)) flyYo -= spd;
+                camX = flyXo; camY = flyYo; camZ = flyZo; camYaw = flyYawO; camPitch = flyPitchO;
+            }
+            prevSpaceO = spaceNow;
+
+            // Stream terrain around the camera, step physics, sync the scene.
+            ostream.update(oscene, *device, *ophys, camX, camZ);
+            ophys->step(dt);
+            oscene.update(*ophys);
+
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWo || chh != lastHo) { lastWo = cw; lastHo = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+
+            device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) oscene.render(*device, frame);
+            device->endFrame(frame);
+        }
+
+        ostream.shutdown(oscene, *device, *ophys);
+        ophys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
     // ---- Asset source (stub until D5) ----
     std::unique_ptr<x3::asset::IAssetSource> assets(x3::asset::createAssetSource());
     assets->mountPak("base.x3pak", 0);  // stub: logs not-implemented for now
