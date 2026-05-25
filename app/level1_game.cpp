@@ -249,6 +249,19 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
                        x3::phys::Vec3{ cc.x + 0.8f, kEnemyY, cc.z + 2.5f },
                        tuningFor(EnemyType::BlueSynth));
 
+    // ---- Explosive barrels: shootable, scattered along the corridor + a checkpoint
+    // cluster (a hit detonates violently + chains to neighbors). ----
+    {
+        m_barrels.init(device, physics);
+        const float by = level1Rooms()[(uint32_t)L1Floor::B1].y0;
+        const x3::phys::Vec3 co = m_layout.corridorCenter;
+        m_barrels.spawn(co.x - 2.0f, by, co.z + 1.6f);
+        m_barrels.spawn(co.x + 3.0f, by, co.z - 1.6f);
+        m_barrels.spawn(cc.x - 1.8f, by, cc.z + 0.2f);   // checkpoint pair -> chain reaction
+        m_barrels.spawn(cc.x - 1.1f, by, cc.z + 0.9f);
+        x3::logInfo("[level1] spawned " + std::to_string(m_barrels.count()) + " explosive barrels");
+    }
+
     // ---- Trigger volumes. Strength (cell), arena (boss entry), elevator (win,
     // disabled until the boss dies). ----
     // Strength: a box around the equipment prop at (1.5, 0.4, -1.8) in the cell.
@@ -494,6 +507,9 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     // ---- Melee cooldown advances (Phase 2b super-strength punch). ----
     m_melee.update(dt);
 
+    // ---- Explosive barrels: detonate any shot this frame (scatter + chain + FX). ----
+    m_barrels.update(dt);
+
     // ---- Doors advance ----
     m_doors.update(dt, scene, physics);
 
@@ -686,6 +702,13 @@ FireResult Level1Game::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& d
                               int damage) {
     FireResult r;
     if (!m_weapon.hasWeapon()) return r;   // gate: only effective when armed
+    // Explosive barrels: a shot that hits a barrel detonates it (independent of
+    // whether it also hits a monster — the ray can pass a barrel on the way).
+    {
+        const float e3[3] = { eye.x, eye.y, eye.z };
+        const float d3[3] = { dir.x, dir.y, dir.z };
+        m_barrels.onShot(e3, d3);
+    }
     // Fire across all three monster groups; the first live monster hit takes it.
     r = m_corridor.fire(eye, dir, scene, physics, damage);
     if (!r.hitMonster) {
@@ -749,6 +772,7 @@ void Level1Game::drawWorldExtras(x3::rhi::IRenderDevice& device,
                                  const x3::rhi::FrameContext& frame,
                                  const Scene& scene) const {
     m_envArt.draw(device, frame);   // converted sci-fi environment art over graybox
+    m_barrels.render(frame);        // intact barrels + their tumbling debris
     m_weapon.drawPickup(device, frame, scene);
     m_corridor.drawAll(device, frame, scene);
     m_checkpoint.drawAll(device, frame, scene);

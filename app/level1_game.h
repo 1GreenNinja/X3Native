@@ -28,6 +28,7 @@
 #include "weapon.h"
 #include "monster.h"
 #include "melee.h"
+#include "barrels.h"   // explosive barrels (shoot -> violent detonation + chain)
 #include "objective.h"
 #include "trigger.h"
 #include "rescue.h"
@@ -216,6 +217,7 @@ public:
     bool      doorLocked(char letter) const;
 
     // Monster groups (for the self-test / objective gating + the save bridge).
+    BarrelSystem&         barrels()                 { return m_barrels; }   // host wires FX/damage sinks
     MonsterManager&       corridorEnemies()         { return m_corridor; }
     const MonsterManager& corridorEnemies()   const { return m_corridor; }
     MonsterManager&       checkpointEnemies()       { return m_checkpoint; }
@@ -347,6 +349,7 @@ private:
     DoorSystem     m_doors;
     WeaponSystem   m_weapon;
     MeleeSystem    m_melee;        // super-strength punch (Phase 2b)
+    BarrelSystem   m_barrels;      // explosive barrels (shoot -> detonate + chain)
     MonsterManager m_corridor;     // 2 guards + 1 drone (beat 3)
     MonsterManager m_checkpoint;   // 1-2 guards (built at level build)
     MonsterSystem  m_martinez;     // boss (beat 9)

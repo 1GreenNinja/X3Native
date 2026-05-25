@@ -3482,6 +3482,16 @@ int main(int argc, char** argv) {
     x3::game::CombatFx combatFx;
     combatFx.init(*device);
 
+    // Explosive barrels FX: a cluster of impact bursts at the blast center so a shot
+    // barrel reads as a violent fireball (on top of its own scattering debris chunks).
+    game.barrels().setFxSink([&combatFx](const float c[3], float radius) {
+        const x3::phys::Vec3 ctr{ c[0], c[1], c[2] };
+        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f });
+        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.7f, 0.5f, 0.0f });
+        combatFx.spawnImpact(ctr, x3::phys::Vec3{ -0.7f, 0.5f, 0.0f });
+        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 0.5f, 0.7f });
+    });
+
     // =====================================================================
     // WEAPONS: data-driven arsenal (pistol / SMG / shotgun / plasma). The
     // Arsenal owns the roster + per-weapon ammo/cooldown/reload state and the
