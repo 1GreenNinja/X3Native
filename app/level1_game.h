@@ -226,6 +226,9 @@ public:
 
     // Monster groups (for the self-test / objective gating + the save bridge).
     BarrelSystem&         barrels()                 { return m_barrels; }   // host wires FX/damage sinks
+    // Static ceiling-fixture point lights (env-art Light_A). The host re-issues these
+    // + a player FLASHLIGHT each frame so the light follows the player through dark halls.
+    const std::vector<x3::rhi::PointLight>& lightFixtures() const { return m_envArt.lightFixtures(); }
     MonsterManager&       corridorEnemies()         { return m_corridor; }
     const MonsterManager& corridorEnemies()   const { return m_corridor; }
     MonsterManager&       checkpointEnemies()       { return m_checkpoint; }

@@ -4501,6 +4501,8 @@ int main(int argc, char** argv) {
     // ---- Optional debug noclip/fly camera (toggle with F). Not required by S3,
     // handy for inspecting the level. Off by default — gameplay is the walker.
     bool noclip = false;
+    bool flashlight = true;   // player-following light (L toggles) — default ON for the dark halls
+    bool prevL = false;
     float flyX = L1.spawn.x, flyY = 1.7f, flyZ = L1.spawn.z, flyYaw = 0.0f, flyPitch = 0.0f;
 
     // ---- Phase 2a: enemy-attack FX. Enemies invoke this to draw a tracer/telegraph
@@ -4929,6 +4931,25 @@ int main(int argc, char** argv) {
         camPitch += weaponRecoilPitch;
         if (camPitch >  1.55f) camPitch =  1.55f;   // keep within the look clamp
         device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+        // FLASHLIGHT (L toggles, default ON): re-issue the level's static ceiling
+        // fixtures + a bright player-following light at the eye, so the dark halls
+        // light up around you. Inserted FIRST so the 64-light cap never drops it.
+        if (!terrainWorld) {
+            bool lNow = keyDown(GLFW_KEY_L);
+            if (lNow && !prevL) { flashlight = !flashlight;
+                                  x3::logInfo(flashlight ? "flashlight ON" : "flashlight OFF"); }
+            prevL = lNow;
+            std::vector<x3::rhi::PointLight> fl = game.lightFixtures();
+            if (flashlight) {
+                x3::rhi::PointLight pl{};
+                pl.pos[0] = camX; pl.pos[1] = camY; pl.pos[2] = camZ;
+                pl.range  = 16.0f;
+                pl.color[0] = 2.4f; pl.color[1] = 2.2f; pl.color[2] = 1.9f;  // bright warm-white (HDR)
+                fl.insert(fl.begin(), pl);
+            }
+            if (fl.size() > 64) fl.resize(64);
+            device->setPointLights(fl.data(), (uint32_t)fl.size());
+        }
         prevSpace = spaceNow;
 
         // ---- Level 1 controller tick: advance doors, run triggers, spawn/clear
