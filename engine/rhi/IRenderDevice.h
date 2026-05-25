@@ -214,6 +214,43 @@ public:
     // false). Default false (headless / non-RT devices).
     virtual bool          rayTracingSupported() const { return false; }
 
+    // ---- Ray-traced ambient occlusion (RT AO — hardware ray query) ----------
+    // GROUND-TRUTH ambient occlusion via the Vulkan ray-query path (rayQueryEXT):
+    // the device builds a BLAS per static mesh + a per-frame TLAS from the scene
+    // draw list, then an inline-ray-query compute pass casts short cosine-hemisphere
+    // rays against the TLAS from each pixel's depth-reconstructed world position;
+    // the resulting occlusion MULTIPLIES the linear HDR scene before bloom/tonemap.
+    //
+    // GATED + DEFAULT OFF (the `r_rtao` cvar maps 1:1 onto `enabled`). When OFF, or
+    // when the device has no RT support (rayTracingSupported()==false), the whole RT
+    // chain is skipped — the existing rasterized + SSAO/SSGI path is byte-for-byte
+    // unchanged and costs nothing. This is purely additive: it never replaces SSAO,
+    // it darkens the final HDR scene with real ray-traced contact occlusion. POD
+    // only — no Vulkan types cross the boundary. Mirrors setSsaoParams: the device
+    // caches a snapshot and re-applies it each frame.
+    //
+    // Tunables: `enabled` gates the whole RT-AO chain. `radius` is the ray length in
+    // meters (a hit within `radius` occludes; larger = broader, softer AO). `rays`
+    // is the hemisphere rays per pixel per frame (1..32; the half-res buffer + a
+    // depth-aware up-sample keep it cheap; raise for less noise). `bias` offsets the
+    // ray origin off the surface to avoid self-intersection. `strength` lerps the
+    // applied darkening (1 = full AO, 0 = none). `power` is a contrast exponent on
+    // the AO. `rebuildTlasEachFrame` forces a TLAS rebuild every frame (correct for
+    // moving geometry; the static-first path rebuilds only when the scene changes).
+    struct RtaoParams {
+        bool  enabled  = false;   // DEFAULT OFF (gated by r_rtao)
+        float radius   = 0.5f;    // ray length (meters) — short = contact AO, not whole-room
+        int   rays     = 8;       // hemisphere rays / pixel / frame (1..32)
+        float bias     = 0.03f;   // surface offset (meters) — avoid self-intersection
+        float strength = 0.85f;   // applied AO darkening (1 = full, 0 = off)
+        float power    = 1.5f;    // contrast exponent on the AO
+        bool  rebuildTlasEachFrame = false; // static-first: rebuild only on scene change
+    };
+    // Set the active RT-AO parameters for subsequent frames (cached + re-applied
+    // each frame, like setSsaoParams). Calling with enabled=false disables RT AO.
+    // No-op on a device without ray tracing. Default no-op (headless / base).
+    virtual void          setRtaoParams(const RtaoParams&) {}
+
     // ---- Screen-space ambient occlusion (SSAO, idTech-8 grounding/contact) --
     // SSAO darkens the AMBIENT/indirect lighting term in corners, crevices, and
     // contact points so objects feel grounded (fixes the "floating/flat" look,

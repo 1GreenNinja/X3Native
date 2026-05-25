@@ -186,6 +186,25 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // refresh); 0 = uncapped. Stops vsync-off from needlessly maxing the GPU on
     // frames the display never shows. Live-tunable: `r_maxfps 0` for uncapped.
     console.registerCVar("r_maxfps", "240", "frame cap when vsync off (0 = uncapped)");
+    // Hardware ray-traced ambient occlusion (RT AO — Vulkan ray-query path). Gated
+    // + DEFAULT OFF: only takes effect on a device that supports ray tracing. Live-
+    // tunable: `r_rtao 1` turns on ground-truth ray-traced contact occlusion (BLAS/
+    // TLAS + inline rayQueryEXT), `r_rtao 0` returns to the SSAO/raster look exactly.
+    console.registerCVar("r_rtao",          "0",    "hardware RT ambient occlusion (ray query); 0 = off (raster/SSAO)");
+    console.registerCVar("r_rtao_radius",   "0.5",  "RT AO ray length (meters)");
+    console.registerCVar("r_rtao_rays",     "8",    "RT AO hemisphere rays per pixel (1..32)");
+    console.registerCVar("r_rtao_strength", "0.85", "RT AO applied darkening (1 = full, 0 = off)");
+}
+
+// Read the r_rtao* cvars and push them onto the device (no-op on a non-RT device).
+void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& device) {
+    x3::rhi::IRenderDevice::RtaoParams p{};
+    p.enabled  = console.getInt("r_rtao") != 0;
+    p.radius   = console.getFloat("r_rtao_radius");
+    p.rays     = console.getInt("r_rtao_rays");
+    p.strength = console.getFloat("r_rtao_strength");
+    if (p.radius <= 0.0f) p.radius = 1.2f;
+    device.setRtaoParams(p);
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.
@@ -577,6 +596,10 @@ int main(int argc, char** argv) {
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false;
+    // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
+    // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
+    // apply passes are exercised under Vulkan validation on an RT-capable device.
+    bool        testRt = false;
     // --test-bestiary (bestiary pass): the data-driven enemy roster. Additive flag.
     bool        testBestiary = false;
     // --test-bosses (Act-1 bosses, Wave 1): the 5 mid-boss defs + the multi-pod
@@ -756,6 +779,7 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
+        else if (a == "--test-rt") { smoketest = true; testRt = true; }
         else if (a == "--test-jobs") testJobs = true;
         else if (a == "--test-asset") testAsset = true;
         else if (a == "--test-console") testConsole = true;
@@ -3522,6 +3546,19 @@ int main(int argc, char** argv) {
     // drawViewmodel so typing e.g. `vm_pitch 10` moves the held gun immediately.
     registerViewmodelCVars(*console);
 
+    // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
+    // render path so the BLAS/TLAS build + ray-query AO compute + apply passes are
+    // exercised under Vulkan validation. No-op if the device lacks RT support (the
+    // device silently stays on the raster/SSAO path). The cvar is also live-tunable.
+    if (testRt) {
+        console->set("r_rtao", "1");
+        x3::rhi::IRenderDevice::RtaoParams rp{};
+        rp.enabled = true;
+        device->setRtaoParams(rp);
+        x3::logInfo(std::string("--test-rt: RT AO requested; device rayTracingSupported=") +
+                    (device->rayTracingSupported() ? "YES" : "NO"));
+    }
+
     // ---- Stress-test injection (perf instrumentation layer) ----------------
     // `spawn N` adds N procedural cubes around the level spawn so the renderer can
     // be load-tested live; `stress_clear` hides them. The --stress N CLI flag does
@@ -4439,6 +4476,9 @@ int main(int argc, char** argv) {
                 frameCapPrev = glfwGetTime();
             }
         }
+        // Push the live r_rtao* cvars onto the device (hardware RT ambient occlusion).
+        // No-op on a non-RT GPU; default OFF so the visual build is unchanged.
+        applyRtaoCVars(*console, *device);
         glfwPollEvents();
 
         // ---- S7: console gating. While the console is open, gameplay input is
