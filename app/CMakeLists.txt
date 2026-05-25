@@ -20,6 +20,7 @@ add_executable(X3Engine WIN32
     objective.cpp
     trigger.cpp
     rescue.cpp
+    npc_dialog.cpp
     level1_game.cpp
     spire_mid.cpp
     spire_top.cpp

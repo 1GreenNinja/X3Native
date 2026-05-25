@@ -32,6 +32,7 @@
 #include "player.h"
 #include "monster.h"
 #include "level1_game.h"
+#include "npc_dialog.h"                     // rescued-NPC talk/dialog -> companion (the captive girl)
 #include "physprops.h"                      // FEATURE_GOALS §1: hanging cubes / joints (ragdoll foundation)
 #include "ragdoll.h"                        // FEATURE_GOALS §2: physics death ragdoll
 #include "editor/editor.h"                  // native Level Editor E1 (brain + self-test)
@@ -576,7 +577,7 @@ int main(int argc, char** argv) {
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
-         testNetSync = false, testNetInterp = false, testNetPredict = false;
+         testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false;
     // --test-bestiary (bestiary pass): the data-driven enemy roster. Additive flag.
     bool        testBestiary = false;
     // --test-bosses (Act-1 bosses, Wave 1): the 5 mid-boss defs + the multi-pod
@@ -798,6 +799,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-netinterp") testNetInterp = true;
         else if (a == "--test-netpredict") testNetPredict = true;
         else if (a == "--test-rescue") testRescue = true;
+        else if (a == "--test-npctalk") testNpcTalk = true;
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-debris") testDebris = true;
         else if (a == "--test-gpuskin") testGpuSkin = true;
@@ -1151,6 +1153,10 @@ int main(int argc, char** argv) {
     if (testRescue) {
         x3::logInfo("running F2 rescue (victim/companion/transform) self-test (R0-R5)...");
         return x3::game::runRescueSelfTest() ? 0 : 1;
+    }
+    if (testNpcTalk) {
+        x3::logInfo("running rescued-NPC talk/dialog -> companion self-test (T1-T7)...");
+        return x3::game::runNpcTalkSelfTest() ? 0 : 1;
     }
     if (testDestruction) {
         x3::logInfo("running K-T0/T1 destruction (fracture/impact/hit/explosion) self-test...");
@@ -4323,6 +4329,36 @@ int main(int argc, char** argv) {
     uint32_t  prevSecretHealth = 0;
     bool      prevSecretNano = false;
 
+    // ---- RESCUED-NPC TALK (the captive girl). When the player presses E within
+    // talk range of a LIVE captive, an exchange opens: she goes terrified ->
+    // relieved -> grateful -> flirty over a short script, advancing on each E.
+    // Completing the last line RESCUES her (RescueSystem::tryRescue -> she becomes a
+    // following Companion) and surfaces a warm one-liner bark. The state machine is
+    // the headless-tested NpcDialog (--test-npctalk); the host just feeds it the
+    // in-range fact + the E edge and reads it back for the prompt/box. The dialog
+    // takes PRIORITY in the E dispatch over the bare onRescue so the player always
+    // gets the exchange (never an instant silent rescue). ----
+    x3::game::NpcDialog npcDialog;
+    float     npcBarkTimer = 0.0f;   // >0 while her companion one-liner is shown
+    std::string npcBarkText;
+    // Find the nearest LIVE captive within `reach` of `at` (XZ). Returns true + its
+    // name/world-pos. Shared by the E dispatch and the prompt/box draw so both see
+    // exactly the same target. (Companions/expired victims are skipped.)
+    auto nearestLiveCaptive = [&](const x3::phys::Vec3& at, float reach,
+                                  std::string& whoOut, x3::phys::Vec3& posOut) -> bool {
+        const x3::game::RescueSystem& rs = game.rescue();
+        float best = reach * reach; bool found = false;
+        for (uint32_t i = 0; i < rs.victimCount(); ++i) {
+            const x3::game::RescueVictim& v = rs.victim(i);
+            if (!v.captive()) continue;
+            const x3::phys::Vec3 vp = v.pos();
+            const float dx = at.x - vp.x, dz = at.z - vp.z;
+            const float d2 = dx * dx + dz * dz;
+            if (d2 <= best) { best = d2; whoOut = v.name(); posOut = vp; found = true; }
+        }
+        return found;
+    };
+
     // ---- GENERAL save/load (versioned checkpoint). The interactive host exposes a
     // programmatic save/load API two ways: quick-save/quick-load on F5/F9, AND a
     // SAVE/LOAD CHECKPOINT affordance in the pause menu (gameUi.wantSave/wantLoad).
@@ -4546,10 +4582,28 @@ int main(int argc, char** argv) {
             x3::phys::Vec3 dir{ std::cos(pitch) * std::cos(yaw),
                                 std::sin(pitch),
                                 std::cos(pitch) * std::sin(yaw) };
-            if (game.onUse(eye, dir, scene, *physics)) {  // plays door SFX internally
+            // RESCUED-NPC TALK takes priority over the bare door/rescue handlers so
+            // the captive girl always gets her exchange. If a live captive is in talk
+            // range, this E starts/advances the dialog; completing it performs the
+            // actual rescue (so she becomes a following companion) + queues her bark.
+            std::string talkWho; x3::phys::Vec3 talkPos{};
+            const bool talkInRange = nearestLiveCaptive(eye, x3::game::kTalkReach, talkWho, talkPos);
+            const bool talkHandled = npcDialog.active() || talkInRange;
+            if (talkHandled) {
+                const std::string barkName = talkWho.empty() ? npcDialog.partner() : talkWho;
+                const bool rescued = npcDialog.interact(
+                    talkInRange, talkWho, talkPos,
+                    [&]() -> bool { return game.onRescue(eye); });
+                if (rescued) {
+                    npcBarkText  = x3::game::companionBark(barkName);
+                    npcBarkTimer = 4.0f;
+                    x3::logInfo("talk: " + barkName + " rescued — now a companion (\"" + npcBarkText + "\")");
+                } else if (npcDialog.active()) {
+                    const auto& ln = npcDialog.currentLine();
+                    x3::logInfo("talk: [" + ln.speaker + "] " + ln.text);
+                }
+            } else if (game.onUse(eye, dir, scene, *physics)) {  // plays door SFX internally
                 x3::logInfo("use: button pressed — door opening");
-            } else if (game.onRescue(eye)) {  // F2 rescue (spec §5): captive in reach -> companion
-                x3::logInfo("use: victim rescued — now a companion");
             } else if (midFloors.onRescue(eye)) {  // F5 synth-bay captive rescue
                 x3::logInfo("use: F5 captive rescued — now a companion");
             } else if (topFloors.onRescue(eye)) {  // F7 rooftop captive (Sarah) rescue
@@ -4588,6 +4642,23 @@ int main(int argc, char** argv) {
             }
         }
         prevE = eNow;
+
+        // ---- RESCUED-NPC TALK upkeep (every frame, edge-independent): if an exchange
+        // is running, keep its box anchored to the captive, and CANCEL it the moment
+        // the player wanders out of talk range (so the box never strands on screen).
+        // Also age out her companion one-liner bark.
+        if (!terrainWorld) {
+            if (npcDialog.active()) {
+                float pex, pey, pez, pyaw, ppitch;
+                player.camera(pex, pey, pez, pyaw, ppitch);
+                if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
+                const x3::phys::Vec3 peye{ pex, pey, pez };
+                std::string w; x3::phys::Vec3 cp{};
+                if (nearestLiveCaptive(peye, x3::game::kTalkReach, w, cp)) npcDialog.setAnchor(cp);
+                else                                                       npcDialog.cancel();
+            }
+            if (npcBarkTimer > 0.0f) npcBarkTimer -= dt;
+        }
 
         // ---- Door-code keypad: capture digit/backspace/enter edges while active.
         // Esc-cancel is handled in the Esc block above. Uses the shared KeypadEntry
@@ -5254,6 +5325,97 @@ int main(int argc, char** argv) {
                             device->drawHudText(frame, label, tx + 1.5f, ty + 1.5f, sz, shadow);
                             device->drawHudText(frame, label, tx, ty, sz, col);
                         }
+                    }
+                }
+                // ---- RESCUED-NPC TALK: floating "[E] Talk" prompt + the dialog box.
+                // The prompt floats over a nearby LIVE captive's head (worldToScreen,
+                // mirroring the door prompt). Once an exchange is open the prompt gives
+                // way to a centered dialog box (speaker + line, large Menu-role font),
+                // and the captive's warm one-liner bark fades after she joins you. ----
+                if (!terrainWorld && !codeMode && !termMode) {
+                    float pex, pey, pez, pyaw, ppitch;
+                    player.camera(pex, pey, pez, pyaw, ppitch);
+                    if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
+                    const x3::phys::Vec3 peye{ pex, pey, pez };
+                    uint32_t hudW = 0, hudH = 0; device->hudSize(hudW, hudH);
+
+                    if (npcDialog.active()) {
+                        // The exchange box: a translucent panel near the screen bottom
+                        // with the speaker label + the current line, large + readable.
+                        const auto& ln = npcDialog.currentLine();
+                        const std::string speaker = ln.speaker.empty() ? npcDialog.partner() : ln.speaker;
+                        const std::string& body = ln.text;
+                        const float cx = (hudW > 0) ? hudW * 0.5f : 640.0f;
+                        const float boxW = (hudW > 0) ? hudW * 0.66f : 840.0f;
+                        const float boxH = 118.0f;
+                        const float boxX = cx - boxW * 0.5f;
+                        const float boxY = (hudH > 0) ? hudH - 190.0f : 540.0f;
+                        const float panel[4]  = { 0.05f, 0.07f, 0.12f, 0.82f };
+                        const float border[4] = { 0.40f, 0.78f, 1.0f, 0.85f };   // cyan rim
+                        device->drawHudQuad(frame, boxX - 3.0f, boxY - 3.0f, boxW + 6.0f, boxH + 6.0f, border);
+                        device->drawHudQuad(frame, boxX, boxY, boxW, boxH, panel);
+                        // Speaker name (warm tint for her, cool for the player "YOU").
+                        const bool isYou = (speaker == "YOU");
+                        const float namePx = 26.0f;
+                        const float herCol[4]  = { 1.0f, 0.62f, 0.78f, 1.0f };   // warm rose (her)
+                        const float youCol[4]  = { 0.66f, 0.92f, 1.0f, 1.0f };   // cool cyan (player)
+                        const float nshadow[4] = { 0.0f, 0.0f, 0.0f, 0.75f };
+                        const float nameX = boxX + 24.0f, nameY = boxY + 18.0f;
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, (speaker + ":").c_str(),
+                                             nameX + 1.5f, nameY + 1.5f, namePx, nshadow);
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, (speaker + ":").c_str(),
+                                             nameX, nameY, namePx, isYou ? youCol : herCol);
+                        // The spoken line, larger, white.
+                        const float linePx = 30.0f;
+                        const float lineX = boxX + 24.0f, lineY = boxY + 58.0f;
+                        const float lshadow[4] = { 0.0f, 0.0f, 0.0f, 0.8f };
+                        const float lineCol[4] = { 0.96f, 0.97f, 1.0f, 1.0f };
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, body.c_str(),
+                                             lineX + 1.5f, lineY + 1.5f, linePx, lshadow);
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, body.c_str(),
+                                             lineX, lineY, linePx, lineCol);
+                        // Advance hint, right-aligned in the box.
+                        const char* hint = (npcDialog.lineIndex() + 1 >= npcDialog.lineCount())
+                                           ? "[E] Free her" : "[E] Continue";
+                        const float hintPx = 18.0f;
+                        const float hw = device->textAdvance(x3::rhi::FontRole::Menu, hint, hintPx);
+                        const float hintX = boxX + boxW - hw - 22.0f, hintY = boxY + boxH - 28.0f;
+                        const float hintCol[4] = { 0.75f, 0.85f, 0.95f, 0.85f };
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, hint, hintX, hintY, hintPx, hintCol);
+                    } else {
+                        // No exchange yet: float "[E] Talk" over the nearest live captive.
+                        std::string who; x3::phys::Vec3 cpos{};
+                        if (nearestLiveCaptive(peye, x3::game::kTalkReach, who, cpos)) {
+                            float sx = 0.0f, sy = 0.0f;
+                            if (device->worldToScreen(cpos.x, cpos.y + 1.85f, cpos.z, sx, sy)) {
+                                const float dx = cpos.x - peye.x, dz = cpos.z - peye.z;
+                                const float dd = std::sqrt(dx * dx + dz * dz);
+                                float a = 1.0f - (dd - 2.0f);
+                                if (a > 1.0f) a = 1.0f; if (a < 0.0f) a = 0.0f;
+                                a = 0.35f + 0.65f * a;
+                                const float sz = 2.4f;
+                                const float tx = sx - 40.0f, ty = sy;
+                                const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f * a };
+                                const float col[4]    = { 1.0f, 0.72f, 0.84f, a };   // warm rose (a person, not a door)
+                                device->drawHudText(frame, "[E] Talk", tx + 1.5f, ty + 1.5f, sz, shadow);
+                                device->drawHudText(frame, "[E] Talk", tx, ty, sz, col);
+                            }
+                        }
+                    }
+
+                    // Her companion one-liner bark, just under the crosshair, fading out.
+                    if (npcBarkTimer > 0.0f && !npcBarkText.empty()) {
+                        float a = npcBarkTimer; if (a > 1.0f) a = 1.0f;   // fade in last second
+                        const float barkPx = 22.0f;
+                        const float bw = device->textAdvance(x3::rhi::FontRole::Menu, npcBarkText.c_str(), barkPx);
+                        const float bx = ((hudW > 0) ? hudW * 0.5f : 640.0f) - bw * 0.5f;
+                        const float by = (hudH > 0) ? hudH * 0.62f : 420.0f;
+                        const float bshadow[4] = { 0.0f, 0.0f, 0.0f, 0.7f * a };
+                        const float bcol[4]    = { 1.0f, 0.72f, 0.84f, a };
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, npcBarkText.c_str(),
+                                             bx + 1.5f, by + 1.5f, barkPx, bshadow);
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, npcBarkText.c_str(),
+                                             bx, by, barkPx, bcol);
                     }
                 }
                 // Strength terminal — the "Awakening" readout (EFLZ_SPIRE §3).
