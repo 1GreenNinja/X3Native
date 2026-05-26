@@ -651,9 +651,9 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
             e.transparent = true;
             e.glass.opacity = alpha;            // see-through dial (was the fake alpha)
             e.glass.tint[0]=r; e.glass.tint[1]=g; e.glass.tint[2]=b;
-            e.glass.roughness  = 0.12f;          // a hair frosted for a polished plate
-            e.glass.refraction = 0.02f;
-            e.glass.specular   = 0.6f;
+            e.glass.roughness  = 0.0f;           // CLEAR — not frosted (owner playtest: crisp text + shimmer, no frost)
+            e.glass.refraction = 0.02f;          // subtle scene-bend behind the plate
+            e.glass.specular   = 0.6f;           // the light shimmer (kept)
         }
         e.tag = (uint32_t)Tag::Prop;
         const float wx = sn*oz, wz = cs*oz;
