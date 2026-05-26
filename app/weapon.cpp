@@ -329,8 +329,8 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.magSize     = 40;
         w.reserveAmmo = 200;
         w.reloadTime  = 2.0f;
-        w.viewmodelGlb = "WeaponEnergyPistol.glb";  // no SMG GLB -> pistol fallback
-        w.vmScale     = 0.18f;
+        w.viewmodelGlb = "WeaponX.glb";  // tactical battle rifle (Rodin art pass)
+        w.vmScale     = 0.11f;           // long rifle -> smaller viewmodel scale
         w.muzzleFx    = "muzzle_default";
         w.impactFx    = "impact_default";
         r.push_back(w);
