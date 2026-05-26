@@ -535,7 +535,11 @@ x3::prims::PrimMesh makeRoundedPanel(float hw, float hh, float corner) {
     const uint32_t base = (uint32_t)m.verts.size();
     const float backZ = -0.001f;     // a hair behind in LOCAL -Z (avoids coplanar z-fight)
     auto pushBack = [&](float x, float y){
-        const float uu = (x + hw) / (2.0f * hw);
+        // U is MIRRORED for the back fan: this fan's visible side is the -Z LOCAL
+        // face, which after the terminal's yaw faces the player. Viewing the same
+        // texture from behind flips it horizontally, so pre-flip U here to cancel
+        // that out — otherwise the readout text renders backwards (right-to-left).
+        const float uu = 1.0f - (x + hw) / (2.0f * hw);
         const float vv = 1.0f - (y + hh) / (2.0f * hh);
         m.verts.push_back({{x, y, backZ}, {0.0f, 0.0f, -1.0f}, {uu, vv}});
     };

@@ -556,6 +556,23 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
                 ui.quad(bx - 2.5f, by - 2.5f, 5.0f, 5.0f, allyCol);
             }
 
+            // --- Secret TRAPDOOR marker (GOLD, pulsing, larger than a blip) so the
+            // cell floor hatch is findable. Four short ticks around it read as a
+            // marked objective rather than just another dot.
+            if (m.trapValid) {
+                float bx, by;
+                if (toRadar(m.trapX, m.trapZ, bx, by)) {
+                    const float tpulse = 0.5f + 0.5f * std::sin(m_t * 5.2f);
+                    const float gold[4] = { 1.0f, 0.80f, 0.15f, 0.55f + 0.40f * tpulse };
+                    ui.quad(bx - 3.5f, by - 3.5f, 7.0f, 7.0f, gold);
+                    const float tick[4] = { 1.0f, 0.92f, 0.45f, 0.45f * tpulse };
+                    ui.quad(bx - 7.0f, by - 1.0f, 4.0f, 2.0f, tick);   // left
+                    ui.quad(bx + 3.0f, by - 1.0f, 4.0f, 2.0f, tick);   // right
+                    ui.quad(bx - 1.0f, by - 7.0f, 2.0f, 4.0f, tick);   // up
+                    ui.quad(bx - 1.0f, by + 3.0f, 2.0f, 4.0f, tick);   // down
+                }
+            }
+
             // --- Player blip (always centered, on top) + a forward "nose" tick.
             const float blip[4] = { 0.2f, 1.0f, 0.35f, 0.95f };
             ui.quad(cxp - 2.0f, cyp - 2.0f, 4.0f, 4.0f, blip);

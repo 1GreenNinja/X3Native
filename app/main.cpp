@@ -5202,6 +5202,8 @@ int main(int argc, char** argv) {
     // (the SecretRoom latches collection; the host owns the Player to apply heals). ----
     bool      termMode = false;
     bool      tmDigitPrev[10] = {};
+    bool      tmCharPrev[26] = {};        // A-Z typed-char edge state (full terminal typing)
+    bool      tmSpacePrev = false;        // space-bar edge state for the terminal
     bool      tmEnterPrev = false, tmBackPrev = false;
     uint32_t  prevSecretHealth = 0;
     bool      prevSecretNano = false;
@@ -5445,8 +5447,9 @@ int main(int argc, char** argv) {
         prevF3 = f3Now;
 
         // ---- WEAPONS: number keys 1..N switch the selected weapon; R reloads.
-        // Suppressed while a door-code keypad is active (digits go to the keypad).
-        if (!codeMode && !terrainWorld) {
+        // Suppressed while a keypad OR the cell terminal is active (those number/letter
+        // keys are being typed as a code, not used to switch weapons).
+        if (!codeMode && !termMode && !terrainWorld) {
             const int n = arsenal.count() < 9 ? arsenal.count() : 9;
             for (int wi = 0; wi < n; ++wi) {
                 bool down = keyDown(GLFW_KEY_1 + wi);
@@ -5626,6 +5629,17 @@ int main(int argc, char** argv) {
                 if (dn && !tmDigitPrev[dgt]) term.pushChar((char)('0' + dgt));
                 tmDigitPrev[dgt] = dn;
             }
+            // Letters + space too, so the cell terminal is a REAL typable field (not
+            // digits-only). Uppercase to match the on-glass font. Movement is gated
+            // off while termMode is active (below) so WASD/Space type, not walk.
+            for (int li = 0; li < 26; ++li) {
+                bool dn = keyDown(GLFW_KEY_A + li);
+                if (dn && !tmCharPrev[li]) term.pushChar((char)('A' + li));
+                tmCharPrev[li] = dn;
+            }
+            bool tspaceNow = keyDown(GLFW_KEY_SPACE);
+            if (tspaceNow && !tmSpacePrev) term.pushChar(' ');
+            tmSpacePrev = tspaceNow;
             bool tbackNow = keyDown(GLFW_KEY_BACKSPACE);
             if (tbackNow && !tmBackPrev) term.backspace();
             tmBackPrev = tbackNow;
@@ -5681,6 +5695,10 @@ int main(int argc, char** argv) {
                 in.jumpPressed = firstSub && spaceNow && !prevSpace;   // rising edge
                 in.lookDX = firstSub ? ddx : 0.0f;
                 in.lookDY = firstSub ? ddy : 0.0f;
+
+                // Cell terminal / keypad open for typing: swallow movement + jump so the
+                // keys (WASD/Space) type into the terminal instead of walking the player.
+                if (termMode || codeMode) { in.moveFwd = 0.0f; in.moveStrafe = 0.0f; in.sprint = false; in.jumpPressed = false; }
 
                 player.update(in, x3::net::kSimDt, *physics);
 
@@ -5906,8 +5924,12 @@ int main(int argc, char** argv) {
         // short forward arc, and brute-forces a closed door you punch. Works whether
         // or not armed (the pistol is the separate LMB verb). Gated by the
         // MeleeSystem's own cooldown; only while alive. ----
-        bool meleeNow = (keyDown(GLFW_KEY_V) ||
-            (!consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS));
+        // While the console, a UI menu, the cell terminal, or a keypad is capturing
+        // input, gameplay verbs (melee / fire) must NOT trigger — no shooting through
+        // the pause menu, no punching while typing the override code.
+        const bool uiCapture = consoleOpen || uiMenuActive || termMode || codeMode;
+        bool meleeNow = !uiCapture && (keyDown(GLFW_KEY_V) ||
+            glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS);
         if (meleeNow && !prevMelee && player.isAlive() && !terrainWorld) {
             x3::phys::Vec3 eye{ camX, camY, camZ };
             x3::phys::Vec3 dir{ std::cos(camPitch) * std::cos(camYaw),
@@ -5942,7 +5964,7 @@ int main(int argc, char** argv) {
         // projectiles are spawned into a host-owned list advanced below. Automatic
         // weapons fire while held; others fire on the LMB rising edge. ----
         (void)fireCooldown; (void)kFireCooldown;   // (legacy cooldown — arsenal owns timing now)
-        bool fireHeld = !consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        bool fireHeld = !uiCapture && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         bool wantFire = arsenal.current().automatic ? fireHeld : (fireHeld && !prevFire);
         if (wantFire && game.armed() && player.isAlive() && arsenal.canFire()) {
             x3::phys::Vec3 eye{ camX, camY, camZ };
@@ -6530,6 +6552,15 @@ int main(int argc, char** argv) {
                     for (uint32_t i = 0; i < na; ++i) {
                         hm.allyX[i] = allies[i].x;
                         hm.allyZ[i] = allies[i].z;
+                    }
+
+                    // Secret TRAPDOOR: gold radar marker while the cell floor hatch
+                    // exists (roomCenter() shares the hatch XZ; the room is straight
+                    // below). Lets the player find the otherwise-hidden hatch.
+                    if (game.secret().hatchBuilt()) {
+                        hm.trapValid = true;
+                        hm.trapX = game.secret().roomCenter().x;
+                        hm.trapZ = game.secret().roomCenter().z;
                     }
 
                     // Faint room outlines: the B1 combat-zone rects (cell / corridor /
