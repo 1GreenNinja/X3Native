@@ -5789,6 +5789,12 @@ int main(int argc, char** argv) {
                 if (keyDown(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
                 if (keyDown(GLFW_KEY_D)) in.moveStrafe += 1.0f;
                 if (keyDown(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+                // Arrow keys (RDP-friendly: mouse-look is flaky over Remote Desktop).
+                // Up/Down = forward/back; Left/Right = TURN (applied to lookDX below).
+                // Gated so they don't fight console history / terminal typing.
+                const bool arrowsLive = !consoleOpen && !termMode;
+                if (arrowsLive && keyDown(GLFW_KEY_UP))   in.moveFwd += 1.0f;
+                if (arrowsLive && keyDown(GLFW_KEY_DOWN)) in.moveFwd -= 1.0f;
                 // Right mouse button = walk forward (hold to autorun)
                 if (!consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
                     in.moveFwd += 1.0f;
@@ -5797,6 +5803,14 @@ int main(int argc, char** argv) {
                 in.jumpPressed = firstSub && spaceNow && !prevSpace;   // rising edge
                 in.lookDX = firstSub ? ddx : 0.0f;
                 in.lookDY = firstSub ? ddy : 0.0f;
+                // Left/Right arrows turn the view via the same lookDX path the mouse uses,
+                // frame-rate-independent (~140 deg/s) — so you can play fine when the mouse
+                // is unusable (e.g. raw-relative look over Remote Desktop is way too jumpy).
+                if (firstSub && arrowsLive) {
+                    const float arrowYaw = (keyDown(GLFW_KEY_RIGHT) ? 1.0f : 0.0f)
+                                         - (keyDown(GLFW_KEY_LEFT)  ? 1.0f : 0.0f);
+                    in.lookDX += arrowYaw * 1000.0f * (float)dt;   // keyboard turn rate
+                }
 
                 // CROUCH (hold C) / CRAWL (hold Left-Ctrl): lower the eye + slow the move.
                 // Ctrl (prone) wins over C (crouch); release both to stand. Suppressed
