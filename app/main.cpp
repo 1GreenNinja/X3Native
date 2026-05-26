@@ -6184,6 +6184,22 @@ int main(int argc, char** argv) {
         return runMechWorld(*device, window, headless, screenshot, screenshotPath,
                             shotCamOverride, shotCam, W, H);
     }
+    // ---- Console + HUD (world-agnostic) ------------------------------------
+    // Lifted ABOVE the worldMode branching so EVERY world block can share a
+    // single console + HUD instance. The Level-1 path used to construct these
+    // locally (after all the --world early-returns); they now live here so the
+    // newer worlds (--world act2caves / --world rifthub) can wire keyboard +
+    // cheat commands without duplicating the console backend. World-specific
+    // cheats (iddqd / god / idkfa / idfa / idclip) still register per-world
+    // because each block has its own local Player/Game/Arsenal — only the
+    // ENGINE-level commands (viewmodel cvars, etc.) live here.
+    std::unique_ptr<x3::con::IConsole> console(x3::con::createConsole());
+    x3::game::Hud hud;
+    bool quitRequested = false;
+    hud.init(*console, &quitRequested);
+    // Live-tunable viewmodel pose cvars (vm_yaw/pitch/roll/fwd/right/down) +
+    // r_maxfps. World-agnostic — register against the lifted console.
+    registerViewmodelCVars(*console);
 
     // ---- Destruction demo (--world destruct / --screenshot-destruct) -------
     // The K-T1 marquee showcase: a lit ground + a row of destructible crates the
@@ -9295,6 +9311,41 @@ int main(int argc, char** argv) {
         x3::game::Player aplayer;
         aplayer.spawn(*aphys, cavesSpawn.x, cavesSpawn.y, cavesSpawn.z);
 
+        // ---- DOOM-style cheat console commands (act2caves variant). Register
+        // against the lifted console using THIS world's local aplayer. The
+        // arsenal/game-specific cheats (idkfa/idfa) require Level-1 systems
+        // (game.cheatArm, arsenal.setInfiniteAmmo) and are SKIPPED here — they
+        // log a single "not available in this world" line instead.
+        console->registerCommand("iddqd", [&aplayer](const std::vector<std::string>&) {
+            const bool on = !aplayer.god(); aplayer.setGod(on); if (on) aplayer.heal();
+            x3::logInfo(std::string("[cheat] god mode ") + (on ? "ON (IDDQD)" : "OFF"));
+        }, "toggle god mode (invulnerable)");
+        console->registerCommand("god", [&aplayer](const std::vector<std::string>& a) {
+            const bool on = a.empty() ? !aplayer.god() : (a[0] != "0");
+            aplayer.setGod(on); if (on) aplayer.heal();
+            x3::logInfo(std::string("[cheat] god = ") + (on ? "1" : "0"));
+        }, "god [0|1] - toggle/set invulnerability");
+        console->registerCommand("idkfa", [&aplayer](const std::vector<std::string>&) {
+            aplayer.setGod(true); aplayer.heal();
+            x3::logInfo("[cheat] IDKFA (act2caves: god+heal only; arsenal n/a in this world)");
+        }, "god + full health (act2caves: no arsenal/ammo)");
+        console->registerCommand("idfa", [](const std::vector<std::string>&) {
+            x3::logInfo("[cheat] IDFA — no arsenal in --world act2caves (use --world level1 for weapons)");
+        }, "no-op in act2caves (Level-1-only weapons)");
+        console->registerCommand("idclip", [&aplayer](const std::vector<std::string>& a) {
+            const bool on = a.empty() ? !aplayer.noclip() : (a[0] != "0");
+            aplayer.setNoclip(on);
+            if (on && !aplayer.god()) aplayer.setGod(true);
+            x3::logInfo(std::string("[cheat] noclip ") + (on ? "ON (IDCLIP)" : "OFF"));
+        }, "idclip [0|1] - toggle noclip free-flight");
+
+        // ---- Keyboard wiring for the console + HUD. Mirrors the Level-1 path:
+        // GRAVE_ACCENT toggles the console, char/key callbacks route text+edit.
+        InputContext inputCtxA{ &hud, console.get() };
+        glfwSetWindowUserPointer(window, &inputCtxA);
+        glfwSetCharCallback(window, charCallback);
+        glfwSetKeyCallback(window, keyCallback);
+
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
         double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
@@ -9303,7 +9354,7 @@ int main(int argc, char** argv) {
         float flyXa = cavesSpawn.x, flyYa = cavesSpawn.y + 1.6f, flyZa = cavesSpawn.z,
               flyYawA = 0.0f, flyPitchA = -0.10f;
         x3::logInfo("--world act2caves: WASD walk, mouse look, Space jump, "
-                    "LeftShift sprint, F noclip, LMB fire, Esc to quit");
+                    "LeftShift sprint, F noclip, LMB fire, ` (grave) for console, Esc to quit");
 
         int lastWa = (int)W, lastHa = (int)H;
         while (!glfwWindowShouldClose(window)) {
@@ -9317,8 +9368,12 @@ int main(int argc, char** argv) {
             double mx, my; glfwGetCursorPos(window, &mx, &my);
             float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
             lastMX = mx; lastMY = my;
+            // Suppress all gameplay input while the dev console is open so the
+            // player isn't moving + looking while typing iddqd / idclip / etc.
+            const bool consoleBlocksA = hud.consoleOpen();
+            if (consoleBlocksA) { ddx = 0.0f; ddy = 0.0f; }
 
-            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            auto kd = [&](int k) { return !consoleBlocksA && (glfwGetKey(window, k) == GLFW_PRESS); };
             bool spaceNow = kd(GLFW_KEY_SPACE);
             bool fNow     = kd(GLFW_KEY_F);
             if (fNow && !prevFA) {
@@ -9361,7 +9416,9 @@ int main(int argc, char** argv) {
             prevSpaceA = spaceNow;
 
             // LMB fire: forward to Act2Caves::onFire (the first live hostile takes it).
-            const bool lmbNow = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            // Suppressed while the dev console is open.
+            const bool lmbNow = !consoleBlocksA &&
+                                (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
             if (lmbNow && !prevLMBA) {
                 const float dxL = std::cos(camPitch) * std::cos(camYaw);
                 const float dyL = std::sin(camPitch);
@@ -9390,10 +9447,27 @@ int main(int argc, char** argv) {
             if (frame.valid) {
                 ascene.render(*device, frame);
                 caves.draw(*device, frame, ascene);
+                // HUD overlay: crosshair + FPS + console. When the console is
+                // open, free the cursor so the player can interact; otherwise
+                // keep it captured for mouse-look.
+                hud.drawCrosshair(*device, frame);
+                hud.drawFps(*device, frame, *console, fdt);
+                hud.drawConsole(*device, frame, *console, fdt);
             }
             device->endFrame(frame);
+
+            // Cursor capture toggles with console open/closed (mirrors Level-1).
+            const bool consoleOpenA = hud.consoleOpen();
+            glfwSetInputMode(window, GLFW_CURSOR,
+                             consoleOpenA ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+            if (quitRequested) break;
         }
 
+        // Clear the window user-pointer + callbacks so the stale stack-scoped
+        // InputContext doesn't survive past this block.
+        glfwSetWindowUserPointer(window, nullptr);
+        glfwSetCharCallback(window, nullptr);
+        glfwSetKeyCallback(window, nullptr);
         aphys->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
@@ -9473,6 +9547,39 @@ int main(int argc, char** argv) {
         x3::game::Player hplayer;
         hplayer.spawn(*hphys, hubSpawn.x, hubSpawn.y, hubSpawn.z);
 
+        // ---- DOOM-style cheat console commands (rifthub variant). Register
+        // against the lifted console using THIS world's local hplayer. The
+        // hub has no arsenal/game — idkfa/idfa log a "not available" line.
+        console->registerCommand("iddqd", [&hplayer](const std::vector<std::string>&) {
+            const bool on = !hplayer.god(); hplayer.setGod(on); if (on) hplayer.heal();
+            x3::logInfo(std::string("[cheat] god mode ") + (on ? "ON (IDDQD)" : "OFF"));
+        }, "toggle god mode (invulnerable)");
+        console->registerCommand("god", [&hplayer](const std::vector<std::string>& a) {
+            const bool on = a.empty() ? !hplayer.god() : (a[0] != "0");
+            hplayer.setGod(on); if (on) hplayer.heal();
+            x3::logInfo(std::string("[cheat] god = ") + (on ? "1" : "0"));
+        }, "god [0|1] - toggle/set invulnerability");
+        console->registerCommand("idkfa", [&hplayer](const std::vector<std::string>&) {
+            hplayer.setGod(true); hplayer.heal();
+            x3::logInfo("[cheat] IDKFA (rifthub: god+heal only; arsenal n/a in this world)");
+        }, "god + full health (rifthub: no arsenal/ammo)");
+        console->registerCommand("idfa", [](const std::vector<std::string>&) {
+            x3::logInfo("[cheat] IDFA — no arsenal in --world rifthub (use --world level1 for weapons)");
+        }, "no-op in rifthub (Level-1-only weapons)");
+        console->registerCommand("idclip", [&hplayer](const std::vector<std::string>& a) {
+            const bool on = a.empty() ? !hplayer.noclip() : (a[0] != "0");
+            hplayer.setNoclip(on);
+            if (on && !hplayer.god()) hplayer.setGod(true);
+            x3::logInfo(std::string("[cheat] noclip ") + (on ? "ON (IDCLIP)" : "OFF"));
+        }, "idclip [0|1] - toggle noclip free-flight");
+
+        // ---- Keyboard wiring for the console + HUD. Mirrors the Level-1 path:
+        // GRAVE_ACCENT toggles the console, char/key callbacks route text+edit.
+        InputContext inputCtxH{ &hud, console.get() };
+        glfwSetWindowUserPointer(window, &inputCtxH);
+        glfwSetCharCallback(window, charCallback);
+        glfwSetKeyCallback(window, keyCallback);
+
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
         double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
@@ -9482,8 +9589,8 @@ int main(int argc, char** argv) {
               flyYawH = 0.0f, flyPitchH = -0.10f;
         std::string lastHudPrompt;
         x3::logInfo("--world rifthub: WASD walk, mouse look, Space jump, "
-                    "LeftShift sprint, F noclip, Esc to quit — orbit the ring "
-                    "to discover the rifts");
+                    "LeftShift sprint, F noclip, ` (grave) for console, Esc to quit — "
+                    "orbit the ring to discover the rifts");
 
         int lastWh = (int)W, lastHh = (int)H;
         while (!glfwWindowShouldClose(window)) {
@@ -9497,8 +9604,12 @@ int main(int argc, char** argv) {
             double mx, my; glfwGetCursorPos(window, &mx, &my);
             float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
             lastMX = mx; lastMY = my;
+            // Suppress all gameplay input while the dev console is open so the
+            // player isn't moving + looking while typing iddqd / idclip / etc.
+            const bool consoleBlocksH = hud.consoleOpen();
+            if (consoleBlocksH) { ddx = 0.0f; ddy = 0.0f; }
 
-            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            auto kd = [&](int k) { return !consoleBlocksH && (glfwGetKey(window, k) == GLFW_PRESS); };
             bool spaceNow = kd(GLFW_KEY_SPACE);
             bool fNow     = kd(GLFW_KEY_F);
             if (fNow && !prevFH) {
@@ -9556,6 +9667,11 @@ int main(int argc, char** argv) {
                 lastHudPrompt.clear();
             }
 
+            // Shimmer animation: pulse each portal's ring + core emissive
+            // BEFORE render so the new values land in the entity transforms
+            // that scene.render reads this frame.
+            hub.tick(fdt, hscene);
+
             hphys->step(fdt);
             hscene.update(*hphys);
 
@@ -9564,10 +9680,26 @@ int main(int argc, char** argv) {
 
             device->setCamera(camX, camY, camZ, camYaw, camPitch, 65.0f);
             auto frame = device->beginFrame();
-            if (frame.valid) hscene.render(*device, frame);
+            if (frame.valid) {
+                hscene.render(*device, frame);
+                // HUD overlay: crosshair + FPS + console (lifted instance).
+                hud.drawCrosshair(*device, frame);
+                hud.drawFps(*device, frame, *console, fdt);
+                hud.drawConsole(*device, frame, *console, fdt);
+            }
             device->endFrame(frame);
+
+            // Cursor capture toggles with console open/closed.
+            const bool consoleOpenH = hud.consoleOpen();
+            glfwSetInputMode(window, GLFW_CURSOR,
+                             consoleOpenH ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+            if (quitRequested) break;
         }
 
+        // Clear callbacks so the stack-scoped InputContext can't outlive this block.
+        glfwSetWindowUserPointer(window, nullptr);
+        glfwSetCharCallback(window, nullptr);
+        glfwSetKeyCallback(window, nullptr);
         hub.shutdown(*device);
         hphys->shutdown();
         device->shutdown();
@@ -10736,15 +10868,10 @@ int main(int argc, char** argv) {
     constexpr float kRecoilRecover = 6.0f; // recoil recovery rate (rad/s decay)
 
     // ---- S7: console backend (D6) + screen-space HUD (FPS, console, crosshair).
-    std::unique_ptr<x3::con::IConsole> console(x3::con::createConsole());
-    x3::game::Hud hud;
-    bool quitRequested = false;
-    hud.init(*console, &quitRequested);
-
-    // FIX 1: live-tunable viewmodel aim. Register vm_yaw/vm_pitch/vm_roll (deg)
-    // and vm_fwd/vm_right/vm_down (m); read them each frame and feed the pose to
-    // drawViewmodel so typing e.g. `vm_pitch 10` moves the held gun immediately.
-    registerViewmodelCVars(*console);
+    // The console + HUD + viewmodel cvars are now created ABOVE the worldMode
+    // branching (search "Console + HUD (world-agnostic)") so every world block
+    // shares one instance. Level 1 just keeps using `console` / `hud` / the
+    // already-set `quitRequested` from the outer scope.
 
     // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
     // render path so the BLAS/TLAS build + ray-query AO compute + apply passes are
