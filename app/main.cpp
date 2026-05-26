@@ -34,6 +34,7 @@
 #include "player.h"
 #include "monster.h"
 #include "level1_game.h"
+#include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
 #include "npc_dialog.h"                     // rescued-NPC talk/dialog -> companion (the captive girl)
 #include "physprops.h"                      // FEATURE_GOALS §1: hanging cubes / joints (ragdoll foundation)
 #include "ragdoll.h"                        // FEATURE_GOALS §2: physics death ragdoll
@@ -794,7 +795,7 @@ int main(int argc, char** argv) {
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
-         testDeathRagdoll = false, testCanonLevel = false;
+         testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1046,6 +1047,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-audio") testAudio = true;
         else if (a == "--test-level1") testLevel1 = true;
         else if (a == "--test-canonlevel") testCanonLevel = true;
+        else if (a == "--test-canonplay") testCanonPlay = true;
         else if (a == "--test-phase2a") testPhase2a = true;
         else if (a == "--test-phase2b") testPhase2b = true;
         else if (a == "--test-anim") testAnim = true;
@@ -1291,6 +1293,10 @@ int main(int argc, char** argv) {
     if (testCanonLevel) {
         x3::logInfo("running EFLZ data-driven canonical-level self-test (C1-C8)...");
         return x3::game::runCanonLevelSelfTest() ? 0 : 1;
+    }
+    if (testCanonPlay) {
+        x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");
+        return x3::game::runCanonPlaySelfTest() ? 0 : 1;
     }
     if (testPhase2a) {
         x3::logInfo("running EFLZ Phase 2a (player health + enemies fight back) self-test...");
@@ -3995,6 +4001,8 @@ int main(int argc, char** argv) {
     std::vector<uint32_t> canonVisRooms;       // per-frame PVS scratch (canonWorld only)
     std::vector<x3::game::CanonLight> canonLights; // per-room ceiling lights (canonWorld only)
     x3::game::DoorSystem  canonDoors;          // SM_Door_A GLB doors at the cut doorways
+    x3::game::CanonPlay   canonPlay;           // canon Floor-1 gameplay (canonWorld only): sidearm + animated enemies + Martinez + 3 girls
+    bool                  canonMedicalActive = false;  // latch: the medical-bay rescue clock was started (player reached the wards)
     x3::game::Scene scene;
     x3::game::Level1Game game;
     // B3: the terrain world is now STREAMED around the player via a residency
@@ -4067,6 +4075,15 @@ int main(int argc, char** argv) {
                         std::to_string(canonFloor.rooms.size()) + " rooms, " +
                         std::to_string(scene.size()) + " entities, " +
                         std::to_string(canonLights.size()) + " room lights); per-room PVS cull ACTIVE");
+            // ---- GAMEPLAY onto the canon rooms (makes --world canonlevel PLAYABLE): the
+            // sidearm pickup in Jake's Cell, the animated enemy squad down the Main Hall +
+            // side cells, Martinez in the Boss Arena, and the 3 rescue girls + their
+            // attackers in the Medical Bay / adjacent wards. Every spawn is room-tagged so
+            // the flood-fill cull + per-room lights include it (and the model draw is
+            // gated to the visible set, see the draw block). Uses the SAME systems the
+            // legacy Level1Game uses (MonsterManager / RescueSystem / WeaponSystem). ----
+            canonPlay.build(canonFloor, scene, *device, *physics,
+                            x3::game::riggedGlbRoot(), x3::game::canonGirlsDialogPath());
             // The re-aimed Level-1 beat flow on REAL canonical room centers: spawn in
             // Jake's Cell, down the wide Main Hall, through Security/Research/Medical/
             // Armory, into the Boss Arena (Martinez), out via the Elevator Lobby.
@@ -5004,6 +5021,10 @@ int main(int argc, char** argv) {
             // Drive the Level 1 controller (doors/monsters/pickup/triggers) +
             // physics + scene sync, exactly as the main loop does.
             game.tick(dt, scene, *physics, eye, eye);
+            // --world canonlevel: tick the canon gameplay (animated enemies / boss / girls)
+            // under validation so the skin/attack paths run; null player (no damage sink).
+            if (canonWorld && canonPlay.built())
+                canonPlay.tick(dt, scene, *physics, eye, nullptr, x3::game::AttackFxFn{});
             // Spire mid floors under validation: dispatch hub triggers + tick the
             // F3/F4/F5 enemy groups + the gated F5 victim.
             for (uint32_t tid : midTriggers.update(eye)) midFloors.onTrigger(tid);
@@ -5094,6 +5115,9 @@ int main(int argc, char** argv) {
             if (frame.valid) {
                 scene.render(*device, frame);
                 if (canonWorld) canonDoors.drawMeshes(*device, frame);   // SM_Door_A doors (canonlevel)
+                // --world canonlevel gameplay characters (room-gated draw — only the visible
+                // rooms' enemies/girls are drawn/skinned, so objs/tris stay modest).
+                if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
                 game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
                 midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
@@ -5160,6 +5184,7 @@ int main(int argc, char** argv) {
         x3::logInfo("smoketest: 30 frames + recreate OK");
         audio->shutdown();
         combatFx.shutdown(*device);
+        if (canonPlay.built()) canonPlay.shutdown();   // --world canonlevel enemy ragdolls
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -5214,12 +5239,16 @@ int main(int argc, char** argv) {
         player.setGod(on); if (on) player.heal();
         console->print(std::string("god = ") + (on ? "1" : "0"));
     }, "god [0|1] - toggle/set invulnerability");
-    console->registerCommand("idkfa", [&player, &game, &scene, &arsenal, &console](const std::vector<std::string>&) {
-        player.setGod(true); player.heal(); game.cheatArm(scene); arsenal.setInfiniteAmmo(true);
+    console->registerCommand("idkfa", [&player, &game, &canonPlay, &scene, &arsenal, &console](const std::vector<std::string>&) {
+        player.setGod(true); player.heal(); game.cheatArm(scene);
+        if (canonPlay.built()) canonPlay.cheatArm(scene);   // --world canonlevel sidearm
+        arsenal.setInfiniteAmmo(true);
         console->print("IDKFA - god + full health + all weapons + UNLIMITED ammo");
     }, "god + full health + all weapons + unlimited ammo");
-    console->registerCommand("idfa", [&game, &scene, &arsenal, &console](const std::vector<std::string>&) {
-        game.cheatArm(scene); arsenal.setInfiniteAmmo(true);
+    console->registerCommand("idfa", [&game, &canonPlay, &scene, &arsenal, &console](const std::vector<std::string>&) {
+        game.cheatArm(scene);
+        if (canonPlay.built()) canonPlay.cheatArm(scene);
+        arsenal.setInfiniteAmmo(true);
         console->print("IDFA - all weapons + unlimited ammo");
     }, "arm all weapons + unlimited ammo");
     console->registerCommand("idclip", [&player, &console](const std::vector<std::string>& a) {
@@ -5289,7 +5318,10 @@ int main(int argc, char** argv) {
     // exactly the same target. (Companions/expired victims are skipped.)
     auto nearestLiveCaptive = [&](const x3::phys::Vec3& at, float reach,
                                   std::string& whoOut, x3::phys::Vec3& posOut) -> bool {
-        const x3::game::RescueSystem& rs = game.rescue();
+        // In --world canonlevel the captives live in canonPlay's RescueSystem; otherwise
+        // in the legacy Level1Game. Scan whichever is active.
+        const x3::game::RescueSystem& rs =
+            (canonWorld && canonPlay.built()) ? canonPlay.rescue() : game.rescue();
         float best = reach * reach; bool found = false;
         for (uint32_t i = 0; i < rs.victimCount(); ++i) {
             const x3::game::RescueVictim& v = rs.victim(i);
@@ -5558,9 +5590,21 @@ int main(int argc, char** argv) {
                 const std::string barkName = talkWho.empty() ? npcDialog.partner() : talkWho;
                 const bool rescued = npcDialog.interact(
                     talkInRange, talkWho, talkPos,
-                    [&]() -> bool { return game.onRescue(eye); });
+                    // canonlevel routes the rescue to canonPlay; legacy to game.
+                    [&]() -> bool {
+                        return (canonWorld && canonPlay.built())
+                                   ? canonPlay.tryRescue(eye)
+                                   : game.onRescue(eye);
+                    });
                 if (rescued) {
-                    npcBarkText  = x3::game::companionBark(barkName);
+                    // Per-girl companion line in canonlevel (her OWN amorous voice) — falls
+                    // back to the shared bark elsewhere / if she has no canon dialog row.
+                    std::string bark;
+                    if (canonWorld && canonPlay.built())
+                        bark = canonPlay.dialog().line(barkName,
+                                   x3::game::GirlDialogState::CompanionAmorous);
+                    if (bark.empty()) bark = x3::game::companionBark(barkName);
+                    npcBarkText  = bark;
                     npcBarkTimer = 4.0f;
                     x3::logInfo("talk: " + barkName + " rescued — now a companion (\"" + npcBarkText + "\")");
                 } else if (npcDialog.active()) {
@@ -5950,6 +5994,25 @@ int main(int argc, char** argv) {
                 }
                 canonDoors.update(dt, scene, *physics);
             }
+            // ---- CANONLEVEL GAMEPLAY: tick the canon enemies/boss/girls (they chase + attack
+            // the player + animate). The medical-bay rescue clock arms once the player reaches
+            // the Medical Bay (room or its neighbours) so the 5-min infection timers don't run
+            // from load — mirrors Level1Game's F2-hub gating. ----
+            if (canonWorld && canonPlay.built()) {
+                if (!canonMedicalActive) {
+                    const uint32_t medRoom = canonFloor.roomByName("Medical Bay");
+                    const uint32_t here = canonFloor.roomAt(camPos.x, camPos.y, camPos.z);
+                    if (medRoom != x3::game::kNoRoom && here == medRoom) {
+                        canonPlay.rescue().activate();
+                        canonMedicalActive = true;
+                        x3::logInfo("--world canonlevel: Medical Bay reached — rescue clocks started "
+                                    "(kill the attackers to save the girls before the infection)");
+                    }
+                }
+                const double _pt0 = glfwGetTime();
+                canonPlay.tick(dt, scene, *physics, camPos, &player, enemyAttackFx);
+                g_perf.tick += glfwGetTime() - _pt0;
+            }
             // ---- SECRET ROOM payoff: game.tick() ticks the cell terminal + the room's
             // loot collection (latching counts). Apply the gameplay EFFECTS here, where
             // we own the concrete Player: each newly-collected HEALTH pack heals +50, and
@@ -6082,7 +6145,9 @@ int main(int argc, char** argv) {
         (void)fireCooldown; (void)kFireCooldown;   // (legacy cooldown — arsenal owns timing now)
         bool fireHeld = !consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         bool wantFire = arsenal.current().automatic ? fireHeld : (fireHeld && !prevFire);
-        if (wantFire && game.armed() && player.isAlive() && arsenal.canFire()) {
+        // In --world canonlevel the legacy `game` is unbuilt; the canon sidearm gates firing.
+        const bool playerArmed = game.armed() || (canonWorld && canonPlay.armed());
+        if (wantFire && playerArmed && player.isAlive() && arsenal.canFire()) {
             x3::phys::Vec3 eye{ camX, camY, camZ };
             x3::phys::Vec3 dir{ std::cos(camPitch) * std::cos(camYaw),
                                 std::sin(camPitch),
@@ -6117,6 +6182,12 @@ int main(int argc, char** argv) {
                 for (const auto& ray : shot.rays) {
                     const int wdmg = ray.damage;          // this pellet/ray's damage
                     x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics, wdmg);
+                    // --world canonlevel: the legacy groups are empty; route the shot through
+                    // the canon enemies/boss/girls instead (arm-gated by canonPlay.onFire).
+                    if (!r.hitMonster && canonWorld && canonPlay.built()) {
+                        x3::game::FireResult rc = canonPlay.onFire(eye, ray.dir, scene, *physics, wdmg);
+                        if (rc.hitMonster || (!r.hit && rc.hit)) r = rc;
+                    }
                     // If the B1 groups didn't take it, try the F3/F4/F5 enemies (the
                     // shot is already arm-gated by the arsenal/Level1Game::onFire).
                     if (!r.hitMonster && game.armed()) {
@@ -6174,6 +6245,10 @@ int main(int argc, char** argv) {
                 if (eh.hit) {
                     // PER-WEAPON damage: the bolt carries its WeaponDef projectile damage.
                     x3::game::FireResult r = game.onFire(b.pos, ndir, scene, *physics, b.damage);
+                    if (!r.hitMonster && canonWorld && canonPlay.built()) {   // canon enemies/boss/girls
+                        x3::game::FireResult rc = canonPlay.onFire(b.pos, ndir, scene, *physics, b.damage);
+                        if (rc.hitMonster) r = rc;
+                    }
                     if (!r.hitMonster) {   // try the F3/F4/F5 enemies for this bolt
                         x3::game::FireResult rm = midFloors.onFire(b.pos, ndir, scene, *physics, b.damage);
                         if (rm.hitMonster) r = rm;
@@ -6242,6 +6317,10 @@ int main(int argc, char** argv) {
             }
             scene.render(*device, frame);
             if (canonWorld) canonDoors.drawMeshes(*device, frame);   // SM_Door_A doors (canonlevel)
+            // --world canonlevel gameplay: the sidearm pickup + animated enemies + Martinez
+            // + the rescue girls, ROOM-GATED (only the visible rooms' characters are drawn/
+            // skinned, so the cull's perf payoff is preserved with the characters in).
+            if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
             // Level 1 world extras: the bobbing armory pickup + all enemy models
             // (corridor guards/drone, checkpoint guards, Martinez) with hit-flash.
             // Skipped in the outdoor terrain world (no Level 1 controller built).
@@ -6340,7 +6419,8 @@ int main(int argc, char** argv) {
                     barsFor(topFloors.boss());
                 }
                 const VmPose vmPose = readViewmodelPose(*console);
-                if (arsenal.viewmodelsLoaded() && game.armed()) {
+                const bool vmArmed = game.armed() || (canonWorld && canonPlay.armed());
+                if (arsenal.viewmodelsLoaded() && vmArmed) {
                     // WEAPONS: draw the SELECTED weapon's viewmodel (its own GLB +
                     // convention-correct base offsets). The live vm_* cvars are passed
                     // as DELTAS from the baked default so console tuning still nudges
@@ -6352,6 +6432,11 @@ int main(int argc, char** argv) {
                         vmPose.fwd   - x3::game::kVmDefFwd,
                         vmPose.right - x3::game::kVmDefRight,
                         vmPose.down  - x3::game::kVmDefDown);
+                } else if (canonWorld && canonPlay.built()) {
+                    // Fallback in canonlevel: the canon sidearm's pickup viewmodel.
+                    canonPlay.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,
+                                            vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
+                                            vmPose.fwd, vmPose.right, vmPose.down);
                 } else {
                     // Fallback: arsenal viewmodels didn't load -> the original pickup
                     // viewmodel (unchanged behavior).
@@ -6625,8 +6710,15 @@ int main(int argc, char** argv) {
                 // Live enemy-remaining counter (HUD): ALL live hostile groups (corridor
                 // + checkpoint + Phase-3 boss adds + bosses), so it never reads "AREA
                 // CLEAR" while a boss add is still alive. -1 (default) hides it elsewhere.
-                hm.enemiesRemaining = game.enemiesRemaining();
-                if (game.armed()) {
+                // --world canonlevel: fold the canon enemies/boss so the counter reflects
+                // the canon spawns (not the empty legacy groups).
+                hm.enemiesRemaining = game.enemiesRemaining() +
+                    ((canonWorld && canonPlay.built()) ? canonPlay.enemiesRemaining() : 0);
+                if (canonWorld && canonPlay.built())
+                    hm.objective = (canonPlay.enemiesRemaining() > 0)
+                        ? "Fight down the spire — save the captives, reach Martinez"
+                        : "AREA CLEAR — reach the Elevator Lobby";
+                if (game.armed() || (canonWorld && canonPlay.armed())) {
                     const x3::game::WeaponDef&         wd = arsenal.current();
                     const x3::game::Arsenal::WeaponState& ws = arsenal.currentState();
                     hm.weapon = wd.name.c_str();
@@ -6648,7 +6740,16 @@ int main(int argc, char** argv) {
                     // are static string literals owned by Level1Game, so storing the
                     // const char* in the (frame-scoped) HudModel is safe.
                     x3::game::Level1Game::EnemyMark marks[x3::ui::HudModel::kMaxBlips];
-                    const uint32_t ne = game.liveEnemyMarks(marks, x3::ui::HudModel::kMaxBlips);
+                    uint32_t ne = game.liveEnemyMarks(marks, x3::ui::HudModel::kMaxBlips);
+                    // --world canonlevel: the canon enemies (Level1Game's are empty here).
+                    if (canonWorld && canonPlay.built()) {
+                        x3::game::CanonPlay::EnemyMark cm[x3::ui::HudModel::kMaxBlips];
+                        const uint32_t nc = canonPlay.liveEnemyMarks(cm, x3::ui::HudModel::kMaxBlips);
+                        ne = 0;
+                        for (uint32_t i = 0; i < nc && ne < x3::ui::HudModel::kMaxBlips; ++i) {
+                            marks[ne].pos = cm[i].pos; marks[ne].label = cm[i].label; ++ne;
+                        }
+                    }
                     hm.enemyCount = (int)ne;
                     for (uint32_t i = 0; i < ne; ++i) {
                         hm.enemyX[i] = marks[i].pos.x;
@@ -6675,7 +6776,9 @@ int main(int argc, char** argv) {
 
                     // Live companion (rescued-victim) positions -> green pulsing blips.
                     x3::phys::Vec3 allies[x3::ui::HudModel::kMaxBlips];
-                    const uint32_t na = game.liveCompanionPositions(allies, x3::ui::HudModel::kMaxBlips);
+                    uint32_t na = game.liveCompanionPositions(allies, x3::ui::HudModel::kMaxBlips);
+                    if (canonWorld && canonPlay.built())
+                        na = canonPlay.liveCompanionPositions(allies, x3::ui::HudModel::kMaxBlips);
                     hm.allyCount = (int)na;
                     for (uint32_t i = 0; i < na; ++i) {
                         hm.allyX[i] = allies[i].x;
@@ -6787,6 +6890,7 @@ int main(int argc, char** argv) {
     game.corridorEnemies().shutdown();
     game.checkpointEnemies().shutdown();
     game.chen().shutdown();
+    if (canonPlay.built()) canonPlay.shutdown();   // --world canonlevel enemy ragdolls
     physics->shutdown();
     device->shutdown();
     glfwDestroyWindow(window);
