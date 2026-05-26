@@ -10,8 +10,11 @@
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/physics/Destruction.h"
+#include "engine/asset/IModelLoader.h"   // IModelLoader / makeDrawables / ModelDrawable / Model
+#include "engine/asset/IAssetSource.h"   // IAssetSource / createAssetSource
 
 #include <functional>
+#include <memory>
 #include <vector>
 #include <cstdint>
 
@@ -68,6 +71,13 @@ private:
 
     x3::rhi::MeshHandle    m_cube;
     x3::rhi::TextureHandle m_tex;
+
+    // Real round barrel model (Barrel.glb), drawn for INTACT barrels; the cube +
+    // fracture chunks remain the debris/fallback look. Empty drawables -> cube fallback.
+    std::unique_ptr<x3::asset::IAssetSource> m_assets;
+    std::unique_ptr<x3::asset::IModelLoader> m_loader;
+    x3::asset::Model                         m_barrelModel;
+    std::vector<x3::asset::ModelDrawable>    m_barrelDrawables;
 
     DamageFn m_damage;
     FxFn     m_fx;

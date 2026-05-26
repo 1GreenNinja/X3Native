@@ -245,22 +245,36 @@ void CombatFx::spawnImpact(const x3::phys::Vec3& pos, const x3::phys::Vec3& norm
 
 void CombatFx::spawnBlood(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir) {
     x3::phys::Vec3 d = normalize(dir);
-    // A short spray of dark-red alpha droplets along the shot direction + gravity.
-    const int n = 12;
+    // A DENSE spray of dark-red alpha droplets along the shot direction + gravity.
+    // Bigger + longer-lived than the old spray so the hit reads clearly on-screen.
+    const int n = 22;                       // was 12 — denser spray
     for (int i = 0; i < n; ++i) {
         Particle p;
         p.pos = pos;
-        const float speed = 1.5f + frand() * 4.0f;
-        p.vel = x3::phys::Vec3{ d.x * speed + frandSym() * 2.0f,
-                                d.y * speed + frandSym() * 2.0f + 1.0f,
-                                d.z * speed + frandSym() * 2.0f };
-        p.life = p.maxLife = 0.35f + frand() * 0.35f;
-        p.size0 = 0.05f + frand() * 0.04f;
-        p.size1 = 0.03f;
-        p.r = 0.55f; p.g = 0.02f; p.b = 0.02f;  // dark red
-        p.a0 = 0.85f;
-        p.gravity = 1.0f; p.drag = 1.2f; p.additive = false;
+        const float speed = 2.0f + frand() * 5.0f;
+        p.vel = x3::phys::Vec3{ d.x * speed + frandSym() * 2.5f,
+                                d.y * speed + frandSym() * 2.5f + 1.5f,
+                                d.z * speed + frandSym() * 2.5f };
+        p.life = p.maxLife = 0.5f + frand() * 0.5f;     // longer
+        p.size0 = 0.09f + frand() * 0.06f;              // ~2x bigger
+        p.size1 = 0.05f;
+        p.r = 0.6f; p.g = 0.02f; p.b = 0.02f;           // dark red
+        p.a0 = 0.9f;
+        p.gravity = 1.4f; p.drag = 1.1f; p.additive = false;
         spawnParticle(p);
+    }
+    // Ground pool: drop a dark-red, up-facing decal just below the hit so a kill
+    // leaves a lasting mark. The decal ring has no color param, so we claim a ring
+    // slot directly and stamp it red + bigger (radius ~0.4-0.7 m).
+    {
+        Decal& dc = m_decalsRing[m_nextDecal];
+        m_nextDecal = (m_nextDecal + 1) % kMaxDecals;
+        dc.center   = x3::phys::Vec3{ pos.x, pos.y - 0.4f, pos.z };
+        dc.normal   = x3::phys::Vec3{ 0.0f, 1.0f, 0.0f };   // up-facing ground pool
+        dc.halfSize = 0.4f + frand() * 0.3f;                // bigger than a bullet hole
+        dc.angle    = frand() * 6.2831853f;
+        dc.life     = dc.maxLife = kDecalLife;
+        dc.color[0] = 0.35f; dc.color[1] = 0.02f; dc.color[2] = 0.02f;  // dark red
     }
 }
 
@@ -323,6 +337,7 @@ void CombatFx::addDecal(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal)
     d.halfSize = 0.10f + frand() * 0.05f;
     d.angle    = frand() * 6.2831853f;
     d.life     = d.maxLife = kDecalLife;
+    d.color[0] = 0.02f; d.color[1] = 0.015f; d.color[2] = 0.01f;   // dark scorch (bullet hole)
 }
 
 int CombatFx::liveParticleCount() const {
@@ -419,8 +434,9 @@ void CombatFx::submit(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
         inst.halfSize = d.halfSize;
         inst.normal[0] = d.normal.x; inst.normal[1] = d.normal.y; inst.normal[2] = d.normal.z;
         inst.angle = d.angle;
-        // Dark scorch; opacity carries the lifetime fade.
-        inst.color[0] = 0.02f; inst.color[1] = 0.015f; inst.color[2] = 0.01f;
+        // Per-decal tint (scorch by default, dark red for blood pools); opacity
+        // carries the lifetime fade.
+        inst.color[0] = d.color[0]; inst.color[1] = d.color[1]; inst.color[2] = d.color[2];
         inst.color[3] = 0.85f * fade;
         decalBuf[nDecal++] = inst;
     }

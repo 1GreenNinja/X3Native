@@ -334,8 +334,12 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.vmScale     = 0.24f;                 // longarm (~0.46 m held)
         w.muzzleFx    = "muzzle_smg";
         w.impactFx    = "impact_bullet";
-        w.fireSfx     = "weapons/rapid/Rapid-Fires_Sci-Fi_Gun-01.wav";   // rapid/auto burst
-        w.fireSfxLoop = true;   // auto weapon: loopable rapid set
+        // SHORT single-shot per round (Task #21 FIX A): the host plays fireSfx once per
+        // bullet. A long rapid-burst WAV stacked a dozen overlapping clips per trigger
+        // pull -> 5-7s of gunfire after release. A short crack per round stops the instant
+        // you let go yet still reads as rapid auto fire at this ROF.
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-66.wav";  // short -> stops on release
+        w.fireSfxLoop = false;  // per-round one-shot (was a looped rapid set)
         r.push_back(w);
     }
 
@@ -426,9 +430,12 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.vmScale     = 0.26f;                        // heavy weapon (~0.49 m held)
         w.muzzleFx    = "muzzle_chaingun";
         w.impactFx    = "impact_bullet";
-        // Sustained rapid-fire belt (the longest rapid take = a meatier auto roar).
-        w.fireSfx     = "weapons/rapid/Rapid-Fires_Sci-Fi_Gun-49.wav";
-        w.fireSfxLoop = true;   // auto weapon: loopable rapid set
+        // SHORT single-shot per round (Task #21 FIX A): a short crack per bullet stops
+        // the instant the trigger is released — the long rapid-burst WAV stacked overlapping
+        // clips and roared for 5-7s after letting go. At this ROF short cracks still read as
+        // a rapid auto-fire chaingun.
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-30.wav";  // short -> stops on release
+        w.fireSfxLoop = false;  // per-round one-shot (was a looped rapid set)
         r.push_back(w);
     }
 

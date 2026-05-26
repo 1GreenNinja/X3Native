@@ -21,6 +21,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace x3::game {
@@ -303,6 +304,181 @@ void CanonFloor::visibleRoomsAt(float x, float y, float z, std::vector<uint32_t>
 }
 
 // =====================================================================================
+// FRUSTUM (frustum-directional portal flood-fill). Build 6 world-space planes from a
+// camera pose with plain trig (no glm) so the headless test can use it. Engine
+// convention: fwd = (cos p cos y, sin p, cos p sin y), world up = +Y.
+// =====================================================================================
+Frustum Frustum::build(float eyeX, float eyeY, float eyeZ, float yaw, float pitch,
+                       float fovYDeg, float aspect, float nearZ, float farZ) {
+    Frustum f;
+    const float cp = std::cos(pitch), sp = std::sin(pitch);
+    const float cy = std::cos(yaw),   sy = std::sin(yaw);
+    // Camera basis (right-handed, matching glm::lookAt(eye, eye+fwd, +Y)).
+    const float fx = cp * cy, fy = sp, fz = cp * sy;                 // forward
+    // right = normalize(cross(fwd, worldUp)); up = cross(right, fwd).
+    float rx = fz * 1.0f - 0.0f, ry = 0.0f, rz = 0.0f - fx * 1.0f;   // cross(fwd, (0,1,0))
+    {
+        float rl = std::sqrt(rx*rx + ry*ry + rz*rz);
+        if (rl < 1e-5f) { rx = 1; ry = 0; rz = 0; rl = 1; }          // looking straight up/down
+        rx /= rl; ry /= rl; rz /= rl;
+    }
+    const float ux = ry*fz - rz*fy;                                  // up = cross(right, fwd)
+    const float uy = rz*fx - rx*fz;
+    const float uz = rx*fy - ry*fx;
+
+    const float halfV = std::tan((fovYDeg * 0.5f) * 3.14159265358979f / 180.0f);
+    const float halfH = halfV * aspect;
+
+    // Plane helper: normal n (will be normalized), passing through point p; inward side
+    // is +n. plane = {n, -dot(n,p)}.
+    auto setPlane = [&](int i, float nx, float ny, float nz, float px, float py, float pz) {
+        float nl = std::sqrt(nx*nx + ny*ny + nz*nz);
+        if (nl < 1e-8f) nl = 1.0f;
+        nx /= nl; ny /= nl; nz /= nl;
+        f.planes[i][0] = nx; f.planes[i][1] = ny; f.planes[i][2] = nz;
+        f.planes[i][3] = -(nx*px + ny*py + nz*pz);
+    };
+
+    // Side-plane normals point INWARD. The four side directions on the far rectangle:
+    // dir = normalize(fwd ± halfH*right ± halfV*up). Inward normal of a side plane through
+    // the eye = cross of two adjacent edge dirs (orient so it points toward the axis).
+    // Simpler: build each side plane's inward normal directly from fwd/right/up.
+    // Left plane: tilt fwd toward -right by halfH; inward normal = fwd*1 + right*(1/halfH)... use the standard
+    //   leftN  =  normalize(fwd*cosL + right*sinL) rotated 90 -> = right*cos - fwd*sin? Use cross product form.
+    auto sideNormal = [&](float sgnH, float sgnV, float& ox, float& oy, float& oz) {
+        // Edge direction toward this side's center on the far plane.
+        ox = fx + sgnH*halfH*rx + sgnV*halfV*ux;
+        oy = fy + sgnH*halfH*ry + sgnV*halfV*uy;
+        oz = fz + sgnH*halfH*rz + sgnV*halfV*uz;
+    };
+    // Corner ray directions.
+    float tlX,tlY,tlZ, trX,trY,trZ, blX,blY,blZ, brX,brY,brZ;
+    sideNormal(-1.0f, +1.0f, tlX,tlY,tlZ);   // top-left
+    sideNormal(+1.0f, +1.0f, trX,trY,trZ);   // top-right
+    sideNormal(-1.0f, -1.0f, blX,blY,blZ);   // bottom-left
+    sideNormal(+1.0f, -1.0f, brX,brY,brZ);   // bottom-right
+    auto cross = [](float ax,float ay,float az, float bx,float by,float bz,
+                    float& cx2,float& cy2,float& cz2){
+        cx2 = ay*bz - az*by; cy2 = az*bx - ax*bz; cz2 = ax*by - ay*bx;
+    };
+    float nx,ny,nz;
+    // Left plane: edge tl x bl (order chosen so normal points inward, toward +right).
+    cross(blX,blY,blZ, tlX,tlY,tlZ, nx,ny,nz);  setPlane(0, nx,ny,nz, eyeX,eyeY,eyeZ);
+    // Right plane: edge tr x br -> inward toward -right.
+    cross(trX,trY,trZ, brX,brY,brZ, nx,ny,nz);  setPlane(1, nx,ny,nz, eyeX,eyeY,eyeZ);
+    // Bottom plane: edge bl x br.
+    cross(brX,brY,brZ, blX,blY,blZ, nx,ny,nz);  setPlane(2, nx,ny,nz, eyeX,eyeY,eyeZ);
+    // Top plane: edge tr x tl.
+    cross(tlX,tlY,tlZ, trX,trY,trZ, nx,ny,nz);  setPlane(3, nx,ny,nz, eyeX,eyeY,eyeZ);
+    // Orient each side plane so the eye+fwd*near point is on the inside; flip if not.
+    {
+        const float ix = eyeX + fx*(nearZ+1.0f), iy = eyeY + fy*(nearZ+1.0f), iz = eyeZ + fz*(nearZ+1.0f);
+        for (int i = 0; i < 4; ++i) {
+            const float s = f.planes[i][0]*ix + f.planes[i][1]*iy + f.planes[i][2]*iz + f.planes[i][3];
+            if (s < 0.0f) for (int k = 0; k < 4; ++k) f.planes[i][k] = -f.planes[i][k];
+        }
+    }
+    // Near plane (normal = +fwd, through eye+near*fwd) and far plane (normal = -fwd).
+    setPlane(4,  fx,  fy,  fz, eyeX + fx*nearZ, eyeY + fy*nearZ, eyeZ + fz*nearZ);
+    setPlane(5, -fx, -fy, -fz, eyeX + fx*farZ,  eyeY + fy*farZ,  eyeZ + fz*farZ);
+    f.valid = true;
+    return f;
+}
+
+bool Frustum::aabbVisible(float minX, float minY, float minZ,
+                          float maxX, float maxY, float maxZ) const {
+    if (!valid) return true;
+    for (int i = 0; i < 6; ++i) {
+        const float nx = planes[i][0], ny = planes[i][1], nz = planes[i][2], d = planes[i][3];
+        // The AABB's corner MOST in the +normal direction (the "positive vertex").
+        const float px = (nx >= 0.0f) ? maxX : minX;
+        const float py = (ny >= 0.0f) ? maxY : minY;
+        const float pz = (nz >= 0.0f) ? maxZ : minZ;
+        if (nx*px + ny*py + nz*pz + d < 0.0f) return false;   // fully outside this plane
+    }
+    return true;
+}
+
+// =====================================================================================
+// PORTAL FLOOD-FILL (frustum-directional). BFS from the camera's room through every
+// OPEN doorway, gated by the camera frustum + a depth/budget cap. See the header.
+// =====================================================================================
+void CanonFloor::floodVisibleRoomsAt(float x, float y, float z,
+                                     const Frustum& frustum,
+                                     const DoorSystem* doors,
+                                     uint32_t maxDepth,
+                                     uint32_t roomBudget,
+                                     std::vector<uint32_t>& out) const {
+    out.clear();
+    if (rooms.empty()) return;
+
+    // Resolve the source room (nearest center if the camera is in no room — doorway seam).
+    uint32_t start = roomAt(x, y, z);
+    if (start == kNoRoom) {
+        float best = 1e30f;
+        for (uint32_t i = 0; i < (uint32_t)rooms.size(); ++i) {
+            float dx = x - rooms[i].cx, dy = y - rooms[i].cy, dz = z - rooms[i].cz;
+            float d2 = dx*dx + dy*dy + dz*dz;
+            if (d2 < best) { best = d2; start = i; }
+        }
+    }
+    if (start == kNoRoom) return;
+    if (roomBudget == 0) roomBudget = 1;
+
+    // Adjacency built from the doorway list, carrying the doorway index so we can query
+    // the door's open state when we try to cross it. Built lazily here (cheap: ~111 edges).
+    const uint32_t n = (uint32_t)rooms.size();
+    struct Edge { uint32_t to; uint32_t doorway; };
+    static thread_local std::vector<std::vector<Edge>> adj;   // reused scratch
+    adj.assign(n, {});
+    for (uint32_t di = 0; di < (uint32_t)doorways.size(); ++di) {
+        const CanonDoorway& dw = doorways[di];
+        if (dw.a < n && dw.b < n) {
+            adj[dw.a].push_back({ dw.b, di });
+            adj[dw.b].push_back({ dw.a, di });
+        }
+    }
+
+    // A doorway PASSES visibility iff it is doorless OR its door is not fully Closed.
+    auto doorwayOpen = [&](uint32_t doorwayIdx) -> bool {
+        const CanonDoorway& dw = doorways[doorwayIdx];
+        if (dw.doorIndex == kNoLink) return true;             // doorless opening / bridge / tube
+        if (!doors || dw.doorIndex >= doors->count()) return true;   // no system => treat as open
+        return doors->at(dw.doorIndex).state != DoorState::Closed;
+    };
+
+    // BFS by depth. visited prevents revisits; the source is always added (you're in it).
+    std::vector<char> visited(n, 0);
+    std::vector<std::pair<uint32_t,uint32_t>> queue;          // (room, depth)
+    queue.reserve(n);
+    queue.push_back({ start, 0 });
+    visited[start] = 1;
+    out.push_back(start);
+
+    size_t head = 0;
+    while (head < queue.size() && out.size() < roomBudget) {
+        const uint32_t room  = queue[head].first;
+        const uint32_t depth = queue[head].second;
+        ++head;
+        if (depth >= maxDepth) continue;                      // don't expand past the depth cap
+        for (const Edge& e : adj[room]) {
+            if (visited[e.to]) continue;
+            if (!doorwayOpen(e.doorway)) continue;            // CLOSED door blocks the flood
+            visited[e.to] = 1;                                // mark visited even if frustum-culled
+                                                              // (don't re-probe through it later)
+            // Frustum gate: only ADD the room if its AABB intersects the view frustum, so
+            // the bubble stretches down what you LOOK at. We still enqueue it so visibility
+            // can continue THROUGH it to rooms further down the same hall.
+            const CanonRoom& r = rooms[e.to];
+            const bool inView = !frustum.valid ||
+                frustum.aabbVisible(r.x0(), r.y0(), r.z0(), r.x1(), r.y1(), r.z1());
+            if (inView && out.size() < roomBudget) out.push_back(e.to);
+            queue.push_back({ e.to, depth + 1 });
+        }
+    }
+}
+
+// =====================================================================================
 // PARSE + DOORWAY RESOLVER.
 // =====================================================================================
 namespace {
@@ -493,12 +669,98 @@ std::string canonProjectJsonPath() {
 }
 
 // =====================================================================================
+// PER-ROOM CEILING LIGHTING. The data-driven floor builds geometry but skips the
+// env_art Light_A ceiling fixtures the legacy level registers, so each room only gets
+// ambient + the flashlight (too dark). We mint warm-white ceiling point lights here —
+// one per small room, a 1-3 light grid for wide rooms — at the room center just below
+// the ceiling. Colour/intensity mirror env_art.cpp (warm tungsten white, premultiplied
+// by an intensity so the room reads as a lit pool, not a dark fixture). The host feeds
+// only the VISIBLE rooms' lights each frame so the active count stays under the cap.
+// =====================================================================================
+std::vector<CanonLight> buildCanonLights(const CanonFloor& floor) {
+    std::vector<CanonLight> lights;
+    if (!floor.valid()) return lights;
+
+    // Warm-white emitter, premultiplied by intensity (linear; mesh.frag accumulates
+    // additively then tonemaps). Matches env_art.cpp's kIntensity 3.2 warm tungsten.
+    constexpr float kIntensity = 3.2f;
+    const float colR = 1.00f * kIntensity;
+    const float colG = 0.86f * kIntensity;
+    const float colB = 0.62f * kIntensity;
+
+    for (uint32_t ri = 0; ri < (uint32_t)floor.rooms.size(); ++ri) {
+        const CanonRoom& r = floor.rooms[ri];
+        // Emit just below the ceiling so the ceiling lid doesn't occlude the pool.
+        const float lightY = r.y1() - 0.25f;
+        // Range covers the room height + a margin so the floor of a tall room is lit.
+        const float range  = std::max(8.0f, r.h + 4.0f);
+        // Wide / deep rooms (boss arena, main hall) get a small grid so the whole floor
+        // reads evenly lit; small cells get a single center light. Cap the grid so we
+        // never mint a huge number of lights for one room (cheap + cap-friendly).
+        const int nx = std::min(3, std::max(1, (int)std::ceil(r.w / 8.0f)));
+        const int nz = std::min(3, std::max(1, (int)std::ceil(r.d / 8.0f)));
+        for (int iz = 0; iz < nz; ++iz) {
+            for (int ix = 0; ix < nx; ++ix) {
+                // Evenly space the grid across the room interior (centered).
+                const float fx = (nx == 1) ? 0.0f : ((ix + 0.5f) / nx - 0.5f);
+                const float fz = (nz == 1) ? 0.0f : ((iz + 0.5f) / nz - 0.5f);
+                CanonLight cl;
+                cl.room = ri;
+                cl.light.pos[0] = r.cx + fx * r.w * 0.8f;
+                cl.light.pos[1] = lightY;
+                cl.light.pos[2] = r.cz + fz * r.d * 0.8f;
+                cl.light.range  = range;
+                cl.light.color[0] = colR; cl.light.color[1] = colG; cl.light.color[2] = colB;
+                lights.push_back(cl);
+            }
+        }
+    }
+    x3::logInfo("buildCanonLights: minted " + std::to_string(lights.size()) +
+                " warm-white ceiling lights for " + std::to_string(floor.rooms.size()) +
+                " rooms (fed per-room visible subset, capped at 16/frame)");
+    return lights;
+}
+
+uint32_t selectVisibleCanonLights(const std::vector<CanonLight>& all,
+                                  const std::vector<uint32_t>& visibleRooms,
+                                  float eyeX, float eyeY, float eyeZ,
+                                  std::vector<x3::rhi::PointLight>& out,
+                                  uint32_t maxLights) {
+    if (all.empty() || visibleRooms.empty() || maxLights == 0) return 0;
+    // Fast membership test for the (small) visible-room set.
+    auto visible = [&](uint32_t room) {
+        for (uint32_t v : visibleRooms) if (v == room) return true;
+        return false;
+    };
+    // Gather candidate lights (those in a visible room) with their squared distance to
+    // the eye, so when we exceed the cap we keep the CLOSEST ones (they dominate the
+    // lit result the player actually sees).
+    struct Cand { const CanonLight* l; float d2; };
+    std::vector<Cand> cands;
+    cands.reserve(all.size());
+    for (const CanonLight& cl : all) {
+        if (!visible(cl.room)) continue;
+        const float dx = cl.light.pos[0] - eyeX;
+        const float dy = cl.light.pos[1] - eyeY;
+        const float dz = cl.light.pos[2] - eyeZ;
+        cands.push_back({ &cl, dx * dx + dy * dy + dz * dz });
+    }
+    if (cands.size() > maxLights) {
+        std::nth_element(cands.begin(), cands.begin() + maxLights, cands.end(),
+                         [](const Cand& a, const Cand& b) { return a.d2 < b.d2; });
+        cands.resize(maxLights);
+    }
+    for (const Cand& c : cands) out.push_back(c.l->light);
+    return (uint32_t)cands.size();
+}
+
+// =====================================================================================
 // BUILDER. Each room is built as a shell: floor slab, ceiling lid (collision-only),
 // and 4 walls. A wall face gets a 1.2 m doorway gap (+ lintel) wherever the resolver
 // produced a doorway on that face. Gap-bridge doorways add a short connecting corridor;
 // cross-level doorways add a vertical descent tube. Every entity carries its room id.
 // =====================================================================================
-void buildCanonFloor(const CanonFloor& floor, Scene& scene,
+void buildCanonFloor(CanonFloor& floor, Scene& scene,
                      x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
                      const CanonBuildOpts& opts) {
     if (!floor.valid()) return;
@@ -725,7 +987,10 @@ void buildCanonFloor(const CanonFloor& floor, Scene& scene,
     // room. Missing GLB -> the door keeps its graybox box (buildLevelDoor fallback). ----
     if (opts.doors) {
         uint32_t built = 0;
-        for (const CanonDoorway& dw : floor.doorways) {
+        // Record which DoorSystem slab fills each cut doorway into doorIndex so the portal
+        // flood-fill can later query that door's open/closed state.
+        for (uint32_t dwi = 0; dwi < (uint32_t)floor.doorways.size(); ++dwi) {
+            CanonDoorway& dw = floor.doorways[dwi];
             if (dw.kind != DoorwayKind::AdjacentX && dw.kind != DoorwayKind::AdjacentZ &&
                 dw.kind != DoorwayKind::Overlap)
                 continue;
@@ -737,6 +1002,7 @@ void buildCanonFloor(const CanonFloor& floor, Scene& scene,
             spec.height    = kLintel;            // clears under the lintel header
             spec.withButton = false;             // static drape (no per-door button spam)
             uint32_t di = buildLevelDoor(scene, *opts.doors, device, physics, spec);
+            dw.doorIndex = di;                   // doorway -> DoorSystem slab (flood-fill query)
             // Room-tag the door's entity so it culls with its room's PVS.
             uint32_t ent = opts.doors->at(di).entity;
             if (ent != kNoLink && ent < scene.size())
@@ -1015,6 +1281,146 @@ bool runCanonLevelSelfTest() {
                         " endZ=" + std::to_string(end.z) + " (Security z1=" + std::to_string(S.z1()) + ")");
         }
         check(walked, "C11 character walks Main Hall -> Security Station through the gap-bridge (mouth is cut)");
+    }
+
+    // ---- C12: PORTAL FLOOD-FILL respects DOOR STATE. Rebuild the floor WITH SM_Door_A
+    //           slabs (a DoorSystem), stand the camera in the Main Hall, and flood with NO
+    //           frustum gate (pure reachability through OPEN doorways, depth 6). With every
+    //           door OPEN a room >= 2 doorway-hops down the hall is in the visible set (the
+    //           pop-fix: far rooms through open doors are kept, not culled). Then CLOSE one
+    //           dorred doorway near the hall and re-flood: a room that was ONLY reachable
+    //           through that now-closed door drops OUT of the set (closed door = opaque). ----
+    {
+        // Fresh scene + door system so we can drive door states. buildCanonFloor records
+        // each cut doorway's slab into floor.doorways[].doorIndex.
+        Scene scene2;
+        DoorSystem doors2;
+        // Re-parse a private floor copy so this test's doorIndex wiring is independent.
+        CanonFloor f2 = loadCanonFloor(canonProjectJsonPath(), 1);
+        CanonBuildOpts copts; copts.doors = &doors2;
+        buildCanonFloor(f2, scene2, device, *physics, copts);
+
+        int hall = f2.roomByName("Main Hall");
+        bool ok = false, behindHidden = false, doorBehindAssert = false;
+        int hops2 = -1; std::string hiddenName, closedVia;
+        auto inSet = [](const std::vector<uint32_t>& s, uint32_t r) {
+            return std::find(s.begin(), s.end(), r) != s.end();
+        };
+        const uint32_t n = (uint32_t)f2.rooms.size();
+        if (hall != (int)kNoRoom) {
+            const CanonRoom& H = f2.rooms[hall];
+            Frustum none; none.valid = false;        // no frustum gate: pure reachability
+            auto setAllDoors = [&](DoorState st, float t) {
+                for (uint32_t d = 0; d < doors2.count(); ++d) { doors2.at(d).state = st; doors2.at(d).t = t; }
+            };
+
+            // BFS hop-distance from the hall on the FULLY-OPEN doorway graph (every doorway
+            // passes) so we can identify a room that is genuinely >= 2 hops away.
+            std::vector<std::vector<uint32_t>> adj(n);
+            for (const CanonDoorway& dw : f2.doorways)
+                if (dw.a < n && dw.b < n) { adj[dw.a].push_back(dw.b); adj[dw.b].push_back(dw.a); }
+            std::vector<int> dist(n, -1); std::vector<uint32_t> q; size_t qh = 0;
+            dist[hall] = 0; q.push_back((uint32_t)hall);
+            while (qh < q.size()) { uint32_t r = q[qh++]; for (uint32_t nb : adj[r]) if (dist[nb] < 0) { dist[nb] = dist[r] + 1; q.push_back(nb); } }
+
+            // (a) ALL DOORS OPEN: flood reaches a room >= 2 doorway-hops down the hall (the
+            //     pop-fix — far rooms through open doors are KEPT, not culled at 1 hop).
+            setAllDoors(DoorState::Open, 1.0f);
+            std::vector<uint32_t> openSet;
+            f2.floodVisibleRoomsAt(H.cx, H.cy, H.cz, none, &doors2, 6, 999, openSet);
+            for (uint32_t r = 0; r < n; ++r)
+                if (dist[r] >= 2 && inSet(openSet, r)) { if (hops2 < 0) { hops2 = dist[r]; hiddenName = f2.rooms[r].name; } }
+            ok = hops2 >= 2;
+
+            // (b) DOOR STATE MATTERS: closing doors must hide rooms reachable ONLY through a
+            //     door (a closed door is opaque). Close every door and re-flood: at least one
+            //     room that was visible with doors open drops OUT of the closed set.
+            setAllDoors(DoorState::Closed, 0.0f);
+            std::vector<uint32_t> closedSet;
+            f2.floodVisibleRoomsAt(H.cx, H.cy, H.cz, none, &doors2, 6, 999, closedSet);
+            behindHidden = closedSet.size() < openSet.size();
+
+            // (c) TARGETED "room behind a closed door": find a LEAF room whose ONLY doorway
+            //     is a DOORED one (every edge incident to it has a slab). Such a room is a
+            //     guaranteed single-door cut — with that door OPEN it floods into the set,
+            //     with it CLOSED there is no other way in, so it drops out. This is the
+            //     literal pop-behaviour Tim wants: a closed door hides the room behind it.
+            std::vector<int> totalDeg(n, 0), doorlessDeg(n, 0);
+            for (const CanonDoorway& dw : f2.doorways) {
+                if (dw.a < n) { ++totalDeg[dw.a]; if (dw.doorIndex == kNoLink) ++doorlessDeg[dw.a]; }
+                if (dw.b < n) { ++totalDeg[dw.b]; if (dw.doorIndex == kNoLink) ++doorlessDeg[dw.b]; }
+            }
+            for (const CanonDoorway& dw : f2.doorways) {
+                if (dw.doorIndex == kNoLink) continue;            // need a real door to close
+                // Pick the endpoint that is a single-DOORED-entry leaf (1 doorway, doored,
+                // and not the hall itself) and is reachable when doors are open.
+                uint32_t probe = kNoRoom;
+                if ((int)dw.a != hall && totalDeg[dw.a] == 1 && doorlessDeg[dw.a] == 0) probe = dw.a;
+                else if ((int)dw.b != hall && totalDeg[dw.b] == 1 && doorlessDeg[dw.b] == 0) probe = dw.b;
+                if (probe == kNoRoom) continue;
+                setAllDoors(DoorState::Open, 1.0f);
+                std::vector<uint32_t> withOpen;
+                f2.floodVisibleRoomsAt(H.cx, H.cy, H.cz, none, &doors2, 6, 999, withOpen);
+                if (!inSet(withOpen, probe)) continue;            // not visible even when open
+                doors2.at(dw.doorIndex).state = DoorState::Closed; doors2.at(dw.doorIndex).t = 0.0f;
+                std::vector<uint32_t> withClosed;
+                f2.floodVisibleRoomsAt(H.cx, H.cy, H.cz, none, &doors2, 6, 999, withClosed);
+                if (!inSet(withClosed, probe)) {                  // closing the door hid it
+                    doorBehindAssert = true;
+                    hiddenName = f2.rooms[probe].name;
+                    closedVia  = f2.rooms[dw.a].name + "<->" + f2.rooms[dw.b].name;
+                    break;
+                }
+            }
+        }
+        x3::logInfo("    flood@Main Hall: open-set reaches a room " + std::to_string(hops2) +
+                    " hops away; closing all doors drops the set; one closed door hides '" +
+                    hiddenName + "'" + (closedVia.empty() ? "" : " (door " + closedVia + ")"));
+        check(hall != (int)kNoRoom && ok && behindHidden && doorBehindAssert,
+              "C12 portal flood-fill: open doors reveal a >=2-hop room down the hall; a CLOSED door hides the room behind it");
+
+        // ---- PERF REPORT (logged, not asserted): the DRAWN object count under the portal
+        //      flood-fill cull at Jake's Cell vs standing in the Main Hall looking DOWN the
+        //      -Z spine through open doors, vs the whole floor uncut (r_roomcull 0). Proves
+        //      the cull stays modest (a few hundred objs, not the whole tower) even down the
+        //      longest sightline. Uses scene2 (built with doors) + drawnCount().
+        if (hall != (int)kNoRoom) {
+            for (uint32_t d = 0; d < doors2.count(); ++d) { doors2.at(d).state = DoorState::Open; doors2.at(d).t = 1.0f; }
+            const uint32_t full = scene2.drawnCount();              // cull inactive => whole floor
+            std::vector<uint32_t> vis;
+            auto measure = [&](float cx, float cy, float cz, float yaw, float pitch, uint32_t depth) {
+                Frustum fr = Frustum::build(cx, cy, cz, yaw, pitch, 60.0f, 16.0f/9.0f);
+                f2.floodVisibleRoomsAt(cx, cy, cz, fr, &doors2, depth, 18, vis);
+                scene2.setVisibleRooms(vis);
+                uint32_t objs = scene2.drawnCount();
+                scene2.clearVisibleRooms();
+                return objs;
+            };
+            int jakeR = f2.roomByName("Jake");
+            const CanonRoom& J = f2.rooms[jakeR];
+            const CanonRoom& M = f2.rooms[hall];
+            // Jake's Cell: look toward the open doorway (-X-ish into the cell block / hall).
+            uint32_t objsJake = measure(J.cx, J.y0()+1.7f, J.cz, -1.5708f, 0.0f, 6);
+            uint32_t roomsJake = (uint32_t)vis.size();
+            // Main Hall: look DOWN the spine (-Z) through the open doors (the long sightline).
+            uint32_t objsHall = measure(M.cx, M.y0()+1.7f, M.cz, -1.5708f, 0.0f, 6);
+            uint32_t roomsHall = (uint32_t)vis.size();
+            // Frustum directionality proof: from the Main Hall looking the OPPOSITE way (+Z,
+            // away from the spine) should see FEWER rooms (the bubble follows your gaze).
+            uint32_t objsHallBack = measure(M.cx, M.y0()+1.7f, M.cz, +1.5708f, 0.0f, 6);
+            uint32_t roomsBack = (uint32_t)vis.size();
+            // Depth cvar proof: r_culldepth 1 (direct neighbours only) tightens it hard.
+            uint32_t objsHallD1 = measure(M.cx, M.y0()+1.7f, M.cz, -1.5708f, 0.0f, 1);
+            uint32_t roomsD1 = (uint32_t)vis.size();
+            x3::logInfo("    PERF flood-cull objs: Jake's Cell=" + std::to_string(objsJake) +
+                        " (" + std::to_string(roomsJake) + " rooms) | Main Hall down-spine=" +
+                        std::to_string(objsHall) + " (" + std::to_string(roomsHall) + " rooms) | whole floor=" +
+                        std::to_string(full) + " (cull keeps it WELL under the tower)");
+            x3::logInfo("    PERF frustum/depth: Main Hall look-AWAY(+Z)=" + std::to_string(objsHallBack) +
+                        " (" + std::to_string(roomsBack) + " rooms) | down-spine @depth1=" +
+                        std::to_string(objsHallD1) + " (" + std::to_string(roomsD1) +
+                        " rooms) — gaze + r_culldepth shape the bubble");
+        }
     }
 
     physics->shutdown();
