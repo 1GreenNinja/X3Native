@@ -102,6 +102,33 @@ float pointAtten(float dist, float range) {
     return w / (dist * dist + 1.0);
 }
 
+// ---- M3: fresnel + specular shimmer helpers --------------------------------
+// Schlick fresnel: reflectance rises toward grazing angles. F0 ~ 0.04 (glass/
+// dielectric at normal incidence). cosTheta = dot(N, V). Clean-room standard.
+float fresnelSchlick(float cosTheta, float F0) {
+    float m = clamp(1.0 - cosTheta, 0.0, 1.0);
+    float m2 = m * m;
+    return F0 + (1.0 - F0) * (m2 * m2 * m);   // F0 + (1-F0)(1-cos)^5
+}
+
+// GGX (Trowbridge-Reitz) normal distribution for the specular highlight lobe.
+// rough in (0,1]; smaller rough -> sharper, brighter glint. The standard form.
+float ggxSpec(vec3 N, vec3 H, float rough) {
+    float a  = max(rough * rough, 1e-3);
+    float a2 = a * a;
+    float ndh = max(dot(N, H), 0.0);
+    float d = (ndh * ndh) * (a2 - 1.0) + 1.0;
+    return a2 / max(3.14159265 * d * d, 1e-4);
+}
+
+// A single light's specular contribution (Blinn-Phong half-vector + GGX lobe).
+vec3 specLight(vec3 N, vec3 V, vec3 L, vec3 radiance, float rough) {
+    vec3 H = normalize(L + V);
+    float spec = ggxSpec(N, H, rough);
+    // Normalize the lobe energy a touch so low roughness doesn't blow out.
+    return radiance * spec * 0.25;
+}
+
 void main() {
     // Only GLASS-flagged fragments belong to this pass; everything else is opaque
     // and already rendered.
@@ -112,7 +139,16 @@ void main() {
     // ---- Per-object glass material (M2-M4), with optional live dev override. ----
     // ctrl.w == 1 -> scale/add the authored material (r_glass_* scrubbing).
     float refraction = vGlassParams.x;
-    if (g.ctrl.w > 0.5) refraction *= g.ctrl.x;
+    float roughness  = clamp(vGlassParams.y, 0.0, 1.0);
+    float specular   = vGlassParams.z;
+    if (g.ctrl.w > 0.5) {
+        refraction *= g.ctrl.x;
+        roughness   = clamp(roughness + g.ctrl.y, 0.0, 1.0);
+        specular   *= g.ctrl.z;
+    }
+    // View vector (fragment -> camera) for fresnel + specular.
+    vec3 V = normalize(g.camPos.xyz - vWorldPos);
+    float time = g.camPos.w;
 
     // Body color: the bound texture (holo UI / white) tinted by the glass color.
     // vFactor.rgb carries the per-object baseColor; vGlassTint.rgb is the glass
@@ -137,9 +173,14 @@ void main() {
     }
 
     // ---- Lighting (same model as the opaque mesh) — used for the glass BODY ----
+    // The specular accumulator (M3) collects the bright glints the BODY lighting
+    // would miss: a sharp lobe off the sun + the nearby point lights, scaled by the
+    // material's specular and sharpened by (1 - roughness).
+    float specRough = mix(0.06, 0.6, roughness);   // polished -> sharp, frosted -> broad
     float ndl = max(dot(N, kSunDir), 0.0);
     float shadow = sampleShadow(vWorldPos, ndl);
     vec3 lighting = kSunColor * (0.75 * ndl * shadow);
+    vec3 specSum = specLight(N, V, kSunDir, kSunColor, specRough) * shadow;
 
     vec3 ambient = cam.ambientCount.rgb;
     float up = N.y * 0.5 + 0.5;
@@ -159,7 +200,26 @@ void main() {
         float pndl = max(dot(N, L), 0.0);
         float att  = pointAtten(dist, cam.lights[i].posRange.w);
         lighting  += cam.lights[i].colorPad.rgb * (pndl * att);
+        specSum   += specLight(N, V, L, cam.lights[i].colorPad.rgb, specRough) * att;
     }
+
+    // ---- M3: Schlick FRESNEL + animated GLINT ----------------------------
+    // Fresnel: glass reflects more at grazing angles + edges (cosTheta -> 0). This
+    // both BRIGHTENS the rim (an environment-tinted sheen) and LIFTS the alpha so a
+    // crystal-clear pane still reads as a surface instead of an invisible plane.
+    float cosV    = max(dot(N, V), 0.0);
+    float fresnel = fresnelSchlick(cosV, 0.04);     // dielectric F0
+    // A subtle time-animated glint: a slow shimmer band scrolling across the surface
+    // (driven by world position + time) that rides on the fresnel rim, so polished
+    // glass catches a moving sparkle. Cheap sin band, kept gentle.
+    float band  = sin(dot(vWorldPos, vec3(0.7, 1.3, 0.9)) * 1.5 + time * 1.6);
+    float glint = smoothstep(0.86, 1.0, band) * (0.5 + 0.5 * fresnel);
+
+    // The full specular term: GGX glints + fresnel sheen + animated glint, all
+    // scaled by the material's specular. A subtle environment-ish sheen colour
+    // (the ambient) tints the fresnel rim so it isn't pure white.
+    vec3 sheen   = mix(kSunColor, ambient + vec3(0.04), 0.5);
+    vec3 specOut = (specSum + sheen * (fresnel * 0.6 + glint * 0.5)) * max(specular, 0.0);
 
     // ---- Compose the glass colour ----------------------------------------
     vec3 litBody = body * lighting;
@@ -167,21 +227,24 @@ void main() {
 
     float opacity = clamp(vFactor.a, 0.0, 1.0);
 
+    vec3 color;
     if (haveScene) {
         // SCREEN-SPACE refraction path: we have a copy of the scene behind the glass,
         // so this fragment SUPPLIES its own background (the BENT scene) rather than
-        // letting the alpha blend reveal the un-bent live scene. Compose in the
-        // shader: the refracted scene tinted by the glass colour, with the lit body
-        // mixed in by opacity (clear pane -> mostly bent scene; opaque -> mostly
-        // body). Output alpha = 1 so the composed result fully replaces the live HDR
-        // pixel (which holds the SAME, but un-bent, scene). This is what makes the
-        // refraction actually visible.
+        // letting the alpha blend reveal the un-bent live scene. The refracted scene
+        // tinted by the glass colour, with the lit body mixed in by opacity (clear
+        // pane -> mostly bent scene; opaque -> mostly body), THEN the specular/fresnel
+        // shimmer added on top. Output alpha = 1 so the composed result fully replaces
+        // the live HDR pixel (which holds the SAME, but un-bent, scene).
         vec3 throughGlass = refractedScene * mix(vec3(1.0), tint, 0.5);
-        vec3 color = mix(throughGlass, litBody, opacity);
+        color = mix(throughGlass, litBody, opacity) + specOut;
         outColor = vec4(color, 1.0);
     } else {
         // No scene copy (target failed / disabled): fall back to the M1 alpha
-        // see-through — the SRC_ALPHA blend reveals the live scene behind.
-        outColor = vec4(litBody, opacity);
+        // see-through path. Add the shimmer on top, and LIFT the alpha by fresnel so
+        // a low-opacity pane still catches light at its edges (never invisible).
+        color = litBody + specOut;
+        float outA = clamp(opacity + fresnel * (1.0 - opacity), 0.0, 1.0);
+        outColor = vec4(color, outA);
     }
 }
