@@ -8,6 +8,7 @@ add_executable(X3Engine WIN32
     physprops.cpp
     ragdoll.cpp
     barrels.cpp
+    glass_test.cpp
     holo_terminal.cpp
     secret_room.cpp
     ecs_render.cpp
@@ -72,6 +73,7 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/tri.frag
     ${CMAKE_SOURCE_DIR}/shaders/mesh.vert
     ${CMAKE_SOURCE_DIR}/shaders/mesh.frag
+    ${CMAKE_SOURCE_DIR}/shaders/glass.frag
     ${CMAKE_SOURCE_DIR}/shaders/shadow.vert
     ${CMAKE_SOURCE_DIR}/shaders/sky.vert
     ${CMAKE_SOURCE_DIR}/shaders/sky.frag

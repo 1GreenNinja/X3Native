@@ -77,6 +77,17 @@ struct Entity {
     // transform still anchors at the visual origin (the feet). Default 0 == no offset.
     float                  bodyVisualOffsetY = 0.0f;
     bool                   visible = true;
+    // ---- Translucent GLASS material (transparent pass) --------------------
+    // When `transparent` is set, Scene::render routes this entity through
+    // device.drawMeshGlass instead of the opaque drawMeshEmissive: it renders in
+    // the dedicated post-opaque, alpha-blended glass pass as real see-through glass
+    // (design spec docs/superpowers/specs/2026-05-25-glass-material-design.md).
+    // `glass` carries the per-instance material; `glass.opacity` is the primary
+    // see-through dial (0 = clear, 1 = opaque) and overrides baseColor[3]. emissive
+    // is still honored (holo glass keeps its glow). Default false == opaque, so every
+    // existing entity renders exactly as before.
+    bool                   transparent = false;
+    x3::rhi::IRenderDevice::GlassMaterial glass{};
     uint32_t               tag = (uint32_t)Tag::None;
     // Generic gameplay linkage (S4): the entity id this one targets, or kNoLink.
     // A Button stores the entity id of the Door it opens. Chosen over a separate

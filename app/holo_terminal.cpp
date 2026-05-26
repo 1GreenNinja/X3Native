@@ -635,15 +635,26 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     };
 
     // Place a custom-mesh child at a LOCAL +Z offset (oz) from pos (yaw-rotated),
-    // with a translucent baseColor + soft emissive (for the glass rim).
+    // with a translucent baseColor + soft emissive (for the glass rim). When
+    // `asGlass` is set the entity is flagged for the engine's REAL translucent-glass
+    // pass (Entity.transparent): `alpha` becomes the glass opacity and (r,g,b) the
+    // glass tint — see-through glass instead of the old "fake by darkening" alpha.
     auto addMesh = [&](const x3::prims::PrimMesh& geo, float oz,
                        float r, float g, float b, float alpha,
-                       float er, float eg, float eb, float es) {
+                       float er, float eg, float eb, float es, bool asGlass = false) {
         Entity e;
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
         e.baseColor[0]=r; e.baseColor[1]=g; e.baseColor[2]=b; e.baseColor[3]=alpha;
         e.emissive[0]=er; e.emissive[1]=eg; e.emissive[2]=eb; e.emissive[3]=es;
+        if (asGlass) {
+            e.transparent = true;
+            e.glass.opacity = alpha;            // see-through dial (was the fake alpha)
+            e.glass.tint[0]=r; e.glass.tint[1]=g; e.glass.tint[2]=b;
+            e.glass.roughness  = 0.12f;          // a hair frosted for a polished plate
+            e.glass.refraction = 0.02f;
+            e.glass.specular   = 0.6f;
+        }
         e.tag = (uint32_t)Tag::Prop;
         const float wx = sn*oz, wz = cs*oz;
         e.transform[0]=cs; e.transform[2]=-sn; e.transform[8]=sn; e.transform[10]=cs;
@@ -696,13 +707,15 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
         x3::prims::PrimMesh innerRim = makeRoundedRim(hw + 0.006f, hh + 0.006f, corner, 0.022f);
         m_decor.push_back(addMesh(innerRim, -0.004f,
                                   0.55f, 0.85f, 1.0f, 0.32f,    // translucent cyan-white glass
-                                  0.18f, 0.55f, 0.85f, 0.9f));  // GENTLE sheen (was 2.6-3.0 neon)
+                                  0.18f, 0.55f, 0.85f, 0.9f,    // GENTLE sheen (was 2.6-3.0 neon)
+                                  /*asGlass=*/true));           // REAL see-through glass bevel
         // Outer halo: a hair larger + dimmer, sitting just behind, so the rim fades
         // softly into the surround like a glass edge catching ambient light.
         x3::prims::PrimMesh outerRim = makeRoundedRim(hw + 0.028f, hh + 0.028f, corner + 0.020f, 0.020f);
         m_decor.push_back(addMesh(outerRim, +0.006f,
                                   0.10f, 0.28f, 0.45f, 0.18f,   // very translucent dark-cyan glass
-                                  0.06f, 0.22f, 0.38f, 0.55f)); // dim outer glow
+                                  0.06f, 0.22f, 0.38f, 0.55f,   // dim outer glow
+                                  /*asGlass=*/true));           // REAL see-through glass halo
         // Faint dark backplate BEHIND the glass so the rim + line-art read against it
         // (kept — it's a subtle backer, not a frame). Rounded silhouette to match.
         x3::prims::PrimMesh backPanel = makeRoundedPanel(hw + 0.03f, hh + 0.03f, corner + 0.02f);
@@ -740,12 +753,19 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                geo.index.data(), (uint32_t)geo.index.size());
     e.tex = m_holoTex;                                  // procedural hologram UI
-    // The mesh shader adds a FLAT per-object emissive on top of (albedo*lighting), so
-    // a high uniform emissive floods the whole quad and DROWNS the textured line-art.
-    // To let the SECURITY-CONSOLE line-art read, keep baseColor bright (full albedo so
-    // the bright cyan strokes survive the lit term) + use a MODERATE emissive that
-    // gives the glass a hologram glow/bloom without washing out the printed HUD.
+    // REAL translucent GLASS (engine glass pass) — replaces the old "fake by leaving
+    // it opaque + carrying the look in the emissive" hack. The plate is now actually
+    // see-through: the cell behind subtly shows through while the holo UI texture +
+    // emissive glow carry the projected-display read. baseColor stays full-albedo so
+    // the bright cyan line-art survives the lit term; glass.opacity is the see-through
+    // dial (mid so the printed HUD still reads strongly against what's behind).
     e.baseColor[0] = 1.0f; e.baseColor[1] = 1.0f; e.baseColor[2] = 1.0f; e.baseColor[3] = 1.0f;
+    e.transparent = true;
+    e.glass.opacity    = 0.62f;          // see-through but UI-dominant (mid opacity)
+    e.glass.tint[0]    = 0.80f; e.glass.tint[1] = 0.92f; e.glass.tint[2] = 1.0f; // faint cool-blue
+    e.glass.roughness  = 0.10f;          // lightly frosted display glass
+    e.glass.refraction = 0.02f;
+    e.glass.specular   = 0.5f;
     // Moderate emissive: gives the glass a hologram glow / bloom WITHOUT flooding out
     // the textured line-art (which rides the full-albedo lit term). Pulsed in update().
     m_emBase[0] = 0.10f; m_emBase[1] = 0.34f; m_emBase[2] = 0.52f; m_emBase[3] = 0.45f;
@@ -767,6 +787,16 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     se.tex = m_holoTex;
     se.baseColor[0]=0.0f; se.baseColor[1]=0.0f; se.baseColor[2]=0.0f; se.baseColor[3]=1.0f;
     se.emissive[0]=0.3f; se.emissive[1]=0.9f; se.emissive[2]=1.0f; se.emissive[3]=0.0f;  // pulsed in update()
+    // Glass too: drawn in the SAME transparent pass as the base plate (both
+    // depth-write OFF) so the in-front sweep quad composites OVER the glass panel
+    // instead of occluding it. Low opacity -> a faint additive-looking shimmer band;
+    // its near-black albedo means it contributes essentially only its emissive sweep.
+    se.transparent = true;
+    se.glass.opacity    = 0.22f;
+    se.glass.tint[0]    = 0.30f; se.glass.tint[1] = 0.90f; se.glass.tint[2] = 1.0f;
+    se.glass.roughness  = 0.15f;
+    se.glass.refraction = 0.0f;
+    se.glass.specular   = 0.4f;
     se.tag = (uint32_t)Tag::Prop;
     const float foZ = 0.014f;                            // toward the viewer (front face +Z local)
     const float fwx = cs*0.0f + sn*foZ, fwz = -sn*0.0f + cs*foZ;
