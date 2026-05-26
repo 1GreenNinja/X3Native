@@ -77,6 +77,36 @@ struct CanonDoorway {
     // For a cut doorway: which axis the host wall runs along (matches DoorAxis):
     // 0 = wall plane is X=const (door thin in X), 1 = wall plane is Z=const (thin in Z).
     uint32_t axis = 0;
+    // Index into the host DoorSystem of the SM_Door_A slab that fills this doorway, or
+    // kNoLink if this doorway has NO door (a doorless opening / gap-bridge mouth / cross-
+    // level tube — visibility ALWAYS passes through it). Set by buildCanonFloor when it
+    // places the slabs (CanonBuildOpts::doors). The portal flood-fill (floodVisibleRoomsAt)
+    // queries this door's DoorState: a CLOSED door is opaque and stops the flood; an
+    // Open/Opening/Closing door lets visibility flow to the room behind it.
+    uint32_t doorIndex = kNoLink;
+};
+
+// ---- Camera frustum (for the frustum-directional portal flood-fill). 6 world-space
+// planes (left/right/bottom/top/near/far) with inward-pointing normals, built from a
+// camera pose (engine convention: fwd = (cos p cos y, sin p, cos p sin y), up = +Y).
+// A point is inside the frustum iff it is on the positive side of all 6 planes; a room
+// AABB is visible iff it is not fully outside any single plane. Plain math (no glm) so
+// the headless self-test can build a frustum without a window/device. ----
+struct Frustum {
+    // plane[i] = {nx, ny, nz, d}; a point p is inside the half-space iff dot(n,p)+d >= 0.
+    float planes[6][4] = {};
+    bool valid = false;
+
+    // Build from a camera pose. fovYDeg is the VERTICAL field of view (matches
+    // VulkanRenderDevice's glm::perspective), aspect = width/height, near/far in meters
+    // (defaults match the device's 0.1 / 200). After build(), aabbVisible() is usable.
+    static Frustum build(float eyeX, float eyeY, float eyeZ, float yaw, float pitch,
+                         float fovYDeg, float aspect, float nearZ = 0.1f, float farZ = 200.0f);
+
+    // True iff the world-AABB [min..max] is at least partially inside the frustum
+    // (conservative: tests the AABB's most-positive corner against each plane).
+    bool aabbVisible(float minX, float minY, float minZ,
+                     float maxX, float maxY, float maxZ) const;
 };
 
 // The fully parsed + resolved floor. rooms/doorways are 1:1 with the JSON after the
@@ -104,7 +134,32 @@ struct CanonFloor {
     // room's PVS (doored neighbours). If the camera is in no room, returns the nearest
     // room's PVS (so the player never sees an empty world at a doorway seam). Written
     // into `out` (cleared first). Feed to Scene::setVisibleRooms.
+    //
+    // NOTE: this is the LEGACY 1-hop set (current room + DIRECT doored neighbours). The
+    // live path now prefers floodVisibleRoomsAt (frustum-directional multi-hop flood-fill);
+    // this remains for the headless light-feed fallback + back-compat with older callers.
     void visibleRoomsAt(float x, float y, float z, std::vector<uint32_t>& out) const;
+
+    // ---- PORTAL FLOOD-FILL PVS (frustum-directional, the live cull) -----------------
+    // BFS from the camera's current room OUT through doorways, accumulating every reached
+    // room into `out` (cleared first). A doorway is TRAVERSABLE iff:
+    //   * it has no door (doorIndex == kNoLink) — a doorless opening / gap-bridge mouth /
+    //     cross-level tube ALWAYS passes; OR
+    //   * its door is NOT fully Closed (Open / Opening / Closing all pass) — a closed door
+    //     is opaque and stops the flood through that doorway (the room behind stays culled).
+    // A reached room is ADDED to the visible set only if its world-AABB intersects `frustum`
+    // (so the bubble stretches down whatever hall you LOOK at, not a fixed radius). The
+    // SOURCE room is always added (you're standing in it) regardless of the frustum. The
+    // flood stops at `maxDepth` doorway hops and at `roomBudget` total rooms so it can never
+    // fall back to drawing the whole tower. `doors` may be null (then every doorway passes —
+    // matches the headless build before doors are wired). `frustum.valid==false` disables
+    // the frustum gate (every reachable room within depth/budget is added — used by tests).
+    void floodVisibleRoomsAt(float x, float y, float z,
+                             const Frustum& frustum,
+                             const DoorSystem* doors,
+                             uint32_t maxDepth,
+                             uint32_t roomBudget,
+                             std::vector<uint32_t>& out) const;
 
     // Find a room by an exact name, or by a name SUBSTRING (case-sensitive). Returns its
     // index or kNoRoom. Used to re-aim the Level-1 beat sequence onto the REAL canonical
@@ -188,7 +243,11 @@ struct CanonBuildOpts {
     // draws this DoorSystem (doors.update / doors.drawMeshes) each frame.
     DoorSystem* doors = nullptr;
 };
-void buildCanonFloor(const CanonFloor& floor, Scene& scene,
+// NOTE: `floor` is taken by NON-const reference because the builder records each cut
+// doorway's DoorSystem slab index back into floor.doorways[].doorIndex (so the portal
+// flood-fill can later query that door's open/closed state). Pass the host's authoritative
+// CanonFloor — the same one fed to floodVisibleRoomsAt / the cull.
+void buildCanonFloor(CanonFloor& floor, Scene& scene,
                      x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
                      const CanonBuildOpts& opts = {});
 

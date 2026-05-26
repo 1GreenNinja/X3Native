@@ -287,6 +287,12 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // current room + its doored neighbours); 0 = draw the whole level (e.g. for noclip
     // overview / debugging). Live-tunable from the console.
     console.registerCVar("r_roomcull", "1", "per-room PVS occlusion cull (0 = draw whole level, e.g. for noclip)");
+    // Portal flood-fill depth: how many OPEN-doorway hops the canonlevel cull floods out
+    // from the player's room. Higher = see further down a hall through open doors (more
+    // rooms drawn); 1 = current room + direct neighbours only (tight). The flood is also
+    // gated by the camera frustum (only rooms you LOOK at are drawn) + a room budget, so it
+    // never falls back to the whole tower. Live-tunable.
+    console.registerCVar("r_culldepth", "6", "canonlevel portal flood-fill depth (open-doorway hops; 1 = direct neighbours only)");
 }
 
 // Read the r_rtao* cvars and push them onto the device (no-op on a non-RT device).
@@ -3981,6 +3987,10 @@ int main(int argc, char** argv) {
     // 7-floor tower build (Level1Game + Spire*) is SKIPPED in this mode; the legacy build
     // remains the default for every other path (so all existing flags are unchanged).
     const bool canonWorld = (worldMode == "canonlevel");
+    // Hard cap on how many rooms the portal flood-fill may add per frame. Even down the
+    // longest sightline with a deep r_culldepth, the cull stays well under the whole 53-room
+    // tower so the GPU never spikes (the spec's "must NOT regress to drawing the tower").
+    constexpr uint32_t kCanonRoomBudget = 18;
     x3::game::CanonFloor canonFloor;           // parsed+resolved Floor 1 (canonWorld only)
     std::vector<uint32_t> canonVisRooms;       // per-frame PVS scratch (canonWorld only)
     std::vector<x3::game::CanonLight> canonLights; // per-room ceiling lights (canonWorld only)
@@ -4966,13 +4976,23 @@ int main(int argc, char** argv) {
         // --world canonlevel: sit in Jake's Cell (the canonical spawn) instead, so the
         // per-room cull renders only that cell + its doored neighbours (the perf proof).
         float camX = L1.armoryCenter.x - 1.0f, camZ = L1.armoryCenter.z;
+        float smokeYaw = 0.0f;
         if (canonWorld && canonFloor.valid()) {
             uint32_t jake = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
             if (jake == x3::game::kNoRoom) jake = 0;
             camX = canonFloor.rooms[jake].cx; camZ = canonFloor.rooms[jake].cz;
+            // PERF-MEASURE override: stand in the Main Hall looking DOWN the -Z spine through
+            // the open doors (the long-sightline worst case) when X3_SMOKE_HALL is set.
+            if (std::getenv("X3_SMOKE_HALL")) {
+                uint32_t mh = canonFloor.roomByName("Main Hall");
+                if (mh != x3::game::kNoRoom) {
+                    camX = canonFloor.rooms[mh].cx; camZ = canonFloor.rooms[mh].cz;
+                    smokeYaw = -1.5708f;   // look down the -Z spine
+                }
+            }
         }
         const float vmX = camX, vmY = 1.7f, vmZ = camZ,
-                    vmYaw = 0.0f, vmPitch = 0.0f;
+                    vmYaw = smokeYaw, vmPitch = 0.0f;
         device->setCamera(vmX, vmY, vmZ, vmYaw, vmPitch, 60.0f);
         audio->setListener(vmX, vmY, vmZ, vmYaw, vmPitch);
         audio->playMusic(kMusicPath, /*loop*/true, /*vol*/0.25f);
@@ -5045,14 +5065,19 @@ int main(int argc, char** argv) {
             // console mid-run so the panel + scrollback + input line render too.
             if (i == 5)  { console->exec("echo smoketest hud line"); hud.toggleConsole(); hud.onChar('a'); hud.onChar('b'); }
             if (i == 20) { hud.closeConsole(); }
-            // Per-room occlusion cull (canonlevel): update the visible-room set from the
-            // camera each frame so render() draws only the current room + its doored
-            // neighbours. (No-op in every other world: scene has no room-tagged entities.)
+            // Per-room occlusion cull (canonlevel): portal flood-fill (frustum-directional)
+            // from the camera each frame so render() draws the player's room + every room
+            // reachable through OPEN doorways that the camera LOOKS at, capped by r_culldepth
+            // + a room budget. (No-op in every other world: scene has no room-tagged entities.)
             if (canonWorld && canonFloor.valid()) {
                 const bool roomCull = console->getInt("r_roomcull") != 0;
                 scene.setRoomCullEnabled(roomCull);
                 if (roomCull) {
-                    canonFloor.visibleRoomsAt(eye.x, eye.y, eye.z, canonVisRooms);
+                    const uint32_t depth = (uint32_t)std::max(1, console->getInt("r_culldepth"));
+                    x3::game::Frustum fr = x3::game::Frustum::build(
+                        eye.x, eye.y, eye.z, vmYaw, vmPitch, 60.0f, 16.0f / 9.0f);
+                    canonFloor.floodVisibleRoomsAt(eye.x, eye.y, eye.z, fr, &canonDoors,
+                                                   depth, kCanonRoomBudget, canonVisRooms);
                     scene.setVisibleRooms(canonVisRooms);
                 }
                 // Feed ONLY the visible rooms' ceiling lights (capped at 16) so the floor
@@ -5843,7 +5868,23 @@ int main(int argc, char** argv) {
             // rooms in the floor. Appended AFTER the flashlight so the flashlight (at the
             // front) is never the one dropped if we somehow brush the cap.
             if (canonWorld && canonFloor.valid()) {
-                canonFloor.visibleRoomsAt(camX, camY, camZ, canonVisRooms);
+                // Compute the per-frame visible-room set ONCE here (portal flood-fill,
+                // frustum-directional) and stash it in canonVisRooms; the render path below
+                // reuses the SAME set so newly-visible rooms down the hall both LIGHT UP and
+                // DRAW, all capped consistently. r_roomcull 0 falls back to the 1-hop set so
+                // a noclip overview is still reasonably lit.
+                if (console->getInt("r_roomcull") != 0) {
+                    const uint32_t depth = (uint32_t)std::max(1, console->getInt("r_culldepth"));
+                    int fbw = 0, fbh = 0; glfwGetFramebufferSize(window, &fbw, &fbh);
+                    const float aspect = (float)std::max(1, fbw) / (float)std::max(1, fbh);
+                    x3::game::Frustum fr = x3::game::Frustum::build(
+                        camX, camY, camZ, camYaw, camPitch, 60.0f, aspect);
+                    canonFloor.floodVisibleRoomsAt(camX, camY, camZ, fr, &canonDoors,
+                                                   depth, kCanonRoomBudget, canonVisRooms);
+                } else {
+                    canonFloor.visibleRoomsAt(camX, camY, camZ, canonVisRooms);
+                }
+                // Cap lights at 16 closest-to-eye over the SAME visible-room set.
                 x3::game::selectVisibleCanonLights(canonLights, canonVisRooms,
                                                    camX, camY, camZ, fl, 16);
             }
@@ -6188,18 +6229,16 @@ int main(int argc, char** argv) {
             // any other bursts) one step. Frozen during a UI menu so chunks hold mid-
             // air with the rest of the sim. No-op cost when the pool is empty.
             device->gpuDebrisStep(simFrozen ? 0.0f : dt);
-            // Per-room occlusion cull (canonlevel): set the visible-room set from the
-            // player's eye each frame -> render() draws only the current room + its
-            // doorway-reachable neighbours. No-op in every other world (no room tags).
-            // `r_roomcull 0` hard-disables the cull so the WHOLE level draws (noclip
-            // overview / debug); `r_roomcull 1` (default) restores the PVS cull.
+            // Per-room occlusion cull (canonlevel): the portal flood-fill visible-room set
+            // (frustum-directional, computed once in the lighting block above as
+            // canonVisRooms) drives render(). A CLOSED door is opaque + stops the flood; far
+            // rooms seen through an OPEN door down a hall you LOOK at are kept (no pop),
+            // capped by r_culldepth hops + a room budget so it never draws the whole tower.
+            // `r_roomcull 0` hard-disables the cull (noclip overview); `1` (default) = on.
             if (canonWorld && canonFloor.valid()) {
                 const bool roomCull = console->getInt("r_roomcull") != 0;
                 scene.setRoomCullEnabled(roomCull);
-                if (roomCull) {
-                    canonFloor.visibleRoomsAt(camX, camY, camZ, canonVisRooms);
-                    scene.setVisibleRooms(canonVisRooms);
-                }
+                if (roomCull) scene.setVisibleRooms(canonVisRooms);   // same set as the lights
             }
             scene.render(*device, frame);
             if (canonWorld) canonDoors.drawMeshes(*device, frame);   // SM_Door_A doors (canonlevel)
