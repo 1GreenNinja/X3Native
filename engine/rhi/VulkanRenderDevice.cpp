@@ -484,9 +484,13 @@ public:
         // Debris compute/draw are re-armed per frame by gpuDebrisStep/gpuDebrisDraw.
         m_debrisStepPending = false;
         m_debrisDrawPending = false;
-        // GPU skinning is re-armed per frame by setSkinnedPalette().
-        m_skinPending.clear();
-        m_skinStepPending = false;
+        // GPU skinning queue is NOT cleared here. The host uploads bone palettes via
+        // game.tick()/applyLocomotion() -> setSkinnedPalette() which run BEFORE
+        // beginFrame() in the main loop; clearing here wiped that queue before the
+        // frame's skin-compute pass ran, freezing every skinned character in bind pose.
+        // It is consumed + cleared in endFrame() right after buildAndExecuteGraph().
+        // (m_frameIdx is stable across the frame, so the uploaded palette slot matches
+        // the slot the dispatch reads.)
         m_framePrepared = false;
         m_frameCmdCount = 0;
         if (fr.hudDescPool) vkResetDescriptorPool(m_dev.device, fr.hudDescPool, 0);
@@ -614,6 +618,13 @@ public:
         const bool wantCapture = (m_captureArmed && m_captureBuf &&
                                   m_captureW == m_extent.width && m_captureH == m_extent.height);
         buildAndExecuteGraph(fr.cmd, imageIndex, wantCapture);
+        // GPU skinning queue consumed by the skin-compute pass recorded inside the graph
+        // above. Clear it HERE (moved out of beginFrame): the host uploads palettes via
+        // setSkinnedPalette() before beginFrame, so clearing in beginFrame wiped them and
+        // every skinned character (enemies, Martinez, rescue companions) froze in bind
+        // pose. Cleared post-dispatch, the armed queue survives to the compute pass.
+        m_skinPending.clear();
+        m_skinStepPending = false;
         const bool capturedThisFrame = wantCapture;
         m_captureArmed = false; // consume the arm regardless
 

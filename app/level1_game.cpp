@@ -220,10 +220,12 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_doorIdx[4] = buildLevelDoor(scene, m_doors, device, physics, e);
     }
 
-    // ---- Armory pistol pickup (beat 6). ----
+    // ---- Starting sidearm IN THE CELL: the player grabs a pistol right at spawn so
+    // they're never defenseless against the corridor monsters (the armory then adds the
+    // heavier guns — see m_armory below). Placed a step ahead of spawn (1.5) in the cell. ----
     m_weapon.buildWeaponPickup(scene, device, m_modelDir,
-                               x3::phys::Vec3{ m_layout.armoryCenter.x, 1.0f,
-                                               m_layout.armoryCenter.z });
+                               x3::phys::Vec3{ m_layout.cellCenter.x, 1.0f,
+                                               m_layout.cellCenter.z });
 
     // ---- Checkpoint encounter (built at level build; beat 8). Now the player is
     // armed, so this is a proper firefight: 3 Guards holding the line behind the
@@ -259,6 +261,23 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_barrels.spawn(co.x + 3.0f, by, co.z - 1.6f);
         m_barrels.spawn(cc.x - 1.8f, by, cc.z + 0.2f);   // checkpoint pair -> chain reaction
         m_barrels.spawn(cc.x - 1.1f, by, cc.z + 0.9f);
+        // MORE barrels (Tim playtest): scatter from the cell through the corridor so there
+        // is always one in sight to shoot + bigger chain reactions. Kept within the ~z +/-1.6
+        // corridor footprint and clear of the spawn (1.5) + the cell pickup (cellCenter,z=0).
+        const float bx = m_layout.cellCenter.x;          // ~3.0, right by the spawn
+        m_barrels.spawn(bx + 0.9f, by,  1.3f);           // cell/start — immediately shootable
+        m_barrels.spawn(bx + 1.6f, by, -1.3f);
+        m_barrels.spawn(co.x - 3.5f, by, -1.4f);
+        m_barrels.spawn(co.x - 0.6f, by,  1.5f);
+        m_barrels.spawn(co.x + 1.4f, by,  1.4f);
+        m_barrels.spawn(co.x + 4.6f, by,  1.3f);
+        // Two more in the checkpoint room, placed CLEAR of the eye->enemy firing lanes
+        // (the test fires from cc.x-0.9 at z~0 toward enemies spread over z in [-2.5,2.5]).
+        // One just inside Door C behind the firing line (cc.x-2.4, harmless), one tucked
+        // against the +Z back of the room (z=+3.0) beyond every enemy — both still
+        // shootable for the chain, neither intercepts a kill shot.
+        m_barrels.spawn(cc.x - 2.4f, by, -1.6f);   // behind the eye, near Door C mouth
+        m_barrels.spawn(cc.x + 1.2f, by,  3.0f);   // +Z back corner, beyond the enemies
         x3::logInfo("[level1] spawned " + std::to_string(m_barrels.count()) + " explosive barrels");
     }
 
@@ -978,10 +997,31 @@ bool runLevel1SelfTest() {
     check(game.objectives().currentLabel() == "Fight to the armory and arm yourself",
           "T7b objective advances after Door A opens");
 
+    // ---- T4 (locked gate, part 1): Door C does NOT open before armed. The player has
+    // only just opened Door A and is still at spawn -- they have not yet stepped into
+    // the cell to grab the sidearm, so they are unarmed and Door C must stay shut. ----
+    {
+        x3::phys::Vec3 btn{ L.doorC.x - 0.10f - 0.12f, 1.3f, L.doorC.z + 0.6f + 0.5f };
+        x3::phys::Vec3 eye{ btn.x - 1.5f, btn.y, btn.z };
+        bool usedLocked = game.onUse(eye, aimFromTo(eye, btn), scene, *physics);
+        bool stillClosed = game.doorState('C') == DoorState::Closed;
+        check(!usedLocked && stillClosed && game.doorLocked('C'),
+              "T4a Door C stays locked + closed before armed");
+    }
+
+    // ---- T3: step into the cell onto the starting sidearm pickup -> armed. The pistol
+    // sits in the detention cell so Jake is never defenseless against the corridor alarm
+    // enemies; the armory's Door C (below) is the gate he opens once armed. ----
+    {
+        run(game, scene, *physics, device,
+            x3::phys::Vec3{ L.cellCenter.x, 0.05f, L.cellCenter.z }, 6);
+        check(game.armed(), "T3 grabbing the cell sidearm arms the player");
+    }
+
     // ---- Corridor clear (gameplay-faithful): on the compact Spire B1, Jake fights
-    // through the alarm enemies en route to the armory. We're not armed yet here, so
-    // melee them down so they don't trail into the later checkpoint encounter (the
-    // fire ray hits the nearest Enemy body, so the encounters must not interleave).
+    // through the alarm enemies en route to the armory. Now armed, he melees them down
+    // so they don't trail into the later checkpoint encounter (the fire ray hits the
+    // nearest Enemy body, so the encounters must not interleave).
     {
         const float cx = L.corridorCenter.x, cz = L.corridorCenter.z;
         x3::phys::Vec3 eye{ cx - 4.0f, 0.6f, cz };
@@ -998,24 +1038,6 @@ bool runLevel1SelfTest() {
             }
             run(game, scene, *physics, device, eye, 2);
         }
-    }
-
-    // ---- T4 (locked gate, part 1): Door C does NOT open before armed. ----
-    {
-        // Aim a use-ray at Door C's button while UNARMED; it must refuse.
-        x3::phys::Vec3 btn{ L.doorC.x - 0.10f - 0.12f, 1.3f, L.doorC.z + 0.6f + 0.5f };
-        x3::phys::Vec3 eye{ btn.x - 1.5f, btn.y, btn.z };
-        bool usedLocked = game.onUse(eye, aimFromTo(eye, btn), scene, *physics);
-        bool stillClosed = game.doorState('C') == DoorState::Closed;
-        check(!usedLocked && stillClosed && game.doorLocked('C'),
-              "T4a Door C stays locked + closed before armed");
-    }
-
-    // ---- T3: walk onto the armory pickup -> armed; pistol can deal damage. ----
-    {
-        run(game, scene, *physics, device,
-            x3::phys::Vec3{ L.armoryCenter.x, 0.05f, L.armoryCenter.z }, 3);
-        check(game.armed(), "T3 walking onto the pickup arms the player");
     }
 
     // ---- T4 (locked gate, part 2): Door C unlocked + opening after arming. ----

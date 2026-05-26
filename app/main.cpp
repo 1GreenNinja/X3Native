@@ -30,6 +30,7 @@
 #include "audio_root.h"                    // portable resolveAudio() (D: mirror / G: packs)
 #include "anim.h"                          // Skinner + --list-clips clip check
 #include "level1.h"
+#include "level_loader.h"                   // data-driven canonical level loader + per-room PVS cull (--test-canonlevel)
 #include "player.h"
 #include "monster.h"
 #include "level1_game.h"
@@ -789,7 +790,7 @@ int main(int argc, char** argv) {
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
-         testDeathRagdoll = false;
+         testDeathRagdoll = false, testCanonLevel = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1057,6 +1058,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-deathragdoll") testDeathRagdoll = true;
         else if (a == "--test-audio") testAudio = true;
         else if (a == "--test-level1") testLevel1 = true;
+        else if (a == "--test-canonlevel") testCanonLevel = true;
         else if (a == "--test-phase2a") testPhase2a = true;
         else if (a == "--test-phase2b") testPhase2b = true;
         else if (a == "--test-anim") testAnim = true;
@@ -1307,6 +1309,10 @@ int main(int argc, char** argv) {
     if (testLevel1) {
         x3::logInfo("running EFLZ Level 1 (Awakening) self-test (T1-T6)...");
         return x3::game::runLevel1SelfTest() ? 0 : 1;
+    }
+    if (testCanonLevel) {
+        x3::logInfo("running EFLZ data-driven canonical-level self-test (C1-C8)...");
+        return x3::game::runCanonLevelSelfTest() ? 0 : 1;
     }
     if (testPhase2a) {
         x3::logInfo("running EFLZ Phase 2a (player health + enemies fight back) self-test...");
@@ -4025,6 +4031,17 @@ int main(int argc, char** argv) {
     // 1127 disco code right away. Any unrecognized --world value also lands here
     // (Level 1), so this is purely additive guidance.
     const bool elevatorWorld = (worldMode == "elevator");
+    // --world canonlevel: build Floor 1 from the OWNER'S CANONICAL LevelArchitect data
+    // (level_loader.*) instead of the hand-coded tower, and run the PER-ROOM OCCLUSION
+    // CULL (portal PVS) so only the player's current room + its doorway-reachable
+    // neighbours render. This is the data-driven path + the perf payoff: the smoketest
+    // under this mode reports objs/tris FAR below the full tower's 8604/49.6M. The full
+    // 7-floor tower build (Level1Game + Spire*) is SKIPPED in this mode; the legacy build
+    // remains the default for every other path (so all existing flags are unchanged).
+    const bool canonWorld = (worldMode == "canonlevel");
+    x3::game::CanonFloor canonFloor;           // parsed+resolved Floor 1 (canonWorld only)
+    std::vector<uint32_t> canonVisRooms;       // per-frame PVS scratch (canonWorld only)
+    x3::game::DoorSystem  canonDoors;          // SM_Door_A GLB doors at the cut doorways
     x3::game::Scene scene;
     x3::game::Level1Game game;
     // B3: the terrain world is now STREAMED around the player via a residency
@@ -4082,7 +4099,39 @@ int main(int argc, char** argv) {
     // it host-side because spire_top exposes victimCaptive() (not a companion query), and
     // we must not modify spire_top.
     bool sarahSaved = false;
-    if (!terrainWorld) {
+    if (canonWorld) {
+        // ---- DATA-DRIVEN CANONICAL FLOOR 1 + per-room PVS cull. ----
+        canonFloor = x3::game::loadCanonFloor(x3::game::canonProjectJsonPath(), 1);
+        if (canonFloor.valid()) {
+            x3::game::CanonBuildOpts copts; copts.doors = &canonDoors;
+            x3::game::buildCanonFloor(canonFloor, scene, *device, *physics, copts);
+            x3::logInfo("--world canonlevel: built canonical Floor 1 (" +
+                        std::to_string(canonFloor.rooms.size()) + " rooms, " +
+                        std::to_string(scene.size()) + " entities); per-room PVS cull ACTIVE");
+            // The re-aimed Level-1 beat flow on REAL canonical room centers: spawn in
+            // Jake's Cell, down the wide Main Hall, through Security/Research/Medical/
+            // Armory, into the Boss Arena (Martinez), out via the Elevator Lobby.
+            {
+                x3::game::CanonBeats bt = x3::game::canonBeats(canonFloor);
+                auto rc = [&](uint32_t r) -> std::string {
+                    if (r == x3::game::kNoRoom) return "(absent)";
+                    const auto& rm = canonFloor.rooms[r];
+                    char b[64]; std::snprintf(b, sizeof(b), "(%.0f,%.0f)", rm.cx, rm.cz);
+                    return std::string(b);
+                };
+                x3::logInfo("--world canonlevel beat flow: Jake's Cell " + rc(bt.jakeCell) +
+                            " -> Main Hall " + rc(bt.mainHall) + " -> Security " + rc(bt.security) +
+                            " -> Research " + rc(bt.research) + " -> Medical " + rc(bt.medical) +
+                            " -> Armory " + rc(bt.armory) + " -> Boss Arena " + rc(bt.bossArena) +
+                            " -> Elevator Lobby " + rc(bt.elevatorLobby));
+            }
+        } else {
+            // JSON absent on this machine -> fall back to the legacy tower build so the
+            // path is never broken (the loader logged the miss).
+            x3::logInfo("--world canonlevel: canonical JSON absent; falling back to legacy Level 1 build");
+            game.build(scene, *device, *physics, x3::game::riggedGlbRoot());
+        }
+    } else if (!terrainWorld) {
         game.build(scene, *device, *physics, x3::game::riggedGlbRoot());
         // Audio hookups for Level 1 events (§9, nice-to-have; silent if no device).
         x3::game::Level1Audio la;
@@ -4965,7 +5014,15 @@ int main(int argc, char** argv) {
         // the viewmodel exercise the real GLB load + draw under validation. The
         // Level1Game tick arms the player when the camera is over the pickup, then
         // unlocks/opens Door C, advancing the beat sequence under validation.
-        const float vmX = L1.armoryCenter.x - 1.0f, vmY = 1.7f, vmZ = L1.armoryCenter.z,
+        // --world canonlevel: sit in Jake's Cell (the canonical spawn) instead, so the
+        // per-room cull renders only that cell + its doored neighbours (the perf proof).
+        float camX = L1.armoryCenter.x - 1.0f, camZ = L1.armoryCenter.z;
+        if (canonWorld && canonFloor.valid()) {
+            uint32_t jake = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
+            if (jake == x3::game::kNoRoom) jake = 0;
+            camX = canonFloor.rooms[jake].cx; camZ = canonFloor.rooms[jake].cz;
+        }
+        const float vmX = camX, vmY = 1.7f, vmZ = camZ,
                     vmYaw = 0.0f, vmPitch = 0.0f;
         device->setCamera(vmX, vmY, vmZ, vmYaw, vmPitch, 60.0f);
         audio->setListener(vmX, vmY, vmZ, vmYaw, vmPitch);
@@ -5039,9 +5096,17 @@ int main(int argc, char** argv) {
             // console mid-run so the panel + scrollback + input line render too.
             if (i == 5)  { console->exec("echo smoketest hud line"); hud.toggleConsole(); hud.onChar('a'); hud.onChar('b'); }
             if (i == 20) { hud.closeConsole(); }
+            // Per-room occlusion cull (canonlevel): update the visible-room set from the
+            // camera each frame so render() draws only the current room + its doored
+            // neighbours. (No-op in every other world: scene has no room-tagged entities.)
+            if (canonWorld && canonFloor.valid()) {
+                canonFloor.visibleRoomsAt(eye.x, eye.y, eye.z, canonVisRooms);
+                scene.setVisibleRooms(canonVisRooms);
+            }
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
+                if (canonWorld) canonDoors.drawMeshes(*device, frame);   // SM_Door_A doors (canonlevel)
                 game.drawDoors(*device, frame);
                 game.drawWorldExtras(*device, frame, scene);
                 midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
@@ -5121,7 +5186,15 @@ int main(int argc, char** argv) {
     // in the detention cell), facing +X down the level spine — or, in the terrain
     // world, on the hills near the world center.
     x3::game::Player player;
-    if (terrainWorld) {
+    if (canonWorld && canonFloor.valid()) {
+        // Spawn in Jake's Cell (the canonical detention spawn).
+        uint32_t jake = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
+        if (jake == x3::game::kNoRoom) jake = 0;
+        const x3::game::CanonRoom& jc = canonFloor.rooms[jake];
+        player.spawn(*physics, jc.cx, jc.y0() + 0.1f, jc.cz);
+        x3::logInfo("--world canonlevel: spawned in Jake's Cell; per-room PVS cull active. "
+                    "Walk through doorways to see the cull follow you.");
+    } else if (terrainWorld) {
         player.spawn(*physics, terrainSpawn.x, terrainSpawn.y, terrainSpawn.z);
     } else if (elevatorWorld && elevator.built()) {
         // --world elevator: drop the player ONTO the cab so they ride immediately.
@@ -5516,6 +5589,12 @@ int main(int argc, char** argv) {
                     const auto& ln = npcDialog.currentLine();
                     x3::logInfo("talk: [" + ln.speaker + "] " + ln.text);
                 }
+            } else if (canonWorld && canonFloor.valid() &&
+                       x3::game::tryUse(eye, dir, 3.0f, scene, canonDoors, *physics)) {
+                // Canonical Floor 1: E toggles whatever SM_Door_A slab the player is
+                // aiming at (open if closed, close if open). Proximity also auto-opens
+                // (handled in the per-frame tick), so this is the deliberate manual path.
+                x3::logInfo("use: canon door toggled");
             } else if (game.onUse(eye, dir, scene, *physics)) {  // plays door SFX internally
                 x3::logInfo("use: button pressed — door opening");
             } else if (midFloors.onRescue(eye)) {  // F5 synth-bay captive rescue
@@ -5788,17 +5867,24 @@ int main(int argc, char** argv) {
             prevL = lNow;
             std::vector<x3::rhi::PointLight> fl = game.lightFixtures();
             if (flashlight) {
-                x3::rhi::PointLight pl{};
-                // Project the light a few meters FORWARD along the view so the bright
-                // soft-edged circle lands where you're LOOKING (a flashlight pool that
-                // lights monsters ahead), not just a lantern glow at the eye.
                 const float fX = std::cos(camPitch) * std::cos(camYaw);
                 const float fY = std::sin(camPitch);
                 const float fZ = std::cos(camPitch) * std::sin(camYaw);
-                pl.pos[0] = camX + fX * 3.0f; pl.pos[1] = camY + fY * 3.0f; pl.pos[2] = camZ + fZ * 3.0f;
+                // Main forward pool: the bright soft-edged circle that lights what you
+                // LOOK at. Pulled in to 2 m (was 3) so it no longer skips the near field.
+                x3::rhi::PointLight pl{};
+                pl.pos[0] = camX + fX * 2.0f; pl.pos[1] = camY + fY * 2.0f; pl.pos[2] = camZ + fZ * 2.0f;
                 pl.range  = 38.0f;   // HUGE circle; point-light attenuation gives the SOFT edge
-                pl.color[0] = 6.0f; pl.color[1] = 5.6f; pl.color[2] = 4.9f;  // much brighter warm-white (HDR)
+                pl.color[0] = 6.0f; pl.color[1] = 5.6f; pl.color[2] = 4.9f;  // bright warm-white (HDR)
                 fl.insert(fl.begin(), pl);
+                // Near light AT the eye so things RIGHT in front of you (barrels, enemies,
+                // the held weapon) are ALWAYS lit — a flashlight should never leave the
+                // near field black. Smaller range, same warm-white.
+                x3::rhi::PointLight eyePl{};
+                eyePl.pos[0] = camX + fX * 0.3f; eyePl.pos[1] = camY + fY * 0.3f; eyePl.pos[2] = camZ + fZ * 0.3f;
+                eyePl.range  = 13.0f;
+                eyePl.color[0] = 3.2f; eyePl.color[1] = 3.0f; eyePl.color[2] = 2.6f;
+                fl.insert(fl.begin(), eyePl);
             }
             if (fl.size() > 64) fl.resize(64);
             device->setPointLights(fl.data(), (uint32_t)fl.size());
@@ -5842,6 +5928,26 @@ int main(int argc, char** argv) {
             { const double _pt0 = glfwGetTime();
               game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
               g_perf.tick += glfwGetTime() - _pt0; }
+            // ---- CANONLEVEL DOORS: tick the SM_Door_A slide animation, and PROXIMITY
+            // AUTO-OPEN — a door within ~2.2 m of the player opens; once the player walks
+            // past (>~3.2 m, hysteresis so it doesn't chatter at the threshold) it closes
+            // again. This is the data-driven floor's door behaviour (E-use also toggles
+            // any door the player aims at, handled in the use block above). The slabs
+            // block the player while Closed and slide UP clear of the lintel when Open.
+            if (canonWorld && canonFloor.valid()) {
+                for (uint32_t di = 0; di < canonDoors.count(); ++di) {
+                    x3::game::Door& d = canonDoors.at(di);
+                    const float dx = camPos.x - d.closedPos.x;
+                    const float dz = camPos.z - d.closedPos.z;
+                    const float d2 = dx * dx + dz * dz;
+                    if (d2 < 2.2f * 2.2f) {
+                        if (d.state == x3::game::DoorState::Closed) canonDoors.startOpening(d);
+                    } else if (d2 > 3.2f * 3.2f) {
+                        if (d.state == x3::game::DoorState::Open) canonDoors.toggle(d);   // Open -> Closing
+                    }
+                }
+                canonDoors.update(dt, scene, *physics);
+            }
             // ---- SECRET ROOM payoff: game.tick() ticks the cell terminal + the room's
             // loot collection (latching counts). Apply the gameplay EFFECTS here, where
             // we own the concrete Player: each newly-collected HEALTH pack heals +50, and
@@ -6125,7 +6231,15 @@ int main(int argc, char** argv) {
             // any other bursts) one step. Frozen during a UI menu so chunks hold mid-
             // air with the rest of the sim. No-op cost when the pool is empty.
             device->gpuDebrisStep(simFrozen ? 0.0f : dt);
+            // Per-room occlusion cull (canonlevel): set the visible-room set from the
+            // player's eye each frame -> render() draws only the current room + its
+            // doorway-reachable neighbours. No-op in every other world (no room tags).
+            if (canonWorld && canonFloor.valid()) {
+                canonFloor.visibleRoomsAt(camX, camY, camZ, canonVisRooms);
+                scene.setVisibleRooms(canonVisRooms);
+            }
             scene.render(*device, frame);
+            if (canonWorld) canonDoors.drawMeshes(*device, frame);   // SM_Door_A doors (canonlevel)
             // Level 1 world extras: the bobbing armory pickup + all enemy models
             // (corridor guards/drone, checkpoint guards, Martinez) with hit-flash.
             // Skipped in the outdoor terrain world (no Level 1 controller built).
