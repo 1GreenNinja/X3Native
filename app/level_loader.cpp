@@ -1,0 +1,936 @@
+// EFLZ data-driven level loader. See app/level_loader.h.
+//
+// Clean-room: built from the C++ standard library, the Scene/IRenderDevice/
+// IPhysicsWorld interfaces and the mesh_prims box builder only. The JSON is the
+// owner's own LevelArchitect export. No purchased C#/id Tech engine source consulted.
+#include "level_loader.h"
+#include "mesh_prims.h"
+#include "asset_root.h"
+
+#include "engine/core/x3_log.h"
+
+#include "headless_device.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <memory>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace x3::game {
+
+namespace {
+
+// =====================================================================================
+// MINIMAL JSON PARSER. The repo has no JSON dependency, so this is a small, dependency-
+// free recursive-descent parser sufficient for the v2 project file (objects, arrays,
+// strings, numbers, bool/null). It is NOT a general validator — it parses well-formed
+// JSON as the LevelArchitect emits it. Values are a tagged union (JValue).
+// =====================================================================================
+struct JValue;
+using JObject = std::vector<std::pair<std::string, JValue>>;
+using JArray  = std::vector<JValue>;
+
+struct JValue {
+    enum class T { Null, Bool, Num, Str, Arr, Obj } t = T::Null;
+    bool        b = false;
+    double      num = 0.0;
+    std::string str;
+    std::shared_ptr<JArray>  arr;
+    std::shared_ptr<JObject> obj;
+
+    bool isObj() const { return t == T::Obj && obj; }
+    bool isArr() const { return t == T::Arr && arr; }
+
+    // Object member lookup (returns null JValue if absent).
+    const JValue* find(const std::string& key) const {
+        if (!isObj()) return nullptr;
+        for (const auto& kv : *obj) if (kv.first == key) return &kv.second;
+        return nullptr;
+    }
+    double asNum(double d = 0.0) const { return t == T::Num ? num : d; }
+    std::string asStr(const char* d = "") const { return t == T::Str ? str : std::string(d); }
+};
+
+struct JParser {
+    const char* p;
+    const char* end;
+    bool ok = true;
+
+    explicit JParser(const std::string& s) : p(s.data()), end(s.data() + s.size()) {}
+
+    void skipWs() {
+        while (p < end) {
+            char c = *p;
+            if (c == ' ' || c == '\t' || c == '\n' || c == '\r') { ++p; continue; }
+            break;
+        }
+    }
+    bool eof() { skipWs(); return p >= end; }
+
+    JValue parseValue() {
+        skipWs();
+        if (p >= end) { ok = false; return {}; }
+        char c = *p;
+        if (c == '{') return parseObject();
+        if (c == '[') return parseArray();
+        if (c == '"') { JValue v; v.t = JValue::T::Str; v.str = parseString(); return v; }
+        if (c == 't' || c == 'f') return parseBool();
+        if (c == 'n') { p += 4; JValue v; v.t = JValue::T::Null; return v; }   // null
+        return parseNumber();
+    }
+
+    std::string parseString() {
+        std::string out;
+        ++p; // opening quote
+        while (p < end && *p != '"') {
+            char c = *p++;
+            if (c == '\\' && p < end) {
+                char e = *p++;
+                switch (e) {
+                    case 'n': out += '\n'; break;
+                    case 't': out += '\t'; break;
+                    case 'r': out += '\r'; break;
+                    case '"': out += '"'; break;
+                    case '\\': out += '\\'; break;
+                    case '/': out += '/'; break;
+                    case 'u': {
+                        // Minimal \uXXXX -> keep ASCII, drop non-ASCII (room names are ASCII).
+                        if (p + 4 <= end) {
+                            int code = 0;
+                            for (int i = 0; i < 4; ++i) {
+                                char h = *p++; code <<= 4;
+                                if (h >= '0' && h <= '9') code |= (h - '0');
+                                else if (h >= 'a' && h <= 'f') code |= (h - 'a' + 10);
+                                else if (h >= 'A' && h <= 'F') code |= (h - 'A' + 10);
+                            }
+                            if (code < 128) out += (char)code;
+                        }
+                        break;
+                    }
+                    default: out += e; break;
+                }
+            } else {
+                out += c;
+            }
+        }
+        if (p < end) ++p; // closing quote
+        return out;
+    }
+
+    JValue parseNumber() {
+        const char* s = p;
+        while (p < end) {
+            char c = *p;
+            if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' ||
+                c == 'e' || c == 'E') { ++p; continue; }
+            break;
+        }
+        JValue v; v.t = JValue::T::Num;
+        v.num = std::strtod(std::string(s, p).c_str(), nullptr);
+        return v;
+    }
+
+    JValue parseBool() {
+        JValue v; v.t = JValue::T::Bool;
+        if (*p == 't') { v.b = true;  p += 4; } else { v.b = false; p += 5; }
+        return v;
+    }
+
+    JValue parseArray() {
+        JValue v; v.t = JValue::T::Arr; v.arr = std::make_shared<JArray>();
+        ++p; // [
+        skipWs();
+        if (p < end && *p == ']') { ++p; return v; }
+        while (p < end) {
+            v.arr->push_back(parseValue());
+            skipWs();
+            if (p < end && *p == ',') { ++p; continue; }
+            if (p < end && *p == ']') { ++p; break; }
+            if (p >= end) { ok = false; break; }
+            // tolerate stray
+            ++p;
+        }
+        return v;
+    }
+
+    JValue parseObject() {
+        JValue v; v.t = JValue::T::Obj; v.obj = std::make_shared<JObject>();
+        ++p; // {
+        skipWs();
+        if (p < end && *p == '}') { ++p; return v; }
+        while (p < end) {
+            skipWs();
+            if (p >= end || *p != '"') { ok = false; break; }
+            std::string key = parseString();
+            skipWs();
+            if (p < end && *p == ':') ++p; else { ok = false; break; }
+            JValue val = parseValue();
+            v.obj->emplace_back(std::move(key), std::move(val));
+            skipWs();
+            if (p < end && *p == ',') { ++p; continue; }
+            if (p < end && *p == '}') { ++p; break; }
+            if (p >= end) { ok = false; break; }
+            ++p;
+        }
+        return v;
+    }
+};
+
+// =====================================================================================
+// Build-time graybox helpers (mirror level1.cpp). Each room shell entity is tagged with
+// its room id so Scene::render can cull per room.
+// =====================================================================================
+constexpr float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+constexpr float kWallT     = 0.2f;     // wall thickness
+constexpr float kDoorHalf  = 0.6f;     // doorway opening half-width (1.2 m)
+constexpr float kLintel    = 2.1f;     // head clearance under a doorway lintel
+constexpr float kCeilT     = 0.2f;     // ceiling cap thickness
+
+uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                float hx, float hy, float hz, float cx, float cy, float cz,
+                x3::rhi::TextureHandle tex, const float color[4], uint32_t roomId,
+                bool collide = true, bool visible = true) {
+    x3::prims::PrimMesh geo = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, 0.5f);
+    Entity e;
+    if (visible)
+        e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                   geo.index.data(), (uint32_t)geo.index.size());
+    e.tex = tex;
+    for (int i = 0; i < 4; ++i) e.baseColor[i] = color[i];
+    for (int i = 0; i < 16; ++i) e.transform[i] = kIdentity[i];
+    e.tag = (uint32_t)Tag::Static;
+    e.visible = visible;
+    e.roomId = roomId;
+    if (collide)
+        e.body = physics.addStaticMesh(geo.cverts.data(), (uint32_t)(geo.cverts.size() / 3),
+                                       geo.cindex.data(), (uint32_t)geo.cindex.size());
+    return scene.add(e);
+}
+
+// A wall running along X (plane z=const), spanning x in [x0,x1], rising floorY..floorY+h.
+void wallX(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
+           float x0, float x1, float z, float floorY, float h,
+           x3::rhi::TextureHandle tex, const float color[4], uint32_t room, bool vis) {
+    if (x1 - x0 < 0.05f) return;
+    addBox(s, d, p, (x1 - x0) * 0.5f, h * 0.5f, kWallT * 0.5f,
+           (x0 + x1) * 0.5f, floorY + h * 0.5f, z, tex, color, room, true, vis);
+}
+// A wall running along Z (plane x=const), spanning z in [z0,z1], rising floorY..floorY+h.
+void wallZ(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
+           float z0, float z1, float x, float floorY, float h,
+           x3::rhi::TextureHandle tex, const float color[4], uint32_t room, bool vis) {
+    if (z1 - z0 < 0.05f) return;
+    addBox(s, d, p, kWallT * 0.5f, h * 0.5f, (z1 - z0) * 0.5f,
+           x, floorY + h * 0.5f, (z0 + z1) * 0.5f, tex, color, room, true, vis);
+}
+// A lintel header above a doorway gap centered at `c` along the wall run.
+void lintelX(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
+             float xc, float z, float floorY, float h, x3::rhi::TextureHandle tex,
+             const float color[4], uint32_t room, bool vis) {
+    const float lh = (h - kLintel) * 0.5f;
+    if (lh <= 0.0f) return;
+    addBox(s, d, p, kDoorHalf, lh, kWallT * 0.5f, xc, floorY + kLintel + lh, z, tex, color, room, true, vis);
+}
+void lintelZ(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
+             float x, float zc, float floorY, float h, x3::rhi::TextureHandle tex,
+             const float color[4], uint32_t room, bool vis) {
+    const float lh = (h - kLintel) * 0.5f;
+    if (lh <= 0.0f) return;
+    addBox(s, d, p, kWallT * 0.5f, lh, kDoorHalf, x, floorY + kLintel + lh, zc, tex, color, room, true, vis);
+}
+
+} // namespace
+
+// =====================================================================================
+// CanonFloor queries (point-in-room + PVS).
+// =====================================================================================
+uint32_t CanonFloor::roomAt(float x, float y, float z, float margin) const {
+    for (uint32_t i = 0; i < (uint32_t)rooms.size(); ++i) {
+        const CanonRoom& r = rooms[i];
+        if (x >= r.x0() - margin && x <= r.x1() + margin &&
+            z >= r.z0() - margin && z <= r.z1() + margin &&
+            y >= r.y0() - margin && y <= r.y1() + margin)
+            return i;
+    }
+    return kNoRoom;
+}
+
+uint32_t CanonFloor::roomByName(const std::string& exactOrSub) const {
+    for (uint32_t i = 0; i < (uint32_t)rooms.size(); ++i)
+        if (rooms[i].name == exactOrSub) return i;                 // exact first
+    for (uint32_t i = 0; i < (uint32_t)rooms.size(); ++i)
+        if (rooms[i].name.find(exactOrSub) != std::string::npos) return i;  // substring
+    return kNoRoom;
+}
+
+CanonBeats canonBeats(const CanonFloor& floor) {
+    CanonBeats b;
+    b.jakeCell      = floor.roomByName("Jake");
+    b.mainHall      = floor.roomByName("Main Hall");
+    b.security      = floor.roomByName("Security Station");
+    b.research      = floor.roomByName("Research Lab");
+    b.medical       = floor.roomByName("Medical Bay");
+    b.armory        = floor.roomByName("Armory");
+    b.bossArena     = floor.roomByName("Boss Arena");
+    b.elevatorLobby = floor.roomByName("Elevator Lobby");
+    return b;
+}
+
+void CanonFloor::visibleRoomsAt(float x, float y, float z, std::vector<uint32_t>& out) const {
+    out.clear();
+    if (rooms.empty()) return;
+    uint32_t cur = roomAt(x, y, z);
+    if (cur == kNoRoom) {
+        // Fall back to the nearest room (by center distance) so a player straddling a
+        // doorway seam / just outside a wall never sees an empty culled world.
+        float best = 1e30f;
+        for (uint32_t i = 0; i < (uint32_t)rooms.size(); ++i) {
+            float dx = x - rooms[i].cx, dy = y - rooms[i].cy, dz = z - rooms[i].cz;
+            float d2 = dx * dx + dy * dy + dz * dz;
+            if (d2 < best) { best = d2; cur = i; }
+        }
+    }
+    if (cur == kNoRoom) return;
+    if (cur < (uint32_t)pvs.size()) out = pvs[cur];
+    else out.push_back(cur);
+}
+
+// =====================================================================================
+// PARSE + DOORWAY RESOLVER.
+// =====================================================================================
+namespace {
+
+// Classify a door pair (mirrors tools/connectivity_audit.py so the histogram matches).
+DoorwayKind classify(const CanonRoom& a, const CanonRoom& b, float& outCx, float& outCz, uint32_t& outAxis) {
+    constexpr float TOL = 0.8f;       // edge-touch tolerance
+    constexpr float MINSPAN = 1.0f;   // minimum shared span to cut a doorway
+
+    if (std::fabs(a.cy - b.cy) > 3.0f) {
+        // Big vertical delta: cross-level (stairs/descent tube). Opening at the shared XZ.
+        outCx = (a.cx + b.cx) * 0.5f;
+        outCz = (a.cz + b.cz) * 0.5f;
+        outAxis = 0;
+        return DoorwayKind::CrossLevel;
+    }
+    const float ax0 = a.x0(), ax1 = a.x1(), az0 = a.z0(), az1 = a.z1();
+    const float bx0 = b.x0(), bx1 = b.x1(), bz0 = b.z0(), bz1 = b.z1();
+    const float ox = std::min(ax1, bx1) - std::max(ax0, bx0);   // X overlap
+    const float oz = std::min(az1, bz1) - std::max(az0, bz0);   // Z overlap
+
+    if (ox > TOL && oz > TOL) {
+        // Interpenetrating: opening in the overlap center.
+        outCx = (std::max(ax0, bx0) + std::min(ax1, bx1)) * 0.5f;
+        outCz = (std::max(az0, bz0) + std::min(az1, bz1)) * 0.5f;
+        outAxis = (ox < oz) ? 0u : 1u;
+        return DoorwayKind::Overlap;
+    }
+    // Adjacent-X: walls share an X plane (a.x1≈b.x0 or b.x1≈a.x0), with a Z overlap span.
+    if (oz > MINSPAN && (std::fabs(ax1 - bx0) <= TOL || std::fabs(bx1 - ax0) <= TOL)) {
+        outCx = std::fabs(ax1 - bx0) <= TOL ? (ax1 + bx0) * 0.5f : (bx1 + ax0) * 0.5f;
+        outCz = (std::max(az0, bz0) + std::min(az1, bz1)) * 0.5f;
+        outAxis = 0;   // wall plane is X=const, door thin in X
+        return DoorwayKind::AdjacentX;
+    }
+    // Adjacent-Z: walls share a Z plane, with an X overlap span.
+    if (ox > MINSPAN && (std::fabs(az1 - bz0) <= TOL || std::fabs(bz1 - az0) <= TOL)) {
+        outCx = (std::max(ax0, bx0) + std::min(ax1, bx1)) * 0.5f;
+        outCz = std::fabs(az1 - bz0) <= TOL ? (az1 + bz0) * 0.5f : (bz1 + az0) * 0.5f;
+        outAxis = 1;   // wall plane is Z=const, door thin in Z
+        return DoorwayKind::AdjacentZ;
+    }
+    // Otherwise a GAP: bridge it with a short connecting corridor. Opening center is the
+    // midpoint of the two room centers; the bridge axis is the larger separation axis.
+    const float sepX = std::max(ax0, bx0) - std::min(ax1, bx1);
+    const float sepZ = std::max(az0, bz0) - std::min(az1, bz1);
+    outCx = (a.cx + b.cx) * 0.5f;
+    outCz = (a.cz + b.cz) * 0.5f;
+    outAxis = (sepX > sepZ) ? 0u : 1u;   // gap is wider in X => corridor runs in X
+    return DoorwayKind::GapBridge;
+}
+
+} // namespace
+
+CanonFloor loadCanonFloor(std::string_view jsonPath, int floorNum) {
+    CanonFloor floor;
+    floor.floorNum = floorNum;
+
+    std::ifstream f((std::string(jsonPath)), std::ios::binary);
+    if (!f) {
+        x3::logInfo("loadCanonFloor: JSON not found at " + std::string(jsonPath) +
+                    " (fall back to legacy build)");
+        return floor;   // valid()==false
+    }
+    std::stringstream ss; ss << f.rdbuf();
+    std::string text = ss.str();
+    if (text.empty()) return floor;
+
+    JParser jp(text);
+    JValue root = jp.parseValue();
+    if (!jp.ok || !root.isObj()) {
+        x3::logInfo("loadCanonFloor: JSON parse failed");
+        return floor;
+    }
+    const JValue* floors = root.find("floors");
+    if (!floors || !floors->isObj()) { x3::logInfo("loadCanonFloor: no 'floors' object"); return floor; }
+    const std::string key = std::to_string(floorNum);
+    const JValue* fl = floors->find(key);
+    if (!fl || !fl->isObj()) { x3::logInfo("loadCanonFloor: floor " + key + " absent"); return floor; }
+
+    if (const JValue* nm = fl->find("name")) floor.name = nm->asStr();
+    const JValue* rooms = fl->find("rooms");
+    const JValue* doors = fl->find("doors");
+    if (!rooms || !rooms->isArr()) { x3::logInfo("loadCanonFloor: floor has no rooms[]"); return floor; }
+
+    for (const JValue& rv : *rooms->arr) {
+        CanonRoom r;
+        if (const JValue* v = rv.find("n")) r.name = v->asStr();
+        if (const JValue* v = rv.find("t")) r.type = v->asStr();
+        if (const JValue* v = rv.find("x")) r.cx = (float)v->asNum();
+        if (const JValue* v = rv.find("y")) r.cy = (float)v->asNum();
+        if (const JValue* v = rv.find("z")) r.cz = (float)v->asNum();
+        if (const JValue* v = rv.find("w")) r.w = (float)v->asNum();
+        if (const JValue* v = rv.find("h")) r.h = (float)v->asNum();
+        if (const JValue* v = rv.find("d")) r.d = (float)v->asNum();
+        floor.rooms.push_back(std::move(r));
+    }
+
+    const uint32_t nRooms = (uint32_t)floor.rooms.size();
+
+    // ---- Build the doorway list by classifying every JSON door pair. The 2 overlap
+    // pairs are handled by classify() (DoorwayKind::Overlap -> opening cut in the
+    // overlap region); we leave their geometry in place (graybox-acceptable — the
+    // opening keeps them connected). ----
+    if (doors && doors->isArr()) {
+        for (const JValue& dv : *doors->arr) {
+            if (!dv.isArr() || dv.arr->size() < 2) continue;
+            uint32_t a = (uint32_t)(*dv.arr)[0].asNum();
+            uint32_t b = (uint32_t)(*dv.arr)[1].asNum();
+            if (a >= nRooms || b >= nRooms) continue;
+            CanonDoorway dw; dw.a = a; dw.b = b;
+            dw.kind = classify(floor.rooms[a], floor.rooms[b], dw.cx, dw.cz, dw.axis);
+            // Doorway Y: at the LOWER room's floor (so the opening sits on the deck). For
+            // cross-level it is the higher room's floor (top of the descent tube).
+            const CanonRoom& ra = floor.rooms[a];
+            const CanonRoom& rb = floor.rooms[b];
+            if (dw.kind == DoorwayKind::CrossLevel)
+                dw.cy = std::max(ra.y0(), rb.y0());
+            else
+                dw.cy = std::max(ra.y0(), rb.y0());
+            floor.doorways.push_back(dw);
+        }
+    }
+    floor.jsonDoorCount = (uint32_t)floor.doorways.size();   // doorways before synthesized edges
+
+    // ---- ISOLATED-ROOM RESOLVER (the 2 deep rooms Cave System / Hidden Sub-Level have
+    // NO door in the JSON). Connect each VERTICALLY (descent tube) to the best surface
+    // room above it: prefer a Stairway/Elevator-type room near its XZ, else the nearest
+    // room by horizontal distance. This makes the level fully navigable (the spec's
+    // "connect VERTICALLY via stairs/descent tube"). The synthesized edge is CrossLevel
+    // so the builder drops a vertical tube + the PVS links the two rooms. ----
+    {
+        std::vector<int> degree(nRooms, 0);
+        for (const CanonDoorway& dw : floor.doorways) { ++degree[dw.a]; ++degree[dw.b]; }
+        for (uint32_t i = 0; i < nRooms; ++i) {
+            if (degree[i] != 0) continue;                       // not isolated
+            const CanonRoom& iso = floor.rooms[i];
+            // Find the best ABOVE-ground link target: smallest horizontal (XZ) distance,
+            // strongly preferring a stairway/elevator descent room.
+            int best = -1; float bestScore = 1e30f;
+            for (uint32_t j = 0; j < nRooms; ++j) {
+                if (j == i) continue;
+                if (floor.rooms[j].cy <= iso.cy + 3.0f) continue;   // must be meaningfully ABOVE
+                float dx = floor.rooms[j].cx - iso.cx, dz = floor.rooms[j].cz - iso.cz;
+                float score = std::sqrt(dx * dx + dz * dz);
+                const std::string& t = floor.rooms[j].type;
+                if (t.find("Stair") != std::string::npos || t.find("Elevator") != std::string::npos)
+                    score *= 0.25f;                              // prefer a real descent point
+                if (score < bestScore) { bestScore = score; best = (int)j; }
+            }
+            if (best >= 0) {
+                CanonDoorway dw; dw.a = (uint32_t)best; dw.b = i;   // a = upper, b = deep
+                dw.kind = DoorwayKind::CrossLevel;
+                dw.cx = floor.rooms[best].cx;                    // tube at the upper room's XZ
+                dw.cz = floor.rooms[best].cz;
+                dw.cy = floor.rooms[best].y0();
+                dw.axis = 0;
+                floor.doorways.push_back(dw);
+                x3::logInfo("loadCanonFloor: linked isolated room '" + iso.name +
+                            "' -> '" + floor.rooms[best].name + "' via vertical descent tube");
+            }
+        }
+    }
+
+    // ---- PORTAL PVS: for each room, the set of room ids reachable through a doorway
+    // (itself + every directly-doored neighbour). This is the visibility set the cull
+    // uses (current room + rooms you can see through a doorway from it). ----
+    floor.pvs.assign(nRooms, {});
+    for (uint32_t i = 0; i < nRooms; ++i) floor.pvs[i].push_back(i);   // self
+    for (const CanonDoorway& dw : floor.doorways) {
+        floor.pvs[dw.a].push_back(dw.b);
+        floor.pvs[dw.b].push_back(dw.a);
+    }
+    // De-duplicate each PVS list (a pair may appear twice in the JSON).
+    for (auto& v : floor.pvs) {
+        std::sort(v.begin(), v.end());
+        v.erase(std::unique(v.begin(), v.end()), v.end());
+    }
+
+    x3::logInfo("loadCanonFloor: floor " + key + " '" + floor.name + "' parsed " +
+                std::to_string(nRooms) + " rooms, " + std::to_string(floor.doorways.size()) +
+                " doorways");
+    return floor;
+}
+
+std::string canonProjectJsonPath() {
+    return std::string(R"(C:\GameDev\OneDrive\GameDev\DellGameDev\Escape48BLN\LevelArchitect\EscapeLab48_AllFloors_v2.project.json)");
+}
+
+// =====================================================================================
+// BUILDER. Each room is built as a shell: floor slab, ceiling lid (collision-only),
+// and 4 walls. A wall face gets a 1.2 m doorway gap (+ lintel) wherever the resolver
+// produced a doorway on that face. Gap-bridge doorways add a short connecting corridor;
+// cross-level doorways add a vertical descent tube. Every entity carries its room id.
+// =====================================================================================
+void buildCanonFloor(const CanonFloor& floor, Scene& scene,
+                     x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                     const CanonBuildOpts& opts) {
+    if (!floor.valid()) return;
+
+    const bool wallVis  = !opts.artMaskWalls;
+    const bool floorVis = !opts.artMaskFloors;
+
+    // Shared procedural sci-fi textures (mirror level1.cpp's surfaces).
+    constexpr uint32_t kTexN = 512;
+    auto floorPx = x3::prims::makeFloorGrateRGBA(kTexN, 2, x3::prims::detail::kNoTint, false);
+    x3::rhi::TextureHandle floorTex = device.createTexture(floorPx.data(), kTexN, kTexN, true);
+    auto wallPxA = x3::prims::makeSciFiPanelRGBA(kTexN, 2, x3::prims::detail::kNoTint,
+                                                 60, 170, 200, 0.16f, x3::prims::WallVariant::Plain);
+    x3::rhi::TextureHandle wallTexA = device.createTexture(wallPxA.data(), kTexN, kTexN, true);
+    auto wallPxB = x3::prims::makeSciFiPanelRGBA(kTexN, 2, x3::prims::detail::kNoTint,
+                                                 60, 170, 200, 0.0f, x3::prims::WallVariant::Conduit);
+    x3::rhi::TextureHandle wallTexB = device.createTexture(wallPxB.data(), kTexN, kTexN, true);
+    auto wallPxC = x3::prims::makeSciFiPanelRGBA(kTexN, 2, x3::prims::detail::kNoTint,
+                                                 60, 170, 200, 0.0f, x3::prims::WallVariant::Vent);
+    x3::rhi::TextureHandle wallTexC = device.createTexture(wallPxC.data(), kTexN, kTexN, true);
+    const x3::rhi::TextureHandle wallVariants[3] = { wallTexA, wallTexB, wallTexC };
+    auto ceilPx = x3::prims::makeCeilingPanelRGBA(kTexN, 3, x3::prims::detail::kNoTint, true);
+    x3::rhi::TextureHandle ceilTex = device.createTexture(ceilPx.data(), kTexN, kTexN, true);
+    const float ceilWhite[4] = { 1, 1, 1, 1 };
+
+    // Per-room-type tints so the graybox reads as distinct wings.
+    auto tintFor = [](const std::string& type, float out[4]) {
+        out[3] = 1.0f;
+        if (type.find("Cell") != std::string::npos || type == "Jake Cell") { out[0]=0.50f; out[1]=0.55f; out[2]=0.68f; }
+        else if (type.find("Boss") != std::string::npos)                   { out[0]=0.70f; out[1]=0.35f; out[2]=0.32f; }
+        else if (type.find("Hallway") != std::string::npos)                { out[0]=0.58f; out[1]=0.62f; out[2]=0.74f; }
+        else if (type.find("Medical") != std::string::npos)                { out[0]=0.62f; out[1]=0.78f; out[2]=0.76f; }
+        else if (type.find("Armory") != std::string::npos)                 { out[0]=0.66f; out[1]=0.56f; out[2]=0.34f; }
+        else if (type.find("Cave") != std::string::npos ||
+                 type.find("Undergroun") != std::string::npos)             { out[0]=0.42f; out[1]=0.46f; out[2]=0.40f; }
+        else if (type.find("Elevator") != std::string::npos ||
+                 type.find("Stair") != std::string::npos)                  { out[0]=0.40f; out[1]=0.42f; out[2]=0.50f; }
+        else                                                               { out[0]=0.60f; out[1]=0.64f; out[2]=0.72f; }
+    };
+
+    const uint32_t nRooms = (uint32_t)floor.rooms.size();
+
+    // For each room+face, collect the doorway gap CENTERS to cut on that face. A face is
+    // identified by (axis, plane-coordinate). We accumulate per (room,face) the gap
+    // coordinate(s) along the wall run. AdjacentX cuts on an X-plane wall of BOTH rooms;
+    // AdjacentZ on a Z-plane wall; Overlap on the matching wall. Gap/cross-level rooms
+    // get their own bridge/tube (the rooms keep solid walls; the bridge punches through).
+    // gapXneg/Xpos = doorway gap centers (z coords) on the -X / +X wall of a room;
+    // gapZneg/Zpos = gap centers (x coords) on the -Z / +Z wall.
+    std::vector<std::vector<float>> gapXneg(nRooms), gapXpos(nRooms), gapZneg(nRooms), gapZpos(nRooms);
+
+    auto addGapToRoom = [&](uint32_t room, const CanonDoorway& dw) {
+        const CanonRoom& r = floor.rooms[room];
+        if (dw.axis == 0) {
+            // Door thin in X -> it lives on an X-plane wall (-X or +X) of the room.
+            if (std::fabs(dw.cx - r.x0()) < std::fabs(dw.cx - r.x1())) gapXneg[room].push_back(dw.cz);
+            else                                                        gapXpos[room].push_back(dw.cz);
+        } else {
+            // Door thin in Z -> a Z-plane wall (-Z or +Z) of the room.
+            if (std::fabs(dw.cz - r.z0()) < std::fabs(dw.cz - r.z1())) gapZneg[room].push_back(dw.cx);
+            else                                                        gapZpos[room].push_back(dw.cx);
+        }
+    };
+    for (const CanonDoorway& dw : floor.doorways) {
+        if (dw.kind == DoorwayKind::AdjacentX || dw.kind == DoorwayKind::AdjacentZ ||
+            dw.kind == DoorwayKind::Overlap) {
+            addGapToRoom(dw.a, dw);
+            addGapToRoom(dw.b, dw);
+        }
+    }
+
+    // Helper: build a wall along Z (plane x=const) for room `ri`, with doorway gaps at
+    // the given z coordinates (each a 1.2 m opening + lintel).
+    auto buildWallZWithGaps = [&](uint32_t ri, float x, float z0, float z1, float floorY, float h,
+                                  const std::vector<float>& gaps, x3::rhi::TextureHandle tex,
+                                  const float tint[4]) {
+        // Sort gaps + build solid segments between them.
+        std::vector<float> g = gaps;
+        std::sort(g.begin(), g.end());
+        float cursor = z0;
+        for (float gc : g) {
+            float lo = gc - kDoorHalf, hi = gc + kDoorHalf;
+            if (lo < cursor) lo = cursor;        // clamp inside the wall run
+            if (hi > z1) hi = z1;
+            if (lo > cursor) wallZ(scene, device, physics, cursor, lo, x, floorY, h, tex, tint, ri, wallVis);
+            lintelZ(scene, device, physics, x, gc, floorY, h, tex, tint, ri, wallVis);
+            cursor = std::max(cursor, hi);
+        }
+        if (cursor < z1) wallZ(scene, device, physics, cursor, z1, x, floorY, h, tex, tint, ri, wallVis);
+        if (g.empty())   wallZ(scene, device, physics, z0, z1, x, floorY, h, tex, tint, ri, wallVis);
+    };
+    auto buildWallXWithGaps = [&](uint32_t ri, float z, float x0, float x1, float floorY, float h,
+                                  const std::vector<float>& gaps, x3::rhi::TextureHandle tex,
+                                  const float tint[4]) {
+        std::vector<float> g = gaps;
+        std::sort(g.begin(), g.end());
+        float cursor = x0;
+        for (float gc : g) {
+            float lo = gc - kDoorHalf, hi = gc + kDoorHalf;
+            if (lo < cursor) lo = cursor;
+            if (hi > x1) hi = x1;
+            if (lo > cursor) wallX(scene, device, physics, cursor, lo, z, floorY, h, tex, tint, ri, wallVis);
+            lintelX(scene, device, physics, gc, z, floorY, h, tex, tint, ri, wallVis);
+            cursor = std::max(cursor, hi);
+        }
+        if (cursor < x1) wallX(scene, device, physics, cursor, x1, z, floorY, h, tex, tint, ri, wallVis);
+        if (g.empty())   wallX(scene, device, physics, x0, x1, z, floorY, h, tex, tint, ri, wallVis);
+    };
+
+    // ---- Build each room shell. ----
+    for (uint32_t ri = 0; ri < nRooms; ++ri) {
+        const CanonRoom& r = floor.rooms[ri];
+        const float floorY = r.y0();
+        const float h = r.h;
+        float tint[4]; tintFor(r.type, tint);
+        const x3::rhi::TextureHandle wTex = wallVariants[ri % 3];
+
+        // Floor slab (top flush with floorY).
+        addBox(scene, device, physics, r.w * 0.5f, 0.05f, r.d * 0.5f,
+               r.cx, floorY - 0.05f, r.cz, floorTex, tint, ri, true, floorVis);
+        // Ceiling lid (collision-only, invisible — GLB ceiling drapes over).
+        addBox(scene, device, physics, r.w * 0.5f, kCeilT * 0.5f, r.d * 0.5f,
+               r.cx, r.y1() + kCeilT * 0.5f, r.cz, ceilTex, ceilWhite, ri, true, /*visible*/false);
+
+        // 4 walls with doorway gaps where the resolver produced them.
+        buildWallZWithGaps(ri, r.x0(), r.z0(), r.z1(), floorY, h, gapXneg[ri], wTex, tint);   // -X wall (runs in Z)
+        buildWallZWithGaps(ri, r.x1(), r.z0(), r.z1(), floorY, h, gapXpos[ri], wTex, tint);   // +X wall
+        buildWallXWithGaps(ri, r.z0(), r.x0(), r.x1(), floorY, h, gapZneg[ri], wTex, tint);   // -Z wall (runs in X)
+        buildWallXWithGaps(ri, r.z1(), r.x0(), r.x1(), floorY, h, gapZpos[ri], wTex, tint);   // +Z wall
+    }
+
+    // ---- GAP BRIDGES: a short walled corridor connecting two rooms across a gap. The
+    // corridor runs between the two nearest faces along the separation axis, 1.2 m wide,
+    // floor-to-a-low-ceiling. Tagged to room `a` so it culls with that room's PVS (a is
+    // also in b's PVS, so it shows from either side). The bridge punches the connection;
+    // we also cut a doorway in each room's facing wall at the bridge mouth. ----
+    const float bridgeTint[4] = { 0.52f, 0.56f, 0.66f, 1.0f };
+    for (const CanonDoorway& dw : floor.doorways) {
+        if (dw.kind != DoorwayKind::GapBridge) continue;
+        const CanonRoom& a = floor.rooms[dw.a];
+        const CanonRoom& b = floor.rooms[dw.b];
+        const float floorY = std::max(a.y0(), b.y0());
+        const float h = std::min(std::min(a.h, b.h), 3.0f);   // low connecting ceiling
+        if (dw.axis == 0) {
+            // Gap is along X: corridor runs in X between a.x1/b.x0 (whichever order).
+            float xlo, xhi;
+            if (a.cx < b.cx) { xlo = a.x1(); xhi = b.x0(); } else { xlo = b.x1(); xhi = a.x0(); }
+            if (xhi < xlo) std::swap(xlo, xhi);
+            const float zc = dw.cz;
+            // Two side walls of the corridor at z = zc ± kDoorHalf, floor slab + ceiling.
+            addBox(scene, device, physics, (xhi - xlo) * 0.5f, 0.05f, kDoorHalf,
+                   (xlo + xhi) * 0.5f, floorY - 0.05f, zc, floorTex, bridgeTint, dw.a, true, floorVis);
+            wallX(scene, device, physics, xlo, xhi, zc - kDoorHalf - kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
+            wallX(scene, device, physics, xlo, xhi, zc + kDoorHalf + kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
+            addBox(scene, device, physics, (xhi - xlo) * 0.5f, kCeilT * 0.5f, kDoorHalf + kWallT,
+                   (xlo + xhi) * 0.5f, floorY + h + kCeilT * 0.5f, zc, ceilTex, ceilWhite, dw.a, true, false);
+        } else {
+            // Gap is along Z.
+            float zlo, zhi;
+            if (a.cz < b.cz) { zlo = a.z1(); zhi = b.z0(); } else { zlo = b.z1(); zhi = a.z0(); }
+            if (zhi < zlo) std::swap(zlo, zhi);
+            const float xc = dw.cx;
+            addBox(scene, device, physics, kDoorHalf, 0.05f, (zhi - zlo) * 0.5f,
+                   xc, floorY - 0.05f, (zlo + zhi) * 0.5f, floorTex, bridgeTint, dw.a, true, floorVis);
+            wallZ(scene, device, physics, zlo, zhi, xc - kDoorHalf - kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
+            wallZ(scene, device, physics, zlo, zhi, xc + kDoorHalf + kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
+            addBox(scene, device, physics, kDoorHalf + kWallT, kCeilT * 0.5f, (zhi - zlo) * 0.5f,
+                   xc, floorY + h + kCeilT * 0.5f, (zlo + zhi) * 0.5f, ceilTex, ceilWhite, dw.a, true, false);
+        }
+    }
+
+    // ---- CROSS-LEVEL DESCENT TUBES: link an isolated deep room (Cave System / Hidden
+    // Sub-Level, y=-174/-178) to its high counterpart via a vertical shaft column at the
+    // shared XZ. A 3 m square hollow tube spanning the Y gap; tagged to the upper room
+    // (a) so it shows from the elevator-lobby level. Reachability graybox (no ladder
+    // sim) — the player descends through it. ----
+    const float tubeTint[4] = { 0.36f, 0.40f, 0.46f, 1.0f };
+    for (const CanonDoorway& dw : floor.doorways) {
+        if (dw.kind != DoorwayKind::CrossLevel) continue;
+        const CanonRoom& a = floor.rooms[dw.a];
+        const CanonRoom& b = floor.rooms[dw.b];
+        const float topY = std::min(a.y0(), b.y0());      // floor of the higher room
+        const float botY = std::max(a.y0(), b.y0());      // floor of the LOWER (deeper) room
+        const float yLo = std::min(topY, botY), yHi = std::max(topY, botY);
+        const float th = (yHi - yLo) + 1.0f;
+        const float tx = dw.cx, tz = dw.cz;
+        const float thx = 1.5f, thz = 1.5f;               // 3 m square tube
+        // 4 thin walls of the tube (open top/bottom).
+        addBox(scene, device, physics, thx, th * 0.5f, kWallT * 0.5f, tx, yLo + th * 0.5f, tz - thz, wallTexA, tubeTint, dw.a, true, wallVis);
+        addBox(scene, device, physics, thx, th * 0.5f, kWallT * 0.5f, tx, yLo + th * 0.5f, tz + thz, wallTexA, tubeTint, dw.a, true, wallVis);
+        addBox(scene, device, physics, kWallT * 0.5f, th * 0.5f, thz, tx - thx, yLo + th * 0.5f, tz, wallTexA, tubeTint, dw.a, true, wallVis);
+        addBox(scene, device, physics, kWallT * 0.5f, th * 0.5f, thz, tx + thx, yLo + th * 0.5f, tz, wallTexA, tubeTint, dw.a, true, wallVis);
+    }
+
+    // ---- SM_Door_A GLB DOORS at each cut doorway (adjacency / overlap openings). The
+    // door + its frame ship together (SM_DoorFrame_A bundled by the kit); buildLevelDoor
+    // loads + scales the shared SM_Door_A GLB to the opening and slides it UP to clear.
+    // Gap-bridge corridors + cross-level tubes are OPEN passages (no slab). Each door
+    // entity is room-tagged (to the lower-indexed room of the pair) so it culls with the
+    // room. Missing GLB -> the door keeps its graybox box (buildLevelDoor fallback). ----
+    if (opts.doors) {
+        uint32_t built = 0;
+        for (const CanonDoorway& dw : floor.doorways) {
+            if (dw.kind != DoorwayKind::AdjacentX && dw.kind != DoorwayKind::AdjacentZ &&
+                dw.kind != DoorwayKind::Overlap)
+                continue;
+            DoorSpec spec;
+            spec.doorwayCenter = x3::phys::Vec3{ dw.cx, dw.cy, dw.cz };
+            // axis 0 => door thin in X (wall plane X=const) => DoorAxis::AlongZ; axis 1 => AlongX.
+            spec.axis = (dw.axis == 0) ? DoorAxis::AlongZ : DoorAxis::AlongX;
+            spec.halfWidth = kDoorHalf;          // matches the 1.2 m cut opening
+            spec.height    = kLintel;            // clears under the lintel header
+            spec.withButton = false;             // static drape (no per-door button spam)
+            uint32_t di = buildLevelDoor(scene, *opts.doors, device, physics, spec);
+            // Room-tag the door's entity so it culls with its room's PVS.
+            uint32_t ent = opts.doors->at(di).entity;
+            if (ent != kNoLink && ent < scene.size())
+                scene.get(ent).roomId = dw.a;
+            ++built;
+        }
+        x3::logInfo("buildCanonFloor: placed " + std::to_string(built) +
+                    " SM_Door_A doors at cut doorways");
+    }
+
+    x3::logInfo("buildCanonFloor: floor " + std::to_string(floor.floorNum) + " built " +
+                std::to_string(scene.size()) + " scene entities for " +
+                std::to_string(nRooms) + " rooms");
+}
+
+// =====================================================================================
+// SELF-TEST (--test-canonlevel).
+// =====================================================================================
+namespace {
+int g_pass = 0, g_fail = 0;
+void check(bool ok, const char* what) {
+    if (ok) { ++g_pass; x3::logInfo(std::string("  PASS ") + what); }
+    else    { ++g_fail; x3::logInfo(std::string("  FAIL ") + what); }
+}
+} // namespace
+
+bool runCanonLevelSelfTest() {
+    g_pass = g_fail = 0;
+    x3::logInfo("running EFLZ data-driven canonical-level (Floor 1) self-test (C1-C8)...");
+
+    // ---- C1: JSON loads + Floor 1 parses 53 rooms / 111 doorways. ----
+    CanonFloor floor = loadCanonFloor(canonProjectJsonPath(), 1);
+    if (!floor.valid()) {
+        // The owner's project file is not on this machine. Report cleanly and treat as a
+        // skip (the legacy build is the fallback). A missing source must not be a hard
+        // failure for portability — but we still flag it loudly.
+        x3::logInfo("  SKIP canonical JSON not present on this machine; legacy build is the fallback");
+        x3::logInfo("--test-canonlevel: SKIPPED (no JSON) — treating as PASS (fallback path is legacy level1)");
+        return true;
+    }
+    check(floor.rooms.size() == 53, "C1a Floor 1 has 53 rooms");
+    check(floor.jsonDoorCount == 111, "C1b Floor 1 parses 111 JSON doors");
+    check(floor.name == "Detention Level", "C1c Floor 1 name = 'Detention Level'");
+
+    // ---- C2: Jake's Cell present at the canonical center (NO axis flip). ----
+    {
+        int jake = -1;
+        for (uint32_t i = 0; i < floor.rooms.size(); ++i)
+            if (floor.rooms[i].name.find("Jake") != std::string::npos) { jake = (int)i; break; }
+        bool found = jake >= 0;
+        bool dims = found && std::fabs(floor.rooms[jake].cx - 2.0f) < 0.01f &&
+                    std::fabs(floor.rooms[jake].cz - 40.0f) < 0.01f &&
+                    std::fabs(floor.rooms[jake].w - 4.0f) < 0.01f &&
+                    std::fabs(floor.rooms[jake].h - 3.5f) < 0.01f;
+        check(found && dims, "C2 Jake's Cell at canonical (2,0,40) 4x3.5x4 (no axis flip)");
+    }
+
+    // ---- C3: doorway resolver kind histogram (matches tools/connectivity_audit.py). ----
+    {
+        uint32_t adjX = 0, adjZ = 0, bridge = 0, overlap = 0, cross = 0, none = 0;
+        for (const CanonDoorway& dw : floor.doorways) {
+            switch (dw.kind) {
+                case DoorwayKind::AdjacentX:  ++adjX; break;
+                case DoorwayKind::AdjacentZ:  ++adjZ; break;
+                case DoorwayKind::GapBridge:  ++bridge; break;
+                case DoorwayKind::Overlap:    ++overlap; break;
+                case DoorwayKind::CrossLevel: ++cross; break;
+                default: ++none; break;
+            }
+        }
+        x3::logInfo("    doorway kinds: adjX=" + std::to_string(adjX) + " adjZ=" + std::to_string(adjZ) +
+                    " bridge=" + std::to_string(bridge) + " overlap=" + std::to_string(overlap) +
+                    " cross=" + std::to_string(cross) + " none=" + std::to_string(none));
+        // The audit reports ~50 adjacent (doorway OK), ~59 gaps, 2 overlap, 2 cross-level.
+        bool adjacentOk = (adjX + adjZ) >= 45 && (adjX + adjZ) <= 55;
+        bool gapsOk     = bridge >= 50 && bridge <= 65;
+        bool crossOk    = cross == 2;            // Cave System + Hidden Sub-Level
+        bool noneZero   = none == 0;             // every door resolved to SOMETHING
+        check(adjacentOk && gapsOk && crossOk && noneZero,
+              "C3 doorway resolver: ~50 adjacent, ~59 gap-bridges, 2 cross-level, 0 unresolved");
+    }
+
+    // ---- C4: the 2 isolated/deep rooms (Cave System / Hidden Sub-Level) are linked. ----
+    {
+        int cave = -1, sub = -1;
+        for (uint32_t i = 0; i < floor.rooms.size(); ++i) {
+            if (floor.rooms[i].name.find("Cave System") != std::string::npos) cave = (int)i;
+            if (floor.rooms[i].name.find("Hidden Sub-Level") != std::string::npos) sub = (int)i;
+        }
+        // Each deep room must now appear in SOME doorway (it was isolated in the raw JSON
+        // door list only if the JSON had no edge; the resolver linked them cross-level).
+        auto inDoorway = [&](int room) {
+            if (room < 0) return false;
+            for (const CanonDoorway& dw : floor.doorways)
+                if ((int)dw.a == room || (int)dw.b == room) return true;
+            return false;
+        };
+        bool caveDeep = cave >= 0 && floor.rooms[cave].cy < -100.0f;
+        bool subDeep  = sub  >= 0 && floor.rooms[sub].cy  < -100.0f;
+        check(cave >= 0 && sub >= 0 && caveDeep && subDeep && inDoorway(cave) && inDoorway(sub),
+              "C4 Cave System + Hidden Sub-Level (deep y<-100) are present and doored (cross-level)");
+    }
+
+    // ---- C5: build the floor; every shell entity carries a valid room id. ----
+    HeadlessRenderDevice device;
+    std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+    physics->init();
+    Scene scene;
+    buildCanonFloor(floor, scene, device, *physics);
+    {
+        uint32_t tagged = 0, withRoom = 0;
+        for (const Entity& e : scene.entities()) {
+            ++tagged;
+            if (e.roomId != kNoRoom && e.roomId < floor.rooms.size()) ++withRoom;
+        }
+        // Effectively all built entities should be room-tagged (the loader tags every
+        // shell + bridge + tube). Allow a tiny slack for any future always-visible adds.
+        check(scene.size() > (uint32_t)floor.rooms.size() * 4 && withRoom == tagged,
+              "C5 floor built; ALL entities carry a valid room id (room-tagged for the cull)");
+    }
+
+    // ---- C6: PVS prunes the drawn set. Pick a small cell, set the visible set to its
+    //          PVS, and assert the drawn count is FAR below the full scene. ----
+    {
+        const uint32_t full = scene.drawnCount();              // cull inactive => everything
+        // Jake's Cell is a small cell with few neighbours: a strong cull demonstration.
+        int jake = -1;
+        for (uint32_t i = 0; i < floor.rooms.size(); ++i)
+            if (floor.rooms[i].name.find("Jake") != std::string::npos) { jake = (int)i; break; }
+        const CanonRoom& jr = floor.rooms[jake];
+        std::vector<uint32_t> vis;
+        floor.visibleRoomsAt(jr.cx, jr.cy, jr.cz, vis);
+        scene.setVisibleRooms(vis);
+        const uint32_t culled = scene.drawnCount();
+        x3::logInfo("    PVS@Jake's Cell: visibleRooms=" + std::to_string(vis.size()) +
+                    " drawn " + std::to_string(culled) + "/" + std::to_string(full));
+        bool pruned = culled > 0 && culled < full / 2;        // at least halved
+        bool selfInVis = std::find(vis.begin(), vis.end(), (uint32_t)jake) != vis.end();
+        check(jake >= 0 && pruned && selfInVis && vis.size() < floor.rooms.size(),
+              "C6 portal PVS prunes the drawn set in Jake's Cell (current room + doored neighbours only)");
+        scene.clearVisibleRooms();
+    }
+
+    // ---- C7: a hub room (Main Hall, many doors) sees more than a cell but still far
+    //          fewer than the whole floor — the cull is correct, not all-or-nothing. ----
+    {
+        const uint32_t full = scene.drawnCount();
+        int hall = -1;
+        for (uint32_t i = 0; i < floor.rooms.size(); ++i)
+            if (floor.rooms[i].name == "Main Hall") { hall = (int)i; break; }
+        const CanonRoom& hr = floor.rooms[hall];
+        std::vector<uint32_t> vis;
+        floor.visibleRoomsAt(hr.cx, hr.cy, hr.cz, vis);
+        scene.setVisibleRooms(vis);
+        const uint32_t culled = scene.drawnCount();
+        x3::logInfo("    PVS@Main Hall: visibleRooms=" + std::to_string(vis.size()) +
+                    " drawn " + std::to_string(culled) + "/" + std::to_string(full));
+        check(hall >= 0 && culled < full && vis.size() < floor.rooms.size(),
+              "C7 Main Hall PVS still culls (hub sees neighbours, not the whole tower)");
+        scene.clearVisibleRooms();
+    }
+
+    // ---- C8: point-in-room + visibleRoomsAt resolve correctly at a known center and a
+    //          doorway seam (camera in no room falls back to the nearest room). ----
+    {
+        int jake = -1;
+        for (uint32_t i = 0; i < floor.rooms.size(); ++i)
+            if (floor.rooms[i].name.find("Jake") != std::string::npos) { jake = (int)i; break; }
+        const CanonRoom& jr = floor.rooms[jake];
+        bool atCenter = floor.roomAt(jr.cx, jr.cy, jr.cz) == (uint32_t)jake;
+        // A point far outside any room resolves to kNoRoom but visibleRoomsAt still
+        // returns a non-empty fallback set.
+        std::vector<uint32_t> vis;
+        floor.visibleRoomsAt(9999.0f, 0.0f, 9999.0f, vis);
+        check(atCenter && !vis.empty(), "C8 roomAt resolves the center; visibleRoomsAt never returns empty");
+    }
+
+    // ---- C9: the re-aimed Level-1 beat flow resolves to the REAL canonical room
+    //          centers (matches tools/v2_floor1_topdown.png): Jake's Cell at the +Z cell
+    //          block, the wide Main Hall across the top, Security/Research/Medical/Armory
+    //          marching DOWN the central spine, the Boss Arena (Martinez) deep at -Z, the
+    //          Elevator Lobby past it. Asserts the spatial ORDER (descending z) + key
+    //          centers so the built floor matches the map. ----
+    {
+        CanonBeats b = canonBeats(floor);
+        auto cz = [&](uint32_t r){ return r == kNoRoom ? 1e9f : floor.rooms[r].cz; };
+        bool present = b.jakeCell != kNoRoom && b.mainHall != kNoRoom && b.security != kNoRoom &&
+                       b.research != kNoRoom && b.medical != kNoRoom && b.armory != kNoRoom &&
+                       b.bossArena != kNoRoom && b.elevatorLobby != kNoRoom;
+        // Map check: Main Hall is the high-z header; the spine descends Security(38) >
+        // Research(30) > Medical(22) > Armory(14); Boss Arena (-14.5) is below Armory;
+        // the Elevator Lobby (-25) is below the Boss Arena. Jake's Cell sits in the cell
+        // block (z~40), below the Main Hall (z~44.5).
+        bool order = present &&
+            cz(b.mainHall) > cz(b.jakeCell) &&             // hall header above the cells
+            cz(b.security) > cz(b.research) &&
+            cz(b.research) > cz(b.medical) &&
+            cz(b.medical)  > cz(b.armory) &&
+            cz(b.armory)   > cz(b.bossArena) &&
+            cz(b.bossArena) > cz(b.elevatorLobby);
+        // Boss Arena is the big room (matches the map's large green block).
+        bool bossBig = b.bossArena != kNoRoom &&
+                       floor.rooms[b.bossArena].w >= 14.0f && floor.rooms[b.bossArena].d >= 12.0f;
+        x3::logInfo("    beat z-order: hall=" + std::to_string((int)cz(b.mainHall)) +
+                    " jake=" + std::to_string((int)cz(b.jakeCell)) +
+                    " sec=" + std::to_string((int)cz(b.security)) +
+                    " arm=" + std::to_string((int)cz(b.armory)) +
+                    " boss=" + std::to_string((int)cz(b.bossArena)) +
+                    " elev=" + std::to_string((int)cz(b.elevatorLobby)));
+        check(present && order && bossBig,
+              "C9 re-aimed beat flow matches the map: Jake->Main Hall->Security/Research/"
+              "Medical/Armory->Boss Arena(big)->Elevator Lobby (descending -Z spine)");
+    }
+
+    physics->shutdown();
+    x3::logInfo("--test-canonlevel: " + std::to_string(g_pass) + " passed, " +
+                std::to_string(g_fail) + " failed");
+    return g_fail == 0;
+}
+
+} // namespace x3::game

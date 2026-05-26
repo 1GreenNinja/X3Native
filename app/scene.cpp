@@ -90,9 +90,30 @@ void Scene::update(const x3::phys::IPhysicsWorld& physics) {
     }
 }
 
+void Scene::setVisibleRooms(const uint32_t* rooms, uint32_t count) {
+    m_visibleRooms.clear();
+    for (uint32_t i = 0; i < count; ++i) m_visibleRooms.insert(rooms[i]);
+    // The cull only becomes ACTIVE once a non-empty set is installed: an empty set
+    // would otherwise hide the whole data-driven level (every room culled), which is
+    // never the intent. Empty set => cull stays inactive (everything draws).
+    m_roomCullActive = (count > 0);
+}
+
+uint32_t Scene::drawnCount() const {
+    uint32_t n = 0;
+    for (const Entity& e : m_entities)
+        if (e.visible && e.mesh.valid() && roomVisible(e.roomId)) ++n;
+    return n;
+}
+
 void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const {
     for (const Entity& e : m_entities) {
         if (!e.visible || !e.mesh.valid())
+            continue;
+        // Per-room occlusion cull (data-driven level loader): skip entities whose room
+        // is not in the current visible set. roomVisible() returns true for kNoRoom and
+        // whenever the cull is inactive, so this is a no-op for every existing entity.
+        if (!roomVisible(e.roomId))
             continue;
         // Emissive-aware draw. The default emissive {0,0,0,0} makes this identical
         // to the old drawMesh() for every existing entity; club1127's neon/crystal

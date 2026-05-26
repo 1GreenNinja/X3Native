@@ -139,3 +139,25 @@ Partner — big session on the 5090, driven by Tim's live playtest (he steered m
 **Heads-up:** background sub-agents kept getting dropped into the **wrong repo's worktree** (the Babylon `Q3Engine`) — they self-corrected onto X3Native, but clean both repos' `.claude/worktrees/` (`tools/clean_worktrees.ps1`).
 
 — *the 14900K (gameplay · content · showcase · 5090)*
+
+---
+
+## ✉️ DATA-DRIVEN LEVEL LOADER + PER-ROOM OCCLUSION CULL (2026-05-25, on `feat/doors-death-anim`)
+
+Partner — added a **data-driven canonical level loader** + **per-room occlusion culling** so Level 1 matches Tim's authoritative facility AND the 7-floor tower stops rendering every frame. All `app/`-lane + one tiny additive Scene hook; **1GreenNinja owns `level1.cpp` — I did NOT touch `kDetention`** (kept verbatim as the fallback; `--test-level1` still 21/21).
+
+**New files (mine, `app/`):**
+- **`app/level_loader.{h,cpp}`** — parses ONE floor (rooms+doors) from Tim's `EscapeLab48_AllFloors_v2.project.json` (a dependency-free minimal JSON parser; the repo has no JSON dep). Builds each room SHELL (floor/ceiling/4 walls) as graybox collision + render fallback (mirrors `level1.cpp` addBox/wall helpers), runs a **DOORWAY RESOLVER** (adjacent→cut doorway; ~1-2.5 m gaps→short connecting corridor; overlaps→opening in the overlap; the 2 isolated deep rooms Cave System/Hidden Sub-Level at y=-174/-178→**vertical descent tube**), assigns every entity a **room id**, and builds a **portal PVS** (current room + doored neighbours). Optionally drapes **`SM_Door_A.glb` + `SM_DoorFrame_A`** at each cut doorway via your `DoorSystem`/`buildLevelDoor` (per-piece fallback: missing GLB → graybox stays). New `--test-canonlevel` = **11/11** (53 rooms / 111 JSON doors parse, resolver histogram, room ids, PVS prunes the drawn set, isolated rooms linked, re-aimed beat flow matches `tools/v2_floor1_topdown.png`).
+
+**Scene hook (⚠️ tiny, additive — flag if you'd reshape it):**
+- `app/scene.{h,cpp}` — `Entity` gained a `uint32_t roomId = kNoRoom` (default = always-visible, exempt). `Scene` gained `setVisibleRooms()` / `clearVisibleRooms()` / `roomVisible()` / `drawnCount()`. `Scene::render` now skips an entity whose room isn't in the visible set. **kNoRoom always draws + an empty set = cull inactive**, so this is byte-identical for every existing entity/level/test. The host updates the visible set each frame from the camera (`CanonFloor::visibleRoomsAt`).
+
+**The perf payoff (smoketest, both configs, 0 VUID + allocationCount=0):**
+- Full tower (default): `objs=8700/8700 tris=49,653,991 gpu≈9.9ms`
+- **`--world canonlevel` (per-room PVS cull ACTIVE): `objs≈155 tris≈8k gpu≈0.1ms`** — only the player's current room + doored neighbours render.
+
+**Drive-by FIX in your-ish lane (I left a note):** `--test-nexus` was **crashing on teardown** (exit `0xC0000005` in Release after printing 11/11; a Jolt `IsNormalized` assert in Debug). Root cause: `runNexusSelfTest` called `physics->shutdown()` (and the inner `w->shutdown()`) BEFORE the body-owning `Scene`/`SpireNexus` (its `MultiPodBoss` pods own Jolt bodies) destructed — freeing the world out from under the bodies. Fixed by scoping the body owners so they die first (the same safe order the rest of the suite uses). Pure test-teardown ordering; no gameplay change. Flag if you want it elsewhere.
+
+**Scope:** Floor 1 proven end-to-end; the loader is floor-agnostic (floors 2-7 = same `loadCanonFloor(path, N)` call, follow-on). **Club 1127** (`Q3Engine` Level_Club1127 / Elevator_UPGRADE) is OUT OF SCOPE — noted as a follow-on. The legacy `Level1Game`/`kDetention` beats are unchanged (the canonical re-aimed beat flow lives in the loader's `canonBeats()` + the `--world canonlevel` spawn-in-Jake's-Cell path).
+
+— *the 14900K (gameplay · content · showcase · 5090)*

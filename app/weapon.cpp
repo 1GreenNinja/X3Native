@@ -808,13 +808,25 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
     x3::phys::Vec3 bz = applyOffsets(negFwd);
 
     float model[16];
-    composeTRS(model, bx, by, bz, d.vmScale, pos);
+    // Tim playtest 2026-05-25: the held weapons read tiny + dark. Enlarge the viewmodel
+    // (~2x) and brighten its base color (HDR > 1) so it reads as a big, lit gun in the
+    // dark interiors instead of a microscopic silhouette. d.vmScale stays the per-weapon
+    // RELATIVE tuning; kVmScaleBoost is the global "hold it up bigger" multiplier.
+    constexpr float kVmScaleBoost = 2.0f;   // Tim: 2x scale is CORRECT, NOT too big — keep it.
+    constexpr float kVmBright     = 2.6f;   // lit (the real issue is the GLB TEXTURE being wrong, not size/brightness)
+    composeTRS(model, bx, by, bz, d.vmScale * kVmScaleBoost, pos);
     for (const auto& dr : vm.drawables) {
         float fin[16];
         x3::asset::mulMat4(model, dr.nodeTransform, fin);
+        const float litColor[4] = {
+            dr.baseColorFactor[0] * kVmBright,
+            dr.baseColorFactor[1] * kVmBright,
+            dr.baseColorFactor[2] * kVmBright,
+            dr.baseColorFactor[3],
+        };
         device.drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
                         x3::rhi::TextureHandle{ dr.baseColorTexId },
-                        dr.baseColorFactor, fin);
+                        litColor, fin);
     }
 }
 
