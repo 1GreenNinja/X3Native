@@ -5518,6 +5518,12 @@ int main(int argc, char** argv) {
                     const auto& ln = npcDialog.currentLine();
                     x3::logInfo("talk: [" + ln.speaker + "] " + ln.text);
                 }
+            } else if (canonWorld && canonFloor.valid() &&
+                       x3::game::tryUse(eye, dir, 3.0f, scene, canonDoors, *physics)) {
+                // Canonical Floor 1: E toggles whatever SM_Door_A slab the player is
+                // aiming at (open if closed, close if open). Proximity also auto-opens
+                // (handled in the per-frame tick), so this is the deliberate manual path.
+                x3::logInfo("use: canon door toggled");
             } else if (game.onUse(eye, dir, scene, *physics)) {  // plays door SFX internally
                 x3::logInfo("use: button pressed — door opening");
             } else if (midFloors.onRescue(eye)) {  // F5 synth-bay captive rescue
@@ -5836,6 +5842,26 @@ int main(int argc, char** argv) {
             { const double _pt0 = glfwGetTime();
               game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
               g_perf.tick += glfwGetTime() - _pt0; }
+            // ---- CANONLEVEL DOORS: tick the SM_Door_A slide animation, and PROXIMITY
+            // AUTO-OPEN — a door within ~2.2 m of the player opens; once the player walks
+            // past (>~3.2 m, hysteresis so it doesn't chatter at the threshold) it closes
+            // again. This is the data-driven floor's door behaviour (E-use also toggles
+            // any door the player aims at, handled in the use block above). The slabs
+            // block the player while Closed and slide UP clear of the lintel when Open.
+            if (canonWorld && canonFloor.valid()) {
+                for (uint32_t di = 0; di < canonDoors.count(); ++di) {
+                    x3::game::Door& d = canonDoors.at(di);
+                    const float dx = camPos.x - d.closedPos.x;
+                    const float dz = camPos.z - d.closedPos.z;
+                    const float d2 = dx * dx + dz * dz;
+                    if (d2 < 2.2f * 2.2f) {
+                        if (d.state == x3::game::DoorState::Closed) canonDoors.startOpening(d);
+                    } else if (d2 > 3.2f * 3.2f) {
+                        if (d.state == x3::game::DoorState::Open) canonDoors.toggle(d);   // Open -> Closing
+                    }
+                }
+                canonDoors.update(dt, scene, *physics);
+            }
             // ---- SECRET ROOM payoff: game.tick() ticks the cell terminal + the room's
             // loot collection (latching counts). Apply the gameplay EFFECTS here, where
             // we own the concrete Player: each newly-collected HEALTH pack heals +50, and

@@ -562,11 +562,35 @@ void buildCanonFloor(const CanonFloor& floor, Scene& scene,
             else                                                        gapZpos[room].push_back(dw.cx);
         }
     };
+    // For a GAP-BRIDGE the two rooms do NOT share a wall — a short corridor spans the
+    // gap. We MUST still punch an opening in EACH room's wall at the bridge mouth, or the
+    // room's solid wall seals the corridor off and the player can't reach it (the
+    // "halls don't connect" bug). The mouth is on the room face that points TOWARD the
+    // other room; the cut coordinate is the bridge's cross-axis center (dw.cz for an
+    // X-running corridor, dw.cx for a Z-running corridor). We pick the facing wall by the
+    // sign of the partner room's center relative to this room's center.
+    auto addBridgeMouthToRoom = [&](uint32_t room, uint32_t other, const CanonDoorway& dw) {
+        const CanonRoom& r = floor.rooms[room];
+        const CanonRoom& o = floor.rooms[other];
+        if (dw.axis == 0) {
+            // Corridor runs along X: mouth on this room's +X or -X wall at z = dw.cz.
+            if (o.cx > r.cx) gapXpos[room].push_back(dw.cz);   // partner is to +X
+            else             gapXneg[room].push_back(dw.cz);   // partner is to -X
+        } else {
+            // Corridor runs along Z: mouth on this room's +Z or -Z wall at x = dw.cx.
+            if (o.cz > r.cz) gapZpos[room].push_back(dw.cx);   // partner is to +Z
+            else             gapZneg[room].push_back(dw.cx);   // partner is to -Z
+        }
+    };
     for (const CanonDoorway& dw : floor.doorways) {
         if (dw.kind == DoorwayKind::AdjacentX || dw.kind == DoorwayKind::AdjacentZ ||
             dw.kind == DoorwayKind::Overlap) {
             addGapToRoom(dw.a, dw);
             addGapToRoom(dw.b, dw);
+        } else if (dw.kind == DoorwayKind::GapBridge) {
+            // Open BOTH facing walls so the bridge corridor is actually walkable.
+            addBridgeMouthToRoom(dw.a, dw.b, dw);
+            addBridgeMouthToRoom(dw.b, dw.a, dw);
         }
     }
 
@@ -925,6 +949,72 @@ bool runCanonLevelSelfTest() {
         check(present && order && bossBig,
               "C9 re-aimed beat flow matches the map: Jake->Main Hall->Security/Research/"
               "Medical/Armory->Boss Arena(big)->Elevator Lobby (descending -Z spine)");
+    }
+
+    // ---- C10: REACHABILITY — every room is reachable from Jake's Cell through the
+    //           doorway graph (adjacency cuts, gap-bridges AND cross-level tubes all
+    //           count as edges). This proves the floor is fully navigable: Jake's Cell ->
+    //           Main Hall -> the wings -> Boss Arena -> Elevator Lobby, plus every side
+    //           cell + the deep cross-level rooms. A disconnected room is a halls-don't-
+    //           connect bug. ----
+    {
+        const uint32_t n = (uint32_t)floor.rooms.size();
+        std::vector<std::vector<uint32_t>> adj(n);
+        for (const CanonDoorway& dw : floor.doorways) {
+            if (dw.a < n && dw.b < n) { adj[dw.a].push_back(dw.b); adj[dw.b].push_back(dw.a); }
+        }
+        int jake = -1;
+        for (uint32_t i = 0; i < n; ++i)
+            if (floor.rooms[i].name.find("Jake") != std::string::npos) { jake = (int)i; break; }
+        std::vector<char> seen(n, 0);
+        std::vector<uint32_t> stack;
+        if (jake >= 0) { stack.push_back((uint32_t)jake); seen[jake] = 1; }
+        while (!stack.empty()) {
+            uint32_t r = stack.back(); stack.pop_back();
+            for (uint32_t nb : adj[r]) if (!seen[nb]) { seen[nb] = 1; stack.push_back(nb); }
+        }
+        uint32_t reached = 0; std::string unreached;
+        for (uint32_t i = 0; i < n; ++i) {
+            if (seen[i]) ++reached;
+            else { if (!unreached.empty()) unreached += ", "; unreached += floor.rooms[i].name; }
+        }
+        x3::logInfo("    reachable from Jake's Cell: " + std::to_string(reached) + "/" +
+                    std::to_string(n) + (unreached.empty() ? "" : "  UNREACHED: " + unreached));
+        check(jake >= 0 && reached == n,
+              "C10 every room reachable from Jake's Cell via the door graph (floor fully navigable)");
+    }
+
+    // ---- C11: PHYSICAL WALKABILITY through a GAP-BRIDGE. The Main Hall -> Security
+    //           Station link is a GAP-BRIDGE (the rooms don't share a wall). Before the
+    //           fix the rooms' solid walls sealed the bridge mouth, so the player was
+    //           trapped. Drop a character on the bridge centerline just inside the Main
+    //           Hall and walk it toward Security; it must cross the bridge into the room
+    //           (proving the mouth is cut + the bridge floor spans the gap). ----
+    {
+        int hall = floor.roomByName("Main Hall");
+        int sec  = floor.roomByName("Security Station");
+        bool walked = false;
+        if (hall != (int)kNoRoom && sec != (int)kNoRoom) {
+            const CanonRoom& H = floor.rooms[hall];
+            const CanonRoom& S = floor.rooms[sec];
+            // Bridge cross-coordinate: the rooms overlap in X around x~22; the gap is along
+            // Z between H.z0() (42) and S.z1() (41). Walk from inside the hall (+Z side)
+            // toward the security room (-Z). Start a little inside the hall.
+            const float bx = (std::max(H.x0(), S.x0()) + std::min(H.x1(), S.x1())) * 0.5f;
+            const float startZ = H.z0() + 1.0f;     // ~1 m inside the Main Hall
+            const float floorY = std::max(H.y0(), S.y0());
+            x3::phys::BodyId chr = physics->createCharacter(0.3f, 1.7f,
+                                       x3::phys::Vec3{ bx, floorY + 0.1f, startZ });
+            // Settle, then push toward -Z (into Security) for ~4 s.
+            for (int i = 0; i < 20; ++i)  { physics->moveCharacter(chr, x3::phys::Vec3{0,0,0}, 1.0f/60.0f); physics->step(1.0f/60.0f); }
+            for (int i = 0; i < 240; ++i) { physics->moveCharacter(chr, x3::phys::Vec3{0,0,-3.0f}, 1.0f/60.0f); physics->step(1.0f/60.0f); }
+            x3::phys::Vec3 end = physics->getBodyPosition(chr);
+            // It must have crossed the bridge into Security's Z span (z <= S.z1()).
+            walked = end.z <= S.z1() + 0.3f;
+            x3::logInfo("    walk Main Hall->Security: startZ=" + std::to_string((int)startZ) +
+                        " endZ=" + std::to_string(end.z) + " (Security z1=" + std::to_string(S.z1()) + ")");
+        }
+        check(walked, "C11 character walks Main Hall -> Security Station through the gap-bridge (mouth is cut)");
     }
 
     physics->shutdown();
