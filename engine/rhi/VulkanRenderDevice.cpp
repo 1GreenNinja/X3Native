@@ -1044,9 +1044,33 @@ public:
         drawMeshEmissive(fc, mesh, baseColor, baseColorFactor, noEmissive, model);
     }
 
+    // Glass / transparent draw. Same payload as drawMeshEmissive plus a GlassMaterial:
+    // the per-object row is flagged GLASS so mesh.frag DISCARDs it (opaque pass) and
+    // the transparent glass pass draws it (glass.frag). M1 uses opacity (-> alpha) +
+    // tint/refraction/roughness/specular carried for later milestones. POD only.
+    void drawMeshGlass(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
+                       const float baseColorFactor[4], const float emissive[4],
+                       const GlassMaterial& glass, const float model[16]) override {
+        // baseColorFactor's alpha is overridden by the material opacity so the glass
+        // body's see-through amount is the single primary dial (spec §2).
+        float factor[4] = {
+            baseColorFactor ? baseColorFactor[0] : 1.0f,
+            baseColorFactor ? baseColorFactor[1] : 1.0f,
+            baseColorFactor ? baseColorFactor[2] : 1.0f,
+            glass.opacity };
+        drawMeshInternal(fc, mesh, baseColor, factor, emissive, model, kFlagGlass);
+    }
+
     void drawMeshEmissive(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                           const float baseColorFactor[4], const float emissive[4],
                           const float model[16]) override {
+        drawMeshInternal(fc, mesh, baseColor, baseColorFactor, emissive, model, /*extraFlags=*/0u);
+    }
+
+    // Shared draw record append (opaque/emissive/glass differ only by `extraFlags`).
+    void drawMeshInternal(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
+                          const float baseColorFactor[4], const float emissive[4],
+                          const float model[16], uint32_t extraFlags) {
         if (!fc.valid || !m_meshPipeline) return;
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
@@ -1060,12 +1084,13 @@ public:
         // A draw that uses the terrain MARKER handle is flagged as terrain: the
         // fragment shader splats grass/rock/snow/sand by height+slope instead of
         // sampling textures[texIndex], and the four detail indices ride along in
-        // the pad fields. All other draws set terrainFlag = 0 and are unchanged.
+        // the pad fields. All other draws set the TERRAIN bit off and are unchanged.
+        // `extraFlags` carries the GLASS bit from drawMeshGlass (mutually exclusive).
         uint32_t texIndex = 0;
-        uint32_t terrainFlag = 0;
+        uint32_t flags = extraFlags;
         if (m_terrainMarkerId != 0 && baseColor.id == m_terrainMarkerId) {
-            terrainFlag = 1;
-            texIndex    = m_terrainTexIdx[0];   // grass index (sane default sample)
+            flags    |= kFlagTerrain;
+            texIndex  = m_terrainTexIdx[0];   // grass index (sane default sample)
         } else if (baseColor.valid()) {
             auto tit = m_textures.find(baseColor.id);
             if (tit != m_textures.end()) texIndex = tit->second.bindlessIndex;
@@ -1074,7 +1099,7 @@ public:
         DrawRecord r;
         r.meshId      = mesh.id;
         r.texIndex    = texIndex;
-        r.terrainFlag = terrainFlag;
+        r.flags       = flags;
         // Pack the four detail indices into two uints: pad1 = grass<<16 | rock,
         // pad2 = snow<<16 | sand (each well under 65535 — kMaxTextures = 4096).
         r.terrainPack1 = (m_terrainTexIdx[0] << 16) | (m_terrainTexIdx[1] & 0xFFFFu);
@@ -1342,9 +1367,18 @@ private:
         glm::vec4 baseColorFactor;
         glm::vec4 emissive;          // rgb = linear color, a = strength
         uint32_t  texIndex;
-        uint32_t  _pad0, _pad1, _pad2;
+        uint32_t  flags;             // bitfield (was _pad0): bit0 = TERRAIN, bit1 = GLASS
+        uint32_t  _pad1, _pad2;      // terrain detail-index packs (only when TERRAIN bit set)
     };
     static_assert(sizeof(ObjectData) == 112, "ObjectData must match std430 layout");
+
+    // Per-object flag bits packed into ObjectData::flags. TERRAIN drives mesh.frag's
+    // procedural splat (was the standalone terrainFlag); GLASS routes the fragment to
+    // the transparent glass pass (mesh.frag DISCARDs it; glass.frag draws it). The
+    // bits are mutually exclusive in practice but stored independently so the shaders
+    // can test either without ambiguity.
+    static constexpr uint32_t kFlagTerrain = 1u << 0;
+    static constexpr uint32_t kFlagGlass   = 1u << 1;
 
     // CPU-side per-draw record accumulated by drawMesh(), consumed by endFrame().
     struct DrawRecord {
@@ -1353,7 +1387,7 @@ private:
         float    model[16];
         float    factor[4];
         float    emissive[4];   // rgb = linear emissive color, a = strength
-        uint32_t terrainFlag;   // 1 = procedural terrain splat (mesh.frag branch)
+        uint32_t flags;         // bit0 = TERRAIN (mesh.frag splat), bit1 = GLASS (glass pass)
         uint32_t terrainPack1;  // grass<<16 | rock  (bindless detail indices)
         uint32_t terrainPack2;  // snow<<16  | sand
     };
@@ -1718,6 +1752,7 @@ private:
         VkDrawIndexedIndirectCommand* cmds =
             static_cast<VkDrawIndexedIndirectCommand*>(fr.indirectMapped);
         uint32_t row = 0, cmdCount = 0;
+        m_frameGlassCount = 0;
         for (uint32_t mid : m_groupOrder) {
             auto mit = m_meshes.find(mid);
             if (mit == m_meshes.end()) continue;
@@ -1732,11 +1767,13 @@ private:
                 o.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
                 o.emissive = glm::vec4(dr.emissive[0], dr.emissive[1], dr.emissive[2], dr.emissive[3]);
                 o.texIndex = dr.texIndex;
-                // Reuse the previously-reserved pads: pad0 = terrain flag, pad1/pad2
-                // = the four packed detail-texture indices (see mesh.{vert,frag}).
-                o._pad0 = dr.terrainFlag;
-                o._pad1 = dr.terrainPack1;
-                o._pad2 = dr.terrainPack2;
+                // flags = bit0 TERRAIN | bit1 GLASS; pad1/pad2 = the four packed
+                // detail-texture indices (only meaningful when TERRAIN is set). See
+                // mesh.{vert,frag} + glass.frag.
+                o.flags  = dr.flags;
+                o._pad1  = dr.terrainPack1;
+                o._pad2  = dr.terrainPack2;
+                if (dr.flags & kFlagGlass) ++m_frameGlassCount;
             }
             VkDrawIndexedIndirectCommand& c = cmds[cmdCount];
             c.indexCount    = mit->second.indexCount;
@@ -2127,9 +2164,13 @@ private:
         // target with read-only scene depth — exactly like the particle pass.
         const bool debrisStep = m_debrisStepPending && m_debrisComputePipeline;
         const bool debrisDraw = m_debrisDrawPending && m_debrisDrawPipeline;
-        // The scene depth must be STORED (not transient) when water/GI/particles/debris
-        // OR RT AO (its compute + apply passes sample it) read it.
-        const bool storeDepth = waterOn || giOn || particlesOn || debrisDraw || rtaoOn;
+        // Translucent GLASS: add a post-opaque transparent pass only when glass was
+        // submitted this frame AND the pipeline exists (graceful fallback, spec §5).
+        // It depth-tests (read-only) against the stored scene depth, like water.
+        const bool glassOn = (m_frameGlassCount > 0) && (m_glassPipeline != VK_NULL_HANDLE);
+        // The scene depth must be STORED (not transient) when water/GI/particles/debris/
+        // glass OR RT AO (its compute + apply passes sample it) read it.
+        const bool storeDepth = waterOn || giOn || particlesOn || debrisDraw || rtaoOn || glassOn;
         RgResource rgSsaoRaw  = m_graph.importImage("ssao.raw",  m_ssaoRawImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgSsaoBlur = m_graph.importImage("ssao.blur", m_ssaoBlurImg,
@@ -2511,6 +2552,71 @@ private:
             waterPass.record = [](void* ctx, VkCommandBuffer c){
                 static_cast<VulkanRenderDevice*>(ctx)->recordWaterPassBody(c); };
             m_graph.addPass(std::move(waterPass));
+        }
+
+        // ---- Translucent GLASS pass (transparent meshes) -------------------
+        // Drawn AFTER the opaque mesh (+ water) pass into the SAME linear HDR target
+        // (LOAD, so the lit scene stays), depth-testing LESS_OR_EQUAL against the
+        // stored scene depth WITHOUT writing it, alpha-blended so glass reads as
+        // see-through over what's behind. Mirrors the water pass's resource uses
+        // (HDR write + read-only depth attachment). Only added when glass was
+        // submitted this frame (glassOn) — zero cost otherwise (spec §5).
+        if (glassOn) {
+            m_glassColorAttach = VkRenderingAttachmentInfo{};
+            m_glassColorAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_glassColorAttach.imageView = m_hdrView;
+            m_glassColorAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_glassColorAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;   // keep the lit scene
+            m_glassColorAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            m_glassDepthAttach = VkRenderingAttachmentInfo{};
+            m_glassDepthAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_glassDepthAttach.imageView = m_depthView;
+            m_glassDepthAttach.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL; // read-only depth
+            m_glassDepthAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            m_glassDepthAttach.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
+
+            RenderPassDesc glassPass{};
+            glassPass.name = "glass";
+            glassPass.addUse(ResourceUse{
+                rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            // Depth: read-only attachment (LEQUAL test, no write). The graph derives
+            // the DEPTH_ATTACHMENT -> DEPTH_READ_ONLY transition from the main pass.
+            glassPass.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            // glass.frag samples the shadow map (sun-lit glass) — declare it READ so
+            // the graph keeps it in DEPTH_READ_ONLY through this pass.
+            glassPass.addUse(ResourceUse{
+                rgShadow, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            if (ssaoOn) {
+                glassPass.addUse(ResourceUse{
+                    rgSsaoBlur, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            }
+            glassPass.usesDynamicRendering = true;
+            m_glassRenderInfo = VkRenderingInfo{};
+            m_glassRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_glassRenderInfo.renderArea = { {0,0}, m_extent };
+            m_glassRenderInfo.layerCount = 1;
+            m_glassRenderInfo.colorAttachmentCount = 1;
+            m_glassRenderInfo.pColorAttachments = &m_glassColorAttach;
+            m_glassRenderInfo.pDepthAttachment = &m_glassDepthAttach;
+            glassPass.renderInfo = m_glassRenderInfo;
+            glassPass.recordCtx = this;
+            glassPass.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordGlassPassBody(c); };
+            m_graph.addPass(std::move(glassPass));
         }
 
         // ================================================================
@@ -3810,6 +3916,35 @@ private:
         vkCmdBindVertexBuffers(cmd, 0, 1, &m_waterVbo, &off);
         vkCmdBindIndexBuffer(cmd, m_waterIbo, 0, VK_INDEX_TYPE_UINT32);
         vkCmdDrawIndexed(cmd, m_waterIndexCount, 1, 0, 0, 0);
+    }
+
+    // ---- Translucent GLASS pass body (transparent meshes) ------------------
+    // Recorded into the (already-open) post-opaque glass pass. Binds the glass
+    // pipeline + the SAME descriptor sets the opaque mesh pass uses (bindless
+    // textures, object SSBO + camera UBO, shadow map, SSAO) and REPLAYS the SAME
+    // per-mesh indirect multidraw. glass.frag DISCARDs non-glass fragments and
+    // mesh.frag DISCARDs glass fragments, so the two passes cleanly partition the
+    // draw list — no separate glass index/SSBO buffer needed for M1. Only reached
+    // when m_frameGlassCount > 0 (the pass isn't added otherwise).
+    void recordGlassPassBody(VkCommandBuffer cmd) {
+        if (!m_glassPipeline || m_frameCmdCount == 0) return;
+        auto& fr = m_frames[m_frameIdx];
+        postViewport(cmd, m_extent);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_glassPipeline);
+        // SAME four sets as recordMeshDraws (the glass pipeline shares m_meshLayout).
+        VkDescriptorSet sets[4] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx] };
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshLayout,
+                                0, 4, sets, 0, nullptr);
+        for (uint32_t i = 0; i < m_frameCmdCount; ++i) {
+            const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
+            VkDeviceSize off = 0;
+            VkBuffer vb = mh.drawVbo(m_frameIdx);
+            vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &off);
+            vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexedIndirect(cmd, fr.indirectBuf,
+                (VkDeviceSize)i * sizeof(VkDrawIndexedIndirectCommand), 1,
+                sizeof(VkDrawIndexedIndirectCommand));
+        }
     }
 
     // ---- Particles + impact decals (combat juice) --------------------------
@@ -6909,6 +7044,66 @@ private:
 
         logInfo("[rhi] GPU-driven mesh pipeline ready (bindless textures + per-object SSBO + multidraw-indirect)");
 
+        // ---- Translucent GLASS pipeline (transparent pass) ----
+        // Clone of the mesh pipeline: SAME layout (m_meshLayout) + vertex shader
+        // (mesh.vert) + descriptor sets, but glass.frag, alpha blend ON
+        // (SRC_ALPHA/ONE_MINUS_SRC_ALPHA), depth-test LESS_OR_EQUAL with depth-write
+        // OFF (it composites over the opaque scene without disturbing depth), and
+        // cull NONE (double-sided glass reads from both faces). GRACEFUL FALLBACK
+        // (spec §5): on any failure the pipeline stays NULL and the glass pass is
+        // skipped — the opaque path is never affected.
+        {
+            VkShaderModule gvs = loadShaderModule("shaders\\mesh.vert.spv");
+            VkShaderModule gfs = loadShaderModule("shaders\\glass.frag.spv");
+            if (!gvs || !gfs) {
+                if (gvs) vkDestroyShaderModule(m_dev.device, gvs, nullptr);
+                if (gfs) vkDestroyShaderModule(m_dev.device, gfs, nullptr);
+                logError("[rhi] glass shader load failed — glass pass disabled (opaque unaffected)");
+            } else {
+                VkPipelineShaderStageCreateInfo gst[2];
+                gst[0] = stages[0]; gst[0].module = gvs;   // mesh.vert (shared)
+                gst[1] = stages[1]; gst[1].module = gfs;   // glass.frag
+
+                // Double-sided glass: no back-face cull.
+                VkPipelineRasterizationStateCreateInfo grs = rs;
+                grs.cullMode = VK_CULL_MODE_NONE;
+
+                // Depth: test LESS_OR_EQUAL against the opaque depth, no write.
+                VkPipelineDepthStencilStateCreateInfo gdss = dss;
+                gdss.depthTestEnable  = VK_TRUE;
+                gdss.depthWriteEnable = VK_FALSE;
+                gdss.depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+                // Standard straight-alpha blend.
+                VkPipelineColorBlendAttachmentState gcba = cba;
+                gcba.blendEnable         = VK_TRUE;
+                gcba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+                gcba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+                gcba.colorBlendOp        = VK_BLEND_OP_ADD;
+                gcba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+                gcba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+                gcba.alphaBlendOp        = VK_BLEND_OP_ADD;
+                VkPipelineColorBlendStateCreateInfo gcb = cb;
+                gcb.pAttachments = &gcba;
+
+                VkGraphicsPipelineCreateInfo ggpci = gpci;
+                ggpci.pStages            = gst;
+                ggpci.pRasterizationState = &grs;
+                ggpci.pDepthStencilState  = &gdss;
+                ggpci.pColorBlendState    = &gcb;
+                VkResult gpr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1,
+                                                         &ggpci, nullptr, &m_glassPipeline);
+                vkDestroyShaderModule(m_dev.device, gvs, nullptr);
+                vkDestroyShaderModule(m_dev.device, gfs, nullptr);
+                if (gpr != VK_SUCCESS) {
+                    m_glassPipeline = VK_NULL_HANDLE;
+                    logError("[rhi] glass pipeline create failed — glass pass disabled (opaque unaffected)");
+                } else {
+                    logInfo("[rhi] translucent glass pipeline ready (transparent pass)");
+                }
+            }
+        }
+
         // Now that m_objSetLayout exists, build the depth-only shadow pipeline.
         if (!createShadowPipeline()) return false;
         return true;
@@ -7150,10 +7345,12 @@ private:
 
         if (m_meshPipeline)  vkDestroyPipeline(m_dev.device, m_meshPipeline, nullptr);
         if (m_meshPipelineNoSsao) vkDestroyPipeline(m_dev.device, m_meshPipelineNoSsao, nullptr);
+        if (m_glassPipeline) vkDestroyPipeline(m_dev.device, m_glassPipeline, nullptr);
         if (m_meshLayout)    vkDestroyPipelineLayout(m_dev.device, m_meshLayout, nullptr);
         if (m_uploadFence)   vkDestroyFence(m_dev.device, m_uploadFence, nullptr);
         if (m_uploadPool)    vkDestroyCommandPool(m_dev.device, m_uploadPool, nullptr);
-        m_meshPipeline = VK_NULL_HANDLE; m_meshPipelineNoSsao = VK_NULL_HANDLE; m_meshLayout = VK_NULL_HANDLE;
+        m_meshPipeline = VK_NULL_HANDLE; m_meshPipelineNoSsao = VK_NULL_HANDLE;
+        m_glassPipeline = VK_NULL_HANDLE; m_meshLayout = VK_NULL_HANDLE;
         m_uploadFence = VK_NULL_HANDLE; m_uploadPool = VK_NULL_HANDLE;
     }
 
@@ -7223,6 +7420,12 @@ private:
     VkPipeline       m_meshPipeline = VK_NULL_HANDLE;        // SSAO path: depth EQUAL, no write
     VkPipeline       m_meshPipelineNoSsao = VK_NULL_HANDLE;  // no-SSAO path: depth LESS, write
     VkPipelineLayout m_meshLayout = VK_NULL_HANDLE;
+    // Translucent GLASS pipeline (transparent pass). Shares m_meshLayout + mesh.vert;
+    // uses glass.frag, depth-test LESS_OR_EQUAL, depth-write OFF, alpha blend, cull
+    // NONE (double-sided glass). Created in createMeshPipeline after the opaque ones.
+    // Graceful fallback (spec §5): if create fails it stays NULL and the glass pass
+    // is skipped (the opaque path is never broken).
+    VkPipeline       m_glassPipeline = VK_NULL_HANDLE;
 
     // GPU-driven descriptor objects:
     //   set 0 = bindless texture array (one shared set, update-after-bind)
@@ -7255,6 +7458,10 @@ private:
     // caches the number of indirect commands produced.
     bool                    m_framePrepared = false;
     uint32_t                m_frameCmdCount = 0;
+    // Number of GLASS-flagged instances submitted this frame (counted in the SSBO
+    // fill). When 0 the transparent glass pass is skipped entirely (spec §5: zero
+    // cost when no glass is visible).
+    uint32_t                m_frameGlassCount = 0;
 
     // ---- Analytic sky pipeline (open-world track, task A) ------------------
     // A vertexless full-screen triangle drawn at the START of the main color pass
@@ -7630,6 +7837,12 @@ private:
     VkRenderingAttachmentInfo m_waterColorAttach{};
     VkRenderingAttachmentInfo m_waterDepthAttach{};
     VkRenderingInfo           m_waterRenderInfo{};
+
+    // Stable storage for the GLASS (transparent) pass's VkRenderingInfo +
+    // attachments (post-opaque; color = HDR LOAD, depth = read-only LEQUAL).
+    VkRenderingAttachmentInfo m_glassColorAttach{};
+    VkRenderingAttachmentInfo m_glassDepthAttach{};
+    VkRenderingInfo           m_glassRenderInfo{};
 
     // ---- GPU-instanced billboard particles + impact decals (combat juice) ---
     // A bounded, per-frame stream of camera-facing billboards drawn into the linear

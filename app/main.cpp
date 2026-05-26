@@ -38,6 +38,7 @@
 #include "ragdoll.h"                        // FEATURE_GOALS §2: physics death ragdoll
 #include "editor/editor.h"                  // native Level Editor E1 (brain + self-test)
 #include "barrels.h"                        // explosive barrels (shoot -> chain explosion)
+#include "glass_test.h"                      // translucent-glass material (--test-glass)
 #include "holo_terminal.h"                  // Jake's cell holographic terminal (text + input)
 #include "secret_room.h"                    // code-locked trapdoor -> stocked secret room
 #include "engine/ecs/Ecs.h"                 // sparse-set ECS core (10k+ entities)
@@ -780,7 +781,7 @@ int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
-         testBarrels = false, testHoloterm = false, testEcs = false, testEcsRender = false,
+         testBarrels = false, testGlass = false, testHoloterm = false, testEcs = false, testEcsRender = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
@@ -1046,6 +1047,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-ragdollskin") testRagdollSkin = true;
         else if (a == "--test-editor") testEditor = true;
         else if (a == "--test-barrels") testBarrels = true;
+        else if (a == "--test-glass") testGlass = true;
         else if (a == "--test-holoterm") testHoloterm = true;
         else if (a == "--test-secretroom") testSecretRoom = true;
         else if (a == "--test-ecs") testEcs = true;
@@ -1265,6 +1267,10 @@ int main(int argc, char** argv) {
     if (testBarrels) {
         x3::logInfo("running explosive-barrels self-test...");
         return x3::game::runBarrelSelfTest() ? 0 : 1;
+    }
+    if (testGlass) {
+        x3::logInfo("running translucent-glass material (M1 see-through) self-test...");
+        return x3::game::runGlassSelfTest() ? 0 : 1;
     }
     if (testHoloterm) {
         x3::logInfo("running holo-terminal (text + input) self-test...");

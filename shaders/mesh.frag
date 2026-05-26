@@ -73,10 +73,14 @@ layout(location = 2) flat in uint vTexIndex;
 layout(location = 3) flat in vec4 vFactor;
 layout(location = 4) in vec3 vWorldPos;
 layout(location = 5) flat in vec4 vEmissive;   // rgb = color, a = strength
-layout(location = 6) flat in uint vTerrainFlag;
+layout(location = 6) flat in uint vFlags;      // bit0 = TERRAIN, bit1 = GLASS
 layout(location = 7) flat in uvec2 vTerrainPack; // x = grass<<16|rock, y = snow<<16|sand
 
 layout(location = 0) out vec4 outColor;
+
+// Per-object flag bits (match mesh.vert + VulkanRenderDevice.cpp kFlag*).
+const uint FLAG_TERRAIN = 1u;
+const uint FLAG_GLASS   = 2u;
 
 const vec3 kSunDir   = normalize(vec3(0.4, 1.0, 0.3)); // matches the depth-pass sun
 const vec3 kSunColor = vec3(1.0, 0.97, 0.92);          // slightly warm white sun
@@ -233,13 +237,20 @@ float pointAtten(float dist, float range) {
 }
 
 void main() {
+    // GLASS meshes are NOT shaded by the opaque pass — they are drawn in the
+    // dedicated transparent glass pass (glass.frag). Discarding here keeps glass
+    // out of the opaque color + (with the no-SSAO pipeline) the depth write, so the
+    // glass pass composites see-through over the lit scene. The flag is uniform per
+    // draw (flat input) so this branch never diverges.
+    if ((vFlags & FLAG_GLASS) != 0u) discard;
+
     vec3 N = normalize(vNormal);
 
     // Terrain meshes (flagged in the SSBO) splat grass/rock/snow/sand by world
     // height + slope; everything else samples its single bindless texture exactly
     // as before. The branch is uniform per draw (flat input), so no divergence.
     vec4 albedo;
-    if (vTerrainFlag != 0u) {
+    if ((vFlags & FLAG_TERRAIN) != 0u) {
         albedo = vec4(terrainAlbedo(vWorldPos, N, vTerrainPack), 1.0) * vFactor;
     } else {
         albedo = texture(textures[nonuniformEXT(vTexIndex)], vUV) * vFactor;
