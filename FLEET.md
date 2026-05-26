@@ -16,12 +16,12 @@ Single source of truth for **who is who**, **how the fleet talks**, and **how co
 
 | Hardware | Fleet identity | Role | Primary lane |
 |---|---|---|---|
-| Dell i9 laptop (RTX A2000) | **OG Dell_I9** | OG dev + verification | gating, doc, lightweight fixes |
-| i9-14900K desktop (RTX 5090) | **14900K** | high-end dev + perf | renderer, PVS/cull, RT |
-| i7-13700K workstation (2× 1080 Ti, 128GB, 4TB) | **13700K** | **integrator on point** | merges feature branches → `main`, re-gates |
-| i7-4790K garage (1080 Ti, Z97) | **DJBOOTH** | worker | per-task per `DJBOOTH.md` |
-| second-screen | **Snake** | worker | per-task per `Snake*.md` |
-| (TBD machine) | **i5000** | worker | per-task per `i5000.md` |
+| Dell i9 laptop (RTX A2000) | **OG Dell_I9** | OG dev + verification | gating, doc, fleet ops, lightweight fixes |
+| i7-13700K workstation (2× 1080 Ti, 128GB, 4TB) | **13700K** *(a.k.a. FarmBoss)* | **integrator on point** — owns `engine/` | merges feature branches → `main`, re-gates; renderer + netcode |
+| i9-14900K desktop (RTX 5090) | **14900K** | gameplay/content powerhouse — owns `app/` | Level/World Editor |
+| i7-13700k second machine | **Snake13700k** | open-world engineer | mountains, city/metropolis, ocean + submarine combat |
+| i7-4790K garage (1080 Ti, Z97) | **DJBOOTH** | mid-biomes engineer | L12–L15 caves + toxic swamplands + Memory Hunter boss |
+| (TBD machine) | **i5000** | desert levels engineer | L10–L11 Crystalline Desert + Salvari Camp |
 
 Workers push **feature branches**; primaries (OG Dell_I9 / 14900K / 13700K) push **`main`** directly (fetch → rebase → push, small + often). See `docs/VERSIONING.md` for the build-identity standard every push should carry.
 
