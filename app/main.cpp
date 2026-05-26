@@ -6668,6 +6668,9 @@ int main(int argc, char** argv) {
     game.corridorEnemies().shutdown();
     game.checkpointEnemies().shutdown();
     game.chen().shutdown();
+    // The off-elevator Nexus (F4.5 Chorus) is a MultiPodBoss whose rigged pods also
+    // spawn skinned death ragdolls — tear those Jolt bodies down too before physics.
+    nexus.shutdown();
     physics->shutdown();
     device->shutdown();
     glfwDestroyWindow(window);
