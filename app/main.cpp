@@ -5405,13 +5405,19 @@ int main(int argc, char** argv) {
         double mx, my; glfwGetCursorPos(window, &mx, &my);
         float ddx = static_cast<float>(mx - lastMX), ddy = static_cast<float>(my - lastMY);
         lastMX = mx; lastMY = my;
-        if (consoleOpen || uiMenuActive) { ddx = 0.0f; ddy = 0.0f; }
+        if (consoleOpen || uiMenuActive || termMode || codeMode) { ddx = 0.0f; ddy = 0.0f; }
 
-        // Gameplay key reads are gated off while the console is open OR a UI menu is
-        // up so typing/navigation doesn't drive movement/use/jump/fire/noclip.
+        // Gameplay key reads are gated off while the console, a UI menu, the cell
+        // terminal, OR a door-code keypad is active — so ALL gameplay input is
+        // redirected to whatever is capturing (it reads keys via rawKey below) and
+        // nothing drives movement/use/jump/fire/noclip/weapon-switch while typing.
         auto keyDown = [&](int k) {
-            return !consoleOpen && !uiMenuActive && glfwGetKey(window, k) == GLFW_PRESS;
+            return !consoleOpen && !uiMenuActive && !termMode && !codeMode &&
+                   glfwGetKey(window, k) == GLFW_PRESS;
         };
+        // RAW key read (bypasses the capture gates) — used ONLY by the terminal/keypad
+        // input capture so they still receive keystrokes while they are active.
+        auto rawKey = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
 
         // F toggles noclip via the SAME Player flag the `idclip` console command drives
         // (single source of truth — previously F drove a local var and idclip drove
@@ -5567,14 +5573,14 @@ int main(int argc, char** argv) {
         // state machine (also driven by --test-doorcode). ----
         if (codeMode && !terrainWorld) {
             for (int dgt = 0; dgt < 10; ++dgt) {
-                bool dn = keyDown(GLFW_KEY_0 + dgt) || keyDown(GLFW_KEY_KP_0 + dgt);
+                bool dn = rawKey(GLFW_KEY_0 + dgt) || rawKey(GLFW_KEY_KP_0 + dgt);
                 if (dn && !kpDigitPrev[dgt]) keypad.pushDigit(dgt);
                 kpDigitPrev[dgt] = dn;
             }
-            bool backNow = keyDown(GLFW_KEY_BACKSPACE);
+            bool backNow = rawKey(GLFW_KEY_BACKSPACE);
             if (backNow && !kpBackPrev) keypad.backspace();
             kpBackPrev = backNow;
-            bool enterNow = keyDown(GLFW_KEY_ENTER) || keyDown(GLFW_KEY_KP_ENTER);
+            bool enterNow = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
             if (enterNow && !kpEnterPrev) {
                 float pex, pey, pez, pyaw, ppitch;
                 player.camera(pex, pey, pez, pyaw, ppitch);
@@ -5625,25 +5631,25 @@ int main(int argc, char** argv) {
         if (termMode && !terrainWorld) {
             x3::game::HoloTerminal& term = game.secret().terminal();
             for (int dgt = 0; dgt < 10; ++dgt) {
-                bool dn = keyDown(GLFW_KEY_0 + dgt) || keyDown(GLFW_KEY_KP_0 + dgt);
+                bool dn = rawKey(GLFW_KEY_0 + dgt) || rawKey(GLFW_KEY_KP_0 + dgt);
                 if (dn && !tmDigitPrev[dgt]) term.pushChar((char)('0' + dgt));
                 tmDigitPrev[dgt] = dn;
             }
             // Letters + space too, so the cell terminal is a REAL typable field (not
-            // digits-only). Uppercase to match the on-glass font. Movement is gated
-            // off while termMode is active (below) so WASD/Space type, not walk.
+            // digits-only). Uppercase to match the on-glass font. These use rawKey so
+            // they register while keyDown (all gameplay input) is gated off in termMode.
             for (int li = 0; li < 26; ++li) {
-                bool dn = keyDown(GLFW_KEY_A + li);
+                bool dn = rawKey(GLFW_KEY_A + li);
                 if (dn && !tmCharPrev[li]) term.pushChar((char)('A' + li));
                 tmCharPrev[li] = dn;
             }
-            bool tspaceNow = keyDown(GLFW_KEY_SPACE);
+            bool tspaceNow = rawKey(GLFW_KEY_SPACE);
             if (tspaceNow && !tmSpacePrev) term.pushChar(' ');
             tmSpacePrev = tspaceNow;
-            bool tbackNow = keyDown(GLFW_KEY_BACKSPACE);
+            bool tbackNow = rawKey(GLFW_KEY_BACKSPACE);
             if (tbackNow && !tmBackPrev) term.backspace();
             tmBackPrev = tbackNow;
-            bool tEnterNow = keyDown(GLFW_KEY_ENTER) || keyDown(GLFW_KEY_KP_ENTER);
+            bool tEnterNow = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
             if (tEnterNow && !tmEnterPrev) {
                 bool ok = term.submit();   // fires the sink -> opens the trapdoor on 1127
                 if (ok) { termMode = false; term.setActive(false);
