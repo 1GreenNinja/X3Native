@@ -330,8 +330,8 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.magSize     = 40;
         w.reserveAmmo = 200;
         w.reloadTime  = 2.0f;
-        w.viewmodelGlb = "WeaponRailgun.glb";  // railgun reads as a rifle for the auto SMG
-        w.vmScale     = 0.24f;                 // longarm (~0.46 m held)
+        w.viewmodelGlb = "WeaponX.glb";  // tactical battle rifle (Rodin art pass)
+        w.vmScale     = 0.11f;           // long rifle -> smaller viewmodel scale
         w.muzzleFx    = "muzzle_smg";
         w.impactFx    = "impact_bullet";
         // Task #21 FIX B (stoppable loop voice): autos play ONE sustained looping WAV
