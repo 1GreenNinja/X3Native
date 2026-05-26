@@ -70,6 +70,14 @@ public:
     // applyLocomotion will upload the palette + skin on the GPU instead of CPU LBS).
     bool gpuSkinning() const { return m_gpuSkin; }
 
+    // Hand every GPU-skinned mesh registered by enableGpuSkinning() back to the device
+    // (unregisterSkinnedMesh), freeing its per-mesh skinning buffers + descriptor sets.
+    // Call when the owning model is DESPAWNED so the GPU registration does not leak for
+    // the rest of the run. After this gpuSkinning() is false; apply() falls back to the
+    // CPU path (harmless — a despawned model is no longer drawn). Idempotent; a no-op on
+    // a headless / CPU-only device (nothing was registered). Safe when !valid().
+    void disableGpuSkinning(x3::rhi::IRenderDevice& device);
+
     // Number of clips + a clip's name/duration (for selecting idle vs walk and for
     // logging). clipIndex is clamped/ignored if out of range.
     uint32_t   clipCount() const { return (uint32_t)m_clipDurations.size(); }
@@ -375,6 +383,10 @@ private:
     // LBS + updateMesh. Holds no GPU resources itself (the device owns them, keyed
     // by mesh handle, freed on destroyMesh / unregisterSkinnedMesh).
     bool                  m_gpuSkin = false;
+    // Mesh ids registered with the device by enableGpuSkinning() — kept so
+    // disableGpuSkinning() can hand them back (unregisterSkinnedMesh) when a model
+    // is despawned, freeing the device's per-mesh skinning buffers/descriptors.
+    std::vector<uint32_t> m_gpuMeshIds;
     int                   m_skinIndex = -1;
     std::vector<float>    m_clipDurations;     // seconds, per clip
     std::vector<std::string> m_clipNames;

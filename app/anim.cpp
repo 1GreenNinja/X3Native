@@ -334,11 +334,22 @@ bool Skinner::enableGpuSkinning(x3::rhi::IRenderDevice& device,
             mv.uv[0] = p.baseUv[v*2+0]; mv.uv[1] = p.baseUv[v*2+1];
         }
         if (device.registerSkinnedMesh(x3::rhi::MeshHandle{ meshId }, bind.data(),
-                                       (uint32_t)vcount, p.jointIdx.data(), p.jointWt.data()))
+                                       (uint32_t)vcount, p.jointIdx.data(), p.jointWt.data())) {
             any = true;
+            m_gpuMeshIds.push_back(meshId);   // remember so we can unregister on despawn
+        }
     }
     m_gpuSkin = any;
     return any;
+}
+
+// Hand every registered skinned mesh back to the device (free its skinning buffers +
+// descriptor sets). Used when the model is despawned. Idempotent.
+void Skinner::disableGpuSkinning(x3::rhi::IRenderDevice& device) {
+    for (uint32_t meshId : m_gpuMeshIds)
+        device.unregisterSkinnedMesh(x3::rhi::MeshHandle{ meshId });
+    m_gpuMeshIds.clear();
+    m_gpuSkin = false;
 }
 
 float Skinner::clipDuration(uint32_t clip) const {

@@ -6885,11 +6885,11 @@ int main(int argc, char** argv) {
     combatFx.shutdown(*device);
     // TASK#12: tear down any in-flight SKINNED death ragdolls (Jolt bodies) BEFORE
     // physics shuts down, so a monster killed in the last ~0.7 s (mid-flop) doesn't
-    // touch a dead Jolt system when its IRagdoll is later destroyed. Fans across the
-    // Level1Game enemy groups; a no-op when nothing is ragdolling.
-    game.corridorEnemies().shutdown();
-    game.checkpointEnemies().shutdown();
-    game.chen().shutdown();
+    // touch a dead Jolt system when its IRagdoll is later destroyed. game.shutdown()
+    // fans across EVERY Level1Game enemy group AND the single Martinez boss + Phase-3
+    // adds (the bare group calls missed Martinez/bossAdds -> exit crash after a boss
+    // kill); a no-op when nothing is ragdolling.
+    game.shutdown();
     if (canonPlay.built()) canonPlay.shutdown();   // --world canonlevel enemy ragdolls
     physics->shutdown();
     device->shutdown();

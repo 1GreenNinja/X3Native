@@ -328,9 +328,16 @@ constexpr float kDeathPopTime  = 0.25f;
 
 // Death TOPPLE duration (seconds): replaces the old shrink-poof. On death the
 // model falls over (rotates ~90deg about its feet) across this window with a brief
-// white flash, then LINGERS as a corpse on the ground (no longer vanishes). Reads
-// as a real kill instead of a sprite popping out of existence.
+// white flash, then settles as a corpse on the ground.
 constexpr float kDeathToppleTime = 0.7f;
+
+// Corpse DESPAWN delay (seconds, BUG#30): after the topple/gib finishes and the
+// monster settles into a corpse, it lingers for this long and then DISAPPEARS —
+// the Entity is hidden, its physics body is already gone, and its GPU skinned-mesh
+// registration is freed. A killed monster no longer stands/lies around forever.
+// ~2.5 s reads the kill, then clears the screen. A gib-class kill despawns at once
+// (see kGibImmediateDespawn): the body burst into chunks, so there is no corpse.
+constexpr float kCorpseDespawnTime = 2.5f;
 
 // Result of a fire() call, returned for HUD/FX/logging and used by the self-test.
 struct FireResult {
@@ -672,6 +679,13 @@ public:
     // removed, but the model is still being drawn (shrinking/flashing).
     bool dying() const { return m_dying; }
 
+    // True once the corpse has DESPAWNED (BUG#30): the topple/gib finished, the
+    // despawn delay elapsed, the Entity is hidden, and the GPU skinned-mesh
+    // registration was freed. A despawned monster is fully removed (not drawn,
+    // no body, skin freed). Distinct from alive()/dying(): a corpse is !alive() &&
+    // !dying() && !despawned() until its timer expires.
+    bool despawned() const { return m_despawned; }
+
     // ---- SKINNED DEATH RAGDOLL accessors (TASK#12, for the self-test) ------
     // True while a physics ragdoll is driving the (rigged) corpse's skin instead of
     // the legacy rigid topple. False for unrigged monsters (they topple) and after
@@ -731,6 +745,13 @@ private:
     void driveSkinFromRagdoll();
     // Remove the ragdoll bodies (corpse cleanup). Idempotent. Leaves the corpse drawable.
     void clearDeathRagdoll();
+
+    // BUG#30: DESPAWN the corpse — hide its Entity, free the GPU skinned-mesh
+    // registration (Skinner::disableGpuSkinning -> unregisterSkinnedMesh), tear down
+    // any lingering ragdoll bodies, and latch m_despawned. The physics body is already
+    // gone (removed at the kill) and the alive count already dropped, so this does NOT
+    // change the count. Idempotent; safe even if never killed (no-op while alive).
+    void despawn(Scene& scene);
 
     // Loaded model + its draw records (one per primitive). Loader kept alive so the
     // GPU handles in m_drawables stay valid for the app's lifetime.
@@ -845,6 +866,15 @@ private:
     bool  m_dying     = false;
     float m_deathPop  = 0.0f;                 // remaining topple time (s) while m_dying
     bool  m_corpse    = false;                // topple finished -> lingering body on the floor
+
+    // ---- Corpse despawn (BUG#30) -----------------------------------------
+    // Once the corpse settles, m_corpseTimer counts down kCorpseDespawnTime; when it
+    // hits 0 the monster DESPAWNS: the Entity is hidden, the GPU skinned-mesh
+    // registration is freed (unregisterSkinnedMesh), and m_despawned latches so the
+    // draw/cleanup happen exactly once. A gib-class kill skips the corpse and despawns
+    // immediately (the body burst). m_despawned implies fully removed (not drawn).
+    float m_corpseTimer = 0.0f;               // countdown to despawn while m_corpse
+    bool  m_despawned   = false;              // corpse removed: hidden + skin freed (once)
 
     // ---- SKINNED DEATH RAGDOLL (TASK#12) ----------------------------------
     // On the KILL of a RIGGED monster (m_skinner.valid()) we build a physics

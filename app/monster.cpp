@@ -683,8 +683,10 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     if (m_atkTimer > 0.0f) { m_atkTimer -= dt; if (m_atkTimer < 0.0f) m_atkTimer = 0.0f; }
 
     // ---- Death: keep drawing the TOPPLE (fall-over + flash, in drawMonster)
-    // until the timer runs out, then settle into a lingering corpse (the body is
-    // already gone from physics; the corpse is draw-only and never re-skins). ----
+    // until the timer runs out, then settle into a corpse, linger briefly, and
+    // DESPAWN (BUG#30): the corpse is removed so a killed monster does not stand /
+    // lie around forever. The physics body is already gone from physics; the GPU
+    // skinned-mesh registration is freed on despawn. ----
     if (!m_alive) {
         if (m_dying) {
             // TASK#12: while a SKINNED ragdoll is active, the host has already stepped
@@ -696,12 +698,24 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             if (m_deathPop <= 0.0f) {
                 m_deathPop = 0.0f;
                 m_dying  = false;
-                m_corpse = true;   // settled flat; keep drawing it on the floor
+                m_corpse = true;   // settled flat; keep drawing it briefly on the floor
                 // Corpse settled -> tear down the ragdoll bodies (no leaked Jolt
                 // bodies). The last skinned pose stays uploaded so the corpse keeps
                 // its collapsed shape; the rigid corpse-topple is skipped for it.
                 clearDeathRagdoll();
+                // BUG#30: start the corpse despawn countdown. A gib-class kill (a
+                // flyer/drone that burst/sparked out of the air) has no corpse to
+                // linger — despawn it immediately (timer 0).
+                const bool gibClass = (m_flyer || m_type == MonsterType::Drone);
+                m_corpseTimer = gibClass ? 0.0f : kCorpseDespawnTime;
             }
+        } else if (m_corpse && !m_despawned) {
+            // BUG#30: lingering corpse -> count down + DESPAWN. The body is already
+            // gone (removed at the kill), the alive/enemiesRemaining count already
+            // dropped on kill, and clearDeathRagdoll() ran on corpse-settle — so the
+            // despawn must NOT touch the count again, only hide + free the skin.
+            m_corpseTimer -= dt;
+            if (m_corpseTimer <= 0.0f) despawn(scene);
         }
         return;
     }
@@ -1398,6 +1412,33 @@ void MonsterSystem::clearDeathRagdoll() {
     m_ragWorldScratch.clear();
 }
 
+// BUG#30: despawn a settled corpse — hide the Entity, free the GPU skinned-mesh
+// registration, and drop any lingering ragdoll bodies. Idempotent; does NOT touch the
+// alive/enemiesRemaining count (the kill already decremented it; alive() stays false).
+void MonsterSystem::despawn(Scene& scene) {
+    if (m_despawned) return;
+    m_despawned = true;
+    m_corpse    = false;   // no longer a drawable corpse
+    m_dying     = false;
+    // Hide the model (the draw path early-outs on a hidden entity; this stops the
+    // corpse drawing). The body was already removed at the kill, so nothing physical
+    // remains. Leave the entity slot in place (kNoLink would break entity() lookups).
+    if (m_entity != kNoLink && m_entity < scene.size()) {
+        Entity& me = scene.get(m_entity);
+        me.visible = false;
+        me.body    = x3::phys::BodyId{};   // belt-and-braces: ensure no dangling body link
+    }
+    // Free the GPU skinned-mesh registration so a despawned rigged enemy does not leak
+    // its per-mesh skinning buffers/descriptors for the rest of the run. No-op on a
+    // headless / CPU-only build (nothing was registered) and on unrigged monsters.
+    if (m_device && m_skinner.valid())
+        m_skinner.disableGpuSkinning(*m_device);
+    // Belt-and-braces: any ragdoll should already be cleared on corpse-settle, but a
+    // gib-class (immediate) despawn can land in the same frame — clear it here too.
+    clearDeathRagdoll();
+    x3::logInfo("[monster] corpse despawned (entity hidden, skinned mesh freed)");
+}
+
 // ---------------------------------------------------------------------------
 // Draw all monster primitives at its transform, with the hit-flash tint.
 // ---------------------------------------------------------------------------
@@ -2006,9 +2047,40 @@ bool runDeathRagdollSelfTest() {
     drcheck(!mon.ragdollActive(), "D4a ragdoll deactivated on corpse-expire");
     drcheck(mon.deathRagdoll() == nullptr, "D4 ragdoll torn down (bodies removed, no leaked Jolt bodies)");
 
+    // ---- D5 (BUG#30): the corpse DESPAWNS after the linger window — it must not
+    // stand/lie around forever. Run past kCorpseDespawnTime: the Entity is hidden,
+    // despawned() latches, the GPU skin registration is freed (gpuSkinning() false),
+    // and the dead monster is NOT double-counted (alive() stays false; entity slot
+    // preserved). ----
+    {
+        const uint32_t deadEnt = mon.entity();
+        const bool entLinks   = deadEnt != kNoLink && deadEnt < scene.size();
+        const bool wasVisible = entLinks ? scene.get(deadEnt).visible : false;
+        drcheck(!mon.despawned() && wasVisible,
+                "D5a corpse still present (visible, not yet despawned) before the linger window");
+        // Step well past kCorpseDespawnTime (2.5 s) at 60 Hz.
+        const int despawnSteps = (int)((kCorpseDespawnTime + 0.5f) / dt) + 2;
+        for (int i = 0; i < despawnSteps; ++i) {
+            physics->step(dt);
+            mon.update(dt, scene, *physics, x3::phys::Vec3{ 0.0f, 1.6f, 5.0f });
+        }
+        const bool hidden = entLinks ? !scene.get(deadEnt).visible : true;
+        drcheck(mon.despawned(), "D5 corpse despawned after the linger window");
+        drcheck(hidden, "D5b despawned corpse Entity hidden (no lingering body drawn)");
+        drcheck(!mon.skinner().gpuSkinning(),
+                "D5c GPU skinned-mesh registration freed on despawn (no leak)");
+        drcheck(!mon.alive() && mon.entity() == deadEnt,
+                "D5d despawn does not resurrect/double-count (dead, entity slot preserved)");
+        drcheck(mon.deathRagdoll() == nullptr,
+                "D5e no ragdoll body survives the despawn");
+    }
+
     // The world still steps cleanly with the ragdoll bodies gone (sanity).
     for (int i = 0; i < 5; ++i) physics->step(dt);
 
+    // Defensive: drop any ragdoll bodies (already torn down by D4) while the Jolt
+    // world is still alive, so ~MonsterSystem never removes bodies from a dead world.
+    mon.shutdownRagdoll();
     physics->shutdown();
     x3::logInfo(std::string("[deathragdoll-test] ") + std::to_string(dr_pass) +
                 " passed, " + std::to_string(dr_fail) + " failed");

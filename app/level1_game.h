@@ -276,6 +276,17 @@ public:
     const MonsterManager& chen() const { return m_chen; }
     MonsterManager&       chen()       { return m_chen; }
 
+    // ---- TEARDOWN (death-ragdoll safety) ----------------------------------
+    // Tear down every monster group's in-flight death ragdoll (and the single
+    // Martinez boss + Phase-3 adds) while the physics world is STILL ALIVE. The
+    // host (and the --test-level1 self-test) MUST call this BEFORE physics->
+    // shutdown(): a boss/enemy killed late leaves a skinned death ragdoll whose
+    // Jolt bodies are removed in ~MonsterSystem -> IRagdoll::removeFromWorld();
+    // if the Jolt world was already shut down that is an access violation
+    // (Release) / a Jolt assert (Debug). Mirrors MonsterManager::shutdown() +
+    // SpireNexus's body-owner scoping. Idempotent and harmless if nothing died.
+    void shutdown();
+
     // Total LIVE hostiles across every group (HUD "ENEMIES" counter). Includes the
     // Phase-3 boss adds + the bosses so the count never reads "AREA CLEAR" while
     // something is still alive (the bossAdds bug).
