@@ -16,9 +16,17 @@
 // world. The portals are arranged in a clockwise circle around the spawn
 // point so the player can walk past all 8 by orbiting once.
 //
-// Authoring style mirrors act2_caves' Scene-prop helpers: every portal is
-// two stacked thin emissive boxes (a ring read), a small emissive floor-
-// plate, and a wider AABB trigger underneath. No GLB asset needed.
+// Authoring style mirrors act2_caves' Scene-prop helpers: every portal is a
+// vertical round "tech-gate" ring built from N tangent box segments (two
+// concentric layers — outer + inner — so the gate reads as a framed
+// doorway), a small octagonal emissive floor-plate, and a thin emissive
+// "shimmer disk" at the center of the ring as the portal's energy core. A
+// wider AABB trigger sits underneath. No GLB asset needed.
+//
+// SHIMMER ANIMATION: Rifthub::tick(dt) runs each frame and pulses the ring's
+// + the shimmer disk's emissive intensity via sin(time * freq + phase), with
+// a per-portal phase offset so the gates ripple around the hub instead of
+// pulsing in unison. See rifthub.cpp's tick() for the constants.
 
 #include "scene.h"
 #include "trigger.h"
@@ -49,17 +57,28 @@ enum class RifthubTrigger : uint32_t {
 constexpr uint32_t kRifthubTrigBase  = 200;
 constexpr uint32_t kRifthubTrigCount = 8;
 
-// One placed portal in the hub. The portal is a vertical "ring" stack of two
-// thin emissive boxes + a small emissive floor-plate, anchored at `worldPos`.
+// One placed portal in the hub. The portal is a vertical round tech-gate ring
+// (two concentric layers of N tangent box segments) + an octagonal emissive
+// floor-plate + a thin "shimmer disk" energy core, anchored at `worldPos`.
 // `triggerId` is the matching RifthubTrigger; `worldName` is the --world flag
 // the host should relaunch with to traverse this rift (NO runtime switch in
 // this draft).
+//
+// The host calls Rifthub::tick(dt) each frame to drive the shimmer pulse —
+// the per-portal entity-id ranges below let tick() poke emissive[3] on the
+// ring segments + the shimmer disk in-place without re-issuing render calls.
 struct RiftPortal {
     const char*    worldName  = "";       // --world flag (e.g. "act2caves")
     uint32_t       triggerId  = 0;        // matching RifthubTrigger id
     x3::phys::Vec3 worldPos{};            // portal center (XZ); Y = floor
     float          tint[3]    = {1,1,1};  // emissive color (portal-specific)
     bool           activated  = false;    // latched when the trigger fires
+    // Entity-id ranges for the shimmer animation. Each portal owns a contiguous
+    // span of ring-segment entities (outer ring then inner ring) and a single
+    // shimmer-disk entity; tick() walks these to pulse emissive strength.
+    uint32_t       ringEntFirst = 0;      // first scene entity id in the ring span
+    uint32_t       ringEntCount = 0;      // number of ring-segment entities
+    uint32_t       coreEnt      = 0;      // shimmer disk entity id (energy core)
 };
 
 // The Portal-Hub area. Build once after the device + physics + a TriggerSystem
@@ -76,6 +95,14 @@ public:
     // onTrigger(). Call once.
     void build(Scene& scene, x3::rhi::IRenderDevice& device,
                x3::phys::IPhysicsWorld& physics, TriggerSystem& triggers);
+
+    // Per-frame shimmer animation. Pulses each portal's ring-segment emissive
+    // strength + its inner shimmer-disk strength using sin(m_time*freq+phase),
+    // with a small per-portal phase offset so the gates ripple around the hub
+    // instead of pulsing in unison. The pulse is RANGE-mapped to {ring 1.5..4,
+    // core 3..6.5} so the energy core always outshines the frame.
+    // `scene` is the Scene the portals were authored into (build()'s scene).
+    void tick(float dt, Scene& scene);
 
     // Free the Scene meshes/textures owned by the hub (the portal ring meshes,
     // the floor plates, the ground checker). Leaves physics ownership to the
@@ -110,13 +137,18 @@ public:
 
 private:
     bool                       m_built = false;
+    float                      m_time = 0.0f;          // shimmer accumulator (sec)
     x3::phys::Vec3             m_spawn{};
     std::vector<RiftPortal>    m_portals;
 
-    // Owned render resources (freed in shutdown()).
+    // Owned render resources (freed in shutdown()). The portal mesh vector
+    // collects EVERY device-allocated mesh authored by build() — ring segments
+    // (outer + inner), floor-plate wedges, and shimmer-disk core — so shutdown
+    // can free them uniformly. The per-portal entity-id ranges in RiftPortal
+    // index into the Scene, not into this vector.
     x3::rhi::MeshHandle        m_groundMesh;
     x3::rhi::TextureHandle     m_groundTex;
-    std::vector<x3::rhi::MeshHandle> m_portalMeshes;     // 2 rings + 1 plate per portal
+    std::vector<x3::rhi::MeshHandle> m_portalMeshes;
 };
 
 } // namespace x3::game
