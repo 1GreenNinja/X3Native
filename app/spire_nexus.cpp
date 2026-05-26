@@ -352,9 +352,18 @@ bool runNexusSelfTest() {
         // The boss has NOT fallen with 4 saved + 1 alive (only 4 downed of 5).
         check(!nx2.hasFallen() && nx2.downedCount() == 4 && nx2.aliveCount() == 1,
               "N7 4 saved + core alive => 4 downed, boss not yet fallen");
+        // TASK#12: tear down any in-flight pod death ragdolls (Jolt bodies) BEFORE the
+        // physics world is shut down, so no IRagdoll dtor touches a dead Jolt system.
+        nx2.shutdown();
         w->shutdown();
     }
 
+    // TASK#12: same teardown order for the primary Nexus — the N6 block KILLED all 5
+    // (rigged) pods, each of which spawned a death ragdoll that is still live in the
+    // world. Clear those Jolt bodies while `physics` is alive; otherwise the pods'
+    // IRagdoll dtors (when `nexus` is destroyed at function exit, after the world is
+    // gone) fault with an access violation in teardown.
+    nexus.shutdown();
     physics->shutdown();
     x3::logInfo(std::string("nexus: ") + std::to_string(g_pass) + "/" +
                 std::to_string(g_pass + g_fail) + " passed");
