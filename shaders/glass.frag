@@ -49,14 +49,15 @@ layout(set = 3, binding = 1) uniform SsaoControl {
 //            Mip-chained for the frost lookup (M4); M2 samples mip 0.
 // binding 1: per-frame control (camera pos + time + screen->UV + dev overrides +
 //            camera right/up for the screen-space normal projection).
-layout(set = 4, binding = 0) uniform sampler2D sceneCopy;
+layout(set = 4, binding = 0) uniform sampler2D sceneCopy;     // sharp scene behind glass
 layout(set = 4, binding = 1) uniform GlassControl {
     vec4 camPos;     // xyz = camera world pos, w = time
-    vec4 screen;     // x = 1/W, y = 1/H, z = maxMip, w = sceneCopyValid (0/1)
+    vec4 screen;     // x = 1/W, y = 1/H, z = frostReady (0/1), w = sceneCopyValid (0/1)
     vec4 ctrl;       // x = refractScale, y = roughAdd, z = specScale, w = overrideOn
     vec4 camRight;   // xyz = camera RIGHT axis (world)
     vec4 camUp;      // xyz = camera UP axis (world)
 } g;
+layout(set = 4, binding = 2) uniform sampler2D sceneFrost;   // blurred scene (M4 frost)
 
 layout(location = 0) in vec3 vNormal;
 layout(location = 1) in vec2 vUV;
@@ -157,19 +158,33 @@ void main() {
     vec3 tint  = vGlassTint.rgb;
     vec3 body  = texel * vFactor.rgb * tint;
 
-    // ---- M2: screen-space REFRACTION -------------------------------------
+    // ---- M2: screen-space REFRACTION + M4: ROUGHNESS / FROST -------------
     // Project the world-space surface normal onto the screen plane (camera right/up)
     // to get the in-screen bend direction, then sample the scene-color copy at the
     // refraction-offset UV. The copy is the scene as it looked BEFORE this glass was
-    // drawn (you can't sample + write the live HDR target in one pass).
+    // drawn (you can't sample + write the live HDR target in one pass). M4: also
+    // sample a pre-blurred copy and LERP sharp->frosted by roughness, so the scene
+    // through the glass goes from crisp (polished) to milky (frosted).
     vec2 screenUV = gl_FragCoord.xy * g.screen.xy;
     vec3 refractedScene = vec3(0.0);
     bool haveScene = g.screen.w > 0.5;
+    bool haveFrost = g.screen.z > 0.5;
     if (haveScene) {
         vec2 nScreen = vec2(dot(N, g.camRight.xyz), dot(N, g.camUp.xyz));
         vec2 offUV   = nScreen * refraction;
         vec2 sampUV  = clamp(screenUV + offUV, vec2(0.0), vec2(1.0));
-        refractedScene = textureLod(sceneCopy, sampUV, 0.0).rgb;
+        vec3 sharp   = textureLod(sceneCopy, sampUV, 0.0).rgb;
+        if (haveFrost && roughness > 0.001) {
+            // Frosted glass scatters: a frosted pane jitters the lookup a touch (so
+            // even the blurred sample isn't a clean mirror of the scene) and leans on
+            // the blurred copy. smoothstep gives a gentle ramp so low roughness stays
+            // nearly clear. Sample the blurred copy at the SAME offset UV.
+            vec3 frost = textureLod(sceneFrost, sampUV, 0.0).rgb;
+            float fmix = smoothstep(0.0, 0.85, roughness);
+            refractedScene = mix(sharp, frost, fmix);
+        } else {
+            refractedScene = sharp;
+        }
     }
 
     // ---- Lighting (same model as the opaque mesh) — used for the glass BODY ----

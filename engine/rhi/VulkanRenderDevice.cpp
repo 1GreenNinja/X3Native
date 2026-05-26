@@ -2178,11 +2178,76 @@ private:
         }
     }
 
-    // ---- Glass frost-blur chain (M4) — implemented in milestone M4 --------
-    // Downsamples the scene copy into m_glassFrostImg[] (separate single-mip images,
-    // bloom-style) so glass.frag can lerp to a frosted level by roughness. For M2/M3
-    // m_glassFrostPipe is NULL so glassFrostOn is false and this is never reached.
-    void addGlassFrostPasses(RgResource /*rgSceneCopy*/) { /* M4 */ }
+    // ---- Glass frost-blur chain (M4) --------------------------------------
+    // Downsample the scene copy into m_glassFrostImg[] — separate single-mip images
+    // (the render-graph tracks one layout per image, so distinct images, not mip
+    // levels), each half the previous. level0 samples the scene copy; level i samples
+    // level i-1. Reuses the bloom-down 13-tap filter (m_bloomDownPipe / m_bloomLayout,
+    // BloomPush, firstPass=0 = plain downsample). The glass shader lerps the sharp
+    // copy toward the deepest level by roughness. Stable per-level storage lives in
+    // member arrays. The caller passes the scene-copy resource (rgSceneCopy) so the
+    // first level orders after the copy; each frost level is imported here.
+    void addGlassFrostPasses(RgResource rgSceneCopy) {
+        for (uint32_t lvl = 0; lvl < kGlassFrostLevels; ++lvl) {
+            if (!m_glassFrostSrcSet[lvl] || !m_glassFrostImg[lvl]) return;
+            const VkExtent2D srcExt = (lvl == 0) ? m_extent : m_glassFrostExt[lvl - 1];
+            const VkExtent2D dstExt = m_glassFrostExt[lvl];
+
+            RgResource rgDst = m_graph.importImage("glass.frost", m_glassFrostImg[lvl],
+                ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+            m_glassFrostRg[lvl] = rgDst;   // remembered so the next level reads it
+
+            BloomPush& pc = m_glassFrostPush[lvl];
+            pc.srcTexel[0] = 1.0f / (float)std::max(1u, srcExt.width);
+            pc.srcTexel[1] = 1.0f / (float)std::max(1u, srcExt.height);
+            pc.threshold = 0.0f; pc.knee = 0.0f;
+            pc.intensity = 1.0f; pc.firstPass = 0;   // plain 13-tap downsample (blur)
+
+            m_glassFrostAttach[lvl] = VkRenderingAttachmentInfo{};
+            m_glassFrostAttach[lvl].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_glassFrostAttach[lvl].imageView = m_glassFrostView[lvl];
+            m_glassFrostAttach[lvl].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_glassFrostAttach[lvl].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            m_glassFrostAttach[lvl].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            m_glassFrostRenderInfo[lvl] = VkRenderingInfo{};
+            m_glassFrostRenderInfo[lvl].sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_glassFrostRenderInfo[lvl].renderArea = { {0,0}, dstExt };
+            m_glassFrostRenderInfo[lvl].layerCount = 1;
+            m_glassFrostRenderInfo[lvl].colorAttachmentCount = 1;
+            m_glassFrostRenderInfo[lvl].pColorAttachments = &m_glassFrostAttach[lvl];
+
+            RenderPassDesc fp{};
+            fp.name = "glass-frost";
+            fp.addUse(ResourceUse{
+                rgDst, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            // Source: the scene copy (level0) or the previous frost level. Declaring
+            // the read transitions the source to SHADER_READ_ONLY before this pass.
+            RgResource rgSrc = (lvl == 0) ? rgSceneCopy : m_glassFrostRg[lvl - 1];
+            fp.addUse(ResourceUse{
+                rgSrc, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            fp.usesDynamicRendering = true;
+            fp.renderInfo = m_glassFrostRenderInfo[lvl];
+            m_glassFrostCtx[lvl] = BloomPassCtx{ this, m_glassFrostSrcSet[lvl], dstExt, lvl };
+            fp.recordCtx = &m_glassFrostCtx[lvl];
+            fp.record = [](void* ctx, VkCommandBuffer c){
+                auto* pc = static_cast<BloomPassCtx*>(ctx);
+                auto* self = pc->self;
+                self->postViewport(c, pc->dstExt);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_glassFrostPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_bloomLayout,
+                                        0, 1, &pc->srcSet, 0, nullptr);
+                vkCmdPushConstants(c, self->m_bloomLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(BloomPush), &self->m_glassFrostPush[pc->mip]);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(fp));
+        }
+    }
 
     // Set dynamic viewport+scissor to a post target's extent.
     void postViewport(VkCommandBuffer c, VkExtent2D ext) {
@@ -2747,6 +2812,16 @@ private:
             if (glassCopyOn) {
                 glassPass.addUse(ResourceUse{
                     rgSceneCopy, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            }
+            // Frostiest blur level (set 4, binding 2): glass.frag samples it for the
+            // M4 frost lerp. The deepest frost pass left it COLOR_ATTACHMENT, so
+            // declare it READ here to transition it -> SHADER_READ_ONLY before draw.
+            if (glassFrostOn && m_glassFrostRg[kGlassFrostLevels - 1].valid()) {
+                glassPass.addUse(ResourceUse{
+                    m_glassFrostRg[kGlassFrostLevels - 1], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
@@ -5559,12 +5634,14 @@ private:
             }
             m_glassCtrlMapped[i] = ainfo.pMappedData;
         }
-        // Descriptor pool + one set per frame.
+        // Descriptor pool: per-frame glass sets (2 image samplers [scene copy +
+        // frost] + 1 UBO each) PLUS the frost downsample src sets (one single-sampler
+        // set per frost level, reusing m_postSetLayout1).
         VkDescriptorPoolSize ps[2]{
-            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kFramesInFlight },
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kFramesInFlight * 2 + kGlassFrostLevels },
             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight } };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        pci.maxSets = kFramesInFlight; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
+        pci.maxSets = kFramesInFlight + kGlassFrostLevels; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
         if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_glassPool) != VK_SUCCESS) {
             logError("[rhi] glass descriptor pool failed"); return false;
         }
@@ -5574,6 +5651,21 @@ private:
             if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_glassSet[i]) != VK_SUCCESS) {
                 logError("[rhi] glass descriptor set alloc failed"); return false;
             }
+        }
+        // Frost (M4) downsample src sets: one single-sampler set per output level
+        // (set[i] samples the SOURCE of level i). Reuses the bloom-down pipeline +
+        // layout (m_bloomDownPipe / m_postSetLayout1). Only built when the post
+        // single-sampler layout + scene copy exist; otherwise frost stays off.
+        if (m_postSetLayout1 && m_bloomDownPipe && m_sceneCopyImg) {
+            bool ok = true;
+            for (uint32_t i = 0; i < kGlassFrostLevels && ok; ++i) {
+                VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+                ai.descriptorPool = m_glassPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_postSetLayout1;
+                ok = (vkAllocateDescriptorSets(m_dev.device, &ai, &m_glassFrostSrcSet[i]) == VK_SUCCESS);
+            }
+            // Reuse the existing bloom downsample pipeline for the frost blur (same
+            // shader, layout, HDR format, dynamic viewport). NULL -> frost disabled.
+            m_glassFrostPipe = ok ? m_bloomDownPipe : VK_NULL_HANDLE;
         }
         writeGlassDescriptors();
         return true;
@@ -5586,18 +5678,42 @@ private:
     void writeGlassDescriptors() {
         if (!m_glassPool || !m_glassCopySampler) return;
         VkImageView copyView = m_sceneCopyView ? m_sceneCopyView : m_hdrView;
+        // Frostiest blur level for binding 2 (M4). Only bind the frost image when the
+        // frost chain actually RUNS (m_glassFrostPipe set), so its layout is
+        // transitioned to SHADER_READ_ONLY by the glass pass. Otherwise fall back to
+        // the sharp copy (the shader's frostReady flag is also 0, so the lerp is a
+        // no-op) — never bind an untransitioned image.
+        VkImageView frostView = (m_glassFrostPipe && m_glassFrostView[kGlassFrostLevels - 1])
+                                ? m_glassFrostView[kGlassFrostLevels - 1] : copyView;
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
             if (!m_glassSet[i]) continue;
-            VkDescriptorImageInfo di{ m_glassCopySampler, copyView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo di{ m_glassCopySampler, copyView,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo df{ m_glassCopySampler, frostView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             VkDescriptorBufferInfo bi{ m_glassCtrlBuf[i], 0, sizeof(GlassControl) };
-            VkWriteDescriptorSet w[2]{};
+            VkWriteDescriptorSet w[3]{};
             w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w[0].dstSet = m_glassSet[i]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
             w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &di;
             w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w[1].dstSet = m_glassSet[i]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
             w[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[1].pBufferInfo = &bi;
-            vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+            w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[2].dstSet = m_glassSet[i]; w[2].dstBinding = 2; w[2].descriptorCount = 1;
+            w[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[2].pImageInfo = &df;
+            vkUpdateDescriptorSets(m_dev.device, 3, w, 0, nullptr);
+        }
+        // Frost downsample SOURCE sets: set[0] samples the scene copy, set[i] samples
+        // frost level i-1 (the previous, larger level). Written here so they track the
+        // recreated views on resize.
+        for (uint32_t i = 0; i < kGlassFrostLevels; ++i) {
+            if (!m_glassFrostSrcSet[i]) continue;
+            VkImageView src = (i == 0) ? copyView : m_glassFrostView[i - 1];
+            if (!src) src = copyView;
+            VkDescriptorImageInfo si{ m_glassCopySampler, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.dstSet = m_glassFrostSrcSet[i]; w.dstBinding = 0; w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &si;
+            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
         }
     }
 
@@ -5607,6 +5723,10 @@ private:
             m_glassSet[i] = VK_NULL_HANDLE;
             if (m_glassCtrlBuf[i]) { vmaDestroyBuffer(m_alloc, m_glassCtrlBuf[i], m_glassCtrlAlloc[i]); m_glassCtrlBuf[i] = VK_NULL_HANDLE; m_glassCtrlAlloc[i] = nullptr; m_glassCtrlMapped[i] = nullptr; }
         }
+        // Frost src sets came from m_glassPool (freed above); the pipe is an ALIAS of
+        // m_bloomDownPipe (owned by destroyPost) — clear, don't destroy.
+        for (uint32_t i = 0; i < kGlassFrostLevels; ++i) m_glassFrostSrcSet[i] = VK_NULL_HANDLE;
+        m_glassFrostPipe = VK_NULL_HANDLE;
         if (m_glassCopySampler) { vkDestroySampler(m_dev.device, m_glassCopySampler, nullptr); m_glassCopySampler = VK_NULL_HANDLE; }
     }
 
@@ -7245,15 +7365,20 @@ private:
         // UBOs + descriptor sets are built later (after the scene-copy target exists)
         // in createGlassResources / writeGlassDescriptors.
         {
-            VkDescriptorSetLayoutBinding b[2]{};
+            // binding0 = scene-color copy (sharp, refraction M2); binding1 =
+            // GlassControl UBO; binding2 = frostiest blur level (M4 frost lerp).
+            VkDescriptorSetLayoutBinding b[3]{};
             b[0].binding = 0; b[0].descriptorCount = 1;
             b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
             b[1].binding = 1; b[1].descriptorCount = 1;
             b[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            b[2].binding = 2; b[2].descriptorCount = 1;
+            b[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
             VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-            ci.bindingCount = 2; ci.pBindings = b;
+            ci.bindingCount = 3; ci.pBindings = b;
             if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_glassSetLayout) != VK_SUCCESS) {
                 logError("[rhi] glass set layout failed"); return false;
             }
@@ -8028,6 +8153,7 @@ private:
     VkRenderingInfo           m_glassFrostRenderInfo[kGlassFrostLevels]{};
     BloomPush                 m_glassFrostPush[kGlassFrostLevels]{};
     BloomPassCtx              m_glassFrostCtx[kGlassFrostLevels]{};
+    RgResource                m_glassFrostRg[kGlassFrostLevels]{};   // per-frame graph handles
 
     // ======================================================================
     // SSAO — screen-space ambient occlusion (idTech-8 grounding/contact AO).
