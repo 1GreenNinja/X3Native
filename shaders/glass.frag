@@ -237,29 +237,36 @@ void main() {
     vec3 specOut = (specSum + sheen * (fresnel * 0.6 + glint * 0.5)) * max(specular, 0.0);
 
     // ---- Compose the glass colour ----------------------------------------
-    vec3 litBody = body * lighting;
-    litBody += vEmissive.rgb * vEmissive.a;   // holo glow kept (feeds bloom)
+    // Split the body into its DIFFUSE part (the lit tinted surface — gated by opacity
+    // against what is seen through the glass) and ADDITIVE light: emissive glow +
+    // specular/fresnel shimmer. The additive light always rides ON TOP (a hologram's
+    // glow / a glint isn't hidden by a low opacity), which keeps the holo-terminal's
+    // emissive sweep + glints bright while still letting the glass read as see-through.
+    vec3 litDiffuse = body * lighting;
+    vec3 additive   = vEmissive.rgb * vEmissive.a + specOut;   // glow + shimmer (feeds bloom)
 
     float opacity = clamp(vFactor.a, 0.0, 1.0);
 
-    vec3 color;
     if (haveScene) {
         // SCREEN-SPACE refraction path: we have a copy of the scene behind the glass,
         // so this fragment SUPPLIES its own background (the BENT scene) rather than
-        // letting the alpha blend reveal the un-bent live scene. The refracted scene
-        // tinted by the glass colour, with the lit body mixed in by opacity (clear
-        // pane -> mostly bent scene; opaque -> mostly body), THEN the specular/fresnel
-        // shimmer added on top. Output alpha = 1 so the composed result fully replaces
-        // the live HDR pixel (which holds the SAME, but un-bent, scene).
+        // letting the alpha blend reveal the un-bent live scene. Mix the (refracted,
+        // tinted) scene with the lit diffuse by opacity (clear pane -> mostly bent
+        // scene; opaque -> mostly body), then ADD the glow + shimmer. Output alpha = 1
+        // so the composed result fully replaces the live HDR pixel (which holds the
+        // SAME, but un-bent, scene).
         vec3 throughGlass = refractedScene * mix(vec3(1.0), tint, 0.5);
-        color = mix(throughGlass, litBody, opacity) + specOut;
-        outColor = vec4(color, 1.0);
+        outColor = vec4(mix(throughGlass, litDiffuse, opacity) + additive, 1.0);
     } else {
         // No scene copy (target failed / disabled): fall back to the M1 alpha
-        // see-through path. Add the shimmer on top, and LIFT the alpha by fresnel so
-        // a low-opacity pane still catches light at its edges (never invisible).
-        color = litBody + specOut;
+        // see-through path (SRC_ALPHA blend reveals the live scene). Premultiply the
+        // additive glow/shimmer by (1/alpha won't work) — instead add it post-blend by
+        // baking it into the colour and LIFTING the alpha by fresnel so a low-opacity
+        // pane still catches light at its edges (never an invisible plane).
         float outA = clamp(opacity + fresnel * (1.0 - opacity), 0.0, 1.0);
+        // Scale the additive term up by 1/outA so the SRC_ALPHA blend (which multiplies
+        // colour by outA) preserves the intended glow energy.
+        vec3 color = litDiffuse + additive / max(outA, 0.04);
         outColor = vec4(color, outA);
     }
 }
