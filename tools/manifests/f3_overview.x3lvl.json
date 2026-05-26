@@ -1,0 +1,1202 @@
+[
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Modular_Ceiling_01f.prefab",
+    "name": "SM_Modular_Ceiling_01f",
+    "pos": [
+      0.34999943,
+      -0.0,
+      6.5
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Surgical_Lamp_01a_light.prefab",
+    "name": "SM_Surgical_Lamp_01a_light",
+    "pos": [
+      -0.05000019,
+      -2.400001,
+      8.299999
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Modular_Wall_01b.prefab",
+    "name": "SM_Modular_Wall_01b",
+    "pos": [
+      -6.4,
+      -0.0,
+      0.5999985
+    ],
+    "rotQuat": [
+      0.0,
+      -1.0,
+      -0.0,
+      0.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Hallway_Door_01b.prefab",
+    "name": "SM_Hallway_Door_01b",
+    "pos": [
+      -3.2000003,
+      -0.0,
+      -1.9000015
+    ],
+    "rotQuat": [
+      0.0,
+      -1.0,
+      -0.0,
+      0.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Air_Conditioner_01a.prefab",
+    "name": "SM_Air_Conditioner_01a",
+    "pos": [
+      -0.4000001,
+      0.099999,
+      -1.9000015
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_IV_Stand_01a.prefab",
+    "name": "SM_IV_Stand_01a",
+    "pos": [
+      -3.2000003,
+      -0.0,
+      11.5
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Modular_Ceiling_01g.prefab",
+    "name": "SM_Modular_Ceiling_01g",
+    "pos": [
+      0.34999943,
+      -0.0,
+      7.049999
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Modular_Ceiling_01a.prefab",
+    "name": "SM_Modular_Ceiling_01a",
+    "pos": [
+      -0.4000001,
+      -0.0,
+      2.0999985
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Modular_Ceiling_01e.prefab",
+    "name": "SM_Modular_Ceiling_01e",
+    "pos": [
+      -0.1500001,
+      -0.0,
+      7.049999
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Surgical_Lamp_01a_light.prefab",
+    "name": "SM_Surgical_Lamp_01a_light",
+    "pos": [
+      0.0,
+      0.0,
+      -0.0
+    ],
+    "rotQuat": [
+      0.0,
+      0.0,
+      -0.0,
+      1.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Brick_01b.prefab",
+    "name": "SM_Brick_01b",
+    "pos": [
+      -0.20000029,
+      0.099999,
+      -0.5999985
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Modular_Ceiling_01d.prefab",
+    "name": "SM_Modular_Ceiling_01d",
+    "pos": [
+      -0.1500001,
+      -0.0,
+      6.5
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Fluoresent_Light_Tube_01a.prefab",
+    "name": "SM_Fluoresent_Light_Tube_01a",
+    "pos": [
+      1.1999998,
+      -0.0,
+      0.70000076
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Modular_Wall_01c.prefab",
+    "name": "SM_Modular_Wall_01c",
+    "pos": [
+      -6.4,
+      -0.0,
+      3.5499992
+    ],
+    "rotQuat": [
+      0.0,
+      -1.0,
+      -0.0,
+      0.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Hallway_Door_02a.prefab",
+    "name": "SM_Hallway_Door_02a",
+    "pos": [
+      -3.2000003,
+      -0.0,
+      3.0999985
+    ],
+    "rotQuat": [
+      0.0,
+      -1.0,
+      -0.0,
+      0.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Surgical_Lamp_01a_piece1.prefab",
+    "name": "SM_Surgical_Lamp_01a_piece1",
+    "pos": [
+      -1.1500001,
+      -2.25,
+      9.0
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Steel_Cabinet_01a.prefab",
+    "name": "SM_Steel_Cabinet_01a",
+    "pos": [
+      0.049999714,
+      -0.0,
+      8.299999
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Surgical_Lamp_01a_piece2.prefab",
+    "name": "SM_Surgical_Lamp_01a_piece2",
+    "pos": [
+      -0.35000038,
+      -1.450001,
+      9.599998
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Crumpled_Paper_01c.prefab",
+    "name": "SM_Crumpled_Paper_01c",
+    "pos": [
+      -0.20000029,
+      -0.0,
+      0.20000076
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Pill_Bottle_01b.prefab",
+    "name": "SM_Pill_Bottle_01b",
+    "pos": [
+      0.14999962,
+      -0.0,
+      -0.0
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Hallway_Door_02f.prefab",
+    "name": "SM_Hallway_Door_02f",
+    "pos": [
+      -3.6000004,
+      -0.0,
+      4.799999
+    ],
+    "rotQuat": [
+      0.0,
+      -0.9500164,
+      -0.0,
+      0.31220013
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Surgical_Lamp_01a_piece4.prefab",
+    "name": "SM_Surgical_Lamp_01a_piece4",
+    "pos": [
+      0.0,
+      0.0,
+      -0.0
+    ],
+    "rotQuat": [
+      0.0,
+      0.0,
+      -0.0,
+      1.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Room_Door_01a.prefab",
+    "name": "SM_Room_Door_01a",
+    "pos": [
+      -4.7000003,
+      -0.0,
+      -1.5499992
+    ],
+    "rotQuat": [
+      0.0,
+      -1.0,
+      -0.0,
+      0.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Tool_Cabinet_01a.prefab",
+    "name": "SM_Tool_Cabinet_01a",
+    "pos": [
+      0.099999905,
+      -0.0,
+      11.450001
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Surgical_Table_01a.prefab",
+    "name": "SM_Surgical_Table_01a",
+    "pos": [
+      0.39999962,
+      -0.0,
+      10.799999
+    ],
+    "rotQuat": [
+      0.0,
+      -1.0,
+      -0.0,
+      0.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Cutlery2.prefab",
+    "name": "SM_Cutlery2",
+    "pos": [
+      0.0,
+      -0.0,
+      -0.0
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Modular_Wall_01d.prefab",
+    "name": "SM_Modular_Wall_01d",
+    "pos": [
+      -6.4,
+      -0.0,
+      8.331
+    ],
+    "rotQuat": [
+      -0.0,
+      -0.0,
+      0.0,
+      1.0
+    ],
+    "scale": [
+      -1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Surgical_Lamp_01a_piece4.prefab",
+    "name": "SM_Surgical_Lamp_01a_piece4",
+    "pos": [
+      0.8499994,
+      -0.0,
+      9.150002
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Fluoresent_Light_Tube_01b.prefab",
+    "name": "SM_Fluoresent_Light_Tube_01b",
+    "pos": [
+      1.1999998,
+      -0.0,
+      0.5
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Rag_01a.prefab",
+    "name": "SM_Rag_01a",
+    "pos": [
+      -0.05000019,
+      -0.0,
+      -0.25
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Crumpled_Paper_01a.prefab",
+    "name": "SM_Crumpled_Paper_01a",
+    "pos": [
+      -0.20000029,
+      -0.0,
+      -0.0
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Hallway_Door_01d.prefab",
+    "name": "SM_Hallway_Door_01d",
+    "pos": [
+      -3.1000004,
+      -0.0,
+      0.40000153
+    ],
+    "rotQuat": [
+      0.0,
+      -1.0,
+      -0.0,
+      0.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Lamp1.prefab",
+    "name": "SM_Lamp1",
+    "pos": [
+      -0.20000029,
+      -0.0,
+      0.9000015
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_tray1.prefab",
+    "name": "SM_tray1",
+    "pos": [
+      0.3000002,
+      0.009999,
+      0.20000076
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Hospital_Bed_NN_01a.prefab",
+    "name": "SM_Hospital_Bed_NN_01a",
+    "pos": [
+      -2.9,
+      -0.0,
+      10.5
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Modular_Ceiling_01i.prefab",
+    "name": "SM_Modular_Ceiling_01i",
+    "pos": [
+      0.8499994,
+      -0.0,
+      7.049999
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Rag_01b.prefab",
+    "name": "SM_Rag_01b",
+    "pos": [
+      0.34999943,
+      -0.0,
+      -0.25
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Cutlery1.prefab",
+    "name": "SM_Cutlery1",
+    "pos": [
+      -0.10000038,
+      -0.0,
+      -0.0
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Brick_01a.prefab",
+    "name": "SM_Brick_01a",
+    "pos": [
+      -0.20000029,
+      0.099999,
+      -0.9000015
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Electrosurgical_Unit_01a.prefab",
+    "name": "SM_Electrosurgical_Unit_01a",
+    "pos": [
+      0.3000002,
+      -0.0,
+      0.5999985
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Modular_Ceiling_01b.prefab",
+    "name": "SM_Modular_Ceiling_01b",
+    "pos": [
+      -0.4000001,
+      -0.0,
+      4.200001
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Hallway_Door_02e.prefab",
+    "name": "SM_Hallway_Door_02e",
+    "pos": [
+      -3.0,
+      -0.0,
+      6.0999985
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Surgical_Lamp_01a_piece3.prefab",
+    "name": "SM_Surgical_Lamp_01a_piece3",
+    "pos": [
+      -0.25,
+      -0.0,
+      10.049999
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Modular_Wall_01a.prefab",
+    "name": "SM_Modular_Wall_01a",
+    "pos": [
+      -6.4,
+      -0.0,
+      -1.9000015
+    ],
+    "rotQuat": [
+      0.0,
+      -1.0,
+      -0.0,
+      0.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Room_Door_02a_Beam.prefab",
+    "name": "SM_Room_Door_02a_Beam",
+    "pos": [
+      -4.7000003,
+      -0.0,
+      1.25
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7616223,
+      -0.0,
+      0.6480212
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Crumpled_Paper_01e.prefab",
+    "name": "SM_Crumpled_Paper_01e",
+    "pos": [
+      -0.10000038,
+      -0.0,
+      0.099998474
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Hallway_Door_Frame2.prefab",
+    "name": "SM_Hallway_Door_Frame2",
+    "pos": [
+      -3.2000003,
+      -0.0,
+      7.200001
+    ],
+    "rotQuat": [
+      0.0,
+      -1.0,
+      -0.0,
+      0.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Room_Door_02a.prefab",
+    "name": "SM_Room_Door_02a",
+    "pos": [
+      -4.717,
+      -0.0,
+      1.202
+    ],
+    "rotQuat": [
+      -0.0,
+      -0.0,
+      0.0,
+      1.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Crumpled_Paper_01b.prefab",
+    "name": "SM_Crumpled_Paper_01b",
+    "pos": [
+      -0.20000029,
+      -0.0,
+      0.099998474
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Crumpled_Paper_01d.prefab",
+    "name": "SM_Crumpled_Paper_01d",
+    "pos": [
+      -0.10000038,
+      -0.0,
+      0.20000076
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Surgical_Lamp_01a_piece2.prefab",
+    "name": "SM_Surgical_Lamp_01a_piece2",
+    "pos": [
+      0.0,
+      0.0,
+      -0.0
+    ],
+    "rotQuat": [
+      0.0,
+      0.0,
+      -0.0,
+      1.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Modular_Ceiling_01h.prefab",
+    "name": "SM_Modular_Ceiling_01h",
+    "pos": [
+      0.8499994,
+      -0.0,
+      6.5
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Surgical_Lamp_01a_piece3.prefab",
+    "name": "SM_Surgical_Lamp_01a_piece3",
+    "pos": [
+      0.0,
+      0.0,
+      -0.0
+    ],
+    "rotQuat": [
+      0.0,
+      0.0,
+      -0.0,
+      1.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Modular_Floor_01a.prefab",
+    "name": "SM_Modular_Floor_01a",
+    "pos": [
+      1.6999998,
+      -0.0,
+      4.200001
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Modular_Ceiling_Framing.prefab",
+    "name": "SM_Modular_Ceiling_Framing",
+    "pos": [
+      1.6999998,
+      -0.0,
+      2.0999985
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Cutlery3.prefab",
+    "name": "SM_Cutlery3",
+    "pos": [
+      0.0,
+      -0.0,
+      0.099998474
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Surgical_Lamp_01a_piece1.prefab",
+    "name": "SM_Surgical_Lamp_01a_piece1",
+    "pos": [
+      0.0,
+      0.0,
+      -0.0
+    ],
+    "rotQuat": [
+      0.0,
+      0.0,
+      -0.0,
+      1.0
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Desk_Lamp_01a.prefab",
+    "name": "SM_Desk_Lamp_01a",
+    "pos": [
+      -0.20000029,
+      -0.0,
+      0.40000153
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_tray2.prefab",
+    "name": "SM_tray2",
+    "pos": [
+      0.4499998,
+      -0.0,
+      0.20000076
+    ],
+    "rotQuat": [
+      0.0,
+      -0.7071068,
+      -0.0,
+      0.7071068
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  },
+  {
+    "prefab": "_Layouts/Hivemind/HorrorHospital/HDRP(Default)/Art/Prefabs/SM_Hallway_Door_02g.prefab",
+    "name": "SM_Hallway_Door_02g",
+    "pos": [
+      -4.4,
+      -0.0,
+      6.0
+    ],
+    "rotQuat": [
+      0.0,
+      -0.72493905,
+      -0.0,
+      0.68881303
+    ],
+    "scale": [
+      1.0,
+      1.0,
+      1.0
+    ]
+  }
+]
