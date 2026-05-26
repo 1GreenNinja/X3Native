@@ -136,6 +136,36 @@ CanonBeats canonBeats(const CanonFloor& floor);
 // with valid()==false (rooms empty) so the caller can fall back to the legacy build.
 CanonFloor loadCanonFloor(std::string_view jsonPath, int floorNum);
 
+// ---- PER-ROOM CEILING LIGHTING --------------------------------------------------------
+// One warm-white ceiling point-light tagged with the room it belongs to. The canonlevel
+// builder (level1.cpp env_art path) does NOT register the env_art Light_A fixtures, so the
+// data-driven floor would otherwise only get ambient + the flashlight (too dark). We mint
+// one (or a few, for big rooms) ceiling light per room here, near the ceiling Y at the room
+// center, mirroring env_art.cpp's warm-tungsten intensity/range, and the host feeds ONLY
+// the lights for the player's currently VISIBLE rooms each frame (room + PVS neighbours) so
+// the active count stays well under the device's 64-light cap (53 rooms would blow it).
+struct CanonLight {
+    x3::rhi::PointLight light;
+    uint32_t            room = kNoRoom;   // which CanonFloor room this light lights
+};
+
+// Build the per-room ceiling lights for a parsed floor: one warm-white omni at each room's
+// center just below its ceiling, range scaled to reach the floor, with a second/third light
+// for wide rooms (boss arena etc.) so they read evenly lit. Returns one CanonLight per
+// emitter (tagged with its room id). Cheap; call once at level build.
+std::vector<CanonLight> buildCanonLights(const CanonFloor& floor);
+
+// Select the lights whose room is in `visibleRooms` (the per-frame PVS set), capped to
+// `maxLights` (default 16 — keeps us well under the device's 64 hard cap while leaving
+// headroom for the flashlight's 2 lights). The closest lights to `eye` win when over the
+// cap. Appends into `out` (NOT cleared — the host inserts the flashlight first). Returns
+// the number of room lights appended.
+uint32_t selectVisibleCanonLights(const std::vector<CanonLight>& all,
+                                   const std::vector<uint32_t>& visibleRooms,
+                                   float eyeX, float eyeY, float eyeZ,
+                                   std::vector<x3::rhi::PointLight>& out,
+                                   uint32_t maxLights = 16);
+
 // The canonical source path baked into the repo's environment (the owner's project).
 // Override via the --world canonlevel arg if needed.
 std::string canonProjectJsonPath();

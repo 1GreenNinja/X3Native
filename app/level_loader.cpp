@@ -493,6 +493,92 @@ std::string canonProjectJsonPath() {
 }
 
 // =====================================================================================
+// PER-ROOM CEILING LIGHTING. The data-driven floor builds geometry but skips the
+// env_art Light_A ceiling fixtures the legacy level registers, so each room only gets
+// ambient + the flashlight (too dark). We mint warm-white ceiling point lights here —
+// one per small room, a 1-3 light grid for wide rooms — at the room center just below
+// the ceiling. Colour/intensity mirror env_art.cpp (warm tungsten white, premultiplied
+// by an intensity so the room reads as a lit pool, not a dark fixture). The host feeds
+// only the VISIBLE rooms' lights each frame so the active count stays under the cap.
+// =====================================================================================
+std::vector<CanonLight> buildCanonLights(const CanonFloor& floor) {
+    std::vector<CanonLight> lights;
+    if (!floor.valid()) return lights;
+
+    // Warm-white emitter, premultiplied by intensity (linear; mesh.frag accumulates
+    // additively then tonemaps). Matches env_art.cpp's kIntensity 3.2 warm tungsten.
+    constexpr float kIntensity = 3.2f;
+    const float colR = 1.00f * kIntensity;
+    const float colG = 0.86f * kIntensity;
+    const float colB = 0.62f * kIntensity;
+
+    for (uint32_t ri = 0; ri < (uint32_t)floor.rooms.size(); ++ri) {
+        const CanonRoom& r = floor.rooms[ri];
+        // Emit just below the ceiling so the ceiling lid doesn't occlude the pool.
+        const float lightY = r.y1() - 0.25f;
+        // Range covers the room height + a margin so the floor of a tall room is lit.
+        const float range  = std::max(8.0f, r.h + 4.0f);
+        // Wide / deep rooms (boss arena, main hall) get a small grid so the whole floor
+        // reads evenly lit; small cells get a single center light. Cap the grid so we
+        // never mint a huge number of lights for one room (cheap + cap-friendly).
+        const int nx = std::min(3, std::max(1, (int)std::ceil(r.w / 8.0f)));
+        const int nz = std::min(3, std::max(1, (int)std::ceil(r.d / 8.0f)));
+        for (int iz = 0; iz < nz; ++iz) {
+            for (int ix = 0; ix < nx; ++ix) {
+                // Evenly space the grid across the room interior (centered).
+                const float fx = (nx == 1) ? 0.0f : ((ix + 0.5f) / nx - 0.5f);
+                const float fz = (nz == 1) ? 0.0f : ((iz + 0.5f) / nz - 0.5f);
+                CanonLight cl;
+                cl.room = ri;
+                cl.light.pos[0] = r.cx + fx * r.w * 0.8f;
+                cl.light.pos[1] = lightY;
+                cl.light.pos[2] = r.cz + fz * r.d * 0.8f;
+                cl.light.range  = range;
+                cl.light.color[0] = colR; cl.light.color[1] = colG; cl.light.color[2] = colB;
+                lights.push_back(cl);
+            }
+        }
+    }
+    x3::logInfo("buildCanonLights: minted " + std::to_string(lights.size()) +
+                " warm-white ceiling lights for " + std::to_string(floor.rooms.size()) +
+                " rooms (fed per-room visible subset, capped at 16/frame)");
+    return lights;
+}
+
+uint32_t selectVisibleCanonLights(const std::vector<CanonLight>& all,
+                                  const std::vector<uint32_t>& visibleRooms,
+                                  float eyeX, float eyeY, float eyeZ,
+                                  std::vector<x3::rhi::PointLight>& out,
+                                  uint32_t maxLights) {
+    if (all.empty() || visibleRooms.empty() || maxLights == 0) return 0;
+    // Fast membership test for the (small) visible-room set.
+    auto visible = [&](uint32_t room) {
+        for (uint32_t v : visibleRooms) if (v == room) return true;
+        return false;
+    };
+    // Gather candidate lights (those in a visible room) with their squared distance to
+    // the eye, so when we exceed the cap we keep the CLOSEST ones (they dominate the
+    // lit result the player actually sees).
+    struct Cand { const CanonLight* l; float d2; };
+    std::vector<Cand> cands;
+    cands.reserve(all.size());
+    for (const CanonLight& cl : all) {
+        if (!visible(cl.room)) continue;
+        const float dx = cl.light.pos[0] - eyeX;
+        const float dy = cl.light.pos[1] - eyeY;
+        const float dz = cl.light.pos[2] - eyeZ;
+        cands.push_back({ &cl, dx * dx + dy * dy + dz * dz });
+    }
+    if (cands.size() > maxLights) {
+        std::nth_element(cands.begin(), cands.begin() + maxLights, cands.end(),
+                         [](const Cand& a, const Cand& b) { return a.d2 < b.d2; });
+        cands.resize(maxLights);
+    }
+    for (const Cand& c : cands) out.push_back(c.l->light);
+    return (uint32_t)cands.size();
+}
+
+// =====================================================================================
 // BUILDER. Each room is built as a shell: floor slab, ceiling lid (collision-only),
 // and 4 walls. A wall face gets a 1.2 m doorway gap (+ lintel) wherever the resolver
 // produced a doorway on that face. Gap-bridge doorways add a short connecting corridor;

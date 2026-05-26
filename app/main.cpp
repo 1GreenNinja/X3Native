@@ -283,6 +283,10 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("r_rtao_radius",   "0.5",  "RT AO ray length (meters)");
     console.registerCVar("r_rtao_rays",     "8",    "RT AO hemisphere rays per pixel (1..32)");
     console.registerCVar("r_rtao_strength", "0.85", "RT AO applied darkening (1 = full, 0 = off)");
+    // Per-room PVS occlusion cull (canonlevel). 1 = cull on (draw only the player's
+    // current room + its doored neighbours); 0 = draw the whole level (e.g. for noclip
+    // overview / debugging). Live-tunable from the console.
+    console.registerCVar("r_roomcull", "1", "per-room PVS occlusion cull (0 = draw whole level, e.g. for noclip)");
 }
 
 // Read the r_rtao* cvars and push them onto the device (no-op on a non-RT device).
@@ -3979,6 +3983,7 @@ int main(int argc, char** argv) {
     const bool canonWorld = (worldMode == "canonlevel");
     x3::game::CanonFloor canonFloor;           // parsed+resolved Floor 1 (canonWorld only)
     std::vector<uint32_t> canonVisRooms;       // per-frame PVS scratch (canonWorld only)
+    std::vector<x3::game::CanonLight> canonLights; // per-room ceiling lights (canonWorld only)
     x3::game::DoorSystem  canonDoors;          // SM_Door_A GLB doors at the cut doorways
     x3::game::Scene scene;
     x3::game::Level1Game game;
@@ -4043,9 +4048,15 @@ int main(int argc, char** argv) {
         if (canonFloor.valid()) {
             x3::game::CanonBuildOpts copts; copts.doors = &canonDoors;
             x3::game::buildCanonFloor(canonFloor, scene, *device, *physics, copts);
+            // Per-room ceiling lights: the data-driven floor skips the env_art Light_A
+            // fixtures the legacy level registers, so without these the rooms only get
+            // ambient + the flashlight (the DARK bug). We feed only the player's VISIBLE
+            // rooms' lights each frame (below) so the active count stays under the cap.
+            canonLights = x3::game::buildCanonLights(canonFloor);
             x3::logInfo("--world canonlevel: built canonical Floor 1 (" +
                         std::to_string(canonFloor.rooms.size()) + " rooms, " +
-                        std::to_string(scene.size()) + " entities); per-room PVS cull ACTIVE");
+                        std::to_string(scene.size()) + " entities, " +
+                        std::to_string(canonLights.size()) + " room lights); per-room PVS cull ACTIVE");
             // The re-aimed Level-1 beat flow on REAL canonical room centers: spawn in
             // Jake's Cell, down the wide Main Hall, through Security/Research/Medical/
             // Armory, into the Boss Arena (Martinez), out via the Elevator Lobby.
@@ -5038,8 +5049,21 @@ int main(int argc, char** argv) {
             // camera each frame so render() draws only the current room + its doored
             // neighbours. (No-op in every other world: scene has no room-tagged entities.)
             if (canonWorld && canonFloor.valid()) {
-                canonFloor.visibleRoomsAt(eye.x, eye.y, eye.z, canonVisRooms);
-                scene.setVisibleRooms(canonVisRooms);
+                const bool roomCull = console->getInt("r_roomcull") != 0;
+                scene.setRoomCullEnabled(roomCull);
+                if (roomCull) {
+                    canonFloor.visibleRoomsAt(eye.x, eye.y, eye.z, canonVisRooms);
+                    scene.setVisibleRooms(canonVisRooms);
+                }
+                // Feed ONLY the visible rooms' ceiling lights (capped at 16) so the floor
+                // is LIT under the smoketest while staying under the 64-light device cap.
+                std::vector<x3::rhi::PointLight> cl;
+                uint32_t nLit = x3::game::selectVisibleCanonLights(
+                    canonLights, canonVisRooms, eye.x, eye.y, eye.z, cl, 16);
+                device->setPointLights(cl.data(), (uint32_t)cl.size());
+                if (i == 0)
+                    x3::logInfo("smoketest --world canonlevel: " + std::to_string(nLit) +
+                                " room point-lights fed for the visible set (cap 16)");
             }
             auto frame = device->beginFrame();
             if (frame.valid) {
@@ -5118,7 +5142,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    x3::logInfo("entering main loop — WASD walk, mouse look, LeftShift sprint, Space jump, E use, V super-strength melee (LMB fire when armed), F noclip, ` console, Esc to quit");
+    x3::logInfo("entering main loop — WASD walk, mouse look, LeftShift sprint, Space jump, C crouch, Ctrl crawl, E use, V super-strength melee (LMB fire when armed), F noclip, ` console, Esc to quit");
 
     // ---- Walking player (S3). Spawn at the Level 1 cell spawn point (Jake wakes
     // in the detention cell), facing +X down the level spine — or, in the terrain
@@ -5705,6 +5729,17 @@ int main(int argc, char** argv) {
                 in.lookDX = firstSub ? ddx : 0.0f;
                 in.lookDY = firstSub ? ddy : 0.0f;
 
+                // CROUCH (hold C) / CRAWL (hold Left-Ctrl): lower the eye + slow the move.
+                // Ctrl (prone) wins over C (crouch); release both to stand. Suppressed
+                // while a console / terminal is open so typing doesn't duck the player.
+                if (!consoleOpen && !termMode && player.isAlive()) {
+                    const bool kCtrl = keyDown(GLFW_KEY_LEFT_CONTROL);
+                    const bool kC    = keyDown(GLFW_KEY_C);
+                    player.setStance(kCtrl ? x3::game::Player::Stance::Prone
+                                   : kC    ? x3::game::Player::Stance::Crouch
+                                           : x3::game::Player::Stance::Stand);
+                }
+
                 player.update(in, x3::net::kSimDt, *physics);
 
                 // Advanced elevator: advance the cab, then carry the player if riding
@@ -5799,6 +5834,18 @@ int main(int argc, char** argv) {
                 eyePl.range  = 13.0f;
                 eyePl.color[0] = 3.2f; eyePl.color[1] = 3.0f; eyePl.color[2] = 2.6f;
                 fl.insert(fl.begin(), eyePl);
+            }
+            // CANONLEVEL ROOM LIGHTING: the data-driven floor has no env_art Light_A
+            // fixtures, so game.lightFixtures() is empty and the rooms would only get
+            // ambient + the flashlight (the DARK bug). Append the player's currently
+            // VISIBLE rooms' ceiling lights (current room + PVS neighbours) — capped at
+            // 16 so the active count stays under the 64-light device cap even with 53
+            // rooms in the floor. Appended AFTER the flashlight so the flashlight (at the
+            // front) is never the one dropped if we somehow brush the cap.
+            if (canonWorld && canonFloor.valid()) {
+                canonFloor.visibleRoomsAt(camX, camY, camZ, canonVisRooms);
+                x3::game::selectVisibleCanonLights(canonLights, canonVisRooms,
+                                                   camX, camY, camZ, fl, 16);
             }
             if (fl.size() > 64) fl.resize(64);
             device->setPointLights(fl.data(), (uint32_t)fl.size());
@@ -6144,9 +6191,15 @@ int main(int argc, char** argv) {
             // Per-room occlusion cull (canonlevel): set the visible-room set from the
             // player's eye each frame -> render() draws only the current room + its
             // doorway-reachable neighbours. No-op in every other world (no room tags).
+            // `r_roomcull 0` hard-disables the cull so the WHOLE level draws (noclip
+            // overview / debug); `r_roomcull 1` (default) restores the PVS cull.
             if (canonWorld && canonFloor.valid()) {
-                canonFloor.visibleRoomsAt(camX, camY, camZ, canonVisRooms);
-                scene.setVisibleRooms(canonVisRooms);
+                const bool roomCull = console->getInt("r_roomcull") != 0;
+                scene.setRoomCullEnabled(roomCull);
+                if (roomCull) {
+                    canonFloor.visibleRoomsAt(camX, camY, camZ, canonVisRooms);
+                    scene.setVisibleRooms(canonVisRooms);
+                }
             }
             scene.render(*device, frame);
             if (canonWorld) canonDoors.drawMeshes(*device, frame);   // SM_Door_A doors (canonlevel)

@@ -4,6 +4,7 @@
 #include "barrels.h"
 #include "mesh_prims.h"
 #include "headless_device.h"
+#include "asset_root.h"   // convertedGlbRoot()
 
 #include "engine/core/x3_log.h"
 
@@ -43,6 +44,24 @@ void BarrelSystem::init(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld&
     m_asset = m_destr.loadFractureAsset(ad);
     x3::logInfo("[barrels] init — fracture asset " + std::to_string(m_asset) +
                 " (" + std::to_string(chunks.size()) + " chunks)");
+
+    // ---- Real round barrel model (overlay for INTACT barrels). Mirrors the
+    // rescue.cpp / env_art asset-load pattern. Falls back to the cube if absent. ----
+    m_assets.reset(x3::asset::createAssetSource());
+    if (m_assets->mountDir(x3::game::convertedGlbRoot(), 0)) {
+        m_loader.reset(x3::asset::createModelLoader(&device, m_assets.get()));
+        m_barrelModel = m_loader->load("SciFi_Warehouse_Kit/Barrel.glb");
+        if (m_barrelModel.ok) {
+            m_barrelDrawables = x3::asset::makeDrawables(m_barrelModel);
+            x3::logInfo("[barrels] loaded Barrel.glb — " +
+                        std::to_string(m_barrelDrawables.size()) + " prim(s)");
+        } else {
+            x3::logWarn("[barrels] Barrel.glb load failed; using cube fallback");
+        }
+    } else {
+        x3::logWarn("[barrels] mountDir failed (" + x3::game::convertedGlbRoot() +
+                    "); using cube fallback");
+    }
 }
 
 uint32_t BarrelSystem::spawn(float x, float floorY, float z) {
@@ -86,12 +105,44 @@ void BarrelSystem::update(float dt) {
 
 void BarrelSystem::render(const x3::rhi::FrameContext& frame) const {
     if (!m_device) return;
+    const float intact[4] = { 0.85f, 0.50f, 0.18f, 1.0f };   // rusty orange tint
+    const float debris[4] = { 0.55f, 0.32f, 0.12f, 1.0f };   // scorched
+
+    if (!m_barrelDrawables.empty()) {
+        // INTACT barrels render as the real round Barrel.glb at each barrel's base;
+        // exploded/scattered DEBRIS still renders as the fracture-chunk cubes (the GLB
+        // has no shatter pieces). The barrel base sits at center.y - kHalfY (floor).
+        for (const Barrel& b : m_barrels) {
+            if (b.exploded) continue;   // shattered -> drawn as debris chunks below
+            // Place the model base at the barrel base on the floor (column-major TRS).
+            const float bx = b.center[0], by = b.center[1] - kHalfY, bz = b.center[2];
+            float model[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, bx, by, bz, 1 };
+            for (const auto& d : m_barrelDrawables) {
+                float fin[16];
+                x3::asset::mulMat4(model, d.nodeTransform, fin);
+                // Use the model's own PBR color (modulated lightly toward the rusty tint).
+                float col[4] = { d.baseColorFactor[0], d.baseColorFactor[1],
+                                 d.baseColorFactor[2], d.baseColorFactor[3] };
+                m_device->drawMesh(frame, x3::rhi::MeshHandle{ d.meshId },
+                                   x3::rhi::TextureHandle{ d.baseColorTexId }, col, fin);
+            }
+        }
+        // Debris chunks from any broken barrel (only the scattered, non-intact pieces).
+        m_destr.forEachActiveChunk([&](const x3::phys::ChunkView& v) {
+            if (v.intact) return;   // intact barrels already drawn as the GLB above
+            float m[16]; std::memcpy(m, v.xform, sizeof(m));
+            const float sx = v.halfExtents[0]*2.0f, sy = v.halfExtents[1]*2.0f, sz = v.halfExtents[2]*2.0f;
+            m[0]*=sx; m[1]*=sx; m[2]*=sx;  m[4]*=sy; m[5]*=sy; m[6]*=sy;  m[8]*=sz; m[9]*=sz; m[10]*=sz;
+            m_device->drawMesh(frame, m_cube, m_tex, debris, m);
+        });
+        return;
+    }
+
+    // Cube fallback (Barrel.glb absent): the original chunk-cube render for all chunks.
     m_destr.forEachActiveChunk([&](const x3::phys::ChunkView& v) {
         float m[16]; std::memcpy(m, v.xform, sizeof(m));
         const float sx = v.halfExtents[0]*2.0f, sy = v.halfExtents[1]*2.0f, sz = v.halfExtents[2]*2.0f;
         m[0]*=sx; m[1]*=sx; m[2]*=sx;  m[4]*=sy; m[5]*=sy; m[6]*=sy;  m[8]*=sz; m[9]*=sz; m[10]*=sz;
-        const float intact[4] = { 0.85f, 0.50f, 0.18f, 1.0f };   // rusty orange
-        const float debris[4] = { 0.55f, 0.32f, 0.12f, 1.0f };   // scorched
         m_device->drawMesh(frame, m_cube, m_tex, v.intact ? intact : debris, m);
     });
 }

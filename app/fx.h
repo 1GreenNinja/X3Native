@@ -213,6 +213,9 @@ private:
         float angle    = 0.0f;     // spin about the normal (rad)
         float life     = 0.0f;     // remaining seconds (<=0 == free)
         float maxLife  = kDecalLife;
+        // Decal tint (linear rgb). Default == dark scorch (bullet hole); blood pools
+        // override it to dark red. Submit multiplies the lifetime fade into alpha.
+        float color[3] = { 0.02f, 0.015f, 0.01f };
     };
     Decal m_decalsRing[kMaxDecals];
     int   m_nextDecal = 0;         // round-robin recycle cursor
