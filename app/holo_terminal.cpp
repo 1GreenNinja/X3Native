@@ -761,11 +761,16 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // dial (mid so the printed HUD still reads strongly against what's behind).
     e.baseColor[0] = 1.0f; e.baseColor[1] = 1.0f; e.baseColor[2] = 1.0f; e.baseColor[3] = 1.0f;
     e.transparent = true;
-    e.glass.opacity    = 0.62f;          // see-through but UI-dominant (mid opacity)
-    e.glass.tint[0]    = 0.80f; e.glass.tint[1] = 0.92f; e.glass.tint[2] = 1.0f; // faint cool-blue
-    e.glass.roughness  = 0.10f;          // lightly frosted display glass
-    e.glass.refraction = 0.02f;
-    e.glass.specular   = 0.5f;
+    // Tasteful tinted, lightly-frosted, emissive display glass (spec §2 preset). With
+    // M2-M4 live: the cell behind bends a touch through it (refraction), the surface
+    // catches a cool-blue fresnel sheen + glints (M3) and reads slightly milky (M4
+    // frost). Mid opacity keeps the printed holo UI dominant while the glass character
+    // shows. Tuned against the M2-M4 shader, not the M1 fake-translucency hack.
+    e.glass.opacity    = 0.55f;          // mid — UI reads, glass still see-through
+    e.glass.tint[0]    = 0.78f; e.glass.tint[1] = 0.90f; e.glass.tint[2] = 1.0f; // cool-blue tint
+    e.glass.roughness  = 0.14f;          // lightly frosted display glass (M4)
+    e.glass.refraction = 0.025f;         // gentle bend of the cell behind (M2)
+    e.glass.specular   = 0.55f;          // fresnel sheen + glints (M3)
     // Moderate emissive: gives the glass a hologram glow / bloom WITHOUT flooding out
     // the textured line-art (which rides the full-albedo lit term). Pulsed in update().
     m_emBase[0] = 0.10f; m_emBase[1] = 0.34f; m_emBase[2] = 0.52f; m_emBase[3] = 0.45f;

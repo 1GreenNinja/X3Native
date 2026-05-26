@@ -18,6 +18,8 @@ struct ObjectData {
     uint flags;           // bit0 = TERRAIN splat, bit1 = GLASS (was _pad0/terrainFlag)
     uint terrainPack1;    // grass<<16 | rock detail bindless indices (was _pad1)
     uint terrainPack2;    // snow<<16  | sand detail bindless indices (was _pad2)
+    vec4 glassParams;     // GLASS only: x = refraction, y = roughness, z = specular
+    vec4 glassTint;       // GLASS only: rgb = tint color
 };
 
 // Per-object flag bits (match VulkanRenderDevice.cpp kFlag*).
@@ -56,6 +58,9 @@ layout(location = 5) flat out vec4 vEmissive;   // rgb = color, a = strength
 // Per-object flags forwarded to the fragment stage (TERRAIN splat / GLASS).
 layout(location = 6) flat out uint vFlags;
 layout(location = 7) flat out uvec2 vTerrainPack; // x = grass<<16|rock, y = snow<<16|sand
+// GLASS material forwarded to glass.frag (M2-M4): refraction/roughness/specular + tint.
+layout(location = 8) flat out vec4 vGlassParams;  // x = refraction, y = roughness, z = specular
+layout(location = 9) flat out vec4 vGlassTint;    // rgb = tint
 
 void main() {
     ObjectData o = objBuf.objects[gl_InstanceIndex];
@@ -69,4 +74,6 @@ void main() {
     vEmissive = o.emissive;
     vFlags = o.flags;
     vTerrainPack = uvec2(o.terrainPack1, o.terrainPack2);
+    vGlassParams = o.glassParams;
+    vGlassTint = o.glassTint;
 }
