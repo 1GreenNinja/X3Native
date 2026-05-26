@@ -16,25 +16,66 @@ namespace x3::game {
 
 namespace {
 
-// Hub layout: 8 portals arranged on a circle of radius kRingRadius around
-// the spawn point at world origin. Each portal "ring" is two stacked thin
-// emissive boxes (lower + upper arc-readable slabs) at the same XZ; a small
-// emissive floor-plate sits at its base. Trigger volumes are wider than the
-// ring so the player only needs to step ONTO the floor plate (not thread
-// the ring) to fire the rift.
+// Hub layout: 8 portals arranged on a circle of radius kRingRadius around the
+// spawn point at world origin. Each portal is a vertical ROUND tech-gate ring
+// — N tangent box segments arranged around a vertical circle (the ring's plane
+// is perpendicular to the outward radial direction so the portal's doorway
+// face points back at the hub center). Two concentric layers (outer + inner)
+// give the gate a framed-doorway read. A small octagonal floor-plate sits at
+// the base and a single thin "shimmer disk" floats at the ring center as the
+// portal's energy core.
 constexpr float kHubHalf       = 20.0f;   // 40 m square floor (footprint half)
 constexpr float kRingRadius    = 14.0f;   // portal placement radius (around spawn)
-constexpr float kRingHeight    = 2.5f;    // visible ring height (top slab top)
-constexpr float kRingHalfThick = 0.15f;   // thin slab half-thickness
-constexpr float kRingHalfArc   = 1.25f;   // slab half-width (the "ring" reads as a wide bar)
-constexpr float kPlateHalfXZ   = 1.50f;   // floor-plate half-extent
-constexpr float kPlateHalfY    = 0.05f;   // floor-plate thin slab half-Y
-constexpr float kTrigHalfXZ    = 2.5f;    // trigger volume half-extent (wider than plate)
-constexpr float kTrigHalfY     = 2.0f;    // trigger volume vertical half-extent
+
+// ---- Tech-gate ring geometry --------------------------------------------------
+constexpr uint32_t kRingSegments   = 24;     // box segments per ring (N at 15° each)
+constexpr float    kRingY          = 2.2f;   // ring center height above the floor
+constexpr float    kOuterRingR     = 2.00f;  // outer ring radius (the visible "frame")
+constexpr float    kInnerRingR     = 1.70f;  // inner ring radius (concentric layer)
+constexpr float    kSegBoxThick    = 0.13f;  // segment half-thickness (radial)
+constexpr float    kSegBoxDepth    = 0.13f;  // segment half-depth (along outward axis)
+// Segment "long-axis" half-extent = half the chord between adjacent segment
+// centers, with a small overlap so neighboring boxes butt cleanly without gaps.
+// chord = 2 * R * sin(pi / N); half-chord = R * sin(pi / N).
+inline float segHalfTangent(float ringR) {
+    const float pi = 3.14159265358979f;
+    return ringR * std::sin(pi / (float)kRingSegments) * 1.04f;  // 4% overlap
+}
+
+// ---- Floor plate (octagonal) --------------------------------------------------
+// 8 small box wedges in a ring on the floor — a low-poly "disk" the player
+// steps onto. Slightly elevated so it reads against the dark ground checker.
+constexpr uint32_t kPlateSegments  = 8;
+constexpr float    kPlateRingR     = 1.30f;  // plate ring radius (center of each wedge)
+constexpr float    kPlateHalfY     = 0.05f;  // plate slab half-Y (flat)
+constexpr float    kPlateBoxThick  = 0.50f;  // plate wedge half-extent (radial)
+// Floor wedges butt at their outer edge — half-tangent = R * sin(pi/8) * 1.04 overlap.
+inline float plateHalfTangent() {
+    const float pi = 3.14159265358979f;
+    return kPlateRingR * std::sin(pi / (float)kPlateSegments) * 1.04f;
+}
+
+// ---- Shimmer disk (energy core) -----------------------------------------------
+// A thin vertical slab at the ring center, facing radially back toward the hub.
+constexpr float    kCoreHalfW      = 0.75f;  // 1.5m wide
+constexpr float    kCoreHalfH      = 0.75f;  // 1.5m tall
+constexpr float    kCoreHalfT      = 0.025f; // 0.05m thick (thin disk)
+
+// ---- Trigger volume -----------------------------------------------------------
+constexpr float kTrigHalfXZ    = 2.5f;    // trigger volume half-extent (wider than ring)
+constexpr float kTrigHalfY     = 2.5f;    // trigger volume vertical half-extent
 
 // Player spawn Y (capsule feet): standing on the ground plane (which sits at
-// y = -kPlateHalfY*2 = -0.10 below the world origin; feet at +0 is fine).
+// y = -0.10 below the world origin; feet at +0 is fine).
 constexpr float kSpawnFeetY    = 0.05f;
+
+// ---- Shimmer pulse constants (used by Rifthub::tick) --------------------------
+constexpr float    kShimmerFreqHz     = 2.5f;            // ring oscillation rate (Hz)
+constexpr float    kShimmerPhaseStep  = 0.5f;            // per-portal phase offset (rad)
+constexpr float    kRingMinEmissive   = 1.5f;            // ring pulse min
+constexpr float    kRingMaxEmissive   = 4.0f;            // ring pulse max
+constexpr float    kCoreMinEmissive   = 3.0f;            // core pulse min (always > ring)
+constexpr float    kCoreMaxEmissive   = 6.5f;            // core pulse max
 
 // Portal authoring table — ORDER is the clockwise arrangement around the hub
 // starting at +X (angle 0 -> -X around -Y rotation; we iterate i=0..7 at
@@ -60,13 +101,34 @@ constexpr PortalSpec kPortalTable[] = {
 constexpr uint32_t kPortalCount = (uint32_t)(sizeof(kPortalTable) / sizeof(kPortalTable[0]));
 static_assert(kPortalCount == kRifthubTrigCount, "kRifthubTrigCount must match the portal table");
 
-// Add a thin emissive slab to the scene (one of the two ring bars or the
-// floor plate). Returns the mesh handle so the hub can free it at shutdown.
-x3::rhi::MeshHandle addEmissiveSlab(Scene& scene, x3::rhi::IRenderDevice& device,
-                                    float hx, float hy, float hz,
-                                    const x3::phys::Vec3& center,
-                                    const float tint[3], float emStrength) {
-    x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, center.x, center.y, center.z);
+// Build a column-major 4x4 model transform from three orthonormal basis vectors
+// (the rendered box's local +X / +Y / +Z, each in WORLD space) plus a world-space
+// translation. The mesh is authored centered at the local origin (makeBox with
+// cx=cy=cz=0), so the transform fully relocates + reorients it. Mirrors the
+// column layout used by valley.cpp's placeTilted().
+inline void makeXform(float m[16],
+                      const float xAxis[3], const float yAxis[3], const float zAxis[3],
+                      float wx, float wy, float wz) {
+    m[ 0] = xAxis[0]; m[ 1] = xAxis[1]; m[ 2] = xAxis[2]; m[ 3] = 0.0f;
+    m[ 4] = yAxis[0]; m[ 5] = yAxis[1]; m[ 6] = yAxis[2]; m[ 7] = 0.0f;
+    m[ 8] = zAxis[0]; m[ 9] = zAxis[1]; m[10] = zAxis[2]; m[11] = 0.0f;
+    m[12] = wx;       m[13] = wy;       m[14] = wz;       m[15] = 1.0f;
+}
+
+// Add an origin-centered box with a per-entity orientation + translation written
+// directly into the Entity transform. Returns BOTH the mesh handle (so shutdown
+// can free it) and the entity id (so tick() can pulse its emissive[3]).
+struct AddedEntity {
+    x3::rhi::MeshHandle mesh;
+    uint32_t            entityId;
+};
+AddedEntity addOrientedEmissiveBox(Scene& scene, x3::rhi::IRenderDevice& device,
+                                   float hx, float hy, float hz,
+                                   const float xAxis[3], const float yAxis[3], const float zAxis[3],
+                                   float wx, float wy, float wz,
+                                   const float tint[3], float emStrength) {
+    // Origin-centered mesh; reorient + translate via Entity::transform.
+    x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, 0.0f, 0.0f, 0.0f);
     Entity e;
     e.mesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
                                m.index.data(), (uint32_t)m.index.size());
@@ -75,8 +137,9 @@ x3::rhi::MeshHandle addEmissiveSlab(Scene& scene, x3::rhi::IRenderDevice& device
     e.emissive[0] = tint[0]; e.emissive[1] = tint[1]; e.emissive[2] = tint[2];
     e.emissive[3] = emStrength;
     e.tag = (uint32_t)Tag::Prop;
-    scene.add(e);
-    return e.mesh;
+    makeXform(e.transform, xAxis, yAxis, zAxis, wx, wy, wz);
+    uint32_t id = scene.add(e);
+    return AddedEntity{ e.mesh, id };
 }
 
 } // namespace
@@ -113,15 +176,17 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // ===== Portals (clockwise ring around the spawn) =====
     m_portals.clear();
     m_portals.reserve(kPortalCount);
-    m_portalMeshes.reserve(kPortalCount * 3);   // 2 ring slabs + 1 plate per portal
+    // Each portal authors: (2 layers * kRingSegments ring boxes) + kPlateSegments
+    // floor wedges + 1 shimmer-disk core = 2*24 + 8 + 1 = 57 meshes.
+    m_portalMeshes.reserve(kPortalCount * (2 * kRingSegments + kPlateSegments + 1));
 
     const float twoPi = 6.2831853f;
     for (uint32_t i = 0; i < kPortalCount; ++i) {
         const PortalSpec& sp = kPortalTable[i];
-        // Angle for portal i — clockwise starting at +X.
-        const float ang = (float)i * (twoPi / (float)kPortalCount);
-        const float cx = std::cos(ang) * kRingRadius;
-        const float cz = std::sin(ang) * kRingRadius;
+        // Hub angle for portal i — clockwise starting at +X.
+        const float hubAng = (float)i * (twoPi / (float)kPortalCount);
+        const float cx = std::cos(hubAng) * kRingRadius;
+        const float cz = std::sin(hubAng) * kRingRadius;
 
         RiftPortal p;
         p.worldName  = sp.worldName;
@@ -129,29 +194,114 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
         p.worldPos   = x3::phys::Vec3{ cx, 0.0f, cz };
         p.tint[0] = sp.tint[0]; p.tint[1] = sp.tint[1]; p.tint[2] = sp.tint[2];
         p.activated  = false;
+
+        // ---- Portal-local basis ---------------------------------------------
+        // The "outward" axis (radial from hub center to portal center) is the
+        // ring's NORMAL — the ring's plane is perpendicular to it, so the
+        // portal's doorway face points back toward the hub center. Up is world
+        // +Y. "Right" (along the ring's plane, horizontal) is up x outward.
+        const float invR = 1.0f / kRingRadius;
+        const float outwardX = cx * invR;
+        const float outwardZ = cz * invR;
+        // Right = (0,1,0) x (outwardX, 0, outwardZ) = (-outwardZ, 0, outwardX). Unit.
+        const float rightX = -outwardZ;
+        const float rightZ =  outwardX;
+
+        // ---- Ring segments (outer + inner concentric layers) -----------------
+        // For each segment at ring angle θ (0..2π going CCW in the ring's local
+        // plane starting from local +right = world (rightX,0,rightZ)):
+        //   - center in ring plane = R*cos(θ)*right + R*sin(θ)*up
+        //   - segment tangent      = -sin(θ)*right + cos(θ)*up
+        //   - segment radial-out   =  cos(θ)*right + sin(θ)*up
+        //   - outward stays the outward axis (depth through the ring)
+        // The box's LOCAL axes map as: local +X = tangent (long axis = arc),
+        // local +Y = radial-out (thickness), local +Z = outward (depth).
+        const uint32_t ringEntFirst = scene.size();
+        for (int layer = 0; layer < 2; ++layer) {
+            const float ringR    = (layer == 0) ? kOuterRingR : kInnerRingR;
+            const float halfTang = segHalfTangent(ringR);
+            for (uint32_t s = 0; s < kRingSegments; ++s) {
+                const float th  = (float)s * (twoPi / (float)kRingSegments);
+                const float ct  = std::cos(th);
+                const float st  = std::sin(th);
+
+                // Segment center in WORLD (portal center + ring offsets).
+                const float segCX = cx     + ringR * ct * rightX;            // right axis x-component
+                const float segCY = kRingY + ringR * st;                     // up axis is world +Y
+                const float segCZ = cz     + ringR * ct * rightZ;
+
+                // Local +X (tangent), +Y (radial-out), +Z (outward).
+                const float locX[3] = { -st * rightX, ct, -st * rightZ };
+                const float locY[3] = {  ct * rightX, st,  ct * rightZ };
+                const float locZ[3] = {  outwardX,   0.0f, outwardZ };
+
+                AddedEntity ae = addOrientedEmissiveBox(
+                    scene, device,
+                    halfTang, kSegBoxThick, kSegBoxDepth,
+                    locX, locY, locZ,
+                    segCX, segCY, segCZ,
+                    sp.tint, /*emStrength=*/3.0f);
+                m_portalMeshes.push_back(ae.mesh);
+            }
+        }
+        p.ringEntFirst = ringEntFirst;
+        p.ringEntCount = 2 * kRingSegments;
+
+        // ---- Octagonal floor plate (8 wedge boxes) ---------------------------
+        // Each wedge is a thin box tangent to a circle of radius kPlateRingR,
+        // axis-aligned in Y (flat on the ground). Reuses the same local basis
+        // (right axis vs world Z) — for the floor plate the ring lives in the
+        // WORLD XZ plane around the portal center, so the wedge tangent is the
+        // tangent to the floor-ring circle.
+        for (uint32_t s = 0; s < kPlateSegments; ++s) {
+            const float th = (float)s * (twoPi / (float)kPlateSegments);
+            const float ct = std::cos(th);
+            const float st = std::sin(th);
+            // Floor-ring local frame: local +right = (rightX,0,rightZ),
+            //                         local +outward = (outwardX,0,outwardZ).
+            // Wedge center: portal center + R*(ct*right + st*outward).
+            const float wcx = cx + kPlateRingR * (ct * rightX + st * outwardX);
+            const float wcy = kPlateHalfY;
+            const float wcz = cz + kPlateRingR * (ct * rightZ + st * outwardZ);
+            // Tangent (long axis, horizontal) = -st*right + ct*outward.
+            const float tgX = -st * rightX + ct * outwardX;
+            const float tgZ = -st * rightZ + ct * outwardZ;
+            // Radial-out (in-plane on the floor) = ct*right + st*outward.
+            const float rdX =  ct * rightX + st * outwardX;
+            const float rdZ =  ct * rightZ + st * outwardZ;
+            // Local +X = tangent (long arc), +Y = world up, +Z = radial-out.
+            const float locX[3] = { tgX, 0.0f, tgZ };
+            const float locY[3] = { 0.0f, 1.0f, 0.0f };
+            const float locZ[3] = { rdX, 0.0f, rdZ };
+            AddedEntity ae = addOrientedEmissiveBox(
+                scene, device,
+                plateHalfTangent(), kPlateHalfY, kPlateBoxThick,
+                locX, locY, locZ,
+                wcx, wcy, wcz,
+                sp.tint, /*emStrength=*/1.5f);
+            m_portalMeshes.push_back(ae.mesh);
+        }
+
+        // ---- Shimmer disk (inner energy core) --------------------------------
+        // A thin vertical slab at the ring's center, facing back toward the
+        // hub (i.e. its plane perpendicular to the outward axis). Brighter
+        // than the ring — this is the visible "portal energy" that pulses.
+        const float coreLocX[3] = { rightX, 0.0f, rightZ };          // along the ring's right axis
+        const float coreLocY[3] = { 0.0f,    1.0f, 0.0f    };        // world up
+        const float coreLocZ[3] = { outwardX, 0.0f, outwardZ };      // thin axis = outward
+        AddedEntity core = addOrientedEmissiveBox(
+            scene, device,
+            kCoreHalfW, kCoreHalfH, kCoreHalfT,
+            coreLocX, coreLocY, coreLocZ,
+            cx, kRingY, cz,
+            sp.tint, /*emStrength=*/5.0f);
+        m_portalMeshes.push_back(core.mesh);
+        p.coreEnt = core.entityId;
+
         m_portals.push_back(p);
 
-        // Lower ring bar (knee-height) + upper ring bar (head-height): two
-        // thin emissive slabs giving a visible "ring" silhouette from any
-        // angle without needing a torus mesh.
-        const x3::phys::Vec3 lowerCenter{ cx, 0.60f, cz };
-        const x3::phys::Vec3 upperCenter{ cx, kRingHeight - kRingHalfThick, cz };
-        m_portalMeshes.push_back(addEmissiveSlab(scene, device,
-            kRingHalfArc, kRingHalfThick, kRingHalfArc,
-            lowerCenter, sp.tint, /*emStrength=*/3.0f));
-        m_portalMeshes.push_back(addEmissiveSlab(scene, device,
-            kRingHalfArc, kRingHalfThick, kRingHalfArc,
-            upperCenter, sp.tint, /*emStrength=*/3.2f));
-
-        // Floor plate: a soft-glowing thin emissive slab on the ground at
-        // the portal base. Doubles as the visible "step here" cue.
-        const x3::phys::Vec3 plateCenter{ cx, kPlateHalfY, cz };
-        m_portalMeshes.push_back(addEmissiveSlab(scene, device,
-            kPlateHalfXZ, kPlateHalfY, kPlateHalfXZ,
-            plateCenter, sp.tint, /*emStrength=*/1.5f));
-
-        // Trigger volume: wider than the plate so the player only needs to
-        // step ONTO the plate (not thread the ring) to fire the rift.
+        // Trigger volume: wider than the ring so the player only needs to
+        // step into the plate area (not thread the ring) to fire the rift.
         const x3::phys::Vec3 tmin{ cx - kTrigHalfXZ, -kTrigHalfY, cz - kTrigHalfXZ };
         const x3::phys::Vec3 tmax{ cx + kTrigHalfXZ,  kTrigHalfY, cz + kTrigHalfXZ };
         triggers.add(tmin, tmax, sp.triggerId, /*enabled=*/true);
@@ -160,7 +310,38 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     physics.optimizeBroadphase();
     m_built = true;
     x3::logInfo("[rifthub] hub built with " + std::to_string(m_portals.size()) +
-                " portals (one per known --world target)");
+                " portals (round tech-gate rings, " + std::to_string(kRingSegments) +
+                " segments/ring x 2 layers + octagonal plate + shimmer disk)");
+}
+
+void Rifthub::tick(float dt, Scene& scene) {
+    if (!m_built) return;
+    m_time += dt;
+
+    // sin(t*omega) -> [-1, 1] -> [0, 1] -> remap to {ring, core} ranges. Each
+    // portal gets a phase offset so the gates ripple around the hub.
+    const float twoPi = 6.2831853f;
+    const float omega = twoPi * kShimmerFreqHz;
+    auto& ents = scene.entities();
+    const uint32_t sceneN = (uint32_t)ents.size();
+    for (uint32_t i = 0; i < m_portals.size(); ++i) {
+        const RiftPortal& p = m_portals[i];
+        const float phase = (float)i * kShimmerPhaseStep;
+        const float s     = std::sin(m_time * omega + phase);
+        const float t01   = 0.5f * (s + 1.0f);
+
+        const float ringEm = kRingMinEmissive + (kRingMaxEmissive - kRingMinEmissive) * t01;
+        const float coreEm = kCoreMinEmissive + (kCoreMaxEmissive - kCoreMinEmissive) * t01;
+
+        // Pulse every ring segment (both layers share the same phase per portal).
+        const uint32_t end = p.ringEntFirst + p.ringEntCount;
+        for (uint32_t e = p.ringEntFirst; e < end && e < sceneN; ++e) {
+            ents[e].emissive[3] = ringEm;
+        }
+        if (p.coreEnt < sceneN) {
+            ents[p.coreEnt].emissive[3] = coreEm;
+        }
+    }
 }
 
 void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
@@ -170,6 +351,7 @@ void Rifthub::shutdown(x3::rhi::IRenderDevice& device) {
     for (auto h : m_portalMeshes) if (h.valid()) device.destroyMesh(h);
     m_portalMeshes.clear();
     m_portals.clear();
+    m_time = 0.0f;
     m_built = false;
 }
 
