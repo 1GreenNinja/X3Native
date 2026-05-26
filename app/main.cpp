@@ -37,8 +37,11 @@
 #include "spire_top.h"                      // EFLZ Spire F6/F7 top-floor content (Act-1 finale)
 #include "spire_nexus.h"                    // EFLZ Floor 4.5 Nexus Chamber / The Chorus (off-elevator boss)
 #include "spire_sublevels.h"                // EFLZ hidden Floor-7 sub-levels + Dr. Chen Return Mission
+#include "timeline.h"                        // EFLZ morality/timeline backbone for the 12 endings (--test-timeline)
 #include "act2_world.h"                      // EFLZ Act-2 open-world surface host + L8/L9 (--test-act2)
 #include "act2_caves.h"                      // EFLZ Act-2 mid biomes L12-15 (--test-act2caves)
+#include "tod.h"                             // EFLZ Time-of-Day cycle (sky/sun via SkyParams — --test-tod)
+#include "weather.h"                         // EFLZ Weather (7 states, biome-gated, hazard — --test-weather)
 #include "elevator.h"
 #include "club1127.h"
 #include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
@@ -49,6 +52,7 @@
 #include "hud.h"
 #include "ui.h"                              // GENERAL game-UI: menus + production HUD + --test-ui
 #include "save.h"                            // GENERAL versioned checkpoint save/load + --test-saveload
+#include "dialog.h"                          // AI-dialog + TTS voice on skinned NPCs (§3) + --test-dialog
 #include "stress.h"
 #include "destruct_demo.h"                 // K-T1 destruction demo (--world destruct)
 #include "ragdoll_demo.h"                  // Physics §2 ragdoll demo (--world ragdoll) + blend check
@@ -509,6 +513,101 @@ static bool runGpuSkinSelfTest() {
     return passed == total;
 }
 
+// ---------------------------------------------------------------------------
+// SpeakingMonster — the HOST adapter that wires the dialog system's speaking
+// state onto a SKINNED NPC (X3_WORLD_BLUEPRINT §3, requirement 4). It implements
+// x3::dialog::ISpeakingNpc and drives an x3::anim::Skinner READ-ONLY: on
+// beginSpeaking it starts a "talk"/idle clip + records the subtitle; each frame
+// while speaking it advances a head-bob (a small extra time scrub layered over
+// the idle clip so the character reads as "talking"); on endSpeaking it returns
+// to rest. It owns its OWN Skinner bound to the NPC's Model so it never mutates
+// the MonsterSystem (read-only use of anim). Lip-sync is not required — a talk
+// pose / bob is the spec'd behaviour.
+//
+// Headless-safe: with a non-skinnable / absent model it still tracks the speaking
+// lifecycle (begin/tick/end) so the demo + wiring are observable without a device.
+class SpeakingMonster final : public x3::dialog::ISpeakingNpc {
+public:
+    // Bind to a loaded skinned Model (e.g. chief_martinez_anim.glb). The model must
+    // outlive this adapter (the demo owns it). Picks a talk/idle clip by name.
+    bool bind(const x3::asset::Model& model) {
+        m_model = &model;
+        m_skinnable = m_skinner.bind(model);
+        if (m_skinnable) {
+            // Prefer a "talk"/"idle" clip for the speaking pose; fall back to clip 0.
+            m_talkClip = m_skinner.findClip({ "talk", "idle" });
+            if (m_talkClip < 0 && m_skinner.clipCount() > 0) m_talkClip = 0;
+        }
+        return m_skinnable;
+    }
+
+    bool skinnable()  const { return m_skinnable; }
+    bool speaking()   const { return m_speaking; }
+    int  beginCount() const { return m_begins; }
+    int  endCount()   const { return m_ends; }
+    const std::string& subtitle() const { return m_subtitle; }
+    // Max per-component change of the joint palette observed between consecutive
+    // ticks while speaking — proves the talk-bob actually animated the skeleton.
+    float maxPaletteDelta() const { return m_maxDelta; }
+
+    void beginSpeaking(std::string_view line, x3::dialog::VoiceId voice,
+                       float estDurationSec) override {
+        (void)voice;
+        ++m_begins;
+        m_speaking = true;
+        m_subtitle.assign(line);
+        m_animTime = 0.0f;
+        m_estDur   = estDurationSec > 0.0f ? estDurationSec : 1.0f;
+        m_havePrev = false;
+        // Show the subtitle on the console (the HUD path would call
+        // IRenderDevice::drawHudText with this string each frame).
+        x3::logInfo(std::string("[dialog] ") + std::string(line));
+    }
+
+    void tickSpeaking(float dt, float phase01) override {
+        if (!m_speaking) return;
+        // Talk bob: advance the clip time, modulated by a small sinusoid so the
+        // head visibly bobs across the line (peaks mid-line, settles at the end).
+        const float bob = 1.0f + 0.6f * std::sin(phase01 * 6.2831853f);
+        m_animTime += dt * bob;
+        if (m_skinnable && m_model && m_talkClip >= 0) {
+            // READ-ONLY anim use: compute the palette at the talk-clip time WITHOUT a
+            // device (the demo is headless). A real windowed host would instead call
+            // m_skinner.apply(model, device, talkClip, time) to skin + draw.
+            m_skinner.computePalette(*m_model, (uint32_t)m_talkClip, m_animTime, m_curPal);
+            if (m_havePrev && m_prevPal.size() == m_curPal.size()) {
+                float d = 0.0f;
+                for (size_t i = 0; i < m_curPal.size(); ++i)
+                    d = std::max(d, std::fabs(m_curPal[i] - m_prevPal[i]));
+                m_maxDelta = std::max(m_maxDelta, d);
+            }
+            m_prevPal = m_curPal;
+            m_havePrev = true;
+        }
+    }
+
+    void endSpeaking() override {
+        ++m_ends;
+        m_speaking = false;
+        m_subtitle.clear();
+    }
+
+private:
+    const x3::asset::Model* m_model = nullptr;
+    x3::anim::Skinner       m_skinner;
+    bool   m_skinnable = false;
+    int    m_talkClip  = -1;
+    bool   m_speaking  = false;
+    int    m_begins    = 0;
+    int    m_ends      = 0;
+    float  m_animTime  = 0.0f;
+    float  m_estDur    = 1.0f;
+    std::string m_subtitle;
+    std::vector<float> m_curPal, m_prevPal;
+    bool   m_havePrev  = false;
+    float  m_maxDelta  = 0.0f;
+};
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -535,6 +634,19 @@ int main(int argc, char** argv) {
     bool        testUi = false;
     // --test-saveload (save/load pass): versioned checkpoint serialization. Additive.
     bool        testSaveLoad = false;
+    // --test-dialog (AI-dialog + TTS pass, §3): the authored dialogue TREE advances
+    // through nodes + player-choice branches OFFLINE; a stub AI provider hook is used
+    // when set (else falls back to the tree); a stub TTS hook drives the NPC into/out
+    // of the SPEAKING state. Fully offline + leak-clean; no network. Additive.
+    bool        testDialog = false;
+    // --demo-dialog [glb] (headless, offline): run the sample Sarah conversation
+    // through a REAL skinned-NPC adapter (SpeakingMonster) that drives an anim
+    // Skinner talk-bob (read-only) over a character GLB, with an offline stub TTS
+    // hook pacing the speaking state. Prints each subtitle + the speaking
+    // transitions + asserts the talk-bob actually animated the skeleton. Defaults
+    // to chief_martinez_anim.glb. No window / Vulkan / network. Additive.
+    bool        demoDialog = false;
+    std::string demoDialogPath;
     // --test-valley (Crystal Valleys Act-2 L15) + --test-cliffs (Salvari cliffs finale).
     bool        testValley = false, testCliffs = false;
     // --test-club (the full Club 1127 "THE DEEP" at Y=-200): build headless + assert
@@ -554,6 +666,10 @@ int main(int argc, char** argv) {
     bool        testGpuSkin = false;
     // --test-spiretop (Spire top-floor content): F6/F7 (Act-1 finale) encounter authoring. Additive.
     bool        testSpireTop = false;
+    // --test-timeline (EFLZ morality/timeline backbone): infection 4-stage timers + cure
+    // rates, the Omega/Alpha/Beta/Gamma timeline selector, the morality axes, and the
+    // 12-ending eligibility map. Additive.
+    bool        testTimeline = false;
     // --test-dronehack (F5 Drone Manufacturing): Sarah's master hack strips the Swarm
     // Controller AI's HP fraction + flips the drone set to allied (gated, not at load). Additive.
     bool        testDroneHack = false;
@@ -572,6 +688,16 @@ int main(int argc, char** argv) {
     // interactable). Asserts the gates, the hazard, the timeline gate, reachability
     // L11->L12->L13->L14->L15, and trigger-id non-collision. Additive flag.
     bool        testAct2Caves = false;
+    // --test-tod (EFLZ Time-of-Day): a 4-phase day cycle (dawn/day/dusk/night) that
+    // drives the analytic sky/sun (dir/color/intensity/haze + ambient) via SkyParams.
+    // Asserts the cycle visits all phases + wraps, the sun arc + intensity vary
+    // monotonically across the day, city-lights/aurora gate on night, deterministic. Additive.
+    bool        testTod = false;
+    // --test-weather (EFLZ Weather): 7 states (clear/cloudy/rain/storm/fog/sandstorm/snow)
+    // with smooth 30 s transitions, biome-gated, each nudging sky/fog/ambient + a hazard
+    // flag. Asserts gating, interpolated transitions, hazard set only in hazardous states
+    // (incl. swamp poison-fog), midpoint hazard flip, and determinism. Additive.
+    bool        testWeather = false;
     // --test-collapse (K-T3 structural collapse): build a small structure (column /
     // beam on two supports), destroy a support, step the sim, and assert the
     // unsupported pieces fall (static->dynamic), anchored pieces stay stable, the
@@ -753,10 +879,13 @@ int main(int argc, char** argv) {
         else if (a == "--test-spiremid") testSpireMid = true;
         else if (a == "--test-nexus") testNexus = true;
         else if (a == "--test-spiretop") testSpireTop = true;
+        else if (a == "--test-timeline") testTimeline = true;
         else if (a == "--test-dronehack") testDroneHack = true;
         else if (a == "--test-sublevels") testSubLevels = true;
         else if (a == "--test-act2") testAct2 = true;
         else if (a == "--test-act2caves") testAct2Caves = true;
+        else if (a == "--test-tod") testTod = true;
+        else if (a == "--test-weather") testWeather = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-elevatorfsm") testElevatorFsm = true;
@@ -777,6 +906,11 @@ int main(int argc, char** argv) {
         else if (a == "--test-footik") testFootIk = true;
         else if (a == "--test-ui") testUi = true;
         else if (a == "--test-saveload") testSaveLoad = true;
+        else if (a == "--test-dialog") testDialog = true;
+        else if (a == "--demo-dialog") {
+            demoDialog = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') demoDialogPath = argv[++i];
+        }
         else if (a == "--test-valley") testValley = true;
         else if (a == "--test-cliffs") testCliffs = true;
         else if (a == "--test-club") testClub = true;
@@ -1055,6 +1189,12 @@ int main(int argc, char** argv) {
                     "Laboratory Act-1 finale) encounter-content self-test...");
         return x3::game::runSpireTopSelfTest() ? 0 : 1;
     }
+    if (testTimeline) {
+        x3::logInfo("running EFLZ morality/timeline backbone (infection 4-stage timers + "
+                    "cure rates, Omega/Alpha/Beta/Gamma selector, morality axes, 12-ending "
+                    "eligibility) self-test...");
+        return x3::game::runTimelineSelfTest() ? 0 : 1;
+    }
     if (testDroneHack) {
         x3::logInfo("running EFLZ F5 Drone Manufacturing — Sarah's master hack "
                     "(strip Swarm AI HP + flip the drone army) self-test...");
@@ -1065,6 +1205,18 @@ int main(int argc, char** argv) {
                     "[Frozen Collective] / Enhanced Interrogation -> Dr. Chen Return Mission) "
                     "self-test...");
         return x3::game::runSubLevelsSelfTest() ? 0 : 1;
+    }
+    if (testTod) {
+        x3::logInfo("running EFLZ Time-of-Day cycle (4-phase dawn/day/dusk/night driving "
+                    "sky/sun dir+color+intensity+haze+ambient via SkyParams; deterministic) "
+                    "self-test...");
+        return x3::game::runTodSelfTest() ? 0 : 1;
+    }
+    if (testWeather) {
+        x3::logInfo("running EFLZ Weather (7 states clear/cloudy/rain/storm/fog/sandstorm/snow; "
+                    "smooth timed transitions; biome-gated; hazard flag for HazardZone) "
+                    "self-test...");
+        return x3::game::runWeatherSelfTest() ? 0 : 1;
     }
     if (testAct2) {
         x3::logInfo("running EFLZ Act-2 open-world surface (L8 Surface Emergence "
@@ -1167,6 +1319,99 @@ int main(int argc, char** argv) {
         x3::logInfo("running GENERAL versioned checkpoint save/load self-test "
                     "(round-trip field-by-field + magic/version/checksum/truncation reject)...");
         return x3::save::runSaveLoadSelfTest() ? 0 : 1;
+    }
+    if (testDialog) {
+        x3::logInfo("running AI-dialog + TTS self-test "
+                    "(offline tree advance + branches; stub AI provider used/fallback; "
+                    "stub TTS drives NPC speaking state; no network; leak-clean)...");
+        return x3::dialog::runDialogSelfTest() ? 0 : 1;
+    }
+    if (demoDialog) {
+        // Headless, fully offline demo: drive the sample Sarah conversation onto a
+        // REAL skinned NPC (chief_martinez_anim.glb) via the SpeakingMonster adapter
+        // + an offline stub TTS hook. Proves requirement 4 end-to-end against the
+        // actual anim Skinner (read-only) without a window / device / network.
+        namespace fs = std::filesystem;
+        std::string glb = demoDialogPath.empty()
+            ? (x3::game::riggedGlbRoot() + "/chief_martinez_anim.glb")
+            : demoDialogPath;
+        x3::logInfo("--demo-dialog: NPC model = " + glb);
+
+        // Load the skinned model headlessly (loader pattern from --list-clips).
+        x3::asset::Model model;
+        std::unique_ptr<x3::asset::IAssetSource> src;
+        std::unique_ptr<x3::asset::IModelLoader> loader;
+        bool haveModel = false;
+        if (fs::exists(glb)) {
+            fs::path p(glb);
+            src.reset(x3::asset::createAssetSource());
+            src->mountDir(p.parent_path().string(), 0);
+            loader.reset(x3::asset::createModelLoader(nullptr, src.get())); // headless
+            model = loader->load(p.filename().string());
+            haveModel = model.ok;
+        }
+        if (!haveModel) {
+            x3::logInfo("--demo-dialog: model absent/failed (clean checkout) — running "
+                        "subtitle-only (the conversation + speaking lifecycle still run).");
+        }
+
+        SpeakingMonster npc;
+        if (haveModel) {
+            bool sk = npc.bind(model);
+            x3::logInfo(std::string("--demo-dialog: NPC skinnable = ") + (sk ? "yes" : "no"));
+        }
+
+        // Offline stub TTS: deterministic clip duration from the line length; NO
+        // file I/O, NO network. (Tim's real voice vendor drops in here as the hook.)
+        auto stubTts = [](const std::string& line, x3::dialog::VoiceId v) {
+            x3::dialog::AudioClip c;
+            c.path = std::string("stub://voice/") + x3::dialog::voiceName(v);
+            c.durationSec = 0.6f + 0.012f * (float)line.size();
+            return c;
+        };
+
+        std::unique_ptr<x3::dialog::IDialogSystem> d(x3::dialog::createDialogSystem());
+        d->setTtsProvider(stubTts);
+        d->setSpeakingNpc(&npc);
+        // No AI provider set -> the authored tree is used (offline baseline). Mode
+        // stays Tree; the demo shows the guaranteed path.
+        x3::dialog::Tree tree = x3::dialog::sampleSarahTree();
+
+        if (!d->start(tree)) { x3::logError("--demo-dialog: tree failed to start"); return 1; }
+
+        // Drive the conversation: tick each line to completion, print the choices,
+        // auto-pick choice 0 (deterministic), until the conversation ends.
+        int safety = 0;
+        while (d->active() && safety++ < 64) {
+            // Tick the current line to completion (the speaking state runs here).
+            int t = 0;
+            while (d->speaking() && t++ < 4000) { d->update(0.02f); }
+            const auto& ch = d->choices();
+            if (ch.empty()) {
+                // Terminal node: the line finished, conversation will end on the next
+                // active() check (the system ended it inside the final exitSpeaking()).
+                break;
+            }
+            x3::logInfo("  [choices]");
+            for (size_t k = 0; k < ch.size(); ++k)
+                x3::logInfo("    " + std::to_string(k) + ") " + ch[k].text);
+            d->choose(0);   // auto-advance down the first branch
+        }
+
+        bool ok = npc.beginCount() >= 1 && npc.beginCount() == npc.endCount() && !d->active();
+        x3::logInfo("--demo-dialog: lines spoken = " + std::to_string(npc.beginCount()) +
+                    ", speaking enter==exit = " + (npc.beginCount() == npc.endCount() ? "yes" : "NO") +
+                    ", conversation ended = " + (!d->active() ? "yes" : "NO"));
+        if (haveModel && npc.skinnable()) {
+            // The talk-bob must have actually moved the skeleton while speaking.
+            bool moved = npc.maxPaletteDelta() > 1e-4f;
+            x3::logInfo("--demo-dialog: talk-bob palette max-delta = " +
+                        std::to_string(npc.maxPaletteDelta()) + (moved ? " (animated)" : " (STATIC!)"));
+            ok = ok && moved;
+        }
+        if (loader && haveModel) loader->unload(model);
+        x3::logInfo(std::string("--demo-dialog: ") + (ok ? "PASS" : "FAIL"));
+        return ok ? 0 : 1;
     }
     if (testValley) {
         x3::logInfo("running Crystal Valleys (Act 2, L15) self-test "
