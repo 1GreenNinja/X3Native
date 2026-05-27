@@ -5832,7 +5832,7 @@ int main(int argc, char** argv) {
                 if (arrowsLive && keyDown(GLFW_KEY_UP))   in.moveFwd += 1.0f;
                 if (arrowsLive && keyDown(GLFW_KEY_DOWN)) in.moveFwd -= 1.0f;
                 // Right mouse button = walk forward (hold to autorun)
-                if (!consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
+                if (!consoleOpen && !simFrozen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
                     in.moveFwd += 1.0f;
                 in.sprint      = keyDown(GLFW_KEY_LEFT_SHIFT);
                 // Edge + mouse-look apply only on the first sub-step of the frame.
@@ -6193,7 +6193,7 @@ int main(int argc, char** argv) {
         // projectiles are spawned into a host-owned list advanced below. Automatic
         // weapons fire while held; others fire on the LMB rising edge. ----
         (void)fireCooldown; (void)kFireCooldown;   // (legacy cooldown — arsenal owns timing now)
-        bool fireHeld = !consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        bool fireHeld = !consoleOpen && !simFrozen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         bool wantFire = arsenal.current().automatic ? fireHeld : (fireHeld && !prevFire);
         // In --world canonlevel the legacy `game` is unbuilt; the canon sidearm gates firing.
         const bool playerArmed = game.armed() || (canonWorld && canonPlay.armed());
