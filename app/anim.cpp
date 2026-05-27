@@ -496,6 +496,40 @@ uint32_t Skinner::currentGlobals(const x3::asset::Model& model, uint32_t clip,
 }
 
 // ===========================================================================
+// Named-bone world-transform readback (third-person held-weapon SOCKET).
+// ===========================================================================
+int Skinner::resolveNodeByName(const x3::asset::Model& model, std::string_view name) const {
+    if (!m_valid || name.empty() || m_nodeCount == 0) return -1;
+    std::string want = toLower(name);
+    int best = -1;
+    for (uint32_t n = 0; n < m_nodeCount; ++n) {
+        std::string have = toLower(model.nodes[n].name);
+        if (have.empty()) continue;
+        if (have == want) return (int)n;                       // exact match wins
+        if (best < 0 && (have.find(want) != std::string::npos ||
+                         want.find(have) != std::string::npos))
+            best = (int)n;                                     // remember a substring match
+    }
+    return best;
+}
+
+bool Skinner::boneGlobal(uint32_t nodeIndex, float out[16]) const {
+    if (!m_valid || nodeIndex >= m_nodeCount || !out) return false;
+    // m_globalScratch holds the per-node MODEL-SPACE globals from the most recent
+    // apply()/applyLocomotion()/applyRagdollBlend() (same pose lastPalette() built).
+    if (m_globalScratch.size() != (size_t)m_nodeCount * 16) return false;
+    std::memcpy(out, &m_globalScratch[(size_t)nodeIndex * 16], 16 * sizeof(float));
+    return true;
+}
+
+bool Skinner::boneGlobalByName(const x3::asset::Model& model, std::string_view name,
+                               float out[16]) const {
+    int n = resolveNodeByName(model, name);
+    if (n < 0) return false;
+    return boneGlobal((uint32_t)n, out);
+}
+
+// ===========================================================================
 // Ragdoll blend — drive the skin from an external physics pose (Physics §2).
 // ===========================================================================
 

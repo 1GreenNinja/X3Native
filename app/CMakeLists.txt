@@ -17,6 +17,7 @@ add_executable(X3Engine WIN32
     weapon.cpp
     monster.cpp
     anim.cpp
+    thirdperson.cpp
     melee.cpp
     objective.cpp
     trigger.cpp

@@ -29,6 +29,7 @@
 #include "asset_root.h"                    // portable assetRoot() (assets-LFS)
 #include "audio_root.h"                    // portable resolveAudio() (D: mirror / G: packs)
 #include "anim.h"                          // Skinner + --list-clips clip check
+#include "thirdperson.h"                    // FP/3P toggle + Jake avatar + held weapon (--test-thirdperson)
 #include "level1.h"
 #include "level_loader.h"                   // data-driven canonical level loader + per-room PVS cull (--test-canonlevel)
 #include "player.h"
@@ -818,7 +819,8 @@ int main(int argc, char** argv) {
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
-         testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false;
+         testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
+         testThirdPerson = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1098,6 +1100,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-netinterp") testNetInterp = true;
         else if (a == "--test-netpredict") testNetPredict = true;
         else if (a == "--test-rescue") testRescue = true;
+        else if (a == "--test-thirdperson") testThirdPerson = true;
         else if (a == "--test-npctalk") testNpcTalk = true;
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-debris") testDebris = true;
@@ -1514,6 +1517,10 @@ int main(int argc, char** argv) {
     if (testRescue) {
         x3::logInfo("running F2 rescue (victim/companion/transform) self-test (R0-R5)...");
         return x3::game::runRescueSelfTest() ? 0 : 1;
+    }
+    if (testThirdPerson) {
+        x3::logInfo("running third-person view (Jake avatar + follow cam + held weapon) self-test (TP1-TP9)...");
+        return x3::game::runThirdPersonSelfTest() ? 0 : 1;
     }
     if (testNpcTalk) {
         x3::logInfo("running rescued-NPC talk/dialog -> companion self-test (T1-T7)...");
@@ -4358,6 +4365,16 @@ int main(int argc, char** argv) {
     x3::game::Arsenal arsenal;
     arsenal.loadViewmodels(*device, x3::game::riggedGlbRoot());
 
+    // ==================== THIRD-PERSON VIEW (FIRST MILESTONE) ====================
+    // Load the Jake avatar + the FP/3P toggle. FP is the DEFAULT (eye-cam + weapon
+    // viewmodel, unchanged). F5 flips to a follow/orbit camera behind+above the player
+    // with the animated Jake avatar (the held weapon socketed to its right hand). The
+    // player capsule/collision are untouched (camera change only). On a failed Jake
+    // load this stays unbuilt and FP keeps working. See app/thirdperson.* + F5 below.
+    x3::game::ThirdPersonView thirdPerson;
+    thirdPerson.build(scene, *device, x3::game::riggedGlbRoot());
+    bool prevF5 = false;
+
     // ---- PER-WEAPON FIRE SOUNDS (the user's "every gun sounds the same" fix) ----
     // Each WeaponDef carries a distinct sci-fi fireSfx (pack-relative WAV). Load each
     // unique one ONCE into a name->handle cache (keyed by the weapon name) so firing
@@ -5586,6 +5603,19 @@ int main(int argc, char** argv) {
         }
         prevF3 = f3Now;
 
+        // F5: toggle FIRST-PERSON <-> THIRD-PERSON view (rising edge). FP is the
+        // default (eye-cam + weapon viewmodel); 3P shows the animated Jake avatar +
+        // a follow camera behind/above the player. Polled even with the console open
+        // so it always works (it changes nothing the console types into). The avatar
+        // only exists when Jake loaded; otherwise the flag flips but FP keeps drawing.
+        bool f5Now = (glfwGetKey(window, GLFW_KEY_F5) == GLFW_PRESS);
+        if (f5Now && !prevF5 && !terrainWorld) {
+            const bool now3p = thirdPerson.toggle();
+            x3::logInfo(now3p ? "view: THIRD-PERSON (Jake avatar + follow cam; F5 to return)"
+                              : "view: FIRST-PERSON (eye-cam + weapon viewmodel)");
+        }
+        prevF5 = f5Now;
+
         // ---- WEAPONS: number keys 1..N switch the selected weapon; R reloads.
         // Suppressed while a door-code keypad is active (digits go to the keypad).
         if (!codeMode && !terrainWorld) {
@@ -5932,7 +5962,29 @@ int main(int argc, char** argv) {
         }
         camPitch += weaponRecoilPitch;
         if (camPitch >  1.55f) camPitch =  1.55f;   // keep within the look clamp
-        device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+
+        // ---- THIRD-PERSON: drive the Jake avatar from the player's feet/look + swap
+        // the RENDER camera to the follow/orbit cam (behind + above the player). The
+        // gameplay camX/camY/camZ (the EYE) is LEFT UNCHANGED so the fire ray, audio
+        // listener, flashlight, and prompts keep using the eye + look dir (FP-parity;
+        // over-the-shoulder 3P aim is a documented follow-on). Only the rendered
+        // viewpoint changes in 3P. No-op (renderCam == eye) in FP / unbuilt. ----
+        float renderCamX = camX, renderCamY = camY, renderCamZ = camZ;
+        if (!terrainWorld && !noclip && thirdPerson.thirdPerson() && thirdPerson.built()) {
+            const x3::phys::Vec3 pfeet = player.feet();
+            const float eyeH = camY - pfeet.y;   // current eye height (stance-aware)
+            // Room for the PVS cull so the avatar isn't culled with its own room.
+            uint32_t avatarRoom = x3::game::kNoRoom;
+            if (canonWorld && canonFloor.valid())
+                avatarRoom = canonFloor.roomAt(pfeet.x, pfeet.y, pfeet.z);
+            const bool crouchedNow = player.stance() != x3::game::Player::Stance::Stand;
+            thirdPerson.update(dt, scene, pfeet, eyeH, camYaw, camPitch, avatarRoom,
+                               crouchedNow, prevFire);   // prevFire = last frame's held-fire
+            const x3::game::ThirdPersonCamera tc =
+                thirdPerson.camera(pfeet, eyeH, camYaw, camPitch);
+            renderCamX = tc.camX; renderCamY = tc.camY; renderCamZ = tc.camZ;
+        }
+        device->setCamera(renderCamX, renderCamY, renderCamZ, camYaw, camPitch, 60.0f);
         // FLASHLIGHT (L toggles, default ON): re-issue the level's static ceiling
         // fixtures + a bright player-following light at the eye, so the dark halls
         // light up around you. Inserted FIRST so the 64-light cap never drops it.
@@ -6409,6 +6461,15 @@ int main(int argc, char** argv) {
             }
             scene.render(*device, frame);
             if (canonWorld) canonDoors.drawMeshes(*device, frame);   // SM_Door_A doors (canonlevel)
+            // THIRD-PERSON: draw the animated Jake avatar at the player's position +
+            // the equipped weapon socketed to its right hand. Both are no-ops in FP /
+            // when Jake didn't load (avatarVisible() gates them). The avatar was posed
+            // + the hand-socket pose computed in thirdPerson.update() above.
+            if (!terrainWorld && thirdPerson.avatarVisible()) {
+                thirdPerson.drawAvatar(*device, frame, scene);
+                const bool heldArmed = game.armed() || (canonWorld && canonPlay.armed());
+                thirdPerson.drawHeldWeapon(*device, frame, scene, arsenal, heldArmed);
+            }
             // --world canonlevel gameplay: the sidearm pickup + animated enemies + Martinez
             // + the rescue girls, ROOM-GATED (only the visible rooms' characters are drawn/
             // skinned, so the cull's perf payoff is preserved with the characters in).
@@ -6512,7 +6573,12 @@ int main(int argc, char** argv) {
                 }
                 const VmPose vmPose = readViewmodelPose(*console);
                 const bool vmArmed = game.armed() || (canonWorld && canonPlay.armed());
-                if (arsenal.viewmodelsLoaded() && vmArmed) {
+                // THIRD-PERSON: hide the FP weapon viewmodel ENTIRELY (the gun is shown
+                // in the avatar's hand instead — drawn after scene.render below).
+                // viewmodelVisible() is true in FP / unbuilt, so FP behaviour is unchanged.
+                if (!thirdPerson.viewmodelVisible()) {
+                    // 3P: no FP viewmodel this frame.
+                } else if (arsenal.viewmodelsLoaded() && vmArmed) {
                     // WEAPONS: draw the SELECTED weapon's viewmodel (its own GLB +
                     // convention-correct base offsets). The live vm_* cvars are passed
                     // as DELTAS from the baked default so console tuning still nudges

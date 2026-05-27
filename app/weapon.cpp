@@ -839,6 +839,40 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
     }
 }
 
+bool Arsenal::currentHasDrawables() const {
+    if (m_sel < 0 || m_views.empty()) return false;
+    const ViewModel& sel = m_views[(size_t)m_sel];
+    if (!sel.drawables.empty()) return true;
+    return sel.fallbackIndex >= 0 && !m_views[(size_t)sel.fallbackIndex].drawables.empty();
+}
+
+void Arsenal::drawCurrentAt(x3::rhi::IRenderDevice& device,
+                            const x3::rhi::FrameContext& frame,
+                            const float model[16]) const {
+    if (m_sel < 0 || m_views.empty()) return;
+    const ViewModel& sel = m_views[(size_t)m_sel];
+    const ViewModel& vm  = (!sel.drawables.empty()) ? sel
+                         : (sel.fallbackIndex >= 0 ? m_views[(size_t)sel.fallbackIndex] : sel);
+    if (vm.drawables.empty()) return;
+    // Same brightness boost the FP viewmodel uses so the held gun reads lit in dark
+    // interiors. The caller owns the full world placement (hand-bone * grip * scale),
+    // so unlike drawCurrentViewmodel this does NO camera-relative posing.
+    constexpr float kVmBright = 2.6f;
+    for (const auto& dr : vm.drawables) {
+        float fin[16];
+        x3::asset::mulMat4(model, dr.nodeTransform, fin);
+        const float litColor[4] = {
+            dr.baseColorFactor[0] * kVmBright,
+            dr.baseColorFactor[1] * kVmBright,
+            dr.baseColorFactor[2] * kVmBright,
+            dr.baseColorFactor[3],
+        };
+        device.drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
+                        x3::rhi::TextureHandle{ dr.baseColorTexId },
+                        litColor, fin);
+    }
+}
+
 // ===========================================================================
 // Headless self-test (--test-pickup). T1 far, T2 enter radius, T3 stays armed.
 // Drives the pure arming rule + a minimal latching loop with synthetic player

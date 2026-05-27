@@ -127,6 +127,31 @@ public:
     // Node count the skinner was bound over (for the caller sizing nodeGlobals).
     uint32_t nodeCount() const { return m_nodeCount; }
 
+    // ======================================================================
+    // Named-bone world-transform readback (third-person held-weapon SOCKET).
+    // ======================================================================
+    // Resolve a node by NAME (case-insensitive; exact match preferred, else a
+    // substring either way for exporter quirks) to its node index, or -1 if no
+    // node matches / !valid(). Used once to cache e.g. the weapon-hand bone
+    // (`mixamorigRightHand`) so the per-frame socket read needs no string work.
+    int resolveNodeByName(const x3::asset::Model& model, std::string_view name) const;
+
+    // Read the MODEL-SPACE global transform (column-major 4x4) of node `nodeIndex`
+    // from the pose most recently produced by apply()/applyLocomotion()/
+    // applyRagdollBlend() (i.e. the same per-node globals that built lastPalette()).
+    // Returns false (out untouched) if !valid(), the index is out of range, or no
+    // pose has been computed yet. This is how the 3P avatar reads its right-hand
+    // bone each frame to socket the carried weapon mesh (final weapon placement =
+    // avatarDrawTransform * boneGlobal * gripOffset). The globals are in the SAME
+    // space drawn meshes use, so composing with the avatar's draw matrix lands the
+    // weapon in the hand.
+    bool boneGlobal(uint32_t nodeIndex, float out[16]) const;
+
+    // Same as boneGlobal but resolves by name each call (convenience for tests /
+    // one-off reads). Prefer resolveNodeByName() once + boneGlobal() in the hot path.
+    bool boneGlobalByName(const x3::asset::Model& model, std::string_view name,
+                          float out[16]) const;
+
     // Snapshot the CURRENT animated per-node GLOBAL (model-space) matrices at
     // (clip, timeSec) into `outGlobals` (nodeCount*16, column-major). This is the
     // SAME pose the next apply()/computePalette() would draw — the death ragdoll
