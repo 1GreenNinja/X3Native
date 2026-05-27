@@ -62,6 +62,7 @@
 #include "club1127.h"
 #include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
 #include "cliffs.h"                          // Salvari cliffs finale (--world cliffs)
+#include "companion.h"                      // companion reflex AI (--test-companion)
 #include "terrain.h"
 #include "fx.h"
 #include "hud.h"
@@ -835,6 +836,9 @@ int main(int argc, char** argv) {
     std::string demoDialogPath;
     // --test-valley (Crystal Valleys Act-2 L15) + --test-cliffs (Salvari cliffs finale).
     bool        testValley = false, testCliffs = false;
+    // --test-companion (companion reflex AI Slice A): deterministic decision unit,
+    // headless, no GPU/physics deps. Additive.
+    bool        testCompanion = false;
     // --test-secretroom (code-locked trapdoor -> secret room): the cell HoloTerminal
     // override code opens a floor-hatch to a stocked secret room below. Additive flag.
     bool        testSecretRoom = false;
@@ -1122,6 +1126,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "--test-valley") testValley = true;
         else if (a == "--test-cliffs") testCliffs = true;
+        else if (a == "--test-companion") testCompanion = true;
         else if (a == "--test-club") testClub = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
@@ -1706,6 +1711,9 @@ int main(int argc, char** argv) {
     if (testCliffs) {
         x3::logInfo("running Salvari cliffs finale self-test (pad/sea/placement/streaming)...");
         return x3::game::runCliffsSelfTest() ? 0 : 1;
+    }
+    if (testCompanion) {
+        return x3::game::runCompanionSelfTest() ? 0 : 1;
     }
     if (testClub) {
         x3::logInfo("running Club 1127 (\"THE DEEP\") self-test "
