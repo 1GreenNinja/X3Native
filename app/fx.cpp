@@ -82,15 +82,38 @@ int CombatFx::spawnParticle(const Particle& p) {
 // ---------------------------------------------------------------------------
 void CombatFx::addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to) {
     Tracer& t = m_tracers[m_nextTracer];
-    t.from = from;
-    t.to   = to;
-    t.life = kTracerTime;
+    t.from   = from;
+    t.to     = to;
+    t.life   = kTracerTime;
+    t.jagged = false;
     m_nextTracer = (m_nextTracer + 1) % kMaxTracers;
 
     m_muzzlePos   = from;
     m_muzzleFlash = kMuzzleFlashTime;
 
     // Bias the muzzle spark cone forward along the shot direction (to - from).
+    x3::phys::Vec3 dir{ to.x - from.x, to.y - from.y, to.z - from.z };
+    spawnMuzzleFlash(from, dir);
+}
+
+// ---------------------------------------------------------------------------
+// addBolt: a jagged LIGHTNING beam (beam weapons). Same pool + muzzle handling as
+// addTracer, but flagged jagged with a fresh per-bolt seed, so draw() renders a
+// forked white-blue zigzag. addBolt is called per shot, so a held beam re-rolls
+// the jag every shot and flickers like real lightning.
+// ---------------------------------------------------------------------------
+void CombatFx::addBolt(const x3::phys::Vec3& from, const x3::phys::Vec3& to) {
+    Tracer& t = m_tracers[m_nextTracer];
+    t.from   = from;
+    t.to     = to;
+    t.life   = kTracerTime;
+    t.jagged = true;
+    m_rng ^= m_rng << 13; m_rng ^= m_rng >> 17; m_rng ^= m_rng << 5;  // advance PRNG
+    t.seed = m_rng ? m_rng : 0xB01Du;
+    m_nextTracer = (m_nextTracer + 1) % kMaxTracers;
+
+    m_muzzlePos   = from;
+    m_muzzleFlash = kMuzzleFlashTime;
     x3::phys::Vec3 dir{ to.x - from.x, to.y - from.y, to.z - from.z };
     spawnMuzzleFlash(from, dir);
 }
@@ -473,6 +496,75 @@ void CombatFx::drawBeam(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
 }
 
 // ---------------------------------------------------------------------------
+// drawBolt: a jagged, forked white-blue lightning bolt from a->b. Subdivides into
+// N sub-segments; each interior vertex is offset perpendicular (amplitude humped to
+// 0 at both ends so the bolt stays pinned at muzzle + target) from a LOCAL rng
+// seeded by `seed`. One short fork branches off the middle for the crackle. Every
+// sub-segment is a drawBeam box, so it reuses the existing tracer render path.
+// ---------------------------------------------------------------------------
+void CombatFx::drawBolt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                        const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                        uint32_t seed, float thickness, const float color[4]) const {
+    x3::phys::Vec3 seg{ b.x - a.x, b.y - a.y, b.z - a.z };
+    float len = std::sqrt(seg.x * seg.x + seg.y * seg.y + seg.z * seg.z);
+    if (len < 1e-4f) { drawBeam(device, frame, a, b, thickness, color); return; }
+    x3::phys::Vec3 dir = normalize(seg);
+    x3::phys::Vec3 ref = (std::fabs(dir.y) < 0.99f) ? x3::phys::Vec3{ 0, 1, 0 }
+                                                    : x3::phys::Vec3{ 1, 0, 0 };
+    x3::phys::Vec3 u = normalize(cross(ref, dir));
+    x3::phys::Vec3 v = cross(dir, u);
+
+    uint32_t rng = seed ? seed : 1u;
+    auto rnd = [&rng]() {
+        rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+        return (float)(rng & 0xFFFFFFu) / (float)0x1000000;   // [0,1)
+    };
+
+    const int   N   = 9;
+    const float amp = (len * 0.07f < 0.4f) ? len * 0.07f : 0.4f;   // jag width (m)
+    auto pointAt = [&](float s, float jitter) {
+        x3::phys::Vec3 p{ a.x + seg.x * s, a.y + seg.y * s, a.z + seg.z * s };
+        float ju = (rnd() * 2.0f - 1.0f) * jitter;
+        float jv = (rnd() * 2.0f - 1.0f) * jitter;
+        p.x += u.x * ju + v.x * jv; p.y += u.y * ju + v.y * jv; p.z += u.z * ju + v.z * jv;
+        return p;
+    };
+
+    x3::phys::Vec3 prev = a, mid = a;
+    for (int i = 1; i <= N; ++i) {
+        float s    = (float)i / (float)N;
+        float hump = 4.0f * s * (1.0f - s);                  // 0 at ends, 1 at middle
+        x3::phys::Vec3 p = (i == N) ? b : pointAt(s, amp * hump);
+        drawBeam(device, frame, prev, p, thickness, color);
+        if (i == N / 2) mid = p;                             // mid vertex -> fork root
+        prev = p;
+    }
+
+    // One short jagged fork off the middle for crackle (~30% length, random heading).
+    x3::phys::Vec3 fdir{ dir.x + (rnd() * 2 - 1) * 0.9f,
+                         dir.y + (rnd() * 2 - 1) * 0.9f,
+                         dir.z + (rnd() * 2 - 1) * 0.9f };
+    float fl = std::sqrt(fdir.x * fdir.x + fdir.y * fdir.y + fdir.z * fdir.z);
+    if (fl > 1e-4f) {
+        x3::phys::Vec3 fend{ mid.x + fdir.x / fl * len * 0.3f,
+                             mid.y + fdir.y / fl * len * 0.3f,
+                             mid.z + fdir.z / fl * len * 0.3f };
+        x3::phys::Vec3 fprev = mid;
+        for (int i = 1; i <= 3; ++i) {
+            float s = (float)i / 3.0f;
+            x3::phys::Vec3 fp{ mid.x + (fend.x - mid.x) * s,
+                               mid.y + (fend.y - mid.y) * s,
+                               mid.z + (fend.z - mid.z) * s };
+            if (i < 3) { fp.x += u.x * (rnd() * 2 - 1) * amp * 0.5f;
+                         fp.y += u.y * (rnd() * 2 - 1) * amp * 0.5f;
+                         fp.z += u.z * (rnd() * 2 - 1) * amp * 0.5f; }
+            drawBeam(device, frame, fprev, fp, thickness * 0.7f, color);
+            fprev = fp;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // draw: active tracers + muzzle flash. (The crosshair moved to the screen-space
 // HUD layer in S7 — see app/hud.* — so fx no longer draws a world-space "+".)
 // ---------------------------------------------------------------------------
@@ -492,13 +584,17 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
     x3::phys::Vec3 right{ -sy, 0.0f, cy };
     x3::phys::Vec3 up = cross(right, forward);  // used by the muzzle-flash basis
 
-    // ---- Tracers: thin bright beams, fading thinner as they age. ----
+    // White-blue lightning color (HDR: blue >1 feeds the bloom chain -> electric glow).
+    const float boltColor[4] = { 0.65f, 0.82f, 1.35f, 1.0f };
+
+    // ---- Tracers: straight bright beams, or jagged lightning bolts (beam weapons). ----
     for (const auto& t : m_tracers) {
         if (t.life <= 0.0f) continue;
         float k = (kTracerTime > 0.0f) ? (t.life / kTracerTime) : 1.0f; // 1->0
-        // Slightly taper the beam as it fades so it reads as a fast streak.
+        // Slightly taper as it fades so it reads as a fast streak.
         float thick = kTracerThickness * (0.5f + 0.5f * k);
-        drawBeam(device, frame, t.from, t.to, thick, tracerColor);
+        if (t.jagged) drawBolt(device, frame, t.from, t.to, t.seed, thick * 0.85f, boltColor);
+        else          drawBeam(device, frame, t.from, t.to, thick, tracerColor);
     }
 
     // ---- Muzzle flash: a brief bright box at the muzzle. ----
