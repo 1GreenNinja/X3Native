@@ -18,6 +18,8 @@ float CompanionBrain::score(CompanionBehavior b, const CompanionContext& ctx) co
     switch (b) {
     case CompanionBehavior::Follow: { float d = len(sub(ctx.playerPos, ctx.selfPos)); return 0.2f + 0.05f * d; }
     case CompanionBehavior::Engage: { const CompanionThreat* t=bestTarget(ctx,60.0f); if(!t) return 0.0f; return 1.0f + (60.0f - t->dist)*0.02f; }
+    case CompanionBehavior::TakeCover: { const CompanionThreat* t=bestTarget(ctx,60.0f); if(!t||!ctx.nearCover) return 0.0f; return (1.0f-ctx.selfHpFrac)*3.0f; }
+    case CompanionBehavior::Retreat: { const CompanionThreat* t=bestTarget(ctx,60.0f); if(!t) return 0.0f; if(ctx.selfHpFrac>0.15f||ctx.nearCover) return 0.0f; return 2.5f; }
     default: return 0.0f;
     }
 }
@@ -39,6 +41,8 @@ CompanionCommand CompanionBrain::tick(const CompanionContext& ctx) const {
             c.aimYaw=std::atan2(to.z,to.x); float horiz=std::sqrt(to.x*to.x+to.z*to.z);
             c.aimPitch=std::atan2(to.y,horiz); c.fire = !ctx.inPlayerLineOfFire && ctx.ammoInMag>0; }
     }
+    else if (best == CompanionBehavior::TakeCover) { if (ctx.nearCover){ x3::phys::Vec3 to=sub(ctx.coverPos,ctx.selfPos); if(len(to)>0.5f) c.moveFwd=1.0f; } }
+    else if (best == CompanionBehavior::Retreat) { const CompanionThreat* t=bestTarget(ctx,60.0f); if(t){ c.moveFwd=1.0f; c.sprint=true; } }
     return c;
 }
 
@@ -65,6 +69,17 @@ bool runCompanionSelfTest() {
         bool ok = (c.chosen == CompanionBehavior::Engage) && c.fire;
         if (ok) pass++; else x3::logError("[companion-test] C2 engage FAILED");
     }
+    // C3: low HP + exposed + cover -> TakeCover.
+    { total++; CompanionContext ctx; ctx.selfPos={0,0,0}; ctx.playerPos={0,0,-3}; ctx.selfHpFrac=0.25f;
+      CompanionThreat t; t.pos={0,0,12}; t.dist=12.0f; t.losToSelf=true; ctx.threats=&t; ctx.threatCount=1;
+      ctx.nearCover=true; ctx.coverPos={4,0,0};
+      CompanionCommand c=brain.tick(ctx);
+      if (c.chosen==CompanionBehavior::TakeCover) pass++; else x3::logError("[companion-test] C3 cover FAILED"); }
+    // C4: critical HP, no cover -> Retreat.
+    { total++; CompanionContext ctx; ctx.selfPos={0,0,0}; ctx.playerPos={0,0,-3}; ctx.selfHpFrac=0.1f;
+      CompanionThreat t; t.pos={0,0,6}; t.dist=6.0f; t.losToSelf=true; ctx.threats=&t; ctx.threatCount=1; ctx.nearCover=false;
+      CompanionCommand c=brain.tick(ctx);
+      if (c.chosen==CompanionBehavior::Retreat) pass++; else x3::logError("[companion-test] C4 retreat FAILED"); }
     x3::logInfo("companion: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
     return pass == total;
 }
