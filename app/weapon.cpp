@@ -562,6 +562,31 @@ std::vector<WeaponDef> makeDefaultRoster() {
         r.push_back(w);
     }
 
+    // ---- 10) Railgun — high-power precision slug (RailgunGood art). ----------
+    // Slow, pinpoint, long-range hitscan that hits like a truck: a 400-HP boss is
+    // ~3 deliberate shots, trash one-shots. Small mag + slow cadence make it the
+    // anti-elite marksman tool — the opposite of the chaingun's spray.
+    {
+        WeaponDef w;
+        w.name        = "railgun";
+        w.kind        = FireKind::Hitscan;
+        w.automatic   = false;
+        w.damage      = 130;          // big single-shot
+        w.fireRate    = 0.7f;         // slow, deliberate
+        w.pellets     = 1;
+        w.spreadDeg   = 0.0f;         // pinpoint
+        w.recoilDeg   = 5.0f;         // heavy kick
+        w.range       = 200.0f;       // long range
+        w.magSize     = 5;
+        w.reserveAmmo = 25;
+        w.reloadTime  = 2.5f;
+        w.viewmodelGlb = "WeaponRailgun.glb";  // green-coil railgun (RailgunGood, Rodin, downscaled 70->5MB)
+        w.vmScale     = 0.13f;
+        w.muzzleFx    = "muzzle_default";
+        w.impactFx    = "impact_default";
+        r.push_back(w);
+    }
+
     return r;
 }
 
