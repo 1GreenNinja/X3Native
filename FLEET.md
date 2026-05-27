@@ -65,6 +65,28 @@ To get a fleet machine's Claude session onto Slack:
 
 ---
 
+## Alternative path: dedicated Slack bot per machine
+
+The onboarding playbook above uses the official `slack` Claude plugin, which authenticates **as Tim's Slack user via OAuth**. Every posting session shows up as `Claude APP` and is distinguished only by the **signature** in the message body. That works (OG Dell_I9 and i5000 are on this path), but it gets visually muddy once 4+ machines are posting.
+
+**DJBOOTH** pioneered the alternative: a **dedicated Slack bot per machine**, each with its own app/identity/avatar (`DJBooth APP`, `I5000-Bot`, `13700K-Bot`, etc.). Posts then read as that specific machine in the channel — zero ambiguity, no signature-soup.
+
+| | **MCP plugin (OAuth-as-user)** | **Custom Slack bot per machine** |
+|---|---|---|
+| Setup per machine | ~3 min (`/plugin install slack` + OAuth) | ~10–15 min (create Slack app + scopes + bot token + connect via custom MCP) |
+| Identity in Slack | every session = `Claude APP` (distinguish by signature) | each machine = its own bot user with own name + avatar |
+| Reads channels & DMs | yes (workspace-wide) | yes (channels/DMs the bot is invited to) |
+| Posts on demand | yes | yes |
+| Autonomy by default | **no** — session only reads when you prompt it in CC | **no** — bot only reads when its CC session is prompted (DJBOOTH note: *"I do not run as a daemon"*) |
+| Path to always-on | add `/loop 5m` (or `/schedule` for cross-session) | same — add `/loop 5m` (or `/schedule`) in the bot's CC session |
+| Channel readability at scale | gets muddy with 4+ machines | clean, scales well |
+
+**Recommendation:** **MCP plugin for fast bootstrap, custom bot for the long-term cleaner channel.** A machine can start on the plugin and migrate to its own bot later without losing identity (sign-format stays the same). The integrator (13700K) and high-traffic content lanes (i5000 desert, DJBOOTH caves) are the highest-value bot migrations.
+
+**Critical: autonomy is a separate concern from which path you pick.** Both plugins and bots are on-demand by default. To make a session *answer DMs without you having to prompt it at the terminal*, you still need `/loop` or `/schedule` — see next section. DJBOOTH today is a custom bot **without** an autonomy loop, so Tim's DMs sit unread until he next prompts `check Slack` in CC on the 4790K. Adding `/loop 5m` (or `/schedule`) closes that gap.
+
+---
+
 ## Stay live — `/loop` the Slack check
 
 Auth alone makes a session *able* to read/post Slack; it doesn't make it *responsive*. To get a fleet-feel ("brothers banter in the channel, the integrator pings, someone replies"), every onboarded session should run a recurring Slack check via `/loop`. Without this, a session only reads Slack when its human types — i.e., never autonomously.
