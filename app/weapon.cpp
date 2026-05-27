@@ -535,6 +535,33 @@ std::vector<WeaponDef> makeDefaultRoster() {
         r.push_back(w);
     }
 
+    // ---- 9) RPG — rocket-propelled grenade launcher (heavy explosive). -------
+    // Slow single-shot launcher: a visible rocket that detonates for big splash.
+    // Anti-group / anti-armor finisher sitting between the chaingun and the BFG.
+    {
+        WeaponDef w;
+        w.name        = "rpg";
+        w.kind        = FireKind::Projectile;
+        w.automatic   = false;
+        w.damage      = 120;          // direct impact
+        w.fireRate    = 0.8f;
+        w.pellets     = 1;
+        w.spreadDeg   = 0.4f;
+        w.recoilDeg   = 5.0f;
+        w.range       = 120.0f;
+        w.magSize     = 1;            // single tube
+        w.reserveAmmo = 12;
+        w.reloadTime  = 2.8f;
+        w.projSpeed   = 40.0f;        // visible rocket
+        w.splashRadius= 5.0f;
+        w.splashDamage= 90;
+        w.viewmodelGlb = "WeaponRPG.glb";
+        w.vmScale     = 0.13f;
+        w.muzzleFx    = "muzzle_default";
+        w.impactFx    = "impact_default";
+        r.push_back(w);
+    }
+
     return r;
 }
 
