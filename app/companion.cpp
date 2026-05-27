@@ -21,6 +21,7 @@ float CompanionBrain::score(CompanionBehavior b, const CompanionContext& ctx) co
     case CompanionBehavior::TakeCover: { const CompanionThreat* t=bestTarget(ctx,60.0f); if(!t||!ctx.nearCover) return 0.0f; return (1.0f-ctx.selfHpFrac)*3.0f; }
     case CompanionBehavior::Retreat: { const CompanionThreat* t=bestTarget(ctx,60.0f); if(!t) return 0.0f; if(ctx.selfHpFrac>0.15f||ctx.nearCover) return 0.0f; return 2.5f; }
     case CompanionBehavior::Revive: { if(!ctx.anyAllyDowned) return 0.0f; const CompanionThreat* t=bestTarget(ctx,8.0f); float danger=t?1.5f:0.0f; return 2.0f - danger; }
+    case CompanionBehavior::Hold: return 0.1f;
     default: return 0.0f;
     }
 }
@@ -29,6 +30,7 @@ CompanionCommand CompanionBrain::tick(const CompanionContext& ctx) const {
     CompanionBehavior best = CompanionBehavior::Follow; float bestScore = -1.0f;
     for (int i = 0; i < (int)CompanionBehavior::Count; ++i) {
         float s = score((CompanionBehavior)i, ctx);
+        if (ctx.suggestion.prefer == (CompanionBehavior)i) s += 0.6f;
         if (s > bestScore) { bestScore = s; best = (CompanionBehavior)i; }
     }
     CompanionCommand c; c.chosen = best;
@@ -89,6 +91,11 @@ bool runCompanionSelfTest() {
       CompanionCommand c=brain.tick(ctx);
       bool ok=(c.chosen==CompanionBehavior::Revive)&&c.reviveAction;
       if (ok) pass++; else x3::logError("[companion-test] C5 revive FAILED"); }
+    // C6: a Hold suggestion makes Hold win over the default Follow.
+    { total++; CompanionContext ctx; ctx.selfPos={0,0,0}; ctx.playerPos={0,0,8};
+      ctx.suggestion.prefer=CompanionBehavior::Hold;
+      CompanionCommand c=brain.tick(ctx);
+      if (c.chosen==CompanionBehavior::Hold) pass++; else x3::logError("[companion-test] C6 suggestion FAILED"); }
     x3::logInfo("companion: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
     return pass == total;
 }
