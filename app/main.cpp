@@ -4373,7 +4373,7 @@ int main(int argc, char** argv) {
     // load this stays unbuilt and FP keeps working. See app/thirdperson.* + F5 below.
     x3::game::ThirdPersonView thirdPerson;
     thirdPerson.build(scene, *device, x3::game::riggedGlbRoot());
-    bool prevF5 = false;
+    bool prevF1 = false, prevF2 = false;
 
     // ---- PER-WEAPON FIRE SOUNDS (the user's "every gun sounds the same" fix) ----
     // Each WeaponDef carries a distinct sci-fi fireSfx (pack-relative WAV). Load each
@@ -5603,18 +5603,24 @@ int main(int argc, char** argv) {
         }
         prevF3 = f3Now;
 
-        // F5: toggle FIRST-PERSON <-> THIRD-PERSON view (rising edge). FP is the
-        // default (eye-cam + weapon viewmodel); 3P shows the animated Jake avatar +
-        // a follow camera behind/above the player. Polled even with the console open
-        // so it always works (it changes nothing the console types into). The avatar
-        // only exists when Jake loaded; otherwise the flag flips but FP keeps drawing.
-        bool f5Now = (glfwGetKey(window, GLFW_KEY_F5) == GLFW_PRESS);
-        if (f5Now && !prevF5 && !terrainWorld) {
-            const bool now3p = thirdPerson.toggle();
-            x3::logInfo(now3p ? "view: THIRD-PERSON (Jake avatar + follow cam; F5 to return)"
-                              : "view: FIRST-PERSON (eye-cam + weapon viewmodel)");
+        // F1 = FIRST-PERSON, F2 = THIRD-PERSON (rising edge; explicit per-mode keys,
+        // not a single toggle). FP is the default (eye-cam + weapon viewmodel); 3P
+        // shows the animated Jake avatar + a follow camera behind/above the player.
+        // Polled even with the console open (changes nothing the console types into).
+        // The avatar only exists when Jake loaded; otherwise the flag flips but FP
+        // keeps drawing. (Moved off F5 — F5 is the quicksave key, see doSave below.)
+        bool f1Now = (glfwGetKey(window, GLFW_KEY_F1) == GLFW_PRESS);
+        bool f2Now = (glfwGetKey(window, GLFW_KEY_F2) == GLFW_PRESS);
+        if (f1Now && !prevF1 && !terrainWorld && thirdPerson.thirdPerson()) {
+            thirdPerson.setThirdPerson(false);
+            x3::logInfo("view: FIRST-PERSON (eye-cam + weapon viewmodel)");
         }
-        prevF5 = f5Now;
+        if (f2Now && !prevF2 && !terrainWorld && !thirdPerson.thirdPerson()) {
+            thirdPerson.setThirdPerson(true);
+            x3::logInfo("view: THIRD-PERSON (Jake avatar + follow cam; F1 to return)");
+        }
+        prevF1 = f1Now;
+        prevF2 = f2Now;
 
         // ---- WEAPONS: number keys 1..N switch the selected weapon; R reloads.
         // Suppressed while a door-code keypad is active (digits go to the keypad).
