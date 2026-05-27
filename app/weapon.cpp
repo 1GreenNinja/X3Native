@@ -483,6 +483,35 @@ std::vector<WeaponDef> makeDefaultRoster() {
         r.push_back(w);
     }
 
+    // ---- 8) BFG — high-tier crafted energy cannon (design: "Railgun / BFG"). --
+    // The ultimate: a slow, huge ORANGE energy ORB with a large splash. Ammo-gated
+    // so it stays a finisher, not a delete button — ~300 direct + 150 splash @ 6 m
+    // kills a 400-HP boss in ~2 hits, but you carry only a few shots. Later-act /
+    // crafted per docs/EFLZ_DESIGN.md weapons table.
+    {
+        WeaponDef w;
+        w.name        = "bfg";
+        w.kind        = FireKind::Projectile;
+        w.automatic   = false;
+        w.damage      = 300;          // huge direct hit
+        w.fireRate    = 0.5f;         // very slow (1 shot / 2 s)
+        w.pellets     = 1;
+        w.spreadDeg   = 0.0f;
+        w.recoilDeg   = 6.0f;         // big shove
+        w.range       = 100.0f;
+        w.magSize     = 4;            // tiny mag
+        w.reserveAmmo = 12;           // rare ammo
+        w.reloadTime  = 4.0f;         // slow reload
+        w.projSpeed   = 25.0f;        // slow, visible orb
+        w.splashRadius= 6.0f;         // big AoE
+        w.splashDamage= 150;          // heavy splash
+        w.viewmodelGlb = "WeaponBFG.glb";   // orange energy cannon (Rodin art)
+        w.vmScale     = 0.16f;
+        w.muzzleFx    = "muzzle_plasma";
+        w.impactFx    = "impact_plasma";
+        r.push_back(w);
+    }
+
     return r;
 }
 
