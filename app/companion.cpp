@@ -7,10 +7,17 @@ namespace x3::game {
 
 static x3::phys::Vec3 sub(const x3::phys::Vec3&a,const x3::phys::Vec3&b){return {a.x-b.x,a.y-b.y,a.z-b.z};}
 static float len(const x3::phys::Vec3&v){return std::sqrt(v.x*v.x+v.y*v.y+v.z*v.z);}
+static const CompanionThreat* bestTarget(const CompanionContext& ctx, float range) {
+    const CompanionThreat* best=nullptr;
+    for (int i=0;i<ctx.threatCount;++i){ const CompanionThreat& t=ctx.threats[i];
+        if (!t.losToSelf || t.dist>range) continue; if (!best || t.dist<best->dist) best=&t; }
+    return best;
+}
 
 float CompanionBrain::score(CompanionBehavior b, const CompanionContext& ctx) const {
     switch (b) {
     case CompanionBehavior::Follow: { float d = len(sub(ctx.playerPos, ctx.selfPos)); return 0.2f + 0.05f * d; }
+    case CompanionBehavior::Engage: { const CompanionThreat* t=bestTarget(ctx,60.0f); if(!t) return 0.0f; return 1.0f + (60.0f - t->dist)*0.02f; }
     default: return 0.0f;
     }
 }
@@ -25,6 +32,12 @@ CompanionCommand CompanionBrain::tick(const CompanionContext& ctx) const {
     if (best == CompanionBehavior::Follow) {
         x3::phys::Vec3 to = sub(ctx.playerPos, ctx.selfPos);
         if (len(to) > 1.5f) c.moveFwd = 1.0f;
+    }
+    else if (best == CompanionBehavior::Engage) {
+        const CompanionThreat* t = bestTarget(ctx, 60.0f);
+        if (t) { x3::phys::Vec3 to=sub(t->pos,ctx.selfPos);
+            c.aimYaw=std::atan2(to.z,to.x); float horiz=std::sqrt(to.x*to.x+to.z*to.z);
+            c.aimPitch=std::atan2(to.y,horiz); c.fire = !ctx.inPlayerLineOfFire && ctx.ammoInMag>0; }
     }
     return c;
 }
@@ -41,6 +54,16 @@ bool runCompanionSelfTest() {
         CompanionCommand c = brain.tick(ctx);
         bool ok = (c.chosen == CompanionBehavior::Follow) && (c.moveFwd > 0.5f);
         if (ok) pass++; else x3::logError("[companion-test] C1 follow FAILED");
+    }
+    // C2: threat 10 m, LOS -> Engage + fire.
+    {
+        total++;
+        CompanionContext ctx; ctx.selfPos={0,0,0}; ctx.playerPos={0,0,-3};
+        CompanionThreat t; t.pos={0,0,10}; t.dist=10.0f; t.losToSelf=true; t.toPlayer=13.0f;
+        ctx.threats=&t; ctx.threatCount=1;
+        CompanionCommand c = brain.tick(ctx);
+        bool ok = (c.chosen == CompanionBehavior::Engage) && c.fire;
+        if (ok) pass++; else x3::logError("[companion-test] C2 engage FAILED");
     }
     x3::logInfo("companion: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
     return pass == total;
