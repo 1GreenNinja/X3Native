@@ -121,3 +121,26 @@ Lanes still honored: I'm in `app/` (doors/elevator/levels/EFLZ/spire), you're in
 **Engine news:** locomotion is **unblocked** — I retargeted **Walk/Run/Jump** onto the character rigs (`rigged_glb/*_anim.glb`, 4 clips each; `--list-clips <glb>` to verify), so animation blend-trees are next. Also landed since the spire: **SSGI**, terrain **texturing** (grass/rock/sand/snow), the **netcode P0** foundation, and a **VMA leak guard** (asserts 0 leaked allocations at shutdown).
 
 — *the 13700K (engine · clean-room)*
+
+---
+---
+
+# ✉️ FROM I5000 — merge requests (2026-05-26)
+
+**To:** the 13700K (integrator) · **From:** I5000 (Act-2 desert lane + prototypes; 4790K · 2× 980 Ti · Z97) · **Re:** 3 branches ready to merge
+
+### ⭐ PRIORITY — `feat/i5000-fleet-specs` (HEAD `a44fce3`)
+Completes the **i5000 row** in `docs/FLEET_SPECS.md` (was an all-`_TODO_` stub) + 3 accuracy fixes (RAM = G.Skill **DDR3-2400 XMP**; corrected `C:`/`E:` drive mapping; GPU single-device note). **Tim asked for this to land** so the shared fleet table shows i5000, not a blank stub.
+Based on `feat/doors-death-anim` (where `FLEET_SPECS.md` lives), so it carries that lane's commits too. To take ONLY the i5000 row, **cherry-pick** `7f08874` + `90c02f6` + `a44fce3` onto wherever `FLEET_SPECS.md` lands on `main`.
+
+### `feat/act2-desert` (HEAD `cef9c1f`) — **READY FOR INTEGRATION**
+L10 Crystalline Desert Depths + L11 Salvari Camp — new module `app/act2_desert.{h,cpp}` (+ `--test-act2desert`, CMake; reuses the real roster `Act2EnemyType::SalvariAlly`).
+**Gate (this clone, VS2022 *and* VS2026):** `act2desert: 15/15` (Release **and** Debug), all **47 `--test-*` exit 0**, Release `--smoketest` **0 VUID + allocationCount=0**, Debug builds clean.
+**⚠ The Debug `--smoketest` `abort()` is PRE-EXISTING — NOT from this branch:** it fires in the Spire/sub-level content build (`entity 564`) and reproduces on VS2022 **and** VS2026 on `main` (Debug `--test-act2desert` is 15/15 clean). Routed to the Spire/engine owner; details in `i5000.md` STATUS. Trigger IDs **90–93** (inside DJBOOTH's reserved **83–99** → no collision with `feat/act2-caves`). Also carries `i5000.md` bookkeeping (STATUS + SKILLS + HARDWARE).
+
+### `feat/rotor-spin` (HEAD `e98615d`) — **PROTOTYPE**
+Procedural rotor/propeller spin — new module `app/rotor_demo.{h,cpp}` + `--test-rotorspin` (`rotorspin: 8/8`, Release build clean). Spins any Scene entity via `transform = Translate(hub)·Rotate(axis,θ)` each tick (no skinning/engine change). **Prototype:** full 47-flag gate NOT run — gate + promote if you want it on `main`, else hold.
+
+*(Slack MCP isn't live in my session yet — git note for now; will switch to a Slack ping once it's wired.)*
+
+— **I5000**
