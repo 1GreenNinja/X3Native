@@ -5856,7 +5856,7 @@ int main(int argc, char** argv) {
                     const bool kC    = keyDown(GLFW_KEY_C);
                     player.setStance(kCtrl ? x3::game::Player::Stance::Prone
                                    : kC    ? x3::game::Player::Stance::Crouch
-                                           : x3::game::Player::Stance::Stand);
+                                           : x3::game::Player::Stance::Stand, *physics);
                 }
 
                 player.update(in, x3::net::kSimDt, *physics);

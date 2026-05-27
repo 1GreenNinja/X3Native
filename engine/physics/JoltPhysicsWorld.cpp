@@ -52,6 +52,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cfloat>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -597,6 +598,38 @@ public:
         auto it = m_chars.find(id.id);
         if (it == m_chars.end()) return false;
         return it->second.ch->GetGroundState() == JPH::CharacterVirtual::EGroundState::OnGround;
+    }
+
+    bool setCharacterHeight(BodyId id, float height) override {
+        auto it = m_chars.find(id.id);
+        if (it == m_chars.end()) return false;
+        CharData& cd = it->second;
+        const float radius = cd.radius;
+        if (std::fabs(height - cd.height) < 1e-3f) return true;   // already that height
+        // Build the new capsule shape exactly like createCharacter: bottom at the feet
+        // (body origin), so the capsule grows/shrinks UPWARD and the feet stay anchored.
+        float cyl = std::max(0.01f, height - 2.0f * radius);
+        float halfCyl = cyl * 0.5f;
+        JPH::Ref<JPH::CapsuleShape> caps = new JPH::CapsuleShape(halfCyl, radius);
+        JPH::RotatedTranslatedShapeSettings rts(
+            JPH::Vec3(0, halfCyl + radius, 0), JPH::Quat::sIdentity(), caps);
+        rts.SetEmbedded();
+        auto shapeRes = rts.Create();
+        if (shapeRes.HasError()) return false;
+
+        // SHRINKING (crouch/prone) is always allowed — the smaller capsule never adds
+        // penetration. GROWING (un-crouch) must NOT clip into a ceiling: SetShape returns
+        // false if the taller shape would penetrate surrounding geometry beyond the
+        // tolerance, leaving the OLD shape in place. The caller then stays crouched.
+        const bool growing = height > cd.height;
+        const float maxPen = growing ? 0.02f : FLT_MAX;
+        JPH::DefaultBroadPhaseLayerFilter bpf =
+            m_system->GetDefaultBroadPhaseLayerFilter(ObjLayers::Player);
+        JPH::DefaultObjectLayerFilter of =
+            m_system->GetDefaultLayerFilter(ObjLayers::Player);
+        bool ok = cd.ch->SetShape(shapeRes.Get(), maxPen, bpf, of, {}, {}, *m_temp);
+        if (ok) cd.height = height;
+        return ok;
     }
 
     RayHit rayCast(Vec3 origin, Vec3 dir, float maxDist, Layer mask) override {

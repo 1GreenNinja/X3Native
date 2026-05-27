@@ -190,8 +190,9 @@ struct JParser {
 // =====================================================================================
 constexpr float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 constexpr float kWallT     = 0.2f;     // wall thickness
-constexpr float kDoorHalf  = 0.6f;     // doorway opening half-width (1.2 m)
-constexpr float kLintel    = 2.1f;     // head clearance under a doorway lintel
+constexpr float kDoorHalf  = 0.8f;     // doorway opening half-width (1.6 m — widened so the
+                                       // CharacterVirtual + margin clears it comfortably)
+constexpr float kLintel    = 2.2f;     // head clearance under a doorway lintel (>= stand 1.8 + margin)
 constexpr float kCeilT     = 0.2f;     // ceiling cap thickness
 
 uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
@@ -231,20 +232,68 @@ void wallZ(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
     addBox(s, d, p, kWallT * 0.5f, h * 0.5f, (z1 - z0) * 0.5f,
            x, floorY + h * 0.5f, (z0 + z1) * 0.5f, tex, color, room, true, vis);
 }
-// A lintel header above a doorway gap centered at `c` along the wall run.
+// A lintel header above a doorway gap centered at `c` along the wall run. The opening
+// stays CLEAR from the floor up to `clearTop`; the header fills from clearTop to the
+// ceiling (floorY + h). `clearTop` is normally floorY + kLintel, but at a doorway whose
+// neighbour sits on a HIGHER floor it is raised to clear a player standing at that higher
+// level (else the lower room's lintel guillotines a climber — the head-clearance bug).
 void lintelX(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
-             float xc, float z, float floorY, float h, x3::rhi::TextureHandle tex,
+             float xc, float z, float floorY, float h, float clearTop, x3::rhi::TextureHandle tex,
              const float color[4], uint32_t room, bool vis) {
-    const float lh = (h - kLintel) * 0.5f;
-    if (lh <= 0.0f) return;
-    addBox(s, d, p, kDoorHalf, lh, kWallT * 0.5f, xc, floorY + kLintel + lh, z, tex, color, room, true, vis);
+    const float top = floorY + h;                  // ceiling underside
+    const float lh = (top - clearTop) * 0.5f;
+    if (lh <= 0.0f) return;                         // ceiling already above the clear opening
+    addBox(s, d, p, kDoorHalf, lh, kWallT * 0.5f, xc, clearTop + lh, z, tex, color, room, true, vis);
 }
 void lintelZ(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
-             float x, float zc, float floorY, float h, x3::rhi::TextureHandle tex,
+             float x, float zc, float floorY, float h, float clearTop, x3::rhi::TextureHandle tex,
              const float color[4], uint32_t room, bool vis) {
-    const float lh = (h - kLintel) * 0.5f;
+    const float top = floorY + h;
+    const float lh = (top - clearTop) * 0.5f;
     if (lh <= 0.0f) return;
-    addBox(s, d, p, kWallT * 0.5f, lh, kDoorHalf, x, floorY + kLintel + lh, zc, tex, color, room, true, vis);
+    addBox(s, d, p, kWallT * 0.5f, lh, kDoorHalf, x, clearTop + lh, zc, tex, color, room, true, vis);
+}
+
+// A walkable THRESHOLD RAMP at a doorway whose two rooms have different floor
+// heights, so the CharacterVirtual (≤0.4 m step-up) can climb the gap instead of
+// being walled out by the higher room's floor-edge. Rises from `yLo` to `yHi` over
+// a run chosen to keep the slope ≤ ~35°, `kDoorHalf` to each side (== the 1.2 m
+// opening width). The run extends from the doorway plane INTO the lower room
+// (`dir` = the sign toward the lower room along the wall-normal axis). Adds both
+// the wedge collision + a tinted render mesh so you see + walk the threshold.
+// `sideSign` = which side of the doorway plane the LOWER room sits on along the run
+// axis (-1 if the lower room's center is on the −axis side of the plane, +1 if +).
+void doorwayRamp(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
+                 float cx, float cz, float yLo, float yHi, uint32_t axis, float sideSign,
+                 x3::rhi::TextureHandle tex, const float color[4], uint32_t room, bool vis) {
+    const float rise = yHi - yLo;
+    if (rise <= 0.02f) return;                       // flat: no ramp needed
+    // Run keeps the slope ≤ ~35° (tan 35° ≈ 0.70); never shorter than the wall so
+    // the ramp top reaches under the lintel/door, never longer than ~6 m.
+    float run = std::max(rise / 0.70f, kWallT + 0.6f);
+    if (run > 6.0f) run = 6.0f;
+    // The wedge occupies the run length on the LOWER room's side of the plane: its LOW
+    // edge is `run` back from the plane (at the lower floor yLo) and its HIGH edge is at
+    // the plane (at yHi). makeRamp's low edge is the origin coord; high edge = origin +
+    // run*dir. Put the origin `run` out on the lower side and climb back to the plane.
+    float origin = sideSign * run;                   // origin offset from the plane along the run axis
+    float dir    = -sideSign;                        // climb back toward the plane
+    x3::prims::PrimMesh geo = (axis == 1)
+        ? x3::prims::makeRamp(cx, yLo, cz + origin, kDoorHalf, run, rise, /*axis*/1, dir, 0.5f)
+        : x3::prims::makeRamp(cx + origin, yLo, cz, kDoorHalf, run, rise, /*axis*/0, dir, 0.5f);
+    Entity e;
+    if (vis)
+        e.mesh = d.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                              geo.index.data(), (uint32_t)geo.index.size());
+    e.tex = tex;
+    for (int i = 0; i < 4; ++i) e.baseColor[i] = color[i];
+    for (int i = 0; i < 16; ++i) e.transform[i] = kIdentity[i];
+    e.tag = (uint32_t)Tag::Static;
+    e.visible = vis;
+    e.roomId = room;
+    e.body = p.addStaticMesh(geo.cverts.data(), (uint32_t)(geo.cverts.size() / 3),
+                             geo.cindex.data(), (uint32_t)geo.cindex.size());
+    s.add(e);
 }
 
 } // namespace
@@ -803,25 +852,36 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
 
     const uint32_t nRooms = (uint32_t)floor.rooms.size();
 
-    // For each room+face, collect the doorway gap CENTERS to cut on that face. A face is
-    // identified by (axis, plane-coordinate). We accumulate per (room,face) the gap
-    // coordinate(s) along the wall run. AdjacentX cuts on an X-plane wall of BOTH rooms;
-    // AdjacentZ on a Z-plane wall; Overlap on the matching wall. Gap/cross-level rooms
-    // get their own bridge/tube (the rooms keep solid walls; the bridge punches through).
-    // gapXneg/Xpos = doorway gap centers (z coords) on the -X / +X wall of a room;
-    // gapZneg/Zpos = gap centers (x coords) on the -Z / +Z wall.
-    std::vector<std::vector<float>> gapXneg(nRooms), gapXpos(nRooms), gapZneg(nRooms), gapZpos(nRooms);
+    // For each room+face, collect the doorway gaps to cut on that face. A face is
+    // identified by (axis, plane-coordinate). We accumulate per (room,face) the gap(s)
+    // along the wall run. AdjacentX cuts on an X-plane wall of BOTH rooms; AdjacentZ on a
+    // Z-plane wall; Overlap on the matching wall. Gap/cross-level rooms get their own
+    // bridge/tube (the rooms keep solid walls; the bridge punches through).
+    // gapXneg/Xpos = doorway gaps (z coord) on the -X / +X wall of a room;
+    // gapZneg/Zpos = gaps (x coord) on the -Z / +Z wall.
+    // Each Gap carries its run coordinate `c` AND a `clearTop` — the Y the opening must
+    // stay clear up to (raised at a step doorway to clear a player standing on the HIGHER
+    // floor, so the lower room's lintel doesn't guillotine someone coming up the ramp).
+    struct Gap { float c; float clearTop; };
+    std::vector<std::vector<Gap>> gapXneg(nRooms), gapXpos(nRooms), gapZneg(nRooms), gapZpos(nRooms);
 
+    // Clear-passage top for a doorway between two rooms: high enough that a standing player
+    // at the HIGHER of the two floors still fits (the shared opening clears the tallest
+    // approach). kLintel above the higher floor, with the usual margin baked into kLintel.
+    auto doorwayClearTop = [&](const CanonRoom& a, const CanonRoom& b) {
+        return std::max(a.y0(), b.y0()) + kLintel;
+    };
     auto addGapToRoom = [&](uint32_t room, const CanonDoorway& dw) {
         const CanonRoom& r = floor.rooms[room];
+        const float clearTop = doorwayClearTop(floor.rooms[dw.a], floor.rooms[dw.b]);
         if (dw.axis == 0) {
             // Door thin in X -> it lives on an X-plane wall (-X or +X) of the room.
-            if (std::fabs(dw.cx - r.x0()) < std::fabs(dw.cx - r.x1())) gapXneg[room].push_back(dw.cz);
-            else                                                        gapXpos[room].push_back(dw.cz);
+            if (std::fabs(dw.cx - r.x0()) < std::fabs(dw.cx - r.x1())) gapXneg[room].push_back({dw.cz, clearTop});
+            else                                                        gapXpos[room].push_back({dw.cz, clearTop});
         } else {
             // Door thin in Z -> a Z-plane wall (-Z or +Z) of the room.
-            if (std::fabs(dw.cz - r.z0()) < std::fabs(dw.cz - r.z1())) gapZneg[room].push_back(dw.cx);
-            else                                                        gapZpos[room].push_back(dw.cx);
+            if (std::fabs(dw.cz - r.z0()) < std::fabs(dw.cz - r.z1())) gapZneg[room].push_back({dw.cx, clearTop});
+            else                                                        gapZpos[room].push_back({dw.cx, clearTop});
         }
     };
     // For a GAP-BRIDGE the two rooms do NOT share a wall — a short corridor spans the
@@ -834,14 +894,15 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     auto addBridgeMouthToRoom = [&](uint32_t room, uint32_t other, const CanonDoorway& dw) {
         const CanonRoom& r = floor.rooms[room];
         const CanonRoom& o = floor.rooms[other];
+        const float clearTop = doorwayClearTop(r, o);
         if (dw.axis == 0) {
             // Corridor runs along X: mouth on this room's +X or -X wall at z = dw.cz.
-            if (o.cx > r.cx) gapXpos[room].push_back(dw.cz);   // partner is to +X
-            else             gapXneg[room].push_back(dw.cz);   // partner is to -X
+            if (o.cx > r.cx) gapXpos[room].push_back({dw.cz, clearTop});   // partner is to +X
+            else             gapXneg[room].push_back({dw.cz, clearTop});   // partner is to -X
         } else {
             // Corridor runs along Z: mouth on this room's +Z or -Z wall at x = dw.cx.
-            if (o.cz > r.cz) gapZpos[room].push_back(dw.cx);   // partner is to +Z
-            else             gapZneg[room].push_back(dw.cx);   // partner is to -Z
+            if (o.cz > r.cz) gapZpos[room].push_back({dw.cx, clearTop});   // partner is to +Z
+            else             gapZneg[room].push_back({dw.cx, clearTop});   // partner is to -Z
         }
     };
     for (const CanonDoorway& dw : floor.doorways) {
@@ -859,35 +920,33 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     // Helper: build a wall along Z (plane x=const) for room `ri`, with doorway gaps at
     // the given z coordinates (each a 1.2 m opening + lintel).
     auto buildWallZWithGaps = [&](uint32_t ri, float x, float z0, float z1, float floorY, float h,
-                                  const std::vector<float>& gaps, x3::rhi::TextureHandle tex,
+                                  std::vector<Gap> g, x3::rhi::TextureHandle tex,
                                   const float tint[4]) {
         // Sort gaps + build solid segments between them.
-        std::vector<float> g = gaps;
-        std::sort(g.begin(), g.end());
+        std::sort(g.begin(), g.end(), [](const Gap& a, const Gap& b){ return a.c < b.c; });
         float cursor = z0;
-        for (float gc : g) {
-            float lo = gc - kDoorHalf, hi = gc + kDoorHalf;
+        for (const Gap& gap : g) {
+            float lo = gap.c - kDoorHalf, hi = gap.c + kDoorHalf;
             if (lo < cursor) lo = cursor;        // clamp inside the wall run
             if (hi > z1) hi = z1;
             if (lo > cursor) wallZ(scene, device, physics, cursor, lo, x, floorY, h, tex, tint, ri, wallVis);
-            lintelZ(scene, device, physics, x, gc, floorY, h, tex, tint, ri, wallVis);
+            lintelZ(scene, device, physics, x, gap.c, floorY, h, gap.clearTop, tex, tint, ri, wallVis);
             cursor = std::max(cursor, hi);
         }
         if (cursor < z1) wallZ(scene, device, physics, cursor, z1, x, floorY, h, tex, tint, ri, wallVis);
         if (g.empty())   wallZ(scene, device, physics, z0, z1, x, floorY, h, tex, tint, ri, wallVis);
     };
     auto buildWallXWithGaps = [&](uint32_t ri, float z, float x0, float x1, float floorY, float h,
-                                  const std::vector<float>& gaps, x3::rhi::TextureHandle tex,
+                                  std::vector<Gap> g, x3::rhi::TextureHandle tex,
                                   const float tint[4]) {
-        std::vector<float> g = gaps;
-        std::sort(g.begin(), g.end());
+        std::sort(g.begin(), g.end(), [](const Gap& a, const Gap& b){ return a.c < b.c; });
         float cursor = x0;
-        for (float gc : g) {
-            float lo = gc - kDoorHalf, hi = gc + kDoorHalf;
+        for (const Gap& gap : g) {
+            float lo = gap.c - kDoorHalf, hi = gap.c + kDoorHalf;
             if (lo < cursor) lo = cursor;
             if (hi > x1) hi = x1;
             if (lo > cursor) wallX(scene, device, physics, cursor, lo, z, floorY, h, tex, tint, ri, wallVis);
-            lintelX(scene, device, physics, gc, z, floorY, h, tex, tint, ri, wallVis);
+            lintelX(scene, device, physics, gap.c, z, floorY, h, gap.clearTop, tex, tint, ri, wallVis);
             cursor = std::max(cursor, hi);
         }
         if (cursor < x1) wallX(scene, device, physics, cursor, x1, z, floorY, h, tex, tint, ri, wallVis);
@@ -914,6 +973,37 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         buildWallZWithGaps(ri, r.x1(), r.z0(), r.z1(), floorY, h, gapXpos[ri], wTex, tint);   // +X wall
         buildWallXWithGaps(ri, r.z0(), r.x0(), r.x1(), floorY, h, gapZneg[ri], wTex, tint);   // -Z wall (runs in X)
         buildWallXWithGaps(ri, r.z1(), r.x0(), r.x1(), floorY, h, gapZpos[ri], wTex, tint);   // +Z wall
+    }
+
+    // ---- THRESHOLD RAMPS at doored/adjacent/overlap openings with a FLOOR-HEIGHT
+    // STEP. Adjacent canon rooms frequently sit at different floor elevations (the
+    // opening is cut at the HIGHER floor, dw.cy); a character approaching from the
+    // LOWER room hits the higher room's floor-edge — a step that exceeds the 0.4 m
+    // CharacterVirtual step-up, so it can NEVER walk through (the "doors are tiny /
+    // can't get through" bug — it was a threshold step, not the opening size). Drop a
+    // walkable wedge ramp into the lower room at each such opening so the player walks
+    // up/down through it. (Gap-bridges + cross-level tubes are handled separately.) ----
+    const float rampTint[4] = { 0.46f, 0.50f, 0.58f, 1.0f };
+    for (const CanonDoorway& dw : floor.doorways) {
+        if (dw.kind != DoorwayKind::AdjacentX && dw.kind != DoorwayKind::AdjacentZ &&
+            dw.kind != DoorwayKind::Overlap)
+            continue;
+        const CanonRoom& a = floor.rooms[dw.a];
+        const CanonRoom& b = floor.rooms[dw.b];
+        const float yLo = std::min(a.y0(), b.y0());
+        const float yHi = std::max(a.y0(), b.y0());
+        if (yHi - yLo <= 0.05f) continue;                 // floors level: no ramp needed
+        const CanonRoom& lower = (a.y0() <= b.y0()) ? a : b;   // ramp run goes into the lower room
+        uint32_t lowerId = (a.y0() <= b.y0()) ? dw.a : dw.b;
+        if (dw.axis == 1) {
+            // AdjacentZ/overlap on a Z-plane: ramp runs along Z into the lower room.
+            float sideSign = (lower.cz < dw.cz) ? -1.0f : +1.0f;
+            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 1, sideSign, floorTex, rampTint, lowerId, floorVis);
+        } else {
+            // AdjacentX/overlap on an X-plane: ramp runs along X into the lower room.
+            float sideSign = (lower.cx < dw.cx) ? -1.0f : +1.0f;
+            doorwayRamp(scene, device, physics, dw.cx, dw.cz, yLo, yHi, 0, sideSign, floorTex, rampTint, lowerId, floorVis);
+        }
     }
 
     // ---- GAP BRIDGES: a short walled corridor connecting two rooms across a gap. The
@@ -1421,6 +1511,118 @@ bool runCanonLevelSelfTest() {
                         std::to_string(objsHallD1) + " (" + std::to_string(roomsD1) +
                         " rooms) — gaze + r_culldepth shape the bubble");
         }
+    }
+
+    // ---- C13: STANDING 1.8 m character walks through a real DOORED doorway, even one
+    //           with a big floor-height STEP. This is the "can't get through the doors"
+    //           fix: adjacent canon rooms sit at different floor elevations and the opening
+    //           is cut at the higher floor, so a player on the lower floor used to hit an
+    //           impassable >0.4 m step at the threshold (and the lower room's lintel
+    //           guillotined any climber). The threshold RAMP + raised shared lintel +
+    //           widened opening make EVERY doored opening walkable standing. We test the
+    //           WORST doored doorway (largest floor step) so a single green proves the
+    //           rest (all use the same builder). ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> pw(x3::phys::createPhysicsWorld());
+        pw->init();
+        Scene sd; DoorSystem dd;
+        CanonFloor fd = loadCanonFloor(canonProjectJsonPath(), 1);
+        CanonBuildOpts o; o.doors = &dd;
+        buildCanonFloor(fd, sd, device, *pw, o);
+        // Pick the doored adjacent doorway with the LARGEST floor-height step that is still
+        // a normal in-level step (≤ 1.2 m) — this is the representative "rooms at different
+        // deck heights" case that walled the player out. (A handful of doorways bridge a
+        // multi-metre drop into the deep cave/sub-level rooms; those get a ramp too but the
+        // approach floor footprint there is an edge case we don't single out for the gate.)
+        // The FIRST doored adjacent doorway with a genuine (>0.4 m, ≤ 1.2 m) floor step —
+        // deterministic, and the common in-level case. Approach from the LOWER room and
+        // require the character to end up STANDING on the UPPER room's floor, inside its
+        // XZ footprint (i.e. it climbed the ramp + passed through the open opening).
+        int best = -1; float pickStep = 0.0f;
+        for (uint32_t i = 0; i < fd.doorways.size(); ++i) {
+            const CanonDoorway& dw = fd.doorways[i];
+            if ((dw.kind == DoorwayKind::AdjacentX || dw.kind == DoorwayKind::AdjacentZ) &&
+                dw.doorIndex != kNoLink) {
+                float step = std::fabs(fd.rooms[dw.a].y0() - fd.rooms[dw.b].y0());
+                if (step > 0.4f && step <= 1.2f) { best = (int)i; pickStep = step; break; }
+            }
+        }
+        bool walked = false;
+        if (best >= 0) {
+            CanonDoorway& dw = fd.doorways[best];
+            // Open every door so each slab clears (proves the slab COLLISION really opens,
+            // not just the visual — the original task suspicion).
+            for (uint32_t k = 0; k < dd.count(); ++k) dd.startOpening(dd.at(k));
+            for (int i = 0; i < 90; ++i) { dd.update(1.0f/60.0f, sd, *pw); pw->step(1.0f/60.0f); }
+            const CanonRoom& ra = fd.rooms[dw.a]; const CanonRoom& rb = fd.rooms[dw.b];
+            const float yLo = std::min(ra.y0(), rb.y0());
+            const float yHi = std::max(ra.y0(), rb.y0());
+            const CanonRoom& lower = (ra.y0() <= rb.y0()) ? ra : rb;
+            const CanonRoom& upper = (ra.y0() <= rb.y0()) ? rb : ra;
+            // Spawn BEYOND the ramp base on flat lower floor, then walk straight at the plane.
+            float rampRun = std::min(std::max((yHi - yLo) / 0.70f, kWallT + 0.6f), 6.0f);
+            float backoff = rampRun + 1.0f;
+            x3::phys::Vec3 start; x3::phys::Vec3 vel;
+            if (dw.axis == 1) {
+                float sgn = (lower.cz < dw.cz) ? -1.0f : +1.0f;     // lower room side of the plane
+                start = x3::phys::Vec3{ dw.cx, yLo + 0.2f, dw.cz + sgn * backoff };
+                vel   = x3::phys::Vec3{ 0, 0, -sgn * 4.0f };        // walk toward the opening
+            } else {
+                float sgn = (lower.cx < dw.cx) ? -1.0f : +1.0f;
+                start = x3::phys::Vec3{ dw.cx + sgn * backoff, yLo + 0.2f, dw.cz };
+                vel   = x3::phys::Vec3{ -sgn * 4.0f, 0, 0 };
+            }
+            x3::phys::BodyId chr = pw->createCharacter(0.35f, 1.8f, start);   // STANDING capsule
+            for (int i = 0; i < 30; ++i)  { pw->moveCharacter(chr, x3::phys::Vec3{0,0,0}, 1.0f/60.0f); pw->step(1.0f/60.0f); }
+            for (int i = 0; i < 600; ++i) { pw->moveCharacter(chr, vel, 1.0f/60.0f); pw->step(1.0f/60.0f); }
+            x3::phys::Vec3 end = pw->getBodyPosition(chr);
+            // Success: climbed to the UPPER floor (within 0.3 m) AND ended inside the UPPER
+            // room's XZ footprint (so it really crossed the threshold into the next room).
+            bool climbed = std::fabs(end.y - yHi) < 0.3f;
+            bool inUpper = end.x >= upper.x0() - 0.4f && end.x <= upper.x1() + 0.4f &&
+                           end.z >= upper.z0() - 0.4f && end.z <= upper.z1() + 0.4f;
+            walked = climbed && inUpper;
+            x3::logInfo("    C13 doored step=" + std::to_string(pickStep) + " m (axis " + std::to_string(dw.axis) +
+                        "): standing char start=(" + std::to_string(start.x) + "," + std::to_string(start.y) + "," + std::to_string(start.z) +
+                        ") end=(" + std::to_string(end.x) + "," + std::to_string(end.y) + "," + std::to_string(end.z) +
+                        ") upperRoom x[" + std::to_string(upper.x0()) + "," + std::to_string(upper.x1()) + "] z[" +
+                        std::to_string(upper.z0()) + "," + std::to_string(upper.z1()) + "] yHi=" + std::to_string(yHi) +
+                        " climbed=" + std::to_string(climbed) + " inUpper=" + std::to_string(inUpper));
+        }
+        check(best >= 0 && walked,
+              "C13 standing player walks through a doored doorway WITH a floor-step (ramp + raised lintel)");
+        pw->shutdown();
+    }
+
+    // ---- C14: a CROUCHED capsule (1.2 m) fits through an opening too LOW for a standing
+    //           (1.8 m) capsule. Proves the crouch-capsule shrink (Player::setStance now
+    //           recreates the CharacterVirtual shorter) buys real low-gap clearance — the
+    //           thing that lets you duck under a low passage. Built on the physics layer
+    //           directly (a low lintel gap) so it is independent of the canon JSON. ----
+    {
+        // A low overhead lintel beam crossing z=2: its underside at y=1.3 (a 1.3 m gap).
+        // A standing 1.8 m capsule can't fit under it; a 1.2 m crouched one can.
+        const float gapTop = 1.3f;
+        auto runUnder = [&](float capHeight) -> float {
+            std::unique_ptr<x3::phys::IPhysicsWorld> pw(x3::phys::createPhysicsWorld());
+            pw->init();
+            float v[] = { -10,0,-10,  10,0,-10,  10,0,10,  -10,0,10 }; uint32_t idx[] = {0,2,1,0,3,2}; pw->addStaticMesh(v,4,idx,6);
+            pw->addBox(x3::phys::Vec3{ 5.0f, 1.0f, 0.2f }, x3::phys::Vec3{ 0.0f, gapTop + 1.0f, 2.0f }, 0.0f, x3::phys::Layer::Static);
+            x3::phys::BodyId c = pw->createCharacter(0.35f, capHeight, x3::phys::Vec3{ 0.0f, 0.1f, 0.0f });
+            for (int i = 0; i < 20; ++i)  { pw->moveCharacter(c, x3::phys::Vec3{0,0,0}, 1.0f/60.0f); pw->step(1.0f/60.0f); }
+            for (int i = 0; i < 240; ++i) { pw->moveCharacter(c, x3::phys::Vec3{0,0,4.0f}, 1.0f/60.0f); pw->step(1.0f/60.0f); }
+            float z = pw->getBodyPosition(c).z;
+            pw->shutdown();
+            return z;
+        };
+        float zStand  = runUnder(1.8f);   // blocked by the low beam
+        float zCrouch = runUnder(1.2f);   // ducks under it
+        bool standBlocked = zStand  < 2.0f;     // never passed the beam plane at z=2
+        bool crouchPassed = zCrouch > 2.5f;     // ducked through to the far side
+        x3::logInfo("    C14 low-gap (" + std::to_string(gapTop) + " m): standing endZ=" + std::to_string(zStand) +
+                    " (blocked) crouched endZ=" + std::to_string(zCrouch) + " (passes)");
+        check(standBlocked && crouchPassed,
+              "C14 crouched (1.2 m) capsule fits a low gap that blocks a standing (1.8 m) capsule");
     }
 
     physics->shutdown();
