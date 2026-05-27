@@ -69,6 +69,22 @@ public:
     // Stop the music track (if any).
     virtual void stopMusic() = 0;
 
+    // ---- Live volume controls (Settings menu) -----------------------------
+    // Set the music bed's volume in [0,1]. Applied immediately to the playing
+    // music voice (and remembered for any music started later). Silent/no-music
+    // -> harmlessly stored. setMusicEnabled(true) resumes at THIS volume.
+    virtual void setMusicVolume(float vol) = 0;
+
+    // Enable/disable the music bed live. false stops/silences the current bed
+    // (the track + its loop position are forgotten); true (re)starts the last
+    // music track at the current music volume. No-op if no track was ever set.
+    virtual void setMusicEnabled(bool enabled) = 0;
+
+    // Master SFX volume in [0,1]: scales ALL playSound2D/playSound3D output. The
+    // scale is applied INTERNALLY in one place (every voice's volume is multiplied
+    // by this), so call sites need not change. Applied to NEW voices going forward.
+    virtual void setMasterSfxVolume(float vol) = 0;
+
     // Per-frame tick: advances any internal bookkeeping (voice cleanup). Cheap.
     virtual void update(float dt) = 0;
 };

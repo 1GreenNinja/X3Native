@@ -215,10 +215,11 @@ void drawHoloReadout(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
     }
 }
 
-// ---- Settings persistence (window size) in %LOCALAPPDATA%\x3native_settings.cfg ----
+// ---- Settings persistence in %LOCALAPPDATA%\x3native_settings.cfg ----
 // readWindowSize() overrides winW/winH at startup (returns true if a saved size exists,
-// so the host skips maximize-by-default); writeWindowSize() is the menu "SET AS DEFAULT"
-// action. Plain key=value text; a missing/garbled file is simply ignored.
+// so the host skips maximize-by-default); readAudioSettings() seeds the music/SFX
+// state; writeSettings() (the menu "SET AS DEFAULT" action) persists window size +
+// audio together. Plain key=value text; a missing/garbled file/key is simply ignored.
 static std::string x3SettingsPath() {
     const char* base = std::getenv("LOCALAPPDATA");
     return std::string(base && *base ? base : ".") + "\\x3native_settings.cfg";
@@ -237,9 +238,31 @@ static bool readWindowSize(uint32_t& w, uint32_t& h) {
     }
     return found;
 }
-static void writeWindowSize(uint32_t w, uint32_t h) {
+// Audio settings live in the same key=value cfg. Each is optional; defaults are
+// kept when a key is missing/garbled. musicVol/sfxVol are stored as plain floats.
+static void readAudioSettings(bool& musicOn, float& musicVol, float& sfxVol) {
+    std::ifstream f(x3SettingsPath());
+    if (!f) return;
+    std::string line;
+    while (std::getline(f, line)) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string k = line.substr(0, eq);
+        const char* vs = line.c_str() + eq + 1;
+        if      (k == "musicOn")  musicOn  = (std::strtol(vs, nullptr, 10) != 0);
+        else if (k == "musicVol") musicVol = (float)std::strtod(vs, nullptr);
+        else if (k == "sfxVol")   sfxVol   = (float)std::strtod(vs, nullptr);
+    }
+    auto clamp01 = [](float& v) { if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f; };
+    clamp01(musicVol); clamp01(sfxVol);
+}
+// Write ALL persisted settings (window size + audio) in one shot, so SET DEFAULT
+// captures the live audio sliders too. Reads the current audio model from the host.
+static void writeSettings(uint32_t w, uint32_t h, bool musicOn, float musicVol, float sfxVol) {
     std::ofstream f(x3SettingsPath());
-    if (f) f << "width=" << w << "\nheight=" << h << "\n";
+    if (f) f << "width=" << w << "\nheight=" << h << "\n"
+             << "musicOn=" << (musicOn ? 1 : 0) << "\n"
+             << "musicVol=" << musicVol << "\nsfxVol=" << sfxVol << "\n";
 }
 
 // Bundle passed to GLFW via the window user-pointer so the char/key callbacks
@@ -5377,8 +5400,19 @@ int main(int argc, char** argv) {
     float prevCamX = 0.0f, prevCamZ = 0.0f; // for horizontal-speed footsteps
     bool  prevCamValid = false;
 
-    // ---- M9: start the low-volume looping ambient/music bed at launch ----
-    audio->playMusic(kMusicPath, /*loop*/true, /*vol*/0.25f);
+    // ---- Audio settings (persisted): seed the live music/SFX state from the cfg
+    // (defaults: music on, music vol 0.25 to match the launch bed, SFX 1.0), apply
+    // it to the audio system, THEN start the bed so it honors the saved volume/on. ----
+    bool  s_musicOn  = true;
+    float s_musicVol = 0.25f;
+    float s_sfxVol   = 1.0f;
+    readAudioSettings(s_musicOn, s_musicVol, s_sfxVol);
+    audio->setMasterSfxVolume(s_sfxVol);
+    audio->setMusicVolume(s_musicVol);
+    audio->setMusicEnabled(s_musicOn);
+    // M9: start the low-volume looping ambient/music bed at launch. playMusic remembers
+    // the track + current music volume; when musicOn is false the bed stays silent.
+    audio->playMusic(kMusicPath, /*loop*/true, s_musicVol);
 
     // ---- Optional debug noclip/fly camera (toggle with F). Not required by S3,
     // handy for inspecting the level. Off by default — gameplay is the walker.
@@ -5412,6 +5446,8 @@ int main(int argc, char** argv) {
         sm.bloom = true; sm.ssao = true; sm.ssgi = true; sm.shadows = true;
         sm.vsync = desc.vsync; sm.width = W; sm.height = H;
         sm.rtao = (console->getInt("r_rtao") != 0);   // RT AO: reflect the cvar (default OFF)
+        // Audio: seed from the persisted values applied to the audio system above.
+        sm.musicOn = s_musicOn; sm.musicVol = s_musicVol; sm.sfxVol = s_sfxVol;
         gameUi.init(*device, console.get(), sm);
         gameUi.setTitle(terrainWorld ? "X3 ENGINE" : "ESCAPE FROM LAB ZERO",
                         terrainWorld ? "open-world demo" : "Level 1 - Awakening");
@@ -6855,12 +6891,27 @@ int main(int argc, char** argv) {
                 prevUiMouse = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
             }
             gameUi.update(uin, *device, frame, hm, dt);
-            // Main-menu "SET AS DEFAULT" -> persist the current framebuffer size.
+
+            // ---- Audio settings -> live audio system. Push every frame from the
+            // SettingsModel; the setters are cheap and idempotent (setMusicEnabled
+            // early-returns when unchanged, so toggling Music stops/starts the bed
+            // exactly once, and the volume sliders quiet music/SFX immediately). ----
+            {
+                const x3::ui::SettingsModel& asm_ = gameUi.settings();
+                audio->setMasterSfxVolume(asm_.sfxVol);
+                audio->setMusicVolume(asm_.musicVol);
+                audio->setMusicEnabled(asm_.musicOn);
+            }
+
+            // Main-menu "SET AS DEFAULT" -> persist the current framebuffer size +
+            // the live audio settings (one cfg file).
             if (gameUi.wantSaveDefaults()) {
                 gameUi.clearSaveDefaults();
-                writeWindowSize((uint32_t)cw, (uint32_t)ch);
-                x3::logInfo("[settings] saved default resolution " +
-                            std::to_string(cw) + "x" + std::to_string(ch));
+                const x3::ui::SettingsModel& s = gameUi.settings();
+                writeSettings((uint32_t)cw, (uint32_t)ch, s.musicOn, s.musicVol, s.sfxVol);
+                x3::logInfo("[settings] saved defaults: resolution " +
+                            std::to_string(cw) + "x" + std::to_string(ch) +
+                            ", musicOn=" + (s.musicOn ? "1" : "0"));
             }
 
             // ---- Save/Load: pause-menu SAVE/LOAD buttons (polled from the UI) +
