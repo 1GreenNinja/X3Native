@@ -191,7 +191,7 @@ void Hud::drawStats(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
     size_t widest = 0;
     for (auto& l : lines) widest = std::max(widest, std::char_traits<char>::length(l));
     const float panelW = widest * glyph + pad * 2.0f;
-    const float panelH = 6 * (glyph + 2.0f) + pad * 2.0f;
+    const float panelH = 6 * (glyph * 1.5f) + pad * 2.0f;
     const float x0 = (w > 0) ? ((float)w - panelW - 8.0f) : 8.0f;
     const float y0 = 8.0f;
 
@@ -334,7 +334,7 @@ void Hud::drawConsole(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
 
     const float panelH = h * kConsoleHeightFrac;
     const float pad = 8.0f;
-    const float lineH = kGlyphPx + 2.0f;
+    const float lineH = kGlyphPx * 1.5f;   // TTF glyphs need ~1.5x leading (was +2 -> lines overlapped)
 
     // Slide: at anim=0 the panel sits fully above the top edge (top = -panelH);
     // at anim=1 it rests on-screen (top = 0). Lerp by the eased value.
@@ -347,8 +347,9 @@ void Hud::drawConsole(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
     device.drawHudQuad(frame, 0.0f, top, (float)w, panelH, panel);
     device.drawHudQuad(frame, 0.0f, top + panelH - 2.0f, (float)w, 2.0f, edge);
 
-    // Input line at the bottom of the (slid) panel.
-    const float inputY = top + panelH - pad - kGlyphPx;
+    // Input line near the bottom of the (slid) panel — offset by the full line height
+    // (not just the glyph size) so the text clears the bright bottom-edge separator.
+    const float inputY = top + panelH - pad - lineH;
     const float inText[4] = { 1.0f, 1.0f, 0.6f, 1.0f };
     std::string inLine = "] " + m_input + "_";   // blinking-ish caret marker
     device.drawHudText(frame, inLine.c_str(), pad, inputY, kGlyphPx, inText);

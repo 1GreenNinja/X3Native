@@ -42,7 +42,12 @@ constexpr float kAirControl   = 0.5f;    // 50% horizontal control while airborn
 constexpr float kCoyoteTime   = 0.15f;   // s — jump still allowed after leaving ground
 constexpr float kJumpBuffer   = 0.10f;   // s — jump remembered if pressed before landing
 constexpr float kStandHeight  = 1.8f;    // m — capsule full standing height
-constexpr float kEyeHeight    = 1.6f;    // m — camera above feet
+constexpr float kEyeHeight    = 1.6f;    // m — camera above feet (Stand)
+constexpr float kCrouchEye    = 0.95f;   // m — ducked eye height (Crouch)
+constexpr float kProneEye     = 0.45f;   // m — crawling/prone eye height (Prone)
+// Planar move-speed multipliers per stance (Stand=full, Crouch=half, Prone=slow crawl).
+constexpr float kCrouchSpeedMul = 0.5f;
+constexpr float kProneSpeedMul  = 0.28f;
 constexpr float kCapsuleRadius = 0.35f;  // m
 constexpr float kMouseSens    = 1.9f;    // look multiplier
 // Mouse delta is in pixels; scale to radians. The extracted "sensitivity ~1.9"
@@ -99,7 +104,13 @@ bool Player::takeDamage(int amount) {
 }
 
 x3::phys::Vec3 Player::damageTargetPos() const {
-    return x3::phys::Vec3{ m_feetX, m_feetY + kEyeHeight, m_feetZ };
+    return x3::phys::Vec3{ m_feetX, m_feetY + m_eyeHeight, m_feetZ };
+}
+
+void Player::setStance(Stance s) {
+    m_stance    = s;
+    m_eyeHeight = (s == Stance::Prone)  ? kProneEye :
+                  (s == Stance::Crouch) ? kCrouchEye : kEyeHeight;
 }
 
 void Player::heal(int amount) {
@@ -174,8 +185,11 @@ void Player::update(const PlayerInput& in, float dt, x3::phys::IPhysicsWorld& ph
     const float fx = std::cos(m_yaw), fz = std::sin(m_yaw);  // forward (XZ)
     const float rx = -fz,             rz = fx;               // right   (XZ)
 
-    // ---- Desired horizontal target velocity from input.
-    const float speed = in.sprint ? kSprintSpeed : kWalkSpeed;
+    // ---- Desired horizontal target velocity from input. Crouch/crawl scale it down
+    // (you move slower the lower your stance — crouch = half, prone/crawl = a slow crawl).
+    const float stanceMul = (m_stance == Stance::Prone)  ? kProneSpeedMul :
+                            (m_stance == Stance::Crouch) ? kCrouchSpeedMul : 1.0f;
+    const float speed = (in.sprint ? kSprintSpeed : kWalkSpeed) * stanceMul;
     float wishX = (fx * in.moveFwd + rx * in.moveStrafe);
     float wishZ = (fz * in.moveFwd + rz * in.moveStrafe);
     // Normalize so diagonal isn't faster, then scale to speed.
@@ -249,7 +263,7 @@ void Player::setFeetPosition(x3::phys::IPhysicsWorld& physics, const x3::phys::V
 
 void Player::camera(float& x, float& y, float& z, float& yaw, float& pitch) const {
     x = m_feetX;
-    y = m_feetY + kEyeHeight;
+    y = m_feetY + m_eyeHeight;
     z = m_feetZ;
     yaw = m_yaw;
     pitch = m_pitch;

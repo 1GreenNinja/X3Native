@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <string>
@@ -49,6 +50,33 @@ void composeTRS(float m[16],
     m[4]  = by.x * s; m[5]  = by.y * s; m[6]  = by.z * s; m[7]  = 0.0f;
     m[8]  = bz.x * s; m[9]  = bz.y * s; m[10] = bz.z * s; m[11] = 0.0f;
     m[12] = t.x;      m[13] = t.y;      m[14] = t.z;      m[15] = 1.0f;
+}
+
+// Inverse of a column-major affine 4x4 that is a rotation * UNIFORM scale +
+// translation (the monster's gameplay model matrix: composeTRS with a yaw basis +
+// uniform scale s). The upper 3x3 is R*s, so its inverse is R^T / s; the
+// translation maps to -(invA * t). General enough for the death-ragdoll space
+// transform (TASK#12). Returns false (and leaves `out` identity) on a degenerate
+// (near-zero scale) matrix.
+bool invertAffineUniform(const float m[16], float out[16]) {
+    for (int i = 0; i < 16; ++i) out[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+    // Uniform scale = length of column 0 (col0 = R*s). Guard against zero.
+    const float s2 = m[0]*m[0] + m[1]*m[1] + m[2]*m[2];
+    if (s2 < 1e-12f) return false;
+    const float invS2 = 1.0f / s2;   // (1/s) * (1/s); invA = R^T / s = (col^T) / s^2
+    // invA (3x3) = transpose(upper3x3) * invS2 (since (R*s)^-1 = R^T / s = R^T * s / s^2).
+    // out columns are the rows of m scaled by invS2.
+    out[0] = m[0]*invS2; out[1] = m[4]*invS2; out[2] = m[8]*invS2;
+    out[4] = m[1]*invS2; out[5] = m[5]*invS2; out[6] = m[9]*invS2;
+    out[8] = m[2]*invS2; out[9] = m[6]*invS2; out[10]= m[10]*invS2;
+    out[3] = out[7] = out[11] = 0.0f;
+    // translation: -(invA * t)
+    const float tx = m[12], ty = m[13], tz = m[14];
+    out[12] = -(out[0]*tx + out[4]*ty + out[8]*tz);
+    out[13] = -(out[1]*tx + out[5]*ty + out[9]*tz);
+    out[14] = -(out[2]*tx + out[6]*ty + out[10]*tz);
+    out[15] = 1.0f;
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +280,10 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
         // upload the joint palette + the GPU skins (no per-frame CPU LBS + full vertex
         // re-upload) — the scalability fix for crowds of NPCs. Falls back to CPU
         // skinning transparently on a non-compute / headless device.
-        m_skinner.enableGpuSkinning(device, m_model);
+        const bool gpuSkin = m_skinner.enableGpuSkinning(device, m_model);
+        x3::logInfo(std::string("[monster] ") + std::string(modelFile) +
+                    (gpuSkin ? "  ->  GPU-SKINNED (compute pre-pass)"
+                             : "  ->  CPU-SKINNED FALLBACK (per-frame updateMesh — PERF)"));
         m_idleClip = m_skinner.findClip({ "idle", "stand", "breath", "loop" });
         // Prefer a distinct WALK clip; fall back to any move clip for m_walkClip.
         m_walkClip = m_skinner.findClip({ "walk" });
@@ -468,6 +499,17 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
         physics.removeBody(m_body);
         m_body = x3::phys::BodyId{};
         x3::logInfo("[monster] killed (HP 0) — body removed, death-pop started");
+        // TASK#12: try the SKINNED DEATH RAGDOLL — a rigged enemy physically flops
+        // with its model (the shot direction carries the topple shove). No-op on an
+        // unrigged model -> the legacy rigid topple draws instead. Spawn AFTER the
+        // Enemy box is removed so the ragdoll bodies don't fight it.
+        spawnDeathRagdoll(physics, dir);
+        // GIBS: fire the death FX sink ONCE at the kill moment so the host explodes
+        // the monster into debris chunks + blood at its body center (not its feet).
+        if (m_deathFx) {
+            const float center[3] = { m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z };
+            m_deathFx(center, m_type == MonsterType::Drone);
+        }
     } else {
         x3::logInfo("[monster] hit for " + std::to_string(shotDmg) +
                     " — HP now " + std::to_string(m_hp));
@@ -500,6 +542,15 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
         if (m_body.valid()) physics.removeBody(m_body);
         m_body = x3::phys::BodyId{};
         x3::logInfo("[monster] melee-killed (HP 0) — body removed, death-pop started");
+        // TASK#12: skinned death ragdoll (melee). No explicit shot dir here — pass a
+        // zero shove so spawnDeathRagdoll topples it along its facing (the caller owns
+        // the separate rigid-body knockback; the body is already gone). No-op unrigged.
+        spawnDeathRagdoll(physics, x3::phys::Vec3{ 0.0f, 0.0f, 0.0f });
+        // GIBS: same death-FX hook as the shot path (gib burst at the body center).
+        if (m_deathFx) {
+            const float center[3] = { m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z };
+            m_deathFx(center, m_type == MonsterType::Drone);
+        }
     } else {
         x3::logInfo("[monster] melee hit for " + std::to_string(dmg) +
                     " — HP now " + std::to_string(m_hp));
@@ -636,11 +687,20 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // already gone from physics; the corpse is draw-only and never re-skins). ----
     if (!m_alive) {
         if (m_dying) {
+            // TASK#12: while a SKINNED ragdoll is active, the host has already stepped
+            // the shared physics world this frame — read the bone transforms OUT and
+            // flop the model's skin to match (replaces the rigid topple for rigged
+            // enemies). Unrigged enemies have no ragdoll; their draw path topples.
+            if (m_ragdollActive) driveSkinFromRagdoll();
             m_deathPop -= dt;
             if (m_deathPop <= 0.0f) {
                 m_deathPop = 0.0f;
                 m_dying  = false;
                 m_corpse = true;   // settled flat; keep drawing it on the floor
+                // Corpse settled -> tear down the ragdoll bodies (no leaked Jolt
+                // bodies). The last skinned pose stays uploaded so the corpse keeps
+                // its collapsed shape; the rigid corpse-topple is skipped for it.
+                clearDeathRagdoll();
             }
         }
         return;
@@ -1089,7 +1149,12 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // preserves the 3x3, so this facing survives the per-frame physics sync as
     // long as the host calls update() after scene.update() (see main loop). ----
     {
-        const float c = std::cos(m_yaw), s = std::sin(m_yaw);
+        // FACING FIX (recovered from wave3): the rigged character GLBs are authored
+        // facing +Z, but facingDir()/AI assume local -Z forward (CONVENTIONS) — so the
+        // MESH renders with its BACK to the player. Flip the VISUAL yaw 180deg here
+        // ONLY (m_yaw / facingDir() / aim / --test-ai are unchanged, so AI stays right).
+        const float ry = m_yaw + 3.14159265358979323846f;
+        const float c = std::cos(ry), s = std::sin(ry);
         // Yaw about +Y: local +X -> (c,0,-s), +Z -> (s,0,c). The phase scale
         // multiplier up-scales the boss as it enrages (graybox phase feedback).
         const float scale = m_modelScale * m_phaseScaleMul;
@@ -1165,6 +1230,174 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     }
 }
 
+// ===========================================================================
+// SKINNED DEATH RAGDOLL (TASK#12). The model's bones are physically driven by a
+// Jolt ragdoll so a rigged enemy FLOPS with its mesh instead of doing the rigid
+// topple. Built on the KILL, driven each frame while m_dying, torn down on
+// corpse-expire. Falls back to the legacy topple for unrigged models.
+// ===========================================================================
+
+// Build the physics ragdoll at the kill moment + bind the skin driver. No-op (and
+// the legacy topple draws) unless the model is skinnable.
+void MonsterSystem::spawnDeathRagdoll(x3::phys::IPhysicsWorld& physics,
+                                      const x3::phys::Vec3& shove) {
+    // Only rigged characters can flop their skin; box/crawler/static fall back.
+    if (!m_skinner.valid() || m_skinner.nodeCount() == 0) return;
+    if (m_deathRagdoll) return;   // already built (idempotent-safe)
+
+    // ---- The FROZEN draw transform the skinned mesh is rendered through:
+    //   final = model * fixup * skinGlobal,  model = T(m_pos) * R(yaw+pi) * S(scale).
+    // Build `model` the SAME way drawMonster's facing bake does, fold in m_modelFixup
+    // (the Z-up stand-up / feet-grounding the draw path applies), and capture the
+    // inverse of (model*fixup) once — m_pos/yaw/scale don't change while dead. The
+    // ragdoll bone world transforms get mapped through THIS inverse into skin space so
+    // the rigid delta composes correctly under the unchanged draw. --
+    const float ry = m_yaw + 3.14159265358979323846f;
+    const float c = std::cos(ry), s = std::sin(ry);
+    const float scale = m_modelScale * m_phaseScaleMul;
+    float model[16];
+    composeTRS(model,
+               x3::phys::Vec3{ c, 0.0f, -s },
+               x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
+               x3::phys::Vec3{ s, 0.0f, c },
+               scale, m_pos);
+    float drawXform[16];
+    x3::asset::mulMat4(model, m_modelFixup, drawXform);   // model * fixup (skin->world)
+    if (!invertAffineUniform(drawXform, m_deathModelInv)) return; // degenerate: bail to topple
+
+    // ---- Build the canonical humanoid rig, in WORLD space, matching the monster:
+    // feet at the monster's base, scaled by the model scale, yawed to its facing so
+    // the physical ragdoll falls in the right spot / direction. makeHumanoidRagdollBones
+    // authors an UPRIGHT rig with the pelvis `originY` up; we then transform every
+    // bone's bind-world matrix by the world placement (T*R*S, feet at m_pos). ----
+    // Ragdoll authored at scale 1 standing on the floor; place its feet at m_pos and
+    // yaw it by the visual heading. The rig's pelvis sits ~ (its authored heights) up.
+    x3::phys::makeHumanoidRagdollBones(/*originY*/0.0f, m_ragdollBones);
+    const uint32_t bn = (uint32_t)m_ragdollBones.size();
+    if (bn == 0) { m_ragdollBones.clear(); return; }
+
+    // World placement for the rig: feet at m_pos, yawed by the VISUAL heading (so the
+    // ragdoll's local +Z forward agrees with the drawn mesh), scaled by `scale`.
+    float place[16];
+    composeTRS(place,
+               x3::phys::Vec3{ c, 0.0f, -s },
+               x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
+               x3::phys::Vec3{ s, 0.0f, c },
+               scale, m_pos);
+    for (uint32_t b = 0; b < bn; ++b) {
+        float placed[16];
+        x3::asset::mulMat4(place, m_ragdollBones[b].bindWorld, placed);
+        std::memcpy(m_ragdollBones[b].bindWorld, placed, 16 * sizeof(float));
+        // Scale the capsule dims by the model scale so collisions match the placement.
+        m_ragdollBones[b].halfHeight *= scale;
+        m_ragdollBones[b].radius     *= scale;
+    }
+
+    m_deathRagdoll.reset(x3::phys::createRagdoll(physics, m_ragdollBones.data(), bn));
+    if (!m_deathRagdoll) { m_ragdollBones.clear(); return; }   // bail -> legacy topple
+
+    // Snap the ragdoll to its placed bind pose + add it to the world (active).
+    {
+        std::vector<float> bind((size_t)bn * 16);
+        for (uint32_t b = 0; b < bn; ++b)
+            std::memcpy(&bind[b*16], m_ragdollBones[b].bindWorld, 16 * sizeof(float));
+        m_deathRagdoll->addToWorld(/*activate*/true);
+        m_deathRagdoll->setPoseWorld(bind.data());
+    }
+
+    // ---- Bind the rigid bone->skin driver to the monster's CURRENT animated pose so
+    // the flop starts seamlessly from where the animation left off. We capture the
+    // Skinner's current global bone transforms (currentGlobals) and seed RagdollSkin
+    // from THEM (not the static bind pose) so frame 0 of the flop == the last animated
+    // frame (no pop). We then map every skin node to the nearest ragdoll bone. The bone
+    // "parts" we feed RagdollSkin live in the SAME space as those globals (the model's
+    // skin space), so each ragdoll bone's INIT part = inv(model*fixup) * boneWorldInit
+    // (m_deathModelInv). The per-frame delta (cur*initInv) is then a skin-space rigid
+    // motion that composes correctly under the frozen draw (final = model*fixup*skinGlobal). ----
+    {
+        // Capture the pose the last draw used: the active clip (or idle) at m_animTime.
+        const int poseClip = (m_idleClip >= 0) ? m_idleClip
+                           : (m_walkClip >= 0) ? m_walkClip : 0;
+        std::vector<float> curGlobals;
+        const uint32_t ng = m_skinner.currentGlobals(m_model, (uint32_t)poseClip,
+                                                      m_animTime, curGlobals);
+        if (ng == m_skinner.nodeCount() && ng > 0)
+            m_ragdollSkin.bindFromGlobals(m_model, curGlobals.data(), ng);
+        else
+            m_ragdollSkin.bind(m_model);   // fall back to the static bind pose
+    }
+
+    // Capture the ragdoll's INITIAL bone world transforms (post setPose) and convert
+    // to model-local for the RagdollSkin part frames.
+    m_ragWorldScratch.assign((size_t)bn * 16, 0.0f);
+    m_ragPartInit.assign((size_t)bn * 16, 0.0f);
+    m_deathRagdoll->getBoneWorldTransforms(m_ragWorldScratch.data());
+    for (uint32_t b = 0; b < bn; ++b)
+        x3::asset::mulMat4(m_deathModelInv, &m_ragWorldScratch[b*16], &m_ragPartInit[b*16]);
+    m_ragdollSkin.mapToParts(m_ragPartInit.data(), bn);
+    m_ragPartCur.assign((size_t)bn * 16, 0.0f);
+
+    // ---- Death impulse: carry the topple's directional shove + a vertical lift, and
+    // a flyer/drone variant that SPARKS/SPINS (a yaw kick) as it falls out of the air,
+    // vs. a grounded enemy that just topples the way it was hit. ----
+    const bool flyer = (m_flyer || m_type == MonsterType::Drone);
+    float impX = shove.x, impZ = shove.z;
+    const float hl = std::sqrt(impX*impX + impZ*impZ);
+    if (hl < 1e-3f) { impX = std::sin(m_yaw); impZ = std::cos(m_yaw); }  // fall forward-ish
+    // Per-mass impulse roughly; the ragdoll AddImpulse is a velocity*mass blast, so a
+    // modest value reads as a shove without launching the body off-screen.
+    const float push = flyer ? 4.5f : 3.0f;
+    const float lift = flyer ? 2.0f : 1.2f;
+    m_deathRagdoll->applyImpulseAll(x3::phys::Vec3{ impX * push, lift, impZ * push });
+    if (flyer) {
+        // Spin a drone: a strong angular kick on the head/spine reads as a sparking
+        // tumble out of the air (apply to a couple of bones so it whirls, not just drops).
+        m_deathRagdoll->applyImpulseBone(2 /*head*/,  x3::phys::Vec3{  push*0.8f, 0.5f, 0.0f });
+        m_deathRagdoll->applyImpulseBone(1 /*spine*/, x3::phys::Vec3{ -push*0.6f, 0.0f, push*0.4f });
+    }
+
+    m_ragdollActive = true;
+    m_ragdolled     = true;   // this corpse flops via ragdoll; skip the rigid topple draw
+    x3::logInfo(std::string("[monster] SKINNED DEATH RAGDOLL spawned (") +
+                std::to_string(bn) + " bones, " +
+                (flyer ? "flyer/drone spin" : "grounded topple") + ")");
+}
+
+// Per-frame: read the ragdoll bone WORLD transforms, convert to model-local, run the
+// rigid bone->skin attach, and feed the result to the Skinner's external-pose path so
+// the GPU-skinned model flops physically with the bones. No device upload work beyond
+// what the Skinner already does (palette upload on GPU, CPU LBS otherwise).
+void MonsterSystem::driveSkinFromRagdoll() {
+    if (!m_ragdollActive || !m_deathRagdoll || !m_device) return;
+    const uint32_t bn = m_deathRagdoll->boneCount();
+    if (bn == 0) return;
+    if (m_ragWorldScratch.size() != (size_t)bn * 16) m_ragWorldScratch.assign((size_t)bn*16, 0.0f);
+    if (m_ragPartCur.size()      != (size_t)bn * 16) m_ragPartCur.assign((size_t)bn*16, 0.0f);
+
+    m_deathRagdoll->getBoneWorldTransforms(m_ragWorldScratch.data());
+    for (uint32_t b = 0; b < bn; ++b)
+        x3::asset::mulMat4(m_deathModelInv, &m_ragWorldScratch[b*16], &m_ragPartCur[b*16]);
+
+    const uint32_t nc = m_ragdollSkin.computeNodeGlobals(m_ragPartCur.data(), bn, m_ragNodeGlobals);
+    if (nc == 0) return;
+    m_skinner.applyExternalGlobals(m_model, *m_device, m_ragNodeGlobals.data(), nc);
+}
+
+// Remove the ragdoll bodies (corpse cleanup). Idempotent. The corpse stays drawable
+// (its last skinned pose is what was uploaded; the rigid corpse-topple is skipped for
+// a model that ragdolled). No leaked Jolt bodies — the IRagdoll dtor also removes.
+void MonsterSystem::clearDeathRagdoll() {
+    if (m_deathRagdoll) {
+        m_deathRagdoll->removeFromWorld();
+        m_deathRagdoll.reset();
+    }
+    m_ragdollActive = false;
+    m_ragdollBones.clear();
+    m_ragPartInit.clear();
+    m_ragPartCur.clear();
+    m_ragWorldScratch.clear();
+}
+
 // ---------------------------------------------------------------------------
 // Draw all monster primitives at its transform, with the hit-flash tint.
 // ---------------------------------------------------------------------------
@@ -1189,6 +1422,22 @@ void MonsterSystem::drawMonster(x3::rhi::IRenderDevice& device,
     // Toward red: keep R, knock down G/B by the flash amount.
     tint[1] *= (1.0f - 0.85f * flashAmt);
     tint[2] *= (1.0f - 0.85f * flashAmt);
+
+    // TASK#12: a model that FLOPPED via the skinned death ragdoll has its collapse
+    // baked into the skinned vertices already (driveSkinFromRagdoll fed the Skinner
+    // the ragdoll pose). Draw it at the plain frozen entity transform — applying the
+    // rigid topple on top would double-rotate it. The corpse keeps the last uploaded
+    // ragdoll pose. (Unrigged enemies have m_ragdolled == false and topple below.)
+    if ((m_dying || m_corpse) && m_ragdolled) {
+        // White flash at the very start of the death still reads the kill.
+        const float fall = m_corpse ? 1.0f
+            : (kDeathToppleTime > 0.0f ? (1.0f - m_deathPop / kDeathToppleTime) : 1.0f);
+        const float flash  = (fall < 0.35f) ? (1.0f - fall / 0.35f) : 0.0f;
+        const float bright = 1.0f + 1.3f * flash;
+        float t2[4] = { tint[0]*bright, tint[1]*bright, tint[2]*bright, tint[3] };
+        drawMonsterAt(device, frame, e.transform, t2);
+        return;
+    }
 
     if (m_dying || m_corpse) {
         // ---- Death TOPPLE: the body falls over (rotates about its feet) and
@@ -1257,6 +1506,7 @@ uint32_t MonsterManager::spawn(Scene& scene, x3::rhi::IRenderDevice& device,
     auto m = std::make_unique<MonsterSystem>();
     m->buildMonsterTuned(scene, device, physics, modelDir, pos, tuning);
     if (m_cueSink) m->setCueSink(m_cueSink);   // wire footstep/impact cues on new spawns
+    if (m_deathFx) m->setDeathFxSink(m_deathFx); // wire the gib-burst death FX on new spawns
     uint32_t idx = (uint32_t)m_monsters.size();
     m_monsters.push_back(std::move(m));
     return idx;
@@ -1267,11 +1517,23 @@ void MonsterManager::setCueSink(const GameCueFn& sink) {
     for (auto& m : m_monsters) m->setCueSink(sink);   // apply to existing too
 }
 
+void MonsterManager::setDeathFxSink(const DeathFxFn& sink) {
+    m_deathFx = sink;
+    for (auto& m : m_monsters) m->setDeathFxSink(sink);   // apply to existing too
+}
+
 uint32_t MonsterManager::aliveCount() const {
     uint32_t n = 0;
     for (const auto& m : m_monsters)
         if (m->alive()) ++n;
     return n;
+}
+
+void MonsterManager::shutdown() {
+    // TASK#12: tear down any in-flight death ragdolls while the physics world is still
+    // alive (mirrors RagdollDemo::shutdown). Without this, a monster destroyed AFTER
+    // physics->shutdown() would call IRagdoll::removeFromWorld() on a dead Jolt system.
+    for (auto& m : m_monsters) m->shutdownRagdoll();
 }
 
 void MonsterManager::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
@@ -1594,6 +1856,163 @@ bool runCombatSelfTest() {
     x3::logInfo(std::string("[combat-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;
+}
+
+// ===========================================================================
+// Headless self-test (--test-deathragdoll, TASK#12). Kill a RIGGED monster and
+// assert the SKINNED death ragdoll: spawns, its bones fall under gravity, the
+// Skinner receives the external pose, and it tears down on corpse-expire with no
+// leaked bodies. No window / Vulkan (headless skin path; palette computed on CPU,
+// uploads skipped for meshId==0). Mirrors the other self-tests.
+// ===========================================================================
+namespace {
+int dr_pass = 0, dr_fail = 0;
+void drcheck(bool cond, const char* name) {
+    if (cond) { ++dr_pass; x3::logInfo(std::string("[deathragdoll-test] PASS ") + name); }
+    else      { ++dr_fail; x3::logError(std::string("[deathragdoll-test] FAIL ") + name); }
+}
+// Distance between two palette buffers (sum of |a-b|) — a quick "did the pose move".
+float palDiff(const std::vector<float>& a, const std::vector<float>& b) {
+    if (a.empty() || a.size() != b.size()) return 0.0f;
+    float s = 0.0f;
+    for (size_t i = 0; i < a.size(); ++i) s += std::fabs(a[i] - b[i]);
+    return s;
+}
+} // namespace
+
+bool runDeathRagdollSelfTest() {
+    dr_pass = dr_fail = 0;
+    const float dt = 1.0f / 60.0f;
+
+    std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+    physics->init();
+    // Flat ground at y=0 to catch the collapse.
+    {
+        float v[] = { -50,0,-50,  50,0,-50,  50,0,50,  -50,0,50 };
+        uint32_t idx[] = { 0,2,1, 0,3,2 };
+        physics->addStaticMesh(v, 4, idx, 6);
+    }
+    physics->optimizeBroadphase();
+
+    HeadlessDevice device;
+    Scene scene;
+    MonsterSystem mon;
+    const x3::phys::Vec3 monsterPos{ 0.0f, 0.0f, 0.0f };
+    // Prefer a genuinely RIGGED model so the skinned-ragdoll path is exercised. The
+    // multi-clip "*_anim.glb" rigs (chief_martinez_anim.glb etc.) are GENERATED
+    // artifacts that may be ABSENT in a clean checkout — pick the first one that
+    // exists, else fall back to the default (which exercises the graceful no-ragdoll
+    // path below). buildMonsterTuned loads modelFile from modelDirOverride.
+    {
+        MonsterSystem::Tuning t;
+        const char* rigCandidates[] = {
+            "chief_martinez_anim.glb", "marcus_webb_anim.glb", "alien_crawler_anim.glb"
+        };
+        for (const char* cand : rigCandidates) {
+            std::error_code ec;
+            if (std::filesystem::exists(std::filesystem::path(riggedGlbRoot()) / cand, ec)) {
+                t.modelFile = cand;
+                t.modelDirOverride = riggedGlbRoot();
+                break;
+            }
+        }
+        mon.buildMonsterTuned(scene, device, *physics, riggedGlbRoot(), monsterPos, t);
+    }
+
+    // This test is only meaningful for a RIGGED model. If the build fell back to a
+    // non-skinnable model (no rigged anim GLB present in this checkout), the ragdoll
+    // path correctly NO-OPS to the legacy topple — assert that graceful fallback
+    // instead of failing the suite.
+    if (!mon.skinnable()) {
+        drcheck(!mon.ragdollActive(), "D0 unrigged model: no skinned ragdoll (graceful topple fallback)");
+        // Kill it and confirm the death path still works (never break a death).
+        const x3::phys::Vec3 eye{ 0.0f, 0.4f, -3.0f };
+        const x3::phys::Vec3 aim{ 0.0f, 0.0f, 1.0f };
+        for (int i = 0; i < 20 && mon.alive(); ++i) mon.fire(eye, aim, scene, *physics);
+        drcheck(!mon.alive() && !mon.ragdollActive(), "D0b unrigged monster dies via topple (no ragdoll)");
+        physics->shutdown();
+        x3::logInfo(std::string("[deathragdoll-test] ") + std::to_string(dr_pass) +
+                    " passed, " + std::to_string(dr_fail) + " failed (unrigged fallback path)");
+        return dr_fail == 0;
+    }
+
+    // ---- Animated palette snapshot BEFORE death (drive one idle frame so the
+    // Skinner has a pose to compare against). ----
+    mon.update(dt, scene, *physics, x3::phys::Vec3{ 0.0f, 1.6f, 5.0f });  // far player -> idle
+    std::vector<float> animPalette = mon.skinner().lastPalette();
+
+    // ---- KILL it with a shot from -Z (the shove carries +Z). ----
+    const x3::phys::Vec3 eye{ 0.0f, 0.4f, -3.0f };
+    const x3::phys::Vec3 aim{ 0.0f, 0.0f, 1.0f };
+    bool killed = false;
+    for (int i = 0; i < 30 && mon.alive(); ++i) {
+        FireResult r = mon.fire(eye, aim, scene, *physics);
+        if (r.killed) killed = true;
+    }
+    drcheck(killed && !mon.alive(), "D1a rigged monster killed");
+    drcheck(mon.ragdollActive() && mon.deathRagdoll() != nullptr,
+            "D1 kill spawns a SKINNED death ragdoll");
+    drcheck(mon.deathRagdoll() && mon.deathRagdoll()->inWorld(),
+            "D1b ragdoll added to the physics world");
+
+    // Record the ragdoll's top bone Y at spawn (before it falls).
+    float topY0 = -1e30f;
+    uint32_t bn = mon.deathRagdoll() ? mon.deathRagdoll()->boneCount() : 0;
+    drcheck(bn > 0, "D1c ragdoll has bones");
+    {
+        std::vector<float> w((size_t)bn * 16);
+        if (mon.deathRagdoll()) mon.deathRagdoll()->getBoneWorldTransforms(w.data());
+        for (uint32_t b = 0; b < bn; ++b) topY0 = std::max(topY0, w[b*16+13]);
+    }
+
+    // ---- Drive the death window: the HOST steps physics, then update() reads the
+    // bones out and feeds the Skinner. Run most of the topple window (NOT to expiry
+    // yet) so the ragdoll is still active + falling. ----
+    const int holdSteps = 30;   // 0.5 s < kDeathToppleTime (0.7 s)
+    for (int i = 0; i < holdSteps; ++i) {
+        physics->step(dt);
+        mon.update(dt, scene, *physics, x3::phys::Vec3{ 0.0f, 1.6f, 5.0f });
+    }
+
+    // D2: the bones FELL (top bone Y dropped under gravity).
+    float topY1 = -1e30f;
+    bool finite = true;
+    if (mon.deathRagdoll()) {
+        std::vector<float> w((size_t)bn * 16);
+        mon.deathRagdoll()->getBoneWorldTransforms(w.data());
+        topY1 = -1e30f;
+        for (uint32_t b = 0; b < bn; ++b) {
+            topY1 = std::max(topY1, w[b*16+13]);
+            for (int k = 0; k < 16; ++k) if (!std::isfinite(w[b*16+k])) finite = false;
+        }
+    }
+    drcheck(finite, "D2a ragdoll bone transforms stay finite (no NaN)");
+    drcheck(topY1 < topY0 - 0.15f, "D2 ragdoll bones fall under gravity (top bone dropped)");
+
+    // D3: the Skinner RECEIVED the external pose — its palette diverged from the
+    // animated pose once the ragdoll drove it.
+    std::vector<float> ragPalette = mon.skinner().lastPalette();
+    drcheck(!ragPalette.empty() && ragPalette.size() == animPalette.size() &&
+            palDiff(ragPalette, animPalette) > 1e-3f,
+            "D3 Skinner received the external ragdoll pose (palette diverged from animated)");
+
+    // ---- Run OUT the rest of the death window so it expires -> corpse + teardown. ----
+    for (int i = 0; i < 60; ++i) {   // 1 s > remaining window
+        physics->step(dt);
+        mon.update(dt, scene, *physics, x3::phys::Vec3{ 0.0f, 1.6f, 5.0f });
+    }
+
+    // D4: torn down on corpse-expire — ragdoll removed, pointer cleared (no leak).
+    drcheck(!mon.ragdollActive(), "D4a ragdoll deactivated on corpse-expire");
+    drcheck(mon.deathRagdoll() == nullptr, "D4 ragdoll torn down (bodies removed, no leaked Jolt bodies)");
+
+    // The world still steps cleanly with the ragdoll bodies gone (sanity).
+    for (int i = 0; i < 5; ++i) physics->step(dt);
+
+    physics->shutdown();
+    x3::logInfo(std::string("[deathragdoll-test] ") + std::to_string(dr_pass) +
+                " passed, " + std::to_string(dr_fail) + " failed");
+    return dr_fail == 0;
 }
 
 // ===========================================================================
@@ -2409,6 +2828,13 @@ void MultiPodBoss::build(const Config& cfg, Scene& scene, x3::rhi::IRenderDevice
     x3::logInfo("[multipod] built " + std::to_string(m_pods.size()) +
                 " pods; fallThreshold=" + std::to_string(m_fallThreshold) +
                 " maxSaved=" + std::to_string(m_maxSaved));
+}
+
+void MultiPodBoss::shutdown() {
+    // TASK#12: tear down any in-flight death ragdolls while the physics world is still
+    // alive (mirrors MonsterManager::shutdown). Without this, a pod destroyed AFTER
+    // physics->shutdown() would call IRagdoll::removeFromWorld() on a dead Jolt system.
+    for (auto& p : m_pods) p->shutdownRagdoll();
 }
 
 bool MultiPodBoss::sparePod(uint32_t i, Scene& scene, x3::phys::IPhysicsWorld& physics) {

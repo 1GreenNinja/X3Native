@@ -21,6 +21,7 @@
 
 #include "engine/rhi/IRenderDevice.h"
 
+#include <cstddef>
 #include <cstdint>
 
 namespace x3::game {
@@ -63,6 +64,9 @@ public:
     void drawMeshEmissive(const x3::rhi::FrameContext&, x3::rhi::MeshHandle,
                           x3::rhi::TextureHandle, const float[4], const float[4],
                           const float[16]) override {}
+    void drawMeshGlass(const x3::rhi::FrameContext&, x3::rhi::MeshHandle,
+                       x3::rhi::TextureHandle, const float[4], const float[4],
+                       const x3::rhi::IRenderDevice::GlassMaterial&, const float[16]) override {}
 
     void submitParticles(const x3::rhi::IRenderDevice::ParticleInstance*, uint32_t,
                          x3::rhi::IRenderDevice::ParticleBlend) override {}
@@ -98,6 +102,15 @@ public:
 
     void drawHudQuad(const x3::rhi::FrameContext&, float, float, float, float, const float[4]) override {}
     void drawHudText(const x3::rhi::FrameContext&, const char*, float, float, float, const float[4]) override {}
+    void drawHudTextF(const x3::rhi::FrameContext&, x3::rhi::FontRole, const char*,
+                      float, float, float, const float[4]) override {}
+    // Headless metrics: all roles are treated as monospace (cell == px) so the UI
+    // layout tests get the same exact N*px math the old static textWidth used.
+    float textAdvance(x3::rhi::FontRole, const char* text, float px) const override {
+        if (!text) return 0.0f;
+        std::size_t n = 0; while (text[n]) ++n;
+        return (float)n * px;
+    }
     void hudSize(uint32_t& w, uint32_t& h) const override { w = 0; h = 0; }
 
     x3::rhi::RenderStats stats() const override { return {}; }

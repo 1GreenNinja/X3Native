@@ -208,6 +208,13 @@ bool runNexusSelfTest() {
     physics->init();
 
     HeadlessDevice device;
+    // Scope every body-owning system (Scene + SpireNexus, whose MultiPodBoss pods own
+    // Jolt bodies) in an INNER block so they are destroyed — releasing those bodies —
+    // BEFORE physics->shutdown() frees the Jolt world. Without this, the function-end
+    // destructor order (physics->shutdown() first, then ~nexus/~scene) tore the world
+    // down under the body owners -> a process-exit access violation (the test logged
+    // 11/11 in Release, then crashed 0xC0000005 on teardown; Debug tripped a Jolt assert).
+    {
     Scene scene;
 
     // Build the Spire geometry (gives floorBaseY[]), then stage the Nexus on top,
@@ -305,6 +312,9 @@ bool runNexusSelfTest() {
     {
         std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
         w->init();
+        // Same teardown discipline as the outer scope: scope the body owners so they die
+        // BEFORE w->shutdown() (below) frees the Jolt world.
+        {
         Scene s2;
         Level1Layout L2 = buildLevel1(s2, device, *w);
         TriggerSystem t2;
@@ -352,9 +362,12 @@ bool runNexusSelfTest() {
         // The boss has NOT fallen with 4 saved + 1 alive (only 4 downed of 5).
         check(!nx2.hasFallen() && nx2.downedCount() == 4 && nx2.aliveCount() == 1,
               "N7 4 saved + core alive => 4 downed, boss not yet fallen");
+        }   // s2/t2/nx2 (+ pods' bodies) destruct here, before w->shutdown() below
         w->shutdown();
     }
 
+    }   // end inner block: scene/triggers/nexus (+ its MultiPodBoss pods' bodies) destruct
+        // HERE, before physics->shutdown() below — so the Jolt world outlives its bodies.
     physics->shutdown();
     x3::logInfo(std::string("nexus: ") + std::to_string(g_pass) + "/" +
                 std::to_string(g_pass + g_fail) + " passed");

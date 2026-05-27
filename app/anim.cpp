@@ -472,6 +472,18 @@ uint32_t Skinner::computePalette(const x3::asset::Model& model, uint32_t clip,
     return jcount;
 }
 
+uint32_t Skinner::currentGlobals(const x3::asset::Model& model, uint32_t clip,
+                                 float timeSec, std::vector<float>& outGlobals) const {
+    if (!m_valid || clip >= m_clipDurations.size()) { outGlobals.clear(); return 0; }
+    // Wrap time over the clip duration (loop), same as computePalette().
+    float dur = m_clipDurations[clip];
+    float t = (dur > 1e-6f) ? std::fmod(timeSec, dur) : 0.0f;
+    if (t < 0) t += dur;
+    outGlobals.assign((size_t)m_nodeCount * 16, 0.0f);
+    computeGlobals(model, clip, t, outGlobals);
+    return m_nodeCount;
+}
+
 // ===========================================================================
 // Ragdoll blend — drive the skin from an external physics pose (Physics §2).
 // ===========================================================================
@@ -951,7 +963,34 @@ void Skinner::apply(const x3::asset::Model& model, x3::rhi::IRenderDevice& devic
     if (!m_valid) return;
     uint32_t jcount = computePalette(model, clip, timeSec, m_palette);
     if (jcount == 0) return;
+    skinAndUpload(model, device, jcount);
+}
 
+uint32_t Skinner::buildPaletteFromGlobals(const x3::asset::Model& model, const float* nodeGlobals,
+                                          uint32_t nodeCount, std::vector<float>& outPalette) const {
+    if (!m_valid || !nodeGlobals || nodeCount != m_nodeCount) { outPalette.clear(); return 0; }
+    const x3::asset::Skin& skin = model.skins[0];
+    const uint32_t jcount = (uint32_t)skin.joints.size();
+    outPalette.assign((size_t)jcount * 16, 0.0f);
+    for (uint32_t j = 0; j < jcount; ++j) {
+        int node = skin.joints[j];
+        if (node < 0 || (uint32_t)node >= m_nodeCount) { mat4Identity(&outPalette[(size_t)j*16]); continue; }
+        const float* ib = &skin.inverseBind[(size_t)j * 16];
+        mat4Mul(&nodeGlobals[(size_t)node*16], ib, &outPalette[(size_t)j*16]);
+    }
+    return jcount;
+}
+
+void Skinner::applyExternalGlobals(const x3::asset::Model& model, x3::rhi::IRenderDevice& device,
+                                   const float* nodeGlobals, uint32_t nodeCount) {
+    if (!m_valid) return;
+    uint32_t jcount = buildPaletteFromGlobals(model, nodeGlobals, nodeCount, m_palette);
+    if (jcount == 0) return;
+    skinAndUpload(model, device, jcount);
+}
+
+void Skinner::skinAndUpload(const x3::asset::Model& model, x3::rhi::IRenderDevice& device,
+                            uint32_t jcount) {
     // ---- GPU path: upload the CPU-computed palette; the device's compute pre-pass
     // skins on the GPU into each mesh's skinned-output vbo (no CPU LBS, no updateMesh).
     if (m_gpuSkin) {

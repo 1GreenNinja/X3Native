@@ -14,9 +14,10 @@ struct BodyId { uint32_t id = 0; bool valid() const { return id != 0; } };
 // the world keeps cached; a body can be created from it. 0 == invalid. Maps to a
 // JPH::ShapeRefC kept inside JoltPhysicsWorld.cpp (no JPH:: types leak here).
 struct ShapeId { uint32_t id = 0; bool valid() const { return id != 0; } };
-// Opaque constraint handle (Physics §1 — suspended/constrained bodies). A joint
-// the world keeps cached (point/distance to a fixed world anchor). 0 == invalid.
-// Maps to a JPH::Ref<JPH::Constraint> kept inside JoltPhysicsWorld.cpp.
+// Opaque constraint handle. Backs BOTH a two-body joint (physics props / ragdoll
+// chains) AND a Physics §1 single-body-to-world joint (point/distance to a fixed
+// world anchor). 0 == invalid. Maps to a JPH::Ref<JPH::Constraint> kept inside
+// JoltPhysicsWorld.cpp (no JPH:: types leak here).
 struct ConstraintId { uint32_t id = 0; bool valid() const { return id != 0; } };
 
 enum class Layer : uint8_t { Static, Dynamic, Player, Enemy, Projectile, Trigger };
@@ -52,6 +53,19 @@ public:
     virtual void   getBodyLinearVelocity(BodyId, float out[3]) const = 0;
     virtual void   setBodyAngularVelocity(BodyId, const float v[3]) = 0;
     virtual void   getBodyAngularVelocity(BodyId, float out[3]) const = 0;
+
+    // (Per-body damping is declared once, below, with the §1 constraint API.)
+
+    // -----------------------------------------------------------------------
+    // Two-body JOINTS (physics props §1 "hanging cubes" + ragdoll §2 chains).
+    // Opaque ConstraintId; no JPH:: types leak. A point (ball) joint pins the two
+    // bodies together at one world anchor — they can swing freely about it. Pass an
+    // invalid BodyId for `a` to pin `b` to the WORLD at `worldAnchor` (a fixed
+    // point), which is how a cube "hangs from above".
+    // -----------------------------------------------------------------------
+    virtual ConstraintId addPointConstraint(BodyId a, BodyId b, Vec3 worldAnchor) = 0;
+    // (removeConstraint is declared once, below, with the §1 constraint API — it
+    //  tears down BOTH this two-body joint form and the single-body §1 joints.)
 
     // Per-body user tag (D-phys). Fast opaque uint64 the game can stamp on a body
     // (AI: "is this an enemy?"; later destruction: "is this destructible?"). 0 by

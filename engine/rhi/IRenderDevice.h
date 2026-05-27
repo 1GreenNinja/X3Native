@@ -30,6 +30,33 @@ struct FrameContext {
 };
 
 // ---------------------------------------------------------------------------
+// Role-based HUD/UI fonts. Each role binds its own baked glyph atlas (loaded
+// from assets/fonts/ at init, with the embedded Roboto Mono as the guaranteed
+// fallback). Some roles are PROPORTIONAL (per-glyph advance widths); the mono
+// roles keep a fixed cell advance so the legacy N*px layout math stays exact.
+//
+//   Title   -> Orbitron-Bold         (proportional) — menu titles, big banners
+//   Menu    -> SpaceGrotesk-Medium    (proportional) — buttons/toggles/objective/labels
+//   Enemy   -> Tektur_Condensed-Bold  (proportional) — enemy nameplates / threat tags
+//   News    -> SpaceMono-Bold         (monospace)    — event popups, "AREA CLEAR", tickers
+//   Console -> Roboto Mono (embedded) (monospace)    — dev `~` console + HP/ammo numerics
+//   HudMono -> alias of Console (the standard game-console mono — "is GOOD")
+//
+// To reassign a role's font: edit the ONE path string in kRoleFontPaths[] in
+// VulkanRenderDevice.cpp and restart (no rebuild of the rest needed). To ship a
+// role embedded in the single binary, run tools/embed_font.ps1 on its .ttf (see
+// that file's header) and point that role at the generated embedded blob.
+enum class FontRole : uint32_t {
+    Console = 0,   // embedded Roboto Mono (mono) — default for drawHudText()
+    HudMono = 0,   // alias: HP/ammo numerics use the same mono atlas as Console
+    Title   = 1,   // Orbitron (proportional)
+    Menu    = 2,   // Space Grotesk (proportional)
+    Enemy   = 3,   // Tektur Condensed (proportional)
+    News    = 4,   // Space Mono (monospace)
+    Count   = 5,
+};
+
+// ---------------------------------------------------------------------------
 // Mesh + texture API (S1). Vulkan types stay hidden in the .cpp; the public
 // boundary uses POD vertices and small opaque handles (id == 0 means invalid).
 // ---------------------------------------------------------------------------
@@ -152,6 +179,34 @@ public:
                                            const float baseColorFactor[4], const float emissive[4],
                                            const float model[16]) = 0;
 
+    // ---- Translucent GLASS material (transparent pass) ---------------------
+    // A general, reusable translucent-glass material (design spec
+    // docs/superpowers/specs/2026-05-25-glass-material-design.md). A mesh drawn
+    // via drawMeshGlass() is NOT rendered in the opaque pass — it is flagged GLASS
+    // and drawn in a dedicated post-opaque, depth-tested (LEQUAL, no depth write),
+    // alpha-blended transparent pass so it reads as see-through over the lit scene.
+    //
+    // All params are runtime-tunable per draw (material-instance style). POD only —
+    // no Vulkan types cross the boundary. MILESTONES: M1 uses `opacity` (-> blend
+    // alpha) so glass renders see-through; `tint`/`refraction`/`roughness`/`specular`
+    // are carried now and consumed by later milestones (refraction, fresnel/specular,
+    // frost). `opacity` 0 = crystal clear, 1 = fully opaque (the primary dial).
+    struct GlassMaterial {
+        float opacity    = 0.35f;            // 0 = clear .. 1 = opaque (blend alpha)
+        float refraction = 0.03f;            // screen-space distortion strength (M2)
+        float roughness  = 0.0f;             // 0 = polished .. 1 = frosted (M4)
+        float specular   = 0.6f;             // shimmer / specular strength (M3)
+        float tint[3]    = { 1.0f, 1.0f, 1.0f }; // glass color; white = colorless
+    };
+
+    // Submit a translucent glass draw. `glass.opacity` overrides baseColorFactor's
+    // alpha (the see-through dial). `emissive` is the same per-object HDR glow term
+    // as drawMeshEmissive (holo glass keeps its glow); pass nullptr for none. The
+    // device flags the per-object row GLASS so it routes to the transparent pass.
+    virtual void          drawMeshGlass(const FrameContext&, MeshHandle, TextureHandle baseColor,
+                                        const float baseColorFactor[4], const float emissive[4],
+                                        const GlassMaterial& glass, const float model[16]) = 0;
+
     // ---- Analytic sky (open-world track, task A) ---------------------------
     // Parameters for the physically-plausible analytic sky drawn as the far-depth
     // backdrop wherever no opaque geometry covers a pixel (it composites against
@@ -180,6 +235,65 @@ public:
     // Project a world point to HUD pixel coords (top-left origin); false if behind the
     // camera / off-screen. Uses the most recent render viewProj. Non-pure (headless: false).
     virtual bool          worldToScreen(float, float, float, float& sx, float& sy) const { sx = sy = 0.0f; return false; }
+
+    // Hardware ray tracing (RT Phase 0): true once VK_KHR_ray_query +
+    // acceleration_structure are enabled on the device. The future RT
+    // shadow/reflection/GI passes gate on this (SSAO/CSM raster fallback when
+    // false). Default false (headless / non-RT devices).
+    virtual bool          rayTracingSupported() const { return false; }
+
+    // ---- Ray-traced ambient occlusion (RT AO — hardware ray query) ----------
+    // GROUND-TRUTH ambient occlusion via the Vulkan ray-query path (rayQueryEXT):
+    // the device builds a BLAS per static mesh + a per-frame TLAS from the scene
+    // draw list, then an inline-ray-query compute pass casts short cosine-hemisphere
+    // rays against the TLAS from each pixel's depth-reconstructed world position;
+    // the resulting occlusion MULTIPLIES the linear HDR scene before bloom/tonemap.
+    //
+    // GATED + DEFAULT OFF (the `r_rtao` cvar maps 1:1 onto `enabled`). When OFF, or
+    // when the device has no RT support (rayTracingSupported()==false), the whole RT
+    // chain is skipped — the existing rasterized + SSAO/SSGI path is byte-for-byte
+    // unchanged and costs nothing. This is purely additive: it never replaces SSAO,
+    // it darkens the final HDR scene with real ray-traced contact occlusion. POD
+    // only — no Vulkan types cross the boundary. Mirrors setSsaoParams: the device
+    // caches a snapshot and re-applies it each frame.
+    //
+    // Tunables: `enabled` gates the whole RT-AO chain. `radius` is the ray length in
+    // meters (a hit within `radius` occludes; larger = broader, softer AO). `rays`
+    // is the hemisphere rays per pixel per frame (1..32; the half-res buffer + a
+    // depth-aware up-sample keep it cheap; raise for less noise). `bias` offsets the
+    // ray origin off the surface to avoid self-intersection. `strength` lerps the
+    // applied darkening (1 = full AO, 0 = none). `power` is a contrast exponent on
+    // the AO. `rebuildTlasEachFrame` forces a TLAS rebuild every frame (correct for
+    // moving geometry; the static-first path rebuilds only when the scene changes).
+    struct RtaoParams {
+        bool  enabled  = false;   // DEFAULT OFF (gated by r_rtao)
+        float radius   = 0.5f;    // ray length (meters) — short = contact AO, not whole-room
+        int   rays     = 8;       // hemisphere rays / pixel / frame (1..32)
+        float bias     = 0.03f;   // surface offset (meters) — avoid self-intersection
+        float strength = 0.85f;   // applied AO darkening (1 = full, 0 = off)
+        float power    = 1.5f;    // contrast exponent on the AO
+        bool  rebuildTlasEachFrame = false; // static-first: rebuild only on scene change
+    };
+    // Set the active RT-AO parameters for subsequent frames (cached + re-applied
+    // each frame, like setSsaoParams). Calling with enabled=false disables RT AO.
+    // No-op on a device without ray tracing. Default no-op (headless / base).
+    virtual void          setRtaoParams(const RtaoParams&) {}
+
+    // ---- Glass DEV overrides (live r_glass_* cvars, spec §2/§3.2) ----------
+    // A dev-time SCALE/OVERRIDE applied to EVERY glass fragment this frame so the
+    // glass look can be scrubbed live in the console without re-authoring each
+    // material. When `override` is false the shader uses each object's own
+    // GlassMaterial unchanged (the production path). When true: refraction is
+    // SCALED by refractScale, roughness is ADDED by roughAdd (clamped), specular is
+    // SCALED by specScale. Cached + re-applied each frame like the other dev params.
+    // Default no-op (headless / base) so existing devices/tests are unaffected.
+    struct GlassDevParams {
+        bool  override     = false;  // false = use per-object materials as authored
+        float refractScale = 1.0f;   // multiplies GlassMaterial.refraction
+        float roughAdd     = 0.0f;   // added to GlassMaterial.roughness (clamped 0..1)
+        float specScale    = 1.0f;   // multiplies GlassMaterial.specular
+    };
+    virtual void          setGlassDevParams(const GlassDevParams&) {}
 
     // ---- Screen-space ambient occlusion (SSAO, idTech-8 grounding/contact) --
     // SSAO darkens the AMBIENT/indirect lighting term in corners, crevices, and
@@ -492,11 +606,27 @@ public:
     // drawHudQuad: a filled rectangle (backed by the built-in 1x1 white texture).
     virtual void drawHudQuad(const FrameContext&, float xPx, float yPx,
                              float wPx, float hPx, const float rgba[4]) = 0;
-    // drawHudText: render `text` starting at (xPx,yPx) with each glyph occupying
-    // pxPerGlyph x pxPerGlyph pixels, sampling the embedded 8x8 bitmap font atlas.
-    // Newlines advance a line; non-printable chars are skipped. `rgba` tints it.
+    // drawHudText: render `text` starting at (xPx,yPx) at glyph size `pxPerGlyph`.
+    // Uses the DEFAULT mono role (FontRole::Console / HudMono — the embedded Roboto
+    // Mono). Each glyph advances by a fixed cell (== pxPerGlyph), so the legacy
+    // N*px layout math (centering / right-align) stays exact. Newlines advance a
+    // line; non-printable chars are skipped; `rgba` tints it. Non-UI callers that
+    // do not care about role keep using this unchanged.
     virtual void drawHudText(const FrameContext&, const char* text, float xPx,
                              float yPx, float pxPerGlyph, const float rgba[4]) = 0;
+    // drawHudTextF: role-aware HUD text. `role` selects the baked atlas. PROPORTIONAL
+    // roles advance the pen by each glyph's REAL width; monospace roles advance by a
+    // fixed cell. To keep centering/right-align exact, query the true rendered width
+    // with textAdvance(role, ...) (UiContext::textWidth wraps this). `px` is the cap
+    // pixel height; `rgba` tints it.
+    virtual void drawHudTextF(const FrameContext&, FontRole role, const char* text,
+                              float xPx, float yPx, float px, const float rgba[4]) = 0;
+    // textAdvance: the TRUE rendered pixel width `text` occupies for `role` at glyph
+    // size `px` — sums per-glyph advances (proportional) or N*cell (mono). The UI
+    // layer's textWidth() reads this so centering/right-alignment is pixel-exact.
+    // Safe to call before a frame is begun (pure metrics; no GPU work). If the role's
+    // atlas is unavailable it falls back to the mono cell metric.
+    virtual float textAdvance(FontRole role, const char* text, float px) const = 0;
     // Current framebuffer size in pixels (for HUD layout / centering).
     virtual void hudSize(uint32_t& outW, uint32_t& outH) const = 0;
 

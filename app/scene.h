@@ -14,12 +14,21 @@
 
 #include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace x3::game {
 
 // Sentinel for Entity::link meaning "not linked to anything".
 constexpr uint32_t kNoLink = 0xFFFFFFFFu;
+
+// Sentinel for Entity::roomId meaning "no room — ALWAYS visible" (the default).
+// Per-room occlusion culling (level_loader.*) tags every built room shell/prop with
+// a real room id; everything else (sky, viewmodel, FX, the elevator shaft, legacy
+// levels) keeps kNoRoom and is exempt from the cull, so render() is byte-identical to
+// the old always-draw behaviour for every existing entity. See Scene::render +
+// Scene::setVisibleRooms.
+constexpr uint32_t kNoRoom = 0xFFFFFFFFu;
 
 // ---------------------------------------------------------------------------
 // Generation-counter handle (netcode Phase 0; spec NETCODE-architecture §4.1).
@@ -77,11 +86,29 @@ struct Entity {
     // transform still anchors at the visual origin (the feet). Default 0 == no offset.
     float                  bodyVisualOffsetY = 0.0f;
     bool                   visible = true;
+    // ---- Translucent GLASS material (transparent pass) --------------------
+    // When `transparent` is set, Scene::render routes this entity through
+    // device.drawMeshGlass instead of the opaque drawMeshEmissive: it renders in
+    // the dedicated post-opaque, alpha-blended glass pass as real see-through glass
+    // (design spec docs/superpowers/specs/2026-05-25-glass-material-design.md).
+    // `glass` carries the per-instance material; `glass.opacity` is the primary
+    // see-through dial (0 = clear, 1 = opaque) and overrides baseColor[3]. emissive
+    // is still honored (holo glass keeps its glow). Default false == opaque, so every
+    // existing entity renders exactly as before.
+    bool                   transparent = false;
+    x3::rhi::IRenderDevice::GlassMaterial glass{};
     uint32_t               tag = (uint32_t)Tag::None;
     // Generic gameplay linkage (S4): the entity id this one targets, or kNoLink.
     // A Button stores the entity id of the Door it opens. Chosen over a separate
     // side-table because the link is 1:1 and stays cache-local with the entity.
     uint32_t               link = kNoLink;
+    // Per-room occlusion culling (level_loader.*): the id of the room this entity
+    // belongs to, or kNoRoom == always-visible (the default — exempt from the cull).
+    // When the Scene has a non-empty visible-room set (setVisibleRooms), render()
+    // draws an entity ONLY if its roomId is kNoRoom OR is in that set. This is how
+    // the data-driven level loader culls the 7-floor tower down to the player's
+    // current room + its doorway-reachable neighbours (a simple portal PVS).
+    uint32_t               roomId = kNoRoom;
 };
 
 class Scene {
@@ -138,14 +165,55 @@ public:
     // rotation getter. See the .cpp for details.
     void update(const x3::phys::IPhysicsWorld& physics);
 
-    // Issue one drawMesh per visible entity with a valid mesh.
+    // Issue one drawMeshEmissive per visible entity with a valid mesh — gated by the
+    // per-room occlusion cull (see setVisibleRooms). An entity is drawn iff
+    // e.visible && e.mesh.valid() && roomVisible(e.roomId). With the room cull
+    // disabled (the default — no visible-room set yet), roomVisible() is always true
+    // and this is identical to the legacy "draw every visible entity" behaviour.
     void render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const;
+
+    // ---- Per-room occlusion culling (data-driven level loader, PVS) ----------
+    // The host updates the VISIBLE-ROOM SET once per frame from the camera position
+    // (the level loader's PVS: current room + doorway-reachable neighbours). render()
+    // then skips entities whose roomId is not in this set. Entities tagged kNoRoom
+    // (sky / viewmodel / FX / legacy levels) are ALWAYS drawn (exempt from the cull).
+    //
+    // The cull is OPT-IN: until the first setVisibleRooms() with a non-empty set, the
+    // cull is INACTIVE and every visible entity draws (so existing levels/tests are
+    // unaffected). setRoomCullEnabled(false) hard-disables it (debug / always draw all).
+    void setVisibleRooms(const uint32_t* rooms, uint32_t count);
+    void setVisibleRooms(const std::vector<uint32_t>& rooms) {
+        setVisibleRooms(rooms.data(), (uint32_t)rooms.size());
+    }
+    // Clear the visible set => cull inactive again (everything draws).
+    void clearVisibleRooms() { m_visibleRooms.clear(); m_roomCullActive = false; }
+    // Master switch: when false the room cull never culls (everything draws) even with
+    // a visible set present. Default true.
+    void setRoomCullEnabled(bool on) { m_roomCullEnabled = on; }
+    bool roomCullEnabled() const { return m_roomCullEnabled; }
+    // True iff a draw of an entity tagged `roomId` would happen under the current cull
+    // state (kNoRoom always passes; cull inactive => everything passes). Pure query —
+    // used by render() and by --test-canonlevel to count the drawn set without a GPU.
+    bool roomVisible(uint32_t roomId) const {
+        if (roomId == kNoRoom) return true;
+        if (!m_roomCullEnabled || !m_roomCullActive) return true;
+        return m_visibleRooms.count(roomId) != 0;
+    }
+    // Count how many of this scene's entities would be DRAWN under the current cull
+    // state (visible + valid mesh + roomVisible). Diagnostics / the self-test proof.
+    uint32_t drawnCount() const;
 
     std::vector<Entity>&       entities()       { return m_entities; }
     const std::vector<Entity>& entities() const { return m_entities; }
 
 private:
     std::vector<Entity> m_entities;
+    // Per-room occlusion cull state. m_roomCullActive flips true the first time a
+    // non-empty visible set is installed; cleared by clearVisibleRooms(). Stored as a
+    // set for O(1) membership in render()'s hot loop.
+    std::unordered_set<uint32_t> m_visibleRooms;
+    bool m_roomCullEnabled = true;
+    bool m_roomCullActive  = false;
     // Per-slot generation counter, parallel to m_entities (1:1 by index). A fresh
     // slot starts at generation 1 (so a minted handle is never the invalid gen 0);
     // recycle() bumps it. Additive — untouched by the legacy uint32_t-id path.

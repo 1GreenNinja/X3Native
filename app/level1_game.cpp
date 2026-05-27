@@ -137,7 +137,9 @@ MonsterSystem::Tuning droneTuning() {
     t.attackWindup   = 0.35f;          // a beat of telegraph before the bolt
     t.ranged         = true;
     t.standoff       = combat::kRangedStandoff;       // hold ~7 m out
-    useCharacter(t, "Drone.glb", 1.0f);
+    // Animated drone (Tim's authored model — rotors spin via the GLB's baked motion).
+    // Falls back to the procedural box if the load fails. Scale may need a tweak.
+    useCharacter(t, "DroneExportWMotion.glb", 1.0f);
     return t;
 }
 } // namespace
@@ -218,10 +220,12 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_doorIdx[4] = buildLevelDoor(scene, m_doors, device, physics, e);
     }
 
-    // ---- Armory pistol pickup (beat 6). ----
+    // ---- Starting sidearm IN THE CELL: the player grabs a pistol right at spawn so
+    // they're never defenseless against the corridor monsters (the armory then adds the
+    // heavier guns — see m_armory below). Placed a step ahead of spawn (1.5) in the cell. ----
     m_weapon.buildWeaponPickup(scene, device, m_modelDir,
-                               x3::phys::Vec3{ m_layout.armoryCenter.x, 1.0f,
-                                               m_layout.armoryCenter.z });
+                               x3::phys::Vec3{ m_layout.cellCenter.x, 1.0f,
+                                               m_layout.cellCenter.z });
 
     // ---- Checkpoint encounter (built at level build; beat 8). Now the player is
     // armed, so this is a proper firefight: 3 Guards holding the line behind the
@@ -246,6 +250,36 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_checkpoint.spawn(scene, device, physics, m_modelDir,
                        x3::phys::Vec3{ cc.x + 0.8f, kEnemyY, cc.z + 2.5f },
                        tuningFor(EnemyType::BlueSynth));
+
+    // ---- Explosive barrels: shootable, scattered along the corridor + a checkpoint
+    // cluster (a hit detonates violently + chains to neighbors). ----
+    {
+        m_barrels.init(device, physics);
+        const float by = level1Rooms()[(uint32_t)L1Floor::B1].y0;
+        const x3::phys::Vec3 co = m_layout.corridorCenter;
+        m_barrels.spawn(co.x - 2.0f, by, co.z + 1.6f);
+        m_barrels.spawn(co.x + 3.0f, by, co.z - 1.6f);
+        m_barrels.spawn(cc.x - 1.8f, by, cc.z + 0.2f);   // checkpoint pair -> chain reaction
+        m_barrels.spawn(cc.x - 1.1f, by, cc.z + 0.9f);
+        // MORE barrels (Tim playtest): scatter from the cell through the corridor so there
+        // is always one in sight to shoot + bigger chain reactions. Kept within the ~z +/-1.6
+        // corridor footprint and clear of the spawn (1.5) + the cell pickup (cellCenter,z=0).
+        const float bx = m_layout.cellCenter.x;          // ~3.0, right by the spawn
+        m_barrels.spawn(bx + 0.9f, by,  1.3f);           // cell/start — immediately shootable
+        m_barrels.spawn(bx + 1.6f, by, -1.3f);
+        m_barrels.spawn(co.x - 3.5f, by, -1.4f);
+        m_barrels.spawn(co.x - 0.6f, by,  1.5f);
+        m_barrels.spawn(co.x + 1.4f, by,  1.4f);
+        m_barrels.spawn(co.x + 4.6f, by,  1.3f);
+        // Two more in the checkpoint room, placed CLEAR of the eye->enemy firing lanes
+        // (the test fires from cc.x-0.9 at z~0 toward enemies spread over z in [-2.5,2.5]).
+        // One just inside Door C behind the firing line (cc.x-2.4, harmless), one tucked
+        // against the +Z back of the room (z=+3.0) beyond every enemy — both still
+        // shootable for the chain, neither intercepts a kill shot.
+        m_barrels.spawn(cc.x - 2.4f, by, -1.6f);   // behind the eye, near Door C mouth
+        m_barrels.spawn(cc.x + 1.2f, by,  3.0f);   // +Z back corner, beyond the enemies
+        x3::logInfo("[level1] spawned " + std::to_string(m_barrels.count()) + " explosive barrels");
+    }
 
     // ---- Trigger volumes. Strength (cell), arena (boss entry), elevator (win,
     // disabled until the boss dies). ----
@@ -302,8 +336,19 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
                        (uint32_t)L1Trigger::Hub, true);
     }
 
+    // ---- CODE-LOCKED TRAPDOOR -> SECRET ROOM (cell HoloTerminal). The cell floor is
+    // at the B1 plate base (y0); Jake's Cell center is the legacy cellCenter (XZ at
+    // the spawn). Build the cell terminal + the floor-hatch trapdoor + the stocked
+    // secret room below, wiring the terminal's submit sink to unlock+open the hatch
+    // on code 1127. Additive — its own HoloTerminal + a hatch registered in m_doors. ----
+    {
+        const float b1y = level1Rooms()[(uint32_t)L1Floor::B1].y0;
+        const x3::phys::Vec3 cellCenter{ m_layout.cellCenter.x, b1y, m_layout.cellCenter.z };
+        m_secretRoom.build(scene, device, physics, m_doors, cellCenter, riggedDir());
+    }
+
     m_built = true;
-    x3::logInfo("Level1Game::build complete — doors A-E, pistol pickup, 4 checkpoint enemies, 4 triggers, 3 rescue victims (timers gated on F2-hub trigger)");
+    x3::logInfo("Level1Game::build complete — doors A-E, pistol pickup, 4 checkpoint enemies, 4 triggers, 3 rescue victims (timers gated on F2-hub trigger), cell trapdoor + secret room");
 }
 
 uint32_t Level1Game::doorIndex(char letter) const {
@@ -372,6 +417,19 @@ void Level1Game::setCueSink(const GameCueFn& sink) {
     if (m_martinezSpawned) m_martinez.setCueSink(sink);
 }
 
+void Level1Game::setDeathFxSink(const DeathFxFn& sink) {
+    m_deathFx = sink;
+    // Fan the gib-burst death FX to every enemy group (managers store + re-apply to
+    // future spawns) and the single Martinez boss instance — exactly like setCueSink.
+    // Groups not yet spawned carry the sink onto their on-beat spawns; Martinez is
+    // wired here once up. The monster fires it ONCE at the kill moment (HP->0).
+    m_corridor.setDeathFxSink(sink);
+    m_checkpoint.setDeathFxSink(sink);
+    m_bossAdds.setDeathFxSink(sink);
+    m_chen.setDeathFxSink(sink);
+    if (m_martinezSpawned) m_martinez.setDeathFxSink(sink);
+}
+
 void Level1Game::cheatArm(Scene& scene) { m_weapon.forceArm(scene); }  // IDKFA/IDFA
 
 void Level1Game::spawnCorridorEnemies(Scene& scene, x3::rhi::IRenderDevice& device,
@@ -421,6 +479,7 @@ void Level1Game::spawnMartinez(Scene& scene, x3::rhi::IRenderDevice& device,
                                                  m_layout.arenaCenter.z },
                                  martinezTuning());
     if (m_cueSink) m_martinez.setCueSink(m_cueSink);   // inherit footstep/impact cues
+    if (m_deathFx) m_martinez.setDeathFxSink(m_deathFx); // inherit the gib-burst death FX
     x3::logInfo("Level1: BOSS — Chief Martinez spawned in the arena (boss-tier HP/speed)");
 }
 
@@ -480,6 +539,9 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
 
     // ---- Melee cooldown advances (Phase 2b super-strength punch). ----
     m_melee.update(dt);
+
+    // ---- Explosive barrels: detonate any shot this frame (scatter + chain + FX). ----
+    m_barrels.update(dt);
 
     // ---- Doors advance ----
     m_doors.update(dt, scene, physics);
@@ -588,6 +650,13 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     // (main.cpp) pokes onRescue() on an E-edge and draws the timers/victims. ----
     m_rescue.tick(dt, scene, physics, playerPos);
 
+    // ---- Code-locked trapdoor -> SECRET ROOM: tick the cell terminal blink + the
+    // secret weapon pickup + the room's loot collection. Heals are applied here via
+    // the IDamageSink when it exposes a heal hook; otherwise the host applies them
+    // off the collected-count deltas (it owns the concrete Player). The hatch itself
+    // animates via m_doors.update() above (it's registered in the same DoorSystem). ----
+    m_secretRoom.tick(dt, scene, playerPos);
+
     // ---- Triggers (per-frame point test on the player position) ----
     for (uint32_t id : m_triggers.update(playerPos)) {
         switch ((L1Trigger)id) {
@@ -666,6 +735,13 @@ FireResult Level1Game::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& d
                               int damage) {
     FireResult r;
     if (!m_weapon.hasWeapon()) return r;   // gate: only effective when armed
+    // Explosive barrels: a shot that hits a barrel detonates it (independent of
+    // whether it also hits a monster — the ray can pass a barrel on the way).
+    {
+        const float e3[3] = { eye.x, eye.y, eye.z };
+        const float d3[3] = { dir.x, dir.y, dir.z };
+        m_barrels.onShot(e3, d3);
+    }
     // Fire across all three monster groups; the first live monster hit takes it.
     r = m_corridor.fire(eye, dir, scene, physics, damage);
     if (!r.hitMonster) {
@@ -677,6 +753,14 @@ FireResult Level1Game::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& d
         FireResult r3 = m_martinez.fire(eye, dir, scene, physics, damage);
         if (r3.hitMonster) r = r3;
         else if (!r.hit && r3.hit) r = r3;
+    }
+    // Phase-3 boss ADDS (summoned during the Martinez fight). These were invincible
+    // to GUNFIRE — onFire never included them (only melee did), so they could never
+    // die and the area never cleared. Include them in the gun-damage chain.
+    if (!r.hitMonster && m_bossAdds.count() > 0) {
+        FireResult ra = m_bossAdds.fire(eye, dir, scene, physics, damage);
+        if (ra.hitMonster) r = ra;
+        else if (!r.hit && ra.hit) r = ra;
     }
     // F2 Medical Bay boss (Dr. Chen), if placed.
     if (!r.hitMonster && m_chenSpawned) {
@@ -721,6 +805,7 @@ void Level1Game::drawWorldExtras(x3::rhi::IRenderDevice& device,
                                  const x3::rhi::FrameContext& frame,
                                  const Scene& scene) const {
     m_envArt.draw(device, frame);   // converted sci-fi environment art over graybox
+    m_barrels.render(frame);        // intact barrels + their tumbling debris
     m_weapon.drawPickup(device, frame, scene);
     m_corridor.drawAll(device, frame, scene);
     m_checkpoint.drawAll(device, frame, scene);
@@ -912,10 +997,31 @@ bool runLevel1SelfTest() {
     check(game.objectives().currentLabel() == "Fight to the armory and arm yourself",
           "T7b objective advances after Door A opens");
 
+    // ---- T4 (locked gate, part 1): Door C does NOT open before armed. The player has
+    // only just opened Door A and is still at spawn -- they have not yet stepped into
+    // the cell to grab the sidearm, so they are unarmed and Door C must stay shut. ----
+    {
+        x3::phys::Vec3 btn{ L.doorC.x - 0.10f - 0.12f, 1.3f, L.doorC.z + 0.6f + 0.5f };
+        x3::phys::Vec3 eye{ btn.x - 1.5f, btn.y, btn.z };
+        bool usedLocked = game.onUse(eye, aimFromTo(eye, btn), scene, *physics);
+        bool stillClosed = game.doorState('C') == DoorState::Closed;
+        check(!usedLocked && stillClosed && game.doorLocked('C'),
+              "T4a Door C stays locked + closed before armed");
+    }
+
+    // ---- T3: step into the cell onto the starting sidearm pickup -> armed. The pistol
+    // sits in the detention cell so Jake is never defenseless against the corridor alarm
+    // enemies; the armory's Door C (below) is the gate he opens once armed. ----
+    {
+        run(game, scene, *physics, device,
+            x3::phys::Vec3{ L.cellCenter.x, 0.05f, L.cellCenter.z }, 6);
+        check(game.armed(), "T3 grabbing the cell sidearm arms the player");
+    }
+
     // ---- Corridor clear (gameplay-faithful): on the compact Spire B1, Jake fights
-    // through the alarm enemies en route to the armory. We're not armed yet here, so
-    // melee them down so they don't trail into the later checkpoint encounter (the
-    // fire ray hits the nearest Enemy body, so the encounters must not interleave).
+    // through the alarm enemies en route to the armory. Now armed, he melees them down
+    // so they don't trail into the later checkpoint encounter (the fire ray hits the
+    // nearest Enemy body, so the encounters must not interleave).
     {
         const float cx = L.corridorCenter.x, cz = L.corridorCenter.z;
         x3::phys::Vec3 eye{ cx - 4.0f, 0.6f, cz };
@@ -932,24 +1038,6 @@ bool runLevel1SelfTest() {
             }
             run(game, scene, *physics, device, eye, 2);
         }
-    }
-
-    // ---- T4 (locked gate, part 1): Door C does NOT open before armed. ----
-    {
-        // Aim a use-ray at Door C's button while UNARMED; it must refuse.
-        x3::phys::Vec3 btn{ L.doorC.x - 0.10f - 0.12f, 1.3f, L.doorC.z + 0.6f + 0.5f };
-        x3::phys::Vec3 eye{ btn.x - 1.5f, btn.y, btn.z };
-        bool usedLocked = game.onUse(eye, aimFromTo(eye, btn), scene, *physics);
-        bool stillClosed = game.doorState('C') == DoorState::Closed;
-        check(!usedLocked && stillClosed && game.doorLocked('C'),
-              "T4a Door C stays locked + closed before armed");
-    }
-
-    // ---- T3: walk onto the armory pickup -> armed; pistol can deal damage. ----
-    {
-        run(game, scene, *physics, device,
-            x3::phys::Vec3{ L.armoryCenter.x, 0.05f, L.armoryCenter.z }, 3);
-        check(game.armed(), "T3 walking onto the pickup arms the player");
     }
 
     // ---- T4 (locked gate, part 2): Door C unlocked + opening after arming. ----

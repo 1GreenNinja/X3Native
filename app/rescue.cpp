@@ -129,7 +129,12 @@ void RescueVictim::build(Scene& scene, x3::rhi::IRenderDevice& device,
 
 void RescueVictim::bakeTransform(Scene& scene) {
     if (m_entity == kNoLink || m_entity >= scene.size()) return;
-    const float c = std::cos(m_yaw), s = std::sin(m_yaw);
+    // FACING FIX (matches monster.cpp): the rigged character GLBs are authored facing
+    // +Z, but headingToFace()/m_yaw assume local -Z forward (CONVENTIONS) — so the mesh
+    // renders with its BACK to its target. Flip the VISUAL yaw 180deg here ONLY (m_yaw
+    // and the follow/face-player logic are unchanged, so --test-rescue stays correct).
+    const float ry = m_yaw + 3.14159265358979323846f;
+    const float c = std::cos(ry), s = std::sin(ry);
     Entity& me = scene.get(m_entity);
     composeTRS(me.transform,
                x3::phys::Vec3{ c, 0.0f, -s },

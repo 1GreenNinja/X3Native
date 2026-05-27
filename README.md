@@ -1,5 +1,23 @@
 # X3Native
 
+> ## ⚠️ ALL MACHINES — READ THIS: clean your `.claude/worktrees/` periodically
+> Claude Code background **sub-agents** each run in a **git worktree** under
+> `.claude/worktrees/agent-<hash>/`. **A worktree is a FULL checkout of the repo** —
+> every GLB/asset (~15 MB each) plus its own `build/` dir. They accumulate by the dozen
+> and can balloon to **many GB** (we hit ~10 GB on one machine). They are **local-only**
+> (now git-ignored) and **safe to delete** once an agent finishes — its work is committed
+> to its branch and pushed to origin, so nothing is lost.
+>
+> **Clean up (run when no sub-agents are actively working):**
+> ```powershell
+> ./tools/clean_worktrees.ps1          # removes all .claude/worktrees/agent-* + prunes
+> # or manually:
+> git worktree list                    # see them
+> git worktree remove --force <path>   # remove a stale one
+> git worktree prune
+> ```
+> This affects **every dev machine** (14900K / 13700K / i5000 / DJBOOTH). Check yours.
+
 Custom native game engine (C++20 / Vulkan 1.3) for the 1GreenNinja game portfolio — X3, TTT 1995, Pin-Pull-Tomb, and future titles. One engine, many games shipped as `.x3pak` data.
 
 **X3Native is 100% original work.** It was built clean-room from scratch — written from behavioral specs + public technical references (the Vulkan spec, *Real-Time Rendering 4th ed.*, GPU Gems, vkguide.dev, GDC/SIGGRAPH talks, library docs) plus the author's own research. The only third-party code is the permissively-licensed libraries listed in `THIRDPARTY_LICENSES.md`. See `PROVENANCE.md` and `LICENSE-NOTICE.md`.

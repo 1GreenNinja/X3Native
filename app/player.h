@@ -86,6 +86,15 @@ public:
     float yaw() const { return m_yaw; }
     float pitch() const { return m_pitch; }
 
+    // ---- Stance (crouch / crawl) ------------------------------------------
+    // Stand (full eye height + full move speed), Crouch (C, ducked eye + half
+    // speed), Prone (Left-Ctrl, crawling eye + a slow crawl). Lowers the camera
+    // (eye height) and scales the planar move speed; the physics capsule is NOT
+    // resized in v1 (visual duck + slow-down only — no low-gap clearance change).
+    enum class Stance : uint32_t { Stand = 0, Crouch = 1, Prone = 2 };
+    void   setStance(Stance s);
+    Stance stance() const { return m_stance; }
+
     // ---- Health / damage / death (Phase 2a, spec §6.6) --------------------
     // Current + max HP, and alive state.
     int  hp() const { return m_hp; }
@@ -158,6 +167,11 @@ private:
     x3::phys::BodyId m_body;
     float m_yaw   = 0.0f;   // around +Y; 0 looks toward +X
     float m_pitch = 0.0f;   // up/down; clamped to +/- kPitchClamp
+
+    // Stance state (crouch/crawl). m_eyeHeight tracks the stance (== kEyeHeight when
+    // standing); the planar move speed is scaled by a per-stance multiplier in update().
+    Stance m_stance    = Stance::Stand;
+    float  m_eyeHeight = 1.6f;   // == kEyeHeight (Stand default)
 
     bool  m_grounded   = false;
     float m_coyote     = 0.0f;   // time-since-grounded countdown (s)

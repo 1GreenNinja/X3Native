@@ -78,18 +78,42 @@ public:
     uint32_t screenW() const { return m_w; }
     uint32_t screenH() const { return m_h; }
 
+    // Project a world point to framebuffer pixels via the live device's camera
+    // (same projection the host uses for door/holo-terminal anchors). Returns false
+    // if the point is behind the camera / off-screen (or in headless tests). Lets the
+    // HUD layer place world-anchored labels (enemy nameplates) without touching GLFW.
+    bool worldToScreen(float wx, float wy, float wz, float& sx, float& sy) const {
+        return m_device ? m_device->worldToScreen(wx, wy, wz, sx, sy) : false;
+    }
+
+    // ---- Font roles --------------------------------------------------------
+    // Convenience aliases so call sites read clearly. These map onto the RHI's
+    // FontRole. PROPORTIONAL roles (Title/Menu/Enemy) advance per-glyph; mono
+    // roles (News/Console/HudMono) keep fixed cells.
+    using FontRole = x3::rhi::FontRole;
+
     // ---- Primitive draws (thin wrappers; no allocation) -------------------
     void quad(float x, float y, float w, float h, const float rgba[4]) const;
-    // Text at (x,y) top-left, glyph size px. Returns the pixel width drawn.
-    float text(const char* s, float x, float y, float px, const float rgba[4]) const;
-    // Centered text: x is the CENTER x; returns the left x used.
-    float textCentered(const char* s, float cx, float y, float px, const float rgba[4]) const;
-    // Pixel width a string would occupy at glyph size px (8x8 atlas: 1:1 cells).
-    static float textWidth(const char* s, float px);
+    // Text at (x,y) top-left, glyph size px, in the given font role. Returns the
+    // TRUE pixel width drawn (proportional-aware). The role defaults to Menu (the
+    // general HUD/label font) so existing call sites read as Space Grotesk.
+    float text(const char* s, float x, float y, float px, const float rgba[4],
+               FontRole role = FontRole::Menu) const;
+    // Centered text: x is the CENTER x; returns the left x used. Role-aware.
+    float textCentered(const char* s, float cx, float y, float px, const float rgba[4],
+                       FontRole role = FontRole::Menu) const;
+    // TRUE pixel width a string occupies at glyph size px for `role` — proportional
+    // roles sum per-glyph advances, mono roles return N*px. Reads live device font
+    // metrics (set in begin()) so centering/right-align stays pixel-exact. The
+    // role-less overload defaults to Menu for back-compat with existing callers.
+    static float textWidth(FontRole role, const char* s, float px);
+    static float textWidth(const char* s, float px) { return textWidth(FontRole::Menu, s, px); }
 
     // ---- Widgets -----------------------------------------------------------
-    // A non-interactive label (left/center). Does not take focus.
-    void label(const char* s, float x, float y, float px, const float rgba[4]) const;
+    // A non-interactive label (left/center). Does not take focus. Role-aware
+    // (defaults to Menu — the general label font).
+    void label(const char* s, float x, float y, float px, const float rgba[4],
+               FontRole role = FontRole::Menu) const;
 
     // A clickable button filling [x,y,w,h] with centered `text`. Returns true on
     // the frame it is activated (mouse click inside OR keyboard-activate while
@@ -113,6 +137,14 @@ public:
     // a 1px bright top edge). Non-interactive.
     void panel(float x, float y, float w, float h, const float rgba[4]) const;
 
+    // An enemy nameplate / threat label: `s` drawn CENTERED at screen (cx, top) in
+    // the Enemy font (Tektur Condensed — the aggressive, condensed threat voice),
+    // with a drop shadow. `px` is the cap height; `rgba` tints it. The monster/HUD
+    // lane calls this once enemies expose a world->screen anchor. Returns the drawn
+    // width. (Wired now so the role + helper exist for the combat lane to adopt.)
+    float enemyNameplate(const char* s, float cx, float top, float px,
+                         const float rgba[4]) const;
+
     // ---- Focus ------------------------------------------------------------
     int  focus() const { return m_focus; }
     void setFocus(int i) { m_focus = i; }
@@ -120,6 +152,13 @@ public:
 
 private:
     bool pointIn(float x, float y, float w, float h) const;
+
+    // Device used by the STATIC textWidth() to query true per-role glyph metrics.
+    // Set in begin() to the live device so centering/right-align is pixel-exact for
+    // proportional fonts. Null (e.g. before the first begin) => textWidth falls back
+    // to N*px (the legacy monospace estimate), which keeps headless layout tests
+    // deterministic. A static pointer is fine: the UI is single-threaded per frame.
+    static x3::rhi::IRenderDevice* s_metricsDevice;
 
     x3::rhi::IRenderDevice* m_device = nullptr;
     x3::rhi::FrameContext   m_frame{};
@@ -160,9 +199,51 @@ struct HudModel {
     int   ammoReserve  = 0;
     bool  reloading    = false;
     const char* objective = "";  // current objective text (may be empty)
+    int   enemiesRemaining = -1; // live enemy count under the objective; <0 = hide
     float damageFlash  = 0.0f;   // [0,1] red hit flash strength
     bool  showCrosshair= true;
     bool  alive        = true;
+    int   dispW        = 0;      // live framebuffer size (drives the menu RESOLUTION readout)
+    int   dispH        = 0;
+
+    // -----------------------------------------------------------------------
+    // MINIMAP RADAR + ENEMY NAMEPLATE feed. Plain arrays (fixed cap, no heap) the
+    // host (main.cpp) fills each frame from the live world. All XZ are WORLD meters;
+    // the HUD does the player-relative translate+rotate (so "up" = forward) itself.
+    // Leave radarValid=false (default) to keep the old minimap stub + skip nameplates
+    // (headless test/screenshot paths that don't feed it are unaffected).
+    // -----------------------------------------------------------------------
+    static constexpr int kMaxBlips = 32;   // enemies / allies drawn on the radar
+    static constexpr int kMaxRooms = 16;   // faint room outlines
+
+    bool  radarValid = false;       // host filled the radar feed this frame
+    float playerX = 0.0f;           // player world X (radar center)
+    float playerZ = 0.0f;           // player world Z
+    float playerYaw = 0.0f;         // player yaw (rad, 0 looks toward +X) -> rotates radar so up=forward
+
+    int   enemyCount = 0;
+    float enemyX[kMaxBlips] = {};   // enemy world X
+    float enemyY[kMaxBlips] = {};   // enemy world Y (body center; nameplate adds head offset)
+    float enemyZ[kMaxBlips] = {};   // enemy world Z
+    const char* enemyLabel[kMaxBlips] = {};  // short threat label per enemy (nullptr -> "HOSTILE")
+    bool  enemyVisible[kMaxBlips] = {};  // eye line-of-sight: NAMEPLATE shows only if true.
+                                         // The minimap blip IGNORES this (radar sees through walls).
+
+    int   allyCount = 0;
+    float allyX[kMaxBlips] = {};    // companion world X
+    float allyZ[kMaxBlips] = {};    // companion world Z
+
+    // Secret-trapdoor objective marker (gold, pulsing) — the cell floor hatch. The
+    // host sets trapValid + the world XZ while the hatch exists so it's findable.
+    bool  trapValid = false;
+    float trapX = 0.0f;
+    float trapZ = 0.0f;
+
+    int   roomCount = 0;
+    float roomCx[kMaxRooms] = {};   // room center X (world)
+    float roomCz[kMaxRooms] = {};   // room center Z (world)
+    float roomHx[kMaxRooms] = {};   // room half-extent X (meters)
+    float roomHz[kMaxRooms] = {};   // room half-extent Z (meters)
 };
 
 // Render-setting state the SettingsMenu reflects + toggles. Mirrors the engine's
@@ -175,8 +256,12 @@ struct SettingsModel {
     bool ssgi    = true;
     bool shadows = true;
     bool vsync   = true;
-    uint32_t width  = 1280;
+    bool rtao    = false;          // hardware ray-traced AO (r_rtao) — OFF by default; no-op without RT
+    uint32_t width  = 1280;        // the "set as default" startup size (persisted)
     uint32_t height = 720;
+    uint32_t dispW  = 0;           // LIVE framebuffer size (host sets each frame) -> Settings readout
+    uint32_t dispH  = 0;
+    bool saveDefault = false;      // Settings "SET DEFAULT" button -> host persists the current size
 };
 
 // The main menu screen. Pure UI: returns an action via the state it requests.
@@ -184,7 +269,11 @@ class MainMenu {
 public:
     // Draw + handle input. Returns the next GameState (MainMenu = stay; Playing =
     // START chosen; Quit = QUIT chosen). `title`/`subtitle` are display strings.
-    GameState update(UiContext& ui, const char* title, const char* subtitle);
+    // dispW/dispH = the LIVE framebuffer size (shown as the resolution readout, updates
+    // as the window is dragged). outSaveDefault is set true the frame the "SET AS
+    // DEFAULT" button is clicked (host writes the settings file).
+    GameState update(UiContext& ui, const char* title, const char* subtitle,
+                     int dispW, int dispH, bool& outSaveDefault);
 };
 
 // A save/load action the pause menu can request back to the host (it is NOT a
@@ -269,6 +358,11 @@ public:
     bool wantSave() const { return m_pendingAction == PauseAction::Save; }
     bool wantLoad() const { return m_pendingAction == PauseAction::Load; }
     void clearSaveLoadRequest() { m_pendingAction = PauseAction::None; }
+    // True the frame the user clicked "SET AS DEFAULT" on the main menu — the host
+    // writes the settings file (window size + r_exposure), then calls clearSaveDefaults().
+    bool wantSaveDefaults() const { return m_saveDefaults; }
+    void clearSaveDefaults() { m_saveDefaults = false; }
+    bool m_saveDefaults = false;
 
     // Force a state (used by the host, e.g. when the player dies -> back to menu,
     // or by tests). Does NOT apply settings.

@@ -4,3 +4,6 @@
 *.fbx  filter=lfs diff=lfs merge=lfs -text
 *.ktx2 filter=lfs diff=lfs merge=lfs -text
 *.bin  filter=lfs diff=lfs merge=lfs -text
+# Curated sci-fi weapon SFX (per-weapon fire sounds) committed under assets/audio/.
+*.wav  filter=lfs diff=lfs merge=lfs -text
+*.WAV  filter=lfs diff=lfs merge=lfs -text

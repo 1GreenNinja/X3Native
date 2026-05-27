@@ -33,3 +33,127 @@ IMPLEMENT `app/act2_caves.{h,cpp}` (mirror `act2_world`/`spire_mid` authoring): 
 
 ## REPORT STATUS (append below, then push the branch)
 <!-- STATUS: branch HEAD, files added/changed, "act2caves: X/Y passed" (or "gate pending"), VUID/leak if gated, "READY FOR INTEGRATION" or BLOCKED+why. -->
+
+---
+
+## STATUS — DJBOOTH (2026-05-23) — Act-2 mid biomes (L12-15)
+
+- **Branch:** `feat/act2-caves` (pushed to origin)
+- **HEAD:** `53e58f15a418ac16b4bc97fcdf33f7aed939d358`
+- **Files changed (vs origin/main):**
+  ```
+   app/CMakeLists.txt |   1 +
+   app/act2_caves.cpp | 822 ++++++++++++++++++++++++++++++++++++++++++++++++++++
+   app/act2_caves.h   | 361 +++++++++++++++++++++++
+   app/main.cpp       |  17 ++
+   4 files changed, 1201 insertions(+)
+  ```
+- **Module sizes:** `app/act2_caves.h` ~361 lines (public API + `Act2CaveAreaPlan`
+  + `PoisonHazardZone` + `CrystalHeartChamber` + self-test prototype);
+  `app/act2_caves.cpp` ~822 lines (build/tick/onTrigger/onFire/draw +
+  reachability helpers + `runAct2CavesSelfTest` running TWO full builds with
+  24 assertions covering every spec gate).
+- **Touched ONLY:** `app/act2_caves.{h,cpp}` (new) + `app/main.cpp` (test flag +
+  include) + `app/CMakeLists.txt` (source list). `act2_world.*`, `act2_desert.*`,
+  Act-1 files, `monster.*` — UNTOUCHED.
+
+### Levels authored (L12-15)
+- **L12 Advanced Cave System** — 4 hostile cave-fauna (`NativeDesertFauna`
+  re-tinted cave-blue), 3 allied Salvari Archives markers (`SalvariAlly` row),
+  the **Crystal Heart Chamber** (dual-gate: strength AND hack required; story-
+  branch latch on activation), the **Memory Hunter** boss in the abyss arena
+  (uses `act2BossTuning(MemoryHunter)` so `copyFeintPhase>0` is wired by the row).
+- **L13 Toxic Swamplands Edge** — 5 stationary `MutatedFlora` lashers +
+  `PoisonHazardZone` AABB present-but-inert-until-entered (mirrors
+  `act2_world.HazardZone` exactly; same `kPoisonExposureRate = 8.0f` so the HUD
+  reads consistently across Act-2 hazards).
+- **L14 Research Station** — 4 `MutatedScientist` (ranged chemical attackers)
+  ALWAYS present; **Beta Siren ambush** placed only when `setSirenAmbushGate(true)`
+  was called before `build()` (i.e. F2 women lost in Act 1). The host flips this
+  flag before build; the test rebuilds both halves to exercise both branches.
+- **L15 Tree Cities** — 3 canopy platforms at RISING Y heights (climb route
+  graybox) + a trading-post pillar prop on the top platform (host wires E-interact
+  to `tradingPostPos()`).
+
+### Trigger range (non-colliding)
+- Reserved **100..108** (`kAct2CavesTrigBase`, 9 ids). Below: Act-1 L1Trigger
+  (10..29), SpireMid hubs (30/40/50), Act-2 host (80..82). 83..99 left as the
+  safe gap for `act2_desert.*` (L10/L11) — next machine's lane.
+- IDs: `L11toL12Portal=100`, `L12CrystalHeartRoom=101`,
+  `L12MemoryHunterArena=102`, `L12toL13Transition=103`, `L13PoisonHazard=104`,
+  `L13toL14Transition=105`, `L14SirenAmbush=106`, `L14toL15Transition=107`,
+  `L15TradingPost=108`.
+
+### Self-test (`--test-act2caves`) — 24 assertions, 2 builds
+C0 module builds; C1 all 4 levels named/objective'd/implemented; C2-C5 per-level
+plan shape (footprints/counts/flags); C6 Memory Hunter present with
+`copyFeintPhase>0`; C7 Salvari Archives allied + 0 dmg; **C8-C13 Crystal Heart
+gates** (inert at load -> stays inert on one gate -> ARMS on both -> `activate()`
+latches `activated+storyBranch` -> idempotent); **C14-C16 L13 poison hazard**
+(present+inert at load -> stays inert outside -> arms+exposure climbs inside);
+**C17+C23 timeline-gated Siren** (flag=true => Siren placed; flag=false => NO
+Siren but scientists still there); C18 Tree Cities 3 rising platforms + trading
+post; C19-C21 reachability latching + `allTransitionsReachable()`; C22 trigger-id
+non-collision range check. Prints `act2caves: X/Y passed`; exit 0 on full pass,
+nonzero on any fail.
+
+### Gate / build — **READY FOR INTEGRATION** ✅ (gated locally on DJBOOTH 2026-05-24)
+
+Local gate executed on DJBOOTH (4790K / 1080Ti) — full chain green:
+
+| Phase | Result |
+|---|---|
+| Configure (`cmake --preset windows-vs2026`) | exit 0 — 9 vcpkg ports installed (binary cache), Vulkan 1.4.350 found |
+| Release build (`cmake --build --preset windows-vs2026`) | exit 0 |
+| **Full `--test-*` gauntlet — 52/52 PASS** (every flag parsed in `app/main.cpp`) | all exit 0 |
+| `--test-act2caves` (this task's self-test) | **PASS in 28.9s — `act2caves: 24/24 passed`** |
+| Release `--smoketest` | exit 0, **VUID mentions = 0** |
+| Debug build (`cmake --build build --config Debug`) | exit 0 |
+| Debug `--smoketest` | exit 0, **VUID = 0**, **`live allocationCount=0 (expect 0)`** |
+
+Gauntlet flag list run (52, derived from `else if (a == "--test-*")` in main.cpp):
+`--test-jobs --test-asset --test-console --test-physics --test-gltf --test-player --test-interact --test-pickup --test-combat --test-audio --test-level1 --test-phase2a --test-phase2b --test-anim --test-terrain --test-terrainplace --test-streaming --test-ai --test-bestiary --test-bosses --test-act2bosses --test-spiremid --test-nexus --test-spiretop --test-dronehack --test-sublevels --test-act2 --test-act2caves --test-doorcode --test-elevator --test-elevatorfsm --test-net --test-netsync --test-netinterp --test-netpredict --test-rescue --test-destruction --test-debris --test-gpuskin --test-collapse --test-physjoint --test-ragdoll --test-nav --test-weapons --test-vehicle --test-footik --test-ui --test-saveload --test-valley --test-cliffs --test-club --test-locomotion`
+
+After `--test-gltf` regenerated `docs/GLB_IMPORT_REPORT.md`, the file was reverted via `git checkout -- docs/GLB_IMPORT_REPORT.md` (no spurious diff in this branch).
+
+Source-correct, compilable-looking, design-aligned C++ on pushed branch. No
+engine/CMake-shader/Act-1/Act-2-world/Act-2-desert/`monster.*` files touched.
+Clean-room: only X3Native headers + EFLZ design docs in `docs/design/`
+(`X3_WORLD_BLUEPRINT.md` §4.2, `EFLZ_WORLD_STRUCTURE.md` L12-L15 rows,
+`EFLZ_BESTIARY.md`). G:\ TASK_3 file not present on this box — design docs
+served as the source of truth. No RBDOOM / id Tech / Doom / Quake source
+consulted.
+
+---
+
+## HARDWARE — DJBOOTH snapshot (2026-05-24)
+
+Tag for fleet comparison: **garage 4790K / 1080Ti / Z97**. Formerly the
+Club 1127 DJ booth PC. Sits on the Blue Toolbox (one of many).
+
+| Component | Value |
+|---|---|
+| **CPU** | Intel i7-4790K (Haswell, 2014) — 4C/8T, 4.0GHz base, LGA1150 |
+| **Motherboard** | ASUS Z97-PRO GAMER (Z97 chipset, **NOT** a newer board — original era) |
+| **BIOS** | AMI v2107, dated 2015-11-10 (eligible for update; mobo last firmware was 2018) |
+| **RAM** | 32GB DDR3-1866 = 4×8GB. 2×G.Skill F3-1866C10-8GAB + 2×Crucial BLS8G3D1609DS1S00 (DDR3-1600 sticks running at 1866 via XMP) |
+| **GPU** | NVIDIA GeForce GTX 1080 Ti, 11GB GDDR5X. Driver 32.0.15.6094 (2024-08-13) |
+| **Monitors** | 2× Dell U2719D / U2719DX (27", 2020 mfr), both **2560×1440** @ 59Hz |
+| **Storage** | C: Samsung 970 EVO Plus **2TB NVMe** (888GB free) · D: Samsung 850 EVO M.2 **500GB SATA** (434GB free). Earlier "3TB NVMe" was a misremember — actual total is 2.5TB SSD across the two drives |
+| **NIC** | Intel I218-V onboard, link 1 Gbps, 802.3 |
+| **WAN throughput** | **219 Mbps ↓ / 41 Mbps ↑** measured. ⚠️ Fleet TODO: move ALL PCs onto the **1200 Mbps fiber** — DJBOOTH is currently ~18% of target down, ~3% up |
+| **OS** | Windows 10 Pro 22H2 (build 19045), installed 2022-04-05, last-boot uptime ~272 hrs |
+| **Power plan** | High performance |
+
+### Build env installed on DJBOOTH (2026-05-23)
+- `C:\Program Files\Microsoft Visual Studio\18\Insiders\` — VS 2026 Community Insiders 18.7.11819.209 (Native Desktop workload, Win11 SDK 22621, VC CMake Project)
+- `C:\VulkanSDK\1.4.350.0\` — exact spec match
+- `C:\vcpkg\` — bootstrapped + pinned to baseline `f7f94113c3b629c01df3d49d5edebae6d598c78c`
+- `C:\Program Files\GitHub CLI\gh.exe` — authed as `1GreenNinja`
+- `D:\GameDev\X3Native` — local clone
+
+### Fleet-relevance notes for the integrator
+- **First-time vcpkg dep compile on this 4790K** is the slowest gauntlet step in the fleet — expect ~1–3 hrs for the 9 ports (joltphysics dominates). All later builds reuse cached binaries.
+- **Vulkan 1.3 feature support on GTX 1080 Ti**: per `BUILD.md`, expected to pass `set_required_features_*` checks; if not, `init()` logs which selection failed.
+- **2× 27" 1440p panels** = comfortable side-by-side dev layout (code on one, debugger / RenderDoc on the other).
+- **Wired 1 Gbps NIC** is fine for LAN/Git, but WAN bandwidth (219/41) bottlenecks first-time git clones of larger feature branches + any vcpkg binary-cache pulls. Moving to the 1200 Mbps fiber should remove that as a fleet-wide concern.

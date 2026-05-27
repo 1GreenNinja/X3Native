@@ -90,14 +90,41 @@ void Scene::update(const x3::phys::IPhysicsWorld& physics) {
     }
 }
 
+void Scene::setVisibleRooms(const uint32_t* rooms, uint32_t count) {
+    m_visibleRooms.clear();
+    for (uint32_t i = 0; i < count; ++i) m_visibleRooms.insert(rooms[i]);
+    // The cull only becomes ACTIVE once a non-empty set is installed: an empty set
+    // would otherwise hide the whole data-driven level (every room culled), which is
+    // never the intent. Empty set => cull stays inactive (everything draws).
+    m_roomCullActive = (count > 0);
+}
+
+uint32_t Scene::drawnCount() const {
+    uint32_t n = 0;
+    for (const Entity& e : m_entities)
+        if (e.visible && e.mesh.valid() && roomVisible(e.roomId)) ++n;
+    return n;
+}
+
 void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const {
     for (const Entity& e : m_entities) {
         if (!e.visible || !e.mesh.valid())
             continue;
-        // Emissive-aware draw. The default emissive {0,0,0,0} makes this identical
-        // to the old drawMesh() for every existing entity; club1127's neon/crystal
+        // Per-room occlusion cull (data-driven level loader): skip entities whose room
+        // is not in the current visible set. roomVisible() returns true for kNoRoom and
+        // whenever the cull is inactive, so this is a no-op for every existing entity.
+        if (!roomVisible(e.roomId))
+            continue;
+        // Translucent glass entities route through the dedicated transparent pass (real
+        // see-through glass), keeping their emissive glow; everything else is opaque. The
+        // default emissive {0,0,0,0} makes the opaque path identical to the old drawMesh()
+        // for every existing entity; club1127's neon/crystal
         // boxes set a non-zero emissive so they glow + feed the bloom chain.
-        device.drawMeshEmissive(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.transform);
+        if (e.transparent) {
+            device.drawMeshGlass(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.glass, e.transform);
+        } else {
+            device.drawMeshEmissive(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.transform);
+        }
     }
 }
 

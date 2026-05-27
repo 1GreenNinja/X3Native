@@ -1,0 +1,124 @@
+#version 460
+// Ray-traced ambient occlusion (RT AO) — INLINE RAY QUERY compute pass.
+// CLEAN-ROOM, original work. Built ONLY from the Vulkan 1.3 spec, the public
+// GLSL_EXT_ray_query extension spec (Khronos), and standard ambient-occlusion
+// math (cosine-weighted hemisphere, Real-Time Rendering 4th ed.). No id Tech /
+// RBDOOM source consulted.
+//
+// WHAT THIS DOES: for each screen pixel it reconstructs the WORLD-space position
+// + a geometric normal from the camera depth buffer (no G-buffer), then casts
+// `numRays` short cosine-weighted hemisphere rays into the scene's TLAS using an
+// inline rayQueryEXT. The fraction of rays that hit geometry within `aoRadius`
+// meters is the occlusion; AO = 1 - occlusion is written to a single-channel R8
+// storage image. A later full-screen "apply" pass multiplies the lit HDR scene
+// by this AO. This is GROUND-TRUTH occlusion (real geometry, no screen-space
+// haloing / view-dependence), gated entirely behind the r_rtao cvar.
+//
+// Ray query (NOT an RT pipeline / SBT): rayQueryEXT is initialised + proceeded
+// inline here; the first committed/uncommitted intersection within tMax marks the
+// ray occluded. Geometry is OPAQUE so a single proceed step suffices.
+
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D depthTex;        // camera depth (D32, [0,1], NEAREST)
+layout(set = 0, binding = 1, r8) uniform writeonly image2D aoOut; // half-res AO output
+layout(set = 0, binding = 2) uniform accelerationStructureEXT tlas;
+layout(set = 0, binding = 3) uniform Rtao {
+    mat4 invViewProj;   // clip -> world
+    vec4 camPos;        // xyz = camera world position
+    vec4 params0;       // x = aoRadius (m), y = numRays, z = bias, w = strength
+    vec4 params1;       // x = outW, y = outH, z = frameSeed, w = power
+} ub;
+
+// Reconstruct world position from a screen UV + NDC depth via inverse viewProj.
+vec3 worldFromDepth(vec2 uv, float depth) {
+    // Match the renderer's clip space: NDC xy in [-1,1], depth already [0,1]
+    // (GLM_FORCE_DEPTH_ZERO_TO_ONE). The proj has its Y flipped at build time, so
+    // the depth buffer's UV.y maps straight to NDC y here.
+    vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 wp  = ub.invViewProj * ndc;
+    return wp.xyz / wp.w;
+}
+
+// Hash + cosine-weighted hemisphere sample around +Z, built into a TBN basis from
+// the surface normal. Cheap per-pixel decorrelation via a wang-style hash.
+uint wang(uint s) {
+    s = (s ^ 61u) ^ (s >> 16); s *= 9u; s = s ^ (s >> 4); s *= 0x27d4eb2du; s = s ^ (s >> 15);
+    return s;
+}
+float rnd(inout uint st) { st = wang(st); return float(st & 0x00FFFFFFu) / float(0x01000000u); }
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    int outW = int(ub.params1.x);
+    int outH = int(ub.params1.y);
+    if (px.x >= outW || px.y >= outH) return;
+
+    // Half-res pixel -> screen UV at the texel center.
+    vec2 uv = (vec2(px) + 0.5) / vec2(outW, outH);
+
+    float depth = texture(depthTex, uv).r;
+    // Sky / far plane: fully unoccluded (AO = 1) so the background is untouched.
+    if (depth >= 1.0) { imageStore(aoOut, px, vec4(1.0)); return; }
+
+    vec3 P = worldFromDepth(uv, depth);
+
+    // Geometric world normal from depth: reconstruct neighbour world positions and
+    // take the cross product of the screen-space position derivatives. The texel
+    // step is one half-res texel; pick the smaller of the +/- neighbours to avoid
+    // bleeding across depth discontinuities (standard depth-normal reconstruction).
+    vec2 texel = 1.0 / vec2(outW, outH);
+    float dR = texture(depthTex, uv + vec2(texel.x, 0.0)).r;
+    float dL = texture(depthTex, uv - vec2(texel.x, 0.0)).r;
+    float dU = texture(depthTex, uv + vec2(0.0, texel.y)).r;
+    float dD = texture(depthTex, uv - vec2(0.0, texel.y)).r;
+    vec3 pR = worldFromDepth(uv + vec2(texel.x, 0.0), dR);
+    vec3 pL = worldFromDepth(uv - vec2(texel.x, 0.0), dL);
+    vec3 pU = worldFromDepth(uv + vec2(0.0, texel.y), dU);
+    vec3 pD = worldFromDepth(uv - vec2(0.0, texel.y), dD);
+    vec3 ddx = (abs(dR - depth) < abs(depth - dL)) ? (pR - P) : (P - pL);
+    vec3 ddy = (abs(dU - depth) < abs(depth - dD)) ? (pU - P) : (P - pD);
+    vec3 N = normalize(cross(ddx, ddy));
+    if (any(isnan(N))) { imageStore(aoOut, px, vec4(1.0)); return; }
+
+    // Build a tangent basis around N for cosine-hemisphere sampling.
+    vec3 up = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T = normalize(cross(up, N));
+    vec3 B = cross(N, T);
+
+    float aoRadius = ub.params0.x;
+    int   numRays  = int(ub.params0.y);
+    float bias     = ub.params0.z;
+    float power    = ub.params1.w;
+
+    // Offset the ray origin off the surface along N to avoid self-intersection.
+    vec3 origin = P + N * bias;
+
+    uint seed = wang(uint(px.x) * 1973u + uint(px.y) * 9277u + uint(ub.params1.z) * 26699u);
+
+    float occ = 0.0;
+    for (int i = 0; i < numRays; ++i) {
+        // Cosine-weighted hemisphere direction in tangent space.
+        float r1 = rnd(seed);
+        float r2 = rnd(seed);
+        float r = sqrt(r1);
+        float phi = 6.2831853 * r2;
+        vec3 local = vec3(r * cos(phi), r * sin(phi), sqrt(max(0.0, 1.0 - r1)));
+        vec3 dir = normalize(T * local.x + B * local.y + N * local.z);
+
+        rayQueryEXT rq;
+        rayQueryInitializeEXT(rq, tlas,
+            gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+            0xFF, origin, 0.001, dir, aoRadius);
+        // Opaque geometry: a single proceed resolves the closest hit within tMax.
+        rayQueryProceedEXT(rq);
+        if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+            occ += 1.0;
+        }
+    }
+    float ao = 1.0 - (occ / float(max(1, numRays)));
+    ao = pow(clamp(ao, 0.0, 1.0), power);
+    imageStore(aoOut, px, vec4(ao));
+}
