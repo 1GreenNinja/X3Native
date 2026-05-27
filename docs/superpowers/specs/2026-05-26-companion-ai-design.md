@@ -106,12 +106,17 @@ self-test driving a synthetic fight (companion picks correct behaviors vs script
 - `runCompanionSelfTest()` — headless, mirrors `runMonsterSelfTest()` style.
 - A `CompanionSuggestion` POD = the bias seam (later fed by the cognitive brain).
 
-## 8. Open questions for Tim's review
+## 8. Resolved (2026-05-26)
 
-1. **Squad size** — max companions at once (start 1–3?).
-2. **Downed/revive model** — do companions *and* the player get downed → revivable by a teammate
-   (co-op staple), or just die? (Affects the revive behavior + HUD.)
-3. **Companion mover** — reuse the full `Player` character controller for each companion, or a
-   lighter AI agent mover? (Perf vs fidelity for N companions.)
-4. **First test bed** — which scene to prove #1 in (Level 1 corridor fight? a dedicated
-   `--world companion` showcase like the weapon showcases)?
+- **Squad size:** up to **7** companions (you + 7 = an 8-strong fireteam). `CompanionSquad`
+  supports N ≤ 7. *Perf note: 7 full `Player` controllers + 7 reflex brains/tick is the heaviest
+  mover choice; reflex scoring runs **job-parallel** (one job per companion), and Jolt handles 7
+  character controllers comfortably — but profile the showcase with a full squad.*
+- **Downed/revive:** **co-op downed → revive** for companions AND the player. Adds a `Downed`
+  state (incapacitated, finishable) + the `revive-downed-ally` behavior (already in the scored
+  set) + a HUD cue + a revive window/timer.
+- **Companion mover:** **reuse the existing `Player` character controller** — companions *are*
+  player entities, so they move with the exact physics the netcode predicts (no second mover).
+- **First test bed:** a dedicated **`--world companion`** showcase (spawn the player + a scripted
+  squad + scripted threats), mirroring the `--world valley/openworld` pattern, plus the headless
+  **`--test-companion`** self-test.
