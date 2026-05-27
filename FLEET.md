@@ -17,7 +17,7 @@ Single source of truth for **who is who**, **how the fleet talks**, and **how co
 | Hardware | Fleet identity | Role | Primary lane |
 |---|---|---|---|
 | Dell i9 laptop (RTX A2000) | **OG Dell_I9** | OG dev + verification | gating, doc, fleet ops, lightweight fixes |
-| i7-13700K workstation (2× 1080 Ti, 128GB, 4TB) | **13700K** *(a.k.a. FarmBoss)* | **integrator on point** — owns `engine/` | merges feature branches → `main`, re-gates; renderer + netcode |
+| i7-13700K workstation (2× 1080 Ti, 128GB, 4TB) | **13700K** — **IntegratorCaptainCommanderInspector** *(a.k.a. FarmBoss)* | **central authority** — owns `engine/` | integrates feature branches → `main`, re-gates every merge, captains the crew, commands lane assignments, inspects every push; renderer + netcode |
 | i9-14900K desktop (RTX 5090) | **14900K** | gameplay/content powerhouse — owns `app/` | Level/World Editor |
 | i7-13700k second machine | **Snake13700k** | open-world engineer | mountains, city/metropolis, ocean + submarine combat |
 | i7-4790K garage (1080 Ti, Z97) | **DJBOOTH** | mid-biomes engineer | L12–L15 caves + toxic swamplands + Memory Hunter boss |
