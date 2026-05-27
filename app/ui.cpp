@@ -217,7 +217,7 @@ bool UiContext::slider(const char* label, float& value, float x, float y, float 
     textCentered(pct, x + w - pctW * 0.5f - 10.0f, y + (h - pctPx) * 0.5f, pctPx, kColText);
 
     // Track geometry: a horizontal bar between the label and the percent readout.
-    const float labelW = 132.0f;            // reserved width for the label on the left
+    const float labelW = 164.0f;            // reserved width for the label (was 132 — keep "Music Volume"/"SFX Volume" from overrunning the track)
     const float trackX = x + labelW;
     const float trackR = x + w - pctW - 16.0f;
     const float trackW = std::max(8.0f, trackR - trackX);
@@ -387,8 +387,9 @@ SettingsLayout computeSettingsLayout(float w, float h) {
     L.cx = w * 0.5f;
     L.pw = std::min(560.0f, w * 0.75f);
     // Taller panel: it hosts 10 rows (6 render toggles + Music toggle + 2 volume
-    // sliders + resolution) plus title + Back. Cap to 92% of the window height.
-    L.ph = std::min(680.0f, h * 0.92f);
+    // sliders + resolution) plus title + Back, AND the extra gap*1.5 that separates
+    // the audio group from the render toggles. Cap to 92% of the window height.
+    L.ph = std::min(693.0f, h * 0.92f);   // was 680; +~gap*1.5 so the audio-group gap still fits
     L.px = L.cx - L.pw * 0.5f;
     L.py = h * 0.5f - L.ph * 0.5f;
     const float titlePx = std::max(24.0f, L.pw / 18.0f);
@@ -434,6 +435,8 @@ GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState ba
     if (ui.toggle("Shadows",     model.shadows, rx, ry, rw, rh)) { model.shadows = !model.shadows; outChanged = true; } ry += rh + gap;
     if (ui.toggle("VSync",       model.vsync,   rx, ry, rw, rh)) { model.vsync   = !model.vsync;   outChanged = true; } ry += rh + gap;
     if (ui.toggle("RT AO (ray-traced)", model.rtao, rx, ry, rw, rh)) { model.rtao = !model.rtao;   outChanged = true; } ry += rh + gap;
+
+    ry += gap * 1.5f;   // a little gap separating the AUDIO group from the render/display toggles
 
     // ---- Audio rows: Music on/off (toggle) + Music & SFX volume (0..1 sliders).
     // The host pushes these to the audio system live (setMusicEnabled / setMusicVolume
@@ -1016,18 +1019,23 @@ bool runUiSelfTest() {
             check(std::abs(ctl.settings().musicVol - 0.25f) < 1e-4f, "U23 musicVol default ~0.25");
             check(std::abs(ctl.settings().sfxVol   - 1.0f)  < 1e-4f, "U24 sfxVol default ~1.0");
 
+            // The audio group is pushed DOWN by an extra gap*1.5 (the separator added
+            // before the Music row), so the audio rows (6/7/8) sit that much lower than
+            // a plain rowCenterY() would compute. Add it back here for the click Y.
+            const float audioGap = L.gap * 1.5f;
+
             // Click the Music toggle row (index 6) -> musicOn flips.
             const bool musicBefore = ctl.settings().musicOn;
-            { UiInput in{}; in.mouseX = L.rowCenterX(); in.mouseY = L.rowCenterY(6);
+            { UiInput in{}; in.mouseX = L.rowCenterX(); in.mouseY = L.rowCenterY(6) + audioGap;
               in.mouseDown = true; in.mousePressed = true;
               ctl.update(in, dev, fc, hud, 0.016f); }
             check(ctl.settings().musicOn != musicBefore, "U25 clicking Music row toggles musicOn");
 
             // Click near the LEFT end of the Music Volume slider track (index 7) ->
-            // value drops toward 0. The track starts at rx + labelW (132).
+            // value drops toward 0. The track starts at rx + labelW (164).
             {
-                const float trackX = L.rx + 132.0f;
-                UiInput in{}; in.mouseX = trackX + 2.0f; in.mouseY = L.rowCenterY(7);
+                const float trackX = L.rx + 164.0f;
+                UiInput in{}; in.mouseX = trackX + 2.0f; in.mouseY = L.rowCenterY(7) + audioGap;
                 in.mouseDown = true; in.mousePressed = true;
                 ctl.update(in, dev, fc, hud, 0.016f);
                 check(ctl.settings().musicVol < 0.1f, "U26 dragging Music slider to the left lowers musicVol");
@@ -1036,7 +1044,7 @@ bool runUiSelfTest() {
             {
                 const float trackR = L.rx + L.rw - 56.0f - 16.0f;  // pctW=56, margin=16
                 ctl.settings().sfxVol = 0.0f;                       // start low so the change is visible
-                UiInput in{}; in.mouseX = trackR - 1.0f; in.mouseY = L.rowCenterY(8);
+                UiInput in{}; in.mouseX = trackR - 1.0f; in.mouseY = L.rowCenterY(8) + audioGap;
                 in.mouseDown = true; in.mousePressed = true;
                 ctl.update(in, dev, fc, hud, 0.016f);
                 check(ctl.settings().sfxVol > 0.9f, "U27 dragging SFX slider to the right raises sfxVol");

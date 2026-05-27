@@ -334,12 +334,13 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.vmScale     = 0.24f;                 // longarm (~0.46 m held)
         w.muzzleFx    = "muzzle_smg";
         w.impactFx    = "impact_bullet";
-        // SHORT single-shot per round (Task #21 FIX A): the host plays fireSfx once per
-        // bullet. A long rapid-burst WAV stacked a dozen overlapping clips per trigger
-        // pull -> 5-7s of gunfire after release. A short crack per round stops the instant
-        // you let go yet still reads as rapid auto fire at this ROF.
-        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-66.wav";  // short -> stops on release
-        w.fireSfxLoop = false;  // per-round one-shot (was a looped rapid set)
+        // Task #21 FIX B (stoppable loop voice): autos play ONE sustained looping WAV
+        // started on the rising edge of held fire and stopped the instant the trigger
+        // releases (or on switch/empty/death/menu) — see the fire block in main.cpp.
+        // The old per-round one-shot stacked a dozen overlapping reverb tails into a
+        // 5-7s roar after release; a single stoppable loop cuts within a frame.
+        w.fireSfx     = "weapons/loops/Loopable_Rapid-Fires_Sci-Fi_Gun_7.wav";  // sustained auto loop
+        w.fireSfxLoop = true;   // host starts/stops a single loop voice (no per-round one-shot)
         r.push_back(w);
     }
 
@@ -430,12 +431,13 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.vmScale     = 0.26f;                        // heavy weapon (~0.49 m held)
         w.muzzleFx    = "muzzle_chaingun";
         w.impactFx    = "impact_bullet";
-        // SHORT single-shot per round (Task #21 FIX A): a short crack per bullet stops
-        // the instant the trigger is released — the long rapid-burst WAV stacked overlapping
-        // clips and roared for 5-7s after letting go. At this ROF short cracks still read as
-        // a rapid auto-fire chaingun.
-        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-30.wav";  // short -> stops on release
-        w.fireSfxLoop = false;  // per-round one-shot (was a looped rapid set)
+        // Task #21 FIX B (stoppable loop voice): the chaingun's continuous minigun whine
+        // is ONE looping WAV the host starts on the rising edge of held fire and stops the
+        // instant fire is released (or on switch/empty/death/menu). The old per-round
+        // one-shot at ~14 rounds/s stacked a dozen reverb tails into a 5-7s roar after
+        // release; the single loop cuts within a frame of letting go.
+        w.fireSfx     = "weapons/loops/Loopable_Rapid-Fires_Sci-Fi_Gun_7.wav";  // sustained minigun whine
+        w.fireSfxLoop = true;   // host starts/stops a single loop voice (no per-round one-shot)
         r.push_back(w);
     }
 

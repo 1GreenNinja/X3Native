@@ -241,8 +241,12 @@ struct WeaponDef {
     // The host loads each distinct fireSfx once into a name->SoundHandle cache at init
     // and plays the CURRENT weapon's handle when it fires (headless: silent, no crash).
     std::string fireSfx      = "";
-    // Loopable fire SFX? (auto weapons can use a loop). Currently a hint only — the host
-    // plays fireSfx as a per-shot one-shot regardless; reserved for future loop voices.
+    // Loopable fire SFX? (Task #21 FIX B). When true the host plays fireSfx as ONE
+    // sustained LOOP voice (IAudioSystem::startLoop) begun on the rising edge of held
+    // fire and stopped the instant fire stops (release / weapon switch / empty mag /
+    // death / menu) — so a held auto = one continuous whine that cuts on release,
+    // instead of a per-round one-shot whose reverb tails stack into a long roar.
+    // When false the host plays fireSfx as a per-shot one-shot (unchanged).
     bool        fireSfxLoop  = false;
 };
 

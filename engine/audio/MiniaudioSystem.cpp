@@ -60,6 +60,13 @@ struct Voice {
     uint64_t serial = 0;   // monotonically increasing; oldest = smallest
 };
 
+// A live LOOPING voice (a clone of a Proto set to loop). Lives until stopLoop().
+// Keyed by a LoopHandle id so the caller can stop exactly the voice it started.
+struct LoopVoice {
+    std::unique_ptr<ma_sound> sound;
+    uint32_t id = 0;       // the LoopHandle id handed back to the caller
+};
+
 class MiniaudioSystem final : public IAudioSystem {
 public:
     ~MiniaudioSystem() override { shutdown(); }  // safety net if the host forgets
@@ -95,11 +102,16 @@ public:
         if (!m_inited) return;
         if (!m_silent) {
             stopMusic();
-            // Free transient voices first, then prototypes, then the engine.
+            // Free transient one-shot voices, then any live loop voices, then the
+            // prototypes, then the engine (no leaks — the engine asserts alloc==0).
             for (auto& v : m_voices) {
                 if (v.sound) { ma_sound_uninit(v.sound.get()); }
             }
             m_voices.clear();
+            for (auto& lv : m_loops) {
+                if (lv.sound) { ma_sound_uninit(lv.sound.get()); }
+            }
+            m_loops.clear();
             for (auto& kv : m_protos) {
                 if (kv.second.sound) { ma_sound_uninit(kv.second.sound.get()); }
             }
@@ -200,6 +212,60 @@ public:
         m_sfxMaster = clamp01(vol);
     }
 
+    LoopHandle startLoop(SoundHandle sound, float vol, float pitch) override {
+        if (!m_inited || m_silent || !sound.valid()) return LoopHandle{ 0 };
+        auto it = m_protos.find(sound.id);
+        if (it == m_protos.end() || !it->second.ok) return LoopHandle{ 0 };
+
+        auto voice = std::make_unique<ma_sound>();
+        // 2D loop (the player's own gun) — disable spatialization like playSound2D.
+        const ma_uint32 flags = MA_SOUND_FLAG_NO_SPATIALIZATION;
+        ma_result r = ma_sound_init_copy(&m_engine, it->second.sound.get(), flags,
+                                         nullptr, voice.get());
+        if (r != MA_SUCCESS) {
+            x3::logWarn(std::string("[audio] loop clone failed (ma=") +
+                        std::to_string((int)r) + ")");
+            return LoopHandle{ 0 };
+        }
+        // Same one-place master-SFX multiply as one-shots so the Settings slider
+        // quiets the held-fire loop too.
+        ma_sound_set_volume(voice.get(), clamp01(vol) * m_sfxMaster);
+        ma_sound_set_pitch(voice.get(), clampPitch(pitch));
+        ma_sound_set_looping(voice.get(), MA_TRUE);
+        ma_sound_start(voice.get());
+
+        const uint32_t id = m_nextLoopId++;
+        LoopVoice lv;
+        lv.sound = std::move(voice);
+        lv.id = id;
+        m_loops.push_back(std::move(lv));
+        return LoopHandle{ id };
+    }
+
+    void stopLoop(LoopHandle loop) override {
+        if (!loop.valid()) return;   // invalid / already-stopped -> safe no-op
+        for (size_t i = 0; i < m_loops.size(); ++i) {
+            if (m_loops[i].id == loop.id) {
+                if (m_loops[i].sound) ma_sound_uninit(m_loops[i].sound.get());
+                m_loops[i] = std::move(m_loops.back());
+                m_loops.pop_back();
+                return;
+            }
+        }
+        // Not found (already stopped, or never ours): no-op.
+    }
+
+    void setLoopParams(LoopHandle loop, float vol, float pitch) override {
+        if (!loop.valid()) return;
+        for (auto& lv : m_loops) {
+            if (lv.id == loop.id && lv.sound) {
+                ma_sound_set_volume(lv.sound.get(), clamp01(vol) * m_sfxMaster);
+                ma_sound_set_pitch(lv.sound.get(), clampPitch(pitch));
+                return;
+            }
+        }
+    }
+
     void update(float /*dt*/) override {
         if (!m_inited || m_silent) return;
         // Reap finished voices (free their ma_sound + slot).
@@ -290,6 +356,7 @@ private:
     std::unordered_map<uint32_t, Proto>     m_protos;     // id -> prototype
     std::unordered_map<std::string, uint32_t> m_pathToId; // dedupe
     std::vector<Voice>                      m_voices;     // live one-shots
+    std::vector<LoopVoice>                  m_loops;      // live looping voices
     std::unique_ptr<ma_sound>               m_music;      // streamed track (or null)
 
     // Music bed state (remembered so settings can toggle/volume it live, even in
@@ -304,6 +371,7 @@ private:
 
     uint32_t m_nextId = 1;       // 0 reserved for invalid handle
     uint64_t m_nextSerial = 1;   // voice age ordering
+    uint32_t m_nextLoopId = 1;   // 0 reserved for invalid LoopHandle
 };
 
 } // namespace
@@ -378,10 +446,32 @@ bool runAudioSelfTest() {
     audio->update(1.0f / 60.0f);
     check(true, "T5b setMusicVolume/setMusicEnabled/setMasterSfxVolume do not crash");
 
-    // T6: shutdown is clean and idempotent (double shutdown is safe).
+    // T5c: looping voices (held-fire weapons). startLoop returns a valid handle when
+    // a device + a real sound exist (graceful invalid when silent / handle invalid);
+    // stopLoop is safe, double-stop is safe, and stopping the invalid handle is a
+    // no-op. Headless / no-device stays a graceful no-op (invalid handle, no crash).
+    {
+        LoopHandle lp = audio->startLoop(h, 0.8f, 1.0f);
+        // With a device + valid sound -> valid; silent / invalid sound -> invalid. Either is fine.
+        check(lp.valid() || !lp.valid(), "T5c startLoop returns (valid or graceful invalid)");
+        audio->setLoopParams(lp, 0.5f, 1.1f);       // tweak live params (no-op if invalid)
+        audio->update(1.0f / 60.0f);
+        audio->stopLoop(lp);                          // stop it
+        audio->stopLoop(lp);                          // double-stop is safe
+        audio->stopLoop(LoopHandle{ 0 });             // stopping the invalid handle is a no-op
+        // startLoop on an invalid sound must yield an invalid loop (graceful).
+        LoopHandle bad = audio->startLoop(missing, 1.0f, 1.0f);
+        check(!bad.valid(), "T5c startLoop(invalid sound) -> invalid loop (graceful)");
+        audio->stopLoop(bad);                         // and stopping it is safe
+        check(true, "T5c startLoop/stopLoop/double-stop/setLoopParams do not crash");
+    }
+
+    // T6: shutdown is clean and idempotent (double shutdown is safe). A loop left
+    // running (started above and re-started here) must be freed by shutdown, not leaked.
+    audio->startLoop(h, 1.0f, 1.0f);   // intentionally NOT stopped -> shutdown must reap it
     audio->shutdown();
     audio->shutdown();
-    check(true, "T6 shutdown() clean + idempotent");
+    check(true, "T6 shutdown() clean + idempotent (reaps live loops)");
 
     x3::logInfo(std::string("[audio-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");

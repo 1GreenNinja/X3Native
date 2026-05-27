@@ -5298,6 +5298,14 @@ int main(int argc, char** argv) {
     bool prevF3 = false;                 // F3 toggles the perf stats overlay
     float fireCooldown = 0.0f;          // seconds until the gun can fire again
     constexpr float kFireCooldown = 0.25f;
+    // Task #21 (FIX B): a single sustained auto-fire LOOP voice. Auto/loopable weapons
+    // (chaingun/smg/lightning, fireSfxLoop=true) play ONE looping WAV started on the
+    // rising edge of held fire and stopped the instant fire ends (release / weapon
+    // switch / empty mag / death / console-menu / sim freeze) — so a held auto reads
+    // as one continuous whine that cuts on release, instead of a per-round one-shot
+    // whose reverb tails stacked into a 5-7s roar. 0/invalid = no loop running.
+    x3::audio::LoopHandle fireLoop{};
+    x3::audio::SoundHandle fireLoopSnd{};   // the sound the current loop voice was started with
     // WEAPONS: rising-edge tracking for the number keys 1..N (weapon switch) + R (reload).
     bool prevWeaponKey[9] = {};
     bool prevReload = false;
@@ -6214,12 +6222,17 @@ int main(int argc, char** argv) {
             const x3::game::WeaponFxKind impactKind =
                 x3::game::fxKindFromId(arsenal.current().impactFx);
             const x3::audio::SoundHandle fireSnd = currentFireSfx();
+            // Task #21 FIX B: loopable weapons (fireSfxLoop=true) drive a single sustained
+            // LOOP voice (reconciled just below the fire block) instead of a per-round
+            // one-shot — so suppress the per-shot fire SFX here for those weapons.
+            const bool usesFireLoop = arsenal.current().fireSfxLoop;
             if (!shot.projectiles.empty()) {
                 // ---- Projectile weapon (plasma): spawn a travelling bolt. ----
                 const auto& pj = shot.projectiles[0];
                 projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pj.damage, 0.0f, pj.range, impactKind });
                 combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);
-                audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 0.9f);
+                if (!usesFireLoop)
+                    audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 0.9f);
                 x3::logInfo("fire: " + arsenal.current().name + " bolt launched");
             } else {
                 // ---- Hitscan weapon (pistol/SMG/shotgun): one onFire per pellet. ----
@@ -6272,12 +6285,41 @@ int main(int argc, char** argv) {
                     if (r.killed)
                         audio->playSound3D(sndDeath, r.endPoint.x, r.endPoint.y, r.endPoint.z, 1.0f, 1.0f);
                 }
-                audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 1.0f);
+                if (!usesFireLoop)
+                    audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 1.0f);
                 if (anyKill)      x3::logInfo("fire: enemy killed! (" + arsenal.current().name + ")");
                 else if (anyHit)  x3::logInfo("fire: enemy hit — HP " + std::to_string(lastHp));
             }
         }
         prevFire = fireHeld;
+
+        // ---- Task #21 FIX B: reconcile the sustained auto-fire LOOP voice EVERY frame.
+        // A loopable weapon's whine should play while the player is actively holding
+        // fire on a usable weapon, and CUT within a frame the instant any stop
+        // condition is true: trigger released (!fireHeld already folds in console-open
+        // and sim-frozen), not armed, dead, mid-reload, or out of ammo. Weapon switch
+        // is handled by comparing the desired loop SOUND to the running one (switching
+        // to a non-loop weapon, or a different loop WAV, stops the old voice). We never
+        // start a second voice because we hold a single fireLoop handle. ----
+        {
+            const x3::game::WeaponDef& cw = arsenal.current();
+            const bool hasAmmo = arsenal.infiniteAmmo() || arsenal.currentState().ammoInMag > 0;
+            const bool wantLoop = cw.fireSfxLoop && fireHeld && playerArmed &&
+                                  player.isAlive() && !arsenal.isReloading() && hasAmmo;
+            const x3::audio::SoundHandle desired = wantLoop ? currentFireSfx() : x3::audio::SoundHandle{};
+            // Stop the running loop if it shouldn't run, or if the desired sound changed
+            // (weapon switch between two loop weapons with different WAVs).
+            if (fireLoop.valid() && (!wantLoop || desired.id != fireLoopSnd.id)) {
+                audio->stopLoop(fireLoop);
+                fireLoop = x3::audio::LoopHandle{};
+                fireLoopSnd = x3::audio::SoundHandle{};
+            }
+            // Start a loop if one is wanted and none is running (rising edge / new weapon).
+            if (wantLoop && !fireLoop.valid() && desired.valid()) {
+                fireLoop = audio->startLoop(desired, 0.85f, 1.0f);  // 0.85 matches the old per-shot gain
+                fireLoopSnd = desired;
+            }
+        }
 
         // ---- WEAPONS: advance live projectile bolts. Each step moves the bolt and
         // raycasts the segment against Enemy then Static; on an enemy hit it deals
