@@ -20,6 +20,7 @@ float CompanionBrain::score(CompanionBehavior b, const CompanionContext& ctx) co
     case CompanionBehavior::Engage: { const CompanionThreat* t=bestTarget(ctx,60.0f); if(!t) return 0.0f; return 1.0f + (60.0f - t->dist)*0.02f; }
     case CompanionBehavior::TakeCover: { const CompanionThreat* t=bestTarget(ctx,60.0f); if(!t||!ctx.nearCover) return 0.0f; return (1.0f-ctx.selfHpFrac)*3.0f; }
     case CompanionBehavior::Retreat: { const CompanionThreat* t=bestTarget(ctx,60.0f); if(!t) return 0.0f; if(ctx.selfHpFrac>0.15f||ctx.nearCover) return 0.0f; return 2.5f; }
+    case CompanionBehavior::Revive: { if(!ctx.anyAllyDowned) return 0.0f; const CompanionThreat* t=bestTarget(ctx,8.0f); float danger=t?1.5f:0.0f; return 2.0f - danger; }
     default: return 0.0f;
     }
 }
@@ -43,6 +44,7 @@ CompanionCommand CompanionBrain::tick(const CompanionContext& ctx) const {
     }
     else if (best == CompanionBehavior::TakeCover) { if (ctx.nearCover){ x3::phys::Vec3 to=sub(ctx.coverPos,ctx.selfPos); if(len(to)>0.5f) c.moveFwd=1.0f; } }
     else if (best == CompanionBehavior::Retreat) { const CompanionThreat* t=bestTarget(ctx,60.0f); if(t){ c.moveFwd=1.0f; c.sprint=true; } }
+    else if (best == CompanionBehavior::Revive) { x3::phys::Vec3 to=sub(ctx.downedAllyPos,ctx.selfPos); float d=len(to); c.reviveAction=true; if(d>1.2f) c.moveFwd=1.0f; }
     return c;
 }
 
@@ -80,6 +82,13 @@ bool runCompanionSelfTest() {
       CompanionThreat t; t.pos={0,0,6}; t.dist=6.0f; t.losToSelf=true; ctx.threats=&t; ctx.threatCount=1; ctx.nearCover=false;
       CompanionCommand c=brain.tick(ctx);
       if (c.chosen==CompanionBehavior::Retreat) pass++; else x3::logError("[companion-test] C4 retreat FAILED"); }
+    // C5: ally downed, no close threat -> Revive + reviveAction.
+    { total++; CompanionContext ctx; ctx.selfPos={0,0,0}; ctx.playerPos={0,0,-3};
+      ctx.anyAllyDowned=true; ctx.downedAllyPos={5,0,0}; ctx.selfHpFrac=0.8f;
+      CompanionThreat t; t.pos={0,0,20}; t.dist=20.0f; t.losToSelf=true; ctx.threats=&t; ctx.threatCount=1;
+      CompanionCommand c=brain.tick(ctx);
+      bool ok=(c.chosen==CompanionBehavior::Revive)&&c.reviveAction;
+      if (ok) pass++; else x3::logError("[companion-test] C5 revive FAILED"); }
     x3::logInfo("companion: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
     return pass == total;
 }
