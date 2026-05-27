@@ -47,6 +47,7 @@ struct CompanionCommand {
     float aimYaw = 0, aimPitch = 0;
     bool  fire = false;
     bool  reviveAction = false;
+    bool  reloadAction = false;
     CompanionBehavior chosen = CompanionBehavior::Follow;
 };
 
