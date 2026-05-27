@@ -69,6 +69,11 @@ public:
     // the muzzle-flash particle burst (a few hot additive sparks at the muzzle).
     void addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to);
 
+    // Register a LIGHTNING beam from `from` to `to`: a jagged white-blue zigzag
+    // (forked) instead of a straight tracer — used by beam weapons (lightning gun).
+    // Each call re-seeds the jag, so a held beam (high fire rate) flickers naturally.
+    void addBolt(const x3::phys::Vec3& from, const x3::phys::Vec3& to);
+
     // ---- Combat-event particle/decal presets (the juice) -------------------
     // Each spawns a tuned burst into the bounded pool / decal ring. Called from the
     // existing combat hooks (weapon fire, melee, monster hit/death). `dir` is the
@@ -116,6 +121,8 @@ private:
         x3::phys::Vec3 from{};
         x3::phys::Vec3 to{};
         float          life = 0.0f;  // remaining seconds; <= 0 means free slot
+        bool           jagged = false; // true => render as a jagged lightning bolt
+        uint32_t       seed = 0;       // per-bolt RNG seed for the zigzag + forks
     };
 
     // Draw one bright box stretched/oriented along the segment a->b with the
@@ -123,6 +130,13 @@ private:
     void drawBeam(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                   const x3::phys::Vec3& a, const x3::phys::Vec3& b,
                   float thickness, const float color[4]) const;
+
+    // Draw a jagged, forked lightning bolt from a->b: subdivides the segment and
+    // offsets the interior vertices perpendicular (max in the middle, pinned at the
+    // ends) from `seed`, then drawBeam's each sub-segment plus one short fork.
+    void drawBolt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                  const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                  uint32_t seed, float thickness, const float color[4]) const;
 
     // A centered unit box mesh (half-extent 0.5 each axis) reused for all FX,
     // scaled per draw via the model matrix.
