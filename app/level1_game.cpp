@@ -804,7 +804,7 @@ MeleeResult Level1Game::onMelee(const x3::phys::Vec3& eye, const x3::phys::Vec3&
 void Level1Game::drawWorldExtras(x3::rhi::IRenderDevice& device,
                                  const x3::rhi::FrameContext& frame,
                                  const Scene& scene) const {
-    m_envArt.draw(device, frame);   // converted sci-fi environment art over graybox
+    m_envArt.draw(device, frame, scene);   // sci-fi env art (per-room cull via scene.roomVisible)
     m_barrels.render(frame);        // intact barrels + their tumbling debris
     m_weapon.drawPickup(device, frame, scene);
     m_corridor.drawAll(device, frame, scene);

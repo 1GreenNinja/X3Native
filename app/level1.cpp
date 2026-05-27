@@ -166,7 +166,7 @@ uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysics
                 float hx, float hy, float hz, float cx, float cy, float cz,
                 x3::rhi::TextureHandle tex, const float color[4],
                 uint32_t tag = (uint32_t)Tag::Static, bool collide = true,
-                bool visible = true) {
+                bool visible = true, uint32_t roomId = kNoRoom) {
     x3::prims::PrimMesh geo = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, 0.5f);
     Entity e;
     if (visible)
@@ -178,6 +178,10 @@ uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysics
     for (int i = 0; i < 16; ++i) e.transform[i] = kIdentity[i];
     e.tag = tag;
     e.visible = visible;
+    // Per-room occlusion cull (game-wide): tag this box with the Spire FLOOR it belongs
+    // to (an L1Floor index), or kNoRoom == always-visible (shaft / stairwell / cross-floor
+    // structure). Scene::render skips entities whose floor isn't in the host's visible set.
+    e.roomId = roomId;
     if (collide)
         e.body = physics.addStaticMesh(geo.cverts.data(), (uint32_t)(geo.cverts.size() / 3),
                                        geo.cindex.data(), (uint32_t)geo.cindex.size());
@@ -187,9 +191,10 @@ uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysics
 // Floor slab for a plate (thin slab whose TOP surface is flush with floorY).
 void addFloor(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
               float cx, float cz, float hx, float hz, float floorY,
-              x3::rhi::TextureHandle tex, const float color[4], bool visible = true) {
+              x3::rhi::TextureHandle tex, const float color[4], bool visible = true,
+              uint32_t roomId = kNoRoom) {
     addBox(scene, device, physics, hx, 0.05f, hz, cx, floorY - 0.05f, cz, tex, color,
-           (uint32_t)Tag::Static, /*collide*/true, visible);
+           (uint32_t)Tag::Static, /*collide*/true, visible, roomId);
 }
 
 // Floor slab WITH a rectangular hole carved out (4 segments around the hole) — used
@@ -200,7 +205,7 @@ void addFloor(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWo
 void addFloorWithCutout(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
                         float cx, float cz, float hx, float hz, float floorY,
                         x3::rhi::TextureHandle tex, const float color[4], bool visible,
-                        float holeCx, float holeCz, float holeHalf) {
+                        float holeCx, float holeCz, float holeHalf, uint32_t roomId = kNoRoom) {
     const float x0 = cx - hx, x1 = cx + hx, z0 = cz - hz, z1 = cz + hz;
     const float hx0 = holeCx - holeHalf, hx1 = holeCx + holeHalf;
     const float hz0 = holeCz - holeHalf, hz1 = holeCz + holeHalf;
@@ -208,7 +213,7 @@ void addFloorWithCutout(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::
         if (b - a < 0.01f || d - c < 0.01f) return;
         addBox(scene, device, physics, (b-a)*0.5f, 0.05f, (d-c)*0.5f,
                (a+b)*0.5f, floorY - 0.05f, (c+d)*0.5f, tex, color,
-               (uint32_t)Tag::Static, /*collide*/true, visible);
+               (uint32_t)Tag::Static, /*collide*/true, visible, roomId);
     };
     // -X segment (full depth), +X segment (full depth), then the -Z / +Z bands across
     // the hole's X span. Together they tile the slab minus the [hx0,hx1]x[hz0,hz1] hole.
@@ -222,10 +227,11 @@ void addFloorWithCutout(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::
 // rises from floorY to floorY+wallH (floor-to-ceiling on this plate).
 void addWallX(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
               float x0, float x1, float z, float floorY, float wallH,
-              x3::rhi::TextureHandle tex, const float color[4], bool visible = true) {
+              x3::rhi::TextureHandle tex, const float color[4], bool visible = true,
+              uint32_t roomId = kNoRoom) {
     const float hx = (x1 - x0) * 0.5f, cx = (x0 + x1) * 0.5f;
     addBox(scene, device, physics, hx, wallH * 0.5f, kWallT * 0.5f, cx, floorY + wallH * 0.5f, z,
-           tex, color, (uint32_t)Tag::Static, /*collide*/true, visible);
+           tex, color, (uint32_t)Tag::Static, /*collide*/true, visible, roomId);
 }
 
 // A cross-wall running along Z (its plane is x = const), spanning z in [z0,z1] and
@@ -234,11 +240,12 @@ void addWallX(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWo
 // withDoorway is false, builds a fully solid wall (end cap).
 void addCrossWall(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
                   float x, float z0, float z1, float zDoor, bool withDoorway, float floorY,
-                  float wallH, x3::rhi::TextureHandle tex, const float color[4], bool visible = true) {
+                  float wallH, x3::rhi::TextureHandle tex, const float color[4], bool visible = true,
+                  uint32_t roomId = kNoRoom) {
     if (!withDoorway) {
         const float hz = (z1 - z0) * 0.5f, cz = (z0 + z1) * 0.5f;
         addBox(scene, device, physics, kWallT * 0.5f, wallH * 0.5f, hz, x, floorY + wallH * 0.5f, cz,
-               tex, color, (uint32_t)Tag::Static, /*collide*/true, visible);
+               tex, color, (uint32_t)Tag::Static, /*collide*/true, visible, roomId);
         return;
     }
     // Left segment: z in [z0, zDoor - kDoorHalf]
@@ -247,7 +254,7 @@ void addCrossWall(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysi
         if (hi > lo) {
             const float hz = (hi - lo) * 0.5f, cz = (lo + hi) * 0.5f;
             addBox(scene, device, physics, kWallT * 0.5f, wallH * 0.5f, hz, x, floorY + wallH * 0.5f, cz,
-                   tex, color, (uint32_t)Tag::Static, /*collide*/true, visible);
+                   tex, color, (uint32_t)Tag::Static, /*collide*/true, visible, roomId);
         }
     }
     // Right segment: z in [zDoor + kDoorHalf, z1]
@@ -256,7 +263,7 @@ void addCrossWall(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysi
         if (hi > lo) {
             const float hz = (hi - lo) * 0.5f, cz = (lo + hi) * 0.5f;
             addBox(scene, device, physics, kWallT * 0.5f, wallH * 0.5f, hz, x, floorY + wallH * 0.5f, cz,
-                   tex, color, (uint32_t)Tag::Static, /*collide*/true, visible);
+                   tex, color, (uint32_t)Tag::Static, /*collide*/true, visible, roomId);
         }
     }
     // Solid header above the doorway, lintel-bottom up to the ceiling.
@@ -265,7 +272,7 @@ void addCrossWall(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysi
         const float lcy = floorY + kLintelBottom + lh;
         if (lh > 0.0f)
             addBox(scene, device, physics, kWallT * 0.5f, lh, kDoorHalf, x, lcy, zDoor, tex, color,
-                   (uint32_t)Tag::Static, /*collide*/true, visible);
+                   (uint32_t)Tag::Static, /*collide*/true, visible, roomId);
     }
 }
 
@@ -274,10 +281,10 @@ void addCrossWall(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysi
 // stops the player/camera leaving through the top. Spans the full plate.
 void addCeiling(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
                 float cx, float cz, float hx, float hz, float ceilY,
-                x3::rhi::TextureHandle tex) {
+                x3::rhi::TextureHandle tex, uint32_t roomId = kNoRoom) {
     const float white[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
     addBox(scene, device, physics, hx, kCeilT * 0.5f, hz, cx, ceilY + kCeilT * 0.5f, cz,
-           tex, white, (uint32_t)Tag::Static, /*collide*/true, /*visible*/false);
+           tex, white, (uint32_t)Tag::Static, /*collide*/true, /*visible*/false, roomId);
 }
 
 // ---- Detention-room interior builder (Floor 1). Each room is an axis-aligned box;
@@ -312,7 +319,7 @@ void buildDetentionRoom(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::
                         const uint32_t* doors, uint32_t pairs, uint32_t ri,
                         float floorY, float ceilH,
                         x3::rhi::TextureHandle wallTex, const float tint[4], bool vis,
-                        const SpineCarve& carve) {
+                        const SpineCarve& carve, uint32_t roomId = kNoRoom) {
     const L1DetentionRoom& r = rooms[ri];
     const float x0 = r.cx - r.w * 0.5f, x1 = r.cx + r.w * 0.5f;
     const float z0 = r.cz - r.d * 0.5f, z1 = r.cz + r.d * 0.5f;
@@ -367,9 +374,9 @@ void buildDetentionRoom(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::
         if (zWallInLane(xFace))
             return;
         else if (doorwayOnZWall(xFace, dCoord))
-            addCrossWall(scene, device, physics, xFace, z0, z1, dCoord, true, floorY, ceilH, wallTex, tint, vis);
+            addCrossWall(scene, device, physics, xFace, z0, z1, dCoord, true, floorY, ceilH, wallTex, tint, vis, roomId);
         else
-            addCrossWall(scene, device, physics, xFace, z0, z1, 0.0f, false, floorY, ceilH, wallTex, tint, vis);
+            addCrossWall(scene, device, physics, xFace, z0, z1, 0.0f, false, floorY, ceilH, wallTex, tint, vis, roomId);
     };
     buildZWall(x0);
     buildZWall(x1);
@@ -385,12 +392,12 @@ void buildDetentionRoom(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::
             if (laneCut) {
                 const float cl = std::max(a, carve.x0), cr = std::min(b, carve.x1);
                 if (cr > cl) {   // overlaps the lane: build the parts outside it
-                    if (carve.x0 > a) addWallX(scene, device, physics, a, carve.x0, zFace, floorY, ceilH, wallTex, tint, vis);
-                    if (b > carve.x1) addWallX(scene, device, physics, carve.x1, b, zFace, floorY, ceilH, wallTex, tint, vis);
+                    if (carve.x0 > a) addWallX(scene, device, physics, a, carve.x0, zFace, floorY, ceilH, wallTex, tint, vis, roomId);
+                    if (b > carve.x1) addWallX(scene, device, physics, carve.x1, b, zFace, floorY, ceilH, wallTex, tint, vis, roomId);
                     return;
                 }
             }
-            addWallX(scene, device, physics, a, b, zFace, floorY, ceilH, wallTex, tint, vis);
+            addWallX(scene, device, physics, a, b, zFace, floorY, ceilH, wallTex, tint, vis, roomId);
         };
         if (haveDoor) {
             seg(x0, xd - kDoorHalf);
@@ -399,7 +406,7 @@ void buildDetentionRoom(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::
             if (lh > 0.0f)
                 addBox(scene, device, physics, kDoorHalf, lh, kWallT * 0.5f, xd,
                        floorY + kLintelBottom + lh, zFace, wallTex, tint,
-                       (uint32_t)Tag::Static, true, vis);
+                       (uint32_t)Tag::Static, true, vis, roomId);
         } else {
             seg(x0, x1);
         }
@@ -489,29 +496,29 @@ Level1Layout buildLevel1(Scene& scene,
         // so an open hatch actually drops the player into the secret room below.
         if (fi == (uint32_t)L1Floor::B1) {
             addFloorWithCutout(scene, device, physics, cx, 0.0f, (f.x1 - f.x0) * 0.5f, f.zHalf, f.y0,
-                               floorTex, tint, floorVis, kCellHatchCx, kCellHatchCz, kCellHatchHalf);
+                               floorTex, tint, floorVis, kCellHatchCx, kCellHatchCz, kCellHatchHalf, fi);
         } else {
             addFloor(scene, device, physics, cx, 0.0f, (f.x1 - f.x0) * 0.5f, f.zHalf, f.y0,
-                     floorTex, tint, floorVis);
+                     floorTex, tint, floorVis, fi);
         }
         // Two long side walls (z = ±zHalf), floor-to-ceiling. Pick DIFFERENT wall
         // variants for the two facing side walls AND stagger by floor so no two adjacent
         // corridor walls read as the same tile (fixes the "all walls identical" look).
         const x3::rhi::TextureHandle sideZneg = wallVariants[fi % 3];
         const x3::rhi::TextureHandle sideZpos = wallVariants[(fi + 1) % 3];
-        addWallX(scene, device, physics, f.x0, f.x1, -f.zHalf, f.y0, f.ceil, sideZneg, tint, wallVis);
-        addWallX(scene, device, physics, f.x0, f.x1,  f.zHalf, f.y0, f.ceil, sideZpos, tint, wallVis);
+        addWallX(scene, device, physics, f.x0, f.x1, -f.zHalf, f.y0, f.ceil, sideZneg, tint, wallVis, fi);
+        addWallX(scene, device, physics, f.x0, f.x1,  f.zHalf, f.y0, f.ceil, sideZpos, tint, wallVis, fi);
         // -X and +X end caps (now fully SOLID perimeter walls — the shaft is interior).
         // Give the two end caps the remaining two variants so all four perimeter walls
         // of a plate differ from one another.
         addCrossWall(scene, device, physics, f.x0, -f.zHalf, f.zHalf, 0.0f,
-                     /*withDoorway*/false, f.y0, f.ceil, wallVariants[(fi + 2) % 3], kWallTint, crossWallVis);
+                     /*withDoorway*/false, f.y0, f.ceil, wallVariants[(fi + 2) % 3], kWallTint, crossWallVis, fi);
         addCrossWall(scene, device, physics, f.x1, -f.zHalf, f.zHalf, 0.0f,
-                     /*withDoorway*/false, f.y0, f.ceil, wallVariants[fi % 3], kWallTint, crossWallVis);
+                     /*withDoorway*/false, f.y0, f.ceil, wallVariants[fi % 3], kWallTint, crossWallVis, fi);
         // Ceiling lid (skip the rooftop: F7 is open to the sky). Collision-only.
         if (!isRooftop)
             addCeiling(scene, device, physics, cx, 0.0f, (f.x1 - f.x0) * 0.5f, f.zHalf,
-                       f.y0 + f.ceil, ceilTex);
+                       f.y0 + f.ceil, ceilTex, fi);
 
         // Fill the per-floor layout result.
         L.floorBaseY[fi]  = f.y0;
@@ -606,18 +613,19 @@ Level1Layout buildLevel1(Scene& scene,
     // side ('W'=-X, 'E'=+X, 'S'=-Z, 'N'=+Z; 0 = sealed). Absolute world coords. Reuses
     // the shared wall helpers (addCrossWall handles the Z-running walls + doorway/lintel;
     // the X-running walls are split manually for a doorway, mirroring buildDetentionRoom).
-    auto roomBox = [&](float rx0, float rx1, float rz0, float rz1, float ry0, float rh, char door) {
+    auto roomBox = [&](float rx0, float rx1, float rz0, float rz1, float ry0, float rh, char door,
+                       uint32_t roomId) {
         const float zc = (rz0 + rz1) * 0.5f, xc = (rx0 + rx1) * 0.5f;
-        addCrossWall(scene, device, physics, rx0, rz0, rz1, zc, door == 'W', ry0, rh, wallTex, kWallTint, crossWallVis);
-        addCrossWall(scene, device, physics, rx1, rz0, rz1, zc, door == 'E', ry0, rh, wallTex, kWallTint, crossWallVis);
+        addCrossWall(scene, device, physics, rx0, rz0, rz1, zc, door == 'W', ry0, rh, wallTex, kWallTint, crossWallVis, roomId);
+        addCrossWall(scene, device, physics, rx1, rz0, rz1, zc, door == 'E', ry0, rh, wallTex, kWallTint, crossWallVis, roomId);
         auto wallXDoor = [&](float zf, bool d) {
-            if (!d) { addWallX(scene, device, physics, rx0, rx1, zf, ry0, rh, wallTex, kWallTint, crossWallVis); return; }
-            addWallX(scene, device, physics, rx0, xc - kDoorHalf, zf, ry0, rh, wallTex, kWallTint, crossWallVis);
-            addWallX(scene, device, physics, xc + kDoorHalf, rx1, zf, ry0, rh, wallTex, kWallTint, crossWallVis);
+            if (!d) { addWallX(scene, device, physics, rx0, rx1, zf, ry0, rh, wallTex, kWallTint, crossWallVis, roomId); return; }
+            addWallX(scene, device, physics, rx0, xc - kDoorHalf, zf, ry0, rh, wallTex, kWallTint, crossWallVis, roomId);
+            addWallX(scene, device, physics, xc + kDoorHalf, rx1, zf, ry0, rh, wallTex, kWallTint, crossWallVis, roomId);
             const float lh = (rh - kLintelBottom) * 0.5f;
             if (lh > 0.0f)
                 addBox(scene, device, physics, kDoorHalf, lh, kWallT * 0.5f, xc, ry0 + kLintelBottom + lh, zf,
-                       wallTex, kWallTint, (uint32_t)Tag::Static, true, crossWallVis);
+                       wallTex, kWallTint, (uint32_t)Tag::Static, true, crossWallVis, roomId);
         };
         wallXDoor(rz0, door == 'S');
         wallXDoor(rz1, door == 'N');
@@ -628,7 +636,8 @@ Level1Layout buildLevel1(Scene& scene,
     auto buildWing = [&](L1Floor fl, const std::vector<WingRoom>& rooms) {
         const L1RoomDef& f = kFloors[(uint32_t)fl];
         for (const WingRoom& r : rooms)
-            roomBox(r.cx - r.hw, r.cx + r.hw, r.cz - r.hd, r.cz + r.hd, f.y0, f.ceil, r.door);
+            roomBox(r.cx - r.hw, r.cx + r.hw, r.cz - r.hd, r.cz + r.hd, f.y0, f.ceil, r.door,
+                    (uint32_t)fl);   // per-room cull: wing rooms belong to their floor
     };
 
     // ---- F2 Medical Bay: 3 ward markers (Aria/Keisha/Emily) in the east hall (rescue
@@ -639,9 +648,9 @@ Level1Layout buildLevel1(Scene& scene,
         const float y0 = f2.y0, h = f2.ceil;
         const float wx1 = 8.0f, wx2 = 15.0f;     // partition X positions (split the +X arrival half)
         addCrossWall(scene, device, physics, wx1, -6.0f, 6.0f, 0.0f, true, y0, h,
-                     wallVariants[2], kWallTint, crossWallVis);
+                     wallVariants[2], kWallTint, crossWallVis, (uint32_t)L1Floor::F2);
         addCrossWall(scene, device, physics, wx2, -6.0f, 6.0f, 0.0f, true, y0, h,
-                     wallVariants[1], kWallTint, crossWallVis);
+                     wallVariants[1], kWallTint, crossWallVis, (uint32_t)L1Floor::F2);
         L.wardA = x3::phys::Vec3{  4.0f, y0, -3.0f };  // Ward A (Aria)
         L.wardB = x3::phys::Vec3{ 11.5f, y0,  3.0f };  // Ward B (Keisha)
         L.wardC = x3::phys::Vec3{ 18.0f, y0, -3.0f };  // Ward C (Emily)
@@ -702,9 +711,9 @@ Level1Layout buildLevel1(Scene& scene,
     {
         const L1RoomDef& f6 = kFloors[(uint32_t)L1Floor::F6];
         const float y0 = f6.y0, h = f6.ceil;
-        addWallX(scene, device, physics, 0.0f, 8.0f, -3.0f, y0, h, wallVariants[1], kWallTint, crossWallVis);
+        addWallX(scene, device, physics, 0.0f, 8.0f, -3.0f, y0, h, wallVariants[1], kWallTint, crossWallVis, (uint32_t)L1Floor::F6);
         addCrossWall(scene, device, physics, 8.0f, -8.0f, -3.0f, -5.5f, true, y0, h,
-                     wallVariants[2], kWallTint, crossWallVis);
+                     wallVariants[2], kWallTint, crossWallVis, (uint32_t)L1Floor::F6);
         L.execOffice = x3::phys::Vec3{ 4.0f, y0, -5.5f };
     }
     {
@@ -746,12 +755,13 @@ Level1Layout buildLevel1(Scene& scene,
             // share the B1 plate slab). Avoid a second slab at y=b1y (z-fight the plate).
             if (r.floorY < -0.01f)
                 addFloor(scene, device, physics, r.cx, r.cz, r.w * 0.5f, r.d * 0.5f, floorY,
-                         floorTex, detTint, floorVis);
+                         floorTex, detTint, floorVis, (uint32_t)L1Floor::B1);
             // Vary the wall motif per room so neighbouring detention cells/halls don't
-            // all read as the same panel (each room's 4 walls share one variant).
+            // all read as the same panel (each room's 4 walls share one variant). The
+            // whole detention complex sits on the B1 plate -> tag B1 for the cull.
             buildDetentionRoom(scene, device, physics, kDetention, kDetCount,
                                kDetDoors, kDetDoorPairCount, ri, floorY, ceilH,
-                               wallVariants[ri % 3], detTint, crossWallVis, carve);
+                               wallVariants[ri % 3], detTint, crossWallVis, carve, (uint32_t)L1Floor::B1);
         }
     }
 
@@ -769,10 +779,11 @@ Level1Layout buildLevel1(Scene& scene,
     // Cell props (medical pod + the strength-target "equipment" prop, beat 1).
     const float podTint[4] = { 0.30f, 0.45f, 0.65f, 1.0f };
     addBox(scene, device, physics, 1.0f, 0.25f, 0.5f, 2.0f, b1y + 0.25f, 1.8f, floorTex, podTint,
-           (uint32_t)Tag::Prop, /*collide*/false);
+           (uint32_t)Tag::Prop, /*collide*/false, /*visible*/true, (uint32_t)L1Floor::B1);
     const float equipTint[4] = { 0.85f, 0.75f, 0.30f, 1.0f };
     uint32_t equip = addBox(scene, device, physics, 0.3f, 0.4f, 0.3f, 1.5f, b1y + 0.4f, -1.8f,
-                            floorTex, equipTint, (uint32_t)Tag::Prop, /*collide*/false);
+                            floorTex, equipTint, (uint32_t)Tag::Prop, /*collide*/false,
+                            /*visible*/true, (uint32_t)L1Floor::B1);
 
     // ---- Legacy door + room mapping (all on B1; the doorway centers are placed
     //      along the B1 spine, and the elevator gate is the shaft doorway). ----
@@ -804,12 +815,12 @@ Level1Layout buildLevel1(Scene& scene,
         const float bh = b1ceil;
         // The two long spine lane walls get different variants; the door partitions cycle
         // through all three so each Awakening sub-room reads a little different.
-        addWallX(scene, device, physics, 0.0f, 19.5f, -kSpineZ, b1y, bh, wallVariants[1], kWallTint, crossWallVis);
-        addWallX(scene, device, physics, 0.0f, 19.5f,  kSpineZ, b1y, bh, wallVariants[2], kWallTint, crossWallVis);
+        addWallX(scene, device, physics, 0.0f, 19.5f, -kSpineZ, b1y, bh, wallVariants[1], kWallTint, crossWallVis, (uint32_t)L1Floor::B1);
+        addWallX(scene, device, physics, 0.0f, 19.5f,  kSpineZ, b1y, bh, wallVariants[2], kWallTint, crossWallVis, (uint32_t)L1Floor::B1);
         const float partX[4] = { L.doorA.x, L.doorB.x, L.doorC.x, L.doorD.x };
         for (uint32_t pi = 0; pi < 4; ++pi)
             addCrossWall(scene, device, physics, partX[pi], -kSpineZ, kSpineZ, 0.0f, true, b1y, bh,
-                         wallVariants[pi % 3], kWallTint, crossWallVis);
+                         wallVariants[pi % 3], kWallTint, crossWallVis, (uint32_t)L1Floor::B1);
     }
 
     L.cellHalf       = x3::phys::Vec3{ 3.0f, b1ceil, kSpineZ };
@@ -836,6 +847,52 @@ Level1Layout buildLevel1(Scene& scene,
                 " canon stack: 0/5/10/20/30/65/78/91); shaft @ ("
                 + std::to_string((int)kShaftCx) + "," + std::to_string((int)kShaftCz) + ")");
     return L;
+}
+
+// ---- Per-floor occlusion cull helpers (see level1.h). The Spire is a vertical stack of
+// plates with SOLID floor + ceiling slabs between them; the only cross-floor sightline is
+// the open elevator shaft + the stairwell, both tagged kNoRoom (always-visible). So the
+// only TAGGED geometry the player can see is their CURRENT floor — culling to it (+ a
+// small neighbour margin against the open shaft doorway peeking onto the adjacent plate)
+// is visually lossless. ----
+uint32_t level1FloorAtY(float y, float margin) {
+    for (uint32_t fi = 0; fi < (uint32_t)L1Floor::Count; ++fi) {
+        const L1RoomDef& f = kFloors[fi];
+        // B1 also owns the detention CAVE ARM that dips below its base (down to ~y=-5),
+        // so extend B1's lower bound to cover a player who descends the caves.
+        const float lo = (fi == (uint32_t)L1Floor::B1) ? (f.y0 - 6.0f) : (f.y0 - margin);
+        const float hi = f.y0 + f.ceil + margin;
+        if (y >= lo && y <= hi) return fi;
+    }
+    return kNoRoom;
+}
+
+void level1VisibleRooms(float camY, uint32_t radius, std::vector<uint32_t>& out) {
+    out.clear();
+    const uint32_t nFloors = (uint32_t)L1Floor::Count;
+    uint32_t cur = level1FloorAtY(camY);
+    if (cur == kNoRoom) {
+        // Inter-floor gap (mid elevator ride): include the floor below + the floor above
+        // the camera so a rider never looks out onto an empty/culled world. Find the
+        // highest floor whose base is at/below camY and the lowest whose base is above.
+        uint32_t below = kNoRoom, above = kNoRoom;
+        for (uint32_t fi = 0; fi < nFloors; ++fi) {
+            if (kFloors[fi].y0 <= camY) below = fi;                 // ascending -> last <= camY
+            else { above = fi; break; }                            // first > camY
+        }
+        if (below != kNoRoom) out.push_back(below);
+        if (above != kNoRoom) out.push_back(above);
+        if (out.empty()) out.push_back(0);                          // degenerate: show B1
+        // Also widen by the radius around the bracketing floors.
+        cur = (below != kNoRoom) ? below : 0;
+    } else {
+        out.push_back(cur);
+    }
+    // Include `radius` floors each side of the current floor (clamped to the stack).
+    for (uint32_t r = 1; r <= radius && r < nFloors; ++r) {
+        if (cur >= r)                 out.push_back(cur - r);
+        if (cur + r < nFloors)        out.push_back(cur + r);
+    }
 }
 
 // Single source of truth for the floor table (shared with env_art.cpp).

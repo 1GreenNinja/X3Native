@@ -5148,6 +5148,30 @@ int main(int argc, char** argv) {
             // console mid-run so the panel + scrollback + input line render too.
             if (i == 5)  { console->exec("echo smoketest hud line"); hud.toggleConsole(); hud.onChar('a'); hud.onChar('b'); }
             if (i == 20) { hud.closeConsole(); }
+            // Per-room (per-FLOOR) occlusion cull for the DEFAULT hand-coded Spire: the
+            // whole 7-floor tower was being submitted every frame (~49.6M tris). Each
+            // surface/prop/art instance is now tagged with its L1Floor; here we compute the
+            // player's CURRENT floor from eye.y and feed it (+ a conservative neighbour
+            // margin) to the cull so only the current floor renders. The shaft/stairwell
+            // are kNoRoom (always visible) so the open cross-floor sightline never pops.
+            // r_roomcull 0 hard-disables it (noclip overview); r_culldepth widens the floor
+            // radius (the floor slabs are SOLID + the only cross-floor opening — the shaft +
+            // stairwell — is always-visible, so the CURRENT floor alone is visually complete;
+            // default depth 6 -> radius 0 = current floor only). (Smoketest camera is on B1 —
+            // the cull engages there and B1's full plate still renders, so no visible cell is
+            // culled.) Engages for the DEFAULT level AND the --world canonlevel FALLBACK (when
+            // the canonical JSON is absent and the legacy tower was built instead).
+            if (!terrainWorld && !(canonWorld && canonFloor.valid())) {
+                const bool roomCull = console->getInt("r_roomcull") != 0;
+                scene.setRoomCullEnabled(roomCull);
+                if (roomCull) {
+                    const int depth = std::max(1, console->getInt("r_culldepth"));
+                    const uint32_t floorRadius = (uint32_t)std::max(0, depth - 6); // default 6 -> radius 0
+                    std::vector<uint32_t> visFloors;
+                    x3::game::level1VisibleRooms(eye.y, floorRadius, visFloors);
+                    scene.setVisibleRooms(visFloors);
+                }
+            }
             // Per-room occlusion cull (canonlevel): portal flood-fill (frustum-directional)
             // from the camera each frame so render() draws the player's room + every room
             // reachable through OPEN doorways that the camera LOOKS at, capped by r_culldepth
@@ -6403,6 +6427,22 @@ int main(int argc, char** argv) {
                 const bool roomCull = console->getInt("r_roomcull") != 0;
                 scene.setRoomCullEnabled(roomCull);
                 if (roomCull) scene.setVisibleRooms(canonVisRooms);   // same set as the lights
+            }
+            // Per-FLOOR occlusion cull for the DEFAULT hand-coded Spire (the ~49.6M-tri
+            // tower). Compute the player's current floor from camY each frame and feed it
+            // (+ a conservative neighbour margin) so only that floor's tagged geometry + art
+            // draws; the elevator shaft + stairwell stay kNoRoom (always visible) so the
+            // open cross-floor sightline never pops. r_roomcull 0 = off (noclip overview).
+            else if (!terrainWorld) {
+                const bool roomCull = console->getInt("r_roomcull") != 0;
+                scene.setRoomCullEnabled(roomCull);
+                if (roomCull) {
+                    const int depth = std::max(1, console->getInt("r_culldepth"));
+                    const uint32_t floorRadius = (uint32_t)std::max(0, depth - 6); // default 6 -> radius 0
+                    std::vector<uint32_t> visFloors;
+                    x3::game::level1VisibleRooms(camY, floorRadius, visFloors);
+                    scene.setVisibleRooms(visFloors);
+                }
             }
             scene.render(*device, frame);
             if (canonWorld) canonDoors.drawMeshes(*device, frame);   // SM_Door_A doors (canonlevel)

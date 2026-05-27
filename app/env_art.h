@@ -52,6 +52,13 @@ struct EnvInstance {
     uint32_t asset = 0;        // index into m_assets
     float    transform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
     float    emissive[4] = {0,0,0,0}; // rgb = linear color, w = strength
+    // Per-room occlusion cull (game-wide, mirroring Scene::Entity::roomId): the id of
+    // the Spire FLOOR this art instance belongs to (an L1Floor index 0..7), or kNoRoom
+    // == always-visible. build() tags every floor/wall/ceiling/light/prop instance with
+    // its floor; the room-aware draw() overload skips instances whose floor is not in
+    // the host's current visible-room set. Default kNoRoom keeps the legacy no-arg draw
+    // (and any untagged instance) drawing exactly as before.
+    uint32_t roomId = kNoRoom;
 };
 
 class EnvArtSystem {
@@ -67,8 +74,19 @@ public:
                         const Level1Layout& layout);
 
     // Draw all placed environment instances (static; call alongside scene.render()
-    // each frame, before the viewmodel). No-op if nothing loaded.
+    // each frame, before the viewmodel). No-op if nothing loaded. This LEGACY overload
+    // draws EVERY instance (no cull) — kept for any caller that has no Scene context.
     void draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const;
+
+    // ROOM-AWARE draw (per-room occlusion cull, game-wide): draw an instance only if
+    // its floor (EnvInstance::roomId) passes scene.roomVisible() — i.e. it is kNoRoom
+    // (always visible) OR in the host's current visible-room set, OR the cull is
+    // inactive. This is how the hand-coded Spire's GLB art (the bulk of the tower's
+    // ~49.6M tris) is culled down to the player's current floor + neighbours, mirroring
+    // the data-driven level loader's per-room PVS. With the cull inactive (no visible
+    // set installed) this is byte-identical to the legacy no-arg draw.
+    void draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+              const Scene& scene) const;
 
     // Diagnostics for logging / the host: how many assets loaded ok / instances.
     uint32_t assetsLoaded() const;
@@ -89,12 +107,15 @@ private:
     // loader created in build() (already bound to the render device).
     uint32_t loadAsset(const std::string& relPath);
 
-    // Add an instance of asset `a` at the given world transform.
-    void addInstance(uint32_t a, const float transform[16]);
+    // Add an instance of asset `a` at the given world transform, tagged with the Spire
+    // FLOOR it belongs to (room id; kNoRoom == always-visible) for the per-room cull.
+    void addInstance(uint32_t a, const float transform[16], uint32_t roomId = kNoRoom);
     // Add an instance with a per-instance EMISSIVE term (HDR pipeline): emissive =
     // { r, g, b, strength } in linear light. Used for the Light_A fixtures so they
     // glow as bright HDR sources (feeding bloom). emissive == nullptr -> no glow.
-    void addInstanceEmissive(uint32_t a, const float transform[16], const float emissive[4]);
+    // `roomId` tags the instance's floor for the per-room cull (kNoRoom = always-visible).
+    void addInstanceEmissive(uint32_t a, const float transform[16], const float emissive[4],
+                             uint32_t roomId = kNoRoom);
 
     std::unique_ptr<x3::asset::IAssetSource> m_assets;
     std::unique_ptr<x3::asset::IModelLoader> m_loader;

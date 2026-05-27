@@ -226,4 +226,30 @@ Level1Layout buildLevel1(Scene& scene,
                          x3::phys::IPhysicsWorld& physics,
                          const Level1ArtMask& artMask = {});
 
+// ---- PER-ROOM (per-FLOOR) OCCLUSION CULL for the hand-coded Spire ---------------------
+// buildLevel1 + env_art.cpp tag every static surface/prop/art instance with the L1Floor
+// it sits on (its roomId). The cross-floor STRUCTURE (the elevator shaft, the emergency
+// stairwell) is left kNoRoom == always-visible so the open shaft sightline never pops.
+// The host computes the player's CURRENT floor from the camera Y each frame and feeds
+// that floor (+ a margin of neighbours) to Scene::setVisibleRooms + the room-aware
+// env_art.draw, so only the floor the player is on (the only floor visible through the
+// solid inter-floor slabs) renders — dropping the whole 7-floor tower's ~49.6M tris to
+// the current floor's share. Mirrors the data-driven loader's portal PVS, partitioned by
+// floor (the robust high-value partition for the vertically-stacked Spire).
+
+// The L1Floor index whose vertical band [y0 - margin, y0 + ceil + margin] contains world
+// Y `y`, or kNoRoom if `y` is in an inter-floor gap (e.g. mid-elevator-ride between two
+// plates). `margin` (default 1 m) tolerates the player standing on a floor slab / under a
+// ceiling. Pure function of the canonical kFloors[] table.
+uint32_t level1FloorAtY(float y, float margin = 1.0f);
+
+// Fill `out` (cleared first) with the visible FLOOR set for a camera at world Y `camY`:
+// the player's current floor plus `radius` floors above and below (radius 0 = current
+// floor only). When `camY` lands in an inter-floor gap (a mid-shaft elevator ride), the
+// floors bracketing that gap (the one below + the one above) are both included so the
+// rider never sees an empty world. The cross-floor shaft/stairwell are kNoRoom (always
+// visible) and need not be listed. Feed `out` to Scene::setVisibleRooms each frame.
+// `radius` honours r_culldepth (the host maps the cvar to a conservative floor radius).
+void level1VisibleRooms(float camY, uint32_t radius, std::vector<uint32_t>& out);
+
 } // namespace x3::game

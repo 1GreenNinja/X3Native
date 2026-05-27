@@ -130,18 +130,21 @@ uint32_t EnvArtSystem::loadAsset(const std::string& relPath) {
     return idx;
 }
 
-void EnvArtSystem::addInstance(uint32_t a, const float transform[16]) {
+void EnvArtSystem::addInstance(uint32_t a, const float transform[16], uint32_t roomId) {
     if (a >= m_assetTable.size() || !m_assetTable[a].ok) return; // skip failed assets
     EnvInstance e; e.asset = a;
     for (int i=0;i<16;++i) e.transform[i]=transform[i];
+    e.roomId = roomId;
     m_instances.push_back(e);
 }
 
-void EnvArtSystem::addInstanceEmissive(uint32_t a, const float transform[16], const float emissive[4]) {
+void EnvArtSystem::addInstanceEmissive(uint32_t a, const float transform[16], const float emissive[4],
+                                       uint32_t roomId) {
     if (a >= m_assetTable.size() || !m_assetTable[a].ok) return; // skip failed assets
     EnvInstance e; e.asset = a;
     for (int i=0;i<16;++i) e.transform[i]=transform[i];
     if (emissive) for (int i=0;i<4;++i) e.emissive[i]=emissive[i];
+    e.roomId = roomId;
     m_instances.push_back(e);
 }
 
@@ -204,7 +207,8 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
         const float tileZ = ab.maxz - ab.minz;   // 3.0
         const float ax = cx(ab), az = cz(ab);
         const float anchorY = ceiling ? ab.miny : ab.maxy;  // ceiling: bottom; floor: top
-        for (const Room& r : rooms) {
+        for (uint32_t fi = 0; fi < (uint32_t)L1Floor::Count; ++fi) {
+            const Room& r = rooms[fi];
             const int nx = (int)std::ceil((r.x1 - r.x0) / tileX);
             const int nz = (int)std::ceil((2.0f * r.zHalf) / tileZ);
             for (int ix=0; ix<nx; ++ix) {
@@ -216,7 +220,7 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
                     const float wyC = ceiling ? (r.y0 + r.ceil) : r.y0;
                     // anchor: (ax, anchorY, az) -> (wxC, wyC, wzC), no yaw/scale.
                     placeYaw(m, 0.0f, 1.0f, ax, anchorY, az, wxC, wyC, wzC);
-                    addInstance(asset, m);
+                    addInstance(asset, m, /*roomId=*/fi);   // per-room cull: tag by floor
                 }
             }
         }
@@ -241,7 +245,8 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
         // Row r's panel bottom sits at y = r*panelH; we add a row while its bottom
         // is still below the ceiling (the topmost row overhangs into the ceiling
         // panel above — hidden, and the collision lid seals it).
-        for (const Room& r : rooms) {
+        for (uint32_t fi = 0; fi < (uint32_t)L1Floor::Count; ++fi) {
+            const Room& r = rooms[fi];
             const int n = (int)std::ceil((r.x1 - r.x0) / panelW);
             const int rows = (int)std::ceil(r.ceil / panelH);   // 1 row for <=4.45 m
             for (int row=0; row<rows; ++row) {
@@ -255,7 +260,7 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
                     for (int i=0; i<n; ++i) {
                         const float wx = r.x0 + (i + 0.5f) * panelW;
                         placeYaw(m, wYaw, 1.0f, wAnchorX, wallMinY, wAnchorZ, wx, rowBaseY, wz);
-                        addInstance(wallA, m);
+                        addInstance(wallA, m, /*roomId=*/fi);   // per-room cull: tag by floor
                     }
                 }
             }
@@ -271,16 +276,17 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
     // yaw +90deg. Anchored at the floor's base Y (d.y carries y0). -------
     if (haveFrame) {
         const float fs = 2.0f / (kFrameAabb.maxx - kFrameAabb.minx);
-        auto frameAt = [&](const x3::phys::Vec3& d) {
+        auto frameAt = [&](const x3::phys::Vec3& d, uint32_t roomId) {
             placeYaw(m, kPi*0.5f, fs, cx(kFrameAabb), kFrameAabb.miny, cz(kFrameAabb),
                      d.x, d.y, d.z);
-            addInstance(frameA, m);
+            addInstance(frameA, m, roomId);
         };
         for (uint32_t fi = 0; fi < (uint32_t)L1Floor::Count; ++fi)
-            frameAt(layout.elevatorDoor[fi]);            // shaft doorway per floor
+            frameAt(layout.elevatorDoor[fi], fi);        // shaft doorway per floor (tag by floor)
         const x3::phys::Vec3 b1doors[5] = {
             layout.doorA, layout.doorB, layout.doorC, layout.doorD, layout.doorE };
-        for (const auto& d : b1doors) frameAt(d);        // B1 spine doors A-E
+        for (const auto& d : b1doors)
+            frameAt(d, (uint32_t)L1Floor::B1);           // B1 spine doors A-E (all on B1)
     }
 
     // ---- CONSOLE: terminals beside the B1 Door A / Door B (the Awakening button
@@ -293,7 +299,7 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
             // facing the console screen back into the room toward -Z (placeYaw yaw=0).
             placeYaw(m, 0.0f, 1.0f, cx(kConsAabb), kConsAabb.miny, cz(kConsAabb),
                      d.x - 0.6f, d.y, d.z + 1.4f);
-            addInstance(consA, m);
+            addInstance(consA, m, (uint32_t)L1Floor::B1);   // B1 spine door consoles
         }
     }
 
@@ -305,18 +311,18 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
     // yawed. A failed asset is silently skipped. The Spire is a vertical stack, so
     // every prop carries the floor's y0. ----
     auto placeProp = [&](uint32_t asset, const Aabb& ab, float yaw,
-                         float wx, float baseY, float wz, float scale = 1.0f) {
+                         float wx, float baseY, float wz, uint32_t roomId, float scale = 1.0f) {
         if (asset >= m_assetTable.size() || !m_assetTable[asset].ok) return;
         placeYaw(m, yaw, scale, cx(ab), ab.miny, cz(ab), wx, baseY, wz);
-        addInstance(asset, m);
+        addInstance(asset, m, roomId);
     };
     // Wall-panel prop (fusebox): anchored on a side wall, raised so it reads as a
     // mounted panel (its AABB dips below 0, so lift it ~1 m onto the wall + base Y).
     auto placeWallPanel = [&](uint32_t asset, const Aabb& ab, float yaw,
-                              float wx, float wy, float wz) {
+                              float wx, float wy, float wz, uint32_t roomId) {
         if (asset >= m_assetTable.size() || !m_assetTable[asset].ok) return;
         placeYaw(m, yaw, 1.0f, cx(ab), cy(ab), cz(ab), wx, wy, wz);
-        addInstance(asset, m);
+        addInstance(asset, m, roomId);
     };
     // Per-floor dressing. A light, repeating kit so each plate reads as a real
     // interior; the exact placements differ a touch by floor so they don't feel
@@ -326,17 +332,17 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
         const float y0 = r.y0;
         const float zH = r.zHalf;
         // Crates + a pallet clustered along the -Z wall, mid-plate.
-        placeProp(pallet, kPalletAabb, 0.0f,     6.0f + (float)(fi % 3) * 2.0f, y0, -zH + 1.1f);
-        placeProp(crateL, kCrateLAabb, kPi*0.5f, 6.0f, y0, -zH + 1.0f);
-        placeProp(crateS, kCrateSAabb, 0.4f,     7.0f, y0, -zH + 1.9f);
+        placeProp(pallet, kPalletAabb, 0.0f,     6.0f + (float)(fi % 3) * 2.0f, y0, -zH + 1.1f, fi);
+        placeProp(crateL, kCrateLAabb, kPi*0.5f, 6.0f, y0, -zH + 1.0f, fi);
+        placeProp(crateS, kCrateSAabb, 0.4f,     7.0f, y0, -zH + 1.9f, fi);
         // Barrels + a crate along the +Z wall.
-        placeProp(barrel, kBarrelAabb, 0.0f,     12.0f, y0,  zH - 1.0f);
-        placeProp(barrel, kBarrelAabb, 0.0f,     13.0f, y0,  zH - 1.6f);
-        placeProp(crateS, kCrateSAabb, 0.7f,     17.0f, y0,  zH - 1.1f);
+        placeProp(barrel, kBarrelAabb, 0.0f,     12.0f, y0,  zH - 1.0f, fi);
+        placeProp(barrel, kBarrelAabb, 0.0f,     13.0f, y0,  zH - 1.6f, fi);
+        placeProp(crateS, kCrateSAabb, 0.7f,     17.0f, y0,  zH - 1.1f, fi);
         // Pipe runs along both side walls + a wall fusebox (service look).
-        placeProp(pipes,  kPipesAabb,  0.0f,     9.0f,  y0, -zH + 0.3f);
-        placeProp(pipes,  kPipesAabb,  0.0f,     15.0f, y0,  zH - 0.3f);
-        placeWallPanel(fuse, kFuseAabb, kPi*0.5f, 11.0f, y0 + 1.6f, -zH + 0.15f);
+        placeProp(pipes,  kPipesAabb,  0.0f,     9.0f,  y0, -zH + 0.3f, fi);
+        placeProp(pipes,  kPipesAabb,  0.0f,     15.0f, y0,  zH - 0.3f, fi);
+        placeWallPanel(fuse, kFuseAabb, kPi*0.5f, 11.0f, y0 + 1.6f, -zH + 0.15f, fi);
     }
 
     // ---- CEILING LIGHTS: fixtures hung from EACH room's (now raised) ceiling. ----
@@ -363,7 +369,8 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
         // point-light tint; strength chosen so the panel blooms tastefully without
         // blowing out the tonemap. (rgb = warm white, w = strength.)
         const float kEmis[4] = { 1.00f, 0.86f, 0.62f, 6.0f };
-        for (const Room& r : rooms) {
+        for (uint32_t fi = 0; fi < (uint32_t)L1Floor::Count; ++fi) {
+            const Room& r = rooms[fi];
             const float lightY  = r.y0 + r.ceil - 0.05f;          // just below THIS plate's ceiling
             // Range covers the 4 m spacing AND reaches the floor in tall rooms.
             const float range   = std::max(7.5f, r.ceil + 3.5f);
@@ -378,7 +385,7 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
                     const float wx = r.x0 + (i + 0.5f) * 4.0f;
                     placeYaw(m, 0.0f, 1.0f, cx(kLightAabb), kLightAabb.maxy, cz(kLightAabb),
                              wx, lightY, wz);
-                    addInstanceEmissive(lightA, m, kEmis);  // HDR: fixture glows + feeds bloom
+                    addInstanceEmissive(lightA, m, kEmis, /*roomId=*/fi);  // HDR fixture, tagged by floor
                     // Point light a touch below the fixture so the ceiling panel above
                     // doesn't occlude the pool of light it casts on the floor/walls.
                     x3::rhi::PointLight pl;
@@ -406,6 +413,29 @@ void EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
             float fin[16];
             x3::asset::mulMat4(inst.transform, d.nodeTransform, fin);
             // HDR pipeline: emissive instances (Light_A fixtures) glow + feed bloom.
+            device.drawMeshEmissive(frame,
+                                    x3::rhi::MeshHandle{ d.meshId },
+                                    x3::rhi::TextureHandle{ d.baseColorTexId },
+                                    d.baseColorFactor,
+                                    inst.emissive,
+                                    fin);
+        }
+    }
+}
+
+void EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                        const Scene& scene) const {
+    // Per-room occlusion cull (game-wide): skip any instance whose floor is not visible
+    // under the host's current visible-room set. scene.roomVisible() returns true for
+    // kNoRoom and whenever the cull is inactive, so with no visible set installed this is
+    // identical to the no-arg draw above (every instance drawn).
+    for (const EnvInstance& inst : m_instances) {
+        if (!scene.roomVisible(inst.roomId))
+            continue;
+        const EnvAsset& a = m_assetTable[inst.asset];
+        for (const auto& d : a.drawables) {
+            float fin[16];
+            x3::asset::mulMat4(inst.transform, d.nodeTransform, fin);
             device.drawMeshEmissive(frame,
                                     x3::rhi::MeshHandle{ d.meshId },
                                     x3::rhi::TextureHandle{ d.baseColorTexId },
