@@ -157,6 +157,48 @@ void ThirdPersonView::build(Scene& scene, x3::rhi::IRenderDevice& device,
                 m_skinner.apply(m_model, *m_device, (uint32_t)m_idleClip, 0.0f);
             }
         }
+
+        // ---- Skeleton-based FIT (Tim 2026-05-27): Jake_22_actions.glb has chronic
+        // XYZ authoring issues across every project that's tried to use it ("they
+        // NEVER EVER NEVER got it right"). Don't trust the authored origin/scale;
+        // instead READ THE BONES from the freshly-applied bind pose and derive
+        // scale (so the avatar renders 1.7m tall regardless of authored size) +
+        // Y-shift (so feet sit at the entity origin = the player's feet, regardless
+        // of where the GLB origin actually is). This is the same fix recipe the
+        // Babylon ttt-model-loader.js used, but driven by the Mixamo SKELETON
+        // (deterministic) instead of mesh bounding-box measurement (which Tim
+        // notes "never got it right" either). Axes/handedness fixes (if Jake is
+        // laying sideways / facing wrong) are a follow-on once the user eyeballs
+        // the result. ----
+        if (m_device) {
+            const int toeNode  = m_skinner.resolveNodeByName(m_model, "mixamorigLeftToeBase");
+            const int headNode = m_skinner.resolveNodeByName(m_model, "mixamorigHead");
+            float toeMat[16], headMat[16];
+            if (toeNode >= 0 && headNode >= 0 &&
+                m_skinner.boneGlobal((uint32_t)toeNode, toeMat) &&
+                m_skinner.boneGlobal((uint32_t)headNode, headMat)) {
+                const float toeY  = toeMat[13];   // column-major: translation Y at index 13
+                const float headY = headMat[13];
+                const float H     = headY - toeY;
+                if (H > 0.1f) {
+                    constexpr float kTargetHeight = 1.7f;
+                    m_modelScale = kTargetHeight / H;
+                    m_modelFixup[13] = -toeY;     // shift feet to origin in model-space; drawXform scales after
+                    x3::logInfo("[3p] Jake skeleton fit: toeY=" + std::to_string(toeY) +
+                                " headY=" + std::to_string(headY) +
+                                " H=" + std::to_string(H) +
+                                " -> scale=" + std::to_string(m_modelScale) +
+                                " yShift=" + std::to_string(m_modelFixup[13]));
+                } else {
+                    x3::logWarn("[3p] Jake skeleton fit: bad height H=" + std::to_string(H) +
+                                " (toe/head bones at same Y?) — keeping default scale/fixup");
+                }
+            } else {
+                x3::logWarn("[3p] Jake skeleton fit: bones not found (toeNode=" +
+                            std::to_string(toeNode) + " headNode=" + std::to_string(headNode) +
+                            ") — keeping default scale/fixup");
+            }
+        }
     } else {
         x3::logWarn("[3p] Jake loaded but is not skinnable — avatar will draw statically");
     }
