@@ -330,8 +330,8 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.magSize     = 40;
         w.reserveAmmo = 200;
         w.reloadTime  = 2.0f;
-        w.viewmodelGlb = "WeaponRailgun.glb";  // railgun reads as a rifle for the auto SMG
-        w.vmScale     = 0.24f;                 // longarm (~0.46 m held)
+        w.viewmodelGlb = "WeaponX.glb";  // tactical battle rifle (Rodin art pass)
+        w.vmScale     = 0.11f;           // long rifle -> smaller viewmodel scale
         w.muzzleFx    = "muzzle_smg";
         w.impactFx    = "impact_bullet";
         // Task #21 FIX B (stoppable loop voice): autos play ONE sustained looping WAV
@@ -503,6 +503,87 @@ std::vector<WeaponDef> makeDefaultRoster() {
         // Continuous loopable zap/beam (the loop reads as a sustained electric crackle).
         w.fireSfx     = "weapons/loops/Loopable_Rapid-Fires_Sci-Fi_Gun_7.wav";
         w.fireSfxLoop = true;   // continuous beam: loopable
+        r.push_back(w);
+    }
+
+    // ---- 8) BFG — high-tier crafted energy cannon (design: "Railgun / BFG"). --
+    // The ultimate: a slow, huge ORANGE energy ORB with a large splash. Ammo-gated
+    // so it stays a finisher, not a delete button — ~300 direct + 150 splash @ 6 m
+    // kills a 400-HP boss in ~2 hits, but you carry only a few shots. Later-act /
+    // crafted per docs/EFLZ_DESIGN.md weapons table.
+    {
+        WeaponDef w;
+        w.name        = "bfg";
+        w.kind        = FireKind::Projectile;
+        w.automatic   = false;
+        w.damage      = 300;          // huge direct hit
+        w.fireRate    = 0.5f;         // very slow (1 shot / 2 s)
+        w.pellets     = 1;
+        w.spreadDeg   = 0.0f;
+        w.recoilDeg   = 6.0f;         // big shove
+        w.range       = 100.0f;
+        w.magSize     = 4;            // tiny mag
+        w.reserveAmmo = 12;           // rare ammo
+        w.reloadTime  = 4.0f;         // slow reload
+        w.projSpeed   = 25.0f;        // slow, visible orb
+        w.splashRadius= 6.0f;         // big AoE
+        w.splashDamage= 150;          // heavy splash
+        w.viewmodelGlb = "WeaponBFG.glb";   // orange energy cannon (Rodin art)
+        w.vmScale     = 0.16f;
+        w.muzzleFx    = "muzzle_plasma";
+        w.impactFx    = "impact_plasma";
+        r.push_back(w);
+    }
+
+    // ---- 9) RPG — rocket-propelled grenade launcher (heavy explosive). -------
+    // Slow single-shot launcher: a visible rocket that detonates for big splash.
+    // Anti-group / anti-armor finisher sitting between the chaingun and the BFG.
+    {
+        WeaponDef w;
+        w.name        = "rpg";
+        w.kind        = FireKind::Projectile;
+        w.automatic   = false;
+        w.damage      = 120;          // direct impact
+        w.fireRate    = 0.8f;
+        w.pellets     = 1;
+        w.spreadDeg   = 0.4f;
+        w.recoilDeg   = 5.0f;
+        w.range       = 120.0f;
+        w.magSize     = 1;            // single tube
+        w.reserveAmmo = 12;
+        w.reloadTime  = 2.8f;
+        w.projSpeed   = 40.0f;        // visible rocket
+        w.splashRadius= 5.0f;
+        w.splashDamage= 90;
+        w.viewmodelGlb = "WeaponRPG.glb";
+        w.vmScale     = 0.13f;
+        w.muzzleFx    = "muzzle_default";
+        w.impactFx    = "impact_default";
+        r.push_back(w);
+    }
+
+    // ---- 10) Railgun — high-power precision slug (RailgunGood art). ----------
+    // Slow, pinpoint, long-range hitscan that hits like a truck: a 400-HP boss is
+    // ~3 deliberate shots, trash one-shots. Small mag + slow cadence make it the
+    // anti-elite marksman tool — the opposite of the chaingun's spray.
+    {
+        WeaponDef w;
+        w.name        = "railgun";
+        w.kind        = FireKind::Hitscan;
+        w.automatic   = false;
+        w.damage      = 130;          // big single-shot
+        w.fireRate    = 0.7f;         // slow, deliberate
+        w.pellets     = 1;
+        w.spreadDeg   = 0.0f;         // pinpoint
+        w.recoilDeg   = 5.0f;         // heavy kick
+        w.range       = 200.0f;       // long range
+        w.magSize     = 5;
+        w.reserveAmmo = 25;
+        w.reloadTime  = 2.5f;
+        w.viewmodelGlb = "WeaponRailgun.glb";  // green-coil railgun (RailgunGood, Rodin, downscaled 70->5MB)
+        w.vmScale     = 0.13f;
+        w.muzzleFx    = "muzzle_default";
+        w.impactFx    = "impact_default";
         r.push_back(w);
     }
 
