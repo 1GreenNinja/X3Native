@@ -42,6 +42,8 @@ constexpr float kAirControl   = 0.5f;    // 50% horizontal control while airborn
 constexpr float kCoyoteTime   = 0.15f;   // s — jump still allowed after leaving ground
 constexpr float kJumpBuffer   = 0.10f;   // s — jump remembered if pressed before landing
 constexpr float kStandHeight  = 1.8f;    // m — capsule full standing height
+constexpr float kCrouchHeight = 1.2f;    // m — ducked capsule height (Crouch)
+constexpr float kProneHeight  = 0.7f;    // m — prone/crawl capsule height (Prone)
 constexpr float kEyeHeight    = 1.6f;    // m — camera above feet (Stand)
 constexpr float kCrouchEye    = 0.95f;   // m — ducked eye height (Crouch)
 constexpr float kProneEye     = 0.45f;   // m — crawling/prone eye height (Prone)
@@ -70,6 +72,10 @@ void Player::spawn(x3::phys::IPhysicsWorld& physics, float x, float y, float z) 
     m_coyote     = 0.0f;
     m_jumpBuffer = 0.0f;
     m_spawned    = true;
+    // Fresh capsule is full standing height: reset the stance + eye to match (a respawn
+    // after dying while crouched must not leave us logically crouched on a stand capsule).
+    m_stance     = Stance::Stand;
+    m_eyeHeight  = kEyeHeight;
     // Seed the cached feet so damageTargetPos()/camera() are valid before the
     // first update() (e.g. a ranged enemy aiming on frame 0 of a test).
     m_feetX = x; m_feetY = y; m_feetZ = z;
@@ -107,7 +113,21 @@ x3::phys::Vec3 Player::damageTargetPos() const {
     return x3::phys::Vec3{ m_feetX, m_feetY + m_eyeHeight, m_feetZ };
 }
 
-void Player::setStance(Stance s) {
+float Player::stanceHeight(Stance s) {
+    return (s == Stance::Prone)  ? kProneHeight :
+           (s == Stance::Crouch) ? kCrouchHeight : kStandHeight;
+}
+
+void Player::setStance(Stance s, x3::phys::IPhysicsWorld& physics) {
+    if (s == m_stance) return;                       // idempotent: already in this stance
+    // Resize the physics capsule. SHRINKING (duck) always succeeds; GROWING (stand up /
+    // half-stand) is REFUSED by the physics world if a ceiling is too low — in that case
+    // keep the current (lower) stance so we never clip a low overhead. Feet stay anchored.
+    if (m_spawned && m_body.valid()) {
+        const bool growing = stanceHeight(s) > stanceHeight(m_stance);
+        if (!physics.setCharacterHeight(m_body, stanceHeight(s)) && growing)
+            return;                                  // blocked by a ceiling: stay crouched
+    }
     m_stance    = s;
     m_eyeHeight = (s == Stance::Prone)  ? kProneEye :
                   (s == Stance::Crouch) ? kCrouchEye : kEyeHeight;
@@ -426,6 +446,64 @@ bool runPlayerSelfTest() {
         bool earlyJumps = gainEarly > 0.2f;   // clear upward boost
         bool lateNoJump = gainLate  < 0.05f;  // essentially just falling
         check(earlyJumps && lateNoJump, "T4 coyote (early jumps, late does not)");
+    }
+
+    // ---- T5: crouch SHRINKS the capsule so a ducked player fits a low gap that blocks a
+    //          standing one; the feet stay anchored; un-crouching under a low ceiling is
+    //          REFUSED (you stay crouched, no clip). ------------------------------------
+    {
+        // (a) Standing player blocked by a low overhead beam; crouched fits under it.
+        auto runGap = [](Player::Stance st) -> float {
+            std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+            w->init();
+            makeGround(*w, 0, 0, 50.0f);
+            // Low beam crossing x=3, underside at y=1.3 (a 1.3 m gap): a stand capsule (1.8 m)
+            // can't pass; a crouch capsule (1.2 m) can.
+            w->addBox(x3::phys::Vec3{0.3f, 1.0f, 5.0f}, x3::phys::Vec3{3.0f, 2.3f, 0.0f},
+                      0.0f, x3::phys::Layer::Static);
+            Player p;
+            p.spawn(*w, 0.0f, 0.05f, 0.0f);   // faces +X, toward the beam
+            for (int i = 0; i < 30; ++i) frame(p, *w, PlayerInput{});
+            p.setStance(st, *w);              // duck (or stay standing)
+            PlayerInput fwd; fwd.moveFwd = 1.0f;
+            for (int i = 0; i < 300; ++i) frame(p, *w, fwd);
+            float x, y, z, yaw, pitch; p.camera(x, y, z, yaw, pitch);
+            w->shutdown();
+            return x;   // how far +X we got (past the beam at x=3 means we fit through)
+        };
+        float xStand  = runGap(Player::Stance::Stand);
+        float xCrouch = runGap(Player::Stance::Crouch);
+        bool standBlocked = xStand  < 3.0f;   // stopped at/under the beam
+        bool crouchFits   = xCrouch > 4.0f;   // ducked through to the far side
+
+        // (b) Feet stay anchored when crouching: feet-y barely moves on the duck.
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init();
+        makeGround(*w, 0, 0, 50.0f);
+        Player p; p.spawn(*w, 0.0f, 0.05f, 0.0f);
+        for (int i = 0; i < 30; ++i) frame(p, *w, PlayerInput{});
+        float fy0 = p.feet().y;
+        p.setStance(Player::Stance::Crouch, *w);
+        for (int i = 0; i < 5; ++i) frame(p, *w, PlayerInput{});
+        bool feetAnchored = std::fabs(p.feet().y - fy0) < 0.2f;
+
+        // (c) Un-crouch GUARD: crouched under a low ceiling, requesting Stand is refused.
+        std::unique_ptr<x3::phys::IPhysicsWorld> w2(x3::phys::createPhysicsWorld());
+        w2->init();
+        makeGround(*w2, 0, 0, 50.0f);
+        // Ceiling slab right overhead, underside at y=1.3 (only a crouch fits).
+        w2->addBox(x3::phys::Vec3{5.0f, 0.5f, 5.0f}, x3::phys::Vec3{0.0f, 1.8f, 0.0f},
+                   0.0f, x3::phys::Layer::Static);
+        Player p2; p2.spawn(*w2, 0.0f, 0.05f, 0.0f);
+        for (int i = 0; i < 30; ++i) frame(p2, *w2, PlayerInput{});
+        p2.setStance(Player::Stance::Crouch, *w2);    // duck under the ceiling (succeeds)
+        bool ducked = p2.stance() == Player::Stance::Crouch;
+        p2.setStance(Player::Stance::Stand, *w2);     // try to stand: ceiling blocks it
+        bool stayedCrouched = p2.stance() == Player::Stance::Crouch;
+        w->shutdown(); w2->shutdown();
+
+        check(standBlocked && crouchFits && feetAnchored && ducked && stayedCrouched,
+              "T5 crouch shrinks capsule (fits low gap, feet anchored, un-crouch ceiling-guarded)");
     }
 
     x3::logInfo(std::string("[player-test] ") + std::to_string(g_pass) + " passed, " +

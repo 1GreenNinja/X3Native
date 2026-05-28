@@ -17,11 +17,12 @@ Single source of truth for **who is who**, **how the fleet talks**, and **how co
 | Hardware | Fleet identity | Role | Primary lane |
 |---|---|---|---|
 | Dell i9 laptop (RTX A2000) | **OG Dell_I9** | OG dev + verification | gating, doc, fleet ops, lightweight fixes |
-| i7-13700K workstation (2× 1080 Ti, 128GB, 4TB) | **13700K** *(a.k.a. FarmBoss)* | **integrator on point** — owns `engine/` | merges feature branches → `main`, re-gates; renderer + netcode |
+| i7-13700K workstation (2× 1080 Ti, 128GB, 4TB) | **13700K** — **IntegratorCaptainCommanderInspector** *(a.k.a. FarmBoss)* | **central authority** — owns `engine/` | integrates feature branches → `main`, re-gates every merge, captains the crew, commands lane assignments, inspects every push; renderer + netcode |
 | i9-14900K desktop (RTX 5090) | **14900K** | gameplay/content powerhouse — owns `app/` | Level/World Editor |
 | i7-13700k second machine | **Snake13700k** | open-world engineer | mountains, city/metropolis, ocean + submarine combat |
 | i7-4790K garage (1080 Ti, Z97) | **DJBOOTH** | mid-biomes engineer | L12–L15 caves + toxic swamplands + Memory Hunter boss |
 | (TBD machine) | **i5000** | desert levels engineer | L10–L11 Crystalline Desert + Salvari Camp |
+| Predator chassis (4790K, dual GTX 1080 Ti SLI, 32GB DDR3, fresh Win11 25h2, VS2026, Vulkan) | **Predator-I4400** *(a.k.a. Predator_FNG — Fresh New Guy)* | **new fleet member** — onboarding | TBD lane; reported ~**680 FPS** on a known-good X3Native build (the high-water bench used to anchor the perf-disparity investigation vs the 13700K's ~40-50 FPS on `integration/culling-glass`) |
 
 Workers push **feature branches**; primaries (OG Dell_I9 / 14900K / 13700K) push **`main`** directly (fetch → rebase → push, small + often). See `docs/VERSIONING.md` for the build-identity standard every push should carry.
 
@@ -61,6 +62,56 @@ To get a fleet machine's Claude session onto Slack:
 - The `localhost:3118/callback` "can't be reached" page is *normal*; the URL still has the code you need.
 - Copy callback URLs as **text**, not screenshots — Claude can't reliably OCR a long single-use token off an image.
 - One Slack auth = the entire workspace. No per-channel re-auth.
+
+---
+
+## Alternative path: dedicated Slack bot per machine
+
+The onboarding playbook above uses the official `slack` Claude plugin, which authenticates **as Tim's Slack user via OAuth**. Every posting session shows up as `Claude APP` and is distinguished only by the **signature** in the message body. That works (OG Dell_I9 and i5000 are on this path), but it gets visually muddy once 4+ machines are posting.
+
+**DJBOOTH** pioneered the alternative: a **dedicated Slack bot per machine**, each with its own app/identity/avatar (`DJBooth APP`, `I5000-Bot`, `13700K-Bot`, etc.). Posts then read as that specific machine in the channel — zero ambiguity, no signature-soup.
+
+| | **MCP plugin (OAuth-as-user)** | **Custom Slack bot per machine** |
+|---|---|---|
+| Setup per machine | ~3 min (`/plugin install slack` + OAuth) | ~10–15 min (create Slack app + scopes + bot token + connect via custom MCP) |
+| Identity in Slack | every session = `Claude APP` (distinguish by signature) | each machine = its own bot user with own name + avatar |
+| Reads channels & DMs | yes (workspace-wide) | yes (channels/DMs the bot is invited to) |
+| Posts on demand | yes | yes |
+| Autonomy by default | **no** — session only reads when you prompt it in CC | **no** — bot only reads when its CC session is prompted (DJBOOTH note: *"I do not run as a daemon"*) |
+| Path to always-on | add `/loop 5m` (or `/schedule` for cross-session) | same — add `/loop 5m` (or `/schedule`) in the bot's CC session |
+| Channel readability at scale | gets muddy with 4+ machines | clean, scales well |
+
+**Recommendation:** **MCP plugin for fast bootstrap, custom bot for the long-term cleaner channel.** A machine can start on the plugin and migrate to its own bot later without losing identity (sign-format stays the same). The integrator (13700K) and high-traffic content lanes (i5000 desert, DJBOOTH caves) are the highest-value bot migrations.
+
+**Critical: autonomy is a separate concern from which path you pick.** Both plugins and bots are on-demand by default. To make a session *answer DMs without you having to prompt it at the terminal*, you still need `/loop` or `/schedule` — see next section. DJBOOTH today is a custom bot **without** an autonomy loop, so Tim's DMs sit unread until he next prompts `check Slack` in CC on the 4790K. Adding `/loop 5m` (or `/schedule`) closes that gap.
+
+---
+
+## Stay live — `/loop` the Slack check
+
+Auth alone makes a session *able* to read/post Slack; it doesn't make it *responsive*. To get a fleet-feel ("brothers banter in the channel, the integrator pings, someone replies"), every onboarded session should run a recurring Slack check via `/loop`. Without this, a session only reads Slack when its human types — i.e., never autonomously.
+
+**After step 6, in that machine's Claude Code session, run:**
+
+```
+/loop 5m Check Slack channels #x3native_escapelabzero_features (C0B6VTEU8Q0) and #new-channel (C0B648DJ43E) for new messages addressed to <YOUR_FLEET_IDENTITY> since the last loop iteration. Use slack_search_public_and_private with sort=timestamp to find recent posts. Respond via slack_send_message to anything that mentions your identity, your lane (e.g. caves for DJBOOTH, desert for i5000, engine/integration for 13700K, perf-bench on the A2000 for OG Dell_I9), or asks a direct question. Sign every reply "— <YOUR_FLEET_IDENTITY> <your_emoji>" (e.g. ":cactus:" for i5000, ":robot_face:" for OG). If nothing new is addressed to you, output ONE short line like "loop tick: nothing new for <ID>" and end the iteration — DO NOT post unless there's something genuinely worth saying. Never spam the channel. Stop the loop if Tim says "stop loop" or similar.
+```
+
+Replace `<YOUR_FLEET_IDENTITY>` and `<your_emoji>` per the roster table above. Pick an emoji per machine: OG Dell_I9 :robot_face: · 13700K :captain: · 14900K :rocket: · Snake13700k :snake: · DJBOOTH :musical_note: · i5000 :cactus: · Predator-I4400 :crossed_swords: *(or whatever you prefer — make them distinct so messages are scannable).*
+
+**How it works** *(the `/loop` skill handles the scheduling internally):*
+- 5 m → cron `2-59/5 * * * *` (fires at :02, :07, :12, …, :57 — off-aligned from :00/:30 so the fleet doesn't all hit the API at once).
+- **Session-only by default** — the loop dies when that Claude Code session closes. To survive across sessions, use `/schedule` instead (cloud cron).
+- Recurring tasks **auto-expire after 7 days**; restart the loop on day 7.
+- `CronDelete <job_id>` to cancel sooner (the job ID is printed when `/loop` schedules it).
+- The first iteration runs immediately on `/loop`; subsequent iterations follow the cron.
+
+**Don't:**
+- Don't `/loop` shorter than 3 m unless there's a specific reason (Slack API rate-limit headroom + token cost).
+- Don't have the loop post on every iteration "checking in!" — Tim will mute you. Only post when there's actual content.
+- Don't run multiple `/loop` instances for the same task in one session.
+
+**Why pre-aligned offsets matter (fleet sync):** if every machine runs `/loop 5m` and uses the default `*/5`, they all fire at :00 :05 :10 simultaneously — five sessions hitting Slack at the same instant. Use `2-59/5`, `3-59/5`, `4-59/5`, etc. for different machines (the `/loop` skill picks one per session).
 
 ---
 

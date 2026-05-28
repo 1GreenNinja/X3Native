@@ -502,6 +502,17 @@ void Level1Game::spawnChen(Scene& scene, x3::rhi::IRenderDevice& device,
                 "(3 phases; KILL-vs-CURE outcome)");
 }
 
+// ---- TEARDOWN: remove any in-flight death-ragdoll bodies (and Martinez's) while
+// the physics world is still alive, BEFORE physics->shutdown(). See level1_game.h.
+// Mirrors MonsterManager::shutdown() across every group + the single Martinez boss. -
+void Level1Game::shutdown() {
+    m_corridor.shutdown();
+    m_checkpoint.shutdown();
+    m_bossAdds.shutdown();
+    m_chen.shutdown();
+    m_martinez.shutdownRagdoll();
+}
+
 bool Level1Game::cureChen(Scene& scene, x3::phys::IPhysicsWorld& physics) {
     if (!m_chenSpawned || m_chen.count() == 0) return false;
     const bool cured = m_chen.at(0).cure(scene, physics);
@@ -1132,6 +1143,11 @@ bool runLevel1SelfTest() {
     // ---- T7d: objective list finished after taking the elevator. ----
     check(game.objectives().allComplete(), "T7d all objectives complete at the end");
 
+    // Tear down any in-flight death ragdolls (the boss died in T5) while the Jolt
+    // world is still alive — without this, ~Level1Game would later remove ragdoll
+    // bodies from an already-shut-down physics world (crash on exit). Mirrors the
+    // --test-nexus body-owner teardown discipline.
+    game.shutdown();
     physics->shutdown();
     x3::logInfo(std::string("[level1-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");

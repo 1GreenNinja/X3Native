@@ -60,6 +60,13 @@ struct Voice {
     uint64_t serial = 0;   // monotonically increasing; oldest = smallest
 };
 
+// A live LOOPING voice (a clone of a Proto set to loop). Lives until stopLoop().
+// Keyed by a LoopHandle id so the caller can stop exactly the voice it started.
+struct LoopVoice {
+    std::unique_ptr<ma_sound> sound;
+    uint32_t id = 0;       // the LoopHandle id handed back to the caller
+};
+
 class MiniaudioSystem final : public IAudioSystem {
 public:
     ~MiniaudioSystem() override { shutdown(); }  // safety net if the host forgets
@@ -95,11 +102,16 @@ public:
         if (!m_inited) return;
         if (!m_silent) {
             stopMusic();
-            // Free transient voices first, then prototypes, then the engine.
+            // Free transient one-shot voices, then any live loop voices, then the
+            // prototypes, then the engine (no leaks — the engine asserts alloc==0).
             for (auto& v : m_voices) {
                 if (v.sound) { ma_sound_uninit(v.sound.get()); }
             }
             m_voices.clear();
+            for (auto& lv : m_loops) {
+                if (lv.sound) { ma_sound_uninit(lv.sound.get()); }
+            }
+            m_loops.clear();
             for (auto& kv : m_protos) {
                 if (kv.second.sound) { ma_sound_uninit(kv.second.sound.get()); }
             }
@@ -159,30 +171,98 @@ public:
     }
 
     void playMusic(std::string_view absPath, bool loop, float vol) override {
-        if (!m_inited || m_silent) return;
-        stopMusic();
-        const std::string path(absPath);
-        m_music = std::make_unique<ma_sound>();
-        // STREAM: don't decode the whole track into RAM. Music is 2D (no spatial).
-        const ma_uint32 flags = MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_NO_SPATIALIZATION;
-        ma_result r = ma_sound_init_from_file(&m_engine, path.c_str(), flags,
-                                              nullptr, nullptr, m_music.get());
-        if (r != MA_SUCCESS) {
-            x3::logWarn(std::string("[audio] music load failed: ") + path +
-                        " (ma=" + std::to_string((int)r) + ") — no music");
-            m_music.reset();
-            return;
-        }
-        ma_sound_set_looping(m_music.get(), loop ? MA_TRUE : MA_FALSE);
-        ma_sound_set_volume(m_music.get(), clamp01(vol));
-        ma_sound_start(m_music.get());
-        x3::logInfo(std::string("[audio] music: ") + path);
+        // Remember the request so setMusicEnabled(true) / setMusicVolume() can act
+        // even in silent mode or before a device exists.
+        m_musicPath = std::string(absPath);
+        m_musicLoop = loop;
+        m_musicVol  = clamp01(vol);
+        if (!m_musicEnabled) return;   // music turned off in settings -> don't start the bed
+        startMusicVoice();
     }
 
     void stopMusic() override {
         if (m_music) {
             ma_sound_uninit(m_music.get());
             m_music.reset();
+        }
+    }
+
+    void setMusicVolume(float vol) override {
+        m_musicVol = clamp01(vol);
+        if (m_music) ma_sound_set_volume(m_music.get(), m_musicVol);
+    }
+
+    void setMusicEnabled(bool enabled) override {
+        if (enabled == m_musicEnabled) {
+            // Even when unchanged, keep the live voice's volume in sync.
+            if (enabled && m_music) ma_sound_set_volume(m_music.get(), m_musicVol);
+            return;
+        }
+        m_musicEnabled = enabled;
+        if (!enabled) {
+            stopMusic();                 // silence + forget the playing voice
+        } else if (!m_musicPath.empty()) {
+            startMusicVoice();           // resume the last track at the current vol
+        }
+    }
+
+    void setMasterSfxVolume(float vol) override {
+        // Stored and applied to NEW voices in playInternal() (one place). Live voices
+        // already playing keep their volume; new one-shots pick up the new master.
+        m_sfxMaster = clamp01(vol);
+    }
+
+    LoopHandle startLoop(SoundHandle sound, float vol, float pitch) override {
+        if (!m_inited || m_silent || !sound.valid()) return LoopHandle{ 0 };
+        auto it = m_protos.find(sound.id);
+        if (it == m_protos.end() || !it->second.ok) return LoopHandle{ 0 };
+
+        auto voice = std::make_unique<ma_sound>();
+        // 2D loop (the player's own gun) — disable spatialization like playSound2D.
+        const ma_uint32 flags = MA_SOUND_FLAG_NO_SPATIALIZATION;
+        ma_result r = ma_sound_init_copy(&m_engine, it->second.sound.get(), flags,
+                                         nullptr, voice.get());
+        if (r != MA_SUCCESS) {
+            x3::logWarn(std::string("[audio] loop clone failed (ma=") +
+                        std::to_string((int)r) + ")");
+            return LoopHandle{ 0 };
+        }
+        // Same one-place master-SFX multiply as one-shots so the Settings slider
+        // quiets the held-fire loop too.
+        ma_sound_set_volume(voice.get(), clamp01(vol) * m_sfxMaster);
+        ma_sound_set_pitch(voice.get(), clampPitch(pitch));
+        ma_sound_set_looping(voice.get(), MA_TRUE);
+        ma_sound_start(voice.get());
+
+        const uint32_t id = m_nextLoopId++;
+        LoopVoice lv;
+        lv.sound = std::move(voice);
+        lv.id = id;
+        m_loops.push_back(std::move(lv));
+        return LoopHandle{ id };
+    }
+
+    void stopLoop(LoopHandle loop) override {
+        if (!loop.valid()) return;   // invalid / already-stopped -> safe no-op
+        for (size_t i = 0; i < m_loops.size(); ++i) {
+            if (m_loops[i].id == loop.id) {
+                if (m_loops[i].sound) ma_sound_uninit(m_loops[i].sound.get());
+                m_loops[i] = std::move(m_loops.back());
+                m_loops.pop_back();
+                return;
+            }
+        }
+        // Not found (already stopped, or never ours): no-op.
+    }
+
+    void setLoopParams(LoopHandle loop, float vol, float pitch) override {
+        if (!loop.valid()) return;
+        for (auto& lv : m_loops) {
+            if (lv.id == loop.id && lv.sound) {
+                ma_sound_set_volume(lv.sound.get(), clamp01(vol) * m_sfxMaster);
+                ma_sound_set_pitch(lv.sound.get(), clampPitch(pitch));
+                return;
+            }
         }
     }
 
@@ -202,6 +282,28 @@ public:
     }
 
 private:
+    // (Re)start the streamed music voice from m_musicPath at m_musicVol. No-op when
+    // silent / no device / no remembered track. Replaces any current music voice.
+    void startMusicVoice() {
+        if (!m_inited || m_silent || m_musicPath.empty()) return;
+        stopMusic();
+        m_music = std::make_unique<ma_sound>();
+        // STREAM: don't decode the whole track into RAM. Music is 2D (no spatial).
+        const ma_uint32 flags = MA_SOUND_FLAG_STREAM | MA_SOUND_FLAG_NO_SPATIALIZATION;
+        ma_result r = ma_sound_init_from_file(&m_engine, m_musicPath.c_str(), flags,
+                                              nullptr, nullptr, m_music.get());
+        if (r != MA_SUCCESS) {
+            x3::logWarn(std::string("[audio] music load failed: ") + m_musicPath +
+                        " (ma=" + std::to_string((int)r) + ") — no music");
+            m_music.reset();
+            return;
+        }
+        ma_sound_set_looping(m_music.get(), m_musicLoop ? MA_TRUE : MA_FALSE);
+        ma_sound_set_volume(m_music.get(), m_musicVol);
+        ma_sound_start(m_music.get());
+        x3::logInfo(std::string("[audio] music: ") + m_musicPath);
+    }
+
     void playInternal(SoundHandle sound, bool spatial, float x, float y, float z,
                       float vol, float pitch) {
         if (!m_inited || m_silent || !sound.valid()) return;
@@ -230,7 +332,10 @@ private:
             return;
         }
 
-        ma_sound_set_volume(voice.get(), clamp01(vol));
+        // ONE-PLACE master SFX scale: every 2D/3D one-shot's volume is multiplied by
+        // the master here, so the Settings SFX slider quiets ALL gunfire/impacts/steps
+        // without touching any call site.
+        ma_sound_set_volume(voice.get(), clamp01(vol) * m_sfxMaster);
         ma_sound_set_pitch(voice.get(), clampPitch(pitch));
         if (spatial) {
             ma_sound_set_spatialization_enabled(voice.get(), MA_TRUE);
@@ -251,10 +356,22 @@ private:
     std::unordered_map<uint32_t, Proto>     m_protos;     // id -> prototype
     std::unordered_map<std::string, uint32_t> m_pathToId; // dedupe
     std::vector<Voice>                      m_voices;     // live one-shots
+    std::vector<LoopVoice>                  m_loops;      // live looping voices
     std::unique_ptr<ma_sound>               m_music;      // streamed track (or null)
+
+    // Music bed state (remembered so settings can toggle/volume it live, even in
+    // silent mode or before a device exists).
+    std::string m_musicPath;            // last requested track ("" = none yet)
+    bool        m_musicLoop = true;
+    float       m_musicVol  = 1.0f;     // current music volume [0,1]
+    bool        m_musicEnabled = true;  // Settings "Music ON/OFF"
+
+    // Master SFX volume [0,1]: applied to EVERY one-shot in playInternal (one place).
+    float       m_sfxMaster = 1.0f;
 
     uint32_t m_nextId = 1;       // 0 reserved for invalid handle
     uint64_t m_nextSerial = 1;   // voice age ordering
+    uint32_t m_nextLoopId = 1;   // 0 reserved for invalid LoopHandle
 };
 
 } // namespace
@@ -315,10 +432,46 @@ bool runAudioSelfTest() {
     audio->stopMusic();
     check(true, "T5 playMusic(missing)/stopMusic do not crash");
 
-    // T6: shutdown is clean and idempotent (double shutdown is safe).
+    // T5b: the live volume/enable setters never crash (no-ops when silent) and are
+    // safe in any order — including before/without a music track.
+    audio->setMasterSfxVolume(0.5f);
+    audio->setMusicVolume(0.7f);
+    audio->setMusicEnabled(false);      // off
+    audio->playSound2D(h, 1.0f, 1.0f);  // master-scaled (no-op if silent)
+    audio->setMusicEnabled(true);       // back on -> resumes last track at current vol
+    audio->setMasterSfxVolume(0.0f);    // fully muted SFX path
+    audio->playSound2D(h, 1.0f, 1.0f);
+    audio->setMasterSfxVolume(1.0f);
+    audio->setMusicVolume(0.25f);
+    audio->update(1.0f / 60.0f);
+    check(true, "T5b setMusicVolume/setMusicEnabled/setMasterSfxVolume do not crash");
+
+    // T5c: looping voices (held-fire weapons). startLoop returns a valid handle when
+    // a device + a real sound exist (graceful invalid when silent / handle invalid);
+    // stopLoop is safe, double-stop is safe, and stopping the invalid handle is a
+    // no-op. Headless / no-device stays a graceful no-op (invalid handle, no crash).
+    {
+        LoopHandle lp = audio->startLoop(h, 0.8f, 1.0f);
+        // With a device + valid sound -> valid; silent / invalid sound -> invalid. Either is fine.
+        check(lp.valid() || !lp.valid(), "T5c startLoop returns (valid or graceful invalid)");
+        audio->setLoopParams(lp, 0.5f, 1.1f);       // tweak live params (no-op if invalid)
+        audio->update(1.0f / 60.0f);
+        audio->stopLoop(lp);                          // stop it
+        audio->stopLoop(lp);                          // double-stop is safe
+        audio->stopLoop(LoopHandle{ 0 });             // stopping the invalid handle is a no-op
+        // startLoop on an invalid sound must yield an invalid loop (graceful).
+        LoopHandle bad = audio->startLoop(missing, 1.0f, 1.0f);
+        check(!bad.valid(), "T5c startLoop(invalid sound) -> invalid loop (graceful)");
+        audio->stopLoop(bad);                         // and stopping it is safe
+        check(true, "T5c startLoop/stopLoop/double-stop/setLoopParams do not crash");
+    }
+
+    // T6: shutdown is clean and idempotent (double shutdown is safe). A loop left
+    // running (started above and re-started here) must be freed by shutdown, not leaked.
+    audio->startLoop(h, 1.0f, 1.0f);   // intentionally NOT stopped -> shutdown must reap it
     audio->shutdown();
     audio->shutdown();
-    check(true, "T6 shutdown() clean + idempotent");
+    check(true, "T6 shutdown() clean + idempotent (reaps live loops)");
 
     x3::logInfo(std::string("[audio-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");

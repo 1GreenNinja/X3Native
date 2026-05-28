@@ -77,6 +77,14 @@ public:
     virtual BodyId createCharacter(float radius, float height, Vec3 pos) = 0;
     virtual void   moveCharacter(BodyId, Vec3 desiredVelocity, float dt) = 0;
     virtual bool   characterGrounded(BodyId) const = 0;
+    // Resize a character's capsule to a new total `height` (radius unchanged), KEEPING the
+    // feet anchored (the capsule still grows/shrinks upward from the feet, so crouch ducks
+    // the head without popping the player up/down). Used for crouch/prone so the collision
+    // capsule — not just the camera — actually shrinks to fit low gaps. Returns false and
+    // leaves the capsule UNCHANGED if the taller shape would intersect surrounding geometry
+    // (e.g. a ceiling above while crouched): the caller stays crouched rather than clip. A
+    // no-op returning false for a non-character / invalid id.
+    virtual bool   setCharacterHeight(BodyId, float height) = 0;
 
     // Queries
     virtual RayHit rayCast(Vec3 origin, Vec3 dir, float maxDist, Layer mask) = 0;

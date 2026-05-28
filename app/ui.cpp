@@ -187,6 +187,74 @@ bool UiContext::toggle(const char* label, bool value, float x, float y, float w,
     return clicked || keyed;
 }
 
+bool UiContext::slider(const char* label, float& value, float x, float y, float w, float h) {
+    const int idx = m_widgetIndex++;
+
+    const bool hovered = pointIn(x, y, w, h);
+    if (hovered) { m_focus = idx; m_mouseMovedFocus = true; }
+    const bool hot = (m_focus == idx);
+
+    // Clamp the incoming value into [0,1] for display + math.
+    float v = value; if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f;
+
+    // Row background (matches toggle/button look).
+    quad(x, y, w, h, hot ? kColBtnHot : kColBtn);
+    if (hot) {
+        const float t = 2.0f;
+        quad(x, y, w, t, kColBtnEdge);
+        quad(x, y + h - t, w, t, kColBtnEdge);
+    }
+
+    // Left: the label.
+    const float px = h * 0.42f;
+    const float ty = y + (h - px) * 0.5f;
+    text(label, x + 14.0f, ty, px, hot ? kColText : kColTextDim);
+
+    // Right: a "NN%" readout (fixed cell at the far right).
+    char pct[8];
+    std::snprintf(pct, sizeof(pct), "%d%%", (int)(v * 100.0f + 0.5f));
+    const float pctW = 56.0f;
+    const float pctPx = h * 0.40f;
+    textCentered(pct, x + w - pctW * 0.5f - 10.0f, y + (h - pctPx) * 0.5f, pctPx, kColText);
+
+    // Track geometry: a horizontal bar between the label and the percent readout.
+    const float labelW = 164.0f;            // reserved width for the label (was 132 — keep "Music Volume"/"SFX Volume" from overrunning the track)
+    const float trackX = x + labelW;
+    const float trackR = x + w - pctW - 16.0f;
+    const float trackW = std::max(8.0f, trackR - trackX);
+    const float trackH = std::max(4.0f, h * 0.16f);
+    const float trackY = y + (h - trackH) * 0.5f;
+
+    quad(trackX, trackY, trackW, trackH, kColTrack);          // empty track
+    quad(trackX, trackY, trackW * v, trackH, kColOn);          // filled portion
+    // Handle: a small bright knob at the value position.
+    const float knobW = 10.0f, knobH = h * 0.55f;
+    const float knobX = trackX + trackW * v - knobW * 0.5f;
+    const float knobY = y + (h - knobH) * 0.5f;
+    quad(knobX, knobY, knobW, knobH, kColBtnEdge);
+
+    // ---- Interaction --------------------------------------------------------
+    float nv = v;
+    bool changed = false;
+
+    // Mouse: click OR drag while held anywhere over the row maps the cursor x onto
+    // the track range (click-to-position + drag-to-scrub). Use the row hover for the
+    // initial grab so the whole row is an easy target.
+    if (hovered && m_in.mouseDown) {
+        float t = (m_in.mouseX - trackX) / trackW;
+        if (t < 0.0f) t = 0.0f; if (t > 1.0f) t = 1.0f;
+        nv = t;
+    }
+    // Keyboard: nudge by 5% while focused.
+    if (hot) {
+        if (m_in.navLeft)  nv -= 0.05f;
+        if (m_in.navRight) nv += 0.05f;
+    }
+    if (nv < 0.0f) nv = 0.0f; if (nv > 1.0f) nv = 1.0f;
+    if (nv != v) { value = nv; changed = true; }
+    return changed;
+}
+
 void UiContext::bar(float x, float y, float w, float h, float frac,
                     const float fill[4], const char* caption) const {
     if (frac < 0.0f) frac = 0.0f;
@@ -312,32 +380,61 @@ GameState PauseMenu::update(UiContext& ui, PauseAction& outAction) {
 // ===========================================================================
 // SettingsMenu
 // ===========================================================================
+// Settings-screen layout metrics, derived once from the screen size. Shared by the
+// render (SettingsMenu::update) and the headless test so the test can compute the
+// exact center of the Nth row without duplicating (and drifting from) the math.
+namespace {
+struct SettingsLayout {
+    float cx, px, py, pw, ph, rx, rw, rh, gap, ry0;
+    // Center y of row index `i` (0 = Bloom, ... see the call order in update()).
+    float rowCenterY(int i) const { return ry0 + (rh + gap) * (float)i + rh * 0.5f; }
+    float rowCenterX() const { return rx + rw * 0.5f; }
+};
+SettingsLayout computeSettingsLayout(float w, float h) {
+    SettingsLayout L{};
+    L.cx = w * 0.5f;
+    L.pw = std::min(560.0f, w * 0.75f);
+    // Taller panel: it hosts 10 rows (6 render toggles + Music toggle + 2 volume
+    // sliders + resolution) plus title + Back, AND the extra gap*1.5 that separates
+    // the audio group from the render toggles. Cap to 92% of the window height.
+    L.ph = std::min(693.0f, h * 0.92f);   // was 680; +~gap*1.5 so the audio-group gap still fits
+    L.px = L.cx - L.pw * 0.5f;
+    L.py = h * 0.5f - L.ph * 0.5f;
+    const float titlePx = std::max(24.0f, L.pw / 18.0f);
+    L.rw = L.pw - 48.0f;
+    L.rh = std::max(34.0f, L.ph * 0.062f);
+    L.gap = L.rh * 0.20f;
+    L.ry0 = L.py + 20.0f + titlePx + 20.0f;
+    L.rx = L.px + 24.0f;
+    return L;
+}
+} // namespace
+
 GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState back,
                                bool& outChanged) {
     outChanged = false;
     const float w = (float)ui.screenW();
     const float h = (float)ui.screenH();
     if (w <= 0.0f || h <= 0.0f) return GameState::Settings;
-    const float cx = w * 0.5f;
+
+    const SettingsLayout L = computeSettingsLayout(w, h);
+    const float cx = L.cx;
 
     const float dim[4] = { 0.0f, 0.0f, 0.0f, 0.6f };
     ui.quad(0, 0, w, h, dim);
 
-    const float pw = std::min(560.0f, w * 0.75f);
-    const float ph = std::min(560.0f, h * 0.85f);
-    const float px = cx - pw * 0.5f;
-    const float py = h * 0.5f - ph * 0.5f;
+    const float pw = L.pw, ph = L.ph, px = L.px, py = L.py;
     ui.panel(px, py, pw, ph, kColPanel);
 
     const float titlePx = std::max(24.0f, pw / 18.0f);
     const float titleCol[4] = { 0.40f, 0.88f, 1.0f, 1.0f };
     ui.textCentered("SETTINGS", cx, py + 20.0f, titlePx, titleCol, UiContext::FontRole::Title);
 
-    const float rw = pw - 48.0f;
-    const float rh = std::max(38.0f, ph * 0.085f);
-    const float gap = rh * 0.22f;
-    float ry = py + 20.0f + titlePx + 20.0f;
-    const float rx = px + 24.0f;
+    const float rw = L.rw;
+    const float rh = L.rh;
+    const float gap = L.gap;
+    float ry = L.ry0;
+    const float rx = L.rx;
 
     // Toggle rows (each takes one focus slot, in this order).
     if (ui.toggle("Bloom",       model.bloom,   rx, ry, rw, rh)) { model.bloom   = !model.bloom;   outChanged = true; } ry += rh + gap;
@@ -346,6 +443,15 @@ GameState SettingsMenu::update(UiContext& ui, SettingsModel& model, GameState ba
     if (ui.toggle("Shadows",     model.shadows, rx, ry, rw, rh)) { model.shadows = !model.shadows; outChanged = true; } ry += rh + gap;
     if (ui.toggle("VSync",       model.vsync,   rx, ry, rw, rh)) { model.vsync   = !model.vsync;   outChanged = true; } ry += rh + gap;
     if (ui.toggle("RT AO (ray-traced)", model.rtao, rx, ry, rw, rh)) { model.rtao = !model.rtao;   outChanged = true; } ry += rh + gap;
+
+    ry += gap * 1.5f;   // a little gap separating the AUDIO group from the render/display toggles
+
+    // ---- Audio rows: Music on/off (toggle) + Music & SFX volume (0..1 sliders).
+    // The host pushes these to the audio system live (setMusicEnabled / setMusicVolume
+    // / setMasterSfxVolume) whenever outChanged fires. ----
+    if (ui.toggle("Music",        model.musicOn, rx, ry, rw, rh)) { model.musicOn = !model.musicOn; outChanged = true; } ry += rh + gap;
+    if (ui.slider("Music Volume", model.musicVol, rx, ry, rw, rh)) { outChanged = true; } ry += rh + gap;
+    if (ui.slider("SFX Volume",   model.sfxVol,   rx, ry, rw, rh)) { outChanged = true; } ry += rh + gap;
 
     // Resolution row: LIVE framebuffer size on the left (updates as the window is
     // dragged) + a "SET DEFAULT" button on the RIGHT (where the old --width/--height
@@ -928,26 +1034,57 @@ bool runUiSelfTest() {
         // Drive the Settings SCREEN: click the SSGI row to toggle it off via the UI.
         ctl.setState(GameState::Settings);
         x3::rhi::FrameContext fc{}; HudModel hud{};
-        // SSGI is the 3rd toggle row; compute its rect like SettingsMenu does.
+        // Row order in SettingsMenu::update: 0 Bloom, 1 SSAO, 2 SSGI, 3 Shadows,
+        // 4 VSync, 5 RT-AO, 6 Music (toggle), 7 Music Volume, 8 SFX Volume.
+        const SettingsLayout L = computeSettingsLayout(1280.0f, 720.0f);
         {
-            const float w = 1280.0f, h = 720.0f, cx = w * 0.5f;
-            const float pw = std::min(560.0f, w * 0.75f);
-            const float ph = std::min(560.0f, h * 0.85f);
-            const float px = cx - pw * 0.5f, py = h * 0.5f - ph * 0.5f;
-            const float titlePx = std::max(24.0f, pw / 18.0f);
-            const float rw = pw - 48.0f;
-            const float rh = std::max(38.0f, ph * 0.085f);
-            const float gap = rh * 0.22f;
-            const float rx = px + 24.0f;
-            float ry = py + 20.0f + titlePx + 20.0f;
-            ry += (rh + gap) * 2.0f;   // skip Bloom (0) + SSAO (1) -> SSGI (2)
-            UiInput in{}; in.mouseX = rx + rw * 0.5f; in.mouseY = ry + rh * 0.5f;
+            UiInput in{}; in.mouseX = L.rowCenterX(); in.mouseY = L.rowCenterY(2); // SSGI
             in.mouseDown = true; in.mousePressed = true;
             const bool ssgiBefore = ctl.settings().ssgi;
             ctl.update(in, dev, fc, hud, 0.016f);
             check(ctl.settings().ssgi != ssgiBefore, "U19 clicking SSGI row toggles the model");
             check(dev.ssgiEnabled == ctl.settings().ssgi, "U20 SSGI live param follows the toggle");
             check(con->getInt("r_ssgi") == (ctl.settings().ssgi ? 1 : 0), "U21 r_ssgi cvar follows the toggle");
+        }
+
+        // ---- Audio settings: Music toggle + Music/SFX sliders edit the model + the
+        // screen reports outChanged so the host can push to the audio system. ----
+        {
+            // Defaults the model ships with.
+            check(ctl.settings().musicOn == true,  "U22 musicOn defaults true");
+            check(std::abs(ctl.settings().musicVol - 0.25f) < 1e-4f, "U23 musicVol default ~0.25");
+            check(std::abs(ctl.settings().sfxVol   - 1.0f)  < 1e-4f, "U24 sfxVol default ~1.0");
+
+            // The audio group is pushed DOWN by an extra gap*1.5 (the separator added
+            // before the Music row), so the audio rows (6/7/8) sit that much lower than
+            // a plain rowCenterY() would compute. Add it back here for the click Y.
+            const float audioGap = L.gap * 1.5f;
+
+            // Click the Music toggle row (index 6) -> musicOn flips.
+            const bool musicBefore = ctl.settings().musicOn;
+            { UiInput in{}; in.mouseX = L.rowCenterX(); in.mouseY = L.rowCenterY(6) + audioGap;
+              in.mouseDown = true; in.mousePressed = true;
+              ctl.update(in, dev, fc, hud, 0.016f); }
+            check(ctl.settings().musicOn != musicBefore, "U25 clicking Music row toggles musicOn");
+
+            // Click near the LEFT end of the Music Volume slider track (index 7) ->
+            // value drops toward 0. The track starts at rx + labelW (164).
+            {
+                const float trackX = L.rx + 164.0f;
+                UiInput in{}; in.mouseX = trackX + 2.0f; in.mouseY = L.rowCenterY(7) + audioGap;
+                in.mouseDown = true; in.mousePressed = true;
+                ctl.update(in, dev, fc, hud, 0.016f);
+                check(ctl.settings().musicVol < 0.1f, "U26 dragging Music slider to the left lowers musicVol");
+            }
+            // Click near the RIGHT end of the SFX Volume slider (index 8) -> ~1.0.
+            {
+                const float trackR = L.rx + L.rw - 56.0f - 16.0f;  // pctW=56, margin=16
+                ctl.settings().sfxVol = 0.0f;                       // start low so the change is visible
+                UiInput in{}; in.mouseX = trackR - 1.0f; in.mouseY = L.rowCenterY(8) + audioGap;
+                in.mouseDown = true; in.mousePressed = true;
+                ctl.update(in, dev, fc, hud, 0.016f);
+                check(ctl.settings().sfxVol > 0.9f, "U27 dragging SFX slider to the right raises sfxVol");
+            }
         }
         delete con;
     }

@@ -334,11 +334,22 @@ bool Skinner::enableGpuSkinning(x3::rhi::IRenderDevice& device,
             mv.uv[0] = p.baseUv[v*2+0]; mv.uv[1] = p.baseUv[v*2+1];
         }
         if (device.registerSkinnedMesh(x3::rhi::MeshHandle{ meshId }, bind.data(),
-                                       (uint32_t)vcount, p.jointIdx.data(), p.jointWt.data()))
+                                       (uint32_t)vcount, p.jointIdx.data(), p.jointWt.data())) {
             any = true;
+            m_gpuMeshIds.push_back(meshId);   // remember so we can unregister on despawn
+        }
     }
     m_gpuSkin = any;
     return any;
+}
+
+// Hand every registered skinned mesh back to the device (free its skinning buffers +
+// descriptor sets). Used when the model is despawned. Idempotent.
+void Skinner::disableGpuSkinning(x3::rhi::IRenderDevice& device) {
+    for (uint32_t meshId : m_gpuMeshIds)
+        device.unregisterSkinnedMesh(x3::rhi::MeshHandle{ meshId });
+    m_gpuMeshIds.clear();
+    m_gpuSkin = false;
 }
 
 float Skinner::clipDuration(uint32_t clip) const {
@@ -482,6 +493,40 @@ uint32_t Skinner::currentGlobals(const x3::asset::Model& model, uint32_t clip,
     outGlobals.assign((size_t)m_nodeCount * 16, 0.0f);
     computeGlobals(model, clip, t, outGlobals);
     return m_nodeCount;
+}
+
+// ===========================================================================
+// Named-bone world-transform readback (third-person held-weapon SOCKET).
+// ===========================================================================
+int Skinner::resolveNodeByName(const x3::asset::Model& model, std::string_view name) const {
+    if (!m_valid || name.empty() || m_nodeCount == 0) return -1;
+    std::string want = toLower(name);
+    int best = -1;
+    for (uint32_t n = 0; n < m_nodeCount; ++n) {
+        std::string have = toLower(model.nodes[n].name);
+        if (have.empty()) continue;
+        if (have == want) return (int)n;                       // exact match wins
+        if (best < 0 && (have.find(want) != std::string::npos ||
+                         want.find(have) != std::string::npos))
+            best = (int)n;                                     // remember a substring match
+    }
+    return best;
+}
+
+bool Skinner::boneGlobal(uint32_t nodeIndex, float out[16]) const {
+    if (!m_valid || nodeIndex >= m_nodeCount || !out) return false;
+    // m_globalScratch holds the per-node MODEL-SPACE globals from the most recent
+    // apply()/applyLocomotion()/applyRagdollBlend() (same pose lastPalette() built).
+    if (m_globalScratch.size() != (size_t)m_nodeCount * 16) return false;
+    std::memcpy(out, &m_globalScratch[(size_t)nodeIndex * 16], 16 * sizeof(float));
+    return true;
+}
+
+bool Skinner::boneGlobalByName(const x3::asset::Model& model, std::string_view name,
+                               float out[16]) const {
+    int n = resolveNodeByName(model, name);
+    if (n < 0) return false;
+    return boneGlobal((uint32_t)n, out);
 }
 
 // ===========================================================================

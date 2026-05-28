@@ -70,6 +70,14 @@ public:
     // applyLocomotion will upload the palette + skin on the GPU instead of CPU LBS).
     bool gpuSkinning() const { return m_gpuSkin; }
 
+    // Hand every GPU-skinned mesh registered by enableGpuSkinning() back to the device
+    // (unregisterSkinnedMesh), freeing its per-mesh skinning buffers + descriptor sets.
+    // Call when the owning model is DESPAWNED so the GPU registration does not leak for
+    // the rest of the run. After this gpuSkinning() is false; apply() falls back to the
+    // CPU path (harmless — a despawned model is no longer drawn). Idempotent; a no-op on
+    // a headless / CPU-only device (nothing was registered). Safe when !valid().
+    void disableGpuSkinning(x3::rhi::IRenderDevice& device);
+
     // Number of clips + a clip's name/duration (for selecting idle vs walk and for
     // logging). clipIndex is clamped/ignored if out of range.
     uint32_t   clipCount() const { return (uint32_t)m_clipDurations.size(); }
@@ -118,6 +126,31 @@ public:
 
     // Node count the skinner was bound over (for the caller sizing nodeGlobals).
     uint32_t nodeCount() const { return m_nodeCount; }
+
+    // ======================================================================
+    // Named-bone world-transform readback (third-person held-weapon SOCKET).
+    // ======================================================================
+    // Resolve a node by NAME (case-insensitive; exact match preferred, else a
+    // substring either way for exporter quirks) to its node index, or -1 if no
+    // node matches / !valid(). Used once to cache e.g. the weapon-hand bone
+    // (`mixamorigRightHand`) so the per-frame socket read needs no string work.
+    int resolveNodeByName(const x3::asset::Model& model, std::string_view name) const;
+
+    // Read the MODEL-SPACE global transform (column-major 4x4) of node `nodeIndex`
+    // from the pose most recently produced by apply()/applyLocomotion()/
+    // applyRagdollBlend() (i.e. the same per-node globals that built lastPalette()).
+    // Returns false (out untouched) if !valid(), the index is out of range, or no
+    // pose has been computed yet. This is how the 3P avatar reads its right-hand
+    // bone each frame to socket the carried weapon mesh (final weapon placement =
+    // avatarDrawTransform * boneGlobal * gripOffset). The globals are in the SAME
+    // space drawn meshes use, so composing with the avatar's draw matrix lands the
+    // weapon in the hand.
+    bool boneGlobal(uint32_t nodeIndex, float out[16]) const;
+
+    // Same as boneGlobal but resolves by name each call (convenience for tests /
+    // one-off reads). Prefer resolveNodeByName() once + boneGlobal() in the hot path.
+    bool boneGlobalByName(const x3::asset::Model& model, std::string_view name,
+                          float out[16]) const;
 
     // Snapshot the CURRENT animated per-node GLOBAL (model-space) matrices at
     // (clip, timeSec) into `outGlobals` (nodeCount*16, column-major). This is the
@@ -375,6 +408,10 @@ private:
     // LBS + updateMesh. Holds no GPU resources itself (the device owns them, keyed
     // by mesh handle, freed on destroyMesh / unregisterSkinnedMesh).
     bool                  m_gpuSkin = false;
+    // Mesh ids registered with the device by enableGpuSkinning() — kept so
+    // disableGpuSkinning() can hand them back (unregisterSkinnedMesh) when a model
+    // is despawned, freeing the device's per-mesh skinning buffers/descriptors.
+    std::vector<uint32_t> m_gpuMeshIds;
     int                   m_skinIndex = -1;
     std::vector<float>    m_clipDurations;     // seconds, per clip
     std::vector<std::string> m_clipNames;
