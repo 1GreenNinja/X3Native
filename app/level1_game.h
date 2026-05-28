@@ -259,6 +259,19 @@ public:
     SecretRoom&       secret()       { return m_secretRoom; }
     const SecretRoom& secret() const { return m_secretRoom; }
 
+    // ---- Door system access (kiosk system / OpenDoor command needs it) -----
+    // The DoorSystem owns the level's animated doors (A-E + the cell hatch + any
+    // future locked panels). The HoloTerminal kiosk system's OpenDoor command
+    // unlocks + opens a door by index, so it needs mutable access. Read-only
+    // access also useful for HUDs.
+    DoorSystem&       doors()       { return m_doors; }
+    const DoorSystem& doors() const { return m_doors; }
+
+    // Public door letter -> DoorSystem index lookup (kiosk OpenDoor command needs
+    // this to wire a kiosk to a specific door at build time). Returns kNoLink for
+    // an invalid letter. Same as the private impl (just promoted to public).
+    uint32_t doorIndexPublic(char letter) const { return doorIndex(letter); }
+
     // ---- F2 rescue system (spec §5) ---------------------------------------
     // The rescue system (3 victims on 5-min timers; rescue -> companion, expire ->
     // boss). The host pokes tryRescue() on an E-interact edge and reads hudTimers()

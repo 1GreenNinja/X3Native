@@ -11,6 +11,7 @@ add_executable(X3Engine WIN32
     barrels.cpp
     glass_test.cpp
     holo_terminal.cpp
+    holo_terminal_system.cpp
     glass_lounge.cpp
     secret_room.cpp
     ecs_render.cpp
