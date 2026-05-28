@@ -195,6 +195,12 @@ public:
     const MonsterManager& miniBoss() const { return m_miniBoss; }
     MonsterManager&       miniBoss()       { return m_miniBoss; }
 
+    // The SL3 Chen-timer-expired mini-boss manager (empty until Chen's rescue clock
+    // expires and the floor spawns a transformed adversary). Exposed for the HUD
+    // bar-loop / radar so this enemy gets a health bar like every other.
+    const MonsterManager& chenBoss() const { return m_chenBoss; }
+    MonsterManager&       chenBoss()       { return m_chenBoss; }
+
     // The SL3 Dr. Chen rescue captive.
     bool   chenPresent() const { return m_chen != nullptr; }
     bool   chenCaptive() const;          // alive + still a captive (not rescued/expired)

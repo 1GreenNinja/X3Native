@@ -195,6 +195,19 @@ public:
     // Per-girl attacker count (Medical Bay interrupt-rescue enemies).
     uint32_t attackerCount() const { return m_attackers.count(); }
 
+    // ---- Enemy-group accessors (HUD health bars / radar) ------------------
+    // Expose every spawned hostile group so the host (main.cpp) can iterate over
+    // them for the over-enemy health bar overlay. Read-only enumeration; no state
+    // change. Mirrors Level1Game::corridorEnemies()/checkpointEnemies()/etc.
+    const MonsterManager& mainHall()   const { return m_mainHall; }
+    MonsterManager&       mainHall()         { return m_mainHall; }
+    const MonsterManager& cellGuards() const { return m_cellGuards; }
+    MonsterManager&       cellGuards()       { return m_cellGuards; }
+    const MonsterManager& attackers()  const { return m_attackers; }
+    MonsterManager&       attackers()        { return m_attackers; }
+    const MonsterSystem&  martinez()   const { return m_martinez; }
+    MonsterSystem&        martinez()         { return m_martinez; }
+
 private:
     // Tag a freshly-spawned monster's Scene entity with `room` (so the cull + lights include
     // it). Returns the room id (for bookkeeping). Idempotent / bounds-checked.
