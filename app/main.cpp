@@ -6157,6 +6157,15 @@ int main(int argc, char** argv) {
         if (on && !player.god()) player.setGod(true);   // don't take env damage while flying
         console->print(std::string("noclip ") + (on ? "ON  (IDCLIP) — fly with WASD, look up/down to climb" : "OFF"));
     }, "idclip [0|1] - toggle noclip free-flight (no collision)");
+    // ---- restart: spawn a fresh X3Engine.exe + close this window so the main
+    // loop unwinds cleanly through the normal shutdown path (texture/mesh release,
+    // VMA leak check, etc.). The new process inherits CWD so assets resolve. Playtest
+    // aid — not a true in-place level reset, just the fastest way to a clean slate.
+    console->registerCommand("restart", [&console, window](const std::vector<std::string>&) {
+        console->print("restart: spawning a fresh X3Engine + exiting this one...");
+        std::system("start \"\" \"X3Engine.exe\"");
+        glfwSetWindowShouldClose(window, GLFW_TRUE);
+    }, "restart - spawn a fresh X3Engine + exit this one");
 
     // ---- S7: route keyboard text + editing into the on-screen console. The
     // char callback feeds printable codepoints; the key callback handles the
