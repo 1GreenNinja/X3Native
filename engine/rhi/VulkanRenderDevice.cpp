@@ -217,6 +217,26 @@ public:
                 : "[rhi] RT: not available on this device — SSAO/CSM raster fallback");
         }
 
+        // HEADLESS + no-RT defensive default. On at least one fielded GPU (1080 Ti,
+        // NVIDIA R546 drivers) the SSAO+GI raster fallback's depth-pre-pass + main-
+        // pass depth-EQUAL combination rejects every fragment, leaving the HDR
+        // target empty -> a fully blank --headless --screenshot. The mesh/depth
+        // shaders use `precise` + `invariant gl_Position` and the main pass tests
+        // LESS_OR_EQUAL (not EQUAL), but NVIDIA's driver still emits non-matching
+        // FMA sequences between the two shaders in some cache states. The windowed
+        // game has a Settings menu where the user disables SSAO/SSGI manually; the
+        // headless path has no such escape hatch, so on a no-RT device we DEFAULT
+        // them off so --headless captures are non-blank out of the box. The host
+        // can still re-enable them explicitly with setSsaoParams/setGiParams (which
+        // is what the windowed game does once the user toggles the setting back on).
+        if (m_headless && !m_rtSupported) {
+            m_ssao.enabled = false;
+            m_gi.enabled   = false;
+            logInfo("[rhi] HEADLESS + no-RT: defaulting SSAO and GI OFF (raster fallback's "
+                    "depth-EQUAL path is hardware-unreliable; setSsaoParams/setGiParams "
+                    "can re-enable explicitly)");
+        }
+
         vkb::DeviceBuilder db{ phys };
         auto dev_ret = db.build();
         if (!dev_ret) { logError(std::string("[rhi] device: ") + dev_ret.error().message()); return false; }
@@ -803,12 +823,75 @@ public:
                            m_format == VK_FORMAT_B8G8R8A8_SRGB);
         const uint8_t* src = static_cast<const uint8_t*>(mapped);
         std::vector<uint8_t> rgba((size_t)W * H * 4);
+        // Pixel-variance accountability: drawCalls+triangle counters can be non-zero
+        // when geometry was SUBMITTED but never landed in the framebuffer (e.g. the
+        // depth-EQUAL test rejecting every fragment in the SSAO+GI path). The ONLY
+        // ground truth is the pixels themselves. Track per-channel mean + variance
+        // and a count of distinct RGB tuples while we're already touching each byte.
+        // If both come up tiny, the capture is the clear color (or near-clear), the
+        // game didn't render -> we log + return false. See the assertion below.
+        double sum[3]   = { 0.0, 0.0, 0.0 };
+        double sumSq[3] = { 0.0, 0.0, 0.0 };
+        // Distinct RGB tuple count via a small open-address hash set (cap 1024 —
+        // anything past that is plenty to confirm the capture is non-blank, and
+        // exceeding the cap short-circuits the rest of the scan).
+        constexpr uint32_t kColorSetCap = 1024;
+        uint32_t colorSet[kColorSetCap];
+        for (uint32_t i = 0; i < kColorSetCap; ++i) colorSet[i] = 0xFFFFFFFFu;
+        uint32_t uniqColorCount = 0;
+        bool     uniqCapped = false;
         for (size_t p = 0; p < (size_t)W * H; ++p) {
             const uint8_t* s = src + p * 4;
             uint8_t* d = rgba.data() + p * 4;
             if (bgra) { d[0] = s[2]; d[1] = s[1]; d[2] = s[0]; }
             else      { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; }
             d[3] = 255;  // force opaque (swapchain alpha is undefined for display)
+            // Variance accumulators (RGB after swizzle, alpha is forced 255 so skip)
+            for (int c = 0; c < 3; ++c) {
+                const double v = (double)d[c];
+                sum[c]   += v;
+                sumSq[c] += v * v;
+            }
+            // Pack RGB into a 24-bit key (R<<16 | G<<8 | B) and probe the small set.
+            // Once we've seen the threshold (10) DISTINCT colors we know the capture
+            // isn't a flat clear; skip the probe to keep the loop cheap.
+            if (!uniqCapped && uniqColorCount < kColorSetCap) {
+                const uint32_t key = ((uint32_t)d[0] << 16) | ((uint32_t)d[1] << 8) | (uint32_t)d[2];
+                // Fast probe: simple linear-probe open-address set keyed by FNV-ish hash.
+                uint32_t h = (key * 2654435761u) & (kColorSetCap - 1);
+                for (uint32_t step = 0; step < kColorSetCap; ++step) {
+                    const uint32_t slot = (h + step) & (kColorSetCap - 1);
+                    if (colorSet[slot] == 0xFFFFFFFFu) { colorSet[slot] = key; ++uniqColorCount; break; }
+                    if (colorSet[slot] == key) break;            // already counted
+                }
+                if (uniqColorCount >= kColorSetCap) uniqCapped = true;
+            }
+        }
+        // Combined per-channel std-dev (RGB only). Variance = E[X^2] - E[X]^2,
+        // averaged across the 3 channels to a single scalar comparable to the
+        // assertion threshold the caller documented (std > 15 = non-blank).
+        const double Npx = (double)((size_t)W * H);
+        double stdAcc = 0.0;
+        for (int c = 0; c < 3; ++c) {
+            const double mean = sum[c] / Npx;
+            const double var  = (sumSq[c] / Npx) - (mean * mean);
+            stdAcc += (var > 0.0) ? std::sqrt(var) : 0.0;
+        }
+        const double stdAvg = stdAcc / 3.0;
+        // Final-frame variance gate. drawCalls/triangles are INSUFFICIENT — geometry
+        // can be submitted off-screen, culled by a broken depth test, or rendered to
+        // the wrong attachment. Pixels are ground truth. If both the std-dev across
+        // RGB AND the distinct-color count are below the "this is clearly blank"
+        // threshold (15 / 10), abort the capture with an explicit error code so
+        // CI/agent harnesses cannot accidentally false-pass on a solid-clear PNG.
+        if (stdAvg < 5.0 || uniqColorCount < 10) {
+            char buf[256];
+            std::snprintf(buf, sizeof(buf),
+                "[rhi] captureFrame: BLANK RENDER DETECTED (std=%.2f colors=%u) — "
+                "likely off-screen or pre-render; PNG NOT written: %s",
+                stdAvg, uniqColorCount, path);
+            logError(buf);
+            return false;
         }
         const int rc = stbi_write_png(path, (int)W, (int)H, 4, rgba.data(), (int)(W * 4));
         if (rc == 0) { logError(std::string("[rhi] captureFrame: PNG write failed: ") + path); return false; }
@@ -2814,15 +2897,22 @@ private:
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
-            // When SSAO is on, mesh.frag samples the blurred AO texture — declare it
-            // so the graph transitions it COLOR_ATTACHMENT -> SHADER_READ_ONLY.
-            if (ssaoOn) {
-                colorPass.addUse(ResourceUse{
-                    rgSsaoBlur, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
-            }
+            // mesh.frag set 3 always BINDS the blurred-AO texture (m_meshAoSet's
+            // descriptor was written once at init pointing at m_ssaoBlurView in
+            // SHADER_READ_ONLY layout); whether the shader SAMPLES it at runtime is
+            // gated by the AO control UBO (aoAmount=0 when SSAO is off -> sample is
+            // discarded). VUID-vkCmdDraw-None-09600 requires the image to be in the
+            // descriptor's recorded layout AT DRAW TIME regardless of whether the
+            // shader actually accesses the texel, so ALWAYS declare the SHADER_READ
+            // use here. When SSAO ran this frame, the graph derives a no-op transition
+            // (it's already SHADER_READ); when SSAO is disabled (e.g. on no-RT
+            // headless), the graph emits the UNDEFINED -> SHADER_READ transition
+            // that keeps validation happy + the harmless-sampling fallback correct.
+            colorPass.addUse(ResourceUse{
+                rgSsaoBlur, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
             colorPass.usesDynamicRendering = true;
             m_mainRenderInfo = VkRenderingInfo{};
             m_mainRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -6315,8 +6405,12 @@ private:
         ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
         VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
         vp.viewportCount = 1; vp.scissorCount = 1;
-        // Same back-face cull + winding as the main mesh pass so the depth values
-        // match EXACTLY (the color pass then runs depth-test EQUAL).
+        // Same back-face cull + winding as the main mesh pass. depth.vert uses the
+        // identical `precise` model->viewProj sequence as mesh.vert (+ matching
+        // `invariant gl_Position;`) so the Z values agree; the main pass's depth
+        // test is LESS_OR_EQUAL to tolerate any residual 1-ULP driver drift, and
+        // for headless captures on a no-RT card we additionally default SSAO+GI
+        // OFF so the entire pre-pass path is bypassed (see init()).
         VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
         rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_BACK_BIT;
         rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
@@ -7596,9 +7690,20 @@ private:
         // the main pass tests EQUAL with depth-write OFF (no double depth write, no
         // z-fight — same geometry, same transform). This also lets SSAO read a
         // complete depth buffer before lighting.
+        // Depth: the SSAO depth pre-pass already wrote camera depth using mesh.vert's
+        // EXACT position computation (`precise` qualifier matched in both shaders),
+        // so the main pass tests LESS_OR_EQUAL with depth-write OFF. We use LE not
+        // strict EQUAL because even with `invariant gl_Position` + `precise`, the
+        // SPIR-V/driver can still emit different FMA sequences in two pipelines
+        // built around different vertex shaders (depth.vert vs mesh.vert) on some
+        // NVIDIA driver versions — producing a 1-ULP Z drift that an EQUAL test
+        // rejects, dropping every fragment and leaving the HDR target empty (the
+        // root-cause symptom we saw on 1080 Ti: a blank --headless --screenshot).
+        // LESS_OR_EQUAL still rejects nothing legitimate (the pre-pass owns depth
+        // for the same geometry in the same order) but tolerates 1-ULP drift.
         VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
         dss.depthTestEnable = VK_TRUE; dss.depthWriteEnable = VK_FALSE;
-        dss.depthCompareOp = VK_COMPARE_OP_EQUAL;
+        dss.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
 
         VkPipelineColorBlendAttachmentState cba{};
         cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;

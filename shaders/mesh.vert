@@ -64,10 +64,25 @@ layout(location = 8) flat out vec4 vGlassParams;  // x = refraction, y = roughne
 layout(location = 9) flat out vec4 vGlassTint;    // rgb = tint (baseColor), w = ior
 layout(location = 10) flat out vec4 vGlassExtra;  // x = reflectance, yzw = transmittanceColor
 
+// POSITION INVARIANCE: the depth pre-pass (depth.vert) writes the camera depth
+// before this pass, and the main pass's pipeline runs depth-test EQUAL. For the
+// equality to ever hold, both shaders MUST compute gl_Position with the same
+// arithmetic sequence at the same precision. `invariant` blocks the compiler/
+// driver from reordering ops in this expression independently of the matching
+// `invariant gl_Position;` in depth.vert. Without it, FMA fusion on certain
+// drivers (1080 Ti / NVIDIA) produces Z values that differ by 1 ULP -> the
+// EQUAL test rejects every fragment -> HDR target stays cleared -> blank PNG.
+invariant gl_Position;
+
 void main() {
     ObjectData o = objBuf.objects[gl_InstanceIndex];
-    vec4 worldPos = o.model * vec4(inPos, 1.0);
-    gl_Position = cam.viewProj * worldPos;
+    // `precise` matches the same qualifier in depth.vert so both shaders compute
+    // gl_Position with the SAME arithmetic sequence at the same precision (no FMA
+    // reordering), and the main pass's depth-EQUAL test against the pre-pass Z
+    // never spuriously rejects fragments. See depth.vert.
+    precise vec4 worldPos = o.model * vec4(inPos, 1.0);
+    precise vec4 clipPos  = cam.viewProj * worldPos;
+    gl_Position = clipPos;
     vNormal = mat3(o.model) * inNormal;
     vUV = inUV;
     vTexIndex = o.texIndex;
