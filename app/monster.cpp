@@ -708,6 +708,65 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
 
     if (m_entity == kNoLink || m_entity >= scene.size()) return;
 
+    // ---- CROSS-FLOOR AI/ATTACK GATE (fix for "shot from outside the level" on
+    // upper Spire floors). The vertically-stacked Spire has solid floor slabs
+    // between floors and only the elevator shaft + emergency stairwell open the
+    // vertical sightline. Before this gate, an enemy on B1 would tick its AI +
+    // attack cooldown unconditionally — and since the melee attack landing has no
+    // LOS raycast, an enemy directly under the player (horiz~0, vertical separation
+    // big) would still deal damage every frame through the floor slab. The per-
+    // floor RENDER cull hides the model so the damage appears to come from
+    // "outside the level."
+    //
+    // Gate (cheap, no level1 dep): when the vertical separation between the enemy
+    // and the player exceeds kCrossFloorY (a clean inter-floor gap), the AI tick
+    // is skipped UNLESS a clear Static-layer LOS ray to the player's eye confirms
+    // the open shaft/stairwell sightline. Within a floor's vertical band this is
+    // a no-op (same-floor combat & stairwell encounters are unaffected). Cancels
+    // any pending wind-up so it can't land a delayed hit when the player drops back.
+    //
+    // The Static-mask rayCast against the floor slabs blocks; only the open shaft
+    // + stairwell (where the slabs HAVE no body) admit the cross-floor LOS — and
+    // those are exactly the spots where an enemy SHOULD be able to threaten the
+    // player vertically (e.g. across the open shaft on an elevator ride).
+    {
+        constexpr float kCrossFloorY = 3.0f;  // m — clearly more than ceiling-thickness, less than the smallest floor gap (5 m)
+        const x3::phys::Vec3 eyeForGate =
+            (target ? target->damageTargetPos() : playerPos);
+        const float dy = std::fabs(eyeForGate.y - m_pos.y);
+        if (dy > kCrossFloorY) {
+            // Stack separation suggests we may be on different floors. Confirm by
+            // raycasting straight along the muzzle->eye line against Static; if a
+            // slab/wall blocks the line, this enemy CANNOT see/shoot the player.
+            const x3::phys::Vec3 from0{ m_pos.x, m_pos.y + 0.3f, m_pos.z };
+            x3::phys::Vec3 d{ eyeForGate.x - from0.x, eyeForGate.y - from0.y,
+                              eyeForGate.z - from0.z };
+            float dl = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
+            bool blocked = false;
+            if (dl > 1e-3f) {
+                const x3::phys::Vec3 nd{ d.x/dl, d.y/dl, d.z/dl };
+                const float skip = kMonsterHalf.x + 0.15f;
+                const x3::phys::Vec3 from{ from0.x + nd.x*skip,
+                                           from0.y + nd.y*skip,
+                                           from0.z + nd.z*skip };
+                const float losLen = dl - skip;
+                if (losLen > 1e-3f) {
+                    x3::phys::RayHit wall =
+                        physics.rayCast(from, nd, losLen, x3::phys::Layer::Static);
+                    blocked = wall.hit;
+                }
+            }
+            if (blocked) {
+                // Not visible to this enemy: cancel any in-progress wind-up so a
+                // delayed hit cannot land when the player descends back, and bail
+                // out of the AI tick entirely (the enemy stays idle off-floor).
+                m_winding = false;
+                m_hasLos = false;
+                return;
+            }
+        }
+    }
+
     // Snapshot the pre-movement position so we can measure this frame's planar
     // speed (used to choose idle vs walk for the skeletal animation, below).
     const x3::phys::Vec3 prevPos = m_pos;
@@ -1120,6 +1179,32 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                         // Tracer from the muzzle to the impact (player) or the wall.
                         x3::phys::Vec3 end = wall.hit ? wall.point : tp;
                         fx(muzzle, end);
+                    }
+                } else {
+                    // MELEE: defense-in-depth LOS raycast (mirrors the ranged check).
+                    // The cross-floor AI gate up top is the primary guard, but melee
+                    // attacks (Guard/Boss/Verthani) historically went straight to
+                    // takeDamage when horiz<=range — so an enemy standing directly
+                    // under a player on the next floor (same XZ, big Y) would deal
+                    // damage every cooldown through the floor slab. Raycast from the
+                    // muzzle to the player's eye against Static; if a slab/wall sits
+                    // between us, the swing does NOT land. Same skip trick as ranged.
+                    x3::phys::Vec3 tp = target->damageTargetPos();
+                    const x3::phys::Vec3 muzzle{ m_pos.x, m_pos.y + 0.3f, m_pos.z };
+                    x3::phys::Vec3 d{ tp.x - muzzle.x, tp.y - muzzle.y, tp.z - muzzle.z };
+                    float dl = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
+                    if (dl > 1e-4f) {
+                        const x3::phys::Vec3 nd{ d.x/dl, d.y/dl, d.z/dl };
+                        const float skip = kMonsterHalf.x + 0.15f;
+                        const x3::phys::Vec3 from{ muzzle.x + nd.x * skip,
+                                                   muzzle.y + nd.y * skip,
+                                                   muzzle.z + nd.z * skip };
+                        const float losLen = dl - skip;
+                        if (losLen > 1e-3f) {
+                            x3::phys::RayHit wall =
+                                physics.rayCast(from, nd, losLen, x3::phys::Layer::Static);
+                            if (wall.hit) landed = false;
+                        }
                     }
                 }
                 if (landed) {
@@ -2492,6 +2577,137 @@ bool runAiSelfTest() {
     x3::logInfo(std::string("[ai-test] ") + std::to_string(ai_pass) + " passed, " +
                 std::to_string(ai_fail) + " failed");
     return ai_fail == 0;
+}
+
+// ===========================================================================
+// MULTI-FLOOR AI self-test (--test-multifloor-ai): reproduces the "shot from
+// outside the level" upper-floor bug + asserts the fix.
+//
+// Setup A — cross-floor occlusion:
+//   * A B1 enemy directly UNDER the player (same XZ; player ~5 m above on a
+//     simulated F1 plate). A SOLID Static slab spans the layer between them.
+//   * The enemy has dmg=8 (melee), hp=200 (so it can't be killed off). The
+//     player stub counts hits; after 5 simulated seconds the enemy MUST have
+//     dealt 0 damage (cross-floor AI gate + melee LOS).
+//
+// Setup B — regression guard (same floor):
+//   * A copy of the same enemy 1.5 m away on a clear floor with no slab.
+//   * After enough ticks it MUST land at least one hit (combat is unaffected).
+// ===========================================================================
+namespace {
+
+// Damage-counting target stub. Acts like a fixed-eye player; remembers how many
+// times takeDamage() was called so the test can assert 0 hits in the bad config.
+class MfTargetStub final : public IDamageSink {
+public:
+    x3::phys::Vec3 eye{ 0.0f, 1.6f, 0.0f };
+    uint32_t hits = 0;
+    int   totalDmg = 0;
+    bool takeDamage(int d) override { ++hits; totalDmg += d; return true; }
+    x3::phys::Vec3 damageTargetPos() const override { return eye; }
+    bool isAlive() const override { return true; }
+};
+
+int mf_pass = 0, mf_fail = 0;
+void mfcheck(bool cond, const char* name) {
+    if (cond) { ++mf_pass; x3::logInfo(std::string("[mfai-test] PASS ") + name); }
+    else      { ++mf_fail; x3::logError(std::string("[mfai-test] FAIL ") + name); }
+}
+
+// Flat ground at y, CCW so +Y is solid, `half` to a side.
+x3::phys::BodyId mfGround(x3::phys::IPhysicsWorld& w, float half, float y) {
+    float v[] = { -half,y,-half,  half,y,-half,  half,y,half,  -half,y,half };
+    uint32_t idx[] = { 0,2,1, 0,3,2 };
+    return w.addStaticMesh(v, 4, idx, 6);
+}
+
+MonsterSystem::Tuning mfGuardTuning() {
+    MonsterSystem::Tuning t;
+    t.type = MonsterType::Guard;
+    t.hp = 200; t.chaseSpeed = 0.0f;   // STATIONARY so it stays directly under the player
+    t.damage = 8; t.attackRange = 2.5f; t.attackCooldown = 0.4f; t.attackWindup = 0.0f;
+    t.ranged = false;
+    return t;
+}
+
+} // namespace
+
+bool runMultiFloorAiSelfTest() {
+    mf_pass = mf_fail = 0;
+    HeadlessDevice device;
+    constexpr float kDt = 1.0f / 60.0f;
+
+    // ---- (A) Cross-floor occlusion: an enemy on B1 (y=0) directly UNDER a
+    // player on a simulated F1 plate (y=5). A solid Static floor slab spans the
+    // layer between them. The melee attack used to land every cooldown because
+    // horiz==0 and the melee path had NO LOS check. With the fix, the AI's
+    // cross-floor gate (or the melee LOS defense-in-depth) drops the swing. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init();
+        // Ground at y=0 (B1 floor) and a SOLID slab at y=4.95 (F1 plate top
+        // surface y=5, slab 0.1 m thick like the real Spire floor).
+        mfGround(*w, 60.0f, 0.0f);
+        // Floor slab between the enemy and the player: a thin box centered at
+        // y=4.95 — mirrors addFloor()'s slab thickness in level1.cpp.
+        w->addBox(x3::phys::Vec3{ 20.0f, 0.05f, 20.0f },
+                  x3::phys::Vec3{ 0.0f, 4.95f, 0.0f }, 0.0f, x3::phys::Layer::Static);
+
+        Scene scene;
+        MonsterSystem mon;
+        // Build the enemy on B1 directly under the player's XZ. With
+        // chaseSpeed=0 it stays put; its hitbox center is at y=0.4ish.
+        mon.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                              x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, mfGuardTuning());
+
+        MfTargetStub player;
+        player.eye = x3::phys::Vec3{ 0.0f, 5.0f + 1.6f, 0.0f };   // standing on F1, eye at y=6.6
+
+        // Tick 5 sim seconds. Without the fix, an attack cooldown of 0.4 s
+        // would land ~12 hits. With the fix, 0 hits.
+        for (int i = 0; i < 300; ++i) {
+            mon.update(kDt, scene, *w, player.eye, player.eye, &player,
+                       AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kDt);
+        }
+        x3::logInfo(std::string("[mfai-test] (A) cross-floor: hits=") +
+                    std::to_string(player.hits) + " totalDmg=" + std::to_string(player.totalDmg));
+        mfcheck(player.hits == 0,
+                "TA cross-floor enemy (under solid slab) deals NO damage to the player");
+        w->shutdown();
+    }
+
+    // ---- (B) Regression guard: same setup, NO slab — close-range same-floor
+    // melee MUST land its hits on the cooldown (combat is unaffected). ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> w(x3::phys::createPhysicsWorld());
+        w->init();
+        mfGround(*w, 60.0f, 0.0f);   // ground only
+
+        Scene scene;
+        MonsterSystem mon;
+        mon.buildMonsterTuned(scene, device, *w, riggedGlbRoot(),
+                              x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, mfGuardTuning());
+
+        MfTargetStub player;
+        // Same-floor, 1.5 m away (well inside attackRange=2.5 m).
+        player.eye = x3::phys::Vec3{ 1.5f, 1.6f, 0.0f };
+
+        for (int i = 0; i < 300; ++i) {
+            mon.update(kDt, scene, *w, player.eye, player.eye, &player,
+                       AttackFxFn{}, BossPhaseFn{}, AllyQueryFn{});
+            w->step(kDt);
+        }
+        x3::logInfo(std::string("[mfai-test] (B) same-floor: hits=") +
+                    std::to_string(player.hits) + " totalDmg=" + std::to_string(player.totalDmg));
+        mfcheck(player.hits >= 3,
+                "TB same-floor enemy with clear LOS lands its melee hits on cooldown");
+        w->shutdown();
+    }
+
+    x3::logInfo(std::string("[mfai-test] ") + std::to_string(mf_pass) + " passed, " +
+                std::to_string(mf_fail) + " failed");
+    return mf_fail == 0;
 }
 
 // ===========================================================================

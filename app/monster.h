@@ -1023,6 +1023,17 @@ bool runPhase2bSelfTest();
 // No window / Vulkan. Lives in monster.cpp. Mirrors the other self-tests.
 bool runAiSelfTest();
 
+// Headless self-test (--test-multifloor-ai). Reproduces the "shot from outside
+// the level" upper-floor bug + asserts the fix. Builds two enemies and a player
+// stub:
+//   (1) a B1 enemy directly UNDER the player who stands on a floor above with a
+//       SOLID Static slab between them (no shaft sightline) — must NOT damage
+//       the player after many ticks (cross-floor AI gate + melee LOS).
+//   (2) a same-floor enemy with clear LOS at close range — MUST damage the
+//       player on its cooldown (regression guard: combat is unaffected).
+// Logs PASS/FAIL T#, returns true iff both pass. No window / Vulkan.
+bool runMultiFloorAiSelfTest();
+
 // ---------------------------------------------------------------------------
 // MonsterDef — one row of the data-driven bestiary roster (bestiary pass). Pure
 // data: a species' display name + a fully-populated MonsterSystem::Tuning (stats /
