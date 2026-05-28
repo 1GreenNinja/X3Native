@@ -359,10 +359,13 @@ void AllyManager::build(Scene& scene, x3::rhi::IRenderDevice& device,
         // skips it -- this system owns the multi-primitive draw, mirroring
         // the MonsterSystem pattern.
         Entity e{};
-        e.tag = Tag::Ally;
+        e.tag = (uint32_t)Tag::Ally;
         std::memcpy(e.transform, a.transform, sizeof(e.transform));
-        e.meshId = 0;   // invalid -> skipped by Scene::render
-        a.entityId = scene.addEntity(e);
+        // e.mesh left default-constructed (invalid MeshHandle) -> Scene::render
+        // skips this entity. This system owns the multi-primitive draw, mirroring
+        // the MonsterSystem pattern (drawMesh calls happen in AllyManager::draw,
+        // not in Scene::render).
+        a.entityId = scene.add(e);
 
         m_allies.push_back(a);
         x3::logInfo(std::string("[ally] spawned ") + allyKindName(a.kind) +
@@ -388,12 +391,24 @@ void AllyManager::draw(x3::rhi::IRenderDevice& device,
         if (!a.alive) continue;
 
         // ---- Character body ----
+        // Compose: fin = ally.transform * d.nodeTransform. The ally transform is
+        // the world-space gameplay matrix (yaw + uniform scale + position); the
+        // per-drawable nodeTransform is the baked glTF node-local TRS so multi-
+        // node character GLBs place correctly. Mirrors monster.cpp's
+        // drawMonsterAt composition, minus the Z-up fixup — Phase A assumes the
+        // character GLBs in this pack are authored Y-up; add a m_modelFixup
+        // multiplication step here if a future Ally pack ships Z-up. The
+        // procedural-box fallback has identity nodeTransform so this is a no-op
+        // for the fallback path.
         const AllyAsset& kind = m_kindAssets[(uint32_t)a.kind];
         for (const x3::asset::ModelDrawable& d : kind.drawables) {
-            float model[16];
-            std::memcpy(model, a.transform, sizeof(model));
-            device.drawMesh(frame, d.meshId, d.baseColorTexId,
-                            d.baseColorFactor, model);
+            float fin[16];
+            x3::asset::mulMat4(a.transform, d.nodeTransform, fin);
+            device.drawMesh(frame,
+                            x3::rhi::MeshHandle{ d.meshId },
+                            x3::rhi::TextureHandle{ d.baseColorTexId },
+                            d.baseColorFactor,
+                            fin);
         }
 
         // ---- Equipped weapon (third-person, hand offset). -----------------
@@ -415,8 +430,13 @@ void AllyManager::draw(x3::rhi::IRenderDevice& device,
         composeYawTRS(wm, a.yaw, kWeaponScale, anchorX, anchorY, anchorZ);
 
         for (const x3::asset::ModelDrawable& d : wpn.drawables) {
-            device.drawMesh(frame, d.meshId, d.baseColorTexId,
-                            d.baseColorFactor, wm);
+            float fin[16];
+            x3::asset::mulMat4(wm, d.nodeTransform, fin);
+            device.drawMesh(frame,
+                            x3::rhi::MeshHandle{ d.meshId },
+                            x3::rhi::TextureHandle{ d.baseColorTexId },
+                            d.baseColorFactor,
+                            fin);
         }
     }
 }
