@@ -714,7 +714,25 @@ CanonFloor loadCanonFloor(std::string_view jsonPath, int floorNum) {
 }
 
 std::string canonProjectJsonPath() {
-    return std::string(R"(C:\GameDev\OneDrive\GameDev\DellGameDev\Escape48BLN\LevelArchitect\EscapeLab48_AllFloors_v2.project.json)");
+    // Pick the first existing copy from a fallback chain so the loader works
+    // regardless of which machine is running (Tim 2026-05-28: i9 Dell diagnosed
+    // the hardcoded 14900K-OneDrive path as missing on every other rig). Order:
+    //   1) repo-relative (works when cwd == repo root, e.g. our standard
+    //      `--world canonlevel` launch + smoketests),
+    //   2) absolute repo path on the master (any cwd on the 14900K),
+    //   3) Tim's original LevelArchitect OneDrive copy (legacy dev workflow).
+    // If none exist, return the absolute repo path so the existing
+    // "JSON not found at <path>" log line names the right place to look.
+    const char* candidates[] = {
+        "assets/levels/EscapeLab48_AllFloors_v2.project.json",
+        R"(C:\GameDev\X3Native-engine\assets\levels\EscapeLab48_AllFloors_v2.project.json)",
+        R"(C:\GameDev\OneDrive\GameDev\DellGameDev\Escape48BLN\LevelArchitect\EscapeLab48_AllFloors_v2.project.json)",
+    };
+    for (const char* c : candidates) {
+        std::ifstream f(c);
+        if (f.good()) return std::string(c);
+    }
+    return std::string(candidates[1]);   // absolute repo path = best error message
 }
 
 // =====================================================================================

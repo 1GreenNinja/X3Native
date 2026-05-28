@@ -1,0 +1,2148 @@
+{
+  "version": "10.7",
+  "type": "project",
+  "name": "Escape Lab 48 — Full Facility (7 Floors + Roof)",
+  "engine": "EscapeLab48",
+  "created": "2026-02-09T07:43:09.197Z",
+  "currentFloor": 1,
+  "floors": {
+    "1": {
+      "name": "Detention Level",
+      "rooms": [
+        {
+          "n": "Main Hall",
+          "t": "Hallway",
+          "x": 22,
+          "y": 0,
+          "z": 44.5,
+          "w": 44,
+          "h": 5,
+          "d": 5,
+          "f": ""
+        },
+        {
+          "n": "Entrance",
+          "t": "Hallway",
+          "x": 5.5,
+          "y": 0,
+          "z": 50,
+          "w": 9,
+          "h": 4,
+          "d": 5,
+          "f": ""
+        },
+        {
+          "n": "Admin Office",
+          "t": "Office",
+          "x": 17,
+          "y": 0,
+          "z": 50,
+          "w": 9,
+          "h": 4,
+          "d": 5,
+          "f": ""
+        },
+        {
+          "n": "IT Room",
+          "t": "Archive",
+          "x": 28,
+          "y": 0,
+          "z": 50,
+          "w": 9,
+          "h": 4,
+          "d": 5,
+          "f": ""
+        },
+        {
+          "n": "Network Hub",
+          "t": "Archive",
+          "x": 39,
+          "y": 0,
+          "z": 50,
+          "w": 9,
+          "h": 4,
+          "d": 5,
+          "f": ""
+        },
+        {
+          "n": "West Cell Hall",
+          "t": "Hallway",
+          "x": 5.5,
+          "y": 0,
+          "z": 22,
+          "w": 3,
+          "h": 5,
+          "d": 40,
+          "f": ""
+        },
+        {
+          "n": "Bottom Hall",
+          "t": "Hallway",
+          "x": 22,
+          "y": 0,
+          "z": 1,
+          "w": 36,
+          "h": 5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "East Cell Hall",
+          "t": "Hallway",
+          "x": 38.5,
+          "y": 0,
+          "z": 22,
+          "w": 3,
+          "h": 5,
+          "d": 40,
+          "f": ""
+        },
+        {
+          "n": "W Service Corridor",
+          "t": "Hallway",
+          "x": 14.5,
+          "y": 0,
+          "z": 26.5,
+          "w": 3,
+          "h": 4.5,
+          "d": 31,
+          "f": ""
+        },
+        {
+          "n": "E Service Corridor",
+          "t": "Hallway",
+          "x": 29.5,
+          "y": 0,
+          "z": 26.5,
+          "w": 3,
+          "h": 4.5,
+          "d": 31,
+          "f": ""
+        },
+        {
+          "n": "Security Station",
+          "t": "Security",
+          "x": 22,
+          "y": 0,
+          "z": 38,
+          "w": 10,
+          "h": 4.5,
+          "d": 6,
+          "f": ""
+        },
+        {
+          "n": "Research Lab",
+          "t": "Lab",
+          "x": 22,
+          "y": 0,
+          "z": 30,
+          "w": 10,
+          "h": 4.5,
+          "d": 6,
+          "f": ""
+        },
+        {
+          "n": "Medical Bay",
+          "t": "Medical Bay",
+          "x": 22,
+          "y": 0,
+          "z": 22,
+          "w": 10,
+          "h": 4.5,
+          "d": 6,
+          "f": ""
+        },
+        {
+          "n": "Armory",
+          "t": "Armory",
+          "x": 22,
+          "y": 0,
+          "z": 14,
+          "w": 10,
+          "h": 4.5,
+          "d": 6,
+          "f": ""
+        },
+        {
+          "n": "Hidden Supply Cache",
+          "t": "Underground",
+          "x": 22,
+          "y": 0,
+          "z": 7,
+          "w": 10,
+          "h": 4,
+          "d": 6,
+          "f": ""
+        },
+        {
+          "n": "Boss Approach",
+          "t": "Connector Hall",
+          "x": 22,
+          "y": 0,
+          "z": -4,
+          "w": 8,
+          "h": 5,
+          "d": 6,
+          "f": ""
+        },
+        {
+          "n": "Boss Arena (Martinez)",
+          "t": "Boss Arena",
+          "x": 22,
+          "y": -1,
+          "z": -14.5,
+          "w": 20,
+          "h": 6,
+          "d": 15,
+          "f": ""
+        },
+        {
+          "n": "Elevator Lobby",
+          "t": "Elevator Lobby",
+          "x": 22,
+          "y": 0,
+          "z": -25,
+          "w": 6,
+          "h": 4,
+          "d": 6,
+          "f": ""
+        },
+        {
+          "n": "Elevator Shaft",
+          "t": "Stairway",
+          "x": 22,
+          "y": 0,
+          "z": -29.5,
+          "w": 4,
+          "h": 10,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "Hidden Sub-Level",
+          "t": "Underground",
+          "x": 22,
+          "y": -174,
+          "z": -24.5,
+          "w": 8,
+          "h": 5,
+          "d": 10,
+          "f": ""
+        },
+        {
+          "n": "Cave System",
+          "t": "Cave",
+          "x": 22,
+          "y": -178,
+          "z": 7,
+          "w": 22,
+          "h": 8,
+          "d": 18,
+          "f": ""
+        },
+        {
+          "n": "WL-1: Jake's Cell",
+          "t": "Jake Cell",
+          "x": 2,
+          "y": 0,
+          "z": 40,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "WR-1",
+          "t": "Cell",
+          "x": 9,
+          "y": 0,
+          "z": 40,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "EL-1",
+          "t": "Cell",
+          "x": 35,
+          "y": 0,
+          "z": 40,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "ER-1",
+          "t": "Cell",
+          "x": 42,
+          "y": 0,
+          "z": 40,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "WL-2",
+          "t": "Cell",
+          "x": 2,
+          "y": 0,
+          "z": 35,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "WR-2",
+          "t": "Cell",
+          "x": 9,
+          "y": 0,
+          "z": 35,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "EL-2",
+          "t": "Cell",
+          "x": 35,
+          "y": 0,
+          "z": 35,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "ER-2",
+          "t": "Cell",
+          "x": 42,
+          "y": 0,
+          "z": 35,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "WL-3",
+          "t": "Cell",
+          "x": 2,
+          "y": 0,
+          "z": 30,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "WR-3",
+          "t": "Cell",
+          "x": 9,
+          "y": 0,
+          "z": 30,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "EL-3",
+          "t": "Cell",
+          "x": 35,
+          "y": 0,
+          "z": 30,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "ER-3",
+          "t": "Cell",
+          "x": 42,
+          "y": 0,
+          "z": 30,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "WL-4",
+          "t": "Cell",
+          "x": 2,
+          "y": 0,
+          "z": 25,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "WR-4",
+          "t": "Cell",
+          "x": 9,
+          "y": 0,
+          "z": 25,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "EL-4",
+          "t": "Cell",
+          "x": 35,
+          "y": 0,
+          "z": 25,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "ER-4",
+          "t": "Cell",
+          "x": 42,
+          "y": 0,
+          "z": 25,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "WL-5",
+          "t": "Cell",
+          "x": 2,
+          "y": 0,
+          "z": 20,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "WR-5",
+          "t": "Cell",
+          "x": 9,
+          "y": 0,
+          "z": 20,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "EL-5",
+          "t": "Cell",
+          "x": 35,
+          "y": 0,
+          "z": 20,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "ER-5",
+          "t": "Cell",
+          "x": 42,
+          "y": 0,
+          "z": 20,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "WL-6",
+          "t": "Cell",
+          "x": 2,
+          "y": 0,
+          "z": 15,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "WR-6: Isolation",
+          "t": "Cell",
+          "x": 9,
+          "y": 0,
+          "z": 15,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "EL-6",
+          "t": "Cell",
+          "x": 35,
+          "y": 0,
+          "z": 15,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "ER-6",
+          "t": "Cell",
+          "x": 42,
+          "y": 0,
+          "z": 15,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "WL-7",
+          "t": "Cell",
+          "x": 2,
+          "y": 0,
+          "z": 10,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "WR-7",
+          "t": "Cell",
+          "x": 9,
+          "y": 0,
+          "z": 10,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "EL-7",
+          "t": "Cell",
+          "x": 35,
+          "y": 0,
+          "z": 10,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "ER-7",
+          "t": "Cell",
+          "x": 42,
+          "y": 0,
+          "z": 10,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "WL-8",
+          "t": "Cell",
+          "x": 2,
+          "y": 0,
+          "z": 5,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "WR-8",
+          "t": "Cell",
+          "x": 9,
+          "y": 0,
+          "z": 5,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "EL-8",
+          "t": "Cell",
+          "x": 35,
+          "y": 0,
+          "z": 5,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        },
+        {
+          "n": "ER-8",
+          "t": "Cell",
+          "x": 42,
+          "y": 0,
+          "z": 5,
+          "w": 4,
+          "h": 3.5,
+          "d": 4,
+          "f": ""
+        }
+      ],
+      "doors": [
+        [
+          0,
+          1
+        ],
+        [
+          0,
+          2
+        ],
+        [
+          0,
+          3
+        ],
+        [
+          0,
+          4
+        ],
+        [
+          0,
+          5
+        ],
+        [
+          0,
+          7
+        ],
+        [
+          0,
+          8
+        ],
+        [
+          0,
+          9
+        ],
+        [
+          0,
+          10
+        ],
+        [
+          0,
+          21
+        ],
+        [
+          0,
+          22
+        ],
+        [
+          0,
+          23
+        ],
+        [
+          0,
+          24
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          2,
+          3
+        ],
+        [
+          3,
+          4
+        ],
+        [
+          5,
+          6
+        ],
+        [
+          5,
+          21
+        ],
+        [
+          5,
+          22
+        ],
+        [
+          5,
+          25
+        ],
+        [
+          5,
+          26
+        ],
+        [
+          5,
+          29
+        ],
+        [
+          5,
+          30
+        ],
+        [
+          5,
+          33
+        ],
+        [
+          5,
+          34
+        ],
+        [
+          5,
+          37
+        ],
+        [
+          5,
+          38
+        ],
+        [
+          5,
+          41
+        ],
+        [
+          5,
+          42
+        ],
+        [
+          5,
+          45
+        ],
+        [
+          5,
+          46
+        ],
+        [
+          5,
+          49
+        ],
+        [
+          5,
+          50
+        ],
+        [
+          6,
+          7
+        ],
+        [
+          6,
+          14
+        ],
+        [
+          6,
+          15
+        ],
+        [
+          6,
+          50
+        ],
+        [
+          6,
+          51
+        ],
+        [
+          7,
+          23
+        ],
+        [
+          7,
+          24
+        ],
+        [
+          7,
+          27
+        ],
+        [
+          7,
+          28
+        ],
+        [
+          7,
+          31
+        ],
+        [
+          7,
+          32
+        ],
+        [
+          7,
+          35
+        ],
+        [
+          7,
+          36
+        ],
+        [
+          7,
+          39
+        ],
+        [
+          7,
+          40
+        ],
+        [
+          7,
+          43
+        ],
+        [
+          7,
+          44
+        ],
+        [
+          7,
+          47
+        ],
+        [
+          7,
+          48
+        ],
+        [
+          7,
+          51
+        ],
+        [
+          7,
+          52
+        ],
+        [
+          8,
+          10
+        ],
+        [
+          8,
+          11
+        ],
+        [
+          8,
+          12
+        ],
+        [
+          8,
+          13
+        ],
+        [
+          8,
+          22
+        ],
+        [
+          8,
+          26
+        ],
+        [
+          8,
+          30
+        ],
+        [
+          8,
+          34
+        ],
+        [
+          8,
+          38
+        ],
+        [
+          8,
+          42
+        ],
+        [
+          8,
+          46
+        ],
+        [
+          9,
+          10
+        ],
+        [
+          9,
+          11
+        ],
+        [
+          9,
+          12
+        ],
+        [
+          9,
+          13
+        ],
+        [
+          9,
+          23
+        ],
+        [
+          9,
+          27
+        ],
+        [
+          9,
+          31
+        ],
+        [
+          9,
+          35
+        ],
+        [
+          9,
+          39
+        ],
+        [
+          9,
+          43
+        ],
+        [
+          9,
+          47
+        ],
+        [
+          10,
+          11
+        ],
+        [
+          11,
+          12
+        ],
+        [
+          12,
+          13
+        ],
+        [
+          13,
+          14
+        ],
+        [
+          15,
+          16
+        ],
+        [
+          16,
+          17
+        ],
+        [
+          17,
+          18
+        ],
+        [
+          21,
+          25
+        ],
+        [
+          22,
+          26
+        ],
+        [
+          23,
+          27
+        ],
+        [
+          24,
+          28
+        ],
+        [
+          25,
+          29
+        ],
+        [
+          26,
+          30
+        ],
+        [
+          27,
+          31
+        ],
+        [
+          28,
+          32
+        ],
+        [
+          29,
+          33
+        ],
+        [
+          30,
+          34
+        ],
+        [
+          31,
+          35
+        ],
+        [
+          32,
+          36
+        ],
+        [
+          33,
+          37
+        ],
+        [
+          34,
+          38
+        ],
+        [
+          35,
+          39
+        ],
+        [
+          36,
+          40
+        ],
+        [
+          37,
+          41
+        ],
+        [
+          38,
+          42
+        ],
+        [
+          39,
+          43
+        ],
+        [
+          40,
+          44
+        ],
+        [
+          41,
+          45
+        ],
+        [
+          42,
+          46
+        ],
+        [
+          43,
+          47
+        ],
+        [
+          44,
+          48
+        ],
+        [
+          45,
+          49
+        ],
+        [
+          46,
+          50
+        ],
+        [
+          47,
+          51
+        ],
+        [
+          48,
+          52
+        ]
+      ],
+      "entities": [],
+      "triggers": []
+    },
+    "2": {
+      "name": "Medical Bay",
+      "rooms": [
+        {
+          "n": "F2: Elevator Lobby",
+          "t": "Elevator Lobby",
+          "x": 22,
+          "y": 10,
+          "z": -26,
+          "w": 6,
+          "h": 3.8,
+          "d": 5,
+          "f": "",
+          "desc": "Exit elevator. Antiseptic smell."
+        },
+        {
+          "n": "F2: Main Corridor",
+          "t": "Hallway",
+          "x": 22,
+          "y": 10,
+          "z": -15,
+          "w": 8,
+          "h": 3.8,
+          "d": 18,
+          "f": "",
+          "desc": "Gurneys line walls. Blood trails."
+        },
+        {
+          "n": "Operating Theater A",
+          "t": "Medical Bay",
+          "x": 12,
+          "y": 10,
+          "z": -18,
+          "w": 12,
+          "h": 4.3,
+          "d": 8,
+          "f": "",
+          "desc": "Active surgery tables. Alien instruments."
+        },
+        {
+          "n": "Operating Theater B",
+          "t": "Medical Bay",
+          "x": 32,
+          "y": 10,
+          "z": -18,
+          "w": 12,
+          "h": 4.3,
+          "d": 8,
+          "f": "",
+          "desc": "Failed experiments. Containment pods cracked."
+        },
+        {
+          "n": "Ward A: Keisha",
+          "t": "Medical Bay",
+          "x": 10,
+          "y": 10,
+          "z": -8,
+          "w": 10,
+          "h": 3.8,
+          "d": 8,
+          "f": "",
+          "desc": "Rescue Target 1. 7 min timer."
+        },
+        {
+          "n": "Ward B: Emily",
+          "t": "Medical Bay",
+          "x": 22,
+          "y": 10,
+          "z": -4,
+          "w": 10,
+          "h": 3.8,
+          "d": 8,
+          "f": "",
+          "desc": "Rescue Target 2. 5 min timer."
+        },
+        {
+          "n": "Ward C: Aria",
+          "t": "Medical Bay",
+          "x": 34,
+          "y": 10,
+          "z": -8,
+          "w": 10,
+          "h": 3.8,
+          "d": 8,
+          "f": "",
+          "desc": "Rescue Target 3. 9 min timer."
+        },
+        {
+          "n": "Pharmacy",
+          "t": "Medical Bay",
+          "x": 10,
+          "y": 10,
+          "z": -24,
+          "w": 8,
+          "h": 3.3,
+          "d": 6,
+          "f": "",
+          "desc": "Medical supplies. Antidote components."
+        },
+        {
+          "n": "Quarantine Zone",
+          "t": "Holding Cell",
+          "x": 34,
+          "y": 10,
+          "z": -24,
+          "w": 8,
+          "h": 3.3,
+          "d": 6,
+          "f": "",
+          "desc": "Sealed chamber. Infection research."
+        },
+        {
+          "n": "Dr. Chen's Office",
+          "t": "Office",
+          "x": 22,
+          "y": 10,
+          "z": 4,
+          "w": 14,
+          "h": 4.8,
+          "d": 8,
+          "f": "",
+          "desc": "Personal logs. Enhancement data."
+        },
+        {
+          "n": "F2 Boss: Mutated Dr. Chen",
+          "t": "Boss Arena",
+          "x": 22,
+          "y": 9.5,
+          "z": 14,
+          "w": 16,
+          "h": 5.8,
+          "d": 10,
+          "f": "",
+          "desc": "800HP. 3 phases."
+        }
+      ],
+      "doors": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          1,
+          3
+        ],
+        [
+          1,
+          5
+        ],
+        [
+          2,
+          4
+        ],
+        [
+          2,
+          7
+        ],
+        [
+          3,
+          6
+        ],
+        [
+          3,
+          8
+        ],
+        [
+          4,
+          5
+        ],
+        [
+          5,
+          6
+        ],
+        [
+          5,
+          9
+        ],
+        [
+          9,
+          10
+        ]
+      ],
+      "entities": [],
+      "triggers": []
+    },
+    "3": {
+      "name": "Genetics Lab",
+      "rooms": [
+        {
+          "n": "F3: Elevator Lobby",
+          "t": "Elevator Lobby",
+          "x": 22,
+          "y": 20,
+          "z": -26,
+          "w": 6,
+          "h": 4,
+          "d": 5,
+          "f": "",
+          "desc": "Blue-lit corridor. Genetic code on walls."
+        },
+        {
+          "n": "F3: Specimen Hall",
+          "t": "Hallway",
+          "x": 22,
+          "y": 20,
+          "z": -14,
+          "w": 8,
+          "h": 4,
+          "d": 20,
+          "f": "",
+          "desc": "Growth tanks. Bubbling fluid. Alien DNA."
+        },
+        {
+          "n": "DNA Sequencing Lab",
+          "t": "Lab",
+          "x": 10,
+          "y": 20,
+          "z": -20,
+          "w": 12,
+          "h": 4.5,
+          "d": 8,
+          "f": "",
+          "desc": "Holographic DNA strands. 4 terminals."
+        },
+        {
+          "n": "Hybridization Chamber",
+          "t": "Lab",
+          "x": 34,
+          "y": 20,
+          "z": -20,
+          "w": 12,
+          "h": 4.5,
+          "d": 8,
+          "f": "",
+          "desc": "Cross-species tanks. Failed hybrids."
+        },
+        {
+          "n": "Growth Tank Array",
+          "t": "Lab",
+          "x": 10,
+          "y": 20,
+          "z": -8,
+          "w": 10,
+          "h": 4,
+          "d": 8,
+          "f": "",
+          "desc": "20 tanks. 3 active creatures growing."
+        },
+        {
+          "n": "Spawning Chamber",
+          "t": "Cave Chamber",
+          "x": 34,
+          "y": 20,
+          "z": -8,
+          "w": 10,
+          "h": 4,
+          "d": 8,
+          "f": "",
+          "desc": "Alien egg pods. Pulsing organic walls."
+        },
+        {
+          "n": "Clone Storage",
+          "t": "Storage",
+          "x": 22,
+          "y": 20,
+          "z": -2,
+          "w": 12,
+          "h": 3.7,
+          "d": 6,
+          "f": "",
+          "desc": "Deactivated clones. Jake clone data."
+        },
+        {
+          "n": "Cold Room",
+          "t": "Storage",
+          "x": 10,
+          "y": 20,
+          "z": 4,
+          "w": 8,
+          "h": 3.5,
+          "d": 6,
+          "f": "",
+          "desc": "-40C. Timer: 30s before damage."
+        },
+        {
+          "n": "Decontamination",
+          "t": "Holding Cell",
+          "x": 34,
+          "y": 20,
+          "z": 4,
+          "w": 8,
+          "h": 3.5,
+          "d": 6,
+          "f": "",
+          "desc": "UV flood chamber. Kills infection."
+        },
+        {
+          "n": "F3 Boss: Experiment #7",
+          "t": "Boss Arena",
+          "x": 22,
+          "y": 19.5,
+          "z": 12,
+          "w": 18,
+          "h": 6,
+          "d": 12,
+          "f": "",
+          "desc": "1200HP. Failed clone. Regenerates."
+        }
+      ],
+      "doors": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          1,
+          3
+        ],
+        [
+          1,
+          6
+        ],
+        [
+          4,
+          6
+        ],
+        [
+          5,
+          6
+        ],
+        [
+          7,
+          9
+        ],
+        [
+          8,
+          9
+        ]
+      ],
+      "entities": [],
+      "triggers": []
+    },
+    "4": {
+      "name": "Cybernetics Wing",
+      "rooms": [
+        {
+          "n": "F4: Elevator Lobby",
+          "t": "Elevator Lobby",
+          "x": 22,
+          "y": 30,
+          "z": -26,
+          "w": 6,
+          "h": 4.2,
+          "d": 5,
+          "f": "",
+          "desc": "Purple neon. Neural interface ads."
+        },
+        {
+          "n": "F4: Augmentation Corridor",
+          "t": "Hallway",
+          "x": 22,
+          "y": 30,
+          "z": -14,
+          "w": 8,
+          "h": 4.2,
+          "d": 20,
+          "f": "",
+          "desc": "Augmentation chairs line both sides."
+        },
+        {
+          "n": "Augmentation Bay",
+          "t": "Lab",
+          "x": 10,
+          "y": 30,
+          "z": -20,
+          "w": 12,
+          "h": 4.7,
+          "d": 8,
+          "f": "",
+          "desc": "8 aug chairs. Strength/speed/armor."
+        },
+        {
+          "n": "Neural Interface Lab",
+          "t": "Lab",
+          "x": 34,
+          "y": 30,
+          "z": -20,
+          "w": 12,
+          "h": 4.7,
+          "d": 8,
+          "f": "",
+          "desc": "Brain-computer links. Memory extraction."
+        },
+        {
+          "n": "Prototype Testing",
+          "t": "Lab",
+          "x": 10,
+          "y": 30,
+          "z": -8,
+          "w": 10,
+          "h": 4.2,
+          "d": 8,
+          "f": "",
+          "desc": "Testing arena. Obstacle course."
+        },
+        {
+          "n": "Workshop",
+          "t": "Lab",
+          "x": 34,
+          "y": 30,
+          "z": -8,
+          "w": 10,
+          "h": 4.2,
+          "d": 8,
+          "f": "",
+          "desc": "Cybernetic limbs. Tools. Schematics."
+        },
+        {
+          "n": "Nexus Chamber Access (F4.5)",
+          "t": "Cave Chamber",
+          "x": 22,
+          "y": 30,
+          "z": -2,
+          "w": 14,
+          "h": 4.5,
+          "d": 8,
+          "f": "",
+          "desc": "3,472 consciousnesses. The Chorus."
+        },
+        {
+          "n": "Coolant System",
+          "t": "Storage",
+          "x": 10,
+          "y": 30,
+          "z": 6,
+          "w": 8,
+          "h": 3.7,
+          "d": 6,
+          "f": "",
+          "desc": "Liquid nitrogen. Sabotage = boss weakness."
+        },
+        {
+          "n": "Power Junction",
+          "t": "Storage",
+          "x": 34,
+          "y": 30,
+          "z": 6,
+          "w": 8,
+          "h": 3.7,
+          "d": 6,
+          "f": "",
+          "desc": "EMP device craftable here."
+        },
+        {
+          "n": "F4 Boss: The Collective",
+          "t": "Boss Arena",
+          "x": 22,
+          "y": 29.5,
+          "z": 16,
+          "w": 18,
+          "h": 6.7,
+          "d": 14,
+          "f": "",
+          "desc": "2000HP. 5 merged scientists."
+        },
+        {
+          "n": "F4.5: Entry Platform",
+          "t": "Cave Chamber",
+          "x": 22,
+          "y": 42,
+          "z": 16,
+          "w": 8,
+          "h": 0.5,
+          "d": 8,
+          "f": "",
+          "desc": "Landing zone from access tunnel."
+        },
+        {
+          "n": "Tier 1: Whisper Gallery",
+          "t": "Cave Chamber",
+          "x": 22,
+          "y": 37,
+          "z": 0,
+          "w": 6,
+          "h": 0.5,
+          "d": 5,
+          "f": "",
+          "desc": "3,472 murmuring consciousnesses."
+        },
+        {
+          "n": "Tier 2: Memory Maze",
+          "t": "Cave Chamber",
+          "x": 32,
+          "y": 41,
+          "z": 0,
+          "w": 6,
+          "h": 0.5,
+          "d": 5,
+          "f": "",
+          "desc": "Holographic victim memories loop."
+        },
+        {
+          "n": "Tier 3: Resonance Ring",
+          "t": "Cave Chamber",
+          "x": 22,
+          "y": 45,
+          "z": 0,
+          "w": 6,
+          "h": 0.5,
+          "d": 5,
+          "f": "",
+          "desc": "Sound pressure psychic attacks."
+        },
+        {
+          "n": "Tier 4: Chorus Antechamber",
+          "t": "Cave Chamber",
+          "x": 12,
+          "y": 49,
+          "z": 0,
+          "w": 6,
+          "h": 0.5,
+          "d": 5,
+          "f": "",
+          "desc": "Pre-boss gauntlet."
+        },
+        {
+          "n": "Tier 5: Apex Arena",
+          "t": "Boss Arena",
+          "x": 22,
+          "y": 53,
+          "z": 0,
+          "w": 10,
+          "h": 0.5,
+          "d": 10,
+          "f": "",
+          "desc": "The Chorus final confrontation."
+        }
+      ],
+      "doors": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          1,
+          3
+        ],
+        [
+          1,
+          6
+        ],
+        [
+          4,
+          6
+        ],
+        [
+          5,
+          6
+        ],
+        [
+          7,
+          9
+        ],
+        [
+          8,
+          9
+        ],
+        [
+          14,
+          15
+        ]
+      ],
+      "entities": [],
+      "triggers": []
+    },
+    "5": {
+      "name": "Drone Station",
+      "rooms": [
+        {
+          "n": "F5: Elevator Lobby",
+          "t": "Elevator Lobby",
+          "x": 22,
+          "y": 65,
+          "z": -26,
+          "w": 6,
+          "h": 4,
+          "d": 5,
+          "f": "",
+          "desc": "Amber warning lights. Drone buzz."
+        },
+        {
+          "n": "F5: Main Corridor",
+          "t": "Hallway",
+          "x": 22,
+          "y": 65,
+          "z": -14,
+          "w": 10,
+          "h": 4,
+          "d": 20,
+          "f": "",
+          "desc": "Drone launch rails on ceiling."
+        },
+        {
+          "n": "Drone Bay Alpha",
+          "t": "Lab",
+          "x": 8,
+          "y": 65,
+          "z": -18,
+          "w": 12,
+          "h": 5,
+          "d": 10,
+          "f": "",
+          "desc": "40 surveillance drones docked."
+        },
+        {
+          "n": "Drone Bay Beta",
+          "t": "Lab",
+          "x": 36,
+          "y": 65,
+          "z": -18,
+          "w": 12,
+          "h": 5,
+          "d": 10,
+          "f": "",
+          "desc": "30 combat drones. Heavy armor."
+        },
+        {
+          "n": "Central Control Hub",
+          "t": "Lab",
+          "x": 22,
+          "y": 65,
+          "z": -4,
+          "w": 16,
+          "h": 5.5,
+          "d": 10,
+          "f": "",
+          "desc": "Master hack terminal. Sarah's objective."
+        },
+        {
+          "n": "Maintenance Bay",
+          "t": "Storage",
+          "x": 8,
+          "y": 65,
+          "z": -4,
+          "w": 10,
+          "h": 4,
+          "d": 8,
+          "f": "",
+          "desc": "Drone repair. Spare parts."
+        },
+        {
+          "n": "Weapons Locker",
+          "t": "Armory",
+          "x": 36,
+          "y": 65,
+          "z": -4,
+          "w": 10,
+          "h": 4,
+          "d": 8,
+          "f": "",
+          "desc": "Plasma cores. EMP warheads."
+        },
+        {
+          "n": "Recharge Station",
+          "t": "Storage",
+          "x": 22,
+          "y": 65,
+          "z": 8,
+          "w": 10,
+          "h": 3.5,
+          "d": 6,
+          "f": "",
+          "desc": "Energy cores. Battery packs."
+        },
+        {
+          "n": "F5 Boss: Swarm Controller",
+          "t": "Boss Arena",
+          "x": 22,
+          "y": 64.5,
+          "z": 18,
+          "w": 20,
+          "h": 7,
+          "d": 12,
+          "f": "",
+          "desc": "5000HP. Drone waves. 3 phases."
+        }
+      ],
+      "doors": [
+        [
+          0,
+          1
+        ],
+        [
+          4,
+          5
+        ],
+        [
+          4,
+          6
+        ],
+        [
+          7,
+          8
+        ]
+      ],
+      "entities": [],
+      "triggers": []
+    },
+    "6": {
+      "name": "Salvari Level",
+      "rooms": [
+        {
+          "n": "F6: Elevator Lobby",
+          "t": "Elevator Lobby",
+          "x": 22,
+          "y": 78,
+          "z": -26,
+          "w": 6,
+          "h": 5,
+          "d": 5,
+          "f": "",
+          "desc": "Alien glyphs glow. Metallic air."
+        },
+        {
+          "n": "F6: Artifact Corridor",
+          "t": "Hallway",
+          "x": 22,
+          "y": 78,
+          "z": -12,
+          "w": 10,
+          "h": 5,
+          "d": 24,
+          "f": "",
+          "desc": "Alien tech displays. Hovering specimens."
+        },
+        {
+          "n": "Artifact Storage",
+          "t": "Storage",
+          "x": 10,
+          "y": 78,
+          "z": -20,
+          "w": 12,
+          "h": 6,
+          "d": 8,
+          "f": "",
+          "desc": "Salvari relics. Ancient weapons."
+        },
+        {
+          "n": "Analysis Lab",
+          "t": "Lab",
+          "x": 34,
+          "y": 78,
+          "z": -20,
+          "w": 12,
+          "h": 6,
+          "d": 8,
+          "f": "",
+          "desc": "Alien tech reverse-engineering."
+        },
+        {
+          "n": "Portal Chamber",
+          "t": "Cave Chamber",
+          "x": 10,
+          "y": 78,
+          "z": -8,
+          "w": 12,
+          "h": 7,
+          "d": 10,
+          "f": "",
+          "desc": "Active portal to alien homeworld."
+        },
+        {
+          "n": "Salvari Containment",
+          "t": "Holding Cell",
+          "x": 34,
+          "y": 78,
+          "z": -8,
+          "w": 12,
+          "h": 5,
+          "d": 10,
+          "f": "",
+          "desc": "3 prisoners. Can be freed as allies."
+        },
+        {
+          "n": "Transformation Pods",
+          "t": "Lab",
+          "x": 10,
+          "y": 78,
+          "z": 4,
+          "w": 8,
+          "h": 5,
+          "d": 6,
+          "f": "",
+          "desc": "Human-alien hybrid conversion."
+        },
+        {
+          "n": "Energy Nexus",
+          "t": "Cave Chamber",
+          "x": 34,
+          "y": 78,
+          "z": 4,
+          "w": 8,
+          "h": 5,
+          "d": 6,
+          "f": "",
+          "desc": "Portal power. Overload = seal forever."
+        },
+        {
+          "n": "First Contact Chamber",
+          "t": "Cave Chamber",
+          "x": 22,
+          "y": 78,
+          "z": 8,
+          "w": 14,
+          "h": 4.5,
+          "d": 8,
+          "f": "",
+          "desc": "Salvari explain the invasion's origin."
+        },
+        {
+          "n": "F6 Boss: Alien Overseer",
+          "t": "Boss Arena",
+          "x": 22,
+          "y": 77.5,
+          "z": 20,
+          "w": 20,
+          "h": 8,
+          "d": 14,
+          "f": "",
+          "desc": "3000HP. Teleport, energy beams."
+        }
+      ],
+      "doors": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          1,
+          3
+        ],
+        [
+          1,
+          4
+        ],
+        [
+          1,
+          5
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          7,
+          8
+        ],
+        [
+          8,
+          9
+        ]
+      ],
+      "entities": [],
+      "triggers": []
+    },
+    "7": {
+      "name": "Executive Suite",
+      "rooms": [
+        {
+          "n": "F7: Elevator Lobby",
+          "t": "Elevator Lobby",
+          "x": 22,
+          "y": 91,
+          "z": -26,
+          "w": 6,
+          "h": 5,
+          "d": 5,
+          "f": "",
+          "desc": "Polished floors. Panoramic windows."
+        },
+        {
+          "n": "F7: Executive Corridor",
+          "t": "Hallway",
+          "x": 22,
+          "y": 91,
+          "z": -12,
+          "w": 10,
+          "h": 5,
+          "d": 24,
+          "f": "",
+          "desc": "Luxurious. Holographic art."
+        },
+        {
+          "n": "Security Checkpoint",
+          "t": "Security",
+          "x": 10,
+          "y": 91,
+          "z": -20,
+          "w": 12,
+          "h": 5.5,
+          "d": 10,
+          "f": "",
+          "desc": "Armed guards. Biometric scanners."
+        },
+        {
+          "n": "Server Room",
+          "t": "Server Room",
+          "x": 34,
+          "y": 91,
+          "z": -20,
+          "w": 12,
+          "h": 5.5,
+          "d": 10,
+          "f": "",
+          "desc": "OverLord's local node. Hackable."
+        },
+        {
+          "n": "Clone Lab",
+          "t": "Lab",
+          "x": 10,
+          "y": 91,
+          "z": -8,
+          "w": 10,
+          "h": 6,
+          "d": 8,
+          "f": "",
+          "desc": "Jake's clone. Mirror confrontation."
+        },
+        {
+          "n": "Executive Offices",
+          "t": "Office",
+          "x": 34,
+          "y": 91,
+          "z": -8,
+          "w": 10,
+          "h": 5,
+          "d": 8,
+          "f": "",
+          "desc": "Invasion timeline. Earth conquest plans."
+        },
+        {
+          "n": "Sarah's Holding Cell",
+          "t": "Holding Cell",
+          "x": 10,
+          "y": 91,
+          "z": 2,
+          "w": 8,
+          "h": 5,
+          "d": 6,
+          "f": "",
+          "desc": "7-9 min rescue timer. Branching."
+        },
+        {
+          "n": "Comms Center",
+          "t": "Archive",
+          "x": 34,
+          "y": 91,
+          "z": 2,
+          "w": 8,
+          "h": 5,
+          "d": 6,
+          "f": "",
+          "desc": "Surface communication. Distress beacon."
+        },
+        {
+          "n": "Observation Deck",
+          "t": "Observation",
+          "x": 22,
+          "y": 91,
+          "z": 10,
+          "w": 20,
+          "h": 8,
+          "d": 10,
+          "f": "",
+          "desc": "360° glass dome. Alien sky, two moons."
+        },
+        {
+          "n": "F7 Boss: Jake's Clone",
+          "t": "Boss Arena",
+          "x": 22,
+          "y": 90.5,
+          "z": 24,
+          "w": 22,
+          "h": 8,
+          "d": 14,
+          "f": "",
+          "desc": "1800HP. Mirror fight. Same abilities."
+        },
+        {
+          "n": "Roof: Elevator Exit",
+          "t": "Observation",
+          "x": 22,
+          "y": 104,
+          "z": -26,
+          "w": 6,
+          "h": 4,
+          "d": 5,
+          "f": "",
+          "desc": "Heavy blast door ahead."
+        },
+        {
+          "n": "Rooftop",
+          "t": "Observation",
+          "x": 22,
+          "y": 104,
+          "z": -6,
+          "w": 30,
+          "h": 0.3,
+          "d": 26,
+          "f": "",
+          "desc": "Open air. First view of alien sky."
+        },
+        {
+          "n": "Helipad",
+          "t": "Observation",
+          "x": 22,
+          "y": 104,
+          "z": 4,
+          "w": 12,
+          "h": 0.5,
+          "d": 8,
+          "f": "",
+          "desc": "Extraction point. Signal beacon."
+        },
+        {
+          "n": "Guard Post A",
+          "t": "Security",
+          "x": 12,
+          "y": 104,
+          "z": -16,
+          "w": 4,
+          "h": 3,
+          "d": 4,
+          "f": "",
+          "desc": "Rooftop sentry. Sniper position."
+        },
+        {
+          "n": "Guard Post B",
+          "t": "Security",
+          "x": 32,
+          "y": 104,
+          "z": -16,
+          "w": 4,
+          "h": 3,
+          "d": 4,
+          "f": "",
+          "desc": "Rooftop sentry. Searchlight."
+        }
+      ],
+      "doors": [
+        [
+          0,
+          1
+        ],
+        [
+          1,
+          2
+        ],
+        [
+          1,
+          3
+        ],
+        [
+          1,
+          4
+        ],
+        [
+          1,
+          5
+        ],
+        [
+          6,
+          8
+        ],
+        [
+          7,
+          8
+        ],
+        [
+          8,
+          9
+        ]
+      ],
+      "entities": [],
+      "triggers": []
+    }
+  }
+}
