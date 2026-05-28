@@ -596,6 +596,18 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
         ui.quad(mmx, mmy, 1.0f, mmH, edgeCol);
         ui.quad(mmx + mmW - 1.0f, mmy, 1.0f, mmH, edgeCol);
 
+        // FLOOR indicator (debug-grade) — small cyan-white label just below the radar
+        // box. Hidden when playerFloor < 0 (host didn't feed). Names match L1Floor.
+        if (m.playerFloor >= 0) {
+            static const char* kFloorNames[] = { "B1", "F1", "F2", "F3", "F4", "F5", "F6", "F7" };
+            const int fi = (m.playerFloor < 8) ? m.playerFloor : 0;
+            char floorBuf[24];
+            std::snprintf(floorBuf, sizeof(floorBuf), "FLOOR: %s", kFloorNames[fi]);
+            const float fpx = 12.0f;
+            const float fcol[4] = { 0.85f, 0.92f, 1.0f, 0.85f };
+            ui.text(floorBuf, mmx + 4.0f, mmy + mmH + 2.0f, fpx, fcol, UiContext::FontRole::Menu);
+        }
+
         const float cxp = mmx + mmW * 0.5f;   // box center (player) in pixels
         const float cyp = mmy + mmH * 0.5f;
         const float half = mmW * 0.5f - 3.0f;  // usable radius inside the border

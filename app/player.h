@@ -130,6 +130,10 @@ public:
     // IDDQD god mode (console cheat): while on, takeDamage() absorbs everything.
     void setGod(bool g) { m_god = g; }
     bool god() const { return m_god; }
+    // Force-clear the red damage flash + iframe NOW. Called from the iddqd console
+    // handler on toggle-ON so the lingering red overlay (from drones hitting you the
+    // instant before you typed it) wipes immediately instead of fading.
+    void clearDamageFlash() { m_flash = 0.0f; m_iframe = 0.0f; }
 
     // IDCLIP noclip (console cheat): free-fly with no gravity/collision; movement
     // follows the full look direction (look up + forward to ascend). setGod is

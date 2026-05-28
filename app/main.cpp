@@ -6147,7 +6147,8 @@ int main(int argc, char** argv) {
     // ---- DOOM-style cheat console commands (playtest aid). Capture the live systems
     // by reference (they outlive the loop). Open the console with ` then type e.g. iddqd.
     console->registerCommand("iddqd", [&player, &console](const std::vector<std::string>&) {
-        const bool on = !player.god(); player.setGod(on); if (on) player.heal();
+        const bool on = !player.god(); player.setGod(on);
+        if (on) { player.heal(); player.clearDamageFlash(); }   // wipe the lingering red overlay too
         console->print(std::string("god mode ") + (on ? "ON  (IDDQD)" : "OFF"));
     }, "toggle god mode (invulnerable)");
     console->registerCommand("god", [&player, &console](const std::vector<std::string>& a) {
@@ -7950,6 +7951,9 @@ int main(int argc, char** argv) {
                     if (noclip) { rpx = flyX; rpy = flyY; rpz = flyZ; rpyaw = flyYaw; }
                     hm.playerX = rpx; hm.playerZ = rpz; hm.playerYaw = rpyaw;
                     hm.radarValid = true;
+                    // Spire floor name under the radar (debug-grade locator). The
+                    // L1Floor enum order matches kFloorNames in ui.cpp's radar block.
+                    hm.playerFloor = (int)x3::game::level1FloorAtY(player.damageTargetPos().y);
 
                     // Live hostile marks (positions + short threat labels). The labels
                     // are static string literals owned by Level1Game, so storing the
