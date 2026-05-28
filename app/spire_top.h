@@ -183,6 +183,12 @@ public:
     const MonsterManager& boss() const { return m_boss; }
     MonsterManager&       boss()       { return m_boss; }
 
+    // The Wave-1 victim-timer-expired mini-boss manager (empty until Sarah's rescue
+    // clock expires and the floor transforms her into a mini-boss). Exposed for the
+    // HUD bar-loop / radar so this enemy gets a health bar like every other.
+    const MonsterManager& victimBoss() const { return m_victimBoss; }
+    MonsterManager&       victimBoss()       { return m_victimBoss; }
+
     // The F7 rescue victim (read to assert it is present but NOT active at load).
     bool   victimPresent() const { return m_victim != nullptr; }
     bool   victimCaptive() const;          // alive + still a captive (not rescued/expired)

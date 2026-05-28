@@ -694,6 +694,139 @@ struct PerfTimers {
 PerfTimers g_perf;
 
 // ---------------------------------------------------------------------------
+// Over-enemy HEALTH BAR — owner playtest tuning (2026-05-27).
+//
+// Directive: bars are TOO PROMINENT, visible THROUGH walls, and missing on
+// some enemies. The polished bar is:
+//   1) THIN     — kEnemyBarW px wide, kEnemyBarH px tall, with a 1 px dark
+//                 outline. No icon / no number / no shadow / no shimmer.
+//   2) FADED    — full alpha within kEnemyBarFullDist meters, smooth-stepped
+//                 to 0 by kEnemyBarFarDist (past far: no bar at all).
+//   3) LOS      — per-bar Static-layer rayCast from the camera origin to the
+//                 enemy's torso world position. If a wall is in the way, the
+//                 bar is suppressed (no more "see through walls" leak).
+//   4) ON EVERY — every living MonsterSystem is iterated (every floor +
+//                 every boss + Chorus pods + sublevels + canon + B1 groups).
+// The raycast is gated behind the distance + on-screen check so distant
+// enemies cost ~one squared-distance compare per frame (no ray fired).
+//
+// Constants are gameplay tuning — safe to retune for playtest.
+constexpr float kEnemyBarW          = 40.0f;  // bar width (pixels) — ~36–48 px band
+constexpr float kEnemyBarH          = 2.0f;   // bar height (pixels) — ~2 px
+constexpr float kEnemyBarOutlinePx  = 1.0f;   // 1 px dark outline around the bar
+constexpr float kEnemyBarFullDist   = 6.0f;   // full alpha within this (m)
+constexpr float kEnemyBarFarDist    = 22.0f;  // gone by this distance (m)
+constexpr float kEnemyBarAnchorY    = 2.2f;   // bar anchor above body-center (m)
+constexpr float kEnemyBarChestY     = 1.0f;   // LOS endpoint above body-center (m)
+constexpr float kEnemyBarFillAlpha  = 0.95f;  // base fill alpha (multiplied by fade)
+constexpr float kEnemyBarBackAlpha  = 0.65f;  // empty/back alpha (multiplied by fade)
+constexpr float kEnemyBarOutAlpha   = 0.80f;  // outline alpha (multiplied by fade)
+
+// Compute the alpha multiplier from camera->enemy distance. 1 at <= kEnemyBarFullDist,
+// smoothstep down to 0 at kEnemyBarFarDist; 0 beyond (caller should skip the draw).
+inline float enemyBarFadeAlpha(float distMeters) {
+    if (distMeters <= kEnemyBarFullDist) return 1.0f;
+    if (distMeters >= kEnemyBarFarDist)  return 0.0f;
+    const float t = (distMeters - kEnemyBarFullDist) /
+                    (kEnemyBarFarDist - kEnemyBarFullDist);
+    // 1 - smoothstep(0,1,t)
+    const float s = t * t * (3.0f - 2.0f * t);
+    return 1.0f - s;
+}
+
+// Draw a single over-enemy bar for `m` if it is alive, near the camera, on screen,
+// and not occluded by a Static wall. The LOS rayCast is the most expensive op; it is
+// gated by squared-distance + worldToScreen, so distant / off-screen enemies cost
+// only a few floats per frame. Returns true iff a bar was drawn (debug accounting).
+bool drawOneEnemyBar(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                     x3::phys::IPhysicsWorld& physics, const x3::phys::Vec3& camEye,
+                     const x3::game::MonsterSystem& m) {
+    if (!m.alive()) return false;
+    const int hpv = m.hp();
+    const int mxv = m.maxHp();
+    if (mxv <= 0 || hpv <= 0) return false;     // safety (every enemy ships maxHp>0)
+    const x3::phys::Vec3 c = m.pos();
+    // CHEAP distance gate: bail past the far range with no rays / no projection.
+    const float dx = c.x - camEye.x, dy = c.y - camEye.y, dz = c.z - camEye.z;
+    const float d2 = dx*dx + dy*dy + dz*dz;
+    if (d2 >= kEnemyBarFarDist * kEnemyBarFarDist) return false;
+    const float dist = std::sqrt(d2);
+    const float fade = enemyBarFadeAlpha(dist);
+    if (fade <= 0.0f) return false;
+    // Project the anchor (above the head) to screen. Behind camera => skip (no ray).
+    const x3::phys::Vec3 anchor{ c.x, c.y + kEnemyBarAnchorY, c.z };
+    float sx = 0.0f, sy = 0.0f;
+    if (!device.worldToScreen(anchor.x, anchor.y, anchor.z, sx, sy)) return false;
+    // LOS occlusion: from the CAMERA ORIGIN toward the enemy's CHEST (a stable
+    // torso target). If a Static-layer body (wall/floor/door) is hit before the
+    // chest, the bar is "through a wall" and is suppressed.
+    const x3::phys::Vec3 chest{ c.x, c.y + kEnemyBarChestY, c.z };
+    const float cdx = chest.x - camEye.x;
+    const float cdy = chest.y - camEye.y;
+    const float cdz = chest.z - camEye.z;
+    const float cdist = std::sqrt(cdx*cdx + cdy*cdy + cdz*cdz);
+    if (cdist > 0.05f) {
+        const x3::phys::Vec3 nd{ cdx / cdist, cdy / cdist, cdz / cdist };
+        // Stop just short of the chest (0.3 m) so we don't graze the enemy's own
+        // collision proxy — but per the Layer::Static mask the enemy hitbox is on
+        // a DIFFERENT layer (Layer::Enemy), so this is belt+braces.
+        const x3::phys::RayHit los = physics.rayCast(
+            camEye, nd, std::max(0.1f, cdist - 0.3f), x3::phys::Layer::Static);
+        if (los.hit) return false;
+    }
+    // ---- Bar geometry ----
+    const float frac = (hpv >= mxv) ? 1.0f : (float)hpv / (float)mxv;
+    uint32_t hw = 0, hh = 0; device.hudSize(hw, hh);
+    const float bw = kEnemyBarW, bh = kEnemyBarH;
+    float x0 = sx - bw * 0.5f;
+    float y0 = sy;
+    // Clamp on-screen so a bar attached to a close enemy never leaks off the top/bottom.
+    if (y0 < kEnemyBarOutlinePx + 1.0f) y0 = kEnemyBarOutlinePx + 1.0f;
+    if (hh > 8 && y0 > (float)hh - (bh + kEnemyBarOutlinePx + 1.0f))
+        y0 = (float)hh - (bh + kEnemyBarOutlinePx + 1.0f);
+    // ---- Bar colors (faded by distance) ----
+    // Fill turns from a desaturated steel-green at full HP toward a warm red as HP
+    // drops — readable at a glance, but not loud. A faint hit-flash white-flares the
+    // fill (the flash decays in ~kHitFlashTime seconds).
+    const float lowH  = 1.0f - frac;            // 0 healthy -> 1 dying
+    const float flash = m.hitFlash();           // [0,1], fades quickly after a shot
+    const float ar = std::min(1.0f, kEnemyBarFillAlpha * fade);
+    const float ab = std::min(1.0f, kEnemyBarBackAlpha * fade);
+    const float ao = std::min(1.0f, kEnemyBarOutAlpha  * fade);
+    const float outl[4]  = { 0.02f, 0.02f, 0.03f, ao };
+    const float backC[4] = { 0.06f, 0.07f, 0.10f, ab };
+    const float fillC[4] = {
+        0.30f + 0.55f * lowH + 0.30f * flash,
+        0.62f - 0.30f * lowH + 0.20f * flash,
+        0.32f - 0.20f * lowH + 0.20f * flash,
+        ar
+    };
+    const float fillW = bw * frac;
+    // Outline (1 px dark border around the whole bar).
+    device.drawHudQuad(frame, x0 - kEnemyBarOutlinePx, y0 - kEnemyBarOutlinePx,
+                       bw + 2.0f * kEnemyBarOutlinePx, bh + 2.0f * kEnemyBarOutlinePx,
+                       outl);
+    // Empty track.
+    device.drawHudQuad(frame, x0, y0, bw, bh, backC);
+    // Filled portion.
+    if (fillW > 0.0f) device.drawHudQuad(frame, x0, y0, fillW, bh, fillC);
+    return true;
+}
+
+// Iterate every monster in `mm` and draw its bar (subject to the cheap distance,
+// on-screen, and LOS gates inside drawOneEnemyBar). Returns the count drawn.
+uint32_t drawEnemyBarsForManager(x3::rhi::IRenderDevice& device,
+                                  const x3::rhi::FrameContext& frame,
+                                  x3::phys::IPhysicsWorld& physics,
+                                  const x3::phys::Vec3& camEye,
+                                  const x3::game::MonsterManager& mm) {
+    uint32_t drawn = 0;
+    for (uint32_t i = 0; i < mm.count(); ++i)
+        if (drawOneEnemyBar(device, frame, physics, camEye, mm.at(i))) ++drawn;
+    return drawn;
+}
+
+// ---------------------------------------------------------------------------
 // SpeakingMonster — the HOST adapter that wires the dialog system's speaking
 // state onto a SKINNED NPC (X3_WORLD_BLUEPRINT §3, requirement 4). It implements
 // x3::dialog::ISpeakingNpc and drives an x3::anim::Skinner READ-ONLY: on
@@ -5217,6 +5350,50 @@ int main(int argc, char** argv) {
                 // GPU-timestamp readback path are exercised under validation.
                 hud.drawStats(*device, frame, *console, dt, /*force=*/true);
                 game.drawObjective(*device, frame);
+                // ---- Over-enemy HEALTH BAR overlay (playtest polish, 2026-05-27) ----
+                // Exercise the SAME bar-render path the main loop uses, on the SAME monster
+                // groups, so the perf line `healthbars=N.NN ms` measured here matches what
+                // the live build emits. THIN, DISTANCE-FADED, LOS-OCCLUDED — see the helper
+                // at the top of this file. The eye is the smoketest camera (vmX/vmY/vmZ).
+                {
+                    const double _pbar0 = glfwGetTime();
+                    const x3::phys::Vec3 hbEye{ vmX, vmY, vmZ };
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, game.corridorEnemies());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, game.checkpointEnemies());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, game.bossAdds());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, game.chen());
+                    if (game.martinezSpawned())
+                        drawOneEnemyBar(*device, frame, *physics, hbEye, game.martinez());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, game.rescue().bosses());
+                    for (uint32_t f = 0; f < (uint32_t)x3::game::SpireMidFloor::Count; ++f)
+                        drawEnemyBarsForManager(*device, frame, *physics, hbEye,
+                                                midFloors.enemies((x3::game::SpireMidFloor)f));
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, midFloors.f3Boss());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, midFloors.swarmBoss());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, midFloors.victimBoss());
+                    for (uint32_t f = 0; f < (uint32_t)x3::game::SpireTopFloor::Count; ++f)
+                        drawEnemyBarsForManager(*device, frame, *physics, hbEye,
+                                                topFloors.enemies((x3::game::SpireTopFloor)f));
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, topFloors.overseerBoss());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, topFloors.boss());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, topFloors.victimBoss());
+                    for (uint32_t i2 = 0; i2 < nexus.chorus().podCount(); ++i2)
+                        drawOneEnemyBar(*device, frame, *physics, hbEye, nexus.chorus().pod(i2));
+                    for (uint32_t s = 0; s < (uint32_t)x3::game::SpireSubLevel::Count; ++s)
+                        drawEnemyBarsForManager(*device, frame, *physics, hbEye,
+                                                subLevels.enemies((x3::game::SpireSubLevel)s));
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, subLevels.miniBoss());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, subLevels.chenBoss());
+                    if (canonWorld && canonPlay.built()) {
+                        drawEnemyBarsForManager(*device, frame, *physics, hbEye, canonPlay.mainHall());
+                        drawEnemyBarsForManager(*device, frame, *physics, hbEye, canonPlay.cellGuards());
+                        drawEnemyBarsForManager(*device, frame, *physics, hbEye, canonPlay.attackers());
+                        drawEnemyBarsForManager(*device, frame, *physics, hbEye, canonPlay.rescue().bosses());
+                        if (canonPlay.martinezSpawned())
+                            drawOneEnemyBar(*device, frame, *physics, hbEye, canonPlay.martinez());
+                    }
+                    g_perf.healthbars += glfwGetTime() - _pbar0;
+                }
                 // Phase 2a: exercise the health bar + damage flash + death overlay
                 // draw paths under validation (fixed sample values, no real player).
                 hud.drawHealth(*device, frame, (i < 20 ? 100 : 35), x3::game::kPlayerMaxHp);
@@ -5242,6 +5419,17 @@ int main(int argc, char** argv) {
                 st.drawCalls, st.triangles, st.objectsDrawn, st.objectsSubmitted,
                 st.gpuFrameMs, stress.count());
             x3::logInfo(sb);
+        }
+        // Perf line: average over-enemy health-bar time per frame (the same field the
+        // [perf] line in the live build emits). Tracked across the smoketest's 30 frames.
+        {
+            const int frames = 30;
+            const double avgMs = (g_perf.healthbars / (double)frames) * 1000.0;
+            char pb[128];
+            std::snprintf(pb, sizeof(pb),
+                "[perf] smoketest: healthbars=%.2f ms (avg/frame over %d frames)",
+                avgMs, frames);
+            x3::logInfo(pb);
         }
         x3::logInfo("smoketest: 30 frames + recreate OK");
         audio->shutdown();
@@ -6426,86 +6614,59 @@ int main(int argc, char** argv) {
                 nexus.draw(*device, frame, scene);            // Floor 4.5 Chorus pods
                 subLevels.drawDoors(*device, frame);          // hidden sub-level door slabs (no-op while closed)
                 subLevels.draw(*device, frame, scene);        // sub-level enemies + Frozen Collective + Dr. Chen (no-op while closed)
-                // ---- Monster HEALTH BARS — shiny metallic, world-anchored, with a
-                // sweeping specular sheen (shimmer). LOS-culled so a bar NEVER shows
-                // through a wall. Above every living enemy; flares white on a fresh hit
-                // and warms toward red as HP drops (length still reads the exact value). --
+                // ---- Over-enemy HEALTH BARS (2026-05-27 playtest polish) ------------
+                // THIN (40x2 px + 1 px outline), DISTANCE-FADED (full <6 m, gone by 22 m),
+                // LOS-OCCLUDED (per-bar Static rayCast from the camera origin to the chest)
+                // and ON EVERY living monster (B1 groups + Spire floors + Nexus pods +
+                // sub-levels + canon-mode groups + bosses + Phase-3 adds + cure/timer
+                // mini-bosses). The cheap distance + on-screen gate keeps the raycast cost
+                // bounded (no rays past far / behind the camera). See drawOneEnemyBar().
                 {
-                    const double barT = glfwGetTime();
-                    const x3::phys::Vec3 hbEye{ camX, camY, camZ };
-                    auto hpBar = [&](const x3::phys::Vec3& head, int hpv, int mx, float flash) {
-                        if (mx <= 0 || hpv <= 0) return;   // living enemies only
-                        // Only show a bar for NEARBY enemies — fades out by ~18 m, gone by 22 m
-                        // (no bars from across the room / 50 ft away).
-                        const float hdx=head.x-hbEye.x, hdy=head.y-hbEye.y, hdz=head.z-hbEye.z;
-                        if (hdx*hdx+hdy*hdy+hdz*hdz > 22.0f*22.0f) return;   // >22 m: no bar
-                        float sx = 0.0f, sy = 0.0f;
-                        if (!device->worldToScreen(head.x, head.y, head.z, sx, sy)) return;  // behind camera
-                        const float frac = (hpv >= mx) ? 1.0f : (float)hpv / (float)mx;
-                        uint32_t hw=0, hh=0; device->hudSize(hw, hh);
-                        const float bw = 40.0f, bh = 3.0f, x0 = sx - bw * 0.5f;   // thin line (was 64x7)
-                        float y0 = sy; if (y0 < 14.0f) y0 = 14.0f;            // clamp on-screen (close enemies)
-                        if (hh > 30 && y0 > (float)hh - 30.0f) y0 = (float)hh - 30.0f;
-                        const float lowH = 1.0f - frac;                       // 0 healthy -> 1 dying
-                        // Per-bar phase from world X so bars don't pulse/shimmer in lockstep.
-                        const float ph    = head.x * 0.7f;
-                        const float pulse = 0.86f + 0.14f * (float)std::sin(barT * 3.2 + ph);
-                        const float outl[4]   = { 0.00f, 0.00f, 0.00f, 0.65f };                       // black definition outline
-                        const float frameC[4] = { 0.78f*pulse, 0.86f*pulse, 1.00f*pulse, 0.95f };      // breathing steel frame
-                        const float backC[4]  = { 0.04f, 0.05f, 0.08f, 0.85f };                        // dark inset bg
-                        // Metallic fill: darker base + lighter top band fakes a vertical
-                        // gradient; warms toward red at low HP; flares white on a hit.
-                        const float baseC[4]  = { 0.52f + 0.30f*lowH + 0.18f*flash, 0.55f - 0.20f*lowH, 0.62f - 0.30f*lowH, 1.0f };
-                        const float topC[4]   = { 0.90f + 0.10f*flash,              0.92f - 0.30f*lowH, 0.98f - 0.45f*lowH, 1.0f };
-                        const float fillW = bw * frac;
-                        device->drawHudQuad(frame, x0 - 2.0f, y0 - 2.0f, bw + 4.0f, bh + 4.0f, outl);
-                        device->drawHudQuad(frame, x0 - 1.5f, y0 - 1.5f, bw + 3.0f, bh + 3.0f, frameC);
-                        device->drawHudQuad(frame, x0, y0, bw, bh, backC);
-                        device->drawHudQuad(frame, x0, y0, fillW, bh, baseC);            // body
-                        device->drawHudQuad(frame, x0, y0, fillW, bh * 0.45f, topC);     // top sheen band
-                        // Sweeping specular sliver = the "shimmer", looping across the fill.
-                        if (fillW > 6.0f) {
-                            const float sw = 7.0f;
-                            const float swp = (float)std::fmod(barT * 0.55 + head.x * 0.05, 1.0);
-                            float sxx = x0 + swp * fillW - sw * 0.5f;
-                            if (sxx < x0)              sxx = x0;
-                            if (sxx > x0 + fillW - sw) sxx = x0 + fillW - sw;
-                            const float sheen[4] = { 1.0f, 1.0f, 1.0f, 0.40f };
-                            device->drawHudQuad(frame, sxx, y0, sw, bh, sheen);
-                        }
-                    };
-                    auto barsFor = [&](x3::game::MonsterManager& mm) {
-                        for (uint32_t i = 0; i < mm.count(); ++i) {
-                            x3::game::MonsterSystem& m = mm.at(i);
-                            if (!m.alive()) continue;
-                            x3::phys::Vec3 c = m.pos();
-                            // LOS cull: skip the bar if a static wall sits between the
-                            // camera and the enemy's chest (no more bars through walls).
-                            const x3::phys::Vec3 chest{ c.x, c.y + 1.0f, c.z };
-                            const x3::phys::Vec3 d{ chest.x - hbEye.x, chest.y - hbEye.y, chest.z - hbEye.z };
-                            const float dist = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
-                            if (dist > 0.001f) {
-                                const x3::phys::Vec3 nd{ d.x/dist, d.y/dist, d.z/dist };
-                                const x3::phys::RayHit los = physics->rayCast(hbEye, nd, dist - 0.3f, x3::phys::Layer::Static);
-                                if (los.hit) continue;   // wall in the way -> hidden
-                            }
-                            c.y += 2.2f;                 // anchor above the head
-                            hpBar(c, m.hp(), m.maxHp(), m.hitFlash());
-                        }
-                    };
-                    // B1 groups + the active Spire-floor enemy groups + bosses.
                     const double _pbar0 = glfwGetTime();
-                    barsFor(game.corridorEnemies());
-                    barsFor(game.checkpointEnemies());
-                    g_perf.healthbars += glfwGetTime() - _pbar0;
+                    const x3::phys::Vec3 hbEye{ camX, camY, camZ };
+                    // ---- Level 1 B1 floor (corridor squad + checkpoint + Martinez + adds + Chen) ----
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, game.corridorEnemies());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, game.checkpointEnemies());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, game.bossAdds());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, game.chen());
+                    if (game.martinezSpawned())
+                        drawOneEnemyBar(*device, frame, *physics, hbEye, game.martinez());
+                    // ---- F2 rescue-system transformed bosses (Siren/Queen/Oracle) ----
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, game.rescue().bosses());
+                    // ---- Spire mid floors (F3/F4/F5 enemies + F3 boss + F5 Swarm + victim boss) ----
                     for (uint32_t f = 0; f < (uint32_t)x3::game::SpireMidFloor::Count; ++f)
-                        barsFor(midFloors.enemies((x3::game::SpireMidFloor)f));
-                    barsFor(midFloors.f3Boss());
-                    barsFor(midFloors.swarmBoss());
+                        drawEnemyBarsForManager(*device, frame, *physics, hbEye,
+                                                midFloors.enemies((x3::game::SpireMidFloor)f));
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, midFloors.f3Boss());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, midFloors.swarmBoss());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, midFloors.victimBoss());
+                    // ---- Spire top floors (F6/F7 enemies + Overseer + Clone + Sarah's mini-boss) ----
                     for (uint32_t f = 0; f < (uint32_t)x3::game::SpireTopFloor::Count; ++f)
-                        barsFor(topFloors.enemies((x3::game::SpireTopFloor)f));
-                    barsFor(topFloors.overseerBoss());
-                    barsFor(topFloors.boss());
+                        drawEnemyBarsForManager(*device, frame, *physics, hbEye,
+                                                topFloors.enemies((x3::game::SpireTopFloor)f));
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, topFloors.overseerBoss());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, topFloors.boss());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, topFloors.victimBoss());
+                    // ---- Floor 4.5 Chorus pods (multi-pod boss; each pod gets its own bar) ----
+                    for (uint32_t i = 0; i < nexus.chorus().podCount(); ++i)
+                        drawOneEnemyBar(*device, frame, *physics, hbEye, nexus.chorus().pod(i));
+                    // ---- Hidden sub-levels (SL1/SL2/SL3 enemies + Frozen Collective + Chen mini-boss)
+                    for (uint32_t s = 0; s < (uint32_t)x3::game::SpireSubLevel::Count; ++s)
+                        drawEnemyBarsForManager(*device, frame, *physics, hbEye,
+                                                subLevels.enemies((x3::game::SpireSubLevel)s));
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, subLevels.miniBoss());
+                    drawEnemyBarsForManager(*device, frame, *physics, hbEye, subLevels.chenBoss());
+                    // ---- --world canonlevel gameplay (Main Hall squad + cell guards + girl
+                    //      attackers + Martinez + the transformed rescue bosses) ------
+                    if (canonWorld && canonPlay.built()) {
+                        drawEnemyBarsForManager(*device, frame, *physics, hbEye, canonPlay.mainHall());
+                        drawEnemyBarsForManager(*device, frame, *physics, hbEye, canonPlay.cellGuards());
+                        drawEnemyBarsForManager(*device, frame, *physics, hbEye, canonPlay.attackers());
+                        drawEnemyBarsForManager(*device, frame, *physics, hbEye, canonPlay.rescue().bosses());
+                        if (canonPlay.martinezSpawned())
+                            drawOneEnemyBar(*device, frame, *physics, hbEye, canonPlay.martinez());
+                    }
+                    g_perf.healthbars += glfwGetTime() - _pbar0;
                 }
                 const VmPose vmPose = readViewmodelPose(*console);
                 const bool vmArmed = game.armed() || (canonWorld && canonPlay.armed());

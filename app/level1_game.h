@@ -233,6 +233,14 @@ public:
     const MonsterManager& corridorEnemies()   const { return m_corridor; }
     MonsterManager&       checkpointEnemies()       { return m_checkpoint; }
     const MonsterManager& checkpointEnemies() const { return m_checkpoint; }
+    // The level boss (Chief Martinez). Read for the HUD health-bar / radar / save bridge.
+    // Always present; `martinezSpawned()` says whether he's been placed in the world yet.
+    MonsterSystem&        martinez()               { return m_martinez; }
+    const MonsterSystem&  martinez()         const { return m_martinez; }
+    // Phase-3 boss adds (Guard adds summoned once when Martinez enters Phase 3). Empty
+    // until summoned. The bar-loop / radar enumerate this so the adds get HP bars too.
+    MonsterManager&       bossAdds()               { return m_bossAdds; }
+    const MonsterManager& bossAdds()         const { return m_bossAdds; }
     bool martinezSpawned() const { return m_martinezSpawned; }
     bool martinezAlive()   const { return m_martinezSpawned && m_martinez.alive(); }
     bool martinezDead()    const { return m_martinezSpawned && !m_martinez.alive(); }

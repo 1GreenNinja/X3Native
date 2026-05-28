@@ -207,6 +207,12 @@ public:
     // in enemies(F5) — those are the drones Sarah's hack flips to allied.
     const MonsterManager& swarmBoss() const { return m_swarmBoss; }
     MonsterManager&       swarmBoss()       { return m_swarmBoss; }
+
+    // The Wave-1 victim-timer-expired mini-boss manager (empty until the F4 victim's
+    // rescue clock expires and the floor spawns a transformed adversary). Exposed for
+    // the HUD bar-loop / radar so this enemy gets a health bar like every other.
+    const MonsterManager& victimBoss() const { return m_victimBoss; }
+    MonsterManager&       victimBoss()       { return m_victimBoss; }
     // Has the player triggered Sarah's master hack yet? (false at load; flips true on
     // the hack interact / once the F5 hack beat fires — never at load).
     bool sarahHackDone() const { return m_sarahHackDone; }
