@@ -47,6 +47,7 @@ add_executable(X3Engine WIN32
     cliffs.cpp
     companion.cpp
     companion_squad.cpp
+    companion_controller.cpp
     terrain.cpp
     vehicle.cpp
     fx.cpp

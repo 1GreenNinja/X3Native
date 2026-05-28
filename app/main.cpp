@@ -64,6 +64,7 @@
 #include "cliffs.h"                          // Salvari cliffs finale (--world cliffs)
 #include "companion.h"                      // companion reflex AI (--test-companion)
 #include "companion_squad.h"                // companion Slice B: squad integration (--test-companion-squad + --world companion)
+#include "companion_controller.h"           // companion Slice C seam: single-companion wrapper (--test-companion-controller)
 #include "terrain.h"
 #include "fx.h"
 #include "hud.h"
@@ -842,6 +843,9 @@ int main(int argc, char** argv) {
     bool        testCompanion = false;
     // --test-companion-squad (companion Slice B): squad integration, downed/revive.
     bool        testCompanionSquad = false;
+    // --test-companion-controller (companion Slice C seam): single-companion wrapper
+    // (Player + CompanionBrain + Identity). Additive, headless.
+    bool        testCompanionController = false;
     // --test-secretroom (code-locked trapdoor -> secret room): the cell HoloTerminal
     // override code opens a floor-hatch to a stocked secret room below. Additive flag.
     bool        testSecretRoom = false;
@@ -1131,6 +1135,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-cliffs") testCliffs = true;
         else if (a == "--test-companion") testCompanion = true;
         else if (a == "--test-companion-squad") testCompanionSquad = true;
+        else if (a == "--test-companion-controller") testCompanionController = true;
         else if (a == "--test-club") testClub = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
@@ -1721,6 +1726,9 @@ int main(int argc, char** argv) {
     }
     if (testCompanionSquad) {
         return x3::game::runCompanionSquadSelfTest() ? 0 : 1;
+    }
+    if (testCompanionController) {
+        return x3::game::runCompanionControllerSelfTest() ? 0 : 1;
     }
     if (testClub) {
         x3::logInfo("running Club 1127 (\"THE DEEP\") self-test "
