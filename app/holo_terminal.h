@@ -24,15 +24,20 @@ public:
     // to reject (flashes + clears). Optional — default accepts.
     using SubmitFn = std::function<bool(const std::string& value)>;
 
-    // Build the screen in the world: a thin SHINY translucent-blue panel centered at
-    // `pos` (facing -Z toward Jake's spawn), `width` x `height` m, with an emissive
-    // rounded-look frame bezel, AND a glass ARM dropping from the ceiling (`ceilingY`,
-    // 0 = auto pos.y+1.7) carrying emissive fiber-optic (cyan) + copper (amber) traces
-    // inside the glass. Registers all render entities in `scene` via `device`. Seeds
-    // the boot readout (so it's no longer blank).
+    // Build the screen in the world: a thin CLEAR-GLASS panel centered at `pos`
+    // (facing -yaw), `width` x `height` m, with an emissive cyan UI printed on it +
+    // a glass ARM dropping from the ceiling (`ceilingY`, 0 = auto pos.y+1.7)
+    // carrying emissive fiber-optic (cyan) + copper (amber) traces inside the
+    // glass. Registers all render entities in `scene` via `device`. Seeds the boot
+    // readout (so it's no longer blank). `roomId` is the per-floor cull tag
+    // applied to every rendered entity (kNoRoom == always-visible).
     void build(Scene& scene, x3::rhi::IRenderDevice& device,
                x3::phys::Vec3 pos, float yaw = 0.0f, float width = 1.4f, float height = 0.9f,
-               float ceilingY = 0.0f);
+               float ceilingY = 0.0f, uint32_t roomId = kNoRoom);
+
+    // Replace the entire readout (used by ShowLore / temporary banners). Marks the
+    // hologram texture dirty so the new lines are baked on the next update().
+    void setLore(std::vector<std::string> lore) { m_lines = std::move(lore); m_texDirty = true; }
 
     // High-contrast readout color the host uses for drawHudText (bright vs the blue
     // glass). Exposed so the in-app render layer matches the art direction.
@@ -88,6 +93,7 @@ private:
     uint32_t       m_entity = kNoLink;
     x3::phys::Vec3 m_pos{};
     float          m_width = 1.4f, m_height = 0.9f;
+    uint32_t       m_roomId = kNoRoom;
     // Scene + screen-entity bookkeeping for the time-driven shimmer (set in build()).
     // update() modulates this entity's emissive each frame; null Scene => no shimmer
     // (the headless self-test path, which never calls build()).

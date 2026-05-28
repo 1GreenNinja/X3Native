@@ -272,31 +272,26 @@ float drawTextGlass(Canvas& c, const std::string& s, float penX, float topY, flo
 // `lines` = the readout (line 0 is the header title, 1+ are the left-column data
 // rows). `inputLine` (if non-empty) is the live "> code_" prompt, baked in amber
 // below the data rows. Passing them in lets the text be rasterized ON the glass.
+//
+// REDO (clear-glass + emissive-UI rev): the background is left FULLY BLACK +
+// FULLY TRANSPARENT (RGB(0,0,0), A=0) so this texture, routed through the entity
+// as an EMISSIVE source, contributes only the cyan line-art strokes + readout
+// glyphs. NO dark-glass plate is baked anymore. The glass plate is now a clear
+// pane (Entity.glass.opacity ~ 0.10, near-white tint) carrying the see-through
+// math; the glowing UI rides on top via the emissive multiply. Result: terminal
+// reads as clear glass with a hologram printed on it, not a teal slab.
 std::vector<uint8_t> makeHologramRGBA(uint32_t n,
                                       const std::vector<std::string>& lines,
                                       const std::string& inputLine) {
     const float fn = (float)n;
 
-    // ---- 1) GLASS BASE (under the line-art): deep-blue gradient + scanlines +
-    // grid + vignette, EXACTLY as before so it still reads as a hologram. ----
+    // ---- 1) BACKGROUND: FULLY BLACK (no dark-glass plate baked anymore). The
+    // canvas only accumulates the additive cyan/white line-art + the rasterized
+    // readout glyphs below; everywhere else stays RGB(0,0,0) and the final pass
+    // emits ALPHA=0 for unlit pixels so the entity's emissive contribution is
+    // exactly the strokes — no painted teal plate to flood the lit term. ----
     Canvas c(n);
-    for (uint32_t y = 0; y < n; ++y) {
-        for (uint32_t x = 0; x < n; ++x) {
-            const float u = (x + 0.5f) / fn, v = (y + 0.5f) / fn;
-            float br = 0.05f, bg = 0.16f, bb = 0.34f;
-            const float grad = 1.0f - v * 0.55f;            // brighter toward the top
-            br *= grad; bg *= grad; bb *= grad;
-            const float scan = 0.78f + 0.22f * ((y % 4u) < 2u ? 1.0f : 0.55f);
-            br *= scan; bg *= scan; bb *= scan;
-            if ((x % 28u) < 1u || (y % 28u) < 1u) { bg += 0.10f; bb += 0.16f; } // data-grid
-            const float cx = (u - 0.5f), cy = (v - 0.5f);
-            const float rad = std::sqrt(cx*cx + cy*cy) * 1.42f;
-            const float vig = 1.0f - 0.45f * rad * rad;
-            br *= vig; bg *= vig; bb *= vig;
-            const size_t i = (size_t)y * n + x;
-            c.r[i] = br; c.g[i] = bg; c.b[i] = bb;
-        }
-    }
+    // (no fill — Canvas is zero-initialised by std::vector<float>(N,0))
 
     // ---- 2) LINE-ART HUD (additive cyan/white). All coordinates in pixels, scaled
     // off n so it stays crisp at 1024^2. Layout follows the reference photos.
@@ -456,8 +451,13 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
         }
     }
 
-    // ---- 3) ROUNDED-CORNER + edge FADE applied to the composited result, so the
-    // silhouette reads as a rounded translucent panel (corners die toward black). ----
+    // ---- 3) ROUNDED-CORNER + edge FADE on the COMPOSITED INK only. The alpha
+    // channel is now data-driven: ALPHA tracks the brightness of the additive
+    // ink we deposited — fully black background -> alpha 0 (so the emissive
+    // contribution is exactly the strokes), bright cyan stroke -> alpha ~ 255.
+    // The rounded corner / edge fade still applies (both to color AND alpha) so
+    // the silhouette stays a rounded panel even though the body is transparent.
+    // ----
     const float r2corner = 0.30f;
     std::vector<uint8_t> px((size_t)n * n * 4);
     auto to8 = [](float c0) -> uint8_t {
@@ -480,10 +480,18 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
             fade *= (edge < 0.0f ? 0.0f : edge);
             const size_t i = (size_t)y * n + x;
             uint8_t* p = &px[i * 4];
-            p[0] = to8(c.r[i] * fade);
-            p[1] = to8(c.g[i] * fade);
-            p[2] = to8(c.b[i] * fade);
-            p[3] = 255;
+            const float fr = c.r[i] * fade;
+            const float fg = c.g[i] * fade;
+            const float fb = c.b[i] * fade;
+            p[0] = to8(fr);
+            p[1] = to8(fg);
+            p[2] = to8(fb);
+            // Alpha tracks the brightest channel of the deposited ink (so the
+            // clear background stays transparent + strokes carry their full alpha).
+            const float maxC = std::max(fr, std::max(fg, fb));
+            // Soft saturation so even faint strokes contribute a little alpha.
+            float a = std::min(1.0f, maxC * 1.20f);
+            p[3] = to8(a);
         }
     }
     return px;
@@ -610,8 +618,9 @@ x3::prims::PrimMesh makeRoundedRim(float hw, float hh, float corner, float thick
 
 void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
                          x3::phys::Vec3 pos, float yaw, float width, float height,
-                         float ceilingY) {
+                         float ceilingY, uint32_t roomId) {
     m_pos = pos; m_width = width; m_height = height;
+    m_roomId = roomId;
     m_scene = &scene;
     m_device = &device;
     const float cs = std::cos(yaw), sn = std::sin(yaw);
@@ -627,6 +636,7 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
         e.baseColor[0]=r; e.baseColor[1]=g; e.baseColor[2]=b; e.baseColor[3]=alpha;
         e.emissive[0]=er; e.emissive[1]=eg; e.emissive[2]=eb; e.emissive[3]=es;
         e.tag = (uint32_t)Tag::Prop;
+        e.roomId = roomId;
         // world offset = R_y(yaw) * (ox,oy,oz)
         const float wx = cs*ox + sn*oz, wz = -sn*ox + cs*oz;
         e.transform[0]=cs; e.transform[2]=-sn; e.transform[8]=sn; e.transform[10]=cs;
@@ -656,6 +666,7 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
             e.glass.specular   = 0.6f;           // the light shimmer (kept)
         }
         e.tag = (uint32_t)Tag::Prop;
+        e.roomId = roomId;
         const float wx = sn*oz, wz = cs*oz;
         e.transform[0]=cs; e.transform[2]=-sn; e.transform[8]=sn; e.transform[10]=cs;
         e.transform[12]=pos.x+wx; e.transform[13]=pos.y; e.transform[14]=pos.z+wz;
@@ -664,20 +675,17 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
 
     const float hw = width * 0.5f, hh = height * 0.5f;
 
-    // Seed the boot readout BEFORE baking the texture so the static lines are
+    // Seed a generic boot readout BEFORE baking the texture so the static lines are
     // rasterized into the glass on the very first frame (the dynamic input line is
-    // appended/re-baked later via regenTexture()). The Awakening terminal (EFLZ §3).
-    // Line 0 is the HEADER TITLE; lines 1+ are the left-column data rows.
-    m_lines = {
-        "SECURITY CELL 07  --  STATUS: SECURE",
-        "SUBJECT: JAKE",
-        "STATUS: AUGMENTED",
-        "MUSCULOSKELETAL OUTPUT: +400%",
-        "RESTRAINT INTEGRITY: FAILING",
-        "MAINTENANCE: AUTO-DIAG OK",
-        "",
-        "ENTER OVERRIDE CODE TO UNLOCK CELL:",
-    };
+    // appended/re-baked later via regenTexture()). The HoloTerminalSystem replaces
+    // these per-instance via setLines() right after build() so each kiosk shows its
+    // own label + lore text. Line 0 is the HEADER TITLE; lines 1+ are the data rows.
+    if (m_lines.empty()) {
+        m_lines = {
+            "TERMINAL  --  STATUS: ONLINE",
+            "AWAITING INPUT",
+        };
+    }
 
     // Build the procedural hologram UI texture once (shared by the screen quad). The
     // readout TEXT is rasterized INTO it (stb_truetype) so it sits ON the glass.
@@ -743,66 +751,72 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                  0,0,0,1,  1.0f,0.55f,0.2f, 2.2f));  // copper trace
     }
 
-    // ---- The HOLOGRAM screen: a rounded-corner glass quad, dark base color so the
-    // EMISSIVE hologram texture + glow carry the look (reads as projected translucent
-    // UI, not a solid slab). The texture supplies scanlines/grid/header/vignette +
-    // rounded-corner fade; emissive makes it glow + feed bloom. update() pulses the
-    // emissive strength + scrolls a scanline overlay for the live shimmer. ----
+    // ---- The HOLOGRAM screen: a rounded-corner CLEAR-GLASS quad. The glowing
+    // line-art HUD now rides on the texture as an EMISSIVE source rather than as
+    // baked-in diffuse over a dark plate — meaning the body is actually clear and
+    // the strokes light up like a projected display. (Per the kiosk redo.)
+    //
+    //   * baseColor stays full-albedo white so the (very weak) lit-term contribution
+    //     to the strokes-where-present is neutral; glass.opacity carries the real
+    //     see-through dial.
+    //   * The procedural hologram texture is bound to BOTH `tex` (so the line-art
+    //     also tints baseColor where it has ink — gives the surface a faint visible
+    //     trace under lights) AND tracked separately as the emissive RGB source. The
+    //     engine's drawMeshGlass already adds emissive on TOP of the glass composite,
+    //     so the strokes glow above the see-through pane regardless of opacity.
+    //   * The flat per-entity emissive flood (m_emBase) is GONE — texel * emissive
+    //     strength is the only emissive contribution. Pulsed in update().
+    //   * Glass material: CLEAR PANE defaults (matches glass_lounge): opacity 0.10,
+    //     near-white tint (so the strokes carry the cyan, not the body), roughness
+    //     0.02, refraction ~0.015, specular ~0.6.
     x3::prims::PrimMesh geo = makeRoundedPanel(hw, hh, std::min(hw, hh) * 0.30f);
     Entity e;
     e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                geo.index.data(), (uint32_t)geo.index.size());
-    e.tex = m_holoTex;                                  // procedural hologram UI
-    // REAL translucent GLASS (engine glass pass) — replaces the old "fake by leaving
-    // it opaque + carrying the look in the emissive" hack. The plate is now actually
-    // see-through: the cell behind subtly shows through while the holo UI texture +
-    // emissive glow carry the projected-display read. baseColor stays full-albedo so
-    // the bright cyan line-art survives the lit term; glass.opacity is the see-through
-    // dial (mid so the printed HUD still reads strongly against what's behind).
+    e.tex = m_holoTex;
     e.baseColor[0] = 1.0f; e.baseColor[1] = 1.0f; e.baseColor[2] = 1.0f; e.baseColor[3] = 1.0f;
     e.transparent = true;
-    // Tasteful tinted, lightly-frosted, emissive display glass (spec §2 preset). With
-    // M2-M4 live: the cell behind bends a touch through it (refraction), the surface
-    // catches a cool-blue fresnel sheen + glints (M3) and reads slightly milky (M4
-    // frost). Mid opacity keeps the printed holo UI dominant while the glass character
-    // shows. Tuned against the M2-M4 shader, not the M1 fake-translucency hack.
-    e.glass.opacity    = 0.55f;          // mid — UI reads, glass still see-through
-    e.glass.tint[0]    = 0.78f; e.glass.tint[1] = 0.90f; e.glass.tint[2] = 1.0f; // cool-blue tint
-    e.glass.roughness  = 0.14f;          // lightly frosted display glass (M4)
-    e.glass.refraction = 0.025f;         // gentle bend of the cell behind (M2)
-    e.glass.specular   = 0.55f;          // fresnel sheen + glints (M3)
-    // Moderate emissive: gives the glass a hologram glow / bloom WITHOUT flooding out
-    // the textured line-art (which rides the full-albedo lit term). Pulsed in update().
-    m_emBase[0] = 0.10f; m_emBase[1] = 0.34f; m_emBase[2] = 0.52f; m_emBase[3] = 0.45f;
+    // CLEAR PLATE GLASS preset (matches app/glass_lounge.cpp): a polished pane that
+    // is barely-tinted + sees through; the holographic UI on top supplies the colour.
+    e.glass.opacity    = 0.10f;          // CLEAR — barely-tinted plate glass
+    e.glass.tint[0]    = 1.0f; e.glass.tint[1] = 1.0f; e.glass.tint[2] = 1.0f;
+    e.glass.roughness  = 0.02f;          // polished (not frosted)
+    e.glass.refraction = 0.015f;         // a hair of scene-bend behind the pane
+    e.glass.specular   = 0.6f;           // clean soft sheen
+    // EMISSIVE: drop the constant flat-teal flood. Emissive RGB is white so it
+    // MULTIPLIES the texel (only stroked pixels light up); strength is small +
+    // breathes via update(). m_emBase[3] is the base strength; rgb stays 1,1,1.
+    m_emBase[0] = 1.0f; m_emBase[1] = 1.0f; m_emBase[2] = 1.0f; m_emBase[3] = 1.4f;
     e.emissive[0]=m_emBase[0]; e.emissive[1]=m_emBase[1]; e.emissive[2]=m_emBase[2]; e.emissive[3]=m_emBase[3];
     e.tag = (uint32_t)Tag::Prop;
+    e.roomId = m_roomId;
     e.transform[0]=cs;  e.transform[2]=-sn;
     e.transform[8]=sn;  e.transform[10]=cs;
     e.transform[12]=pos.x; e.transform[13]=pos.y; e.transform[14]=pos.z;
     m_entity = scene.add(e);
 
-    // ---- A second, slightly-in-front SCANLINE overlay quad: a thin bright cyan
-    // emissive sheet whose emissive STRENGTH is animated in update() to scroll a
-    // shimmer band down the glass (the moving "projector refresh" line). Same rounded
-    // shape, nudged toward the viewer so it composites over the base. ----
+    // ---- A second, slightly-in-front SCANLINE overlay quad: a thin emissive sheet
+    // whose emissive STRENGTH is animated in update() to scroll a shimmer band down
+    // the glass (the moving "projector refresh" line). Same rounded shape, nudged
+    // toward the viewer so it composites over the base. SAME clear-glass material
+    // as the base so the body never paints in — only its emissive sweep shows. ----
     x3::prims::PrimMesh sgeo = makeRoundedPanel(hw*0.98f, hh*0.98f, std::min(hw, hh) * 0.28f);
     Entity se;
     se.mesh = device.createMesh(sgeo.verts.data(), (uint32_t)sgeo.verts.size(),
                                 sgeo.index.data(), (uint32_t)sgeo.index.size());
     se.tex = m_holoTex;
-    se.baseColor[0]=0.0f; se.baseColor[1]=0.0f; se.baseColor[2]=0.0f; se.baseColor[3]=1.0f;
+    se.baseColor[0]=1.0f; se.baseColor[1]=1.0f; se.baseColor[2]=1.0f; se.baseColor[3]=1.0f;
     se.emissive[0]=0.3f; se.emissive[1]=0.9f; se.emissive[2]=1.0f; se.emissive[3]=0.0f;  // pulsed in update()
-    // Glass too: drawn in the SAME transparent pass as the base plate (both
-    // depth-write OFF) so the in-front sweep quad composites OVER the glass panel
-    // instead of occluding it. Low opacity -> a faint additive-looking shimmer band;
-    // its near-black albedo means it contributes essentially only its emissive sweep.
     se.transparent = true;
-    se.glass.opacity    = 0.22f;
-    se.glass.tint[0]    = 0.30f; se.glass.tint[1] = 0.90f; se.glass.tint[2] = 1.0f;
-    se.glass.roughness  = 0.15f;
+    // Even clearer than the base — the scanline quad must not paint over the UI;
+    // it only carries an emissive sweep. Very low opacity, near-white tint.
+    se.glass.opacity    = 0.04f;
+    se.glass.tint[0]    = 1.0f; se.glass.tint[1] = 1.0f; se.glass.tint[2] = 1.0f;
+    se.glass.roughness  = 0.04f;
     se.glass.refraction = 0.0f;
-    se.glass.specular   = 0.4f;
+    se.glass.specular   = 0.3f;
     se.tag = (uint32_t)Tag::Prop;
+    se.roomId = m_roomId;
     const float foZ = 0.014f;                            // toward the viewer (front face +Z local)
     const float fwx = cs*0.0f + sn*foZ, fwz = -sn*0.0f + cs*foZ;
     se.transform[0]=cs; se.transform[2]=-sn; se.transform[8]=sn; se.transform[10]=cs;
@@ -811,7 +825,7 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
 
     // (Boot readout seeded above, before the texture bake, so the on-glass text is
     // rasterized into the first hologram frame.)
-    x3::logInfo("[holoterm] built cell-01 terminal (translucent emissive) at (" +
+    x3::logInfo("[holoterm] built terminal (clear-glass + emissive UI) at (" +
                 std::to_string((int)pos.x) + "," + std::to_string((int)pos.y) + "," +
                 std::to_string((int)pos.z) + ")");
 }
@@ -894,6 +908,8 @@ void HoloTerminal::update(float dt) {
 
     // Slow emissive PULSE on the base glass (a gentle breathing glow, ~0.27 Hz) plus
     // a faint higher-frequency flicker (the projector instability). Subtle, bounded.
+    // Only the STRENGTH channel breathes; rgb stays at the multiplicative-white we
+    // set in build() so the texture's strokes carry the colour.
     const float pulse   = 0.86f + 0.14f * std::sin(m_clock * 1.7f);
     const float flicker = 0.97f + 0.03f * std::sin(m_clock * 13.0f);
     const float k = pulse * flicker;

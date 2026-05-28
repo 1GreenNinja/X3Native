@@ -42,6 +42,7 @@
 #include "barrels.h"                        // explosive barrels (shoot -> chain explosion)
 #include "glass_test.h"                      // translucent-glass material (--test-glass)
 #include "holo_terminal.h"                  // Jake's cell holographic terminal (text + input)
+#include "holo_terminal_system.h"           // placeable HoloTerminal kiosks + command dispatch
 #include "glass_lounge.h"                   // glass table + chairs + SIT-AT-CHAIR (--test-sit)
 #include "secret_room.h"                    // code-locked trapdoor -> stocked secret room
 #include "engine/ecs/Ecs.h"                 // sparse-set ECS core (10k+ entities)
@@ -799,7 +800,7 @@ int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
-         testBarrels = false, testGlass = false, testHoloterm = false, testSit = false, testEcs = false, testEcsRender = false,
+         testBarrels = false, testGlass = false, testHoloterm = false, testTerminals = false, testSit = false, testEcs = false, testEcsRender = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
@@ -1067,6 +1068,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-barrels") testBarrels = true;
         else if (a == "--test-glass") testGlass = true;
         else if (a == "--test-holoterm") testHoloterm = true;
+        else if (a == "--test-terminals") testTerminals = true;
         else if (a == "--test-sit") testSit = true;
         else if (a == "--test-secretroom") testSecretRoom = true;
         else if (a == "--test-ecs") testEcs = true;
@@ -1296,6 +1298,10 @@ int main(int argc, char** argv) {
     if (testHoloterm) {
         x3::logInfo("running holo-terminal (text + input) self-test...");
         return x3::game::runHoloTerminalSelfTest() ? 0 : 1;
+    }
+    if (testTerminals) {
+        x3::logInfo("running holo-terminal KIOSK SYSTEM self-test...");
+        return x3::game::runHoloTerminalSystemSelfTest() ? 0 : 1;
     }
     if (testSit) {
         x3::logInfo("running glass-lounge SIT-AT-CHAIR (state machine) self-test...");
@@ -4139,6 +4145,23 @@ int main(int argc, char** argv) {
     // the terminal) prompts at a time. ----
     x3::game::GlassLounge    glassLounge;
     x3::game::SitController  sitCtrl;
+    // ---- HOLO-TERMINAL KIOSK SYSTEM: placeable terminals scattered around B1.
+    // The cell-escape terminal (legacy code 1278) is registered as the FIRST instance
+    // (external, owned by SecretRoom); additional B1 kiosks are owned by the system
+    // and built directly into the world. Each kiosk has a real-world command (UnlockCell
+    // / OpenDoor / ToggleLights / TriggerAlarm / ShowLore / SpawnCrate) that fires when
+    // the player submits the kiosk's code. The host gates input the same way termMode
+    // gates the cell terminal today (keyDown lambda + the input/movement lock).
+    x3::game::HoloTerminalSystem holoSys;
+    // Light dimmer multipliers (one per fixture in game.lightFixtures()). The
+    // ToggleLights command cycles a per-anchor scale through full -> dim -> off ->
+    // full; the render loop multiplies each fixture's color RGB by its stored scale
+    // before issuing setPointLights. Size is matched to fl.size() at first use.
+    std::vector<float> kioskLightScale;
+    // Alarm screen-tint state: a brief eased pulse (red) when a TriggerAlarm fires.
+    // The system itself decays the alarm timer; the host reads alarm() each frame.
+    // Auto-resets when the timer hits zero (the system clears active).
+    // (No separate state needed here — read holoSys.alarm().)
     // Host-tracked latch: Sarah was rescued on F7 (set true when topFloors.onRescue()
     // succeeds). Combined with "the Clone boss is dead" it is the descent gate. We track
     // it host-side because spire_top exposes victimCaptive() (not a companion query), and
@@ -4291,6 +4314,194 @@ int main(int argc, char** argv) {
         // L1Floor::B1 so the per-floor cull keeps the lounge with the basement.
         const x3::phys::Vec3 loungeCenter{ -1.0f, Lb.floorBaseY[(uint32_t)x3::game::L1Floor::B1], 7.0f };
         glassLounge.build(scene, *device, *physics, loungeCenter, (uint32_t)x3::game::L1Floor::B1);
+
+        // ---- HOLO-TERMINAL KIOSKS on B1 (clear-glass + emissive UI + per-instance
+        // command). Built AFTER game.build() so the SecretRoom + DoorSystem already
+        // hold the cell trapdoor + the spine doors A-E. The cell terminal (legacy
+        // code 1278) is registered as an EXTERNAL instance pointing to the one
+        // SecretRoom built; the other terminals are owned by the system and built
+        // directly into the world here. ----
+        {
+            using namespace x3::game;
+            const float b1y = Lb.floorBaseY[(uint32_t)L1Floor::B1];
+            const uint32_t roomB1 = (uint32_t)L1Floor::B1;
+            const float PI = 3.14159265358979f;
+
+            // (1) CELL LOCK — the legacy cell-escape terminal. SecretRoom built it
+            // facing -Z toward Jake's spawn. We register it here as an external so
+            // the kiosk registry counts it + the unified input flow reaches it.
+            // The UnlockCell command's sink (installed below) re-uses the same
+            // SecretRoom submitCode path so the existing S1-S7 secret-room test
+            // keeps working byte-identically.
+            {
+                TerminalParams p;
+                holoSys.addExternal(game.secret().terminal(),
+                                    "cell_lock", "DETENTION CELL 07", "1278",
+                                    TerminalCommand::UnlockCell, p,
+                                    x3::phys::Vec3{ Lb.cellCenter.x, b1y + 1.3f, Lb.cellCenter.z - 2.6f },
+                                    /*yaw*/PI, roomB1);
+            }
+
+            // (2) OLD ARMORY DOOR — the lounge nook is just past Door B; this kiosk
+            // sits in the lounge area and opens Door B (corridor->armory) on submit.
+            // Faces -Z so the player walks up from the table side.
+            {
+                TerminalParams p;
+                p.doorIdx = game.doorIndexPublic('B');   // Door B == corridor -> armory
+                holoSys.add(scene, *device, "armory_door", "OLD ARMORY ACCESS", "OPEN",
+                            TerminalCommand::OpenDoor, p,
+                            // Mounted on the +Z wall of the corridor/lounge nook
+                            x3::phys::Vec3{ Lb.corridorCenter.x - 1.5f, b1y + 1.4f, 5.5f },
+                            /*yaw*/-PI*0.5f,           // facing -Z (toward the lounge)
+                            1.0f, 0.65f, 0.0f, roomB1,
+                            { "OLD ARMORY ACCESS PANEL",
+                              "DOOR INTERLOCK: ENGAGED",
+                              "TYPE 'OPEN' TO RELEASE" });
+            }
+
+            // (3) CORRIDOR LIGHTING — central corridor (between Door A and the
+            // armory). Cycles the nearest 3 point lights' intensity.
+            {
+                TerminalParams p;
+                p.lightAnchor = x3::phys::Vec3{ Lb.corridorCenter.x, b1y + 2.5f, Lb.corridorCenter.z };
+                p.lightRadius = 6.0f;
+                p.lightMaxAffect = 3;
+                holoSys.add(scene, *device, "lights_central", "CORRIDOR LIGHTING", "LIGHTS",
+                            TerminalCommand::ToggleLights, p,
+                            // Mounted on the -Z wall of the corridor (faces +Z).
+                            x3::phys::Vec3{ Lb.corridorCenter.x, b1y + 1.4f,
+                                            Lb.corridorCenter.z - Lb.corridorHalf.z + 0.18f },
+                            /*yaw*/PI*0.5f,
+                            1.0f, 0.65f, 0.0f, roomB1,
+                            { "CORRIDOR LIGHTING CTRL",
+                              "MODE: AUTO",
+                              "TYPE 'LIGHTS' TO CYCLE" });
+            }
+
+            // (4) ALARM — security alarm panel inside the armory.
+            {
+                TerminalParams p;
+                holoSys.add(scene, *device, "alarm_armory", "SECURITY ALARM", "ALARM",
+                            TerminalCommand::TriggerAlarm, p,
+                            // Mounted on the +Z wall of the armory (faces -Z).
+                            x3::phys::Vec3{ Lb.armoryCenter.x, b1y + 1.4f,
+                                            Lb.armoryCenter.z + Lb.armoryHalf.z - 0.18f },
+                            /*yaw*/-PI*0.5f,
+                            1.0f, 0.65f, 0.0f, roomB1,
+                            { "SECURITY ALARM PANEL",
+                              "TYPE 'ALARM' TO TRIGGER",
+                              "DURATION: 3 SECONDS" });
+            }
+
+            // (5) INTEL ARCHIVE — lore / world-building dump in the checkpoint room.
+            {
+                TerminalParams p;
+                p.lore = {
+                    "SUBJECT: PROJECT X3",
+                    "FACILITY: AHL CORP SPIRE",
+                    "STATUS: BREACH IN PROGRESS",
+                    "RECOMMEND: EVAC ALL CIVILIANS",
+                    "SUBJ JAKE: UNAUTHORIZED",
+                    "AUGMENT LEVEL TIER-3",
+                };
+                holoSys.add(scene, *device, "lore_intel", "INTEL ARCHIVE", "READ",
+                            TerminalCommand::ShowLore, p,
+                            // Mounted on the -Z wall of the checkpoint room (faces +Z).
+                            x3::phys::Vec3{ Lb.checkpointCenter.x - 0.5f, b1y + 1.4f,
+                                            Lb.checkpointCenter.z - Lb.checkpointHalf.z + 0.18f },
+                            /*yaw*/PI*0.5f,
+                            1.0f, 0.65f, 0.0f, roomB1,
+                            { "INTEL ARCHIVE  --  LOCKED",
+                              "TYPE 'READ' TO QUERY" });
+            }
+
+            // (6) CACHE DISPENSER — bonus crate spawner in the arena (the bonus).
+            {
+                TerminalParams p;
+                p.cratePos = x3::phys::Vec3{ Lb.arenaCenter.x - 1.5f, b1y + 0.55f, Lb.arenaCenter.z + 1.2f };
+                holoSys.add(scene, *device, "crate_dispense", "CACHE DISPENSER", "CRATE",
+                            TerminalCommand::SpawnCrate, p,
+                            // Mounted on the +Z wall of the arena (faces -Z).
+                            x3::phys::Vec3{ Lb.arenaCenter.x, b1y + 1.4f,
+                                            Lb.arenaCenter.z + Lb.arenaHalf.z - 0.18f },
+                            /*yaw*/-PI*0.5f,
+                            1.0f, 0.65f, 0.0f, roomB1,
+                            { "CACHE DISPENSER",
+                              "TYPE 'CRATE' TO RELEASE" });
+            }
+
+            // ---- Wire the cross-system sinks. ----
+            // UnlockCell: route to the SecretRoom hatch via submitCode (the live
+            // DoorSystem already holds it; the sink path mirrors the legacy
+            // code-1278 -> hatch opening flow exactly).
+            holoSys.setUnlockCellSink([&]() -> bool {
+                // The hatch idx is the DoorSystem index SecretRoom registered. We
+                // re-use SecretRoom::submitCode which captures the DoorSystem inside
+                // the secret-room terminal sink (the cell terminal's submit, not the
+                // kiosk system's). Replaying "1278" through the terminal fires that
+                // sink and opens the hatch. DoorSystem& arg is unused (the captured
+                // one inside the sink is the live one).
+                DoorSystem dummy;
+                return game.secret().submitCode(x3::game::kSecretRoomCode, dummy);
+            });
+
+            // ToggleLights: store a per-fixture scale; the render loop multiplies
+            // each fixture's color RGB by its stored scale before issuing
+            // setPointLights. Cycle is full(1.0) -> dim(0.35) -> off(0.0) -> full.
+            holoSys.setLightsToggleSink([&](const x3::phys::Vec3& at, float radius, uint32_t maxAffect) {
+                const std::vector<x3::rhi::PointLight>& src = game.lightFixtures();
+                if (kioskLightScale.size() != src.size()) kioskLightScale.assign(src.size(), 1.0f);
+                // Find the K nearest fixtures within radius.
+                struct Hit { uint32_t i; float d2; };
+                std::vector<Hit> hits;
+                hits.reserve(src.size());
+                const float r2 = radius * radius;
+                for (uint32_t i = 0; i < src.size(); ++i) {
+                    const float dx = src[i].pos[0] - at.x;
+                    const float dy = src[i].pos[1] - at.y;
+                    const float dz = src[i].pos[2] - at.z;
+                    const float d2 = dx*dx + dy*dy + dz*dz;
+                    if (d2 <= r2) hits.push_back({ i, d2 });
+                }
+                std::sort(hits.begin(), hits.end(),
+                          [](const Hit& a, const Hit& b) { return a.d2 < b.d2; });
+                const uint32_t affect = std::min((uint32_t)hits.size(), maxAffect);
+                if (affect == 0) {
+                    x3::logInfo("[holoterm-sys] ToggleLights: no fixtures in range");
+                    return;
+                }
+                // Cycle: pick the current scale of the first hit and step.
+                const float cur = kioskLightScale[hits[0].i];
+                float next = 1.0f;
+                if (cur >= 0.99f)        next = 0.35f;
+                else if (cur >= 0.30f)   next = 0.0f;
+                else                      next = 1.0f;
+                for (uint32_t k = 0; k < affect; ++k) kioskLightScale[hits[k].i] = next;
+                x3::logInfo("[holoterm-sys] ToggleLights: cycled " + std::to_string(affect) +
+                            " fixtures -> scale=" + std::to_string(next));
+            });
+
+            // SpawnCrate: drop a glowing crate prop into the scene at `at`.
+            holoSys.setSpawnCrateSink([&](const x3::phys::Vec3& at) {
+                x3::prims::PrimMesh g = x3::prims::makeBox(0.30f, 0.30f, 0.30f, 0, 0, 0, 0.5f);
+                Entity e;
+                e.mesh = device->createMesh(g.verts.data(), (uint32_t)g.verts.size(),
+                                            g.index.data(), (uint32_t)g.index.size());
+                e.baseColor[0]=1.0f; e.baseColor[1]=0.78f; e.baseColor[2]=0.22f; e.baseColor[3]=1.0f;
+                e.emissive[0]=1.0f; e.emissive[1]=0.55f; e.emissive[2]=0.15f; e.emissive[3]=2.4f;
+                e.tag = (uint32_t)Tag::Prop;
+                e.roomId = (uint32_t)L1Floor::B1;
+                e.transform[12] = at.x; e.transform[13] = at.y; e.transform[14] = at.z;
+                (void)scene.add(e);
+                x3::logInfo("[holoterm-sys] SpawnCrate: crate dropped at (" +
+                            std::to_string(at.x) + "," + std::to_string(at.y) + "," +
+                            std::to_string(at.z) + ")");
+            });
+
+            x3::logInfo("[holoterm-sys] built " + std::to_string(holoSys.count()) +
+                        " kiosks on B1 (cell_lock external + " +
+                        std::to_string(holoSys.count() - 1) + " owned)");
+        }
     }
     const x3::game::Level1Layout& L1 = game.layout();
 
@@ -5623,7 +5834,7 @@ int main(int argc, char** argv) {
         bool uiEscEdge = false;
         if (escNow && !kpEscPrev) {
             if (codeMode) { codeMode = false; keypad.clear(); }
-            else if (termMode) { termMode = false; game.secret().terminal().setActive(false); }
+            else if (termMode) { termMode = false; holoSys.leave(); }
             else          { uiEscEdge = true; }   // hand the Esc edge to the UI below
         }
         kpEscPrev = escNow;
@@ -5803,14 +6014,21 @@ int main(int argc, char** argv) {
                             std::to_string(nexus.savedCount()));
             } else if (subLevels.onRescue(eye)) {  // SL3 Dr. Chen rescue (the Return-Mission payoff)
                 x3::logInfo("use: Dr. Chen freed — the Return Mission is complete");
-            } else if (!termMode && game.secret().terminal().built() &&
-                       [&]{ const x3::phys::Vec3 a = game.secret().terminal().anchor();
-                            const float ddx = eye.x - a.x, ddz = eye.z - a.z;
-                            return ddx*ddx + ddz*ddz < 9.0f; }()) {
-                // Near the cell HoloTerminal: open terminal-entry mode (type the override
-                // code, Enter submits to the sink -> the trapdoor opens on 1127).
-                termMode = true; game.secret().terminal().setActive(true);
-                x3::logInfo("use: cell terminal — type the override code, Enter to submit, Esc to cancel");
+            } else if (!termMode && holoSys.count() > 0 &&
+                       holoSys.nearestInReach(eye) >= 0) {
+                // Near ANY kiosk: open terminal-entry mode + activate the nearest
+                // kiosk in the system. The legacy cell-escape terminal is one of these
+                // (registered as external in the kiosk system), so this generalises
+                // the old game.secret().terminal() path to ALL placeable terminals.
+                const int ki = holoSys.nearestInReach(eye);
+                holoSys.enter((uint32_t)ki);
+                termMode = true;
+                const std::string& lbl = holoSys.at((uint32_t)ki).label;
+                const std::string& kcode = holoSys.at((uint32_t)ki).code;
+                x3::logInfo("use: terminal '" + lbl + "' — type" +
+                            (kcode.empty() ? std::string(" command, ") :
+                                              (std::string(" '") + kcode + "', ")) +
+                            "Enter to submit, Esc to cancel");
             } else if (!codeMode && (game.nearLockedCodedDoor(eye) ||
                                      midFloors.nearLockedCodedDoor(eye) ||
                                      topFloors.nearLockedCodedDoor(eye) ||
@@ -5906,36 +6124,35 @@ int main(int argc, char** argv) {
             kpEnterPrev = enterNow;
         }
 
-        // ---- Cell HoloTerminal entry: capture digit/backspace/Enter edges while the
-        // terminal is active. Enter calls submit() -> the terminal's sink (which opens
-        // the floor-hatch trapdoor on the correct code 1127). Esc-cancel handled below. --
-        if (termMode && !terrainWorld) {
-            x3::game::HoloTerminal& term = game.secret().terminal();
+        // ---- HoloTerminal kiosk entry: capture digit/letter/space/backspace/Enter
+        // edges while a kiosk is active. The kiosk system is the single input sink;
+        // it routes chars to the currently-active kiosk + dispatches the
+        // per-instance command on Enter (UnlockCell / OpenDoor / ToggleLights /
+        // TriggerAlarm / ShowLore / SpawnCrate). Esc-cancel handled in the Esc block above.
+        if (termMode && !terrainWorld && holoSys.isUsing()) {
             for (int dgt = 0; dgt < 10; ++dgt) {
                 bool dn = rawKey(GLFW_KEY_0 + dgt) || rawKey(GLFW_KEY_KP_0 + dgt);
-                if (dn && !tmDigitPrev[dgt]) term.pushChar((char)('0' + dgt));
+                if (dn && !tmDigitPrev[dgt]) holoSys.pushChar((char)('0' + dgt));
                 tmDigitPrev[dgt] = dn;
             }
-            // Letters + space too, so the cell terminal is a REAL typable field (not
-            // digits-only). Uppercase to match the on-glass font. These use rawKey so
-            // they register while keyDown (all gameplay input) is gated off in termMode.
+            // Letters + space (uppercased by the system to match the on-glass font).
             for (int li = 0; li < 26; ++li) {
                 bool dn = rawKey(GLFW_KEY_A + li);
-                if (dn && !tmCharPrev[li]) term.pushChar((char)('A' + li));
+                if (dn && !tmCharPrev[li]) holoSys.pushChar((char)('A' + li));
                 tmCharPrev[li] = dn;
             }
             bool tspaceNow = rawKey(GLFW_KEY_SPACE);
-            if (tspaceNow && !tmSpacePrev) term.pushChar(' ');
+            if (tspaceNow && !tmSpacePrev) holoSys.pushChar(' ');
             tmSpacePrev = tspaceNow;
             bool tbackNow = rawKey(GLFW_KEY_BACKSPACE);
-            if (tbackNow && !tmBackPrev) term.backspace();
+            if (tbackNow && !tmBackPrev) holoSys.backspace();
             tmBackPrev = tbackNow;
             bool tEnterNow = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
             if (tEnterNow && !tmEnterPrev) {
-                bool ok = term.submit();   // fires the sink -> opens the trapdoor on 1127
-                if (ok) { termMode = false; term.setActive(false);
-                          x3::logInfo("terminal: code ACCEPTED — trapdoor opening"); }
-                else      x3::logInfo("terminal: code rejected");
+                bool ok = holoSys.submit(scene, game.doors(), *device);
+                if (ok) { termMode = false;
+                          x3::logInfo("terminal: command ACCEPTED"); }
+                else      x3::logInfo("terminal: command rejected");
             }
             tmEnterPrev = tEnterNow;
         }
@@ -6081,6 +6298,13 @@ int main(int argc, char** argv) {
                 camYaw = sitCtrl.camYaw();
             }
         }
+        // ---- HOLO-TERMINAL KIOSK SYSTEM tick: drives every kiosk's cursor blink,
+        // texture re-bake (only when the input/readout actually changed) +
+        // lore-timeout reset + the alarm decay. The external cell terminal is
+        // also ticked by SecretRoom::tick (via game.tick()), so calling update()
+        // here on it is a redundant no-op on the geometry but cleanly drives
+        // the system-owned alarm/lore timers.
+        if (!terrainWorld) holoSys.update(dt);
         // WEAPONS: apply + recover the weapon recoil kick. The kick is a transient
         // upward pitch offset added on top of the look pitch; it decays back to 0 so
         // the view recovers (recoil -> camera). Applied uniformly to setCamera, the
@@ -6101,6 +6325,18 @@ int main(int argc, char** argv) {
                                   x3::logInfo(flashlight ? "flashlight ON" : "flashlight OFF"); }
             prevL = lNow;
             std::vector<x3::rhi::PointLight> fl = game.lightFixtures();
+            // KIOSK ToggleLights: per-fixture brightness scale. The kiosk system's
+            // ToggleLights sink (wired above) writes scales into kioskLightScale
+            // (parallel to game.lightFixtures()). Apply BEFORE the flashlight is
+            // prepended so kiosk-dimmed fixtures stay dimmed regardless of the
+            // flashlight; the flashlight isn't a Light_A fixture so its scale is
+            // unaffected.
+            if (!kioskLightScale.empty() && kioskLightScale.size() == fl.size()) {
+                for (uint32_t i = 0; i < fl.size(); ++i) {
+                    const float s = kioskLightScale[i];
+                    fl[i].color[0] *= s; fl[i].color[1] *= s; fl[i].color[2] *= s;
+                }
+            }
             if (flashlight) {
                 const float fX = std::cos(camPitch) * std::cos(camYaw);
                 const float fY = std::sin(camPitch);
@@ -6710,6 +6946,25 @@ int main(int argc, char** argv) {
             // EFLZ-specific HUD extras that the GENERAL GameHud doesn't own. These
             // draw only while actively playing (not in any menu / console).
             if (playingNow && !consoleOpen) {
+                // HOLO-TERMINAL ALARM screen-tint pulse: a brief red wash over the
+                // whole HUD whenever a TriggerAlarm kiosk has been fired. Eases in
+                // and out over the 3 s window so it reads as a security alarm
+                // sweep, not a flicker. Drawn FIRST so the rest of the HUD
+                // composites on top. Auto-clears when the timer reaches 0.
+                if (!terrainWorld && holoSys.alarm().active) {
+                    uint32_t hudW = 0, hudH = 0; device->hudSize(hudW, hudH);
+                    const float t = holoSys.alarm().total > 0.0f ?
+                                    holoSys.alarm().timer / holoSys.alarm().total : 0.0f;
+                    // Smooth eased pulse: rises in the first 15% (sharp on), holds,
+                    // ramps off over the last 30%.
+                    float a = 0.0f;
+                    if (t > 0.85f)      a = 1.0f - (t - 0.85f) / 0.15f;     // attack
+                    else if (t > 0.30f) a = 1.0f;
+                    else                 a = t / 0.30f;                      // release
+                    a *= 0.35f;                                              // peak alpha
+                    const float tint[4] = { 1.0f, 0.10f, 0.10f, a };
+                    device->drawHudQuad(frame, 0.0f, 0.0f, (float)hudW, (float)hudH, tint);
+                }
                 // Door-code keypad prompt: centered, while code entry is active.
                 if (codeMode && !terrainWorld) {
                     uint32_t hudW = 0, hudH = 0; device->hudSize(hudW, hudH);
@@ -6718,28 +6973,29 @@ int main(int argc, char** argv) {
                     device->drawHudText(frame, kpPrompt.c_str(),
                                         (float)hudW * 0.5f - 230.0f, (float)hudH * 0.5f - 60.0f, 3.0f, kpCol);
                 }
-                // CELL HOLO-TERMINAL readout: LARGE high-contrast on-glass text drawn
-                // over the projected hologram panel (worldToScreen anchor). The boot
-                // readout shows WHENEVER the panel is built + visible + within reach-ish
-                // range (so the hologram is never a blank slab); the editable input line
-                // + blinking cursor appear once the player is in termMode (pressed E).
-                // The text SIZE is derived from the panel's on-screen height so it scales
-                // to the glass at any distance — clearly readable from a few meters.
-                if (!terrainWorld && game.secret().terminal().built() &&
-                    !game.secret().terminal().textOnGlass()) {
-                    // FALLBACK only: the readout normally lives ON the glass (baked into
-                    // the hologram texture so it tilts with the panel). This 2D overlay
-                    // runs solely if the on-glass font bake failed.
-                    const auto& term = game.secret().terminal();
-                    const x3::phys::Vec3 a = term.anchor();
-                    // Player eye for the range/visibility gate.
+                // HOLO-TERMINAL KIOSK readout fallback: LARGE high-contrast 2D
+                // overlay over EACH kiosk's panel — but ONLY when the on-glass text
+                // bake failed (the readout normally lives ON the glass texture so
+                // it tilts with the panel). We iterate every kiosk in the system
+                // and draw the fallback when needed; the active kiosk also gets
+                // the live input line drawn over it.
+                if (!terrainWorld && holoSys.count() > 0) {
                     float pex, pey, pez, pyaw, ppitch;
                     player.camera(pex, pey, pez, pyaw, ppitch);
                     if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
-                    const float tdx = a.x - pex, tdy = a.y - pey, tdz = a.z - pez;
-                    const float distM = std::sqrt(tdx*tdx + tdy*tdy + tdz*tdz);
-                    if (distM < 14.0f)
-                        drawHoloReadout(*device, frame, term, a, termMode);
+                    const int activeIdx = holoSys.active();
+                    for (uint32_t i = 0; i < holoSys.count(); ++i) {
+                        const auto& kt = holoSys.at(i);
+                        if (kt.terminal().textOnGlass()) continue;   // on-glass bake handled the text
+                        const x3::phys::Vec3 a = kt.terminal().anchor();
+                        if (!kt.terminal().built()) continue;
+                        const float tdx = a.x - pex, tdy = a.y - pey, tdz = a.z - pez;
+                        const float distM = std::sqrt(tdx*tdx + tdy*tdy + tdz*tdz);
+                        if (distM < 14.0f) {
+                            const bool showInput = (activeIdx == (int)i) && termMode;
+                            drawHoloReadout(*device, frame, kt.terminal(), a, showInput);
+                        }
+                    }
                 }
                 // Door interaction prompt: a "[E] Open" / "[E] Close" tag floating at
                 // the doorway the player is looking at (within use range), fading in
@@ -6792,12 +7048,20 @@ int main(int argc, char** argv) {
                         if (ex*ex + ez*ez < 16.0f)
                             floatPrompt(x3::phys::Vec3{ cc.x, cc.y + 1.6f, cc.z }, "[E] Call Elevator", 84.0f);
                     }
-                    // Cell HoloTerminal: within ~3 m of its anchor.
-                    if (game.secret().terminal().built()) {
-                        const x3::phys::Vec3 a = game.secret().terminal().anchor();
-                        const float dx = pex - a.x, dz = pez - a.z;
-                        if (dx*dx + dz*dz < 9.0f)
-                            floatPrompt(x3::phys::Vec3{ a.x, a.y + 0.55f, a.z }, "[E] Use Terminal (code 1278)", 110.0f);
+                    // HoloTerminal KIOSKS: float the [E] Use prompt over the nearest
+                    // kiosk in reach (the system already does the proximity test).
+                    // Each kiosk's prompt embeds its label so the player knows what
+                    // they're activating. The legacy cell terminal is one of these.
+                    if (holoSys.count() > 0) {
+                        const x3::phys::Vec3 peye{ pex, pey, pez };
+                        const int ki = holoSys.nearestInReach(peye);
+                        if (ki >= 0) {
+                            const auto& kt = holoSys.at((uint32_t)ki);
+                            std::string lbl = std::string("[E] Use ") + kt.label;
+                            if (!kt.code.empty()) lbl += " (code " + kt.code + ")";
+                            floatPrompt(x3::phys::Vec3{ kt.pos.x, kt.pos.y + 0.55f, kt.pos.z },
+                                        lbl.c_str(), 110.0f);
+                        }
                     }
                     // GLASS LOUNGE: when SEATED, float a "[E] Stand" prompt anchored at
                     // the seated eye so the player always knows the exit key. When
