@@ -23,11 +23,20 @@
 //     buffer, and issues ONE vkCmdDrawIndexedIndirect per distinct mesh. The
 //     vertex shader reads its row via gl_InstanceIndex (firstInstance + instance).
 //     100k single-mesh cubes => ONE draw call instead of 100k.
-//   * Culling: NOT implemented here (neither CPU nor compute). The bottleneck the
-//     baseline exposed was per-draw CPU submission, which bindless+multidraw kills
-//     outright; the worst-case bench points the camera so the whole field is
-//     on-screen anyway, where culling would not help. Compute frustum culling is
-//     the documented stretch and is left for a follow-up (see RETURN notes).
+//   * Culling: CPU per-object FRUSTUM (POV) cull now EXISTS here (cvar
+//     r_frustumcull, default on; setFrustumCull()). Each createMesh() stores the
+//     mesh's LOCAL AABB; prepareFrameData() extracts the 6 view-frustum planes from
+//     the frame's camera viewProj (Gribb-Hartmann) and, before grouping, transforms
+//     each draw record's local AABB into a conservative world bounding sphere and
+//     tests it against the frustum — records entirely outside the view cone are
+//     SKIPPED (never written to the SSBO / indirect buffer), so geometry behind or
+//     beside the camera costs nothing. Animated/skinned meshes (dynamic vbo or a
+//     registered GPU-skin) and degenerate-AABB meshes are treated as always-visible
+//     (never culled) so characters + the player weapon never pop. The per-mesh
+//     instance grouping + firstInstance offsets + indirect instanceCount are
+//     recounted AFTER culling so the multidraw stays correct. GPU compute culling
+//     remains a possible future step; this CPU pass is robust for these object
+//     counts and is the documented follow-up landed here.
 //
 // The HUD 2D overlay keeps its own pipeline + per-draw descriptor path unchanged
 // (few draws/frame; not a bottleneck).
@@ -69,6 +78,7 @@
 #include <cstdio>
 #include <cassert>
 #include <algorithm>
+#include <limits>
 #include <unordered_map>
 #include <chrono>
 
@@ -354,6 +364,12 @@ public:
         const uint32_t n = std::min<uint32_t>(count, kMaxPointLights);
         m_pointLights.assign(lights, lights + n);
     }
+
+    // CPU per-object frustum cull toggle (cvar r_frustumcull). When false the
+    // device submits every draw record it receives (pre-cull behavior); when true
+    // prepareFrameData() skips records whose world bounds are outside the camera
+    // frustum. Default on (set in the member initializer).
+    void setFrustumCull(bool enabled) override { m_frustumCull = enabled; }
 
     void setSkyParams(const SkyParams& sp) override {
         // Cache a snapshot; prepareFrameData() writes it into the per-frame sky UBO
@@ -883,6 +899,38 @@ public:
         }
         m.indexCount = icount;
         m.vertexCount = vcount;
+        // ---- Local AABB for the CPU frustum cull (computed once, here) -------
+        // Sweep the bind-pose vertex positions for min/max. A mesh whose bounds
+        // are degenerate (single point / zero extent on every axis — e.g. a
+        // procedural / full-screen mesh) stays cullable=false and is NEVER culled
+        // (always drawn). The half-diagonal is the bind-pose bounding-sphere radius.
+        {
+            glm::vec3 lo( std::numeric_limits<float>::max());
+            glm::vec3 hi(-std::numeric_limits<float>::max());
+            for (uint32_t vi = 0; vi < vcount; ++vi) {
+                const float* p = verts[vi].pos;
+                lo.x = std::min(lo.x, p[0]); hi.x = std::max(hi.x, p[0]);
+                lo.y = std::min(lo.y, p[1]); hi.y = std::max(hi.y, p[1]);
+                lo.z = std::min(lo.z, p[2]); hi.z = std::max(hi.z, p[2]);
+            }
+            const glm::vec3 ext = hi - lo;
+            const bool finite = std::isfinite(ext.x) && std::isfinite(ext.y) && std::isfinite(ext.z);
+            // Degenerate iff effectively zero-size on ALL three axes (a point) or
+            // non-finite. Such meshes are treated as always-visible.
+            const bool degenerate = !finite ||
+                (ext.x <= 1e-6f && ext.y <= 1e-6f && ext.z <= 1e-6f);
+            if (degenerate) {
+                m.cullable = false;
+                m.localMin = m.localMax = m.localCenter = glm::vec3(0.0f);
+                m.localRadius = 0.0f;
+            } else {
+                m.cullable    = true;
+                m.localMin    = lo;
+                m.localMax    = hi;
+                m.localCenter = 0.5f * (lo + hi);
+                m.localRadius = 0.5f * glm::length(ext);   // bind-pose bounding sphere
+            }
+        }
         uint32_t id = m_nextMeshId++;
         m_meshes.emplace(id, m);
         return { id };
@@ -1305,6 +1353,17 @@ private:
         VkBuffer ibo = VK_NULL_HANDLE; VmaAllocation iboAlloc = nullptr;
         uint32_t indexCount = 0;
         uint32_t vertexCount = 0;       // vertices the vbo was sized for
+        // ---- CPU frustum-cull bounds (computed once at createMesh) ----------
+        // The mesh's LOCAL-space axis-aligned bounds (min/max of the bind-pose
+        // vertex positions). prepareFrameData() transforms this by each draw
+        // record's model matrix into a world bounding sphere and tests it against
+        // the camera frustum. `cullable` is false for a degenerate/empty AABB
+        // (a procedural / full-screen / single-point mesh) — such a mesh is
+        // ALWAYS drawn (never culled). Set at create time; never mutated after.
+        glm::vec3 localMin{ 0.0f }, localMax{ 0.0f };
+        glm::vec3 localCenter{ 0.0f };  // 0.5*(min+max)
+        float     localRadius = 0.0f;   // half-diagonal length (bind-pose bounding sphere)
+        bool      cullable = false;     // false => degenerate AABB => always visible
         // CPU-skinning support (J1, scaled for fix 2): a mesh that has been updated
         // at least once becomes DYNAMIC and holds kFramesInFlight HOST_VISIBLE,
         // persistently-mapped vertex buffers — one per frame-in-flight — instead of
@@ -1556,6 +1615,77 @@ private:
         const HudVertex br{ { x1, y1 }, { u1, v1 }, { c[0], c[1], c[2], c[3] } };
         out[0] = tl; out[1] = bl; out[2] = br;   // CCW: tl->bl->br
         out[3] = tl; out[4] = br; out[5] = tr;   //      tl->br->tr
+    }
+
+    // ---- CPU frustum-cull helpers ------------------------------------------
+    // Six world-space frustum planes extracted from a clip-from-world matrix
+    // (Gribb-Hartmann). plane = {a,b,c,d}; a point p is INSIDE the half-space iff
+    // dot(a,b,c , p) + d >= 0. Normalized so `d` is a true signed distance, which
+    // lets the sphere test below compare against a metric radius. Clean-room:
+    // derived from the standard "extract frustum planes from a combined matrix"
+    // identity, not from any external engine source.
+    struct CullPlanes { glm::vec4 p[6]; };
+    static CullPlanes extractFrustumPlanes(const glm::mat4& m) {
+        // glm is column-major: m[col][row]. Build row vectors r0..r3.
+        const glm::vec4 r0(m[0][0], m[1][0], m[2][0], m[3][0]);
+        const glm::vec4 r1(m[0][1], m[1][1], m[2][1], m[3][1]);
+        const glm::vec4 r2(m[0][2], m[1][2], m[2][2], m[3][2]);
+        const glm::vec4 r3(m[0][3], m[1][3], m[2][3], m[3][3]);
+        CullPlanes cp;
+        cp.p[0] = r3 + r0;   // left
+        cp.p[1] = r3 - r0;   // right
+        cp.p[2] = r3 + r1;   // bottom
+        cp.p[3] = r3 - r1;   // top
+        // GLM_FORCE_DEPTH_ZERO_TO_ONE: near plane is r2 (z>=0), far is r3 - r2.
+        cp.p[4] = r2;        // near
+        cp.p[5] = r3 - r2;   // far
+        for (int i = 0; i < 6; ++i) {
+            const float len = glm::length(glm::vec3(cp.p[i]));
+            if (len > 1e-8f) cp.p[i] /= len;
+        }
+        return cp;
+    }
+    // Conservative world bounding-SPHERE vs frustum test: the sphere (centerW,
+    // radiusW) is rejected only if it lies entirely on the negative side of ANY
+    // single plane. Sphere bound is exact for uniform scale and conservatively
+    // safe for non-uniform scale (radiusW already used the max-axis scale), so it
+    // never produces false NEGATIVES that would pop visible geometry.
+    static bool sphereVisible(const CullPlanes& cp, const glm::vec3& centerW, float radiusW) {
+        for (int i = 0; i < 6; ++i) {
+            const float dist = glm::dot(glm::vec3(cp.p[i]), centerW) + cp.p[i].w;
+            if (dist < -radiusW) return false;   // fully outside this plane
+        }
+        return true;
+    }
+    // Largest scale factor a (column-major) model matrix applies along any axis —
+    // the length of its longest basis vector. Used to scale a mesh's bind-pose
+    // bounding-sphere radius into world space conservatively.
+    static float maxAxisScale(const float m[16]) {
+        const float sx = std::sqrt(m[0]*m[0] + m[1]*m[1] + m[2]*m[2]);     // col 0
+        const float sy = std::sqrt(m[4]*m[4] + m[5]*m[5] + m[6]*m[6]);     // col 1
+        const float sz = std::sqrt(m[8]*m[8] + m[9]*m[9] + m[10]*m[10]);   // col 2
+        return std::max(sx, std::max(sy, sz));
+    }
+    // Decide whether draw record `dr` (mesh `m`) survives the frustum cull.
+    // ALWAYS-VISIBLE (returns true) for: cull disabled, non-cullable/degenerate
+    // mesh, or a mesh that can deform beyond bind pose (dynamic CPU-skin vbo or a
+    // registered GPU-skin) — those never pop. Otherwise transforms the bind-pose
+    // bounding sphere by the record's model matrix and tests it.
+    bool recordVisible(const DrawRecord& dr, const Mesh& m, const CullPlanes& cp) const {
+        if (!m.cullable) return true;                 // degenerate/procedural -> always draw
+        if (m.dynamic)   return true;                 // CPU-skinned (deforms) -> never cull
+        if (m_skinnedMeshes.find(dr.meshId) != m_skinnedMeshes.end()) return true; // GPU-skinned
+        // Transform the local-space sphere center by the model matrix (column-major).
+        const float* M = dr.model;
+        const glm::vec3 c = m.localCenter;
+        glm::vec3 centerW(
+            M[0]*c.x + M[4]*c.y + M[8] *c.z + M[12],
+            M[1]*c.x + M[5]*c.y + M[9] *c.z + M[13],
+            M[2]*c.x + M[6]*c.y + M[10]*c.z + M[14]);
+        // World radius = bind-pose radius * the matrix's largest axis scale, with a
+        // small epsilon margin so a sphere grazing a plane is kept (no edge popping).
+        const float radiusW = m.localRadius * maxAxisScale(M) + 1e-3f;
+        return sphereVisible(cp, centerW, radiusW);
     }
 
     // ---- GPU-driven per-frame data prep (Subsystem D + shadows E) ----------
@@ -1820,8 +1950,25 @@ private:
                 ++it;
             }
         }
+        // ---- CPU FRUSTUM (POV) CULL ----------------------------------------
+        // Build the 6 view-frustum planes from THIS frame's camera viewProj once,
+        // then drop any draw record whose mesh world bounds fall entirely outside
+        // the view cone BEFORE it enters a group. A culled record is never written
+        // to the SSBO / indirect buffer, so per-mesh instanceCount + firstInstance
+        // (computed below from the surviving group sizes) stay correct without any
+        // extra bookkeeping. Disabled (every record kept) when m_frustumCull==false.
+        const bool cullOn = m_frustumCull;
+        const CullPlanes cullPlanes = extractFrustumPlanes(ubo.viewProj);
         for (uint32_t i = 0; i < (uint32_t)m_drawRecords.size(); ++i) {
-            uint32_t mid = m_drawRecords[i].meshId;
+            const DrawRecord& rec = m_drawRecords[i];
+            uint32_t mid = rec.meshId;
+            if (cullOn) {
+                auto mit = m_meshes.find(mid);
+                if (mit != m_meshes.end() && !recordVisible(rec, mit->second, cullPlanes)) {
+                    ++m_building.objectsCulled;   // outside the frustum -> skip
+                    continue;
+                }
+            }
             auto it = m_groups.find(mid);
             if (it == m_groups.end()) { m_groups.emplace(mid, std::vector<uint32_t>{}); m_groupOrder.push_back(mid); it = m_groups.find(mid); }
             else if (it->second.empty()) m_groupOrder.push_back(mid);
@@ -8656,6 +8803,9 @@ private:
     // m_ambient is a small constant lift so shadowed/back-faces aren't pure black
     // (a touch cool/blue to read as a sci-fi interior without washing out).
     std::vector<PointLight> m_pointLights;
+    // CPU per-object frustum (POV) cull toggle (cvar r_frustumcull). Default ON.
+    // Flipped by setFrustumCull(); read by prepareFrameData() to gate the cull.
+    bool m_frustumCull = true;
     // Hemispheric ambient FLOOR (mesh.frag ambientCount.rgb). The original 0.10/0.11/
     // 0.14 was tuned far too dark for a SUNLESS indoor scene (B1 has no directional
     // sun, so unlit areas fell to near-black — "incredibly dark"). Lifted ~2.6x to a
