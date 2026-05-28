@@ -8,7 +8,7 @@
 
 ## 1. Goals & non-goals
 
-**Goals:** fly an ultra-detailed ship through space → jump between star systems via a Salvari crystal-matrix wormhole → walk the ship interior during transit (open panels, repair wires, watch space move past real windows, Star-Trek-style) → fly to a planet → cinematic atmospheric descent → land in that planet's world → full space dogfighting along the way. Polish + long-term playability over ship-fast.
+**Goals:** fly an ultra-detailed ship through space → jump between star systems via a Salvari crystal-matrix wormhole → walk the ship interior during transit (open panels, repair wires, watch space move past real windows, Star-Trek-style) → EVA outside the ship to repair the hull when needed → fly to a planet → cinematic atmospheric descent → land in that planet's world → full space dogfighting along the way. Polish + long-term playability over ship-fast.
 
 **Non-goals (explicitly cut, with reasons):**
 - **Seamless no-loading planet descent** (No Man's Sky / Star Citizen). Cut because it requires a floating-origin coordinate retrofit + planet-scale LOD terrain — multi-month foundational work — AND it can't host the interior-repair-during-transit beat. Staged transitions deliver the polished experience without it.
@@ -22,7 +22,9 @@
 | 2.1 | **Staged transitions**: wormhole (interstellar) + cinematic descent (orbit→ground) | No floating origin. Reuses `--world` + terrain streaming. |
 | 2.2 | **Origin-centered coordinates** per context | No precision retrofit. |
 | 2.3 | **Ship interior scales with ship class** (data-driven room manifest) | One interior system; small/large/huge ships are data, not code. |
-| 2.4 | **True-portal "Star Trek" windows**: static ship + moving environment + scaled proxies + light bleed | Physics in static ship frame (no moving-platform problem). Motion is visual. |
+| 2.4 | **True-portal "Star Trek" windows** (TRANSIT-CONTEXT ONLY): during `WormholeTransit`, ship is static at origin + environment streaks past windows + scaled proxies + light bleed | Interior physics in static ship frame (no moving-platform problem). Motion is purely visual. **Does NOT apply to DeepSpace** — see 2.8. |
+| 2.8 | **Ship has TWO representations, switched by Context.** **Exterior** (`DeepSpace` flight + dogfight): a REAL moving entity — 6DOF position/velocity/orientation in a shared world frame, full-detail hull, viewable from cockpit / 3P chase / cinematic external angles, dogfighting real enemy ships. **Interior** (`WormholeTransit`): static walkaround (2.4). | Dogfighting REQUIRES the real moving exterior + multiple external views — can't be a static instance. space-pilot already drives this (6DOF + 1P/3P toggle + weapons). The static-environment trick is transit-only. |
+| 2.9 | **EVA spacewalk repair** (`EVA` context): ship at rest/drifting, player exits an airlock and free-floats outside on the hull to repair it. | Zero-G locomotion (thruster pack + mag-boots) reuses the shipped **swim controller** (~80% overlap: 3D free-move + boost + oxygen). Exterior hull (S11) must support close traversal + repair points, not just a distant silhouette. Exterior version of the S7 repair interactions. |
 | 2.5 | **Planet surfaces: mix** — major worlds = full open-world (reuse terrain/WorldRegions/City/OceanBase); minor = handcrafted arenas | Scope scales with story weight. |
 | 2.6 | **Distance LOD on all exterior content** | Makes true-portal windows + space scene affordable. Needs a runtime LOD-swap system (assets are LOD0-only today). |
 | 2.7 | **Full dogfighting combat pillar** | Adds enemy ship AI + targeting + ship damage model. |
@@ -35,8 +37,9 @@ Everything plugs into `SpaceLayer`. It owns the current **context** and orchestr
 namespace x3::space {
 
 enum class Context {
-    DeepSpace,      // free flight in a star system, combat happens here
-    WormholeTransit,// autopilot; player walks the ship interior
+    DeepSpace,      // free flight in a star system, combat happens here (real moving ship)
+    WormholeTransit,// autopilot; player walks the static ship interior
+    EVA,            // ship at rest/drifting; player free-floats outside on the hull (repairs)
     AtmoDescent,    // on-rails orbit->ground cinematic
     Surface,        // handed off to a --world (open-world hub or arena)
 };
@@ -99,13 +102,16 @@ Each = one agent lane. Format: **responsibility · key interface · depends on �
 
 ### Environment & assets (independent — no S0 runtime dep, but populate S0's proxy registry)
 - **S1 · Space environment** — skybox/nebula (extends shipped starfield), proxy planets (low-poly LOD spheres + normal/displacement maps from Tim's planet packs), sun + bloom, instanced asteroid fields. Depends: S2 (LOD), shipped starfield. Files: `app/space/space_env.{h,cpp}`.
-- **S11 · Ship art + node-animation** — ultra-detailed ship GLBs; landing gear / panels / turrets via **node-transform animation** (NOT skeletal rigging — ships are rigid with articulated parts). Asset pipeline lane. Depends: nothing. Files: ship GLBs in `assets/rigged_glb/`, node-anim metadata, Blender node-anim export script in `tools/`.
+- **S11 · Ship art + node-animation** — ultra-detailed ship GLBs; landing gear / panels / turrets via **node-transform animation** (NOT skeletal rigging — ships are rigid with articulated parts). **Exterior hull must be detailed + collidable enough for close EVA traversal + carry exterior repair points** (S12), not just a distant combat silhouette. Asset pipeline lane. Depends: nothing. Files: ship GLBs in `assets/rigged_glb/`, node-anim metadata, Blender node-anim export script in `tools/`.
 
 ### The signature experience (Wave 2/3 — depend on S0)
 - **S3 · Wormhole transit** — crystal-matrix wormhole VFX (shader-driven tunnel) + autopilot state + the transit context manager. Registers a wormhole runner with S0. Lore: Salvari crystal-matrix translation = the mechanism (ties to the caves Salvari-crystal beat in the design corpus). Depends: S0. Files: `app/space/wormhole.{h,cpp}`, `shaders/wormhole.{vert,frag}`.
 - **S5 · Ship interior** — data-driven room manifest per ship class (small=cockpit shell, large=multi-room, huge=multi-deck); static-ship frame; walkable via reused Player capsule; crew via NPCController + CompanionController (both shipped). Interface: a `ShipClass` JSON/data format declaring rooms, doors, stations, window placements. Depends: S0. Files: `app/space/ship_interior.{h,cpp}`, ship-class data files.
 - **S6 · True-portal windows** — real-opening windows in the hull showing the moving environment (S0 env transform + S1 proxies + S3 wormhole) with parallax + light bleed into the interior. The Star Trek tech. Depends: S5 (interior), S1 (env), S0. Files: `app/space/window_portal.{h,cpp}`, `shaders/portal.{vert,frag}`.
 - **S7 · Interior interaction** — open panels, repair-wire minigame, the transit gameplay loop; interactable stations. Depends: S5. Files: `app/space/ship_interact.{h,cpp}`.
+
+### EVA (Wave 2/3 — depends on S0; reuses shipped swim controller)
+- **S12 · EVA spacewalk** — zero-G exterior locomotion (thruster pack + mag-boots for hull-walking, oxygen, optional tether) ADAPTED from the shipped swim controller (`feat/swim-controller @ c2eeb18` — 3D free-move + boost + oxygen ≈ thruster + boost + O2; swap buoyancy→zero-G, stroke→thruster, add mag-boot surface-stick). Exterior hull-repair interactions (outside version of S7). `EVA` context, entered from `DeepSpace` via airlock. Depends: S0, S11 (close-traversable hull), swim controller. Files: `app/space/eva.{h,cpp}`.
 
 ### Landing
 - **S4 · Cinematic atmo descent** — orbit→ground on-rails sequence (hull glow, clouds, fire) masking the load into the surface `--world` (open-world hub via terrain streaming, or arena). Registers a descent runner with S0; hands off to the existing `--world` system. Depends: S0, existing terrain/openworld worlds. Files: `app/space/descent.{h,cpp}`.
