@@ -1144,13 +1144,22 @@ public:
         // GLASS material (M2-M4): refraction/roughness/specular + tint. Zeroed for
         // the opaque path so its SSBO rows carry no stray glass state.
         if (glass) {
+            // Pack the UE5 PBR params into the spare payload lanes (M5 rework):
+            //   glassParams = (refraction, roughness, specular, METALLIC)
+            //   glassTint   = (tint.rgb, IOR)
+            //   glassExtra  = (reflectance, transmittanceColor.rgb)
             r.glassParams[0] = glass->refraction; r.glassParams[1] = glass->roughness;
-            r.glassParams[2] = glass->specular;   r.glassParams[3] = 0.0f;
+            r.glassParams[2] = glass->specular;   r.glassParams[3] = glass->metallic;
             r.glassTint[0]   = glass->tint[0];    r.glassTint[1]   = glass->tint[1];
-            r.glassTint[2]   = glass->tint[2];    r.glassTint[3]   = 0.0f;
+            r.glassTint[2]   = glass->tint[2];    r.glassTint[3]   = glass->ior;
+            r.glassExtra[0]  = glass->reflectance;
+            r.glassExtra[1]  = glass->transmittanceColor[0];
+            r.glassExtra[2]  = glass->transmittanceColor[1];
+            r.glassExtra[3]  = glass->transmittanceColor[2];
         } else {
             r.glassParams[0] = r.glassParams[1] = r.glassParams[2] = r.glassParams[3] = 0.0f;
             r.glassTint[0]   = r.glassTint[1]   = r.glassTint[2]   = r.glassTint[3]   = 0.0f;
+            r.glassExtra[0]  = r.glassExtra[1]  = r.glassExtra[2]  = r.glassExtra[3]  = 0.0f;
         }
         m_drawRecords.push_back(r);
     }
@@ -1416,12 +1425,16 @@ private:
         // Carried per-object so each glass instance keeps its OWN material (the
         // holo-terminal panel/rim/scanline all differ — material-instance style,
         // spec §3.2). Opaque draws leave these zeroed (the opaque path never reads
-        // them). glass.frag (M2-M4) consumes: refraction (screen-space bend),
-        // roughness (frost mip), specular (shimmer), tint (rgb body color).
-        glm::vec4 glassParams;       // x = refraction, y = roughness, z = specular, w = unused
-        glm::vec4 glassTint;         // rgb = glass tint color, a = unused
+        // them). glass.frag consumes: refraction (screen bend), roughness (frost mip
+        // + reflection blur), specular (analytic glints), tint (baseColor) PLUS the
+        // M5 UE5 PBR params packed into the spare lanes:
+        //   glassParams.w = metallic, glassTint.w = ior,
+        //   glassExtra = (reflectance, transmittanceColor.rgb).
+        glm::vec4 glassParams;       // x = refraction, y = roughness, z = specular, w = METALLIC
+        glm::vec4 glassTint;         // rgb = glass tint (baseColor), w = IOR
+        glm::vec4 glassExtra;        // x = reflectance, yzw = transmittanceColor
     };
-    static_assert(sizeof(ObjectData) == 144, "ObjectData must match std430 layout");
+    static_assert(sizeof(ObjectData) == 160, "ObjectData must match std430 layout");
 
     // Per-object flag bits packed into ObjectData::flags. TERRAIN drives mesh.frag's
     // procedural splat (was the standalone terrainFlag); GLASS routes the fragment to
@@ -1442,8 +1455,9 @@ private:
         uint32_t terrainPack1;  // grass<<16 | rock  (bindless detail indices)
         uint32_t terrainPack2;  // snow<<16  | sand
         // GLASS material (only filled by drawMeshGlass; zeroed for opaque draws).
-        float    glassParams[4]; // x = refraction, y = roughness, z = specular, w unused
-        float    glassTint[4];   // rgb = tint, a unused
+        float    glassParams[4]; // x = refraction, y = roughness, z = specular, w = metallic
+        float    glassTint[4];   // rgb = tint (baseColor), w = ior
+        float    glassExtra[4];  // x = reflectance, yzw = transmittanceColor
     };
 
     // Per-frame mesh-draw capacity: sizes the per-object SSBO ring (one
@@ -1860,6 +1874,8 @@ private:
                                           dr.glassParams[2], dr.glassParams[3]);
                 o.glassTint   = glm::vec4(dr.glassTint[0], dr.glassTint[1],
                                           dr.glassTint[2], dr.glassTint[3]);
+                o.glassExtra  = glm::vec4(dr.glassExtra[0], dr.glassExtra[1],
+                                          dr.glassExtra[2], dr.glassExtra[3]);
                 if (dr.flags & kFlagGlass) ++m_frameGlassCount;
             }
             VkDrawIndexedIndirectCommand& c = cmds[cmdCount];
