@@ -19,30 +19,36 @@ function parseOutgoing(buffer) {
 }
 
 function startOutboxListener(pipeName, onMessage) {
-  const server = net.createServer((socket) => {
+  // allowHalfOpen so the server can still write the reply after the client
+  // half-closes (its end() shouldn't tear down the whole socket — we need
+  // the response path to remain open until our write is flushed).
+  const server = net.createServer({ allowHalfOpen: true }, (socket) => {
     const chunks = [];
     socket.on('data', (d) => chunks.push(d));
-    socket.on('end', () => {
-      const buf = Buffer.concat(chunks);
-      let msg;
-      try {
-        msg = parseOutgoing(buf);
-      } catch (e) {
-        try { socket.write(JSON.stringify({ ok: false, error: e.message })); } catch (_) {}
-        try { socket.end(); } catch (_) {}
-        return;
-      }
-      Promise.resolve()
-        .then(() => onMessage(msg))
-        .then(
-          (result) => socket.write(JSON.stringify({ ok: true, ...result })),
-          (err) => socket.write(JSON.stringify({ ok: false, error: err.message }))
-        )
-        .finally(() => {
-          try { socket.end(); } catch (_) {}
-        });
-    });
     socket.on('error', (_e) => { /* swallow per-connection errors */ });
+
+    const replyAndClose = (obj) => {
+      // Combined end(data) guarantees the OS flushes the payload before
+      // closing the socket — avoids the race where socket.write() then
+      // socket.end() drops the write on Windows named pipes.
+      try { socket.end(JSON.stringify(obj)); } catch (_) {}
+    };
+
+    socket.on('end', () => {
+      // Unified Promise chain: both error and success paths complete in
+      // a microtask, giving identical timing semantics for the client's
+      // listener wiring. Sync errors from parseOutgoing land in the catch.
+      const buf = Buffer.concat(chunks);
+      Promise.resolve()
+        .then(() => {
+          const msg = parseOutgoing(buf);  // throws -> handled by rejection branch
+          return onMessage(msg);
+        })
+        .then(
+          (result) => replyAndClose({ ok: true, ...result }),
+          (err) => replyAndClose({ ok: false, error: err.message })
+        );
+    });
   });
   server.listen(pipeName);
   return server;

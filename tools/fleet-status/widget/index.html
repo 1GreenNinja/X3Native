@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fleet Status — X3Native</title>
+  <link rel="stylesheet" href="widget.css">
+</head>
+<body>
+  <div id="header">
+    <span class="hdr-rule">━━━ </span>
+    <span class="hdr-title">Fleet status</span>
+    <span class="hdr-meta" id="hdr-meta">connecting…</span>
+    <span class="hdr-rule"> ━━━</span>
+  </div>
+
+  <div id="warnings" hidden></div>
+  <div id="machines"></div>
+  <div id="queue-section" hidden>
+    <div class="section-header">━━━ Integration queue ━━━</div>
+    <div id="queue"></div>
+  </div>
+
+  <div id="error" hidden>
+    <p>fleet-status.json not reachable.</p>
+    <p class="dim">Check the FleetStatus-Generator scheduled task on 13700K.</p>
+  </div>
+
+  <script src="widget.js"></script>
+</body>
+</html>

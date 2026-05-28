@@ -1,0 +1,93 @@
+{
+  "generated_at": "2026-05-28T07:11:00Z",
+  "generator_machine": "13700k",
+  "machines": [
+    {
+      "name": "djbooth",
+      "display_name": "DJBOOTH",
+      "lan_ip": "192.168.7.110",
+      "presence": "online",
+      "presence_source": "ping+matrix",
+      "last_seen_at": "2026-05-28T07:10:42Z",
+      "last_seen_ago_sec": 18,
+      "branches": [
+        {
+          "name": "feat/fleet-messaging-design",
+          "head_sha": "54bb912",
+          "head_subject": "tools: cycle-4 prep — slack-daemon source, Conduit docker, Element web, fleet-status",
+          "head_committed_at": "2026-05-28T06:38:00Z",
+          "ahead_of_main": 6,
+          "behind_main": 0,
+          "ready_for_integration": false
+        }
+      ],
+      "role": "worker",
+      "notes": "garage 4790K / 1080Ti — 24/7"
+    },
+    {
+      "name": "13700k",
+      "display_name": "13700K",
+      "lan_ip": "192.168.7.42",
+      "presence": "online",
+      "presence_source": "matrix-only",
+      "last_seen_at": "2026-05-28T07:11:00Z",
+      "last_seen_ago_sec": 0,
+      "branches": [
+        { "name": "main", "head_sha": "0b6ab79", "head_subject": "docs: VERSIONING.md (Snake)", "head_committed_at": "2026-05-25T15:00:00Z", "ahead_of_main": 0, "behind_main": 0, "ready_for_integration": false }
+      ],
+      "role": "integrator",
+      "notes": "Command Center — hosts Conduit + cloudflared"
+    },
+    {
+      "name": "14900k",
+      "display_name": "14900K",
+      "lan_ip": "192.168.7.45",
+      "presence": "away",
+      "presence_source": "ping-only",
+      "last_seen_at": "2026-05-28T06:42:00Z",
+      "last_seen_ago_sec": 1740,
+      "branches": [
+        { "name": "feat/multi-font-roles", "head_sha": "8d74d74", "head_subject": "font: role-based multi-font HUD/UI system", "head_committed_at": "2026-05-24T18:00:00Z", "ahead_of_main": 17, "behind_main": 49, "ready_for_integration": false }
+      ],
+      "role": "showcase",
+      "notes": "i9 · RTX 5090 — visual-pass rig"
+    },
+    {
+      "name": "i5000",
+      "display_name": "I5000",
+      "lan_ip": "192.168.7.x",
+      "presence": "unknown",
+      "presence_source": "stale",
+      "last_seen_at": null,
+      "last_seen_ago_sec": null,
+      "branches": [],
+      "role": "worker",
+      "notes": "act2-desert lane — IP pending"
+    },
+    {
+      "name": "i4400",
+      "display_name": "I4400",
+      "lan_ip": "192.168.7.x",
+      "presence": "unknown",
+      "presence_source": "stale",
+      "last_seen_at": null,
+      "last_seen_ago_sec": null,
+      "branches": [],
+      "role": "worker",
+      "notes": "glass desk · dual 1080Ti · fresh Win11"
+    }
+  ],
+  "integration_queue": [
+    {
+      "branch": "feat/fleet-messaging-design",
+      "from_machine": "djbooth",
+      "head_sha": "54bb912",
+      "queued_at": "2026-05-28T06:38:00Z",
+      "status_blurb": "spec + plan + tooling sketches ready for Tim review"
+    }
+  ],
+  "warnings": [
+    { "severity": "warn", "text": "14900K's feat/multi-font-roles is 49 commits behind main — rebase needed", "affects_machine": "14900k" },
+    { "severity": "info", "text": "I5000 has no recent activity — verify the box is online", "affects_machine": "i5000" }
+  ]
+}
