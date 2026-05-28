@@ -9,7 +9,7 @@ const machineName = (process.env.MATRIX_BOT_MACHINE || os.hostname()).toLowerCas
 const claudeDir = process.env.CLAUDE_DIR || path.join(os.homedir(), '.claude');
 
 module.exports = {
-  homeserverUrl: process.env.MATRIX_HOMESERVER_URL || 'https://chat.tims-fleet.xyz',
+  homeserverUrl: process.env.MATRIX_HOMESERVER_URL || 'https://fleetcommand.slopclaude.com',
   accessTokenPath: path.join(claudeDir, '.matrix_token'),
   inboxPath: path.join(claudeDir, '.matrix_inbox.jsonl'),
   outboxLogPath: path.join(claudeDir, '.matrix_outbox.jsonl'),

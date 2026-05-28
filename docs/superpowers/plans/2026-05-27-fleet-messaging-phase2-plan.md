@@ -6,7 +6,7 @@
 
 **Architecture:** Phase 1 already shipped the design + bot daemon + theme + widget skeleton as source. Phase 2 is the **deploy + integrate** half. No new architecture; mostly configuration + replication.
 
-**Tech Stack:** Conduit (already running on 13700K), Element Web (already deployed at chat.&lt;CHOSEN_DOMAIN&gt;), matrix-bot-sdk (already validated on DJBOOTH + 13700K), Node.js v24, PowerShell Scheduled Tasks, http-server static serving.
+**Tech Stack:** Conduit (already running on 13700K), Element Web (already deployed at `fleetcommand.slopclaude.com`), matrix-bot-sdk (already validated on DJBOOTH + 13700K), Node.js v24, PowerShell Scheduled Tasks, http-server static serving.
 
 **Pre-conditions:**
 - Phase 1 complete (Conduit live, Cloudflare Tunnel up, Element Web accessible, DJBOOTH + 13700K daemons running, #fleet-ops working, Slack→Matrix mirror live)
@@ -59,7 +59,7 @@ Start-ScheduledTask -TaskName 'ElementWeb-Static'
 
 - [ ] **Step 5: Verify in browser.**
 
-Open `https://chat.<CHOSEN_DOMAIN>/` — should load with dark blue-black background, cyan accents on the login form. Log in as `@tim` to confirm the full app applies the theme.
+Open `https://fleetcommand.slopclaude.com/` — should load with dark blue-black background, cyan accents on the login form. Log in as `@tim` to confirm the full app applies the theme.
 
 - [ ] **Step 6: Commit.**
 
@@ -110,13 +110,13 @@ New-Item -ItemType SymbolicLink `
 
 - [ ] **Step 3: Verify widget loads.**
 
-Open `https://chat.<CHOSEN_DOMAIN>/fleet-widget/` in a browser — should show the cyberpunk fleet grid. Initially the JSON file doesn't exist yet so the error fallback shows. That's expected until Task 5 runs.
+Open `https://fleetcommand.slopclaude.com/fleet-widget/` in a browser — should show the cyberpunk fleet grid. Initially the JSON file doesn't exist yet so the error fallback shows. That's expected until Task 5 runs.
 
 ### Task 4: Add the widget to #fleet-ops as a Matrix widget
 
 - [ ] **Step 1: In Element, open `#fleet-ops` room.**
 - [ ] **Step 2: Click info icon → Widgets → Add Custom.**
-- [ ] **Step 3: URL: `https://chat.<CHOSEN_DOMAIN>/fleet-widget/`. Name: `Fleet Status`. Save.**
+- [ ] **Step 3: URL: `https://fleetcommand.slopclaude.com/fleet-widget/`. Name: `Fleet Status`. Save.**
 - [ ] **Step 4: Right sidebar now shows the widget iframe.** Currently displays the error state since fleet-status.json isn't generated yet.
 
 ### Task 5: Deploy + start the fleet-status generator
@@ -161,7 +161,7 @@ Register-ScheduledTask -TaskName 'FleetStatus-Generator' `
 Start-ScheduledTask -TaskName 'FleetStatus-Generator'
 ```
 
-- [ ] **Step 5: Verify widget now shows real data.** Refresh `https://chat.<CHOSEN_DOMAIN>/fleet-widget/` — should show DJBOOTH + 13700K + (any other machines with known LAN IPs) with their actual branch states.
+- [ ] **Step 5: Verify widget now shows real data.** Refresh `https://fleetcommand.slopclaude.com/fleet-widget/` — should show DJBOOTH + 13700K + (any other machines with known LAN IPs) with their actual branch states.
 
 ---
 
@@ -213,7 +213,7 @@ cd $dst
 ```bash
 TOKEN_NEW='<14900k-bot-token-from-step-1>'
 BOT_PW=$(openssl rand -hex 24)
-curl -s -X POST "https://chat.<CHOSEN_DOMAIN>/_matrix/client/v3/register" \
+curl -s -X POST "https://fleetcommand.slopclaude.com/_matrix/client/v3/register" \
   -H "Content-Type: application/json" \
   -d "{
     \"username\": \"14900k\",
@@ -236,7 +236,7 @@ Save the password to Tim's password manager. Extract the `access_token` and save
 ```powershell
 $env:MATRIX_BOT_MACHINE = '14900k'
 & 'C:\Program Files\nodejs\node.exe' "$env:USERPROFILE\.claude\matrix-daemon\daemon.js"
-# Expect "identified" log line with user_id @14900k:<CHOSEN_DOMAIN>
+# Expect "identified" log line with user_id @14900k:fleetcommand.slopclaude.com
 # Ctrl+C to stop
 ```
 
@@ -252,7 +252,7 @@ Register-ScheduledTask -TaskName '14900K-MatrixDaemon' -Action $action -Trigger 
 Start-ScheduledTask -TaskName '14900K-MatrixDaemon'
 ```
 
-- [ ] **Step 9: From Element on Tim's account, invite `@14900k:<CHOSEN_DOMAIN>` to `#fleet-ops`.**
+- [ ] **Step 9: From Element on Tim's account, invite `@14900k:fleetcommand.slopclaude.com` to `#fleet-ops`.**
 
 The AutojoinRoomsMixin in `login.js` auto-accepts. Verify in the daemon log:
 
@@ -263,7 +263,7 @@ tail -5 ~/.claude/.matrix-daemon.log
 
 - [ ] **Step 10: Verify the widget shows 14900K as 🟢 online.**
 
-Refresh `https://chat.<CHOSEN_DOMAIN>/fleet-widget/`. 14900K should now appear with its LAN IP + current branch.
+Refresh `https://fleetcommand.slopclaude.com/fleet-widget/`. 14900K should now appear with its LAN IP + current branch.
 
 - [ ] **Step 11: Update `~/.claude/.fleet_hosts.json` on every fleet PC** to include 14900K's real LAN IP. The widget reads from 13700K's copy.
 
@@ -334,7 +334,7 @@ Even with `allow_registration = false`, the leaked token shouldn't sit in plaint
 ## Self-review notes
 
 - **Scope:** Phase 2 is theme + widget + 6 daemons + production lockdown. Tight focus. No scope creep into Phase 3.
-- **No placeholders:** all commands are concrete. `<CHOSEN_DOMAIN>` is the only template variable; Tim's §9 answer makes it concrete before execution.
+- **No placeholders:** all commands are concrete. `fleetcommand.slopclaude.com` is the only template variable; Tim's §9 answer makes it concrete before execution.
 - **Type consistency:** matrix-daemon's `daemon.js` / `config.js` / `login.js` interfaces are unchanged from Phase 1; this plan just deploys them more places.
 - **Risk:** the most likely failure is the Conduit registration token leaking + someone outside the fleet creating an account. Task 13 (rotate token) mitigates. `allow_registration = false` (Task 12) is the harder gate.
 

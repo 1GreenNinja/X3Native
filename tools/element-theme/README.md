@@ -10,7 +10,7 @@ Custom Element Web theme matching the X3Native engine aesthetic. Dark blue-black
 | `theme.css` | Full CSS override stylesheet for fine-grained Element 1.11.x layout tweaks. |
 | `README.md` | This file. |
 
-## Installing on Element Web (self-hosted at chat.&lt;CHOSEN_DOMAIN&gt;)
+## Installing on Element Web (self-hosted at `fleetcommand.slopclaude.com`)
 
 ### Method 1 — copy CSS into Element's webroot and reference from index.html
 

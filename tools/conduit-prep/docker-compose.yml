@@ -6,7 +6,7 @@
 #
 # Setup:
 #   1. cp conduit.toml.template C:\opt\conduit\config\conduit.toml
-#   2. Edit conduit.toml — replace <CHOSEN_DOMAIN> with Tim's domain
+#   2. Edit conduit.toml — replace fleetcommand.slopclaude.com with Tim's domain
 #      and insert the generated registration_token
 #   3. cp cloudflared-credentials.json.template C:\opt\conduit\cloudflared\<UUID>.json
 #      (placeholder — actual JSON comes from `cloudflared tunnel create`)
@@ -17,7 +17,7 @@
 #        Invoke-RestMethod -Uri http://127.0.0.1:6167/_matrix/client/versions
 #      Expected: JSON listing of supported Matrix spec versions
 #   7. Verify Cloudflare tunnel is reachable from external network:
-#        curl -I https://chat.<CHOSEN_DOMAIN>/_matrix/client/versions
+#        curl -I https://fleetcommand.slopclaude.com/_matrix/client/versions
 
 services:
   conduit:

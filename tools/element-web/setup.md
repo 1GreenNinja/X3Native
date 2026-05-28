@@ -1,6 +1,6 @@
 # Element Web setup on 13700K
 
-Static-file deployment of Element Web served alongside Conduit through the same Cloudflare Tunnel hostname (`chat.<CHOSEN_DOMAIN>`). The bare hostname serves Element Web; `/_matrix/*` paths route to Conduit. This is Plan Tasks 17–19 in `docs/superpowers/plans/2026-05-27-fleet-messaging-phase1-plan.md`.
+Static-file deployment of Element Web served alongside Conduit through the same Cloudflare Tunnel hostname (`fleetcommand.slopclaude.com`). The bare hostname serves Element Web; `/_matrix/*` paths route to Conduit. This is Plan Tasks 17–19 in `docs/superpowers/plans/2026-05-27-fleet-messaging-phase1-plan.md`.
 
 ## Why Element Web specifically?
 
@@ -39,14 +39,14 @@ Test-Path "$dest\index.html"
 
 ## config.json — point Element at our homeserver
 
-Create `C:\opt\element-web\config.json` (substituting `<CHOSEN_DOMAIN>`):
+Create `C:\opt\element-web\config.json` (substituting `fleetcommand.slopclaude.com`):
 
 ```json
 {
   "default_server_config": {
     "m.homeserver": {
-      "base_url": "https://chat.<CHOSEN_DOMAIN>",
-      "server_name": "<CHOSEN_DOMAIN>"
+      "base_url": "https://fleetcommand.slopclaude.com",
+      "server_name": "fleetcommand.slopclaude.com"
     }
   },
   "brand": "X3Native Fleet",
@@ -60,7 +60,7 @@ Create `C:\opt\element-web\config.json` (substituting `<CHOSEN_DOMAIN>`):
   "default_country_code": "US",
   "show_labs_settings": true,
   "feature_threadenabled": true,
-  "room_directory": { "servers": ["<CHOSEN_DOMAIN>"] },
+  "room_directory": { "servers": ["fleetcommand.slopclaude.com"] },
   "default_theme": "cyberpunk-x3native"
 }
 ```
@@ -109,15 +109,15 @@ The `cloudflared-config.yml.template` in `tools/conduit-prep/` already includes 
 
 ```yaml
 ingress:
-  - hostname: chat.<CHOSEN_DOMAIN>
+  - hostname: fleetcommand.slopclaude.com
     path: /_matrix/.*
     service: http://conduit:6167         # or 127.0.0.1:6167 if cloudflared runs on the host
 
-  - hostname: chat.<CHOSEN_DOMAIN>
+  - hostname: fleetcommand.slopclaude.com
     path: /.well-known/.*
     service: http://conduit:6167
 
-  - hostname: chat.<CHOSEN_DOMAIN>
+  - hostname: fleetcommand.slopclaude.com
     service: http://host.docker.internal:8080   # Element Web on host (from inside container)
 
   - service: http_status:404
@@ -138,15 +138,15 @@ curl -s http://127.0.0.1:8080/ | grep -o '<title>[^<]*</title>'
 # Expected: <title>Element</title>
 
 # External — through the tunnel — should hit Element Web
-curl -sI https://chat.<CHOSEN_DOMAIN>/
+curl -sI https://fleetcommand.slopclaude.com/
 # Expected: HTTP/2 200; content-type: text/html
 
 # External — through the tunnel — Matrix API
-curl -sI https://chat.<CHOSEN_DOMAIN>/_matrix/client/versions
+curl -sI https://fleetcommand.slopclaude.com/_matrix/client/versions
 # Expected: HTTP/2 200; content-type: application/json
 ```
 
-Then **Tim opens `https://chat.<CHOSEN_DOMAIN>/`** in his browser. Should see the cyberpunk-themed Element login. Register with the token from `conduit.toml`. Become admin.
+Then **Tim opens `https://fleetcommand.slopclaude.com/`** in his browser. Should see the cyberpunk-themed Element login. Register with the token from `conduit.toml`. Become admin.
 
 ## File checklist after setup
 

@@ -10,11 +10,11 @@ If Tim wants to deviate (different deployment option, custom backup path, etc.),
 
 | § | Decision | Default |
 |---|---|---|
-| 9.1 | Domain | Pick `tims-fleet.xyz` ($1-3/yr at Cloudflare Registrar) |
+| 9.1 | Domain | Pick `fleetcommand.slopclaude.com` ($1-3/yr at Cloudflare Registrar) |
 | 9.2 | Cloudflare account | Create one if missing (free tier fine) |
 | 9.3 | Conduit deployment | Docker Desktop on 13700K |
 | 9.4 | Backup destination | `D:\Dropbox\fleet-backups\conduit\` via rclone |
-| 9.5 | Element web placement | Same subdomain (`chat.tims-fleet.xyz`) |
+| 9.5 | Element web placement | Same subdomain (`fleetcommand.slopclaude.com`) |
 | 9.6 | Widget priority | Phase 2 (not Phase 1) |
 
 If those defaults all work for you, the below is your full deploy.
@@ -23,11 +23,11 @@ If those defaults all work for you, the below is your full deploy.
 
 ## Step 1 — Register the domain (15 min)
 
-Go to **https://dash.cloudflare.com/?to=/:account/registrar** and register `tims-fleet.xyz` (or your pick). If you already have the domain elsewhere, change nameservers to Cloudflare's per the dashboard wizard.
+Go to **https://dash.cloudflare.com/?to=/:account/registrar** and register `fleetcommand.slopclaude.com` (or your pick). If you already have the domain elsewhere, change nameservers to Cloudflare's per the dashboard wizard.
 
 **Verify:**
 ```bash
-nslookup tims-fleet.xyz 1.1.1.1
+nslookup fleetcommand.slopclaude.com 1.1.1.1
 # Should return Cloudflare's nameservers
 ```
 
@@ -44,10 +44,10 @@ winget install Cloudflare.cloudflared --silent --accept-package-agreements --acc
 ```powershell
 cd $env:USERPROFILE
 & 'C:\Program Files\cloudflared\cloudflared.exe' tunnel login
-# Browser opens; pick your Cloudflare account + tims-fleet.xyz
+# Browser opens; pick your Cloudflare account + fleetcommand.slopclaude.com
 & 'C:\Program Files\cloudflared\cloudflared.exe' tunnel create djbooth-fleet-chat
 # Note the UUID + credentials file path it prints
-& 'C:\Program Files\cloudflared\cloudflared.exe' tunnel route dns djbooth-fleet-chat chat.tims-fleet.xyz
+& 'C:\Program Files\cloudflared\cloudflared.exe' tunnel route dns djbooth-fleet-chat fleetcommand.slopclaude.com
 ```
 
 ## Step 4 — Set up Conduit config directories on 13700K (3 min)
@@ -69,18 +69,18 @@ Write-Output "REGISTRATION TOKEN (save this!): $regToken"
 
 ```powershell
 $repo = 'D:\GameDev\X3Native'  # adjust if cloned elsewhere
-$domain = 'tims-fleet.xyz'
+$domain = 'fleetcommand.slopclaude.com'
 $tunnelUuid = '<UUID-FROM-STEP-3>'
 
 # Conduit config
 (Get-Content "$repo\tools\conduit-prep\conduit.toml.template" -Raw) `
-  -replace '<CHOSEN_DOMAIN>', $domain `
+  -replace 'fleetcommand.slopclaude.com', $domain `
   -replace '<REGISTRATION_TOKEN>', $regToken `
   | Set-Content 'C:\opt\conduit\config\conduit.toml' -Encoding utf8
 
 # Cloudflared ingress
 (Get-Content "$repo\tools\conduit-prep\cloudflared-config.yml.template" -Raw) `
-  -replace '<CHOSEN_DOMAIN>', $domain `
+  -replace 'fleetcommand.slopclaude.com', $domain `
   -replace '<TUNNEL_UUID>', $tunnelUuid `
   | Set-Content 'C:\opt\conduit\cloudflared\config.yml' -Encoding utf8
 ```
@@ -98,7 +98,7 @@ docker compose ps   # both services should show "Up"
 # Internal
 Invoke-RestMethod -Uri 'http://127.0.0.1:6167/_matrix/client/versions'
 # External (through Cloudflare Tunnel)
-Invoke-RestMethod -Uri 'https://chat.tims-fleet.xyz/_matrix/client/versions'
+Invoke-RestMethod -Uri 'https://fleetcommand.slopclaude.com/_matrix/client/versions'
 ```
 
 Both should return JSON with a `versions` array.
@@ -113,7 +113,7 @@ Invoke-WebRequest -Uri "https://github.com/element-hq/element-web/releases/downl
 tar -xzf "$env:TEMP\element-web.tar.gz" -C $dest --strip-components=1
 
 # Config
-$domain = 'tims-fleet.xyz'
+$domain = 'fleetcommand.slopclaude.com'
 @"
 {
   "default_server_config": {
@@ -140,7 +140,7 @@ Register-ScheduledTask -TaskName 'ElementWeb-Static' -Action $action -Trigger $t
 Start-ScheduledTask -TaskName 'ElementWeb-Static'
 ```
 
-**Verify in browser:** Open `https://chat.tims-fleet.xyz/` — Element login screen should appear.
+**Verify in browser:** Open `https://fleetcommand.slopclaude.com/` — Element login screen should appear.
 
 ## Step 8 — Create your admin account in Element (3 min)
 
@@ -149,7 +149,7 @@ In the browser tab from Step 7:
 1. Click **"Create Account"**
 2. Username: `tim`, password: pick one (save to password manager)
 3. **Registration token:** paste the one from Step 4
-4. Submit → you're logged in as `@tim:tims-fleet.xyz`
+4. Submit → you're logged in as `@tim:fleetcommand.slopclaude.com`
 
 The first registered user becomes admin automatically.
 
@@ -168,7 +168,7 @@ Then on each machine, register the bot via the Matrix API. On DJBOOTH:
 ```bash
 TOKEN_NEW='<djbooth-token-from-conduit>'
 BOT_PW=$(openssl rand -hex 24)
-curl -s -X POST "https://chat.tims-fleet.xyz/_matrix/client/v3/register" \
+curl -s -X POST "https://fleetcommand.slopclaude.com/_matrix/client/v3/register" \
   -H "Content-Type: application/json" \
   -d "{\"username\":\"djbooth\",\"password\":\"$BOT_PW\",\"auth\":{\"type\":\"m.login.registration_token\",\"token\":\"$TOKEN_NEW\"}}" \
   > /tmp/djbooth-register.json
@@ -195,7 +195,7 @@ cd $dst
 
 # Smoketest
 & 'C:\Program Files\nodejs\node.exe' daemon.js
-# Expect "identified" log line with user_id @djbooth:tims-fleet.xyz
+# Expect "identified" log line with user_id @djbooth:fleetcommand.slopclaude.com
 # Ctrl+C to stop
 
 # Register Scheduled Task
@@ -215,7 +215,7 @@ Repeat on 13700K with `MATRIX_BOT_MACHINE='13700k'` env var set first.
 In Element:
 
 1. Click **"+"** next to room list → "Create Room" → name: `fleet-ops`
-2. Settings → Members → invite `@djbooth:tims-fleet.xyz` and `@13700k:tims-fleet.xyz`
+2. Settings → Members → invite `@djbooth:fleetcommand.slopclaude.com` and `@13700k:fleetcommand.slopclaude.com`
 3. Both bots auto-accept (AutojoinRoomsMixin handles it)
 4. Type a message in the room — both daemons should write it to their inbox
 
@@ -261,7 +261,7 @@ Register-ScheduledTask -TaskName 'Conduit-NightlyBackup' -Action $action -Trigge
 ## You're done with Phase 1
 
 - ✅ Matrix homeserver running on 13700K, externally reachable
-- ✅ Element Web at chat.tims-fleet.xyz
+- ✅ Element Web at fleetcommand.slopclaude.com
 - ✅ Tim's admin account + 2 bot accounts (DJBOOTH, 13700K)
 - ✅ #fleet-ops room with both bots
 - ✅ Slack→Matrix mirror live (both inboxes drain through /loop)

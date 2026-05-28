@@ -40,7 +40,7 @@ New-Item -ItemType SymbolicLink `
   -Target C:\opt\element-web\fleet-status.json
 ```
 
-The widget will then be reachable at `https://chat.<CHOSEN_DOMAIN>/fleet-widget/` and shareable in Element via the room-info → "Widgets" → "Add Custom Widget" feature.
+The widget will then be reachable at `https://fleetcommand.slopclaude.com/fleet-widget/` and shareable in Element via the room-info → "Widgets" → "Add Custom Widget" feature.
 
 ## Adding the widget to a Matrix room
 
@@ -48,7 +48,7 @@ In Element:
 
 1. Open the room (`#fleet-ops`)
 2. Click the **info** icon → **Widgets** → **Add Custom**
-3. URL: `https://chat.<CHOSEN_DOMAIN>/fleet-widget/`
+3. URL: `https://fleetcommand.slopclaude.com/fleet-widget/`
 4. Name: `Fleet Status`
 5. Save → widget appears in the room's right sidebar
 

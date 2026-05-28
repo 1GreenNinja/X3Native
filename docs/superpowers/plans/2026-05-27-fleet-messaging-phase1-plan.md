@@ -4,7 +4,7 @@
 
 **Goal:** Stand up a self-hosted Matrix-based fleet messaging fabric on 13700K: Conduit homeserver + Cloudflare Tunnel for remote access + Element Web client + bot daemons on DJBOOTH and 13700K + the first fleet room (#fleet-ops) + Slack-to-Matrix mirroring during the 30-day soak.
 
-**Architecture:** Conduit (Rust binary, SQLite, ~12 MB) on 13700K bound to 127.0.0.1:6167, fronted by `cloudflared` exposing `chat.tims-fleet.xyz` to the public internet (free Cloudflare Tunnel). Per-machine Matrix accounts (`@djbooth`, `@13700k`, etc.). Each fleet PC runs a Node.js daemon using `matrix-bot-sdk` that maintains a persistent sync connection, writes incoming messages to a local inbox file, and exposes a named-pipe outbox for Claude sessions to post replies. Element Web hosted on the same Cloudflare Tunnel as a static asset. Slack daemon (already running) gets a one-way cross-post hook to mirror to Matrix during the soak.
+**Architecture:** Conduit (Rust binary, SQLite, ~12 MB) on 13700K bound to 127.0.0.1:6167, fronted by `cloudflared` exposing `fleetcommand.slopclaude.com` to the public internet (free Cloudflare Tunnel). Per-machine Matrix accounts (`@djbooth`, `@13700k`, etc.). Each fleet PC runs a Node.js daemon using `matrix-bot-sdk` that maintains a persistent sync connection, writes incoming messages to a local inbox file, and exposes a named-pipe outbox for Claude sessions to post replies. Element Web hosted on the same Cloudflare Tunnel as a static asset. Slack daemon (already running) gets a one-way cross-post hook to mirror to Matrix during the soak.
 
 **Tech Stack:** Conduit (Rust homeserver), `cloudflared` (Cloudflare Tunnel client), Element Web (React static SPA), Node.js v24.16 (already installed at `C:\Program Files\nodejs\`), `matrix-bot-sdk` npm package, `rclone` for backups, PowerShell for Windows Scheduled Tasks.
 
@@ -23,23 +23,13 @@
 
 **Files:** `docs/superpowers/specs/2026-05-27-fleet-messaging-design.md` (update §9 with chosen domain)
 
-- [ ] **Step 1: Tim picks a domain.** Cheapest path is `tims-fleet.xyz` ($1-3/yr on Namecheap or Cloudflare Registrar). Any domain works — `.dev`, `.gg`, `.fyi`, `.io` are all fine. The full hostname will be `chat.<your-domain>`.
+- [x] **Step 1: ✅ Domain locked.** Tim chose `fleetcommand.slopclaude.com` (subdomain of the existing slopclaude.com he already owns). Confirmed 2026-05-28. No new domain registration needed — just a DNS record at the slopclaude.com zone.
 
-- [ ] **Step 2: Register or transfer it to Cloudflare's DNS.** Cloudflare Tunnel REQUIRES Cloudflare-managed DNS. If using a non-Cloudflare registrar, change nameservers to Cloudflare's per their setup wizard.
+- [ ] **Step 2: Verify the slopclaude.com zone is on Cloudflare DNS.** Cloudflare Tunnel REQUIRES Cloudflare-managed DNS. If slopclaude.com is on another registrar, transfer nameservers to Cloudflare.
 
-- [ ] **Step 3: Update §9 of the spec with the chosen domain.**
-
-```bash
-cd D:\GameDev\X3Native
-# Replace tims-fleet.xyz with chosen domain in spec line ~50
-sed -i 's|tims-fleet.xyz|<CHOSEN_DOMAIN>|g' docs/superpowers/specs/2026-05-27-fleet-messaging-design.md
-```
-
-- [ ] **Step 4: Commit.**
-
-```bash
-git add docs/superpowers/specs/2026-05-27-fleet-messaging-design.md
-git commit -m "spec: lock production domain to <CHOSEN_DOMAIN>"
+```powershell
+nslookup slopclaude.com 1.1.1.1
+# Expected: returns *.ns.cloudflare.com nameservers
 ```
 
 ### Task 2: Verify Cloudflare account is ready
@@ -53,7 +43,7 @@ git commit -m "spec: lock production domain to <CHOSEN_DOMAIN>"
 - [ ] **Step 4:** Confirm by running on DJBOOTH:
 
 ```bash
-nslookup <CHOSEN_DOMAIN> 1.1.1.1
+nslookup fleetcommand.slopclaude.com 1.1.1.1
 # Expected: returns Cloudflare nameservers (e.g., walt.ns.cloudflare.com)
 ```
 
@@ -147,12 +137,12 @@ Write-Output "Registration token: $regToken"
 # Save to a secure note — Tim needs this to register accounts via Element
 ```
 
-- [ ] **Step 2: Write `conduit.toml`.** Replace `<CHOSEN_DOMAIN>` with the actual domain from Task 1.
+- [ ] **Step 2: Write `conduit.toml`.** Replace `fleetcommand.slopclaude.com` with the actual domain from Task 1.
 
 ```powershell
 $config = @"
 [global]
-server_name = "<CHOSEN_DOMAIN>"
+server_name = "fleetcommand.slopclaude.com"
 database_backend = "sqlite"
 database_path = "C:/opt/conduit/db"
 port = 6167
@@ -316,15 +306,15 @@ ls "$env:USERPROFILE\.cloudflared\*.json"
 
 ```powershell
 $tunnelUuid = '<UUID-FROM-TASK-12>'
-& 'C:\Program Files\cloudflared\cloudflared.exe' tunnel route dns djbooth-fleet-chat "chat.<CHOSEN_DOMAIN>"
+& 'C:\Program Files\cloudflared\cloudflared.exe' tunnel route dns djbooth-fleet-chat "fleetcommand.slopclaude.com"
 ```
 
-- [ ] **Step 2: Verify the CNAME exists in the Cloudflare dashboard.** Navigate to DNS → Records and confirm `chat.<CHOSEN_DOMAIN>` → `<UUID>.cfargotunnel.com` is listed and proxied (orange cloud ON).
+- [ ] **Step 2: Verify the CNAME exists in the Cloudflare dashboard.** Navigate to DNS → Records and confirm `fleetcommand.slopclaude.com` → `<UUID>.cfargotunnel.com` is listed and proxied (orange cloud ON).
 
 - [ ] **Step 3: Verify DNS resolves.**
 
 ```powershell
-nslookup "chat.<CHOSEN_DOMAIN>" 1.1.1.1
+nslookup "fleetcommand.slopclaude.com" 1.1.1.1
 # Expected: returns Cloudflare IPs (104.x.x.x or 172.x.x.x)
 ```
 
@@ -341,7 +331,7 @@ $config = @"
 tunnel: $tunnelUuid
 credentials-file: $env:USERPROFILE\.cloudflared\$tunnelUuid.json
 ingress:
-  - hostname: chat.<CHOSEN_DOMAIN>
+  - hostname: fleetcommand.slopclaude.com
     service: http://127.0.0.1:6167
   - service: http_status:404
 "@
@@ -367,7 +357,7 @@ Set-Content -Path "$env:USERPROFILE\.cloudflared\config.yml" -Value $config -Enc
 - [ ] **Step 2: From DJBOOTH or any external box, curl the public URL.**
 
 ```bash
-curl -sI "https://chat.<CHOSEN_DOMAIN>/_matrix/client/versions"
+curl -sI "https://fleetcommand.slopclaude.com/_matrix/client/versions"
 # Expected: HTTP/2 200 + json content-type
 ```
 
@@ -388,7 +378,7 @@ $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 365) -MultipleInstances IgnoreNew
 $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType S4U -RunLevel Highest
 
-Register-ScheduledTask -TaskName 'CloudflareTunnel-Fleet' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Cloudflare Tunnel for chat.<CHOSEN_DOMAIN> → Conduit.'
+Register-ScheduledTask -TaskName 'CloudflareTunnel-Fleet' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Description 'Cloudflare Tunnel for fleetcommand.slopclaude.com → Conduit.'
 
 Start-ScheduledTask -TaskName 'CloudflareTunnel-Fleet'
 ```
@@ -396,7 +386,7 @@ Start-ScheduledTask -TaskName 'CloudflareTunnel-Fleet'
 - [ ] **Step 2: Verify the tunnel reconnected.**
 
 ```bash
-curl -sI "https://chat.<CHOSEN_DOMAIN>/_matrix/client/versions"
+curl -sI "https://fleetcommand.slopclaude.com/_matrix/client/versions"
 # Expected: HTTP/2 200
 ```
 
@@ -405,7 +395,7 @@ curl -sI "https://chat.<CHOSEN_DOMAIN>/_matrix/client/versions"
 ```powershell
 Restart-Computer -Force
 # After reboot, wait 2 min, then:
-curl -sI "https://chat.<CHOSEN_DOMAIN>/_matrix/client/versions"
+curl -sI "https://fleetcommand.slopclaude.com/_matrix/client/versions"
 # Expected: HTTP/2 200
 ```
 
@@ -452,8 +442,8 @@ $elementConfig = @"
 {
   "default_server_config": {
     "m.homeserver": {
-      "base_url": "https://chat.<CHOSEN_DOMAIN>",
-      "server_name": "<CHOSEN_DOMAIN>"
+      "base_url": "https://fleetcommand.slopclaude.com",
+      "server_name": "fleetcommand.slopclaude.com"
     }
   },
   "brand": "X3Native Fleet",
@@ -467,7 +457,7 @@ $elementConfig = @"
   "default_country_code": "US",
   "show_labs_settings": true,
   "feature_threadenabled": true,
-  "room_directory": { "servers": ["<CHOSEN_DOMAIN>"] }
+  "room_directory": { "servers": ["fleetcommand.slopclaude.com"] }
 }
 "@
 Set-Content -Path 'C:\opt\element-web\config.json' -Value $elementConfig -Encoding utf8
@@ -502,13 +492,13 @@ Start-ScheduledTask -TaskName 'ElementWeb-Static'
 tunnel: <UUID>
 credentials-file: ...
 ingress:
-  - hostname: chat.<CHOSEN_DOMAIN>
+  - hostname: fleetcommand.slopclaude.com
     path: /_matrix/.*
     service: http://127.0.0.1:6167
-  - hostname: chat.<CHOSEN_DOMAIN>
+  - hostname: fleetcommand.slopclaude.com
     path: /.well-known/.*
     service: http://127.0.0.1:6167
-  - hostname: chat.<CHOSEN_DOMAIN>
+  - hostname: fleetcommand.slopclaude.com
     service: http://127.0.0.1:8080
   - service: http_status:404
 ```
@@ -523,17 +513,17 @@ Start-ScheduledTask -TaskName 'CloudflareTunnel-Fleet'
 - [ ] **Step 5: Verify Element Web loads.**
 
 ```bash
-curl -s "https://chat.<CHOSEN_DOMAIN>/" | head -20
+curl -s "https://fleetcommand.slopclaude.com/" | head -20
 # Expected: HTML containing "Element" or "<title>Element</title>"
 ```
 
 ### Task 20: Tim logs in via Element
 
-- [ ] **Step 1:** Open `https://chat.<CHOSEN_DOMAIN>/` in any browser (laptop or phone).
+- [ ] **Step 1:** Open `https://fleetcommand.slopclaude.com/` in any browser (laptop or phone).
 
 - [ ] **Step 2:** Click "Create Account" → uses registration token from Task 6. Username: `tim`. Password: Tim's choice (save to password manager).
 
-- [ ] **Step 3:** After signup, Tim is logged in as `@tim:<CHOSEN_DOMAIN>`.
+- [ ] **Step 3:** After signup, Tim is logged in as `@tim:fleetcommand.slopclaude.com`.
 
 - [ ] **Step 4:** From Tim's account, raise privileges to admin via Conduit's admin command (Conduit auto-promotes the first registered user to admin if `allow_registration` is true and `registration_token` is set).
 
@@ -561,7 +551,7 @@ curl -s "https://chat.<CHOSEN_DOMAIN>/" | head -20
 TOKEN_DJ='<djbooth-bot-token-from-task-21>'
 # Generate a random password for the bot account
 BOT_PW=$(openssl rand -hex 24)
-curl -s -X POST "https://chat.<CHOSEN_DOMAIN>/_matrix/client/v3/register" \
+curl -s -X POST "https://fleetcommand.slopclaude.com/_matrix/client/v3/register" \
   -H "Content-Type: application/json" \
   -d "{
     \"username\": \"djbooth\",
@@ -572,7 +562,7 @@ curl -s -X POST "https://chat.<CHOSEN_DOMAIN>/_matrix/client/v3/register" \
     }
   }" > /tmp/djbooth-register.json
 cat /tmp/djbooth-register.json
-# Expected: JSON with "access_token", "user_id":"@djbooth:<CHOSEN_DOMAIN>", "device_id"
+# Expected: JSON with "access_token", "user_id":"@djbooth:fleetcommand.slopclaude.com", "device_id"
 # Save the access_token to ~/.claude/.matrix_token (mode 700)
 umask 077
 jq -r .access_token /tmp/djbooth-register.json > "$HOME/.claude/.matrix_token"
@@ -583,9 +573,9 @@ echo "Bot password (save in password manager): $BOT_PW"
 
 ```bash
 TOKEN=$(cat "$HOME/.claude/.matrix_token")
-curl -s "https://chat.<CHOSEN_DOMAIN>/_matrix/client/v3/account/whoami" \
+curl -s "https://fleetcommand.slopclaude.com/_matrix/client/v3/account/whoami" \
   -H "Authorization: Bearer $TOKEN"
-# Expected: {"user_id":"@djbooth:<CHOSEN_DOMAIN>",...}
+# Expected: {"user_id":"@djbooth:fleetcommand.slopclaude.com",...}
 ```
 
 - [ ] **Step 3: Repeat the same flow on 13700K for `@13700k`.**
@@ -677,7 +667,7 @@ const machineName = (process.env.MATRIX_BOT_MACHINE || os.hostname()).toLowerCas
 const claudeDir = process.env.CLAUDE_DIR || path.join(os.homedir(), '.claude');
 
 module.exports = {
-  homeserverUrl: process.env.MATRIX_HOMESERVER_URL || 'https://chat.tims-fleet.xyz',
+  homeserverUrl: process.env.MATRIX_HOMESERVER_URL || 'https://fleetcommand.slopclaude.com',
   accessTokenPath: path.join(claudeDir, '.matrix_token'),
   inboxPath: path.join(claudeDir, '.matrix_inbox.jsonl'),
   outboxLogPath: path.join(claudeDir, '.matrix_outbox.jsonl'),
@@ -804,16 +794,16 @@ describe('inbox', () => {
   test('appendIncoming writes one JSON line per message', () => {
     appendIncoming(tmpInbox, {
       source: 'matrix',
-      room: '!fleet-ops:tims-fleet.xyz',
-      sender: '@tim:tims-fleet.xyz',
+      room: '!fleet-ops:fleetcommand.slopclaude.com',
+      sender: '@tim:fleetcommand.slopclaude.com',
       text: 'hello djbooth',
       eventId: '$evt1',
       ts: 1700000000000,
     });
     appendIncoming(tmpInbox, {
       source: 'matrix',
-      room: '!fleet-ops:tims-fleet.xyz',
-      sender: '@13700k:tims-fleet.xyz',
+      room: '!fleet-ops:fleetcommand.slopclaude.com',
+      sender: '@13700k:fleetcommand.slopclaude.com',
       text: 'how is gating?',
       eventId: '$evt2',
       ts: 1700000001000,
@@ -821,7 +811,7 @@ describe('inbox', () => {
     const lines = fs.readFileSync(tmpInbox, 'utf8').trim().split('\n');
     expect(lines).toHaveLength(2);
     expect(JSON.parse(lines[0]).text).toBe('hello djbooth');
-    expect(JSON.parse(lines[1]).sender).toBe('@13700k:tims-fleet.xyz');
+    expect(JSON.parse(lines[1]).sender).toBe('@13700k:fleetcommand.slopclaude.com');
   });
 });
 ```
@@ -1097,7 +1087,7 @@ tail -5 "$HOME/.claude/.matrix-daemon.log"
 ```powershell
 $pipeStream = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'matrix-djbooth', [System.IO.Pipes.PipeDirection]::InOut)
 $pipeStream.Connect(2000)
-$msg = @{ room = '!FLEET-OPS-ROOM-ID:<CHOSEN_DOMAIN>'; text = 'DJBOOTH online via Matrix — first cross-fleet ping' } | ConvertTo-Json -Compress
+$msg = @{ room = '!FLEET-OPS-ROOM-ID:fleetcommand.slopclaude.com'; text = 'DJBOOTH online via Matrix — first cross-fleet ping' } | ConvertTo-Json -Compress
 $writer = New-Object System.IO.StreamWriter($pipeStream)
 $writer.Write($msg)
 $writer.Flush()
@@ -1116,7 +1106,7 @@ tail -1 "$HOME/.claude/.matrix_inbox.jsonl"
 ```powershell
 $pipeStream = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'matrix-13700k', [System.IO.Pipes.PipeDirection]::InOut)
 $pipeStream.Connect(2000)
-$msg = @{ room = '!FLEET-OPS-ROOM-ID:<CHOSEN_DOMAIN>'; text = '13700K integrator copies — round trip OK' } | ConvertTo-Json -Compress
+$msg = @{ room = '!FLEET-OPS-ROOM-ID:fleetcommand.slopclaude.com'; text = '13700K integrator copies — round trip OK' } | ConvertTo-Json -Compress
 $writer = New-Object System.IO.StreamWriter($pipeStream)
 $writer.Write($msg)
 $writer.Flush()
@@ -1237,7 +1227,7 @@ Start-Sleep -Seconds 30
 - [ ] DJBOOTH mentions `@13700k` in #fleet-ops → 13700K daemon writes it to inbox in <1 second
 - [ ] Conduit's DB survives a 13700K reboot without manual intervention
 - [ ] Cloudflare Tunnel auto-reconnects after WAN flap (test: unplug 13700K's ethernet for 30s, plug back, verify Element reconnects)
-- [ ] Element Web at `chat.<CHOSEN_DOMAIN>` shows the basic config (custom theme is Phase 2)
+- [ ] Element Web at `fleetcommand.slopclaude.com` shows the basic config (custom theme is Phase 2)
 - [ ] Backup script wrote a fresh DB snapshot to Dropbox last night
 - [ ] System has been up 168 consecutive hours (1 week) without manual intervention
 
@@ -1246,7 +1236,7 @@ Start-Sleep -Seconds 30
 ## Self-review notes
 
 - **Spec coverage:** §1–§11 of the spec are covered. §4.5 (custom theme) is Phase 2 — explicitly noted in success criteria. §4.6 (sidebar widget) is Phase 2 — not in this plan.
-- **No placeholders:** all code blocks are complete. Steps that depend on Tim-resolved §9 questions (e.g., `<CHOSEN_DOMAIN>`) are clearly marked with `<...>` placeholders Tim fills before execution.
+- **No placeholders:** all code blocks are complete. Steps that depend on Tim-resolved §9 questions (e.g., `fleetcommand.slopclaude.com`) are clearly marked with `<...>` placeholders Tim fills before execution.
 - **Type consistency:** functions exported from each module (`loadToken`, `createClient`, `appendIncoming`, `parseOutgoing`, `startOutboxListener`) are referenced consistently in `daemon.js`.
 - **Scope:** Phase 1 only. Phase 2 (theme, widget, remaining daemons) gets a separate plan.
 

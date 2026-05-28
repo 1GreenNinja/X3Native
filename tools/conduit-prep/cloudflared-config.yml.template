@@ -1,4 +1,4 @@
-# cloudflared-config.yml — Cloudflare Tunnel routing for chat.<CHOSEN_DOMAIN>
+# cloudflared-config.yml — Cloudflare Tunnel routing for fleetcommand.slopclaude.com
 #
 # After running `cloudflared tunnel create djbooth-fleet-chat` and getting the
 # tunnel UUID + credentials JSON, copy this file to
@@ -14,19 +14,19 @@ credentials-file: /etc/cloudflared/<TUNNEL_UUID>.json
 ingress:
   # The Matrix Client-Server API and well-known endpoints go to Conduit.
   # In docker-compose, cloudflared reaches Conduit at the service name.
-  - hostname: chat.<CHOSEN_DOMAIN>
+  - hostname: fleetcommand.slopclaude.com
     path: /_matrix/.*
     service: http://conduit:6167
 
-  - hostname: chat.<CHOSEN_DOMAIN>
+  - hostname: fleetcommand.slopclaude.com
     path: /.well-known/.*
     service: http://conduit:6167
 
-  # Everything else on chat.<CHOSEN_DOMAIN> goes to the Element Web static
+  # Everything else on fleetcommand.slopclaude.com goes to the Element Web static
   # server (Plan Task 17-19). The http-server runs as a separate Scheduled
   # Task on 13700K, NOT in this compose file. The host IP from inside the
   # container is host.docker.internal on Docker Desktop for Windows.
-  - hostname: chat.<CHOSEN_DOMAIN>
+  - hostname: fleetcommand.slopclaude.com
     service: http://host.docker.internal:8080
 
   # Catch-all

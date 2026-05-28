@@ -4,7 +4,7 @@ Long-running Node.js process that each fleet PC runs to participate in the Matri
 
 ## What it does
 
-1. Logs in to the fleet Matrix server (`chat.<CHOSEN_DOMAIN>`) as `@<machine>:<CHOSEN_DOMAIN>` using an access token saved at `~/.claude/.matrix_token` (mode 700)
+1. Logs in to the fleet Matrix server (`fleetcommand.slopclaude.com`) as `@<machine>:fleetcommand.slopclaude.com` using an access token saved at `~/.claude/.matrix_token` (mode 700)
 2. Maintains a persistent sync connection — sub-second latency for incoming messages
 3. On every `room.message` event in joined rooms or DMs: appends a JSON line to `~/.claude/.matrix_inbox.jsonl`
 4. Listens on a Windows named pipe (`\\.\pipe\matrix-<machine>`) for outbound message requests from the local Claude Code session
@@ -40,16 +40,16 @@ POST a single JSON object to `\\.\pipe\matrix-<machine>`:
 
 ```json
 {
-  "room": "!FLEET-OPS-ROOM-ID:tims-fleet.xyz",
+  "room": "!FLEET-OPS-ROOM-ID:fleetcommand.slopclaude.com",
   "text": "merge feat/portal-hub when ready",
-  "mention": ["@13700k:tims-fleet.xyz"],
-  "thread_root": "$evtid:tims-fleet.xyz"
+  "mention": ["@13700k:fleetcommand.slopclaude.com"],
+  "thread_root": "$evtid:fleetcommand.slopclaude.com"
 }
 ```
 
 **Response 200 (one JSON object on the same connection):**
 ```json
-{ "ok": true, "eventId": "$newevt:tims-fleet.xyz" }
+{ "ok": true, "eventId": "$newevt:fleetcommand.slopclaude.com" }
 ```
 
 **Response on error:**
@@ -61,7 +61,7 @@ POST a single JSON object to `\\.\pipe\matrix-<machine>`:
 ```powershell
 $pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', 'matrix-djbooth', [System.IO.Pipes.PipeDirection]::InOut)
 $pipe.Connect(2000)
-$msg = @{ room = '!fleet:tims-fleet.xyz'; text = 'hello' } | ConvertTo-Json -Compress
+$msg = @{ room = '!fleet:fleetcommand.slopclaude.com'; text = 'hello' } | ConvertTo-Json -Compress
 $writer = New-Object System.IO.StreamWriter($pipe)
 $writer.Write($msg); $writer.Flush(); $writer.Close()
 $reader = New-Object System.IO.StreamReader($pipe)
@@ -129,7 +129,7 @@ Tests cover pure logic (config defaults, token loading, inbox writes, outbox par
 
 | Var | Default | Purpose |
 |---|---|---|
-| `MATRIX_HOMESERVER_URL` | `https://chat.tims-fleet.xyz` | Conduit endpoint |
+| `MATRIX_HOMESERVER_URL` | `https://fleetcommand.slopclaude.com` | Conduit endpoint |
 | `MATRIX_BOT_MACHINE` | `os.hostname().toLowerCase()` | Identifies which fleet PC this is |
 | `CLAUDE_DIR` | `~/.claude` | Root for state files |
 

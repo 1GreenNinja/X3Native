@@ -10,8 +10,8 @@ Bridges the fleet's Slack workspace into the Matrix homeserver, two-way. After P
 
 | Slack side | ↔ | Matrix side |
 |---|---|---|
-| `#fleet-ops` | ↔ | `#fleet-ops-slack:tims-fleet.xyz` (bridged ghost room) |
-| Tim's `@djbooth` DM | ↔ | `@djbooth-slack:tims-fleet.xyz` ghost user DM |
+| `#fleet-ops` | ↔ | `#fleet-ops-slack:fleetcommand.slopclaude.com` (bridged ghost room) |
+| Tim's `@djbooth` DM | ↔ | `@djbooth-slack:fleetcommand.slopclaude.com` ghost user DM |
 | Slack user posts | → | Mirrored as ghost-user posts on Matrix side |
 | Matrix user posts in bridged room | → | Mirrored to Slack |
 | Reactions / threads / edits | ↔ | Most are bridged faithfully |
@@ -57,7 +57,7 @@ For a small private fleet where Tim is the only human user, the bridge is **opti
                              │
                              ▼ https
                         ┌──────────────────────────┐
-                        │ chat.<CHOSEN_DOMAIN>     │
+                        │ fleetcommand.slopclaude.com     │
                         │   ↑                       │
                         │   Element (web/iOS)       │
                         └──────────────────────────┘
@@ -109,7 +109,7 @@ Critical fields:
 ```yaml
 homeserver:
   address: http://conduit:6167
-  domain: <CHOSEN_DOMAIN>
+  domain: fleetcommand.slopclaude.com
 
 appservice:
   address: http://mautrix-slack:29335
@@ -125,7 +125,7 @@ bridge:
   username_template: "slack_{userid}"
   command_prefix: "!slack"
   permissions:
-    "@tim:<CHOSEN_DOMAIN>": admin
+    "@tim:fleetcommand.slopclaude.com": admin
 ```
 
 ### Step 3: Register the appservice with Conduit
@@ -140,7 +140,7 @@ The bridge generates a registration YAML; Conduit needs to load it. Copy it into
 
 ### Step 4: Connect Slack workspace
 
-In Element, DM `@slackbot:<CHOSEN_DOMAIN>` (the bridge's control bot):
+In Element, DM `@slackbot:fleetcommand.slopclaude.com` (the bridge's control bot):
 
 ```
 !slack login-token <slack-bot-token-xoxb-...> <slack-app-token-xapp-...>
@@ -175,7 +175,7 @@ Map `#fleet-ops` (`C0B76SQ0XQ8`) ↔ Matrix `#fleet-ops` room. Repeat for other 
 | Slack mentions `<@U…>` | ✓ Bridged as Matrix mentions |
 | Slack emoji | ⚠ Custom Slack emoji may not have Matrix equivalents |
 | Slack channels with > 1000 members | ⚠ Bridge backfills slowly; not relevant for our fleet (<10 users) |
-| DMs from Tim to `@djbooth` | ✓ Bridged ↔ Element DM to `@djbooth:<CHOSEN_DOMAIN>` |
+| DMs from Tim to `@djbooth` | ✓ Bridged ↔ Element DM to `@djbooth:fleetcommand.slopclaude.com` |
 | Slack workspace deletion | ↔ Bridge drops; restart with new token |
 
 ## Cutover plan

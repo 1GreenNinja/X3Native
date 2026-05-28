@@ -18,7 +18,7 @@ Tim wanted the fleet's messaging fabric out from under Slack's pricing/feature r
 |---|---|
 | **Protocol** | Matrix (open standard, no vendor lock-in) |
 | **Server** | Conduit (Rust, single 12 MB binary, SQLite) — runs on the 13700K Command Center |
-| **Public URL** | `https://chat.<CHOSEN_DOMAIN>/` via Cloudflare Tunnel (free, no port-forwarding) |
+| **Public URL** | `https://fleetcommand.slopclaude.com/` via Cloudflare Tunnel (free, no port-forwarding) |
 | **Clients** | Element (web / iOS / Android), polished apps free of charge |
 | **Identity** | Per-machine Matrix accounts — `@djbooth`, `@13700k`, `@14900k`, `@i5000`, `@i4400`, `@snake`, `@mob_boss`, `@laptop_og` |
 | **Bot tech** | matrix-bot-sdk on Node.js — same daemon pattern as our Slack daemon today |
@@ -49,7 +49,7 @@ Three forces:
 
 These are the 6 open questions from spec §9:
 
-1. **Domain name** — placeholder `tims-fleet.xyz`; Tim picks the real one (~$1-3/yr at Cloudflare Registrar or Namecheap)
+1. ✅ **Domain name** — `fleetcommand.slopclaude.com` (locked 2026-05-28; subdomain of Tim's existing slopclaude.com)
 2. **Cloudflare account** — needs one for the Tunnel; free tier fine
 3. **Conduit deployment option** — Docker (recommended) / WSL2 / build-from-source — see `tools/conduit-prep/CONDUIT-DEPLOY.md`
 4. **Backup destination** — Dropbox proposed at `D:\Dropbox\fleet-backups\conduit\`

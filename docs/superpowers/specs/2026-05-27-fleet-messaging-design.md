@@ -33,11 +33,11 @@ The goal of this spec is to lock the architecture so the implementation plan (ne
 | **Server host** | **13700K Command Center** | Confirmed by Tim 2026-05-27 21:13 PT. Always-on, integrator role aligns, fastest fleet CPU. | Dedicated Raspberry Pi 4 long-term (best separation of dev/infra); DJBOOTH as fallback. |
 | **Server implementation** | **Conduit** (Rust, single 12 MB binary, SQLite) | Lightest mainstream Matrix homeserver. No Postgres, no Python, no Docker required. One systemd-style auto-restart service on the host. | Synapse (heavier, Python+Postgres); Dendrite (Go, also lighter than Synapse but more deps than Conduit). |
 | **Federation** | **Disabled initially**, can be enabled later | Single-server fleet. No need to federate with public Matrix.org. Trivial to enable per-server later. | Federated from day one — more work, no immediate benefit. |
-| **Domain** | `chat.tims-fleet.xyz` (placeholder, Tim picks the real domain) | Cloudflare Tunnel needs a public hostname to point at. Tim already owns or can register a fleet-specific domain (~$10/yr). | Use a Cloudflare-provided trycloudflare.com hostname — works but unstable; rerolls per-connection. |
+| **Domain** | `fleetcommand.slopclaude.com` (confirmed by Tim 2026-05-28; subdomain of his existing slopclaude.com) | Cloudflare Tunnel needs a public hostname; subdomain of an owned domain means no separate registration cost. | Use a Cloudflare-provided trycloudflare.com hostname — works but unstable; rerolls per-connection. |
 | **Remote access** | **Cloudflare Tunnel** (`cloudflared` daemon on 13700K) | Free, no port-forwarding, no static IP, no DDNS. Works from any phone on cellular. | Tailscale (requires the human to be on the mesh too — same on phone — fine but extra app); router port-forward (needs DDNS, less secure). |
 | **Client (human)** | **Element** — web, iOS, Android | Polished, mature, free. Tim installs Element on phone + uses Element Web on desktop. | Cinny, Schildi, FluffyChat, Hydrogen — alternatives, less polished. Custom client we build later if Element's UX falls short. |
 | **Theme** | **Custom cyberpunk-X3Native** (Element theme JSON + custom CSS) | Element supports per-deployment themes. Dark background, neon-cyan accents on bold, monospace code spans, X3Native logo as default workspace icon. | Stock Element Dark — works fine but doesn't match the fleet aesthetic. |
-| **Identity model** | **One Matrix account per machine** | Mirrors the per-machine Slack bot pattern. `@djbooth:tims-fleet.xyz`, `@13700k:...`, etc. Each Claude session on that machine logs in as its host. `@tim:...` is the human admin. | Single shared `@fleet-bot` — easier setup but loses identity granularity; can't `@14900k specifically`. |
+| **Identity model** | **One Matrix account per machine** | Mirrors the per-machine Slack bot pattern. `@djbooth:fleetcommand.slopclaude.com`, `@13700k:...`, etc. Each Claude session on that machine logs in as its host. `@tim:...` is the human admin. | Single shared `@fleet-bot` — easier setup but loses identity granularity; can't `@14900k specifically`. |
 | **Bot SDK** | **matrix-bot-sdk** on Node.js (the Node.js v24 already installed at `C:\Program Files\nodejs\`) | Mature, Tim already has the stack working for the local Slack MCP. Node.js is the lingua franca of MCP servers and we'll reuse the runtime. | matrix-nio (Python, also great — usable once Python 3.13 install finishes); custom Rust client (overkill). |
 | **Bot architecture** | **One persistent daemon per machine** (long-running Node process, auto-start via Windows Scheduled Task) | Pattern proven by the just-built Slack daemon. Daemon receives Matrix events → writes to local inbox → Claude session drains on prompt or via `/loop`. Persistent connection = sub-second latency for incoming messages. | Polling — simpler but defeats the "live" reason to use Matrix. |
 | **Channel taxonomy** | See §6 | Mirrors Slack's `#fleet-ops`, plus new fleet-specific channels not feasible on free Slack. | — |
@@ -48,7 +48,7 @@ The goal of this spec is to lock the architecture so the implementation plan (ne
 ```
                           ┌─────────────────────────────────┐
                           │  Cloudflare Tunnel              │
-                          │  https://chat.tims-fleet.xyz    │
+                          │  https://fleetcommand.slopclaude.com    │
                           └─────────┬───────────────────────┘
                                     │ (HTTP/2 via cloudflared)
                                     ▼
@@ -59,7 +59,7 @@ The goal of this spec is to lock the architecture so the implementation plan (ne
 │  │  - Federation disabled                          │          │
 │  │  - SQLite at C:\opt\conduit\db\                 │          │
 │  │  - Bind 127.0.0.1:6167 (cloudflared talks here) │          │
-│  │  - Server name: tims-fleet.xyz                  │          │
+│  │  - Server name: fleetcommand.slopclaude.com                  │          │
 │  │  - Auto-restart via Scheduled Task at boot      │          │
 │  │  - Backup: nightly rclone copy to ~/Dropbox/    │          │
 │  └─────────────────────────────────────────────────┘          │
@@ -74,7 +74,7 @@ The goal of this spec is to lock the architecture so the implementation plan (ne
 │  │ daemon   │ │ daemon   │ │ daemon   │ │ daemon   │           │
 │  └──────────┘ └──────────┘ └──────────┘ └──────────┘           │
 │  Each:                                                          │
-│   - Logs in as @<machine>:tims-fleet.xyz                        │
+│   - Logs in as @<machine>:fleetcommand.slopclaude.com                        │
 │   - Subscribes to all fleet rooms                               │
 │   - On incoming event → append to ~/.claude/.matrix_inbox.jsonl │
 │   - Exposes a local Unix socket (or named pipe on Windows) for  │
@@ -103,7 +103,7 @@ The goal of this spec is to lock the architecture so the implementation plan (ne
 **Config (conduit.toml) essentials:**
 ```toml
 [global]
-server_name = "tims-fleet.xyz"
+server_name = "fleetcommand.slopclaude.com"
 database_backend = "sqlite"
 database_path = "C:/opt/conduit/db"
 port = 6167
@@ -121,7 +121,7 @@ trusted_servers = []  # no federation peers
 
 **Backup:** Nightly Scheduled Task at 03:00 runs `rclone sync C:\opt\conduit\db C:\Users\Tim Smith\Dropbox\fleet-backups\conduit\` (Tim already has Dropbox at `D:\Dropbox`, redirect path as needed).
 
-**Initial admin account:** Tim creates `@tim:tims-fleet.xyz` via Conduit's admin command on first boot. From there, Tim creates the per-machine accounts.
+**Initial admin account:** Tim creates `@tim:fleetcommand.slopclaude.com` via Conduit's admin command on first boot. From there, Tim creates the per-machine accounts.
 
 ### 4.2 Cloudflare Tunnel
 
@@ -132,12 +132,12 @@ trusted_servers = []  # no federation peers
 tunnel: <UUID-from-cloudflared-create>
 credentials-file: C:\Users\Tim Smith\.cloudflared\<UUID>.json
 ingress:
-  - hostname: chat.tims-fleet.xyz
+  - hostname: fleetcommand.slopclaude.com
     service: http://127.0.0.1:6167
   - service: http_status:404
 ```
 
-**DNS:** Cloudflare zone for `tims-fleet.xyz` (or whatever domain Tim picks). One CNAME `chat → <tunnel-UUID>.cfargotunnel.com`.
+**DNS:** Cloudflare zone for `fleetcommand.slopclaude.com` (or whatever domain Tim picks). One CNAME `chat → <tunnel-UUID>.cfargotunnel.com`.
 
 ### 4.3 Per-machine matrix-bot-sdk daemon
 
@@ -150,7 +150,7 @@ ingress:
 
 **daemon.js responsibilities:**
 
-1. **Login** as `@<machine>:tims-fleet.xyz` using an access token saved at `~/.claude/.matrix_token` (mode 700)
+1. **Login** as `@<machine>:fleetcommand.slopclaude.com` using an access token saved at `~/.claude/.matrix_token` (mode 700)
 2. **Sync loop** — persistent connection to the homeserver, receives events as they arrive (sub-second latency)
 3. **Inbox writer** — for every message in a room the machine is in OR direct message to the machine: append a JSON line to `~/.claude/.matrix_inbox.jsonl` (parallels the existing Slack inbox pattern)
 4. **Outbox listener** — local IPC: Windows named pipe `\\.\pipe\matrix-<machine>` is the primary surface. On non-Windows hosts (the laptop OG if it's Linux), fall back to a Unix domain socket at `~/.claude/matrix-<machine>.sock`. Claude session POSTs an outgoing JSON message + room + reply-to; daemon ships it to Matrix and replies with the event_id.
@@ -161,9 +161,9 @@ ingress:
 
 ### 4.4 Element clients (Tim's UX)
 
-**Web:** Element Web hosted on the Conduit box at `https://chat.tims-fleet.xyz/` (Element Web is just static files behind the same Cloudflare Tunnel). Optional: serve Element Web from a separate subdomain to keep the homeserver and client separable.
+**Web:** Element Web hosted on the Conduit box at `https://fleetcommand.slopclaude.com/` (Element Web is just static files behind the same Cloudflare Tunnel). Optional: serve Element Web from a separate subdomain to keep the homeserver and client separable.
 
-**iOS / Android:** Tim installs Element from the App Store / Play Store. Logs in with homeserver `tims-fleet.xyz` + his account + password. Push notifications work via Element's standard push gateway (Matrix supports this out of the box).
+**iOS / Android:** Tim installs Element from the App Store / Play Store. Logs in with homeserver `fleetcommand.slopclaude.com` + his account + password. Push notifications work via Element's standard push gateway (Matrix supports this out of the box).
 
 **Desktop:** Element Desktop (Electron app) on Tim's laptop. Same login.
 
@@ -210,7 +210,7 @@ Matrix supports custom **widgets** — iframe-embedded mini-apps that show insid
 | MOB BOSS | ⚫️ — dormant |
 | laptop OG | 🟡 — Tim's hands-on |
 
-Data source: a small JSON file at `https://chat.tims-fleet.xyz/fleet-status.json` populated by a cron on 13700K that:
+Data source: a small JSON file at `https://fleetcommand.slopclaude.com/fleet-status.json` populated by a cron on 13700K that:
 - `git fetch origin && git for-each-ref refs/remotes/origin` to get each branch's HEAD
 - pings each machine's matrix-daemon health endpoint
 - writes the JSON
@@ -246,7 +246,7 @@ Claude on a fleet PC POSTs JSON to `\\.\pipe\matrix-<machine>`:
   "room": "#fleet-ops",
   "text": "Snake's act2-world is ready for review — branch feat/openworld",
   "mention": ["@snake", "@13700k"],
-  "thread_root": "$evtid:tims-fleet.xyz"
+  "thread_root": "$evtid:fleetcommand.slopclaude.com"
 }
 ```
 
@@ -268,7 +268,7 @@ The daemon dispatches it via `matrix-bot-sdk`'s `sendText` / `sendMessage`.
 
 ### Phase 1 (week 1)
 1. Conduit deployment on 13700K
-2. Cloudflare Tunnel + Element web at `chat.tims-fleet.xyz`
+2. Cloudflare Tunnel + Element web at `fleetcommand.slopclaude.com`
 3. Element iOS + Element Web login for Tim
 4. DJBOOTH and 13700K matrix-daemon (the two always-on boxes; bring others online incrementally)
 5. `#fleet-ops` channel
@@ -299,11 +299,11 @@ The daemon dispatches it via `matrix-bot-sdk`'s `sendText` / `sendMessage`.
 
 ## 9. Open questions for Tim
 
-1. **Domain name** — `tims-fleet.xyz` is a placeholder. What domain do you want? Need to register or use one you own.
+1. **Domain name** — `fleetcommand.slopclaude.com` is a placeholder. What domain do you want? Need to register or use one you own.
 2. **Cloudflare account** — do you already have a Cloudflare account? (Required for the Tunnel; free tier is fine.)
 3. **Conduit registration token** — happy with a generated random one, OR want a memorable phrase (like `xkcd-correct-horse`)?
 4. **Backup destination** — Dropbox at `D:\Dropbox\fleet-backups\conduit\` works? Or somewhere else?
-5. **Element web hosting** — same subdomain as the homeserver (`chat.tims-fleet.xyz`) or separate (`elements.tims-fleet.xyz`)?
+5. **Element web hosting** — same subdomain as the homeserver (`fleetcommand.slopclaude.com`) or separate (`elements.fleetcommand.slopclaude.com`)?
 6. **Custom widget priorities** — fleet-status sidebar is in Phase 2 by default; want it Phase 1 instead?
 
 ## 10. Non-goals (explicit)
@@ -322,7 +322,7 @@ The system is "done" (Phase 1 complete) when:
 - ✅ DJBOOTH can mention `@13700k` in `#fleet-ops` and 13700K's daemon writes it to its inbox in under 1 second
 - ✅ Conduit's database survives a 13700K reboot without manual intervention
 - ✅ Cloudflare Tunnel auto-reconnects after WAN flap
-- ✅ Element Web at `chat.tims-fleet.xyz` shows the cyberpunk theme
+- ✅ Element Web at `fleetcommand.slopclaude.com` shows the cyberpunk theme
 - ✅ Backup script writes a fresh DB snapshot to Dropbox nightly
 - ✅ The system has been up 168 consecutive hours (1 week) without manual intervention
 

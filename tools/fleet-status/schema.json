@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://chat.<CHOSEN_DOMAIN>/fleet-status.schema.json",
+  "$id": "https://fleetcommand.slopclaude.com/fleet-status.schema.json",
   "title": "X3Native Fleet Status",
   "description": "Periodically-regenerated JSON consumed by the Element sidebar widget. Shows per-machine presence + branch state + integrator queue.",
   "type": "object",
