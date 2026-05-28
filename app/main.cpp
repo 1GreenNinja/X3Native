@@ -83,6 +83,8 @@
 #include "ragdoll_demo.h"                  // Physics §2 ragdoll demo (--world ragdoll) + blend check
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
 #include "space_pilot.h"                   // Act-3 6DOF space-flight pilot (--test-space + --world space)
+#include "sky_stars.h"                     // procedural starfield (--test-starfield + --world starfield)
+#include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
 #include <string_view>
@@ -1341,7 +1343,7 @@ int main(int argc, char** argv) {
          testSpace = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
-         testThirdPerson = false, testNpc = false;
+         testThirdPerson = false, testNpc = false, testStarfield = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1684,6 +1686,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-companion-squad") testCompanionSquad = true;
         else if (a == "--test-companion-controller") testCompanionController = true;
         else if (a == "--test-club") testClub = true;
+        else if (a == "--test-starfield") testStarfield = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -1868,6 +1871,114 @@ int main(int argc, char** argv) {
     if (testGlass) {
         x3::logInfo("running translucent-glass material (M1 see-through) self-test...");
         return x3::game::runGlassSelfTest() ? 0 : 1;
+    }
+    // --test-starfield: procedural starfield (Act-3 deep-space backdrop) self-test.
+    // Headless -- exercises the SkyStars init/render/shutdown lifecycle, asserts
+    // Tuning param-clamp, and asserts the procedural hash produces a stable
+    // non-trivial star pattern (the same hash math the shader uses).
+    if (testStarfield) {
+        x3::logInfo("running procedural starfield (SkyStars) self-test...");
+        int pass = 0, total = 0;
+        auto check = [&](bool c, const char* name) {
+            ++total;
+            if (c) { ++pass; x3::logInfo(std::string("  [ok] ") + name); }
+            else   {          x3::logError(std::string("  [FAIL] ") + name); }
+        };
+        // T1: init + shutdown lifecycle is leak-clean (the headless device
+        // increments a handle counter; we just assert valid handles came back
+        // and shutdown() releases them so a second init() succeeds).
+        x3::game::HeadlessRenderDevice hdev;
+        {
+            x3::SkyStars sky;
+            sky.init(hdev);
+            check(sky.initialized() && sky.mesh().valid() && sky.texture().valid(),
+                  "T1 init() produces valid mesh + texture, initialized()=true");
+            sky.shutdown(hdev);
+            check(!sky.initialized() && !sky.mesh().valid() && !sky.texture().valid(),
+                  "T1b shutdown() releases handles, initialized()=false");
+            // Round-trip: re-init MUST succeed without leaking.
+            sky.init(hdev);
+            check(sky.initialized(), "T1c re-init after shutdown succeeds");
+            sky.shutdown(hdev);
+        }
+        // T2: render() with a sample viewProjInv runs without crashing and
+        // produces a non-zero emissive strength (the twinkle modulator).
+        {
+            x3::SkyStars sky;
+            sky.init(hdev);
+            x3::rhi::FrameContext fr = hdev.beginFrame();
+            // Identity viewProjInv16 -- the headless emissive draw is a no-op
+            // so any matrix is fine; we just need the call to be VUID-safe.
+            const float idM[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            sky.setCamera(0.0f, 0.0f, 0.0f);
+            sky.render(hdev, fr, idM, /*timeSec=*/0.25f);
+            check(sky.lastEmissiveStrength() > 0.0f,
+                  "T2 render() updates emissive strength (twinkle live)");
+            // Twinkle should be MIN at sin == -1: timeSec * speed * 2pi = 3pi/2.
+            const float twinkleHz = sky.lastTuning().twinkleSpeed;
+            const float tMin = (3.0f / 4.0f) / std::max(1e-3f, twinkleHz);   // sin(3pi/2)=-1
+            sky.render(hdev, fr, idM, tMin);
+            float minE = sky.lastEmissiveStrength();
+            const float tMax = (1.0f / 4.0f) / std::max(1e-3f, twinkleHz);   // sin(pi/2)=+1
+            sky.render(hdev, fr, idM, tMax);
+            float maxE = sky.lastEmissiveStrength();
+            check(maxE > minE && maxE - minE > 0.1f,
+                  "T2b twinkle modulates emissive monotonically across the sine wave");
+            hdev.endFrame(fr);
+            sky.shutdown(hdev);
+        }
+        // T3: API parameter clamping (density > 0, radius > 0, threshold in [0,1)).
+        {
+            x3::SkyStars::Tuning bad;
+            bad.starDensity   = -5.0f;
+            bad.starRadius    = -0.1f;
+            bad.threshold     = 1.5f;
+            bad.twinkleSpeed  = -2.0f;
+            auto c = x3::clampTuning(bad);
+            check(c.starDensity  > 0.0f, "T3a density clamps to > 0");
+            check(c.starRadius   > 0.0f, "T3b radius clamps to > 0");
+            check(c.threshold    >= 0.0f && c.threshold < 1.0f, "T3c threshold clamps to [0,1)");
+            check(c.twinkleSpeed >= 0.0f, "T3d twinkleSpeed clamps to >= 0");
+            // Clamp on the negative side too.
+            x3::SkyStars::Tuning low;
+            low.threshold = -0.5f;
+            auto c2 = x3::clampTuning(low);
+            check(c2.threshold == 0.0f, "T3e threshold clamps -0.5 -> 0");
+        }
+        // T4: the procedural hash actually produces stars -- sample a grid of
+        // directions and assert at least SOME of them register as starlit. The
+        // exact ratio depends on threshold; with the defaults (0.985 + a 2x
+        // dust layer @ blended 0.994) we expect a non-trivial fraction.
+        {
+            x3::SkyStars::Tuning t;
+            int hits = 0, samples = 0;
+            const int grid = 32;
+            for (int iy = 0; iy < grid; ++iy) {
+                for (int ix = 0; ix < grid; ++ix) {
+                    float u = (ix + 0.5f) / (float)grid;
+                    float v = (iy + 0.5f) / (float)grid;
+                    float th  = u * 6.2831853f;
+                    float phi = v * 3.14159265f;
+                    float sy = std::sin(phi), cy = std::cos(phi);
+                    float d[3] = { sy * std::cos(th), cy, sy * std::sin(th) };
+                    float b = x3::SkyStars::sampleProceduralBrightness(d, t, 0.0f);
+                    if (b > 0.05f) ++hits;
+                    ++samples;
+                }
+            }
+            check(hits > 0,
+                  "T4 procedural hash produces stars across the celestial sphere");
+            // Determinism: same direction same time same tuning -> same value.
+            float d[3] = { 0.3f, 0.6f, 0.7f };
+            x3::SkyStars::Tuning t2;
+            float a = x3::SkyStars::sampleProceduralBrightness(d, t2, 0.5f);
+            float bb = x3::SkyStars::sampleProceduralBrightness(d, t2, 0.5f);
+            check(a == bb, "T4b hash is deterministic");
+        }
+        x3::logInfo("starfield: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+        std::printf("starfield: %d/%d passed\n", pass, total);
+        std::fflush(stdout);
+        return (pass == total) ? 0 : 1;
     }
     if (testHoloterm) {
         x3::logInfo("running holo-terminal (text + input) self-test...");
@@ -3374,6 +3485,106 @@ int main(int argc, char** argv) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return wroteOn ? 0 : 1;
+    }
+
+    // ---- Procedural starfield showcase (--world starfield) ------------------
+    // The Act-3 deep-space backdrop in isolation: NO scene geometry, NO player.
+    // A SkyStars instance is brought up, the camera slowly rotates around the
+    // origin so the parallax-correct dome reads at multiple yaws, and a
+    // screenshot is captured at the end. The pixel-variance test on the
+    // resulting PNG (std > 15, uniqColors > 100) IS the visual gate -- a near-
+    // black background sprinkled with many distinct star pixels easily clears.
+    if (worldMode == "starfield") {
+        x3::logInfo("--world starfield: showcasing the procedural deep-space starfield");
+
+        // Deep-space backdrop: disable SSAO + GI (no surface detail to occlude),
+        // sky (the starfield IS the sky), water, RT. Just the dome + clear color.
+        { x3::rhi::IRenderDevice::SsaoParams sp{}; sp.enabled = false; device->setSsaoParams(sp); }
+        { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled   = false; device->setGiParams(gp); }
+        { x3::rhi::IRenderDevice::SkyParams  sp{}; sp.enabled   = false; device->setSkyParams(sp); }
+
+        x3::SkyStars sky;
+        sky.init(*device);
+        if (!sky.initialized()) {
+            x3::logError("--world starfield: SkyStars::init() failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        // ---- Headless capture: rotate the camera a bit, settle, grab PNG. -----
+        if (headless) {
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_starfield.png");
+            const int kFrames = 24;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                float t = (float)i * (1.0f / 30.0f);   // simulated 30 fps clock
+                // Camera at origin (dome centered on us). Slow yaw rotation
+                // so successive frames sample different starfield directions.
+                float yaw   = 0.15f * t;
+                float pitch = 0.05f * std::sin(t);
+                device->setCamera(0.0f, 0.0f, 0.0f, yaw, pitch, 70.0f);
+                if (shotCamOverride) {
+                    device->setCamera(shotCam[0], shotCam[1], shotCam[2],
+                                      shotCam[3], shotCam[4], 70.0f);
+                }
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    sky.setCamera(0.0f, 0.0f, 0.0f);
+                    sky.render(*device, frame, /*viewProjInv16=*/nullptr, t);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world starfield: wrote " + outPath);
+            else       x3::logError("--world starfield: capture FAILED");
+            sky.shutdown(*device);
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ---- Windowed path: free-rotate the camera with the mouse to inspect.
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double startTime = glfwGetTime();
+        double prevTime  = startTime;
+        float fyaw = 0.0f, fpitch = 0.0f;
+        x3::logInfo("--world starfield: rotate with mouse, Esc to quit");
+        int lastWs = (int)W, lastHs = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime(); (void)prevTime; prevTime = now;
+            float t = (float)(now - startTime);
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+            fyaw   += ddx * 0.0025f;
+            fpitch -= ddy * 0.0025f;
+            if (fpitch >  1.55f) fpitch =  1.55f;
+            if (fpitch < -1.55f) fpitch = -1.55f;
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWs || chh != lastHs) { lastWs = cw; lastHs = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+            device->setCamera(0.0f, 0.0f, 0.0f, fyaw, fpitch, 70.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                sky.setCamera(0.0f, 0.0f, 0.0f);
+                sky.render(*device, frame, /*viewProjInv16=*/nullptr, t);
+            }
+            device->endFrame(frame);
+        }
+
+        sky.shutdown(*device);
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
     }
 
     // ---- Glass material showcase (--world glass) ---------------------------
