@@ -335,15 +335,6 @@ ThirdPersonCamera ThirdPersonView::camera(const x3::phys::Vec3& feet, float eyeH
                                m_camDist, m_camHeight);
 }
 
-void ThirdPersonView::setUserAdjust(float yOffMeters, float yawOffRad) {
-    m_userYOff   = yOffMeters;
-    m_userYawOff = yawOffRad;
-}
-
-void ThirdPersonView::setCameraTuning(float camDist, float camHeightAbove) {
-    m_camDist   = camDist;
-    m_camHeight = camHeightAbove;
-}
 
 void ThirdPersonView::drawAvatar(x3::rhi::IRenderDevice& device,
                                  const x3::rhi::FrameContext& frame,

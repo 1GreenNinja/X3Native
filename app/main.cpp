@@ -318,13 +318,9 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // gated by the camera frustum (only rooms you LOOK at are drawn) + a room budget, so it
     // never falls back to the whole tower. Live-tunable.
     console.registerCVar("r_culldepth", "6", "canonlevel portal flood-fill depth (open-doorway hops; 1 = direct neighbours only)");
-    // 3rd-person live-tuning cvars (Tim playtest 2026-05-27): dial in the Jake
-    // avatar Y/yaw + 3P camera framing in the console (backtick) without rebuilding.
-    // Bake the final values back as constants in thirdperson.h once they look right.
-    console.registerCVar("jake_yoff",       "0",   "3P: extra Y offset for Jake avatar in meters (negative = lift up)");
-    console.registerCVar("jake_yawoff_deg", "0",   "3P: extra yaw rotation for Jake in degrees (added to the 180-deg facing-flip)");
-    console.registerCVar("jake_camdist",    "3.6", "3P: follow-camera distance behind the player (m)");
-    console.registerCVar("jake_camh",       "0.7", "3P: follow-camera height above the eye line (m)");
+    // (3rd-person Jake tuning cvars removed 2026-05-27: dialed-in values
+    // jake_yoff=1.03 / jake_yawoff_deg=90 / jake_camdist=2.3 / jake_camh=0.37
+    // are now baked as member defaults in app/thirdperson.h.)
 }
 
 // Read the r_rtao* cvars and push them onto the device (no-op on a non-RT device).
@@ -5984,16 +5980,6 @@ int main(int argc, char** argv) {
         // viewpoint changes in 3P. No-op (renderCam == eye) in FP / unbuilt. ----
         float renderCamX = camX, renderCamY = camY, renderCamZ = camZ;
         if (!terrainWorld && !noclip && thirdPerson.thirdPerson() && thirdPerson.built()) {
-            // Live-tuning cvars (jake_yoff / jake_yawoff_deg / jake_camdist / jake_camh).
-            // Read every frame so the user can dial in the avatar Y / yaw + 3P camera
-            // framing in the console without rebuilding (Tim playtest 2026-05-27).
-            const float kDegToRad = 0.01745329252f;
-            thirdPerson.setUserAdjust(
-                (float)console->getFloat("jake_yoff"),
-                (float)console->getFloat("jake_yawoff_deg") * kDegToRad);
-            thirdPerson.setCameraTuning(
-                (float)console->getFloat("jake_camdist"),
-                (float)console->getFloat("jake_camh"));
             const x3::phys::Vec3 pfeet = player.feet();
             const float eyeH = camY - pfeet.y;   // current eye height (stance-aware)
             // Room for the PVS cull so the avatar isn't culled with its own room.

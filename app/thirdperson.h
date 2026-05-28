@@ -103,14 +103,6 @@ public:
     // Flip FP<->3P; returns the new state. (F5 in the game loop.)
     bool toggle() { setThirdPerson(!m_thirdPerson); return m_thirdPerson; }
 
-    // ---- Runtime tuning (Tim playtest 2026-05-27) ----------------------------
-    // Cvars `jake_yoff` (m), `jake_yawoff_deg` (deg), `jake_camdist` (m),
-    // `jake_camh` (m) feed these setters every frame so a live playtest can dial
-    // in the avatar Y / yaw + 3P camera framing without rebuilding. Once the look
-    // is right, bake the values back as constants.
-    void setUserAdjust(float yOffMeters, float yawOffRad);
-    void setCameraTuning(float camDist, float camHeightAbove);
-
     // True iff the FP weapon VIEWMODEL should draw this frame (FP only). The avatar
     // is the inverse: drawn only in 3P. These are the two things the toggle swaps.
     bool viewmodelVisible() const { return !m_thirdPerson; }
@@ -198,11 +190,16 @@ private:
     // monster draw path final = model * fixup * nodeTransform).
     float    m_modelFixup[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 
-    // Live-tuning offsets driven by cvars (see setUserAdjust / setCameraTuning).
-    float    m_userYOff   = 0.0f;       // extra Y in meters (negative = lift up)
-    float    m_userYawOff = 0.0f;       // extra yaw in radians (added after the 180-deg flip)
-    float    m_camDist    = 3.6f;       // mirrors kTpCamDistance default
-    float    m_camHeight  = 0.7f;       // mirrors kTpCamHeightAbove default
+    // Jake-specific authoring fixups baked in 2026-05-27 (dialed via cvars in a
+    // live playtest, then locked here as defaults). Jake_22_actions.glb has chronic
+    // XYZ authoring issues that no project ever fully untangled — the empirical
+    // values below are what the engine needs to plant feet on the floor and face
+    // forward. Kept as MEMBER defaults so the same machinery still applies cleanly
+    // and a future asset swap can override per-instance if needed.
+    float    m_userYOff   = 1.03f;             // extra Y lift (m); empirical floor-plant
+    float    m_userYawOff = 1.5707963f;        // +90 deg in rad; GLB faces +X natively
+    float    m_camDist    = 2.3f;              // 3P follow camera distance behind player (m)
+    float    m_camHeight  = 0.37f;             // 3P follow camera height above eye line (m)
 };
 
 // Follow-camera tuning (meters). Behind the player + above; the test asserts the
