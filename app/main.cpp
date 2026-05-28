@@ -6327,15 +6327,23 @@ int main(int argc, char** argv) {
     x3::ui::UiController gameUi;
     {
         x3::ui::SettingsModel sm{};
-        // Seed from current engine defaults: SSAO + SSGI are ON by default in the
-        // device; bloom is always-on in the HDR pipeline; shadows on; vsync from
-        // the device desc; resolution = the actual window size.
-        sm.bloom = true; sm.ssao = true; sm.ssgi = true; sm.shadows = true;
+        // SSAO + SSGI default ON only when the device has hardware ray-tracing.
+        // Their raster fallback renders the scene BLACK on non-RT GPUs (e.g. GTX
+        // 1080 Ti — see [rhi] "RT: not available on this device — SSAO/CSM raster
+        // fallback"). The fleet's RTX boxes still get them on; older cards default
+        // OFF so the level is visible on launch.
+        const bool hasRT = device && device->rayTracingSupported();
+        sm.bloom = true; sm.ssao = hasRT; sm.ssgi = hasRT; sm.shadows = true;
         sm.vsync = desc.vsync; sm.width = W; sm.height = H;
         sm.rtao = (console->getInt("r_rtao") != 0);   // RT AO: reflect the cvar (default OFF)
         // Audio: seed from the persisted values applied to the audio system above.
         sm.musicOn = s_musicOn; sm.musicVol = s_musicVol; sm.sfxVol = s_sfxVol;
         gameUi.init(*device, console.get(), sm);
+        // Push the seeded settings to the device + cvars NOW so SSAO/SSGI are
+        // OFF on non-RT GPUs from the very first frame (otherwise the engine's
+        // raster-fallback default would render the level black until the player
+        // manually toggles them in Settings).
+        gameUi.applySettings(*device, console.get());
         gameUi.setTitle(terrainWorld ? "X3 ENGINE" : "ESCAPE FROM LAB ZERO",
                         terrainWorld ? "open-world demo" : "Level 1 - Awakening");
     }
