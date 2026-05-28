@@ -786,7 +786,7 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // EMISSIVE: drop the constant flat-teal flood. Emissive RGB is white so it
     // MULTIPLIES the texel (only stroked pixels light up); strength is small +
     // breathes via update(). m_emBase[3] is the base strength; rgb stays 1,1,1.
-    m_emBase[0] = 1.0f; m_emBase[1] = 1.0f; m_emBase[2] = 1.0f; m_emBase[3] = 1.4f;
+    m_emBase[0] = 1.0f; m_emBase[1] = 1.0f; m_emBase[2] = 1.0f; m_emBase[3] = 2.6f;   // brighter strokes (owner pass: "overlay was faint")
     e.emissive[0]=m_emBase[0]; e.emissive[1]=m_emBase[1]; e.emissive[2]=m_emBase[2]; e.emissive[3]=m_emBase[3];
     e.tag = (uint32_t)Tag::Prop;
     e.roomId = m_roomId;

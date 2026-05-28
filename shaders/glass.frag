@@ -281,7 +281,11 @@ void main() {
     vec3  kS = Fenv;
     float kT = 1.0 - max(max(kS.r, kS.g), kS.b);
     float opacity = clamp(vFactor.a, 0.0, 1.0);
-    vec3  emissive = vEmissive.rgb * vEmissive.a;   // additive holo glow (feeds bloom)
+    // texel-MODULATED emissive: holo strokes (texel > 0) light up; clear-glass
+    // background (texel == 0 from the alpha-0 baked texture) emits nothing, so the
+    // see-through stays see-through. For non-textured glass (lounge table / rims),
+    // texel comes from the default white texture so emissive is unchanged.
+    vec3  emissive = texel * vEmissive.rgb * vEmissive.a;
 
     vec3 interior = mix(throughGlass, litBody, opacity);
     vec3 color = interior * kT + reflection + specSum + emissive;
