@@ -42,6 +42,7 @@
 #include "barrels.h"                        // explosive barrels (shoot -> chain explosion)
 #include "glass_test.h"                      // translucent-glass material (--test-glass)
 #include "holo_terminal.h"                  // Jake's cell holographic terminal (text + input)
+#include "glass_lounge.h"                   // glass table + chairs + SIT-AT-CHAIR (--test-sit)
 #include "secret_room.h"                    // code-locked trapdoor -> stocked secret room
 #include "engine/ecs/Ecs.h"                 // sparse-set ECS core (10k+ entities)
 #include "ecs_render.h"                     // ECS -> GPU-driven render feed
@@ -798,7 +799,7 @@ int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
-         testBarrels = false, testGlass = false, testHoloterm = false, testEcs = false, testEcsRender = false,
+         testBarrels = false, testGlass = false, testHoloterm = false, testSit = false, testEcs = false, testEcsRender = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
@@ -1066,6 +1067,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-barrels") testBarrels = true;
         else if (a == "--test-glass") testGlass = true;
         else if (a == "--test-holoterm") testHoloterm = true;
+        else if (a == "--test-sit") testSit = true;
         else if (a == "--test-secretroom") testSecretRoom = true;
         else if (a == "--test-ecs") testEcs = true;
         else if (a == "--test-ecsrender") testEcsRender = true;
@@ -1294,6 +1296,10 @@ int main(int argc, char** argv) {
     if (testHoloterm) {
         x3::logInfo("running holo-terminal (text + input) self-test...");
         return x3::game::runHoloTerminalSelfTest() ? 0 : 1;
+    }
+    if (testSit) {
+        x3::logInfo("running glass-lounge SIT-AT-CHAIR (state machine) self-test...");
+        return x3::game::runSitSelfTest() ? 0 : 1;
     }
     if (testSecretRoom) {
         x3::logInfo("running secret-room (code-locked trapdoor) self-test...");
@@ -4122,6 +4128,17 @@ int main(int argc, char** argv) {
     // (subTriggers) dispatches the hidden-lift + per-sub-level hub ids. Level 1 only. ----
     x3::game::SpireSubLevels subLevels;
     x3::game::TriggerSystem  subTriggers;
+    // ---- B1 GLASS LOUNGE (a plate-glass table + 4 chairs in the open area behind the
+    // detention cell — "Old Armory" room, x[-4.5,2.5], z[4.5,9.5]) + the SIT-AT-CHAIR
+    // state machine. Built with the level (Level 1 only). The lounge entities are
+    // room-tagged to L1Floor::B1 so the per-floor occlusion cull keeps them with the
+    // floor. The SitController owns the seated state + the smooth camera lerp; the
+    // host drives it from the same keyDown-gated E-interact path the cell HoloTerminal
+    // uses so it can't fire while typing into the terminal/keypad or in a UI menu, and
+    // firing the weapon never triggers sit. Only one interactable (nearest chair OR
+    // the terminal) prompts at a time. ----
+    x3::game::GlassLounge    glassLounge;
+    x3::game::SitController  sitCtrl;
     // Host-tracked latch: Sarah was rescued on F7 (set true when topFloors.onRescue()
     // succeeds). Combined with "the Clone boss is dead" it is the descent gate. We track
     // it host-side because spire_top exposes victimCaptive() (not a companion query), and
@@ -4266,6 +4283,14 @@ int main(int argc, char** argv) {
         subLevels.build(scene, *device, *physics, Lb, subTriggers,
                         x3::game::riggedGlbRoot());
 
+        // ---- B1 GLASS LOUNGE: a plate-glass table + 4 chairs in the open area behind
+        // Jake's detention cell. The cell spans x[-3.5,3.5]/z[-3,3]; the "Old Armory"
+        // detention room directly +Z behind it spans x[-4.5,2.5]/z[4.5,9.5] (3.5 m
+        // ceiling, clear floor) — that's the lounge nook. Centered at (-1, 0, 7) the
+        // 1.6 x 0.9 m table fits with chair clearance on all four sides. Tagged to
+        // L1Floor::B1 so the per-floor cull keeps the lounge with the basement.
+        const x3::phys::Vec3 loungeCenter{ -1.0f, Lb.floorBaseY[(uint32_t)x3::game::L1Floor::B1], 7.0f };
+        glassLounge.build(scene, *device, *physics, loungeCenter, (uint32_t)x3::game::L1Floor::B1);
     }
     const x3::game::Level1Layout& L1 = game.layout();
 
@@ -5700,14 +5725,42 @@ int main(int argc, char** argv) {
             x3::phys::Vec3 dir{ std::cos(pitch) * std::cos(yaw),
                                 std::sin(pitch),
                                 std::cos(pitch) * std::sin(yaw) };
+            // SIT-AT-CHAIR has FIRST priority on the E edge: if already seated, E
+            // stands the player back up (the player's only "use" while seated). Else
+            // if a chair is in reach + the player is facing it (kSitReach +
+            // kSitFacingDot, see glass_lounge.cpp), this E sits them. The chair list
+            // is well clear of every other interactable (the lounge is in the cell-
+            // adjacent open room; doors / NPCs / the terminal / the elevator are
+            // elsewhere on B1), so taking priority here doesn't starve other uses.
+            // This block uses the SAME keyDown gate the terminal/keypad rely on, so it
+            // cannot fire while typing into the terminal/keypad or in a UI menu, and
+            // firing the weapon is a mouse-button event that never gets here.
+            bool sitConsumedE = false;
+            if (sitCtrl.seated()) {
+                sitCtrl.requestStand();
+                x3::logInfo("use: standing up from the lounge chair");
+                sitConsumedE = true;
+            } else if (glassLounge.built()) {
+                const int ci = glassLounge.nearestSittableChair(eye, yaw);
+                if (ci >= 0) {
+                    const x3::phys::Vec3 seatEye = glassLounge.seatedEye((uint32_t)ci);
+                    const float          seatYaw = glassLounge.seatedYaw((uint32_t)ci);
+                    sitCtrl.requestSit(ci, eye, yaw, seatEye, seatYaw);
+                    x3::logInfo("use: sitting down at lounge chair " + std::to_string(ci));
+                    sitConsumedE = true;
+                }
+            }
             // RESCUED-NPC TALK takes priority over the bare door/rescue handlers so
             // the captive girl always gets her exchange. If a live captive is in talk
             // range, this E starts/advances the dialog; completing it performs the
             // actual rescue (so she becomes a following companion) + queues her bark.
             std::string talkWho; x3::phys::Vec3 talkPos{};
             const bool talkInRange = nearestLiveCaptive(eye, x3::game::kTalkReach, talkWho, talkPos);
-            const bool talkHandled = npcDialog.active() || talkInRange;
-            if (talkHandled) {
+            const bool talkHandled = !sitConsumedE && (npcDialog.active() || talkInRange);
+            if (sitConsumedE) {
+                // Sit/stand already consumed the E edge — fall through past every other
+                // handler this frame.
+            } else if (talkHandled) {
                 const std::string barkName = talkWho.empty() ? npcDialog.partner() : talkWho;
                 const bool rescued = npcDialog.interact(
                     talkInRange, talkWho, talkPos,
@@ -5933,6 +5986,20 @@ int main(int argc, char** argv) {
                 // Cell terminal / keypad open for typing: swallow movement + jump so the
                 // keys (WASD/Space) type into the terminal instead of walking the player.
                 if (termMode || codeMode) { in.moveFwd = 0.0f; in.moveStrafe = 0.0f; in.sprint = false; in.jumpPressed = false; }
+                // SIT-AT-CHAIR: when seated (or sitting down mid-lerp), movement is
+                // LOCKED. Any movement key press, however, triggers STAND (a tap-to-
+                // stand affordance — feels natural, the player tries to walk and the
+                // chair lets them go). The stand request itself UNLOCKS movement
+                // immediately (SitController::requestStand flips the state), so this
+                // sub-step's input still goes to the player on the next frame.
+                if (sitCtrl.movementLocked()) {
+                    const bool wantsMove = (in.moveFwd != 0.0f) || (in.moveStrafe != 0.0f) || in.jumpPressed;
+                    if (wantsMove) {
+                        sitCtrl.requestStand();
+                        x3::logInfo("use: standing up (movement key pressed)");
+                    }
+                    in.moveFwd = 0.0f; in.moveStrafe = 0.0f; in.sprint = false; in.jumpPressed = false;
+                }
                 // CROUCH (hold C) / CRAWL (hold Left-Ctrl): lower the eye + slow the move.
                 // Ctrl (prone) wins over C (crouch); release both to stand. Suppressed
                 // while a console / terminal is open so typing doesn't duck the player.
@@ -5998,6 +6065,21 @@ int main(int argc, char** argv) {
             player.camera(camX, camY, camZ, camYaw, camPitch);
         } else {
             camX = flyX; camY = flyY; camZ = flyZ; camYaw = flyYaw; camPitch = flyPitch;
+        }
+        // ---- SIT-AT-CHAIR camera override (B1 glass lounge). When the player is
+        // SEATED (or mid-lerp into/out of the seat) the SitController computes a
+        // smoothly-eased camera eye + yaw that overrides the live standing pose. Mouse
+        // look is preserved (the yaw fed in is the player's live look yaw, which the
+        // controller passes through while fully seated so the camera still rotates
+        // with the mouse). Pitch is NOT overridden — free vertical look stays. Suppress
+        // entirely in noclip so the fly cam is never hijacked. ----
+        if (!noclip && !terrainWorld) {
+            sitCtrl.update(dt, x3::phys::Vec3{ camX, camY, camZ }, camYaw);
+            if (sitCtrl.seated() || sitCtrl.transitioning()) {
+                const x3::phys::Vec3 ce = sitCtrl.camEye();
+                camX = ce.x; camY = ce.y; camZ = ce.z;
+                camYaw = sitCtrl.camYaw();
+            }
         }
         // WEAPONS: apply + recover the weapon recoil kick. The kick is a transient
         // upward pitch offset added on top of the look pitch; it decays back to 0 so
@@ -6716,6 +6798,26 @@ int main(int argc, char** argv) {
                         const float dx = pex - a.x, dz = pez - a.z;
                         if (dx*dx + dz*dz < 9.0f)
                             floatPrompt(x3::phys::Vec3{ a.x, a.y + 0.55f, a.z }, "[E] Use Terminal (code 1278)", 110.0f);
+                    }
+                    // GLASS LOUNGE: when SEATED, float a "[E] Stand" prompt anchored at
+                    // the seated eye so the player always knows the exit key. When
+                    // STANDING, if a chair is in reach + facing (the same gate the
+                    // E-handler uses) float "[E] Sit" over that chair's seat. Only ONE
+                    // (sit OR stand) ever appears at a time — naturally exclusive.
+                    if (glassLounge.built()) {
+                        if (sitCtrl.seated()) {
+                            const int ci = sitCtrl.chairIndex();
+                            if (ci >= 0 && ci < (int)glassLounge.chairCount()) {
+                                const x3::phys::Vec3 se = glassLounge.seatedEye((uint32_t)ci);
+                                floatPrompt(x3::phys::Vec3{ se.x, se.y + 0.30f, se.z }, "[E] Stand", 38.0f);
+                            }
+                        } else {
+                            const int ci = glassLounge.nearestSittableChair(x3::phys::Vec3{ pex, pey, pez }, pyaw);
+                            if (ci >= 0) {
+                                const x3::phys::Vec3 cp = glassLounge.chair((uint32_t)ci).pos;
+                                floatPrompt(x3::phys::Vec3{ cp.x, cp.y + 1.20f, cp.z }, "[E] Sit", 28.0f);
+                            }
+                        }
                     }
                 }
                 // ---- RESCUED-NPC TALK: floating "[E] Talk" prompt + the dialog box.
