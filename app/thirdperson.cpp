@@ -135,7 +135,11 @@ void ThirdPersonView::build(Scene& scene, x3::rhi::IRenderDevice& device,
         if (m_idleClip < 0) m_idleClip = 0;
         m_useLocoBlend = (m_walkClip >= 0 || m_runClip >= 0);
         if (m_useLocoBlend)
-            m_skinner.setLocomotionClips(m_idleClip, m_walkClip, m_runClip, 1.5f, 4.0f);
+            // Walk threshold lowered 1.5 -> 0.2 m/s so any real movement triggers
+            // the walk clip (Tim playtest 2026-05-27: characters were sliding/idle
+            // instead of walking, the FPS player's nominal speed wasn't reaching
+            // the old threshold visibly). Run kicks in at 2 m/s = comfortable jog.
+            m_skinner.setLocomotionClips(m_idleClip, m_walkClip, m_runClip, 0.2f, 2.0f);
 
         // Resolve the weapon-hand socket bone ONCE (per-frame reads are index-based).
         m_handNode = m_skinner.resolveNodeByName(m_model, kJakeHandBone);

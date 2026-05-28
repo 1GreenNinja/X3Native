@@ -297,7 +297,9 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
         // Run ~4 m/s (the AI maps planar speed to those bands).
         m_useLocoBlend = m_animActive && (m_walkClip >= 0 || m_runClip >= 0);
         if (m_useLocoBlend)
-            m_skinner.setLocomotionClips(m_idleClip, m_walkClip, m_runClip, 1.5f, 4.0f);
+            // Walk threshold lowered 1.5 -> 0.2 m/s so any real motion triggers walk
+            // (Tim playtest 2026-05-27: monsters were sliding without animating).
+            m_skinner.setLocomotionClips(m_idleClip, m_walkClip, m_runClip, 0.2f, 2.0f);
         std::string clipList;
         for (uint32_t c = 0; c < m_skinner.clipCount(); ++c) {
             clipList += (c ? ", " : "") + std::string(m_skinner.clipName(c)) +
