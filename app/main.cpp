@@ -3996,6 +3996,203 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // ---- Companion AI showcase (--world companion) --------------------------
+    // Self-contained flat arena: player + 3 CompanionSquad members + 3 enemy
+    // MonsterSystems as threats. LOW-CONFLICT: does NOT touch level1/spire/act2.
+    // Mirrors --world valley/cliffs scaffold exactly.
+    //   * SCREENSHOT (headless): `--world companion --screenshot <path>`.
+    //   * WALKABLE (windowed):   `--world companion` -- WASD + mouse, Esc to quit.
+    if (worldMode == "companion") {
+        x3::logInfo("--world companion: building companion AI showcase arena");
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> coPhys(x3::phys::createPhysicsWorld());
+        if (!coPhys->init()) {
+            x3::logError("--world companion: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        x3::game::Scene coScene;
+
+        // Flat arena: a large static ground plane at y=0.
+        coPhys->addBox({ 60.0f, 0.5f, 60.0f }, { 0.0f, -0.5f, 0.0f },
+                       0.0f, x3::phys::Layer::Static);
+
+        // Analytic sky.
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.5f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
+            sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.95f; sp.sunColor[2] = 0.85f;
+            sp.sunIntensity = 1.0f; sp.haze = 0.3f; sp.exposure = 1.0f;
+            device->setSkyParams(sp);
+        }
+
+        // Human player spawns slightly behind the squad.
+        x3::game::Player coPlayer;
+        coPlayer.spawn(*coPhys, 0.0f, 0.5f, -8.0f);
+
+        // Companions: 3 slots flanking the player's starting position.
+        x3::game::CompanionSquad coSquad;
+        coSquad.setScene(&coScene);
+        coSquad.addCompanion(*coPhys,  3.0f, 0.5f, -6.0f,  0.0f);   // right
+        coSquad.addCompanion(*coPhys, -3.0f, 0.5f, -6.0f,  0.0f);   // left
+        coSquad.addCompanion(*coPhys,  0.0f, 0.5f, -4.0f,  0.0f);   // center-rear
+
+        // Enemies: 3 BlueSynth-tuned MonsterSystems spread across the far side.
+        constexpr uint32_t kCoNumEnemies = 3;
+        std::unique_ptr<x3::game::MonsterSystem> coEnemies[kCoNumEnemies];
+        x3::game::MonsterSystem* coEnemyPtrs[kCoNumEnemies];
+        const float coExPos[kCoNumEnemies][3] = {
+            { -8.0f, 0.5f, 14.0f },
+            {  0.0f, 0.5f, 18.0f },
+            {  8.0f, 0.5f, 14.0f },
+        };
+        for (uint32_t e = 0; e < kCoNumEnemies; ++e) {
+            coEnemies[e] = std::make_unique<x3::game::MonsterSystem>();
+            x3::game::MonsterSystem::Tuning t;
+            t.hp = 150; t.chaseSpeed = 1.5f;
+            t.type = x3::game::MonsterType::Guard;
+            t.damage = 5; t.attackRange = 2.0f; t.attackCooldown = 1.5f;
+            t.ranged = false; t.flyer = false;
+            // Try the BlueSynth model; falls back to the procedural box if absent.
+            t.modelFile = "blue_synth_seed1.glb";
+            coEnemies[e]->buildMonsterTuned(coScene, *device, *coPhys,
+                x3::game::riggedGlbRoot(),
+                { coExPos[e][0], coExPos[e][1], coExPos[e][2] }, t);
+            coEnemyPtrs[e] = coEnemies[e].get();
+        }
+
+        const float coFps = 60.0f;
+        const float coDt  = 1.0f / coFps;
+
+        // ===== Headless screenshot path: settle + capture. ===================
+        if (headless) {
+            const std::string coOutPath = screenshot ? screenshotPath
+                                                     : std::string("w_companion.png");
+            // Elevated overhead camera: look down at the squad + threats.
+            float coCamX = 0.0f, coCamY = 18.0f, coCamZ = 2.0f;
+            float coCamYaw = 0.0f, coCamPitch = -1.0f;   // ~57 deg down
+            if (shotCamOverride) {
+                coCamX = shotCam[0]; coCamY = shotCam[1]; coCamZ = shotCam[2];
+                coCamYaw = shotCam[3]; coCamPitch = shotCam[4];
+            }
+            const int kCoSettle = 60;
+            for (int ci = 0; ci < kCoSettle; ++ci) {
+                glfwPollEvents();
+                const x3::phys::Vec3 copp = coPlayer.feet();
+                const x3::phys::Vec3 coPlayerEye{ copp.x, copp.y + 1.6f, copp.z };
+                coSquad.tick(coDt, *coPhys, coPlayerEye,
+                             (float)coPlayer.hp() / (float)coPlayer.maxHp(),
+                             !coPlayer.isAlive(), coEnemyPtrs, kCoNumEnemies);
+                for (uint32_t e = 0; e < kCoNumEnemies; ++e) {
+                    if (coEnemies[e]->alive())
+                        coEnemies[e]->update(coDt, coScene, *coPhys, copp, &coPlayer, {});
+                }
+                coPhys->step(coDt);
+                coScene.update(*coPhys);
+                device->setCamera(coCamX, coCamY, coCamZ, coCamYaw, coCamPitch, 60.0f);
+                if (ci == kCoSettle - 1) device->armCapture(coOutPath.c_str());
+                auto coFrame = device->beginFrame();
+                if (coFrame.valid) {
+                    coScene.render(*device, coFrame);
+                    for (uint32_t e = 0; e < kCoNumEnemies; ++e)
+                        coEnemies[e]->drawMonster(*device, coFrame, coScene);
+                }
+                device->endFrame(coFrame);
+            }
+            const bool coWrote = device->captureFrame(coOutPath.c_str());
+            if (coWrote) x3::logInfo("--world companion: wrote screenshot " + coOutPath);
+            else         x3::logError("--world companion: capture FAILED");
+            coSquad.shutdown(*coPhys);
+            coPhys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return coWrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: player WASD + mouse, companions fight. ==
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported())
+            glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double coLastMX, coLastMY; glfwGetCursorPos(window, &coLastMX, &coLastMY);
+        double coPrevTime = glfwGetTime();
+        bool coPrevSpace = false;
+        x3::logInfo("--world companion: WASD walk, mouse look, Space jump, "
+                    "LeftShift sprint, Esc to quit");
+
+        int coLastW = (int)W, coLastH = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+
+            const double coNow = glfwGetTime();
+            float coDtLoop = (float)(coNow - coPrevTime); coPrevTime = coNow;
+            if (coDtLoop > 0.1f) coDtLoop = 0.1f;
+
+            double coMX, coMY; glfwGetCursorPos(window, &coMX, &coMY);
+            const float coDdx = (float)(coMX - coLastMX);
+            const float coDdy = (float)(coMY - coLastMY);
+            coLastMX = coMX; coLastMY = coMY;
+
+            auto coKd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            const bool coSpaceNow = coKd(GLFW_KEY_SPACE);
+
+            x3::game::PlayerInput coIn;
+            if (coKd(GLFW_KEY_W)) coIn.moveFwd    += 1.0f;
+            if (coKd(GLFW_KEY_S)) coIn.moveFwd    -= 1.0f;
+            if (coKd(GLFW_KEY_D)) coIn.moveStrafe += 1.0f;
+            if (coKd(GLFW_KEY_A)) coIn.moveStrafe -= 1.0f;
+            coIn.sprint     = coKd(GLFW_KEY_LEFT_SHIFT);
+            coIn.jumpPressed = coSpaceNow && !coPrevSpace;
+            coIn.lookDX = coDdx; coIn.lookDY = coDdy;
+            coPlayer.update(coIn, coDtLoop, *coPhys);
+            coPrevSpace = coSpaceNow;
+
+            float coCX, coCY, coCZ, coCYaw, coCPitch;
+            coPlayer.camera(coCX, coCY, coCZ, coCYaw, coCPitch);
+            const x3::phys::Vec3 coPlayerPos{ coCX, coCY, coCZ };
+            const x3::phys::Vec3 coFeetPos = coPlayer.feet();
+
+            coSquad.tick(coDtLoop, *coPhys, coPlayerPos,
+                         (float)coPlayer.hp() / (float)coPlayer.maxHp(),
+                         !coPlayer.isAlive(), coEnemyPtrs, kCoNumEnemies);
+
+            for (uint32_t e = 0; e < kCoNumEnemies; ++e) {
+                if (coEnemies[e]->alive())
+                    coEnemies[e]->update(coDtLoop, coScene, *coPhys,
+                                         coFeetPos, &coPlayer, {});
+            }
+            coPhys->step(coDtLoop);
+            coScene.update(*coPhys);
+
+            int coCW, coCH; glfwGetFramebufferSize(window, &coCW, &coCH);
+            if (coCW != coLastW || coCH != coLastH) {
+                coLastW = coCW; coLastH = coCH;
+                if (coCW > 0 && coCH > 0) device->onResize((uint32_t)coCW, (uint32_t)coCH);
+            }
+
+            device->setCamera(coCX, coCY, coCZ, coCYaw, coCPitch, 60.0f);
+            auto coFr = device->beginFrame();
+            if (coFr.valid) {
+                coScene.render(*device, coFr);
+                for (uint32_t e = 0; e < kCoNumEnemies; ++e)
+                    coEnemies[e]->drawMonster(*device, coFr, coScene);
+            }
+            device->endFrame(coFr);
+        }
+
+        coSquad.shutdown(*coPhys);
+        coPhys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
     // ---- Asset source (stub until D5) ----
     std::unique_ptr<x3::asset::IAssetSource> assets(x3::asset::createAssetSource());
     assets->mountPak("base.x3pak", 0);  // stub: logs not-implemented for now
