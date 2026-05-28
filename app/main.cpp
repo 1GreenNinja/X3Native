@@ -51,6 +51,7 @@
 #include "spire_sublevels.h"                // EFLZ hidden Floor-7 sub-levels + Dr. Chen Return Mission
 #include "timeline.h"                        // EFLZ morality/timeline backbone for the 12 endings (--test-timeline)
 #include "act2_world.h"                      // EFLZ Act-2 open-world surface host + L8/L9 (--test-act2)
+#include "canon_aliens.h"                    // EFLZ canon-alien roster (Mantis/Grey/Reptilian/Nordic) — --test-canonaliens
 #include "act2_desert.h"                     // EFLZ Act-2 desert depths + Salvari camp L10/L11 (--test-act2desert)
 #include "act2_caves.h"                      // EFLZ Act-2 mid biomes L12-15 (--test-act2caves)
 #include "tod.h"                             // EFLZ Time-of-Day cycle (sky/sun via SkyParams — --test-tod)
@@ -870,6 +871,14 @@ int main(int argc, char** argv) {
     // Emergence (lab-exit gauntlet -> Emergence Point safe zone) + L9 Crystalline Desert
     // Edge (crystal props + neutral fauna + an inert-until-entered hazard zone). Additive.
     bool        testAct2 = false;
+    // --test-canonaliens (canon-alien roster — the four "most reported" species:
+    // Mantis/Grey/Reptilian/Nordic, per the Davis-Puthoff visualisation). Builds
+    // each of the 5 Tuning rows (SaurianSoldier/Warlord, GreyTasked, NordicSteward,
+    // MantisArbiter) on a HeadlessDevice + Jolt world; asserts the roster is
+    // complete + ordered, each row builds, and per-species stat invariants hold
+    // (Soldier melee, Warlord Boss + phases + memory-flash, Tasked ranged/fragile,
+    // Steward allied + stationary, Arbiter fast + strafe-heavy), rows are distinct.
+    bool        testCanonAliens = false;
     // --test-act2desert (EFLZ Act-2 desert depths): L10 Crystalline Desert Depths
     // (deeper desert, first-contact allied Salvari + an injured-Salvari side-quest,
     // a hidden crystal-cave camp entrance, a light Overlord patrol) + L11 Salvari
@@ -1088,6 +1097,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-dronehack") testDroneHack = true;
         else if (a == "--test-sublevels") testSubLevels = true;
         else if (a == "--test-act2") testAct2 = true;
+        else if (a == "--test-canonaliens") testCanonAliens = true;
         else if (a == "--test-act2desert") testAct2Desert = true;
         else if (a == "--test-act2caves") testAct2Caves = true;
         else if (a == "--test-tod") testTod = true;
@@ -1499,6 +1509,13 @@ int main(int argc, char** argv) {
                     "+ timeline-gated Siren ambush; L15 Tree Cities + trading post) "
                     "self-test...");
         return x3::game::runAct2CavesSelfTest() ? 0 : 1;
+    }
+    if (testCanonAliens) {
+        x3::logInfo("running EFLZ canon-alien roster (Mantis/Grey/Reptilian/Nordic — "
+                    "the 'most reported' species ported into MonsterSystem::Tuning rows: "
+                    "Saurian Soldier/Warlord, Grey Tasked, Nordic Steward, Mantis Arbiter) "
+                    "self-test...");
+        return x3::game::runCanonAliensSelfTest() ? 0 : 1;
     }
     if (testWorldRegions) {
         x3::logInfo("running EFLZ open-world surface regions (crash site + outposts + "

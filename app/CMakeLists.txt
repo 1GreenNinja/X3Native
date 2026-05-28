@@ -49,6 +49,7 @@ add_executable(X3Engine WIN32
     vehicle.cpp
     fx.cpp
     hud.cpp
+    canon_aliens.cpp
     ui.cpp)
 
 target_link_libraries(X3Engine PRIVATE x3engine glfw)
