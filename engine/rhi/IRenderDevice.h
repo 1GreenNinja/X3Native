@@ -95,7 +95,8 @@ struct RenderStats {
     uint32_t drawCalls        = 0;   // drawMesh() calls that recorded a draw this frame
     uint32_t triangles        = 0;   // total triangles submitted this frame
     uint32_t objectsSubmitted = 0;   // drawMesh() calls attempted (incl. skipped)
-    uint32_t objectsDrawn     = 0;   // drawMesh() calls that actually drew (== drawCalls)
+    uint32_t objectsDrawn     = 0;   // draw records that survived frustum cull + grouped
+    uint32_t objectsCulled    = 0;   // draw records SKIPPED by the CPU frustum cull this frame
     float    gpuFrameMs       = 0.0f; // GPU time for the main pass (timestamp queries)
     uint64_t frameCount       = 0;   // total frames presented since init
 };
@@ -596,6 +597,23 @@ public:
     // change them. `count` is clamped to the device's cap (extra lights ignored).
     // Passing count==0 clears all point lights (sun + ambient only).
     virtual void          setPointLights(const PointLight* lights, uint32_t count) = 0;
+
+    // ---- CPU per-object frustum (POV) cull --------------------------------
+    // Enable/disable CPU per-object camera-frustum culling for subsequent frames
+    // (cvar r_frustumcull; default ON). When ON, endFrame() builds the 6 view-
+    // frustum planes from the frame's camera viewProj and skips any draw record
+    // whose mesh world bounds lie entirely outside the frustum (geometry behind /
+    // beside the camera is never submitted to the GPU). This is a SECOND, additive
+    // gate that works WITHIN whatever room/floor set the game already feeds; it is
+    // orthogonal to the game-side per-room PVS cull. When OFF the device submits
+    // exactly the records it receives (byte-for-byte the pre-cull behavior).
+    //
+    // CORRECTNESS: meshes that can deform beyond their bind-pose bounds (CPU- or
+    // GPU-skinned / animated characters, ragdolls, the viewmodel weapon) and any
+    // mesh with a degenerate/empty local AABB (procedural / full-screen) are treated
+    // as ALWAYS-VISIBLE and never culled, so animated content + the player weapon
+    // never pop. The HUD/2D overlay path is separate and entirely unaffected.
+    virtual void          setFrustumCull(bool enabled) = 0;
 
     // ---- Screen-space 2D HUD overlay (S7) ----------------------------------
     // A pixel-space overlay drawn over the 3D scene, inside the same dynamic-

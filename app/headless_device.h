@@ -95,6 +95,7 @@ public:
     bool supportsGpuSkinning() const override { return false; }
 
     void setPointLights(const x3::rhi::PointLight*, uint32_t) override {}
+    void setFrustumCull(bool) override {}   // headless: no draws to cull
     void setSkyParams(const x3::rhi::IRenderDevice::SkyParams&) override {}
     void setSsaoParams(const x3::rhi::IRenderDevice::SsaoParams&) override {}
     void setGiParams(const x3::rhi::IRenderDevice::GiParams&) override {}

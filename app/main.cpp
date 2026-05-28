@@ -294,6 +294,11 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // current room + its doored neighbours); 0 = draw the whole level (e.g. for noclip
     // overview / debugging). Live-tunable from the console.
     console.registerCVar("r_roomcull", "1", "per-room PVS occlusion cull (0 = draw whole level, e.g. for noclip)");
+    // CPU per-object camera-FRUSTUM (POV) cull, inside the renderer. 1 = on (skip
+    // draws whose world bounds are outside the view cone — "don't render what can't
+    // be seen", an ADDITIVE gate on top of r_roomcull); 0 = submit every record (the
+    // pre-cull behavior). Animated/skinned meshes + the player weapon are never culled.
+    console.registerCVar("r_frustumcull", "1", "CPU per-object camera-frustum cull (0 = submit everything)");
     // Portal flood-fill depth: how many OPEN-doorway hops the canonlevel cull floods out
     // from the player's room. Higher = see further down a hall through open doors (more
     // rooms drawn); 1 = current room + direct neighbours only (tight). The flood is also
@@ -5173,6 +5178,14 @@ int main(int argc, char** argv) {
                     x3::logInfo("smoketest --world canonlevel: " + std::to_string(nLit) +
                                 " room point-lights fed for the visible set (cap 16)");
             }
+            // CPU per-object frustum (POV) cull toggle (cvar r_frustumcull). Applies in
+            // every world (not just canonlevel) — it gates the device's draw records
+            // against the camera frustum. Set each frame so console scrubbing is live.
+            // X3_SMOKE_NOFRUSTUM forces it OFF for the headless before/after perf A/B
+            // (no console under --smoketest); unset = follow the cvar (default on).
+            const bool frustumOn = std::getenv("X3_SMOKE_NOFRUSTUM")
+                ? false : (console->getInt("r_frustumcull") != 0);
+            device->setFrustumCull(frustumOn);
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
@@ -5242,6 +5255,19 @@ int main(int argc, char** argv) {
                 st.drawCalls, st.triangles, st.objectsDrawn, st.objectsSubmitted,
                 st.gpuFrameMs, stress.count());
             x3::logInfo(sb);
+            // POV-cull win: how many submitted draw records the frustum cull skipped
+            // this frame, what actually got drawn, and the resulting triangle count.
+            // (objectsDrawn = records that survived the cull + grouped; objectsSubmitted
+            // = every drawMesh() this frame; objectsCulled = the skipped delta.)
+            char fb[160];
+            const char* dir = std::getenv("X3_SMOKE_HALL")
+                ? "Main Hall, facing DOWN the -Z spine"
+                : "Jake's Cell, facing +X";
+            std::snprintf(fb, sizeof(fb),
+                "frustum: drew %u/%u objects (culled %u), submitted tris=%u [cam: %s]",
+                st.objectsDrawn, st.objectsSubmitted, st.objectsCulled, st.triangles,
+                (canonWorld ? dir : "default"));
+            x3::logInfo(fb);
         }
         x3::logInfo("smoketest: 30 frames + recreate OK");
         audio->shutdown();
@@ -6393,6 +6419,10 @@ int main(int argc, char** argv) {
             // any other bursts) one step. Frozen during a UI menu so chunks hold mid-
             // air with the rest of the sim. No-op cost when the pool is empty.
             device->gpuDebrisStep(simFrozen ? 0.0f : dt);
+            // CPU per-object frustum (POV) cull toggle (cvar r_frustumcull). Additive on
+            // top of the per-room PVS cull below; applies in every world. Set each frame
+            // so console scrubbing is live.
+            device->setFrustumCull(console->getInt("r_frustumcull") != 0);
             // Per-room occlusion cull (canonlevel): the portal flood-fill visible-room set
             // (frustum-directional, computed once in the lighting block above as
             // canonVisRooms) drives render(). A CLOSED door is opaque + stops the flood; far
