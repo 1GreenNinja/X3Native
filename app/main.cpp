@@ -803,7 +803,7 @@ int main(int argc, char** argv) {
          testBarrels = false, testGlass = false, testHoloterm = false, testTerminals = false, testSit = false, testEcs = false, testEcsRender = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
-         testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
+         testStreaming = false, testAi = false, testMultiFloorAi = false, testDoorCode = false, testElevator = false,
          testElevatorFsm = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
@@ -1087,6 +1087,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-terrainplace") testTerrainPlace = true;
         else if (a == "--test-streaming") testStreaming = true;
         else if (a == "--test-ai") testAi = true;
+        else if (a == "--test-multifloor-ai") testMultiFloorAi = true;
         else if (a == "--test-bestiary") testBestiary = true;
         else if (a == "--test-bosses") testBosses = true;
         else if (a == "--test-act2bosses") testAct2Bosses = true;
@@ -1435,6 +1436,10 @@ int main(int argc, char** argv) {
     if (testAi) {
         x3::logInfo("running D-ai monster combat behaviour state-machine self-test...");
         return x3::game::runAiSelfTest() ? 0 : 1;
+    }
+    if (testMultiFloorAi) {
+        x3::logInfo("running multi-floor AI self-test (cross-floor enemy must not shoot through slabs)...");
+        return x3::game::runMultiFloorAiSelfTest() ? 0 : 1;
     }
     if (testBestiary) {
         x3::logInfo("running data-driven enemy bestiary roster self-test...");
