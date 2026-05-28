@@ -34,6 +34,7 @@
 #include "level1.h"
 #include "level_loader.h"                   // data-driven canonical level loader + per-room PVS cull (--test-canonlevel)
 #include "player.h"
+#include "swim_controller.h"                // Act 4 underwater swim/dive controller (--test-swim + --world swim)
 #include "monster.h"
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
@@ -1028,7 +1029,7 @@ int main(int argc, char** argv) {
     //   `version` cmd + the --version path work; print "version: X/Y passed".
     bool showVersion = false, testVersion = false;
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
-         testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
+         testGltf = false, testPlayer = false, testSwim = false, testInteract = false, testPickup = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
          testBarrels = false, testGlass = false, testHoloterm = false, testTerminals = false, testSit = false, testEcs = false, testEcsRender = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
@@ -1293,6 +1294,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-physics") testPhysics = true;
         else if (a == "--test-gltf") testGltf = true;
         else if (a == "--test-player") testPlayer = true;
+        else if (a == "--test-swim") testSwim = true;
         else if (a == "--test-interact") testInteract = true;
         else if (a == "--test-physprops") testPhysprops = true;
         else if (a == "--test-ragdoll") testRagdoll = true;
@@ -1515,6 +1517,10 @@ int main(int argc, char** argv) {
     if (testPlayer) {
         x3::logInfo("running player/character-controller (S3) self-test...");
         return x3::game::runPlayerSelfTest() ? 0 : 1;
+    }
+    if (testSwim) {
+        x3::logInfo("running swim/dive (Act 4 underwater) self-test...");
+        return x3::game::runSwimSelfTest() ? 0 : 1;
     }
     if (testInteract) {
         x3::logInfo("running button->door interaction (S4) self-test...");
@@ -3720,6 +3726,248 @@ int main(int argc, char** argv) {
             device->endFrame(frame);
         }
         demo.shutdown(); rphys->shutdown(); device->shutdown();
+        if (window) glfwDestroyWindow(window); glfwTerminate();
+        return 0;
+    }
+
+    // ======================================================================
+    // ---- Underwater SWIM showcase (--world swim) --------------------------
+    // Act 4 tier8 undersea foundation: spawn the player at depth ~5 m below the
+    // water surface (surfaceY = 0), surrounded by sea-creature stand-ins
+    // (sharks / squid / whale / manta) as static decoration boxes (no AI yet —
+    // a separate task). Headless: capture a still from the dive vantage.
+    // Walkable: WASD swim + mouse look, Space ascend, LeftCtrl descend, LeftShift
+    // boost, Esc to quit. Builds on app/swim_controller.{h,cpp}. Jolt (MIT) only.
+    if (worldMode == "swim") {
+        x3::logInfo("--world swim: building the Act 4 undersea showcase");
+        std::unique_ptr<x3::phys::IPhysicsWorld> sphys(x3::phys::createPhysicsWorld());
+        if (!sphys->init()) {
+            x3::logError("--world swim: physics init failed");
+            device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate(); return 1;
+        }
+
+        // ---- Shared meshes + textures.
+        // Box mesh used for both seafloor + creature stand-ins (varied scale).
+        std::vector<x3::rhi::MeshVertex> bv; std::vector<uint32_t> bi;
+        x3::prims::makeCube(0.5f, bv, bi);
+        auto boxMesh = device->createMesh(bv.data(), (uint32_t)bv.size(),
+                                          bi.data(), (uint32_t)bi.size());
+        // Seafloor as a big flat quad at y = -20.
+        x3::prims::PrimMesh floor = x3::prims::makeBox(60.0f, 0.5f, 60.0f, 0.0f, -20.5f, 0.0f, 0.5f);
+        auto floorMesh = device->createMesh(floor.verts.data(), (uint32_t)floor.verts.size(),
+                                            floor.index.data(), (uint32_t)floor.index.size());
+        sphys->addStaticMesh(floor.cverts.data(), (uint32_t)(floor.cverts.size() / 3),
+                             floor.cindex.data(), (uint32_t)floor.cindex.size());
+        // Sand-tinted seafloor texture (warm tan), checker so the surface reads.
+        auto sandPx = x3::prims::makeCheckerRGBA(128, 16, 200, 178, 120, 150, 130, 84);
+        auto sandTex = device->createTexture(sandPx.data(), 128, 128, true);
+        // Generic "creature" tile (mid-grey / blueish so the box stand-ins look
+        // marine until skinned models drop in).
+        auto creaturePx = x3::prims::makeSolidRGBA(8, 90, 110, 130);
+        auto creatureTex = device->createTexture(creaturePx.data(), 8, 8, true);
+
+        // ---- Sea-creature STATIC decorations. Stand-ins (boxes) at the
+        // positions where the rigged_glb sea-fauna models will be placed later
+        // (sea_giant_squid.glb / sea_hammerhead.glb / sea_humpback_whale.glb /
+        // sea_manta_ray.glb / GreatWhiteSharkGameReady.glb). Varied depths so
+        // the player can swim around them.
+        struct Creature {
+            const char* name;
+            float x, y, z;      // world position
+            float hx, hy, hz;   // half-extents (box stand-in)
+            float color[3];
+        };
+        const Creature creatures[] = {
+            // Name                      x      y      z    hx   hy   hz   tint
+            { "GreatWhiteShark",       10.0f, -6.0f,  4.0f, 2.2f, 0.6f, 0.6f, { 0.55f, 0.62f, 0.66f } },
+            { "sea_hammerhead",        -7.0f, -8.0f,  6.0f, 1.8f, 0.5f, 0.5f, { 0.62f, 0.66f, 0.70f } },
+            { "sea_giant_squid",       -3.0f,-14.0f, -8.0f, 1.0f, 1.8f, 1.0f, { 0.78f, 0.50f, 0.55f } },
+            { "sea_humpback_whale",   -18.0f,-10.0f, -2.0f, 5.5f, 1.5f, 1.5f, { 0.42f, 0.48f, 0.55f } },
+            { "sea_manta_ray",          6.0f,-12.0f, -7.0f, 2.0f, 0.2f, 2.5f, { 0.35f, 0.40f, 0.48f } },
+        };
+        const int kNumCreatures = (int)(sizeof(creatures) / sizeof(creatures[0]));
+
+        // Build per-creature box meshes (so we can give each a unique scale +
+        // collision so the swimmer can't tunnel through them).
+        std::vector<x3::rhi::MeshHandle> creatureMeshes;
+        creatureMeshes.reserve(kNumCreatures);
+        for (int i = 0; i < kNumCreatures; ++i) {
+            const auto& c = creatures[i];
+            x3::prims::PrimMesh m = x3::prims::makeBox(c.hx, c.hy, c.hz, c.x, c.y, c.z, 0.5f);
+            auto mh = device->createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                         m.index.data(), (uint32_t)m.index.size());
+            sphys->addStaticMesh(m.cverts.data(), (uint32_t)(m.cverts.size() / 3),
+                                 m.cindex.data(), (uint32_t)m.cindex.size());
+            creatureMeshes.push_back(mh);
+        }
+
+        // ---- Water + sky (sun-from-above tint) ---------------------------------
+        // Underwater base color comes from the WaterParams' deep tint when viewed
+        // from above; under the surface, the analytic sky gives a soft top-light.
+        { x3::rhi::IRenderDevice::SkyParams sk{};
+          sk.enabled = true;
+          // Sun directly above + slightly forward, intensity dialed for the
+          // through-water haze look.
+          sk.sunDir[0] = 0.0f; sk.sunDir[1] = 1.0f; sk.sunDir[2] = 0.1f;
+          sk.sunIntensity = 1.4f;
+          sk.haze = 0.6f;
+          sk.exposure = 1.0f;
+          device->setSkyParams(sk); }
+        { x3::rhi::IRenderDevice::WaterParams wp{};
+          wp.enabled = true;
+          wp.seaLevel = 0.0f;
+          wp.amplitude = 0.35f;
+          wp.steepness = 0.4f;
+          wp.waveLength = 16.0f;
+          wp.speed = 1.0f;
+          // Slightly more saturated blue so the underwater POV reads as ocean.
+          wp.deepColor[0]    = 0.02f; wp.deepColor[1]    = 0.06f; wp.deepColor[2]    = 0.10f;
+          wp.shallowColor[0] = 0.08f; wp.shallowColor[1] = 0.30f; wp.shallowColor[2] = 0.40f;
+          wp.specular = 8.0f; wp.fresnel = 0.02f;
+          device->setWaterParams(wp); }
+        // Two fill point lights: one near the player's spawn (so creatures
+        // catch a rim from the camera side), one over the sand (so the floor
+        // doesn't ink out).
+        { x3::rhi::PointLight pl[3];
+          pl[0].pos[0] = 0.0f;  pl[0].pos[1] = -3.0f; pl[0].pos[2] = 0.0f; pl[0].range = 18.0f;
+          pl[0].color[0] = 1.6f; pl[0].color[1] = 1.9f; pl[0].color[2] = 2.4f;
+          pl[1].pos[0] = 8.0f;  pl[1].pos[1] = -8.0f; pl[1].pos[2] = 4.0f; pl[1].range = 14.0f;
+          pl[1].color[0] = 1.0f; pl[1].color[1] = 1.4f; pl[1].color[2] = 1.8f;
+          pl[2].pos[0] = -10.0f; pl[2].pos[1] = -10.0f; pl[2].pos[2] = -2.0f; pl[2].range = 14.0f;
+          pl[2].color[0] = 1.2f; pl[2].color[1] = 1.5f; pl[2].color[2] = 1.8f;
+          device->setPointLights(pl, 3); }
+
+        // ---- Spawn the swimmer at depth ~5 m below the surface.
+        x3::game::SwimController swim;
+        x3::game::SwimController::Tuning swimT;
+        swimT.surfaceY = 0.0f;
+        swim.spawn(*sphys, 0.0f, -5.0f, 0.0f, swimT);
+
+        const float dt = 1.0f / 60.0f;
+
+        // Shared draw helper: floor + creature stand-ins.
+        auto drawScene = [&](const x3::rhi::FrameContext& frame) {
+            const float white[4] = { 1, 1, 1, 1 };
+            const float idM[16]  = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            device->drawMesh(frame, floorMesh, sandTex, white, idM);
+            for (int i = 0; i < kNumCreatures; ++i) {
+                const auto& c = creatures[i];
+                const float tint[4] = { c.color[0], c.color[1], c.color[2], 1.0f };
+                device->drawMesh(frame, creatureMeshes[i], creatureTex, tint, idM);
+            }
+        };
+
+        // ===== Headless capture (--world swim --screenshot <path>) =============
+        if (headless) {
+            // Vantage: at depth, looking forward toward the shark + hammerhead
+            // arc so creatures + seafloor all read in the frame.
+            float cam[5] = { 0.0f, -4.5f, -6.0f, 0.0f, -0.15f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("G:/X3Native/captures/swim.png");
+            const int kFrames = 30;
+            float waterT = 0.0f;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                sphys->step(dt);
+                waterT += dt;
+                { x3::rhi::IRenderDevice::WaterParams wp{};
+                  wp.enabled = true; wp.seaLevel = 0.0f; wp.time = waterT;
+                  wp.amplitude = 0.35f; wp.steepness = 0.4f; wp.waveLength = 16.0f; wp.speed = 1.0f;
+                  wp.deepColor[0]    = 0.02f; wp.deepColor[1]    = 0.06f; wp.deepColor[2]    = 0.10f;
+                  wp.shallowColor[0] = 0.08f; wp.shallowColor[1] = 0.30f; wp.shallowColor[2] = 0.40f;
+                  wp.specular = 8.0f; wp.fresnel = 0.02f;
+                  device->setWaterParams(wp); }
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 70.0f);
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) drawScene(frame);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world swim: wrote " + outPath);
+            else       x3::logError("--world swim: capture FAILED");
+            device->destroyMesh(boxMesh);
+            device->destroyMesh(floorMesh);
+            for (auto m : creatureMeshes) device->destroyMesh(m);
+            device->destroyTexture(sandTex);
+            device->destroyTexture(creatureTex);
+            sphys->shutdown(); device->shutdown();
+            if (window) glfwDestroyWindow(window); glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: SwimController drives the camera. =======
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        float waterT = 0.0f;
+        x3::logInfo("--world swim: WASD swim, Space ascend, LeftCtrl descend, "
+                    "LeftShift boost, mouse look, Esc to quit");
+        int lastWd = (int)W, lastHd = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+            auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+
+            // Build a swim input. LeftCtrl descend is encoded by combining
+            // moveFwd along a downward pitch — but with the swim controller's
+            // jumpPressed = ascend convention, we wire descend by simply
+            // applying a Y nudge after update() (the cleanest path without
+            // touching PlayerInput shape). Equivalent: just teleport the body
+            // a few cm down each frame LeftCtrl is held.
+            x3::game::PlayerInput in;
+            if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+            if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+            if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+            if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+            in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+            in.jumpPressed = kd(GLFW_KEY_SPACE);     // Space = ascend (held)
+            in.lookDX = ddx; in.lookDY = ddy;
+            swim.update(in, fdt, *sphys);
+            // LeftCtrl descend: nudge feet down at swim speed.
+            if (kd(GLFW_KEY_LEFT_CONTROL)) {
+                x3::phys::Vec3 p = sphys->getBodyPosition(swim.body());
+                p.y -= 3.5f * fdt;
+                sphys->setBodyPosition(swim.body(), p);
+            }
+            sphys->step(fdt);
+
+            // Animate water surface scroll.
+            waterT += fdt;
+            { x3::rhi::IRenderDevice::WaterParams wp{};
+              wp.enabled = true; wp.seaLevel = 0.0f; wp.time = waterT;
+              wp.amplitude = 0.35f; wp.steepness = 0.4f; wp.waveLength = 16.0f; wp.speed = 1.0f;
+              wp.deepColor[0]    = 0.02f; wp.deepColor[1]    = 0.06f; wp.deepColor[2]    = 0.10f;
+              wp.shallowColor[0] = 0.08f; wp.shallowColor[1] = 0.30f; wp.shallowColor[2] = 0.40f;
+              wp.specular = 8.0f; wp.fresnel = 0.02f;
+              device->setWaterParams(wp); }
+
+            float cx, cy, cz, cyaw, cpitch;
+            swim.camera(cx, cy, cz, cyaw, cpitch);
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWd || chh != lastHd) {
+                lastWd = cw; lastHd = chh;
+                if (cw > 0 && chh > 0) device->onResize((uint32_t)cw, (uint32_t)chh);
+            }
+            device->setCamera(cx, cy, cz, cyaw, cpitch, 70.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) drawScene(frame);
+            device->endFrame(frame);
+        }
+        device->destroyMesh(boxMesh);
+        device->destroyMesh(floorMesh);
+        for (auto m : creatureMeshes) device->destroyMesh(m);
+        device->destroyTexture(sandTex);
+        device->destroyTexture(creatureTex);
+        sphys->shutdown(); device->shutdown();
         if (window) glfwDestroyWindow(window); glfwTerminate();
         return 0;
     }
