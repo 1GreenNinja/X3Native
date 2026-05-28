@@ -4016,11 +4016,28 @@ int main(int argc, char** argv) {
 
         x3::game::Scene coScene;
 
-        // Flat arena: a large static ground plane at y=0.
+        // Flat arena: a large static ground plane at y=0 (physics).
         coPhys->addBox({ 60.0f, 0.5f, 60.0f }, { 0.0f, -0.5f, 0.0f },
                        0.0f, x3::phys::Layer::Static);
 
-        // Analytic sky.
+        // Visible ground quad (render mesh in the scene). Uses a concrete/asphalt
+        // checker so the arena floor reads clearly from the 3/4 camera.
+        {
+            std::vector<x3::rhi::MeshVertex> gvtx; std::vector<uint32_t> gixs;
+            x3::prims::makeGroundQuad(/*half=*/60.0f, /*tiles=*/30.0f, gvtx, gixs);
+            x3::game::Entity ge;
+            ge.mesh = device->createMesh(gvtx.data(), (uint32_t)gvtx.size(),
+                                         gixs.data(), (uint32_t)gixs.size());
+            auto gPx = x3::prims::makeCheckerRGBA(64, 8, 105, 112, 108, 55, 62, 58);
+            ge.tex  = device->createTexture(gPx.data(), 64, 64, true);
+            ge.baseColor[0] = ge.baseColor[1] = ge.baseColor[2] = ge.baseColor[3] = 1.0f;
+            ge.tag  = (uint32_t)x3::game::Tag::Static;
+            // Identity transform: ground sits at y=0, centered on the origin.
+            for (int gi = 0; gi < 16; ++gi) ge.transform[gi] = (gi % 5 == 0) ? 1.0f : 0.0f;
+            coScene.add(ge);
+        }
+
+        // Analytic sky + point lights so models are well-lit from every angle.
         {
             x3::rhi::IRenderDevice::SkyParams sp{};
             sp.enabled = true;
@@ -4028,6 +4045,22 @@ int main(int argc, char** argv) {
             sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.95f; sp.sunColor[2] = 0.85f;
             sp.sunIntensity = 1.0f; sp.haze = 0.3f; sp.exposure = 1.0f;
             device->setSkyParams(sp);
+        }
+        {
+            x3::rhi::PointLight coPl[5];
+            auto coSetL = [](x3::rhi::PointLight& l,
+                              float x, float y, float z,
+                              float r, float g, float b, float range) {
+                l.pos[0]=x; l.pos[1]=y; l.pos[2]=z; l.range=range;
+                l.color[0]=r; l.color[1]=g; l.color[2]=b;
+            };
+            // Overhead key + four fill lights to illuminate all character faces.
+            coSetL(coPl[0],   0.0f, 9.0f,  5.0f,  5.5f, 5.4f, 5.0f, 50.0f);
+            coSetL(coPl[1],  10.0f, 5.0f, 12.0f,  4.0f, 3.8f, 3.4f, 45.0f);
+            coSetL(coPl[2], -10.0f, 5.0f, 12.0f,  3.4f, 3.8f, 4.4f, 45.0f);
+            coSetL(coPl[3],  10.0f, 5.0f, -7.0f,  3.8f, 3.6f, 3.4f, 45.0f);
+            coSetL(coPl[4], -10.0f, 5.0f, -7.0f,  3.4f, 3.8f, 4.4f, 45.0f);
+            device->setPointLights(coPl, 5);
         }
 
         // Human player spawns slightly behind the squad.
@@ -4041,7 +4074,69 @@ int main(int argc, char** argv) {
         coSquad.addCompanion(*coPhys, -3.0f, 0.5f, -6.0f,  0.0f);   // left
         coSquad.addCompanion(*coPhys,  0.0f, 0.5f, -4.0f,  0.0f);   // center-rear
 
-        // Enemies: 3 BlueSynth-tuned MonsterSystems spread across the far side.
+        // ---- Visible character models for each companion + the player --------
+        // Each companion's physics is driven by Player (capsule); the companion has
+        // no visible mesh. We give each slot an INERT MonsterSystem (chaseSpeed=0,
+        // damage=0) loaded from a rigged GLB so drawMonster() renders the model.
+        // Each tick, after physics + scene.update(), we sync the monster entity's
+        // transform to the companion's Player::feet() + Player::yaw().
+        // Companion models: AnnaTactical.glb (female operative). Player: marcus_webb.glb.
+        constexpr uint32_t kCoNumViz = 4;  // 3 companions + 1 player visual
+        std::unique_ptr<x3::game::MonsterSystem> coViz[kCoNumViz];
+        const char* coVizModels[kCoNumViz] = {
+            "AnnaTactical.glb",   // companion slot 0 (right)
+            "AnnaTactical.glb",   // companion slot 1 (left)
+            "AnnaTactical.glb",   // companion slot 2 (center-rear)
+            "marcus_webb.glb",    // human player
+        };
+        // Initial spawn positions matching the player/squad spawn (visual bodies
+        // placed at the same feet positions; will be synced each tick).
+        const float coVizSpawn[kCoNumViz][3] = {
+            {  3.0f, 0.5f, -6.0f },
+            { -3.0f, 0.5f, -6.0f },
+            {  0.0f, 0.5f, -4.0f },
+            {  0.0f, 0.5f, -8.0f },
+        };
+        for (uint32_t v = 0; v < kCoNumViz; ++v) {
+            coViz[v] = std::make_unique<x3::game::MonsterSystem>();
+            x3::game::MonsterSystem::Tuning vt;
+            vt.hp         = 100;
+            vt.chaseSpeed = 0.0f;   // inert: the Player capsule owns movement
+            vt.damage     = 0;
+            vt.modelFile  = coVizModels[v];
+            vt.modelDirOverride = x3::game::riggedGlbRoot();
+            vt.modelScale = 1.0f;
+            vt.standUpZtoY = false;
+            coViz[v]->buildMonsterTuned(coScene, *device, *coPhys,
+                x3::game::riggedGlbRoot(),
+                { coVizSpawn[v][0], coVizSpawn[v][1], coVizSpawn[v][2] }, vt);
+        }
+
+        // Helper: sync a companion visual monster's scene-entity transform to the
+        // given feet position + facing yaw (called after scene.update() each tick so
+        // the physics-sync that runs inside scene.update() doesn't stomp our pose).
+        // Mirrors how monster.cpp bakes the yaw facing into the entity transform.
+        auto coSyncViz = [&](uint32_t vizIdx,
+                              const x3::phys::Vec3& feet, float yaw) {
+            const uint32_t eid = coViz[vizIdx]->entity();
+            if (eid == x3::game::kNoLink || eid >= coScene.size()) return;
+            x3::game::Entity& ve = coScene.get(eid);
+            // yaw +pi: rigged GLBs are authored facing +Z; local -Z is the game
+            // convention. Flip here to face the correct direction (same fix as
+            // MonsterSystem::update's facing bake in monster.cpp).
+            const float ry = yaw + 3.14159265358979f;
+            const float c = std::cos(ry), s = std::sin(ry);
+            // Column-major TRS: col0=(c,0,-s,0), col1=(0,1,0,0), col2=(s,0,c,0),
+            // col3=(tx,ty,tz,1). Scale=1.
+            ve.transform[0]=c;  ve.transform[1]=0.0f; ve.transform[2]=-s; ve.transform[3]=0.0f;
+            ve.transform[4]=0.0f; ve.transform[5]=1.0f; ve.transform[6]=0.0f; ve.transform[7]=0.0f;
+            ve.transform[8]=s;  ve.transform[9]=0.0f; ve.transform[10]=c; ve.transform[11]=0.0f;
+            ve.transform[12]=feet.x; ve.transform[13]=feet.y; ve.transform[14]=feet.z;
+            ve.transform[15]=1.0f;
+        };
+
+        // Enemies: 3 threat MonsterSystems spread across the far side of the arena.
+        // Using marcus_webb.glb (falls back to box if absent); real chase + damage.
         constexpr uint32_t kCoNumEnemies = 3;
         std::unique_ptr<x3::game::MonsterSystem> coEnemies[kCoNumEnemies];
         x3::game::MonsterSystem* coEnemyPtrs[kCoNumEnemies];
@@ -4057,8 +4152,11 @@ int main(int argc, char** argv) {
             t.type = x3::game::MonsterType::Guard;
             t.damage = 5; t.attackRange = 2.0f; t.attackCooldown = 1.5f;
             t.ranged = false; t.flyer = false;
-            // Try the BlueSynth model; falls back to the procedural box if absent.
-            t.modelFile = "blue_synth_seed1.glb";
+            // Use marcus_webb.glb for threats; falls back to the procedural box.
+            t.modelFile = "marcus_webb.glb";
+            t.modelDirOverride = x3::game::riggedGlbRoot();
+            // Hostile tint: slight warm-red to distinguish threats from allies.
+            t.tint[0]=1.3f; t.tint[1]=0.85f; t.tint[2]=0.8f; t.tint[3]=1.0f;
             coEnemies[e]->buildMonsterTuned(coScene, *device, *coPhys,
                 x3::game::riggedGlbRoot(),
                 { coExPos[e][0], coExPos[e][1], coExPos[e][2] }, t);
@@ -4072,9 +4170,10 @@ int main(int argc, char** argv) {
         if (headless) {
             const std::string coOutPath = screenshot ? screenshotPath
                                                      : std::string("w_companion.png");
-            // Elevated overhead camera: look down at the squad + threats.
-            float coCamX = 0.0f, coCamY = 18.0f, coCamZ = 2.0f;
-            float coCamYaw = 0.0f, coCamPitch = -1.0f;   // ~57 deg down
+            // 3/4 elevated camera: back + left of the squad, looking toward the threats
+            // so the player, companions, and enemies are all visible in frame.
+            float coCamX = -8.0f, coCamY = 12.0f, coCamZ = -12.0f;
+            float coCamYaw = 0.65f, coCamPitch = -0.52f;  // look toward +X+Z
             if (shotCamOverride) {
                 coCamX = shotCam[0]; coCamY = shotCam[1]; coCamZ = shotCam[2];
                 coCamYaw = shotCam[3]; coCamPitch = shotCam[4];
@@ -4093,6 +4192,12 @@ int main(int argc, char** argv) {
                 }
                 coPhys->step(coDt);
                 coScene.update(*coPhys);
+                // Sync companion + player visual models to their physics capsule positions.
+                for (uint32_t v = 0; v < 3u; ++v) {
+                    const x3::phys::Vec3 fp = coSquad.slot(v).player.feet();
+                    coSyncViz(v, fp, coSquad.slot(v).player.yaw());
+                }
+                coSyncViz(3, copp, coPlayer.yaw());
                 device->setCamera(coCamX, coCamY, coCamZ, coCamYaw, coCamPitch, 60.0f);
                 if (ci == kCoSettle - 1) device->armCapture(coOutPath.c_str());
                 auto coFrame = device->beginFrame();
@@ -4100,12 +4205,35 @@ int main(int argc, char** argv) {
                     coScene.render(*device, coFrame);
                     for (uint32_t e = 0; e < kCoNumEnemies; ++e)
                         coEnemies[e]->drawMonster(*device, coFrame, coScene);
+                    for (uint32_t v = 0; v < kCoNumViz; ++v)
+                        coViz[v]->drawMonster(*device, coFrame, coScene);
                 }
                 device->endFrame(coFrame);
             }
             const bool coWrote = device->captureFrame(coOutPath.c_str());
             if (coWrote) x3::logInfo("--world companion: wrote screenshot " + coOutPath);
             else         x3::logError("--world companion: capture FAILED");
+            // Assert non-trivial geometry was rendered (blank = ~0 triangles).
+            // drawCalls >= 1 (ground) + 7 models (each 1 primitive) = 8 minimum;
+            // triangles should be in the millions for GPU-skinned GLB characters.
+            {
+                const x3::rhi::RenderStats coSt = device->stats();
+                char coRb[256];
+                std::snprintf(coRb, sizeof(coRb),
+                    "--world companion: capture stats draws=%u tris=%u",
+                    coSt.drawCalls, coSt.triangles);
+                x3::logInfo(coRb);
+                if (coSt.drawCalls < 5u || coSt.triangles < 1000u) {
+                    x3::logError("--world companion: BLANK RENDER -- drawCalls or triangles too low");
+                }
+            }
+            // Tear down enemy + companion-viz ragdolls BEFORE physics shuts down
+            // (skinned death ragdolls leave Jolt bodies that must be removed while
+            // the world is alive — same pattern as MonsterManager::shutdown).
+            for (uint32_t e = 0; e < kCoNumEnemies; ++e)
+                coEnemies[e]->shutdownRagdoll();
+            for (uint32_t v = 0; v < kCoNumViz; ++v)
+                coViz[v]->shutdownRagdoll();
             coSquad.shutdown(*coPhys);
             coPhys->shutdown();
             device->shutdown();
@@ -4168,6 +4296,12 @@ int main(int argc, char** argv) {
             }
             coPhys->step(coDtLoop);
             coScene.update(*coPhys);
+            // Sync companion + player visual models to their physics capsule positions.
+            for (uint32_t v = 0; v < 3u; ++v) {
+                const x3::phys::Vec3 fp = coSquad.slot(v).player.feet();
+                coSyncViz(v, fp, coSquad.slot(v).player.yaw());
+            }
+            coSyncViz(3, coFeetPos, coPlayer.yaw());
 
             int coCW, coCH; glfwGetFramebufferSize(window, &coCW, &coCH);
             if (coCW != coLastW || coCH != coLastH) {
@@ -4181,10 +4315,17 @@ int main(int argc, char** argv) {
                 coScene.render(*device, coFr);
                 for (uint32_t e = 0; e < kCoNumEnemies; ++e)
                     coEnemies[e]->drawMonster(*device, coFr, coScene);
+                for (uint32_t v = 0; v < kCoNumViz; ++v)
+                    coViz[v]->drawMonster(*device, coFr, coScene);
             }
             device->endFrame(coFr);
         }
 
+        // Tear down ragdolls before the physics world (same as MonsterManager::shutdown).
+        for (uint32_t e = 0; e < kCoNumEnemies; ++e)
+            coEnemies[e]->shutdownRagdoll();
+        for (uint32_t v = 0; v < kCoNumViz; ++v)
+            coViz[v]->shutdownRagdoll();
         coSquad.shutdown(*coPhys);
         coPhys->shutdown();
         device->shutdown();
