@@ -29,6 +29,7 @@
 #include "asset_root.h"                    // portable assetRoot() (assets-LFS)
 #include "audio_root.h"                    // portable resolveAudio() (D: mirror / G: packs)
 #include "anim.h"                          // Skinner + --list-clips clip check
+#include "thirdperson.h"                    // FP/3P toggle + Jake avatar + held weapon (--test-thirdperson)
 #include "level1.h"
 #include "level_loader.h"                   // data-driven canonical level loader + per-room PVS cull (--test-canonlevel)
 #include "player.h"
@@ -221,10 +222,11 @@ void drawHoloReadout(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext
     }
 }
 
-// ---- Settings persistence (window size) in %LOCALAPPDATA%\x3native_settings.cfg ----
+// ---- Settings persistence in %LOCALAPPDATA%\x3native_settings.cfg ----
 // readWindowSize() overrides winW/winH at startup (returns true if a saved size exists,
-// so the host skips maximize-by-default); writeWindowSize() is the menu "SET AS DEFAULT"
-// action. Plain key=value text; a missing/garbled file is simply ignored.
+// so the host skips maximize-by-default); readAudioSettings() seeds the music/SFX
+// state; writeSettings() (the menu "SET AS DEFAULT" action) persists window size +
+// audio together. Plain key=value text; a missing/garbled file/key is simply ignored.
 static std::string x3SettingsPath() {
     const char* base = std::getenv("LOCALAPPDATA");
     return std::string(base && *base ? base : ".") + "\\x3native_settings.cfg";
@@ -243,9 +245,31 @@ static bool readWindowSize(uint32_t& w, uint32_t& h) {
     }
     return found;
 }
-static void writeWindowSize(uint32_t w, uint32_t h) {
+// Audio settings live in the same key=value cfg. Each is optional; defaults are
+// kept when a key is missing/garbled. musicVol/sfxVol are stored as plain floats.
+static void readAudioSettings(bool& musicOn, float& musicVol, float& sfxVol) {
+    std::ifstream f(x3SettingsPath());
+    if (!f) return;
+    std::string line;
+    while (std::getline(f, line)) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string k = line.substr(0, eq);
+        const char* vs = line.c_str() + eq + 1;
+        if      (k == "musicOn")  musicOn  = (std::strtol(vs, nullptr, 10) != 0);
+        else if (k == "musicVol") musicVol = (float)std::strtod(vs, nullptr);
+        else if (k == "sfxVol")   sfxVol   = (float)std::strtod(vs, nullptr);
+    }
+    auto clamp01 = [](float& v) { if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f; };
+    clamp01(musicVol); clamp01(sfxVol);
+}
+// Write ALL persisted settings (window size + audio) in one shot, so SET DEFAULT
+// captures the live audio sliders too. Reads the current audio model from the host.
+static void writeSettings(uint32_t w, uint32_t h, bool musicOn, float musicVol, float sfxVol) {
     std::ofstream f(x3SettingsPath());
-    if (f) f << "width=" << w << "\nheight=" << h << "\n";
+    if (f) f << "width=" << w << "\nheight=" << h << "\n"
+             << "musicOn=" << (musicOn ? 1 : 0) << "\n"
+             << "musicVol=" << musicVol << "\nsfxVol=" << sfxVol << "\n";
 }
 
 // Bundle passed to GLFW via the window user-pointer so the char/key callbacks
@@ -801,7 +825,8 @@ int main(int argc, char** argv) {
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
-         testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false;
+         testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
+         testThirdPerson = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1103,6 +1128,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-netinterp") testNetInterp = true;
         else if (a == "--test-netpredict") testNetPredict = true;
         else if (a == "--test-rescue") testRescue = true;
+        else if (a == "--test-thirdperson") testThirdPerson = true;
         else if (a == "--test-npctalk") testNpcTalk = true;
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-debris") testDebris = true;
@@ -1553,6 +1579,10 @@ int main(int argc, char** argv) {
     if (testRescue) {
         x3::logInfo("running F2 rescue (victim/companion/transform) self-test (R0-R5)...");
         return x3::game::runRescueSelfTest() ? 0 : 1;
+    }
+    if (testThirdPerson) {
+        x3::logInfo("running third-person view (Jake avatar + follow cam + held weapon) self-test (TP1-TP9)...");
+        return x3::game::runThirdPersonSelfTest() ? 0 : 1;
     }
     if (testNpcTalk) {
         x3::logInfo("running rescued-NPC talk/dialog -> companion self-test (T1-T7)...");
@@ -4397,6 +4427,16 @@ int main(int argc, char** argv) {
     x3::game::Arsenal arsenal;
     arsenal.loadViewmodels(*device, x3::game::riggedGlbRoot());
 
+    // ==================== THIRD-PERSON VIEW (FIRST MILESTONE) ====================
+    // Load the Jake avatar + the FP/3P toggle. FP is the DEFAULT (eye-cam + weapon
+    // viewmodel, unchanged). F5 flips to a follow/orbit camera behind+above the player
+    // with the animated Jake avatar (the held weapon socketed to its right hand). The
+    // player capsule/collision are untouched (camera change only). On a failed Jake
+    // load this stays unbuilt and FP keeps working. See app/thirdperson.* + F5 below.
+    x3::game::ThirdPersonView thirdPerson;
+    thirdPerson.build(scene, *device, x3::game::riggedGlbRoot());
+    bool prevF1 = false, prevF2 = false;
+
     // ---- PER-WEAPON FIRE SOUNDS (the user's "every gun sounds the same" fix) ----
     // Each WeaponDef carries a distinct sci-fi fireSfx (pack-relative WAV). Load each
     // unique one ONCE into a name->handle cache (keyed by the weapon name) so firing
@@ -5337,6 +5377,14 @@ int main(int argc, char** argv) {
     bool prevF3 = false;                 // F3 toggles the perf stats overlay
     float fireCooldown = 0.0f;          // seconds until the gun can fire again
     constexpr float kFireCooldown = 0.25f;
+    // Task #21 (FIX B): a single sustained auto-fire LOOP voice. Auto/loopable weapons
+    // (chaingun/smg/lightning, fireSfxLoop=true) play ONE looping WAV started on the
+    // rising edge of held fire and stopped the instant fire ends (release / weapon
+    // switch / empty mag / death / console-menu / sim freeze) — so a held auto reads
+    // as one continuous whine that cuts on release, instead of a per-round one-shot
+    // whose reverb tails stacked into a 5-7s roar. 0/invalid = no loop running.
+    x3::audio::LoopHandle fireLoop{};
+    x3::audio::SoundHandle fireLoopSnd{};   // the sound the current loop voice was started with
     // WEAPONS: rising-edge tracking for the number keys 1..N (weapon switch) + R (reload).
     bool prevWeaponKey[9] = {};
     bool prevReload = false;
@@ -5441,8 +5489,19 @@ int main(int argc, char** argv) {
     float prevCamX = 0.0f, prevCamZ = 0.0f; // for horizontal-speed footsteps
     bool  prevCamValid = false;
 
-    // ---- M9: start the low-volume looping ambient/music bed at launch ----
-    audio->playMusic(kMusicPath, /*loop*/true, /*vol*/0.25f);
+    // ---- Audio settings (persisted): seed the live music/SFX state from the cfg
+    // (defaults: music on, music vol 0.25 to match the launch bed, SFX 1.0), apply
+    // it to the audio system, THEN start the bed so it honors the saved volume/on. ----
+    bool  s_musicOn  = true;
+    float s_musicVol = 0.25f;
+    float s_sfxVol   = 1.0f;
+    readAudioSettings(s_musicOn, s_musicVol, s_sfxVol);
+    audio->setMasterSfxVolume(s_sfxVol);
+    audio->setMusicVolume(s_musicVol);
+    audio->setMusicEnabled(s_musicOn);
+    // M9: start the low-volume looping ambient/music bed at launch. playMusic remembers
+    // the track + current music volume; when musicOn is false the bed stays silent.
+    audio->playMusic(kMusicPath, /*loop*/true, s_musicVol);
 
     // ---- Optional debug noclip/fly camera (toggle with F). Not required by S3,
     // handy for inspecting the level. Off by default — gameplay is the walker.
@@ -5476,6 +5535,8 @@ int main(int argc, char** argv) {
         sm.bloom = true; sm.ssao = true; sm.ssgi = true; sm.shadows = true;
         sm.vsync = desc.vsync; sm.width = W; sm.height = H;
         sm.rtao = (console->getInt("r_rtao") != 0);   // RT AO: reflect the cvar (default OFF)
+        // Audio: seed from the persisted values applied to the audio system above.
+        sm.musicOn = s_musicOn; sm.musicVol = s_musicVol; sm.sfxVol = s_sfxVol;
         gameUi.init(*device, console.get(), sm);
         gameUi.setTitle(terrainWorld ? "X3 ENGINE" : "ESCAPE FROM LAB ZERO",
                         terrainWorld ? "open-world demo" : "Level 1 - Awakening");
@@ -5611,6 +5672,25 @@ int main(int argc, char** argv) {
             x3::logInfo(std::string("r_stats = ") + console->getString("r_stats"));
         }
         prevF3 = f3Now;
+
+        // F1 = FIRST-PERSON, F2 = THIRD-PERSON (rising edge; explicit per-mode keys,
+        // not a single toggle). FP is the default (eye-cam + weapon viewmodel); 3P
+        // shows the animated Jake avatar + a follow camera behind/above the player.
+        // Polled even with the console open (changes nothing the console types into).
+        // The avatar only exists when Jake loaded; otherwise the flag flips but FP
+        // keeps drawing. (Moved off F5 — F5 is the quicksave key, see doSave below.)
+        bool f1Now = (glfwGetKey(window, GLFW_KEY_F1) == GLFW_PRESS);
+        bool f2Now = (glfwGetKey(window, GLFW_KEY_F2) == GLFW_PRESS);
+        if (f1Now && !prevF1 && !terrainWorld && thirdPerson.thirdPerson()) {
+            thirdPerson.setThirdPerson(false);
+            x3::logInfo("view: FIRST-PERSON (eye-cam + weapon viewmodel)");
+        }
+        if (f2Now && !prevF2 && !terrainWorld && !thirdPerson.thirdPerson()) {
+            thirdPerson.setThirdPerson(true);
+            x3::logInfo("view: THIRD-PERSON (Jake avatar + follow cam; F1 to return)");
+        }
+        prevF1 = f1Now;
+        prevF2 = f2Now;
 
         // ---- WEAPONS: number keys 1..N switch the selected weapon; R reloads.
         // Suppressed while a keypad OR the cell terminal is active (those number/letter
@@ -5871,14 +5951,28 @@ int main(int argc, char** argv) {
                 if (keyDown(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
                 if (keyDown(GLFW_KEY_D)) in.moveStrafe += 1.0f;
                 if (keyDown(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+                // Arrow keys (RDP-friendly: mouse-look is flaky over Remote Desktop).
+                // Up/Down = forward/back; Left/Right = TURN (applied to lookDX below).
+                // Gated so they don't fight console history / terminal typing.
+                const bool arrowsLive = !consoleOpen && !termMode;
+                if (arrowsLive && keyDown(GLFW_KEY_UP))   in.moveFwd += 1.0f;
+                if (arrowsLive && keyDown(GLFW_KEY_DOWN)) in.moveFwd -= 1.0f;
                 // Right mouse button = walk forward (hold to autorun)
-                if (!consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
+                if (!consoleOpen && !simFrozen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS)
                     in.moveFwd += 1.0f;
                 in.sprint      = keyDown(GLFW_KEY_LEFT_SHIFT);
                 // Edge + mouse-look apply only on the first sub-step of the frame.
                 in.jumpPressed = firstSub && spaceNow && !prevSpace;   // rising edge
                 in.lookDX = firstSub ? ddx : 0.0f;
                 in.lookDY = firstSub ? ddy : 0.0f;
+                // Left/Right arrows turn the view via the same lookDX path the mouse uses,
+                // frame-rate-independent (~140 deg/s) — so you can play fine when the mouse
+                // is unusable (e.g. raw-relative look over Remote Desktop is way too jumpy).
+                if (firstSub && arrowsLive) {
+                    const float arrowYaw = (keyDown(GLFW_KEY_RIGHT) ? 1.0f : 0.0f)
+                                         - (keyDown(GLFW_KEY_LEFT)  ? 1.0f : 0.0f);
+                    in.lookDX += arrowYaw * 1000.0f * (float)dt;   // keyboard turn rate
+                }
 
                 // Cell terminal / keypad open for typing: swallow movement + jump so the
                 // keys (WASD/Space) type into the terminal instead of walking the player.
@@ -5891,7 +5985,7 @@ int main(int argc, char** argv) {
                     const bool kC    = keyDown(GLFW_KEY_C);
                     player.setStance(kCtrl ? x3::game::Player::Stance::Prone
                                    : kC    ? x3::game::Player::Stance::Crouch
-                                           : x3::game::Player::Stance::Stand);
+                                           : x3::game::Player::Stance::Stand, *physics);
                 }
 
                 player.update(in, x3::net::kSimDt, *physics);
@@ -5959,7 +6053,29 @@ int main(int argc, char** argv) {
         }
         camPitch += weaponRecoilPitch;
         if (camPitch >  1.55f) camPitch =  1.55f;   // keep within the look clamp
-        device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+
+        // ---- THIRD-PERSON: drive the Jake avatar from the player's feet/look + swap
+        // the RENDER camera to the follow/orbit cam (behind + above the player). The
+        // gameplay camX/camY/camZ (the EYE) is LEFT UNCHANGED so the fire ray, audio
+        // listener, flashlight, and prompts keep using the eye + look dir (FP-parity;
+        // over-the-shoulder 3P aim is a documented follow-on). Only the rendered
+        // viewpoint changes in 3P. No-op (renderCam == eye) in FP / unbuilt. ----
+        float renderCamX = camX, renderCamY = camY, renderCamZ = camZ;
+        if (!terrainWorld && !noclip && thirdPerson.thirdPerson() && thirdPerson.built()) {
+            const x3::phys::Vec3 pfeet = player.feet();
+            const float eyeH = camY - pfeet.y;   // current eye height (stance-aware)
+            // Room for the PVS cull so the avatar isn't culled with its own room.
+            uint32_t avatarRoom = x3::game::kNoRoom;
+            if (canonWorld && canonFloor.valid())
+                avatarRoom = canonFloor.roomAt(pfeet.x, pfeet.y, pfeet.z);
+            const bool crouchedNow = player.stance() != x3::game::Player::Stance::Stand;
+            thirdPerson.update(dt, scene, pfeet, eyeH, camYaw, camPitch, avatarRoom,
+                               crouchedNow, prevFire);   // prevFire = last frame's held-fire
+            const x3::game::ThirdPersonCamera tc =
+                thirdPerson.camera(pfeet, eyeH, camYaw, camPitch);
+            renderCamX = tc.camX; renderCamY = tc.camY; renderCamZ = tc.camZ;
+        }
+        device->setCamera(renderCamX, renderCamY, renderCamZ, camYaw, camPitch, 60.0f);
         // FLASHLIGHT (L toggles, default ON): re-issue the level's static ceiling
         // fixtures + a bright player-following light at the eye, so the dark halls
         // light up around you. Inserted FIRST so the 64-light cap never drops it.
@@ -6232,7 +6348,9 @@ int main(int argc, char** argv) {
         // projectiles are spawned into a host-owned list advanced below. Automatic
         // weapons fire while held; others fire on the LMB rising edge. ----
         (void)fireCooldown; (void)kFireCooldown;   // (legacy cooldown — arsenal owns timing now)
-        bool fireHeld = !uiCapture && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        // Merge: uiCapture (HEAD's combined console/menu/term/code gate) AND !simFrozen
+        // (doors-death-anim's menu-freeze gate) — suppress LMB fire while any UI panel is up.
+        bool fireHeld = !uiCapture && !simFrozen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         bool wantFire = arsenal.current().automatic ? fireHeld : (fireHeld && !prevFire);
         // In --world canonlevel the legacy `game` is unbuilt; the canon sidearm gates firing.
         const bool playerArmed = game.armed() || (canonWorld && canonPlay.armed());
@@ -6253,12 +6371,17 @@ int main(int argc, char** argv) {
             const x3::game::WeaponFxKind impactKind =
                 x3::game::fxKindFromId(arsenal.current().impactFx);
             const x3::audio::SoundHandle fireSnd = currentFireSfx();
+            // Task #21 FIX B: loopable weapons (fireSfxLoop=true) drive a single sustained
+            // LOOP voice (reconciled just below the fire block) instead of a per-round
+            // one-shot — so suppress the per-shot fire SFX here for those weapons.
+            const bool usesFireLoop = arsenal.current().fireSfxLoop;
             if (!shot.projectiles.empty()) {
                 // ---- Projectile weapon (plasma): spawn a travelling bolt. ----
                 const auto& pj = shot.projectiles[0];
                 projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pj.damage, 0.0f, pj.range, impactKind });
                 combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);
-                audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 0.9f);
+                if (!usesFireLoop)
+                    audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 0.9f);
                 x3::logInfo("fire: " + arsenal.current().name + " bolt launched");
             } else {
                 // ---- Hitscan weapon (pistol/SMG/shotgun): one onFire per pellet. ----
@@ -6311,12 +6434,41 @@ int main(int argc, char** argv) {
                     if (r.killed)
                         audio->playSound3D(sndDeath, r.endPoint.x, r.endPoint.y, r.endPoint.z, 1.0f, 1.0f);
                 }
-                audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 1.0f);
+                if (!usesFireLoop)
+                    audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 1.0f);
                 if (anyKill)      x3::logInfo("fire: enemy killed! (" + arsenal.current().name + ")");
                 else if (anyHit)  x3::logInfo("fire: enemy hit — HP " + std::to_string(lastHp));
             }
         }
         prevFire = fireHeld;
+
+        // ---- Task #21 FIX B: reconcile the sustained auto-fire LOOP voice EVERY frame.
+        // A loopable weapon's whine should play while the player is actively holding
+        // fire on a usable weapon, and CUT within a frame the instant any stop
+        // condition is true: trigger released (!fireHeld already folds in console-open
+        // and sim-frozen), not armed, dead, mid-reload, or out of ammo. Weapon switch
+        // is handled by comparing the desired loop SOUND to the running one (switching
+        // to a non-loop weapon, or a different loop WAV, stops the old voice). We never
+        // start a second voice because we hold a single fireLoop handle. ----
+        {
+            const x3::game::WeaponDef& cw = arsenal.current();
+            const bool hasAmmo = arsenal.infiniteAmmo() || arsenal.currentState().ammoInMag > 0;
+            const bool wantLoop = cw.fireSfxLoop && fireHeld && playerArmed &&
+                                  player.isAlive() && !arsenal.isReloading() && hasAmmo;
+            const x3::audio::SoundHandle desired = wantLoop ? currentFireSfx() : x3::audio::SoundHandle{};
+            // Stop the running loop if it shouldn't run, or if the desired sound changed
+            // (weapon switch between two loop weapons with different WAVs).
+            if (fireLoop.valid() && (!wantLoop || desired.id != fireLoopSnd.id)) {
+                audio->stopLoop(fireLoop);
+                fireLoop = x3::audio::LoopHandle{};
+                fireLoopSnd = x3::audio::SoundHandle{};
+            }
+            // Start a loop if one is wanted and none is running (rising edge / new weapon).
+            if (wantLoop && !fireLoop.valid() && desired.valid()) {
+                fireLoop = audio->startLoop(desired, 0.85f, 1.0f);  // 0.85 matches the old per-shot gain
+                fireLoopSnd = desired;
+            }
+        }
 
         // ---- WEAPONS: advance live projectile bolts. Each step moves the bolt and
         // raycasts the segment against Enemy then Static; on an enemy hit it deals
@@ -6406,6 +6558,15 @@ int main(int argc, char** argv) {
             }
             scene.render(*device, frame);
             if (canonWorld) canonDoors.drawMeshes(*device, frame);   // SM_Door_A doors (canonlevel)
+            // THIRD-PERSON: draw the animated Jake avatar at the player's position +
+            // the equipped weapon socketed to its right hand. Both are no-ops in FP /
+            // when Jake didn't load (avatarVisible() gates them). The avatar was posed
+            // + the hand-socket pose computed in thirdPerson.update() above.
+            if (!terrainWorld && thirdPerson.avatarVisible()) {
+                thirdPerson.drawAvatar(*device, frame, scene);
+                const bool heldArmed = game.armed() || (canonWorld && canonPlay.armed());
+                thirdPerson.drawHeldWeapon(*device, frame, scene, arsenal, heldArmed);
+            }
             // --world canonlevel gameplay: the sidearm pickup + animated enemies + Martinez
             // + the rescue girls, ROOM-GATED (only the visible rooms' characters are drawn/
             // skinned, so the cull's perf payoff is preserved with the characters in).
@@ -6509,7 +6670,12 @@ int main(int argc, char** argv) {
                 }
                 const VmPose vmPose = readViewmodelPose(*console);
                 const bool vmArmed = game.armed() || (canonWorld && canonPlay.armed());
-                if (arsenal.viewmodelsLoaded() && vmArmed) {
+                // THIRD-PERSON: hide the FP weapon viewmodel ENTIRELY (the gun is shown
+                // in the avatar's hand instead — drawn after scene.render below).
+                // viewmodelVisible() is true in FP / unbuilt, so FP behaviour is unchanged.
+                if (!thirdPerson.viewmodelVisible()) {
+                    // 3P: no FP viewmodel this frame.
+                } else if (arsenal.viewmodelsLoaded() && vmArmed) {
                     // WEAPONS: draw the SELECTED weapon's viewmodel (its own GLB +
                     // convention-correct base offsets). The live vm_* cvars are passed
                     // as DELTAS from the baked default so console tuning still nudges
@@ -6939,12 +7105,27 @@ int main(int argc, char** argv) {
                 prevUiMouse = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
             }
             gameUi.update(uin, *device, frame, hm, dt);
-            // Main-menu "SET AS DEFAULT" -> persist the current framebuffer size.
+
+            // ---- Audio settings -> live audio system. Push every frame from the
+            // SettingsModel; the setters are cheap and idempotent (setMusicEnabled
+            // early-returns when unchanged, so toggling Music stops/starts the bed
+            // exactly once, and the volume sliders quiet music/SFX immediately). ----
+            {
+                const x3::ui::SettingsModel& asm_ = gameUi.settings();
+                audio->setMasterSfxVolume(asm_.sfxVol);
+                audio->setMusicVolume(asm_.musicVol);
+                audio->setMusicEnabled(asm_.musicOn);
+            }
+
+            // Main-menu "SET AS DEFAULT" -> persist the current framebuffer size +
+            // the live audio settings (one cfg file).
             if (gameUi.wantSaveDefaults()) {
                 gameUi.clearSaveDefaults();
-                writeWindowSize((uint32_t)cw, (uint32_t)ch);
-                x3::logInfo("[settings] saved default resolution " +
-                            std::to_string(cw) + "x" + std::to_string(ch));
+                const x3::ui::SettingsModel& s = gameUi.settings();
+                writeSettings((uint32_t)cw, (uint32_t)ch, s.musicOn, s.musicVol, s.sfxVol);
+                x3::logInfo("[settings] saved defaults: resolution " +
+                            std::to_string(cw) + "x" + std::to_string(ch) +
+                            ", musicOn=" + (s.musicOn ? "1" : "0"));
             }
 
             // ---- Save/Load: pause-menu SAVE/LOAD buttons (polled from the UI) +
@@ -6983,12 +7164,12 @@ int main(int argc, char** argv) {
     combatFx.shutdown(*device);
     // TASK#12: tear down any in-flight SKINNED death ragdolls (Jolt bodies) BEFORE
     // physics shuts down, so a monster killed in the last ~0.7 s (mid-flop) doesn't
-    // touch a dead Jolt system when its IRagdoll is later destroyed. Fans across the
-    // Level1Game enemy groups; a no-op when nothing is ragdolling.
-    game.corridorEnemies().shutdown();
-    game.checkpointEnemies().shutdown();
-    game.chen().shutdown();
-    // The off-elevator Nexus (F4.5 Chorus) is a MultiPodBoss whose rigged pods also
+    // touch a dead Jolt system when its IRagdoll is later destroyed. game.shutdown()
+    // fans across EVERY Level1Game enemy group AND the single Martinez boss + Phase-3
+    // adds (the bare group calls missed Martinez/bossAdds -> exit crash after a boss
+    // kill); a no-op when nothing is ragdolling.
+    game.shutdown();
+    // The off-elevator Nexus (F4.5 Chorus) is a SpireNexus whose rigged pods also
     // spawn skinned death ragdolls — tear those Jolt bodies down too before physics.
     nexus.shutdown();
     if (canonPlay.built()) canonPlay.shutdown();   // --world canonlevel enemy ragdolls

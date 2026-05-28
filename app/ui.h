@@ -127,6 +127,14 @@ public:
     // focused). `value` is the current state (for display only). Takes one focus slot.
     bool toggle(const char* label, bool value, float x, float y, float w, float h);
 
+    // A labelled 0..1 horizontal slider row in [x,y,w,h]: draws `label` left, then a
+    // track + a handle whose position reflects `value` (clamped to [0,1]), and a
+    // right-aligned "NN%" readout. INTERACTIVE: click/drag along the track sets the
+    // value by mouse; while keyboard-focused, navLeft/navRight nudge by ~5%. Writes
+    // the new value through `value` and returns true on any frame it changed. Takes
+    // one focus slot (in call order). Generic — usable for any normalized scalar.
+    bool slider(const char* label, float& value, float x, float y, float w, float h);
+
     // A filled progress/stat bar (e.g. HP). Non-interactive, no focus. `frac` in
     // [0,1]; draws a dark track + a `fill`-colored bar + an optional `caption`
     // overlaid (nullptr = none).
@@ -262,6 +270,11 @@ struct SettingsModel {
     uint32_t dispW  = 0;           // LIVE framebuffer size (host sets each frame) -> Settings readout
     uint32_t dispH  = 0;
     bool saveDefault = false;      // Settings "SET DEFAULT" button -> host persists the current size
+
+    // ---- Audio (applied LIVE to the audio system by the host) -------------
+    bool  musicOn  = true;         // "Music ON/OFF" -> setMusicEnabled
+    float musicVol = 0.25f;        // "Music Volume" [0,1] -> setMusicVolume (matches the launch bed)
+    float sfxVol   = 1.0f;         // "SFX Volume"   [0,1] -> setMasterSfxVolume
 };
 
 // The main menu screen. Pure UI: returns an action via the state it requests.

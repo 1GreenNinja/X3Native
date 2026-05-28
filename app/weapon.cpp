@@ -334,12 +334,13 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.vmScale     = 0.24f;                 // longarm (~0.46 m held)
         w.muzzleFx    = "muzzle_smg";
         w.impactFx    = "impact_bullet";
-        // SHORT single-shot per round (Task #21 FIX A): the host plays fireSfx once per
-        // bullet. A long rapid-burst WAV stacked a dozen overlapping clips per trigger
-        // pull -> 5-7s of gunfire after release. A short crack per round stops the instant
-        // you let go yet still reads as rapid auto fire at this ROF.
-        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-66.wav";  // short -> stops on release
-        w.fireSfxLoop = false;  // per-round one-shot (was a looped rapid set)
+        // Task #21 FIX B (stoppable loop voice): autos play ONE sustained looping WAV
+        // started on the rising edge of held fire and stopped the instant the trigger
+        // releases (or on switch/empty/death/menu) — see the fire block in main.cpp.
+        // The old per-round one-shot stacked a dozen overlapping reverb tails into a
+        // 5-7s roar after release; a single stoppable loop cuts within a frame.
+        w.fireSfx     = "weapons/loops/Loopable_Rapid-Fires_Sci-Fi_Gun_7.wav";  // sustained auto loop
+        w.fireSfxLoop = true;   // host starts/stops a single loop voice (no per-round one-shot)
         r.push_back(w);
     }
 
@@ -430,12 +431,13 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.vmScale     = 0.26f;                        // heavy weapon (~0.49 m held)
         w.muzzleFx    = "muzzle_chaingun";
         w.impactFx    = "impact_bullet";
-        // SHORT single-shot per round (Task #21 FIX A): a short crack per bullet stops
-        // the instant the trigger is released — the long rapid-burst WAV stacked overlapping
-        // clips and roared for 5-7s after letting go. At this ROF short cracks still read as
-        // a rapid auto-fire chaingun.
-        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-30.wav";  // short -> stops on release
-        w.fireSfxLoop = false;  // per-round one-shot (was a looped rapid set)
+        // Task #21 FIX B (stoppable loop voice): the chaingun's continuous minigun whine
+        // is ONE looping WAV the host starts on the rising edge of held fire and stops the
+        // instant fire is released (or on switch/empty/death/menu). The old per-round
+        // one-shot at ~14 rounds/s stacked a dozen reverb tails into a 5-7s roar after
+        // release; the single loop cuts within a frame of letting go.
+        w.fireSfx     = "weapons/loops/Loopable_Rapid-Fires_Sci-Fi_Gun_7.wav";  // sustained minigun whine
+        w.fireSfxLoop = true;   // host starts/stops a single loop voice (no per-round one-shot)
         r.push_back(w);
     }
 
@@ -822,6 +824,40 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
     constexpr float kVmScaleBoost = 2.0f;   // Tim: 2x scale is CORRECT, NOT too big — keep it.
     constexpr float kVmBright     = 2.6f;   // lit (the real issue is the GLB TEXTURE being wrong, not size/brightness)
     composeTRS(model, bx, by, bz, d.vmScale * kVmScaleBoost, pos);
+    for (const auto& dr : vm.drawables) {
+        float fin[16];
+        x3::asset::mulMat4(model, dr.nodeTransform, fin);
+        const float litColor[4] = {
+            dr.baseColorFactor[0] * kVmBright,
+            dr.baseColorFactor[1] * kVmBright,
+            dr.baseColorFactor[2] * kVmBright,
+            dr.baseColorFactor[3],
+        };
+        device.drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
+                        x3::rhi::TextureHandle{ dr.baseColorTexId },
+                        litColor, fin);
+    }
+}
+
+bool Arsenal::currentHasDrawables() const {
+    if (m_sel < 0 || m_views.empty()) return false;
+    const ViewModel& sel = m_views[(size_t)m_sel];
+    if (!sel.drawables.empty()) return true;
+    return sel.fallbackIndex >= 0 && !m_views[(size_t)sel.fallbackIndex].drawables.empty();
+}
+
+void Arsenal::drawCurrentAt(x3::rhi::IRenderDevice& device,
+                            const x3::rhi::FrameContext& frame,
+                            const float model[16]) const {
+    if (m_sel < 0 || m_views.empty()) return;
+    const ViewModel& sel = m_views[(size_t)m_sel];
+    const ViewModel& vm  = (!sel.drawables.empty()) ? sel
+                         : (sel.fallbackIndex >= 0 ? m_views[(size_t)sel.fallbackIndex] : sel);
+    if (vm.drawables.empty()) return;
+    // Same brightness boost the FP viewmodel uses so the held gun reads lit in dark
+    // interiors. The caller owns the full world placement (hand-bone * grip * scale),
+    // so unlike drawCurrentViewmodel this does NO camera-relative posing.
+    constexpr float kVmBright = 2.6f;
     for (const auto& dr : vm.drawables) {
         float fin[16];
         x3::asset::mulMat4(model, dr.nodeTransform, fin);

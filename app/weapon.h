@@ -241,8 +241,12 @@ struct WeaponDef {
     // The host loads each distinct fireSfx once into a name->SoundHandle cache at init
     // and plays the CURRENT weapon's handle when it fires (headless: silent, no crash).
     std::string fireSfx      = "";
-    // Loopable fire SFX? (auto weapons can use a loop). Currently a hint only — the host
-    // plays fireSfx as a per-shot one-shot regardless; reserved for future loop voices.
+    // Loopable fire SFX? (Task #21 FIX B). When true the host plays fireSfx as ONE
+    // sustained LOOP voice (IAudioSystem::startLoop) begun on the rising edge of held
+    // fire and stopped the instant fire stops (release / weapon switch / empty mag /
+    // death / menu) — so a held auto = one continuous whine that cuts on release,
+    // instead of a per-round one-shot whose reverb tails stack into a long roar.
+    // When false the host plays fireSfx as a per-shot one-shot (unchanged).
     bool        fireSfxLoop  = false;
 };
 
@@ -389,6 +393,27 @@ public:
                               float extraRight = 0.0f, float extraDown = 0.0f) const;
 
     bool viewmodelsLoaded() const { return !m_views.empty(); }
+
+    // ---- Third-person HELD-weapon render (socket to the avatar's hand bone) --
+    // Draw the CURRENT weapon's loaded viewmodel meshes at an arbitrary world
+    // `model` matrix (column-major 4x4) — REUSING the same drawables loaded for the
+    // FP viewmodel (no asset duplication). The 3P avatar reads its right-hand bone
+    // world transform from the Skinner and composes it with a per-weapon grip
+    // offset to produce `model`, so the equipped gun rides in the avatar's hand and
+    // swaps automatically when the player switches weapons (m_sel). No-op if
+    // viewmodels weren't loaded / the current slot has no drawables. The per-weapon
+    // viewmodel scale (vmScale) is folded into `scale` so the host doesn't need it.
+    void drawCurrentAt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                       const float model[16]) const;
+
+    // The current weapon's viewmodel scale (vmScale) — exposed so the host can fold
+    // it into the hand-socket placement matrix it builds.
+    float currentViewmodelScale() const {
+        return (m_sel >= 0 && m_sel < (int)m_defs.size()) ? m_defs[(size_t)m_sel].vmScale : 0.18f;
+    }
+    // True iff the CURRENT weapon slot resolves to a non-empty set of drawables
+    // (its own load, or the pistol fallback). Lets the host gate the held-weapon draw.
+    bool currentHasDrawables() const;
 
     // ---- Checkpoint restore (save/load) -----------------------------------
     // Restore the selection + a per-weapon (ammoInMag,reserve) pair. `ammo` is

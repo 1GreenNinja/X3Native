@@ -108,6 +108,77 @@ inline PrimMesh makeBox(float hx, float hy, float hz,
     return m;
 }
 
+// A walkable RAMP wedge: a sloped top surface rising from y=0 at the LOW edge to
+// y=`rise` at the HIGH edge, over a horizontal run `run`, `halfW` wide. Built in
+// LOCAL space centered on the run axis at (cx,cy,cz) where cy is the LOW floor:
+//   - `axis`==1 (run along +Z): low edge at z=cz, high edge at z=cz+run (slope up
+//     toward +Z). Width spans x in [cx-halfW, cx+halfW].
+//   - `axis`==0 (run along +X): low edge at x=cx, high edge at x=cx+run.
+// `dir` flips the climb direction (+1 climbs toward +axis, -1 toward -axis). The
+// solid fills from the floor (cy) up to the sloped top, so a character walks UP it.
+// Produces render (with up-facing normal on the ramp top) + collision geometry.
+inline PrimMesh makeRamp(float cx, float cy, float cz,
+                         float halfW, float run, float rise,
+                         uint32_t axis, float dir,
+                         float uvScale = 1.0f) {
+    PrimMesh m;
+    auto quad = [&](float ax,float ay,float az, float bx,float by,float bz,
+                    float ccx,float ccy,float ccz, float dx,float dy,float dz,
+                    float nx,float ny,float nz, float u, float v) {
+        uint32_t base = (uint32_t)m.verts.size();
+        m.verts.push_back({{ax,ay,az},{nx,ny,nz},{0,0}});
+        m.verts.push_back({{bx,by,bz},{nx,ny,nz},{u,0}});
+        m.verts.push_back({{ccx,ccy,ccz},{nx,ny,nz},{u,v}});
+        m.verts.push_back({{dx,dy,dz},{nx,ny,nz},{0,v}});
+        m.index.insert(m.index.end(), {base, base+1, base+2, base, base+2, base+3});
+    };
+    // 6 corner points of the wedge. Run axis local coordinate `s` in [0,run]*dir.
+    const float s0 = 0.0f, s1 = run * dir;
+    auto P = [&](float w, float s, float yy, float& ox, float& oy, float& oz) {
+        oy = cy + yy;
+        if (axis == 1) { ox = cx + w; oz = cz + s; }
+        else           { ox = cx + s; oz = cz + w; }
+    };
+    // Low edge (s0): floor only. High edge (s1): floor up to rise. Top is sloped.
+    float LL[3], LR[3], HLb[3], HRb[3], HLt[3], HRt[3];
+    P(-halfW, s0, 0,    LL[0],LL[1],LL[2]);
+    P( halfW, s0, 0,    LR[0],LR[1],LR[2]);
+    P(-halfW, s1, 0,    HLb[0],HLb[1],HLb[2]);
+    P( halfW, s1, 0,    HRb[0],HRb[1],HRb[2]);
+    P(-halfW, s1, rise, HLt[0],HLt[1],HLt[2]);
+    P( halfW, s1, rise, HRt[0],HRt[1],HRt[2]);
+    const float su = run * uvScale, sv = halfW * 2 * uvScale;
+    // Sloped TOP: low edge (LL,LR) up to high-top (HLt,HRt). Up-ish normal.
+    quad(LL[0],LL[1],LL[2], LR[0],LR[1],LR[2], HRt[0],HRt[1],HRt[2], HLt[0],HLt[1],HLt[2], 0,1,0, su, sv);
+    // HIGH vertical face (riser at the top end). Normal along +run.
+    {
+        const float nz = (axis==1) ? dir : 0.0f, nx = (axis==1) ? 0.0f : dir;
+        quad(HLb[0],HLb[1],HLb[2], HRb[0],HRb[1],HRb[2], HRt[0],HRt[1],HRt[2], HLt[0],HLt[1],HLt[2], nx,0,nz, sv, rise*uvScale);
+    }
+    // Two side triangles (walls of the wedge). Emit as degenerate quads (tri).
+    {
+        // Left side (w=-halfW): LL, HLb, HLt.
+        uint32_t base = (uint32_t)m.verts.size();
+        m.verts.push_back({{LL[0],LL[1],LL[2]},{-1,0,0},{0,0}});
+        m.verts.push_back({{HLb[0],HLb[1],HLb[2]},{-1,0,0},{1,0}});
+        m.verts.push_back({{HLt[0],HLt[1],HLt[2]},{-1,0,0},{1,1}});
+        m.index.insert(m.index.end(), {base, base+1, base+2});
+        // Right side (w=+halfW): LR, HRt, HRb.
+        base = (uint32_t)m.verts.size();
+        m.verts.push_back({{LR[0],LR[1],LR[2]},{1,0,0},{0,0}});
+        m.verts.push_back({{HRt[0],HRt[1],HRt[2]},{1,0,0},{1,1}});
+        m.verts.push_back({{HRb[0],HRb[1],HRb[2]},{1,0,0},{1,0}});
+        m.index.insert(m.index.end(), {base, base+1, base+2});
+    }
+    // Collision: reuse render positions + indices.
+    m.cverts.reserve(m.verts.size() * 3);
+    for (const auto& vtx : m.verts) {
+        m.cverts.push_back(vtx.pos[0]); m.cverts.push_back(vtx.pos[1]); m.cverts.push_back(vtx.pos[2]);
+    }
+    m.cindex = m.index;
+    return m;
+}
+
 // Procedural NxN checker texture (RGBA8). Two contrasting colors per cell:
 // a light tint and a darker base. Defaults match the S1 blue-grey scheme.
 inline std::vector<uint8_t> makeCheckerRGBA(uint32_t n, uint32_t cell,

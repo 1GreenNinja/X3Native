@@ -57,6 +57,29 @@ void fromMat44(JPH::Mat44Arg src, float out[16]) {
 
 JPH::RVec3 worldPos(const float m[16]) { return JPH::RVec3(m[12], m[13], m[14]); }
 
+// Column-major float[16] -> JPH::Mat44 with the upper-3x3 basis renormalized to a
+// pure rotation (uniform scale stripped) and the translation preserved. Used before
+// handing a world matrix to Jolt's SetPose, whose GetQuaternion() asserts the result
+// is normalized (a scaled basis would otherwise trip the Debug IsNormalized assert).
+// Degenerate (near-zero-length) columns fall back to the identity axis so the result
+// is always a valid orthonormal basis.
+JPH::Mat44 sanitizeOrtho(const float m[16]) {
+    auto normCol = [](float x, float y, float z, JPH::Vec3 fallback) -> JPH::Vec3 {
+        float len2 = x*x + y*y + z*z;
+        if (len2 < 1e-12f) return fallback;
+        float inv = 1.0f / std::sqrt(len2);
+        return JPH::Vec3(x*inv, y*inv, z*inv);
+    };
+    JPH::Vec3 c0 = normCol(m[0],  m[1],  m[2],  JPH::Vec3::sAxisX());
+    JPH::Vec3 c1 = normCol(m[4],  m[5],  m[6],  JPH::Vec3::sAxisY());
+    JPH::Vec3 c2 = normCol(m[8],  m[9],  m[10], JPH::Vec3::sAxisZ());
+    return JPH::Mat44(
+        JPH::Vec4(c0, 0.0f),
+        JPH::Vec4(c1, 0.0f),
+        JPH::Vec4(c2, 0.0f),
+        JPH::Vec4(m[12], m[13], m[14], 1.0f));
+}
+
 class JoltRagdoll final : public IRagdoll {
 public:
     JoltRagdoll(IPhysicsWorld& world, const RagdollBoneDesc* bones, uint32_t n)
@@ -204,8 +227,17 @@ public:
         // Lower-level SetPose: directly take the world-space joint matrices. The root
         // offset is the root bone's world translation; the matrices we pass are full
         // world transforms, so pass a zero root offset (matrices are already world).
+        //
+        // Jolt's SetPose calls Mat44::GetQuaternion() on each matrix and (in a Debug
+        // build) asserts the result IsNormalized() before rotating bodies. The caller's
+        // bind-world matrices commonly carry a UNIFORM SCALE (e.g. the monster death
+        // ragdoll bakes the model scale into the placement), which makes the rotation
+        // columns non-unit and the extracted quaternion un-normalized -> Debug assert
+        // (Quat.inl:344). Strip the scale here (renormalize the 3x3 basis columns)
+        // before handing the matrix to Jolt so the quaternion is always normalized.
         std::vector<JPH::Mat44> mats(m_count);
-        for (uint32_t i = 0; i < m_count; ++i) mats[i] = toMat44(&worldMatrices[i*16]);
+        for (uint32_t i = 0; i < m_count; ++i)
+            mats[i] = sanitizeOrtho(&worldMatrices[i*16]);
         m_ragdoll->SetPose(JPH::RVec3::sZero(), mats.data());
         m_ragdoll->SetLinearAndAngularVelocity(JPH::Vec3::sZero(), JPH::Vec3::sZero());
         m_ragdoll->ResetWarmStart();
