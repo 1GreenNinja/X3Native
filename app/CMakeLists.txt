@@ -17,6 +17,9 @@ add_executable(X3Engine WIN32
     elevator.cpp
     weapon.cpp
     monster.cpp
+    ally.cpp
+    ally_ai.cpp
+    ally_arena.cpp
     anim.cpp
     melee.cpp
     objective.cpp
