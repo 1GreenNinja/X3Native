@@ -1,0 +1,233 @@
+/* =============================================================================
+   cyberpunk-x3native.css — Element Web override stylesheet
+   =============================================================================
+   Paired with theme.json. Drop this file into Element Web's webroot (e.g.
+   C:\opt\element-web\themes\cyberpunk-x3native.css) and reference it from
+   index.html OR load it via the "Add custom theme" feature in Element's
+   Appearance settings (paste the contents into the "custom theme" input).
+
+   Goal: make the chat read like an X3Native HUD — high contrast,
+   monospace-leaning, with portal-cyan emphasis on machine names and
+   code spans. Compatible with Element 1.11.x layouts; small-screen
+   responsive selectors preserved.
+   ========================================================================== */
+
+:root {
+  /* Core palette — matches theme.json semantic colors */
+  --bg-base:        #0a0e1a;  /* near-black with blue undertone */
+  --bg-panel:       #121826;  /* slightly lighter panel */
+  --bg-elevated:    #1a2333;  /* room cards, sidebar hover */
+  --bg-code:        #0f1420;  /* inline code backgrounds */
+
+  --fg-base:        #d4dde6;  /* off-white, slightly cool */
+  --fg-dim:         #8590a0;  /* metadata, timestamps */
+  --fg-faint:       #5a6470;  /* unread counts when nothing unread */
+
+  --accent-cyan:    #00ffd5;  /* portal-cyan from rifthub */
+  --accent-violet:  #b94dff;  /* Memory Hunter / Crystal Heart */
+  --accent-amber:   #ff8c1a;  /* alien sky */
+
+  --semantic-good:  #00ff88;
+  --semantic-warn:  #ffaa00;
+  --semantic-bad:   #ff3366;
+
+  --font-mono:    'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace;
+  --font-ui:      'Inter', 'Segoe UI', system-ui, sans-serif;
+  --font-display: 'Orbitron', 'Inter', system-ui, sans-serif;
+}
+
+/* ---- Global base ----------------------------------------------------------- */
+body, .mx_MatrixChat, .mx_HomePage {
+  background: var(--bg-base) !important;
+  color: var(--fg-base);
+  font-family: var(--font-ui);
+}
+
+/* ---- Sidebar (room list + space panel) ------------------------------------- */
+.mx_LeftPanel,
+.mx_SpacePanel {
+  background: var(--bg-base) !important;
+  border-right: 1px solid var(--bg-elevated);
+}
+.mx_RoomTile {
+  background: transparent;
+  border-bottom: 1px solid rgba(26, 35, 51, 0.4);
+}
+.mx_RoomTile:hover,
+.mx_RoomTile_selected {
+  background: var(--bg-elevated) !important;
+}
+.mx_RoomTile_name,
+.mx_SpaceItem_label {
+  color: var(--fg-base) !important;
+}
+.mx_RoomTile_subtitle {
+  color: var(--fg-dim) !important;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* ---- Room header ----------------------------------------------------------- */
+.mx_RoomHeader {
+  background: var(--bg-base) !important;
+  border-bottom: 1px solid var(--bg-elevated);
+}
+.mx_RoomHeader_nametext {
+  font-family: var(--font-display);
+  letter-spacing: 0.02em;
+}
+
+/* ---- Timeline / message list ---------------------------------------------- */
+.mx_RoomView_messagePanel,
+.mx_RoomView_body {
+  background: var(--bg-panel) !important;
+}
+.mx_EventTile {
+  padding: 4px 12px;
+}
+.mx_EventTile:hover {
+  background: rgba(26, 35, 51, 0.3);
+}
+.mx_EventTile_senderDetails .mx_DisambiguatedProfile_displayName {
+  color: var(--accent-cyan) !important;
+  font-family: var(--font-display);
+  font-weight: 600;
+}
+.mx_EventTile_avatar {
+  border: 2px solid var(--bg-elevated);
+}
+.mx_MessageTimestamp {
+  color: var(--fg-faint);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* ---- Code spans + blocks (portal-cyan emphasis) --------------------------- */
+.mx_EventTile_body code,
+.mx_EventTile_body pre,
+.mx_EventTile_body kbd,
+.mx_MessageComposer code {
+  font-family: var(--font-mono) !important;
+  background: var(--bg-code) !important;
+  color: var(--accent-cyan) !important;
+  border: 1px solid #1a2333;
+  border-radius: 3px;
+  padding: 1px 6px;
+}
+.mx_EventTile_body pre {
+  padding: 12px;
+  display: block;
+  overflow-x: auto;
+}
+.mx_EventTile_body pre code {
+  background: transparent !important;
+  border: none;
+  padding: 0;
+  color: var(--fg-base) !important;
+}
+
+/* ---- Mentions (@machine, @tim) -------------------------------------------- */
+.mx_Pill {
+  background: rgba(0, 255, 213, 0.12) !important;
+  color: var(--accent-cyan) !important;
+  border: 1px solid rgba(0, 255, 213, 0.3) !important;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+/* ---- Composer (message input) --------------------------------------------- */
+.mx_MessageComposer {
+  background: var(--bg-base) !important;
+  border-top: 1px solid var(--bg-elevated);
+}
+.mx_BasicMessageComposer_input {
+  font-family: var(--font-ui);
+  color: var(--fg-base);
+  background: var(--bg-panel);
+}
+
+/* ---- Right panel (room info) ---------------------------------------------- */
+.mx_RightPanel {
+  background: var(--bg-base) !important;
+  border-left: 1px solid var(--bg-elevated);
+}
+.mx_RightPanel_headerTitle {
+  font-family: var(--font-display);
+  letter-spacing: 0.02em;
+}
+
+/* ---- Buttons + interactive accents ---------------------------------------- */
+.mx_AccessibleButton_kind_primary {
+  background: var(--accent-cyan) !important;
+  color: var(--bg-base) !important;
+  font-weight: 600;
+}
+.mx_AccessibleButton_kind_primary:hover {
+  background: #66ffe0 !important;
+  box-shadow: 0 0 12px rgba(0, 255, 213, 0.4);
+}
+.mx_AccessibleButton_kind_danger {
+  background: var(--semantic-bad) !important;
+}
+
+/* ---- Notifications + badges ----------------------------------------------- */
+.mx_NotificationBadge {
+  background: var(--accent-cyan) !important;
+  color: var(--bg-base) !important;
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+.mx_NotificationBadge_highlighted {
+  background: var(--semantic-bad) !important;
+  color: white !important;
+}
+
+/* ---- Reactions ------------------------------------------------------------ */
+.mx_ReactionsRowButton {
+  background: var(--bg-elevated) !important;
+  border: 1px solid rgba(0, 255, 213, 0.15) !important;
+}
+.mx_ReactionsRowButton_selected {
+  background: rgba(0, 255, 213, 0.2) !important;
+  border-color: var(--accent-cyan) !important;
+}
+
+/* ---- Login / welcome ------------------------------------------------------ */
+.mx_AuthBody,
+.mx_Welcome {
+  background: linear-gradient(180deg, var(--bg-base) 0%, var(--bg-panel) 100%) !important;
+}
+.mx_AuthHeader_logo img {
+  filter: drop-shadow(0 0 8px rgba(0, 255, 213, 0.5));
+}
+
+/* ---- Subtle scanline texture (optional, removable) ------------------------ */
+/*
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    180deg,
+    transparent 0px,
+    transparent 2px,
+    rgba(0, 255, 213, 0.015) 2px,
+    rgba(0, 255, 213, 0.015) 3px
+  );
+  z-index: 9999;
+}
+*/
+
+/* ---- Username color overrides for fleet bots ------------------------------ */
+/* Apply to specific bot accounts so DJBOOTH always shows in violet, etc.
+   Element's username color is deterministic from the user_id hash; these
+   selectors target the rendered display name color for fleet identity. */
+[data-self="@djbooth"]     .mx_DisambiguatedProfile_displayName { color: #b94dff !important; }
+[data-self="@13700k"]      .mx_DisambiguatedProfile_displayName { color: #00ffd5 !important; }
+[data-self="@14900k"]      .mx_DisambiguatedProfile_displayName { color: #ff8c1a !important; }
+[data-self="@i5000"]       .mx_DisambiguatedProfile_displayName { color: #00ff88 !important; }
+[data-self="@i4400"]       .mx_DisambiguatedProfile_displayName { color: #ff66cc !important; }
+[data-self="@snake"]       .mx_DisambiguatedProfile_displayName { color: #3aafff !important; }
+[data-self="@mob_boss"]    .mx_DisambiguatedProfile_displayName { color: #ffaa00 !important; }
+[data-self="@laptop_og"]   .mx_DisambiguatedProfile_displayName { color: #ff3366 !important; }

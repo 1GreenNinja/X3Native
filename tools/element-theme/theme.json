@@ -1,0 +1,66 @@
+{
+  "name": "cyberpunk-x3native",
+  "is_dark": true,
+  "fonts": {
+    "faces": [
+      {
+        "font-family": "Orbitron",
+        "src": [
+          {
+            "url": "https://fonts.gstatic.com/s/orbitron/v34/yMJMMIlzdpvBhQQL_SC3X9yhF25-T1nyGy6BoWg1.woff2",
+            "format": "woff2"
+          }
+        ]
+      },
+      {
+        "font-family": "JetBrains Mono",
+        "src": [
+          {
+            "url": "https://fonts.gstatic.com/s/jetbrainsmono/v23/tDbY2o-flEEny0FZhsfKu5WU4xD-IQ-PuZJJXxfpAO7M.woff2",
+            "format": "woff2"
+          }
+        ]
+      }
+    ],
+    "general": "Inter, 'Segoe UI', system-ui, sans-serif",
+    "monospace": "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Consolas, monospace"
+  },
+  "colors": {
+    "accent-color": "#00ffd5",
+    "primary-color": "#00ffd5",
+    "warning-color": "#ffaa00",
+    "alert": "#ff3366",
+
+    "sidebar-color": "#0a0e1a",
+    "roomlist-background-color": "#0a0e1a",
+    "roomlist-text-color": "#d4dde6",
+    "roomlist-text-secondary-color": "#8590a0",
+    "roomlist-highlights-color": "#1a2333",
+    "roomlist-separator-color": "#1a2333",
+    "roomheader-background-color": "#0a0e1a",
+    "roomheader-text-color": "#d4dde6",
+    "roomheader-addroom-bg-color": "#1a2333",
+    "roomheader-addroom-fg-color": "#00ffd5",
+
+    "timeline-background-color": "#121826",
+    "timeline-text-color": "#d4dde6",
+    "secondary-content": "#8590a0",
+    "tertiary-content": "#5a6470",
+    "timeline-text-secondary-color": "#8590a0",
+    "timeline-highlights-color": "#1a2333",
+
+    "reaction-row-button-selected-bg-color": "#003a33",
+    "menu-selected-color": "#1a2333",
+
+    "username-colors": [
+      "#00ffd5",
+      "#b94dff",
+      "#ff8c1a",
+      "#00ff88",
+      "#ff3366",
+      "#ffaa00",
+      "#3aafff",
+      "#ff66cc"
+    ]
+  }
+}
