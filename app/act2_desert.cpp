@@ -269,6 +269,23 @@ void Act2Desert::build(Scene& scene, x3::rhi::IRenderDevice& device,
         p.salvariCount = m_survivors.count();
     }
 
+    // ===================================================================
+    // L10 — SAURIAN WARLORD boss (canon-aliens Reptilian Overlord enforcer). Spawned
+    // in a dedicated arena center deep in L10 (between the Overlord patrol and the
+    // cave mouth) using the canon-alien SaurianWarlord Tuning (HP 540, Boss type,
+    // 3 phases + memory-flash window aligned to the Adaptive-Hide rhythm). PRESENT
+    // at build but INERT (m_warlordSpawned=false) — arming the L10WarlordArena
+    // trigger latches it active. Once the Adaptive-Hide engine extension lands,
+    // setting adaptiveHideResist=0.6 on the Tuning row in canon_aliens.cpp lights up
+    // the "rotate damage type" rhythm.
+    // ===================================================================
+    {
+        const float Xwarlord = X0 + 680.0f;
+        m_warlord.spawn(scene, device, physics, m_modelDir,
+                        surfaceAt(Xwarlord, Z0, kDesertEnemyYOff),
+                        canonAlienTuning(CanonAlien::SaurianWarlord));
+    }
+
     // ---- Triggers (host's shared TriggerSystem; ids forwarded to onTrigger).
     // FRESH 90+ id range so this shares one TriggerSystem with act2_world (80..82)
     // and the Act-1 systems without colliding. ----
@@ -281,6 +298,7 @@ void Act2Desert::build(Scene& scene, x3::rhi::IRenderDevice& device,
         };
         addGate(Xt910,  Z0, 6.0f,  14.0f, Act2DesertTrigger::L9toL10Transition);
         addGate(Xcave,  Z0, 10.0f, 14.0f, Act2DesertTrigger::L10CaveEntrance);
+        addGate(X0 + 680.0f, Z0, 12.0f, 14.0f, Act2DesertTrigger::L10WarlordArena);
         addGate(Xt1011, Z0, 6.0f,  14.0f, Act2DesertTrigger::L10toL11Transition);
         addGate(X11,    Z0, 16.0f, 16.0f, Act2DesertTrigger::L11CulturalExchange);
     }
@@ -322,6 +340,7 @@ void Act2Desert::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     // The Overlord patrol attacks only while the player is alive (matches act2_world).
     IDamageSink* atk = (player && player->isAlive()) ? player : nullptr;
     m_patrol.update(dt, scene, physics, eye, atk, attackFx);
+    if (m_warlordSpawned) m_warlord.update(dt, scene, physics, eye, atk, attackFx);
 
     // Allied Salvari (contacts + camp survivors): movement-only, stationary markers
     // (chaseSpeed 0) — they never fight the player.
@@ -361,6 +380,12 @@ void Act2Desert::onTrigger(uint32_t triggerId) {
                 x3::logInfo("Act2: Salvari cultural-exchange beat reached");
             }
             break;
+        case Act2DesertTrigger::L10WarlordArena:
+            if (!m_warlordSpawned) {
+                m_warlordSpawned = true;
+                x3::logInfo("Act2: L10 WARLORD ARENA armed — Saurian Warlord active");
+            }
+            break;
     }
 }
 
@@ -388,13 +413,19 @@ bool Act2Desert::onInteract(uint32_t interactId) {
 
 FireResult Act2Desert::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                               Scene& scene, x3::phys::IPhysicsWorld& physics) {
-    // Only the hostile Overlord patrol is a valid target (allied Salvari excluded).
+    // L10 Warlord (when armed) takes priority — return its hit if any.
+    if (m_warlordSpawned) {
+        FireResult rw = m_warlord.fire(eye, dir, scene, physics);
+        if (rw.hitMonster) return rw;
+    }
+    // Otherwise fire against the L10 Overlord patrol (allied Salvari excluded).
     return m_patrol.fire(eye, dir, scene, physics);
 }
 
 void Act2Desert::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                       const Scene& scene) const {
     m_patrol.drawAll(device, frame, scene);
+    if (m_warlordSpawned) m_warlord.drawAll(device, frame, scene);
     m_contacts.drawAll(device, frame, scene);
     m_survivors.drawAll(device, frame, scene);
 }
@@ -565,6 +596,25 @@ bool runAct2DesertSelfTest() {
         check(world.l10Reached() && world.caveFound() && world.l11Reached() &&
               world.culturalExchangeDone(),
               "D11 L9->L10 / cave / L10->L11 / cultural-exchange triggers latch their beats");
+    }
+
+    // ---- L10 Saurian Warlord boss (canon-aliens) — PRESENT at load but INERT;
+    // arming the L10WarlordArena trigger latches it active. ----
+    {
+        // Warlord built (1 monster in manager) but INERT at load (m_warlordSpawned=false).
+        bool buildOk = world.warlord().count() == 1 && !world.warlordSpawned();
+        bool tuningOk = false;
+        if (world.warlord().count() == 1) {
+            const MonsterSystem& w = world.warlord().at(0);
+            tuningOk = w.maxHp() == 540 && w.type() == MonsterType::Boss && w.alive();
+        }
+        check(buildOk && tuningOk,
+              "D15 Saurian Warlord PRESENT at load (HP 540, Boss-typed, alive) but INERT (warlordSpawned=false)");
+
+        // Arming the L10WarlordArena trigger latches the boss live.
+        world.onTrigger((uint32_t)Act2DesertTrigger::L10WarlordArena);
+        check(world.warlordSpawned(),
+              "D16 L10WarlordArena trigger latches warlordSpawned=true (boss goes live)");
     }
 
     // ---- L9 -> L10 -> L11 chain reachable (both transitions registered + enabled +
