@@ -153,7 +153,7 @@ ingress:
 1. **Login** as `@<machine>:tims-fleet.xyz` using an access token saved at `~/.claude/.matrix_token` (mode 700)
 2. **Sync loop** — persistent connection to the homeserver, receives events as they arrive (sub-second latency)
 3. **Inbox writer** — for every message in a room the machine is in OR direct message to the machine: append a JSON line to `~/.claude/.matrix_inbox.jsonl` (parallels the existing Slack inbox pattern)
-4. **Outbox listener** — local IPC (Windows named pipe `\\.\pipe\matrix-<machine>` or HTTP localhost:47XXX) — Claude session POSTs an outgoing message + room + reply-to; daemon ships it to Matrix
+4. **Outbox listener** — local IPC: Windows named pipe `\\.\pipe\matrix-<machine>` is the primary surface. On non-Windows hosts (the laptop OG if it's Linux), fall back to a Unix domain socket at `~/.claude/matrix-<machine>.sock`. Claude session POSTs an outgoing JSON message + room + reply-to; daemon ships it to Matrix and replies with the event_id.
 5. **Presence** — daemon emits `m.presence` updates every 5 min indicating the machine is alive; Element clients show fleet machines as 🟢 / 🟡 / ⚫️ in the sidebar widget
 6. **Reconnection** — on connection loss, exponential backoff retry; logs to `~/.claude/.matrix-daemon.log`
 
