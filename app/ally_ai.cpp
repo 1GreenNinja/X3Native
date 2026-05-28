@@ -175,17 +175,8 @@ constexpr float kAllyRepoStepTime  = 0.35f;   // brief Reposition dwell
 
 } // namespace
 
-const char* allyStateName(AllyState s) {
-    switch (s) {
-        case AllyState::Follow:     return "Follow";
-        case AllyState::Engage:     return "Engage";
-        case AllyState::Reposition: return "Reposition";
-        case AllyState::Reload:     return "Reload";
-        case AllyState::TakeCover:  return "TakeCover";
-        case AllyState::Search:     return "Search";
-    }
-    return "?";
-}
+// allyStateName() is defined in ally.cpp (Phase A) alongside the other name
+// lookup functions; this file's state transitions reference it as an extern.
 
 // ---------------------------------------------------------------------------
 // setWeapon — flip the per-ally weapon slot on EVERY ally of that kind.
@@ -596,7 +587,7 @@ void AllyManager::update(float dt,
                          x3::phys::IPhysicsWorld& physics,
                          const x3::phys::Vec3& playerPos,
                          const HostileQueryFn& hostileQuery,
-                         x3::ai::INavigation* nav) {
+                         x3::ai::INavGrid* nav) {
     (void)nav;   // optional; Phase B doesn't path-find — direct steps only.
 
     for (auto& a : m_allies) {

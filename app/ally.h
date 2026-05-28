@@ -272,7 +272,7 @@ public:
                 x3::phys::IPhysicsWorld& physics,
                 const x3::phys::Vec3& playerPos,
                 const HostileQueryFn& hostileQuery,
-                x3::ai::INavigation* nav);
+                x3::ai::INavGrid* nav);
 
     // Resolve a raycast hit against the ally roster. Called by the host's
     // shoot-resolver (player fire / monster fire) to centralise the friendly-
