@@ -193,11 +193,19 @@ public:
     // are carried now and consumed by later milestones (refraction, fresnel/specular,
     // frost). `opacity` 0 = crystal clear, 1 = fully opaque (the primary dial).
     struct GlassMaterial {
-        float opacity    = 0.35f;            // 0 = clear .. 1 = opaque (blend alpha)
+        float opacity    = 0.35f;            // 0 = clear .. 1 = opaque (body-vs-transmission mix)
         float refraction = 0.03f;            // screen-space distortion strength (M2)
         float roughness  = 0.0f;             // 0 = polished .. 1 = frosted (M4)
-        float specular   = 0.6f;             // shimmer / specular strength (M3)
-        float tint[3]    = { 1.0f, 1.0f, 1.0f }; // glass color; white = colorless
+        float specular   = 0.6f;             // analytic specular (sun + point glints) strength
+        float tint[3]    = { 1.0f, 1.0f, 1.0f }; // glass baseColor; white = colorless
+        // ---- UE5-style PBR params (M5 shiny+transparent rework) ---------------
+        // Defaulted so every existing drawMeshGlass/Entity call site still compiles
+        // (the holo-terminal, glass_test, level glass all keep their behaviour). The
+        // glass.frag Filament Cook-Torrance path consumes these; see glass.frag.
+        float metallic   = 0.0f;             // 0 = dielectric glass .. 1 = metal (F0 = baseColor)
+        float ior        = 1.5f;             // index of refraction (glass 1.5 -> F0 0.04); drives F0 + bend
+        float reflectance = 0.5f;            // UE5 "Specular" analog, used only when ior <= 1.0
+        float transmittanceColor[3] = { 1.0f, 1.0f, 1.0f }; // tints the SCENE BEHIND (UE5 thin-translucent)
     };
 
     // Submit a translucent glass draw. `glass.opacity` overrides baseColorFactor's

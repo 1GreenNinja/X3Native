@@ -2,23 +2,28 @@
 #extension GL_EXT_nonuniform_qualifier : require
 
 // Translucent GLASS fragment shader — the transparent pass companion to mesh.frag
-// (design spec docs/superpowers/specs/2026-05-25-glass-material-design.md).
+// (design spec docs/GLASS_MATERIAL_SPEC.md). M5 rework: a genuinely SHINY +
+// TRANSPARENT UE5-modeled material (Filament Cook-Torrance BRDF + roughness-aware
+// fresnel environment reflection), clean-room from the public Filament / LearnOpenGL
+// / UE5 docs.
 //
 // Drawn in a dedicated post-opaque pass: depth-tested LESS_OR_EQUAL against the
 // opaque depth, depth-write OFF, alpha-blended (SRC_ALPHA / ONE_MINUS_SRC_ALPHA)
 // into the SAME linear HDR scene the opaque pass produced. It shares the mesh
 // pipeline's vertex shader (mesh.vert), the four mesh descriptor sets (bindless
 // textures set0, camera UBO+SSBO set1, shadow map set2, SSAO set3) AND a glass-only
-// set4 (scene-color copy + GlassControl UBO), so it reads the exact same per-object
-// payload PLUS the screen behind it.
+// set4 (scene-color copy + GlassControl UBO + frost-blur), so it reads the exact
+// same per-object payload PLUS the screen behind it.
 //
-// MILESTONES:
-//   M1 (alpha see-through): lit like the opaque mesh, output alpha = opacity.
-//   M2 (screen-space REFRACTION): sample a COPY of the scene captured before this
-//      pass at screenUV + (screen-space normal * refraction), so the scene behind
-//      the glass BENDS. Strength from GlassMaterial.refraction.
-//   M3 (fresnel + specular shimmer): later.
-//   M4 (roughness / frost): later.
+// COMPOSITE (energy-split, see GLASS_MATERIAL_SPEC.md):
+//   throughGlass = refracted scene behind (roughness -> blur via the frost copy),
+//                  lightly tinted by transmittanceColor.
+//   reflection   = fresnel-weighted environment (screen reflection + sky gradient).
+//   specSum      = analytic Cook-Torrance glints off the sun + point lights.
+//   interior     = mix(throughGlass, litBody, opacity)
+//   color        = interior*kT + reflection + specSum + emissive
+//   With a scene copy we write vec4(color,1) (opaque-replace: we supply the bent
+//   background); else alpha-blend lifted by fresnel.
 // NON-glass fragments DISCARD here (they belong to the opaque pass).
 
 layout(set = 0, binding = 0) uniform sampler2D textures[];
@@ -46,9 +51,9 @@ layout(set = 3, binding = 1) uniform SsaoControl {
 // ---- Glass-only set 4 -----------------------------------------------------
 // binding 0: the scene-color COPY captured AFTER the opaque pass, BEFORE this
 //            pass (so we can sample the scene behind the glass while writing HDR).
-//            Mip-chained for the frost lookup (M4); M2 samples mip 0.
 // binding 1: per-frame control (camera pos + time + screen->UV + dev overrides +
-//            camera right/up for the screen-space normal projection).
+//            camera right/up for the screen-space normal/reflection projection).
+// binding 2: a pre-blurred copy of the scene (frost) — leaned on by roughness.
 layout(set = 4, binding = 0) uniform sampler2D sceneCopy;     // sharp scene behind glass
 layout(set = 4, binding = 1) uniform GlassControl {
     vec4 camPos;     // xyz = camera world pos, w = time
@@ -57,7 +62,7 @@ layout(set = 4, binding = 1) uniform GlassControl {
     vec4 camRight;   // xyz = camera RIGHT axis (world)
     vec4 camUp;      // xyz = camera UP axis (world)
 } g;
-layout(set = 4, binding = 2) uniform sampler2D sceneFrost;   // blurred scene (M4 frost)
+layout(set = 4, binding = 2) uniform sampler2D sceneFrost;   // blurred scene (frost)
 
 layout(location = 0) in vec3 vNormal;
 layout(location = 1) in vec2 vUV;
@@ -67,8 +72,9 @@ layout(location = 4) in vec3 vWorldPos;
 layout(location = 5) flat in vec4 vEmissive;     // rgb = color, a = strength
 layout(location = 6) flat in uint vFlags;        // bit0 = TERRAIN, bit1 = GLASS
 layout(location = 7) flat in uvec2 vTerrainPack; // unused for glass
-layout(location = 8) flat in vec4 vGlassParams;  // x = refraction, y = roughness, z = specular
-layout(location = 9) flat in vec4 vGlassTint;    // rgb = tint
+layout(location = 8) flat in vec4 vGlassParams;  // x = refraction, y = roughness, z = specular, w = metallic
+layout(location = 9) flat in vec4 vGlassTint;    // rgb = tint (baseColor), w = ior
+layout(location = 10) flat in vec4 vGlassExtra;  // x = reflectance, yzw = transmittanceColor
 
 layout(location = 0) out vec4 outColor;
 
@@ -76,6 +82,11 @@ const uint FLAG_GLASS = 2u;
 
 const vec3 kSunDir   = normalize(vec3(0.4, 1.0, 0.3));
 const vec3 kSunColor = vec3(1.0, 0.97, 0.92);
+
+// ---- BRDF + fresnel constants (Filament / split-sum IBL; clean-room) -------
+const float PI = 3.14159265;
+const float MIN_PERCEPTUAL_ROUGH = 0.089;
+const float MAX_REFLECTION_LOD   = 5.0;   // sceneCopy mip count - 1 (LOD clamps if fewer)
 
 // 3x3 PCF (identical to mesh.frag) — glass is still lit by the sun so it doesn't
 // read as a flat slab in the dark.
@@ -103,31 +114,47 @@ float pointAtten(float dist, float range) {
     return w / (dist * dist + 1.0);
 }
 
-// ---- M3: fresnel + specular shimmer helpers --------------------------------
-// Schlick fresnel: reflectance rises toward grazing angles. F0 ~ 0.04 (glass/
-// dielectric at normal incidence). cosTheta = dot(N, V). Clean-room standard.
-float fresnelSchlick(float cosTheta, float F0) {
-    float m = clamp(1.0 - cosTheta, 0.0, 1.0);
-    float m2 = m * m;
-    return F0 + (1.0 - F0) * (m2 * m2 * m);   // F0 + (1-F0)(1-cos)^5
+// ---- Filament Cook-Torrance BRDF + UE5 F0 (clean-room, public docs) --------
+// F0 from IOR (dielectric) or baseColor (metal). For glass ior 1.5 -> 0.04.
+// When ior <= 1 (authoring chose the UE5 "Specular"/reflectance dial instead),
+// fall back to 0.16*reflectance^2 (Filament's remapping).
+vec3 computeF0(vec3 baseColor, float metallic, float ior, float reflectance) {
+    float f0d;
+    if (ior > 1.0) { float t = (ior - 1.0) / (ior + 1.0); f0d = t * t; }
+    else           { f0d = 0.16 * reflectance * reflectance; }
+    return mix(vec3(f0d), baseColor, metallic);
 }
-
-// GGX (Trowbridge-Reitz) normal distribution for the specular highlight lobe.
-// rough in (0,1]; smaller rough -> sharper, brighter glint. The standard form.
-float ggxSpec(vec3 N, vec3 H, float rough) {
-    float a  = max(rough * rough, 1e-3);
+// GGX (Trowbridge-Reitz) normal distribution; a = roughness^2 (linear roughness).
+float D_GGX(float NoH, float a) {
     float a2 = a * a;
-    float ndh = max(dot(N, H), 0.0);
-    float d = (ndh * ndh) * (a2 - 1.0) + 1.0;
-    return a2 / max(3.14159265 * d * d, 1e-4);
+    float d  = (NoH * NoH) * (a2 - 1.0) + 1.0;
+    return a2 / max(PI * d * d, 1e-7);
 }
-
-// A single light's specular contribution (Blinn-Phong half-vector + GGX lobe).
-vec3 specLight(vec3 N, vec3 V, vec3 L, vec3 radiance, float rough) {
+// Height-correlated Smith visibility (includes the 1/(4 NoL NoV) denominator).
+float V_SmithGGX(float NoV, float NoL, float a) {
+    float a2 = a * a;
+    float gv = NoL * sqrt(NoV * NoV * (1.0 - a2) + a2);
+    float gl = NoV * sqrt(NoL * NoL * (1.0 - a2) + a2);
+    return 0.5 / max(gv + gl, 1e-5);
+}
+// Schlick fresnel (analytic lights).
+vec3 F_Schlick(float u, vec3 f0) {
+    float f = pow(1.0 - u, 5.0);
+    return f0 + (1.0 - f0) * f;
+}
+// Roughness-aware fresnel for the environment term: a rough surface keeps a dimmer,
+// broader rim (Sebastien Lagarde). pr = perceptual roughness.
+vec3 F_SchlickRough(float NoV, vec3 f0, float pr) {
+    return f0 + (max(vec3(1.0 - pr), f0) - f0) * pow(1.0 - NoV, 5.0);
+}
+// One analytic light's Cook-Torrance specular contribution (already * NoL).
+vec3 specBRDF(vec3 N, vec3 V, vec3 L, vec3 radiance, vec3 f0, float a) {
     vec3 H = normalize(L + V);
-    float spec = ggxSpec(N, H, rough);
-    // Normalize the lobe energy a touch so low roughness doesn't blow out.
-    return radiance * spec * 0.25;
+    float NoV = max(dot(N, V), 1e-4);
+    float NoL = max(dot(N, L), 0.0);
+    float NoH = max(dot(N, H), 0.0);
+    float VoH = max(dot(V, H), 0.0);
+    return (D_GGX(NoH, a) * V_SmithGGX(NoV, NoL, a)) * F_Schlick(VoH, f0) * radiance * NoL;
 }
 
 void main() {
@@ -135,138 +162,142 @@ void main() {
     // and already rendered.
     if ((vFlags & FLAG_GLASS) == 0u) discard;
 
-    vec3 N = normalize(vNormal);
-
-    // ---- Per-object glass material (M2-M4), with optional live dev override. ----
+    // ---- Per-object glass material, with optional live dev override. ----
     // ctrl.w == 1 -> scale/add the authored material (r_glass_* scrubbing).
     float refraction = vGlassParams.x;
     float roughness  = clamp(vGlassParams.y, 0.0, 1.0);
     float specular   = vGlassParams.z;
+    float metallic   = clamp(vGlassParams.w, 0.0, 1.0);
+    float ior        = vGlassTint.w;
+    float reflectance = vGlassExtra.x;
+    vec3  transmit   = vGlassExtra.yzw;
     if (g.ctrl.w > 0.5) {
         refraction *= g.ctrl.x;
         roughness   = clamp(roughness + g.ctrl.y, 0.0, 1.0);
         specular   *= g.ctrl.z;
     }
-    // View vector (fragment -> camera) for fresnel + specular.
+    // Defaults if a draw left a lane zeroed (legacy glass before M5): keep it glass.
+    if (ior < 1.0)          ior = 1.5;
+    if (reflectance <= 0.0) reflectance = 0.5;
+    if (dot(transmit, transmit) < 1e-6) transmit = vec3(1.0);
+
+    // Perceptual roughness -> linear a (Filament). Clamp the floor so a "polished"
+    // pane still has a finite, stable highlight.
+    float perceptualR = clamp(roughness, MIN_PERCEPTUAL_ROUGH, 1.0);
+    float a = perceptualR * perceptualR;
+
+    vec3 N = normalize(vNormal);
     vec3 V = normalize(g.camPos.xyz - vWorldPos);
-    float time = g.camPos.w;
+    float NoV = max(dot(N, V), 1e-4);
 
-    // Body color: the bound texture (holo UI / white) tinted by the glass color.
-    // vFactor.rgb carries the per-object baseColor; vGlassTint.rgb is the glass
-    // tint. Treat white tint (default) as colorless.
+    // Body / baseColor: bound texture (holo UI / white) * per-object factor * tint.
     vec3 texel = texture(textures[nonuniformEXT(vTexIndex)], vUV).rgb;
-    vec3 tint  = vGlassTint.rgb;
-    vec3 body  = texel * vFactor.rgb * tint;
+    vec3 baseColor = texel * vFactor.rgb * vGlassTint.rgb;
 
-    // ---- M2: screen-space REFRACTION + M4: ROUGHNESS / FROST -------------
-    // Project the world-space surface normal onto the screen plane (camera right/up)
-    // to get the in-screen bend direction, then sample the scene-color copy at the
-    // refraction-offset UV. The copy is the scene as it looked BEFORE this glass was
-    // drawn (you can't sample + write the live HDR target in one pass). M4: also
-    // sample a pre-blurred copy and LERP sharp->frosted by roughness, so the scene
-    // through the glass goes from crisp (polished) to milky (frosted).
+    // F0 (specular reflectance at normal incidence) from IOR/metallic.
+    vec3 f0 = computeF0(baseColor, metallic, ior, reflectance);
+
+    // ---- Screen geometry shared by refraction + reflection -----------------
     vec2 screenUV = gl_FragCoord.xy * g.screen.xy;
-    vec3 refractedScene = vec3(0.0);
     bool haveScene = g.screen.w > 0.5;
     bool haveFrost = g.screen.z > 0.5;
+
+    // ---- Ambient (used by the body fill + the reflection sky gradient) ------
+    vec3 ambient = cam.ambientCount.rgb;
+
+    // ---- (A) REFRACTED BACKGROUND (the scene seen THROUGH the pane) --------
+    // Project N onto the screen plane (camera right/up) for the in-screen bend
+    // direction; offset scales with refraction*(ior-1) so a stronger IOR bends more.
+    // Sample the sharp copy at a roughness-driven LOD (clamps to mip0 if the copy is
+    // single-mip) AND lerp toward the pre-blurred frost copy by roughness, so the
+    // scene goes crisp (polished) -> milky (frosted). transmittanceColor lightly
+    // tints the background (UE5 thin-translucent), NOT a flat body slab.
+    vec3 throughGlass = vec3(0.0);
     if (haveScene) {
         vec2 nScreen = vec2(dot(N, g.camRight.xyz), dot(N, g.camUp.xyz));
-        vec2 offUV   = nScreen * refraction;
-        vec2 sampUV  = clamp(screenUV + offUV, vec2(0.0), vec2(1.0));
-        vec3 sharp   = textureLod(sceneCopy, sampUV, 0.0).rgb;
-        if (haveFrost && roughness > 0.001) {
-            // Frosted glass scatters: a frosted pane jitters the lookup a touch (so
-            // even the blurred sample isn't a clean mirror of the scene) and leans on
-            // the blurred copy. smoothstep gives a gentle ramp so low roughness stays
-            // nearly clear. Sample the blurred copy at the SAME offset UV.
-            vec3 frost = textureLod(sceneFrost, sampUV, 0.0).rgb;
-            float fmix = smoothstep(0.0, 0.85, roughness);
-            refractedScene = mix(sharp, frost, fmix);
-        } else {
-            refractedScene = sharp;
-        }
+        vec2 offUV   = nScreen * refraction * (ior - 1.0) * 2.0;
+        vec2 sUV     = clamp(screenUV + offUV, vec2(0.0), vec2(1.0));
+        float lod    = perceptualR * MAX_REFLECTION_LOD;
+        vec3 sharp   = textureLod(sceneCopy, sUV, lod).rgb;
+        vec3 frost   = haveFrost ? textureLod(sceneFrost, sUV, 0.0).rgb : sharp;
+        throughGlass = mix(sharp, frost, smoothstep(0.2, 0.9, perceptualR))
+                       * mix(vec3(1.0), transmit, 0.65);
     }
 
-    // ---- Lighting (same model as the opaque mesh) — used for the glass BODY ----
-    // The specular accumulator (M3) collects the bright glints the BODY lighting
-    // would miss: a sharp lobe off the sun + the nearby point lights, scaled by the
-    // material's specular and sharpened by (1 - roughness).
-    float specRough = mix(0.06, 0.6, roughness);   // polished -> sharp, frosted -> broad
-    float ndl = max(dot(N, kSunDir), 0.0);
+    // ---- (B) ENVIRONMENT REFLECTION (the biggest visual win) ----------------
+    // Reflect V about N, project to screen, sample the scene copy along it + a
+    // sky/ambient gradient fallback; fresnel-weight (roughness-aware) so even a
+    // frosted pane keeps a rim. With NO scene copy we still get the sky gradient.
+    vec3 R = reflect(-V, N);
+    vec2 rScreen = vec2(dot(R, g.camRight.xyz), dot(R, g.camUp.xyz));
+    vec3 sky = mix(ambient * 0.6, kSunColor * 1.2, clamp(R.y * 0.5 + 0.5, 0.0, 1.0));
+    vec3 reflScene = haveScene
+        ? textureLod(sceneCopy, clamp(screenUV + rScreen * 0.25, vec2(0.0), vec2(1.0)),
+                     perceptualR * MAX_REFLECTION_LOD).rgb
+        : sky;
+    vec3 envRefl = haveScene ? mix(sky, reflScene, 0.6) : sky;
+    vec3 Fenv = F_SchlickRough(NoV, f0, perceptualR);
+    vec3 reflection = envRefl * Fenv;
+
+    // ---- (C) ANALYTIC SPECULAR (sharp Cook-Torrance glints) ----------------
+    float ndl    = max(dot(N, kSunDir), 0.0);
     float shadow = sampleShadow(vWorldPos, ndl);
-    vec3 lighting = kSunColor * (0.75 * ndl * shadow);
-    vec3 specSum = specLight(N, V, kSunDir, kSunColor, specRough) * shadow;
-
-    vec3 ambient = cam.ambientCount.rgb;
-    float up = N.y * 0.5 + 0.5;
-    float ao = 1.0;
-    if (ssao.ctrl.x > 0.5) {
-        vec2 aoUV = gl_FragCoord.xy * ssao.ctrl.zw;
-        float aoSample = texture(ssaoTex, aoUV).r;
-        ao = mix(1.0, aoSample, clamp(ssao.ctrl.y, 0.0, 1.0));
-    }
-    lighting += ambient * mix(0.85, 1.25, up) * ao;
+    vec3 specSum = specBRDF(N, V, kSunDir, kSunColor, f0, a) * shadow;
 
     int n = int(cam.ambientCount.w);
     for (int i = 0; i < n && i < kMaxPointLights; ++i) {
         vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
         float dist = length(toL);
         vec3  L    = toL / max(dist, 0.0001);
+        float att  = pointAtten(dist, cam.lights[i].posRange.w);
+        specSum   += specBRDF(N, V, L, cam.lights[i].colorPad.rgb, f0, a) * att;
+    }
+    specSum *= max(specular, 0.0);
+
+    // ---- (D) LIT BODY (the diffuse fill for opaque-ish / tinted panes) ------
+    // Standard sun + ambient (+ optional SSAO) diffuse over the dielectric base.
+    float ao = 1.0;
+    if (ssao.ctrl.x > 0.5) {
+        vec2 aoUV = gl_FragCoord.xy * ssao.ctrl.zw;
+        float aoSample = texture(ssaoTex, aoUV).r;
+        ao = mix(1.0, aoSample, clamp(ssao.ctrl.y, 0.0, 1.0));
+    }
+    float up = N.y * 0.5 + 0.5;
+    vec3 diffuseColor = baseColor * (1.0 - metallic);
+    vec3 litBody = diffuseColor * (kSunColor * (0.75 * ndl * shadow)
+                                   + ambient * mix(0.85, 1.25, up) * ao);
+    // Point-light diffuse on the body.
+    for (int i = 0; i < n && i < kMaxPointLights; ++i) {
+        vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
+        float dist = length(toL);
+        vec3  L    = toL / max(dist, 0.0001);
         float pndl = max(dot(N, L), 0.0);
         float att  = pointAtten(dist, cam.lights[i].posRange.w);
-        lighting  += cam.lights[i].colorPad.rgb * (pndl * att);
-        specSum   += specLight(N, V, L, cam.lights[i].colorPad.rgb, specRough) * att;
+        litBody   += diffuseColor * cam.lights[i].colorPad.rgb * (pndl * att);
     }
 
-    // ---- M3: Schlick FRESNEL + animated GLINT ----------------------------
-    // Fresnel: glass reflects more at grazing angles + edges (cosTheta -> 0). This
-    // both BRIGHTENS the rim (an environment-tinted sheen) and LIFTS the alpha so a
-    // crystal-clear pane still reads as a surface instead of an invisible plane.
-    float cosV    = max(dot(N, V), 0.0);
-    float fresnel = fresnelSchlick(cosV, 0.04);     // dielectric F0
-    // A subtle time-animated glint: a slow shimmer band scrolling across the surface
-    // (driven by world position + time) that rides on the fresnel rim, so polished
-    // glass catches a moving sparkle. Cheap sin band, kept gentle.
-    float band  = sin(dot(vWorldPos, vec3(0.7, 1.3, 0.9)) * 1.5 + time * 1.6);
-    float glint = smoothstep(0.86, 1.0, band) * (0.5 + 0.5 * fresnel);
-
-    // The full specular term: GGX glints + fresnel sheen + animated glint, all
-    // scaled by the material's specular. A subtle environment-ish sheen colour
-    // (the ambient) tints the fresnel rim so it isn't pure white.
-    vec3 sheen   = mix(kSunColor, ambient + vec3(0.04), 0.5);
-    vec3 specOut = (specSum + sheen * (fresnel * 0.6 + glint * 0.5)) * max(specular, 0.0);
-
-    // ---- Compose the glass colour ----------------------------------------
-    // Split the body into its DIFFUSE part (the lit tinted surface — gated by opacity
-    // against what is seen through the glass) and ADDITIVE light: emissive glow +
-    // specular/fresnel shimmer. The additive light always rides ON TOP (a hologram's
-    // glow / a glint isn't hidden by a low opacity), which keeps the holo-terminal's
-    // emissive sweep + glints bright while still letting the glass read as see-through.
-    vec3 litDiffuse = body * lighting;
-    vec3 additive   = vEmissive.rgb * vEmissive.a + specOut;   // glow + shimmer (feeds bloom)
-
+    // ---- (E) COMPOSITE (energy split) --------------------------------------
+    // kS = fresnel reflectance; kT = transmitted energy that survives the reflection.
+    vec3  kS = Fenv;
+    float kT = 1.0 - max(max(kS.r, kS.g), kS.b);
     float opacity = clamp(vFactor.a, 0.0, 1.0);
+    vec3  emissive = vEmissive.rgb * vEmissive.a;   // additive holo glow (feeds bloom)
+
+    vec3 interior = mix(throughGlass, litBody, opacity);
+    vec3 color = interior * kT + reflection + specSum + emissive;
 
     if (haveScene) {
-        // SCREEN-SPACE refraction path: we have a copy of the scene behind the glass,
-        // so this fragment SUPPLIES its own background (the BENT scene) rather than
-        // letting the alpha blend reveal the un-bent live scene. Mix the (refracted,
-        // tinted) scene with the lit diffuse by opacity (clear pane -> mostly bent
-        // scene; opaque -> mostly body), then ADD the glow + shimmer. Output alpha = 1
-        // so the composed result fully replaces the live HDR pixel (which holds the
-        // SAME, but un-bent, scene).
-        vec3 throughGlass = refractedScene * mix(vec3(1.0), tint, 0.5);
-        outColor = vec4(mix(throughGlass, litDiffuse, opacity) + additive, 1.0);
+        // Opaque-replace: this fragment SUPPLIES its own (bent) background, so it
+        // fully replaces the live HDR pixel (which holds the same, un-bent, scene).
+        outColor = vec4(color, 1.0);
     } else {
-        // No scene copy (target failed / disabled): fall back to the M1 alpha
-        // see-through path (SRC_ALPHA blend reveals the live scene). Premultiply the
-        // additive glow/shimmer by (1/alpha won't work) — instead add it post-blend by
-        // baking it into the colour and LIFTING the alpha by fresnel so a low-opacity
-        // pane still catches light at its edges (never an invisible plane).
-        float outA = clamp(opacity + fresnel * (1.0 - opacity), 0.0, 1.0);
-        // Scale the additive term up by 1/outA so the SRC_ALPHA blend (which multiplies
-        // colour by outA) preserves the intended glow energy.
-        vec3 color = litDiffuse + additive / max(outA, 0.04);
-        outColor = vec4(color, outA);
+        // No scene copy: alpha-blend fallback (SRC_ALPHA reveals the live scene).
+        // Lift alpha by fresnel so a low-opacity pane still catches light at the rim
+        // (never an invisible plane); scale additive light by 1/alpha so the blend
+        // (which multiplies by alpha) preserves the intended energy.
+        float maxFenv = max(max(Fenv.r, Fenv.g), Fenv.b);
+        float outA = clamp(opacity + maxFenv * (1.0 - opacity), 0.0, 1.0);
+        vec3 outRGB = litBody + (reflection + specSum + emissive) / max(outA, 0.04);
+        outColor = vec4(outRGB, outA);
     }
 }

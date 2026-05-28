@@ -2778,6 +2778,237 @@ int main(int argc, char** argv) {
         return wroteOn ? 0 : 1;
     }
 
+    // ---- Glass material showcase (--world glass) ---------------------------
+    // M5 SHINY+TRANSPARENT glass proof: a lit room with DEPTH-RICH, recognizable,
+    // differently-colored boxes (and a bright emissive marker at varied depths)
+    // behind THREE angled panes — CLEAR, FROSTED, TINTED — so the reworked
+    // glass.frag (Filament Cook-Torrance + fresnel env reflection + screen-space
+    // refraction) reads as genuine see-through, glossy glass. Self-contained,
+    // no physics. Headless `--world glass --screenshot <path>` writes a PNG.
+    if (worldMode == "glass") {
+        x3::logInfo("--world glass: building the UE5-style glass material showcase");
+
+        // ---- Shared meshes + textures -------------------------------------
+        // A thin upright PANE (a flat-ish box): a quad-like slab the glass renders on.
+        x3::prims::PrimMesh paneGeo = x3::prims::makeBox(0.95f, 1.15f, 0.03f, 0.0f, 0.0f, 0.0f, 1.0f);
+        auto paneMesh = device->createMesh(paneGeo.verts.data(), (uint32_t)paneGeo.verts.size(),
+                                           paneGeo.index.data(), (uint32_t)paneGeo.index.size());
+        // Big floor + a LOW back wall so the scene behind the glass has structure but
+        // does not fill the frame with a dark mass.
+        x3::prims::PrimMesh floorGeo = x3::prims::makeBox(8.0f, 0.15f, 8.0f, 0.0f, -0.15f, 0.0f, 2.0f);
+        auto floorMesh = device->createMesh(floorGeo.verts.data(), (uint32_t)floorGeo.verts.size(),
+                                            floorGeo.index.data(), (uint32_t)floorGeo.index.size());
+        x3::prims::PrimMesh wallGeo = x3::prims::makeBox(8.0f, 3.5f, 0.15f, 0.0f, 3.5f, -6.0f, 1.5f);
+        auto wallMesh = device->createMesh(wallGeo.verts.data(), (uint32_t)wallGeo.verts.size(),
+                                           wallGeo.index.data(), (uint32_t)wallGeo.index.size());
+
+        auto whiteD  = x3::prims::makeSolidRGBA(16, 255, 255, 255);
+        auto whiteTex = device->createTexture(whiteD.data(), 16, 16, true);
+        auto floorD  = x3::prims::makeCheckerRGBA(64, 8, 90, 94, 110, 40, 44, 56);
+        auto floorTex = device->createTexture(floorD.data(), 64, 64, true);
+        const float wallTint[3] = { 1.2f, 1.25f, 1.4f };
+        auto wallD   = x3::prims::makeSciFiPanelRGBA(256, 3, wallTint);
+        auto wallTex = device->createTexture(wallD.data(), 256, 256, true);
+
+        // ---- Outdoor-ish lighting: analytic sky + bright fills ------------
+        { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = true; sp.sunIntensity = 1.6f; sp.haze = 0.3f;
+          device->setSkyParams(sp); }
+        { x3::rhi::PointLight pl[4];
+          pl[0].pos[0]=-2.5f; pl[0].pos[1]=2.6f; pl[0].pos[2]=-1.0f; pl[0].range=14.0f;
+          pl[0].color[0]=8.0f; pl[0].color[1]=7.6f; pl[0].color[2]=7.0f;
+          pl[1].pos[0]= 2.5f; pl[1].pos[1]=2.6f; pl[1].pos[2]=-1.0f; pl[1].range=14.0f;
+          pl[1].color[0]=7.0f; pl[1].color[1]=7.6f; pl[1].color[2]=8.0f;
+          pl[2].pos[0]= 0.0f; pl[2].pos[1]=3.0f; pl[2].pos[2]=-3.5f; pl[2].range=14.0f;
+          pl[2].color[0]=7.5f; pl[2].color[1]=7.5f; pl[2].color[2]=7.5f;
+          pl[3].pos[0]= 0.0f; pl[3].pos[1]=2.8f; pl[3].pos[2]= 2.5f; pl[3].range=14.0f;
+          pl[3].color[0]=6.0f; pl[3].color[1]=6.0f; pl[3].color[2]=7.0f;
+          device->setPointLights(pl, 4); }
+
+        // ---- Build the demo SCENE via the proven Scene + Entity path ------
+        // The Scene::render fan-out (drawMesh/drawMeshEmissive/drawMeshGlass) is the
+        // same code path the club / Level 1 / canonlevel use, so the colored boxes
+        // light + glow exactly like the club's neon strips. Each colored box gets a
+        // modest per-color emissive so it reads as a bright, recognizable object
+        // behind the glass and feeds the bloom chain (strength > 1 = HDR source).
+        x3::game::Scene gscene;
+        auto addStatic = [&](x3::rhi::MeshHandle mesh, x3::rhi::TextureHandle tex,
+                             const float col[4], const float em[4], const float xform[16]) {
+            x3::game::Entity e;
+            e.mesh = mesh; e.tex = tex;
+            for (int i = 0; i < 4; ++i)  e.baseColor[i] = col[i];
+            for (int i = 0; i < 4; ++i)  e.emissive[i]  = em ? em[i] : 0.0f;
+            for (int i = 0; i < 16; ++i) e.transform[i] = xform[i];
+            gscene.add(e);
+        };
+        auto addGlass = [&](x3::rhi::MeshHandle mesh, x3::rhi::TextureHandle tex,
+                            const float col[4], const x3::rhi::IRenderDevice::GlassMaterial& m,
+                            const float xform[16]) {
+            x3::game::Entity e;
+            e.mesh = mesh; e.tex = tex;
+            for (int i = 0; i < 4; ++i)  e.baseColor[i] = col[i];
+            for (int i = 0; i < 16; ++i) e.transform[i] = xform[i];
+            e.transparent = true; e.glass = m;
+            gscene.add(e);
+        };
+
+        // Floor + back wall (the opaque room).
+        const float white4[4]   = {1,1,1,1};
+        const float idF[16]     = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+        addStatic(floorMesh, floorTex, white4, nullptr, idF);
+        addStatic(wallMesh,  wallTex,  white4, nullptr, idF);
+
+        // Depth-rich colored boxes behind where the panes will sit. A modest
+        // self-emissive in each box's own color guarantees they read as bright,
+        // recognizable colored blocks (and a strong WHITE marker deep in the scene
+        // so transparent panes clearly transmit a glowing object). FOLLOWS THE
+        // CLUB1127 PATTERN: each box is its own makeBox authored at its world
+        // position with IDENTITY transform — the proven path that lights + glows.
+        std::vector<x3::rhi::MeshHandle> boxMeshes;
+        struct ColBox { float cx, cy, cz, half; float r, g, b, em; };
+        const ColBox cboxes[] = {
+            // A staircase of bright primary cubes receding in depth (z more negative
+            // = further) so the refraction bend + parallax read clearly through the
+            // panes. Each gets its own color as a moderate emissive (HDR > 1).
+            {-2.6f, 0.7f, -1.4f, 0.7f, 0.90f, 0.20f, 0.18f, 6.0f}, // red, near
+            {-0.9f, 0.55f,-2.7f, 0.55f,0.18f, 0.85f, 0.30f, 5.0f}, // green, mid
+            { 1.0f, 0.8f, -2.0f, 0.8f, 0.20f, 0.45f, 0.98f, 5.0f}, // blue, mid
+            { 2.7f, 0.6f, -3.3f, 0.6f, 0.95f, 0.80f, 0.15f, 4.5f}, // yellow, far
+            {-0.2f, 1.5f, -4.4f, 0.5f, 0.85f, 0.32f, 0.85f, 4.5f}, // magenta, far+high
+            // Bright cyan marker deep in the scene -> obvious transmission through glass.
+            { 1.7f, 1.8f, -4.9f, 0.4f, 0.4f,  0.95f, 1.0f,  5.0f},
+        };
+        for (const auto& b : cboxes) {
+            x3::prims::PrimMesh g = x3::prims::makeBox(b.half, b.half, b.half, b.cx, b.cy, b.cz, 1.0f);
+            x3::rhi::MeshHandle mh = device->createMesh(g.verts.data(), (uint32_t)g.verts.size(),
+                                                       g.index.data(), (uint32_t)g.index.size());
+            boxMeshes.push_back(mh);
+            const float col[4] = { b.r, b.g, b.b, 1.0f };
+            // Use the BOX color * strength as the emissive radiance; the marker box
+            // (b.r,g,b == 1) becomes white-strength.
+            const float em[4]  = { b.r, b.g, b.b, b.em };
+            addStatic(mh, whiteTex, col, em, idF);
+        }
+
+        // ---- Three angled glass panes (left -> right) ---------------------
+        // CLEAR / FROSTED / TINTED. Each yaw-rotated so the camera sees a grazing
+        // angle (fresnel rim) plus head-on (transmission). Default GlassMaterial
+        // fields cover everything new (metallic 0 / ior 1.5 / reflectance 0.5 /
+        // transmittanceColor (1,1,1)); we override only the per-preset deltas.
+        using GM = x3::rhi::IRenderDevice::GlassMaterial;
+        auto paneTRS = [](float yaw, float px, float py, float pz, float m[16]) {
+            const float cy = std::cos(yaw), sy = std::sin(yaw);
+            m[0]=cy;  m[1]=0; m[2]=-sy; m[3]=0;
+            m[4]=0;   m[5]=1; m[6]=0;   m[7]=0;
+            m[8]=sy;  m[9]=0; m[10]=cy; m[11]=0;
+            m[12]=px; m[13]=py; m[14]=pz; m[15]=1;
+        };
+        struct PaneCfg { float px, py, pz, yaw; GM mat; };
+        std::vector<PaneCfg> paneCfgs(3);
+        // CLEAR window: opacity 0.08, white tint, ior 1.5, near-polished.
+        paneCfgs[0].px=-2.1f; paneCfgs[0].py=1.15f; paneCfgs[0].pz=1.4f; paneCfgs[0].yaw= 0.40f;
+        { GM& m=paneCfgs[0].mat; m.opacity=0.08f; m.refraction=0.015f; m.roughness=0.03f; m.specular=1.0f;
+          m.tint[0]=1.0f; m.tint[1]=1.0f; m.tint[2]=1.0f;
+          m.metallic=0.0f; m.ior=1.5f; m.reflectance=0.5f;
+          m.transmittanceColor[0]=1.0f; m.transmittanceColor[1]=1.0f; m.transmittanceColor[2]=1.0f; }
+        // FROSTED: opacity 0.5, roughness 0.6, faint cool transmit.
+        paneCfgs[1].px=0.0f; paneCfgs[1].py=1.15f; paneCfgs[1].pz=1.6f; paneCfgs[1].yaw=0.0f;
+        { GM& m=paneCfgs[1].mat; m.opacity=0.5f; m.refraction=0.02f; m.roughness=0.6f; m.specular=1.0f;
+          m.tint[0]=0.95f; m.tint[1]=0.97f; m.tint[2]=1.0f;
+          m.metallic=0.0f; m.ior=1.5f; m.reflectance=0.5f;
+          m.transmittanceColor[0]=0.9f; m.transmittanceColor[1]=0.95f; m.transmittanceColor[2]=1.0f; }
+        // TINTED: colored glass, opacity ~0.2, transmit a teal tint.
+        paneCfgs[2].px=2.1f; paneCfgs[2].py=1.15f; paneCfgs[2].pz=1.4f; paneCfgs[2].yaw=-0.40f;
+        { GM& m=paneCfgs[2].mat; m.opacity=0.2f; m.refraction=0.018f; m.roughness=0.12f; m.specular=1.0f;
+          m.tint[0]=0.35f; m.tint[1]=0.85f; m.tint[2]=0.7f;
+          m.metallic=0.0f; m.ior=1.55f; m.reflectance=0.5f;
+          m.transmittanceColor[0]=0.45f; m.transmittanceColor[1]=0.95f; m.transmittanceColor[2]=0.8f; }
+        for (const auto& p : paneCfgs) {
+            float m[16]; paneTRS(p.yaw, p.px, p.py, p.pz, m);
+            const float base[4] = { p.mat.tint[0], p.mat.tint[1], p.mat.tint[2], 1.0f };
+            addGlass(paneMesh, whiteTex, base, p.mat, m);
+        }
+
+        auto drawScene = [&](const x3::rhi::FrameContext& frame) {
+            gscene.render(*device, frame);
+        };
+
+        auto cleanup = [&]() {
+            for (auto mh : boxMeshes) device->destroyMesh(mh);
+            device->destroyMesh(paneMesh);
+            device->destroyMesh(floorMesh); device->destroyMesh(wallMesh);
+            device->destroyTexture(whiteTex); device->destroyTexture(floorTex);
+            device->destroyTexture(wallTex);
+        };
+
+        // ===== Headless capture: pose the camera, settle, grab a PNG. =====
+        if (headless) {
+            // Vantage: eye in front + slightly low, looking slightly up so the dark
+            // back wall (and the lit colored boxes against it) fills the frame
+            // behind the panes (avoids the bright sky washing out the transmission).
+            float cam[5] = { 0.0f, 0.9f, 4.2f, -1.5708f, 0.05f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const std::string outPath = screenshot ? screenshotPath
+                                       : std::string("G:/X3Native/captures/glass_demo.png");
+            const int kFrames = 12;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 65.0f);
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) drawScene(frame);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world glass: wrote " + outPath);
+            else       x3::logError("--world glass: capture FAILED");
+            cleanup();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: fly-cam (WASD + mouse, Esc). =====
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        float fx = 0.0f, fy = 0.9f, fz = 4.2f, fyaw = -1.5708f, fpitch = 0.05f;
+        x3::logInfo("--world glass: fly WASD + mouse (CLEAR | FROSTED | TINTED panes), Esc to quit");
+        int lastWd = (int)W, lastHd = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime(); float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx=(float)(mx-lastMX), ddy=(float)(my-lastMY); lastMX=mx; lastMY=my;
+            auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+            fyaw += ddx*0.0025f; fpitch -= ddy*0.0025f;
+            if (fpitch> 1.55f) fpitch= 1.55f; if (fpitch<-1.55f) fpitch=-1.55f;
+            float dx=std::cos(fpitch)*std::cos(fyaw), dy=std::sin(fpitch), dz=std::cos(fpitch)*std::sin(fyaw);
+            float rl=std::sqrt(dx*dx+dz*dz); if (rl<1e-4f) rl=1e-4f;
+            float rx=-dz/rl, rz=dx/rl; float spd=5.0f*fdt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd*=3.0f;
+            if (kd(GLFW_KEY_W)){fx+=dx*spd;fy+=dy*spd;fz+=dz*spd;}
+            if (kd(GLFW_KEY_S)){fx-=dx*spd;fy-=dy*spd;fz-=dz*spd;}
+            if (kd(GLFW_KEY_D)){fx+=rx*spd;fz+=rz*spd;}
+            if (kd(GLFW_KEY_A)){fx-=rx*spd;fz-=rz*spd;}
+            if (kd(GLFW_KEY_SPACE)) fy += spd;
+            if (kd(GLFW_KEY_LEFT_CONTROL)) fy -= spd;
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWd || chh != lastHd) { lastWd=cw; lastHd=chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+            device->setCamera(fx, fy, fz, fyaw, fpitch, 65.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) drawScene(frame);
+            device->endFrame(frame);
+        }
+        cleanup();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
     // ---- Destruction demo (--world destruct / --screenshot-destruct) -------
     // The K-T1 marquee showcase: a lit ground + a row of destructible crates the
     // player can SHOOT (left mouse -> weapon ray -> DestructibleManager::applyHit)
