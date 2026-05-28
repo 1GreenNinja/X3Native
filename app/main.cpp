@@ -6084,6 +6084,22 @@ int main(int argc, char** argv) {
         x3::logInfo("smoketest: 30 frames + recreate OK");
         audio->shutdown();
         combatFx.shutdown(*device);
+        // TASK#12 (smoketest parity with the live shutdown path at the bottom of main):
+        // the smoketest ticks game/topFloors/midFloors/nexus and fires bullets that CAN
+        // hit a rigged enemy → spawns a SKINNED death ragdoll whose Jolt bodies are
+        // removed in ~MonsterSystem -> IRagdoll::removeFromWorld(). If any monster is
+        // mid-flop at exit, destroying the SpireNexus / Level1Game AFTER physics->
+        // shutdown() touches a dead Jolt PhysicsSystem → access violation (Release) /
+        // Jolt assert (Debug). The fix at commit 9273ca5 (and ~26 lines below at the
+        // bottom of main) applied this teardown order to the live path but missed the
+        // smoketest's parallel exit, so the smoketest exited with an empty-stderr exit-1
+        // under contention while the live path was already safe. Mirror the live order
+        // exactly: game.shutdown() (fans every Level1Game group + Martinez + bossAdds),
+        // nexus.shutdown() (fans the Chorus pods), canonPlay.shutdown() (when --world
+        // canonlevel), THEN physics->shutdown(). Idempotent — a no-op when no monster
+        // is ragdolling.
+        game.shutdown();
+        nexus.shutdown();
         if (canonPlay.built()) canonPlay.shutdown();   // --world canonlevel enemy ragdolls
         physics->shutdown();
         device->shutdown();
