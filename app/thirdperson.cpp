@@ -119,7 +119,11 @@ void ThirdPersonView::build(Scene& scene, x3::rhi::IRenderDevice& device,
         x3::logInfo(std::string("[3p] Jake -> ") +
                     (gpuSkin ? "GPU-SKINNED (compute pre-pass)"
                              : "CPU-SKINNED FALLBACK (per-frame updateMesh)"));
-        m_idleClip      = m_skinner.findClip({ "rifleaimingidle", "idle", "stand", "breath" });
+        // Prefer plain "Idle" over "Rifleaimingidle" for default standing — the rifle-aim
+        // idle is a low/combat-ready stance that reads as "crouched/angles wrong" when the
+        // player isn't aiming (Tim playtest 2026-05-27). Rifleaimingidle is still resolved
+        // separately into m_rifleIdleClip below for the fire-held cross-fade.
+        m_idleClip      = m_skinner.findClip({ "idle", "stand", "breath", "rifleaimingidle" });
         // Prefer the RIFLE-holding move clips (hands grip the gun): Riflerun for run,
         // Walking for walk, Runbackwards/Walkingbackwards for reverse.
         m_walkClip      = m_skinner.findClip({ "walking", "walk" });
@@ -184,6 +188,21 @@ void ThirdPersonView::build(Scene& scene, x3::rhi::IRenderDevice& device,
                     constexpr float kTargetHeight = 1.7f;
                     m_modelScale = kTargetHeight / H;
                     m_modelFixup[13] = -toeY;     // shift feet to origin in model-space; drawXform scales after
+                    // Also zero out any XZ offset baked into the GLB root/armature node by
+                    // reading the HIP bone's bind-pose world XZ and shifting those out, so
+                    // Jake's body center lands at the player's XZ (not offset to one side of
+                    // the camera frame as observed in playtest 2026-05-27).
+                    const int hipsNode = m_skinner.resolveNodeByName(m_model, "mixamorigHips");
+                    float hipMat[16];
+                    if (hipsNode >= 0 && m_skinner.boneGlobal((uint32_t)hipsNode, hipMat)) {
+                        const float hipX = hipMat[12], hipZ = hipMat[14];
+                        m_modelFixup[12] = -hipX;
+                        m_modelFixup[14] = -hipZ;
+                        x3::logInfo("[3p] Jake XZ center on hips: hipX=" + std::to_string(hipX) +
+                                    " hipZ=" + std::to_string(hipZ) +
+                                    " -> xShift=" + std::to_string(m_modelFixup[12]) +
+                                    " zShift=" + std::to_string(m_modelFixup[14]));
+                    }
                     x3::logInfo("[3p] Jake skeleton fit: toeY=" + std::to_string(toeY) +
                                 " headY=" + std::to_string(headY) +
                                 " H=" + std::to_string(H) +
