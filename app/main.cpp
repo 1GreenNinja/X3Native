@@ -842,6 +842,11 @@ int main(int argc, char** argv) {
     // the key fixtures (DJ booth, ORB, bars, 12-step stair, PA rig, 28 blacklights,
     // 6 TVs, the 50x100x30 ft room footprint/Y) + leak-clean. Additive flag.
     bool        testClub = false;
+    // --test-loadnewglbs (wire-new-glbs pass): load each of the 8 new rigged GLBs
+    // through the M2 model loader on the HEADLESS device and assert each produced
+    // >=1 primitive(s). Verifies the asset-conversion + LFS pull + path wiring are
+    // intact. No window/Vulkan. Additive flag; the existing gate is unaffected.
+    bool        testLoadNewGlbs = false;
     // --test-spiremid (Spire mid-floor content): F3/F4/F5 encounter authoring. Additive.
     bool        testSpireMid = false;
     // --test-nexus (Floor 4.5 Nexus / The Chorus): off-elevator multi-pod boss. Additive.
@@ -1123,6 +1128,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-valley") testValley = true;
         else if (a == "--test-cliffs") testCliffs = true;
         else if (a == "--test-club") testClub = true;
+        else if (a == "--test-loadnewglbs") testLoadNewGlbs = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -1711,6 +1717,65 @@ int main(int argc, char** argv) {
         x3::logInfo("running Club 1127 (\"THE DEEP\") self-test "
                     "(build at Y=-200; assert DJ booth/ORB/bars/stair/PA/blacklights/TVs/footprint; leak-clean)...");
         return x3::game::runClubSelfTest() ? 0 : 1;
+    }
+    if (testLoadNewGlbs) {
+        // ---- wire-new-glbs self-test ----------------------------------------
+        // Load each of the 8 new rigged GLBs via the M2 model loader on the
+        // headless device and assert each produced >=1 primitive(s). NOTE: the
+        // headless device hands out monotonic fake handles, so the load
+        // exercises the on-disk file + the cgltf parsing + the primitive build
+        // path (the GPU upload is a no-op on the test device, exactly like
+        // every other --test-* headless path).
+        x3::logInfo("running wire-new-glbs self-test: load each of the 8 new "
+                    "rigged GLBs through the M2 loader on the headless seam (nullptr device)...");
+        std::unique_ptr<x3::asset::IAssetSource> assets(x3::asset::createAssetSource());
+        const std::string riggedDir = x3::game::riggedGlbRoot();
+        if (!assets->mountDir(riggedDir, 0)) {
+            x3::logError("[test-loadnewglbs] mountDir failed: " + riggedDir);
+            return 1;
+        }
+        // Use the headless seam (device=nullptr) — same pattern as the M2 self-test
+        // and the OTHER --test-* paths in this file (search "createModelLoader(nullptr").
+        // Confirms the GLB on-disk file + cgltf parsing + Model::primitives build is
+        // green; no GPU upload happens (the headless seam mints fake handles).
+        std::unique_ptr<x3::asset::IModelLoader> loader(
+            x3::asset::createModelLoader(nullptr, assets.get()));
+        struct Item { const char* file; const char* role; };
+        const Item items[] = {
+            { "WeaponEnergyPistol.glb",      "Pistol (viewmodel/pickup)" },
+            { "Sportscar.glb",               "Drive entity" },
+            { "Mechanic.glb",                "NPC" },
+            { "DrLabResearcher.glb",         "NPC" },
+            { "MechSoldier.glb",             "Enemy (heavy trooper)" },
+            { "DannyBartender.glb",          "NPC (Club 1127 bartender)" },
+            { "SynthModelActual.glb",        "Enemy (synth, ground melee)" },
+            { "ArmoredFuturisticSoldier.glb","Enemy (armored trooper)" },
+        };
+        int pass = 0, fail = 0;
+        for (const Item& it : items) {
+            x3::asset::Model m = loader->load(it.file);
+            const uint32_t prims = (uint32_t)m.primitives.size();
+            const uint32_t nodes = (uint32_t)m.nodes.size();
+            const uint32_t mats  = (uint32_t)m.materials.size();
+            if (m.ok && prims >= 1) {
+                ++pass;
+                x3::logInfo(std::string("[test-loadnewglbs] PASS ") + it.file +
+                            "  prims=" + std::to_string(prims) +
+                            " nodes=" + std::to_string(nodes) +
+                            " mats=" + std::to_string(mats) +
+                            "  (" + it.role + ")");
+            } else {
+                ++fail;
+                x3::logError(std::string("[test-loadnewglbs] FAIL ") + it.file +
+                             "  ok=" + (m.ok ? "true" : "false") +
+                             " prims=" + std::to_string(prims));
+            }
+            loader->unload(m);
+        }
+        x3::logInfo("[test-loadnewglbs] " + std::to_string(pass) + " passed, " +
+                    std::to_string(fail) + " failed (" + std::to_string(pass) + "/" +
+                    std::to_string((int)(sizeof(items)/sizeof(items[0]))) + ")");
+        return fail == 0 ? 0 : 1;
     }
 
     x3::logInfo("X3Engine starting...");
@@ -3300,6 +3365,19 @@ int main(int argc, char** argv) {
         if (isDrive) built = car.build(*device, *vphys, spawnX, spawnY, spawnZ);
         else if (isBoat) built = boat.build(*device, *vphys, spawnX, spawnY, spawnZ, boatSeaLevel, /*isSub*/false);
         else built = plane.build(*device, *vphys, spawnX, spawnY, spawnZ);
+        // ---- wire-new-glbs: load the Sportscar GLB onto the drive chassis. The
+        // 35k-tri rigged Sportscar.glb sits in assets/rigged_glb/. KEEP FULL RES —
+        // Tim's note: do NOT downscale. On any load failure we silently fall back
+        // to the procedural red cube (loadBodyGlb returns false + logs the reason).
+        // The chassis half-extents (m_hx=0.9, m_hy=0.4, m_hz=1.8) read as a ~3.6 m
+        // car; the GLB is authored at car-scale so scale=1.0. liftY = -m_hy drops
+        // the model from the chassis CENTER to its underside so wheels land on the
+        // road, not floating mid-air. yawOffset rotates 180° because most authored
+        // car models face +Z but the chassis travels -Z forward.
+        if (isDrive && built) {
+            car.loadBodyGlb(*device, x3::game::riggedGlbRoot(), "Sportscar.glb",
+                            /*scale*/1.0f, /*yawOffset*/3.14159265f, /*liftY*/-0.40f);
+        }
         if (!built) {
             x3::logError("--world " + worldMode + ": vehicle build failed");
             if (isDrive) vstream.shutdown(vscene, *device, *vphys);
@@ -3484,6 +3562,221 @@ int main(int argc, char** argv) {
         if (isDrive) { car.shutdown(); vstream.shutdown(vscene, *device, *vphys); }
         else if (isBoat) boat.shutdown(); else plane.shutdown();
         vphys->shutdown(); device->shutdown();
+        if (window) glfwDestroyWindow(window); glfwTerminate();
+        return 0;
+    }
+
+    // ---- Wire-check showcase (--world wirecheck) ----------------------------
+    // wire-new-glbs pass: a low-conflict showcase world that places one of each
+    // of the 8 freshly-converted GLBs in view + the Sportscar parked, all on a
+    // simple lit slab. Built entirely from the public IRenderDevice +
+    // IPhysicsWorld API + the M2 model loader (same pattern as cliffs.cpp).
+    // Used with `--world wirecheck --screenshot wirecheck.png --headless` to
+    // capture the verification still; the verifier reads the PNG via PIL and
+    // checks std > 15 + uniqueColors > 100 (pixels are ground truth — the
+    // drawCalls/triangles count alone is INSUFFICIENT, see the prior blank-still
+    // bug).
+    if (worldMode == "wirecheck") {
+        x3::logInfo("--world wirecheck: showcase the 8 newly-wired GLBs");
+
+        // Physics (used for an addStaticMesh ground slab so something exists).
+        std::unique_ptr<x3::phys::IPhysicsWorld> wphys(x3::phys::createPhysicsWorld());
+        if (!wphys->init()) {
+            x3::logError("--world wirecheck: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        // Outdoor sun + sky (clear lighting on the characters).
+        { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = true;
+          sp.sunDir[0]=0.4f; sp.sunDir[1]=1.0f; sp.sunDir[2]=0.3f;
+          sp.sunColor[0]=1.0f; sp.sunColor[1]=0.97f; sp.sunColor[2]=0.92f;
+          sp.sunIntensity=1.4f; sp.haze=0.35f; sp.exposure=1.0f;
+          device->setSkyParams(sp); }
+        // Camera-side fill point lights so the front faces read clearly.
+        { x3::rhi::PointLight pl[3];
+          pl[0].pos[0]=  0.0f; pl[0].pos[1]= 5.0f; pl[0].pos[2]= 12.0f; pl[0].range=30.0f;
+          pl[0].color[0]=5.0f; pl[0].color[1]=4.6f; pl[0].color[2]=4.2f;
+          pl[1].pos[0]= -8.0f; pl[1].pos[1]= 4.0f; pl[1].pos[2]= 10.0f; pl[1].range=24.0f;
+          pl[1].color[0]=3.6f; pl[1].color[1]=4.0f; pl[1].color[2]=4.8f;
+          pl[2].pos[0]=  8.0f; pl[2].pos[1]= 4.0f; pl[2].pos[2]= 10.0f; pl[2].range=24.0f;
+          pl[2].color[0]=4.6f; pl[2].color[1]=4.4f; pl[2].color[2]=3.8f;
+          device->setPointLights(pl, 3); }
+
+        // Ground slab so the characters stand on something (visible + static physics).
+        x3::prims::PrimMesh g = x3::prims::makeBox(30.0f, 0.1f, 30.0f, 0.0f, -0.1f, 0.0f, 1.0f);
+        x3::rhi::MeshHandle groundMesh = device->createMesh(
+            g.verts.data(), (uint32_t)g.verts.size(),
+            g.index.data(), (uint32_t)g.index.size());
+        auto gpx = x3::prims::makeSolidRGBA(8, 70, 78, 82);
+        x3::rhi::TextureHandle groundTex = device->createTexture(gpx.data(), 8, 8, true);
+        wphys->addStaticMesh(g.cverts.data(), (uint32_t)(g.cverts.size()/3),
+                             g.cindex.data(), (uint32_t)g.cindex.size());
+
+        // Load each new GLB through the same loose-dir asset source path the rest
+        // of the engine uses. Place one of each at the row z = 0, fanned along x;
+        // park the Sportscar in front of them. Each loaded model is rendered as
+        // T(pos) * Ry(yaw) * S(scale) * nodeTransform per drawable.
+        struct Placed {
+            std::unique_ptr<x3::asset::IAssetSource> assets;
+            std::unique_ptr<x3::asset::IModelLoader> loader;
+            x3::asset::Model model;
+            std::vector<x3::asset::ModelDrawable> drawables;
+            float pos[3] = {0,0,0};
+            float yaw    = 0.0f;
+            float scale  = 1.0f;
+            const char* name = "";
+        };
+        std::vector<Placed> placed;
+        const std::string riggedDir = x3::game::riggedGlbRoot();
+        auto place = [&](const char* file, float x, float y, float z, float yaw,
+                         float scale) {
+            Placed p;
+            p.assets.reset(x3::asset::createAssetSource());
+            p.assets->mountDir(riggedDir, 0);
+            p.loader.reset(x3::asset::createModelLoader(device.get(), p.assets.get()));
+            p.model = p.loader->load(file);
+            if (p.model.ok) p.drawables = x3::asset::makeDrawables(p.model);
+            p.pos[0]=x; p.pos[1]=y; p.pos[2]=z; p.yaw=yaw; p.scale=scale;
+            p.name = file;
+            x3::logInfo(std::string("[wirecheck] ") + file + ": " +
+                        std::to_string(p.drawables.size()) + " primitive(s) @ (" +
+                        std::to_string(x) + "," + std::to_string(y) + "," +
+                        std::to_string(z) + ")");
+            placed.push_back(std::move(p));
+        };
+
+        // The 7 characters fan along x (z=0), all facing +Z (toward the camera at
+        // z=+12). Spacing 2.5 m. The Sportscar parks in front of them at z=+4.
+        const float chRowZ = 0.0f;
+        const float chSpacing = 2.6f;
+        const float xs[7] = { -7.8f, -5.2f, -2.6f, 0.0f, 2.6f, 5.2f, 7.8f };
+        (void)chSpacing;
+        const float yawToCam = 0.0f;  // model -Z = "back", we want +Z forward (toward camera)
+        // Authored character GLBs are mostly Y-up forward = -Z, so a yaw of pi
+        // turns them around to FACE the camera at z=+12.
+        const float faceCam = 3.14159265f;
+        place("WeaponEnergyPistol.glb",    xs[0], 1.1f, chRowZ, yawToCam, 5.0f);   // pistol held up
+        place("Mechanic.glb",              xs[1], 0.0f, chRowZ, faceCam,  1.0f);
+        place("DrLabResearcher.glb",       xs[2], 0.0f, chRowZ, faceCam,  1.0f);
+        place("DannyBartender.glb",        xs[3], 0.0f, chRowZ, faceCam,  1.0f);
+        place("SynthModelActual.glb",      xs[4], 0.0f, chRowZ, faceCam,  1.0f);
+        place("MechSoldier.glb",           xs[5], 0.0f, chRowZ, faceCam,  1.0f);
+        place("ArmoredFuturisticSoldier.glb", xs[6], 0.0f, chRowZ, faceCam, 1.0f);
+        // Sportscar parked in front of the row (closer to the camera).
+        place("Sportscar.glb",             0.0f,  0.0f, 5.0f,   faceCam,  1.0f);
+
+        auto renderRow = [&](const x3::rhi::FrameContext& fr) {
+            // Ground slab (identity transform).
+            float gm[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+            const float gc[4] = { 1, 1, 1, 1 };
+            device->drawMesh(fr, groundMesh, groundTex, gc, gm);
+
+            for (const Placed& p : placed) {
+                if (p.drawables.empty()) continue;
+                // world = T(pos) * Ry(yaw) * S(scale), column-major.
+                const float c = std::cos(p.yaw), s = std::sin(p.yaw);
+                float world[16] = {
+                      c*p.scale, 0.0f, -s*p.scale, 0.0f,
+                       0.0f,    p.scale, 0.0f,     0.0f,
+                      s*p.scale, 0.0f,  c*p.scale, 0.0f,
+                      p.pos[0], p.pos[1], p.pos[2], 1.0f,
+                };
+                for (const auto& d : p.drawables) {
+                    float color[4] = {
+                        d.baseColorFactor[0], d.baseColorFactor[1],
+                        d.baseColorFactor[2], d.baseColorFactor[3],
+                    };
+                    float fin[16];
+                    x3::asset::mulMat4(world, d.nodeTransform, fin);
+                    device->drawMesh(fr, x3::rhi::MeshHandle{ d.meshId },
+                                     x3::rhi::TextureHandle{ d.baseColorTexId },
+                                     color, fin);
+                }
+            }
+        };
+
+        // ===== Headless capture path ==========================================
+        if (headless) {
+            const std::string outPath = screenshot ? screenshotPath
+                                       : std::string("wirecheck.png");
+            // Frame: camera sits in FRONT of the row (z=+12), looking -Z, slightly
+            // above (y=+3.5), tilted down so all 7 characters + the parked car
+            // read clearly.
+            const float cam[5] = { 0.0f, 3.5f, 12.0f, /*yaw*/0.0f, /*pitch*/-0.18f };
+            // Settle a few frames so any device-side warm-up + autoexposure stabilize.
+            const int kSettle = 30;
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 70.0f);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto fr = device->beginFrame();
+                if (fr.valid) renderRow(fr);
+                device->endFrame(fr);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo(std::string("--world wirecheck: wrote ") + outPath);
+            else       x3::logError("--world wirecheck: capture FAILED");
+
+            // Teardown (release through loaders first so handles destroy through the
+            // device while it is still alive).
+            for (Placed& p : placed) {
+                if (p.loader && p.model.ok) p.loader->unload(p.model);
+            }
+            placed.clear();
+            device->destroyMesh(groundMesh);
+            device->destroyTexture(groundTex);
+            wphys->shutdown(); device->shutdown();
+            if (window) glfwDestroyWindow(window); glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Windowed interactive: orbit the row with the mouse. ============
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        float camYaw = 0.0f, camPitch = -0.18f;
+        int lastWd = (int)W, lastHd = (int)H;
+        x3::logInfo("--world wirecheck: orbit with mouse, W/S zoom, Esc quit");
+        float orbitR = 12.0f;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            camYaw += (float)(mx - lastMX) * 0.0025f;
+            camPitch -= (float)(my - lastMY) * 0.0025f;
+            if (camPitch >  1.4f) camPitch =  1.4f;
+            if (camPitch < -1.4f) camPitch = -1.4f;
+            lastMX = mx; lastMY = my;
+            auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+            if (kd(GLFW_KEY_W)) orbitR = std::max(3.0f,  orbitR - 8.0f*fdt);
+            if (kd(GLFW_KEY_S)) orbitR = std::min(40.0f, orbitR + 8.0f*fdt);
+
+            const float focalY = 1.5f;
+            float cx = std::sin(camYaw) * std::cos(camPitch) * orbitR;
+            float cy = focalY - std::sin(camPitch) * orbitR;
+            float cz = std::cos(camYaw) * std::cos(camPitch) * orbitR;
+            // Camera yaw to look back at the origin: atan2(-cx, -cz).
+            const float lookYaw = std::atan2(-cx, -cz);
+            int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
+            if (cw != lastWd || ch != lastHd) { lastWd=cw; lastHd=ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
+            device->setCamera(cx, cy, cz, lookYaw, camPitch, 70.0f);
+            auto fr = device->beginFrame();
+            if (fr.valid) renderRow(fr);
+            device->endFrame(fr);
+        }
+        for (Placed& p : placed) {
+            if (p.loader && p.model.ok) p.loader->unload(p.model);
+        }
+        placed.clear();
+        device->destroyMesh(groundMesh);
+        device->destroyTexture(groundTex);
+        wphys->shutdown(); device->shutdown();
         if (window) glfwDestroyWindow(window); glfwTerminate();
         return 0;
     }

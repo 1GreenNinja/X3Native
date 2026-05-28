@@ -2676,6 +2676,90 @@ MonsterSystem::Tuning tuningFor(EnemyType t) {
 }
 
 // ===========================================================================
+// NEW-GLB ENEMY VARIANTS (wire-new-glbs pass)
+//
+// Three additional spawn-ready Tunings for the new character GLBs added to the
+// rigged_glb roster. These are helper factories (NOT new EnemyType rows) so the
+// existing 4-entry bestiary + --test-bestiary remain UNCHANGED. Stats are tuned
+// from the existing DominionTrooper / BlueSynth rows and the combat:: bands so
+// the values stay inside the sane bands. Each loads its GLB from rigged_glb via
+// the same defRigged() helper as the bestiary; on load failure the MonsterSystem
+// falls back to its tinted procedural box (so a clean checkout never breaks).
+// ===========================================================================
+
+// SynthModelActual — humanoid GROUND synth (a fresh synth variant alongside the
+// existing BlueSynth flyer). Tim's note: "BlueSynth tuning is a FLYER but the
+// synth is a humanoid → set flyer=false". So this row deliberately runs the
+// MELEE Guard lane on the FLOOR (not Drone/flyer): closes + swings. Stats are
+// in-between DominionTrooper (HP 100) and Illuminated (HP 220) — heavier than a
+// trooper because it's a "robotic" synth, but still melee.
+MonsterSystem::Tuning synthModelActualTuning() {
+    MonsterSystem::Tuning t;
+    t.type           = MonsterType::Guard;            // melee archetype
+    t.flyer          = false;                         // HUMANOID — walks the floor
+    t.hp             = 160;                           // tougher than a trooper, softer than elite
+    t.chaseSpeed     = 2.8f;                          // slightly faster than a trooper (2.5)
+    t.damage         = combat::kMeleeDamageDefault;   // 8 HP per swing
+    t.attackRange    = combat::kMeleeRange;           // 1.9 m
+    t.attackCooldown = combat::kMeleeCooldownDefault; // ~1.1 s
+    t.attackWindup   = combat::kMeleeWindup;          // 0.25 s
+    t.ranged         = false;
+    t.aiStrafeBias   = 0.30f;                         // mostly advances, a touch of flank
+    t.tint[0]=0.85f; t.tint[1]=0.92f; t.tint[2]=1.05f; // pale steel-blue chrome
+    t.modelFile        = "SynthModelActual.glb";
+    t.modelDirOverride = riggedGlbRoot();
+    t.standUpZtoY      = false;                       // rigged sources are Y-up
+    t.modelScale       = 1.0f;
+    return t;
+}
+
+// MechSoldier — heavy armored mech-style trooper. Tougher + harder hit than the
+// basic DominionTrooper (HP 100, dmg 8); MELEE Guard lane (same combat code,
+// just heavier). Slower so it reads as "heavy".
+MonsterSystem::Tuning mechSoldierTuning() {
+    MonsterSystem::Tuning t;
+    t.type           = MonsterType::Guard;
+    t.flyer          = false;
+    t.hp             = 200;                           // heavy: ~2x trooper
+    t.chaseSpeed     = 2.0f;                          // slower (heavy armor)
+    t.damage         = combat::kMeleeDamageMax;       // 10 (top of the band)
+    t.attackRange    = combat::kMeleeRange;           // 1.9 m
+    t.attackCooldown = combat::kMeleeCooldownMax;     // ~1.3 s (slow heavy swings)
+    t.attackWindup   = combat::kMeleeWindup;          // 0.25 s
+    t.ranged         = false;
+    t.aiStrafeBias   = 0.10f;                         // advances hard, almost never flanks
+    t.tint[0]=0.75f; t.tint[1]=0.78f; t.tint[2]=0.82f; // gunmetal
+    t.modelFile        = "MechSoldier.glb";
+    t.modelDirOverride = riggedGlbRoot();
+    t.standUpZtoY      = false;
+    t.modelScale       = 1.0f;
+    return t;
+}
+
+// ArmoredFuturisticSoldier — armored futuristic trooper variant. Slightly tougher
+// than the baseline DominionTrooper (HP 100) but not as heavy as MechSoldier.
+// MELEE Guard lane.
+MonsterSystem::Tuning armoredFuturisticSoldierTuning() {
+    MonsterSystem::Tuning t;
+    t.type           = MonsterType::Guard;
+    t.flyer          = false;
+    t.hp             = 140;                           // ~40% tougher than a basic trooper
+    t.chaseSpeed     = 2.5f;                          // bible "Normal"
+    t.damage         = combat::kMeleeDamageDefault;   // 8
+    t.attackRange    = combat::kMeleeRange;           // 1.9 m
+    t.attackCooldown = combat::kMeleeCooldownDefault; // ~1.1 s
+    t.attackWindup   = combat::kMeleeWindup;          // 0.25 s
+    t.ranged         = false;
+    t.aiStrafeBias   = 0.25f;                         // mid: advances mostly, light flank
+    t.tint[0]=0.82f; t.tint[1]=0.88f; t.tint[2]=0.78f; // olive armor
+    t.modelFile        = "ArmoredFuturisticSoldier.glb";
+    t.modelDirOverride = riggedGlbRoot();
+    t.standUpZtoY      = false;
+    t.modelScale       = 1.0f;
+    return t;
+}
+
+// ===========================================================================
 // ACT-1 MID-BOSS ROSTER + MACHINE EXTENSIONS (Wave 1).
 //
 // The 3 single-body bosses (Dr. Chen / Failed Experiment #7 / Alien Overseer) are

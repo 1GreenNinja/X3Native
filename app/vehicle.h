@@ -16,10 +16,14 @@
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/physics/IVehicle.h"
+#include "engine/asset/IModelLoader.h"
+#include "engine/asset/IAssetSource.h"
 #include "mesh_prims.h"
 
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace x3::game {
@@ -44,6 +48,28 @@ public:
     // raycast against (Static for terrain). Returns false if the controller failed.
     bool build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
                float x, float y, float z);
+
+    // OPTIONAL: load a body GLB (rigged_glb, Y-up) and draw it on top of the
+    // chassis transform in render(). When set, render() multiplies each model
+    // primitive's nodeTransform by the chassis transform and draws via drawMesh,
+    // so the GLB rides the live physics chassis. The procedural chassis cube is
+    // SUPPRESSED whenever a real GLB body loaded successfully (so the wheels +
+    // the GLB are the only chassis visuals). Call AFTER build(). Returns true on
+    // success; on failure render() falls back to the legacy chassis cube.
+    //
+    // `glbDir` is a loose-dir mount (e.g. riggedGlbRoot()), `glbFile` the GLB
+    // filename inside it. `scale` is a uniform per-model scale (1.0 = author).
+    // `yawOffset` lets the model's forward axis line up with the chassis -Z
+    // forward if the GLB was authored facing +Z. `liftY` raises the model
+    // relative to the chassis center (most sportscar GLBs have origin at ground
+    // level, so lift = -m_hy puts the wheels on the ground).
+    bool loadBodyGlb(x3::rhi::IRenderDevice& device,
+                     std::string_view glbDir, std::string_view glbFile,
+                     float scale = 1.0f, float yawOffset = 0.0f, float liftY = 0.0f);
+
+    // True iff a body GLB loaded successfully (render() draws the GLB instead of
+    // the chassis cube). Diagnostics + the wirecheck capture verification.
+    bool usingBodyGlb() const { return m_usingBodyGlb; }
 
     // Feed driver input + advance one step. Call setInput()+preStep() BEFORE the
     // host's physics->step(), then postStep() AFTER. drive() is a convenience that
@@ -76,6 +102,20 @@ private:
     x3::rhi::TextureHandle m_chassisTex;
     x3::rhi::TextureHandle m_wheelTex;
     std::vector<x3::phys::WheelDesc> m_wheels;
+
+    // ---- Optional rigged_glb body model (wire-new-glbs pass) ----
+    // When loadBodyGlb() succeeds the GLB is drawn AT the live chassis transform
+    // (composed with each primitive's bake-time nodeTransform) and the procedural
+    // chassis cube is suppressed. Kept alive for the demo's lifetime so the GPU
+    // handles inside the drawables stay valid.
+    std::unique_ptr<x3::asset::IAssetSource> m_bodyAssets;
+    std::unique_ptr<x3::asset::IModelLoader> m_bodyLoader;
+    x3::asset::Model                         m_bodyModel;
+    std::vector<x3::asset::ModelDrawable>    m_bodyDrawables;
+    bool   m_usingBodyGlb = false;
+    float  m_bodyScale    = 1.0f;
+    float  m_bodyYawOff   = 0.0f;
+    float  m_bodyLiftY    = 0.0f;
 };
 
 // ---------------------------------------------------------------------------

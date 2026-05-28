@@ -1050,6 +1050,30 @@ const MonsterDef& monsterDef(EnemyType t);
 // buildMonsterTuned() to place that enemy.
 MonsterSystem::Tuning tuningFor(EnemyType t);
 
+// ---------------------------------------------------------------------------
+// NEW-GLB ENEMY VARIANTS (wire-new-glbs pass). Three additional spawn-ready
+// Tunings for the freshly-converted character GLBs that joined the rigged_glb
+// roster (SynthModelActual / MechSoldier / ArmoredFuturisticSoldier). These are
+// helper factories (NOT new EnemyType rows) so the existing 4-entry bestiary
+// table + --test-bestiary stay unchanged; level/world code spawns them by
+// calling these directly, exactly like guardTuning()/droneTuning() in
+// level1_game.cpp. Each Tuning points at the new rigged_glb file via
+// defRigged() under the hood, falls back to the procedural box on load failure,
+// and pulls damage/cooldown from the combat:: bands so the values stay in the
+// sane, winnable bands.
+//
+//   * synthModelActualTuning — ground humanoid synth (Synth enemy variant
+//     alongside the existing BlueSynth flyer). HUMANOID, so flyer=false per
+//     Tim's note — the bestiary BlueSynth row is a FLYER (hovers, center-origin
+//     model) but the actual synth model is a humanoid that walks on the floor.
+//   * mechSoldierTuning — heavy armored mech-style trooper variant.
+//     Higher HP / harder hit than the basic Trooper.
+//   * armoredFuturisticSoldierTuning — armored futuristic trooper variant.
+//     Slightly tougher than the basic Trooper but lighter than MechSoldier.
+MonsterSystem::Tuning synthModelActualTuning();
+MonsterSystem::Tuning mechSoldierTuning();
+MonsterSystem::Tuning armoredFuturisticSoldierTuning();
+
 // Headless self-test (--test-bestiary, the data-driven enemy roster). Asserts each
 // EnemyType in the roster:
 //   (a) BUILDS with its table stats (HP / type / ranged / damage all match the row,

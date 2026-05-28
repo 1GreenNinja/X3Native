@@ -5,8 +5,11 @@
 
 #include "vehicle.h"
 
+#include "engine/core/x3_log.h"
+
 #include <cmath>
 #include <cstring>
+#include <string>
 
 namespace x3::game {
 
@@ -138,6 +141,42 @@ bool DriveDemo::build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& p
     return true;
 }
 
+// Load a rigged_glb body model and use it INSTEAD of the procedural chassis cube
+// for the render pass. The GLB rides the chassis transform every frame (we
+// compose chassis world * (translate liftY) * rotate(yawOffset) * scale * each
+// drawable's bake-time nodeTransform). On failure the legacy chassis cube draws.
+// wire-new-glbs pass: this is how Sportscar.glb becomes the --world drive entity.
+bool DriveDemo::loadBodyGlb(x3::rhi::IRenderDevice& device,
+                            std::string_view glbDir, std::string_view glbFile,
+                            float scale, float yawOffset, float liftY) {
+    m_usingBodyGlb = false;
+    m_bodyDrawables.clear();
+    m_bodyAssets.reset(x3::asset::createAssetSource());
+    if (!m_bodyAssets->mountDir(glbDir, 0)) {
+        x3::logWarn(std::string("[vehicle] body-GLB mountDir failed: ") + std::string(glbDir));
+        return false;
+    }
+    m_bodyLoader.reset(x3::asset::createModelLoader(&device, m_bodyAssets.get()));
+    m_bodyModel = m_bodyLoader->load(glbFile);
+    if (!m_bodyModel.ok) {
+        x3::logWarn(std::string("[vehicle] body-GLB load failed: ") + std::string(glbFile));
+        return false;
+    }
+    m_bodyDrawables = x3::asset::makeDrawables(m_bodyModel);
+    if (m_bodyDrawables.empty()) {
+        x3::logWarn(std::string("[vehicle] body-GLB produced 0 drawables: ") + std::string(glbFile));
+        return false;
+    }
+    m_bodyScale  = scale;
+    m_bodyYawOff = yawOffset;
+    m_bodyLiftY  = liftY;
+    m_usingBodyGlb = true;
+    x3::logInfo(std::string("[vehicle] loaded body GLB ") + std::string(glbFile) +
+                "  ->  " + std::to_string(m_bodyDrawables.size()) + " primitive(s), scale=" +
+                std::to_string(scale));
+    return true;
+}
+
 void DriveDemo::setInput(const x3::phys::VehicleInput& in) { if (m_ctl) m_ctl->setInput(in); }
 void DriveDemo::preStep(float dt)  { if (m_ctl) m_ctl->preStep(dt); }
 void DriveDemo::postStep(float dt) { if (m_ctl) m_ctl->postStep(dt); }
@@ -152,13 +191,48 @@ void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
     const float bodyCol[4]  = { 1.0f, 0.25f, 0.22f, 1.0f };
     const float wheelCol[4] = { 0.12f, 0.12f, 0.14f, 1.0f };
 
-    // Chassis: pos + rotation from physics, scaled to its half extents (cube is
-    // half-extent 0.5 -> scale = he/0.5 = he*2).
+    // Chassis pos + rotation from physics. The procedural cube path scales the
+    // unit cube by 2*half-extent; the GLB body path uses the bare chassis world
+    // (translate + rotate, no scale-cube) so the model isn't squashed.
     x3::phys::Vec3 p = m_physics->getBodyPosition(m_chassis);
     float q[4]; m_physics->getBodyRotation(m_chassis, q);
     float pos[3] = { p.x, p.y, p.z };
-    float m[16]; composeTRS(pos, q, m_hx*2.0f, m_hy*2.0f, m_hz*2.0f, m);
-    m_device->drawMesh(frame, m_chassisMesh, m_chassisTex, bodyCol, m);
+
+    if (m_usingBodyGlb && !m_bodyDrawables.empty()) {
+        // Body GLB ride. Compose: chassisWorld(no-cube-scale) * yawAdj * S(scale) *
+        // T(0, liftY, 0) * nodeTransform, per drawable. The yawOffset lines up the
+        // model's authored forward with the chassis -Z forward; liftY drops the
+        // wheels to the ground when the GLB origin is at the model's base.
+        float worldNoScale[16];
+        composeTRS(pos, q, 1.0f, 1.0f, 1.0f, worldNoScale);
+        // bodyLocal = Ry(yawOffset) * S(scale) * T(0, liftY, 0). column-major.
+        const float yc = std::cos(m_bodyYawOff), ys = std::sin(m_bodyYawOff);
+        float bodyLocal[16] = {
+              yc*m_bodyScale, 0.0f, -ys*m_bodyScale, 0.0f,
+                       0.0f,  m_bodyScale, 0.0f,     0.0f,
+              ys*m_bodyScale, 0.0f,  yc*m_bodyScale, 0.0f,
+                       0.0f, m_bodyLiftY, 0.0f,      1.0f,
+        };
+        float worldBody[16];
+        x3::asset::mulMat4(worldNoScale, bodyLocal, worldBody);
+        for (const auto& d : m_bodyDrawables) {
+            float color[4] = {
+                d.baseColorFactor[0],
+                d.baseColorFactor[1],
+                d.baseColorFactor[2],
+                d.baseColorFactor[3],
+            };
+            float fin[16];
+            x3::asset::mulMat4(worldBody, d.nodeTransform, fin);
+            m_device->drawMesh(frame, x3::rhi::MeshHandle{ d.meshId },
+                               x3::rhi::TextureHandle{ d.baseColorTexId },
+                               color, fin);
+        }
+    } else {
+        // Legacy procedural chassis cube: scaled to its half extents.
+        float m[16]; composeTRS(pos, q, m_hx*2.0f, m_hy*2.0f, m_hz*2.0f, m);
+        m_device->drawMesh(frame, m_chassisMesh, m_chassisTex, bodyCol, m);
+    }
 
     // Wheels: the controller hands back a world transform that already maps a
     // unit Y-cylinder (radius 1, half-height 1) to the wheel. Our cylinder mesh is
@@ -175,6 +249,14 @@ void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
 void DriveDemo::shutdown() {
     m_ctl.reset();  // remove the constraint/step-listener BEFORE the body/world go
     if (m_physics && m_chassis.valid()) m_physics->removeBody(m_chassis);
+    // Release the body GLB GPU resources THROUGH the loader (it owns the per-prim
+    // mesh/texture handles minted at load time). Reset the loader BEFORE the
+    // device shutdown, so destroyMesh/destroyTexture run while the device is alive.
+    if (m_bodyLoader && m_bodyModel.ok) m_bodyLoader->unload(m_bodyModel);
+    m_bodyDrawables.clear();
+    m_bodyLoader.reset();
+    m_bodyAssets.reset();
+    m_usingBodyGlb = false;
     if (m_device) {
         if (m_chassisMesh.valid()) m_device->destroyMesh(m_chassisMesh);
         if (m_wheelMesh.valid())   m_device->destroyMesh(m_wheelMesh);
