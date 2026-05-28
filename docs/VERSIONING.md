@@ -139,3 +139,4 @@ engine's other `--test-*` gates.
   (`app/ui.cpp`/`ui.h`), `--version` + `--test-version` + startup banner
   (`app/main.cpp`). Gated: all `--test-*` exit 0, `--test-version` passes, `--version`
   works, Release + Debug `--smoketest` 0 VUID, Debug leak-clean. READY FOR INTEGRATION.
+- 2026-05-27 (13700K SNAKE, `feat/version-bump-0.4`): **BUMPED 0.3 → 0.4.** New engine systems: `SwimController` + `NPCSystem` (both shipped on their own feat lanes today). `--test-version` regex updated to `^0\.4\.\d{5}$`. Release notes in `docs/RELEASES.md`. Gated: `--test-version` green, Release + Debug `--smoketest` 0 VUID alloc=0. READY FOR INTEGRATION.
