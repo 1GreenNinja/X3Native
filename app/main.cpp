@@ -6159,11 +6159,16 @@ int main(int argc, char** argv) {
     }, "idclip [0|1] - toggle noclip free-flight (no collision)");
     // ---- restart: spawn a fresh X3Engine.exe + close this window so the main
     // loop unwinds cleanly through the normal shutdown path (texture/mesh release,
-    // VMA leak check, etc.). The new process inherits CWD so assets resolve. Playtest
-    // aid — not a true in-place level reset, just the fastest way to a clean slate.
-    console->registerCommand("restart", [&console, window](const std::vector<std::string>&) {
-        console->print("restart: spawning a fresh X3Engine + exiting this one...");
-        std::system("start \"\" \"X3Engine.exe\"");
+    // VMA leak check, etc.). argv[0] is the absolute path the OS launched us with —
+    // we MUST use that since cmd's `start` resolves bare names against CWD (which
+    // is the project root, not the build/bin/Release dir where the exe lives).
+    // Playtest aid — not a true in-place level reset, just a clean-slate cycle.
+    const std::string restartExe(argv[0] ? argv[0] : "X3Engine.exe");
+    console->registerCommand("restart", [&console, window, restartExe](const std::vector<std::string>&) {
+        const std::string cmd = std::string("start \"\" \"") + restartExe + "\"";
+        console->print(std::string("restart: spawning ") + restartExe);
+        const int rc = std::system(cmd.c_str());
+        console->print(std::string("restart: spawn rc=") + std::to_string(rc) + " — closing this window...");
         glfwSetWindowShouldClose(window, GLFW_TRUE);
     }, "restart - spawn a fresh X3Engine + exit this one");
 
