@@ -38,11 +38,14 @@ constexpr float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 // ---------------------------------------------------------------------------
 // TABLE — top is GLASS (a thin slab), legs are opaque thin square boxes.
 constexpr float kTableTopHX     = 0.80f;   // half-extent X (full 1.6 m)
-constexpr float kTableTopHY     = 0.025f;  // half-extent Y (full 0.05 m thick slab)
+constexpr float kTableTopHY     = 0.040f;  // half-extent Y (full 8 cm — thicker plate, owner pass 2)
 constexpr float kTableTopHZ     = 0.45f;   // half-extent Z (full 0.9 m)
 constexpr float kTableHeight    = 0.75f;   // top SURFACE height (m above the floor)
-constexpr float kTableLegHX     = 0.035f;  // square 7 cm metal legs
-constexpr float kTableLegHZ     = 0.035f;
+constexpr float kTableLegHX     = 0.020f;  // square 4 cm metal legs (slimmer/refined)
+constexpr float kTableLegHZ     = 0.020f;
+// Tiny gap so leg TOPS sit a hair BELOW the glass slab bottom — avoids any z-fight at
+// the meeting surface + guarantees no "leg poking into glass" visual through the plate.
+constexpr float kLegGlassGap    = 0.002f;
 // CHAIR — seat box + back box (opaque). Seat top at kChairSeatHeight; back rises above.
 constexpr float kChairSeatHX    = 0.225f;  // 45 cm wide seat
 constexpr float kChairSeatHY    = 0.025f;  // 5 cm thick cushion
@@ -54,6 +57,12 @@ constexpr float kChairBackHZ    = 0.025f;  // 5 cm thick
 // The back is placed BEHIND the seat (opposite the seated facing) so the player
 // looks AT the table when seated.
 constexpr float kChairBackOffset = 0.20f;  // distance back from seat center
+// CHAIR LEGS — 4 thin posts from the floor up to the seat bottom at the seat's
+// axis-aligned corners (inset a hair so they look like they support the seat from
+// underneath, not at its outer rim).
+constexpr float kChairLegHX     = 0.018f;  // ~3.6 cm square posts
+constexpr float kChairLegHZ     = 0.018f;
+constexpr float kChairLegInset  = 0.025f;  // inset from seat edge
 
 // Default colors. The table top is set CLEAR (low-opacity GlassMaterial); legs are
 // gunmetal; chairs are a warm dark grey.
@@ -109,7 +118,8 @@ uint32_t addGlassTabletop(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys
     // room light as a soft sheen.
     e.transparent = true;
     e.glass.opacity    = 0.10f;          // CLEAR — barely-tinted plate glass
-    e.glass.tint[0]    = 0.92f; e.glass.tint[1] = 0.96f; e.glass.tint[2] = 1.0f;
+    // Cool BLUEISH plate-glass tint (owner pass 2) — distinct cool cast, not colorless.
+    e.glass.tint[0]    = 0.60f; e.glass.tint[1] = 0.78f; e.glass.tint[2] = 0.95f;
     e.glass.roughness  = 0.04f;          // polished plate (not frosted)
     e.glass.refraction = 0.02f;          // subtle scene-bend behind the plate
     e.glass.specular   = 0.55f;          // a clean soft sheen, not a hot mirror
@@ -153,6 +163,20 @@ void buildChair(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysics
     const float bhz = alongX ? kChairBackHX : kChairBackHZ;
     slot.backEntity = addOpaqueBox(scene, device, physics, bhx, kChairBackHY, bhz,
                                    bx, by, bz, kChairTint, /*collide*/false, floorRoomId);
+    // 4 chair LEGS — thin posts from the floor up to the seat bottom, at the seat's
+    // axis-aligned corners (inset slightly). Opaque + collide-less so the chair stays a
+    // walk-through prop; the SIT interaction is the only contact the player has with it.
+    const float legSpanY = kChairSeatHeight - kChairSeatHY * 2.0f;
+    const float legCy2   = slot.pos.y + legSpanY * 0.5f;
+    const float legHy2   = legSpanY * 0.5f;
+    const float lxOff    = kChairSeatHX - kChairLegInset;
+    const float lzOff    = kChairSeatHZ - kChairLegInset;
+    for (int sx = -1; sx <= 1; sx += 2)
+        for (int sz = -1; sz <= 1; sz += 2)
+            addOpaqueBox(scene, device, physics,
+                         kChairLegHX, legHy2, kChairLegHZ,
+                         slot.pos.x + sx * lxOff, legCy2, slot.pos.z + sz * lzOff,
+                         kChairTint, /*collide*/false, floorRoomId);
 }
 
 } // namespace
@@ -173,8 +197,11 @@ void GlassLounge::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // Legs at the 4 corners (inset a hair so they're under the slab, not at the rim).
     const float legInsetX = kTableTopHX - 0.06f;
     const float legInsetZ = kTableTopHZ - 0.06f;
-    const float legCy     = fy + (kTableHeight - kTableTopHY * 2.0f) * 0.5f;
-    const float legHy     = (kTableHeight - kTableTopHY * 2.0f) * 0.5f;
+    // Leg tops sit kLegGlassGap below the slab bottom so the surfaces don't share a
+    // plane (no z-fight / no leg appearing to enter the glass interior).
+    const float legSpan   = kTableHeight - kTableTopHY * 2.0f - kLegGlassGap;
+    const float legCy     = fy + legSpan * 0.5f;
+    const float legHy     = legSpan * 0.5f;
     for (int sx = -1; sx <= 1; sx += 2)
         for (int sz = -1; sz <= 1; sz += 2)
             addOpaqueBox(scene, device, physics,
