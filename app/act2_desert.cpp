@@ -51,19 +51,11 @@ MonsterSystem::Tuning overlordMeleeTuning() {
     return t;
 }
 
-// L10 OVERLORD PATROL — ranged elite. Built on the Illuminated (ranged elite)
-// profile, tinted Overlord magenta, damage forced into the combat:: ranged band.
-// EXISTING roster type.
-MonsterSystem::Tuning overlordRangedTuning() {
-    MonsterSystem::Tuning t = tuningFor(EnemyType::Illuminated);
-    t.type           = MonsterType::Drone;
-    t.ranged         = true;
-    t.damage         = combat::kRangedDamageDefault;    // ensure > 0 (hostile)
-    t.attackCooldown = combat::kRangedCooldownDefault;
-    t.standoff       = combat::kRangedStandoff;
-    t.tint[0] = 0.80f; t.tint[1] = 0.25f; t.tint[2] = 0.55f; t.tint[3] = 1.0f; // Overlord magenta
-    return t;
-}
+// (L10 OVERLORD PATROL — ranged-elite slot is now filled by the canon-aliens
+//  GreyTasked drone instead of a tinted Illuminated synth. Lore-correct: the
+//  Greys are synthetic worker-drones serving the Reptilian Overlords, so a
+//  Reptilian-led patrol naturally drags one Grey along as the ranged spotter.
+//  Stats come from canonAlienTuning(CanonAlien::GreyTasked) — see canon_aliens.cpp.)
 
 // A Salvari refugee marker. Uses the REAL Act-2 roster `SalvariAlly` type (the
 // roster lane already shipped it): startAllied => m_allied=true + m_dmg=0 at build,
@@ -158,14 +150,16 @@ void Act2Desert::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                      0.40f, 0.55f, 0.90f, 0.35f, 0.85f, 1.00f, 2.5f);
         }
 
-        // Light Overlord patrol (existing hostile roster, tinted Overlord) spread
-        // along the approach: 2 melee troopers woven with 1 ranged elite.
+        // Mixed patrol (Reptilian Troopers + their Grey-servant ranged spotter)
+        // spread along the approach: 2 melee Overlord Troopers (existing tinted
+        // hostile roster) woven with 1 canon Grey Tasked drone (ranged).
         m_patrol.spawn(scene, device, physics, m_modelDir,
                        surfaceAt(X10 + 45, Z0 + 5, kDesertEnemyYOff), overlordMeleeTuning());
         m_patrol.spawn(scene, device, physics, m_modelDir,
                        surfaceAt(X10 + 85, Z0 - 6, kDesertEnemyYOff), overlordMeleeTuning());
         m_patrol.spawn(scene, device, physics, m_modelDir,
-                       surfaceAt(X10 + 125, Z0 + 3, kDesertEnemyYOff), overlordRangedTuning());
+                       surfaceAt(X10 + 125, Z0 + 3, kDesertEnemyYOff),
+                       canonAlienTuning(CanonAlien::GreyTasked));
         p.patrolCount = m_patrol.count();
 
         // FIRST CONTACT: allied Salvari refugees near the cave mouth. Index 0 is the
@@ -327,7 +321,7 @@ void Act2Desert::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_built = true;
     x3::logInfo("Act2Desert::build complete — L10 CRYSTALLINE DESERT DEPTHS (7 crystals, "
                 "hidden cave mouth, 3 first-contact Salvari [1 injured -> side-quest], "
-                "3-strong Overlord patrol) + L11 SALVARI CAMP (cave graybox + 8 crystals, "
+                "3-strong patrol [2 Reptilian Troopers + 1 Grey Tasked drone]) + L11 SALVARI CAMP (cave graybox + 8 crystals, "
                 "7 survivor markers incl. K'thara, an upgrade station + cultural-exchange "
                 "beat); alien sky + streamed terrain stood up");
 }
