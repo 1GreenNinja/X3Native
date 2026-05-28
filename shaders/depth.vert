@@ -13,6 +13,15 @@
 //
 // This is the camera analogue of shadow.vert (which uses lightViewProj); here
 // the transform is cam.viewProj * model so the depth matches the main pass.
+//
+// CRITICAL: gl_Position MUST be invariant + computed in EXACTLY the same order
+// as mesh.vert (worldPos = model * inPos; gl_Position = viewProj * worldPos).
+// The main pass then runs depth-test EQUAL against this Z. Even a 1-ULP
+// difference (from FMA reordering or a different bracketing) causes the EQUAL
+// test to reject every fragment, leaving the HDR target empty -> blank capture.
+// invariant ensures the SPIR-V/driver does not re-order ops in this pre-pass
+// differently from the same expression in mesh.vert. See mesh.vert for the
+// matching `invariant gl_Position;` + identical computation.
 
 struct ObjectData {
     mat4 model;
@@ -39,7 +48,21 @@ layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec3 inNormal;   // unused; kept so the VBO layout matches
 layout(location = 2) in vec2 inUV;       // unused
 
+// Force position-invariance so the SPIR-V/driver MUST emit the same arithmetic
+// sequence as mesh.vert's gl_Position. Without this, the (model * inPos) sub-
+// expression can be folded into a fused multiply-add differently in the two
+// shaders, and the main pass's depth-EQUAL test rejects every fragment.
+invariant gl_Position;
+
 void main() {
     ObjectData o = objBuf.objects[gl_InstanceIndex];
-    gl_Position = cam.viewProj * o.model * vec4(inPos, 1.0);
+    // MUST match mesh.vert EXACTLY: worldPos = model * inPos; pos = viewProj * worldPos.
+    // The `precise` qualifier (and the matching one in mesh.vert) tells the driver
+    // not to reorder these matrix multiplies into a different FMA sequence — the
+    // main pass's depth-EQUAL/LESS_OR_EQUAL test against this Z then never sees a
+    // 1-ULP drift that would reject every fragment (the symptom: a blank --headless
+    // --screenshot capture, observed on NVIDIA 1080 Ti / no-RT, raster SSAO/GI).
+    precise vec4 worldPos = o.model * vec4(inPos, 1.0);
+    precise vec4 clipPos  = cam.viewProj * worldPos;
+    gl_Position = clipPos;
 }
