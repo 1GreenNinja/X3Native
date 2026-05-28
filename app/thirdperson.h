@@ -103,6 +103,14 @@ public:
     // Flip FP<->3P; returns the new state. (F5 in the game loop.)
     bool toggle() { setThirdPerson(!m_thirdPerson); return m_thirdPerson; }
 
+    // ---- Runtime tuning (Tim playtest 2026-05-27) ----------------------------
+    // Cvars `jake_yoff` (m), `jake_yawoff_deg` (deg), `jake_camdist` (m),
+    // `jake_camh` (m) feed these setters every frame so a live playtest can dial
+    // in the avatar Y / yaw + 3P camera framing without rebuilding. Once the look
+    // is right, bake the values back as constants.
+    void setUserAdjust(float yOffMeters, float yawOffRad);
+    void setCameraTuning(float camDist, float camHeightAbove);
+
     // True iff the FP weapon VIEWMODEL should draw this frame (FP only). The avatar
     // is the inverse: drawn only in 3P. These are the two things the toggle swaps.
     bool viewmodelVisible() const { return !m_thirdPerson; }
@@ -189,6 +197,12 @@ private:
     // The model fixup (identity for the Y-up Jake rig; kept for parity with the
     // monster draw path final = model * fixup * nodeTransform).
     float    m_modelFixup[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+
+    // Live-tuning offsets driven by cvars (see setUserAdjust / setCameraTuning).
+    float    m_userYOff   = 0.0f;       // extra Y in meters (negative = lift up)
+    float    m_userYawOff = 0.0f;       // extra yaw in radians (added after the 180-deg flip)
+    float    m_camDist    = 3.6f;       // mirrors kTpCamDistance default
+    float    m_camHeight  = 0.7f;       // mirrors kTpCamHeightAbove default
 };
 
 // Follow-camera tuning (meters). Behind the player + above; the test asserts the

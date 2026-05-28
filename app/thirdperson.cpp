@@ -249,13 +249,18 @@ void ThirdPersonView::bakeTransform(Scene& scene) {
     // FACING FLIP (matches rescue.cpp/monster.cpp): the rigged GLBs are authored
     // facing +Z, but m_yaw assumes local -Z forward (CONVENTIONS) — so flip the
     // VISUAL yaw 180deg here only. m_yaw stays the logical heading.
-    const float ry = m_yaw + kPi;
+    // Yaw: the 180-deg facing-flip + the runtime cvar offset (jake_yawoff_deg).
+    const float ry = m_yaw + kPi + m_userYawOff;
     const float c = std::cos(ry), s = std::sin(ry);
+    // Position: m_pos = player's feet, plus the runtime Y cvar (jake_yoff) to nudge
+    // Jake up/down for the GLB's chronic origin offset (Tim: "they never got it right").
+    x3::phys::Vec3 posAdj = m_pos;
+    posAdj.y += m_userYOff;
     composeTRS(m_drawXform,
                x3::phys::Vec3{ c, 0.0f, -s },
                x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
                x3::phys::Vec3{ s, 0.0f, c },
-               m_modelScale, m_pos);
+               m_modelScale, posAdj);
     if (m_entity != kNoLink && m_entity < scene.size()) {
         Entity& me = scene.get(m_entity);
         std::memcpy(me.transform, m_drawXform, 16 * sizeof(float));
@@ -327,7 +332,17 @@ void ThirdPersonView::update(float dt, Scene& scene, const x3::phys::Vec3& feet,
 ThirdPersonCamera ThirdPersonView::camera(const x3::phys::Vec3& feet, float eyeHeight,
                                           float yaw, float pitch) const {
     return computeFollowCamera(feet.x, feet.y, feet.z, eyeHeight, yaw, pitch,
-                               kTpCamDistance, kTpCamHeightAbove);
+                               m_camDist, m_camHeight);
+}
+
+void ThirdPersonView::setUserAdjust(float yOffMeters, float yawOffRad) {
+    m_userYOff   = yOffMeters;
+    m_userYawOff = yawOffRad;
+}
+
+void ThirdPersonView::setCameraTuning(float camDist, float camHeightAbove) {
+    m_camDist   = camDist;
+    m_camHeight = camHeightAbove;
 }
 
 void ThirdPersonView::drawAvatar(x3::rhi::IRenderDevice& device,
