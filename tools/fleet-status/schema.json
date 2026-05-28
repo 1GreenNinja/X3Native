@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chat.<CHOSEN_DOMAIN>/fleet-status.schema.json",
+  "title": "X3Native Fleet Status",
+  "description": "Periodically-regenerated JSON consumed by the Element sidebar widget. Shows per-machine presence + branch state + integrator queue.",
+  "type": "object",
+  "required": ["generated_at", "generator_machine", "machines"],
+  "properties": {
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when this snapshot was produced. Widget displays as 'updated 2 min ago'."
+    },
+    "generator_machine": {
+      "type": "string",
+      "description": "Which machine ran the generator (typically 13700K)."
+    },
+    "machines": {
+      "type": "array",
+      "description": "One entry per fleet PC. Order is the widget's display order.",
+      "items": {
+        "type": "object",
+        "required": ["name", "lan_ip", "presence", "presence_source"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Canonical machine slug (lowercase). Matches the Matrix bot account suffix."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Pretty form for the widget (e.g. 'DJBOOTH', 'I4400')."
+          },
+          "lan_ip": {
+            "type": "string",
+            "format": "ipv4",
+            "description": "LAN IPv4. Source of truth is ~/.claude/.fleet_hosts.json on the generator machine."
+          },
+          "presence": {
+            "type": "string",
+            "enum": ["online", "away", "dormant", "unknown"],
+            "description": "Aggregated from presence_source. online=ping reachable + matrix-daemon connected within 10 min. away=ping reachable but no matrix presence in 10-60 min. dormant=ping fail OR no matrix presence in 60+ min. unknown=ping fail + no presence ever seen."
+          },
+          "presence_source": {
+            "type": "string",
+            "enum": ["ping+matrix", "matrix-only", "ping-only", "stale"],
+            "description": "Which signal(s) we used to derive presence."
+          },
+          "last_seen_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Most recent presence-ping receipt from this machine's matrix-daemon."
+          },
+          "last_seen_ago_sec": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Convenience field for the widget. Same value as generated_at - last_seen_at."
+          },
+          "branches": {
+            "type": "array",
+            "description": "Branches currently associated with this machine (refs/remotes/origin/feat/*-machine OR by integrator dispatch in main).",
+            "items": {
+              "type": "object",
+              "required": ["name", "head_sha", "head_subject", "ahead_of_main"],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Branch name without origin/ prefix."
+                },
+                "head_sha": {
+                  "type": "string",
+                  "minLength": 7,
+                  "maxLength": 40,
+                  "description": "Short or full commit SHA at branch HEAD."
+                },
+                "head_subject": {
+                  "type": "string",
+                  "description": "Subject line of the HEAD commit (first line of the commit message)."
+                },
+                "head_committed_at": {
+                  "type": "string",
+                  "format": "date-time",
+                  "description": "When the HEAD commit was created."
+                },
+                "ahead_of_main": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Number of commits the branch is ahead of origin/main."
+                },
+                "behind_main": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Number of commits the branch is behind origin/main. >0 means the branch needs a rebase before it can be merged cleanly."
+                },
+                "ready_for_integration": {
+                  "type": "boolean",
+                  "description": "True iff the branch's STATUS block in its associated <MACHINE>.md says 'READY FOR INTEGRATION' (textual match, simple)."
+                }
+              }
+            }
+          },
+          "role": {
+            "type": "string",
+            "enum": ["worker", "integrator", "primary", "showcase", "fallback"],
+            "description": "Fleet role per the spec. 13700K=integrator, 14900K=showcase, the laptop OG=primary, the others=worker."
+          },
+          "notes": {
+            "type": "string",
+            "description": "Free-text notes the integrator can pin (e.g. 'I4400 just upgraded to Win11 — verify daemon survives reboot')."
+          }
+        }
+      }
+    },
+    "integration_queue": {
+      "type": "array",
+      "description": "Branches awaiting the integrator's merge. Ordered by age (oldest first).",
+      "items": {
+        "type": "object",
+        "required": ["branch", "from_machine", "head_sha", "queued_at"],
+        "properties": {
+          "branch": { "type": "string" },
+          "from_machine": { "type": "string" },
+          "head_sha": { "type": "string" },
+          "queued_at": { "type": "string", "format": "date-time" },
+          "status_blurb": { "type": "string", "description": "First sentence of the branch's STATUS block." }
+        }
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "description": "Anything the widget should highlight at the top — stale daemons, branches behind main, etc.",
+      "items": {
+        "type": "object",
+        "required": ["severity", "text"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["info", "warn", "error"] },
+          "text": { "type": "string" },
+          "affects_machine": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,66 @@
+# docker-compose.yml — Conduit homeserver on 13700K
+#
+# Run on the 13700K Command Center to bring up Matrix homeserver
+# + Cloudflare Tunnel together. Both processes have restart=unless-stopped
+# so they survive 13700K reboots automatically.
+#
+# Setup:
+#   1. cp conduit.toml.template C:\opt\conduit\config\conduit.toml
+#   2. Edit conduit.toml — replace <CHOSEN_DOMAIN> with Tim's domain
+#      and insert the generated registration_token
+#   3. cp cloudflared-credentials.json.template C:\opt\conduit\cloudflared\<UUID>.json
+#      (placeholder — actual JSON comes from `cloudflared tunnel create`)
+#   4. cp cloudflared-config.yml.template C:\opt\conduit\cloudflared\config.yml
+#      Edit to substitute the tunnel UUID + chat hostname
+#   5. docker compose up -d
+#   6. Verify Conduit health:
+#        Invoke-RestMethod -Uri http://127.0.0.1:6167/_matrix/client/versions
+#      Expected: JSON listing of supported Matrix spec versions
+#   7. Verify Cloudflare tunnel is reachable from external network:
+#        curl -I https://chat.<CHOSEN_DOMAIN>/_matrix/client/versions
+
+services:
+  conduit:
+    image: matrixconduit/matrix-conduit:v0.10.12
+    container_name: conduit
+    restart: unless-stopped
+    # Bind only to localhost — cloudflared fronts external traffic.
+    # If you want LAN-direct access (no Tunnel), switch to 0.0.0.0:6167.
+    ports:
+      - "127.0.0.1:6167:6167"
+    volumes:
+      - C:\opt\conduit\data:/var/lib/matrix-conduit
+      - C:\opt\conduit\config\conduit.toml:/etc/matrix-conduit/conduit.toml:ro
+    environment:
+      CONDUIT_CONFIG: /etc/matrix-conduit/conduit.toml
+    healthcheck:
+      # Conduit doesn't ship curl in the image, so we hit the API via the
+      # built-in /usr/local/bin/conduit binary or just check the listening port
+      test: ["CMD-SHELL", "echo >/dev/tcp/127.0.0.1/6167"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-fleet
+    restart: unless-stopped
+    # cloudflared needs to reach the conduit container on the docker network.
+    # Use the service name "conduit" in the ingress config (not 127.0.0.1).
+    depends_on:
+      conduit:
+        condition: service_started
+    volumes:
+      - C:\opt\conduit\cloudflared:/etc/cloudflared:ro
+    command: tunnel --config /etc/cloudflared/config.yml --no-autoupdate run
+
+# Notes:
+# - Conduit's data volume on C:\opt\conduit\data\ holds the SQLite DB.
+#   Back this up via the rclone nightly script (Plan Task 35).
+# - The cloudflared config.yml ingress should reference the docker service
+#   name "conduit:6167" instead of "127.0.0.1:6167" because cloudflared
+#   inside the compose network reaches Conduit through the bridge network.
+# - For a more conservative deploy: split conduit and cloudflared into two
+#   separate compose files / services, e.g., put cloudflared as a native
+#   Windows Scheduled Task and only containerize Conduit.

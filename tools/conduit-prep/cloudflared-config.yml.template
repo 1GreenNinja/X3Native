@@ -1,0 +1,38 @@
+# cloudflared-config.yml — Cloudflare Tunnel routing for chat.<CHOSEN_DOMAIN>
+#
+# After running `cloudflared tunnel create djbooth-fleet-chat` and getting the
+# tunnel UUID + credentials JSON, copy this file to
+#   C:\opt\conduit\cloudflared\config.yml
+# Replace placeholders below.
+
+tunnel: <TUNNEL_UUID>
+credentials-file: /etc/cloudflared/<TUNNEL_UUID>.json
+
+# Ingress rules — match against the inbound hostname + path and route to
+# the appropriate local service. Order matters; first match wins. The
+# catch-all 404 rule at the end is required.
+ingress:
+  # The Matrix Client-Server API and well-known endpoints go to Conduit.
+  # In docker-compose, cloudflared reaches Conduit at the service name.
+  - hostname: chat.<CHOSEN_DOMAIN>
+    path: /_matrix/.*
+    service: http://conduit:6167
+
+  - hostname: chat.<CHOSEN_DOMAIN>
+    path: /.well-known/.*
+    service: http://conduit:6167
+
+  # Everything else on chat.<CHOSEN_DOMAIN> goes to the Element Web static
+  # server (Plan Task 17-19). The http-server runs as a separate Scheduled
+  # Task on 13700K, NOT in this compose file. The host IP from inside the
+  # container is host.docker.internal on Docker Desktop for Windows.
+  - hostname: chat.<CHOSEN_DOMAIN>
+    service: http://host.docker.internal:8080
+
+  # Catch-all
+  - service: http_status:404
+
+# Other tunnel options worth considering later:
+# warp-routing: enable for WireGuard-style overlay if you want fleet
+#   machines on the LAN to reach the homeserver via the tunnel as well.
+# metrics: 127.0.0.1:2000  # tunnel diagnostics endpoint

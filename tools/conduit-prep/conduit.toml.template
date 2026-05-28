@@ -1,0 +1,50 @@
+# conduit.toml — Conduit homeserver config for X3Native fleet
+#
+# Before copying to C:\opt\conduit\config\conduit.toml:
+#   1. Replace <CHOSEN_DOMAIN> with the domain Tim picks (Plan Task 1)
+#   2. Replace <REGISTRATION_TOKEN> with a freshly-generated 32-byte hex token
+#      ($bytes = New-Object byte[] 32; [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes); [BitConverter]::ToString($bytes).Replace('-','').ToLower())
+#   3. Save the registration token to Tim's password manager — needed to
+#      register the per-machine bot accounts via Element
+
+[global]
+# The Matrix server_name used as the @<user>:<server_name> suffix.
+server_name = "<CHOSEN_DOMAIN>"
+
+# SQLite is the recommended backend for small to medium homeservers.
+# It single-writer-locks the DB; that's fine for a fleet of ~8 users.
+database_backend = "sqlite"
+database_path = "/var/lib/matrix-conduit"
+
+# Port Conduit binds. cloudflared talks to this on 127.0.0.1.
+port = 6167
+address = "0.0.0.0"  # inside the container; the host port-mapping restricts to 127.0.0.1
+
+# Account registration policy.
+# allow_registration = true REQUIRES a registration_token to actually register.
+# Set to false after Tim and all fleet bots are registered.
+allow_registration = true
+registration_token = "<REGISTRATION_TOKEN>"
+
+# Federation off — this is a private fleet. Can be enabled later.
+allow_federation = false
+allow_check_for_updates = true
+allow_encryption = true
+
+# Max upload size for files. 20 MB is plenty for fleet-internal screenshots.
+max_request_size = 20_000_000
+
+# No federated trusted servers (federation is off).
+trusted_servers = []
+
+# Default room version for newly-created rooms. Use 10 (Matrix v1.6+).
+default_room_version = "10"
+
+# When the well-known endpoint is queried, this is the homeserver Element
+# should auto-discover. cloudflared exposes the same name externally.
+[global.well_known]
+client = "https://chat.<CHOSEN_DOMAIN>"
+server = "chat.<CHOSEN_DOMAIN>:443"
+
+# Optional logging tuning:
+# log = "info,rocket=off,_=off,sled=off"
