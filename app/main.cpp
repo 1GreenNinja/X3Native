@@ -33,6 +33,7 @@
 #include "level_loader.h"                   // data-driven canonical level loader + per-room PVS cull (--test-canonlevel)
 #include "player.h"
 #include "monster.h"
+#include "npc.h"                            // non-combatant NPC controller (--test-npc / --world npc)
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
 #include "npc_dialog.h"                     // rescued-NPC talk/dialog -> companion (the captive girl)
@@ -801,7 +802,8 @@ int main(int argc, char** argv) {
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
-         testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false;
+         testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
+         testNpc = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1104,6 +1106,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-netpredict") testNetPredict = true;
         else if (a == "--test-rescue") testRescue = true;
         else if (a == "--test-npctalk") testNpcTalk = true;
+        else if (a == "--test-npc") testNpc = true;
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-debris") testDebris = true;
         else if (a == "--test-gpuskin") testGpuSkin = true;
@@ -1309,6 +1312,10 @@ int main(int argc, char** argv) {
     if (testCombat) {
         x3::logInfo("running shoot-monster combat (S6) self-test...");
         return x3::game::runCombatSelfTest() ? 0 : 1;
+    }
+    if (testNpc) {
+        x3::logInfo("running non-combatant NPCSystem self-test...");
+        return x3::game::runNpcSelfTest() ? 0 : 1;
     }
     if (testDeathRagdoll) {
         x3::logInfo("running skinned death-ragdoll (TASK#12) self-test...");
@@ -3216,6 +3223,212 @@ int main(int argc, char** argv) {
             device->endFrame(frame);
         }
         demo.shutdown(); rphys->shutdown(); device->shutdown();
+        if (window) glfwDestroyWindow(window); glfwTerminate();
+        return 0;
+    }
+
+    // ---- NPC showcase (--world npc) ---------------------------------------
+    // Spawn 3-4 non-combatant NPCs around the player using rigged_glb models:
+    //   * BartenderDanny.glb — Idle fixed pose at the "bar" (look-at-on-approach).
+    //   * DockWorker.glb     — Patrol a 4-waypoint loop on the dock.
+    //   * DrJohnson.glb      — Captive, rescuable (press E in range).
+    //   * Mechanic.glb       — Idle, fixed pose, look-at-on-approach.
+    // Each model falls back to a procedural khaki box if the GLB is absent (clean
+    // checkout safe). Headless / screenshot path captures a fixed camera; the
+    // walkable path gives a fly-cam + E to rescue the captive.
+    if (worldMode == "npc") {
+        x3::logInfo("--world npc: building the NPC showcase (bartender + patrol + captive)");
+        std::unique_ptr<x3::phys::IPhysicsWorld> nphys(x3::phys::createPhysicsWorld());
+        if (!nphys->init()) {
+            x3::logError("--world npc: physics init failed");
+            device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate(); return 1;
+        }
+
+        // ---- Lit ground + sky so the screenshot is not a black void. ------
+        auto grTexD = x3::prims::makeCheckerRGBA(64, 8, 150, 150, 160, 60, 62, 74);
+        auto grTex  = device->createTexture(grTexD.data(), 64, 64, true);
+        x3::prims::PrimMesh g = x3::prims::makeBox(20.0f, 0.25f, 20.0f, 0.0f, -0.25f, 0.0f, 0.25f);
+        auto grMesh = device->createMesh(g.verts.data(), (uint32_t)g.verts.size(),
+                                         g.index.data(), (uint32_t)g.index.size());
+        nphys->addStaticMesh(g.cverts.data(), (uint32_t)(g.cverts.size()/3),
+                             g.cindex.data(), (uint32_t)g.cindex.size());
+
+        { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = true; sp.sunIntensity = 1.3f; sp.haze = 0.3f;
+          device->setSkyParams(sp); }
+        { x3::rhi::PointLight pl[2];
+          pl[0].pos[0]= 2.0f; pl[0].pos[1]=3.0f; pl[0].pos[2]= 0.0f; pl[0].range=20.0f;
+          pl[0].color[0]=5.0f; pl[0].color[1]=4.8f; pl[0].color[2]=4.4f;
+          pl[1].pos[0]=-2.0f; pl[1].pos[1]=3.0f; pl[1].pos[2]= 0.0f; pl[1].range=20.0f;
+          pl[1].color[0]=3.2f; pl[1].color[1]=3.2f; pl[1].color[2]=3.5f;
+          device->setPointLights(pl, 2); }
+
+        x3::game::Scene nscene;
+
+        // 1) Bartender (fixed pose at "bar", look-at-on-approach).
+        x3::game::NPCSystem bartender;
+        {
+            x3::game::NPCSystem::Tuning t;
+            t.modelFile        = "BartenderDanny.glb";
+            t.modelDirOverride = x3::game::riggedGlbRoot();
+            t.modelScale       = 1.0f;
+            t.lookAtRange      = 3.5f;
+            t.initialMode      = x3::game::NPCSystem::Mode::Idle;
+            bartender.build(nscene, *device, *nphys, x3::phys::Vec3{ 0.0f, 0.0f, -3.0f }, t);
+            bartender.setFixedPose(0.0f);   // face -Z (toward the player)
+        }
+
+        // 2) DockWorker (patrol a 4-waypoint loop). Falls back to box if missing.
+        x3::game::NPCSystem dockWorker;
+        {
+            x3::game::NPCSystem::Tuning t;
+            t.modelFile        = "DockWorker.glb";
+            t.modelDirOverride = x3::game::riggedGlbRoot();
+            t.modelScale       = 1.0f;
+            t.lookAtRange      = 2.5f;
+            t.initialMode      = x3::game::NPCSystem::Mode::Idle;
+            const x3::phys::Vec3 spawn{ 5.0f, 0.0f, 0.0f };
+            dockWorker.build(nscene, *device, *nphys, spawn, t);
+            dockWorker.setPatrol({
+                x3::phys::Vec3{  5.0f, 0.0f,  2.0f },
+                x3::phys::Vec3{  7.0f, 0.0f,  2.0f },
+                x3::phys::Vec3{  7.0f, 0.0f, -2.0f },
+                x3::phys::Vec3{  5.0f, 0.0f, -2.0f },
+            }, 1.6f);
+        }
+
+        // 3) Captive Dr. Johnson (rescuable on E in range).
+        x3::game::NPCSystem captive;
+        {
+            x3::game::NPCSystem::Tuning t;
+            t.modelFile        = "DrJohnson.glb";
+            t.modelDirOverride = x3::game::riggedGlbRoot();
+            t.modelScale       = 1.0f;
+            t.lookAtRange      = 0.0f;   // no look-at; captives don't track
+            t.initialMode      = x3::game::NPCSystem::Mode::Captive;
+            captive.build(nscene, *device, *nphys, x3::phys::Vec3{ -5.0f, 0.0f, 0.0f }, t);
+        }
+
+        // 4) Mechanic (idle, look-at-on-approach). Falls back if the model is absent.
+        x3::game::NPCSystem mechanic;
+        {
+            x3::game::NPCSystem::Tuning t;
+            t.modelFile        = "Mechanic.glb";
+            t.modelDirOverride = x3::game::riggedGlbRoot();
+            t.modelScale       = 1.0f;
+            t.lookAtRange      = 3.0f;
+            t.initialMode      = x3::game::NPCSystem::Mode::Idle;
+            mechanic.build(nscene, *device, *nphys, x3::phys::Vec3{ 0.0f, 0.0f, 3.0f }, t);
+            mechanic.setFixedPose(3.14159265f);   // face +Z (away from the player, toward a "workbench")
+        }
+
+        // Lambda that draws the whole NPC scene for one frame.
+        auto drawNpcScene = [&](const x3::rhi::FrameContext& frame) {
+            const float white[4] = {1,1,1,1};
+            const float idG[16]  = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+            device->drawMesh(frame, grMesh, grTex, white, idG);
+            bartender.drawNPC(*device, frame, nscene);
+            dockWorker.drawNPC(*device, frame, nscene);
+            captive.drawNPC(*device, frame, nscene);
+            mechanic.drawNPC(*device, frame, nscene);
+        };
+
+        const float dt = 1.0f / 60.0f;
+        // The "player" position drives look-at + (for the headless path) drives
+        // the captive into rescue range so the screenshot shows a free NPC pose.
+        x3::phys::Vec3 playerPos{ 0.0f, 1.6f, 5.0f };
+
+        // ===== Headless capture: tick a few frames so patrol/look-at engage. ====
+        if (headless) {
+            // Frame the four NPCs in a wide vista shot. Camera is at +Z 8 m, look
+            // toward -Z (the bartender + the dock worker + the captive all line up).
+            float cam[5] = { 0.0f, 2.2f, 9.0f, -1.5708f, -0.10f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("G:/X3Native/captures/npc.png");
+            const int kFrames = 30;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                // Walk the "player" toward the bartender so look-at engages mid-shot.
+                if (i > 5) { playerPos.z -= 0.06f; }
+                bartender.update(dt, nscene, *nphys, playerPos);
+                dockWorker.update(dt, nscene, *nphys, playerPos);
+                captive.update(dt, nscene, *nphys, playerPos);
+                mechanic.update(dt, nscene, *nphys, playerPos);
+                nphys->step(dt);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) drawNpcScene(frame);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world npc: wrote " + outPath);
+            else       x3::logError("--world npc: capture FAILED");
+            bartender.shutdownRagdoll(*nphys);
+            dockWorker.shutdownRagdoll(*nphys);
+            captive.shutdownRagdoll(*nphys);
+            mechanic.shutdownRagdoll(*nphys);
+            device->destroyMesh(grMesh); device->destroyTexture(grTex);
+            nphys->shutdown(); device->shutdown();
+            if (window) glfwDestroyWindow(window); glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: fly-cam; E rescues the captive. =====
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        float fx = 0.0f, fy = 1.8f, fz = 6.0f, fyaw = -1.5708f, fpitch = -0.05f;
+        bool prevE = false;
+        x3::logInfo("--world npc: fly WASD + mouse, E to rescue the captive in range, Esc to quit");
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime(); float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx=(float)(mx-lastMX), ddy=(float)(my-lastMY); lastMX=mx; lastMY=my;
+            auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+            fyaw += ddx*0.0025f; fpitch -= ddy*0.0025f;
+            if (fpitch> 1.55f) fpitch= 1.55f; if (fpitch<-1.55f) fpitch=-1.55f;
+            float dx=std::cos(fpitch)*std::cos(fyaw), dy=std::sin(fpitch), dz=std::cos(fpitch)*std::sin(fyaw);
+            float rl=std::sqrt(dx*dx+dz*dz); if (rl<1e-4f) rl=1e-4f;
+            float rx=-dz/rl, rz=dx/rl; float spd=5.0f*fdt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd*=3.0f;
+            if (kd(GLFW_KEY_W)){fx+=dx*spd;fy+=dy*spd;fz+=dz*spd;}
+            if (kd(GLFW_KEY_S)){fx-=dx*spd;fy-=dy*spd;fz-=dz*spd;}
+            if (kd(GLFW_KEY_D)){fx+=rx*spd;fz+=rz*spd;}
+            if (kd(GLFW_KEY_A)){fx-=rx*spd;fz-=rz*spd;}
+            playerPos.x = fx; playerPos.y = fy; playerPos.z = fz;
+            // E rises -> rescue the captive if in range (3 m).
+            bool eNow = kd(GLFW_KEY_E);
+            if (eNow && !prevE) {
+                const float dxe = playerPos.x - captive.pos().x;
+                const float dze = playerPos.z - captive.pos().z;
+                if (dxe*dxe + dze*dze <= 3.0f * 3.0f && captive.isCaptive()) {
+                    if (captive.markRescued())
+                        x3::logInfo("--world npc: captive RESCUED!");
+                }
+            }
+            prevE = eNow;
+            bartender.update(fdt, nscene, *nphys, playerPos);
+            dockWorker.update(fdt, nscene, *nphys, playerPos);
+            captive.update(fdt, nscene, *nphys, playerPos);
+            mechanic.update(fdt, nscene, *nphys, playerPos);
+            nphys->step(fdt);
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh);
+            device->setCamera(fx, fy, fz, fyaw, fpitch, 60.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) drawNpcScene(frame);
+            device->endFrame(frame);
+        }
+        bartender.shutdownRagdoll(*nphys);
+        dockWorker.shutdownRagdoll(*nphys);
+        captive.shutdownRagdoll(*nphys);
+        mechanic.shutdownRagdoll(*nphys);
+        device->destroyMesh(grMesh); device->destroyTexture(grTex);
+        nphys->shutdown(); device->shutdown();
         if (window) glfwDestroyWindow(window); glfwTerminate();
         return 0;
     }

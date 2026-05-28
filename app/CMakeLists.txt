@@ -17,6 +17,7 @@ add_executable(X3Engine WIN32
     elevator.cpp
     weapon.cpp
     monster.cpp
+    npc.cpp
     anim.cpp
     melee.cpp
     objective.cpp
