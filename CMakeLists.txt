@@ -11,6 +11,36 @@ project(X3Native
     LANGUAGES CXX
 )
 
+# ---- Version (MAJOR.MINOR.BUILD = 0.3.<git-commit-count>) ----
+# MAJOR.MINOR is the SINGLE editable place for the pre-release line: bump
+# X3_VERSION_MINOR here to move 0.3 -> 0.4. BUILD is the zero-padded git commit
+# count, injected at build time. See docs/VERSIONING.md and cmake/GitVersion.cmake.
+set(X3_VERSION_MAJOR 0 CACHE STRING "X3Native major version (0 until first release)")
+set(X3_VERSION_MINOR 3 CACHE STRING "X3Native minor version (pre-release line, e.g. 0.3)")
+
+set(X3_VERSION_IN  "${CMAKE_SOURCE_DIR}/engine/core/version.h.in")
+set(X3_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
+set(X3_VERSION_OUT "${X3_GENERATED_DIR}/engine/core/version.h")
+
+# 1) Generate once at configure time so the header exists for the first build.
+set(X3_SRC_DIR "${CMAKE_SOURCE_DIR}")
+include(${CMAKE_SOURCE_DIR}/cmake/GitVersion.cmake)
+
+# 2) Regenerate at every build (so hash + commit-count stay fresh when HEAD
+#    moves). configure_file only rewrites when contents change, so this does
+#    not force a full rebuild each time.
+add_custom_target(x3_version ALL
+    COMMAND ${CMAKE_COMMAND}
+        -D "X3_SRC_DIR=${CMAKE_SOURCE_DIR}"
+        -D "X3_VERSION_MAJOR=${X3_VERSION_MAJOR}"
+        -D "X3_VERSION_MINOR=${X3_VERSION_MINOR}"
+        -D "X3_VERSION_IN=${X3_VERSION_IN}"
+        -D "X3_VERSION_OUT=${X3_VERSION_OUT}"
+        -P "${CMAKE_SOURCE_DIR}/cmake/GitVersion.cmake"
+    BYPRODUCTS "${X3_VERSION_OUT}"
+    COMMENT "Stamping X3 version (git commit-count + short hash)"
+    VERBATIM)
+
 # ---- Global C++ settings ----
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

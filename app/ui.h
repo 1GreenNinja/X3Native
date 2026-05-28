@@ -205,6 +205,7 @@ struct HudModel {
     bool  alive        = true;
     int   dispW        = 0;      // live framebuffer size (drives the menu RESOLUTION readout)
     int   dispH        = 0;
+    bool  showVersion  = true;   // tiny build-id watermark in a screen corner (set by host)
 
     // -----------------------------------------------------------------------
     // MINIMAP RADAR + ENEMY NAMEPLATE feed. Plain arrays (fixed cap, no heap) the

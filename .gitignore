@@ -1,6 +1,12 @@
 # Build output
 /build/
 /out/
+
+# Generated version header (produced from engine/core/version.h.in at build
+# time by cmake/GitVersion.cmake — only the .in template + CMake glue are
+# committed, never the stamped header). Normally already covered by /build/.
+generated/engine/core/version.h
+**/generated/engine/core/version.h
 cmake-build-*/
 /bin/
 /lib/

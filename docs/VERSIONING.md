@@ -1,172 +1,141 @@
-# X3Native — Version & Feature Stamping Standard
+# X3Native — Versioning
 
 **Problem this solves (2026-05-23 incident):** five sessions across the fleet built
 the engine in parallel; nobody could tell two `X3Engine.exe` builds apart, a Feb
 **BabylonJS** screenshot got mistaken for a native build, and a ~49-commit lead on
-the 14900k couldn't be located against `main`. The engine today has **no version
-string, no `--version`, no `--help`** — two builds are indistinguishable.
+the 14900k couldn't be located against `main`. The engine had **no version string,
+no `--version`** — two builds were indistinguishable.
 
-**The fix:** every build carries a compiled-in identity (version + commit + build
-date + machine + branch + dirty flag) and a human-readable feature manifest. The
-identity prints on `--version`, on the HUD watermark (so screenshots self-identify),
-and in the `--smoketest`/`--bench` headers (so logs self-identify). The fleet posts
-this string on every push/build.
-
-> **Fleet push model:** the three primary rigs — **13700K, 14900K, and the laptop
-> (OG)** — push `main` directly (fetch → rebase → push, small & often). Worker
-> machines (garage **DJBOOTH** 4790K, second-screen **Snake**) push **feature
-> branches**; a primary rig merges + re-gates. `VERSION` is bumped by whoever does
-> the `main` merge.
+**The fix (as built on `feat/versioning`):** every build carries a compiled-in
+version derived from git, shown on `--version`, in the console (`version` command),
+on the main menu, and as a small HUD watermark — so any build, log, or screenshot
+self-identifies.
 
 ---
 
-## 1. The version string (canonical format)
+## 1. The scheme: `MAJOR.MINOR.BUILD` = `0.3.NNNNN`
 
 ```
-X3Native v0.4.0+c0d3c62 (built 2026-05-25 07:30, I9DevPC, main)
-                 ^hash         ^UTC build time   ^machine ^branch
+X3 v0.3.00284 (c3c74e1)
+       ^MAJOR.MINOR.BUILD   ^short git hash
 ```
 
-Dirty (uncommitted edits at build time) appends `-dirty`:
-```
-X3Native v0.4.0+c0d3c62-dirty (built 2026-05-25 07:31, p13700k, feat/act2-world)
-```
-
-Components — **all compiled in at build time**, never hand-edited:
-
-| Field | Source | Why it matters |
+| Field | Source | Notes |
 |---|---|---|
-| `MAJOR.MINOR.PATCH` | the `VERSION` file at repo root | human-meaningful release number; integrator bumps it |
-| `+<gitshort>` | `git rev-parse --short HEAD` | exact commit — maps any build back to source |
-| `-dirty` | `git status --porcelain` non-empty | the build came from **uncommitted edits** — the #1 "which build is this?" trap |
-| build time (UTC) | CMake configure/build timestamp | orders builds in time |
-| machine | `$env:COMPUTERNAME` (Win) / `hostname` | which rig produced it (I9DevPC, p13700k, the 14900k, garage 4790K) |
-| branch | `git rev-parse --abbrev-ref HEAD` | which lane — instantly flags an off-`main` build |
+| `MAJOR.MINOR` = `0.3` | the `X3_VERSION_MAJOR` / `X3_VERSION_MINOR` CMake cache vars (root `CMakeLists.txt`) | **single editable place**; `0` = pre-release, `3` = current line |
+| `BUILD` = `NNNNN` | `git rev-list --count HEAD`, **zero-padded to 5 digits** | the total commit count — monotonic, no hand-editing, maps a build to a point in history |
+| `(hash)` | `git rev-parse --short HEAD` | the exact commit; `nogit` if git is unavailable |
 
-`VERSION` file (repo root, single source of truth, one line):
-```
-0.4.0
-```
+The canonical strings (compiled in via the generated header):
 
-## 2. Versioning policy (0.x pre-release)
+- `X3_VERSION_STRING` = `"0.3.00284"` (the `MAJOR.MINOR.BUILD` triple)
+- `X3_VERSION_FULL`   = `"0.3.00284 (c3c74e1)"` (triple + short hash)
 
-- **MAJOR** stays `0` until first public release.
-- **MINOR** bumps on a new Act or a major engine system (Act-2 world, GPU-driven culling, netcode-go-live).
-- **PATCH** bumps on content/fixes that land on `main`.
-- **Whoever merges to `main` bumps `VERSION`** (one bump per merge) and adds a `CHANGELOG.md` line. The primary rigs (13700K / 14900K / OG laptop) push `main`; workers push branches.
-- Tag each bump: `git tag v0.4.0 && git push origin v0.4.0` — so versions ↔ commits are permanent.
+### Why the git commit count for BUILD?
 
-## 3. How it's injected (CMake — clean-room, no new deps)
+It's **automatic and monotonic** — every commit bumps it with zero manual work, so
+two builds are never accidentally stamped the same number, and a higher BUILD always
+means "more commits / further along." It needs no release process and no file to keep
+in sync. Combined with the short hash it's a precise, human-readable build id that
+maps straight back to source. (Caveat: the count is per-branch/per-history — a feature
+branch and `main` at the same calendar moment can show different counts; the hash
+disambiguates.)
 
-Add `cmake/GitVersion.cmake`. It runs `git` at build time and writes a generated
-header the engine includes. The header is regenerated **every build** (so hash +
-dirty + time stay fresh) but only rewritten when its contents change (so it doesn't
-force a full rebuild each time).
+### How to bump MINOR (0.3 → 0.4)
+
+Edit the **one** place — the cache var in the root `CMakeLists.txt`:
 
 ```cmake
-# cmake/GitVersion.cmake  (invoked via add_custom_target that runs pre-build)
-find_package(Git QUIET)
-file(READ "${CMAKE_SOURCE_DIR}/VERSION" X3_SEMVER)
-string(STRIP "${X3_SEMVER}" X3_SEMVER)
-execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
-  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} OUTPUT_VARIABLE X3_GIT_HASH
-  OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --abbrev-ref HEAD
-  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} OUTPUT_VARIABLE X3_GIT_BRANCH
-  OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-execute_process(COMMAND ${GIT_EXECUTABLE} status --porcelain
-  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} OUTPUT_VARIABLE X3_GIT_DIRTY ERROR_QUIET)
-if(X3_GIT_DIRTY STREQUAL "")
-  set(X3_DIRTY "")
-else()
-  set(X3_DIRTY "-dirty")
-endif()
-string(TIMESTAMP X3_BUILD_TIME "%Y-%m-%d %H:%M" UTC)
-cmake_host_system_information(RESULT X3_HOST QUERY HOSTNAME)
-configure_file(${CMAKE_SOURCE_DIR}/cmake/x3_version.h.in
-               ${CMAKE_BINARY_DIR}/generated/x3_version.h @ONLY)
+set(X3_VERSION_MINOR 3 CACHE STRING "...")   # change 3 -> 4
 ```
 
-`cmake/x3_version.h.in`:
-```c
-#pragma once
-#define X3_VERSION_SEMVER  "@X3_SEMVER@"
-#define X3_VERSION_HASH    "@X3_GIT_HASH@"
-#define X3_VERSION_BRANCH  "@X3_GIT_BRANCH@"
-#define X3_VERSION_DIRTY   "@X3_DIRTY@"
-#define X3_VERSION_BUILT   "@X3_BUILD_TIME@"
-#define X3_VERSION_MACHINE "@X3_HOST@"
-#define X3_VERSION_STRING \
-  "X3Native v" X3_VERSION_SEMVER "+" X3_VERSION_HASH X3_VERSION_DIRTY \
-  " (built " X3_VERSION_BUILT " UTC, " X3_VERSION_MACHINE ", " X3_VERSION_BRANCH ")"
-```
+(or pass `-D X3_VERSION_MINOR=4` at configure). Bump MINOR on a new Act or a major
+engine system (Act-2 world go-live, GPU-driven culling, netcode-go-live). MAJOR stays
+`0` until the first public release. BUILD is never edited by hand. **Note:** if you
+bump MINOR, update the `--test-version` regex (`^0\.3\.\d{5}$`) in `app/main.cpp` to
+match the new line.
 
-Wire-up: add `${CMAKE_BINARY_DIR}/generated` to the app include dirs; add an
-`add_custom_target(x3_version ALL ...)` that re-runs `GitVersion.cmake` before the
-`X3Engine` target builds, and `add_dependencies(X3Engine x3_version)`.
+---
 
-A tiny `engine/core/x3_version.h` wrapper exposes it to code:
-```c
-#pragma once
-#include "x3_version.h"           // generated
-namespace x3 { inline const char* versionString() { return X3_VERSION_STRING; } }
-```
+## 2. How it's injected (CMake — clean-room, no new deps)
 
-## 4. The feature manifest (answers "what features does THIS build have?")
+- **Template (committed):** `engine/core/version.h.in` — has `@X3_VERSION_*@`
+  placeholders.
+- **Generator (committed):** `cmake/GitVersion.cmake` — runs `git rev-list --count
+  HEAD` + `git rev-parse --short HEAD`, zero-pads BUILD, composes the strings, and
+  `configure_file()`s the template to the generated header.
+- **Generated header (gitignored, never committed):**
+  `<build>/generated/engine/core/version.h` — included in code as
+  `#include "engine/core/version.h"` (the build dir's `generated/` is on the engine
+  target's PUBLIC include path).
 
-A single in-code table is the human-readable inventory — the integrator adds a row
-when a feature branch merges to `main`. `--features` prints it.
+Root `CMakeLists.txt` runs the generator **twice**:
 
-```c
-// app/features.h  — keep in sync with main-merged features (integrator owns it)
-struct Feature { const char* name; const char* note; };
-inline constexpr Feature kFeatures[] = {
-  {"render-device",     "Vulkan 1.3 dynamic-rendering, bindless, multidraw-indirect"},
-  {"gpu-skinning",      "compute pre-pass skinning"},
-  {"physics",           "Jolt world + character controller + vehicles"},
-  {"act1-spire",        "7-floor spire B1->F7, bosses, drone hack, Nexus 4.5"},
-  {"act2-world",        "alien-surface open world L8-20 (when merged)"},
-  {"netcode",           "client prediction + server reconciliation (Phase 1)"},
-  {"saveload",          "versioned checkpoints, F5/F9"},
-  {"audio",             "miniaudio 3D + music; portable resolveAudio()"},
-  // ... integrator appends on each merge ...
-};
-```
+1. **at configure time** (`include(cmake/GitVersion.cmake)`) so the header exists for
+   the first build;
+2. **at every build** via `add_custom_target(x3_version ALL ... -P GitVersion.cmake)`
+   so the hash + commit-count stay fresh when **HEAD moves** without re-configuring.
+   `configure_file` only rewrites the header when its contents change, so this does
+   **not** force a full rebuild each time. `x3engine` (and therefore `X3Engine`)
+   `add_dependencies(... x3_version)`, so the stamp is current before anything that
+   includes the header compiles.
 
-The existing `--test-*` / `--world` flag set is the *machine-checkable* inventory;
-`--features` is the *human* inventory. Both should agree.
+**Graceful fallback:** if git is missing or this isn't a repo, BUILD = `00000` and the
+hash = `"nogit"`, so the build **never breaks** (you get `0.3.00000 (nogit)`).
 
-## 5. CLI surface (add to `app/main.cpp` arg parse)
+The generated header is gitignored (it lives under `/build/` which is already ignored,
+plus an explicit `**/generated/engine/core/version.h` rule). Only the `.in` template
+and the CMake glue are committed.
 
-| Flag | Output | Exit |
+---
+
+## 3. Where the version shows up
+
+| Surface | Where | Output |
 |---|---|---|
-| `--version` | the one-line version string | 0 |
-| `--version --json` | `{"semver":"0.4.0","hash":"c0d3c62","dirty":false,"branch":"main","machine":"I9DevPC","built":"..."}` | 0 |
-| `--features` | version line + the `kFeatures` manifest, one per line | 0 |
-| `--help` | usage + grouped flag list (tests / worlds / capture / dev) | 0 |
+| **`--version` CLI flag** | `app/main.cpp` | prints `X3 v0.3.00284 (c3c74e1)`, exits 0 |
+| **Console `version` command** | registered in `app/hud.cpp` (`Hud::init`, the cvar/command system) | prints `X3 v0.3.00284 (c3c74e1)` to the console |
+| **Main menu** | `x3::ui::MainMenu` (`app/ui.cpp`) | small dim `X3 v0.3.00284 (c3c74e1)` line under the title/subtitle |
+| **Production HUD** | `x3::ui::GameHud` (`app/ui.cpp`) | tiny `v0.3.00284` watermark, bottom-right corner (gated by `HudModel::showVersion`, default on) |
+| **Startup log** | `app/main.cpp`, first log line | `X3 v0.3.00284 (c3c74e1)` before "X3Engine starting..." — so `--smoketest` / `--bench` logs self-identify |
 
-The `--json` form is what the fleet auto-posts to Slack on push/build.
+In code, include `engine/core/version.h` and use the macros (`X3_VERSION_STRING`,
+`X3_VERSION_FULL`, `X3_GIT_HASH`, `X3_VERSION_MAJOR/MINOR/BUILD`) or the helpers
+`x3::versionString()` / `x3::versionFull()`.
 
-## 6. Self-identifying logs + HUD (so screenshots & logs can't be confused)
+---
 
-- **First log line at every startup** (already have `logInfo`): print `versionString()`
-  before the device line. Then `--smoketest`/`--bench` output is self-identifying.
-- **HUD watermark**: draw `v0.4.0+c0d3c62 I9DevPC` small in a screen corner, gated by
-  cvar `ui_showVersion` (default ON in dev). **This is why the Feb BabylonJS shot was
-  mistaken for native — a watermark makes every screenshot say what it is.**
+## 4. Self-test: `--test-version`
 
-## 7. Rollout (one feature branch, gated like any other)
+`X3Engine.exe --test-version` runs offline (no window/Vulkan) and asserts:
 
-A worker machine (not the integrator) implements §3–§6 on `feat/versioning`:
-1. add `VERSION`, `cmake/GitVersion.cmake`, `cmake/x3_version.h.in`, `engine/core/x3_version.h`, `app/features.h`;
-2. wire the custom target + include dir; add `--version/--features/--help`; print at startup; add the HUD watermark + cvar;
-3. run the full test-gate (all `--test-*` exit 0, Release+Debug `--smoketest` 0 VUID + allocationCount=0);
-4. push `feat/versioning`; a **primary rig** merges to `main`, sets `VERSION`, tags `v0.4.0`.
+1. `X3_VERSION_STRING` is non-empty;
+2. it's well-formed — matches `^0\.3\.\d{5}$`;
+3. `X3_VERSION_FULL` is well-formed (`<string> (<hash>)`);
+4. the console `version` command (registered exactly as the engine does) reports
+   `X3_VERSION_FULL`;
+5. the `--version` code path produces the same line and exits 0.
 
-After this lands, `X3Engine.exe --version` answers "which build is this?" forever.
+It prints `version: X/Y passed` and exits 0 only if all pass — the same shape as the
+engine's other `--test-*` gates.
+
+---
+
+## 5. Versioning policy (0.x pre-release)
+
+- **MAJOR** stays `0` until the first public release.
+- **MINOR** bumps on a new Act or a major engine system; it's the only hand-set field.
+- **BUILD** is the git commit count — never edited.
+- Tagging a release is optional but recommended: `git tag v0.3 && git push origin v0.3`.
 
 ---
 
 ## STATUS
 <!-- branch HEAD, files changed, gate confirmation, READY FOR INTEGRATION / BLOCKED -->
-- 2026-05-25 (I9DevPC): **design doc only** — specifies the standard; no engine code changed yet. READY FOR INTEGRATION (doc). Implementation (§7) is a separate `feat/versioning` task for a worker machine.
+- 2026-05-25 (13700K, `feat/versioning`): **IMPLEMENTED.** Scheme `0.3.<commit-count>`
+  wired end to end — `cmake/GitVersion.cmake` + `engine/core/version.h.in` (generated
+  header gitignored), root-CMake MAJOR/MINOR cache vars + `x3_version` custom target,
+  `version` console command (`app/hud.cpp`), main-menu version line + HUD watermark
+  (`app/ui.cpp`/`ui.h`), `--version` + `--test-version` + startup banner
+  (`app/main.cpp`). Gated: all `--test-*` exit 0, `--test-version` passes, `--version`
+  works, Release + Debug `--smoketest` 0 VUID, Debug leak-clean. READY FOR INTEGRATION.
