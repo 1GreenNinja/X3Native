@@ -839,7 +839,7 @@ int runVersionFlag() {
 }
 
 // --test-version: assert the version string is non-empty + well-formed
-// (^0\.3\.\d{5}$), that the console `version` command reports it, and that the
+// (^0\.4\.\d{5}$), that the console `version` command reports it, and that the
 // --version path produces it. Prints "version: X/Y passed". Returns true if all pass.
 bool runVersionSelfTest() {
     int pass = 0, total = 0;
@@ -853,12 +853,12 @@ bool runVersionSelfTest() {
     const std::string vstr = X3_VERSION_STRING;
     check(!vstr.empty(), "T1 X3_VERSION_STRING non-empty");
 
-    // T2: well-formed "^0\.3\.\d{5}$" (MAJOR.MINOR fixed at 0.3; BUILD = 5 digits).
-    check(std::regex_match(vstr, std::regex(R"(^0\.3\.\d{5}$)")), "T2 matches ^0\\.3\\.\\d{5}$");
+    // T2: well-formed "^0\.4\.\d{5}$" (MAJOR.MINOR fixed at 0.4; BUILD = 5 digits).
+    check(std::regex_match(vstr, std::regex(R"(^0\.4\.\d{5}$)")), "T2 matches ^0\\.4\\.\\d{5}$");
 
     // T3: full string is "<string> (<hash>)" and contains the version string + a hash.
     const std::string vfull = X3_VERSION_FULL;
-    check(std::regex_match(vfull, std::regex(R"(^0\.3\.\d{5} \([0-9a-f]+|nogit\)$)")) ||
+    check(std::regex_match(vfull, std::regex(R"(^0\.4\.\d{5} \([0-9a-f]+|nogit\)$)")) ||
           vfull == (vstr + " (" X3_GIT_HASH ")"),
           "T3 X3_VERSION_FULL well-formed");
 

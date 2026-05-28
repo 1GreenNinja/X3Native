@@ -16,7 +16,7 @@ project(X3Native
 # X3_VERSION_MINOR here to move 0.3 -> 0.4. BUILD is the zero-padded git commit
 # count, injected at build time. See docs/VERSIONING.md and cmake/GitVersion.cmake.
 set(X3_VERSION_MAJOR 0 CACHE STRING "X3Native major version (0 until first release)")
-set(X3_VERSION_MINOR 3 CACHE STRING "X3Native minor version (pre-release line, e.g. 0.3)")
+set(X3_VERSION_MINOR 4 CACHE STRING "X3Native minor version (pre-release line, e.g. 0.4)")
 
 set(X3_VERSION_IN  "${CMAKE_SOURCE_DIR}/engine/core/version.h.in")
 set(X3_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
