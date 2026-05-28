@@ -5,6 +5,7 @@ add_executable(X3Engine WIN32
     level1.cpp
     level_loader.cpp
     player.cpp
+    mech_pilot.cpp
     door.cpp
     physprops.cpp
     ragdoll.cpp
@@ -63,10 +64,17 @@ target_link_libraries(X3Engine PRIVATE x3engine glfw)
 find_package(Stb REQUIRED)
 target_include_directories(X3Engine PRIVATE ${Stb_INCLUDE_DIR})
 
-# WIN32 subsystem but we want a console for logs during dev:
+# WIN32 subsystem but we want a console for logs during dev.
+# /STACK:16MB — main() aggregates ~9 large inline `--world` showcase blocks; MSVC
+# reserves the SUM of every block's locals as one frame at function entry, which
+# already sits near the 1 MB default stack reserve. Reaching the worldMode dispatch
+# (deep main frame) and then calling a showcase helper (e.g. runMechWorld) puts a
+# second large frame on top and overflows the 1 MB default at startup. Bump the
+# reserve so the host has comfortable headroom (and the showcase helpers can keep
+# their natural stack-local scene setup).
 if(MSVC)
     set_target_properties(X3Engine PROPERTIES
-        LINK_FLAGS "/SUBSYSTEM:CONSOLE")
+        LINK_FLAGS "/SUBSYSTEM:CONSOLE /STACK:16777216")
 endif()
 
 set_target_properties(X3Engine PROPERTIES

@@ -37,6 +37,7 @@
 #include "monster.h"
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
+#include "mech_pilot.h"                      // rideable heavy-mech pilot controller (--test-mech + --world mech)
 #include "npc_dialog.h"                     // rescued-NPC talk/dialog -> companion (the captive girl)
 #include "physprops.h"                      // FEATURE_GOALS §1: hanging cubes / joints (ragdoll foundation)
 #include "ragdoll.h"                        // FEATURE_GOALS §2: physics death ragdoll
@@ -1022,13 +1023,307 @@ bool runVersionSelfTest() {
 
 } // namespace
 
+// ---------------------------------------------------------------------------
+// --world mech showcase (rideable heavy-mech). Extracted from main() into its own
+// function so its locals do NOT inflate main()'s already-large aggregate stack frame
+// (MSVC reserves the sum of all inline --world blocks at main() entry; this block put
+// it over the 1 MB stack reserve -> a startup stack overflow). Owns device + GLFW
+// teardown like every other --world block and returns the process exit code.
+//
+// A rideable heavy mech (MechPilotController) on a checker ground plane with a few
+// "target dummy" props to shoot. 3rd-person chase cam by default (V toggles cockpit);
+// WASD walk (sluggish), Shift boost, Space jump-jets, LMB autocannon, R missile pod.
+// Headless `--world mech --screenshot <path>` poses a chase still + captures a PNG.
+// The mech VISUAL tries mech.glb first, falling back to a large humanoid GLB scaled
+// up, then to a primitive gunmetal box silhouette. SSAO+SSGI are forced OFF (the
+// documented near-black raster-fallback workaround on this non-RT base).
+static int runMechWorld(x3::rhi::IRenderDevice& device, GLFWwindow* window,
+                        bool headless, bool screenshot, const std::string& screenshotPath,
+                        bool shotCamOverride, const float shotCam[5],
+                        uint32_t W, uint32_t H) {
+    x3::logInfo("--world mech: building the rideable heavy-mech showcase");
+
+    std::unique_ptr<x3::phys::IPhysicsWorld> mphys(x3::phys::createPhysicsWorld());
+    if (!mphys->init()) {
+        x3::logError("--world mech: physics init failed");
+        device.shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate(); return 1;
+    }
+
+    // SSAO/SSGI OFF (the documented near-black raster-fallback workaround).
+    { x3::rhi::IRenderDevice::SsaoParams sp{}; sp.enabled = false; device.setSsaoParams(sp); }
+    { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; device.setGiParams(gp); }
+
+    // ---- Checker ground plane (physics + render). -------------------------
+    const float kGroundHalf = 60.0f;
+    {
+        float v[] = {
+            -kGroundHalf, 0.0f, -kGroundHalf,
+             kGroundHalf, 0.0f, -kGroundHalf,
+             kGroundHalf, 0.0f,  kGroundHalf,
+            -kGroundHalf, 0.0f,  kGroundHalf,
+        };
+        uint32_t idx[] = { 0,2,1, 0,3,2 };
+        mphys->addStaticMesh(v, 4, idx, 6);
+    }
+    x3::prims::PrimMesh groundGeo = x3::prims::makeBox(kGroundHalf, 0.15f, kGroundHalf, 0.0f, -0.15f, 0.0f, 16.0f);
+    auto groundMesh = device.createMesh(groundGeo.verts.data(), (uint32_t)groundGeo.verts.size(),
+                                        groundGeo.index.data(), (uint32_t)groundGeo.index.size());
+    auto checkerD = x3::prims::makeCheckerRGBA(64, 8, 70, 76, 92, 40, 44, 56);
+    auto checkerTex = device.createTexture(checkerD.data(), 64, 64, true);
+    auto whiteD = x3::prims::makeSolidRGBA(8, 235, 235, 235);
+    auto whiteTex = device.createTexture(whiteD.data(), 8, 8, true);
+
+    // ---- Lighting: sky + point fills so the mech reads. -------------------
+    { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = true; sp.sunIntensity = 1.4f; sp.haze = 0.35f;
+      sp.sunDir[0]=0.4f; sp.sunDir[1]=1.0f; sp.sunDir[2]=0.3f; device.setSkyParams(sp); }
+    { x3::rhi::PointLight pl[3];
+      pl[0].pos[0]= 6.0f; pl[0].pos[1]=9.0f; pl[0].pos[2]= 6.0f; pl[0].range=42.0f;
+      pl[0].color[0]=9.0f; pl[0].color[1]=8.6f; pl[0].color[2]=8.0f;
+      pl[1].pos[0]=-6.0f; pl[1].pos[1]=8.0f; pl[1].pos[2]=-2.0f; pl[1].range=42.0f;
+      pl[1].color[0]=6.0f; pl[1].color[1]=6.4f; pl[1].color[2]=8.0f;
+      pl[2].pos[0]= 0.0f; pl[2].pos[1]=10.0f; pl[2].pos[2]=-10.0f; pl[2].range=48.0f;
+      pl[2].color[0]=7.0f; pl[2].color[1]=7.0f; pl[2].color[2]=7.0f;
+      device.setPointLights(pl, 3); }
+
+    // ---- Spawn the mech controller. ---------------------------------------
+    x3::game::MechPilotController mech;
+    mech.spawn(*mphys, 0.0f, 0.2f, 0.0f);
+
+    // ---- Mech visual: mech.glb -> OverLordEnforcer99.glb (scaled up) -> box.
+    std::unique_ptr<x3::asset::IAssetSource> masrc(x3::asset::createAssetSource());
+    masrc->mountDir(x3::game::riggedGlbRoot(), 0);
+    std::unique_ptr<x3::asset::IModelLoader> mmloader(
+        x3::asset::createModelLoader(&device, masrc.get()));
+    x3::asset::Model mechModel;
+    std::vector<x3::asset::ModelDrawable> mechDrawables;
+    float mechScale = 1.0f;
+    std::string mechGlbUsed = "(none - box fallback)";
+    {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const char* cands[] = { "mech.glb", "OverLordEnforcer99.glb", "RexBouncer.glb" };
+        for (const char* c : cands) {
+            if (!fs::exists(fs::path(x3::game::riggedGlbRoot()) / c, ec)) continue;
+            mechModel = mmloader->load(c);
+            if (mechModel.ok) {
+                mechDrawables = x3::asset::makeDrawables(mechModel);
+                mechGlbUsed = c;
+                // Humanoid GLBs read ~1.8 m at scale 1; scale up to the mech's
+                // ~3.6 m capsule height for the gunmetal-giant silhouette.
+                mechScale = (std::string(c) == "mech.glb") ? 1.0f : 2.0f;
+                break;
+            }
+        }
+    }
+    x3::logInfo(std::string("--world mech: mech visual = ") + mechGlbUsed +
+                " (scale " + std::to_string(mechScale) + ")");
+    // Box silhouette fallback when no GLB loads (a tall gunmetal slab).
+    x3::prims::PrimMesh mechBoxGeo = x3::prims::makeBox(1.1f, 1.8f, 0.9f, 0.0f, 0.0f, 0.0f, 1.0f);
+    auto mechBoxMesh = device.createMesh(mechBoxGeo.verts.data(), (uint32_t)mechBoxGeo.verts.size(),
+                                         mechBoxGeo.index.data(), (uint32_t)mechBoxGeo.index.size());
+    auto gunmetalD = x3::prims::makeSolidRGBA(8, 96, 102, 112);
+    auto gunmetalTex = device.createTexture(gunmetalD.data(), 8, 8, true);
+
+    // ---- Target-dummy props (static red boxes) to shoot. ------------------
+    struct Dummy { float x, y, z, half; bool alive; };
+    std::vector<Dummy> dummies = {
+        {  8.0f, 1.2f,  4.0f, 1.2f, true },
+        { 12.0f, 1.5f, -2.0f, 1.5f, true },
+        {  4.0f, 1.0f, 10.0f, 1.0f, true },
+        { -6.0f, 1.3f,  9.0f, 1.3f, true },
+    };
+    std::vector<x3::rhi::MeshHandle> dummyMeshes;
+    for (const auto& d : dummies) {
+        x3::prims::PrimMesh g = x3::prims::makeBox(d.half, d.half, d.half, d.x, d.y, d.z, 1.0f);
+        dummyMeshes.push_back(device.createMesh(g.verts.data(), (uint32_t)g.verts.size(),
+                                                g.index.data(), (uint32_t)g.index.size()));
+    }
+    const float dummyTint[4] = { 0.85f, 0.22f, 0.20f, 1.0f };
+    const float dummyEm[4]   = { 0.85f, 0.22f, 0.20f, 2.5f };
+    const float idMat[16]    = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+
+    x3::game::CombatFx mfx;
+    mfx.init(device);
+
+    const float dt = 1.0f / 60.0f;
+
+    // Draw helper: ground + mech (GLB or box) + alive dummies + FX.
+    auto drawMechScene = [&](const x3::rhi::FrameContext& frame,
+                             float eyeX, float eyeY, float eyeZ, float cyaw, float cpitch) {
+        const float white4[4] = {1,1,1,1};
+        device.drawMesh(frame, groundMesh, checkerTex, white4, idMat);
+        x3::phys::Vec3 feet = mech.feet();
+        const float my = mech.yaw();
+        const float cy = std::cos(my), sy = std::sin(my);
+        float place[16] = {
+            cy*mechScale, 0.0f, -sy*mechScale, 0.0f,
+            0.0f, mechScale, 0.0f, 0.0f,
+            sy*mechScale, 0.0f,  cy*mechScale, 0.0f,
+            feet.x, feet.y, feet.z, 1.0f
+        };
+        if (!mechDrawables.empty()) {
+            for (const auto& dr : mechDrawables) {
+                float fin[16];
+                x3::asset::mulMat4(place, dr.nodeTransform, fin);
+                float tint[4] = { dr.baseColorFactor[0]*1.3f + 0.1f,
+                                  dr.baseColorFactor[1]*1.3f + 0.1f,
+                                  dr.baseColorFactor[2]*1.3f + 0.15f, dr.baseColorFactor[3] };
+                device.drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
+                                x3::rhi::TextureHandle{ dr.baseColorTexId }, tint, fin);
+            }
+        } else {
+            float bm[16] = {
+                cy, 0.0f, -sy, 0.0f,
+                0.0f, 1.0f, 0.0f, 0.0f,
+                sy, 0.0f,  cy, 0.0f,
+                feet.x, feet.y + 1.8f, feet.z, 1.0f
+            };
+            const float mtint[4] = {1,1,1,1};
+            device.drawMesh(frame, mechBoxMesh, gunmetalTex, mtint, bm);
+        }
+        for (size_t i = 0; i < dummies.size(); ++i) {
+            if (!dummies[i].alive) continue;
+            device.drawMeshEmissive(frame, dummyMeshes[i], whiteTex, dummyTint, dummyEm, idMat);
+        }
+        mfx.draw(device, frame, eyeX, eyeY, eyeZ, cyaw, cpitch);
+    };
+
+    // Fire at the nearest dummy in front (cheap ray-vs-sphere) + add a tracer + damage.
+    auto fireAtDummies = [&](int dmg) {
+        x3::phys::Vec3 m = mech.muzzle();
+        x3::phys::Vec3 d = mech.aimDir();
+        float bestT = 1e9f; int bestI = -1;
+        for (size_t i = 0; i < dummies.size(); ++i) {
+            if (!dummies[i].alive) continue;
+            float ox = dummies[i].x - m.x, oy = dummies[i].y - m.y, oz = dummies[i].z - m.z;
+            float proj = ox*d.x + oy*d.y + oz*d.z;
+            if (proj <= 0.0f) continue;
+            float cx = m.x + d.x*proj, cy2 = m.y + d.y*proj, cz = m.z + d.z*proj;
+            float dx2 = cx-dummies[i].x, dy2 = cy2-dummies[i].y, dz2 = cz-dummies[i].z;
+            float dist2 = dx2*dx2 + dy2*dy2 + dz2*dz2;
+            float r = dummies[i].half * 1.4f;
+            if (dist2 <= r*r && proj < bestT) { bestT = proj; bestI = (int)i; }
+        }
+        x3::phys::Vec3 hit;
+        if (bestI >= 0) {
+            hit = x3::phys::Vec3{ dummies[bestI].x, dummies[bestI].y, dummies[bestI].z };
+            mfx.spawnImpact(hit, x3::phys::Vec3{ -d.x, -d.y, -d.z });
+            static int hp[8] = {0};
+            hp[bestI] -= dmg;
+            if (hp[bestI] <= -200) { dummies[bestI].alive = false; mfx.spawnDeath(hit); }
+        } else {
+            hit = x3::phys::Vec3{ m.x + d.x*60.0f, m.y + d.y*60.0f, m.z + d.z*60.0f };
+        }
+        mfx.addTracer(m, hit);
+    };
+
+    auto cleanup = [&]() {
+        mfx.shutdown(device);
+        if (mechModel.ok) mmloader->unload(mechModel);
+        for (auto mh : dummyMeshes) device.destroyMesh(mh);
+        device.destroyMesh(mechBoxMesh); device.destroyMesh(groundMesh);
+        device.destroyTexture(gunmetalTex); device.destroyTexture(whiteTex);
+        device.destroyTexture(checkerTex);
+    };
+
+    // ===== Headless capture: settle, walk a step, pose a chase shot, grab. =====
+    if (headless) {
+        const std::string outPath = screenshot ? screenshotPath
+                                   : std::string("G:/X3Native/captures/mech.png");
+        const int kFrames = 90;
+        for (int i = 0; i < kFrames; ++i) {
+            glfwPollEvents();
+            x3::game::PlayerInput in;
+            if (i > 20 && i < 70) in.moveFwd = 1.0f;   // stomp forward a bit
+            mech.update(in, dt, *mphys);
+            mphys->step(dt);
+            if (i > 40 && (i % 6 == 0) && mech.fireAutocannon(dt)) fireAtDummies(mech.tuning().autocannonDmg);
+            mfx.update(dt);
+            float cx, cy, cz, cyaw, cpitch;
+            mech.camera(cx, cy, cz, cyaw, cpitch);
+            if (shotCamOverride) { cx=shotCam[0]; cy=shotCam[1]; cz=shotCam[2]; cyaw=shotCam[3]; cpitch=shotCam[4]; }
+            device.setCamera(cx, cy, cz, cyaw, cpitch, 65.0f);
+            if (i == kFrames - 1) device.armCapture(outPath.c_str());
+            auto frame = device.beginFrame();
+            if (frame.valid) drawMechScene(frame, cx, cy, cz, cyaw, cpitch);
+            device.endFrame(frame);
+        }
+        const bool wrote = device.captureFrame(outPath.c_str());
+        x3::phys::Vec3 fp = mech.feet();
+        char rb[256];
+        std::snprintf(rb, sizeof(rb),
+            "--world mech: wrote %s | mech=%s feet=(%.1f,%.1f,%.1f) hull=%d armor=%d fuel=%.2f",
+            outPath.c_str(), mechGlbUsed.c_str(), fp.x, fp.y, fp.z,
+            mech.hull(), mech.armor(), mech.jumpJetFuel());
+        if (wrote) x3::logInfo(rb); else x3::logError("--world mech: capture FAILED");
+        cleanup(); mphys->shutdown(); device.shutdown();
+        if (window) glfwDestroyWindow(window); glfwTerminate();
+        return wrote ? 0 : 1;
+    }
+
+    // ===== Walkable windowed path: pilot the mech, chase cam. =====
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+    double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+    double prevTime = glfwGetTime();
+    bool prevV = false, prevR = false;
+    x3::logInfo("--world mech: WASD walk (Shift boost), Space jump-jets, LMB autocannon, R missiles, V cockpit, Esc quit");
+    int lastWd = (int)W, lastHd = (int)H;
+    while (!glfwWindowShouldClose(window)) {
+        glfwPollEvents();
+        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+        double now = glfwGetTime(); float fdt = (float)(now - prevTime); prevTime = now;
+        if (fdt > 0.1f) fdt = 0.1f;
+        double mx, my; glfwGetCursorPos(window, &mx, &my);
+        float ddx=(float)(mx-lastMX), ddy=(float)(my-lastMY); lastMX=mx; lastMY=my;
+        auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+
+        x3::game::PlayerInput in;
+        in.moveFwd    = (kd(GLFW_KEY_W)?1.0f:0.0f) - (kd(GLFW_KEY_S)?1.0f:0.0f);
+        in.moveStrafe = (kd(GLFW_KEY_D)?1.0f:0.0f) - (kd(GLFW_KEY_A)?1.0f:0.0f);
+        in.sprint     = kd(GLFW_KEY_LEFT_SHIFT);
+        in.jumpPressed = kd(GLFW_KEY_SPACE);
+        in.lookDX = ddx; in.lookDY = ddy;
+
+        bool vNow = kd(GLFW_KEY_V);
+        if (vNow && !prevV) mech.toggleCameraMode();
+        prevV = vNow;
+
+        mech.update(in, fdt, *mphys);
+        mphys->step(fdt);
+
+        if (glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) {
+            if (mech.fireAutocannon(fdt)) fireAtDummies(mech.tuning().autocannonDmg);
+        }
+        bool rNow = kd(GLFW_KEY_R);
+        if (rNow && !prevR && mech.fireMissilePod(fdt)) {
+            for (int k = 0; k < 4; ++k) fireAtDummies(mech.tuning().missilePodDmg);
+        }
+        prevR = rNow;
+
+        mfx.update(fdt);
+
+        float cx, cy, cz, cyaw, cpitch;
+        mech.camera(cx, cy, cz, cyaw, cpitch);
+        int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+        if (cw != lastWd || chh != lastHd) { lastWd=cw; lastHd=chh; if (cw>0&&chh>0) device.onResize((uint32_t)cw,(uint32_t)chh); }
+        device.setCamera(cx, cy, cz, cyaw, cpitch, 65.0f);
+        auto frame = device.beginFrame();
+        if (frame.valid) drawMechScene(frame, cx, cy, cz, cyaw, cpitch);
+        device.endFrame(frame);
+    }
+    cleanup(); mphys->shutdown(); device.shutdown();
+    if (window) glfwDestroyWindow(window); glfwTerminate();
+    return 0;
+}
+
 int main(int argc, char** argv) {
     // --version : print the build identity ("X3 v0.3.NNNNN (hash)") and exit 0.
     // --test-version : assert the version string is well-formed + the console
     //   `version` cmd + the --version path work; print "version: X/Y passed".
     bool showVersion = false, testVersion = false;
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
-         testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
+         testGltf = false, testPlayer = false, testMech = false, testInteract = false, testPickup = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
          testBarrels = false, testGlass = false, testHoloterm = false, testTerminals = false, testSit = false, testEcs = false, testEcsRender = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
@@ -1293,6 +1588,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-physics") testPhysics = true;
         else if (a == "--test-gltf") testGltf = true;
         else if (a == "--test-player") testPlayer = true;
+        else if (a == "--test-mech") testMech = true;
         else if (a == "--test-interact") testInteract = true;
         else if (a == "--test-physprops") testPhysprops = true;
         else if (a == "--test-ragdoll") testRagdoll = true;
@@ -1515,6 +1811,10 @@ int main(int argc, char** argv) {
     if (testPlayer) {
         x3::logInfo("running player/character-controller (S3) self-test...");
         return x3::game::runPlayerSelfTest() ? 0 : 1;
+    }
+    if (testMech) {
+        x3::logInfo("running mech-pilot heavy-controller (--test-mech) self-test...");
+        return x3::game::runMechSelfTest() ? 0 : 1;
     }
     if (testInteract) {
         x3::logInfo("running button->door interaction (S4) self-test...");
@@ -3263,6 +3563,31 @@ int main(int argc, char** argv) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return 0;
+    }
+
+    // ---- Mech-pilot showcase (--world mech) --------------------------------
+    // A rideable heavy mech (MechPilotController) standing on a checker ground plane
+    // with a few "target dummy" props to shoot. 3rd-person chase camera by default
+    // (V toggles cockpit); WASD walk (sluggish), Shift boost, Space jump-jets, LMB
+    // autocannon (rapid tracers), R missile-pod burst. Headless
+    // `--world mech --screenshot <path>` poses a chase still + captures a PNG.
+    //
+    // The mech VISUAL tries mech.glb first (Tim's gunmetal mech) and falls back to
+    // any large humanoid GLB (OverLordEnforcer99.glb) scaled up, then to a primitive
+    // box silhouette if no GLB loads — so the showcase always renders something.
+    //
+    // NOTE (SSAO/SSGI black-on-no-RT quirk, MEMORY): this base predates the
+    // headless-capture default-off fix, so we force SSAO + SSGI OFF in this block
+    // before rendering or the raster fallback yields a near-black frame.
+    if (worldMode == "mech") {
+        // Extracted to its own function so its (sizable) locals get their OWN stack
+        // frame: main() already aggregates ~9 large inline --world blocks, and MSVC
+        // sums every block's locals into one frame allocated at function entry. Adding
+        // this block inline pushed main()'s frame past the 1 MB default stack reserve
+        // and stack-overflowed at startup (before any flag ran). A separate function
+        // keeps main()'s frame bounded. See runMechWorld().
+        return runMechWorld(*device, window, headless, screenshot, screenshotPath,
+                            shotCamOverride, shotCam, W, H);
     }
 
     // ---- Destruction demo (--world destruct / --screenshot-destruct) -------
