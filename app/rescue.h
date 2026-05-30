@@ -29,6 +29,7 @@
 
 #include "scene.h"
 #include "monster.h"   // MonsterManager + Tuning (the boss the victim becomes)
+#include "anim.h"      // J1/T1: skeletal-animation Skinner (so girls breathe/idle)
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -107,6 +108,15 @@ public:
     float timerMax()  const { return m_timerMax; }
     x3::phys::Vec3 pos() const { return m_pos; }
 
+    // ---- Animation queries (BUG #48 + --test-rescue) ----------------------
+    // True once bind() found a skinnable model + a usable clip, so tick() drives
+    // the Skinner each frame (the girl breathes/idles instead of freezing).
+    bool animActive() const { return m_animActive; }
+    // Read-only access to the Skinner so the self-test can assert the joint palette
+    // actually changed between two times (i.e. she's animating, not frozen).
+    const x3::anim::Skinner& skinner() const { return m_skinner; }
+    const x3::asset::Model&  model()   const { return m_model; }
+
     // The boss tuning this victim transforms into (read by the host on expiry so it
     // can MonsterManager::spawn the boss with the right model/stats).
     const MonsterSystem::Tuning& bossTuning() const { return m_bossTuning; }
@@ -123,12 +133,34 @@ private:
     void drawAt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                 const float model[16]) const;
     void bakeTransform(Scene& scene);   // write yaw + scale + pos into the entity
+    // BUG #48: drive the Skinner one frame from a planar speed (m/s). Locomotion
+    // blend when a walk/run set exists; else the single Idle clip (pumped faster
+    // while moving). No-op if the model isn't skinnable. Re-uploads via m_device.
+    void driveAnim(float dt, float planarSpeed);
 
     std::unique_ptr<x3::asset::IAssetSource> m_assets;
     std::unique_ptr<x3::asset::IModelLoader> m_loader;
     x3::asset::Model                         m_model;
     std::vector<x3::asset::ModelDrawable>    m_drawables;
     bool                                     m_usingReal = false;
+
+    // ---- Skeletal animation (BUG #48): each victim drives her OWN Skinner every
+    // frame so she breathes/idles (and a companion walks) instead of freezing at
+    // bind/T-pose. Mirrors MonsterSystem exactly: bind() the loaded model, resolve
+    // idle/walk/run clips by fuzzy name, setLocomotionClips(0.2,2.0), then call
+    // applyLocomotion() (locomotion blend) or apply() (idle-only) in tick(). Each
+    // girl owns her own animTime + phase offset so they don't animate in lockstep.
+    // The device is captured at build() so tick() (no device param) can re-upload
+    // the CPU-skinned verts. Unskinnable models leave m_skinner invalid -> static. -
+    x3::anim::Skinner        m_skinner;
+    x3::rhi::IRenderDevice*  m_device     = nullptr;
+    int   m_idleClip   = -1;
+    int   m_walkClip   = -1;
+    int   m_runClip    = -1;
+    bool  m_useLocoBlend = false;   // a real idle(+walk/+run) set drives the blend
+    bool  m_animActive   = false;   // a usable clip was found (skinner valid)
+    float m_animTime     = 0.0f;    // single-clip playback time (looped in the runtime)
+    float m_phaseOffset  = 0.0f;    // per-girl start phase so they aren't identical
 
     VictimId        m_id        = VictimId::Aria;
     std::string     m_name;

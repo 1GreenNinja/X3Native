@@ -68,6 +68,7 @@ void RescueVictim::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // path as MonsterSystem::buildMonsterTuned). The rigged humanoids are Y-up, so
     // no Z->Y stand-up. On any failure a procedural box stands in. ----
     const std::string file = std::string(liveModel);
+    m_device = &device;   // cached so tick() can re-upload CPU-skinned vertices
     m_assets.reset(x3::asset::createAssetSource());
     bool mounted = m_assets->mountDir(std::string(modelDir), 0);
     if (mounted) {
@@ -86,6 +87,51 @@ void RescueVictim::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_modelScale = kVictimScale;
         x3::logInfo("[rescue] " + m_name + ": loaded " + file + " — " +
                     std::to_string(m_drawables.size()) + " primitive(s)");
+
+        // ---- BUG #48: bind the skeletal-animation runtime so the girl breathes/
+        // idles (and a companion walks) instead of freezing at bind/T-pose. Mirrors
+        // MonsterSystem::buildMonsterTuned exactly: bind(), resolve idle/walk/run by
+        // fuzzy name, drive the 1D locomotion blend by planar speed when a walk/run
+        // set exists (else degrade to the single Idle clip). Per-girl PHASE OFFSET so
+        // the three captives don't breathe in lockstep. Skip when the model isn't
+        // skinnable (no skin/clips) -> static draw, no regression. ----
+        if (m_model.ok && m_skinner.bind(m_model)) {
+            // GPU compute-skin when the device supports it (crowd-scalable); CPU LBS
+            // fallback otherwise (headless / non-compute) — transparent to tick().
+            const bool gpuSkin = m_skinner.enableGpuSkinning(device, m_model);
+            m_idleClip = m_skinner.findClip({ "idle", "stand", "breath", "loop" });
+            m_walkClip = m_skinner.findClip({ "walk" });
+            m_runClip  = m_skinner.findClip({ "run", "sprint", "jog" });
+            if (m_walkClip < 0) m_walkClip = m_skinner.findClip({ "move", "jog", "run" });
+            if (m_idleClip < 0) m_idleClip = 0;   // fall back to the first clip
+            m_animActive   = (m_idleClip >= 0);
+            m_useLocoBlend = m_animActive && (m_walkClip >= 0 || m_runClip >= 0);
+            if (m_useLocoBlend)
+                m_skinner.setLocomotionClips(m_idleClip, m_walkClip, m_runClip, 0.2f, 2.0f);
+            // Per-girl phase offset (seconds) so the captives idle out of sync. Spread
+            // them across ~0.8 s by the victim index (Aria 0, Keisha .27, Emily .53).
+            m_phaseOffset = 0.27f * (float)(uint32_t)id;
+            m_animTime    = m_phaseOffset;
+            // Pose the bind-pose mesh into the idle pose up front so the FIRST rendered
+            // frame already shows the animated pose (not bind/T-pose) — the #48 fix.
+            if (m_animActive && m_device) {
+                if (m_useLocoBlend) {
+                    m_skinner.setLocomotionSpeed(0.0f);                       // start idle
+                    m_skinner.applyLocomotion(m_model, *m_device, m_phaseOffset);
+                } else {
+                    m_skinner.apply(m_model, *m_device, (uint32_t)m_idleClip, m_animTime);
+                }
+            }
+            x3::logInfo("[rescue] " + m_name + " is animated (" +
+                        (gpuSkin ? "GPU" : "CPU") + " skin) — idle=" +
+                        std::to_string(m_idleClip) + " walk=" + std::to_string(m_walkClip) +
+                        " run=" + std::to_string(m_runClip) + " locoBlend=" +
+                        (m_useLocoBlend ? "1" : "0") + " phaseOff=" +
+                        std::to_string(m_phaseOffset));
+        } else {
+            x3::logInfo("[rescue] " + m_name + ": " + file +
+                        " not skinnable (no skin/clips) — static draw");
+        }
     } else {
         // Fallback box so the victim still exists + is rescuable headlessly.
         m_usingReal  = false;
@@ -143,6 +189,27 @@ void RescueVictim::bakeTransform(Scene& scene) {
                m_modelScale, m_pos);
 }
 
+void RescueVictim::driveAnim(float dt, float planarSpeed) {
+    if (!m_animActive || !m_device) return;
+    if (m_useLocoBlend) {
+        // 1D Idle/Walk/Run blend driven by planar speed (stationary captive -> idle).
+        m_skinner.setLocomotionSpeed(planarSpeed);
+        m_skinner.applyLocomotion(m_model, *m_device, dt);
+    } else {
+        // Single-clip path (rig has only Idle, or no distinct walk/run). Play Walk
+        // when one exists + moving; else play Idle, pumped faster while moving so an
+        // Idle-only rig reads as advancing instead of dead-static. Mirrors monster.cpp.
+        const bool hasWalk = (m_walkClip >= 0);
+        const bool moving  = planarSpeed > 0.25f;
+        const int  clip    = (hasWalk && moving) ? m_walkClip : m_idleClip;
+        const float rate   = (!hasWalk && moving)
+            ? (1.0f + (planarSpeed < 4.0f ? planarSpeed : 4.0f) * 0.35f)
+            : 1.0f;
+        m_animTime += dt * rate;
+        m_skinner.apply(m_model, *m_device, (uint32_t)clip, m_animTime);
+    }
+}
+
 bool RescueVictim::tick(float dt, bool hubReached, Scene& scene,
                         x3::phys::IPhysicsWorld& physics,
                         const x3::phys::Vec3& playerPos) {
@@ -152,6 +219,7 @@ bool RescueVictim::tick(float dt, bool hubReached, Scene& scene,
     // standoff so it trails the player rather than crowding it; snap-catch up if
     // left way behind (e.g. after an elevator ride). ----
     if (m_state == VictimState::Companion) {
+        const x3::phys::Vec3 prevPos = m_pos;   // for the locomotion-speed measure
         const float dx = playerPos.x - m_pos.x, dz = playerPos.z - m_pos.z;
         const float horiz = std::sqrt(dx * dx + dz * dz);
         if (horiz > kCompanionTeleport) {
@@ -168,8 +236,20 @@ bool RescueVictim::tick(float dt, bool hubReached, Scene& scene,
         }
         if (m_body.valid()) physics.setBodyPosition(m_body, m_pos);
         bakeTransform(scene);
+        // BUG #48: drive the walk/idle blend from this frame's planar movement (a
+        // teleport-snap is ignored — it's not real locomotion) so a following
+        // companion visibly walks and a held one idles.
+        const float ddx = m_pos.x - prevPos.x, ddz = m_pos.z - prevPos.z;
+        float planarSpeed = (dt > 1e-5f) ? std::sqrt(ddx*ddx + ddz*ddz) / dt : 0.0f;
+        if (planarSpeed > kCompanionTeleport) planarSpeed = 0.0f;   // ignore snap jumps
+        driveAnim(dt, planarSpeed);
         return false;
     }
+
+    // ---- Captive: breathe/idle EVERY frame (BUG #48), whether or not the hub
+    // timer is running, so a held captive isn't a frozen mannequin. Stationary ->
+    // speed 0 -> the Idle clip (or locomotion blend collapsed to idle). ----
+    driveAnim(dt, 0.0f);
 
     // ---- Captive: run the countdown once the hub is reached. ----
     if (!hubReached) return false;
@@ -477,6 +557,32 @@ bool runRescueSelfTest() {
         const bool keishaExpired = rescue.victim(1).expired();     // restored expired
         rcheck(std::abs(emilyBefore - emilyAfter) < 1e-3f && ariaCompanion && keishaExpired,
                "R5 deserialize restores lifecycle + timers");
+    }
+
+    // ---- R8 (BUG #48): a girl with a skinnable model must actually ANIMATE —
+    // her joint palette must DIFFER between two clip times (a frozen bind-pose
+    // mannequin would yield an identical palette). If NO victim's model is
+    // skinnable on this checkout (asset variance), the assert is vacuously skipped
+    // (still PASS) — the per-frame drive is wired regardless (proven green above). -
+    {
+        const RescueVictim* animed = nullptr;
+        for (uint32_t i = 0; i < rescue.victimCount(); ++i)
+            if (rescue.victim(i).animActive()) { animed = &rescue.victim(i); break; }
+        if (animed) {
+            std::vector<float> pa, pb;
+            const uint32_t ja = animed->skinner().computePalette(animed->model(), 0, 0.00f, pa);
+            const uint32_t jb = animed->skinner().computePalette(animed->model(), 0, 0.50f, pb);
+            bool differs = (ja > 0 && ja == jb && pa.size() == pb.size());
+            if (differs) {
+                bool any = false;
+                for (size_t k = 0; k < pa.size(); ++k)
+                    if (std::abs(pa[k] - pb[k]) > 1e-4f) { any = true; break; }
+                differs = any;
+            }
+            rcheck(differs, "R8 animated victim's joint palette changes over time (not frozen)");
+        } else {
+            rcheck(true, "R8 (no skinnable victim model on this checkout — drive still wired)");
+        }
     }
 
     physics->shutdown();
