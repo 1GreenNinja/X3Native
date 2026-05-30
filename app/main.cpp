@@ -36,6 +36,7 @@
 #include "monster.h"
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
+#include "intro_coldopen.h"                  // --world intro / default lead-in cold-open (shot-down -> captured)
 #include "npc_dialog.h"                     // rescued-NPC talk/dialog -> companion (the captive girl)
 #include "physprops.h"                      // FEATURE_GOALS §1: hanging cubes / joints (ragdoll foundation)
 #include "ragdoll.h"                        // FEATURE_GOALS §2: physics death ragdoll
@@ -928,6 +929,10 @@ int main(int argc, char** argv) {
     // chief_martinez_anim.glb if no path is given. No window / Vulkan. Additive.
     bool        testLocomotion = false;
     std::string testLocomotionPath;
+    // --test-intro (intro cold-open): the prologue phase machine (Jake's last flight -> enemy
+    // pulse -> white-out crash -> "6 MONTHS LATER" -> handoff to the cell) advances in order and
+    // is skippable. No window / Vulkan. Additive — does not affect the existing gate.
+    bool        testIntro = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
@@ -1217,6 +1222,7 @@ int main(int argc, char** argv) {
             testLocomotion = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') testLocomotionPath = argv[++i];
         }
+        else if (a == "--test-intro") testIntro = true;
     }
 
     // Headless self-tests (no window / Vulkan needed)
@@ -1326,6 +1332,10 @@ int main(int argc, char** argv) {
     if (testCanonPlay) {
         x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");
         return x3::game::runCanonPlaySelfTest() ? 0 : 1;
+    }
+    if (testIntro) {
+        x3::logInfo("running intro cold-open self-test (flight -> hit -> whiteout -> titlecard -> handoff; skippable)...");
+        return x3::intro::runIntroSelfTest() ? 0 : 1;
     }
     if (testPhase2a) {
         x3::logInfo("running EFLZ Phase 2a (player health + enemies fight back) self-test...");
@@ -3995,6 +4005,31 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // ---- INTRO COLD-OPEN (prologue lead-in). Before the cell is built, play the scripted
+    // cold-open: Jake flies his ship through space, a larger enemy ship shoots him down with an
+    // energy pulse, the screen whites out on the crash, then "6 MONTHS LATER" -> hand off to the
+    // cell where he wakes a captive. This is the canon reason he starts the game in a detention
+    // cell (shot down + CAPTURED). Gated so it ONLY runs as the windowed lead-in for the cell
+    // worlds (default Level 1 / elevator / canonlevel) or when explicitly requested with
+    // `--world intro`; headless (smoketest/screenshot) + the sandbox/demo worlds skip it entirely
+    // (runIntro is also a no-op when `window` is null, a second safety net). The intro renders on
+    // the public 2D path only — it spawns NO meshes/lights/physics, so there is nothing to leak
+    // and the cell build that follows is byte-for-byte unchanged.
+    {
+        const bool introCellWorld = (worldMode == "level1") || (worldMode == "elevator") ||
+                                    (worldMode == "canonlevel") || (worldMode == "intro");
+        if (window && introCellWorld) {
+            if (!x3::intro::runIntro(*device, window)) {
+                // Window was closed during the intro — exit cleanly (mirrors a window-close quit).
+                physics->shutdown();
+                device->shutdown();
+                if (window) glfwDestroyWindow(window);
+                glfwTerminate();
+                return 0;
+            }
+        }
+    }
+
     // ---- Build EFLZ Level 1 "Awakening" into the scene. The vertical slice now
     // BECOMES Level 1: the Level1Game controller owns the graybox geometry, doors
     // A-E, the armory pistol pickup, the checkpoint guards, the strength/arena/
@@ -4025,7 +4060,10 @@ int main(int argc, char** argv) {
     // under this mode reports objs/tris FAR below the full tower's 8604/49.6M. The full
     // 7-floor tower build (Level1Game + Spire*) is SKIPPED in this mode; the legacy build
     // remains the default for every other path (so all existing flags are unchanged).
-    const bool canonWorld = (worldMode == "canonlevel");
+    // `--world intro` is the canon flow: after the cold-open prologue (played above), it hands
+    // off to the SAME canonical Floor-1 cell start as `--world canonlevel` (where Jake wakes a
+    // captive). So `intro` aliases the canon build here.
+    const bool canonWorld = (worldMode == "canonlevel") || (worldMode == "intro");
     // Hard cap on how many rooms the portal flood-fill may add per frame. Even down the
     // longest sightline with a deep r_culldepth, the cull stays well under the whole 53-room
     // tower so the GPU never spikes (the spec's "must NOT regress to drawing the tower").

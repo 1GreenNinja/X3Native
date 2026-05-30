@@ -25,6 +25,7 @@ add_executable(X3Engine WIN32
     npc_dialog.cpp
     level1_game.cpp
     canon_play.cpp
+    intro_coldopen.cpp
     spire_mid.cpp
     spire_top.cpp
     spire_nexus.cpp
