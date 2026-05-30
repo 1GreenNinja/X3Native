@@ -158,8 +158,10 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
         Level1Layout seed;
         const L1RoomDef* tbl = level1Rooms();
         const float shaftX0 = 19.5f;     // matches level1.cpp kShaftX0
-        for (uint32_t fi = 0; fi < (uint32_t)L1Floor::Count; ++fi)
+        for (uint32_t fi = 0; fi < (uint32_t)L1Floor::Count; ++fi) {
             seed.elevatorDoor[fi] = x3::phys::Vec3{ shaftX0, tbl[fi].y0, 0.0f };
+            seed.floorBaseY[fi]   = tbl[fi].y0;   // spire_art anchors per-floor dressing here
+        }
         const float b1y = tbl[(uint32_t)L1Floor::B1].y0;
         seed.doorA = x3::phys::Vec3{  5.0f, b1y, 0.0f };
         seed.doorB = x3::phys::Vec3{ 10.0f, b1y, 0.0f };
@@ -167,17 +169,31 @@ void Level1Game::build(Scene& scene, x3::rhi::IRenderDevice& device,
         seed.doorD = x3::phys::Vec3{ 18.0f, b1y, 0.0f };
         seed.doorE = x3::phys::Vec3{ shaftX0, b1y, 0.0f };
         m_artMask = m_envArt.build(device, convertedDir(), seed);
+
+        // ---- THEMED per-floor dressing (spire_art): layer the Modular Abandoned
+        // Hospital kit on F3 (Genetics Lab) ON TOP of env_art's base look, driven by
+        // the placement manifests under <repo>/tools/manifests. assetRoot() is
+        // <repo>/assets, so the manifests sit one dir up. Degrades gracefully (no
+        // dir / no manifests -> all-false mask, env_art base stays). --
+        std::string manifestsDir = (std::filesystem::path(assetRoot()) /
+                                    ".." / "tools" / "manifests").lexically_normal().string();
+        if (!std::filesystem::is_directory(manifestsDir) &&
+            std::filesystem::is_directory("tools/manifests"))
+            manifestsDir = "tools/manifests";
+        m_spireMask = m_spireArt.build(device, convertedDir(), manifestsDir, seed);
     }
 
-    // ---- Lighting: register a forward point light at each Light_A ceiling fixture
-    // the env-art placed, so the corridor is lit (not just decorated with dark
-    // fixture meshes). The fixtures are static, so one call is enough — the device
-    // caches the set and re-uploads it into each frame's UBO. mesh.frag accumulates
-    // them on TOP of the existing directional sun + shadow pass. ----
+    // ---- Lighting: register the union of env_art's Light_A ceiling fixtures + the
+    // spire_art surgical-lamp fixtures, so BOTH the corridor base lighting AND the
+    // F3 clinical-horror lamp pools are lit (not just decorated with dark meshes).
+    // The fixtures are static, so one call is enough — the device caches the set and
+    // re-uploads it each frame. mesh.frag accumulates them on TOP of the sun. ----
     {
-        const auto& fixtures = m_envArt.lightFixtures();
-        if (!fixtures.empty())
-            device.setPointLights(fixtures.data(), (uint32_t)fixtures.size());
+        std::vector<x3::rhi::PointLight> lights = m_envArt.lightFixtures();
+        const auto& themed = m_spireArt.lightFixtures();
+        lights.insert(lights.end(), themed.begin(), themed.end());
+        if (!lights.empty())
+            device.setPointLights(lights.data(), (uint32_t)lights.size());
     }
 
     // ---- Geometry (graybox collision; surface renders suppressed where real art
@@ -721,6 +737,7 @@ void Level1Game::drawWorldExtras(x3::rhi::IRenderDevice& device,
                                  const x3::rhi::FrameContext& frame,
                                  const Scene& scene) const {
     m_envArt.draw(device, frame);   // converted sci-fi environment art over graybox
+    m_spireArt.draw(device, frame); // per-floor THEMED dressing (F3 Hospital) ON TOP of env_art
     m_weapon.drawPickup(device, frame, scene);
     m_corridor.drawAll(device, frame, scene);
     m_checkpoint.drawAll(device, frame, scene);

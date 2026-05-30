@@ -33,6 +33,7 @@
 #include "player.h"
 #include "monster.h"
 #include "level1_game.h"
+#include "spire_art.h"                       // EFLZ Spire per-floor THEMED art overlay (--test-spireart)
 #include "spire_mid.h"                      // EFLZ Spire F3/F4/F5 mid-floor content
 #include "spire_top.h"                      // EFLZ Spire F6/F7 top-floor content (Act-1 finale)
 #include "spire_nexus.h"                    // EFLZ Floor 4.5 Nexus Chamber / The Chorus (off-elevator boss)
@@ -304,6 +305,79 @@ static bool runDebrisSelfTest() {
 
     std::printf("debris: %d/%d passed\n", passed, total);
     x3::logInfo("debris: " + std::to_string(passed) + "/" + std::to_string(total) + " passed");
+    return passed == total;
+}
+
+// --test-spireart : Spire per-floor THEMED art overlay (spire_art) self-test.
+//
+// Drives the REAL Vulkan render device HEADLESS (no window) so the GLB upload path
+// is actually exercised. It builds a SpireArtSystem pointed at the converted_glb dir
+// (where the Modular_Abandoned_Hospital kit lives) + the tools/manifests dir (the
+// per-floor "<floor>_*.x3lvl.json" placement manifests), seeding the F3 floor base Y
+// (20 m) into the layout, and asserts:
+//   (a) at least one Hospital GLB loaded,
+//   (b) at least one instance was placed,
+//   (c) the F3 coverage flag is true,
+//   (d) at least one surgical-lamp point-light fixture was registered (the HDR look).
+// Prints "SPIREART-TEST ..." and returns true iff all pass.
+static bool runSpireArtSelfTest() {
+    using namespace x3::rhi;
+    int passed = 0, total = 0;
+    auto check = [&](const char* name, bool ok) {
+        ++total; if (ok) ++passed;
+        x3::logInfo(std::string("  [spireart] ") + (ok ? "PASS " : "FAIL ") + name);
+        return ok;
+    };
+
+    if (!glfwInit()) { x3::logError("[spireart] glfwInit failed"); return false; }
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+
+    std::unique_ptr<IRenderDevice> device(createRenderDevice());
+    DeviceDesc desc{};
+    desc.width = 640; desc.height = 360; desc.headless = true;
+#ifdef _DEBUG
+    desc.validation = true;
+#endif
+    if (!device->init(desc)) { x3::logError("[spireart] device init failed"); glfwTerminate(); return false; }
+
+    // Resolve dirs: converted GLBs under assetRoot()/converted_glb; the placement
+    // manifests live in the repo at <repo>/tools/manifests (assetRoot() == <repo>/assets,
+    // so manifests = assetRoot()/../tools/manifests). Fall back to ./tools/manifests
+    // when run from the repo root.
+    const std::string convertedDir = x3::game::convertedGlbRoot();
+    std::string manifestsDir = (std::filesystem::path(x3::game::assetRoot()) /
+                                ".." / "tools" / "manifests").lexically_normal().string();
+    if (!std::filesystem::is_directory(manifestsDir)) {
+        if (std::filesystem::is_directory("tools/manifests")) manifestsDir = "tools/manifests";
+    }
+    x3::logInfo("[spireart] convertedDir=" + convertedDir + " manifestsDir=" + manifestsDir);
+
+    // Seed a minimal layout: only floorBaseY[F3] is consulted by build() for F3.
+    // Use the canon Spire stack so the dressing anchors at F3's real plate (20 m).
+    x3::game::Level1Layout layout;
+    const float kBaseY[x3::game::kSpireFloorCount] = { 0, 5, 10, 20, 30, 65, 78, 91 };
+    for (uint32_t i = 0; i < x3::game::kSpireFloorCount; ++i) layout.floorBaseY[i] = kBaseY[i];
+
+    x3::game::SpireArtSystem spireArt;
+    x3::game::SpireArtMask mask = spireArt.build(*device, convertedDir, manifestsDir, layout);
+
+    const uint32_t assets   = spireArt.assetsLoaded();
+    const uint32_t insts    = spireArt.instanceCount();
+    const uint32_t f3Insts  = spireArt.instanceCountOnFloor(x3::game::L1Floor::F3);
+    const uint32_t lamps    = (uint32_t)spireArt.lightFixtures().size();
+    const bool     f3Cover  = mask.floorCovered[(uint32_t)x3::game::L1Floor::F3];
+
+    check("at least one Hospital GLB loaded", assets > 0);
+    check("at least one instance placed",     insts > 0);
+    check("F3 coverage flag set",             f3Cover);
+    check("at least one surgical-lamp light",  lamps > 0);
+
+    device->shutdown();
+    glfwTerminate();
+
+    std::printf("SPIREART-TEST assets=%u instances=%u f3=%u lamps=%u f3covered=%d : %d/%d passed\n",
+                assets, insts, f3Insts, lamps, (int)f3Cover, passed, total);
+    x3::logInfo("SPIREART-TEST " + std::to_string(passed) + "/" + std::to_string(total) + " passed");
     return passed == total;
 }
 
@@ -653,6 +727,9 @@ int main(int argc, char** argv) {
     bool        testClub = false;
     // --test-spiremid (Spire mid-floor content): F3/F4/F5 encounter authoring. Additive.
     bool        testSpireMid = false;
+    // --test-spireart (Spire per-floor THEMED art overlay): build the Hospital F3
+    // dressing from the placement manifests on a headless device + assert coverage.
+    bool        testSpireArt = false;
     // --test-nexus (Floor 4.5 Nexus / The Chorus): off-elevator multi-pod boss. Additive.
     bool        testNexus = false;
     // --test-debris (K-T2 GPU-compute debris): spawn a burst, step the compute sim
@@ -860,6 +937,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-bosses") testBosses = true;
         else if (a == "--test-act2bosses") testAct2Bosses = true;
         else if (a == "--test-spiremid") testSpireMid = true;
+        else if (a == "--test-spireart") testSpireArt = true;
         else if (a == "--test-nexus") testNexus = true;
         else if (a == "--test-spiretop") testSpireTop = true;
         else if (a == "--test-timeline") testTimeline = true;
@@ -1160,6 +1238,11 @@ int main(int argc, char** argv) {
         x3::logInfo("running EFLZ Spire mid-floor (F3 Labs / F4 Offices / F5 Synth bay) "
                     "encounter-content self-test...");
         return x3::game::runSpireMidSelfTest() ? 0 : 1;
+    }
+    if (testSpireArt) {
+        x3::logInfo("running EFLZ Spire THEMED art overlay (F3 Hospital dressing) "
+                    "self-test...");
+        return runSpireArtSelfTest() ? 0 : 1;
     }
     if (testNexus) {
         x3::logInfo("running EFLZ Floor 4.5 Nexus Chamber / The Chorus "

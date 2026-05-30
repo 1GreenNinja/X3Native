@@ -33,6 +33,7 @@
 #include "rescue.h"
 #include "level1.h"
 #include "env_art.h"
+#include "spire_art.h"   // per-floor THEMED dressing layered ON TOP of env_art
 
 #include "save.h"      // engine-general checkpoint schema (the bridge maps onto it)
 
@@ -287,6 +288,8 @@ private:
     Level1Layout   m_layout;
     EnvArtSystem   m_envArt;       // converted sci-fi GLB visuals over the graybox
     Level1ArtMask  m_artMask;      // which graybox surfaces real art covers
+    SpireArtSystem m_spireArt;     // per-floor THEMED dressing (F3 Hospital) over env_art
+    SpireArtMask   m_spireMask;    // which floors the themed overlay covers
     DoorSystem     m_doors;
     WeaponSystem   m_weapon;
     MeleeSystem    m_melee;        // super-strength punch (Phase 2b)

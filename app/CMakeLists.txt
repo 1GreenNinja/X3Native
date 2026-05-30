@@ -25,6 +25,7 @@ add_executable(X3Engine WIN32
     save.cpp
     dialog.cpp
     env_art.cpp
+    spire_art.cpp
     club1127.cpp
     cues.cpp
     valley.cpp
