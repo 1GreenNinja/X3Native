@@ -256,15 +256,29 @@ void ThirdPersonView::bakeTransform(Scene& scene) {
     // Yaw: the 180-deg facing-flip + the runtime cvar offset (jake_yawoff_deg).
     const float ry = m_yaw + kPi + m_userYawOff;
     const float c = std::cos(ry), s = std::sin(ry);
-    // Position: m_pos = player's feet, plus the runtime Y cvar (jake_yoff) to nudge
-    // Jake up/down for the GLB's chronic origin offset (Tim: "they never got it right").
+    // Yaw-only basis columns (the avatar's local right/up/forward in world space).
+    x3::phys::Vec3 bx{ c, 0.0f, -s };       // local +X (right) after yaw
+    x3::phys::Vec3 by{ 0.0f, 1.0f, 0.0f };  // local +Y (up)
+    x3::phys::Vec3 bz{ s, 0.0f, c };        // local +Z (forward) after yaw
+
+    // ---- CROUCH (synthesized; no crouch clip on the rig — TASK#46.2): while
+    // crouched, drop the avatar (hip lower) + lean the upper body forward by
+    // tilting the whole basis about its LOCAL-RIGHT axis. m_crouchAmt is the
+    // smoothed 0..1 amount (driven in update()). At amt=0 this is a no-op so the
+    // standing pose is byte-for-byte unchanged. A real retargeted crouch clip is
+    // the ideal future fix; this reads acceptably as a squat in the meantime. ----
     x3::phys::Vec3 posAdj = m_pos;
     posAdj.y += m_userYOff;
-    composeTRS(m_drawXform,
-               x3::phys::Vec3{ c, 0.0f, -s },
-               x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
-               x3::phys::Vec3{ s, 0.0f, c },
-               m_modelScale, posAdj);
+    if (m_crouchAmt > 1e-3f) {
+        posAdj.y -= kTpCrouchDrop * m_crouchAmt;
+        // Lean: rotate the up/forward columns about the local-right axis (bx).
+        const float lean = kTpCrouchLeanDeg * (kPi / 180.0f) * m_crouchAmt;
+        const float cl = std::cos(lean), sl = std::sin(lean);
+        const x3::phys::Vec3 fwd = bz, up = by;
+        bz = x3::phys::Vec3{ fwd.x * cl + up.x * sl, fwd.y * cl + up.y * sl, fwd.z * cl + up.z * sl };
+        by = x3::phys::Vec3{ up.x * cl - fwd.x * sl, up.y * cl - fwd.y * sl, up.z * cl - fwd.z * sl };
+    }
+    composeTRS(m_drawXform, bx, by, bz, m_modelScale, posAdj);
     if (m_entity != kNoLink && m_entity < scene.size()) {
         Entity& me = scene.get(m_entity);
         std::memcpy(me.transform, m_drawXform, 16 * sizeof(float));
@@ -326,17 +340,51 @@ void ThirdPersonView::update(float dt, Scene& scene, const x3::phys::Vec3& feet,
         }
     }
 
-    // Crouch: Jake has no crouch clip in this rig, so lower the avatar gracefully
-    // (drop the feet a touch) rather than popping. A real crouch clip is a follow-on.
-    if (crouched) m_pos.y -= 0.0f;   // (kept as a hook; visual crouch tuning = follow-on)
+    // ---- CROUCH (TASK#46.2): Jake has no crouch clip in this 22-clip rig, so we
+    // SYNTHESIZE one — smoothly drive a 0..1 crouch amount toward the `crouched`
+    // flag; bakeTransform() turns it into a hip drop + forward lean so the avatar
+    // visibly squats instead of doing nothing. Exponential smoothing avoids a pop.
+    // (A real retargeted crouch clip is the ideal future fix — see thirdperson.h.) --
+    {
+        const float target = crouched ? 1.0f : 0.0f;
+        const float k = 1.0f - std::exp(-kTpCrouchBlend * (dt > 0.0f ? dt : 0.0f));
+        m_crouchAmt += (target - m_crouchAmt) * k;
+        if (m_crouchAmt < 1e-4f) m_crouchAmt = 0.0f;
+        if (m_crouchAmt > 0.9999f) m_crouchAmt = 1.0f;
+    }
+
+    // ---- OVER-THE-SHOULDER AIM (TASK#46.3): smooth a 0..1 aim amount toward
+    // `fireHeld`; camera() biases the follow cam subtly over the right shoulder by
+    // this amount so the avatar body doesn't block the crosshair. Kept gentle. ----
+    {
+        const float target = fireHeld ? 1.0f : 0.0f;
+        const float k = 1.0f - std::exp(-kTpAimBlend * (dt > 0.0f ? dt : 0.0f));
+        m_aimAmt += (target - m_aimAmt) * k;
+        if (m_aimAmt < 1e-4f) m_aimAmt = 0.0f;
+        if (m_aimAmt > 0.9999f) m_aimAmt = 1.0f;
+    }
 
     bakeTransform(scene);
 }
 
 ThirdPersonCamera ThirdPersonView::camera(const x3::phys::Vec3& feet, float eyeHeight,
                                           float yaw, float pitch) const {
-    return computeFollowCamera(feet.x, feet.y, feet.z, eyeHeight, yaw, pitch,
-                               m_camDist, m_camHeight);
+    // Base follow cam: behind + above the head. When aiming, pull it in a touch and
+    // bias it over the RIGHT shoulder so the avatar body clears the crosshair. The
+    // shift is along the camera's RIGHT vector + a forward pull, scaled by m_aimAmt
+    // (smoothed), so it eases in/out and is a no-op at rest (follow cam unchanged).
+    const float dist = m_camDist - kTpAimShoulderIn * m_aimAmt;
+    ThirdPersonCamera c = computeFollowCamera(feet.x, feet.y, feet.z, eyeHeight,
+                                              yaw, pitch, dist, m_camHeight);
+    if (m_aimAmt > 1e-3f) {
+        float fwd[3], right[3], up[3];
+        lookBasis(yaw, pitch, fwd, right, up);
+        const float r = kTpAimShoulderRight * m_aimAmt;
+        c.camX += right[0] * r;
+        c.camY += right[1] * r;
+        c.camZ += right[2] * r;
+    }
+    return c;
 }
 
 
@@ -361,7 +409,7 @@ void ThirdPersonView::drawAvatar(x3::rhi::IRenderDevice& device,
     }
 }
 
-bool ThirdPersonView::handSocketWorld(float out[16]) const {
+bool ThirdPersonView::handSocketWorld(float out[16], std::string_view weaponName) const {
     if (!m_built || m_handNode < 0 || !out) return false;
     float boneGlobal[16];
     if (!m_skinner.boneGlobal((uint32_t)m_handNode, boneGlobal)) return false;
@@ -370,10 +418,23 @@ bool ThirdPersonView::handSocketWorld(float out[16]) const {
     float mf[16], handWorld[16];
     x3::asset::mulMat4(m_drawXform, m_modelFixup, mf);
     x3::asset::mulMat4(mf, boneGlobal, handWorld);
-    // Fold in the per-weapon grip offset (translation in the hand-local frame) +
-    // the held-weapon scale. Build the grip as a TRS in the hand's local space.
-    float grip[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-    grip[12] = kTpGripRight; grip[13] = -kTpGripDown; grip[14] = kTpGripForward;
+    // ---- PER-WEAPON GRIP (TASK#46.1): each gun seats differently in the palm.
+    // Look up the per-weapon row (pistol / chaingun / shotgun / ...) and build it as
+    // a TRS in the hand's LOCAL frame: rotation (small twist/tilt/roll to square the
+    // authored barrel onto the grip) then translation (right/down/forward into the
+    // palm). hand-local axes: +X right, +Y up, +Z forward (down the barrel). ----
+    const TpGrip& g = tpGripFor(weaponName);
+    const float cy = std::cos(g.yawDeg   * (kPi / 180.0f)), sy = std::sin(g.yawDeg   * (kPi / 180.0f));
+    const float cp = std::cos(g.pitchDeg * (kPi / 180.0f)), sp = std::sin(g.pitchDeg * (kPi / 180.0f));
+    const float cr = std::cos(g.rollDeg  * (kPi / 180.0f)), sr = std::sin(g.rollDeg  * (kPi / 180.0f));
+    // R = Ry(yaw) * Rx(pitch) * Rz(roll) (intrinsic), column-major.
+    float Rz[16] = { cr, sr, 0,0,  -sr, cr, 0,0,  0,0,1,0,  0,0,0,1 };
+    float Rx[16] = { 1,0,0,0,  0, cp, sp, 0,  0,-sp, cp, 0,  0,0,0,1 };
+    float Ry[16] = { cy,0,-sy,0,  0,1,0,0,  sy,0,cy,0,  0,0,0,1 };
+    float RxRz[16], grip[16];
+    x3::asset::mulMat4(Rx, Rz, RxRz);
+    x3::asset::mulMat4(Ry, RxRz, grip);
+    grip[12] = g.right; grip[13] = -g.down; grip[14] = g.forward;
     float out2[16];
     x3::asset::mulMat4(handWorld, grip, out2);
     std::memcpy(out, out2, 16 * sizeof(float));
@@ -390,11 +451,14 @@ void ThirdPersonView::drawHeldWeapon(x3::rhi::IRenderDevice& device,
     if (m_entity == kNoLink || m_entity >= scene.size()) return;
     if (!scene.get(m_entity).visible) return;
 
+    const std::string& wname = arsenal.current().name;
     float handWorld[16];
-    if (!handSocketWorld(handWorld)) return;
-    // Apply the per-weapon viewmodel scale (folded with the global held mul) onto the
-    // hand frame so the gun reads about right in the palm. Scale the upper-3x3.
-    const float s = arsenal.currentViewmodelScale() * kTpHeldWeaponScaleMul;
+    if (!handSocketWorld(handWorld, wname)) return;
+    // Apply the per-weapon viewmodel scale (folded with the global held mul + the
+    // per-weapon grip scaleMul) onto the hand frame so the gun reads about right in
+    // the palm. Scale the upper-3x3.
+    const float s = arsenal.currentViewmodelScale() * kTpHeldWeaponScaleMul *
+                    tpGripFor(wname).scaleMul;
     float scaled[16];
     std::memcpy(scaled, handWorld, 16 * sizeof(float));
     for (int col = 0; col < 3; ++col)
@@ -447,6 +511,28 @@ bool runThirdPersonSelfTest() {
         const float fwdZ = std::cos(pitch) * std::sin(yaw);
         const float dot = toHeadX * fwdX + toHeadY * fwdY + toHeadZ * fwdZ;
         tpcheck(dot > 0.85f, "TP3 follow camera LOOKS TOWARD the player");
+    }
+
+    // ---- TP3b: the PER-WEAPON GRIP TABLE (TASK#46.1) — no asset needed. ------
+    {
+        // Known weapons resolve to their OWN row (name matches), distinct guns get
+        // distinct offsets (the whole point: a pistol seats differently than a
+        // chaingun), and an unknown name falls back to the default row.
+        const TpGrip& pistol  = tpGripFor("pistol");
+        const TpGrip& chain   = tpGripFor("chaingun");
+        const TpGrip& shotgun = tpGripFor("shotgun");
+        const TpGrip& unknown = tpGripFor("no_such_weapon");
+        const TpGrip& deflt   = tpGripFor("");   // empty -> default row too
+        const bool resolvesOwn = pistol.name && std::string_view(pistol.name) == "pistol" &&
+                                 chain.name  && std::string_view(chain.name)  == "chaingun";
+        // Distinct guns -> distinct forward seat (pistol short, chaingun long barrel).
+        const bool distinct = std::fabs(pistol.forward - chain.forward) > 1e-3f &&
+                              std::fabs(pistol.forward - shotgun.forward) > 1e-3f;
+        // Unknown name + empty name both resolve to the SAME default row (no crash).
+        const bool fallback = unknown.name == nullptr && deflt.name == nullptr &&
+                              unknown.forward == deflt.forward;
+        tpcheck(resolvesOwn && distinct && fallback,
+                "TP3b per-weapon grip table: known guns resolve distinct rows, unknown -> default");
     }
 
     // ---- TP4: the locomotion-band selector picks Idle/Walk/Run by speed. -----
@@ -526,6 +612,46 @@ bool runThirdPersonSelfTest() {
                                  sock1[14] - sock0[14]);
         tpcheck(moved > 2.5f,
                 "TP9 hand socket follows the avatar (held weapon rides the hand)");
+
+        // TP10: the per-weapon grip actually MOVES the socket — a pistol and a
+        // chaingun must produce different world placements at the same pose (the
+        // grip table is wired through handSocketWorld, not ignored).
+        float sockPistol[16], sockChain[16];
+        const bool gp = tp.handSocketWorld(sockPistol, "pistol");
+        const bool gc = tp.handSocketWorld(sockChain,  "chaingun");
+        const float gripMoved = vlen(sockPistol[12] - sockChain[12],
+                                     sockPistol[13] - sockChain[13],
+                                     sockPistol[14] - sockChain[14]);
+        tpcheck(gp && gc && gripMoved > 1e-3f,
+                "TP10 per-weapon grip shifts the hand socket (pistol != chaingun)");
+
+        // TP11: CROUCH (TASK#46.2) lowers the avatar — after several crouched frames
+        // the baked draw-transform Y sits below the standing Y at the same feet.
+        x3::phys::Vec3 cf{ feet2.x, feet2.y, feet2.z };
+        // Settle standing first.
+        for (int i = 0; i < 20; ++i)
+            tp.update(1.0f / 60.0f, scene, cf, 1.6f, -kPi * 0.5f, 0.0f, kNoRoom, false, false);
+        float stand[16]; tp.handSocketWorld(stand);
+        const float standY = stand[13];
+        // Now crouch and settle.
+        for (int i = 0; i < 60; ++i)
+            tp.update(1.0f / 60.0f, scene, cf, 1.6f, -kPi * 0.5f, 0.0f, kNoRoom, true, false);
+        float crouch[16]; tp.handSocketWorld(crouch);
+        tpcheck(crouch[13] < standY - 0.1f,
+                "TP11 crouch lowers the avatar (hand socket drops vs standing)");
+
+        // TP12: OVER-THE-SHOULDER AIM (TASK#46.3) biases the camera vs the rest cam.
+        // Settle un-aimed, capture the cam; then hold fire several frames + capture.
+        for (int i = 0; i < 30; ++i)
+            tp.update(1.0f / 60.0f, scene, cf, 1.6f, -kPi * 0.5f, 0.0f, kNoRoom, false, false);
+        ThirdPersonCamera rest = tp.camera(cf, 1.6f, -kPi * 0.5f, 0.0f);
+        for (int i = 0; i < 30; ++i)
+            tp.update(1.0f / 60.0f, scene, cf, 1.6f, -kPi * 0.5f, 0.0f, kNoRoom, false, true);
+        ThirdPersonCamera aim = tp.camera(cf, 1.6f, -kPi * 0.5f, 0.0f);
+        const float camShift = vlen(aim.camX - rest.camX, aim.camY - rest.camY,
+                                    aim.camZ - rest.camZ);
+        tpcheck(camShift > 0.05f,
+                "TP12 over-the-shoulder aim biases the follow camera while firing");
         tp.setThirdPerson(false);
     }
 

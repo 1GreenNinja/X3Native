@@ -122,6 +122,8 @@ public:
 
     // The follow camera for THIS frame's player state (call after update()). Returns
     // the orbit-camera position + the pass-through look angles. FP callers ignore it.
+    // When aiming (built up via update()'s fireHeld) the camera biases subtly
+    // over-the-right-shoulder so the avatar body doesn't block the crosshair.
     ThirdPersonCamera camera(const x3::phys::Vec3& feet, float eyeHeight,
                              float yaw, float pitch) const;
 
@@ -142,10 +144,11 @@ public:
 
     // ---- Hand socket readback (also used by --test-thirdperson) ------------
     // Compute the WORLD transform (column-major 4x4) where the held weapon is
-    // placed: avatarDraw * handBoneGlobal * gripOffset. Returns false if unbuilt /
+    // placed: avatarDraw * handBoneGlobal * perWeaponGrip. Returns false if unbuilt /
     // the hand bone didn't resolve / no pose computed yet. The translation column
-    // (out[12..14]) is the weapon's world position (near the right hand).
-    bool handSocketWorld(float out[16]) const;
+    // (out[12..14]) is the weapon's world position (near the right hand). `weaponName`
+    // selects the per-weapon grip row (kTpGripTable); empty/unknown -> the default row.
+    bool handSocketWorld(float out[16], std::string_view weaponName = {}) const;
 
     // The avatar's current world position (feet) + facing yaw — for tests / HUD.
     x3::phys::Vec3 avatarPos() const { return m_pos; }
@@ -200,6 +203,15 @@ private:
     float    m_userYawOff = 1.5707963f;        // +90 deg in rad; GLB faces +X natively
     float    m_camDist    = 2.3f;              // 3P follow camera distance behind player (m)
     float    m_camHeight  = 0.37f;             // 3P follow camera height above eye line (m)
+
+    // CROUCH (synthesized — no crouch clip on this rig). m_crouchAmt is a smoothed
+    // 0..1 amount driven by the `crouched` flag in update(); bakeTransform() applies
+    // it as a hip drop + forward lean so the avatar visibly squats.
+    float    m_crouchAmt  = 0.0f;
+    // OVER-THE-SHOULDER AIM. m_aimAmt is a smoothed 0..1 amount driven by `fireHeld`
+    // in update(); camera() uses it to bias the follow cam subtly over the right
+    // shoulder while aiming so the body doesn't block the crosshair.
+    float    m_aimAmt     = 0.0f;
 };
 
 // Follow-camera tuning (meters). Behind the player + above; the test asserts the
@@ -207,15 +219,83 @@ private:
 inline constexpr float kTpCamDistance    = 3.6f;   // m behind the player
 inline constexpr float kTpCamHeightAbove = 0.7f;   // m above the eye line
 
-// Per-weapon grip offset (meters, in the hand-bone local frame) so the gun sits in
-// the palm rather than at the wrist pivot. A single shared nudge for the milestone;
-// per-weapon tuning is a follow-on (the user eyeballs it in a headed playtest).
-inline constexpr float kTpGripForward = 0.0f;
-inline constexpr float kTpGripRight   = 0.0f;
-inline constexpr float kTpGripDown    = 0.0f;
+// ---------------------------------------------------------------------------
+// PER-WEAPON GRIP TABLE (TASK#46.1)
+// ---------------------------------------------------------------------------
+// Each gun sits differently in the palm: the hand bone is the WRIST pivot, so a
+// single shared zero offset seats every model at the wrist (reads as "floating off
+// the hand"). A small per-weapon offset (meters, in the hand-bone LOCAL frame:
+// +right toward the thumb side, +down toward the palm, +forward down the barrel)
+// plus an optional small rotation (degrees about the hand-local axes) lets each
+// model nestle into the grip. Looked up by WeaponDef::name (see makeDefaultRoster):
+// pistol / smg / shotgun / plasma / chaingun / plasma_rifle / lightning.
+//
+// HAND-TUNING: these are starting values dialed by eye against the Mixamo
+// right-hand bind pose; nudge them in a headed playtest (the values are small +
+// local so a change to one gun never touches another). Forward seats the model
+// along the barrel out of the fist; down drops it into the palm; right centers it
+// across the fingers. Rotations square the authored barrel axis onto the grip.
+struct TpGrip {
+    const char* name;        // matches WeaponDef::name (nullptr = default fallback row)
+    float forward;           // m along the barrel (out of the fist)
+    float right;             // m toward the thumb side
+    float down;              // m into the palm
+    float yawDeg;            // small twist about hand-up
+    float pitchDeg;          // small tilt about hand-right
+    float rollDeg;           // small roll about the barrel
+    float scaleMul;          // per-weapon scale tweak on top of vmScale (1 = none)
+};
+
+// The grip table. The FIRST row whose name is nullptr is the default fallback used
+// for any weapon not explicitly listed. Tuned so each model reads as "held", not
+// "stuck to the wrist". Values are deliberately small + easy to hand-edit.
+inline constexpr TpGrip kTpGripTable[] = {
+    // name           fwd     right   down    yaw    pitch  roll   scale
+    { "pistol",      0.07f,  0.01f,  0.04f,   0.0f,  -8.0f,  0.0f,  1.00f },
+    { "smg",         0.11f,  0.01f,  0.05f,   0.0f,  -6.0f,  0.0f,  1.00f },
+    { "shotgun",     0.16f,  0.00f,  0.05f,   0.0f,  -4.0f,  0.0f,  1.05f },
+    { "plasma",      0.10f,  0.01f,  0.05f,   0.0f,  -6.0f,  0.0f,  1.00f },
+    { "chaingun",    0.18f,  0.00f,  0.06f,   0.0f,  -3.0f,  0.0f,  1.10f },
+    { "plasma_rifle",0.15f,  0.00f,  0.05f,   0.0f,  -4.0f,  0.0f,  1.05f },
+    { "lightning",   0.13f,  0.01f,  0.05f,   0.0f,  -5.0f,  0.0f,  1.00f },
+    { nullptr,       0.09f,  0.01f,  0.05f,   0.0f,  -6.0f,  0.0f,  1.00f }, // default
+};
+
+// Look up the grip row for a weapon name (case-sensitive, matches WeaponDef::name).
+// Returns the matching row, or the trailing nullptr-named default row if no match.
+// constexpr so it's a compile-time table walk + zero-cost in the hot path.
+inline constexpr const TpGrip& tpGripFor(std::string_view name) {
+    const TpGrip* def = &kTpGripTable[0];
+    for (const auto& g : kTpGripTable) {
+        if (g.name == nullptr) { def = &g; continue; }
+        // constexpr-friendly C-string compare against the string_view.
+        std::string_view gn(g.name);
+        if (gn == name) return g;
+    }
+    return *def;
+}
+
 // Held-weapon scale relative to the hand bone (the FP vmScale is authored for the
-// camera-relative viewmodel; in the hand it reads about the same).
+// camera-relative viewmodel; in the hand it reads about the same). Multiplied by
+// the per-weapon TpGrip::scaleMul.
 inline constexpr float kTpHeldWeaponScaleMul = 1.0f;
+
+// ---------------------------------------------------------------------------
+// CROUCH (TASK#46.2) — Jake's 22-clip Mixamo rig has NO crouch clip. We fake a
+// graceful crouch by lowering the avatar (hips drop) + a slight forward lean while
+// the locomotion clips keep playing, so the avatar visibly squats instead of doing
+// nothing. A real RETARGETED crouch clip is the ideal future fix (then this whole
+// synthesized-crouch block can be replaced by triggerClip(crouchClip)).
+inline constexpr float kTpCrouchDrop    = 0.45f;  // m the avatar lowers when crouched
+inline constexpr float kTpCrouchLeanDeg = 10.0f;  // forward lean (pitch) while crouched
+inline constexpr float kTpCrouchBlend   = 8.0f;   // 1/s smoothing rate in/out of crouch
+
+// Over-the-shoulder aim (TASK#46.3, subtle): while aiming/firing the follow camera
+// biases a touch to the right + in, so the avatar's body doesn't block the
+// crosshair. Kept small so the existing follow cam isn't broken.
+inline constexpr float kTpAimShoulderRight = 0.35f;  // m camera shift to the right when aiming
+inline constexpr float kTpAimShoulderIn    = 0.45f;  // m camera pull-in toward the head when aiming
+inline constexpr float kTpAimBlend         = 6.0f;   // 1/s smoothing rate in/out of aim
 
 // Headless self-test (--test-thirdperson). Asserts the MECHANICS only (visual
 // correctness is the user's eyeball job): Jake loads with the expected bone count +
