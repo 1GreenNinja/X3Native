@@ -859,8 +859,17 @@ void Arsenal::drawCurrentAt(x3::rhi::IRenderDevice& device,
     // so unlike drawCurrentViewmodel this does NO camera-relative posing.
     constexpr float kVmBright = 2.6f;
     for (const auto& dr : vm.drawables) {
+        // STRIP the node-transform's authored WORLD TRANSLATION (cols 12..14): these
+        // weapon GLBs bake an FP-viewmodel placement offset into the root node, which
+        // — when multiplied by the world-space hand matrix here — flings the gun off
+        // to the floor (Tim 3P playtest: weapon lay flat mid-corridor, not in hand).
+        // The caller's `model` already owns the full world placement (hand-bone * grip
+        // * scale), so we keep only the node's orientation/scale (upper 3x3).
+        float nt[16];
+        std::memcpy(nt, dr.nodeTransform, 16 * sizeof(float));
+        nt[12] = nt[13] = nt[14] = 0.0f;
         float fin[16];
-        x3::asset::mulMat4(model, dr.nodeTransform, fin);
+        x3::asset::mulMat4(model, nt, fin);
         const float litColor[4] = {
             dr.baseColorFactor[0] * kVmBright,
             dr.baseColorFactor[1] * kVmBright,
