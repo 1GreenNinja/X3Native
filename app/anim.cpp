@@ -360,11 +360,18 @@ std::string_view Skinner::clipName(uint32_t clip) const {
 }
 
 int Skinner::findClip(std::initializer_list<const char*> keys) const {
+    // For each key (in caller priority order) an EXACT (case-insensitive) clip-name
+    // match wins over a mere substring match. Without this, a key like "walking"
+    // resolves to the FIRST clip that merely CONTAINS it — e.g. Jake's
+    // "Leftstrafewalking" (a sideways step that LEANS the body) instead of the plain
+    // "Walking" clip — which made the 3P avatar lean off at a \ angle the instant he
+    // moved. (Same collision class that a56d1b0 fixed for idle-vs-Rifleaimingidle.)
     for (const char* key : keys) {
         std::string k = toLower(key);
-        for (uint32_t c = 0; c < (uint32_t)m_clipNames.size(); ++c) {
-            if (toLower(m_clipNames[c]).find(k) != std::string::npos) return (int)c;
-        }
+        for (uint32_t c = 0; c < (uint32_t)m_clipNames.size(); ++c)
+            if (toLower(m_clipNames[c]) == k) return (int)c;                          // exact name
+        for (uint32_t c = 0; c < (uint32_t)m_clipNames.size(); ++c)
+            if (toLower(m_clipNames[c]).find(k) != std::string::npos) return (int)c;  // substring
     }
     return -1;
 }

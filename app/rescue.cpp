@@ -248,7 +248,11 @@ bool RescueVictim::tick(float dt, bool hubReached, Scene& scene,
 
     // ---- Captive: breathe/idle EVERY frame (BUG #48), whether or not the hub
     // timer is running, so a held captive isn't a frozen mannequin. Stationary ->
-    // speed 0 -> the Idle clip (or locomotion blend collapsed to idle). ----
+    // speed 0 -> the Idle clip (or locomotion blend collapsed to idle). Bake the
+    // transform too (mirrors the Companion path) so the captive gets the 180deg
+    // facing-FLIP — without it she keeps the identity-basis init transform from
+    // build() and renders facing the wrong way (back to the player). ----
+    bakeTransform(scene);
     driveAnim(dt, 0.0f);
 
     // ---- Captive: run the countdown once the hub is reached. ----

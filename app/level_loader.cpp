@@ -971,6 +971,57 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         if (g.empty())   wallX(scene, device, physics, x0, x1, z, floorY, h, tex, tint, ri, wallVis);
     };
 
+    // ---- DOORWAY WALL DEDUP (kills the around-doorway z-fight). Two adjacent rooms
+    // would each build a wall box on their SHARED plane — two COINCIDENT opaque boxes
+    // that z-fight wherever the per-room PVS draws both rooms at once (i.e. through the
+    // doorway between them, which is exactly where the player sees the flicker). Fix at
+    // the source: when one room's wall FULLY COVERS the other's on the shared plane (the
+    // usual cell-off-a-hall case), only the bigger "owner" builds it and the smaller room
+    // SKIPS that face. The owner is in the skipper's PVS (doored neighbour) so the wall
+    // still renders from both sides — no hole, no duplicate, and its static body still
+    // blocks/collides for both rooms. Two rooms that only PARTIALLY overlap keep both
+    // walls (rare; never risks a gap). A room NEVER skips a face it also OWNS for a
+    // different neighbour (that would strand the neighbour relying on it).
+    std::vector<unsigned char> skipFace(nRooms * 4, 0);   // [ri*4 + f], f: 0=-X 1=+X 2=-Z 3=+Z
+    {
+        std::vector<unsigned char> wantSkip(nRooms * 4, 0), ownFace(nRooms * 4, 0);
+        const float eps = 0.02f;
+        auto faceX = [&](const CanonRoom& r, float planeX) {
+            return (std::fabs(planeX - r.x0()) < std::fabs(planeX - r.x1())) ? 0 : 1;   // -X : +X
+        };
+        auto faceZ = [&](const CanonRoom& r, float planeZ) {
+            return (std::fabs(planeZ - r.z0()) < std::fabs(planeZ - r.z1())) ? 2 : 3;   // -Z : +Z
+        };
+        auto coversY = [&](const CanonRoom& big, const CanonRoom& s) {
+            return big.y0() <= s.y0() + eps && big.y1() >= s.y1() - eps;
+        };
+        auto coversZ = [&](const CanonRoom& big, const CanonRoom& s) {
+            return big.z0() <= s.z0() + eps && big.z1() >= s.z1() - eps && coversY(big, s);
+        };
+        auto coversX = [&](const CanonRoom& big, const CanonRoom& s) {
+            return big.x0() <= s.x0() + eps && big.x1() >= s.x1() - eps && coversY(big, s);
+        };
+        for (const CanonDoorway& dw : floor.doorways) {
+            if (dw.kind != DoorwayKind::AdjacentX && dw.kind != DoorwayKind::AdjacentZ &&
+                dw.kind != DoorwayKind::Overlap)
+                continue;                       // GapBridge rooms keep solid walls (own corridor)
+            const CanonRoom& A = floor.rooms[dw.a];
+            const CanonRoom& B = floor.rooms[dw.b];
+            int fa, fb; bool aCovB, bCovA;
+            if (dw.axis == 0) {                 // shared X plane; the shared walls run along Z
+                fa = faceX(A, dw.cx); fb = faceX(B, dw.cx);
+                aCovB = coversZ(A, B); bCovA = coversZ(B, A);
+            } else {                            // shared Z plane; the shared walls run along X
+                fa = faceZ(A, dw.cz); fb = faceZ(B, dw.cz);
+                aCovB = coversX(A, B); bCovA = coversX(B, A);
+            }
+            if (aCovB)      { wantSkip[dw.b * 4 + fb] = 1; ownFace[dw.a * 4 + fa] = 1; }
+            else if (bCovA) { wantSkip[dw.a * 4 + fa] = 1; ownFace[dw.b * 4 + fb] = 1; }
+            // else: partial overlap — keep both walls (no skip, no hole).
+        }
+        for (uint32_t i = 0; i < nRooms * 4; ++i) skipFace[i] = wantSkip[i] && !ownFace[i];
+    }
+
     // ---- Build each room shell. ----
     for (uint32_t ri = 0; ri < nRooms; ++ri) {
         const CanonRoom& r = floor.rooms[ri];
