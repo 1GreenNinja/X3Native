@@ -1,8 +1,8 @@
 # X3Native Space Engine — Design Spec
 
-**Date:** 2026-05-28
-**Status:** DRAFT — pending Tim's review
-**Context:** Act 3 of "Escape From Lab Zero" ("Beyond the Stars," ~L36–75). This spec defines the space-engine architecture and decomposes it into ~11 independent subsystems (= parallel agent lanes). The interface contracts in §3 are the load-bearing part — they are what let the lanes build in parallel without colliding.
+**Date:** 2026-05-28 (LOCKED 2026-05-30)
+**Status:** ✅ LOCKED — approved by Tim 2026-05-30. Wave-1 planning underway (Snake/rightscreen 13700K).
+**Context:** Act 3 of "Escape From Lab Zero" ("Beyond the Stars," ~L36–75). This spec defines the space-engine architecture and decomposes it into 13 subsystems S0–S12 (= parallel agent lanes). The interface contracts in §3 are the load-bearing part — they are what let the lanes build in parallel without colliding.
 
 ---
 
