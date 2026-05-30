@@ -154,6 +154,20 @@ public:
     x3::phys::Vec3 avatarPos() const { return m_pos; }
     float avatarYaw() const { return m_yaw; }
 
+    // Copy the baked avatar DRAW transform (column-major 4x4) — for tests / HUD. Lets
+    // a test assert the standing basis is upright + orthonormal (no crouch tilt). The
+    // basis columns are out[0..2]=right, out[4..6]=up, out[8..10]=forward (scaled by
+    // m_modelScale). Valid after the first update()/bakeTransform().
+    void avatarDrawTransform(float out[16]) const {
+        for (int i = 0; i < 16; ++i) out[i] = m_drawXform[i];
+    }
+    // True iff the locomotion blend currently has the BACKWARDS clip set registered
+    // (player backpedalling) — for the regression test (BUG B).
+    bool locoBackActive() const { return m_locoBackActive; }
+    // Resolved backward-walk clip index (or -1) — lets the test skip when the rig has
+    // no backpedal clip.
+    int  walkBackClip() const { return m_walkBackClip; }
+
 private:
     // Build the facing-flipped draw transform (matches rescue.cpp/monster.cpp:
     // ry = m_yaw + pi) into m_drawXform and bake it onto the avatar Entity.
@@ -174,6 +188,10 @@ private:
     int  m_idleClip = -1, m_walkClip = -1, m_runClip = -1;
     int  m_runBackClip = -1, m_walkBackClip = -1, m_rifleIdleClip = -1, m_fireClip = -1;
     bool m_useLocoBlend = false;
+    // Which clip set the locomotion blend currently has registered: true = the
+    // BACKWARDS walk/run clips (player backpedalling), false = the forward set. Lets
+    // update() re-register only on a forward<->backward transition (BUG B).
+    bool m_locoBackActive = false;
 
     // Hand socket bone node index (resolved once in build()).
     int  m_handNode = -1;

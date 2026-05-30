@@ -712,20 +712,39 @@ void Skinner::setLocomotion01(float speed01) {
 }
 
 void Skinner::triggerClip(int clip, float fadeSec, bool loop) {
-    m_xfadeDur  = (fadeSec > 1e-3f) ? fadeSec : 1e-3f;
-    m_xfadeTime = 0.0f;
-    if (clip < 0 || (uint32_t)clip >= m_clipDurations.size()) {
+    // IDEMPOTENCY (freeze fix): callers commonly call this EVERY FRAME (e.g. the 3P
+    // avatar requests the fire clip while fireHeld and cancels (clip<0) otherwise).
+    // A naive implementation that reset m_xfadeTime on every call would re-seed the
+    // ramp to 0 each frame, so a crossfade could never finish ramping (m_xfadeW
+    // pinned), permanently FREEZING the pose on the crossfade target. So a repeated
+    // request for the SAME state must be a true no-op — only an ACTUAL state change
+    // (re)seeds the ramp timer.
+    const bool wantCancel = (clip < 0 || (uint32_t)clip >= m_clipDurations.size());
+    if (wantCancel) {
         // Cancel: ramp back out to the locomotion blend (crossfaded, not snapped).
-        if (m_xfadeActive) { m_xfadeOut = true; }
+        // Already inactive, or already ramping out -> nothing to do (don't reset the
+        // ramp clock, or the fade-out would stall forever).
+        if (m_xfadeActive && !m_xfadeOut) {
+            m_xfadeOut  = true;
+            m_xfadeTime = 0.0f;     // seed the ramp-OUT once, on the transition only
+            m_xfadeDur  = (fadeSec > 1e-3f) ? fadeSec : 1e-3f;
+        }
         return;
     }
+    // Already crossfading IN to this exact clip with the same loop mode: no-op (let
+    // the in-progress ramp keep advancing rather than restarting it every frame).
+    if (m_xfadeActive && !m_xfadeOut && m_xfadeClip == clip && m_xfadeLoop == loop)
+        return;
+    // New target (or re-targeting after a cancel): (re)seed the ramp-IN.
+    m_xfadeDur    = (fadeSec > 1e-3f) ? fadeSec : 1e-3f;
+    m_xfadeTime   = 0.0f;
     m_xfadeActive = true;
     m_xfadeClip   = clip;
     m_xfadeLoop   = loop;
     m_xfadeClipT  = 0.0f;
     m_xfadeOut    = false;
     // m_xfadeW stays where it is (it ramps up smoothly from the current value), so
-    // re-triggering mid-fade does not pop.
+    // re-triggering after a different clip does not pop.
 }
 
 // Sample every node's local pose from a clip into flat caller arrays. Reused, not
@@ -890,6 +909,12 @@ bool Skinner::advanceBlend(const x3::asset::Model& model, float dt) {
     if (m_xfadeActive) {
         m_xfadeClipT += dt;
         const float xdur = m_clipDurations[(size_t)m_xfadeClip];
+        // Keep a LOOPING crossfade-target cursor bounded: over minutes of sustained
+        // play (e.g. fire held in 3P) an unwrapped accumulator loses float precision
+        // and eventually quantizes to a single sampled phase ("stops animating").
+        // Non-loop targets are intentionally left to run out (the ramp-out fires).
+        if (m_xfadeLoop && xdur > 1e-4f && m_xfadeClipT >= xdur)
+            m_xfadeClipT = std::fmod(m_xfadeClipT, xdur);
         // Decide ramp direction.
         if (!m_xfadeOut && !m_xfadeLoop && xdur > 1e-4f &&
             m_xfadeClipT >= xdur - m_xfadeDur) {

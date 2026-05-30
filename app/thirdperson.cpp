@@ -243,10 +243,23 @@ void ThirdPersonView::build(Scene& scene, x3::rhi::IRenderDevice& device,
 }
 
 void ThirdPersonView::setThirdPerson(bool on) {
+    const bool entering = on && !m_thirdPerson;
     m_thirdPerson = on;
     // Show/hide the avatar Entity so Scene-level bookkeeping reflects the mode (the
     // actual draw is gated by avatarVisible() in drawAvatar()).
     // (Entity visibility is toggled in update()/drawAvatar via avatarVisible().)
+    //
+    // BUG A fix — reset the synthesized-crouch + aim smoothing when ENTERING 3P. The
+    // crouch/aim amounts are only driven while update() runs (3P active); in FP they
+    // FREEZE at their last value. So crouching in 3P, toggling to FP, then back to 3P
+    // would re-enter with a stale m_crouchAmt ~ 1.0 — bakeTransform() leans the basis
+    // and the avatar spawns/re-enters visibly TILTED even though the player is
+    // standing. Zeroing here guarantees a freshly-shown (standing) avatar is upright;
+    // update() then smooths back in if the player actually is crouched.
+    if (entering) {
+        m_crouchAmt = 0.0f;
+        m_aimAmt    = 0.0f;
+    }
 }
 
 void ThirdPersonView::bakeTransform(Scene& scene) {
@@ -306,11 +319,26 @@ void ThirdPersonView::update(float dt, Scene& scene, const x3::phys::Vec3& feet,
     m_prevPos = m_pos;
     m_havePrev = true;
 
-    // ---- Facing: face the move direction while moving; hold the look yaw when
-    // still (so a standing avatar faces where the player looks, not a stale dir). --
+    // ---- Facing + movement direction RELATIVE to the look (BUG B fix). The avatar
+    // ALWAYS faces the player's look yaw — backing up or strafing must NOT spin the
+    // body to face the movement vector (that 180-deg whip-around was the bug). We
+    // instead decompose the planar movement onto the look's forward/right axes to
+    // get a signed forward component; backpedalling then selects the BACKWARDS walk/
+    // run clip while the body stays forward-facing (a real backpedal read). The rig
+    // has no strafe clip, so lateral-dominant motion keeps the forward clip set
+    // (facing forward) — acceptable until a strafe clip is retargeted. ----
+    m_yaw = yaw;   // body faces the camera/look direction at all times
     const bool moving = (moveX * moveX + moveZ * moveZ) > 1e-6f && planarSpeed > 0.15f;
-    if (moving) m_yaw = std::atan2(moveZ, moveX);   // planar heading (XZ from +X toward +Z)
-    else        m_yaw = yaw;                          // face the camera look dir when idle
+    // Look forward on the XZ plane (CONVENTIONS: forward = (cos yaw, *, sin yaw)).
+    const float fX = std::cos(yaw), fZ = std::sin(yaw);
+    // Signed forward component of the move (m, this frame). >0 = forward, <0 = back.
+    const float fwdComp = moving ? (moveX * fX + moveZ * fZ) : 0.0f;
+    // Backpedalling: moving and the motion is predominantly opposite the look dir.
+    // (Compare the forward component's magnitude against the planar move magnitude so
+    //  pure strafing — fwdComp ~ 0 — is NOT treated as "backwards".)
+    const float moveMag = std::sqrt(moveX * moveX + moveZ * moveZ);
+    const bool movingBack = moving && fwdComp < 0.0f &&
+                            (-fwdComp) > 0.5f * moveMag;   // back dominates lateral
 
     // Avatar belongs to the player's room so the PVS cull keeps it visible.
     if (m_entity != kNoLink && m_entity < scene.size()) {
@@ -325,16 +353,30 @@ void ThirdPersonView::update(float dt, Scene& scene, const x3::phys::Vec3& feet,
     // lower scale fallback if no crouch clip exists (Jake has none). ----
     if (m_thirdPerson && m_device && m_skinner.valid()) {
         if (m_useLocoBlend) {
+            // Swap the locomotion walk/run clip set forward<->backward so backing up
+            // plays the backpedal clip with the body STILL FACING FORWARD (BUG B). Only
+            // re-register on an actual direction change (cheap; avoids per-frame churn).
+            const bool wantBack = movingBack &&
+                                  (m_walkBackClip >= 0 || m_runBackClip >= 0);
+            if (wantBack != m_locoBackActive) {
+                const int wlk = wantBack && m_walkBackClip >= 0 ? m_walkBackClip : m_walkClip;
+                const int run = wantBack && m_runBackClip  >= 0 ? m_runBackClip  : m_runClip;
+                m_skinner.setLocomotionClips(m_idleClip, wlk, run, 0.2f, 2.0f);
+                m_locoBackActive = wantBack;
+            }
             m_skinner.setLocomotionSpeed(planarSpeed);
             // Firing while basically stationary: nudge toward the rifle aim/fire pose
-            // via a short crossfade (auto-returns to the locomotion blend). Easy + safe.
-            if (fireHeld && planarSpeed < 0.4f && m_fireClip >= 0)
-                m_skinner.triggerClip(m_fireClip, 0.12f, /*loop*/true);
-            else if (!fireHeld)
-                m_skinner.triggerClip(-1, 0.15f);   // cancel back to locomotion
+            // via a short crossfade (loops while held; idempotent so re-requesting the
+            // same clip each frame is a true no-op — see Skinner::triggerClip). Cancel
+            // back to locomotion whenever we don't want the fire pose (released OR
+            // moving fast enough that locomotion should win), so it never sticks.
+            const bool wantFirePose = fireHeld && planarSpeed < 0.4f && m_fireClip >= 0;
+            if (wantFirePose) m_skinner.triggerClip(m_fireClip, 0.12f, /*loop*/true);
+            else              m_skinner.triggerClip(-1, 0.15f);   // cancel -> locomotion
             m_skinner.applyLocomotion(m_model, *m_device, dt);
         } else {
-            const int clip = (planarSpeed > 0.25f && m_walkClip >= 0) ? m_walkClip : m_idleClip;
+            const int fwdClip = (planarSpeed > 0.25f && m_walkClip >= 0) ? m_walkClip : m_idleClip;
+            const int clip = (movingBack && m_walkBackClip >= 0) ? m_walkBackClip : fwdClip;
             m_animTime += dt;
             m_skinner.apply(m_model, *m_device, (uint32_t)clip, m_animTime);
         }
@@ -652,6 +694,92 @@ bool runThirdPersonSelfTest() {
                                     aim.camZ - rest.camZ);
         tpcheck(camShift > 0.05f,
                 "TP12 over-the-shoulder aim biases the follow camera while firing");
+
+        // ---- TP13 (BUG A): a STANDING avatar's baked basis is UPRIGHT + ORTHONORMAL.
+        // After crouching (TP11 left m_crouchAmt high), re-ENTER 3P — setThirdPerson()
+        // must zero the synthesized-crouch amount so the freshly-shown standing avatar
+        // is perfectly upright (no leftover lean tilt). Then a few standing frames keep
+        // it upright. Assert: up column == world +Y (no tilt), and the 3 basis columns
+        // are mutually orthogonal + unit-length (after removing the uniform scale).
+        tp.setThirdPerson(false);
+        tp.setThirdPerson(true);   // re-enter: BUG A fix zeroes the stale crouch amount
+        for (int i = 0; i < 5; ++i)
+            tp.update(1.0f / 60.0f, scene, cf, 1.6f, -kPi * 0.5f, 0.0f, kNoRoom, false, false);
+        float dxf[16]; tp.avatarDrawTransform(dxf);
+        // Columns (column-major): right=col0(0,1,2), up=col1(4,5,6), fwd=col2(8,9,10).
+        float rgt[3] = { dxf[0], dxf[1], dxf[2] };
+        float upc[3] = { dxf[4], dxf[5], dxf[6] };
+        float fwc[3] = { dxf[8], dxf[9], dxf[10] };
+        const float rl = vlen(rgt[0], rgt[1], rgt[2]);
+        const float ul = vlen(upc[0], upc[1], upc[2]);
+        const float fl = vlen(fwc[0], fwc[1], fwc[2]);
+        // Up must point along world +Y (standing => no pitch/roll lean).
+        const bool uprightY = ul > 1e-4f && upc[1] / ul > 0.9999f &&
+                              std::fabs(upc[0]) < 1e-3f && std::fabs(upc[2]) < 1e-3f;
+        // Orthogonal columns (normalized dot ~ 0) + equal (uniform-scale) lengths.
+        auto ndot = [](const float* a, float la, const float* b, float lb) {
+            return (a[0]*b[0] + a[1]*b[1] + a[2]*b[2]) / (la * lb + 1e-12f);
+        };
+        const bool ortho = rl > 1e-4f && ul > 1e-4f && fl > 1e-4f &&
+                           std::fabs(ndot(rgt, rl, upc, ul)) < 1e-3f &&
+                           std::fabs(ndot(rgt, rl, fwc, fl)) < 1e-3f &&
+                           std::fabs(ndot(upc, ul, fwc, fl)) < 1e-3f;
+        tpcheck(uprightY && ortho,
+                "TP13 standing avatar basis is UPRIGHT + orthonormal at spawn (crouch amt 0)");
+
+        // ---- TP14 (BUG B): backing up keeps the body FACING the look dir + selects
+        // the BACKWARDS clip (no 180-deg spin to face the movement vector). Look along
+        // world -Z (yaw=-pi/2); step the feet in +Z (BACKWARD relative to the look).
+        // Assert avatarYaw stays the look yaw (does NOT flip to atan2(+dz,0)=+pi/2),
+        // and the backward clip set is selected (when the rig has a backpedal clip).
+        const float lookYaw = -kPi * 0.5f;
+        x3::phys::Vec3 bf{ cf.x, cf.y, cf.z };
+        tp.update(1.0f / 60.0f, scene, bf, 1.6f, lookYaw, 0.0f, kNoRoom, false, false); // seed prev
+        for (int i = 0; i < 8; ++i) {
+            bf.z += 0.04f;   // ~2.4 m/s in +Z = backpedal (look faces -Z)
+            tp.update(1.0f / 60.0f, scene, bf, 1.6f, lookYaw, 0.0f, kNoRoom, false, false);
+        }
+        // Body still faces the look dir (within a few degrees), NOT the move heading.
+        auto angDiff = [](float a, float b) {
+            float d = a - b;
+            while (d >  kPi) d -= 2.0f * kPi;
+            while (d < -kPi) d += 2.0f * kPi;
+            return std::fabs(d);
+        };
+        const bool facesLook = angDiff(tp.avatarYaw(), lookYaw) < 0.05f;
+        // Back clip selected iff the rig actually has one (else gracefully stays fwd).
+        const bool backSel = (tp.walkBackClip() < 0) ? true : tp.locoBackActive();
+        tpcheck(facesLook && backSel,
+                "TP14 backward movement keeps the body FORWARD-facing + selects the back clip");
+
+        // ---- TP15 (BUG C): the avatar keeps ANIMATING over a long sustained run with
+        // fireHeld TRUE every frame (the freeze repro). update() requests the looping
+        // fire crossfade clip every frame; the bug was that triggerClip() re-seeded the
+        // crossfade clock (m_xfadeClipT=0 / m_xfadeTime=0) on EVERY call, pinning the
+        // fire pose at t=0 — the avatar froze after the first held-fire. Drive ~3
+        // simulated minutes (10800 frames @ 60 Hz) standing + firing, then sample two
+        // consecutive frames and assert the pose STILL advances (fire clip looping) +
+        // is finite (no precision blow-up). With the idempotent-triggerClip fix the
+        // per-frame fire request is a true no-op and the clip advances normally.
+        bool stillAnimating = false;
+        x3::phys::Vec3 rf{ cf.x, cf.y, cf.z };
+        for (int i = 0; i < 10800; ++i)             // ~180 s of held fire, standing
+            tp.update(1.0f / 60.0f, scene, rf, 1.6f, lookYaw, 0.0f, kNoRoom, false, true);
+        // Two consecutive frames at FIXED feet, still firing — only the animation pose
+        // can move the hand socket. A stuck (frozen) crossfade gives dPose ~ 0.
+        tp.update(1.0f / 60.0f, scene, rf, 1.6f, lookYaw, 0.0f, kNoRoom, false, true);
+        float lateA[16]; tp.handSocketWorld(lateA);
+        tp.update(1.0f / 60.0f, scene, rf, 1.6f, lookYaw, 0.0f, kNoRoom, false, true);
+        float lateB[16]; tp.handSocketWorld(lateB);
+        const float dPose = vlen(lateB[12] - lateA[12],
+                                 lateB[13] - lateA[13],
+                                 lateB[14] - lateA[14]);
+        const bool finite = std::isfinite(lateB[12]) && std::isfinite(lateB[13]) &&
+                            std::isfinite(lateB[14]);
+        stillAnimating = finite && dPose > 1e-6f;
+        tpcheck(stillAnimating,
+                "TP15 avatar still animates after a long sustained held-fire run (no crossfade freeze)");
+
         tp.setThirdPerson(false);
     }
 
