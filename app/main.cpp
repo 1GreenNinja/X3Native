@@ -84,6 +84,7 @@
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
 #include "space_pilot.h"                   // Act-3 6DOF space-flight pilot (--test-space + --world space)
 #include "sky_stars.h"                     // procedural starfield (--test-starfield + --world starfield)
+#include "space/space_layer.h"             // S0 SpaceLayer spine (--test-spacelayer)
 #include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
@@ -1343,7 +1344,8 @@ int main(int argc, char** argv) {
          testSpace = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
-         testThirdPerson = false, testNpc = false, testStarfield = false;
+         testThirdPerson = false, testNpc = false, testStarfield = false,
+         testSpaceLayer = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1687,6 +1689,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-companion-controller") testCompanionController = true;
         else if (a == "--test-club") testClub = true;
         else if (a == "--test-starfield") testStarfield = true;
+        else if (a == "--test-spacelayer") testSpaceLayer = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -1977,6 +1980,170 @@ int main(int argc, char** argv) {
         }
         x3::logInfo("starfield: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
         std::printf("starfield: %d/%d passed\n", pass, total);
+        std::fflush(stdout);
+        return (pass == total) ? 0 : 1;
+    }
+    // --test-spacelayer: S0 SpaceLayer spine self-test. Headless deterministic
+    // logic only (no GPU) -- exercises the context state machine + staged
+    // transitions, the moving-environment transform integration, and the
+    // free-list proxy registry.
+    if (testSpaceLayer) {
+        x3::logInfo("running S0 SpaceLayer spine self-test...");
+        int pass = 0, total = 0;
+        auto check = [&](bool c, const char* name) {
+            ++total;
+            if (c) { ++pass; x3::logInfo(std::string("  [ok] ") + name); }
+            else   {          x3::logError(std::string("  [FAIL] ") + name); }
+        };
+
+        using x3::space::SpaceLayer;
+        using x3::space::Context;
+        using x3::space::Proxy;
+
+        // T1: initial context is DeepSpace after init().
+        {
+            SpaceLayer L;
+            L.init();
+            check(L.context() == Context::DeepSpace, "T1 init() -> DeepSpace");
+            check(L.proxyCount() == 0u, "T1b init() -> empty proxy registry");
+        }
+
+        // T2: wormhole request + runner -> transit while running, arrives DeepSpace.
+        {
+            SpaceLayer L;
+            L.init();
+            int ticks = 0;
+            L.registerWormholeRunner([&](float) { return ++ticks >= 3; });
+            L.requestWormhole(42);
+            check(L.context() == Context::WormholeTransit, "T2 requestWormhole -> WormholeTransit");
+            L.update(0.1f); // tick 1
+            check(L.context() == Context::WormholeTransit, "T2b mid-transit stays WormholeTransit");
+            L.update(0.1f); // tick 2
+            L.update(0.1f); // tick 3 -> complete
+            check(L.context() == Context::DeepSpace, "T2c runner complete -> DeepSpace (arrived)");
+        }
+
+        // T3: descent -> AtmoDescent -> Surface; then ascent -> DeepSpace.
+        {
+            SpaceLayer L;
+            L.init();
+            bool done = false;
+            L.registerDescentRunner([&](float) { return done; });
+            L.requestDescent(7);
+            check(L.context() == Context::AtmoDescent, "T3 requestDescent -> AtmoDescent");
+            L.update(0.1f); // runner not done yet
+            check(L.context() == Context::AtmoDescent, "T3b stays AtmoDescent until runner done");
+            done = true;
+            L.update(0.1f);
+            check(L.context() == Context::Surface, "T3c descent complete -> Surface");
+            L.requestAscent();
+            L.update(0.1f); // descent runner reused; done==true -> immediate
+            check(L.context() == Context::DeepSpace, "T3d requestAscent -> DeepSpace");
+        }
+
+        // T4: no-runner transitions complete on the next update.
+        {
+            SpaceLayer L;
+            L.init();
+            L.requestWormhole(1);
+            check(L.context() == Context::WormholeTransit, "T4 no-runner armed -> WormholeTransit");
+            L.update(0.1f);
+            check(L.context() == Context::DeepSpace, "T4b no-runner completes next update");
+        }
+
+        // T5: environment transform integrates pure translation.
+        {
+            SpaceLayer L;
+            L.init();
+            const float v[3] = { 0.0f, 0.0f, -5.0f };
+            const float w[3] = { 0.0f, 0.0f, 0.0f };
+            L.setEnvironmentVelocity(v, w);
+            L.update(1.0f);
+            float m[16];
+            L.environmentTransform(m);
+            // Column-major translation lives at indices 12,13,14.
+            check(std::fabs(m[14] - (-5.0f)) < 1e-4f &&
+                  std::fabs(m[12]) < 1e-4f && std::fabs(m[13]) < 1e-4f,
+                  "T5 env transform integrates translation (0,0,-5)");
+            // A second second of the same velocity accumulates to -10.
+            L.update(1.0f);
+            L.environmentTransform(m);
+            check(std::fabs(m[14] - (-10.0f)) < 1e-3f, "T5b translation accumulates frame-over-frame");
+        }
+
+        // T6: environment transform integrates rotation about Y.
+        {
+            SpaceLayer L;
+            L.init();
+            const float v[3] = { 0.0f, 0.0f, 0.0f };
+            const float w[3] = { 0.0f, 1.0f, 0.0f }; // 1 rad/s about +Y
+            L.setEnvironmentVelocity(v, w);
+            L.update(1.0f); // rotate 1 rad
+            float m[16];
+            L.environmentTransform(m);
+            // Ry column-major {cy,0,-sy,0, 0,1,0,0, sy,0,cy,0, ...}: the cos
+            // terms sit on the diagonal at m[0] and m[10]; the sin terms at
+            // m[2] (=-sy) and m[8] (=+sy). cos(1)=0.5403, sin(1)=0.8415.
+            const float c1 = std::cos(1.0f), s1 = std::sin(1.0f);
+            check(std::fabs(m[0] - c1) < 1e-3f && std::fabs(m[10] - c1) < 1e-3f,
+                  "T6 env transform rotates about Y (cos terms)");
+            check(std::fabs(m[2] - (-s1)) < 1e-3f && std::fabs(m[8] - s1) < 1e-3f,
+                  "T6b env transform rotation has expected sin terms");
+            // No translation when velocity is zero.
+            check(std::fabs(m[12]) < 1e-4f && std::fabs(m[13]) < 1e-4f && std::fabs(m[14]) < 1e-4f,
+                  "T6c pure rotation leaves translation at origin");
+        }
+
+        // T7: proxy registry add returns stable id, count tracks.
+        {
+            SpaceLayer L;
+            L.init();
+            Proxy p{};
+            p.kind = Proxy::Kind::Planet;
+            p.pos[0] = 1.0f; p.pos[1] = 2.0f; p.pos[2] = 3.0f;
+            p.radius = 9.5f; p.lodAsset = 77u;
+            p.tint[0] = 0.1f; p.tint[1] = 0.2f; p.tint[2] = 0.3f; p.tint[3] = 1.0f;
+            uint32_t id0 = L.addProxy(p);
+            check(L.proxyCount() == 1u, "T7 addProxy increments count");
+            Proxy q = p; q.kind = Proxy::Kind::Ship; q.radius = 2.0f;
+            uint32_t id1 = L.addProxy(q);
+            check(L.proxyCount() == 2u && id1 != id0, "T7b second add: count=2, distinct id");
+            // Accessor round-trip: find the planet among live proxies.
+            bool found = false;
+            for (uint32_t i = 0; i < L.proxyCount(); ++i) {
+                const Proxy& r = L.proxy(i);
+                if (r.kind == Proxy::Kind::Planet && std::fabs(r.radius - 9.5f) < 1e-4f &&
+                    r.lodAsset == 77u && std::fabs(r.pos[2] - 3.0f) < 1e-4f)
+                    found = true;
+            }
+            check(found, "T7c accessor round-trips proxy fields");
+
+            // updateProxy mutates in place; id stays stable.
+            Proxy upd = p; upd.radius = 99.0f; upd.kind = Proxy::Kind::Station;
+            L.updateProxy(id0, upd);
+            bool seenUpdated = false;
+            for (uint32_t i = 0; i < L.proxyCount(); ++i) {
+                const Proxy& r = L.proxy(i);
+                if (r.kind == Proxy::Kind::Station && std::fabs(r.radius - 99.0f) < 1e-4f)
+                    seenUpdated = true;
+            }
+            check(seenUpdated && L.proxyCount() == 2u, "T7d updateProxy mutates in place, count unchanged");
+
+            // removeProxy drops the count; the survivor is still accessible.
+            L.removeProxy(id0);
+            check(L.proxyCount() == 1u, "T7e removeProxy decrements count");
+            const Proxy& survivor = L.proxy(0);
+            check(survivor.kind == Proxy::Kind::Ship && std::fabs(survivor.radius - 2.0f) < 1e-4f,
+                  "T7f survivor remains accessible after removal");
+
+            // Free-list reuse: a fresh add reclaims the freed slot's id.
+            Proxy fresh{}; fresh.kind = Proxy::Kind::Asteroid; fresh.radius = 4.0f;
+            uint32_t id2 = L.addProxy(fresh);
+            check(id2 == id0 && L.proxyCount() == 2u, "T7g free-list reuses removed id");
+        }
+
+        x3::logInfo("spacelayer: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+        std::printf("spacelayer: %d/%d passed\n", pass, total);
         std::fflush(stdout);
         return (pass == total) ? 0 : 1;
     }
