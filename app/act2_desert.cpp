@@ -294,6 +294,20 @@ void Act2Desert::build(Scene& scene, x3::rhi::IRenderDevice& device,
                         canonAlienTuning(CanonAlien::SaurianWarlord));
     }
 
+    // ===================================================================
+    // L10 — MANTIS ARBITER AMBUSH (canon-aliens; gated by the side-quest).
+    // A wildcard insectoid investigates the camp once the player commits a
+    // "highly visible" act of mercy (saving the injured Salvari). PRESENT at
+    // build but INERT until BOTH (a) the L10MantisAmbush trigger fires AND
+    // (b) m_injuredSalvariRescued is true. The trigger volume sits a short
+    // walk past the cave mouth, so naturally re-entered after the rescue.
+    // ===================================================================
+    {
+        m_mantisAmbush.spawn(scene, device, physics, m_modelDir,
+                             surfaceAt(Xcave - 8.0f, Z0 + 12.0f, kDesertEnemyYOff),
+                             canonAlienTuning(CanonAlien::MantisArbiter));
+    }
+
     // ---- Triggers (host's shared TriggerSystem; ids forwarded to onTrigger).
     // FRESH 90+ id range so this shares one TriggerSystem with act2_world (80..82)
     // and the Act-1 systems without colliding. ----
@@ -307,6 +321,7 @@ void Act2Desert::build(Scene& scene, x3::rhi::IRenderDevice& device,
         addGate(Xt910,  Z0, 6.0f,  14.0f, Act2DesertTrigger::L9toL10Transition);
         addGate(Xcave,  Z0, 10.0f, 14.0f, Act2DesertTrigger::L10CaveEntrance);
         addGate(X0 + 680.0f, Z0, 12.0f, 14.0f, Act2DesertTrigger::L10WarlordArena);
+        addGate(Xcave + 2.0f, Z0 + 8.0f, 8.0f, 6.0f, Act2DesertTrigger::L10MantisAmbush);
         addGate(Xt1011, Z0, 6.0f,  14.0f, Act2DesertTrigger::L10toL11Transition);
         addGate(X11,    Z0, 16.0f, 16.0f, Act2DesertTrigger::L11CulturalExchange);
     }
@@ -335,7 +350,7 @@ void Act2Desert::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_built = true;
     x3::logInfo("Act2Desert::build complete — L10 CRYSTALLINE DESERT DEPTHS (7 crystals, "
                 "hidden cave mouth, 3 first-contact Salvari [1 injured -> side-quest], "
-                "3-strong patrol [2 Reptilian Troopers + 1 Grey Tasked drone]) + L11 SALVARI CAMP (cave graybox + 8 crystals, "
+                "3-strong patrol [2 Reptilian Troopers + 1 Grey Tasked drone] + a gated Mantis Arbiter ambush wildcard) + L11 SALVARI CAMP (cave graybox + 8 crystals, "
                 "7 survivor markers incl. K'thara + 1 Nordic Steward mentor at the upgrade station + cultural-exchange "
                 "beat); alien sky + streamed terrain stood up");
 }
@@ -349,6 +364,7 @@ void Act2Desert::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     IDamageSink* atk = (player && player->isAlive()) ? player : nullptr;
     m_patrol.update(dt, scene, physics, eye, atk, attackFx);
     if (m_warlordSpawned) m_warlord.update(dt, scene, physics, eye, atk, attackFx);
+    if (m_mantisSpawned)  m_mantisAmbush.update(dt, scene, physics, eye, atk, attackFx);
 
     // Allied Salvari (contacts + camp survivors): movement-only, stationary markers
     // (chaseSpeed 0) — they never fight the player.
@@ -395,6 +411,16 @@ void Act2Desert::onTrigger(uint32_t triggerId) {
                 x3::logInfo("Act2: L10 WARLORD ARENA armed — Saurian Warlord active");
             }
             break;
+        case Act2DesertTrigger::L10MantisAmbush:
+            // Gate: only arms IF the player saved the injured Salvari first. The
+            // trigger volume can fire any number of times before the rescue; nothing
+            // happens until the moral-choice prerequisite is true. After the rescue,
+            // crossing the same volume latches the wildcard ambush.
+            if (!m_mantisSpawned && m_injuredSalvariRescued) {
+                m_mantisSpawned = true;
+                x3::logInfo("Act2: L10 MANTIS AMBUSH armed — wildcard Arbiter investigates the saved Salvari");
+            }
+            break;
     }
 }
 
@@ -427,6 +453,11 @@ FireResult Act2Desert::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& d
         FireResult rw = m_warlord.fire(eye, dir, scene, physics);
         if (rw.hitMonster) return rw;
     }
+    // L10 Mantis Ambush (when armed) is next priority — wildcard is closer than the patrol.
+    if (m_mantisSpawned) {
+        FireResult rm = m_mantisAmbush.fire(eye, dir, scene, physics);
+        if (rm.hitMonster) return rm;
+    }
     // Otherwise fire against the L10 Overlord patrol (allied Salvari excluded).
     return m_patrol.fire(eye, dir, scene, physics);
 }
@@ -435,6 +466,7 @@ void Act2Desert::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
                       const Scene& scene) const {
     m_patrol.drawAll(device, frame, scene);
     if (m_warlordSpawned) m_warlord.drawAll(device, frame, scene);
+    if (m_mantisSpawned)  m_mantisAmbush.drawAll(device, frame, scene);
     m_contacts.drawAll(device, frame, scene);
     m_survivors.drawAll(device, frame, scene);
     m_nordicMentor.drawAll(device, frame, scene);
@@ -572,6 +604,21 @@ bool runAct2DesertSelfTest() {
               "D7 side-quest + upgrade station present but INERT at load");
     }
 
+    // ---- L10 Mantis Ambush (canon-aliens) — PRESENT at load + INERT, AND the
+    // L10MantisAmbush trigger does NOT arm the wildcard while the injured-Salvari
+    // side-quest is still INERT (the gate's negative half: no rescue → no Mantis).
+    // Runs BEFORE D8 so m_injuredSalvariRescued is still false here. ----
+    {
+        bool presentInert = world.mantisAmbush().count() == 1 && !world.mantisSpawned();
+        check(presentInert,
+              "D18 Mantis Arbiter PRESENT at load (count=1) but INERT (mantisSpawned=false)");
+
+        // Fire the trigger now — side-quest NOT done → gate blocks → still inert.
+        world.onTrigger((uint32_t)Act2DesertTrigger::L10MantisAmbush);
+        check(!world.mantisSpawned(),
+              "D19 L10MantisAmbush trigger is GATED — without the side-quest rescued, the Mantis stays INERT");
+    }
+
     // ---- Interacting flips them; idempotent (second interact returns false). ----
     {
         bool firstSide = world.onInteract((uint32_t)Act2DesertInteract::L10InjuredSalvari);
@@ -634,6 +681,20 @@ bool runAct2DesertSelfTest() {
                        allAlliedAndHarmless(world.nordicMentor());
         check(buildOk,
               "D17 Nordic Steward mentor PRESENT in L11 camp (count=1) + ALLIED + 0 damage + alive");
+    }
+
+    // ---- L10 Mantis Ambush — the gate's positive half. By here, D8 has latched
+    // m_injuredSalvariRescued=true; re-firing the L10MantisAmbush trigger should
+    // now arm the wildcard (mantisSpawned flips true + the monster stays alive). ----
+    {
+        // Sanity: D19 set the world up so the trigger was already fired once and
+        // blocked. Side-quest is now rescued; re-firing the trigger should latch.
+        world.onTrigger((uint32_t)Act2DesertTrigger::L10MantisAmbush);
+        bool armed = world.mantisSpawned() &&
+                     world.mantisAmbush().count() == 1 &&
+                     world.mantisAmbush().at(0).alive();
+        check(armed,
+              "D20 L10MantisAmbush trigger latches mantisSpawned=true AFTER the side-quest is rescued (gate opens)");
     }
 
     // ---- L9 -> L10 -> L11 chain reachable (both transitions registered + enabled +

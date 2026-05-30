@@ -78,6 +78,9 @@ enum class Act2DesertTrigger : uint32_t {
     L10toL11Transition = 92,  // entered the Salvari camp (the cave settlement)
     L11CulturalExchange= 93,  // reached the cultural-exchange beat inside the camp
     L10WarlordArena    = 94,  // entered the L10 boss arena → arms the Saurian Warlord (canon-aliens)
+    L10MantisAmbush    = 95,  // crossed the post-rescue zone → arms the Mantis Arbiter ambush
+                              // (canon-aliens; GATED by m_injuredSalvariRescued — narrative consequence
+                              // of saving the injured Salvari draws Mantis wildcard attention)
 };
 
 // Act-2 DESERT-DEPTHS interact ids (the host forwards a use/interact to onInteract).
@@ -192,6 +195,14 @@ public:
     const MonsterManager& warlord() const { return m_warlord; }
     MonsterManager&       warlord()       { return m_warlord; }
     bool warlordSpawned() const { return m_warlordSpawned; }
+    // L10 Mantis Ambush (canon-aliens MantisArbiter; fast hostile insectoid). PRESENT
+    // at build but INERT until the L10MantisAmbush trigger arms — AND the trigger
+    // itself is gated by m_injuredSalvariRescued: rescuing the injured Salvari is what
+    // draws the Mantis wildcard's attention. A genuine "your choice has consequences"
+    // beat without needing a karma system.
+    const MonsterManager& mantisAmbush() const { return m_mantisAmbush; }
+    MonsterManager&       mantisAmbush()       { return m_mantisAmbush; }
+    bool mantisSpawned() const { return m_mantisSpawned; }
     // L11 Nordic Steward mentor (canon-aliens; allied, stationary, golden tint).
     // A second-species presence in the Salvari camp — the upgrade-station mentor,
     // distinct from K'thara's cyan-white Salvari commander. startAllied + chaseSpeed=0.
@@ -245,6 +256,7 @@ private:
     MonsterManager m_survivors;  // L11 camp Salvari survivors (allied; incl. K'thara)
     MonsterManager m_warlord;    // L10 Saurian Warlord boss (canon-aliens; gated by m_warlordSpawned)
     MonsterManager m_nordicMentor; // L11 Nordic Steward mentor (canon-aliens; allied + stationary)
+    MonsterManager m_mantisAmbush; // L10 Mantis Arbiter wildcard (canon-aliens; gated by m_mantisSpawned ∧ side-quest)
 
     std::vector<uint32_t> m_desertCrystals;  // L10 crystal-formation Scene props
     std::vector<uint32_t> m_campCrystals;    // L11 cave bioluminescent crystals
@@ -267,6 +279,7 @@ private:
     bool m_injuredSalvariRescued = false;  // side-quest completed (interact)
     bool m_upgradeGranted    = false;  // upgrade station used (interact)
     bool m_warlordSpawned    = false;  // L10WarlordArena trigger latched (boss live)
+    bool m_mantisSpawned     = false;  // L10MantisAmbush trigger latched AND side-quest done (ambush live)
 
     // Reachability anchors (the monotonic +X progression L9 edge -> L10 -> cave -> L11).
     x3::phys::Vec3 m_l9Edge{};       // L9 far edge (the L9->L10 threshold approach)
