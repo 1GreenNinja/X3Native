@@ -59,6 +59,7 @@ add_executable(X3Engine WIN32
     fx.cpp
     hud.cpp
     space_pilot.cpp
+    space/ship_anim.cpp
     sky_stars.cpp
     ui.cpp)
 

@@ -84,6 +84,7 @@
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
 #include "space_pilot.h"                   // Act-3 6DOF space-flight pilot (--test-space + --world space)
 #include "sky_stars.h"                     // procedural starfield (--test-starfield + --world starfield)
+#include "space/ship_anim.h"               // S11 ship node-transform anim (--test-shipanim + --world shipanim)
 #include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
@@ -1343,7 +1344,8 @@ int main(int argc, char** argv) {
          testSpace = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
-         testThirdPerson = false, testNpc = false, testStarfield = false;
+         testThirdPerson = false, testNpc = false, testStarfield = false,
+         testShipanim = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1687,6 +1689,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-companion-controller") testCompanionController = true;
         else if (a == "--test-club") testClub = true;
         else if (a == "--test-starfield") testStarfield = true;
+        else if (a == "--test-shipanim") testShipanim = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -1977,6 +1980,115 @@ int main(int argc, char** argv) {
         }
         x3::logInfo("starfield: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
         std::printf("starfield: %d/%d passed\n", pass, total);
+        std::fflush(stdout);
+        return (pass == total) ? 0 : 1;
+    }
+    // --test-shipanim: S11 ship node-transform animation self-test (headless).
+    // Verifies the four shipped SpaceShip*.glb load via the existing model loader
+    // (≥1 primitive each), then exercises the ShipNodeAnim driver: bind a ship root
+    // entity, register an articulated part with two key-poses, and assert setPart()
+    // lerps + update() writes the part's child-entity transform between the poses
+    // (and rides the ship's placement). No GPU — uses the headless loader path.
+    if (testShipanim) {
+        x3::logInfo("running S11 ship node-transform animation self-test...");
+        int pass = 0, total = 0;
+        auto check = [&](bool c, const char* name) {
+            ++total;
+            if (c) { ++pass; x3::logInfo(std::string("  [ok] ") + name); }
+            else   {          x3::logError(std::string("  [FAIL] ") + name); }
+        };
+
+        // ---- T1: each shipped SpaceShip*.glb loads with >=1 primitive --------
+        const std::string rigDir = x3::game::riggedGlbRoot();
+        std::unique_ptr<x3::asset::IAssetSource> asrc(x3::asset::createAssetSource());
+        asrc->mountDir(rigDir, 0);
+        // Headless loader (dev == nullptr): mints fake non-zero handles, no GPU.
+        std::unique_ptr<x3::asset::IModelLoader> loader(
+            x3::asset::createModelLoader(nullptr, asrc.get()));
+        const char* kShips[] = { "SpaceShip.glb", "SpaceShip2.glb",
+                                 "SpaceShip3.glb", "SpaceShip4.glb" };
+        for (const char* s : kShips) {
+            x3::asset::Model m = loader->load(s);
+            bool good = m.ok && !m.primitives.empty();
+            check(good, (std::string("T1 load ") + s + " (>=1 primitive)").c_str());
+            if (m.ok) loader->unload(m);
+        }
+
+        // ---- T2: lerpMat4 endpoints + midpoint -------------------------------
+        {
+            float a[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};      // identity
+            float b[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,4,0,1};      // +4 in Y
+            float o[16];
+            x3::space::lerpMat4(a, b, 0.0f, o);
+            check(o[13] == 0.0f, "T2a lerp(t=0) == poseA");
+            x3::space::lerpMat4(a, b, 1.0f, o);
+            check(o[13] == 4.0f, "T2b lerp(t=1) == poseB");
+            x3::space::lerpMat4(a, b, 0.5f, o);
+            check(std::fabs(o[13] - 2.0f) < 1e-5f, "T2c lerp(t=0.5) midpoint");
+        }
+
+        // ---- T3: bind + addPart + setPart + update on a Scene ----------------
+        {
+            x3::game::Scene scene;
+            // Ship root at (10, 0, 0) — a non-identity placement so we prove the
+            // part rides the root frame (world = rootWorld * localPose).
+            x3::game::Entity ship{};
+            ship.transform[12] = 10.0f;   // tx = 10
+            uint32_t shipId = scene.add(ship);
+            // Landing-gear child entity (its transform is driven by ShipNodeAnim).
+            x3::game::Entity gear{};
+            uint32_t gearId = scene.add(gear);
+
+            x3::space::ShipNodeAnim anim;
+            anim.bind(scene, shipId);
+            check(anim.shipEntity() == shipId, "T3a bind records ship root entity");
+
+            // Retracted pose: gear tucked at local Y=0. Deployed: gear down Y=-3.
+            float poseUp[16]   = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0, 0,0,1};
+            float poseDown[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,-3,0,1};
+            anim.addPart("landing_gear", poseUp, poseDown, gearId);
+            check(anim.partCount() == 1, "T3b addPart registers the part");
+            check(anim.partValue("landing_gear") == 0.0f, "T3c new part starts retracted (t=0)");
+            check(anim.partValue("no_such_part") < 0.0f, "T3d unknown part queries -1");
+
+            // Retracted: update() places the gear at the ship origin (local Y=0).
+            anim.update(0.016f, scene);
+            const float gy0 = scene.get(gearId).transform[13];
+            const float gx0 = scene.get(gearId).transform[12];
+            check(std::fabs(gy0 - 0.0f) < 1e-4f && std::fabs(gx0 - 10.0f) < 1e-4f,
+                  "T3e retracted: gear at root frame (x=10, y=0)");
+
+            // Deploy: setPart(1.0) -> gear drops to local Y=-3 (world y=-3).
+            anim.setPart("landing_gear", 1.0f);
+            check(anim.partValue("landing_gear") == 1.0f, "T3f setPart(1.0) updates value");
+            anim.update(0.016f, scene);
+            const float gy1 = scene.get(gearId).transform[13];
+            const float gx1 = scene.get(gearId).transform[12];
+            check(std::fabs(gy1 - (-3.0f)) < 1e-4f, "T3g deployed: gear lerps to local Y=-3");
+            check(std::fabs(gx1 - 10.0f) < 1e-4f, "T3h deployed: gear still rides root X=10");
+
+            // Half-deploy lerps to the midpoint.
+            anim.setPart("landing_gear", 0.5f);
+            anim.update(0.016f, scene);
+            check(std::fabs(scene.get(gearId).transform[13] - (-1.5f)) < 1e-4f,
+                  "T3i half-deploy lerps to Y=-1.5");
+
+            // setPart clamps out-of-range to [0,1].
+            anim.setPart("landing_gear", 5.0f);
+            check(anim.partValue("landing_gear") == 1.0f, "T3j setPart clamps >1 to 1");
+            anim.setPart("landing_gear", -2.0f);
+            check(anim.partValue("landing_gear") == 0.0f, "T3k setPart clamps <0 to 0");
+
+            // The gear rides a MOVED ship: shift the root, update, gear follows.
+            scene.get(shipId).transform[14] = 7.0f;   // tz = 7
+            anim.setPart("landing_gear", 1.0f);
+            anim.update(0.016f, scene);
+            check(std::fabs(scene.get(gearId).transform[14] - 7.0f) < 1e-4f,
+                  "T3l moving the root carries the articulated part (z=7)");
+        }
+
+        x3::logInfo("shipanim: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+        std::printf("shipanim: %d/%d passed\n", pass, total);
         std::fflush(stdout);
         return (pass == total) ? 0 : 1;
     }
@@ -3581,6 +3693,210 @@ int main(int argc, char** argv) {
         }
 
         sky.shutdown(*device);
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    // ---- Ship node-anim showcase (--world shipanim) ------------------------
+    // S11 proof: a parked ULTRA-DETAILED ship on a slow turntable with ONE
+    // articulated part (the landing gear) cycling 0->1->0 over time so the
+    // node-transform articulation is visibly moving. The ship hull is a real
+    // SpaceShip*.glb; because the shipped GLBs carry no authored named child
+    // nodes yet, the gear is a SYNTHETIC child box driven by ShipNodeAnim
+    // (the exact addPart/setPart/update path an authored ship would use). The
+    // pixel-variance test on the PNG (std > 15, uniqColors > 100) IS the gate:
+    // the lit ship + moving gear easily clears it. Headless + windowed.
+    if (worldMode == "shipanim") {
+        x3::logInfo("--world shipanim: ship node-transform articulation showcase");
+
+        // Deep-space framing: no SSAO/GI (per the task brief), no fog sky.
+        { x3::rhi::IRenderDevice::SsaoParams sp{}; sp.enabled = false; device->setSsaoParams(sp); }
+        { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; device->setGiParams(gp); }
+        { x3::rhi::IRenderDevice::SkyParams  kp{}; kp.enabled = false; device->setSkyParams(kp); }
+        // Three-point rig so the metal hull + gear read with shape against black.
+        { x3::rhi::PointLight pl[3];
+          pl[0].pos[0]= 6.0f; pl[0].pos[1]= 6.0f; pl[0].pos[2]= 6.0f; pl[0].range=60.0f;
+          pl[0].color[0]=12.0f; pl[0].color[1]=11.0f; pl[0].color[2]=9.5f;
+          pl[1].pos[0]=-6.0f; pl[1].pos[1]= 4.0f; pl[1].pos[2]= 2.0f; pl[1].range=40.0f;
+          pl[1].color[0]=3.0f;  pl[1].color[1]=3.6f;  pl[1].color[2]=4.8f;
+          pl[2].pos[0]= 4.0f; pl[2].pos[1]=-3.0f; pl[2].pos[2]=-5.0f; pl[2].range=50.0f;
+          pl[2].color[0]=2.5f;  pl[2].color[1]=1.8f;  pl[2].color[2]=1.4f;
+          device->setPointLights(pl, 3); }
+
+        // ---- Load a real ship hull GLB (SpaceShip.glb, drone fallback). --------
+        const std::string rigDir = x3::game::riggedGlbRoot();
+        std::unique_ptr<x3::asset::IAssetSource> asrc(x3::asset::createAssetSource());
+        asrc->mountDir(rigDir, 0);
+        std::unique_ptr<x3::asset::IModelLoader> mloader(
+            x3::asset::createModelLoader(device.get(), asrc.get()));
+        const char* kShipCandidates[] = {
+            "SpaceShip.glb", "SpaceShip2.glb", "SpaceShip3.glb", "SpaceShip4.glb",
+            "DroneOscillating.glb"
+        };
+        x3::asset::Model shipModel{}; std::string shipFile;
+        for (const char* c : kShipCandidates) {
+            shipModel = mloader->load(c);
+            if (shipModel.ok) { shipFile = c; break; }
+        }
+        std::vector<x3::asset::ModelDrawable> shipDrawables;
+        if (shipModel.ok) shipDrawables = x3::asset::makeDrawables(shipModel);
+        x3::logInfo(std::string("--world shipanim: hull = ") +
+                    (shipModel.ok ? shipFile : "<procedural-box-fallback>") +
+                    " (note: shipped GLBs have no authored named nodes -> "
+                    "synthetic landing_gear; see tools/ship_node_anim.py)");
+
+        // Hull fallback box (if even the drone load failed).
+        x3::prims::PrimMesh hbm = x3::prims::makeBox(2.2f, 0.7f, 1.3f, 0,0,0, 0.25f);
+        auto hullBoxMesh = device->createMesh(hbm.verts.data(), (uint32_t)hbm.verts.size(),
+                                              hbm.index.data(), (uint32_t)hbm.index.size());
+        auto hbTexD = x3::prims::makeCheckerRGBA(64, 8, 170, 180, 200, 60, 66, 84);
+        auto hullBoxTex = device->createTexture(hbTexD.data(), 64, 64, true);
+
+        // ---- Synthetic landing-gear part: a bright strut box (a child node). ---
+        x3::prims::PrimMesh gbm = x3::prims::makeBox(0.18f, 1.0f, 0.18f, 0,0,0, 0.5f);
+        auto gearMesh = device->createMesh(gbm.verts.data(), (uint32_t)gbm.verts.size(),
+                                           gbm.index.data(), (uint32_t)gbm.index.size());
+        auto gTexD = x3::prims::makeCheckerRGBA(32, 4, 230, 210, 90, 120, 100, 40);
+        auto gearTex = device->createTexture(gTexD.data(), 32, 32, true);
+
+        // ---- Scene with a ship root + a gear child driven by ShipNodeAnim. -----
+        // The Scene holds the AUTHORITATIVE transforms: the host writes the root
+        // (turntable), ShipNodeAnim composes the gear child = root * lerp(pose).
+        const float kShipScale = (shipFile.rfind("SpaceShip", 0) == 0) ? 1.6f : 6.0f;
+        x3::game::Scene scene;
+        x3::game::Entity shipE{}; uint32_t shipId = scene.add(shipE);
+        x3::game::Entity gearE{}; uint32_t gearId = scene.add(gearE);
+        x3::space::ShipNodeAnim anim;
+        anim.bind(scene, shipId);
+        // Gear key-poses in SHIP-LOCAL space: retracted tucked up under the hull
+        // (y=+0.2), deployed dropped below (y=-1.1). Scaled by the ship scale so
+        // the strut sits proportionally to the hull. Two TRS key-poses == the
+        // authoring contract a real "landing_gear" node would carry.
+        const float gx = 0.9f * kShipScale, gzf = 0.7f * kShipScale;
+        const float S = kShipScale;
+        auto gearPose = [&](float ly, float out[16]){
+            const float p[16] = { S,0,0,0, 0,S,0,0, 0,0,S,0, gx, ly, gzf, 1 };
+            for (int k = 0; k < 16; ++k) out[k] = p[k];
+        };
+        float poseUp[16], poseDown[16];
+        gearPose( 0.2f * kShipScale, poseUp);
+        gearPose(-1.1f * kShipScale, poseDown);
+        anim.addPart("landing_gear", poseUp, poseDown, gearId);
+
+        // Build the turntable root transform (yaw about +Y) for time t.
+        auto setRoot = [&](float yaw){
+            const float c = std::cos(yaw), s = std::sin(yaw);
+            float* m = scene.get(shipId).transform;
+            m[0]=c*S; m[1]=0; m[2]=-s*S; m[3]=0;
+            m[4]=0;   m[5]=S; m[6]=0;    m[7]=0;
+            m[8]=s*S; m[9]=0; m[10]=c*S; m[11]=0;
+            m[12]=0;  m[13]=0; m[14]=0;  m[15]=1;
+        };
+
+        // Draw the hull at the root transform, then the gear at its driven child
+        // transform. `bright` lifts the dark scifi metal so it reads in black space.
+        auto drawShip = [&](const x3::rhi::FrameContext& frame){
+            const float* root = scene.get(shipId).transform;
+            if (shipModel.ok) {
+                for (const auto& dr : shipDrawables) {
+                    float fin[16];
+                    x3::asset::mulMat4(root, dr.nodeTransform, fin);
+                    float tint[4] = {
+                        dr.baseColorFactor[0]*4.0f + 0.45f,
+                        dr.baseColorFactor[1]*4.0f + 0.50f,
+                        dr.baseColorFactor[2]*4.0f + 0.55f,
+                        dr.baseColorFactor[3] };
+                    device->drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
+                                     x3::rhi::TextureHandle{ dr.baseColorTexId }, tint, fin);
+                }
+            } else {
+                const float white[4] = { 1.4f, 1.4f, 1.5f, 1.0f };
+                device->drawMesh(frame, hullBoxMesh, hullBoxTex, white, root);
+            }
+            // Gear child (transform was set by anim.update()).
+            const float gearTint[4] = { 1.6f, 1.4f, 0.7f, 1.0f };
+            device->drawMesh(frame, gearMesh, gearTex, gearTint, scene.get(gearId).transform);
+        };
+
+        // Gear cycle 0->1->0 over a 4 s period (a smooth cosine ease).
+        auto gearCycle = [](float t){ return 0.5f - 0.5f * std::cos(t * (6.2831853f / 4.0f)); };
+
+        device->setFrustumCull(false);   // robust visual capture (see --world space)
+
+        // ===== Headless capture =====
+        if (headless) {
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_shipanim.png");
+            // Camera looking at the parked ship from a 3/4 high angle so both the
+            // hull and the deployed gear strut fall in frame.
+            float cam[5] = { 4.5f, 3.0f, 5.0f, 3.9f, -0.45f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const int kFrames = 48;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                float t = (float)i * (1.0f / 30.0f);
+                setRoot(0.35f * t);                       // slow turntable
+                anim.setPart("landing_gear", gearCycle(t));// gear cycling
+                anim.update(1.0f/30.0f, scene);
+                device->setCamera(cam[0],cam[1],cam[2],cam[3],cam[4], 60.0f);
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) drawShip(frame);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world shipanim: wrote " + outPath);
+            else       x3::logError("--world shipanim: capture FAILED");
+            if (shipModel.ok) mloader->unload(shipModel);
+            device->destroyMesh(hullBoxMesh); device->destroyTexture(hullBoxTex);
+            device->destroyMesh(gearMesh);    device->destroyTexture(gearTex);
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Windowed path: orbit the parked ship, watch the gear cycle. =====
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double startTime = glfwGetTime();
+        float orbYaw = 3.9f, orbPitch = -0.45f, orbDist = 7.5f;
+        x3::logInfo("--world shipanim: mouse-orbit the ship; gear cycles automatically; Esc to quit");
+        int lastWs = (int)W, lastHs = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float t = (float)(now - startTime);
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+            orbYaw   += ddx * 0.0035f;
+            orbPitch -= ddy * 0.0035f;
+            if (orbPitch >  1.4f) orbPitch =  1.4f;
+            if (orbPitch < -1.4f) orbPitch = -1.4f;
+
+            setRoot(0.35f * t);
+            anim.setPart("landing_gear", gearCycle(t));
+            anim.update((float)(now - startTime), scene);
+
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWs || chh != lastHs) { lastWs = cw; lastHs = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+            // Orbit camera: place the eye on a sphere around the origin looking in.
+            float ex = orbDist * std::cos(orbPitch) * std::sin(orbYaw);
+            float ey = orbDist * std::sin(-orbPitch);
+            float ez = orbDist * std::cos(orbPitch) * std::cos(orbYaw);
+            device->setCamera(ex, ey, ez, orbYaw + 3.14159265f, orbPitch, 60.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) drawShip(frame);
+            device->endFrame(frame);
+        }
+        if (shipModel.ok) mloader->unload(shipModel);
+        device->destroyMesh(hullBoxMesh); device->destroyTexture(hullBoxTex);
+        device->destroyMesh(gearMesh);    device->destroyTexture(gearTex);
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
