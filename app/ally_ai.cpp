@@ -253,12 +253,17 @@ AllyState AllyManager::tickFollow(AllyInstance& a, float dt,
                                   const x3::phys::Vec3& playerPos,
                                   const HostileQueryFn& q) {
     (void)dt;
-    // Check for a hostile within the broadest engage range first so the squad
-    // engages as soon as ANY weapon could reach.
+    // Acquire at THIS ally's per-weapon engage range (NOT the broad hitscan
+    // range) so the acquire range matches the range tickEngage holds at — a
+    // short-range weapon must not acquire at 30 m only to be dropped at 12 m by
+    // tickEngage (that mismatch was the dominant Engage<->Search oscillation).
+    const float acquire = weaponParams(a.weapon).range;
     x3::phys::Vec3 hPos; float hDist = 0.0f;
-    if (nearestHostile(q, x3::phys::Vec3{a.transform[12], a.transform[13], a.transform[14]},
-                       kAllyEngageRangeHitscan, hPos, hDist)) {
+    if (acquire > 0.0f &&
+        nearestHostile(q, x3::phys::Vec3{a.transform[12], a.transform[13], a.transform[14]},
+                       acquire, hPos, hDist)) {
         for (int i = 0; i < 3; ++i) a.lastKnownHostile[i] = (&hPos.x)[i];
+        a.losGraceTimer = kAllyLosGrace;   // fresh grace window on entering Engage
         return AllyState::Engage;
     }
 
@@ -304,7 +309,8 @@ AllyState AllyManager::tickFollow(AllyInstance& a, float dt,
 AllyState AllyManager::tickEngage(AllyInstance& a, float dt,
                                   const x3::phys::Vec3& playerPos,
                                   const HostileQueryFn& q,
-                                  x3::phys::IPhysicsWorld& physics) {
+                                  x3::phys::IPhysicsWorld& physics,
+                                  Scene& scene) {
     (void)playerPos;
     // Low HP -> TakeCover (entry side of the hysteresis; tickTakeCover handles exit).
     const float hpFrac = (float)a.hp / (float)kAllyHp;
@@ -313,13 +319,23 @@ AllyState AllyManager::tickEngage(AllyInstance& a, float dt,
     // Need ammo to engage. Empty mag -> reload (return; the next tick is Reload).
     if (a.magRemaining <= 0.0f) { a.reloadTimer = kAllyReloadTime; return AllyState::Reload; }
 
-    // Per-weapon engage range gates what counts as "in range".
+    // Per-weapon engage range gates what counts as "in range". We HOLD the
+    // engagement out to range * hysteresis (a wider band than the acquire
+    // range) so a target hovering near the edge doesn't flip acquire/lose every
+    // tick. The grace timer (below) absorbs momentary LOS breaks.
     const WeaponParams wp = weaponParams(a.weapon);
+    const float holdRange = wp.range * kAllyEngageHysteresis;
     const x3::phys::Vec3 self{ a.transform[12], a.transform[13], a.transform[14] };
     x3::phys::Vec3 hPos; float hDist = 0.0f;
-    if (!nearestHostile(q, self, wp.range, hPos, hDist)) {
-        // Lost the hostile — keep last-known and Search.
-        return AllyState::Search;
+    if (!nearestHostile(q, self, holdRange, hPos, hDist)) {
+        // Target out of hold-range. Don't drop instantly — burn the grace
+        // window first; only Search after kAllyLosGrace of continuous loss.
+        a.losGraceTimer -= dt;
+        if (a.losGraceTimer <= 0.0f) return AllyState::Search;
+        // Still in grace: keep facing the last-known spot and hold Engage.
+        a.yawTarget = headingToFace(a.lastKnownHostile[0] - self.x,
+                                    a.lastKnownHostile[2] - self.z);
+        return AllyState::Engage;
     }
     for (int i = 0; i < 3; ++i) a.lastKnownHostile[i] = (&hPos.x)[i];
 
@@ -328,7 +344,11 @@ AllyState AllyManager::tickEngage(AllyInstance& a, float dt,
     // rayCast Layer::Static" idiom; Layer::Static also collides with Enemy/Ally
     // bodies so we offset the ray origin past our own collision skirt.)
     const x3::phys::Vec3 muzzle{ self.x, self.y + 1.2f, self.z };
-    x3::phys::Vec3 d{ hPos.x - muzzle.x, hPos.y - muzzle.y, hPos.z - muzzle.z };
+    // Aim at the enemy's CHEST (origin + kAllyAimChestY), not its feet, so the
+    // ray stays clear of the Static floor it would otherwise graze at the
+    // endpoint (the false-wall-hit that drove the lockstep oscillation).
+    const x3::phys::Vec3 aim{ hPos.x, hPos.y + kAllyAimChestY, hPos.z };
+    x3::phys::Vec3 d{ aim.x - muzzle.x, aim.y - muzzle.y, aim.z - muzzle.z };
     float dl = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
     if (dl < 1e-4f) dl = 1e-4f;
     const x3::phys::Vec3 nd{ d.x/dl, d.y/dl, d.z/dl };
@@ -339,13 +359,48 @@ AllyState AllyManager::tickEngage(AllyInstance& a, float dt,
     x3::phys::RayHit wall = (losLen > 1e-3f)
         ? physics.rayCast(from, nd, losLen, x3::phys::Layer::Static)
         : x3::phys::RayHit{};
-    if (wall.hit) return AllyState::Search;            // wall between us — lost LOS
+    // CRITICAL: a rayCast against Layer::Static ALSO returns Enemy/Ally/Player
+    // combatant bodies (they collide-with-static, so the broadphase reports them
+    // to a Static query). A combatant standing in the line is NOT a wall — in a
+    // dense fight there's almost always another enemy/ally ~2 m into the line, so
+    // treating that as "LOS lost" flips the whole squad Engage<->Search in
+    // lockstep forever (the real root cause of the bench oscillation). Resolve
+    // the hit body: only TRUE level geometry (a non-combatant entity, or an
+    // unresolved/Static body) blocks LOS. A combatant hit means the path is wall-
+    // clear at least up to that body, so we keep engaging (fireOnce's own
+    // courteous-fire ray handles not plinking a friend that's actually in front).
+    bool realWall = false;
+    if (wall.hit && wall.body.valid()) {
+        const uint32_t ent = scene.entityForBody(wall.body);
+        if (ent != kNoLink && ent < scene.size()) {
+            const uint32_t tag = scene.get(ent).tag;
+            // Tag has no Player member (the player isn't a tagged scene entity);
+            // Monster + Ally cover every combatant body a LOS ray can hit here.
+            const bool combatant = (tag == (uint32_t)Tag::Monster ||
+                                    tag == (uint32_t)Tag::Ally);
+            realWall = !combatant;             // only non-combatant geometry blocks
+        } else {
+            realWall = true;                   // unresolved hit -> assume geometry (conservative)
+        }
+    }
+    if (realWall) {
+        // A genuine wall between us — burn the grace window before giving up. A
+        // ray clipping a wall edge for one frame must NOT bounce us to Search;
+        // only a sustained block (kAllyLosGrace) does. Keep facing the hostile.
+        a.losGraceTimer -= dt;
+        if (a.losGraceTimer <= 0.0f) return AllyState::Search;
+        a.yawTarget = headingToFace(hPos.x - self.x, hPos.z - self.z);
+        return AllyState::Engage;
+    }
+
+    // Clear LOS to a live hostile in range: refresh the grace window.
+    a.losGraceTimer = kAllyLosGrace;
 
     // Face the hostile + fire when the cooldown clears.
     a.yawTarget = headingToFace(hPos.x - self.x, hPos.z - self.z);
     a.fireCooldown -= dt;
     if (a.fireCooldown <= 0.0f) {
-        fireOnce(a, physics, hPos);
+        fireOnce(a, physics, hPos, scene);
         // fireOnce sets fireCooldown + decrements magRemaining (or skips on
         // friendly-in-cone). If the mag emptied, the next tick will Reload.
     }
@@ -369,8 +424,9 @@ AllyState AllyManager::tickReposition(AllyInstance& a, float dt,
                                       const HostileQueryFn& q) {
     (void)playerPos;
     const x3::phys::Vec3 self{ a.transform[12], a.transform[13], a.transform[14] };
+    const float holdRange = weaponParams(a.weapon).range * kAllyEngageHysteresis;
     x3::phys::Vec3 hPos; float hDist = 0.0f;
-    if (!nearestHostile(q, self, kAllyEngageRangeHitscan, hPos, hDist)) {
+    if (!nearestHostile(q, self, holdRange, hPos, hDist)) {
         return AllyState::Engage;   // hostile gone; let Engage tick decide next
     }
 
@@ -471,10 +527,14 @@ AllyState AllyManager::tickTakeCover(AllyInstance& a, float dt,
 AllyState AllyManager::tickSearch(AllyInstance& a, float dt, const HostileQueryFn& q) {
     const x3::phys::Vec3 self{ a.transform[12], a.transform[13], a.transform[14] };
 
-    // Hostile reappeared? Engage.
+    // Hostile reappeared within THIS ally's acquire range? Engage. (Same
+    // per-weapon range tickFollow acquires at, so Search<->Engage can't ping-
+    // pong across a range mismatch.)
+    const float acquire = weaponParams(a.weapon).range;
     x3::phys::Vec3 hPos; float hDist = 0.0f;
-    if (nearestHostile(q, self, kAllyEngageRangeHitscan, hPos, hDist)) {
+    if (acquire > 0.0f && nearestHostile(q, self, acquire, hPos, hDist)) {
         for (int i = 0; i < 3; ++i) a.lastKnownHostile[i] = (&hPos.x)[i];
+        a.losGraceTimer = kAllyLosGrace;   // fresh grace window on re-entering Engage
         return AllyState::Engage;
     }
 
@@ -518,14 +578,16 @@ AllyState AllyManager::tickSearch(AllyInstance& a, float dt, const HostileQueryF
 // raycast LANDS on the enemy layer, which is the contract we honor.
 // ---------------------------------------------------------------------------
 void AllyManager::fireOnce(AllyInstance& a, x3::phys::IPhysicsWorld& physics,
-                           const x3::phys::Vec3& targetWorld) {
+                           const x3::phys::Vec3& targetWorld, Scene& scene) {
     const WeaponParams wp = weaponParams(a.weapon);
     if (wp.damage <= 0 || wp.range <= 0.0f) return;     // disarmed: silently no-op
 
     const x3::phys::Vec3 self{ a.transform[12], a.transform[13], a.transform[14] };
     const x3::phys::Vec3 muzzle{ self.x, self.y + 1.2f, self.z };
+    // Aim at chest (origin + kAllyAimChestY) to match the LOS check + clear the
+    // floor; monster.cpp sizes the Enemy hitbox feet..head so a chest hit lands.
     x3::phys::Vec3 d{ targetWorld.x - muzzle.x,
-                      targetWorld.y - muzzle.y,
+                      (targetWorld.y + kAllyAimChestY) - muzzle.y,
                       targetWorld.z - muzzle.z };
     float dl = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
     if (dl < 1e-4f) return;
@@ -545,8 +607,20 @@ void AllyManager::fireOnce(AllyInstance& a, x3::phys::IPhysicsWorld& physics,
     if (losLen > 1e-3f) {
         x3::phys::RayHit friendly =
             physics.rayCast(from, nd, losLen, x3::phys::Layer::Player);
-        if (friendly.hit) {
-            // A friendly body is in the line-of-fire. Hold fire this frame.
+        // Same broadphase caveat as the LOS check: a Layer::Player ray ALSO
+        // returns Enemy/Ally bodies (they collide-with-Player). Only an actual
+        // friendly ALLY in front is a reason to hold fire — an ENEMY in the line
+        // is the target, not a teammate. Resolve the hit and skip ONLY for a
+        // Tag::Ally body; otherwise fall through and fire (without this, every
+        // shot was suppressed because an enemy is always in the cone -> fired=0).
+        bool friendlyAlly = false;
+        if (friendly.hit && friendly.body.valid()) {
+            const uint32_t ent = scene.entityForBody(friendly.body);
+            if (ent != kNoLink && ent < scene.size())
+                friendlyAlly = (scene.get(ent).tag == (uint32_t)Tag::Ally);
+        }
+        if (friendlyAlly) {
+            // A real teammate is in the line-of-fire. Hold fire this frame.
             return;
         }
     }
@@ -601,7 +675,7 @@ void AllyManager::update(float dt,
             case AllyState::Follow:
                 next = tickFollow(a, dt, playerPos, hostileQuery); break;
             case AllyState::Engage:
-                next = tickEngage(a, dt, playerPos, hostileQuery, physics); break;
+                next = tickEngage(a, dt, playerPos, hostileQuery, physics, scene); break;
             case AllyState::Reposition:
                 next = tickReposition(a, dt, playerPos, hostileQuery); break;
             case AllyState::Reload:
@@ -616,6 +690,10 @@ void AllyManager::update(float dt,
             if (next == AllyState::Search)  a.losMemory = kAllyLosLostMemory;
             // On entering TakeCover, reset the dwell counter (re-used field).
             if (next == AllyState::TakeCover) a.losMemory = 0.0f;
+            // On entering Engage from ANY state (incl. Reload/Reposition), give a
+            // fresh LOS grace window so the first contested frame can't insta-flip
+            // back to Search.
+            if (next == AllyState::Engage)  a.losGraceTimer = kAllyLosGrace;
             x3::logInfo(std::string("[ally] ") + allyKindName(a.kind) +
                         " " + allyStateName(a.state) + " -> " + allyStateName(next) +
                         " (hp=" + std::to_string(a.hp) + ")");

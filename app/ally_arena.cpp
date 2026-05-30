@@ -136,7 +136,14 @@ uint32_t AllyManager::makeBenchArena(Scene& scene,
 
     const float radius = ringRadiusFor(enemyCount);
     constexpr float kPi = 3.14159265358979323846f;
-    constexpr float kEnemyY = 0.4f;   // matches level1_game.cpp's ground enemies
+    // Enemies must be COPLANAR with the allies, who were built at arenaCenter.y
+    // (== L1.spawn.y). An earlier cut hardcoded an ABSOLUTE y=0.4 here, which put
+    // the ring on a different plane than the squad whenever the spawn floor
+    // wasn't at y~0.4 — the ally->enemy LOS ray then raked steeply through the
+    // Static floor every frame, permanently failing the LOS check and flipping
+    // the whole squad Engage<->Search in lockstep (the bench oscillation). Anchor
+    // the ring to the squad's own plane so the line-of-fire is horizontal.
+    const float enemyY = arenaCenter.y;
 
     uint32_t spawned = 0;
     for (uint32_t i = 0; i < enemyCount; ++i) {
@@ -145,8 +152,9 @@ uint32_t AllyManager::makeBenchArena(Scene& scene,
         const float wz = arenaCenter.z + std::sin(theta) * radius;
         // BlueSynth is a flyer in the bestiary table — its Tuning::flyer + the
         // MonsterSystem's hover offset handle the Y; we just give it the same
-        // ground Y so the table's flyer logic places it correctly.
-        const x3::phys::Vec3 spawnPos{ wx, kEnemyY, wz };
+        // ground Y (the squad's plane) so the table's flyer logic places it
+        // correctly relative to the floor the allies stand on.
+        const x3::phys::Vec3 spawnPos{ wx, enemyY, wz };
         MonsterSystem::Tuning t = tuningFor(pickBestiarySlot(i));
         (void)mm.spawn(scene, device, physics, modelDir, spawnPos, t);
         ++spawned;

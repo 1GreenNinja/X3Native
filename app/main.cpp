@@ -4814,9 +4814,19 @@ int main(int argc, char** argv) {
         // <ally.h> include) so the public ally.h contract stays frozen for the
         // Phase A/B siblings building in parallel.
 
-        // Camera + arena both anchored at the level spawn so the 3 allies built
-        // by AllyManager::build() (placed AT spawn) are inside the enemy ring.
-        const x3::phys::Vec3 arenaCenter = L1.spawn;
+        // Camera + arena both anchored at the level spawn, but LIFTED into open
+        // air ABOVE the Spire. The bench measures COMBAT DENSITY (the per-frame
+        // CPU/GPU cost of N enemies + 3 allies all running their full AI + ray
+        // queries + skinned draws) — NOT navigation through rooms. Spawning the
+        // ring at the in-room spawn put enemies in/behind the Spire's Static
+        // walls, so every ally->enemy LOS ray hit a wall: the squad never got a
+        // clear shot (fired=0) and flipped Engage<->Search in lockstep forever.
+        // Lifting the whole cohort into clear air above the tower (F7 tops out at
+        // ~91 m) gives unobstructed sightlines in every direction, so the AI
+        // exercises the EXPENSIVE paths (Engage + fire raycasts) instead of
+        // thrashing Search — a more honest, and more stable, density number.
+        x3::phys::Vec3 arenaCenter = L1.spawn;
+        arenaCenter.y += 250.0f;   // open sky above the Spire; nothing Static up here to block LOS.
         // Build the 3-ally squad next to spawn. Model + weapon dirs are the same
         // rigged_glb root the live game uses; AllyManager falls back to tinted
         // procedural boxes if the GLBs are missing, so the bench still measures

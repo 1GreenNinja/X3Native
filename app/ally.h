@@ -165,6 +165,33 @@ constexpr float kAllyLosLostMemory     = 2.0f;  // seconds after losing LOS befo
 constexpr float kAllyMoveSpeed         = 4.0f;  // chase / follow speed (m/s) — a touch under the player (5 m/s).
 constexpr float kAllyTurnRate          = 8.0f;  // rad/s heading slew (matches monster.h::kAiTurnRate).
 
+// ---- Engage hysteresis (anti-oscillation) ---------------------------------
+// Two separate fixes for the Engage<->Search flicker seen in --bench-combat:
+//   1. RANGE BAND: an ally ACQUIRES a target at its per-weapon engage range R,
+//      but keeps HOLDING the engagement until the target passes R * this factor.
+//      Without the band, a target hovering exactly at R flips acquire/lose every
+//      decision tick. The acquire range must ALSO be per-weapon (Follow/Search
+//      re-acquire at the SAME weapon range Engage holds at) or a short-range
+//      weapon (shotgun=12 m) re-acquires at the long hitscan range (30 m) and
+//      oscillates across the 12..30 m dead band — that was the dominant bug.
+//   2. LOS GRACE: a momentary LOS break (a wall edge clipping the ray, a target
+//      stepping behind a pillar for one frame) does NOT immediately drop to
+//      Search. The ally holds Engage for kAllyLosGrace seconds of CONTINUOUS
+//      lost LOS first; any clear-LOS frame resets the grace. Mirrors the way
+//      monster.h's Search only triggers after a sustained loss, not instantly.
+constexpr float kAllyEngageHysteresis  = 1.20f; // hold range = acquire range * this (20% band).
+constexpr float kAllyLosGrace          = 0.5f;  // seconds of continuous lost-LOS before dropping to Search.
+
+// LOS + fire rays aim at the enemy's CHEST, not its origin. The hostile query
+// returns the enemy's m.pos() — its FEET/origin, which sit ON the Static floor.
+// A LOS/fire ray aimed straight at the feet grazes the floor at the endpoint and
+// registers a spurious wall hit EVERY frame -> permanent (false) LOS loss ->
+// the whole squad flips Engage<->Search in lockstep (the residual bench
+// oscillation after the coplanar fix). Aiming this far ABOVE the enemy origin
+// keeps the ray clear of the floor and lands it on the enemy's body box (which
+// monster.cpp sizes feet..head, so a chest-height hit connects).
+constexpr float kAllyAimChestY         = 0.95f; // meters above the enemy origin to aim LOS + fire.
+
 // ---------------------------------------------------------------------------
 // One loaded ally model (GLB drawables + the optional skinned anim handle).
 // Mirrors SpireArtAsset / EnvAsset / the monster.h equivalent — kept loaded
@@ -204,6 +231,7 @@ struct AllyInstance {
     float      reloadTimer   = 0.0f;
     float      repositionTimer = kAllyRepositionPeriod;
     float      losMemory     = 0.0f;  // counts down after losing LOS in Search.
+    float      losGraceTimer = kAllyLosGrace; // counts down during a momentary LOS break in Engage; resets on clear LOS. Drops to Search only at 0.
 
     // Last-known hostile, for Search.
     float      lastKnownHostile[3] = {0,0,0};
@@ -323,7 +351,7 @@ private:
 
     // The per-state ticks. Each returns the NEXT state (may equal current).
     AllyState tickFollow    (AllyInstance& a, float dt, const x3::phys::Vec3& playerPos, const HostileQueryFn& q);
-    AllyState tickEngage    (AllyInstance& a, float dt, const x3::phys::Vec3& playerPos, const HostileQueryFn& q, x3::phys::IPhysicsWorld& physics);
+    AllyState tickEngage    (AllyInstance& a, float dt, const x3::phys::Vec3& playerPos, const HostileQueryFn& q, x3::phys::IPhysicsWorld& physics, Scene& scene);
     AllyState tickReposition(AllyInstance& a, float dt, const x3::phys::Vec3& playerPos, const HostileQueryFn& q);
     AllyState tickReload    (AllyInstance& a, float dt);
     AllyState tickTakeCover (AllyInstance& a, float dt, const x3::phys::Vec3& playerPos, const HostileQueryFn& q);
@@ -335,7 +363,7 @@ private:
     // silently if the line-of-fire intersects an ally / the player (the
     // "no surprise teamkill" rule, even with g_friendlyfire=1).
     void fireOnce(AllyInstance& a, x3::phys::IPhysicsWorld& physics,
-                  const x3::phys::Vec3& targetWorld);
+                  const x3::phys::Vec3& targetWorld, Scene& scene);
 
     AllyAsset                       m_kindAssets[(uint32_t)AllyKind::Count];
     AllyAsset                       m_weaponAssets[(uint32_t)AllyWeapon::Count];
