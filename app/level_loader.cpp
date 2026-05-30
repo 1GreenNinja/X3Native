@@ -1170,6 +1170,61 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         }
         x3::logInfo("buildCanonFloor: placed " + std::to_string(built) +
                     " SM_Door_A doors at cut doorways");
+
+        // ---- SECURED ROOMS (gameplay lock; design: docs/design/HIDDEN_AREAS_AND_BIOMESH.md).
+        // The center command rooms reach the hall via OPEN gap-bridge corridors (no slab), so
+        // there is nothing to lock. When opts.lockSecuredRooms is set (the live game, NOT the
+        // geometry self-test), drop a LOCKABLE SM_Door_A slab at each secured room's bridge
+        // mouth + lock it: Security = keycard OR code 1701; Medical = code 2480; Armory =
+        // keycard AND code 8896. (Codes are placeholders until real in-world clues exist.)
+        if (opts.lockSecuredRooms) {
+            struct SecLock { const char* name; int keycard; int code; bool both; };
+            const SecLock secLocks[] = {
+                { "Security Station", kKeycardSecurity, 1701, false },
+                { "Medical Bay",      0,                2480, false },
+                { "Armory",           kKeycardSecurity, 8896, true  },
+            };
+            uint32_t nSec = 0;
+            for (const SecLock& lk : secLocks) {
+                const uint32_t target = floor.roomByName(lk.name);
+                if (target == kNoRoom) continue;
+                const CanonRoom& r = floor.rooms[target];
+                for (uint32_t dwi = 0; dwi < (uint32_t)floor.doorways.size(); ++dwi) {
+                    CanonDoorway& dw = floor.doorways[dwi];
+                    if (dw.kind != DoorwayKind::GapBridge) continue;       // only the open mouths
+                    if (dw.doorIndex != kNoLink) continue;                 // already doored
+                    if (dw.a != target && dw.b != target) continue;        // must touch this room
+                    const uint32_t other = (dw.a == target) ? dw.b : dw.a;
+                    const CanonRoom& o = floor.rooms[other];
+                    DoorSpec spec;
+                    spec.halfWidth   = kDoorHalf;        // == the cut mouth half-width (1.6 m opening)
+                    spec.height      = kLintel;          // clears under the mouth lintel
+                    spec.withButton  = false;
+                    spec.locked      = true;
+                    spec.keycard     = lk.keycard;
+                    spec.code        = lk.code;
+                    spec.requireBoth = lk.both;
+                    // Place the slab on THIS room's wall facing `other` (mirror addBridgeMouthToRoom).
+                    if (dw.axis == 0) {                  // corridor along X -> mouth on an X-plane wall, z = dw.cz
+                        const float wallX = (o.cx > r.cx) ? r.x1() : r.x0();
+                        spec.axis = DoorAxis::AlongZ;    // slab thin in X
+                        spec.doorwayCenter = x3::phys::Vec3{ wallX, dw.cy, dw.cz };
+                    } else {                             // corridor along Z -> mouth on a Z-plane wall, x = dw.cx
+                        const float wallZ = (o.cz > r.cz) ? r.z1() : r.z0();
+                        spec.axis = DoorAxis::AlongX;    // slab thin in Z
+                        spec.doorwayCenter = x3::phys::Vec3{ dw.cx, dw.cy, wallZ };
+                    }
+                    const uint32_t di = buildLevelDoor(scene, *opts.doors, device, physics, spec);
+                    dw.doorIndex = di;                   // gate the PVS flood at this now-doored mouth
+                    const uint32_t ent = opts.doors->at(di).entity;
+                    if (ent != kNoLink && ent < scene.size())
+                        scene.get(ent).roomId = kNoRoom; // always-visible (seen from the approach side)
+                    ++nSec;
+                }
+            }
+            x3::logInfo("buildCanonFloor: locked " + std::to_string(nSec) +
+                        " secured-room doors (Security=card|1701, Medical=2480, Armory=card+8896)");
+        }
     }
 
     x3::logInfo("buildCanonFloor: floor " + std::to_string(floor.floorNum) + " built " +

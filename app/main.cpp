@@ -4110,6 +4110,12 @@ int main(int argc, char** argv) {
     std::vector<uint32_t> canonVisRooms;       // per-frame PVS scratch (canonWorld only)
     std::vector<x3::game::CanonLight> canonLights; // per-room ceiling lights (canonWorld only)
     x3::game::DoorSystem  canonDoors;          // SM_Door_A GLB doors at the cut doorways
+    // ---- Keycard / keypad door gating (canonWorld). keycardMask = bitmask of held
+    // keycard ids; the Security keycard is a glowing pickup in the Research Lab. ----
+    uint32_t keycardMask       = 0;
+    uint32_t canonKeycardEnt   = x3::game::kNoLink;
+    float    canonKeycardX     = 0.0f, canonKeycardZ = 0.0f;
+    bool     canonKeycardTaken = false;
     x3::game::CanonPlay   canonPlay;           // canon Floor-1 gameplay (canonWorld only): sidearm + animated enemies + Martinez + 3 girls
     bool                  canonMedicalActive = false;  // latch: the medical-bay rescue clock was started (player reached the wards)
     x3::game::Scene scene;
@@ -4173,7 +4179,7 @@ int main(int argc, char** argv) {
         // ---- DATA-DRIVEN CANONICAL FLOOR 1 + per-room PVS cull. ----
         canonFloor = x3::game::loadCanonFloor(x3::game::canonProjectJsonPath(), 1);
         if (canonFloor.valid()) {
-            x3::game::CanonBuildOpts copts; copts.doors = &canonDoors;
+            x3::game::CanonBuildOpts copts; copts.doors = &canonDoors; copts.lockSecuredRooms = true;
             x3::game::buildCanonFloor(canonFloor, scene, *device, *physics, copts);
             // Per-room ceiling lights: the data-driven floor skips the env_art Light_A
             // fixtures the legacy level registers, so without these the rooms only get
@@ -4184,6 +4190,33 @@ int main(int argc, char** argv) {
                         std::to_string(canonFloor.rooms.size()) + " rooms, " +
                         std::to_string(scene.size()) + " entities, " +
                         std::to_string(canonLights.size()) + " room lights); per-room PVS cull ACTIVE");
+            // (Secured-room doors — Security / Medical / Armory — are built + locked INSIDE
+            // buildCanonFloor via copts.lockSecuredRooms above: those rooms reach the hall
+            // through open gap-bridges, so a slab has to be placed there before it can be locked.)
+            // ---- SECURITY KEYCARD pickup: a glowing cyan card in the Research Lab. Grabbed by
+            // walking up to it (proximity, in the per-frame tick). Opens the Security Station
+            // (card OR code) + is half of the Armory's card+code lock. ----
+            {
+                const uint32_t rr = canonFloor.roomByName("Research Lab");
+                if (rr != x3::game::kNoRoom) {
+                    const x3::game::CanonRoom& room = canonFloor.rooms[rr];
+                    canonKeycardX = room.cx; canonKeycardZ = room.cz;
+                    const float ky = room.y0() + 1.0f;
+                    x3::prims::PrimMesh card = x3::prims::makeBox(0.22f, 0.14f, 0.02f, 0.0f, 0.0f, 0.0f, 1.0f);
+                    x3::game::Entity e;
+                    for (int i = 0; i < 16; ++i) e.transform[i] = 0.0f;
+                    e.transform[0] = e.transform[5] = e.transform[10] = e.transform[15] = 1.0f;
+                    e.transform[12] = canonKeycardX; e.transform[13] = ky; e.transform[14] = canonKeycardZ;
+                    e.mesh = device->createMesh(card.verts.data(), (uint32_t)card.verts.size(),
+                                                card.index.data(), (uint32_t)card.index.size());
+                    e.baseColor[0] = 0.15f; e.baseColor[1] = 0.88f; e.baseColor[2] = 1.0f; e.baseColor[3] = 1.0f;
+                    e.tag     = (uint32_t)x3::game::Tag::Prop;
+                    e.visible = true;
+                    e.roomId  = rr;
+                    canonKeycardEnt = scene.add(e);
+                    x3::logInfo("--world canonlevel: Security keycard placed in the Research Lab");
+                }
+            }
             // ---- GAMEPLAY onto the canon rooms (makes --world canonlevel PLAYABLE): the
             // sidearm pickup in Jake's Cell, the animated enemy squad down the Main Hall +
             // side cells, Martinez in the Boss Arena, and the 3 rescue girls + their
@@ -5815,11 +5848,42 @@ int main(int argc, char** argv) {
                     x3::logInfo("talk: [" + ln.speaker + "] " + ln.text);
                 }
             } else if (canonWorld && canonFloor.valid() &&
-                       x3::game::tryUse(eye, dir, 3.0f, scene, canonDoors, *physics)) {
-                // Canonical Floor 1: E toggles whatever SM_Door_A slab the player is
-                // aiming at (open if closed, close if open). This is the ONLY way canon
-                // doors move — there is no proximity auto-open.
-                x3::logInfo("use: canon door toggled");
+                       [&]() -> bool {
+                           // Canonical Floor 1 doors: aim + E. Unlocked -> toggle. Locked ->
+                           // keycard / keypad gating (Security = card OR code; Medical = code;
+                           // Armory = card AND code). Returns true once handled (consumes the E).
+                           x3::game::Door* d = x3::game::pickAimedDoor(eye, dir, 3.0f, scene, canonDoors, *physics);
+                           if (!d) return false;                       // not aiming at a door -> fall through
+                           if (!d->locked) { canonDoors.toggle(*d); x3::logInfo("use: canon door toggled"); return true; }
+                           auto cardName = [](int id){ return id == x3::game::kKeycardSecurity ? "Security" : "access"; };
+                           const bool needCard = d->keycard != 0;
+                           const bool hasCard  = needCard && (keycardMask & (1u << (uint32_t)d->keycard));
+                           const bool needCode = d->code != 0;
+                           if (d->requireBoth) {                       // need card AND code (Armory)
+                               if (needCard && !hasCard) {
+                                   npcBarkText = std::string("LOCKED — need the ") + cardName(d->keycard) + " keycard";
+                                   npcBarkTimer = 3.0f; return true;
+                               }
+                               codeMode = true; keypad.clear();        // card ok -> enter the code
+                               npcBarkText = std::string("Keycard OK — enter code ") + std::to_string(d->code);
+                               npcBarkTimer = 4.0f; return true;
+                           }
+                           if (needCard && hasCard) {                  // either-credential: card opens it outright
+                               canonDoors.unlock(*d); canonDoors.toggle(*d);
+                               npcBarkText = std::string(cardName(d->keycard)) + " keycard accepted";
+                               npcBarkTimer = 2.5f; x3::logInfo("use: canon door unlocked (keycard)"); return true;
+                           }
+                           if (needCode) {                             // try the code (Security w/o card, or Medical)
+                               codeMode = true; keypad.clear();
+                               npcBarkText = needCard
+                                   ? (std::string("LOCKED — ") + cardName(d->keycard) + " keycard, or enter code " + std::to_string(d->code))
+                                   : (std::string("LOCKED — enter code ") + std::to_string(d->code));
+                               npcBarkTimer = 4.0f; return true;
+                           }
+                           npcBarkText = std::string("LOCKED — need the ") + cardName(d->keycard) + " keycard";
+                           npcBarkTimer = 3.0f; return true;
+                       }()) {
+                // canon door interaction handled inside the lambda (toggle / unlock / keypad / message)
             } else if (game.onUse(eye, dir, scene, *physics)) {  // plays door SFX internally
                 x3::logInfo("use: button pressed — door opening");
             } else if (midFloors.onRescue(eye)) {  // F5 synth-bay captive rescue
@@ -5921,7 +5985,8 @@ int main(int argc, char** argv) {
                 }
                 if (elevDisco) {
                     codeMode = false; keypad.clear();
-                } else if (game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
+                } else if (canonDoors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
+                    game.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     midFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     topFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     subLevels.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value())) {
@@ -6225,6 +6290,17 @@ int main(int argc, char** argv) {
             // open-the-door beat entirely. Removed so E is the sole driver.)
             if (canonWorld && canonFloor.valid()) {
                 canonDoors.update(dt, scene, *physics);
+                // SECURITY KEYCARD: grab it by walking up to it (proximity, XZ).
+                if (!canonKeycardTaken && canonKeycardEnt != x3::game::kNoLink) {
+                    const float kdx = camPos.x - canonKeycardX, kdz = camPos.z - canonKeycardZ;
+                    if (kdx * kdx + kdz * kdz < 1.6f * 1.6f) {
+                        canonKeycardTaken = true;
+                        keycardMask |= (1u << (uint32_t)x3::game::kKeycardSecurity);
+                        if (canonKeycardEnt < scene.size()) scene.get(canonKeycardEnt).visible = false;
+                        npcBarkText = "Acquired the Security keycard"; npcBarkTimer = 3.0f;
+                        x3::logInfo("--world canonlevel: Security keycard acquired");
+                    }
+                }
             }
             // ---- CANONLEVEL GAMEPLAY: tick the canon enemies/boss/girls (they chase + attack
             // the player + animate). The medical-bay rescue clock arms once the player reaches

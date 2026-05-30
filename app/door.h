@@ -52,6 +52,10 @@ enum class DoorState : uint32_t {
 // (opens only on Martinez's death) — game state, not a wall button. unlock()
 // alone does not open the door; the host calls startOpening() after unlocking
 // (or uses unlockAndOpen()).
+// Keycard ids for locked-door gating (0 = no keycard required). The security /
+// bio-mesh progression assigns these; a Door/DoorSpec `keycard` field references one.
+constexpr int kKeycardSecurity = 1;
+
 struct Door {
     uint32_t          entity   = kNoLink;
     x3::phys::BodyId  body;
@@ -63,6 +67,9 @@ struct Door {
     bool              locked   = false;  // §6.4: refuse to open until unlock()
     int               code     = 0;      // keypad code (0 = no keypad); a LOCKED door with
                                          // code != 0 opens when the matching code is entered
+    int               keycard  = 0;      // 0 = none; >0 = requires this keycard id to open
+    bool              requireBoth = false; // locked + keycard + code: true = need BOTH;
+                                           // false = EITHER the card OR the code opens it
     // ---- Visual GLB placement (the real SM_Door_A slab is drawn over the
     // collision-only box). These let drawMeshes() orient + size the shared GLB to
     // fit this door's opening and follow the slide animation. ----
@@ -100,6 +107,15 @@ public:
     // shared `t` cursor makes the reverse seamless). Returns true if a transition
     // happened (false only for a locked, fully-Closed door).
     bool toggle(Door& d) const;
+
+    // Submit a keypad `code`: unlock + open the nearest LOCKED, coded door within
+    // `range` of `eye` whose code matches. Returns true if a door began opening.
+    // (Mirrors Level1Game::tryDoorCode for the canonical-floor keypad path.)
+    bool tryDoorCode(const x3::phys::Vec3& eye, int code, float range = 3.5f);
+
+    // Nearest LOCKED door within `range` of `eye` (drives the HUD "locked" prompt),
+    // or nullptr if none. Pure query.
+    Door* nearestLockedDoor(const x3::phys::Vec3& eye, float range = 3.5f);
 
     // Clear a door's locked flag (does NOT open it). After unlock() the door can
     // be opened by startOpening()/its button. Idempotent.
@@ -181,6 +197,8 @@ struct DoorSpec {
     float          duration  = 1.0f;       // seconds Closed -> Open
     bool           locked    = false;      // §6.4 lockable
     int            code      = 0;          // keypad code (0 = none); locked + code => keypad door
+    int            keycard   = 0;          // 0 = none; >0 = requires this keycard id
+    bool           requireBoth = false;    // keycard+code door: true = need BOTH, false = EITHER
     bool           withButton = true;      // place a linked wall button beside it
     float          tint[4]   = { 0.85f, 0.30f, 0.18f, 1.0f };  // door slab color
     // Floor HATCH ("the door on the floor"): a horizontal slab lying flat in the

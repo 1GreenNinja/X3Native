@@ -242,6 +242,11 @@ struct CanonBuildOpts {
     // (buildLevelDoor's per-piece fallback) so the level never breaks. The host ticks +
     // draws this DoorSystem (doors.update / doors.drawMeshes) each frame.
     DoorSystem* doors = nullptr;
+    // Gameplay: when true, buildCanonFloor drops LOCKABLE slabs at the secured center
+    // rooms' (Security / Medical / Armory) otherwise-open bridge-mouth entrances and
+    // locks them. Left false by the geometry self-test so its open-passage assertions
+    // (e.g. C11 "walk Main Hall -> Security through the gap-bridge") still hold.
+    bool lockSecuredRooms = false;
 };
 // NOTE: `floor` is taken by NON-const reference because the builder records each cut
 // doorway's DoorSystem slab index back into floor.doorways[].doorIndex (so the portal
