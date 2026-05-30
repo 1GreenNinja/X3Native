@@ -110,7 +110,13 @@ namespace ObjLayers {
     static constexpr JPH::ObjectLayer Enemy      = 3;
     static constexpr JPH::ObjectLayer Projectile = 4;
     static constexpr JPH::ObjectLayer Trigger    = 5;
-    static constexpr JPH::ObjectLayer Count      = 6;
+    // Coop-NPC ally layer (APPENDED — existing layer indices unchanged). Allies
+    // behave like Player for body-vs-body collisions (block on Static/Dynamic,
+    // overlap Triggers) AND like Enemy for hit resolution (an Enemy-mask probe
+    // hits them, and they are hit by an Ally-mask probe too) so monsters can
+    // target+damage allies through the same fire/raycast path the player uses.
+    static constexpr JPH::ObjectLayer Ally       = 6;
+    static constexpr JPH::ObjectLayer Count      = 7;
 }
 
 namespace BPLayers {
@@ -127,6 +133,7 @@ JPH::ObjectLayer toObjLayer(Layer l) {
         case Layer::Enemy:      return ObjLayers::Enemy;
         case Layer::Projectile: return ObjLayers::Projectile;
         case Layer::Trigger:    return ObjLayers::Trigger;
+        case Layer::Ally:       return ObjLayers::Ally;
     }
     return ObjLayers::Static;
 }
@@ -138,15 +145,27 @@ bool objectLayersCollide(JPH::ObjectLayer a, JPH::ObjectLayer b) {
         return (a == x && b == y) || (a == y && b == x);
     };
     using namespace ObjLayers;
-    // Trigger: overlap with Player/Enemy/Dynamic only.
+    // Trigger: overlap with Player/Enemy/Dynamic/Ally only.
     if (a == Trigger || b == Trigger) {
-        return pair(Trigger, Player) || pair(Trigger, Enemy) || pair(Trigger, Dynamic);
+        return pair(Trigger, Player) || pair(Trigger, Enemy)
+            || pair(Trigger, Dynamic) || pair(Trigger, Ally);
     }
     // Static: never collides with Static.
     if (a == Static && b == Static) return false;
-    // Projectile: Static, Enemy only (owner filtered separately, never Player/Dynamic/Projectile).
+    // Projectile: Static, Enemy, Ally (so a friendly-fire projectile from an enemy
+    // CAN strike an ally body). Owner filtered separately; never Player/Dynamic/Projectile.
     if (a == Projectile || b == Projectile) {
-        return pair(Projectile, Static) || pair(Projectile, Enemy);
+        return pair(Projectile, Static) || pair(Projectile, Enemy)
+            || pair(Projectile, Ally);
+    }
+    // Ally: collides with Static/Dynamic (movement) AND with Enemy (so hostiles can
+    // body-block them) AND with Player (so the squad doesn't telefrag the player).
+    // Allies do NOT collide with other Allies (cheap squad-cohesion: they overlap so
+    // the AI's lateral steps don't stick on each other; positions are kinematic).
+    if (a == Ally || b == Ally) {
+        if (pair(Ally, Ally)) return false;
+        return pair(Ally, Static) || pair(Ally, Dynamic)
+            || pair(Ally, Player) || pair(Ally, Enemy);
     }
     // Everything else: Static/Dynamic/Player/Enemy all collide with each other.
     return true;
@@ -171,6 +190,7 @@ public:
         m_map[ObjLayers::Enemy]      = BPLayers::Moving;
         m_map[ObjLayers::Projectile] = BPLayers::Moving;
         m_map[ObjLayers::Trigger]    = BPLayers::NonMoving;
+        m_map[ObjLayers::Ally]       = BPLayers::Moving;  // kinematic capsule
     }
     JPH::uint GetNumBroadPhaseLayers() const override { return BPLayers::Count; }
     JPH::BroadPhaseLayer GetBroadPhaseLayer(JPH::ObjectLayer l) const override {
@@ -198,7 +218,8 @@ public:
             case Dynamic:    return true;
             case Player:     return true;
             case Enemy:      return true;
-            case Projectile: return true;                       // Static(NonMoving)+Enemy(Moving)
+            case Projectile: return true;                       // Static(NonMoving)+Enemy(Moving)+Ally(Moving)
+            case Ally:       return true;                       // Static(NonMoving)+Dynamic/Player/Enemy(Moving)
             default:         return true;
         }
     }

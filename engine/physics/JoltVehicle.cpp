@@ -46,9 +46,9 @@ namespace x3::phys {
 namespace {
 
 // The Layer enum -> Jolt ObjectLayer mapping MUST match JoltPhysicsWorld.cpp's
-// ObjLayers (Static=0, Dynamic=1, Player=2, Enemy=3, Projectile=4, Trigger=5).
-// We can't include that file's anonymous namespace, so we re-state the mapping
-// here. (It is part of the engine's own physics contract, not Jolt's.)
+// ObjLayers (Static=0, Dynamic=1, Player=2, Enemy=3, Projectile=4, Trigger=5,
+// Ally=6). We can't include that file's anonymous namespace, so we re-state the
+// mapping here. (It is part of the engine's own physics contract, not Jolt's.)
 JPH::ObjectLayer objLayerOf(Layer l) {
     switch (l) {
         case Layer::Static:     return 0;
@@ -57,6 +57,7 @@ JPH::ObjectLayer objLayerOf(Layer l) {
         case Layer::Enemy:      return 3;
         case Layer::Projectile: return 4;
         case Layer::Trigger:    return 5;
+        case Layer::Ally:       return 6;
     }
     return 0;
 }

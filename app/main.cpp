@@ -37,6 +37,18 @@
 #include "swim_controller.h"                // Act 4 underwater swim/dive controller (--test-swim + --world swim)
 #include "monster.h"
 #include "npc.h"                            // non-combatant NPC controller (--test-npc / --world npc)
+#include "ally.h"                            // coop-NPC allies + --bench-combat arena
+// Forward decls for the --bench-combat arena's free helpers (lives in
+// app/ally_arena.cpp). NOT promoted into ally.h to keep that public contract
+// frozen for the Phase A/B siblings; the names are only ever used from main.cpp's
+// bench-combat driver below.
+namespace x3::game {
+    class MonsterManager;
+    MonsterManager& allyArenaMonsters();
+    uint32_t        allyArenaEnemyCount();
+    uint32_t        allyArenaEnemiesAlive();
+    void            allyArenaShutdown();
+}
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
 #include "mech_pilot.h"                      // rideable heavy-mech pilot controller (--test-mech + --world mech)
@@ -1480,6 +1492,15 @@ int main(int argc, char** argv) {
     // ms. Headless of gameplay (no input); used to produce the perf baseline.
     bool     bench = false;
     uint32_t benchFrames = 600;
+    // Combat-density bench (--bench-combat [N]): build the 3-ally squad + an N-enemy
+    // ring around the spawn (see app/ally_arena.cpp), tick the FULL combat AI for
+    // both sides while running 600 frames vsync OFF, and report
+    //   BENCH-COMBAT allies=3 enemies=N alive=A FPS=X CPU=Yms GPU=Zms
+    // — the honest combat-density number, with both sides actually fighting. N
+    // defaults to 16 if omitted. Distinct from --bench (which only stresses the
+    // renderer with idle cubes) — the WHOLE REASON the coop-NPC lane shipped.
+    bool     benchCombat = false;
+    uint32_t benchCombatEnemies = 16;
     // Screenshot mode (--screenshot [path.png]): build EFLZ Level 1, pose the
     // camera at a representative corridor vantage, render a few frames so shadows
     // + art settle, read the color image back to CPU, write a PNG, and exit 0.
@@ -1704,6 +1725,16 @@ int main(int argc, char** argv) {
             if (i + 1 < argc) { stressCount = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
             // Optional second positional arg = frame count.
             if (i + 1 < argc && argv[i + 1][0] != '-')
+                benchFrames = (uint32_t)std::strtoul(argv[++i], nullptr, 10);
+        }
+        else if (a == "--bench-combat") {
+            benchCombat = true;
+            // Optional N (enemy ring count). Anything that doesn't look like a
+            // numeric token is treated as "skipped" -> keep the default.
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
+                benchCombatEnemies = (uint32_t)std::strtoul(argv[++i], nullptr, 10);
+            // Optional second positional arg = frame count (mirrors --bench).
+            if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
                 benchFrames = (uint32_t)std::strtoul(argv[++i], nullptr, 10);
         }
         else if (a == "--screenshot") {
@@ -2492,8 +2523,9 @@ int main(int argc, char** argv) {
     desc.height = H;
     desc.headless = headless;
     // Benchmark mode runs with vsync OFF so it measures the true frame ceiling,
-    // not the display refresh cap.
-    desc.vsync  = !bench;
+    // not the display refresh cap. --bench-combat is the same family (combat-density
+    // measurement) so it also disables vsync.
+    desc.vsync  = !(bench || benchCombat);
 #ifdef _DEBUG
     desc.validation = true;
 #else
@@ -7161,6 +7193,144 @@ int main(int argc, char** argv) {
                 combatFx.liveParticleCount(), gOff, gOn, gOn - gOff);
             x3::logInfo(pb);
         }
+
+        audio->shutdown();
+        combatFx.shutdown(*device);
+        physics->shutdown();
+        device->shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    // ---- Combat-density benchmark mode (--bench-combat [N] [frames]) -------
+    // The HONEST combat-density FPS number: build the 3-ally squad next to the
+    // level spawn, drop an N-enemy ring around them via AllyManager::makeBenchArena
+    // (see app/ally_arena.cpp), pose the camera so the whole arena fits in view,
+    // then run `benchFrames` frames vsync OFF with BOTH sides ticking their full
+    // combat AI + physics. The per-frame cost scales with the live combatant
+    // count, not the (idle) cube field --bench measures. Reports:
+    //   BENCH-COMBAT allies=3 enemies=N alive=A FPS=X CPU=Yms GPU=Zms
+    if (benchCombat) {
+        // The arena's free helpers (allyArenaMonsters / allyArenaEnemyCount /
+        // allyArenaEnemiesAlive / allyArenaShutdown) live in app/ally_arena.cpp
+        // and are forward-declared near the top of this file (next to the
+        // <ally.h> include) so the public ally.h contract stays frozen for the
+        // Phase A/B siblings building in parallel.
+
+        // Camera + arena both anchored at the level spawn so the 3 allies built
+        // by AllyManager::build() (placed AT spawn) are inside the enemy ring.
+        const x3::phys::Vec3 arenaCenter = L1.spawn;
+        // Build the 3-ally squad next to spawn. Model + weapon dirs are the same
+        // rigged_glb root the live game uses; AllyManager falls back to tinted
+        // procedural boxes if the GLBs are missing, so the bench still measures
+        // an honest combat-density frame even on a fresh clone with no LFS.
+        x3::game::AllyManager allies;
+        const std::string modelDir  = x3::game::riggedGlbRoot();
+        const std::string weaponDir = x3::game::riggedGlbRoot();
+        allies.build(scene, *device, *physics, modelDir, weaponDir, arenaCenter);
+
+        // Spawn the enemy ring. makeBenchArena returns the count actually placed
+        // (0 if build() somehow left no allies; we treat that as failure).
+        const uint32_t spawned = allies.makeBenchArena(scene, *device, *physics,
+                                                       benchCombatEnemies, arenaCenter);
+        if (spawned == 0) {
+            x3::logError("--bench-combat: AllyManager::makeBenchArena spawned 0 enemies");
+            audio->shutdown();
+            combatFx.shutdown(*device);
+            physics->shutdown();
+            device->shutdown();
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        x3::game::MonsterManager& arenaEnemies = x3::game::allyArenaMonsters();
+
+        // Camera: stand back from the arena center, slightly elevated, looking at
+        // the arena so the whole ring fits in view (worst case: every combatant
+        // submitted to the renderer each frame).
+        const float bx = arenaCenter.x - 25.0f;
+        const float by = arenaCenter.y + 18.0f;
+        const float bz = arenaCenter.z;
+        const float byaw = 0.0f, bpitch = -0.5f;
+        device->setCamera(bx, by, bz, byaw, bpitch, 75.0f);
+
+        // Hostile query: for ally AI, list LIVE arena enemies within radius. Uses
+        // the arena's MonsterManager directly (no per-frame heap alloc — fills the
+        // caller's fixed buffer).
+        x3::game::HostileQueryFn hostiles =
+            [&arenaEnemies](const x3::phys::Vec3& self, float radius,
+                            x3::phys::Vec3* out, uint32_t maxOut) -> uint32_t {
+                uint32_t n = 0;
+                const float r2 = radius * radius;
+                const uint32_t total = arenaEnemies.count();
+                for (uint32_t i = 0; i < total && n < maxOut; ++i) {
+                    const x3::game::MonsterSystem& m = arenaEnemies.at(i);
+                    if (!m.alive()) continue;
+                    const x3::phys::Vec3 p = m.pos();
+                    const float dx = p.x - self.x, dz = p.z - self.z;
+                    if (dx*dx + dz*dz <= r2) out[n++] = p;
+                }
+                return n;
+            };
+
+        const uint32_t warmup = std::min<uint32_t>(60, benchFrames / 4);
+        double sumCpuMs = 0.0, sumGpuMs = 0.0; uint32_t measured = 0;
+        double prevT = glfwGetTime();
+        x3::rhi::RenderStats last{};
+        const float dt = 1.0f / 60.0f;
+        // The squad anchors its Follow state on the player position; for the
+        // bench there's no real player, so use the arena center as the anchor.
+        const x3::phys::Vec3 playerAnchor = arenaCenter;
+
+        for (uint32_t f = 0; f < benchFrames && !glfwWindowShouldClose(window); ++f) {
+            glfwPollEvents();
+            const double nowT = glfwGetTime();
+            const double cpuMs = (nowT - prevT) * 1000.0; prevT = nowT;
+
+            // Tick BOTH sides' full combat AI so the measurement reflects honest
+            // combat density (LOS rays + state-machine + fire raycasts + per-
+            // frame melee-attack-permit arbitration on the enemy side).
+            allies.update(dt, scene, *physics, playerAnchor, hostiles, /*nav*/ nullptr);
+            arenaEnemies.update(dt, scene, *physics, playerAnchor);
+
+            physics->step(dt);
+            scene.update(*physics);
+
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                scene.render(*device, frame);
+                arenaEnemies.drawAll(*device, frame, scene);
+                allies.draw(*device, frame);
+                // HUD stats overlay so the GPU exercises the HUD path under load too.
+                hud.drawStats(*device, frame, *console, (float)(cpuMs / 1000.0), /*force=*/true);
+            }
+            device->endFrame(frame);
+
+            last = device->stats();
+            if (f >= warmup) { sumCpuMs += cpuMs; sumGpuMs += last.gpuFrameMs; ++measured; }
+        }
+
+        const double avgCpu = measured ? sumCpuMs / measured : 0.0;
+        const double avgGpu = measured ? sumGpuMs / measured : 0.0;
+        const double avgFps = (avgCpu > 1e-6) ? (1000.0 / avgCpu) : 0.0;
+        // `alive=A` reports the ENEMY survivor count (the meaningful one — enemies
+        // drop as the squad fires; allies are tougher and rarely die in the bench
+        // window). The ally survivor count is reported separately if it ever
+        // differs from totalCount (a dead squad mid-bench indicates a balance bug).
+        const uint32_t allyTotal  = allies.totalCount();
+        const uint32_t allyAlive  = allies.aliveCount();
+        const uint32_t enemyAlive = x3::game::allyArenaEnemiesAlive();
+        const uint32_t enemyTotal = x3::game::allyArenaEnemyCount();
+        char rb[320];
+        std::snprintf(rb, sizeof(rb),
+            "BENCH-COMBAT allies=%u enemies=%u alive=%u FPS=%.1f CPU=%.3fms GPU=%.3fms (allies_alive=%u, avg over %u frames)",
+            allyTotal, enemyTotal, enemyAlive, avgFps, avgCpu, avgGpu, allyAlive, measured);
+        x3::logInfo(rb);
+
+        // Tear down the arena's ragdolls BEFORE the physics world is destroyed so
+        // no Jolt body outlives its world (mirrors MonsterManager::shutdown).
+        x3::game::allyArenaShutdown();
 
         audio->shutdown();
         combatFx.shutdown(*device);

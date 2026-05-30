@@ -22,6 +22,9 @@ add_executable(X3Engine WIN32
     weapon.cpp
     monster.cpp
     npc.cpp
+    ally.cpp
+    ally_ai.cpp
+    ally_arena.cpp
     anim.cpp
     thirdperson.cpp
     melee.cpp

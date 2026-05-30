@@ -66,6 +66,10 @@ enum class Tag : uint32_t {
     Button  = 4,   // S4
     Weapon  = 5,   // S5
     Monster = 6,   // S6
+    // Cooperative ally NPC (coop-NPC PR). APPENDED — does NOT change any existing
+    // numeric value. Lets AllyManager scan / filter entities by role (and the host
+    // tell allies apart from monsters in HUD nameplates / minimap blips / saves).
+    Ally    = 7,
 };
 
 struct Entity {
