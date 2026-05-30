@@ -192,6 +192,11 @@ public:
     const MonsterManager& warlord() const { return m_warlord; }
     MonsterManager&       warlord()       { return m_warlord; }
     bool warlordSpawned() const { return m_warlordSpawned; }
+    // L11 Nordic Steward mentor (canon-aliens; allied, stationary, golden tint).
+    // A second-species presence in the Salvari camp — the upgrade-station mentor,
+    // distinct from K'thara's cyan-white Salvari commander. startAllied + chaseSpeed=0.
+    const MonsterManager& nordicMentor() const { return m_nordicMentor; }
+    MonsterManager&       nordicMentor()       { return m_nordicMentor; }
 
     // Emissive prop counts.
     uint32_t desertCrystalCount() const { return (uint32_t)m_desertCrystals.size(); }
@@ -239,6 +244,7 @@ private:
     MonsterManager m_contacts;   // L10 first-contact Salvari (allied; one injured)
     MonsterManager m_survivors;  // L11 camp Salvari survivors (allied; incl. K'thara)
     MonsterManager m_warlord;    // L10 Saurian Warlord boss (canon-aliens; gated by m_warlordSpawned)
+    MonsterManager m_nordicMentor; // L11 Nordic Steward mentor (canon-aliens; allied + stationary)
 
     std::vector<uint32_t> m_desertCrystals;  // L10 crystal-formation Scene props
     std::vector<uint32_t> m_campCrystals;    // L11 cave bioluminescent crystals

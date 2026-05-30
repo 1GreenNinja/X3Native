@@ -261,6 +261,20 @@ void Act2Desert::build(Scene& scene, x3::rhi::IRenderDevice& device,
             m_survivors.at(idx).convertToAllied();
         }
         p.salvariCount = m_survivors.count();
+
+        // L11 NORDIC STEWARD MENTOR (canon-aliens). A second-species allied
+        // presence in the camp — the mentor who staffs the upgrade station,
+        // distinct from K'thara's cyan-white Salvari commander. Stationary +
+        // startAllied (chaseSpeed 0 + 0 damage) — re-asserted with convertToAllied
+        // for parity with the survivor pattern. Placed east of K'thara, slightly
+        // off-axis, so the camp visually reads as "two species cohabiting".
+        {
+            const uint32_t idx = m_nordicMentor.spawn(
+                scene, device, physics, m_modelDir,
+                surfaceAt(X11 + 12, Z0 - 6, kDesertEnemyYOff),
+                canonAlienTuning(CanonAlien::NordicSteward));
+            m_nordicMentor.at(idx).convertToAllied();
+        }
     }
 
     // ===================================================================
@@ -322,7 +336,7 @@ void Act2Desert::build(Scene& scene, x3::rhi::IRenderDevice& device,
     x3::logInfo("Act2Desert::build complete — L10 CRYSTALLINE DESERT DEPTHS (7 crystals, "
                 "hidden cave mouth, 3 first-contact Salvari [1 injured -> side-quest], "
                 "3-strong patrol [2 Reptilian Troopers + 1 Grey Tasked drone]) + L11 SALVARI CAMP (cave graybox + 8 crystals, "
-                "7 survivor markers incl. K'thara, an upgrade station + cultural-exchange "
+                "7 survivor markers incl. K'thara + 1 Nordic Steward mentor at the upgrade station + cultural-exchange "
                 "beat); alien sky + streamed terrain stood up");
 }
 
@@ -340,6 +354,7 @@ void Act2Desert::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     // (chaseSpeed 0) — they never fight the player.
     m_contacts.update(dt, scene, physics, playerPos);
     m_survivors.update(dt, scene, physics, playerPos);
+    m_nordicMentor.update(dt, scene, physics, playerPos);
 }
 
 uint32_t Act2Desert::update(Scene& scene, x3::rhi::IRenderDevice& device,
@@ -422,6 +437,7 @@ void Act2Desert::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContex
     if (m_warlordSpawned) m_warlord.drawAll(device, frame, scene);
     m_contacts.drawAll(device, frame, scene);
     m_survivors.drawAll(device, frame, scene);
+    m_nordicMentor.drawAll(device, frame, scene);
 }
 
 void Act2Desert::shutdown(Scene& scene, x3::rhi::IRenderDevice& device,
@@ -609,6 +625,15 @@ bool runAct2DesertSelfTest() {
         world.onTrigger((uint32_t)Act2DesertTrigger::L10WarlordArena);
         check(world.warlordSpawned(),
               "D16 L10WarlordArena trigger latches warlordSpawned=true (boss goes live)");
+    }
+
+    // ---- L11 Nordic Steward mentor (canon-aliens) — exactly 1 present, allied,
+    // 0 damage, alive (a second-species allied presence in the camp). ----
+    {
+        bool buildOk = world.nordicMentor().count() == 1 &&
+                       allAlliedAndHarmless(world.nordicMentor());
+        check(buildOk,
+              "D17 Nordic Steward mentor PRESENT in L11 camp (count=1) + ALLIED + 0 damage + alive");
     }
 
     // ---- L9 -> L10 -> L11 chain reachable (both transitions registered + enabled +
