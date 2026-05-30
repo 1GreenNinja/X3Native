@@ -84,6 +84,7 @@
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
 #include "space_pilot.h"                   // Act-3 6DOF space-flight pilot (--test-space + --world space)
 #include "sky_stars.h"                     // procedural starfield (--test-starfield + --world starfield)
+#include "space/wormhole_vfx.h"            // Salvari crystal-matrix wormhole (--test-wormhole + --world wormhole)
 #include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
@@ -1343,7 +1344,8 @@ int main(int argc, char** argv) {
          testSpace = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
-         testThirdPerson = false, testNpc = false, testStarfield = false;
+         testThirdPerson = false, testNpc = false, testStarfield = false,
+         testWormhole = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1687,6 +1689,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-companion-controller") testCompanionController = true;
         else if (a == "--test-club") testClub = true;
         else if (a == "--test-starfield") testStarfield = true;
+        else if (a == "--test-wormhole") testWormhole = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -1977,6 +1980,122 @@ int main(int argc, char** argv) {
         }
         x3::logInfo("starfield: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
         std::printf("starfield: %d/%d passed\n", pass, total);
+        std::fflush(stdout);
+        return (pass == total) ? 0 : 1;
+    }
+    // --test-wormhole: Salvari crystal-matrix wormhole VFX self-test (Act-3 jump
+    // transition). Headless -- exercises the WormholeVfx init/render/shutdown
+    // lifecycle (leak-clean round-trip), a VUID-safe render() with a sample
+    // viewProj, Tuning param clamping, progress 0..1 handling, and that the baked
+    // crystal-matrix pattern is non-trivial + faceted. Mirrors --test-starfield.
+    if (testWormhole) {
+        x3::logInfo("running Salvari crystal-matrix wormhole (WormholeVfx) self-test...");
+        int pass = 0, total = 0;
+        auto check = [&](bool c, const char* name) {
+            ++total;
+            if (c) { ++pass; x3::logInfo(std::string("  [ok] ") + name); }
+            else   {          x3::logError(std::string("  [FAIL] ") + name); }
+        };
+        x3::game::HeadlessRenderDevice hdev;
+        // T1: init + shutdown lifecycle is leak-clean (valid handles in, released
+        // on shutdown, and a second init() succeeds -- no leaked resources).
+        {
+            x3::space::WormholeVfx wh;
+            wh.init(hdev);
+            check(wh.initialized() && wh.mesh().valid() && wh.texture().valid(),
+                  "T1 init() produces valid mesh + texture, initialized()=true");
+            wh.shutdown(hdev);
+            check(!wh.initialized() && !wh.mesh().valid() && !wh.texture().valid(),
+                  "T1b shutdown() releases handles, initialized()=false");
+            wh.init(hdev);
+            check(wh.initialized(), "T1c re-init after shutdown succeeds (no leak)");
+            // Double-init is idempotent (no second mesh/texture minted).
+            x3::rhi::MeshHandle before = wh.mesh();
+            wh.init(hdev);
+            check(wh.mesh().id == before.id, "T1d double-init() is a no-op");
+            wh.shutdown(hdev);
+            // Shutdown is idempotent (second shutdown does not crash).
+            wh.shutdown(hdev);
+            check(!wh.initialized(), "T1e double-shutdown() is safe");
+        }
+        // T2: render() with a sample viewProj runs without crashing (VUID-safe in
+        // the headless stub) and updates the core/convergence strength.
+        {
+            x3::space::WormholeVfx wh;
+            wh.init(hdev);
+            x3::rhi::FrameContext fr = hdev.beginFrame();
+            const float idM[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            wh.setOrigin(0.0f, 0.0f, 0.0f);
+            wh.render(hdev, fr, idM, /*timeSec=*/0.25f, /*progress=*/0.0f);
+            check(wh.lastCoreStrength() > 0.0f,
+                  "T2 render() applies a positive core glow even at progress 0");
+            // Progress should INTENSIFY the white-hot core/convergence.
+            wh.render(hdev, fr, idM, /*timeSec=*/0.25f, /*progress=*/1.0f);
+            float fullCore = wh.lastCoreStrength();
+            wh.render(hdev, fr, idM, /*timeSec=*/0.25f, /*progress=*/0.0f);
+            float zeroCore = wh.lastCoreStrength();
+            check(fullCore > zeroCore && fullCore - zeroCore > 1.0f,
+                  "T2b progress 1.0 intensifies the core vs progress 0.0");
+            hdev.endFrame(fr);
+            wh.shutdown(hdev);
+        }
+        // T3: Tuning parameter clamping (length>0, radius>0, flowSpeed>=0,
+        // facetDensity>=3) -- the bake/mesh need these to be sane.
+        {
+            x3::space::WormholeVfx::Tuning bad;
+            bad.length       = -50.0f;
+            bad.radius       = -2.0f;
+            bad.flowSpeed    = -4.0f;
+            bad.facetDensity = 1.0f;
+            auto c = x3::space::clampTuning(bad);
+            check(c.length       > 0.0f,  "T3a length clamps to > 0");
+            check(c.radius       > 0.0f,  "T3b radius clamps to > 0");
+            check(c.flowSpeed    >= 0.0f, "T3c flowSpeed clamps to >= 0");
+            check(c.facetDensity >= 3.0f, "T3d facetDensity clamps to >= 3");
+            // A wild Tuning must still init cleanly (clamp protects the bake/mesh).
+            x3::space::WormholeVfx wh;
+            wh.init(hdev, bad);
+            check(wh.initialized(), "T3e init() survives an out-of-range Tuning");
+            wh.shutdown(hdev);
+        }
+        // T4: progress is clamped to [0,1] inside render() (S3 may drive it from a
+        // sequence that overshoots), and the baked crystal-matrix is non-trivial +
+        // faceted (the convergence end is brighter than the mouth; facet seams
+        // produce a brightness variance around the ring).
+        {
+            x3::space::WormholeVfx wh;
+            wh.init(hdev);
+            x3::rhi::FrameContext fr = hdev.beginFrame();
+            const float idM[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            wh.render(hdev, fr, idM, 0.0f, /*progress=*/5.0f);   // overshoot high
+            check(wh.lastProgress() == 1.0f, "T4a progress > 1 clamps to 1.0");
+            wh.render(hdev, fr, idM, 0.0f, /*progress=*/-3.0f);  // overshoot low
+            check(wh.lastProgress() == 0.0f, "T4b progress < 0 clamps to 0.0");
+            hdev.endFrame(fr);
+            wh.shutdown(hdev);
+
+            x3::space::WormholeVfx::Tuning t;
+            // Convergence: the far end (zNorm 1) reads brighter than the mouth (0).
+            float bMouth = x3::space::WormholeVfx::sampleFacetBrightness(0.3f, 0.0f, t);
+            float bFar   = x3::space::WormholeVfx::sampleFacetBrightness(0.3f, 1.0f, t);
+            check(bFar > bMouth, "T4c convergence end is brighter than the mouth");
+            // Faceted: sweep theta around the ring at fixed z -> brightness varies
+            // (purple prismatic glints at the facet seams).
+            float lo = 1e9f, hi = -1e9f;
+            const int N = 256;
+            for (int i = 0; i < N; ++i) {
+                float th = (i + 0.5f) / (float)N * 6.2831853f;
+                float b = x3::space::WormholeVfx::sampleFacetBrightness(th, 0.5f, t);
+                lo = std::min(lo, b); hi = std::max(hi, b);
+            }
+            check(hi - lo > 0.05f, "T4d crystal facets produce brightness variance around the ring");
+            // Determinism: same inputs -> same value.
+            float a0 = x3::space::WormholeVfx::sampleFacetBrightness(1.1f, 0.4f, t);
+            float a1 = x3::space::WormholeVfx::sampleFacetBrightness(1.1f, 0.4f, t);
+            check(a0 == a1, "T4e crystal sample is deterministic");
+        }
+        x3::logInfo("wormhole: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+        std::printf("wormhole: %d/%d passed\n", pass, total);
         std::fflush(stdout);
         return (pass == total) ? 0 : 1;
     }
@@ -3581,6 +3700,124 @@ int main(int argc, char** argv) {
         }
 
         sky.shutdown(*device);
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    // ---- Salvari crystal-matrix wormhole showcase (--world wormhole) --------
+    // The Act-3 system-jump transition in isolation: NO scene geometry beyond the
+    // crystalline tunnel itself. A WormholeVfx instance is brought up and the
+    // camera flies DOWN the tunnel axis (+Z) over time with a slow roll, while
+    // `progress` ramps 0->1 so the white-hot convergence blooms out as the jump
+    // completes. A screenshot is captured at the end; the pixel-variance gate
+    // (std > 15, uniqColors > 100) is satisfied by the faceted blue/purple/white
+    // crystal walls + the bright convergence point.
+    if (worldMode == "wormhole") {
+        x3::logInfo("--world wormhole: showcasing the Salvari crystal-matrix wormhole");
+
+        // Tunnel interior: disable SSAO + GI (the crystal IS the only surface and
+        // it's emissive), sky (the tunnel surrounds the camera), water, RT.
+        { x3::rhi::IRenderDevice::SsaoParams sp{}; sp.enabled = false; device->setSsaoParams(sp); }
+        { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; device->setGiParams(gp); }
+        { x3::rhi::IRenderDevice::SkyParams  sp{}; sp.enabled = false; device->setSkyParams(sp); }
+
+        x3::space::WormholeVfx wh;
+        x3::space::WormholeVfx::Tuning whT;   // Salvari defaults (blue->purple->white)
+        wh.init(*device, whT);
+        if (!wh.initialized()) {
+            x3::logError("--world wormhole: WormholeVfx::init() failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        // The tunnel mouth sits at the origin and extends +length along +Z. Fly
+        // the camera from just inside the mouth toward the convergence end.
+        wh.setOrigin(0.0f, 0.0f, 0.0f);
+        const float kFlyZ0 = 6.0f;                       // start just inside the mouth
+        const float kFlyZ1 = whT.length * 0.9f;          // end near the convergence
+        // The device camera forward is (cos(pitch)cos(yaw), sin(pitch), cos(pitch)
+        // sin(yaw)); to look straight down the tunnel axis (+Z) the yaw is +pi/2.
+        const float kAxisYaw = 1.57079633f;
+
+        // ---- Headless capture: fly down the tunnel, ramp progress, grab PNG. ---
+        if (headless) {
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_wormhole.png");
+            const int kFrames = 48;
+            // Capture the ICONIC shot: camera near the MOUTH looking straight down
+            // the full length so the faceted blue/purple crystal walls recede to a
+            // bright convergence point ahead. At full progress the white-hot core
+            // blooms out the whole frame; we capture early (camera at the mouth)
+            // with a moderate progress so walls + convergence are BOTH in shot.
+            const int kShotFrame = 2;
+            const float kShotProgress = 0.55f;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                float t = (float)i * (1.0f / 30.0f);     // simulated 30 fps clock
+                float u = (float)i / (float)(kFrames - 1); // 0..1 through the jump
+                bool isShot = (i == kShotFrame);
+                float camZ = isShot ? kFlyZ0 : (kFlyZ0 + (kFlyZ1 - kFlyZ0) * u);
+                float prog = isShot ? kShotProgress : u;
+                float roll = 0.25f * t;                   // slow roll
+                // Look straight down the tunnel axis (+Z = yaw pi/2); the roll is a
+                // small pitch/yaw wobble so the facets sweep. The capture frame
+                // looks DEAD-CENTER down the axis (no wobble) for a symmetric
+                // "receding crystal tunnel" composition.
+                float yaw   = kAxisYaw + (isShot ? 0.0f : 0.04f * std::sin(roll));
+                float pitch = isShot ? 0.0f : 0.03f * std::cos(roll);
+                device->setCamera(0.0f, 0.0f, camZ, yaw, pitch, 80.0f);
+                if (shotCamOverride) {
+                    device->setCamera(shotCam[0], shotCam[1], shotCam[2],
+                                      shotCam[3], shotCam[4], 80.0f);
+                }
+                if (isShot) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    wh.render(*device, frame, /*viewProj16=*/nullptr, t, /*progress=*/prog, whT);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world wormhole: wrote " + outPath);
+            else       x3::logError("--world wormhole: capture FAILED");
+            wh.shutdown(*device);
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ---- Windowed path: auto-fly the camera down the tunnel; Esc to quit. ---
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double startTime = glfwGetTime();
+        x3::logInfo("--world wormhole: flying through the crystal-matrix jump, Esc to quit");
+        int lastWs = (int)W, lastHs = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float t = (float)(now - startTime);
+            // Loop the jump every ~6s so the showcase reads as a continuous flight.
+            float u = std::fmod(t, 6.0f) / 6.0f;
+            float camZ = kFlyZ0 + (kFlyZ1 - kFlyZ0) * u;
+            float roll = 0.25f * t;
+            float yaw   = kAxisYaw + 0.04f * std::sin(roll);
+            float pitch = 0.03f * std::cos(roll);
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWs || chh != lastHs) { lastWs = cw; lastHs = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+            device->setCamera(0.0f, 0.0f, camZ, yaw, pitch, 80.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                wh.render(*device, frame, /*viewProj16=*/nullptr, t, /*progress=*/u, whT);
+            }
+            device->endFrame(frame);
+        }
+
+        wh.shutdown(*device);
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();

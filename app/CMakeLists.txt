@@ -60,6 +60,7 @@ add_executable(X3Engine WIN32
     hud.cpp
     space_pilot.cpp
     sky_stars.cpp
+    space/wormhole_vfx.cpp
     ui.cpp)
 
 target_link_libraries(X3Engine PRIVATE x3engine glfw)
@@ -122,7 +123,9 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/skin.comp
     ${CMAKE_SOURCE_DIR}/shaders/rtao_apply.frag
     ${CMAKE_SOURCE_DIR}/shaders/starfield.vert
-    ${CMAKE_SOURCE_DIR}/shaders/starfield.frag)
+    ${CMAKE_SOURCE_DIR}/shaders/starfield.frag
+    ${CMAKE_SOURCE_DIR}/shaders/wormhole.vert
+    ${CMAKE_SOURCE_DIR}/shaders/wormhole.frag)
 # Hardware ray-tracing (ray-query) shaders need SPIR-V 1.4+ and the ray-query
 # extension target; compiled with explicit target flags below. Listed separately
 # so the default glslc invocation (which targets an older SPIR-V) is not used.
