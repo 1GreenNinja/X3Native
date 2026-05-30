@@ -62,6 +62,7 @@
 #include "fx.h"
 #include "hud.h"
 #include "ui.h"                              // GENERAL game-UI: menus + production HUD + --test-ui
+#include "loading_screen.h"                  // EFLZ boot/world-load screen + --test-loading (Task #49)
 #include "save.h"                            // GENERAL versioned checkpoint save/load + --test-saveload
 #include "dialog.h"                          // AI-dialog + TTS voice on skinned NPCs (§3) + --test-dialog
 #include "stress.h"
@@ -841,6 +842,9 @@ int main(int argc, char** argv) {
     bool        testAct2Bosses = false;
     // --test-ui (UI pass): general game-UI layer (menus + HUD). Additive flag.
     bool        testUi = false;
+    // --test-loading (loading-screen pass, Task #49): asserts progress is monotonic
+    // 0->1 over the load steps + the tip line rotates. Headless. Additive flag.
+    bool        testLoading = false;
     // --test-saveload (save/load pass): versioned checkpoint serialization. Additive.
     bool        testSaveLoad = false;
     // --test-dialog (AI-dialog + TTS pass, §3): the authored dialogue TREE advances
@@ -1120,6 +1124,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-vehicle") testVehicle = true;
         else if (a == "--test-footik") testFootIk = true;
         else if (a == "--test-ui") testUi = true;
+        else if (a == "--test-loading") testLoading = true;
         else if (a == "--test-saveload") testSaveLoad = true;
         else if (a == "--test-dialog") testDialog = true;
         else if (a == "--demo-dialog") {
@@ -1580,6 +1585,11 @@ int main(int argc, char** argv) {
         x3::logInfo("running GENERAL game-UI self-test "
                     "(button hit-test + Menu<->Playing<->Paused transitions + settings cvar wiring)...");
         return x3::ui::runUiSelfTest() ? 0 : 1;
+    }
+    if (testLoading) {
+        x3::logInfo("running EFLZ loading-screen self-test "
+                    "(monotonic progress 0->1 + tip rotation + fade-in/out)...");
+        return x3::game::runLoadingSelfTest() ? 0 : 1;
     }
     if (testSaveLoad) {
         x3::logInfo("running GENERAL versioned checkpoint save/load self-test "
@@ -4000,10 +4010,38 @@ int main(int argc, char** argv) {
     if (!physics->init()) {
         x3::logError("physics world init failed");
         device->shutdown();
-        glfwDestroyWindow(window);
+        if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
     }
+
+    // ---- EFLZ LOADING SCREEN (Task #49) — shown on cold boot AND world switch,
+    // replacing the bare/black gap while the device/assets/audio/physics/world
+    // come up. The procedural background texture is created now (device is up);
+    // each chunk of boot work below pushes a real progress STEP (0->1). Headless
+    // safe: render() is a no-op without a valid frame, so --smoketest never blocks.
+    // The bar is also DRAWN under the headless smoketest (a few frames below) so
+    // the 2D draw path is validation-checked. ----
+    x3::game::LoadingScreen loading;
+    loading.init(*device);
+    loading.step(x3::game::LoadStep::DeviceReady, "RENDER DEVICE");
+    // Helper: render ONE loading frame (poll + beginFrame + draw + endFrame) at the
+    // current progress, advancing the tip/fade clock by dt. No-op draw when there is
+    // no real frame; safe headless. Used both during the build (a couple of progress
+    // frames so the human SEES the bar move) and for the fade-out hand-off.
+    const float kLoadDt = 1.0f / 60.0f;
+    auto loadingFrame = [&](float dt) {
+        glfwPollEvents();
+        auto lf = device->beginFrame();
+        loading.render(*device, lf, dt);
+        device->endFrame(lf);
+    };
+
+    // Asset mount + audio init already happened above; reflect them on the bar.
+    loading.step(x3::game::LoadStep::AssetsMounted, "MOUNTING ASSETS");
+    loading.step(x3::game::LoadStep::AudioReady, "LOADING AUDIO");
+    loading.step(x3::game::LoadStep::PhysicsReady, "PHYSICS WORLD");
+    loadingFrame(kLoadDt);
 
     // ---- INTRO COLD-OPEN (prologue lead-in). Before the cell is built, play the scripted
     // cold-open: Jake flies his ship through space, a larger enemy ship shoots him down with an
@@ -4273,6 +4311,12 @@ int main(int argc, char** argv) {
     }
     const x3::game::Level1Layout& L1 = game.layout();
 
+    // World geometry + canon room spawns are built — push the heavy build steps onto
+    // the loading bar and show a frame so the human sees the bar jump.
+    loading.step(x3::game::LoadStep::WorldGeometry, "BUILDING WORLD");
+    loading.step(x3::game::LoadStep::Spawns, "SPAWNING ACTORS");
+    loadingFrame(kLoadDt);
+
     // ---- Outdoor terrain world setup (--world terrain). Bring up the job system
     // + the camera-centered STREAMER (B3): an UNBOUNDED procedural world where
     // only a bounded ring of tiles around the player is resident. Tiles are
@@ -4327,6 +4371,8 @@ int main(int argc, char** argv) {
     // crosshair now lives in the screen-space HUD layer (S7), not here. ----
     x3::game::CombatFx combatFx;
     combatFx.init(*device);
+    // FX / debris / UI primed — bar nearly full.
+    loading.step(x3::game::LoadStep::FxReady, "PRIMING FX");
 
     // Explosive barrels FX: a cluster of impact bursts at the blast center so a shot
     // barrel reads as a violent fireball (on top of its own scattering debris chunks).
@@ -5067,6 +5113,17 @@ int main(int argc, char** argv) {
 
     if (smoketest) {
         x3::logInfo("smoketest: stepping Level 1 + rendering 30 frames (+ a mid-run swapchain recreate)");
+        // EFLZ loading screen (Task #49) under validation: finish the bar, draw a few
+        // overlay frames (full background + title + bar + tip — exercises drawHudQuad/
+        // drawHudTextF), then fade it OUT so the hand-off path runs. Headless-safe: the
+        // frame may be invalid (offscreen) but render() still advances state and the
+        // draws are guarded; this must NOT block. Background texture freed after.
+        loading.step(x3::game::LoadStep::Done, "READY");
+        for (int i = 0; i < 4; ++i) loadingFrame(kLoadDt);
+        loading.beginFadeOut();
+        int loadGuard = 0;
+        while (!loading.faded() && loadGuard++ < 60) loadingFrame(kLoadDt);
+        loading.shutdown(*device);
         // Sit the camera in the armory looking at the pistol pickup so arming +
         // the viewmodel exercise the real GLB load + draw under validation. The
         // Level1Game tick arms the player when the camera is over the pickup, then
@@ -5529,6 +5586,31 @@ int main(int argc, char** argv) {
     bool prevUiMouse = false;
     bool prevNavUp = false, prevNavDown = false, prevNavAct = false,
          prevNavLeft = false, prevNavRight = false;
+
+    // ---- EFLZ LOADING SCREEN hand-off (Task #49) — INTERACTIVE path -----------
+    // The world is fully built. Mark the bar complete, hold the finished screen for
+    // a couple of frames, then fade it OUT with REAL wall-clock dt so the first
+    // gameplay (menu) frame doesn't pop in. Driven entirely on the real window
+    // frame path (beginFrame/endFrame). Only reached when a window exists.
+    {
+        loading.step(x3::game::LoadStep::Done, "READY");
+        // Hold the completed bar briefly so the 100% + final tip read.
+        double lprev = glfwGetTime();
+        for (int i = 0; i < 8 && !glfwWindowShouldClose(window); ++i) {
+            const double now = glfwGetTime();
+            const float ldt = (float)(now - lprev); lprev = now;
+            loadingFrame(ldt > 0.1f ? 0.1f : ldt);
+        }
+        // Fade out (clean hand-off). Bounded so a stalled present can't hang the boot.
+        loading.beginFadeOut();
+        int loadGuard = 0;
+        while (!loading.faded() && loadGuard++ < 240 && !glfwWindowShouldClose(window)) {
+            const double now = glfwGetTime();
+            const float ldt = (float)(now - lprev); lprev = now;
+            loadingFrame(ldt > 0.1f ? 0.1f : ldt);
+        }
+        loading.shutdown(*device);
+    }
 
     // ---- Main loop ----
     int lastW = static_cast<int>(W), lastH = static_cast<int>(H);
