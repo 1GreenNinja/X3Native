@@ -811,6 +811,10 @@ int main(int argc, char** argv) {
     // --test-bosses (Act-1 bosses, Wave 1): the 5 mid-boss defs + the multi-pod
     // machine + the scripted pre-fight hook + the Martinez regression guard. Additive.
     bool        testBosses = false;
+    // --test-adaptive-hide (canon-aliens engine ext.): the type-keyed rotate-damage
+    // rhythm on a Boss-type monster — full first hit, reduced same-type repeat,
+    // type-rotation re-opens, window expires, opt-out (resist==0) is dead-code.
+    bool        testAdaptiveHide = false;
     // --test-act2bosses (Act-2 roster, Wave 2): the 5 alien-planet-surface enemy
     // defs + 4 single-body bosses (Memory Hunter / Siren / Breeder Queen / Garrison
     // Commander) + the Wave-2 Tuning tags (startAllied / copyFeintPhase /
@@ -1080,6 +1084,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-ai") testAi = true;
         else if (a == "--test-bestiary") testBestiary = true;
         else if (a == "--test-bosses") testBosses = true;
+        else if (a == "--test-adaptive-hide") testAdaptiveHide = true;
         else if (a == "--test-act2bosses") testAct2Bosses = true;
         else if (a == "--test-spiremid") testSpireMid = true;
         else if (a == "--test-nexus") testNexus = true;
@@ -1427,6 +1432,11 @@ int main(int argc, char** argv) {
         x3::logInfo("running EFLZ Act-1 mid-boss roster + machine-extension "
                     "(multi-pod + scripted pre-fight hook) self-test...");
         return x3::game::runBossesSelfTest() ? 0 : 1;
+    }
+    if (testAdaptiveHide) {
+        x3::logInfo("running canon-aliens Adaptive-Hide rhythm self-test "
+                    "(type-keyed resist + 8 s window; Warlord-tuned)...");
+        return x3::game::runAdaptiveHideSelfTest() ? 0 : 1;
     }
     if (testAct2Bosses) {
         x3::logInfo("running EFLZ Act-2 roster (5 alien-planet-surface enemies + "
