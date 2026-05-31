@@ -101,6 +101,7 @@ namespace x3::game {
 #include "space/space_env.h"               // S1 space environment: nebula/stars + planets + sun (--test-spaceenv + --world spaceenv)
 #include "space/ship_anim.h"               // S11 ship node-transform anim (--test-shipanim + --world shipanim)
 #include "space/wormhole_vfx.h"            // Salvari crystal-matrix wormhole (--test-wormhole + --world wormhole)
+#include "space/decloak_vfx.h"             // intro decloak shimmer VFX (--test-decloak + --world decloak)
 #include "space/wormhole_transit.h"        // S3 wormhole transit (--test-wormhole-transit + --world wormhole-transit)
 #include "space/descent.h"                  // S4 cinematic atmo descent (--test-atmo-descent + --world atmo-descent)
 #include "space/ship_interior.h"           // S5 walkable ship interior (--test-ship-interior + --world ship-interior)
@@ -1376,6 +1377,7 @@ int main(int argc, char** argv) {
          testSpaceEnv = false,
          testShipanim = false,
          testWormhole = false,
+         testDecloak = false,
          testWormholeTransit = false,
          testAtmoDescent = false,
          testShipInterior = false,
@@ -1744,6 +1746,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-spaceenv") testSpaceEnv = true;
         else if (a == "--test-shipanim") testShipanim = true;
         else if (a == "--test-wormhole") testWormhole = true;
+        else if (a == "--test-decloak") testDecloak = true;
         else if (a == "--test-wormhole-transit") testWormholeTransit = true;
         else if (a == "--test-atmo-descent") testAtmoDescent = true;
         else if (a == "--test-ship-interior") testShipInterior = true;
@@ -2590,6 +2593,124 @@ int main(int argc, char** argv) {
         }
         x3::logInfo("wormhole: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
         std::printf("wormhole: %d/%d passed\n", pass, total);
+        std::fflush(stdout);
+        return (pass == total) ? 0 : 1;
+    }
+    // --test-decloak: intro DECLOAK shimmer VFX self-test (a capital ship phasing
+    // into existence). Headless -- exercises the DecloakVfx init/render/shutdown
+    // lifecycle (leak-clean round-trip), a VUID-safe render() at progress 0, 0.5,
+    // 1.0, the revealAlpha() ramp (0->0, 1->1, monotonic), Tuning clamping, and
+    // that the baked shimmer is non-trivial. Mirrors --test-wormhole.
+    if (testDecloak) {
+        x3::logInfo("running intro decloak shimmer (DecloakVfx) self-test...");
+        int pass = 0, total = 0;
+        auto check = [&](bool c, const char* name) {
+            ++total;
+            if (c) { ++pass; x3::logInfo(std::string("  [ok] ") + name); }
+            else   {          x3::logError(std::string("  [FAIL] ") + name); }
+        };
+
+        x3::game::HeadlessRenderDevice hdev;
+        const float idM[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        // T1: init + shutdown lifecycle is leak-clean (valid handles in, released
+        // on shutdown, a second init() succeeds, double-init/shutdown safe).
+        {
+            x3::space::DecloakVfx dv;
+            dv.init(hdev);
+            check(dv.initialized() && dv.mesh().valid() && dv.texture().valid(),
+                  "T1 init() produces valid mesh + texture, initialized()=true");
+            dv.shutdown(hdev);
+            check(!dv.initialized() && !dv.mesh().valid() && !dv.texture().valid(),
+                  "T1b shutdown() releases handles, initialized()=false");
+            dv.init(hdev);
+            check(dv.initialized(), "T1c re-init after shutdown succeeds (no leak)");
+            x3::rhi::MeshHandle before = dv.mesh();
+            dv.init(hdev);
+            check(dv.mesh().id == before.id, "T1d double-init() is a no-op");
+            dv.shutdown(hdev);
+            dv.shutdown(hdev);
+            check(!dv.initialized(), "T1e double-shutdown() is safe");
+        }
+        // T2: render() at progress 0, 0.5, 1.0 runs VUID-safe (headless stub) and
+        // the shimmer strength PEAKS at the mid-reveal vs both ends (the reveal
+        // window: faint cloaked outline -> peak shimmer -> resolved/fades out).
+        {
+            x3::space::DecloakVfx dv;
+            dv.init(hdev);
+            x3::rhi::FrameContext fr = hdev.beginFrame();
+            dv.render(hdev, fr, idM, idM, /*timeSec=*/0.25f, /*progress=*/0.0f);
+            float s0 = dv.lastShimmerStrength();
+            check(s0 > 0.0f, "T2 render() at progress 0 applies a faint cloaked-outline shimmer");
+            dv.render(hdev, fr, idM, idM, /*timeSec=*/0.25f, /*progress=*/0.5f);
+            float sMid = dv.lastShimmerStrength();
+            dv.render(hdev, fr, idM, idM, /*timeSec=*/0.25f, /*progress=*/1.0f);
+            float s1 = dv.lastShimmerStrength();
+            check(sMid > s0 && sMid > s1, "T2b shimmer PEAKS at the mid-reveal (0.5) vs both ends");
+            // render() with a null model transform must be VUID-safe (sits at origin).
+            dv.render(hdev, fr, nullptr, nullptr, 0.1f, 0.3f);
+            check(dv.lastProgress() == 0.3f, "T2c render() with null transforms is safe");
+            hdev.endFrame(fr);
+            dv.shutdown(hdev);
+        }
+        // T3: revealAlpha ramp -- 0 at progress 0, 1 at progress 1, monotonic
+        // non-decreasing, and clamps overshoots.
+        {
+            check(std::fabs(x3::space::DecloakVfx::revealAlpha(0.0f) - 0.0f) < 1e-4f,
+                  "T3a revealAlpha(0) ~= 0 (ship fully cloaked)");
+            check(std::fabs(x3::space::DecloakVfx::revealAlpha(1.0f) - 1.0f) < 1e-4f,
+                  "T3b revealAlpha(1) ~= 1 (ship fully revealed)");
+            bool mono = true;
+            float prev = x3::space::DecloakVfx::revealAlpha(0.0f);
+            for (int i = 1; i <= 64; ++i) {
+                float p = (float)i / 64.0f;
+                float a = x3::space::DecloakVfx::revealAlpha(p);
+                if (a < prev - 1e-5f) mono = false;
+                prev = a;
+            }
+            check(mono, "T3c revealAlpha is monotonic non-decreasing on [0,1]");
+            check(x3::space::DecloakVfx::revealAlpha(5.0f) == 1.0f &&
+                  x3::space::DecloakVfx::revealAlpha(-3.0f) == 0.0f,
+                  "T3d revealAlpha clamps overshoots to [0,1]");
+        }
+        // T4: Tuning clamping + progress clamp in render() + a non-trivial bake.
+        {
+            x3::space::DecloakVfx::Tuning bad;
+            bad.shellScale   = -2.0f;
+            bad.shimmerSpeed = -4.0f;
+            bad.scanDensity  = 0.0f;
+            auto c = x3::space::clampTuning(bad);
+            check(c.shellScale   > 0.0f,  "T4a shellScale clamps to > 0");
+            check(c.shimmerSpeed >= 0.0f, "T4b shimmerSpeed clamps to >= 0");
+            check(c.scanDensity  >= 1.0f, "T4c scanDensity clamps to >= 1");
+            x3::space::DecloakVfx dv;
+            dv.init(hdev, bad);
+            check(dv.initialized(), "T4d init() survives an out-of-range Tuning");
+            x3::rhi::FrameContext fr = hdev.beginFrame();
+            dv.render(hdev, fr, idM, idM, 0.0f, /*progress=*/5.0f);
+            check(dv.lastProgress() == 1.0f, "T4e progress > 1 clamps to 1.0");
+            dv.render(hdev, fr, idM, idM, 0.0f, /*progress=*/-3.0f);
+            check(dv.lastProgress() == 0.0f, "T4f progress < 0 clamps to 0.0");
+            hdev.endFrame(fr);
+            dv.shutdown(hdev);
+
+            // Non-trivial bake: sweep the shell UV -> the scanline + edge glow
+            // produce a real brightness variance.
+            x3::space::DecloakVfx::Tuning t;
+            float lo = 1e9f, hi = -1e9f;
+            const int N = 128;
+            for (int i = 0; i < N; ++i) {
+                float v = (i + 0.5f) / (float)N;
+                float b = x3::space::DecloakVfx::sampleShimmerBrightness(0.5f, v, t);
+                lo = std::min(lo, b); hi = std::max(hi, b);
+            }
+            check(hi - lo > 0.05f, "T4g baked shimmer produces brightness variance (scanlines + edge)");
+            // Determinism.
+            float a0 = x3::space::DecloakVfx::sampleShimmerBrightness(0.2f, 0.7f, t);
+            float a1 = x3::space::DecloakVfx::sampleShimmerBrightness(0.2f, 0.7f, t);
+            check(a0 == a1, "T4h shimmer sample is deterministic");
+        }
+        x3::logInfo("decloak: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+        std::printf("decloak: %d/%d passed\n", pass, total);
         std::fflush(stdout);
         return (pass == total) ? 0 : 1;
     }
@@ -5035,6 +5156,177 @@ int main(int argc, char** argv) {
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
+        return 0;
+    }
+
+    // ---- Intro DECLOAK shimmer showcase (--world decloak) ------------------
+    // A capital ship DECLOAKS: progress ramps 0->1 over time, the cyan-white
+    // shimmer/edge-glow overlay (DecloakVfx) plays over the hull while the real
+    // ship mesh fades in via revealAlpha(). Deep-space framing (no SSAO/GI, no
+    // sky). Headless screenshot + windowed. The PNG pixel-variance gate (std>15,
+    // uniq>100) is cleared by the lit ship + the bright shimmer shell.
+    if (worldMode == "decloak") {
+        x3::logInfo("--world decloak: showcasing the intro decloak shimmer (a ship phasing in)");
+
+        { x3::rhi::IRenderDevice::SsaoParams sp{}; sp.enabled = false; device->setSsaoParams(sp); }
+        { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; device->setGiParams(gp); }
+        { x3::rhi::IRenderDevice::SkyParams  kp{}; kp.enabled = false; device->setSkyParams(kp); }
+        // Bright point lights near the ship so the metal hull reads against black
+        // deep space once it resolves (mirrors --world space's lighting rig).
+        { x3::rhi::PointLight pl[3];
+          pl[0].pos[0]= 30.0f; pl[0].pos[1]= 30.0f; pl[0].pos[2]= 30.0f; pl[0].range=200.0f;
+          pl[0].color[0]=30.0f; pl[0].color[1]=28.0f; pl[0].color[2]=24.0f;
+          pl[1].pos[0]=-25.0f; pl[1].pos[1]= 15.0f; pl[1].pos[2]=  8.0f; pl[1].range=150.0f;
+          pl[1].color[0]=8.0f;  pl[1].color[1]=10.0f; pl[1].color[2]=14.0f;
+          pl[2].pos[0]= 40.0f; pl[2].pos[1]=-10.0f; pl[2].pos[2]=-15.0f; pl[2].range=180.0f;
+          pl[2].color[0]=5.0f;  pl[2].color[1]=4.0f;  pl[2].color[2]=3.0f;
+          device->setPointLights(pl, 3); }
+
+        // ---- Load a ship GLB (SpaceShip*.glb preferred; drone/box fallback). --
+        const std::string rigDir = x3::game::riggedGlbRoot();
+        std::unique_ptr<x3::asset::IAssetSource> asrc(x3::asset::createAssetSource());
+        asrc->mountDir(rigDir, 0);
+        std::unique_ptr<x3::asset::IModelLoader> mloader(
+            x3::asset::createModelLoader(device.get(), asrc.get()));
+        const char* kShipCandidates[] = {
+            "SpaceShip.glb", "SpaceShip2.glb", "SpaceShip3.glb", "SpaceShip4.glb",
+            "DroneOscillating.glb", "DroneExportWMotion.glb"
+        };
+        x3::asset::Model shipModel{}; std::string shipFile;
+        for (const char* c : kShipCandidates) {
+            shipModel = mloader->load(c);
+            if (shipModel.ok) { shipFile = c; break; }
+        }
+        std::vector<x3::asset::ModelDrawable> shipDrawables;
+        if (shipModel.ok) shipDrawables = x3::asset::makeDrawables(shipModel);
+        x3::logInfo(std::string("--world decloak: ship model=") +
+                    (shipModel.ok ? shipFile : "<procedural-box-fallback>"));
+
+        // Procedural-box fallback for the ship hull.
+        x3::prims::PrimMesh sbm = x3::prims::makeBox(2.4f, 0.8f, 1.4f, 0, 0, 0, 0.25f);
+        auto shipBoxMesh = device->createMesh(sbm.verts.data(), (uint32_t)sbm.verts.size(),
+                                              sbm.index.data(), (uint32_t)sbm.index.size());
+        auto sbTexD = x3::prims::makeCheckerRGBA(64, 8, 170, 180, 205, 55, 65, 85);
+        auto shipBoxTex = device->createTexture(sbTexD.data(), 64, 64, true);
+
+        // Ship placement: centered, scaled up so it fills the frame. The decloak
+        // shell is drawn in the SAME local frame (scaled to hug the hull bounds).
+        const float kShipScale = 14.0f;
+        float shipXform[16] = {
+            kShipScale, 0, 0, 0,
+            0, kShipScale, 0, 0,
+            0, 0, kShipScale, 0,
+            0, 0, 0, 1
+        };
+        // The decloak shell is a unit box (half-extent ~1, * shellScale). The
+        // SpaceShip GLB occupies roughly +/-1 local unit, so a shell at ~1.05x
+        // the ship scale haloes the hull just outside it without swallowing the
+        // frame (the camera sits well outside the shell at -34).
+        float shellXform[16];
+        { float s = kShipScale * 1.05f;
+          float t[16] = { s,0,0,0, 0,s,0,0, 0,0,s,0, 0,0,0,1 };
+          for (int k=0;k<16;++k) shellXform[k]=t[k]; }
+
+        x3::space::DecloakVfx decloak;
+        x3::space::DecloakVfx::Tuning dvT;
+        decloak.init(*device, dvT);
+        if (!decloak.initialized()) {
+            x3::logError("--world decloak: DecloakVfx::init() failed");
+            device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
+            if (shipModel.ok) mloader->unload(shipModel);
+            device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate();
+            return 1;
+        }
+
+        // Draw the ship hull modulated by `alpha` (revealAlpha): fades the ship in
+        // as the decloak resolves.
+        auto drawShip = [&](const x3::rhi::FrameContext& frame, float alpha) {
+            if (shipModel.ok) {
+                for (const auto& dr : shipDrawables) {
+                    float fin[16];
+                    x3::asset::mulMat4(shipXform, dr.nodeTransform, fin);
+                    float tint[4] = {
+                        (dr.baseColorFactor[0] * 4.0f + 0.45f) * alpha,
+                        (dr.baseColorFactor[1] * 4.0f + 0.50f) * alpha,
+                        (dr.baseColorFactor[2] * 4.0f + 0.55f) * alpha,
+                        dr.baseColorFactor[3]
+                    };
+                    device->drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
+                                     x3::rhi::TextureHandle{ dr.baseColorTexId }, tint, fin);
+                }
+            } else {
+                const float tint[4] = { alpha, alpha, alpha, 1.0f };
+                device->drawMesh(frame, shipBoxMesh, shipBoxTex, tint, shipXform);
+            }
+        };
+
+        // Camera: off to -X looking toward +X at the ship.
+        const float kCam[5] = { -34.0f, 6.0f, 0.0f, 0.0f, -0.06f };
+
+        if (headless) {
+            device->setFrustumCull(false);   // robust capture (deeply-nested GLB AABBs)
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("G:/X3Native/captures/decloak.png");
+            const int kFrames   = 40;
+            const int kShotFrame= kFrames - 1;
+            // Capture mid-reveal so BOTH the shimmer (bright) AND a partly-faded
+            // ship are visible -> a busy, high-variance frame.
+            const float kShotProgress = 0.55f;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                float t = (float)i * (1.0f / 30.0f);
+                bool isShot = (i == kShotFrame);
+                float prog = isShot ? kShotProgress
+                                    : std::clamp((float)i / (float)(kFrames - 1), 0.0f, 1.0f);
+                float cam[5]; for (int k=0;k<5;++k) cam[k]=kCam[k];
+                if (shotCamOverride) for (int k=0;k<5;++k) cam[k]=shotCam[k];
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 65.0f);
+                if (isShot) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    drawShip(frame, x3::space::DecloakVfx::revealAlpha(prog));
+                    decloak.render(*device, frame, nullptr, shellXform, t, prog, dvT);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world decloak: wrote " + outPath);
+            else       x3::logError("--world decloak: capture FAILED");
+            decloak.shutdown(*device);
+            device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
+            if (shipModel.ok) mloader->unload(shipModel);
+            device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double startTimeD = glfwGetTime();
+        x3::logInfo("--world decloak: the ship decloaks (progress loops 0->1); Esc to quit");
+        int lastWsD = (int)W, lastHsD = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float t = (float)(now - startTimeD);
+            // Decloak over ~5s, hold revealed ~2s, then loop.
+            float cycle = std::fmod(t, 7.0f);
+            float prog = std::clamp(cycle / 5.0f, 0.0f, 1.0f);
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWsD || chh != lastHsD) { lastWsD = cw; lastHsD = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+            device->setCamera(kCam[0], kCam[1], kCam[2], kCam[3], kCam[4], 65.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                drawShip(frame, x3::space::DecloakVfx::revealAlpha(prog));
+                decloak.render(*device, frame, nullptr, shellXform, t, prog, dvT);
+            }
+            device->endFrame(frame);
+        }
+
+        decloak.shutdown(*device);
+        device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
+        if (shipModel.ok) mloader->unload(shipModel);
+        device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate();
         return 0;
     }
 
