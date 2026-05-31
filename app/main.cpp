@@ -9547,6 +9547,19 @@ int main(int argc, char** argv) {
         x3::game::Player hplayer;
         hplayer.spawn(*hphys, hubSpawn.x, hubSpawn.y, hubSpawn.z);
 
+        // ---- Eerie wormhole audio: a looping ambient drone bed + a per-portal
+        // activation sting. Paths resolve via resolveAudio() — silent on machines
+        // without the SFX packs (e.g. DJBOOTH's 4790K, no D:/GameDevAssets) and
+        // audible on the pack-bearing rigs (13700K/14900K G: layout). Swap the
+        // pack-relative filenames for your preferred drone/sting if these don't fit.
+        std::unique_ptr<x3::audio::IAudioSystem> haudio(x3::audio::createAudioSystem());
+        haudio->init();
+        const std::string kRiftDrone = x3::game::resolveAudio(
+            "Sci-Fi Music Pack 1/Loops/SMP1_LOOP_Zero8 _1.wav");
+        const x3::audio::SoundHandle sndRiftActivate = haudio->load(x3::game::resolveAudio(
+            "Sci-fi Evolution Gift Pack/Health or Energy Game Recharge 2.wav"));
+        haudio->playMusic(kRiftDrone, /*loop*/true, /*vol*/0.30f);   // eerie ambient bed
+
         // ---- DOOM-style cheat console commands (rifthub variant). Register
         // against the lifted console using THIS world's local hplayer. The
         // hub has no arsenal/game — idkfa/idfa log a "not available" line.
@@ -9653,7 +9666,17 @@ int main(int argc, char** argv) {
 
             const x3::phys::Vec3 ppos{ camX, camY, camZ };
             const auto fired = htriggers.update(ppos);
-            for (uint32_t id : fired) hub.onTrigger(id);
+            for (uint32_t id : fired) {
+                hub.onTrigger(id);
+                // Play the activation sting AT the portal's world position so it
+                // pans correctly as the player steps through.
+                for (const auto& rp : hub.portals()) {
+                    if (rp.triggerId == id) {
+                        haudio->playSound3D(sndRiftActivate, rp.worldPos.x, 1.6f, rp.worldPos.z, 0.9f, 1.0f);
+                        break;
+                    }
+                }
+            }
 
             // HUD prompt: log a single line whenever the nearest-in-range portal
             // CHANGES so the player gets the discovery signposting without spam.
@@ -9671,6 +9694,11 @@ int main(int argc, char** argv) {
             // BEFORE render so the new values land in the entity transforms
             // that scene.render reads this frame.
             hub.tick(fdt, hscene);
+
+            // Move the audio listener with the camera + advance the mixer so the
+            // drone bed + any active stings pan correctly.
+            haudio->setListener(camX, camY, camZ, camYaw, camPitch);
+            haudio->update(fdt);
 
             hphys->step(fdt);
             hscene.update(*hphys);
@@ -9700,6 +9728,8 @@ int main(int argc, char** argv) {
         glfwSetWindowUserPointer(window, nullptr);
         glfwSetCharCallback(window, nullptr);
         glfwSetKeyCallback(window, nullptr);
+        haudio->stopMusic();
+        haudio->shutdown();
         hub.shutdown(*device);
         hphys->shutdown();
         device->shutdown();

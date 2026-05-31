@@ -74,8 +74,39 @@ constexpr float    kShimmerFreqHz     = 2.5f;            // ring oscillation rat
 constexpr float    kShimmerPhaseStep  = 0.5f;            // per-portal phase offset (rad)
 constexpr float    kRingMinEmissive   = 1.5f;            // ring pulse min
 constexpr float    kRingMaxEmissive   = 4.0f;            // ring pulse max
-constexpr float    kCoreMinEmissive   = 3.0f;            // core pulse min (always > ring)
-constexpr float    kCoreMaxEmissive   = 6.5f;            // core pulse max
+
+// ---- Electric-blue energy core ------------------------------------------------
+// The destination tint stays on the OUTER + INNER ring frame (so portals are
+// distinguishable), but the energy core + rim emitter nodes are a unifying
+// electric blue — every portal reads as a blue wormhole inside a colored housing.
+constexpr float    kCoreBlue[3]       = { 0.15f, 0.55f, 1.00f };  // electric blue
+constexpr float    kCoreInnerBlue[3]  = { 0.60f, 0.85f, 1.00f };  // brighter inner (near-white-blue)
+constexpr float    kCoreInnerHalfW    = 0.42f;          // inner disk half-width
+constexpr float    kCoreInnerHalfH    = 0.42f;          // inner disk half-height
+constexpr float    kCoreInnerHalfT    = 0.020f;         // inner disk half-thickness
+constexpr float    kCoreBlueMinEm     = 4.0f;           // core blue pulse min
+constexpr float    kCoreBlueMaxEm     = 9.0f;           // core blue pulse max (bright)
+constexpr float    kCoreFreqHz        = 3.2f;           // core pulses faster than the frame
+
+// ---- Wormhole-generator housing -----------------------------------------------
+// Emitter struts: radial "machine arms" reaching outward from the ring at the
+// cardinal angles, with a dim structural blue-grey body. They make the portal
+// read as a generated field, not a free-floating hoop.
+constexpr uint32_t kStrutCount        = 4;              // 4 arms (N/E/S/W of the ring)
+constexpr float    kStrutHalfLen      = 0.85f;          // radial half-length
+constexpr float    kStrutHalfThick    = 0.11f;          // cross-section half-thickness
+constexpr float    kStrutBlueGrey[3]  = { 0.16f, 0.24f, 0.38f };  // dim structural
+constexpr float    kStrutEmissive     = 0.6f;           // dim — it's housing, not energy
+// Rim emitter nodes: bright blue cubes seated on the OUTER ring at even angles.
+// They chase-pulse in sequence (a peak sweeps around the ring) so the generator
+// looks like it's cycling energy into the field.
+constexpr uint32_t kNodeCount         = 8;              // 8 emitter nodes
+constexpr float    kNodeHalf          = 0.17f;          // node cube half-extent
+constexpr float    kNodeBlue[3]       = { 0.25f, 0.62f, 1.00f };  // emitter blue
+constexpr float    kNodeChaseHz       = 0.85f;          // chase peak revolutions/sec
+constexpr float    kNodeMinEm         = 0.5f;           // node trough
+constexpr float    kNodeMaxEm         = 7.5f;           // node peak (when the chase hits it)
+constexpr float    kNodeChaseSharp    = 6.0f;           // higher = tighter/brighter peak
 
 // Portal authoring table — ORDER is the clockwise arrangement around the hub
 // starting at +X (angle 0 -> -X around -Y rotation; we iterate i=0..7 at
@@ -177,8 +208,10 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_portals.clear();
     m_portals.reserve(kPortalCount);
     // Each portal authors: (2 layers * kRingSegments ring boxes) + kPlateSegments
-    // floor wedges + 1 shimmer-disk core = 2*24 + 8 + 1 = 57 meshes.
-    m_portalMeshes.reserve(kPortalCount * (2 * kRingSegments + kPlateSegments + 1));
+    // floor wedges + kStrutCount emitter struts + kNodeCount rim nodes + 2 core
+    // disks = 2*24 + 8 + 4 + 8 + 2 = 70 meshes.
+    m_portalMeshes.reserve(kPortalCount *
+        (2 * kRingSegments + kPlateSegments + kStrutCount + kNodeCount + 2));
 
     const float twoPi = 6.2831853f;
     for (uint32_t i = 0; i < kPortalCount; ++i) {
@@ -282,10 +315,73 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             m_portalMeshes.push_back(ae.mesh);
         }
 
-        // ---- Shimmer disk (inner energy core) --------------------------------
-        // A thin vertical slab at the ring's center, facing back toward the
-        // hub (i.e. its plane perpendicular to the outward axis). Brighter
-        // than the ring — this is the visible "portal energy" that pulses.
+        // ---- Wormhole-generator emitter struts (4 radial arms) ---------------
+        // Dim structural blue-grey boxes reaching outward from just past the
+        // outer ring at the 4 cardinal ring angles (θ = 0, 90, 180, 270°). Each
+        // strut's long axis is the in-ring-plane radial direction at its angle.
+        for (uint32_t a = 0; a < kStrutCount; ++a) {
+            const float th = (float)a * (twoPi / (float)kStrutCount);
+            const float ct = std::cos(th);
+            const float st = std::sin(th);
+            // In-ring-plane radial-out at θ = ct*right + st*up (unit; right ⊥ up).
+            const float radX = ct * rightX;             // right x-component
+            const float radY = st;                      // up is world +Y
+            const float radZ = ct * rightZ;
+            // In-ring-plane tangent = -st*right + ct*up.
+            const float tanX = -st * rightX;
+            const float tanY =  ct;
+            const float tanZ = -st * rightZ;
+            // Strut center: just beyond the outer ring along the radial.
+            const float sr  = kOuterRingR + kStrutHalfLen;
+            const float scx = cx     + sr * radX;
+            const float scy = kRingY + sr * radY;
+            const float scz = cz     + sr * radZ;
+            // Local +X = radial (long axis), +Y = tangent (thin), +Z = outward (thin).
+            const float locX[3] = { radX, radY, radZ };
+            const float locY[3] = { tanX, tanY, tanZ };
+            const float locZ[3] = { outwardX, 0.0f, outwardZ };
+            AddedEntity ae = addOrientedEmissiveBox(
+                scene, device,
+                kStrutHalfLen, kStrutHalfThick, kStrutHalfThick,
+                locX, locY, locZ,
+                scx, scy, scz,
+                kStrutBlueGrey, kStrutEmissive);
+            m_portalMeshes.push_back(ae.mesh);
+        }
+
+        // ---- Rim emitter nodes (chase-pulsing blue cubes) --------------------
+        // Bright blue cubes seated on the OUTER ring at even angles. Authored
+        // contiguously so tick() can chase-pulse them in sequence. The chase
+        // makes the generator look like it's cycling energy into the field.
+        const uint32_t nodeEntFirst = scene.size();
+        for (uint32_t n = 0; n < kNodeCount; ++n) {
+            const float th = (float)n * (twoPi / (float)kNodeCount);
+            const float ct = std::cos(th);
+            const float st = std::sin(th);
+            // Node center: on the outer ring at angle θ.
+            const float ncx = cx     + kOuterRingR * ct * rightX;
+            const float ncy = kRingY + kOuterRingR * st;
+            const float ncz = cz     + kOuterRingR * ct * rightZ;
+            // Axis-aligned-ish cube (orientation cosmetic for a small cube).
+            const float locX[3] = { rightX, 0.0f, rightZ };
+            const float locY[3] = { 0.0f, 1.0f, 0.0f };
+            const float locZ[3] = { outwardX, 0.0f, outwardZ };
+            AddedEntity ae = addOrientedEmissiveBox(
+                scene, device,
+                kNodeHalf, kNodeHalf, kNodeHalf,
+                locX, locY, locZ,
+                ncx, ncy, ncz,
+                kNodeBlue, /*emStrength=*/kNodeMinEm);
+            m_portalMeshes.push_back(ae.mesh);
+        }
+        p.nodeEntFirst = nodeEntFirst;
+        p.nodeEntCount = kNodeCount;
+
+        // ---- Energy core: electric-blue disk + brighter inner disk -----------
+        // The wormhole itself — a vertical blue slab at the ring center facing
+        // back toward the hub, with a smaller near-white-blue disk in front of
+        // it for depth. Both pulse blue (NOT the destination tint) so every
+        // portal reads as a blue wormhole regardless of its frame color.
         const float coreLocX[3] = { rightX, 0.0f, rightZ };          // along the ring's right axis
         const float coreLocY[3] = { 0.0f,    1.0f, 0.0f    };        // world up
         const float coreLocZ[3] = { outwardX, 0.0f, outwardZ };      // thin axis = outward
@@ -294,9 +390,20 @@ void Rifthub::build(Scene& scene, x3::rhi::IRenderDevice& device,
             kCoreHalfW, kCoreHalfH, kCoreHalfT,
             coreLocX, coreLocY, coreLocZ,
             cx, kRingY, cz,
-            sp.tint, /*emStrength=*/5.0f);
+            kCoreBlue, /*emStrength=*/kCoreBlueMinEm);
         m_portalMeshes.push_back(core.mesh);
         p.coreEnt = core.entityId;
+
+        // Inner brighter disk, nudged a hair toward the hub (along -outward) so
+        // it sits just in front of the main core and doesn't z-fight.
+        AddedEntity coreInner = addOrientedEmissiveBox(
+            scene, device,
+            kCoreInnerHalfW, kCoreInnerHalfH, kCoreInnerHalfT,
+            coreLocX, coreLocY, coreLocZ,
+            cx - outwardX * 0.03f, kRingY, cz - outwardZ * 0.03f,
+            kCoreInnerBlue, /*emStrength=*/kCoreBlueMaxEm);
+        m_portalMeshes.push_back(coreInner.mesh);
+        p.coreInnerEnt = coreInner.entityId;
 
         m_portals.push_back(p);
 
@@ -318,28 +425,43 @@ void Rifthub::tick(float dt, Scene& scene) {
     if (!m_built) return;
     m_time += dt;
 
-    // sin(t*omega) -> [-1, 1] -> [0, 1] -> remap to {ring, core} ranges. Each
-    // portal gets a phase offset so the gates ripple around the hub.
     const float twoPi = 6.2831853f;
-    const float omega = twoPi * kShimmerFreqHz;
+    const float ringOmega = twoPi * kShimmerFreqHz;   // destination-tint frame pulse
+    const float coreOmega = twoPi * kCoreFreqHz;       // faster blue energy pulse
+    const float chaseOmega = twoPi * kNodeChaseHz;     // rim-node chase rotation
     auto& ents = scene.entities();
     const uint32_t sceneN = (uint32_t)ents.size();
+
     for (uint32_t i = 0; i < m_portals.size(); ++i) {
         const RiftPortal& p = m_portals[i];
         const float phase = (float)i * kShimmerPhaseStep;
-        const float s     = std::sin(m_time * omega + phase);
-        const float t01   = 0.5f * (s + 1.0f);
 
-        const float ringEm = kRingMinEmissive + (kRingMaxEmissive - kRingMinEmissive) * t01;
-        const float coreEm = kCoreMinEmissive + (kCoreMaxEmissive - kCoreMinEmissive) * t01;
-
-        // Pulse every ring segment (both layers share the same phase per portal).
+        // --- Frame ring: destination-tint pulse (gates ripple around the hub) ---
+        const float ringS   = std::sin(m_time * ringOmega + phase);
+        const float ringT01 = 0.5f * (ringS + 1.0f);
+        const float ringEm  = kRingMinEmissive + (kRingMaxEmissive - kRingMinEmissive) * ringT01;
         const uint32_t end = p.ringEntFirst + p.ringEntCount;
         for (uint32_t e = p.ringEntFirst; e < end && e < sceneN; ++e) {
             ents[e].emissive[3] = ringEm;
         }
-        if (p.coreEnt < sceneN) {
-            ents[p.coreEnt].emissive[3] = coreEm;
+
+        // --- Energy core: faster electric-blue pulse (core + brighter inner) ---
+        const float coreS   = std::sin(m_time * coreOmega + phase);
+        const float coreT01 = 0.5f * (coreS + 1.0f);
+        const float coreEm  = kCoreBlueMinEm + (kCoreBlueMaxEm - kCoreBlueMinEm) * coreT01;
+        if (p.coreEnt < sceneN)      ents[p.coreEnt].emissive[3]      = coreEm;
+        // Inner disk runs a touch brighter + counter-phased so the core "breathes".
+        if (p.coreInnerEnt < sceneN) ents[p.coreInnerEnt].emissive[3] = coreEm * 1.15f + 1.0f;
+
+        // --- Rim emitter nodes: a chase peak sweeps around the ring ---------
+        // node n's phase lags by n*(2pi/N); a sharpened cosine makes one bright
+        // peak travel the ring, like the generator cycling energy into the field.
+        const uint32_t nend = p.nodeEntFirst + p.nodeEntCount;
+        for (uint32_t n = 0; p.nodeEntFirst + n < nend && p.nodeEntFirst + n < sceneN; ++n) {
+            const float nodePhase = m_time * chaseOmega - (float)n * (twoPi / (float)kNodeCount);
+            const float c01  = 0.5f * (std::cos(nodePhase) + 1.0f);   // [0,1]
+            const float peak = std::pow(c01, kNodeChaseSharp);        // sharpen to a tight peak
+            ents[p.nodeEntFirst + n].emissive[3] = kNodeMinEm + (kNodeMaxEm - kNodeMinEm) * peak;
         }
     }
 }

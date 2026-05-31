@@ -78,7 +78,12 @@ struct RiftPortal {
     // shimmer-disk entity; tick() walks these to pulse emissive strength.
     uint32_t       ringEntFirst = 0;      // first scene entity id in the ring span
     uint32_t       ringEntCount = 0;      // number of ring-segment entities
-    uint32_t       coreEnt      = 0;      // shimmer disk entity id (energy core)
+    uint32_t       coreEnt      = 0;      // shimmer disk entity id (energy core, blue)
+    uint32_t       coreInnerEnt = 0;      // brighter inner blue disk (core depth)
+    // Rim emitter nodes — bright blue cubes on the outer ring that chase-pulse
+    // in sequence (the wormhole generator "charging" the field). Contiguous span.
+    uint32_t       nodeEntFirst = 0;      // first rim emitter-node entity id
+    uint32_t       nodeEntCount = 0;      // number of rim emitter nodes
 };
 
 // The Portal-Hub area. Build once after the device + physics + a TriggerSystem
