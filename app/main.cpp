@@ -5910,6 +5910,268 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // ---- Jake's hero fighter showcase (--world jakeship) -------------------
+    // The "Minerva": Jake's Rodin-generated gunmetal fighter (JakeFighterShip.glb,
+    // ~60k tris, PBR materials embedded). A clean hero display: the ship parked
+    // centered on a SLOW TURNTABLE against a subtle dark-nebula backdrop, lit by a
+    // 3-POINT rig (warm key + cool fill + warm rim/back) so the metal hull + PBR
+    // (normal/metallic-roughness) read — sheen on the panels, edges catching the
+    // rim. Drawn through drawMeshPBR so the normal + MR maps actually shade.
+    // Headless capture frames a hero 3/4 angle; windowed orbits the ship.
+    if (worldMode == "jakeship") {
+        x3::logInfo("--world jakeship: building Jake's hero fighter (Minerva) showcase");
+
+        // Deep space: no SSAO/GI (raster fallback goes black on no-RT — Settings),
+        // no analytic fog sky. We supply our own dark-nebula backdrop + 3-pt lights.
+        { x3::rhi::IRenderDevice::SsaoParams sp{}; sp.enabled = false; device->setSsaoParams(sp); }
+        { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; device->setGiParams(gp); }
+        { x3::rhi::IRenderDevice::SkyParams  kp{}; kp.enabled = false; device->setSkyParams(kp); }
+
+        // 3-point rig, neutral-to-cool, tuned for a mid-size metal hull:
+        //   [0] KEY  — warm, high front-right, the dominant shaper.
+        //   [1] FILL — cool, lower front-left, softens the shadow side.
+        //   [2] RIM  — warm-ish, behind/below, kicks a hot edge so the silhouette
+        //              separates from the black and the panel edges glint.
+        // Lights pulled out to ~+/-20u and intensities high (hull spans ~25u at this
+        // scale); the fill is generous so the shadow-side metal still reads, the rim
+        // hot so the silhouette + panel edges separate from the starfield.
+        { x3::rhi::PointLight pl[4];
+          // KEY (warm, front-right high) — the dominant shaper.
+          pl[0].pos[0]= 20.0f; pl[0].pos[1]= 18.0f; pl[0].pos[2]= 18.0f; pl[0].range=220.0f;
+          pl[0].color[0]=420.0f; pl[0].color[1]=394.0f; pl[0].color[2]=344.0f;
+          // FILL (cool, front-left lower) — lifts the whole shadow side.
+          pl[1].pos[0]=-22.0f; pl[1].pos[1]= 4.0f;  pl[1].pos[2]= 16.0f; pl[1].range=220.0f;
+          pl[1].color[0]=210.0f; pl[1].color[1]=246.0f; pl[1].color[2]=310.0f;
+          // RIM/BACK (warm, behind) — hot edge to pop the silhouette.
+          pl[2].pos[0]=-14.0f; pl[2].pos[1]= 10.0f; pl[2].pos[2]=-22.0f; pl[2].range=200.0f;
+          pl[2].color[0]=220.0f; pl[2].color[1]=176.0f; pl[2].color[2]=140.0f;
+          // UNDER-FILL (cool, low front) — keeps the ventral hull from crushing.
+          pl[3].pos[0]= 6.0f;  pl[3].pos[1]=-16.0f; pl[3].pos[2]= 14.0f; pl[3].range=180.0f;
+          pl[3].color[0]=70.0f; pl[3].color[1]=84.0f; pl[3].color[2]=104.0f;
+          device->setPointLights(pl, 4); }
+
+        // ---- Subtle dark-nebula backdrop --------------------------------------
+        // A big inward-facing box around the scene, painted with a dark blue-violet
+        // nebula gradient + faint stars, drawn UNLIT (high emissive, ~black albedo)
+        // so the ship sits IN space rather than a void. Camera lives well inside it.
+        x3::prims::PrimMesh skyGeo = x3::prims::makeBox(120.0f, 120.0f, 120.0f, 0,0,0, 1.0f);
+        // Duplicate the winding (append the reversed triangles) so the INWARD faces
+        // survive the device's back-face cull regardless of convention — the proven
+        // sky_stars/SpaceEnv skydome trick. We view the box from inside.
+        { const size_t n = skyGeo.index.size();
+          skyGeo.index.reserve(n * 2);
+          for (size_t k = 0; k + 2 < n; k += 3) {
+              skyGeo.index.push_back(skyGeo.index[k]);
+              skyGeo.index.push_back(skyGeo.index[k+2]);
+              skyGeo.index.push_back(skyGeo.index[k+1]);
+          } }
+        auto skyMesh = device->createMesh(skyGeo.verts.data(), (uint32_t)skyGeo.verts.size(),
+                                          skyGeo.index.data(), (uint32_t)skyGeo.index.size());
+        // Procedural nebula texture: dim base with violet/teal cloud bands + stars.
+        // Higher freq + brighter than a pure void so the small window the camera sees
+        // still carries structure (gradient + stars), placing the ship IN space.
+        const int kSky = 512;
+        std::vector<uint8_t> skyD((size_t)kSky*kSky*4);
+        {
+            auto h2 = [](int x, int y){ uint32_t h = (uint32_t)(x*374761393 + y*668265263);
+                                        h = (h ^ (h>>13)) * 1274126177u; return (h ^ (h>>16)); };
+            for (int y = 0; y < kSky; ++y) for (int x = 0; x < kSky; ++x) {
+                float fx = (float)x / kSky, fy = (float)y / kSky;
+                // Multi-octave cloud lobes (violet + teal) over a dim base.
+                float n1 = 0.5f + 0.5f*std::sin(fx*14.0f + fy*7.0f) * std::sin(fy*11.0f);
+                float n2 = 0.5f + 0.5f*std::cos(fx*9.0f - fy*13.0f) * std::cos(fx*10.0f);
+                float n3 = 0.5f + 0.5f*std::sin((fx+fy)*22.0f);
+                // Near-black base with HDR-bright violet/teal nebula wisps gated to the
+                // cloud-lobe overlap, plus hot stars. Because the emissive strength is
+                // tiny, only these bright peaks survive into a dim, structured field.
+                float cloud = std::max(0.0f, n1*n2 - 0.30f);   // only the lobe overlaps glow
+                float r = 6.0f  + 210.0f*cloud + 4.0f*n3;
+                float g = 4.0f  + 120.0f*cloud*n2 + 3.0f*n3;
+                float b = 10.0f + 255.0f*cloud + 8.0f*n1;
+                // Hot, plentiful stars (pushed to HDR so they read through the low gain).
+                uint32_t hh = h2(x,y);
+                if ((hh & 0xff) < 3) { float s = 235.0f + (hh>>8 & 0x14); r=s; g=s; b=255.0f; }
+                size_t o = ((size_t)y*kSky + x)*4;
+                skyD[o+0]=(uint8_t)std::min(255.0f,r); skyD[o+1]=(uint8_t)std::min(255.0f,g);
+                skyD[o+2]=(uint8_t)std::min(255.0f,b); skyD[o+3]=255;
+            }
+        }
+        auto skyTex = device->createTexture(skyD.data(), kSky, kSky, true);
+        float skyXform[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+
+        // ---- Load Jake's fighter (JakeFighterShip.glb), drone/box fallback. ----
+        const std::string rigDir = x3::game::riggedGlbRoot();
+        std::unique_ptr<x3::asset::IAssetSource> asrc(x3::asset::createAssetSource());
+        asrc->mountDir(rigDir, 0);
+        std::unique_ptr<x3::asset::IModelLoader> mloader(
+            x3::asset::createModelLoader(device.get(), asrc.get()));
+        const char* kShipCandidates[] = {
+            "JakeFighterShip.glb", "SpaceShip.glb", "SpaceShip2.glb"
+        };
+        x3::asset::Model shipModel{}; std::string shipFile;
+        for (const char* c : kShipCandidates) {
+            shipModel = mloader->load(c);
+            if (shipModel.ok) { shipFile = c; break; }
+        }
+        std::vector<x3::asset::ModelDrawable> shipDrawables;
+        if (shipModel.ok) shipDrawables = x3::asset::makeDrawables(shipModel);
+        int nNormal = 0, nMR = 0;
+        for (const auto& dr : shipDrawables) { if (dr.normalTexId) ++nNormal; if (dr.mrTexId) ++nMR; }
+        x3::logInfo(std::string("--world jakeship: hull = ") +
+                    (shipModel.ok ? shipFile : "<procedural-box-fallback>") +
+                    " | primitives=" + std::to_string(shipDrawables.size()) +
+                    " normalMaps=" + std::to_string(nNormal) +
+                    " mrMaps=" + std::to_string(nMR));
+
+        // Procedural-box fallback if the GLB failed to load.
+        x3::prims::PrimMesh sbm = x3::prims::makeBox(2.4f, 0.8f, 1.4f, 0, 0, 0, 0.25f);
+        auto shipBoxMesh = device->createMesh(sbm.verts.data(), (uint32_t)sbm.verts.size(),
+                                              sbm.index.data(), (uint32_t)sbm.index.size());
+        auto sbTexD = x3::prims::makeCheckerRGBA(64, 8, 150, 160, 185, 50, 58, 78);
+        auto shipBoxTex = device->createTexture(sbTexD.data(), 64, 64, true);
+
+        // ---- Framing -----------------------------------------------------------
+        // The loader bakes Y-up + node placement into each drawable's nodeTransform
+        // but does NOT expose CPU geometry bounds across the boundary, so we cannot
+        // auto-fit from the Model. We recenter by the AVERAGE of the node translations
+        // (a stable proxy for the hull center on a multi-node export) and apply an
+        // empirically-tuned scale that frames the hero hull (iterated against the
+        // captured PNG). The procedural-box fallback uses identity center/scale.
+        float ctr[3] = { 0,0,0 };
+        if (!shipDrawables.empty()) {
+            for (const auto& dr : shipDrawables) {
+                ctr[0]+=dr.nodeTransform[12]; ctr[1]+=dr.nodeTransform[13]; ctr[2]+=dr.nodeTransform[14];
+            }
+            for (int k=0;k<3;++k) ctr[k] /= (float)shipDrawables.size();
+        }
+        const float kShipScale = shipModel.ok ? 2.6f : 1.0f;   // tuned for JakeFighterShip.glb
+        x3::logInfo("--world jakeship: center=(" + std::to_string(ctr[0]) + "," +
+                    std::to_string(ctr[1]) + "," + std::to_string(ctr[2]) +
+                    ") scale=" + std::to_string(kShipScale));
+
+        // Build the turntable root: yaw about +Y, recenter (subtract ctr) then scale.
+        // Column-major: m = Scale * Yaw * Translate(-ctr).
+        auto setRoot = [&](float yaw, float* m){
+            const float c = std::cos(yaw), s = std::sin(yaw), S = kShipScale;
+            // Rotate-then-scale basis.
+            m[0]=c*S; m[1]=0;  m[2]=-s*S; m[3]=0;
+            m[4]=0;   m[5]=S;  m[6]=0;    m[7]=0;
+            m[8]=s*S; m[9]=0;  m[10]=c*S; m[11]=0;
+            // Translation = -(R*S*ctr) so the recentred hull sits at the origin.
+            m[12] = -(c*S*ctr[0] + s*S*ctr[2]);
+            m[13] = -(S*ctr[1]);
+            m[14] = -(-s*S*ctr[0] + c*S*ctr[2]);
+            m[15] = 1.0f;
+        };
+
+        // Draw the nebula backdrop (unlit) then the ship through the PBR path.
+        auto drawScene = [&](const x3::rhi::FrameContext& frame, float yaw){
+            // Starfield backdrop, drawn UNLIT but with a LOW emissive strength so the
+            // mostly-black texture reads as deep space with faint nebula wisps + stars,
+            // WITHOUT the box becoming a bright HDR source that bloom washes to grey.
+            // (Tuned low: the field must stay dark so the lit hull is the hero.)
+            const float skyEmis[4] = { 1.0f, 1.0f, 1.0f, 0.05f };
+            const float skyFac[4]  = { 1.0f, 1.0f, 1.0f, 1.0f };
+            device->drawMeshEmissive(frame, skyMesh, skyTex, skyFac, skyEmis, skyXform);
+
+            float root[16]; setRoot(yaw, root);
+            if (shipModel.ok) {
+                const float noEmis[4] = { 0,0,0,0 };
+                for (const auto& dr : shipDrawables) {
+                    float fin[16];
+                    x3::asset::mulMat4(root, dr.nodeTransform, fin);
+                    // Keep the authored PBR base color; a touch of lift so the very
+                    // dark gunmetal albedo doesn't crush to black, but let the metal
+                    // sheen come from the lights + MR map (not a flat brightening).
+                    float tint[4] = {
+                        dr.baseColorFactor[0]*1.25f + 0.10f,
+                        dr.baseColorFactor[1]*1.25f + 0.11f,
+                        dr.baseColorFactor[2]*1.25f + 0.13f,
+                        dr.baseColorFactor[3] };
+                    device->drawMeshPBR(frame,
+                                        x3::rhi::MeshHandle{ dr.meshId },
+                                        x3::rhi::TextureHandle{ dr.baseColorTexId },
+                                        x3::rhi::TextureHandle{ dr.normalTexId },
+                                        x3::rhi::TextureHandle{ dr.mrTexId },
+                                        tint, noEmis, fin);
+                }
+            } else {
+                const float white[4] = { 1.3f, 1.35f, 1.45f, 1.0f };
+                device->drawMesh(frame, shipBoxMesh, shipBoxTex, white, root);
+            }
+        };
+
+        device->setFrustumCull(false);   // robust visual capture (see --world space)
+
+        // ===== Headless capture: a hero 3/4 angle ==============================
+        if (headless) {
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_jakeship.png");
+            // 3/4 hero framing: front-right, slightly above, looking down at the hull.
+            float cam[5] = { 15.0f, 7.0f, 17.0f, 3.86f, -0.26f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const int kFrames = 36;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                device->setCamera(cam[0],cam[1],cam[2],cam[3],cam[4], 52.0f);
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                // Settle at a rear-3/4 hero yaw (180 deg) — the broad top hull catches
+                // the warm key, the engine block + spine read, best PBR sheen of the set.
+                if (frame.valid) drawScene(frame, 3.14159265f);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world jakeship: wrote " + outPath);
+            else       x3::logError("--world jakeship: capture FAILED");
+            if (shipModel.ok) mloader->unload(shipModel);
+            device->destroyMesh(skyMesh);     device->destroyTexture(skyTex);
+            device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Windowed: slow turntable, free orbit with the mouse. ============
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMXj, lastMYj; glfwGetCursorPos(window, &lastMXj, &lastMYj);
+        double startTimeJ = glfwGetTime();
+        float orbYaw = 3.86f, orbPitch = -0.34f, orbDist = 17.0f;
+        x3::logInfo("--world jakeship: mouse-orbit the Minerva; it turntables automatically; Esc to quit");
+        int lastWsJ = (int)W, lastHsJ = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float t = (float)(now - startTimeJ);
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMXj), ddy = (float)(my - lastMYj);
+            lastMXj = mx; lastMYj = my;
+            orbYaw   += ddx * 0.0035f;
+            orbPitch -= ddy * 0.0035f;
+            if (orbPitch >  1.4f) orbPitch =  1.4f;
+            if (orbPitch < -1.4f) orbPitch = -1.4f;
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWsJ || chh != lastHsJ) { lastWsJ = cw; lastHsJ = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+            float ex = orbDist * std::cos(orbPitch) * std::sin(orbYaw);
+            float ey = orbDist * std::sin(-orbPitch);
+            float ez = orbDist * std::cos(orbPitch) * std::cos(orbYaw);
+            device->setCamera(ex, ey, ez, orbYaw + 3.14159265f, orbPitch, 52.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) drawScene(frame, 0.25f * t);   // slow turntable
+            device->endFrame(frame);
+        }
+        if (shipModel.ok) mloader->unload(shipModel);
+        device->destroyMesh(skyMesh);     device->destroyTexture(skyTex);
+        device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
     // ---- Glass material showcase (--world glass) ---------------------------
     // M5 SHINY+TRANSPARENT glass proof: a lit room with DEPTH-RICH, recognizable,
     // differently-colored boxes (and a bright emissive marker at varied depths)
