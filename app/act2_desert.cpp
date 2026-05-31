@@ -51,19 +51,11 @@ MonsterSystem::Tuning overlordMeleeTuning() {
     return t;
 }
 
-// L10 OVERLORD PATROL — ranged elite. Built on the Illuminated (ranged elite)
-// profile, tinted Overlord magenta, damage forced into the combat:: ranged band.
-// EXISTING roster type.
-MonsterSystem::Tuning overlordRangedTuning() {
-    MonsterSystem::Tuning t = tuningFor(EnemyType::Illuminated);
-    t.type           = MonsterType::Drone;
-    t.ranged         = true;
-    t.damage         = combat::kRangedDamageDefault;    // ensure > 0 (hostile)
-    t.attackCooldown = combat::kRangedCooldownDefault;
-    t.standoff       = combat::kRangedStandoff;
-    t.tint[0] = 0.80f; t.tint[1] = 0.25f; t.tint[2] = 0.55f; t.tint[3] = 1.0f; // Overlord magenta
-    return t;
-}
+// (L10 OVERLORD PATROL — ranged-elite slot is now filled by the canon-aliens
+//  GreyTasked drone instead of a tinted Illuminated synth. Lore-correct: the
+//  Greys are synthetic worker-drones serving the Reptilian Overlords, so a
+//  Reptilian-led patrol naturally drags one Grey along as the ranged spotter.
+//  Stats come from canonAlienTuning(CanonAlien::GreyTasked) — see canon_aliens.cpp.)
 
 // A Salvari refugee marker. Uses the REAL Act-2 roster `SalvariAlly` type (the
 // roster lane already shipped it): startAllied => m_allied=true + m_dmg=0 at build,
@@ -158,14 +150,16 @@ void Act2Desert::build(Scene& scene, x3::rhi::IRenderDevice& device,
                                      0.40f, 0.55f, 0.90f, 0.35f, 0.85f, 1.00f, 2.5f);
         }
 
-        // Light Overlord patrol (existing hostile roster, tinted Overlord) spread
-        // along the approach: 2 melee troopers woven with 1 ranged elite.
+        // Mixed patrol (Reptilian Troopers + their Grey-servant ranged spotter)
+        // spread along the approach: 2 melee Overlord Troopers (existing tinted
+        // hostile roster) woven with 1 canon Grey Tasked drone (ranged).
         m_patrol.spawn(scene, device, physics, m_modelDir,
                        surfaceAt(X10 + 45, Z0 + 5, kDesertEnemyYOff), overlordMeleeTuning());
         m_patrol.spawn(scene, device, physics, m_modelDir,
                        surfaceAt(X10 + 85, Z0 - 6, kDesertEnemyYOff), overlordMeleeTuning());
         m_patrol.spawn(scene, device, physics, m_modelDir,
-                       surfaceAt(X10 + 125, Z0 + 3, kDesertEnemyYOff), overlordRangedTuning());
+                       surfaceAt(X10 + 125, Z0 + 3, kDesertEnemyYOff),
+                       canonAlienTuning(CanonAlien::GreyTasked));
         p.patrolCount = m_patrol.count();
 
         // FIRST CONTACT: allied Salvari refugees near the cave mouth. Index 0 is the
@@ -267,6 +261,51 @@ void Act2Desert::build(Scene& scene, x3::rhi::IRenderDevice& device,
             m_survivors.at(idx).convertToAllied();
         }
         p.salvariCount = m_survivors.count();
+
+        // L11 NORDIC STEWARD MENTOR (canon-aliens). A second-species allied
+        // presence in the camp — the mentor who staffs the upgrade station,
+        // distinct from K'thara's cyan-white Salvari commander. Stationary +
+        // startAllied (chaseSpeed 0 + 0 damage) — re-asserted with convertToAllied
+        // for parity with the survivor pattern. Placed east of K'thara, slightly
+        // off-axis, so the camp visually reads as "two species cohabiting".
+        {
+            const uint32_t idx = m_nordicMentor.spawn(
+                scene, device, physics, m_modelDir,
+                surfaceAt(X11 + 12, Z0 - 6, kDesertEnemyYOff),
+                canonAlienTuning(CanonAlien::NordicSteward));
+            m_nordicMentor.at(idx).convertToAllied();
+        }
+    }
+
+    // ===================================================================
+    // L10 — SAURIAN WARLORD boss (canon-aliens Reptilian Overlord enforcer). Spawned
+    // in a dedicated arena center deep in L10 (between the Overlord patrol and the
+    // cave mouth) using the canon-alien SaurianWarlord Tuning (HP 540, Boss type,
+    // 3 phases + memory-flash window aligned to the Adaptive-Hide rhythm). PRESENT
+    // at build but INERT (m_warlordSpawned=false) — arming the L10WarlordArena
+    // trigger latches it active. Once the Adaptive-Hide engine extension lands,
+    // setting adaptiveHideResist=0.6 on the Tuning row in canon_aliens.cpp lights up
+    // the "rotate damage type" rhythm.
+    // ===================================================================
+    {
+        const float Xwarlord = X0 + 680.0f;
+        m_warlord.spawn(scene, device, physics, m_modelDir,
+                        surfaceAt(Xwarlord, Z0, kDesertEnemyYOff),
+                        canonAlienTuning(CanonAlien::SaurianWarlord));
+    }
+
+    // ===================================================================
+    // L10 — MANTIS ARBITER AMBUSH (canon-aliens; gated by the side-quest).
+    // A wildcard insectoid investigates the camp once the player commits a
+    // "highly visible" act of mercy (saving the injured Salvari). PRESENT at
+    // build but INERT until BOTH (a) the L10MantisAmbush trigger fires AND
+    // (b) m_injuredSalvariRescued is true. The trigger volume sits a short
+    // walk past the cave mouth, so naturally re-entered after the rescue.
+    // ===================================================================
+    {
+        m_mantisAmbush.spawn(scene, device, physics, m_modelDir,
+                             surfaceAt(Xcave - 8.0f, Z0 + 12.0f, kDesertEnemyYOff),
+                             canonAlienTuning(CanonAlien::MantisArbiter));
     }
 
     // ---- Triggers (host's shared TriggerSystem; ids forwarded to onTrigger).
@@ -281,6 +320,8 @@ void Act2Desert::build(Scene& scene, x3::rhi::IRenderDevice& device,
         };
         addGate(Xt910,  Z0, 6.0f,  14.0f, Act2DesertTrigger::L9toL10Transition);
         addGate(Xcave,  Z0, 10.0f, 14.0f, Act2DesertTrigger::L10CaveEntrance);
+        addGate(X0 + 680.0f, Z0, 12.0f, 14.0f, Act2DesertTrigger::L10WarlordArena);
+        addGate(Xcave + 2.0f, Z0 + 8.0f, 8.0f, 6.0f, Act2DesertTrigger::L10MantisAmbush);
         addGate(Xt1011, Z0, 6.0f,  14.0f, Act2DesertTrigger::L10toL11Transition);
         addGate(X11,    Z0, 16.0f, 16.0f, Act2DesertTrigger::L11CulturalExchange);
     }
@@ -309,8 +350,8 @@ void Act2Desert::build(Scene& scene, x3::rhi::IRenderDevice& device,
     m_built = true;
     x3::logInfo("Act2Desert::build complete — L10 CRYSTALLINE DESERT DEPTHS (7 crystals, "
                 "hidden cave mouth, 3 first-contact Salvari [1 injured -> side-quest], "
-                "3-strong Overlord patrol) + L11 SALVARI CAMP (cave graybox + 8 crystals, "
-                "7 survivor markers incl. K'thara, an upgrade station + cultural-exchange "
+                "3-strong patrol [2 Reptilian Troopers + 1 Grey Tasked drone] + a gated Mantis Arbiter ambush wildcard) + L11 SALVARI CAMP (cave graybox + 8 crystals, "
+                "7 survivor markers incl. K'thara + 1 Nordic Steward mentor at the upgrade station + cultural-exchange "
                 "beat); alien sky + streamed terrain stood up");
 }
 
@@ -322,11 +363,14 @@ void Act2Desert::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     // The Overlord patrol attacks only while the player is alive (matches act2_world).
     IDamageSink* atk = (player && player->isAlive()) ? player : nullptr;
     m_patrol.update(dt, scene, physics, eye, atk, attackFx);
+    if (m_warlordSpawned) m_warlord.update(dt, scene, physics, eye, atk, attackFx);
+    if (m_mantisSpawned)  m_mantisAmbush.update(dt, scene, physics, eye, atk, attackFx);
 
     // Allied Salvari (contacts + camp survivors): movement-only, stationary markers
     // (chaseSpeed 0) — they never fight the player.
     m_contacts.update(dt, scene, physics, playerPos);
     m_survivors.update(dt, scene, physics, playerPos);
+    m_nordicMentor.update(dt, scene, physics, playerPos);
 }
 
 uint32_t Act2Desert::update(Scene& scene, x3::rhi::IRenderDevice& device,
@@ -361,6 +405,22 @@ void Act2Desert::onTrigger(uint32_t triggerId) {
                 x3::logInfo("Act2: Salvari cultural-exchange beat reached");
             }
             break;
+        case Act2DesertTrigger::L10WarlordArena:
+            if (!m_warlordSpawned) {
+                m_warlordSpawned = true;
+                x3::logInfo("Act2: L10 WARLORD ARENA armed — Saurian Warlord active");
+            }
+            break;
+        case Act2DesertTrigger::L10MantisAmbush:
+            // Gate: only arms IF the player saved the injured Salvari first. The
+            // trigger volume can fire any number of times before the rescue; nothing
+            // happens until the moral-choice prerequisite is true. After the rescue,
+            // crossing the same volume latches the wildcard ambush.
+            if (!m_mantisSpawned && m_injuredSalvariRescued) {
+                m_mantisSpawned = true;
+                x3::logInfo("Act2: L10 MANTIS AMBUSH armed — wildcard Arbiter investigates the saved Salvari");
+            }
+            break;
     }
 }
 
@@ -388,15 +448,28 @@ bool Act2Desert::onInteract(uint32_t interactId) {
 
 FireResult Act2Desert::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                               Scene& scene, x3::phys::IPhysicsWorld& physics) {
-    // Only the hostile Overlord patrol is a valid target (allied Salvari excluded).
+    // L10 Warlord (when armed) takes priority — return its hit if any.
+    if (m_warlordSpawned) {
+        FireResult rw = m_warlord.fire(eye, dir, scene, physics);
+        if (rw.hitMonster) return rw;
+    }
+    // L10 Mantis Ambush (when armed) is next priority — wildcard is closer than the patrol.
+    if (m_mantisSpawned) {
+        FireResult rm = m_mantisAmbush.fire(eye, dir, scene, physics);
+        if (rm.hitMonster) return rm;
+    }
+    // Otherwise fire against the L10 Overlord patrol (allied Salvari excluded).
     return m_patrol.fire(eye, dir, scene, physics);
 }
 
 void Act2Desert::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                       const Scene& scene) const {
     m_patrol.drawAll(device, frame, scene);
+    if (m_warlordSpawned) m_warlord.drawAll(device, frame, scene);
+    if (m_mantisSpawned)  m_mantisAmbush.drawAll(device, frame, scene);
     m_contacts.drawAll(device, frame, scene);
     m_survivors.drawAll(device, frame, scene);
+    m_nordicMentor.drawAll(device, frame, scene);
 }
 
 void Act2Desert::shutdown(Scene& scene, x3::rhi::IRenderDevice& device,
@@ -531,6 +604,21 @@ bool runAct2DesertSelfTest() {
               "D7 side-quest + upgrade station present but INERT at load");
     }
 
+    // ---- L10 Mantis Ambush (canon-aliens) — PRESENT at load + INERT, AND the
+    // L10MantisAmbush trigger does NOT arm the wildcard while the injured-Salvari
+    // side-quest is still INERT (the gate's negative half: no rescue → no Mantis).
+    // Runs BEFORE D8 so m_injuredSalvariRescued is still false here. ----
+    {
+        bool presentInert = world.mantisAmbush().count() == 1 && !world.mantisSpawned();
+        check(presentInert,
+              "D18 Mantis Arbiter PRESENT at load (count=1) but INERT (mantisSpawned=false)");
+
+        // Fire the trigger now — side-quest NOT done → gate blocks → still inert.
+        world.onTrigger((uint32_t)Act2DesertTrigger::L10MantisAmbush);
+        check(!world.mantisSpawned(),
+              "D19 L10MantisAmbush trigger is GATED — without the side-quest rescued, the Mantis stays INERT");
+    }
+
     // ---- Interacting flips them; idempotent (second interact returns false). ----
     {
         bool firstSide = world.onInteract((uint32_t)Act2DesertInteract::L10InjuredSalvari);
@@ -565,6 +653,48 @@ bool runAct2DesertSelfTest() {
         check(world.l10Reached() && world.caveFound() && world.l11Reached() &&
               world.culturalExchangeDone(),
               "D11 L9->L10 / cave / L10->L11 / cultural-exchange triggers latch their beats");
+    }
+
+    // ---- L10 Saurian Warlord boss (canon-aliens) — PRESENT at load but INERT;
+    // arming the L10WarlordArena trigger latches it active. ----
+    {
+        // Warlord built (1 monster in manager) but INERT at load (m_warlordSpawned=false).
+        bool buildOk = world.warlord().count() == 1 && !world.warlordSpawned();
+        bool tuningOk = false;
+        if (world.warlord().count() == 1) {
+            const MonsterSystem& w = world.warlord().at(0);
+            tuningOk = w.maxHp() == 540 && w.type() == MonsterType::Boss && w.alive();
+        }
+        check(buildOk && tuningOk,
+              "D15 Saurian Warlord PRESENT at load (HP 540, Boss-typed, alive) but INERT (warlordSpawned=false)");
+
+        // Arming the L10WarlordArena trigger latches the boss live.
+        world.onTrigger((uint32_t)Act2DesertTrigger::L10WarlordArena);
+        check(world.warlordSpawned(),
+              "D16 L10WarlordArena trigger latches warlordSpawned=true (boss goes live)");
+    }
+
+    // ---- L11 Nordic Steward mentor (canon-aliens) — exactly 1 present, allied,
+    // 0 damage, alive (a second-species allied presence in the camp). ----
+    {
+        bool buildOk = world.nordicMentor().count() == 1 &&
+                       allAlliedAndHarmless(world.nordicMentor());
+        check(buildOk,
+              "D17 Nordic Steward mentor PRESENT in L11 camp (count=1) + ALLIED + 0 damage + alive");
+    }
+
+    // ---- L10 Mantis Ambush — the gate's positive half. By here, D8 has latched
+    // m_injuredSalvariRescued=true; re-firing the L10MantisAmbush trigger should
+    // now arm the wildcard (mantisSpawned flips true + the monster stays alive). ----
+    {
+        // Sanity: D19 set the world up so the trigger was already fired once and
+        // blocked. Side-quest is now rescued; re-firing the trigger should latch.
+        world.onTrigger((uint32_t)Act2DesertTrigger::L10MantisAmbush);
+        bool armed = world.mantisSpawned() &&
+                     world.mantisAmbush().count() == 1 &&
+                     world.mantisAmbush().at(0).alive();
+        check(armed,
+              "D20 L10MantisAmbush trigger latches mantisSpawned=true AFTER the side-quest is rescued (gate opens)");
     }
 
     // ---- L9 -> L10 -> L11 chain reachable (both transitions registered + enabled +
