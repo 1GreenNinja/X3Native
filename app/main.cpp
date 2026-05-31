@@ -92,6 +92,7 @@
 #include "space/wormhole_transit.h"        // S3 wormhole transit (--test-wormhole-transit + --world wormhole-transit)
 #include "space/descent.h"                  // S4 cinematic atmo descent (--test-atmo-descent + --world atmo-descent)
 #include "space/ship_interior.h"           // S5 walkable ship interior (--test-ship-interior + --world ship-interior)
+#include "space/ship_ai.h"                  // S8 enemy ship AI / dogfight (--test-ship-ai + --world ship-ai)
 #include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
@@ -1360,7 +1361,8 @@ int main(int argc, char** argv) {
          testWormhole = false,
          testWormholeTransit = false,
          testAtmoDescent = false,
-         testShipInterior = false;
+         testShipInterior = false,
+         testShipAi = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1712,6 +1714,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-wormhole-transit") testWormholeTransit = true;
         else if (a == "--test-atmo-descent") testAtmoDescent = true;
         else if (a == "--test-ship-interior") testShipInterior = true;
+        else if (a == "--test-ship-ai") testShipAi = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -2771,6 +2774,11 @@ int main(int argc, char** argv) {
     if (testShipInterior) {
         x3::logInfo("running S5 ship-interior (walkable, data-driven) self-test...");
         return x3::space::runShipInteriorSelfTest() ? 0 : 1;
+    }
+    // --test-ship-ai: S8 enemy ship AI self-test. Pure logic, headless, no GPU.
+    if (testShipAi) {
+        x3::logInfo("running S8 enemy ship-AI (dogfight) self-test...");
+        return x3::space::runShipAiSelfTest() ? 0 : 1;
     }
     if (testHoloterm) {
         x3::logInfo("running holo-terminal (text + input) self-test...");
@@ -5879,6 +5887,217 @@ int main(int argc, char** argv) {
         device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
         if (shipModel.ok) mloader->unload(shipModel);
         sphys->shutdown(); device->shutdown();
+        if (window) glfwDestroyWindow(window); glfwTerminate();
+        return 0;
+    }
+
+    // ======================================================================
+    // ---- S8 ENEMY SHIP-AI dogfight showcase (--world ship-ai) -------------
+    // A dummy (static) player ship at the origin + a wing of AI enemy fighters
+    // that fly in, maneuver, and fire (the EnemyShipManager dogfight sandbox).
+    // Each enemy is drawn as a ship GLB at its pos/fwd; their laser-fire events
+    // are rendered as CombatFx tracers. Dark clear color (deep space), SSAO+SSGI
+    // OFF (the no-RT black-on-empty-space fallback), bright point lights so the
+    // ships read. Headless `--world ship-ai --screenshot <path>` writes a PNG.
+    if (worldMode == "ship-ai") {
+        x3::logInfo("--world ship-ai: building the S8 enemy ship-AI dogfight showcase");
+
+        // Sky off (no daytime backdrop over deep space); SSAO + SSGI off (raster
+        // fallback blacks out an empty-space scene on no-RT GPUs -- memory bank).
+        { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
+        { x3::rhi::IRenderDevice::SsaoParams ap{}; ap.enabled = false; device->setSsaoParams(ap); }
+        { x3::rhi::IRenderDevice::GiParams gp{}; gp.enabled = false; device->setGiParams(gp); }
+        // Bright point lights near the fleet so the ships aren't silhouettes
+        // (deep space has zero bounced light).
+        { x3::rhi::PointLight pl[3];
+          pl[0].pos[0] =  120.0f; pl[0].pos[1] = 120.0f; pl[0].pos[2] = 120.0f;
+          pl[0].range  =  700.0f;
+          pl[0].color[0] = 60.0f; pl[0].color[1] = 56.0f; pl[0].color[2] = 48.0f;
+          pl[1].pos[0] = -80.0f; pl[1].pos[1] =  60.0f; pl[1].pos[2] =  20.0f;
+          pl[1].range  = 500.0f;
+          pl[1].color[0] = 15.0f; pl[1].color[1] = 18.0f; pl[1].color[2] = 24.0f;
+          pl[2].pos[0] =  200.0f; pl[2].pos[1] = -30.0f; pl[2].pos[2] = -50.0f;
+          pl[2].range  = 600.0f;
+          pl[2].color[0] = 8.0f; pl[2].color[1] = 6.0f; pl[2].color[2] = 4.0f;
+          device->setPointLights(pl, 3); }
+
+        // ---- Dummy player ship (static target at the origin) --------------
+        const float playerPos[3] = { 0.0f, 0.0f, 0.0f };
+        const float playerVel[3] = { 0.0f, 0.0f, 0.0f };
+
+        // ---- Enemy ship manager: spawn 4 fighters in a loose ring out front
+        x3::space::EnemyShipManager fleet;
+        fleet.init(8);
+        const float spawns[][3] = {
+            {   55.0f,    6.0f,   16.0f },
+            {   70.0f,   -4.0f,  -20.0f },
+            {   48.0f,   10.0f,   -8.0f },
+            {   85.0f,    0.0f,    6.0f },
+        };
+        for (const auto& s : spawns) fleet.spawn(s);
+        x3::logInfo(std::string("--world ship-ai: spawned ") +
+                    std::to_string(fleet.count()) + " enemy fighters");
+
+        // ---- Ship visual GLB. Try SpaceShip2.glb (task brief) first, then the
+        //      DroneOscillating stand-in, else a procedural box.
+        const std::string rigDir = x3::game::riggedGlbRoot();
+        std::unique_ptr<x3::asset::IAssetSource> asrc(x3::asset::createAssetSource());
+        asrc->mountDir(rigDir, 0);
+        std::unique_ptr<x3::asset::IModelLoader> mloader(x3::asset::createModelLoader(device.get(), asrc.get()));
+        const char* kShipCandidates[] = {
+            "SpaceShip2.glb", "SpaceShip.glb", "SpaceShip3.glb",
+            "DroneOscillating.glb", "DroneExportWMotion.glb"
+        };
+        x3::asset::Model shipModel{};
+        std::string shipFile;
+        for (const char* c : kShipCandidates) {
+            shipModel = mloader->load(c);
+            if (shipModel.ok) { shipFile = c; break; }
+        }
+        std::vector<x3::asset::ModelDrawable> shipDrawables;
+        if (shipModel.ok) shipDrawables = x3::asset::makeDrawables(shipModel);
+        x3::logInfo(std::string("--world ship-ai: enemy ship model=") +
+                    (shipModel.ok ? shipFile : "<procedural-box-fallback>"));
+
+        // Procedural-box fallback.
+        x3::prims::PrimMesh sbm = x3::prims::makeBox(3.0f, 1.0f, 1.8f, 0, 0, 0, 0.3f);
+        auto shipBoxMesh = device->createMesh(sbm.verts.data(), (uint32_t)sbm.verts.size(),
+                                              sbm.index.data(), (uint32_t)sbm.index.size());
+        auto sbTexD = x3::prims::makeCheckerRGBA(64, 8, 200, 120, 110, 70, 60, 90);
+        auto shipBoxTex = device->createTexture(sbTexD.data(), 64, 64, true);
+
+        // CombatFx (heap — see --world space note on the 1 MB stack).
+        auto combatFxOwned = std::make_unique<x3::game::CombatFx>();
+        x3::game::CombatFx& combatFx = *combatFxOwned;
+        combatFx.init(*device);
+
+        const float kEnemyScale = 22.0f;
+        const float dtSim = 1.0f / 60.0f;
+
+        // Build a 4x4 model matrix from a ship's pos + forward heading (the ship
+        // local +X aligned to fwd; a world-up reference builds an orthonormal basis).
+        auto enemyXform = [&](const x3::space::EnemyShip& s, float out[16]) {
+            float f[3] = { s.fwd[0], s.fwd[1], s.fwd[2] };
+            float fl = std::sqrt(f[0]*f[0]+f[1]*f[1]+f[2]*f[2]);
+            if (fl > 1e-4f) { f[0]/=fl; f[1]/=fl; f[2]/=fl; } else { f[0]=1; f[1]=0; f[2]=0; }
+            float up[3] = { 0, 1, 0 };
+            // right = up x f
+            float r[3] = { up[1]*f[2]-up[2]*f[1], up[2]*f[0]-up[0]*f[2], up[0]*f[1]-up[1]*f[0] };
+            float rl = std::sqrt(r[0]*r[0]+r[1]*r[1]+r[2]*r[2]);
+            if (rl > 1e-4f) { r[0]/=rl; r[1]/=rl; r[2]/=rl; } else { r[0]=0; r[1]=0; r[2]=1; }
+            // recompute up = f x right
+            float u[3] = { f[1]*r[2]-f[2]*r[1], f[2]*r[0]-f[0]*r[2], f[0]*r[1]-f[1]*r[0] };
+            const float S = kEnemyScale;
+            out[0]=f[0]*S; out[1]=f[1]*S; out[2]=f[2]*S; out[3]=0;
+            out[4]=u[0]*S; out[5]=u[1]*S; out[6]=u[2]*S; out[7]=0;
+            out[8]=r[0]*S; out[9]=r[1]*S; out[10]=r[2]*S; out[11]=0;
+            out[12]=s.pos[0]; out[13]=s.pos[1]; out[14]=s.pos[2]; out[15]=1;
+        };
+
+        auto drawShipAt = [&](const x3::rhi::FrameContext& frame, const float xform[16], float bright) {
+            if (shipModel.ok) {
+                for (const auto& dr : shipDrawables) {
+                    float fin[16];
+                    x3::asset::mulMat4(xform, dr.nodeTransform, fin);
+                    float tint[4] = {
+                        dr.baseColorFactor[0] * bright * 4.0f + 0.55f,
+                        dr.baseColorFactor[1] * bright * 4.0f + 0.40f,
+                        dr.baseColorFactor[2] * bright * 4.0f + 0.40f,
+                        dr.baseColorFactor[3]
+                    };
+                    device->drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
+                                     x3::rhi::TextureHandle{ dr.baseColorTexId }, tint, fin);
+                }
+            } else {
+                const float reddish[4] = { bright*1.2f, bright*0.7f, bright*0.7f, 1.0f };
+                device->drawMesh(frame, shipBoxMesh, shipBoxTex, reddish, xform);
+            }
+        };
+
+        auto drawScene = [&](const x3::rhi::FrameContext& frame) {
+            for (uint32_t i = 0; i < fleet.count(); ++i) {
+                float m[16]; enemyXform(fleet.ship(i), m);
+                drawShipAt(frame, m, 1.2f);
+            }
+        };
+
+        // Step the AI sim one frame + feed any fire events into CombatFx tracers.
+        auto stepSim = [&](float dt) {
+            fleet.update(dt, playerPos, playerVel);
+            for (const auto& ev : fleet.fireEvents()) {
+                combatFx.addTracer(x3::phys::Vec3{ ev.from[0], ev.from[1], ev.from[2] },
+                                   x3::phys::Vec3{ ev.to[0], ev.to[1], ev.to[2] });
+            }
+        };
+
+        // ===== Headless capture =====
+        if (headless) {
+            device->setFrustumCull(false);
+            // Camera behind the player ship looking toward +X at the fighters
+            // (mirrors the proven --world space framing: cam at -X, ships out at
+            // +X within FOV).
+            float cam[5] = { -25.0f, 6.0f, 0.0f, 0.0f, -0.05f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const std::string outPath = screenshot ? screenshotPath : std::string("G:/X3Native/captures/shipai.png");
+            // Settle only briefly: the fighters start at x~180-300 and close fast,
+            // so a short window keeps them clustered out front in the camera frame.
+            const int kFrames = 30;   // let the fighters fly in + maneuver a bit
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                stepSim(dtSim);
+                combatFx.update(dtSim);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 65.0f);
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) { drawScene(frame); combatFx.submit(*device, frame); }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world ship-ai: wrote " + outPath);
+            else       x3::logError("--world ship-ai: capture FAILED");
+            combatFx.shutdown(*device);
+            device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
+            if (shipModel.ok) mloader->unload(shipModel);
+            device->shutdown();
+            if (window) glfwDestroyWindow(window); glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: orbit the dogfight =====
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double prevTime = glfwGetTime();
+        float camYaw = 0.0f, camPitch = -0.05f, camDist = 120.0f;
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        x3::logInfo("--world ship-ai: watch the AI fighters dogfight the player ship; mouse orbits, Esc quit");
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime(); float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            camYaw   += (float)(mx - lastMX) * 0.005f;
+            camPitch += (float)(my - lastMY) * 0.005f;
+            lastMX = mx; lastMY = my;
+
+            stepSim(fdt);
+            combatFx.update(fdt);
+
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw>0 && chh>0) device->onResize((uint32_t)cw, (uint32_t)chh);
+            // Orbit camera around the origin (the player ship).
+            const float cy = std::cos(camYaw), sy = std::sin(camYaw);
+            float cx = -camDist * cy, cz = -camDist * sy, cyy = 8.0f + camDist * (-camPitch);
+            device->setCamera(cx, cyy, cz, camYaw, camPitch, 65.0f);
+
+            auto frame = device->beginFrame();
+            if (frame.valid) { drawScene(frame); combatFx.submit(*device, frame); }
+            device->endFrame(frame);
+        }
+        combatFx.shutdown(*device);
+        device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
+        if (shipModel.ok) mloader->unload(shipModel);
+        device->shutdown();
         if (window) glfwDestroyWindow(window); glfwTerminate();
         return 0;
     }
