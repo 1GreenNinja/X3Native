@@ -88,6 +88,7 @@
 #include "space/lod.h"                      // S2 distance-LOD system (--test-lod + --world lod)
 #include "space/space_env.h"               // S1 space environment: nebula/stars + planets + sun (--test-spaceenv + --world spaceenv)
 #include "space/ship_anim.h"               // S11 ship node-transform anim (--test-shipanim + --world shipanim)
+#include "space/wormhole_vfx.h"            // Salvari crystal-matrix wormhole (--test-wormhole + --world wormhole)
 #include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
@@ -1352,7 +1353,8 @@ int main(int argc, char** argv) {
          testSpaceLayer = false,
          testLod = false,
          testSpaceEnv = false,
-         testShipanim = false;
+         testShipanim = false,
+         testWormhole = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1700,6 +1702,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-lod") testLod = true;
         else if (a == "--test-spaceenv") testSpaceEnv = true;
         else if (a == "--test-shipanim") testShipanim = true;
+        else if (a == "--test-wormhole") testWormhole = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -2407,6 +2410,123 @@ int main(int argc, char** argv) {
 
         x3::logInfo("shipanim: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
         std::printf("shipanim: %d/%d passed\n", pass, total);
+        std::fflush(stdout);
+        return (pass == total) ? 0 : 1;
+    }
+    // --test-wormhole: Salvari crystal-matrix wormhole VFX self-test (Act-3 jump
+    // transition). Headless -- exercises the WormholeVfx init/render/shutdown
+    // lifecycle (leak-clean round-trip), a VUID-safe render() with a sample
+    // viewProj, Tuning param clamping, progress 0..1 handling, and that the baked
+    // crystal-matrix pattern is non-trivial + faceted. Mirrors --test-starfield.
+    if (testWormhole) {
+        x3::logInfo("running Salvari crystal-matrix wormhole (WormholeVfx) self-test...");
+        int pass = 0, total = 0;
+        auto check = [&](bool c, const char* name) {
+            ++total;
+            if (c) { ++pass; x3::logInfo(std::string("  [ok] ") + name); }
+            else   {          x3::logError(std::string("  [FAIL] ") + name); }
+        };
+
+        x3::game::HeadlessRenderDevice hdev;
+        // T1: init + shutdown lifecycle is leak-clean (valid handles in, released
+        // on shutdown, and a second init() succeeds -- no leaked resources).
+        {
+            x3::space::WormholeVfx wh;
+            wh.init(hdev);
+            check(wh.initialized() && wh.mesh().valid() && wh.texture().valid(),
+                  "T1 init() produces valid mesh + texture, initialized()=true");
+            wh.shutdown(hdev);
+            check(!wh.initialized() && !wh.mesh().valid() && !wh.texture().valid(),
+                  "T1b shutdown() releases handles, initialized()=false");
+            wh.init(hdev);
+            check(wh.initialized(), "T1c re-init after shutdown succeeds (no leak)");
+            // Double-init is idempotent (no second mesh/texture minted).
+            x3::rhi::MeshHandle before = wh.mesh();
+            wh.init(hdev);
+            check(wh.mesh().id == before.id, "T1d double-init() is a no-op");
+            wh.shutdown(hdev);
+            // Shutdown is idempotent (second shutdown does not crash).
+            wh.shutdown(hdev);
+            check(!wh.initialized(), "T1e double-shutdown() is safe");
+        }
+        // T2: render() with a sample viewProj runs without crashing (VUID-safe in
+        // the headless stub) and updates the core/convergence strength.
+        {
+            x3::space::WormholeVfx wh;
+            wh.init(hdev);
+            x3::rhi::FrameContext fr = hdev.beginFrame();
+            const float idM[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            wh.setOrigin(0.0f, 0.0f, 0.0f);
+            wh.render(hdev, fr, idM, /*timeSec=*/0.25f, /*progress=*/0.0f);
+            check(wh.lastCoreStrength() > 0.0f,
+                  "T2 render() applies a positive core glow even at progress 0");
+            // Progress should INTENSIFY the white-hot core/convergence.
+            wh.render(hdev, fr, idM, /*timeSec=*/0.25f, /*progress=*/1.0f);
+            float fullCore = wh.lastCoreStrength();
+            wh.render(hdev, fr, idM, /*timeSec=*/0.25f, /*progress=*/0.0f);
+            float zeroCore = wh.lastCoreStrength();
+            check(fullCore > zeroCore && fullCore - zeroCore > 1.0f,
+                  "T2b progress 1.0 intensifies the core vs progress 0.0");
+            hdev.endFrame(fr);
+            wh.shutdown(hdev);
+        }
+        // T3: Tuning parameter clamping (length>0, radius>0, flowSpeed>=0,
+        // facetDensity>=3) -- the bake/mesh need these to be sane.
+        {
+            x3::space::WormholeVfx::Tuning bad;
+            bad.length       = -50.0f;
+            bad.radius       = -2.0f;
+            bad.flowSpeed    = -4.0f;
+            bad.facetDensity = 1.0f;
+            auto c = x3::space::clampTuning(bad);
+            check(c.length       > 0.0f,  "T3a length clamps to > 0");
+            check(c.radius       > 0.0f,  "T3b radius clamps to > 0");
+            check(c.flowSpeed    >= 0.0f, "T3c flowSpeed clamps to >= 0");
+            check(c.facetDensity >= 3.0f, "T3d facetDensity clamps to >= 3");
+            // A wild Tuning must still init cleanly (clamp protects the bake/mesh).
+            x3::space::WormholeVfx wh;
+            wh.init(hdev, bad);
+            check(wh.initialized(), "T3e init() survives an out-of-range Tuning");
+            wh.shutdown(hdev);
+        }
+        // T4: progress is clamped to [0,1] inside render() (S3 may drive it from a
+        // sequence that overshoots), and the baked crystal-matrix is non-trivial +
+        // faceted (the convergence end is brighter than the mouth; facet seams
+        // produce a brightness variance around the ring).
+        {
+            x3::space::WormholeVfx wh;
+            wh.init(hdev);
+            x3::rhi::FrameContext fr = hdev.beginFrame();
+            const float idM[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            wh.render(hdev, fr, idM, 0.0f, /*progress=*/5.0f);   // overshoot high
+            check(wh.lastProgress() == 1.0f, "T4a progress > 1 clamps to 1.0");
+            wh.render(hdev, fr, idM, 0.0f, /*progress=*/-3.0f);  // overshoot low
+            check(wh.lastProgress() == 0.0f, "T4b progress < 0 clamps to 0.0");
+            hdev.endFrame(fr);
+            wh.shutdown(hdev);
+
+            x3::space::WormholeVfx::Tuning t;
+            // Convergence: the far end (zNorm 1) reads brighter than the mouth (0).
+            float bMouth = x3::space::WormholeVfx::sampleFacetBrightness(0.3f, 0.0f, t);
+            float bFar   = x3::space::WormholeVfx::sampleFacetBrightness(0.3f, 1.0f, t);
+            check(bFar > bMouth, "T4c convergence end is brighter than the mouth");
+            // Faceted: sweep theta around the ring at fixed z -> brightness varies
+            // (purple prismatic glints at the facet seams).
+            float lo = 1e9f, hi = -1e9f;
+            const int N = 256;
+            for (int i = 0; i < N; ++i) {
+                float th = (i + 0.5f) / (float)N * 6.2831853f;
+                float b = x3::space::WormholeVfx::sampleFacetBrightness(th, 0.5f, t);
+                lo = std::min(lo, b); hi = std::max(hi, b);
+            }
+            check(hi - lo > 0.05f, "T4d crystal facets produce brightness variance around the ring");
+            // Determinism: same inputs -> same value.
+            float a0 = x3::space::WormholeVfx::sampleFacetBrightness(1.1f, 0.4f, t);
+            float a1 = x3::space::WormholeVfx::sampleFacetBrightness(1.1f, 0.4f, t);
+            check(a0 == a1, "T4e crystal sample is deterministic");
+        }
+        x3::logInfo("wormhole: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+        std::printf("wormhole: %d/%d passed\n", pass, total);
         std::fflush(stdout);
         return (pass == total) ? 0 : 1;
     }
@@ -4183,7 +4303,7 @@ int main(int argc, char** argv) {
     // NO player. SSAO + GI are DISABLED (the deep-space SSAO-black quirk: with no
     // surfaces to occlude, the AO pass crushes the whole frame to black on the
     // raster fallback). The pixel-variance gate on the PNG (std>15, uniq>100) is
-    // the visual proof — bright planets + the sun + a starfield clear it easily.
+    // the visual proof -- bright planets + the sun + a starfield clear it easily.
     if (worldMode == "spaceenv") {
         x3::logInfo("--world spaceenv: building the S1 space-environment showcase");
 
@@ -4202,15 +4322,11 @@ int main(int argc, char** argv) {
         }
         // Place three proxy planets at varied positions/sizes/tints, all in front
         // of the camera so the orbit keeps them in frame.
-        // NOTE: planets must sit INSIDE the dome (radius 50 m, camera-anchored),
-        // else the far dome wall occludes them in depth. Keep |pos| < ~45 m.
-        { float p[3] = {  12.0f,   1.0f, -22.0f }; float a[3] = { 0.90f, 0.55f, 0.35f }; env.addPlanet(p, 5.0f,  a); } // warm rocky (near)
-        { float p[3] = { -16.0f,  -3.0f, -34.0f }; float a[3] = { 0.35f, 0.55f, 0.95f }; env.addPlanet(p, 9.0f,  a); } // blue gas giant
-        { float p[3] = {   4.0f,   9.0f, -40.0f }; float a[3] = { 0.55f, 0.90f, 0.55f }; env.addPlanet(p, 4.0f,  a); } // green moon
-        // Sun up-and-to-the-left of the look direction, warm white, bright.
+        { float p[3] = {  12.0f,   1.0f, -22.0f }; float a[3] = { 0.90f, 0.55f, 0.35f }; env.addPlanet(p, 5.0f,  a); }
+        { float p[3] = { -16.0f,  -3.0f, -34.0f }; float a[3] = { 0.35f, 0.55f, 0.95f }; env.addPlanet(p, 9.0f,  a); }
+        { float p[3] = {   4.0f,   9.0f, -40.0f }; float a[3] = { 0.55f, 0.90f, 0.55f }; env.addPlanet(p, 4.0f,  a); }
         { float d[3] = { -0.45f, 0.40f, -0.80f }; float c[3] = { 1.0f, 0.92f, 0.78f }; env.setSun(d, c, 1.6f); }
 
-        // ---- Headless capture: slow orbit, settle, grab the PNG. ----
         if (headless) {
             const std::string outPath = screenshot ? screenshotPath
                                                    : std::string("agent_spaceenv.png");
@@ -4218,14 +4334,10 @@ int main(int argc, char** argv) {
             for (int i = 0; i < kFrames; ++i) {
                 glfwPollEvents();
                 float t = (float)i * (1.0f / 30.0f);
-                // Slow camera orbit around the origin (the planets sit in -Z).
-                // Camera forward = (cos p cos y, sin p, cos p sin y); yaw=-pi/2
-                // looks down -Z toward the planet field. A small swing keeps the
-                // orbit lively while keeping the cluster in frame.
                 float ang = 0.10f * t;
                 float ex = 12.0f * std::sin(ang);
                 float ez = 12.0f * std::cos(ang);
-                float yaw = -1.5708f + 0.15f * std::sin(ang);   // ~face -Z
+                float yaw = -1.5708f + 0.15f * std::sin(ang);
                 device->setCamera(ex, 0.0f, ez, yaw, 0.02f, 70.0f);
                 if (shotCamOverride) {
                     device->setCamera(shotCam[0], shotCam[1], shotCam[2],
@@ -4236,7 +4348,7 @@ int main(int argc, char** argv) {
                 auto frame = device->beginFrame();
                 if (frame.valid) {
                     env.setCamera(ex, 0.0f, ez);
-                    env.render(*device, frame, /*viewProj16=*/nullptr, t);
+                    env.render(*device, frame, nullptr, t);
                 }
                 device->endFrame(frame);
             }
@@ -4250,7 +4362,6 @@ int main(int argc, char** argv) {
             return wrote ? 0 : 1;
         }
 
-        // ---- Windowed path: free orbit with the mouse to inspect. ----
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
         double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
@@ -4279,12 +4390,105 @@ int main(int argc, char** argv) {
             auto frame = device->beginFrame();
             if (frame.valid) {
                 env.setCamera(ex, 0.0f, ez);
-                env.render(*device, frame, /*viewProj16=*/nullptr, t);
+                env.render(*device, frame, nullptr, t);
             }
             device->endFrame(frame);
         }
 
         env.shutdown(*device);
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    // ---- Salvari crystal-matrix wormhole showcase (--world wormhole) --------
+    if (worldMode == "wormhole") {
+        x3::logInfo("--world wormhole: showcasing the Salvari crystal-matrix wormhole");
+
+        { x3::rhi::IRenderDevice::SsaoParams sp{}; sp.enabled = false; device->setSsaoParams(sp); }
+        { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; device->setGiParams(gp); }
+        { x3::rhi::IRenderDevice::SkyParams  sp{}; sp.enabled = false; device->setSkyParams(sp); }
+
+        x3::space::WormholeVfx wh;
+        x3::space::WormholeVfx::Tuning whT;
+        wh.init(*device, whT);
+        if (!wh.initialized()) {
+            x3::logError("--world wormhole: WormholeVfx::init() failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        wh.setOrigin(0.0f, 0.0f, 0.0f);
+        const float kFlyZ0 = 6.0f;
+        const float kFlyZ1 = whT.length * 0.9f;
+        const float kAxisYaw = 1.57079633f;
+
+        if (headless) {
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_wormhole.png");
+            const int kFrames = 48;
+            const int kShotFrame = 2;
+            const float kShotProgress = 0.55f;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                float t = (float)i * (1.0f / 30.0f);
+                float u = (float)i / (float)(kFrames - 1);
+                bool isShot = (i == kShotFrame);
+                float camZ = isShot ? kFlyZ0 : (kFlyZ0 + (kFlyZ1 - kFlyZ0) * u);
+                float prog = isShot ? kShotProgress : u;
+                float roll = 0.25f * t;
+                float yaw   = kAxisYaw + (isShot ? 0.0f : 0.04f * std::sin(roll));
+                float pitch = isShot ? 0.0f : 0.03f * std::cos(roll);
+                device->setCamera(0.0f, 0.0f, camZ, yaw, pitch, 80.0f);
+                if (shotCamOverride) {
+                    device->setCamera(shotCam[0], shotCam[1], shotCam[2],
+                                      shotCam[3], shotCam[4], 80.0f);
+                }
+                if (isShot) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    wh.render(*device, frame, nullptr, t, prog, whT);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world wormhole: wrote " + outPath);
+            else       x3::logError("--world wormhole: capture FAILED");
+            wh.shutdown(*device);
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double startTimeW = glfwGetTime();
+        x3::logInfo("--world wormhole: flying through the crystal-matrix jump, Esc to quit");
+        int lastWsW = (int)W, lastHsW = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float t = (float)(now - startTimeW);
+            float u = std::fmod(t, 6.0f) / 6.0f;
+            float camZ = kFlyZ0 + (kFlyZ1 - kFlyZ0) * u;
+            float roll = 0.25f * t;
+            float yaw   = kAxisYaw + 0.04f * std::sin(roll);
+            float pitch = 0.03f * std::cos(roll);
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWsW || chh != lastHsW) { lastWsW = cw; lastHsW = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+            device->setCamera(0.0f, 0.0f, camZ, yaw, pitch, 80.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                wh.render(*device, frame, nullptr, t, u, whT);
+            }
+            device->endFrame(frame);
+        }
+
+        wh.shutdown(*device);
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
