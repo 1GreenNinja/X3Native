@@ -179,6 +179,18 @@ public:
                                            const float baseColorFactor[4], const float emissive[4],
                                            const float model[16]) = 0;
 
+    // PBR draw: drawMeshEmissive plus a NORMAL map + METALLIC-ROUGHNESS texture
+    // (glTF packing: metallic in B, roughness in G). Invalid normal/mr handles
+    // (id 0) make this identical to drawMeshEmissive (the shader skips its PBR
+    // branch for that object), so the default impl below simply forwards — only
+    // the GLB drawable path (env_art / models carrying PBR maps) needs real PBR.
+    virtual void          drawMeshPBR(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
+                                      TextureHandle /*normal*/, TextureHandle /*metalRough*/,
+                                      const float baseColorFactor[4], const float emissive[4],
+                                      const float model[16]) {
+        drawMeshEmissive(fc, mesh, baseColor, baseColorFactor, emissive, model);
+    }
+
     // ---- Analytic sky (open-world track, task A) ---------------------------
     // Parameters for the physically-plausible analytic sky drawn as the far-depth
     // backdrop wherever no opaque geometry covers a pixel (it composites against

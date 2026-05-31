@@ -130,6 +130,8 @@ public:
 struct ModelDrawable {
     uint32_t meshId        = 0;          // -> rhi::MeshHandle{ meshId }
     uint32_t baseColorTexId = 0;         // -> rhi::TextureHandle{ } (0 == default white)
+    uint32_t normalTexId   = 0;          // -> rhi::TextureHandle{ } (0 == none; PBR normal map)
+    uint32_t mrTexId       = 0;          // -> rhi::TextureHandle{ } (0 == none; metallic-roughness)
     float    baseColorFactor[4] = {1, 1, 1, 1};
     float    nodeTransform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; // node world (column-major)
 };

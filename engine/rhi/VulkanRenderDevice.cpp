@@ -1058,6 +1058,15 @@ public:
     void drawMeshEmissive(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                           const float baseColorFactor[4], const float emissive[4],
                           const float model[16]) override {
+        // Forward to the PBR path with no normal/MR maps (identical behaviour).
+        drawMeshPBR(fc, mesh, baseColor, TextureHandle{}, TextureHandle{},
+                    baseColorFactor, emissive, model);
+    }
+
+    void drawMeshPBR(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
+                     TextureHandle normal, TextureHandle metalRough,
+                     const float baseColorFactor[4], const float emissive[4],
+                     const float model[16]) override {
         if (!fc.valid || !m_meshPipeline) return;
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
@@ -1081,6 +1090,17 @@ public:
             auto tit = m_textures.find(baseColor.id);
             if (tit != m_textures.end()) texIndex = tit->second.bindlessIndex;
         }
+        // Resolve the optional PBR maps to bindless indices (0 == none -> the
+        // fragment shader skips its PBR branch and shades exactly as before).
+        uint32_t normalIdx = 0, mrIdx = 0;
+        if (normal.valid()) {
+            auto it = m_textures.find(normal.id);
+            if (it != m_textures.end()) normalIdx = it->second.bindlessIndex;
+        }
+        if (metalRough.valid()) {
+            auto it = m_textures.find(metalRough.id);
+            if (it != m_textures.end()) mrIdx = it->second.bindlessIndex;
+        }
 
         DrawRecord r;
         r.meshId      = mesh.id;
@@ -1090,6 +1110,8 @@ public:
         // pad2 = snow<<16 | sand (each well under 65535 — kMaxTextures = 4096).
         r.terrainPack1 = (m_terrainTexIdx[0] << 16) | (m_terrainTexIdx[1] & 0xFFFFu);
         r.terrainPack2 = (m_terrainTexIdx[2] << 16) | (m_terrainTexIdx[3] & 0xFFFFu);
+        r.normalTexIndex = normalIdx;
+        r.mrTexIndex     = mrIdx;
         std::memcpy(r.model, model, sizeof(r.model));
         if (baseColorFactor) std::memcpy(r.factor, baseColorFactor, sizeof(r.factor));
         else { r.factor[0] = r.factor[1] = r.factor[2] = r.factor[3] = 1.0f; }
@@ -1353,9 +1375,12 @@ private:
         glm::vec4 baseColorFactor;
         glm::vec4 emissive;          // rgb = linear color, a = strength
         uint32_t  texIndex;
-        uint32_t  _pad0, _pad1, _pad2;
+        uint32_t  _pad0, _pad1, _pad2;       // pad0 = terrainFlag, pad1/2 = packed terrain detail idx
+        uint32_t  normalTexIndex;            // 0 = none (PBR normal-map bindless idx)
+        uint32_t  mrTexIndex;                // 0 = none (metallic-roughness bindless idx)
+        uint32_t  _pad3, _pad4;              // keep this row 16-byte aligned (std430 stride 128)
     };
-    static_assert(sizeof(ObjectData) == 112, "ObjectData must match std430 layout");
+    static_assert(sizeof(ObjectData) == 128, "ObjectData must match std430 layout");
 
     // CPU-side per-draw record accumulated by drawMesh(), consumed by endFrame().
     struct DrawRecord {
@@ -1367,6 +1392,8 @@ private:
         uint32_t terrainFlag;   // 1 = procedural terrain splat (mesh.frag branch)
         uint32_t terrainPack1;  // grass<<16 | rock  (bindless detail indices)
         uint32_t terrainPack2;  // snow<<16  | sand
+        uint32_t normalTexIndex = 0;  // 0 = none (PBR normal-map bindless idx)
+        uint32_t mrTexIndex     = 0;  // 0 = none (metallic-roughness bindless idx)
     };
 
     // Per-frame mesh-draw capacity: sizes the per-object SSBO ring (one
@@ -1748,6 +1775,9 @@ private:
                 o._pad0 = dr.terrainFlag;
                 o._pad1 = dr.terrainPack1;
                 o._pad2 = dr.terrainPack2;
+                o.normalTexIndex = dr.normalTexIndex;
+                o.mrTexIndex     = dr.mrTexIndex;
+                o._pad3 = 0; o._pad4 = 0;
             }
             VkDrawIndexedIndirectCommand& c = cmds[cmdCount];
             c.indexCount    = mit->second.indexCount;

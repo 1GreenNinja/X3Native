@@ -18,6 +18,9 @@ struct ObjectData {
     uint terrainFlag;     // 1 = procedural terrain splat (was _pad0)
     uint terrainPack1;    // grass<<16 | rock detail bindless indices (was _pad1)
     uint terrainPack2;    // snow<<16  | sand detail bindless indices (was _pad2)
+    uint normalTexIndex;  // 0 = none (PBR normal-map bindless idx) — used in mesh.frag (slice 2)
+    uint mrTexIndex;      // 0 = none (metallic-roughness bindless idx)
+    uint _pad3, _pad4;    // keep std430 stride at 128 (matches C++ ObjectData)
 };
 
 layout(std430, set = 1, binding = 0) readonly buffer Objects {
