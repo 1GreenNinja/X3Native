@@ -51,9 +51,10 @@ uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysics
 uint32_t SecretRoom::addScreen(Scene& scene, x3::rhi::IRenderDevice& device,
                                const x3::phys::Vec3& center, float yaw,
                                float w, float h, float r, float g, float b, float strength) {
-    // A thin emissive panel on a wall, yaw-rotated so it lies flat against the wall.
-    // (Thin in local Z; yaw turns local Z toward the wall normal.) Translucent base
-    // + strong HDR emissive => a glowing sci-fi display, NOT a flat solid quad.
+    // A thin GLASS display panel on a wall, yaw-rotated so it lies flat against
+    // the wall. Routes through the drawMeshGlass transparent pass (same path as
+    // the holo terminals) so it reads as REAL see-through glass with strong HDR
+    // emissive baked content — not a flat cardboard quad.
     const float cs = std::cos(yaw), sn = std::sin(yaw);
     const float hw = w * 0.5f, hh = h * 0.5f, ht = 0.03f;
     x3::prims::PrimMesh geo = x3::prims::makeBox(hw, hh, ht, 0, 0, 0, 0.5f);
@@ -63,6 +64,14 @@ uint32_t SecretRoom::addScreen(Scene& scene, x3::rhi::IRenderDevice& device,
     e.baseColor[0]=r*0.25f; e.baseColor[1]=g*0.25f; e.baseColor[2]=b*0.25f; e.baseColor[3]=0.55f;
     e.emissive[0]=r; e.emissive[1]=g; e.emissive[2]=b; e.emissive[3]=strength;
     e.tag = (uint32_t)Tag::Prop;
+    // Real glass material — `glass.opacity` is the see-through dial that
+    // overrides baseColor[3] (the old fake-translucency hack). Light frosting
+    // softens reflections; specular gives a glint along the screen edge.
+    e.transparent     = true;
+    e.glass.opacity   = 0.55f;
+    e.glass.roughness = 0.20f;
+    e.glass.specular  = 0.8f;
+    e.glass.ior       = 1.5f;
     e.transform[0]=cs;  e.transform[2]=-sn;
     e.transform[8]=sn;  e.transform[10]=cs;
     e.transform[12]=center.x; e.transform[13]=center.y; e.transform[14]=center.z;
