@@ -102,6 +102,7 @@ namespace x3::game {
 #include "space/ship_anim.h"               // S11 ship node-transform anim (--test-shipanim + --world shipanim)
 #include "space/wormhole_vfx.h"            // Salvari crystal-matrix wormhole (--test-wormhole + --world wormhole)
 #include "space/decloak_vfx.h"             // intro decloak shimmer VFX (--test-decloak + --world decloak)
+#include "space/tractor_beam.h"            // capital-ship tractor beam (--test-tractor + --world tractor)
 #include "space/wormhole_transit.h"        // S3 wormhole transit (--test-wormhole-transit + --world wormhole-transit)
 #include "space/descent.h"                  // S4 cinematic atmo descent (--test-atmo-descent + --world atmo-descent)
 #include "space/ship_interior.h"           // S5 walkable ship interior (--test-ship-interior + --world ship-interior)
@@ -1378,6 +1379,7 @@ int main(int argc, char** argv) {
          testShipanim = false,
          testWormhole = false,
          testDecloak = false,
+         testTractor = false,
          testWormholeTransit = false,
          testAtmoDescent = false,
          testShipInterior = false,
@@ -1747,6 +1749,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-shipanim") testShipanim = true;
         else if (a == "--test-wormhole") testWormhole = true;
         else if (a == "--test-decloak") testDecloak = true;
+        else if (a == "--test-tractor") testTractor = true;
         else if (a == "--test-wormhole-transit") testWormholeTransit = true;
         else if (a == "--test-atmo-descent") testAtmoDescent = true;
         else if (a == "--test-ship-interior") testShipInterior = true;
@@ -2711,6 +2714,125 @@ int main(int argc, char** argv) {
         }
         x3::logInfo("decloak: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
         std::printf("decloak: %d/%d passed\n", pass, total);
+        std::fflush(stdout);
+        return (pass == total) ? 0 : 1;
+    }
+
+    if (testTractor) {
+        x3::logInfo("running capital-ship tractor-beam (TractorBeam) self-test...");
+        int pass = 0, total = 0;
+        auto check = [&](bool c, const char* name) {
+            ++total;
+            if (c) { ++pass; x3::logInfo(std::string("  [ok] ") + name); }
+            else   {          x3::logError(std::string("  [FAIL] ") + name); }
+        };
+
+        x3::game::HeadlessRenderDevice hdev;
+        const float idM[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        // T1: init + shutdown lifecycle is leak-clean.
+        {
+            x3::space::TractorBeam tb;
+            tb.init(hdev);
+            check(tb.initialized() && tb.mesh().valid() && tb.texture().valid(),
+                  "T1 init() produces valid mesh + texture, initialized()=true");
+            tb.shutdown(hdev);
+            check(!tb.initialized() && !tb.mesh().valid() && !tb.texture().valid(),
+                  "T1b shutdown() releases handles, initialized()=false");
+            tb.init(hdev);
+            check(tb.initialized(), "T1c re-init after shutdown succeeds (no leak)");
+            x3::rhi::MeshHandle before = tb.mesh();
+            tb.init(hdev);
+            check(tb.mesh().id == before.id, "T1d double-init() is a no-op");
+            tb.shutdown(hdev);
+            tb.shutdown(hdev);
+            check(!tb.initialized(), "T1e double-shutdown() is safe");
+        }
+        // T2: render() at intensity 0 / 0.5 / 1.0 with a from/to pair runs VUID-safe
+        // and intensity scales the beam strength (lock-on ramp).
+        {
+            x3::space::TractorBeam tb;
+            tb.init(hdev);
+            x3::rhi::FrameContext fr = hdev.beginFrame();
+            const float from[3] = { 0.0f, 0.0f, 0.0f };
+            const float to[3]   = { 12.0f, 2.0f, -4.0f };
+            tb.render(hdev, fr, idM, from, to, /*intensity=*/0.0f, /*timeSec=*/0.3f);
+            check(tb.lastDrawn() && tb.lastStrength() > 0.0f,
+                  "T2 render() at intensity 0 still draws a faint targeting glow");
+            float s0 = tb.lastStrength();
+            tb.render(hdev, fr, idM, from, to, /*intensity=*/0.5f, 0.3f);
+            float s5 = tb.lastStrength();
+            tb.render(hdev, fr, idM, from, to, /*intensity=*/1.0f, 0.3f);
+            float s1 = tb.lastStrength();
+            check(s1 > s5 && s5 > s0,
+                  "T2b intensity 0 < 0.5 < 1.0 monotonically raises beam strength");
+            // Intensity is clamped to [0,1].
+            tb.render(hdev, fr, idM, from, to, /*intensity=*/5.0f, 0.3f);
+            check(tb.lastIntensity() == 1.0f, "T2c intensity > 1 clamps to 1.0");
+            tb.render(hdev, fr, idM, from, to, /*intensity=*/-3.0f, 0.3f);
+            check(tb.lastIntensity() == 0.0f, "T2d intensity < 0 clamps to 0.0");
+            hdev.endFrame(fr);
+            tb.shutdown(hdev);
+        }
+        // T3: degenerate from==to is handled gracefully -- the draw is SKIPPED, no
+        // NaN, no degenerate transform handed to the GPU.
+        {
+            x3::space::TractorBeam tb;
+            tb.init(hdev);
+            x3::rhi::FrameContext fr = hdev.beginFrame();
+            const float same[3] = { 3.0f, 1.0f, -2.0f };
+            tb.render(hdev, fr, idM, same, same, /*intensity=*/1.0f, 0.3f);
+            check(!tb.lastDrawn() && tb.lastStrength() == 0.0f,
+                  "T3 from==to skips the draw (no NaN, no degenerate transform)");
+            // A vanishingly-short beam is likewise skipped.
+            const float a[3] = { 0.0f, 0.0f, 0.0f };
+            const float b[3] = { 1e-6f, 0.0f, 0.0f };
+            tb.render(hdev, fr, idM, a, b, 1.0f, 0.3f);
+            check(!tb.lastDrawn(), "T3b near-zero-length beam is skipped");
+            // After a degenerate frame, a valid pair draws again (state recovers).
+            const float to2[3] = { 0.0f, 8.0f, 0.0f };  // straight UP (up-parallel basis path)
+            tb.render(hdev, fr, idM, a, to2, 1.0f, 0.3f);
+            check(tb.lastDrawn(), "T3c valid beam after a degenerate one draws (up-parallel basis ok)");
+            hdev.endFrame(fr);
+            tb.shutdown(hdev);
+        }
+        // T4: Tuning clamping (emitterRadius>=0, captureRadius>0, ringDensity>=1,
+        // flowSpeed>=0) + the baked energy is non-trivial (capture end brighter
+        // than emitter; rings produce brightness variance along the axis).
+        {
+            x3::space::TractorBeam::Tuning bad;
+            bad.emitterRadius = -1.0f;
+            bad.captureRadius = -3.0f;
+            bad.ringDensity   = 0.0f;
+            bad.flowSpeed     = -5.0f;
+            auto c = x3::space::clampTuning(bad);
+            check(c.emitterRadius >= 0.0f, "T4a emitterRadius clamps to >= 0");
+            check(c.captureRadius  > 0.0f, "T4b captureRadius clamps to > 0");
+            check(c.ringDensity   >= 1.0f, "T4c ringDensity clamps to >= 1");
+            check(c.flowSpeed     >= 0.0f, "T4d flowSpeed clamps to >= 0");
+            x3::space::TractorBeam tb;
+            tb.init(hdev, bad);
+            check(tb.initialized(), "T4e init() survives an out-of-range Tuning");
+            tb.shutdown(hdev);
+
+            x3::space::TractorBeam::Tuning t;
+            float bEmit = x3::space::TractorBeam::sampleEnergyBrightness(0.0f, t);
+            float bCap  = x3::space::TractorBeam::sampleEnergyBrightness(1.0f, t);
+            check(bCap > bEmit, "T4f capture end is brighter than the emitter end");
+            // Rings: sweep s along the axis -> brightness varies (the energy bands).
+            float lo = 1e9f, hi = -1e9f;
+            const int N = 512;
+            for (int i = 0; i < N; ++i) {
+                float s = (i + 0.5f) / (float)N;
+                float bb = x3::space::TractorBeam::sampleEnergyBrightness(s, t);
+                lo = std::min(lo, bb); hi = std::max(hi, bb);
+            }
+            check(hi - lo > 0.05f, "T4g energy rings produce brightness variance along the beam");
+            float a0 = x3::space::TractorBeam::sampleEnergyBrightness(0.4f, t);
+            float a1 = x3::space::TractorBeam::sampleEnergyBrightness(0.4f, t);
+            check(a0 == a1, "T4h energy sample is deterministic");
+        }
+        x3::logInfo("tractor: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+        std::printf("tractor: %d/%d passed\n", pass, total);
         std::fflush(stdout);
         return (pass == total) ? 0 : 1;
     }
@@ -5327,6 +5449,151 @@ int main(int argc, char** argv) {
         device->destroyMesh(shipBoxMesh); device->destroyTexture(shipBoxTex);
         if (shipModel.ok) mloader->unload(shipModel);
         device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate();
+        return 0;
+    }
+
+    if (worldMode == "tractor") {
+        x3::logInfo("--world tractor: showcasing the capital-ship tractor beam capture");
+
+        { x3::rhi::IRenderDevice::SsaoParams sp{}; sp.enabled = false; device->setSsaoParams(sp); }
+        { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; device->setGiParams(gp); }
+        { x3::rhi::IRenderDevice::SkyParams  kp{}; kp.enabled = false; device->setSkyParams(kp); }
+        // Three-point rig so the metal boxes read with shape against black space.
+        { x3::rhi::PointLight pl[3];
+          pl[0].pos[0]= 10.0f; pl[0].pos[1]= 12.0f; pl[0].pos[2]= 12.0f; pl[0].range=120.0f;
+          pl[0].color[0]=11.0f; pl[0].color[1]=10.5f; pl[0].color[2]=9.0f;
+          pl[1].pos[0]=-14.0f; pl[1].pos[1]= 8.0f; pl[1].pos[2]= 4.0f; pl[1].range=100.0f;
+          pl[1].color[0]=3.0f;  pl[1].color[1]=3.6f;  pl[1].color[2]=4.8f;
+          pl[2].pos[0]= 6.0f; pl[2].pos[1]=-6.0f; pl[2].pos[2]=-10.0f; pl[2].range=90.0f;
+          pl[2].color[0]=2.5f;  pl[2].color[1]=1.8f;  pl[2].color[2]=1.4f;
+          device->setPointLights(pl, 3); }
+
+        // Capital-ship emitter end (the beam apex). A big slab of hull.
+        x3::prims::PrimMesh capGeo = x3::prims::makeBox(5.0f, 3.0f, 6.0f, 0,0,0, 0.4f);
+        auto capMesh = device->createMesh(capGeo.verts.data(), (uint32_t)capGeo.verts.size(),
+                                          capGeo.index.data(), (uint32_t)capGeo.index.size());
+        auto capTexD = x3::prims::makeCheckerRGBA(64, 8, 150, 158, 175, 60, 66, 84);
+        auto capTex  = device->createTexture(capTexD.data(), 64, 64, true);
+
+        // Jake's fighter (the captured ship). A small box.
+        x3::prims::PrimMesh figGeo = x3::prims::makeBox(1.0f, 0.5f, 1.6f, 0,0,0, 0.5f);
+        auto figMesh = device->createMesh(figGeo.verts.data(), (uint32_t)figGeo.verts.size(),
+                                          figGeo.index.data(), (uint32_t)figGeo.index.size());
+        auto figTexD = x3::prims::makeCheckerRGBA(64, 8, 200, 150, 110, 90, 70, 60);
+        auto figTex  = device->createTexture(figTexD.data(), 64, 64, true);
+
+        x3::space::TractorBeam beam;
+        x3::space::TractorBeam::Tuning beamT;
+        beam.init(*device, beamT);
+        if (!beam.initialized()) {
+            x3::logError("--world tractor: TractorBeam::init() failed");
+            device->destroyMesh(capMesh); device->destroyTexture(capTex);
+            device->destroyMesh(figMesh); device->destroyTexture(figTex);
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        // Emitter sits on the front face of the capital ship at the origin; the
+        // fighter starts far out along +X and is reeled IN toward the emitter.
+        const float kEmitter[3] = { 6.0f, 0.0f, 0.0f };   // beam apex (capital-ship hull face)
+        const float kCapStart   = 40.0f;                  // fighter start distance (X)
+        const float kCapEnd     = 11.0f;                  // fighter held just off the hull
+
+        // Compose the fighter transform + draw the full scene for a given fighter X
+        // and beam intensity/time.
+        auto drawTractorScene = [&](const x3::rhi::FrameContext& frame, float figX,
+                                    float intensity, float tSec) {
+            // Capital ship at origin.
+            const float capM[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            const float capTint[4] = { 1.4f, 1.45f, 1.6f, 1.0f };
+            device->drawMesh(frame, capMesh, capTex, capTint, capM);
+            // Fighter at (figX, slight bob, 0), with a gentle tumble as it's pulled.
+            float bob = 0.6f * std::sin(tSec * 1.3f);
+            float yaw = 0.3f * std::sin(tSec * 0.9f);
+            float c = std::cos(yaw), s = std::sin(yaw);
+            const float figM[16] = {
+                c, 0, -s, 0,
+                0, 1,  0, 0,
+                s, 0,  c, 0,
+                figX, bob, 0.0f, 1.0f
+            };
+            const float figTint[4] = { 1.6f, 1.35f, 1.1f, 1.0f };
+            device->drawMesh(frame, figMesh, figTex, figTint, figM);
+            // The beam: apex at the emitter, base at the fighter (to == fighter pos).
+            const float to[3] = { figX, bob, 0.0f };
+            beam.render(*device, frame, nullptr, kEmitter, to, intensity, tSec, beamT);
+        };
+
+        if (headless) {
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_tractor.png");
+            const int kFrames = 60;
+            const int kShotFrame = 40;   // late: beam locked on, fighter half-reeled
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                float t = (float)i * (1.0f / 30.0f);
+                float u = (float)i / (float)(kFrames - 1);
+                // Intensity ramps up fast (lock-on) then holds; fighter pulled in.
+                float intensity = std::min(1.0f, u * 2.2f);
+                float figX = kCapStart + (kCapEnd - kCapStart) * u;
+                // Camera off to the side + above so the WHOLE beam (emitter->fighter)
+                // and both ships fill the frame.
+                device->setCamera(20.0f, 14.0f, 34.0f, 3.95f, -0.28f, 70.0f);
+                if (shotCamOverride) {
+                    device->setCamera(shotCam[0], shotCam[1], shotCam[2],
+                                      shotCam[3], shotCam[4], 70.0f);
+                }
+                if (i == kShotFrame) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    drawTractorScene(frame, figX, intensity, t);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world tractor: wrote " + outPath);
+            else       x3::logError("--world tractor: capture FAILED");
+            beam.shutdown(*device);
+            device->destroyMesh(capMesh); device->destroyTexture(capTex);
+            device->destroyMesh(figMesh); device->destroyTexture(figTex);
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double startTimeT = glfwGetTime();
+        x3::logInfo("--world tractor: the capital ship reels Jake's fighter in; Esc to quit");
+        int lastWsT = (int)W, lastHsT = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float t = (float)(now - startTimeT);
+            // Loop the capture beat every 5s so the showcase repeats.
+            float u = std::fmod(t, 5.0f) / 5.0f;
+            float intensity = std::min(1.0f, u * 2.2f);
+            float figX = kCapStart + (kCapEnd - kCapStart) * u;
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWsT || chh != lastHsT) { lastWsT = cw; lastHsT = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+            device->setCamera(20.0f, 14.0f, 34.0f, 3.95f, -0.28f, 70.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                drawTractorScene(frame, figX, intensity, t);
+            }
+            device->endFrame(frame);
+        }
+
+        beam.shutdown(*device);
+        device->destroyMesh(capMesh); device->destroyTexture(capTex);
+        device->destroyMesh(figMesh); device->destroyTexture(figTex);
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
         return 0;
     }
 

@@ -69,6 +69,7 @@ add_executable(X3Engine WIN32
     space/space_env.cpp
     space/wormhole_vfx.cpp
     space/decloak_vfx.cpp
+    space/tractor_beam.cpp
     space/wormhole_transit.cpp
     space/descent.cpp
     space/ship_interior.cpp
