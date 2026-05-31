@@ -85,6 +85,7 @@
 #include "space_pilot.h"                   // Act-3 6DOF space-flight pilot (--test-space + --world space)
 #include "sky_stars.h"                     // procedural starfield (--test-starfield + --world starfield)
 #include "space/space_layer.h"             // S0 SpaceLayer spine (--test-spacelayer)
+#include "space/descent.h"                  // S4 cinematic atmo descent (--test-atmo-descent + --world atmo-descent)
 #include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
@@ -1345,7 +1346,7 @@ int main(int argc, char** argv) {
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
          testThirdPerson = false, testNpc = false, testStarfield = false,
-         testSpaceLayer = false;
+         testSpaceLayer = false, testAtmoDescent = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1690,6 +1691,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-club") testClub = true;
         else if (a == "--test-starfield") testStarfield = true;
         else if (a == "--test-spacelayer") testSpaceLayer = true;
+        else if (a == "--test-atmo-descent") testAtmoDescent = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -2144,6 +2146,113 @@ int main(int argc, char** argv) {
 
         x3::logInfo("spacelayer: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
         std::printf("spacelayer: %d/%d passed\n", pass, total);
+        std::fflush(stdout);
+        return (pass == total) ? 0 : 1;
+    }
+
+    // --test-atmo-descent: S4 cinematic atmo-descent self-test. Headless (a small
+    // offscreen device backs AtmoDescent::init's mesh/texture creation). Verifies
+    // the descent runner wiring into the S0 SpaceLayer spine: init() registers the
+    // runner; requestDescent() -> Context::AtmoDescent + active(); update(dt) ramps
+    // progress() 0->1 while staying in AtmoDescent; at 1.0 -> Context::Surface +
+    // active()==false. The surface --world handoff is STUBBED for Wave 2 (the spine
+    // simply reaches Surface; no world is loaded here).
+    if (testAtmoDescent) {
+        x3::logInfo("running S4 cinematic atmo-descent self-test...");
+        int pass = 0, total = 0;
+        auto check = [&](bool c, const char* name) {
+            ++total;
+            if (c) { ++pass; x3::logInfo(std::string("  [ok] ") + name); }
+            else   {          x3::logError(std::string("  [FAIL] ") + name); }
+        };
+
+        if (!glfwInit()) { x3::logError("[atmo-descent] glfwInit failed"); return 1; }
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        std::unique_ptr<x3::rhi::IRenderDevice> dev(x3::rhi::createRenderDevice());
+        x3::rhi::DeviceDesc dd{};
+        dd.width = 320; dd.height = 240; dd.headless = true;
+#ifdef _DEBUG
+        dd.validation = true;
+#endif
+        if (!dev->init(dd)) { x3::logError("[atmo-descent] device init failed"); glfwTerminate(); return 1; }
+
+        using x3::space::SpaceLayer;
+        using x3::space::Context;
+        using x3::space::AtmoDescent;
+
+        // T1: heat-intensity curve shape — 0 at the ends, a peak in the middle.
+        {
+            float h0 = x3::space::descentHeatIntensity(0.0f);
+            float h1 = x3::space::descentHeatIntensity(1.0f);
+            float hm = x3::space::descentHeatIntensity(0.5f);
+            check(h0 < 0.05f && h1 < 0.05f, "T1 heat curve ~0 at start + end (clear sky)");
+            check(hm > h0 && hm > h1 && hm > 0.5f, "T1b heat curve peaks mid-descent (hull glow)");
+        }
+
+        // T2: init() wires the runner + builds GPU resources.
+        {
+            SpaceLayer L; L.init();
+            AtmoDescent d;
+            d.init(*dev, L, /*durationSec=*/2.0f);
+            check(d.initialized(), "T2 init() built the entry-effect resources");
+            check(!d.active() && d.progress() == 0.0f, "T2b not active before requestDescent()");
+            check(std::fabs(d.durationSec() - 2.0f) < 1e-4f, "T2c durationSec recorded");
+            d.shutdown(*dev);
+        }
+
+        // T3: requestDescent() -> AtmoDescent context + the descent goes active.
+        {
+            SpaceLayer L; L.init();
+            AtmoDescent d; d.init(*dev, L, /*durationSec=*/1.0f);
+            L.requestDescent(/*planetId=*/3);
+            check(L.context() == Context::AtmoDescent, "T3 requestDescent -> AtmoDescent");
+            L.update(0.1f);  // first tick arms the runner active flag + ramps a bit
+            check(d.active(), "T3b descent active mid-sequence");
+            check(L.context() == Context::AtmoDescent, "T3c stays AtmoDescent while ramping");
+            check(d.progress() > 0.0f && d.progress() < 1.0f, "T3d progress ramps 0<p<1");
+            d.shutdown(*dev);
+        }
+
+        // T4: progress ramps monotonically toward 1.0 over the duration, then the
+        // spine lands in Surface and the descent goes inactive.
+        {
+            SpaceLayer L; L.init();
+            AtmoDescent d; d.init(*dev, L, /*durationSec=*/1.0f);
+            L.requestDescent(/*planetId=*/9);
+            float prev = d.progress();
+            bool monotonic = true;
+            // 12 ticks * 0.1s = 1.2s > 1.0s duration -> completes.
+            for (int i = 0; i < 12; ++i) {
+                L.update(0.1f);
+                if (d.progress() < prev - 1e-5f) monotonic = false;
+                prev = d.progress();
+            }
+            check(monotonic, "T4 progress is monotonic non-decreasing");
+            check(d.progress() >= 1.0f, "T4b progress reaches 1.0 by end of duration");
+            check(L.context() == Context::Surface, "T4c completion -> Surface (handed to --world, STUBBED)");
+            check(!d.active(), "T4d descent inactive after completion");
+            d.shutdown(*dev);
+        }
+
+        // T5: render() is a safe no-op-ish call against a live frame (no crash,
+        // exercises the draw path at a representative mid-descent progress).
+        {
+            SpaceLayer L; L.init();
+            AtmoDescent d; d.init(*dev, L, /*durationSec=*/2.0f);
+            L.requestDescent(1);
+            L.update(1.0f);  // ~halfway -> heat near peak
+            d.setCamera(0.0f, 0.0f, 0.0f);
+            auto fr = dev->beginFrame();
+            if (fr.valid) d.render(*dev, fr, /*viewProj16=*/nullptr, /*timeSec=*/1.0f);
+            dev->endFrame(fr);
+            check(d.progress() > 0.0f, "T5 render() ran at mid-descent without crashing");
+            d.shutdown(*dev);
+        }
+
+        dev->shutdown();
+        glfwTerminate();
+        x3::logInfo("atmo-descent: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+        std::printf("atmo-descent: %d/%d passed\n", pass, total);
         std::fflush(stdout);
         return (pass == total) ? 0 : 1;
     }
@@ -3652,6 +3761,115 @@ int main(int argc, char** argv) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return wroteOn ? 0 : 1;
+    }
+
+    // ---- Cinematic atmospheric descent showcase (--world atmo-descent) ------
+    // S4: the orbit->ground on-rails entry sequence that masks the load into a
+    // surface world. The camera descends while the atmospheric-entry effect
+    // (hull glow + atmosphere fog + cloud streaks) intensifies through mid-
+    // descent (the re-entry fireball) then clears to open sky at the end. The
+    // descent runner is driven by the S0 SpaceLayer spine: requestDescent()
+    // arms AtmoDescent, update(dt) ramps progress, and at 1.0 the spine reaches
+    // Context::Surface — where the actual --world surface load is wired at
+    // integration time (STUBBED here for Wave 2; this showcase just plays the
+    // cinematic + captures it). Pixel-variance gate: std>15, uniqColors>100.
+    if (worldMode == "atmo-descent") {
+        x3::logInfo("--world atmo-descent: showcasing the S4 cinematic atmospheric descent");
+
+        // On-rails cinematic backdrop: no surface detail to occlude, the effect
+        // IS the sky. Disable SSAO + GI (per the gate), plus the analytic sky.
+        { x3::rhi::IRenderDevice::SsaoParams sp{}; sp.enabled = false; device->setSsaoParams(sp); }
+        { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; device->setGiParams(gp); }
+        { x3::rhi::IRenderDevice::SkyParams  sp{}; sp.enabled = false; device->setSkyParams(sp); }
+
+        x3::space::SpaceLayer layer; layer.init();
+        x3::space::AtmoDescent descent;
+        descent.init(*device, layer, /*durationSec=*/8.0f);
+        if (!descent.initialized()) {
+            x3::logError("--world atmo-descent: AtmoDescent::init() failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        layer.requestDescent(/*planetId=*/1);
+
+        // ---- Headless capture: tick the descent toward its hottest moment, grab.
+        if (headless) {
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_atmo_descent.png");
+            const int kFrames = 60;
+            const float dt = 8.0f / (float)kFrames * 0.62f;  // land near the heat peak
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                float t = (float)i * (1.0f / 30.0f);
+                layer.update(dt);
+                // Camera descends (drops in +Y) and looks toward -Z (yaw -pi/2)
+                // so the cloud-streak deck (placed along -Z ahead of the eye) and
+                // the heat dome fill the frame; a slight pitch-down sells the dive.
+                float drop  = -(float)i * 0.15f;
+                float yaw   = -1.5708f + 0.08f * std::sin(t);
+                float pitch = -0.18f;
+                device->setCamera(0.0f, drop, 0.0f, yaw, pitch, 75.0f);
+                if (shotCamOverride) {
+                    device->setCamera(shotCam[0], shotCam[1], shotCam[2],
+                                      shotCam[3], shotCam[4], 75.0f);
+                }
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    descent.setCamera(0.0f, drop, 0.0f);
+                    descent.render(*device, frame, /*viewProj16=*/nullptr, t);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world atmo-descent: wrote " + outPath +
+                                   " (progress=" + std::to_string(descent.progress()) + ")");
+            else       x3::logError("--world atmo-descent: capture FAILED");
+            descent.shutdown(*device);
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ---- Windowed path: watch the full descent play out, loop it. ---------
+        double startTime = glfwGetTime();
+        double prevTime  = startTime;
+        float dropY = 0.0f, fyaw = 0.0f;
+        x3::logInfo("--world atmo-descent: watch the orbit->ground entry sequence, Esc to quit");
+        int lastWs = (int)W, lastHs = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float frameDt = (float)(now - prevTime); prevTime = now;
+            float t = (float)(now - startTime);
+            // Loop the cinematic so the window keeps showing it.
+            if (layer.context() == x3::space::Context::Surface) {
+                layer.init(); descent.init(*device, layer, 8.0f);
+                layer.requestDescent(1); dropY = 0.0f; fyaw = 0.0f;
+            }
+            layer.update(frameDt);
+            dropY -= frameDt * 4.5f;
+            fyaw  += frameDt * 0.1f;
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWs || chh != lastHs) { lastWs = cw; lastHs = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+            device->setCamera(0.0f, dropY, 0.0f, -1.5708f + fyaw, -0.18f, 75.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                descent.setCamera(0.0f, dropY, 0.0f);
+                descent.render(*device, frame, /*viewProj16=*/nullptr, t);
+            }
+            device->endFrame(frame);
+        }
+
+        descent.shutdown(*device);
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
     }
 
     // ---- Procedural starfield showcase (--world starfield) ------------------
