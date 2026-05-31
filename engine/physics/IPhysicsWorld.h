@@ -20,7 +20,15 @@ struct ShapeId { uint32_t id = 0; bool valid() const { return id != 0; } };
 // JoltPhysicsWorld.cpp (no JPH:: types leak here).
 struct ConstraintId { uint32_t id = 0; bool valid() const { return id != 0; } };
 
-enum class Layer : uint8_t { Static, Dynamic, Player, Enemy, Projectile, Trigger };
+// NOTE: this enum's numeric values are the ObjectLayer indices in
+// JoltPhysicsWorld.cpp's ObjLayers (Static=0, Dynamic=1, Player=2, Enemy=3,
+// Projectile=4, Trigger=5). DO NOT reorder. NEW layers MUST be APPENDED at the
+// end (and matched with a row in JoltPhysicsWorld.cpp's ObjLayers + toObjLayer +
+// objectLayersCollide + BPLayerInterfaceImpl + ObjectVsBroadPhaseFilterImpl, plus
+// the parallel objLayerOf table in JoltVehicle.cpp). Ally is the coop-NPC layer:
+// allies collide like Player (kinematic capsule, sees Static/Dynamic/Triggers) but
+// are hittable by an Enemy-mask probe so monsters can target them.
+enum class Layer : uint8_t { Static, Dynamic, Player, Enemy, Projectile, Trigger, Ally };
 
 struct RayHit { bool hit = false; BodyId body; Vec3 point; Vec3 normal; float distance = 0; };
 
