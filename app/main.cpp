@@ -86,6 +86,7 @@
 #include "sky_stars.h"                     // procedural starfield (--test-starfield + --world starfield)
 #include "space/space_layer.h"             // S0 SpaceLayer spine (--test-spacelayer)
 #include "space/ship_interior.h"           // S5 walkable ship interior (--test-ship-interior + --world ship-interior)
+#include "space/ship_windows.h"            // S6 true-portal ship windows (--test-ship-windows + --world ship-windows)
 #include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
@@ -1346,7 +1347,7 @@ int main(int argc, char** argv) {
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
          testThirdPerson = false, testNpc = false, testStarfield = false,
-         testSpaceLayer = false, testShipInterior = false;
+         testSpaceLayer = false, testShipInterior = false, testShipWindows = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1692,6 +1693,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-starfield") testStarfield = true;
         else if (a == "--test-spacelayer") testSpaceLayer = true;
         else if (a == "--test-ship-interior") testShipInterior = true;
+        else if (a == "--test-ship-windows") testShipWindows = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -2156,6 +2158,14 @@ int main(int argc, char** argv) {
     if (testShipInterior) {
         x3::logInfo("running S5 ship-interior (walkable, data-driven) self-test...");
         return x3::space::runShipInteriorSelfTest() ? 0 : 1;
+    }
+    // --test-ship-windows: S6 true-portal ship windows (moving space outside) self-test.
+    // Headless (HeadlessRenderDevice) -- asserts the cockpit's 2 windows populate
+    // windowCount, render is VUID-safe with light-bleed lights, a changed envYaw
+    // drives the backdrop orientation, multiple env angles sample, clean shutdown.
+    if (testShipWindows) {
+        x3::logInfo("running S6 ship-windows (true-portal moving space) self-test...");
+        return x3::space::runShipWindowsSelfTest() ? 0 : 1;
     }
     if (testHoloterm) {
         x3::logInfo("running holo-terminal (text + input) self-test...");
@@ -5794,6 +5804,156 @@ int main(int argc, char** argv) {
             device->endFrame(frame);
         }
 
+        interior.shutdown(*sphys);
+        sphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    // ---- S6 SHIP WINDOWS showcase (--world ship-windows) -------------------
+    // THE SIGNATURE INTERIOR TECH: stand INSIDE the static cockpit (S5) and the
+    // windows show REAL space that MOVES — the "Star Trek" moving-set trick (the
+    // ship is static at origin; the environment carries the motion, decision 2.4).
+    // ShipWindows (app/space/ship_windows.*) renders a moving star/nebula view
+    // through each manifest window (UVs panned by envYaw, driven from timeSec) +
+    // a space backdrop dome + per-window light-bleed lights.
+    //   * WALKABLE (windowed): `--world ship-windows` — WASD + mouse, walls collide.
+    //   * SCREENSHOT (headless): `--world ship-windows --screenshot <path>` — pose a
+    //     camera looking at the forward viewport, settle, capture the PNG, exit.
+    if (worldMode == "ship-windows") {
+        x3::logInfo("--world ship-windows: building the cockpit with TRUE-PORTAL moving space");
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> sphys(x3::phys::createPhysicsWorld());
+        if (!sphys->init()) {
+            x3::logError("--world ship-windows: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        x3::game::Scene sscene;
+        x3::space::ShipInterior interior;
+        interior.build(*device, sscene, *sphys, x3::space::ShipInterior::makeSmallCockpit());
+
+        x3::space::ShipWindows windows;
+        windows.init(*device, interior.manifest());
+
+        // No sky (inside the hull). Disable SSAO/GI raster fallback so a no-RT
+        // capture is not black (per the lane brief). Interior fill lights + the
+        // ShipWindows light-bleed lights are uploaded together.
+        { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
+        { x3::rhi::IRenderDevice::SsaoParams ao{}; ao.enabled = false; device->setSsaoParams(ao); }
+        { x3::rhi::IRenderDevice::GiParams gi{}; gi.enabled = false; device->setGiParams(gi); }
+        // Merge interior ceiling fill + the per-window light-bleed lights.
+        std::vector<x3::rhi::PointLight> lights;
+        { x3::rhi::PointLight pl{}; pl.pos[0]=0.0f; pl.pos[1]=2.7f; pl.pos[2]=0.0f;
+          pl.range=10.0f; pl.color[0]=4.0f; pl.color[1]=4.2f; pl.color[2]=4.6f; lights.push_back(pl); }
+        for (const auto& bl : windows.bleedLights()) lights.push_back(bl);
+        device->setPointLights(lights.data(), (uint32_t)lights.size());
+
+        // ===== Headless screenshot: look forward at the moving viewport. =====
+        if (headless) {
+            // Stand at the aft of the cockpit looking forward (-Z) at the forward
+            // window so the deck + console + the moving space fill the frame.
+            float cam[5] = { 0.0f, 1.7f, 2.2f, -1.5708f, -0.04f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const float dt = 1.0f / 60.0f;
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("G:/X3Native/captures/windows.png");
+            const int kSettle = 16;
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                sphys->step(dt);
+                sscene.update(*sphys);
+                const float t = (float)i * dt;
+                const float envYaw = 0.25f * t;          // the ship "flies" — space pans
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 70.0f);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    interior.render(*device, frame, sscene);
+                    windows.setCamera(cam[0], cam[1], cam[2]);
+                    windows.render(*device, frame, /*viewProj16=*/nullptr, t, envYaw, 0.0f);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world ship-windows: wrote " + outPath);
+            else       x3::logError("--world ship-windows: capture FAILED");
+            windows.shutdown(*device);
+            interior.shutdown(*sphys);
+            sphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: real first-person Player + the moving space. =====
+        x3::game::Player splayer;
+        const x3::phys::Vec3 spawn = interior.spawnPoint();
+        splayer.spawn(*sphys, spawn.x, spawn.y, spawn.z);
+
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double startTime = glfwGetTime();
+        double prevTime = startTime;
+        bool prevSpaceS = false;
+        int lastWs = (int)W, lastHs = (int)H;
+        x3::logInfo("--world ship-windows: WASD walk, mouse look, Space jump, LeftShift sprint, Esc to quit");
+
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+
+            double now = glfwGetTime();
+            float dt = (float)(now - prevTime); prevTime = now;
+            if (dt > 0.1f) dt = 0.1f;
+            const float t = (float)(now - startTime);
+
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+
+            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            bool spaceNow = kd(GLFW_KEY_SPACE);
+
+            x3::game::PlayerInput in;
+            if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+            if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+            if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+            if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+            in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+            in.jumpPressed = spaceNow && !prevSpaceS;
+            in.lookDX = ddx; in.lookDY = ddy;
+            prevSpaceS = spaceNow;
+
+            splayer.update(in, dt, *sphys);
+            sphys->step(dt);
+            sscene.update(*sphys);
+
+            float camX, camY, camZ, camYaw, camPitch;
+            splayer.camera(camX, camY, camZ, camYaw, camPitch);
+
+            int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
+            if (cw != lastWs || ch != lastHs) { lastWs = cw; lastHs = ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
+
+            const float envYaw = 0.18f * t;   // slow pan: "flying through space"
+            device->setCamera(camX, camY, camZ, camYaw, camPitch, 70.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                interior.render(*device, frame, sscene);
+                windows.setCamera(camX, camY, camZ);
+                windows.render(*device, frame, /*viewProj16=*/nullptr, t, envYaw, 0.0f);
+            }
+            device->endFrame(frame);
+        }
+
+        windows.shutdown(*device);
         interior.shutdown(*sphys);
         sphys->shutdown();
         device->shutdown();
