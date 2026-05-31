@@ -50,10 +50,12 @@ MonsterSystem::Tuning saurianSoldierTuning() {
 // memory-flash vulnerability window aligned to the Adaptive-Hide design (each
 // phase transition opens a brief amplified-damage window — the player rotates
 // damage types to exploit). Phase 3 summons Grey adds (canon).
-// FORWARD-SPEC: full Adaptive Hide (last-damage-type 60% resist for 8 s) needs a
-// new MonsterSystem::Tuning::adaptiveHideResist field + a per-frame
-// last-damage tracker on MonsterSystem (monster.* lane). Until that lands, the
-// phase machine + memoryFlash already gives the "rotate damage type" rhythm.
+// ADAPTIVE HIDE NOW LIVE (feat/adaptive-hide engine extension landed): the
+// SaurianWarlord opts into the new MonsterSystem::Tuning::adaptiveHideResist
+// (0.60 == 60% reduction on the matched-type window) + the canonical 8 s window.
+// Memory-flash stays — stacks multiplicatively with the adaptive resist so a
+// matched type during a flash is 1.5 * 0.4 = 0.6 (still reduced but less so —
+// rotating during a flash is the "double-bonus" beat the spec wanted).
 MonsterSystem::Tuning saurianWarlordTuning() {
     MonsterSystem::Tuning t = bossTuning(BossType::FailedExperiment7);
     t.hp                    = 540;                            // boss tier (~1.6x Martinez 340)
@@ -74,9 +76,16 @@ MonsterSystem::Tuning saurianWarlordTuning() {
     t.phase3SpeedMul        = 1.60f;
     t.phase3DamageMul       = 1.70f;
     t.phase3SummonCount     = 2;                              // P3 summons Grey adds
-    // Memory-flash = the "rotate damage type" vulnerability beat (1.2 s @ 1.5x).
+    // Memory-flash = a brief amplified-vulnerability window per phase transition
+    // (1.2 s @ 1.5x). Stacks multiplicatively with Adaptive Hide below.
     t.memoryFlashTime       = 1.2f;
     t.memoryFlashDamageMul  = 1.5f;
+    // Adaptive Hide (canon) — 60% resist to the LAST incoming damage type for
+    // 8 s. Player MUST rotate (Kinetic -> Energy -> Bio -> ...) to keep damage
+    // flowing. Inert until the feat/adaptive-hide engine extension lands; once
+    // it does, this is the canonical Warlord fight rhythm.
+    t.adaptiveHideResist      = 0.60f;
+    t.adaptiveHideDurationSec = 8.0f;
     return t;
 }
 
