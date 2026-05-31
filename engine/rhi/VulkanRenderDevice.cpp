@@ -1347,8 +1347,9 @@ private:
         glm::mat4 lightViewProj;     // offset 64
         glm::vec4 ambientCount;      // offset 128: rgb = ambient color, w = light count (as float)
         GpuPointLight lights[kMaxPointLights]; // offset 144
+        glm::vec4 camPos;            // xyz = camera world position (PBR view vector); w unused
     };
-    static_assert(sizeof(FrameUBO) == 144 + kMaxPointLights * 32,
+    static_assert(sizeof(FrameUBO) == 144 + kMaxPointLights * 32 + 16,
                   "FrameUBO must match the std140 layout in mesh.frag");
 
     // ---- Analytic sky UBO (open-world track, task A) -----------------------
@@ -1626,6 +1627,7 @@ private:
             ubo.lights[i].posRange = glm::vec4(s.pos[0], s.pos[1], s.pos[2], s.range);
             ubo.lights[i].colorPad = glm::vec4(s.color[0], s.color[1], s.color[2], 0.0f);
         }
+        ubo.camPos = glm::vec4(m_camPos, 0.0f);   // PBR view vector (mesh.frag)
         std::memcpy(fr.camMapped, &ubo, sizeof(FrameUBO));
 
         // Analytic sky UBO (open-world track, task A): the camera's INVERSE viewProj

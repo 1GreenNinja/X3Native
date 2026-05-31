@@ -50,6 +50,7 @@ layout(set = 1, binding = 1) uniform Camera {
     mat4 lightViewProj;
     vec4 ambientCount;              // rgb = ambient color, w = active light count
     PointLight lights[kMaxPointLights];
+    vec4 camPos;                    // xyz = camera world position (PBR view vector)
 } cam;
 
 // Hardware-compare shadow sampler (depth texture + VK_COMPARE_OP_LESS_OR_EQUAL).
@@ -75,6 +76,8 @@ layout(location = 4) in vec3 vWorldPos;
 layout(location = 5) flat in vec4 vEmissive;   // rgb = color, a = strength
 layout(location = 6) flat in uint vTerrainFlag;
 layout(location = 7) flat in uvec2 vTerrainPack; // x = grass<<16|rock, y = snow<<16|sand
+layout(location = 8) flat in uint vNormalTexIndex; // 0 = none (PBR normal map)
+layout(location = 9) flat in uint vMrTexIndex;     // 0 = none (metallic-roughness)
 
 layout(location = 0) out vec4 outColor;
 
@@ -232,12 +235,46 @@ float pointAtten(float dist, float range) {
     return w / (dist * dist + 1.0);
 }
 
+// ---- PBR helpers (Cook-Torrance GGX). Only the metallic-roughness branch in main()
+// calls these; plain meshes (vMrTexIndex == 0) never do, so their shading is unchanged.
+const float PI = 3.14159265359;
+float D_GGX(float NoH, float a) { float a2 = a * a; float d = (NoH * NoH) * (a2 - 1.0) + 1.0; return a2 / max(PI * d * d, 1e-7); }
+float V_SmithGGX(float NoV, float NoL, float a) {
+    float k = a * 0.5;
+    float gv = NoL * (NoV * (1.0 - k) + k);
+    float gl = NoV * (NoL * (1.0 - k) + k);
+    return 0.5 / max(gv + gl, 1e-5);
+}
+vec3 F_Schlick(float u, vec3 f0) { return f0 + (1.0 - f0) * pow(clamp(1.0 - u, 0.0, 1.0), 5.0); }
+// One light's outgoing radiance factor (Lambert diffuse + GGX spec) * NoL.
+vec3 brdf(vec3 N, vec3 V, float NoV, vec3 L, vec3 F0, vec3 diff, float a) {
+    float NoL = max(dot(N, L), 0.0);
+    if (NoL <= 0.0) return vec3(0.0);
+    vec3 H = normalize(V + L);
+    float NoH = max(dot(N, H), 0.0), VoH = max(dot(V, H), 0.0);
+    vec3 F = F_Schlick(VoH, F0);
+    vec3 spec = D_GGX(NoH, a) * V_SmithGGX(NoV, NoL, a) * F;
+    return ((vec3(1.0) - F) * diff / PI + spec) * NoL;
+}
+// Perturb the geometry normal by a tangent-space normal map via a derivative TBN
+// (no vertex tangents needed). idx = bindless normal-map index.
+vec3 perturbNormal(vec3 N, vec3 wp, vec2 uv, uint idx) {
+    vec3 t = texture(textures[nonuniformEXT(idx)], uv).xyz * 2.0 - 1.0;
+    vec3 dp1 = dFdx(wp), dp2 = dFdy(wp);
+    vec2 du1 = dFdx(uv), du2 = dFdy(uv);
+    vec3 T = normalize(dp1 * du2.y - dp2 * du1.y);
+    vec3 B = -normalize(cross(N, T));
+    return normalize(mat3(T, B, N) * t);
+}
+
 void main() {
     vec3 N = normalize(vNormal);
+    // PBR normal map (non-terrain): perturb the geometry normal via a derivative TBN.
+    if (vTerrainFlag == 0u && vNormalTexIndex > 0u)
+        N = perturbNormal(N, vWorldPos, vUV, vNormalTexIndex);
 
-    // Terrain meshes (flagged in the SSBO) splat grass/rock/snow/sand by world
-    // height + slope; everything else samples its single bindless texture exactly
-    // as before. The branch is uniform per draw (flat input), so no divergence.
+    // Terrain meshes splat grass/rock/snow/sand by world height+slope; everything
+    // else samples its single bindless base texture. Uniform branch (flat input).
     vec4 albedo;
     if (vTerrainFlag != 0u) {
         albedo = vec4(terrainAlbedo(vWorldPos, N, vTerrainPack), 1.0) * vFactor;
@@ -245,44 +282,51 @@ void main() {
         albedo = texture(textures[nonuniformEXT(vTexIndex)], vUV) * vFactor;
     }
 
-    // ---- Directional sun (shadow-gated diffuse) ----
-    float ndl = max(dot(N, kSunDir), 0.0);
+    // ---- Shared terms: sun shadow, hemispheric ambient, SSAO (both paths use these). ----
+    float ndl    = max(dot(N, kSunDir), 0.0);
     float shadow = sampleShadow(vWorldPos, ndl);
-    vec3 lighting = kSunColor * (0.75 * ndl * shadow);
-
-    // ---- Hemispheric ambient: blend a slightly warmer "up" tint with the cooler
-    // base ambient by the surface's vertical facing so floors/ceilings differ. ----
-    vec3 ambient = cam.ambientCount.rgb;
+    vec3  ambient = cam.ambientCount.rgb;
     float up = N.y * 0.5 + 0.5;                 // 0 = facing down, 1 = facing up
-
-    // SSAO modulates ONLY this ambient/indirect term (the sun + point lights are
-    // direct light and stay full-strength). Sample the blurred AO at this
-    // fragment's screen UV; `strength` lerps the effect (1 = full AO, 0 = off).
     float ao = 1.0;
     if (ssao.ctrl.x > 0.5) {
         vec2 aoUV = gl_FragCoord.xy * ssao.ctrl.zw;   // pixel -> [0,1] screen UV
-        float aoSample = texture(ssaoTex, aoUV).r;
-        ao = mix(1.0, aoSample, clamp(ssao.ctrl.y, 0.0, 1.0));
+        ao = mix(1.0, texture(ssaoTex, aoUV).r, clamp(ssao.ctrl.y, 0.0, 1.0));
     }
-    lighting += ambient * mix(0.85, 1.25, up) * ao;
+    int nLights = int(cam.ambientCount.w);
 
-    // ---- Forward point lights (Light_A ceiling fixtures) ----
-    int n = int(cam.ambientCount.w);
-    for (int i = 0; i < n && i < kMaxPointLights; ++i) {
-        vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
-        float dist = length(toL);
-        vec3  L    = toL / max(dist, 0.0001);
-        float pndl = max(dot(N, L), 0.0);
-        float att  = pointAtten(dist, cam.lights[i].posRange.w);
-        lighting  += cam.lights[i].colorPad.rgb * (pndl * att);
+    vec3 color;
+    if (vMrTexIndex == 0u) {
+        // ---- DIFFUSE path (UNCHANGED shading; uses the perturbed N if a normal map was set). ----
+        vec3 lighting = kSunColor * (0.75 * ndl * shadow);
+        lighting += ambient * mix(0.85, 1.25, up) * ao;
+        for (int i = 0; i < nLights && i < kMaxPointLights; ++i) {
+            vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
+            float dist = length(toL);
+            vec3  L    = toL / max(dist, 0.0001);
+            lighting  += cam.lights[i].colorPad.rgb * (max(dot(N, L), 0.0) * pointAtten(dist, cam.lights[i].posRange.w));
+        }
+        color = albedo.rgb * lighting;
+    } else {
+        // ---- PBR metallic-roughness (Cook-Torrance GGX). glTF MR: B=metallic, G=roughness. ----
+        vec3  mr       = texture(textures[nonuniformEXT(vMrTexIndex)], vUV).rgb;
+        float metallic = mr.b;
+        float a        = clamp(mr.g, 0.045, 1.0); a *= a;       // perceptual roughness -> GGX alpha
+        vec3  F0       = mix(vec3(0.04), albedo.rgb, metallic);
+        vec3  diff     = albedo.rgb * (1.0 - metallic);
+        vec3  V        = normalize(cam.camPos.xyz - vWorldPos);
+        float NoV      = max(dot(N, V), 1e-4);
+        vec3  Lo = brdf(N, V, NoV, kSunDir, F0, diff, a) * kSunColor * shadow;        // sun (shadowed)
+        for (int i = 0; i < nLights && i < kMaxPointLights; ++i) {                    // point lights
+            vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
+            float dist = length(toL);
+            vec3  L    = toL / max(dist, 0.0001);
+            Lo += brdf(N, V, NoV, L, F0, diff, a) * cam.lights[i].colorPad.rgb * pointAtten(dist, cam.lights[i].posRange.w);
+        }
+        Lo += ambient * mix(0.85, 1.25, up) * ao * diff;                             // ambient diffuse + AO
+        color = Lo;
     }
 
-    // ---- Emissive: a per-object HDR radiance added on top (light fixtures /
-    // strips). Independent of incoming light so a fixture glows even in shadow;
-    // multiplied into HDR range by its strength so it drives the bloom chain. ----
-    vec3 color = albedo.rgb * lighting;
+    // ---- Emissive: per-object HDR radiance on top (glows even in shadow; feeds bloom). ----
     color += vEmissive.rgb * vEmissive.a;
-
-    // HDR output in LINEAR light — NO tonemap here (moved to composite.frag).
-    outColor = vec4(color, albedo.a);
+    outColor = vec4(color, albedo.a);   // HDR linear; tonemap is in composite.frag
 }

@@ -40,6 +40,7 @@ layout(set = 1, binding = 1) uniform Camera {
     mat4 lightViewProj;
     vec4 ambientCount;
     PointLight lights[kMaxPointLights];
+    vec4 camPos;          // xyz = camera world position (PBR view vector)
 } cam;
 
 layout(location = 0) in vec3 inPos;
@@ -55,6 +56,8 @@ layout(location = 5) flat out vec4 vEmissive;   // rgb = color, a = strength
 // Terrain splat payload (only meaningful when vTerrainFlag != 0):
 layout(location = 6) flat out uint vTerrainFlag;
 layout(location = 7) flat out uvec2 vTerrainPack; // x = grass<<16|rock, y = snow<<16|sand
+layout(location = 8) flat out uint vNormalTexIndex; // 0 = none (PBR normal map)
+layout(location = 9) flat out uint vMrTexIndex;     // 0 = none (metallic-roughness)
 
 void main() {
     ObjectData o = objBuf.objects[gl_InstanceIndex];
@@ -68,4 +71,6 @@ void main() {
     vEmissive = o.emissive;
     vTerrainFlag = o.terrainFlag;
     vTerrainPack = uvec2(o.terrainPack1, o.terrainPack2);
+    vNormalTexIndex = o.normalTexIndex;
+    vMrTexIndex = o.mrTexIndex;
 }
