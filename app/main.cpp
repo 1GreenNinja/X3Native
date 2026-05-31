@@ -1715,7 +1715,8 @@ int main(int argc, char** argv) {
         else if (a == "--test-companion-controller") testCompanionController = true;
         else if (a == "--test-club") testClub = true;
         else if (a == "--test-starfield") testStarfield = true;
-        else if (a == "--test-spacelayer") testSpaceLayer = true;
+        // Break the else-if chain (MSVC C1061: nested-too-deeply limit).
+        if (a == "--test-spacelayer") testSpaceLayer = true;
         else if (a == "--test-lod") testLod = true;
         else if (a == "--test-spaceenv") testSpaceEnv = true;
         else if (a == "--test-shipanim") testShipanim = true;
