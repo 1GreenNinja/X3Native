@@ -69,6 +69,7 @@ add_executable(X3Engine WIN32
     space/descent.cpp
     space/ship_interior.cpp
     space/ship_ai.cpp
+    space/targeting.cpp
     ui.cpp)
 
 target_link_libraries(X3Engine PRIVATE x3engine glfw)

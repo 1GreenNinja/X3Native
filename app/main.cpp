@@ -93,6 +93,7 @@
 #include "space/descent.h"                  // S4 cinematic atmo descent (--test-atmo-descent + --world atmo-descent)
 #include "space/ship_interior.h"           // S5 walkable ship interior (--test-ship-interior + --world ship-interior)
 #include "space/ship_ai.h"                  // S8 enemy ship AI / dogfight (--test-ship-ai + --world ship-ai)
+#include "space/targeting.h"               // S9 targeting / radar / lock-on (--test-targeting + --world targeting)
 #include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
@@ -1362,7 +1363,8 @@ int main(int argc, char** argv) {
          testWormholeTransit = false,
          testAtmoDescent = false,
          testShipInterior = false,
-         testShipAi = false;
+         testShipAi = false,
+         testTargeting = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1715,6 +1717,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-atmo-descent") testAtmoDescent = true;
         else if (a == "--test-ship-interior") testShipInterior = true;
         else if (a == "--test-ship-ai") testShipAi = true;
+        else if (a == "--test-targeting") testTargeting = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -2779,6 +2782,157 @@ int main(int argc, char** argv) {
     if (testShipAi) {
         x3::logInfo("running S8 enemy ship-AI (dogfight) self-test...");
         return x3::space::runShipAiSelfTest() ? 0 : 1;
+    }
+    // --test-targeting: S9 targeting / radar / lock-on self-test. Headless.
+    if (testTargeting) {
+        x3::logInfo("running S9 targeting / radar / lock-on self-test...");
+        int pass = 0, total = 0;
+        auto check = [&](bool c, const char* name) {
+            ++total;
+            if (c) { ++pass; x3::logInfo(std::string("  [ok] ") + name); }
+            else   {          x3::logError(std::string("  [FAIL] ") + name); }
+        };
+
+        using x3::space::TargetingSystem;
+        using x3::space::Contact;
+        using x3::space::LeadSolution;
+
+        // A deterministic scene: two hostiles (ids 10, 20) ahead along +X at
+        // different ranges, one friendly (id 5) ahead, one hostile (id 30)
+        // behind. Hostile 10 sits dead on the +X boresight; 20 is off-axis.
+        Contact cs[4]{};
+        cs[0] = { 10u, { 100.0f,   0.0f,   0.0f }, { 0.0f, 0.0f, 0.0f }, true  }; // on-axis, near
+        cs[1] = { 20u, { 200.0f,  40.0f,   0.0f }, { 0.0f, 0.0f, 0.0f }, true  }; // off-axis, far
+        cs[2] = {  5u, { 120.0f,   0.0f,   0.0f }, { 0.0f, 0.0f, 0.0f }, false }; // friendly, on-axis
+        cs[3] = { 30u, { -80.0f,   0.0f,   0.0f }, { 0.0f, 0.0f, 0.0f }, true  }; // behind
+
+        // T1: setContacts + no lock initially.
+        {
+            TargetingSystem ts;
+            ts.setContacts(cs, 4);
+            check(ts.contactCount() == 4u, "T1 setContacts stores all contacts");
+            check(!ts.hasLock(), "T1b no lock before any lock request");
+        }
+
+        // T2: lockNearest picks the in-cone hostile, skipping the closer friendly.
+        {
+            TargetingSystem ts;
+            ts.setContacts(cs, 4);
+            const float from[3] = { 0.0f, 0.0f, 0.0f };
+            const float fwd[3]  = { 1.0f, 0.0f, 0.0f };
+            ts.lockNearest(from, fwd);
+            check(ts.hasLock() && ts.lockedId() == 10u,
+                  "T2 lockNearest locks the on-axis hostile (id 10), not the friendly");
+        }
+
+        // T3: cycleTarget advances through HOSTILES only, skipping the friendly.
+        {
+            TargetingSystem ts;
+            ts.setContacts(cs, 4);
+            ts.cycleTarget(+1); // first hostile in list order: id 10
+            check(ts.hasLock() && ts.lockedId() == 10u, "T3 cycle +1 -> first hostile id 10");
+            ts.cycleTarget(+1); // next hostile: id 20 (skips friendly id 5)
+            check(ts.lockedId() == 20u, "T3b cycle +1 -> next hostile id 20 (skips friendly)");
+            ts.cycleTarget(+1); // next hostile: id 30 (wraps past friendly)
+            check(ts.lockedId() == 30u, "T3c cycle +1 -> hostile id 30");
+            ts.cycleTarget(+1); // wraps back to id 10
+            check(ts.lockedId() == 10u, "T3d cycle +1 wraps back to id 10");
+            ts.cycleTarget(-1); // back to id 30
+            check(ts.lockedId() == 30u, "T3e cycle -1 wraps to id 30");
+        }
+
+        // T4: computeLead returns a VALID intercept for a crossing mover.
+        {
+            TargetingSystem ts;
+            // Single hostile crossing in +Z at 30 m/s, 100 m straight ahead.
+            Contact mover{ 99u, { 100.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 30.0f }, true };
+            ts.setContacts(&mover, 1);
+            ts.cycleTarget(+1);
+            const float shooter[3] = { 0.0f, 0.0f, 0.0f };
+            LeadSolution s = ts.computeLead(shooter, 300.0f); // fast projectile
+            // Lead must be AHEAD of the target in its direction of travel (+Z>0)
+            // and within physical bounds of a real intercept.
+            check(s.valid && s.aimPoint[2] > 0.5f && s.distance > 99.0f,
+                  "T4 computeLead: valid lead point ahead of crossing target");
+            // Sanity: the aim point's flight time matches projectile travel.
+            float dz = s.aimPoint[2];
+            float flightT = s.distance / 300.0f;
+            check(std::fabs(dz - 30.0f * flightT) < 1.0f,
+                  "T4b lead point is consistent with intercept time");
+        }
+
+        // T5: computeLead INVALID when the projectile is too slow to catch a
+        // target receding faster than the projectile flies.
+        {
+            TargetingSystem ts;
+            Contact fleeing{ 88u, { 100.0f, 0.0f, 0.0f }, { 50.0f, 0.0f, 0.0f }, true };
+            ts.setContacts(&fleeing, 1);
+            ts.cycleTarget(+1);
+            const float shooter[3] = { 0.0f, 0.0f, 0.0f };
+            LeadSolution s = ts.computeLead(shooter, 10.0f); // slower than the target
+            check(!s.valid, "T5 computeLead invalid: projectile too slow to intercept");
+        }
+
+        // T6: computeLead invalid with no lock.
+        {
+            TargetingSystem ts;
+            ts.setContacts(cs, 4);
+            const float shooter[3] = { 0.0f, 0.0f, 0.0f };
+            LeadSolution s = ts.computeLead(shooter, 300.0f);
+            check(!s.valid, "T6 computeLead invalid without a lock");
+        }
+
+        // T7: radarBlips projects within range, drops out-of-range, flags locked.
+        {
+            TargetingSystem ts;
+            ts.setContacts(cs, 4);
+            ts.cycleTarget(+1); // lock id 10 (on +X boresight)
+            const float pPos[3] = { 0.0f, 0.0f, 0.0f };
+            const float pFwd[3] = { 1.0f, 0.0f, 0.0f }; // facing +X -> radar up
+            TargetingSystem::Blip blips[8]{};
+            // Range 150: includes id 10 (100), friendly 5 (120), behind 30 (80);
+            // excludes id 20 (planar 200).
+            uint32_t nb = ts.radarBlips(blips, 8, pPos, pFwd, 150.0f);
+            check(nb == 3u, "T7 radarBlips range-gates out the far contact (3 of 4)");
+            // Find id 10's blip: facing +X, a +X target projects to +Y (up),
+            // near +1 (range 100 / 150 ~= 0.67), x near 0.
+            bool okLockedBlip = false;
+            for (uint32_t i = 0; i < nb; ++i) {
+                if (blips[i].id == 10u) {
+                    okLockedBlip = blips[i].locked &&
+                                   blips[i].hostile &&
+                                   blips[i].radarXY[1] > 0.5f &&
+                                   std::fabs(blips[i].radarXY[0]) < 0.05f;
+                }
+            }
+            check(okLockedBlip, "T7b locked on-axis hostile projects to radar up, flagged locked");
+            // The contact behind (id 30) projects to -Y (down).
+            bool behindDown = false;
+            for (uint32_t i = 0; i < nb; ++i)
+                if (blips[i].id == 30u && blips[i].radarXY[1] < -0.3f) behindDown = true;
+            check(behindDown, "T7c contact behind the player projects to radar down");
+        }
+
+        // T8: clearLock + lock auto-drops when the locked contact disappears.
+        {
+            TargetingSystem ts;
+            ts.setContacts(cs, 4);
+            ts.cycleTarget(+1);
+            check(ts.hasLock(), "T8 lock acquired");
+            ts.clearLock();
+            check(!ts.hasLock(), "T8b clearLock releases the lock");
+            // Re-lock, then feed a list WITHOUT the locked id -> auto-clear.
+            ts.cycleTarget(+1);
+            check(ts.hasLock() && ts.lockedId() == 10u, "T8c re-locked id 10");
+            Contact gone[1] = { { 20u, { 200.0f, 40.0f, 0.0f }, { 0,0,0 }, true } };
+            ts.setContacts(gone, 1);
+            check(!ts.hasLock(), "T8d lock auto-drops when locked contact leaves the feed");
+        }
+
+        x3::logInfo("targeting: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+        std::printf("targeting: %d/%d passed\n", pass, total);
+        std::fflush(stdout);
+        return (pass == total) ? 0 : 1;
     }
     if (testHoloterm) {
         x3::logInfo("running holo-terminal (text + input) self-test...");
@@ -5586,6 +5740,195 @@ int main(int argc, char** argv) {
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
+        return 0;
+    }
+
+    // ======================================================================
+    // ---- S9 TARGETING / RADAR / LOCK-ON showcase (--world targeting) ------
+    // A handful of contacts (mix of hostile + friendly) placed in deep space
+    // ahead of the player. The TargetingSystem locks the nearest in-cone
+    // hostile; we draw a colored world-space marker box at each contact (red =
+    // hostile, green = friendly, brighter for the locked one) and a distinct
+    // bright marker at the computed lead point. A HUD overlay paints the radar
+    // disc + blips and a reticle on the locked contact + a lead-indicator.
+    // Headless `--world targeting --screenshot <path>` writes a non-blank PNG.
+    if (worldMode == "targeting") {
+        x3::logInfo("--world targeting: building the S9 targeting / radar HUD showcase");
+
+        // Deep-space lighting: kill SSAO + GI (they raster a black-on-black
+        // scene with no nearby geometry — the documented no-RT fallback) and the
+        // analytic sky, so the markers read against the dark clear color.
+        { x3::rhi::IRenderDevice::SsaoParams sp{}; sp.enabled = false; device->setSsaoParams(sp); }
+        { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled   = false; device->setGiParams(gp); }
+        { x3::rhi::IRenderDevice::SkyParams  sp{}; sp.enabled   = false; device->setSkyParams(sp); }
+        // Bright point lights near the cluster so the unlit marker boxes read.
+        { x3::rhi::PointLight pl[2];
+          pl[0].pos[0] = 0.0f; pl[0].pos[1] = 60.0f; pl[0].pos[2] = 60.0f; pl[0].range = 600.0f;
+          pl[0].color[0] = 40.0f; pl[0].color[1] = 40.0f; pl[0].color[2] = 44.0f;
+          pl[1].pos[0] = -60.0f; pl[1].pos[1] = 30.0f; pl[1].pos[2] = 20.0f; pl[1].range = 500.0f;
+          pl[1].color[0] = 14.0f; pl[1].color[1] = 16.0f; pl[1].color[2] = 20.0f;
+          device->setPointLights(pl, 2); }
+
+        // ---- The contacts (host-fed each frame in a real game) -------------
+        // Player sits at the origin looking toward +X. Hostiles ahead; one
+        // friendly; the locked hostile (id 10) is given a crossing velocity so
+        // the lead point separates visibly from the marker.
+        x3::space::Contact contacts[5]{};
+        contacts[0] = { 10u, {  70.0f,   6.0f,  10.0f }, { 0.0f, 0.0f, 18.0f }, true  };
+        contacts[1] = { 20u, {  90.0f,  22.0f, -28.0f }, { 0.0f, 0.0f, 0.0f  }, true  };
+        contacts[2] = { 30u, {  80.0f, -18.0f,  30.0f }, { 0.0f, 0.0f, 0.0f  }, true  };
+        contacts[3] = {  5u, {  60.0f,   4.0f, -16.0f }, { 0.0f, 0.0f, 0.0f  }, false };
+        contacts[4] = { 40u, { 120.0f,  -6.0f,   4.0f }, { 0.0f, 0.0f, 0.0f  }, true  };
+        const uint32_t kNContacts = 5;
+
+        x3::space::TargetingSystem targeting;
+        targeting.setContacts(contacts, kNContacts);
+        const float playerPos[3] = { 0.0f, 0.0f, 0.0f };
+        const float playerFwd[3] = { 1.0f, 0.0f, 0.0f };
+        targeting.lockNearest(playerPos, playerFwd);
+        const float kProjSpeed = 220.0f;
+
+        // ---- Marker geometry: a box drawn at each contact -----------------
+        // Generously sized so the headless screenshot reads with strong pixel
+        // variance against the dark backdrop (this is a VISUAL gate).
+        x3::prims::PrimMesh markerGeo = x3::prims::makeBox(9.0f, 9.0f, 9.0f, 0, 0, 0, 1.0f);
+        auto markerMesh = device->createMesh(markerGeo.verts.data(), (uint32_t)markerGeo.verts.size(),
+                                             markerGeo.index.data(), (uint32_t)markerGeo.index.size());
+        auto whiteD = x3::prims::makeCheckerRGBA(16, 4, 235, 235, 240, 120, 130, 150);
+        auto whiteTex = device->createTexture(whiteD.data(), 16, 16, true);
+        x3::prims::PrimMesh leadGeo = x3::prims::makeBox(5.0f, 5.0f, 5.0f, 0, 0, 0, 1.0f);
+        auto leadMesh = device->createMesh(leadGeo.verts.data(), (uint32_t)leadGeo.verts.size(),
+                                           leadGeo.index.data(), (uint32_t)leadGeo.index.size());
+
+        // Draw all the world-space markers + the lead indicator for the frame.
+        auto drawScene = [&](const x3::rhi::FrameContext& frame) {
+            for (uint32_t i = 0; i < kNContacts; ++i) {
+                const x3::space::Contact& c = contacts[i];
+                const bool locked = targeting.hasLock() && targeting.lockedId() == c.id;
+                float tint[4];
+                if (c.hostile) { tint[0] = locked ? 2.4f : 1.4f; tint[1] = 0.12f; tint[2] = 0.12f; }
+                else           { tint[0] = 0.12f; tint[1] = locked ? 2.4f : 1.4f; tint[2] = 0.20f; }
+                tint[3] = 1.0f;
+                float m[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, c.pos[0], c.pos[1], c.pos[2], 1 };
+                device->drawMesh(frame, markerMesh, whiteTex, tint, m);
+            }
+            // Lead indicator: a bright cyan box at the firing solution.
+            x3::space::LeadSolution lead = targeting.computeLead(playerPos, kProjSpeed);
+            if (lead.valid) {
+                const float cyan[4] = { 0.2f, 2.6f, 3.0f, 1.0f };
+                float m[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0,
+                                lead.aimPoint[0], lead.aimPoint[1], lead.aimPoint[2], 1 };
+                device->drawMesh(frame, leadMesh, whiteTex, cyan, m);
+            }
+        };
+
+        // HUD overlay: radar disc bottom-right + reticle on the locked target.
+        auto drawHud = [&](const x3::rhi::FrameContext& frame) {
+            uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+            const float fw = (float)hw, fh = (float)hh;
+            // Radar disc: a square panel in the bottom-right corner.
+            const float radarSize = 0.40f * fh;
+            const float cx = fw - radarSize * 0.5f - 0.03f * fw;
+            const float cy = fh - radarSize * 0.5f - 0.03f * fh;
+            const float half = radarSize * 0.5f;
+            // Panel background.
+            const float panelBg[4] = { 0.04f, 0.10f, 0.06f, 0.55f };
+            device->drawHudQuad(frame, cx - half, cy - half, radarSize, radarSize, panelBg);
+            // Crosshair lines through the radar center (the player's heading).
+            const float grid[4] = { 0.20f, 0.45f, 0.30f, 0.8f };
+            device->drawHudQuad(frame, cx - half, cy - 1.0f, radarSize, 2.0f, grid);
+            device->drawHudQuad(frame, cx - 1.0f, cy - half, 2.0f, radarSize, grid);
+            // Player marker at center.
+            const float me[4] = { 0.5f, 0.9f, 1.0f, 1.0f };
+            device->drawHudQuad(frame, cx - 3.0f, cy - 3.0f, 6.0f, 6.0f, me);
+            // Blips.
+            x3::space::TargetingSystem::Blip blips[32];
+            uint32_t nb = targeting.radarBlips(blips, 32, playerPos, playerFwd, 200.0f);
+            for (uint32_t i = 0; i < nb; ++i) {
+                // radarXY: +X right, +Y up. Screen +y is DOWN, so negate Y.
+                const float bx = cx + blips[i].radarXY[0] * half;
+                const float by = cy - blips[i].radarXY[1] * half;
+                float col[4];
+                if (blips[i].locked)      { col[0]=1.0f; col[1]=1.0f; col[2]=0.3f; col[3]=1.0f; }
+                else if (blips[i].hostile){ col[0]=1.0f; col[1]=0.25f; col[2]=0.25f; col[3]=1.0f; }
+                else                      { col[0]=0.3f; col[1]=1.0f; col[2]=0.4f; col[3]=1.0f; }
+                const float s = blips[i].locked ? 8.0f : 5.0f;
+                device->drawHudQuad(frame, bx - s*0.5f, by - s*0.5f, s, s, col);
+            }
+            // Reticle: a yellow open box at screen center when locked, plus a
+            // "LOCK" label, to mark the dogfight HUD.
+            if (targeting.hasLock()) {
+                const float rx = fw * 0.5f, ry = fh * 0.5f, rs = 0.05f * fh;
+                const float yellow[4] = { 1.0f, 0.95f, 0.2f, 1.0f };
+                device->drawHudQuad(frame, rx - rs, ry - rs, 2.0f*rs, 2.0f, yellow); // top
+                device->drawHudQuad(frame, rx - rs, ry + rs, 2.0f*rs, 2.0f, yellow); // bottom
+                device->drawHudQuad(frame, rx - rs, ry - rs, 2.0f, 2.0f*rs, yellow); // left
+                device->drawHudQuad(frame, rx + rs, ry - rs, 2.0f, 2.0f*rs, yellow); // right
+                device->drawHudText(frame, "TARGET LOCK", rx - 60.0f, ry - rs - 24.0f, 12.0f, yellow);
+                char buf[64];
+                x3::space::LeadSolution lead = targeting.computeLead(playerPos, kProjSpeed);
+                std::snprintf(buf, sizeof(buf), "ID %u  RNG %.0f", targeting.lockedId(),
+                              lead.valid ? lead.distance : 0.0f);
+                device->drawHudText(frame, buf, rx - 60.0f, ry + rs + 12.0f, 12.0f, yellow);
+            }
+        };
+
+        // Camera: behind the player at the origin, looking toward +X.
+        float cam[6] = { -30.0f, 4.0f, 0.0f, 0.0f, 0.0f, 65.0f };
+
+        // ---- Headless capture ----------------------------------------------
+        if (headless) {
+            device->setFrustumCull(false);
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("G:/X3Native/captures/targeting.png");
+            const int kFrames = 16;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], cam[5]);
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) { drawScene(frame); drawHud(frame); }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world targeting: wrote " + outPath);
+            else       x3::logError("--world targeting: capture FAILED");
+            device->destroyMesh(markerMesh); device->destroyMesh(leadMesh);
+            device->destroyTexture(whiteTex);
+            device->shutdown();
+            if (window) glfwDestroyWindow(window); glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ---- Windowed path: cycle the lock with TAB / shift+TAB, Esc quit ---
+        x3::logInfo("--world targeting: TAB cycle lock, N lock-nearest, C clear, Esc quit");
+        bool prevTab = false, prevN = false, prevC = false;
+        int lastWs = (int)W, lastHs = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            const bool tab = glfwGetKey(window, GLFW_KEY_TAB) == GLFW_PRESS;
+            const bool shift = glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
+            if (tab && !prevTab) targeting.cycleTarget(shift ? -1 : +1);
+            prevTab = tab;
+            const bool nKey = glfwGetKey(window, GLFW_KEY_N) == GLFW_PRESS;
+            if (nKey && !prevN) targeting.lockNearest(playerPos, playerFwd);
+            prevN = nKey;
+            const bool cKey = glfwGetKey(window, GLFW_KEY_C) == GLFW_PRESS;
+            if (cKey && !prevC) targeting.clearLock();
+            prevC = cKey;
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWs || chh != lastHs) { lastWs = cw; lastHs = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+            device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], cam[5]);
+            auto frame = device->beginFrame();
+            if (frame.valid) { drawScene(frame); drawHud(frame); }
+            device->endFrame(frame);
+        }
+        device->destroyMesh(markerMesh); device->destroyMesh(leadMesh);
+        device->destroyTexture(whiteTex);
+        device->shutdown();
+        if (window) glfwDestroyWindow(window); glfwTerminate();
         return 0;
     }
 
