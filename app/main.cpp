@@ -1360,7 +1360,7 @@ int main(int argc, char** argv) {
          testWormhole = false,
          testWormholeTransit = false,
          testAtmoDescent = false,
-         testSpaceLayer = false, testShipInterior = false;
+         testShipInterior = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
