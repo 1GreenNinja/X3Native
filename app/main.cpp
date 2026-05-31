@@ -86,6 +86,7 @@
 #include "sky_stars.h"                     // procedural starfield (--test-starfield + --world starfield)
 #include "space/space_layer.h"             // S0 SpaceLayer spine (--test-spacelayer)
 #include "space/lod.h"                      // S2 distance-LOD system (--test-lod + --world lod)
+#include "space/space_env.h"               // S1 space environment: nebula/stars + planets + sun (--test-spaceenv + --world spaceenv)
 #include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
@@ -1348,7 +1349,8 @@ int main(int argc, char** argv) {
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
          testThirdPerson = false, testNpc = false, testStarfield = false,
          testSpaceLayer = false,
-         testLod = false;
+         testLod = false,
+         testSpaceEnv = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1694,6 +1696,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-starfield") testStarfield = true;
         else if (a == "--test-spacelayer") testSpaceLayer = true;
         else if (a == "--test-lod") testLod = true;
+        else if (a == "--test-spaceenv") testSpaceEnv = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -2201,6 +2204,97 @@ int main(int argc, char** argv) {
 
         x3::logInfo("lod: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
         std::printf("lod: %d/%d passed\n", pass, total);
+        std::fflush(stdout);
+        return (pass == total) ? 0 : 1;
+    }
+    // --test-spaceenv: S1 space environment (nebula/star dome + proxy planets +
+    // sun) self-test. Headless — exercises init/shutdown leak-clean lifecycle,
+    // addPlanet bookkeeping, setSun normalization, and a VUID-safe render() with
+    // and without planets/sun (drawMeshEmissive against the headless device).
+    if (testSpaceEnv) {
+        x3::logInfo("running S1 space environment (SpaceEnv) self-test...");
+        int pass = 0, total = 0;
+        auto check = [&](bool c, const char* name) {
+            ++total;
+            if (c) { ++pass; x3::logInfo(std::string("  [ok] ") + name); }
+            else   {          x3::logError(std::string("  [FAIL] ") + name); }
+        };
+
+        x3::game::HeadlessRenderDevice hdev;
+        // T1: init produces valid resources; shutdown releases them; re-init OK.
+        {
+            x3::space::SpaceEnv env;
+            env.init(hdev);
+            check(env.initialized() && env.domeMesh().valid() &&
+                  env.sphereMesh().valid() && env.spriteMesh().valid(),
+                  "T1 init() produces valid dome + sphere + sprite, initialized()=true");
+            env.shutdown(hdev);
+            check(!env.initialized() && !env.domeMesh().valid() &&
+                  !env.sphereMesh().valid() && !env.spriteMesh().valid(),
+                  "T1b shutdown() releases all handles, initialized()=false");
+            env.init(hdev);
+            check(env.initialized(), "T1c re-init after shutdown succeeds (leak-clean)");
+            env.shutdown(hdev);
+        }
+        // T2: addPlanet bookkeeping — stable incrementing ids + count.
+        {
+            x3::space::SpaceEnv env;
+            env.init(hdev);
+            check(env.planetCount() == 0, "T2 planetCount()==0 before any addPlanet");
+            float p0[3] = {  100.0f, 0.0f, -300.0f }, a0[3] = { 0.8f, 0.5f, 0.3f };
+            float p1[3] = { -200.0f, 50.0f, -500.0f }, a1[3] = { 0.4f, 0.6f, 0.9f };
+            uint32_t id0 = env.addPlanet(p0, 40.0f, a0);
+            uint32_t id1 = env.addPlanet(p1, 70.0f, a1);
+            check(id0 == 0 && id1 == 1, "T2b addPlanet returns stable incrementing ids");
+            check(env.planetCount() == 2, "T2c planetCount() reflects 2 planets");
+            // Degenerate radius is clamped (no crash / no zero-scale planet).
+            float p2[3] = { 0, 0, -100 }, a2[3] = { 1, 1, 1 };
+            env.addPlanet(p2, -5.0f, a2);
+            check(env.planetCount() == 3, "T2d addPlanet with bad radius still registers");
+            env.shutdown(hdev);
+        }
+        // T3: setSun normalizes the direction + flags sunSet().
+        {
+            x3::space::SpaceEnv env;
+            env.init(hdev);
+            check(!env.sunSet(), "T3 sunSet()==false before setSun");
+            float dir[3] = { 0.0f, 3.0f, 4.0f };   // length 5 -> expect (0,0.6,0.8)
+            float col[3] = { 1.0f, 0.95f, 0.85f };
+            env.setSun(dir, col, 2.0f);
+            check(env.sunSet(), "T3b setSun flags sunSet()=true");
+            // Degenerate direction does not crash / leaves a valid sun.
+            float zero[3] = { 0, 0, 0 };
+            env.setSun(zero, col, 1.0f);
+            check(env.sunSet(), "T3c setSun with zero dir is safe (still set)");
+            env.shutdown(hdev);
+        }
+        // T4: render() is VUID-safe with 0 planets/no sun, and with planets+sun.
+        {
+            x3::space::SpaceEnv env;
+            env.init(hdev);
+            const float vp[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            x3::rhi::FrameContext fr = hdev.beginFrame();
+            env.setCamera(0, 0, 0);
+            env.render(hdev, fr, vp, 0.0f);   // empty scene, no sun: must not crash
+            float p0[3] = { 80, 0, -200 }, a0[3] = { 0.7f, 0.5f, 0.4f };
+            float p1[3] = { -120, 30, -260 }, a1[3] = { 0.3f, 0.5f, 0.8f };
+            env.addPlanet(p0, 30.0f, a0);
+            env.addPlanet(p1, 50.0f, a1);
+            float sd[3] = { 0.3f, 0.5f, 0.8f }, sc[3] = { 1.0f, 0.9f, 0.8f };
+            env.setSun(sd, sc, 1.5f);
+            env.render(hdev, fr, vp, 0.5f);   // planets + sun: must not crash
+            hdev.endFrame(fr);
+            check(true, "T4 render() VUID-safe empty + with 2 planets + sun");
+            // render() before init() is a no-op (must not crash).
+            x3::space::SpaceEnv env2;
+            x3::rhi::FrameContext fr2 = hdev.beginFrame();
+            env2.render(hdev, fr2, vp, 0.0f);
+            hdev.endFrame(fr2);
+            check(!env2.initialized(), "T4b render() before init() is a safe no-op");
+            env.shutdown(hdev);
+        }
+        x3::logInfo("spaceenv: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+        std::printf("spaceenv: %d/%d passed\n", pass, total);
         std::fflush(stdout);
         return (pass == total) ? 0 : 1;
     }
@@ -3964,6 +4058,122 @@ int main(int argc, char** argv) {
             device->endFrame(frame);
         }
 
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    // ---- S1 space-environment showcase (--world spaceenv) -------------------
+    // The Act-3 deep-space scene in isolation: the nebula/star dome backdrop +
+    // 2-3 proxy planets + a bright sun, with the camera slowly orbiting the
+    // origin so the planets + sun read at multiple angles. NO scene geometry,
+    // NO player. SSAO + GI are DISABLED (the deep-space SSAO-black quirk: with no
+    // surfaces to occlude, the AO pass crushes the whole frame to black on the
+    // raster fallback). The pixel-variance gate on the PNG (std>15, uniq>100) is
+    // the visual proof — bright planets + the sun + a starfield clear it easily.
+    if (worldMode == "spaceenv") {
+        x3::logInfo("--world spaceenv: building the S1 space-environment showcase");
+
+        { x3::rhi::IRenderDevice::SsaoParams sp{}; sp.enabled = false; device->setSsaoParams(sp); }
+        { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; device->setGiParams(gp); }
+        { x3::rhi::IRenderDevice::SkyParams  sp{}; sp.enabled = false; device->setSkyParams(sp); }
+
+        x3::space::SpaceEnv env;
+        env.init(*device);
+        if (!env.initialized()) {
+            x3::logError("--world spaceenv: SpaceEnv::init() failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        // Place three proxy planets at varied positions/sizes/tints, all in front
+        // of the camera so the orbit keeps them in frame.
+        // NOTE: planets must sit INSIDE the dome (radius 50 m, camera-anchored),
+        // else the far dome wall occludes them in depth. Keep |pos| < ~45 m.
+        { float p[3] = {  12.0f,   1.0f, -22.0f }; float a[3] = { 0.90f, 0.55f, 0.35f }; env.addPlanet(p, 5.0f,  a); } // warm rocky (near)
+        { float p[3] = { -16.0f,  -3.0f, -34.0f }; float a[3] = { 0.35f, 0.55f, 0.95f }; env.addPlanet(p, 9.0f,  a); } // blue gas giant
+        { float p[3] = {   4.0f,   9.0f, -40.0f }; float a[3] = { 0.55f, 0.90f, 0.55f }; env.addPlanet(p, 4.0f,  a); } // green moon
+        // Sun up-and-to-the-left of the look direction, warm white, bright.
+        { float d[3] = { -0.45f, 0.40f, -0.80f }; float c[3] = { 1.0f, 0.92f, 0.78f }; env.setSun(d, c, 1.6f); }
+
+        // ---- Headless capture: slow orbit, settle, grab the PNG. ----
+        if (headless) {
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_spaceenv.png");
+            const int kFrames = 24;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                float t = (float)i * (1.0f / 30.0f);
+                // Slow camera orbit around the origin (the planets sit in -Z).
+                // Camera forward = (cos p cos y, sin p, cos p sin y); yaw=-pi/2
+                // looks down -Z toward the planet field. A small swing keeps the
+                // orbit lively while keeping the cluster in frame.
+                float ang = 0.10f * t;
+                float ex = 12.0f * std::sin(ang);
+                float ez = 12.0f * std::cos(ang);
+                float yaw = -1.5708f + 0.15f * std::sin(ang);   // ~face -Z
+                device->setCamera(ex, 0.0f, ez, yaw, 0.02f, 70.0f);
+                if (shotCamOverride) {
+                    device->setCamera(shotCam[0], shotCam[1], shotCam[2],
+                                      shotCam[3], shotCam[4], 70.0f);
+                    ex = shotCam[0]; ez = shotCam[2];
+                }
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    env.setCamera(ex, 0.0f, ez);
+                    env.render(*device, frame, /*viewProj16=*/nullptr, t);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world spaceenv: wrote " + outPath);
+            else       x3::logError("--world spaceenv: capture FAILED");
+            env.shutdown(*device);
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ---- Windowed path: free orbit with the mouse to inspect. ----
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double startTime = glfwGetTime();
+        float fyaw = -1.5708f, fpitch = -0.06f;   // start facing the -Z planet field
+        x3::logInfo("--world spaceenv: mouse looks around, Esc to quit");
+        int lastWs = (int)W, lastHs = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float t = (float)(now - startTime);
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+            fyaw   += ddx * 0.0025f;
+            fpitch -= ddy * 0.0025f;
+            if (fpitch >  1.55f) fpitch =  1.55f;
+            if (fpitch < -1.55f) fpitch = -1.55f;
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWs || chh != lastHs) { lastWs = cw; lastHs = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+            // Slow auto-orbit so it's alive even without input.
+            float ang = 0.10f * t;
+            float ex = 30.0f * std::sin(ang);
+            float ez = 30.0f * std::cos(ang) - 30.0f;
+            device->setCamera(ex, 0.0f, ez, fyaw, fpitch, 70.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                env.setCamera(ex, 0.0f, ez);
+                env.render(*device, frame, /*viewProj16=*/nullptr, t);
+            }
+            device->endFrame(frame);
+        }
+
+        env.shutdown(*device);
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
