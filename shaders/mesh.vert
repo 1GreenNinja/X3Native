@@ -47,6 +47,7 @@ layout(set = 1, binding = 1) uniform Camera {
     mat4 lightViewProj;
     vec4 ambientCount;
     PointLight lights[kMaxPointLights];
+    vec4 camPos;          // xyz = camera world position (PBR view vector)
 } cam;
 
 layout(location = 0) in vec3 inPos;
@@ -66,15 +67,13 @@ layout(location = 7) flat out uvec2 vTerrainPack; // x = grass<<16|rock, y = sno
 layout(location = 8) flat out vec4 vGlassParams;  // x = refraction, y = roughness, z = specular, w = metallic
 layout(location = 9) flat out vec4 vGlassTint;    // rgb = tint (baseColor), w = ior
 layout(location = 10) flat out vec4 vGlassExtra;  // x = reflectance, yzw = transmittanceColor
+// PBR slice-1/2 outputs (consumed by mesh.frag; glass.frag ignores). At 11/12
+// so they do NOT collide with the glass outputs at 8/9/10 above.
+layout(location = 11) flat out uint vNormalTexIndex; // 0 = none (PBR normal map)
+layout(location = 12) flat out uint vMrTexIndex;     // 0 = none (metallic-roughness)
 
-// POSITION INVARIANCE: the depth pre-pass (depth.vert) writes the camera depth
-// before this pass, and the main pass's pipeline runs depth-test EQUAL. For the
-// equality to ever hold, both shaders MUST compute gl_Position with the same
-// arithmetic sequence at the same precision. `invariant` blocks the compiler/
-// driver from reordering ops in this expression independently of the matching
-// `invariant gl_Position;` in depth.vert. Without it, FMA fusion on certain
-// drivers (1080 Ti / NVIDIA) produces Z values that differ by 1 ULP -> the
-// EQUAL test rejects every fragment -> HDR target stays cleared -> blank PNG.
+// POSITION INVARIANCE: matches depth.vert. FMA reorder produces 1-ULP Z drift
+// on some drivers -> depth-EQUAL test rejects every fragment -> blank PNG.
 invariant gl_Position;
 
 void main() {
@@ -97,4 +96,6 @@ void main() {
     vGlassParams = o.glassParams;
     vGlassTint = o.glassTint;
     vGlassExtra = o.glassExtra;
+    vNormalTexIndex = o.normalTexIndex;
+    vMrTexIndex = o.mrTexIndex;
 }
