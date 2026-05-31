@@ -85,6 +85,7 @@
 #include "space_pilot.h"                   // Act-3 6DOF space-flight pilot (--test-space + --world space)
 #include "sky_stars.h"                     // procedural starfield (--test-starfield + --world starfield)
 #include "space/space_layer.h"             // S0 SpaceLayer spine (--test-spacelayer)
+#include "space/eva.h"                      // S12 EVA spacewalk controller (--test-eva + --world eva)
 #include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
@@ -1345,7 +1346,7 @@ int main(int argc, char** argv) {
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
          testThirdPerson = false, testNpc = false, testStarfield = false,
-         testSpaceLayer = false;
+         testSpaceLayer = false, testEva = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1608,6 +1609,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-gltf") testGltf = true;
         else if (a == "--test-player") testPlayer = true;
         else if (a == "--test-swim") testSwim = true;
+        else if (a == "--test-eva")  testEva  = true;
         else if (a == "--test-mech") testMech = true;
         else if (a == "--test-interact") testInteract = true;
         else if (a == "--test-physprops") testPhysprops = true;
@@ -1842,6 +1844,10 @@ int main(int argc, char** argv) {
     if (testSwim) {
         x3::logInfo("running swim/dive (Act 4 underwater) self-test...");
         return x3::game::runSwimSelfTest() ? 0 : 1;
+    }
+    if (testEva) {
+        x3::logInfo("running EVA spacewalk (Act-3 S12 zero-G) --test-eva self-test...");
+        return x3::space::runEvaSelfTest() ? 0 : 1;
     }
     if (testSpace) {
         x3::logInfo("running space-pilot (Act-3 6DOF) --test-space self-test...");
@@ -4973,6 +4979,244 @@ int main(int argc, char** argv) {
         mechanic.shutdownRagdoll(*nphys);
         device->destroyMesh(grMesh); device->destroyTexture(grTex);
         nphys->shutdown(); device->shutdown();
+        if (window) glfwDestroyWindow(window); glfwTerminate();
+        return 0;
+    }
+
+    // ======================================================================
+    // ---- Act-3 EVA SPACEWALK showcase (--world eva) -----------------------
+    // S12: the player free-floats OUTSIDE the ship in zero-G, on the hull, to
+    // repair it (design spec §2.9). A big box "hull" is the close-traversable
+    // surface (a real SpaceShip.glb is used if its LFS binary is present, else
+    // the box placeholder per the task brief). Deep-space backdrop: dark clear
+    // color + a procedural starfield of far bright points; SSAO + SSGI OFF
+    // (they raster a starless black on no-RT — the memory-bank fallback). The
+    // EVAController (app/space/eva.{h,cpp}) drives the camera: WASD thrust,
+    // Space/Ctrl up/down, Shift boost, B toggles mag-boots (stick to the hull),
+    // F attempts a hull repair near the marked repair point.
+    if (worldMode == "eva") {
+        x3::logInfo("--world eva: building the Act-3 EVA spacewalk showcase");
+        std::unique_ptr<x3::phys::IPhysicsWorld> ephys(x3::phys::createPhysicsWorld());
+        if (!ephys->init()) {
+            x3::logError("--world eva: physics init failed");
+            device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate(); return 1;
+        }
+
+        // ---- Deep-space lighting. Sky OFF (dark clear shows through), SSAO + GI
+        //      OFF (they black out a starfield scene with no nearby bounce).
+        { x3::rhi::IRenderDevice::SkyParams sk{}; sk.enabled = false; device->setSkyParams(sk); }
+        { x3::rhi::IRenderDevice::SsaoParams ap{}; ap.enabled = false; device->setSsaoParams(ap); }
+        { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; device->setGiParams(gp); }
+        // Bright point lights near the hull so it reads against the black (no
+        // bounced light in vacuum — anything subtle silhouettes).
+        { x3::rhi::PointLight pl[3];
+          pl[0].pos[0] =  18.0f; pl[0].pos[1] =  16.0f; pl[0].pos[2] =  14.0f; pl[0].range = 120.0f;
+          pl[0].color[0] = 22.0f; pl[0].color[1] = 21.0f; pl[0].color[2] = 19.0f;   // sun key
+          pl[1].pos[0] = -16.0f; pl[1].pos[1] =  10.0f; pl[1].pos[2] =  -8.0f; pl[1].range = 90.0f;
+          pl[1].color[0] = 6.0f;  pl[1].color[1] = 7.0f;  pl[1].color[2] = 10.0f;   // cool fill
+          pl[2].pos[0] =  6.0f;  pl[2].pos[1] =  -8.0f; pl[2].pos[2] = -16.0f; pl[2].range = 90.0f;
+          pl[2].color[0] = 5.0f;  pl[2].color[1] = 4.0f;  pl[2].color[2] = 3.0f;    // warm rim
+          device->setPointLights(pl, 3); }
+
+        // ---- The hull. Try a real SpaceShip.glb (auto-upgrades when its LFS
+        //      binary is fetched); else a big box hull placeholder. The box is
+        //      both the visual + the static collision the mag-boots stick to and
+        //      the EVA suit can't tunnel through.
+        const std::string rigDir = x3::game::riggedGlbRoot();
+        std::unique_ptr<x3::asset::IAssetSource> asrc(x3::asset::createAssetSource());
+        asrc->mountDir(rigDir, 0);
+        std::unique_ptr<x3::asset::IModelLoader> hloader(x3::asset::createModelLoader(device.get(), asrc.get()));
+        x3::asset::Model hullModel = hloader->load("SpaceShip.glb");
+        std::vector<x3::asset::ModelDrawable> hullDrawables;
+        if (hullModel.ok) hullDrawables = x3::asset::makeDrawables(hullModel);
+        std::string hullUsed = hullModel.ok ? "SpaceShip.glb" : "box-hull-placeholder";
+        x3::logInfo(std::string("--world eva: hull = ") + hullUsed);
+
+        // Big box hull: a 24 x 6 x 10 m slab centered at origin, top face at y=3.
+        // (Visual + collision; the EVA suit walks/floats over the +Y top face.)
+        const float kHullTopY = 3.0f;
+        x3::prims::PrimMesh hullBox = x3::prims::makeBox(12.0f, 3.0f, 5.0f, 0.0f, 0.0f, 0.0f, 1.0f);
+        auto hullMesh = device->createMesh(hullBox.verts.data(), (uint32_t)hullBox.verts.size(),
+                                           hullBox.index.data(), (uint32_t)hullBox.index.size());
+        ephys->addStaticMesh(hullBox.cverts.data(), (uint32_t)(hullBox.cverts.size() / 3),
+                             hullBox.cindex.data(), (uint32_t)hullBox.cindex.size());
+        auto hullPx = x3::prims::makeCheckerRGBA(64, 8, 150, 158, 170, 70, 76, 90);
+        auto hullTex = device->createTexture(hullPx.data(), 64, 64, true);
+
+        // ---- A glowing repair-point marker sitting on the hull top face.
+        const x3::phys::Vec3 repairPos{ 4.0f, kHullTopY, 1.5f };
+        x3::prims::PrimMesh rpBox = x3::prims::makeBox(0.4f, 0.4f, 0.4f,
+                                                       repairPos.x, repairPos.y + 0.4f, repairPos.z, 0.5f);
+        auto rpMesh = device->createMesh(rpBox.verts.data(), (uint32_t)rpBox.verts.size(),
+                                         rpBox.index.data(), (uint32_t)rpBox.index.size());
+        auto rpPx = x3::prims::makeSolidRGBA(4, 255, 180, 40);   // amber "damage" flag
+        auto rpTex = device->createTexture(rpPx.data(), 4, 4, true);
+
+        // ---- Procedural starfield: many tiny bright cubes scattered on a far
+        //      shell so the deep-space backdrop reads (deterministic LCG).
+        constexpr int kStars = 240;
+        std::vector<x3::rhi::MeshHandle> starMeshes; starMeshes.reserve(kStars);
+        uint32_t rng = 0x5eed1234u;
+        auto frand = [&](){ rng = rng * 1664525u + 1013904223u; return (rng >> 8) * (1.0f / 16777216.0f); };
+        for (int i = 0; i < kStars; ++i) {
+            // Random direction on a sphere, pushed out to a far radius.
+            const float u = frand() * 2.0f - 1.0f;
+            const float th = frand() * 6.2831853f;
+            const float r = std::sqrt(std::max(0.0f, 1.0f - u*u));
+            const float R = 180.0f + frand() * 80.0f;
+            const float sx = R * r * std::cos(th);
+            const float sy = R * u;
+            const float sz = R * r * std::sin(th);
+            const float ssz = 0.35f + frand() * 0.5f;   // tiny
+            x3::prims::PrimMesh sm = x3::prims::makeBox(ssz, ssz, ssz, sx, sy, sz, 0.5f);
+            starMeshes.push_back(device->createMesh(sm.verts.data(), (uint32_t)sm.verts.size(),
+                                                    sm.index.data(), (uint32_t)sm.index.size()));
+        }
+        auto starPx = x3::prims::makeSolidRGBA(2, 255, 255, 255);
+        auto starTex = device->createTexture(starPx.data(), 2, 2, true);
+
+        // ---- Spawn the EVA suit just above the hull top face, near the airlock.
+        x3::space::EVAController eva;
+        x3::space::EVAController::Tuning evaT;   // defaults: zero-G, maxOxygenS=120
+        eva.spawn(*ephys, -6.0f, kHullTopY + 1.2f, 0.0f, evaT);
+        eva.setRepairPoint(repairPos, 2.0f);
+
+        const float dt = 1.0f / 60.0f;
+
+        // Draw a GLB hull at a placement matrix (if loaded), brightened for deep
+        // space; else the box hull.
+        auto drawHull = [&](const x3::rhi::FrameContext& frame) {
+            const float white[4] = { 1, 1, 1, 1 };
+            const float idM[16]  = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            if (hullModel.ok) {
+                // Scale + lift the GLB so it reads as a big hull under the suit.
+                const float S = 6.0f;
+                float xform[16] = { S,0,0,0, 0,S,0,0, 0,0,S,0, 0,0,0,1 };
+                for (const auto& dr : hullDrawables) {
+                    float fin[16];
+                    x3::asset::mulMat4(xform, dr.nodeTransform, fin);
+                    float tint[4] = {
+                        dr.baseColorFactor[0] * 4.0f + 0.45f,
+                        dr.baseColorFactor[1] * 4.0f + 0.50f,
+                        dr.baseColorFactor[2] * 4.0f + 0.55f,
+                        dr.baseColorFactor[3]
+                    };
+                    device->drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
+                                     x3::rhi::TextureHandle{ dr.baseColorTexId }, tint, fin);
+                }
+            }
+            // Always draw the box hull (it is the collision + a robust visual).
+            device->drawMesh(frame, hullMesh, hullTex, white, idM);
+        };
+
+        auto drawScene = [&](const x3::rhi::FrameContext& frame) {
+            const float idM[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            const float starTint[4] = { 6.0f, 6.0f, 6.5f, 1.0f };   // bright points
+            for (auto sm : starMeshes) device->drawMesh(frame, sm, starTex, starTint, idM);
+            drawHull(frame);
+            const float amber[4] = { 3.0f, 2.0f, 0.5f, 1.0f };
+            device->drawMesh(frame, rpMesh, rpTex, amber, idM);
+        };
+
+        // ===== Headless capture (--world eva --screenshot <path>) ==========
+        if (headless) {
+            device->setFrustumCull(false);
+            // Vantage: above + behind the suit, looking down the hull toward the
+            // amber repair marker so hull + starfield + suit-region all read.
+            float cam[5] = { -12.0f, 9.0f, -7.0f, 0.35f, -0.45f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("G:/X3Native/captures/eva.png");
+            const int kFrames = 16;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                eva.update(x3::game::PlayerInput{}, dt, *ephys);
+                ephys->step(dt);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 70.0f);
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) drawScene(frame);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world eva: wrote " + outPath);
+            else       x3::logError("--world eva: capture FAILED");
+            device->destroyMesh(hullMesh); device->destroyMesh(rpMesh);
+            for (auto sm : starMeshes) device->destroyMesh(sm);
+            device->destroyTexture(hullTex); device->destroyTexture(rpTex); device->destroyTexture(starTex);
+            if (hullModel.ok) hloader->unload(hullModel);
+            ephys->shutdown(); device->shutdown();
+            if (window) glfwDestroyWindow(window); glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: EVAController drives the camera. ====
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        bool prevB = false, prevF = false;
+        x3::logInfo("--world eva: WASD thrust, Space/Ctrl up/down, Shift boost, "
+                    "B mag-boots, F repair, mouse look, Esc to quit");
+        int lastWd = (int)W, lastHd = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+            auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
+
+            // B toggles mag-boots (rising edge).
+            bool bNow = kd(GLFW_KEY_B);
+            if (bNow && !prevB) eva.setMagBoots(!eva.magBootsEnabled());
+            prevB = bNow;
+
+            x3::game::PlayerInput in;
+            if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+            if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+            if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+            if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+            in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+            in.jumpPressed = kd(GLFW_KEY_SPACE);     // Space = ascend (held)
+            in.lookDX = ddx; in.lookDY = ddy;
+            eva.update(in, fdt, *ephys);
+            // LeftCtrl descend: nudge feet down (matches swim's host convention;
+            // ignored when mag-boots clamp the suit to the hull).
+            if (kd(GLFW_KEY_LEFT_CONTROL) && !eva.magBootsActive()) {
+                x3::phys::Vec3 p = ephys->getBodyPosition(eva.body());
+                p.y -= eva.maxOxygenSeconds() > 0 ? 5.0f * fdt : 0.0f;
+                ephys->setBodyPosition(eva.body(), p);
+            }
+            // F = attempt a hull repair near the marker (rising edge).
+            bool fNow = kd(GLFW_KEY_F);
+            if (fNow && !prevF) {
+                if (eva.tryRepair()) x3::logInfo("--world eva: repair tick (in range)");
+                else                 x3::logInfo("--world eva: no repair point in reach");
+            }
+            prevF = fNow;
+            ephys->step(fdt);
+
+            float cx, cy, cz, cyaw, cpitch;
+            eva.camera(cx, cy, cz, cyaw, cpitch);
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWd || chh != lastHd) {
+                lastWd = cw; lastHd = chh;
+                if (cw > 0 && chh > 0) device->onResize((uint32_t)cw, (uint32_t)chh);
+            }
+            device->setCamera(cx, cy, cz, cyaw, cpitch, 70.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) drawScene(frame);
+            device->endFrame(frame);
+        }
+        device->destroyMesh(hullMesh); device->destroyMesh(rpMesh);
+        for (auto sm : starMeshes) device->destroyMesh(sm);
+        device->destroyTexture(hullTex); device->destroyTexture(rpTex); device->destroyTexture(starTex);
+        if (hullModel.ok) hloader->unload(hullModel);
+        ephys->shutdown(); device->shutdown();
         if (window) glfwDestroyWindow(window); glfwTerminate();
         return 0;
     }
