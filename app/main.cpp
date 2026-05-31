@@ -94,6 +94,7 @@
 #include "space/ship_interior.h"           // S5 walkable ship interior (--test-ship-interior + --world ship-interior)
 #include "space/ship_ai.h"                  // S8 enemy ship AI / dogfight (--test-ship-ai + --world ship-ai)
 #include "space/targeting.h"               // S9 targeting / radar / lock-on (--test-targeting + --world targeting)
+#include "space/ship_damage.h"             // S10 ship damage model (--test-ship-damage)
 #include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
@@ -1364,7 +1365,8 @@ int main(int argc, char** argv) {
          testAtmoDescent = false,
          testShipInterior = false,
          testShipAi = false,
-         testTargeting = false;
+         testTargeting = false,
+         testShipDamage = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1718,6 +1720,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-ship-interior") testShipInterior = true;
         else if (a == "--test-ship-ai") testShipAi = true;
         else if (a == "--test-targeting") testTargeting = true;
+        else if (a == "--test-ship-damage") testShipDamage = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -2933,6 +2936,11 @@ int main(int argc, char** argv) {
         std::printf("targeting: %d/%d passed\n", pass, total);
         std::fflush(stdout);
         return (pass == total) ? 0 : 1;
+    }
+    // --test-ship-damage: S10 ship damage model self-test.
+    if (testShipDamage) {
+        x3::logInfo("running S10 ship-damage model self-test...");
+        return x3::space::runShipDamageSelfTest() ? 0 : 1;
     }
     if (testHoloterm) {
         x3::logInfo("running holo-terminal (text + input) self-test...");
