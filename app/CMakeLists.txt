@@ -42,6 +42,7 @@ add_executable(X3Engine WIN32
     act2_world.cpp
     act2_desert.cpp
     act2_caves.cpp
+    rifthub.cpp
     tod.cpp
     weather.cpp
     world_regions.cpp

@@ -72,6 +72,7 @@ namespace x3::game {
 #include "act2_world.h"                      // EFLZ Act-2 open-world surface host + L8/L9 (--test-act2)
 #include "act2_desert.h"                     // EFLZ Act-2 desert depths + Salvari camp L10/L11 (--test-act2desert)
 #include "act2_caves.h"                      // EFLZ Act-2 mid biomes L12-15 (--test-act2caves)
+#include "rifthub.h"                         // EFLZ portal hub: discoverable rifts (--world rifthub / --test-rifthub)
 #include "tod.h"                             // EFLZ Time-of-Day cycle (sky/sun via SkyParams — --test-tod)
 #include "weather.h"                         // EFLZ Weather (7 states, biome-gated, hazard — --test-weather)
 #include "world_regions.h"                   // EFLZ open-world surrounding regions + 4 mountain ranges (--test-worldregions)
@@ -1474,6 +1475,11 @@ int main(int argc, char** argv) {
     // interactable). Asserts the gates, the hazard, the timeline gate, reachability
     // L11->L12->L13->L14->L15, and trigger-id non-collision. Additive flag.
     bool        testAct2Caves = false;
+    // --test-rifthub (EFLZ portal hub): builds the graybox hub headless + asserts the
+    // 8 cosmetic rift portals, their per-portal trigger volumes (entering latches
+    // "<name> rift activated"), the shimmer tick() advancing emissive over time, and
+    // that the 8 portal names map to real --world targets. Mirrors --test-act2caves. Additive.
+    bool        testRifthub = false;
     // --test-tod (EFLZ Time-of-Day): a 4-phase day cycle (dawn/day/dusk/night) that
     // drives the analytic sky/sun (dir/color/intensity/haze + ambient) via SkyParams.
     // Asserts the cycle visits all phases + wraps, the sun arc + intensity vary
@@ -1855,6 +1861,10 @@ int main(int argc, char** argv) {
             testLocomotion = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') testLocomotionPath = argv[++i];
         }
+        // --test-rifthub: a STANDALONE if (NOT chained) so the portal-hub flag
+        // never extends an else-if chain past MSVC's C1061 nested-too-deeply
+        // limit (the space-engine integration already hit it — see line ~1747).
+        if (a == "--test-rifthub") testRifthub = true;
     }
 
     // --version : print build identity + exit 0 (before any window/Vulkan work).
@@ -3226,6 +3236,11 @@ int main(int argc, char** argv) {
                     "+ timeline-gated Siren ambush; L15 Tree Cities + trading post) "
                     "self-test...");
         return x3::game::runAct2CavesSelfTest() ? 0 : 1;
+    }
+    if (testRifthub) {
+        x3::logInfo("running EFLZ portal hub (8 cosmetic rift portals + per-portal "
+                    "trigger latch + shimmer/energy-core pulse; --test-rifthub) self-test...");
+        return x3::game::runRifthubSelfTest() ? 0 : 1;
     }
     if (testWorldRegions) {
         x3::logInfo("running EFLZ open-world surface regions (crash site + outposts + "
@@ -8706,6 +8721,409 @@ int main(int argc, char** argv) {
         cliffs.shutdown(cscene, *device, *cphys);
         cjobs->shutdown();
         cphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    // ---- Act-2 mid biomes direct boot (--world act2caves) -------------------
+    // Direct-boot into the EFLZ Act-2 mid-biomes content (L12 Advanced Cave System
+    // -> L13 Toxic Swamplands Edge -> L14 Research Station -> L15 Tree Cities).
+    // The caves are subterranean and authored at hand-picked Y (no streamed terrain),
+    // so the host builds a FLAT physics ground at the L12 spawn elevation + a soft
+    // emissive sky and lets Act2Caves::build() author every prop / pack / boss on top.
+    // WALKABLE (WASD/mouse, Space jump, LeftShift sprint, F noclip) + headless shot.
+    // Mirrors the valley/cliffs scaffold (direct GLFW input, no lifted console).
+    if (worldMode == "act2caves") {
+        x3::logInfo("--world act2caves: building the EFLZ Act-2 mid biomes (L12-L15)");
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> aphys(x3::phys::createPhysicsWorld());
+        if (!aphys->init()) {
+            x3::logError("--world act2caves: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        x3::game::Scene ascene;
+        x3::game::TriggerSystem atriggers;
+
+        // Soft cave/sky lighting: a dim blue sun + heavy haze so the bioluminescent
+        // emissives + the Crystal Heart read against the dark caves.
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.2f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.1f;
+            sp.sunColor[0] = 0.55f; sp.sunColor[1] = 0.60f; sp.sunColor[2] = 0.85f;
+            sp.sunIntensity = 0.55f; sp.haze = 0.85f; sp.exposure = 1.0f;
+            device->setSkyParams(sp);
+        }
+
+        x3::game::Act2Caves caves;
+        caves.build(ascene, *device, *aphys, atriggers, x3::game::riggedGlbRoot());
+
+        // Flat physics ground at the L12 spawn elevation (the caves author at
+        // hand-picked Y with no ground mesh — this is the player capsule's floor).
+        const x3::phys::Vec3 cavesSpawn =
+            caves.plan(x3::game::Act2CaveLevel::L12_AdvancedCaveSystem).spawn;
+        {
+            x3::prims::PrimMesh g = x3::prims::makeBox(100.0f, 0.25f, 100.0f,
+                                                       cavesSpawn.x, cavesSpawn.y - 0.30f,
+                                                       cavesSpawn.z, 0.25f);
+            aphys->addStaticMesh(g.cverts.data(), (uint32_t)(g.cverts.size() / 3),
+                                 g.cindex.data(), (uint32_t)g.cindex.size());
+            auto gtex = x3::prims::makeCheckerRGBA(64, 8, 70, 80, 100, 30, 36, 50);
+            x3::rhi::TextureHandle gth = device->createTexture(gtex.data(), 64, 64, true);
+            x3::rhi::MeshHandle gmh = device->createMesh(
+                g.verts.data(), (uint32_t)g.verts.size(),
+                g.index.data(), (uint32_t)g.index.size());
+            x3::game::Entity ge;
+            ge.mesh = gmh; ge.tex = gth;
+            ge.baseColor[0] = 1.0f; ge.baseColor[1] = 1.0f; ge.baseColor[2] = 1.0f;
+            ge.baseColor[3] = 1.0f;
+            ge.tag = (uint32_t)x3::game::Tag::Static;
+            ascene.add(ge);
+        }
+        aphys->optimizeBroadphase();
+
+        x3::game::AttackFxFn noopFx;   // tolerates an empty function
+
+        // ===== Headless screenshot path: settle the boss/pack/triggers, grab. ====
+        if (headless) {
+            float cam[5] = { cavesSpawn.x - 4.0f, cavesSpawn.y + 2.5f, cavesSpawn.z,
+                             0.0f, -0.18f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const int kSettle = 32;
+            const float dt = 1.0f / 60.0f;
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_act2caves.png");
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                const x3::phys::Vec3 eye{ cam[0], cam[1], cam[2] };
+                caves.tick(dt, ascene, *aphys, eye, eye, /*player=*/nullptr, noopFx);
+                aphys->step(dt);
+                ascene.update(*aphys);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    ascene.render(*device, frame);
+                    caves.draw(*device, frame, ascene);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world act2caves: wrote screenshot " + outPath);
+            else       x3::logError("--world act2caves: capture FAILED");
+            aphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path (mirrors valley's first-person loop). ======
+        x3::game::Player aplayer;
+        aplayer.spawn(*aphys, cavesSpawn.x, cavesSpawn.y, cavesSpawn.z);
+
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        bool prevSpaceA = false, prevFA = false, noclipA = false, prevLMBA = false;
+        float flyXa = cavesSpawn.x, flyYa = cavesSpawn.y + 1.6f, flyZa = cavesSpawn.z,
+              flyYawA = 0.0f, flyPitchA = -0.10f;
+        x3::logInfo("--world act2caves: WASD walk, mouse look, Space jump, "
+                    "LeftShift sprint, F noclip, LMB fire, Esc to quit");
+
+        int lastWa = (int)W, lastHa = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+
+            double now = glfwGetTime();
+            float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+
+            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            bool spaceNow = kd(GLFW_KEY_SPACE);
+            bool fNow     = kd(GLFW_KEY_F);
+            if (fNow && !prevFA) {
+                noclipA = !noclipA;
+                if (noclipA) { float yy, pp; aplayer.camera(flyXa, flyYa, flyZa, yy, pp); flyYawA = yy; flyPitchA = pp; }
+            }
+            prevFA = fNow;
+
+            float camX, camY, camZ, camYaw, camPitch;
+            if (!noclipA) {
+                x3::game::PlayerInput in;
+                if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+                if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+                if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+                if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+                in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+                in.jumpPressed = spaceNow && !prevSpaceA;
+                in.lookDX = ddx; in.lookDY = ddy;
+                aplayer.update(in, fdt, *aphys);
+                aplayer.camera(camX, camY, camZ, camYaw, camPitch);
+            } else {
+                const float sens = 0.0025f;
+                flyYawA += ddx * sens; flyPitchA -= ddy * sens;
+                if (flyPitchA >  1.55f) flyPitchA =  1.55f;
+                if (flyPitchA < -1.55f) flyPitchA = -1.55f;
+                float fxv = std::cos(flyPitchA) * std::cos(flyYawA);
+                float fyv = std::sin(flyPitchA);
+                float fzv = std::cos(flyPitchA) * std::sin(flyYawA);
+                float rl = std::sqrt(fxv*fxv + fzv*fzv); if (rl < 1e-4f) rl = 1e-4f;
+                float rx = -fzv/rl, rz = fxv/rl;
+                float spd = 6.0f * fdt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd *= 3.0f;
+                if (kd(GLFW_KEY_W)) { flyXa += fxv*spd; flyYa += fyv*spd; flyZa += fzv*spd; }
+                if (kd(GLFW_KEY_S)) { flyXa -= fxv*spd; flyYa -= fyv*spd; flyZa -= fzv*spd; }
+                if (kd(GLFW_KEY_D)) { flyXa += rx*spd; flyZa += rz*spd; }
+                if (kd(GLFW_KEY_A)) { flyXa -= rx*spd; flyZa -= rz*spd; }
+                if (spaceNow) flyYa += spd;
+                if (kd(GLFW_KEY_LEFT_CONTROL)) flyYa -= spd;
+                camX = flyXa; camY = flyYa; camZ = flyZa; camYaw = flyYawA; camPitch = flyPitchA;
+            }
+            prevSpaceA = spaceNow;
+
+            // LMB fire -> Act2Caves::onFire (first live hostile takes it).
+            const bool lmbNow = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            if (lmbNow && !prevLMBA) {
+                const float dxL = std::cos(camPitch) * std::cos(camYaw);
+                const float dyL = std::sin(camPitch);
+                const float dzL = std::cos(camPitch) * std::sin(camYaw);
+                caves.onFire(x3::phys::Vec3{ camX, camY, camZ },
+                             x3::phys::Vec3{ dxL, dyL, dzL }, ascene, *aphys);
+            }
+            prevLMBA = lmbNow;
+
+            const x3::phys::Vec3 ppos{ camX, camY, camZ };
+            caves.tick(fdt, ascene, *aphys, ppos, ppos, &aplayer, noopFx);
+            const auto fired = atriggers.update(ppos);
+            for (uint32_t id : fired) caves.onTrigger(id);
+
+            aphys->step(fdt);
+            ascene.update(*aphys);
+
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWa || chh != lastHa) { lastWa = cw; lastHa = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+
+            device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                ascene.render(*device, frame);
+                caves.draw(*device, frame, ascene);
+            }
+            device->endFrame(frame);
+        }
+        aphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    // ---- Portal Hub (--world rifthub) --------------------------------------
+    // A small graybox HUB with 8 visible cosmetic rift portals — one per known
+    // --world target — arranged in a circle around spawn, plus a blue energy core
+    // + per-portal shimmer (Rifthub::tick pulses emissive). POLISH over DJBOOTH's
+    // draft: walking into a portal now RELAUNCHES a fresh X3Engine into that
+    // --world target (reusing the `restart` console command's spawn mechanism +
+    // appending --world <target>) instead of only logging the hint. HUD prompt
+    // within 5 m. Mirrors the valley/cliffs scaffold (direct GLFW input).
+    if (worldMode == "rifthub") {
+        x3::logInfo("--world rifthub: building the portal-hub discovery area");
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> hphys(x3::phys::createPhysicsWorld());
+        if (!hphys->init()) {
+            x3::logError("--world rifthub: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        x3::game::Scene hscene;
+        x3::game::TriggerSystem htriggers;
+
+        // Neutral overhead sky — the portals do the lighting work via emission.
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.3f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.2f;
+            sp.sunColor[0] = 0.85f; sp.sunColor[1] = 0.85f; sp.sunColor[2] = 0.95f;
+            sp.sunIntensity = 0.65f; sp.haze = 0.45f; sp.exposure = 1.0f;
+            device->setSkyParams(sp);
+        }
+
+        x3::game::Rifthub hub;
+        hub.build(hscene, *device, *hphys, htriggers);
+
+        const x3::phys::Vec3 hubSpawn = hub.spawn();
+
+        // ===== Headless screenshot path: pose, settle, grab. ====================
+        if (headless) {
+            // Slightly elevated 3/4 view so several portals + the energy cores
+            // read in the same frame (the ring sits at y=0..2.5).
+            float cam[5] = { 0.0f, 8.0f, 18.0f, -1.5708f, -0.35f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const int kSettle = 24;
+            const float dt = 1.0f / 60.0f;
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_rifthub.png");
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                hub.tick(dt, hscene);   // pulse the shimmer + energy core before render
+                hphys->step(dt);
+                hscene.update(*hphys);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 65.0f);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) hscene.render(*device, frame);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world rifthub: wrote screenshot " + outPath);
+            else       x3::logError("--world rifthub: capture FAILED");
+            hub.shutdown(*device);
+            hphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path (mirrors valley's first-person loop). ======
+        x3::game::Player hplayer;
+        hplayer.spawn(*hphys, hubSpawn.x, hubSpawn.y, hubSpawn.z);
+
+        // POLISH: portals are REAL teleports. Walking into a portal spawns a fresh
+        // X3Engine into that slice + closes this window (the same clean-slate
+        // mechanism as the `restart` console command, with --world <target>
+        // appended). argv[0] is the absolute path the OS launched us with — we
+        // MUST use it since cmd's `start` resolves bare names against CWD.
+        const std::string hubExe(argv[0] ? argv[0] : "X3Engine.exe");
+
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        bool prevSpaceH = false, prevFH = false, noclipH = false;
+        float flyXh = hubSpawn.x, flyYh = hubSpawn.y + 1.6f, flyZh = hubSpawn.z,
+              flyYawH = 0.0f, flyPitchH = -0.10f;
+        std::string lastHudPrompt;
+        x3::logInfo("--world rifthub: WASD walk, mouse look, Space jump, LeftShift "
+                    "sprint, F noclip, Esc to quit — walk into a rift to LAUNCH that world");
+
+        int lastWh = (int)W, lastHh = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+
+            double now = glfwGetTime();
+            float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+
+            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            bool spaceNow = kd(GLFW_KEY_SPACE);
+            bool fNow     = kd(GLFW_KEY_F);
+            if (fNow && !prevFH) {
+                noclipH = !noclipH;
+                if (noclipH) { float yy, pp; hplayer.camera(flyXh, flyYh, flyZh, yy, pp); flyYawH = yy; flyPitchH = pp; }
+            }
+            prevFH = fNow;
+
+            float camX, camY, camZ, camYaw, camPitch;
+            if (!noclipH) {
+                x3::game::PlayerInput in;
+                if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+                if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+                if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+                if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+                in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+                in.jumpPressed = spaceNow && !prevSpaceH;
+                in.lookDX = ddx; in.lookDY = ddy;
+                hplayer.update(in, fdt, *hphys);
+                hplayer.camera(camX, camY, camZ, camYaw, camPitch);
+            } else {
+                const float sens = 0.0025f;
+                flyYawH += ddx * sens; flyPitchH -= ddy * sens;
+                if (flyPitchH >  1.55f) flyPitchH =  1.55f;
+                if (flyPitchH < -1.55f) flyPitchH = -1.55f;
+                float fxv = std::cos(flyPitchH) * std::cos(flyYawH);
+                float fyv = std::sin(flyPitchH);
+                float fzv = std::cos(flyPitchH) * std::sin(flyYawH);
+                float rl = std::sqrt(fxv*fxv + fzv*fzv); if (rl < 1e-4f) rl = 1e-4f;
+                float rx = -fzv/rl, rz = fxv/rl;
+                float spd = 6.0f * fdt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd *= 3.0f;
+                if (kd(GLFW_KEY_W)) { flyXh += fxv*spd; flyYh += fyv*spd; flyZh += fzv*spd; }
+                if (kd(GLFW_KEY_S)) { flyXh -= fxv*spd; flyYh -= fyv*spd; flyZh -= fzv*spd; }
+                if (kd(GLFW_KEY_D)) { flyXh += rx*spd; flyZh += rz*spd; }
+                if (kd(GLFW_KEY_A)) { flyXh -= rx*spd; flyZh -= rz*spd; }
+                if (spaceNow) flyYh += spd;
+                if (kd(GLFW_KEY_LEFT_CONTROL)) flyYh -= spd;
+                camX = flyXh; camY = flyYh; camZ = flyZh; camYaw = flyYawH; camPitch = flyPitchH;
+            }
+            prevSpaceH = spaceNow;
+
+            const x3::phys::Vec3 ppos{ camX, camY, camZ };
+            const auto fired = htriggers.update(ppos);
+            for (uint32_t id : fired) {
+                hub.onTrigger(id);   // latch + log the relaunch hint
+                // POLISH: actually relaunch into the portal's --world target.
+                for (const auto& rp : hub.portals()) {
+                    if (rp.triggerId == id && rp.worldName && rp.worldName[0]) {
+                        const std::string cmd = std::string("start \"\" \"") + hubExe +
+                                                "\" --world " + rp.worldName;
+                        x3::logInfo(std::string("[rifthub] launching --world ") +
+                                    rp.worldName + " (fresh X3Engine)");
+                        std::system(cmd.c_str());
+                        glfwSetWindowShouldClose(window, GLFW_TRUE);
+                        break;
+                    }
+                }
+            }
+
+            // HUD prompt: log a single line whenever the nearest-in-range portal
+            // CHANGES so the player gets discovery signposting without spam.
+            std::string prompt;
+            if (hub.hudPromptForEye(ppos, prompt, /*hudRadiusM=*/5.0f)) {
+                if (prompt != lastHudPrompt) {
+                    x3::logInfo(std::string("[rifthub HUD] ") + prompt);
+                    lastHudPrompt = prompt;
+                }
+            } else if (!lastHudPrompt.empty()) {
+                lastHudPrompt.clear();
+            }
+
+            // Shimmer: pulse ring + energy core emissive BEFORE render so the new
+            // values land in the entity transforms scene.render reads this frame.
+            hub.tick(fdt, hscene);
+
+            hphys->step(fdt);
+            hscene.update(*hphys);
+
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWh || chh != lastHh) { lastWh = cw; lastHh = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+
+            device->setCamera(camX, camY, camZ, camYaw, camPitch, 65.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) hscene.render(*device, frame);
+            device->endFrame(frame);
+        }
+        hub.shutdown(*device);
+        hphys->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
