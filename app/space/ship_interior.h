@@ -23,9 +23,12 @@
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
+#include "engine/asset/IAssetSource.h"
+#include "engine/asset/IModelLoader.h"
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -113,6 +116,76 @@ private:
     // Render meshes/textures owned by this interior (freed in shutdown()).
     std::vector<x3::rhi::MeshHandle>    m_meshes;
     std::vector<x3::rhi::TextureHandle> m_textures;
+};
+
+// ===========================================================================
+// FireflyCockpit — the "used future" SHOWCASE dressing for --world ship-interior.
+//
+// ShipInterior (above) owns the WALKABLE shell + collision (graybox boxes). It is
+// data-driven + ship-class-agnostic, so it must stay neutral. The Firefly look —
+// real modular SM_* sci-fi geometry, a pilot's console, ceiling pipes, and WARM
+// amber light fixtures (Serenity's lived-in cockpit) — is a SHOWCASE concern,
+// kept here as a separate, purely-VISUAL overlay that draws on top of (and instead
+// of) the graybox so the brief's art direction doesn't pollute the reusable system.
+//
+// It loads the ModularSciFi_Interior/SM_*.glb kit (the same pieces env_art.cpp
+// uses), places them into a small angled cockpit, and registers WARM point lights
+// at each Light_A fixture. Per-asset fallback: a missing GLB is simply not drawn.
+// REUSES the public IModelLoader / IAssetSource / IRenderDevice API only.
+class FireflyCockpit {
+public:
+    // Load the SM_* kit from `convertedGlbDir` (e.g. convertedGlbRoot()) and place
+    // the cockpit geometry + props + warm light fixtures. Call once. Returns true
+    // if at least the floor/wall kit loaded (false -> caller keeps the graybox).
+    bool build(x3::rhi::IRenderDevice& device, const std::string& convertedGlbDir);
+
+    // Draw all placed cockpit instances (static; call each frame before the windows).
+    void render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const;
+
+    // Draw the forward SPACE pane (the view out the cockpit window: a deep, mostly-
+    // dark star/nebula field at a controlled, NON-blooming emissive so the stars read
+    // as points on black space — the Serenity window — not a white sheet). `panSec`
+    // gently drifts the field so the ship reads as moving. Call after render(), before
+    // the viewmodel. Placed at the forward hull opening (z = -3).
+    void renderWindow(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                      float panSec) const;
+
+    // Warm amber point lights at the ceiling fixtures (the Firefly signature). Feed
+    // these to IRenderDevice::setPointLights (merge with the window light-bleed).
+    const std::vector<x3::rhi::PointLight>& warmLights() const { return m_warm; }
+
+    uint32_t assetsLoaded() const;
+    uint32_t instanceCount() const { return (uint32_t)m_instances.size(); }
+    bool     ok() const { return m_ok; }
+
+private:
+    struct Asset {
+        x3::asset::Model                      model;
+        std::vector<x3::asset::ModelDrawable> drawables;
+        bool ok = false;
+    };
+    struct Inst {
+        uint32_t asset = 0;
+        float    transform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+        float    emissive[4] = {0,0,0,0};
+    };
+    uint32_t loadAsset(const std::string& relPath);
+    void     addInstance(uint32_t a, const float m[16], const float emissive[4] = nullptr);
+
+    std::unique_ptr<x3::asset::IAssetSource> m_assets;
+    std::unique_ptr<x3::asset::IModelLoader> m_loader;
+    std::vector<Asset>                       m_table;
+    std::vector<std::string>                 m_paths;
+    std::vector<Inst>                        m_instances;
+    std::vector<x3::rhi::PointLight>         m_warm;
+    bool                                     m_ok = false;
+
+    // Forward space window (self-owned so brightness is controlled — the S6 ShipWindows
+    // pane blooms to white at this size/closeness). A baked star/nebula quad.
+    x3::rhi::MeshHandle    m_winMesh{};
+    x3::rhi::TextureHandle m_winTex{};
+    std::array<float, 6>   m_winPlace{};   // {x,y,z, w,h, yaw}
+    bool                   m_winOk = false;
 };
 
 // Headless self-test (--test-ship-interior, >=6 checks). Uses HeadlessRenderDevice +

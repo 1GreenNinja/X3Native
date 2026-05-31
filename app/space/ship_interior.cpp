@@ -4,6 +4,8 @@
 #include "../mesh_prims.h"        // x3::prims box builders + procedural sci-fi textures
 #include "../headless_device.h"   // HeadlessRenderDevice for the self-test
 
+#include "engine/core/x3_log.h"
+
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -262,6 +264,352 @@ ShipManifest ShipInterior::makeSmallCockpit() {
     m.windows.push_back({ -3.0f, 1.6f, 0.0f, 2.0f, 1.0f, 1.5708f });       // port side
 
     return m;
+}
+
+// ===========================================================================
+// FireflyCockpit — warm "used future" GLB dressing for the --world showcase.
+// ===========================================================================
+namespace {
+
+constexpr float kPiF = 3.14159265358979f;
+
+// Probed world-space AABBs of the SM_* kit pieces (meters), AFTER the GLB node
+// transforms — copied from env_art.cpp's measured table so placement matches.
+struct CkAabb { float minx,miny,minz, maxx,maxy,maxz; };
+constexpr CkAabb kFloorAabb { -5.12f, -0.04f, 0.00f, -1.12f, 0.19f, 3.00f };  // 4.0(X)x3.0(Z)
+constexpr CkAabb kCeilAabb  { -5.12f,  4.04f, 0.00f, -1.12f, 4.40f, 3.00f };
+constexpr CkAabb kWallAabb  { -1.43f, -0.04f, 0.00f,  0.00f, 4.40f, 3.00f };  // 3.0 wide(Z) x 4.45 tall
+constexpr CkAabb kConsAabb  { -0.47f,  0.00f,-0.31f,  0.31f, 1.55f, 0.29f };
+constexpr CkAabb kLightAabb { -0.22f,  0.00f, 0.00f,  0.00f, 0.03f, 2.26f };
+constexpr CkAabb kPipesAabb { -0.123f,-0.011f,-0.000f, 0.539f, 0.164f, 3.000f };
+constexpr CkAabb kFrameAabb { -6.25f, -0.04f,-0.28f,  0.00f, 4.40f, 0.28f };
+
+inline float ckcx(const CkAabb& a){ return (a.minx+a.maxx)*0.5f; }
+inline float ckcz(const CkAabb& a){ return (a.minz+a.maxz)*0.5f; }
+
+// Tileable hash + value noise for the deep-space window texture.
+inline float sHash(uint32_t x, uint32_t y, uint32_t n, uint32_t salt) {
+    uint32_t h = (x % n) * 374761393u + (y % n) * 668265263u + salt * 2654435761u;
+    h = (h ^ (h >> 13)) * 1274126177u; h ^= h >> 16;
+    return (float)(h & 0xFFFFFFu) / (float)0x1000000u;
+}
+inline float sNoise(float u, float v, uint32_t cell, uint32_t salt) {
+    const float fx = u*(float)cell, fy = v*(float)cell;
+    const uint32_t x0=(uint32_t)std::floor(fx), y0=(uint32_t)std::floor(fy);
+    const float tx=fx-(float)x0, ty=fy-(float)y0;
+    auto sm=[](float t){return t*t*(3.0f-2.0f*t);};
+    const float sx=sm(tx), sy=sm(ty);
+    const float a=sHash(x0,y0,cell,salt), b=sHash(x0+1,y0,cell,salt);
+    const float c=sHash(x0,y0+1,cell,salt), d=sHash(x0+1,y0+1,cell,salt);
+    const float ab=a+(b-a)*sx, cd=c+(d-c)*sx;
+    return ab+(cd-ab)*sy;
+}
+// A DEEP, mostly-BLACK star field with a faint warm-violet nebula band + sparse
+// stars. Kept dim on purpose so an emissive pane reads as real space (points of
+// light on black), not a glowing white sheet. Tileable so a UV pan never seams.
+inline std::vector<uint8_t> bakeSpaceRGBA(uint32_t n) {
+    std::vector<uint8_t> px((size_t)n*n*4, 0);
+    for (uint32_t y=0;y<n;++y){
+        const float v=(y+0.5f)/(float)n;
+        for (uint32_t x=0;x<n;++x){
+            const float u=(x+0.5f)/(float)n;
+            // Faint nebula: low-freq noise -> a soft warm-violet cloud, VERY dim, on
+            // near-black space (so stars read as points, not a gray sheet).
+            float neb = 0.6f*sNoise(u,v,5,7u) + 0.4f*sNoise(u,v,11,23u);
+            neb = std::clamp((neb-0.62f)/0.38f, 0.0f, 1.0f); neb*=neb;
+            float r = 0.010f + 0.30f*neb;      // warm-violet wisp
+            float g = 0.006f + 0.10f*neb;
+            float b = 0.020f + 0.36f*neb;
+            // Stars: sparse hash threshold, driven to FULL brightness so they survive
+            // the low pane emissive as crisp points on the near-black field.
+            float hs = sHash(x,y,n,131u);
+            if (hs > 0.9975f){ float br=3.2f; r+=br; g+=br; b+=br; }          // bright star
+            else if (hs > 0.992f){ float br=1.5f; r+=br*1.05f; g+=br*0.97f; b+=br; } // mid star
+            else if (hs > 0.982f){ float br=0.7f; r+=br; g+=br*0.95f; b+=br; }       // dim star
+            auto u8=[](float c){c=std::clamp(c,0.0f,1.0f);return (uint8_t)std::lround(c*255.0f);};
+            uint8_t* p=&px[((size_t)y*n+x)*4];
+            p[0]=u8(r); p[1]=u8(g); p[2]=u8(b); p[3]=255;
+        }
+    }
+    return px;
+}
+
+// Build a unit window quad (local XY plane, +Z normal, -0.5..0.5) with the given
+// UV span so the camera samples a sub-window of the larger field (overscan).
+inline void ckQuad(x3::rhi::MeshVertex out[4], float u0, float v0, float u1, float v1) {
+    auto mk=[](float x,float y,float u,float v){ x3::rhi::MeshVertex q{};
+        q.pos[0]=x; q.pos[1]=y; q.pos[2]=0; q.normal[2]=1.0f; q.uv[0]=u; q.uv[1]=v; return q; };
+    out[0]=mk(-0.5f,-0.5f,u0,v0); out[1]=mk(0.5f,-0.5f,u1,v0);
+    out[2]=mk(0.5f,0.5f,u1,v1);   out[3]=mk(-0.5f,0.5f,u0,v1);
+}
+
+// Column-major TRS: yaw about +Y + uniform scale s, mapping local anchor (px,py,pz)
+// to world (wx,wy,wz). Mirrors env_art::placeYaw (glTF facing: yaw 0 -> faces -Z).
+void ckPlaceYaw(float m[16], float yaw, float s,
+                float px, float py, float pz,
+                float wx, float wy, float wz) {
+    const float c = std::cos(yaw), sn = std::sin(yaw);
+    m[0]=c*s;  m[1]=0;   m[2]=-sn*s; m[3]=0;
+    m[4]=0;    m[5]=s;   m[6]=0;     m[7]=0;
+    m[8]=sn*s; m[9]=0;   m[10]=c*s;  m[11]=0;
+    const float rpx = (c*px + sn*pz) * s;
+    const float rpy = (py) * s;
+    const float rpz = (-sn*px + c*pz) * s;
+    m[12]=wx - rpx; m[13]=wy - rpy; m[14]=wz - rpz; m[15]=1.0f;
+}
+
+} // namespace
+
+uint32_t FireflyCockpit::loadAsset(const std::string& relPath) {
+    for (uint32_t i=0;i<m_paths.size();++i) if (m_paths[i]==relPath) return i;
+    Asset a;
+    a.model = m_loader->load(relPath);
+    if (a.model.ok) { a.drawables = x3::asset::makeDrawables(a.model); a.ok = !a.drawables.empty(); }
+    if (a.ok) x3::logInfo("[firefly] loaded " + relPath + " (" +
+                          std::to_string(a.drawables.size()) + " prim)");
+    else      x3::logWarn("[firefly] FAILED " + relPath);
+    uint32_t idx = (uint32_t)m_table.size();
+    m_table.push_back(std::move(a));
+    m_paths.push_back(relPath);
+    return idx;
+}
+
+void FireflyCockpit::addInstance(uint32_t a, const float m[16], const float emissive[4]) {
+    if (a >= m_table.size() || !m_table[a].ok) return;
+    Inst e; e.asset = a;
+    for (int i=0;i<16;++i) e.transform[i]=m[i];
+    if (emissive) for (int i=0;i<4;++i) e.emissive[i]=emissive[i];
+    m_instances.push_back(e);
+}
+
+bool FireflyCockpit::build(x3::rhi::IRenderDevice& device, const std::string& convertedGlbDir) {
+    m_assets.reset(x3::asset::createAssetSource());
+    if (!m_assets->mountDir(convertedGlbDir, 0)) {
+        x3::logWarn("[firefly] mountDir failed: " + convertedGlbDir + " — graybox kept");
+        return false;
+    }
+    m_loader.reset(x3::asset::createModelLoader(&device, m_assets.get()));
+
+    const std::string kit = "ModularSciFi_Interior/";
+    const uint32_t floorA = loadAsset(kit + "SM_Floor_A.glb");
+    const uint32_t ceilA  = loadAsset(kit + "SM_Ceiling_A.glb");
+    const uint32_t wallA  = loadAsset(kit + "SM_Wall_A.glb");
+    const uint32_t consA  = loadAsset(kit + "SM_Console.glb");
+    const uint32_t lightA = loadAsset(kit + "SM_Light_A.glb");
+    const uint32_t pipesA = loadAsset(kit + "SM_Pipes_A.glb");
+    const uint32_t frameA = loadAsset(kit + "SM_DoorFrame_A.glb");
+
+    const bool haveFloor = m_table[floorA].ok;
+    const bool haveWall  = m_table[wallA].ok;
+    float m[16];
+
+    // ---- COCKPIT FOOTPRINT ---------------------------------------------------
+    // A 6 m (X, -3..3) x 6 m (Z, -3..8) deck that matches makeSmallCockpit()'s
+    // collision shell (cockpit X[-3,3] Z[-3,3] + corridor aft to z=8). The FORWARD
+    // wall (z = -3) is LEFT OPEN for the big window to space (ShipWindows portal).
+    const float fTileX = kFloorAabb.maxx - kFloorAabb.minx; // 4.0
+    const float fTileZ = kFloorAabb.maxz - kFloorAabb.minz; // 3.0
+    const float fax = ckcx(kFloorAabb), faz = ckcz(kFloorAabb);
+
+    // FLOOR + CEILING tiling over X[-3,3] Z[-3,8].
+    auto tile = [&](uint32_t asset, const CkAabb& ab, float anchorY, float wyC) {
+        if (asset >= m_table.size() || !m_table[asset].ok) return;
+        const float tx = ab.maxx - ab.minx, tz = ab.maxz - ab.minz;
+        const float ax = ckcx(ab), az = ckcz(ab);
+        for (float wx = -3.0f + tx*0.5f; wx < 3.0f + 0.1f; wx += tx)
+            for (float wz = -3.0f + tz*0.5f; wz < 8.0f + 0.1f; wz += tz) {
+                ckPlaceYaw(m, 0.0f, 1.0f, ax, anchorY, az, wx, wyC, wz);
+                addInstance(asset, m);
+            }
+    };
+    (void)fTileX; (void)fTileZ; (void)fax; (void)faz;
+    if (haveFloor) tile(floorA, kFloorAabb, kFloorAabb.maxy, 0.0f);      // floor top -> y=0
+    if (m_table[ceilA].ok) tile(ceilA, kCeilAabb, kCeilAabb.miny, 3.0f); // ceiling bottom -> y=3
+
+    // ---- WALLS: left (x=-3) + right (x=+3) side walls run along Z; aft (z=+8) cap.
+    // FORWARD wall (z=-3) intentionally omitted (the window). Wall panel is 3.0 wide
+    // (local Z), 1.43 thick (local X). Side walls -> yaw +/-90 so width runs along Z.
+    if (haveWall) {
+        const float panelW = kWallAabb.maxz - kWallAabb.minz; // 3.0
+        const float wMinY  = kWallAabb.miny;
+        const float wax = ckcx(kWallAabb), waz = ckcz(kWallAabb);
+        // Side walls along Z (x = -3 and x = +3), tiling z = -3..8.
+        for (int side = 0; side < 2; ++side) {
+            const float wx = (side==0) ? -3.0f : 3.0f;
+            const float yaw = (side==0) ? kPiF*0.5f : -kPiF*0.5f; // face into the room
+            for (float wz = -3.0f + panelW*0.5f; wz < 8.0f + 0.1f; wz += panelW) {
+                ckPlaceYaw(m, yaw, 1.0f, wax, wMinY, waz, wx, 0.0f, wz);
+                addInstance(wallA, m);
+            }
+        }
+        // Aft cap (z = +8), runs along X (yaw 0).
+        for (float wx = -3.0f + panelW*0.5f; wx < 3.0f + 0.1f; wx += panelW) {
+            ckPlaceYaw(m, 0.0f, 1.0f, wax, wMinY, waz, wx, 0.0f, 8.0f);
+            addInstance(wallA, m);
+        }
+        // The FORWARD wall (z=-3) is deliberately left fully open — the big Serenity
+        // window (S6 portal) fills it, so the pilot's whole forward view is space.
+    }
+
+    // ---- DOOR FRAME at the aft corridor mouth (z ~ +3) for mechanical character.
+    if (m_table[frameA].ok) {
+        const float fs = 2.4f / (kFrameAabb.maxx - kFrameAabb.minx);
+        ckPlaceYaw(m, kPiF*0.5f, fs, ckcx(kFrameAabb), kFrameAabb.miny, ckcz(kFrameAabb),
+                   0.0f, 0.0f, 3.0f);
+        addInstance(frameA, m);
+    }
+
+    // ---- PILOT'S CONSOLE: the centerpiece. A wide bank across the front of the
+    // cockpit, just inside the window, facing aft (+Z) toward the pilot's seat. We
+    // place THREE consoles side-by-side so it reads as a real helm dash, not one box.
+    if (m_table[consA].ok) {
+        const float consBaseZ = -2.0f;          // just inside the forward window
+        for (int i = -1; i <= 1; ++i) {
+            const float wx = (float)i * 0.85f;
+            // Console faces the pilot (toward +Z) -> yaw pi. Slight fan-out yaw so the
+            // side panels angle inward (a curved Serenity dash).
+            const float yaw = kPiF + (float)i * 0.18f;
+            ckPlaceYaw(m, yaw, 1.0f, ckcx(kConsAabb), kConsAabb.miny, ckcz(kConsAabb),
+                       wx, 0.0f, consBaseZ);
+            // Warm amber screen glow on the console itself (feeds bloom -> lit dash).
+            // Kept modest so the dash reads as warm panels, not a white blowout.
+            const float consEmis[4] = { 1.0f, 0.52f, 0.20f, 1.1f };
+            addInstance(consA, m, consEmis);
+        }
+    }
+
+    // ---- PIPES: ceiling + wall runs (the "lived-in" mechanical clutter). --------
+    if (m_table[pipesA].ok) {
+        // Two ceiling pipe runs down the length of the cockpit (along Z), tucked to
+        // the corners. Pipes_A is 3.0 long (local Z); tile 2 along z=-3..3.
+        for (int s=0;s<2;++s) {
+            const float px = (s==0) ? -2.5f : 2.5f;
+            for (float pz = -3.0f; pz < 3.0f; pz += 3.0f) {
+                ckPlaceYaw(m, 0.0f, 1.0f, ckcx(kPipesAabb), kPipesAabb.miny, ckcz(kPipesAabb),
+                           px, 2.78f, pz + 1.5f);
+                addInstance(pipesA, m);
+            }
+        }
+    }
+
+    // ---- WARM CEILING LIGHTS — the Firefly signature. Amber/orange, low + warm. --
+    // Each Light_A fixture also registers a warm point light (this is what does most
+    // of the "Serenity" feel). Premultiplied by intensity (linear; mesh.frag adds +
+    // tonemaps). Emissive on the fixture mesh so it glows + feeds the bloom chain.
+    if (m_table[lightA].ok) {
+        // DEEPLY saturated amber so the kit's light-gray PBR surfaces actually pick
+        // up a warm tint instead of blooming to neutral white. Lower intensity than
+        // a clinical white fill — Firefly is DIM + warm, not bright. Strong R, much
+        // lower G, near-zero B (incandescent tungsten, ~2700K and warmer).
+        const float kInt = 1.9f;
+        const float kR = 1.00f * kInt, kG = 0.46f * kInt, kB = 0.16f * kInt; // amber
+        const float kEmis[4] = { 1.00f, 0.50f, 0.18f, 4.0f };
+        // Two fixtures over the cockpit + two over the corridor aft.
+        const float fz[4] = { -1.6f, 0.6f, 3.6f, 6.4f };
+        for (float z : fz) {
+            ckPlaceYaw(m, 0.0f, 1.0f, ckcx(kLightAabb), kLightAabb.maxy, ckcz(kLightAabb),
+                       0.0f, 2.95f, z);
+            addInstance(lightA, m, kEmis);
+            x3::rhi::PointLight pl;
+            pl.pos[0]=0.0f; pl.pos[1]=2.55f; pl.pos[2]=z; pl.range=7.0f;
+            pl.color[0]=kR; pl.color[1]=kG; pl.color[2]=kB;
+            m_warm.push_back(pl);
+        }
+        // A low warm "console uplight" right at the dash so the pilot's seat area
+        // glows amber from below (the iconic warm pool under the cockpit window).
+        x3::rhi::PointLight dash;
+        dash.pos[0]=0.0f; dash.pos[1]=1.0f; dash.pos[2]=-1.2f; dash.range=4.0f;
+        dash.color[0]=1.00f*2.0f; dash.color[1]=0.40f*2.0f; dash.color[2]=0.12f*2.0f;
+        m_warm.push_back(dash);
+    }
+
+    // ---- FORWARD SPACE WINDOW: self-owned deep-space pane (controlled brightness).
+    // A 4.4 m x 2.3 m glass at the forward hull opening (z = -3), centered a bit above
+    // the dash. Sampling a sub-window of the baked field (overscan) so renderWindow()
+    // can drift it. Two-sided so it reads from inside regardless.
+    {
+        auto spacePx = bakeSpaceRGBA(512);
+        m_winTex = device.createTexture(spacePx.data(), 512, 512, /*srgb=*/false);
+        x3::rhi::MeshVertex qv[4]; ckQuad(qv, 0.0f, 0.0f, 0.6f, 0.6f);
+        const uint32_t qi[12] = { 0,1,2, 0,2,3,  0,2,1, 0,3,2 }; // two-sided
+        m_winMesh = device.createMesh(qv, 4, qi, 12);
+        // Sit the pane a hair INSIDE the forward opening so it clears the floor/ceiling
+        // edges; faces +Z (into the room) so the pilot sees it. yaw = pi -> normal +Z.
+        m_winPlace = { 0.0f, 1.85f, -2.78f, 4.4f, 2.3f, kPiF };
+        m_winOk = m_winMesh.valid() && m_winTex.valid();
+    }
+
+    m_ok = haveFloor && haveWall;
+    x3::logInfo("[firefly] built: " + std::to_string(assetsLoaded()) + " asset(s), " +
+                std::to_string(m_instances.size()) + " instance(s), " +
+                std::to_string(m_warm.size()) + " warm light(s), window=" +
+                std::to_string((int)m_winOk));
+    return m_ok;
+}
+
+void FireflyCockpit::renderWindow(x3::rhi::IRenderDevice& device,
+                                  const x3::rhi::FrameContext& frame, float panSec) const {
+    if (!m_winOk) return;
+    // Gently pan the UV sub-window so the starfield drifts (the ship is "moving").
+    const float uPan = std::fmod(panSec * 0.01f, 0.4f);
+    const float vPan = 0.12f + 0.004f * std::sin(panSec * 0.2f);
+    x3::rhi::MeshVertex qv[4]; ckQuad(qv, uPan, vPan, uPan + 0.6f, vPan + 0.6f);
+    device.updateMesh(m_winMesh, qv, 4);
+    // Column-major model: scale to (w,h), yaw about +Y, translate to placement.
+    const float c = std::cos(m_winPlace[5]), s = std::sin(m_winPlace[5]);
+    const float w = m_winPlace[3], h = m_winPlace[4];
+    float model[16] = {
+        c*w, 0,  -s*w, 0,
+        0,   h,  0,    0,
+        s,   0,  c,    0,
+        m_winPlace[0], m_winPlace[1], m_winPlace[2], 1,
+    };
+    // MODEST emissive so the dim stars on black read as space, NOT a white sheet.
+    // The base field is already mostly black; a low strength keeps it from blooming
+    // out while the brightest stars still glint. White multiplier (texture carries
+    // the color).
+    // mesh.frag adds emissive FLAT (not texture-modulated), so a high emissive would
+    // wash the pane to a uniform sheet. Instead keep emissive TINY (a faint deep-space
+    // ambient glow) and let the STAR TEXTURE show through ALBEDO — the brightest texels
+    // (the baked stars, driven >1) survive even the dim interior lighting as crisp
+    // points on near-black space. baseColorFactor 1 so the texture passes through.
+    const float col[4]  = { 1.4f, 1.4f, 1.6f, 1.0f };   // lift albedo so stars pop
+    const float emis[4] = { 0.05f, 0.05f, 0.08f, 0.6f }; // faint deep-space floor only
+    device.drawMeshEmissive(frame, m_winMesh, m_winTex, col, emis, model);
+}
+
+void FireflyCockpit::render(x3::rhi::IRenderDevice& device,
+                            const x3::rhi::FrameContext& frame) const {
+    // WARM BASE TINT — the single biggest Firefly lever. The SM_* kit ships with a
+    // cold light-gray/white PBR albedo; multiplying a warm amber tint into every
+    // surface's baseColorFactor gives the whole hull the aged-brass / tungsten-lit
+    // "used future" cast (so even unlit surfaces read warm, not clinical gray-blue).
+    const float kWarmTint[3] = { 1.00f, 0.74f, 0.50f };
+    for (const Inst& inst : m_instances) {
+        const Asset& a = m_table[inst.asset];
+        for (const auto& d : a.drawables) {
+            float fin[16];
+            x3::asset::mulMat4(inst.transform, d.nodeTransform, fin);
+            const float tinted[4] = {
+                d.baseColorFactor[0] * kWarmTint[0],
+                d.baseColorFactor[1] * kWarmTint[1],
+                d.baseColorFactor[2] * kWarmTint[2],
+                d.baseColorFactor[3],
+            };
+            device.drawMeshPBR(frame,
+                               x3::rhi::MeshHandle{ d.meshId },
+                               x3::rhi::TextureHandle{ d.baseColorTexId },
+                               x3::rhi::TextureHandle{ d.normalTexId },
+                               x3::rhi::TextureHandle{ d.mrTexId },
+                               tinted,
+                               inst.emissive,
+                               fin);
+        }
+    }
+}
+
+uint32_t FireflyCockpit::assetsLoaded() const {
+    uint32_t n=0; for (const auto& a : m_table) if (a.ok) ++n; return n;
 }
 
 // ---------------------------------------------------------------------------

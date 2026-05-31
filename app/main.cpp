@@ -8462,7 +8462,7 @@ int main(int argc, char** argv) {
     //   * SCREENSHOT (headless): `--world ship-interior --screenshot <path>` — pose a
     //     camera inside the cockpit, settle a few frames, capture the PNG, exit.
     if (worldMode == "ship-interior") {
-        x3::logInfo("--world ship-interior: building the walkable cockpit + corridor");
+        x3::logInfo("--world ship-interior: building the FIREFLY cockpit (warm 'used future')");
 
         std::unique_ptr<x3::phys::IPhysicsWorld> sphys(x3::phys::createPhysicsWorld());
         if (!sphys->init()) {
@@ -8473,45 +8473,77 @@ int main(int argc, char** argv) {
             return 1;
         }
 
+        // Collision shell + spawn come from the (untouched) ShipInterior system; the
+        // graybox VISUALS are suppressed (we draw the real SM_* kit instead). The
+        // window placements feed the S6 portal so the pilot sees space out the glass.
         x3::game::Scene sscene;
         x3::space::ShipInterior interior;
         interior.build(*device, sscene, *sphys, x3::space::ShipInterior::makeSmallCockpit());
 
-        // Interior lighting: NO sky (we're inside the hull). Point lights at the
-        // ceiling of each room so the deck reads. Disable SSAO/GI raster fallback so a
-        // 1080-Ti-class no-RT capture is not black (per the lane brief).
+        // The warm modular cockpit (real geometry: floor/walls/ceiling/console/pipes
+        // + amber light fixtures + a forward space window) — the Firefly look. Falls
+        // back to graybox if the GLB kit is absent.
+        x3::space::FireflyCockpit cockpit;
+        const bool haveArt = cockpit.build(*device, x3::game::convertedGlbRoot());
+
+        // Inside the hull: no sky. Disable SSAO/GI raster fallback so a no-RT capture
+        // is not black (per the lane brief).
         { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
         { x3::rhi::IRenderDevice::SsaoParams ao{}; ao.enabled = false; device->setSsaoParams(ao); }
         { x3::rhi::IRenderDevice::GiParams gi{}; gi.enabled = false; device->setGiParams(gi); }
-        { x3::rhi::PointLight pl[3];
-          pl[0].pos[0]= 0.0f; pl[0].pos[1]=2.7f; pl[0].pos[2]= 0.0f; pl[0].range=10.0f;
-          pl[0].color[0]=6.0f; pl[0].color[1]=6.2f; pl[0].color[2]=6.6f;            // cockpit
-          pl[1].pos[0]= 0.0f; pl[1].pos[1]=2.7f; pl[1].pos[2]= 5.5f; pl[1].range=9.0f;
-          pl[1].color[0]=4.0f; pl[1].color[1]=4.4f; pl[1].color[2]=5.0f;            // corridor
-          pl[2].pos[0]= 0.0f; pl[2].pos[1]=1.4f; pl[2].pos[2]=-2.6f; pl[2].range=5.0f;
-          pl[2].color[0]=2.0f; pl[2].color[1]=3.0f; pl[2].color[2]=4.0f;            // helm glow
-          device->setPointLights(pl, 3); }
+
+        // WARM lighting is the Firefly signature: amber/orange fixtures from the
+        // cockpit, plus a faint cool starlight bleed at the window so the glass reads
+        // as a real opening. Warm dominates; the cool bleed is just an accent.
+        {
+            std::vector<x3::rhi::PointLight> lights;
+            if (haveArt) for (const auto& w : cockpit.warmLights()) lights.push_back(w);
+            else {
+                x3::rhi::PointLight pl{}; pl.pos[1]=2.6f; pl.range=9.0f;
+                pl.color[0]=4.0f; pl.color[1]=2.6f; pl.color[2]=1.3f; lights.push_back(pl);
+            }
+            // Faint cool starlight bleed just inside the forward window.
+            // Bright, cool light in FRONT of the window pane so the star TEXTURE shows
+            // through albedo (mesh.frag adds emissive flat; the texture only reads when
+            // lit). Tight range so it stays on the pane and doesn't cool the warm room.
+            x3::rhi::PointLight bleed{};
+            bleed.pos[0]=0.0f; bleed.pos[1]=1.85f; bleed.pos[2]=-2.55f; bleed.range=1.2f;
+            bleed.color[0]=2.2f; bleed.color[1]=2.4f; bleed.color[2]=3.0f;
+            lights.push_back(bleed);
+            device->setPointLights(lights.data(), (uint32_t)lights.size());
+        }
 
         const x3::phys::Vec3 spawn = interior.spawnPoint();
 
-        // ===== Headless screenshot path: pose a camera inside the cockpit. =====
+        // Draw the cockpit (art OR graybox fallback) + the forward space window.
+        auto drawScene = [&](const x3::rhi::FrameContext& frame, float t,
+                             float ex, float ey, float ez) {
+            (void)ex; (void)ey; (void)ez;
+            if (haveArt) { cockpit.render(*device, frame); cockpit.renderWindow(*device, frame, t); }
+            else         interior.render(*device, frame, sscene);
+        };
+
+        // ===== Headless screenshot path: the pilot's-eye Serenity framing. =====
         if (headless) {
-            // Stand near the aft of the cockpit looking forward toward the helm + the
-            // forward window so the deck/walls/console fill the frame.
-            float cam[5] = { 0.0f, 1.7f, 2.2f, -1.5708f, -0.06f };
+            // Over-the-shoulder Serenity framing: sit BACK from the dash (z=+2.4) at
+            // standing eye height, looking FORWARD (-Z) and slightly DOWN so the warm
+            // console bank fills the lower-mid frame and the window to space sits above
+            // it. Pulling back keeps the pipes out of the top and shows the full cockpit.
+            float cam[5] = { 0.0f, 1.72f, 2.3f, -1.5708f, -0.05f };
             if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
             const float dt = 1.0f / 60.0f;
             const std::string outPath = screenshot ? screenshotPath
                                                    : std::string("G:/X3Native/captures/interior.png");
-            const int kSettle = 12;
+            const int kSettle = 16;
             for (int i = 0; i < kSettle; ++i) {
                 glfwPollEvents();
                 sphys->step(dt);
                 sscene.update(*sphys);
+                const float t = (float)i * dt;
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 70.0f);
                 if (i == kSettle - 1) device->armCapture(outPath.c_str());
                 auto frame = device->beginFrame();
-                if (frame.valid) interior.render(*device, frame, sscene);
+                if (frame.valid) drawScene(frame, t, cam[0], cam[1], cam[2]);
                 device->endFrame(frame);
             }
             const bool wrote = device->captureFrame(outPath.c_str());
@@ -8573,8 +8605,9 @@ int main(int argc, char** argv) {
             if (cw != lastWs || ch != lastHs) { lastWs = cw; lastHs = ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
 
             device->setCamera(camX, camY, camZ, camYaw, camPitch, 70.0f);
+            const float t = (float)now;
             auto frame = device->beginFrame();
-            if (frame.valid) interior.render(*device, frame, sscene);
+            if (frame.valid) drawScene(frame, t, camX, camY, camZ);
             device->endFrame(frame);
         }
 
