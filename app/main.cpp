@@ -89,6 +89,7 @@
 #include "space/space_env.h"               // S1 space environment: nebula/stars + planets + sun (--test-spaceenv + --world spaceenv)
 #include "space/ship_anim.h"               // S11 ship node-transform anim (--test-shipanim + --world shipanim)
 #include "space/wormhole_vfx.h"            // Salvari crystal-matrix wormhole (--test-wormhole + --world wormhole)
+#include "space/wormhole_transit.h"        // S3 wormhole transit (--test-wormhole-transit + --world wormhole-transit)
 #include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
@@ -1354,7 +1355,8 @@ int main(int argc, char** argv) {
          testLod = false,
          testSpaceEnv = false,
          testShipanim = false,
-         testWormhole = false;
+         testWormhole = false,
+         testWormholeTransit = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1703,6 +1705,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-spaceenv") testSpaceEnv = true;
         else if (a == "--test-shipanim") testShipanim = true;
         else if (a == "--test-wormhole") testWormhole = true;
+        else if (a == "--test-wormhole-transit") testWormholeTransit = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -2527,6 +2530,132 @@ int main(int argc, char** argv) {
         }
         x3::logInfo("wormhole: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
         std::printf("wormhole: %d/%d passed\n", pass, total);
+        std::fflush(stdout);
+        return (pass == total) ? 0 : 1;
+    }
+    // --test-wormhole-transit: S3 wormhole transit self-test. Headless --
+    // wires a WormholeTransit runner into a SpaceLayer and drives the spine:
+    // requestWormhole(dest) -> Context::WormholeTransit + active(); stepping
+    // SpaceLayer.update(dt) ramps progress() 0->1; at progress 1.0 the context
+    // returns to DeepSpace and active() is false again.
+    if (testWormholeTransit) {
+        x3::logInfo("running S3 wormhole-transit self-test...");
+        int pass = 0, total = 0;
+        auto check = [&](bool c, const char* name) {
+            ++total;
+            if (c) { ++pass; x3::logInfo(std::string("  [ok] ") + name); }
+            else   {          x3::logError(std::string("  [FAIL] ") + name); }
+        };
+
+        using x3::space::SpaceLayer;
+        using x3::space::Context;
+        using x3::space::WormholeTransit;
+
+        x3::game::HeadlessRenderDevice hdev;
+
+        // T1: init brings up the owned VFX and the transit starts idle.
+        {
+            SpaceLayer L; L.init();
+            WormholeTransit wt;
+            wt.init(hdev, L, /*durationSec=*/6.0f);
+            check(!wt.active(), "T1 init() -> not active (no transit armed yet)");
+            check(wt.progress() == 0.0f, "T1b init() -> progress 0");
+            wt.shutdown(hdev);
+        }
+
+        // T2: requestWormhole -> WormholeTransit + active(); stepping ramps
+        // progress 0->1; at 1.0 the context lands in DeepSpace and active==false.
+        {
+            SpaceLayer L; L.init();
+            WormholeTransit wt;
+            const float dur = 6.0f;
+            wt.init(hdev, L, dur);
+
+            L.requestWormhole(/*destSystemId=*/42u);
+            check(L.context() == Context::WormholeTransit,
+                  "T2 requestWormhole -> Context::WormholeTransit");
+
+            // First tick arms the transit; active() flips true and progress > 0.
+            L.update(1.0f);
+            check(wt.active(), "T2b after first update -> active()");
+            check(wt.progress() > 0.0f && wt.progress() < 1.0f,
+                  "T2c progress ramps into (0,1)");
+            check(L.context() == Context::WormholeTransit,
+                  "T2d still in WormholeTransit mid-jump");
+
+            // Monotonic ramp: progress strictly increases each step until done.
+            float prev = wt.progress();
+            bool monotonic = true;
+            // dur=6, already 1s in; 5 more 1s steps reach progress 1.0.
+            for (int i = 0; i < 5; ++i) {
+                L.update(1.0f);
+                if (wt.progress() < prev) monotonic = false;
+                prev = wt.progress();
+            }
+            check(monotonic, "T2e progress is monotonic non-decreasing");
+            check(wt.progress() >= 1.0f, "T2f progress reaches 1.0 at duration");
+            check(L.context() == Context::DeepSpace,
+                  "T2g transit complete -> back in DeepSpace (arrived at dest)");
+            check(!wt.active(), "T2h transit complete -> active()==false");
+
+            wt.shutdown(hdev);
+        }
+
+        // T3: progress() never exceeds 1.0 even if over-stepped past duration.
+        {
+            SpaceLayer L; L.init();
+            WormholeTransit wt;
+            wt.init(hdev, L, /*durationSec=*/2.0f);
+            L.requestWormhole(7u);
+            L.update(100.0f); // wildly over-step
+            check(wt.progress() == 1.0f, "T3 progress clamps to 1.0 on over-step");
+            check(L.context() == Context::DeepSpace, "T3b over-step still lands DeepSpace");
+            check(!wt.active(), "T3c over-step completes the transit");
+            wt.shutdown(hdev);
+        }
+
+        // T4: a second jump after the first re-arms cleanly (timer resets).
+        {
+            SpaceLayer L; L.init();
+            WormholeTransit wt;
+            wt.init(hdev, L, /*durationSec=*/4.0f);
+            // First jump to completion.
+            L.requestWormhole(1u);
+            for (int i = 0; i < 4; ++i) L.update(1.0f);
+            check(L.context() == Context::DeepSpace && !wt.active(),
+                  "T4 first jump completes");
+            // Second jump: progress must restart near 0, not stay pinned at 1.
+            L.requestWormhole(2u);
+            L.update(1.0f);
+            check(wt.active() && wt.progress() > 0.0f && wt.progress() < 1.0f,
+                  "T4b second jump re-arms with a fresh progress ramp");
+            wt.shutdown(hdev);
+        }
+
+        // T5: render() before/after init is VUID-safe (no crash; no-op pre-init).
+        {
+            SpaceLayer L; L.init();
+            WormholeTransit wt;
+            wt.init(hdev, L, 6.0f);
+            x3::rhi::FrameContext fr = hdev.beginFrame();
+            const float idM[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            wt.render(hdev, fr, idM, /*timeSec=*/0.5f); // active()==false here -> still safe
+            L.requestWormhole(3u);
+            L.update(1.0f);
+            wt.render(hdev, fr, idM, 1.0f);             // mid-transit draw
+            hdev.endFrame(fr);
+            check(true, "T5 render() is crash-free pre- and mid-transit");
+            wt.shutdown(hdev);
+            // After shutdown a render is a safe no-op.
+            x3::rhi::FrameContext fr2 = hdev.beginFrame();
+            wt.render(hdev, fr2, idM, 2.0f);
+            hdev.endFrame(fr2);
+            check(!wt.active() && wt.progress() == 0.0f,
+                  "T5b shutdown() resets active()/progress() and render() stays safe");
+        }
+
+        x3::logInfo("wormhole-transit: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+        std::printf("wormhole-transit: %d/%d passed\n", pass, total);
         std::fflush(stdout);
         return (pass == total) ? 0 : 1;
     }
@@ -4035,6 +4164,99 @@ int main(int argc, char** argv) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return wroteOn ? 0 : 1;
+    }
+
+    // ---- Wormhole transit showcase (--world wormhole-transit) ---------------
+    // The S3 Salvari crystal-matrix interstellar jump in isolation. The camera
+    // sits INSIDE the crystalline tunnel; a WormholeTransit is wired into a
+    // SpaceLayer, requestWormhole() is fired at start, and the transit plays:
+    // the SpaceLayer.update(dt) ramps progress 0->1 (via the registered runner)
+    // and the owned WormholeVfx blooms to white-hot convergence as the jump
+    // completes. The pixel-variance gate (std > 15, uniqColors > 100) IS the
+    // visual check -- a faceted, color-graded tunnel easily clears it.
+    if (worldMode == "wormhole-transit") {
+        x3::logInfo("--world wormhole-transit: showcasing the S3 crystal-matrix jump");
+
+        // No surface detail to occlude / no global illumination in the tunnel.
+        { x3::rhi::IRenderDevice::SsaoParams sp{}; sp.enabled = false; device->setSsaoParams(sp); }
+        { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled   = false; device->setGiParams(gp); }
+        { x3::rhi::IRenderDevice::SkyParams  sp{}; sp.enabled   = false; device->setSkyParams(sp); }
+
+        x3::space::SpaceLayer L;
+        L.init();
+        x3::space::WormholeTransit wt;
+        const float kDuration = 6.0f;
+        wt.init(*device, L, kDuration);
+
+        // Fire the jump immediately; the runner ramps progress over kDuration.
+        L.requestWormhole(/*destSystemId=*/42u);
+
+        // ---- Headless capture: fly down the tunnel, settle near convergence. ---
+        if (headless) {
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_wormhole_transit.png");
+            // Step the transit ~80% of the way so the tunnel reads bright + the
+            // core has bloomed, then capture (full convergence at 1.0 is near
+            // white-out, which is poorer for the variance gate).
+            const int kFrames = 36;
+            const float dt = (kDuration * 0.8f) / (float)kFrames;
+            float t = 0.0f;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                L.update(dt);
+                t += dt;
+                // Camera inside the tunnel mouth, looking down +Z toward the
+                // convergence point; slow advance for a sense of flight.
+                float camZ = 4.0f + t * 6.0f;
+                device->setCamera(0.0f, 0.0f, camZ, 0.0f, 0.0f, 75.0f);
+                if (shotCamOverride) {
+                    device->setCamera(shotCam[0], shotCam[1], shotCam[2],
+                                      shotCam[3], shotCam[4], 75.0f);
+                }
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) wt.render(*device, frame, /*viewProj16=*/nullptr, t);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world wormhole-transit: wrote " + outPath +
+                                   " (progress=" + std::to_string(wt.progress()) + ")");
+            else       x3::logError("--world wormhole-transit: capture FAILED");
+            wt.shutdown(*device);
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ---- Windowed path: watch the jump play, then loop the tunnel idle. ----
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double startTime = glfwGetTime();
+        double prevTime  = startTime;
+        x3::logInfo("--world wormhole-transit: the jump plays then holds; Esc to quit");
+        int lastWs = (int)W, lastHs = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float dt = (float)(now - prevTime); prevTime = now;
+            float t = (float)(now - startTime);
+            L.update(dt);
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWs || chh != lastHs) { lastWs = cw; lastHs = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+            float camZ = 4.0f + t * 6.0f;
+            device->setCamera(0.0f, 0.0f, camZ, 0.0f, 0.0f, 75.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) wt.render(*device, frame, /*viewProj16=*/nullptr, t);
+            device->endFrame(frame);
+        }
+
+        wt.shutdown(*device);
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
     }
 
     // ---- Procedural starfield showcase (--world starfield) ------------------

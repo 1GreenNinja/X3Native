@@ -65,6 +65,7 @@ add_executable(X3Engine WIN32
     space/lod.cpp
     space/space_env.cpp
     space/wormhole_vfx.cpp
+    space/wormhole_transit.cpp
     ui.cpp)
 
 target_link_libraries(X3Engine PRIVATE x3engine glfw)
