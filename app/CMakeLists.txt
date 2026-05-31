@@ -61,6 +61,7 @@ add_executable(X3Engine WIN32
     space_pilot.cpp
     sky_stars.cpp
     space/space_layer.cpp
+    space/targeting.cpp
     ui.cpp)
 
 target_link_libraries(X3Engine PRIVATE x3engine glfw)
