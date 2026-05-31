@@ -1059,6 +1059,201 @@ bool runVersionSelfTest() {
     return pass == total;
 }
 
+// ===========================================================================
+// VATTALUS COCKPIT DRESSING (--world ship-interior showcase only)
+//
+// Builds the AAA sci-fi bridge look ON TOP of the ShipInterior shell: glowing
+// blue holographic UI screens (emissive quads with a baked readout texture),
+// dark angled helm consoles + pilot seats (dark prim boxes — a real helm, not
+// floating cubes), and a recessed circular floor vent. Purely visual props
+// added to the Scene; never touches the ShipInterior API or its collision.
+// ===========================================================================
+namespace cockpit {
+
+const float kIdent[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+
+// A column-major TRS: yaw about +Y (radians), placing a box whose verts already
+// bake their world center. We only need yaw for the angled holo panels / seats,
+// so this returns a pure rotation about a pivot (px,py,pz).
+inline void yawAbout(float m[16], float yaw, float px, float py, float pz) {
+    const float c = std::cos(yaw), s = std::sin(yaw);
+    m[0]=c;  m[1]=0; m[2]=-s; m[3]=0;
+    m[4]=0;  m[5]=1; m[6]=0;  m[7]=0;
+    m[8]=s;  m[9]=0; m[10]=c; m[11]=0;
+    // translation so the pivot stays fixed: t = p - R*p
+    m[12]=px - (c*px - s*pz);
+    m[13]=0.0f;
+    m[14]=pz - (s*px + c*pz);
+    m[15]=1.0f;
+}
+
+// Procedural BLUE HOLOGRAPHIC UI texture: a dark base with rows of glowing
+// cyan/blue readout bars, tick marks, and a couple of waveform lines — fake
+// telemetry that reads as a live console screen. RGBA8, n x n (tileable-ish;
+// used un-tiled on a single quad). Bright where the UI glyphs are so the
+// emissive multiply makes those pixels bloom blue against the dark+red hull.
+inline std::vector<uint8_t> makeHoloUiRGBA(uint32_t n, uint32_t salt) {
+    std::vector<uint8_t> px((size_t)n * n * 4, 0);
+    auto put = [&](uint32_t x, uint32_t y, int r, int g, int b) {
+        if (x >= n || y >= n) return;
+        size_t i = ((size_t)y * n + x) * 4;
+        px[i+0] = (uint8_t)(r<0?0:r>255?255:r);
+        px[i+1] = (uint8_t)(g<0?0:g>255?255:g);
+        px[i+2] = (uint8_t)(b<0?0:b>255?255:b);
+        px[i+3] = 255;
+    };
+    // Dark blue-black base with faint scanlines.
+    for (uint32_t y = 0; y < n; ++y)
+        for (uint32_t x = 0; x < n; ++x) {
+            int base = (y & 1) ? 10 : 16;
+            put(x, y, base/3, base/2, base);
+        }
+    // Border frame (bright cyan).
+    for (uint32_t x = 0; x < n; ++x) { put(x,1,40,200,255); put(x,n-2,40,200,255); }
+    for (uint32_t y = 0; y < n; ++y) { put(1,y,40,200,255); put(n-2,y,40,200,255); }
+    // Horizontal readout bars: ~6 rows of partial-fill cyan gauges.
+    const uint32_t rows = 6;
+    for (uint32_t r = 0; r < rows; ++r) {
+        uint32_t y = (uint32_t)((r + 0.5f) / rows * n);
+        // pseudo-random fill length per row from salt.
+        uint32_t h = (r * 2654435761u) ^ (salt * 40503u);
+        float fill = 0.25f + 0.7f * ((h >> 8 & 0xFF) / 255.0f);
+        uint32_t x1 = (uint32_t)(6 + fill * (n - 16));
+        for (uint32_t x = 6; x < x1 && x < n - 6; ++x) {
+            int br = 120 + (int)(120 * ((float)(x - 6) / (n - 12)));
+            put(x, y,   30, br, 255);
+            put(x, y+1, 20, br/2 + 60, 220);
+        }
+        // tick marks at the row's right edge
+        for (uint32_t t = 0; t < 4; ++t) put(n - 8 - t*4, y - 2, 60, 220, 255);
+    }
+    // A faint waveform line near the top (cyan sine).
+    for (uint32_t x = 4; x < n - 4; ++x) {
+        float ph = (float)x / n * 6.2831853f * 3.0f + salt;
+        uint32_t y = (uint32_t)(n * 0.18f + std::sin(ph) * n * 0.06f);
+        put(x, y, 80, 230, 255);
+        put(x, y+1, 40, 150, 220);
+    }
+    return px;
+}
+
+// Procedural TEAL/BLUE SPACE texture for the forward viewport: a dark blue-teal
+// nebula gradient + sparse stars. Kept MODERATE in brightness so an emissive quad
+// reads as deep space (not a blown-out white wall). RGBA8, n x n.
+inline std::vector<uint8_t> makeSpaceRGBA(uint32_t n, uint32_t salt) {
+    std::vector<uint8_t> px((size_t)n * n * 4, 255);
+    auto hash01 = [](uint32_t x, uint32_t y, uint32_t s) {
+        uint32_t h = x*374761393u + y*668265263u + s*2147483647u;
+        h = (h ^ (h>>13)) * 1274126177u; h ^= h>>16;
+        return (float)(h & 0xFFFFFFu) / (float)0x1000000u;
+    };
+    for (uint32_t y = 0; y < n; ++y) {
+        float v = (float)y / n;
+        for (uint32_t x = 0; x < n; ++x) {
+            float u = (float)x / n;
+            // Soft teal/blue nebula: low-freq blobs from a few hash samples.
+            float neb = 0.0f;
+            for (int o = 0; o < 3; ++o) {
+                uint32_t step = 8u << o;
+                uint32_t gx = (uint32_t)(u * step), gy = (uint32_t)(v * step);
+                neb += hash01(gx, gy, salt + o*17u) / (float)(o+1);
+            }
+            neb = neb / 1.83f;
+            neb = neb * neb;                            // tighten clouds -> more dark space
+            float depth = 0.45f + 0.55f * (1.0f - v);   // subtle vertical falloff
+            // Texture is LIT (white base * light), so author it at full albedo range:
+            // deep teal/navy nebula with high-contrast bright stars.
+            float r = (0.04f + 0.22f * neb) * depth;
+            float g = (0.12f + 0.45f * neb) * depth;    // teal bias
+            float b = (0.22f + 0.62f * neb) * depth;
+            // Sparse bright stars (high contrast vs the dark field).
+            float hs = hash01(x, y, 909u + salt);
+            if (hs > 0.9965f) { float br = 0.9f; r=g=b=0.0f; r+=br; g+=br; b+=br*1.05f; }
+            else if (hs > 0.987f) { r=0.55f; g=0.62f; b=0.72f; }
+            auto u8 = [](float c){ c = c<0?0:c>1?1:c; return (uint8_t)(c*255.0f); };
+            uint8_t* p = &px[((size_t)y*n+x)*4];
+            p[0]=u8(r); p[1]=u8(g); p[2]=u8(b); p[3]=255;
+        }
+    }
+    return px;
+}
+
+// Add a thin EMISSIVE quad-box (a holo screen) at world center (cx,cy,cz) with
+// half-extents (hx,hy,hz≈thin), yawed about its own center. Glows blue.
+inline uint32_t addHoloScreen(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                              x3::rhi::TextureHandle tex,
+                              float hx, float hy, float hz,
+                              float cx, float cy, float cz, float yaw,
+                              float er, float eg, float eb, float strength,
+                              float baseLum = 0.0f) {
+    // baseLum>0 => give the quad a bright (white) base color so its TEXTURE shows
+    // via albedo*lighting (used for the starfield viewport, where flat emissive
+    // would wash out the stars). baseLum==0 => dark base (a self-glowing UI panel).
+    x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, 1.0f);
+    x3::rhi::MeshHandle mesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                                 m.index.data(), (uint32_t)m.index.size());
+    x3::game::Entity e;
+    e.mesh = mesh; e.tex = tex;
+    if (baseLum > 0.0f) { e.baseColor[0]=baseLum; e.baseColor[1]=baseLum; e.baseColor[2]=baseLum; }
+    else { e.baseColor[0]=0.10f; e.baseColor[1]=0.16f; e.baseColor[2]=0.22f; }
+    e.baseColor[3]=1.0f;
+    e.emissive[0]=er; e.emissive[1]=eg; e.emissive[2]=eb; e.emissive[3]=strength;
+    if (std::fabs(yaw) > 1e-4f) yawAbout(e.transform, yaw, cx, cy, cz);
+    else std::memcpy(e.transform, kIdent, sizeof(kIdent));
+    e.tag = (uint32_t)x3::game::Tag::Prop;
+    return scene.add(e);
+}
+
+// Add a DARK prop box (helm console body / pilot seat part / vent). Slightly cool
+// gunmetal so it stays dark; optional faint emissive rim (eStrength>0).
+inline uint32_t addDarkBox(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                           x3::rhi::TextureHandle tex,
+                           float hx, float hy, float hz,
+                           float cx, float cy, float cz, float yaw,
+                           float r, float g, float b,
+                           float er=0, float eg=0, float eb=0, float eStr=0) {
+    x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, 1.5f);
+    x3::rhi::MeshHandle mesh = device.createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                                 m.index.data(), (uint32_t)m.index.size());
+    x3::game::Entity e;
+    e.mesh = mesh; e.tex = tex;
+    e.baseColor[0]=r; e.baseColor[1]=g; e.baseColor[2]=b; e.baseColor[3]=1.0f;
+    e.emissive[0]=er; e.emissive[1]=eg; e.emissive[2]=eb; e.emissive[3]=eStr;
+    if (std::fabs(yaw) > 1e-4f) yawAbout(e.transform, yaw, cx, cy, cz);
+    else std::memcpy(e.transform, kIdent, sizeof(kIdent));
+    e.tag = (uint32_t)x3::game::Tag::Prop;
+    return scene.add(e);
+}
+
+// Build ONE helm station: an angled dark console body facing the window (-Z),
+// an angled blue holo screen set into its top, and a pilot seat (base + back).
+// (cx,cz) = floor anchor; `yaw` faces the seat/console toward the window.
+inline void addHelmStation(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                           x3::rhi::TextureHandle hullTex, x3::rhi::TextureHandle holoTex,
+                           float cx, float cz, float yaw) {
+    const float cr=0.20f, cg=0.21f, cb=0.25f;   // gunmetal (reads under fill)
+    const float sr=0.14f, sg=0.15f, sb=0.19f;   // seat (dark gunmetal)
+    // Console body: a low slab in front of the seat (toward -Z / the window).
+    addDarkBox(device, scene, hullTex, 0.55f, 0.45f, 0.40f,
+               cx, 0.45f, cz - 0.95f, yaw, cr, cg, cb,
+               1.0f, 0.10f, 0.14f, 0.6f);            // faint red rim glow on the console base
+    // Glowing blue readout panel standing UP off the console, facing the pilot
+    // (toward +Z / the camera) so its glow reads over the dark hull. Two stacked.
+    addHoloScreen(device, scene, holoTex, 0.52f, 0.34f, 0.03f,
+                  cx, 1.18f, cz - 0.72f, yaw, 0.22f, 0.72f, 0.95f, 2.2f);
+    addHoloScreen(device, scene, holoTex, 0.46f, 0.02f, 0.34f,
+                  cx, 0.92f, cz - 0.50f, yaw, 0.18f, 0.60f, 0.85f, 1.7f);  // flat desk readout (faces up)
+    // Pilot seat: base cushion + tall back. Dark, reads as a chair at the console.
+    addDarkBox(device, scene, hullTex, 0.30f, 0.12f, 0.30f,
+               cx, 0.52f, cz + 0.15f, yaw, sr, sg, sb);   // seat pan
+    addDarkBox(device, scene, hullTex, 0.30f, 0.50f, 0.12f,
+               cx, 1.00f, cz + 0.42f, yaw, sr, sg, sb);   // seat back
+    addDarkBox(device, scene, hullTex, 0.20f, 0.26f, 0.20f,
+               cx, 0.26f, cz + 0.18f, yaw, sr*0.8f, sg*0.8f, sb*0.8f); // seat pedestal
+}
+
+} // namespace cockpit
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -8473,43 +8668,173 @@ int main(int argc, char** argv) {
             return 1;
         }
 
+        // VATTALUS COCKPIT manifest: a single 7x3x7 m bridge with a BIG forward
+        // viewport opening cut into the front (-Z) wall (modeled as a "door" gap so
+        // ShipInterior leaves a real hole) — the S6 moving space shows through it.
+        x3::space::ShipManifest vman;
+        vman.shipClass = x3::space::ShipClass::Small;
+        {
+            x3::space::Room bridge;
+            bridge.name = "Bridge";
+            bridge.boundsMin[0]=-3.5f; bridge.boundsMin[1]=0.0f; bridge.boundsMin[2]=-3.5f;
+            bridge.boundsMax[0]= 3.5f; bridge.boundsMax[1]=3.0f; bridge.boundsMax[2]= 3.5f;
+            vman.rooms.push_back(bridge);
+            // Viewport "door" on the front wall (z=-3.5): a 5.0 m wide, 1.9 m tall
+            // opening — the big angled forward window (roomB self-references room 0;
+            // ShipInterior just needs the gap cut, it does not pass through it).
+            x3::space::Door vp;
+            vp.pos[0]=0.0f; vp.pos[1]=1.55f; vp.pos[2]=-3.5f;
+            vp.size[0]=5.0f; vp.size[1]=2.5f;
+            vp.roomA=0; vp.roomB=0;
+            vman.doors.push_back(vp);
+            // ONE forward window placement filling the opening (S6 pane sits in it).
+            vman.windows.push_back({ 0.0f, 1.55f, -3.5f, 5.0f, 2.5f, 0.0f });
+        }
+
         x3::game::Scene sscene;
         x3::space::ShipInterior interior;
-        interior.build(*device, sscene, *sphys, x3::space::ShipInterior::makeSmallCockpit());
+        interior.build(*device, sscene, *sphys, vman);
 
-        // Interior lighting: NO sky (we're inside the hull). Point lights at the
-        // ceiling of each room so the deck reads. Disable SSAO/GI raster fallback so a
-        // 1080-Ti-class no-RT capture is not black (per the lane brief).
+        // ===== VATTALUS COCKPIT DRESSING ====================================
+        // Re-skin the shell into a sleek AAA bridge: DARK machined-metal base +
+        // CRIMSON RIM accents + GLOWING BLUE holo screens + a real angled helm.
+        // (1) Darken the ShipInterior shell entities to gunmetal/charcoal so the
+        //     base reads DARK (the shell's default bright cool tint -> dark cool).
+        //     We only touch baseColor on the already-built Static shell entities;
+        //     the ShipInterior API/collision are untouched.
+        for (auto& e : sscene.entities()) {
+            if (e.tag == (uint32_t)x3::game::Tag::Static) {
+                e.baseColor[0] = 0.16f; e.baseColor[1] = 0.17f; e.baseColor[2] = 0.20f;
+            } else if (e.tag == (uint32_t)x3::game::Tag::Prop) {
+                // HIDE the S5 station-marker cubes entirely: the angled helm
+                // consoles + seats we add below are the real fixtures (no floating
+                // green/cyan cubes — they'd fight the Vattalus look).
+                e.visible = false;
+            }
+        }
+        // (2) A shared blue holo-UI texture + dark hull tile for the dressing props.
+        auto holoTexPx = cockpit::makeHoloUiRGBA(96, 7);
+        x3::rhi::TextureHandle holoTex = device->createTexture(holoTexPx.data(), 96, 96, true);
+        auto hullTexPx = x3::prims::makeSciFiPanelRGBA(128, 2);
+        x3::rhi::TextureHandle hullTex = device->createTexture(hullTexPx.data(), 128, 128, true);
+        // (3) BLUE HOLO STRIP above the forward viewport: a row of glowing readouts
+        //     spanning the top of the window opening (just inside the front wall).
+        for (int i = 0; i < 7; ++i) {
+            float x = -2.4f + i * 0.8f;
+            cockpit::addHoloScreen(*device, sscene, holoTex,
+                                   0.36f, 0.26f, 0.03f, x, 2.55f, -3.30f, 0.0f,
+                                   0.22f, 0.72f, 0.95f, 2.6f);
+        }
+        // (4) THREE angled HELM STATIONS facing the forward window (-Z): a center
+        //     pilot + a port + a starboard helm, each a dark console + blue screen
+        //     + a pilot seat (back+base). A real helm, not floating cubes.
+        cockpit::addHelmStation(*device, sscene, hullTex, holoTex,  0.0f, -1.4f,  0.0f);
+        cockpit::addHelmStation(*device, sscene, hullTex, holoTex, -1.95f, -0.7f,  0.45f);
+        cockpit::addHelmStation(*device, sscene, hullTex, holoTex,  1.95f, -0.7f, -0.45f);
+        // (5) Recessed circular FLOOR VENT (Vattalus detail): a dark disc with a
+        //     thin red emissive rim, set into the deck between the helm and aft.
+        cockpit::addDarkBox(*device, sscene, hullTex, 0.85f, 0.06f, 0.85f,
+                            0.0f, 0.04f, 1.6f, 0.0f, 0.06f, 0.07f, 0.09f);   // dark grille pad
+        cockpit::addDarkBox(*device, sscene, hullTex, 0.95f, 0.04f, 0.10f,
+                            0.0f, 0.05f, 0.70f, 0.0f, 0.10f, 0.10f, 0.12f, 1.0f, 0.10f, 0.14f, 1.4f); // red rim N
+        cockpit::addDarkBox(*device, sscene, hullTex, 0.95f, 0.04f, 0.10f,
+                            0.0f, 0.05f, 2.50f, 0.0f, 0.10f, 0.10f, 0.12f, 1.0f, 0.10f, 0.14f, 1.4f); // red rim S
+
+        // (6) Forward VIEWPORT: a big angled emissive pane of teal/blue space set
+        //     into the front-wall opening (our own controlled starfield so it reads
+        //     as deep space, not a blown-out white pane). Moderate emissive so the
+        //     nebula + stars survive bloom. Placed just inside the opening (z=-3.45)
+        //     and split into 4 vertical panes for an angled multi-pane look.
+        auto spacePx = cockpit::makeSpaceRGBA(256, 3);
+        x3::rhi::TextureHandle spaceTex = device->createTexture(spacePx.data(), 256, 256, true);
+        for (int i = 0; i < 4; ++i) {
+            float x = -1.875f + i * 1.25f;
+            // White base (texture shows via lighting) + a faint teal emissive floor
+            // so the deepest space isn't pitch black. The cool window key lights it.
+            cockpit::addHoloScreen(*device, sscene, spaceTex,
+                                   0.60f, 1.05f, 0.02f, x, 1.55f, -3.42f, 0.0f,
+                                   0.05f, 0.10f, 0.16f, 1.0f, /*baseLum=*/1.0f);
+        }
+        // Thin dark mullions between the panes (machined window frame).
+        for (int i = 0; i < 5; ++i) {
+            float x = -2.5f + i * 1.25f;
+            cockpit::addDarkBox(*device, sscene, hullTex, 0.04f, 1.10f, 0.06f,
+                                x, 1.55f, -3.40f, 0.0f, 0.10f, 0.11f, 0.13f);
+        }
+
+        // ===== THE LIGHTING RIG =============================================
+        // NO sky (inside the hull) + SSAO/GI raster fallback OFF (no-RT not black).
+        // DARK ambient base; the light is CRIMSON RIM accents raking the dark
+        // panels (NOT a global flood) + ONE cool key from the forward window so
+        // the scene isn't pure red. The blue holo screens self-glow (emissive).
         { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
         { x3::rhi::IRenderDevice::SsaoParams ao{}; ao.enabled = false; device->setSsaoParams(ao); }
         { x3::rhi::IRenderDevice::GiParams gi{}; gi.enabled = false; device->setGiParams(gi); }
-        { x3::rhi::PointLight pl[3];
-          pl[0].pos[0]= 0.0f; pl[0].pos[1]=2.7f; pl[0].pos[2]= 0.0f; pl[0].range=10.0f;
-          pl[0].color[0]=6.0f; pl[0].color[1]=6.2f; pl[0].color[2]=6.6f;            // cockpit
-          pl[1].pos[0]= 0.0f; pl[1].pos[1]=2.7f; pl[1].pos[2]= 5.5f; pl[1].range=9.0f;
-          pl[1].color[0]=4.0f; pl[1].color[1]=4.4f; pl[1].color[2]=5.0f;            // corridor
-          pl[2].pos[0]= 0.0f; pl[2].pos[1]=1.4f; pl[2].pos[2]=-2.6f; pl[2].range=5.0f;
-          pl[2].color[0]=2.0f; pl[2].color[1]=3.0f; pl[2].color[2]=4.0f;            // helm glow
-          device->setPointLights(pl, 3); }
+        std::vector<x3::rhi::PointLight> slights;
+        auto addRim = [&](float x, float y, float z, float r, float g, float b,
+                          float range, float inten) {
+            x3::rhi::PointLight pl{}; pl.pos[0]=x; pl.pos[1]=y; pl.pos[2]=z; pl.range=range;
+            pl.color[0]=r*inten; pl.color[1]=g*inten; pl.color[2]=b*inten; slights.push_back(pl);
+        };
+        const float CR=1.0f, CG=0.10f, CB=0.14f;   // crimson rim color
+        // Ceiling-perimeter crimson rim strips (small range -> rake, not flood).
+        addRim(-3.1f, 2.7f, -2.2f, CR,CG,CB, 4.0f, 3.2f);
+        addRim( 3.1f, 2.7f, -2.2f, CR,CG,CB, 4.0f, 3.2f);
+        addRim(-3.1f, 2.7f,  1.8f, CR,CG,CB, 4.0f, 2.8f);
+        addRim( 3.1f, 2.7f,  1.8f, CR,CG,CB, 4.0f, 2.8f);
+        // Side-wall mid crimson rims (rake the dark panels at eye height).
+        addRim(-3.3f, 1.5f, -0.5f, CR,CG,CB, 4.0f, 3.4f);
+        addRim( 3.3f, 1.5f, -0.5f, CR,CG,CB, 4.0f, 3.4f);
+        addRim(-3.3f, 1.7f,  2.2f, CR,CG,CB, 3.8f, 2.8f);
+        addRim( 3.3f, 1.7f,  2.2f, CR,CG,CB, 3.8f, 2.8f);
+        // Low console-base crimson accents (uplight the helm bodies).
+        addRim( 0.0f, 0.5f, -2.0f, CR,CG,CB, 3.2f, 2.8f);
+        addRim(-2.3f, 0.5f, -1.2f, CR,CG,CB, 3.2f, 2.6f);
+        addRim( 2.3f, 0.5f, -1.2f, CR,CG,CB, 3.2f, 2.6f);
+        // Cool helm-station fills so the port/starboard consoles + seats READ.
+        addRim(-1.95f, 1.4f, -0.7f, 0.40f, 0.48f, 0.60f, 3.6f, 2.4f);
+        addRim( 1.95f, 1.4f, -0.7f, 0.40f, 0.48f, 0.60f, 3.6f, 2.4f);
+        // Floor-vent red rim wash + aft corner rims.
+        addRim( 0.0f, 0.4f,  1.6f, CR,CG,CB, 2.8f, 2.2f);
+        addRim(-3.2f, 1.2f,  3.0f, CR,CG,CB, 3.5f, 2.2f);
+        addRim( 3.2f, 1.2f,  3.0f, CR,CG,CB, 3.5f, 2.2f);
+        // ONE cool KEY from the forward window (teal-white), and a soft blue fill
+        // from the holo strip so the helm faces read without going pure-red.
+        // Cool KEY just IN FRONT of the viewport panes so it lights their visible
+        // (+Z) face — makes the starfield TEXTURE read (white base * this light).
+        addRim( 0.0f, 1.55f, -2.7f, 0.60f, 0.85f, 1.05f, 6.0f, 4.5f);  // window key (cool)
+        addRim(-1.6f, 1.55f, -2.7f, 0.50f, 0.75f, 1.0f, 4.5f, 2.5f);   // window key port
+        addRim( 1.6f, 1.55f, -2.7f, 0.50f, 0.75f, 1.0f, 4.5f, 2.5f);   // window key stbd
+        addRim( 0.0f, 2.4f, -3.1f, 0.20f, 0.55f, 0.95f, 4.5f, 2.4f);  // blue holo-strip fill
+        // LOW neutral-cool fill so the dark gunmetal + the helm/seats READ as
+        // machined metal (not pure black) without flooding the mood. Two soft
+        // overheads — dim, big range, slightly cool.
+        addRim( 0.0f, 2.8f, -0.5f, 0.45f, 0.50f, 0.62f, 7.0f, 2.0f);  // forward overhead fill
+        addRim( 0.0f, 2.8f,  2.2f, 0.40f, 0.45f, 0.58f, 6.0f, 1.6f);  // aft overhead fill
+        addRim( 0.0f, 1.2f, -1.6f, 0.35f, 0.42f, 0.55f, 4.0f, 1.4f);  // helm-pit cool fill
+        device->setPointLights(slights.data(), (uint32_t)slights.size());
 
         const x3::phys::Vec3 spawn = interior.spawnPoint();
 
         // ===== Headless screenshot path: pose a camera inside the cockpit. =====
         if (headless) {
-            // Stand near the aft of the cockpit looking forward toward the helm + the
-            // forward window so the deck/walls/console fill the frame.
-            float cam[5] = { 0.0f, 1.7f, 2.2f, -1.5708f, -0.06f };
+            // Slightly ELEVATED at the aft, looking FORWARD (-Z) across the helm
+            // consoles toward the big window — dark panels + red rim + blue holo +
+            // space beyond, framed like the Vattalus reference.
+            float cam[5] = { 0.0f, 2.30f, 3.40f, -1.5708f, -0.22f };
             if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
             const float dt = 1.0f / 60.0f;
             const std::string outPath = screenshot ? screenshotPath
                                                    : std::string("G:/X3Native/captures/interior.png");
-            const int kSettle = 12;
+            const int kSettle = 14;
             for (int i = 0; i < kSettle; ++i) {
                 glfwPollEvents();
                 sphys->step(dt);
                 sscene.update(*sphys);
+                const float t = (float)i * dt;
                 device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 70.0f);
                 if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                (void)t;
                 auto frame = device->beginFrame();
                 if (frame.valid) interior.render(*device, frame, sscene);
                 device->endFrame(frame);
@@ -8535,6 +8860,7 @@ int main(int argc, char** argv) {
         double prevTime = glfwGetTime();
         bool prevSpaceS = false;
         int lastWs = (int)W, lastHs = (int)H;
+        const double startTime = glfwGetTime();
         x3::logInfo("--world ship-interior: WASD walk, mouse look, Space jump, LeftShift sprint, Esc to quit");
 
         while (!glfwWindowShouldClose(window)) {
@@ -8544,6 +8870,7 @@ int main(int argc, char** argv) {
             double now = glfwGetTime();
             float dt = (float)(now - prevTime); prevTime = now;
             if (dt > 0.1f) dt = 0.1f;
+            const float wt = (float)(now - startTime);
 
             double mx, my; glfwGetCursorPos(window, &mx, &my);
             float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
@@ -8572,6 +8899,7 @@ int main(int argc, char** argv) {
             int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
             if (cw != lastWs || ch != lastHs) { lastWs = cw; lastHs = ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
 
+            (void)wt;
             device->setCamera(camX, camY, camZ, camYaw, camPitch, 70.0f);
             auto frame = device->beginFrame();
             if (frame.valid) interior.render(*device, frame, sscene);
