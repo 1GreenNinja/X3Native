@@ -85,12 +85,14 @@
 #include "space_pilot.h"                   // Act-3 6DOF space-flight pilot (--test-space + --world space)
 #include "sky_stars.h"                     // procedural starfield (--test-starfield + --world starfield)
 #include "space/space_layer.h"             // S0 SpaceLayer spine (--test-spacelayer)
+#include "space/lod.h"                      // S2 distance-LOD system (--test-lod + --world lod)
 #include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
 #include <string_view>
 #include <string>
 #include <cmath>
+#include <map>
 #include <vector>
 #include <unordered_map>   // per-weapon fire-sound cache (name -> SoundHandle)
 #include <cstdint>
@@ -1345,7 +1347,8 @@ int main(int argc, char** argv) {
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
          testThirdPerson = false, testNpc = false, testStarfield = false,
-         testSpaceLayer = false;
+         testSpaceLayer = false,
+         testLod = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1690,6 +1693,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-club") testClub = true;
         else if (a == "--test-starfield") testStarfield = true;
         else if (a == "--test-spacelayer") testSpaceLayer = true;
+        else if (a == "--test-lod") testLod = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -2144,6 +2148,59 @@ int main(int argc, char** argv) {
 
         x3::logInfo("spacelayer: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
         std::printf("spacelayer: %d/%d passed\n", pass, total);
+        std::fflush(stdout);
+        return (pass == total) ? 0 : 1;
+    }
+    // --test-lod: S2 distance-LOD selection self-test. Pure CPU policy logic
+    // (no GPU) — exercises LodSystem::select() across the distance bands and
+    // makeFromChain() slot population/clamping.
+    if (testLod) {
+        x3::logInfo("running S2 distance-LOD (LodSystem) self-test...");
+        int pass = 0, total = 0;
+        auto check = [&](bool c, const char* name) {
+            ++total;
+            if (c) { ++pass; x3::logInfo(std::string("  [ok] ") + name); }
+            else   {          x3::logError(std::string("  [FAIL] ") + name); }
+        };
+
+        x3::space::LodSystem lod;
+
+        // Canonical 4-level chain: handles 10/20/30/40, switchDist {50,150,400}.
+        x3::space::LodSet full =
+            lod.makeFromChain(10, 20, 30, 40, 50.0f, 150.0f, 400.0f, 4);
+        check(full.levels == 4, "B1a makeFromChain populates levels=4");
+        check(full.mesh[0] == 10 && full.mesh[3] == 40, "B1b chain handles stored in order");
+
+        // Band selection: d<50 -> LOD0, 50<=d<150 -> LOD1, 150<=d<400 -> LOD2, d>=400 -> LOD3.
+        check(lod.select(full, 0.0f)   == 10, "B1c d=0    -> LOD0");
+        check(lod.select(full, 49.9f)  == 10, "B1d d=49.9 -> LOD0 (just under 1st thresh)");
+        check(lod.select(full, 50.0f)  == 20, "B1e d=50   -> LOD1 (on 1st thresh)");
+        check(lod.select(full, 100.0f) == 20, "B1f d=100  -> LOD1");
+        check(lod.select(full, 150.0f) == 30, "B1g d=150  -> LOD2 (on 2nd thresh)");
+        check(lod.select(full, 399.9f) == 30, "B1h d=399.9-> LOD2");
+        check(lod.select(full, 400.0f) == 40, "B1i d=400  -> LOD3 (on 3rd thresh)");
+        check(lod.select(full, 9999.f) == 40, "B1j d=huge -> LOD3 (saturates)");
+        check(lod.select(full, -5.0f)  == 10, "B1k negative distance -> LOD0");
+
+        // levels=2 clamps to the highest populated level (LOD1) at any far distance.
+        x3::space::LodSet two =
+            lod.makeFromChain(11, 22, 33, 44, 50.0f, 150.0f, 400.0f, 2);
+        check(two.levels == 2, "B1l makeFromChain clamps populated levels");
+        check(two.mesh[2] == 0 && two.mesh[3] == 0, "B1m unused slots zeroed");
+        check(lod.select(two, 10.0f)   == 11, "B1n levels=2 near -> LOD0");
+        check(lod.select(two, 75.0f)   == 22, "B1o levels=2 past 1st thresh -> LOD1");
+        check(lod.select(two, 9999.f)  == 22, "B1p levels=2 far -> clamps to LOD1 (highest populated)");
+
+        // levels clamps out of range, single-LOD always returns LOD0.
+        x3::space::LodSet one =
+            lod.makeFromChain(7, 0, 0, 0, 50.0f, 150.0f, 400.0f, 9);
+        check(one.levels == 4, "B1q makeFromChain clamps levels>4 to 4");
+        x3::space::LodSet solo =
+            lod.makeFromChain(7, 0, 0, 0, 50.0f, 150.0f, 400.0f, 1);
+        check(lod.select(solo, 5000.f) == 7, "B1r levels=1 always returns LOD0");
+
+        x3::logInfo("lod: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+        std::printf("lod: %d/%d passed\n", pass, total);
         std::fflush(stdout);
         return (pass == total) ? 0 : 1;
     }
@@ -3748,6 +3805,165 @@ int main(int argc, char** argv) {
         }
 
         sky.shutdown(*device);
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    // ---- Distance-LOD showcase (--world lod) -------------------------------
+    // S2 proof: one sphere asset, four LODs (icosphere subdivided 3/2/1/0 times
+    // -> ~1280 / 320 / 80 / 20 tris). The camera pulls steadily BACK over time;
+    // each frame LodSystem::select() picks the LOD for the current distance and
+    // we draw ONLY that mesh. On screen the sphere visibly simplifies from a
+    // smooth ball to a coarse polyhedron as it recedes. Headless capture writes
+    // a PNG at a mid-distance pose (a clearly faceted but still ball-shaped LOD,
+    // lots of shaded facets + lit highlight -> easily clears std>15 / uniq>100).
+    if (worldMode == "lod") {
+        x3::logInfo("--world lod: showcasing the S2 distance-LOD mesh-swap");
+
+        // SSAO/SSGI raster fallback is BLACK with no RT on this rig -> disable
+        // both (SSAO-black-on-no-RT). Keep the analytic sky for a lit backdrop.
+        { x3::rhi::IRenderDevice::SsaoParams sp{}; sp.enabled = false; device->setSsaoParams(sp); }
+        { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; device->setGiParams(gp); }
+        { x3::rhi::IRenderDevice::SkyParams  sp{}; sp.enabled = true; sp.sunIntensity = 2.0f; sp.haze = 0.2f;
+          device->setSkyParams(sp); }
+
+        // ---- Build the LOD chain: an icosphere subdivided N times per level.
+        // Standard icosahedron seed + midpoint subdivision; vertices pushed to
+        // unit radius each pass so each level is a rounder sphere. Lower levels
+        // keep the same silhouette scale but far fewer, larger facets.
+        auto buildIcoSphere = [&](int subdiv, float radius) -> x3::rhi::MeshHandle {
+            struct V3 { float x, y, z; };
+            const float t = (1.0f + std::sqrt(5.0f)) * 0.5f;
+            std::vector<V3> pos = {
+                {-1, t, 0}, {1, t, 0}, {-1, -t, 0}, {1, -t, 0},
+                {0, -1, t}, {0, 1, t}, {0, -1, -t}, {0, 1, -t},
+                {t, 0, -1}, {t, 0, 1}, {-t, 0, -1}, {-t, 0, 1},
+            };
+            std::vector<uint32_t> tris = {
+                0,11,5, 0,5,1, 0,1,7, 0,7,10, 0,10,11,
+                1,5,9, 5,11,4, 11,10,2, 10,7,6, 7,1,8,
+                3,9,4, 3,4,2, 3,2,6, 3,6,8, 3,8,9,
+                4,9,5, 2,4,11, 6,2,10, 8,6,7, 9,8,1,
+            };
+            for (int s = 0; s < subdiv; ++s) {
+                std::vector<uint32_t> next;
+                next.reserve(tris.size() * 4);
+                std::map<uint64_t, uint32_t> midCache;
+                auto midpoint = [&](uint32_t a, uint32_t b) -> uint32_t {
+                    uint64_t key = a < b ? ((uint64_t)a << 32 | b) : ((uint64_t)b << 32 | a);
+                    auto it = midCache.find(key);
+                    if (it != midCache.end()) return it->second;
+                    V3 m{ (pos[a].x + pos[b].x) * 0.5f, (pos[a].y + pos[b].y) * 0.5f,
+                          (pos[a].z + pos[b].z) * 0.5f };
+                    uint32_t id = (uint32_t)pos.size();
+                    pos.push_back(m);
+                    midCache[key] = id;
+                    return id;
+                };
+                for (size_t i = 0; i < tris.size(); i += 3) {
+                    uint32_t a = tris[i], b = tris[i + 1], c = tris[i + 2];
+                    uint32_t ab = midpoint(a, b), bc = midpoint(b, c), ca = midpoint(c, a);
+                    uint32_t f[] = { a,ab,ca, b,bc,ab, c,ca,bc, ab,bc,ca };
+                    next.insert(next.end(), std::begin(f), std::end(f));
+                }
+                tris.swap(next);
+            }
+            // Normalize to the sphere + emit MeshVertex (pos==normal for a sphere,
+            // simple lat/long UVs so the lit shading reads the facets).
+            std::vector<x3::rhi::MeshVertex> verts;
+            verts.reserve(pos.size());
+            for (auto& p : pos) {
+                float len = std::sqrt(p.x*p.x + p.y*p.y + p.z*p.z);
+                float nx = p.x/len, ny = p.y/len, nz = p.z/len;
+                float u = 0.5f + std::atan2(nz, nx) / (2.0f * 3.14159265f);
+                float v = 0.5f - std::asin(std::max(-1.0f, std::min(1.0f, ny))) / 3.14159265f;
+                verts.push_back({{nx*radius, ny*radius, nz*radius}, {nx, ny, nz}, {u, v}});
+            }
+            return device->createMesh(verts.data(), (uint32_t)verts.size(),
+                                      tris.data(), (uint32_t)tris.size());
+        };
+
+        const float kR = 2.0f;
+        x3::rhi::MeshHandle m0 = buildIcoSphere(3, kR);   // ~1280 tris (LOD0 hi-detail)
+        x3::rhi::MeshHandle m1 = buildIcoSphere(2, kR);   // ~320 tris
+        x3::rhi::MeshHandle m2 = buildIcoSphere(1, kR);   // ~80 tris
+        x3::rhi::MeshHandle m3 = buildIcoSphere(0, kR);   // 20 tris (raw icosahedron)
+
+        x3::space::LodSystem lodSys;
+        x3::space::LodSet lodSet =
+            lodSys.makeFromChain(m0.id, m1.id, m2.id, m3.id,
+                                 /*d01=*/14.0f, /*d12=*/22.0f, /*d23=*/30.0f, /*levels=*/4);
+
+        auto albedoD = x3::prims::makeCheckerRGBA(64, 8, 210, 150, 90, 70, 50, 40);
+        auto albedoTex = device->createTexture(albedoD.data(), 64, 64, true);
+
+        { x3::rhi::PointLight pl[2];
+          pl[0].pos[0]=6.0f; pl[0].pos[1]=6.0f; pl[0].pos[2]=8.0f; pl[0].range=60.0f;
+          pl[0].color[0]=9.0f; pl[0].color[1]=8.4f; pl[0].color[2]=7.6f;
+          pl[1].pos[0]=-8.0f; pl[1].pos[1]=3.0f; pl[1].pos[2]=4.0f; pl[1].range=60.0f;
+          pl[1].color[0]=4.0f; pl[1].color[1]=4.4f; pl[1].color[2]=6.0f;
+          device->setPointLights(pl, 2); }
+
+        // Sphere sits at the origin; the camera dollies back along +Z so the
+        // distance grows and LODs step down. Identity model (sphere centered).
+        const float model[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        const float white[4]  = { 1, 1, 1, 1 };
+        auto distFor = [&](float t) { return 6.0f + t * 3.5f; };  // pull back over time
+
+        if (headless) {
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("agent_lod.png");
+            const int kFrames = 48;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                float t = (float)i * (1.0f / 12.0f);    // ~4s sweep
+                float dist = distFor(t);
+                // Camera looks at the origin from +Z at the current distance, a
+                // slight elevation so the silhouette + top facets both read.
+                // yaw -pi/2 aims the +Z-positioned camera back toward the
+                // sphere at the origin (forward.z = cos(p)*sin(yaw) = -1).
+                device->setCamera(0.0f, 1.2f, dist, -1.5708f, -0.10f, 60.0f);
+                if (shotCamOverride)
+                    device->setCamera(shotCam[0], shotCam[1], shotCam[2],
+                                      shotCam[3], shotCam[4], 60.0f);
+                uint32_t chosen = lodSys.select(lodSet, dist);
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid && chosen)
+                    device->drawMesh(frame, x3::rhi::MeshHandle{chosen}, albedoTex, white, model);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world lod: wrote " + outPath);
+            else       x3::logError("--world lod: capture FAILED");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ---- Windowed path: the camera auto-dollies back then loops, so the
+        // LOD swap is continuously visible. Esc to quit.
+        double startTime = glfwGetTime();
+        x3::logInfo("--world lod: camera pulls back; sphere LOD steps down. Esc to quit");
+        int lastWs = (int)W, lastHs = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            float t = (float)std::fmod(glfwGetTime() - startTime, 8.0);  // 8s loop
+            float dist = distFor(t);
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWs || chh != lastHs) { lastWs = cw; lastHs = chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+            device->setCamera(0.0f, 1.2f, dist, -1.5708f, -0.10f, 60.0f);
+            uint32_t chosen = lodSys.select(lodSet, dist);
+            auto frame = device->beginFrame();
+            if (frame.valid && chosen)
+                device->drawMesh(frame, x3::rhi::MeshHandle{chosen}, albedoTex, white, model);
+            device->endFrame(frame);
+        }
+
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
