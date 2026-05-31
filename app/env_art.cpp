@@ -413,12 +413,14 @@ void EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
             float fin[16];
             x3::asset::mulMat4(inst.transform, d.nodeTransform, fin);
             // HDR pipeline: emissive instances (Light_A fixtures) glow + feed bloom.
-            device.drawMeshEmissive(frame,
-                                    x3::rhi::MeshHandle{ d.meshId },
-                                    x3::rhi::TextureHandle{ d.baseColorTexId },
-                                    d.baseColorFactor,
-                                    inst.emissive,
-                                    fin);
+            device.drawMeshPBR(frame,
+                               x3::rhi::MeshHandle{ d.meshId },
+                               x3::rhi::TextureHandle{ d.baseColorTexId },
+                               x3::rhi::TextureHandle{ d.normalTexId },
+                               x3::rhi::TextureHandle{ d.mrTexId },
+                               d.baseColorFactor,
+                               inst.emissive,
+                               fin);
         }
     }
 }

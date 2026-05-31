@@ -181,40 +181,34 @@ public:
                                            const float model[16]) = 0;
 
     // ---- Translucent GLASS material (transparent pass) ---------------------
-    // A general, reusable translucent-glass material (design spec
-    // docs/superpowers/specs/2026-05-25-glass-material-design.md). A mesh drawn
-    // via drawMeshGlass() is NOT rendered in the opaque pass — it is flagged GLASS
-    // and drawn in a dedicated post-opaque, depth-tested (LEQUAL, no depth write),
-    // alpha-blended transparent pass so it reads as see-through over the lit scene.
-    //
-    // All params are runtime-tunable per draw (material-instance style). POD only —
-    // no Vulkan types cross the boundary. MILESTONES: M1 uses `opacity` (-> blend
-    // alpha) so glass renders see-through; `tint`/`refraction`/`roughness`/`specular`
-    // are carried now and consumed by later milestones (refraction, fresnel/specular,
-    // frost). `opacity` 0 = crystal clear, 1 = fully opaque (the primary dial).
+    // Spec: docs/superpowers/specs/2026-05-25-glass-material-design.md.
     struct GlassMaterial {
-        float opacity    = 0.35f;            // 0 = clear .. 1 = opaque (body-vs-transmission mix)
-        float refraction = 0.03f;            // screen-space distortion strength (M2)
-        float roughness  = 0.0f;             // 0 = polished .. 1 = frosted (M4)
-        float specular   = 0.6f;             // analytic specular (sun + point glints) strength
-        float tint[3]    = { 1.0f, 1.0f, 1.0f }; // glass baseColor; white = colorless
-        // ---- UE5-style PBR params (M5 shiny+transparent rework) ---------------
-        // Defaulted so every existing drawMeshGlass/Entity call site still compiles
-        // (the holo-terminal, glass_test, level glass all keep their behaviour). The
-        // glass.frag Filament Cook-Torrance path consumes these; see glass.frag.
-        float metallic   = 0.0f;             // 0 = dielectric glass .. 1 = metal (F0 = baseColor)
-        float ior        = 1.5f;             // index of refraction (glass 1.5 -> F0 0.04); drives F0 + bend
-        float reflectance = 0.5f;            // UE5 "Specular" analog, used only when ior <= 1.0
-        float transmittanceColor[3] = { 1.0f, 1.0f, 1.0f }; // tints the SCENE BEHIND (UE5 thin-translucent)
+        float opacity    = 0.35f;
+        float refraction = 0.03f;
+        float roughness  = 0.0f;
+        float specular   = 0.6f;
+        float tint[3]    = { 1.0f, 1.0f, 1.0f };
+        float metallic   = 0.0f;
+        float ior        = 1.5f;
+        float reflectance = 0.5f;
+        float transmittanceColor[3] = { 1.0f, 1.0f, 1.0f };
     };
 
-    // Submit a translucent glass draw. `glass.opacity` overrides baseColorFactor's
-    // alpha (the see-through dial). `emissive` is the same per-object HDR glow term
-    // as drawMeshEmissive (holo glass keeps its glow); pass nullptr for none. The
-    // device flags the per-object row GLASS so it routes to the transparent pass.
     virtual void          drawMeshGlass(const FrameContext&, MeshHandle, TextureHandle baseColor,
                                         const float baseColorFactor[4], const float emissive[4],
                                         const GlassMaterial& glass, const float model[16]) = 0;
+
+    // PBR draw: drawMeshEmissive + NORMAL + METALLIC-ROUGHNESS bindless maps
+    // (glTF packing: metallic in B, roughness in G). Invalid (id 0) handles
+    // collapse to drawMeshEmissive behaviour (shader skips PBR branch). Default
+    // impl forwards; the Vulkan override carries the indices through the per-
+    // object SSBO so slice 2's mesh.frag can shade them.
+    virtual void          drawMeshPBR(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
+                                      TextureHandle /*normal*/, TextureHandle /*metalRough*/,
+                                      const float baseColorFactor[4], const float emissive[4],
+                                      const float model[16]) {
+        drawMeshEmissive(fc, mesh, baseColor, baseColorFactor, emissive, model);
+    }
 
     // ---- Analytic sky (open-world track, task A) ---------------------------
     // Parameters for the physically-plausible analytic sky drawn as the far-depth

@@ -18,9 +18,12 @@ struct ObjectData {
     uint flags;           // bit0 = TERRAIN splat, bit1 = GLASS (was _pad0/terrainFlag)
     uint terrainPack1;    // grass<<16 | rock detail bindless indices (was _pad1)
     uint terrainPack2;    // snow<<16  | sand detail bindless indices (was _pad2)
-    vec4 glassParams;     // GLASS only: x = refraction, y = roughness, z = specular, w = metallic
-    vec4 glassTint;       // GLASS only: rgb = tint (baseColor), w = ior
-    vec4 glassExtra;      // GLASS only: x = reflectance, yzw = transmittanceColor
+    uint normalTexIndex;  // PBR slice 1 bindless idx (0 = none, slice 2 reads it)
+    uint mrTexIndex;
+    uint _pad3, _pad4;
+    vec4 glassParams;     // GLASS only: x=refraction, y=roughness, z=specular, w=metallic
+    vec4 glassTint;       // GLASS only: rgb=tint, w=ior
+    vec4 glassExtra;      // GLASS only: x=reflectance, yzw=transmittanceColor
 };
 
 // Per-object flag bits (match VulkanRenderDevice.cpp kFlag*).

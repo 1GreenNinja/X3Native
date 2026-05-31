@@ -1228,12 +1228,24 @@ public:
         drawMeshInternal(fc, mesh, baseColor, baseColorFactor, emissive, model, /*extraFlags=*/0u, nullptr);
     }
 
-    // Shared draw record append (opaque/emissive/glass differ only by `extraFlags`
-    // and the optional GlassMaterial — nullptr for the opaque path).
+    // PBR override: forwards into drawMeshInternal carrying the optional normal +
+    // metallic-roughness bindless map handles. Invalid (id 0) handles drop to the
+    // drawMeshEmissive behaviour (no PBR shading branch in the fragment shader).
+    void drawMeshPBR(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
+                     TextureHandle normal, TextureHandle metalRough,
+                     const float baseColorFactor[4], const float emissive[4],
+                     const float model[16]) override {
+        drawMeshInternal(fc, mesh, baseColor, baseColorFactor, emissive, model,
+                         /*extraFlags=*/0u, nullptr, normal, metalRough);
+    }
+
+    // Shared draw record append (opaque/emissive/glass/PBR differ only by
+    // `extraFlags`, the optional GlassMaterial, and the optional PBR map handles).
     void drawMeshInternal(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                           const float baseColorFactor[4], const float emissive[4],
                           const float model[16], uint32_t extraFlags,
-                          const GlassMaterial* glass) {
+                          const GlassMaterial* glass,
+                          TextureHandle normal = {}, TextureHandle metalRough = {}) {
         if (!fc.valid || !m_meshPipeline) return;
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
@@ -1258,6 +1270,17 @@ public:
             auto tit = m_textures.find(baseColor.id);
             if (tit != m_textures.end()) texIndex = tit->second.bindlessIndex;
         }
+        // Resolve the optional PBR maps to bindless indices (0 == none -> the
+        // fragment shader skips its PBR branch and shades exactly as before).
+        uint32_t normalIdx = 0, mrIdx = 0;
+        if (normal.valid()) {
+            auto it = m_textures.find(normal.id);
+            if (it != m_textures.end()) normalIdx = it->second.bindlessIndex;
+        }
+        if (metalRough.valid()) {
+            auto it = m_textures.find(metalRough.id);
+            if (it != m_textures.end()) mrIdx = it->second.bindlessIndex;
+        }
 
         DrawRecord r;
         r.meshId      = mesh.id;
@@ -1267,6 +1290,8 @@ public:
         // pad2 = snow<<16 | sand (each well under 65535 — kMaxTextures = 4096).
         r.terrainPack1 = (m_terrainTexIdx[0] << 16) | (m_terrainTexIdx[1] & 0xFFFFu);
         r.terrainPack2 = (m_terrainTexIdx[2] << 16) | (m_terrainTexIdx[3] & 0xFFFFu);
+        r.normalTexIndex = normalIdx;
+        r.mrTexIndex     = mrIdx;
         std::memcpy(r.model, model, sizeof(r.model));
         if (baseColorFactor) std::memcpy(r.factor, baseColorFactor, sizeof(r.factor));
         else { r.factor[0] = r.factor[1] = r.factor[2] = r.factor[3] = 1.0f; }
@@ -1561,28 +1586,21 @@ private:
         glm::vec4 baseColorFactor;
         glm::vec4 emissive;          // rgb = linear color, a = strength
         uint32_t  texIndex;
-        uint32_t  flags;             // bitfield (was _pad0): bit0 = TERRAIN, bit1 = GLASS
-        uint32_t  _pad1, _pad2;      // terrain detail-index packs (only when TERRAIN bit set)
-        // ---- GLASS material (only meaningful when the GLASS flag is set) -------
-        // Carried per-object so each glass instance keeps its OWN material (the
-        // holo-terminal panel/rim/scanline all differ — material-instance style,
-        // spec §3.2). Opaque draws leave these zeroed (the opaque path never reads
-        // them). glass.frag consumes: refraction (screen bend), roughness (frost mip
-        // + reflection blur), specular (analytic glints), tint (baseColor) PLUS the
-        // M5 UE5 PBR params packed into the spare lanes:
-        //   glassParams.w = metallic, glassTint.w = ior,
-        //   glassExtra = (reflectance, transmittanceColor.rgb).
+        uint32_t  flags;             // bit0 = TERRAIN, bit1 = GLASS
+        uint32_t  _pad1, _pad2;      // terrain detail-index packs (when TERRAIN bit set)
+        // PBR slice 1: bindless indices for normal + metallic-roughness maps.
+        // 0 == none (shader skips PBR branch). Slice 2 (mesh.frag) reads these.
+        uint32_t  normalTexIndex;
+        uint32_t  mrTexIndex;
+        uint32_t  _pad3, _pad4;      // keep glass row at 16-byte std430 boundary
+        // GLASS material (only meaningful when GLASS bit set). glass.frag consumes;
+        // mesh.frag DISCARDs glass fragments so they route to the transparent pass.
         glm::vec4 glassParams;       // x = refraction, y = roughness, z = specular, w = METALLIC
         glm::vec4 glassTint;         // rgb = glass tint (baseColor), w = IOR
         glm::vec4 glassExtra;        // x = reflectance, yzw = transmittanceColor
     };
-    static_assert(sizeof(ObjectData) == 160, "ObjectData must match std430 layout");
+    static_assert(sizeof(ObjectData) == 176, "ObjectData must match std430 layout");
 
-    // Per-object flag bits packed into ObjectData::flags. TERRAIN drives mesh.frag's
-    // procedural splat (was the standalone terrainFlag); GLASS routes the fragment to
-    // the transparent glass pass (mesh.frag DISCARDs it; glass.frag draws it). The
-    // bits are mutually exclusive in practice but stored independently so the shaders
-    // can test either without ambiguity.
     static constexpr uint32_t kFlagTerrain = 1u << 0;
     static constexpr uint32_t kFlagGlass   = 1u << 1;
 
@@ -1597,9 +1615,12 @@ private:
         uint32_t terrainPack1;  // grass<<16 | rock  (bindless detail indices)
         uint32_t terrainPack2;  // snow<<16  | sand
         // GLASS material (only filled by drawMeshGlass; zeroed for opaque draws).
-        float    glassParams[4]; // x = refraction, y = roughness, z = specular, w = metallic
-        float    glassTint[4];   // rgb = tint (baseColor), w = ior
-        float    glassExtra[4];  // x = reflectance, yzw = transmittanceColor
+        float    glassParams[4];
+        float    glassTint[4];
+        float    glassExtra[4];
+        // PBR slice 1: optional bindless indices for normal + MR maps.
+        uint32_t normalTexIndex = 0;
+        uint32_t mrTexIndex     = 0;
     };
 
     // Per-frame mesh-draw capacity: sizes the per-object SSBO ring (one
@@ -2094,12 +2115,16 @@ private:
                 o.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
                 o.emissive = glm::vec4(dr.emissive[0], dr.emissive[1], dr.emissive[2], dr.emissive[3]);
                 o.texIndex = dr.texIndex;
-                // flags = bit0 TERRAIN | bit1 GLASS; pad1/pad2 = the four packed
-                // detail-texture indices (only meaningful when TERRAIN is set). See
-                // mesh.{vert,frag} + glass.frag.
+                // flags = bit0 TERRAIN | bit1 GLASS; pad1/pad2 = packed terrain
+                // detail indices (when TERRAIN bit set). PBR map indices carried
+                // for the optional slice-2 shading branch. Glass material zeroed
+                // for opaque draws (the opaque path never reads it).
                 o.flags  = dr.flags;
                 o._pad1  = dr.terrainPack1;
                 o._pad2  = dr.terrainPack2;
+                o.normalTexIndex = dr.normalTexIndex;
+                o.mrTexIndex     = dr.mrTexIndex;
+                o._pad3 = 0; o._pad4 = 0;
                 o.glassParams = glm::vec4(dr.glassParams[0], dr.glassParams[1],
                                           dr.glassParams[2], dr.glassParams[3]);
                 o.glassTint   = glm::vec4(dr.glassTint[0], dr.glassTint[1],

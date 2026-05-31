@@ -733,6 +733,10 @@ bool fillDrawable(const Model& m, const MeshPrimitive& p, const float nodeWorld[
         for (int k = 0; k < 4; ++k) d.baseColorFactor[k] = mat.baseColor[k];
         if ((mat.baseColorTex & kTagMask) == kTexTag)
             d.baseColorTexId = static_cast<uint32_t>(mat.baseColorTex & ~kTagMask);
+        if ((mat.normalTex & kTagMask) == kTexTag)
+            d.normalTexId = static_cast<uint32_t>(mat.normalTex & ~kTagMask);
+        if ((mat.mrTex & kTagMask) == kTexTag)
+            d.mrTexId = static_cast<uint32_t>(mat.mrTex & ~kTagMask);
     }
     for (int i = 0; i < 16; ++i) d.nodeTransform[i] = nodeWorld[i];
     return true;
