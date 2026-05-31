@@ -97,6 +97,7 @@
 #include "space/ship_damage.h"             // S10 ship damage model (--test-ship-damage)
 #include "space/eva.h"                      // S12 EVA spacewalk controller (--test-eva + --world eva)
 #include "space/ship_windows.h"            // S6 true-portal ship windows (--test-ship-windows + --world ship-windows)
+#include "space/ship_repair.h"             // S7 in-transit panel repair (--test-ship-repair + --world ship-repair)
 #include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
@@ -1370,7 +1371,8 @@ int main(int argc, char** argv) {
          testTargeting = false,
          testShipDamage = false,
          testEva = false,
-         testShipWindows = false;
+         testShipWindows = false,
+         testShipRepair = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1728,6 +1730,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-targeting") testTargeting = true;
         else if (a == "--test-ship-damage") testShipDamage = true;
         else if (a == "--test-ship-windows") testShipWindows = true;
+        else if (a == "--test-ship-repair") testShipRepair = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -2957,6 +2960,11 @@ int main(int argc, char** argv) {
     if (testShipWindows) {
         x3::logInfo("running S6 ship-windows (true-portal moving space) self-test...");
         return x3::space::runShipWindowsSelfTest() ? 0 : 1;
+    }
+    // --test-ship-repair: S7 in-transit panel-repair state machine self-test.
+    if (testShipRepair) {
+        x3::logInfo("running S7 ship-repair (panel state machine) self-test...");
+        return x3::space::runShipRepairSelfTest() ? 0 : 1;
     }
     if (testHoloterm) {
         x3::logInfo("running holo-terminal (text + input) self-test...");
@@ -7971,15 +7979,6 @@ int main(int argc, char** argv) {
     }
 
     // ---- S6 SHIP WINDOWS showcase (--world ship-windows) -------------------
-    // THE SIGNATURE INTERIOR TECH: stand INSIDE the static cockpit (S5) and the
-    // windows show REAL space that MOVES — the "Star Trek" moving-set trick (the
-    // ship is static at origin; the environment carries the motion, decision 2.4).
-    // ShipWindows (app/space/ship_windows.*) renders a moving star/nebula view
-    // through each manifest window (UVs panned by envYaw, driven from timeSec) +
-    // a space backdrop dome + per-window light-bleed lights.
-    //   * WALKABLE (windowed): `--world ship-windows` — WASD + mouse, walls collide.
-    //   * SCREENSHOT (headless): `--world ship-windows --screenshot <path>` — pose a
-    //     camera looking at the forward viewport, settle, capture the PNG, exit.
     if (worldMode == "ship-windows") {
         x3::logInfo("--world ship-windows: building the cockpit with TRUE-PORTAL moving space");
 
@@ -8114,6 +8113,246 @@ int main(int argc, char** argv) {
         windows.shutdown(*device);
         interior.shutdown(*sphys);
         sphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    if (worldMode == "ship-repair") {
+        x3::logInfo("--world ship-repair: cockpit + damaged panels (walk up + E to repair)");
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> rphys(x3::phys::createPhysicsWorld());
+        if (!rphys->init()) {
+            x3::logError("--world ship-repair: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        x3::game::Scene rscene;
+        x3::space::ShipInterior rinterior;
+        rinterior.build(*device, rscene, *rphys, x3::space::ShipInterior::makeSmallCockpit());
+
+        // Interior lighting (no sky inside the hull; disable SSAO/GI raster fallback so
+        // a no-RT capture is not black — per the lane brief).
+        { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
+        { x3::rhi::IRenderDevice::SsaoParams ao{}; ao.enabled = false; device->setSsaoParams(ao); }
+        { x3::rhi::IRenderDevice::GiParams gi{}; gi.enabled = false; device->setGiParams(gi); }
+        { x3::rhi::PointLight pl[2];
+          pl[0].pos[0]= 0.0f; pl[0].pos[1]=2.7f; pl[0].pos[2]= 0.0f; pl[0].range=10.0f;
+          pl[0].color[0]=6.0f; pl[0].color[1]=6.2f; pl[0].color[2]=6.6f;
+          pl[1].pos[0]= 2.4f; pl[1].pos[1]=1.4f; pl[1].pos[2]=-2.0f; pl[1].range=5.0f;
+          pl[1].color[0]=3.0f; pl[1].color[1]=2.2f; pl[1].color[2]=1.4f;            // panel glow
+          device->setPointLights(pl, 2); }
+
+        // ---- Build the repair model + its visual entities -------------------
+        // One damaged panel on the +X (starboard) cockpit wall (x ~ +3), at chest
+        // height, with 3 wires; and a second on the -X wall with 2 wires.
+        x3::space::RepairSystem repair;
+        const int kWiresA = 3, kWiresB = 2;
+        // On the inner face of the +X / -X cockpit walls (wall inner face ~ +/-2.82),
+        // protruding into the room so the panel + cavity read as a surface fixture.
+        const float pA[3] = {  2.62f, 1.25f, -1.2f };
+        const float pB[3] = { -2.62f, 1.25f,  1.2f };
+        repair.addPanel(pA,  1.5708f, kWiresA);   // faces -X (into the room)
+        repair.addPanel(pB, -1.5708f, kWiresB);   // faces +X
+
+        // Visual building blocks. A "frame" plate (always there), a "cover" plate that
+        // hides the wiring while Sealed, and N wire bars per panel that light green as
+        // connected. We track the scene ids so we can recolor/hide them each frame.
+        auto solidPx = x3::prims::makeSolidRGBA(8, 70, 74, 84);
+        x3::rhi::TextureHandle solidTex = device->createTexture(solidPx.data(), 8, 8, true);
+        const float kIdent[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+
+        struct PanelVis { uint32_t cover; std::vector<uint32_t> wires; };
+        std::vector<PanelVis> vis;
+
+        auto addBox = [&](float hx,float hy,float hz, float cx,float cy,float cz,
+                          const float col[4], const float em[4], uint32_t tag) -> uint32_t {
+            x3::prims::PrimMesh m = x3::prims::makeBox(hx,hy,hz, cx,cy,cz, 1.0f);
+            x3::rhi::MeshHandle mesh = device->createMesh(m.verts.data(),(uint32_t)m.verts.size(),
+                                                          m.index.data(),(uint32_t)m.index.size());
+            x3::game::Entity e;
+            e.mesh = mesh; e.tex = solidTex;
+            for (int k=0;k<4;++k) e.baseColor[k]=col[k];
+            if (em) for (int k=0;k<4;++k) e.emissive[k]=em[k];
+            std::memcpy(e.transform, kIdent, sizeof(kIdent));
+            e.tag = tag;
+            return rscene.add(e);
+        };
+
+        const float frameCol[4] = {0.18f,0.20f,0.24f,1.0f};
+        const float coverCol[4] = {0.30f,0.32f,0.38f,1.0f};
+        const float coverEm[4]  = {0.0f,0.0f,0.0f,0.0f};
+        for (uint32_t pi = 0; pi < repair.panelCount(); ++pi) {
+            const x3::space::RepairPanel& p = repair.panel(pi);
+            // `side` = sign of the INWARD normal (toward the room). The panel sits on
+            // the wall; depth layers go OUTWARD (into the hull, away from the room):
+            //   cover  (room-most, hides the cavity while Sealed)
+            //   wires  (just behind the cover)
+            //   frame  (deepest — the cavity backing, behind the wires)
+            // so an opened panel reveals the lit wires in front of the dark backing.
+            const float side = (p.pos[0] > 0.0f) ? -1.0f : 1.0f;   // inward normal x sign
+            const float coverX = p.pos[0] + side * 0.02f;          // room-most face
+            const float wireX  = coverX  - side * 0.08f;           // behind the cover
+            const float frameX = coverX  - side * 0.16f;           // deepest backing
+            // Recessed frame (the open cavity backing — deepest layer).
+            addBox(0.04f, 0.55f, 0.45f, frameX, p.pos[1], p.pos[2],
+                   frameCol, nullptr, (uint32_t)x3::game::Tag::Prop);
+            PanelVis pv;
+            // Cover plate (room-most; hides the wiring while Sealed).
+            pv.cover = addBox(0.03f, 0.55f, 0.45f, coverX, p.pos[1], p.pos[2],
+                              coverCol, coverEm, (uint32_t)x3::game::Tag::Prop);
+            // Wire bars, stacked vertically inside the cavity, in FRONT of the frame.
+            const int n = p.wiresTotal;
+            const float darkCol[4] = {0.10f,0.10f,0.12f,1.0f};
+            for (int w = 0; w < n; ++w) {
+                const float wy = p.pos[1] - 0.32f + (n>1 ? (0.64f * (float)w/(float)(n-1)) : 0.0f);
+                uint32_t id = addBox(0.03f, 0.045f, 0.34f, wireX, wy, p.pos[2],
+                                     darkCol, nullptr, (uint32_t)x3::game::Tag::Prop);
+                rscene.get(id).visible = false;   // hidden until the panel opens
+                pv.wires.push_back(id);
+            }
+            vis.push_back(std::move(pv));
+        }
+
+        // Per-frame: sync the visuals from the RepairSystem model. Cover hidden once
+        // Open; wires shown + recolored (red->green) by connected count; a Repairing/
+        // Repaired panel glows green.
+        auto syncVisuals = [&]() {
+            for (uint32_t pi = 0; pi < repair.panelCount(); ++pi) {
+                const x3::space::RepairPanel& p = repair.panel(pi);
+                const PanelVis& pv = vis[pi];
+                const bool opened = (p.state != x3::space::PanelState::Sealed);
+                rscene.get(pv.cover).visible = !opened;
+                for (int w = 0; w < (int)pv.wires.size(); ++w) {
+                    x3::game::Entity& e = rscene.get(pv.wires[(size_t)w]);
+                    e.visible = opened;
+                    const bool on = w < p.wiresConnected;
+                    if (on) { e.baseColor[0]=0.1f; e.baseColor[1]=0.9f; e.baseColor[2]=0.2f;
+                              e.emissive[0]=0.2f; e.emissive[1]=2.4f; e.emissive[2]=0.4f; e.emissive[3]=2.0f; }
+                    else    { e.baseColor[0]=0.7f; e.baseColor[1]=0.15f; e.baseColor[2]=0.12f;
+                              e.emissive[0]=1.2f; e.emissive[1]=0.2f; e.emissive[2]=0.15f; e.emissive[3]=1.0f; }
+                }
+            }
+        };
+
+        const x3::phys::Vec3 rspawn = rinterior.spawnPoint();
+
+        // ===== Headless screenshot path: auto-drive the interaction. =====
+        if (headless) {
+            // Camera across the cockpit looking head-on at panel A on the +X wall
+            // (toward +X, yaw ~0). At this stand-off the open cavity reads as a
+            // framed panel and the green-lit wire bars pop against the dark backing.
+            float cam[5] = { 1.05f, 1.32f, -1.2f, 0.0f, -0.03f };
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const float dt = 1.0f / 60.0f;
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("G:/X3Native/captures/repair.png");
+            // The auto-driver's "player": standing at the panel so it is in range.
+            const float driverPos[3] = { 1.9f, 1.4f, -1.2f };
+            const int kSettle = 40;
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                rphys->step(dt);
+                rscene.update(*rphys);
+                // Auto-drive: open the panel on frame 4, connect a wire every 5 frames
+                // so the capture shows an OPEN panel mid-repair (some wires lit).
+                int inRange = repair.update(dt, driverPos, /*interactPressed*/ i == 4);
+                if (i >= 8 && i < 8 + 5 * (kWiresA - 1) && (i % 5) == 0 && inRange >= 0)
+                    repair.connectWire(inRange);   // connect all but the last (stay Open)
+                syncVisuals();
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 70.0f);
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) rinterior.render(*device, frame, rscene);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world ship-repair: wrote " + outPath +
+                                   " (panel " + std::to_string(repair.panel(0).wiresConnected) +
+                                   "/" + std::to_string(kWiresA) + " wires)");
+            else       x3::logError("--world ship-repair: capture FAILED");
+            rinterior.shutdown(*rphys);
+            rphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: real Player; E opens + connects wires. =====
+        x3::game::Player rplayer;
+        rplayer.spawn(*rphys, rspawn.x, rspawn.y, rspawn.z);
+
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        bool prevSpaceR = false, prevER = false;
+        int lastWr = (int)W, lastHr = (int)H;
+        x3::logInfo("--world ship-repair: WASD walk, mouse look, E open/connect a wire, Esc to quit");
+
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+
+            double now = glfwGetTime();
+            float dt = (float)(now - prevTime); prevTime = now;
+            if (dt > 0.1f) dt = 0.1f;
+
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+
+            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            bool spaceNow = kd(GLFW_KEY_SPACE);
+            bool eNow = kd(GLFW_KEY_E);
+
+            x3::game::PlayerInput in;
+            if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+            if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+            if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+            if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+            in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+            in.jumpPressed = spaceNow && !prevSpaceR;
+            in.lookDX = ddx; in.lookDY = ddy;
+            prevSpaceR = spaceNow;
+
+            rplayer.update(in, dt, *rphys);
+            rphys->step(dt);
+            rscene.update(*rphys);
+
+            float camX, camY, camZ, camYaw, camPitch;
+            rplayer.camera(camX, camY, camZ, camYaw, camPitch);
+
+            // Drive the repair state machine off the camera (eye) position. E both
+            // opens a Sealed in-range panel (handled inside update on the rising edge)
+            // AND connects a wire on an already-open in-range panel.
+            const float pp[3] = { camX, camY, camZ };
+            int inRange = repair.update(dt, pp, eNow);
+            const bool ePressed = eNow && !prevER;
+            if (ePressed && inRange >= 0 &&
+                repair.panel((uint32_t)inRange).state == x3::space::PanelState::Open)
+                repair.connectWire(inRange);
+            prevER = eNow;
+            syncVisuals();
+            if (repair.allRepaired())
+                x3::logInfo("--world ship-repair: ALL PANELS REPAIRED");
+
+            int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
+            if (cw != lastWr || ch != lastHr) { lastWr = cw; lastHr = ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
+
+            device->setCamera(camX, camY, camZ, camYaw, camPitch, 70.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) rinterior.render(*device, frame, rscene);
+            device->endFrame(frame);
+        }
+
+        rinterior.shutdown(*rphys);
+        rphys->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();

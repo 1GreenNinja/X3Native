@@ -73,6 +73,7 @@ add_executable(X3Engine WIN32
     space/ship_damage.cpp
     space/eva.cpp
     space/ship_windows.cpp
+    space/ship_repair.cpp
     ui.cpp)
 
 target_link_libraries(X3Engine PRIVATE x3engine glfw)
