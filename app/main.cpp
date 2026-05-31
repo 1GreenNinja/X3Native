@@ -85,6 +85,7 @@
 #include "space_pilot.h"                   // Act-3 6DOF space-flight pilot (--test-space + --world space)
 #include "sky_stars.h"                     // procedural starfield (--test-starfield + --world starfield)
 #include "space/space_layer.h"             // S0 SpaceLayer spine (--test-spacelayer)
+#include "space/ship_damage.h"             // S10 ship damage model (--test-ship-damage)
 #include "headless_device.h"               // HeadlessRenderDevice (used by --test-starfield)
 
 #include <memory>
@@ -1345,7 +1346,7 @@ int main(int argc, char** argv) {
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
          testThirdPerson = false, testNpc = false, testStarfield = false,
-         testSpaceLayer = false;
+         testSpaceLayer = false, testShipDamage = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1690,6 +1691,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-club") testClub = true;
         else if (a == "--test-starfield") testStarfield = true;
         else if (a == "--test-spacelayer") testSpaceLayer = true;
+        else if (a == "--test-ship-damage") testShipDamage = true;
         else if (a == "--width") {
             if (i + 1 < argc) { winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -2146,6 +2148,15 @@ int main(int argc, char** argv) {
         std::printf("spacelayer: %d/%d passed\n", pass, total);
         std::fflush(stdout);
         return (pass == total) ? 0 : 1;
+    }
+    // --test-ship-damage: S10 ship damage model self-test. Headless deterministic
+    // pure-logic only (no GPU) -- shield-first-then-hull two-pool order, exact
+    // overflow math, shield regen only after the delay, capital-ship destructible
+    // subsystems + targeted routing only when shields are down. Logic-only lane
+    // (no --world): the model is value-type math with no GPU surface to show.
+    if (testShipDamage) {
+        x3::logInfo("running S10 ship-damage model self-test...");
+        return x3::space::runShipDamageSelfTest() ? 0 : 1;
     }
     if (testHoloterm) {
         x3::logInfo("running holo-terminal (text + input) self-test...");
