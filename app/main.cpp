@@ -5146,7 +5146,10 @@ int main(int argc, char** argv) {
                 x3::game::ResolvedFire shot = arsenal.fire(eye, dir, weaponRng);
                 const x3::phys::Vec3 m = muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch);
                 for (const auto& ray : shot.rays) {
-                    x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics);
+                    // Pass the firing weapon's DamageType through so canon-aliens Adaptive Hide
+                    // (currently on the SaurianWarlord row) reacts to the player's loadout.
+                    x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics,
+                                                        ray.damage, ray.type);
                     combatFx.addTracer(m, r.endPoint);
                 }
                 for (const auto& pj : shot.projectiles)
@@ -6280,7 +6283,11 @@ int main(int argc, char** argv) {
                 combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);   // per-weapon flash (hitscan)
                 for (const auto& ray : shot.rays) {
                     const int wdmg = ray.damage;          // this pellet/ray's damage
-                    x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics, wdmg);
+                    // canon-aliens Adaptive Hide: each ray also carries its WeaponDef::type
+                    // (Kinetic / Energy / ... stamped by Arsenal::fire). Threaded through
+                    // every dispatcher so bosses with adaptiveHideResist > 0 react to the
+                    // player's actual loadout choice (the Warlord's resist rhythm).
+                    x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                     // --world canonlevel: the legacy groups are empty; route the shot through
                     // the canon enemies/boss/girls instead (arm-gated by canonPlay.onFire).
                     if (!r.hitMonster && canonWorld && canonPlay.built()) {
