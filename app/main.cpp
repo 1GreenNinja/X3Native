@@ -6297,24 +6297,24 @@ int main(int argc, char** argv) {
                     // If the B1 groups didn't take it, try the F3/F4/F5 enemies (the
                     // shot is already arm-gated by the arsenal/Level1Game::onFire).
                     if (!r.hitMonster && game.armed()) {
-                        x3::game::FireResult rm = midFloors.onFire(eye, ray.dir, scene, *physics, wdmg);
+                        x3::game::FireResult rm = midFloors.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                         if (rm.hitMonster || (!r.hit && rm.hit)) r = rm;
                     }
                     // Then the F6/F7 top-floor enemies + the Clone boss.
                     if (!r.hitMonster && game.armed()) {
-                        x3::game::FireResult rt = topFloors.onFire(eye, ray.dir, scene, *physics, wdmg);
+                        x3::game::FireResult rt = topFloors.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                         if (rt.hitMonster || (!r.hit && rt.hit)) r = rt;
                     }
                     // Then the Floor 4.5 Chorus pods (no-op until the Nexus is armed; a
                     // pod killed this way counts as KILLED, not saved).
                     if (!r.hitMonster && game.armed()) {
-                        x3::game::FireResult rn = nexus.onFire(eye, ray.dir, scene, *physics, wdmg);
+                        x3::game::FireResult rn = nexus.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                         if (rn.hitMonster || (!r.hit && rn.hit)) r = rn;
                     }
                     // Then the hidden sub-level enemies + the Frozen Collective (a clean
                     // miss until the descent has opened).
                     if (!r.hitMonster && game.armed()) {
-                        x3::game::FireResult rs = subLevels.onFire(eye, ray.dir, scene, *physics, wdmg);
+                        x3::game::FireResult rs = subLevels.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                         if (rs.hitMonster || (!r.hit && rs.hit)) r = rs;
                     }
                     combatFx.addTracer(muzzle, r.endPoint);   // tracer + muzzle burst per pellet
