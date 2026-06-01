@@ -34,6 +34,7 @@
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/asset/IModelLoader.h"
 #include "engine/asset/IAssetSource.h"
+#include "engine/core/x3_damage.h"   // DamageType (per-weapon canon-aliens Adaptive-Hide tag)
 
 #include <cstdint>
 #include <memory>
@@ -188,6 +189,12 @@ struct WeaponDef {
     FireKind    kind        = FireKind::Hitscan;
     bool        automatic   = false;    // true: holding fire keeps firing at fireRate
     int         damage      = 15;       // damage PER hitscan ray / per projectile / per pellet
+    // canon-aliens Adaptive Hide: the type-tag this weapon stamps onto each shot
+    // (resolved into HitscanRay::type / ProjectileSpawn::type by Arsenal::fire and
+    // ultimately passed to MonsterManager::fire(..., damage, type) by the host).
+    // Default Kinetic — every weapon that doesn't opt-in reads as Kinetic on the
+    // canon-aliens Warlord's resist machine. (See docs/canon-aliens-adaptive-hide.md §4.1.)
+    x3::DamageType type    = x3::DamageType::Kinetic;
     float       fireRate    = 3.0f;     // shots per second (cooldown = 1/fireRate)
     int         pellets     = 1;        // rays per shot (shotgun > 1); 1 for single-ray
     float       spreadDeg   = 0.0f;     // half-angle cone of random spread (deg) per ray
@@ -255,6 +262,9 @@ struct ProjectileSpawn {
     x3::phys::Vec3 vel{};      // unit dir * projSpeed (m/s)
     int            damage = 0; // damage on impact
     float          range  = 0; // max travel distance before despawn (m)
+    // canon-aliens Adaptive Hide: type stamped from the firing WeaponDef::type so the
+    // host can pass it to MonsterManager::fire(..., damage, type).
+    x3::DamageType type   = x3::DamageType::Kinetic;
     // Plasma Rifle splash: if splashRadius > 0 the host may apply splashDamage to
     // every enemy within splashRadius of the impact point (in addition to the
     // direct-hit `damage`). 0 radius -> plain single-target bolt.
@@ -268,6 +278,9 @@ struct HitscanRay {
     x3::phys::Vec3 dir{};      // unit fire direction (spread already applied)
     int            damage = 0; // damage this ray deals on a hit
     float          range  = 0; // max ray distance (m)
+    // canon-aliens Adaptive Hide: stamped from the firing WeaponDef::type (same on
+    // every ray of a multi-pellet shot; chain rays inherit too).
+    x3::DamageType type   = x3::DamageType::Kinetic;
     // Lightning Gun beam metadata (default = a plain ray, so existing weapons are
     // unaffected). `beam` marks an instant-hit beam (continuous-feel) the host may
     // render as a solid line rather than a tracer; `chain` is true for the extra
