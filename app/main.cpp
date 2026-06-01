@@ -6291,7 +6291,7 @@ int main(int argc, char** argv) {
                     // --world canonlevel: the legacy groups are empty; route the shot through
                     // the canon enemies/boss/girls instead (arm-gated by canonPlay.onFire).
                     if (!r.hitMonster && canonWorld && canonPlay.built()) {
-                        x3::game::FireResult rc = canonPlay.onFire(eye, ray.dir, scene, *physics, wdmg);
+                        x3::game::FireResult rc = canonPlay.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                         if (rc.hitMonster || (!r.hit && rc.hit)) r = rc;
                     }
                     // If the B1 groups didn't take it, try the F3/F4/F5 enemies (the
