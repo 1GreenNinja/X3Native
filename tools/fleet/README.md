@@ -18,6 +18,19 @@ conjunction with `tools/matrix-daemon/` (DJBOOTH's matrix-bot-sdk daemon).
   `~/.claude/.matrix_room_names.json` so `fleet_inbox.py` can show "Fleet Ops"
   instead of a bare hash.
 
+- **`fleet_image.py`** — posts an **image** (render, screenshot, build
+  artifact) to a room: uploads to the media repo, then sends an `m.image`
+  event with an optional text caption. Stdlib-only (no Pillow — image
+  dimensions are parsed from PNG/JPEG/GIF/BMP headers). Usage:
+  `python fleet_image.py <room_id_or_#alias> <image_path> ["caption"]`.
+
+  **Multi-bot per host:** `fleet_image.py` honours the env override
+  `FLEET_TOKEN_FILE` (absolute path, or a bare name under `~/.claude`) so
+  two Claude sessions sharing one Windows user can post under different
+  identities — e.g. `FLEET_TOKEN_FILE=.matrix_token_snake` posts as `@snake`
+  instead of the host's default bot. (`fleet_send.py` can adopt the same
+  pattern for text.)
+
 ## Per-machine setup
 
 Already done on `13700K` as part of FleetCommand Phase 1. For any other
