@@ -59,6 +59,7 @@
 #include "engine/asset/IModelLoader.h"
 #include "engine/asset/IAssetSource.h"
 #include "engine/ai/INavigation.h"   // GENERAL navigation: route around walls (optional)
+#include "engine/core/x3_damage.h"   // DamageType (Adaptive Hide: rotate-damage-type rhythm)
 
 #include <cstdint>
 #include <functional>
@@ -470,6 +471,17 @@ public:
         // it to drive a HUD timer + the level-exit trigger ("escape or die"); the
         // boss machine just carries the value. 0 (default) => no escape timer.
         float escapeTimerSeconds   = 0.0f;
+
+        // ---- Adaptive Hide (canon-aliens SaurianWarlord). Boss-style "rotate
+        // damage type" rhythm: after taking damage of type T, gain `adaptiveHideResist`
+        // reduction on ALL further damage of type T for `adaptiveHideDurationSec`
+        // seconds, then re-evaluate. INERT by default (resist == 0 leaves every
+        // existing row unchanged); only rows that opt in get the behaviour.
+        // Stacks multiplicatively with memoryFlashDamageMul (a matched type during a
+        // flash window: 1.5 * 0.4 = 0.6, still reduced but less harshly — exactly
+        // the design intent that rotating during a flash multiplies the bonus).
+        float adaptiveHideResist      = 0.0f;   // 0..1; e.g. 0.6 == 60% reduction
+        float adaptiveHideDurationSec = 8.0f;   // window length; unused when resist == 0
     };
 
     // Build the monster: load alien_crawler.glb from `modelDir` via a fresh
@@ -499,7 +511,8 @@ public:
     // for legacy/test paths); a HEADSHOT (hit in the upper hitbox) deals 3x.
     FireResult fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                     Scene& scene, x3::phys::IPhysicsWorld& physics,
-                    int damage = kDamagePerShot);
+                    int damage = kDamagePerShot,
+                    x3::DamageType type = x3::DamageType::Kinetic);
 
     // Advance one frame: decay the hit-flash timer and, if chaseSpeed > 0 and the
     // monster is alive, move it relative to `playerPos` (chase for melee, hold a
@@ -540,7 +553,8 @@ public:
     // remove body + death-pop), exactly as a lethal shot does. Returns the killed
     // flag. No-op (returns false) when already dead. The knockback impulse is the
     // caller's job (it owns the physics body + direction).
-    bool takeMeleeDamage(int damage, Scene& scene, x3::phys::IPhysicsWorld& physics);
+    bool takeMeleeDamage(int damage, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                         x3::DamageType type = x3::DamageType::Melee);
 
     // Enemy archetype + attack params (read for the HUD / self-test / tuning).
     MonsterType type() const { return m_type; }
@@ -607,6 +621,13 @@ public:
     // flash, else 1). fire()/takeMeleeDamage() apply this automatically; exposed so
     // the host/self-test can observe the amplified-vulnerability beat.
     float incomingDamageMul() const { return inMemoryFlash() ? m_memoryFlashDamageMul : 1.0f; }
+
+    // Adaptive-Hide queries (HUD colour-tint, self-test introspection). m_adaptiveHideType
+    // is the LAST damage type seen; m_adaptiveHideTimer is the seconds left in the resist
+    // window (0 == window expired / never opened / row not opted-in).
+    x3::DamageType adaptiveHideType()   const { return m_adaptiveHideType; }
+    float          adaptiveHideTimer()  const { return m_adaptiveHideTimer; }
+    float          adaptiveHideResist() const { return m_adaptiveHideResist; }
 
     // ---- Act-2 boss tags (Wave 2) -----------------------------------------
     // Memory Hunter (Act-2 L12): which phase runs the copy/feint gimmick (0 = none).
@@ -855,6 +876,12 @@ private:
     float m_memoryFlashTime     = 0.0f;   // FE#7: flash duration per phase transition (s)
     float m_memoryFlashDamageMul = 1.0f;  // FE#7: incoming-damage mul while flashing
     float m_flashTimer          = 0.0f;   // >0 while in a memory-flash window (s)
+
+    // ---- Adaptive Hide (canon-aliens SaurianWarlord; opt-in via Tuning). ------
+    float          m_adaptiveHideResist      = 0.0f;                  // copied from Tuning
+    float          m_adaptiveHideDurationSec = 8.0f;                  // copied from Tuning
+    x3::DamageType m_adaptiveHideType        = x3::DamageType::None;  // last incoming type
+    float          m_adaptiveHideTimer       = 0.0f;                  // s remaining in current resist window
     // Act-2 boss tags carried as DATA (read by the floor module / HUD / self-test).
     uint32_t m_copyFeintPhase   = 0;      // Memory Hunter: which boss phase runs copy/feint
     float    m_escapeTimer      = 0.0f;   // Garrison Commander: P3 orbital-strike countdown (s)
@@ -1002,7 +1029,8 @@ public:
     // firing weapon's per-shot damage (defaults to kDamagePerShot).
     FireResult fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                     Scene& scene, x3::phys::IPhysicsWorld& physics,
-                    int damage = kDamagePerShot);
+                    int damage = kDamagePerShot,
+                    x3::DamageType type = x3::DamageType::Kinetic);
 
 private:
     std::vector<std::unique_ptr<MonsterSystem>> m_monsters;
@@ -1300,6 +1328,14 @@ struct ScriptedFightHook {
 // Logs PASS/FAIL T#, prints "bosses: X/Y passed", returns true iff all pass. No
 // window / Vulkan. Lives in monster.cpp. Mirrors the other self-tests.
 bool runBossesSelfTest();
+
+// Adaptive Hide self-test (--test-adaptive-hide). Builds one MonsterSystem with a
+// Tuning that opts into Adaptive Hide (resist 0.6, window 8 s) and walks through
+// the rhythm specified in docs/canon-aliens-adaptive-hide.md §3: full damage on
+// first hit, reduced on a same-type repeat, full on a type-rotation, timer expiry
+// re-opens the window, opt-out (resist == 0) is dead-code (regression). Headless
+// (no Vulkan / window), logs PASS/FAIL, prints "adaptivehide: X/Y passed".
+bool runAdaptiveHideSelfTest();
 
 // ===========================================================================
 // ACT-2 ENEMY + BOSS ROSTER (Wave 2). Alien-planet surface (Keth'zar Prime,

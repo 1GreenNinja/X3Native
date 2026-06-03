@@ -1399,6 +1399,10 @@ int main(int argc, char** argv) {
     // --test-bosses (Act-1 bosses, Wave 1): the 5 mid-boss defs + the multi-pod
     // machine + the scripted pre-fight hook + the Martinez regression guard. Additive.
     bool        testBosses = false;
+    // --test-adaptive-hide (canon-aliens engine ext.): the type-keyed rotate-damage
+    // rhythm on a Boss-type monster — full first hit, reduced same-type repeat,
+    // type-rotation re-opens, window expires, opt-out (resist==0) is dead-code.
+    bool        testAdaptiveHide = false;
     // --test-act2bosses (Act-2 roster, Wave 2): the 5 alien-planet-surface enemy
     // defs + 4 single-body bosses (Memory Hunter / Siren / Breeder Queen / Garrison
     // Commander) + the Wave-2 Tuning tags (startAllied / copyFeintPhase /
@@ -1701,6 +1705,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-multifloor-ai") testMultiFloorAi = true;
         else if (a == "--test-bestiary") testBestiary = true;
         else if (a == "--test-bosses") testBosses = true;
+        else if (a == "--test-adaptive-hide") testAdaptiveHide = true;
         else if (a == "--test-act2bosses") testAct2Bosses = true;
         else if (a == "--test-spiremid") testSpireMid = true;
         else if (a == "--test-nexus") testNexus = true;
@@ -3407,6 +3412,11 @@ int main(int argc, char** argv) {
         x3::logInfo("running EFLZ Act-1 mid-boss roster + machine-extension "
                     "(multi-pod + scripted pre-fight hook) self-test...");
         return x3::game::runBossesSelfTest() ? 0 : 1;
+    }
+    if (testAdaptiveHide) {
+        x3::logInfo("running canon-aliens Adaptive-Hide rhythm self-test "
+                    "(type-keyed resist + 8 s window; Warlord-tuned)...");
+        return x3::game::runAdaptiveHideSelfTest() ? 0 : 1;
     }
     if (testAct2Bosses) {
         x3::logInfo("running EFLZ Act-2 roster (5 alien-planet-surface enemies + "
@@ -11153,7 +11163,10 @@ int main(int argc, char** argv) {
                 x3::game::ResolvedFire shot = arsenal.fire(eye, dir, weaponRng);
                 const x3::phys::Vec3 m = muzzleFromCamera(vmX, vmY, vmZ, vmYaw, vmPitch);
                 for (const auto& ray : shot.rays) {
-                    x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics);
+                    // Pass the firing weapon's DamageType through so canon-aliens Adaptive Hide
+                    // (currently on the SaurianWarlord row) reacts to the player's loadout.
+                    x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics,
+                                                        ray.damage, ray.type);
                     combatFx.addTracer(m, r.endPoint);
                 }
                 for (const auto& pj : shot.projectiles)
@@ -12591,34 +12604,38 @@ int main(int argc, char** argv) {
                 combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);   // per-weapon flash (hitscan)
                 for (const auto& ray : shot.rays) {
                     const int wdmg = ray.damage;          // this pellet/ray's damage
-                    x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics, wdmg);
+                    // canon-aliens Adaptive Hide: each ray also carries its WeaponDef::type
+                    // (Kinetic / Energy / ... stamped by Arsenal::fire). Threaded through
+                    // every dispatcher so bosses with adaptiveHideResist > 0 react to the
+                    // player's actual loadout choice (the Warlord's resist rhythm).
+                    x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                     // --world canonlevel: the legacy groups are empty; route the shot through
                     // the canon enemies/boss/girls instead (arm-gated by canonPlay.onFire).
                     if (!r.hitMonster && canonWorld && canonPlay.built()) {
-                        x3::game::FireResult rc = canonPlay.onFire(eye, ray.dir, scene, *physics, wdmg);
+                        x3::game::FireResult rc = canonPlay.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                         if (rc.hitMonster || (!r.hit && rc.hit)) r = rc;
                     }
                     // If the B1 groups didn't take it, try the F3/F4/F5 enemies (the
                     // shot is already arm-gated by the arsenal/Level1Game::onFire).
                     if (!r.hitMonster && game.armed()) {
-                        x3::game::FireResult rm = midFloors.onFire(eye, ray.dir, scene, *physics, wdmg);
+                        x3::game::FireResult rm = midFloors.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                         if (rm.hitMonster || (!r.hit && rm.hit)) r = rm;
                     }
                     // Then the F6/F7 top-floor enemies + the Clone boss.
                     if (!r.hitMonster && game.armed()) {
-                        x3::game::FireResult rt = topFloors.onFire(eye, ray.dir, scene, *physics, wdmg);
+                        x3::game::FireResult rt = topFloors.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                         if (rt.hitMonster || (!r.hit && rt.hit)) r = rt;
                     }
                     // Then the Floor 4.5 Chorus pods (no-op until the Nexus is armed; a
                     // pod killed this way counts as KILLED, not saved).
                     if (!r.hitMonster && game.armed()) {
-                        x3::game::FireResult rn = nexus.onFire(eye, ray.dir, scene, *physics, wdmg);
+                        x3::game::FireResult rn = nexus.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                         if (rn.hitMonster || (!r.hit && rn.hit)) r = rn;
                     }
                     // Then the hidden sub-level enemies + the Frozen Collective (a clean
                     // miss until the descent has opened).
                     if (!r.hitMonster && game.armed()) {
-                        x3::game::FireResult rs = subLevels.onFire(eye, ray.dir, scene, *physics, wdmg);
+                        x3::game::FireResult rs = subLevels.onFire(eye, ray.dir, scene, *physics, wdmg, ray.type);
                         if (rs.hitMonster || (!r.hit && rs.hit)) r = rs;
                     }
                     if (arsenal.current().beam) combatFx.addBolt(muzzle, r.endPoint);   // lightning gun: jagged forked bolt

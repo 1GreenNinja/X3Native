@@ -141,8 +141,13 @@ bool SpireNexus::onInteract(const x3::phys::Vec3& playerPos, Scene& scene,
 
 FireResult SpireNexus::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                               Scene& scene, x3::phys::IPhysicsWorld& physics,
-                              int damage) {
+                              int damage, x3::DamageType type) {
     if (!m_built || !m_armed) return FireResult{};   // no Chorus to hit before discovery
+    // NOTE: MultiPodBoss::fire is a different signature than MonsterManager::fire and
+    // doesn't yet accept a DamageType — Chorus pods will read as Kinetic until that
+    // class lights up too (separate follow-up PR; the Chorus boss design doesn't
+    // currently use adaptiveHideResist anyway, so this is a pure-signature cleanup).
+    (void)type;
     return m_chorus.fire(eye, dir, scene, physics, damage);
 }
 

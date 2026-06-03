@@ -125,7 +125,8 @@ public:
     // bosses). Returns the FireResult so the host spawns FX. No-op when not armed.
     FireResult onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                       Scene& scene, x3::phys::IPhysicsWorld& physics,
-                      int damage = kDamagePerShot);
+                      int damage = kDamagePerShot,
+                      x3::DamageType type = x3::DamageType::Kinetic);
 
     // Try to rescue the nearest captive girl in range of `playerPos` (E-interact). Returns
     // true iff a girl was rescued this call (the host logs / surfaces her grateful bark).

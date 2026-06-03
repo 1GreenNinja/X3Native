@@ -447,19 +447,23 @@ bool Act2Desert::onInteract(uint32_t interactId) {
 }
 
 FireResult Act2Desert::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                              Scene& scene, x3::phys::IPhysicsWorld& physics) {
-    // L10 Warlord (when armed) takes priority — return its hit if any.
+                              Scene& scene, x3::phys::IPhysicsWorld& physics,
+                              int damage, x3::DamageType type) {
+    // L10 Warlord (when armed) takes priority — return its hit if any. canon-aliens
+    // Adaptive Hide: the SaurianWarlord row opts into adaptiveHideResist so `type`
+    // matters here — players who spam one weapon stall, players who rotate keep
+    // damage flowing.
     if (m_warlordSpawned) {
-        FireResult rw = m_warlord.fire(eye, dir, scene, physics);
+        FireResult rw = m_warlord.fire(eye, dir, scene, physics, damage, type);
         if (rw.hitMonster) return rw;
     }
     // L10 Mantis Ambush (when armed) is next priority — wildcard is closer than the patrol.
     if (m_mantisSpawned) {
-        FireResult rm = m_mantisAmbush.fire(eye, dir, scene, physics);
+        FireResult rm = m_mantisAmbush.fire(eye, dir, scene, physics, damage, type);
         if (rm.hitMonster) return rm;
     }
     // Otherwise fire against the L10 Overlord patrol (allied Salvari excluded).
-    return m_patrol.fire(eye, dir, scene, physics);
+    return m_patrol.fire(eye, dir, scene, physics, damage, type);
 }
 
 void Act2Desert::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
