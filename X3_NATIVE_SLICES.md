@@ -137,7 +137,7 @@
 **Gate**: GLB appears in viewport.
 
 ## Slice 23 — PBR metallic-roughness materials from glTF
-**Goal**: Map glTF PBR (baseColor/metallic/roughness/normal/emissive/occlusion) to RBDOOM's PBR.
+**Goal**: Map glTF PBR (baseColor/metallic/roughness/normal/emissive/occlusion) to the engine's own clean-room PBR (`shaders/mesh.frag`; importer in `engine/asset/ModelLoader.cpp`). *(Note: much of this is already implemented — see audit.)*
 **Gate**: GLB renders with correct PBR shading.
 
 ## Slice 24 — KTX2 / Basis Universal textures
@@ -391,7 +391,7 @@
 **Gate**: visual parity with Babylon reference.
 
 ## Slice 80 — Bloom tuning + lens dirt
-**Goal**: Tune RBDOOM's bloom; optional lens-dirt overlay.
+**Goal**: Tune the engine's own bloom (`shaders/bloom_down.frag` / `shaders/bloom_up.frag`); optional lens-dirt overlay.
 **Gate**: highlights glow tastefully, not blown out.
 
 ## Slice 81 — TAA / DLSS hook
@@ -443,7 +443,7 @@
 # M9 — Audio + Steamworks (Slices 91–96)
 
 ## Slice 91 — miniaudio integration
-**Goal**: Replace id sound with miniaudio; play a 2D sound.
+**Goal**: Add the miniaudio audio backend (clean-room; there is no prior "id sound" to replace); play a 2D sound. *(Note: `engine/audio/MiniaudioSystem.cpp` already exists — IN PROGRESS per PROVENANCE.)*
 **Gate**: a sound plays.
 
 ## Slice 92 — 3D spatial audio (HRTF)
