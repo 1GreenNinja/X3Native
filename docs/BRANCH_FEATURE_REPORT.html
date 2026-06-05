@@ -1,0 +1,565 @@
+<!doctype html><html lang='en'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>X3Native — Branch Feature Report</title><style>:root{--bg:#0b0f14;--panel:#121822;--ink:#dce6f2;--muted:#8aa0b8;--line:#1f2a38;
+--accent:#39d4ff;--accent2:#7c5cff;--row:#0f151d;--rowalt:#0c1118}
+*{box-sizing:border-box}
+body{margin:0;background:linear-gradient(160deg,#0a0e13,#0d1420 60%,#0a0e13);
+color:var(--ink);font:15px/1.6 'Segoe UI',system-ui,-apple-system,sans-serif;
+padding:0 0 80px}
+.wrap{max-width:1060px;margin:0 auto;padding:0 28px}
+header.hero{padding:48px 28px 28px;border-bottom:1px solid var(--line);
+background:radial-gradient(900px 300px at 20% -10%,rgba(57,212,255,.12),transparent),
+radial-gradient(700px 260px at 90% -20%,rgba(124,92,255,.12),transparent)}
+.hero .wrap{padding:0}
+h1{font-size:30px;margin:0 0 6px;letter-spacing:.3px;
+background:linear-gradient(90deg,var(--accent),var(--accent2));
+-webkit-background-clip:text;background-clip:text;color:transparent}
+h2{margin:38px 0 12px;font-size:21px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+h3{margin:26px 0 10px;font-size:16px;color:var(--accent)}
+p{margin:10px 0;color:var(--ink)}
+em{color:var(--muted)}
+a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
+code{background:#0a0e14;border:1px solid var(--line);border-radius:5px;
+padding:1px 6px;font:13px/1.5 'Cascadia Code',Consolas,monospace;color:#9fe8ff}
+strong{color:#fff}
+hr{border:0;border-top:1px solid var(--line);margin:30px 0}
+table{width:100%;border-collapse:collapse;margin:14px 0;font-size:14px;
+border:1px solid var(--line);border-radius:10px;overflow:hidden}
+thead th{background:linear-gradient(180deg,#16202c,#111923);text-align:left;
+padding:10px 12px;color:#bfe9ff;font-weight:600;border-bottom:1px solid var(--line)}
+tbody td{padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+tbody tr:nth-child(odd){background:var(--row)}
+tbody tr:nth-child(even){background:var(--rowalt)}
+tbody tr:hover{background:#15202c}
+ul{margin:10px 0;padding-left:22px}li{margin:4px 0}
+blockquote{margin:14px 0;padding:8px 16px;border-left:3px solid var(--accent2);
+background:#101622;color:var(--muted);border-radius:0 8px 8px 0}
+.footer{margin-top:40px;color:var(--muted);font-size:12px}</style></head><body><header class='hero'><div class='wrap'></div></header><div class='wrap'><h1>X3Native — Branch Feature Report</h1>
+<p><strong>Generated:</strong> 2026-06-05 · <strong>Repo:</strong> <code>1GreenNinja/X3Native</code> · <strong>Refs surveyed:</strong> 166 (local + <code>origin/*</code>) <strong>Current branch:</strong> <code>feat/cull-combined</code> · <strong>Default:</strong> <code>main</code></p>
+<p>This report groups every active feature branch by lane, using each branch's latest commit subject as its feature label. Local + <code>origin/</code> pairs of the same name are shown once. Ephemeral <code>worktree-agent-*</code> scratch branches are summarized as a group at the end rather than listed individually.</p>
+<hr>
+<h2>At a glance</h2>
+<table><thead><tr>
+<th>Lane</th>
+<th>Branches</th>
+<th>Highlights</th>
+</tr></thead><tbody>
+<tr>
+<td>🚀 Space / Act-3 (S0–S12 + VFX)</td>
+<td>~19</td>
+<td>Full ship-combat + interstellar-transit slice stack</td>
+</tr>
+<tr>
+<td>🛸 Ships · cockpits · vehicles</td>
+<td>4</td>
+<td>Jake's Minerva, Vattalus bridge, Firefly cockpit, heavy-mech</td>
+</tr>
+<tr>
+<td>🤝 Companion / co-op AI</td>
+<td>5</td>
+<td>Two-brain companion squad + non-combatant NPC system</td>
+</tr>
+<tr>
+<td>👾 Enemies · canon-aliens · monsters</td>
+<td>7</td>
+<td>4 canon species, Adaptive-Hide, Saurian Warlord boss</td>
+</tr>
+<tr>
+<td>🗺️ World / levels</td>
+<td>~10</td>
+<td>Open-world, Act-2 desert/caves, floors 2–7, Spire cull</td>
+</tr>
+<tr>
+<td>💎 Glass · materials · holo</td>
+<td>5</td>
+<td>UE5 Cook-Torrance glass, holo-terminal kiosks</td>
+</tr>
+<tr>
+<td>🔫 Weapons</td>
+<td>5</td>
+<td>Railgun #10, real PBR viewmodels, per-weapon SFX/FX</td>
+</tr>
+<tr>
+<td>🔥 Damage-type thread (Jun 1)</td>
+<td>5</td>
+<td><code>DamageType</code> threaded through every <code>onFire</code> dispatch</td>
+</tr>
+<tr>
+<td>⚙️ Rendering / engine infra</td>
+<td>~10</td>
+<td>Frustum + occlusion cull, RT AO, capture fix, versioning</td>
+</tr>
+<tr>
+<td>🌀 Portal hub · swim · misc gameplay</td>
+<td>4</td>
+<td>Rift hub, Act-4 undersea swim, healthbars, AI fixes</td>
+</tr>
+<tr>
+<td>📝 Docs · fleet · specs</td>
+<td>~14</td>
+<td>Fleet notes, clean-room license, level-editor lane</td>
+</tr>
+<tr>
+<td>🔗 Integration / merge</td>
+<td>5</td>
+<td><code>main</code>, culling-glass, 14900k-test, cull-doors-death-anim</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>🚀 Space / Act-3 — ship combat &amp; interstellar transit</h2>
+<p>The largest lane: a numbered slice stack (S0–S12) plus standalone VFX.</p>
+<table><thead><tr>
+<th>Branch</th>
+<th>Slice</th>
+<th>Feature</th>
+</tr></thead><tbody>
+<tr>
+<td><code>feat/space-layer</code></td>
+<td>S0</td>
+<td>SpaceLayer spine — context FSM + env transform + proxy registry</td>
+</tr>
+<tr>
+<td><code>feat/space-env</code></td>
+<td>S1</td>
+<td>Space environment — nebula/star dome + proxy planets + sun</td>
+</tr>
+<tr>
+<td><code>feat/space-lod</code></td>
+<td>S2</td>
+<td>Distance-LOD system + Blender LOD-chain generator</td>
+</tr>
+<tr>
+<td><code>feat/wormhole-transit</code></td>
+<td>S3</td>
+<td>Wormhole transit — crystal-matrix interstellar jump</td>
+</tr>
+<tr>
+<td><code>feat/atmo-descent</code></td>
+<td>S4</td>
+<td>Cinematic atmospheric descent (AtmoDescent)</td>
+</tr>
+<tr>
+<td><code>feat/ship-interior</code></td>
+<td>S5</td>
+<td>Walkable, data-driven static ship interior</td>
+</tr>
+<tr>
+<td><code>feat/ship-windows</code></td>
+<td>S6</td>
+<td>True-portal ship windows — moving space outside the glass</td>
+</tr>
+<tr>
+<td><code>feat/ship-repair</code></td>
+<td>S7</td>
+<td>Ship repair — open panels + connect wires (transit gameplay)</td>
+</tr>
+<tr>
+<td><code>feat/ship-ai</code></td>
+<td>S8</td>
+<td>Enemy ship AI — dogfight pillar enemies</td>
+</tr>
+<tr>
+<td><code>feat/ship-targeting</code></td>
+<td>S9</td>
+<td>Targeting / radar / lock-on dogfight HUD layer</td>
+</tr>
+<tr>
+<td><code>feat/ship-damage</code></td>
+<td>S10</td>
+<td>Ship damage model — shield/hull/destructible subsystems</td>
+</tr>
+<tr>
+<td><code>feat/ship-art</code></td>
+<td>S11</td>
+<td>Ship art + node-transform animation (Lane D)</td>
+</tr>
+<tr>
+<td><code>feat/eva-spacewalk</code></td>
+<td>S12</td>
+<td>EVA spacewalk — zero-G hull-repair controller</td>
+</tr>
+<tr>
+<td><code>feat/space-pilot</code></td>
+<td>—</td>
+<td>SpacePilotController 6DOF + <code>--test-space</code> + <code>--world space</code></td>
+</tr>
+<tr>
+<td><code>feat/space-stars</code></td>
+<td>—</td>
+<td>Procedural starfield system + Act-3 art plan</td>
+</tr>
+<tr>
+<td><code>feat/decloak-vfx</code></td>
+<td>—</td>
+<td>Decloak shimmer VFX (intro ship phasing in)</td>
+</tr>
+<tr>
+<td><code>feat/tractor-beam</code></td>
+<td>—</td>
+<td>Tractor-beam VFX for the intro capture beat</td>
+</tr>
+<tr>
+<td><code>feat/wormhole-vfx</code></td>
+<td>—</td>
+<td>Salvari crystal-matrix wormhole VFX (jump transition)</td>
+</tr>
+<tr>
+<td><code>feat/space-wave1-integrated</code></td>
+<td>—</td>
+<td>Wave-1 space integration branch</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>🛸 Ships · cockpits · vehicles</h2>
+<table><thead><tr>
+<th>Branch</th>
+<th>Feature</th>
+</tr></thead><tbody>
+<tr>
+<td><code>feat/jake-ship</code></td>
+<td>Baked game-weight Minerva staged as Jake's hero ship</td>
+</tr>
+<tr>
+<td><code>feat/cockpit-vattalus</code></td>
+<td>Vattalus-style sci-fi bridge for <code>--world ship-interior</code></td>
+</tr>
+<tr>
+<td><code>feat/ship-interior-firefly</code></td>
+<td><code>--world ship-interior</code> rebuilt as a Firefly cockpit</td>
+</tr>
+<tr>
+<td><code>feat/mech-pilot</code></td>
+<td>Rideable heavy-mech pilot controller + <code>--test-mech</code> + <code>--world mech</code></td>
+</tr>
+</tbody></table>
+<hr>
+<h2>🤝 Companion / co-op AI</h2>
+<table><thead><tr>
+<th>Branch</th>
+<th>Feature</th>
+</tr></thead><tbody>
+<tr>
+<td><code>feat/companion-ai</code></td>
+<td>Companion squad — visible companion + threat models in showcase</td>
+</tr>
+<tr>
+<td><code>feat/companion-controller</code></td>
+<td>Single-companion facade (Slice C seam)</td>
+</tr>
+<tr>
+<td><code>feat/coop-companion-merge</code></td>
+<td>Co-op companion merge — spec locked, Wave-1 incoming</td>
+</tr>
+<tr>
+<td><code>feat/npc-controller</code></td>
+<td>NPCSystem controller for non-combatant world NPCs</td>
+</tr>
+<tr>
+<td><code>origin/feat/coop-npcs</code></td>
+<td>Co-op NPC integration — INavGrid + allyStateName fixes</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>👾 Enemies · canon-aliens · monsters</h2>
+<table><thead><tr>
+<th>Branch</th>
+<th>Feature</th>
+</tr></thead><tbody>
+<tr>
+<td><code>feat/enemy-artpass</code></td>
+<td>Wire the real Synth character as <code>blue_synth_seed1.glb</code> (18.6→8.6 MB)</td>
+</tr>
+<tr>
+<td><code>origin/feat/canon-aliens</code></td>
+<td>Port the four "most reported" species into <code>MonsterSystem::Tuning</code></td>
+</tr>
+<tr>
+<td><code>origin/feat/canon-aliens-warlord-adaptive</code></td>
+<td>Light up Adaptive-Hide on the Saurian Warlord row</td>
+</tr>
+<tr>
+<td><code>origin/feat/adaptive-hide</code></td>
+<td>Adaptive-Hide engine extension (rotate damage-type resist)</td>
+</tr>
+<tr>
+<td><code>origin/feat/act2-desert-warlord</code></td>
+<td>Saurian Warlord boss wired into L10 (gated arena)</td>
+</tr>
+<tr>
+<td><code>origin/feat/act2-desert-mantis-ambush</code></td>
+<td>Mantis Arbiter wildcard ambush gated by side-quest</td>
+</tr>
+<tr>
+<td><code>origin/feat/act2-desert-grey-patrol</code></td>
+<td>L10 patrol's ranged unit swapped to canon GreyTasked drone</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>🗺️ World / levels</h2>
+<table><thead><tr>
+<th>Branch</th>
+<th>Feature · Status</th>
+</tr></thead><tbody>
+<tr>
+<td><code>feat/openworld</code></td>
+<td>Open-world — gated (Release+Debug, 0 VUID, alloc=0) · <strong>READY FOR INTEGRATION</strong></td>
+</tr>
+<tr>
+<td><code>feat/floors2-7-dims</code></td>
+<td>Floors 2–7 dims · <strong>READY FOR INTEGRATION</strong> (46/46 gate)</td>
+</tr>
+<tr>
+<td><code>feat/act2-world</code></td>
+<td>Act-2 world · <strong>READY FOR INTEGRATION</strong> (44/44 gate)</td>
+</tr>
+<tr>
+<td><code>origin/feat/act2-caves</code></td>
+<td>Act-2 caves (DJBOOTH) · gate PASSED</td>
+</tr>
+<tr>
+<td><code>origin/feat/act2-desert</code></td>
+<td>Act-2 desert base world</td>
+</tr>
+<tr>
+<td><code>origin/feat/act2-desert-nordic-mentor</code></td>
+<td>Nordic Steward mentor seated in the L11 Salvari camp</td>
+</tr>
+<tr>
+<td><code>origin/feat/act2-roster</code></td>
+<td>Act-2 roster + env install</td>
+</tr>
+<tr>
+<td><code>origin/feat/14900k-content</code></td>
+<td>Club 1127 + flooded cave/tunnel network (<code>--world club</code>)</td>
+</tr>
+<tr>
+<td><code>feat/world-blueprint</code></td>
+<td>Resolve the 4 open design decisions (Tim, 2026-05-23)</td>
+</tr>
+<tr>
+<td><code>feat/spire-cull</code></td>
+<td>Game-wide per-floor occlusion cull for the hand-coded Spire</td>
+</tr>
+<tr>
+<td><code>origin/feat/door-code-keypad</code></td>
+<td>Functional doors + 7-story elevator + gun aim</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>💎 Glass · materials · holo-terminals</h2>
+<table><thead><tr>
+<th>Branch</th>
+<th>Feature</th>
+</tr></thead><tbody>
+<tr>
+<td><code>feat/glass-shiny-transparent</code></td>
+<td>Glass rework — UE5-style shiny + transparent (Filament Cook-Torrance)</td>
+</tr>
+<tr>
+<td><code>feat/glass-lounge-sit</code></td>
+<td>Glass lounge (clear plate-glass table + chairs) + sit-at-chair interaction</td>
+</tr>
+<tr>
+<td><code>feat/holo-terminal-kiosks</code></td>
+<td>Clear-glass HoloTerminal redo + placeable kiosk system + 6 B1 terminals</td>
+</tr>
+<tr>
+<td><code>origin/feat/holoterm-hologram</code></td>
+<td>Cell terminal as an actual glowing blue hologram</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>🔫 Weapons</h2>
+<table><thead><tr>
+<th>Branch</th>
+<th>Feature</th>
+</tr></thead><tbody>
+<tr>
+<td><code>feat/weapons-artpass</code></td>
+<td>Add Railgun (#10) — high-power precision slug</td>
+</tr>
+<tr>
+<td><code>feat/weapons-artpass-rebased</code></td>
+<td>Railgun #10, rebased variant</td>
+</tr>
+<tr>
+<td><code>origin/feat/weapon-real-models</code></td>
+<td>Real PBR-textured viewmodels for all 7 FPS weapons</td>
+</tr>
+<tr>
+<td><code>origin/feat/weapon-sfx-fx</code></td>
+<td>Distinct per-weapon fire SFX + muzzle/impact FX</td>
+</tr>
+<tr>
+<td><code>origin/feat/weapon-damage-types</code></td>
+<td>Stamp <code>DamageType</code> on every <code>WeaponDef</code> + <code>ResolvedFire</code> shot</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>🔥 Damage-type thread (Jun 1 sweep)</h2>
+<p>A coordinated pass threading <code>DamageType</code> through every <code>onFire</code> dispatcher.</p>
+<table><thead><tr>
+<th>Branch</th>
+<th>Feature</th>
+</tr></thead><tbody>
+<tr>
+<td><code>origin/feat/weapon-damage-types</code></td>
+<td>Source: <code>DamageType</code> on weapon defs + resolved shots</td>
+</tr>
+<tr>
+<td><code>origin/feat/main-fire-damage-types</code></td>
+<td><code>Level1Game::onFire</code> + player fire dispatch</td>
+</tr>
+<tr>
+<td><code>origin/feat/spire-fire-damage-types</code></td>
+<td>All four Spire <code>onFire</code> dispatchers (folded into <code>cull-combined</code>)</td>
+</tr>
+<tr>
+<td><code>origin/feat/act2-desert-fire-damage-types</code></td>
+<td><code>Act2Desert::onFire</code></td>
+</tr>
+<tr>
+<td><code>origin/feat/canon-play-fire-damage-types</code></td>
+<td><code>CanonPlay::onFire</code> + main dispatch</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>⚙️ Rendering / engine infrastructure</h2>
+<table><thead><tr>
+<th>Branch</th>
+<th>Feature</th>
+</tr></thead><tbody>
+<tr>
+<td><code>feat/cull-combined</code></td>
+<td><strong>(current)</strong> Combined cull chain — 7 branches collapsed into one</td>
+</tr>
+<tr>
+<td><code>feat/frustum-cull</code></td>
+<td>CPU per-object camera-frustum (POV) culling</td>
+</tr>
+<tr>
+<td><code>feat/headless-capture-fix</code></td>
+<td>Fix headless capture grabbing only clear color + pixel-variance assertion</td>
+</tr>
+<tr>
+<td><code>feat/smoketest-fix</code></td>
+<td>Mirror live shutdown teardown before <code>physics-&gt;shutdown</code></td>
+</tr>
+<tr>
+<td><code>feat/versioning</code></td>
+<td>Build-time <code>0.3.&lt;commit-count&gt;</code> version system</td>
+</tr>
+<tr>
+<td><code>feat/version-bump-0.4</code></td>
+<td>0.4 release — controllers + asset wiring batch (8 GLBs)</td>
+</tr>
+<tr>
+<td><code>feat/wire-new-glbs</code></td>
+<td>Wire 8 new rigged GLBs into the engine</td>
+</tr>
+<tr>
+<td><code>origin/feat/multi-font-roles</code></td>
+<td>Role-based multi-font HUD/UI system (proportional)</td>
+</tr>
+<tr>
+<td><code>origin/worktree-agent-adc96d327cb9718fd</code></td>
+<td>Hardware ray-query RT ambient occlusion (BLAS/TLAS + inline AO)</td>
+</tr>
+<tr>
+<td><code>origin/worktree-agent-af060330558559680</code></td>
+<td>Skinned death ragdoll wired into monster death</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>🌀 Portal hub · swim · other gameplay</h2>
+<table><thead><tr>
+<th>Branch</th>
+<th>Feature</th>
+</tr></thead><tbody>
+<tr>
+<td><code>feat/portal-hub-polish</code></td>
+<td>Rift hub — blue energy core + wormhole-generator housing + eerie audio</td>
+</tr>
+<tr>
+<td><code>feat/portal-hub-polished</code></td>
+<td>Port + polish DJBOOTH's portal hub onto <code>cull-combined</code></td>
+</tr>
+<tr>
+<td><code>feat/swim-controller</code></td>
+<td>Act-4 undersea SwimController + <code>--test-swim</code> (8/8) + <code>--world swim</code></td>
+</tr>
+<tr>
+<td><code>feat/healthbar-polish</code></td>
+<td>Healthbars — thin + faded + LOS-occluded + on every enemy</td>
+</tr>
+<tr>
+<td><code>fix/upper-floor-ai</code></td>
+<td>Stop cross-floor enemies from shooting through the level</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>📝 Docs · fleet · specs</h2>
+<table><thead><tr>
+<th>Branch</th>
+<th>Feature</th>
+</tr></thead><tbody>
+<tr>
+<td><code>origin/docs/clean-room-license-correction</code></td>
+<td>Correct license posture — original clean-room work, not an RBDOOM fork</td>
+</tr>
+<tr>
+<td><code>origin/feat/level-editor</code></td>
+<td>Seed native Level Editor lane — FP walkaround + AI asset suggestions</td>
+</tr>
+<tr>
+<td><code>origin/specs/jk-idtech8-enhance</code></td>
+<td>Fold "beyond idTech 8" features into the roadmap</td>
+</tr>
+<tr>
+<td><code>origin/feat/fleet-messaging-design</code></td>
+<td><code>fleet_image.py</code> — post images to fleet chat</td>
+</tr>
+<tr>
+<td><code>origin/docs/fleet-localllm</code></td>
+<td>Local-LLM via LM Studio router guide</td>
+</tr>
+<tr>
+<td><code>origin/feat/rotor-spin</code></td>
+<td>Procedural rotor/propeller spin prototype (RotorSpin)</td>
+</tr>
+<tr>
+<td><code>origin/feat/wave3-content</code></td>
+<td>Procedural creature locomotion baker (Verthani)</td>
+</tr>
+</tbody></table>
+<p>*(Plus ~7 more <code>docs/*</code> and <code>note-to-*</code> fleet-coordination branches.)*</p>
+<hr>
+<h2>🔗 Integration / merge branches</h2>
+<table><thead><tr>
+<th>Branch</th>
+<th>Role</th>
+</tr></thead><tbody>
+<tr>
+<td><code>main</code></td>
+<td>Default — last merge PR #8 (integration/culling-glass); 3 behind some feature work</td>
+</tr>
+<tr>
+<td><code>origin/integration/culling-glass</code></td>
+<td>Culling + glass integration line</td>
+</tr>
+<tr>
+<td><code>integration/14900k-test</code></td>
+<td>14900K integration test line</td>
+</tr>
+<tr>
+<td><code>origin/integration/main-plus-session</code></td>
+<td>main + session unify (physics constraint API)</td>
+</tr>
+<tr>
+<td><code>merge/cull-doors-death-anim</code></td>
+<td>Merge <code>doors-death-anim</code> onto the cull line</td>
+</tr>
+</tbody></table>
+<hr>
+<h2>🧪 Ephemeral agent worktrees</h2>
+<p>~16 <code>worktree-agent-*</code> branches exist as parallel-agent scratch workspaces (glass M1, RT AO, gibs, nameplates/minimap, TTF font, secret trapdoor room, nexus ragdoll teardown fix, etc.). Most are already merged into the integration lines above and are not tracked here as standalone features.</p>
+<hr>
+<p>*Report generated by surveying all local and <code>origin/*</code> refs. Feature labels are the latest commit subject per branch; "READY FOR INTEGRATION" tags are the branch authors' own gate status, not re-verified here.*</p></div></body></html>
