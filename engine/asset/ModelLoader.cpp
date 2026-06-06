@@ -46,6 +46,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -413,6 +414,22 @@ private:
             m.normalTex    = resolveTexture(cm.normal_texture,    up, /*isNormal*/true,  /*srgb*/false); // DATA: linear
             m.occlusionTex = resolveTexture(cm.occlusion_texture, up, false, /*srgb*/false);             // DATA: linear
             m.emissiveTex  = resolveTexture(cm.emissive_texture,  up, false, /*srgb*/true);              // COLOR: sRGB
+            // HDRP DetailMap via the converter's material.extras["x3Detail"] (glTF has no
+            // detail slot): {"tex":N,"uvScale":F,"nrmScale":F}. Resolve the map LINEAR (data).
+            if (cm.extras.data) {
+                const char* dj = std::strstr(cm.extras.data, "\"x3Detail\"");
+                if (dj) {
+                    int dtex = -1; double duv = 1.0, dnrm = 1.0;
+                    if (const char* t = std::strstr(dj, "\"tex\""))      std::sscanf(t, "\"tex\":%d",       &dtex);
+                    if (const char* u = std::strstr(dj, "\"uvScale\""))  std::sscanf(u, "\"uvScale\":%lf",  &duv);
+                    if (const char* n = std::strstr(dj, "\"nrmScale\"")) std::sscanf(n, "\"nrmScale\":%lf", &dnrm);
+                    if (dtex >= 0 && (size_t)dtex < data.textures_count) {
+                        m.detailTex      = resolveTexture(&data.textures[dtex], up, /*isNormal*/false, /*srgb*/false); // DATA: linear
+                        m.detailUvScale  = (float)duv;
+                        m.detailNrmScale = (float)dnrm;
+                    }
+                }
+            }
             m.doubleSided  = cm.double_sided != 0;
             m.alphaBlend   = (cm.alpha_mode == cgltf_alpha_mode_blend);
             m.alphaMask    = (cm.alpha_mode == cgltf_alpha_mode_mask);
@@ -758,6 +775,9 @@ bool fillDrawable(const Model& m, const MeshPrimitive& p, const float nodeWorld[
         for (int k = 0; k < 3; ++k) d.emissiveFactor[k] = mat.emissive[k];
         if ((mat.emissiveTex & kTagMask) == kTexTag)
             d.emissiveTexId = static_cast<uint32_t>(mat.emissiveTex & ~kTagMask);
+        if ((mat.detailTex & kTagMask) == kTexTag)
+            d.detailTexId = static_cast<uint32_t>(mat.detailTex & ~kTagMask);
+        d.detailUvScale = mat.detailUvScale;
     }
     for (int i = 0; i < 16; ++i) d.nodeTransform[i] = nodeWorld[i];
     return true;
