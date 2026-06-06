@@ -21,7 +21,13 @@
 
 #include "editor.h"
 
+#include "engine/asset/IModelLoader.h"
+#include "engine/asset/IAssetSource.h"
+
 #include <cstdint>
+#include <memory>
+#include <string>
+#include <unordered_map>
 #include <vector>
 
 struct GLFWwindow;
@@ -69,6 +75,17 @@ public:
     int placeBrush(uint32_t type, const float pos[3], const float size[3],
                    x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
                    x3::phys::IPhysicsWorld& physics);
+
+    // Feature 3: place a GLB model entity (type "model", model=relPath) at the fly-cam
+    // focus, loading + caching the GLB on first use. Returns the entity index (or -1 if
+    // the LevelDoc is full). The model is drawn by renderModels() each frame.
+    int placeModel(const std::string& relPath, x3::rhi::IRenderDevice& device);
+
+    // Feature 3: draw all placed model entities' GLB drawables at their transforms.
+    // Call from the main loop ALONGSIDE scene.render() (it needs a live FrameContext,
+    // so it can't run inside the ImGui-only draw()). No-op if no models are placed or
+    // the converted_glb dir didn't mount. Editor-only.
+    void renderModels(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame);
 
     HostMode mode() const { return m_mode; }
     LevelDoc&       doc()       { return m_doc; }
@@ -118,6 +135,23 @@ private:
     // Resolve a brush's material id -> { GPU texture id, tint[3] } for spawnBrush, baking
     // (and caching) the texture on first use. Empty/unknown id falls back to the grid.
     uint32_t resolveMaterial(const std::string& id, x3::rhi::IRenderDevice& device, float outTint[3]);
+
+    // ---- Feature 3: model browser (GLB props) -------------------------------
+    // One loaded GLB: its drawables (handle-resolved, node-TRS baked). Cached by
+    // relpath so repeated placements of the same prop share one GPU upload.
+    struct LoadedModel {
+        x3::asset::Model                      model;
+        std::vector<x3::asset::ModelDrawable> drawables;
+        bool ok = false;
+    };
+    std::unique_ptr<x3::asset::IAssetSource> m_modelAssets;  // mounts converted_glb
+    std::unique_ptr<x3::asset::IModelLoader> m_modelLoader;  // bound to the device
+    std::unordered_map<std::string, LoadedModel> m_modelCache;
+    bool m_modelDirMounted = false;
+    // Lazily mount the converted_glb dir + create the loader (first model placement).
+    void ensureModelLoader(x3::rhi::IRenderDevice& device);
+    // Load + cache a GLB by relpath; returns the cached entry (ok=false on failure).
+    const LoadedModel* loadModelCached(const std::string& relPath, x3::rhi::IRenderDevice& device);
 
     // Fly-cam state (Edit mode). pitch clamped +-1.55. Seeded near the world origin.
     float m_camX = 6.0f, m_camY = 4.0f, m_camZ = 10.0f;
