@@ -73,3 +73,19 @@ run.pid
 # Loose scratch screenshots in repo root (keep curated ones in docs/screenshots/)
 /*.png
 /*.gif
+
+# Runtime / scratch artifacts
+imgui.ini
+b1log.txt
+*terminal log*.txt
+*.done
+tools/__pycache__/
+assets/fonts/*.zip
+
+# Render-proof captures — regenerable via --screenshot-* (don't bloat history)
+captures/
+
+# ShowRoom_Vol30 baked GLBs: large + REGENERABLE from the Unity kit via the committed
+# converter:  python tools/convert_unity_pack.py repack-glb <kit> Example_01.orig.glb Example_01.glb
+# Keeping them out of LFS (the kit is the source of truth; the converter is committed).
+assets/converted_glb/ShowRoom_Vol30/
