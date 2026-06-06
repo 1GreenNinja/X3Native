@@ -365,6 +365,154 @@ bool EditorState::deleteSelectedBrush() {
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// Undo / redo (P0.6). Snapshot-based brush command stack. Pure doc mutation —
+// the host re-syncs the Scene + Jolt via the returned HistoryEffect hint.
+// ---------------------------------------------------------------------------
+void EditorState::pushCmd(const BrushCmd& c) {
+    // Truncate the redo tail (any command at/after the current undo position) then
+    // append + advance — the classic linear-history behaviour.
+    if (m_undoPos < (int)m_history.size())
+        m_history.erase(m_history.begin() + m_undoPos, m_history.end());
+    m_history.push_back(c);
+    m_undoPos = (int)m_history.size();
+}
+
+int EditorState::addBrushCmd(uint32_t type, const float pos[3]) {
+    int idx = addBrush(type, pos);          // does the mutation + selects the brush
+    if (idx < 0) return idx;
+    BrushCmd c; c.kind = CmdKind::Add; c.index = idx; c.after = m_doc.brushes[idx];
+    pushCmd(c);
+    return idx;
+}
+
+bool EditorState::deleteSelectedBrushCmd() {
+    if (!hasBrushSelection()) return false;
+    BrushCmd c; c.kind = CmdKind::Delete; c.index = m_selIndex;
+    c.before = m_doc.brushes[m_selIndex];   // capture value + live links for restore
+    bool ok = deleteSelectedBrush();
+    if (ok) pushCmd(c);
+    return ok;
+}
+
+void EditorState::beginBrushEdit(int index) {
+    if (m_editing) return;                  // already in a drag; ignore nested begins
+    if (index < 0 || index >= (int)m_doc.brushes.size()) return;
+    m_editing = true; m_editIndex = index; m_editBefore = m_doc.brushes[index];
+}
+
+void EditorState::commitBrushEdit() {
+    if (!m_editing) return;
+    m_editing = false;
+    const int idx = m_editIndex; m_editIndex = -1;
+    if (idx < 0 || idx >= (int)m_doc.brushes.size()) return;
+    const BlockoutBrush& now = m_doc.brushes[idx];
+    // Drop a no-op edit (e.g. a click that didn't drag) — only push if something moved.
+    auto v3eq = [](const float a[3], const float b[3]) {
+        return std::fabs(a[0]-b[0]) < 1e-5f && std::fabs(a[1]-b[1]) < 1e-5f &&
+               std::fabs(a[2]-b[2]) < 1e-5f;
+    };
+    const bool unchanged = v3eq(m_editBefore.pos, now.pos) &&
+                           v3eq(m_editBefore.size, now.size) &&
+                           std::fabs(m_editBefore.yaw - now.yaw) < 1e-5f;
+    if (unchanged) return;
+    BrushCmd c; c.kind = CmdKind::Transform; c.index = idx;
+    c.before = m_editBefore; c.after = now;
+    pushCmd(c);
+}
+
+HistoryEffect EditorState::undo() {
+    HistoryEffect eff;
+    if (!canUndo()) return eff;
+    const BrushCmd& c = m_history[--m_undoPos];
+    switch (c.kind) {
+        case CmdKind::Add: {
+            // Undo an Add = remove the brush. Hand the host the dead links to tear down.
+            if (c.index >= 0 && c.index < (int)m_doc.brushes.size()) {
+                const BlockoutBrush& b = m_doc.brushes[c.index];
+                eff.deadSceneEntity = b.sceneEntity; eff.deadBody = b.body;
+                m_doc.brushes.erase(m_doc.brushes.begin() + c.index);
+            }
+            eff.op = HistoryEffect::Op::Respawn; eff.index = c.index; eff.removed = true;
+            m_selKind = SelKind::None; m_selIndex = -1;
+            break;
+        }
+        case CmdKind::Delete: {
+            // Undo a Delete = re-insert the captured brush (links cleared so the host
+            // rebuilds a fresh mesh/body).
+            BlockoutBrush b = c.before; b.sceneEntity = 0xFFFFFFFFu; b.body = 0;
+            int at = c.index; if (at > (int)m_doc.brushes.size()) at = (int)m_doc.brushes.size();
+            m_doc.brushes.insert(m_doc.brushes.begin() + at, b);
+            eff.op = HistoryEffect::Op::Respawn; eff.index = at;
+            m_selKind = SelKind::Brush; m_selIndex = at;
+            break;
+        }
+        case CmdKind::Transform: {
+            if (c.index >= 0 && c.index < (int)m_doc.brushes.size()) {
+                BlockoutBrush& b = m_doc.brushes[c.index];
+                const uint32_t se = b.sceneEntity, bo = b.body;  // keep live links
+                b = c.before; b.sceneEntity = se; b.body = bo;
+                // A pure move/yaw can sync cheaply; a size change must respawn the mesh.
+                const bool sizeChanged =
+                    std::fabs(c.before.size[0]-c.after.size[0]) > 1e-5f ||
+                    std::fabs(c.before.size[1]-c.after.size[1]) > 1e-5f ||
+                    std::fabs(c.before.size[2]-c.after.size[2]) > 1e-5f;
+                eff.op = sizeChanged ? HistoryEffect::Op::Respawn : HistoryEffect::Op::SyncXform;
+                eff.index = c.index;
+                m_selKind = SelKind::Brush; m_selIndex = c.index;
+            }
+            break;
+        }
+        default: break;
+    }
+    return eff;
+}
+
+HistoryEffect EditorState::redo() {
+    HistoryEffect eff;
+    if (!canRedo()) return eff;
+    const BrushCmd& c = m_history[m_undoPos++];
+    switch (c.kind) {
+        case CmdKind::Add: {
+            // Redo an Add = re-insert the created brush (links cleared -> host rebuilds).
+            BlockoutBrush b = c.after; b.sceneEntity = 0xFFFFFFFFu; b.body = 0;
+            int at = c.index; if (at > (int)m_doc.brushes.size()) at = (int)m_doc.brushes.size();
+            m_doc.brushes.insert(m_doc.brushes.begin() + at, b);
+            eff.op = HistoryEffect::Op::Respawn; eff.index = at;
+            m_selKind = SelKind::Brush; m_selIndex = at;
+            break;
+        }
+        case CmdKind::Delete: {
+            // Redo a Delete = remove the brush again (tear down its live links).
+            if (c.index >= 0 && c.index < (int)m_doc.brushes.size()) {
+                const BlockoutBrush& b = m_doc.brushes[c.index];
+                eff.deadSceneEntity = b.sceneEntity; eff.deadBody = b.body;
+                m_doc.brushes.erase(m_doc.brushes.begin() + c.index);
+            }
+            eff.op = HistoryEffect::Op::Respawn; eff.index = c.index; eff.removed = true;
+            m_selKind = SelKind::None; m_selIndex = -1;
+            break;
+        }
+        case CmdKind::Transform: {
+            if (c.index >= 0 && c.index < (int)m_doc.brushes.size()) {
+                BlockoutBrush& b = m_doc.brushes[c.index];
+                const uint32_t se = b.sceneEntity, bo = b.body;
+                b = c.after; b.sceneEntity = se; b.body = bo;
+                const bool sizeChanged =
+                    std::fabs(c.before.size[0]-c.after.size[0]) > 1e-5f ||
+                    std::fabs(c.before.size[1]-c.after.size[1]) > 1e-5f ||
+                    std::fabs(c.before.size[2]-c.after.size[2]) > 1e-5f;
+                eff.op = sizeChanged ? HistoryEffect::Op::Respawn : HistoryEffect::Op::SyncXform;
+                eff.index = c.index;
+                m_selKind = SelKind::Brush; m_selIndex = c.index;
+            }
+            break;
+        }
+        default: break;
+    }
+    return eff;
+}
+
 // ===========================================================================
 // Headless self-test (--test-editor). E0-E5.
 // ===========================================================================
@@ -482,6 +630,73 @@ bool runEditorSelfTest() {
                     rt.brushes[1].type == 1u && near(rt.brushes[1].yaw, 1.5708f) &&
                     near(rt.brushes[1].size[1], 2.0f) && rt.brushes[1].collide == false;
         check(same, "E7 blockout brushes[] JSON round-trip preserves type/pos/size/yaw/collide");
+    }
+
+    // ---- E8: undo/redo of add — addBrushCmd then undo removes it, redo restores. ----
+    {
+        LevelDoc d; EditorState ed(d);
+        ed.setSnap(true, 0.5f);
+        float p[3] = { 1, 0, 2 };
+        int idx = ed.addBrushCmd(0u, p);
+        bool added = idx == 0 && d.brushes.size() == 1 && ed.canUndo() && !ed.canRedo();
+        HistoryEffect u = ed.undo();
+        bool undone = d.brushes.empty() && u.removed && u.op == HistoryEffect::Op::Respawn &&
+                      !ed.canUndo() && ed.canRedo();
+        HistoryEffect r = ed.redo();
+        bool redone = d.brushes.size() == 1 && r.op == HistoryEffect::Op::Respawn &&
+                      near(d.brushes[0].pos[2], 2.0f) && ed.canUndo() && !ed.canRedo();
+        check(added && undone && redone, "E8 undo/redo of brush ADD round-trips the doc");
+    }
+
+    // ---- E9: undo/redo of delete — captured brush is restored faithfully. ----
+    {
+        LevelDoc d; EditorState ed(d);
+        float p[3] = { 4, 1, -3 };
+        ed.addBrushCmd(1u, p);                       // a Ramp
+        ed.selectBrush(0);
+        bool del = ed.deleteSelectedBrushCmd() && d.brushes.empty();
+        HistoryEffect u = ed.undo();                 // undo the delete -> restore
+        bool restored = d.brushes.size() == 1 && d.brushes[0].type == 1u &&
+                        near(d.brushes[0].pos[0], 4.0f) && u.op == HistoryEffect::Op::Respawn &&
+                        u.index == 0;
+        HistoryEffect r = ed.redo();                 // redo the delete -> gone again
+        bool gone = d.brushes.empty() && r.removed;
+        check(del && restored && gone, "E9 undo/redo of brush DELETE restores the captured brush");
+    }
+
+    // ---- E10: transform edit groups a drag into ONE undo step (move). ----
+    {
+        LevelDoc d; EditorState ed(d);
+        ed.setSnap(false);
+        float p[3] = { 0, 0, 0 };
+        ed.addBrushCmd(0u, p);                        // brush 0 at origin (1 undo step)
+        ed.beginBrushEdit(0);
+        d.brushes[0].pos[0] = 5.0f;                   // simulate a multi-frame drag
+        d.brushes[0].pos[0] = 7.0f;
+        ed.commitBrushEdit();                         // ONE Transform command
+        bool oneStep = ed.canUndo();
+        HistoryEffect u = ed.undo();                  // back to x=0
+        bool back = near(d.brushes[0].pos[0], 0.0f) && u.op == HistoryEffect::Op::SyncXform;
+        HistoryEffect r = ed.redo();                  // forward to x=7
+        bool fwd = near(d.brushes[0].pos[0], 7.0f) && r.op == HistoryEffect::Op::SyncXform;
+        // A commit with no net change must NOT push a command.
+        ed.beginBrushEdit(0); ed.commitBrushEdit();
+        bool noEmpty = !ed.canRedo();                 // still nothing to redo
+        check(oneStep && back && fwd && noEmpty, "E10 transform drag = one undo step; empty edit dropped");
+    }
+
+    // ---- E11: a size edit reports Respawn (mesh rebuild) on undo, not SyncXform. ----
+    {
+        LevelDoc d; EditorState ed(d);
+        ed.setSnap(false);
+        float p[3] = { 0, 0, 0 };
+        ed.addBrushCmd(0u, p);
+        ed.beginBrushEdit(0);
+        d.brushes[0].size[0] = 6.0f;                  // grow X face
+        ed.commitBrushEdit();
+        HistoryEffect u = ed.undo();
+        check(u.op == HistoryEffect::Op::Respawn && near(d.brushes[0].size[0], 2.0f),
+              "E11 size edit undo asks the host to RESPAWN (rebuild mesh)");
     }
 
     x3::logInfo(std::string("[editor-test] ") + std::to_string(g_pass) + " passed, " +

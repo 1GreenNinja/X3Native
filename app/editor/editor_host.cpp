@@ -14,6 +14,7 @@
 #include <GLFW/glfw3.h>
 #include <imgui.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -184,6 +185,35 @@ void EditorHost::syncBrushTransform(int idx, x3::game::Scene& scene,
                                         x3::phys::Vec3{ b.pos[0], b.pos[1], b.pos[2] });
 }
 
+void EditorHost::teardownLinks(uint32_t sceneEntity, uint32_t body,
+                               x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                               x3::phys::IPhysicsWorld& physics) {
+    if (sceneEntity != 0xFFFFFFFFu && sceneEntity < scene.size()) {
+        x3::game::Entity& e = scene.get(sceneEntity);
+        if (e.mesh.valid()) device.destroyMesh(e.mesh);
+        e.mesh = x3::rhi::MeshHandle{}; e.visible = false;
+    }
+    if (body) physics.removeBody(x3::phys::BodyId{ body });
+}
+
+void EditorHost::applyEffect(const HistoryEffect& eff, x3::rhi::IRenderDevice& device,
+                             x3::game::Scene& scene, x3::phys::IPhysicsWorld& physics) {
+    using Op = HistoryEffect::Op;
+    if (eff.op == Op::None) return;
+    if (eff.removed) {
+        // The brush record is gone (undo-of-add / redo-of-delete): tear down its links.
+        teardownLinks(eff.deadSceneEntity, eff.deadBody, device, scene, physics);
+        return;
+    }
+    if (eff.op == Op::Respawn) {
+        // The brush exists with cleared links (restored) OR with stale ones (size
+        // change). respawnBrush handles both: it destroys any live mesh/body first.
+        respawnBrush(eff.index, device, scene, physics);
+    } else if (eff.op == Op::SyncXform) {
+        syncBrushTransform(eff.index, scene, physics);
+    }
+}
+
 int EditorHost::placeBrush(uint32_t type, const float pos[3], const float size[3],
                            x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
                            x3::phys::IPhysicsWorld& physics) {
@@ -210,6 +240,25 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
         return;
     }
 
+    // ---- Editor keyboard shortcuts (Edit mode). Ctrl+Z/Y undo/redo, Q/W tool. Only
+    // when ImGui is NOT capturing the keyboard (so typing in a field never fires). ----
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        const bool kbdFree = !io.WantCaptureKeyboard && m_window;
+        auto down = [&](int k){ return m_window && glfwGetKey(m_window, k) == GLFW_PRESS; };
+        const bool ctrl = down(GLFW_KEY_LEFT_CONTROL) || down(GLFW_KEY_RIGHT_CONTROL);
+        if (kbdFree && ctrl) {
+            const bool z = down(GLFW_KEY_Z), y = down(GLFW_KEY_Y);
+            if (z && !m_ctrlZPrev) applyEffect(m_state.undo(), device, scene, physics);
+            if (y && !m_ctrlYPrev) applyEffect(m_state.redo(), device, scene, physics);
+            m_ctrlZPrev = z; m_ctrlYPrev = y;
+        } else { m_ctrlZPrev = m_ctrlYPrev = false; }
+        if (kbdFree && !ctrl) {
+            if (down(GLFW_KEY_Q)) m_tool = Tool::Select;
+            if (down(GLFW_KEY_W)) m_tool = Tool::Move;
+        }
+    }
+
     // ---- Menu bar (File / Mode). ----
     bool doNew = false, doSave = false, doLoad = false;
     if (ImGui::BeginMainMenuBar()) {
@@ -219,12 +268,20 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
             if (ImGui::MenuItem("Load"))       doLoad = true;
             ImGui::EndMenu();
         }
+        bool doUndo = false, doRedo = false;
+        if (ImGui::BeginMenu("Edit")) {
+            if (ImGui::MenuItem("Undo", "Ctrl+Z", false, m_state.canUndo())) doUndo = true;
+            if (ImGui::MenuItem("Redo", "Ctrl+Y", false, m_state.canRedo())) doRedo = true;
+            ImGui::EndMenu();
+        }
+        if (doUndo) applyEffect(m_state.undo(), device, scene, physics);
+        if (doRedo) applyEffect(m_state.redo(), device, scene, physics);
         if (ImGui::BeginMenu("Mode")) {
             if (ImGui::MenuItem("Edit", "F8", m_mode == HostMode::Edit)) m_mode = HostMode::Edit;
             if (ImGui::MenuItem("Play", "F8", m_mode == HostMode::Play)) m_mode = HostMode::Play;
             ImGui::EndMenu();
         }
-        ImGui::TextDisabled("   Level Architect  |  RMB+WASD fly  |  F8 Edit/Play");
+        ImGui::TextDisabled("   Level Architect  |  RMB+WASD fly  |  F8 Edit/Play  |  Q/W tool  |  LMB drag axis");
         ImGui::EndMainMenuBar();
     }
 
@@ -291,62 +348,82 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
         m_state.snapValue(m_camZ + std::cos(m_camPitch)*std::sin(m_camYaw) * 6.0f),
     };
     if (ImGui::Button("Add Box")) {
-        float sz[3] = { 2,2,2 };
-        placeBrush(0u, focus, sz, device, scene, physics);
+        int idx = m_state.addBrushCmd(0u, focus);     // undoable
+        if (idx >= 0) spawnBrush(idx, device, scene, physics);
     }
     ImGui::SameLine();
     if (ImGui::Button("Add Ramp")) {
-        float sz[3] = { 3, 2, 4 };
-        placeBrush(1u, focus, sz, device, scene, physics);
+        int idx = m_state.addBrushCmd(1u, focus);     // undoable
+        if (idx >= 0) {
+            m_doc.brushes[idx].size[0] = std::max(0.25f, m_state.snapValue(3.0f));
+            m_doc.brushes[idx].size[1] = std::max(0.25f, m_state.snapValue(2.0f));
+            m_doc.brushes[idx].size[2] = std::max(0.25f, m_state.snapValue(4.0f));
+            spawnBrush(idx, device, scene, physics);
+        }
     }
 
     ImGui::Separator();
+    ImGui::TextDisabled("Add buttons are undoable (Ctrl+Z / Ctrl+Y).");
+    ImGui::End();
+
+    // ---- Details panel (P3): two-way-synced pos/yaw/size for the selection, each
+    // edit grouped into ONE undo step via begin/commitBrushEdit. Shares its selection
+    // and transform with the viewport gizmo. ----
+    ImGui::Begin("Details");
     if (m_state.hasBrushSelection()) {
         int si = m_state.selIndex();
         BlockoutBrush& b = m_doc.brushes[si];
-        ImGui::Text("Selected: %s", b.name.c_str());
+        ImGui::Text("Selected: %s  [%s]", b.name.c_str(), b.type == 1u ? "Ramp" : "Box");
         const float step = kGridSteps[m_gridSel];
         bool moved = false, resized = false;
 
-        // Position (snapped DragFloat3).
+        // Tool readout (drives the viewport gizmo). Q select / W move.
+        ImGui::TextDisabled("Tool: %s  (Q select, W move, Ctrl+Z/Y undo/redo)",
+                            m_tool == Tool::Move ? "MOVE" : m_tool == Tool::Rotate ? "ROTATE"
+                            : m_tool == Tool::Scale ? "SCALE" : "SELECT");
+
+        // Position — DragFloat3, snapped. IsItemActivated/Deactivated bracket the drag
+        // into one undo command (works for a click-drag on the slider too).
         float pos[3] = { b.pos[0], b.pos[1], b.pos[2] };
-        if (ImGui::DragFloat3("Pos (m)", pos, step)) {
+        if (ImGui::DragFloat3("Position (m)", pos, step)) {
             for (int a = 0; a < 3; ++a) b.pos[a] = m_state.snapValue(pos[a]);
             moved = true;
         }
-        // Size (snapped, clamped to 0.25 m min).
+        if (ImGui::IsItemActivated())   m_state.beginBrushEdit(si);
+        if (ImGui::IsItemDeactivatedAfterEdit()) m_state.commitBrushEdit();
+
+        // Rotation (yaw degrees in UI, radians in doc).
+        float yawDeg = b.yaw * 57.29578f;
+        if (ImGui::DragFloat("Rotation Y (deg)", &yawDeg, 1.0f)) {
+            b.yaw = yawDeg * 0.0174533f; moved = true;
+        }
+        if (ImGui::IsItemActivated())   m_state.beginBrushEdit(si);
+        if (ImGui::IsItemDeactivatedAfterEdit()) m_state.commitBrushEdit();
+
+        // Scale = full extents (m), snapped + clamped. A change rebuilds the mesh.
         float size[3] = { b.size[0], b.size[1], b.size[2] };
-        if (ImGui::DragFloat3("Size (m)", size, step, 0.25f, 200.0f)) {
+        if (ImGui::DragFloat3("Scale / Size (m)", size, step, 0.25f, 200.0f)) {
             for (int a = 0; a < 3; ++a) b.size[a] = std::max(0.25f, m_state.snapValue(size[a]));
             resized = true;
         }
-        // Yaw (degrees in the UI, radians in the doc).
-        float yawDeg = b.yaw * 57.29578f;
-        if (ImGui::DragFloat("Yaw (deg)", &yawDeg, 5.0f)) { b.yaw = yawDeg * 0.0174533f; moved = true; }
+        if (ImGui::IsItemActivated())   m_state.beginBrushEdit(si);
+        if (ImGui::IsItemDeactivatedAfterEdit()) m_state.commitBrushEdit();
+
         if (ImGui::Checkbox("Collide", &b.collide)) resized = true;  // toggling re-adds the body
 
-        // Quick face-grow buttons (snapped), mirroring resizeSelectedBrush.
-        ImGui::TextDisabled("Grow face (+%.2g m):", step);
-        if (ImGui::Button("X+")) { m_state.resizeSelectedBrush(Axis::X, step); resized = true; } ImGui::SameLine();
-        if (ImGui::Button("Y+")) { m_state.resizeSelectedBrush(Axis::Y, step); resized = true; } ImGui::SameLine();
-        if (ImGui::Button("Z+")) { m_state.resizeSelectedBrush(Axis::Z, step); resized = true; }
-
         if (ImGui::Button("Delete brush")) {
-            // Tear down the live mesh/body then remove from the doc.
-            if (b.sceneEntity != 0xFFFFFFFFu && b.sceneEntity < scene.size()) {
-                x3::game::Entity& e = scene.get(b.sceneEntity);
-                if (e.mesh.valid()) device.destroyMesh(e.mesh);
-                e.mesh = x3::rhi::MeshHandle{}; e.visible = false;
-            }
-            if (b.body) physics.removeBody(x3::phys::BodyId{ b.body });
-            m_state.deleteSelectedBrush();
+            const uint32_t se = b.sceneEntity, bo = b.body;
+            if (m_state.deleteSelectedBrushCmd())                 // undoable
+                teardownLinks(se, bo, device, scene, physics);
         } else {
             if (resized) respawnBrush(si, device, scene, physics);   // rebuild mesh+body
             else if (moved) syncBrushTransform(si, scene, physics);  // transform-only
         }
     } else {
-        ImGui::TextDisabled("(no brush selected — pick one in the Outliner)");
+        ImGui::TextDisabled("(no brush selected — pick one in the viewport or Outliner)");
     }
+    ImGui::Text("Undo: %s   Redo: %s",
+                m_state.canUndo() ? "available" : "-", m_state.canRedo() ? "available" : "-");
     ImGui::End();
 
     // ---- Status / viewport readout. ----
@@ -359,6 +436,147 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
     x3::rhi::RenderStats st = device.stats();
     ImGui::Text("Draw calls: %u   Tris: %u", st.drawCalls, st.triangles);
     ImGui::End();
+
+    // ---- Viewport gizmo + click-pick (P3). Drawn last so it overlays the scene. ----
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        gizmoAndPick(device, scene, physics, io.WantCaptureMouse);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// P3 — viewport MOVE gizmo + click-pick. Uses device->worldToScreen to project the
+// brush origin + axis tips to pixels, draws the 3 axis handles on the ImGui
+// foreground draw list, and drags the grabbed axis by mapping cursor motion onto the
+// screen-projected axis direction. A plain click in empty space ray-picks a brush.
+// Talks to the engine ONLY through IRenderDevice (worldToScreen) — engine stays pure.
+// ---------------------------------------------------------------------------
+void EditorHost::gizmoAndPick(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                              x3::phys::IPhysicsWorld& physics, bool wantMouse) {
+    const float kAxisLen = 1.6f;             // world-metres of each gizmo arm
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImGuiIO& io = ImGui::GetIO();
+    const ImVec2 mouse = io.MousePos;
+    const bool lmb = !wantMouse && (glfwGetMouseButton(m_window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
+    const bool lmbDown = lmb && !m_lmbPrev;   // rising edge
+
+    // Project a world point; returns false if off-screen / behind.
+    auto project = [&](float wx, float wy, float wz, ImVec2& out) -> bool {
+        float sx = 0, sy = 0;
+        if (!device.worldToScreen(wx, wy, wz, sx, sy)) return false;
+        out = ImVec2(sx, sy); return true;
+    };
+
+    // Only the MOVE tool draws an interactive gizmo; Select still allows pick.
+    const bool haveSel = m_state.hasBrushSelection();
+    int si = haveSel ? m_state.selIndex() : -1;
+
+    // ---- Active drag: move the selected brush along m_dragAxis by cursor delta. ----
+    if (m_dragging) {
+        if (!lmb) {
+            // Release: commit the grouped edit + final physics/scene sync.
+            m_state.commitBrushEdit();
+            if (si >= 0) syncBrushTransform(si, scene, physics);
+            m_dragging = false; m_dragAxis = Axis::None;
+        } else if (si >= 0 && m_tool == Tool::Move) {
+            BlockoutBrush& b = m_doc.brushes[si];
+            // Re-project the axis to get its current screen direction, map the cursor's
+            // movement onto it, scale by the world/screen ratio of the axis.
+            ImVec2 o, tip;
+            const int a = (m_dragAxis == Axis::X) ? 0 : (m_dragAxis == Axis::Y) ? 1 : 2;
+            float tipW[3] = { b.pos[0], b.pos[1], b.pos[2] }; tipW[a] += kAxisLen;
+            if (project(b.pos[0], b.pos[1], b.pos[2], o) &&
+                project(tipW[0], tipW[1], tipW[2], tip)) {
+                const float dxS = tip.x - o.x, dyS = tip.y - o.y;
+                const float len2 = dxS*dxS + dyS*dyS;
+                if (len2 > 1e-3f) {
+                    // Signed screen param of the cursor along the axis (0=origin,1=tip).
+                    const float s = ((mouse.x - o.x)*dxS + (mouse.y - o.y)*dyS) / len2;
+                    const float worldDelta = (s - m_dragStartS) * kAxisLen;
+                    float target = m_dragBaseM + worldDelta;
+                    target = m_state.snapValue(target);
+                    if (std::fabs(target - b.pos[a]) > 1e-5f) {
+                        b.pos[a] = target;
+                        syncBrushTransform(si, scene, physics);   // live preview
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- Draw the gizmo + (when idle) hit-test axis grab on LMB-down. ----
+    if (haveSel && m_tool == Tool::Move) {
+        BlockoutBrush& b = m_doc.brushes[si];
+        ImVec2 o;
+        if (project(b.pos[0], b.pos[1], b.pos[2], o)) {
+            const ImU32 colX = IM_COL32(237, 69, 76, 255);   // X red
+            const ImU32 colY = IM_COL32(102, 219, 102, 255); // Y green
+            const ImU32 colZ = IM_COL32(76, 140, 242, 255);  // Z blue
+            const ImU32 cols[3] = { colX, colY, colZ };
+            const Axis  axes[3] = { Axis::X, Axis::Y, Axis::Z };
+            float grabBest = 14.0f; Axis grab = Axis::None; float grabS = 0.0f;
+            for (int a = 0; a < 3; ++a) {
+                float tipW[3] = { b.pos[0], b.pos[1], b.pos[2] }; tipW[a] += kAxisLen;
+                ImVec2 tip;
+                if (!project(tipW[0], tipW[1], tipW[2], tip)) continue;
+                dl->AddLine(o, tip, cols[a], 3.0f);
+                dl->AddCircleFilled(tip, 4.5f, cols[a]);
+                // Distance from cursor to this axis segment (for grab pick).
+                if (!m_dragging) {
+                    const float dxS = tip.x - o.x, dyS = tip.y - o.y;
+                    const float len2 = dxS*dxS + dyS*dyS;
+                    float s = len2 > 1e-3f ? ((mouse.x-o.x)*dxS + (mouse.y-o.y)*dyS)/len2 : 0;
+                    s = s < 0 ? 0 : (s > 1 ? 1 : s);
+                    const float px = o.x + dxS*s, py = o.y + dyS*s;
+                    const float d = std::sqrt((mouse.x-px)*(mouse.x-px) + (mouse.y-py)*(mouse.y-py));
+                    if (d < grabBest) {
+                        grabBest = d; grab = axes[a];
+                        // Store the UNCLAMPED param so the drag tracks past the tip.
+                        grabS = len2 > 1e-3f ? ((mouse.x-o.x)*dxS + (mouse.y-o.y)*dyS)/len2 : 0;
+                    }
+                }
+            }
+            // Origin handle.
+            dl->AddCircleFilled(o, 5.0f, IM_COL32(255, 209, 46, 255));
+            // Begin a drag if LMB pressed on an axis.
+            if (lmbDown && grab != Axis::None) {
+                m_dragging = true; m_dragAxis = grab; m_dragStartS = grabS;
+                const int a = (grab == Axis::X) ? 0 : (grab == Axis::Y) ? 1 : 2;
+                m_dragBaseM = b.pos[a];
+                m_state.beginBrushEdit(si);     // group the drag into one undo step
+            }
+        }
+    }
+
+    // ---- Plain click in empty space (no axis grabbed) = ray-pick a brush. ----
+    if (lmbDown && !m_dragging) {
+        // Build the camera ray from the host's fly-cam pose (same basis as tick()).
+        const float fx = std::cos(m_camPitch) * std::cos(m_camYaw);
+        const float fy = std::sin(m_camPitch);
+        const float fz = std::cos(m_camPitch) * std::sin(m_camYaw);
+        // Pick the brush whose center is nearest the ray (mirror of EditorState::pickRay,
+        // but over brushes[] + radius from the brush's own size).
+        const float o3[3] = { m_camX, m_camY, m_camZ };
+        const float dl3 = std::sqrt(fx*fx+fy*fy+fz*fz);
+        const float dx = fx/dl3, dy = fy/dl3, dz = fz/dl3;
+        int best = -1; float bestT = 1e9f;
+        for (int i = 0; i < (int)m_doc.brushes.size(); ++i) {
+            const BlockoutBrush& bb = m_doc.brushes[i];
+            const float ox = bb.pos[0]-o3[0], oy = bb.pos[1]-o3[1], oz = bb.pos[2]-o3[2];
+            const float t = ox*dx + oy*dy + oz*dz;
+            if (t < 0.0f) continue;
+            const float px = o3[0]+dx*t, py = o3[1]+dy*t, pz = o3[2]+dz*t;
+            const float perp = std::sqrt((bb.pos[0]-px)*(bb.pos[0]-px) +
+                                         (bb.pos[1]-py)*(bb.pos[1]-py) +
+                                         (bb.pos[2]-pz)*(bb.pos[2]-pz));
+            // Hit radius ~ the brush's largest half-extent + a little slack.
+            const float r = 0.5f * std::max(bb.size[0], std::max(bb.size[1], bb.size[2])) + 0.5f;
+            if (perp <= r && t < bestT) { bestT = t; best = i; }
+        }
+        if (best >= 0) m_state.selectBrush(best);
+    }
+
+    m_lmbPrev = lmb;
 }
 
 } // namespace x3::editor
