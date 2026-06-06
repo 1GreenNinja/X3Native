@@ -522,7 +522,9 @@ uint32_t EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                                fin,
                                d.alphaMask,
                                d.alphaBlend,
-                               x3::rhi::TextureHandle{ d.emissiveTexId });
+                               x3::rhi::TextureHandle{ d.emissiveTexId },
+                               x3::rhi::TextureHandle{ d.detailTexId },   // HDRP micro-detail
+                               d.detailUvScale);
         }
     }
     return drawn;

@@ -216,7 +216,8 @@ public:
                                       TextureHandle /*normal*/, TextureHandle /*metalRough*/,
                                       const float baseColorFactor[4], const float emissive[4],
                                       const float model[16], bool /*alphaMask*/ = false,
-                                      bool /*alphaBlend*/ = false, TextureHandle /*emissiveTex*/ = {}) {
+                                      bool /*alphaBlend*/ = false, TextureHandle /*emissiveTex*/ = {},
+                                      TextureHandle /*detailTex*/ = {}, float /*detailUvScale*/ = 1.0f) {
         drawMeshEmissive(fc, mesh, baseColor, baseColorFactor, emissive, model);
     }
 

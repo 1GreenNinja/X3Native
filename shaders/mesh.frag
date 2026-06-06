@@ -94,6 +94,7 @@ layout(location = 7) flat in uvec2 vTerrainPack; // x = grass<<16|rock, y = snow
 layout(location = 8) flat in uint vNormalTexIndex; // 0 = none (PBR normal map)
 layout(location = 9) flat in uint vMrTexIndex;     // 0 = none (metallic-roughness)
 layout(location = 10) flat in uint vEmissiveTexIndex; // 0 = none (emissive map)
+layout(location = 11) flat in uint vDetailPacked;     // HDRP micro-detail: (uvScale*64<<20)|bindlessIdx
 
 layout(location = 0) out vec4 outColor;
 
@@ -360,6 +361,21 @@ void main() {
     // Alpha-cutout: drop the transparent atlas background so sprites aren't opaque quads.
     if (alphaCutout && albedo.a < 0.5) discard;
 
+    // ---- HDRP micro-DETAIL map (vDetailPacked: low 20 bits = bindless idx, high 12 =
+    // uvScale*64). HDRP packing R = desat detail albedo (overlay, 0.5 = neutral),
+    // B = detail smoothness. Tiled at vUV*uvScale to add fine surface variation the base
+    // atlas lacks. (Detail NORMAL is deferred — albedo + roughness give the v1 micro-detail.)
+    float detSmoothAdj = 0.0;
+    {
+        uint dIdx = vDetailPacked & 0xFFFFFu;
+        if (dIdx != 0u) {
+            float dUv = float(vDetailPacked >> 20) / 64.0;
+            vec4 det  = texture(textures[nonuniformEXT(dIdx)], vUV * max(dUv, 0.01));
+            albedo.rgb *= clamp(det.r * 2.0, 0.7, 1.3);   // overlay: 0.5 = neutral, kept subtle/safe
+            detSmoothAdj = det.b - 0.5;                    // detail smoothness -> roughness nudge below
+        }
+    }
+
     // ---- Shared terms: sun shadow, hemispheric ambient, SSAO (both paths use these). ----
     vec3  kSunDir = normalize(cam.sunDir.xyz);   // per-scene sun direction (Camera UBO)
     float ndl    = max(dot(N, kSunDir), 0.0);
@@ -395,7 +411,7 @@ void main() {
         // ---- PBR metallic-roughness (Cook-Torrance GGX). glTF MR: B=metallic, G=roughness. ----
         vec3  mr       = texture(textures[nonuniformEXT(vMrTexIndex)], vUV).rgb;
         float metallic = mr.b;
-        float pRough   = clamp(mr.g, 0.045, 1.0);                // perceptual roughness (for IBL)
+        float pRough   = clamp(mr.g - detSmoothAdj * 0.4, 0.045, 1.0);  // perceptual roughness (for IBL) + detail-smoothness nudge
         float a        = pRough; a *= a;                         // -> GGX alpha (direct lights)
         vec3  F0       = mix(vec3(0.04), albedo.rgb, metallic);
         vec3  diff     = albedo.rgb * (1.0 - metallic);

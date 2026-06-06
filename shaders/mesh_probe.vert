@@ -47,6 +47,7 @@ layout(location = 7) flat out uvec2 vTerrainPack;
 layout(location = 8) flat out uint vNormalTexIndex;
 layout(location = 9) flat out uint vMrTexIndex;
 layout(location = 10) flat out uint vEmissiveTexIndex;
+layout(location = 11) flat out uint vDetailPacked;     // HDRP micro-detail (_pad4): (uvScale*64<<20)|idx
 
 void main() {
     ObjectData o = objBuf.objects[gl_InstanceIndex];
@@ -63,4 +64,5 @@ void main() {
     vNormalTexIndex = o.normalTexIndex;
     vMrTexIndex = o.mrTexIndex;
     vEmissiveTexIndex = o.emissiveTexIndex;
+    vDetailPacked = o._pad4;   // HDRP micro-detail map (packed idx + uvScale)
 }

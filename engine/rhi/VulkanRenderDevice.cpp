@@ -1354,7 +1354,8 @@ public:
     void drawMeshPBR(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                      TextureHandle normal, TextureHandle metalRough,
                      const float baseColorFactor[4], const float emissive[4],
-                     const float model[16], bool alphaMask = false, bool alphaBlend = false, TextureHandle emissiveTex = {}) override {
+                     const float model[16], bool alphaMask = false, bool alphaBlend = false, TextureHandle emissiveTex = {},
+                     TextureHandle detailTex = {}, float detailUvScale = 1.0f) override {
         if (!fc.valid || !m_meshPipeline) return;
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
@@ -1409,6 +1410,17 @@ public:
         r.normalTexIndex   = normalIdx;
         r.mrTexIndex       = mrIdx;
         r.emissiveTexIndex = emisIdx;
+        // HDRP micro-detail map: resolve to bindless + pack with the UV tiling. Low 20
+        // bits = detail bindless idx, high 12 = uvScale*64 (tiling 0..63.98). 0 = none.
+        uint32_t detailIdx = 0;
+        if (detailTex.valid()) {
+            auto it = m_textures.find(detailTex.id);
+            if (it != m_textures.end()) detailIdx = it->second.bindlessIndex;
+        }
+        if (detailIdx != 0) {
+            uint32_t uvf = (uint32_t)std::min(4095.0f, std::max(0.0f, detailUvScale * 64.0f));
+            r.detailPacked = (detailIdx & 0xFFFFFu) | (uvf << 20);
+        }
         r.alphaBlend       = alphaBlend;
         std::memcpy(r.model, model, sizeof(r.model));
         if (baseColorFactor) std::memcpy(r.factor, baseColorFactor, sizeof(r.factor));
@@ -1724,6 +1736,7 @@ private:
         uint32_t normalTexIndex = 0;  // 0 = none (PBR normal-map bindless idx)
         uint32_t mrTexIndex     = 0;  // 0 = none (metallic-roughness bindless idx)
         uint32_t emissiveTexIndex = 0; // 0 = none (emissive bindless idx)
+        uint32_t detailPacked = 0;     // HDRP micro-detail: (uvScale*64 << 20) | bindlessIdx; 0 = none
         bool     alphaBlend = false;   // glTF BLEND -> blend batch (CPU partition)
     };
 
@@ -2119,7 +2132,7 @@ private:
                 o.normalTexIndex   = dr.normalTexIndex;
                 o.mrTexIndex       = dr.mrTexIndex;
                 o.emissiveTexIndex = dr.emissiveTexIndex;
-                o._pad4 = 0;
+                o._pad4 = dr.detailPacked;   // HDRP micro-detail: (uvScale*64<<20)|bindlessIdx
             }
             VkDrawIndexedIndirectCommand& c = cmds[cmdCount];
             c.indexCount    = mit->second.indexCount;
