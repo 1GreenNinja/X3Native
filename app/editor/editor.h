@@ -241,6 +241,13 @@ public:
                m_selIndex < (int)m_doc.brushes.size();
     }
 
+    // Pick the BRUSH whose oriented box (size extents, yaw about +Y, at pos) the ray
+    // (origin + t*dir) enters NEAREST the origin. A true ray-vs-OBB slab test (tighter
+    // than a center-distance pick on long thin brushes — Feature 2). Returns the brush
+    // index or -1 (miss). Pure logic over brushes[], so the live viewport + a headless
+    // test share it. `pad` adds a small slack to the half-extents for easier grabbing.
+    int pickBrushRay(const float origin[3], const float dir[3], float pad = 0.0f) const;
+
     // ---- Blockout brush ops (Level Architect P2; headless-testable) ----------
     // Add a brush of `type` (0=Box, 1=Ramp) at `pos` (snapped to the grid), default
     // 2 m cube extents (snapped), selects it. Returns the new brush index.

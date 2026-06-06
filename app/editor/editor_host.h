@@ -140,7 +140,11 @@ private:
     Axis  m_dragAxis  = Axis::None;
     bool  m_dragging  = false;
     float m_dragStartS = 0.0f;           // screen-space param at grab
-    float m_dragBaseM  = 0.0f;           // brush coord on the axis at grab
+    float m_dragBaseM  = 0.0f;           // brush coord (pos OR size) on the axis at grab
+    // Feature 2 ROTATE drag: the brush yaw + the cursor's angle about the gizmo origin
+    // at grab time, so a Rotate drag adds (current angle - start angle) to the base yaw.
+    float m_dragBaseYaw  = 0.0f;
+    float m_dragStartAng = 0.0f;
     bool  m_lmbPrev    = false;          // LMB held last frame (rising/falling edge)
     // Last gizmo HistoryEffect produced by a commit, applied next frame by draw().
     bool  m_ctrlZPrev = false, m_ctrlYPrev = false;  // Ctrl+Z / Ctrl+Y rising edge
