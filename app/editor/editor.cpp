@@ -362,6 +362,41 @@ void EditorState::selectBrush(int index) {
     if (index < (int)m_doc.brushes.size()) { m_selKind = SelKind::Brush; m_selIndex = index; }
 }
 
+int EditorState::pickBrushRay(const float origin[3], const float dir[3], float pad) const {
+    float dl = std::sqrt(dir[0]*dir[0] + dir[1]*dir[1] + dir[2]*dir[2]);
+    if (dl < 1e-6f) return -1;
+    const float dx = dir[0]/dl, dy = dir[1]/dl, dz = dir[2]/dl;
+    int best = -1; float bestT = 1e30f;
+    for (size_t i = 0; i < m_doc.brushes.size(); ++i) {
+        const BlockoutBrush& b = m_doc.brushes[i];
+        // Transform the ray into the brush's LOCAL frame (un-yaw about +Y, translate to
+        // origin) so the OBB becomes an axis-aligned box [-h, +h] and we run a slab test.
+        const float c = std::cos(b.yaw), s = std::sin(b.yaw);
+        const float rx0 = origin[0]-b.pos[0], ry0 = origin[1]-b.pos[1], rz0 = origin[2]-b.pos[2];
+        // brushMatrix maps local->world by R(yaw): world = [c,0,s; 0,1,0; -s,0,c]*local.
+        // The inverse (world->local) is the transpose: [c,0,-s; 0,1,0; s,0,c].
+        const float lox = c*rx0 - s*rz0, loy = ry0, loz = s*rx0 + c*rz0;
+        const float ldx = c*dx  - s*dz,  ldy = dy,  ldz = s*dx  + c*dz;
+        const float h[3] = { b.size[0]*0.5f + pad, b.size[1]*0.5f + pad, b.size[2]*0.5f + pad };
+        const float ro[3] = { lox, loy, loz }, rd[3] = { ldx, ldy, ldz };
+        float tmin = 0.0f, tmax = 1e30f; bool hit = true;
+        for (int a = 0; a < 3; ++a) {
+            if (std::fabs(rd[a]) < 1e-8f) {
+                if (ro[a] < -h[a] || ro[a] > h[a]) { hit = false; break; }
+            } else {
+                float t1 = (-h[a] - ro[a]) / rd[a];
+                float t2 = ( h[a] - ro[a]) / rd[a];
+                if (t1 > t2) { float tmp=t1; t1=t2; t2=tmp; }
+                if (t1 > tmin) tmin = t1;
+                if (t2 < tmax) tmax = t2;
+                if (tmin > tmax) { hit = false; break; }
+            }
+        }
+        if (hit && tmax >= 0.0f && tmin < bestT) { bestT = tmin; best = (int)i; }
+    }
+    return best;
+}
+
 int EditorState::addBrush(uint32_t type, const float pos[3]) {
     BlockoutBrush b;
     b.type = (type <= 1u) ? type : 0u;   // P2 core = Box(0) / Ramp(1)
@@ -770,6 +805,51 @@ bool runEditorSelfTest() {
         bool roundtrip = parsed && rt.brushes.size() == 1 && rt.brushes[0].material == "hazard";
         check(tableOk && assigned && reverted && redone && roundtrip,
               "E12 material assign: undoable (RESPAWN) + JSON round-trips the brush surface");
+    }
+
+    // ---- E13 (Feature 2): true OBB raycast pick is TIGHT on a long thin brush. ----
+    {
+        LevelDoc d; EditorState ed(d);
+        ed.setSnap(false);
+        // A long thin wall along Z at the origin (0.5 wide x 3 tall x 12 long): the OBB
+        // hugs x in [-0.25,0.25], z in [-6,6]. brush index 0.
+        { BlockoutBrush b; b.pos[0]=0; b.pos[1]=1.5f; b.pos[2]=0;
+          b.size[0]=0.5f; b.size[1]=3.0f; b.size[2]=12.0f; d.brushes.push_back(b); }
+        // Ray straight DOWN onto the wall's far end (x=0, z=5): inside the thin slab -> HIT.
+        float oHit[3] = { 0.0f, 20.0f, 5.0f }, dn[3] = { 0, -1, 0 };
+        int hit = ed.pickBrushRay(oHit, dn);
+        // Ray straight DOWN at x=2 (well OUTSIDE the 0.5 m wall width) over z=5: a tight
+        // OBB test MISSES. (A loose center-distance pick using the 12 m extent as a fat
+        // radius would falsely grab the wall here — the regression Feature 2 fixes.)
+        float oMiss[3] = { 2.0f, 20.0f, 5.0f };
+        int miss = ed.pickBrushRay(oMiss, dn);
+        check(hit == 0 && miss == -1,
+              "E13 OBB raycast pick is tight (inside thin slab hits; 2 m off-axis misses)");
+    }
+
+    // ---- E14 (Feature 2): rotate + scale gizmo deltas group into one undo step each. ----
+    {
+        LevelDoc d; EditorState ed(d);
+        ed.setSnap(false);
+        float p[3] = { 0, 0, 0 };
+        ed.addBrushCmd(0u, p);                          // brush 0 (2 m cube, yaw 0)
+        // ROTATE: a yaw drag (mirrors the gizmo writing b.yaw across frames) = 1 undo step.
+        ed.beginBrushEdit(0);
+        d.brushes[0].yaw = 0.3f;
+        d.brushes[0].yaw = 0.7854f;                     // 45 deg
+        ed.commitBrushEdit();
+        HistoryEffect ru = ed.undo();                   // back to yaw 0 (cheap SyncXform)
+        bool rotOk = near(d.brushes[0].yaw, 0.0f) && ru.op == HistoryEffect::Op::SyncXform;
+        ed.redo();                                      // forward to 45 deg
+        bool rotFwd = near(d.brushes[0].yaw, 0.7854f);
+        // SCALE: a size drag = 1 undo step, and undo asks the host to RESPAWN (mesh rebuild).
+        ed.beginBrushEdit(0);
+        d.brushes[0].size[0] = 5.0f;                    // grow X
+        ed.commitBrushEdit();
+        HistoryEffect su = ed.undo();
+        bool scaleOk = near(d.brushes[0].size[0], 2.0f) && su.op == HistoryEffect::Op::Respawn;
+        check(rotOk && rotFwd && scaleOk,
+              "E14 rotate(yaw)=SyncXform + scale(size)=Respawn, each one undo step");
     }
 
     x3::logInfo(std::string("[editor-test] ") + std::to_string(g_pass) + " passed, " +

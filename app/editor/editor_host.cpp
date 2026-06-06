@@ -135,8 +135,10 @@ bool EditorHost::tick(float dt, bool wantMouse, bool wantKbd,
         if (down(GLFW_KEY_S)) { m_camX -= fx*spd; m_camY -= fy*spd; m_camZ -= fz*spd; }
         if (down(GLFW_KEY_D)) { m_camX += rx*spd; m_camZ += rz*spd; }
         if (down(GLFW_KEY_A)) { m_camX -= rx*spd; m_camZ -= rz*spd; }
-        if (down(GLFW_KEY_E) || down(GLFW_KEY_SPACE)) m_camY += spd;
-        if (down(GLFW_KEY_Q) || down(GLFW_KEY_LEFT_CONTROL)) m_camY -= spd;
+        // Vertical fly: SPACE up / LEFT_CTRL down. (Q/E are reserved for the Q/W/E/R
+        // tool hotkeys in draw(), so they no longer double as camera vertical.)
+        if (down(GLFW_KEY_SPACE)) m_camY += spd;
+        if (down(GLFW_KEY_LEFT_CONTROL)) m_camY -= spd;
     }
     device.setCamera(m_camX, m_camY, m_camZ, m_camYaw, m_camPitch, 65.0f);
     return true;   // the host drove the camera this frame
@@ -290,6 +292,8 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
         if (kbdFree && !ctrl) {
             if (down(GLFW_KEY_Q)) m_tool = Tool::Select;
             if (down(GLFW_KEY_W)) m_tool = Tool::Move;
+            if (down(GLFW_KEY_E)) m_tool = Tool::Rotate;
+            if (down(GLFW_KEY_R)) m_tool = Tool::Scale;
         }
     }
 
@@ -315,7 +319,7 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
             if (ImGui::MenuItem("Play", "F8", m_mode == HostMode::Play)) m_mode = HostMode::Play;
             ImGui::EndMenu();
         }
-        ImGui::TextDisabled("   Level Architect  |  RMB+WASD fly  |  F8 Edit/Play  |  Q/W tool  |  LMB drag axis");
+        ImGui::TextDisabled("   Level Architect  |  RMB+WASD fly (SPACE/CTRL up-down)  |  F8 Edit/Play  |  Q/W/E/R tool  |  LMB drag gizmo");
         ImGui::EndMainMenuBar();
     }
 
@@ -522,134 +526,165 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
 }
 
 // ---------------------------------------------------------------------------
-// P3 — viewport MOVE gizmo + click-pick. Uses device->worldToScreen to project the
-// brush origin + axis tips to pixels, draws the 3 axis handles on the ImGui
-// foreground draw list, and drags the grabbed axis by mapping cursor motion onto the
-// screen-projected axis direction. A plain click in empty space ray-picks a brush.
-// Talks to the engine ONLY through IRenderDevice (worldToScreen) — engine stays pure.
+// Feature 2 — viewport transform gizmos (Move/Rotate/Scale) + AABB-raycast pick.
+// Projects the brush origin + axis tips to pixels (device->worldToScreen), draws the
+// active tool's handles on the ImGui foreground draw list, and drags the grabbed axis
+// by mapping cursor motion onto the screen-projected axis. Handle LENGTH is camera-
+// distance-scaled so it stays a roughly constant screen size. A plain click ray-picks
+// the brush whose ORIENTED BOX the ray enters (EditorState::pickBrushRay — tight on
+// long thin brushes). Engine stays pure: only worldToScreen is used.
 // ---------------------------------------------------------------------------
 void EditorHost::gizmoAndPick(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
                               x3::phys::IPhysicsWorld& physics, bool wantMouse) {
-    const float kAxisLen = 1.6f;             // world-metres of each gizmo arm
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     ImGuiIO& io = ImGui::GetIO();
     const ImVec2 mouse = io.MousePos;
     const bool lmb = !wantMouse && (glfwGetMouseButton(m_window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS);
     const bool lmbDown = lmb && !m_lmbPrev;   // rising edge
 
-    // Project a world point; returns false if off-screen / behind.
     auto project = [&](float wx, float wy, float wz, ImVec2& out) -> bool {
         float sx = 0, sy = 0;
         if (!device.worldToScreen(wx, wy, wz, sx, sy)) return false;
         out = ImVec2(sx, sy); return true;
     };
 
-    // Only the MOVE tool draws an interactive gizmo; Select still allows pick.
     const bool haveSel = m_state.hasBrushSelection();
     int si = haveSel ? m_state.selIndex() : -1;
+    // The Select tool draws no gizmo; the other three do (Move/Rotate/Scale).
+    const bool gizmoTool = (m_tool == Tool::Move || m_tool == Tool::Rotate || m_tool == Tool::Scale);
 
-    // ---- Active drag: move the selected brush along m_dragAxis by cursor delta. ----
+    // Camera-distance-scaled handle arm length: keep the gizmo a roughly constant
+    // SCREEN size by scaling its world length with the camera->brush distance. Without
+    // this the handles shrink to nothing when you fly away from the brush.
+    float kAxisLen = 1.6f;
+    if (haveSel) {
+        const BlockoutBrush& b = m_doc.brushes[si];
+        const float ddx = b.pos[0]-m_camX, ddy = b.pos[1]-m_camY, ddz = b.pos[2]-m_camZ;
+        const float dist = std::sqrt(ddx*ddx + ddy*ddy + ddz*ddz);
+        kAxisLen = std::max(0.6f, dist * 0.16f);   // ~constant on-screen handle size
+    }
+
+    // ---- Active drag: apply the cursor delta to the grabbed axis per the tool. ----
     if (m_dragging) {
-        if (!lmb) {
-            // Release: commit the grouped edit + final physics/scene sync.
+        if (!lmb || si < 0) {
             m_state.commitBrushEdit();
             if (si >= 0) syncBrushTransform(si, scene, physics);
             m_dragging = false; m_dragAxis = Axis::None;
-        } else if (si >= 0 && m_tool == Tool::Move) {
+        } else {
             BlockoutBrush& b = m_doc.brushes[si];
-            // Re-project the axis to get its current screen direction, map the cursor's
-            // movement onto it, scale by the world/screen ratio of the axis.
-            ImVec2 o, tip;
             const int a = (m_dragAxis == Axis::X) ? 0 : (m_dragAxis == Axis::Y) ? 1 : 2;
+            // Re-project the axis arm to get its current screen direction; map the
+            // cursor onto it (signed param, 0=origin .. 1=tip) -> a world delta.
+            ImVec2 o, tip;
             float tipW[3] = { b.pos[0], b.pos[1], b.pos[2] }; tipW[a] += kAxisLen;
             if (project(b.pos[0], b.pos[1], b.pos[2], o) &&
                 project(tipW[0], tipW[1], tipW[2], tip)) {
                 const float dxS = tip.x - o.x, dyS = tip.y - o.y;
                 const float len2 = dxS*dxS + dyS*dyS;
                 if (len2 > 1e-3f) {
-                    // Signed screen param of the cursor along the axis (0=origin,1=tip).
                     const float s = ((mouse.x - o.x)*dxS + (mouse.y - o.y)*dyS) / len2;
                     const float worldDelta = (s - m_dragStartS) * kAxisLen;
-                    float target = m_dragBaseM + worldDelta;
-                    target = m_state.snapValue(target);
-                    if (std::fabs(target - b.pos[a]) > 1e-5f) {
-                        b.pos[a] = target;
-                        syncBrushTransform(si, scene, physics);   // live preview
+                    bool changed = false;
+                    if (m_tool == Tool::Move) {
+                        float target = m_state.snapValue(m_dragBaseM + worldDelta);
+                        if (std::fabs(target - b.pos[a]) > 1e-5f) { b.pos[a] = target; changed = true; }
+                    } else if (m_tool == Tool::Scale) {
+                        // Grow the extent on this axis by the drag delta (snap + min clamp).
+                        float target = std::max(0.25f, m_state.snapValue(m_dragBaseM + worldDelta));
+                        if (std::fabs(target - b.size[a]) > 1e-5f) { b.size[a] = target; changed = true; }
+                    } // Rotate is handled below via the angular ring mapping.
+                    if (changed) {
+                        if (m_tool == Tool::Scale) respawnBrush(si, device, scene, physics); // mesh rebuild
+                        else                       syncBrushTransform(si, scene, physics);   // transform only
+                    }
+                }
+            }
+            // Rotate uses a SEPARATE mapping (angle from cursor about the screen origin),
+            // handled here so it doesn't depend on a single axis arm projection.
+            if (m_tool == Tool::Rotate) {
+                ImVec2 oc;
+                if (project(b.pos[0], b.pos[1], b.pos[2], oc)) {
+                    const float ang = std::atan2(mouse.y - oc.y, mouse.x - oc.x);
+                    float dyaw = ang - m_dragStartAng;
+                    float newYaw = m_dragBaseYaw + dyaw;
+                    // Snap yaw to 5-degree increments when grid-snap is on.
+                    if (m_state.snapEnabled()) {
+                        const float step = 5.0f * 0.0174533f;
+                        newYaw = std::round(newYaw / step) * step;
+                    }
+                    if (std::fabs(newYaw - b.yaw) > 1e-5f) {
+                        b.yaw = newYaw;
+                        syncBrushTransform(si, scene, physics);
                     }
                 }
             }
         }
     }
 
-    // ---- Draw the gizmo + (when idle) hit-test axis grab on LMB-down. ----
-    if (haveSel && m_tool == Tool::Move) {
+    // ---- Draw the active tool's gizmo + hit-test the axis grab on LMB-down. ----
+    if (haveSel && gizmoTool) {
         BlockoutBrush& b = m_doc.brushes[si];
         ImVec2 o;
         if (project(b.pos[0], b.pos[1], b.pos[2], o)) {
-            const ImU32 colX = IM_COL32(237, 69, 76, 255);   // X red
-            const ImU32 colY = IM_COL32(102, 219, 102, 255); // Y green
-            const ImU32 colZ = IM_COL32(76, 140, 242, 255);  // Z blue
-            const ImU32 cols[3] = { colX, colY, colZ };
+            const ImU32 cols[3] = { IM_COL32(237,69,76,255), IM_COL32(102,219,102,255), IM_COL32(76,140,242,255) };
             const Axis  axes[3] = { Axis::X, Axis::Y, Axis::Z };
             float grabBest = 14.0f; Axis grab = Axis::None; float grabS = 0.0f;
-            for (int a = 0; a < 3; ++a) {
-                float tipW[3] = { b.pos[0], b.pos[1], b.pos[2] }; tipW[a] += kAxisLen;
-                ImVec2 tip;
-                if (!project(tipW[0], tipW[1], tipW[2], tip)) continue;
-                dl->AddLine(o, tip, cols[a], 3.0f);
-                dl->AddCircleFilled(tip, 4.5f, cols[a]);
-                // Distance from cursor to this axis segment (for grab pick).
+
+            if (m_tool == Tool::Rotate) {
+                // A single yaw ring (about +Y) in the brush's tool-accent pink.
+                dl->AddCircle(o, std::max(24.0f, kAxisLen * 22.0f), IM_COL32(255,136,170,255), 48, 2.5f);
+                // Grab anywhere near the ring band.
                 if (!m_dragging) {
-                    const float dxS = tip.x - o.x, dyS = tip.y - o.y;
-                    const float len2 = dxS*dxS + dyS*dyS;
-                    float s = len2 > 1e-3f ? ((mouse.x-o.x)*dxS + (mouse.y-o.y)*dyS)/len2 : 0;
-                    s = s < 0 ? 0 : (s > 1 ? 1 : s);
-                    const float px = o.x + dxS*s, py = o.y + dyS*s;
-                    const float d = std::sqrt((mouse.x-px)*(mouse.x-px) + (mouse.y-py)*(mouse.y-py));
-                    if (d < grabBest) {
-                        grabBest = d; grab = axes[a];
-                        // Store the UNCLAMPED param so the drag tracks past the tip.
-                        grabS = len2 > 1e-3f ? ((mouse.x-o.x)*dxS + (mouse.y-o.y)*dyS)/len2 : 0;
+                    const float rad = std::max(24.0f, kAxisLen * 22.0f);
+                    const float dd = std::sqrt((mouse.x-o.x)*(mouse.x-o.x) + (mouse.y-o.y)*(mouse.y-o.y));
+                    if (std::fabs(dd - rad) < 12.0f) grab = Axis::Y;
+                }
+            } else {
+                // Move / Scale: three axis arms. Scale draws a box at the tip, Move a dot.
+                for (int a = 0; a < 3; ++a) {
+                    float tipW[3] = { b.pos[0], b.pos[1], b.pos[2] }; tipW[a] += kAxisLen;
+                    ImVec2 tip;
+                    if (!project(tipW[0], tipW[1], tipW[2], tip)) continue;
+                    dl->AddLine(o, tip, cols[a], 3.0f);
+                    if (m_tool == Tool::Scale)
+                        dl->AddRectFilled(ImVec2(tip.x-5,tip.y-5), ImVec2(tip.x+5,tip.y+5), cols[a]);
+                    else
+                        dl->AddCircleFilled(tip, 4.5f, cols[a]);
+                    if (!m_dragging) {
+                        const float dxS = tip.x - o.x, dyS = tip.y - o.y;
+                        const float len2 = dxS*dxS + dyS*dyS;
+                        float s = len2 > 1e-3f ? ((mouse.x-o.x)*dxS + (mouse.y-o.y)*dyS)/len2 : 0;
+                        s = s < 0 ? 0 : (s > 1 ? 1 : s);
+                        const float px = o.x + dxS*s, py = o.y + dyS*s;
+                        const float d = std::sqrt((mouse.x-px)*(mouse.x-px) + (mouse.y-py)*(mouse.y-py));
+                        if (d < grabBest) {
+                            grabBest = d; grab = axes[a];
+                            grabS = len2 > 1e-3f ? ((mouse.x-o.x)*dxS + (mouse.y-o.y)*dyS)/len2 : 0;
+                        }
                     }
                 }
             }
-            // Origin handle.
-            dl->AddCircleFilled(o, 5.0f, IM_COL32(255, 209, 46, 255));
-            // Begin a drag if LMB pressed on an axis.
+            dl->AddCircleFilled(o, 5.0f, IM_COL32(255, 209, 46, 255));   // origin handle
+
             if (lmbDown && grab != Axis::None) {
                 m_dragging = true; m_dragAxis = grab; m_dragStartS = grabS;
                 const int a = (grab == Axis::X) ? 0 : (grab == Axis::Y) ? 1 : 2;
-                m_dragBaseM = b.pos[a];
+                m_dragBaseM   = (m_tool == Tool::Scale) ? b.size[a] : b.pos[a];
+                m_dragBaseYaw = b.yaw;
+                m_dragStartAng = std::atan2(mouse.y - o.y, mouse.x - o.x);
                 m_state.beginBrushEdit(si);     // group the drag into one undo step
             }
         }
     }
 
-    // ---- Plain click in empty space (no axis grabbed) = ray-pick a brush. ----
+    // ---- Plain click (no handle grabbed) = ray-pick the brush under the cursor. ----
     if (lmbDown && !m_dragging) {
-        // Build the camera ray from the host's fly-cam pose (same basis as tick()).
         const float fx = std::cos(m_camPitch) * std::cos(m_camYaw);
         const float fy = std::sin(m_camPitch);
         const float fz = std::cos(m_camPitch) * std::sin(m_camYaw);
-        // Pick the brush whose center is nearest the ray (mirror of EditorState::pickRay,
-        // but over brushes[] + radius from the brush's own size).
         const float o3[3] = { m_camX, m_camY, m_camZ };
-        const float dl3 = std::sqrt(fx*fx+fy*fy+fz*fz);
-        const float dx = fx/dl3, dy = fy/dl3, dz = fz/dl3;
-        int best = -1; float bestT = 1e9f;
-        for (int i = 0; i < (int)m_doc.brushes.size(); ++i) {
-            const BlockoutBrush& bb = m_doc.brushes[i];
-            const float ox = bb.pos[0]-o3[0], oy = bb.pos[1]-o3[1], oz = bb.pos[2]-o3[2];
-            const float t = ox*dx + oy*dy + oz*dz;
-            if (t < 0.0f) continue;
-            const float px = o3[0]+dx*t, py = o3[1]+dy*t, pz = o3[2]+dz*t;
-            const float perp = std::sqrt((bb.pos[0]-px)*(bb.pos[0]-px) +
-                                         (bb.pos[1]-py)*(bb.pos[1]-py) +
-                                         (bb.pos[2]-pz)*(bb.pos[2]-pz));
-            // Hit radius ~ the brush's largest half-extent + a little slack.
-            const float r = 0.5f * std::max(bb.size[0], std::max(bb.size[1], bb.size[2])) + 0.5f;
-            if (perp <= r && t < bestT) { bestT = t; best = i; }
-        }
+        const float d3[3] = { fx, fy, fz };
+        int best = m_state.pickBrushRay(o3, d3, /*pad*/0.1f);   // true OBB raycast
         if (best >= 0) m_state.selectBrush(best);
     }
 
