@@ -500,8 +500,9 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.vmScale     = 0.24f;                // longarm (~0.46 m held)
         w.muzzleFx    = "muzzle_lightning";
         w.impactFx    = "impact_lightning";
-        // Continuous loopable zap/beam (the loop reads as a sustained electric crackle).
-        w.fireSfx     = "weapons/loops/Loopable_Rapid-Fires_Sci-Fi_Gun_7.wav";
+        // Continuous electric ZAP (Vefects Zap pack) — looped while the beam is held so
+        // it reads as a sustained lightning crackle (not a generic gun loop).
+        w.fireSfx     = "weapons/loops/Vefects_Zap_Medium_01.wav";
         w.fireSfxLoop = true;   // continuous beam: loopable
         r.push_back(w);
     }
