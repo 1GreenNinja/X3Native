@@ -115,6 +115,13 @@ def parse_materials(pack_root):
         # scalar fallbacks when there is no MaskMap.
         rec["metallic"]   = _scalar(txt, "_Metallic", 0.0)
         rec["smoothness"] = _scalar(txt, "_Smoothness", 0.5)
+        # HDRP DetailMap (micro surface detail) — UV tiling lives on the _DetailMap
+        # texenv's m_Scale; intensities in _Detail*Scale. glTF has no detail slot, so the
+        # converter emits the map + these params via material.extras (engine unpacks).
+        dm = re.search(r"_DetailMap:\s*\n\s*m_Texture:[^\n]*\n\s*m_Scale:\s*\{x:\s*([0-9.eE-]+)", txt)
+        rec["detailScale"]       = float(dm.group(1)) if dm else 1.0
+        rec["detailAlbedoScale"] = _scalar(txt, "_DetailAlbedoScale", 1.0)
+        rec["detailNormalScale"] = _scalar(txt, "_DetailNormalScale", 1.0)
         # _BaseColor is the ONLY source of color on HDRP atlas materials.
         rec["baseColor"] = _color(txt, "_BaseColor", (1.0, 1.0, 1.0, 1.0))
         rec["emisColor"] = _color(txt, "_EmissiveColor", (0.0, 0.0, 0.0, 1.0))[:3] \
@@ -300,6 +307,21 @@ def apply_materials(gltf, guidmap, matmap, png_cache, rebuild=False):
                 gm.emissiveTexture = TextureInfo(index=_add_image(gltf, p, samp, texcache)); n_tex += 1
                 ec = rec.get("emisColor", (1.0, 1.0, 1.0))
                 gm.emissiveFactor = [min(1.0, max(0.0, c)) for c in ec] if max(ec) > 0 else [1.0, 1.0, 1.0]
+
+        # DetailMap (HDRP micro-detail: R=desat albedo, G=normalY, B=smoothness, A=normalX),
+        # tiled by uvScale. glTF has no detail slot, so emit the LINEAR map + carry its index
+        # + scales via material.extras["x3Detail"] for the engine loader to unpack + blend in
+        # mesh.frag. Skip a shared-default map (would just re-tile the base atlas).
+        if hdrp:
+            dg = rec.get("_DetailMap"); df = guidmap.get(dg) if dg else None
+            dshared = (not dg) or dg in (rec.get("_BaseColorMap"), rec.get("_MaskMap"), rec.get("_NormalMap"))
+            if df and not dshared and (dp := to_png(df, png_cache)):
+                dtex = _add_image(gltf, dp, samp, texcache); n_tex += 1
+                ex = dict(gm.extras) if gm.extras else {}
+                ex["x3Detail"] = {"tex": dtex, "uvScale": rec.get("detailScale", 1.0),
+                                  "nrmScale": rec.get("detailNormalScale", 1.0),
+                                  "albScale": rec.get("detailAlbedoScale", 1.0)}
+                gm.extras = ex
     return n_tex, matched
 
 def repack_glb(in_glb, out_glb, guidmap, matmap, png_cache):
