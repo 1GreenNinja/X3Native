@@ -154,6 +154,41 @@ public:
     x3::phys::Vec3 avatarPos() const { return m_pos; }
     float avatarYaw() const { return m_yaw; }
 
+    // ---- LIVE GRIP TUNE (TASK#53) ------------------------------------------
+    // ADDITIVE override on top of the currently-selected weapon's kTpGripTable
+    // row, driven by console cvars (grip_x/y/z + grip_pitch/yaw/roll + grip_scale)
+    // so Tim can DIAL each gun live in 3P, then bake the dialed numbers into the
+    // table. Position deltas are METERS in the hand-LOCAL frame (matching TpGrip:
+    // x=right toward thumb, y=down into palm, z=forward down the barrel); rotation
+    // deltas are DEGREES added to the row's yaw/pitch/roll; scale delta is ADDED to
+    // the row's scaleMul. All-zero (the default) => the baked table is unchanged.
+    // The override is applied to whatever weapon is CURRENTLY held, so switching
+    // weapons (number keys) lets Tim dial each in turn. See the BAKE comment block
+    // above kTpGripTable in thirdperson.h. Position/rotation read back via gripX()..
+    void setGripOverride(float x, float y, float z,
+                         float pitchDeg, float yawDeg, float rollDeg,
+                         float scaleDelta) {
+        m_gripOvX = x; m_gripOvY = y; m_gripOvZ = z;
+        m_gripOvPitch = pitchDeg; m_gripOvYaw = yawDeg; m_gripOvRoll = rollDeg;
+        m_gripOvScale = scaleDelta;
+    }
+    bool gripOverrideActive() const {
+        return m_gripOvX || m_gripOvY || m_gripOvZ ||
+               m_gripOvPitch || m_gripOvYaw || m_gripOvRoll || m_gripOvScale;
+    }
+    float gripOvX()     const { return m_gripOvX; }
+    float gripOvY()     const { return m_gripOvY; }
+    float gripOvZ()     const { return m_gripOvZ; }
+    float gripOvPitch() const { return m_gripOvPitch; }
+    float gripOvYaw()   const { return m_gripOvYaw; }
+    float gripOvRoll()  const { return m_gripOvRoll; }
+    float gripOvScale() const { return m_gripOvScale; }
+    // The EFFECTIVE grip for a weapon = its table row + the live override. Filled for
+    // the HUD readout so Tim sees the absolute values he should bake into the row.
+    void effectiveGrip(std::string_view weaponName, float& fwd, float& right,
+                       float& down, float& yawDeg, float& pitchDeg, float& rollDeg,
+                       float& scaleMul) const;
+
     // Copy the baked avatar DRAW transform (column-major 4x4) — for tests / HUD. Lets
     // a test assert the standing basis is upright + orthonormal (no crouch tilt). The
     // basis columns are out[0..2]=right, out[4..6]=up, out[8..10]=forward (scaled by
@@ -230,6 +265,12 @@ private:
     // in update(); camera() uses it to bias the follow cam subtly over the right
     // shoulder while aiming so the body doesn't block the crosshair.
     float    m_aimAmt     = 0.0f;
+
+    // LIVE GRIP TUNE (TASK#53) — additive override on the current weapon's grip
+    // row, driven by cvars. Default 0 => no change to the baked kTpGripTable.
+    float    m_gripOvX = 0.0f, m_gripOvY = 0.0f, m_gripOvZ = 0.0f;       // m (right/down/fwd)
+    float    m_gripOvPitch = 0.0f, m_gripOvYaw = 0.0f, m_gripOvRoll = 0.0f; // deg
+    float    m_gripOvScale = 0.0f;                                       // added to scaleMul
 };
 
 // Follow-camera tuning (meters). Behind the player + above; the test asserts the
@@ -253,6 +294,27 @@ inline constexpr float kTpCamHeightAbove = 0.7f;   // m above the eye line
 // local so a change to one gun never touches another). Forward seats the model
 // along the barrel out of the fist; down drops it into the palm; right centers it
 // across the fingers. Rotations square the authored barrel axis onto the grip.
+//
+// ---------------------------------------------------------------------------
+// LIVE-TUNE + BAKE WORKFLOW (TASK#53)
+// ---------------------------------------------------------------------------
+// The values below were chosen BLIND and need Tim's eyeball. To DIAL them live:
+//   1. Run headed in 3P:  X3Engine.exe --world showroom   (then press F2/F5 for 3P)
+//   2. Select a weapon with the number keys (1..7) — the override applies to the
+//      CURRENTLY-held weapon.
+//   3. Dial the console cvars (additive on top of this weapon's row):
+//        grip_x  grip_y  grip_z         (meters: right / down / forward)
+//        grip_pitch  grip_yaw  grip_roll (degrees)
+//        grip_scale                      (added to scaleMul)
+//      The 3P HUD prints the EFFECTIVE (row + override) values for the held weapon.
+//   4. When the gun sits right, read the HUD line — those are the absolute numbers
+//      to BAKE. Edit that weapon's row in kTpGripTable below:
+//        forward = z, right = x, down = y, pitchDeg/yawDeg/rollDeg, scaleMul.
+//   5. Zero the cvars (grip_x 0, etc.), switch to the next weapon, repeat.
+//   6. AFTER all weapons are baked: remove the grip_* cvars from app/main.cpp and
+//      the m_gripOv* override path (setGripOverride / effectiveGrip /
+//      gripOverrideActive in thirdperson.*) so the table is the single source again.
+//      The HUD readout line + this comment block can then go too.
 struct TpGrip {
     const char* name;        // matches WeaponDef::name (nullptr = default fallback row)
     float forward;           // m along the barrel (out of the fist)
