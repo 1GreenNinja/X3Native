@@ -23,15 +23,13 @@
 > concrete file:line evidence; anything thin was kept 🚧/📝 rather than
 > marked done). M0 (Slices 1–8) is OBSOLETE and left unstamped.
 >
-> **✅ 37 shipped · 🚧 21 in progress · 📝 34 planned · ⛔ 8 obsolete (M0)**
+> **✅ 37 shipped · 🚧 21 in progress · 📝 24 planned · ⛔ 18 obsolete (M0 + M4)**
 >
 > - **Strong / mostly shipped:** M1 Vulkan 1.3 (9–15, 17), M2 glTF/PBR (21–26),
 >   M3 Jolt physics + CharacterVirtual (31–42, near-complete), M5 game slice
 >   (53–64 in C++), core post-FX (SSAO/SSGI/bloom/ACES/compute-particles),
 >   custom GUI + HUD + menus (85–88), `.x3pak` mount/priority/override (67, 69).
 > - **Biggest gaps (📝, no trace in tree):**
->   - **M4 Lua/sol3 scripting (43–52) — entirely absent.** Gameplay the plan
->     assumed would be Lua (weapons 55, AI 56) is implemented in C++ instead.
 >   - **No Dear ImGui** (83–84) — only a custom UI helper.
 >   - **No Steamworks** (95–96) and no ship/packaging pipeline (97–100).
 >   - **Advanced post-FX:** DoF (74), motion blur (75), OIT (76), TAA/DLSS (81),
@@ -249,7 +247,18 @@
 
 ---
 
-# M4 — Lua / sol3 scripting (Slices 43–52)
+# M4 — Lua / sol3 scripting (Slices 43–52) — ⛔ OBSOLETE (2026-06-05)
+
+> **Not being pursued.** The engine was built clean-room in C++ and gameplay
+> (weapons, AI, abilities) is implemented directly in C++ — not scripted. This
+> milestone existed for the original "engine = sellable, each game = an
+> obfuscated Lua pak" multi-game model. While X3Native ships **one** game
+> (EFLZ) in C++, a Lua VM is speculative weight that fights the as-built engine.
+> Slices 43–52 are kept for historical context only.
+>
+> **Revive trigger:** if/when the "many games, one engine" pak-selling model
+> becomes real (a second game, or external modders), reopen this milestone —
+> embedded scripting is the right tool for that layer, not before.
 
 ## Slice 43 📝 — sol3 + LuaJIT/Lua 5.4 VM
 **Goal**: Embed sol3 + a Lua runtime; a `.lua` runs at startup.
