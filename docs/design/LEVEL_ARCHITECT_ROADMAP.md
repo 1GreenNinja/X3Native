@@ -309,6 +309,52 @@ FORGE3D-style live material tweaking, prefab/variant reuse) begin.
 
 ---
 
+## 3b. Phase 5 — Doom-Builder "Visual Mode" keyboard nudge editing (SHIPPED)
+
+The single best part of Doom Builder's Visual Mode, brought to the live editor: you LOOK
+at a brush (crosshair raycast from the fly-cam — reuses `EditorState::pickBrushRay`, which
+auto-selects the looked-at brush) and SHAPE it with the KEYBOARD — no mouse-drag. Every
+nudge is grid-snapped, is ONE undo step (routed through `beginBrushEdit`/`commitBrushEdit`),
+and is live-synced to the Scene + Jolt body so the physics block actually moves/resizes.
+
+The faced axis is resolved from the crosshair surface normal (`EditorHost::facedAxis` runs a
+slab test on the brush OBB and reports the entered face's axis; falls back to camera-forward).
+
+**CLASSIC default key map** (data-driven, rebindable — see below):
+
+| Action          | Default bind | What it does                                            |
+|-----------------|--------------|---------------------------------------------------------|
+| Raise Ceiling   | Mouse-wheel ▲ | grow brush +Y, recenter up → TOP rises (Doom ceiling)   |
+| Lower Ceiling   | Mouse-wheel ▼ | shrink brush +Y, recenter down → TOP falls              |
+| Raise Floor     | PgUp         | shrink +Y, recenter up → BOTTOM rises (Doom floor)      |
+| Lower Floor     | PgDn         | grow +Y, recenter down → BOTTOM falls                   |
+| Move Out        | Up arrow     | push the brush +1 step along the faced axis             |
+| Move In         | Down arrow   | pull the brush −1 step along the faced axis             |
+| Stretch +       | `]`          | grow the brush extent on the faced axis                 |
+| Shrink −        | `[`          | shrink the brush extent on the faced axis               |
+| Toggle Cheat-Sheet | `H`       | show/hide the floating keybind overlay                  |
+
+**Step modifiers (not binds):** hold **Shift** for a x4 (larger) step, **Ctrl** for a quarter
+(finer) step. The base step is the active grid snap (1 / 0.5 / 0.25 m).
+
+**Rebindable + single source of truth.** The binds live in a data-driven `KeybindTable`
+(`app/editor/editor.h` + `editor_keybinds.cpp`): `{action → key}` rows the input poll reads
+with `actionForKey()` and the on-screen cheat-sheet reads with `keyFor()` / `at()` — one
+table, so the poll and the tooltip can never drift. Rebind in the **Keybinds** panel (click an
+action, press a key or scroll a wheel notch; Esc cancels; "Reset to defaults" restores the
+classic map). No two actions may share a key (a rebind steals it).
+
+**Unobtrusive floating cheat-sheet.** A small, low-alpha (~0.28) overlay pinned to the
+bottom-right corner lists the ACTIVE binds (read from the same `KeybindTable`), shown only in
+Edit mode, never in Play. `H` hides it down to a faint one-line hint.
+
+Headless coverage in `--test-editor`: **E16** (keyboard move nudge = snapped pos + one undo
+step + SyncXform), **E17** (stretch = Respawn; raise/lower ceiling & floor move the correct
+face), **E18** (keybind table defaults + `actionForKey`↔`keyFor` inverse + rebind-steals +
+reset). Tooltip placement + nudge *feel* are the owner's eyeball check in `--editor`.
+
+---
+
 ## 4. Risks & Unknowns
 
 - **ImGui integration friction.** Sharing our Vulkan device/queue/swapchain with `imgui_impl_vulkan`

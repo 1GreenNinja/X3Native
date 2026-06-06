@@ -612,6 +612,78 @@ HistoryEffect EditorState::redo() {
     return eff;
 }
 
+// ---------------------------------------------------------------------------
+// Phase 5 — keyboard NUDGE (Doom-Builder Visual Mode). Each call is ONE undo step
+// (begin/commit brackets the mutation) + grid-snapped. Pure doc mutation; the host
+// applies the returned HistoryEffect to the live Scene + Jolt.
+// ---------------------------------------------------------------------------
+HistoryEffect EditorState::nudgeBrush(NudgeAction action, Axis faceAxis, float step) {
+    HistoryEffect eff;
+    if (!hasBrushSelection()) return eff;
+    if (step <= 0.0f) step = m_grid;
+    const int idx = m_selIndex;
+    BlockoutBrush& b = m_doc.brushes[idx];
+
+    // Resolve the moved axis. Height actions are always +Y (Doom floor/ceiling); the
+    // rest act on the crosshair's faced axis (fall back to Z = "forward" if unknown).
+    int a = (faceAxis == Axis::X) ? 0 : (faceAxis == Axis::Y) ? 1 : 2;
+
+    bool sizeChanged = false;
+    const int undoBefore = m_undoPos;
+    beginBrushEdit(idx);
+    switch (action) {
+        case NudgeAction::MoveOut:
+            b.pos[a] = snapValue(b.pos[a] + step);
+            break;
+        case NudgeAction::MoveIn:
+            b.pos[a] = snapValue(b.pos[a] - step);
+            break;
+        case NudgeAction::StretchGrow:
+            b.size[a] = std::max(0.25f, snapValue(b.size[a] + step));
+            sizeChanged = true;
+            break;
+        case NudgeAction::StretchShrink:
+            b.size[a] = std::max(0.25f, snapValue(b.size[a] - step));
+            sizeChanged = true;
+            break;
+        // Height: move the TOP face. Grow/shrink Y by `step` AND shift the center by
+        // half a step so the BOTTOM stays put (the top rises/falls — Doom ceiling).
+        case NudgeAction::RaiseHeight: {
+            float ns = std::max(0.25f, snapValue(b.size[1] + step));
+            b.pos[1] = snapValue(b.pos[1] + (ns - b.size[1]) * 0.5f);
+            b.size[1] = ns; sizeChanged = true; break;
+        }
+        case NudgeAction::LowerHeight: {
+            float ns = std::max(0.25f, snapValue(b.size[1] - step));
+            b.pos[1] = snapValue(b.pos[1] + (ns - b.size[1]) * 0.5f);
+            b.size[1] = ns; sizeChanged = true; break;
+        }
+        // Floor: move the BOTTOM face. Raising the floor SHRINKS Y and lifts the center
+        // by half (top stays put); lowering the floor grows Y + drops the center.
+        case NudgeAction::RaiseFloor: {
+            float ns = std::max(0.25f, snapValue(b.size[1] - step));
+            b.pos[1] = snapValue(b.pos[1] - (ns - b.size[1]) * 0.5f);
+            b.size[1] = ns; sizeChanged = true; break;
+        }
+        case NudgeAction::LowerFloor: {
+            float ns = std::max(0.25f, snapValue(b.size[1] + step));
+            b.pos[1] = snapValue(b.pos[1] - (ns - b.size[1]) * 0.5f);
+            b.size[1] = ns; sizeChanged = true; break;
+        }
+        default:
+            // Non-geometry actions (ToggleTooltip) don't touch the brush.
+            m_editing = false; m_editIndex = -1; return eff;
+    }
+    commitBrushEdit();   // pushes one Transform command IFF something actually changed
+
+    // If commit dropped the command (a snap that landed on the same value -> no net
+    // change), there's nothing for the host to do — report op==None.
+    if (m_undoPos == undoBefore) return eff;
+    eff.op = sizeChanged ? HistoryEffect::Op::Respawn : HistoryEffect::Op::SyncXform;
+    eff.index = idx;
+    return eff;
+}
+
 // ===========================================================================
 // Headless self-test (--test-editor). E0-E5.
 // ===========================================================================
@@ -894,6 +966,85 @@ bool runEditorSelfTest() {
                          near(rt.entities[0].yaw, 0.5f) && near(rt.entities[0].scale, 1.5f);
         check(catOk && roundtrip,
               "E15 model browser: placed GLB entity round-trips through the LevelDoc JSON");
+    }
+
+    // ---- E16 (Phase 5): keyboard MOVE nudge = snapped pos + ONE undo step. ----
+    {
+        LevelDoc d; EditorState ed(d);
+        ed.setSnap(true, 0.5f);
+        float p[3] = { 0, 0, 0 };
+        ed.addBrushCmd(0u, p);                          // brush 0 at origin (1 undo step)
+        ed.selectBrush(0);
+        int undoBefore = 0; (void)undoBefore;
+        // Move OUT along Z by a 0.5 step -> z = 0.5, reported as a cheap SyncXform.
+        HistoryEffect e1 = ed.nudgeBrush(NudgeAction::MoveOut, Axis::Z, 0.5f);
+        bool moved = near(d.brushes[0].pos[2], 0.5f) && e1.op == HistoryEffect::Op::SyncXform;
+        // The nudge is ONE undo step: undo restores z=0.
+        HistoryEffect u = ed.undo();
+        bool oneStep = near(d.brushes[0].pos[2], 0.0f) && u.op == HistoryEffect::Op::SyncXform;
+        // Move IN along X -> x = -0.5.
+        ed.redo();                                      // back to z=0.5
+        HistoryEffect e2 = ed.nudgeBrush(NudgeAction::MoveIn, Axis::X, 0.5f);
+        bool movedIn = near(d.brushes[0].pos[0], -0.5f) && e2.op == HistoryEffect::Op::SyncXform;
+        check(moved && oneStep && movedIn,
+              "E16 keyboard MOVE nudge: snapped pos, one undo step, SyncXform sync");
+    }
+
+    // ---- E17 (Phase 5): STRETCH + HEIGHT nudges resize (Respawn), top/bottom logic. ----
+    {
+        LevelDoc d; EditorState ed(d);
+        ed.setSnap(true, 0.5f);
+        float p[3] = { 0, 1, 0 };
+        ed.addBrushCmd(0u, p);                          // 2 m cube centered at y=1
+        ed.selectBrush(0);
+        // STRETCH grow on X by 1 step -> size.x 2 -> 2.5, host must RESPAWN (mesh rebuild).
+        HistoryEffect s = ed.nudgeBrush(NudgeAction::StretchGrow, Axis::X, 0.5f);
+        bool grew = near(d.brushes[0].size[0], 2.5f) && s.op == HistoryEffect::Op::Respawn;
+        // RAISE CEILING: top was y=2 (center 1 + half 1). Raise by 1 -> size.y 2->3,
+        // center shifts up by 0.5 (to 1.5) so the BOTTOM stays at y=0, top -> 3.
+        HistoryEffect h = ed.nudgeBrush(NudgeAction::RaiseHeight, Axis::Y, 1.0f);
+        const float top = d.brushes[0].pos[1] + d.brushes[0].size[1]*0.5f;
+        const float bot = d.brushes[0].pos[1] - d.brushes[0].size[1]*0.5f;
+        bool raised = near(d.brushes[0].size[1], 3.0f) && near(top, 3.0f) && near(bot, 0.0f) &&
+                      h.op == HistoryEffect::Op::Respawn;
+        // RAISE FLOOR: bottom was 0. Raise floor by 1 -> size.y 3->2, center up by 0.5
+        // (to 2.0) so the TOP stays at 3, bottom -> 1.
+        HistoryEffect f = ed.nudgeBrush(NudgeAction::RaiseFloor, Axis::Y, 1.0f);
+        const float top2 = d.brushes[0].pos[1] + d.brushes[0].size[1]*0.5f;
+        const float bot2 = d.brushes[0].pos[1] - d.brushes[0].size[1]*0.5f;
+        bool floor = near(d.brushes[0].size[1], 2.0f) && near(top2, 3.0f) && near(bot2, 1.0f) &&
+                     f.op == HistoryEffect::Op::Respawn;
+        check(grew && raised && floor,
+              "E17 keyboard STRETCH=Respawn + RAISE ceiling/floor move the right face");
+    }
+
+    // ---- E18 (Phase 5): the keybind TABLE maps actions<->keys + rebind updates it. ----
+    {
+        KeybindTable kb;
+        // Defaults: the classic Doom-Builder map (wheel = ceiling, arrows = move, brackets
+        // = stretch). actionForKey + keyFor are inverse over the table.
+        bool dflt = kb.keyFor(NudgeAction::RaiseHeight) == kKeyMouseWheelUp &&
+                    kb.keyFor(NudgeAction::LowerHeight) == kKeyMouseWheelDown &&
+                    kb.actionForKey(kKeyMouseWheelUp) == NudgeAction::RaiseHeight &&
+                    kb.actionForKey(0) == NudgeAction::Count &&        // 0 = unbound
+                    kb.count() == (uint32_t)NudgeAction::Count;
+        // Rebind MoveOut to an arbitrary key code; keyFor + actionForKey both reflect it.
+        const int kFoo = 70000;
+        bool rebound = kb.rebind(NudgeAction::MoveOut, kFoo) &&
+                       kb.keyFor(NudgeAction::MoveOut) == kFoo &&
+                       kb.actionForKey(kFoo) == NudgeAction::MoveOut;
+        // Rebinding a key already held by another action STEALS it (no two share a key).
+        int moveInKey = kb.keyFor(NudgeAction::MoveIn);
+        bool steal = kb.rebind(NudgeAction::MoveOut, moveInKey) &&
+                     kb.keyFor(NudgeAction::MoveOut) == moveInKey &&
+                     kb.keyFor(NudgeAction::MoveIn) == 0 &&            // stolen -> unbound
+                     kb.actionForKey(moveInKey) == NudgeAction::MoveOut;
+        // Reset restores the defaults.
+        kb.resetDefaults();
+        bool reset = kb.keyFor(NudgeAction::RaiseHeight) == kKeyMouseWheelUp &&
+                     kb.actionForKey(kFoo) == NudgeAction::Count;
+        check(dflt && rebound && steal && reset,
+              "E18 keybind table: defaults + actionForKey<->keyFor + rebind steals + reset");
     }
 
     x3::logInfo(std::string("[editor-test] ") + std::to_string(g_pass) + " passed, " +

@@ -124,6 +124,76 @@ enum class SelKind : uint8_t { None = 0, Entity, Brush };
 enum class Tool : uint8_t { Select = 0, Move, Rotate, Scale };
 
 // ---------------------------------------------------------------------------
+// PHASE 5 — DOOM-BUILDER "VISUAL MODE" KEYBOARD NUDGE EDITING.
+//
+// In Edit mode the user LOOKS at a brush (crosshair raycast from the fly-cam) and
+// SHAPES it with the keyboard — no mouse-drag. Every nudge is grid-snapped and is
+// ONE undo step (it routes through begin/commitBrushEdit). The set of actions is a
+// DATA-DRIVEN keybind TABLE so both the input handler AND the on-screen cheat-sheet
+// read from the same source (they can never drift) and the binds are rebindable.
+//
+// The nudge operates on the brush's "faced axis": the host resolves which world axis
+// the crosshair surface normal points along (X/Y/Z) and passes it in; Move pushes the
+// brush along that axis, Stretch grows/shrinks its extent on that axis, and Height
+// raises/lowers the TOP or BOTTOM (Doom's signature floor/ceiling move) on +Y.
+// ---------------------------------------------------------------------------
+enum class NudgeAction : uint8_t {
+    MoveOut = 0,     // push the brush along +faced axis by one step (away from you)
+    MoveIn,          // pull the brush along -faced axis by one step (toward you)
+    StretchGrow,     // grow the brush's extent on the faced axis by one step
+    StretchShrink,   // shrink the brush's extent on the faced axis by one step
+    RaiseHeight,     // raise the brush TOP (Doom ceiling): +Y size + recenter up
+    LowerHeight,     // lower the brush TOP: -Y size + recenter down
+    RaiseFloor,      // raise the brush BOTTOM (Doom floor): -Y size + recenter up
+    LowerFloor,      // lower the brush BOTTOM: +Y size + recenter down
+    ToggleTooltip,   // show/hide the floating keybind cheat-sheet overlay
+    Count
+};
+
+// One row of the rebindable keybind table. `key` is a GLFW key code (so the host
+// reads it directly with glfwGetKey); kKeyMouseWheelUp/Down are SYNTHETIC sentinels
+// the host maps from the ImGui mouse-wheel (Doom's classic raise/lower-with-wheel).
+struct Keybind {
+    NudgeAction action;
+    int         key;     // GLFW_KEY_* or a kKeyMouseWheel* sentinel
+};
+
+// Synthetic key codes for the mouse wheel (well outside GLFW's key range). The host
+// translates a wheel tick into one of these before querying actionForKey().
+constexpr int kKeyMouseWheelUp   = 100001;
+constexpr int kKeyMouseWheelDown = 100002;
+
+// The keybind TABLE — owns the {action -> key} mapping, rebindable at runtime. Seeded
+// with the CLASSIC Doom-Builder-flavored defaults (documented in editor_keybinds.cpp).
+// The input handler AND the tooltip both read this one instance.
+class KeybindTable {
+public:
+    KeybindTable() { resetDefaults(); }
+
+    // Restore the classic default binds.
+    void resetDefaults();
+
+    // The current key bound to `action` (or 0 if unbound).
+    int  keyFor(NudgeAction action) const;
+    // The action bound to `key`, or NudgeAction::Count if none. Used by the input poll.
+    NudgeAction actionForKey(int key) const;
+    // Rebind `action` to `key`. If `key` was already bound to another action, that other
+    // binding is cleared (no two actions share a key). Returns true on change.
+    bool rebind(NudgeAction action, int key);
+
+    // Stable count + indexed access for the rebind UI + tooltip rows.
+    uint32_t count() const { return (uint32_t)NudgeAction::Count; }
+    const Keybind& at(uint32_t i) const { return m_binds[i]; }
+
+    // Human-readable action label ("Move Out") and key name ("PgUp", "Wheel ▲", "]").
+    static const char* actionLabel(NudgeAction a);
+    static const char* keyName(int key);
+
+private:
+    Keybind m_binds[(int)NudgeAction::Count];
+};
+
+// ---------------------------------------------------------------------------
 // Theme — the Lab Architect / Task9D palette (dark navy + cyan accents + the
 // per-tool gizmo colors W=green/E=blue/R=pink), as DATA so the in-app HUD layer
 // just reads it. RGBA floats 0..1.
@@ -296,6 +366,17 @@ public:
     void  beginBrushEdit(int index);
     void  commitBrushEdit();
     bool  editing() const { return m_editing; }
+
+    // ---- Phase 5: keyboard NUDGE (Doom-Builder Visual Mode) -----------------
+    // Apply one keyboard nudge to the SELECTED brush as a single, grid-snapped, undoable
+    // step (it brackets the mutation in begin/commitBrushEdit internally, so each call =
+    // one Ctrl+Z). `faceAxis` is the world axis the crosshair surface points along
+    // (resolved by the host from the looked-at face normal); Height actions ignore it and
+    // always act on +Y. `step` is the snap step for this nudge (Shift/Ctrl pick a larger/
+    // finer step host-side). Returns the host re-sync hint (HistoryEffect): Move/RaiseFloor
+    // etc. that only translate report SyncXform; anything that changes a size reports
+    // Respawn (mesh rebuild). op==None when there's no brush selection or no net change.
+    HistoryEffect nudgeBrush(NudgeAction action, Axis faceAxis, float step);
 
     bool  canUndo() const { return m_undoPos > 0; }
     bool  canRedo() const { return m_undoPos < (int)m_history.size(); }
