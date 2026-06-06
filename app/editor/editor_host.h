@@ -118,6 +118,25 @@ private:
     void gizmoAndPick(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
                       x3::phys::IPhysicsWorld& physics, bool wantMouse);
 
+    // ---- Phase 5: Doom-Builder "Visual Mode" KEYBOARD nudge editing ---------
+    // Crosshair-raycast the brush the fly-cam LOOKS at, then shape it with the keyboard
+    // (move in/out, stretch, raise/lower floor & ceiling) — all grid-snapped, each nudge
+    // one undo step, live-synced to Scene + Jolt. Reads the rebindable m_keybinds table
+    // (Shift = larger step, Ctrl = finer). Called from draw() in Edit mode after the
+    // gizmo. wantKbd gates it so typing in a panel never nudges. Returns the action that
+    // fired this frame (or Count) for the status readout.
+    NudgeAction visualNudge(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                            x3::phys::IPhysicsWorld& physics, bool wantKbd);
+    // Resolve the world AXIS the looked-at brush's faced surface normal points along, by
+    // testing which face of the brush OBB the crosshair ray crosses. Falls back to the
+    // camera-forward dominant axis. Used to pick the move/stretch axis for visualNudge.
+    Axis facedAxis(int brushIdx) const;
+
+    // Draw the unobtrusive floating keybind cheat-sheet (corner, low alpha, small) and
+    // the rebind panel. Reads/writes m_keybinds so the table + tooltip never drift.
+    void drawKeybindOverlay();
+    void drawRebindPanel();
+
     LevelDoc    m_doc;
     EditorState m_state;
     HostMode    m_mode = HostMode::Edit;
@@ -182,6 +201,18 @@ private:
     bool  m_lmbPrev    = false;          // LMB held last frame (rising/falling edge)
     // Last gizmo HistoryEffect produced by a commit, applied next frame by draw().
     bool  m_ctrlZPrev = false, m_ctrlYPrev = false;  // Ctrl+Z / Ctrl+Y rising edge
+
+    // ---- Phase 5: keyboard nudge / cheat-sheet / rebind ---------------------
+    KeybindTable m_keybinds;                 // the rebindable {action -> key} table
+    bool   m_tooltipVisible = true;          // floating cheat-sheet shown (H toggles)
+    // Rising-edge tracking for each bound key (so a held key fires once per press, while
+    // the wheel — inherently per-tick — fires per notch). Indexed by NudgeAction.
+    bool   m_nudgePrev[(int)NudgeAction::Count] = {};
+    NudgeAction m_lastNudge = NudgeAction::Count;   // for the status readout
+    int    m_lastFaceAxis = 2;               // last resolved faced axis (for the readout)
+    // Rebind capture: when set, the next key the user presses rebinds this action.
+    bool        m_rebinding = false;
+    NudgeAction m_rebindAction = NudgeAction::Count;
 };
 
 } // namespace x3::editor

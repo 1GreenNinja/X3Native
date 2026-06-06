@@ -13,6 +13,7 @@ add_executable(X3Engine WIN32
     secret_room.cpp
     ecs_render.cpp
     editor/editor.cpp
+    editor/editor_keybinds.cpp
     editor/editor_host.cpp
     elevator.cpp
     weapon.cpp

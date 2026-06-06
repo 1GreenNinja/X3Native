@@ -621,6 +621,18 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
     ImGui::Text("Draw calls: %u   Tris: %u", st.drawCalls, st.triangles);
     ImGui::End();
 
+    // ---- Phase 5: Doom-Builder Visual Mode KEYBOARD nudge editing -----------
+    // The Keybinds rebind panel (data-driven; shares m_keybinds with the overlay + poll).
+    drawRebindPanel();
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        // Crosshair-raycast the looked-at brush + apply keyboard nudges (gated on
+        // !WantCaptureKeyboard so typing in a field never nudges).
+        m_lastNudge = visualNudge(device, scene, physics, io.WantCaptureKeyboard);
+    }
+    // The unobtrusive floating cheat-sheet (corner, faint) — H toggles it.
+    drawKeybindOverlay();
+
     // ---- Viewport gizmo + click-pick (P3). Drawn last so it overlays the scene. ----
     {
         ImGuiIO& io = ImGui::GetIO();
@@ -792,6 +804,231 @@ void EditorHost::gizmoAndPick(x3::rhi::IRenderDevice& device, x3::game::Scene& s
     }
 
     m_lmbPrev = lmb;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — resolve the faced AXIS: which world axis the crosshair ray crosses the
+// looked-at brush on. Transform the camera ray into the brush's local frame, run the
+// slab test, and report the axis of the entry face. Falls back to the camera-forward
+// dominant axis if the ray misses (so a nudge still has a sensible axis).
+// ---------------------------------------------------------------------------
+Axis EditorHost::facedAxis(int brushIdx) const {
+    const float fx = std::cos(m_camPitch) * std::cos(m_camYaw);
+    const float fy = std::sin(m_camPitch);
+    const float fz = std::cos(m_camPitch) * std::sin(m_camYaw);
+    if (brushIdx >= 0 && brushIdx < (int)m_doc.brushes.size()) {
+        const BlockoutBrush& b = m_doc.brushes[brushIdx];
+        const float c = std::cos(b.yaw), s = std::sin(b.yaw);
+        // world->local (transpose of R(yaw)); translate to the brush center.
+        const float ox = m_camX-b.pos[0], oy = m_camY-b.pos[1], oz = m_camZ-b.pos[2];
+        const float lox = c*ox - s*oz, loy = oy, loz = s*ox + c*oz;
+        const float ldx = c*fx - s*fz, ldy = fy, ldz = s*fx + c*fz;
+        const float ro[3] = { lox, loy, loz }, rd[3] = { ldx, ldy, ldz };
+        const float h[3] = { b.size[0]*0.5f, b.size[1]*0.5f, b.size[2]*0.5f };
+        float tmin = 0.0f, tmax = 1e30f; int entryAxis = -1; bool hit = true;
+        for (int a = 0; a < 3; ++a) {
+            if (std::fabs(rd[a]) < 1e-8f) {
+                if (ro[a] < -h[a] || ro[a] > h[a]) { hit = false; break; }
+            } else {
+                float t1 = (-h[a]-ro[a])/rd[a], t2 = (h[a]-ro[a])/rd[a];
+                if (t1 > t2) { float t=t1; t1=t2; t2=t; }
+                if (t1 > tmin) { tmin = t1; entryAxis = a; }   // the last-entered slab = face
+                if (t2 < tmax) tmax = t2;
+                if (tmin > tmax) { hit = false; break; }
+            }
+        }
+        if (hit && entryAxis >= 0)
+            return entryAxis == 0 ? Axis::X : entryAxis == 1 ? Axis::Y : Axis::Z;
+    }
+    // Fallback: dominant camera-forward axis.
+    const float ax = std::fabs(fx), ay = std::fabs(fy), az = std::fabs(fz);
+    if (ax >= ay && ax >= az) return Axis::X;
+    if (az >= ax && az >= ay) return Axis::Z;
+    return Axis::Y;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — KEYBOARD nudge editing. The crosshair raycasts the looked-at brush each
+// frame (auto-selecting it so the user just LOOKS to edit), then any bound nudge key /
+// wheel notch fires one grid-snapped, undoable nudge, live-synced to Scene + Jolt.
+// ---------------------------------------------------------------------------
+NudgeAction EditorHost::visualNudge(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                                    x3::phys::IPhysicsWorld& physics, bool wantKbd) {
+    if (!m_window) return NudgeAction::Count;
+
+    // The crosshair ray from the fly-cam pose (reuse pickBrushRay). Auto-select the
+    // looked-at brush so Visual Mode = look + press (no click needed). Only when not
+    // mid-gizmo-drag (so a mouse drag doesn't fight the crosshair) and not over a panel.
+    if (!m_dragging) {
+        const float fx = std::cos(m_camPitch) * std::cos(m_camYaw);
+        const float fy = std::sin(m_camPitch);
+        const float fz = std::cos(m_camPitch) * std::sin(m_camYaw);
+        const float o3[3] = { m_camX, m_camY, m_camZ };
+        const float d3[3] = { fx, fy, fz };
+        int looked = m_state.pickBrushRay(o3, d3, /*pad*/0.1f);
+        if (looked >= 0 &&
+            !(m_state.selKind() == SelKind::Brush && m_state.selIndex() == looked)) {
+            m_state.selectBrush(looked);
+        }
+    }
+
+    if (wantKbd) { for (auto& p : m_nudgePrev) p = false; return NudgeAction::Count; }
+
+    // Step size: base grid step, scaled by modifiers (Shift = 4x bigger, Ctrl = quarter).
+    auto down = [&](int k){ return glfwGetKey(m_window, k) == GLFW_PRESS; };
+    const bool shift = down(GLFW_KEY_LEFT_SHIFT) || down(GLFW_KEY_RIGHT_SHIFT);
+    const bool ctrl  = down(GLFW_KEY_LEFT_CONTROL) || down(GLFW_KEY_RIGHT_CONTROL);
+    float step = m_state.grid();
+    if (shift) step *= 4.0f;
+    else if (ctrl) step *= 0.25f;
+    if (step < 1e-4f) step = 0.0625f;
+
+    // Translate this frame's mouse-wheel into a synthetic wheel key (Doom's classic
+    // raise/lower-with-wheel). One notch = one nudge.
+    const float wheel = ImGui::GetIO().MouseWheel;
+    const int wheelKey = wheel > 0.5f ? kKeyMouseWheelUp
+                       : wheel < -0.5f ? kKeyMouseWheelDown : 0;
+
+    const Axis face = facedAxis(m_state.hasBrushSelection() ? m_state.selIndex() : -1);
+    m_lastFaceAxis = (face == Axis::X) ? 0 : (face == Axis::Y) ? 1 : 2;
+
+    NudgeAction fired = NudgeAction::Count;
+    // Walk every action; fire on the rising edge of its bound key (or a matching wheel
+    // notch). Keyboard binds repeat once per press; the wheel fires per notch.
+    for (int i = 0; i < (int)NudgeAction::Count; ++i) {
+        const NudgeAction act = (NudgeAction)i;
+        const int key = m_keybinds.keyFor(act);
+        if (key == 0) { m_nudgePrev[i] = false; continue; }
+
+        bool pressed = false;
+        if (key == kKeyMouseWheelUp || key == kKeyMouseWheelDown) {
+            pressed = (wheelKey == key);          // per-notch, no edge tracking needed
+        } else {
+            const bool nowDown = down(key);
+            pressed = nowDown && !m_nudgePrev[i]; // rising edge
+            m_nudgePrev[i] = nowDown;
+        }
+        if (!pressed) continue;
+
+        if (act == NudgeAction::ToggleTooltip) {
+            m_tooltipVisible = !m_tooltipVisible;
+            fired = act;
+            continue;
+        }
+        // A geometry nudge — needs a selected brush. One undo step + live sync.
+        if (m_state.hasBrushSelection()) {
+            HistoryEffect eff = m_state.nudgeBrush(act, face, step);
+            applyEffect(eff, device, scene, physics);
+            if (eff.op != HistoryEffect::Op::None) fired = act;
+        }
+    }
+    return fired;
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — the UNOBTRUSIVE floating keybind cheat-sheet. A small, low-alpha overlay
+// pinned to the bottom-right corner, listing the ACTIVE nudge binds (read straight from
+// m_keybinds so it can never drift from the input poll). H toggles it. Edit mode only
+// (draw() already returns early in Play mode before this runs).
+// ---------------------------------------------------------------------------
+void EditorHost::drawKeybindOverlay() {
+    if (!m_tooltipVisible) {
+        // A single faint hint so the user knows how to bring it back.
+        ImGuiViewport* vp = ImGui::GetMainViewport();
+        ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 10,
+                                       vp->WorkPos.y + vp->WorkSize.y - 10),
+                                ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+        ImGui::SetNextWindowBgAlpha(0.20f);
+        ImGui::Begin("##nudgehint", nullptr,
+                     ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
+                     ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoInputs);
+        ImGui::SetWindowFontScale(0.85f);
+        ImGui::TextColored(ImVec4(0.6f, 0.7f, 0.8f, 0.6f), "[%s] keybinds",
+                           KeybindTable::keyName(m_keybinds.keyFor(NudgeAction::ToggleTooltip)));
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::End();
+        return;
+    }
+
+    ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x - 10,
+                                   vp->WorkPos.y + vp->WorkSize.y - 10),
+                            ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    ImGui::SetNextWindowBgAlpha(0.28f);   // faint — a cheat-sheet, not a panel
+    ImGui::Begin("##nudgecheat", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                 ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
+                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoInputs);
+    ImGui::SetWindowFontScale(0.85f);
+    const char* axis = m_lastFaceAxis == 0 ? "X" : m_lastFaceAxis == 1 ? "Y" : "Z";
+    const bool sel = m_state.hasBrushSelection();
+    ImGui::TextColored(ImVec4(0.45f, 0.8f, 1.0f, 0.85f),
+                       "VISUAL MODE  (look at a brush)  axis:%s%s", axis,
+                       sel ? "" : "  [aim at a brush]");
+    ImGui::Separator();
+    // Read every bind from the same table the poll reads — guaranteed in-sync.
+    for (uint32_t i = 0; i < m_keybinds.count(); ++i) {
+        const Keybind& kb = m_keybinds.at(i);
+        ImGui::TextColored(ImVec4(0.75f, 0.82f, 0.92f, 0.80f), "%-9s",
+                           KeybindTable::keyName(kb.key));
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.6f, 0.66f, 0.74f, 0.7f), "%s",
+                           KeybindTable::actionLabel(kb.action));
+    }
+    ImGui::Separator();
+    ImGui::TextColored(ImVec4(0.55f, 0.6f, 0.68f, 0.6f),
+                       "Shift=x4 step   Ctrl=fine   (rebind: Keybinds panel)");
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::End();
+}
+
+// ---------------------------------------------------------------------------
+// Phase 5 — the REBIND panel. Click an action's button, then press a key to bind it
+// (or scroll the wheel to bind a wheel notch). Writes m_keybinds, which the overlay +
+// poll both read — single source of truth. A Reset restores the classic defaults.
+// ---------------------------------------------------------------------------
+void EditorHost::drawRebindPanel() {
+    ImGui::Begin("Keybinds");
+    ImGui::TextDisabled("Doom-Builder Visual Mode nudge binds.");
+    ImGui::TextDisabled("Click an action, then press a key (or scroll) to rebind.");
+    ImGui::Separator();
+
+    // Capture mode: the next key/wheel the user presses rebinds m_rebindAction.
+    if (m_rebinding && m_window) {
+        const float wheel = ImGui::GetIO().MouseWheel;
+        if (wheel > 0.5f)       { m_keybinds.rebind(m_rebindAction, kKeyMouseWheelUp);   m_rebinding = false; }
+        else if (wheel < -0.5f) { m_keybinds.rebind(m_rebindAction, kKeyMouseWheelDown); m_rebinding = false; }
+        else {
+            // Scan the key range for the first pressed key (skip Escape = cancel).
+            for (int k = 32; k <= GLFW_KEY_LAST; ++k) {
+                if (glfwGetKey(m_window, k) == GLFW_PRESS) {
+                    if (k == GLFW_KEY_ESCAPE) { m_rebinding = false; break; }
+                    m_keybinds.rebind(m_rebindAction, k);
+                    m_rebinding = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    for (uint32_t i = 0; i < m_keybinds.count(); ++i) {
+        const Keybind& kb = m_keybinds.at(i);
+        const bool capturing = m_rebinding && m_rebindAction == kb.action;
+        ImGui::Text("%-18s", KeybindTable::actionLabel(kb.action));
+        ImGui::SameLine(190);
+        char btn[48];
+        std::snprintf(btn, sizeof(btn), "%s##rb%u",
+                      capturing ? "press a key..." : KeybindTable::keyName(kb.key), i);
+        if (ImGui::Button(btn)) { m_rebinding = true; m_rebindAction = kb.action; }
+    }
+    ImGui::Separator();
+    if (ImGui::Button("Reset to defaults")) { m_keybinds.resetDefaults(); m_rebinding = false; }
+    ImGui::SameLine();
+    ImGui::Text("Cheat-sheet: %s", m_tooltipVisible ? "shown (H)" : "hidden (H)");
+    ImGui::End();
 }
 
 } // namespace x3::editor
