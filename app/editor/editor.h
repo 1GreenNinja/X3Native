@@ -46,6 +46,11 @@ struct BlockoutBrush {
     float size[3]   = { 2, 2, 2 };       // full extents (m)
     float yaw       = 0.0f;              // radians about +Y
     float tint[3]   = { 0.85f, 0.85f, 0.88f };
+    // Surface MATERIAL id (Feature 1, click-a-wall texturing). Names a built-in
+    // material in editorMaterials() — the host resolves it to a cached GPU texture +
+    // tint when (re)spawning the brush. Empty == the default clean grid material.
+    // Round-trips through the brushes[] JSON so a textured blockout reloads as-authored.
+    std::string material;
     bool  collide   = true;              // add a static Jolt body
     // Live links (NOT serialized): the Scene entity id + Jolt body id while editing.
     uint32_t sceneEntity = 0xFFFFFFFFu;
@@ -147,6 +152,30 @@ struct PaletteItem { const char* type; const char* label; float color[4]; };
 // array; count via editorPaletteCount().
 const PaletteItem* editorPalette();
 uint32_t           editorPaletteCount();
+
+// ---------------------------------------------------------------------------
+// Feature 1 — CLICK-A-WALL surface MATERIALS. A curated built-in set surfaced as a
+// clickable palette panel: pick a brush, click a material, the brush re-skins (its
+// render tint + a procedural texture) and the choice persists in the LevelDoc JSON
+// (BlockoutBrush::material). `id` is the stable serialized name; `tex` selects which
+// procedural generator the host bakes once + caches; `tint` multiplies the texel.
+// id "" (the implicit default) == the clean blockout grid material.
+// ---------------------------------------------------------------------------
+enum class MatTex : uint8_t {
+    Grid = 0,   // the clean blockout grid (the default)
+    Panel,      // sci-fi gunmetal wall panel
+    CleanPanel, // smooth near-white architectural panel
+    Floor,      // walkable deck plate
+    Ceiling,    // overhead coffer panel
+    Solid,      // flat solid color (tint only)
+};
+struct BlockoutMaterial { const char* id; const char* label; MatTex tex; float tint[3]; };
+// The curated built-in material set. Stable array; count via editorMaterialCount().
+// editorMaterialFind() returns the index of `id` (or -1), so the host + tests resolve
+// a serialized name back to a material deterministically.
+const BlockoutMaterial* editorMaterials();
+uint32_t                editorMaterialCount();
+int                     editorMaterialFind(const std::string& id);
 
 // A menu / toolbar command (data-driven so the HUD renders it + the test checks
 // it). `shortcut` is a display hint ("W", "Ctrl+S"); `id` drives dispatch.

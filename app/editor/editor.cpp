@@ -43,6 +43,36 @@ const PaletteItem* editorPalette() {
 uint32_t editorPaletteCount() { return 15; }
 
 // ---------------------------------------------------------------------------
+// Feature 1 — curated built-in surface MATERIALS (click-a-wall texturing). The
+// first entry (id "grid") is the clean blockout default; the rest are named sci-fi
+// surfaces the host bakes to a cached procedural texture + tint. The serialized
+// BlockoutBrush::material stores `id`; an empty id also resolves to the grid default.
+// ---------------------------------------------------------------------------
+const BlockoutMaterial* editorMaterials() {
+    static const BlockoutMaterial k[] = {
+        { "grid",       "Blockout Grid",  MatTex::Grid,       { 1.00f, 1.00f, 1.00f } },
+        { "wall",       "Sci-Fi Wall",    MatTex::Panel,      { 1.00f, 1.00f, 1.00f } },
+        { "wall_rust",  "Rusted Wall",    MatTex::Panel,      { 1.10f, 0.78f, 0.62f } },
+        { "wall_blue",  "Blue Bulkhead",  MatTex::Panel,      { 0.70f, 0.85f, 1.10f } },
+        { "clean",      "Clean Panel",    MatTex::CleanPanel, { 1.00f, 1.00f, 1.00f } },
+        { "floor",      "Deck Floor",     MatTex::Floor,      { 1.00f, 1.00f, 1.00f } },
+        { "ceiling",    "Ceiling Panel",  MatTex::Ceiling,    { 1.00f, 1.00f, 1.00f } },
+        { "concrete",   "Concrete",       MatTex::Solid,      { 0.62f, 0.61f, 0.58f } },
+        { "hazard",     "Hazard Red",     MatTex::Solid,      { 0.82f, 0.20f, 0.18f } },
+        { "emerald",    "Emerald",        MatTex::Solid,      { 0.18f, 0.65f, 0.42f } },
+    };
+    return k;
+}
+uint32_t editorMaterialCount() { return 10; }
+int editorMaterialFind(const std::string& id) {
+    if (id.empty()) return 0;                       // empty == the grid default
+    const BlockoutMaterial* m = editorMaterials();
+    for (uint32_t i = 0; i < editorMaterialCount(); ++i)
+        if (id == m[i].id) return (int)i;
+    return -1;
+}
+
+// ---------------------------------------------------------------------------
 // Top menu bar (File / Edit / Tools / View) — data the HUD renders + dispatches.
 // ---------------------------------------------------------------------------
 const Menu* editorMenuBar() {
@@ -131,6 +161,7 @@ std::string LevelDoc::toJson() const {
           << ", \"size\": " << vec3(b.size)
           << ", \"yaw\": " << num(b.yaw)
           << ", \"tint\": " << vec3(b.tint)
+          << ", \"material\": \"" << esc(b.material) << "\""
           << ", \"collide\": " << (b.collide ? "1" : "0") << " }";
         if (i + 1 < brushes.size()) o << ",";
         o << "\n";
@@ -225,6 +256,7 @@ bool LevelDoc::fromJson(const std::string& json) {
                     else if (bk == "size")   j.vec3(b.size);
                     else if (bk == "yaw")    b.yaw = j.number();
                     else if (bk == "tint")   j.vec3(b.tint);
+                    else if (bk == "material") b.material = j.str();
                     else if (bk == "collide") b.collide = (j.number() != 0.0f);
                     else { /* skip unknown scalar */ j.str(); }
                 }
@@ -369,6 +401,19 @@ bool EditorState::deleteSelectedBrush() {
 // Undo / redo (P0.6). Snapshot-based brush command stack. Pure doc mutation —
 // the host re-syncs the Scene + Jolt via the returned HistoryEffect hint.
 // ---------------------------------------------------------------------------
+namespace {
+// True iff transitioning between two brush states needs a full mesh+texture rebuild
+// (vs a cheap transform-only sync). Size changes the mesh; material/tint changes the
+// bound texture + baseColor, both applied at spawn — so either forces a Respawn.
+bool brushNeedsRespawn(const BlockoutBrush& a, const BlockoutBrush& b) {
+    for (int i = 0; i < 3; ++i)
+        if (std::fabs(a.size[i] - b.size[i]) > 1e-5f) return true;
+    for (int i = 0; i < 3; ++i)
+        if (std::fabs(a.tint[i] - b.tint[i]) > 1e-5f) return true;
+    return a.material != b.material;
+}
+} // namespace
+
 void EditorState::pushCmd(const BrushCmd& c) {
     // Truncate the redo tail (any command at/after the current undo position) then
     // append + advance — the classic linear-history behaviour.
@@ -414,7 +459,9 @@ void EditorState::commitBrushEdit() {
     };
     const bool unchanged = v3eq(m_editBefore.pos, now.pos) &&
                            v3eq(m_editBefore.size, now.size) &&
-                           std::fabs(m_editBefore.yaw - now.yaw) < 1e-5f;
+                           std::fabs(m_editBefore.yaw - now.yaw) < 1e-5f &&
+                           v3eq(m_editBefore.tint, now.tint) &&
+                           m_editBefore.material == now.material;
     if (unchanged) return;
     BrushCmd c; c.kind = CmdKind::Transform; c.index = idx;
     c.before = m_editBefore; c.after = now;
@@ -452,12 +499,10 @@ HistoryEffect EditorState::undo() {
                 BlockoutBrush& b = m_doc.brushes[c.index];
                 const uint32_t se = b.sceneEntity, bo = b.body;  // keep live links
                 b = c.before; b.sceneEntity = se; b.body = bo;
-                // A pure move/yaw can sync cheaply; a size change must respawn the mesh.
-                const bool sizeChanged =
-                    std::fabs(c.before.size[0]-c.after.size[0]) > 1e-5f ||
-                    std::fabs(c.before.size[1]-c.after.size[1]) > 1e-5f ||
-                    std::fabs(c.before.size[2]-c.after.size[2]) > 1e-5f;
-                eff.op = sizeChanged ? HistoryEffect::Op::Respawn : HistoryEffect::Op::SyncXform;
+                // A pure move/yaw can sync cheaply; a size OR material/tint change must
+                // respawn the mesh (the texture/baseColor is bound at spawn time).
+                eff.op = brushNeedsRespawn(c.before, c.after)
+                       ? HistoryEffect::Op::Respawn : HistoryEffect::Op::SyncXform;
                 eff.index = c.index;
                 m_selKind = SelKind::Brush; m_selIndex = c.index;
             }
@@ -498,11 +543,8 @@ HistoryEffect EditorState::redo() {
                 BlockoutBrush& b = m_doc.brushes[c.index];
                 const uint32_t se = b.sceneEntity, bo = b.body;
                 b = c.after; b.sceneEntity = se; b.body = bo;
-                const bool sizeChanged =
-                    std::fabs(c.before.size[0]-c.after.size[0]) > 1e-5f ||
-                    std::fabs(c.before.size[1]-c.after.size[1]) > 1e-5f ||
-                    std::fabs(c.before.size[2]-c.after.size[2]) > 1e-5f;
-                eff.op = sizeChanged ? HistoryEffect::Op::Respawn : HistoryEffect::Op::SyncXform;
+                eff.op = brushNeedsRespawn(c.before, c.after)
+                       ? HistoryEffect::Op::Respawn : HistoryEffect::Op::SyncXform;
                 eff.index = c.index;
                 m_selKind = SelKind::Brush; m_selIndex = c.index;
             }
@@ -697,6 +739,37 @@ bool runEditorSelfTest() {
         HistoryEffect u = ed.undo();
         check(u.op == HistoryEffect::Op::Respawn && near(d.brushes[0].size[0], 2.0f),
               "E11 size edit undo asks the host to RESPAWN (rebuild mesh)");
+    }
+
+    // ---- E12 (Feature 1): material assign is undoable, RESPAWNs, + round-trips JSON. ----
+    {
+        // The material table + lookup is well-formed (grid is index 0; empty resolves to it).
+        bool tableOk = editorMaterialCount() == 10 &&
+                       std::string(editorMaterials()[0].id) == "grid" &&
+                       editorMaterialFind("") == 0 && editorMaterialFind("grid") == 0 &&
+                       editorMaterialFind("hazard") > 0 && editorMaterialFind("nope") == -1;
+
+        LevelDoc d; EditorState ed(d);
+        ed.setSnap(false);
+        float p[3] = { 0, 0, 0 };
+        ed.addBrushCmd(0u, p);                         // brush 0, default (empty) material
+        ed.selectBrush(0);
+        // Assign a material as a grouped edit (mirrors the Materials panel click).
+        ed.beginBrushEdit(0);
+        d.brushes[0].material = "hazard";
+        ed.commitBrushEdit();
+        bool assigned = d.brushes[0].material == "hazard" && ed.canUndo();
+        // Undo restores the empty material AND asks the host to RESPAWN (re-skin), not
+        // a cheap transform-only sync (the texture is bound at spawn).
+        HistoryEffect u = ed.undo();
+        bool reverted = d.brushes[0].material.empty() && u.op == HistoryEffect::Op::Respawn;
+        HistoryEffect r = ed.redo();
+        bool redone = d.brushes[0].material == "hazard" && r.op == HistoryEffect::Op::Respawn;
+        // The material survives a JSON save->load round-trip.
+        LevelDoc rt; bool parsed = rt.fromJson(d.toJson());
+        bool roundtrip = parsed && rt.brushes.size() == 1 && rt.brushes[0].material == "hazard";
+        check(tableOk && assigned && reverted && redone && roundtrip,
+              "E12 material assign: undoable (RESPAWN) + JSON round-trips the brush surface");
     }
 
     x3::logInfo(std::string("[editor-test] ") + std::to_string(g_pass) + " passed, " +

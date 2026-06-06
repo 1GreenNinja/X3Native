@@ -55,6 +55,35 @@ void EditorHost::init(x3::rhi::IRenderDevice& device, x3::game::Scene& /*scene*/
 }
 
 // ---------------------------------------------------------------------------
+// Feature 1 — resolve a brush material id to a cached GPU texture + tint, baking the
+// procedural texture on first use. The grid kind reuses the session grid texture; the
+// rest reuse the mesh_prims sci-fi generators (same surfaces the env art uses), each
+// baked ONCE and shared. Engine stays pure: only IRenderDevice::createTexture is used.
+uint32_t EditorHost::resolveMaterial(const std::string& id, x3::rhi::IRenderDevice& device,
+                                     float outTint[3]) {
+    int mi = x3::editor::editorMaterialFind(id);
+    if (mi < 0) mi = 0;                                  // unknown id -> grid default
+    const BlockoutMaterial& mat = x3::editor::editorMaterials()[mi];
+    if (outTint) { outTint[0]=mat.tint[0]; outTint[1]=mat.tint[1]; outTint[2]=mat.tint[2]; }
+    const uint8_t k = (uint8_t)mat.tex;
+    if (k == (uint8_t)MatTex::Grid) return m_gridTex;    // the cached session grid
+    if (k < 8 && m_matTex[k] != 0) return m_matTex[k];   // already baked
+    // Bake the procedural texture once for this kind.
+    std::vector<uint8_t> px; uint32_t n = 256;
+    switch (mat.tex) {
+        case MatTex::Panel:      px = x3::prims::makeSciFiPanelRGBA(n, 2); break;
+        case MatTex::CleanPanel: px = x3::prims::makeCleanPanelRGBA(n, 4); break;
+        case MatTex::Floor:      px = x3::prims::makeFloorGrateRGBA(n, 2); break;
+        case MatTex::Ceiling:    px = x3::prims::makeCeilingPanelRGBA(n, 3); break;
+        case MatTex::Solid:      n = 4; px = x3::prims::makeSolidRGBA(n, 255, 255, 255); break;
+        default:                 return m_gridTex;
+    }
+    x3::rhi::TextureHandle h = device.createTexture(px.data(), n, n, /*srgb*/true);
+    if (k < 8) m_matTex[k] = h.id;
+    return h.id;
+}
+
+// ---------------------------------------------------------------------------
 bool EditorHost::tick(float dt, bool wantMouse, bool wantKbd,
                       x3::rhi::IRenderDevice& device) {
     if (!m_window) return false;
@@ -127,9 +156,14 @@ void EditorHost::spawnBrush(int idx, x3::rhi::IRenderDevice& device,
 
     x3::game::Entity e;
     e.mesh = mesh;
-    e.tex  = x3::rhi::TextureHandle{ m_gridTex };
-    e.baseColor[0] = b.tint[0]; e.baseColor[1] = b.tint[1];
-    e.baseColor[2] = b.tint[2]; e.baseColor[3] = 1.0f;
+    // Feature 1: resolve the brush's surface material -> cached texture + tint multiplier
+    // (empty material falls back to the clean grid). The brush's own tint multiplies the
+    // material tint so the Details color picker still tunes the surface.
+    float matTint[3] = { 1, 1, 1 };
+    uint32_t tex = resolveMaterial(b.material, device, matTint);
+    e.tex  = x3::rhi::TextureHandle{ tex };
+    e.baseColor[0] = b.tint[0]*matTint[0]; e.baseColor[1] = b.tint[1]*matTint[1];
+    e.baseColor[2] = b.tint[2]*matTint[2]; e.baseColor[3] = 1.0f;
     e.tag = (uint32_t)x3::game::Tag::Static;
     brushMatrix(b, e.transform);
     b.sceneEntity = scene.add(e);
@@ -424,6 +458,49 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
     }
     ImGui::Text("Undo: %s   Redo: %s",
                 m_state.canUndo() ? "available" : "-", m_state.canRedo() ? "available" : "-");
+    ImGui::End();
+
+    // ---- Materials palette (Feature 1: click-a-wall texturing). Click a swatch to
+    // re-skin the selected brush; the change is ONE undo step + persists in the JSON. ----
+    ImGui::Begin("Materials");
+    if (m_state.hasBrushSelection()) {
+        int si = m_state.selIndex();
+        BlockoutBrush& b = m_doc.brushes[si];
+        int cur = x3::editor::editorMaterialFind(b.material);
+        ImGui::TextDisabled("Surface for the selected brush:");
+        const BlockoutMaterial* mats = x3::editor::editorMaterials();
+        const uint32_t nMat = x3::editor::editorMaterialCount();
+        for (uint32_t i = 0; i < nMat; ++i) {
+            const BlockoutMaterial& m = mats[i];
+            // A color swatch (the material tint) + the label as a selectable row.
+            ImU32 sw = IM_COL32((int)(m.tint[0]*200), (int)(m.tint[1]*200), (int)(m.tint[2]*200), 255);
+            ImVec2 p0 = ImGui::GetCursorScreenPos();
+            ImGui::GetWindowDrawList()->AddRectFilled(p0, ImVec2(p0.x+16, p0.y+16), sw, 3.0f);
+            ImGui::Dummy(ImVec2(20, 16)); ImGui::SameLine();
+            char lbl[64]; std::snprintf(lbl, sizeof(lbl), "%s##mat%u", m.label, i);
+            if (ImGui::Selectable(lbl, (int)i == cur)) {
+                if ((int)i != cur) {
+                    m_state.beginBrushEdit(si);     // group into one undo step
+                    b.material = m.id;
+                    m_state.commitBrushEdit();
+                    respawnBrush(si, device, scene, physics);   // re-skin (texture+tint)
+                }
+            }
+        }
+        ImGui::Separator();
+        // A tint multiplier so the same texture can be recolored per brush (also undoable).
+        float tint[3] = { b.tint[0], b.tint[1], b.tint[2] };
+        if (ImGui::ColorEdit3("Tint", tint, ImGuiColorEditFlags_NoInputs)) {
+            for (int a = 0; a < 3; ++a) b.tint[a] = tint[a];
+        }
+        if (ImGui::IsItemActivated())   m_state.beginBrushEdit(si);
+        if (ImGui::IsItemDeactivatedAfterEdit()) {
+            m_state.commitBrushEdit();
+            respawnBrush(si, device, scene, physics);
+        }
+    } else {
+        ImGui::TextDisabled("(select a brush to assign its surface material)");
+    }
     ImGui::End();
 
     // ---- Status / viewport readout. ----
