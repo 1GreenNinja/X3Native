@@ -2388,6 +2388,8 @@ int main(int argc, char** argv) {
             proofHost.placeBrush(0u, p0, s0, *device, proofScene, *proofPhys);
             proofHost.placeBrush(0u, p1, s1, *device, proofScene, *proofPhys);
             proofHost.placeBrush(1u, p2, s2, *device, proofScene, *proofPhys);
+            // Feature 3 proof: place a GLB prop (renders via renderModels each frame).
+            proofHost.placeModel("SciFi_Warehouse_Kit/Barrel.glb", *device);
         }
         // A pleasant 3/4 vantage on the brushes; a touch of ambient so the grey reads.
         device->setCamera(8.0f, 6.5f, 11.0f, -2.35f, -0.45f, 60.0f);
@@ -2402,6 +2404,7 @@ int main(int argc, char** argv) {
             auto frame = device->beginFrame();
             if (frame.valid) {
                 proofScene.render(*device, frame);          // the grid-material brushes
+                proofHost.renderModels(*device, frame);     // Feature 3 GLB props
                 device->beginEditorUI();                    // dockspace root (device)
                 proofHost.draw(*device, proofScene, *proofPhys, 1.0f/60.0f);  // panels (host)
                 device->endEditorUI();                      // ImGui::Render + stash draw data
@@ -9720,6 +9723,11 @@ int main(int argc, char** argv) {
             // No-op without --editor (editorUIActive() stays false). Phase 1 replaces
             // the demo window with the real docked editor panels.
             if (editorMode && device->editorUIActive()) device->beginEditorUI();
+            // EDITOR (--editor) Feature 3: draw placed GLB model props into THIS frame's
+            // scene pass (the blockout brushes render via scene.render(); models live in
+            // the LevelDoc and are drawn here). No-op without --editor / no models placed.
+            if (editorMode && device->editorUIActive())
+                editorHost.renderModels(*device, frame);
             // GIBS: integrate the GPU-compute debris pool (monster-death chunks +
             // any other bursts) one step. Frozen during a UI menu so chunks hold mid-
             // air with the rest of the sim. No-op cost when the pool is empty.

@@ -5,6 +5,7 @@
 // Scene + Jolt so the greybox is walkable in Play mode.
 #include "editor_host.h"
 
+#include "../asset_root.h"
 #include "../mesh_prims.h"
 #include "../scene.h"
 #include "engine/core/x3_log.h"
@@ -262,6 +263,79 @@ int EditorHost::placeBrush(uint32_t type, const float pos[3], const float size[3
 }
 
 // ---------------------------------------------------------------------------
+// Feature 3 — content/MODEL browser: load + place GLB props as model entities.
+// ---------------------------------------------------------------------------
+void EditorHost::ensureModelLoader(x3::rhi::IRenderDevice& device) {
+    if (m_modelLoader) return;
+    m_modelAssets.reset(x3::asset::createAssetSource());
+    const std::string dir = x3::game::convertedGlbRoot();
+    m_modelDirMounted = m_modelAssets->mountDir(dir, 0);
+    if (!m_modelDirMounted)
+        x3::logWarn("[editor-host] model browser: mountDir failed: " + dir);
+    m_modelLoader.reset(x3::asset::createModelLoader(&device, m_modelAssets.get()));
+}
+
+const EditorHost::LoadedModel* EditorHost::loadModelCached(const std::string& relPath,
+                                                           x3::rhi::IRenderDevice& device) {
+    auto it = m_modelCache.find(relPath);
+    if (it != m_modelCache.end()) return &it->second;
+    ensureModelLoader(device);
+    LoadedModel lm;
+    if (m_modelLoader && m_modelDirMounted) {
+        lm.model = m_modelLoader->load(relPath);
+        if (lm.model.ok) { lm.drawables = x3::asset::makeDrawables(lm.model); lm.ok = !lm.drawables.empty(); }
+    }
+    if (lm.ok) x3::logInfo("[editor-host] model loaded: " + relPath + " (" +
+                           std::to_string(lm.drawables.size()) + " drawables)");
+    else       x3::logWarn("[editor-host] model FAILED to load: " + relPath);
+    auto res = m_modelCache.emplace(relPath, std::move(lm));
+    return &res.first->second;
+}
+
+int EditorHost::placeModel(const std::string& relPath, x3::rhi::IRenderDevice& device) {
+    loadModelCached(relPath, device);     // warm the cache (ok if it fails — placed anyway)
+    // Spawn point ~6 m in front of the fly-cam, snapped (matches the brush spawn focus).
+    float focus[3] = {
+        m_state.snapValue(m_camX + std::cos(m_camPitch)*std::cos(m_camYaw) * 6.0f),
+        m_state.snapValue(m_camY + std::sin(m_camPitch) * 6.0f),
+        m_state.snapValue(m_camZ + std::cos(m_camPitch)*std::sin(m_camYaw) * 6.0f),
+    };
+    int idx = m_state.addEntity("model", focus);
+    if (idx < 0) return idx;
+    m_doc.entities[idx].model = relPath;
+    // Name it after the file stem for the Outliner.
+    size_t slash = relPath.find_last_of("/\\");
+    std::string stem = (slash == std::string::npos) ? relPath : relPath.substr(slash + 1);
+    m_doc.entities[idx].name = stem;
+    return idx;
+}
+
+void EditorHost::renderModels(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) {
+    if (m_doc.entities.empty()) return;
+    const float white[4] = { 1, 1, 1, 1 };
+    for (const auto& e : m_doc.entities) {
+        if (e.model.empty()) continue;
+        const LoadedModel* lm = loadModelCached(e.model, device);
+        if (!lm || !lm->ok) continue;
+        // Object transform: yaw about +Y, uniform scale, translate to pos (column-major).
+        const float c = std::cos(e.yaw), s = std::sin(e.yaw), k = e.scale;
+        float obj[16] = {
+            c*k, 0, -s*k, 0,
+            0,   k, 0,    0,
+            s*k, 0, c*k,  0,
+            e.pos[0], e.pos[1], e.pos[2], 1
+        };
+        for (const auto& d : lm->drawables) {
+            if (!d.meshId) continue;
+            float m[16];
+            x3::asset::mulMat4(obj, d.nodeTransform, m);   // object * baked node TRS
+            device.drawMesh(frame, x3::rhi::MeshHandle{ d.meshId },
+                            x3::rhi::TextureHandle{ d.baseColorTexId }, white, m);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
                       x3::phys::IPhysicsWorld& physics, float /*dt*/) {
     // PLAY mode: hide the panels, leave only a thin status hint.
@@ -504,6 +578,35 @@ void EditorHost::draw(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
         }
     } else {
         ImGui::TextDisabled("(select a brush to assign its surface material)");
+    }
+    ImGui::End();
+
+    // ---- Model Browser (Feature 3): click a prop to place it at the fly-cam focus. ----
+    ImGui::Begin("Models");
+    ImGui::TextDisabled("Place a GLB prop at the camera focus:");
+    const x3::editor::ModelCatalogItem* cat = x3::editor::editorModelCatalog();
+    const uint32_t nCat = x3::editor::editorModelCatalogCount();
+    for (uint32_t i = 0; i < nCat; ++i) {
+        char lbl[96]; std::snprintf(lbl, sizeof(lbl), "%s##mdl%u", cat[i].label, i);
+        if (ImGui::Selectable(lbl, false)) {
+            int idx = placeModel(cat[i].relPath, device);
+            if (idx >= 0) m_state.select(idx);   // select the new entity (Outliner highlight)
+        }
+    }
+    ImGui::Separator();
+    if (m_state.hasSelection() && m_state.selKind() != SelKind::Brush) {
+        int ei = m_state.selected();
+        if (ei >= 0 && ei < (int)m_doc.entities.size() && !m_doc.entities[ei].model.empty()) {
+            EditorEntity& e = m_doc.entities[ei];
+            ImGui::Text("Selected model: %s", e.name.c_str());
+            ImGui::DragFloat3("Pos##mdl", e.pos, kGridSteps[m_gridSel]);
+            float yawDeg = e.yaw * 57.29578f;
+            if (ImGui::DragFloat("Yaw##mdl", &yawDeg, 1.0f)) e.yaw = yawDeg * 0.0174533f;
+            ImGui::DragFloat("Scale##mdl", &e.scale, 0.05f, 0.05f, 50.0f);
+            if (ImGui::Button("Delete model")) m_state.deleteSelected();
+        }
+    } else {
+        ImGui::TextDisabled("(placed models are listed in the Outliner)");
     }
     ImGui::End();
 

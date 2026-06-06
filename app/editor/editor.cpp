@@ -73,6 +73,26 @@ int editorMaterialFind(const std::string& id) {
 }
 
 // ---------------------------------------------------------------------------
+// Feature 3 — curated MODEL browser catalog (converted_glb props that ship in the
+// repo's assets dir). relPath is resolved under the editor's mounted converted_glb
+// dir; a GLB that fails to load just places nothing (graybox-safe).
+// ---------------------------------------------------------------------------
+const ModelCatalogItem* editorModelCatalog() {
+    static const ModelCatalogItem k[] = {
+        { "SciFi_Warehouse_Kit/Barrel.glb",      "Barrel" },
+        { "SciFi_Warehouse_Kit/Crate Short.glb", "Crate (short)" },
+        { "SciFi_Warehouse_Kit/Crate Long.glb",  "Crate (long)" },
+        { "SciFi_Warehouse_Kit/Pallet.glb",      "Pallet" },
+        { "SciFi_Warehouse_Kit/Fusebox 01.glb",  "Fusebox" },
+        { "ModularSciFi_Interior/SM_Console.glb", "Console" },
+        { "ModularSciFi_Interior/SM_Light_A.glb", "Light fixture" },
+        { "ModularSciFi_Interior/SM_Pipes_A.glb", "Pipes" },
+    };
+    return k;
+}
+uint32_t editorModelCatalogCount() { return 8; }
+
+// ---------------------------------------------------------------------------
 // Top menu bar (File / Edit / Tools / View) — data the HUD renders + dispatches.
 // ---------------------------------------------------------------------------
 const Menu* editorMenuBar() {
@@ -145,7 +165,8 @@ std::string LevelDoc::toJson() const {
           << ", \"pos\": " << vec3(e.pos)
           << ", \"yaw\": " << num(e.yaw)
           << ", \"scale\": " << num(e.scale)
-          << ", \"tint\": " << vec3(e.tint) << " }";
+          << ", \"tint\": " << vec3(e.tint)
+          << ", \"model\": \"" << esc(e.model) << "\" }";
         if (i + 1 < entities.size()) o << ",";
         o << "\n";
     }
@@ -237,6 +258,7 @@ bool LevelDoc::fromJson(const std::string& json) {
                     else if (ek == "yaw")   e.yaw = j.number();
                     else if (ek == "scale") e.scale = j.number();
                     else if (ek == "tint")  j.vec3(e.tint);
+                    else if (ek == "model") e.model = j.str();
                     else { /* skip unknown scalar */ j.str(); }
                 }
                 j.eat('}');
@@ -850,6 +872,28 @@ bool runEditorSelfTest() {
         bool scaleOk = near(d.brushes[0].size[0], 2.0f) && su.op == HistoryEffect::Op::Respawn;
         check(rotOk && rotFwd && scaleOk,
               "E14 rotate(yaw)=SyncXform + scale(size)=Respawn, each one undo step");
+    }
+
+    // ---- E15 (Feature 3): a placed MODEL entity round-trips through the JSON. ----
+    {
+        bool catOk = editorModelCatalogCount() == 8 &&
+                     editorModelCatalog()[0].relPath != nullptr &&
+                     std::string(editorModelCatalog()[0].relPath).find(".glb") != std::string::npos;
+
+        LevelDoc d; EditorState ed(d);
+        float p[3] = { 2, 0, -3 };
+        int idx = ed.addEntity("model", p);
+        d.entities[idx].model = "SciFi_Warehouse_Kit/Barrel.glb";
+        d.entities[idx].yaw = 0.5f; d.entities[idx].scale = 1.5f;
+        // Save -> load: the model relpath + transform survive.
+        LevelDoc rt; bool parsed = rt.fromJson(d.toJson());
+        bool roundtrip = parsed && rt.entities.size() == 1 &&
+                         rt.entities[0].type == "model" &&
+                         rt.entities[0].model == "SciFi_Warehouse_Kit/Barrel.glb" &&
+                         near(rt.entities[0].pos[0], 2.0f) && near(rt.entities[0].pos[2], -3.0f) &&
+                         near(rt.entities[0].yaw, 0.5f) && near(rt.entities[0].scale, 1.5f);
+        check(catOk && roundtrip,
+              "E15 model browser: placed GLB entity round-trips through the LevelDoc JSON");
     }
 
     x3::logInfo(std::string("[editor-test] ") + std::to_string(g_pass) + " passed, " +

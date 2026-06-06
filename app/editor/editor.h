@@ -23,11 +23,15 @@ namespace x3::editor {
 // what x3-level-builder consumes (type maps to its areas[]->entities kinds).
 struct EditorEntity {
     std::string name;
-    std::string type = "prop";          // prop | enemy | item | npc | light | static
+    std::string type = "prop";          // prop | enemy | item | npc | light | static | model
     float pos[3]   = { 0, 0, 0 };
     float yaw      = 0.0f;               // radians about +Y
     float scale    = 1.0f;
     float tint[3]  = { 0.8f, 0.8f, 0.85f };
+    // Feature 3 (content/model browser): a GLB relative path under the editor's
+    // mounted converted_glb dir. When non-empty the editor renders that model's
+    // drawables at this entity's transform (instead of a graybox). Round-trips in JSON.
+    std::string model;
     // Live link to the Scene entity id while editing (not serialized). kNoLink-ish
     // sentinel = not spawned in the live scene.
     uint32_t sceneEntity = 0xFFFFFFFFu;
@@ -176,6 +180,16 @@ struct BlockoutMaterial { const char* id; const char* label; MatTex tex; float t
 const BlockoutMaterial* editorMaterials();
 uint32_t                editorMaterialCount();
 int                     editorMaterialFind(const std::string& id);
+
+// ---------------------------------------------------------------------------
+// Feature 3 — content/MODEL browser. A curated handful of GLB props from the asset
+// catalog (converted_glb): click an entry to place a model entity (EditorEntity with
+// type "model" + EditorEntity::model = relPath) at the fly-cam focus. `relPath` is the
+// path under the editor's mounted converted_glb dir; `label` is the browser display.
+// ---------------------------------------------------------------------------
+struct ModelCatalogItem { const char* relPath; const char* label; };
+const ModelCatalogItem* editorModelCatalog();
+uint32_t                editorModelCatalogCount();
 
 // A menu / toolbar command (data-driven so the HUD renders it + the test checks
 // it). `shortcut` is a display hint ("W", "Ctrl+S"); `id` drives dispatch.
