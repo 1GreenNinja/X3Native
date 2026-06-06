@@ -5141,17 +5141,22 @@ int main(int argc, char** argv) {
         elev.build(sscene, *device, *sphys, shaftX, shaftZ, carHX, platHY, carHZ,
                    { elevBaseCenterY, elevTopCenterY }, /*startStop*/0);
         elev.setSpeed(14.0f);   // m/s — a brisk readable climb (~7 s over the 99 m shaft)
-        // Recolor the cab platform to a dim glass-deck plate so the rider clearly
-        // stands on something (keep it visible — it is the opaque floor of the car).
+        // GLASS-BOTTOM cab (OWNER'S vision): hide the opaque plate Entity and draw a
+        // translucent glass floor slab at the cab top each frame (in drawAdditiveGlass).
+        // Collision is the elevator's moving Static body, so the rider still stands + rides
+        // — they just see DOWN through the floor at the gallery falling away as it climbs.
         if (elevEntIdx < sscene.size()) {
-            x3::game::Entity& ce = sscene.get(elevEntIdx);
-            ce.baseColor[0]=0.30f; ce.baseColor[1]=0.34f; ce.baseColor[2]=0.42f; ce.baseColor[3]=1.0f;
+            sscene.get(elevEntIdx).visible = false;
         }
         // Glass BOX walls authored centered at ORIGIN; drawn at (cabTop + carBoxHY)
         // each frame so the walls rise from the platform. Hollow-look: a single
         // translucent box reads as a glass cab around the rider.
         x3::rhi::MeshHandle carMesh = makeWorldMesh(
             x3::prims::makeBox(carHX, carBoxHY, carHZ, 0, 0, 0, 0.6f));
+        // Glass FLOOR slab (cab footprint, thin) — the see-through bottom the rider stands
+        // on; drawn translucent at the cab plate each frame (replaces the opaque plate).
+        x3::rhi::MeshHandle carFloorMesh = makeWorldMesh(
+            x3::prims::makeBox(carHX, platHY, carHZ, 0, 0, 0, 0.4f));
         // Four slim vertical guide POSTS flanking the shaft (opaque structure), so the
         // shaft reads as built while staying mostly open for the see-through ride. They
         // span from the base floor up to the deck rail height.
@@ -5843,6 +5848,11 @@ int main(int argc, char** argv) {
             float carModel[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
             carModel[12] = cc.x; carModel[13] = cc.y + platHY + carBoxHY; carModel[14] = cc.z;
             drawGlass(fr, carMesh, carModel, 0.50f, 0.80f, 1.00f, 0.26f, 0.30f);
+            // Glass-bottom FLOOR — the see-through plate the rider stands on (centered at
+            // the cab plate; collision is the elevator Static body). Ride up + look DOWN.
+            float carFloorModel[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+            carFloorModel[12] = cc.x; carFloorModel[13] = cc.y; carFloorModel[14] = cc.z;
+            drawGlass(fr, carFloorMesh, carFloorModel, 0.45f, 0.72f, 0.95f, 0.30f, 0.10f);
             // ANALYST GALLERY dark-glass balustrade: the flat dark-tinted glass band
             // (merged ring, world-space verts + identity model) + dark tint/opacity.
             for (const GalGlass& g : galGlass)
