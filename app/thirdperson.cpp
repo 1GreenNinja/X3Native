@@ -12,6 +12,7 @@
 
 #include "engine/core/x3_log.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -465,10 +466,20 @@ bool ThirdPersonView::handSocketWorld(float out[16], std::string_view weaponName
     // a TRS in the hand's LOCAL frame: rotation (small twist/tilt/roll to square the
     // authored barrel onto the grip) then translation (right/down/forward into the
     // palm). hand-local axes: +X right, +Y up, +Z forward (down the barrel). ----
+    // LIVE-TUNE override (TASK#53): add the cvar-driven deltas to the table row for
+    // the CURRENT weapon so Tim can dial it by eye, then bake. Zero deltas (default)
+    // reproduce the baked row byte-for-byte. See effectiveGrip()/the BAKE block in
+    // thirdperson.h. Position deltas: x=right, y=down, z=forward (hand-local).
     const TpGrip& g = tpGripFor(weaponName);
-    const float cy = std::cos(g.yawDeg   * (kPi / 180.0f)), sy = std::sin(g.yawDeg   * (kPi / 180.0f));
-    const float cp = std::cos(g.pitchDeg * (kPi / 180.0f)), sp = std::sin(g.pitchDeg * (kPi / 180.0f));
-    const float cr = std::cos(g.rollDeg  * (kPi / 180.0f)), sr = std::sin(g.rollDeg  * (kPi / 180.0f));
+    const float gForward = g.forward  + m_gripOvZ;
+    const float gRight   = g.right    + m_gripOvX;
+    const float gDown    = g.down     + m_gripOvY;
+    const float gYawDeg  = g.yawDeg   + m_gripOvYaw;
+    const float gPitchD  = g.pitchDeg + m_gripOvPitch;
+    const float gRollDeg = g.rollDeg  + m_gripOvRoll;
+    const float cy = std::cos(gYawDeg  * (kPi / 180.0f)), sy = std::sin(gYawDeg  * (kPi / 180.0f));
+    const float cp = std::cos(gPitchD  * (kPi / 180.0f)), sp = std::sin(gPitchD  * (kPi / 180.0f));
+    const float cr = std::cos(gRollDeg * (kPi / 180.0f)), sr = std::sin(gRollDeg * (kPi / 180.0f));
     // R = Ry(yaw) * Rx(pitch) * Rz(roll) (intrinsic), column-major.
     float Rz[16] = { cr, sr, 0,0,  -sr, cr, 0,0,  0,0,1,0,  0,0,0,1 };
     float Rx[16] = { 1,0,0,0,  0, cp, sp, 0,  0,-sp, cp, 0,  0,0,0,1 };
@@ -476,11 +487,27 @@ bool ThirdPersonView::handSocketWorld(float out[16], std::string_view weaponName
     float RxRz[16], grip[16];
     x3::asset::mulMat4(Rx, Rz, RxRz);
     x3::asset::mulMat4(Ry, RxRz, grip);
-    grip[12] = g.right; grip[13] = -g.down; grip[14] = g.forward;
+    grip[12] = gRight; grip[13] = -gDown; grip[14] = gForward;
     float out2[16];
     x3::asset::mulMat4(handWorld, grip, out2);
     std::memcpy(out, out2, 16 * sizeof(float));
     return true;
+}
+
+void ThirdPersonView::effectiveGrip(std::string_view weaponName, float& fwd,
+                                    float& right, float& down, float& yawDeg,
+                                    float& pitchDeg, float& rollDeg,
+                                    float& scaleMul) const {
+    // The ABSOLUTE grip for the HUD readout = the baked table row + the live cvar
+    // override. These are the numbers Tim bakes into kTpGripTable for this weapon.
+    const TpGrip& g = tpGripFor(weaponName);
+    fwd      = g.forward  + m_gripOvZ;
+    right    = g.right    + m_gripOvX;
+    down     = g.down     + m_gripOvY;
+    yawDeg   = g.yawDeg   + m_gripOvYaw;
+    pitchDeg = g.pitchDeg + m_gripOvPitch;
+    rollDeg  = g.rollDeg  + m_gripOvRoll;
+    scaleMul = std::max(0.01f, g.scaleMul + m_gripOvScale);
 }
 
 void ThirdPersonView::drawHeldWeapon(x3::rhi::IRenderDevice& device,
@@ -499,8 +526,10 @@ void ThirdPersonView::drawHeldWeapon(x3::rhi::IRenderDevice& device,
     // Apply the per-weapon viewmodel scale (folded with the global held mul + the
     // per-weapon grip scaleMul) onto the hand frame so the gun reads about right in
     // the palm. Scale the upper-3x3.
-    const float s = arsenal.currentViewmodelScale() * kTpHeldWeaponScaleMul *
-                    tpGripFor(wname).scaleMul;
+    // LIVE-TUNE (TASK#53): add the cvar scale delta onto the row's scaleMul for the
+    // current weapon (clamped >0 so a too-negative dial can't invert the model).
+    const float scaleMul = std::max(0.01f, tpGripFor(wname).scaleMul + m_gripOvScale);
+    const float s = arsenal.currentViewmodelScale() * kTpHeldWeaponScaleMul * scaleMul;
     float scaled[16];
     std::memcpy(scaled, handWorld, 16 * sizeof(float));
     for (int col = 0; col < 3; ++col)

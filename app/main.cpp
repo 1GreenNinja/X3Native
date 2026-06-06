@@ -640,6 +640,21 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // (3rd-person Jake tuning cvars removed 2026-05-27: dialed-in values
     // jake_yoff=1.03 / jake_yawoff_deg=90 / jake_camdist=2.3 / jake_camh=0.37
     // are now baked as member defaults in app/thirdperson.h.)
+
+    // ---- HELD-WEAPON GRIP LIVE-TUNE (TASK#53) ------------------------------
+    // ADDITIVE override on the CURRENTLY-held weapon's kTpGripTable row, so Tim can
+    // DIAL each gun's grip live in 3P (F2/F5), read the effective values off the 3P
+    // HUD, then BAKE them into kTpGripTable (app/thirdperson.h). Default 0 => the
+    // baked table is unchanged. Position is meters in the hand-LOCAL frame; rotation
+    // is degrees; scale is added to the row's scaleMul. See the BAKE block above
+    // kTpGripTable. Synced per-frame in applyRtaoCVars().
+    console.registerCVar("grip_x",     "0", "3P held-weapon grip override: +meters toward thumb (right); live, current weapon");
+    console.registerCVar("grip_y",     "0", "3P held-weapon grip override: +meters into the palm (down); live, current weapon");
+    console.registerCVar("grip_z",     "0", "3P held-weapon grip override: +meters down the barrel (forward); live, current weapon");
+    console.registerCVar("grip_pitch", "0", "3P held-weapon grip override: +degrees tilt about hand-right; live, current weapon");
+    console.registerCVar("grip_yaw",   "0", "3P held-weapon grip override: +degrees twist about hand-up; live, current weapon");
+    console.registerCVar("grip_roll",  "0", "3P held-weapon grip override: +degrees roll about the barrel; live, current weapon");
+    console.registerCVar("grip_scale", "0", "3P held-weapon grip override: +added to the weapon's scaleMul; live, current weapon");
 }
 
 // Read the r_rtao* cvars and push them onto the device (no-op on a non-RT device).
@@ -9211,6 +9226,15 @@ int main(int argc, char** argv) {
             if (canonWorld && canonFloor.valid())
                 avatarRoom = canonFloor.roomAt(pfeet.x, pfeet.y, pfeet.z);
             const bool crouchedNow = player.stance() != x3::game::Player::Stance::Stand;
+            // HELD-WEAPON GRIP LIVE-TUNE (TASK#53): push the grip_* cvars onto the
+            // view as an additive override on the CURRENT weapon's table row, so Tim
+            // can dial each gun by eye and read the effective values off the HUD.
+            // Default 0 => no change to the baked kTpGripTable. See thirdperson.h.
+            thirdPerson.setGripOverride(
+                console->getFloat("grip_x"), console->getFloat("grip_y"),
+                console->getFloat("grip_z"), console->getFloat("grip_pitch"),
+                console->getFloat("grip_yaw"), console->getFloat("grip_roll"),
+                console->getFloat("grip_scale"));
             thirdPerson.update(dt, scene, pfeet, eyeH, camYaw, camPitch, avatarRoom,
                                crouchedNow, prevFire);   // prevFire = last frame's held-fire
             const x3::game::ThirdPersonCamera tc =
@@ -10286,6 +10310,27 @@ int main(int argc, char** argv) {
                 if (f5Now && !prevSaveKey) doSave();
                 if (f9Now && !prevLoadKey) doLoad();
                 prevSaveKey = f5Now; prevLoadKey = f9Now;
+            }
+
+            // HELD-WEAPON GRIP LIVE-TUNE readout (TASK#53): in 3P, print the EFFECTIVE
+            // grip (baked table row + live grip_* override) for the CURRENTLY-held
+            // weapon, so Tim can dial grip_x/y/z + grip_pitch/yaw/roll + grip_scale by
+            // eye and read the absolute numbers to BAKE into kTpGripTable. No-op in FP /
+            // unbuilt. The "*OV" tag shows when an override is active (non-baked).
+            if (!terrainWorld && thirdPerson.thirdPerson() && thirdPerson.built()) {
+                const std::string& gw = arsenal.current().name;
+                float gf, gr, gd, gyaw, gpit, grol, gsc;
+                thirdPerson.effectiveGrip(gw, gf, gr, gd, gyaw, gpit, grol, gsc);
+                char gripLine[224];
+                std::snprintf(gripLine, sizeof(gripLine),
+                    "GRIP[%s]%s  x %.3f  y %.3f  z %.3f  pitch %.1f  yaw %.1f  roll %.1f  scale %.3f",
+                    gw.c_str(), thirdPerson.gripOverrideActive() ? " *OV" : "",
+                    gr, gd, gf, gpit, gyaw, grol, gsc);
+                const float gx = 18.0f, gy = 96.0f, gpx = 16.0f;
+                const float gsh[4] = { 0.0f, 0.0f, 0.0f, 0.80f };
+                const float gcl[4] = { 0.72f, 1.0f, 0.25f, 1.0f };   // lime so it reads over the scene
+                device->drawHudText(frame, gripLine, gx + 1.5f, gy + 1.5f, gpx, gsh);
+                device->drawHudText(frame, gripLine, gx, gy, gpx, gcl);
             }
 
             // Always-on overlays (independent of game state): FPS meter, the perf
