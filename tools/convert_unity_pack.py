@@ -96,8 +96,12 @@ def parse_materials(pack_root):
                 rec[slot] = m.group(1).lower()
         # HDRP if it carries the HDRP/Lit base-color slot (Built-in has _MainTex instead).
         rec["hdrp"] = "_BaseColorMap:" in txt or "_MaskMap:" in txt
-        # emission only when the active keyword is set (HDRP sets _EmissiveColor on every mat).
-        rec["emission"] = re.search(r"-\s*_EMISSION\b", txt) is not None
+        # emission ONLY when _EMISSION is an ACTIVE keyword (m_ValidKeywords). HDRP also
+        # lists _EMISSION under m_InvalidKeywords / the full keyword set when it's OFF, so a
+        # blanket search wrongly flags non-emissive mats (e.g. chrome) and a flat emissive
+        # then makes whole walls self-glow white regardless of lighting.
+        vk = re.search(r"m_ValidKeywords:\s*\n((?:\s*-\s*\S+\n)*)", txt)
+        rec["emission"] = bool(vk) and "_EMISSION" in vk.group(1)
         rec["glossScale"] = _scalar(txt, "_GlossMapScale", 1.0)
         # HDRP per-channel remaps applied to the MaskMap (default = identity passthrough).
         rec["smoothMin"] = _scalar(txt, "_SmoothnessRemapMin", 0.0)
@@ -221,6 +225,8 @@ def apply_materials(gltf, guidmap, matmap, png_cache, rebuild=False):
             gm.normalTexture = None
             gm.occlusionTexture = None
             gm.emissiveTexture = None
+            gm.emissiveFactor = [0.0, 0.0, 0.0]   # reset: the assembled GLB baked bright
+                                                  # wall emissive; re-add only for real fixtures
     if not gltf.samplers:
         gltf.samplers.append(Sampler())    # default repeat/linear
     samp = 0
@@ -275,18 +281,17 @@ def apply_materials(gltf, guidmap, matmap, png_cache, rebuild=False):
             if f and (p := to_png(f, png_cache)):
                 gm.occlusionTexture = OcclusionTextureInfo(index=_add_image(gltf, p, samp, texcache)); n_tex += 1
 
-        # emissive — HDRP sets _EmissiveColor on every mat, so gate on the _EMISSION keyword
-        # to avoid making non-emissive surfaces (e.g. chrome) glow.
-        emit_ok = (not hdrp) or rec.get("emission")
-        if emit_ok:
-            ec = rec.get("emisColor", (0.0, 0.0, 0.0))
-            mx = max(ec)
+        # emissive — only when _EMISSION is active (gated above) AND a real emissive MAP
+        # localizes the glow. A flat full-surface emissiveFactor with no map blows whole
+        # walls to white, so we never apply emissive without a map. The HDRP _EmissiveColor
+        # is CLAMPED into glTF's [0,1] factor (not normalized — normalizing turned a subtle
+        # colour into a near-white glow).
+        if (not hdrp) or rec.get("emission"):
             g = rec.get(emis_slot); f = guidmap.get(g) if g else None
             if f and (p := to_png(f, png_cache)):
                 gm.emissiveTexture = TextureInfo(index=_add_image(gltf, p, samp, texcache)); n_tex += 1
-                gm.emissiveFactor = [min(1.0, c / mx) for c in ec] if mx > 0 else [1.0, 1.0, 1.0]
-            elif hdrp and mx > 0:
-                gm.emissiveFactor = [min(1.0, c / mx) for c in ec]  # HDR color -> clamped factor
+                ec = rec.get("emisColor", (1.0, 1.0, 1.0))
+                gm.emissiveFactor = [min(1.0, max(0.0, c)) for c in ec] if max(ec) > 0 else [1.0, 1.0, 1.0]
     return n_tex, matched
 
 def repack_glb(in_glb, out_glb, guidmap, matmap, png_cache):
