@@ -110,6 +110,15 @@ private:
     // Cached clean grid material (one texture shared by every brush). Created in init.
     uint32_t      m_gridTex  = 0;   // x3::rhi::TextureHandle.id (0 == none)
 
+    // ---- Feature 1: surface MATERIAL texture cache --------------------------
+    // One GPU texture per MatTex kind, baked lazily on first use + shared by every
+    // brush that picks that material (mirrors the grid-material session caching). The
+    // grid kind aliases m_gridTex. Index by (uint8_t)MatTex. 0 == not yet created.
+    uint32_t      m_matTex[8] = { 0,0,0,0,0,0,0,0 };
+    // Resolve a brush's material id -> { GPU texture id, tint[3] } for spawnBrush, baking
+    // (and caching) the texture on first use. Empty/unknown id falls back to the grid.
+    uint32_t resolveMaterial(const std::string& id, x3::rhi::IRenderDevice& device, float outTint[3]);
+
     // Fly-cam state (Edit mode). pitch clamped +-1.55. Seeded near the world origin.
     float m_camX = 6.0f, m_camY = 4.0f, m_camZ = 10.0f;
     float m_camYaw = -2.2f, m_camPitch = -0.25f;
