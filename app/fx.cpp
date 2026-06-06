@@ -6,6 +6,7 @@
 #include "mesh_prims.h"
 
 #include <cmath>
+#include <cstdlib>   // std::rand / RAND_MAX (jagged lightning bolt jitter)
 
 namespace x3::game {
 
@@ -80,11 +81,12 @@ int CombatFx::spawnParticle(const Particle& p) {
 // addTracer: drop a beam into the pool (round-robin) + light the muzzle flash +
 // spawn the muzzle-flash particle burst (so every shot reads with juice).
 // ---------------------------------------------------------------------------
-void CombatFx::addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to) {
+void CombatFx::addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to, WeaponFxKind kind) {
     Tracer& t = m_tracers[m_nextTracer];
     t.from = from;
     t.to   = to;
     t.life = kTracerTime;
+    t.kind = kind;
     m_nextTracer = (m_nextTracer + 1) % kMaxTracers;
 
     m_muzzlePos   = from;
@@ -473,6 +475,43 @@ void CombatFx::drawBeam(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
 }
 
 // ---------------------------------------------------------------------------
+// drawLightningBolt: a jagged a->b arc. Subdivide into kBoltSegs segments,
+// offset each interior vertex perpendicular to the path by a random amount
+// (re-rolled every call so the bolt crackles), draw each segment as a thin
+// drawBeam. The final vertex lands exactly on `b` (the hit point) so the bolt
+// still terminates where the ray hit.
+// ---------------------------------------------------------------------------
+void CombatFx::drawLightningBolt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                                 const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                                 float thickness, const float color[4]) const {
+    if (!m_box.valid()) return;
+    x3::phys::Vec3 seg{ b.x - a.x, b.y - a.y, b.z - a.z };
+    float len = std::sqrt(seg.x * seg.x + seg.y * seg.y + seg.z * seg.z);
+    if (len < 1e-4f) { drawBeam(device, frame, a, b, thickness, color); return; }
+    x3::phys::Vec3 dir = normalize(seg);
+    x3::phys::Vec3 ref = (std::fabs(dir.y) < 0.99f) ? x3::phys::Vec3{ 0, 1, 0 }
+                                                    : x3::phys::Vec3{ 1, 0, 0 };
+    x3::phys::Vec3 u = normalize(cross(ref, dir));   // perp basis for the jitter
+    x3::phys::Vec3 v = cross(dir, u);
+    const int   kBoltSegs = 8;
+    const float jit = std::min(0.45f, len * 0.07f);  // perpendicular offset amplitude
+    auto rnd = []() { return (float)std::rand() / (float)RAND_MAX * 2.0f - 1.0f; }; // [-1,1]
+    x3::phys::Vec3 prev = a;
+    for (int i = 1; i <= kBoltSegs; ++i) {
+        float t = (float)i / (float)kBoltSegs;
+        x3::phys::Vec3 pt{ a.x + seg.x * t, a.y + seg.y * t, a.z + seg.z * t };
+        if (i < kBoltSegs) {        // interior vertex: jitter perpendicular (endpoints fixed)
+            float ox = rnd() * jit, oy = rnd() * jit;
+            pt.x += u.x * ox + v.x * oy;
+            pt.y += u.y * ox + v.y * oy;
+            pt.z += u.z * ox + v.z * oy;
+        }
+        drawBeam(device, frame, prev, pt, thickness, color);
+        prev = pt;
+    }
+}
+
+// ---------------------------------------------------------------------------
 // draw: active tracers + muzzle flash. (The crosshair moved to the screen-space
 // HUD layer in S7 — see app/hud.* — so fx no longer draws a world-space "+".)
 // ---------------------------------------------------------------------------
@@ -496,9 +535,16 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
     for (const auto& t : m_tracers) {
         if (t.life <= 0.0f) continue;
         float k = (kTracerTime > 0.0f) ? (t.life / kTracerTime) : 1.0f; // 1->0
-        // Slightly taper the beam as it fades so it reads as a fast streak.
-        float thick = kTracerThickness * (0.5f + 0.5f * k);
-        drawBeam(device, frame, t.from, t.to, thick, tracerColor);
+        if (t.kind == WeaponFxKind::Lightning) {
+            // Jagged white-cyan bolt (re-randomized each frame -> crackle).
+            const float boltColor[4] = { 0.62f, 0.95f, 1.0f, 1.0f };
+            float thick = kTracerThickness * (0.45f + 0.35f * k);
+            drawLightningBolt(device, frame, t.from, t.to, thick, boltColor);
+        } else {
+            // Slightly taper the beam as it fades so it reads as a fast streak.
+            float thick = kTracerThickness * (0.5f + 0.5f * k);
+            drawBeam(device, frame, t.from, t.to, thick, tracerColor);
+        }
     }
 
     // ---- Muzzle flash: a brief bright box at the muzzle. ----

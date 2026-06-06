@@ -102,7 +102,10 @@ public:
     // Register a shot beam from `from` (the muzzle) to `to` (the hit point, or
     // eye + dir*range on a miss). Also lights the muzzle flash at `from` AND spawns
     // the muzzle-flash particle burst (a few hot additive sparks at the muzzle).
-    void addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to);
+    // `kind` tints/shapes the beam: Lightning renders as a jagged white-cyan bolt
+    // (re-randomized each frame); everything else is the straight hot-yellow tracer.
+    void addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to,
+                   WeaponFxKind kind = WeaponFxKind::Default);
 
     // ---- Combat-event particle/decal presets (the juice) -------------------
     // Each spawns a tuned burst into the bounded pool / decal ring. Called from the
@@ -159,6 +162,7 @@ private:
         x3::phys::Vec3 from{};
         x3::phys::Vec3 to{};
         float          life = 0.0f;  // remaining seconds; <= 0 means free slot
+        WeaponFxKind   kind = WeaponFxKind::Default;  // Lightning -> jagged bolt
     };
 
     // Draw one bright box stretched/oriented along the segment a->b with the
@@ -166,6 +170,13 @@ private:
     void drawBeam(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                   const x3::phys::Vec3& a, const x3::phys::Vec3& b,
                   float thickness, const float color[4]) const;
+
+    // Draw a JAGGED lightning bolt a->b: subdivide into segments with random
+    // perpendicular offsets (re-rolled per call so it crackles), each drawn via
+    // drawBeam. The last vertex lands exactly on `b` (the hit point).
+    void drawLightningBolt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                           const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                           float thickness, const float color[4]) const;
 
     // A centered unit box mesh (half-extent 0.5 each axis) reused for all FX,
     // scaled per draw via the model matrix.

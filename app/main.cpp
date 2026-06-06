@@ -9596,7 +9596,7 @@ int main(int argc, char** argv) {
                         x3::game::FireResult rs = subLevels.onFire(eye, ray.dir, scene, *physics, wdmg);
                         if (rs.hitMonster || (!r.hit && rs.hit)) r = rs;
                     }
-                    combatFx.addTracer(muzzle, r.endPoint);   // tracer + muzzle burst per pellet
+                    combatFx.addTracer(muzzle, r.endPoint, muzzleKind);   // tracer (Lightning -> jagged bolt) + muzzle burst per pellet
                     if (r.killed) { combatFx.spawnDeath(r.endPoint); anyKill = true; }
                     else if (r.hitMonster) { combatFx.spawnBlood(r.hitPoint, ray.dir); anyHit = true; lastHp = r.hpAfter; }
                     else {
