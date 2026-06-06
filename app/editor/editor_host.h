@@ -82,6 +82,25 @@ private:
                       x3::phys::IPhysicsWorld& physics);   // resize: rebuild mesh+body
     void syncBrushTransform(int idx, x3::game::Scene& scene, x3::phys::IPhysicsWorld& physics);
 
+    // Apply an undo/redo HistoryEffect to the LIVE scene (rebuild / sync / tear down a
+    // brush per the hint the EditorState returned). Centralizes the GPU+Jolt side so
+    // Ctrl+Z/Y, gizmo commits, and the Details panel all share one re-sync path.
+    void applyEffect(const HistoryEffect& eff, x3::rhi::IRenderDevice& device,
+                     x3::game::Scene& scene, x3::phys::IPhysicsWorld& physics);
+    // Tear down a brush's live mesh + body by explicit links (used when the brush
+    // record is already gone, e.g. undo-of-add).
+    void teardownLinks(uint32_t sceneEntity, uint32_t body,
+                       x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                       x3::phys::IPhysicsWorld& physics);
+
+    // ---- P3 transform gizmo (move) + viewport pick --------------------------
+    // Draw the move gizmo over the selected brush (ImGui foreground draw list, via
+    // device->worldToScreen) and handle LMB axis drag -> moveSelectedBrush, grouped
+    // into one undo step (begin/commitBrushEdit). Also handles a plain LMB click in
+    // the empty viewport = ray-pick a brush to select. Called from draw() in Edit mode.
+    void gizmoAndPick(x3::rhi::IRenderDevice& device, x3::game::Scene& scene,
+                      x3::phys::IPhysicsWorld& physics, bool wantMouse);
+
     LevelDoc    m_doc;
     EditorState m_state;
     HostMode    m_mode = HostMode::Edit;
@@ -102,6 +121,20 @@ private:
     int   m_gridSel = 1;                 // index into kGridSteps
     // Which brush type the "Add" buttons spawn next (0=Box, 1=Ramp).
     uint32_t m_addType = 0;
+
+    // ---- P3 gizmo drag state ------------------------------------------------
+    // The current tool (Q/W/E/R). P3 ships the MOVE gizmo as the interactive one;
+    // Rotate/Scale are reachable via the Details panel fields (also undoable).
+    Tool  m_tool = Tool::Move;
+    // Active axis drag: which axis is grabbed, and the cursor's signed distance along
+    // the projected axis at grab time (so we move by the delta, not absolute).
+    Axis  m_dragAxis  = Axis::None;
+    bool  m_dragging  = false;
+    float m_dragStartS = 0.0f;           // screen-space param at grab
+    float m_dragBaseM  = 0.0f;           // brush coord on the axis at grab
+    bool  m_lmbPrev    = false;          // LMB held last frame (rising/falling edge)
+    // Last gizmo HistoryEffect produced by a commit, applied next frame by draw().
+    bool  m_ctrlZPrev = false, m_ctrlYPrev = false;  // Ctrl+Z / Ctrl+Y rising edge
 };
 
 } // namespace x3::editor

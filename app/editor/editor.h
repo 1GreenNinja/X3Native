@@ -77,6 +77,35 @@ struct LevelDoc {
 // Transform-gizmo axes.
 enum class Axis : uint8_t { None = 0, X, Y, Z };
 
+// ---------------------------------------------------------------------------
+// Undo/redo command stack (P0.6). The history is BRUSH-FOCUSED: every brush
+// add / delete / transform routes through it so Ctrl+Z/Y are universal in the
+// editor. Commands are SNAPSHOT-based (store the full BlockoutBrush value), which
+// is robust and trivially correct for the small brush count a blockout has.
+//
+// applyUndo/applyRedo MUTATE only the LevelDoc's brushes[] (pure logic, headless-
+// testable). They return a HistoryEffect so the live host knows how to re-sync the
+// Scene + Jolt (a moved brush needs only a transform sync; an add/delete/resize
+// needs a full respawn). The host owns the GPU/physics side via the returned hint.
+// ---------------------------------------------------------------------------
+enum class CmdKind : uint8_t { None = 0, Add, Delete, Transform };
+
+// What the host must do to the live scene after an undo/redo applied to brushes[].
+//   None       — nothing changed (empty stack).
+//   Respawn    — brush at `index` must be (re)built (add/undo-delete/resize): rebuild
+//                mesh + body. For an undo-of-add / redo-of-delete the brush is GONE;
+//                `removed` is true and the host tears down the prior live links.
+//   SyncXform  — only the transform (pos/yaw) changed: cheap transform/body update.
+struct HistoryEffect {
+    enum class Op : uint8_t { None = 0, Respawn, SyncXform } op = Op::None;
+    int  index   = -1;       // brush index the host must act on (post-apply doc index)
+    bool removed = false;    // the brush at `index` no longer exists (tear down links)
+    // For a teardown the host needs the dead brush's live links; carried here so the
+    // host can destroy the mesh/body without the brush record still existing.
+    uint32_t deadSceneEntity = 0xFFFFFFFFu;
+    uint32_t deadBody        = 0;
+};
+
 // What the current selection refers to (tagged selection — entities[] vs brushes[]).
 // P3 will extend this to a multi-select vector; P2 needs only the single tagged kind.
 enum class SelKind : uint8_t { None = 0, Entity, Brush };
@@ -200,7 +229,43 @@ public:
     float snapValue(float v) const { return m_snap ? std::round(v / m_grid) * m_grid : v; }
     void  setGrid(float g) { if (g > 1e-4f) m_grid = g; }
 
+    // ---- Undo / redo (P0.6) -------------------------------------------------
+    // Add a brush AND record it as an undoable command. Same as addBrush() but the
+    // op goes on the history stack. Returns the new brush index.
+    int   addBrushCmd(uint32_t type, const float pos[3]);
+    // Delete the selected brush AND record it. The live links (sceneEntity/body) are
+    // captured so a teardown is possible and a redo-restore round-trips them. Returns
+    // true if one was removed.
+    bool  deleteSelectedBrushCmd();
+
+    // Transform-edit commands group a continuous drag into ONE undo step. Call
+    // beginBrushEdit() at the start of a gizmo/DragFloat interaction (captures the
+    // before-snapshot), mutate brushes[idx] freely, then commitBrushEdit() once the
+    // interaction ends (captures the after-snapshot + pushes a Transform command iff
+    // the value actually changed). A begin with no net change is dropped on commit.
+    void  beginBrushEdit(int index);
+    void  commitBrushEdit();
+    bool  editing() const { return m_editing; }
+
+    bool  canUndo() const { return m_undoPos > 0; }
+    bool  canRedo() const { return m_undoPos < (int)m_history.size(); }
+    // Apply one undo / redo to brushes[]. Returns the host re-sync hint (see
+    // HistoryEffect). No-op (op==None) when the stack end is reached.
+    HistoryEffect undo();
+    HistoryEffect redo();
+
 private:
+    // One undoable brush operation (snapshot pair). For Add: `after` is the created
+    // brush, `before` unused. For Delete: `before` is the removed brush, `after`
+    // unused. For Transform: both are the brush value pre/post the edit.
+    struct BrushCmd {
+        CmdKind kind = CmdKind::None;
+        int     index = -1;          // brush index the op targets
+        BlockoutBrush before;        // pre-state (Delete / Transform)
+        BlockoutBrush after;         // post-state (Add / Transform)
+    };
+    void pushCmd(const BrushCmd& c);  // truncates redo tail, appends, advances pos
+
     LevelDoc& m_doc;
     int   m_selected = -1;
     bool  m_snap = true;
@@ -209,6 +274,16 @@ private:
     // legacy entities[] selection above is the source of truth.
     SelKind m_selKind  = SelKind::None;
     int     m_selIndex = -1;
+
+    // Undo/redo stack (P0.6). m_history holds commands oldest->newest; m_undoPos is
+    // the count of APPLIED commands (everything < m_undoPos is "done", >= is "undone").
+    // A new push truncates the redo tail (anything >= m_undoPos).
+    std::vector<BrushCmd> m_history;
+    int                   m_undoPos = 0;
+    // Transform-edit grouping (beginBrushEdit/commitBrushEdit).
+    bool          m_editing      = false;
+    int           m_editIndex    = -1;
+    BlockoutBrush m_editBefore;
 };
 
 // Headless self-test (--test-editor): JSON save/load round-trip equality, ray pick
