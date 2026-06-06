@@ -101,7 +101,9 @@ def parse_materials(pack_root):
         # blanket search wrongly flags non-emissive mats (e.g. chrome) and a flat emissive
         # then makes whole walls self-glow white regardless of lighting.
         vk = re.search(r"m_ValidKeywords:\s*\n((?:\s*-\s*\S+\n)*)", txt)
-        rec["emission"] = bool(vk) and "_EMISSION" in vk.group(1)
+        vks = vk.group(1) if vk else ""
+        # _EMISSION = Built-in keyword; _EMISSIVE_COLOR_MAP = the HDRP equivalent.
+        rec["emission"] = ("_EMISSION" in vks) or ("_EMISSIVE_COLOR_MAP" in vks)
         rec["glossScale"] = _scalar(txt, "_GlossMapScale", 1.0)
         # HDRP per-channel remaps applied to the MaskMap (default = identity passthrough).
         rec["smoothMin"] = _scalar(txt, "_SmoothnessRemapMin", 0.0)
@@ -288,7 +290,13 @@ def apply_materials(gltf, guidmap, matmap, png_cache, rebuild=False):
         # colour into a near-white glow).
         if (not hdrp) or rec.get("emission"):
             g = rec.get(emis_slot); f = guidmap.get(g) if g else None
-            if f and (p := to_png(f, png_cache)):
+            # Require a DEDICATED emissive map: the kit's non-emissive mats (walls, chrome)
+            # point _EmissiveColorMap at a SHARED default also used by another slot, which
+            # would glow the whole surface. Genuine fixtures (screens, Glow_Cube) have a
+            # unique bright emissive map -> they glow, walls don't.
+            shared = (not g) or g in (rec.get("_BaseColorMap"), rec.get("_MaskMap"),
+                                      rec.get("_NormalMap"), rec.get("_DetailMap"))
+            if f and not shared and (p := to_png(f, png_cache)):
                 gm.emissiveTexture = TextureInfo(index=_add_image(gltf, p, samp, texcache)); n_tex += 1
                 ec = rec.get("emisColor", (1.0, 1.0, 1.0))
                 gm.emissiveFactor = [min(1.0, max(0.0, c)) for c in ec] if max(ec) > 0 else [1.0, 1.0, 1.0]
