@@ -305,13 +305,17 @@ private:
     // Resolve a texture_view to a GPU handle: decode embedded image bytes with
     // stb (or transcode KTX2 if wired); on any failure return a default handle
     // and log once per model.
+    // srgb = the IMPORT GAMMA FORMULA: COLOR maps (baseColor, emissive) are sRGB-encoded and
+    // must be decoded to linear by the sampler; DATA maps (normal, metallic-roughness,
+    // occlusion) are linear and must NOT be sRGB-decoded (doing so corrupts normals + PBR).
+    // isNormal only selects the fallback default (flat-normal vs white) on decode failure.
     uint64_t resolveTexture(const cgltf_texture_view& tv, GpuUploader& up,
-                            bool isNormal) {
+                            bool isNormal, bool srgb) {
         if (!tv.texture) return 0; // no texture bound at all
-        return resolveTexture(tv.texture, up, isNormal);
+        return resolveTexture(tv.texture, up, isNormal, srgb);
     }
 
-    uint64_t resolveTexture(const cgltf_texture* tex, GpuUploader& up, bool isNormal) {
+    uint64_t resolveTexture(const cgltf_texture* tex, GpuUploader& up, bool isNormal, bool srgb) {
         const cgltf_image* img = nullptr;
         bool ktx2 = false;
         if (tex->has_basisu && tex->basisu_image) { img = tex->basisu_image; ktx2 = true; }
@@ -374,7 +378,7 @@ private:
             warnOnce("[gltf] image decode failed; using default");
             return isNormal ? up.defaultNormal() : up.defaultWhite();
         }
-        uint64_t handle = up.uploadTexture(px, w, h);
+        uint64_t handle = up.uploadTexture(px, w, h, srgb);
         stbi_image_free(px);
         return handle;
     }
@@ -389,18 +393,30 @@ private:
                 for (int k = 0; k < 4; ++k) m.baseColor[k] = pbr.base_color_factor[k];
                 m.metallic  = pbr.metallic_factor;
                 m.roughness = pbr.roughness_factor;
-                m.baseColorTex = resolveTexture(pbr.base_color_texture, up, false);
-                m.mrTex        = resolveTexture(pbr.metallic_roughness_texture, up, false);
+                m.baseColorTex = resolveTexture(pbr.base_color_texture, up, /*isNormal*/false, /*srgb*/true);
+                m.mrTex        = resolveTexture(pbr.metallic_roughness_texture, up, false, /*srgb*/false); // DATA: linear
+                // Metallic material with NO MR texture (only scalar factors — common in Unity
+                // GLB exports): synthesize a 1x1 MR map from the factors (glTF: roughness=G,
+                // metallic=B) so the mesh takes the shader's PBR/IBL branch (lit as metal)
+                // instead of dark Lambertian diffuse — otherwise dark-tinted metals read black.
+                if ((m.mrTex & kTagMask) != kTexTag && m.metallic > 0.001f) {
+                    const uint8_t mrpx[4] = { 0,
+                        (uint8_t)(m.roughness * 255.0f + 0.5f),
+                        (uint8_t)(m.metallic  * 255.0f + 0.5f), 255 };
+                    m.mrTex = up.uploadTexture(mrpx, 1, 1, /*srgb=*/false);  // data, not color
+                }
             }
             for (int k = 0; k < 3; ++k) m.emissive[k] = cm.emissive_factor[k];
             if (cm.has_emissive_strength)
                 for (int k = 0; k < 3; ++k) m.emissive[k] *= cm.emissive_strength.emissive_strength;
 
-            m.normalTex    = resolveTexture(cm.normal_texture,    up, true);
-            m.occlusionTex = resolveTexture(cm.occlusion_texture, up, false);
-            m.emissiveTex  = resolveTexture(cm.emissive_texture,  up, false);
+            m.normalTex    = resolveTexture(cm.normal_texture,    up, /*isNormal*/true,  /*srgb*/false); // DATA: linear
+            m.occlusionTex = resolveTexture(cm.occlusion_texture, up, false, /*srgb*/false);             // DATA: linear
+            m.emissiveTex  = resolveTexture(cm.emissive_texture,  up, false, /*srgb*/true);              // COLOR: sRGB
             m.doubleSided  = cm.double_sided != 0;
             m.alphaBlend   = (cm.alpha_mode == cgltf_alpha_mode_blend);
+            m.alphaMask    = (cm.alpha_mode == cgltf_alpha_mode_mask);
+            m.alphaCutoff  = (cm.alpha_cutoff > 0.0f) ? cm.alpha_cutoff : 0.5f;
             model.materials.push_back(m);
         }
     }
@@ -737,6 +753,11 @@ bool fillDrawable(const Model& m, const MeshPrimitive& p, const float nodeWorld[
             d.normalTexId = static_cast<uint32_t>(mat.normalTex & ~kTagMask);
         if ((mat.mrTex & kTagMask) == kTexTag)
             d.mrTexId = static_cast<uint32_t>(mat.mrTex & ~kTagMask);
+        d.alphaMask = mat.alphaMask;
+        d.alphaBlend = mat.alphaBlend;
+        for (int k = 0; k < 3; ++k) d.emissiveFactor[k] = mat.emissive[k];
+        if ((mat.emissiveTex & kTagMask) == kTexTag)
+            d.emissiveTexId = static_cast<uint32_t>(mat.emissiveTex & ~kTagMask);
     }
     for (int i = 0; i < 16; ++i) d.nodeTransform[i] = nodeWorld[i];
     return true;

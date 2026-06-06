@@ -13,6 +13,7 @@ add_executable(X3Engine WIN32
     secret_room.cpp
     ecs_render.cpp
     editor/editor.cpp
+    editor/editor_host.cpp
     elevator.cpp
     weapon.cpp
     monster.cpp
@@ -50,6 +51,13 @@ add_executable(X3Engine WIN32
 
 target_link_libraries(X3Engine PRIVATE x3engine glfw)
 
+# Dear ImGui (docking) — EDITOR-ONLY. The Level Architect host (app/editor/
+# editor_host.cpp) submits its panels with the CORE ImGui widget API directly; the
+# GLFW/Vulkan backends still live (PRIVATE) in the engine device. Linking the imgui
+# core lib here is additive — the game path never calls these unless --editor is set.
+find_package(imgui CONFIG REQUIRED)
+target_link_libraries(X3Engine PRIVATE imgui::imgui)
+
 # holo_terminal.cpp rasterizes its on-glass readout text into the hologram
 # texture with stb_truetype (the same single-header lib the engine font atlas
 # uses). The implementation lives in the engine TU, so the app only needs the
@@ -71,6 +79,7 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/tri.vert
     ${CMAKE_SOURCE_DIR}/shaders/tri.frag
     ${CMAKE_SOURCE_DIR}/shaders/mesh.vert
+    ${CMAKE_SOURCE_DIR}/shaders/mesh_probe.vert
     ${CMAKE_SOURCE_DIR}/shaders/mesh.frag
     ${CMAKE_SOURCE_DIR}/shaders/shadow.vert
     ${CMAKE_SOURCE_DIR}/shaders/sky.vert
@@ -94,11 +103,28 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/ssgi_temporal.frag
     ${CMAKE_SOURCE_DIR}/shaders/ssgi_blur.frag
     ${CMAKE_SOURCE_DIR}/shaders/ssgi_apply.frag
+    ${CMAKE_SOURCE_DIR}/shaders/ibl_brdf_lut.frag
+    ${CMAKE_SOURCE_DIR}/shaders/ibl_env.frag
+    ${CMAKE_SOURCE_DIR}/shaders/ibl_irradiance.frag
+    ${CMAKE_SOURCE_DIR}/shaders/ibl_prefilter.frag
     ${CMAKE_SOURCE_DIR}/shaders/debris.comp
     ${CMAKE_SOURCE_DIR}/shaders/debris.vert
     ${CMAKE_SOURCE_DIR}/shaders/debris.frag
     ${CMAKE_SOURCE_DIR}/shaders/skin.comp
-    ${CMAKE_SOURCE_DIR}/shaders/rtao_apply.frag)
+    ${CMAKE_SOURCE_DIR}/shaders/rtao_apply.frag
+    ${CMAKE_SOURCE_DIR}/shaders/planet.vert
+    ${CMAKE_SOURCE_DIR}/shaders/planet_moon.frag
+    ${CMAKE_SOURCE_DIR}/shaders/planet_ice.frag
+    ${CMAKE_SOURCE_DIR}/shaders/planet_gas.frag
+    ${CMAKE_SOURCE_DIR}/shaders/planet_lava.frag
+    ${CMAKE_SOURCE_DIR}/shaders/planet_terrestrial.frag
+    ${CMAKE_SOURCE_DIR}/shaders/planet_oceanic.frag
+    ${CMAKE_SOURCE_DIR}/shaders/planet_sand.frag
+    ${CMAKE_SOURCE_DIR}/shaders/planet_thunderstorm.frag
+    ${CMAKE_SOURCE_DIR}/shaders/planet_sun.frag
+    ${CMAKE_SOURCE_DIR}/shaders/planet_atmosphere.frag
+    ${CMAKE_SOURCE_DIR}/shaders/planet_suncorona.frag
+    ${CMAKE_SOURCE_DIR}/shaders/planet_ring.frag)
 # Hardware ray-tracing (ray-query) shaders need SPIR-V 1.4+ and the ray-query
 # extension target; compiled with explicit target flags below. Listed separately
 # so the default glslc invocation (which targets an older SPIR-V) is not used.

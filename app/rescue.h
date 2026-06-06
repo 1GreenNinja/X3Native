@@ -30,9 +30,11 @@
 #include "scene.h"
 #include "monster.h"   // MonsterManager + Tuning (the boss the victim becomes)
 #include "anim.h"      // J1/T1: skeletal-animation Skinner (so girls breathe/idle)
+#include "ragdoll.h"   // RagdollSkin (drive the skin from physics parts) — mirrors monster.*
 
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
+#include "engine/physics/Ragdoll.h"   // phys::IRagdoll + makeHumanoidRagdollBones (skinned death/collapse ragdoll)
 #include "engine/asset/IModelLoader.h"
 #include "engine/asset/IAssetSource.h"
 
@@ -91,6 +93,38 @@ public:
     // Companion (stop the timer, retag friendly) and return true. Else false.
     bool tryRescue(const x3::phys::Vec3& playerPos, float reach = kRescueReach);
 
+    // ---- PHYSICS RAGDOLL (collapse) — mirrors MonsterSystem's death ragdoll -----
+    // Collapse Aria into a physics ragdoll: snapshot the Skinner's CURRENT animated
+    // bone globals, build a Jolt humanoid ragdoll (engine makeHumanoidRagdollBones +
+    // createRagdoll) placed/yawed/scaled to match her, seed it from those globals (so
+    // the flop starts seamlessly from where the animation left off), and latch
+    // m_ragdolled. From then on tick() reads the ragdoll bone transforms back out of
+    // the SHARED physics world (which the host steps each frame) and drives the skin
+    // via Skinner::applyExternalGlobals — the MESH follows the bodies. Idempotent: a
+    // second call (or a non-skinnable model) is a no-op. `physics` MUST be the same
+    // world the host steps each frame and must outlive the victim. `scene` is needed to
+    // FREEZE her entity (drop its body link) so Scene::update() can't move the frozen
+    // collapse transform once the standing collision body is removed.
+    void ragdoll(Scene& scene, x3::phys::IPhysicsWorld& physics);
+
+    // True once ragdoll() built a live physics ragdoll driving the skin.
+    bool ragdolled() const { return m_ragdolled; }
+
+    // Override the draw tint (debug / headless proof framing only — e.g. make the
+    // collapsed ragdoll read against a dark floor). Multiplies the per-drawable base
+    // color exactly like the default friendly tint.
+    void setTint(float r, float g, float b, float a) { m_tint[0]=r; m_tint[1]=g; m_tint[2]=b; m_tint[3]=a; }
+
+    // Set the STATIC facing yaw (radians, headingToFace convention: yaw =
+    // atan2(-dirX,-dirZ) to point the model's local -Z along (dirX,dirZ)). Used by
+    // non-gameplay placements (e.g. the showroom ANALYST GALLERY) to face a Captive
+    // figure toward a fixed target (its terminal). A Captive's tick() re-bakes this
+    // yaw each frame (it never self-rotates while Captive), so the figure holds the
+    // facing. No effect on the rescue/companion follow logic. The 180deg VISUAL flip
+    // for the +Z-authored rigged GLBs is applied in bakeTransform(), so pass the
+    // logical heading (toward the target).
+    void setFacing(float yaw) { m_yaw = yaw; }
+
     // Draw the victim's model at its transform (the entity render mesh is invalid;
     // this is the single source of truth for the multi-primitive draw — like
     // MonsterSystem::drawMonster). No-op once Expired (the model is gone).
@@ -138,6 +172,12 @@ private:
     // while moving). No-op if the model isn't skinnable. Re-uploads via m_device.
     void driveAnim(float dt, float planarSpeed);
 
+    // RAGDOLL: read the live ragdoll bone WORLD transforms, map them into skin space,
+    // run the rigid bone->skin attach (RagdollSkin), and feed the result to the
+    // Skinner's external-pose path so the GPU-skinned MESH flops with the bodies.
+    // Mirrors MonsterSystem::driveSkinFromRagdoll. No-op unless ragdolled + device.
+    void driveSkinFromRagdoll();
+
     std::unique_ptr<x3::asset::IAssetSource> m_assets;
     std::unique_ptr<x3::asset::IModelLoader> m_loader;
     x3::asset::Model                         m_model;
@@ -161,6 +201,23 @@ private:
     bool  m_animActive   = false;   // a usable clip was found (skinner valid)
     float m_animTime     = 0.0f;    // single-clip playback time (looped in the runtime)
     float m_phaseOffset  = 0.0f;    // per-girl start phase so they aren't identical
+
+    // ---- PHYSICS RAGDOLL (collapse) — SAME machinery as MonsterSystem's death
+    // ragdoll. On ragdoll() we build a Jolt humanoid ragdoll from the canonical rig,
+    // placed/yawed/scaled to match Aria + seeded from her CURRENT animated bone
+    // globals, and add it to the shared world. Each frame while m_ragdolled we read the
+    // bone WORLD transforms out, map them onto the skin nodes (RagdollSkin, rigid
+    // attach), and feed them to applyExternalGlobals so the MESH flops physically. If
+    // the model has no usable skeleton, m_deathRagdoll stays null (ragdoll() no-ops). --
+    std::unique_ptr<x3::phys::IRagdoll>      m_deathRagdoll;   // null => no skinned ragdoll
+    RagdollSkin                              m_ragdollSkin;    // rigid bone->skin driver
+    std::vector<x3::phys::RagdollBoneDesc>   m_ragdollBones;   // the rig the ragdoll was built from
+    std::vector<float>                       m_ragPartInit;    // per-bone INIT skin-local 4x4 (boneCount*16)
+    std::vector<float>                       m_ragWorldScratch;// per-bone CURRENT world 4x4 scratch
+    std::vector<float>                       m_ragPartCur;     // per-bone CURRENT skin-local 4x4 scratch
+    std::vector<float>                       m_ragNodeGlobals; // RagdollSkin output (nodeCount*16)
+    float                                    m_deathModelInv[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; // inverse of the frozen draw matrix at collapse
+    bool                                     m_ragdolled = false; // a physics ragdoll is driving the skin (collapse latched)
 
     VictimId        m_id        = VictimId::Aria;
     std::string     m_name;

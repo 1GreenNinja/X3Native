@@ -20,6 +20,9 @@ struct DeviceDesc {
     // offscreen image. nativeWindowHandle is ignored. The interactive windowed
     // path (headless=false) is byte-for-byte unchanged. See the .cpp.
     bool     headless    = false;
+    // Supersample AA (HEADLESS/screenshot only): render at width*ssaa x height*ssaa and
+    // box-downscale to width x height on capture. 1 = off. The live windowed path ignores it.
+    uint32_t ssaa        = 1;
 };
 
 struct FrameContext {
@@ -118,6 +121,31 @@ public:
     // forward = (cos(pitch)*cos(yaw), sin(pitch), cos(pitch)*sin(yaw)).
     virtual void setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) = 0;
 
+    // Scene ambient (hemispheric floor lift in mesh.frag, also the crude IBL term for
+    // PBR meshes). Default is a small cool constant; raise it for bright daylit/outdoor
+    // scenes (e.g. the showroom) so metal/glass surfaces aren't black. Non-pure (no-op
+    // default) so headless / other devices are unaffected.
+    virtual void setAmbient(float r, float g, float b) {}
+
+    // Frame the sun's shadow ortho box on a world center + half-extent, instead of the default
+    // camera-following ~45 m box. For large scenes (the showroom) so the building + surrounding
+    // geometry fall inside the shadow map and actually cast shadows. Non-pure (no-op default).
+    virtual void setShadowBounds(float cx, float cy, float cz, float halfExtent) {}
+
+    // Enable/disable the interior reflection probe: bake the IBL environment from the
+    // SCENE geometry (around the camera) instead of the analytic sky, so glossy metals
+    // reflect the dim interior rather than the bright open sky. Non-pure (no-op default).
+    virtual void setIblProbe(bool enable) {}
+
+    // Final additive bloom strength (composite pass). Default is a subtle global value;
+    // raise it for "hero" scenes (e.g. the showroom spire glowing against a dark sky) so
+    // HDR-emissive surfaces bloom strongly, WITHOUT touching other scenes. Non-pure no-op default.
+    virtual void setBloom(float intensity) {}
+
+    // Whole-scene brightness multiplier applied pre-tonemap in the composite pass
+    // (1.0 = unchanged). Drives the live r_exposure cvar / showroom brightness slider.
+    virtual void setExposure(float e) {}
+
     // Per-frame
     virtual FrameContext beginFrame() = 0;
     virtual void         endFrame(const FrameContext&) = 0;
@@ -187,9 +215,37 @@ public:
     virtual void          drawMeshPBR(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                                       TextureHandle /*normal*/, TextureHandle /*metalRough*/,
                                       const float baseColorFactor[4], const float emissive[4],
-                                      const float model[16]) {
+                                      const float model[16], bool /*alphaMask*/ = false,
+                                      bool /*alphaBlend*/ = false, TextureHandle /*emissiveTex*/ = {}) {
         drawMeshEmissive(fc, mesh, baseColor, baseColorFactor, emissive, model);
     }
+
+    // ---- Procedural planet body (FORGE3D port) -----------------------------
+    // Draw a UV-SPHERE planet with a per-TYPE planet pipeline (a push-constant
+    // model matrix + up to 12 bindless texture indices + uTime; no per-object SSBO).
+    // The per-type fragment shader does its own object-space triplanar / banded /
+    // emissive look. Drawn AFTER the opaque mesh multidraw, reusing the mesh's set0
+    // bindless + set1 Camera UBO descriptor sets. ADDITIVE: non-pure no-op default so
+    // the headless stub / other devices are unaffected and existing levels are
+    // byte-for-byte unchanged.
+    //   model     : column-major 4x4 object->world.
+    //   typeIndex : PlanetType (0=Moon,1=Ice,2=Gas,3=Lava,4=Terrestrial,5=Oceanic,
+    //               6=Sand,7=Thunderstorm,8=Sun) — selects the pipeline.
+    //   maps      : up to `mapCount` TextureHandles in the type's pc.tex[] slot order
+    //               (resolved to bindless indices; >12 clamped, unused slots zeroed).
+    //   uTime     : animation time in seconds (for animated types).
+    virtual void drawPlanet(const FrameContext& fc, MeshHandle mesh, const float model[16],
+                            uint32_t typeIndex, const TextureHandle* maps, uint32_t mapCount,
+                            float uTime) {}
+
+    // ---- Celestial / sky animation time ------------------------------------
+    // A global time source (seconds) for sky-driven animation: the starfield
+    // rotation + any future time-driven celestial motion read it via the sky UBO
+    // (params.z). The live game loop passes the elapsed time each frame; headless
+    // screenshots pass a fixed non-zero value so animated state is captured.
+    // Per-planet animation (e.g. the sun corona) still flows via drawPlanet's
+    // uTime arg — this only feeds the full-screen sky. Non-pure no-op default.
+    virtual void          setSkyTime(float) {}
 
     // ---- Analytic sky (open-world track, task A) ---------------------------
     // Parameters for the physically-plausible analytic sky drawn as the far-depth
@@ -211,6 +267,8 @@ public:
         float sunIntensity  = 1.0f;
         float haze          = 0.5f;
         float exposure      = 1.0f;
+        float zenith[3]     = { 0.10f, 0.28f, 0.66f }; // overhead sky color (linear); per-scene (default = old global)
+        float horizon[3]    = { 0.62f, 0.74f, 0.92f }; // horizon glow color (linear); per-scene (default = old global)
     };
     // Set the active sky parameters for subsequent frames (cached + re-applied
     // each frame, like setPointLights). Calling with enabled=false disables it.
@@ -626,6 +684,39 @@ public:
     // Capability query
     virtual bool supportsDescriptorIndexing() const = 0;
     virtual bool supportsMeshShaders() const = 0;
+
+    // ---- Editor UI (Dear ImGui, docking) — EDITOR-ONLY (Level Architect P0) ----
+    // The native level editor draws its panels with Dear ImGui INTO the swapchain
+    // image, in a dedicated render pass AFTER the game composite/HUD pass. ImGui is
+    // gated to `--editor` mode: with no `--editor` flag none of these are called and
+    // the device allocates NOTHING (zero cost in the shipping game path). The game's
+    // own FontRole HUD (drawHudQuad/drawHudText) is untouched — ImGui is a SEPARATE,
+    // editor-only overlay. All five are NON-PURE no-op defaults so the headless stub,
+    // the game, and any other IRenderDevice implementation are unaffected; only the
+    // Vulkan device overrides them (ImGui/Vulkan types stay hidden in the .cpp).
+    //
+    // initEditorUI: one-time ImGui init (context + docking flag + dedicated descriptor
+    //   pool + GLFW/Vulkan backends bound to the device's own queue/format). `glfwWindow`
+    //   is the live GLFWwindow* (passed as void* so this header needs no GLFW include).
+    //   Safe to call once after device init succeeds; a second call is a no-op.
+    virtual void initEditorUI(void* /*glfwWindow*/) {}
+    // beginEditorUI: start a new ImGui frame (call once per frame BEFORE issuing the
+    //   editor's Begin/End/widget calls). For P0 the device itself submits a dockspace
+    //   + the ImGui demo window as a proof of the integration.
+    virtual void beginEditorUI() {}
+    // endEditorUI: finalize the ImGui frame (ImGui::Render) and stash the draw data so
+    //   the device records ImGui_ImplVulkan_RenderDrawData inside the next endFrame()'s
+    //   graph pass. Call AFTER all editor widget calls and BEFORE endFrame().
+    virtual void endEditorUI() {}
+    // shutdownEditorUI: tear down ImGui (backends + context + the dedicated pool).
+    //   Idempotent; also invoked automatically from the device shutdown if still init.
+    virtual void shutdownEditorUI() {}
+    // editorWantsInput: reports ImGui's WantCaptureMouse / WantCaptureKeyboard so the
+    //   host can gate game/camera input when the cursor/keyboard is over an ImGui panel.
+    //   Both false when the editor UI is not initialized (game path keeps all input).
+    virtual void editorWantsInput(bool& mouse, bool& kbd) const { mouse = false; kbd = false; }
+    // editorUIActive: true once initEditorUI has succeeded (the editor overlay is live).
+    virtual bool editorUIActive() const { return false; }
 };
 
 // Factory. Returns the (clean, original) Vulkan implementation of IRenderDevice.

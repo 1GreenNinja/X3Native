@@ -50,6 +50,11 @@ target_link_libraries(x3engine
         miniz::miniz
         glm::glm
         Jolt::Jolt
+        # Dear ImGui (docking) — EDITOR-ONLY. PRIVATE so ImGui types never leak into
+        # IRenderDevice.h (it stays graphics/ImGui-API-free); the vcpkg port compiles
+        # imgui_impl_vulkan.cpp / imgui_impl_glfw.cpp into the package, so the editor-UI
+        # methods in VulkanRenderDevice.cpp call the backends with no vendoring.
+        imgui::imgui
 )
 
 target_compile_features(x3engine PUBLIC cxx_std_20)

@@ -57,6 +57,8 @@ struct Material {
     uint64_t occlusionTex = 0;
     bool     doubleSided  = false;
     bool     alphaBlend   = false;
+    bool     alphaMask    = false;   // glTF alphaMode==MASK (alpha-cutout)
+    float    alphaCutoff  = 0.5f;
 };
 
 // Node hierarchy. glTF convention is kept (right-handed, +Y up, -Z forward,
@@ -132,6 +134,10 @@ struct ModelDrawable {
     uint32_t baseColorTexId = 0;         // -> rhi::TextureHandle{ } (0 == default white)
     uint32_t normalTexId   = 0;          // -> rhi::TextureHandle{ } (0 == none; PBR normal map)
     uint32_t mrTexId       = 0;          // -> rhi::TextureHandle{ } (0 == none; metallic-roughness)
+    bool     alphaMask     = false;      // glTF alphaMode==MASK: fragment is alpha-cutout (foliage/people)
+    bool     alphaBlend    = false;      // glTF alphaMode==BLEND: translucent (glass) -> blend pass
+    float    emissiveFactor[3] = {0, 0, 0};  // HDR-scaled emissive color (glowing edge strips etc.)
+    uint32_t emissiveTexId = 0;          // -> rhi::TextureHandle{ } (0 == none; emissive map)
     float    baseColorFactor[4] = {1, 1, 1, 1};
     float    nodeTransform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; // node world (column-major)
 };

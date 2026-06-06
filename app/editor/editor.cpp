@@ -4,6 +4,7 @@
 // subset we emit, plus pure selection/gizmo logic. No third-party JSON lib.
 #include "editor.h"
 
+#include "../mesh_prims.h"               // buildBrushMesh (B4 geometry assertion)
 #include "engine/core/x3_log.h"
 
 #include <cmath>
@@ -118,6 +119,22 @@ std::string LevelDoc::toJson() const {
         if (i + 1 < entities.size()) o << ",";
         o << "\n";
     }
+    o << "  ],\n";
+    // Level Architect P2 BLOCKOUT brushes (mirrors entities[]: same num()/vec3()/esc()
+    // helpers). type 0 = Box, 1 = Ramp. collide -> a static Jolt body on load.
+    o << "  \"brushes\": [\n";
+    for (size_t i = 0; i < brushes.size(); ++i) {
+        const BlockoutBrush& b = brushes[i];
+        o << "    { \"name\": \"" << esc(b.name) << "\""
+          << ", \"type\": " << (int)b.type
+          << ", \"pos\": " << vec3(b.pos)
+          << ", \"size\": " << vec3(b.size)
+          << ", \"yaw\": " << num(b.yaw)
+          << ", \"tint\": " << vec3(b.tint)
+          << ", \"collide\": " << (b.collide ? "1" : "0") << " }";
+        if (i + 1 < brushes.size()) o << ",";
+        o << "\n";
+    }
     o << "  ]\n";
     o << "}\n";
     return o.str();
@@ -169,6 +186,7 @@ struct JParse {
 bool LevelDoc::fromJson(const std::string& json) {
     JParse j{ json.c_str(), json.c_str() + json.size() };
     entities.clear();
+    brushes.clear();
     if (!j.eat('{')) return false;
     while (j.ok && j.peek() && j.peek() != '}') {
         std::string k = j.key();
@@ -192,6 +210,26 @@ bool LevelDoc::fromJson(const std::string& json) {
                 }
                 j.eat('}');
                 entities.push_back(e);
+            }
+            j.eat(']');
+        } else if (k == "brushes") {
+            if (!j.eat('[')) { return false; }
+            while (j.ok && j.peek() && j.peek() != ']') {
+                if (!j.eat('{')) break;
+                BlockoutBrush b;
+                while (j.ok && j.peek() && j.peek() != '}') {
+                    std::string bk = j.key();
+                    if (bk == "name")        b.name = j.str();
+                    else if (bk == "type")   b.type = (uint32_t)j.number();
+                    else if (bk == "pos")    j.vec3(b.pos);
+                    else if (bk == "size")   j.vec3(b.size);
+                    else if (bk == "yaw")    b.yaw = j.number();
+                    else if (bk == "tint")   j.vec3(b.tint);
+                    else if (bk == "collide") b.collide = (j.number() != 0.0f);
+                    else { /* skip unknown scalar */ j.str(); }
+                }
+                j.eat('}');
+                brushes.push_back(b);
             }
             j.eat(']');
         } else {
@@ -280,6 +318,50 @@ bool EditorState::deleteSelected() {
     if (!hasSelection()) return false;
     m_doc.entities.erase(m_doc.entities.begin() + m_selected);
     if (m_selected >= (int)m_doc.entities.size()) m_selected = (int)m_doc.entities.size() - 1;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Blockout brush ops (Level Architect P2). Pure doc mutation — the live host
+// (EditorHost) mirrors each change into the Scene + Jolt. Headless-testable.
+// ---------------------------------------------------------------------------
+void EditorState::selectBrush(int index) {
+    if (index < 0) { m_selKind = SelKind::None; m_selIndex = -1; return; }
+    if (index < (int)m_doc.brushes.size()) { m_selKind = SelKind::Brush; m_selIndex = index; }
+}
+
+int EditorState::addBrush(uint32_t type, const float pos[3]) {
+    BlockoutBrush b;
+    b.type = (type <= 1u) ? type : 0u;   // P2 core = Box(0) / Ramp(1)
+    b.name = std::string(b.type == 1u ? "ramp_" : "box_") + std::to_string(m_doc.brushes.size());
+    if (pos) for (int a = 0; a < 3; ++a) b.pos[a] = snapValue(pos[a]);
+    // Default 2 m cube, snapped (so a freshly placed brush already sits on the grid).
+    for (int a = 0; a < 3; ++a) b.size[a] = std::max(0.25f, snapValue(b.size[a]));
+    m_doc.brushes.push_back(b);
+    m_selKind = SelKind::Brush; m_selIndex = (int)m_doc.brushes.size() - 1;
+    return m_selIndex;
+}
+
+bool EditorState::resizeSelectedBrush(Axis axis, float delta) {
+    if (!hasBrushSelection() || axis == Axis::None || delta == 0.0f) return false;
+    int a = (axis == Axis::X) ? 0 : (axis == Axis::Y) ? 1 : 2;
+    float& s = m_doc.brushes[m_selIndex].size[a];
+    s = std::max(0.25f, snapValue(s + delta));
+    return true;
+}
+
+bool EditorState::moveSelectedBrush(Axis axis, float delta) {
+    if (!hasBrushSelection() || axis == Axis::None || delta == 0.0f) return false;
+    int a = (axis == Axis::X) ? 0 : (axis == Axis::Y) ? 1 : 2;
+    float& p = m_doc.brushes[m_selIndex].pos[a];
+    p = snapValue(p + delta);
+    return true;
+}
+
+bool EditorState::deleteSelectedBrush() {
+    if (!hasBrushSelection()) return false;
+    m_doc.brushes.erase(m_doc.brushes.begin() + m_selIndex);
+    m_selKind = SelKind::None; m_selIndex = -1;
     return true;
 }
 
@@ -385,7 +467,103 @@ bool runEditorSelfTest() {
         check(pal && men, "E6 Lab-Architect palette + UE-style menu data present");
     }
 
+    // ---- E7: blockout brushes[] JSON round-trip preserves the brushes. ----
+    {
+        LevelDoc bd; bd.name = "blockout";
+        { BlockoutBrush b; b.name="floor"; b.type=0; b.pos[0]=2; b.pos[1]=0; b.pos[2]=-3;
+          b.size[0]=8; b.size[1]=0.5f; b.size[2]=8; b.yaw=0.0f; b.collide=true; bd.brushes.push_back(b); }
+        { BlockoutBrush b; b.name="slope"; b.type=1; b.pos[0]=5; b.pos[1]=1; b.pos[2]=2;
+          b.size[0]=3; b.size[1]=2; b.size[2]=4; b.yaw=1.5708f; b.collide=false; bd.brushes.push_back(b); }
+        LevelDoc rt; bool parsed = rt.fromJson(bd.toJson());
+        bool same = parsed && rt.brushes.size() == 2 &&
+                    rt.brushes[0].name == "floor" && rt.brushes[0].type == 0u &&
+                    near(rt.brushes[0].size[0], 8.0f) && near(rt.brushes[0].pos[2], -3.0f) &&
+                    rt.brushes[0].collide == true &&
+                    rt.brushes[1].type == 1u && near(rt.brushes[1].yaw, 1.5708f) &&
+                    near(rt.brushes[1].size[1], 2.0f) && rt.brushes[1].collide == false;
+        check(same, "E7 blockout brushes[] JSON round-trip preserves type/pos/size/yaw/collide");
+    }
+
     x3::logInfo(std::string("[editor-test] ") + std::to_string(g_pass) + " passed, " +
+                std::to_string(g_fail) + " failed");
+    return g_fail == 0;
+}
+
+// ===========================================================================
+// Blockout self-test (--test-blockout). B0-B4. No window / Vulkan.
+// ===========================================================================
+bool runBlockoutSelfTest() {
+    g_pass = g_fail = 0;
+
+    // ---- B0: a brush round-trips through the brushes[] JSON (full fidelity). ----
+    {
+        LevelDoc doc; doc.name = "bt";
+        BlockoutBrush b; b.name="ramp_test"; b.type=1;
+        b.pos[0]=3.5f; b.pos[1]=1.25f; b.pos[2]=-7.0f;
+        b.size[0]=4.0f; b.size[1]=2.5f; b.size[2]=6.0f; b.yaw=0.7854f; b.collide=true;
+        doc.brushes.push_back(b);
+        LevelDoc rt; bool ok = rt.fromJson(doc.toJson());
+        bool same = ok && rt.brushes.size() == 1 &&
+                    rt.brushes[0].name == "ramp_test" && rt.brushes[0].type == 1u &&
+                    near(rt.brushes[0].pos[0], 3.5f) && near(rt.brushes[0].pos[1], 1.25f) &&
+                    near(rt.brushes[0].pos[2], -7.0f) &&
+                    near(rt.brushes[0].size[0], 4.0f) && near(rt.brushes[0].size[1], 2.5f) &&
+                    near(rt.brushes[0].size[2], 6.0f) && near(rt.brushes[0].yaw, 0.7854f) &&
+                    rt.brushes[0].collide == true;
+        check(same, "B0 brush round-trips (type/pos/size/yaw/collide preserved)");
+    }
+
+    // ---- B1: addBrush snaps the position to the grid + selects the new brush. ----
+    {
+        LevelDoc doc; EditorState ed(doc);
+        ed.setSnap(true, 0.5f);
+        float p[3] = { 2.3f, 0.1f, -4.7f };
+        int idx = ed.addBrush(/*Box*/0u, p);
+        bool ok = idx == 0 && doc.brushes.size() == 1 &&
+                  ed.selKind() == SelKind::Brush && ed.selIndex() == 0 &&
+                  near(doc.brushes[0].pos[0], 2.5f) &&   // 2.3 -> snap 2.5
+                  near(doc.brushes[0].pos[2], -4.5f);    // -4.7 -> snap -4.5
+        check(ok, "B1 addBrush snaps pos to grid + selects the brush");
+    }
+
+    // ---- B2: resizeSelectedBrush grows a face with grid snap + a min clamp. ----
+    {
+        LevelDoc doc; EditorState ed(doc);
+        ed.setSnap(true, 0.5f);
+        float p[3] = { 0, 0, 0 };
+        ed.addBrush(0u, p);                       // 2 m cube
+        ed.resizeSelectedBrush(Axis::X, 1.3f);    // 2 + 1.3 = 3.3 -> snap 3.5
+        bool grew = near(doc.brushes[0].size[0], 3.5f);
+        ed.resizeSelectedBrush(Axis::Y, -5.0f);   // 2 - 5 -> clamp 0.25
+        bool clamped = doc.brushes[0].size[1] >= 0.25f - 1e-3f && doc.brushes[0].size[1] < 0.5f;
+        check(grew && clamped, "B2 resizeSelectedBrush face-grows with snap + min clamp");
+    }
+
+    // ---- B3: a Box brush mesh is origin-CENTERED (bbox symmetric about 0). ----
+    {
+        float size[3] = { 4.0f, 2.0f, 6.0f };
+        x3::prims::PrimMesh m = x3::prims::buildBrushMesh(x3::prims::BrushType::Box, size);
+        float mn[3] = { 1e9f,1e9f,1e9f }, mx[3] = { -1e9f,-1e9f,-1e9f };
+        for (const auto& v : m.verts) for (int a=0;a<3;++a){ mn[a]=std::min(mn[a],v.pos[a]); mx[a]=std::max(mx[a],v.pos[a]); }
+        bool centered = near(mn[0],-2.0f) && near(mx[0],2.0f) &&
+                        near(mn[1],-1.0f) && near(mx[1],1.0f) &&
+                        near(mn[2],-3.0f) && near(mx[2],3.0f);
+        check(centered && !m.verts.empty(), "B3 Box brush mesh is origin-centered (transform carries pos)");
+    }
+
+    // ---- B4: Box + Ramp builders produce non-degenerate render + collision geo. ----
+    {
+        float size[3] = { 3.0f, 2.0f, 5.0f };
+        x3::prims::PrimMesh box  = x3::prims::buildBrushMesh(x3::prims::BrushType::Box,  size);
+        x3::prims::PrimMesh ramp = x3::prims::buildBrushMesh(x3::prims::BrushType::Ramp, size);
+        bool boxOk  = box.verts.size()  >= 8 && box.index.size()  % 3 == 0 &&
+                      box.cverts.size()  == box.verts.size()  * 3 && box.cindex.size()  == box.index.size();
+        bool rampOk = ramp.verts.size() >= 6 && ramp.index.size() % 3 == 0 &&
+                      ramp.cverts.size() == ramp.verts.size() * 3 && ramp.cindex.size() == ramp.index.size();
+        check(boxOk && rampOk, "B4 Box + Ramp meshes: valid render + matching collision geometry");
+    }
+
+    x3::logInfo(std::string("[blockout-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;
 }

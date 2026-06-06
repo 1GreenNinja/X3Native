@@ -14,14 +14,25 @@
 // This is the camera analogue of shadow.vert (which uses lightViewProj); here
 // the transform is cam.viewProj * model so the depth matches the main pass.
 
+// MUST match the std430 stride of mesh.vert's ObjectData (128 B) AND the C++ ObjectData
+// (VulkanRenderDevice.cpp, static_assert(sizeof==128)). The pre-pass and color pass share
+// the SAME per-object SSBO indexed by gl_InstanceIndex, so a smaller stride here reads the
+// WRONG row for every instance index > 0 -> depth.vert writes a different depth than
+// mesh.vert -> the color pass's EQUAL depth test discards every instance except SSBO row 0.
+// (The PBR slice grew this struct to 128 B in mesh.vert + C++ but missed depth.vert/shadow.vert.)
+// depth.vert only uses o.model; the 8 trailing uints exist solely to force stride = 128 B.
 struct ObjectData {
-    mat4 model;
-    vec4 baseColorFactor;
-    vec4 emissive;
-    uint texIndex;
+    mat4 model;          // 64
+    vec4 baseColorFactor;// 16
+    vec4 emissive;       // 16
+    uint texIndex;       // -- 8 uints = 32 B -> total 128 B
     uint _pad0;
     uint _pad1;
     uint _pad2;
+    uint _pad3;
+    uint _pad4;
+    uint _pad5;
+    uint _pad6;
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer Objects {
@@ -41,5 +52,8 @@ layout(location = 2) in vec2 inUV;       // unused
 
 void main() {
     ObjectData o = objBuf.objects[gl_InstanceIndex];
-    gl_Position = cam.viewProj * o.model * vec4(inPos, 1.0);
+    // Group the multiply EXACTLY as mesh.vert (worldPos first, then viewProj) so the
+    // floating-point depth is bit-invariant with the color pass and survives EQUAL.
+    vec4 worldPos = o.model * vec4(inPos, 1.0);
+    gl_Position = cam.viewProj * worldPos;
 }

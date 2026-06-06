@@ -12,7 +12,11 @@
     "joltphysics",
     "cgltf",
     "stb",
-    "miniaudio"
+    "miniaudio",
+    {
+      "name": "imgui",
+      "features": ["docking-experimental", "glfw-binding", "vulkan-binding"]
+    }
   ],
   "builtin-baseline": "f7f94113c3b629c01df3d49d5edebae6d598c78c",
   "overrides": []

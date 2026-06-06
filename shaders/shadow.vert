@@ -9,13 +9,23 @@
 // transform is lightViewProj * model — there is NO fragment shader (depth-only),
 // so this writes gl_Position and nothing else.
 
+// MUST match the std430 stride of mesh.vert's ObjectData (128 B) + the C++ ObjectData
+// (VulkanRenderDevice.cpp static_assert(sizeof==128)) — this pass shares the SAME per-object
+// SSBO indexed by gl_InstanceIndex. A smaller stride reads the WRONG row for every instance
+// index > 0 (was 96 B: missing `emissive` AND the PBR-slice trailing uints). shadow.vert only
+// uses o.model; the rest exist solely to force stride = 128 B.
 struct ObjectData {
-    mat4 model;
-    vec4 baseColorFactor;
-    uint texIndex;
+    mat4 model;          // 64
+    vec4 baseColorFactor;// 16
+    vec4 emissive;       // 16
+    uint texIndex;       // -- 8 uints = 32 B -> total 128 B
     uint _pad0;
     uint _pad1;
     uint _pad2;
+    uint _pad3;
+    uint _pad4;
+    uint _pad5;
+    uint _pad6;
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer Objects {
@@ -36,5 +46,6 @@ layout(location = 2) in vec2 inUV;       // unused
 
 void main() {
     ObjectData o = objBuf.objects[gl_InstanceIndex];
-    gl_Position = cam.lightViewProj * o.model * vec4(inPos, 1.0);
+    vec4 worldPos = o.model * vec4(inPos, 1.0);
+    gl_Position = cam.lightViewProj * worldPos;
 }

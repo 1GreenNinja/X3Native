@@ -20,7 +20,8 @@ struct ObjectData {
     uint terrainPack2;    // snow<<16  | sand detail bindless indices (was _pad2)
     uint normalTexIndex;  // 0 = none (PBR normal-map bindless idx) — used in mesh.frag (slice 2)
     uint mrTexIndex;      // 0 = none (metallic-roughness bindless idx)
-    uint _pad3, _pad4;    // keep std430 stride at 128 (matches C++ ObjectData)
+    uint emissiveTexIndex; // 0 = none (emissive bindless idx; was _pad3)
+    uint _pad4;            // keep std430 stride at 128 (matches C++ ObjectData)
 };
 
 layout(std430, set = 1, binding = 0) readonly buffer Objects {
@@ -58,6 +59,7 @@ layout(location = 6) flat out uint vTerrainFlag;
 layout(location = 7) flat out uvec2 vTerrainPack; // x = grass<<16|rock, y = snow<<16|sand
 layout(location = 8) flat out uint vNormalTexIndex; // 0 = none (PBR normal map)
 layout(location = 9) flat out uint vMrTexIndex;     // 0 = none (metallic-roughness)
+layout(location = 10) flat out uint vEmissiveTexIndex; // 0 = none (emissive map)
 
 void main() {
     ObjectData o = objBuf.objects[gl_InstanceIndex];
@@ -73,4 +75,5 @@ void main() {
     vTerrainPack = uvec2(o.terrainPack1, o.terrainPack2);
     vNormalTexIndex = o.normalTexIndex;
     vMrTexIndex = o.mrTexIndex;
+    vEmissiveTexIndex = o.emissiveTexIndex;
 }

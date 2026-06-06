@@ -47,6 +47,16 @@
 #include <VkBootstrap.h>
 #include <vk_mem_alloc.h>
 
+// Dear ImGui (docking) — EDITOR-ONLY. These headers + the GLFW/Vulkan backends are
+// referenced ONLY by the editor-UI methods (initEditorUI/beginEditorUI/endEditorUI/
+// shutdownEditorUI) and the editor-UI graph pass; nothing in the game/headless path
+// touches them. ImGui types stay inside THIS .cpp — IRenderDevice.h never sees them.
+// GLFW is forward-declared by imgui_impl_glfw.h (no GLFW include needed here; the
+// host passes the GLFWwindow* as void* across the IRenderDevice boundary).
+#include <imgui.h>
+#include <imgui_impl_glfw.h>     // vcpkg installs the backends flat in include/ (no backends/ prefix)
+#include <imgui_impl_vulkan.h>
+
 // PNG writer for captureFrame() (--screenshot). This is the ONLY translation unit
 // that defines STB_IMAGE_WRITE_IMPLEMENTATION (ModelLoader.cpp owns the matching
 // STB_IMAGE_IMPLEMENTATION for the reader — they are separate stb headers).
@@ -61,6 +71,7 @@
 #include <vector>
 #include <string>
 #include <cmath>
+#include <chrono>
 #include <fstream>
 #include <filesystem>
 #include <system_error>
@@ -87,8 +98,11 @@ class VulkanRenderDevice final : public IRenderDevice {
 public:
     bool init(const DeviceDesc& desc) override {
         m_vsync = desc.vsync;
-        m_width = desc.width; m_height = desc.height;
         m_headless = desc.headless;
+        // SSAA (headless only): render at outW*ssaa x outH*ssaa, box-downscale on capture.
+        m_ssaa  = (m_headless && desc.ssaa > 1) ? desc.ssaa : 1;
+        m_outW  = desc.width; m_outH = desc.height;
+        m_width = desc.width * m_ssaa; m_height = desc.height * m_ssaa;
 
         // ---- Instance ----
         vkb::InstanceBuilder ib;
@@ -156,6 +170,7 @@ public:
         //     this feature. (multiDrawIndirect not needed: drawCount == 1 per call.)
         VkPhysicalDeviceFeatures f10{};
         f10.drawIndirectFirstInstance = VK_TRUE;
+        f10.samplerAnisotropy = VK_TRUE;   // anisotropic filtering so grazing surfaces aren't blurry
 
         vkb::PhysicalDeviceSelector sel{ m_inst };
         sel.set_minimum_version(1,3)
@@ -233,6 +248,12 @@ public:
         if (!createGraphics()) return false;      // builds the shadow depth pipeline at the end
         if (!createHud()) return false;
         if (!createSky()) return false;           // analytic sky (open-world track, task A)
+        // Image-based lighting (IBL): build the env/irradiance/prefilter cubes + BRDF
+        // LUT objects (set 4 of the mesh pipeline). Default ON for ALL scenes; the
+        // actual bake from the sky runs lazily on the first frame (m_iblDirty). If
+        // this fails, IBL stays inactive and mesh.frag falls back to the flat ambient.
+        if (!createIbl()) { logError("[rhi] IBL init failed; falling back to flat ambient"); m_iblReady = false; }
+        else              { m_iblDirty = true; }
         // HDR pipeline + bloom: build the post pipelines (extent-independent) then
         // the HDR scene + bloom-mip targets at the current extent + their sets.
         if (!createPost()) return false;
@@ -276,6 +297,7 @@ public:
 
     void shutdown() override {
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        shutdownEditorUI();   // editor-only ImGui teardown (no-op if --editor was absent)
         destroyRt();          // RT AO pipelines/targets + AS module (no-op if never built)
         destroySkinning();
         destroyDebris();
@@ -284,6 +306,7 @@ public:
         destroyGi();
         destroySsao();
         destroyPost();
+        destroyIbl();
         destroySky();
         destroyHud();
         destroyGraphics();
@@ -314,6 +337,155 @@ public:
         m_surface = VK_NULL_HANDLE;
     }
 
+    // =====================================================================
+    // Editor UI (Dear ImGui, docking) — EDITOR-ONLY (Level Architect P0).
+    // None of these allocate or run unless the host calls initEditorUI() (only
+    // app/main.cpp does, and only with --editor). The game/headless paths never
+    // call them, so the shipping game is byte-for-byte unchanged. resolved imgui
+    // == vcpkg 1.92.8 (>= 1.90): fonts AUTO-UPLOAD on the first
+    // ImGui_ImplVulkan_RenderDrawData and PipelineRenderingCreateInfo is an
+    // InitInfo struct field — so NO explicit ImGui_ImplVulkan_CreateFontsTexture()
+    // call is needed (the pre-1.90 branch).
+    // =====================================================================
+    void initEditorUI(void* glfwWindow) override {
+        // A window handle is REQUIRED (the ImGui GLFW backend binds to it for input).
+        // A second call is a no-op. In the normal game/headless paths nothing calls
+        // this (only app/main.cpp, and only with --editor) so the shipping game is
+        // untouched. Headless WITH a window is the --screenshot-editor proof path:
+        // ImGui renders into the offscreen color image (colorTargetView in the graph
+        // pass resolves to the offscreen view in headless), so the proof verifies the
+        // integration rasterizes without a display.
+        if (m_imguiInit || !glfwWindow) return;
+
+        // (1) DEDICATED descriptor pool for ImGui's font + per-texture image samplers.
+        // FREE_DESCRIPTOR_SET so ImGui can free/realloc sets. imgui 1.92.8 SPLITS its
+        // texture binding into separate SAMPLER + SAMPLED_IMAGE descriptors (no longer
+        // a single COMBINED_IMAGE_SAMPLER), so the pool MUST declare all three types or
+        // validation warns (AllocateDescriptorSets-WrongType) and a strict driver could
+        // return OUT_OF_POOL_MEMORY. 1000 of each is ImGui's documented generous cap.
+        // This pool is NEVER shared with the bindless/HUD pools (sharing would corrupt
+        // them).
+        {
+            VkDescriptorPoolSize ps[] = {
+                { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000 },
+                { VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,          1000 },
+                { VK_DESCRIPTOR_TYPE_SAMPLER,                1000 },
+            };
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+            pci.maxSets = 1000;
+            pci.poolSizeCount = static_cast<uint32_t>(std::size(ps));
+            pci.pPoolSizes = ps;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_imguiPool) != VK_SUCCESS) {
+                logError("[rhi] editor UI: ImGui descriptor pool create failed");
+                return;
+            }
+        }
+
+        // (2) ImGui context + DOCKING (NOT multi-viewport yet — ViewportsEnable would
+        // spawn secondary swapchains the device does not manage; deferred to a later
+        // 2nd-monitor piece).
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+        ImGui::StyleColorsDark();
+
+        // (3) GLFW backend, install_callbacks=true => ImGui CHAINS the game's existing
+        // GLFW key/char/scroll/mouse callbacks (so gameplay input still fires; the host
+        // gates viewport input on editorWantsInput()/WantCaptureMouse/Keyboard).
+        ImGui_ImplGlfw_InitForVulkan(static_cast<GLFWwindow*>(glfwWindow), true);
+
+        // (4) Vulkan backend, sharing the device's OWN handles + dynamic rendering with
+        // the SAME color format as the composite/HUD pass (m_format) so ImGui composites
+        // correctly onto the LDR composited image. No render pass object (dynamic
+        // rendering); depth UNDEFINED (the editor-UI pass has no depth attachment).
+        const uint32_t imageCount = static_cast<uint32_t>(
+            m_swapImages.empty() ? 2u : m_swapImages.size());
+
+        // imgui 1.92.8 (2025/09/26+) moved RenderPass/MSAASamples/PipelineRenderingCreateInfo
+        // into the PipelineInfoMain sub-struct (the old top-level fields are removed). Use
+        // PipelineInfoMain.PipelineRenderingCreateInfo with the SAME color format as the
+        // composite/HUD pass (m_format) + depth UNDEFINED (the editor-UI pass has no depth).
+        VkPipelineRenderingCreateInfoKHR prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR };
+        prci.colorAttachmentCount = 1;
+        prci.pColorAttachmentFormats = &m_format;
+        prci.depthAttachmentFormat = VK_FORMAT_UNDEFINED;
+
+        ImGui_ImplVulkan_InitInfo init{};
+        init.ApiVersion      = VK_API_VERSION_1_3;
+        init.Instance        = m_inst.instance;
+        init.PhysicalDevice  = m_dev.physical_device;
+        init.Device          = m_dev.device;
+        init.QueueFamily     = m_gfxFamily;
+        init.Queue           = m_gfxQueue;
+        init.DescriptorPool  = m_imguiPool;
+        init.MinImageCount   = imageCount;
+        init.ImageCount      = imageCount;
+        init.UseDynamicRendering = true;
+        init.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+        init.PipelineInfoMain.PipelineRenderingCreateInfo = prci;
+        if (!ImGui_ImplVulkan_Init(&init)) {
+            logError("[rhi] editor UI: ImGui_ImplVulkan_Init failed");
+            ImGui_ImplGlfw_Shutdown();
+            ImGui::DestroyContext();
+            vkDestroyDescriptorPool(m_dev.device, m_imguiPool, nullptr);
+            m_imguiPool = VK_NULL_HANDLE;
+            return;
+        }
+        // imgui 1.92.8 (>= 1.90): the font atlas auto-uploads on the first
+        // RenderDrawData, so no ImGui_ImplVulkan_CreateFontsTexture() call here.
+
+        m_imguiInit = true;
+        logInfo("[rhi] editor UI: Dear ImGui (docking) initialized (imgui 1.92.8, "
+                "dynamic-rendering, dedicated descriptor pool)");
+    }
+
+    void beginEditorUI() override {
+        if (!m_imguiInit) return;
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+        // Phase 1: the device only opens the docking ROOT here. The EditorHost (app/
+        // editor) submits all panels between beginEditorUI() and endEditorUI(). (P0's
+        // device-side dockspace + demo window have moved out to the host.) Pass-through
+        // central node so the live scene shows through the dockspace background.
+        ImGui::DockSpaceOverViewport(0, ImGui::GetMainViewport(),
+                                     ImGuiDockNodeFlags_PassthruCentralNode);
+    }
+
+    void endEditorUI() override {
+        if (!m_imguiInit) return;
+        // CPU draw-data build OUTSIDE the command buffer; the editor-UI graph pass in
+        // buildAndExecuteGraph() records ImGui_ImplVulkan_RenderDrawData against this.
+        // Must run BEFORE endFrame() so the draw data exists when the graph records.
+        ImGui::Render();
+        m_editorDrawData = ImGui::GetDrawData();
+    }
+
+    void shutdownEditorUI() override {
+        if (!m_imguiInit) return;
+        if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        ImGui_ImplVulkan_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+        if (m_imguiPool) {
+            vkDestroyDescriptorPool(m_dev.device, m_imguiPool, nullptr);
+            m_imguiPool = VK_NULL_HANDLE;
+        }
+        m_imguiInit = false;
+        m_editorDrawData = nullptr;
+    }
+
+    void editorWantsInput(bool& mouse, bool& kbd) const override {
+        if (!m_imguiInit) { mouse = false; kbd = false; return; }
+        const ImGuiIO& io = ImGui::GetIO();
+        mouse = io.WantCaptureMouse;
+        kbd   = io.WantCaptureKeyboard;
+    }
+
+    bool editorUIActive() const override { return m_imguiInit; }
+
     void onResize(uint32_t w, uint32_t h) override {
         if (w == 0 || h == 0) return;
         m_width = w; m_height = h;
@@ -334,6 +506,27 @@ public:
         m_camYaw = yaw; m_camPitch = pitch; m_camFov = fovDeg;
     }
 
+    void setAmbient(float r, float g, float b) override { m_ambient = glm::vec3(r, g, b); }
+
+    void setBloom(float intensity) override { m_bloomIntensity = intensity; }
+
+    // Whole-scene brightness: pre-tonemap exposure multiplier in the composite pass.
+    void setExposure(float e) override { m_exposure = (e > 0.0f) ? e : 1.0f; }
+
+    void setShadowBounds(float cx, float cy, float cz, float halfExtent) override {
+        m_shadowOverride  = true;
+        m_shadowCenter    = glm::vec3(cx, cy, cz);
+        m_shadowOrtho     = halfExtent;
+        m_shadowDepthHalf = halfExtent * 1.6f;   // deep enough for tall geometry + sun setback
+    }
+
+    // Interior reflection probe: when ON, the IBL environment cube is baked from the
+    // SCENE geometry (around the camera) instead of the analytic sky, so glossy metals
+    // reflect the dim interior rather than the bright open sky (which blows them out).
+    void setIblProbe(bool enable) override {
+        if (m_iblProbeScene != enable) { m_iblProbeScene = enable; m_iblDirty = true; }
+    }
+
     void setPointLights(const PointLight* lights, uint32_t count) override {
         // Copy a clamped snapshot (we never retain the caller's pointer). The
         // cached set is re-uploaded into each frame's UBO by prepareFrameData, so
@@ -346,8 +539,16 @@ public:
         // Cache a snapshot; prepareFrameData() writes it into the per-frame sky UBO
         // and ensureMainPass() draws the full-screen sky when enabled. Disabled by
         // default, so indoor levels + every existing flag are unchanged.
+        // IBL: if any sky term that feeds the environment radiance changed, flag the
+        // IBL chain dirty so it rebakes the irradiance/prefilter cubes next frame.
+        if (std::memcmp(&m_sky, &sp, sizeof(SkyParams)) != 0) m_iblDirty = true;
         m_sky = sp;
     }
+
+    // Global sky-animation time (seconds). Cached + written into the sky UBO's
+    // params.z by prepareFrameData(), driving the starfield rotation + any future
+    // time-driven celestial motion. Live loop passes elapsed; screenshots a fixed value.
+    void setSkyTime(float t) override { m_skyTime = t; }
 
     // Project a world point -> HUD pixel coords (top-left origin) using the cached render
     // viewProj. false if behind the camera / well off-screen. For monster health bars etc.
@@ -476,6 +677,7 @@ public:
         // overwrite its per-frame object SSBO / camera UBO / indirect rings and to
         // recycle the HUD descriptor pool + HUD vertex ring.
         m_drawRecords.clear();
+        m_planetDraws.clear();   // planet body draws (FORGE3D port) reset per frame
         // Particle/decal per-frame staging (capacity persists -> no heap churn).
         m_partAdd.clear();
         m_partAlpha.clear();
@@ -492,7 +694,7 @@ public:
         // (m_frameIdx is stable across the frame, so the uploaded palette slot matches
         // the slot the dispatch reads.)
         m_framePrepared = false;
-        m_frameCmdCount = 0;
+        m_frameCmdCount = 0; m_frameCmdOpaque = 0;
         if (fr.hudDescPool) vkResetDescriptorPool(m_dev.device, fr.hudDescPool, 0);
         fr.hudVertsUsed = 0;
 
@@ -535,17 +737,22 @@ public:
     // follows the camera so the visible ~60 m level is always covered. Matches the
     // sun L in mesh.frag: normalize(0.4, 1.0, 0.3).
     glm::mat4 computeLightViewProj() const {
-        const glm::vec3 sunDir = glm::normalize(glm::vec3(0.4f, 1.0f, 0.3f));
-        const glm::vec3 center = m_camPos;
-        const glm::vec3 eye = center + sunDir * kShadowDepthHalf;
+        // Per-scene sun: rake the shadow box along the SAME direction the sky disk +
+        // mesh.frag lighting use (m_sky.sunDir; defaults to (0.4,1,0.3) when no sky is set,
+        // so Level1's shadows are unchanged).
+        const glm::vec3 sunDir = glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2]));
+        // Default: ~45 m box following the camera (Level1). Override (setShadowBounds): a fixed
+        // box on a scene AABB so large scenes (showroom) fall inside the shadow map.
+        const glm::vec3 center = m_shadowOverride ? m_shadowCenter : m_camPos;
+        const float     ortho  = m_shadowOverride ? m_shadowOrtho : kShadowOrtho;
+        const float     dHalf  = m_shadowOverride ? m_shadowDepthHalf : kShadowDepthHalf;
+        const glm::vec3 eye = center + sunDir * dHalf;
         // Up vector not parallel to sunDir.
         const glm::vec3 up = glm::vec3(0.0f, 1.0f, 0.0f);
         glm::vec3 upPick = (std::abs(glm::dot(sunDir, up)) > 0.99f) ? glm::vec3(0,0,1) : up;
         glm::mat4 view = glm::lookAt(eye, center, upPick);
         // Ortho with Vulkan's [0,1] Z (GLM_FORCE_DEPTH_ZERO_TO_ONE), reverse-Y clip.
-        glm::mat4 proj = glm::ortho(-kShadowOrtho, kShadowOrtho,
-                                    -kShadowOrtho, kShadowOrtho,
-                                    0.0f, 2.0f * kShadowDepthHalf);
+        glm::mat4 proj = glm::ortho(-ortho, ortho, -ortho, ortho, 0.0f, 2.0f * dHalf);
         proj[1][1] *= -1.0f;
         return proj * view;
     }
@@ -580,6 +787,57 @@ public:
         // the composite pass, so it composites on the final LDR image (not bloomed
         // and not double-tonemapped).
         recordMeshDraws(cmd);
+
+        // Planet bodies (FORGE3D port): drawn AFTER the opaque meshes (so they
+        // composite against the established opaque depth), before transparent/HUD.
+        // Dedicated pipeline + push constant; no-op when no planet was submitted.
+        recordPlanetDraws(cmd);
+    }
+
+    // Record the queued planet body draws into the (already-open) main color pass.
+    // Reuses the mesh path's set0 (bindless textures) + set1 (object SSBO + camera
+    // UBO) descriptor sets — rebinding them to the planet pipeline layout (which
+    // declares the SAME set0/set1 layouts) so the bind is valid even though we just
+    // bound them for the mesh path. Per planet: push the model + texture indices,
+    // bind the sphere's vertex/index buffers, and one indexed draw.
+    void recordPlanetDraws(VkCommandBuffer cmd) {
+        if (m_planetDraws.empty() || !m_planetPipelines[PT_Moon]) return;
+        auto& fr = m_frames[m_frameIdx];
+        // set0 = bindless textures, set1 = object SSBO (unused) + camera UBO. All
+        // per-type pipelines share m_planetPipelineLayout, so bind the sets ONCE.
+        VkDescriptorSet sets[2] = { m_bindlessSet, fr.objSet };
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_planetPipelineLayout,
+                                0, 2, sets, 0, nullptr);
+        // Single per-draw emitter (resolve mesh + pipeline, push constants, draw).
+        auto emit = [&](const PlanetDraw& pd) {
+            auto mit = m_meshes.find(pd.meshId);
+            if (mit == m_meshes.end()) return;
+            uint32_t ti = pd.typeIndex < (uint32_t)PT_Count ? pd.typeIndex : (uint32_t)PT_Moon;
+            VkPipeline pipe = m_planetPipelines[ti];
+            if (!pipe) pipe = m_planetPipelines[PT_Moon];   // fall back to Moon if a type failed
+            const Mesh& mh = mit->second;
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+            PlanetPush push{};
+            std::memcpy(push.model, pd.model, sizeof(push.model));
+            std::memcpy(push.tex, pd.tex, sizeof(push.tex));
+            push.uTime = pd.uTime;
+            vkCmdPushConstants(cmd, m_planetPipelineLayout,
+                               VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                               0, sizeof(PlanetPush), &push);
+            VkDeviceSize off = 0;
+            VkBuffer vb = mh.drawVbo(m_frameIdx);
+            vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &off);
+            vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexed(cmd, mh.indexCount, 1, 0, 0, 0);
+        };
+        // PASS 1: opaque bodies (typeIndex < PT_OpaqueCount) establish color + depth.
+        for (const PlanetDraw& pd : m_planetDraws)
+            if (pd.typeIndex < (uint32_t)PT_OpaqueCount) emit(pd);
+        // PASS 2: transparent glow layers (atmosphere / corona / ring) composite OVER
+        // the bodies (depth-test LEQUAL, depth-write OFF), so they read against the
+        // bodies' depth without occluding each other.
+        for (const PlanetDraw& pd : m_planetDraws)
+            if (pd.typeIndex >= (uint32_t)PT_OpaqueCount) emit(pd);
     }
 
     void endFrame(const FrameContext& fc) override {
@@ -597,6 +855,13 @@ public:
         // begin/end-rendering are hand-coded in this per-frame path anymore.
         // ===================================================================
         prepareFrameData();  // fill camera/light/sky UBO + SSBO + indirect (data only)
+
+        // ---- IBL rebake (default ON): if the sky changed (or first frame), rebuild
+        // the irradiance/prefilter cubes from the analytic sky on a one-time submit
+        // (its own fence) that completes BEFORE this frame's command buffer runs, so
+        // mesh.frag set 4 samples a valid environment. Cheap + rare (only on sky
+        // change), so per-frame cost is just the three texture fetches in the shader.
+        if (m_iblReady && m_iblDirty) regenIblFromSky();
 
         // ---- Hardware ray-tracing (RT AO) build, gated + default OFF ----------
         // Only when r_rtao is on AND the device supports RT: lazily build the RT-AO
@@ -774,6 +1039,29 @@ public:
             if (bgra) { d[0] = s[2]; d[1] = s[1]; d[2] = s[0]; }
             else      { d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; }
             d[3] = 255;  // force opaque (swapchain alpha is undefined for display)
+        }
+        // SSAA: box-downscale each ssaa x ssaa block of the supersampled render to one output
+        // texel (true supersampling — antialiases geometry edges + texture detail, no softening).
+        if (m_ssaa > 1 && (W % m_ssaa) == 0 && (H % m_ssaa) == 0) {
+            const uint32_t ow = W / m_ssaa, oh = H / m_ssaa, n = m_ssaa * m_ssaa;
+            std::vector<uint8_t> out((size_t)ow * oh * 4);
+            for (uint32_t y = 0; y < oh; ++y)
+                for (uint32_t x = 0; x < ow; ++x) {
+                    uint32_t a0 = 0, a1 = 0, a2 = 0;
+                    for (uint32_t sy = 0; sy < m_ssaa; ++sy)
+                        for (uint32_t sx = 0; sx < m_ssaa; ++sx) {
+                            const uint8_t* s = rgba.data() + (((size_t)(y * m_ssaa + sy)) * W + (x * m_ssaa + sx)) * 4;
+                            a0 += s[0]; a1 += s[1]; a2 += s[2];
+                        }
+                    uint8_t* d = out.data() + (((size_t)y) * ow + x) * 4;
+                    d[0] = (uint8_t)(a0 / n); d[1] = (uint8_t)(a1 / n); d[2] = (uint8_t)(a2 / n); d[3] = 255;
+                }
+            const int rcd = stbi_write_png(path, (int)ow, (int)oh, 4, out.data(), (int)(ow * 4));
+            if (rcd == 0) { logError(std::string("[rhi] captureFrame: PNG write failed: ") + path); return false; }
+            logInfo(std::string("[rhi] captureFrame: wrote ") + path + " (" + std::to_string(ow) + "x" +
+                    std::to_string(oh) + " <- " + std::to_string(W) + "x" + std::to_string(H) + " SSAA " +
+                    std::to_string(m_ssaa) + "x)");
+            return true;
         }
         const int rc = stbi_write_png(path, (int)W, (int)H, 4, rgba.data(), (int)(W * 4));
         if (rc == 0) { logError(std::string("[rhi] captureFrame: PNG write failed: ") + path); return false; }
@@ -1066,7 +1354,7 @@ public:
     void drawMeshPBR(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                      TextureHandle normal, TextureHandle metalRough,
                      const float baseColorFactor[4], const float emissive[4],
-                     const float model[16]) override {
+                     const float model[16], bool alphaMask = false, bool alphaBlend = false, TextureHandle emissiveTex = {}) override {
         if (!fc.valid || !m_meshPipeline) return;
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
@@ -1104,20 +1392,56 @@ public:
 
         DrawRecord r;
         r.meshId      = mesh.id;
-        r.texIndex    = texIndex;
+        // texIndex high bits flag material alpha mode for the fragment shader (bindless indices
+        // are < kMaxTextures = 4096, so bits 30/31 are free): bit31 = MASK (alpha-cutout discard),
+        // bit30 = BLEND (apply the glass-opacity floor). mesh.frag masks them off before sampling.
+        r.texIndex    = texIndex | (alphaMask ? 0x80000000u : 0u) | (alphaBlend ? 0x40000000u : 0u);
         r.terrainFlag = terrainFlag;
         // Pack the four detail indices into two uints: pad1 = grass<<16 | rock,
         // pad2 = snow<<16 | sand (each well under 65535 — kMaxTextures = 4096).
         r.terrainPack1 = (m_terrainTexIdx[0] << 16) | (m_terrainTexIdx[1] & 0xFFFFu);
         r.terrainPack2 = (m_terrainTexIdx[2] << 16) | (m_terrainTexIdx[3] & 0xFFFFu);
-        r.normalTexIndex = normalIdx;
-        r.mrTexIndex     = mrIdx;
+        uint32_t emisIdx = 0;
+        if (emissiveTex.valid()) {
+            auto it = m_textures.find(emissiveTex.id);
+            if (it != m_textures.end()) emisIdx = it->second.bindlessIndex;
+        }
+        r.normalTexIndex   = normalIdx;
+        r.mrTexIndex       = mrIdx;
+        r.emissiveTexIndex = emisIdx;
+        r.alphaBlend       = alphaBlend;
         std::memcpy(r.model, model, sizeof(r.model));
         if (baseColorFactor) std::memcpy(r.factor, baseColorFactor, sizeof(r.factor));
         else { r.factor[0] = r.factor[1] = r.factor[2] = r.factor[3] = 1.0f; }
         if (emissive) std::memcpy(r.emissive, emissive, sizeof(r.emissive));
         else { r.emissive[0] = r.emissive[1] = r.emissive[2] = r.emissive[3] = 0.0f; }
         m_drawRecords.push_back(r);
+    }
+
+    // ---- Procedural planet body (FORGE3D port) -----------------------------
+    // Queue a planet draw for THIS frame: resolve each TextureHandle to its
+    // bindless index (same map lookup drawMeshPBR uses), confirm the mesh exists,
+    // and push a PlanetDraw entry. The actual draw is recorded in recordMainPassBody
+    // AFTER the opaque mesh multidraw (dedicated planet pipeline + push constant).
+    void drawPlanet(const FrameContext& fc, MeshHandle mesh, const float model[16],
+                    uint32_t typeIndex, const TextureHandle* maps, uint32_t mapCount,
+                    float uTime) override {
+        if (!fc.valid || !m_planetPipelines[PT_Moon] || !model) return;
+        if (m_meshes.find(mesh.id) == m_meshes.end()) return; // unknown mesh -> skip
+        auto idx = [this](TextureHandle h) -> uint32_t {
+            if (!h.valid()) return 0;                         // 0 == built-in white
+            auto it = m_textures.find(h.id);
+            return it != m_textures.end() ? it->second.bindlessIndex : 0u;
+        };
+        PlanetDraw pd{};
+        std::memcpy(pd.model, model, sizeof(pd.model));
+        uint32_t n = (mapCount > 12u) ? 12u : mapCount;       // clamp to the 12 slots
+        for (uint32_t i = 0; i < 12u; ++i)
+            pd.tex[i] = (maps && i < n) ? idx(maps[i]) : 0u;  // resolve; zero the rest
+        pd.uTime     = uTime;
+        pd.typeIndex = (typeIndex < (uint32_t)PT_Count) ? typeIndex : (uint32_t)PT_Moon;
+        pd.meshId    = mesh.id;
+        m_planetDraws.push_back(pd);
     }
 
     // ---- Screen-space 2D HUD overlay (S7) ----------------------------------
@@ -1348,8 +1672,9 @@ private:
         glm::vec4 ambientCount;      // offset 128: rgb = ambient color, w = light count (as float)
         GpuPointLight lights[kMaxPointLights]; // offset 144
         glm::vec4 camPos;            // xyz = camera world position (PBR view vector); w unused
+        glm::vec4 sunDir;            // xyz = per-scene direction TOWARD the sun (lighting + shadows)
     };
-    static_assert(sizeof(FrameUBO) == 144 + kMaxPointLights * 32 + 16,
+    static_assert(sizeof(FrameUBO) == 144 + kMaxPointLights * 32 + 32,
                   "FrameUBO must match the std140 layout in mesh.frag");
 
     // ---- Analytic sky UBO (open-world track, task A) -----------------------
@@ -1363,8 +1688,10 @@ private:
         glm::vec4 sunDir;        // offset 80: xyz = normalized toward-sun direction
         glm::vec4 sunColor;      // offset 96: rgb = sun color, a = intensity
         glm::vec4 params;        // offset 112: x = haze, y = exposure, z/w reserved
+        glm::vec4 zenith;        // offset 128: rgb = overhead sky color (per-scene)
+        glm::vec4 horizon;       // offset 144: rgb = horizon glow color (per-scene)
     };
-    static_assert(sizeof(SkyUBO) == 128, "SkyUBO must match the std140 layout in sky.frag");
+    static_assert(sizeof(SkyUBO) == 160, "SkyUBO must match the std140 layout in sky.frag");
 
     // Per-object GPU row (matches shaders/mesh.vert ObjectData; std430). The 3
     // uint pads keep the struct 16-byte aligned after texIndex so std430's mat4
@@ -1379,7 +1706,8 @@ private:
         uint32_t  _pad0, _pad1, _pad2;       // pad0 = terrainFlag, pad1/2 = packed terrain detail idx
         uint32_t  normalTexIndex;            // 0 = none (PBR normal-map bindless idx)
         uint32_t  mrTexIndex;                // 0 = none (metallic-roughness bindless idx)
-        uint32_t  _pad3, _pad4;              // keep this row 16-byte aligned (std430 stride 128)
+        uint32_t  emissiveTexIndex;          // 0 = none (emissive bindless idx; was _pad3)
+        uint32_t  _pad4;                     // keep this row 16-byte aligned (std430 stride 128)
     };
     static_assert(sizeof(ObjectData) == 128, "ObjectData must match std430 layout");
 
@@ -1395,6 +1723,8 @@ private:
         uint32_t terrainPack2;  // snow<<16  | sand
         uint32_t normalTexIndex = 0;  // 0 = none (PBR normal-map bindless idx)
         uint32_t mrTexIndex     = 0;  // 0 = none (metallic-roughness bindless idx)
+        uint32_t emissiveTexIndex = 0; // 0 = none (emissive bindless idx)
+        bool     alphaBlend = false;   // glTF BLEND -> blend batch (CPU partition)
     };
 
     // Per-frame mesh-draw capacity: sizes the per-object SSBO ring (one
@@ -1519,7 +1849,7 @@ private:
     void prepareFrameData() {
         if (m_framePrepared) return;
         m_framePrepared = true;
-        m_frameCmdCount = 0;
+        m_frameCmdCount = 0; m_frameCmdOpaque = 0;
 
         auto& fr = m_frames[m_frameIdx];
         if (!fr.objMapped || !fr.indirectMapped || !fr.camMapped) return;
@@ -1558,6 +1888,9 @@ private:
             const float invW = (m_extent.width  > 0) ? 1.0f / (float)m_extent.width  : 0.0f;
             const float invH = (m_extent.height > 0) ? 1.0f / (float)m_extent.height : 0.0f;
             sc.ctrl = glm::vec4(m_ssao.enabled ? 1.0f : 0.0f, m_ssao.strength, invW, invH);
+            // IBL lane: valid only once an environment has been baked into the cubes.
+            const float iblValid = (m_iblReady && m_iblBaked) ? 1.0f : 0.0f;
+            sc.ibl = glm::vec4(iblValid, 1.0f, (float)(kIblPrefilterMips - 1), 0.0f);
             if (m_ssaoCtrlMapped[m_frameIdx])
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
         }
@@ -1628,6 +1961,8 @@ private:
             ubo.lights[i].colorPad = glm::vec4(s.color[0], s.color[1], s.color[2], 0.0f);
         }
         ubo.camPos = glm::vec4(m_camPos, 0.0f);   // PBR view vector (mesh.frag)
+        // Per-scene sun direction for lighting + shadows (same source as the sky disk).
+        ubo.sunDir = glm::vec4(glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2])), 0.0f);
         std::memcpy(fr.camMapped, &ubo, sizeof(FrameUBO));
 
         // Analytic sky UBO (open-world track, task A): the camera's INVERSE viewProj
@@ -1642,7 +1977,9 @@ private:
             glm::vec3 sd = glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2]));
             sky.sunDir   = glm::vec4(sd, 0.0f);
             sky.sunColor = glm::vec4(m_sky.sunColor[0], m_sky.sunColor[1], m_sky.sunColor[2], m_sky.sunIntensity);
-            sky.params   = glm::vec4(m_sky.haze, m_sky.exposure, 0.0f, 0.0f);
+            sky.params   = glm::vec4(m_sky.haze, m_sky.exposure, m_skyTime, 0.0f);
+            sky.zenith   = glm::vec4(m_sky.zenith[0], m_sky.zenith[1], m_sky.zenith[2], 0.0f);
+            sky.horizon  = glm::vec4(m_sky.horizon[0], m_sky.horizon[1], m_sky.horizon[2], 0.0f);
             std::memcpy(fr.skyMapped, &sky, sizeof(SkyUBO));
         }
 
@@ -1758,12 +2095,16 @@ private:
         VkDrawIndexedIndirectCommand* cmds =
             static_cast<VkDrawIndexedIndirectCommand*>(fr.indirectMapped);
         uint32_t row = 0, cmdCount = 0;
-        for (uint32_t mid : m_groupOrder) {
+        // Emit one indirect cmd + its SSBO rows for a mesh group. Run in TWO passes so OPAQUE
+        // groups are recorded first and BLEND (glass) groups last — the shadow/depth-prepass
+        // replay only [0, m_frameCmdOpaque), and the color pass draws the blend tail with the
+        // transparent pipeline AFTER opaque has established depth.
+        auto emitGroup = [&](uint32_t mid) {
             auto mit = m_meshes.find(mid);
-            if (mit == m_meshes.end()) continue;
+            if (mit == m_meshes.end()) return;
             const std::vector<uint32_t>& list = m_groups[mid];
-            if (list.empty()) continue;
-            if (cmdCount >= kMaxDrawMeshes) break;
+            if (list.empty()) return;
+            if (cmdCount >= kMaxDrawMeshes) return;
             const uint32_t baseRow = row;
             for (uint32_t ri : list) {
                 const DrawRecord& dr = m_drawRecords[ri];
@@ -1772,14 +2113,13 @@ private:
                 o.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
                 o.emissive = glm::vec4(dr.emissive[0], dr.emissive[1], dr.emissive[2], dr.emissive[3]);
                 o.texIndex = dr.texIndex;
-                // Reuse the previously-reserved pads: pad0 = terrain flag, pad1/pad2
-                // = the four packed detail-texture indices (see mesh.{vert,frag}).
                 o._pad0 = dr.terrainFlag;
                 o._pad1 = dr.terrainPack1;
                 o._pad2 = dr.terrainPack2;
-                o.normalTexIndex = dr.normalTexIndex;
-                o.mrTexIndex     = dr.mrTexIndex;
-                o._pad3 = 0; o._pad4 = 0;
+                o.normalTexIndex   = dr.normalTexIndex;
+                o.mrTexIndex       = dr.mrTexIndex;
+                o.emissiveTexIndex = dr.emissiveTexIndex;
+                o._pad4 = 0;
             }
             VkDrawIndexedIndirectCommand& c = cmds[cmdCount];
             c.indexCount    = mit->second.indexCount;
@@ -1792,7 +2132,14 @@ private:
             m_building.drawCalls += 1;
             m_building.objectsDrawn += (uint32_t)list.size();
             m_building.triangles += (mit->second.indexCount / 3) * (uint32_t)list.size();
-        }
+        };
+        auto isBlendGroup = [&](uint32_t mid) {
+            auto it = m_groups.find(mid);
+            return it != m_groups.end() && !it->second.empty() && m_drawRecords[it->second[0]].alphaBlend;
+        };
+        for (uint32_t mid : m_groupOrder) if (!isBlendGroup(mid)) emitGroup(mid);  // OPAQUE first
+        m_frameCmdOpaque = cmdCount;                                               // [0,opaque) | [opaque,count)
+        for (uint32_t mid : m_groupOrder) if ( isBlendGroup(mid)) emitGroup(mid);  // BLEND (glass) last
         m_frameCmdCount = cmdCount;
     }
 
@@ -1820,7 +2167,7 @@ private:
             // set 0 = object SSBO + camera UBO (shadow.vert reads lightViewProj).
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowLayout,
                                     0, 1, &fr.objSet, 0, nullptr);
-            for (uint32_t i = 0; i < m_frameCmdCount; ++i) {
+            for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
                 const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
                 VkDeviceSize off = 0;
                 VkBuffer vb = mh.drawVbo(m_frameIdx); // fix 2: per-frame dynamic vbo
@@ -1848,7 +2195,7 @@ private:
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_depthPrePipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowLayout,
                                 0, 1, &fr.objSet, 0, nullptr);
-        for (uint32_t i = 0; i < m_frameCmdCount; ++i) {
+        for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
             const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
             VkDeviceSize off = 0;
             VkBuffer vb = mh.drawVbo(m_frameIdx);
@@ -1876,11 +2223,15 @@ private:
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           prePassOn ? m_meshPipeline : m_meshPipelineNoSsao);
         // set 0 = bindless textures, set 1 = object SSBO + camera UBO, set 2 = shadow
-        // map, set 3 = the SSAO AO texture + control UBO (this frame's set).
-        VkDescriptorSet sets[4] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx] };
+        // map, set 3 = the SSAO AO texture + control UBO (this frame's set), set 4 =
+        // IBL (irradiance + prefilter cubes + BRDF LUT). set 4 is always bound when
+        // the IBL objects exist (they're cleared to neutral at init + rebaked on sky
+        // change); mesh.frag gates the IBL math on the SSAO-ctrl ibl.x valid flag, so
+        // an un-baked / failed env safely falls back to the flat ambient term.
+        VkDescriptorSet sets[5] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx], m_iblMeshSet };
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshLayout,
-                                0, 4, sets, 0, nullptr);
-        for (uint32_t i = 0; i < m_frameCmdCount; ++i) {
+                                0, 5, sets, 0, nullptr);
+        for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
             const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
             VkDeviceSize off = 0;
             VkBuffer vb = mh.drawVbo(m_frameIdx); // fix 2: per-frame dynamic vbo
@@ -1891,6 +2242,22 @@ private:
             vkCmdDrawIndexedIndirect(cmd, fr.indirectBuf,
                 (VkDeviceSize)i * sizeof(VkDrawIndexedIndirectCommand), 1,
                 sizeof(VkDrawIndexedIndirectCommand));
+        }
+        // BLEND (glass) pass: the transparent pipeline (src-alpha over, depth-test LEQUAL,
+        // NO depth-write, cull NONE), same color attachment + descriptor sets, drawn AFTER
+        // opaque so glass composites over the established opaque depth. v1: unsorted.
+        if (m_meshPipelineTransparent && m_frameCmdCount > m_frameCmdOpaque) {
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshPipelineTransparent);
+            for (uint32_t i = m_frameCmdOpaque; i < m_frameCmdCount; ++i) {
+                const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
+                VkDeviceSize off = 0;
+                VkBuffer vb = mh.drawVbo(m_frameIdx);
+                vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &off);
+                vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
+                vkCmdDrawIndexedIndirect(cmd, fr.indirectBuf,
+                    (VkDeviceSize)i * sizeof(VkDrawIndexedIndirectCommand), 1,
+                    sizeof(VkDrawIndexedIndirectCommand));
+            }
         }
     }
 
@@ -2998,8 +3365,8 @@ private:
                 vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_compositeLayout,
                                         0, 1, &self->m_setComposite, 0, nullptr);
                 CompositePush cp{};
-                cp.bloomIntensity = kBloomIntensity;
-                cp.exposure = 1.0f;
+                cp.bloomIntensity = self->m_bloomIntensity;
+                cp.exposure = self->m_exposure;   // live whole-scene brightness (r_exposure)
                 vkCmdPushConstants(c, self->m_compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(cp), &cp);
                 vkCmdDraw(c, 3, 1, 0, 0);
@@ -3014,6 +3381,57 @@ private:
                 }
             };
             m_graph.addPass(std::move(comp));
+        }
+
+        // ================================================================
+        // EDITOR UI (Dear ImGui) — EDITOR-ONLY. Inserted AFTER composite/HUD and
+        // BEFORE the present-finalize/capture pass, so ImGui panels draw on TOP of
+        // the fully composited scene + game HUD, and the present transition that
+        // follows is unchanged. Gated on (m_imguiInit && draw data exists this
+        // frame): a non-editor run never enters here (zero added passes/cost). The
+        // pass loads (does NOT clear) the composited color, blends ImGui over it,
+        // and leaves rgColor in COLOR_ATTACHMENT_OPTIMAL — exactly the state the
+        // present-finalize pass expects, and the capture-copy path is untouched
+        // (editor UI never inits in headless mode, so this never runs under
+        // --screenshot). This is editor-only and separate from the FontRole HUD.
+        if (m_imguiInit && m_editorDrawData && m_editorDrawData->CmdListsCount > 0) {
+            m_editorUiAttach = VkRenderingAttachmentInfo{};
+            m_editorUiAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_editorUiAttach.imageView = colorTargetView;
+            m_editorUiAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_editorUiAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;   // preserve scene+HUD
+            m_editorUiAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            RenderPassDesc ui{};
+            ui.name = "editor-ui";
+            // WRITE the final color target (depend on the composite write so the
+            // graph derives the COLOR_ATTACHMENT_OUTPUT -> COLOR_ATTACHMENT_OUTPUT
+            // execution+memory dependency automatically — no hand-coded barrier).
+            ui.addUse(ResourceUse{
+                rgColor, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            ui.usesDynamicRendering = true;
+            m_editorUiRenderInfo = VkRenderingInfo{};
+            m_editorUiRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_editorUiRenderInfo.renderArea = { {0,0}, m_extent };
+            m_editorUiRenderInfo.layerCount = 1;
+            m_editorUiRenderInfo.colorAttachmentCount = 1;
+            m_editorUiRenderInfo.pColorAttachments = &m_editorUiAttach;
+            ui.renderInfo = m_editorUiRenderInfo;
+            ui.recordCtx = this;
+            ui.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                VkViewport vp{ 0.0f, 0.0f, (float)self->m_extent.width,
+                               (float)self->m_extent.height, 0.0f, 1.0f };
+                VkRect2D scis{ {0,0}, self->m_extent };
+                vkCmdSetViewport(c, 0, 1, &vp);
+                vkCmdSetScissor(c, 0, 1, &scis);
+                // ImGui records its own draws into the live (dynamic-rendering) pass.
+                ImGui_ImplVulkan_RenderDrawData(self->m_editorDrawData, c);
+            };
+            m_graph.addPass(std::move(ui));
         }
 
         // ---- Pass 3: present finalize (or in-frame capture copy) ------------
@@ -3490,6 +3908,561 @@ private:
 
         logInfo("[rhi] HUD 2D pipeline ready (NDC quads + TTF/bitmap glyph atlas, alpha-blended, no depth)");
         return true;
+    }
+
+    // =====================================================================
+    // IMAGE-BASED LIGHTING (IBL) — split-sum environment reflections.
+    //
+    // Bakes (from the analytic sky) a diffuse irradiance cube + a roughness-mipped
+    // specular prefilter cube + a scene-independent BRDF LUT, then exposes them as
+    // mesh.frag set 4. createIbl() builds all GPU objects (idempotent w.r.t. the
+    // sky); regenIblFromSky() runs the four fullscreen bake passes on a one-time
+    // submit (init + whenever the sky changes). Everything is additive: if the IBL
+    // resources fail to build, m_iblReady stays false and mesh.frag falls back to
+    // its old flat ambient term (the descriptor set is still bound but the shader
+    // gates on an "iblValid" flag carried in the SSAO control UBO's spare lane).
+    // =====================================================================
+
+    // std140 mirror of IblSkyUBO in ibl_env.frag (5 vec4s = 80 bytes).
+    struct IblSkyUBO {
+        glm::vec4 sunDir;
+        glm::vec4 sunColor;
+        glm::vec4 params;   // x=haze y=exposure z=time w=enabled
+        glm::vec4 zenith;
+        glm::vec4 horizon;
+    };
+    // Per-face push constant for the env/irradiance pass (3 vec4) + prefilter (4 vec4).
+    struct IblFacePush {
+        glm::vec4 faceFwd;
+        glm::vec4 faceRight;
+        glm::vec4 faceUp;
+        glm::vec4 misc;     // prefilter: x=roughness y=resolution; ignored by env/irradiance
+    };
+
+    // The six cube-face direction bases (matches Vulkan cube face order +X,-X,+Y,-Y,+Z,-Z).
+    // fwd = face center dir; right/up span the face so dir = fwd + (2u-1)*right + (2v-1)*up.
+    // Chosen so the assembled cube is consistent (standard GL/Vulkan cubemap convention).
+    static void iblFaceBasis(int face, glm::vec3& fwd, glm::vec3& right, glm::vec3& up) {
+        switch (face) {
+            case 0: fwd={ 1, 0, 0}; right={ 0, 0,-1}; up={0,-1,0}; break; // +X
+            case 1: fwd={-1, 0, 0}; right={ 0, 0, 1}; up={0,-1,0}; break; // -X
+            case 2: fwd={ 0, 1, 0}; right={ 1, 0, 0}; up={0, 0,1}; break; // +Y
+            case 3: fwd={ 0,-1, 0}; right={ 1, 0, 0}; up={0, 0,-1}; break;// -Y
+            case 4: fwd={ 0, 0, 1}; right={ 1, 0, 0}; up={0,-1,0}; break; // +Z
+            default:fwd={ 0, 0,-1}; right={-1, 0, 0}; up={0,-1,0}; break; // -Z
+        }
+    }
+
+    // Create one cubemap image (6 layers) + a CUBE view + per-face single-mip RT
+    // views (mip `rtMip` of each face). When mipLevels>1 the image is mip-complete.
+    bool createIblCube(uint32_t size, uint32_t mipLevels, VkImageUsageFlags usage,
+                       VkImage& outImg, VmaAllocation& outAlloc,
+                       VkImageView& outCubeView, VkImageView* outFaceViews, uint32_t rtMip) {
+        VkImageCreateInfo ici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        ici.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        ici.imageType = VK_IMAGE_TYPE_2D; ici.format = kIblCubeFormat;
+        ici.extent = { size, size, 1 }; ici.mipLevels = mipLevels; ici.arrayLayers = 6;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT; ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = usage; ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VmaAllocationCreateInfo aci{}; aci.usage = VMA_MEMORY_USAGE_AUTO;
+        aci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        if (vmaCreateImage(m_alloc, &ici, &aci, &outImg, &outAlloc, nullptr) != VK_SUCCESS) return false;
+        VkImageViewCreateInfo cv{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        cv.image = outImg; cv.viewType = VK_IMAGE_VIEW_TYPE_CUBE; cv.format = kIblCubeFormat;
+        cv.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 6 };
+        if (vkCreateImageView(m_dev.device, &cv, nullptr, &outCubeView) != VK_SUCCESS) return false;
+        if (outFaceViews) {
+            for (uint32_t f = 0; f < 6; ++f) {
+                VkImageViewCreateInfo fv{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+                fv.image = outImg; fv.viewType = VK_IMAGE_VIEW_TYPE_2D; fv.format = kIblCubeFormat;
+                fv.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, rtMip, 1, f, 1 };
+                if (vkCreateImageView(m_dev.device, &fv, nullptr, &outFaceViews[f]) != VK_SUCCESS) return false;
+            }
+        }
+        return true;
+    }
+
+    // Build all IBL GPU objects (images, views, samplers, descriptor layouts/sets,
+    // and the four bake pipelines). Does NOT bake (that's regenIblFromSky()).
+    bool createIbl() {
+        m_iblEnvMips = (uint32_t)std::floor(std::log2((float)kIblEnvSize)) + 1u;
+
+        // ---- Images + views ----
+        const VkImageUsageFlags cubeUsage =
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (!createIblCube(kIblEnvSize, m_iblEnvMips, cubeUsage,
+                           m_iblEnvImg, m_iblEnvAlloc, m_iblEnvCubeView, m_iblEnvFaceView, 0)) {
+            logError("[rhi] IBL env cube create failed"); return false;
+        }
+        if (!createIblCube(kIblIrradSize, 1, cubeUsage,
+                           m_iblIrradImg, m_iblIrradAlloc, m_iblIrradCubeView, m_iblIrradFaceView, 0)) {
+            logError("[rhi] IBL irradiance cube create failed"); return false;
+        }
+        // Prefilter: kIblPrefilterMips mips; one RT view per (mip,face).
+        {
+            VkImageCreateInfo ici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+            ici.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+            ici.imageType = VK_IMAGE_TYPE_2D; ici.format = kIblCubeFormat;
+            ici.extent = { kIblPrefilterSize, kIblPrefilterSize, 1 };
+            ici.mipLevels = kIblPrefilterMips; ici.arrayLayers = 6;
+            ici.samples = VK_SAMPLE_COUNT_1_BIT; ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+            ici.usage = cubeUsage; ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            VmaAllocationCreateInfo aci{}; aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+            if (vmaCreateImage(m_alloc, &ici, &aci, &m_iblPrefImg, &m_iblPrefAlloc, nullptr) != VK_SUCCESS) {
+                logError("[rhi] IBL prefilter cube create failed"); return false;
+            }
+            VkImageViewCreateInfo cv{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+            cv.image = m_iblPrefImg; cv.viewType = VK_IMAGE_VIEW_TYPE_CUBE; cv.format = kIblCubeFormat;
+            cv.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, kIblPrefilterMips, 0, 6 };
+            if (vkCreateImageView(m_dev.device, &cv, nullptr, &m_iblPrefCubeView) != VK_SUCCESS) return false;
+            for (uint32_t mip = 0; mip < kIblPrefilterMips; ++mip)
+                for (uint32_t f = 0; f < 6; ++f) {
+                    VkImageViewCreateInfo fv{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+                    fv.image = m_iblPrefImg; fv.viewType = VK_IMAGE_VIEW_TYPE_2D; fv.format = kIblCubeFormat;
+                    fv.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, f, 1 };
+                    if (vkCreateImageView(m_dev.device, &fv, nullptr, &m_iblPrefFaceView[mip][f]) != VK_SUCCESS) return false;
+                }
+        }
+        // BRDF LUT (2D RG16F).
+        if (!createColorTarget(kIblBrdfFormat, kIblBrdfSize, kIblBrdfSize,
+                               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                               m_iblBrdfImg, m_iblBrdfAlloc, m_iblBrdfView)) {
+            logError("[rhi] IBL BRDF LUT create failed"); return false;
+        }
+
+        // ---- Samplers ----
+        {
+            VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+            sci.magFilter = VK_FILTER_LINEAR; sci.minFilter = VK_FILTER_LINEAR;
+            sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+            sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            sci.maxLod = VK_LOD_CLAMP_NONE;
+            if (vkCreateSampler(m_dev.device, &sci, nullptr, &m_iblCubeSampler) != VK_SUCCESS) return false;
+            VkSamplerCreateInfo bs = sci; bs.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST; bs.maxLod = 0.0f;
+            if (vkCreateSampler(m_dev.device, &bs, nullptr, &m_iblBrdfSampler) != VK_SUCCESS) return false;
+        }
+
+        // ---- Descriptor set layouts ----
+        // set0 for env capture: one UBO (IblSkyUBO).
+        {
+            VkDescriptorSetLayoutBinding b{}; b.binding = 0; b.descriptorCount = 1;
+            b.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 1; ci.pBindings = &b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_iblSkyUboSetLayout) != VK_SUCCESS) return false;
+        }
+        // set0 for convolve passes: one cube sampler.
+        {
+            VkDescriptorSetLayoutBinding b{}; b.binding = 0; b.descriptorCount = 1;
+            b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 1; ci.pBindings = &b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_iblCubeSetLayout) != VK_SUCCESS) return false;
+        }
+        // (mesh.frag set 4 layout m_iblMeshSetLayout was created in createGraphics so
+        //  the mesh pipeline layout could include it; we only ALLOCATE its set here.)
+
+        // ---- Sky UBO buffer (host-mapped, written before each bake) ----
+        {
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = sizeof(IblSkyUBO); bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{}; aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo info{};
+            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_iblSkyUboBuf, &m_iblSkyUboAlloc, &info) != VK_SUCCESS) return false;
+            m_iblSkyUboMapped = info.pMappedData;
+        }
+
+        // ---- Descriptor pool + sets (bake-side: sky UBO set + env-cube set) ----
+        {
+            VkDescriptorPoolSize sizes[2]{};
+            sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; sizes[0].descriptorCount = 1;
+            sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; sizes[1].descriptorCount = 2;
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.maxSets = 2; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_iblBakePool) != VK_SUCCESS) return false;
+            VkDescriptorSetAllocateInfo a0{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            a0.descriptorPool = m_iblBakePool; a0.descriptorSetCount = 1; a0.pSetLayouts = &m_iblSkyUboSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &a0, &m_iblSkyUboSet) != VK_SUCCESS) return false;
+            VkDescriptorSetAllocateInfo a1{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            a1.descriptorPool = m_iblBakePool; a1.descriptorSetCount = 1; a1.pSetLayouts = &m_iblCubeSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &a1, &m_iblEnvCubeSet) != VK_SUCCESS) return false;
+            // Write the sky UBO into the env set; the env cube into the convolve set.
+            VkDescriptorBufferInfo dbi{ m_iblSkyUboBuf, 0, sizeof(IblSkyUBO) };
+            VkDescriptorImageInfo  dci{ m_iblCubeSampler, m_iblEnvCubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet w[2]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[0].dstSet = m_iblSkyUboSet;
+            w[0].dstBinding = 0; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[0].pBufferInfo = &dbi;
+            w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[1].dstSet = m_iblEnvCubeSet;
+            w[1].dstBinding = 0; w[1].descriptorCount = 1;
+            w[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[1].pImageInfo = &dci;
+            vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+        }
+
+        // ---- mesh.frag set 4 pool + set (written after the first bake) ----
+        {
+            VkDescriptorPoolSize sz{}; sz.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; sz.descriptorCount = 3;
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.maxSets = 1; pci.poolSizeCount = 1; pci.pPoolSizes = &sz;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_iblMeshPool) != VK_SUCCESS) return false;
+            VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            ai.descriptorPool = m_iblMeshPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_iblMeshSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_iblMeshSet) != VK_SUCCESS) return false;
+        }
+
+        // ---- Pipelines (fullscreen-triangle vertex shader) ----
+        // Env capture: set0 = sky UBO, push = IblFacePush.
+        {
+            VkPushConstantRange pcr{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(IblFacePush) };
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pl.setLayoutCount = 1; pl.pSetLayouts = &m_iblSkyUboSetLayout;
+            pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &pcr;
+            if (vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_iblEnvLayout) != VK_SUCCESS) return false;
+            if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\ibl_env.frag.spv",
+                                          m_iblEnvLayout, kIblCubeFormat, false, m_iblEnvPipe)) return false;
+        }
+        // Convolve (irradiance + prefilter share this layout): set0 = cube sampler, push = IblFacePush.
+        {
+            VkPushConstantRange pcr{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(IblFacePush) };
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pl.setLayoutCount = 1; pl.pSetLayouts = &m_iblCubeSetLayout;
+            pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &pcr;
+            if (vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_iblCubeLayout) != VK_SUCCESS) return false;
+            if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\ibl_irradiance.frag.spv",
+                                          m_iblCubeLayout, kIblCubeFormat, false, m_iblIrradPipe)) return false;
+            if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\ibl_prefilter.frag.spv",
+                                          m_iblCubeLayout, kIblCubeFormat, false, m_iblPrefPipe)) return false;
+        }
+        // BRDF LUT: no sets, no push.
+        {
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            if (vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_iblBrdfLayout) != VK_SUCCESS) return false;
+            if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\ibl_brdf_lut.frag.spv",
+                                          m_iblBrdfLayout, kIblBrdfFormat, false, m_iblBrdfPipe)) return false;
+        }
+
+        // ---- Initialize all sampled images to SHADER_READ_ONLY (contents undefined)
+        // so mesh.frag set 4 is bindable from the very first draw even if a bake has
+        // not run yet. A plain UNDEFINED->SHADER_READ layout transition is enough
+        // (no clear / no TRANSFER_DST needed) since the gate flag (ssao.ibl.x) keeps
+        // the shader from sampling these until a real bake completes; the first-frame
+        // bake overwrites the contents regardless.
+        bool clr = oneTimeSubmit([&](VkCommandBuffer cmd){
+            iblBarrier(cmd, m_iblEnvImg, 0, m_iblEnvMips, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            iblBarrier(cmd, m_iblIrradImg, 0, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            iblBarrier(cmd, m_iblPrefImg, 0, kIblPrefilterMips, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            iblBarrierTex2D(cmd, m_iblBrdfImg, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        });
+        if (!clr) { logError("[rhi] IBL initial layout transition failed"); return false; }
+        // Write mesh.frag set 4 now (points at the cleared cubes/LUT); regenIblFromSky
+        // re-points it after each bake (identical views, so this is just safety).
+        {
+            VkDescriptorImageInfo di0{ m_iblCubeSampler, m_iblIrradCubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo di1{ m_iblCubeSampler, m_iblPrefCubeView,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo di2{ m_iblBrdfSampler, m_iblBrdfView,      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet w[3]{};
+            for (int i = 0; i < 3; ++i) { w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[i].dstSet = m_iblMeshSet;
+                w[i].dstBinding = i; w[i].descriptorCount = 1; w[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; }
+            w[0].pImageInfo = &di0; w[1].pImageInfo = &di1; w[2].pImageInfo = &di2;
+            vkUpdateDescriptorSets(m_dev.device, 3, w, 0, nullptr);
+        }
+
+        // Reflection-probe depth target (env-face sized) for the optional scene bake.
+        {
+            VkImageCreateInfo di{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+            di.imageType = VK_IMAGE_TYPE_2D; di.format = m_depthFormat;
+            di.extent = { kIblEnvSize, kIblEnvSize, 1 }; di.mipLevels = 1; di.arrayLayers = 1;
+            di.samples = VK_SAMPLE_COUNT_1_BIT; di.tiling = VK_IMAGE_TILING_OPTIMAL;
+            di.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+            VmaAllocationCreateInfo da{}; da.usage = VMA_MEMORY_USAGE_AUTO;
+            da.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+            if (vmaCreateImage(m_alloc, &di, &da, &m_probeDepthImg, &m_probeDepthAlloc, nullptr) == VK_SUCCESS) {
+                VkImageViewCreateInfo dv{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+                dv.image = m_probeDepthImg; dv.viewType = VK_IMAGE_VIEW_TYPE_2D; dv.format = m_depthFormat;
+                dv.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+                vkCreateImageView(m_dev.device, &dv, nullptr, &m_probeDepthView);
+            } else {
+                logError("[rhi] probe depth image create failed (reflection probe disabled)");
+            }
+        }
+
+        m_iblReady = true;
+        logInfo("[rhi] IBL ready (env 256 + irradiance 32 + prefilter 128/5mip + BRDF LUT 256, split-sum)");
+        return true;
+    }
+
+    // Small helper: render the fullscreen triangle into a single image-view attachment.
+    void iblRenderTo(VkCommandBuffer cmd, VkImageView target, uint32_t w, uint32_t h,
+                     VkPipeline pipe, VkPipelineLayout layout, VkDescriptorSet set,
+                     const IblFacePush* push) {
+        VkRenderingAttachmentInfo att{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+        att.imageView = target; att.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        att.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; att.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
+        ri.renderArea = { {0,0}, {w,h} }; ri.layerCount = 1;
+        ri.colorAttachmentCount = 1; ri.pColorAttachments = &att;
+        vkCmdBeginRendering(cmd, &ri);
+        VkViewport vp{ 0,0,(float)w,(float)h,0,1 }; VkRect2D sc{ {0,0},{w,h} };
+        vkCmdSetViewport(cmd, 0, 1, &vp); vkCmdSetScissor(cmd, 0, 1, &sc);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+        if (set) vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, nullptr);
+        if (push) vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(IblFacePush), push);
+        vkCmdDraw(cmd, 3, 1, 0, 0);
+        vkCmdEndRendering(cmd);
+    }
+
+    // sync2 image-layout barrier for an IBL image subresource range.
+    void iblBarrier(VkCommandBuffer cmd, VkImage img, uint32_t baseMip, uint32_t mipCount,
+                    VkImageLayout oldL, VkImageLayout newL,
+                    VkPipelineStageFlags2 ss, VkAccessFlags2 sa,
+                    VkPipelineStageFlags2 ds, VkAccessFlags2 da) {
+        VkImageMemoryBarrier2 b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+        b.srcStageMask = ss; b.srcAccessMask = sa; b.dstStageMask = ds; b.dstAccessMask = da;
+        b.oldLayout = oldL; b.newLayout = newL;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = img; b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, baseMip, mipCount, 0, 6 };
+        VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        di.imageMemoryBarrierCount = 1; di.pImageMemoryBarriers = &b;
+        vkCmdPipelineBarrier2(cmd, &di);
+    }
+
+    // Reflection-probe scene bake: render opaque scene geometry into all 6 env-cube
+    // faces from m_iblProbePos (90deg/face), so the IBL env captures the dim INTERIOR
+    // instead of the bright sky. The env image is already in COLOR_ATTACHMENT (mip0, 6
+    // layers). Each face clears to a dim ambient backdrop (window openings / gaps) then
+    // draws the scene via the probe PSO (push-constant per-face viewProj). One shared
+    // depth target, WAW-barriered between faces. Lighting reuses mesh.frag (direct +
+    // fallback ambient on the first bake, since IBL isn't valid yet) — no recursion.
+    void bakeProbeSceneIntoEnv(VkCommandBuffer cmd) {
+        auto& fr = m_frames[m_frameIdx];
+        const glm::vec3 clear = m_ambient * 0.5f;   // dim interior backdrop for gaps/openings
+        // probe depth -> DEPTH_ATTACHMENT (contents discarded each bake).
+        VkImageMemoryBarrier2 db{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+        db.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT; db.srcAccessMask = 0;
+        db.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        db.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        db.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; db.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        db.srcQueueFamilyIndex = db.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        db.image = m_probeDepthImg; db.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+        VkDependencyInfo ddi{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO }; ddi.imageMemoryBarrierCount = 1; ddi.pImageMemoryBarriers = &db;
+        vkCmdPipelineBarrier2(cmd, &ddi);
+
+        VkDescriptorSet sets[5] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx], m_iblMeshSet };
+        for (int f = 0; f < 6; ++f) {
+            glm::vec3 fwd, right, up; iblFaceBasis(f, fwd, right, up);
+            glm::mat4 view = glm::lookAt(m_iblProbePos, m_iblProbePos + fwd, up);
+            glm::mat4 proj = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, 200.0f); proj[1][1] *= -1.0f;
+            glm::mat4 vp = proj * view;
+
+            VkRenderingAttachmentInfo col{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+            col.imageView = m_iblEnvFaceView[f]; col.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            col.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; col.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            col.clearValue.color = { { clear.r, clear.g, clear.b, 1.0f } };
+            VkRenderingAttachmentInfo dep{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+            dep.imageView = m_probeDepthView; dep.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            dep.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; dep.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+            dep.clearValue.depthStencil = { 1.0f, 0 };
+            VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
+            ri.renderArea = { {0,0}, {kIblEnvSize, kIblEnvSize} }; ri.layerCount = 1;
+            ri.colorAttachmentCount = 1; ri.pColorAttachments = &col; ri.pDepthAttachment = &dep;
+
+            vkCmdBeginRendering(cmd, &ri);
+            VkViewport vpp{ 0,0,(float)kIblEnvSize,(float)kIblEnvSize,0,1 }; VkRect2D sc{ {0,0},{kIblEnvSize,kIblEnvSize} };
+            vkCmdSetViewport(cmd, 0, 1, &vpp); vkCmdSetScissor(cmd, 0, 1, &sc);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshProbePipe);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshProbeLayout, 0, 5, sets, 0, nullptr);
+            vkCmdPushConstants(cmd, m_meshProbeLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &vp);
+            for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
+                const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
+                VkDeviceSize off = 0; VkBuffer vb = mh.drawVbo(m_frameIdx);
+                vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &off);
+                vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
+                vkCmdDrawIndexedIndirect(cmd, fr.indirectBuf,
+                    (VkDeviceSize)i * sizeof(VkDrawIndexedIndirectCommand), 1, sizeof(VkDrawIndexedIndirectCommand));
+            }
+            vkCmdEndRendering(cmd);
+
+            if (f < 5) {   // WAW on the shared probe depth before the next face's CLEAR
+                VkImageMemoryBarrier2 wb{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+                wb.srcStageMask = VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT; wb.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                wb.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT; wb.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+                wb.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL; wb.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+                wb.srcQueueFamilyIndex = wb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                wb.image = m_probeDepthImg; wb.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+                VkDependencyInfo wdi{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO }; wdi.imageMemoryBarrierCount = 1; wdi.pImageMemoryBarriers = &wb;
+                vkCmdPipelineBarrier2(cmd, &wdi);
+            }
+        }
+    }
+
+    // Bake the IBL chain from the CURRENT sky params. Runs the BRDF LUT (only once),
+    // then env capture (6 faces) -> env mip generation -> irradiance convolve (6
+    // faces) -> prefilter (5 mips x 6 faces), all on one one-time submit. Then
+    // writes mesh.frag set 4 to point at the fresh irradiance/prefilter/LUT.
+    bool regenIblFromSky() {
+        if (!m_iblReady) return false;
+
+        // Fill the sky UBO from the cached SkyParams (always 'enabled' for the bake:
+        // even indoor levels get a sensible neutral env from their sky colors).
+        glm::vec3 sd = glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2]));
+        IblSkyUBO u{};
+        u.sunDir   = glm::vec4(sd, 0.0f);
+        u.sunColor = glm::vec4(m_sky.sunColor[0], m_sky.sunColor[1], m_sky.sunColor[2], m_sky.sunIntensity);
+        u.params   = glm::vec4(m_sky.haze, m_sky.exposure, m_skyTime, m_sky.enabled ? 1.0f : 0.0f);
+        u.zenith   = glm::vec4(m_sky.zenith[0], m_sky.zenith[1], m_sky.zenith[2], 0.0f);
+        u.horizon  = glm::vec4(m_sky.horizon[0], m_sky.horizon[1], m_sky.horizon[2], 0.0f);
+        std::memcpy(m_iblSkyUboMapped, &u, sizeof(u));
+
+        bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
+            // ---- BRDF LUT (only the first time; it never changes) ----
+            if (!m_iblBaked) {
+                iblBarrierTex2D(cmd, m_iblBrdfImg, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                                VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+                iblRenderTo(cmd, m_iblBrdfView, kIblBrdfSize, kIblBrdfSize, m_iblBrdfPipe, m_iblBrdfLayout, VK_NULL_HANDLE, nullptr);
+                iblBarrierTex2D(cmd, m_iblBrdfImg, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            }
+
+            // ---- Env capture: render the analytic sky into mip0 of all 6 faces ----
+            iblBarrier(cmd, m_iblEnvImg, 0, m_iblEnvMips, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+            const bool probeScene = m_iblProbeScene && m_meshProbePipe && m_probeDepthView && m_frameCmdOpaque > 0;
+            if (probeScene) {
+                // Interior reflection probe: bake the SCENE (around the camera) into the
+                // env instead of the sky, so glossy metals reflect the room, not open sky.
+                m_iblProbePos = m_camPos;
+                bakeProbeSceneIntoEnv(cmd);
+            } else {
+                for (int f = 0; f < 6; ++f) {
+                    glm::vec3 fwd, right, up; iblFaceBasis(f, fwd, right, up);
+                    IblFacePush p{}; p.faceFwd = glm::vec4(fwd, 0); p.faceRight = glm::vec4(right, 0); p.faceUp = glm::vec4(up, 0);
+                    iblRenderTo(cmd, m_iblEnvFaceView[f], kIblEnvSize, kIblEnvSize, m_iblEnvPipe, m_iblEnvLayout, m_iblSkyUboSet, &p);
+                }
+            }
+            // mip0 -> TRANSFER_SRC; generate the env mip chain by linear blits so the
+            // prefilter pass can mip-bias rough lobes (anti-firefly). Then ALL mips -> SHADER_READ.
+            iblBarrier(cmd, m_iblEnvImg, 0, 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+            int32_t mw = (int32_t)kIblEnvSize, mh = (int32_t)kIblEnvSize;
+            for (uint32_t mip = 1; mip < m_iblEnvMips; ++mip) {
+                iblBarrier(cmd, m_iblEnvImg, mip, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                           VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                int32_t nw = mw > 1 ? mw / 2 : 1, nh = mh > 1 ? mh / 2 : 1;
+                VkImageBlit blit{};
+                blit.srcOffsets[1] = { mw, mh, 1 }; blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, 0, 6 };
+                blit.dstOffsets[1] = { nw, nh, 1 }; blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, mip, 0, 6 };
+                vkCmdBlitImage(cmd, m_iblEnvImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               m_iblEnvImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+                iblBarrier(cmd, m_iblEnvImg, mip, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+                mw = nw; mh = nh;
+            }
+            iblBarrier(cmd, m_iblEnvImg, 0, m_iblEnvMips, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+            // ---- Irradiance convolve (reads the env cube) ----
+            iblBarrier(cmd, m_iblIrradImg, 0, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+            for (int f = 0; f < 6; ++f) {
+                glm::vec3 fwd, right, up; iblFaceBasis(f, fwd, right, up);
+                IblFacePush p{}; p.faceFwd = glm::vec4(fwd, 0); p.faceRight = glm::vec4(right, 0); p.faceUp = glm::vec4(up, 0);
+                iblRenderTo(cmd, m_iblIrradFaceView[f], kIblIrradSize, kIblIrradSize, m_iblIrradPipe, m_iblCubeLayout, m_iblEnvCubeSet, &p);
+            }
+            iblBarrier(cmd, m_iblIrradImg, 0, 1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+
+            // ---- Prefilter (reads the env cube) into each roughness mip ----
+            iblBarrier(cmd, m_iblPrefImg, 0, kIblPrefilterMips, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+            for (uint32_t mip = 0; mip < kIblPrefilterMips; ++mip) {
+                uint32_t mipSize = kIblPrefilterSize >> mip; if (mipSize == 0) mipSize = 1;
+                float roughness = (kIblPrefilterMips > 1) ? (float)mip / (float)(kIblPrefilterMips - 1) : 0.0f;
+                for (int f = 0; f < 6; ++f) {
+                    glm::vec3 fwd, right, up; iblFaceBasis(f, fwd, right, up);
+                    IblFacePush p{}; p.faceFwd = glm::vec4(fwd, 0); p.faceRight = glm::vec4(right, 0); p.faceUp = glm::vec4(up, 0);
+                    p.misc = glm::vec4(roughness, (float)kIblEnvSize, 0, 0);
+                    iblRenderTo(cmd, m_iblPrefFaceView[mip][f], mipSize, mipSize, m_iblPrefPipe, m_iblCubeLayout, m_iblEnvCubeSet, &p);
+                }
+            }
+            iblBarrier(cmd, m_iblPrefImg, 0, kIblPrefilterMips, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        });
+        if (!ok) { logError("[rhi] IBL bake submit failed"); return false; }
+
+        // Point mesh.frag set 4 at the fresh irradiance + prefilter + BRDF LUT.
+        VkDescriptorImageInfo di0{ m_iblCubeSampler, m_iblIrradCubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo di1{ m_iblCubeSampler, m_iblPrefCubeView,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo di2{ m_iblBrdfSampler, m_iblBrdfView,      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkWriteDescriptorSet w[3]{};
+        for (int i = 0; i < 3; ++i) { w[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[i].dstSet = m_iblMeshSet;
+            w[i].dstBinding = i; w[i].descriptorCount = 1; w[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; }
+        w[0].pImageInfo = &di0; w[1].pImageInfo = &di1; w[2].pImageInfo = &di2;
+        vkUpdateDescriptorSets(m_dev.device, 3, w, 0, nullptr);
+
+        m_iblBaked = true; m_iblDirty = false;
+        return true;
+    }
+
+    // 2D version of iblBarrier (BRDF LUT, 1 layer).
+    void iblBarrierTex2D(VkCommandBuffer cmd, VkImage img, VkImageLayout oldL, VkImageLayout newL,
+                         VkPipelineStageFlags2 ss, VkAccessFlags2 sa, VkPipelineStageFlags2 ds, VkAccessFlags2 da) {
+        VkImageMemoryBarrier2 b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+        b.srcStageMask = ss; b.srcAccessMask = sa; b.dstStageMask = ds; b.dstAccessMask = da;
+        b.oldLayout = oldL; b.newLayout = newL;
+        b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = img; b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        di.imageMemoryBarrierCount = 1; di.pImageMemoryBarriers = &b;
+        vkCmdPipelineBarrier2(cmd, &di);
+    }
+
+    void destroyIbl() {
+        auto killView = [&](VkImageView& v){ if (v) { vkDestroyImageView(m_dev.device, v, nullptr); v = VK_NULL_HANDLE; } };
+        auto killImg  = [&](VkImage& i, VmaAllocation& a){ if (i) { vmaDestroyImage(m_alloc, i, a); i = VK_NULL_HANDLE; a = nullptr; } };
+        auto killPipe = [&](VkPipeline& p){ if (p) { vkDestroyPipeline(m_dev.device, p, nullptr); p = VK_NULL_HANDLE; } };
+        auto killPl   = [&](VkPipelineLayout& p){ if (p) { vkDestroyPipelineLayout(m_dev.device, p, nullptr); p = VK_NULL_HANDLE; } };
+        auto killSl   = [&](VkDescriptorSetLayout& s){ if (s) { vkDestroyDescriptorSetLayout(m_dev.device, s, nullptr); s = VK_NULL_HANDLE; } };
+        killPipe(m_iblEnvPipe); killPipe(m_iblIrradPipe); killPipe(m_iblPrefPipe); killPipe(m_iblBrdfPipe);
+        killPl(m_iblEnvLayout); killPl(m_iblCubeLayout); killPl(m_iblBrdfLayout);
+        if (m_iblMeshPool) { vkDestroyDescriptorPool(m_dev.device, m_iblMeshPool, nullptr); m_iblMeshPool = VK_NULL_HANDLE; }
+        if (m_iblBakePool) { vkDestroyDescriptorPool(m_dev.device, m_iblBakePool, nullptr); m_iblBakePool = VK_NULL_HANDLE; }
+        // m_iblMeshSetLayout is owned by createGraphics/destroyGraphics (it's baked
+        // into the mesh pipeline layout), so it is NOT destroyed here.
+        killSl(m_iblCubeSetLayout); killSl(m_iblSkyUboSetLayout);
+        if (m_iblSkyUboBuf) { vmaDestroyBuffer(m_alloc, m_iblSkyUboBuf, m_iblSkyUboAlloc); m_iblSkyUboBuf = VK_NULL_HANDLE; m_iblSkyUboAlloc = nullptr; m_iblSkyUboMapped = nullptr; }
+        if (m_iblCubeSampler) { vkDestroySampler(m_dev.device, m_iblCubeSampler, nullptr); m_iblCubeSampler = VK_NULL_HANDLE; }
+        if (m_iblBrdfSampler) { vkDestroySampler(m_dev.device, m_iblBrdfSampler, nullptr); m_iblBrdfSampler = VK_NULL_HANDLE; }
+        for (int f = 0; f < 6; ++f) { killView(m_iblEnvFaceView[f]); killView(m_iblIrradFaceView[f]); }
+        for (uint32_t m = 0; m < kIblPrefilterMips; ++m) for (int f = 0; f < 6; ++f) killView(m_iblPrefFaceView[m][f]);
+        killView(m_iblEnvCubeView); killView(m_iblIrradCubeView); killView(m_iblPrefCubeView); killView(m_iblBrdfView);
+        killImg(m_iblEnvImg, m_iblEnvAlloc); killImg(m_iblIrradImg, m_iblIrradAlloc);
+        killImg(m_iblPrefImg, m_iblPrefAlloc); killImg(m_iblBrdfImg, m_iblBrdfAlloc);
+        killView(m_probeDepthView); killImg(m_probeDepthImg, m_probeDepthAlloc);  // reflection-probe depth
+        m_iblReady = false; m_iblBaked = false;
     }
 
     // ---- Analytic sky (open-world track, task A) ---------------------------
@@ -5080,6 +6053,12 @@ private:
         // RT AO (if built): half-res target tracks the extent + the depth view
         // changed, so recreate the target + rewrite all RT-AO descriptors.
         if (m_rtaoBuilt) { createRtaoTargets(); writeRtaoDescriptors(); }
+        // Editor UI (if active): tell ImGui the new swapchain image count. With
+        // dynamic rendering ImGui holds no per-image framebuffers and m_format is
+        // stable, so no font/pipeline rebuild is needed.
+        if (m_imguiInit)
+            ImGui_ImplVulkan_SetMinImageCount(
+                static_cast<uint32_t>(m_swapImages.empty() ? 2u : m_swapImages.size()));
     }
 
     // ---- HEADLESS offscreen render target (no window, no swapchain) ---------
@@ -6595,14 +7574,19 @@ private:
         if (vmaCreateBuffer(m_alloc, &sbci, &svaci, &staging, &stagingAlloc, &si) != VK_SUCCESS) return false;
         std::memcpy(si.pMappedData, rgba8, (size_t)bytes);
 
+        // Full mip chain so minified/distant surfaces aren't aliased and (with aniso) not
+        // blurry. mipLevels = floor(log2(max dim)) + 1. The image needs TRANSFER_SRC too so
+        // each level can be blit-downscaled from the previous one.
+        const uint32_t mipLevels = (uint32_t)std::floor(std::log2((float)std::max(w, h))) + 1u;
+
         VkImageCreateInfo ici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
         ici.imageType = VK_IMAGE_TYPE_2D;
         ici.format = fmt;
         ici.extent = { w, h, 1 };
-        ici.mipLevels = 1; ici.arrayLayers = 1;
+        ici.mipLevels = mipLevels; ici.arrayLayers = 1;
         ici.samples = VK_SAMPLE_COUNT_1_BIT;
         ici.tiling = VK_IMAGE_TILING_OPTIMAL;
-        ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         VmaAllocationCreateInfo ivaci{}; ivaci.usage = VMA_MEMORY_USAGE_AUTO;
         if (vmaCreateImage(m_alloc, &ici, &ivaci, &out.image, &out.alloc, nullptr) != VK_SUCCESS) {
@@ -6610,29 +7594,61 @@ private:
         }
 
         bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
-            // UNDEFINED -> TRANSFER_DST
-            imageBarrier(cmd, out.image,
-                VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
-                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            // Per-mip sync2 layout barrier helper.
+            auto barrierMip = [&](uint32_t mip, VkImageLayout oldL, VkImageLayout newL,
+                                  VkPipelineStageFlags2 ss, VkAccessFlags2 sa,
+                                  VkPipelineStageFlags2 ds, VkAccessFlags2 da) {
+                VkImageMemoryBarrier2 b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+                b.srcStageMask = ss; b.srcAccessMask = sa; b.dstStageMask = ds; b.dstAccessMask = da;
+                b.oldLayout = oldL; b.newLayout = newL;
+                b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                b.image = out.image;
+                b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 1 };
+                VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+                di.imageMemoryBarrierCount = 1; di.pImageMemoryBarriers = &b;
+                vkCmdPipelineBarrier2(cmd, &di);
+            };
+            // mip 0: UNDEFINED -> TRANSFER_DST, then copy the uploaded RGBA8.
+            barrierMip(0, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                       VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
             VkBufferImageCopy region{};
-            region.bufferOffset = 0;
             region.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
             region.imageExtent = { w, h, 1 };
-            vkCmdCopyBufferToImage(cmd, staging, out.image,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-            // TRANSFER_DST -> SHADER_READ_ONLY
-            imageBarrier(cmd, out.image,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            vkCmdCopyBufferToImage(cmd, staging, out.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            // Generate each successive mip by a 2x linear downscale blit from the previous.
+            int32_t mw = (int32_t)w, mh = (int32_t)h;
+            for (uint32_t i = 1; i < mipLevels; ++i) {
+                barrierMip(i - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+                barrierMip(i, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                           VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                const int32_t nw = mw > 1 ? mw / 2 : 1, nh = mh > 1 ? mh / 2 : 1;
+                VkImageBlit blit{};
+                blit.srcOffsets[1] = { mw, mh, 1 };
+                blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1 };
+                blit.dstOffsets[1] = { nw, nh, 1 };
+                blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1 };
+                vkCmdBlitImage(cmd, out.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               out.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+                barrierMip(i - 1, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+                mw = nw; mh = nh;
+            }
+            // Last mip is still TRANSFER_DST -> SHADER_READ.
+            barrierMip(mipLevels - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
         });
         vmaDestroyBuffer(m_alloc, staging, stagingAlloc);
         if (!ok) { vmaDestroyImage(m_alloc, out.image, out.alloc); out.image = VK_NULL_HANDLE; out.alloc = nullptr; return false; }
 
         VkImageViewCreateInfo vci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
         vci.image = out.image; vci.viewType = VK_IMAGE_VIEW_TYPE_2D; vci.format = fmt;
-        vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 1 };
         if (vkCreateImageView(m_dev.device, &vci, nullptr, &out.view) != VK_SUCCESS) {
             vmaDestroyImage(m_alloc, out.image, out.alloc); out = Texture{}; return false;
         }
@@ -6644,6 +7660,8 @@ private:
         sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
         sci.maxLod = VK_LOD_CLAMP_NONE;
+        sci.anisotropyEnable = VK_TRUE;   // sharpen grazing-angle surfaces (feature enabled at device init)
+        sci.maxAnisotropy = 8.0f;         // well under the RTX limit (16)
         if (vkCreateSampler(m_dev.device, &sci, nullptr, &out.sampler) != VK_SUCCESS) {
             vkDestroyImageView(m_dev.device, out.view, nullptr);
             vmaDestroyImage(m_alloc, out.image, out.alloc); out = Texture{}; return false;
@@ -6851,6 +7869,22 @@ private:
                 logError("[rhi] mesh ao set layout failed"); return false;
             }
         }
+        // ---- mesh.frag IBL set (set 4): irradiance cube + prefilter cube + BRDF LUT.
+        // Created here (device-only) so the mesh pipeline layout can declare it; the
+        // images/sets are built later in createIbl(). 3 combined image samplers. ----
+        {
+            VkDescriptorSetLayoutBinding b[3]{};
+            for (int i = 0; i < 3; ++i) {
+                b[i].binding = i; b[i].descriptorCount = 1;
+                b[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                b[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            }
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 3; ci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_iblMeshSetLayout) != VK_SUCCESS) {
+                logError("[rhi] mesh ibl set layout failed"); return false;
+            }
+        }
 
         // ---- Mesh pipeline (bindless texture + per-object SSBO + indirect) ----
         VkShaderModule vs = loadShaderModule("shaders\\mesh.vert.spv");
@@ -6905,10 +7939,11 @@ private:
 
         // GPU-driven layout: set 0 = bindless textures, set 1 = object SSBO +
         // camera UBO, set 2 = the shadow map (perf-stack E), set 3 = the SSAO AO
-        // texture + control UBO. NO push constants (per-object data is in the SSBO).
-        VkDescriptorSetLayout setLayouts[4] = { m_bindlessLayout, m_objSetLayout, m_shadowSetLayout, m_meshAoSetLayout };
+        // texture + control UBO, set 4 = IBL (irradiance + prefilter cubes + BRDF
+        // LUT). NO push constants (per-object data is in the SSBO).
+        VkDescriptorSetLayout setLayouts[5] = { m_bindlessLayout, m_objSetLayout, m_shadowSetLayout, m_meshAoSetLayout, m_iblMeshSetLayout };
         VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-        plci.setLayoutCount = 4; plci.pSetLayouts = setLayouts;
+        plci.setLayoutCount = 5; plci.pSetLayouts = setLayouts;
         if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_meshLayout) != VK_SUCCESS) {
             logError("[rhi] pipeline layout failed"); return false;
         }
@@ -6946,11 +7981,176 @@ private:
         gpci.pDepthStencilState = &dssNo;
         pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_meshPipelineNoSsao);
 
+        // ---- Reflection-PROBE scene PSO: mesh_probe.vert (per-face viewProj via push
+        // constant) + the SAME mesh.frag, opaque depth LESS+write into the HDR env-cube
+        // face. regenIblFromSky() uses it to bake interior geometry into the IBL env so
+        // glossy metals reflect the room, not the open sky. gpci is in opaque (dssNo/cb/rs).
+        {
+            VkShaderModule pvs = loadShaderModule("shaders\\mesh_probe.vert.spv");
+            if (pvs) {
+                VkPushConstantRange pcr{}; pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+                pcr.offset = 0; pcr.size = sizeof(glm::mat4);
+                VkPipelineLayoutCreateInfo plp{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+                plp.setLayoutCount = 5; plp.pSetLayouts = setLayouts;       // same 5 sets as the mesh pass
+                plp.pushConstantRangeCount = 1; plp.pPushConstantRanges = &pcr;
+                if (vkCreatePipelineLayout(m_dev.device, &plp, nullptr, &m_meshProbeLayout) == VK_SUCCESS) {
+                    VkPipelineShaderStageCreateInfo pst[2] = { stages[0], stages[1] };
+                    pst[0].module = pvs;                                    // swap vertex -> probe (fs unchanged)
+                    VkGraphicsPipelineCreateInfo ppgci = gpci;              // opaque state, HDR color + depth fmt
+                    ppgci.pStages = pst; ppgci.layout = m_meshProbeLayout;
+                    if (vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &ppgci, nullptr, &m_meshProbePipe) != VK_SUCCESS)
+                        logError("[rhi] reflection-probe pipeline create failed (probe disabled)");
+                }
+                vkDestroyShaderModule(m_dev.device, pvs, nullptr);
+            } else {
+                logError("[rhi] mesh_probe.vert.spv failed to load (reflection probe disabled)");
+            }
+        }
+
+        // Transparent (BLEND/glass) variant — same shaders/layout/HDR target, vs/fs still alive.
+        // src-alpha OVER blend, depth-test LESS_OR_EQUAL (works for both the EQUAL-prepass and the
+        // LESS no-prepass opaque depth), NO depth-write, cull NONE (double-sided glass).
+        VkResult prT = VK_SUCCESS;
+        {
+            VkPipelineColorBlendAttachmentState cbaT = cba;
+            cbaT.blendEnable = VK_TRUE;
+            cbaT.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+            cbaT.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            cbaT.colorBlendOp = VK_BLEND_OP_ADD;
+            cbaT.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            cbaT.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+            cbaT.alphaBlendOp = VK_BLEND_OP_ADD;
+            VkPipelineColorBlendStateCreateInfo cbT = cb; cbT.pAttachments = &cbaT;
+            VkPipelineDepthStencilStateCreateInfo dssT = dss;   // depthTest ON, write OFF
+            dssT.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+            VkPipelineRasterizationStateCreateInfo rsT = rs; rsT.cullMode = VK_CULL_MODE_NONE;
+            gpci.pColorBlendState = &cbT; gpci.pDepthStencilState = &dssT; gpci.pRasterizationState = &rsT;
+            prT = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_meshPipelineTransparent);
+            gpci.pColorBlendState = &cb; gpci.pDepthStencilState = &dssNo; gpci.pRasterizationState = &rs;  // restore
+        }
+
+        // ---- Planet body pipelines (FORGE3D port) — one OPAQUE PSO per type ----
+        // Each is a CLONE of the OPAQUE mesh PSO (same MeshVertex input via `vin`,
+        // depth LESS + write via `dssNo`, cull BACK via `rs`, no blend via `cb`, same
+        // HDR target via `prci`) but with planet.vert + the per-type fragment shader,
+        // all sharing ONE layout (set0 bindless + set1 object SSBO/camera UBO + a
+        // 128-byte push-constant range, VERTEX|FRAGMENT). gpci is currently in the
+        // restored opaque state (cb/dssNo/rs) — exactly the opaque depth/cull/blend.
+        // Per-type fragment .spv in PlanetType enum order (Moon..Sun). Atmosphere /
+        // suncorona / ring shells are DEFERRED (not wired this pass).
+        VkResult prP = VK_SUCCESS;
+        {
+            static const char* kPlanetFrags[PT_OpaqueCount] = {
+                "shaders\\planet_moon.frag.spv",
+                "shaders\\planet_ice.frag.spv",
+                "shaders\\planet_gas.frag.spv",
+                "shaders\\planet_lava.frag.spv",
+                "shaders\\planet_terrestrial.frag.spv",
+                "shaders\\planet_oceanic.frag.spv",
+                "shaders\\planet_sand.frag.spv",
+                "shaders\\planet_thunderstorm.frag.spv",
+                "shaders\\planet_sun.frag.spv",
+            };
+            VkShaderModule pvs = loadShaderModule("shaders\\planet.vert.spv");
+            if (!pvs) {
+                vkDestroyShaderModule(m_dev.device, vs, nullptr);
+                vkDestroyShaderModule(m_dev.device, fs, nullptr);
+                logError("[rhi] planet vertex shader module failed to load"); return false;
+            }
+            // Shared layout: SAME set0 (bindless) + set1 (object SSBO + camera UBO)
+            // layouts the mesh pipeline uses, + a 128-byte push constant for both stages.
+            VkDescriptorSetLayout planetSetLayouts[2] = { m_bindlessLayout, m_objSetLayout };
+            VkPushConstantRange pcRange{};
+            pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+            pcRange.offset = 0; pcRange.size = 128;
+            VkPipelineLayoutCreateInfo pplci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pplci.setLayoutCount = 2; pplci.pSetLayouts = planetSetLayouts;
+            pplci.pushConstantRangeCount = 1; pplci.pPushConstantRanges = &pcRange;
+            if (vkCreatePipelineLayout(m_dev.device, &pplci, nullptr, &m_planetPipelineLayout) != VK_SUCCESS) {
+                vkDestroyShaderModule(m_dev.device, pvs, nullptr);
+                vkDestroyShaderModule(m_dev.device, vs, nullptr);
+                vkDestroyShaderModule(m_dev.device, fs, nullptr);
+                logError("[rhi] planet pipeline layout failed"); return false;
+            }
+            for (uint32_t pt = 0; pt < (uint32_t)PT_OpaqueCount && prP == VK_SUCCESS; ++pt) {
+                VkShaderModule pfs = loadShaderModule(kPlanetFrags[pt]);
+                if (!pfs) { logError(std::string("[rhi] planet frag failed to load: ") + kPlanetFrags[pt]);
+                            prP = VK_ERROR_INITIALIZATION_FAILED; break; }
+                VkPipelineShaderStageCreateInfo pstages[2]{};
+                pstages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                pstages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   pstages[0].module = pvs; pstages[0].pName = "main";
+                pstages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                pstages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; pstages[1].module = pfs; pstages[1].pName = "main";
+                VkGraphicsPipelineCreateInfo pgci = gpci;   // copies the opaque state set above
+                pgci.pStages = pstages; pgci.layout = m_planetPipelineLayout;
+                prP = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &pgci, nullptr, &m_planetPipelines[pt]);
+                vkDestroyShaderModule(m_dev.device, pfs, nullptr);
+            }
+
+            // ---- TRANSPARENT glow shells (DEFERRED layers, now wired) ----------
+            // Three more PSOs sharing m_planetPipelineLayout + planet.vert, drawn
+            // AFTER the opaque bodies. They override the opaque blend/depth/cull:
+            //   Atmosphere / SunCorona : ADDITIVE (srcRGB=ONE, dstRGB=ONE), depth
+            //       test LEQUAL + write OFF, cull NONE (far limb hemisphere shows).
+            //   Ring : ALPHA (SRC_ALPHA / ONE_MINUS_SRC_ALPHA), depth LEQUAL +
+            //       write OFF, cull NONE (annulus visible from both faces).
+            // The frags emit PREMULTIPLIED glow (atmosphere/corona) so srcRGB=ONE.
+            struct TransP { PlanetType pt; const char* frag; bool additive; };
+            static const TransP kTrans[] = {
+                { PT_Atmosphere, "shaders\\planet_atmosphere.frag.spv", true  },
+                { PT_SunCorona,  "shaders\\planet_suncorona.frag.spv",  true  },
+                { PT_Ring,       "shaders\\planet_ring.frag.spv",       false },
+            };
+            // Shared depth (LEQUAL, write OFF) + raster (cull NONE) for all three.
+            VkPipelineDepthStencilStateCreateInfo dssGlow{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+            dssGlow.depthTestEnable = VK_TRUE; dssGlow.depthWriteEnable = VK_FALSE;
+            dssGlow.depthCompareOp  = VK_COMPARE_OP_LESS_OR_EQUAL;
+            VkPipelineRasterizationStateCreateInfo rsGlow{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+            rsGlow.polygonMode = VK_POLYGON_MODE_FILL; rsGlow.cullMode = VK_CULL_MODE_NONE;
+            rsGlow.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rsGlow.lineWidth = 1.0f;
+            for (const TransP& tp : kTrans) {
+                if (prP != VK_SUCCESS) break;
+                VkShaderModule pfs = loadShaderModule(tp.frag);
+                if (!pfs) { logError(std::string("[rhi] planet (transparent) frag failed to load: ") + tp.frag);
+                            prP = VK_ERROR_INITIALIZATION_FAILED; break; }
+                VkPipelineShaderStageCreateInfo pstages[2]{};
+                pstages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                pstages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   pstages[0].module = pvs; pstages[0].pName = "main";
+                pstages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                pstages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; pstages[1].module = pfs; pstages[1].pName = "main";
+                VkPipelineColorBlendAttachmentState cbaG{};
+                cbaG.colorWriteMask = VK_COLOR_COMPONENT_R_BIT|VK_COLOR_COMPONENT_G_BIT|VK_COLOR_COMPONENT_B_BIT|VK_COLOR_COMPONENT_A_BIT;
+                cbaG.blendEnable = VK_TRUE;
+                cbaG.colorBlendOp = VK_BLEND_OP_ADD; cbaG.alphaBlendOp = VK_BLEND_OP_ADD;
+                if (tp.additive) {                       // premultiplied glow: ONE/ONE
+                    cbaG.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+                    cbaG.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+                    cbaG.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+                    cbaG.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+                } else {                                 // ring: SRC_ALPHA over
+                    cbaG.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+                    cbaG.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+                    cbaG.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+                    cbaG.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+                }
+                VkPipelineColorBlendStateCreateInfo cbG = cb; cbG.pAttachments = &cbaG;
+                VkGraphicsPipelineCreateInfo pgci = gpci;   // opaque base; override below
+                pgci.pStages = pstages; pgci.layout = m_planetPipelineLayout;
+                pgci.pColorBlendState = &cbG; pgci.pDepthStencilState = &dssGlow; pgci.pRasterizationState = &rsGlow;
+                prP = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &pgci, nullptr, &m_planetPipelines[tp.pt]);
+                vkDestroyShaderModule(m_dev.device, pfs, nullptr);
+            }
+            vkDestroyShaderModule(m_dev.device, pvs, nullptr);
+        }
+
         vkDestroyShaderModule(m_dev.device, vs, nullptr);
         vkDestroyShaderModule(m_dev.device, fs, nullptr);
         if (pr != VK_SUCCESS) { logError("[rhi] no-ssao graphics pipeline create failed"); return false; }
+        if (prT != VK_SUCCESS) { logError("[rhi] transparent graphics pipeline create failed"); return false; }
+        if (prP != VK_SUCCESS) { logError("[rhi] planet graphics pipeline create failed"); return false; }
 
         logInfo("[rhi] GPU-driven mesh pipeline ready (bindless textures + per-object SSBO + multidraw-indirect)");
+        logInfo("[rhi] planet body pipeline ready (push-constant model + bindless triplanar PBR)");
 
         // Now that m_objSetLayout exists, build the depth-only shadow pipeline.
         if (!createShadowPipeline()) return false;
@@ -7193,10 +8393,21 @@ private:
 
         if (m_meshPipeline)  vkDestroyPipeline(m_dev.device, m_meshPipeline, nullptr);
         if (m_meshPipelineNoSsao) vkDestroyPipeline(m_dev.device, m_meshPipelineNoSsao, nullptr);
+        if (m_meshProbePipe) { vkDestroyPipeline(m_dev.device, m_meshProbePipe, nullptr); m_meshProbePipe = VK_NULL_HANDLE; }
+        if (m_meshProbeLayout) { vkDestroyPipelineLayout(m_dev.device, m_meshProbeLayout, nullptr); m_meshProbeLayout = VK_NULL_HANDLE; }
+        if (m_meshPipelineTransparent) vkDestroyPipeline(m_dev.device, m_meshPipelineTransparent, nullptr);
+        for (uint32_t pt = 0; pt < (uint32_t)PT_Count; ++pt) {
+            if (m_planetPipelines[pt]) { vkDestroyPipeline(m_dev.device, m_planetPipelines[pt], nullptr); m_planetPipelines[pt] = VK_NULL_HANDLE; }
+        }
+        if (m_planetPipelineLayout) vkDestroyPipelineLayout(m_dev.device, m_planetPipelineLayout, nullptr);
         if (m_meshLayout)    vkDestroyPipelineLayout(m_dev.device, m_meshLayout, nullptr);
+        // mesh.frag set 4 layout (IBL): created in createGraphics, baked into m_meshLayout.
+        if (m_iblMeshSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_iblMeshSetLayout, nullptr); m_iblMeshSetLayout = VK_NULL_HANDLE; }
         if (m_uploadFence)   vkDestroyFence(m_dev.device, m_uploadFence, nullptr);
         if (m_uploadPool)    vkDestroyCommandPool(m_dev.device, m_uploadPool, nullptr);
-        m_meshPipeline = VK_NULL_HANDLE; m_meshPipelineNoSsao = VK_NULL_HANDLE; m_meshLayout = VK_NULL_HANDLE;
+        m_meshPipeline = VK_NULL_HANDLE; m_meshPipelineNoSsao = VK_NULL_HANDLE;
+        m_meshPipelineTransparent = VK_NULL_HANDLE; m_meshLayout = VK_NULL_HANDLE;
+        m_planetPipelineLayout = VK_NULL_HANDLE;
         m_uploadFence = VK_NULL_HANDLE; m_uploadPool = VK_NULL_HANDLE;
     }
 
@@ -7265,7 +8476,55 @@ private:
     VmaAllocator  m_alloc = nullptr;
     VkPipeline       m_meshPipeline = VK_NULL_HANDLE;        // SSAO path: depth EQUAL, no write
     VkPipeline       m_meshPipelineNoSsao = VK_NULL_HANDLE;  // no-SSAO path: depth LESS, write
+    // Interior reflection probe: a clone of the no-SSAO mesh PSO using mesh_probe.vert
+    // (per-face viewProj via push constant) to bake scene geometry into the IBL env cube.
+    VkPipeline       m_meshProbePipe = VK_NULL_HANDLE;
+    VkPipelineLayout m_meshProbeLayout = VK_NULL_HANDLE;     // 5 mesh sets + mat4 push (VERTEX)
+    VkImage          m_probeDepthImg = VK_NULL_HANDLE; VmaAllocation m_probeDepthAlloc = nullptr;
+    VkImageView      m_probeDepthView = VK_NULL_HANDLE;      // env-face-sized depth for the bake
+    bool             m_iblProbeScene = false;                // bake scene into env (vs sky-only)
+    glm::vec3        m_iblProbePos{ 0.0f, 1.6f, 0.0f };      // probe world position (set to cam at bake)
+    VkPipeline       m_meshPipelineTransparent = VK_NULL_HANDLE;  // BLEND: src-alpha over, LEQUAL, no depth-write, cull NONE
     VkPipelineLayout m_meshLayout = VK_NULL_HANDLE;
+
+    // ---- Procedural planet body (FORGE3D port) — dedicated per-TYPE pipelines.
+    // Each clones the OPAQUE mesh PSO (same MeshVertex input, depth LESS+write, cull
+    // BACK, no blend) but with planet.vert + a per-type fragment shader, all sharing
+    // the SAME layout (set0 bindless + set1 camera UBO + a 128-byte push constant).
+    // The 9 OPAQUE planet types, in pipeline-index order:
+    enum PlanetType : uint32_t {
+        PT_Moon = 0, PT_Ice, PT_Gas, PT_Lava, PT_Terrestrial,
+        PT_Oceanic, PT_Sand, PT_Thunderstorm, PT_Sun,
+        // TRANSPARENT glow layers (drawn AFTER the opaque bodies, compositing OVER
+        // them). Atmosphere/SunCorona = ADDITIVE shells; Ring = ALPHA annulus.
+        PT_Atmosphere, PT_SunCorona, PT_Ring,
+        PT_Count,
+        PT_OpaqueCount = PT_Atmosphere   // [0..PT_OpaqueCount) are the 9 opaque bodies
+    };
+    VkPipeline       m_planetPipelines[PT_Count] = {};   // [0] is the old m_planetPipeline
+    VkPipelineLayout m_planetPipelineLayout = VK_NULL_HANDLE;
+    // Generalized push-constant block (mirrors PC {} in planet.vert + every per-type
+    // frag): mat4 model (64B) + uint tex[12] (48B) + float uTime (4B) + float _p0 +
+    // uint _p1 + uint _p2 (12B) = 128B exactly (the full push-constant range).
+    struct PlanetPush {
+        float    model[16];   // 64B
+        uint32_t tex[12];     // 48B — bindless texture indices, per-type slot mapping
+        float    uTime;       //  4B
+        float    _p0;         //  4B
+        uint32_t _p1;         //  4B
+        uint32_t _p2;         //  4B
+    };
+    static_assert(sizeof(PlanetPush) == 128, "PlanetPush must be 128 bytes (push-constant range)");
+    // One queued planet draw for THIS frame (resolved bindless indices + mesh id +
+    // which per-type pipeline to bind). tex[] holds up to 12 resolved bindless idx.
+    struct PlanetDraw {
+        float    model[16];
+        uint32_t tex[12];
+        float    uTime;
+        uint32_t typeIndex;   // PlanetType -> which m_planetPipelines[] to bind
+        uint32_t meshId;
+    };
+    std::vector<PlanetDraw> m_planetDraws;
 
     // GPU-driven descriptor objects:
     //   set 0 = bindless texture array (one shared set, update-after-bind)
@@ -7298,6 +8557,7 @@ private:
     // caches the number of indirect commands produced.
     bool                    m_framePrepared = false;
     uint32_t                m_frameCmdCount = 0;
+    uint32_t                m_frameCmdOpaque = 0;  // [0,opaque)=opaque cmds, [opaque,count)=BLEND (glass)
 
     // ---- Analytic sky pipeline (open-world track, task A) ------------------
     // A vertexless full-screen triangle drawn at the START of the main color pass
@@ -7310,6 +8570,66 @@ private:
     VkDescriptorSetLayout m_skySetLayout = VK_NULL_HANDLE;
     VkDescriptorPool      m_skyPool      = VK_NULL_HANDLE;
     SkyParams             m_sky{};   // cached params (enabled=false by default)
+    float                 m_skyTime = 0.0f;  // sky-animation time (seconds), -> sky UBO params.z
+
+    // ---- Image-based lighting (IBL) — split-sum environment reflections ----
+    // Foundation for SSR + the RT tier. Three cube/2D resources baked from the
+    // analytic sky: a diffuse IRRADIANCE cube (32px), a roughness-mipped specular
+    // PREFILTER cube (128px base, kIblPrefilterMips), and a scene-independent BRDF
+    // LUT (256px RG16F). An intermediate ENV cube (256px, mipped) is captured from
+    // the analytic-sky math, then convolved. mesh.frag set 4 samples these for
+    // split-sum IBL (replacing the flat ambient*Fresnel constant). The bakes run
+    // on a one-time submit at init + whenever setSkyParams changes the sky, so the
+    // per-frame cost is zero (only the three texture fetches in the shader).
+    static constexpr uint32_t kIblEnvSize        = 256;  // env cube face edge
+    static constexpr uint32_t kIblIrradSize      = 32;   // irradiance cube face edge
+    static constexpr uint32_t kIblPrefilterSize  = 128;  // prefilter cube mip0 edge
+    static constexpr uint32_t kIblPrefilterMips  = 5;    // roughness mip count (128->8)
+    static constexpr uint32_t kIblBrdfSize       = 256;  // BRDF LUT edge
+    static constexpr VkFormat kIblCubeFormat     = VK_FORMAT_R16G16B16A16_SFLOAT;
+    static constexpr VkFormat kIblBrdfFormat     = VK_FORMAT_R16G16_SFLOAT;
+
+    bool m_iblReady = false;          // all resources created (mesh.frag may sample)
+    bool m_iblBaked = false;          // a valid environment was baked at least once
+    bool m_iblDirty = true;           // sky changed -> rebake on next frame prep
+    // Env (intermediate) cube: captured analytic sky, full mip chain for prefilter.
+    VkImage     m_iblEnvImg = VK_NULL_HANDLE;  VmaAllocation m_iblEnvAlloc = nullptr;
+    VkImageView m_iblEnvCubeView = VK_NULL_HANDLE;            // CUBE view (all mips) for sampling
+    VkImageView m_iblEnvFaceView[6] = {};                    // per-face mip0 RT views (capture)
+    uint32_t    m_iblEnvMips = 1;
+    // Irradiance cube (diffuse IBL).
+    VkImage     m_iblIrradImg = VK_NULL_HANDLE; VmaAllocation m_iblIrradAlloc = nullptr;
+    VkImageView m_iblIrradCubeView = VK_NULL_HANDLE;
+    VkImageView m_iblIrradFaceView[6] = {};
+    // Prefilter cube (specular IBL), one RT view per (mip,face).
+    VkImage     m_iblPrefImg = VK_NULL_HANDLE;  VmaAllocation m_iblPrefAlloc = nullptr;
+    VkImageView m_iblPrefCubeView = VK_NULL_HANDLE;
+    VkImageView m_iblPrefFaceView[kIblPrefilterMips][6] = {};
+    // BRDF LUT (2D RG16F).
+    VkImage     m_iblBrdfImg = VK_NULL_HANDLE;  VmaAllocation m_iblBrdfAlloc = nullptr;
+    VkImageView m_iblBrdfView = VK_NULL_HANDLE;
+    // Samplers: cube (linear+mip, clamp) shared by env/irradiance/prefilter; 2D for the LUT.
+    VkSampler   m_iblCubeSampler = VK_NULL_HANDLE;
+    VkSampler   m_iblBrdfSampler = VK_NULL_HANDLE;
+    // Pipelines (fullscreen-triangle, render to one cube face / mip at a time).
+    VkPipeline       m_iblEnvPipe = VK_NULL_HANDLE;
+    VkPipeline       m_iblIrradPipe = VK_NULL_HANDLE;
+    VkPipeline       m_iblPrefPipe = VK_NULL_HANDLE;
+    VkPipeline       m_iblBrdfPipe = VK_NULL_HANDLE;
+    VkPipelineLayout m_iblEnvLayout = VK_NULL_HANDLE;     // UBO set0 + face push
+    VkPipelineLayout m_iblCubeLayout = VK_NULL_HANDLE;    // cube sampler set0 + face/misc push
+    VkPipelineLayout m_iblBrdfLayout = VK_NULL_HANDLE;    // no sets, no push
+    // set0 for the IBL UBO (env capture) + set0 for a cube sampler (convolve passes).
+    VkDescriptorSetLayout m_iblSkyUboSetLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_iblCubeSetLayout   = VK_NULL_HANDLE;
+    VkDescriptorPool      m_iblBakePool = VK_NULL_HANDLE;
+    VkDescriptorSet       m_iblSkyUboSet = VK_NULL_HANDLE;   // -> env capture
+    VkDescriptorSet       m_iblEnvCubeSet = VK_NULL_HANDLE;  // env cube -> irradiance/prefilter
+    VkBuffer m_iblSkyUboBuf = VK_NULL_HANDLE; VmaAllocation m_iblSkyUboAlloc = nullptr; void* m_iblSkyUboMapped = nullptr;
+    // mesh.frag set 4 (IBL): binding0 irradiance cube, binding1 prefilter cube, binding2 BRDF LUT.
+    VkDescriptorSetLayout m_iblMeshSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool      m_iblMeshPool = VK_NULL_HANDLE;
+    VkDescriptorSet       m_iblMeshSet = VK_NULL_HANDLE;
 
     // 2D HUD overlay pipeline (NDC quads, no depth, alpha-blended)
     VkPipeline       m_hudPipeline = VK_NULL_HANDLE;
@@ -7493,9 +8813,12 @@ private:
     };
     static_assert(sizeof(SsaoUBO) == 128 + 32 + (kSsaoKernel + 16) * 16,
                   "SsaoUBO must match the std140 layout in ssao.frag");
-    // Tiny control block fed to mesh.frag (set3/binding1): x=enabled, y=strength,
-    // z=1/screenW, w=1/screenH.
-    struct SsaoControl { glm::vec4 ctrl; };
+    // Tiny control block fed to mesh.frag (set3/binding1): ctrl = {x=enabled,
+    // y=strength, z=1/screenW, w=1/screenH}; ibl = {x=IBL valid(0/1), y=IBL
+    // intensity, z=prefilter max mip, w=reserved}. The ibl lane lets mesh.frag fall
+    // back to the old flat ambient when no environment is baked (other paths/headless
+    // failure) without a separate UBO.
+    struct SsaoControl { glm::vec4 ctrl; glm::vec4 ibl; };
     // Half-res AO targets: raw (ssao.frag output) + blurred (ssao_blur output,
     // sampled by mesh.frag). Both R8, recreated with the frame extent.
     VkImage       m_ssaoRawImg  = VK_NULL_HANDLE; VmaAllocation m_ssaoRawAlloc  = nullptr; VkImageView m_ssaoRawView  = VK_NULL_HANDLE;
@@ -7808,6 +9131,10 @@ private:
     VkDescriptorPool      m_shadowDescPool = VK_NULL_HANDLE;
     VkDescriptorSet       m_shadowSet      = VK_NULL_HANDLE;   // points at the map
     glm::mat4             m_lightViewProj{ 1.0f };  // computed each frame
+    bool                  m_shadowOverride = false;        // setShadowBounds: fixed shadow box
+    glm::vec3             m_shadowCenter{ 0.0f };
+    float                 m_shadowOrtho = kShadowOrtho;
+    float                 m_shadowDepthHalf = kShadowDepthHalf;
     uint32_t              m_curImageIndex  = 0;
 
     // ---- Render graph (perf-stack B) --------------------------------------
@@ -7848,6 +9175,22 @@ private:
     VkImage       m_offscreenColorImg   = VK_NULL_HANDLE;
     VmaAllocation m_offscreenColorAlloc = nullptr;
     VkImageView   m_offscreenColorView  = VK_NULL_HANDLE;
+
+    // ---- Editor UI (Dear ImGui, docking) — EDITOR-ONLY ---------------------
+    // All default null/false so a NON-editor run (no initEditorUI call) allocates
+    // nothing and the editor-UI graph pass is never added. The descriptor pool is
+    // DEDICATED to ImGui (never shared with the bindless/HUD pools — sharing would
+    // corrupt them). m_editorDrawData is filled by endEditorUI() (CPU draw-data
+    // build, OUTSIDE the command buffer) and consumed by the editor-UI graph pass
+    // inside buildAndExecuteGraph() — mirrors prepareFrameData()->recordMeshDraws().
+    VkDescriptorPool m_imguiPool      = VK_NULL_HANDLE;
+    bool             m_imguiInit      = false;
+    ImDrawData*      m_editorDrawData = nullptr;
+    // Stable storage for the editor-UI pass's VkRenderingInfo + color attachment so
+    // they outlive execute() (the graph holds pointers into these — same pattern as
+    // the composite pass's m_compositeRenderInfo / m_compositeAttach above).
+    VkRenderingInfo           m_editorUiRenderInfo{};
+    VkRenderingAttachmentInfo m_editorUiAttach{};
 
     // Per-frame-in-flight
     Frame    m_frames[kFramesInFlight];
@@ -7940,6 +9283,7 @@ private:
     bool m_vsync = true;
     bool m_needsRecreate = false;
     uint32_t m_width = 0, m_height = 0;
+    uint32_t m_ssaa = 1, m_outW = 0, m_outH = 0;   // SSAA: m_width = m_outW*ssaa; downscale on capture
 
     // Camera (FPS); defaults frame the cube at origin
     glm::vec3 m_camPos{ 0.0f, 1.5f, 4.0f };
@@ -7960,6 +9304,10 @@ private:
     // 2nd lift (still "couldn't see"): 0.26 -> 0.42. Sunless B1 needs a real ambient
     // floor; point lights only pool under fixtures, leaving floor/walls black between.
     glm::vec3               m_ambient{ 0.42f, 0.44f, 0.50f };
+    // Final additive bloom strength; defaults to the global subtle value, per-scene
+    // override via setBloom() (the showroom raises it for the glowing-spire hero look).
+    float                   m_bloomIntensity = kBloomIntensity;
+    float                   m_exposure = 1.0f;   // whole-scene brightness (composite pre-tonemap)
 };
 
 } // namespace

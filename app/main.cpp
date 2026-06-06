@@ -41,6 +41,7 @@
 #include "physprops.h"                      // FEATURE_GOALS §1: hanging cubes / joints (ragdoll foundation)
 #include "ragdoll.h"                        // FEATURE_GOALS §2: physics death ragdoll
 #include "editor/editor.h"                  // native Level Editor E1 (brain + self-test)
+#include "editor/editor_host.h"             // Level Architect editor host (shell + blockout)
 #include "barrels.h"                        // explosive barrels (shoot -> chain explosion)
 #include "holo_terminal.h"                  // Jake's cell holographic terminal (text + input)
 #include "secret_room.h"                    // code-locked trapdoor -> stocked secret room
@@ -56,6 +57,7 @@
 #include "weather.h"                         // EFLZ Weather (7 states, biome-gated, hazard — --test-weather)
 #include "elevator.h"
 #include "club1127.h"
+#include "env_art.h"                       // EnvArtSystem::buildFromGlb (--screenshot-showroom)
 #include "valley.h"                          // Crystal Valleys (Act 2, L15 — --world valley)
 #include "cliffs.h"                          // Salvari cliffs finale (--world cliffs)
 #include "terrain.h"
@@ -78,6 +80,7 @@
 #include <unordered_map>   // per-weapon fire-sound cache (name -> SoundHandle)
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>    // std::strcmp (showroom planet name match)
 #include <algorithm>
 #include <filesystem>
 #include <cstdio>
@@ -136,6 +139,308 @@ x3::phys::Vec3 muzzleFromCamera(float ex, float ey, float ez, float yaw, float p
         ex + forward.x * mFwd + right.x * mRight - up.x * mDown,
         ey + forward.y * mFwd + right.y * mRight - up.y * mDown,
         ez + forward.z * mFwd + right.z * mRight - up.z * mDown };
+}
+
+// ---- Shared NIGHT-SKY planet helper -------------------------------------
+// One spot to build the UV-sphere + load the 6 FORGE3D planet types (Moon, Ice,
+// Gas, Lava, Terrestrial, Sun) — the SAME files / slot order / srgb flags the
+// --screenshot-nightsky block has always used — and draw them via drawPlanet().
+// Used by BOTH --screenshot-nightsky and the NIGHT --screenshot-showroom path so
+// the planet recipe isn't duplicated. Positions/radii are defaults the caller may
+// override per-scene (the showroom shifts/scales them to frame over the spire).
+struct NightSkyPlanet {
+    uint32_t                            typeIndex;   // 0=Moon 1=Ice 2=Gas 3=Lava 4=Terrestrial 8=Sun
+    std::vector<x3::rhi::TextureHandle> maps;        // pc.tex[] slot order for the type
+    float                               worldPos[3]; // world position (defaults; caller may move)
+    float                               radius;      // apparent-size scale
+    const char*                         name;        // log label
+    // ---- TRANSPARENT glow layers (additive atmosphere / sun corona; alpha ring).
+    // Each is OPTIONAL: a valid texture handle enables that layer for this body. The
+    // shells reuse the SAME sphere mesh as the body, scaled up; the ring uses a flat
+    // annulus mesh (passed separately to drawNightSkyPlanets). Type indices match
+    // PlanetType: Atmosphere=9, SunCorona=10, Ring=11.
+    x3::rhi::TextureHandle              atmoTex{};   // Atmosphere shell ramp (tex[0]); inflated sphere
+    x3::rhi::TextureHandle              coronaTex{}; // SunCorona map (tex[0]); inflated sphere, animated
+    x3::rhi::TextureHandle              ringTex{};   // Ring radial strip (tex[0]); flat annulus
+};
+
+// Build the UV-sphere (writes `outMesh`) + load every planet's textures, returning
+// the list of bodies with their default nightsky positions/radii. `nTexFail` is
+// incremented per missing file. The texture cache de-dupes shared maps. `logTag`
+// prefixes the load logs so the calling path is clear.
+inline std::vector<NightSkyPlanet> loadNightSkyPlanets(
+        x3::rhi::IRenderDevice* device, x3::rhi::MeshHandle& outMesh,
+        int& nTexFail, const char* logTag,
+        x3::rhi::MeshHandle* outRingMesh = nullptr) {
+    const std::string kPlanets = "C:/Users/Tim/X3/Assets/FORGE3D/Planets/";
+    const std::string kAtmo    = kPlanets + "Atmosphere/";
+    const std::string kMisc    = kPlanets + "Misc/Textures/";
+
+    std::unordered_map<std::string, x3::rhi::TextureHandle> texCache;
+    auto loadTex = [&](const std::string& path, bool srgb) -> x3::rhi::TextureHandle {
+        std::string key = path + (srgb ? "#s" : "#l");
+        auto it = texCache.find(key);
+        if (it != texCache.end()) return it->second;
+        int w = 0, h = 0, comp = 0;
+        stbi_uc* px = stbi_load(path.c_str(), &w, &h, &comp, 4);   // force RGBA8
+        x3::rhi::TextureHandle handle{};
+        if (!px) {
+            x3::logError(std::string(logTag) + ": FAILED to load " + path);
+            ++nTexFail;
+        } else {
+            handle = device->createTexture(px, (uint32_t)w, (uint32_t)h, srgb);
+            stbi_image_free(px);
+            x3::logInfo(std::string(logTag) + ": loaded " + path + " (" + std::to_string(w) + "x" +
+                        std::to_string(h) + (srgb ? ", srgb)" : ", linear)"));
+        }
+        texCache[key] = handle;
+        return handle;
+    };
+
+    std::vector<NightSkyPlanet> bodies;
+    // Moon (type 0): tex[0]=Albedo(s) [1]=Normal(l) [2]=Detail(s) [3]=Spec(l) [4]=Scatter(s)
+    {
+        const std::string p = kPlanets + "Moon/Textures/";
+        bodies.push_back({ 0u, {
+            loadTex(p + "moon_02.png",        true),
+            loadTex(p + "moon_02_normal.png", false),
+            loadTex(p + "moon_01_detail.png", true),
+            loadTex(p + "moon_02_spec.png",   false),
+            loadTex(kAtmo + "sunset_yellow_05.png", true),
+        }, { -42.0f, 30.0f, -100.0f }, 15.0f, "Moon" });
+    }
+    // Ice (type 1): tex[0]=ColorMap(s) [1]=Normal(l) [2]=Height(l) [3]=Detail(l) [4]=Scatter(s)
+    {
+        const std::string p = kPlanets + "Ice/Textures/";
+        bodies.push_back({ 1u, {
+            loadTex(p + "ColorMapSqr.png",  true),
+            loadTex(p + "ice_01_normal.png", false),
+            loadTex(p + "ice_01.png",        false),
+            loadTex(p + "icedetail_01.png",  false),
+            loadTex(kAtmo + "sunset_blue_03.png", true),
+        }, { 86.0f, 34.0f, -130.0f }, 22.0f, "Ice" });
+    }
+    // Gas (type 2): tex[0]=HeightBands(s) [1]=UVDistortion(l) [2]=Scatter(s)
+    {
+        const std::string p = kPlanets + "Gas/Textures/";
+        bodies.push_back({ 2u, {
+            loadTex(p + "planet_gas_03.png",  true),
+            loadTex(p + "planet_gas_08.png",  false),
+            loadTex(kAtmo + "sunset_yellow_01.png", true),
+        }, { 18.0f, 8.0f, -210.0f }, 42.0f, "Gas" });
+    }
+    // Lava (type 3): tex[0]=Height(s) [1]=Detail(l) [2]=Magma(l) [3]=Normal(l) [4]=Distortion(s) [5]=Scatter(s)
+    {
+        const std::string lp = kPlanets + "Lava/Textures/";
+        const std::string ip = kPlanets + "Ice/Textures/";
+        bodies.push_back({ 3u, {
+            loadTex(lp + "lava_01.png",        true),
+            loadTex(lp + "lavadetail_01.png",  false),
+            loadTex(lp + "lavadetail_01.png",  false),
+            loadTex(ip + "ice_04_normal.png",  false),
+            loadTex(lp + "lavadistmap.png",    true),
+            loadTex(kAtmo + "sunset_red_04.png", true),
+        }, { -95.0f, -20.0f, -120.0f }, 20.0f, "Lava" });
+    }
+    // Terrestrial (type 4): tex[0]=Height(s) [1]=LandMask(l) [2]=Normal(l) [3]=Scatter(s)
+    //   [4]=Gradient(l) [5]=CloudsTop(s) [6]=CloudsMiddle(s) [7]=CityLight(l)
+    //   [8]=CityLightUV(l) [9]=CityLightMask(l)
+    {
+        const std::string p = kPlanets + "Terrestrial/Textures/";
+        bodies.push_back({ 4u, {
+            loadTex(p + "terrestrialdetail_01.png",        true),
+            loadTex(p + "landmask_01.png",                 false),
+            loadTex(p + "terrestrialdetail_01_normal.png", false),
+            loadTex(kAtmo + "sunset_yellow_05.png",        true),
+            loadTex(kMisc + "polegradient_01.png",         false),
+            loadTex(p + "cloudscap_01.png",                true),
+            loadTex(p + "clouds_01.png",                   true),
+            loadTex(p + "lights_01.png",                   false),
+            loadTex(p + "lights_01_uv.png",                false),
+            loadTex(p + "lights_01_mask.png",              false),
+        }, { 60.0f, -30.0f, -135.0f }, 26.0f, "Terrestrial" });
+    }
+    // Sun (type 8): tex[0]=SurfaceMap(l) [1]=DistortionMap(l) — emissive, small+bright.
+    {
+        const std::string sp = kPlanets + "Sun/Textures/";
+        const std::string tp = kPlanets + "Thunderstorm/Textures/";
+        bodies.push_back({ 8u, {
+            loadTex(sp + "sunsurface_01.png", false),
+            loadTex(tp + "storm_02.png",      false),
+        }, { -14.0f, 40.0f, -70.0f }, 11.0f, "Sun" });
+    }
+
+    // ---- TRANSPARENT glow layers (additive atmosphere + sun corona; alpha ring) ----
+    // Load the three extra maps + attach them to the matching bodies so the shells
+    // draw with the same world position as their body. Texture roles per the port
+    // headers + TEXTURE_MANIFEST:
+    //   Atmosphere shell : _AtmosphereSample = Atmosphere/Atmosphere_01.png horizon
+    //                      gradient ramp (sRGB, CLAMP_TO_EDGE). On the Terrestrial.
+    //   Sun corona       : _CoronaMap = Sun/Textures/suncorona_01.png grayscale flow
+    //                      atlas (LINEAR). On the Sun (animated via uTime).
+    //   Ring             : _DetailMap = Gas/Textures/ring_01.png radial strip (sRGB,
+    //                      CLAMP_TO_EDGE; RGB=color, R=alpha). Around the Gas giant.
+    x3::rhi::TextureHandle atmoTex   = loadTex(kAtmo + "Atmosphere_01.png", true);
+    x3::rhi::TextureHandle coronaTex = loadTex(kPlanets + "Sun/Textures/suncorona_01.png", false);
+    x3::rhi::TextureHandle ringTex   = loadTex(kPlanets + "Gas/Textures/ring_01.png", true);
+    for (NightSkyPlanet& b : bodies) {
+        if (b.typeIndex == 4u) b.atmoTex   = atmoTex;    // Terrestrial -> atmosphere shell
+        if (b.typeIndex == 8u) b.coronaTex = coronaTex;  // Sun         -> corona halo
+        if (b.typeIndex == 2u) b.ringTex   = ringTex;    // Gas         -> ring annulus
+    }
+
+    // ONE UV-sphere mesh (unit radius; pos == normal for the triplanar shading).
+    x3::prims::PrimMesh sphere = x3::prims::makeUVSphere(64, 128);
+    outMesh = device->createMesh(
+        sphere.verts.data(), (uint32_t)sphere.verts.size(),
+        sphere.index.data(),  (uint32_t)sphere.index.size());
+
+    // Flat annulus for the ring (object-space radii match planet_ring.frag's
+    // hardcoded inner=1.3 / outer=2.5; the model matrix sizes it to the gas giant).
+    if (outRingMesh) {
+        x3::prims::PrimMesh ring = x3::prims::makeRing(1.3f, 2.5f, 128);
+        *outRingMesh = device->createMesh(
+            ring.verts.data(), (uint32_t)ring.verts.size(),
+            ring.index.data(),  (uint32_t)ring.index.size());
+    }
+
+    return bodies;
+}
+
+// Draw every planet for the current frame (call AFTER the scene's own draws so the
+// depth buffer occludes correctly). Each body uses its per-type planet pipeline.
+inline void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::FrameContext& fc,
+                                x3::rhi::MeshHandle mesh,
+                                const std::vector<NightSkyPlanet>& planets, float uTime,
+                                x3::rhi::MeshHandle ringMesh = {}) {
+    if (!fc.valid) return;
+    // PlanetType transparent indices (see VulkanRenderDevice PlanetType enum).
+    constexpr uint32_t kAtmosphere = 9u, kSunCorona = 10u, kRing = 11u;
+    for (const NightSkyPlanet& b : planets) {
+        const float r = b.radius;
+        // OPAQUE body: uniform scale by the apparent radius, translated to world pos.
+        const float model[16] = {
+            r, 0, 0, 0,
+            0, r, 0, 0,
+            0, 0, r, 0,
+            b.worldPos[0], b.worldPos[1], b.worldPos[2], 1,
+        };
+        device->drawPlanet(fc, mesh, model, b.typeIndex,
+                           b.maps.data(), (uint32_t)b.maps.size(), uTime);
+
+        // --- ADDITIVE atmosphere shell: same sphere, inflated ~1.06x the body. ---
+        if (b.atmoTex.valid()) {
+            const float s = r * 1.06f;
+            const float m[16] = { s,0,0,0, 0,s,0,0, 0,0,s,0,
+                                  b.worldPos[0], b.worldPos[1], b.worldPos[2], 1 };
+            x3::rhi::TextureHandle t[1] = { b.atmoTex };
+            device->drawPlanet(fc, mesh, m, kAtmosphere, t, 1u, uTime);
+        }
+        // --- ADDITIVE sun corona: same sphere, big shell ~2.2x the Sun, animated. ---
+        if (b.coronaTex.valid()) {
+            const float s = r * 2.2f;
+            const float m[16] = { s,0,0,0, 0,s,0,0, 0,0,s,0,
+                                  b.worldPos[0], b.worldPos[1], b.worldPos[2], 1 };
+            x3::rhi::TextureHandle t[1] = { b.coronaTex };
+            device->drawPlanet(fc, mesh, m, kSunCorona, t, 1u, uTime);
+        }
+        // --- ALPHA ring: flat annulus, tilted, uniformly scaled by the body radius. ---
+        // The ring mesh is authored in object space at inner=1.3 / outer=2.5 (the
+        // frag's hardcoded radii). A uniform scale by `r` keeps object-space radii
+        // intact (the frag works object-space) and sizes the ring to 1.3r..2.5r in
+        // world. A small tilt about X gives the disc some perspective.
+        if (b.ringTex.valid() && ringMesh.valid()) {
+            const float s = r;
+            const float ct = 0.92f, st = 0.39f;   // ~23 deg tilt about X (cos,sin)
+            // column-major: tilt(X) * scale(s), translated to the body position.
+            const float m[16] = {
+                 s,      0,      0,     0,
+                 0,    s*ct,   s*st,    0,
+                 0,   -s*st,   s*ct,    0,
+                 b.worldPos[0], b.worldPos[1], b.worldPos[2], 1,
+            };
+            x3::rhi::TextureHandle t[1] = { b.ringTex };
+            device->drawPlanet(fc, ringMesh, m, kRing, t, 1u, uTime);
+        }
+    }
+}
+
+// ---- SHOWROOM DAY<->NIGHT lighting STATES (one helper, two looks) -----------
+// The --world showroom (and its headless proofs) drive their sky/sun/ambient/
+// bloom/interior-point-lights through this ONE helper so DAY and NIGHT are a
+// single switch.  ADDITIVE: NIGHT reproduces the exact values the showroom has
+// always used (dark planet sky + dim cool moon + full interior point lights);
+// the planet draw + setSkyTime wheeling are gated to NIGHT by the CALLER.
+//
+//   DAY  — match the Unity ShowRoom_Vol30 interior (bright, cool, high-key white):
+//     * Sun from the Unity HDRP directional light Rotation X=69.31, Y=9.7, Z=0.
+//       Unity light forward = R_y(9.7)*R_x(69.31)*(0,0,1) = (0.0595,-0.9355,0.3483);
+//       sunDir (TOWARD the sun) = -forward = (-0.0595, 0.9355, -0.3483) — a high
+//       winter-midday sun, ~69 deg elevation, azimuth ~10 deg.  Short soft shadows.
+//     * Bright sky: pale winter-blue zenith, warm-grey horizon haze, exposure ~1.
+//     * setAmbient BRIGHT cool snow-bounce — the DOMINANT fill (high-key, no hard
+//       blacks); this is what makes the interior read bright/cool like Unity 013904.
+//     * setBloom low (~0.12).  Interior point lights DIMMED (x0.3) — snow-bounce
+//       carries the room by day, not the fixtures.
+//
+// `interiorLights` (nullable) holds the FULL-intensity NIGHT point lights (color
+// already pre-multiplied by intensity).  DAY pushes a x0.3-scaled copy; NIGHT
+// pushes them unchanged.  Pass nullptr for paths with no interior lights (the
+// exterior --screenshot-showroom).  Returns nothing; SSAO/GI are untouched.
+inline void applyShowroomTimeOfDay(
+        x3::rhi::IRenderDevice* device, bool day,
+        const std::vector<x3::rhi::PointLight>* interiorLights = nullptr) {
+    x3::rhi::IRenderDevice::SkyParams sp{};
+    sp.enabled = true;
+    if (day) {
+        // DAY — Unity-match: high winter sun, bright pale winter-blue sky.
+        sp.sunDir[0]   = -0.0595f; sp.sunDir[1] = 0.9355f; sp.sunDir[2] = -0.3483f; // TOWARD the sun
+        sp.sunColor[0] = 1.00f;  sp.sunColor[1] = 0.98f; sp.sunColor[2] = 0.95f;    // warm-neutral
+        sp.sunIntensity = 3.4f;   // bright key (winter midday)
+        sp.haze = 0.5f; sp.exposure = 0.92f;   // just under 1.0 so the bright floors don't blow out
+        sp.zenith[0]  = 0.20f; sp.zenith[1]  = 0.34f; sp.zenith[2]  = 0.62f;        // pale winter-blue
+        sp.horizon[0] = 0.72f; sp.horizon[1] = 0.80f; sp.horizon[2] = 0.92f;        // warm-grey/white haze
+        device->setSkyParams(sp);
+        device->setAmbient(0.48f, 0.52f, 0.62f);   // BRIGHT cool snow-bounce high-key fill (pulled from 0.55 so floors don't blow)
+        device->setBloom(0.12f);                    // low: let white panels bloom only slightly
+    } else {
+        // NIGHT — UNCHANGED from the original showroom recipe.
+        sp.sunDir[0] = 0.6f; sp.sunDir[1] = 0.42f; sp.sunDir[2] = -0.2f;   // low raking MOON
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.96f; sp.sunColor[2] = 0.90f;
+        sp.sunIntensity = 0.25f;   // cool moonlight (still casts shadows)
+        sp.haze = 0.15f; sp.exposure = 0.62f;
+        sp.zenith[0]  = 0.012f; sp.zenith[1]  = 0.012f; sp.zenith[2]  = 0.028f;   // near-black zenith
+        sp.horizon[0] = 0.10f;  sp.horizon[1] = 0.13f;  sp.horizon[2] = 0.20f;    // faint cool horizon
+        device->setSkyParams(sp);
+        device->setAmbient(0.09f, 0.10f, 0.16f);   // cool dim moonlight fill
+        device->setBloom(0.22f);                    // HERO glow on the HDR-emissive windows/fixtures
+    }
+    // Interior point lights: DAY dims them (x0.3) so snow-bounce dominates; NIGHT
+    // uses the full-intensity set.  Color channels are pre-multiplied by intensity.
+    if (interiorLights) {
+        if (day) {
+            std::vector<x3::rhi::PointLight> dim = *interiorLights;
+            for (x3::rhi::PointLight& pl : dim) {
+                pl.color[0] *= 0.3f; pl.color[1] *= 0.3f; pl.color[2] *= 0.3f;
+            }
+            device->setPointLights(dim.data(), (uint32_t)dim.size());
+        } else {
+            device->setPointLights(interiorLights->data(), (uint32_t)interiorLights->size());
+        }
+    }
+    // Interior reflection probe: bake the IBL env from the showroom geometry (around the
+    // camera) instead of the open sky, so the glossy/metallic Unity panels reflect the
+    // dim interior rather than the bright sky (which blows them out to white).
+    device->setIblProbe(true);
+}
+
+// Read the DAY-vs-NIGHT selection for the SHOWROOM. Default = NIGHT (unchanged).
+// DAY is opted into via the env X3_SHOWROOM_DAY=1 (so the headless proofs
+// --screenshot-showroom / -fp / -floor2 can capture DAY) OR the in-game 'T'
+// toggle (interactive path flips a runtime bool seeded from this).
+inline bool showroomDayDefault() {
+    const char* e = std::getenv("X3_SHOWROOM_DAY");
+    return e != nullptr && e[0] != '0' && e[0] != '\0';
 }
 
 // ---- ON-GLASS HOLO-TERMINAL readout (large, high-contrast, fit to the panel) ----
@@ -284,6 +589,14 @@ struct VmPose { float yawRad, pitchRad, rollRad, fwd, right, down; };
 
 constexpr float kDegToRad = 3.14159265358979f / 180.0f;
 
+// KEYPAD code for the --world showroom HIDDEN HATCH (the concealed floor panel that
+// opens the stair down to the glass elevator). The hatch is gated by entering THIS
+// code on a keypad (reusing x3::game::KeypadEntry, the same state machine driven by
+// --test-doorcode / the Level-1 §6.4 door gate). Deliberately NOT 1127 (that is the
+// Spire/Club secret). Themed "ARIA" on a phone keypad (A=2,R=7,I=4,A=2). *** CHANGE
+// HERE to re-key the hatch. *** Also exercised headless by --test-hatchcode.
+constexpr int kShowroomHatchCode = 2742;
+
 // Register the six viewmodel cvars, seeded with the baked defaults (weapon.h).
 void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("vm_yaw",   std::to_string(x3::game::kVmDefYawDeg),
@@ -320,6 +633,10 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // gated by the camera frustum (only rooms you LOOK at are drawn) + a room budget, so it
     // never falls back to the whole tower. Live-tunable.
     console.registerCVar("r_culldepth", "6", "canonlevel portal flood-fill depth (open-doorway hops; 1 = direct neighbours only)");
+    // Whole-scene brightness dial (live). Multiplies the composite pre-tonemap exposure;
+    // 1.0 = unchanged. The in-game "showroom brightness" knob: `r_exposure 1.5` brightens,
+    // `r_exposure 0.7` dims. Type it in the console (~) and the scene updates immediately.
+    console.registerCVar("r_exposure", "1.0", "whole-scene brightness (pre-tonemap exposure multiplier; live)");
     // (3rd-person Jake tuning cvars removed 2026-05-27: dialed-in values
     // jake_yoff=1.03 / jake_yawoff_deg=90 / jake_camdist=2.3 / jake_camh=0.37
     // are now baked as member defaults in app/thirdperson.h.)
@@ -334,6 +651,9 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     p.strength = console.getFloat("r_rtao_strength");
     if (p.radius <= 0.0f) p.radius = 1.2f;
     device.setRtaoParams(p);
+    // Whole-scene brightness dial (live; default 1.0 = unchanged). Piggybacks the
+    // per-frame cvar->device sync so `r_exposure` takes effect immediately.
+    device.setExposure(console.getFloat("r_exposure"));
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.
@@ -816,6 +1136,7 @@ int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
+         testBlockout = false,
          testBarrels = false, testHoloterm = false, testEcs = false, testEcsRender = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
@@ -825,7 +1146,7 @@ int main(int argc, char** argv) {
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
-         testThirdPerson = false;
+         testThirdPerson = false, testHatchCode = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -952,6 +1273,20 @@ int main(int argc, char** argv) {
     // when omitted: G:\X3Native\screenshot.png.
     bool        screenshot = false;
     std::string screenshotPath = "G:/X3Native/screenshot.png";
+    // Level Architect EDITOR mode (--editor): boot the live canon world with the Dear
+    // ImGui (docking) editor overlay enabled. With no --editor flag ImGui never
+    // initializes (zero cost — byte-for-byte the shipping game). Phase 0 draws only a
+    // dockspace + the ImGui demo window (proof the integration renders); Phase 1 hosts
+    // the real panels.
+    bool        editorMode = false;
+    // Headless editor proof (--screenshot-editor [path.png]): init ImGui in a headless
+    // device, render ONE frame with the dockspace + demo window, and capture a PNG that
+    // shows the ImGui window — proves the Phase-0 integration actually rasterizes.
+    // NOTE: ImGui normally inits only in windowed --editor; this proof path is the
+    // single exception (a forced headless ImGui init) so the render can be verified
+    // without a display. Default path: build/proof/editor_p0.png.
+    bool        editorShot = false;
+    std::string editorShotPath = "build/proof/editor_p0.png";
     // UI-demo capture (--ui-demo [path.png] / --screenshot-menu): build EFLZ Level 1,
     // pose the gate-standard corridor camera, then draw the GENERAL game-UI MAIN MENU
     // (title + START / QUIT, the START button focused/hot) over the rendered scene and
@@ -971,6 +1306,82 @@ int main(int argc, char** argv) {
     // open-world sky. Default path when omitted: G:\X3Native\sky.png.
     bool        skyShot = false;
     std::string skyShotPath = "G:/X3Native/sky.png";
+    // Showroom preview (--screenshot-showroom [path.png]): load the baked Unity scene
+    // export (assets/converted_glb/ShowRoom_Vol30/Example_01.glb), frame the camera on
+    // the building cluster, capture a PBR-shaded PNG. Headless, like --screenshot.
+    bool        showroomShot = false;
+    std::string showroomShotPath = "G:/X3Native/showroom.png";
+    // FIRST-PERSON showroom proof (--screenshot-showroom-fp [path.png]): run the SAME
+    // interactive `--world showroom` setup (walkable floor slab + companion Aria + the
+    // wheeling night sky) but render ONE headless frame from the PLAYER SPAWN eye and
+    // capture a PNG. This is the headless proof that the walkable content is correct
+    // (interactive WASD/mouse can't be exercised headlessly). Default: G:\X3Native\showroom_fp.png.
+    bool        showroomFpShot = false;
+    std::string showroomFpShotPath = "G:/X3Native/showroom_fp.png";
+    // RAGDOLL PROOF (--screenshot-showroom-ragdoll [path.png]): same headless showroom-FP
+    // setup, but call girl.ragdoll() and step the physics world ~45 frames so Aria
+    // COLLAPSES, then capture one frame. The frame must show her in a physics heap
+    // (driven by applyExternalGlobals from the ragdoll), NOT the standing idle pose —
+    // the headless proof the ragdoll drives the skin. Default: G:\X3Native\showroom_ragdoll.png.
+    bool        showroomRagdollShot = false;
+    std::string showroomRagdollShotPath = "G:/X3Native/showroom_ragdoll.png";
+    // GLASS-DECK / ELEVATOR / HIDDEN-STAIR proofs (additive spire-top experience).
+    // Each forces --world showroom on, then captures ONE headless frame from a
+    // vantage that proves the new feature, and exits:
+    //   --screenshot-showroom-deck  [path] — camera ON the glass deck at the spire
+    //       top (~y=90), looking out at the night sky (deck glass + rails + planets).
+    //   --screenshot-showroom-floor2 [path] — standing ON the 2nd floor (y=3) having
+    //       climbed the synthesized stair; proves the climb collision + 2nd-floor slab.
+    //   --screenshot-showroom-door  [path] — the hidden 2nd-floor WALL DOOR, shown
+    //       OPEN (slid aside) revealing the entry passage behind it (set X3_SHOWROOM_
+    //       DOORCLOSED=1 to instead capture it CLOSED/concealed flush in the wall).
+    //   --screenshot-showroom-elevator [path] — the glass car in the ELEVATOR ATRIUM
+    //       (the white room above the 2nd floor where the lift boards), camera inside.
+    //   --screenshot-showroom-stair [path] — the entry PASSAGE + 90 deg TURN + the
+    //       FLIGHT OF STAIRS climbing up to the elevator atrium.
+    bool        showroomDeckShot = false;
+    std::string showroomDeckShotPath = "C:/GameDev/X3Native-engine/build/proof/showroom_deck.png";
+    bool        showroomElevShot = false;
+    std::string showroomElevShotPath = "C:/GameDev/X3Native-engine/build/proof/showroom_elevator.png";
+    bool        showroomStairShot = false;
+    std::string showroomStairShotPath = "C:/GameDev/X3Native-engine/build/proof/showroom_stair.png";
+    bool        showroomFloor2Shot = false;
+    std::string showroomFloor2ShotPath = "C:/GameDev/X3Native-engine/build/proof/showroom_floor2.png";
+    bool        showroomDoorShot = false;
+    std::string showroomDoorShotPath = "C:/GameDev/X3Native-engine/build/proof/showroom_door.png";
+    //   --screenshot-showroom-struts [path] — EXTERIOR shot from outside the building
+    //       looking back at it, framing the SYMMETRIC radial set of thickened "/"
+    //       strut legs (all four matched). Default build/proof/showroom_struts.png.
+    bool        showroomStrutsShot = false;
+    std::string showroomStrutsShotPath = "C:/GameDev/X3Native-engine/build/proof/showroom_struts.png";
+    // HIDDEN ANALYST GALLERY proofs (--screenshot-showroom-gallery [path]): the secret
+    // surveillance level ringing the central void at the elevator level (~Y10-13). The
+    // flag captures TWO frames in one run: (a) the gallery itself — terminals glowing +
+    // analyst figures around the ring — to <path>; (b) the view from the gallery looking
+    // DOWN through the dark one-way glass onto the civilian floor/pad to <path>_down.png.
+    // X3_SHOWROOM_GALLERY_UP=1 instead captures the civilian-floor view looking UP at the
+    // dark-glass ceiling band (proving the analysts read dark/hidden from below).
+    bool        showroomGalleryShot = false;
+    std::string showroomGalleryShotPath = "C:/GameDev/X3Native-engine/build/proof/showroom_gallery.png";
+    // CIVILIAN-FLOOR proof (--screenshot-showroom-civilians [path]): a wide DAY view
+    // looking across the GROUND floor (blue pad + lounge) so the civilian crowd reads,
+    // then a second frame from the 2nd-floor mezzanine deck (<path>_mezz.png). Proves
+    // the civilians populate both floors naturally, day-lit, standing on the floor.
+    bool        showroomCivShot = false;
+    std::string showroomCivShotPath = "C:/GameDev/X3Native-engine/build/proof/showroom_civilians.png";
+    // Planet preview (--screenshot-planet [path.png]): build a UV-sphere Moon body,
+    // load the 5 FORGE3D Moon textures, light it from the side so a day/night
+    // terminator reads, hang it against a dark space backdrop, and capture a PNG.
+    // Headless, 4x SSAA, like --screenshot-showroom. Default path: G:\X3Native\planet.png.
+    bool        planetShot = false;
+    std::string planetShotPath = "G:/X3Native/planet.png";
+    // Night-sky preview (--screenshot-nightsky [path.png]): build ONE UV-sphere and
+    // hang ~6 VARIED planet TYPES (Moon, Ice, Gas, Lava, Terrestrial, Sun) staggered
+    // across a dark, star-flecked dome, each shaded by its own per-type pipeline, and
+    // capture a PNG. Headless, 4x SSAA, like --screenshot-planet. Default path:
+    // G:\X3Native\nightsky.png.
+    bool        nightskyShot = false;
+    std::string nightskyShotPath = "G:/X3Native/nightsky.png";
     // Terrain vantage mode (--screenshot-terrain [path.png]): build the tiled
     // procedural terrain world (terrain + sky + sun), pose a camera up on the
     // hills looking toward the sun so the lit rolling terrain + cast shadows +
@@ -1073,6 +1484,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-ragdoll") testRagdoll = true;
         else if (a == "--test-ragdollskin") testRagdollSkin = true;
         else if (a == "--test-editor") testEditor = true;
+        else if (a == "--test-blockout") testBlockout = true;
         else if (a == "--test-barrels") testBarrels = true;
         else if (a == "--test-holoterm") testHoloterm = true;
         else if (a == "--test-secretroom") testSecretRoom = true;
@@ -1105,6 +1517,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-tod") testTod = true;
         else if (a == "--test-weather") testWeather = true;
         else if (a == "--test-doorcode") testDoorCode = true;
+        else if (a == "--test-hatchcode") testHatchCode = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-elevatorfsm") testElevatorFsm = true;
         else if (a == "--test-net") testNet = true;
@@ -1153,6 +1566,11 @@ int main(int argc, char** argv) {
             if (i + 1 < argc && argv[i + 1][0] != '-')
                 benchFrames = (uint32_t)std::strtoul(argv[++i], nullptr, 10);
         }
+        else if (a == "--editor") editorMode = true;
+        else if (a == "--screenshot-editor") {
+            editorShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') editorShotPath = argv[++i];
+        }
         else if (a == "--screenshot") {
             screenshot = true;
             // Optional path arg (next token, if it isn't another flag).
@@ -1185,6 +1603,84 @@ int main(int argc, char** argv) {
             skyShot = true;
             // Optional output path arg (next token, if it isn't another flag).
             if (i + 1 < argc && argv[i + 1][0] != '-') skyShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-showroom") {
+            showroomShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') showroomShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-showroom-fp") {
+            // Headless first-person proof of the walkable --world showroom. Forces the
+            // showroom world on so the SAME build path runs, then renders one frame from
+            // the player spawn eye and exits.
+            showroomFpShot = true;
+            worldMode = "showroom";
+            if (i + 1 < argc && argv[i + 1][0] != '-') showroomFpShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-showroom-ragdoll") {
+            // Headless proof of Aria's physics RAGDOLL: same showroom-FP setup, but
+            // collapse her + step the world so she falls, then capture one frame.
+            showroomRagdollShot = true;
+            worldMode = "showroom";
+            if (i + 1 < argc && argv[i + 1][0] != '-') showroomRagdollShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-showroom-deck") {
+            // Headless proof: stand on the spire-top glass deck, look out at the night sky.
+            showroomDeckShot = true;
+            worldMode = "showroom";
+            if (i + 1 < argc && argv[i + 1][0] != '-') showroomDeckShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-showroom-elevator") {
+            // Headless proof: glass elevator car parked mid-shaft, camera inside it.
+            showroomElevShot = true;
+            worldMode = "showroom";
+            if (i + 1 < argc && argv[i + 1][0] != '-') showroomElevShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-showroom-stair") {
+            // Headless proof: the entry passage + 90 deg turn + the stairs up to the atrium.
+            showroomStairShot = true;
+            worldMode = "showroom";
+            if (i + 1 < argc && argv[i + 1][0] != '-') showroomStairShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-showroom-floor2") {
+            // Headless proof: standing on the 2nd floor having climbed the synthesized stair.
+            showroomFloor2Shot = true;
+            worldMode = "showroom";
+            if (i + 1 < argc && argv[i + 1][0] != '-') showroomFloor2ShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-showroom-door") {
+            // Headless proof: the hidden STRUT-FACE door (open by default; closed via env).
+            showroomDoorShot = true;
+            worldMode = "showroom";
+            if (i + 1 < argc && argv[i + 1][0] != '-') showroomDoorShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-showroom-struts") {
+            // Headless EXTERIOR proof: frame the symmetric set of thickened "/" struts.
+            showroomStrutsShot = true;
+            worldMode = "showroom";
+            if (i + 1 < argc && argv[i + 1][0] != '-') showroomStrutsShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-showroom-gallery") {
+            // Headless proof of the HIDDEN ANALYST GALLERY: captures the gallery (terminals
+            // + analyst figures) AND a down-through-the-dark-glass view in one run (and an
+            // up-from-the-civilian-floor view under X3_SHOWROOM_GALLERY_UP=1).
+            showroomGalleryShot = true;
+            worldMode = "showroom";
+            if (i + 1 < argc && argv[i + 1][0] != '-') showroomGalleryShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-showroom-civilians") {
+            // Headless DAY proof of the CIVILIAN crowd on the ground + 2nd floors:
+            // captures a wide ground-floor view (<path>) + a mezzanine view (<path>_mezz.png).
+            showroomCivShot = true;
+            worldMode = "showroom";
+            if (i + 1 < argc && argv[i + 1][0] != '-') showroomCivShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-planet") {
+            planetShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') planetShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-nightsky") {
+            nightskyShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') nightskyShotPath = argv[++i];
         }
         else if (a == "--screenshot-terrain") {
             terrainShot = true;
@@ -1289,6 +1785,10 @@ int main(int argc, char** argv) {
     if (testEditor) {
         x3::logInfo("running Level Editor E1 (JSON/pick/gizmo) self-test...");
         return x3::editor::runEditorSelfTest() ? 0 : 1;
+    }
+    if (testBlockout) {
+        x3::logInfo("running Level Architect BLOCKOUT (brushes[] JSON / snap / mesh) self-test...");
+        return x3::editor::runBlockoutSelfTest() ? 0 : 1;
     }
     if (testBarrels) {
         x3::logInfo("running explosive-barrels self-test...");
@@ -1499,6 +1999,44 @@ int main(int argc, char** argv) {
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
         return x3::game::runDoorCodeSelfTest() ? 0 : 1;
+    }
+    if (testHatchCode) {
+        // Showroom HIDDEN-HATCH keypad smoke (H1-H4). Drives the SAME KeypadEntry state
+        // machine + the SAME submit comparison (value() == kShowroomHatchCode) the
+        // --world showroom hatch uses, headlessly: a wrong code is rejected (buffer
+        // cleared, hatch stays shut), the correct code (with a typo + backspace fixup)
+        // is accepted and "opens" the hatch. Pure logic — no Vulkan/GLFW needed.
+        x3::logInfo("running showroom hidden-hatch keypad smoke (H1-H4)...");
+        bool ok = true;
+        x3::game::KeypadEntry kp;
+        bool hatchOpen = false;
+        auto submit = [&](){
+            if (kp.value() == kShowroomHatchCode) { hatchOpen = true; kp.clear(); return true; }
+            kp.clear(); return false;  // wrong -> clear, stay shut (mirrors DENIED)
+        };
+        // H1: a WRONG code is rejected and the hatch stays shut.
+        for (int d : {1,2,3,4}) kp.pushDigit(d);
+        bool h1 = (!submit() && !hatchOpen);
+        ok = ok && h1; x3::logInfo(std::string("  H1 wrong-code rejected: ") + (h1?"PASS":"FAIL"));
+        // H2: digits append + Backspace fixes a typo so the buffer == the code.
+        const int code = kShowroomHatchCode;                 // 4-digit (2742)
+        kp.clear();
+        kp.pushDigit((code/1000)%10);
+        kp.pushDigit((code/100)%10);
+        kp.pushDigit(9);            // deliberate typo
+        kp.backspace();             // ...corrected
+        kp.pushDigit((code/10)%10);
+        kp.pushDigit(code%10);
+        bool h2 = (kp.value() == code);
+        ok = ok && h2; x3::logInfo(std::string("  H2 digit/backspace -> code: ") + (h2?"PASS":"FAIL"));
+        // H3: submitting the CORRECT code opens the hatch + clears the buffer.
+        bool h3 = (submit() && hatchOpen && kp.empty());
+        ok = ok && h3; x3::logInfo(std::string("  H3 correct-code opens hatch: ") + (h3?"PASS":"FAIL"));
+        // H4: the code is NOT the Spire/Club 1127 secret (guards against re-keying drift).
+        bool h4 = (kShowroomHatchCode != 1127);
+        ok = ok && h4; x3::logInfo(std::string("  H4 code != 1127 (Spire secret): ") + (h4?"PASS":"FAIL"));
+        x3::logInfo(std::string("hatch-keypad smoke: ") + (ok?"ALL PASS":"FAILED"));
+        return ok ? 0 : 1;
     }
     if (testElevator) {
         x3::logInfo("running advanced elevator (call/travel/carry) self-test (E1-E6)...");
@@ -1711,7 +2249,7 @@ int main(int argc, char** argv) {
     // render fully offscreen — NO GLFW window, NO surface, NO swapchain, nothing
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
-    const bool headless = smoketest || screenshot || skyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire;
+    const bool headless = smoketest || screenshot || skyShot || showroomShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -1756,6 +2294,7 @@ int main(int argc, char** argv) {
     desc.width  = W;
     desc.height = H;
     desc.headless = headless;
+    desc.ssaa = (showroomShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot) ? 4u : 1u;   // 4x supersample the showroom / planet / nightsky still (5090 headless: ~16 samples/px, pristine)
     // Benchmark mode runs with vsync OFF so it measures the true frame ceiling,
     // not the display refresh cap.
     desc.vsync  = !bench;
@@ -1770,6 +2309,100 @@ int main(int argc, char** argv) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
+    }
+
+    // ---- Level Architect EDITOR overlay init (--editor / --screenshot-editor) ----
+    // ImGui initializes ONLY here, ONLY when --editor (windowed) or --screenshot-editor
+    // (headless proof) is set. Without either flag initEditorUI is never called and the
+    // device allocates nothing for ImGui (the shipping game path is byte-for-byte
+    // unchanged). The windowed --editor begin/end wrap lands in the interactive loop.
+    if (editorMode && window) {
+        device->initEditorUI(window);
+        x3::logInfo(device->editorUIActive()
+            ? "--editor: Dear ImGui (docking) editor overlay ACTIVE"
+            : "--editor: editor overlay FAILED to init");
+    }
+
+    // ---- Headless editor PROOF (--screenshot-editor [path.png]) ------------------
+    // Inits ImGui in the headless device (a hidden GLFW window backs the GLFW backend;
+    // rendering goes into the offscreen color image), renders ONE frame with the
+    // dockspace + demo window, and captures a PNG so the Phase-0 integration can be
+    // verified without a display. Offscreen + one-shot, like --screenshot.
+    if (editorShot) {
+        x3::logInfo("--screenshot-editor: ImGui Phase-0 proof -> " + editorShotPath);
+        // Ensure the output directory exists (build/proof/).
+        {
+            std::error_code ec;
+            std::filesystem::path outp(editorShotPath);
+            if (outp.has_parent_path())
+                std::filesystem::create_directories(outp.parent_path(), ec);
+        }
+        // A HIDDEN GLFW window backs ImGui's GLFW backend (no surface is used — the
+        // device is headless and renders into its offscreen target).
+        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
+        GLFWwindow* proofWin = glfwCreateWindow(static_cast<int>(W), static_cast<int>(H),
+                                                "X3Engine-editor-proof", nullptr, nullptr);
+        glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);  // restore the default for any later window
+        if (!proofWin) {
+            x3::logError("--screenshot-editor: hidden GLFW window create failed");
+            device->shutdown();
+            glfwTerminate();
+            return 1;
+        }
+        device->initEditorUI(proofWin);
+        if (!device->editorUIActive()) {
+            x3::logError("--screenshot-editor: ImGui init failed");
+            glfwDestroyWindow(proofWin);
+            device->shutdown();
+            glfwTerminate();
+            return 1;
+        }
+        // Phase 1/2 PROOF: stand up a real EditorHost over a minimal Scene + physics,
+        // place a couple of blockout BOXES + a RAMP (clean grid material), pose the
+        // camera at them, and render one frame -> PNG showing the DOCKSPACE + the
+        // editor panels + the grid-material brushes in the viewport.
+        x3::game::Scene proofScene;
+        x3::phys::IPhysicsWorld* proofPhys = x3::phys::createPhysicsWorld();
+        proofPhys->init();
+        x3::editor::EditorHost proofHost;
+        proofHost.init(*device, proofScene, *proofPhys, proofWin);
+        {
+            float p0[3] = { 0.0f, 0.0f, 0.0f }, s0[3] = { 8.0f, 0.5f, 8.0f };   // floor plate
+            float p1[3] = { -2.0f, 1.0f, 1.0f }, s1[3] = { 2.0f, 2.0f, 2.0f };  // a box
+            float p2[3] = { 3.0f, 1.0f, 1.0f }, s2[3] = { 3.0f, 2.0f, 4.0f };   // a ramp
+            proofHost.placeBrush(0u, p0, s0, *device, proofScene, *proofPhys);
+            proofHost.placeBrush(0u, p1, s1, *device, proofScene, *proofPhys);
+            proofHost.placeBrush(1u, p2, s2, *device, proofScene, *proofPhys);
+        }
+        // A pleasant 3/4 vantage on the brushes; a touch of ambient so the grey reads.
+        device->setCamera(8.0f, 6.5f, 11.0f, -2.35f, -0.45f, 60.0f);
+        device->setAmbient(0.55f, 0.56f, 0.58f);
+        // Render a few settle frames (font upload + draw-data), capturing the last one.
+        bool ok = false;
+        const int kProofFrames = 4;
+        for (int f = 0; f < kProofFrames; ++f) {
+            const bool lastFrame = (f == kProofFrames - 1);
+            if (lastFrame) device->armCapture(editorShotPath.c_str());
+            glfwPollEvents();
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                proofScene.render(*device, frame);          // the grid-material brushes
+                device->beginEditorUI();                    // dockspace root (device)
+                proofHost.draw(*device, proofScene, *proofPhys, 1.0f/60.0f);  // panels (host)
+                device->endEditorUI();                      // ImGui::Render + stash draw data
+                device->endFrame(frame);
+            }
+            if (lastFrame) ok = device->captureFrame(editorShotPath.c_str());
+        }
+        device->shutdownEditorUI();
+        proofPhys->shutdown();
+        delete proofPhys;
+        glfwDestroyWindow(proofWin);
+        device->shutdown();
+        glfwTerminate();
+        x3::logInfo(ok ? "--screenshot-editor: wrote " + editorShotPath
+                       : "--screenshot-editor: capture FAILED");
+        return ok ? 0 : 1;
     }
 
     // ---- Sky vantage mode (--screenshot-sky [path.png]) --------------------
@@ -1844,6 +2477,338 @@ int main(int argc, char** argv) {
 
         device->shutdown();
         glfwDestroyWindow(window);
+        glfwTerminate();
+        return wrote ? 0 : 1;
+    }
+
+    // ---- Showroom preview (--screenshot-showroom [path.png]) ---------------
+    // Load the baked Unity scene export (the "3D Showroom Level Kit" Example_01),
+    // frame the camera on the BUILDING cluster (the surrounding km of decorative
+    // scatter sits off-frame), and capture a PBR-shaded PNG. Headless, like the rest.
+    if (showroomShot) {
+        x3::logInfo("--screenshot-showroom: rendering the Unity showroom export to " + showroomShotPath);
+        x3::game::EnvArtSystem showroom;
+        const bool ok = showroom.buildFromGlb(*device, x3::game::convertedGlbRoot(),
+                                              "ShowRoom_Vol30/Example_01.glb");
+        if (!ok) x3::logError("--screenshot-showroom: scene GLB failed to load");
+
+        // DAY<->NIGHT state (default NIGHT; X3_SHOWROOM_DAY=1 -> DAY). The helper sets
+        // sky/sun/ambient/bloom for the chosen state (no interior point lights on the
+        // exterior shot). DAY = Unity-match bright cool sky; NIGHT = the original recipe.
+        const bool gShowroomDay = showroomDayDefault();
+        applyShowroomTimeOfDay(device.get(), gShowroomDay, /*interiorLights*/nullptr);
+        x3::logInfo(std::string("--screenshot-showroom: time-of-day = ") + (gShowroomDay ? "DAY" : "NIGHT"));
+        // Disable the SSAO/GI depth PRE-PASS for the showroom: it makes the color pass use an
+        // EQUAL depth test vs full-quad pre-pass depth, which would punch sky holes through
+        // alpha-cutout foliage (the pre-pass has no fragment shader to discard). Without it the
+        // color pass uses LESS + depth-write, so cutout sprites composite correctly.
+        { x3::rhi::IRenderDevice::SsaoParams s{}; s.enabled = false; device->setSsaoParams(s); }
+        { x3::rhi::IRenderDevice::GiParams   g{}; g.enabled = false; device->setGiParams(g); }
+
+        // --- NIGHT-SKY planets: load the 6 FORGE3D bodies via the SHARED helper (same
+        // files / slot order / srgb as --screenshot-nightsky). They get RE-POSITIONED
+        // below, AFTER the camera is framed, so they hang HIGH ABOVE/BEHIND the spire in
+        // the upper frame (and within the 200 m far plane) — not at the nightsky defaults.
+        int nPlanetTexFail = 0;
+        x3::rhi::MeshHandle planetMesh{};
+        x3::rhi::MeshHandle ringMesh{};
+        std::vector<NightSkyPlanet> planets =
+            loadNightSkyPlanets(device.get(), planetMesh, nPlanetTexFail, "--screenshot-showroom", &ringMesh);
+        if (nPlanetTexFail > 0)
+            x3::logError("--screenshot-showroom: " + std::to_string(nPlanetTexFail) +
+                         " planet texture(s) missing — some bodies may render flat");
+        // Non-zero sky-animation time so the starfield (+ any future time-driven sky)
+        // is captured in a settled, animated state. Corona uTime flows via drawPlanet.
+        // NIGHT only — the starfield/wheeling is a night feature (auto-hidden on the
+        // bright DAY sky, and the planets are not drawn in DAY).
+        if (!gShowroomDay) device->setSkyTime(10.0f);
+
+        // Frame on the BUILDING using ENGINE-space bounds (the engine's node-transform
+        // composition differs from the Python analysis, so trust the engine). namedBounds
+        // filters to structural/furniture meshes, ignoring the km of decorative scatter.
+        const std::vector<std::string> kBuild = {
+            "room", "pilar", "plateform", "platform", "stair", "window", "showcase",
+            "table", "chair", "carpet", "tube", "halogen", "cache", "tv_screen" };
+        float bmn[3], bmx[3];
+        const uint32_t nb = showroom.namedBounds(kBuild, bmn, bmx);
+        if (nb == 0) { showroom.worldBounds(bmn, bmx); x3::logWarn("--screenshot-showroom: 0 named building nodes; framing the full scene"); }
+        x3::logInfo("--screenshot-showroom: building bounds (" + std::to_string(nb) + " nodes) min(" +
+            std::to_string(bmn[0]) + "," + std::to_string(bmn[1]) + "," + std::to_string(bmn[2]) +
+            ") max(" + std::to_string(bmx[0]) + "," + std::to_string(bmx[1]) + "," + std::to_string(bmx[2]) + ")");
+
+        // Center + extent -> stand back along +Z, kept within the 200 m far plane.
+        const float cx = (bmn[0] + bmx[0]) * 0.5f, cy = (bmn[1] + bmx[1]) * 0.5f, cz = (bmn[2] + bmx[2]) * 0.5f;
+        const float ex = bmx[0] - bmn[0], ey = bmx[1] - bmn[1];
+        float span = ex > ey ? ex : ey;
+        float dist = span * 0.75f + 12.0f;
+        if (dist > 175.0f) dist = 175.0f;
+        if (dist < 18.0f)  dist = 18.0f;
+        const float camx = cx, camy = cy + ey * 0.12f, camz = bmx[2] + dist;   // in front (+Z face)
+        float dx = cx - camx, dy = cy - camy, dz = cz - camz;                  // look toward center
+        float len = std::sqrt(dx * dx + dy * dy + dz * dz); if (len < 1e-3f) len = 1e-3f;
+        const float pitch = std::asin(dy / len);
+        const float yaw   = std::atan2(dz, dx);
+        x3::logInfo("--screenshot-showroom: cam(" + std::to_string(camx) + "," + std::to_string(camy) + "," +
+            std::to_string(camz) + ") yaw=" + std::to_string(yaw) + " pitch=" + std::to_string(pitch));
+        device->setCamera(camx, camy, camz, yaw, pitch, 72.0f);
+        // Frame the sun's shadow box on the building (+ surrounding firs) so they cast shadows
+        // (the default ~45 m camera-following box sits 100+ m short of the building).
+        device->setShadowBounds(cx, cy, cz, 150.0f);
+
+        // --- RE-POSITION the planets HIGH ABOVE/BEHIND the spire, in the camera's view
+        // direction (toward -Z, beyond the building) so they sit in the UPPER frame above
+        // the building. Computed in the CAMERA basis: forward = look dir, plus a world-up
+        // lift + a per-body azimuth fan + an "up into the upper third" elevation. Each is
+        // placed at a distance kept WITHIN the 200 m far plane (the planet's NEAR edge must
+        // clear it, so distance + radius < ~195). varied radius: Terrestrial + Gas prominent,
+        // Moon/Ice mid, Sun smaller + bright. None reach the building/forest (all far + high).
+        {
+            const float cp = std::cos(pitch), spn = std::sin(pitch);
+            const float cyw = std::cos(yaw),   syw = std::sin(yaw);
+            const float fwd[3]   = { cp * cyw, spn, cp * syw };          // camera forward (look dir)
+            const float right[3] = { -syw, 0.0f, cyw };                 // camera right (world-up plane)
+            // Per-body placement: distance (m, within far plane), azimuth fan (m, +=right),
+            // and lift (m, world-up) so they ride the upper third of the frame.
+            struct Place { const char* name; float dist; float side; float lift; float radius; };
+            // Distances + lift/side kept so each body's CENTER distance from the camera
+            // (sqrt(dist^2 + lift^2 + side^2)) + its radius stays comfortably < the 200 m
+            // far plane (largest here ~187 m), so nothing clips at the far plane.
+            const Place places[] = {
+                // name           dist   side    lift   radius   (lifts lowered so bodies sit in the
+                { "Terrestrial",  120.0f, -42.0f,  44.0f, 28.0f },   // upper third, fully framed (not cropped)
+                { "Gas",          125.0f,  48.0f,  52.0f, 34.0f },   // prominent giant, upper-right
+                { "Moon",         105.0f,   8.0f,  40.0f, 14.0f },   // mid, high-center
+                { "Ice",          115.0f, -28.0f,  42.0f, 16.0f },   // mid, upper-left of center
+                { "Lava",         128.0f,  32.0f,  38.0f, 15.0f },   // mid, right
+                { "Sun",           98.0f, -16.0f,  48.0f,  9.0f },   // small + bright, high-left
+            };
+            for (NightSkyPlanet& b : planets) {
+                const Place* pl = nullptr;
+                for (const Place& q : places) if (std::strcmp(q.name, b.name) == 0) { pl = &q; break; }
+                if (!pl) continue;
+                b.radius = pl->radius;
+                b.worldPos[0] = camx + fwd[0] * pl->dist + right[0] * pl->side;
+                b.worldPos[1] = camy + fwd[1] * pl->dist + pl->lift;                // world-up lift
+                b.worldPos[2] = camz + fwd[2] * pl->dist + right[2] * pl->side;
+                x3::logInfo(std::string("--screenshot-showroom: planet ") + b.name + " pos(" +
+                    std::to_string(b.worldPos[0]) + "," + std::to_string(b.worldPos[1]) + "," +
+                    std::to_string(b.worldPos[2]) + ") r=" + std::to_string(b.radius) +
+                    " dist=" + std::to_string(pl->dist));
+            }
+        }
+
+        // Draw the WHOLE scene (all 1150 drawables). The earlier "~480 draws blanks the frame"
+        // ceiling was a SYMPTOM of the depth.vert/shadow.vert SSBO-stride bug (garbage depths at
+        // high instance indices compounded with draw count) — fixed, so the full scene composites.
+        uint32_t showroomMaxDraw = 0xFFFFFFFFu;
+        if (const char* e = std::getenv("X3_SHOWROOM_MAXDRAW")) showroomMaxDraw = (uint32_t)std::strtoul(e, nullptr, 10);
+        x3::logInfo("--screenshot-showroom: maxDraw=" + std::to_string(showroomMaxDraw));
+
+        const int kSettle = 16;
+        for (int i = 0; i < kSettle; ++i) {
+            glfwPollEvents();
+            if (i == kSettle - 1) device->armCapture(showroomShotPath.c_str());
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                const uint32_t nDrawn = showroom.draw(*device, frame, showroomMaxDraw, nullptr, nullptr);
+                if (i == 0) x3::logInfo("--screenshot-showroom: drew " + std::to_string(nDrawn) + " drawables (of 1150)");
+                // Hang the night-sky planets over the spire (AFTER the env so depth occludes correctly).
+                // Ring mesh enables the gas giant's alpha ring; the device composites the
+                // transparent glow shells (atmosphere/corona/ring) AFTER the opaque bodies.
+                // NIGHT only — DAY has no planets (the bright sky carries the exterior).
+                if (!gShowroomDay)
+                    drawNightSkyPlanets(device.get(), frame, planetMesh, planets, 10.0f, ringMesh);
+            }
+            device->endFrame(frame);
+        }
+        const bool wrote = device->captureFrame(showroomShotPath.c_str());
+        if (wrote) x3::logInfo("--screenshot-showroom: wrote " + showroomShotPath);
+        else       x3::logError("--screenshot-showroom: capture FAILED");
+
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return wrote ? 0 : 1;
+    }
+
+    // ---- Planet preview (--screenshot-planet [path.png]) -------------------
+    // Build a UV-sphere Moon body, load the 5 FORGE3D Moon textures from the pack,
+    // shade it with the dedicated planet pipeline (object-space triplanar PBR +
+    // scatter), hang it against a dark space backdrop lit from the side so a clear
+    // day/night terminator shows, settle one headless frame, and capture a PNG.
+    if (planetShot) {
+        x3::logInfo("--screenshot-planet: rendering procedural Moon to " + planetShotPath);
+
+        // --- Load the 5 Moon textures straight from the FORGE3D pack (no repo copy).
+        const std::string kPack = "C:/Users/Tim/X3/Assets/FORGE3D/Planets/Moon/Textures/";
+        const std::string kAtmo = "C:/Users/Tim/X3/Assets/FORGE3D/Planets/Atmosphere/";
+        // albedo, normal, detail, spec, scatter — sRGB for color/albedo/scatter, linear for normal/spec.
+        const std::string paths[5] = {
+            kPack + "moon_01.png", kPack + "moon_01_normal.png", kPack + "moon_01_detail.png",
+            kPack + "moon_01_spec.png", kAtmo + "sunset_yellow_05.png",
+        };
+        const bool srgbFlag[5] = { true, false, true, false, true };
+        x3::rhi::TextureHandle tex[5] = {};
+        bool allLoaded = true;
+        for (int t = 0; t < 5; ++t) {
+            int w = 0, h = 0, comp = 0;
+            stbi_uc* px = stbi_load(paths[t].c_str(), &w, &h, &comp, 4);   // force RGBA8
+            if (!px) {
+                x3::logError("--screenshot-planet: FAILED to load " + paths[t]);
+                allLoaded = false;
+                continue;
+            }
+            tex[t] = device->createTexture(px, (uint32_t)w, (uint32_t)h, srgbFlag[t]);
+            x3::logInfo("--screenshot-planet: loaded " + paths[t] + " (" + std::to_string(w) + "x" +
+                        std::to_string(h) + (srgbFlag[t] ? ", srgb)" : ", linear)"));
+            stbi_image_free(px);
+        }
+        if (!allLoaded) x3::logError("--screenshot-planet: one or more Moon textures missing — render may be flat");
+
+        // --- UV-sphere Moon mesh (unit radius). pos == normal for the triplanar.
+        x3::prims::PrimMesh sphere = x3::prims::makeUVSphere(64, 128);
+        x3::rhi::MeshHandle moon = device->createMesh(sphere.verts.data(), (uint32_t)sphere.verts.size(),
+                                                      sphere.index.data(), (uint32_t)sphere.index.size());
+
+        // --- Model: unit sphere at the origin (radius 1). Column-major identity*scale.
+        const float kRadius = 1.0f;
+        float model[16] = {
+            kRadius, 0, 0, 0,
+            0, kRadius, 0, 0,
+            0, 0, kRadius, 0,
+            0, 0, 0, 1,
+        };
+
+        // --- Dark space backdrop: near-black zenith, faint horizon, a side sun so the
+        // moon shows a clear day/night terminator. The Camera UBO sun direction the
+        // planet frag reads is sourced from SkyParams.sunDir, so set it here.
+        // Sun mostly TOWARD the camera (+Z dominant) and to the upper-side (+X,+Y) so
+        // the camera-facing hemisphere reads as a bright gibbous Moon with the day/night
+        // terminator sweeping across the LEFT third of the visible disc (a clear, lit
+        // hero shot rather than a thin night-side crescent).
+        const float sunDir[3] = { 0.32f, 0.26f, 1.0f };   // normalized internally
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = sunDir[0]; sp.sunDir[1] = sunDir[1]; sp.sunDir[2] = sunDir[2];
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.96f; sp.sunColor[2] = 0.90f;
+        sp.sunIntensity = 0.25f;   // low — this is deep space, not a daylit horizon
+        sp.haze = 0.0f; sp.exposure = 1.0f;
+        sp.zenith[0]  = 0.01f; sp.zenith[1]  = 0.01f; sp.zenith[2]  = 0.02f;  // near-black space
+        sp.horizon[0] = 0.02f; sp.horizon[1] = 0.02f; sp.horizon[2] = 0.04f;  // slightly lighter
+        device->setSkyParams(sp);
+        device->setAmbient(0.07f, 0.07f, 0.09f);   // small cool fill so the night side reads as dark rock, not pure black
+        device->setBloom(0.10f);
+        // No SSAO/GI pre-pass: the planet uses the opaque depth LESS+write pipeline.
+        { x3::rhi::IRenderDevice::SsaoParams s{}; s.enabled = false; device->setSsaoParams(s); }
+        { x3::rhi::IRenderDevice::GiParams   g{}; g.enabled = false; device->setGiParams(g); }
+
+        // --- Camera ~3 units back, looking at the origin, modest FOV so the unit
+        // sphere fills ~70% of the frame.
+        const float camx = 0.0f, camy = 0.0f, camz = 3.0f;
+        const float yaw   = std::atan2(0.0f - camz, 0.0f - camx);   // toward origin in XZ
+        const float pitch = 0.0f;                                   // level
+        const float fovDeg = 40.0f;
+        device->setCamera(camx, camy, camz, yaw, pitch, fovDeg);
+
+        x3::logInfo("--screenshot-planet: cam(" + std::to_string(camx) + "," + std::to_string(camy) + "," +
+            std::to_string(camz) + ") yaw=" + std::to_string(yaw) + " pitch=" + std::to_string(pitch) +
+            " sun(" + std::to_string(sunDir[0]) + "," + std::to_string(sunDir[1]) + "," + std::to_string(sunDir[2]) +
+            ") out=" + planetShotPath);
+
+        const int kSettle = 8;
+        bool wrote = false;
+        for (int i = 0; i < kSettle; ++i) {
+            glfwPollEvents();
+            if (i == kSettle - 1) device->armCapture(planetShotPath.c_str());
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                // typeIndex 0 = Moon; its 5 maps in pc.tex[0..4] order.
+                device->drawPlanet(frame, moon, model, 0u /*Moon*/, tex, 5u, 0.0f);
+            }
+            device->endFrame(frame);
+        }
+        wrote = device->captureFrame(planetShotPath.c_str());
+        if (wrote) x3::logInfo("--screenshot-planet: wrote " + planetShotPath);
+        else       x3::logError("--screenshot-planet: capture FAILED");
+
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return wrote ? 0 : 1;
+    }
+
+    // ---- Night-sky preview (--screenshot-nightsky [path.png]) --------------
+    // Build ONE UV-sphere mesh and hang 6 VARIED planet TYPES staggered across a
+    // dark, star-flecked dome — each shaded by its OWN per-type pipeline. Loads each
+    // type's documented texture set from the FORGE3D pack (slot order per the frag
+    // header / TEXTURE_MANIFEST.md), places them at varied azimuth/elevation/distance/
+    // radius so they read as distinct sky bodies of different apparent sizes, and
+    // captures a single 4x-SSAA PNG. The procedural starfield in sky.frag appears on
+    // the dark sky automatically. (Atmosphere/suncorona/ring shells are DEFERRED.)
+    if (nightskyShot) {
+        x3::logInfo("--screenshot-nightsky: rendering staggered multi-planet sky to " + nightskyShotPath);
+
+        // --- Build the UV-sphere + load the 6 FORGE3D planet types via the shared
+        // helper (same files / slot order / srgb / default positions as before).
+        int nTexFail = 0;
+        x3::rhi::MeshHandle planetMesh{};
+        x3::rhi::MeshHandle ringMesh{};
+        std::vector<NightSkyPlanet> bodies =
+            loadNightSkyPlanets(device.get(), planetMesh, nTexFail, "--screenshot-nightsky", &ringMesh);
+
+        if (nTexFail > 0)
+            x3::logError("--screenshot-nightsky: " + std::to_string(nTexFail) +
+                         " texture(s) missing — some bodies may render flat");
+
+        // --- DARK NIGHT sky: near-black zenith, faint horizon, very low sun intensity,
+        // no haze. The procedural starfield in sky.frag paints onto the dark dome.
+        const float sunDir[3] = { 0.4f, 0.25f, 0.6f };   // normalized internally
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = sunDir[0]; sp.sunDir[1] = sunDir[1]; sp.sunDir[2] = sunDir[2];
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+        sp.sunIntensity = 0.04f;     // deep night — the bodies are the heroes, not the sky
+        sp.haze = 0.0f; sp.exposure = 1.0f;
+        sp.zenith[0]  = 0.005f; sp.zenith[1]  = 0.005f; sp.zenith[2]  = 0.012f;  // near-black
+        sp.horizon[0] = 0.010f; sp.horizon[1] = 0.012f; sp.horizon[2] = 0.025f;  // slightly lighter
+        device->setSkyParams(sp);
+        device->setAmbient(0.06f, 0.06f, 0.10f);   // cool low fill
+        device->setBloom(0.15f);
+        device->setSkyTime(10.0f);   // non-zero sky-animation time (starfield rotation)
+        { x3::rhi::IRenderDevice::SsaoParams s{}; s.enabled = false; device->setSsaoParams(s); }
+        { x3::rhi::IRenderDevice::GiParams   g{}; g.enabled = false; device->setGiParams(g); }
+
+        // --- Camera near origin looking toward the -Z cluster, tilted slightly UP so
+        // the dome + stars + the staggered bodies fill the frame.
+        const float camx = 0.0f, camy = 6.0f, camz = 18.0f;
+        const float yaw   = -1.5708f;   // toward -Z (the cluster)
+        const float pitch = 0.22f;      // ~13deg up
+        const float fovDeg = 75.0f;     // wide so all 6 bodies fit
+        device->setCamera(camx, camy, camz, yaw, pitch, fovDeg);
+
+        x3::logInfo("--screenshot-nightsky: cam(" + std::to_string(camx) + "," + std::to_string(camy) + "," +
+            std::to_string(camz) + ") yaw=" + std::to_string(yaw) + " pitch=" + std::to_string(pitch) +
+            " fov=" + std::to_string(fovDeg) + " bodies=" + std::to_string(bodies.size()) +
+            " out=" + nightskyShotPath);
+
+        const float kUTime = 10.0f;   // fixed animation time for the still (animated types)
+        const int kSettle = 8;
+        bool wrote = false;
+        for (int i = 0; i < kSettle; ++i) {
+            glfwPollEvents();
+            if (i == kSettle - 1) device->armCapture(nightskyShotPath.c_str());
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                drawNightSkyPlanets(device.get(), frame, planetMesh, bodies, kUTime, ringMesh);
+            }
+            device->endFrame(frame);
+        }
+        wrote = device->captureFrame(nightskyShotPath.c_str());
+        if (wrote) x3::logInfo("--screenshot-nightsky: wrote " + nightskyShotPath);
+        else       x3::logError("--screenshot-nightsky: capture FAILED");
+
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return wrote ? 0 : 1;
     }
@@ -3645,6 +4610,2061 @@ int main(int argc, char** argv) {
         }
 
         cphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    // ---- Interactive SHOWROOM walkthrough (--world showroom) ----------------
+    // Walk the baked Unity "3D Showroom Level Kit" (Example_01) at night, with the
+    // companion Aria standing a few metres away and the wheeling FORGE3D night sky
+    // overhead. Built entirely through the public Scene/device/physics API (like
+    // `--world club`) so it stays LOW-CONFLICT with Level 1 / the Spire. Two ways in:
+    //   * WALKABLE (windowed): `--world showroom` — the Level-1 walking controller +
+    //     physics, an E-to-talk exchange with Aria (she becomes a companion), Esc quit.
+    //   * HEADLESS PROOF: `--screenshot-showroom-fp <path>` — same setup, but render
+    //     ONE frame from the player spawn eye (first person) + capture a PNG, then exit
+    //     (the only way to verify the walkable interior content without live input).
+    //
+    // EnvArtSystem is PURELY VISUAL (no collision bodies) + its bounds are origin-only,
+    // so we SYNTHESIZE a flat ground slab under the building footprint (see floorY note
+    // below) + a perimeter wall ring so the player can't walk off the world.
+    if (worldMode == "showroom") {
+        x3::logInfo("--world showroom: building the interactive night showroom walkthrough");
+
+        // Physics world for the showroom (separate from the Level-1 path below).
+        std::unique_ptr<x3::phys::IPhysicsWorld> sphys(x3::phys::createPhysicsWorld());
+        if (!sphys->init()) {
+            x3::logError("--world showroom: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        x3::game::Scene sscene;
+
+        // Load the baked Unity scene export (same GLB / path as --screenshot-showroom).
+        x3::game::EnvArtSystem showroom;
+        const bool envOk = showroom.buildFromGlb(*device, x3::game::convertedGlbRoot(),
+                                                 "ShowRoom_Vol30/Example_01.glb");
+        if (!envOk) x3::logError("--world showroom: scene GLB failed to load (floor + Aria still build)");
+
+        // ---- DAY<->NIGHT toggle state -------------------------------------------------
+        // gShowroomDay flips the whole sky/sun/ambient/bloom/interior-point-light recipe
+        // via applyShowroomTimeOfDay(). Default = NIGHT (unchanged); X3_SHOWROOM_DAY=1
+        // seeds DAY (for the headless proofs); the live loop flips it with the 'T' key.
+        bool gShowroomDay = showroomDayDefault();
+        // The CIVILIAN proof is a DAY shot by spec (the public-floors look is the
+        // bright snow-bounce day grade) — force DAY regardless of the env default.
+        if (showroomCivShot) gShowroomDay = true;
+
+        // ---- Night-sky + lighting recipe (mirrors the --screenshot-showroom block) ----
+        // The night `sp` is kept in scope as the BASE the ragdoll PROOF brightens (a
+        // night-only debug shot). The live look is (re)applied by applyShowroomTimeOfDay
+        // below for the chosen state — once for the headless proofs, and again on every
+        // 'T' toggle in the interactive loop.
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.6f; sp.sunDir[1] = 0.42f; sp.sunDir[2] = -0.2f;   // low raking MOON
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.96f; sp.sunColor[2] = 0.90f;
+        sp.sunIntensity = 0.25f;   // cool moonlight (still casts shadows)
+        sp.haze = 0.15f; sp.exposure = 0.62f;
+        sp.zenith[0]  = 0.012f; sp.zenith[1]  = 0.012f; sp.zenith[2]  = 0.028f;   // near-black zenith
+        sp.horizon[0] = 0.10f;  sp.horizon[1] = 0.13f;  sp.horizon[2] = 0.20f;    // faint cool horizon
+        // (sky/ambient/bloom are applied via applyShowroomTimeOfDay AFTER the interior
+        // point lights are built — see the INTERIOR LIGHTING block.)
+        // Disable the SSAO/GI depth PRE-PASS (the showroom uses alpha-cutout foliage that
+        // the pre-pass can't discard — would punch sky holes; see the screenshot block).
+        { x3::rhi::IRenderDevice::SsaoParams s{}; s.enabled = false; device->setSsaoParams(s); }
+        { x3::rhi::IRenderDevice::GiParams   g{}; g.enabled = false; device->setGiParams(g); }
+
+        // Night-sky planets (shared helper; same files/order as --screenshot-nightsky).
+        int nPlanetTexFail = 0;
+        x3::rhi::MeshHandle planetMesh{};
+        x3::rhi::MeshHandle ringMesh{};
+        std::vector<NightSkyPlanet> planets =
+            loadNightSkyPlanets(device.get(), planetMesh, nPlanetTexFail, "--world showroom", &ringMesh);
+        if (nPlanetTexFail > 0)
+            x3::logWarn("--world showroom: " + std::to_string(nPlanetTexFail) + " planet texture(s) missing");
+
+        // ---- Building footprint (engine-space) — same kBuild subset as the screenshot block.
+        const std::vector<std::string> kBuild = {
+            "room", "pilar", "plateform", "platform", "stair", "window", "showcase",
+            "table", "chair", "carpet", "tube", "halogen", "cache", "tv_screen" };
+        float bmn[3], bmx[3];
+        const uint32_t nb = showroom.namedBounds(kBuild, bmn, bmx);
+        if (nb == 0) { showroom.worldBounds(bmn, bmx); x3::logWarn("--world showroom: 0 named building nodes; using full scene bounds"); }
+        x3::logInfo("--world showroom: building bounds (" + std::to_string(nb) + " nodes) min(" +
+            std::to_string(bmn[0]) + "," + std::to_string(bmn[1]) + "," + std::to_string(bmn[2]) +
+            ") max(" + std::to_string(bmx[0]) + "," + std::to_string(bmx[1]) + "," + std::to_string(bmx[2]) + ")");
+
+        const float cx = (bmn[0] + bmx[0]) * 0.5f, cz = (bmn[2] + bmx[2]) * 0.5f;
+        const float halfX = std::max(8.0f, (bmx[0] - bmn[0]) * 0.5f + 4.0f);   // footprint XZ half-extents (+ margin)
+        const float halfZ = std::max(8.0f, (bmx[2] - bmn[2]) * 0.5f + 4.0f);
+
+        // ---- SYNTHESIZE the GROUND floor. EnvArtSystem makes NO collision bodies + its
+        // bounds are ORIGIN-only (not the true floor plane), so floorY is a TUNE POINT:
+        // start at the building-bounds min Y. One large static slab sized to the footprint
+        // XZ, its TOP surface at floorY (so player feet at floorY+eps stand on it). 1 m
+        // thick (half-extent 0.5), centered 0.5 below floorY.  *** TUNE floorY HERE ***
+        // SOLID now (no holes): the OWNER'S entrance is a HIDDEN WALL DOOR on the 2nd
+        // floor — not a ground floor-hatch — and the glass elevator now boards in the
+        // upper ATRIUM, so the ground level no longer needs a hatch drop or a shaft pit.
+        float floorY = bmn[1];   // <-- empirical start; adjust if the player floats/sinks.
+        {
+            sphys->addBox({ halfX, 0.5f, halfZ }, { cx, floorY - 0.5f, cz }, 0.0f, x3::phys::Layer::Static);
+            x3::logInfo("--world showroom: GROUND floor slab (solid) top floorY=" + std::to_string(floorY) +
+                        " center(" + std::to_string(cx) + "," + std::to_string(cz) + ") (TUNE POINT)");
+        }
+        // Perimeter walls (4 static slabs, 4 m tall) so the player can't walk off the slab.
+        {
+            const float wallH = 2.0f;   // half-height (4 m wall)
+            const float wallT = 0.3f;   // half-thickness
+            const x3::phys::Vec3 wc{ cx, floorY + wallH, cz };
+            sphys->addBox({ wallT, wallH, halfZ }, { cx - halfX, wc.y, cz }, 0.0f, x3::phys::Layer::Static); // -X
+            sphys->addBox({ wallT, wallH, halfZ }, { cx + halfX, wc.y, cz }, 0.0f, x3::phys::Layer::Static); // +X
+            sphys->addBox({ halfX, wallH, wallT }, { cx, wc.y, cz - halfZ }, 0.0f, x3::phys::Layer::Static); // -Z
+            sphys->addBox({ halfX, wallH, wallT }, { cx, wc.y, cz + halfZ }, 0.0f, x3::phys::Layer::Static); // +Z
+        }
+
+        // ---- Player spawn at the building center, feet just above the floor slab.
+        const float sx = cx, sy = floorY + 0.05f, sz = cz;
+        x3::game::Player splayer;
+        splayer.spawn(*sphys, sx, sy, sz);
+        x3::logInfo("--world showroom: player spawn feet(" + std::to_string(sx) + "," +
+                    std::to_string(sy) + "," + std::to_string(sz) + ")");
+
+        // ---- Companion ARIA: a single RescueVictim a few metres in front (+Z) of spawn,
+        // standing on the floor. NEVER activated (hubReached stays false -> no countdown,
+        // no boss). AnnaCasual_anim.glb carries Idle/Walk/Run/Talk (retargeted from Jake),
+        // so the loco blend engages — she walks/runs while following, not idle-slides.
+        const float gx = cx + 3.0f, gz = cz + 4.0f;
+        x3::game::RescueVictim girl;
+        girl.build(sscene, *device, *sphys, x3::game::riggedGlbRoot(),
+                   x3::phys::Vec3{ gx, floorY, gz }, x3::game::VictimId::Aria, "Aria",
+                   "AnnaCasual_anim.glb", 1e9f /*huge timer — never expires*/,
+                   x3::game::MonsterSystem::Tuning{});
+        x3::logInfo("--world showroom: Aria at (" + std::to_string(gx) + "," +
+                    std::to_string(floorY) + "," + std::to_string(gz) + ")");
+
+        // ===================================================================
+        // ADDITIVE: 2ND-FLOOR hidden wall door -> passage -> stairs -> elevator
+        // atrium -> glass elevator -> glass spire-top deck. (OWNER'S VISION.)
+        // All geometry below is ADDITIVE to the showroom (does NOT touch the
+        // building GLB / Aria / night-sky code). It FOLLOWS THE BUILDING'S OWN
+        // ARCHITECTURE — clad in the building's WHITE PANEL material, aligned to
+        // its axes / walls / floor levels (derived from the GLB node bounds):
+        //   GROUND floor   y = floorY (-9)   : where the player spawns.
+        //   2nd FLOOR      y = floor2Y (3)   : top of the GLB Room_01 slab; the
+        //                  player CLIMBS here on a synthesized stair approximating
+        //                  the GLB "Stair" nodes (left run x~[44,54]).
+        //   ATRIUM floor   y = atriumFloorY (9): one flight ABOVE the 2nd floor,
+        //                  where the glass elevator now BOARDS.
+        //   DECK           y = deckTopY (90) : the glass spire-top deck (unchanged).
+        // Feature chain (all WALKABLE, all white-clad, all axis-aligned):
+        //   STAGE 1  CLIMB collision: a stair (approximating the GLB Stair run) +
+        //            a 2nd-floor slab so the player walks up from ground to y=3.
+        //   STAGE 2  a FLUSH HIDDEN WALL DOOR set into a real 2nd-floor wall
+        //            (Pilar_02, z~-101), keypad-gated (code 2742 unchanged); the
+        //            panel SLIDES ASIDE when unlocked.
+        //   STAGE 3  behind the door: an ENTRY PASSAGE (-Z) -> a 90 deg TURN ->
+        //            a FLIGHT OF STAIRS UP -> the ELEVATOR ATRIUM (a white room
+        //            around the lift). The elevator's LOWER stop is the atrium.
+        //   (PHASE 1/2 below keep the GLASS DECK + the glass elevator that rides
+        //    atrium<->deck.) Glass is the engine BLEND path (drawMeshPBR
+        //    alphaBlend=true), drawn explicitly each frame; the white-panel
+        //    opaque geometry goes through the Scene as textured entities.
+        // ===================================================================
+        const float spireX = cx;          // spire is over the building center X
+        const float spireZ = -100.0f;     // spire Z (per the night-showroom blueprint)
+        const float deckTopY = 90.0f;     // walkable deck surface height (TUNE vs spire top y~88.5)
+        const float shaftX   = spireX + 9.0f;  // elevator shaft just +X of the spire (clear of geo)
+        const float shaftZ   = spireZ;
+        // ---- Building floor levels (from the GLB node bounds; see tools/glb_node_bounds.py).
+        // Room_01 (the 2nd-floor slab) has its TOP at world y=3; the GLB "Stair" nodes climb
+        // from the ground (y=-9). The atrium sits one short flight above the 2nd floor.
+        const float floor2Y     = 3.0f;   // 2nd-floor walkable surface (Room_01 top)
+        // ELEVATOR LEVEL (Y10, in the owner's Y10-14 range): the hidden stair climbs UP
+        // INSIDE the back strut to THIS height, where it meets the glass-elevator boarding
+        // atrium. The lift's LOWER stop is computed from atriumFloorY below, so setting it
+        // here moves the boarding level to the strut-stair landing (OWNER'S vision). Y10 is
+        // chosen so the strut's diagonal stepped stair climbs at a walkable ~43 deg (the
+        // character controller's max walkable slope is 50 deg; steps are <=0.4 m each).
+        const float atriumFloorY = 10.0f; // elevator-atrium floor == strut-stair landing
+
+        // ---- Shared procedural meshes (authored at WORLD center; identity xform).
+        // Glass tints reused for deck slab, rails, car, and shaft glints. The
+        // alphaBlend draw multiplies baseColorFactor (incl. alpha) onto the texel.
+        auto makeWorldMesh = [&](const x3::prims::PrimMesh& g) {
+            return device->createMesh(g.verts.data(), (uint32_t)g.verts.size(),
+                                      g.index.data(), (uint32_t)g.index.size());
+        };
+        // A helper to draw one glass box (translucent) at an identity-placed world
+        // mesh, OR offset by a model translation for the moving car.
+        const float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+        auto drawGlass = [&](const x3::rhi::FrameContext& fr, x3::rhi::MeshHandle m,
+                             const float model[16], float r, float g, float b, float a,
+                             float emisStrength) {
+            const float bcf[4]  = { r, g, b, a };
+            const float emis[4] = { r * 0.6f, g * 0.7f, b * 0.9f, emisStrength };
+            device->drawMeshPBR(fr, m, x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
+                                x3::rhi::TextureHandle{}, bcf, emis, model,
+                                /*alphaMask*/false, /*alphaBlend*/true, x3::rhi::TextureHandle{});
+        };
+
+        // ===================================================================
+        // WHITE-PANEL CLADDING — match the building's wall material.
+        // The GLB walls (Room_01/Pilar_01/Pilar_02) all use a "Wall_Atlas..._White"
+        // textured material (baseColorFactor white). So every additive surface of
+        // the entrance run (climb stair, 2nd-floor slab, hidden door panel, passage,
+        // turn, upper stair, atrium) is clad in a procedural WHITE sci-fi PANEL tile
+        // tinted near-white, so the whole run reads as part of the structure (NOT
+        // grey boxes). One shared tiling texture + a tiny "add a white-clad static
+        // box (render entity + collision)" helper keep it uniform + axis-aligned.
+        // -------------------------------------------------------------------
+        x3::rhi::TextureHandle whitePanelTex{};
+        {
+            // CLEAN, SMOOTH near-white powder-coat panel — matches the sleek Unity
+            // ShowRoom interior (smooth light-grey/white walls + floors). The earlier
+            // pass used makeSciFiPanelRGBA tinted ~x2.7, which lifted the panel FACES to
+            // white but left the seam grooves / bolts / bevels as a HIGH-CONTRAST grid
+            // (heavy dark grout) that clashed with the smooth GLB. makeCleanPanelRGBA is
+            // a flat light face with only a WHISPER-FINE 1-px low-contrast seam hairline
+            // (no grout, no bolts, no bevels), so the additive cladding reads flush with
+            // the imported white walls. 4 panel divisions across the 512 tile.
+            std::vector<uint8_t> px = x3::prims::makeCleanPanelRGBA(
+                512, /*panels*/4, x3::prims::detail::kNoTint, /*seams*/true);
+            whitePanelTex = device->createTexture(px.data(), 512, 512, /*srgb*/true);
+        }
+        // The white-panel base tint (multiplies the already-white texel). Near-1 so the
+        // clean white panels read under the dim moonlight, like the GLB walls.
+        const float kWhite[4] = { 0.98f, 0.98f, 1.0f, 1.0f };
+        // Add ONE axis-aligned white-clad box: a render Scene entity (white panel
+        // texture) PLUS matching Static collision. Returns the Scene entity id.
+        // (cx,cy,cz) = center; (hx,hy,hz) = half-extents. collide=false => visual only.
+        auto addWhiteBox = [&](float bx, float by, float bz, float hx, float hy, float hz,
+                               bool collide = true) -> uint32_t {
+            x3::rhi::MeshHandle m = makeWorldMesh(x3::prims::makeBox(hx, hy, hz, bx, by, bz, 0.25f));
+            x3::game::Entity e; e.mesh = m; e.tex = whitePanelTex;
+            e.baseColor[0]=kWhite[0]; e.baseColor[1]=kWhite[1]; e.baseColor[2]=kWhite[2]; e.baseColor[3]=1.0f;
+            const uint32_t id = sscene.add(e);
+            if (collide) sphys->addBox({ hx, hy, hz }, { bx, by, bz }, 0.0f, x3::phys::Layer::Static);
+            return id;
+        };
+
+        // ===================================================================
+        // STAGE 1 — let the player CLIMB to the 2ND FLOOR (y = floor2Y = 3).
+        // The GLB has no collision, so we SYNTHESIZE it, aligned to the building:
+        //   * the 2nd-floor SLAB = the GLB Room_01 footprint (x~[29,115], z~[-123,
+        //     -99]) with its TOP at floor2Y. Built as two halves around the central
+        //     tower-core gap (x~[71,73]) so it matches the real split floor.
+        //   * a CLIMB STAIR approximating the GLB "Stair" node (left run, x~[44,54],
+        //     running along +Z), EXTENDED so it rises the full ground->2nd-floor
+        //     drop (floorY -> floor2Y = 12 m) at a walkable pitch. makeRamp builds
+        //     the walkable wedge; we cap it with a white tread plate so it reads as
+        //     a clad stair, and a small landing where it meets the 2nd floor.
+        // -------------------------------------------------------------------
+        // 2nd-floor slab — Room_01 footprint, split around the central tower gap.
+        const float r2z0 = -122.8f, r2z1 = -99.2f;            // Room_01 Z span
+        const float r2cz = (r2z0 + r2z1) * 0.5f, r2hz = (r2z1 - r2z0) * 0.5f;
+        const float slabHY = 0.4f;                            // 0.8 m thick slab; TOP at floor2Y
+        const float slabCY = floor2Y - slabHY;
+        // Left half x~[29.3,71.2], right half x~[73,114.9]; leave the x~[71.2,73] gap.
+        addWhiteBox((29.3f + 71.2f) * 0.5f, slabCY, r2cz, (71.2f - 29.3f) * 0.5f, slabHY, r2hz);
+        addWhiteBox((73.0f + 114.9f) * 0.5f, slabCY, r2cz, (114.9f - 73.0f) * 0.5f, slabHY, r2hz);
+        // CLIMB stair: approximate the GLB left "Stair" (x~[43.8,53.7]) but lengthen
+        // the run so the 12 m rise is a walkable ~40 deg. Runs along +Z from a low
+        // edge on the ground (z=stairLowZ @ floorY) up to a high edge that meets the
+        // 2nd-floor slab (z=stairHighZ @ floor2Y).
+        const float climbCX = 48.75f;          // GLB left-stair X center
+        const float climbHalfW = 4.8f;         // matches the GLB stair width (~9.9 m)
+        const float climbRise = floor2Y - floorY;   // 12 m
+        const float climbRun  = 15.0f;         // walkable pitch (~39 deg)
+        const float stairLowZ  = -119.0f;      // low edge on the ground (inside Room_01 -Z half)
+        {
+            x3::prims::PrimMesh ramp = x3::prims::makeRamp(climbCX, floorY, stairLowZ,
+                                                          climbHalfW, climbRun, climbRise,
+                                                          /*axis*/1 /*+Z*/, /*dir*/+1.0f, 0.25f);
+            x3::rhi::MeshHandle m = makeWorldMesh(ramp);
+            x3::game::Entity e; e.mesh = m; e.tex = whitePanelTex;
+            e.baseColor[0]=kWhite[0]; e.baseColor[1]=kWhite[1]; e.baseColor[2]=kWhite[2]; e.baseColor[3]=1.0f;
+            sscene.add(e);
+            sphys->addStaticMesh(ramp.cverts.data(), (uint32_t)ramp.cverts.size() / 3,
+                                 ramp.cindex.data(), (uint32_t)ramp.cindex.size());
+            x3::logInfo("--world showroom: STAGE1 climb stair x=" + std::to_string(climbCX) +
+                        " run +Z z=" + std::to_string(stairLowZ) + ".." +
+                        std::to_string(stairLowZ + climbRun) + " rise " + std::to_string(climbRise) +
+                        " m floorY->floor2Y; 2nd-floor slab top y=" + std::to_string(floor2Y));
+        }
+
+        // ===================================================================
+        // STRUT SET — the building's SYMMETRIC RADIAL "/" blade-fin legs, REBUILT
+        // thicker (the GLB struts are fixed thin geometry, so we clad NEW white-panel
+        // strut-SHELLS over them). FOUR canted struts at the four footprint corners
+        // (back-left/back-right/front-left/front-right), each LEANING INWARD+UP toward
+        // the central spire core — a matched radial set (same thickness/width/height,
+        // mirrored about the center). ONE strut (the BACK-LEFT, Z~-134, least visible
+        // from the central pad per the interior reference) is HOLLOW and carries the
+        // HIDDEN STAIR: a keypad door (code 2742) set into its canted outward "/" face
+        // at the civilian floor (floorY) climbs UP INSIDE it to the ELEVATOR LEVEL
+        // (atriumFloorY=14), where a short bridge meets the glass-elevator atrium.
+        //   - Strut layout sampled from the GLB Plateform_05/06 corner fins
+        //     (tools/glb_node_bounds.py): the 4 canted disc-edge supports.
+        //   - Built via prims::makeCantedStrut (a sheared prism) so they read as the
+        //     real leaning legs, clad in the SAME white-panel material as the GLB walls.
+        // -------------------------------------------------------------------
+        // Add a white-clad procedural mesh (render entity + static collision). Used for
+        // the canted struts / stair steps that aren't axis-aligned boxes.
+        auto addWhiteMesh = [&](const x3::prims::PrimMesh& g, bool collide = true) -> uint32_t {
+            x3::rhi::MeshHandle m = makeWorldMesh(g);
+            x3::game::Entity e; e.mesh = m; e.tex = whitePanelTex;
+            e.baseColor[0]=kWhite[0]; e.baseColor[1]=kWhite[1]; e.baseColor[2]=kWhite[2]; e.baseColor[3]=1.0f;
+            const uint32_t id = sscene.add(e);
+            if (collide && !g.cverts.empty())
+                sphys->addStaticMesh(g.cverts.data(), (uint32_t)g.cverts.size()/3,
+                                     g.cindex.data(), (uint32_t)g.cindex.size());
+            return id;
+        };
+
+        // --- Matched strut dimensions (ALL four identical -> symmetric). ---
+        const float strutBaseY  = floorY;        // strut foot on the civilian floor (-12)
+        const float strutTopY   = atriumFloorY;  // strut head at the elevator level (10)
+        const float strutHalfW  = 4.0f;          // 8 m wide (tangential) — beefy leg
+        const float strutHalfT  = 2.6f;          // 5.2 m thick (radial) — THICKENED
+        const float strutHeadR  = 10.0f;         // head pulled IN to ~10 m from the core
+                                                 // (distinct legs, just inside the disc spring line;
+                                                 //  gives the hollow strut a ~44 deg walkable stair)
+        // Base/top XZ centers per corner, derived radially from the center so the four
+        // are perfectly mirrored. Base sits OUT at the corner; head pulled IN near the
+        // spire core (the "/" inward lean -> the four legs gather toward the spire). The
+        // head-near-core lean also gives a long diagonal run (~23 m) so the internal
+        // stair climbs the floorY->elevator-level drop at a walkable ~43 deg.
+        struct StrutDef { float bx,bz,tx,tz,rox,roz; };
+        auto strutFor = [&](float cornerX, float cornerZ) -> StrutDef {
+            float dx = cornerX - cx, dz = cornerZ - cz;
+            float L = std::sqrt(dx*dx + dz*dz); if (L < 1e-3f) L = 1.0f;
+            float ux = dx/L, uz = dz/L;             // radial-OUT unit
+            StrutDef s;
+            s.bx = cornerX + ux*2.0f;     s.bz = cornerZ + uz*2.0f;     // foot a touch further out
+            s.tx = cx + ux*strutHeadR;    s.tz = cz + uz*strutHeadR;    // head near the core
+            s.rox = ux; s.roz = uz;
+            return s;
+        };
+        // GLB Plateform_05/06 corner-fin centers (the canted disc-edge supports).
+        const StrutDef sBL = strutFor((47.2f+70.0f)*0.5f, (-139.6f-129.7f)*0.5f); // back-left  (Z~-134) HOLLOW
+        const StrutDef sBR = strutFor((74.3f+97.0f)*0.5f, (-139.7f-129.8f)*0.5f); // back-right
+        const StrutDef sFL = strutFor((47.2f+70.0f)*0.5f, (-92.2f-82.3f)*0.5f);   // front-left
+        const StrutDef sFR = strutFor((74.3f+97.1f)*0.5f, (-92.3f-82.4f)*0.5f);   // front-right
+        // Build the THREE SOLID struts (BR/FL/FR). The hollow BL one is built below
+        // (its walls + door + interior stair).
+        auto buildSolidStrut = [&](const StrutDef& s) {
+            addWhiteMesh(x3::prims::makeCantedStrut(s.bx, strutBaseY, s.bz, s.tx, strutTopY, s.tz,
+                                                    strutHalfW, strutHalfT, s.rox, s.roz,
+                                                    /*uvScale*/0.4f, /*hollow*/false));
+        };
+        buildSolidStrut(sBR); buildSolidStrut(sFL); buildSolidStrut(sFR);
+        x3::logInfo("--world showroom: STRUTS x4 canted blades (halfW=" + std::to_string(strutHalfW) +
+                    " halfT=" + std::to_string(strutHalfT) + " baseY=" + std::to_string(strutBaseY) +
+                    " topY=" + std::to_string(strutTopY) + ") symmetric about (" +
+                    std::to_string(cx) + "," + std::to_string(cz) + "); BACK-LEFT is HOLLOW (stair)");
+
+        // ---- The HOLLOW BACK-LEFT strut: four canted WALLS (outward face has the door
+        // gap), the internal STAIR climbing the cant, the keypad door, and the top
+        // landing + bridge to the elevator atrium. The blade is clad white like the rest.
+        // Geometry follows the SAME canted axis (base sBL.b* -> top sBL.t*).
+        const float hsRox = sBL.rox, hsRoz = sBL.roz;       // radial-out unit (toward corner)
+        const float hsTx  = -hsRoz,  hsTz = hsRox;          // tangential unit
+        // Door sits in the OUTWARD canted face at the civilian floor. Door-face center at
+        // the base, pushed out to the outward wall plane.
+        const float doorFaceX = sBL.bx + hsRox*strutHalfT;
+        const float doorFaceZ = sBL.bz + hsRoz*strutHalfT;
+        // Keep the proven keypad-host variable NAMES (door*/hatch*) so the interaction +
+        // smoke code is untouched; they now address the STRUT-FACE door at civilian level.
+        const float doorHalfW   = 1.2f;          // 2.4 m wide opening
+        const float doorHalfH   = 1.3f;          // 2.6 m tall
+        const float doorPanelHZ = 0.20f;         // panel thickness
+        const float doorFloorY  = floorY;        // civilian floor the player stands on
+        const float doorX = doorFaceX;           // door center X (proximity + panel)
+        const float doorZ = doorFaceZ;           // door center Z
+        const float doorCY = doorFloorY + doorHalfH;   // panel center (sill on the floor)
+        const float hatchX = doorX, hatchZ = doorZ, hatchHalf = doorHalfW;   // proximity window
+        constexpr int HATCH_CODE = kShowroomHatchCode;   // 2742 (UNCHANGED)
+        // The hollow strut SHELL (outward wall omitted so the doorway/interior is open).
+        // Render + collision: the 3 enclosed faces (inward + both tangential) + caps give
+        // the blade its solid read and keep the stair enclosed; the outward face is clad
+        // separately below (around the door gap) so a real door-sized hole exists.
+        addWhiteMesh(x3::prims::makeCantedStrut(sBL.bx, strutBaseY, sBL.bz, sBL.tx, strutTopY, sBL.tz,
+                                                strutHalfW, strutHalfT, hsRox, hsRoz,
+                                                /*uvScale*/0.4f, /*hollow*/true));
+        // OUTWARD-FACE CLADDING: thin CANTED slabs (matching the blade's lean) covering
+        // the full outward face EXCEPT a door-sized gap at the base — so from outside the
+        // strut reads as a clean clad "/" blade with a flush door set into it. Built as
+        // canted slabs (thin in the radial axis) at the outward face plane:
+        //   * the UPPER cladding (above the door lintel, up the whole face),
+        //   * a LEFT and RIGHT jamb cladding flanking the door at the base.
+        {
+            const float cladHT = 0.18f;   // cladding slab thickness (radial)
+            // The outward face plane sits at +halfT along radial from the strut axis. The
+            // canted slab's own axis runs base->top; we offset both base/top OUT by halfT.
+            const float ofbx = sBL.bx + hsRox*strutHalfT, ofbz = sBL.bz + hsRoz*strutHalfT;
+            const float oftx = sBL.tx + hsRox*strutHalfT, oftz = sBL.tz + hsRoz*strutHalfT;
+            const float doorTopY = doorFloorY + doorHalfH*2.0f;   // top of the 2.6 m door
+            // UPPER cladding: from the door top up to the head, full width. Its base sits
+            // at the height where the door ends (interpolate the face axis to that height).
+            {
+                const float tDoorTop = (doorTopY - strutBaseY) / (strutTopY - strutBaseY);
+                const float ubx = ofbx + (oftx - ofbx)*tDoorTop, ubz = ofbz + (oftz - ofbz)*tDoorTop;
+                addWhiteMesh(x3::prims::makeCantedStrut(ubx, doorTopY, ubz, oftx, strutTopY, oftz,
+                                                        strutHalfW, cladHT, hsRox, hsRoz, 0.4f, false));
+            }
+            // LEFT + RIGHT jamb cladding at the base (door height), flanking the 2.4 m gap.
+            const float jambHW = (strutHalfW - doorHalfW) * 0.5f;     // half-width of each jamb panel
+            const float jambOff = doorHalfW + jambHW;                 // tangential offset to jamb center
+            for (float sgn : { +1.0f, -1.0f }) {
+                const float jbx = ofbx + hsTx*jambOff*sgn, jbz = ofbz + hsTz*jambOff*sgn;
+                // jamb top tracks the cant up to the door top height.
+                const float tDoorTop = (doorTopY - strutBaseY) / (strutTopY - strutBaseY);
+                const float jtx = jbx + (oftx - ofbx)*tDoorTop, jtz = jbz + (oftz - ofbz)*tDoorTop;
+                addWhiteMesh(x3::prims::makeCantedStrut(jbx, strutBaseY, jbz, jtx, doorTopY, jtz,
+                                                        jambHW, cladHT, hsRox, hsRoz, 0.4f, false));
+            }
+        }
+        // Concealed door PANEL: a thin CANTED white slab flush in the outward face,
+        // matching the blade's lean + the same white texture so it's invisible until
+        // opened. Authored at its WORLD position (door tangential center, sill on the
+        // floor) so its entity transform starts at identity; the slide animation then
+        // translates it tangentially. Collision is a matching axis-aligned box (removed
+        // on open). A faint cyan glow pulses when the player is near + it's still closed.
+        const float doorTopY2 = doorFloorY + doorHalfH*2.0f;
+        x3::rhi::MeshHandle hatchMesh = makeWorldMesh(x3::prims::makeCantedStrut(
+            doorFaceX, doorFloorY, doorFaceZ,
+            doorFaceX + (sBL.tx - sBL.bx) * ((doorTopY2-strutBaseY)/(strutTopY-strutBaseY)),
+            doorTopY2,
+            doorFaceZ + (sBL.tz - sBL.bz) * ((doorTopY2-strutBaseY)/(strutTopY-strutBaseY)),
+            doorHalfW, doorPanelHZ, hsRox, hsRoz, 0.4f, false));
+        x3::game::Entity hatchEnt; hatchEnt.mesh = hatchMesh; hatchEnt.tex = whitePanelTex;
+        hatchEnt.baseColor[0]=kWhite[0]; hatchEnt.baseColor[1]=kWhite[1]; hatchEnt.baseColor[2]=kWhite[2]; hatchEnt.baseColor[3]=1.0f;
+        hatchEnt.emissive[0]=0.10f; hatchEnt.emissive[1]=0.45f; hatchEnt.emissive[2]=0.55f; hatchEnt.emissive[3]=0.0f;
+        const uint32_t hatchIdx = sscene.add(hatchEnt);   // authored in world -> identity transform
+        x3::phys::BodyId hatchLidBody =
+            sphys->addBox({ doorHalfW, doorHalfH, doorPanelHZ }, { doorX, doorCY, doorZ }, 0.0f, x3::phys::Layer::Static);
+        bool  hatchOpen = false;
+        float hatchSlide = 0.0f;
+        // The slide-aside direction (tangential, +) for the cosmetic open animation.
+        const float hatchSlideX = hsTx, hatchSlideZ = hsTz;
+
+        // ---- INTERNAL STAIR up the hollow strut: many small STEPPED white treads
+        // following the canted axis from the door foot (floorY) up to the head landing
+        // (atriumFloorY). Each step rises <=0.4 m (the character controller steps up to
+        // 0.4 m) so the player WALKS UP every step; collision is on every tread. Each
+        // tread is an ORIENTED block (built via makeCantedStrut so its cross-section is
+        // aligned to the strut's tangential + radial axes — NOT axis-aligned — so the
+        // steps fill the canted blade interior and march along the diagonal cant.
+        {
+            const float stepRise = 0.4f;                                  // <=0.4 m -> walkable
+            const int   nSteps   = (int)std::ceil((strutTopY - strutBaseY) / stepRise);  // ~48
+            const float treadHW  = strutHalfW - 0.9f;                     // tread half-width (tangential, inside walls)
+            const float treadHT  = strutHalfT - 0.5f;                     // tread half-depth (radial, inside walls)
+            for (int i = 0; i < nSteps; ++i) {
+                float t0  = (float)(i + 1) / (float)nSteps;               // top of step i
+                float cxs = sBL.bx + (sBL.tx - sBL.bx) * t0;
+                float czs = sBL.bz + (sBL.tz - sBL.bz) * t0;
+                float topY = strutBaseY + (strutTopY - strutBaseY) * t0;  // this tread's TOP
+                // ORIENTED riser block: a short vertical prism (cross-section tangential x
+                // radial, aligned to the strut) from just below the tread up to its top.
+                // (Same XZ for base+top -> a vertical block; height = 0.55 m riser.)
+                addWhiteMesh(x3::prims::makeCantedStrut(cxs, topY - 0.55f, czs, cxs, topY, czs,
+                                                        treadHW, treadHT, hsRox, hsRoz, 0.4f, false));
+            }
+            // Top LANDING: a white floor pad at the strut head (atriumFloorY) where the
+            // stair tops out and the bridge to the elevator atrium begins.
+            addWhiteBox(sBL.tx, strutTopY - 0.25f, sBL.tz, strutHalfW, 0.25f, strutHalfT);
+            x3::logInfo("--world showroom: HOLLOW strut stair " + std::to_string(nSteps) +
+                        " steps (rise " + std::to_string(stepRise) + " m each) base(" +
+                        std::to_string(sBL.bx) + "," + std::to_string(sBL.bz) + ") -> head(" +
+                        std::to_string(sBL.tx) + "," + std::to_string(sBL.tz) +
+                        ") rise floorY->atriumFloorY=" + std::to_string(strutTopY) +
+                        "; door face(" + std::to_string(doorFaceX) + "," + std::to_string(doorFaceZ) +
+                        ") at civilian floor y=" + std::to_string(doorFloorY));
+        }
+
+        // -------------------------------------------------------------------
+        // PHASE 1 — GLASS DECK at the spire top.
+        // 14x14 m glass slab (thin), TOP surface at deckTopY, centered over the
+        // spire. Four low glass rail boxes around the edge (1.1 m tall). Static
+        // collision: the slab floor + the four rails (so you stand + can't fall).
+        // -------------------------------------------------------------------
+        const float deckHalf = 7.0f;       // 14 m square
+        const float deckSlabHalfY = 0.15f; // thin glass slab
+        const float deckSlabCY = deckTopY - deckSlabHalfY;   // center so TOP == deckTopY
+        x3::rhi::MeshHandle deckMesh = makeWorldMesh(
+            x3::prims::makeBox(deckHalf, deckSlabHalfY, deckHalf, spireX, deckSlabCY, spireZ, 0.5f));
+        // Rails: 4 thin tall glass boxes hugging each edge (top ~1.1 m above deck).
+        const float railH = 0.55f, railT = 0.08f;
+        const float railCY = deckTopY + railH;
+        x3::rhi::MeshHandle railNZ = makeWorldMesh(x3::prims::makeBox(deckHalf, railH, railT, spireX, railCY, spireZ - deckHalf, 1.0f));
+        x3::rhi::MeshHandle railPZ = makeWorldMesh(x3::prims::makeBox(deckHalf, railH, railT, spireX, railCY, spireZ + deckHalf, 1.0f));
+        x3::rhi::MeshHandle railNX = makeWorldMesh(x3::prims::makeBox(railT, railH, deckHalf, spireX - deckHalf, railCY, spireZ, 1.0f));
+        x3::rhi::MeshHandle railPX = makeWorldMesh(x3::prims::makeBox(railT, railH, deckHalf, spireX + deckHalf, railCY, spireZ, 1.0f));
+        // Static collision: deck floor slab + 4 rail slabs.
+        sphys->addBox({ deckHalf, deckSlabHalfY, deckHalf }, { spireX, deckSlabCY, spireZ }, 0.0f, x3::phys::Layer::Static);
+        sphys->addBox({ deckHalf, railH, railT }, { spireX, railCY, spireZ - deckHalf }, 0.0f, x3::phys::Layer::Static);
+        sphys->addBox({ deckHalf, railH, railT }, { spireX, railCY, spireZ + deckHalf }, 0.0f, x3::phys::Layer::Static);
+        sphys->addBox({ railT, railH, deckHalf }, { spireX - deckHalf, railCY, spireZ }, 0.0f, x3::phys::Layer::Static);
+        sphys->addBox({ railT, railH, deckHalf }, { spireX + deckHalf, railCY, spireZ }, 0.0f, x3::phys::Layer::Static);
+        x3::logInfo("--world showroom: PHASE1 glass deck 14x14 top y=" + std::to_string(deckTopY) +
+                    " center(" + std::to_string(spireX) + "," + std::to_string(spireZ) + ") + 4 rails");
+
+        // -------------------------------------------------------------------
+        // PHASE 2 — GLASS ELEVATOR atrium<->deck (reuses app/elevator.cpp).
+        // ElevatorSystem provides the moving Static-layer body that CARRIES the
+        // player: update() returns the per-frame vertical delta (the host adds it
+        // to a rider's Y) and playerRiding(feet) detects a rider standing on the
+        // cab TOP. So the cab is a thin FLOOR PLATFORM the player rides INSIDE a
+        // glass box that rises above it. The cab-top is the standable surface:
+        //   LOWER stop -> cab top at the ATRIUM floor (atriumFloorY) so you step
+        //                 from the atrium into the cab (OWNER'S vision — the lift no
+        //                 longer reaches the ground; you climb to it via the door);
+        //   UPPER stop -> cab top at the DECK (deckTopY) so you step out onto it.
+        // The glass walls (a 2.5 x 3 x 2.5 m box) are a translucent VISUAL drawn
+        // around/above the platform each frame (not collision — open so you walk in).
+        // -------------------------------------------------------------------
+        const float carHX = 1.25f, platHY = 0.12f, carHZ = 1.25f;   // thin platform
+        const float carBoxHY = 1.5f;   // glass box half-height (3 m tall walls)
+        // Stop centers so the PLATFORM TOP (center + platHY) lands at atriumFloorY / deckTopY.
+        const float elevBaseCenterY = atriumFloorY - platHY;   // cab top == atrium floor
+        const float elevTopCenterY  = deckTopY      - platHY;   // cab top == deckTopY
+        x3::game::ElevatorSystem elev;
+        const uint32_t elevEntIdx = sscene.size();   // the cab platform entity lands here
+        elev.build(sscene, *device, *sphys, shaftX, shaftZ, carHX, platHY, carHZ,
+                   { elevBaseCenterY, elevTopCenterY }, /*startStop*/0);
+        elev.setSpeed(14.0f);   // m/s — a brisk readable climb (~7 s over the 99 m shaft)
+        // Recolor the cab platform to a dim glass-deck plate so the rider clearly
+        // stands on something (keep it visible — it is the opaque floor of the car).
+        if (elevEntIdx < sscene.size()) {
+            x3::game::Entity& ce = sscene.get(elevEntIdx);
+            ce.baseColor[0]=0.30f; ce.baseColor[1]=0.34f; ce.baseColor[2]=0.42f; ce.baseColor[3]=1.0f;
+        }
+        // Glass BOX walls authored centered at ORIGIN; drawn at (cabTop + carBoxHY)
+        // each frame so the walls rise from the platform. Hollow-look: a single
+        // translucent box reads as a glass cab around the rider.
+        x3::rhi::MeshHandle carMesh = makeWorldMesh(
+            x3::prims::makeBox(carHX, carBoxHY, carHZ, 0, 0, 0, 0.6f));
+        // Four slim vertical guide POSTS flanking the shaft (opaque structure), so the
+        // shaft reads as built while staying mostly open for the see-through ride. They
+        // span from the base floor up to the deck rail height.
+        const float postT = 0.10f;
+        const float postTopY = deckTopY + 1.0f;                 // up past the deck
+        const float postH  = (postTopY - atriumFloorY) * 0.5f;  // half-height (atrium -> deck)
+        const float postCY = atriumFloorY + postH;
+        x3::rhi::MeshHandle postMesh = makeWorldMesh(
+            x3::prims::makeBox(postT, postH, postT, 0, 0, 0, 1.0f));
+        auto addPost = [&](float px, float pz) {
+            x3::game::Entity e; e.mesh = postMesh;
+            e.baseColor[0]=0.20f; e.baseColor[1]=0.22f; e.baseColor[2]=0.28f; e.baseColor[3]=1.0f;
+            e.transform[12]=px; e.transform[13]=postCY; e.transform[14]=pz;
+            sscene.add(e);
+        };
+        addPost(shaftX - carHX - 0.25f, shaftZ - carHZ - 0.25f);
+        addPost(shaftX + carHX + 0.25f, shaftZ - carHZ - 0.25f);
+        addPost(shaftX - carHX - 0.25f, shaftZ + carHZ + 0.25f);
+        addPost(shaftX + carHX + 0.25f, shaftZ + carHZ + 0.25f);
+        x3::logInfo("--world showroom: PHASE2 glass elevator shaft(" + std::to_string(shaftX) + "," +
+                    std::to_string(shaftZ) + ") stops cab-top {atriumFloorY=" + std::to_string(atriumFloorY) +
+                    ", deck=" + std::to_string(deckTopY) + "} carry-via ElevatorSystem");
+
+        // -------------------------------------------------------------------
+        // ELEVATOR ATRIUM (at the strut-stair landing level, atriumFloorY=14) + a
+        // short BRIDGE from the hollow strut's head to the glass-elevator boarding.
+        // (This SUPERSEDES the old 2nd-floor partition-door + passage + up-stair: the
+        //  new route is keypad door in the strut face -> stair UP inside the strut ->
+        //  this atrium -> glass elevator -> deck.) All white-clad, all walkable.
+        // -------------------------------------------------------------------
+        {
+            // Atrium floor pad around the lift shaft (shaftX=cx+9, shaftZ=-100) at Y14.
+            const float atX0 = shaftX - 9.0f, atX1 = shaftX + 5.0f;
+            const float atZ0 = shaftZ - 9.0f, atZ1 = shaftZ + 5.0f;
+            addWhiteBox((atX0+atX1)*0.5f, atriumFloorY - 0.25f, (atZ0+atZ1)*0.5f,
+                        (atX1-atX0)*0.5f, 0.25f, (atZ1-atZ0)*0.5f);
+            // BRIDGE: a white walkway from the strut head landing (sBL.t*) to the atrium
+            // edge, both at atriumFloorY, so the player crosses from the strut to the lift.
+            {
+                const float ax0 = std::min(sBL.tx, atX0) - 1.6f, ax1 = std::max(sBL.tx, atX0) + 1.6f;
+                const float az0 = std::min(sBL.tz, atZ0) - 1.6f, az1 = std::max(sBL.tz, atZ0) + 1.6f;
+                addWhiteBox((ax0+ax1)*0.5f, atriumFloorY - 0.25f, (az0+az1)*0.5f,
+                            (ax1-ax0)*0.5f, 0.25f, (az1-az0)*0.5f);
+            }
+            x3::logInfo("--world showroom: ELEVATOR ATRIUM floor y=" + std::to_string(atriumFloorY) +
+                        " around shaft(" + std::to_string(shaftX) + "," + std::to_string(shaftZ) +
+                        ") + bridge from strut head(" + std::to_string(sBL.tx) + "," + std::to_string(sBL.tz) + ")");
+        }
+
+        // ===================================================================
+        // HIDDEN ANALYST GALLERY (OWNER'S VISION). A secret surveillance level
+        // ringing the CENTRAL VOID above the civilian floor, AT THE ELEVATOR
+        // LEVEL (galleryY == atriumFloorY) so the strut stair lands ON it and the
+        // glass elevator boards FROM it. A walkable white-panel RING (annulus)
+        // around an OPEN VOID over the building center (cx,cz); through the void
+        // (rimmed with DARK ONE-WAY GLASS) the analysts look DOWN onto the
+        // civilians on the ground floor (Y=floorY) + the 2nd floor (Y=floor2Y).
+        // HOLOGRAPHIC TERMINALS (reuse holo_terminal.cpp) ring the void facing in;
+        // a subset carry idle ANALYST FIGURES (RescueVictim skinned, never rescued).
+        //
+        // DARK-GLASS BALUSTRADE (real-time, fixed-alpha BLEND path — no per-pixel
+        // fresnel): the void edge is treated with an ELEGANT thin parapet (low white
+        // kerb + slim cap rail) topped by a band of FLAT DARK-TINTED GLASS held by
+        // slim metal mullions — like the Unity interior's glass railings. The dark
+        // tint gives the analysts a shaded look-down onto the civilians while the void
+        // stays OPEN below the glass band (so the gallery still overlooks the floor).
+        // LIMITATION: the tint is a fixed-alpha approximation, not a true angle-
+        // dependent one-way material — but it reads sleek + minimal (NOT a lumpy
+        // louver/gear). Glass tint/alpha (galGlass* below) are the TUNE POINTS.
+        // ===================================================================
+        // Gallery ring sits at the elevator level so it connects to the existing
+        // strut-stair landing + bridge + elevator boarding (all at atriumFloorY).
+        const float galleryY   = atriumFloorY;          // walkable ring surface (== Y10)
+        const float voidR      = 9.0f;                  // central VOID radius (open down-look)
+        const float galOuterR  = 17.0f;                 // ring outer radius (~8 m wide balcony)
+        // Ring built as a fan of trapezoidal SEGMENTS around (cx,cz). Each segment is a
+        // white-clad box laid along its mid-radius arc; collision on each so it's walkable.
+        const int   galSeg     = 16;                    // ring segments (+ terminal slots)
+        const float galMidR    = (voidR + galOuterR) * 0.5f;
+        // Persistent gallery glass state (drawn each frame via the BLEND path, like the
+        // deck/elevator glass). The slats + rim pane are authored at WORLD positions so
+        // their model matrix is a per-slat rotation about the slat center.
+        struct GalGlass { x3::rhi::MeshHandle mesh; float model[16]; float r,g,b,a,emis; };
+        std::vector<GalGlass> galGlass;
+        // Holographic terminals around the ring + the analyst figures at a subset.
+        std::vector<x3::game::HoloTerminal> galTerms;
+        std::vector<x3::game::RescueVictim> galAnalysts;
+        galTerms.reserve(galSeg);
+        galAnalysts.reserve(6);
+        {
+            // ---- (1) WALKABLE RING FLOOR — galSeg trapezoid segments forming an annulus
+            // around the void, white-clad + collision. A small thick slab per segment
+            // (top at galleryY) tangent to its arc. Gaps at the strut-landing + elevator
+            // sides are bridged by the existing atrium/bridge floor (both at atriumFloorY).
+            const float ringHalfRad = (galOuterR - voidR) * 0.5f;   // radial half-extent of a segment
+            const float ringHY = 0.22f;                              // 0.44 m thick floor slab
+            const float ringCY = galleryY - ringHY;                  // center so TOP == galleryY
+            for (int s = 0; s < galSeg; ++s) {
+                const float ang = (6.2831853f * (s + 0.5f)) / (float)galSeg;
+                const float ca = std::cos(ang), sa = std::sin(ang);
+                const float segX = cx + ca * galMidR, segZ = cz + sa * galMidR;
+                // Tangential half-width sized so adjacent segments overlap into a closed ring.
+                const float tanHW = (3.14159265f * galMidR) / (float)galSeg + 0.35f;
+                // Author the segment as an axis-aligned box then rotate it to lie along the
+                // arc tangent via a yaw model matrix (addWhiteMesh uses world meshes; here we
+                // build a rotated box by composing the rotation into vertices is overkill —
+                // instead use a radial-aligned box: radial = ringHalfRad, tangential = tanHW,
+                // approximated axis-aligned per-segment which is fine at 16 segments).
+                // Build the segment in LOCAL (radial=x, tangential=z) then place rotated:
+                // a white-clad render box + a matching rotated static collision body.
+                x3::prims::PrimMesh seg = x3::prims::makeBox(ringHalfRad, ringHY, tanHW, 0,0,0, 0.3f);
+                // Rotate verts by `ang` about Y so radial axis points outward.
+                for (auto& v : seg.verts) {
+                    const float lx = v.pos[0], lz = v.pos[2];
+                    v.pos[0] = lx * ca - lz * sa + segX;
+                    v.pos[1] += ringCY;
+                    v.pos[2] = lx * sa + lz * ca + segZ;
+                    const float nx = v.normal[0], nz = v.normal[2];
+                    v.normal[0] = nx * ca - nz * sa; v.normal[2] = nx * sa + nz * ca;
+                }
+                x3::rhi::MeshHandle m = makeWorldMesh(seg);
+                x3::game::Entity e; e.mesh = m; e.tex = whitePanelTex;
+                e.baseColor[0]=kWhite[0]; e.baseColor[1]=kWhite[1]; e.baseColor[2]=kWhite[2]; e.baseColor[3]=1.0f;
+                sscene.add(e);
+                // Collision: a small axis-aligned box at the segment center (a touch larger so
+                // the ring is seamlessly walkable; the player capsule never notices the facets).
+                sphys->addBox({ tanHW*std::fabs(sa) + ringHalfRad*std::fabs(ca) + 0.1f, ringHY,
+                                tanHW*std::fabs(ca) + ringHalfRad*std::fabs(sa) + 0.1f },
+                              { segX, ringCY, segZ }, 0.0f, x3::phys::Layer::Static);
+            }
+            // ---- (2) VOID-EDGE PARAPET + DARK-GLASS BALUSTRADE — an ELEGANT, THIN,
+            // sleek treatment of the void rim (replacing the old chunky tilted-slat
+            // "louver" ring that read as a crude gear/cog). It mirrors the Unity
+            // interior's glass railings: a SMOOTH LOW PARAPET (a thin white kerb + a
+            // slim white cap rail) topped by a continuous band of FLAT DARK-TINTED
+            // GLASS held by SLIM METAL MULLIONS. The analysts still get a dark
+            // look-down onto the civilians (the glass is dark-tinted, see-through
+            // looking down through the open void below the glass band), and the
+            // railing/safety read is preserved. Minimal geometry: a clean kerb ring,
+            // a thin cap ring, slim mullion posts, and ONE merged flat glass band.
+            //   * kerb     — a thin white solid ~0.35 m tall at the void edge (the
+            //                low parapet base; gives a clean lip + collision).
+            //   * cap rail — a slim white bar capping the glass band (the handrail).
+            //   * mullions — slim dark metal posts at each segment (hold the glass).
+            //   * glass    — ONE merged ring of FLAT vertical dark-tinted panes via the
+            //                existing BLEND path (galGlass), set just inboard of the kerb.
+            const float kerbH       = 0.35f;                 // low parapet kerb height (m)
+            const float kerbHY      = kerbH * 0.5f;
+            const float kerbHRad    = 0.07f;                 // thin radial half-thickness
+            const float glassH      = 0.62f;                 // dark-glass band height (m)
+            const float glassTopY   = galleryY + kerbH + glassH;  // top of the glass = handrail height (~1.0 m)
+            const float capHY       = 0.04f;                 // slim cap-rail half-height
+            const float capHRad     = 0.10f;                 // slim cap-rail radial half-depth
+            const float mullHRad    = 0.045f, mullHTan = 0.045f;  // slim mullion post half-dims
+            // Dark-tinted FLAT glass (smoky, low transmission) — same dark tint family
+            // the deck/elevator glass uses; alpha = BLEND opacity (dark, see-through down).
+            const float galGlassR = 0.030f, galGlassG = 0.040f, galGlassB = 0.065f;
+            const float galGlassA = 0.62f;
+            // The kerb + cap rails are rotated boxes at each segment (like the ring floor).
+            for (int s = 0; s < galSeg; ++s) {
+                const float ang = (6.2831853f * (s + 0.5f)) / (float)galSeg;
+                const float ca = std::cos(ang), sa = std::sin(ang);
+                const float tanHW = (3.14159265f * voidR) / (float)galSeg + 0.25f;
+                // Place a white box (radial half=hRad, given height) at radius `rad`,
+                // centered at world Y `cy`, rotated to lie along the arc tangent. Adds a
+                // render entity (clean white panel) + a matching static collision body.
+                auto placeRing = [&](float rad, float cy, float hRad, float hY, float colTanPad) {
+                    const float rx = cx + ca * rad, rz = cz + sa * rad;
+                    x3::prims::PrimMesh b = x3::prims::makeBox(hRad, hY, tanHW, 0,0,0, 1.0f);
+                    for (auto& v : b.verts) {
+                        const float lx = v.pos[0], lz = v.pos[2];
+                        v.pos[0] = lx * ca - lz * sa + rx;
+                        v.pos[1] += cy;
+                        v.pos[2] = lx * sa + lz * ca + rz;
+                        const float nx = v.normal[0], nz = v.normal[2];
+                        v.normal[0] = nx * ca - nz * sa; v.normal[2] = nx * sa + nz * ca;
+                    }
+                    x3::rhi::MeshHandle m = makeWorldMesh(b);
+                    x3::game::Entity e; e.mesh = m; e.tex = whitePanelTex;
+                    e.baseColor[0]=kWhite[0]; e.baseColor[1]=kWhite[1]; e.baseColor[2]=kWhite[2]; e.baseColor[3]=1.0f;
+                    sscene.add(e);
+                    if (colTanPad >= 0.0f)
+                        sphys->addBox({ tanHW*std::fabs(sa) + hRad*std::fabs(ca) + colTanPad, hY,
+                                        tanHW*std::fabs(ca) + hRad*std::fabs(sa) + colTanPad },
+                                      { rx, cy, rz }, 0.0f, x3::phys::Layer::Static);
+                };
+                // Low parapet KERB at the void edge (collision = the safety barrier).
+                placeRing(voidR + 0.10f, galleryY + kerbHY, kerbHRad, kerbHY, 0.05f);
+                // Slim CAP RAIL atop the glass band (the handrail; thin collision lid).
+                placeRing(voidR + 0.10f, glassTopY + capHY, capHRad, capHY, 0.0f);
+            }
+            // SLIM MULLIONS — a dark metal post at each segment boundary, spanning kerb
+            // top -> cap, holding the glass. Built white-clad-mesh path but tinted dark.
+            {
+                const float mullBaseY = galleryY + kerbH;
+                const float mullHY    = glassH * 0.5f;
+                for (int s = 0; s < galSeg; ++s) {
+                    const float ang = (6.2831853f * (float)s) / (float)galSeg;   // on segment edges
+                    const float ca = std::cos(ang), sa = std::sin(ang);
+                    const float rx = cx + ca * (voidR + 0.10f), rz = cz + sa * (voidR + 0.10f);
+                    x3::prims::PrimMesh post = x3::prims::makeBox(mullHRad, mullHY, mullHTan, 0,0,0, 1.0f);
+                    for (auto& v : post.verts) {
+                        const float lx = v.pos[0], lz = v.pos[2];
+                        v.pos[0] = lx * ca - lz * sa + rx;
+                        v.pos[1] += mullBaseY + mullHY;
+                        v.pos[2] = lx * sa + lz * ca + rz;
+                        const float nx = v.normal[0], nz = v.normal[2];
+                        v.normal[0] = nx * ca - nz * sa; v.normal[2] = nx * sa + nz * ca;
+                    }
+                    x3::rhi::MeshHandle m = makeWorldMesh(post);
+                    x3::game::Entity e; e.mesh = m; e.tex = whitePanelTex;
+                    // Slim dark metal mullion tint (cool gunmetal, distinct from the white).
+                    e.baseColor[0]=0.16f; e.baseColor[1]=0.18f; e.baseColor[2]=0.22f; e.baseColor[3]=1.0f;
+                    sscene.add(e);   // visual only (no collision; the kerb is the barrier)
+                }
+            }
+            // ---- (3) FLAT DARK-GLASS BAND — ONE merged ring of FLAT VERTICAL dark-tinted
+            // panes spanning the kerb top -> cap rail, just inboard of the void edge. The
+            // dark tint gives the analysts a shaded look-down onto the civilians (and the
+            // void is OPEN below the glass band, so the gallery still overlooks the floor);
+            // the flat vertical glass reads as a sleek railing pane (NOT a lumpy louver).
+            // Drawn via the existing BLEND path (galGlass) as a SINGLE merged draw.
+            {
+                const int   galGlassSeg = 32;                 // panes around the ring (smooth band)
+                const float glassMidY   = galleryY + kerbH + glassH * 0.5f;
+                const float glassHY     = glassH * 0.5f;
+                const float glassHTan   = (3.14159265f * voidR) / (float)galGlassSeg + 0.10f;
+                const float glassHThk   = 0.02f;              // thin flat pane
+                x3::prims::PrimMesh glassMerged;
+                for (int s = 0; s < galGlassSeg; ++s) {
+                    const float ang = (6.2831853f * (s + 0.5f)) / (float)galGlassSeg;
+                    const float ca = std::cos(ang), sa = std::sin(ang);
+                    const float panX = cx + ca * (voidR + 0.05f), panZ = cz + sa * (voidR + 0.05f);
+                    // Flat vertical pane: radial=thin, height=glassHY, tangential=glassHTan;
+                    // rotate about Y to lie along the arc tangent (NO tilt -> flat band).
+                    x3::prims::PrimMesh pane = x3::prims::makeBox(glassHThk, glassHY, glassHTan, 0,0,0, 1.0f);
+                    const uint32_t vb = (uint32_t)glassMerged.verts.size();
+                    for (auto v : pane.verts) {
+                        const float lx = v.pos[0], lz = v.pos[2];
+                        v.pos[0] = lx * ca - lz * sa + panX;
+                        v.pos[1] += glassMidY;
+                        v.pos[2] = lx * sa + lz * ca + panZ;
+                        const float nx = v.normal[0], nz = v.normal[2];
+                        v.normal[0] = nx * ca - nz * sa; v.normal[2] = nx * sa + nz * ca;
+                        glassMerged.verts.push_back(v);
+                    }
+                    for (uint32_t idx : pane.index) glassMerged.index.push_back(vb + idx);
+                }
+                GalGlass gg{}; gg.mesh = makeWorldMesh(glassMerged);
+                gg.model[0]=1;gg.model[5]=1;gg.model[10]=1;gg.model[15]=1;   // identity (verts in world)
+                gg.r=galGlassR; gg.g=galGlassG; gg.b=galGlassB; gg.a=galGlassA; gg.emis=0.03f;
+                galGlass.push_back(gg);
+            }
+
+            // ---- (4) HOLOGRAPHIC TERMINALS — reuse holo_terminal.cpp. One per segment
+            // slot, on the OUTER side of the ring facing INWARD toward the void (so an
+            // analyst standing between the terminal and the rail watches the floor below
+            // over the readout). ~10-12 around the ring. Each seeds a surveillance-feed
+            // readout. Terminal anchor sits at chest height on the ring floor.
+            const int kNumTerms = 11;                 // ~10-12 terminals
+            const float termR = galOuterR - 2.2f;     // terminal stands near the outer wall
+            const float termY = galleryY + 1.25f;     // screen center at chest/eye height
+            for (int t = 0; t < kNumTerms; ++t) {
+                const float ang = (6.2831853f * t) / (float)kNumTerms + 0.18f;
+                const float ca = std::cos(ang), sa = std::sin(ang);
+                const float tx = cx + ca * termR, tz = cz + sa * termR;
+                // Face the terminal INWARD (toward the void center). HoloTerminal::build
+                // yaws the screen's local +Z front by `yaw`; aim it at (cx,cz) so the
+                // readout faces an analyst standing between the terminal and the rail.
+                const float inwardYaw = std::atan2(cx - tx, cz - tz);
+                galTerms.emplace_back();
+                x3::game::HoloTerminal& term = galTerms.back();
+                term.build(sscene, *device, x3::phys::Vec3{ tx, termY, tz }, inwardYaw,
+                           1.2f, 0.78f, /*ceilingY*/ galleryY + 2.6f);
+                // Surveillance-feed readout (line 0 = header title; 1+ = data rows).
+                term.setLines({
+                    std::string("SURVEILLANCE FEED ") + (char)('A' + (t % 8)) +
+                        "-" + std::to_string(10 + t),
+                    "ZONE: CIVILIAN ATRIUM",
+                    "TRACKING: ACTIVE",
+                    std::string("CONTACTS: ") + std::to_string(3 + (t * 5) % 9),
+                    "BIOMETRICS: NOMINAL",
+                    "ONE-WAY GLASS: ENGAGED",
+                });
+            }
+            x3::logInfo("--world showroom: GALLERY terminals = " + std::to_string(galTerms.size()) +
+                        " around void (r=" + std::to_string(termR) + ") facing in");
+
+            // ---- (5) ANALYST FIGURES — a modest subset (4) of skinned idle figures at
+            // four spread terminals, facing their terminal/the void. Reuse RescueVictim
+            // (the AnnaCasual_anim.glb idle path Aria uses); built as Captive + never
+            // rescued + hubReached=false so the timer never runs and there's no follow AI
+            // — they just idle (breathe) in place. setFacing aims each at the void center.
+            const int kNumAnalysts = 4;
+            const int kTermsPerAnalyst = (galTerms.empty() ? 1 : (int)galTerms.size()) / kNumAnalysts;
+            for (int aN = 0; aN < kNumAnalysts; ++aN) {
+                const int slot = aN * std::max(1, kTermsPerAnalyst);
+                const float ang = (6.2831853f * slot) / (float)kNumTerms + 0.18f;
+                const float ca = std::cos(ang), sa = std::sin(ang);
+                // Stand ~1.4 m IN from the terminal (between it and the rail) on the ring.
+                const float aR = galOuterR - 3.6f;
+                const float axp = cx + ca * aR, azp = cz + sa * aR;
+                galAnalysts.emplace_back();
+                x3::game::RescueVictim& an = galAnalysts.back();
+                an.build(sscene, *device, *sphys, x3::game::riggedGlbRoot(),
+                         x3::phys::Vec3{ axp, galleryY, azp },
+                         x3::game::VictimId::Aria, std::string("Analyst") + std::to_string(aN + 1),
+                         "AnnaCasual_anim.glb", 1e9f /*never expires*/,
+                         x3::game::MonsterSystem::Tuning{});
+                // Face the void center (and thus the terminal, which is just outward of it).
+                // headingToFace law (CONVENTIONS): yaw = atan2(-dirX,-dirZ) points local -Z
+                // along (dirX,dirZ); dir = center - self.
+                an.setFacing(std::atan2(-(cx - axp), -(cz - azp)));
+                // A cool analyst tint (distinct from Aria's friendly cyan).
+                an.setTint(0.78f, 0.82f, 0.92f, 1.0f);
+            }
+            x3::logInfo("--world showroom: GALLERY analysts = " + std::to_string(galAnalysts.size()) +
+                        " (skinned idle, facing the void) + dark-glass parapet = " +
+                        std::to_string(galGlass.size()) + " merged BLEND mesh (flat dark-glass balustrade band)");
+        }
+        x3::logInfo("--world showroom: hidden-trigger = KEYPAD code-entry (press E at the STRUT-FACE door, type code " +
+                    std::to_string(HATCH_CODE) + ", Enter to submit) — the white panel slides aside, stair climbs inside the strut");
+
+        // ===================================================================
+        // CIVILIAN FIGURES — the public milling on the GROUND floor + 2nd-floor
+        // mezzanine (the museum-lobby crowd). EXACT same reuse pattern as the
+        // companion Aria + the gallery ANALYSTS: each is a RescueVictim built
+        // Captive, AnnaCasual_anim.glb idle, timer 1e9 (never expires),
+        // hubReached=false (no countdown, no follow AI) -> they just idle/breathe
+        // in place. setFacing() holds each at a natural static heading (small
+        // groups facing each other / facing out the glass / toward the blue pad).
+        // WARMER, VARIED tints (vs the analysts' cool blue-grey 0.78/0.82/0.92)
+        // so they read as the PUBLIC, not staff. Positions are hand-jittered (NOT
+        // a grid) on the walkable floors: GROUND at y=floorY (-9) around the
+        // central blue pad + lounge, 2ND FLOOR at y=floor2Y (3) on the Room_01
+        // mezzanine deck. setFacing law (CONVENTIONS / setFacing doc): yaw =
+        // atan2(-dirX,-dirZ) aims the model's local -Z along (dirX,dirZ); to face
+        // a target T from self S pass dir = T - S.
+        //
+        // PERF: each skinned tick() does a GPU readback (vkDeviceWaitIdle) ->
+        // costly under 4x headless SSAA. The headless proofs POSE these on the
+        // first ~2 frames then render static (see the proof loops). Total skinned
+        // figures kept modest: Aria(1) + analysts(4) + civilians(8) = 13.
+        std::vector<x3::game::RescueVictim> civilians;
+        civilians.reserve(8);
+        {
+            // A civilian = {x,z, facing-target x,z, tint r,g,b, y-level}. Facing a
+            // target point reads more natural than a raw yaw (groups face each
+            // other / the pad / out the glass). Warm/varied civilian palette.
+            struct Civ { float x, z, tx, tz, r, g, b, y; const char* name; };
+            const float padX = cx, padZ = cz;            // central blue pad center (social heart)
+            const std::vector<Civ> civDefs = {
+                // ---- GROUND floor (y=floorY): ~5 around the blue pad + lounge ----
+                // A) a chatting PAIR just off the pad's +X edge, facing each other.
+                { padX + 4.6f, padZ + 1.2f,  padX + 6.2f, padZ + 2.0f,  0.86f, 0.52f, 0.46f, floorY, "Civ_PairA" }, // warm terracotta
+                { padX + 6.4f, padZ + 2.4f,  padX + 4.6f, padZ + 1.2f,  0.52f, 0.66f, 0.40f, floorY, "Civ_PairB" }, // warm olive
+                // B) a lone visitor at the pad's -X lounge edge, gazing OUT the glass (-X).
+                { padX - 5.8f, padZ - 1.5f,  padX - 40.0f, padZ - 1.5f, 0.80f, 0.74f, 0.42f, floorY, "Civ_Gazer" }, // warm gold
+                // C) a small group of two on the -Z lounge arc, facing IN toward the pad.
+                { padX - 1.4f, padZ - 6.2f,  padX,         padZ,        0.74f, 0.50f, 0.70f, floorY, "Civ_TrioA" }, // warm mauve
+                { padX + 2.0f, padZ - 7.0f,  padX,         padZ,        0.58f, 0.62f, 0.84f, floorY, "Civ_TrioB" }, // soft periwinkle
+                // ---- 2ND-FLOOR mezzanine (y=floor2Y): ~3 on the Room_01 deck ----
+                // Deck footprint x~[29..115], z~[-123..-99]; place clear of the central
+                // tower gap (x~71..73) + the void, looking along the deck / down at the pad.
+                // D) a pair at the +X end of the deck, facing each other near the rail.
+                { 96.0f, -114.0f,  93.0f, -112.0f,  0.84f, 0.58f, 0.40f, floor2Y, "Civ_MezzA" }, // warm amber
+                { 92.0f, -112.5f,  96.0f, -114.0f,  0.66f, 0.78f, 0.62f, floor2Y, "Civ_MezzB" }, // sage
+                // E) a lone figure at the -X end of the deck, looking DOWN toward the pad below.
+                { 40.0f, -107.0f,  cx,    cz,        0.82f, 0.66f, 0.50f, floor2Y, "Civ_MezzC" }, // warm tan
+            };
+            for (const auto& c : civDefs) {
+                civilians.emplace_back();
+                x3::game::RescueVictim& cv = civilians.back();
+                cv.build(sscene, *device, *sphys, x3::game::riggedGlbRoot(),
+                         x3::phys::Vec3{ c.x, c.y, c.z },
+                         x3::game::VictimId::Aria, c.name,
+                         "AnnaCasual_anim.glb", 1e9f /*never expires*/,
+                         x3::game::MonsterSystem::Tuning{});
+                cv.setFacing(std::atan2(-(c.tx - c.x), -(c.tz - c.z)));
+                cv.setTint(c.r, c.g, c.b, 1.0f);
+            }
+            x3::logInfo("--world showroom: CIVILIANS = " + std::to_string(civilians.size()) +
+                        " skinned idle (5 ground @ y=" + std::to_string(floorY) +
+                        " around blue pad + lounge, 3 mezzanine @ y=" + std::to_string(floor2Y) +
+                        "), warm/varied tint, facing pad/each-other/glass");
+        }
+#if 0
+        // -------------------------------------------------------------------
+        // [SUPERSEDED] STAGE 2/3 — HIDDEN 2ND-FLOOR WALL DOOR -> entry passage -> 90 deg
+        // turn -> flight of stairs UP -> ELEVATOR ATRIUM. REPLACED by the strut-face
+        // keypad door + internal strut stair above. Kept under #if 0 for reference only.
+        // Concealed entrance on the 2ND FLOOR: a flush WHITE wall panel set into the
+        // GLB Pilar_01/02 left BACK wall (z~-121) — chosen because the player has
+        // ample 2nd-floor room IN FRONT of it (interior side, z>-120) to walk up and
+        // face it, while CONCEALED space sits behind it (z<-122). On the keypad code
+        // (2742) the panel SLIDES ASIDE; you walk -Z into the passage, TURN +X, then
+        // a grand FLIGHT OF STAIRS climbs +X-and-up to the ELEVATOR ATRIUM where the
+        // glass lift boards. The keypad mechanic + code are UNCHANGED (the hatch*
+        // variables below drive the WALL DOOR; the same KeypadEntry + value()==
+        // kShowroomHatchCode gate that --test-hatchcode shares).
+        // -------------------------------------------------------------------
+        // ---- The hidden DOOR (a flush white wall panel) set into a WHITE PARTITION
+        // WALL I build across the open 2nd-floor mid-room (clear of the thick GLB
+        // structural walls at z~-101 / z~-121, which would otherwise occlude it). The
+        // partition is axis-aligned + clad in the same white panels, so it reads as a
+        // built interior wall; its sill rests on the 2nd floor (floor2Y). The player,
+        // having climbed to the 2nd floor (landing at z~-104), faces -Z toward it.
+        const float doorX = 52.0f;             // door center X (left half, near the climb landing)
+        const float doorZ = -106.0f;           // partition plane (open mid-room, clear of GLB walls)
+        const float doorHalfW = 1.2f;          // 2.4 m wide opening
+        const float doorHalfH = 1.25f;         // 2.5 m tall (fits under the GLB Tube vault at y~6)
+        const float doorPanelHZ = 0.18f;       // panel thickness (set into the partition)
+        const float doorCY = floor2Y + doorHalfH;   // panel center (sill on the 2nd floor)
+        // Keep the proven keypad-host variable NAMES (hatch*) so the interaction +
+        // smoke code is untouched; they now address the WALL DOOR on the 2nd floor.
+        const float hatchX = doorX;            // door center X (proximity test)
+        const float hatchZ = doorZ;            // door plane Z (proximity test)
+        const float hatchHalf = doorHalfW;     // proximity half-window
+        const float doorFloorY = floor2Y;      // the floor the player stands on to use it
+        constexpr int HATCH_CODE = kShowroomHatchCode;   // 2742 (UNCHANGED) — themed "ARIA"
+
+        // WHITE PARTITION WALL the door sits in: flanking jambs + a lintel above,
+        // floor-to-vault, clad in white panels + solid collision. The door opening is
+        // the only gap (the player approaches from +Z, the climb-landing side).
+        const float partHalfH = 1.4f;          // partition half-height (~2.8 m, to the vault)
+        const float partCY = floor2Y + partHalfH;
+        {
+            const float jambW = 5.0f;          // jamb half-extent each side
+            // -X jamb + +X jamb (the door opening is the gap between them).
+            addWhiteBox(doorX - doorHalfW - jambW, partCY, doorZ, jambW, partHalfH, doorPanelHZ);
+            addWhiteBox(doorX + doorHalfW + jambW, partCY, doorZ, jambW, partHalfH, doorPanelHZ);
+            // Lintel above the opening up to the partition top.
+            addWhiteBox(doorX, (floor2Y + doorHalfH*2.0f + (floor2Y + partHalfH*2.0f))*0.5f, doorZ,
+                        doorHalfW, ((floor2Y + partHalfH*2.0f) - (floor2Y + doorHalfH*2.0f))*0.5f, doorPanelHZ);
+        }
+
+        // Concealed door PANEL: a thin white box flush in the partition, clad in the
+        // SAME white panel texture so it is invisible until opened. It slides +X aside
+        // on unlock; its Static collision body is REMOVED on open so the player walks
+        // through. A faint cyan glow pulses when the player is near + it's still closed.
+        x3::rhi::MeshHandle hatchMesh = makeWorldMesh(
+            x3::prims::makeBox(doorHalfW, doorHalfH, doorPanelHZ, 0, 0, 0, 0.25f));
+        x3::game::Entity hatchEnt; hatchEnt.mesh = hatchMesh; hatchEnt.tex = whitePanelTex;
+        hatchEnt.baseColor[0]=kWhite[0]; hatchEnt.baseColor[1]=kWhite[1]; hatchEnt.baseColor[2]=kWhite[2]; hatchEnt.baseColor[3]=1.0f;
+        hatchEnt.emissive[0]=0.10f; hatchEnt.emissive[1]=0.45f; hatchEnt.emissive[2]=0.55f; hatchEnt.emissive[3]=0.0f; // glows only when armed
+        hatchEnt.transform[12]=doorX; hatchEnt.transform[13]=doorCY; hatchEnt.transform[14]=doorZ;
+        const uint32_t hatchIdx = sscene.add(hatchEnt);
+        // The panel's solid collision while CLOSED (it seals the wall). Removed on open.
+        x3::phys::BodyId hatchLidBody =
+            sphys->addBox({ doorHalfW, doorHalfH, doorPanelHZ }, { doorX, doorCY, doorZ }, 0.0f, x3::phys::Layer::Static);
+        bool  hatchOpen = false;        // latched once triggered
+        float hatchSlide = 0.0f;        // 0=closed .. 1=fully slid aside
+
+        // ---- Aligned interior run, all WHITE-clad + walkable, behind the door:
+        //   ENTRY PASSAGE : -Z from the door into the open mid-room (y=floor2Y).
+        //   90 deg TURN   : dogleg from -Z to +X.
+        //   STAIRS UP     : a grand +X flight climbing floor2Y -> atriumFloorY.
+        //   ELEVATOR ATRIUM: a white room at y=atriumFloorY enclosing the lift shaft.
+        const float passHalfW   = 1.6f;        // passage/turn corridor half-width
+        const float passTopGap  = 2.4f;        // interior head-height (fits under the GLB vault)
+        const float passDoorZ   = doorZ - doorPanelHZ;   // -Z (concealed) face of the door
+        const float passEndZ    = -113.0f;     // back of the entry passage (the turn corner)
+        const float turnCX      = doorX;        // the dogleg corner X (== door X)
+        const float upStairLowX = doorX + passHalfW + 1.0f;  // stair low edge (on the 2nd floor)
+        const float upStairRun  = 18.0f;       // +X run (gentle grand flight)
+        const float upStairRise = atriumFloorY - floor2Y;   // 6 m
+        const float stairZ      = passEndZ;     // the +X stair runs along the turn-corner Z line
+        const float atriumX0    = 70.0f, atriumX1 = 91.0f;  // atrium X span (encloses shaftX=81)
+        const float atriumZ0    = -115.0f, atriumZ1 = -98.5f; // atrium Z span (encloses shaftZ=-100)
+        // Helper: a white floor slab (top at topY) of the given XZ rect.
+        auto whiteFloor = [&](float x0, float x1, float z0, float z1, float topY) {
+            addWhiteBox((x0+x1)*0.5f, topY - 0.25f, (z0+z1)*0.5f, (x1-x0)*0.5f, 0.25f, (z1-z0)*0.5f);
+        };
+        // Helper: a white ceiling slab (bottom at botY).
+        auto whiteCeil = [&](float x0, float x1, float z0, float z1, float botY) {
+            addWhiteBox((x0+x1)*0.5f, botY + 0.15f, (z0+z1)*0.5f, (x1-x0)*0.5f, 0.15f, (z1-z0)*0.5f);
+        };
+        // (A) ENTRY PASSAGE: floor + ceiling + the two side walls, from the door
+        // (z=passDoorZ) -Z back to the turn corner (z=passEndZ), centered on doorX.
+        {
+            const float wallHy = passTopGap * 0.5f, wallCy = floor2Y + wallHy;
+            whiteFloor(turnCX - passHalfW - 0.3f, turnCX + passHalfW + 0.3f, passEndZ + passHalfW - 0.3f, passDoorZ, floor2Y);
+            whiteCeil (turnCX - passHalfW - 0.3f, turnCX + passHalfW + 0.3f, passEndZ + passHalfW - 0.3f, passDoorZ, floor2Y + passTopGap);
+            // -X side wall of the passage (full length). +X side wall ONLY on the door
+            // half (the -Z end opens via the turn into the +X stair run).
+            addWhiteBox(turnCX - passHalfW - 0.15f, wallCy, (passEndZ + passDoorZ)*0.5f, 0.15f, wallHy, (passDoorZ - passEndZ)*0.5f);
+            addWhiteBox(turnCX + passHalfW + 0.15f, wallCy, (passDoorZ + (passEndZ + 2*passHalfW))*0.5f, 0.15f, wallHy, (passDoorZ - (passEndZ + 2*passHalfW))*0.5f);
+        }
+        // (B) 90 deg TURN corner: a white floor+ceiling patch at (turnCX,passEndZ)
+        // bridging the -Z passage into the +X stair run; a -Z back wall seals the corner.
+        {
+            const float wallHy = passTopGap * 0.5f, wallCy = floor2Y + wallHy;
+            whiteFloor(turnCX - passHalfW - 0.3f, upStairLowX + 0.5f, passEndZ - passHalfW - 0.3f, passEndZ + passHalfW + 0.3f, floor2Y);
+            whiteCeil (turnCX - passHalfW - 0.3f, upStairLowX + 0.5f, passEndZ - passHalfW - 0.3f, passEndZ + passHalfW + 0.3f, floor2Y + passTopGap);
+            addWhiteBox((turnCX + upStairLowX)*0.5f, wallCy, passEndZ - passHalfW - 0.15f, (upStairLowX + passHalfW - turnCX)*0.5f + 0.3f, wallHy, 0.15f); // -Z back wall
+        }
+        // (C) STAIRS UP: a grand white ramp climbing +X from the 2nd floor (floor2Y) to
+        // the atrium (atriumFloorY), centered on stairZ. Matches the building's stairs.
+        {
+            x3::prims::PrimMesh ramp = x3::prims::makeRamp(upStairLowX, floor2Y, stairZ,
+                                                          passHalfW, upStairRun, upStairRise,
+                                                          /*axis*/0 /*+X*/, /*dir*/+1.0f, 0.25f);
+            x3::rhi::MeshHandle m = makeWorldMesh(ramp);
+            x3::game::Entity e; e.mesh = m; e.tex = whitePanelTex;
+            e.baseColor[0]=kWhite[0]; e.baseColor[1]=kWhite[1]; e.baseColor[2]=kWhite[2]; e.baseColor[3]=1.0f;
+            sscene.add(e);
+            sphys->addStaticMesh(ramp.cverts.data(), (uint32_t)ramp.cverts.size() / 3,
+                                 ramp.cindex.data(), (uint32_t)ramp.cindex.size());
+        }
+        // (D) ELEVATOR ATRIUM: a white room at atriumFloorY around the lift shaft. The
+        // stair tops out at its -Z/-X corner; the player walks +Z across it to board the
+        // cab. Floor slab + a high ceiling + three bounding walls (+Z left open for the
+        // shaft view + the deck above). The shaft passes up through the ceiling gap.
+        {
+            whiteFloor(atriumX0, atriumX1, atriumZ0, atriumZ1, atriumFloorY);
+            const float atriumWallHy = 2.2f, atriumWallCy = atriumFloorY + atriumWallHy;  // 4.4 m walls
+            // Ceiling with a gap around the shaft so the cab rises through it.
+            whiteCeil(atriumX0, shaftX - carHX - 0.6f, atriumZ0, atriumZ1, atriumFloorY + 4.6f); // -X of shaft
+            whiteCeil(shaftX + carHX + 0.6f, atriumX1, atriumZ0, atriumZ1, atriumFloorY + 4.6f); // +X of shaft
+            // Bounding walls: -X, +X, -Z. (+Z left open toward the front / shaft.)
+            addWhiteBox(atriumX0 - 0.15f, atriumWallCy, (atriumZ0+atriumZ1)*0.5f, 0.15f, atriumWallHy, (atriumZ1-atriumZ0)*0.5f); // -X wall
+            addWhiteBox(atriumX1 + 0.15f, atriumWallCy, (atriumZ0+atriumZ1)*0.5f, 0.15f, atriumWallHy, (atriumZ1-atriumZ0)*0.5f); // +X wall
+            addWhiteBox((atriumX0+atriumX1)*0.5f, atriumWallCy, atriumZ0 - 0.15f, (atriumX1-atriumX0)*0.5f, atriumWallHy, 0.15f); // -Z wall
+            x3::logInfo("--world showroom: STAGE2/3 hidden wall door(" + std::to_string(doorX) + "," +
+                        std::to_string(doorZ) + ") on the 2nd floor y=" + std::to_string(floor2Y) +
+                        " -> passage(-Z to z=" + std::to_string(passEndZ) + ") -> turn(+X) -> stair rise " +
+                        std::to_string(upStairRise) + " m -> atrium floor y=" + std::to_string(atriumFloorY) +
+                        " (shaft " + std::to_string(shaftX) + "," + std::to_string(shaftZ) + ")");
+        }
+        x3::logInfo("--world showroom: hidden-trigger = KEYPAD code-entry (press E at the 2nd-floor wall door, type code " +
+                    std::to_string(HATCH_CODE) + ", Enter to submit) — the white panel slides aside");
+#endif // [SUPERSEDED] old 2nd-floor wall-door entrance
+
+        // ===================================================================
+        // INTERIOR LIGHTING (forward POINT LIGHTS) — make the walkable INTERIOR
+        // read like a clean, bright, evenly-lit white Unity interior, WITHOUT
+        // touching the NIGHT sky/sun/ambient (those stay dark so the sky + planets
+        // are unchanged outside). mesh.frag accumulates these on TOP of the dim
+        // moonlight sun + cool ambient, so the white-panel slab/passage/stair/
+        // atrium catch them and read clean white; the building's GLB emissive
+        // fixtures (halogen/tube/showcase/tv_screen) still glow via their material
+        // emissive (a small bloom nudge below makes them read as ceiling/strips).
+        //
+        // ALL lights are COOL-WHITE (color ~(1,1,1.05) pre-multiplied by an
+        // intensity) placed near ceiling height in each space, range ~10-16 m,
+        // spaced so the floors/walls light evenly (no dark pools, no hot blobs).
+        // Shared block => applies to BOTH the interactive --world showroom AND the
+        // headless proof flags. Budget: kMaxPointLights = 64.
+        //   *** TUNING KNOBS: kPL_I (intensity), kPL_R (range), grid steps below.
+        // plights is declared at BLOCK scope (full NIGHT intensity) so the live 'T'
+        // toggle can re-push it scaled (DAY x0.3) / full (NIGHT) via the helper.
+        // -------------------------------------------------------------------
+        std::vector<x3::rhi::PointLight> plights;
+        {
+            plights.reserve(64);
+            // Cool-white tint, slightly blue-biased. The 3 color channels are
+            // PRE-MULTIPLIED by the intensity so the shader sees color*intensity.
+            const float kPL_I = 3.4f;          // *** master interior intensity (brighter -> clean Unity-white interior, dominates the blue night ambient)
+            const float kPL_R = 13.0f;         // *** master range (m); attenuation -> 0 here
+            auto addLight = [&](float x, float y, float z, float range, float intensity) {
+                if (plights.size() >= 64) return;
+                x3::rhi::PointLight pl{};
+                pl.pos[0] = x; pl.pos[1] = y; pl.pos[2] = z;
+                pl.range  = range;
+                pl.color[0] = 1.04f * intensity;   // clean, faintly WARM white (interior fill) —
+                pl.color[1] = 1.00f * intensity;   // counters the cold blue night ambient so the
+                pl.color[2] = 0.96f * intensity;   // white panels read crisp like the Unity interior
+                plights.push_back(pl);
+            };
+
+            // (1) GROUND entrance / spawn area — a grid a few metres above the
+            // ground floor over the building footprint center, so the spawn room
+            // + the foot of the climb stair read lit. floorY ~ -9; ceiling is open,
+            // so hang the lights ~6 m up. 3x3 grid centered on (cx,cz), ~14 m step.
+            {
+                const float gY = floorY + 6.0f;
+                const float gStep = 14.0f;
+                for (int ix = -1; ix <= 1; ++ix)
+                    for (int iz = -1; iz <= 1; ++iz)
+                        addLight(cx + ix * gStep, gY, cz + iz * gStep, 16.0f, kPL_I);
+                // Extra light at the foot of the climb stair so the ascent reads.
+                addLight(climbCX, floorY + 5.0f, stairLowZ + 3.0f, 14.0f, kPL_I);
+            }
+
+            // (2) 2ND-FLOOR Room_01 — x[29,115], z[-122.8,-99.2], floor y=3, vaulted
+            // ceiling y~6..13.6. Hang lights ~y=9 (under the vault, above head). A
+            // grid across the long X span x 2 rows in Z so the whole slab lights.
+            {
+                const float fY = floor2Y + 6.0f;       // ~y=9, under the vault
+                const float xs[] = { 36.0f, 52.0f, 68.0f, 84.0f, 100.0f, 112.0f };
+                const float zs[] = { r2z0 + 6.0f, (r2z0 + r2z1) * 0.5f, r2z1 - 6.0f };
+                for (float zx : zs)
+                    for (float xx : xs)
+                        addLight(xx, fY, zx, kPL_R, kPL_I);
+            }
+
+            // (3) HOLLOW STRUT INTERIOR — the hidden stair climbing UP inside the
+            // back-left strut from the door foot (floorY) to the head (atriumFloorY).
+            // Hang a few lights stepping up the canted axis (base sBL.b* -> head sBL.t*)
+            // a touch above the treads, so the white strut interior + the stair read
+            // bright + even from the keypad door up to the landing.
+            {
+                const int kSteps = 4;
+                for (int s = 0; s <= kSteps; ++s) {
+                    const float t = (float)s / (float)kSteps;
+                    const float lx = sBL.bx + (sBL.tx - sBL.bx) * t;
+                    const float lz = sBL.bz + (sBL.tz - sBL.bz) * t;
+                    const float ly = strutBaseY + (strutTopY - strutBaseY) * t + 2.6f;
+                    addLight(lx, ly, lz, 10.0f, kPL_I * 0.9f);
+                }
+            }
+
+            // (4) ELEVATOR ATRIUM / BRIDGE — the boarding level at atriumFloorY(14)
+            // around the shaft, plus the bridge from the strut head. Hang lights ~3 m
+            // above the floor so the white room + the glass cab read clean white.
+            {
+                const float aY = atriumFloorY + 3.0f;
+                addLight(shaftX,         aY, shaftZ,         12.0f, kPL_I);
+                addLight(shaftX - 6.0f,  aY, shaftZ - 6.0f,  12.0f, kPL_I);
+                addLight(shaftX - 6.0f,  aY, shaftZ + 3.0f,  12.0f, kPL_I);
+                // Over the strut head landing + the bridge mid-span.
+                addLight(sBL.tx, atriumFloorY + 2.6f, sBL.tz, 11.0f, kPL_I * 0.95f);
+                addLight((sBL.tx + shaftX) * 0.5f, atriumFloorY + 2.6f,
+                         (sBL.tz + shaftZ) * 0.5f, 11.0f, kPL_I * 0.95f);
+                // One brighter light over the shaft mouth so the boarding cab pops.
+                addLight(shaftX, atriumFloorY + 2.0f, shaftZ, 10.0f, kPL_I * 1.1f);
+            }
+
+            x3::logInfo("--world showroom: INTERIOR point lights = " + std::to_string(plights.size()) +
+                        "/64 (cool-white, intensity " + std::to_string(kPL_I) + ", range ~" +
+                        std::to_string((int)kPL_R) + " m) covering ground/2nd-floor/strut-stair/atrium");
+        }
+        // APPLY the chosen DAY/NIGHT state: sky/sun/ambient + bloom + the interior point
+        // lights (full at night, x0.3 by day). DAY = bright cool Unity-match (snow-bounce
+        // ambient dominates, point lights dimmed, low bloom); NIGHT = dark planet sky +
+        // dim moon + full fixtures + the HERO bloom (0.22) on the GLB emissive fixtures.
+        applyShowroomTimeOfDay(device.get(), gShowroomDay, &plights);
+        x3::logInfo(std::string("--world showroom: time-of-day = ") + (gShowroomDay ? "DAY" : "NIGHT"));
+
+        // E-to-talk dialog state (the headless-tested NpcDialog).
+        x3::game::NpcDialog npcDialog;
+        float       npcBarkTimer = 0.0f;
+        std::string npcBarkText;
+
+        // Frame the sun's shadow box on the building so it casts shadows.
+        device->setShadowBounds(cx, (bmn[1] + bmx[1]) * 0.5f, cz, 150.0f);
+
+        // Position the night-sky planets HIGH ABOVE the building (camera-basis fan), reusing
+        // the screenshot-showroom placement, but anchored on the player spawn eye + a fixed
+        // look direction (toward +Z / Aria) so they hang in the upper frame from inside.
+        auto placePlanets = [&](float eyex, float eyey, float eyez, float yaw, float pitch) {
+            const float cp = std::cos(pitch), spn = std::sin(pitch);
+            const float cyw = std::cos(yaw),   syw = std::sin(yaw);
+            const float fwd[3]   = { cp * cyw, spn, cp * syw };
+            const float right[3] = { -syw, 0.0f, cyw };
+            struct Place { const char* name; float dist; float side; float lift; float radius; };
+            const Place places[] = {
+                { "Terrestrial",  120.0f, -42.0f,  44.0f, 28.0f },
+                { "Gas",          125.0f,  48.0f,  52.0f, 34.0f },
+                { "Moon",         105.0f,   8.0f,  40.0f, 14.0f },
+                { "Ice",          115.0f, -28.0f,  42.0f, 16.0f },
+                { "Lava",         128.0f,  32.0f,  38.0f, 15.0f },
+                { "Sun",           98.0f, -16.0f,  48.0f,  9.0f },
+            };
+            for (NightSkyPlanet& b : planets) {
+                const Place* pl = nullptr;
+                for (const Place& q : places) if (std::strcmp(q.name, b.name) == 0) { pl = &q; break; }
+                if (!pl) continue;
+                b.radius = pl->radius;
+                b.worldPos[0] = eyex + fwd[0] * pl->dist + right[0] * pl->side;
+                b.worldPos[1] = eyey + fwd[1] * pl->dist + pl->lift;
+                b.worldPos[2] = eyez + fwd[2] * pl->dist + right[2] * pl->side;
+            }
+        };
+
+        // Draw the ADDITIVE translucent glass (deck slab + 4 rails + the riding car)
+        // each frame, AFTER the opaque scene/env (the BLEND pass is depth-tested over
+        // them). The car follows elev.cabCenter(); deck/rails are world-fixed meshes.
+        auto drawAdditiveGlass = [&](const x3::rhi::FrameContext& fr) {
+            // Deck slab — cool cyan tint, faint self-glow so it reads at night.
+            drawGlass(fr, deckMesh, kIdentity, 0.55f, 0.78f, 0.95f, 0.34f, 0.25f);
+            drawGlass(fr, railNZ,   kIdentity, 0.60f, 0.85f, 1.00f, 0.45f, 0.40f);
+            drawGlass(fr, railPZ,   kIdentity, 0.60f, 0.85f, 1.00f, 0.45f, 0.40f);
+            drawGlass(fr, railNX,   kIdentity, 0.60f, 0.85f, 1.00f, 0.45f, 0.40f);
+            drawGlass(fr, railPX,   kIdentity, 0.60f, 0.85f, 1.00f, 0.45f, 0.40f);
+            // Glass elevator BOX — walls rise from the cab platform top. cabTop =
+            // cabCenter().y + platHY; the box center sits carBoxHY above that.
+            const x3::phys::Vec3 cc = elev.cabCenter();
+            float carModel[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+            carModel[12] = cc.x; carModel[13] = cc.y + platHY + carBoxHY; carModel[14] = cc.z;
+            drawGlass(fr, carMesh, carModel, 0.50f, 0.80f, 1.00f, 0.26f, 0.30f);
+            // ANALYST GALLERY dark-glass balustrade: the flat dark-tinted glass band
+            // (merged ring, world-space verts + identity model) + dark tint/opacity.
+            for (const GalGlass& g : galGlass)
+                drawGlass(fr, g.mesh, g.model, g.r, g.g, g.b, g.a, g.emis);
+        };
+
+        // ===== HEADLESS first-person proof (--screenshot-showroom-fp): one frame from
+        // the spawn eye, looking toward Aria (+Z), settle so she skins + bloom registers.
+        // --screenshot-showroom-ragdoll reuses the SAME setup but COLLAPSES Aria into a
+        // physics ragdoll and steps the world long enough for her to fall into a heap,
+        // then captures one frame — proof the ragdoll drives the skin (she's down, not
+        // standing). The camera backs up + looks down a touch so the heap fills the frame.
+        if (headless) {
+            const bool ragShot  = showroomRagdollShot;
+            const bool deckShot = showroomDeckShot;
+            const bool elevShot = showroomElevShot;
+            const bool stairShot= showroomStairShot;
+            const bool floor2Shot = showroomFloor2Shot;
+            const bool doorShot = showroomDoorShot;
+            const bool strutsShot = showroomStrutsShot;
+            const bool galleryShot = showroomGalleryShot;
+            // FP shot frames Aria standing from the spawn eye (look +Z, level). Ragdoll
+            // shot moves the eye CLOSE to her (2.5 m back on the eye->Aria diagonal, lower
+            // eye) and AIMS the camera straight at her floor spot so the collapsed heap
+            // fills the frame and reads clearly — she's down, not standing.
+            // Camera: the ragdoll shot uses the eye placed a short distance from Aria,
+            // AIMED directly at her spot so the heap is centered. The FP shot keeps the
+            // proven spawn-eye/level look. Aiming at her floor spot means a STANDING Aria
+            // fills the frame center; once collapsed the SAME shot shows a low heap there —
+            // a direct A/B proof at one framing.
+            // Shared helper: brighten the dim moonlit interior for a PROOF capture so the
+            // white-panel run reads clearly (headless only — does not touch the live look).
+            // NOTE: the interior is now genuinely lit by the INTERIOR POINT LIGHTS
+            // set up in the shared block above, so the proofs no longer raise the
+            // night sky/sun/ambient to fake brightness — that would also brighten
+            // the sky/planets in the shot. brightenProof is kept as a NO-OP so the
+            // interior proofs render with the TRUE night values: the interior reads
+            // bright from the point lights while the sky stays dark (an honest test
+            // of the interior lighting). (Args ignored; kept for call-site shape.)
+            auto brightenProof = [&](float /*amb*/, float /*sun*/, float /*expo*/) {
+                // intentionally empty — point lights carry the interior now.
+            };
+
+            // ===== HIDDEN ANALYST GALLERY proof (--screenshot-showroom-gallery). Captures
+            // MULTIPLE frames in one run from the gallery level:
+            //   (a) <path>             — the gallery: terminals glowing + analyst figures,
+            //                            standing on the ring looking ALONG it.
+            //   (b) <path>_down.png    — from the gallery, looking DOWN through the dark
+            //                            one-way glass onto the civilian floor/pad.
+            //   X3_SHOWROOM_GALLERY_UP=1 swaps (b) for an UP view from the civilian floor at
+            //   the dark-glass ceiling band (should read dark — analysts hidden).
+            // Settles a few frames so the skinned analysts pose + the terminal holo bakes,
+            // then captures each vantage. Self-contained: builds, captures, exits.
+            if (galleryShot) {
+                static const bool kUpView = (std::getenv("X3_SHOWROOM_GALLERY_UP") != nullptr);
+                const float dt = 1.0f / 60.0f;
+                float gelapsed = 10.0f;
+                // Helper: drive the gallery sub-systems one settle frame + render one frame
+                // from the given eye/look, optionally arming a capture to `outPath`.
+                // `tickHeavy`: re-pose the skinned analysts + re-bake the holo terminals.
+                // Each skinned tick triggers a GPU readback (vkDeviceWaitIdle) so it is
+                // EXPENSIVE under 4x SSAA — for a STILL capture we only need to pose them
+                // a couple of frames to seat the idle pose + bake the holo textures ONCE,
+                // then SKIP the heavy systems and just re-render the (now static) scene.
+                auto galTickAndRender = [&](float ex, float ey, float ez, float gyaw, float gpitch,
+                                            bool tickHeavy, const char* outPath) {
+                    glfwPollEvents();
+                    splayer.update(x3::game::PlayerInput{}, dt, *sphys);
+                    sphys->step(dt);
+                    sscene.update(*sphys);
+                    if (tickHeavy) {
+                        girl.tick(dt, false, sscene, *sphys, x3::phys::Vec3{ sx, sy, sz });
+                        for (auto& tm : galTerms) tm.update(dt);
+                        for (auto& an : galAnalysts)
+                            an.tick(dt, /*hubReached*/false, sscene, *sphys, an.pos());
+                        for (auto& cv : civilians)
+                            cv.tick(dt, /*hubReached*/false, sscene, *sphys, cv.pos());
+                    }
+                    gelapsed += dt;
+                    if (!gShowroomDay) placePlanets(ex, ey, ez, gyaw, gpitch);
+                    device->setCamera(ex, ey, ez, gyaw, gpitch, 80.0f);
+                    if (!gShowroomDay) device->setSkyTime(gelapsed);
+                    if (outPath) device->armCapture(outPath);
+                    auto frame = device->beginFrame();
+                    if (frame.valid) {
+                        sscene.render(*device, frame);
+                        showroom.draw(*device, frame);
+                        girl.draw(*device, frame, sscene);
+                        for (auto& an : galAnalysts) an.draw(*device, frame, sscene);
+                        for (auto& cv : civilians) cv.draw(*device, frame, sscene);
+                        drawAdditiveGlass(frame);   // incl. the dark one-way gallery glass
+                        if (!gShowroomDay)
+                            drawNightSkyPlanets(device.get(), frame, planetMesh, planets, gelapsed, ringMesh);
+                    }
+                    device->endFrame(frame);
+                };
+                // The "_down" / "_up" output paths derived from the base path.
+                std::string base = showroomGalleryShotPath;
+                std::string stem = base; std::string ext = ".png";
+                { const size_t dot = base.find_last_of('.'); if (dot != std::string::npos) { stem = base.substr(0,dot); ext = base.substr(dot); } }
+                const std::string downPath = stem + (kUpView ? "_up" : "_down") + ext;
+                // ---- Vantage A: ON the gallery ring, looking ALONG/ACROSS it so a run of
+                // terminals + the nearest analyst read, with the void + rail in frame.
+                // Stand on the ring at one azimuth, look tangentially toward the next slots.
+                const float galY  = atriumFloorY;
+                // HERO: a raised 3/4 from the ring's outer edge, angled DOWN across the void
+                // so the WHOLE gallery reads — the white ring, the OPEN VOID with its dark
+                // one-way glass louver rim, the terminals + analyst figures around it, the
+                // dome above. Eye out by the wall; aim past the void center onto the rim/glass.
+                const float aAng  = 2.3f;
+                const float aex = cx + std::cos(aAng) * 15.5f;
+                const float aez = cz + std::sin(aAng) * 15.5f;
+                const float aey = galY + 4.2f;                    // raised for the down-across angle
+                const float atx = cx - std::cos(aAng) * 5.0f;     // aim past the void center
+                const float atz = cz - std::sin(aAng) * 5.0f;
+                const float aty = galY - 0.8f;                    // tilt down onto the void rim/glass
+                {
+                    const float vx = atx - aex, vy = aty - aey, vz = atz - aez;
+                    const float vlxz = std::sqrt(vx*vx + vz*vz);
+                    const float gyaw = std::atan2(vz, vx), gpitch = std::atan2(vy, vlxz);
+                    const int kGalSettle = 4;
+                    for (int i = 0; i < kGalSettle; ++i)
+                        galTickAndRender(aex, aey, aez, gyaw, gpitch, /*tickHeavy*/ i < 2,
+                                         (i == kGalSettle - 1) ? base.c_str() : nullptr);
+                    const bool w1 = device->captureFrame(base.c_str());
+                    x3::logInfo(std::string("--screenshot-showroom-gallery: ") + (w1 ? "wrote " : "FAILED ") + base);
+                }
+                // ---- Vantage A2 (<path>_term.png): a PLAYER-height close-up of one analyst
+                // at a glowing surveillance terminal, facing the void — proving the terminals
+                // render their holo readout + the skinned analyst figures read. Stand just
+                // inward of an analyst slot, look outward/along at the analyst + terminal.
+                if (!kUpView) {
+                    const std::string termPath = stem + "_term" + ext;
+                    const float slotAng = (6.2831853f * 2) / 11.0f + 0.18f;   // analyst slot 2 / a terminal
+                    const float ca = std::cos(slotAng), sa = std::sin(slotAng);
+                    const float t2ex = cx + ca * (17.0f - 6.5f), t2ez = cz + sa * (17.0f - 6.5f);
+                    const float t2ey = galY + 1.65f;
+                    const float t2tx = cx + ca * (17.0f - 1.5f), t2tz = cz + sa * (17.0f - 1.5f);
+                    const float t2ty = galY + 1.2f;
+                    const float vx = t2tx - t2ex, vy = t2ty - t2ey, vz = t2tz - t2ez;
+                    const float vlxz = std::sqrt(vx*vx + vz*vz);
+                    const float gyaw = std::atan2(vz, vx), gpitch = std::atan2(vy, vlxz);
+                    for (int i = 0; i < 4; ++i)
+                        galTickAndRender(t2ex, t2ey, t2ez, gyaw, gpitch, /*tickHeavy*/ i < 2,
+                                         (i == 3) ? termPath.c_str() : nullptr);
+                    const bool wT = device->captureFrame(termPath.c_str());
+                    x3::logInfo(std::string("--screenshot-showroom-gallery: ") + (wT ? "wrote " : "FAILED ") + termPath);
+                }
+                // ---- Vantage B: DOWN through the dark glass OR UP at the ceiling band.
+                float bex, bey, bez, byaw, bpitch;
+                if (kUpView) {
+                    // Stand on the CIVILIAN floor UNDER the gallery void + look near-straight
+                    // UP at the dark-glass band ringing the void mouth ~19 m overhead (it
+                    // should read DARK — the analysts behind it hidden). Aim at the void rim
+                    // directly above (a hair off-vertical to avoid gimbal).
+                    bex = cx; bez = cz; bey = floorY + 1.6f;
+                    const float tx2 = cx + 2.5f, tz2 = cz + 1.0f, ty2 = galleryY - 0.3f;
+                    const float vx = tx2 - bex, vy = ty2 - bey, vz = tz2 - bez;
+                    const float vlxz = std::sqrt(vx*vx + vz*vz);
+                    byaw = std::atan2(vz, vx); bpitch = std::atan2(vy, vlxz);   // steep UP
+                } else {
+                    // Lean out OVER the void at the rail + look almost straight DOWN through
+                    // the dark one-way glass onto the civilian floor/pad ~19 m below. The eye
+                    // is nudged just INSIDE the void rim (over the opening) so the downward
+                    // sightline clears the gallery floor + the GLB dome shells (which sit over
+                    // the spire at Z~-100, away from this void center at Z~cz) and reaches the
+                    // ground. Aim at a point on the floor a touch toward center so the pad
+                    // reads (not dead-vertical, which would show only floor directly under).
+                    // A raised 3/4 over the void rail (away from the GLB dome at Z~-100),
+                    // tilted DOWN so the OPEN VOID + its dark one-way glass rim fill the
+                    // frame and, through them, the civilian floor + the companion ARIA below
+                    // read — proving the analysts watch the civilians through the glass. Eye
+                    // lifted + pulled back on the -Z bearing; aim into the void at Aria.
+                    bex = cx; bez = cz - 14.0f;          // back on the -Z gallery arc
+                    bey = galY + 5.0f;                   // lifted for the down-into-void angle
+                    const float tx2 = gx, tz2 = gz, ty2 = floorY + 1.0f;  // aim at Aria below, through the void
+                    const float vx = tx2 - bex, vy = ty2 - bey, vz = tz2 - bez;
+                    const float vlxz = std::sqrt(vx*vx + vz*vz);
+                    byaw = std::atan2(vz, vx); bpitch = std::atan2(vy, vlxz);   // down into the void
+                }
+                {
+                    // The analysts/terminals are already posed+baked from vantage A; just
+                    // settle a couple frames at the new camera (light ticks) + capture.
+                    for (int i = 0; i < 4; ++i)
+                        galTickAndRender(bex, bey, bez, byaw, bpitch, /*tickHeavy*/ false,
+                                         (i == 3) ? downPath.c_str() : nullptr);
+                    const bool w2 = device->captureFrame(downPath.c_str());
+                    x3::logInfo(std::string("--screenshot-showroom-gallery: ") + (w2 ? "wrote " : "FAILED ") + downPath);
+                }
+                sphys->shutdown();
+                device->shutdown();
+                if (window) glfwDestroyWindow(window);
+                glfwTerminate();
+                return 0;
+            }
+
+            // ===== CIVILIAN-FLOOR proof (--screenshot-showroom-civilians). DAY shot.
+            // Captures TWO frames in one run:
+            //   (a) <path>          — wide GROUND floor: the blue pad + lounge civilians.
+            //   (b) <path>_mezz.png — the 2nd-floor mezzanine deck civilians.
+            // PERF: each skinned tick() does a GPU readback (vkDeviceWaitIdle) — costly
+            // under 4x SSAA. So we POSE all skinned figures (Aria + analysts + the 8
+            // civilians) on only the FIRST 2 settle frames, then SKIP the heavy tick and
+            // re-render the now-static scene for the remaining settle + capture frame.
+            if (showroomCivShot) {
+                const float dt = 1.0f / 60.0f;
+                float celapsed = 10.0f;
+                auto civTickAndRender = [&](float ex, float ey, float ez, float cyaw, float cpitch,
+                                            bool poseFrame, const char* outPath) {
+                    glfwPollEvents();
+                    splayer.update(x3::game::PlayerInput{}, dt, *sphys);
+                    sphys->step(dt);
+                    sscene.update(*sphys);
+                    if (poseFrame) {
+                        // Seat the idle pose ONCE (first frames of each vantage). Each
+                        // tick is a GPU readback — kept to the first 2 frames only.
+                        girl.tick(dt, false, sscene, *sphys, x3::phys::Vec3{ sx, sy, sz });
+                        for (auto& cv : civilians)
+                            cv.tick(dt, /*hubReached*/false, sscene, *sphys, cv.pos());
+                    }
+                    celapsed += dt;
+                    device->setCamera(ex, ey, ez, cyaw, cpitch, 78.0f);
+                    if (outPath) device->armCapture(outPath);
+                    auto frame = device->beginFrame();
+                    if (frame.valid) {
+                        sscene.render(*device, frame);
+                        showroom.draw(*device, frame);
+                        girl.draw(*device, frame, sscene);
+                        for (auto& cv : civilians) cv.draw(*device, frame, sscene);
+                        drawAdditiveGlass(frame);
+                    }
+                    device->endFrame(frame);
+                };
+                // Derive the "_mezz" output path from the base path.
+                std::string base = showroomCivShotPath;
+                std::string ext = ".png";
+                std::string stem = base;
+                if (stem.size() > 4 && stem.substr(stem.size() - 4) == ".png") {
+                    ext = stem.substr(stem.size() - 4); stem = stem.substr(0, stem.size() - 4);
+                }
+                const std::string mezzPath = stem + "_mezz" + ext;
+
+                // ---- (a) GROUND floor: eye near the +X/+Z lounge, elevated a touch,
+                // looking back across the blue pad (toward -X/-Z) so the pad civilians
+                // (the chatting pair, the gazer, the trio) all read on the floor.
+                {
+                    const float ex = cx + 11.0f, ez = cz + 9.5f, ey = floorY + 1.7f;
+                    const float tx = cx + 1.0f, ty = floorY + 0.9f, tz = cz - 1.0f;
+                    const float vx = tx - ex, vy = ty - ey, vz = tz - ez;
+                    const float vlxz = std::sqrt(vx*vx + vz*vz);
+                    const float yw = std::atan2(vz, vx), pt = std::atan2(vy, vlxz);
+                    for (int i = 0; i < 5; ++i)
+                        civTickAndRender(ex, ey, ez, yw, pt, /*poseFrame*/ i < 2,
+                                         (i == 4) ? showroomCivShotPath.c_str() : nullptr);
+                    const bool w1 = device->captureFrame(showroomCivShotPath.c_str());
+                    x3::logInfo(std::string("--screenshot-showroom-civilians: ") +
+                                (w1 ? "wrote " : "FAILED ") + showroomCivShotPath);
+                }
+                // ---- (b) 2nd-floor mezzanine: eye on the Room_01 deck (y=floor2Y),
+                // standing close to the +X civilian pair so they read clearly, looking
+                // along the deck at the pair + the down-gazing figure beyond.
+                {
+                    const float ex = 80.0f, ez = -109.0f, ey = floor2Y + 1.7f;
+                    const float tx = 94.0f, ty = floor2Y + 0.9f, tz = -113.5f;
+                    const float vx = tx - ex, vy = ty - ey, vz = tz - ez;
+                    const float vlxz = std::sqrt(vx*vx + vz*vz);
+                    const float yw = std::atan2(vz, vx), pt = std::atan2(vy, vlxz);
+                    // Figures already posed from (a) — light settle frames, no heavy tick.
+                    for (int i = 0; i < 4; ++i)
+                        civTickAndRender(ex, ey, ez, yw, pt, /*poseFrame*/ false,
+                                         (i == 3) ? mezzPath.c_str() : nullptr);
+                    const bool w2 = device->captureFrame(mezzPath.c_str());
+                    x3::logInfo(std::string("--screenshot-showroom-civilians: ") +
+                                (w2 ? "wrote " : "FAILED ") + mezzPath);
+                }
+                sphys->shutdown();
+                device->shutdown();
+                if (window) glfwDestroyWindow(window);
+                glfwTerminate();
+                return 0;
+            }
+
+            float eyeX, eyeZ, eyeY, yaw, pitch;
+            if (strutsShot) {
+                // EXTERIOR proof: stand well OUTSIDE the back-left corner, elevated, and
+                // look back at the building center so the SYMMETRIC radial set of
+                // thickened "/" strut legs all read (the four matched canted blades
+                // leaning in toward the spire core).
+                eyeX = cx - 60.0f; eyeZ = cz - 60.0f; eyeY = floorY + 40.0f;
+                const float tx = cx, ty = floorY + 4.0f, tz = cz;
+                const float vx = tx - eyeX, vy = ty - eyeY, vz = tz - eyeZ;
+                const float vlxz = std::sqrt(vx*vx + vz*vz);
+                yaw = std::atan2(vz, vx); pitch = std::atan2(vy, vlxz);
+            } else if (deckShot) {
+                // PHASE 1 proof: stand ON the glass deck, near the -X rail, look out
+                // ACROSS the deck toward +X/+Z and up a touch at the wheeling sky.
+                eyeX = spireX - deckHalf + 1.5f; eyeZ = spireZ; eyeY = deckTopY + 1.6f;
+                yaw = 0.35f /*toward +X, slightly +Z*/; pitch = 0.12f /*look up at the sky*/;
+            } else if (floor2Shot) {
+                // STAGE 1 proof: stand ON the 2nd floor (y=floor2Y) just -X of the climb
+                // stair top, looking across the open 2nd-floor slab + DOWN the climb ramp
+                // (toward +X/-Z) so the rising ramp, the solid 2nd-floor slab, and the
+                // building + night sky all read — proving the player climbed up onto solid
+                // 2nd-floor collision (NOT boxed in, NOT underground).
+                eyeX = climbCX - 9.0f; eyeZ = stairLowZ + climbRun + 1.0f; eyeY = floor2Y + 1.7f;
+                const float tx = climbCX + 3.0f, ty = floorY + 2.0f, tz = stairLowZ + 4.0f;
+                const float vx = tx - eyeX, vy = ty - eyeY, vz = tz - eyeZ;
+                const float vlxz = std::sqrt(vx*vx + vz*vz);
+                yaw = std::atan2(vz, vx); pitch = std::atan2(vy, vlxz);
+                brightenProof(0.55f, 1.15f, 1.0f);
+            } else if (doorShot) {
+                // STAGE 2 proof: stand ON the 2nd floor (interior side, +Z of the door) a
+                // few metres back, looking -Z straight at the hidden wall door in the back
+                // wall. By default the door is OPEN (slid aside, revealing the dark passage
+                // behind); X3_SHOWROOM_DOORCLOSED=1 keeps it CLOSED so the panel reads
+                // flush/concealed in the strut face.
+                // Stand OUTSIDE the back-left strut at civilian level (floorY), a few
+                // metres radially-OUT from the door, looking back IN at the hidden door
+                // set into the strut's canted "/" face. OPEN by default reveals the dark
+                // stair interior; X3_SHOWROOM_DOORCLOSED=1 keeps it CLOSED so the panel
+                // reads flush/concealed in the white strut face.
+                eyeX = doorFaceX + hsRox * 4.0f; eyeZ = doorFaceZ + hsRoz * 4.0f;
+                eyeY = doorFloorY + doorHalfH;   // level with the door center, head-on
+                const float tx = doorFaceX, ty = doorFloorY + doorHalfH, tz = doorFaceZ;
+                const float vx = tx - eyeX, vy = ty - eyeY, vz = tz - eyeZ;
+                const float vlxz = std::sqrt(vx*vx + vz*vz);
+                yaw = std::atan2(vz, vx); pitch = std::atan2(vy, vlxz);
+                brightenProof(0.58f, 1.2f, 1.0f);
+            } else if (elevShot) {
+                // ELEVATOR-LEVEL proof: stand on the atrium floor (y=atriumFloorY=14)
+                // beside the parked glass cab, looking at the cab + up the shaft toward the
+                // deck — proving the strut stair lands at the boarding level where the lift
+                // now BOARDS.
+                eyeY = atriumFloorY + 1.7f;
+                eyeX = shaftX - 5.5f; eyeZ = shaftZ - 6.0f;
+                const float tx = shaftX, ty = atriumFloorY + 2.5f, tz = shaftZ;
+                const float vx = tx - eyeX, vy = ty - eyeY, vz = tz - eyeZ;
+                const float vlxz = std::sqrt(vx*vx + vz*vz);
+                yaw = std::atan2(vz, vx); pitch = std::atan2(vy, vlxz);
+                brightenProof(0.52f, 1.1f, 0.98f);
+            } else if (stairShot) {
+                // STRUT-STAIR proof: stand just inside the strut door at the foot of the
+                // hidden stair (at the door face, civilian floor) looking UP the canted
+                // axis toward the strut head landing (atriumFloorY) — proving the stair
+                // climbs UP INSIDE the strut to the elevator level.
+                // Look through the OPEN door (slid aside for this shot) from just outside,
+                // head-on + slightly up, framed on the doorway so the ASCENDING STEPS
+                // inside the canted blade read climbing up behind the opening.
+                eyeX = doorFaceX + hsRox * 3.5f; eyeZ = doorFaceZ + hsRoz * 3.5f;
+                eyeY = doorFloorY + 1.3f;
+                const float tx = sBL.bx + (sBL.tx - sBL.bx) * 0.22f;
+                const float tz = sBL.bz + (sBL.tz - sBL.bz) * 0.22f;
+                const float ty = strutBaseY + (strutTopY - strutBaseY) * 0.22f + 0.2f;
+                const float vx = tx - eyeX, vy = ty - eyeY, vz = tz - eyeZ;
+                const float vlxz = std::sqrt(vx*vx + vz*vz);
+                yaw = std::atan2(vz, vx); pitch = std::atan2(vy, vlxz);
+                brightenProof(0.55f, 1.15f, 1.0f);
+            } else if (ragShot) {
+                const float tx = gx, ty = floorY + 0.3f, tz = gz;   // aim at her floor spot
+                // A HIGH 3/4 vantage 2.5 m back + 4.0 m up looks STEEPLY DOWN onto the
+                // heap, clearing the floor slab's raised near edge (which occludes a flat
+                // body from any near-level eye) so the sprawled ragdoll reads clearly
+                // against the dark floor (bright proof tint makes it pop).
+                float ax = sx - gx, az = sz - gz;                   // Aria -> center (toward the eye)
+                const float al = std::sqrt(ax*ax + az*az);
+                const float ux = (al > 1e-4f) ? ax/al : 0.0f, uz = (al > 1e-4f) ? az/al : -1.0f;
+                const float back = 2.5f;
+                eyeX = tx + ux*back; eyeZ = tz + uz*back; eyeY = floorY + 4.0f;
+                // Brighten the dim moonlit showroom for the PROOF so the collapsed heap
+                // reads clearly against the dark floor (headless capture only — does not
+                // touch the interactive --world showroom look). NIGHT-only: in DAY the
+                // snow-bounce ambient already reads bright, so leave the DAY state intact.
+                if (!gShowroomDay) {
+                    device->setAmbient(0.42f, 0.45f, 0.55f);
+                    x3::rhi::IRenderDevice::SkyParams sb = sp; sb.sunIntensity = 0.9f; sb.exposure = 0.85f; device->setSkyParams(sb);
+                }
+                const float vx = tx - eyeX, vy = ty - eyeY, vz = tz - eyeZ;
+                const float vlxz = std::sqrt(vx*vx + vz*vz);
+                yaw   = std::atan2(vz, vx);            // look at Aria (engine yaw: atan2(dz,dx))
+                pitch = std::atan2(vy, vlxz);          // gentle down-tilt onto her
+            } else {
+                eyeX = sx; eyeZ = sz; eyeY = sy + 1.6f; yaw = 1.5708f /*+Z*/; pitch = -0.05f;
+            }
+            placePlanets(eyeX, eyeY, eyeZ, yaw, pitch);
+            // For the ragdoll proof, tint Aria a bright warm hue so the collapsed body
+            // reads clearly against the dark moonlit floor (headless capture only).
+            if (ragShot) girl.setTint(1.6f, 0.9f, 0.55f, 1.0f);
+            // STRUT-door proof: OPEN the hidden strut-face door (slide the panel aside
+            // along the strut's tangential axis + remove its collision) so the interior
+            // stair reads. The door/stair shots default OPEN; X3_SHOWROOM_DOORCLOSED=1
+            // keeps it concealed flush in the strut face for the door-closed proof.
+            static const bool kDoorClosed = (std::getenv("X3_SHOWROOM_DOORCLOSED") != nullptr);
+            const bool openDoorForProof = (stairShot || elevShot || (doorShot && !kDoorClosed));
+            if (openDoorForProof) {
+                hatchOpen = true; hatchSlide = 1.0f;
+                sphys->removeBody(hatchLidBody);
+                if (hatchIdx < sscene.size()) {
+                    x3::game::Entity& he = sscene.get(hatchIdx);
+                    // Mesh is authored in WORLD space -> transform translation is a pure
+                    // tangential DELTA (0 = closed). Slide one panel-width aside.
+                    he.transform[12] = hatchSlideX * hatchHalf * 2.0f;   // slid fully aside (tangential)
+                    he.transform[14] = hatchSlideZ * hatchHalf * 2.0f;
+                }
+            }
+            // Ragdoll shot needs ~45 physics steps to fall + settle; FP shot just settles.
+            const int kSettle = ragShot ? 50 : 24;
+            const float dt = 1.0f / 60.0f;
+            float elapsed = 10.0f;   // non-zero so the starfield/clouds read animated
+            const std::string outPath =
+                strutsShot ? showroomStrutsShotPath :
+                deckShot   ? showroomDeckShotPath   :
+                floor2Shot ? showroomFloor2ShotPath :
+                doorShot   ? showroomDoorShotPath   :
+                elevShot   ? showroomElevShotPath   :
+                stairShot  ? showroomStairShotPath  :
+                ragShot    ? showroomRagdollShotPath : showroomFpShotPath;
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                splayer.update(x3::game::PlayerInput{}, dt, *sphys);
+                // STAGE 3 atrium proof: keep the cab parked at its LOWER stop (the atrium
+                // boarding level) so the cab + atrium both read; just sync its transform.
+                if (elevShot) {
+                    elev.update(dt, sscene, *sphys);
+                }
+                // Collapse Aria after a few settle frames (so her CURRENT idle pose seeds
+                // the ragdoll), THEN keep stepping so the bodies fall and her skin flops.
+                // Control image (same framing, STANDING): set X3_RAGDOLL_NOCOLLAPSE=1 to
+                // skip the collapse so the A/B comparison is at one identical camera.
+                static const bool kNoCollapse = (std::getenv("X3_RAGDOLL_NOCOLLAPSE") != nullptr);
+                if (ragShot && !kNoCollapse && i == 4) {
+                    girl.ragdoll(sscene, *sphys);
+                    x3::logInfo("--screenshot-showroom-ragdoll: Aria collapsed (ragdolled=" +
+                                std::string(girl.ragdolled() ? "1" : "0") + ")");
+                }
+                sphys->step(dt);
+                sscene.update(*sphys);
+                girl.tick(dt, /*hubReached*/false, sscene, *sphys, x3::phys::Vec3{ sx, sy, sz });
+                // Civilians: pose-then-static (each tick is a GPU readback — costly under
+                // 4x SSAA). Seat their idle pose on the first 2 frames only, then render
+                // them static for the rest of the settle + capture.
+                if (i < 2)
+                    for (auto& cv : civilians)
+                        cv.tick(dt, /*hubReached*/false, sscene, *sphys, cv.pos());
+                elapsed += dt;
+                device->setCamera(eyeX, eyeY, eyeZ, yaw, pitch, ragShot ? 58.0f : 72.0f);
+                if (!gShowroomDay) device->setSkyTime(elapsed);   // wheeling sky = NIGHT only
+                if (i == kSettle - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    sscene.render(*device, frame);
+                    showroom.draw(*device, frame);
+                    girl.draw(*device, frame, sscene);
+                    for (auto& cv : civilians) cv.draw(*device, frame, sscene);
+                    drawAdditiveGlass(frame);   // deck slab + rails + glass car (BLEND)
+                    // Planets are a NIGHT feature — never drawn in DAY (the starfield in
+                    // sky.frag auto-hides on the bright DAY sky).
+                    if (!gShowroomDay)
+                        drawNightSkyPlanets(device.get(), frame, planetMesh, planets, elapsed, ringMesh);
+                }
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            const char* tag =
+                strutsShot ? "--screenshot-showroom-struts"   :
+                deckShot   ? "--screenshot-showroom-deck"     :
+                floor2Shot ? "--screenshot-showroom-floor2"   :
+                doorShot   ? "--screenshot-showroom-door"     :
+                elevShot   ? "--screenshot-showroom-elevator" :
+                stairShot  ? "--screenshot-showroom-stair"    :
+                ragShot    ? "--screenshot-showroom-ragdoll"  : "--screenshot-showroom-fp";
+            if (wrote) x3::logInfo(std::string(tag) + ": wrote " + outPath);
+            else       x3::logError(std::string(tag) + ": capture FAILED");
+            sphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path: full first-person controller + E-to-talk. =====
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        bool prevSpaceS = false, prevES = false, prevKS = false, prevFS = false, prevTS = false;
+        float elapsed = 0.0f;
+        // ---- HIDDEN-HATCH keypad host state. Mirrors the Level-1 §6.4 keypad gate
+        // (main.cpp ~line 6921): a local KeypadEntry buffer + per-key rising-edge
+        // trackers. When the player is near the still-closed hatch and presses E,
+        // hatchCodeMode opens: digit keys 0-9 append, Backspace deletes, Enter submits
+        // (== HATCH_CODE -> run the existing open logic; else flash DENIED + clear),
+        // Esc cancels. Same KeypadEntry state machine exercised by --test-doorcode. ----
+        bool                  hatchCodeMode = false;
+        x3::game::KeypadEntry hatchKeypad;
+        bool hkDigitPrev[10] = {};
+        bool hkEnterPrev = false, hkBackPrev = false, hkEscPrev = false;
+        float hatchDeniedTimer = 0.0f;   // >0 while the "DENIED" flash is shown
+        x3::logInfo("--world showroom: walk the showroom — WASD, mouse look, Space jump, "
+                    "LeftShift sprint, E talk to Aria / open the strut-door keypad, F ride elevator, "
+                    "T toggle DAY/NIGHT, K ragdoll-collapse Aria, Esc to quit");
+        x3::logInfo(std::string("--world showroom: starting in ") + (gShowroomDay ? "DAY" : "NIGHT") +
+                    " (press T to toggle; instant switch)");
+        x3::logInfo("--world showroom: walk to the BACK-LEFT STRUT LEG, find the HIDDEN DOOR in its canted "
+                    "face at floor level — press E to open the KEYPAD, type the code + Enter to slide the panel "
+                    "aside, then climb the STAIR UP INSIDE the strut to the ELEVATOR LEVEL, press F to ride the "
+                    "glass elevator to the deck.");
+
+        int lastWs = (int)W, lastHs = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            // Esc (edge-detected): while the hatch keypad is up, the FIRST Esc cancels
+            // code-entry (mirrors the §6.4 gate, where Esc backs out of codeMode);
+            // otherwise Esc quits the walkthrough as before.
+            bool escNow = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+            if (escNow && !hkEscPrev) {
+                if (hatchCodeMode) { hatchCodeMode = false; hatchKeypad.clear(); }
+                else { hkEscPrev = escNow; break; }
+            }
+            hkEscPrev = escNow;
+
+            double now = glfwGetTime();
+            float dt = (float)(now - prevTime); prevTime = now;
+            if (dt > 0.1f) dt = 0.1f;
+            elapsed += dt;
+
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+
+            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            bool spaceNow = kd(GLFW_KEY_SPACE);
+
+            x3::game::PlayerInput in;
+            if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+            if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+            if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+            if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+            in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+            in.jumpPressed = spaceNow && !prevSpaceS;
+            in.lookDX = ddx; in.lookDY = ddy;
+            prevSpaceS = spaceNow;
+
+            splayer.update(in, dt, *sphys);
+            sphys->step(dt);
+            sscene.update(*sphys);
+
+            // ANALYST GALLERY: idle the terminals (holo shimmer) + the analyst figures
+            // (breathe in place; Captive + hubReached=false => no timer, no follow AI).
+            for (auto& tm : galTerms) tm.update(dt);
+            for (auto& an : galAnalysts)
+                an.tick(dt, /*hubReached*/false, sscene, *sphys, an.pos());
+            // CIVILIANS: idle in place (Captive + hubReached=false => no timer, no follow AI).
+            for (auto& cv : civilians)
+                cv.tick(dt, /*hubReached*/false, sscene, *sphys, cv.pos());
+
+            // ---- GLASS ELEVATOR: advance the cab + CARRY the rider (reuse elevator.cpp).
+            // update() returns the cab's per-frame vertical delta; if the player is on
+            // the cab top (playerRiding), add it to the player's feet so they ride up/down.
+            {
+                const float elevDy = elev.update(dt, sscene, *sphys);
+                if (elevDy != 0.0f && elev.playerRiding(splayer.feet())) {
+                    x3::phys::Vec3 f = splayer.feet();
+                    f.y += elevDy;
+                    splayer.setFeetPosition(*sphys, f);
+                }
+            }
+
+            // T rising-edge: flip DAY<->NIGHT and re-apply the whole lighting STATE
+            // (sky/sun/ambient/bloom + interior point lights scaled). Instant switch
+            // (v1 — no cross-fade). The planet draw + setSkyTime below are gated to NIGHT.
+            bool tNow = kd(GLFW_KEY_T);
+            if (tNow && !prevTS) {
+                gShowroomDay = !gShowroomDay;
+                applyShowroomTimeOfDay(device.get(), gShowroomDay, &plights);
+                x3::logInfo(std::string("--world showroom: T pressed — time-of-day = ") +
+                            (gShowroomDay ? "DAY (bright cool snow-bounce)" : "NIGHT (planets + dim moon + fixtures)"));
+            }
+            prevTS = tNow;
+
+            // K rising-edge: collapse Aria into a physics ragdoll (debug/test hook).
+            // The shared physics world is stepped above, so once ragdolled her tick()
+            // drives the skin from the falling bodies. Idempotent — repeat K is a no-op.
+            bool kNow = kd(GLFW_KEY_K);
+            if (kNow && !prevKS) {
+                girl.ragdoll(sscene, *sphys);
+                x3::logInfo("--world showroom: K pressed — Aria ragdoll-collapse");
+            }
+            prevKS = kNow;
+
+            // ---- HIDDEN 2ND-FLOOR WALL DOOR (KEYPAD-gated) + ELEVATOR call.
+            //   * Near the concealed wall panel (still closed) -> E opens the KEYPAD;
+            //     digits + Enter submit. The CORRECT code (2742) runs openHatch()
+            //     (slides the panel aside + removes its collision so you walk through).
+            //   * On/at the elevator cab -> F calls it to the next stop (atrium<->deck).
+            // The keypad reuses the SAME KeypadEntry state machine + edge-handling shape
+            // as the Level-1 §6.4 door-code gate (main.cpp ~line 6921).
+            const x3::phys::Vec3 pf = splayer.feet();
+            // Horizontal radial proximity to the strut-face door point (canted door, not
+            // axis-aligned) + standing at the door's floor level, while it's still closed.
+            const float ndx = pf.x - hatchX, ndz = pf.z - hatchZ;
+            const bool nearHatch = (ndx*ndx + ndz*ndz <= (hatchHalf + 2.5f)*(hatchHalf + 2.5f)) &&
+                                   (std::fabs(pf.y - doorFloorY) <= 2.6f) && !hatchOpen;
+            const bool atElevator = elev.playerRiding(pf);
+            // The existing open logic, factored so the keypad-submit path (and the
+            // headless smoke) can run it. Removes the panel collision ONCE; idempotent
+            // if already open. (Passage/turn/stair/atrium/elevator wiring untouched.)
+            auto openHatch = [&](const char* via) {
+                if (hatchOpen) return;
+                hatchOpen = true;
+                sphys->removeBody(hatchLidBody);      // open the doorway
+                x3::logInfo(std::string("--world showroom: hidden wall door OPENED (") + via +
+                            ") — walk in, turn, take the stair up to the elevator atrium");
+            };
+
+            // F: elevator call only (the door does not open on F).
+            bool fNow = kd(GLFW_KEY_F);
+            if (fNow && !prevFS) {
+                if (atElevator) {
+                    elev.callNext();                       // atrium <-> deck
+                    x3::logInfo("--world showroom: elevator called (F) -> stop " +
+                                std::to_string(elev.targetStop()));
+                }
+            }
+            prevFS = fNow;
+
+            // E near the still-closed hatch (and not already entering): open the keypad.
+            // Mirrors §6.4 "near a locked coded door + E -> codeMode = true; keypad.clear()".
+            bool eHatchNow = kd(GLFW_KEY_E);
+            if (eHatchNow && !prevES && nearHatch && !hatchCodeMode) {
+                hatchCodeMode = true; hatchKeypad.clear(); hatchDeniedTimer = 0.0f;
+                x3::logInfo("--world showroom: hatch keypad — type the code, Enter to submit, Esc to cancel");
+            }
+
+            // Hatch keypad edge-handling while active: digits 0-9 append, Backspace
+            // deletes, Enter submits. (Esc-cancel is handled in the Esc block above.)
+            // Same per-key rising-edge shape as the §6.4 codeMode block.
+            if (hatchCodeMode) {
+                for (int dgt = 0; dgt < 10; ++dgt) {
+                    bool dn = kd(GLFW_KEY_0 + dgt) || kd(GLFW_KEY_KP_0 + dgt);
+                    if (dn && !hkDigitPrev[dgt]) hatchKeypad.pushDigit(dgt);
+                    hkDigitPrev[dgt] = dn;
+                }
+                bool backNow = kd(GLFW_KEY_BACKSPACE);
+                if (backNow && !hkBackPrev) hatchKeypad.backspace();
+                hkBackPrev = backNow;
+                bool enterNow = kd(GLFW_KEY_ENTER) || kd(GLFW_KEY_KP_ENTER);
+                if (enterNow && !hkEnterPrev) {
+                    if (hatchKeypad.value() == HATCH_CODE) {
+                        x3::logInfo("--world showroom: hatch keypad ACCEPTED — opening");
+                        hatchCodeMode = false; hatchKeypad.clear();
+                        openHatch("keypad");
+                    } else {
+                        x3::logInfo("--world showroom: hatch keypad DENIED");
+                        hatchDeniedTimer = 1.5f;          // flash "DENIED"
+                        hatchKeypad.clear();              // clear the buffer, stay in entry
+                    }
+                }
+                hkEnterPrev = enterNow;
+            }
+            if (hatchDeniedTimer > 0.0f) hatchDeniedTimer -= dt;
+            // Animate the strut-face panel sliding aside (along the strut tangential
+            // axis) once opened (cosmetic; collision is already removed). Slides ~1
+            // panel-width over ~0.5 s.
+            if (hatchOpen && hatchSlide < 1.0f) {
+                hatchSlide = std::min(1.0f, hatchSlide + dt * 2.0f);
+                if (hatchIdx < sscene.size()) {
+                    x3::game::Entity& he = sscene.get(hatchIdx);
+                    // Pure tangential DELTA (mesh authored in world; 0 = closed).
+                    he.transform[12] = hatchSlide * hatchSlideX * hatchHalf * 2.0f;
+                    he.transform[14] = hatchSlide * hatchSlideZ * hatchHalf * 2.0f;
+                }
+            }
+            // Pulse the door panel's glow when the player is near + it's still closed
+            // (a subtle "interactable" tell, per Tim's concealed-entrance vision).
+            if (hatchIdx < sscene.size()) {
+                x3::game::Entity& he = sscene.get(hatchIdx);
+                he.emissive[3] = (nearHatch ? 0.8f : 0.0f);
+            }
+
+            float camX, camY, camZ, camYaw, camPitch;
+            splayer.camera(camX, camY, camZ, camYaw, camPitch);
+            const x3::phys::Vec3 eye{ camX, camY, camZ };
+            girl.tick(dt, /*hubReached*/false, sscene, *sphys, eye);
+
+            // E rising-edge: start/advance the Aria exchange; completing it rescues her.
+            bool eNow = kd(GLFW_KEY_E);
+            std::string talkWho; x3::phys::Vec3 talkPos{};
+            const bool talkInRange = girl.captive() && [&]{
+                const float dx = eye.x - girl.pos().x, dz = eye.z - girl.pos().z;
+                return dx*dx + dz*dz <= x3::game::kTalkReach * x3::game::kTalkReach;
+            }();
+            if (talkInRange) { talkWho = girl.name(); talkPos = girl.pos(); }
+            if (eNow && !prevES && (npcDialog.active() || talkInRange)) {
+                const std::string barkName = talkWho.empty() ? npcDialog.partner() : talkWho;
+                const bool rescued = npcDialog.interact(
+                    talkInRange, talkWho, talkPos, [&]{ return girl.tryRescue(eye); });
+                if (rescued) {
+                    npcBarkText  = x3::game::companionBark(barkName);
+                    npcBarkTimer = 4.0f;
+                    x3::logInfo("--world showroom: Aria rescued — now a companion");
+                }
+            }
+            prevES = eNow;
+            // Keep the box anchored / cancel if she drifts out of range; age the bark.
+            if (npcDialog.active()) {
+                if (talkInRange) npcDialog.setAnchor(girl.pos());
+                else             npcDialog.cancel();
+            }
+            if (npcBarkTimer > 0.0f) npcBarkTimer -= dt;
+
+            int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
+            if (cw != lastWs || ch != lastHs) { lastWs = cw; lastHs = ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
+
+            if (!gShowroomDay) placePlanets(camX, camY, camZ, camYaw, camPitch);
+            device->setCamera(camX, camY, camZ, camYaw, camPitch, 72.0f);
+            if (!gShowroomDay) device->setSkyTime(elapsed);   // wheeling sky = NIGHT only
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                sscene.render(*device, frame);
+                showroom.draw(*device, frame);
+                girl.draw(*device, frame, sscene);
+                for (auto& an : galAnalysts) an.draw(*device, frame, sscene);   // gallery analysts
+                for (auto& cv : civilians) cv.draw(*device, frame, sscene);     // civilian crowd
+                drawAdditiveGlass(frame);   // glass deck + rails + riding car + gallery dark glass (BLEND)
+                // Planets are a NIGHT feature — never drawn in DAY (the bright sky carries it).
+                if (!gShowroomDay)
+                    drawNightSkyPlanets(device.get(), frame, planetMesh, planets, elapsed, ringMesh);
+
+                // ---- HUD: "[E] Talk" prompt over Aria, or the dialog box while talking.
+                uint32_t hudW = 0, hudH = 0; device->hudSize(hudW, hudH);
+                // Center proximity prompt: "[E] Keypad" at the still-closed hatch (now
+                // code-gated), or "[F] Ride elevator" at the cab. Suppressed while the
+                // hatch keypad is up (the entry prompt below owns the screen then).
+                {
+                    const char* fp = (nearHatch && !hatchCodeMode) ? "[E] Keypad"
+                                   : atElevator                    ? "[F] Ride elevator" : nullptr;
+                    if (fp) {
+                        const float fw = device->textAdvance(x3::rhi::FontRole::Menu, fp, 22.0f);
+                        const float fx = ((hudW > 0) ? hudW * 0.5f : 640.0f) - fw * 0.5f;
+                        const float fy = (hudH > 0) ? hudH * 0.72f : 480.0f;
+                        const float fsh[4] = { 0.0f, 0.0f, 0.0f, 0.75f };
+                        const float fcl[4] = { 0.62f, 0.92f, 1.0f, 1.0f };
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, fp, fx + 1.5f, fy + 1.5f, 22.0f, fsh);
+                        device->drawHudTextF(frame, x3::rhi::FontRole::Menu, fp, fx, fy, 22.0f, fcl);
+                    }
+                }
+                // Hatch KEYPAD entry prompt (centered) while code-entry is active —
+                // mirrors the §6.4 door-code HUD (KeypadEntry::prompt drives the digits).
+                // A "DENIED" flash overrides the buffer line briefly on a wrong code.
+                if (hatchCodeMode) {
+                    const std::string kp = (hatchDeniedTimer > 0.0f)
+                        ? std::string("DOOR LOCKED   DENIED")
+                        : (std::string("DOOR LOCKED   ENTER CODE: ") + hatchKeypad.buf + "_");
+                    const float kw = device->textAdvance(x3::rhi::FontRole::Menu, kp.c_str(), 26.0f);
+                    const float kx = ((hudW > 0) ? hudW * 0.5f : 640.0f) - kw * 0.5f;
+                    const float ky = (hudH > 0) ? hudH * 0.5f - 30.0f : 330.0f;
+                    const float ksh[4] = { 0.0f, 0.0f, 0.0f, 0.80f };
+                    const bool denied = (hatchDeniedTimer > 0.0f);
+                    const float kcl[4] = { 1.0f,
+                                           denied ? 0.30f : 0.82f,
+                                           denied ? 0.26f : 0.18f,
+                                           1.0f };                        // red DENIED / amber entry
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, kp.c_str(), kx + 1.5f, ky + 1.5f, 26.0f, ksh);
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, kp.c_str(), kx, ky, 26.0f, kcl);
+                }
+                if (npcDialog.active()) {
+                    const auto& ln = npcDialog.currentLine();
+                    const std::string speaker = ln.speaker.empty() ? npcDialog.partner() : ln.speaker;
+                    const float ccx = (hudW > 0) ? hudW * 0.5f : 640.0f;
+                    const float boxW = (hudW > 0) ? hudW * 0.66f : 840.0f;
+                    const float boxH = 118.0f;
+                    const float boxX = ccx - boxW * 0.5f;
+                    const float boxY = (hudH > 0) ? hudH - 190.0f : 540.0f;
+                    const float panel[4]  = { 0.05f, 0.07f, 0.12f, 0.82f };
+                    const float border[4] = { 0.40f, 0.78f, 1.0f, 0.85f };
+                    device->drawHudQuad(frame, boxX - 3.0f, boxY - 3.0f, boxW + 6.0f, boxH + 6.0f, border);
+                    device->drawHudQuad(frame, boxX, boxY, boxW, boxH, panel);
+                    const bool isYou = (speaker == "YOU");
+                    const float herCol[4] = { 1.0f, 0.62f, 0.78f, 1.0f };
+                    const float youCol[4] = { 0.66f, 0.92f, 1.0f, 1.0f };
+                    const float nshadow[4] = { 0.0f, 0.0f, 0.0f, 0.75f };
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, (speaker + ":").c_str(),
+                                         boxX + 25.5f, boxY + 19.5f, 26.0f, nshadow);
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, (speaker + ":").c_str(),
+                                         boxX + 24.0f, boxY + 18.0f, 26.0f, isYou ? youCol : herCol);
+                    const float lineCol[4] = { 0.96f, 0.97f, 1.0f, 1.0f };
+                    const float lshadow[4] = { 0.0f, 0.0f, 0.0f, 0.8f };
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, ln.text.c_str(),
+                                         boxX + 25.5f, boxY + 59.5f, 30.0f, lshadow);
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, ln.text.c_str(),
+                                         boxX + 24.0f, boxY + 58.0f, 30.0f, lineCol);
+                    const char* hint = (npcDialog.lineIndex() + 1 >= npcDialog.lineCount())
+                                       ? "[E] Free her" : "[E] Continue";
+                    const float hw = device->textAdvance(x3::rhi::FontRole::Menu, hint, 18.0f);
+                    const float hintCol[4] = { 0.75f, 0.85f, 0.95f, 0.85f };
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, hint,
+                                         boxX + boxW - hw - 22.0f, boxY + boxH - 28.0f, 18.0f, hintCol);
+                } else if (talkInRange) {
+                    const x3::phys::Vec3 cp = girl.pos();
+                    float ssx = 0.0f, ssy = 0.0f;
+                    if (device->worldToScreen(cp.x, cp.y + 1.85f, cp.z, ssx, ssy)) {
+                        const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
+                        const float col[4]    = { 1.0f, 0.72f, 0.84f, 1.0f };
+                        device->drawHudText(frame, "[E] Talk", ssx - 40.0f + 1.5f, ssy + 1.5f, 18.0f, shadow);
+                        device->drawHudText(frame, "[E] Talk", ssx - 40.0f, ssy, 18.0f, col);
+                    }
+                }
+                if (npcBarkTimer > 0.0f && !npcBarkText.empty()) {
+                    float a = npcBarkTimer; if (a > 1.0f) a = 1.0f;
+                    const float bw = device->textAdvance(x3::rhi::FontRole::Menu, npcBarkText.c_str(), 22.0f);
+                    const float bx = ((hudW > 0) ? hudW * 0.5f : 640.0f) - bw * 0.5f;
+                    const float by = (hudH > 0) ? hudH * 0.62f : 420.0f;
+                    const float bshadow[4] = { 0.0f, 0.0f, 0.0f, 0.7f * a };
+                    const float bcol[4]    = { 1.0f, 0.72f, 0.84f, a };
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, npcBarkText.c_str(), bx + 1.5f, by + 1.5f, 22.0f, bshadow);
+                    device->drawHudTextF(frame, x3::rhi::FontRole::Menu, npcBarkText.c_str(), bx, by, 22.0f, bcol);
+                }
+            }
+            device->endFrame(frame);
+        }
+
+        sphys->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
@@ -5620,6 +8640,15 @@ int main(int argc, char** argv) {
     bool prevNavUp = false, prevNavDown = false, prevNavAct = false,
          prevNavLeft = false, prevNavRight = false;
 
+    // ---- LEVEL ARCHITECT editor host (--editor only) --------------------------
+    // The live-mode editor orchestrator: panels + a fly-cam (Edit mode) + the F8
+    // Edit/Play toggle + the blockout brush subsystem (grid material cached on the
+    // GPU here). Constructed always-cheap (no allocation) but only init'd + ticked
+    // when editorMode, so the shipping game path is byte-for-byte unchanged.
+    x3::editor::EditorHost editorHost;
+    if (editorMode && device->editorUIActive())
+        editorHost.init(*device, scene, *physics, window);
+
     // ---- EFLZ LOADING SCREEN hand-off (Task #49) — INTERACTIVE path -----------
     // The world is fully built. Mark the bar complete, hold the finished screen for
     // a couple of frames, then fade it OUT with REAL wall-clock dt so the first
@@ -6179,6 +9208,15 @@ int main(int argc, char** argv) {
             renderCamX = tc.camX; renderCamY = tc.camY; renderCamZ = tc.camZ;
         }
         device->setCamera(renderCamX, renderCamY, renderCamZ, camYaw, camPitch, 60.0f);
+        // LEVEL ARCHITECT (--editor): in EDIT mode the host's fly-cam OVERRIDES the
+        // game camera just set above (it calls device->setCamera with its own pose);
+        // in PLAY mode the host returns false and the game camera above stands. All
+        // host input is gated on editorWantsInput so panels never move the camera.
+        if (editorMode && device->editorUIActive()) {
+            bool emouse = false, ekbd = false;
+            device->editorWantsInput(emouse, ekbd);
+            editorHost.tick(dt, emouse, ekbd, *device);
+        }
         // FLASHLIGHT (L toggles, default ON): re-issue the level's static ceiling
         // fixtures + a bright player-following light at the eye, so the dark halls
         // light up around you. Inserted FIRST so the 64-light cap never drops it.
@@ -6642,6 +9680,12 @@ int main(int argc, char** argv) {
 
         auto frame = device->beginFrame();
         if (frame.valid) {
+            // EDITOR (--editor): start the ImGui frame for this render. P0 submits a
+            // fullscreen dockspace + the ImGui demo window (proof); the device records
+            // the ImGui draws in a pass AFTER the game composite/HUD inside endFrame.
+            // No-op without --editor (editorUIActive() stays false). Phase 1 replaces
+            // the demo window with the real docked editor panels.
+            if (editorMode && device->editorUIActive()) device->beginEditorUI();
             // GIBS: integrate the GPU-compute debris pool (monster-death chunks +
             // any other bursts) one step. Frozen during a UI menu so chunks hold mid-
             // air with the rest of the sim. No-op cost when the pool is empty.
@@ -7239,6 +10283,15 @@ int main(int argc, char** argv) {
             hud.drawFps(*device, frame, *console, dt);
             hud.drawStats(*device, frame, *console, dt);
             hud.drawConsole(*device, frame, *console, dt);
+            // EDITOR (--editor): the HOST submits the editor panels (menu bar /
+            // Outliner / Blockout / Status) between begin and end, then endEditorUI
+            // finalizes the ImGui frame (ImGui::Render + stash draw data) AFTER the
+            // game HUD so endFrame's editor-UI pass draws it over the composited
+            // scene+HUD. No-op without --editor.
+            if (editorMode && device->editorUIActive()) {
+                editorHost.draw(*device, scene, *physics, dt);
+                device->endEditorUI();
+            }
         }
         device->endFrame(frame);
         g_perf.addFrame((double)dt);   // per-system perf breakdown logged every 120 frames

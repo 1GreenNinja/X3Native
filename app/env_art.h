@@ -66,9 +66,36 @@ public:
                         std::string_view convertedGlbDir,
                         const Level1Layout& layout);
 
+    // Load ONE arbitrary converted GLB (e.g. a baked Unity scene export) and place a
+    // single identity instance, so draw() renders ALL its primitives at their baked
+    // node transforms. Self-contained (creates its own IAssetSource + loader). Used by
+    // the --screenshot-showroom / --world showroom scene-preview path. Returns true if
+    // the GLB loaded (false keeps an empty system — nothing draws).
+    bool buildFromGlb(x3::rhi::IRenderDevice& device,
+                      std::string_view convertedGlbDir, std::string_view relPath);
+
+    // World-space AABB of all placed drawables' origins (engine-space ground truth —
+    // for framing a preview camera). outMin/outMax are float[3]. No-op (huge/inverted)
+    // if nothing is placed.
+    void worldBounds(float outMin[3], float outMax[3]) const;
+
+    // Engine-space AABB of mesh-node origins whose node NAME contains any of `subs`
+    // (lowercased substring match) — for framing the camera on a SUBSET (e.g. the
+    // building, ignoring far decorative scatter). Uses the SAME node-transform
+    // composition as makeDrawables, so it matches what's rendered. Returns the match
+    // count; the bbox is inverted (min>max) if nothing matched.
+    uint32_t namedBounds(const std::vector<std::string>& subs, float outMin[3], float outMax[3]) const;
+
     // Draw all placed environment instances (static; call alongside scene.render()
-    // each frame, before the viewmodel). No-op if nothing loaded.
-    void draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const;
+    // each frame, before the viewmodel). No-op if nothing loaded. `maxDrawables` caps
+    // how many per-primitive drawables are issued this frame (default: all) — used by
+    // the showroom diagnostic to bisect a per-frame draw-count fault.
+    // Returns the number of drawables actually issued (after cull/cap) — for diagnostics.
+    // If cullMin/cullMax are non-null, only drawables whose world origin is inside that AABB
+    // are issued (frames a region of a large baked scene + bounds the per-frame draw count).
+    uint32_t draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                  uint32_t maxDrawables = 0xFFFFFFFFu,
+                  const float* cullMin = nullptr, const float* cullMax = nullptr) const;
 
     // Diagnostics for logging / the host: how many assets loaded ok / instances.
     uint32_t assetsLoaded() const;
