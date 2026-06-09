@@ -47,6 +47,7 @@ add_executable(X3Engine WIN32
     world_regions.cpp
     city.cpp
     ocean_base.cpp
+    undersea_art.cpp
     save.cpp
     dialog.cpp
     env_art.cpp
