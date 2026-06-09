@@ -8030,6 +8030,141 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // ---- Undersea base showcase (--world undersea) -------------------------
+    // The Act-4 OceanBase graybox (3-level disc on the seafloor) draped with the
+    // real textured Abyssal Station GLB (UnderseaArtSystem), lit deep-sea, with a
+    // headless --screenshot path + a slow windowed orbit. Mirrors --world swim.
+    if (worldMode == "undersea") {
+        x3::logInfo("--world undersea: building the Act-4 undersea base + Abyssal Station overlay");
+        std::unique_ptr<x3::phys::IPhysicsWorld> uphys(x3::phys::createPhysicsWorld());
+        if (!uphys->init()) {
+            x3::logError("--world undersea: physics init failed");
+            device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate(); return 1;
+        }
+
+        // Graybox undersea zone (fills its own OceanBasePlan: disc @ (1100,-1350),
+        // seafloor -80, top deck -62, r=80) + the real station overlay on top.
+        x3::game::Scene uscene;
+        x3::game::OceanBase ob;
+        ob.build(uscene, *device, *uphys);
+        const x3::game::OceanBasePlan& p = ob.plan();
+
+        x3::game::UnderseaArtSystem undersea;
+        undersea.build(*device, x3::game::convertedGlbRoot(), p);
+
+        // ---- Deep-sea sky + water (dark, high haze) ----
+        { x3::rhi::IRenderDevice::SkyParams sk{};
+          sk.enabled = true;
+          sk.sunDir[0] = 0.05f; sk.sunDir[1] = 1.0f; sk.sunDir[2] = 0.15f;
+          sk.sunIntensity = 0.6f; sk.haze = 0.9f; sk.exposure = 0.6f;   // deep, murky
+          device->setSkyParams(sk); }
+        { x3::rhi::IRenderDevice::WaterParams wp{};
+          wp.enabled = true; wp.seaLevel = p.surfaceY;
+          wp.amplitude = 0.4f; wp.steepness = 0.45f; wp.waveLength = 18.0f; wp.speed = 1.0f;
+          wp.deepColor[0]    = 0.008f; wp.deepColor[1]    = 0.035f; wp.deepColor[2]    = 0.075f;
+          wp.shallowColor[0] = 0.05f;  wp.shallowColor[1] = 0.22f;  wp.shallowColor[2] = 0.32f;
+          wp.specular = 8.0f; wp.fresnel = 0.02f;
+          device->setWaterParams(wp); }
+
+        // Station's own cool point-light fixtures + a high key over the complex so
+        // the PBR hull reads in the deep (feeds bloom).
+        std::vector<x3::rhi::PointLight> plights = undersea.lightFixtures();
+        { x3::rhi::PointLight key; key.pos[0]=p.cx; key.pos[1]=p.baseDeckY+34.0f; key.pos[2]=p.cz;
+          key.range=140.0f; key.color[0]=0.9f; key.color[1]=1.15f; key.color[2]=1.5f;
+          plights.push_back(key); }
+        if (!plights.empty()) device->setPointLights(plights.data(), (uint32_t)plights.size());
+
+        auto drawScene = [&](const x3::rhi::FrameContext& frame) {
+            uscene.render(*device, frame);   // OceanBase graybox (disc + reactor glow + subs)
+            undersea.draw(*device, frame);   // the real textured station on top
+        };
+
+        // Camera framing: orbit the disc centre, eye a touch above the top deck,
+        // looking down slightly to catch station + disc + a sliver of seafloor.
+        const float bx = p.cx, bz = p.cz;
+        const float lookY = p.baseDeckY + 6.0f;   // station mid (it spans deck..+~35 m)
+        auto computeCam = [&](float ang, float cam[5]) {
+            const float R = 66.0f;                  // close hero framing
+            const float camX = bx + R * std::cos(ang);
+            const float camZ = bz + R * std::sin(ang);
+            const float camY = p.baseDeckY + 16.0f;
+            const float dx = bx - camX, dy = lookY - camY, dz = bz - camZ;
+            const float len = std::sqrt(dx*dx + dy*dy + dz*dz);
+            cam[0]=camX; cam[1]=camY; cam[2]=camZ;
+            cam[3]=std::atan2(dz, dx);
+            cam[4]=std::asin(dy / (len > 1e-3f ? len : 1e-3f));
+        };
+        const float dt = 1.0f / 60.0f;
+
+        // ===== Headless capture (--world undersea --screenshot <path>) =====
+        if (headless) {
+            float cam[5]; computeCam(-0.7f, cam);
+            if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
+            const std::string outPath = screenshot ? screenshotPath
+                                                   : std::string("G:/X3Native/captures/undersea.png");
+            const int kFrames = 40;
+            float waterT = 0.0f;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                uphys->step(dt);
+                waterT += dt;
+                { x3::rhi::IRenderDevice::WaterParams wp{};
+                  wp.enabled = true; wp.seaLevel = p.surfaceY; wp.time = waterT;
+                  wp.amplitude = 0.4f; wp.steepness = 0.45f; wp.waveLength = 18.0f; wp.speed = 1.0f;
+                  wp.deepColor[0]=0.008f; wp.deepColor[1]=0.035f; wp.deepColor[2]=0.075f;
+                  wp.shallowColor[0]=0.05f; wp.shallowColor[1]=0.22f; wp.shallowColor[2]=0.32f;
+                  wp.specular = 8.0f; wp.fresnel = 0.02f;
+                  device->setWaterParams(wp); }
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 68.0f);
+                if (i == kFrames - 1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) drawScene(frame);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world undersea: wrote " + outPath);
+            else       x3::logError("--world undersea: capture FAILED");
+            uphys->shutdown(); device->shutdown();
+            if (window) glfwDestroyWindow(window); glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        // ===== Windowed: slow auto-orbit, ESC to quit. =====
+        x3::logInfo("--world undersea: slow orbit showcase — Esc to quit");
+        double prevTime = glfwGetTime();
+        float waterT = 0.0f, ang = -0.7f;
+        int lastWd = (int)W, lastHd = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime();
+            float fdt = (float)(now - prevTime); prevTime = now;
+            if (fdt > 0.1f) fdt = 0.1f;
+            uphys->step(fdt);
+            waterT += fdt; ang += fdt * 0.12f;
+            { x3::rhi::IRenderDevice::WaterParams wp{};
+              wp.enabled = true; wp.seaLevel = p.surfaceY; wp.time = waterT;
+              wp.amplitude = 0.4f; wp.steepness = 0.45f; wp.waveLength = 18.0f; wp.speed = 1.0f;
+              wp.deepColor[0]=0.008f; wp.deepColor[1]=0.035f; wp.deepColor[2]=0.075f;
+              wp.shallowColor[0]=0.05f; wp.shallowColor[1]=0.22f; wp.shallowColor[2]=0.32f;
+              wp.specular = 8.0f; wp.fresnel = 0.02f;
+              device->setWaterParams(wp); }
+            float cam[5]; computeCam(ang, cam);
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw != lastWd || chh != lastHd) {
+                lastWd = cw; lastHd = chh;
+                if (cw > 0 && chh > 0) device->onResize((uint32_t)cw, (uint32_t)chh);
+            }
+            device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 68.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) drawScene(frame);
+            device->endFrame(frame);
+        }
+        uphys->shutdown(); device->shutdown();
+        if (window) glfwDestroyWindow(window); glfwTerminate();
+        return 0;
+    }
+
     // ======================================================================
     // ---- VEHICLE FRAMEWORK demos (--world drive / boat / fly) -------------
     // GENERAL vehicle/flight/buoyancy framework (engine/physics/IVehicle.h) on

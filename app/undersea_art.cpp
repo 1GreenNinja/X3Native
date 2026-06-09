@@ -31,7 +31,7 @@ constexpr float kStAnchorX = 1.75f;    // (-14.0 + 17.5)/2  centre X
 constexpr float kStAnchorY = 0.0f;     // min Y (base) -> sits on the deck
 constexpr float kStAnchorZ = -1.625f;  // (-11.75 + 8.5)/2  centre Z
 // Up-scale so the ~31x20 m kit reads as a real complex on the r=80 disc.
-constexpr float kStationScale = 1.8f;
+constexpr float kStationScale = 2.6f;
 
 // Column-major TRS: yaw about +Y (rad) + uniform scale s, mapping the local point
 // (px,py,pz) to world (wx,wy,wz). i.e. world = T(w)*R_y(yaw)*S(s)*T(-p). Mirrors
@@ -104,26 +104,36 @@ void UnderseaArtSystem::build(x3::rhi::IRenderDevice& device,
     placeYaw(m, /*yaw*/0.0f, kStationScale,
              kStAnchorX, kStAnchorY, kStAnchorZ,
              plan.cx, plan.baseDeckY, plan.cz);
-    // Subtle blue self-illum so the hull reads (and faintly blooms) in the deep;
-    // per-window glow is a future refinement (drawMeshPBR samples no emissive map).
-    const float kStationEmis[4] = { 0.06f, 0.18f, 0.34f, 1.15f };
+    // No per-instance emissive: a uniform glow washes out the PBR gunmetal into a
+    // flat blob. Let the converted base/normal/MR textures show their real detail;
+    // the deep-sea read + bloom come from the cool point lights below. (Per-window
+    // emissive accents are a future refinement — drawMeshPBR samples no emissive map.)
+    const float kStationEmis[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     addInstanceEmissive(station, m, kStationEmis);
 
     // ---- Cool point-light fixtures around the station so the PBR hull is lit in
     // the deep (the env_art Light_A pattern) + feeds the bloom chain. Cyan-white,
     // premultiplied by intensity; range reaches across the structure. ----
-    const float kIntensity = 3.0f;
-    const float kColR = 0.55f * kIntensity;   // cool blue-cyan
-    const float kColG = 0.80f * kIntensity;
+    // Cool-WHITE (only a slight blue lean) so the gunmetal PBR reads instead of
+    // tinting the whole hull blue. Placed OUTSIDE + ABOVE the ~82 m / ~34 m-tall
+    // station so they light the exterior (not buried inside the hull) — bright
+    // enough to lift the dark gunmetal out of the murk and feed bloom.
+    // NOTE: at the far-offshore world coords (1100,-1350) these point lights do
+    // not visibly reach the station in-engine (suspected Forward+ light-cluster
+    // coverage limit at large world coordinates — flagged to Integrator). Kept at
+    // a sensible intensity; the in-engine lit read is pending that engine fix.
+    const float kIntensity = 3.5f;
+    const float kColR = 0.80f * kIntensity;
+    const float kColG = 0.90f * kIntensity;
     const float kColB = 1.00f * kIntensity;
     const float deckY = plan.baseDeckY;
     struct LP { float dx, dy, dz, range; };
     const LP lps[] = {
-        {  28.0f, 18.0f,  24.0f, 75.0f },   // four high corners over the complex
-        { -28.0f, 18.0f,  24.0f, 75.0f },
-        {  28.0f, 18.0f, -24.0f, 75.0f },
-        { -28.0f, 18.0f, -24.0f, 75.0f },
-        {   0.0f, 30.0f,   0.0f, 90.0f },   // one high key over the habitat
+        {  54.0f, 26.0f,  54.0f, 100.0f },  // four lamps OUTSIDE the footprint, high
+        { -54.0f, 26.0f,  54.0f, 100.0f },
+        {  54.0f, 26.0f, -54.0f, 100.0f },
+        { -54.0f, 26.0f, -54.0f, 100.0f },
+        {   0.0f, 46.0f,   0.0f, 110.0f },  // one high key above the complex
     };
     for (const LP& l : lps) {
         x3::rhi::PointLight pl;
