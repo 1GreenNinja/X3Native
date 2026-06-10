@@ -1,0 +1,27 @@
+#version 450
+// hzb_build.comp — depth pyramid (Hi-Z) builder for occlusion culling (D15).
+// Dispatched once per mip: reads mip N-1 (or the depth buffer for mip 0),
+// writes mip N as a 2x2 reduce. REDUCE_MAX=1 keeps the FARTHEST depth
+// (standard-Z, depth grows with distance); set 0 for MIN under reversed-Z.
+// Conservative on odd sizes: the gather clamps, so edge texels re-sample the
+// border — never reports geometry farther than it is.
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(constant_id = 0) const uint REDUCE_MAX = 1u;
+
+layout(set = 0, binding = 0) uniform sampler2D srcMip;
+layout(set = 0, binding = 1, r32f) writeonly uniform image2D dstMip;
+
+layout(push_constant) uniform Push { uvec2 dstSize; } pc;
+
+void main() {
+    uvec2 p = gl_GlobalInvocationID.xy;
+    if (p.x >= pc.dstSize.x || p.y >= pc.dstSize.y) return;
+    // textureGather on the 2x2 footprint centered between the four source texels.
+    vec2 uv = (vec2(p) * 2.0 + 1.0) / vec2(textureSize(srcMip, 0));
+    vec4 d = textureGather(srcMip, uv, 0);
+    float r = (REDUCE_MAX == 1u)
+        ? max(max(d.x, d.y), max(d.z, d.w))
+        : min(min(d.x, d.y), min(d.z, d.w));
+    imageStore(dstMip, ivec2(p), vec4(r));
+}

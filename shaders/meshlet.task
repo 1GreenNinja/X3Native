@@ -1,0 +1,92 @@
+#version 450
+// meshlet.task — TIER 2 (UNTESTED — REVIEW REQUIRED, see D15 handoff §Tier 2).
+// Per-MESHLET culling: one task workgroup tests 32 meshlets of one object;
+// survivors are emitted to meshlet.mesh. Requires VK_EXT_mesh_shader
+// (Turing/RDNA2+; NOT the 1080 Ti — tier detection routes Pascal to Tier 0).
+// Culls: frustum (sphere) + backface cone + optional HZB, all per ~64-tri
+// cluster, so a big Unity-store building loses its far side instead of being
+// all-or-nothing.
+#extension GL_EXT_mesh_shader : require
+
+layout(local_size_x = 32) in;
+
+layout(constant_id = 0) const uint USE_HZB = 0u;
+
+struct Meshlet {
+    vec4 sphere;       // object-space center+radius (transformed below)
+    vec4 cone;         // xyz = axis (object space), w = -sin(angle) cutoff
+    uint vertexOffset; uint triangleOffset;
+    uint vertexCount;  uint triangleCount;
+};
+layout(std430, set = 1, binding = 0) readonly buffer Meshlets { Meshlet meshlets[]; };
+
+layout(std430, set = 1, binding = 1) readonly buffer ObjectXf {
+    mat4 model;        // this draw's object transform
+    vec4 sphereScale;  // x = max axis scale (radius scaling), rest pad
+};
+
+layout(set = 0, binding = 4) uniform CullParams {
+    vec4 frustum[6];
+    mat4 viewProj;
+    vec2 hzbSize;
+    uint instanceCount; uint _pad0;
+} P;
+layout(set = 0, binding = 5) uniform sampler2D hzb;
+
+layout(push_constant) uniform Push {
+    uint meshletBase;  uint meshletCount;
+    vec4 cameraPosWS;  // for the backface-cone test
+} pc;
+
+struct TaskPayload { uint meshletIds[32]; };
+taskPayloadSharedEXT TaskPayload payload;
+
+shared uint sVisibleCount;
+
+bool frustumVisible(vec4 s) {
+    for (int i = 0; i < 6; ++i)
+        if (dot(P.frustum[i].xyz, s.xyz) + P.frustum[i].w < -s.w) return false;
+    return true;
+}
+
+void main() {
+    if (gl_LocalInvocationIndex == 0u) sVisibleCount = 0u;
+    barrier();
+
+    uint id = pc.meshletBase + gl_GlobalInvocationID.x;
+    bool vis = false;
+    if (gl_GlobalInvocationID.x < pc.meshletCount) {
+        Meshlet m = meshlets[id];
+        vec3 cWS = (model * vec4(m.sphere.xyz, 1.0)).xyz;
+        float rWS = m.sphere.w * sphereScale.x;
+        vis = frustumVisible(vec4(cWS, rWS));
+        if (vis && m.cone.w > -1.0) {
+            // Backface cone: cluster faces away if view dir is inside the
+            // anti-cone. Conservative; cone.w = -1 disables (double-sided).
+            vec3 axisWS = normalize(mat3(model) * m.cone.xyz);
+            vec3 view = normalize(cWS - pc.cameraPosWS.xyz);
+            if (dot(view, axisWS) >= m.cone.w + rWS / max(length(cWS - pc.cameraPosWS.xyz), 1e-4))
+                vis = false;
+        }
+        // HZB per-meshlet (UNTESTED): same projected-sphere test as cull.comp.
+        if (vis && USE_HZB == 1u) {
+            vec4 c = P.viewProj * vec4(cWS, 1.0);
+            if (c.w > rWS) {
+                float rNdc = rWS / c.w;
+                vec2 mn = clamp(c.xy / c.w - rNdc, -1.0, 1.0) * 0.5 + 0.5;
+                vec2 mx = clamp(c.xy / c.w + rNdc, -1.0, 1.0) * 0.5 + 0.5;
+                vec2 sizePx = (mx - mn) * P.hzbSize;
+                float mip = ceil(log2(max(max(sizePx.x, sizePx.y), 1.0)));
+                float sceneDepth = textureLod(hzb, (mn + mx) * 0.5, mip).r;
+                if ((c.z - rWS) / c.w > sceneDepth) vis = false;
+            }
+        }
+    }
+
+    if (vis) {
+        uint slot = atomicAdd(sVisibleCount, 1u);
+        payload.meshletIds[slot] = id;
+    }
+    barrier();
+    EmitMeshTasksEXT(sVisibleCount, 1, 1);
+}
