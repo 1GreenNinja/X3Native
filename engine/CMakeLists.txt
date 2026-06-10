@@ -20,6 +20,7 @@ add_library(x3engine STATIC
     net/NetworkSystem.cpp
     net/SnapshotInterpolator.cpp
     net/ClientPredictor.cpp
+    script/LuaScriptSystem.cpp
 )
 
 # Header-only model-loader deps (M2): cgltf (glTF/GLB parse) + stb (image decode)
@@ -30,6 +31,17 @@ find_package(Stb REQUIRED)
 # vcpkg port installs only miniaudio.h (no CMake config), so locate the header.
 find_path(MINIAUDIO_INCLUDE_DIRS "miniaudio.h")
 
+# Lua scripting (D14): Lua 5.4 + sol2 (the "sol3" C++ binding). sol2 stays
+# PRIVATE — nothing in engine/script/IScriptSystem.h needs it, same quarantine
+# discipline as Vulkan/ImGui. sol2 generates a very large TU on MSVC, so the
+# one .cpp that pulls in <sol/sol.hpp> is compiled with /bigobj.
+find_package(Lua REQUIRED)
+find_package(sol2 CONFIG REQUIRED)
+if(MSVC)
+    set_source_files_properties(script/LuaScriptSystem.cpp
+        PROPERTIES COMPILE_OPTIONS /bigobj)
+endif()
+
 # Repo root on the include path so consumers use the namespaced prefix,
 # e.g. #include "engine/rhi/IRenderDevice.h"
 target_include_directories(x3engine PUBLIC ${CMAKE_SOURCE_DIR})
@@ -38,7 +50,8 @@ target_include_directories(x3engine PUBLIC ${CMAKE_SOURCE_DIR})
 # inside MiniaudioSystem.cpp — all header-only, so they're PRIVATE include dirs
 # and never leak to engine consumers (the audio header exposes no ma_* types).
 target_include_directories(x3engine PRIVATE
-    ${CGLTF_INCLUDE_DIRS} ${Stb_INCLUDE_DIR} ${MINIAUDIO_INCLUDE_DIRS})
+    ${CGLTF_INCLUDE_DIRS} ${Stb_INCLUDE_DIR} ${MINIAUDIO_INCLUDE_DIRS}
+    ${LUA_INCLUDE_DIR})
 
 target_link_libraries(x3engine
     PUBLIC
@@ -55,6 +68,10 @@ target_link_libraries(x3engine
         # imgui_impl_vulkan.cpp / imgui_impl_glfw.cpp into the package, so the editor-UI
         # methods in VulkanRenderDevice.cpp call the backends with no vendoring.
         imgui::imgui
+        # Lua scripting (D14) — PRIVATE so sol/Lua types never leak through
+        # engine/script/IScriptSystem.h (it stays scripting-API-free).
+        sol2::sol2
+        ${LUA_LIBRARIES}
 )
 
 target_compile_features(x3engine PUBLIC cxx_std_20)
