@@ -89,9 +89,49 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include "FrustumCull.h"   // CPU per-object frustum cull (r_frustumcull, D15 baseline)
+
 namespace x3::rhi {
 
 namespace {
+
+// Compute a model-space bounding sphere from a vertex list for the CPU frustum cull:
+// AABB center, then the radius is the max vertex distance from that center (a tight
+// conservative sphere). Empty/null -> zero radius (treated as unbounded -> never culled).
+inline void computeLocalSphere(const MeshVertex* verts, uint32_t vcount,
+                               glm::vec3& outCenter, float& outRadius) {
+    outCenter = glm::vec3(0.0f);
+    outRadius = 0.0f;
+    if (!verts || vcount == 0) return;
+    glm::vec3 lo(verts[0].pos[0], verts[0].pos[1], verts[0].pos[2]);
+    glm::vec3 hi = lo;
+    for (uint32_t i = 1; i < vcount; ++i) {
+        const glm::vec3 p(verts[i].pos[0], verts[i].pos[1], verts[i].pos[2]);
+        lo = glm::min(lo, p);
+        hi = glm::max(hi, p);
+    }
+    outCenter = 0.5f * (lo + hi);
+    float r2 = 0.0f;
+    for (uint32_t i = 0; i < vcount; ++i) {
+        const glm::vec3 p(verts[i].pos[0], verts[i].pos[1], verts[i].pos[2]);
+        r2 = std::max(r2, glm::dot(p - outCenter, p - outCenter));
+    }
+    outRadius = std::sqrt(r2);
+}
+
+// Transform a model-space bounding sphere to world space by an instance model matrix:
+// center -> (model * center); radius -> radius * (max scale axis), so non-uniform
+// scale stays conservative (the largest axis bounds the whole sphere). Returns the
+// CullSphere (xyz = world center, w = world radius) the GPU-equivalent test consumes.
+inline CullSphere worldSphere(const glm::mat4& model, const glm::vec3& cLocal, float rLocal) {
+    const glm::vec3 cWorld = glm::vec3(model * glm::vec4(cLocal, 1.0f));
+    // Column lengths of the upper-left 3x3 = per-axis scale (incl. shear contribution).
+    const float sx = glm::length(glm::vec3(model[0]));
+    const float sy = glm::length(glm::vec3(model[1]));
+    const float sz = glm::length(glm::vec3(model[2]));
+    const float maxScale = std::max(sx, std::max(sy, sz));
+    return CullSphere(cWorld, rLocal * maxScale);
+}
 
 constexpr uint32_t kFramesInFlight = 2;
 // Glass frost (M4): number of progressively-downsampled blur levels of the scene
@@ -520,6 +560,10 @@ public:
     }
 
     void setAmbient(float r, float g, float b) override { m_ambient = glm::vec3(r, g, b); }
+
+    // CPU per-object frustum cull toggle (r_frustumcull). Default ON. When OFF the
+    // draw path is byte-identical to before this feature (objectsDrawn == list.size()).
+    void setFrustumCullEnabled(bool enabled) override { m_frustumCull = enabled; }
 
     void setBloom(float intensity) override { m_bloomIntensity = intensity; }
 
@@ -1171,6 +1215,8 @@ public:
         }
         m.indexCount = icount;
         m.vertexCount = vcount;
+        // Bake the model-space bounding sphere for the CPU frustum cull (r_frustumcull).
+        computeLocalSphere(verts, vcount, m.boundsCenter, m.boundsRadius);
         uint32_t id = m_nextMeshId++;
         m_meshes.emplace(id, m);
         return { id };
@@ -1236,6 +1282,9 @@ public:
         Mesh& m = it->second;
         if (vcount != m.vertexCount) return;  // count must match the original mesh
         const VkDeviceSize bytes = (VkDeviceSize)vcount * sizeof(MeshVertex);
+        // Keep the frustum-cull bounds in sync with the new pose (cheap; skinned
+        // meshes are typically marked ALWAYS_VISIBLE so this is mostly belt-and-braces).
+        computeLocalSphere(verts, vcount, m.boundsCenter, m.boundsRadius);
 
         if (!m.dynamic) {
             // Promote: allocate kFramesInFlight HOST_VISIBLE mapped vbos and seed
@@ -1672,6 +1721,13 @@ private:
         VkBuffer ibo = VK_NULL_HANDLE; VmaAllocation iboAlloc = nullptr;
         uint32_t indexCount = 0;
         uint32_t vertexCount = 0;       // vertices the vbo was sized for
+        // Local-space bounding sphere (model space), computed from the mesh's
+        // vertices at create/update time. Used by the CPU per-object frustum cull
+        // (r_frustumcull): transformed to world space per draw instance via the
+        // instance model matrix (center * model; radius * maxScale). See
+        // FrustumCull.h. boundsRadius == 0 means "no bounds" -> never culled.
+        glm::vec3 boundsCenter{0.0f};   // model-space sphere center
+        float     boundsRadius = 0.0f;  // model-space sphere radius (0 = unbounded)
         // CPU-skinning support (J1, scaled for fix 2): a mesh that has been updated
         // at least once becomes DYNAMIC and holds kFramesInFlight HOST_VISIBLE,
         // persistently-mapped vertex buffers — one per frame-in-flight — instead of
@@ -1822,6 +1878,10 @@ private:
         uint32_t emissiveTexIndex = 0; // 0 = none (emissive bindless idx)
         uint32_t detailPacked = 0;     // HDRP micro-detail: (uvScale*64 << 20) | bindlessIdx; 0 = none
         bool     alphaBlend = false;   // glTF BLEND -> blend batch (CPU partition)
+        // ALWAYS_VISIBLE for the CPU frustum cull (r_frustumcull): when true this
+        // instance is NEVER culled (sky / fullscreen / unbounded items). Mirrors
+        // cull.comp's flags bit0. CPU-only — NOT uploaded to the object SSBO.
+        bool     noCull = false;
         // GLASS material (only filled by drawMeshGlass; zeroed for opaque draws).
         float    glassParams[4]; // x = refraction, y = roughness, z = specular, w unused
         float    glassTint[4];   // rgb = tint, a unused
@@ -1966,6 +2026,12 @@ private:
         FrameUBO ubo{};
         ubo.viewProj = proj * view;
         m_lastViewProj = ubo.viewProj;  // cached for the debris instanced draw UBO
+
+        // CPU per-object frustum cull (r_frustumcull): extract the 6 normalized
+        // world-space planes from THIS frame's camera viewProj (Gribb-Hartmann).
+        // emitGroup() tests each instance's world bounding sphere against these.
+        // Same planes (normalized) + same sphere test as the GPU cull.comp.
+        m_frameFrustum = extractFrustumPlanes(ubo.viewProj);
 
         // ---- GLASS control UBO (set 4, binding 1): camera world pos + time +
         // screen-space pixel->UV + the live dev-cvar overrides. glass.frag reads it
@@ -2236,8 +2302,20 @@ private:
             if (list.empty()) return;
             if (cmdCount >= kMaxDrawMeshes) return;
             const uint32_t baseRow = row;
+            const glm::vec3 meshC = mit->second.boundsCenter;
+            const float     meshR = mit->second.boundsRadius;
             for (uint32_t ri : list) {
                 const DrawRecord& dr = m_drawRecords[ri];
+                // CPU per-object frustum cull (r_frustumcull). Skip an instance whose
+                // world bounding sphere is fully outside the frustum. ALWAYS_VISIBLE
+                // (dr.noCull) and unbounded meshes (meshR == 0) are never culled.
+                // Same normalized planes + same conservative sphere test as cull.comp,
+                // so a future GPU statDrawn matches this objectsDrawn exactly.
+                if (m_frustumCull && !dr.noCull && meshR > 0.0f) {
+                    const glm::mat4 model = glm::make_mat4(dr.model);
+                    const CullSphere ws = worldSphere(model, meshC, meshR);
+                    if (!sphereInFrustum(m_frameFrustum, ws)) continue;  // culled
+                }
                 ObjectData& o = objs[row++];
                 std::memcpy(&o.model, dr.model, sizeof(o.model));
                 o.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
@@ -2259,17 +2337,22 @@ private:
                                           dr.glassTint[2], dr.glassTint[3]);
                 if (dr.flags & kFlagGlass) ++m_frameGlassCount;
             }
+            // Survivors actually written this group (== list.size() when cull is off).
+            const uint32_t drawn = row - baseRow;
+            // Whole group culled away -> emit NO indirect command (and no draw call),
+            // exactly as an empty group is skipped above. Nothing references baseRow.
+            if (drawn == 0) return;
             VkDrawIndexedIndirectCommand& c = cmds[cmdCount];
             c.indexCount    = mit->second.indexCount;
-            c.instanceCount = (uint32_t)list.size();
+            c.instanceCount = drawn;
             c.firstIndex    = 0;
             c.vertexOffset  = 0;
             c.firstInstance = baseRow;
             m_drawMeshOrder[cmdCount] = mid;
             ++cmdCount;
             m_building.drawCalls += 1;
-            m_building.objectsDrawn += (uint32_t)list.size();
-            m_building.triangles += (mit->second.indexCount / 3) * (uint32_t)list.size();
+            m_building.objectsDrawn += drawn;
+            m_building.triangles += (mit->second.indexCount / 3) * drawn;
         };
         auto isBlendGroup = [&](uint32_t mid) {
             auto it = m_groups.find(mid);
@@ -10069,6 +10152,11 @@ private:
     // override via setBloom() (the showroom raises it for the glowing-spire hero look).
     float                   m_bloomIntensity = kBloomIntensity;
     float                   m_exposure = 1.0f;   // whole-scene brightness (composite pre-tonemap)
+    // CPU per-object frustum cull (r_frustumcull). Default ON. m_frameFrustum is the
+    // 6 normalized world-space planes for the frame being prepared (filled from the
+    // camera viewProj in prepareFrameData, consumed by emitGroup).
+    bool                    m_frustumCull = true;
+    FrustumPlanes           m_frameFrustum{};
 };
 
 } // namespace

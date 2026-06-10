@@ -146,6 +146,13 @@ public:
     // (1.0 = unchanged). Drives the live r_exposure cvar / showroom brightness slider.
     virtual void setExposure(float e) {}
 
+    // CPU per-object frustum cull toggle (live r_frustumcull cvar; default ON). When
+    // disabled the draw path is byte-identical to before the cull existed
+    // (objectsDrawn == every submitted instance). Conservative world-sphere vs
+    // frustum test that mirrors the GPU cull.comp (D15 equivalence baseline).
+    // Non-pure (no-op default) so headless / other devices are unaffected.
+    virtual void setFrustumCullEnabled(bool enabled) {}
+
     // Per-frame
     virtual FrameContext beginFrame() = 0;
     virtual void         endFrame(const FrameContext&) = 0;

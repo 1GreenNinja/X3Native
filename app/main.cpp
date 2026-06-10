@@ -10,6 +10,8 @@
 #include "engine/core/IConsole.h"
 #include "engine/core/IJobSystem.h"
 #include "engine/rhi/IRenderDevice.h"
+#include "engine/rhi/FrustumCull.h"          // CPU per-object frustum cull (--test-frustumcull)
+#include <glm/gtc/matrix_transform.hpp>       // glm::perspective/lookAt/translate/scale (--test-frustumcull)
 #include "engine/asset/IAssetSource.h"
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/physics/Destruction.h"   // K-T0/T1 destructibles + --test-destruction
@@ -633,6 +635,10 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // current room + its doored neighbours); 0 = draw the whole level (e.g. for noclip
     // overview / debugging). Live-tunable from the console.
     console.registerCVar("r_roomcull", "1", "per-room PVS occlusion cull (0 = draw whole level, e.g. for noclip)");
+    // CPU per-object frustum cull (conservative world-sphere vs camera frustum, in the
+    // render device). 1 = on (default); 0 = byte-identical to no cull (objectsDrawn ==
+    // every submitted instance). The reference baseline the D15 GPU cull is diffed against.
+    console.registerCVar("r_frustumcull", "1", "CPU per-object frustum cull (0 = draw every instance, no cull)");
     // Portal flood-fill depth: how many OPEN-doorway hops the canonlevel cull floods out
     // from the player's room. Higher = see further down a hall through open doors (more
     // rooms drawn); 1 = current room + direct neighbours only (tight). The flood is also
@@ -675,6 +681,9 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     // Whole-scene brightness dial (live; default 1.0 = unchanged). Piggybacks the
     // per-frame cvar->device sync so `r_exposure` takes effect immediately.
     device.setExposure(console.getFloat("r_exposure"));
+    // CPU per-object frustum cull (live; default on). Same per-frame sync so toggling
+    // r_frustumcull from the console takes effect immediately.
+    device.setFrustumCullEnabled(console.getInt("r_frustumcull") != 0);
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.
@@ -722,6 +731,84 @@ void keyCallback(GLFWwindow* win, int key, int /*scancode*/, int action, int /*m
         default: break;
     }
 }
+// ---------------------------------------------------------------------------
+// --test-frustumcull : CPU per-object frustum-cull self-test (D15 baseline).
+//
+// Builds a KNOWN camera frustum (same viewProj convention the render device uses:
+// glm::perspective, reverse-Y for Vulkan clip) and a KNOWN set of world spheres at
+// known positions, then runs the EXACT engine cull math (engine/rhi/FrustumCull.h:
+// extractFrustumPlanes + sphereInFrustum — the same functions VulkanRenderDevice
+// calls) and asserts the precise survivor set, incl. the edge cases the GPU
+// cull.comp must also honor:
+//   * dead-ahead object inside the frustum                -> KEPT
+//   * object far off to the side (outside left/right)     -> CULLED
+//   * object fully BEHIND the camera (behind near plane)  -> CULLED
+//   * sphere STRADDLING a plane (|dist| < radius)         -> KEPT (conservative)
+//   * object beyond the far plane                         -> CULLED
+//   * ALWAYS_VISIBLE bypass (caller skips the test)       -> KEPT even if outside
+// Prints "frustumcull: X/Y passed" and returns true iff all pass. No GPU/window.
+static bool runFrustumCullSelfTest() {
+    using namespace x3::rhi;
+    int passed = 0, total = 0;
+    auto check = [&](const char* name, bool ok) {
+        ++total; if (ok) ++passed;
+        x3::logInfo(std::string("  [") + (ok ? "PASS" : "FAIL") + "] " + name);
+    };
+
+    // Camera at origin looking down -Z (right-handed), 90deg FOV, aspect 1, near
+    // 0.1, far 100. Reverse-Y exactly as VulkanRenderDevice::prepareFrameData does.
+    const glm::vec3 eye(0.0f, 0.0f, 0.0f);
+    glm::mat4 view = glm::lookAt(eye, eye + glm::vec3(0, 0, -1), glm::vec3(0, 1, 0));
+    glm::mat4 proj = glm::perspective(glm::radians(90.0f), 1.0f, 0.1f, 100.0f);
+    proj[1][1] *= -1.0f;
+    const FrustumPlanes fr = extractFrustumPlanes(proj * view);
+
+    auto keep = [&](const glm::vec3& c, float r) {
+        return sphereInFrustum(fr, CullSphere(c, r));
+    };
+
+    // (1) dead-ahead, well inside -> kept.
+    check("ahead-inside kept", keep(glm::vec3(0, 0, -10), 1.0f));
+    // (2) far off to the +X side at modest depth (way outside the 90deg cone) -> culled.
+    check("far-right outside culled", !keep(glm::vec3(100, 0, -10), 1.0f));
+    // (3) fully behind the camera (+Z) -> culled (behind near plane).
+    check("behind-camera culled", !keep(glm::vec3(0, 0, 10), 1.0f));
+    // (4) center just behind the near plane (z=+0.05) but radius 0.2 reaches across
+    //     the near plane -> STRADDLES -> kept (conservative). Distance to near plane
+    //     is 0.15 < r, so the test must keep it.
+    check("straddle-near kept", keep(glm::vec3(0, 0, 0.05f), 0.2f));
+    // (5) beyond the far plane (z=-150, far=100), small radius -> culled.
+    check("beyond-far culled", !keep(glm::vec3(0, 0, -150), 1.0f));
+    // (6) a tiny sphere exactly ON the right frustum edge at z=-10: at 90deg FOV the
+    //     edge is x = |z| = 10. Center slightly OUTSIDE (x=11) with radius 0.5 (does
+    //     not reach back to the plane) -> culled; radius 2.0 reaches the plane -> kept.
+    check("edge-outside small culled", !keep(glm::vec3(11, 0, -10), 0.5f));
+    check("edge-straddle large kept",   keep(glm::vec3(11, 0, -10), 2.0f));
+    // (7) ALWAYS_VISIBLE bypass: an object far outside is KEPT because the caller
+    //     never runs the test for noCull instances. Model the device's own guard.
+    {
+        const bool noCull = true;
+        const glm::vec3 cOut(100, 100, 100);  // nowhere near the frustum
+        const bool drawn = noCull ? true : keep(cOut, 1.0f);
+        check("ALWAYS_VISIBLE kept", drawn);
+    }
+    // (8) world-transform path: a unit-radius local sphere translated to an inside
+    //     position via a model matrix, with non-uniform scale (max axis grows the
+    //     radius). Mirrors VulkanRenderDevice::worldSphere usage.
+    {
+        glm::mat4 m(1.0f);
+        m = glm::translate(m, glm::vec3(0, 0, -20));
+        m = glm::scale(m, glm::vec3(3.0f, 1.0f, 1.0f));  // max scale axis = 3
+        const glm::vec3 cW = glm::vec3(m * glm::vec4(0, 0, 0, 1));
+        const float rW = 1.0f * 3.0f;                    // local r=1 * maxScale
+        check("world-xform inside kept", keep(cW, rW));
+    }
+
+    x3::logInfo("frustumcull: " + std::to_string(passed) + "/" +
+                std::to_string(total) + " passed");
+    return passed == total;
+}
+
 // ---------------------------------------------------------------------------
 // --test-debris : K-T2 GPU-compute persistent debris world self-test.
 //
@@ -1159,6 +1246,7 @@ int main(int argc, char** argv) {
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
          testBlockout = false,
          testBarrels = false, testGlass = false, testHoloterm = false, testEcs = false, testEcsRender = false,
+         testFrustumCull = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
@@ -1524,6 +1612,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-blockout") testBlockout = true;
         else if (a == "--test-barrels") testBarrels = true;
         else if (a == "--test-glass") testGlass = true;
+        else if (a == "--test-frustumcull") testFrustumCull = true;
         else if (a == "--test-holoterm") testHoloterm = true;
         else if (a == "--test-secretroom") testSecretRoom = true;
         else if (a == "--test-ecs") testEcs = true;
@@ -1840,6 +1929,10 @@ int main(int argc, char** argv) {
     if (testGlass) {
         x3::logInfo("running translucent-glass material (M1 see-through) self-test...");
         return x3::game::runGlassSelfTest() ? 0 : 1;
+    }
+    if (testFrustumCull) {
+        x3::logInfo("running CPU per-object frustum-cull (D15 baseline) self-test...");
+        return runFrustumCullSelfTest() ? 0 : 1;
     }
     if (testHoloterm) {
         x3::logInfo("running holo-terminal (text + input) self-test...");
@@ -8292,6 +8385,13 @@ int main(int argc, char** argv) {
         const float vmX = camX, vmY = 1.7f, vmZ = camZ,
                     vmYaw = smokeYaw, vmPitch = 0.0f;
         device->setCamera(vmX, vmY, vmZ, vmYaw, vmPitch, 60.0f);
+        // Sanity A/B for the CPU frustum cull: X3_NOFRUSTUMCULL=1 disables it so the
+        // smoketest's "objs=" line reports the no-cull baseline (== objectsSubmitted);
+        // unset = cull ON (default). Lets a headless run diff objectsDrawn 1 vs 0.
+        if (std::getenv("X3_NOFRUSTUMCULL")) {
+            device->setFrustumCullEnabled(false);
+            x3::logInfo("smoketest: r_frustumcull 0 (X3_NOFRUSTUMCULL) — CPU frustum cull DISABLED");
+        }
         audio->setListener(vmX, vmY, vmZ, vmYaw, vmPitch);
         audio->playMusic(kMusicPath, /*loop*/true, /*vol*/0.25f);
         const x3::phys::Vec3 eye{ vmX, vmY, vmZ };
