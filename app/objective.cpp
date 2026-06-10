@@ -54,6 +54,7 @@ void ObjectiveSystem::setCurrent(uint32_t index) {
 }
 
 const std::string& ObjectiveSystem::currentLabel() const {
+    if (!m_override.empty()) return m_override;   // free-text override (x3.setObjective) wins
     if (m_current == kNoObjective || m_current >= (uint32_t)m_labels.size())
         return kEmpty;
     return m_labels[m_current];

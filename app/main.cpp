@@ -7702,6 +7702,76 @@ int main(int argc, char** argv) {
                     " scripts/*.lua at boot");
     }
 
+    // ---- D14 trigger/objective bindings (app-side, per the D14 handoff: the
+    // engine ships a generic registerFunction(); the APP wires the real game
+    // systems here so engine/ never learns about doors/objectives). A SMALL,
+    // focused surface — just the trigger/secret-room mechanic. `game` (the
+    // Level1Game) owns the objective HUD line, the DoorSystem (doors A-E + the
+    // secret-room floor hatch), and the secret room. Captured by ref; these are
+    // only called during scripts->update()/fire() while `game` is alive.
+    {
+        using x3::script::ScriptValue;
+        x3::game::Level1Game* gp = &game;
+
+        // x3.setObjective(text) -> the GTA-style under-minimap objective line.
+        scripts->registerFunction("setObjective",
+            [gp](const std::vector<ScriptValue>& a) -> ScriptValue {
+                if (!a.empty()) gp->objectives().setText(a[0].asString());
+                return ScriptValue();
+            });
+
+        // x3.openDoor(id) / x3.closeDoor(id) -> the DoorSystem by door index.
+        // Idempotent (startOpening/toggle no-op when already in that state).
+        scripts->registerFunction("openDoor",
+            [gp](const std::vector<ScriptValue>& a) -> ScriptValue {
+                if (a.empty()) return ScriptValue(false);
+                uint32_t i = (uint32_t)a[0].asInt();
+                if (i >= gp->doors().count()) return ScriptValue(false);
+                x3::game::Door& d = gp->doors().at(i);
+                gp->doors().unlock(d);                 // scripted opens bypass the lock
+                return ScriptValue(gp->doors().startOpening(d));
+            });
+        scripts->registerFunction("closeDoor",
+            [gp](const std::vector<ScriptValue>& a) -> ScriptValue {
+                if (a.empty()) return ScriptValue(false);
+                uint32_t i = (uint32_t)a[0].asInt();
+                if (i >= gp->doors().count()) return ScriptValue(false);
+                x3::game::Door& d = gp->doors().at(i);
+                // toggle() only closes an open door; refuse if already closed/closing.
+                if (d.state == x3::game::DoorState::Closed ||
+                    d.state == x3::game::DoorState::Closing) return ScriptValue(false);
+                return ScriptValue(gp->doors().toggle(d));
+            });
+        // x3.setDoorState(id, open) -> explicit open/close (convenience over the two above).
+        scripts->registerFunction("setDoorState",
+            [gp](const std::vector<ScriptValue>& a) -> ScriptValue {
+                if (a.size() < 2) return ScriptValue(false);
+                uint32_t i = (uint32_t)a[0].asInt();
+                if (i >= gp->doors().count()) return ScriptValue(false);
+                x3::game::Door& d = gp->doors().at(i);
+                if (a[1].asBool()) { gp->doors().unlock(d); return ScriptValue(gp->doors().startOpening(d)); }
+                if (d.state == x3::game::DoorState::Closed ||
+                    d.state == x3::game::DoorState::Closing) return ScriptValue(false);
+                return ScriptValue(gp->doors().toggle(d));
+            });
+
+        // x3.openTrapdoor() -> the secret-room floor hatch (DoorSpec.floorHatch).
+        // The hatch lives in the same DoorSystem; index from the secret room. The
+        // id arg is optional/ignored (there's one hatch); accepted for symmetry.
+        scripts->registerFunction("openTrapdoor",
+            [gp](const std::vector<ScriptValue>&) -> ScriptValue {
+                if (!gp->secret().hatchBuilt()) return ScriptValue(false);
+                uint32_t i = gp->secret().hatchDoorIndex();
+                if (i >= gp->doors().count()) return ScriptValue(false);
+                x3::game::Door& d = gp->doors().at(i);
+                gp->doors().unlock(d);
+                return ScriptValue(gp->doors().startOpening(d));
+            });
+
+        x3::logInfo("D14 script bindings: setObjective/openDoor/closeDoor/"
+                    "setDoorState/openTrapdoor wired to Level1Game");
+    }
+
     // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
     // render path so the BLAS/TLAS build + ray-query AO compute + apply passes are
     // exercised under Vulkan validation. No-op if the device lacks RT support (the
@@ -9197,6 +9267,13 @@ int main(int argc, char** argv) {
             tmBackPrev = tbackNow;
             bool tEnterNow = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
             if (tEnterNow && !tmEnterPrev) {
+                // D14: fire the entered code INTO Lua before submit() clears the
+                // input line. scripts/secret_room.lua listens for terminal_code and
+                // (on the secret code) calls x3.openTrapdoor()+x3.setObjective() —
+                // proving the terminal->trapdoor mechanic can live in a pak as DATA.
+                // The C++ submit sink below still runs (idempotent with the script).
+                const std::string entered = term.input();
+                if (scripts) scripts->fire("terminal_code", {{"code", entered}});
                 bool ok = term.submit();   // fires the sink -> opens the trapdoor on 1127
                 if (ok) { termMode = false; term.setActive(false);
                           x3::logInfo("terminal: code ACCEPTED — trapdoor opening"); }
@@ -9481,6 +9558,14 @@ int main(int argc, char** argv) {
             { const double _pt0 = glfwGetTime();
               game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
               g_perf.tick += glfwGetTime() - _pt0; }
+            // D14: forward any trigger-zone ENTRIES from this tick into Lua so pak
+            // script DATA can react. zone = the L1Trigger id; who = "player". The
+            // engine never sees this — Level1Game just records the fired ids.
+            if (scripts) {
+                for (uint32_t tid : game.lastFiredTriggers())
+                    scripts->fire("trigger_enter",
+                        {{"zone", std::to_string(tid)}, {"who", "player"}});
+            }
             // ---- CANONLEVEL DOORS: tick the SM_Door_A slide animation. Doors are
             // MANUAL — the player opens/closes one by aiming at the slab (or its button)
             // and pressing E (the use block above calls tryUse()->toggle()). There is
