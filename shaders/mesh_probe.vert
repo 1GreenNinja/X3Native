@@ -14,13 +14,15 @@ struct ObjectData {
     vec4 baseColorFactor;
     vec4 emissive;        // rgb = linear emissive color, a = strength (HDR source)
     uint texIndex;
-    uint terrainFlag;
+    uint flags;           // bit0 = TERRAIN, bit1 = GLASS (was terrainFlag)
     uint terrainPack1;
     uint terrainPack2;
     uint normalTexIndex;
     uint mrTexIndex;
     uint emissiveTexIndex;
-    uint _pad4;            // std430 stride 128 (matches C++ ObjectData)
+    uint detailPacked;    // HDRP micro-detail (_pad4): (uvScale*64<<20)|idx
+    vec4 glassParams;     // GLASS only: x = refraction, y = roughness, z = specular
+    vec4 glassTint;       // GLASS only: rgb = tint color (matches C++ 160B ObjectData)
 };
 
 layout(std430, set = 1, binding = 0) readonly buffer Objects {
@@ -42,7 +44,7 @@ layout(location = 2) flat out uint vTexIndex;
 layout(location = 3) flat out vec4 vFactor;
 layout(location = 4) out vec3 vWorldPos;
 layout(location = 5) flat out vec4 vEmissive;
-layout(location = 6) flat out uint vTerrainFlag;
+layout(location = 6) flat out uint vFlags;       // bit0 = TERRAIN, bit1 = GLASS
 layout(location = 7) flat out uvec2 vTerrainPack;
 layout(location = 8) flat out uint vNormalTexIndex;
 layout(location = 9) flat out uint vMrTexIndex;
@@ -59,10 +61,10 @@ void main() {
     vFactor = o.baseColorFactor;
     vWorldPos = worldPos.xyz;
     vEmissive = o.emissive;
-    vTerrainFlag = o.terrainFlag;
+    vFlags = o.flags;
     vTerrainPack = uvec2(o.terrainPack1, o.terrainPack2);
     vNormalTexIndex = o.normalTexIndex;
     vMrTexIndex = o.mrTexIndex;
     vEmissiveTexIndex = o.emissiveTexIndex;
-    vDetailPacked = o._pad4;   // HDRP micro-detail map (packed idx + uvScale)
+    vDetailPacked = o.detailPacked;   // HDRP micro-detail map (packed idx + uvScale)
 }

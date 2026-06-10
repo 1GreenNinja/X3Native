@@ -25,7 +25,7 @@ struct ObjectData {
     mat4 model;          // 64
     vec4 baseColorFactor;// 16
     vec4 emissive;       // 16
-    uint texIndex;       // -- 8 uints = 32 B -> total 128 B
+    uint texIndex;       // -- 8 uints = 32 B -> 128 B, + 2 vec4 glass = 160 B
     uint _pad0;
     uint _pad1;
     uint _pad2;
@@ -33,6 +33,8 @@ struct ObjectData {
     uint _pad4;
     uint _pad5;
     uint _pad6;
+    vec4 glassParams;    // pad to match C++ 160 B ObjectData std430 stride
+    vec4 glassTint;      // (unused here — depth pass only needs `model`)
 };
 
 layout(std430, set = 0, binding = 0) readonly buffer Objects {

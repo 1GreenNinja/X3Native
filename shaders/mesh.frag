@@ -352,7 +352,7 @@ void main() {
 
     vec3 N = normalize(vNormal);
     // PBR normal map (non-terrain): perturb the geometry normal via a derivative TBN.
-    if (vTerrainFlag == 0u && vNormalTexIndex > 0u)
+    if ((vFlags & FLAG_TERRAIN) == 0u && vNormalTexIndex > 0u)
         N = perturbNormal(N, vWorldPos, vUV, vNormalTexIndex);
 
     // Terrain meshes splat grass/rock/snow/sand by world height+slope; everything
