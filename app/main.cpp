@@ -8060,6 +8060,13 @@ int main(int argc, char** argv) {
                                          sf.index.data(), (uint32_t)sf.index.size());
         auto sedPx  = x3::prims::makeCheckerRGBA(128, 24, 44, 50, 56, 30, 35, 41);
         auto sedTex = device->createTexture(sedPx.data(), 128, 128, true);
+        // Marine snow: a tiny emissive cube instanced as drifting particulate for
+        // deep-sea atmosphere (faint cool specks catching the light in the murk).
+        std::vector<x3::rhi::MeshVertex> snv; std::vector<uint32_t> sni;
+        x3::prims::makeCube(0.07f, snv, sni);
+        auto snowMesh = device->createMesh(snv.data(), (uint32_t)snv.size(),
+                                           sni.data(), (uint32_t)sni.size());
+        const int kSnow = 150;
 
         x3::game::UnderseaArtSystem undersea;
         undersea.build(*device, x3::game::convertedGlbRoot(), p);
@@ -8086,11 +8093,29 @@ int main(int argc, char** argv) {
           plights.push_back(key); }
         if (!plights.empty()) device->setPointLights(plights.data(), (uint32_t)plights.size());
 
+        float snowT = 0.0f;   // advanced each frame so the snow drifts down
         auto drawScene = [&](const x3::rhi::FrameContext& frame) {
             const float white[4] = { 1, 1, 1, 1 };
             const float idM[16]  = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
             device->drawMesh(frame, sfMesh, sedTex, white, idM);  // seafloor
             undersea.draw(*device, frame);                        // the real textured station, LIT
+            // ---- drifting marine snow (deterministic scatter + slow descent) ----
+            auto fracf = [](float x){ return x - std::floor(x); };
+            const float snowCol[4] = { 0.65f, 0.74f, 0.88f, 1.0f };
+            const float snowEm[4]  = { 0.55f, 0.68f, 0.85f, 1.6f };  // faint cool HDR speck
+            for (int s2 = 0; s2 < kSnow; ++s2) {
+                const float hx = fracf(std::sin((float)s2 * 12.9898f) * 43758.55f);
+                const float hy = fracf(std::sin((float)s2 * 78.233f)  * 43758.55f);
+                const float hz = fracf(std::sin((float)s2 * 37.719f)  * 43758.55f);
+                const float px = p.cx + (hx * 2.0f - 1.0f) * 48.0f;
+                const float pz = p.cz + (hz * 2.0f - 1.0f) * 48.0f;
+                const float span = 56.0f;
+                const float drift = std::fmod(hy * span + snowT * 1.6f, span);
+                const float py = p.baseDeckY + span - drift;       // descends, wraps
+                const float mm[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, px,py,pz,1 };
+                device->drawMeshEmissive(frame, snowMesh, x3::rhi::TextureHandle{0},
+                                         snowCol, snowEm, mm);
+            }
         };
 
         // Camera framing: orbit the disc centre, eye a touch above the top deck,
@@ -8121,7 +8146,7 @@ int main(int argc, char** argv) {
             for (int i = 0; i < kFrames; ++i) {
                 glfwPollEvents();
                 uphys->step(dt);
-                waterT += dt;
+                waterT += dt; snowT += dt;
                 { x3::rhi::IRenderDevice::WaterParams wp{};
                   wp.enabled = true; wp.seaLevel = p.surfaceY; wp.time = waterT;
                   wp.amplitude = 0.4f; wp.steepness = 0.45f; wp.waveLength = 18.0f; wp.speed = 1.0f;
@@ -8138,7 +8163,7 @@ int main(int argc, char** argv) {
             const bool wrote = device->captureFrame(outPath.c_str());
             if (wrote) x3::logInfo("--world undersea: wrote " + outPath);
             else       x3::logError("--world undersea: capture FAILED");
-            device->destroyMesh(sfMesh); device->destroyTexture(sedTex);
+            device->destroyMesh(sfMesh); device->destroyTexture(sedTex); device->destroyMesh(snowMesh);
             uphys->shutdown(); device->shutdown();
             if (window) glfwDestroyWindow(window); glfwTerminate();
             return wrote ? 0 : 1;
@@ -8156,7 +8181,7 @@ int main(int argc, char** argv) {
             float fdt = (float)(now - prevTime); prevTime = now;
             if (fdt > 0.1f) fdt = 0.1f;
             uphys->step(fdt);
-            waterT += fdt; ang += fdt * 0.12f;
+            waterT += fdt; ang += fdt * 0.12f; snowT += fdt;
             { x3::rhi::IRenderDevice::WaterParams wp{};
               wp.enabled = true; wp.seaLevel = p.surfaceY; wp.time = waterT;
               wp.amplitude = 0.4f; wp.steepness = 0.45f; wp.waveLength = 18.0f; wp.speed = 1.0f;
@@ -8175,7 +8200,7 @@ int main(int argc, char** argv) {
             if (frame.valid) drawScene(frame);
             device->endFrame(frame);
         }
-        device->destroyMesh(sfMesh); device->destroyTexture(sedTex);
+        device->destroyMesh(sfMesh); device->destroyTexture(sedTex); device->destroyMesh(snowMesh);
         uphys->shutdown(); device->shutdown();
         if (window) glfwDestroyWindow(window); glfwTerminate();
         return 0;
