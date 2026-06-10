@@ -22,16 +22,16 @@ namespace {
 const char* kRelStation = "Undersea/abyssal_station.glb";
 
 // Probed glTF-space (engine Y-up) AABB of abyssal_station.glb, in meters
-// (assemble_undersea_base.py exports it base-seated at Y=0). Derived from the
-// Blender probe x[-14,17.5] y[-8.5,11.75] z[0,13.277] via the glTF->Blender
-// import map (blender.z = gltf.y up, blender.y = -gltf.z):
-//   gltf X[-14.0, 17.5]   Y[0.0, 13.277]   Z[-11.75, 8.5]
+// (assemble_undersea_base.py exports it base-seated at Y=0). v2 unified facility
+// (modules + connecting corridors). Blender probe x[-19.25,23] y[-10,14] z[0,20.93]
+// -> glTF (blender.z = gltf.y up, blender.y = -gltf.z):
+//   gltf X[-19.25, 23.0]   Y[0.0, 20.93]   Z[-14.0, 10.0]
 // We seat the station's base-center anchor onto the base top deck.
-constexpr float kStAnchorX = 1.75f;    // (-14.0 + 17.5)/2  centre X
+constexpr float kStAnchorX = 1.875f;   // (-19.25 + 23.0)/2  centre X
 constexpr float kStAnchorY = 0.0f;     // min Y (base) -> sits on the deck
-constexpr float kStAnchorZ = -1.625f;  // (-11.75 + 8.5)/2  centre Z
-// Up-scale so the ~31x20 m kit reads as a real complex on the r=80 disc.
-constexpr float kStationScale = 2.6f;
+constexpr float kStAnchorZ = -2.0f;    // (-14.0 + 10.0)/2  centre Z
+// Up-scale so the ~42x21 m unified facility reads on the r=80 disc.
+constexpr float kStationScale = 2.0f;
 
 // Column-major TRS: yaw about +Y (rad) + uniform scale s, mapping the local point
 // (px,py,pz) to world (wx,wy,wz). i.e. world = T(w)*R_y(yaw)*S(s)*T(-p). Mirrors

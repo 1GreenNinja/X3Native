@@ -8096,12 +8096,12 @@ int main(int argc, char** argv) {
         // Camera framing: orbit the disc centre, eye a touch above the top deck,
         // looking down slightly to catch station + disc + a sliver of seafloor.
         const float bx = p.cx, bz = p.cz;
-        const float lookY = p.baseDeckY + 13.0f;   // station mid (it spans deck..+~34 m)
+        const float lookY = p.baseDeckY + 19.0f;   // station mid (it spans deck..+~42 m)
         auto computeCam = [&](float ang, float cam[5]) {
-            const float R = 74.0f;                  // hero framing
+            const float R = 92.0f;                  // hero framing
             const float camX = bx + R * std::cos(ang);
             const float camZ = bz + R * std::sin(ang);
-            const float camY = p.baseDeckY + 24.0f;
+            const float camY = p.baseDeckY + 34.0f;
             const float dx = bx - camX, dy = lookY - camY, dz = bz - camZ;
             const float len = std::sqrt(dx*dx + dy*dy + dz*dz);
             cam[0]=camX; cam[1]=camY; cam[2]=camZ;
