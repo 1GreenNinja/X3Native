@@ -116,12 +116,13 @@ void UnderseaArtSystem::build(x3::rhi::IRenderDevice& device,
     // premultiplied by intensity; range reaches across the structure. ----
     // Cool-WHITE (only a slight blue lean) so the gunmetal PBR reads instead of
     // tinting the whole hull blue. Placed OUTSIDE + ABOVE the ~82 m / ~34 m-tall
-    // station so they light the exterior (not buried inside the hull) — bright
-    // enough to lift the dark gunmetal out of the murk and feed bloom.
-    // NOTE: at the far-offshore world coords (1100,-1350) these point lights do
-    // not visibly reach the station in-engine (suspected Forward+ light-cluster
-    // coverage limit at large world coordinates — flagged to Integrator). Kept at
-    // a sensible intensity; the in-engine lit read is pending that engine fix.
+    // station so they light the exterior (not buried inside the hull).
+    // KNOWN ISSUE (under investigation w/ Integrator): in a standalone --world
+    // loop this converted GLB renders via drawMeshPBR as a near-black silhouette
+    // even at the origin with sun + these point lights set — ruled out: world
+    // coords, metallic level, missing normals. The whole standalone scene reads
+    // under-lit, so it's a sun/exposure/PBR-path interaction the full Level1 scene
+    // render handles but a bare --world loop does not. The lit read is pending that.
     const float kIntensity = 3.5f;
     const float kColR = 0.80f * kIntensity;
     const float kColG = 0.90f * kIntensity;

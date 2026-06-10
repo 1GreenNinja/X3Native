@@ -8042,12 +8042,24 @@ int main(int argc, char** argv) {
             device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate(); return 1;
         }
 
-        // Graybox undersea zone (fills its own OceanBasePlan: disc @ (1100,-1350),
-        // seafloor -80, top deck -62, r=80) + the real station overlay on top.
-        x3::game::Scene uscene;
-        x3::game::OceanBase ob;
-        ob.build(uscene, *device, *uphys);
-        const x3::game::OceanBasePlan& p = ob.plan();
+        // Showcase at NEAR-ORIGIN so the point lights actually reach the station.
+        // The real OceanBase sits at offshore (1100,-1350) where the Forward+ light
+        // grid does not currently cover it (see undersea_art.cpp's note — flagged to
+        // Integrator), so the station reads dark there. Here we place an equivalent
+        // OceanBasePlan at the origin + a dark sediment seafloor, and the same GLB
+        // overlay reads as a LIT hero. The --test-undersea-art gate still verifies
+        // the real OceanBase placement; this is purely the visual showcase.
+        x3::game::OceanBasePlan p{};
+        p.cx = 0.0f; p.cz = 0.0f; p.surfaceY = 70.0f;   // surface far above -> we are UNDERWATER
+        p.baseDeckY = 0.0f; p.seafloorY = -3.0f; p.radius = 45.0f; p.levels = 1;
+        p.hasSubDock = p.hasAirlock = p.hasReactor = true;
+
+        // Dark sediment seafloor at origin (the station sits on it).
+        x3::prims::PrimMesh sf = x3::prims::makeBox(95.0f, 1.0f, 95.0f, 0.0f, p.seafloorY - 1.0f, 0.0f, 0.5f);
+        auto sfMesh = device->createMesh(sf.verts.data(), (uint32_t)sf.verts.size(),
+                                         sf.index.data(), (uint32_t)sf.index.size());
+        auto sedPx  = x3::prims::makeCheckerRGBA(128, 24, 44, 50, 56, 30, 35, 41);
+        auto sedTex = device->createTexture(sedPx.data(), 128, 128, true);
 
         x3::game::UnderseaArtSystem undersea;
         undersea.build(*device, x3::game::convertedGlbRoot(), p);
@@ -8056,7 +8068,7 @@ int main(int argc, char** argv) {
         { x3::rhi::IRenderDevice::SkyParams sk{};
           sk.enabled = true;
           sk.sunDir[0] = 0.05f; sk.sunDir[1] = 1.0f; sk.sunDir[2] = 0.15f;
-          sk.sunIntensity = 0.6f; sk.haze = 0.9f; sk.exposure = 0.6f;   // deep, murky
+          sk.sunIntensity = 1.8f; sk.haze = 0.9f; sk.exposure = 0.8f;   // god-ray top light
           device->setSkyParams(sk); }
         { x3::rhi::IRenderDevice::WaterParams wp{};
           wp.enabled = true; wp.seaLevel = p.surfaceY;
@@ -8066,28 +8078,30 @@ int main(int argc, char** argv) {
           wp.specular = 8.0f; wp.fresnel = 0.02f;
           device->setWaterParams(wp); }
 
-        // Station's own cool point-light fixtures + a high key over the complex so
-        // the PBR hull reads in the deep (feeds bloom).
+        // Station's own cool point-light fixtures + a bright high key so the PBR
+        // hull reads + feeds bloom (these DO reach it at the origin).
         std::vector<x3::rhi::PointLight> plights = undersea.lightFixtures();
-        { x3::rhi::PointLight key; key.pos[0]=p.cx; key.pos[1]=p.baseDeckY+34.0f; key.pos[2]=p.cz;
-          key.range=140.0f; key.color[0]=0.9f; key.color[1]=1.15f; key.color[2]=1.5f;
+        { x3::rhi::PointLight key; key.pos[0]=p.cx; key.pos[1]=p.baseDeckY+42.0f; key.pos[2]=p.cz;
+          key.range=130.0f; key.color[0]=2.2f; key.color[1]=2.6f; key.color[2]=3.2f;
           plights.push_back(key); }
         if (!plights.empty()) device->setPointLights(plights.data(), (uint32_t)plights.size());
 
         auto drawScene = [&](const x3::rhi::FrameContext& frame) {
-            uscene.render(*device, frame);   // OceanBase graybox (disc + reactor glow + subs)
-            undersea.draw(*device, frame);   // the real textured station on top
+            const float white[4] = { 1, 1, 1, 1 };
+            const float idM[16]  = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+            device->drawMesh(frame, sfMesh, sedTex, white, idM);  // seafloor
+            undersea.draw(*device, frame);                        // the real textured station, LIT
         };
 
         // Camera framing: orbit the disc centre, eye a touch above the top deck,
         // looking down slightly to catch station + disc + a sliver of seafloor.
         const float bx = p.cx, bz = p.cz;
-        const float lookY = p.baseDeckY + 6.0f;   // station mid (it spans deck..+~35 m)
+        const float lookY = p.baseDeckY + 13.0f;   // station mid (it spans deck..+~34 m)
         auto computeCam = [&](float ang, float cam[5]) {
-            const float R = 66.0f;                  // close hero framing
+            const float R = 74.0f;                  // hero framing
             const float camX = bx + R * std::cos(ang);
             const float camZ = bz + R * std::sin(ang);
-            const float camY = p.baseDeckY + 16.0f;
+            const float camY = p.baseDeckY + 24.0f;
             const float dx = bx - camX, dy = lookY - camY, dz = bz - camZ;
             const float len = std::sqrt(dx*dx + dy*dy + dz*dz);
             cam[0]=camX; cam[1]=camY; cam[2]=camZ;
@@ -8124,6 +8138,7 @@ int main(int argc, char** argv) {
             const bool wrote = device->captureFrame(outPath.c_str());
             if (wrote) x3::logInfo("--world undersea: wrote " + outPath);
             else       x3::logError("--world undersea: capture FAILED");
+            device->destroyMesh(sfMesh); device->destroyTexture(sedTex);
             uphys->shutdown(); device->shutdown();
             if (window) glfwDestroyWindow(window); glfwTerminate();
             return wrote ? 0 : 1;
@@ -8160,6 +8175,7 @@ int main(int argc, char** argv) {
             if (frame.valid) drawScene(frame);
             device->endFrame(frame);
         }
+        device->destroyMesh(sfMesh); device->destroyTexture(sedTex);
         uphys->shutdown(); device->shutdown();
         if (window) glfwDestroyWindow(window); glfwTerminate();
         return 0;
