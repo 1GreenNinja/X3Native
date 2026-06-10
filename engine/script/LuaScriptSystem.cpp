@@ -88,7 +88,7 @@ public:
         // Compile + run the chunk inside the sandbox, then onInit if present.
         sol::load_result chunk = lua_.load(slot->source, "@" + slot->name);
         if (!chunk.valid()) {
-            failSlot(*slot, sol::error(chunk).what());
+            failSlot(*slot, chunk.get<sol::error>().what());
             return id;                    // valid id; fix + reload under same id
         }
         sol::protected_function body = chunk;
@@ -164,11 +164,11 @@ public:
         sol::load_result chunk = lua_.load("return " + std::string(code), "@eval");
         if (!chunk.valid())                 // not an expression? try a statement
             chunk = lua_.load(std::string(code), "@eval");
-        if (!chunk.valid()) return std::string("ERROR: ") + sol::error(chunk).what();
+        if (!chunk.valid()) return std::string("ERROR: ") + chunk.get<sol::error>().what();
         sol::protected_function body = chunk;
         sol::set_environment(s->env, body);
         sol::protected_function_result r = body();
-        if (!r.valid()) return std::string("ERROR: ") + sol::error(r).what();
+        if (!r.valid()) return std::string("ERROR: ") + r.get<sol::error>().what();
         sol::object o = r;
         return o == sol::nil ? "nil" : lua_["tostring"](o).get<std::string>();
     }
@@ -218,7 +218,7 @@ private:
     bool callProtected(Slot& s, sol::protected_function& fn, A&&... a) {
         if (!fn.valid()) return true;     // hook absent — fine, not an error
         sol::protected_function_result r = fn(std::forward<A>(a)...);
-        if (!r.valid()) { failSlot(s, sol::error(r).what()); return false; }
+        if (!r.valid()) { failSlot(s, r.get<sol::error>().what()); return false; }
         return true;
     }
     template <class... A>

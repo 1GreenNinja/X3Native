@@ -20,6 +20,8 @@ add_library(x3engine STATIC
     net/NetworkSystem.cpp
     net/SnapshotInterpolator.cpp
     net/ClientPredictor.cpp
+    rhi/GpuCull.cpp
+    script/LuaScriptSystem.cpp
 )
 
 # Header-only model-loader deps (M2): cgltf (glTF/GLB parse) + stb (image decode)
@@ -29,6 +31,11 @@ find_package(Stb REQUIRED)
 # Header-only audio dep (M9): miniaudio (single header, Unlicense/MIT-0). The
 # vcpkg port installs only miniaudio.h (no CMake config), so locate the header.
 find_path(MINIAUDIO_INCLUDE_DIRS "miniaudio.h")
+
+# D14 scripting: sol2 (C++ binding) over Lua. D15 GPU culling has no extra dep
+# (pure Vulkan/RHI). sol2::sol2 carries its own includes; Lua provides the VM.
+find_package(Lua REQUIRED)
+find_package(sol2 CONFIG REQUIRED)
 
 # Repo root on the include path so consumers use the namespaced prefix,
 # e.g. #include "engine/rhi/IRenderDevice.h"
@@ -50,6 +57,17 @@ target_link_libraries(x3engine
         miniz::miniz
         glm::glm
         Jolt::Jolt
+        sol2::sol2
+        ${LUA_LIBRARIES}
 )
+
+# Lua headers are needed only inside LuaScriptSystem.cpp (sol2 wraps them).
+target_include_directories(x3engine PRIVATE ${LUA_INCLUDE_DIR})
+
+# Fable's D14 note: sol2 + MSVC blows the per-TU section limit; /bigobj fixes it.
+if (MSVC)
+    set_source_files_properties(script/LuaScriptSystem.cpp
+        PROPERTIES COMPILE_OPTIONS "/bigobj")
+endif()
 
 target_compile_features(x3engine PUBLIC cxx_std_20)

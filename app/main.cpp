@@ -10,6 +10,8 @@
 #include "engine/core/IConsole.h"
 #include "engine/core/IJobSystem.h"
 #include "engine/rhi/IRenderDevice.h"
+#include "engine/rhi/GpuCull.h"            // Fable D15: GPU culling + meshlets (--test-meshlet)
+#include "engine/script/IScriptSystem.h"  // Fable D14: Lua scripting system (--test-script)
 #include "engine/asset/IAssetSource.h"
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/physics/Destruction.h"   // K-T0/T1 destructibles + --test-destruction
@@ -791,6 +793,7 @@ private:
 
 int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
+         testScript = false, testMeshlet = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
          testBarrels = false, testGlass = false, testHoloterm = false, testEcs = false, testEcsRender = false,
@@ -1051,6 +1054,8 @@ int main(int argc, char** argv) {
         else if (a == "--test-asset") testAsset = true;
         else if (a == "--test-console") testConsole = true;
         else if (a == "--test-physics") testPhysics = true;
+        else if (a == "--test-script") testScript = true;
+        else if (a == "--test-meshlet") testMeshlet = true;
         else if (a == "--test-gltf") testGltf = true;
         else if (a == "--test-player") testPlayer = true;
         else if (a == "--test-interact") testInteract = true;
@@ -1253,6 +1258,14 @@ int main(int argc, char** argv) {
         // App-side physics-death ragdoll (this session's app/ragdoll.cpp path).
         bool deathOk = x3::game::runRagdollSelfTest();
         return (engineOk && blendOk && deathOk) ? 0 : 1;
+    }
+    if (testScript) {
+        x3::logInfo("running Lua scripting (Fable D14) self-test...");
+        return x3::script::runScriptSelfTest() ? 0 : 1;
+    }
+    if (testMeshlet) {
+        x3::logInfo("running meshlet-builder (Fable D15) self-test...");
+        return x3::rhi::runMeshletSelfTest() ? 0 : 1;
     }
     if (testGltf) {
         x3::logInfo("running glTF/GLB model loader (M2) self-test...");
