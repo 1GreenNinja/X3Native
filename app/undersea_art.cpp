@@ -104,11 +104,12 @@ void UnderseaArtSystem::build(x3::rhi::IRenderDevice& device,
     placeYaw(m, /*yaw*/0.0f, kStationScale,
              kStAnchorX, kStAnchorY, kStAnchorZ,
              plan.cx, plan.baseDeckY, plan.cz);
-    // No per-instance emissive: a uniform glow washes out the PBR gunmetal into a
-    // flat blob. Let the converted base/normal/MR textures show their real detail;
-    // the deep-sea read + bloom come from the cool point lights below. (Per-window
-    // emissive accents are a future refinement — drawMeshPBR samples no emissive map.)
-    const float kStationEmis[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    // The engine has no IBL, so the matte hull's albedo is capped dark and reads
+    // below the murk. A TASTEFUL cool emissive lifts the whole hull above the deep
+    // (the matte sun+ambient diffuse detail still varies underneath, so it isn't a
+    // flat blob) — reads as a lit/bioluminescent deep-sea station + feeds bloom.
+    // (Rich gunmetal-with-IBL awaits the engine IBL pass — see note below.)
+    const float kStationEmis[4] = { 0.09f, 0.14f, 0.21f, 2.0f };
     addInstanceEmissive(station, m, kStationEmis);
 
     // ---- Cool point-light fixtures around the station so the PBR hull is lit in
@@ -123,18 +124,21 @@ void UnderseaArtSystem::build(x3::rhi::IRenderDevice& device,
     // coords, metallic level, missing normals. The whole standalone scene reads
     // under-lit, so it's a sun/exposure/PBR-path interaction the full Level1 scene
     // render handles but a bare --world loop does not. The lit read is pending that.
-    const float kIntensity = 3.5f;
-    const float kColR = 0.80f * kIntensity;
+    // Point lights fall off as ~1/d^2 (mesh.frag pointAtten), so distant lamps do
+    // nothing — these sit CLOSE (within ~18 m) and among the structure so they
+    // actually rim-light nearby modules + add variation over the emissive lift.
+    const float kIntensity = 7.0f;
+    const float kColR = 0.78f * kIntensity;
     const float kColG = 0.90f * kIntensity;
     const float kColB = 1.00f * kIntensity;
     const float deckY = plan.baseDeckY;
     struct LP { float dx, dy, dz, range; };
     const LP lps[] = {
-        {  54.0f, 26.0f,  54.0f, 100.0f },  // four lamps OUTSIDE the footprint, high
-        { -54.0f, 26.0f,  54.0f, 100.0f },
-        {  54.0f, 26.0f, -54.0f, 100.0f },
-        { -54.0f, 26.0f, -54.0f, 100.0f },
-        {   0.0f, 46.0f,   0.0f, 110.0f },  // one high key above the complex
+        {  18.0f, 12.0f,  16.0f, 34.0f },   // close fills around the complex
+        { -18.0f, 12.0f,  16.0f, 34.0f },
+        {  18.0f, 12.0f, -16.0f, 34.0f },
+        { -18.0f, 12.0f, -16.0f, 34.0f },
+        {   0.0f, 22.0f,   0.0f, 40.0f },   // close key over the habitat
     };
     for (const LP& l : lps) {
         x3::rhi::PointLight pl;
