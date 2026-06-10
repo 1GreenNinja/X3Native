@@ -248,6 +248,34 @@ public:
     // uTime arg — this only feeds the full-screen sky. Non-pure no-op default.
     virtual void          setSkyTime(float) {}
 
+    // ---- Translucent GLASS material (transparent pass) ---------------------
+    // A general, reusable translucent-glass material (design spec
+    // docs/superpowers/specs/2026-05-25-glass-material-design.md). A mesh drawn
+    // via drawMeshGlass() is NOT rendered in the opaque pass — it is flagged GLASS
+    // and drawn in a dedicated post-opaque, depth-tested (LEQUAL, no depth write),
+    // alpha-blended transparent pass so it reads as see-through over the lit scene.
+    //
+    // All params are runtime-tunable per draw (material-instance style). POD only —
+    // no Vulkan types cross the boundary. MILESTONES: M1 uses `opacity` (-> blend
+    // alpha) so glass renders see-through; `tint`/`refraction`/`roughness`/`specular`
+    // are carried now and consumed by later milestones (refraction, fresnel/specular,
+    // frost). `opacity` 0 = crystal clear, 1 = fully opaque (the primary dial).
+    struct GlassMaterial {
+        float opacity    = 0.35f;            // 0 = clear .. 1 = opaque (blend alpha)
+        float refraction = 0.03f;            // screen-space distortion strength (M2)
+        float roughness  = 0.0f;             // 0 = polished .. 1 = frosted (M4)
+        float specular   = 0.6f;             // shimmer / specular strength (M3)
+        float tint[3]    = { 1.0f, 1.0f, 1.0f }; // glass color; white = colorless
+    };
+
+    // Submit a translucent glass draw. `glass.opacity` overrides baseColorFactor's
+    // alpha (the see-through dial). `emissive` is the same per-object HDR glow term
+    // as drawMeshEmissive (holo glass keeps its glow); pass nullptr for none. The
+    // device flags the per-object row GLASS so it routes to the transparent pass.
+    virtual void          drawMeshGlass(const FrameContext&, MeshHandle, TextureHandle baseColor,
+                                        const float baseColorFactor[4], const float emissive[4],
+                                        const GlassMaterial& glass, const float model[16]) = 0;
+
     // ---- Analytic sky (open-world track, task A) ---------------------------
     // Parameters for the physically-plausible analytic sky drawn as the far-depth
     // backdrop wherever no opaque geometry covers a pixel (it composites against
@@ -321,6 +349,22 @@ public:
     // each frame, like setSsaoParams). Calling with enabled=false disables RT AO.
     // No-op on a device without ray tracing. Default no-op (headless / base).
     virtual void          setRtaoParams(const RtaoParams&) {}
+
+    // ---- Glass DEV overrides (live r_glass_* cvars, spec §2/§3.2) ----------
+    // A dev-time SCALE/OVERRIDE applied to EVERY glass fragment this frame so the
+    // glass look can be scrubbed live in the console without re-authoring each
+    // material. When `override` is false the shader uses each object's own
+    // GlassMaterial unchanged (the production path). When true: refraction is
+    // SCALED by refractScale, roughness is ADDED by roughAdd (clamped), specular is
+    // SCALED by specScale. Cached + re-applied each frame like the other dev params.
+    // Default no-op (headless / base) so existing devices/tests are unaffected.
+    struct GlassDevParams {
+        bool  override     = false;  // false = use per-object materials as authored
+        float refractScale = 1.0f;   // multiplies GlassMaterial.refraction
+        float roughAdd     = 0.0f;   // added to GlassMaterial.roughness (clamped 0..1)
+        float specScale    = 1.0f;   // multiplies GlassMaterial.specular
+    };
+    virtual void          setGlassDevParams(const GlassDevParams&) {}
 
     // ---- Screen-space ambient occlusion (SSAO, idTech-8 grounding/contact) --
     // SSAO darkens the AMBIENT/indirect lighting term in corners, crevices, and

@@ -9,6 +9,7 @@ add_executable(X3Engine WIN32
     physprops.cpp
     ragdoll.cpp
     barrels.cpp
+    glass_test.cpp
     holo_terminal.cpp
     secret_room.cpp
     ecs_render.cpp
@@ -34,8 +35,13 @@ add_executable(X3Engine WIN32
     spire_sublevels.cpp
     timeline.cpp
     act2_world.cpp
+    act2_desert.cpp
+    act2_caves.cpp
     tod.cpp
     weather.cpp
+    world_regions.cpp
+    city.cpp
+    ocean_base.cpp
     save.cpp
     dialog.cpp
     env_art.cpp
@@ -82,6 +88,7 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/mesh.vert
     ${CMAKE_SOURCE_DIR}/shaders/mesh_probe.vert
     ${CMAKE_SOURCE_DIR}/shaders/mesh.frag
+    ${CMAKE_SOURCE_DIR}/shaders/glass.frag
     ${CMAKE_SOURCE_DIR}/shaders/shadow.vert
     ${CMAKE_SOURCE_DIR}/shaders/sky.vert
     ${CMAKE_SOURCE_DIR}/shaders/sky.frag

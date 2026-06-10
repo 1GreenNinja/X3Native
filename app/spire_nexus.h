@@ -126,6 +126,15 @@ public:
     void draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
               const Scene& scene) const;
 
+    // TASK#12: tear down any in-flight Chorus death ragdolls (Jolt bodies) while the
+    // physics world is still alive. A killed RIGGED pod spawns a physics ragdoll whose
+    // bodies are auto-cleared only when its corpse-pop times out in tick(); if a pod is
+    // still mid-flop when the physics world is shut down/destroyed, the IRagdoll dtor
+    // would touch a DEAD Jolt system (an access violation in teardown). The host (and
+    // the self-test) must call this BEFORE shutting down the shared physics world.
+    // Idempotent / no-op when no pod is ragdolling. Forwards to MultiPodBoss::shutdown.
+    void shutdown() { m_chorus.shutdown(); }
+
     // ---- Queries (host HUD + the self-test) -------------------------------
     bool built() const { return m_built; }
     // The Chorus is ARMED once the connector trigger discovered the Nexus. False at

@@ -115,10 +115,16 @@ void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
         // whenever the cull is inactive, so this is a no-op for every existing entity.
         if (!roomVisible(e.roomId))
             continue;
-        // Emissive-aware draw. The default emissive {0,0,0,0} makes this identical
-        // to the old drawMesh() for every existing entity; club1127's neon/crystal
+        // Translucent glass entities route through the dedicated transparent pass (real
+        // see-through glass), keeping their emissive glow; everything else is opaque. The
+        // default emissive {0,0,0,0} makes the opaque path identical to the old drawMesh()
+        // for every existing entity; club1127's neon/crystal
         // boxes set a non-zero emissive so they glow + feed the bloom chain.
-        device.drawMeshEmissive(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.transform);
+        if (e.transparent) {
+            device.drawMeshGlass(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.glass, e.transform);
+        } else {
+            device.drawMeshEmissive(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.transform);
+        }
     }
 }
 

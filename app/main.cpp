@@ -43,6 +43,7 @@
 #include "editor/editor.h"                  // native Level Editor E1 (brain + self-test)
 #include "editor/editor_host.h"             // Level Architect editor host (shell + blockout)
 #include "barrels.h"                        // explosive barrels (shoot -> chain explosion)
+#include "glass_test.h"                      // translucent-glass material (--test-glass)
 #include "holo_terminal.h"                  // Jake's cell holographic terminal (text + input)
 #include "secret_room.h"                    // code-locked trapdoor -> stocked secret room
 #include "engine/ecs/Ecs.h"                 // sparse-set ECS core (10k+ entities)
@@ -53,8 +54,13 @@
 #include "spire_sublevels.h"                // EFLZ hidden Floor-7 sub-levels + Dr. Chen Return Mission
 #include "timeline.h"                        // EFLZ morality/timeline backbone for the 12 endings (--test-timeline)
 #include "act2_world.h"                      // EFLZ Act-2 open-world surface host + L8/L9 (--test-act2)
+#include "act2_desert.h"                     // EFLZ Act-2 desert depths + Salvari camp L10/L11 (--test-act2desert)
+#include "act2_caves.h"                      // EFLZ Act-2 mid biomes L12-15 (--test-act2caves)
 #include "tod.h"                             // EFLZ Time-of-Day cycle (sky/sun via SkyParams — --test-tod)
 #include "weather.h"                         // EFLZ Weather (7 states, biome-gated, hazard — --test-weather)
+#include "world_regions.h"                   // EFLZ open-world surrounding regions + 4 mountain ranges (--test-worldregions)
+#include "city.h"                            // EFLZ open-world metropolis: districts + roads + freeway tunnels (--test-city)
+#include "ocean_base.h"                      // EFLZ open-world ocean + undersea base + submarine combat (--test-oceanbase)
 #include "elevator.h"
 #include "club1127.h"
 #include "env_art.h"                       // EnvArtSystem::buildFromGlb (--screenshot-showroom)
@@ -1152,7 +1158,7 @@ int main(int argc, char** argv) {
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
          testBlockout = false,
-         testBarrels = false, testHoloterm = false, testEcs = false, testEcsRender = false,
+         testBarrels = false, testGlass = false, testHoloterm = false, testEcs = false, testEcsRender = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
@@ -1233,6 +1239,19 @@ int main(int argc, char** argv) {
     // Emergence (lab-exit gauntlet -> Emergence Point safe zone) + L9 Crystalline Desert
     // Edge (crystal props + neutral fauna + an inert-until-entered hazard zone). Additive.
     bool        testAct2 = false;
+    // --test-act2desert (EFLZ Act-2 desert depths): L10 Crystalline Desert Depths
+    // (deeper desert, first-contact allied Salvari + an injured-Salvari side-quest,
+    // a hidden crystal-cave camp entrance, a light Overlord patrol) + L11 Salvari
+    // Camp "Refugee Haven" (cave settlement, survivor markers incl. K'thara, an
+    // upgrade-station interact + cultural-exchange beat). Reachable L9->L10->L11. Additive.
+    bool        testAct2Desert = false;
+    // --test-act2caves (EFLZ Act-2 mid biomes L12-15): the bioluminescent Advanced Cave
+    // System (Crystal Heart dual-gated interactable + Memory Hunter abyss boss) + the
+    // Toxic Swamplands edge (poison hazard zone, inert at load) + the Research Station
+    // (timeline-gated Siren ambush) + the Tree Cities (vertical canopy + trading-post
+    // interactable). Asserts the gates, the hazard, the timeline gate, reachability
+    // L11->L12->L13->L14->L15, and trigger-id non-collision. Additive flag.
+    bool        testAct2Caves = false;
     // --test-tod (EFLZ Time-of-Day): a 4-phase day cycle (dawn/day/dusk/night) that
     // drives the analytic sky/sun (dir/color/intensity/haze + ambient) via SkyParams.
     // Asserts the cycle visits all phases + wraps, the sun arc + intensity vary
@@ -1243,6 +1262,9 @@ int main(int argc, char** argv) {
     // flag. Asserts gating, interpolated transitions, hazard set only in hazardous states
     // (incl. swamp poison-fog), midpoint hazard flip, and determinism. Additive.
     bool        testWeather = false;
+    bool        testWorldRegions = false;   // --test-worldregions (open-world surface regions + mountains)
+    bool        testCity = false;           // --test-city (open-world metropolis: districts + roads + tunnels)
+    bool        testOceanBase = false;      // --test-oceanbase (ocean + undersea base + submarine combat)
     // --test-collapse (K-T3 structural collapse): build a small structure (column /
     // beam on two supports), destroy a support, step the sim, and assert the
     // unsupported pieces fall (static->dynamic), anchored pieces stay stable, the
@@ -1501,6 +1523,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-editor") testEditor = true;
         else if (a == "--test-blockout") testBlockout = true;
         else if (a == "--test-barrels") testBarrels = true;
+        else if (a == "--test-glass") testGlass = true;
         else if (a == "--test-holoterm") testHoloterm = true;
         else if (a == "--test-secretroom") testSecretRoom = true;
         else if (a == "--test-ecs") testEcs = true;
@@ -1529,8 +1552,13 @@ int main(int argc, char** argv) {
         else if (a == "--test-dronehack") testDroneHack = true;
         else if (a == "--test-sublevels") testSubLevels = true;
         else if (a == "--test-act2") testAct2 = true;
+        else if (a == "--test-act2desert") testAct2Desert = true;
+        else if (a == "--test-act2caves") testAct2Caves = true;
         else if (a == "--test-tod") testTod = true;
         else if (a == "--test-weather") testWeather = true;
+        else if (a == "--test-worldregions") testWorldRegions = true;
+        else if (a == "--test-city") testCity = true;
+        else if (a == "--test-oceanbase") testOceanBase = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-hatchcode") testHatchCode = true;
         else if (a == "--test-elevator") testElevator = true;
@@ -1809,6 +1837,10 @@ int main(int argc, char** argv) {
         x3::logInfo("running explosive-barrels self-test...");
         return x3::game::runBarrelSelfTest() ? 0 : 1;
     }
+    if (testGlass) {
+        x3::logInfo("running translucent-glass material (M1 see-through) self-test...");
+        return x3::game::runGlassSelfTest() ? 0 : 1;
+    }
     if (testHoloterm) {
         x3::logInfo("running holo-terminal (text + input) self-test...");
         return x3::game::runHoloTerminalSelfTest() ? 0 : 1;
@@ -2010,6 +2042,36 @@ int main(int argc, char** argv) {
                     "gauntlet, Emergence-Point companions, crystal desert + hazard zone) "
                     "self-test...");
         return x3::game::runAct2WorldSelfTest() ? 0 : 1;
+    }
+    if (testAct2Desert) {
+        x3::logInfo("running EFLZ Act-2 desert depths (L10 Crystalline Desert Depths: "
+                    "first-contact allied Salvari + injured-Salvari side-quest, hidden "
+                    "crystal-cave camp entrance, light Overlord patrol; + L11 Salvari Camp "
+                    "'Refugee Haven': cave settlement, survivors incl. K'thara, upgrade "
+                    "station + cultural-exchange beat; reachable L9->L10->L11) self-test...");
+        return x3::game::runAct2DesertSelfTest() ? 0 : 1;
+    }
+    if (testAct2Caves) {
+        x3::logInfo("running EFLZ Act-2 mid biomes (L12 Advanced Cave System + Crystal "
+                    "Heart dual-gated interactable + Memory Hunter abyss boss; L13 Toxic "
+                    "Swamplands Edge + poison hazard [inert at load]; L14 Research Station "
+                    "+ timeline-gated Siren ambush; L15 Tree Cities + trading post) "
+                    "self-test...");
+        return x3::game::runAct2CavesSelfTest() ? 0 : 1;
+    }
+    if (testWorldRegions) {
+        x3::logInfo("running EFLZ open-world surface regions (crash site + outposts + "
+                    "4 mountain ranges) self-test...");
+        return x3::game::runWorldRegionsSelfTest() ? 0 : 1;
+    }
+    if (testCity) {
+        x3::logInfo("running EFLZ open-world metropolis (Scrapyard / New District / Industrial "
+                    "+ road grid + 4 freeway tunnels) self-test...");
+        return x3::game::runCitySelfTest() ? 0 : 1;
+    }
+    if (testOceanBase) {
+        x3::logInfo("running EFLZ open-world ocean + undersea base + submarine combat self-test...");
+        return x3::game::runOceanBaseSelfTest() ? 0 : 1;
     }
     if (testDoorCode) {
         x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
@@ -8524,6 +8586,8 @@ int main(int argc, char** argv) {
     // (the SecretRoom latches collection; the host owns the Player to apply heals). ----
     bool      termMode = false;
     bool      tmDigitPrev[10] = {};
+    bool      tmCharPrev[26] = {};        // A-Z typed-char edge state (full terminal typing)
+    bool      tmSpacePrev = false;        // space-bar edge state for the terminal
     bool      tmEnterPrev = false, tmBackPrev = false;
     uint32_t  prevSecretHealth = 0;
     bool      prevSecretNano = false;
@@ -8775,13 +8839,19 @@ int main(int argc, char** argv) {
         double mx, my; glfwGetCursorPos(window, &mx, &my);
         float ddx = static_cast<float>(mx - lastMX), ddy = static_cast<float>(my - lastMY);
         lastMX = mx; lastMY = my;
-        if (consoleOpen || uiMenuActive) { ddx = 0.0f; ddy = 0.0f; }
+        if (consoleOpen || uiMenuActive || termMode || codeMode) { ddx = 0.0f; ddy = 0.0f; }
 
-        // Gameplay key reads are gated off while the console is open OR a UI menu is
-        // up so typing/navigation doesn't drive movement/use/jump/fire/noclip.
+        // Gameplay key reads are gated off while the console, a UI menu, the cell
+        // terminal, OR a door-code keypad is active — so ALL gameplay input is
+        // redirected to whatever is capturing (it reads keys via rawKey below) and
+        // nothing drives movement/use/jump/fire/noclip/weapon-switch while typing.
         auto keyDown = [&](int k) {
-            return !consoleOpen && !uiMenuActive && glfwGetKey(window, k) == GLFW_PRESS;
+            return !consoleOpen && !uiMenuActive && !termMode && !codeMode &&
+                   glfwGetKey(window, k) == GLFW_PRESS;
         };
+        // RAW key read (bypasses the capture gates) — used ONLY by the terminal/keypad
+        // input capture so they still receive keystrokes while they are active.
+        auto rawKey = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
 
         // F toggles noclip via the SAME Player flag the `idclip` console command drives
         // (single source of truth — previously F drove a local var and idclip drove
@@ -8836,8 +8906,9 @@ int main(int argc, char** argv) {
         prevF2 = f2Now;
 
         // ---- WEAPONS: number keys 1..N switch the selected weapon; R reloads.
-        // Suppressed while a door-code keypad is active (digits go to the keypad).
-        if (!codeMode && !terrainWorld) {
+        // Suppressed while a keypad OR the cell terminal is active (those number/letter
+        // keys are being typed as a code, not used to switch weapons).
+        if (!codeMode && !termMode && !terrainWorld) {
             const int n = arsenal.count() < 9 ? arsenal.count() : 9;
             for (int wi = 0; wi < n; ++wi) {
                 bool down = keyDown(GLFW_KEY_1 + wi);
@@ -9004,14 +9075,14 @@ int main(int argc, char** argv) {
         // state machine (also driven by --test-doorcode). ----
         if (codeMode && !terrainWorld) {
             for (int dgt = 0; dgt < 10; ++dgt) {
-                bool dn = keyDown(GLFW_KEY_0 + dgt) || keyDown(GLFW_KEY_KP_0 + dgt);
+                bool dn = rawKey(GLFW_KEY_0 + dgt) || rawKey(GLFW_KEY_KP_0 + dgt);
                 if (dn && !kpDigitPrev[dgt]) keypad.pushDigit(dgt);
                 kpDigitPrev[dgt] = dn;
             }
-            bool backNow = keyDown(GLFW_KEY_BACKSPACE);
+            bool backNow = rawKey(GLFW_KEY_BACKSPACE);
             if (backNow && !kpBackPrev) keypad.backspace();
             kpBackPrev = backNow;
-            bool enterNow = keyDown(GLFW_KEY_ENTER) || keyDown(GLFW_KEY_KP_ENTER);
+            bool enterNow = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
             if (enterNow && !kpEnterPrev) {
                 float pex, pey, pez, pyaw, ppitch;
                 player.camera(pex, pey, pez, pyaw, ppitch);
@@ -9063,14 +9134,25 @@ int main(int argc, char** argv) {
         if (termMode && !terrainWorld) {
             x3::game::HoloTerminal& term = game.secret().terminal();
             for (int dgt = 0; dgt < 10; ++dgt) {
-                bool dn = keyDown(GLFW_KEY_0 + dgt) || keyDown(GLFW_KEY_KP_0 + dgt);
+                bool dn = rawKey(GLFW_KEY_0 + dgt) || rawKey(GLFW_KEY_KP_0 + dgt);
                 if (dn && !tmDigitPrev[dgt]) term.pushChar((char)('0' + dgt));
                 tmDigitPrev[dgt] = dn;
             }
-            bool tbackNow = keyDown(GLFW_KEY_BACKSPACE);
+            // Letters + space too, so the cell terminal is a REAL typable field (not
+            // digits-only). Uppercase to match the on-glass font. These use rawKey so
+            // they register while keyDown (all gameplay input) is gated off in termMode.
+            for (int li = 0; li < 26; ++li) {
+                bool dn = rawKey(GLFW_KEY_A + li);
+                if (dn && !tmCharPrev[li]) term.pushChar((char)('A' + li));
+                tmCharPrev[li] = dn;
+            }
+            bool tspaceNow = rawKey(GLFW_KEY_SPACE);
+            if (tspaceNow && !tmSpacePrev) term.pushChar(' ');
+            tmSpacePrev = tspaceNow;
+            bool tbackNow = rawKey(GLFW_KEY_BACKSPACE);
             if (tbackNow && !tmBackPrev) term.backspace();
             tmBackPrev = tbackNow;
-            bool tEnterNow = keyDown(GLFW_KEY_ENTER) || keyDown(GLFW_KEY_KP_ENTER);
+            bool tEnterNow = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
             if (tEnterNow && !tmEnterPrev) {
                 bool ok = term.submit();   // fires the sink -> opens the trapdoor on 1127
                 if (ok) { termMode = false; term.setActive(false);
@@ -9137,6 +9219,9 @@ int main(int argc, char** argv) {
                     in.lookDX += arrowYaw * 1000.0f * (float)dt;   // keyboard turn rate
                 }
 
+                // Cell terminal / keypad open for typing: swallow movement + jump so the
+                // keys (WASD/Space) type into the terminal instead of walking the player.
+                if (termMode || codeMode) { in.moveFwd = 0.0f; in.moveStrafe = 0.0f; in.sprint = false; in.jumpPressed = false; }
                 // CROUCH (hold C) / CRAWL (hold Left-Ctrl): lower the eye + slow the move.
                 // Ctrl (prone) wins over C (crouch); release both to stand. Suppressed
                 // while a console / terminal is open so typing doesn't duck the player.
@@ -9490,8 +9575,12 @@ int main(int argc, char** argv) {
         // short forward arc, and brute-forces a closed door you punch. Works whether
         // or not armed (the pistol is the separate LMB verb). Gated by the
         // MeleeSystem's own cooldown; only while alive. ----
-        bool meleeNow = (keyDown(GLFW_KEY_V) ||
-            (!consoleOpen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS));
+        // While the console, a UI menu, the cell terminal, or a keypad is capturing
+        // input, gameplay verbs (melee / fire) must NOT trigger — no shooting through
+        // the pause menu, no punching while typing the override code.
+        const bool uiCapture = consoleOpen || uiMenuActive || termMode || codeMode;
+        bool meleeNow = !uiCapture && (keyDown(GLFW_KEY_V) ||
+            glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS);
         if (meleeNow && !prevMelee && player.isAlive() && !terrainWorld) {
             x3::phys::Vec3 eye{ camX, camY, camZ };
             x3::phys::Vec3 dir{ std::cos(camPitch) * std::cos(camYaw),
@@ -9526,7 +9615,7 @@ int main(int argc, char** argv) {
         // projectiles are spawned into a host-owned list advanced below. Automatic
         // weapons fire while held; others fire on the LMB rising edge. ----
         (void)fireCooldown; (void)kFireCooldown;   // (legacy cooldown — arsenal owns timing now)
-        bool fireHeld = !consoleOpen && !simFrozen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        bool fireHeld = !uiCapture && !simFrozen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         bool wantFire = arsenal.current().automatic ? fireHeld : (fireHeld && !prevFire);
         // In --world canonlevel the legacy `game` is unbuilt; the canon sidearm gates firing.
         const bool playerArmed = game.armed() || (canonWorld && canonPlay.armed());
@@ -10227,6 +10316,15 @@ int main(int argc, char** argv) {
                         hm.allyZ[i] = allies[i].z;
                     }
 
+                    // Secret TRAPDOOR: gold radar marker while the cell floor hatch
+                    // exists (roomCenter() shares the hatch XZ; the room is straight
+                    // below). Lets the player find the otherwise-hidden hatch.
+                    if (game.secret().hatchBuilt()) {
+                        hm.trapValid = true;
+                        hm.trapX = game.secret().roomCenter().x;
+                        hm.trapZ = game.secret().roomCenter().z;
+                    }
+
                     // Faint room outlines: the B1 combat-zone rects (cell / corridor /
                     // armory / checkpoint / arena) from the authored layout. XZ center
                     // + half-extents; the HUD transforms them player-relative.
@@ -10377,6 +10475,9 @@ int main(int argc, char** argv) {
     // adds (the bare group calls missed Martinez/bossAdds -> exit crash after a boss
     // kill); a no-op when nothing is ragdolling.
     game.shutdown();
+    // The off-elevator Nexus (F4.5 Chorus) is a MultiPodBoss whose rigged pods also
+    // spawn skinned death ragdolls — tear those Jolt bodies down too before physics.
+    nexus.shutdown();
     if (canonPlay.built()) canonPlay.shutdown();   // --world canonlevel enemy ragdolls
     physics->shutdown();
     device->shutdown();

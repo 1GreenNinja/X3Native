@@ -81,6 +81,7 @@
 #include <cassert>
 #include <algorithm>
 #include <unordered_map>
+#include <chrono>
 
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #define GLM_FORCE_RADIANS
@@ -93,6 +94,10 @@ namespace x3::rhi {
 namespace {
 
 constexpr uint32_t kFramesInFlight = 2;
+// Glass frost (M4): number of progressively-downsampled blur levels of the scene
+// copy. Each is a separate single-mip image (the render-graph tracks one layout per
+// image). The glass shader samples the deepest level for the frosted look.
+constexpr uint32_t kGlassFrostLevels = 3;
 
 class VulkanRenderDevice final : public IRenderDevice {
 public:
@@ -259,6 +264,13 @@ public:
         if (!createPost()) return false;
         if (!createBloomTargets()) return false;
         writePostDescriptors();
+        // Glass set-4 resources (scene-copy sampler + per-frame control UBO + sets).
+        // After createBloomTargets so the scene-copy view exists. Non-fatal: a
+        // failure leaves the glass sets null and the glass pass falls back gracefully.
+        if (!createGlassResources()) {
+            destroyGlassResources();
+            logError("[rhi] glass resources init failed — glass refraction/shimmer disabled (opaque + M1 alpha unaffected)");
+        }
         // SSAO (depth pre-pass + half-res hemisphere AO + depth-aware blur). Built
         // after the mesh layout (it adds set 3 to the mesh pipeline) + the extent
         // is known. Enabled by default with tasteful tunables.
@@ -305,6 +317,7 @@ public:
         destroyWater();
         destroyGi();
         destroySsao();
+        destroyGlassResources();
         destroyPost();
         destroyIbl();
         destroySky();
@@ -561,6 +574,12 @@ public:
         // RT device, beginFrame() lazily inits the AS module + RT-AO pipelines.
         m_rtao = p;
         m_rtao.rays = std::max(1, std::min(32, m_rtao.rays));
+    }
+
+    void setGlassDevParams(const GlassDevParams& p) override {
+        // Cache a snapshot of the live r_glass_* dev overrides; the glass control
+        // UBO picks them up in prepareFrameData each frame.
+        m_glassDev = p;
     }
 
     bool worldToScreen(float wx, float wy, float wz, float& sx, float& sy) const override {
@@ -1343,6 +1362,25 @@ public:
         drawMeshEmissive(fc, mesh, baseColor, baseColorFactor, noEmissive, model);
     }
 
+    // Glass / transparent draw. Same payload as drawMeshEmissive plus a GlassMaterial:
+    // the per-object row is flagged GLASS so mesh.frag DISCARDs it (opaque pass) and
+    // the transparent glass pass draws it (glass.frag). M1 uses opacity (-> alpha) +
+    // tint/refraction/roughness/specular carried for later milestones. POD only.
+    void drawMeshGlass(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
+                       const float baseColorFactor[4], const float emissive[4],
+                       const GlassMaterial& glass, const float model[16]) override {
+        // baseColorFactor's alpha is overridden by the material opacity so the glass
+        // body's see-through amount is the single primary dial (spec §2).
+        float factor[4] = {
+            baseColorFactor ? baseColorFactor[0] : 1.0f,
+            baseColorFactor ? baseColorFactor[1] : 1.0f,
+            baseColorFactor ? baseColorFactor[2] : 1.0f,
+            glass.opacity };
+        drawMeshInternal(fc, mesh, baseColor, TextureHandle{}, TextureHandle{}, factor, emissive,
+                         model, /*alphaMask=*/false, /*alphaBlend=*/false, TextureHandle{},
+                         TextureHandle{}, 1.0f, kFlagGlass, &glass);
+    }
+
     void drawMeshEmissive(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                           const float baseColorFactor[4], const float emissive[4],
                           const float model[16]) override {
@@ -1351,11 +1389,26 @@ public:
                     baseColorFactor, emissive, model);
     }
 
+    // PBR public entry: forwards to the shared internal builder with no glass.
     void drawMeshPBR(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                      TextureHandle normal, TextureHandle metalRough,
                      const float baseColorFactor[4], const float emissive[4],
                      const float model[16], bool alphaMask = false, bool alphaBlend = false, TextureHandle emissiveTex = {},
                      TextureHandle detailTex = {}, float detailUvScale = 1.0f) override {
+        drawMeshInternal(fc, mesh, baseColor, normal, metalRough, baseColorFactor, emissive,
+                         model, alphaMask, alphaBlend, emissiveTex, detailTex, detailUvScale,
+                         /*extraFlags=*/0u, /*glass=*/nullptr);
+    }
+
+    // Shared draw record append. The opaque/emissive/PBR/glass paths differ only by
+    // the optional PBR maps, the alpha mode, `extraFlags` (GLASS bit), and the
+    // optional GlassMaterial (nullptr for every non-glass path).
+    void drawMeshInternal(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
+                          TextureHandle normal, TextureHandle metalRough,
+                          const float baseColorFactor[4], const float emissive[4],
+                          const float model[16], bool alphaMask, bool alphaBlend,
+                          TextureHandle emissiveTex, TextureHandle detailTex, float detailUvScale,
+                          uint32_t extraFlags, const GlassMaterial* glass) {
         if (!fc.valid || !m_meshPipeline) return;
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
@@ -1369,12 +1422,13 @@ public:
         // A draw that uses the terrain MARKER handle is flagged as terrain: the
         // fragment shader splats grass/rock/snow/sand by height+slope instead of
         // sampling textures[texIndex], and the four detail indices ride along in
-        // the pad fields. All other draws set terrainFlag = 0 and are unchanged.
+        // the pad fields. All other draws set the TERRAIN bit off and are unchanged.
+        // `extraFlags` carries the GLASS bit from drawMeshGlass (mutually exclusive).
         uint32_t texIndex = 0;
-        uint32_t terrainFlag = 0;
+        uint32_t flags = extraFlags;
         if (m_terrainMarkerId != 0 && baseColor.id == m_terrainMarkerId) {
-            terrainFlag = 1;
-            texIndex    = m_terrainTexIdx[0];   // grass index (sane default sample)
+            flags    |= kFlagTerrain;
+            texIndex  = m_terrainTexIdx[0];   // grass index (sane default sample)
         } else if (baseColor.valid()) {
             auto tit = m_textures.find(baseColor.id);
             if (tit != m_textures.end()) texIndex = tit->second.bindlessIndex;
@@ -1397,7 +1451,8 @@ public:
         // are < kMaxTextures = 4096, so bits 30/31 are free): bit31 = MASK (alpha-cutout discard),
         // bit30 = BLEND (apply the glass-opacity floor). mesh.frag masks them off before sampling.
         r.texIndex    = texIndex | (alphaMask ? 0x80000000u : 0u) | (alphaBlend ? 0x40000000u : 0u);
-        r.terrainFlag = terrainFlag;
+        // `flags` carries TERRAIN (bit0) + GLASS (bit1); terrain detail idx ride in the pack fields.
+        r.flags       = flags;
         // Pack the four detail indices into two uints: pad1 = grass<<16 | rock,
         // pad2 = snow<<16 | sand (each well under 65535 — kMaxTextures = 4096).
         r.terrainPack1 = (m_terrainTexIdx[0] << 16) | (m_terrainTexIdx[1] & 0xFFFFu);
@@ -1427,6 +1482,17 @@ public:
         else { r.factor[0] = r.factor[1] = r.factor[2] = r.factor[3] = 1.0f; }
         if (emissive) std::memcpy(r.emissive, emissive, sizeof(r.emissive));
         else { r.emissive[0] = r.emissive[1] = r.emissive[2] = r.emissive[3] = 0.0f; }
+        // GLASS material (M2-M4): refraction/roughness/specular + tint. Zeroed for
+        // the opaque path so its SSBO rows carry no stray glass state.
+        if (glass) {
+            r.glassParams[0] = glass->refraction; r.glassParams[1] = glass->roughness;
+            r.glassParams[2] = glass->specular;   r.glassParams[3] = 0.0f;
+            r.glassTint[0]   = glass->tint[0];    r.glassTint[1]   = glass->tint[1];
+            r.glassTint[2]   = glass->tint[2];    r.glassTint[3]   = 0.0f;
+        } else {
+            r.glassParams[0] = r.glassParams[1] = r.glassParams[2] = r.glassParams[3] = 0.0f;
+            r.glassTint[0]   = r.glassTint[1]   = r.glassTint[2]   = r.glassTint[3]   = 0.0f;
+        }
         m_drawRecords.push_back(r);
     }
 
@@ -1715,13 +1781,31 @@ private:
         glm::vec4 baseColorFactor;
         glm::vec4 emissive;          // rgb = linear color, a = strength
         uint32_t  texIndex;
-        uint32_t  _pad0, _pad1, _pad2;       // pad0 = terrainFlag, pad1/2 = packed terrain detail idx
+        uint32_t  flags;             // bitfield (was _pad0): bit0 = TERRAIN, bit1 = GLASS
+        uint32_t  _pad1, _pad2;      // terrain detail-index packs (only when TERRAIN bit set)
+        // ---- PBR maps (0 = none; the fragment shader skips its PBR branch) -----
         uint32_t  normalTexIndex;            // 0 = none (PBR normal-map bindless idx)
         uint32_t  mrTexIndex;                // 0 = none (metallic-roughness bindless idx)
-        uint32_t  emissiveTexIndex;          // 0 = none (emissive bindless idx; was _pad3)
-        uint32_t  _pad4;                     // keep this row 16-byte aligned (std430 stride 128)
+        uint32_t  emissiveTexIndex;          // 0 = none (emissive bindless idx)
+        uint32_t  detailPacked;              // HDRP micro-detail: (uvScale*64 << 20) | bindlessIdx; 0 = none
+        // ---- GLASS material (only meaningful when the GLASS flag is set) -------
+        // Carried per-object so each glass instance keeps its OWN material (the
+        // holo-terminal panel/rim/scanline all differ — material-instance style,
+        // spec §3.2). Opaque draws leave these zeroed (the opaque path never reads
+        // them). glass.frag (M2-M4) consumes: refraction (screen-space bend),
+        // roughness (frost mip), specular (shimmer), tint (rgb body color).
+        glm::vec4 glassParams;       // x = refraction, y = roughness, z = specular, w = unused
+        glm::vec4 glassTint;         // rgb = glass tint color, a = unused
     };
-    static_assert(sizeof(ObjectData) == 128, "ObjectData must match std430 layout");
+    static_assert(sizeof(ObjectData) == 160, "ObjectData must match std430 layout");
+
+    // Per-object flag bits packed into ObjectData::flags. TERRAIN drives mesh.frag's
+    // procedural splat (was the standalone terrainFlag); GLASS routes the fragment to
+    // the transparent glass pass (mesh.frag DISCARDs it; glass.frag draws it). The
+    // bits are mutually exclusive in practice but stored independently so the shaders
+    // can test either without ambiguity.
+    static constexpr uint32_t kFlagTerrain = 1u << 0;
+    static constexpr uint32_t kFlagGlass   = 1u << 1;
 
     // CPU-side per-draw record accumulated by drawMesh(), consumed by endFrame().
     struct DrawRecord {
@@ -1730,7 +1814,7 @@ private:
         float    model[16];
         float    factor[4];
         float    emissive[4];   // rgb = linear emissive color, a = strength
-        uint32_t terrainFlag;   // 1 = procedural terrain splat (mesh.frag branch)
+        uint32_t flags;         // bit0 = TERRAIN (mesh.frag splat), bit1 = GLASS (glass pass)
         uint32_t terrainPack1;  // grass<<16 | rock  (bindless detail indices)
         uint32_t terrainPack2;  // snow<<16  | sand
         uint32_t normalTexIndex = 0;  // 0 = none (PBR normal-map bindless idx)
@@ -1738,6 +1822,9 @@ private:
         uint32_t emissiveTexIndex = 0; // 0 = none (emissive bindless idx)
         uint32_t detailPacked = 0;     // HDRP micro-detail: (uvScale*64 << 20) | bindlessIdx; 0 = none
         bool     alphaBlend = false;   // glTF BLEND -> blend batch (CPU partition)
+        // GLASS material (only filled by drawMeshGlass; zeroed for opaque draws).
+        float    glassParams[4]; // x = refraction, y = roughness, z = specular, w unused
+        float    glassTint[4];   // rgb = tint, a unused
     };
 
     // Per-frame mesh-draw capacity: sizes the per-object SSBO ring (one
@@ -1879,6 +1966,35 @@ private:
         FrameUBO ubo{};
         ubo.viewProj = proj * view;
         m_lastViewProj = ubo.viewProj;  // cached for the debris instanced draw UBO
+
+        // ---- GLASS control UBO (set 4, binding 1): camera world pos + time +
+        // screen-space pixel->UV + the live dev-cvar overrides. glass.frag reads it
+        // for refraction (M2), fresnel/specular shimmer (M3) and frost (M4). Filled
+        // every frame so cvar scrubbing + the animated glint update immediately. ----
+        if (m_glassCtrlMapped[m_frameIdx]) {
+            const float t = std::chrono::duration<float>(
+                std::chrono::steady_clock::now() - m_glassClockStart).count();
+            const float invW = (m_extent.width  > 0) ? 1.0f / (float)m_extent.width  : 0.0f;
+            const float invH = (m_extent.height > 0) ? 1.0f / (float)m_extent.height : 0.0f;
+            GlassControl gc{};
+            gc.camPos = glm::vec4(m_camPos, t);
+            // screen.z = frost availability (M4): 1 when the frost-blur chain ran this
+            // frame (so the shader may lerp to the blurred level by roughness), else 0.
+            // screen.w = scene-copy valid (refraction enabled). Both 0 -> M1 fallback.
+            const float frostReady = m_glassFrostPipe ? 1.0f : 0.0f;
+            gc.screen = glm::vec4(invW, invH, frostReady, m_sceneCopyView ? 1.0f : 0.0f);
+            gc.ctrl   = glm::vec4(
+                m_glassDev.override ? m_glassDev.refractScale : 1.0f,
+                m_glassDev.override ? m_glassDev.roughAdd     : 0.0f,
+                m_glassDev.override ? m_glassDev.specScale    : 1.0f,
+                m_glassDev.override ? 1.0f : 0.0f);
+            // Camera RIGHT / UP world axes from the view matrix (glm is column-major:
+            // row0 of view = right, row1 = up). Used to project the world-space glass
+            // normal onto the screen plane for the refraction offset + fresnel.
+            gc.camRight = glm::vec4(view[0][0], view[1][0], view[2][0], 0.0f);
+            gc.camUp    = glm::vec4(view[0][1], view[1][1], view[2][1], 0.0f);
+            std::memcpy(m_glassCtrlMapped[m_frameIdx], &gc, sizeof(GlassControl));
+        }
 
         // ---- SSAO per-frame UBO + mesh.frag control. The SSAO pass reconstructs
         // VIEW-space position from depth via invProj and projects samples via proj
@@ -2108,6 +2224,7 @@ private:
         VkDrawIndexedIndirectCommand* cmds =
             static_cast<VkDrawIndexedIndirectCommand*>(fr.indirectMapped);
         uint32_t row = 0, cmdCount = 0;
+        m_frameGlassCount = 0;
         // Emit one indirect cmd + its SSBO rows for a mesh group. Run in TWO passes so OPAQUE
         // groups are recorded first and BLEND (glass) groups last — the shadow/depth-prepass
         // replay only [0, m_frameCmdOpaque), and the color pass draws the blend tail with the
@@ -2126,13 +2243,21 @@ private:
                 o.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
                 o.emissive = glm::vec4(dr.emissive[0], dr.emissive[1], dr.emissive[2], dr.emissive[3]);
                 o.texIndex = dr.texIndex;
-                o._pad0 = dr.terrainFlag;
-                o._pad1 = dr.terrainPack1;
-                o._pad2 = dr.terrainPack2;
+                // flags = bit0 TERRAIN | bit1 GLASS; pad1/pad2 = the four packed
+                // detail-texture indices (only meaningful when TERRAIN is set). See
+                // mesh.{vert,frag} + glass.frag.
+                o.flags  = dr.flags;
+                o._pad1  = dr.terrainPack1;
+                o._pad2  = dr.terrainPack2;
                 o.normalTexIndex   = dr.normalTexIndex;
                 o.mrTexIndex       = dr.mrTexIndex;
                 o.emissiveTexIndex = dr.emissiveTexIndex;
-                o._pad4 = dr.detailPacked;   // HDRP micro-detail: (uvScale*64<<20)|bindlessIdx
+                o.detailPacked = dr.detailPacked;   // HDRP micro-detail: (uvScale*64<<20)|bindlessIdx
+                o.glassParams = glm::vec4(dr.glassParams[0], dr.glassParams[1],
+                                          dr.glassParams[2], dr.glassParams[3]);
+                o.glassTint   = glm::vec4(dr.glassTint[0], dr.glassTint[1],
+                                          dr.glassTint[2], dr.glassTint[3]);
+                if (dr.flags & kFlagGlass) ++m_frameGlassCount;
             }
             VkDrawIndexedIndirectCommand& c = cmds[cmdCount];
             c.indexCount    = mit->second.indexCount;
@@ -2488,6 +2613,77 @@ private:
         }
     }
 
+    // ---- Glass frost-blur chain (M4) --------------------------------------
+    // Downsample the scene copy into m_glassFrostImg[] — separate single-mip images
+    // (the render-graph tracks one layout per image, so distinct images, not mip
+    // levels), each half the previous. level0 samples the scene copy; level i samples
+    // level i-1. Reuses the bloom-down 13-tap filter (m_bloomDownPipe / m_bloomLayout,
+    // BloomPush, firstPass=0 = plain downsample). The glass shader lerps the sharp
+    // copy toward the deepest level by roughness. Stable per-level storage lives in
+    // member arrays. The caller passes the scene-copy resource (rgSceneCopy) so the
+    // first level orders after the copy; each frost level is imported here.
+    void addGlassFrostPasses(RgResource rgSceneCopy) {
+        for (uint32_t lvl = 0; lvl < kGlassFrostLevels; ++lvl) {
+            if (!m_glassFrostSrcSet[lvl] || !m_glassFrostImg[lvl]) return;
+            const VkExtent2D srcExt = (lvl == 0) ? m_extent : m_glassFrostExt[lvl - 1];
+            const VkExtent2D dstExt = m_glassFrostExt[lvl];
+
+            RgResource rgDst = m_graph.importImage("glass.frost", m_glassFrostImg[lvl],
+                ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+            m_glassFrostRg[lvl] = rgDst;   // remembered so the next level reads it
+
+            BloomPush& pc = m_glassFrostPush[lvl];
+            pc.srcTexel[0] = 1.0f / (float)std::max(1u, srcExt.width);
+            pc.srcTexel[1] = 1.0f / (float)std::max(1u, srcExt.height);
+            pc.threshold = 0.0f; pc.knee = 0.0f;
+            pc.intensity = 1.0f; pc.firstPass = 0;   // plain 13-tap downsample (blur)
+
+            m_glassFrostAttach[lvl] = VkRenderingAttachmentInfo{};
+            m_glassFrostAttach[lvl].sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_glassFrostAttach[lvl].imageView = m_glassFrostView[lvl];
+            m_glassFrostAttach[lvl].imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_glassFrostAttach[lvl].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+            m_glassFrostAttach[lvl].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            m_glassFrostRenderInfo[lvl] = VkRenderingInfo{};
+            m_glassFrostRenderInfo[lvl].sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_glassFrostRenderInfo[lvl].renderArea = { {0,0}, dstExt };
+            m_glassFrostRenderInfo[lvl].layerCount = 1;
+            m_glassFrostRenderInfo[lvl].colorAttachmentCount = 1;
+            m_glassFrostRenderInfo[lvl].pColorAttachments = &m_glassFrostAttach[lvl];
+
+            RenderPassDesc fp{};
+            fp.name = "glass-frost";
+            fp.addUse(ResourceUse{
+                rgDst, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            // Source: the scene copy (level0) or the previous frost level. Declaring
+            // the read transitions the source to SHADER_READ_ONLY before this pass.
+            RgResource rgSrc = (lvl == 0) ? rgSceneCopy : m_glassFrostRg[lvl - 1];
+            fp.addUse(ResourceUse{
+                rgSrc, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            fp.usesDynamicRendering = true;
+            fp.renderInfo = m_glassFrostRenderInfo[lvl];
+            m_glassFrostCtx[lvl] = BloomPassCtx{ this, m_glassFrostSrcSet[lvl], dstExt, lvl };
+            fp.recordCtx = &m_glassFrostCtx[lvl];
+            fp.record = [](void* ctx, VkCommandBuffer c){
+                auto* pc = static_cast<BloomPassCtx*>(ctx);
+                auto* self = pc->self;
+                self->postViewport(c, pc->dstExt);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_glassFrostPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_bloomLayout,
+                                        0, 1, &pc->srcSet, 0, nullptr);
+                vkCmdPushConstants(c, self->m_bloomLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(BloomPush), &self->m_glassFrostPush[pc->mip]);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(fp));
+        }
+    }
+
     // Set dynamic viewport+scissor to a post target's extent.
     void postViewport(VkCommandBuffer c, VkExtent2D ext) {
         VkViewport vp{ 0.0f, 0.0f, (float)ext.width, (float)ext.height, 0.0f, 1.0f };
@@ -2550,9 +2746,23 @@ private:
         // target with read-only scene depth — exactly like the particle pass.
         const bool debrisStep = m_debrisStepPending && m_debrisComputePipeline;
         const bool debrisDraw = m_debrisDrawPending && m_debrisDrawPipeline;
-        // The scene depth must be STORED (not transient) when water/GI/particles/debris
-        // OR RT AO (its compute + apply passes sample it) read it.
-        const bool storeDepth = waterOn || giOn || particlesOn || debrisDraw || rtaoOn;
+        // Translucent GLASS: add a post-opaque transparent pass only when glass was
+        // submitted this frame AND the pipeline + its set-4 resources exist (graceful
+        // fallback, spec §5). It depth-tests (read-only) against the stored scene
+        // depth, like water.
+        const bool glassOn = (m_frameGlassCount > 0) && (m_glassPipeline != VK_NULL_HANDLE)
+                             && (m_glassSet[m_frameIdx] != VK_NULL_HANDLE);
+        // Screen-space refraction/frost (M2/M4) needs the scene-color copy target.
+        // When it failed to create, glass still draws (M1 alpha + fresnel/specular)
+        // but the copy pass + scene sampling are skipped (the shader reads the maxMip
+        // flag = 0 from the control UBO and refracts nothing).
+        const bool glassCopyOn = glassOn && (m_sceneCopyImg != VK_NULL_HANDLE);
+        // Frost (M4): the blurred-mip chain on the scene copy. Needs the frost
+        // downsample pipeline + per-mip descriptor sets (built in createGlassResources).
+        const bool glassFrostOn = glassCopyOn && (m_glassFrostPipe != VK_NULL_HANDLE);
+        // The scene depth must be STORED (not transient) when water/GI/particles/debris/
+        // glass OR RT AO (its compute + apply passes sample it) read it.
+        const bool storeDepth = waterOn || giOn || particlesOn || debrisDraw || rtaoOn || glassOn;
         RgResource rgSsaoRaw  = m_graph.importImage("ssao.raw",  m_ssaoRawImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgSsaoBlur = m_graph.importImage("ssao.blur", m_ssaoBlurImg,
@@ -2561,6 +2771,13 @@ private:
         // Imported UNDEFINED each frame (fully overwritten by the compute pass).
         RgResource rgRtao = {};
         if (rtaoOn) rgRtao = m_graph.importImage("rtao.ao", m_rtaoImg,
+            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        // Scene-color copy (glass refraction/frost). Imported UNDEFINED each frame —
+        // its content is fully (re)written by the copy pass (mip0) + frost passes
+        // (mips 1..N) before the glass pass samples it, so there is no cross-frame
+        // dependency the graph must preserve.
+        RgResource rgSceneCopy = {};
+        if (glassCopyOn) rgSceneCopy = m_graph.importImage("scene.copy", m_sceneCopyImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         // GI half-res buffers + the prev-depth copy. Imported each frame; the accum
         // buffers persist across frames (history), but the graph only tracks layout
@@ -2934,6 +3151,129 @@ private:
             waterPass.record = [](void* ctx, VkCommandBuffer c){
                 static_cast<VulkanRenderDevice*>(ctx)->recordWaterPassBody(c); };
             m_graph.addPass(std::move(waterPass));
+        }
+
+        // ---- Scene-color COPY (glass refraction/frost capture, spec §3.1) ---
+        // Snapshot the opaque (+ sky/water) HDR scene into m_sceneCopyImg mip0 with a
+        // straight vkCmdCopyImage, AFTER the main(+water) pass and BEFORE the glass
+        // pass — glass.frag samples this copy for the screen behind it (you cannot
+        // sample + write one image in a single pass). Only when glass + the copy
+        // target are live (glassCopyOn). The graph derives HDR COLOR_ATTACHMENT ->
+        // TRANSFER_SRC and scene-copy UNDEFINED -> TRANSFER_DST.
+        if (glassCopyOn) {
+            RenderPassDesc cp{};
+            cp.name = "glass-scenecopy";
+            cp.addUse(ResourceUse{
+                rgHdr, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            cp.addUse(ResourceUse{
+                rgSceneCopy, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            cp.recordCtx = this;
+            cp.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                VkImageCopy region{};
+                region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 }; // mip0
+                region.extent = { self->m_extent.width, self->m_extent.height, 1 };
+                vkCmdCopyImage(c, self->m_hdrImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               self->m_sceneCopyImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            };
+            m_graph.addPass(std::move(cp));
+
+            // ---- Frost blur chain (M4): downsample mip0 -> mip1 -> ... so the glass
+            // shader can pick a blurred LOD by roughness. Added here (right after the
+            // copy, before glass) so the whole scene-copy chain is ready when glass
+            // samples it. Each pass renders one mip from the previous, larger mip.
+            if (glassFrostOn) addGlassFrostPasses(rgSceneCopy);
+        }
+
+        // ---- Translucent GLASS pass (transparent meshes) -------------------
+        // Drawn AFTER the opaque mesh (+ water) pass into the SAME linear HDR target
+        // (LOAD, so the lit scene stays), depth-testing LESS_OR_EQUAL against the
+        // stored scene depth WITHOUT writing it, alpha-blended so glass reads as
+        // see-through over what's behind. Mirrors the water pass's resource uses
+        // (HDR write + read-only depth attachment). Only added when glass was
+        // submitted this frame (glassOn) — zero cost otherwise (spec §5).
+        if (glassOn) {
+            m_glassColorAttach = VkRenderingAttachmentInfo{};
+            m_glassColorAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_glassColorAttach.imageView = m_hdrView;
+            m_glassColorAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_glassColorAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;   // keep the lit scene
+            m_glassColorAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            m_glassDepthAttach = VkRenderingAttachmentInfo{};
+            m_glassDepthAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_glassDepthAttach.imageView = m_depthView;
+            m_glassDepthAttach.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL; // read-only depth
+            m_glassDepthAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            m_glassDepthAttach.storeOp = VK_ATTACHMENT_STORE_OP_NONE;
+
+            RenderPassDesc glassPass{};
+            glassPass.name = "glass";
+            glassPass.addUse(ResourceUse{
+                rgHdr, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            // Depth: read-only attachment (LEQUAL test, no write). The graph derives
+            // the DEPTH_ATTACHMENT -> DEPTH_READ_ONLY transition from the main pass.
+            glassPass.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            // glass.frag samples the shadow map (sun-lit glass) — declare it READ so
+            // the graph keeps it in DEPTH_READ_ONLY through this pass.
+            glassPass.addUse(ResourceUse{
+                rgShadow, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            if (ssaoOn) {
+                glassPass.addUse(ResourceUse{
+                    rgSsaoBlur, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            }
+            // Scene-color copy (set 4, binding 0): glass.frag samples the scene
+            // behind it (refraction M2 / frost M4). Declare it READ so the graph
+            // transitions the copy chain TRANSFER_DST/COLOR_ATTACHMENT ->
+            // SHADER_READ_ONLY before this pass. Only when the copy ran this frame.
+            if (glassCopyOn) {
+                glassPass.addUse(ResourceUse{
+                    rgSceneCopy, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            }
+            // Frostiest blur level (set 4, binding 2): glass.frag samples it for the
+            // M4 frost lerp. The deepest frost pass left it COLOR_ATTACHMENT, so
+            // declare it READ here to transition it -> SHADER_READ_ONLY before draw.
+            if (glassFrostOn && m_glassFrostRg[kGlassFrostLevels - 1].valid()) {
+                glassPass.addUse(ResourceUse{
+                    m_glassFrostRg[kGlassFrostLevels - 1], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            }
+            glassPass.usesDynamicRendering = true;
+            m_glassRenderInfo = VkRenderingInfo{};
+            m_glassRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_glassRenderInfo.renderArea = { {0,0}, m_extent };
+            m_glassRenderInfo.layerCount = 1;
+            m_glassRenderInfo.colorAttachmentCount = 1;
+            m_glassRenderInfo.pColorAttachments = &m_glassColorAttach;
+            m_glassRenderInfo.pDepthAttachment = &m_glassDepthAttach;
+            glassPass.renderInfo = m_glassRenderInfo;
+            glassPass.recordCtx = this;
+            glassPass.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordGlassPassBody(c); };
+            m_graph.addPass(std::move(glassPass));
         }
 
         // ================================================================
@@ -4841,6 +5181,39 @@ private:
         vkCmdDrawIndexed(cmd, m_waterIndexCount, 1, 0, 0, 0);
     }
 
+    // ---- Translucent GLASS pass body (transparent meshes) ------------------
+    // Recorded into the (already-open) post-opaque glass pass. Binds the glass
+    // pipeline + the SAME descriptor sets the opaque mesh pass uses (bindless
+    // textures, object SSBO + camera UBO, shadow map, SSAO) and REPLAYS the SAME
+    // per-mesh indirect multidraw. glass.frag DISCARDs non-glass fragments and
+    // mesh.frag DISCARDs glass fragments, so the two passes cleanly partition the
+    // draw list — no separate glass index/SSBO buffer needed for M1. Only reached
+    // when m_frameGlassCount > 0 (the pass isn't added otherwise).
+    void recordGlassPassBody(VkCommandBuffer cmd) {
+        // Need the glass pipeline AND its set-4 resources; without set 4 the bind
+        // would be invalid, so the whole pass is skipped (M1 alpha still works on the
+        // frames where set 4 exists — it always does if createGlassResources passed).
+        if (!m_glassPipeline || !m_glassLayout || !m_glassSet[m_frameIdx] || m_frameCmdCount == 0) return;
+        auto& fr = m_frames[m_frameIdx];
+        postViewport(cmd, m_extent);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_glassPipeline);
+        // The 4 shared mesh sets + the glass-only set 4 (scene-copy + GlassControl).
+        VkDescriptorSet sets[5] = { m_bindlessSet, fr.objSet, m_shadowSet,
+                                    m_meshAoSet[m_frameIdx], m_glassSet[m_frameIdx] };
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_glassLayout,
+                                0, 5, sets, 0, nullptr);
+        for (uint32_t i = 0; i < m_frameCmdCount; ++i) {
+            const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
+            VkDeviceSize off = 0;
+            VkBuffer vb = mh.drawVbo(m_frameIdx);
+            vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &off);
+            vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexedIndirect(cmd, fr.indirectBuf,
+                (VkDeviceSize)i * sizeof(VkDrawIndexedIndirectCommand), 1,
+                sizeof(VkDrawIndexedIndirectCommand));
+        }
+    }
+
     // ---- Particles + impact decals (combat juice) --------------------------
     // Build: the shared unit quad (4 corners, triangle strip), the per-frame
     // instance rings (additive/alpha particles + decals) + UBOs + descriptor sets,
@@ -6050,6 +6423,8 @@ private:
         // descriptor sets after the swapchain (and m_extent) are updated.
         createBloomTargets();
         writePostDescriptors();
+        // Glass set 4 references the scene-copy view (recreated above) — rewrite it.
+        writeGlassDescriptors();
         // SSAO half-res targets track the extent; the depth view also changed, so
         // rewrite every SSAO descriptor that references depth/AO views.
         createSsaoTargets();
@@ -6161,6 +6536,8 @@ private:
         // (and rewrite the post descriptor sets) so they track the new size.
         createBloomTargets();
         writePostDescriptors();
+        // Glass set 4 references the scene-copy view (recreated above) — rewrite it.
+        writeGlassDescriptors();
         // SSAO half-res targets + depth-referencing descriptors track the extent.
         createSsaoTargets();
         writeSsaoDescriptors();
@@ -6184,9 +6561,11 @@ private:
         const uint32_t W = m_extent.width, H = m_extent.height;
         if (W == 0 || H == 0) { logError("[rhi] bloom: zero extent"); return false; }
 
-        // HDR scene target (full resolution).
+        // HDR scene target (full resolution). TRANSFER_SRC so the glass scene-copy
+        // pass can vkCmdCopyImage it into the scene-color copy (glass refraction).
         if (!createColorTarget(kHdrFormat, W, H,
-                               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                               | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                                m_hdrImg, m_hdrAlloc, m_hdrView)) {
             logError("[rhi] HDR scene target create failed"); return false;
         }
@@ -6203,7 +6582,57 @@ private:
                 logError("[rhi] bloom mip create failed"); return false;
             }
         }
+
+        // ---- Scene-color COPY target (glass refraction/frost, spec §3.1) -----
+        // A mip-chained HDR image: mip0 (full-res) receives a vkCmdCopyImage of the
+        // opaque HDR scene; mips 1..N are progressively blurred (M4 frost). Usage:
+        // TRANSFER_DST (copy into mip0) + SAMPLED (glass reads) + COLOR_ATTACHMENT
+        // (frost blur passes render into mips 1..N). One image, per-mip + full-chain
+        // views. Graceful: failure leaves it NULL (the glass pass falls back to
+        // sampling without refraction).
+        if (!createSceneCopyTarget(W, H)) {
+            // Non-fatal: clean up partial state; glass will run without refraction.
+            destroySceneCopyTarget();
+            logError("[rhi] scene-color copy target create failed — glass refraction disabled");
+        }
         return true;
+    }
+
+    // Create the single-mip scene-color copy image (refraction, M2) + the separate
+    // downsampled frost-blur level images (M4). Returns false on any failure (caller
+    // treats it as non-fatal: glass still draws, just without refraction/frost).
+    bool createSceneCopyTarget(uint32_t W, uint32_t H) {
+        // Full-res, single-mip copy: TRANSFER_DST (copy target), SAMPLED (refraction
+        // read), TRANSFER_SRC (frost level 0 reads it as the blur source).
+        if (!createColorTarget(kHdrFormat, W, H,
+                               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                               | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                               m_sceneCopyImg, m_sceneCopyAlloc, m_sceneCopyView)) {
+            return false;
+        }
+        // Frost levels: each half the previous (level0 = half-res). COLOR_ATTACHMENT
+        // (blur render target) + SAMPLED (sampled by the next level + the glass shader).
+        uint32_t mw = W, mh = H;
+        for (uint32_t i = 0; i < kGlassFrostLevels; ++i) {
+            mw = std::max(1u, mw / 2); mh = std::max(1u, mh / 2);
+            m_glassFrostExt[i] = { mw, mh };
+            if (!createColorTarget(kHdrFormat, mw, mh,
+                                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                   m_glassFrostImg[i], m_glassFrostAlloc[i], m_glassFrostView[i])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void destroySceneCopyTarget() {
+        if (m_sceneCopyView) { vkDestroyImageView(m_dev.device, m_sceneCopyView, nullptr); m_sceneCopyView = VK_NULL_HANDLE; }
+        if (m_sceneCopyImg) { vmaDestroyImage(m_alloc, m_sceneCopyImg, m_sceneCopyAlloc); m_sceneCopyImg = VK_NULL_HANDLE; m_sceneCopyAlloc = nullptr; }
+        for (uint32_t i = 0; i < kGlassFrostLevels; ++i) {
+            if (m_glassFrostView[i]) { vkDestroyImageView(m_dev.device, m_glassFrostView[i], nullptr); m_glassFrostView[i] = VK_NULL_HANDLE; }
+            if (m_glassFrostImg[i])  { vmaDestroyImage(m_alloc, m_glassFrostImg[i], m_glassFrostAlloc[i]); m_glassFrostImg[i] = VK_NULL_HANDLE; m_glassFrostAlloc[i] = nullptr; }
+            m_glassFrostExt[i] = {};
+        }
     }
 
     void destroyBloomTargets() {
@@ -6213,8 +6642,139 @@ private:
             if (m.img)   { vmaDestroyImage(m_alloc, m.img, m.alloc); m.img = VK_NULL_HANDLE; m.alloc = nullptr; }
             m.extent = {};
         }
+        destroySceneCopyTarget();
         if (m_hdrView) { vkDestroyImageView(m_dev.device, m_hdrView, nullptr); m_hdrView = VK_NULL_HANDLE; }
         if (m_hdrImg)  { vmaDestroyImage(m_alloc, m_hdrImg, m_hdrAlloc); m_hdrImg = VK_NULL_HANDLE; m_hdrAlloc = nullptr; }
+    }
+
+    // ---- Glass resources (set 4 UBO + descriptor sets + scene-copy sampler) ----
+    // Built once at init AFTER createBloomTargets (so the scene-copy view exists):
+    // a mip-aware LINEAR sampler, per-frame GlassControl UBOs, a descriptor pool +
+    // one glass set per frame. The set is (re)written by writeGlassDescriptors at
+    // init + on every resize (the scene-copy view changes). The glass set layout
+    // itself is built in createGraphics (needed by the glass pipeline layout).
+    // Graceful: any failure leaves m_glassSet[*] null; recordGlassPassBody falls
+    // back to binding nothing and the glass pass is skipped (opaque unaffected).
+    bool createGlassResources() {
+        // Mip-aware LINEAR clamp sampler: the frost lookup (M4) samples an explicit
+        // LOD; CLAMP_TO_EDGE so a refraction offset near the screen edge doesn't wrap.
+        VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        sci.magFilter = VK_FILTER_LINEAR; sci.minFilter = VK_FILTER_LINEAR;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        sci.minLod = 0.0f; sci.maxLod = 0.0f;   // single-mip scene copy + frost levels
+        if (vkCreateSampler(m_dev.device, &sci, nullptr, &m_glassCopySampler) != VK_SUCCESS) {
+            logError("[rhi] glass scene-copy sampler failed"); return false;
+        }
+        // Per-frame GlassControl UBOs (host-visible, persistently mapped).
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = sizeof(GlassControl); bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo ainfo{};
+            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_glassCtrlBuf[i], &m_glassCtrlAlloc[i], &ainfo) != VK_SUCCESS) {
+                logError("[rhi] glass control UBO alloc failed"); return false;
+            }
+            m_glassCtrlMapped[i] = ainfo.pMappedData;
+        }
+        // Descriptor pool: per-frame glass sets (2 image samplers [scene copy +
+        // frost] + 1 UBO each) PLUS the frost downsample src sets (one single-sampler
+        // set per frost level, reusing m_postSetLayout1).
+        VkDescriptorPoolSize ps[2]{
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kFramesInFlight * 2 + kGlassFrostLevels },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight } };
+        VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        pci.maxSets = kFramesInFlight + kGlassFrostLevels; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
+        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_glassPool) != VK_SUCCESS) {
+            logError("[rhi] glass descriptor pool failed"); return false;
+        }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            ai.descriptorPool = m_glassPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_glassSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_glassSet[i]) != VK_SUCCESS) {
+                logError("[rhi] glass descriptor set alloc failed"); return false;
+            }
+        }
+        // Frost (M4) downsample src sets: one single-sampler set per output level
+        // (set[i] samples the SOURCE of level i). Reuses the bloom-down pipeline +
+        // layout (m_bloomDownPipe / m_postSetLayout1). Only built when the post
+        // single-sampler layout + scene copy exist; otherwise frost stays off.
+        if (m_postSetLayout1 && m_bloomDownPipe && m_sceneCopyImg) {
+            bool ok = true;
+            for (uint32_t i = 0; i < kGlassFrostLevels && ok; ++i) {
+                VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+                ai.descriptorPool = m_glassPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_postSetLayout1;
+                ok = (vkAllocateDescriptorSets(m_dev.device, &ai, &m_glassFrostSrcSet[i]) == VK_SUCCESS);
+            }
+            // Reuse the existing bloom downsample pipeline for the frost blur (same
+            // shader, layout, HDR format, dynamic viewport). NULL -> frost disabled.
+            m_glassFrostPipe = ok ? m_bloomDownPipe : VK_NULL_HANDLE;
+        }
+        writeGlassDescriptors();
+        return true;
+    }
+
+    // (Re)point the glass sets at the current scene-copy view + per-frame UBO.
+    // Called at init + after every resize (the scene-copy view is recreated). If
+    // the scene-copy target failed to create, the sampler points at the HDR view
+    // as a harmless stand-in (glass simply won't refract — opacity path still reads).
+    void writeGlassDescriptors() {
+        if (!m_glassPool || !m_glassCopySampler) return;
+        VkImageView copyView = m_sceneCopyView ? m_sceneCopyView : m_hdrView;
+        // Frostiest blur level for binding 2 (M4). Only bind the frost image when the
+        // frost chain actually RUNS (m_glassFrostPipe set), so its layout is
+        // transitioned to SHADER_READ_ONLY by the glass pass. Otherwise fall back to
+        // the sharp copy (the shader's frostReady flag is also 0, so the lerp is a
+        // no-op) — never bind an untransitioned image.
+        VkImageView frostView = (m_glassFrostPipe && m_glassFrostView[kGlassFrostLevels - 1])
+                                ? m_glassFrostView[kGlassFrostLevels - 1] : copyView;
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (!m_glassSet[i]) continue;
+            VkDescriptorImageInfo di{ m_glassCopySampler, copyView,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo df{ m_glassCopySampler, frostView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorBufferInfo bi{ m_glassCtrlBuf[i], 0, sizeof(GlassControl) };
+            VkWriteDescriptorSet w[3]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[0].dstSet = m_glassSet[i]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &di;
+            w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[1].dstSet = m_glassSet[i]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+            w[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[1].pBufferInfo = &bi;
+            w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[2].dstSet = m_glassSet[i]; w[2].dstBinding = 2; w[2].descriptorCount = 1;
+            w[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[2].pImageInfo = &df;
+            vkUpdateDescriptorSets(m_dev.device, 3, w, 0, nullptr);
+        }
+        // Frost downsample SOURCE sets: set[0] samples the scene copy, set[i] samples
+        // frost level i-1 (the previous, larger level). Written here so they track the
+        // recreated views on resize.
+        for (uint32_t i = 0; i < kGlassFrostLevels; ++i) {
+            if (!m_glassFrostSrcSet[i]) continue;
+            VkImageView src = (i == 0) ? copyView : m_glassFrostView[i - 1];
+            if (!src) src = copyView;
+            VkDescriptorImageInfo si{ m_glassCopySampler, src, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.dstSet = m_glassFrostSrcSet[i]; w.dstBinding = 0; w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &si;
+            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        }
+    }
+
+    void destroyGlassResources() {
+        if (m_glassPool) { vkDestroyDescriptorPool(m_dev.device, m_glassPool, nullptr); m_glassPool = VK_NULL_HANDLE; }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            m_glassSet[i] = VK_NULL_HANDLE;
+            if (m_glassCtrlBuf[i]) { vmaDestroyBuffer(m_alloc, m_glassCtrlBuf[i], m_glassCtrlAlloc[i]); m_glassCtrlBuf[i] = VK_NULL_HANDLE; m_glassCtrlAlloc[i] = nullptr; m_glassCtrlMapped[i] = nullptr; }
+        }
+        // Frost src sets came from m_glassPool (freed above); the pipe is an ALIAS of
+        // m_bloomDownPipe (owned by destroyPost) — clear, don't destroy.
+        for (uint32_t i = 0; i < kGlassFrostLevels; ++i) m_glassFrostSrcSet[i] = VK_NULL_HANDLE;
+        m_glassFrostPipe = VK_NULL_HANDLE;
+        if (m_glassCopySampler) { vkDestroySampler(m_dev.device, m_glassCopySampler, nullptr); m_glassCopySampler = VK_NULL_HANDLE; }
     }
 
     // Helper: create a single-mip 2D color image + view (used for HDR + bloom mips).
@@ -7899,6 +8459,33 @@ private:
             }
         }
 
+        // ---- glass.frag set 4: scene-color copy sampler + GlassControl UBO -----
+        // The glass pipeline's EXTRA set (beyond the 4 shared with the opaque mesh
+        // path), so glass.frag can sample the scene behind it (refraction M2/frost
+        // M4) + read the per-frame camera pos / time / dev overrides. Created here
+        // (only needs the device) so the glass pipeline layout can include it; the
+        // UBOs + descriptor sets are built later (after the scene-copy target exists)
+        // in createGlassResources / writeGlassDescriptors.
+        {
+            // binding0 = scene-color copy (sharp, refraction M2); binding1 =
+            // GlassControl UBO; binding2 = frostiest blur level (M4 frost lerp).
+            VkDescriptorSetLayoutBinding b[3]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            b[2].binding = 2; b[2].descriptorCount = 1;
+            b[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 3; ci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_glassSetLayout) != VK_SUCCESS) {
+                logError("[rhi] glass set layout failed"); return false;
+            }
+        }
+
         // ---- Mesh pipeline (bindless texture + per-object SSBO + indirect) ----
         VkShaderModule vs = loadShaderModule("shaders\\mesh.vert.spv");
         VkShaderModule fs = loadShaderModule("shaders\\mesh.frag.spv");
@@ -8165,6 +8752,79 @@ private:
         logInfo("[rhi] GPU-driven mesh pipeline ready (bindless textures + per-object SSBO + multidraw-indirect)");
         logInfo("[rhi] planet body pipeline ready (push-constant model + bindless triplanar PBR)");
 
+        // ---- Translucent GLASS pipeline (transparent pass) ----
+        // Shares mesh.vert + sets 0-3 with the opaque mesh path, but uses its OWN
+        // pipeline layout m_glassLayout (sets 0-3 identical + set 4 = scene-color
+        // copy sampler + GlassControl UBO) so glass.frag can sample the scene behind
+        // it (refraction M2 / frost M4). glass.frag, alpha blend ON
+        // (SRC_ALPHA/ONE_MINUS_SRC_ALPHA), depth-test LESS_OR_EQUAL with depth-write
+        // OFF (composites over the opaque scene without disturbing depth), cull NONE
+        // (double-sided glass). GRACEFUL FALLBACK (spec §5): on any failure the
+        // pipeline stays NULL and the glass pass is skipped — opaque is never affected.
+        {
+            // Glass pipeline layout: the 4 shared mesh sets + the glass-only set 4.
+            VkDescriptorSetLayout glassSets[5] = {
+                m_bindlessLayout, m_objSetLayout, m_shadowSetLayout,
+                m_meshAoSetLayout, m_glassSetLayout };
+            VkPipelineLayoutCreateInfo gplci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            gplci.setLayoutCount = 5; gplci.pSetLayouts = glassSets;
+            if (vkCreatePipelineLayout(m_dev.device, &gplci, nullptr, &m_glassLayout) != VK_SUCCESS) {
+                m_glassLayout = VK_NULL_HANDLE;
+                logError("[rhi] glass pipeline layout failed — glass pass disabled (opaque unaffected)");
+            }
+
+            VkShaderModule gvs = m_glassLayout ? loadShaderModule("shaders\\mesh.vert.spv") : VK_NULL_HANDLE;
+            VkShaderModule gfs = m_glassLayout ? loadShaderModule("shaders\\glass.frag.spv") : VK_NULL_HANDLE;
+            if (!m_glassLayout || !gvs || !gfs) {
+                if (gvs) vkDestroyShaderModule(m_dev.device, gvs, nullptr);
+                if (gfs) vkDestroyShaderModule(m_dev.device, gfs, nullptr);
+                if (m_glassLayout) logError("[rhi] glass shader load failed — glass pass disabled (opaque unaffected)");
+            } else {
+                VkPipelineShaderStageCreateInfo gst[2];
+                gst[0] = stages[0]; gst[0].module = gvs;   // mesh.vert (shared)
+                gst[1] = stages[1]; gst[1].module = gfs;   // glass.frag
+
+                // Double-sided glass: no back-face cull.
+                VkPipelineRasterizationStateCreateInfo grs = rs;
+                grs.cullMode = VK_CULL_MODE_NONE;
+
+                // Depth: test LESS_OR_EQUAL against the opaque depth, no write.
+                VkPipelineDepthStencilStateCreateInfo gdss = dss;
+                gdss.depthTestEnable  = VK_TRUE;
+                gdss.depthWriteEnable = VK_FALSE;
+                gdss.depthCompareOp   = VK_COMPARE_OP_LESS_OR_EQUAL;
+
+                // Standard straight-alpha blend.
+                VkPipelineColorBlendAttachmentState gcba = cba;
+                gcba.blendEnable         = VK_TRUE;
+                gcba.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+                gcba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+                gcba.colorBlendOp        = VK_BLEND_OP_ADD;
+                gcba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+                gcba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+                gcba.alphaBlendOp        = VK_BLEND_OP_ADD;
+                VkPipelineColorBlendStateCreateInfo gcb = cb;
+                gcb.pAttachments = &gcba;
+
+                VkGraphicsPipelineCreateInfo ggpci = gpci;
+                ggpci.layout             = m_glassLayout;   // glass-specific (set 4)
+                ggpci.pStages            = gst;
+                ggpci.pRasterizationState = &grs;
+                ggpci.pDepthStencilState  = &gdss;
+                ggpci.pColorBlendState    = &gcb;
+                VkResult gpr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1,
+                                                         &ggpci, nullptr, &m_glassPipeline);
+                vkDestroyShaderModule(m_dev.device, gvs, nullptr);
+                vkDestroyShaderModule(m_dev.device, gfs, nullptr);
+                if (gpr != VK_SUCCESS) {
+                    m_glassPipeline = VK_NULL_HANDLE;
+                    logError("[rhi] glass pipeline create failed — glass pass disabled (opaque unaffected)");
+                } else {
+                    logInfo("[rhi] translucent glass pipeline ready (transparent pass)");
+                }
+            }
+        }
+
         // Now that m_objSetLayout exists, build the depth-only shadow pipeline.
         if (!createShadowPipeline()) return false;
         return true;
@@ -8413,6 +9073,9 @@ private:
             if (m_planetPipelines[pt]) { vkDestroyPipeline(m_dev.device, m_planetPipelines[pt], nullptr); m_planetPipelines[pt] = VK_NULL_HANDLE; }
         }
         if (m_planetPipelineLayout) vkDestroyPipelineLayout(m_dev.device, m_planetPipelineLayout, nullptr);
+        if (m_glassPipeline) vkDestroyPipeline(m_dev.device, m_glassPipeline, nullptr);
+        if (m_glassLayout)   vkDestroyPipelineLayout(m_dev.device, m_glassLayout, nullptr);
+        if (m_glassSetLayout) vkDestroyDescriptorSetLayout(m_dev.device, m_glassSetLayout, nullptr);
         if (m_meshLayout)    vkDestroyPipelineLayout(m_dev.device, m_meshLayout, nullptr);
         // mesh.frag set 4 layout (IBL): created in createGraphics, baked into m_meshLayout.
         if (m_iblMeshSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_iblMeshSetLayout, nullptr); m_iblMeshSetLayout = VK_NULL_HANDLE; }
@@ -8421,6 +9084,8 @@ private:
         m_meshPipeline = VK_NULL_HANDLE; m_meshPipelineNoSsao = VK_NULL_HANDLE;
         m_meshPipelineTransparent = VK_NULL_HANDLE; m_meshLayout = VK_NULL_HANDLE;
         m_planetPipelineLayout = VK_NULL_HANDLE;
+        m_glassPipeline = VK_NULL_HANDLE;
+        m_glassLayout = VK_NULL_HANDLE; m_glassSetLayout = VK_NULL_HANDLE;
         m_uploadFence = VK_NULL_HANDLE; m_uploadPool = VK_NULL_HANDLE;
     }
 
@@ -8499,6 +9164,50 @@ private:
     glm::vec3        m_iblProbePos{ 0.0f, 1.6f, 0.0f };      // probe world position (set to cam at bake)
     VkPipeline       m_meshPipelineTransparent = VK_NULL_HANDLE;  // BLEND: src-alpha over, LEQUAL, no depth-write, cull NONE
     VkPipelineLayout m_meshLayout = VK_NULL_HANDLE;
+    // Translucent GLASS pipeline (transparent pass). Shares mesh.vert + sets 0-3
+    // with the opaque mesh path, but uses its OWN pipeline layout m_glassLayout
+    // (sets 0-3 identical, plus set 4 = glass-specific: scene-color copy sampler +
+    // glass control UBO) so glass.frag can sample the scene behind it (refraction
+    // M2 / frost M4) without touching the locked mesh layout. Depth-test
+    // LESS_OR_EQUAL, depth-write OFF, alpha blend, cull NONE (double-sided glass).
+    // Created in createMeshPipeline after the opaque ones. Graceful fallback
+    // (spec §5): if any glass object fails to create it stays NULL and the glass
+    // pass is skipped (the opaque path is never broken).
+    VkPipeline       m_glassPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout m_glassLayout   = VK_NULL_HANDLE;
+    // Glass set 4: binding0 = scene-color copy (mip-aware sampler), binding1 =
+    // GlassControl UBO (per-frame: camera world pos, time, screen size, dev cvar
+    // overrides). The layout is created once; the per-frame UBO + descriptor set
+    // are written each frame / on resize (the scene-copy view changes on resize).
+    VkDescriptorSetLayout m_glassSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool      m_glassPool      = VK_NULL_HANDLE;
+    VkDescriptorSet       m_glassSet[kFramesInFlight] = {};
+    VkBuffer      m_glassCtrlBuf[kFramesInFlight]    = {};
+    VmaAllocation m_glassCtrlAlloc[kFramesInFlight]  = {};
+    void*         m_glassCtrlMapped[kFramesInFlight] = {};
+    // Frost (M4): a fullscreen-triangle downsample pipeline + per-level descriptor
+    // sets (one per blur-source image) that blur the scene copy into m_glassFrostImg[].
+    // Reuses the bloom-down shader/layout (m_bloomLayout). NULL until M4 builds it,
+    // which keeps the frost passes off (glassFrostOn=false) for M2/M3.
+    VkPipeline      m_glassFrostPipe = VK_NULL_HANDLE;
+    VkDescriptorSet m_glassFrostSrcSet[kGlassFrostLevels + 1] = {}; // [0]=scene copy, [1..]=levels
+    // Per-frame GlassControl UBO (std140; matches glass.frag GlassControl block).
+    // camPos.xyz = camera world position (fresnel/specular view vector), .w = time
+    // (animated glint). screen.xy = 1/width, 1/height (gl_FragCoord -> screen UV);
+    // .z = scene-copy max mip level (frost lod clamp), .w unused. ctrl = dev cvar
+    // OVERRIDES: x = refraction scale, y = roughness add, z = specular scale, w = 1
+    // when any override is active (else 0 -> shader uses the per-object material).
+    struct GlassControl {
+        glm::vec4 camPos;     // xyz = camera world pos, w = time (seconds)
+        glm::vec4 screen;     // x = 1/W, y = 1/H, z = maxMip, w = sceneCopyValid (0/1)
+        glm::vec4 ctrl;       // x = refractScale, y = roughAdd, z = specScale, w = overrideOn
+        glm::vec4 camRight;   // xyz = camera RIGHT axis (world) — screen-space normal.x
+        glm::vec4 camUp;      // xyz = camera UP axis (world)    — screen-space normal.y
+    };
+    // Live dev-cvar glass overrides (r_glass_*), pushed via setGlassDevParams.
+    GlassDevParams m_glassDev{};
+    // Wall-clock seconds since device init, for the animated specular glint (M3).
+    std::chrono::steady_clock::time_point m_glassClockStart = std::chrono::steady_clock::now();
 
     // ---- Procedural planet body (FORGE3D port) — dedicated per-TYPE pipelines.
     // Each clones the OPAQUE mesh PSO (same MeshVertex input, depth LESS+write, cull
@@ -8571,6 +9280,10 @@ private:
     bool                    m_framePrepared = false;
     uint32_t                m_frameCmdCount = 0;
     uint32_t                m_frameCmdOpaque = 0;  // [0,opaque)=opaque cmds, [opaque,count)=BLEND (glass)
+    // Number of GLASS-flagged instances submitted this frame (counted in the SSBO
+    // fill). When 0 the transparent glass pass is skipped entirely (spec §5: zero
+    // cost when no glass is visible).
+    uint32_t                m_frameGlassCount = 0;
 
     // ---- Analytic sky pipeline (open-world track, task A) ------------------
     // A vertexless full-screen triangle drawn at the START of the main color pass
@@ -8743,6 +9456,29 @@ private:
     VmaAllocation m_hdrAlloc = nullptr;
     VkImageView   m_hdrView  = VK_NULL_HANDLE;
 
+    // ---- Scene-color COPY target (translucent GLASS, spec §3.1) ------------
+    // A full-res, SINGLE-MIP copy of the opaque HDR scene, captured AFTER the main
+    // (+water) pass and BEFORE the glass pass, so glass.frag can SAMPLE the scene
+    // behind it (screen-space refraction M2) while WRITING the same HDR target — you
+    // cannot sample + write one image in a single pass. HDR format; usage
+    // TRANSFER_DST (vkCmdCopyImage target) + SAMPLED + TRANSFER_SRC (M4 frost reads
+    // it as the blur source). The render-graph tracks ONE layout per image (mip0
+    // only), so the frost blur uses SEPARATE images (m_glassFrostImg[], like the
+    // bloom mips) rather than this image's deeper mips. Created/destroyed alongside
+    // the bloom targets (tracks the swapchain extent; keeps allocationCount=0).
+    VkImage       m_sceneCopyImg   = VK_NULL_HANDLE;
+    VmaAllocation m_sceneCopyAlloc = nullptr;
+    VkImageView   m_sceneCopyView  = VK_NULL_HANDLE;    // single-mip view (refraction sample)
+    VkSampler     m_glassCopySampler = VK_NULL_HANDLE;  // LINEAR, CLAMP
+    // Frost (M4): a short chain of separately-allocated, progressively-downsampled
+    // blur images of the scene copy (kGlassFrostLevels). Each is single-mip (the
+    // graph tracks per-image layout), like the bloom mips. The glass shader samples
+    // the deepest level for the frosted look and lerps to the sharp copy by roughness.
+    VkImage       m_glassFrostImg[kGlassFrostLevels]   = {};
+    VmaAllocation m_glassFrostAlloc[kGlassFrostLevels] = {};
+    VkImageView   m_glassFrostView[kGlassFrostLevels]  = {};
+    VkExtent2D    m_glassFrostExt[kGlassFrostLevels]   = {};
+
     // One bloom mip (its own image so each can be both a render target AND a
     // sampled source for the next/prev pass). mip[0] is half the frame extent;
     // each subsequent mip halves again.
@@ -8800,6 +9536,12 @@ private:
     };
     BloomPassCtx m_bloomDownCtx[kBloomMips]{};
     BloomPassCtx m_bloomUpCtx[kBloomMips]{};
+    // Glass frost-blur chain (M4): stable per-level storage (one per frost level).
+    VkRenderingAttachmentInfo m_glassFrostAttach[kGlassFrostLevels]{};
+    VkRenderingInfo           m_glassFrostRenderInfo[kGlassFrostLevels]{};
+    BloomPush                 m_glassFrostPush[kGlassFrostLevels]{};
+    BloomPassCtx              m_glassFrostCtx[kGlassFrostLevels]{};
+    RgResource                m_glassFrostRg[kGlassFrostLevels]{};   // per-frame graph handles
 
     // ======================================================================
     // SSAO — screen-space ambient occlusion (idTech-8 grounding/contact AO).
@@ -9009,6 +9751,12 @@ private:
     VkRenderingAttachmentInfo m_waterColorAttach{};
     VkRenderingAttachmentInfo m_waterDepthAttach{};
     VkRenderingInfo           m_waterRenderInfo{};
+
+    // Stable storage for the GLASS (transparent) pass's VkRenderingInfo +
+    // attachments (post-opaque; color = HDR LOAD, depth = read-only LEQUAL).
+    VkRenderingAttachmentInfo m_glassColorAttach{};
+    VkRenderingAttachmentInfo m_glassDepthAttach{};
+    VkRenderingInfo           m_glassRenderInfo{};
 
     // ---- GPU-instanced billboard particles + impact decals (combat juice) ---
     // A bounded, per-frame stream of camera-facing billboards drawn into the linear

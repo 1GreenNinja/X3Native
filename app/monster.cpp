@@ -2904,6 +2904,13 @@ void MultiPodBoss::build(const Config& cfg, Scene& scene, x3::rhi::IRenderDevice
                 " maxSaved=" + std::to_string(m_maxSaved));
 }
 
+void MultiPodBoss::shutdown() {
+    // TASK#12: tear down any in-flight death ragdolls while the physics world is still
+    // alive (mirrors MonsterManager::shutdown). Without this, a pod destroyed AFTER
+    // physics->shutdown() would call IRagdoll::removeFromWorld() on a dead Jolt system.
+    for (auto& p : m_pods) p->shutdownRagdoll();
+}
+
 bool MultiPodBoss::sparePod(uint32_t i, Scene& scene, x3::phys::IPhysicsWorld& physics) {
     if (i >= m_pods.size()) return false;
     MonsterSystem& p = *m_pods[i];

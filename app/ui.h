@@ -241,6 +241,12 @@ struct HudModel {
     float allyX[kMaxBlips] = {};    // companion world X
     float allyZ[kMaxBlips] = {};    // companion world Z
 
+    // Secret-trapdoor objective marker (gold, pulsing) — the cell floor hatch. The
+    // host sets trapValid + the world XZ while the hatch exists so it's findable.
+    bool  trapValid = false;
+    float trapX = 0.0f;
+    float trapZ = 0.0f;
+
     int   roomCount = 0;
     float roomCx[kMaxRooms] = {};   // room center X (world)
     float roomCz[kMaxRooms] = {};   // room center Z (world)

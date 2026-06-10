@@ -89,7 +89,7 @@ layout(location = 2) flat in uint vTexIndex;
 layout(location = 3) flat in vec4 vFactor;
 layout(location = 4) in vec3 vWorldPos;
 layout(location = 5) flat in vec4 vEmissive;   // rgb = color, a = strength
-layout(location = 6) flat in uint vTerrainFlag;
+layout(location = 6) flat in uint vFlags;      // bit0 = TERRAIN, bit1 = GLASS
 layout(location = 7) flat in uvec2 vTerrainPack; // x = grass<<16|rock, y = snow<<16|sand
 layout(location = 8) flat in uint vNormalTexIndex; // 0 = none (PBR normal map)
 layout(location = 9) flat in uint vMrTexIndex;     // 0 = none (metallic-roughness)
@@ -100,6 +100,9 @@ layout(location = 0) out vec4 outColor;
 
 // kSunDir is now PER-SCENE: derived in main() from the Camera UBO (cam.sunDir),
 // which the device fills from SkyParams.sunDir. (Was a hardcoded const here.)
+// Per-object flag bits (match mesh.vert + VulkanRenderDevice.cpp kFlag*).
+const uint FLAG_TERRAIN = 1u;
+const uint FLAG_GLASS   = 2u;
 const vec3 kSunColor = vec3(1.0, 0.97, 0.92);          // slightly warm white sun
 
 // ===========================================================================
@@ -340,6 +343,13 @@ vec3 perturbNormal(vec3 N, vec3 wp, vec2 uv, uint idx) {
 }
 
 void main() {
+    // GLASS meshes are NOT shaded by the opaque pass — they are drawn in the
+    // dedicated transparent glass pass (glass.frag). Discarding here keeps glass
+    // out of the opaque color + (with the no-SSAO pipeline) the depth write, so the
+    // glass pass composites see-through over the lit scene. The flag is uniform per
+    // draw (flat input) so this branch never diverges.
+    if ((vFlags & FLAG_GLASS) != 0u) discard;
+
     vec3 N = normalize(vNormal);
     // PBR normal map (non-terrain): perturb the geometry normal via a derivative TBN.
     if (vTerrainFlag == 0u && vNormalTexIndex > 0u)
@@ -353,7 +363,7 @@ void main() {
     const bool alphaCutout = (vTexIndex & 0x80000000u) != 0u;  // bit31 = MASK (cutout)
     const bool alphaBlend  = (vTexIndex & 0x40000000u) != 0u;  // bit30 = BLEND (glass)
     vec4 albedo;
-    if (vTerrainFlag != 0u) {
+    if ((vFlags & FLAG_TERRAIN) != 0u) {
         albedo = vec4(terrainAlbedo(vWorldPos, N, vTerrainPack), 1.0) * vFactor;
     } else {
         albedo = texture(textures[nonuniformEXT(baseIdx)], vUV) * vFactor;

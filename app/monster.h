@@ -1182,6 +1182,16 @@ public:
                x3::phys::IPhysicsWorld& physics, std::string_view modelDir,
                const x3::phys::Vec3& origin);
 
+    // TASK#12: tear down any in-flight death ragdolls across ALL pods (idempotent).
+    // A killed RIGGED pod spawns a physics ragdoll (Jolt bodies in the shared world);
+    // its bodies are only auto-cleared when its corpse-pop times out in update(). If
+    // the pods are destroyed (or the physics world is shut down) while a pod is still
+    // mid-flop, the IRagdoll dtor would call removeFromWorld() on a DEAD Jolt system
+    // (an access violation in teardown). Call this BEFORE the physics world is shut
+    // down (mirrors MonsterManager::shutdown). Safe any time; a no-op when no pod is
+    // ragdolling.
+    void shutdown();
+
     uint32_t podCount() const { return (uint32_t)m_pods.size(); }
     MonsterSystem&       pod(uint32_t i)       { return *m_pods[i]; }
     const MonsterSystem& pod(uint32_t i) const { return *m_pods[i]; }
