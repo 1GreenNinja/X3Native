@@ -76,6 +76,41 @@ struct ScriptStatus {
 // args for fire(): ordered key/value string pairs, surfaced to Lua as a table.
 using EventArgs = std::vector<std::pair<std::string, std::string>>;
 
+// Sol-free marshaled value for host<->Lua native functions. A minimal tagged
+// union over the Lua primitive types a binding needs: nil / boolean / number /
+// string. The implementation converts sol::object <-> ScriptValue at the
+// boundary so this header stays scripting-API-free (same quarantine as the rest
+// of the interface). Construct from bool/double/int/string; default is Nil.
+struct ScriptValue {
+    enum class Type : uint8_t { Nil, Bool, Number, String };
+    Type        type = Type::Nil;
+    bool        b    = false;
+    double      n    = 0.0;
+    std::string s;
+
+    ScriptValue() = default;
+    ScriptValue(bool v)               : type(Type::Bool),   b(v) {}
+    ScriptValue(double v)             : type(Type::Number), n(v) {}
+    ScriptValue(int v)                : type(Type::Number), n((double)v) {}
+    ScriptValue(const char* v)        : type(Type::String), s(v) {}
+    ScriptValue(std::string v)        : type(Type::String), s(std::move(v)) {}
+
+    bool isNil()    const { return type == Type::Nil; }
+    bool asBool()   const { return type == Type::Bool ? b : type != Type::Nil; }
+    double asNumber() const { return type == Type::Number ? n : 0.0; }
+    // String view of any value (numbers/bools stringified) — handy for ids that
+    // arrive as either "door_12" or 12 from a script.
+    std::string asString() const;
+    // Integer convenience for id-style args (door indices, zone ids).
+    int asInt() const { return (int)asNumber(); }
+};
+
+// A host function exposed to Lua as x3.<name>(...). Receives positional args
+// (matching fire()'s positional style, but typed not string-only) and returns a
+// single ScriptValue (Nil for void-style bindings). Registered by app code that
+// owns the real systems; the engine never needs to know what they do.
+using NativeFn = std::function<ScriptValue(const std::vector<ScriptValue>&)>;
+
 class IScriptSystem {
 public:
     virtual ~IScriptSystem() = default;
@@ -98,10 +133,12 @@ public:
     // Broadcast an event to every healthy script's onEvent(name, args).
     virtual void fire(std::string_view event, const EventArgs& args = {}) = 0;
 
-    // Host→Lua surface from API-free code: exposes x3.<name>(...) taking any
-    // args (stringified). Typed bindings live in the .cpp where sol is visible.
-    virtual void registerFunction(std::string_view name,
-                                  std::function<void(const std::vector<std::string>&)> fn) = 0;
+    // Host→Lua surface from API-free code: exposes x3.<name>(...) as a callable
+    // in every script sandbox (incl. already-loaded scripts). The function takes
+    // positional ScriptValue args and returns one ScriptValue. App code wires the
+    // real game systems (doors/objectives/...) here without the engine knowing
+    // about them — keeps typed bindings app-side per the D14 handoff.
+    virtual void registerFunction(std::string_view name, NativeFn fn) = 0;
 
     // Run a snippet inside a script's environment; returns tostring(result) or
     // "ERROR: ...". Powers the console `lua <script> <code>` command.
