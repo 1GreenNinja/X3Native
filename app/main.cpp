@@ -32,6 +32,7 @@
 #include "thirdperson.h"                    // FP/3P toggle + Jake avatar + held weapon (--test-thirdperson)
 #include "level1.h"
 #include "level_loader.h"                   // data-driven canonical level loader + per-room PVS cull (--test-canonlevel)
+#include "leveldoc_world.h"                  // EDITOR LevelDoc loader: --world fromdoc + hot reload (--test-loader)
 #include "player.h"
 #include "monster.h"
 #include "level1_game.h"
@@ -1264,6 +1265,20 @@ int main(int argc, char** argv) {
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
          testThirdPerson = false, testHatchCode = false;
+    // --test-loader (EDITOR LevelDoc data-driven loader): author a doc in memory ->
+    // save -> LOAD through the real loader -> assert the built world matches; then
+    // modify + hot-reload -> assert the delta applied and the create/destroy ledgers
+    // balance to zero (the no-leak gate). Additive flag.
+    bool        testLoader = false;
+    // --world fromdoc [path]: boot the engine DIRECTLY into a LevelDoc JSON (the
+    // editor's save format) — playable (walk/collide/shoot) + HOT-RELOADABLE (mtime
+    // poll / `level_reload` console cmd). Default path == the editor's File>Save
+    // target so the edit -> save -> reload loop closes out of the box.
+    std::string docWorldPath = x3::game::defaultLevelDocPath();
+    // --screenshot-loader [path.png]: headless proof — build the sample LevelDoc
+    // through the REAL loader on the live device, render the room, capture a PNG.
+    bool        loaderShot = false;
+    std::string loaderShotPath = "build/proof/loader_room.png";
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1662,6 +1677,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-ragdoll") testRagdoll = true;
         else if (a == "--test-ragdollskin") testRagdollSkin = true;
         else if (a == "--test-editor") testEditor = true;
+        else if (a == "--test-loader") testLoader = true;
         else if (a == "--test-blockout") testBlockout = true;
         else if (a == "--test-barrels") testBarrels = true;
         else if (a == "--test-glass") testGlass = true;
@@ -1739,6 +1755,10 @@ int main(int argc, char** argv) {
         }
         else if (a == "--world") {
             if (i + 1 < argc && argv[i + 1][0] != '-') worldMode = argv[++i];
+            // `--world fromdoc <path.json>`: an optional second positional token is
+            // the LevelDoc to boot (default = the editor's File>Save target).
+            if (worldMode == "fromdoc" && i + 1 < argc && argv[i + 1][0] != '-')
+                docWorldPath = argv[++i];
         }
         else if (a == "--stress") {
             if (i + 1 < argc) { stressCount = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
@@ -1754,6 +1774,10 @@ int main(int argc, char** argv) {
         else if (a == "--screenshot-editor") {
             editorShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') editorShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-loader") {
+            loaderShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') loaderShotPath = argv[++i];
         }
         else if (a == "--screenshot") {
             screenshot = true;
@@ -1977,6 +2001,10 @@ int main(int argc, char** argv) {
     if (testBlockout) {
         x3::logInfo("running Level Architect BLOCKOUT (brushes[] JSON / snap / mesh) self-test...");
         return x3::editor::runBlockoutSelfTest() ? 0 : 1;
+    }
+    if (testLoader) {
+        x3::logInfo("running LevelDoc data-driven loader (save->load->hot-reload) self-test...");
+        return x3::game::runLevelDocLoaderSelfTest() ? 0 : 1;
     }
     if (testBarrels) {
         x3::logInfo("running explosive-barrels self-test...");
@@ -2475,7 +2503,7 @@ int main(int argc, char** argv) {
     // render fully offscreen — NO GLFW window, NO surface, NO swapchain, nothing
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
-    const bool headless = smoketest || screenshot || skyShot || ddgiShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot;
+    const bool headless = smoketest || screenshot || skyShot || ddgiShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -2669,6 +2697,68 @@ int main(int argc, char** argv) {
         glfwTerminate();
         x3::logInfo(ok ? "--screenshot-editor: wrote " + editorShotPath
                        : "--screenshot-editor: capture FAILED");
+        return ok ? 0 : 1;
+    }
+
+    // ---- Headless LOADER proof (--screenshot-loader [path.png]) ----------------
+    // The data-driven LevelDoc loader's render proof: author the sample LevelDoc,
+    // SAVE it to disk, LOAD it back through the REAL loader (file -> parse -> brushes
+    // + materials + props + lights + trigger -> live device meshes + Jolt bodies),
+    // pose the camera inside the built room, capture a PNG, tear everything down.
+    // Offscreen + one-shot, like --screenshot.
+    if (loaderShot) {
+        x3::logInfo("--screenshot-loader: LevelDoc loader proof -> " + loaderShotPath);
+        {
+            std::error_code ec;
+            std::filesystem::path outp(loaderShotPath);
+            if (outp.has_parent_path())
+                std::filesystem::create_directories(outp.parent_path(), ec);
+            std::filesystem::create_directories("build/proof", ec);
+        }
+        // Author + save the sample doc, then load it through the real file path so
+        // the proof exercises the EXACT pipeline `--world fromdoc` boots.
+        const char* kDocPath = "build/proof/loader_sample_room.json";
+        x3::editor::LevelDoc sample = x3::game::makeSampleLevelDoc();
+        if (!sample.saveJson(kDocPath)) {
+            x3::logError("--screenshot-loader: could not write " + std::string(kDocPath));
+            device->shutdown(); glfwTerminate(); return 1;
+        }
+        x3::game::Scene proofScene;
+        x3::phys::IPhysicsWorld* proofPhys = x3::phys::createPhysicsWorld();
+        proofPhys->init();
+        x3::game::LevelDocWorld proofDoc;
+        bool built = proofDoc.loadFromFile(kDocPath, proofScene, *device, *proofPhys);
+        bool ok = false;
+        if (built) {
+            // A 3/4 vantage inside the room: ramp + ledge + hazard pillar in frame.
+            float ps[3]; proofDoc.playerStart(ps);
+            device->setCamera(ps[0] + 4.0f, ps[1] + 2.6f, ps[2] + 1.5f, -2.05f, -0.30f, 65.0f);
+            device->setAmbient(0.42f, 0.43f, 0.47f);
+            std::vector<x3::rhi::PointLight> pls;
+            proofDoc.selectLights(ps[0], ps[1], ps[2], pls, 16);
+            device->setPointLights(pls.data(), (uint32_t)pls.size());
+            const int kFrames = 8;   // settle so shadows/SSAO register
+            for (int f = 0; f < kFrames; ++f) {
+                const bool last = (f == kFrames - 1);
+                if (last) device->armCapture(loaderShotPath.c_str());
+                glfwPollEvents();
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    proofScene.render(*device, frame);
+                    device->endFrame(frame);
+                }
+                if (last) ok = device->captureFrame(loaderShotPath.c_str());
+            }
+        } else {
+            x3::logError("--screenshot-loader: loader BUILD failed");
+        }
+        proofDoc.shutdown(proofScene, *device, *proofPhys);
+        proofPhys->shutdown();
+        delete proofPhys;
+        device->shutdown();
+        glfwTerminate();
+        x3::logInfo(ok ? "--screenshot-loader: wrote " + loaderShotPath
+                       : "--screenshot-loader: capture FAILED");
         return ok ? 0 : 1;
     }
 
@@ -7868,6 +7958,14 @@ int main(int argc, char** argv) {
     // off to the SAME canonical Floor-1 cell start as `--world canonlevel` (where Jake wakes a
     // captive). So `intro` aliases the canon build here.
     const bool canonWorld = (worldMode == "canonlevel") || (worldMode == "intro");
+    // --world fromdoc: boot DIRECTLY into the EDITOR's LevelDoc JSON (docWorldPath)
+    // via the data-driven loader (app/leveldoc_world.*) — brushes -> meshes + Jolt
+    // bodies + materials, props -> GLB instances, lights -> point lights, triggers ->
+    // zones with script hooks. HOT-RELOADABLE while playing: an mtime poll + the
+    // `level_reload` console command tear down ONLY the doc-built objects and rebuild
+    // in place (player position preserved). The editor's File>Save writes the same
+    // default path, closing the edit -> save -> live-reload loop.
+    const bool docWorld = (worldMode == "fromdoc");
     // Hard cap on how many rooms the portal flood-fill may add per frame. Even down the
     // longest sightline with a deep r_culldepth, the cull stays well under the whole 53-room
     // tower so the GPU never spikes (the spec's "must NOT regress to drawing the tower").
@@ -7884,6 +7982,9 @@ int main(int argc, char** argv) {
     bool     canonKeycardTaken = false;
     x3::game::CanonPlay   canonPlay;           // canon Floor-1 gameplay (canonWorld only): sidearm + animated enemies + Martinez + 3 girls
     bool                  canonMedicalActive = false;  // latch: the medical-bay rescue clock was started (player reached the wards)
+    // --world fromdoc: the LevelDoc-built world + its hot-reload state (docWorld only).
+    x3::game::LevelDocWorld docLevel;
+    bool docReloadRequested = false;           // set by the `level_reload` console cmd
     x3::game::Scene scene;
     x3::game::Level1Game game;
     // B3: the terrain world is now STREAMED around the player via a residency
@@ -8013,6 +8114,35 @@ int main(int argc, char** argv) {
             // JSON absent on this machine -> fall back to the legacy tower build so the
             // path is never broken (the loader logged the miss).
             x3::logInfo("--world canonlevel: canonical JSON absent; falling back to legacy Level 1 build");
+            game.build(scene, *device, *physics, x3::game::riggedGlbRoot());
+        }
+    } else if (docWorld) {
+        // ---- DATA-DRIVEN LEVELDOC WORLD (--world fromdoc). If the doc file is
+        // absent, SEED it with the sample room (so a first boot always lands in a
+        // playable space AND leaves a JSON on disk the user can live-edit). If it
+        // exists but fails to parse, fall back to the legacy Level 1 build.
+        {
+            std::error_code ec;
+            if (!std::filesystem::exists(docWorldPath, ec)) {
+                std::filesystem::path dp(docWorldPath);
+                if (dp.has_parent_path()) std::filesystem::create_directories(dp.parent_path(), ec);
+                x3::editor::LevelDoc seed = x3::game::makeSampleLevelDoc();
+                if (seed.saveJson(docWorldPath))
+                    x3::logInfo("--world fromdoc: no doc at " + docWorldPath +
+                                " — seeded the sample room there (edit it live!)");
+            }
+        }
+        if (docLevel.loadFromFile(docWorldPath, scene, *device, *physics)) {
+            x3::logInfo("--world fromdoc: BOOTED LevelDoc '" + docLevel.doc().name + "' from " +
+                        docWorldPath + " (" + std::to_string(docLevel.brushEntityCount()) +
+                        " brushes, " + std::to_string(docLevel.propEntityCount()) + " props, " +
+                        std::to_string(docLevel.bodyCount()) + " bodies, " +
+                        std::to_string(docLevel.lightCount()) + " lights, " +
+                        std::to_string(docLevel.triggerCount()) + " triggers). "
+                        "HOT RELOAD: save the JSON (or the F8 editor's File>Save) or run "
+                        "`level_reload` in the console — the world rebuilds in place.");
+        } else {
+            x3::logInfo("--world fromdoc: doc unreadable; falling back to legacy Level 1 build");
             game.build(scene, *device, *physics, x3::game::riggedGlbRoot());
         }
     } else if (!terrainWorld) {
@@ -8315,6 +8445,7 @@ int main(int argc, char** argv) {
     // drawViewmodel so typing e.g. `vm_pitch 10` moves the held gun immediately.
     registerViewmodelCVars(*console);
 
+<<<<<<< HEAD
     // --legacypost / --notaa: pin the matching cvars so the per-frame cvar->device
     // sync (applyRtaoCVars) keeps the A/B state instead of re-enabling defaults.
     if (legacyPost) {
@@ -8332,6 +8463,17 @@ int main(int argc, char** argv) {
     if (noRefl) {
         console->set("r_ssr", "0");              // --norefl: reflections off, TAA untouched
         console->set("r_rtreflections", "0");
+=======
+    // --world fromdoc: the `level_reload` console command. Sets a request flag the
+    // sim tick applies at the next frame (never mid-draw). Registered regardless of
+    // load success so the command exists once a doc world is up.
+    if (docWorld) {
+        console->registerCommand("level_reload",
+            [&docReloadRequested](const std::vector<std::string>&) {
+                docReloadRequested = true;
+                x3::logInfo("level_reload: requested (applies next tick)");
+            }, "reload the --world fromdoc LevelDoc JSON in place");
+>>>>>>> origin/feat/level-loader
     }
 
     // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
@@ -8979,6 +9121,13 @@ int main(int argc, char** argv) {
         // per-room cull renders only that cell + its doored neighbours (the perf proof).
         float camX = L1.armoryCenter.x - 1.0f, camZ = L1.armoryCenter.z;
         float smokeYaw = 0.0f;
+        // --world fromdoc: sit at the doc's player start so the LevelDoc-built room
+        // is what renders (and the mid-run hot-reload below exercises the live path).
+        if (docWorld && docLevel.built()) {
+            float ps[3]; docLevel.playerStart(ps);
+            camX = ps[0]; camZ = ps[2];
+            smokeYaw = -1.5708f;   // look into the room (-Z, where the sample geo sits)
+        }
         if (canonWorld && canonFloor.valid()) {
             uint32_t jake = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
             if (jake == x3::game::kNoRoom) jake = 0;
@@ -9096,6 +9245,20 @@ int main(int argc, char** argv) {
                     x3::logInfo("smoketest --world canonlevel: " + std::to_string(nLit) +
                                 " room point-lights fed for the visible set (cap 16)");
             }
+            // --world fromdoc under validation: feed the doc lights, walk the player
+            // point through the doc triggers, and HOT-RELOAD the doc mid-run (i==18)
+            // so the live teardown -> rebuild path (destroyMesh/removeBody + respawn)
+            // runs under the Vulkan validation layers + the VMA leak gate.
+            if (docWorld && docLevel.built()) {
+                std::vector<x3::rhi::PointLight> dl;
+                docLevel.selectLights(eye.x, eye.y, eye.z, dl, 16);
+                device->setPointLights(dl.data(), (uint32_t)dl.size());
+                docLevel.updateTriggers(eye);
+                if (i == 18) {
+                    x3::logInfo("smoketest --world fromdoc: exercising live hot-reload");
+                    docLevel.reloadNow(scene, *device, *physics);
+                }
+            }
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
@@ -9170,6 +9333,7 @@ int main(int argc, char** argv) {
         audio->shutdown();
         combatFx.shutdown(*device);
         if (canonPlay.built()) canonPlay.shutdown();   // --world canonlevel enemy ragdolls
+        docLevel.shutdown(scene, *device, *physics);   // --world fromdoc doc objects + caches
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -9191,6 +9355,12 @@ int main(int argc, char** argv) {
         player.spawn(*physics, jc.cx, jc.y0() + 0.1f, jc.cz);
         x3::logInfo("--world canonlevel: spawned in Jake's Cell; per-room PVS cull active. "
                     "Walk through doorways to see the cull follow you.");
+    } else if (docWorld && docLevel.built()) {
+        // --world fromdoc: spawn at the doc's authored player start.
+        float ps[3]; docLevel.playerStart(ps);
+        player.spawn(*physics, ps[0], ps[1] + 0.1f, ps[2]);
+        x3::logInfo("--world fromdoc: spawned at the LevelDoc playerStart. Edit + save the "
+                    "JSON (or `level_reload`) to hot-rebuild the world around you.");
     } else if (terrainWorld) {
         player.spawn(*physics, terrainSpawn.x, terrainSpawn.y, terrainSpawn.z);
     } else if (elevatorWorld && elevator.built()) {
@@ -10100,6 +10270,10 @@ int main(int argc, char** argv) {
                 x3::game::selectVisibleCanonLights(canonLights, canonVisRooms,
                                                    camX, camY, camZ, fl, 16);
             }
+            // FROMDOC LIGHTING: append the LevelDoc's authored point lights (closest
+            // 16 to the eye) after the flashlight, mirroring the canonlevel feed.
+            if (docWorld && docLevel.built())
+                docLevel.selectLights(camX, camY, camZ, fl, 16);
             if (fl.size() > 64) fl.resize(64);
             device->setPointLights(fl.data(), (uint32_t)fl.size());
         }
@@ -10111,6 +10285,20 @@ int main(int argc, char** argv) {
         // Phase 2a: pass the player as the damage sink + the enemy-attack FX so
         // guards/drone/Martinez hurt the player (enemies attack only while alive). ----
         const x3::phys::Vec3 camPos{ camX, camY, camZ };
+        // ---- --world fromdoc: LIVE-EDIT loop. Apply a queued `level_reload`, poll
+        // the doc file's mtime (a save from the F8 editor or ANY text editor), and
+        // walk the player point through the doc's trigger zones. The reload tears
+        // down only the doc-built objects and rebuilds in place — the player body is
+        // untouched, so you keep standing where you are while the world rebuilds. ----
+        if (docWorld && docLevel.built() && !simFrozen) {
+            if (docReloadRequested) {
+                docReloadRequested = false;
+                docLevel.reloadNow(scene, *device, *physics);
+            } else {
+                docLevel.pollHotReload(glfwGetTime(), scene, *device, *physics);
+            }
+            docLevel.updateTriggers(camPos);
+        }
         if (simFrozen) {
             // Sim frozen by a UI menu: skip the level controller / streaming / ocean
             // clock so doors/enemies/objectives/waves hold still. (Terrain tiles are
@@ -11183,6 +11371,7 @@ int main(int argc, char** argv) {
     // spawn skinned death ragdolls — tear those Jolt bodies down too before physics.
     nexus.shutdown();
     if (canonPlay.built()) canonPlay.shutdown();   // --world canonlevel enemy ragdolls
+    docLevel.shutdown(scene, *device, *physics);   // --world fromdoc doc objects + caches
     physics->shutdown();
     device->shutdown();
     glfwDestroyWindow(window);

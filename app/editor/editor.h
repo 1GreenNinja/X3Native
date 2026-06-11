@@ -40,6 +40,15 @@ struct EditorEntity {
     // mounted converted_glb dir. When non-empty the editor renders that model's
     // drawables at this entity's transform (instead of a graybox). Round-trips in JSON.
     std::string model;
+    // Optional SCRIPT hook id (data-driven loader, app/leveldoc_world.*): for a
+    // type "trigger" entity this is the event id the loader fires on player entry
+    // ("x3 trigger_enter <script>"); for other types it is reserved as a future
+    // per-entity script binding. Carried in the JSON so the Lua trigger chain
+    // (feat/lua-trigger-binding) composes later WITHOUT a format change.
+    std::string script;
+    // Trigger ZONE full extents in metres (type "trigger" only; {0,0,0} = unset,
+    // the loader falls back to `scale` as a uniform extent). Round-trips in JSON.
+    float size[3] = { 0, 0, 0 };
     // Live link to the Scene entity id while editing (not serialized). kNoLink-ish
     // sentinel = not spawned in the live scene.
     uint32_t sceneEntity = 0xFFFFFFFFu;

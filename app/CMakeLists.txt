@@ -4,6 +4,7 @@ add_executable(X3Engine WIN32
     level.cpp
     level1.cpp
     level_loader.cpp
+    leveldoc_world.cpp
     player.cpp
     door.cpp
     physprops.cpp
