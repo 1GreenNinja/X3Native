@@ -196,6 +196,18 @@ public:
     virtual TextureHandle createTexture(const void* rgba8, uint32_t w, uint32_t h, bool srgb) = 0;
     virtual void          destroyTexture(TextureHandle) = 0;
 
+    // ---- BOOT-TIME upload batching (docs/BOOT_TIME.md) ----------------------
+    // Between beginUploadBatch()/endUploadBatch(), createMesh/createTexture record
+    // their staging copies into ONE shared command buffer instead of doing a
+    // blocking submit + fence wait EACH (~ms of fixed cost per call — the 16 s
+    // world-build pole was ~2000 tiny submits). The batch is flushed (single
+    // submit + single wait) by endUploadBatch, and AUTOMATICALLY by beginFrame or
+    // by any other one-shot GPU op, so ordering/visibility semantics are identical
+    // to the unbatched path. Nestable-safe: extra calls are no-ops. Default no-op
+    // (headless/null devices keep the plain blocking path).
+    virtual void beginUploadBatch() {}
+    virtual void endUploadBatch() {}
+
     // ---- Terrain material splat (open-world ground) -------------------------
     // Register a set of four already-created tiling DETAIL textures as the GROUND
     // material set used for procedural height+slope splatting in mesh.frag. The

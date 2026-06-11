@@ -39,6 +39,7 @@
 #include "RenderGraph.h"
 #include "VulkanRT.h"          // hardware ray-tracing AS manager (ray-query path)
 #include "../core/x3_log.h"
+#include "../core/x3_boot.h"   // [boot] timeline marks (device-init sub-phases)
 #include "font8x8_basic.h"
 #include "font_robotomono.h"   // embedded Roboto Mono TTF (Apache-2.0) — modern HUD font
 
@@ -251,6 +252,7 @@ public:
         logInfo(std::string("[rhi] device ready: ") + phys.name +
                 " (Vulkan 1.3, dynamic-rendering + sync2 + descriptor-indexing)" +
                 (m_headless ? " [HEADLESS: offscreen target, no surface/swapchain]" : ""));
+        x3::boot::mark("rhi: instance+device");
 
         // VMA allocator (needed by the swapchain's depth image + graphics buffers)
         VmaAllocatorCreateInfo aci{};
@@ -269,8 +271,11 @@ public:
         else            { if (!createSwapchain(m_width, m_height)) return false; }
         if (!createPerFrame()) return false;
         if (!createShadowImage()) return false;   // before createGraphics (mesh layout needs set 2)
+        x3::boot::mark("rhi: swapchain+frames+shadow");
         if (!createGraphics()) return false;      // builds the shadow depth pipeline at the end
+        x3::boot::mark("rhi: core pipelines (createGraphics)");
         if (!createHud()) return false;
+        x3::boot::mark("rhi: hud (font atlas + pipelines)");
         if (!createSky()) return false;           // analytic sky (open-world track, task A)
         // Image-based lighting (IBL): build the env/irradiance/prefilter cubes + BRDF
         // LUT objects (set 4 of the mesh pipeline). Default ON for ALL scenes; the
@@ -278,6 +283,7 @@ public:
         // this fails, IBL stays inactive and mesh.frag falls back to the flat ambient.
         if (!createIbl()) { logError("[rhi] IBL init failed; falling back to flat ambient"); m_iblReady = false; }
         else              { m_iblDirty = true; }
+        x3::boot::mark("rhi: sky+ibl objects");
         // HDR pipeline + bloom: build the post pipelines (extent-independent) then
         // the HDR scene + bloom-mip targets at the current extent + their sets.
         if (!createPost()) return false;
@@ -323,6 +329,7 @@ public:
         // depth/shadow/color passes (which draw it unchanged). Additive + opt-in:
         // nothing runs unless a mesh is registered + a palette uploaded each frame.
         if (!createSkinning()) return false;
+        x3::boot::mark("rhi: post/ssao/gi/fx pipelines");
 
         // ===================================================================
         // ZERO-STUTTER boot precompile (docs/ZERO_STUTTER.md step 1).
@@ -378,10 +385,12 @@ public:
             logInfo(pbuf);
             (void)msBefore;
         }
+        x3::boot::mark("rhi: RT precompile");
         return true;
     }
 
     void shutdown() override {
+        if (m_dev.device) flushUploadBatch();   // land + free any still-batched uploads
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
         // ZERO-STUTTER: persist the pipeline cache FIRST (device still alive) so
         // the next boot compiles near-zero pipelines from scratch.
@@ -791,6 +800,10 @@ public:
 
     FrameContext beginFrame() override {
         FrameContext fc{};
+        // BOOT-TIME upload batching: any uploads still pending from a batch window
+        // must land before this frame can sample/draw them (identical visibility
+        // semantics to the unbatched path).
+        flushUploadBatch();
         // ZERO-STUTTER: from here on, ANY pipeline/module/pool creation outside a
         // declared boundary is LATE (the x3Create* wrappers count + assert it).
         m_firstFrameBegun = true;
@@ -10194,6 +10207,22 @@ private:
             vmaDestroyBuffer(m_alloc, staging, stagingAlloc); return false;
         }
 
+        // BOOT-TIME upload batching: while a batch window is active, record the
+        // copy into the shared batch command buffer (one submit for the whole
+        // batch) instead of a blocking per-buffer submit + fence wait. The staging
+        // buffer stays alive until the flush. Semantics are identical: anything
+        // that could consume the data (beginFrame / any one-shot op) flushes first.
+        if (m_batchActive) {
+            VkCommandBuffer cmd = batchCmd();
+            if (cmd) {
+                VkBufferCopy region{ 0, 0, bytes };
+                vkCmdCopyBuffer(cmd, staging, outBuf, 1, &region);
+                m_batchStagings.emplace_back(staging, stagingAlloc);
+                ++m_batchOps;
+                return true;
+            }
+            // batch cmd alloc failed -> fall through to the blocking path
+        }
         bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
             VkBufferCopy region{ 0, 0, bytes };
             vkCmdCopyBuffer(cmd, staging, outBuf, 1, &region);
@@ -10236,7 +10265,7 @@ private:
             vmaDestroyBuffer(m_alloc, staging, stagingAlloc); return false;
         }
 
-        bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
+        auto recordTexUpload = [&, staging](VkCommandBuffer cmd){
             // Per-mip sync2 layout barrier helper.
             auto barrierMip = [&](uint32_t mip, VkImageLayout oldL, VkImageLayout newL,
                                   VkPipelineStageFlags2 ss, VkAccessFlags2 sa,
@@ -10285,8 +10314,27 @@ private:
             barrierMip(mipLevels - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                        VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        });
-        vmaDestroyBuffer(m_alloc, staging, stagingAlloc);
+        };
+        // BOOT-TIME upload batching: record the copy + mip-blit chain into the
+        // shared batch command buffer (one submit per batch) when a batch window is
+        // active; the staging buffer stays alive until the flush. Identical command
+        // stream, just deferred to a single submit.
+        bool ok;
+        if (m_batchActive) {
+            VkCommandBuffer cmd = batchCmd();
+            if (cmd) {
+                recordTexUpload(cmd);
+                m_batchStagings.emplace_back(staging, stagingAlloc);
+                ++m_batchOps;
+                ok = true;
+                staging = VK_NULL_HANDLE; stagingAlloc = nullptr;   // ownership moved to the batch
+            } else {
+                ok = oneTimeSubmit(recordTexUpload);
+            }
+        } else {
+            ok = oneTimeSubmit(recordTexUpload);
+        }
+        if (staging) vmaDestroyBuffer(m_alloc, staging, stagingAlloc);
         if (!ok) { vmaDestroyImage(m_alloc, out.image, out.alloc); out.image = VK_NULL_HANDLE; out.alloc = nullptr; return false; }
 
         VkImageViewCreateInfo vci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
@@ -10319,9 +10367,78 @@ private:
         t = Texture{};
     }
 
+    // ---- BOOT-TIME upload batching (docs/BOOT_TIME.md) ----------------------
+    // Begin (or continue) the shared batch command buffer. Returns VK_NULL_HANDLE
+    // only if allocation fails (callers then fall back to oneTimeSubmit).
+    VkCommandBuffer batchCmd() {
+        if (m_batchOpen) return m_batchCmd;
+        if (!m_batchCmd) {
+            VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+            ai.commandPool = m_uploadPool;
+            ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            ai.commandBufferCount = 1;
+            if (vkAllocateCommandBuffers(m_dev.device, &ai, &m_batchCmd) != VK_SUCCESS) {
+                m_batchCmd = VK_NULL_HANDLE;
+                return VK_NULL_HANDLE;
+            }
+        }
+        VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(m_batchCmd, &bi) != VK_SUCCESS) return VK_NULL_HANDLE;
+        m_batchOpen = true;
+        return m_batchCmd;
+    }
+
+    // Submit every recorded batched upload in ONE submit + ONE fence wait, then
+    // free the kept-alive staging buffers. No-op when nothing is pending.
+    void flushUploadBatch() {
+        if (!m_batchOpen) return;
+        const auto t0 = std::chrono::steady_clock::now();
+        vkEndCommandBuffer(m_batchCmd);
+        VkCommandBufferSubmitInfo cmdS{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+        cmdS.commandBuffer = m_batchCmd;
+        VkSubmitInfo2 submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+        submit.commandBufferInfoCount = 1; submit.pCommandBufferInfos = &cmdS;
+        if (vkQueueSubmit2(m_gfxQueue, 1, &submit, m_uploadFence) == VK_SUCCESS) {
+            vkWaitForFences(m_dev.device, 1, &m_uploadFence, VK_TRUE, UINT64_MAX);
+            vkResetFences(m_dev.device, 1, &m_uploadFence);
+        } else {
+            logError("[rhi] upload batch: submit failed (uploads lost this batch)");
+        }
+        m_batchOpen = false;
+        vkResetCommandBuffer(m_batchCmd, 0);
+        for (auto& s : m_batchStagings) vmaDestroyBuffer(m_alloc, s.first, s.second);
+        m_batchStagings.clear();
+        ++m_batchFlushes;
+        m_batchMs += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0).count();
+    }
+
+    void beginUploadBatch() override {
+        if (m_batchActive) return;       // nestable-safe
+        m_batchActive = true;
+        m_batchOps = 0; m_batchFlushes = 0; m_batchMs = 0.0;
+    }
+
+    void endUploadBatch() override {
+        if (!m_batchActive) return;
+        flushUploadBatch();
+        m_batchActive = false;
+        if (m_batchOps) {
+            char b[160];
+            std::snprintf(b, sizeof(b),
+                "[rhi] upload batch: %u uploads in %u flush(es), %.1f ms total flush wait",
+                m_batchOps, m_batchFlushes, m_batchMs);
+            logInfo(b);
+        }
+    }
+
     // Record + submit a transient command buffer, wait on a one-shot fence.
     template <class Fn>
     bool oneTimeSubmit(Fn&& record) {
+        // Ordering safety: any one-shot GPU op (BLAS build, readback, IBL bake…)
+        // may depend on batched uploads — land those first.
+        flushUploadBatch();
         VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
         ai.commandPool = m_uploadPool;
         ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -11674,6 +11791,20 @@ private:
     // One-time staging upload (transient pool + fence)
     VkCommandPool m_uploadPool = VK_NULL_HANDLE;
     VkFence       m_uploadFence = VK_NULL_HANDLE;
+
+    // ---- BOOT-TIME upload batching (docs/BOOT_TIME.md) ----------------------
+    // While m_batchActive, createDeviceLocalBuffer/createSampledTexture record
+    // into m_batchCmd instead of one blocking oneTimeSubmit each; staging buffers
+    // are kept alive in m_batchStagings until the single flush. oneTimeSubmit and
+    // beginFrame auto-flush a pending batch first, so any GPU op that could read
+    // batched data executes strictly after the uploads land.
+    bool          m_batchActive = false;            // begin/endUploadBatch window
+    bool          m_batchOpen   = false;            // m_batchCmd has recorded work
+    VkCommandBuffer m_batchCmd  = VK_NULL_HANDLE;
+    std::vector<std::pair<VkBuffer, VmaAllocation>> m_batchStagings;
+    uint32_t      m_batchOps    = 0;                // uploads in the current batch
+    uint32_t      m_batchFlushes = 0;               // receipts: flushes this batch window
+    double        m_batchMs     = 0.0;              // receipts: wall ms spent flushing
 
     // ---- Offscreen capture (fix 1: in-frame, acquired-image copy) ----------
     // armCapture() arms a request; endFrame() then records the color-image -> host

@@ -90,7 +90,26 @@ public:
                 std::error_code ec;
                 if (fs::exists(p, ec) && !fs::is_directory(p, ec)) {
                     std::ifstream f(p, std::ios::binary);
-                    if (f) { Blob b; b.bytes.assign(std::istreambuf_iterator<char>(f), {}); b.ok = true; return b; }
+                    if (f) {
+                        // BOOT-TIME: bulk read (file_size + one read()). The old
+                        // istreambuf_iterator path read BYTE-BY-BYTE — ~230 ms for
+                        // a 49 MB GLB vs ~15 ms bulk (docs/BOOT_TIME.md).
+                        const auto sz = fs::file_size(p, ec);
+                        if (!ec && sz > 0) {
+                            Blob b;
+                            b.bytes.resize(static_cast<size_t>(sz));
+                            f.read(reinterpret_cast<char*>(b.bytes.data()),
+                                   static_cast<std::streamsize>(sz));
+                            if (static_cast<size_t>(f.gcount()) == static_cast<size_t>(sz)) {
+                                b.ok = true;
+                                return b;
+                            }
+                        }
+                        // Fallback (unsized/atypical file): the original iterator read.
+                        f.clear(); f.seekg(0, std::ios::beg);
+                        Blob b; b.bytes.assign(std::istreambuf_iterator<char>(f), {});
+                        b.ok = true; return b;
+                    }
                 }
             } else {
                 auto it = m.index.find(vp);

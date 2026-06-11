@@ -1,5 +1,6 @@
 add_library(x3engine STATIC
     core/x3_log.cpp
+    core/x3_boot.cpp
     core/Console.cpp
     core/JobSystem.cpp
     ecs/Ecs.cpp

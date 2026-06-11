@@ -49,8 +49,11 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <chrono>      // [boot] per-file GLB load timing
 #include <fstream>
 #include <functional>
+#include <mutex>          // boot-time texture cache guard
+#include <unordered_map>  // boot-time texture cache
 #include <memory>
 #include <string>
 #include <unordered_set>
@@ -78,6 +81,72 @@ constexpr bool kHasKtx2 = false;
 constexpr uint64_t kMeshTag = 0x1ull << 60;
 constexpr uint64_t kTexTag  = 0x2ull << 60;
 constexpr uint64_t kTagMask = 0xFull << 60;
+
+// ---------------------------------------------------------------------------
+// BOOT-TIME texture cache (docs/BOOT_TIME.md): the same enemy/weapon GLB is
+// loaded once PER SPAWN (each instance needs its own dynamic skinned mesh), but
+// its textures are immutable — decoding + uploading them again per instance was
+// a multi-second boot pole (7x marcus_webb at ~400 ms each). Key = FNV-1a of
+// the ENCODED image bytes (+ srgb), so identical images dedupe even across
+// different GLBs. Entries are REFCOUNTED: every load() that returns a cached
+// handle adds a ref; GpuUploader::free (the unload path) only destroys the GPU
+// texture when the last ref drops. Process-wide + mutex-guarded.
+// ---------------------------------------------------------------------------
+struct TexCacheEntry { uint64_t handle; uint32_t refs; };
+std::mutex g_texCacheMu;
+std::unordered_map<uint64_t, TexCacheEntry> g_texCacheByKey;   // content key -> entry
+std::unordered_map<uint64_t, uint64_t>      g_texKeyByHandle;  // handle -> content key
+
+uint64_t fnv1aBytes(const uint8_t* p, size_t n, uint64_t h = 1469598103934665603ull) {
+    for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 1099511628211ull; }
+    return h;
+}
+
+// Bump the refcount of an already-cached texture handle (used when a cached
+// MODEL instance shares the template's textures). Returns false if the handle
+// is not cache-tracked (should not happen; logged by the caller).
+bool retainCachedTexture(uint64_t handle) {
+    std::lock_guard<std::mutex> lk(g_texCacheMu);
+    auto hit = g_texKeyByHandle.find(handle);
+    if (hit == g_texKeyByHandle.end()) return false;
+    auto kit = g_texCacheByKey.find(hit->second);
+    if (kit == g_texCacheByKey.end()) return false;
+    ++kit->second.refs;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// BOOT-TIME model cache (docs/BOOT_TIME.md): each character/weapon SPAWN loads
+// its GLB again (instances need their own dynamic skinned meshes), repeating
+// the 50 MB file read + cgltf parse + vertex convert + anim copy — 19x
+// marcus_webb on a default boot. Key = path + blob size + sampled content hash
+// (first/last 64 KB), so identical files dedupe across mount roots. The cache
+// stores a TEMPLATE Model (CPU data + SHARED cached texture handles; GPU mesh
+// handles zeroed) plus the upload-ready interleaved verts/indices per
+// primitive. A cache hit deep-copies the template (instances may animate
+// independently), re-uploads ONLY the per-instance mesh buffers (batched ->
+// cheap), and retains the shared textures. Real-device loads only; the
+// headless/minted-handle path is untouched.
+// ---------------------------------------------------------------------------
+struct CachedPrimData {
+    std::vector<rhi::MeshVertex> verts;
+    std::vector<uint32_t>        idx;
+};
+struct ModelCacheEntry {
+    Model                       templ;   // GPU mesh handles zeroed; textures live
+    std::vector<CachedPrimData> prims;   // aligned with templ.primitives
+};
+std::mutex g_modelCacheMu;
+std::unordered_map<uint64_t, ModelCacheEntry> g_modelCache;
+
+uint64_t modelContentKey(const std::string& path, const uint8_t* bytes, size_t len) {
+    uint64_t h = fnv1aBytes(reinterpret_cast<const uint8_t*>(path.data()), path.size());
+    h ^= (uint64_t)len * 1099511628211ull;
+    const size_t probe = 65536;
+    h = fnv1aBytes(bytes, len < probe ? len : probe, h);
+    if (len > probe) h = fnv1aBytes(bytes + (len - probe), probe, h);
+    return h;
+}
 
 class GpuUploader {
 public:
@@ -110,13 +179,49 @@ public:
         return mint();
     }
 
+    // CACHE-AWARE upload: look the content key up in the global texture cache
+    // first; on a miss run `make()` (decode and/or upload) and insert. Refcounts
+    // are deduped PER MODEL LOAD (m_acquired): a model that references the same
+    // texture from several material slots acquires exactly ONE ref, matching the
+    // one free() its unload performs (the unload path dedupes by handle).
+    template <class MakeFn>
+    uint64_t cachedUpload(uint64_t key, MakeFn&& make) {
+        if (!m_dev) return make();           // headless: minted handles, no cache
+        {
+            std::lock_guard<std::mutex> lk(g_texCacheMu);
+            auto it = g_texCacheByKey.find(key);
+            if (it != g_texCacheByKey.end()) {
+                if (m_acquired.insert(it->second.handle).second) ++it->second.refs;
+                return it->second.handle;
+            }
+        }
+        uint64_t h = make();
+        if (h) {
+            std::lock_guard<std::mutex> lk(g_texCacheMu);
+            g_texCacheByKey[key] = TexCacheEntry{ h, 1 };
+            g_texKeyByHandle[h]  = key;
+            m_acquired.insert(h);
+        }
+        return h;
+    }
+
+    // Cached upload keyed by DECODED pixel content (defaults / synthesized 1x1s).
+    uint64_t uploadTextureCached(const void* rgba, int w, int h, bool srgb) {
+        if (!m_dev) return mint();
+        const uint64_t key = fnv1aBytes(static_cast<const uint8_t*>(rgba),
+                                        (size_t)w * h * 4,
+                  0xC0DEC0DEC0DEC0DEull ^ ((uint64_t)(uint32_t)w << 32) ^ (uint32_t)h)
+              ^ (srgb ? 0x9E3779B97F4A7C15ull : 0ull);
+        return cachedUpload(key, [&]{ return uploadTexture(rgba, w, h, srgb); });
+    }
+
     // Shared 1x1 default textures (white base color, flat normal). Created once
     // per model, reused so a model with N missing textures only allocates two.
     uint64_t defaultWhite() {
         if (!m_defWhite) {
             if (m_dev) {
                 const uint8_t white[4] = { 255, 255, 255, 255 };
-                m_defWhite = uploadTexture(white, 1, 1, true);
+                m_defWhite = uploadTextureCached(white, 1, 1, true);
             } else m_defWhite = mint();
         }
         return m_defWhite;
@@ -125,7 +230,7 @@ public:
         if (!m_defNormal) {
             if (m_dev) {
                 const uint8_t flat[4] = { 128, 128, 255, 255 }; // +Z normal, linear
-                m_defNormal = uploadTexture(flat, 1, 1, false);
+                m_defNormal = uploadTextureCached(flat, 1, 1, false);
             } else m_defNormal = mint();
         }
         return m_defNormal;
@@ -133,11 +238,28 @@ public:
 
     // Free a handle. Real device: route to destroyMesh/destroyTexture by tag.
     // Headless seam: nothing to free (the model clears the field itself).
+    // Cached textures are refcounted — the GPU texture is only destroyed when the
+    // LAST model referencing it unloads (see the boot-time texture cache above).
     void free(uint64_t handle) {
         if (!m_dev || !handle) return;
         uint32_t id = (uint32_t)(handle & ~kTagMask);
-        if ((handle & kTagMask) == kMeshTag)      m_dev->destroyMesh(rhi::MeshHandle{ id });
-        else if ((handle & kTagMask) == kTexTag)  m_dev->destroyTexture(rhi::TextureHandle{ id });
+        if ((handle & kTagMask) == kMeshTag) {
+            m_dev->destroyMesh(rhi::MeshHandle{ id });
+        } else if ((handle & kTagMask) == kTexTag) {
+            {
+                std::lock_guard<std::mutex> lk(g_texCacheMu);
+                auto hit = g_texKeyByHandle.find(handle);
+                if (hit != g_texKeyByHandle.end()) {
+                    auto kit = g_texCacheByKey.find(hit->second);
+                    if (kit != g_texCacheByKey.end()) {
+                        if (--kit->second.refs > 0) return;   // still referenced elsewhere
+                        g_texCacheByKey.erase(kit);
+                    }
+                    g_texKeyByHandle.erase(hit);
+                }
+            }
+            m_dev->destroyTexture(rhi::TextureHandle{ id });
+        }
     }
 
 private:
@@ -148,6 +270,9 @@ private:
     rhi::IRenderDevice* m_dev = nullptr;
     uint64_t m_defWhite = 0, m_defNormal = 0;
     size_t   m_vbBytes = 0, m_ibBytes = 0;
+    // Unique texture handles ref'd by THIS model load (one uploader per load):
+    // dedupes refcount acquisition so unload's once-per-unique-handle free balances.
+    std::unordered_set<uint64_t> m_acquired;
     // Monotonic, process-wide, always non-zero (starts at 1).
     static std::atomic<uint64_t> s_next;
 };
@@ -216,6 +341,11 @@ public:
         : m_dev(dev), m_assets(assets) {}
 
     Model load(std::string_view virtualPath) override {
+        const auto t0 = std::chrono::steady_clock::now();
+        auto msSince = [](std::chrono::steady_clock::time_point a) {
+            return std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - a).count();
+        };
         Model model;
         const std::string path(virtualPath);
 
@@ -225,9 +355,53 @@ public:
         }
 
         Blob blob = m_assets->read(virtualPath);
+        const double blobMs = msSince(t0);
         if (!blob.ok || blob.bytes.empty()) {
             logError("[gltf] read failed (missing / empty): " + path);
             return model;
+        }
+
+        // ---- BOOT-TIME model cache: a prior load of this exact file means we can
+        // skip the parse/decode/convert entirely — deep-copy the CPU template,
+        // retain the shared textures, and re-upload only the per-instance mesh
+        // buffers (batched -> cheap). Real-device loads only.
+        const uint64_t mkey = m_dev
+            ? modelContentKey(path, blob.bytes.data(), blob.bytes.size()) : 0;
+        if (m_dev) {
+            std::unique_lock<std::mutex> lk(g_modelCacheMu);
+            auto it = g_modelCache.find(mkey);
+            if (it != g_modelCache.end()) {
+                const ModelCacheEntry& e = it->second;
+                const auto tc0 = std::chrono::steady_clock::now();
+                Model m = e.templ;                          // deep copy (CPU data)
+                const double copyMs = msSince(tc0);
+                lk.unlock();
+                // Retain each UNIQUE shared texture handle once (matches unload's
+                // once-per-unique-handle free).
+                std::unordered_set<uint64_t> uniq;
+                for (const Material& mat : m.materials)
+                    for (uint64_t h : { mat.baseColorTex, mat.normalTex, mat.mrTex,
+                                        mat.emissiveTex, mat.occlusionTex, mat.detailTex })
+                        if (h && uniq.insert(h).second && !retainCachedTexture(h))
+                            warnOnce("[gltf] cached model texture not cache-tracked (refcount skipped)");
+                GpuUploader up(m_dev);
+                for (size_t i = 0; i < m.primitives.size() && i < e.prims.size(); ++i) {
+                    up.uploadMesh(e.prims[i].verts.data(), (uint32_t)e.prims[i].verts.size(),
+                                  e.prims[i].idx.data(),   (uint32_t)e.prims[i].idx.size(),
+                                  m.primitives[i].vertexBuffer, m.primitives[i].indexBuffer);
+                }
+                m.ok = !m.primitives.empty();
+                const double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - t0).count();
+                char tb[320];
+                std::snprintf(tb, sizeof(tb),
+                    "[gltf] loaded %s in %.1f ms (CACHED: prims=%zu mats=%zu anims=%zu; "
+                    "read %.1f copy %.1f)",
+                    path.c_str(), ms, m.primitives.size(), m.materials.size(),
+                    m.animations.size(), blobMs, copyMs);
+                logInfo(tb);
+                return m;
+            }
         }
 
         cgltf_options opts{};
@@ -252,16 +426,51 @@ public:
 
         GpuUploader up(m_dev);
 
+        // Capture upload-ready prim data for the model cache (real device only).
+        std::vector<CachedPrimData> captured;
+        m_capturePrims = m_dev ? &captured : nullptr;
+
         buildMaterials(*data, model, up);
         buildPrimitives(*data, model, up);
         buildNodes(*data, model);
         buildSkins(*data, model);
         buildAnimations(*data, model);
+        m_capturePrims = nullptr;
 
         // A model is "ok" if it produced at least one drawable primitive.
         model.ok = !model.primitives.empty();
         if (!model.ok)
             logWarn("[gltf] no drawable primitives produced: " + path);
+
+        // ---- Store the template in the BOOT-TIME model cache: CPU data + shared
+        // texture handles (the cache takes its OWN ref on each unique texture so a
+        // model unload can never strand later instances), GPU mesh handles zeroed
+        // (each instance uploads its own). ----
+        if (m_dev && model.ok && captured.size() == model.primitives.size()) {
+            ModelCacheEntry e;
+            e.templ = model;                       // deep copy
+            for (auto& p : e.templ.primitives) { p.vertexBuffer = 0; p.indexBuffer = 0; }
+            e.prims = std::move(captured);
+            std::unordered_set<uint64_t> uniq;
+            for (const Material& mat : e.templ.materials)
+                for (uint64_t h : { mat.baseColorTex, mat.normalTex, mat.mrTex,
+                                    mat.emissiveTex, mat.occlusionTex, mat.detailTex })
+                    if (h && uniq.insert(h).second) retainCachedTexture(h);
+            std::lock_guard<std::mutex> lk(g_modelCacheMu);
+            g_modelCache.emplace(mkey, std::move(e));
+        }
+        // [boot] per-file load cost (parse + texture decode + GPU upload) — the
+        // boot-time long-pole receipts (docs/BOOT_TIME.md).
+        {
+            const double ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - t0).count();
+            char tb[512];
+            std::snprintf(tb, sizeof(tb),
+                "[gltf] loaded %s in %.1f ms (prims=%zu mats=%zu anims=%zu)",
+                path.c_str(), ms, model.primitives.size(), model.materials.size(),
+                model.animations.size());
+            logInfo(tb);
+        }
         return model;
     }
 
@@ -373,14 +582,22 @@ private:
             return isNormal ? up.defaultNormal() : up.defaultWhite();
         }
 
-        int w = 0, h = 0, comp = 0;
-        stbi_uc* px = stbi_load_from_memory(bytes, static_cast<int>(len), &w, &h, &comp, 4);
-        if (!px) {
+        // BOOT-TIME texture cache: identical encoded bytes (+srgb) -> the SAME GPU
+        // texture, refcounted. Kills the repeated stb decode + upload when the same
+        // character/weapon GLB is loaded once per spawned instance.
+        const uint64_t key = fnv1aBytes(bytes, len) ^ (srgb ? 0x9E3779B97F4A7C15ull : 0ull);
+        uint64_t handle = up.cachedUpload(key, [&]() -> uint64_t {
+            int w = 0, h = 0, comp = 0;
+            stbi_uc* px = stbi_load_from_memory(bytes, static_cast<int>(len), &w, &h, &comp, 4);
+            if (!px) return 0;
+            uint64_t hnd = up.uploadTexture(px, w, h, srgb);
+            stbi_image_free(px);
+            return hnd;
+        });
+        if (!handle) {
             warnOnce("[gltf] image decode failed; using default");
             return isNormal ? up.defaultNormal() : up.defaultWhite();
         }
-        uint64_t handle = up.uploadTexture(px, w, h, srgb);
-        stbi_image_free(px);
         return handle;
     }
 
@@ -404,7 +621,7 @@ private:
                     const uint8_t mrpx[4] = { 0,
                         (uint8_t)(m.roughness * 255.0f + 0.5f),
                         (uint8_t)(m.metallic  * 255.0f + 0.5f), 255 };
-                    m.mrTex = up.uploadTexture(mrpx, 1, 1, /*srgb=*/false);  // data, not color
+                    m.mrTex = up.uploadTextureCached(mrpx, 1, 1, /*srgb=*/false);  // data, not color
                 }
             }
             for (int k = 0; k < 3; ++k) m.emissive[k] = cm.emissive_factor[k];
@@ -515,6 +732,9 @@ private:
                 up.uploadMesh(mv.data(), static_cast<uint32_t>(mv.size()),
                               indices.data(), static_cast<uint32_t>(indices.size()),
                               mp.vertexBuffer, mp.indexBuffer);
+                // BOOT-TIME model cache: keep the upload-ready verts/indices so a
+                // later load of the same file re-uploads instead of re-parsing.
+                if (m_capturePrims) m_capturePrims->push_back({ mv, indices });
                 mp.indexCount   = static_cast<uint32_t>(indices.size());
                 mp.materialIndex = prim.material
                     ? static_cast<uint32_t>(cgltf_material_index(&data, prim.material))
@@ -736,6 +956,9 @@ private:
     rhi::IRenderDevice* m_dev = nullptr;
     IAssetSource*       m_assets = nullptr;
     std::unordered_set<std::string> m_warned; // de-dupes per-model warnings
+    // BOOT-TIME model cache: when non-null (real-device load in flight),
+    // buildPrimitives copies each uploaded prim's verts/indices here.
+    std::vector<CachedPrimData>* m_capturePrims = nullptr;
 };
 
 } // namespace
