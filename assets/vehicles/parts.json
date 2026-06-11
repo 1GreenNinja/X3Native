@@ -1,0 +1,147 @@
+{
+  "format": "x3.vehparts/1",
+  "baseline": {
+    "torqueNm": 700.0,
+    "maxRpm": 6500.0,
+    "massKg": 1300.0,
+    "brakeTorque": 2200.0,
+    "suspFreq": 2.2,
+    "suspDamp": 0.7,
+    "curve": [[0.0, 0.78], [0.3, 0.97], [0.55, 1.0], [0.8, 0.95], [1.0, 0.82]]
+  },
+  "categories": [
+    {
+      "id": "camshaft", "label": "Camshaft",
+      "parts": [
+        { "id": "cam_street", "name": "Street Cam", "tier": 1, "price": 650,
+          "curve": [[0.0, 0.84], [0.3, 1.0], [0.55, 1.0], [0.8, 0.93], [1.0, 0.78]],
+          "redlineBonus": 0 },
+        { "id": "cam_sport", "name": "Sport Cam", "tier": 2, "price": 1400,
+          "curve": [[0.0, 0.76], [0.3, 0.94], [0.55, 1.0], [0.8, 1.0], [1.0, 0.9]],
+          "redlineBonus": 300 },
+        { "id": "cam_race", "name": "Race Cam", "tier": 3, "price": 3200,
+          "curve": [[0.0, 0.62], [0.3, 0.85], [0.55, 0.98], [0.8, 1.0], [1.0, 1.0]],
+          "redlineBonus": 800 }
+      ]
+    },
+    {
+      "id": "exhaust", "label": "Exhaust",
+      "parts": [
+        { "id": "exh_catback", "name": "Cat-Back Exhaust", "tier": 1, "price": 900,
+          "powerPct": 3.0, "noteId": 1, "pitchOffset": -0.05, "timbre": 0.3 },
+        { "id": "exh_turboback", "name": "Turbo-Back 3in", "tier": 2, "price": 2100,
+          "powerPct": 6.0, "noteId": 2, "pitchOffset": -0.10, "timbre": 0.55 },
+        { "id": "exh_titanium", "name": "Full Titanium", "tier": 3, "price": 4800,
+          "powerPct": 9.0, "noteId": 3, "pitchOffset": 0.08, "timbre": 0.8 },
+        { "id": "exh_sidepipe", "name": "Open Side-Pipes", "tier": 4, "price": 7500,
+          "powerPct": 11.0, "noteId": 4, "pitchOffset": -0.16, "timbre": 1.0 }
+      ]
+    },
+    {
+      "id": "intake", "label": "Intake",
+      "parts": [
+        { "id": "int_panel", "name": "Drop-In Panel Filter", "tier": 1, "price": 250, "powerPct": 1.5 },
+        { "id": "int_cai", "name": "Cold-Air Intake", "tier": 2, "price": 800, "powerPct": 4.0 },
+        { "id": "int_itb", "name": "Individual Throttle Bodies", "tier": 3, "price": 3600, "powerPct": 7.0 }
+      ]
+    },
+    {
+      "id": "intercooler", "label": "Intercooler",
+      "parts": [
+        { "id": "ic_stock_plus", "name": "Uprated Core", "tier": 1, "price": 700,
+          "powerPct": 1.0, "safeBoostBonus": 0.15 },
+        { "id": "ic_fmic", "name": "Front-Mount IC", "tier": 2, "price": 1900,
+          "powerPct": 2.5, "safeBoostBonus": 0.35 },
+        { "id": "ic_race", "name": "Race Core + Water Spray", "tier": 3, "price": 4200,
+          "powerPct": 4.0, "safeBoostBonus": 0.6 }
+      ]
+    },
+    {
+      "id": "forced_induction", "label": "Forced Induction",
+      "parts": [
+        { "id": "fi_sc_roots", "name": "Roots Supercharger", "tier": 1, "price": 5500,
+          "fiType": "supercharger", "boostPowerPct": 22.0, "whine": 1 },
+        { "id": "fi_turbo_small", "name": "Bolt-On Turbo (small)", "tier": 2, "price": 7800,
+          "fiType": "turbo", "boostPowerPct": 30.0, "spoolLagS": 0.5, "topEndBias": 0.45, "whistle": 1 },
+        { "id": "fi_sc_centri", "name": "Centrifugal Supercharger", "tier": 3, "price": 9800,
+          "fiType": "supercharger", "boostPowerPct": 34.0, "whine": 1 },
+        { "id": "fi_turbo_big", "name": "Big Single Turbo", "tier": 4, "price": 14500,
+          "fiType": "turbo", "boostPowerPct": 48.0, "spoolLagS": 1.1, "topEndBias": 0.75, "whistle": 1 }
+      ]
+    },
+    {
+      "id": "ecu", "label": "ECU Tune",
+      "parts": [
+        { "id": "ecu_piggy", "name": "Piggyback Module", "tier": 1, "price": 1200,
+          "maxBoost": 0.8, "safeBoost": 0.6, "safeLean": 1.05, "safeTiming": 0.6,
+          "knockLimit": 1.0, "powerPerBoost": 9.0, "powerPerTiming": 5.0, "leanPowerPct": 3.0,
+          "repairCost": 1800 },
+        { "id": "ecu_flash", "name": "Stage Flash Tune", "tier": 2, "price": 2600,
+          "maxBoost": 1.4, "safeBoost": 1.0, "safeLean": 1.08, "safeTiming": 0.7,
+          "knockLimit": 1.2, "powerPerBoost": 11.0, "powerPerTiming": 7.0, "leanPowerPct": 4.0,
+          "repairCost": 2600 },
+        { "id": "ecu_standalone", "name": "Standalone ECU", "tier": 3, "price": 5600,
+          "maxBoost": 2.0, "safeBoost": 1.5, "safeLean": 1.12, "safeTiming": 0.8,
+          "knockLimit": 1.5, "powerPerBoost": 13.0, "powerPerTiming": 9.0, "leanPowerPct": 6.0,
+          "repairCost": 3400 }
+      ]
+    },
+    {
+      "id": "tires", "label": "Tires",
+      "parts": [
+        { "id": "tire_touring", "name": "Touring All-Season", "tier": 1, "price": 600,
+          "gripScale": 1.05, "compound": "AS" },
+        { "id": "tire_summer", "name": "Performance Summer", "tier": 2, "price": 1300,
+          "gripScale": 1.15, "compound": "PS" },
+        { "id": "tire_semislick", "name": "Semi-Slick R-Comp", "tier": 3, "price": 2600,
+          "gripScale": 1.3, "compound": "RC" },
+        { "id": "tire_slick", "name": "Full Slick", "tier": 4, "price": 4400,
+          "gripScale": 1.45, "compound": "SL" }
+      ]
+    },
+    {
+      "id": "suspension", "label": "Suspension",
+      "parts": [
+        { "id": "susp_lowering", "name": "Lowering Springs", "tier": 1, "price": 850,
+          "rideHeightDelta": -0.04, "suspFreq": 2.5, "suspDamp": 0.75 },
+        { "id": "susp_coilover_s", "name": "Street Coilovers", "tier": 2, "price": 2200,
+          "rideHeightDelta": -0.07, "suspFreq": 2.9, "suspDamp": 0.85 },
+        { "id": "susp_coilover_r", "name": "Race Coilovers", "tier": 3, "price": 4600,
+          "rideHeightDelta": -0.1, "suspFreq": 3.4, "suspDamp": 0.95 }
+      ]
+    },
+    {
+      "id": "brakes", "label": "Brakes",
+      "parts": [
+        { "id": "brk_pads", "name": "Performance Pads", "tier": 1, "price": 450,
+          "brakeTorque": 2600.0 },
+        { "id": "brk_bbk4", "name": "4-Piston Big Brakes", "tier": 2, "price": 2300,
+          "brakeTorque": 3200.0 },
+        { "id": "brk_carbon", "name": "Carbon-Ceramic Kit", "tier": 3, "price": 6200,
+          "brakeTorque": 4000.0 }
+      ]
+    },
+    {
+      "id": "weight", "label": "Weight Reduction",
+      "parts": [
+        { "id": "wt_interior", "name": "Interior Strip", "tier": 1, "price": 500,
+          "massDelta": -60.0 },
+        { "id": "wt_carbon", "name": "Carbon Panels + Lexan", "tier": 2, "price": 3800,
+          "massDelta": -140.0 },
+        { "id": "wt_full", "name": "Full Race Build", "tier": 3, "price": 8800,
+          "massDelta": -230.0 }
+      ]
+    },
+    {
+      "id": "nitrous", "label": "Nitrous",
+      "parts": [
+        { "id": "nos_50", "name": "50-Shot Wet Kit", "tier": 1, "price": 1500,
+          "nitrousMult": 1.18, "tankSeconds": 8.0, "refillCost": 150 },
+        { "id": "nos_100", "name": "100-Shot Direct Port", "tier": 2, "price": 3400,
+          "nitrousMult": 1.35, "tankSeconds": 6.0, "refillCost": 250 },
+        { "id": "nos_200", "name": "200-Shot Race System", "tier": 3, "price": 6800,
+          "nitrousMult": 1.6, "tankSeconds": 5.0, "refillCost": 400 }
+      ]
+    }
+  ]
+}

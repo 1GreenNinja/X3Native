@@ -119,14 +119,20 @@ public:
             ws->mMaxSteerAngle       = w.steered ? w.maxSteerAngle : 0.0f;
             ws->mMaxBrakeTorque      = w.maxBrakeTorque;
             ws->mMaxHandBrakeTorque  = w.handBraked ? w.maxBrakeTorque * 2.5f : 0.0f;
+            // BASELINE tire compound: scale Jolt's default friction curves by the
+            // authored gripScale (see WheelDesc::gripScale).
+            if (w.gripScale > 0.0f && w.gripScale != 1.0f) {
+                for (auto& p : ws->mLongitudinalFriction.mPoints) p.mY *= w.gripScale;
+                for (auto& p : ws->mLateralFriction.mPoints)      p.mY *= w.gripScale;
+            }
             vs.mWheels.push_back(ws);
             m_wheelRadius[i] = w.radius;
             m_wheelWidth[i]  = w.width;
             // Tuning bookkeeping: keep the raw settings pointer (the constraint's
             // Ref owns it; it stays alive for our lifetime) + the authored base
-            // suspension lengths and the DEFAULT tire friction curves, so a live
-            // tuning can scale/offset from the authored baseline (idempotent —
-            // re-applying a tuning never compounds).
+            // suspension lengths and the BASELINE tire friction curves (post-
+            // gripScale), so a live tuning scales/offsets from the authored
+            // baseline (idempotent — re-applying a tuning never compounds).
             m_wheelSettings.push_back(ws);
             m_baseSuspMin.push_back(w.suspensionMin);
             m_baseSuspMax.push_back(w.suspensionMax);
@@ -247,6 +253,15 @@ public:
     }
     int gear() const override {
         return m_ctrl ? m_ctrl->GetTransmission().GetCurrentGear() : 0;
+    }
+
+    float longitudinalSlip(uint32_t i) const override {
+        if (!m_constraint || i >= m_wheelCount) return 0.0f;
+        const JPH::Wheel* w = m_constraint->GetWheel(i);
+        if (!w || !w->HasContact()) return 0.0f;
+        const float surface = w->GetAngularVelocity() * m_wheelRadius[i];
+        const float v = forwardSpeed();
+        return (surface - v) / std::max(std::fabs(v), 1.0f);
     }
 
     // ---- LIVE TUNING (performance shop). Mutates the running Jolt settings in

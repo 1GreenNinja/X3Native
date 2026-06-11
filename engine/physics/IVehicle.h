@@ -87,6 +87,13 @@ struct WheelDesc {
     bool  handBraked    = false;                // does the hand brake lock this wheel?
     float maxSteerAngle = 0.5236f;              // max steer (rad) ~30deg, if steered
     float maxBrakeTorque= 1500.0f;              // brake torque (Nm)
+    // BASELINE tire grip: multiplies Jolt's default longitudinal+lateral friction
+    // curves at build time. The Jolt default is a generic economy tire whose high-
+    // slip plateau is so low that a powerful RWD car lives in a permanent torque-
+    // independent burnout (upshifts slip-blocked, engine pinned at redline) — set
+    // > 1 for a sports-car compound so engine torque actually reaches the road.
+    // A live WheeledTuning gripScale composes ON TOP of this baseline.
+    float gripScale     = 1.0f;
 };
 
 // ---------------------------------------------------------------------------
@@ -246,6 +253,11 @@ public:
     virtual bool wheelState(uint32_t i, WheelState& out) const { (void)i; (void)out; return false; }
     virtual float engineRPM() const { return 0.0f; }
     virtual int   gear() const { return 0; }
+
+    // Longitudinal slip RATIO of wheel i: (wheelSurfaceSpeed - vehicleSpeed) /
+    // max(|vehicleSpeed|, 1). ~0 = rolling in sync, >> 0 = wheelspin (burnout),
+    // < 0 = locked under braking. Used by the game-layer traction control.
+    virtual float longitudinalSlip(uint32_t i) const { (void)i; return 0.0f; }
 
     // Apply a live performance tuning (see WheeledTuning). Mutates the running
     // Jolt engine/wheel settings + the chassis mass IN PLACE — no constraint

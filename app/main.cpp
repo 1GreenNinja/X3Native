@@ -78,6 +78,8 @@
 #include "destruct_demo.h"                 // K-T1 destruction demo (--world destruct)
 #include "ragdoll_demo.h"                  // Physics §2 ragdoll demo (--world ragdoll) + blend check
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
+#include "vehparts.h"                      // performance-parts catalog + build composition (--test-vehparts)
+#include "perfshop.h"                      // the drive-in performance shop (--world drive)
 
 #include <memory>
 #include <string_view>
@@ -1261,7 +1263,8 @@ int main(int argc, char** argv) {
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
          testElevatorFsm = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
-         testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
+         testNav = false, testWeapons = false, testVehicle = false, testVehParts = false,
+         testFootIk = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
          testThirdPerson = false, testHatchCode = false;
@@ -1739,6 +1742,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-nav") testNav = true;
         else if (a == "--test-weapons") testWeapons = true;
         else if (a == "--test-vehicle") testVehicle = true;
+        else if (a == "--test-vehparts") testVehParts = true;
         else if (a == "--test-footik") testFootIk = true;
         else if (a == "--test-ui") testUi = true;
         else if (a == "--test-loading") testLoading = true;
@@ -2374,6 +2378,11 @@ int main(int argc, char** argv) {
                     "(spawn -> E enter -> throttle 4 s -> displacement + wheel contact -> E exit restores control)...");
         const bool driveOk = x3::game::runDriveEnterExitSelfTest();
         return (frameworkOk && driveOk) ? 0 : 1;
+    }
+    if (testVehParts) {
+        x3::logInfo("running PERFORMANCE PARTS (x3.vehparts/1) self-test "
+                    "(catalog parse + composition math + REAL Jolt physics deltas + dyno pop thresholds)...");
+        return x3::game::vehparts::runVehPartsSelfTest() ? 0 : 1;
     }
     if (testFootIk) {
         x3::logInfo("running foot-IK (two-bone + plant + pelvis) self-test...");

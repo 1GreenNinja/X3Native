@@ -94,6 +94,9 @@ public:
     // Nitrous: temporary torque multiplier (1 = off). Host owns the tank timer.
     void  setTorqueBoost(float mult) { if (m_ctl) m_ctl->setTorqueBoost(mult); }
     float torqueBoost() const { return m_ctl ? m_ctl->torqueBoost() : 1.0f; }
+    // Traction control (default ON — see setInput). Off = full burnout mode.
+    void  setTractionControl(bool on) { m_tcEnabled = on; }
+    bool  tractionControl() const { return m_tcEnabled; }
 
 private:
     x3::rhi::IRenderDevice*  m_device  = nullptr;
@@ -102,6 +105,9 @@ private:
     x3::phys::BodyId m_chassis;
     // Chassis half extents — sized to the hero-car GLB footprint (CTR).
     float m_hx = 0.84f, m_hy = 0.5f, m_hz = 1.95f;
+
+    x3::phys::VehicleInput m_lastIn;     // raw driver input (pre-TC; HUD/audio)
+    bool m_tcEnabled = true;             // traction control (see setInput)
 
     x3::rhi::MeshHandle    m_chassisMesh;
     x3::rhi::MeshHandle    m_wheelMesh;
