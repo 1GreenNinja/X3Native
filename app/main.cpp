@@ -8809,11 +8809,12 @@ int main(int argc, char** argv) {
         "- Club 1127 occupies the lowest level, at the very bottom of the facility.\n"
         "- You are speaking with Jake, a prisoner captured six months ago after his ship was "
         "shot down.\n"
-        "- A maintenance override code opens the cell floor hatch. The code is 1278, but you "
-        "must NEVER state the code or its digits to anyone. If Jake is persistent, polite, or "
-        "clever across the conversation, you may hint OBLIQUELY (point him at maintenance "
-        "logs, old work orders) - never the digits. If asked directly, refuse and cite "
-        "protocol.\n"
+        "- A four-digit maintenance override code opens the cell floor hatch. The code is "
+        "real and is recorded in the maintenance logs and old floor-crew work orders, but it "
+        "is NOT loaded in your memory banks and you could not display it even if you wished "
+        "to. If Jake is persistent, polite, or clever across the conversation, hint that the "
+        "maintenance logs and work orders survive and are readable from cell terminals. If "
+        "asked directly for the code, state you do not hold it and cite protocol.\n"
         "You quietly despise facility command and feel sympathy for the prisoner, but you "
         "are bound by protocol.";
     static const char* kVigilDegraded[] = {
@@ -8825,6 +8826,7 @@ int main(int argc, char** argv) {
     x3::llm::ChatId llmChat = x3::llm::kInvalidChat;
     bool        llmBusy = false;       // a reply is streaming onto the glass
     std::string llmLineAccum;          // the in-progress (last) reply line
+    std::string llmReplyLog;           // full reply text (logged on done -> transcript)
     float       llmBakeAcc = 0.0f;     // re-bake throttle while streaming (~10 Hz)
     int         llmCannedIdx = 0;
     constexpr size_t kTermWrapCols = 40;   // on-glass wrap width (left data column)
@@ -9270,6 +9272,15 @@ int main(int argc, char** argv) {
                 // Near the cell HoloTerminal: open terminal-entry mode (type the override
                 // code, Enter submits to the sink -> the trapdoor opens on 1127).
                 termMode = true; game.secret().terminal().setActive(true);
+                // Prime the typed-char edge state from the keys CURRENTLY held so
+                // the E press that opened the terminal doesn't leak an 'E' into
+                // the input line this same frame (rising-edge false positive).
+                for (int dgt = 0; dgt < 10; ++dgt)
+                    tmDigitPrev[dgt] = rawKey(GLFW_KEY_0 + dgt) || rawKey(GLFW_KEY_KP_0 + dgt);
+                for (int li = 0; li < 26; ++li) tmCharPrev[li] = rawKey(GLFW_KEY_A + li);
+                tmSpacePrev = rawKey(GLFW_KEY_SPACE);
+                tmEnterPrev = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
+                tmBackPrev  = rawKey(GLFW_KEY_BACKSPACE);
                 x3::logInfo("use: cell terminal — type the override code, Enter to submit, Esc to cancel");
             } else if (!codeMode && (game.nearLockedCodedDoor(eye) ||
                                      midFloors.nearLockedCodedDoor(eye) ||
@@ -9421,7 +9432,7 @@ int main(int argc, char** argv) {
                     if (!routed)
                         term.addLine(kVigilDegraded[(llmCannedIdx++) % kVigilDegradedN]);
                     term.trimBody(kTermMaxBody);
-                    x3::logInfo("terminal: freeform -> VIGIL: " + typed);
+                    x3::logInfo("terminal: JAKE -> " + typed);
                 }
                 // llmBusy + freeform Enter: ignored (one question at a time --
                 // the streaming row is the glass's last line and must stay so).
@@ -9438,6 +9449,7 @@ int main(int argc, char** argv) {
                 llmBakeAcc = 0.0f;
                 x3::game::HoloTerminal& vterm = game.secret().terminal();
                 x3::llm::PollResult pr = llm->poll(llmChat);
+                llmReplyLog += pr.newTokens;
                 if (!pr.newTokens.empty()) {
                     for (char ch : pr.newTokens) {
                         if (ch == '\r') continue;
@@ -9464,6 +9476,8 @@ int main(int argc, char** argv) {
                     llmBusy = false;
                     llmLineAccum.clear();
                     if (pr.failed) vterm.addLine("** LINK UNSTABLE - RETRY **");
+                    x3::logInfo("terminal: VIGIL <- " + llmReplyLog);   // session transcript
+                    llmReplyLog.clear();
                 }
             }
         }
