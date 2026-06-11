@@ -92,3 +92,14 @@ update of latency, absorbed by the mixer's live per-voice retune).
   thread, CONTINUOUS_PROCESSING so gunshot tails ring out).
 - `snd_rtacoustics 0` (or non-RT hardware): occlusion provider never hooked →
   the mixer play path is byte-for-byte the pre-acoustics path.
+
+## Suite verdicts (2026-06-11, 14900K / RTX 5090)
+
+- `--test-acoustics` 9/9, `--test-audio` 11/11 — Release AND Debug.
+- Full `--test-*` suite (82 flags): **81/82 in one sequential sweep; the lone
+  `--test-collapse` exit-127 was a load flake** (two OTHER agents' X3Engine
+  GPU tests were saturating the machine concurrently) — re-ran 4x directly:
+  29/29 green every time.
+- Release `--smoketest`: exit 0, `VMA shutdown leak check: live
+  allocationCount=0`. Debug `--smoketest` (validation layers): exit 0, zero
+  VUIDs, allocationCount=0.
