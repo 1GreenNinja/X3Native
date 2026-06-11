@@ -161,6 +161,11 @@ public:
         float aeMin          = 0.70f;  // r_aemin: adapted-exposure clamp floor
         float aeMax          = 2.20f;  // r_aemax: adapted-exposure clamp ceiling
         float aeKey          = 0.18f;  // r_aekey: target middle-grey key
+        bool  taa            = true;   // r_taa: temporal AA (Halton jitter + history
+                                       // resolve). 0 = jitter fully off + resolve pass
+                                       // skipped -> byte-identical to the pre-TAA path.
+        float taaSharpen     = 0.25f;  // r_taasharpen: post-resolve RCAS-style sharpen
+                                       // amount (0 = off). Only applied when taa is on.
     };
     virtual void setPostFX(const PostFXParams&) {}
 

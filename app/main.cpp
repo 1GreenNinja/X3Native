@@ -657,6 +657,11 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("r_aemin",          "0.7",  "auto-exposure clamp floor (max darkening of bright scenes)");
     console.registerCVar("r_aemax",          "2.2",  "auto-exposure clamp ceiling (max lift of dark scenes)");
     console.registerCVar("r_aekey",          "0.18", "auto-exposure target middle-grey key");
+    // TAA (temporal anti-aliasing): Halton(2,3) sub-pixel jitter + history resolve
+    // before bloom/tonemap. r_taa 0 turns the jitter fully off and skips the
+    // resolve pass -> byte-identical to the pre-TAA render path (A/B).
+    console.registerCVar("r_taa",        "1",    "temporal AA: 1 = jitter + history resolve (default), 0 = off (byte-identical pre-TAA path)");
+    console.registerCVar("r_taasharpen", "0.25", "post-TAA RCAS-style sharpen amount (0 = off; only applied while r_taa 1)");
     // (3rd-person Jake tuning cvars removed 2026-05-27: dialed-in values
     // jake_yoff=1.03 / jake_yawoff_deg=90 / jake_camdist=2.3 / jake_camh=0.37
     // are now baked as member defaults in app/thirdperson.h.)
@@ -705,6 +710,11 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     if (px.aeMin   <= 0.0f) px.aeMin   = 0.7f;
     if (px.aeMax   <  px.aeMin) px.aeMax = px.aeMin;
     if (px.aeKey   <= 0.0f) px.aeKey   = 0.18f;
+    // TAA (live): r_taa gates the jitter + resolve; r_taasharpen [0..1].
+    px.taa        = console.getInt("r_taa") != 0;
+    px.taaSharpen = console.getFloat("r_taasharpen");
+    if (px.taaSharpen < 0.0f) px.taaSharpen = 0.0f;
+    if (px.taaSharpen > 1.0f) px.taaSharpen = 1.0f;
     device.setPostFX(px);
 }
 
@@ -1376,7 +1386,12 @@ int main(int argc, char** argv) {
     std::string skyShotPath = "G:/X3Native/sky.png";
     // --legacypost A/B: 1 = auto-exposure off (the pre-post-stack look);
     // 2 = also bloom off + tonemap passthrough (raw HDR clamp debugging).
+    // BOTH levels also force TAA off — "legacy" means the pre-strike renderer,
+    // and the bit-identical guarantee predates the TAA jitter.
     int         legacyPost = 0;
+    // --notaa A/B: disable TAA only (jitter fully off + resolve skipped) so
+    // before/after screenshots isolate exactly the TAA contribution.
+    bool        noTaa = false;
     // Showroom preview (--screenshot-showroom [path.png]): load the baked Unity scene
     // export (assets/converted_glb/ShowRoom_Vol30/Example_01.glb), frame the camera on
     // the building cluster, capture a PBR-shaded PNG. Headless, like --screenshot.
@@ -1545,6 +1560,7 @@ int main(int argc, char** argv) {
         if (a == "--smoketest") smoketest = true;
         else if (a == "--legacypost")  legacyPost = 1;   // A/B: auto-exposure OFF (pre-strike look)
         else if (a == "--legacypost2") legacyPost = 2;   // A/B: + bloom OFF + tonemap passthrough
+        else if (a == "--notaa")       noTaa = true;     // A/B: TAA off (jitter + resolve disabled)
         else if (a == "--test-rt") { smoketest = true; testRt = true; }
         else if (a == "--test-jobs") testJobs = true;
         else if (a == "--test-asset") testAsset = true;
@@ -2424,14 +2440,23 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // --legacypost: A/B switch — disable the post-stack additions (auto-exposure;
-    // and with --legacypost2 also bloom + ACES->passthrough) so any path, headless
-    // screenshots included, can be compared against the pre-post-stack renderer.
-    if (legacyPost) {
+    // --legacypost: A/B switch — disable the post-stack additions (auto-exposure +
+    // TAA; and with --legacypost2 also bloom + ACES->passthrough) so any path,
+    // headless screenshots included, can be compared against the pre-post-stack
+    // renderer. --notaa: disable ONLY TAA (jitter fully off + resolve skipped) so
+    // before/after captures isolate the TAA contribution. Both also pin the cvars
+    // so the interactive per-frame cvar sync doesn't re-enable the feature.
+    if (legacyPost || noTaa) {
         x3::rhi::IRenderDevice::PostFXParams px{};
-        px.autoExposure = false;                 // legacy = no eye adaptation
-        if (legacyPost > 1) { px.bloomEnabled = false; px.tonemapMode = 0; }
+        if (legacyPost) {
+            px.autoExposure = false;             // legacy = no eye adaptation
+            px.taa = false;                      // legacy = no TAA jitter/resolve
+            if (legacyPost > 1) { px.bloomEnabled = false; px.tonemapMode = 0; }
+        }
+        if (noTaa) px.taa = false;
         device->setPostFX(px);
+        // (The interactive path additionally pins the matching cvars right after
+        // the console exists, so the per-frame cvar sync can't re-enable these.)
     }
 
     // ---- Level Architect EDITOR overlay init (--editor / --screenshot-editor) ----
@@ -7704,6 +7729,15 @@ int main(int argc, char** argv) {
     // and vm_fwd/vm_right/vm_down (m); read them each frame and feed the pose to
     // drawViewmodel so typing e.g. `vm_pitch 10` moves the held gun immediately.
     registerViewmodelCVars(*console);
+
+    // --legacypost / --notaa: pin the matching cvars so the per-frame cvar->device
+    // sync (applyRtaoCVars) keeps the A/B state instead of re-enabling defaults.
+    if (legacyPost) {
+        console->set("r_autoexposure", "0");
+        console->set("r_taa", "0");
+        if (legacyPost > 1) { console->set("r_bloom", "0"); console->set("r_tonemap", "0"); }
+    }
+    if (noTaa) console->set("r_taa", "0");
 
     // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
     // render path so the BLAS/TLAS build + ray-query AO compute + apply passes are
