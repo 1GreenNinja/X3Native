@@ -23,6 +23,7 @@
 #include "engine/net/ISnapshotInterpolator.h"  // netcode Phase 0c: --test-netinterp
 #include "engine/net/IClientPredictor.h"        // netcode Phase 1: --test-netpredict
 #include "engine/ai/INavigation.h"       // GENERAL navigation: nav grid + A* + --test-nav
+#include "engine/llm/ILlmSystem.h"       // in-engine LLM (living NPC minds) + --test-llm
 
 #include "scene.h"
 #include "mesh_prims.h"
@@ -1227,7 +1228,7 @@ int main(int argc, char** argv) {
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
          testBlockout = false,
-         testBarrels = false, testGlass = false, testHoloterm = false, testEcs = false, testEcsRender = false,
+         testBarrels = false, testGlass = false, testHoloterm = false, testLlm = false, testEcs = false, testEcsRender = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
@@ -1609,6 +1610,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-barrels") testBarrels = true;
         else if (a == "--test-glass") testGlass = true;
         else if (a == "--test-holoterm") testHoloterm = true;
+        else if (a == "--test-llm") testLlm = true;
         else if (a == "--test-secretroom") testSecretRoom = true;
         else if (a == "--test-ecs") testEcs = true;
         else if (a == "--test-ecsrender") testEcsRender = true;
@@ -1932,6 +1934,13 @@ int main(int argc, char** argv) {
     if (testSecretRoom) {
         x3::logInfo("running secret-room (code-locked trapdoor) self-test...");
         return x3::game::runSecretRoomSelfTest() ? 0 : 1;
+    }
+    if (testLlm) {
+        // Mock plumbing always; the real-model round-trip is gated on the .gguf
+        // existing (see assets/models/llm/README.md for the download command).
+        x3::logInfo("running in-engine LLM (NPC minds) self-test...");
+        const std::string llmModel = x3::game::assetRoot() + "/models/llm/qwen2.5-3b-instruct-q4_k_m.gguf";
+        return x3::llm::runLlmSelfTest(llmModel.c_str()) ? 0 : 1;
     }
     if (testEcs) {
         x3::logInfo("running ECS (sparse-set, 50k entities) self-test...");
