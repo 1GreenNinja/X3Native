@@ -643,6 +643,10 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // 1.0 = unchanged. The in-game "showroom brightness" knob: `r_exposure 1.5` brightens,
     // `r_exposure 0.7` dims. Type it in the console (~) and the scene updates immediately.
     console.registerCVar("r_exposure", "1.0", "whole-scene brightness (pre-tonemap exposure multiplier; live)");
+    // Metal ambient-specular floor (mesh.frag IBL path): metals in a DARK baked
+    // environment keep an F0-tinted ambient response instead of rendering black.
+    // 1 = on (default), 0 = off, >1 strengthens. Live (synced in applyRtaoCVars).
+    console.registerCVar("r_metalambient", "1", "metal ambient-specular floor (0 = off; metals keep an F0-tinted ambient in dark environments; live)");
     // (3rd-person Jake tuning cvars removed 2026-05-27: dialed-in values
     // jake_yoff=1.03 / jake_yawoff_deg=90 / jake_camdist=2.3 / jake_camh=0.37
     // are now baked as member defaults in app/thirdperson.h.)
@@ -675,6 +679,8 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     // Whole-scene brightness dial (live; default 1.0 = unchanged). Piggybacks the
     // per-frame cvar->device sync so `r_exposure` takes effect immediately.
     device.setExposure(console.getFloat("r_exposure"));
+    // Metal ambient-specular floor (live; default 1.0 = on, 0 = off).
+    device.setMetalAmbient(console.getFloat("r_metalambient"));
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.
