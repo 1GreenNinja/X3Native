@@ -56,8 +56,38 @@ everything-word."* The r1b branch ("Say it plain, Sergeant") gets the plainest d
 in the pack. Declining is clean — "you get the second-best thing I've got, which is
 everything minus one" — no soured banter. Gate: rel 3, love ≥ 70, **not** `torres_alive`.
 
+### desire — the drill that stops pretending (heat 4/5, gate: `keisha.romance`)
+A sparring session where her corrections stop being corrections: hips squared to his, breath
+at his ear, "my professionalism is shot, soldier... permission to stop needing one." The
+d1b branch (he confesses to losing form on purpose) gets the wall-pin and "punishment
+detail to follow" — she leaves him against the wall with his heart rate "somewhere
+unprofessional." Decline is instant, clean, soldierly: "Copy that. Holding position...
+Drill's over — hydrate." Costs nothing, re-offers.
+
+### night — the watch is cancelled (heat 5/5, gate: rel ≥ 3 + `keisha.romance` + `keisha.desire` + `loc.private`)
+She walks the perimeter, throws the bolt, and the watch-the-door posture *deliberately*
+stands down — the most intimate thing Keisha can do. Threshold consent is in her cadence
+("Last call to object, soldier"). The act is hers to lead — the Marine takes point — fierce,
+loud, "two soldiers refusing to die quiet in a building built on silence"; the months of
+too-late dreams surface and burn off. Aftermath lands the cardamom-kitchen payoff at full
+volume: *"Tonight I went somewhere new. It's this. You're the new somewhere."* Sets
+`keisha.night`, fires `romance_consummated`. Decline branch is shoulder-to-shoulder
+watch-stand ("the boring pages are my favorites") — zero cost.
+
+### afterglow — three hours (gate: `keisha.night`, once)
+She sleeps past her ninety minutes for the first time since the table — three straight
+hours, his doing — and issues new standing orders (her spot, his six). The a1b tease branch
+ends with her stealing a kiss like contraband and "Last night you were VERY loud" through a
+closing door. She hums while she dresses now.
+
+### banter (romance-gated additions)
+Six new lines: "Eyes front, soldier — mine weren't," loser-takes-orders sparring,
+field-stripping his rifle as "couples stuff," the post-firefight "Later. Door. Lock."
+briefing, the three-hours trust line, and Jake painted into the cardamom-Sunday kitchen
+("by the window, second cup — deal with it").
+
 ### infected_lost — Breeder Queen seed
 The horror is perfected cadence with no breath behind it, and the empty pocket where the
 kitchen was.
 
-## Flags: `keisha.met / .interrupted / .promise_asked / .knows_sarah / .sq_active / .sq_done / .torres_truth / .torres_alive / .torres_dead / .romance / .romance_declined / .romance_torres`
+## Flags: `keisha.met / .interrupted / .promise_asked / .knows_sarah / .sq_active / .sq_done / .torres_truth / .torres_alive / .torres_dead / .romance / .romance_declined / .romance_torres / .desire / .night / .afterglow` · Host flag read: `loc.private`
