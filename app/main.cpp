@@ -3002,7 +3002,9 @@ int main(int argc, char** argv) {
         if (const char* e = std::getenv("X3_SHOWROOM_MAXDRAW")) showroomMaxDraw = (uint32_t)std::strtoul(e, nullptr, 10);
         x3::logInfo("--screenshot-showroom: maxDraw=" + std::to_string(showroomMaxDraw));
 
-        const int kSettle = 16;
+        // --ddgi: give the probe field time to converge (hysteresis warm-up ramp
+        // + a few multibounce generations) before the still is captured.
+        const int kSettle = ddgiForce ? 120 : 16;
         for (int i = 0; i < kSettle; ++i) {
             glfwPollEvents();
             if (i == kSettle - 1) device->armCapture(showroomShotPath.c_str());
@@ -4892,7 +4894,7 @@ int main(int argc, char** argv) {
             // capturing the caves/boss arena from a custom vantage during verify).
             if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
             device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
-            const int kSettle = 24;   // advance enough for character skinning + bloom
+            const int kSettle = ddgiForce ? 120 : 24;   // advance enough for character skinning + bloom (+ DDGI convergence with --ddgi)
             const float dt = 1.0f / 60.0f;
             const std::string outPath = screenshot ? screenshotPath
                                                    : std::string("C:/GameDev/X3Native-engine/agent_club.png");
@@ -6672,7 +6674,7 @@ int main(int argc, char** argv) {
                 }
             }
             // Ragdoll shot needs ~45 physics steps to fall + settle; FP shot just settles.
-            const int kSettle = ragShot ? 50 : 24;
+            const int kSettle = ragShot ? 50 : (ddgiForce ? 120 : 24);   // --ddgi: probe-field convergence
             const float dt = 1.0f / 60.0f;
             float elapsed = 10.0f;   // non-zero so the starfield/clouds read animated
             const std::string outPath =
