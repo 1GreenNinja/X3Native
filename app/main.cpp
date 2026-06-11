@@ -8776,7 +8776,10 @@ int main(int argc, char** argv) {
                 }
                 const double ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - rt0).count();
-                if (rtaCpuMs < 0.0 || ms > rtaCpuMs) rtaCpuMs = ms;   // worst pair
+                // Steady-state cost only: the FIRST submit lazily builds the
+                // pipeline/buffer chain (~tens of ms, one-time) — exclude it.
+                if (rtaHarvested > 0 && (rtaCpuMs < 0.0 || ms > rtaCpuMs))
+                    rtaCpuMs = ms;   // worst steady-state pair
                 if (i == 29) {
                     if (rtaHarvested > 0) {
                         char rb[200];
