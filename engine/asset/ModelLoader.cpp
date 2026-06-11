@@ -430,6 +430,20 @@ private:
                     }
                 }
             }
+            // CLEARCOAT lobe (car paint) via material.extras["x3Clearcoat"] (same
+            // converter-extras pattern as x3Detail): {"intensity":F,"roughness":F}.
+            // glTF has KHR_materials_clearcoat but the converter writes extras so
+            // the whole chain stays on the one proven path.
+            if (cm.extras.data) {
+                const char* cj = std::strstr(cm.extras.data, "\"x3Clearcoat\"");
+                if (cj) {
+                    double ci = 1.0, cr = 0.05;
+                    if (const char* i = std::strstr(cj, "\"intensity\"")) std::sscanf(i, "\"intensity\":%lf", &ci);
+                    if (const char* r = std::strstr(cj, "\"roughness\"")) std::sscanf(r, "\"roughness\":%lf", &cr);
+                    m.clearcoat      = (float)(ci < 0.0 ? 0.0 : (ci > 1.0 ? 1.0 : ci));
+                    m.clearcoatRough = (float)(cr < 0.01 ? 0.01 : (cr > 1.0 ? 1.0 : cr));
+                }
+            }
             m.doubleSided  = cm.double_sided != 0;
             m.alphaBlend   = (cm.alpha_mode == cgltf_alpha_mode_blend);
             m.alphaMask    = (cm.alpha_mode == cgltf_alpha_mode_mask);
@@ -778,6 +792,8 @@ bool fillDrawable(const Model& m, const MeshPrimitive& p, const float nodeWorld[
         if ((mat.detailTex & kTagMask) == kTexTag)
             d.detailTexId = static_cast<uint32_t>(mat.detailTex & ~kTagMask);
         d.detailUvScale = mat.detailUvScale;
+        d.clearcoat      = mat.clearcoat;
+        d.clearcoatRough = mat.clearcoatRough;
     }
     for (int i = 0; i < 16; ++i) d.nodeTransform[i] = nodeWorld[i];
     return true;

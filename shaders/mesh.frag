@@ -126,6 +126,10 @@ layout(location = 0) out vec4 outColor;
 // Per-object flag bits (match mesh.vert + VulkanRenderDevice.cpp kFlag*).
 const uint FLAG_TERRAIN = 1u;
 const uint FLAG_GLASS   = 2u;
+// CLEARCOAT (car paint): a second fixed-F0 (0.04) specular lobe over the base
+// layer. Params ride the SPARE terrain-pack1 lane (vTerrainPack.x — mutually
+// exclusive with TERRAIN): low byte = intensity*255, next byte = roughness*255.
+const uint FLAG_CLEARCOAT = 4u;
 const vec3 kSunColor = vec3(1.0, 0.97, 0.92);          // slightly warm white sun
 
 // ===========================================================================
@@ -610,6 +614,78 @@ void main() {
         // ambient diffuse + ambient*3.4*Fresnel constant (kept as the no-env fallback).
         Lo += iblAmbient(N, V, albedo.rgb, metallic, pRough, F0, ao, ambient, up, ddgiGI);
         color = Lo;
+    }
+
+    // ======================================================================
+    // CLEARCOAT lobe (car paint, FLAG_CLEARCOAT): a SECOND specular layer with
+    // a fixed dielectric F0 (0.04 — lacquer over the base coat) and its own low
+    // roughness, energy-conserving: the coat's view-angle fresnel ATTENUATES the
+    // base result (light reflected by the coat never reaches the paint below),
+    // then the coat's own direct GGX + mirror-sharp environment (prefiltered env
+    // with the SSR/RT reflection replace — the emissive-panel sweep money shot)
+    // are added on top. The coat shades on the GEOMETRIC normal (a lacquer film
+    // is smooth — it must not inherit micro normal-map detail), which also keeps
+    // the fresnel rim clean across body curvature.
+    // ======================================================================
+    if ((vFlags & FLAG_CLEARCOAT) != 0u) {
+        float ccI = float(vTerrainPack.x & 0xFFu) / 255.0;
+        float ccR = max(float((vTerrainPack.x >> 8) & 0xFFu) / 255.0, 0.02);
+        vec3  Nc  = normalize(vNormal);
+        vec3  Vc  = normalize(cam.camPos.xyz - vWorldPos);
+        float NoVc = max(dot(Nc, Vc), 1e-4);
+        float aCc  = ccR * ccR;
+        // Coat fresnel at the view angle = the energy the coat takes from the base.
+        float Fc = (0.04 + 0.96 * pow(1.0 - NoVc, 5.0)) * ccI;
+        color *= (1.0 - Fc);
+        // Direct lights through the coat lobe (sun shadowed like the base).
+        vec3 ccLo = vec3(0.0);
+        {
+            float NoL = max(dot(Nc, kSunDir), 0.0);
+            if (NoL > 0.0) {
+                vec3 H = normalize(Vc + kSunDir);
+                float NoH = max(dot(Nc, H), 0.0), VoH = max(dot(Vc, H), 0.0);
+                float Fd  = 0.04 + 0.96 * pow(1.0 - VoH, 5.0);
+                ccLo += kSunColor * shadow
+                      * (D_GGX(NoH, aCc) * V_SmithGGX(NoVc, NoL, aCc) * Fd * NoL);
+            }
+            for (int i = 0; i < nLights && i < kMaxPointLights; ++i) {
+                vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
+                float dist = length(toL);
+                vec3  L    = toL / max(dist, 0.0001);
+                float NoL2 = max(dot(Nc, L), 0.0);
+                if (NoL2 <= 0.0) continue;
+                vec3 H = normalize(Vc + L);
+                float NoH = max(dot(Nc, H), 0.0), VoH = max(dot(Vc, H), 0.0);
+                float Fd  = 0.04 + 0.96 * pow(1.0 - VoH, 5.0);
+                ccLo += cam.lights[i].colorPad.rgb * pointAtten(dist, cam.lights[i].posRange.w)
+                      * (D_GGX(NoH, aCc) * V_SmithGGX(NoVc, NoL2, aCc) * Fd * NoL2);
+            }
+        }
+        // Coat environment: prefiltered env along the coat reflection, with the
+        // SSR/RT reflection buffer REPLACING it where confident (same blend +
+        // roughness gate + Reinhard rolloff as the base IBL specular).
+        vec3 envC;
+        if (ssao.ibl.x > 0.5) {
+            vec3 Rc  = reflect(-Vc, Nc);
+            vec3 pre = textureLod(prefilterCube, Rc, ccR * max(ssao.ibl.z, 0.0)).rgb;
+            if (ssao.refl.x > 0.5) {
+                vec2 ruv = gl_FragCoord.xy * ssao.ctrl.zw;
+                vec4 rr  = texture(reflTex, ruv);
+                float rw = clamp(rr.a, 0.0, 1.0) * clamp(ssao.refl.y, 0.0, 1.0)
+                         * (1.0 - smoothstep(0.25, 0.6, ccR));
+                pre = mix(pre, rr.rgb, rw);
+            }
+            vec2 ab = texture(brdfLUT, vec2(NoVc, ccR)).rg;
+            envC = pre * (vec3(0.04) * ab.x + ab.y);
+            envC = envC / (1.0 + envC);
+            envC *= ssao.ibl.y;
+        } else {
+            // No baked env: the legacy flat-ambient fresnel rim, so the coat still
+            // reads on paths without IBL (matches the old ambient-specular look).
+            envC = ambient * 3.4 * (0.04 + 0.96 * pow(1.0 - NoVc, 5.0)) * mix(0.55, 1.1, up);
+        }
+        float specAoC = clamp(ao + 0.4, 0.0, 1.0);
+        color += (ccLo + envC * specAoC) * ccI;
     }
 
     // ---- DDGI debug views (r_ddgi_debug): 1 = the raw interpolated probe

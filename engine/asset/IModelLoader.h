@@ -58,6 +58,11 @@ struct Material {
     uint64_t detailTex    = 0;   // HDRP DetailMap (R=desat albedo, G=nrmY, B=smooth, A=nrmX); 0 = none
     float    detailUvScale = 1.0f;   // detail UV tiling (from the converter's x3Detail extras)
     float    detailNrmScale = 1.0f;
+    // CLEARCOAT lobe (car paint): a second fixed-F0 (0.04) low-roughness specular
+    // layer over the base, from the converter's material.extras["x3Clearcoat"]
+    // {intensity, roughness} — the x3Detail extras pattern. 0 = none (default).
+    float    clearcoat      = 0.0f;
+    float    clearcoatRough = 0.05f;
     bool     doubleSided  = false;
     bool     alphaBlend   = false;
     bool     alphaMask    = false;   // glTF alphaMode==MASK (alpha-cutout)
@@ -143,6 +148,8 @@ struct ModelDrawable {
     uint32_t emissiveTexId = 0;          // -> rhi::TextureHandle{ } (0 == none; emissive map)
     uint32_t detailTexId   = 0;          // -> rhi::TextureHandle{ } (0 == none; HDRP micro-detail map)
     float    detailUvScale = 1.0f;       // detail UV tiling (mesh.frag samples detail at vUV*this)
+    float    clearcoat     = 0.0f;       // clearcoat intensity (car paint); 0 = no clearcoat lobe
+    float    clearcoatRough = 0.05f;     // clearcoat roughness (mirror-ish lacquer)
     float    baseColorFactor[4] = {1, 1, 1, 1};
     float    nodeTransform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; // node world (column-major)
 };

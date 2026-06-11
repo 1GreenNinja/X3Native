@@ -1477,10 +1477,11 @@ public:
                      TextureHandle normal, TextureHandle metalRough,
                      const float baseColorFactor[4], const float emissive[4],
                      const float model[16], bool alphaMask = false, bool alphaBlend = false, TextureHandle emissiveTex = {},
-                     TextureHandle detailTex = {}, float detailUvScale = 1.0f) override {
+                     TextureHandle detailTex = {}, float detailUvScale = 1.0f,
+                     float clearcoat = 0.0f, float clearcoatRough = 0.05f) override {
         drawMeshInternal(fc, mesh, baseColor, normal, metalRough, baseColorFactor, emissive,
                          model, alphaMask, alphaBlend, emissiveTex, detailTex, detailUvScale,
-                         /*extraFlags=*/0u, /*glass=*/nullptr);
+                         /*extraFlags=*/0u, /*glass=*/nullptr, clearcoat, clearcoatRough);
     }
 
     // Shared draw record append. The opaque/emissive/PBR/glass paths differ only by
@@ -1491,7 +1492,8 @@ public:
                           const float baseColorFactor[4], const float emissive[4],
                           const float model[16], bool alphaMask, bool alphaBlend,
                           TextureHandle emissiveTex, TextureHandle detailTex, float detailUvScale,
-                          uint32_t extraFlags, const GlassMaterial* glass) {
+                          uint32_t extraFlags, const GlassMaterial* glass,
+                          float clearcoat = 0.0f, float clearcoatRough = 0.05f) {
         if (!fc.valid || !m_meshPipeline) return;
         // GPU-driven path: drawMesh records NO commands and binds NO descriptors.
         // It appends a CPU record; endFrame() groups by mesh + emits multidraw-
@@ -1540,6 +1542,17 @@ public:
         // pad2 = snow<<16 | sand (each well under 65535 — kMaxTextures = 4096).
         r.terrainPack1 = (m_terrainTexIdx[0] << 16) | (m_terrainTexIdx[1] & 0xFFFFu);
         r.terrainPack2 = (m_terrainTexIdx[2] << 16) | (m_terrainTexIdx[3] & 0xFFFFu);
+        // CLEARCOAT (car paint): reuse the SPARE pack1 lane — a clearcoat draw is
+        // never the terrain marker, so the lane is free. 8.8 fixed point:
+        // low byte = intensity*255, next byte = roughness*255. flags bit2 gates
+        // the fragment lobe; every non-clearcoat draw is byte-identical.
+        if (clearcoat > 0.001f && (r.flags & kFlagTerrain) == 0u) {
+            const float ccI = clearcoat      < 0.0f ? 0.0f : (clearcoat      > 1.0f ? 1.0f : clearcoat);
+            const float ccR = clearcoatRough < 0.0f ? 0.0f : (clearcoatRough > 1.0f ? 1.0f : clearcoatRough);
+            r.flags |= kFlagClearcoat;
+            r.terrainPack1 = ((uint32_t)(ccR * 255.0f + 0.5f) << 8)
+                           |  (uint32_t)(ccI * 255.0f + 0.5f);
+        }
         uint32_t emisIdx = 0;
         if (emissiveTex.valid()) {
             auto it = m_textures.find(emissiveTex.id);
@@ -1889,6 +1902,10 @@ private:
     // can test either without ambiguity.
     static constexpr uint32_t kFlagTerrain = 1u << 0;
     static constexpr uint32_t kFlagGlass   = 1u << 1;
+    // CLEARCOAT (car paint): mesh.frag adds a second fixed-F0 specular lobe; the
+    // packed {roughness<<8 | intensity} byte pair rides the SPARE terrain-pack1
+    // lane (mutually exclusive with TERRAIN, which owns that lane when set).
+    static constexpr uint32_t kFlagClearcoat = 1u << 2;
 
     // CPU-side per-draw record accumulated by drawMesh(), consumed by endFrame().
     struct DrawRecord {

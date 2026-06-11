@@ -92,3 +92,4 @@ captures/
 # so they stay out of LFS (the kit is the source of truth).
 assets/converted_glb/ShowRoom_Vol30/*
 !assets/converted_glb/ShowRoom_Vol30/Example_01.glb
+.staging/

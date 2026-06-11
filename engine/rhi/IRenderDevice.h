@@ -239,12 +239,17 @@ public:
     // (id 0) make this identical to drawMeshEmissive (the shader skips its PBR
     // branch for that object), so the default impl below simply forwards — only
     // the GLB drawable path (env_art / models carrying PBR maps) needs real PBR.
+    // `clearcoat`/`clearcoatRough` (car paint): a second fixed-F0 (0.04) specular
+    // lobe over the base layer (mesh.frag), carried per-object in a spare SSBO
+    // lane (the terrain-pack field — mutually exclusive with TERRAIN). 0 = none;
+    // every existing call site keeps the default and shades byte-identically.
     virtual void          drawMeshPBR(const FrameContext& fc, MeshHandle mesh, TextureHandle baseColor,
                                       TextureHandle /*normal*/, TextureHandle /*metalRough*/,
                                       const float baseColorFactor[4], const float emissive[4],
                                       const float model[16], bool /*alphaMask*/ = false,
                                       bool /*alphaBlend*/ = false, TextureHandle /*emissiveTex*/ = {},
-                                      TextureHandle /*detailTex*/ = {}, float /*detailUvScale*/ = 1.0f) {
+                                      TextureHandle /*detailTex*/ = {}, float /*detailUvScale*/ = 1.0f,
+                                      float /*clearcoat*/ = 0.0f, float /*clearcoatRough*/ = 0.05f) {
         drawMeshEmissive(fc, mesh, baseColor, baseColorFactor, emissive, model);
     }
 
