@@ -14,6 +14,7 @@ are bit-reproducible (the march jitter seed is a pure frame counter).
 | `gallery_refl_on/off.png` | Hidden analyst gallery overlook. Top-down floor angles are correctly FADED (backface gate) instead of lying — differences are subtle by design. |
 | `level1_refl_on/off.png` | Level-1 spawn still — lab walls/floor pick up subtle SSR; gameplay readability unchanged. |
 | `nightsky_refl_on/off.png` | Night-sky sanity: md5-IDENTICAL on/off (sky pixels are not reflectors — confidence 0 by construction). |
+| `motion_frame15_on/off.png` | `--capture-ai` mid-fight motion frame: reflections stay stable under camera/monster motion — no SSR trails or jitter sparkle (the march's start jitter integrates away in TAA; mean on/off delta 0.25 on the rough checker plane). |
 
 A/B verdicts (md5, Level-1 still, vs a fresh base build at 20db239 = feat/taa + metal-ambient):
 - base default == feat/reflections `--norefl` -> **identical** (`fd0cce05...`, the exact hash documented in the TAA proof)
