@@ -7,7 +7,14 @@ of the suite (mock plumbing still runs).
 
 ## Get the model
 
-Qwen2.5-3B-Instruct, Q4_K_M quant (**Apache 2.0** — clean for commercial use):
+Qwen2.5-3B-Instruct, Q4_K_M quant:
+
+> **LICENSE WARNING:** Qwen2.5-**3B** ships under the **Qwen Research License**
+> (NON-commercial) — unlike its 1.5B/7B/14B/32B siblings, which are Apache 2.0.
+> Fine for development; for a commercial build swap in an Apache-2.0 GGUF
+> (e.g. `Qwen/Qwen2.5-1.5B-Instruct-GGUF` or `Qwen2.5-7B-Instruct-GGUF`) —
+> the engine loads ANY `.gguf` dropped into this directory when the default
+> filename is absent.
 
 ```sh
 curl -L -o assets/models/llm/qwen2.5-3b-instruct-q4_k_m.gguf \

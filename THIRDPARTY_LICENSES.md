@@ -20,6 +20,18 @@ obligations on the engine).
 | stb (stb_image, stb_image_write) | MIT / public-domain (dual) | image decode + PNG screenshot write | github.com/nothings/stb |
 | miniaudio | MIT-0 / public-domain (dual) | audio playback / 3D | github.com/mackron/miniaudio |
 
+## Vendored via CMake FetchContent
+
+| Library | License | Use | Source |
+|---|---|---|---|
+| llama.cpp + ggml (pinned tag `b9590`) | MIT | in-engine LLM inference (NPC minds), CPU backend only | github.com/ggml-org/llama.cpp |
+
+### LLM model weights (data, NOT in git)
+
+| Model | License | Notes |
+|---|---|---|
+| Qwen2.5-3B-Instruct Q4_K_M (GGUF) | **Qwen Research License (NON-commercial)** | dev default; download per `assets/models/llm/README.md`. ⚠️ The 3B size is NOT Apache 2.0 (1.5B/7B/14B/32B are) — swap an Apache-2.0 GGUF (e.g. Qwen2.5-1.5B/7B-Instruct) before any commercial ship; the engine loads any `.gguf` in `assets/models/llm/`. |
+
 ## Embedded in-tree
 
 | Component | License | Use | Notes |

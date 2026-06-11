@@ -7800,8 +7800,18 @@ int main(int argc, char** argv) {
     // assets/models/llm/README.md. MODELLESS the game still works: ai_npc
     // defaults OFF when the file is absent and the terminal serves canned
     // "SYSTEMS DEGRADED" lines instead.
-    const std::string llmModelPath =
+    std::string llmModelPath =
         x3::game::assetRoot() + "/models/llm/qwen2.5-3b-instruct-q4_k_m.gguf";
+    if (!std::filesystem::exists(llmModelPath)) {
+        // Model-agnostic fallback: any .gguf dropped into assets/models/llm/
+        // works (e.g. an Apache-2.0 Qwen2.5-1.5B/7B for commercial builds —
+        // see assets/models/llm/README.md on licensing).
+        std::error_code fec;
+        for (const auto& e : std::filesystem::directory_iterator(
+                 x3::game::assetRoot() + "/models/llm", fec)) {
+            if (e.path().extension() == ".gguf") { llmModelPath = e.path().string(); break; }
+        }
+    }
     const bool llmModelPresent = std::filesystem::exists(llmModelPath);
     console->registerCVar("ai_npc",       llmModelPresent ? "1" : "0",
                           "LLM NPC minds (terminal freeform Q&A); default 1 only when the model file exists");
