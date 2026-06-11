@@ -41,6 +41,7 @@
             { "text": "What's ABOVE the surface? Nobody's seen the sky in months.", "next": "r_surface" },
             { "text": "A big ship shot me down six months ago. Who flies something that size?", "next": "r_quartermaster", "if": [ {"flag": "harvest.known"} ] },
             { "text": "The barcode man walked off the floor. He said you'd know what that's worth.", "next": "r_reyes", "if": [ {"flag": "reyes.fled"}, {"not": {"flag": "vesper.reyes_paid"}} ] },
+            { "text": "Tonight I'm not shopping for rumors. I'm looking at the bartender.", "next": "f2" },
             { "text": "Just the drink tonight.", "next": "v_drink" }
           ] },
         { "id": "r_architect",
@@ -69,7 +70,32 @@
           "next": "v_menu" },
         { "id": "v_drink",
           "line": "Smartest order in the house. *she pours, and for one song's length nobody in the world is breeding anything, hunting anything, or counting down to anything* The Architect used to say a room like this isn't an escape from the war, honey. It's the EXHIBIT. The thing you point at when somebody asks what the war was about. *she leaves you the bottle* Go win the argument.",
-          "next": "end" }
+          "next": "end" },
+        { "id": "f2",
+          "_scene": "THE FLIRTATION THREAD (heat 3-4/5, never consummated — the tease IS her currency). Entry cascades: f2 requires vesper.flirt2, else f1; f1 requires vesper.flirt1, else f0. So the thread escalates across visits and f2 is the repeatable standing dance.",
+          "if": [ {"flag": "vesper.flirt2"} ],
+          "else": "f1",
+          "line": "*the music slows. You'd swear she did it. You'd be right.* Back for the top shelf again. *she pours two fingers of the good bottle and slides it across, letting her fingers brush yours one deliberate beat too long* Let me tell you how this dance ends, honey, since you keep asking with your eyes. It doesn't. *she says it like the kindest thing in the building, and maybe it is* The tease is the top shelf. The day I pour it, it's GONE — and then you're just another man who got what he wanted at Vesper's, and I'm just another bottle with a story on the label. *she leans in, one inch from scandal, voice dropped to the register the speakers use on the rock below* Whereas THIS... this I can serve you forever. *she straightens — wicked, warm, untouchable* Now buy a rumor or go blush somewhere profitable, you gorgeous catastrophe. You're terrible for my concentration and WONDERFUL for business.",
+          "choices": [
+            { "text": "One day, Vesper, you'll pour it.", "next": "f2_a" },
+            { "text": "Worth every visit. The drink's a bonus.", "next": "f2_b" }
+          ] },
+        { "id": "f2_a",
+          "line": "*the laugh is real — rich and low, the rarest pour in the house* One day the war's over, the suns come up, and Vesper retires somewhere with one customer and no bar between them. *she pats your cheek, twice, fond as a blade in velvet* Keep surviving, honey. It's the only tab that counts toward it.",
+          "next": "v_menu" },
+        { "id": "f2_b",
+          "line": "*she winks, and the glass is already moving* Flatterer. That's tomorrow's flirt spent on credit — drink up. House is winning tonight.",
+          "next": "v_menu" },
+        { "id": "f1",
+          "if": [ {"flag": "vesper.flirt1"} ],
+          "else": "f0",
+          "line": "*she comes around the bar this time — first time you've ever seen her on the customer side — lifts your hand off the glass and turns it palm-up, reading the calluses like a ledger* Trigger. Crowbar. Rope. *one fingertip traces the lifeline, unhurried, and the music politely looks away* ...And gentle, says the testimony of every stray you've walked out of the dark up there. Dangerous combination, honey. Hands like these could put a girl clean out of the information business. *she folds your fingers closed over the touch — making you keep it — and steps back behind the bar with the smile of a woman who knows exactly what she just collateralized* That one was free. The next one costs a kiss, and fair warning: I price kisses like rumors. The good ones cost everything. And I never, ever discount.",
+          "fx": [ {"set": "vesper.flirt2"} ],
+          "next": "v_menu" },
+        { "id": "f0",
+          "line": "*for one second the glass-polish stops — recalculation — and the smile that comes back is a different vintage entirely* At the bartender. *she leans onto her forearms across the bar, slow, bringing the perfume and the amusement into range* Honey, men look at me every night. Mostly they look like they're reading a menu. You look like you're reading a BOOK. *she taps your glass once and refills it without breaking eye contact* House rule number two: the bartender is not on the menu. *the pause is precision-poured* ...Rules get bent for customers who read. Never broken. Bent. Come back when the war's a little quieter, and bend one with me.",
+          "fx": [ {"set": "vesper.flirt1"} ],
+          "next": "v_menu" }
       ]
     }
   }

@@ -27,10 +27,24 @@ upstairs. Every rumor fires `x3.fire("rumor", {topic})` for the Lua/objective la
 | The big ship | `harvest.known` (Emily's ledger) | **the Quartermaster** — the human broker who targeted Jake's ship; opens the `quartermaster_ledger` quest (expansion a) |
 | The barcode man | `reyes.fled` | pays off Reyes's flee branch; comps a free rumor — kindness upstairs is currency downstairs |
 
+## The flirtation thread (heat 3–4/5 — never consummated, by design)
+A menu line ("Tonight I'm not shopping for rumors. I'm looking at the bartender.") enters a
+three-stage cascade (`f2` → else `f1` → else `f0`), so the thread escalates across visits:
+
+| Stage | What happens | Flag set |
+|---|---|---|
+| f0 | She stops polishing (the tell). "Men look at me like they're reading a menu. You look like you're reading a BOOK." House rule two: the bartender is not on the menu — *rules get bent for customers who read. Never broken. Bent.* | `vesper.flirt1` |
+| f1 | She comes around the bar — first time ever seen on the customer side — and reads his calluses like a ledger, folds his fingers closed over the touch. "The next one costs a kiss, and I price kisses like rumors. The good ones cost everything, and I never discount." | `vesper.flirt2` |
+| f2 | The repeatable standing dance. She names the rule out loud and makes it the kindest thing in the building: *"The tease is the top shelf. The day I pour it, it's GONE... whereas THIS I can serve you forever."* Both player responses keep the dance alive; the kiss never lands; the price never gets paid. | — |
+
+This is her economy applied to desire: she never lies, she prices — and the one thing she
+will not sell is the only thing that keeps a customer forever. The thread never touches her
+rumor prices and never gates content: pure sizzle, zero transaction.
+
 ## Voice keys
 "Honey" as punctuation; barkeep economics ("I only sell the question"); her two tells are
 authored and consistent — *full attention* (stops polishing) for things she cares about,
 *polishing the clean glass* for the one thing that scares her (the Quartermaster). She
 checks the door exactly once in the tree. Players who read tells get told the truth twice.
 
-## Flags set: `vesper.met`, `club.found`, `code.1127.known`, `rumor.architect_full / .third_room / .substrate_hum / .not_earth`, `quartermaster.known`, `vesper.reyes_paid`
+## Flags set: `vesper.met`, `club.found`, `code.1127.known`, `rumor.architect_full / .third_room / .substrate_hum / .not_earth`, `quartermaster.known`, `vesper.reyes_paid`, `vesper.flirt1`, `vesper.flirt2`
