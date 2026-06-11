@@ -1419,6 +1419,27 @@ bool runPhysicsSelfTest() {
         w->shutdown();
     }
 
+    // ---- T12: removeBody on an invalid/stale id is a SAFE no-op (spec M3 §73).
+    // Guards the warn path that the teardown-ordering fix must NOT silence: a
+    // genuine stale remove still warns (visible in this test's output) and never
+    // crashes or damages the world. ----
+    {
+        std::unique_ptr<IPhysicsWorld> w(createPhysicsWorld());
+        w->init();
+        w->addBox(Vec3{50,0.5f,50}, Vec3{0,-0.5f,0}, 0.0f, Layer::Static); // ground @ y=0
+        BodyId b = w->addBox(Vec3{0.5f,0.5f,0.5f}, Vec3{0,2,0}, 1.0f, Layer::Dynamic);
+        w->removeBody(b);          // legitimate remove
+        w->removeBody(b);          // STALE remove -> warn-once + no-op (must not crash)
+        w->removeBody(BodyId{});   // invalid id   -> same no-op path
+        // World must remain fully functional after the stale removes.
+        BodyId b2 = w->addBox(Vec3{0.5f,0.5f,0.5f}, Vec3{0,2,0}, 1.0f, Layer::Dynamic);
+        for (int i = 0; i < 120; ++i) w->step(kFixedDt);
+        Vec3 p = w->getBodyPosition(b2);
+        check(b2.valid() && approx(p.y, 0.5f, 0.06f),
+              "T12 stale/invalid removeBody is a no-op; world stays functional");
+        w->shutdown();
+    }
+
     x3::logInfo(std::string("[phys-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;
