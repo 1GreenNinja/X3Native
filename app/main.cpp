@@ -1644,6 +1644,11 @@ int main(int argc, char** argv) {
     // G:/X3Native/captures/ui_menu.png.
     bool        uiDemo = false;
     std::string uiDemoPath = "G:/X3Native/captures/ui_menu.png";
+    // Chat-tree dialog capture (--screenshot-dialog [path.png]): the --screenshot
+    // path with the camera posed at the F5 captive (Lena) and her first_meeting
+    // chat tree OPEN, so the choice UI can be judged headlessly. Additive.
+    bool        dialogShot = false;
+    std::string dialogShotPath = "docs/screenshots/dialog/lena_dialog.png";
     // Which UI screen the --ui-demo capture shows: "main" (default), "pause", or
     // "settings". Lets one flag document all three menu screens.
     std::string uiDemoScreen = "main";
@@ -1928,6 +1933,11 @@ int main(int argc, char** argv) {
         else if (a == "--screenshot-editor") {
             editorShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') editorShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-dialog") {
+            screenshot = true; dialogShot = true;
+            screenshotPath = dialogShotPath;
+            if (i + 1 < argc && argv[i + 1][0] != '-') { dialogShotPath = argv[++i]; screenshotPath = dialogShotPath; }
         }
         else if (a == "--screenshot") {
             screenshot = true;
@@ -8006,6 +8016,30 @@ int main(int argc, char** argv) {
     // the SAME bindings the live game wires; see the function above main()).
     registerGameBindings(*scripts, game);
 
+    // ---- CHAT-TREE dialog runner (x3.chattree/1, --test-chattree). Loads the
+    // narrative pack (docs/design/narrative/chat_trees) and binds the runner to
+    // the REAL systems: the global TimelineState for karma/axes conditions+fx,
+    // the D14 script system for x3.fire effects, and (when the pak shipped an
+    // eflz_dialog.lua) the {"lua": fn} condition escape hatch via eval. The
+    // follow hook is per-conversation (set where the talk target is known). ----
+    x3::game::ChatTreeSystem chatTrees;
+    chatTrees.loadDefault();
+    chatTrees.ctx().timeline = &x3::game::globalTimeline();
+    chatTrees.ctx().scripts  = scripts.get();
+    {
+        // {"lua": "fn"} conditions evaluate inside the dialog script's sandbox
+        // (eval auto-prepends `return`); absent script -> conditions fail safe.
+        x3::script::ScriptId dlgScript = x3::script::kInvalidScript;
+        for (x3::script::ScriptId id : scripts->loadedScripts())
+            if (scripts->status(id).name == "eflz_dialog.lua") { dlgScript = id; break; }
+        if (dlgScript != x3::script::kInvalidScript) {
+            x3::script::IScriptSystem* sp = scripts.get();
+            chatTrees.ctx().luaCond = [sp, dlgScript](const std::string& fn) {
+                return sp->eval(dlgScript, fn + "()") == "true";
+            };
+        }
+    }
+
     // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
     // render path so the BLAS/TLAS build + ray-query AO compute + apply passes are
     // exercised under Vulkan validation. No-op if the device lacks RT support (the
@@ -8334,11 +8368,26 @@ int main(int argc, char** argv) {
         // so the corridor walls + doorway + floor recede into the frame. A slight
         // downward pitch puts floor shadows in view; the sun is normalize(0.4,1,0.3)
         // (matches the shadow pass) so the down-corridor look shows cast shadows.
-        const float ssX = shotCamOverride ? shotCam[0] : 8.0f;
-        const float ssY = shotCamOverride ? shotCam[1] : 1.75f;
-        const float ssZ = shotCamOverride ? shotCam[2] : -0.4f;
-        const float ssYaw = shotCamOverride ? shotCam[3] : 0.06f;
-        const float ssPitch = shotCamOverride ? shotCam[4] : -0.16f;
+        float ssX = shotCamOverride ? shotCam[0] : 8.0f;
+        float ssY = shotCamOverride ? shotCam[1] : 1.75f;
+        float ssZ = shotCamOverride ? shotCam[2] : -0.4f;
+        float ssYaw = shotCamOverride ? shotCam[3] : 0.06f;
+        float ssPitch = shotCamOverride ? shotCam[4] : -0.16f;
+        // --screenshot-dialog: pose AT the F5 captive (Lena) and OPEN her chat
+        // tree so the choice UI is in frame (drawn in the loop below).
+        if (dialogShot) {
+            std::error_code dse;
+            std::filesystem::create_directories(
+                std::filesystem::path(screenshotPath).parent_path(), dse);
+            if (midFloors.victim()) {
+                const x3::phys::Vec3 vp = midFloors.victim()->pos();
+                ssX = vp.x - 2.4f; ssY = vp.y + 1.55f; ssZ = vp.z;
+                ssYaw = 0.0f; ssPitch = -0.05f;          // facing +X toward her
+            }
+            chatTrees.flags().set("lena.interrupted");   // the richer 3-choice fm0
+            if (!chatTrees.start("lena", "first_meeting"))
+                x3::logWarn("--screenshot-dialog: lena first_meeting failed to start");
+        }
         const float ssFov = 70.0f;
         device->setCamera(ssX, ssY, ssZ, ssYaw, ssPitch, ssFov);
         const x3::phys::Vec3 ssEye{ ssX, ssY, ssZ };
@@ -8470,6 +8519,9 @@ int main(int argc, char** argv) {
                 }
                 shotHud.draw(shotUi, shm, dt);
                 shotUi.end();
+
+                // Chat-tree dialog UI over the vantage (--screenshot-dialog).
+                if (dialogShot) x3::game::drawChatTreeUi(*device, frame, chatTrees);
 
                 // ON-GLASS HOLO-TERMINAL readout for the capture: when the shot camera
                 // is aimed at the cell terminal it shows the LARGE high-contrast boot
@@ -8951,6 +9003,21 @@ int main(int argc, char** argv) {
     x3::game::NpcDialog npcDialog;
     float     npcBarkTimer = 0.0f;   // >0 while her companion one-liner is shown
     std::string npcBarkText;
+    bool      chatNumPrev[4] = {};   // chat-tree choice keys 1-4 edge state
+    // CHAT-TREE talk target: the F5 captive 'Lena' (spire_mid) — the first NPC whose
+    // dialog runs the data-driven x3.chattree runner instead of the shared 5-line
+    // script. Captive in reach -> her first_meeting tree; Companion -> banter pool.
+    auto chatTalkTarget = [&](const x3::phys::Vec3& at, float reach,
+                              std::string& whoOut, x3::phys::Vec3& posOut,
+                              bool& captiveOut) -> bool {
+        const x3::game::RescueVictim* v = midFloors.victim();
+        if (!v || v->expired() || !chatTrees.hasNpc(v->name())) return false;
+        const x3::phys::Vec3 vp = v->pos();
+        const float dx = at.x - vp.x, dz = at.z - vp.z;
+        if (dx * dx + dz * dz > reach * reach) return false;
+        whoOut = v->name(); posOut = vp; captiveOut = v->captive();
+        return true;
+    };
     // Find the nearest LIVE captive within `reach` of `at` (XZ). Returns true + its
     // name/world-pos. Shared by the E dispatch and the prompt/box draw so both see
     // exactly the same target. (Companions/expired victims are skipped.)
@@ -8990,6 +9057,10 @@ int main(int argc, char** argv) {
                                                             midFloors, topFloors, curFloor);
         if (x3::save::saveCheckpoint(savePath, st))
             x3::logInfo("[save] quick-saved checkpoint -> " + savePath);
+        // Story flags + per-NPC rel ride ALONGSIDE the binary checkpoint (their own
+        // additive text file — the checkpoint format/version stays untouched).
+        if (chatTrees.flags().saveFile(savePath + ".flags.txt"))
+            x3::logInfo("[save] story flags -> " + savePath + ".flags.txt");
     };
     // Perform a load: read + validate, then apply to the live game (and re-position
     // the elevator to the recorded floor). Fails gracefully (logged) on a bad file.
@@ -9007,6 +9078,10 @@ int main(int argc, char** argv) {
         // world matches the restored "current floor".
         if (elevator.built() && (int)loadedFloor < elevator.stopCount())
             elevator.callTo((int)loadedFloor);
+        // Story flags + rel (additive file next to the checkpoint; absence is fine —
+        // an old save simply restores with empty narrative state).
+        if (chatTrees.flags().loadFile(savePath + ".flags.txt"))
+            x3::logInfo("[save] story flags restored from " + savePath + ".flags.txt");
     };
 
     // ---- M9 audio event edge-tracking + footstep cadence -------------------
@@ -9252,10 +9327,37 @@ int main(int argc, char** argv) {
         prevF1 = f1Now;
         prevF2 = f2Now;
 
+        // ---- CHAT-TREE choice input: number keys 1-4 answer the filtered choices
+        // while a chat conversation is up (E advances no-choice lines in the use
+        // dispatch below). Edge-detected; consumes the keys (weapon switch is
+        // suppressed while talking — same capture idea as the terminal). ----
+        if (chatTrees.active() && !terrainWorld) {
+            const uint32_t nch = (uint32_t)chatTrees.choices().size();
+            for (int ci = 0; ci < 4; ++ci) {
+                const bool dn = keyDown(GLFW_KEY_1 + ci) || keyDown(GLFW_KEY_KP_1 + ci);
+                if (dn && !chatNumPrev[ci] && (uint32_t)ci < nch) {
+                    const bool still = chatTrees.choose((uint32_t)ci);
+                    if (still) {
+                        x3::logInfo("chat: [" + chatTrees.currentSpeaker() + "] " +
+                                    chatTrees.currentLine());
+                    } else if (chatTrees.followFired()) {
+                        npcBarkText  = x3::game::companionBark("Lena");
+                        npcBarkTimer = 4.0f;
+                        x3::logInfo("chat: " + std::string("Lena") +
+                                    " joined as a companion (chat tree)");
+                    }
+                }
+                chatNumPrev[ci] = dn;
+            }
+        } else {
+            chatNumPrev[0] = chatNumPrev[1] = chatNumPrev[2] = chatNumPrev[3] = false;
+        }
+
         // ---- WEAPONS: number keys 1..N switch the selected weapon; R reloads.
         // Suppressed while a keypad OR the cell terminal is active (those number/letter
-        // keys are being typed as a code, not used to switch weapons).
-        if (!codeMode && !termMode && !terrainWorld) {
+        // keys are being typed as a code, not used to switch weapons), and while a
+        // chat-tree conversation is capturing 1-4 as dialog choices.
+        if (!codeMode && !termMode && !terrainWorld && !chatTrees.active()) {
             const int n = arsenal.count() < 9 ? arsenal.count() : 9;
             for (int wi = 0; wi < n; ++wi) {
                 bool down = keyDown(GLFW_KEY_1 + wi);
@@ -9290,14 +9392,63 @@ int main(int argc, char** argv) {
             x3::phys::Vec3 dir{ std::cos(pitch) * std::cos(yaw),
                                 std::sin(pitch),
                                 std::cos(pitch) * std::sin(yaw) };
+            // CHAT-TREE TALK (x3.chattree/1) takes priority over EVERYTHING: Lena,
+            // the F5 scavenger, runs her DATA dialog (lena.json) instead of the
+            // shared 5-line script. E starts first_meeting on the captive /
+            // advances no-choice lines (1-4 answer choices, handled per-frame
+            // above); re-talking the companion pulls a banter-pool bark. The
+            // {"follow"} effect routes through the SAME midFloors.onRescue sink
+            // the bare E-rescue used.
+            std::string chatWho; x3::phys::Vec3 chatPos{}; bool chatCaptive = false;
+            const bool chatInRange =
+                chatTalkTarget(eye, x3::game::kTalkReach, chatWho, chatPos, chatCaptive);
+            const bool chatHandled = chatTrees.active() || chatInRange;
+            if (chatHandled) {
+                if (chatTrees.active()) {
+                    if (chatTrees.choices().empty()) {
+                        const bool still = chatTrees.advance();
+                        if (still) {
+                            x3::logInfo("chat: [" + chatTrees.currentSpeaker() + "] " +
+                                        chatTrees.currentLine());
+                        } else if (chatTrees.followFired()) {
+                            npcBarkText  = x3::game::companionBark(chatWho.empty() ? "Lena" : chatWho);
+                            npcBarkTimer = 4.0f;
+                            x3::logInfo("chat: " + (chatWho.empty() ? std::string("Lena") : chatWho) +
+                                        " rescued via her chat tree — now a companion");
+                        }
+                    }   // choices up: E waits for a 1-4 answer
+                } else if (chatCaptive) {
+                    // The follow sink — evaluated when her tree's {"follow"} fx fires
+                    // (a later E), so it re-resolves the victim position at call time.
+                    chatTrees.ctx().follow = [&midFloors]() {
+                        const x3::game::RescueVictim* v = midFloors.victim();
+                        return v ? midFloors.onRescue(v->pos()) : false;
+                    };
+                    if (chatTrees.start(chatWho, "first_meeting"))
+                        x3::logInfo("chat: [" + chatTrees.currentSpeaker() + "] " +
+                                    chatTrees.currentLine());
+                } else {
+                    // Companion re-talk: a banter-pool bark (weighted, rotated, gated).
+                    const float roll = (float)(std::rand() % 1000) / 1000.0f;
+                    const std::string b = chatTrees.pickBanter(chatWho, roll);
+                    if (!b.empty()) {
+                        npcBarkText  = b;
+                        npcBarkTimer = 5.0f;
+                        x3::logInfo("chat banter: [" + chatWho + "] " + b);
+                    }
+                }
+            }
             // RESCUED-NPC TALK takes priority over the bare door/rescue handlers so
             // the captive girl always gets her exchange. If a live captive is in talk
             // range, this E starts/advances the dialog; completing it performs the
             // actual rescue (so she becomes a following companion) + queues her bark.
             std::string talkWho; x3::phys::Vec3 talkPos{};
-            const bool talkInRange = nearestLiveCaptive(eye, x3::game::kTalkReach, talkWho, talkPos);
+            const bool talkInRange = !chatHandled &&
+                nearestLiveCaptive(eye, x3::game::kTalkReach, talkWho, talkPos);
             const bool talkHandled = npcDialog.active() || talkInRange;
-            if (talkHandled) {
+            if (chatHandled) {
+                // consumed by the chat-tree branch above (keeps the else-chain shut)
+            } else if (talkHandled) {
                 const std::string barkName = talkWho.empty() ? npcDialog.partner() : talkWho;
                 const bool rescued = npcDialog.interact(
                     talkInRange, talkWho, talkPos,
@@ -9413,6 +9564,18 @@ int main(int argc, char** argv) {
                 std::string w; x3::phys::Vec3 cp{};
                 if (nearestLiveCaptive(peye, x3::game::kTalkReach, w, cp)) npcDialog.setAnchor(cp);
                 else                                                       npcDialog.cancel();
+            }
+            // Chat-tree conversation: cancel the moment the player wanders out of
+            // talk range (a small grace over the start reach so a head-bob doesn't
+            // drop the box mid-line). Matches NpcDialog's never-strand rule.
+            if (chatTrees.active()) {
+                float pex, pey, pez, pyaw, ppitch;
+                player.camera(pex, pey, pez, pyaw, ppitch);
+                if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
+                const x3::phys::Vec3 peye{ pex, pey, pez };
+                std::string w; x3::phys::Vec3 cp{}; bool cap = false;
+                if (!chatTalkTarget(peye, x3::game::kTalkReach + 0.5f, w, cp, cap))
+                    chatTrees.cancel();
             }
             if (npcBarkTimer > 0.0f) npcBarkTimer -= dt;
         }
@@ -9937,7 +10100,10 @@ int main(int argc, char** argv) {
         // While the console, a UI menu, the cell terminal, or a keypad is capturing
         // input, gameplay verbs (melee / fire) must NOT trigger — no shooting through
         // the pause menu, no punching while typing the override code.
-        const bool uiCapture = consoleOpen || uiMenuActive || termMode || codeMode;
+        // A running chat-tree conversation also pauses the combat verbs (no firing
+        // through Lena's dialog box) — same capture idea as the terminal/keypad.
+        const bool uiCapture = consoleOpen || uiMenuActive || termMode || codeMode ||
+                               chatTrees.active();
         bool meleeNow = !uiCapture && (keyDown(GLFW_KEY_V) ||
             glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS);
         if (meleeNow && !prevMelee && player.isAlive() && !terrainWorld) {
@@ -10464,6 +10630,29 @@ int main(int argc, char** argv) {
                     if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
                     const x3::phys::Vec3 peye{ pex, pey, pez };
                     uint32_t hudW = 0, hudH = 0; device->hudSize(hudW, hudH);
+
+                    // CHAT-TREE dialog box (Lena) — the data-driven runner's UI: NPC
+                    // line on top, up to 4 numbered choices below, GTA-subtitle look.
+                    if (chatTrees.active()) {
+                        x3::game::drawChatTreeUi(*device, frame, chatTrees);
+                    } else {
+                        // "[E] Talk" floats over the chat-capable NPC too (captive OR
+                        // companion re-talk), same worldToScreen pattern as below.
+                        std::string cw; x3::phys::Vec3 cp{}; bool ccap = false;
+                        if (chatTalkTarget(peye, x3::game::kTalkReach, cw, cp, ccap)) {
+                            float sx = 0.0f, sy = 0.0f;
+                            if (device->worldToScreen(cp.x, cp.y + 1.85f, cp.z, sx, sy)) {
+                                const float ddx = cp.x - pex, ddz = cp.z - pez;
+                                float a = 1.0f - (std::sqrt(ddx*ddx + ddz*ddz) - 2.0f);
+                                if (a > 1.0f) a = 1.0f; if (a < 0.0f) a = 0.0f;
+                                a = 0.35f + 0.65f * a;
+                                const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f * a };
+                                const float col[4]    = { 1.0f, 0.72f, 0.84f, a };
+                                device->drawHudText(frame, "[E] Talk", sx - 40.0f + 1.5f, sy + 1.5f, 18.0f, shadow);
+                                device->drawHudText(frame, "[E] Talk", sx - 40.0f, sy, 18.0f, col);
+                            }
+                        }
+                    }
 
                     if (npcDialog.active()) {
                         // The exchange box: a translucent panel near the screen bottom

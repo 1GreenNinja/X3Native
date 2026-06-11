@@ -226,6 +226,8 @@ public:
     bool   victimCaptive() const;          // alive + still a captive (not rescued/expired)
     bool   victimTimerRunning() const { return m_f5HubReached; }   // clock gated on the F5 hub
     float  victimTimeLeft() const;
+    // Borrow the F5 victim itself (chat-tree talk target: name/pos/state). May be null.
+    const RescueVictim* victim() const { return m_victim.get(); }
 
     // Reachability: a floor is reachable iff its elevator stop index is inside the
     // elevator's stop range (one stop per floor, 0..kSpireFloorCount-1). The host
