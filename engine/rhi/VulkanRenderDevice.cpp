@@ -2368,8 +2368,10 @@ private:
             if (list.empty()) return;
             if (cmdCount >= kMaxDrawMeshes) return;
             const uint32_t baseRow = row;
+            bool anyCutout = false;   // any instance with texIndex bit31 (glTF alphaMode MASK)
             for (uint32_t ri : list) {
                 const DrawRecord& dr = m_drawRecords[ri];
+                if (dr.texIndex & 0x80000000u) anyCutout = true;
                 ObjectData& o = objs[row++];
                 std::memcpy(&o.model, dr.model, sizeof(o.model));
                 o.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
@@ -2398,6 +2400,9 @@ private:
             c.vertexOffset  = 0;
             c.firstInstance = baseRow;
             m_drawMeshOrder[cmdCount] = mid;
+            // Cutout groups need the alpha-testing depth pre-pass variant when
+            // reflections force the pre-pass on (see recordDepthPrePassBody).
+            m_drawMeshCutout[cmdCount] = anyCutout ? 1u : 0u;
             ++cmdCount;
             m_building.drawCalls += 1;
             m_building.objectsDrawn += (uint32_t)list.size();
@@ -2462,10 +2467,39 @@ private:
         VkRect2D scis{ {0,0}, m_extent };
         vkCmdSetViewport(cmd, 0, 1, &vp);
         vkCmdSetScissor(cmd, 0, 1, &scis);
+        // Alpha-CUTOUT groups (foliage / people billboards, texIndex bit31): the
+        // plain pipeline has no fragment stage, so it writes depth for the FULL
+        // quad — the color pass then alpha-discards those texels under EQUAL and
+        // nothing ever fills them (flat clear-color rectangles around trees). The
+        // cutout pipeline (depth_cutout.vert/.frag) replicates mesh.frag's exact
+        // discard. ONLY engaged on reflections frames: SSAO/GI-only pre-passes
+        // keep the historical full-quad depth bit-for-bit (r_ssr 0 + r_taa A/B
+        // md5 guarantees vs the pre-reflections build stay intact; promoting the
+        // cutout fix to SSAO/GI is a separate, deliberate change).
+        const bool cutoutAware = m_reflActiveThisFrame
+                              && (m_depthPreCutoutPipeline != VK_NULL_HANDLE);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_depthPrePipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowLayout,
                                 0, 1, &fr.objSet, 0, nullptr);
+        bool cutoutBound = false;   // which of the two pipelines is currently bound
         for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
+            const bool wantCutout = cutoutAware && (m_drawMeshCutout[i] != 0);
+            if (wantCutout != cutoutBound) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    wantCutout ? m_depthPreCutoutPipeline : m_depthPrePipeline);
+                if (wantCutout) {
+                    // set 0 = objSet (layout-compatible with the plain pipeline's
+                    // m_shadowLayout, stays bound), set 1 = bindless textures.
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        m_depthPreCutoutLayout, 0, 1, &fr.objSet, 0, nullptr);
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        m_depthPreCutoutLayout, 1, 1, &m_bindlessSet, 0, nullptr);
+                } else {
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        m_shadowLayout, 0, 1, &fr.objSet, 0, nullptr);
+                }
+                cutoutBound = wantCutout;
+            }
             const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
             VkDeviceSize off = 0;
             VkBuffer vb = mh.drawVbo(m_frameIdx);
@@ -7850,6 +7884,38 @@ private:
         VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_depthPrePipeline);
         vkDestroyShaderModule(m_dev.device, vs, nullptr);
         if (pr != VK_SUCCESS) { logError("[rhi] depth pre-pass pipeline create failed"); return false; }
+
+        // ---- ALPHA-CUTOUT variant (depth_cutout.vert/.frag) -----------------
+        // Identical fixed-function state; adds a fragment stage that replicates
+        // mesh.frag's alphaMode==MASK discard so billboard depth matches the color
+        // pass texel-for-texel. Used per-draw for cutout groups on reflections
+        // frames (recordDepthPrePassBody). Set 0 = objSet (same bindings as
+        // depth.vert -> layout-compatible with m_shadowLayout), set 1 = bindless.
+        // NON-FATAL on failure: the plain full-quad pre-pass still works.
+        {
+            VkDescriptorSetLayout cutSets[2] = { m_objSetLayout, m_bindlessLayout };
+            VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            plci.setLayoutCount = 2; plci.pSetLayouts = cutSets;
+            if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_depthPreCutoutLayout) == VK_SUCCESS) {
+                VkShaderModule cvs = loadShaderModule("shaders\\depth_cutout.vert.spv");
+                VkShaderModule cfs = loadShaderModule("shaders\\depth_cutout.frag.spv");
+                if (cvs && cfs) {
+                    VkPipelineShaderStageCreateInfo cstages[2]{};
+                    cstages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                    cstages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   cstages[0].module = cvs; cstages[0].pName = "main";
+                    cstages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                    cstages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; cstages[1].module = cfs; cstages[1].pName = "main";
+                    gpci.stageCount = 2; gpci.pStages = cstages;
+                    gpci.layout = m_depthPreCutoutLayout;
+                    if (vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_depthPreCutoutPipeline) != VK_SUCCESS)
+                        m_depthPreCutoutPipeline = VK_NULL_HANDLE;
+                }
+                if (cvs) vkDestroyShaderModule(m_dev.device, cvs, nullptr);
+                if (cfs) vkDestroyShaderModule(m_dev.device, cfs, nullptr);
+            }
+            if (!m_depthPreCutoutPipeline)
+                logError("[rhi] depth pre-pass CUTOUT pipeline unavailable — billboards keep full-quad depth");
+        }
         return true;
     }
 
@@ -7940,6 +8006,8 @@ private:
         if (m_ssaoBlurPipe)   { vkDestroyPipeline(m_dev.device, m_ssaoBlurPipe, nullptr); m_ssaoBlurPipe = VK_NULL_HANDLE; }
         if (m_ssaoPipe)       { vkDestroyPipeline(m_dev.device, m_ssaoPipe, nullptr); m_ssaoPipe = VK_NULL_HANDLE; }
         if (m_depthPrePipeline){ vkDestroyPipeline(m_dev.device, m_depthPrePipeline, nullptr); m_depthPrePipeline = VK_NULL_HANDLE; }
+        if (m_depthPreCutoutPipeline){ vkDestroyPipeline(m_dev.device, m_depthPreCutoutPipeline, nullptr); m_depthPreCutoutPipeline = VK_NULL_HANDLE; }
+        if (m_depthPreCutoutLayout)  { vkDestroyPipelineLayout(m_dev.device, m_depthPreCutoutLayout, nullptr); m_depthPreCutoutLayout = VK_NULL_HANDLE; }
         if (m_ssaoBlurLayout) { vkDestroyPipelineLayout(m_dev.device, m_ssaoBlurLayout, nullptr); m_ssaoBlurLayout = VK_NULL_HANDLE; }
         if (m_ssaoLayout)     { vkDestroyPipelineLayout(m_dev.device, m_ssaoLayout, nullptr); m_ssaoLayout = VK_NULL_HANDLE; }
         if (m_ssaoPool)       { vkDestroyDescriptorPool(m_dev.device, m_ssaoPool, nullptr); m_ssaoPool = VK_NULL_HANDLE; }
@@ -10291,6 +10359,10 @@ private:
     std::unordered_map<uint32_t, std::vector<uint32_t>> m_groups;
     std::vector<uint32_t>   m_groupOrder;
     uint32_t                m_drawMeshOrder[kMaxDrawMeshes] = {};
+    // Per-indirect-command flag: group contains >=1 alphaMode==MASK (cutout)
+    // instance -> the reflections depth pre-pass uses the alpha-testing pipeline
+    // for it (recordDepthPrePassBody). Parallel to m_drawMeshOrder.
+    uint8_t                 m_drawMeshCutout[kMaxDrawMeshes] = {};
     // Per-frame data preparation (camera/light UBO + SSBO + indirect) is shared by
     // the shadow depth pass AND the main color pass, so it runs once (guarded) and
     // caches the number of indirect commands produced.
@@ -10662,6 +10734,11 @@ private:
     VkExtent2D    m_ssaoExtent{};                       // half the frame extent
     // Depth pre-pass pipeline (depth.vert; set0 = objSet, reuses m_shadowLayout).
     VkPipeline    m_depthPrePipeline = VK_NULL_HANDLE;
+    // Alpha-cutout depth pre-pass variant (depth_cutout.vert/.frag): fragment-
+    // stage alpha test so billboard depth matches mesh.frag's cutout discard.
+    // Own layout (set0 = objSet, set1 = bindless). Reflections frames only.
+    VkPipeline       m_depthPreCutoutPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout m_depthPreCutoutLayout   = VK_NULL_HANDLE;
     // SSAO + blur pipelines (full-screen-triangle fragment passes).
     VkSampler             m_depthSampler  = VK_NULL_HANDLE;  // NEAREST, sample depth as data
     VkDescriptorSetLayout m_ssaoSetLayout = VK_NULL_HANDLE;  // depth + SsaoUBO (ssao.frag)

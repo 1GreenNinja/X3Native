@@ -107,6 +107,8 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/taa_resolve.frag
     ${CMAKE_SOURCE_DIR}/shaders/autoexposure.comp
     ${CMAKE_SOURCE_DIR}/shaders/depth.vert
+    ${CMAKE_SOURCE_DIR}/shaders/depth_cutout.vert
+    ${CMAKE_SOURCE_DIR}/shaders/depth_cutout.frag
     ${CMAKE_SOURCE_DIR}/shaders/ssao.frag
     ${CMAKE_SOURCE_DIR}/shaders/ssao_blur.frag
     ${CMAKE_SOURCE_DIR}/shaders/ssgi_gather.frag
