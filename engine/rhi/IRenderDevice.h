@@ -377,6 +377,27 @@ public:
     // No-op on a device without ray tracing. Default no-op (headless / base).
     virtual void          setRtaoParams(const RtaoParams&) {}
 
+    // ---- SSR / ray-traced REFLECTIONS (r_ssr / r_rtreflections) ------------
+    // Hybrid reflections: a half-res (or full-res) compute pass marches each
+    // pixel's reflection ray against the depth buffer and samples LAST frame's
+    // lit scene (the TAA history image) — reflections therefore REQUIRE TAA
+    // (its history is the color source and its accumulation is the temporal
+    // denoiser; with r_taa 0 the whole chain is off and the render is
+    // byte-for-byte unchanged). On ray-query hardware, screen-space misses fall
+    // back to ONE inline ray query into the scene TLAS (rtFallback; auto-
+    // disabled — SSR-only — when rayTracingSupported() is false, e.g. Pascal).
+    // mesh.frag blends the result INTO its split-sum IBL specular by confidence
+    // (replace-where-confident through the same F0/roughness env-BRDF weighting
+    // — energy-conserving, never additive on top of full IBL specular).
+    struct ReflectionParams {
+        bool  ssr        = false;   // master gate (r_ssr; OFF until the app enables it)
+        bool  rtFallback = true;    // ray-query fallback where SSR misses (r_rtreflections)
+        bool  fullRes    = false;   // r_reflquality: false = half-res (default), true = full
+        float intensity  = 1.0f;    // blend-weight scale on the composed reflection [0..1]
+    };
+    // Cached + re-applied each frame, like setRtaoParams. Default no-op.
+    virtual void          setReflectionParams(const ReflectionParams&) {}
+
     // ---- Glass DEV overrides (live r_glass_* cvars, spec §2/§3.2) ----------
     // A dev-time SCALE/OVERRIDE applied to EVERY glass fragment this frame so the
     // glass look can be scrubbed live in the console without re-authoring each

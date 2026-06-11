@@ -1,0 +1,257 @@
+#version 460
+// Screen-space + (optionally) ray-traced REFLECTIONS — half-res compute pass.
+// CLEAN-ROOM, original work: built from the Vulkan 1.3 spec, the public
+// GLSL_EXT_ray_query extension spec (Khronos), and the standard screen-space
+// reflection technique (linear raymarch + binary refine against the depth
+// buffer; Real-Time Rendering 4th ed. / the public SSR literature). No id
+// Tech / RBDOOM source consulted.
+//
+// WHAT THIS DOES: for each (half-res) pixel it reconstructs the world position
+// + a geometric normal from the camera depth buffer (the rtao.comp pattern),
+// reflects the view ray, and marches that reflection ray in WORLD space,
+// projecting each sample into the CURRENT frame's (jittered) clip space and
+// comparing against the depth buffer. A hit samples the PREVIOUS frame's lit
+// HDR scene color (the TAA history image), reprojected through the previous
+// frame's UNJITTERED viewProj — previous-frame color avoids every same-frame
+// ordering hazard and TAA's accumulation acts as the temporal denoiser.
+//
+// OUTPUT: rgba16f — rgb = reflected radiance (linear HDR), a = CONFIDENCE
+// [0,1]. mesh.frag blends this INTO its split-sum IBL specular by confidence
+// (reflection replaces the prefiltered env radiance where confident, falls
+// back to IBL where not), so the energy weighting (F0 * brdfLUT scale + bias,
+// metal ambient floor, Reinhard specular rolloff) is applied EXACTLY ONCE, in
+// one place, by the existing material path.
+//
+// RT FALLBACK (compiled only with -DREFL_RT=1 -> refl_rt.comp.spv, bound only
+// on ray-query devices): where the screen march misses (ray leaves the screen
+// or is occluded), fire ONE inline ray query into the scene TLAS (the rtao
+// pattern). A miss means the ray reaches the sky -> confidence 0 so mesh.frag
+// keeps the IBL specular (the sky env IS the correct sky reflection). A hit is
+// shaded with a deliberate, documented APPROXIMATION (no per-triangle material
+// access exists in the ray-query-only RT tier — no SBT, no vertex fetch):
+//   1) reproject the hit point into the previous frame; if it was on screen,
+//      use the history color (correct-ish radiance, just one frame old);
+//   2) otherwise flat-shade: constant albedo * (scene ambient + dimmed sun) —
+//      a low-frequency plausible fill, NOT full material eval.
+// Confidence is reduced for both so TAA + the IBL blend soften any error.
+//
+// SKY PIXELS write confidence 0 (the sky is not a reflector). First frame /
+// camera-cut frames (histValid 0) write 0 everywhere -> pure IBL fallback.
+
+#ifdef REFL_RT
+#extension GL_EXT_ray_query : require
+#endif
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D depthTex;     // camera depth (D32, NEAREST)
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2D reflOut;
+layout(set = 0, binding = 2) uniform sampler2D prevScene;    // TAA history (prev lit HDR, LINEAR/CLAMP)
+layout(set = 0, binding = 3) uniform Refl {
+    mat4 invViewProj;    // CURRENT (jittered) clip -> world (matches this frame's depth)
+    mat4 viewProj;       // CURRENT (jittered) world -> clip (march sample projection)
+    mat4 prevViewProj;   // PREVIOUS frame's UNJITTERED world -> clip (history sample)
+    vec4 camPos;         // xyz = camera world pos, w = history valid (0/1)
+    vec4 sunDir;         // xyz = direction TOWARD the sun, w = frame seed (jitter decorrelation)
+    vec4 ambient;        // rgb = scene hemispheric ambient, w = unused
+    vec4 params0;        // x = outW, y = outH, z = max march distance (m), w = thickness (m)
+    vec4 params1;        // x = march steps, y/z/w = unused
+} ub;
+#ifdef REFL_RT
+layout(set = 0, binding = 4) uniform accelerationStructureEXT tlas;
+#endif
+
+const vec3  kSunColor       = vec3(1.0, 0.97, 0.92); // matches mesh.frag's sun tint
+const float kFallbackAlbedo = 0.40;                  // RT flat-shade albedo guess (documented approx)
+
+// Reconstruct world position from screen UV + NDC depth (same convention as
+// rtao.comp: NDC xy in [-1,1], depth already [0,1], proj Y-flip baked in).
+vec3 worldFromDepth(vec2 uv, float depth) {
+    vec4 ndc = vec4(uv * 2.0 - 1.0, depth, 1.0);
+    vec4 wp  = ub.invViewProj * ndc;
+    return wp.xyz / wp.w;
+}
+
+// World position -> current-frame screen UV + NDC depth. w<=0 -> behind camera.
+vec3 projectToScreen(vec3 wp, out float w) {
+    vec4 clip = ub.viewProj * vec4(wp, 1.0);
+    w = clip.w;
+    vec3 ndc = clip.xyz / max(clip.w, 1e-6);
+    return vec3(ndc.xy * 0.5 + 0.5, ndc.z);
+}
+
+// Screen-border fade: 1 in the middle, 0 at the edge (reflections that resolve
+// near the screen edge are unreliable — the reflected content is half off-screen).
+float edgeFade(vec2 uv) {
+    vec2 d = min(uv, 1.0 - uv);
+    float m = min(d.x, d.y);
+    return smoothstep(0.0, 0.07, m);
+}
+
+uint wang(uint s) {
+    s = (s ^ 61u) ^ (s >> 16); s *= 9u; s = s ^ (s >> 4); s *= 0x27d4eb2du; s = s ^ (s >> 15);
+    return s;
+}
+
+// Sample the previous frame's lit scene at a world position. Returns rgb +
+// validity (the point may not have been on screen last frame).
+vec4 samplePrevScene(vec3 wp) {
+    vec4 clip = ub.prevViewProj * vec4(wp, 1.0);
+    if (clip.w <= 1e-4) return vec4(0.0);
+    vec2 uv = (clip.xy / clip.w) * 0.5 + 0.5;
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) return vec4(0.0);
+    vec3 c = texture(prevScene, uv).rgb;
+    if (any(isnan(c))) return vec4(0.0);
+    return vec4(c, 1.0);
+}
+
+void main() {
+    ivec2 px = ivec2(gl_GlobalInvocationID.xy);
+    int outW = int(ub.params0.x);
+    int outH = int(ub.params0.y);
+    if (px.x >= outW || px.y >= outH) return;
+
+    // History invalid (first frame / camera cut / TAA toggle): no usable color
+    // source -> confidence 0 everywhere, mesh.frag stays on pure IBL specular.
+    if (ub.camPos.w < 0.5) { imageStore(reflOut, px, vec4(0.0)); return; }
+
+    vec2 uv = (vec2(px) + 0.5) / vec2(outW, outH);
+    float depth = texture(depthTex, uv).r;
+    if (depth >= 1.0) { imageStore(reflOut, px, vec4(0.0)); return; }   // sky: not a reflector
+
+    vec3 P = worldFromDepth(uv, depth);
+
+    // Geometric world normal from depth (smaller-delta neighbour pick, exactly
+    // the rtao.comp reconstruction — robust across depth discontinuities).
+    vec2 texel = 1.0 / vec2(outW, outH);
+    float dR = texture(depthTex, uv + vec2(texel.x, 0.0)).r;
+    float dL = texture(depthTex, uv - vec2(texel.x, 0.0)).r;
+    float dU = texture(depthTex, uv + vec2(0.0, texel.y)).r;
+    float dD = texture(depthTex, uv - vec2(0.0, texel.y)).r;
+    vec3 pR = worldFromDepth(uv + vec2(texel.x, 0.0), dR);
+    vec3 pL = worldFromDepth(uv - vec2(texel.x, 0.0), dL);
+    vec3 pU = worldFromDepth(uv + vec2(0.0, texel.y), dU);
+    vec3 pD = worldFromDepth(uv - vec2(0.0, texel.y), dD);
+    vec3 ddx = (abs(dR - depth) < abs(depth - dL)) ? (pR - P) : (P - pL);
+    vec3 ddy = (abs(dU - depth) < abs(depth - dD)) ? (pU - P) : (P - pD);
+    vec3 N = normalize(cross(ddx, ddy));
+    if (any(isnan(N))) { imageStore(reflOut, px, vec4(0.0)); return; }
+
+    vec3 V = normalize(ub.camPos.xyz - P);
+    if (dot(N, V) < 0.0) N = -N;             // face the camera (reconstruction sign)
+    vec3 R = reflect(-V, N);
+
+    // Backface fade: a reflection ray heading back TOWARD the camera mostly
+    // sees surfaces the depth buffer never captured (their back faces) — fade
+    // it out instead of producing smeared lies.
+    float backFade = 1.0 - smoothstep(0.45, 0.92, dot(R, V));
+    if (backFade <= 0.001) { imageStore(reflOut, px, vec4(0.0)); return; }
+
+    float maxDist   = ub.params0.z;
+    float thickness = ub.params0.w;
+    int   steps     = int(ub.params1.x);
+
+    // Per-pixel, per-frame start-offset jitter (TAA integrates it away) breaks
+    // the stair-stepping of the fixed march into noise the resolve can average.
+    uint seed = wang(uint(px.x) * 1973u + uint(px.y) * 9277u + uint(ub.sunDir.w) * 26699u);
+    float jitter = float(seed & 0xFFFFu) / 65536.0;
+
+    // ---- SCREEN-SPACE MARCH (linear, mildly accelerating, binary refine) ----
+    vec3  O      = P + N * 0.02;             // lift off the surface (self-hit guard)
+    float stepLen = maxDist / float(steps);
+    float t       = stepLen * (0.25 + 0.5 * jitter);
+    float tPrev   = 0.0;
+    bool  hit     = false;
+    bool  offscreen = false;
+    vec2  hitUv   = vec2(0.0);
+    vec3  hitPos  = vec3(0.0);
+
+    for (int i = 0; i < steps; ++i) {
+        vec3 S = O + R * t;
+        float w;
+        vec3 sp = projectToScreen(S, w);
+        if (w <= 0.0 || any(lessThan(sp.xy, vec2(0.0))) || any(greaterThan(sp.xy, vec2(1.0)))) {
+            offscreen = true;                 // ray left the screen -> RT fallback
+            break;
+        }
+        float sceneD = texture(depthTex, sp.xy).r;
+        if (sceneD < 1.0) {                   // (sky samples can't occlude the ray)
+            vec3 scenePos = worldFromDepth(sp.xy, sceneD);
+            float rayDist   = distance(ub.camPos.xyz, S);
+            float sceneDist = distance(ub.camPos.xyz, scenePos);
+            float depthGap  = rayDist - sceneDist;
+            // Thickness window scales gently with distance so far geometry
+            // (coarser depth precision) still registers.
+            float thick = thickness * (1.0 + 0.04 * sceneDist);
+            if (depthGap > 0.0 && depthGap < thick + (t - tPrev)) {
+                // ---- binary refine between tPrev and t ----
+                float lo = tPrev, hi = t;
+                for (int r = 0; r < 5; ++r) {
+                    float mid = 0.5 * (lo + hi);
+                    vec3 M = O + R * mid;
+                    float mw; vec3 mp = projectToScreen(M, mw);
+                    float md = texture(depthTex, mp.xy).r;
+                    vec3  mScene = worldFromDepth(mp.xy, md);
+                    if (distance(ub.camPos.xyz, M) > distance(ub.camPos.xyz, mScene)) hi = mid;
+                    else lo = mid;
+                }
+                float wF; vec3 fp = projectToScreen(O + R * hi, wF);
+                hitUv  = fp.xy;
+                hitPos = O + R * hi;
+                hit = true;
+                break;
+            }
+        }
+        tPrev = t;
+        t += stepLen;
+        stepLen *= 1.04;                      // mild geometric growth (long rays cheaper)
+    }
+
+    vec3  outColor = vec3(0.0);
+    float outConf  = 0.0;
+
+    if (hit) {
+        // Sample LAST frame's lit scene at the hit point, reprojected through the
+        // previous unjittered viewProj (the history was resolved on those centers).
+        vec4 prev = samplePrevScene(hitPos);
+        if (prev.a > 0.5) {
+            outColor = prev.rgb;
+            outConf  = edgeFade(hitUv) * backFade;
+        }
+        // else: hit was visible now but not last frame (disocclusion) — leave
+        // confidence 0 -> IBL fallback this frame, SSR resumes next frame.
+    }
+#ifdef REFL_RT
+    if (!hit && outConf <= 0.0) {
+        // ---- RAY-QUERY FALLBACK (off-screen / occluded / disocclusion) ----
+        // One inline ray query against the scene TLAS (the rtao.comp pattern).
+        rayQueryEXT rq;
+        rayQueryInitializeEXT(rq, tlas,
+            gl_RayFlagsOpaqueEXT, 0xFF, O, 0.05, R, maxDist * 4.0);
+        while (rayQueryProceedEXT(rq)) { }
+        if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+            float tHit = rayQueryGetIntersectionTEXT(rq, true);
+            vec3  H    = O + R * tHit;
+            // Best effort: the hit may have been ON SCREEN last frame (the march
+            // just couldn't reach it through an occluder) — use history color.
+            vec4 prev = samplePrevScene(H);
+            if (prev.a > 0.5) {
+                outColor = prev.rgb;
+                outConf  = 0.65 * backFade;
+            } else {
+                // DOCUMENTED APPROXIMATION: no material access in the ray-query
+                // tier -> flat-shade the hit (constant albedo * (ambient + dim
+                // sun)). Low confidence so the IBL blend + TAA soften it.
+                outColor = kFallbackAlbedo * (ub.ambient.rgb + kSunColor * 0.18);
+                outConf  = 0.45 * backFade;
+            }
+        }
+        // RT MISS: the ray reaches the sky -> confidence stays 0 and mesh.frag
+        // keeps the prefiltered ENV specular, which IS the sky — correct by
+        // construction (sky reflections come from the sky env, never the screen).
+    }
+#endif
+
+    if (any(isnan(outColor))) { outColor = vec3(0.0); outConf = 0.0; }
+    imageStore(reflOut, px, vec4(outColor, clamp(outConf, 0.0, 1.0)));
+}
