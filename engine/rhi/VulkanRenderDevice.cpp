@@ -261,6 +261,10 @@ public:
         aci.vulkanApiVersion = VK_API_VERSION_1_3;
         if (vmaCreateAllocator(&aci, &m_alloc) != VK_SUCCESS) { logError("[rhi] VMA create failed"); return false; }
 
+        // ZERO-STUTTER: the persistent VkPipelineCache must exist BEFORE the first
+        // pipeline is created (createGraphics below) so every compile feeds/hits it.
+        createPipelineCache();
+
         if (m_headless) { if (!createOffscreenTarget(m_width, m_height)) return false; }
         else            { if (!createSwapchain(m_width, m_height)) return false; }
         if (!createPerFrame()) return false;
@@ -319,11 +323,70 @@ public:
         // depth/shadow/color passes (which draw it unchanged). Additive + opt-in:
         // nothing runs unless a mesh is registered + a palette uploaded each frame.
         if (!createSkinning()) return false;
+
+        // ===================================================================
+        // ZERO-STUTTER boot precompile (docs/ZERO_STUTTER.md step 1).
+        // The RT chains (RT-AO, SSR/RT reflections, DDGI) used to be built
+        // LAZILY on the first frame that enabled them — a mid-frame
+        // vkCreate*Pipelines + vkDeviceWaitIdle, i.e. exactly the UE-style PSO
+        // hitch this engine forbids. Build them NOW, at boot, on any device
+        // that could ever run them. The ensure*Ready() lazy paths remain as a
+        // graceful fallback but find m_*Built == true and create nothing.
+        //   * RT-AO + reflections: any ray-query device (reflections' SSR-only
+        //     compute pipeline is also used on non-RT devices — build it too).
+        //   * DDGI: additionally needs position-fetch + the IBL env cube.
+        // ===================================================================
+        {
+            const uint32_t psoBefore = m_psoTotal;
+            const double   msBefore  = m_psoCreateMs;
+            if (m_rtSupported) ensureRtCore();   // AS module (no PSOs; never mid-frame again)
+            if (m_rtSupported && !m_rtaoBuilt) {
+                if (createRtao() && createRtaoTargets()) {
+                    writeRtaoDescriptors();
+                    m_rtaoBuilt = true;
+                } else {
+                    logError("[rhi] boot precompile: RT-AO chain failed (lazy fallback remains)");
+                }
+            }
+            if (!m_reflBuilt) {                  // SSR works on EVERY device (no RT needed)
+                if (createRefl() && createReflTargets()) {
+                    writeReflDescriptors();
+                    writeSsaoDescriptors();      // point mesh set3 binding2 at the refl buffer
+                    m_reflBuilt = true;
+                } else {
+                    logError("[rhi] boot precompile: reflections chain failed (lazy fallback remains)");
+                    destroyRefl();
+                }
+            }
+            if (m_rtSupported && m_rtPosFetch && m_iblEnvCubeView != VK_NULL_HANDLE && !m_ddgiBuilt) {
+                if (createDdgi() && createDdgiTargets()) {
+                    writeDdgiDescriptors();
+                    writeSsaoDescriptors();      // point mesh set3 bindings 3/4 at the atlases
+                    m_ddgiBuilt = true;
+                } else {
+                    logError("[rhi] boot precompile: DDGI chain failed (lazy fallback remains)");
+                    destroyDdgi();
+                }
+            }
+            char pbuf[224];
+            std::snprintf(pbuf, sizeof(pbuf),
+                "[rhi] boot precompile: %u pipelines total (%u RT-chain) in %.1f ms (%s cache) — "
+                "rtao=%d refl=%d ddgi=%d; no pipeline may be created after frame 1",
+                m_psoTotal, m_psoTotal - psoBefore, m_psoCreateMs,
+                m_cacheLoadedBytes ? "warm" : "cold",
+                (int)m_rtaoBuilt, (int)m_reflBuilt, (int)m_ddgiBuilt);
+            logInfo(pbuf);
+            (void)msBefore;
+        }
         return true;
     }
 
     void shutdown() override {
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
+        // ZERO-STUTTER: persist the pipeline cache FIRST (device still alive) so
+        // the next boot compiles near-zero pipelines from scratch.
+        savePipelineCache();
+        if (m_pipelineCache) { vkDestroyPipelineCache(m_dev.device, m_pipelineCache, nullptr); m_pipelineCache = VK_NULL_HANDLE; }
         shutdownEditorUI();   // editor-only ImGui teardown (no-op if --editor was absent)
         destroyRefl();        // SSR/RT reflections pipelines/targets (no-op if never built)
         destroyDdgi();        // DDGI probe-grid pipelines/atlases (no-op if never built)
@@ -387,6 +450,14 @@ public:
         // integration rasterizes without a display.
         if (m_imguiInit || !glfwWindow) return;
 
+        // ZERO-STUTTER: declared boundary — editor-UI init is an explicit dev-tool
+        // moment (--editor / --screenshot-editor), never mid-gameplay. ImGui creates
+        // its own internal pipeline (outside our wrappers) + this descriptor pool.
+        m_creationBoundary = true;
+        struct BoundaryReset {
+            bool* f; ~BoundaryReset() { *f = false; }
+        } boundaryReset{ &m_creationBoundary };
+
         // (1) DEDICATED descriptor pool for ImGui's font + per-texture image samplers.
         // FREE_DESCRIPTOR_SET so ImGui can free/realloc sets. imgui 1.92.8 SPLITS its
         // texture binding into separate SAMPLER + SAMPLED_IMAGE descriptors (no longer
@@ -406,7 +477,7 @@ public:
             pci.maxSets = 1000;
             pci.poolSizeCount = static_cast<uint32_t>(std::size(ps));
             pci.pPoolSizes = ps;
-            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_imguiPool) != VK_SUCCESS) {
+            if (x3CreateDescriptorPool(&pci, nullptr, &m_imguiPool) != VK_SUCCESS) {
                 logError("[rhi] editor UI: ImGui descriptor pool create failed");
                 return;
             }
@@ -720,6 +791,14 @@ public:
 
     FrameContext beginFrame() override {
         FrameContext fc{};
+        // ZERO-STUTTER: from here on, ANY pipeline/module/pool creation outside a
+        // declared boundary is LATE (the x3Create* wrappers count + assert it).
+        m_firstFrameBegun = true;
+        // Per-frame attribution counters for the spike log (consumed by
+        // recordFramePacing() at the end of this frame's endFrame()).
+        m_psoThisFrame = m_modulesThisFrame = m_poolsThisFrame = 0;
+        m_allocsThisFrame = m_asBuildsThisFrame = 0;
+        m_iblBakedThisFrame = m_recreatedThisFrame = false;
         if (m_needsRecreate) {
             if (m_headless) recreateOffscreenTarget(); else recreateSwapchain();
             m_needsRecreate = false;
@@ -959,7 +1038,7 @@ public:
         // (its own fence) that completes BEFORE this frame's command buffer runs, so
         // mesh.frag set 4 samples a valid environment. Cheap + rare (only on sky
         // change), so per-frame cost is just the three texture fetches in the shader.
-        if (m_iblReady && m_iblDirty) regenIblFromSky();
+        if (m_iblReady && m_iblDirty) { m_iblBakedThisFrame = true; regenIblFromSky(); }
 
         // ---- Hardware ray-tracing (RT AO) build, gated + default OFF ----------
         // Only when r_rtao is on AND the device supports RT: lazily build the RT-AO
@@ -1076,9 +1155,49 @@ public:
         m_building.gpuFrameMs = m_lastGpuMs;
         m_building.frameCount = m_totalFrames;
         m_lastStats = m_building;
+
+        // ZERO-STUTTER: record this frame in the pacing ring + spike log.
+        recordFramePacing();
     }
 
     RenderStats stats() const override { return m_lastStats; }
+
+    // ---- ZERO-STUTTER telemetry snapshot (r_frametelemetry / --test-framepacing).
+    // Percentiles over the post-warmup ring; the late-creation counters are the
+    // strict-PSO audit receipts (see the x3Create* wrappers + recordFramePacing).
+    FramePacing framePacing() const override {
+        FramePacing p{};
+        p.psoLate     = m_psoLate;
+        p.modulesLate = m_modulesLate;
+        p.poolsLate   = m_poolsLate;
+        p.psoTotal    = m_psoTotal;
+        p.psoBootMs   = (float)m_psoCreateMs;
+        p.cacheLoaded = m_cacheLoadedBytes;
+        p.spikes      = m_spikeCount;
+        p.samples     = (uint32_t)m_paceRing.size();
+        if (m_paceRing.empty()) return p;
+        std::vector<float> cpu, gpu;
+        cpu.reserve(m_paceRing.size()); gpu.reserve(m_paceRing.size());
+        for (const PaceSample& s : m_paceRing) { cpu.push_back(s.cpuMs); gpu.push_back(s.gpuMs); }
+        std::sort(cpu.begin(), cpu.end());
+        std::sort(gpu.begin(), gpu.end());
+        auto pct = [](const std::vector<float>& v, double q) {
+            const size_t i = std::min(v.size() - 1, (size_t)(q * (double)(v.size() - 1) + 0.5));
+            return v[i];
+        };
+        p.cpuP50 = pct(cpu, 0.50); p.cpuP95 = pct(cpu, 0.95); p.cpuP99 = pct(cpu, 0.99);
+        p.cpuP999 = pct(cpu, 0.999); p.cpuMax = cpu.back();
+        p.gpuP50 = pct(gpu, 0.50); p.gpuP95 = pct(gpu, 0.95); p.gpuP99 = pct(gpu, 0.99);
+        p.gpuP999 = pct(gpu, 0.999); p.gpuMax = gpu.back();
+        return p;
+    }
+
+    void setPacingParams(const PacingParams& pp) override {
+        m_pacing = pp;
+        if (m_pacing.warmupFrames < 1) m_pacing.warmupFrames = 1;
+        if (m_pacing.spikeFactor < 1.0f) m_pacing.spikeFactor = 1.0f;
+        if (m_pacing.floorMs < 0.0f) m_pacing.floorMs = 0.0f;
+    }
 
     // ---- Offscreen capture (--screenshot) ----------------------------------
     // Step 1: arm a capture for the NEXT frame. endFrame() will record the color-
@@ -1110,7 +1229,7 @@ public:
             vaci.usage = VMA_MEMORY_USAGE_AUTO;
             vaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo rinfo{};
-            if (vmaCreateBuffer(m_alloc, &bci, &vaci, &m_captureBuf, &m_captureAlloc, &rinfo) != VK_SUCCESS) {
+            if (x3vmaCreateBuffer(&bci, &vaci, &m_captureBuf, &m_captureAlloc, &rinfo) != VK_SUCCESS) {
                 logError("[rhi] armCapture: readback buffer alloc failed");
                 m_captureBuf = VK_NULL_HANDLE; return;
             }
@@ -1215,7 +1334,7 @@ public:
         vaci.usage = VMA_MEMORY_USAGE_AUTO;
         vaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
         VkBuffer readback = VK_NULL_HANDLE; VmaAllocation readbackAlloc = nullptr; VmaAllocationInfo rinfo{};
-        if (vmaCreateBuffer(m_alloc, &bci, &vaci, &readback, &readbackAlloc, &rinfo) != VK_SUCCESS) {
+        if (x3vmaCreateBuffer(&bci, &vaci, &readback, &readbackAlloc, &rinfo) != VK_SUCCESS) {
             logError("[rhi] captureFrame: readback buffer alloc failed"); return false;
         }
         VkImage img = m_swapImages[imageIndex];
@@ -1359,7 +1478,7 @@ public:
                              VMA_ALLOCATION_CREATE_MAPPED_BIT;
                 VmaAllocationInfo ai{};
                 VkBuffer nb = VK_NULL_HANDLE; VmaAllocation na = nullptr;
-                if (vmaCreateBuffer(m_alloc, &bci, &vaci, &nb, &na, &ai) != VK_SUCCESS) {
+                if (x3vmaCreateBuffer(&bci, &vaci, &nb, &na, &ai) != VK_SUCCESS) {
                     logError("[rhi] updateMesh: dynamic vbo alloc failed"); allocFailed = true; break;
                 }
                 void* mapped = ai.pMappedData;
@@ -4786,7 +4905,7 @@ private:
             VkDescriptorPoolSize sz{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kMaxHudDraws };
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
             pci.maxSets = kMaxHudDraws; pci.poolSizeCount = 1; pci.pPoolSizes = &sz;
-            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &fr.hudDescPool) != VK_SUCCESS) {
+            if (x3CreateDescriptorPool(&pci, nullptr, &fr.hudDescPool) != VK_SUCCESS) {
                 logError("[rhi] HUD descriptor pool failed"); return false;
             }
             VkBufferCreateInfo vbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -4796,7 +4915,7 @@ private:
             vaci.usage = VMA_MEMORY_USAGE_AUTO;
             vaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo vinfo{};
-            if (vmaCreateBuffer(m_alloc, &vbci, &vaci, &fr.hudVbo, &fr.hudVboAlloc, &vinfo) != VK_SUCCESS) {
+            if (x3vmaCreateBuffer(&vbci, &vaci, &fr.hudVbo, &fr.hudVboAlloc, &vinfo) != VK_SUCCESS) {
                 logError("[rhi] HUD vertex ring create failed"); return false;
             }
             fr.hudVboMapped = vinfo.pMappedData;
@@ -4881,7 +5000,7 @@ private:
         gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
         gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
         gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_hudLayout;
-        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_hudPipeline);
+        VkResult pr = x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_hudPipeline);
 
         vkDestroyShaderModule(m_dev.device, vs, nullptr);
         vkDestroyShaderModule(m_dev.device, fs, nullptr);
@@ -4947,7 +5066,7 @@ private:
         ici.usage = usage; ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         VmaAllocationCreateInfo aci{}; aci.usage = VMA_MEMORY_USAGE_AUTO;
         aci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-        if (vmaCreateImage(m_alloc, &ici, &aci, &outImg, &outAlloc, nullptr) != VK_SUCCESS) return false;
+        if (x3vmaCreateImage(&ici, &aci, &outImg, &outAlloc, nullptr) != VK_SUCCESS) return false;
         VkImageViewCreateInfo cv{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
         cv.image = outImg; cv.viewType = VK_IMAGE_VIEW_TYPE_CUBE; cv.format = kIblCubeFormat;
         cv.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, mipLevels, 0, 6 };
@@ -4991,7 +5110,7 @@ private:
             ici.usage = cubeUsage; ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
             VmaAllocationCreateInfo aci{}; aci.usage = VMA_MEMORY_USAGE_AUTO;
             aci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-            if (vmaCreateImage(m_alloc, &ici, &aci, &m_iblPrefImg, &m_iblPrefAlloc, nullptr) != VK_SUCCESS) {
+            if (x3vmaCreateImage(&ici, &aci, &m_iblPrefImg, &m_iblPrefAlloc, nullptr) != VK_SUCCESS) {
                 logError("[rhi] IBL prefilter cube create failed"); return false;
             }
             VkImageViewCreateInfo cv{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
@@ -5054,7 +5173,7 @@ private:
             VmaAllocationCreateInfo aci{}; aci.usage = VMA_MEMORY_USAGE_AUTO;
             aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo info{};
-            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_iblSkyUboBuf, &m_iblSkyUboAlloc, &info) != VK_SUCCESS) return false;
+            if (x3vmaCreateBuffer(&bci, &aci, &m_iblSkyUboBuf, &m_iblSkyUboAlloc, &info) != VK_SUCCESS) return false;
             m_iblSkyUboMapped = info.pMappedData;
         }
 
@@ -5065,7 +5184,7 @@ private:
             sizes[1].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; sizes[1].descriptorCount = 2;
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
             pci.maxSets = 2; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
-            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_iblBakePool) != VK_SUCCESS) return false;
+            if (x3CreateDescriptorPool(&pci, nullptr, &m_iblBakePool) != VK_SUCCESS) return false;
             VkDescriptorSetAllocateInfo a0{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
             a0.descriptorPool = m_iblBakePool; a0.descriptorSetCount = 1; a0.pSetLayouts = &m_iblSkyUboSetLayout;
             if (vkAllocateDescriptorSets(m_dev.device, &a0, &m_iblSkyUboSet) != VK_SUCCESS) return false;
@@ -5090,7 +5209,7 @@ private:
             VkDescriptorPoolSize sz{}; sz.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; sz.descriptorCount = 3;
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
             pci.maxSets = 1; pci.poolSizeCount = 1; pci.pPoolSizes = &sz;
-            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_iblMeshPool) != VK_SUCCESS) return false;
+            if (x3CreateDescriptorPool(&pci, nullptr, &m_iblMeshPool) != VK_SUCCESS) return false;
             VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
             ai.descriptorPool = m_iblMeshPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_iblMeshSetLayout;
             if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_iblMeshSet) != VK_SUCCESS) return false;
@@ -5170,7 +5289,7 @@ private:
             di.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
             VmaAllocationCreateInfo da{}; da.usage = VMA_MEMORY_USAGE_AUTO;
             da.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-            if (vmaCreateImage(m_alloc, &di, &da, &m_probeDepthImg, &m_probeDepthAlloc, nullptr) == VK_SUCCESS) {
+            if (x3vmaCreateImage(&di, &da, &m_probeDepthImg, &m_probeDepthAlloc, nullptr) == VK_SUCCESS) {
                 VkImageViewCreateInfo dv{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
                 dv.image = m_probeDepthImg; dv.viewType = VK_IMAGE_VIEW_TYPE_2D; dv.format = m_depthFormat;
                 dv.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
@@ -5468,7 +5587,7 @@ private:
         VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kFramesInFlight };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         pci.maxSets = kFramesInFlight; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
-        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_skyPool) != VK_SUCCESS) {
+        if (x3CreateDescriptorPool(&pci, nullptr, &m_skyPool) != VK_SUCCESS) {
             logError("[rhi] sky desc pool failed"); return false;
         }
 
@@ -5482,7 +5601,7 @@ private:
             aci.usage = VMA_MEMORY_USAGE_AUTO;
             aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo info{};
-            if (vmaCreateBuffer(m_alloc, &bci, &aci, &fr.skyBuf, &fr.skyAlloc, &info) != VK_SUCCESS) {
+            if (x3vmaCreateBuffer(&bci, &aci, &fr.skyBuf, &fr.skyAlloc, &info) != VK_SUCCESS) {
                 logError("[rhi] sky UBO create failed"); return false;
             }
             fr.skyMapped = info.pMappedData;
@@ -5562,7 +5681,7 @@ private:
         gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
         gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
         gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_skyLayout;
-        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_skyPipeline);
+        VkResult pr = x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_skyPipeline);
 
         vkDestroyShaderModule(m_dev.device, vs, nullptr);
         vkDestroyShaderModule(m_dev.device, fs, nullptr);
@@ -5657,7 +5776,7 @@ private:
             { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kFramesInFlight } };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         pci.maxSets = kFramesInFlight; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
-        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_waterPool) != VK_SUCCESS) {
+        if (x3CreateDescriptorPool(&pci, nullptr, &m_waterPool) != VK_SUCCESS) {
             logError("[rhi] water desc pool failed"); return false;
         }
 
@@ -5670,7 +5789,7 @@ private:
             aci.usage = VMA_MEMORY_USAGE_AUTO;
             aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo info{};
-            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_waterUboBuf[i], &m_waterUboAlloc[i], &info) != VK_SUCCESS) {
+            if (x3vmaCreateBuffer(&bci, &aci, &m_waterUboBuf[i], &m_waterUboAlloc[i], &info) != VK_SUCCESS) {
                 logError("[rhi] water UBO create failed"); return false;
             }
             m_waterUboMapped[i] = info.pMappedData;
@@ -5753,7 +5872,7 @@ private:
         gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
         gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
         gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_waterLayout;
-        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_waterPipeline);
+        VkResult pr = x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_waterPipeline);
 
         vkDestroyShaderModule(m_dev.device, vs, nullptr);
         vkDestroyShaderModule(m_dev.device, fs, nullptr);
@@ -5906,7 +6025,7 @@ private:
             { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kFramesInFlight } };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         pci.maxSets = kFramesInFlight * 2; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
-        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_partPool) != VK_SUCCESS) {
+        if (x3CreateDescriptorPool(&pci, nullptr, &m_partPool) != VK_SUCCESS) {
             logError("[rhi] particle desc pool failed"); return false;
         }
 
@@ -5920,7 +6039,7 @@ private:
                 aci.usage = VMA_MEMORY_USAGE_AUTO;
                 aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
                 VmaAllocationInfo info{};
-                if (vmaCreateBuffer(m_alloc, &bci, &aci, &buf, &alloc, &info) != VK_SUCCESS) return false;
+                if (x3vmaCreateBuffer(&bci, &aci, &buf, &alloc, &info) != VK_SUCCESS) return false;
                 mapped = info.pMappedData;
                 return true;
             };
@@ -6041,7 +6160,7 @@ private:
                 gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
                 gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
                 gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_partLayout;
-                return vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &out) == VK_SUCCESS;
+                return x3CreateGraphicsPipelines(1, &gpci, nullptr, &out) == VK_SUCCESS;
             };
             bool ok = buildPart(addBlend, m_partAddPipeline) && buildPart(aBlend, m_partAlphaPipeline);
             vkDestroyShaderModule(m_dev.device, vs, nullptr);
@@ -6090,7 +6209,7 @@ private:
             gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
             gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
             gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_decalLayout;
-            VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_decalPipeline);
+            VkResult pr = x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_decalPipeline);
             vkDestroyShaderModule(m_dev.device, vs, nullptr);
             vkDestroyShaderModule(m_dev.device, fs, nullptr);
             if (pr != VK_SUCCESS) { logError("[rhi] decal pipeline create failed"); return false; }
@@ -6197,7 +6316,7 @@ private:
             aci.usage = VMA_MEMORY_USAGE_AUTO;
             aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo info{};
-            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_debrisPoolBuf, &m_debrisPoolAlloc, &info) != VK_SUCCESS) {
+            if (x3vmaCreateBuffer(&bci, &aci, &m_debrisPoolBuf, &m_debrisPoolAlloc, &info) != VK_SUCCESS) {
                 logError("[rhi] debris pool SSBO create failed"); return false; }
             m_debrisPoolMapped = info.pMappedData;
             // Zero the pool -> every slot DEAD (spinState.w == 0).
@@ -6212,7 +6331,7 @@ private:
             aci.usage = VMA_MEMORY_USAGE_AUTO;
             aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo info{};
-            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_debrisCountBuf, &m_debrisCountAlloc, &info) != VK_SUCCESS) {
+            if (x3vmaCreateBuffer(&bci, &aci, &m_debrisCountBuf, &m_debrisCountAlloc, &info) != VK_SUCCESS) {
                 logError("[rhi] debris counters SSBO create failed"); return false; }
             m_debrisCountMapped = info.pMappedData;
             std::memset(m_debrisCountMapped, 0, (size_t)bci.size);
@@ -6227,7 +6346,7 @@ private:
                 aci.usage = VMA_MEMORY_USAGE_AUTO;
                 aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
                 VmaAllocationInfo info{};
-                if (vmaCreateBuffer(m_alloc, &bci, &aci, &buf, &alloc, &info) != VK_SUCCESS) return false;
+                if (x3vmaCreateBuffer(&bci, &aci, &buf, &alloc, &info) != VK_SUCCESS) return false;
                 mapped = info.pMappedData; return true;
             };
             if (!makeMapped(sizeof(GpuDebrisParamsUBO), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
@@ -6271,7 +6390,7 @@ private:
             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kFramesInFlight * 2 } }; // compute params + draw UBO
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         pci.maxSets = kFramesInFlight * 2; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
-        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_debrisPool) != VK_SUCCESS) {
+        if (x3CreateDescriptorPool(&pci, nullptr, &m_debrisPool) != VK_SUCCESS) {
             logError("[rhi] debris desc pool failed"); return false; }
 
         // --- Compute set layout: b0 pool SSBO, b1 counters SSBO, b2 params UBO. ---
@@ -6314,7 +6433,7 @@ private:
             cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
             cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
             cpci.layout = m_debrisComputeLayout;
-            VkResult cr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_debrisComputePipeline);
+            VkResult cr = x3CreateComputePipelines(1, &cpci, nullptr, &m_debrisComputePipeline);
             vkDestroyShaderModule(m_dev.device, cs, nullptr);
             if (cr != VK_SUCCESS) { logError("[rhi] debris compute pipeline create failed"); return false; }
         }
@@ -6410,7 +6529,7 @@ private:
             gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
             gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
             gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_debrisDrawLayout;
-            VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_debrisDrawPipeline);
+            VkResult pr = x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_debrisDrawPipeline);
             vkDestroyShaderModule(m_dev.device, vs, nullptr);
             vkDestroyShaderModule(m_dev.device, fs, nullptr);
             if (pr != VK_SUCCESS) { logError("[rhi] debris draw pipeline create failed"); return false; }
@@ -6626,7 +6745,7 @@ private:
         // (a long session may register/free many characters).
         pci.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
         pci.maxSets = maxSets; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
-        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_skinPool) != VK_SUCCESS) {
+        if (x3CreateDescriptorPool(&pci, nullptr, &m_skinPool) != VK_SUCCESS) {
             logError("[rhi] skin desc pool failed"); return false; }
 
         // Set layout: b0 src verts (RO), b1 influences (RO), b2 palette (RO), b3 dst (RW).
@@ -6655,7 +6774,7 @@ private:
         cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
         cpci.layout = m_skinPipelineLayout;
-        VkResult cr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_skinPipeline);
+        VkResult cr = x3CreateComputePipelines(1, &cpci, nullptr, &m_skinPipeline);
         vkDestroyShaderModule(m_dev.device, cs, nullptr);
         if (cr != VK_SUCCESS) { logError("[rhi] skin compute pipeline create failed"); return false; }
 
@@ -6779,7 +6898,7 @@ private:
             aci.usage = VMA_MEMORY_USAGE_AUTO;
             aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo info{};
-            if (vmaCreateBuffer(m_alloc, &bci, &aci, &sm.palBuf[i], &sm.palAlloc[i], &info) != VK_SUCCESS) {
+            if (x3vmaCreateBuffer(&bci, &aci, &sm.palBuf[i], &sm.palAlloc[i], &info) != VK_SUCCESS) {
                 logError("[rhi] skin: palette SSBO alloc failed");
                 destroySkinnedMeshResources(sm); return false; }
             sm.palMapped[i] = info.pMappedData;
@@ -6875,7 +6994,7 @@ private:
         aci.usage = VMA_MEMORY_USAGE_AUTO;
         aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
         VkBuffer rb = VK_NULL_HANDLE; VmaAllocation rbA = nullptr; VmaAllocationInfo rbI{};
-        if (vmaCreateBuffer(m_alloc, &bci, &aci, &rb, &rbA, &rbI) != VK_SUCCESS) {
+        if (x3vmaCreateBuffer(&bci, &aci, &rb, &rbA, &rbI) != VK_SUCCESS) {
             logError("[rhi] readbackSkinnedMesh: readback buffer alloc failed"); return false; }
         bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
             VkBufferCopy region{ 0, 0, bytes };
@@ -7022,7 +7141,7 @@ private:
         VmaAllocationCreateInfo daci{};
         daci.usage = VMA_MEMORY_USAGE_AUTO;
         daci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-        if (vmaCreateImage(m_alloc, &dici, &daci, &m_depthImg, &m_depthAlloc, nullptr) != VK_SUCCESS) {
+        if (x3vmaCreateImage(&dici, &daci, &m_depthImg, &m_depthAlloc, nullptr) != VK_SUCCESS) {
             logError("[rhi] depth image create failed"); return false;
         }
         VkImageViewCreateInfo dvci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
@@ -7045,6 +7164,12 @@ private:
     }
 
     void recreateSwapchain() {
+        // ZERO-STUTTER: declared recreate boundary (resize/vsync). Extent-tracking
+        // targets are reallocated here — exempt from the strict late-create assert,
+        // flagged for the spike log. No PIPELINES are created (dynamic rendering;
+        // all formats are extent-independent), only images/views/descriptors.
+        m_creationBoundary = true;
+        m_recreatedThisFrame = true;
         vkDeviceWaitIdle(m_dev.device);
         createSwapchain(m_width, m_height);
         // HDR scene + bloom mips track the frame extent — rebuild + rewrite their
@@ -7082,6 +7207,7 @@ private:
         if (m_imguiInit)
             ImGui_ImplVulkan_SetMinImageCount(
                 static_cast<uint32_t>(m_swapImages.empty() ? 2u : m_swapImages.size()));
+        m_creationBoundary = false;
     }
 
     // ---- HEADLESS offscreen render target (no window, no swapchain) ---------
@@ -7114,7 +7240,7 @@ private:
         VmaAllocationCreateInfo caci{};
         caci.usage = VMA_MEMORY_USAGE_AUTO;
         caci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-        if (vmaCreateImage(m_alloc, &cici, &caci, &m_offscreenColorImg, &m_offscreenColorAlloc, nullptr) != VK_SUCCESS) {
+        if (x3vmaCreateImage(&cici, &caci, &m_offscreenColorImg, &m_offscreenColorAlloc, nullptr) != VK_SUCCESS) {
             logError("[rhi] offscreen color image create failed"); return false;
         }
         VkImageViewCreateInfo cvci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
@@ -7139,7 +7265,7 @@ private:
         VmaAllocationCreateInfo daci{};
         daci.usage = VMA_MEMORY_USAGE_AUTO;
         daci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-        if (vmaCreateImage(m_alloc, &dici, &daci, &m_depthImg, &m_depthAlloc, nullptr) != VK_SUCCESS) {
+        if (x3vmaCreateImage(&dici, &daci, &m_depthImg, &m_depthAlloc, nullptr) != VK_SUCCESS) {
             logError("[rhi] offscreen depth image create failed"); return false;
         }
         VkImageViewCreateInfo dvci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
@@ -7165,6 +7291,10 @@ private:
     // next beginFrame/endFrame targets the new images). This exercises the same
     // resize/recreate code path the windowed swapchain recreate does, validated.
     void recreateOffscreenTarget() {
+        // ZERO-STUTTER: declared recreate boundary (headless resize) — see
+        // recreateSwapchain(). Images/views/descriptors only; no pipelines.
+        m_creationBoundary = true;
+        m_recreatedThisFrame = true;
         vkDeviceWaitIdle(m_dev.device);
         createOffscreenTarget(m_width, m_height);
         // The HDR scene + bloom mips are sized to the frame extent — rebuild them
@@ -7200,6 +7330,7 @@ private:
         // this was a live VUID-08114 source: the headless --test-rt mid-run
         // recreate left the rtao sets on the destroyed depth view.)
         if (m_rtaoBuilt) { createRtaoTargets(); writeRtaoDescriptors(); }
+        m_creationBoundary = false;
     }
 
     // ---- HDR scene + bloom render targets ----------------------------------
@@ -7352,7 +7483,7 @@ private:
             aci.usage = VMA_MEMORY_USAGE_AUTO;
             aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo ainfo{};
-            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_glassCtrlBuf[i], &m_glassCtrlAlloc[i], &ainfo) != VK_SUCCESS) {
+            if (x3vmaCreateBuffer(&bci, &aci, &m_glassCtrlBuf[i], &m_glassCtrlAlloc[i], &ainfo) != VK_SUCCESS) {
                 logError("[rhi] glass control UBO alloc failed"); return false;
             }
             m_glassCtrlMapped[i] = ainfo.pMappedData;
@@ -7365,7 +7496,7 @@ private:
             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight } };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         pci.maxSets = kFramesInFlight + kGlassFrostLevels; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
-        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_glassPool) != VK_SUCCESS) {
+        if (x3CreateDescriptorPool(&pci, nullptr, &m_glassPool) != VK_SUCCESS) {
             logError("[rhi] glass descriptor pool failed"); return false;
         }
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
@@ -7464,7 +7595,7 @@ private:
         VmaAllocationCreateInfo aci{};
         aci.usage = VMA_MEMORY_USAGE_AUTO;
         aci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-        if (vmaCreateImage(m_alloc, &ici, &aci, &outImg, &outAlloc, nullptr) != VK_SUCCESS) return false;
+        if (x3vmaCreateImage(&ici, &aci, &outImg, &outAlloc, nullptr) != VK_SUCCESS) return false;
         VkImageViewCreateInfo vci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
         vci.image = outImg; vci.viewType = VK_IMAGE_VIEW_TYPE_2D; vci.format = fmt;
         vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
@@ -7576,7 +7707,7 @@ private:
         };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         pci.maxSets = single + 4 + kFramesInFlight; pci.poolSizeCount = 3; pci.pPoolSizes = ps;
-        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_postPool) != VK_SUCCESS) {
+        if (x3CreateDescriptorPool(&pci, nullptr, &m_postPool) != VK_SUCCESS) {
             logError("[rhi] post desc pool failed"); return false;
         }
         // Allocate the single-sampler sets (HDR + mips) and the composite set.
@@ -7625,7 +7756,7 @@ private:
             aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo ainfo{};
-            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_taaUboBuf[i], &m_taaUboAlloc[i], &ainfo) != VK_SUCCESS) {
+            if (x3vmaCreateBuffer(&bci, &aci, &m_taaUboBuf[i], &m_taaUboAlloc[i], &ainfo) != VK_SUCCESS) {
                 logError("[rhi] TAA UBO alloc failed"); return false;
             }
             m_taaUboMapped[i] = ainfo.pMappedData;
@@ -7644,7 +7775,7 @@ private:
             aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                         VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo info{};
-            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_aeBuf, &m_aeAlloc, &info) != VK_SUCCESS) {
+            if (x3vmaCreateBuffer(&bci, &aci, &m_aeBuf, &m_aeAlloc, &info) != VK_SUCCESS) {
                 logError("[rhi] auto-exposure buffer create failed"); return false;
             }
             float init[4] = { 1.0f, 0.0f, 0.0f, 0.0f };   // neutral exposure
@@ -7666,7 +7797,7 @@ private:
             cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
             cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
             cpci.layout = m_aeLayout;
-            VkResult pr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_aePipe);
+            VkResult pr = x3CreateComputePipelines(1, &cpci, nullptr, &m_aePipe);
             vkDestroyShaderModule(m_dev.device, cs, nullptr);
             if (pr != VK_SUCCESS) { logError("[rhi] auto-exposure pipeline create failed"); return false; }
         }
@@ -7778,7 +7909,7 @@ private:
         gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
         gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
         gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = layout;
-        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &outPipe);
+        VkResult pr = x3CreateGraphicsPipelines(1, &gpci, nullptr, &outPipe);
 
         vkDestroyShaderModule(m_dev.device, vs, nullptr);
         vkDestroyShaderModule(m_dev.device, fs, nullptr);
@@ -7984,7 +8115,7 @@ private:
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
             pci.maxSets = nFrames + nFrames + 1;
             pci.poolSizeCount = m_rtSupported ? 3u : 2u; pci.pPoolSizes = sizes;
-            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_ssaoPool) != VK_SUCCESS) {
+            if (x3CreateDescriptorPool(&pci, nullptr, &m_ssaoPool) != VK_SUCCESS) {
                 logError("[rhi] ssao desc pool failed"); return false;
             }
         }
@@ -7997,7 +8128,7 @@ private:
             aci.usage = VMA_MEMORY_USAGE_AUTO;
             aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo info{};
-            if (vmaCreateBuffer(m_alloc, &ub, &aci, &m_ssaoUboBuf[i], &m_ssaoUboAlloc[i], &info) != VK_SUCCESS) {
+            if (x3vmaCreateBuffer(&ub, &aci, &m_ssaoUboBuf[i], &m_ssaoUboAlloc[i], &info) != VK_SUCCESS) {
                 logError("[rhi] ssao ubo create failed"); return false;
             }
             m_ssaoUboMapped[i] = info.pMappedData;
@@ -8005,7 +8136,7 @@ private:
             VkBufferCreateInfo cb{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
             cb.size = sizeof(SsaoControl); cb.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
             VmaAllocationInfo cinfo{};
-            if (vmaCreateBuffer(m_alloc, &cb, &aci, &m_ssaoCtrlBuf[i], &m_ssaoCtrlAlloc[i], &cinfo) != VK_SUCCESS) {
+            if (x3vmaCreateBuffer(&cb, &aci, &m_ssaoCtrlBuf[i], &m_ssaoCtrlAlloc[i], &cinfo) != VK_SUCCESS) {
                 logError("[rhi] ssao ctrl ubo create failed"); return false;
             }
             m_ssaoCtrlMapped[i] = cinfo.pMappedData;
@@ -8112,7 +8243,7 @@ private:
         gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
         gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
         gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_shadowLayout;
-        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_depthPrePipeline);
+        VkResult pr = x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_depthPrePipeline);
         vkDestroyShaderModule(m_dev.device, vs, nullptr);
         if (pr != VK_SUCCESS) { logError("[rhi] depth pre-pass pipeline create failed"); return false; }
 
@@ -8138,7 +8269,7 @@ private:
                     cstages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; cstages[1].module = cfs; cstages[1].pName = "main";
                     gpci.stageCount = 2; gpci.pStages = cstages;
                     gpci.layout = m_depthPreCutoutLayout;
-                    if (vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_depthPreCutoutPipeline) != VK_SUCCESS)
+                    if (x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_depthPreCutoutPipeline) != VK_SUCCESS)
                         m_depthPreCutoutPipeline = VK_NULL_HANDLE;
                 }
                 if (cvs) vkDestroyShaderModule(m_dev.device, cvs, nullptr);
@@ -8397,7 +8528,7 @@ private:
             sizes[3].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;         sizes[3].descriptorCount = nF;
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
             pci.maxSets = nF * 2; pci.poolSizeCount = 4; pci.pPoolSizes = sizes;
-            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_rtaoPool) != VK_SUCCESS) return false;
+            if (x3CreateDescriptorPool(&pci, nullptr, &m_rtaoPool) != VK_SUCCESS) return false;
         }
         // ---- Per-frame UBOs + sets. ----
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
@@ -8407,7 +8538,7 @@ private:
             aci.usage = VMA_MEMORY_USAGE_AUTO;
             aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo info{};
-            if (vmaCreateBuffer(m_alloc, &ub, &aci, &m_rtaoUboBuf[i], &m_rtaoUboAlloc[i], &info) != VK_SUCCESS) return false;
+            if (x3vmaCreateBuffer(&ub, &aci, &m_rtaoUboBuf[i], &m_rtaoUboAlloc[i], &info) != VK_SUCCESS) return false;
             m_rtaoUboMapped[i] = info.pMappedData;
             VkDescriptorSetAllocateInfo a0{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
             a0.descriptorPool = m_rtaoPool; a0.descriptorSetCount = 1; a0.pSetLayouts = &m_rtaoSetLayout;
@@ -8427,7 +8558,7 @@ private:
             cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
             cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
             cpci.layout = m_rtaoLayout;
-            VkResult pr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_rtaoPipe);
+            VkResult pr = x3CreateComputePipelines(1, &cpci, nullptr, &m_rtaoPipe);
             vkDestroyShaderModule(m_dev.device, cs, nullptr);
             if (pr != VK_SUCCESS) return false;
         }
@@ -8492,7 +8623,7 @@ private:
         gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
         gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
         gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = layout;
-        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &outPipe);
+        VkResult pr = x3CreateGraphicsPipelines(1, &gpci, nullptr, &outPipe);
         vkDestroyShaderModule(m_dev.device, vs, nullptr);
         vkDestroyShaderModule(m_dev.device, fs, nullptr);
         return pr == VK_SUCCESS;
@@ -8605,6 +8736,7 @@ private:
             VkBufferDeviceAddressInfo ii{ VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO }; ii.buffer = m.ibo;
             const VkDeviceAddress vbAddr = vkGetBufferDeviceAddress(m_dev.device, &vi);
             const VkDeviceAddress ibAddr = vkGetBufferDeviceAddress(m_dev.device, &ii);
+            ++m_asBuildsThisFrame;   // ZERO-STUTTER spike-log attribution (new BLAS)
             m_rt.ensureBlas(mid, vbAddr, m.vertexCount, (uint32_t)sizeof(MeshVertex), ibAddr, m.indexCount);
         }
 
@@ -8647,6 +8779,7 @@ private:
         // and necessary for correctness when they do happen.
         if (!firstBuild) vkDeviceWaitIdle(m_dev.device);
 
+        ++m_asBuildsThisFrame;   // ZERO-STUTTER spike-log attribution (TLAS (re)build)
         const VkAccelerationStructureKHR before = m_rt.tlas();
         if (!m_rt.buildTlas(m_rtInstScratch)) return false;
         m_rtTlasSig = sig;
@@ -8800,7 +8933,7 @@ private:
             }
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
             pci.maxSets = nFrames * nVariants; pci.poolSizeCount = nSizes; pci.pPoolSizes = sizes;
-            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_reflPool) != VK_SUCCESS) return false;
+            if (x3CreateDescriptorPool(&pci, nullptr, &m_reflPool) != VK_SUCCESS) return false;
         }
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
             VkBufferCreateInfo ub{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -8809,7 +8942,7 @@ private:
             aci.usage = VMA_MEMORY_USAGE_AUTO;
             aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo info{};
-            if (vmaCreateBuffer(m_alloc, &ub, &aci, &m_reflUboBuf[i], &m_reflUboAlloc[i], &info) != VK_SUCCESS) return false;
+            if (x3vmaCreateBuffer(&ub, &aci, &m_reflUboBuf[i], &m_reflUboAlloc[i], &info) != VK_SUCCESS) return false;
             m_reflUboMapped[i] = info.pMappedData;
 
             VkDescriptorSetAllocateInfo a0{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
@@ -8832,7 +8965,7 @@ private:
             cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
             cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
             cpci.layout = m_reflLayout;
-            VkResult pr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_reflPipe);
+            VkResult pr = x3CreateComputePipelines(1, &cpci, nullptr, &m_reflPipe);
             vkDestroyShaderModule(m_dev.device, cs, nullptr);
             if (pr != VK_SUCCESS) return false;
         }
@@ -8847,7 +8980,7 @@ private:
                     cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
                     cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
                     cpci.layout = m_reflLayoutRt;
-                    if (vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_reflPipeRt) != VK_SUCCESS)
+                    if (x3CreateComputePipelines(1, &cpci, nullptr, &m_reflPipeRt) != VK_SUCCESS)
                         m_reflPipeRt = VK_NULL_HANDLE;
                     vkDestroyShaderModule(m_dev.device, cs, nullptr);
                 }
@@ -9118,7 +9251,7 @@ private:
             sizes[4].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; sizes[4].descriptorCount = nF;
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
             pci.maxSets = nF * 2; pci.poolSizeCount = 5; pci.pPoolSizes = sizes;
-            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_ddgiPool) != VK_SUCCESS) return false;
+            if (x3CreateDescriptorPool(&pci, nullptr, &m_ddgiPool) != VK_SUCCESS) return false;
         }
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
             VkBufferCreateInfo ub{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
@@ -9127,7 +9260,7 @@ private:
             aci.usage = VMA_MEMORY_USAGE_AUTO;
             aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
             VmaAllocationInfo info{};
-            if (vmaCreateBuffer(m_alloc, &ub, &aci, &m_ddgiUboBuf[i], &m_ddgiUboAlloc[i], &info) != VK_SUCCESS) return false;
+            if (x3vmaCreateBuffer(&ub, &aci, &m_ddgiUboBuf[i], &m_ddgiUboAlloc[i], &info) != VK_SUCCESS) return false;
             m_ddgiUboMapped[i] = info.pMappedData;
             VkDescriptorSetAllocateInfo a0{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
             a0.descriptorPool = m_ddgiPool; a0.descriptorSetCount = 1; a0.pSetLayouts = &m_ddgiRaySetLayout;
@@ -9147,7 +9280,7 @@ private:
             cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
             cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
             cpci.layout = m_ddgiRayLayout;
-            VkResult pr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_ddgiRayPipe);
+            VkResult pr = x3CreateComputePipelines(1, &cpci, nullptr, &m_ddgiRayPipe);
             vkDestroyShaderModule(m_dev.device, cs, nullptr);
             if (pr != VK_SUCCESS) return false;
         }
@@ -9163,7 +9296,7 @@ private:
             cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
             cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
             cpci.layout = m_ddgiUpLayout;
-            VkResult pr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_ddgiUpPipe);
+            VkResult pr = x3CreateComputePipelines(1, &cpci, nullptr, &m_ddgiUpPipe);
             vkDestroyShaderModule(m_dev.device, cs, nullptr);
             if (pr != VK_SUCCESS) return false;
         }
@@ -9196,7 +9329,7 @@ private:
         bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
         VmaAllocationCreateInfo aci{};
         aci.usage = VMA_MEMORY_USAGE_AUTO;
-        if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_ddgiRayBuf, &m_ddgiRayAlloc, nullptr) != VK_SUCCESS)
+        if (x3vmaCreateBuffer(&bci, &aci, &m_ddgiRayBuf, &m_ddgiRayAlloc, nullptr) != VK_SUCCESS)
             return false;
 
         // Clear both atlases to zero + park them SHADER_READ_ONLY so the very
@@ -9552,7 +9685,7 @@ private:
             sizes[1].descriptorCount = nF /*gather ubo*/ + nF /*temporal ubo*/;
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
             pci.maxSets = nF * 4; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
-            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_giPool) != VK_SUCCESS) {
+            if (x3CreateDescriptorPool(&pci, nullptr, &m_giPool) != VK_SUCCESS) {
                 logError("[rhi] gi desc pool failed"); return false;
             }
         }
@@ -9564,14 +9697,14 @@ private:
             VkBufferCreateInfo ub{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
             ub.size = sizeof(GiUBO); ub.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
             VmaAllocationInfo info{};
-            if (vmaCreateBuffer(m_alloc, &ub, &aci, &m_giUboBuf[i], &m_giUboAlloc[i], &info) != VK_SUCCESS) {
+            if (x3vmaCreateBuffer(&ub, &aci, &m_giUboBuf[i], &m_giUboAlloc[i], &info) != VK_SUCCESS) {
                 logError("[rhi] gi ubo create failed"); return false;
             }
             m_giUboMapped[i] = info.pMappedData;
             VkBufferCreateInfo tb{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
             tb.size = sizeof(GiTemporalUBO); tb.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
             VmaAllocationInfo tinfo{};
-            if (vmaCreateBuffer(m_alloc, &tb, &aci, &m_giTempUboBuf[i], &m_giTempUboAlloc[i], &tinfo) != VK_SUCCESS) {
+            if (x3vmaCreateBuffer(&tb, &aci, &m_giTempUboBuf[i], &m_giTempUboAlloc[i], &tinfo) != VK_SUCCESS) {
                 logError("[rhi] gi temporal ubo create failed"); return false;
             }
             m_giTempUboMapped[i] = tinfo.pMappedData;
@@ -9646,7 +9779,7 @@ private:
         dici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         VmaAllocationCreateInfo daci{}; daci.usage = VMA_MEMORY_USAGE_AUTO;
         daci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-        if (vmaCreateImage(m_alloc, &dici, &daci, &m_giPrevDepthImg, &m_giPrevDepthAlloc, nullptr) != VK_SUCCESS) {
+        if (x3vmaCreateImage(&dici, &daci, &m_giPrevDepthImg, &m_giPrevDepthAlloc, nullptr) != VK_SUCCESS) {
             logError("[rhi] gi prev-depth image failed"); return false;
         }
         VkImageViewCreateInfo dvci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
@@ -9840,6 +9973,179 @@ private:
         return slash == std::string::npos ? std::string(".") : p.substr(0, slash);
     }
 
+    // =========================================================================
+    // ZERO-STUTTER instrumentation (docs/ZERO_STUTTER.md).
+    //
+    // EVERY pipeline / shader-module / descriptor-pool creation and every VMA
+    // buffer/image allocation in this file funnels through the x3Create* /
+    // x3vmaCreate* wrappers below so the engine can PROVE nothing expensive is
+    // created mid-frame:
+    //   * total + per-frame counters feed the spike log + framePacing(),
+    //   * any creation AFTER the first frame began counts as LATE and (under
+    //     r_strictpso) logs a validation-style "[stutter]" error line,
+    //   * pipeline creation goes through the persistent VkPipelineCache
+    //     (loaded from disk at boot, saved at shutdown -> warm second boots).
+    // Declared recreate boundaries (swapchain resize, editor-UI init, live
+    // quality-setting rebuilds) set m_creationBoundary so they are exempt from
+    // the strict assert — they are explicit hitch points, never mid-gameplay.
+    // =========================================================================
+    void noteCreate(const char* what, uint32_t& lateCounter, uint32_t& frameCounter) {
+        ++frameCounter;
+        if (m_firstFrameBegun && !m_creationBoundary) {
+            ++lateCounter;
+            if (m_pacing.strictPso)
+                logError(std::string("[stutter] ") + what +
+                         " created after first frame (frame " + std::to_string(m_totalFrames) +
+                         ") — precompile it at boot or inside a declared recreate boundary");
+        }
+    }
+
+    VkResult x3CreateGraphicsPipelines(uint32_t n, const VkGraphicsPipelineCreateInfo* ci,
+                                       const VkAllocationCallbacks* ac, VkPipeline* out) {
+        const auto t0 = std::chrono::steady_clock::now();
+        VkResult r = vkCreateGraphicsPipelines(m_dev.device, m_pipelineCache, n, ci, ac, out);
+        m_psoCreateMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (r == VK_SUCCESS) { m_psoTotal += n; noteCreate("graphics pipeline", m_psoLate, m_psoThisFrame); }
+        return r;
+    }
+    VkResult x3CreateComputePipelines(uint32_t n, const VkComputePipelineCreateInfo* ci,
+                                      const VkAllocationCallbacks* ac, VkPipeline* out) {
+        const auto t0 = std::chrono::steady_clock::now();
+        VkResult r = vkCreateComputePipelines(m_dev.device, m_pipelineCache, n, ci, ac, out);
+        m_psoCreateMs += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        if (r == VK_SUCCESS) { m_psoTotal += n; noteCreate("compute pipeline", m_psoLate, m_psoThisFrame); }
+        return r;
+    }
+    VkResult x3CreateDescriptorPool(const VkDescriptorPoolCreateInfo* ci,
+                                    const VkAllocationCallbacks* ac, VkDescriptorPool* out) {
+        VkResult r = vkCreateDescriptorPool(m_dev.device, ci, ac, out);
+        if (r == VK_SUCCESS) noteCreate("descriptor pool", m_poolsLate, m_poolsThisFrame);
+        return r;
+    }
+    VkResult x3vmaCreateBuffer(const VkBufferCreateInfo* bci, const VmaAllocationCreateInfo* aci,
+                               VkBuffer* buf, VmaAllocation* alloc, VmaAllocationInfo* info) {
+        VkResult r = vmaCreateBuffer(m_alloc,bci, aci, buf, alloc, info);
+        if (r == VK_SUCCESS) ++m_allocsThisFrame;
+        return r;
+    }
+    VkResult x3vmaCreateImage(const VkImageCreateInfo* ici, const VmaAllocationCreateInfo* aci,
+                              VkImage* img, VmaAllocation* alloc, VmaAllocationInfo* info) {
+        VkResult r = vmaCreateImage(m_alloc,ici, aci, img, alloc, info);
+        if (r == VK_SUCCESS) ++m_allocsThisFrame;
+        return r;
+    }
+
+    // ---- VkPipelineCache persistence (ZERO-STUTTER step 2) -----------------
+    static std::string pipelineCachePath() { return exeDir() + "\\x3pipeline.cache"; }
+
+    // Load the on-disk pipeline cache (if any) and create the VkPipelineCache all
+    // x3Create*Pipelines calls feed. A stale/foreign blob (different GPU/driver)
+    // is detected via the spec'd 32-byte header and ignored — cold boot compiles
+    // everything and the save below replaces the file.
+    void createPipelineCache() {
+        std::vector<char> blob;
+        std::ifstream f(pipelineCachePath(), std::ios::binary | std::ios::ate);
+        if (f) {
+            size_t sz = (size_t)f.tellg(); f.seekg(0);
+            blob.resize(sz);
+            if (sz) f.read(blob.data(), sz);
+        }
+        if (blob.size() >= 32) {
+            // VkPipelineCacheHeaderVersionOne: u32 headerSize, u32 headerVersion,
+            // u32 vendorID, u32 deviceID, u8 uuid[16].
+            VkPhysicalDeviceProperties props{};
+            vkGetPhysicalDeviceProperties(m_dev.physical_device, &props);
+            uint32_t vendor = 0, device = 0;
+            std::memcpy(&vendor, blob.data() + 8, 4);
+            std::memcpy(&device, blob.data() + 12, 4);
+            if (vendor != props.vendorID || device != props.deviceID ||
+                std::memcmp(blob.data() + 16, props.pipelineCacheUUID, VK_UUID_SIZE) != 0) {
+                logInfo("[rhi] pipeline cache: on-disk blob is for a different GPU/driver — ignoring (cold boot)");
+                blob.clear();
+            }
+        } else {
+            blob.clear();
+        }
+        VkPipelineCacheCreateInfo pcc{ VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+        pcc.initialDataSize = blob.size();
+        pcc.pInitialData    = blob.empty() ? nullptr : blob.data();
+        if (vkCreatePipelineCache(m_dev.device, &pcc, nullptr, &m_pipelineCache) != VK_SUCCESS) {
+            // Defensive: retry without initial data, then give up (cache==NULL is legal).
+            pcc.initialDataSize = 0; pcc.pInitialData = nullptr;
+            if (vkCreatePipelineCache(m_dev.device, &pcc, nullptr, &m_pipelineCache) != VK_SUCCESS)
+                m_pipelineCache = VK_NULL_HANDLE;
+            blob.clear();
+        }
+        m_cacheLoadedBytes = blob.size();
+        logInfo("[rhi] pipeline cache: " + (blob.empty()
+            ? std::string("COLD (no usable on-disk cache; full compile this boot)")
+            : std::string("WARM — loaded ") + std::to_string(blob.size()) + " bytes from " + pipelineCachePath()));
+    }
+
+    // Persist the pipeline cache beside the exe (called from shutdown(), after
+    // waitIdle and before the device dies). Second boots then compile near-zero.
+    void savePipelineCache() {
+        if (m_pipelineCache == VK_NULL_HANDLE) return;
+        size_t sz = 0;
+        if (vkGetPipelineCacheData(m_dev.device, m_pipelineCache, &sz, nullptr) != VK_SUCCESS || sz == 0) return;
+        std::vector<char> blob(sz);
+        if (vkGetPipelineCacheData(m_dev.device, m_pipelineCache, &sz, blob.data()) != VK_SUCCESS) return;
+        std::ofstream f(pipelineCachePath(), std::ios::binary | std::ios::trunc);
+        if (!f) { logError("[rhi] pipeline cache: save failed (cannot open " + pipelineCachePath() + ")"); return; }
+        f.write(blob.data(), (std::streamsize)sz);
+        char buf[256];
+        std::snprintf(buf, sizeof(buf),
+            "[rhi] pipeline cache: saved %zu bytes (this boot compiled %u pipelines in %.1f ms; loaded %llu bytes)",
+            sz, m_psoTotal, m_psoCreateMs, (unsigned long long)m_cacheLoadedBytes);
+        logInfo(buf);
+    }
+
+    // ---- Frame-pacing ring + spike log (ZERO-STUTTER step 3) ---------------
+    // Called at the very end of endFrame(): records the endFrame->endFrame CPU
+    // wall delta + the latest GPU timestamp time, and logs ONE attribution line
+    // for any post-warmup frame above the spike threshold. Warmup frames are not
+    // recorded (boot compile / first-bake noise stays out of the percentiles).
+    void recordFramePacing() {
+        const auto now = std::chrono::steady_clock::now();
+        if (!m_paceHaveLast) { m_paceLast = now; m_paceHaveLast = true; return; }
+        const float cpuMs = (float)std::chrono::duration<double, std::milli>(now - m_paceLast).count();
+        m_paceLast = now;
+        if (m_totalFrames <= (uint64_t)m_pacing.warmupFrames) return;   // warmup: excluded
+        // Rolling median over the last <=128 recorded samples (the spike gate).
+        float median = 0.0f;
+        if (!m_paceRing.empty()) {
+            const size_t n = std::min<size_t>(m_paceRing.size(), 128);
+            float tmp[128];
+            for (size_t i = 0; i < n; ++i)
+                tmp[i] = m_paceRing[(m_paceWrite + (uint32_t)m_paceRing.size() - 1 - (uint32_t)i) % (uint32_t)m_paceRing.size()].cpuMs;
+            std::nth_element(tmp, tmp + n / 2, tmp + n);
+            median = tmp[n / 2];
+        }
+        if (m_paceRing.size() < kPaceRingCap) {
+            m_paceRing.push_back({ cpuMs, m_lastGpuMs });
+            m_paceWrite = (uint32_t)(m_paceRing.size() % kPaceRingCap);
+        } else {
+            m_paceRing[m_paceWrite] = { cpuMs, m_lastGpuMs };
+            m_paceWrite = (m_paceWrite + 1) % kPaceRingCap;
+        }
+        // Spike: above BOTH the relative (spikeFactor x rolling median) and the
+        // absolute (median + floorMs) thresholds. One attribution line per spike.
+        if (median > 0.0f &&
+            cpuMs > median * m_pacing.spikeFactor &&
+            cpuMs > median + m_pacing.floorMs) {
+            ++m_spikeCount;
+            char buf[256];
+            std::snprintf(buf, sizeof(buf),
+                "[pacing] SPIKE frame=%llu cpu=%.2fms (median %.2f) gpu=%.2fms | pso+%u mod+%u pools+%u allocs+%u asbuild+%u%s%s",
+                (unsigned long long)m_totalFrames, cpuMs, median, m_lastGpuMs,
+                m_psoThisFrame, m_modulesThisFrame, m_poolsThisFrame, m_allocsThisFrame,
+                m_asBuildsThisFrame,
+                m_iblBakedThisFrame ? " +iblbake" : "",
+                m_recreatedThisFrame ? " +recreate" : "");
+            logInfo(buf);
+        }
+    }
+
     VkShaderModule loadShaderModule(const std::string& relPath) {
         std::string full = exeDir() + "\\" + relPath;
         std::ifstream f(full, std::ios::binary | std::ios::ate);
@@ -9852,6 +10158,8 @@ private:
         VkShaderModule m = VK_NULL_HANDLE;
         if (vkCreateShaderModule(m_dev.device, &ci, nullptr, &m) != VK_SUCCESS)
             logError(std::string("[rhi] shader module create failed: ") + full);
+        else
+            noteCreate("shader module", m_modulesLate, m_modulesThisFrame);
         return m;
     }
 
@@ -9866,7 +10174,7 @@ private:
         svaci.usage = VMA_MEMORY_USAGE_AUTO;
         svaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
         VkBuffer staging = VK_NULL_HANDLE; VmaAllocation stagingAlloc = nullptr; VmaAllocationInfo si{};
-        if (vmaCreateBuffer(m_alloc, &sbci, &svaci, &staging, &stagingAlloc, &si) != VK_SUCCESS) return false;
+        if (x3vmaCreateBuffer(&sbci, &svaci, &staging, &stagingAlloc, &si) != VK_SUCCESS) return false;
         std::memcpy(si.pMappedData, data, (size_t)bytes);
 
         // Device-local destination.
@@ -9874,7 +10182,7 @@ private:
         dbci.size = bytes; dbci.usage = usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
         VmaAllocationCreateInfo dvaci{};
         dvaci.usage = VMA_MEMORY_USAGE_AUTO;
-        if (vmaCreateBuffer(m_alloc, &dbci, &dvaci, &outBuf, &outAlloc, nullptr) != VK_SUCCESS) {
+        if (x3vmaCreateBuffer(&dbci, &dvaci, &outBuf, &outAlloc, nullptr) != VK_SUCCESS) {
             vmaDestroyBuffer(m_alloc, staging, stagingAlloc); return false;
         }
 
@@ -9898,7 +10206,7 @@ private:
         svaci.usage = VMA_MEMORY_USAGE_AUTO;
         svaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
         VkBuffer staging = VK_NULL_HANDLE; VmaAllocation stagingAlloc = nullptr; VmaAllocationInfo si{};
-        if (vmaCreateBuffer(m_alloc, &sbci, &svaci, &staging, &stagingAlloc, &si) != VK_SUCCESS) return false;
+        if (x3vmaCreateBuffer(&sbci, &svaci, &staging, &stagingAlloc, &si) != VK_SUCCESS) return false;
         std::memcpy(si.pMappedData, rgba8, (size_t)bytes);
 
         // Full mip chain so minified/distant surfaces aren't aliased and (with aniso) not
@@ -9916,7 +10224,7 @@ private:
         ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
         ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         VmaAllocationCreateInfo ivaci{}; ivaci.usage = VMA_MEMORY_USAGE_AUTO;
-        if (vmaCreateImage(m_alloc, &ici, &ivaci, &out.image, &out.alloc, nullptr) != VK_SUCCESS) {
+        if (x3vmaCreateImage(&ici, &ivaci, &out.image, &out.alloc, nullptr) != VK_SUCCESS) {
             vmaDestroyBuffer(m_alloc, staging, stagingAlloc); return false;
         }
 
@@ -10075,7 +10383,7 @@ private:
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
             pci.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
             pci.maxSets = 1; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
-            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_bindlessPool) != VK_SUCCESS) {
+            if (x3CreateDescriptorPool(&pci, nullptr, &m_bindlessPool) != VK_SUCCESS) {
                 logError("[rhi] bindless pool failed"); return false;
             }
             VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
@@ -10110,7 +10418,7 @@ private:
             sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; sizes[1].descriptorCount = kFramesInFlight;
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
             pci.maxSets = kFramesInFlight; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
-            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_objPool) != VK_SUCCESS) {
+            if (x3CreateDescriptorPool(&pci, nullptr, &m_objPool) != VK_SUCCESS) {
                 logError("[rhi] object pool failed"); return false;
             }
 
@@ -10124,7 +10432,7 @@ private:
                 aci.usage = VMA_MEMORY_USAGE_AUTO;
                 aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
                 VmaAllocationInfo info{};
-                if (vmaCreateBuffer(m_alloc, &bci, &aci, &fr.objBuf, &fr.objAlloc, &info) != VK_SUCCESS) {
+                if (x3vmaCreateBuffer(&bci, &aci, &fr.objBuf, &fr.objAlloc, &info) != VK_SUCCESS) {
                     logError("[rhi] object SSBO create failed"); return false;
                 }
                 fr.objMapped = info.pMappedData;
@@ -10134,7 +10442,7 @@ private:
                 cbci.size = sizeof(FrameUBO);
                 cbci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
                 VmaAllocationInfo cinfo{};
-                if (vmaCreateBuffer(m_alloc, &cbci, &aci, &fr.camBuf, &fr.camAlloc, &cinfo) != VK_SUCCESS) {
+                if (x3vmaCreateBuffer(&cbci, &aci, &fr.camBuf, &fr.camAlloc, &cinfo) != VK_SUCCESS) {
                     logError("[rhi] camera UBO create failed"); return false;
                 }
                 fr.camMapped = cinfo.pMappedData;
@@ -10145,7 +10453,7 @@ private:
                 ibci.size = (VkDeviceSize)kMaxDrawMeshes * sizeof(VkDrawIndexedIndirectCommand);
                 ibci.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
                 VmaAllocationInfo iinfo{};
-                if (vmaCreateBuffer(m_alloc, &ibci, &aci, &fr.indirectBuf, &fr.indirectAlloc, &iinfo) != VK_SUCCESS) {
+                if (x3vmaCreateBuffer(&ibci, &aci, &fr.indirectBuf, &fr.indirectAlloc, &iinfo) != VK_SUCCESS) {
                     logError("[rhi] indirect buffer create failed"); return false;
                 }
                 fr.indirectMapped = iinfo.pMappedData;
@@ -10342,7 +10650,7 @@ private:
         gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_meshLayout;
         // SSAO path pipeline: depth-test EQUAL, depth-write OFF (the depth pre-pass
         // already wrote depth). Created with `dss` set above.
-        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_meshPipeline);
+        VkResult pr = x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_meshPipeline);
         if (pr != VK_SUCCESS) {
             vkDestroyShaderModule(m_dev.device, vs, nullptr);
             vkDestroyShaderModule(m_dev.device, fs, nullptr);
@@ -10356,7 +10664,7 @@ private:
         dssNo.depthWriteEnable = VK_TRUE;
         dssNo.depthCompareOp   = VK_COMPARE_OP_LESS;
         gpci.pDepthStencilState = &dssNo;
-        pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_meshPipelineNoSsao);
+        pr = x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_meshPipelineNoSsao);
 
         // ---- Reflection-PROBE scene PSO: mesh_probe.vert (per-face viewProj via push
         // constant) + the SAME mesh.frag, opaque depth LESS+write into the HDR env-cube
@@ -10375,7 +10683,7 @@ private:
                     pst[0].module = pvs;                                    // swap vertex -> probe (fs unchanged)
                     VkGraphicsPipelineCreateInfo ppgci = gpci;              // opaque state, HDR color + depth fmt
                     ppgci.pStages = pst; ppgci.layout = m_meshProbeLayout;
-                    if (vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &ppgci, nullptr, &m_meshProbePipe) != VK_SUCCESS)
+                    if (x3CreateGraphicsPipelines(1, &ppgci, nullptr, &m_meshProbePipe) != VK_SUCCESS)
                         logError("[rhi] reflection-probe pipeline create failed (probe disabled)");
                 }
                 vkDestroyShaderModule(m_dev.device, pvs, nullptr);
@@ -10402,7 +10710,7 @@ private:
             dssT.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
             VkPipelineRasterizationStateCreateInfo rsT = rs; rsT.cullMode = VK_CULL_MODE_NONE;
             gpci.pColorBlendState = &cbT; gpci.pDepthStencilState = &dssT; gpci.pRasterizationState = &rsT;
-            prT = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_meshPipelineTransparent);
+            prT = x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_meshPipelineTransparent);
             gpci.pColorBlendState = &cb; gpci.pDepthStencilState = &dssNo; gpci.pRasterizationState = &rs;  // restore
         }
 
@@ -10421,11 +10729,11 @@ private:
                 gpci.pStages = rtStages;
                 // EQUAL/no-write (depth pre-pass on) variant:
                 gpci.pDepthStencilState = &dss;
-                if (vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_meshPipelineRt) != VK_SUCCESS)
+                if (x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_meshPipelineRt) != VK_SUCCESS)
                     m_meshPipelineRt = VK_NULL_HANDLE;
                 // LESS/write (no pre-pass) variant:
                 gpci.pDepthStencilState = &dssNo;
-                if (vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_meshPipelineNoSsaoRt) != VK_SUCCESS)
+                if (x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_meshPipelineNoSsaoRt) != VK_SUCCESS)
                     m_meshPipelineNoSsaoRt = VK_NULL_HANDLE;
                 // Transparent (BLEND) variant — same state the block above used:
                 {
@@ -10442,7 +10750,7 @@ private:
                     dssT.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
                     VkPipelineRasterizationStateCreateInfo rsT = rs; rsT.cullMode = VK_CULL_MODE_NONE;
                     gpci.pColorBlendState = &cbT; gpci.pDepthStencilState = &dssT; gpci.pRasterizationState = &rsT;
-                    if (vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_meshPipelineTransparentRt) != VK_SUCCESS)
+                    if (x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_meshPipelineTransparentRt) != VK_SUCCESS)
                         m_meshPipelineTransparentRt = VK_NULL_HANDLE;
                     gpci.pColorBlendState = &cb; gpci.pDepthStencilState = &dssNo; gpci.pRasterizationState = &rs;  // restore
                 }
@@ -10511,7 +10819,7 @@ private:
                 pstages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; pstages[1].module = pfs; pstages[1].pName = "main";
                 VkGraphicsPipelineCreateInfo pgci = gpci;   // copies the opaque state set above
                 pgci.pStages = pstages; pgci.layout = m_planetPipelineLayout;
-                prP = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &pgci, nullptr, &m_planetPipelines[pt]);
+                prP = x3CreateGraphicsPipelines(1, &pgci, nullptr, &m_planetPipelines[pt]);
                 vkDestroyShaderModule(m_dev.device, pfs, nullptr);
             }
 
@@ -10565,7 +10873,7 @@ private:
                 VkGraphicsPipelineCreateInfo pgci = gpci;   // opaque base; override below
                 pgci.pStages = pstages; pgci.layout = m_planetPipelineLayout;
                 pgci.pColorBlendState = &cbG; pgci.pDepthStencilState = &dssGlow; pgci.pRasterizationState = &rsGlow;
-                prP = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &pgci, nullptr, &m_planetPipelines[tp.pt]);
+                prP = x3CreateGraphicsPipelines(1, &pgci, nullptr, &m_planetPipelines[tp.pt]);
                 vkDestroyShaderModule(m_dev.device, pfs, nullptr);
             }
             vkDestroyShaderModule(m_dev.device, pvs, nullptr);
@@ -10640,7 +10948,7 @@ private:
                 ggpci.pRasterizationState = &grs;
                 ggpci.pDepthStencilState  = &gdss;
                 ggpci.pColorBlendState    = &gcb;
-                VkResult gpr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1,
+                VkResult gpr = x3CreateGraphicsPipelines(1,
                                                          &ggpci, nullptr, &m_glassPipeline);
                 vkDestroyShaderModule(m_dev.device, gvs, nullptr);
                 vkDestroyShaderModule(m_dev.device, gfs, nullptr);
@@ -10675,7 +10983,7 @@ private:
         VmaAllocationCreateInfo aci{};
         aci.usage = VMA_MEMORY_USAGE_AUTO;
         aci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
-        if (vmaCreateImage(m_alloc, &ici, &aci, &m_shadowImg, &m_shadowAlloc, nullptr) != VK_SUCCESS) {
+        if (x3vmaCreateImage(&ici, &aci, &m_shadowImg, &m_shadowAlloc, nullptr) != VK_SUCCESS) {
             logError("[rhi] shadow image create failed"); return false;
         }
         VkImageViewCreateInfo vci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
@@ -10715,7 +11023,7 @@ private:
         VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         pci.maxSets = 1; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
-        if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_shadowDescPool) != VK_SUCCESS) {
+        if (x3CreateDescriptorPool(&pci, nullptr, &m_shadowDescPool) != VK_SUCCESS) {
             logError("[rhi] shadow desc pool failed"); return false;
         }
         VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
@@ -10811,7 +11119,7 @@ private:
         gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
         gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
         gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_shadowLayout;
-        VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_shadowPipeline);
+        VkResult pr = x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_shadowPipeline);
         vkDestroyShaderModule(m_dev.device, vs, nullptr);
         if (pr != VK_SUCCESS) { logError("[rhi] shadow pipeline create failed"); return false; }
 
@@ -12083,6 +12391,30 @@ private:
     // and the snapshot of the last completed frame (returned by stats()).
     RenderStats m_building{};            // accumulates during the current frame
     RenderStats m_lastStats{};           // snapshot taken at endFrame()
+
+    // ---- ZERO-STUTTER state (docs/ZERO_STUTTER.md) -------------------------
+    // Persistent pipeline cache + the late-creation audit + frame-pacing ring.
+    VkPipelineCache m_pipelineCache    = VK_NULL_HANDLE;
+    uint64_t        m_cacheLoadedBytes = 0;       // bytes accepted from disk at boot
+    double          m_psoCreateMs      = 0.0;     // wall ms spent in vkCreate*Pipelines
+    bool            m_firstFrameBegun  = false;   // set by the first beginFrame()
+    bool            m_creationBoundary = false;   // inside a declared recreate boundary
+    PacingParams    m_pacing{};                   // cvar-driven (setPacingParams)
+    // Totals + late-creation audit counters (late = after the first frame began,
+    // outside a declared boundary — these are the zero-stutter receipts).
+    uint32_t m_psoTotal = 0, m_psoLate = 0, m_modulesLate = 0, m_poolsLate = 0;
+    // Per-frame attribution counters (reset in beginFrame, read by the spike log).
+    uint32_t m_psoThisFrame = 0, m_modulesThisFrame = 0, m_poolsThisFrame = 0,
+             m_allocsThisFrame = 0, m_asBuildsThisFrame = 0;
+    bool m_iblBakedThisFrame = false, m_recreatedThisFrame = false;
+    // Frame-time ring (post-warmup samples only; CPU = endFrame->endFrame wall).
+    static constexpr uint32_t kPaceRingCap = 4096;
+    struct PaceSample { float cpuMs; float gpuMs; };
+    std::vector<PaceSample> m_paceRing;
+    uint32_t m_paceWrite = 0;
+    bool     m_paceHaveLast = false;
+    std::chrono::steady_clock::time_point m_paceLast{};
+    uint32_t m_spikeCount = 0;
 
     bool m_vsync = true;
     bool m_needsRecreate = false;

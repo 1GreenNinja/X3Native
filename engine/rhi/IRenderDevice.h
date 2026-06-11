@@ -819,6 +819,48 @@ public:
     // for the HUD/console overlay. No Vulkan types cross this boundary.
     virtual RenderStats stats() const = 0;
 
+    // ---- ZERO-STUTTER frame-pacing telemetry (r_frametelemetry / --test-framepacing)
+    // Snapshot of the device's frame-time ring buffer + "late creation" audit
+    // counters. CPU times are endFrame-to-endFrame wall deltas; GPU times come
+    // from the existing per-frame timestamp queries. Percentiles cover the
+    // POST-WARMUP samples only (warmup = PacingParams::warmupFrames). The late-
+    // creation counters are the receipts for the zero-stutter guarantee: every
+    // pipeline/shader-module/descriptor-pool must be created at boot (or at a
+    // declared recreate boundary) — anything created mid-frame after the first
+    // frame began increments these and, under strictPso, logs a [stutter] error.
+    struct FramePacing {
+        // CPU frame-time percentiles (ms) over the post-warmup ring window.
+        float cpuP50 = 0, cpuP95 = 0, cpuP99 = 0, cpuP999 = 0, cpuMax = 0;
+        // GPU frame-time percentiles (ms) — same window, timestamp-query times.
+        float gpuP50 = 0, gpuP95 = 0, gpuP99 = 0, gpuP999 = 0, gpuMax = 0;
+        uint32_t samples = 0;          // post-warmup frames measured
+        uint32_t spikes  = 0;          // post-warmup frames > max(spikeFactor*median, median+floorMs)
+        // Late-creation audit (the strict-PSO gate; all must stay 0 in steady state):
+        uint32_t psoLate     = 0;      // pipelines created after the first frame began
+        uint32_t modulesLate = 0;      // shader modules created after the first frame began
+        uint32_t poolsLate   = 0;      // descriptor pools created after the first frame began
+        // Boot receipts:
+        uint32_t psoTotal    = 0;      // pipelines created since init (boot precompile count)
+        float    psoBootMs   = 0;      // wall-clock ms spent in pipeline creation
+        uint64_t cacheLoaded = 0;      // VkPipelineCache bytes loaded from disk at boot
+    };
+    virtual FramePacing framePacing() const { return {}; }
+
+    // Tunables for the telemetry/guarantee (cvar-driven so CI can tighten):
+    //   warmupFrames — frames excluded from percentiles/spike counting (default 60)
+    //   spikeFactor  — spike when cpuMs > spikeFactor * rolling median (default 2)
+    //   floorMs      — absolute slack: spike also requires cpuMs > median+floorMs
+    //                  (filters OS-scheduler noise on sub-ms headless frames)
+    //   strictPso    — log a [stutter] error line on ANY pipeline/module/pool
+    //                  creation after the first frame begins (default ON in Debug)
+    struct PacingParams {
+        int   warmupFrames = 60;
+        float spikeFactor  = 2.0f;
+        float floorMs      = 3.0f;
+        bool  strictPso    = false;
+    };
+    virtual void setPacingParams(const PacingParams&) {}
+
     // ---- Offscreen capture (--screenshot) ---------------------------------
     // Two-step, validation-clean capture of a FRESHLY-RENDERED, properly-acquired
     // frame (avoids reading a non-acquired/last-presented swapchain image):

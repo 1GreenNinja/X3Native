@@ -721,6 +721,24 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("grip_yaw",   "0", "3P held-weapon grip override: +degrees twist about hand-up; live, current weapon");
     console.registerCVar("grip_roll",  "0", "3P held-weapon grip override: +degrees roll about the barrel; live, current weapon");
     console.registerCVar("grip_scale", "0", "3P held-weapon grip override: +added to the weapon's scaleMul; live, current weapon");
+
+    // ---- ZERO-STUTTER GUARANTEE (docs/ZERO_STUTTER.md) ---------------------
+    // r_strictpso: any pipeline/shader-module/descriptor-pool created after the
+    // first frame begins logs a validation-style "[stutter]" error (the UE-style
+    // PSO-hitch detector). Default ON in Debug builds (with the validation gate),
+    // OFF in Release (the counters still accumulate for --test-framepacing).
+#ifdef NDEBUG
+    console.registerCVar("r_strictpso", "0", "log [stutter] error on any pipeline/module/pool created after frame 1 (zero-stutter audit)");
+#else
+    console.registerCVar("r_strictpso", "1", "log [stutter] error on any pipeline/module/pool created after frame 1 (zero-stutter audit; Debug default ON)");
+#endif
+    // Frame-pacing telemetry HUD line (p50/p95/p99/p999/max + spike + late-create
+    // counters) — the live receipts. The spike LOG in the device is always on.
+    console.registerCVar("r_frametelemetry", "0", "HUD frame-pacing telemetry line: percentiles + spikes + late pipeline creations");
+    // Spike/percentile thresholds (cvars so CI can tighten them later):
+    console.registerCVar("r_fpace_warmup", "60",  "frame-pacing warmup frames excluded from percentiles/spike counting");
+    console.registerCVar("r_fpace_spikex", "2.0", "spike threshold: frame > spikex * rolling median");
+    console.registerCVar("r_fpace_floor",  "3.0", "spike absolute floor (ms): frame must also exceed median + floor (filters sub-ms OS jitter)");
 }
 
 // Read the r_rtao* cvars and push them onto the device (no-op on a non-RT device).
@@ -791,6 +809,13 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     rs.pointMax    = console.getInt("r_rtpoint_max");
     rs.pointRadius = console.getFloat("r_rtpoint_size");
     device.setRtShadowParams(rs);
+    // ZERO-STUTTER frame-pacing thresholds + the strict-PSO audit gate (live).
+    x3::rhi::IRenderDevice::PacingParams pace{};
+    pace.warmupFrames = console.getInt("r_fpace_warmup");
+    pace.spikeFactor  = console.getFloat("r_fpace_spikex");
+    pace.floorMs      = console.getFloat("r_fpace_floor");
+    pace.strictPso    = console.getInt("r_strictpso") != 0;
+    device.setPacingParams(pace);
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.
@@ -1568,6 +1593,12 @@ int main(int argc, char** argv) {
     // the mesh_rt pipelines + TLAS path run under Vulkan validation.
     bool        testRtShadows = false;
     bool        noRtShadows = false;       // --nortshadows: pin r_rtshadows 0 (CSM-only A/B)
+    // --test-framepacing (ZERO-STUTTER GUARANTEE, docs/ZERO_STUTTER.md): headless
+    // 600-frame scripted camera flythrough of the built world (default Level 1)
+    // that asserts, post-warmup: ZERO spike frames (> r_fpace_spikex * rolling
+    // median + r_fpace_floor), ZERO pipelines/shader modules created after frame
+    // 1, ZERO descriptor-pool growth. Prints the CPU+GPU p50/p95/p99/p999/max.
+    bool        testFramePacing = false;
     // Terrain vantage mode (--screenshot-terrain [path.png]): build the tiled
     // procedural terrain world (terrain + sky + sun), pose a camera up on the
     // hills looking toward the sun so the lit rolling terrain + cast shadows +
@@ -1668,6 +1699,8 @@ int main(int argc, char** argv) {
         }
         // RT soft-shadow flags — handled OUTSIDE the chain (same C1061 reason).
         if (a == "--test-rtshadows") { smoketest = true; testRtShadows = true; continue; }
+        // Zero-stutter flythrough — handled OUTSIDE the chain (same C1061 reason).
+        if (a == "--test-framepacing") { testFramePacing = true; continue; }
         if (a == "--nortshadows") { noRtShadows = true; continue; }   // A/B: pin tier 0 (CSM-only)
         if (a == "--screenshot-rtshadows") {
             rtshShot = true;
@@ -2497,7 +2530,7 @@ int main(int argc, char** argv) {
     // render fully offscreen — NO GLFW window, NO surface, NO swapchain, nothing
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
-    const bool headless = smoketest || screenshot || skyShot || ddgiShot || showroomShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot;
+    const bool headless = smoketest || testFramePacing || screenshot || skyShot || ddgiShot || showroomShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -8239,6 +8272,18 @@ int main(int argc, char** argv) {
     // drawViewmodel so typing e.g. `vm_pitch 10` moves the held gun immediately.
     registerViewmodelCVars(*console);
 
+    // ZERO-STUTTER: push the pacing thresholds + strict-PSO gate ONCE now (the
+    // per-frame applyRtaoCVars sync keeps them live in the windowed loop) so the
+    // headless smoketest/screenshot paths run with the audit armed too.
+    {
+        x3::rhi::IRenderDevice::PacingParams pace{};
+        pace.warmupFrames = console->getInt("r_fpace_warmup");
+        pace.spikeFactor  = console->getFloat("r_fpace_spikex");
+        pace.floorMs      = console->getFloat("r_fpace_floor");
+        pace.strictPso    = console->getInt("r_strictpso") != 0;
+        device->setPacingParams(pace);
+    }
+
     // --legacypost / --notaa: pin the matching cvars so the per-frame cvar->device
     // sync (applyRtaoCVars) keeps the A/B state instead of re-enabling defaults.
     if (legacyPost) {
@@ -8900,6 +8945,109 @@ int main(int argc, char** argv) {
         glfwDestroyWindow(window);
         glfwTerminate();
         return wrote ? 0 : 1;
+    }
+
+    // ======================================================================
+    // --test-framepacing — the ZERO-STUTTER GUARANTEE gate (docs/ZERO_STUTTER.md).
+    // A scripted headless 600-frame camera flythrough of the built world
+    // (default: Level 1 — an elliptical sweep covering the spawn->armory spine,
+    // two laps, with a gentle pitch bob so view-dependent passes churn). Ticks
+    // the REAL game loop (Level1Game + physics + scene sync + FX) and renders
+    // the full stack each frame. After the run it asserts, from the device's
+    // own audit counters (the x3Create* wrappers):
+    //   1. ZERO post-warmup spike frames (> r_fpace_spikex * rolling median AND
+    //      > median + r_fpace_floor ms),
+    //   2. ZERO pipelines + ZERO shader modules created after frame 1,
+    //   3. ZERO descriptor-pool growth after frame 1.
+    // Warmup (r_fpace_warmup, default 60) is excluded; thresholds are cvars so
+    // CI can tighten them. Prints CPU+GPU p50/p95/p99/p999/max as the receipt.
+    // ======================================================================
+    if (testFramePacing) {
+        x3::logInfo("framepacing: 600-frame scripted flythrough (zero-stutter gate)");
+        // Loading screen hand-off (same as the smoketest: finish, fade, free).
+        loading.step(x3::game::LoadStep::Done, "READY");
+        for (int i = 0; i < 4; ++i) loadingFrame(kLoadDt);
+        loading.beginFadeOut();
+        int loadGuard = 0;
+        while (!loading.faded() && loadGuard++ < 60) loadingFrame(kLoadDt);
+        loading.shutdown(*device);
+
+        // Camera spline: an ellipse over the spawn->armory axis at eye height,
+        // yaw following the tangent (always looking "down the path"), pitch a
+        // slow sine. Deterministic — every run flies the identical path.
+        const float pcx = (L1.spawn.x + L1.armoryCenter.x) * 0.5f;
+        const float pcz = (L1.spawn.z + L1.armoryCenter.z) * 0.5f;
+        const float prx = std::fabs(L1.armoryCenter.x - L1.spawn.x) * 0.5f + 4.0f;
+        const float prz = std::fabs(L1.armoryCenter.z - L1.spawn.z) * 0.5f + 4.0f;
+        const int   kFlyFrames = 600;
+        const float dt = 1.0f / 60.0f;
+        int passed = 0, total = 0;
+        auto check = [&](const char* name, bool ok) {
+            ++total; if (ok) ++passed;
+            x3::logInfo(std::string("  [framepacing] ") + (ok ? "PASS  " : "FAIL  ") + name);
+        };
+        for (int i = 0; i < kFlyFrames; ++i) {
+            glfwPollEvents();
+            const float t   = (float)i / (float)kFlyFrames;
+            const float ang = t * 2.0f * 6.2831853f;            // two laps
+            const float ex  = pcx + prx * std::cos(ang);
+            const float ez  = pcz + prz * std::sin(ang);
+            const float ey  = 1.7f;
+            // Tangent yaw (forward = cos(pitch)(cos(yaw),0,sin(yaw)) + sin(pitch) up).
+            const float yaw   = std::atan2(prz * std::cos(ang), -prx * std::sin(ang));
+            const float pitch = 0.12f * std::sin(t * 4.0f * 3.1415926f);
+            device->setCamera(ex, ey, ez, yaw, pitch, 60.0f);
+            audio->setListener(ex, ey, ez, yaw, pitch);
+            applyRtaoCVars(*console, *device);                  // live cvar->device sync
+            const x3::phys::Vec3 eye{ ex, ey, ez };
+            game.tick(dt, scene, *physics, eye, eye);
+            physics->step(dt);
+            scene.update(*physics);
+            audio->update(dt);
+            arsenal.tick(dt);
+            combatFx.update(dt);
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                scene.render(*device, frame);
+                game.drawDoors(*device, frame);
+                game.drawWorldExtras(*device, frame, scene);
+                combatFx.draw(*device, frame, ex, ey, ez, yaw, pitch);
+                combatFx.submit(*device, frame);
+                hud.drawCrosshair(*device, frame);
+                hud.drawFps(*device, frame, *console, dt);
+            }
+            device->endFrame(frame);
+        }
+        // ---- The receipts + the gate -----------------------------------
+        const x3::rhi::IRenderDevice::FramePacing fp = device->framePacing();
+        char pb[320];
+        std::snprintf(pb, sizeof(pb),
+            "framepacing: CPU ms p50=%.2f p95=%.2f p99=%.2f p999=%.2f max=%.2f | "
+            "GPU ms p50=%.2f p95=%.2f p99=%.2f p999=%.2f max=%.2f (%u post-warmup frames)",
+            fp.cpuP50, fp.cpuP95, fp.cpuP99, fp.cpuP999, fp.cpuMax,
+            fp.gpuP50, fp.gpuP95, fp.gpuP99, fp.gpuP999, fp.gpuMax, fp.samples);
+        x3::logInfo(pb);
+        std::snprintf(pb, sizeof(pb),
+            "framepacing: boot pipelines=%u in %.1f ms (pipeline cache: %llu bytes loaded) | "
+            "late creations: pso=%u modules=%u pools=%u | spikes=%u",
+            fp.psoTotal, fp.psoBootMs, (unsigned long long)fp.cacheLoaded,
+            fp.psoLate, fp.modulesLate, fp.poolsLate, fp.spikes);
+        x3::logInfo(pb);
+        check("ring has post-warmup samples (run long enough)", fp.samples >= 400);
+        check("ZERO post-warmup spike frames (2x rolling median + floor)", fp.spikes == 0);
+        check("ZERO pipelines created after frame 1", fp.psoLate == 0);
+        check("ZERO shader modules created after frame 1", fp.modulesLate == 0);
+        check("ZERO descriptor-pool growth after frame 1", fp.poolsLate == 0);
+        std::printf("framepacing: %d/%d passed\n", passed, total);
+        x3::logInfo("framepacing: " + std::to_string(passed) + "/" + std::to_string(total) + " passed");
+        audio->shutdown();
+        combatFx.shutdown(*device);
+        if (canonPlay.built()) canonPlay.shutdown();
+        physics->shutdown();
+        device->shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return (passed == total) ? 0 : 1;
     }
 
     if (smoketest) {
@@ -11091,6 +11239,20 @@ int main(int argc, char** argv) {
             // stats panel, and the dev console panel (drawn last so it sits on top).
             hud.drawFps(*device, frame, *console, dt);
             hud.drawStats(*device, frame, *console, dt);
+            // ZERO-STUTTER telemetry line (r_frametelemetry 1): live frame-pacing
+            // percentiles + spike count + the late-creation audit counters.
+            if (console->getInt("r_frametelemetry") != 0) {
+                const x3::rhi::IRenderDevice::FramePacing fp = device->framePacing();
+                char tl[224];
+                std::snprintf(tl, sizeof(tl),
+                    "pace cpu p50 %.2f p95 %.2f p99 %.2f p999 %.2f max %.2f ms | gpu p99 %.2f | spikes %u | late pso %u mod %u pool %u",
+                    fp.cpuP50, fp.cpuP95, fp.cpuP99, fp.cpuP999, fp.cpuMax,
+                    fp.gpuP99, fp.spikes, fp.psoLate, fp.modulesLate, fp.poolsLate);
+                const float tsh[4] = { 0.0f, 0.0f, 0.0f, 0.80f };
+                const float tcl[4] = { 0.45f, 0.95f, 1.0f, 1.0f };   // cyan: telemetry
+                device->drawHudText(frame, tl, 9.5f, 76.5f, 14.0f, tsh);
+                device->drawHudText(frame, tl, 8.0f, 75.0f, 14.0f, tcl);
+            }
             hud.drawConsole(*device, frame, *console, dt);
             // EDITOR (--editor): the HOST submits the editor panels (menu bar /
             // Outliner / Blockout / Status) between begin and end, then endEditorUI
