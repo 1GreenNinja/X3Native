@@ -865,6 +865,61 @@ std::vector<ModelDrawable> makeDrawables(const Model& m) {
     return out;
 }
 
+std::vector<ModelDrawable> makeDrawablesNamed(const Model& m,
+                                              std::vector<std::string>& outNodeNames) {
+    // Same walk as makeDrawables, additionally reporting the glTF NODE NAME each
+    // drawable came from (parallel array). Lets a caller partition a multi-part
+    // model by authored part names (e.g. a vehicle's Wheel_FL/FR/RL/RR vs body)
+    // without duplicating the node-transform composition. The orphaned-mesh safety
+    // net emits an empty name.
+    std::vector<ModelDrawable> out;
+    outNodeNames.clear();
+    if (m.nodes.empty()) {
+        out = makeDrawables(m);
+        outNodeNames.assign(out.size(), std::string());
+        return out;
+    }
+    const size_t n = m.nodes.size();
+    std::vector<std::array<float, 16>> world(n);
+    std::vector<char> state(n, 0);
+    std::function<void(size_t)> computeWorld = [&](size_t i) {
+        if (state[i] == 2) return;
+        const Node& nd = m.nodes[i];
+        if (nd.parent < 0 || nd.parent >= (int)n || state[(size_t)nd.parent] == 1) {
+            std::memcpy(world[i].data(), nd.localTransform, sizeof(float) * 16);
+        } else {
+            state[i] = 1;
+            computeWorld((size_t)nd.parent);
+            mat4Mul(world[(size_t)nd.parent].data(), nd.localTransform, world[i].data());
+        }
+        state[i] = 2;
+    };
+    for (size_t i = 0; i < n; ++i) computeWorld(i);
+    for (size_t i = 0; i < n; ++i) {
+        const Node& nd = m.nodes[i];
+        if (nd.meshIndex < 0) continue;
+        for (const auto& p : m.primitives) {
+            if ((int)p.meshIndex != nd.meshIndex) continue;
+            ModelDrawable d;
+            if (fillDrawable(m, p, world[i].data(), d)) {
+                out.push_back(d);
+                outNodeNames.push_back(nd.name);
+            }
+        }
+    }
+    {
+        std::unordered_set<uint32_t> nodeMeshes;
+        for (const Node& nd : m.nodes) if (nd.meshIndex >= 0) nodeMeshes.insert((uint32_t)nd.meshIndex);
+        const float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+        for (const auto& p : m.primitives) {
+            if (nodeMeshes.count(p.meshIndex)) continue;
+            ModelDrawable d;
+            if (fillDrawable(m, p, ident, d)) { out.push_back(d); outNodeNames.push_back(std::string()); }
+        }
+    }
+    return out;
+}
+
 // ===========================================================================
 // Self-test (M2 acceptance tests). Headless: no Vulkan, null device.
 // ===========================================================================

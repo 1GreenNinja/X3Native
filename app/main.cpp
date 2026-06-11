@@ -2335,7 +2335,11 @@ int main(int argc, char** argv) {
     if (testVehicle) {
         x3::logInfo("running vehicle framework self-test "
                     "(wheeled accel/steer + buoyancy waterline + flight thrust/lift)...");
-        return x3::phys::runVehicleSelfTest() ? 0 : 1;
+        const bool frameworkOk = x3::phys::runVehicleSelfTest();
+        x3::logInfo("running DRIVE enter/exit self-test "
+                    "(spawn -> E enter -> throttle 4 s -> displacement + wheel contact -> E exit restores control)...");
+        const bool driveOk = x3::game::runDriveEnterExitSelfTest();
+        return (frameworkOk && driveOk) ? 0 : 1;
     }
     if (testFootIk) {
         x3::logInfo("running foot-IK (two-bone + plant + pelvis) self-test...");
@@ -4893,6 +4897,12 @@ int main(int argc, char** argv) {
             const float v0[3] = { 0, 0, -40.0f };
             vphys->setBodyLinearVelocity(plane.airframe(), v0);
         }
+        // HERO-CAR GLB skin: render the real clearcoat-painted car instead of the
+        // graybox (graybox stays the fallback on a clean checkout without LFS).
+        if (isDrive) {
+            const bool sk = car.skin(*device, x3::game::convertedGlbRoot(), "Vehicles/CTR.glb");
+            x3::logInfo(std::string("--world drive: hero-car GLB skin ") + (sk ? "ON (CTR)" : "absent — graybox"));
+        }
         vphys->optimizeBroadphase();
 
         const float dt = 1.0f / 60.0f;
@@ -5000,10 +5010,30 @@ int main(int argc, char** argv) {
         double prevTime = glfwGetTime();
         float camYaw = -1.5708f, camPitch = -0.22f;
         float waveT = 0.0f;
-        if (isDrive) x3::logInfo("--world drive: W/S throttle, A/D steer, Space handbrake, mouse orbits, Esc quit");
+        if (isDrive) x3::logInfo("--world drive: WASD drive, Space handbrake, E exit/enter on foot, mouse orbits, Esc quit");
         else if (isBoat) x3::logInfo("--world boat: W/S motor, A/D steer, mouse orbits, Esc quit");
         else x3::logInfo("--world fly: W/S throttle, A/D yaw, Up/Down pitch, Q/E roll, mouse orbits, Esc quit");
         int lastWd = (int)W, lastHd = (int)H;
+
+        // ---- DRIVE: E enter/exit (the Riftforged car UX) + engine audio. ----
+        // Start AT THE WHEEL (the demo IS the car); E steps out to an on-foot
+        // first-person walker on the terrain, E beside the car takes the wheel
+        // again. The engine loop is a looping voice pitch-mapped to an RPM proxy
+        // (speed + throttle blend) — the placeholder note until the parts system
+        // brings per-exhaust notes (G2b).
+        bool  inCar = true, prevE = false;
+        float footPos[3] = { spawnX + 3.0f, spawnY, spawnZ };
+        float fovNow = 70.0f;
+        std::unique_ptr<x3::audio::IAudioSystem> vaudio(x3::audio::createAudioSystem());
+        vaudio->init();
+        x3::audio::SoundHandle engineSnd{};
+        x3::audio::LoopHandle  engineLoop{};
+        if (isDrive) {
+            engineSnd = vaudio->load(x3::game::resolveAudio("vehicles/engine_loop.wav"));
+            if (engineSnd.valid()) engineLoop = vaudio->startLoop(engineSnd, 0.35f, 0.8f);
+            x3::logInfo(std::string("--world drive: engine audio loop ") +
+                        (engineSnd.valid() ? "ON" : "absent (silent)"));
+        }
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
             if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
@@ -5018,13 +5048,42 @@ int main(int argc, char** argv) {
             lastMX = mx; lastMY = my;
             auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
 
+            // ---- DRIVE: E toggles in-car <-> on-foot (edge-triggered). ----
+            if (isDrive) {
+                const bool eNow = kd(GLFW_KEY_E);
+                if (eNow && !prevE) {
+                    float cp[3]; car.chassisPos(cp);
+                    if (inCar) {
+                        // Step out beside the driver's door; engine loop stops.
+                        inCar = false;
+                        footPos[0] = cp[0] + 2.2f; footPos[2] = cp[2];
+                        const x3::game::TerrainConfig& tc = x3::game::worldTerrainConfig();
+                        footPos[1] = x3::game::terrainHeightAt(tc, footPos[0], footPos[2]);
+                        if (engineLoop.valid()) { vaudio->stopLoop(engineLoop); engineLoop = {}; }
+                        x3::logInfo("--world drive: exited the car (E beside it to re-enter)");
+                    } else {
+                        const float ddx = footPos[0]-cp[0], ddz = footPos[2]-cp[2];
+                        if (std::sqrt(ddx*ddx + ddz*ddz) <= 3.5f) {
+                            inCar = true;
+                            if (engineSnd.valid()) engineLoop = vaudio->startLoop(engineSnd, 0.35f, 0.8f);
+                            x3::logInfo("--world drive: took the wheel");
+                        }
+                    }
+                }
+                prevE = eNow;
+            }
+
             x3::phys::VehicleInput in;
             if (isDrive || isBoat) {
-                in.throttle = (kd(GLFW_KEY_W)?1.0f:0.0f) - (kd(GLFW_KEY_S)?1.0f:0.0f);
-                in.steer    = (kd(GLFW_KEY_D)?1.0f:0.0f) - (kd(GLFW_KEY_A)?1.0f:0.0f);
+                const bool driving = !isDrive || inCar;   // on foot -> car idles, parked
+                if (driving) {
+                    in.throttle = (kd(GLFW_KEY_W)?1.0f:0.0f) - (kd(GLFW_KEY_S)?1.0f:0.0f);
+                    in.steer    = (kd(GLFW_KEY_D)?1.0f:0.0f) - (kd(GLFW_KEY_A)?1.0f:0.0f);
+                }
                 if (isDrive) {
-                    if (kd(GLFW_KEY_SPACE)) in.handBrake = 1.0f;
-                    if (in.throttle < 0.0f && car.forwardSpeed() > 0.5f) { in.brake = 1.0f; in.throttle = 0.0f; }
+                    if (!inCar) in.handBrake = 1.0f;      // parking brake while on foot
+                    else if (kd(GLFW_KEY_SPACE)) in.handBrake = 1.0f;
+                    if (inCar && in.throttle < 0.0f && car.forwardSpeed() > 0.5f) { in.brake = 1.0f; in.throttle = 0.0f; }
                 }
             } else { // fly
                 in.throttle = (kd(GLFW_KEY_W)?1.0f:0.0f) - (kd(GLFW_KEY_S)?0.5f:0.0f);
@@ -5050,19 +5109,54 @@ int main(int argc, char** argv) {
                 device->setWaterParams(wp);
             }
 
-            // Orbit/chase camera around the vehicle.
+            // Camera: chase the vehicle (with a slight SPEED-FOV stretch in the
+            // car), or first-person walk when on foot (drive only).
             float vp[3]; vpos(vp);
-            float dist = isFly ? 16.0f : 10.0f, height = isFly ? 4.0f : 3.5f;
-            float cx = vp[0] - std::cos(camPitch)*std::cos(camYaw)*dist;
-            float cy = vp[1] + height - std::sin(camPitch)*dist;
-            float cz = vp[2] - std::cos(camPitch)*std::sin(camYaw)*dist;
+            float cx, cy, cz;
+            float fovTarget = 70.0f;
+            if (isDrive && !inCar) {
+                // On-foot first-person walker on the streamed terrain.
+                const x3::game::TerrainConfig& tc = x3::game::worldTerrainConfig();
+                float wdx = std::cos(camYaw), wdz = std::sin(camYaw);
+                float wrx = -wdz, wrz = wdx;
+                float wspd = (kd(GLFW_KEY_LEFT_SHIFT) ? 9.0f : 4.5f) * fdt;
+                if (kd(GLFW_KEY_W)) { footPos[0]+=wdx*wspd; footPos[2]+=wdz*wspd; }
+                if (kd(GLFW_KEY_S)) { footPos[0]-=wdx*wspd; footPos[2]-=wdz*wspd; }
+                if (kd(GLFW_KEY_D)) { footPos[0]+=wrx*wspd; footPos[2]+=wrz*wspd; }
+                if (kd(GLFW_KEY_A)) { footPos[0]-=wrx*wspd; footPos[2]-=wrz*wspd; }
+                footPos[1] = x3::game::terrainHeightAt(tc, footPos[0], footPos[2]);
+                cx = footPos[0]; cy = footPos[1] + 1.7f; cz = footPos[2];
+                vstream.update(vscene, *device, *vphys, footPos[0], footPos[2]);
+            } else {
+                float dist = isFly ? 16.0f : 10.0f, height = isFly ? 4.0f : 3.5f;
+                cx = vp[0] - std::cos(camPitch)*std::cos(camYaw)*dist;
+                cy = vp[1] + height - std::sin(camPitch)*dist;
+                cz = vp[2] - std::cos(camPitch)*std::sin(camYaw)*dist;
+                if (isDrive) {
+                    // Speed FOV: widen toward +14deg approaching ~120 km/h.
+                    const float sn = std::min(std::fabs(car.forwardSpeed()) / 33.0f, 1.0f);
+                    fovTarget = 70.0f + 14.0f * sn;
+                }
+            }
+            // Smooth the FOV change (dt-scaled, never per-frame — the HARD rule).
+            fovNow += (fovTarget - fovNow) * std::min(fdt * 6.0f, 1.0f);
+            // Engine audio: pitch/volume track the RPM proxy (speed+throttle).
+            if (isDrive && engineLoop.valid()) {
+                const float sn = std::min(std::fabs(car.forwardSpeed()) / 33.0f, 1.0f);
+                const float th = std::fabs(in.throttle);
+                vaudio->setLoopParams(engineLoop, 0.30f + 0.35f*th + 0.15f*sn,
+                                      0.75f + 1.10f*sn + 0.18f*th);
+            }
+            vaudio->setListener(cx, cy, cz, camYaw, camPitch);
             int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
             if (cw != lastWd || ch != lastHd) { lastWd=cw; lastHd=ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
-            device->setCamera(cx, cy, cz, camYaw, camPitch, 70.0f);
+            device->setCamera(cx, cy, cz, camYaw, camPitch, fovNow);
             auto frame = device->beginFrame();
             if (frame.valid) vrender(frame);
             device->endFrame(frame);
         }
+        if (engineLoop.valid()) vaudio->stopLoop(engineLoop);
+        vaudio->shutdown();
         if (isDrive) { car.shutdown(); vstream.shutdown(vscene, *device, *vphys); }
         else if (isBoat) boat.shutdown(); else plane.shutdown();
         vphys->shutdown(); device->shutdown();

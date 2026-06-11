@@ -162,6 +162,13 @@ struct ModelDrawable {
 // model still works (identity nodeTransform). Returns empty for headless models.
 std::vector<ModelDrawable> makeDrawables(const Model& m);
 
+// makeDrawables + the glTF NODE NAME each drawable came from (parallel array,
+// same length/order). Lets callers partition a multi-part model by authored part
+// names (e.g. a vehicle's Wheel_FL/FR/RL/RR vs the body) without re-doing the
+// node-transform walk. Orphaned-mesh fallback drawables get an empty name.
+std::vector<ModelDrawable> makeDrawablesNamed(const Model& m,
+                                              std::vector<std::string>& outNodeNames);
+
 // Column-major 4x4 multiply helper: out = a * b (glTF/glm convention). Exposed so
 // callers can compose objectTransform (a) with a drawable's nodeTransform (b)
 // before handing the result to IRenderDevice::drawMesh(). out may NOT alias a/b.
