@@ -1701,6 +1701,10 @@ int main(int argc, char** argv) {
         else if (a == "--test-ai") testAi = true;
         else if (a == "--test-bestiary") testBestiary = true;
         else if (a == "--test-bosses") testBosses = true;
+        // (chain break — restart the if/else-if ladder so MSVC stays under the
+        // C1061 block-nesting limit; flags are exact == matches, all unique, so a
+        // matched arg simply falls through the second ladder without re-matching)
+        if (false) {}
         else if (a == "--test-act2bosses") testAct2Bosses = true;
         else if (a == "--test-spiremid") testSpireMid = true;
         else if (a == "--test-nexus") testNexus = true;
@@ -1740,6 +1744,8 @@ int main(int argc, char** argv) {
         else if (a == "--test-loading") testLoading = true;
         else if (a == "--test-saveload") testSaveLoad = true;
         else if (a == "--test-dialog") testDialog = true;
+        // (chain break #2 — see the note above)
+        if (false) {}
         else if (a == "--demo-dialog") {
             demoDialog = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') demoDialogPath = argv[++i];
@@ -8445,7 +8451,6 @@ int main(int argc, char** argv) {
     // drawViewmodel so typing e.g. `vm_pitch 10` moves the held gun immediately.
     registerViewmodelCVars(*console);
 
-<<<<<<< HEAD
     // --legacypost / --notaa: pin the matching cvars so the per-frame cvar->device
     // sync (applyRtaoCVars) keeps the A/B state instead of re-enabling defaults.
     if (legacyPost) {
@@ -8463,7 +8468,8 @@ int main(int argc, char** argv) {
     if (noRefl) {
         console->set("r_ssr", "0");              // --norefl: reflections off, TAA untouched
         console->set("r_rtreflections", "0");
-=======
+    }
+
     // --world fromdoc: the `level_reload` console command. Sets a request flag the
     // sim tick applies at the next frame (never mid-draw). Registered regardless of
     // load success so the command exists once a doc world is up.
@@ -8473,7 +8479,6 @@ int main(int argc, char** argv) {
                 docReloadRequested = true;
                 x3::logInfo("level_reload: requested (applies next tick)");
             }, "reload the --world fromdoc LevelDoc JSON in place");
->>>>>>> origin/feat/level-loader
     }
 
     // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
