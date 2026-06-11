@@ -31,13 +31,24 @@ void check(bool ok, const char* what) {
 
 // Drain a chat until done (or timeout). Returns the accumulated text and the
 // number of NON-EMPTY polls (so streaming-in-pieces is observable).
-struct DrainResult { std::string text; int nonEmptyPolls = 0; bool done = false; };
+struct DrainResult {
+    std::string text;
+    int    nonEmptyPolls = 0;
+    int    tokens = 0;          // exact model-token count (PollResult metering)
+    double firstTokenS = -1.0;  // time to first token, seconds
+    bool   done = false;
+};
 DrainResult drain(ILlmSystem& sys, ChatId chat, int timeoutMs) {
     DrainResult r;
     const auto t0 = std::chrono::steady_clock::now();
     for (;;) {
         PollResult p = sys.poll(chat);
-        if (!p.newTokens.empty()) { r.text += p.newTokens; ++r.nonEmptyPolls; }
+        if (!p.newTokens.empty()) {
+            if (r.firstTokenS < 0.0)
+                r.firstTokenS = std::chrono::duration<double>(
+                                    std::chrono::steady_clock::now() - t0).count();
+            r.text += p.newTokens; ++r.nonEmptyPolls; r.tokens += p.newTokenCount;
+        }
         if (p.done) { r.done = true; break; }
         const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                             std::chrono::steady_clock::now() - t0).count();
@@ -163,18 +174,34 @@ void testRealModel(const std::string& path) {
                           low.find("spire")    != std::string::npos ||
                           low.find("facility") != std::string::npos;
     check(mentions, "R6 reply mentions the facility");
-    // tok/s: count words as a proxy is sloppy; ~4 chars/token is the standard
-    // rough inverse — report BOTH so the log is honest.
-    const double approxTokens = (double)d.text.size() / 4.0;
-    x3::logInfo("  [llm-test] reply (" + std::to_string(d.text.size()) + " chars, ~" +
-                std::to_string((int)approxTokens) + " tokens est.) in " +
-                std::to_string(genS) + " s  => ~" +
-                std::to_string(approxTokens / (genS > 0.0 ? genS : 1.0)) +
-                " tok/s (incl. prompt eval)");
+    // tok/s metered with EXACT token counts: prompt eval = time to first token;
+    // decode rate = remaining tokens over remaining time.
+    const double decodeS = genS - (d.firstTokenS > 0.0 ? d.firstTokenS : 0.0);
+    const double tokPerS = (d.tokens > 1 && decodeS > 0.0) ? (d.tokens - 1) / decodeS : 0.0;
+    x3::logInfo("  [llm-test] reply: " + std::to_string(d.tokens) + " tokens in " +
+                std::to_string(genS) + " s (first token at " +
+                std::to_string(d.firstTokenS) + " s incl. prompt eval) => " +
+                std::to_string(tokPerS) + " tok/s decode");
     x3::logInfo("  [llm-test] reply text: " + d.text);
 
+    // R7: SECOND TURN on the same chat — validates the multi-turn KV path and
+    // gives a longer generation for an honest sustained-decode tok/s number.
+    const auto tGen1 = std::chrono::steady_clock::now();
+    check(sys->submit(chat, "Describe this facility floor by floor, in detail."),
+          "R7 second-turn submit accepted");
+    DrainResult d2 = drain(*sys, chat, 180000);
+    const double gen2S = std::chrono::duration<double>(
+                             std::chrono::steady_clock::now() - tGen1).count();
+    check(d2.done && !d2.text.empty(), "R8 second-turn reply completes non-empty");
+    const double decode2S = gen2S - (d2.firstTokenS > 0.0 ? d2.firstTokenS : 0.0);
+    const double tokPerS2 = (d2.tokens > 1 && decode2S > 0.0) ? (d2.tokens - 1) / decode2S : 0.0;
+    x3::logInfo("  [llm-test] turn 2: " + std::to_string(d2.tokens) + " tokens, first at " +
+                std::to_string(d2.firstTokenS) + " s, sustained " +
+                std::to_string(tokPerS2) + " tok/s decode");
+    x3::logInfo("  [llm-test] turn-2 text: " + d2.text);
+
     sys->unload();
-    check(!sys->modelLoaded(), "R7 unload clean");
+    check(!sys->modelLoaded(), "R9 unload clean");
 }
 
 } // namespace

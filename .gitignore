@@ -48,6 +48,10 @@ ai_action*.gif
 # Tracy captures
 *.tracy
 
+# LLM model weights (~2 GB) — never in git/LFS. Download per
+# assets/models/llm/README.md (the game runs modelless without them).
+assets/models/llm/*.gguf
+
 # Claude Code background sub-agent worktrees — each is a FULL repo checkout
 # (gigabytes of duplicated assets + build dirs). Local-only, never commit.
 # Clean periodically: tools/clean_worktrees.ps1  (see README warning).

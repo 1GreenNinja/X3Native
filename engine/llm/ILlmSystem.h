@@ -35,9 +35,10 @@ struct ModelOpts {
 
 // poll() result: everything generated since the last poll, plus terminal state.
 struct PollResult {
-    std::string newTokens;      // freshly generated text (may be empty)
-    bool        done   = false; // generation finished (EOG / token cap / cancel)
-    bool        failed = false; // generation aborted on an error (done is also true)
+    std::string newTokens;        // freshly generated text (may be empty)
+    int         newTokenCount = 0;// model tokens in newTokens (for tok/s metering)
+    bool        done   = false;   // generation finished (EOG / token cap / cancel)
+    bool        failed = false;   // generation aborted on an error (done is also true)
 };
 
 class ILlmSystem {

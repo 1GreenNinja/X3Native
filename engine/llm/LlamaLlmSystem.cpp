@@ -132,6 +132,8 @@ public:
         auto it = m_chats.find(chat);
         if (it == m_chats.end()) { r.done = true; r.failed = true; return r; }
         r.newTokens.swap(it->second.pending);
+        r.newTokenCount = it->second.pendingCount;
+        it->second.pendingCount = 0;
         r.done   = it->second.done;
         r.failed = it->second.failed;
         return r;
@@ -197,6 +199,7 @@ private:
         bool            primed = false;   // system prompt decoded into the KV
         std::size_t     stateBytes = 0;   // KV/compute buffer estimate
         std::string     pending;
+        int             pendingCount = 0;   // model tokens in `pending`
         bool            busy = false;
         bool            done = false;
         bool            failed = false;
@@ -251,10 +254,13 @@ private:
         return llama_decode(ctx, batch) == 0;
     }
 
-    void emit(ChatId chat, const std::string& text) {
+    void emit(ChatId chat, const std::string& text, int tokenCount = 0) {
         std::lock_guard<std::mutex> lk(m_mx);
         auto it = m_chats.find(chat);
-        if (it != m_chats.end()) it->second.pending += text;
+        if (it != m_chats.end()) {
+            it->second.pending      += text;
+            it->second.pendingCount += tokenCount;
+        }
     }
 
     bool isCancelled(ChatId chat) {
@@ -360,7 +366,7 @@ private:
 
             char buf[256];
             const int n = llama_token_to_piece(vocab, tok, buf, (int)sizeof(buf), 0, /*special*/false);
-            if (n > 0) emit(job.chat, std::string(buf, (size_t)n));
+            if (n > 0) emit(job.chat, std::string(buf, (size_t)n), 1);
 
             std::vector<llama_token> one{ tok };
             if (!decodeTokens(ctx, one)) { failed = true; break; }   // KV full

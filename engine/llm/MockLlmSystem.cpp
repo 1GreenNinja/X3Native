@@ -72,6 +72,8 @@ public:
         auto it = m_chats.find(chat);
         if (it == m_chats.end()) { r.done = true; r.failed = true; return r; }
         r.newTokens.swap(it->second.pending);
+        r.newTokenCount = it->second.pendingCount;
+        it->second.pendingCount = 0;
         r.done = it->second.done;
         return r;
     }
@@ -120,6 +122,7 @@ private:
         std::uint32_t ordinal = 0;
         std::string   persona;
         std::string   pending;        // tokens awaiting poll()
+        int           pendingCount = 0;
         bool          busy = false;   // a job is queued/running
         bool          done = false;   // last job finished
         bool          cancelReq = false;
@@ -179,7 +182,7 @@ private:
     void emit(ChatId chat, const std::string& text) {
         std::lock_guard<std::mutex> lk(m_mx);
         auto it = m_chats.find(chat);
-        if (it != m_chats.end()) it->second.pending += text;
+        if (it != m_chats.end()) { it->second.pending += text; ++it->second.pendingCount; }
     }
 
     mutable std::mutex      m_mx;
