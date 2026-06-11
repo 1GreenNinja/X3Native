@@ -99,6 +99,9 @@ public:
         // Keep the car from flipping fully upside down (still lets it lean).
         vs.mMaxPitchRollAngle = JPH::DegreesToRadians(60.0f);
 
+        m_wheelSettings.clear();
+        m_baseSuspMin.clear();
+        m_baseSuspMax.clear();
         for (uint32_t i = 0; i < d.wheelCount; ++i) {
             const WheelDesc& w = d.wheels[i];
             JPH::WheelSettingsWV* ws = new JPH::WheelSettingsWV();
@@ -119,10 +122,23 @@ public:
             vs.mWheels.push_back(ws);
             m_wheelRadius[i] = w.radius;
             m_wheelWidth[i]  = w.width;
+            // Tuning bookkeeping: keep the raw settings pointer (the constraint's
+            // Ref owns it; it stays alive for our lifetime) + the authored base
+            // suspension lengths and the DEFAULT tire friction curves, so a live
+            // tuning can scale/offset from the authored baseline (idempotent —
+            // re-applying a tuning never compounds).
+            m_wheelSettings.push_back(ws);
+            m_baseSuspMin.push_back(w.suspensionMin);
+            m_baseSuspMax.push_back(w.suspensionMax);
+            if (i == 0) {
+                m_baseLongFriction = ws->mLongitudinalFriction;
+                m_baseLatFriction  = ws->mLateralFriction;
+            }
         }
 
         // ---- Controller (engine + transmission + 1 differential) ----
         JPH::WheeledVehicleControllerSettings* cs = new JPH::WheeledVehicleControllerSettings();
+        m_baseMaxTorque = d.maxEngineTorque;            // tuning/boost baseline
         cs->mEngine.mMaxTorque = d.maxEngineTorque;
         cs->mEngine.mMaxRPM    = d.maxEngineRPM;
         cs->mTransmission.mClutchStrength = d.clutchStrength;
@@ -233,6 +249,65 @@ public:
         return m_ctrl ? m_ctrl->GetTransmission().GetCurrentGear() : 0;
     }
 
+    // ---- LIVE TUNING (performance shop). Mutates the running Jolt settings in
+    // place — the simulation reads the settings objects every step, so the next
+    // physics tick already drives with the new engine/tires/suspension/brakes. ----
+    bool applyWheeledTuning(const WheeledTuning& t) override {
+        if (!m_ctrl || !m_chassis) return false;
+        JPH::VehicleEngine& eng = m_ctrl->GetEngine();
+        // Engine peak torque + redline. m_baseMaxTorque is the TUNED baseline the
+        // nitrous boost multiplies (so boost never compounds with itself).
+        if (t.maxEngineTorque > 0.0f) {
+            m_baseMaxTorque = t.maxEngineTorque;
+            eng.mMaxTorque  = m_baseMaxTorque * m_boost;
+        }
+        if (t.maxEngineRPM > 0.0f) eng.mMaxRPM = t.maxEngineRPM;
+        // Normalized torque CURVE (camshaft / forced-induction profile).
+        if (t.curvePoints > 0) {
+            eng.mNormalizedTorque.Clear();
+            const uint32_t nPts = std::min<uint32_t>(t.curvePoints, 8u);
+            for (uint32_t i = 0; i < nPts; ++i)
+                eng.mNormalizedTorque.AddPoint(t.curve[i].rpmFrac, t.curve[i].torqueFrac);
+            eng.mNormalizedTorque.Sort();
+        }
+        // Chassis mass (inertia rescaled with it).
+        if (t.massKg > 0.0f && m_chassis->GetMotionProperties())
+            m_chassis->GetMotionProperties()->ScaleToMass(t.massKg);
+        // Per-wheel: tires / suspension / ride height / brakes. All scale or offset
+        // from the AUTHORED baseline captured in build(), so re-application after a
+        // parts change is idempotent.
+        for (size_t i = 0; i < m_wheelSettings.size(); ++i) {
+            JPH::WheelSettingsWV* ws = m_wheelSettings[i];
+            if (t.gripScale > 0.0f) {
+                ws->mLongitudinalFriction = m_baseLongFriction;
+                for (auto& p : ws->mLongitudinalFriction.mPoints) p.mY *= t.gripScale;
+                ws->mLateralFriction = m_baseLatFriction;
+                for (auto& p : ws->mLateralFriction.mPoints) p.mY *= t.gripScale;
+            }
+            if (t.suspensionFreq > 0.0f) ws->mSuspensionSpring.mFrequency = t.suspensionFreq;
+            if (t.suspensionDamp > 0.0f) ws->mSuspensionSpring.mDamping   = t.suspensionDamp;
+            if (t.rideHeightDelta != WheeledTuning::kRideHeightLeave) {
+                ws->mSuspensionMinLength = std::max(0.03f, m_baseSuspMin[i] + t.rideHeightDelta);
+                ws->mSuspensionMaxLength = std::max(ws->mSuspensionMinLength + 0.05f,
+                                                    m_baseSuspMax[i] + t.rideHeightDelta);
+            }
+            if (t.brakeTorque > 0.0f) {
+                ws->mMaxBrakeTorque = t.brakeTorque;
+                if (ws->mMaxHandBrakeTorque > 0.0f)         // keep the hand-brake lock ratio
+                    ws->mMaxHandBrakeTorque = t.brakeTorque * 2.5f;
+            }
+        }
+        // Wake the body so the re-tuned constraint solves immediately.
+        if (m_system) m_system->GetBodyInterface().ActivateBody(m_chassis->GetID());
+        return true;
+    }
+
+    void setTorqueBoost(float mult) override {
+        m_boost = std::clamp(mult, 0.1f, 4.0f);
+        if (m_ctrl) m_ctrl->GetEngine().mMaxTorque = m_baseMaxTorque * m_boost;
+    }
+    float torqueBoost() const override { return m_boost; }
+
 private:
     JPH::PhysicsSystem* m_system = nullptr;
     JPH::Body*          m_chassis = nullptr;
@@ -245,6 +320,12 @@ private:
     uint32_t m_wheelCount = 0;
     std::vector<float> m_wheelRadius, m_wheelWidth;
     VehicleInput m_in;
+    // ---- Live-tuning bookkeeping (applyWheeledTuning / setTorqueBoost) ----
+    std::vector<JPH::WheelSettingsWV*> m_wheelSettings; // owned by the constraint's Refs
+    std::vector<float> m_baseSuspMin, m_baseSuspMax;    // authored suspension lengths
+    JPH::LinearCurve m_baseLongFriction, m_baseLatFriction; // default tire curves
+    float m_baseMaxTorque = 600.0f;                     // tuned baseline (boost multiplies)
+    float m_boost = 1.0f;                               // nitrous multiplier (1 = none)
 };
 
 // =====================================================================

@@ -85,6 +85,16 @@ public:
     float forwardSpeed() const { return m_ctl ? m_ctl->forwardSpeed() : 0.0f; }
     float engineRPM()    const { return m_ctl ? m_ctl->engineRPM() : 0.0f; }
 
+    // ---- Performance-shop live tuning passthrough (engine WheeledTuning). ----
+    // Re-tunes the RUNNING Jolt vehicle in place (engine curve/torque, mass, grip,
+    // suspension, ride height, brakes) — drive out of the shop and FEEL the parts.
+    bool applyTuning(const x3::phys::WheeledTuning& t) {
+        return m_ctl ? m_ctl->applyWheeledTuning(t) : false;
+    }
+    // Nitrous: temporary torque multiplier (1 = off). Host owns the tank timer.
+    void  setTorqueBoost(float mult) { if (m_ctl) m_ctl->setTorqueBoost(mult); }
+    float torqueBoost() const { return m_ctl ? m_ctl->torqueBoost() : 1.0f; }
+
 private:
     x3::rhi::IRenderDevice*  m_device  = nullptr;
     x3::phys::IPhysicsWorld* m_physics = nullptr;
