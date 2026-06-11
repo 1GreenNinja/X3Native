@@ -1,0 +1,72 @@
+#version 450
+
+// AUTO-EXPOSURE (eye adaptation) — CLEAN-ROOM, original.
+//
+// One workgroup (16x16 = 256 threads). Each thread samples a FIXED 4x4 sub-grid
+// of the linear-HDR scene (64x64 = 4096 uniformly spaced taps total — plenty for
+// a stable log-average and fully deterministic: no jitter, no temporal sample
+// walk). The shared-memory tree reduction averages log2-luminance; thread 0 maps
+// the average to a target exposure (key / avgLum, clamped to [minExp, maxExp])
+// and TEMPORALLY adapts the persistent SSBO value toward it with an exponential
+// response (1 - exp(-dt*speed)) — the classic eye-adaptation model. `snap != 0`
+// jumps straight to the target (first frame after init/toggle, and every frame
+// in headless capture so screenshots are reproducible).
+//
+// The composite pass multiplies this adapted exposure with the r_exposure BIAS
+// (compensation) — auto sets the base level, the user dials taste on top.
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) uniform sampler2D hdrTex;     // linear HDR scene
+layout(set = 0, binding = 1) buffer ExposureBuf {
+    float adapted;   // adapted exposure multiplier (composite reads this)
+    float avgLog;    // last frame's average log2 luminance (debug/HUD)
+    float pad0, pad1;
+} ae;
+
+layout(push_constant) uniform Push {
+    float dt;        // frame delta time (seconds, clamped by the CPU)
+    float speed;     // adaptation rate (1/s) — r_aespeed
+    float minExp;    // exposure clamp floor — r_aemin
+    float maxExp;    // exposure clamp ceiling — r_aemax
+    float key;       // target middle-grey key (~0.18) — r_aekey
+    int   snap;      // 1 = adapt instantly (first frame / headless determinism)
+    float pad0, pad1;
+} pc;
+
+shared float sSum[256];
+
+void main() {
+    // 4096 fixed grid taps: thread (tx,ty) owns the 4x4 cell block at
+    // (tx*4 .. tx*4+3, ty*4 .. ty*4+3) of a virtual 64x64 grid over the screen.
+    const uvec2 t = gl_LocalInvocationID.xy;
+    float acc = 0.0;
+    for (uint sy = 0u; sy < 4u; ++sy)
+        for (uint sx = 0u; sx < 4u; ++sx) {
+            vec2 uv = (vec2(t) * 4.0 + vec2(float(sx), float(sy)) + 0.5) / 64.0;
+            vec3 c = textureLod(hdrTex, uv, 0.0).rgb;
+            float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
+            // Clamp into a sane HDR range: the floor keeps log2 finite on pure
+            // black; the ceiling stops a single sun/specular firefly from
+            // dragging the whole average (half-float max is 65504 anyway).
+            acc += log2(clamp(lum, 1e-4, 16384.0));
+        }
+
+    const uint li = gl_LocalInvocationIndex;
+    sSum[li] = acc;
+    barrier();
+    // Tree reduction (barrier in uniform control flow).
+    for (uint s = 128u; s > 0u; s >>= 1u) {
+        if (li < s) sSum[li] += sSum[li + s];
+        barrier();
+    }
+
+    if (li == 0u) {
+        float avgLog = sSum[0] / 4096.0;
+        float avgLum = exp2(avgLog);
+        float target = clamp(pc.key / max(avgLum, 1e-4), pc.minExp, pc.maxExp);
+        float a = (pc.snap != 0) ? 1.0 : (1.0 - exp(-pc.dt * pc.speed));
+        ae.adapted = mix(ae.adapted, target, a);
+        ae.avgLog  = avgLog;
+    }
+}

@@ -144,7 +144,25 @@ public:
 
     // Whole-scene brightness multiplier applied pre-tonemap in the composite pass
     // (1.0 = unchanged). Drives the live r_exposure cvar / showroom brightness slider.
+    // With auto-exposure ON this acts as exposure COMPENSATION (bias) on top of the
+    // adapted value; with it OFF it is the absolute exposure, exactly as before.
     virtual void setExposure(float e) {}
+
+    // HDR post-stack settings (tonemap / bloom gate / auto-exposure), synced per
+    // frame from the r_* cvars. Defaults preserve the device-side behavior when the
+    // app never calls this (headless screenshot/test paths included).
+    struct PostFXParams {
+        int   tonemapMode    = 1;      // r_tonemap: 0 = passthrough clamp (A/B), 1 = ACES
+        bool  bloomEnabled   = true;   // r_bloom: 0 skips the whole bloom chain
+        float bloomIntensity = -1.0f;  // r_bloomintensity: <0 = keep the scene-tuned setBloom()
+        float bloomThreshold = 1.10f;  // r_bloomthreshold: bright-pass knee point (linear)
+        bool  autoExposure   = true;   // r_autoexposure: eye adaptation on/off
+        float aeSpeed        = 1.5f;   // r_aespeed: adaptation rate (1/s)
+        float aeMin          = 0.70f;  // r_aemin: adapted-exposure clamp floor
+        float aeMax          = 2.20f;  // r_aemax: adapted-exposure clamp ceiling
+        float aeKey          = 0.18f;  // r_aekey: target middle-grey key
+    };
+    virtual void setPostFX(const PostFXParams&) {}
 
     // Per-frame
     virtual FrameContext beginFrame() = 0;
