@@ -2754,18 +2754,21 @@ int main(int argc, char** argv) {
         std::vector<x3::prims::PrimMesh> parts;
         parts.push_back(x3::prims::makeBox(9.5f, 0.5f, 8.5f,  0.0f, -0.5f, 3.5f)); // floor slab
         parts.push_back(x3::prims::makeBox(9.5f, 0.5f, 8.5f,  0.0f,  4.5f, 3.5f)); // ceiling slab
-        parts.push_back(x3::prims::makeBox(0.5f, 2.0f, 8.5f, -9.0f,  2.0f, 3.5f)); // west shell
-        parts.push_back(x3::prims::makeBox(0.5f, 2.0f, 8.5f,  9.0f,  2.0f, 3.5f)); // east shell
-        parts.push_back(x3::prims::makeBox(9.5f, 2.0f, 0.5f,  0.0f,  2.0f, -4.5f)); // south shell
-        parts.push_back(x3::prims::makeBox(9.5f, 2.0f, 0.5f,  0.0f,  2.0f, 11.5f)); // north shell
-        // A|B divider (x=0) with a 2 m doorway at z in [-1,1], 3 m tall:
-        parts.push_back(x3::prims::makeBox(0.5f, 2.0f, 1.5f,  0.0f,  2.0f, -2.5f)); // divider south seg
-        parts.push_back(x3::prims::makeBox(0.5f, 2.0f, 1.5f,  0.0f,  2.0f,  2.5f)); // divider north seg
-        parts.push_back(x3::prims::makeBox(0.5f, 0.5f, 1.0f,  0.0f,  3.5f,  0.0f)); // doorway lintel
+        // Walls run y -0.15..4.15 (half 2.15) so they OVERLAP the floor +
+        // ceiling slabs — no coplanar seam for the shadow map's PCF bias to
+        // leak a sunlit strip through at the junction.
+        parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 8.5f, -9.0f,  2.0f, 3.5f)); // west shell
+        parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 8.5f,  9.0f,  2.0f, 3.5f)); // east shell
+        parts.push_back(x3::prims::makeBox(9.5f, 2.15f, 0.5f,  0.0f,  2.0f, -4.5f)); // south shell
+        parts.push_back(x3::prims::makeBox(9.5f, 2.15f, 0.5f,  0.0f,  2.0f, 11.5f)); // north shell
+        // A|B divider (x=0) with a 2 m doorway at z in [-1,1], ~3 m tall:
+        parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 1.5f,  0.0f,  2.0f, -2.5f)); // divider south seg
+        parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 1.5f,  0.0f,  2.0f,  2.5f)); // divider north seg
+        parts.push_back(x3::prims::makeBox(0.5f, 0.65f, 1.0f,  0.0f,  3.55f, 0.0f)); // doorway lintel (2.9..4.2)
         // A|C separator (z=4..5, FULL span — room C is sealed; the leak canary):
-        parts.push_back(x3::prims::makeBox(9.5f, 2.0f, 0.5f,  0.0f,  2.0f,  4.5f));
+        parts.push_back(x3::prims::makeBox(9.5f, 2.15f, 0.5f,  0.0f,  2.0f,  4.5f));
         // C | east-void divider (x=0, z 5..11) so C is a closed room:
-        parts.push_back(x3::prims::makeBox(0.5f, 2.0f, 3.0f,  0.0f,  2.0f,  8.0f));
+        parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 3.0f,  0.0f,  2.0f,  8.0f));
         // RED accent wall inside room A (color-bleed proof: B's spill reads warm-red):
         x3::prims::PrimMesh redPanel = x3::prims::makeBox(0.1f, 1.8f, 3.5f, -8.3f, 1.9f, 0.0f);
 
@@ -2791,6 +2794,17 @@ int main(int argc, char** argv) {
         device->setPointLights(&pl, 1);
         device->setAmbient(0.015f, 0.016f, 0.020f);          // near-black base ambient
         device->setShadowBounds(0.0f, 2.0f, 3.5f, 25.0f);
+        // Sun BELOW the horizon (sky stays disabled): every surface's sun N.L is
+        // <= 0, so the only light in the rig is the room-A point light + the
+        // emissive panel — the purest possible bounce-only A/B (this also avoids
+        // the engine's shadow-bias seam at wall/ceiling junctions muddying the
+        // leak canary; that seam is a raster artifact identical OFF and ON).
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = false;
+            sp.sunDir[0] = 0.0f; sp.sunDir[1] = -1.0f; sp.sunDir[2] = 0.01f;
+            device->setSkyParams(sp);
+        }
 
         const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
         const float white[4] = { 1, 1, 1, 1 };
@@ -2849,6 +2863,11 @@ int main(int argc, char** argv) {
         dp.debug = 0; device->setDdgiParams(dp);
         // The no-leak canary: sealed room C must STAY dark with DDGI on.
         camRoomC(); ok &= renderFrames(30, ddgiShotDir + "/ddgi_leak_on.png");
+        // DYNAMIC proof: remove the point light mid-run — the probes re-converge
+        // (hysteresis, ~1-2 s) to the EMISSIVE PANEL as the only GI source. The
+        // doorway spill must survive (dimmer, panel-toned) purely from emissive.
+        device->setPointLights(nullptr, 0);
+        camRoomB(); ok &= renderFrames(180, ddgiShotDir + "/ddgi_emissive_only.png");
 
         x3::logInfo("--screenshot-ddgi: GPU frame avg " + std::to_string(gpuOff) +
                     " ms (off) vs " + std::to_string(gpuOn) + " ms (on) -> DDGI cost ~" +
