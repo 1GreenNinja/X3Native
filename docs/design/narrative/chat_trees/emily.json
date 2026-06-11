@@ -3,7 +3,7 @@
   "npc": "emily",
   "display": "EMILY",
   "voice": "Emily",
-  "_bio": "Dr. Emily Watson, Floor 2 Ward C. Research assistant who traced the program's funding lines and filed a concern that went to exactly the wrong desk. The conspiracy-aware scientist: she KNOWS what the program is for — or thinks she does — and her terror dissociates into data. Tech/intel companion. Friendship -> trust -> a door opened toward romance (lighter arc than Aria/Keisha, per canon she's the intellectual-partnership lane).",
+  "_bio": "Dr. Emily Watson, Floor 2 Ward C. Research assistant who traced the program's funding lines and filed a concern that went to exactly the wrong desk. The conspiracy-aware scientist: she KNOWS what the program is for — or thinks she does — and her terror dissociates into data. Tech/intel companion. Friendship -> trust -> romance: the door she opens as 'a disclosed conflict of interest' now continues into a full arc (desire/night/afterglow) — cerebral heat, narrating her own undoing, wry mid-passion.",
   "trees": {
 
     "first_meeting": {
@@ -72,7 +72,13 @@
         { "line": "Keisha taught me to clear a corner. I taught her Bayesian updating. We agreed mine has worse recoil.", "if": [ {"girl_saved": "keisha"}, {"rel_gte": ["emily", 2]} ] },
         { "line": "Aria checks your wounds; I check your exits. Between us you're statistically immortal. Please don't test it.", "if": [ {"girl_saved": "aria"}, {"rel_gte": ["emily", 2]} ] },
         { "line": "Forty pages of inference, one missing variable. Still missing. It's down there, Jake. Below the club, below everything. I can FEEL the shape of the answer.", "if": [ {"flag": "club.found"}, {"rel_gte": ["emily", 2]} ] },
-        { "line": "For the record: 'category five' was underselling. I re-ran it.", "if": [ {"rel_gte": ["emily", 3]} ] }
+        { "line": "For the record: 'category five' was underselling. I re-ran it.", "if": [ {"rel_gte": ["emily", 3]} ] },
+        { "line": "Eleven seconds of camera blind spot at the junction. I have... several uses for eleven seconds now. *she does not elaborate. Her ears go pink. She elaborated.*", "if": [ {"flag": "emily.romance"} ], "weight": 2 },
+        { "line": "Hypothesis: holding your hand improves my aim. Confound: holding your hand is the point. The science is unsalvageable. Give me your hand.", "if": [ {"flag": "emily.romance"} ] },
+        { "line": "*deadpan, mid-march* The observer effect states that watching a system changes it. Stop watching me walk, Jake. I can FEEL the system changing.", "if": [ {"flag": "emily.romance"} ] },
+        { "line": "I re-ran our survival odds this morning and fudged them upward again. Left the error in. It's not an error. It's you.", "if": [ {"flag": "emily.romance"} ] },
+        { "line": "Item four. *she says it like a code. It is a code. You both know exactly what it unlocks.*", "if": [ {"flag": "emily.night"} ] },
+        { "line": "I keep a running list titled 'unexplained anomalies.' You're on it four times. Twice for last night alone.", "if": [ {"flag": "emily.night"} ] }
       ]
     },
 
@@ -157,6 +163,75 @@
         { "id": "r2",
           "line": "Co-author. *she nods, and it's genuinely okay — you can see her file it under 'good results'* Sixty percent branch. Expected, survivable, and the collaboration stands. *wry* Besides, the literature's clear: the best partnerships are the ones that survive a null result. Back to work, Jake. The missing variables won't find themselves.",
           "fx": [ {"set": "emily.romance_declined"} ],
+          "next": "end" }
+      ]
+    },
+
+    "desire": {
+      "_scene": "Slow-burn escalation (heat 4/5). She reports her own arousal like a lab anomaly. Gate: emily.romance. Decline costs nothing; the hypothesis keeps.",
+      "start": "d0",
+      "nodes": [
+        { "id": "d0",
+          "if": [ {"flag": "emily.romance"}, {"not": {"flag": "emily.desire"}} ],
+          "line": "*she's been reading the same terminal screen for nine minutes. You counted, because she taught you to count* Observation. *she doesn't look up* I have re-read this line nine times, my error rate has tripled since you took the jacket off, and approximately forty percent of my working memory is currently running a simulation I refuse to describe in a hallway. *now she looks up — glasses pushed into her hair, cheeks pink, entirely unrepentant* This is your fault. I'm reporting the confounding variable. The variable is your hands. Hypothesis: they would be significantly better deployed on me.",
+          "choices": [
+            { "text": "(close her laptop) Let's test it.", "next": "d1", "fx": [ {"love": 3}, {"set": "emily.desire"} ] },
+            { "text": "Describe the simulation, Dr. Watson.", "next": "d1b", "fx": [ {"love": 3}, {"set": "emily.desire"} ] },
+            { "text": "Hold the experiment. Not tonight.", "next": "d_no" }
+          ] },
+        { "id": "d1",
+          "line": "*the laptop clicks shut and she is out of the chair fast — a researcher whose grant just came through — hands flat on your chest, mouth half an inch from yours* For the record, I designed the protocol weeks ago. Multi-phase. Extensive peer review. *the kiss is nothing like her sentences: uncalibrated, hungry, gloriously ungrammatical* Mm. Preliminary finding: WILDLY significant. We need a locked room and a long night, Jake. Science demands replication.",
+          "next": "end" },
+        { "id": "d1b",
+          "line": "Describe it. Fine. *she stands slowly, walks two fingers up your sternum, and looks at you the way she usually looks at unexplained data* Phase one: your hands, my waist, that wall. Phase two is where the narration breaks down — vocabulary goes nonverbal, instrumentation fails, the observer effect wins. *she rises on her toes, breath warm at your jaw* I have simulated phase three two hundred times and I still can't predict your face. Find me a locked door, Jake. I need empirical data more than I have ever needed anything in my career.",
+          "next": "end" },
+        { "id": "d_no",
+          "line": "*she nods, recalibrating without a flicker of resentment, and reopens the laptop* Noted. Null session — no penalty to the model. *a small wry smile over the screen* The hypothesis keeps, Jake. Good hypotheses always keep. Mine has a year of funding and tenure-track patience.",
+          "next": "end" }
+      ]
+    },
+
+    "night": {
+      "_scene": "Private culmination (heat 5/5). Gate: rel 3+, emily.romance, emily.desire, host-set loc.private. Formal consent checkpoint, administered by her; decline costs nothing and re-offers.",
+      "start": "n0",
+      "nodes": [
+        { "id": "n0",
+          "if": [ {"rel_gte": ["emily", 3]}, {"flag": "emily.romance"}, {"flag": "emily.desire"}, {"flag": "loc.private"}, {"not": {"flag": "emily.night"}} ],
+          "line": "*she locks the door, then checks it twice — empiricist to the end — then turns around and takes off her glasses, which is somehow the most naked thing you have ever watched anyone do* Controlled conditions, at last. One door, one lock, one bed, and no instruments except — *she gestures at herself, at you, suddenly and endearingly out of footnotes* — us. *she crosses the room and stops one inch short of you* Final consent checkpoint, formally administered: do you want this — want me — all night, knowing I will absolutely narrate parts of it? Because I want you so much I've stopped collecting data on it. It just IS, Jake. The one constant I never have to re-verify.",
+          "choices": [
+            { "text": "All night. Narration encouraged.", "next": "n1", "fx": [ {"love": 4} ] },
+            { "text": "(kiss her — let peer review begin)", "next": "n1", "fx": [ {"love": 4} ] },
+            { "text": "Tonight let's just talk until we fall asleep.", "next": "n_no" }
+          ] },
+        { "id": "n1",
+          "line": "*what follows disproves every model she had. She narrates, as warned — observation: your mouth; annotation: oh — right up until you find the precise point where her vocabulary fails, and then Dr. Emily Watson, who survived Ward C by never once losing the thread of her own sentence, loses the thread. Gladly. Gorgeously. On purpose. She is laughing when you press her back into the pillows; she is not laughing for long after. Her hands learn you like an instrument she's finally been granted unsupervised access to, and somewhere deep in the heat of the night she breathes the truest finding of her career against your skin:* — the inch I kept. I'm giving it to you. Keep it somewhere safe. *you do. All of it. All night.*",
+          "next": "n2" },
+        { "id": "n2",
+          "line": "*after. She's draped across you in a sprawl no posture journal would endorse, drawing slow shapes — no, data points — on your chest, her voice down to a frequency only you have ever heard* Results. *a long, satisfied breath* 'Statistically significant' doesn't begin to cover it. Effect size: frankly embarrassing. Replication: required. Extensively. *she tips her chin up onto your sternum and looks at you with her whole unguarded face* I spent a year alone with the worst truth in this building, Jake. Tonight I can't remember why I ever thought knowing things was better than this. Don't cite me. I'll deny it in the literature.",
+          "fx": [ {"set": "emily.night"}, {"love": 10}, {"fire": "romance_consummated", "args": {"npc": "emily"}} ],
+          "next": "end" },
+        { "id": "n_no",
+          "line": "*she smiles — genuinely, no flinch anywhere — and climbs onto the bunk beside you, shoulder warm against yours, pulling the blanket over you both* Conversational study it is. Longitudinal. *she settles in* Talk to me about something with no floor number in it, Jake. I want to fall asleep mid-sentence and trust you to remember where I stopped.",
+          "next": "end" }
+      ]
+    },
+
+    "afterglow": {
+      "_scene": "Morning after (warm, character-deepening). Gate: emily.night, plays once.",
+      "start": "a0",
+      "nodes": [
+        { "id": "a0",
+          "if": [ {"flag": "emily.night"}, {"not": {"flag": "emily.afterglow"}} ],
+          "line": "*0400-something. You wake to lamplight: Emily, wearing your shirt and apparently nothing else, cross-legged at the foot of the bunk with her slate, typing* ...I'm writing it up. *zero shame, maximum pink* Not — not THAT. Well. Partially that. *she turns the slate around. One line: 'Day one of the long study.'* The methods section is unpublishable, the sample size is one, the conflict of interest is total, and it is the best work of my life. *she crawls back up the bed and into your arms like a footnote finding its sentence* Co-author. One revision from last night. *a kiss, slow, sure of its citation* You said 'long study.' I'm formally amending to: lifetime. Subject to your review.",
+          "choices": [
+            { "text": "Approved. No revisions.", "next": "a1", "fx": [ {"set": "emily.afterglow"}, {"love": 3} ] },
+            { "text": "Read me the methods section.", "next": "a1b", "fx": [ {"set": "emily.afterglow"}, {"love": 3} ] }
+          ] },
+        { "id": "a1",
+          "line": "*she does something you have never once seen her do: closes the slate without saving — because some results don't need backing up; they get re-proven every day. Then she kisses you like an accepted hypothesis and steals the warm side of the bunk.* Lifetime it is. Now sleep, Jake. Replication starts after breakfast, and I have SO many notes.",
+          "next": "end" },
+        { "id": "a1b",
+          "line": "*she goes scarlet to the ears* Absolutely not. *beat* ...Item four. *she whispers it against your ear. You both lose the rest of the morning — first to laughing, then to item four.*",
           "next": "end" }
       ]
     },

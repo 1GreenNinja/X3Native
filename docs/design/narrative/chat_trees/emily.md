@@ -44,16 +44,46 @@ The peer-review scene: "does it read as brave or as broken?" All three answers a
 even "Honestly? It unsettles me sometimes" *raises* trust, because the flinch is the data
 and yours never came.
 
-### romance — the opened door (lighter by design)
-Canon keeps Emily as the intellectual-partnership lane (Omega pairs her with Dr. Ashford),
-so her arc tops out at a conflict-of-interest disclosure, not a demand: *"I'm not asking for
+### romance — the disclosure (now a full arc)
+Her declaration stays a conflict-of-interest disclosure, not a demand: *"I'm not asking for
 a result. I'm disclosing a conflict of interest."* Accepting starts the long study;
-declining files itself under good results and the collaboration genuinely stands. Two full
-romances (Aria, Keisha) + this opened door satisfies the at-least-two bar without flattening
-the three women into the same shape.
+declining files itself under good results and the collaboration genuinely stands. What was
+an opened door now continues through desire/night/afterglow — in HER shape (cerebral,
+self-narrating, wry mid-passion), never Aria's or Keisha's.
+
+### desire — reporting the variable (heat 4/5, gate: `emily.romance`)
+Nine re-reads of the same terminal line, tripled error rate, and a formal anomaly report:
+"the confounding variable is your hands. Hypothesis: they would be significantly better
+deployed on me." The d1b branch ("Describe the simulation, Dr. Watson") gets the phase-one/
+phase-two/phase-three breakdown ending in "I've simulated phase three two hundred times and
+I still can't predict your face." Decline is a null session, no penalty to the model — "good
+hypotheses always keep."
+
+### night — controlled conditions (heat 5/5, gate: rel ≥ 3 + `emily.romance` + `emily.desire` + `loc.private`)
+She locks the door, checks it twice, then removes her glasses — "the most naked thing you
+have ever watched anyone do." Consent is *formally administered*, in character, as a final
+checkpoint. The scene's engine is her narration failing: she annotates right up to the point
+where vocabulary goes nonverbal, and the woman who survived Ward C by never losing the
+thread of her own sentence loses it gladly, on purpose. The Ward C inch-she-kept motif
+turns over at the peak: *"the inch I kept — I'm giving it to you."* Aftermath delivers her
+finding ("effect size: frankly embarrassing; replication: required, extensively"). Sets
+`emily.night`, fires `romance_consummated`. Decline branch: the longitudinal conversational
+study, falling asleep mid-sentence — zero cost.
+
+### afterglow — day one of the long study (gate: `emily.night`, once)
+0400, his shirt, her slate: she's writing it up. One visible line — "Day one of the long
+study" — and a formal amendment: lifetime, subject to his review. Accepting it makes her
+close the slate *without saving*, the most out-of-character act of trust she has. The other
+branch births "item four," a running private code the banter pool then pays off.
 
 ### infected_lost — Oracle seed
 The narration with the inch gone: "the subject understood the mechanism completely, and the
 understanding changed nothing. Isn't that the cruelest finding in the file?"
 
-## Flags: `emily.met / .interrupted / .told_cradle / .sq_active / .sq_solo_risk / .sq_done / .romance / .romance_declined` · Globals set: `cradle.known`, `harvest.known`
+## Flags: `emily.met / .interrupted / .told_cradle / .sq_active / .sq_solo_risk / .sq_done / .romance / .romance_declined / .desire / .night / .afterglow` · Globals set: `cradle.known`, `harvest.known` · Host flag read: `loc.private`
+
+## Banter (romance-gated additions)
+Six new lines: the eleven-seconds-of-blind-spot line (she does not elaborate; her ears
+elaborate), hand-holding-improves-my-aim, the observer-effect walk complaint, the
+fudged-odds-left-the-error-in confession, "Item four," and the unexplained-anomalies list
+("you're on it four times — twice for last night alone").
