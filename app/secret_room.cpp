@@ -283,6 +283,14 @@ void SecretRoom::build(Scene& scene, x3::rhi::IRenderDevice& device,
         if (v != kSecretRoomCode) return false;            // reject any other code
         if (hatchIdx == kNoLink || hatchIdx >= dptr->count()) return false;
         Door& hatch = dptr->at(hatchIdx);
+        // IDEMPOTENT ACCEPT: the D14 scripts/secret_room.lua path reacts to the
+        // fired terminal_code BEFORE submit() runs this sink (see main.cpp
+        // submitTerminalToScripts), so the hatch may already be Opening/Open.
+        // The correct code must still read ACCEPTED — without this the live
+        // terminal showed [REJECTED] on the right code whenever the script won
+        // the race (caught by --test-hatch C8).
+        if (hatch.state == DoorState::Opening || hatch.state == DoorState::Open)
+            return true;
         bool opened = dptr->unlockAndOpen(hatch);          // unlock + start the slide
         if (opened)
             x3::logInfo("[secret] override code accepted — cell trapdoor opening");

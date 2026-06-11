@@ -47,6 +47,7 @@
 #include "glass_test.h"                      // translucent-glass material (--test-glass)
 #include "holo_terminal.h"                  // Jake's cell holographic terminal (text + input)
 #include "secret_room.h"                    // code-locked trapdoor -> stocked secret room
+#include "headless_device.h"                // shared no-op IRenderDevice (--test-hatch)
 #include "engine/ecs/Ecs.h"                 // sparse-set ECS core (10k+ entities)
 #include "ecs_render.h"                     // ECS -> GPU-driven render feed
 #include "spire_mid.h"                      // EFLZ Spire F3/F4/F5 mid-floor content
@@ -1154,6 +1155,308 @@ private:
 };
 } // namespace
 
+// ===========================================================================
+// D14 SCRIPT BOOT + GAME BINDINGS — factored so the headless --test-hatch chain
+// self-test below exercises the IDENTICAL script loading + binding registration
+// the live game boots with (NOT duplicated lambdas that could drift).
+// ===========================================================================
+
+// Load every scripts/*.lua found under the asset root (or repo root) into the
+// script system — the exact boot-load the app performs. Returns count loaded.
+static int loadBootScripts(x3::script::IScriptSystem& scripts) {
+    namespace fs = std::filesystem;
+    std::error_code sec;
+    // scripts/ lives at the repo root (peer to assets/). Resolve via the
+    // asset root's parent, then fall back to ./scripts for repo-root runs.
+    const fs::path candidates[] = {
+        fs::path(x3::game::assetRoot()).parent_path() / "scripts",
+        fs::path("scripts"),
+    };
+    int loaded = 0;
+    for (const fs::path& dir : candidates) {
+        if (!fs::is_directory(dir, sec)) continue;
+        for (const auto& ent : fs::directory_iterator(dir, sec)) {
+            if (!ent.is_regular_file() || ent.path().extension() != ".lua") continue;
+            std::ifstream f(ent.path(), std::ios::binary);
+            if (!f) continue;
+            std::string src((std::istreambuf_iterator<char>(f)),
+                            std::istreambuf_iterator<char>());
+            const std::string name = ent.path().filename().string();
+            if (scripts.load(name, src) != x3::script::kInvalidScript) ++loaded;
+        }
+        break; // first existing scripts dir wins
+    }
+    return loaded;
+}
+
+// D14 trigger/objective bindings (app-side, per the D14 handoff: the engine
+// ships a generic registerFunction(); the APP wires the real game systems here
+// so engine/ never learns about doors/objectives). A SMALL, focused surface —
+// just the trigger/secret-room mechanic. `game` (the Level1Game) owns the
+// objective HUD line, the DoorSystem (doors A-E + the secret-room floor hatch),
+// and the secret room. Captured by pointer; these are only called during
+// scripts->update()/fire() while `game` is alive.
+static void registerGameBindings(x3::script::IScriptSystem& scripts,
+                                 x3::game::Level1Game& game) {
+    using x3::script::ScriptValue;
+    x3::game::Level1Game* gp = &game;
+
+    // x3.setObjective(text) -> the GTA-style under-minimap objective line.
+    scripts.registerFunction("setObjective",
+        [gp](const std::vector<ScriptValue>& a) -> ScriptValue {
+            if (!a.empty()) gp->objectives().setText(a[0].asString());
+            return ScriptValue();
+        });
+
+    // x3.openDoor(id) / x3.closeDoor(id) -> the DoorSystem by door index.
+    // Idempotent (startOpening/toggle no-op when already in that state).
+    scripts.registerFunction("openDoor",
+        [gp](const std::vector<ScriptValue>& a) -> ScriptValue {
+            if (a.empty()) return ScriptValue(false);
+            uint32_t i = (uint32_t)a[0].asInt();
+            if (i >= gp->doors().count()) return ScriptValue(false);
+            x3::game::Door& d = gp->doors().at(i);
+            gp->doors().unlock(d);                 // scripted opens bypass the lock
+            return ScriptValue(gp->doors().startOpening(d));
+        });
+    scripts.registerFunction("closeDoor",
+        [gp](const std::vector<ScriptValue>& a) -> ScriptValue {
+            if (a.empty()) return ScriptValue(false);
+            uint32_t i = (uint32_t)a[0].asInt();
+            if (i >= gp->doors().count()) return ScriptValue(false);
+            x3::game::Door& d = gp->doors().at(i);
+            // toggle() only closes an open door; refuse if already closed/closing.
+            if (d.state == x3::game::DoorState::Closed ||
+                d.state == x3::game::DoorState::Closing) return ScriptValue(false);
+            return ScriptValue(gp->doors().toggle(d));
+        });
+    // x3.setDoorState(id, open) -> explicit open/close (convenience over the two above).
+    scripts.registerFunction("setDoorState",
+        [gp](const std::vector<ScriptValue>& a) -> ScriptValue {
+            if (a.size() < 2) return ScriptValue(false);
+            uint32_t i = (uint32_t)a[0].asInt();
+            if (i >= gp->doors().count()) return ScriptValue(false);
+            x3::game::Door& d = gp->doors().at(i);
+            if (a[1].asBool()) { gp->doors().unlock(d); return ScriptValue(gp->doors().startOpening(d)); }
+            if (d.state == x3::game::DoorState::Closed ||
+                d.state == x3::game::DoorState::Closing) return ScriptValue(false);
+            return ScriptValue(gp->doors().toggle(d));
+        });
+
+    // x3.openTrapdoor() -> the secret-room floor hatch (DoorSpec.floorHatch).
+    // The hatch lives in the same DoorSystem; index from the secret room. The
+    // id arg is optional/ignored (there's one hatch); accepted for symmetry.
+    scripts.registerFunction("openTrapdoor",
+        [gp](const std::vector<ScriptValue>&) -> ScriptValue {
+            if (!gp->secret().hatchBuilt()) return ScriptValue(false);
+            uint32_t i = gp->secret().hatchDoorIndex();
+            if (i >= gp->doors().count()) return ScriptValue(false);
+            x3::game::Door& d = gp->doors().at(i);
+            gp->doors().unlock(d);
+            return ScriptValue(gp->doors().startOpening(d));
+        });
+
+    x3::logInfo("D14 script bindings: setObjective/openDoor/closeDoor/"
+                "setDoorState/openTrapdoor wired to Level1Game");
+}
+
+// The cell-terminal Enter glue: fire the typed code INTO Lua before submit()
+// clears the input line (scripts/secret_room.lua listens for terminal_code and
+// on the secret code calls x3.openTrapdoor()+x3.setObjective()), then run the
+// terminal's own submit sink (idempotent with the script). Factored so the
+// in-game Enter handler and --test-hatch run the SAME keypad->fire link.
+static bool submitTerminalToScripts(x3::script::IScriptSystem* scripts,
+                                    x3::game::HoloTerminal& term) {
+    const std::string entered = term.input();
+    if (scripts) scripts->fire("terminal_code", {{"code", entered}});
+    return term.submit();   // fires the sink -> opens the trapdoor on the code
+}
+
+// ===========================================================================
+// --test-hatch : END-TO-END secret-hatch chain self-test (headless, no mocks).
+// Every link of Tim's terminal-code -> trapdoor chain was verified in isolation
+// (--test-script, --test-secretroom, --test-holoterm); THIS asserts the FULL
+// chain in one automated run on the REAL pieces:
+//   real Level1Game world  +  boot-loaded scripts/secret_room.lua  +  the SAME
+//   registerGameBindings() the live game wires  +  the SAME
+//   submitTerminalToScripts() Enter glue the in-game cell terminal runs.
+// Checks (C1-C8):
+//   C1 boot: scripts/*.lua load; secret_room.lua healthy (not quarantined)
+//   C2 the hatch starts LOCKED + Closed (floor hatch in the real DoorSystem)
+//   C3 NEGATIVE: fire("terminal_code", code=9999) -> hatch stays Closed+locked,
+//      objective override untouched
+//   C4 POSITIVE: fire("terminal_code", code=1278) -> Lua -> x3.openTrapdoor()
+//      -> the REAL DoorSystem hatch is Opening, and reaches Open under tick()
+//   C5 Lua x3.setObjective() -> the ObjectiveSystem override line == the
+//      script's authored string
+//   C6 trigger_enter plumbing: walk the player into a REAL L1 trigger and
+//      forward game.lastFiredTriggers() exactly as the main loop does ->
+//      scripts receive it, nothing quarantined
+//   C7 KEYPAD NEGATIVE (fresh world+scripts): type 9999 on the REAL cell
+//      HoloTerminal -> Enter glue -> rejected, hatch stays Closed
+//   C8 KEYPAD POSITIVE: type 1278 (with a typo + backspace) -> Enter glue ->
+//      hatch opens AND the Lua objective line is set. ONLY the script writes
+//      the objective override (the C++ submit sink does not), so this PROVES
+//      the keypad -> fire -> Lua link, not just the C++ sink.
+// ===========================================================================
+static bool runHatchChainSelfTest() {
+    int pass = 0, fail = 0;
+    auto check = [&](bool c, const char* name) {
+        if (c) { ++pass; x3::logInfo(std::string("[hatch-test] PASS ") + name); }
+        else   { ++fail; x3::logError(std::string("[hatch-test] FAIL ") + name); }
+    };
+    constexpr float kDt = 1.0f / 60.0f;
+    const char* kObjectiveLine = "A hatch grinds open in the cell floor... drop through";
+
+    // secret_room.lua healthy (loaded, not quarantined by a Lua error)?
+    auto scriptHealthy = [](x3::script::IScriptSystem& sys, const char* name) {
+        for (x3::script::ScriptId id : sys.loadedScripts()) {
+            x3::script::ScriptStatus st = sys.status(id);
+            if (st.name == name) return st.loaded && !st.failed;
+        }
+        return false;
+    };
+
+    // ---- World 1: the fire()-onward chain. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+        physics->init();
+        x3::game::HeadlessRenderDevice device;
+        x3::game::Scene scene;
+        x3::game::Level1Game game;
+        game.setDevice(device);
+        game.build(scene, device, *physics, /*modelDir*/"");
+
+        std::unique_ptr<x3::script::IScriptSystem> scripts(
+            x3::script::createLuaScriptSystem(nullptr));
+        const int loaded = loadBootScripts(*scripts);
+        registerGameBindings(*scripts, game);
+
+        // C1: the real scripts/ dir boot-loaded; secret_room.lua healthy.
+        check(loaded >= 1 && scriptHealthy(*scripts, "secret_room.lua"),
+              "C1 boot-load scripts/ — secret_room.lua loaded + healthy");
+
+        // C2: the hatch starts LOCKED + Closed.
+        const uint32_t hi = game.secret().hatchDoorIndex();
+        bool hatchOk = game.secret().hatchBuilt() && hi < game.doors().count();
+        {
+            const x3::game::Door& h = game.doors().at(hi);
+            check(hatchOk && h.locked && h.floorHatch &&
+                  h.state == x3::game::DoorState::Closed,
+                  "C2 hatch starts LOCKED + Closed (floor hatch)");
+        }
+
+        // C3 NEGATIVE: a wrong code through the full event path leaves it shut.
+        scripts->fire("terminal_code", {{"code", "9999"}});
+        scripts->update(kDt);
+        {
+            const x3::game::Door& h = game.doors().at(hi);
+            check(h.locked && h.state == x3::game::DoorState::Closed &&
+                  game.objectives().overrideText().empty(),
+                  "C3 wrong code 9999 -> hatch stays LOCKED+Closed, objective untouched");
+        }
+
+        // C4 POSITIVE: the secret code -> Lua -> openTrapdoor -> REAL DoorSystem.
+        scripts->fire("terminal_code", {{"code", x3::game::kSecretRoomCode}});
+        scripts->update(kDt);
+        {
+            const x3::game::Door& h = game.doors().at(hi);
+            bool opening = !h.locked && (h.state == x3::game::DoorState::Opening ||
+                                         h.state == x3::game::DoorState::Open);
+            // Pump the real game tick so the DoorSystem animates the slide to Open.
+            const x3::phys::Vec3 spawn = game.layout().spawn;
+            for (int i = 0; i < 120; ++i) {
+                game.tick(kDt, scene, *physics, spawn, spawn);
+                physics->step(kDt);
+                scene.update(*physics);
+                scripts->update(kDt);
+            }
+            check(opening && game.doors().at(hi).state == x3::game::DoorState::Open,
+                  "C4 code 1278 -> Lua openTrapdoor -> hatch Opening -> Open");
+        }
+
+        // C5: the script's objective line landed on the real ObjectiveSystem.
+        check(game.objectives().overrideText() == kObjectiveLine,
+              "C5 Lua setObjective -> objective override == script string");
+
+        // C6: trigger_enter plumbing — walk into the REAL strength trigger and
+        // forward lastFiredTriggers() exactly as the main loop does.
+        {
+            const x3::phys::Vec3 trigPos{ 1.5f, 0.05f, -1.8f };   // beat-1 strength trigger
+            int forwarded = 0;
+            for (int i = 0; i < 4; ++i) {
+                game.tick(kDt, scene, *physics, trigPos, trigPos);
+                for (uint32_t tid : game.lastFiredTriggers()) {
+                    scripts->fire("trigger_enter",
+                        {{"zone", std::to_string(tid)}, {"who", "player"}});
+                    ++forwarded;
+                }
+                physics->step(kDt);
+                scene.update(*physics);
+            }
+            scripts->update(kDt);
+            check(forwarded >= 1 && scriptHealthy(*scripts, "secret_room.lua"),
+                  "C6 real L1 trigger_enter forwarded to scripts — no quarantine");
+        }
+
+        physics->shutdown();
+    }
+
+    // ---- World 2 (fresh latch): the KEYPAD link — the real HoloTerminal typed
+    // input driven through the SAME Enter glue the in-game handler runs. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+        physics->init();
+        x3::game::HeadlessRenderDevice device;
+        x3::game::Scene scene;
+        x3::game::Level1Game game;
+        game.setDevice(device);
+        game.build(scene, device, *physics, /*modelDir*/"");
+
+        std::unique_ptr<x3::script::IScriptSystem> scripts(
+            x3::script::createLuaScriptSystem(nullptr));
+        loadBootScripts(*scripts);
+        registerGameBindings(*scripts, game);
+
+        const uint32_t hi = game.secret().hatchDoorIndex();
+        x3::game::HoloTerminal& term = game.secret().terminal();
+        term.setActive(true);   // the in-game termMode flow activates the field
+
+        // C7 KEYPAD NEGATIVE: type a wrong code, Enter -> rejected, hatch shut.
+        for (char c : std::string("9999")) term.pushChar(c);
+        bool acceptedWrong = submitTerminalToScripts(scripts.get(), term);
+        scripts->update(kDt);
+        check(!acceptedWrong &&
+              game.doors().at(hi).state == x3::game::DoorState::Closed &&
+              game.doors().at(hi).locked &&
+              game.objectives().overrideText().empty(),
+              "C7 keypad 9999 + Enter -> rejected, hatch stays LOCKED+Closed");
+
+        // C8 KEYPAD POSITIVE: type the code (with a typo fixed by backspace),
+        // Enter -> the hatch opens AND the Lua objective landed (proving the
+        // keypad -> fire -> Lua link: only the script writes the override).
+        term.pushChar('1'); term.pushChar('2'); term.pushChar('9');
+        term.backspace();   // ...typo corrected
+        term.pushChar('7'); term.pushChar('8');
+        bool accepted = submitTerminalToScripts(scripts.get(), term);
+        scripts->update(kDt);
+        {
+            const x3::game::Door& h = game.doors().at(hi);
+            bool opening = !h.locked && (h.state == x3::game::DoorState::Opening ||
+                                         h.state == x3::game::DoorState::Open);
+            check(accepted && opening &&
+                  game.objectives().overrideText() == kObjectiveLine,
+                  "C8 keypad 1278 + Enter -> hatch opens + Lua objective set");
+        }
+
+        physics->shutdown();
+    }
+
+    x3::logInfo("[hatch-test] " + std::to_string(pass) + " passed, " +
+                std::to_string(fail) + " failed");
+    return fail == 0;
+}
+
 int main(int argc, char** argv) {
     bool smoketest = false, testAsset = false, testConsole = false, testPhysics = false,
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
@@ -1169,7 +1472,12 @@ int main(int argc, char** argv) {
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
-         testThirdPerson = false, testHatchCode = false;
+         testThirdPerson = false, testHatchCode = false,
+         // --test-hatch: END-TO-END secret-hatch chain (terminal_code fire ->
+         // boot-loaded secret_room.lua -> registerGameBindings openTrapdoor ->
+         // REAL Level1Game DoorSystem hatch opens + objective line set; plus the
+         // keypad submit link via the real HoloTerminal). See runHatchChainSelfTest.
+         testHatch = false;
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1563,6 +1871,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-oceanbase") testOceanBase = true;
         else if (a == "--test-doorcode") testDoorCode = true;
         else if (a == "--test-hatchcode") testHatchCode = true;
+        else if (a == "--test-hatch") testHatch = true;
         else if (a == "--test-elevator") testElevator = true;
         else if (a == "--test-elevatorfsm") testElevatorFsm = true;
         else if (a == "--test-net") testNet = true;
@@ -1851,6 +2160,12 @@ int main(int argc, char** argv) {
     if (testSecretRoom) {
         x3::logInfo("running secret-room (code-locked trapdoor) self-test...");
         return x3::game::runSecretRoomSelfTest() ? 0 : 1;
+    }
+    if (testHatch) {
+        x3::logInfo("running END-TO-END secret-hatch chain self-test "
+                    "(terminal -> fire(terminal_code) -> secret_room.lua -> "
+                    "openTrapdoor -> REAL DoorSystem hatch + objective; C1-C8)...");
+        return runHatchChainSelfTest() ? 0 : 1;
     }
     if (testEcs) {
         x3::logInfo("running ECS (sparse-set, 50k entities) self-test...");
@@ -7675,102 +7990,13 @@ int main(int argc, char** argv) {
     // scripts dir exists this is a no-op and the engine runs unchanged.
     std::unique_ptr<x3::script::IScriptSystem> scripts(
         x3::script::createLuaScriptSystem(console.get()));
-    {
-        namespace fs = std::filesystem;
-        std::error_code sec;
-        // scripts/ lives at the repo root (peer to assets/). Resolve via the
-        // asset root's parent, then fall back to ./scripts for repo-root runs.
-        const fs::path candidates[] = {
-            fs::path(x3::game::assetRoot()).parent_path() / "scripts",
-            fs::path("scripts"),
-        };
-        int loaded = 0;
-        for (const fs::path& dir : candidates) {
-            if (!fs::is_directory(dir, sec)) continue;
-            for (const auto& ent : fs::directory_iterator(dir, sec)) {
-                if (!ent.is_regular_file() || ent.path().extension() != ".lua") continue;
-                std::ifstream f(ent.path(), std::ios::binary);
-                if (!f) continue;
-                std::string src((std::istreambuf_iterator<char>(f)),
-                                std::istreambuf_iterator<char>());
-                const std::string name = ent.path().filename().string();
-                if (scripts->load(name, src) != x3::script::kInvalidScript) ++loaded;
-            }
-            break; // first existing scripts dir wins
-        }
-        x3::logInfo("D14 script system: loaded " + std::to_string(loaded) +
-                    " scripts/*.lua at boot");
-    }
+    x3::logInfo("D14 script system: loaded " + std::to_string(loadBootScripts(*scripts)) +
+                " scripts/*.lua at boot");
 
-    // ---- D14 trigger/objective bindings (app-side, per the D14 handoff: the
-    // engine ships a generic registerFunction(); the APP wires the real game
-    // systems here so engine/ never learns about doors/objectives). A SMALL,
-    // focused surface — just the trigger/secret-room mechanic. `game` (the
-    // Level1Game) owns the objective HUD line, the DoorSystem (doors A-E + the
-    // secret-room floor hatch), and the secret room. Captured by ref; these are
-    // only called during scripts->update()/fire() while `game` is alive.
-    {
-        using x3::script::ScriptValue;
-        x3::game::Level1Game* gp = &game;
-
-        // x3.setObjective(text) -> the GTA-style under-minimap objective line.
-        scripts->registerFunction("setObjective",
-            [gp](const std::vector<ScriptValue>& a) -> ScriptValue {
-                if (!a.empty()) gp->objectives().setText(a[0].asString());
-                return ScriptValue();
-            });
-
-        // x3.openDoor(id) / x3.closeDoor(id) -> the DoorSystem by door index.
-        // Idempotent (startOpening/toggle no-op when already in that state).
-        scripts->registerFunction("openDoor",
-            [gp](const std::vector<ScriptValue>& a) -> ScriptValue {
-                if (a.empty()) return ScriptValue(false);
-                uint32_t i = (uint32_t)a[0].asInt();
-                if (i >= gp->doors().count()) return ScriptValue(false);
-                x3::game::Door& d = gp->doors().at(i);
-                gp->doors().unlock(d);                 // scripted opens bypass the lock
-                return ScriptValue(gp->doors().startOpening(d));
-            });
-        scripts->registerFunction("closeDoor",
-            [gp](const std::vector<ScriptValue>& a) -> ScriptValue {
-                if (a.empty()) return ScriptValue(false);
-                uint32_t i = (uint32_t)a[0].asInt();
-                if (i >= gp->doors().count()) return ScriptValue(false);
-                x3::game::Door& d = gp->doors().at(i);
-                // toggle() only closes an open door; refuse if already closed/closing.
-                if (d.state == x3::game::DoorState::Closed ||
-                    d.state == x3::game::DoorState::Closing) return ScriptValue(false);
-                return ScriptValue(gp->doors().toggle(d));
-            });
-        // x3.setDoorState(id, open) -> explicit open/close (convenience over the two above).
-        scripts->registerFunction("setDoorState",
-            [gp](const std::vector<ScriptValue>& a) -> ScriptValue {
-                if (a.size() < 2) return ScriptValue(false);
-                uint32_t i = (uint32_t)a[0].asInt();
-                if (i >= gp->doors().count()) return ScriptValue(false);
-                x3::game::Door& d = gp->doors().at(i);
-                if (a[1].asBool()) { gp->doors().unlock(d); return ScriptValue(gp->doors().startOpening(d)); }
-                if (d.state == x3::game::DoorState::Closed ||
-                    d.state == x3::game::DoorState::Closing) return ScriptValue(false);
-                return ScriptValue(gp->doors().toggle(d));
-            });
-
-        // x3.openTrapdoor() -> the secret-room floor hatch (DoorSpec.floorHatch).
-        // The hatch lives in the same DoorSystem; index from the secret room. The
-        // id arg is optional/ignored (there's one hatch); accepted for symmetry.
-        scripts->registerFunction("openTrapdoor",
-            [gp](const std::vector<ScriptValue>&) -> ScriptValue {
-                if (!gp->secret().hatchBuilt()) return ScriptValue(false);
-                uint32_t i = gp->secret().hatchDoorIndex();
-                if (i >= gp->doors().count()) return ScriptValue(false);
-                x3::game::Door& d = gp->doors().at(i);
-                gp->doors().unlock(d);
-                return ScriptValue(gp->doors().startOpening(d));
-            });
-
-        x3::logInfo("D14 script bindings: setObjective/openDoor/closeDoor/"
-                    "setDoorState/openTrapdoor wired to Level1Game");
-    }
+    // D14 trigger/objective bindings — factored into registerGameBindings() (shared
+    // verbatim with the headless --test-hatch chain self-test, so the test proves
+    // the SAME bindings the live game wires; see the function above main()).
+    registerGameBindings(*scripts, game);
 
     // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
     // render path so the BLAS/TLAS build + ray-query AO compute + apply passes are
@@ -9267,14 +9493,11 @@ int main(int argc, char** argv) {
             tmBackPrev = tbackNow;
             bool tEnterNow = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
             if (tEnterNow && !tmEnterPrev) {
-                // D14: fire the entered code INTO Lua before submit() clears the
-                // input line. scripts/secret_room.lua listens for terminal_code and
-                // (on the secret code) calls x3.openTrapdoor()+x3.setObjective() —
-                // proving the terminal->trapdoor mechanic can live in a pak as DATA.
-                // The C++ submit sink below still runs (idempotent with the script).
-                const std::string entered = term.input();
-                if (scripts) scripts->fire("terminal_code", {{"code", entered}});
-                bool ok = term.submit();   // fires the sink -> opens the trapdoor on 1127
+                // D14: fire the entered code INTO Lua, then run the terminal's own
+                // submit sink — via submitTerminalToScripts() (factored above main(),
+                // shared with --test-hatch so the keypad->fire link is the SAME code
+                // the headless chain self-test proves).
+                bool ok = submitTerminalToScripts(scripts.get(), term);
                 if (ok) { termMode = false; term.setActive(false);
                           x3::logInfo("terminal: code ACCEPTED — trapdoor opening"); }
                 else      x3::logInfo("terminal: code rejected");
