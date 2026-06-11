@@ -1282,6 +1282,8 @@ int main(int argc, char** argv) {
     // through the REAL loader on the live device, render the room, capture a PNG.
     bool        loaderShot = false;
     std::string loaderShotPath = "build/proof/loader_room.png";
+    // --set <cvar> <value> pairs, applied right after console cvar registration.
+    std::vector<std::pair<std::string, std::string>> cliCVars;
     // --screenshot-perfshop [dir]: headless PERFORMANCE-SHOP proofs — boot the
     // drive world, build the shop, set the car on the lift, capture the bay
     // (car on lift + neon sign), the PARTS terminal, and the DYNO mid-pull into
@@ -1752,6 +1754,12 @@ int main(int argc, char** argv) {
         else if (a == "--screenshot-perfshop") {
             perfshopShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') perfshopShotDir = argv[++i];
+        }
+        else if (a == "--set") {
+            // Generic CLI cvar override: --set <cvar> <value> (repeatable).
+            // Applied right after the console registers its cvars — the headless
+            // A/B debugging workhorse (e.g. --set r_rtreflections 0).
+            if (i + 2 < argc) { cliCVars.emplace_back(argv[i+1], argv[i+2]); i += 2; }
         }
         else if (a == "--test-footik") testFootIk = true;
         else if (a == "--test-ui") testUi = true;
@@ -5061,8 +5069,13 @@ int main(int argc, char** argv) {
 
         // ===== Headless PERFORMANCE-SHOP proofs (--screenshot-perfshop <dir>). ==
         // Car posed on the lift, shop mode on: bay (car + neon sign), PARTS
-        // terminal close-up, DYNO mid-pull. Run with --legacypost (the default
-        // post stack renders BLACK headless in this world path — pre-existing).
+        // terminal close-up, DYNO mid-pull. Works on the FULL default post stack
+        // (the refl.comp NaN/INF guard + radiance cap bounded the reflection->TAA
+        // history feedback loop that used to drive this world path to black).
+        // NOTE: the PLAIN `--world drive --screenshot` chase shot (sun-facing cam
+        // on the clearcoat car over STREAMED tiles) can still go black
+        // INTERMITTENTLY with the RT reflection fallback on — race-shaped,
+        // pre-existing; --legacypost (or --notaa/--norefl) sidesteps it there.
         if (perfshopShot) {
             if (!shopBuilt) {
                 x3::logError("--screenshot-perfshop: shop build failed");
@@ -8708,6 +8721,13 @@ int main(int argc, char** argv) {
     // and vm_fwd/vm_right/vm_down (m); read them each frame and feed the pose to
     // drawViewmodel so typing e.g. `vm_pitch 10` moves the held gun immediately.
     registerViewmodelCVars(*console);
+
+    // --set <cvar> <value> CLI overrides (repeatable) — applied as soon as the
+    // console exists so the per-frame cvar sync starts from the requested state.
+    for (const auto& kv : cliCVars) {
+        console->set(kv.first, kv.second);
+        x3::logInfo("--set " + kv.first + " " + kv.second);
+    }
 
     // --legacypost / --notaa: pin the matching cvars so the per-frame cvar->device
     // sync (applyRtaoCVars) keeps the A/B state instead of re-enabling defaults.
