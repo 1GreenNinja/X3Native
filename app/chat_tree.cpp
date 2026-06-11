@@ -158,6 +158,33 @@ struct JParser {
     }
 };
 
+// ASCII-fold display text: the HUD font atlas is ASCII-only, but the authored
+// trees carry literal UTF-8 (em-dashes, curly quotes, ellipses). Fold the
+// common punctuation to ASCII equivalents and drop anything else multi-byte so
+// no line ever renders as "???". Applied at LOAD time to display strings only
+// (ids/flags are ASCII by construction).
+std::string asciiFold(const std::string& in) {
+    std::string out;
+    out.reserve(in.size());
+    for (size_t i = 0; i < in.size();) {
+        const unsigned char c = (unsigned char)in[i];
+        if (c < 0x80) { out += (char)c; ++i; continue; }
+        // Decode the UTF-8 sequence length.
+        size_t len = (c >= 0xF0) ? 4 : (c >= 0xE0) ? 3 : 2;
+        if (i + len > in.size()) break;
+        const std::string seq = in.substr(i, len);
+        if      (seq == "\xE2\x80\x94" || seq == "\xE2\x80\x93") out += " - "; // em/en dash
+        else if (seq == "\xE2\x80\x99" || seq == "\xE2\x80\x98") out += '\'';  // curly single
+        else if (seq == "\xE2\x80\x9C" || seq == "\xE2\x80\x9D") out += '"';   // curly double
+        else if (seq == "\xE2\x80\xA6") out += "...";                          // ellipsis
+        else if (seq == "\xC3\xA9") out += 'e';                                // é
+        // anything else multi-byte: dropped (better absent than "???")
+        i += len;
+    }
+    return out;
+}
+
+
 // ---------------------------------------------------------------------------
 // Cond / fx parsing from JValues (the closed spec-§3 vocabulary).
 // ---------------------------------------------------------------------------
@@ -321,7 +348,7 @@ bool parseNode(const JValue& jv, ChatNode& out, std::vector<std::string>& errors
     out.id = jv.find("id") ? jv.find("id")->asStr() : "";
     if (out.id.empty()) { errors.push_back(where + ": node missing `id`"); ok = false; }
     const std::string nw = where + "." + out.id;
-    out.line     = jv.find("line")    ? jv.find("line")->asStr()    : "";
+    out.line     = jv.find("line")    ? asciiFold(jv.find("line")->asStr()) : "";
     out.speaker  = jv.find("speaker") ? jv.find("speaker")->asStr() : "";
     out.next     = jv.find("next")    ? jv.find("next")->asStr()    : "";
     out.elseNode = jv.find("else")    ? jv.find("else")->asStr()    : "";
@@ -336,7 +363,7 @@ bool parseNode(const JValue& jv, ChatNode& out, std::vector<std::string>& errors
             ChatChoice cc;
             const std::string cw = nw + ".c" + std::to_string(ci++);
             if (!c.isObj()) { errors.push_back(cw + ": choice is not an object"); ok = false; continue; }
-            cc.text = c.find("text") ? c.find("text")->asStr() : "";
+            cc.text = c.find("text") ? asciiFold(c.find("text")->asStr()) : "";
             cc.next = c.find("next") ? c.find("next")->asStr() : "";
             if (cc.text.empty()) { errors.push_back(cw + ": choice missing `text`"); ok = false; }
             if (cc.next.empty()) { errors.push_back(cw + ": choice missing `next`"); ok = false; }
@@ -369,7 +396,7 @@ bool parseTree(const std::string& name, const JValue& jv, ChatTree& out,
             ChatBanter bl;
             const std::string bw = where + ".pool" + std::to_string(bi++);
             if (!b.isObj()) { errors.push_back(bw + ": banter entry is not an object"); ok = false; continue; }
-            bl.line = b.find("line") ? b.find("line")->asStr() : "";
+            bl.line = b.find("line") ? asciiFold(b.find("line")->asStr()) : "";
             if (bl.line.empty()) { errors.push_back(bw + ": banter missing `line`"); ok = false; }
             if (const JValue* w = b.find("weight")) bl.weight = std::max(1, (int)w->num);
             if (const JValue* o = b.find("once"))   bl.once = o->b;
@@ -972,7 +999,13 @@ void drawChatTreeUi(x3::rhi::IRenderDevice& device,
 
     const std::string& speaker = sys.currentSpeaker();
     const std::vector<ChatChoice>& choices = sys.choices();
-    const std::vector<std::string> rows = wrapText(sys.currentLine(), 88, 5);
+    // Char budgets measured against the REAL font: average advance of a sample
+    // string at the line size vs the panel's usable width — wraps never overflow.
+    const float avgChar = device.textAdvance(x3::rhi::FontRole::Menu,
+                              "the quick brown fox jumps over it", 24.0f) / 33.0f;
+    const size_t lineBudget   = (size_t)std::max(20.0f, (boxW - 56.0f)  / std::max(avgChar, 1.0f));
+    const size_t choiceBudget = (size_t)std::max(20.0f, (boxW - 110.0f) / (std::max(avgChar, 1.0f) * (22.0f / 24.0f)));
+    const std::vector<std::string> rows = wrapText(sys.currentLine(), lineBudget, 6);
 
     // Panel height: header + line rows + choice rows + hint.
     const float lineH = 30.0f, choiceH = 28.0f;
@@ -1020,7 +1053,7 @@ void drawChatTreeUi(x3::rhi::IRenderDevice& device,
         const uint32_t shown = std::min<uint32_t>((uint32_t)choices.size(), 4u);
         for (uint32_t i = 0; i < shown; ++i) {
             const std::string num = std::to_string(i + 1) + ".";
-            const std::vector<std::string> crow = wrapText(choices[i].text, 84, 1);
+            const std::vector<std::string> crow = wrapText(choices[i].text, choiceBudget, 1);
             const std::string& ctext = crow.empty() ? choices[i].text : crow[0];
             device.drawHudTextF(frame, x3::rhi::FontRole::Menu, num.c_str(),
                                 boxX + 32.0f + 1.5f, ty + 1.5f, 22.0f, shadow);
