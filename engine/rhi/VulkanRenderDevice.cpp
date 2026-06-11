@@ -7140,6 +7140,12 @@ private:
         writeWaterDescriptors();
         // Particles sample the scene depth (soft fade): rewire on the new depth view.
         writeParticleDescriptors();
+        // RT AO (if built): the half-res target tracks the extent AND its compute +
+        // apply sets reference the depth view destroyed/recreated above — recreate
+        // + rewrite, exactly like the windowed recreateSwapchain() path. (Missing
+        // this was a live VUID-08114 source: the headless --test-rt mid-run
+        // recreate left the rtao sets on the destroyed depth view.)
+        if (m_rtaoBuilt) { createRtaoTargets(); writeRtaoDescriptors(); }
     }
 
     // ---- HDR scene + bloom render targets ----------------------------------
