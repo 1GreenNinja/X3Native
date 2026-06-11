@@ -1,0 +1,174 @@
+{
+  "format": "x3.chattree/1",
+  "npc": "aria",
+  "display": "ARIA",
+  "voice": "Aria",
+  "_bio": "Medical technician, Floor 2 Ward A. Night-shift med tech who noticed patients with no admission records and reported it — the report became her transfer order. She has nursed the aftermath of this program on other women; her horror is that she knows exactly what comes next. Healer companion. Full romance arc (Alpha/Omega).",
+  "trees": {
+
+    "first_meeting": {
+      "start": "fm0",
+      "nodes": [
+        { "id": "fm0",
+          "if": [ {"flag": "aria.interrupted"} ],
+          "else": "fm0_alt",
+          "line": "*she won't look at the thing you killed* Is it off me. Tell me it's off me. Don't describe it — yes or no.",
+          "choices": [
+            { "text": "It's dead. It's done. Look at me — just me.", "next": "fm1", "fx": [ {"karma": 2}, {"love": 2} ] },
+            { "text": "You're fine. Can you walk?", "next": "fm1b" },
+            { "text": "(say nothing — cut the restraints)", "next": "fm1c", "fx": [ {"love": 1} ] }
+          ],
+          "fx": [ {"set": "aria.met"} ]
+        },
+        { "id": "fm0_alt",
+          "line": "*flinching back against the gurney* You're... not one of them. You're not. Are you. I've been listening to the corridor for an hour deciding what your footsteps were.",
+          "choices": [
+            { "text": "Easy. I'm getting you out of here.", "next": "fm1", "fx": [ {"karma": 1} ] },
+            { "text": "Depends who 'they' are. Who are you?", "next": "fm1d" }
+          ],
+          "fx": [ {"set": "aria.met"} ]
+        },
+        { "id": "fm1",
+          "line": "*breathing out, ragged* Okay. Okay. I'm Aria — I'm staff. Was staff. Med tech, night rotation. I used to change the dressings on what comes after this room, so I need you to understand that I know precisely what you just stopped, and I am never going to be able to thank you in words.",
+          "next": "fm2" },
+        { "id": "fm1b",
+          "line": "I can walk. I've walked worse people than me out of worse rooms than this. *she stands, steadies on your arm for half a second, lets go fast* Aria. Med tech. Tell me where we're going so my legs have a job.",
+          "next": "fm2" },
+        { "id": "fm1c",
+          "line": "*she rubs her wrists, watching you work the last strap, voice very small* You didn't make me ask twice. Nobody here has ever... okay. Aria. I'm Aria. I'm with you.",
+          "next": "fm2", "fx": [ {"love": 1} ] },
+        { "id": "fm1d",
+          "line": "'They' wear my old ID badge colors, so let's say staff who stopped being people. I'm Aria. I filed one honest report in this building and woke up on this table. That's my whole resume now.",
+          "next": "fm2" },
+        { "id": "fm2",
+          "line": "Listen — there are others. Down the ward. I heard at least two doors after they sealed mine. If your math says you can't reach everyone... *she stops, swallows* ...I've done that math for other people. Don't ask me to do it for you.",
+          "choices": [
+            { "text": "I'm going for all of them.", "next": "fm3", "fx": [ {"karma": 3}, {"set": "aria.heard_promise"} ] },
+            { "text": "I save who I can reach. That's the truth.", "next": "fm3b", "fx": [ {"karma": 1} ] },
+            { "text": "You're the one in front of me. Move.", "next": "fm3c" }
+          ] },
+        { "id": "fm3",
+          "line": "Then I'm your medic and you're my miracle and we're wasting both standing here. *she grabs a trauma kit off the wall like she's done it a thousand times* Go. I patch whatever this place does to you for trying.",
+          "next": "fm4" },
+        { "id": "fm3b",
+          "line": "*a beat — then a nod that costs her something* That's the answer of someone who'll still be alive to carry people out. Fine. I'd rather follow honest math than a beautiful lie. Kit's on the wall — I'm taking it.",
+          "next": "fm4" },
+        { "id": "fm3c",
+          "line": "*quietly* Right. One foot, then the other. That's how the night shift gets through too. *she takes the trauma kit anyway, not asking permission* I'm bringing this. Someone always needs it.",
+          "next": "fm4" },
+        { "id": "fm4",
+          "line": "Stay where I can see your back. That's the part of you I can keep alive.",
+          "fx": [ {"follow": true}, {"rel": ["aria", 1]}, {"fire": "companion_joined", "args": {"npc": "aria"}} ],
+          "next": "end" }
+      ]
+    },
+
+    "banter": {
+      "pool": [
+        { "line": "Your breathing changes before a fight. I've started loading the kit when it does.", "if": [ {"rel_gte": ["aria", 1]} ] },
+        { "line": "I keep cataloguing exits. Old habit. The night shift teaches you every room is a trap that hasn't sprung yet.", "if": [ {"rel_gte": ["aria", 1]} ] },
+        { "line": "If you get hit, you tell me. You don't get to be stoic on my shift.", "if": [ {"rel_gte": ["aria", 1]} ], "weight": 2 },
+        { "line": "I knew three of the women in the morgue logs by their first names. When we're out, I'm saying all of them somewhere with sky.", "if": [ {"rel_gte": ["aria", 2]} ] },
+        { "line": "You sleep like you're standing watch on yourself. Tonight let me take an hour of it.", "if": [ {"rel_gte": ["aria", 3]} ] },
+        { "line": "I used to think being needed was the same as being safe. You're teaching me they can be the same thing for good reasons.", "if": [ {"rel_gte": ["aria", 3]} ] },
+        { "line": "Keisha says you're 'adequate in a firefight.' From her that's a wedding toast.", "if": [ {"girl_saved": "keisha"}, {"rel_gte": ["aria", 2]} ] },
+        { "line": "Emily showed me the numbers on what you interrupted. I asked her to never show me again. Then I memorized them anyway.", "if": [ {"girl_saved": "emily"}, {"rel_gte": ["aria", 2]} ] },
+        { "line": "*after the elevator, softly* That music it plays. Someone programmed that to keep people calm on the way down to this. Someone chose the key it's in.", "weight": 1 }
+      ]
+    },
+
+    "sidequest": {
+      "_hook": "THE MANIFEST — Aria's report named names: patients processed with no admission records. The original log still sits in the morgue-office terminal on F1's medical wing. Recover it: it is evidence (usable on Martinez), a memorial, and the thing they took her for.",
+      "start": "sq0",
+      "nodes": [
+        { "id": "sq0",
+          "if": [ {"rel_gte": ["aria", 1]}, {"not": {"flag": "aria.sq_done"}} ],
+          "line": "Jake. There's a thing I need and I've been deciding whether I'm allowed to ask. The morgue office, back on the detention level. Terminal three. There's a log in it — forty-one names of people this place processed who were never admitted. I wrote it. It's why I'm here. If it still exists... it's the only proof those people existed at all.",
+          "choices": [
+            { "text": "We'll get it. All forty-one of them come out of here with us.", "next": "sq1", "fx": [ {"karma": 3}, {"set": "aria.sq_active"} ] },
+            { "text": "Evidence like that has uses. I'm in.", "next": "sq1b", "fx": [ {"set": "aria.sq_active"} ] },
+            { "text": "It's paper. We're not dying for paper.", "next": "sq2" }
+          ] },
+        { "id": "sq1",
+          "line": "*she looks at you the way people look at weather breaking* You said 'with us.' Okay. Terminal three. My login might still work — they fired me into a cell, not out of the system.",
+          "next": "end" },
+        { "id": "sq1b",
+          "line": "Uses. Yes. Fine — I'll take 'leverage' if it gets them carried out of here. The dead don't care why they're remembered. *quieter* I care. But I'll take it.",
+          "next": "end" },
+        { "id": "sq2",
+          "line": "*level, very calm — the calm she does instead of crying* It's not paper. It's the difference between forty-one murders and forty-one people who never happened. But you're keeping me alive, so we do it your way. *she doesn't mention it again. The silence does.*",
+          "fx": [ {"love": -5}, {"set": "aria.sq_refused"} ],
+          "next": "end" },
+        { "id": "sq_done",
+          "_trigger": "fired by host/Lua when the manifest item is taken from the morgue terminal",
+          "line": "*she reads the list once, top to bottom, lips moving. Then she closes the slate.* Mercer. Okafor. Liu. Forty-one. I'll teach you the rest when there's time. Thank you for making me a witness again instead of a patient.",
+          "fx": [ {"set": "aria.sq_done"}, {"clear": "aria.sq_active"}, {"rel": ["aria", 2]}, {"karma": 5}, {"give": "aria_manifest"}, {"fire": "sidequest_done", "args": {"npc": "aria", "quest": "manifest"}} ],
+          "next": "end" }
+      ]
+    },
+
+    "trust": {
+      "_scene": "Plays at a quiet moment (camp/elevator hold) once rel 2 + love >= 55.",
+      "start": "t0",
+      "nodes": [
+        { "id": "t0",
+          "if": [ {"rel_gte": ["aria", 2]}, {"love_gte": 55} ],
+          "line": "Can I tell you the part I don't tell people? When they strapped me down, the worst thing wasn't fear. It was recognition. I'd seen the room from the other side. I'd held hands on that table and said 'you're going to be okay' and I knew the odds when I said it. So when it was me — I knew my own odds. To the percent.",
+          "choices": [
+            { "text": "And then I broke your odds.", "next": "t1", "fx": [ {"love": 4} ] },
+            { "text": "You kept saying it anyway. To them. That matters.", "next": "t1b", "fx": [ {"karma": 2}, {"love": 3} ] },
+            { "text": "Why are you telling me this?", "next": "t1c" }
+          ] },
+        { "id": "t1",
+          "line": "*a startled laugh, wet at the edges* You did. You walked in and the math just... lost. Do you know what that does to someone who's only ever survived by counting? *she shakes her head* I'm keeping you. As a rounding error. The good kind.",
+          "fx": [ {"rel": ["aria", 3]} ],
+          "next": "end" },
+        { "id": "t1b",
+          "line": "Someone had to be the voice that lied kindly. I decided it should be a voice that hated the lie. *beat* You're the first person who's made the kind lie true. I needed you to know what that's worth where I'm from.",
+          "fx": [ {"rel": ["aria", 3]} ],
+          "next": "end" },
+        { "id": "t1c",
+          "line": "Because triage is honesty about what you can carry. *she taps her own sternum* I'm telling you what's in here so you know the weight before you decide to keep carrying it. Most people pretend the weight isn't there. You've never once pretended.",
+          "fx": [ {"rel": ["aria", 3]} ],
+          "next": "end" }
+      ]
+    },
+
+    "romance": {
+      "_scene": "Opt-in, declinable without losing Bond. Gate: rel 3, love >= 70, timeline Alpha or Omega-pre-lock. Restraint: intimacy by voice and aftermath; fade on acceptance.",
+      "start": "r0",
+      "nodes": [
+        { "id": "r0",
+          "if": [ {"rel_gte": ["aria", 3]}, {"love_gte": 70} ],
+          "line": "*she's rebandaging your forearm and her hands stop moving* I have a confession shaped like a question. I check you for injuries more often than is clinically defensible. The question is whether you've noticed. *she still hasn't let go of your arm*",
+          "choices": [
+            { "text": "I noticed. I've been getting hurt on purpose.", "next": "r1", "fx": [ {"love": 5} ] },
+            { "text": "Aria. Look up.", "next": "r1", "fx": [ {"love": 5} ] },
+            { "text": "You're my medic. I need you to stay just that.", "next": "r2" }
+          ] },
+        { "id": "r1",
+          "line": "*she looks up. For once she isn't counting anything.* The night shift rule is: nothing good starts in a place like this. I'm breaking the rule. Deliberately. With both eyes open. *quiet, certain* Stay. Not where I can see your back. Closer than that.",
+          "fx": [ {"rel": ["aria", 4]}, {"set": "aria.romance"}, {"love": 10}, {"fire": "romance_started", "args": {"npc": "aria"}} ],
+          "next": "end" },
+        { "id": "r2",
+          "line": "*the smallest nod; her hands finish the bandage, perfectly steady* Then that's what I am. *beat* For the record, you were kind about it, and I'm not made of glass — I'm made of night shifts. We're fine, Jake. We're better than fine. We're honest.",
+          "fx": [ {"set": "aria.romance_declined"} ],
+          "next": "end" }
+      ]
+    },
+
+    "infected_lost": {
+      "_use": "If Aria's timer expires — pre-Siren transformation barks (the existing victim-to-boss machine plays the fight).",
+      "start": "il0",
+      "nodes": [
+        { "id": "il0",
+          "line": "*the voice is still hers. That's the unbearable part.* Shh. It doesn't hurt anymore, Jake. That's the first true thing anyone's said in this room. I screamed your name, did you know that? I counted my own odds and I screamed it anyway.",
+          "next": "il1" },
+        { "id": "il1",
+          "line": "I can hear every heartbeat on this floor now. Yours is the loudest. Come here — let me take care of you. I was always... so good... at taking care of people.",
+          "fx": [ {"fire": "boss_intro", "args": {"npc": "aria", "boss": "siren"}} ],
+          "next": "end" }
+      ]
+    }
+  }
+}

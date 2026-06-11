@@ -1,0 +1,187 @@
+{
+  "format": "x3.chattree/1",
+  "npc": "keisha",
+  "display": "KEISHA",
+  "voice": "Keisha",
+  "_bio": "Security Specialist Keisha Williams, Floor 2 Ward B. Ex-Marine, facility security — fought back during the 'evacuation drill' that was actually a harvest sweep; they took her FOR the combat genes. Warrior companion. Full romance arc (equals, sparring cadence). Sidequest: find Officer James Torres, her partner from second shift.",
+  "trees": {
+
+    "first_meeting": {
+      "start": "fm0",
+      "nodes": [
+        { "id": "fm0",
+          "if": [ {"flag": "keisha.interrupted"} ],
+          "else": "fm0_alt",
+          "line": "*she's still straining against the straps, staring at the corpse like she killed it herself* Tell me it felt something when it died. Tell me it had one second of knowing it lost. *only then does she look at you* ...You. You're real. Knife's in my left boot — they missed it. Cut me out.",
+          "choices": [
+            { "text": "(take the knife, cut the straps) It knew. I made sure.", "next": "fm1", "fx": [ {"karma": 1}, {"love": 2} ] },
+            { "text": "(cut her loose) You're safe now.", "next": "fm1b" },
+            { "text": "First tell me you're still you.", "next": "fm1c" }
+          ],
+          "fx": [ {"set": "keisha.met"} ]
+        },
+        { "id": "fm0_alt",
+          "line": "*she's worked one strap half loose with her teeth. Her wrists are raw.* Either shoot me or cut me loose, but decide fast — I've been at this strap forty minutes and I am NOT being here when they come back to finish the job.",
+          "choices": [
+            { "text": "(cut her loose) Easy, soldier. I've got you.", "next": "fm1b", "fx": [ {"karma": 1} ] },
+            { "text": "Forty minutes? You almost had it.", "next": "fm1d" }
+          ],
+          "fx": [ {"set": "keisha.met"} ]
+        },
+        { "id": "fm1",
+          "line": "Good. GOOD. *she's off the table before the last strap clears, shaking the blood back into her hands like it's a drill* Williams. Keisha. Staff Sergeant, once. Facility security, recently — until the 'evacuation drill' turned out to be a shopping trip and I put two guards down before the gas got me. Apparently fighting back puts you at the top of their list. Genes, the doc said. They wanted my GENES.",
+          "next": "fm2" },
+        { "id": "fm1b",
+          "line": "*the second her hands are free she's checking her own pulse points, jaw tight — a Marine's self-triage* Intact. INTACT. Okay. Williams, Keisha — security, ex-Corps. You just made the shortest friends-list in the galaxy. Don't die before I pay it back.",
+          "next": "fm2" },
+        { "id": "fm1c",
+          "line": "*she goes very still. Then, level:* My name is Keisha Williams. My service number ends in four-seven-one. My mother's kitchen smells like cardamom on Sundays, and if I EVER stop being able to tell you that, you have my permission and my ORDER to put me down. Now cut. Me. Loose.",
+          "next": "fm2", "fx": [ {"love": 2}, {"set": "keisha.promise_asked"} ] },
+        { "id": "fm1d",
+          "line": "*a bark of a laugh, the first one in this building in months* 'Almost' is the most expensive word in my line of work. Cut me loose and I'll teach you the cheap ones. Williams. Keisha. You got a unit, or are you just the luckiest stray in this hole?",
+          "next": "fm2" },
+        { "id": "fm2",
+          "line": "Inventory: I need a weapon, a direction, and one truthful answer. The answer first — there were others on this corridor. Screamers, then quiet ones. The quiet ones are worse. Are you going for them?",
+          "choices": [
+            { "text": "Every door on this floor. That's the mission.", "next": "fm3", "fx": [ {"karma": 3} ] },
+            { "text": "I go where the clock lets me.", "next": "fm3b", "fx": [ {"karma": 1} ] },
+            { "text": "My mission is one name: Sarah. The rest is en route.", "next": "fm3c", "fx": [ {"set": "keisha.knows_sarah"} ] }
+          ] },
+        { "id": "fm3",
+          "line": "Then you've got yourself a fire team. *she takes the dead guard's baton without breaking stride* I know this floor's patrol gaps, the ward codes worth trying, and which doors hinge outward. You shoot, I breach. Try to keep up.",
+          "next": "fm4" },
+        { "id": "fm3b",
+          "line": "*she holds your eyes a second, then nods once* Triage. Hate it. Respect it. The Corps wrote that math on my heart with a cheap pen. Fine — I make your clock run faster: I know the patrol gaps and the door codes worth trying. Move.",
+          "next": "fm4" },
+        { "id": "fm3c",
+          "line": "Sarah. *she files the name like ammunition* Okay. A man with one name carved on him fights harder than a man with a map. I've seen it. But hear me, Jake — if a door screams when we pass it, we are OPENING that door. That's my price. Pay it or leave me the knife.",
+          "next": "fm4", "fx": [ {"karma": 1} ] },
+        { "id": "fm4",
+          "line": "Right. New unit, two strong, zero quit. I've got your six, your front, and anything else that needs covering. MOVE.",
+          "fx": [ {"follow": true}, {"rel": ["keisha", 1]}, {"fire": "companion_joined", "args": {"npc": "keisha"}} ],
+          "next": "end" }
+      ]
+    },
+
+    "banter": {
+      "pool": [
+        { "line": "Your reload's a half-second slow on the left side. Gimme a quiet hour and a wall, I'll fix it.", "if": [ {"rel_gte": ["keisha", 1]} ], "weight": 2 },
+        { "line": "This place numbers everything. Floors, cells, people. First thing we do when we win? Names. Names on everything.", "if": [ {"rel_gte": ["keisha", 1]} ] },
+        { "line": "I don't sleep more than ninety minutes at a stretch anymore. Don't make it a thing. Just — if you hear me up at 0300, it's the straps. I'm walking it off.", "if": [ {"rel_gte": ["keisha", 2]} ] },
+        { "line": "The doc that prepped me had clean nails and a wedding ring. That's the detail I'm keeping for when I meet him again.", "if": [ {"rel_gte": ["keisha", 2]} ] },
+        { "line": "Aria stitched my shoulder and lectured me the whole time. Didn't have the heart to tell her the lecture's the part that helped.", "if": [ {"girl_saved": "aria"}, {"rel_gte": ["keisha", 2]} ] },
+        { "line": "Emily talks like a textbook fell in love with a smoke alarm. I'd die for her. Tell her and I'll deny it.", "if": [ {"girl_saved": "emily"}, {"rel_gte": ["keisha", 2]} ] },
+        { "line": "You move like a door-kicker now. Six months ago I'd have made you for a pilot. *beat* You WERE a pilot. Huh. This place really does rebuild people.", "if": [ {"rel_gte": ["keisha", 2]} ] },
+        { "line": "Stay loud, Jake. Quiet's what they make here.", "weight": 1 }
+      ]
+    },
+
+    "sidequest": {
+      "_hook": "TORRES — Officer James Torres, second-shift security, the partner who covered her retreat during the harvest sweep. The duty roster says 'reassigned: sublevel storage.' Canon: Torres is Keisha's Omega-timeline partner (EFLZ_NARRATIVE support-tier) — finding him alive shapes whether her romance lane opens or closes with grace.",
+      "start": "sq0",
+      "nodes": [
+        { "id": "sq0",
+          "if": [ {"rel_gte": ["keisha", 1]}, {"not": {"flag": "keisha.sq_done"}} ],
+          "line": "Jake. Personnel question. There was a second-shift officer — Torres. James Torres. When the sweep hit, he put himself between me and the gas team and yelled RUN like an idiot, because we are both exactly that kind of idiot. Duty roster says 'reassigned: sublevel storage.' This facility doesn't store PEOPLE in storage. Except it does. I need eyes on that sublevel.",
+          "choices": [
+            { "text": "We find him. Nobody gets left in this place.", "next": "sq1", "fx": [ {"karma": 3}, {"set": "keisha.sq_active"} ] },
+            { "text": "Cryo storage is on the route down anyway. We'll look.", "next": "sq1b", "fx": [ {"set": "keisha.sq_active"} ] },
+            { "text": "Was he just your partner?", "next": "sq2" }
+          ] },
+        { "id": "sq1",
+          "line": "*a sharp exhale — relief disguised as drill-sergeant approval* Correct answer. He'd come for me. He DID come for me; it just didn't take. Storage runs under the armory line. I know the access hymn — half a code and a hard kick.",
+          "next": "end" },
+        { "id": "sq1b",
+          "line": "Roger. Low promises, kept promises — that's the good kind of officer. *quieter* If it's a pod, Jake... if he's frozen in a drawer down there... we are not leaving him in the drawer.",
+          "next": "end" },
+        { "id": "sq2",
+          "line": "*she doesn't flinch* He was the guy I never got around to. Two years of 'after this rotation.' Then the rotation was THIS. *beat* So no. Not just my partner. A debt. Whatever else he was going to be got stolen along with everything else in this building, and I want it BACK on the table where I can look at it. Clear?",
+          "fx": [ {"set": "keisha.sq_active"}, {"set": "keisha.torres_truth"}, {"love": 2} ],
+          "next": "end" },
+        { "id": "sq_found_alive",
+          "_trigger": "fired by host/Lua when Torres is found alive in Cryo Storage (SL2 wake-the-pods choice)",
+          "line": "*she stands at the open pod for a long ten seconds, at attention, like reporting in* Torres. You absolute idiot. You yelled 'run.' *then, to you, voice rebuilt* Thank you. Whatever happens after this — you gave me back the unfinished thing. That's the rarest thing this place ever coughed up.",
+          "fx": [ {"set": "keisha.sq_done"}, {"set": "keisha.torres_alive"}, {"clear": "keisha.sq_active"}, {"rel": ["keisha", 2]}, {"karma": 5}, {"ally": true}, {"fire": "sidequest_done", "args": {"npc": "keisha", "quest": "torres", "result": "alive"}} ],
+          "next": "end" },
+        { "id": "sq_found_dead",
+          "_trigger": "fired by host/Lua when Torres's fate is confirmed dead (disposal manifest / failed pod)",
+          "line": "*she reads the manifest twice. Folds it. Puts it inside her vest, over the sternum.* Confirmed. Okay. *she rolls her shoulders like settling a pack* He bought me the seconds that bought me the table that bought me YOU kicking the door. Chain of custody on a life, Jake. I intend to be worth the price. Let's go ruin their whole program.",
+          "fx": [ {"set": "keisha.sq_done"}, {"set": "keisha.torres_dead"}, {"clear": "keisha.sq_active"}, {"rel": ["keisha", 2]}, {"karma": 2}, {"love": 3}, {"fire": "sidequest_done", "args": {"npc": "keisha", "quest": "torres", "result": "dead"}} ],
+          "next": "end" }
+      ]
+    },
+
+    "trust": {
+      "_scene": "Quiet hold, rel 2 + love >= 55. The 0300 scene — the only time she lets the armor down, and she does it on purpose, as a tactical decision.",
+      "start": "t0",
+      "nodes": [
+        { "id": "t0",
+          "if": [ {"rel_gte": ["keisha", 2]}, {"love_gte": 55} ],
+          "line": "*0300. She's awake, back to the wall, watching the door. She talks without looking at you.* Debrief. You should know what you're carrying in your unit. On the table, when the thing leaned over me — I didn't scream defiance, whatever I tell the others. I went somewhere. Mom's kitchen. Cardamom. I was already saying goodbye to it. That's what they almost got, Jake. Not my body. My SUNDAY.",
+          "choices": [
+            { "text": "They didn't get it. You're going to stand in that kitchen.", "next": "t1", "fx": [ {"love": 4} ] },
+            { "text": "You came back swinging. That's all the debrief I need.", "next": "t1b", "fx": [ {"love": 3} ] },
+            { "text": "Why tell me and not Aria?", "next": "t1c" }
+          ] },
+        { "id": "t1",
+          "line": "*a long breath out. The watch-the-door posture finally unclenches one degree.* Yeah. Yeah, I am. And you're coming with, because Mom will want to inspect whoever I followed out of hell. Fair warning: she's harder than Martinez. *the joke lands soft. It's a gift.*",
+          "fx": [ {"rel": ["keisha", 3]} ],
+          "next": "end" },
+        { "id": "t1b",
+          "line": "Hooah. *beat* Most people want the wound, you know. They poke for it. You just... log it and hand me back my rifle. That's the entire reason you got the debrief. Dismissed — and Jake? Thanks for not making it weird.",
+          "fx": [ {"rel": ["keisha", 3]} ],
+          "next": "end" },
+        { "id": "t1c",
+          "line": "Aria would CARRY it. She carries everything; you've seen her. You — you'll just stand next to it with me. That's the difference, and it's why it's you on this watch. *she finally looks at you* Don't make me explain it twice; I'm armed.",
+          "fx": [ {"rel": ["keisha", 3]}, {"love": 2} ],
+          "next": "end" }
+      ]
+    },
+
+    "romance": {
+      "_scene": "Rel 3 + love >= 70. Locked off with grace if Torres was found alive (she chooses the unfinished thing — canon Omega pairing). Sparring-cadence declaration; fade on acceptance.",
+      "start": "r0",
+      "nodes": [
+        { "id": "r0",
+          "if": [ {"rel_gte": ["keisha", 3]}, {"love_gte": 70}, {"not": {"flag": "keisha.torres_alive"}} ],
+          "else": "r_torres",
+          "line": "*she's field-stripping her weapon and yours, hands on autopilot* Tactical assessment, and you don't get to interrupt: you kicked a door for a stranger, you opened every door I asked, and you stood next to the worst thing in my head without flinching. In the Corps we had a word for the one you want on your six for the whole tour. *she sets the weapon down, finished* The word was everything. You're my everything-word, Jake. React accordingly.",
+          "choices": [
+            { "text": "(close the distance) Reacting.", "next": "r1", "fx": [ {"love": 5} ] },
+            { "text": "Say it plain, Sergeant. No jargon.", "next": "r1b", "fx": [ {"love": 5} ] },
+            { "text": "Keisha — I can't give you that and mean it.", "next": "r2" }
+          ] },
+        { "id": "r1",
+          "line": "*she meets you halfway — she was always going to meet you halfway* Mm. Adequate response time, soldier. *softer, against your collar, the swagger finally off-duty* Stay loud with me. That's the whole order.",
+          "fx": [ {"rel": ["keisha", 4]}, {"set": "keisha.romance"}, {"love": 10}, {"fire": "romance_started", "args": {"npc": "keisha"}} ],
+          "next": "end" },
+        { "id": "r1b",
+          "line": "Plain. Fine. *she squares up like it's a breach* I love you. Past tense never happened; future tense is the plan. I have killed my way across two floors deciding whether to say it, and I'd rather die loud beside you than safe behind anyone else alive. *beat* THAT plain enough, or do you need it in writing?",
+          "fx": [ {"rel": ["keisha", 4]}, {"set": "keisha.romance"}, {"love": 10}, {"fire": "romance_started", "args": {"npc": "keisha"}} ],
+          "next": "end" },
+        { "id": "r2",
+          "line": "*one nod. Clean.* Copy. *she racks the slide on your weapon and hands it back grip-first* Then you get the second-best thing I've got, which is everything minus one. No drama, no distance. You're still my six. *and she means it — the banter never sours, but `keisha.romance_declined` colors a handful of late lines wistful*",
+          "fx": [ {"set": "keisha.romance_declined"} ],
+          "next": "end" },
+        { "id": "r_torres",
+          "line": "*quietly, watching Torres relearn how to walk after cryo* You see how it is, right? Two years of 'after this rotation.' The rotation's finally over, Jake. *she bumps your shoulder with hers — gratitude, brotherhood, a door gently closed* You gave me this. Don't think I don't know what it cost the other thing. You're family now. That outranks everything.",
+          "fx": [ {"set": "keisha.romance_torres"}, {"karma": 3} ],
+          "next": "end" }
+      ]
+    },
+
+    "infected_lost": {
+      "_use": "If Keisha's timer expires — pre-Breeder-Queen barks.",
+      "start": "il0",
+      "nodes": [
+        { "id": "il0",
+          "line": "*the command cadence is still there. That's what's wrong — it's PERFECT now, no breath behind it.* Report, Jake. You were slow. I held the line at the strap for forty minutes and the relief never came. *the thing wearing her posture straightens* So I was issued a new unit.",
+          "next": "il1" },
+        { "id": "il1",
+          "line": "Cardamom. *a tilt of the head, puzzled, like checking an empty pocket* There was a kitchen. It's quiet in there now. Everything is so much quieter than you, little soldier. Let me show you what they made of the loudest woman on this floor.",
+          "fx": [ {"fire": "boss_intro", "args": {"npc": "keisha", "boss": "breeder_queen"}} ],
+          "next": "end" }
+      ]
+    }
+  }
+}

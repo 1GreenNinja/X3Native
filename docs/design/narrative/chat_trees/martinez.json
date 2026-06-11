@@ -1,0 +1,91 @@
+{
+  "format": "x3.chattree/1",
+  "npc": "martinez",
+  "display": "MARTINEZ",
+  "voice": "Martinez",
+  "_bio": "Security Chief Marcus Martinez — Floor 1 boss (canon-locked F1). Ex-special-forces, cybernetic augments, genuinely believes he is guarding legitimate research; the program kept him deliberately blind. The pre-fight tree offers a HARD talk-down path: karma >= 20 AND evidence in hand (aria_manifest or chen_video_log) AND three correct beats — any threat or lie collapses it to the fight. Canon phases (Professional/Doubt/Revelation) remain the boss machine's; this tree is the doorway in and the spare scene after.",
+  "trees": {
+
+    "prefight": {
+      "start": "p0",
+      "nodes": [
+        { "id": "p0",
+          "line": "*the arena lights come up in banks, deliberate — a man who wants you to see him plant his feet. The custom pistol stays holstered. For now.* Subject 7-Alpha. Six months of taxpayer-grade containment and you're loose for one hour and my floor looks like a war crime. *he rolls his shoulders; something servo-driven answers in his arm* I read your file, son. Pilot. Shot down, salvaged, stabilized. This facility put you back together — and THIS is the thank-you note?",
+          "choices": [
+            { "text": "Salvaged? Look at the wards behind me. Look at what your facility does.", "next": "p1", "fx": [ {"set": "martinez.engaged"} ] },
+            { "text": "Stand aside, Chief. You're one door. I've opened worse.", "next": "p_fight_taunt" },
+            { "text": "You said 'stabilized.' Who told you that? Did you ever check?", "next": "p1b", "fx": [ {"set": "martinez.engaged"} ] }
+          ] },
+        { "id": "p1",
+          "line": "I look at those wards every shift. Quarantine medicine, hard cases, volunteer contracts — I've seen the PAPERWORK. *a fraction too fast. A man reciting a handhold.* You know what I haven't seen? One — single — staff member walk out of this posting and badmouth it. Perfect record. Perfect compliance. *his jaw works* ...Perfect compliance. Eight years of it. You want to tell me what loose thread you think you're pulling, pull it fast.",
+          "choices": [
+            { "text": "(show the manifest) Forty-one patients. No admission records. Your own system.", "next": "p2", "if": [ {"item": "aria_manifest"} ], "fx": [ {"set": "martinez.shown_evidence"} ] },
+            { "text": "(play Chen's log) Hear it from the man who runs the science.", "next": "p2b", "if": [ {"item": "chen_video_log"} ], "fx": [ {"set": "martinez.shown_evidence"} ] },
+            { "text": "I don't carry proof. I carry what I saw in Ward B.", "next": "p_almost" },
+            { "text": "The thread is your throat if you don't move.", "next": "p_fight_taunt" }
+          ] },
+        { "id": "p1b",
+          "line": "*the servo arm goes still* ...Medical division certifies the subjects. Command certifies medical. I certify the perimeter. That's how a facility WORKS, that's how every base I ever served on worked— *he stops himself. Eight years of not finishing that sentence.* Checked. No. I didn't check. Checking medical wasn't my lane. *his eyes come up, and there's a soldier's worst fear in them: bad orders, followed well* You've got thirty seconds before I decide my lane just changed. Use them.",
+          "choices": [
+            { "text": "(show the manifest) Forty-one names, Chief. Never admitted. Never discharged.", "next": "p2", "if": [ {"item": "aria_manifest"} ], "fx": [ {"set": "martinez.shown_evidence"} ] },
+            { "text": "(play Chen's log) Your own director, in his own words.", "next": "p2b", "if": [ {"item": "chen_video_log"} ], "fx": [ {"set": "martinez.shown_evidence"} ] },
+            { "text": "Thirty seconds? Here's ten: come down to Ward B and SMELL it.", "next": "p_almost" }
+          ] },
+        { "id": "p2",
+          "line": "*he reads the way career soldiers read casualty lists — fast, then slow, then not breathing* Mercer. *one name out of forty-one, and his voice goes somewhere else* Mercer was on MY intake roster. Transport injury, they said. Family notified, they said. I signed the— *the slate creaks in the cybernetic grip* I signed the perimeter release on half these names. They used MY signature as the lid on this.",
+          "next": "p3" },
+        { "id": "p2b",
+          "line": "*Chen's voice fills the arena — tired, precise, damned: '...gestation cohort seven shows improved tolerance... Security Chief Martinez remains outside the briefing tier, recommend maintaining...' Martinez listens to all of it at parade rest, which is how some men bleed.* Outside the briefing tier. *softly* Eight years. I deployed three times for this country, I took the metal arm so I could keep SERVING, and they put me on the door of THIS and made sure I'd never look inside.",
+          "next": "p3" },
+        { "id": "p3",
+          "line": "*the pistol comes out — and stops, halfway, a man at war with his own draw* Here's my problem, 7-Alpha. If that's real, my whole posting is a crime scene and I'm the longest-serving accomplice in it. If it's forged, you're the most dangerous thing in the building and I'm the last door. Either way the manual says the same thing. *the red eye flickers* Give me the version of the next sixty seconds where I don't have to be the manual.",
+          "choices": [
+            { "text": "Come WITH me. Check the wards yourself. Be the man who stopped it, not the door that hid it.", "next": "p4", "if": [ {"karma_gte": 20} ], "fx": [ {"karma": 5} ] },
+            { "text": "Walk away. Just... stand down and walk away.", "next": "p_almost2" },
+            { "text": "There isn't one. You wore the uniform of this place for eight years.", "next": "p_fight_judged" }
+          ] },
+        { "id": "p4",
+          "line": "*ten seconds of servo-hum silence. Then the pistol goes back in the holster, and Security Chief Martinez makes the second-hardest decision of his life at the speed of the first.* Ward B. *he keys his command override into the arena console; every door on the floor sighs open at once* If you're lying to me, son, I will find you anywhere on this rock. If you're not— *he picks up the manifest slate like it weighs forty-one souls* —then I've got eight years of perimeter logs to turn into a noose for somebody, and I know EXACTLY whose names go in it. The elevator's released. My keycard, my journal — take both. The custom piece stays with me. I've got doors of my own to open tonight.",
+          "fx": [ {"set": "martinez.talked_down"}, {"karma": 10}, {"redemption": 5}, {"ally": true}, {"give": "martinez_keycard"}, {"give": "martinez_journal"}, {"fire": "boss_resolved", "args": {"npc": "martinez", "how": "talkdown"}} ],
+          "next": "end" },
+        { "id": "p_almost",
+          "line": "What you SAW. *he shakes his head once, and you can watch the door close* Son, I've had eight years of people telling me what they saw, and a binder of clearances telling me why they're wrong. Without paper, you're just the most articulate escapee I've ever processed. *the pistol clears the holster* And processing is the job.",
+          "fx": [ {"fire": "boss_resolved", "args": {"npc": "martinez", "how": "fight"}}, {"end": "fight"} ],
+          "next": "end" },
+        { "id": "p_almost2",
+          "line": "Walk away. *he actually laughs — one short, awful note* To WHERE? This posting is my pension, my arm, my whole second life. You're asking me to walk out of my own skeleton. *the pistol comes the rest of the way up* No. If I'm wrong about this place, I'll find out the way I do everything else. On post.",
+          "fx": [ {"fire": "boss_resolved", "args": {"npc": "martinez", "how": "fight"}}, {"end": "fight"} ],
+          "next": "end" },
+        { "id": "p_fight_taunt",
+          "line": "*whatever was open in his face bolts shut; what's left is twenty years of door-kicking with a factory warranty* There he is. The file said 'aggression indices elevated' — first thing this facility's told me all day that checks out. *flashbang in the left hand, pistol in the right* Security log, timestamp: subject resisted. They always resist.",
+          "fx": [ {"fire": "boss_resolved", "args": {"npc": "martinez", "how": "fight"}}, {"end": "fight"} ],
+          "next": "end" },
+        { "id": "p_fight_judged",
+          "line": "*he takes the hit standing. Then he nods, slowly, like a sentence being accepted.* Yeah. Maybe that's the truth of it. But here's the thing about men like me, 7-Alpha — guilt doesn't make us stand down. It makes us need the trial. *the red eye ignites* Come earn the verdict.",
+          "fx": [ {"fire": "boss_resolved", "args": {"npc": "martinez", "how": "fight"}}, {"end": "fight"} ],
+          "next": "end" }
+      ]
+    },
+
+    "spare": {
+      "_scene": "Plays if the fight ran to P3 (the Revelation phase — he has seen the truth on the terminal, canon) and the player chooses spare instead of execute.",
+      "start": "s0",
+      "nodes": [
+        { "id": "s0",
+          "line": "*he's down against the console, the metal arm dead at his side, the terminal still scrolling the intake records his own override finally unlocked mid-fight. He's not looking at you. He's reading.* Mercer... I signed... *then, to you, through whatever's broken inside:* Finish it or don't, son. But if you don't — leave me the slate. A man should... read the whole charge sheet against himself. It's the last thing I'm fit to guard.",
+          "choices": [
+            { "text": "(spare him — leave the slate) Read it. Then do something about it.", "next": "s1", "fx": [ {"karma": 8}, {"mercy": 5}, {"set": "martinez.spared"} ] },
+            { "text": "(spare him, take his weapon) You sit this war out, Chief.", "next": "s2", "fx": [ {"karma": 4}, {"set": "martinez.spared"}, {"give": "martinez_pistol"} ] }
+          ] },
+        { "id": "s1",
+          "line": "*he pulls the slate into his lap with his living hand, and for a moment he's just a tired man at the end of a watch* My keycard's in the desk. Journal too — everything I logged that never got answered. Take them. *as you turn away:* 7-Alpha. Jake. *the first time he's used the name* The ones in the wards. Some of them are alive because the night-shift medic kept filing reports nobody read. Aria. If she's still breathing... tell her somebody finally read them. Tell her it mattered.",
+          "fx": [ {"give": "martinez_keycard"}, {"give": "martinez_journal"}, {"set": "martinez.aria_message"}, {"fire": "boss_resolved", "args": {"npc": "martinez", "how": "spared"}} ],
+          "next": "end" },
+        { "id": "s2",
+          "line": "*he watches you take the custom pistol — twenty years of muscle memory leaving the room in your hand — and doesn't fight it* Fair. Verdict's fair. *he tips his head back against the console* Keycard's in the desk. Go up, not down, if you want the fast way to the people you're looking for. And son — when you reach whoever's ABOVE the briefing tier... *the red eye guttering* ...hit them once for the perimeter crew. We didn't know. I'll spend whatever's left finding out which of us is lying when we say that.",
+          "fx": [ {"give": "martinez_keycard"}, {"fire": "boss_resolved", "args": {"npc": "martinez", "how": "spared_disarmed"}} ],
+          "next": "end" }
+      ]
+    }
+  }
+}

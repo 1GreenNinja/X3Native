@@ -39,6 +39,7 @@
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
 #include "intro_coldopen.h"                  // --world intro / default lead-in cold-open (shot-down -> captured)
 #include "npc_dialog.h"                     // rescued-NPC talk/dialog -> companion (the captive girl)
+#include "chat_tree.h"                      // x3.chattree/1 data-driven dialog runner (--test-chattree)
 #include "physprops.h"                      // FEATURE_GOALS §1: hanging cubes / joints (ragdoll foundation)
 #include "ragdoll.h"                        // FEATURE_GOALS §2: physics death ragdoll
 #include "editor/editor.h"                  // native Level Editor E1 (brain + self-test)
@@ -1471,6 +1472,7 @@ int main(int argc, char** argv) {
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
+         testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
          testThirdPerson = false, testHatchCode = false,
          // --test-hatch: END-TO-END secret-hatch chain (terminal_code fire ->
@@ -1881,6 +1883,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-rescue") testRescue = true;
         else if (a == "--test-thirdperson") testThirdPerson = true;
         else if (a == "--test-npctalk") testNpcTalk = true;
+        else if (a == "--test-chattree") testChatTree = true;
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-debris") testDebris = true;
         else if (a == "--test-gpuskin") testGpuSkin = true;
@@ -2476,6 +2479,11 @@ int main(int argc, char** argv) {
     if (testNpcTalk) {
         x3::logInfo("running rescued-NPC talk/dialog -> companion self-test (T1-T7)...");
         return x3::game::runNpcTalkSelfTest() ? 0 : 1;
+    }
+    if (testChatTree) {
+        x3::logInfo("running x3.chattree/1 dialog-runner self-test (parse all 8 trees + "
+                    "the lena walk: gates/fx/follow/1278/banter/flags round-trip)...");
+        return x3::game::runChatTreeSelfTest() ? 0 : 1;
     }
     if (testDestruction) {
         x3::logInfo("running K-T0/T1 destruction (fracture/impact/hit/explosion) self-test...");

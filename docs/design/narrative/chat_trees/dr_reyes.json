@@ -1,0 +1,96 @@
+{
+  "format": "x3.chattree/1",
+  "npc": "reyes",
+  "display": "DR. REYES",
+  "voice": "Reyes",
+  "_bio": "Dr. Felix Reyes — junior geneticist, gestation-cohort team, found hiding under a desk in the F1 Research Lab. THE NEUTRAL/AMBIGUOUS NPC: a collaborator by cowardice and mortgage, not conviction. He holds real currency (the Medical Bay keypad code, the ward assignments + timer intel, the word 'Cradle') and four outcomes: ALLY (escort deal), FLEE (he runs, resurfaces at Club 1127 with a guilt-gift), BETRAY (if threatened + low karma he sells you to the duty station), DEAD (karma hit, partial intel). His whole voice is rationalization mid-collapse.",
+  "trees": {
+
+    "first_meeting": {
+      "start": "m0",
+      "nodes": [
+        { "id": "m0",
+          "line": "*the Research Lab looks empty — then a desk exhales. A man in a lab coat unfolds from under it, hands first, a stylus held up like it might count as surrender.* Non-combatant! Civilian — well, contractor — well — *he gives up on the org chart* — Reyes. Dr. Felix Reyes, gene-integration, cohort team, and before you do anything thematic with that weapon: I have never personally touched a restraint. I want that ON the record. There IS a record, right? There's always a record.",
+          "choices": [
+            { "text": "Cohort team. You're one of the ones who runs the wards.", "next": "m1" },
+            { "text": "Stand up. Slowly. You get one chance to be useful.", "next": "m1b", "fx": [ {"set": "reyes.threatened"} ] },
+            { "text": "(lower the weapon) Talk, doctor. I'm listening.", "next": "m1c", "fx": [ {"karma": 1} ] }
+          ],
+          "fx": [ {"set": "reyes.met"} ]
+        },
+        { "id": "m1",
+          "line": "I run ASSAYS. Tissue panels. Beautiful, abstract little numbers that arrive in tubes with barcodes instead of faces — that was the ARRANGEMENT, that was the whole — *he hears himself and deflates an inch* ...You stop asking where the tubes come from around month three. Everyone does. There's a man on Five who hums while he works so he can't hear the ward doors. We all have a thing. The humming, the headphones, the... arrangement.",
+          "next": "m2" },
+        { "id": "m1b",
+          "line": "Useful! Yes. Useful is — useful is my entire survival strategy, historically. *his hands stay up; his eyes do rapid, unflattering math about you* Codes. I have codes. Schedules. I know which wards are... occupied... and which procedure windows are live. That's worth more to you than my obituary, I'd run those numbers myself.",
+          "next": "m2b" },
+        { "id": "m1c",
+          "line": "*the stylus lowers by degrees, like a flag he's embarrassed about* Thank you. Genuinely. You're the first thing in this building today that's pointed at me and then CHOSEN not to— *he stops, recalibrates* I'm going to be honest with you, because you've made it weirdly affordable: I know things you need, and I am exactly as much of a coward as I look, which means I'll trade every bit of it for one realistic exit.",
+          "next": "m2" },
+        { "id": "m2",
+          "line": "Here's my position, and I'll keep it brief because brevity is all the dignity I have left. The program upstairs calls itself 'Cradle' in the one memo nobody was supposed to print. I printed it. By accident! A queue error! But I READ it on purpose, and since then I sleep four hours and flinch at barcodes. *he wipes his palms on the coat* I can't undo what I assayed. But I can hand you the Medical Bay door code and the live procedure schedule, and you can go be the undo. Question is what it costs me, and whether you're a buyer or a tax.",
+          "choices": [
+            { "text": "The deal: codes and schedule now, and you walk out behind me alive.", "next": "m_ally", "fx": [ {"set": "reyes.deal"} ] },
+            { "text": "Give me the code and run, doctor. Don't be here when this place falls.", "next": "m_flee" },
+            { "text": "Cost? You assayed people, Reyes. The cost is everything you know — now.", "next": "m3_press", "fx": [ {"set": "reyes.threatened"} ] }
+          ],
+          "fx": [ {"set": "cradle.known"} ] },
+        { "id": "m2b",
+          "line": "So here is the transaction, plainly, while my hands are still raised: Medical Bay keypad code, the ward assignments, the live procedure windows — who is closest to the edge, in minutes, which I suspect matters ENORMOUSLY to whatever you're about to do. In exchange: I am not here when the consequences arrive. In ANY sense. Yes?",
+          "choices": [
+            { "text": "Deal. Codes now, and stay behind me till the exit.", "next": "m_ally", "fx": [ {"set": "reyes.deal"} ] },
+            { "text": "Codes now. Then run and keep running.", "next": "m_flee" },
+            { "text": "(press the weapon closer) Everything. Faster.", "next": "m3_press" }
+          ] },
+        { "id": "m3_press",
+          "line": "*his voice goes thin and rapid, a man paying a toll in pieces of himself* Okay — okay. Code is 4-1-1-9. Ward A is closest to procedure, then C, then B, the schedule's on my badge, TAKE the badge. *and underneath the babble, something curdles in his eyes — you've confirmed every story he tells himself about why keeping his head down was always the only option* There. Everything. As requested. *he is very, very still until you leave*",
+          "fx": [ {"give": "reyes_badge"}, {"fire": "rescue_intel", "args": {"source": "reyes"}}, {"set": "reyes.gave_under_threat"} ],
+          "choices": [
+            { "text": "(take the badge and go)", "next": "m_threat_exit" },
+            { "text": "(take the badge) Run, Reyes. Far.", "next": "m_flee_late" }
+          ] },
+        { "id": "m_threat_exit",
+          "line": "*as the door cycles behind you, Dr. Felix Reyes sits back under his desk and does what frightened accommodating men have done in every building like this in history: he picks the safest master available. The duty station's alarm line is two keystrokes away, and you made yourself the scarier unknown.* — IF karma < 0: he uses it (sets reyes.betrayed; an elite response team is pre-staged at the F3 landing). IF karma >= 0: he stares at the alarm key for a long time, and doesn't. Coward cuts both ways. —",
+          "fx": [ {"fire": "reyes_resolve", "args": {"branch": "threat_exit"}} ],
+          "next": "end" },
+        { "id": "m_ally",
+          "line": "*relief takes ten years off him, and honesty puts five back* Buyer. Thank god, a BUYER. *he produces it all at speed — a man unburdening:* Medical Bay keypad: 4-1-1-9. Ward assignments — A, C, B, in order of urgency, the procedure clock runs on the wall feed and I can read it from any terminal. And — gratis, because you're letting me live behind the only person in this building the program is scared of — *he leans in* — they kept your cell on a separate power loop, 7-Alpha. Yours and ONE other room in this facility. The records call the other one 'the Bride suite.' I'd hurry.",
+          "fx": [ {"set": "reyes.ally"}, {"give": "reyes_badge"}, {"fire": "rescue_intel", "args": {"source": "reyes"}}, {"fire": "rumor", "args": {"topic": "bride_suite"}}, {"ally": true}, {"karma": 2} ],
+          "next": "m_ally2" },
+        { "id": "m_ally2",
+          "line": "I'll keep to your shadow and I won't touch anything that beeps. And — Jake. *first time he's used the name instead of the designation; it costs him visibly* When you reach the people who SIGNED this... I'll testify. Assays, batch numbers, the printed memo, all of it. A coward's testimony is still testimony. It might be the one thing I'm brave enough to survive.",
+          "fx": [ {"set": "reyes.will_testify"}, {"fire": "boss_resolved", "args": {"npc": "reyes", "how": "ally"}} ],
+          "next": "end" },
+        { "id": "m_flee",
+          "line": "*he blinks — mercy wasn't on his price sheet* Run. Yes. Running is — running I can DO. *the code spills out of him as he gathers himself:* 4-1-1-9, Medical Bay, Ward A's clock is shortest. *at the doorway he stops, compelled by some leftover scrap of the man he meant to be:* There's a door at the bottom of this place with music behind it. If you live long enough to need a drink, the woman who pours it keeps accounts on everyone — even the people upstairs. Tell her the barcode man finally walked off the floor. She'll know what it's worth.",
+          "fx": [ {"set": "reyes.fled"}, {"fire": "rescue_intel", "args": {"source": "reyes"}}, {"fire": "rumor", "args": {"topic": "club_door"}}, {"karma": 3}, {"fire": "boss_resolved", "args": {"npc": "reyes", "how": "fled"}} ],
+          "next": "end" },
+        { "id": "m_flee_late",
+          "line": "*he goes. Not gracefully — knocking a chair, clutching the coat like a blanket — but he goes. And because you gave a frightened man an exit instead of a verdict, the alarm line stays untouched behind him.*",
+          "fx": [ {"set": "reyes.fled"}, {"karma": 1}, {"fire": "boss_resolved", "args": {"npc": "reyes", "how": "fled_late"}} ],
+          "next": "end" }
+      ]
+    },
+
+    "club_reunion": {
+      "_scene": "If reyes.fled: he resurfaces at Club 1127, nursing something amber at the far end of the ground bar, weeks-deep in growing a conscience. The guilt-gift scene.",
+      "start": "cr0",
+      "nodes": [
+        { "id": "cr0",
+          "if": [ {"flag": "reyes.fled"}, {"flag": "club.found"} ],
+          "line": "*he's shaved, which somehow makes him look more haunted, not less* You. Of course. The bottom of the world and YOU walk in. *he turns his glass a quarter-turn, a man rehearsing* I've been doing arithmetic down here. Vesper extends credit against information, and it turns out I'm... rich. Horribly, horribly rich. *he slides a data sliver down the bar* Batch records. Every assay I ever signed, cross-referenced to intake dates. I was going to drink my way to the courage to give it to someone. You'll do. You'll more than do.",
+          "choices": [
+            { "text": "(take it) This is testimony, Reyes. You're already testifying.", "next": "cr1", "fx": [ {"give": "reyes_batch_records"}, {"karma": 3}, {"set": "reyes.will_testify"} ] },
+            { "text": "(take it) Buy him another round. Say nothing.", "next": "cr2", "fx": [ {"give": "reyes_batch_records"}, {"karma": 2} ] }
+          ] },
+        { "id": "cr1",
+          "line": "*he looks at his own empty hands like they've been acquitted of something small* ...Huh. So I am. *he straightens on the stool, maybe half an inch. For Felix Reyes it's a parade-ground transformation.* Then put me down as a witness, 7-Alpha. First name Felix. Middle name 'reluctantly.' *the joke is terrible. The decision underneath it isn't.*",
+          "fx": [ {"fire": "ally_registered", "args": {"npc": "reyes"}} ],
+          "next": "end" },
+        { "id": "cr2",
+          "line": "*Vesper pours without being asked — she was listening; she is always listening. Reyes wraps both hands around the glass.* You know the worst part of cowardice as a career? The benefits are real. You DO survive. You just... arrive places like this, alive, with nobody to drink with. *he raises the glass to you anyway* To the undo. Go be it.",
+          "next": "end" }
+      ]
+    }
+  }
+}
