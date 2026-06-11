@@ -642,6 +642,19 @@ public:
         m_ddgi.normalBias = std::max(0.0f, std::min(4.0f, m_ddgi.normalBias));
     }
 
+    void setRtShadowParams(const RtShadowParams& p) override {
+        // Cache a snapshot (re-applied each frame, like setRtaoParams). On a
+        // device without ray query this is a harmless store: the RT mesh
+        // pipeline variants are never created, the want-gate below stays false
+        // and the plain (bit-identical) pipelines are bound — the same auto-0
+        // tier gating DDGI/reflections use.
+        m_rtShadows = p;
+        m_rtShadows.tier        = std::max(0, std::min(2, m_rtShadows.tier));
+        m_rtShadows.sunSizeDeg  = std::max(0.0f, std::min(5.0f, m_rtShadows.sunSizeDeg));
+        m_rtShadows.pointMax    = std::max(0, std::min(16, m_rtShadows.pointMax));
+        m_rtShadows.pointRadius = std::max(0.0f, std::min(1.0f, m_rtShadows.pointRadius));
+    }
+
     void setGlassDevParams(const GlassDevParams& p) override {
         // Cache a snapshot of the live r_glass_* dev overrides; the glass control
         // UBO picks them up in prepareFrameData each frame.
@@ -960,12 +973,15 @@ public:
         m_rtaoActiveThisFrame = false;
         m_reflRtThisFrame = false;
         m_ddgiActiveThisFrame = false;
-        // Reflections' ray-query fallback and DDGI reuse the SAME BLAS/TLAS this
-        // block builds — one AS, three consumers (RT AO + RT reflections + DDGI).
+        m_rtShadowsActiveThisFrame = false;
+        // Reflections' ray-query fallback, DDGI and RT soft shadows reuse the
+        // SAME BLAS/TLAS this block builds — one AS, four consumers (RT AO +
+        // RT reflections + DDGI + r_rtshadows).
         const bool reflRtWant = m_reflActiveThisFrame && m_refl.rtFallback
                              && (m_reflPipeRt != VK_NULL_HANDLE);
         const bool ddgiWant = m_ddgiWantThisFrame;   // decided in prepareFrameData
-        if (m_rtSupported && (m_rtao.enabled || reflRtWant || ddgiWant)) {
+        const bool rtshWant = m_rtShadowsWantThisFrame;
+        if (m_rtSupported && (m_rtao.enabled || reflRtWant || ddgiWant || rtshWant)) {
             const bool coreReady = m_rtao.enabled ? ensureRtaoReady() : ensureRtCore();
             if (coreReady && buildRtSceneAS() && m_rt.lastInstanceCount() > 0) {
                 if (m_rtao.enabled) {
@@ -977,6 +993,11 @@ public:
                     prepareDdgiUbo();
                     m_ddgiActiveThisFrame = true;
                 }
+                // RT soft shadows: bind the mesh_rt pipelines this frame ONLY
+                // once the set3 TLAS descriptor is live (written on the first
+                // TLAS build / handle change; the variant statically uses it).
+                if (rtshWant && m_meshTlasWritten)
+                    m_rtShadowsActiveThisFrame = true;
             }
         }
         // Fill the per-frame reflection UBO (matrices captured by prepareFrameData).
@@ -2140,7 +2161,19 @@ private:
         m_ddgiWantThisFrame = false;
         if (m_ddgi.enabled && m_rtSupported && m_rtPosFetch && ensureDdgiReady())
             m_ddgiWantThisFrame = true;
-        else if (!m_ddgi.enabled) {
+
+        // ---- RT soft shadows (r_rtshadows): decide WANT for this frame -------
+        // Tier-gated on ray query + the mesh_rt pipeline variants existing. The
+        // UBO lanes below carry the gate; whether the RT pipelines are actually
+        // BOUND is decided in endFrame (m_rtShadowsActiveThisFrame) once the
+        // TLAS build for this frame has succeeded and the set3 TLAS descriptor
+        // is written — until then the plain pipelines run and never read these
+        // lanes. (Same want/active split DDGI uses.)
+        m_rtShadowsWantThisFrame = (m_rtShadows.tier > 0) && m_rtSupported
+                                && m_meshPipelineRt != VK_NULL_HANDLE
+                                && m_meshPipelineNoSsaoRt != VK_NULL_HANDLE;
+
+        if (!m_ddgi.enabled) {
             m_ddgiFrameCount = 0;      // toggle off -> full warm-up ramp on re-enable
             m_ddgiVolumeValid = false; // and a fresh auto-fit (scene may have changed)
         }
@@ -2228,6 +2261,19 @@ private:
                 sc.ddgiSpacing = glm::vec4(m_ddgiSpacing, 0.0f);
                 sc.ddgiCounts  = glm::vec4((float)m_ddgiCountX, (float)m_ddgiCountY,
                                            (float)m_ddgiCountZ, 0.0f);
+            }
+            // RT soft-shadow lanes (r_rtshadows): read ONLY by the mesh_rt.frag
+            // pipelines (bound only when the TLAS is live), so writing them is
+            // free for every other path. Per-frame jitter rotation only while
+            // TAA can integrate it; with TAA off the seed pins to 0 so the
+            // 1-spp penumbra dither is STATIC (no sizzle).
+            if (m_rtShadowsWantThisFrame) {
+                sc.rtsh0 = glm::vec4((float)m_rtShadows.tier,
+                                     std::tan(glm::radians(m_rtShadows.sunSizeDeg)),
+                                     (float)m_rtShadows.pointMax,
+                                     m_rtShadows.pointRadius);
+                sc.rtsh1 = glm::vec4(taaWant ? (float)(m_rtshFrameSeed++ & 16383u) : 0.0f,
+                                     0.0f, 0.0f, 0.0f);
             }
             if (m_ssaoCtrlMapped[m_frameIdx])
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
@@ -2610,8 +2656,14 @@ private:
         // buildAndExecuteGraph when TAA is off), so this never diverges from the
         // graph's depth-prepass / LOAD-vs-CLEAR decision.
         const bool prePassOn = m_ssao.enabled || m_gi.enabled || m_reflActiveThisFrame;
+        // RT soft shadows (r_rtshadows): swap in the mesh_rt.frag variants —
+        // identical fixed-function state, identical layout — only on frames
+        // where endFrame confirmed the TLAS + its set3 descriptor are live.
+        // Inactive/tier-0/non-RT frames bind the EXACT pre-existing pipelines.
+        const bool rtsh = m_rtShadowsActiveThisFrame;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          prePassOn ? m_meshPipeline : m_meshPipelineNoSsao);
+                          prePassOn ? (rtsh ? m_meshPipelineRt       : m_meshPipeline)
+                                    : (rtsh ? m_meshPipelineNoSsaoRt : m_meshPipelineNoSsao));
         // set 0 = bindless textures, set 1 = object SSBO + camera UBO, set 2 = shadow
         // map, set 3 = the SSAO AO texture + control UBO (this frame's set), set 4 =
         // IBL (irradiance + prefilter cubes + BRDF LUT). set 4 is always bound when
@@ -2637,7 +2689,9 @@ private:
         // NO depth-write, cull NONE), same color attachment + descriptor sets, drawn AFTER
         // opaque so glass composites over the established opaque depth. v1: unsorted.
         if (m_meshPipelineTransparent && m_frameCmdCount > m_frameCmdOpaque) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshPipelineTransparent);
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              (rtsh && m_meshPipelineTransparentRt) ? m_meshPipelineTransparentRt
+                                                                    : m_meshPipelineTransparent);
             for (uint32_t i = m_frameCmdOpaque; i < m_frameCmdCount; ++i) {
                 const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
                 VkDeviceSize off = 0;
@@ -7919,13 +7973,17 @@ private:
         //      blur set. Samplers + uniform buffers sized exactly. ----
         {
             const uint32_t nFrames = kFramesInFlight;
-            VkDescriptorPoolSize sizes[2]{};
+            VkDescriptorPoolSize sizes[3]{};
             sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             sizes[0].descriptorCount = nFrames /*ssao depth*/ + nFrames * 4 /*mesh ao + refl + ddgi irr/vis*/ + 2 /*blur*/;
             sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             sizes[1].descriptorCount = nFrames /*ssao ubo*/ + nFrames /*ctrl ubo*/;
+            // RT devices: mesh set3 carries the TLAS at binding 5 (r_rtshadows).
+            sizes[2].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            sizes[2].descriptorCount = nFrames;
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-            pci.maxSets = nFrames + nFrames + 1; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
+            pci.maxSets = nFrames + nFrames + 1;
+            pci.poolSizeCount = m_rtSupported ? 3u : 2u; pci.pPoolSizes = sizes;
             if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_ssaoPool) != VK_SUCCESS) {
                 logError("[rhi] ssao desc pool failed"); return false;
             }
@@ -8187,6 +8245,33 @@ private:
             w[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[4].pImageInfo = &dgv;
             vkUpdateDescriptorSets(m_dev.device, 5, w, 0, nullptr);
         }
+        // RT soft shadows (r_rtshadows): re-point set3 binding5 at the TLAS when
+        // one exists (resize path — the sets were just rewritten above; keep the
+        // AS binding live so the next RT-shadow frame doesn't trace a stale
+        // descriptor). Before the first TLAS build there is nothing to write —
+        // the plain pipelines never reference binding 5.
+        writeMeshTlasDescriptor();
+    }
+
+    // Write the scene TLAS into mesh set3 binding5 for ALL frames in flight
+    // (the r_rtshadows ray origin). Callers must guarantee the sets are not in
+    // use by a pending command buffer (first TLAS build + handle-grow rebuilds
+    // idle the device; init/resize paths are idle by construction). No-op
+    // without RT support / before the first TLAS exists.
+    void writeMeshTlasDescriptor() {
+        if (!m_rtSupported) return;
+        VkAccelerationStructureKHR tlas = m_rt.tlas();
+        if (!tlas || !m_meshAoSet[0]) return;
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkWriteDescriptorSetAccelerationStructureKHR asW{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
+            asW.accelerationStructureCount = 1; asW.pAccelerationStructures = &tlas;
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.pNext = &asW; w.dstSet = m_meshAoSet[i]; w.dstBinding = 5;
+            w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        }
+        m_meshTlasWritten = true;
     }
 
     void destroySsao() {
@@ -8566,7 +8651,15 @@ private:
         if (!m_rt.buildTlas(m_rtInstScratch)) return false;
         m_rtTlasSig = sig;
         // If the TLAS handle changed (first build or a grow), re-point the descriptors.
-        if (m_rt.tlas() != before) rewriteRtaoTlas();
+        if (m_rt.tlas() != before) {
+            // Mesh set3 (r_rtshadows TLAS at binding 5) is ALWAYS BOUND, so its
+            // sets may be referenced by pending command buffers — idle before
+            // rewriting them on the FIRST build (rebuilds already idled above;
+            // the refl chain's first build sets the same precedent).
+            if (firstBuild) vkDeviceWaitIdle(m_dev.device);
+            rewriteRtaoTlas();
+            writeMeshTlasDescriptor();
+        }
         return m_rt.tlasBuilt() && m_rt.tlas() != VK_NULL_HANDLE;
     }
 
@@ -10096,7 +10189,7 @@ private:
             // mesh.frag statically references them, so they are part of the
             // layout on EVERY device; non-DDGI paths point them at the blurred-AO
             // view as a layout-valid placeholder (never sampled — gate 0).
-            VkDescriptorSetLayoutBinding b[5]{};
+            VkDescriptorSetLayoutBinding b[6]{};
             b[0].binding = 0; b[0].descriptorCount = 1;
             b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -10112,8 +10205,16 @@ private:
             b[4].binding = 4; b[4].descriptorCount = 1;
             b[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             b[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            // Binding 5 = the scene TLAS for RT soft shadows (r_rtshadows) — in
+            // the LAYOUT only on ray-query devices (the AS descriptor type needs
+            // VK_KHR_acceleration_structure). Only the mesh_rt.frag variant
+            // statically references it; the plain pipelines never touch it, so
+            // it may stay unwritten until the first TLAS build lands.
+            b[5].binding = 5; b[5].descriptorCount = 1;
+            b[5].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            b[5].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
             VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-            ci.bindingCount = 5; ci.pBindings = b;
+            ci.bindingCount = m_rtSupported ? 6u : 5u; ci.pBindings = b;
             if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_meshAoSetLayout) != VK_SUCCESS) {
                 logError("[rhi] mesh ao set layout failed"); return false;
             }
@@ -10303,6 +10404,57 @@ private:
             gpci.pColorBlendState = &cbT; gpci.pDepthStencilState = &dssT; gpci.pRasterizationState = &rsT;
             prT = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_meshPipelineTransparent);
             gpci.pColorBlendState = &cb; gpci.pDepthStencilState = &dssNo; gpci.pRasterizationState = &rs;  // restore
+        }
+
+        // ---- RT soft-shadow variants (r_rtshadows; ray-query devices only) ----
+        // The SAME three mesh pipelines with mesh_rt.frag.spv (inline ray-query
+        // shadow rays; TLAS at set3/binding5, which the layout above carries on
+        // RT devices). Identical fixed-function state per-variant; bound at draw
+        // time only on frames where the TLAS descriptor is valid. NON-FATAL on
+        // failure: the want-gate checks the pipeline handle, so a load/create
+        // failure simply leaves RT shadows off (plain raster path).
+        if (m_rtSupported) {
+            VkShaderModule fsRt = loadShaderModule("shaders\\mesh_rt.frag.spv");
+            if (fsRt) {
+                VkPipelineShaderStageCreateInfo rtStages[2] = { stages[0], stages[1] };
+                rtStages[1].module = fsRt;
+                gpci.pStages = rtStages;
+                // EQUAL/no-write (depth pre-pass on) variant:
+                gpci.pDepthStencilState = &dss;
+                if (vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_meshPipelineRt) != VK_SUCCESS)
+                    m_meshPipelineRt = VK_NULL_HANDLE;
+                // LESS/write (no pre-pass) variant:
+                gpci.pDepthStencilState = &dssNo;
+                if (vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_meshPipelineNoSsaoRt) != VK_SUCCESS)
+                    m_meshPipelineNoSsaoRt = VK_NULL_HANDLE;
+                // Transparent (BLEND) variant — same state the block above used:
+                {
+                    VkPipelineColorBlendAttachmentState cbaT = cba;
+                    cbaT.blendEnable = VK_TRUE;
+                    cbaT.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+                    cbaT.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+                    cbaT.colorBlendOp = VK_BLEND_OP_ADD;
+                    cbaT.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+                    cbaT.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+                    cbaT.alphaBlendOp = VK_BLEND_OP_ADD;
+                    VkPipelineColorBlendStateCreateInfo cbT = cb; cbT.pAttachments = &cbaT;
+                    VkPipelineDepthStencilStateCreateInfo dssT = dss;
+                    dssT.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+                    VkPipelineRasterizationStateCreateInfo rsT = rs; rsT.cullMode = VK_CULL_MODE_NONE;
+                    gpci.pColorBlendState = &cbT; gpci.pDepthStencilState = &dssT; gpci.pRasterizationState = &rsT;
+                    if (vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_meshPipelineTransparentRt) != VK_SUCCESS)
+                        m_meshPipelineTransparentRt = VK_NULL_HANDLE;
+                    gpci.pColorBlendState = &cb; gpci.pDepthStencilState = &dssNo; gpci.pRasterizationState = &rs;  // restore
+                }
+                gpci.pStages = stages;   // restore for the planet clones below
+                vkDestroyShaderModule(m_dev.device, fsRt, nullptr);
+                if (m_meshPipelineRt && m_meshPipelineNoSsaoRt)
+                    logInfo("[rhi] RT soft-shadow mesh pipelines ready (mesh_rt.frag: inline ray-query sun + point shadows)");
+                else
+                    logError("[rhi] RT soft-shadow pipeline create failed — r_rtshadows stays raster-only");
+            } else {
+                logError("[rhi] mesh_rt.frag.spv failed to load — r_rtshadows stays raster-only");
+            }
         }
 
         // ---- Planet body pipelines (FORGE3D port) — one OPAQUE PSO per type ----
@@ -10745,6 +10897,11 @@ private:
         if (m_meshProbePipe) { vkDestroyPipeline(m_dev.device, m_meshProbePipe, nullptr); m_meshProbePipe = VK_NULL_HANDLE; }
         if (m_meshProbeLayout) { vkDestroyPipelineLayout(m_dev.device, m_meshProbeLayout, nullptr); m_meshProbeLayout = VK_NULL_HANDLE; }
         if (m_meshPipelineTransparent) vkDestroyPipeline(m_dev.device, m_meshPipelineTransparent, nullptr);
+        if (m_meshPipelineRt)            vkDestroyPipeline(m_dev.device, m_meshPipelineRt, nullptr);
+        if (m_meshPipelineNoSsaoRt)      vkDestroyPipeline(m_dev.device, m_meshPipelineNoSsaoRt, nullptr);
+        if (m_meshPipelineTransparentRt) vkDestroyPipeline(m_dev.device, m_meshPipelineTransparentRt, nullptr);
+        m_meshPipelineRt = VK_NULL_HANDLE; m_meshPipelineNoSsaoRt = VK_NULL_HANDLE;
+        m_meshPipelineTransparentRt = VK_NULL_HANDLE;
         for (uint32_t pt = 0; pt < (uint32_t)PT_Count; ++pt) {
             if (m_planetPipelines[pt]) { vkDestroyPipeline(m_dev.device, m_planetPipelines[pt], nullptr); m_planetPipelines[pt] = VK_NULL_HANDLE; }
         }
@@ -10951,6 +11108,18 @@ private:
     bool             m_iblProbeScene = false;                // bake scene into env (vs sky-only)
     glm::vec3        m_iblProbePos{ 0.0f, 1.6f, 0.0f };      // probe world position (set to cam at bake)
     VkPipeline       m_meshPipelineTransparent = VK_NULL_HANDLE;  // BLEND: src-alpha over, LEQUAL, no depth-write, cull NONE
+    // RT soft-shadow variants (mesh_rt.frag.spv; created only on ray-query
+    // devices, bound only on frames where the TLAS descriptor is valid). Same
+    // pipeline LAYOUT as the plain set (set3 just has one extra binding on RT
+    // devices); identical fixed-function state per-variant.
+    VkPipeline       m_meshPipelineRt            = VK_NULL_HANDLE; // EQUAL/no-write (pre-pass on)
+    VkPipeline       m_meshPipelineNoSsaoRt      = VK_NULL_HANDLE; // LESS/write (no pre-pass)
+    VkPipeline       m_meshPipelineTransparentRt = VK_NULL_HANDLE; // BLEND variant
+    RtShadowParams   m_rtShadows{};                    // cached r_rtshadows tunables (default tier 2)
+    bool             m_rtShadowsWantThisFrame   = false; // decided in prepareFrameData (UBO gate)
+    bool             m_rtShadowsActiveThisFrame = false; // decided in endFrame (TLAS ready + descriptor written)
+    bool             m_meshTlasWritten = false;          // mesh set3 binding5 points at a real TLAS
+    uint32_t         m_rtshFrameSeed = 0;                // per-frame jitter rotation counter
     VkPipelineLayout m_meshLayout = VK_NULL_HANDLE;
     // Translucent GLASS pipeline (transparent pass). Shares mesh.vert + sets 0-3
     // with the opaque mesh path, but uses its OWN pipeline layout m_glassLayout
@@ -11438,6 +11607,10 @@ private:
         glm::vec4 ddgiOrigin;   // xyz = grid min corner, w = visMaxDist
         glm::vec4 ddgiSpacing;  // xyz = probe spacing
         glm::vec4 ddgiCounts;   // xyz = probe counts (float)
+        // RT soft shadows (r_rtshadows) — read ONLY by the mesh_rt.frag variant;
+        // all zero when inactive (the plain variant never references them).
+        glm::vec4 rtsh0;        // x = tier, y = tan(sun angular radius), z = point ray budget K, w = light source radius (m)
+        glm::vec4 rtsh1;        // x = frame seed (0 when TAA is off -> static dither)
     };
     // Half-res AO targets: raw (ssao.frag output) + blurred (ssao_blur output,
     // sampled by mesh.frag). Both R8, recreated with the frame extent.

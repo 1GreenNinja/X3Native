@@ -433,6 +433,35 @@ public:
     // Cached + re-applied each frame, like setRtaoParams. Default no-op.
     virtual void          setDdgiParams(const DdgiParams&) {}
 
+    // ---- RAY-TRACED SOFT SHADOWS (r_rtshadows) ------------------------------
+    // Per-pixel inline ray-query shadows in the mesh fragment stage, traced
+    // against the SAME scene TLAS RT-AO/reflections/DDGI share:
+    //   tier 0: CSM-only — today's path, bit-identical (the plain mesh.frag
+    //           pipeline is bound; none of this code exists in its SPIR-V).
+    //   tier 1: SUN — one cone-jittered ray per pixel (angular radius
+    //           sunSizeDeg) min()-combined with the CSM term, so static
+    //           geometry gets soft distance-scaled penumbra while skinned
+    //           characters (absent from the static TLAS) keep their raster
+    //           shadows. Per-frame jitter rotation; TAA accumulates the noise.
+    //   tier 2 (default): sun + POINT LIGHTS — lamps finally cast: the first
+    //           `pointMax` lights with a non-negligible contribution at the
+    //           pixel each get one ray toward a jittered point on the light's
+    //           spherical source (radius pointRadius); penumbra widens with
+    //           occluder distance. Beyond the budget: unshadowed (existing
+    //           behavior).
+    // TIER-GATED: requires ray-query hardware; on anything else (Pascal) the
+    // stored tier is ignored and the raster path is byte-for-byte unchanged
+    // (the same auto-0 gating DDGI/reflections use). Opaque-only rays v1
+    // (alpha-cutout occludes as the full quad — documented, same as RT AO).
+    struct RtShadowParams {
+        int   tier        = 2;      // r_rtshadows (0/1/2; auto-0 without ray query)
+        float sunSizeDeg  = 0.5f;   // r_rtsun_size: sun angular RADIUS (degrees)
+        int   pointMax    = 4;      // r_rtpoint_max: point shadow rays per pixel
+        float pointRadius = 0.10f;  // r_rtpoint_size: light source radius (m)
+    };
+    // Cached + re-applied each frame, like setRtaoParams. Default no-op.
+    virtual void          setRtShadowParams(const RtShadowParams&) {}
+
     // ---- Glass DEV overrides (live r_glass_* cvars, spec §2/§3.2) ----------
     // A dev-time SCALE/OVERRIDE applied to EVERY glass fragment this frame so the
     // glass look can be scrubbed live in the console without re-authoring each
