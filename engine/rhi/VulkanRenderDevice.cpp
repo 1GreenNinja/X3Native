@@ -538,6 +538,8 @@ public:
         if (p.taa && !m_post.taa) m_taaHistoryValid = false;
         m_post = p;
     }
+    // Metal ambient-specular floor strength (mesh.frag IBL path; rides ssao ctrl ibl.w).
+    void setMetalAmbient(float s) override { m_metalAmbient = (s >= 0.0f) ? s : 1.0f; }
 
     void setShadowBounds(float cx, float cy, float cz, float halfExtent) override {
         m_shadowOverride  = true;
@@ -2099,8 +2101,9 @@ private:
             const float invH = (m_extent.height > 0) ? 1.0f / (float)m_extent.height : 0.0f;
             sc.ctrl = glm::vec4(m_ssao.enabled ? 1.0f : 0.0f, m_ssao.strength, invW, invH);
             // IBL lane: valid only once an environment has been baked into the cubes.
+            // .w = metal ambient-specular floor strength (r_metalambient, default 1).
             const float iblValid = (m_iblReady && m_iblBaked) ? 1.0f : 0.0f;
-            sc.ibl = glm::vec4(iblValid, 1.0f, (float)(kIblPrefilterMips - 1), 0.0f);
+            sc.ibl = glm::vec4(iblValid, 1.0f, (float)(kIblPrefilterMips - 1), m_metalAmbient);
             if (m_ssaoCtrlMapped[m_frameIdx])
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
         }
@@ -10682,6 +10685,7 @@ private:
     // override via setBloom() (the showroom raises it for the glowing-spire hero look).
     float                   m_bloomIntensity = kBloomIntensity;
     float                   m_exposure = 1.0f;   // whole-scene brightness (composite pre-tonemap)
+    float                   m_metalAmbient = 1.0f; // metal ambient-spec floor strength (mesh.frag ibl.w; r_metalambient)
 };
 
 } // namespace

@@ -67,7 +67,7 @@ layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap;
 layout(set = 3, binding = 0) uniform sampler2D ssaoTex;
 layout(set = 3, binding = 1) uniform SsaoControl {
     vec4 ctrl;   // x=enabled, y=strength, z=1/screenW, w=1/screenH
-    vec4 ibl;    // x=IBL valid(0/1), y=IBL intensity, z=prefilter max mip, w=reserved
+    vec4 ibl;    // x=IBL valid(0/1), y=IBL intensity, z=prefilter max mip, w=metal ambient-spec floor strength (r_metalambient)
 } ssao;
 
 // ===========================================================================
@@ -309,6 +309,21 @@ vec3 iblAmbient(vec3 N, vec3 V, vec3 albedo, float metallic, float perceptualRou
     vec3 prefiltered = textureLod(prefilterCube, R, perceptualRough * maxMip).rgb;
     vec2 ab = texture(brdfLUT, vec2(NoV, perceptualRough)).rg;
     vec3 specular = prefiltered * (F0 * ab.x + ab.y);
+
+    // ---- Metal ambient-specular FLOOR (r_metalambient, carried in ssao.ibl.w) ----
+    // Metals have no diffuse lobe (kD ~ 0 above), so when the baked environment is
+    // DARK (night interiors, windowless rooms) their entire ambient response is this
+    // prefiltered specular — which is then ~0, and metals render near-black even
+    // though the scene has a healthy flat ambient (cam.ambientCount). Physically a
+    // metal in a lit room still shows an F0-tinted environment response (HDRP gives
+    // metals exactly this ambient specular floor). Floor the env specular at the
+    // scene's hemispheric ambient tinted by F0, gated by metallic so DIELECTRICS
+    // (F0 = 0.04) are untouched, and dimmed for rough metals (duller response).
+    // max(), not +=: a healthy/bright environment is NEVER brightened, and the floor
+    // passes through the same Reinhard energy rolloff below as the env specular.
+    vec3 floorSpec = ssao.ibl.w * ambient * F0 * metallic
+                   * mix(1.0, 0.55, perceptualRough) * mix(0.55, 1.1, up);
+    specular = max(specular, floorSpec);
 
     // Energy ceiling: a near-mirror metal (low roughness, high F0) reflecting a bright
     // environment produces HDR specular so large it clips past ACES to flat white. Soft

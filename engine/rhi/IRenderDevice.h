@@ -168,6 +168,10 @@ public:
                                        // amount (0 = off). Only applied when taa is on.
     };
     virtual void setPostFX(const PostFXParams&) {}
+    // Metal ambient-specular floor strength (mesh.frag IBL path): metals in a DARK
+    // baked environment keep an F0-tinted ambient response instead of going black.
+    // 1.0 = default ON, 0.0 = off. Drives the live r_metalambient cvar.
+    virtual void setMetalAmbient(float s) {}
 
     // Per-frame
     virtual FrameContext beginFrame() = 0;
