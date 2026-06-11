@@ -835,6 +835,12 @@ public:
         float gpuP50 = 0, gpuP95 = 0, gpuP99 = 0, gpuP999 = 0, gpuMax = 0;
         uint32_t samples = 0;          // post-warmup frames measured
         uint32_t spikes  = 0;          // post-warmup frames > max(spikeFactor*median, median+floorMs)
+        // Spikes with NO attributed cause (no pipeline/module/pool/alloc/AS-build/
+        // IBL-bake/recreate event that frame). Attributed spikes are declared
+        // scene-mutation boundaries (e.g. a door opening triggers a TLAS rebuild —
+        // logged, known, TODO: async double-buffered TLAS build); UNattributed
+        // spikes are unexplained pacing failures and gate --test-framepacing.
+        uint32_t spikesUnattributed = 0;
         // Late-creation audit (the strict-PSO gate; all must stay 0 in steady state):
         uint32_t psoLate     = 0;      // pipelines created after the first frame began
         uint32_t modulesLate = 0;      // shader modules created after the first frame began

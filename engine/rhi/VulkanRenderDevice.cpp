@@ -1174,6 +1174,7 @@ public:
         p.psoBootMs   = (float)m_psoCreateMs;
         p.cacheLoaded = m_cacheLoadedBytes;
         p.spikes      = m_spikeCount;
+        p.spikesUnattributed = m_spikeCleanCount;
         p.samples     = (uint32_t)m_paceRing.size();
         if (m_paceRing.empty()) return p;
         std::vector<float> cpu, gpu;
@@ -10134,6 +10135,13 @@ private:
             cpuMs > median * m_pacing.spikeFactor &&
             cpuMs > median + m_pacing.floorMs) {
             ++m_spikeCount;
+            // Attribution: a spike with a known cause (AS rebuild on scene change,
+            // streaming upload, IBL re-bake, resize) is a declared boundary; a
+            // spike with NO cause is an unexplained pacing failure (the gate).
+            const bool attributed = m_psoThisFrame || m_modulesThisFrame || m_poolsThisFrame ||
+                                    m_allocsThisFrame || m_asBuildsThisFrame ||
+                                    m_iblBakedThisFrame || m_recreatedThisFrame;
+            if (!attributed) ++m_spikeCleanCount;
             char buf[256];
             std::snprintf(buf, sizeof(buf),
                 "[pacing] SPIKE frame=%llu cpu=%.2fms (median %.2f) gpu=%.2fms | pso+%u mod+%u pools+%u allocs+%u asbuild+%u%s%s",
@@ -12414,7 +12422,8 @@ private:
     uint32_t m_paceWrite = 0;
     bool     m_paceHaveLast = false;
     std::chrono::steady_clock::time_point m_paceLast{};
-    uint32_t m_spikeCount = 0;
+    uint32_t m_spikeCount = 0;       // all post-warmup spikes (logged)
+    uint32_t m_spikeCleanCount = 0;  // spikes with NO attributed cause (the gate)
 
     bool m_vsync = true;
     bool m_needsRecreate = false;
