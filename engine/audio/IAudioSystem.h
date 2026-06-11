@@ -111,6 +111,27 @@ public:
     // startLoop). Default no-op so backends may opt out; invalid handle -> no-op.
     virtual void setLoopParams(LoopHandle /*loop*/, float /*vol*/, float /*pitch*/) {}
 
+    // ---- RT ACOUSTICS hooks (occlusion + room reverb) ----------------------
+    // Occlusion provider: a callback the mixer invokes ONCE per 3D one-shot at
+    // play time with the emitter's world position, returning the smoothed
+    // occlusion factor in [0,1] (0 = clear line of sound, 1 = fully behind
+    // geometry). The mixer applies it as a volume duck + a per-voice one-pole
+    // lowpass chain (muffled-through-the-wall). Pass fn=nullptr to unhook —
+    // the play path is then byte-for-byte the pre-acoustics path for new
+    // voices. Plain function pointer + user so no <functional> crosses the
+    // interface. Default no-op (backends may opt out).
+    using OcclusionFn = float (*)(void* user, float x, float y, float z);
+    virtual void setOcclusionProvider(OcclusionFn /*fn*/, void* /*user*/) {}
+
+    // Room reverb (RT-acoustics room estimate -> mixer): a single shared
+    // Schroeder reverb INSERT (4 comb + 2 allpass, dry + wet*reverb) that all
+    // 3D one-shots route through while an occlusion provider is hooked.
+    // `t60Seconds` is the decay time (RT60); `wet` is the wet mix [0..1]
+    // (0 = audibly dry). Both are smoothed inside the audio thread (no zipper).
+    // The reverb chain is created lazily on the first call; before that (or in
+    // silent mode) this is a harmless store. Default no-op.
+    virtual void setReverbParams(float /*t60Seconds*/, float /*wet*/) {}
+
     // Per-frame tick: advances any internal bookkeeping (voice cleanup). Cheap.
     virtual void update(float dt) = 0;
 };

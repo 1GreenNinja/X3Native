@@ -15,6 +15,7 @@ add_library(x3engine STATIC
     ai/Navigation.cpp
     asset/ModelLoader.cpp
     audio/MiniaudioSystem.cpp
+    audio/RtAcoustics.cpp
     net/LoopbackTransport.cpp
     net/Replication.cpp
     net/NetworkSystem.cpp

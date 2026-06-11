@@ -18,6 +18,7 @@
 #include "engine/physics/IVehicle.h"      // vehicle framework: --test-vehicle + --world drive/boat/fly
 #include "engine/asset/IModelLoader.h"
 #include "engine/audio/IAudioSystem.h"
+#include "engine/audio/RtAcoustics.h"   // RT ACOUSTICS: audio rays through the render TLAS (+ --test-acoustics)
 #include "engine/net/INetworkSystem.h"   // netcode Phase 0: --test-net + SimClock
 #include "engine/net/SimClock.h"         // deterministic fixed-step accumulator
 #include "engine/net/ISnapshotInterpolator.h"  // netcode Phase 0c: --test-netinterp
@@ -692,6 +693,14 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("r_ddgi_ny",        "8",    "DDGI probe count Y (2..32)");
     console.registerCVar("r_ddgi_nz",        "24",   "DDGI probe count Z (2..32)");
     console.registerCVar("r_ddgi_hyst",      "0.97", "DDGI irradiance hysteresis (history blend; higher = smoother/slower)");
+    // RT ACOUSTICS — audio rays through the render TLAS (the audio sibling of
+    // r_rtao/r_ddgi): per-emitter occlusion rays muffle gunfire through real
+    // walls (volume duck + per-voice lowpass) and a periodic listener room
+    // probe sizes the reverb to the ACTUAL geometry. Default ON; the chain
+    // self-gates on ray-query hardware (non-RT devices: inert, byte-identical
+    // audio). snd_rta_debug logs the live per-emitter occlusion + room class.
+    console.registerCVar("snd_rtacoustics", "1", "RT acoustics: TLAS occlusion rays (muffle through walls) + room-probe reverb; needs RT hardware, inert otherwise");
+    console.registerCVar("snd_rta_debug",   "0", "RT acoustics debug: 1 = log per-emitter occlusion + room class/mfp/T60/wet (~2 Hz)");
     // (3rd-person Jake tuning cvars removed 2026-05-27: dialed-in values
     // jake_yoff=1.03 / jake_yawoff_deg=90 / jake_camdist=2.3 / jake_camh=0.37
     // are now baked as member defaults in app/thirdperson.h.)
@@ -1255,7 +1264,7 @@ int main(int argc, char** argv) {
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
          testBlockout = false,
          testBarrels = false, testGlass = false, testHoloterm = false, testEcs = false, testEcsRender = false,
-         testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
+         testCombat = false, testAudio = false, testAcoustics = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
          testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
          testElevatorFsm = false,
@@ -1664,6 +1673,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-combat") testCombat = true;
         else if (a == "--test-deathragdoll") testDeathRagdoll = true;
         else if (a == "--test-audio") testAudio = true;
+        else if (a == "--test-acoustics") testAcoustics = true;
         else if (a == "--test-level1") testLevel1 = true;
         else if (a == "--test-canonlevel") testCanonLevel = true;
         else if (a == "--test-canonplay") testCanonPlay = true;
@@ -2004,6 +2014,10 @@ int main(int argc, char** argv) {
     if (testAudio) {
         x3::logInfo("running audio (M9) self-test...");
         return x3::audio::runAudioSelfTest() ? 0 : 1;
+    }
+    if (testAcoustics) {
+        x3::logInfo("running RT-acoustics self-test (occlusion rays + room estimate)...");
+        return x3::audio::runAcousticsSelfTest() ? 0 : 1;
     }
     if (testLevel1) {
         x3::logInfo("running EFLZ Level 1 (Awakening) self-test (T1-T6)...");
@@ -7430,6 +7444,24 @@ int main(int argc, char** argv) {
     // Missing files load() to invalid handles -> silent.
     std::unique_ptr<x3::audio::IAudioSystem> audio(x3::audio::createAudioSystem());
     audio->init();
+    // ---- RT ACOUSTICS (snd_rtacoustics): audio rays through the render TLAS.
+    // The brain (RtAcoustics) fires per-emitter occlusion fans + a periodic
+    // listener room probe through IRenderDevice::traceAudioRays (the same scene
+    // TLAS the RT screen effects trace); the mixer applies the result as a
+    // volume duck + per-voice lowpass + room reverb. Self-gating: on a non-RT
+    // device traceAudioRays returns false and the whole chain stays inert.
+    static_assert(sizeof(x3::audio::AcousticRay) == sizeof(x3::rhi::IRenderDevice::AudioRay),
+                  "AcousticRay must match IRenderDevice::AudioRay (memcpy bridge)");
+    x3::audio::RtAcoustics rtAcoustics;
+    rtAcoustics.setTracer(
+        +[](void* user, const x3::audio::AcousticRay* rays, int count, float* outHitT) -> bool {
+            auto* dev = static_cast<x3::rhi::IRenderDevice*>(user);
+            return dev->traceAudioRays(
+                reinterpret_cast<const x3::rhi::IRenderDevice::AudioRay*>(rays), count, outHitT);
+        },
+        device.get());
+    bool  rtaHooked = false;        // occlusion provider currently installed?
+    float rtaDebugTimer = 0.0f;     // snd_rta_debug log cadence
     // Concrete asset picks (see docs/ASSET_INVENTORY.md). Pack-relative paths with
     // graceful fallback: a missing/undecodable file -> invalid handle -> the
     // corresponding event is simply silent (logged once at load).
@@ -8707,6 +8739,44 @@ int main(int argc, char** argv) {
             physics->step(dt);
             scene.update(*physics);
             audio->update(dt);
+            // RT ACOUSTICS under validation: exercise the TLAS audio-ray batch.
+            // The first call ARMS the per-frame TLAS build (returns false); later
+            // frames trace for real on RT hardware. Non-RT: false + inert. The
+            // last frame logs the result + the measured cost of one batch.
+            if (i >= 18) {
+                x3::rhi::IRenderDevice::AudioRay ar[66];
+                int an = 0;
+                ar[an].ox = vmX; ar[an].oy = vmY; ar[an].oz = vmZ;
+                ar[an].dx = 0; ar[an].dy = -1; ar[an].dz = 0; ar[an].tMax = 50.0f; ++an;  // floor
+                ar[an].ox = vmX; ar[an].oy = vmY; ar[an].oz = vmZ;
+                ar[an].dx = 1; ar[an].dy = 0;  ar[an].dz = 0; ar[an].tMax = 50.0f; ++an;  // wall
+                // A 64-ray room-probe-sized sphere batch (the production cadence shape).
+                for (int k = 0; k < 64; ++k) {
+                    const float ga = 2.39996323f;
+                    const float yf = 1.0f - 2.0f * ((float)k + 0.5f) / 64.0f;
+                    const float rr = std::sqrt(std::max(0.0f, 1.0f - yf * yf));
+                    ar[an].ox = vmX; ar[an].oy = vmY; ar[an].oz = vmZ;
+                    ar[an].dx = rr * std::cos(ga * k); ar[an].dy = yf;
+                    ar[an].dz = rr * std::sin(ga * k); ar[an].tMax = 80.0f; ++an;
+                }
+                float hit[66];
+                const auto rt0 = std::chrono::steady_clock::now();
+                const bool ok = device->traceAudioRays(ar, an, hit);
+                const double rtMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - rt0).count();
+                if (i == 29) {
+                    if (ok) {
+                        int hits = 0; for (int k = 0; k < an; ++k) if (hit[k] >= 0.0f) ++hits;
+                        char rb[160];
+                        std::snprintf(rb, sizeof(rb),
+                            "[rta] smoketest trace OK: %d rays, %d hits, floorHit=%.2fm, batch=%.3fms",
+                            an, hits, hit[0], rtMs);
+                        x3::logInfo(rb);
+                    } else {
+                        x3::logInfo("[rta] smoketest trace: no data (non-RT device or TLAS pending) — inert OK");
+                    }
+                }
+            }
             // Exercise the FX/fire path under validation: fire once mid-run.
             if (i == 10) {
                 x3::phys::Vec3 dir{ std::cos(vmPitch) * std::cos(vmYaw),
@@ -10180,6 +10250,40 @@ int main(int argc, char** argv) {
         // M9: tick the audio system (reaps finished one-shot voices). Always ticked
         // so audio voices don't pile up while paused.
         audio->update(dt);
+
+        // ---- RT ACOUSTICS (snd_rtacoustics): re-trace active emitters + the
+        // periodic room probe against the TLAS, hand the room reverb targets to
+        // the mixer, and (de)install the mixer's occlusion provider on cvar
+        // change. Inert (provider never installed) without RT hardware. ----
+        {
+            const bool rtaOn = console->getInt("snd_rtacoustics") != 0 &&
+                               device->rayTracingSupported();
+            if (rtaOn != rtaHooked) {
+                audio->setOcclusionProvider(
+                    rtaOn ? &x3::audio::RtAcoustics::occlusionThunk : nullptr,
+                    rtaOn ? &rtAcoustics : nullptr);
+                rtAcoustics.setEnabled(rtaOn);
+                if (!rtaOn) audio->setReverbParams(0.3f, 0.0f);   // dry again
+                rtaHooked = rtaOn;
+                x3::logInfo(rtaOn ? "[rta] RT acoustics ON (TLAS occlusion + room reverb)"
+                                  : "[rta] RT acoustics OFF");
+            }
+            if (rtaOn) {
+                rtAcoustics.setListener(camX, camY, camZ);
+                rtAcoustics.update(dt);
+                const x3::audio::RoomEstimate& rm = rtAcoustics.room();
+                audio->setReverbParams(rm.t60, rm.wet);
+                if (console->getInt("snd_rta_debug") != 0) {
+                    rtaDebugTimer += dt;
+                    if (rtaDebugTimer >= 0.5f) {
+                        rtaDebugTimer = 0.0f;
+                        x3::logInfo(rtAcoustics.debugString());
+                    }
+                } else {
+                    rtaDebugTimer = 0.0f;
+                }
+            }
+        }
 
         int cw, ch;
         glfwGetFramebufferSize(window, &cw, &ch);

@@ -433,6 +433,28 @@ public:
     // Cached + re-applied each frame, like setRtaoParams. Default no-op.
     virtual void          setDdgiParams(const DdgiParams&) {}
 
+    // ---- RT ACOUSTICS — audio rays through the render TLAS (snd_rtacoustics) --
+    // Synchronously trace a small batch of arbitrary world-space rays against the
+    // SAME scene TLAS the RT AO / reflections / DDGI passes use, and return each
+    // ray's CLOSEST hit distance in meters (outHitT[i] < 0 = miss within tMax).
+    // The audio layer (engine/audio/RtAcoustics) batches per-emitter occlusion
+    // fans + a periodic listener room-probe sphere into one call — a few hundred
+    // rays, ~0.1 ms class. POD only — no Vulkan types cross the boundary.
+    //
+    // Returns false (and leaves outHitT untouched) when ray tracing is
+    // unsupported, the TLAS is not built yet (the first call ARMS the per-frame
+    // TLAS build; results begin one frame later), or count exceeds the internal
+    // batch capacity. Callers must treat false as "no data" — keep last values.
+    // Default false (headless / non-RT devices — acoustics then stays inert).
+    struct AudioRay {
+        float ox = 0, oy = 0, oz = 0;  // world-space origin
+        float tMax = 1.0f;             // ray length (meters)
+        float dx = 0, dy = 1, dz = 0;  // direction (normalized by the caller)
+        float pad = 0;                 // std430 vec4-pair alignment
+    };
+    virtual bool          traceAudioRays(const AudioRay*, int /*count*/,
+                                         float* /*outHitT*/) { return false; }
+
     // ---- Glass DEV overrides (live r_glass_* cvars, spec §2/§3.2) ----------
     // A dev-time SCALE/OVERRIDE applied to EVERY glass fragment this frame so the
     // glass look can be scrubbed live in the console without re-authoring each

@@ -143,7 +143,8 @@ set(SHADER_SRCS
 set(SHADER_SRCS_RT
     ${CMAKE_SOURCE_DIR}/shaders/rtao.comp
     ${CMAKE_SOURCE_DIR}/shaders/ddgi_rays.comp
-    ${CMAKE_SOURCE_DIR}/shaders/ddgi_update.comp)
+    ${CMAKE_SOURCE_DIR}/shaders/ddgi_update.comp
+    ${CMAKE_SOURCE_DIR}/shaders/audio_rays.comp)
 set(SPV_DIR ${CMAKE_BINARY_DIR}/shaders_spv)
 file(MAKE_DIRECTORY ${SPV_DIR})
 set(SPV_FILES "")
