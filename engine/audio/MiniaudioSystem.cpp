@@ -157,6 +157,7 @@ float occlusionCutoffHz(float occ) {
     return 19000.0f * std::pow(0.022f, clamp01(occ));
 }
 constexpr float kOcclusionDuck = 0.7f;   // volume *= 1 - kOcclusionDuck*occ
+constexpr ma_uint32 kOccLpfOrder = 4;    // 4th-order = 24 dB/oct (a real wall)
 
 // A loaded, fully-decoded prototype sound we clone transient voices from. Kept
 // alive for the system's lifetime (clones reference its decoded data).
@@ -171,8 +172,16 @@ struct Proto {
 // chain (voice -> lpf -> reverb -> endpoint); uninit'd with the voice.
 struct Voice {
     std::unique_ptr<ma_sound> sound;
-    std::unique_ptr<ma_lpf_node> lpf;   // null = not occluded (direct route)
+    std::unique_ptr<ma_lpf_node> lpf;   // 3D voices with a provider hooked own one
     uint64_t serial = 0;   // monotonically increasing; oldest = smallest
+    // Live-occlusion state (3D voices while a provider is hooked): the mixer
+    // re-queries the provider each update() and retunes volume + lowpass, so
+    // a door closing mid-tail muffles the tail and the async tracer's one-
+    // update latency on a NEW emitter is corrected within ~16-33 ms.
+    bool  spatial = false;
+    float x = 0, y = 0, z = 0;
+    float baseVol = 1.0f;               // pre-master, pre-duck volume
+    float lastOcc = -1.0f;              // last applied occlusion (skip no-ops)
 };
 
 // A live LOOPING voice (a clone of a Proto set to loop). Lives until stopLoop().
@@ -419,6 +428,29 @@ public:
                 ++i;
             }
         }
+        // RT ACOUSTICS: retune LIVE 3D voices from the provider's CURRENT
+        // smoothed occlusion (volume duck + lowpass cutoff). Covers the async
+        // tracer's one-update latency on fresh emitters and doors closing
+        // mid-tail. Skipped entirely without a provider; per-voice no-op when
+        // the value barely moved (cheap: a handful of voices * one reinit).
+        if (m_occFn) {
+            for (Voice& v : m_voices) {
+                if (!v.spatial || !v.sound) continue;
+                const float occ = clamp01(m_occFn(m_occUser, v.x, v.y, v.z));
+                if (std::fabs(occ - v.lastOcc) < 0.005f) continue;
+                v.lastOcc = occ;
+                ma_sound_set_volume(v.sound.get(),
+                    v.baseVol * m_sfxMaster * (1.0f - kOcclusionDuck * occ));
+                if (v.lpf) {
+                    ma_lpf_config lc = ma_lpf_config_init(
+                        ma_format_f32,
+                        ma_engine_get_channels(&m_engine),
+                        ma_engine_get_sample_rate(&m_engine),
+                        (double)occlusionCutoffHz(occ), kOccLpfOrder);
+                    ma_lpf_node_reinit(&lc, v.lpf.get());
+                }
+            }
+        }
     }
 
 private:
@@ -507,34 +539,31 @@ private:
         }
 
         // ---- RT ACOUSTICS (3D voices, provider hooked) ----------------------
-        // Ask the provider for this emitter position's smoothed occlusion ONCE at
-        // play time (one-shots are short — gunshots/impacts — so a start-time
-        // value is correct; successive shots track the provider's 200 ms smooth).
-        // Apply as a volume duck + a per-voice lowpass, and route the voice
-        // through the shared room reverb. With NO provider hooked the path below
-        // is byte-for-byte the pre-acoustics path (default endpoint attach).
+        // Ask the provider for this emitter position's smoothed occlusion, route
+        // the voice voice->lowpass->reverb->endpoint, and apply occlusion as a
+        // volume duck + the lowpass cutoff. EVERY 3D voice gets the lowpass while
+        // a provider is hooked (cutoff ~19 kHz = transparent when clear) because
+        // update() retunes it LIVE — a new emitter's first traced value (the
+        // async tracer is one update behind) and a door closing mid-tail both
+        // land on the already-playing voice. With NO provider hooked the path
+        // below is byte-for-byte the pre-acoustics path (default endpoint attach).
         float occ = 0.0f;
         std::unique_ptr<ma_lpf_node> lpf;
         if (spatial && m_occFn) {
             occ = clamp01(m_occFn(m_occUser, x, y, z));
             ma_node* target = m_reverb ? &m_reverb->base
                                        : ma_node_graph_get_endpoint(ma_engine_get_node_graph(&m_engine));
-            if (occ > 0.02f) {
-                // Muffle: voice -> lowpass -> reverb/endpoint.
-                lpf = std::make_unique<ma_lpf_node>();
-                ma_lpf_node_config lc = ma_lpf_node_config_init(
-                    ma_engine_get_channels(&m_engine),
-                    ma_engine_get_sample_rate(&m_engine),
-                    (double)occlusionCutoffHz(occ), /*order*/ 4);
-                if (ma_lpf_node_init(ma_engine_get_node_graph(&m_engine), &lc, nullptr,
-                                     lpf.get()) == MA_SUCCESS) {
-                    ma_node_attach_output_bus(lpf.get(), 0, target, 0);
-                    ma_node_attach_output_bus(voice.get(), 0, lpf.get(), 0);
-                } else {
-                    lpf.reset();   // filter failed: volume-only duck still applies
-                    ma_node_attach_output_bus(voice.get(), 0, target, 0);
-                }
+            lpf = std::make_unique<ma_lpf_node>();
+            ma_lpf_node_config lc = ma_lpf_node_config_init(
+                ma_engine_get_channels(&m_engine),
+                ma_engine_get_sample_rate(&m_engine),
+                (double)occlusionCutoffHz(occ), kOccLpfOrder);
+            if (ma_lpf_node_init(ma_engine_get_node_graph(&m_engine), &lc, nullptr,
+                                 lpf.get()) == MA_SUCCESS) {
+                ma_node_attach_output_bus(lpf.get(), 0, target, 0);
+                ma_node_attach_output_bus(voice.get(), 0, lpf.get(), 0);
             } else {
+                lpf.reset();   // filter failed: volume-only duck still applies
                 ma_node_attach_output_bus(voice.get(), 0, target, 0);
             }
         }
@@ -554,6 +583,10 @@ private:
         v.sound = std::move(voice);
         v.lpf = std::move(lpf);
         v.serial = m_nextSerial++;
+        v.spatial = spatial;
+        v.x = x; v.y = y; v.z = z;
+        v.baseVol = clamp01(vol);
+        v.lastOcc = occ;
         m_voices.push_back(std::move(v));
     }
 

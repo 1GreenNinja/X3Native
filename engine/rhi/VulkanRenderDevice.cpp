@@ -8594,26 +8594,29 @@ private:
     }
 
     // =====================================================================
-    // RT ACOUSTICS — traceAudioRays(): synchronous batched ray queries
-    // against the SAME scene TLAS the RT screen effects use. A few hundred
-    // rays per call (per-emitter occlusion fans + the periodic room-probe
-    // sphere), dispatched as ONE small compute (audio_rays.comp) on a
-    // transient command buffer with a fence wait — sub-0.1ms-class. The
-    // first call ARMS the per-frame TLAS build (m_audioRaysWantFrames) and
-    // returns false until the TLAS exists; callers keep their last values.
+    // RT ACOUSTICS — ASYNC batched ray queries against the SAME scene TLAS
+    // the RT screen effects use. Submit records + queues ONE small compute
+    // dispatch (audio_rays.comp) with a fence and returns immediately;
+    // harvest polls the fence next update and copies the hit distances out.
+    // Async on purpose: a synchronous fence wait on the graphics queue would
+    // stall the game thread behind the in-flight frame's GPU work (tens of
+    // ms on heavy scenes); submit+harvest costs ~microseconds and audio
+    // tolerates one update of latency. The first submit ARMS the per-frame
+    // TLAS build (m_audioRaysWantFrames) and returns false until it exists.
     // =====================================================================
-    bool traceAudioRays(const AudioRay* rays, int count, float* outHitT) override {
-        if (!m_rtSupported || !rays || !outHitT || count <= 0 ||
+    bool traceAudioRaysSubmit(const AudioRay* rays, int count) override {
+        if (!m_rtSupported || !rays || count <= 0 ||
             (uint32_t)count > kAudioRayCapacity)
             return false;
         m_audioRaysWantFrames = 300;   // keep the TLAS alive ~5s past the last ask
+        if (m_audioRayInFlight) return false;   // previous batch not harvested yet
         if (!ensureRtCore() || !m_rt.tlasBuilt() || m_rt.tlas() == VK_NULL_HANDLE)
             return false;              // TLAS comes up next endFrame — no data yet
         if (!ensureAudioRays()) return false;
 
         // (Re)point the TLAS descriptor when the handle changed (first build or
-        // a grow recreated it). Safe here: our previous dispatch fence-waited to
-        // completion inside this same call, so the set is never in flight.
+        // a grow recreated it). Safe: no batch is in flight (checked above), so
+        // the set is never updated while bound to executing work.
         if (m_audioRayTlasBound != m_rt.tlas()) {
             VkAccelerationStructureKHR tlas = m_rt.tlas();
             VkWriteDescriptorSetAccelerationStructureKHR asW{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
@@ -8630,7 +8633,7 @@ private:
         std::memcpy(m_audioRayInMapped, rays, (size_t)count * sizeof(AudioRay));
         vmaFlushAllocation(m_alloc, m_audioRayInAlloc, 0, (VkDeviceSize)count * sizeof(AudioRay));
 
-        // Record + submit + fence-wait the one-shot dispatch.
+        // Record + submit (NO wait — the fence is polled by harvest).
         vkResetCommandBuffer(m_audioRayCmd, 0);
         VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -8659,12 +8662,23 @@ private:
         submit.commandBufferInfoCount = 1; submit.pCommandBufferInfos = &cs;
         if (vkQueueSubmit2(m_gfxQueue, 1, &submit, m_audioRayFence) != VK_SUCCESS)
             return false;
-        vkWaitForFences(m_dev.device, 1, &m_audioRayFence, VK_TRUE, UINT64_MAX);
-        vkResetFences(m_dev.device, 1, &m_audioRayFence);
-
-        vmaInvalidateAllocation(m_alloc, m_audioRayOutAlloc, 0, (VkDeviceSize)count * sizeof(float));
-        std::memcpy(outHitT, m_audioRayOutMapped, (size_t)count * sizeof(float));
+        m_audioRayInFlight = true;
+        m_audioRayInFlightCount = count;
         return true;
+    }
+
+    int traceAudioRaysHarvest(float* outHitT, int capacity) override {
+        if (!m_audioRayInFlight) return -1;
+        const VkResult fs = vkGetFenceStatus(m_dev.device, m_audioRayFence);
+        if (fs == VK_NOT_READY) return 0;     // still on the GPU — poll again
+        vkResetFences(m_dev.device, 1, &m_audioRayFence);
+        m_audioRayInFlight = false;
+        const int n = m_audioRayInFlightCount;
+        m_audioRayInFlightCount = 0;
+        if (fs != VK_SUCCESS || !outHitT || capacity < n) return -1;  // batch dropped
+        vmaInvalidateAllocation(m_alloc, m_audioRayOutAlloc, 0, (VkDeviceSize)n * sizeof(float));
+        std::memcpy(outHitT, m_audioRayOutMapped, (size_t)n * sizeof(float));
+        return n;
     }
 
     // Lazily build the audio-ray batch chain: pipeline (audio_rays.comp) +
@@ -8778,6 +8792,11 @@ private:
 
     void destroyAudioRays() {
         if (!m_dev.device) return;
+        if (m_audioRayInFlight && m_audioRayFence) {
+            vkWaitForFences(m_dev.device, 1, &m_audioRayFence, VK_TRUE, UINT64_MAX);
+            m_audioRayInFlight = false;
+            m_audioRayInFlightCount = 0;
+        }
         if (m_audioRayFence)   { vkDestroyFence(m_dev.device, m_audioRayFence, nullptr); m_audioRayFence = VK_NULL_HANDLE; }
         if (m_audioRayCmdPool) { vkDestroyCommandPool(m_dev.device, m_audioRayCmdPool, nullptr); m_audioRayCmdPool = VK_NULL_HANDLE; m_audioRayCmd = VK_NULL_HANDLE; }
         if (m_audioRayPool)    { vkDestroyDescriptorPool(m_dev.device, m_audioRayPool, nullptr); m_audioRayPool = VK_NULL_HANDLE; m_audioRaySet = VK_NULL_HANDLE; }
@@ -11046,6 +11065,8 @@ private:
     VkAccelerationStructureKHR m_audioRayTlasBound = VK_NULL_HANDLE; // descriptor currency
     bool m_audioRayBuilt  = false;
     bool m_audioRayFailed = false;        // one-shot create failure latch (no retry spam)
+    bool m_audioRayInFlight = false;      // a submitted batch awaits harvest
+    int  m_audioRayInFlightCount = 0;     // ray count of the in-flight batch
     int  m_audioRaysWantFrames = 0;       // >0: keep the scene TLAS built for audio
 
     // ======================================================================

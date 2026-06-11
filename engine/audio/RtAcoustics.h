@@ -8,11 +8,12 @@
 //   * OCCLUSION: for every active 3D sound emitter it fires a primary
 //     listener->emitter ray plus a small deterministic jittered fan (8 rays)
 //     against the tracer; the blocked-ray fraction is the occlusion factor,
-//     temporally smoothed (~200 ms) so successive gunshots glide rather than
-//     zipper. The mixer (MiniaudioSystem) queries it once per 3D one-shot via
-//     IAudioSystem::setOcclusionProvider and applies a volume duck + a
-//     per-voice lowpass — stand behind a wall from gunfire and it muffles;
-//     step through the door and it opens up.
+//     temporally smoothed (~200 ms) so transitions glide rather than zipper.
+//     The mixer (MiniaudioSystem) queries it via IAudioSystem::
+//     setOcclusionProvider — at play time AND live per update for every
+//     in-flight 3D voice — and applies a volume duck + a per-voice lowpass:
+//     stand behind a wall from gunfire and it muffles; step through the door
+//     and it opens up.
 //
 //   * ROOM REVERB ESTIMATE: every ~0.5 s it fires a 64-ray deterministic
 //     sphere from the LISTENER; the mean free path + miss fraction classify
@@ -20,14 +21,17 @@
 //     reverb decay (T60) + wet level for the mixer's Schroeder insert
 //     (IAudioSystem::setReverbParams), smoothed so doorway transitions sweep.
 //
-// The TRACER is injected (plain function pointer + user): the game wires it to
-// IRenderDevice::traceAudioRays (the GPU ray-query batch vs the TLAS); the
-// headless self-test (--test-acoustics) wires a deterministic CPU box-room
-// tracer instead — same math, no GPU required. A tracer returning false means
-// "no data this call" (e.g. the TLAS isn't built yet): all last values hold.
+// The TRACER is injected as an ASYNC submit/harvest pair (plain function
+// pointers + user): the game wires it to IRenderDevice::traceAudioRaysSubmit/
+// Harvest (the GPU ray-query batch vs the TLAS — async so the game thread
+// never fence-waits behind frame GPU work); the headless self-test
+// (--test-acoustics) wires a deterministic CPU box-room tracer with the same
+// one-update latency. Each update HARVESTS the previous batch (applying it
+// with saved slot metadata, so expired/reused slots never mis-apply) and
+// SUBMITS the next. No data yet -> all last values hold.
 //
-// Budget: <= 16 emitters * 9 rays + 64 room rays = 208 rays per update, one
-// batched trace call — ~0.1 ms class, trivial next to DDGI's thousands.
+// Budget: <= 16 emitters * 9 rays + 64 room rays = 208 rays per batch, one
+// submit per update — ~0.1 ms class GPU, ~microseconds CPU.
 
 #include <string>
 
@@ -43,12 +47,12 @@ struct AcousticRay {
     float pad = 0;
 };
 
-// Batched tracer: fill outHitT[i] with the CLOSEST hit distance along ray i
-// (< 0 = miss within tMax) and return true; return false = no data this call
-// (caller keeps its last values). Plain function pointer + user (no
-// <functional> across the engine boundary).
-using AcousticTraceFn = bool (*)(void* user, const AcousticRay* rays, int count,
-                                 float* outHitT);
+// Async tracer pair (mirrors IRenderDevice::traceAudioRaysSubmit/Harvest):
+//  * submit: kick a batch; false = busy / no TLAS yet / unsupported.
+//  * harvest: poll the last batch; returns its ray count and fills outHitT
+//    (closest hit, < 0 = miss) when done; 0 = still pending; -1 = none/lost.
+using AcousticSubmitFn  = bool (*)(void* user, const AcousticRay* rays, int count);
+using AcousticHarvestFn = int  (*)(void* user, float* outHitT, int capacity);
 
 enum class RoomClass : int { Small = 0, Medium = 1, Large = 2, Outdoor = 3 };
 
@@ -65,13 +69,14 @@ public:
     static constexpr int kMaxEmitters = 16;  // active occlusion-tracked emitters
     static constexpr int kFanRays     = 8;   // jitter fan around each primary ray
     static constexpr int kRoomRays    = 64;  // listener room-probe sphere
+    static constexpr int kBatchCap    = kMaxEmitters * (1 + kFanRays) + kRoomRays;
 
-    // Inject the ray tracer (game: IRenderDevice::traceAudioRays bridge;
-    // test: CPU box tracer). fn=nullptr disables all tracing (occlusion 0).
-    void setTracer(AcousticTraceFn fn, void* user);
+    // Inject the async tracer (game: IRenderDevice bridge; test: CPU box
+    // tracer). nullptrs disable all tracing (occlusion 0, room stays dry).
+    void setTracer(AcousticSubmitFn submit, AcousticHarvestFn harvest, void* user);
 
-    // Master gate (snd_rtacoustics): disabled -> occlusionAt returns 0, update
-    // is a no-op, and the room estimate decays to dry (wet 0).
+    // Master gate (snd_rtacoustics): disabled -> occlusionAt returns 0 and
+    // update() is a no-op.
     void setEnabled(bool on) { m_enabled = on; }
     bool enabled() const { return m_enabled; }
 
@@ -79,17 +84,19 @@ public:
     void setListener(float x, float y, float z);
 
     // Mixer occlusion provider entry: smoothed occlusion [0,1] for an emitter
-    // at (x,y,z). Registers/refreshes the emitter slot; a NEW slot is traced
-    // synchronously so the very first shot from a fresh spot is already
-    // correct. Thunk form matches IAudioSystem::OcclusionFn.
+    // at (x,y,z). Registers/refreshes the emitter slot. A NEW slot starts at 0
+    // and SNAPS to its first traced value (one update of latency); the mixer's
+    // live per-voice re-query makes that inaudible (~16-33 ms). Thunk form
+    // matches IAudioSystem::OcclusionFn.
     float occlusionAt(float x, float y, float z);
     static float occlusionThunk(void* self, float x, float y, float z) {
         return static_cast<RtAcoustics*>(self)->occlusionAt(x, y, z);
     }
 
-    // Per-frame: re-trace active emitters (one batched call), advance the
-    // ~200 ms occlusion smoothing, expire idle emitters (3 s), and every
-    // ~0.5 s re-probe the room sphere + smooth the reverb targets.
+    // Per-frame: HARVEST the previous batch (apply occlusion targets + the
+    // room estimate via saved metadata), advance the ~200 ms smoothing,
+    // expire idle emitters (3 s), and SUBMIT the next batch (with the room
+    // sphere appended every ~0.5 s).
     void update(float dt);
 
     const RoomEstimate& room() const { return m_room; }
@@ -104,17 +111,17 @@ private:
         float occ = 0.0f;        // smoothed (what the mixer hears)
         float occTarget = 0.0f;  // latest traced blocked-ray fraction
         float idle = 0.0f;       // seconds since last occlusionAt() touch
+        unsigned gen = 0;        // bumped on (re)allocation — pending-apply guard
         bool  used = false;
+        bool  newborn = true;    // first traced value SNAPS (no smoothing ramp)
     };
 
-    // Trace the (1 + kFanRays) occlusion fan for one emitter NOW; returns the
-    // blocked fraction, or -1 when the tracer has no data.
-    float traceEmitterFan(const Emitter& e);
-    void  probeRoom();           // 64-ray sphere -> classify -> set targets
+    void probeApply(const float* hitT, int roomStart);  // room rays -> estimate
     static void classify(float meanFreePath, float missFrac,
                          RoomClass& cls, float& t60, float& wet);
 
-    AcousticTraceFn m_trace = nullptr;
+    AcousticSubmitFn  m_submit  = nullptr;
+    AcousticHarvestFn m_harvest = nullptr;
     void* m_traceUser = nullptr;
     bool  m_enabled = true;
 
@@ -126,12 +133,20 @@ private:
     float m_roomWetTarget = 0.0f;
     float m_roomTimer = 999.0f;           // fire the first probe immediately
 
-    // Reused batch scratch (no per-frame heap churn after warm-up).
-    std::string m_dbgScratch;
+    // In-flight batch metadata (what harvest applies results against).
+    struct Pending {
+        bool active = false;
+        int  count = 0;
+        int  fanStart[kMaxEmitters] = {};
+        int  fanCount[kMaxEmitters] = {};
+        unsigned gen[kMaxEmitters] = {};  // slot generation at submit time
+        int  roomStart = -1;              // -1 = no room sphere in this batch
+    } m_pending;
 };
 
-// Headless self-test (--test-acoustics): deterministic CPU box-room tracer;
-// asserts wall-occlusion high vs line-of-sight ~0, the 200 ms smoothing,
+// Headless self-test (--test-acoustics): deterministic CPU box-room tracer
+// (same async submit/harvest contract, one-update latency); asserts
+// wall-occlusion high vs line-of-sight ~0, the 200 ms smoothing,
 // small-room vs walls-removed (outdoor) classification, determinism across
 // instances, and prints a wall-walk transcript (the snd_rta_debug story).
 bool runAcousticsSelfTest();

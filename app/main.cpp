@@ -7454,10 +7454,14 @@ int main(int argc, char** argv) {
                   "AcousticRay must match IRenderDevice::AudioRay (memcpy bridge)");
     x3::audio::RtAcoustics rtAcoustics;
     rtAcoustics.setTracer(
-        +[](void* user, const x3::audio::AcousticRay* rays, int count, float* outHitT) -> bool {
+        +[](void* user, const x3::audio::AcousticRay* rays, int count) -> bool {
             auto* dev = static_cast<x3::rhi::IRenderDevice*>(user);
-            return dev->traceAudioRays(
-                reinterpret_cast<const x3::rhi::IRenderDevice::AudioRay*>(rays), count, outHitT);
+            return dev->traceAudioRaysSubmit(
+                reinterpret_cast<const x3::rhi::IRenderDevice::AudioRay*>(rays), count);
+        },
+        +[](void* user, float* outHitT, int capacity) -> int {
+            auto* dev = static_cast<x3::rhi::IRenderDevice*>(user);
+            return dev->traceAudioRaysHarvest(outHitT, capacity);
         },
         device.get());
     bool  rtaHooked = false;        // occlusion provider currently installed?
@@ -8739,41 +8743,50 @@ int main(int argc, char** argv) {
             physics->step(dt);
             scene.update(*physics);
             audio->update(dt);
-            // RT ACOUSTICS under validation: exercise the TLAS audio-ray batch.
-            // The first call ARMS the per-frame TLAS build (returns false); later
-            // frames trace for real on RT hardware. Non-RT: false + inert. The
-            // last frame logs the result + the measured cost of one batch.
+            // RT ACOUSTICS under validation: exercise the ASYNC TLAS audio-ray
+            // batch (submit one frame, harvest the next — the production shape).
+            // The first submit ARMS the per-frame TLAS build (returns false);
+            // later frames trace for real on RT hardware. Non-RT: inert. The
+            // last frames log the harvested result + the measured CPU cost of
+            // one submit+harvest pair (the game-thread cost — must be ~us).
             if (i >= 18) {
-                x3::rhi::IRenderDevice::AudioRay ar[66];
-                int an = 0;
-                ar[an].ox = vmX; ar[an].oy = vmY; ar[an].oz = vmZ;
-                ar[an].dx = 0; ar[an].dy = -1; ar[an].dz = 0; ar[an].tMax = 50.0f; ++an;  // floor
-                ar[an].ox = vmX; ar[an].oy = vmY; ar[an].oz = vmZ;
-                ar[an].dx = 1; ar[an].dy = 0;  ar[an].dz = 0; ar[an].tMax = 50.0f; ++an;  // wall
-                // A 64-ray room-probe-sized sphere batch (the production cadence shape).
-                for (int k = 0; k < 64; ++k) {
-                    const float ga = 2.39996323f;
-                    const float yf = 1.0f - 2.0f * ((float)k + 0.5f) / 64.0f;
-                    const float rr = std::sqrt(std::max(0.0f, 1.0f - yf * yf));
-                    ar[an].ox = vmX; ar[an].oy = vmY; ar[an].oz = vmZ;
-                    ar[an].dx = rr * std::cos(ga * k); ar[an].dy = yf;
-                    ar[an].dz = rr * std::sin(ga * k); ar[an].tMax = 80.0f; ++an;
-                }
-                float hit[66];
                 const auto rt0 = std::chrono::steady_clock::now();
-                const bool ok = device->traceAudioRays(ar, an, hit);
-                const double rtMs = std::chrono::duration<double, std::milli>(
+                static int rtaHarvested = 0; static float rtaFloorHit = -1.0f;
+                static double rtaCpuMs = -1.0;
+                float hit[66];
+                const int got = device->traceAudioRaysHarvest(hit, 66);
+                if (got > 0) { rtaHarvested = got; rtaFloorHit = hit[0]; }
+                if (got != 0) {   // idle or just harvested: submit the next batch
+                    x3::rhi::IRenderDevice::AudioRay ar[66];
+                    int an = 0;
+                    ar[an].ox = vmX; ar[an].oy = vmY; ar[an].oz = vmZ;
+                    ar[an].dx = 0; ar[an].dy = -1; ar[an].dz = 0; ar[an].tMax = 50.0f; ++an;  // floor
+                    ar[an].ox = vmX; ar[an].oy = vmY; ar[an].oz = vmZ;
+                    ar[an].dx = 1; ar[an].dy = 0;  ar[an].dz = 0; ar[an].tMax = 50.0f; ++an;  // wall
+                    // A 64-ray room-probe-sized sphere (the production batch shape).
+                    for (int k = 0; k < 64; ++k) {
+                        const float ga = 2.39996323f;
+                        const float yf = 1.0f - 2.0f * ((float)k + 0.5f) / 64.0f;
+                        const float rr = std::sqrt(std::max(0.0f, 1.0f - yf * yf));
+                        ar[an].ox = vmX; ar[an].oy = vmY; ar[an].oz = vmZ;
+                        ar[an].dx = rr * std::cos(ga * k); ar[an].dy = yf;
+                        ar[an].dz = rr * std::sin(ga * k); ar[an].tMax = 80.0f; ++an;
+                    }
+                    device->traceAudioRaysSubmit(ar, an);
+                }
+                const double ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - rt0).count();
+                if (rtaCpuMs < 0.0 || ms > rtaCpuMs) rtaCpuMs = ms;   // worst pair
                 if (i == 29) {
-                    if (ok) {
-                        int hits = 0; for (int k = 0; k < an; ++k) if (hit[k] >= 0.0f) ++hits;
-                        char rb[160];
+                    if (rtaHarvested > 0) {
+                        char rb[200];
                         std::snprintf(rb, sizeof(rb),
-                            "[rta] smoketest trace OK: %d rays, %d hits, floorHit=%.2fm, batch=%.3fms",
-                            an, hits, hit[0], rtMs);
+                            "[rta] smoketest async trace OK: harvested %d rays, floorHit=%.2fm, "
+                            "worst submit+harvest CPU=%.3fms (game thread, non-blocking)",
+                            rtaHarvested, rtaFloorHit, rtaCpuMs);
                         x3::logInfo(rb);
                     } else {
-                        x3::logInfo("[rta] smoketest trace: no data (non-RT device or TLAS pending) — inert OK");
+                        x3::logInfo("[rta] smoketest async trace: no data (non-RT device or TLAS pending) — inert OK");
                     }
                 }
             }

@@ -56,28 +56,11 @@ float smoothStep(float cur, float target, float dt, float tau) {
     return cur + (target - cur) * a;
 }
 
-} // namespace
-
-void RtAcoustics::setTracer(AcousticTraceFn fn, void* user) {
-    m_trace = fn;
-    m_traceUser = fn ? user : nullptr;
-}
-
-void RtAcoustics::setListener(float x, float y, float z) {
-    m_lx = x; m_ly = y; m_lz = z;
-}
-
-int RtAcoustics::activeEmitters() const {
-    int n = 0;
-    for (const Emitter& e : m_emitters) n += e.used ? 1 : 0;
-    return n;
-}
-
 // Build the (1 + kFanRays) ray fan listener -> emitter into `out`.
 // Returns the number of rays appended (0 when the emitter is on top of the
 // listener — trivially unoccluded).
-static int buildFan(float lx, float ly, float lz, float ex, float ey, float ez,
-                    AcousticRay* out) {
+int buildFan(float lx, float ly, float lz, float ex, float ey, float ez,
+             AcousticRay* out) {
     const V3 L{ lx, ly, lz }, E{ ex, ey, ez };
     const V3 d = sub(E, L);
     const float dist = len(d);
@@ -111,23 +94,30 @@ static int buildFan(float lx, float ly, float lz, float ex, float ey, float ez,
     return n;
 }
 
-float RtAcoustics::traceEmitterFan(const Emitter& e) {
-    if (!m_trace) return -1.0f;
-    AcousticRay rays[1 + kFanRays];
-    const int n = buildFan(m_lx, m_ly, m_lz, e.x, e.y, e.z, rays);
-    if (n == 0) return 0.0f;
-    float hit[1 + kFanRays];
-    if (!m_trace(m_traceUser, rays, n, hit)) return -1.0f;   // no data yet
-    int blocked = 0;
-    for (int i = 0; i < n; ++i)
-        if (hit[i] >= 0.0f) ++blocked;   // anything inside tMax blocks the path
-    return (float)blocked / (float)n;
+} // namespace
+
+void RtAcoustics::setTracer(AcousticSubmitFn submit, AcousticHarvestFn harvest, void* user) {
+    m_submit = submit;
+    m_harvest = harvest;
+    m_traceUser = (submit && harvest) ? user : nullptr;
+    if (!submit || !harvest) { m_submit = nullptr; m_harvest = nullptr; }
+    m_pending.active = false;
+}
+
+void RtAcoustics::setListener(float x, float y, float z) {
+    m_lx = x; m_ly = y; m_lz = z;
+}
+
+int RtAcoustics::activeEmitters() const {
+    int n = 0;
+    for (const Emitter& e : m_emitters) n += e.used ? 1 : 0;
+    return n;
 }
 
 float RtAcoustics::occlusionAt(float x, float y, float z) {
-    if (!m_enabled || !m_trace) return 0.0f;
+    if (!m_enabled || !m_submit) return 0.0f;
 
-    // Match an existing slot (same emitter spot re-firing).
+    // Match an existing slot (same emitter spot re-firing / live voice query).
     int freeSlot = -1, idlest = -1; float idlestT = -1.0f;
     for (int i = 0; i < kMaxEmitters; ++i) {
         Emitter& e = m_emitters[i];
@@ -141,46 +131,78 @@ float RtAcoustics::occlusionAt(float x, float y, float z) {
         if (e.idle > idlestT) { idlestT = e.idle; idlest = i; }
     }
 
-    // New emitter: take a free slot (or steal the idlest) and trace it NOW so
-    // the FIRST shot from a fresh spot is already correctly muffled.
+    // New emitter: take a free slot (or steal the idlest). It starts at 0 and
+    // SNAPS to its first traced value when the next batch lands (one update of
+    // latency); the mixer re-queries live voices per update, so the snap is
+    // applied to the already-playing voice within ~16-33 ms.
     const int slot = (freeSlot >= 0) ? freeSlot : idlest;
     if (slot < 0) return 0.0f;
     Emitter& e = m_emitters[slot];
-    e.used = true; e.idle = 0.0f;
+    e.used = true; e.newborn = true; e.idle = 0.0f;
     e.x = x; e.y = y; e.z = z;
-    const float t = traceEmitterFan(e);
-    e.occTarget = (t >= 0.0f) ? t : 0.0f;
-    e.occ = e.occTarget;          // instant on creation; smoothed thereafter
+    e.occ = 0.0f; e.occTarget = 0.0f;
+    ++e.gen;
     return e.occ;
 }
 
 void RtAcoustics::update(float dt) {
-    if (!m_enabled || !m_trace) return;
+    if (!m_enabled || !m_submit) return;
     if (dt < 0.0f) dt = 0.0f;
     if (dt > 0.25f) dt = 0.25f;
 
-    // ---- Batch: every active emitter's fan + (periodically) the room sphere
-    // into ONE trace call (one GPU dispatch / fence in the live game). --------
-    AcousticRay batch[kMaxEmitters * (1 + kFanRays) + kRoomRays];
-    int  fanStart[kMaxEmitters];
-    int  fanCount[kMaxEmitters];
-    int  n = 0;
-
-    for (int i = 0; i < kMaxEmitters; ++i) {
-        Emitter& e = m_emitters[i];
-        fanStart[i] = n; fanCount[i] = 0;
-        if (!e.used) continue;
-        e.idle += dt;
-        if (e.idle > kEmitterExpire) { e.used = false; continue; }
-        fanCount[i] = buildFan(m_lx, m_ly, m_lz, e.x, e.y, e.z, batch + n);
-        n += fanCount[i];
+    // ---- 1) HARVEST the in-flight batch (if any) and apply via the saved
+    // metadata. Generation guards make a reused/expired slot ignore results
+    // that were traced for its previous occupant. -----------------------------
+    if (m_pending.active) {
+        float hit[kBatchCap];
+        const int got = m_harvest(m_traceUser, hit, kBatchCap);
+        if (got > 0) {
+            m_pending.active = false;
+            for (int i = 0; i < kMaxEmitters; ++i) {
+                if (m_pending.fanCount[i] <= 0) continue;
+                Emitter& e = m_emitters[i];
+                if (!e.used || e.gen != m_pending.gen[i]) continue;
+                int blocked = 0;
+                for (int k = 0; k < m_pending.fanCount[i]; ++k)
+                    if (hit[m_pending.fanStart[i] + k] >= 0.0f) ++blocked;
+                e.occTarget = (float)blocked / (float)m_pending.fanCount[i];
+                if (e.newborn) { e.occ = e.occTarget; e.newborn = false; }  // snap
+            }
+            if (m_pending.roomStart >= 0) probeApply(hit, m_pending.roomStart);
+        } else if (got < 0) {
+            m_pending.active = false;   // batch lost (device reset/raced) — drop
+        }
+        // got == 0: still on the GPU — keep waiting, no new submit this update.
     }
 
+    // ---- 2) Expire idle emitters + advance the ~200 ms smoothing ------------
+    for (int i = 0; i < kMaxEmitters; ++i) {
+        Emitter& e = m_emitters[i];
+        if (!e.used) continue;
+        e.idle += dt;
+        if (e.idle > kEmitterExpire) { e.used = false; ++e.gen; continue; }
+        e.occ = smoothStep(e.occ, e.occTarget, dt, kOccSmoothTau);
+    }
+    m_room.t60 = smoothStep(m_room.t60, m_roomT60Target, dt, kRoomSmoothTau);
+    m_room.wet = smoothStep(m_room.wet, m_roomWetTarget, dt, kRoomSmoothTau);
+
+    // ---- 3) SUBMIT the next batch (emitter fans + the 2 Hz room sphere) -----
+    if (m_pending.active) return;       // previous batch still pending
     m_roomTimer += dt;
-    int roomStart = -1;
+
+    AcousticRay batch[kBatchCap];
+    Pending p;
+    int n = 0;
+    for (int i = 0; i < kMaxEmitters; ++i) {
+        Emitter& e = m_emitters[i];
+        p.fanStart[i] = n; p.fanCount[i] = 0; p.gen[i] = e.gen;
+        if (!e.used) continue;
+        p.fanCount[i] = buildFan(m_lx, m_ly, m_lz, e.x, e.y, e.z, batch + n);
+        if (p.fanCount[i] == 0 && e.newborn) { e.occ = 0.0f; e.occTarget = 0.0f; e.newborn = false; }
+        n += p.fanCount[i];
+    }
     if (m_roomTimer >= kRoomProbePeriod) {
-        m_roomTimer = 0.0f;
-        roomStart = n;
+        p.roomStart = n;
         const auto& dirs = roomDirTemplate();
         for (int i = 0; i < kRoomRays; ++i) {
             AcousticRay r = dirs[i];
@@ -188,39 +210,27 @@ void RtAcoustics::update(float dt) {
             batch[n++] = r;
         }
     }
-
-    float hit[kMaxEmitters * (1 + kFanRays) + kRoomRays];
-    bool haveData = false;
-    if (n > 0) haveData = m_trace(m_traceUser, batch, n, hit);
-
-    // ---- Occlusion targets + ~200 ms smoothing ------------------------------
-    for (int i = 0; i < kMaxEmitters; ++i) {
-        Emitter& e = m_emitters[i];
-        if (!e.used) continue;
-        if (haveData && fanCount[i] > 0) {
-            int blocked = 0;
-            for (int k = 0; k < fanCount[i]; ++k)
-                if (hit[fanStart[i] + k] >= 0.0f) ++blocked;
-            e.occTarget = (float)blocked / (float)fanCount[i];
-        }
-        e.occ = smoothStep(e.occ, e.occTarget, dt, kOccSmoothTau);
+    if (n == 0) return;                  // nothing to trace
+    p.count = n;
+    if (m_submit(m_traceUser, batch, n)) {
+        if (p.roomStart >= 0) m_roomTimer = 0.0f;   // probe actually went out
+        p.active = true;
+        m_pending = p;
     }
+    // submit false (busy / TLAS pending): try again next update; values hold.
+}
 
-    // ---- Room estimate (when probed this update) ----------------------------
-    if (haveData && roomStart >= 0) {
-        float sum = 0.0f; int misses = 0;
-        for (int i = 0; i < kRoomRays; ++i) {
-            const float t = hit[roomStart + i];
-            if (t >= 0.0f) sum += t;
-            else { sum += kRoomRayLen; ++misses; }
-        }
-        m_room.meanFreePath = sum / (float)kRoomRays;
-        m_room.missFrac = (float)misses / (float)kRoomRays;
-        classify(m_room.meanFreePath, m_room.missFrac,
-                 m_room.cls, m_roomT60Target, m_roomWetTarget);
+void RtAcoustics::probeApply(const float* hitT, int roomStart) {
+    float sum = 0.0f; int misses = 0;
+    for (int i = 0; i < kRoomRays; ++i) {
+        const float t = hitT[roomStart + i];
+        if (t >= 0.0f) sum += t;
+        else { sum += kRoomRayLen; ++misses; }
     }
-    m_room.t60 = smoothStep(m_room.t60, m_roomT60Target, dt, kRoomSmoothTau);
-    m_room.wet = smoothStep(m_room.wet, m_roomWetTarget, dt, kRoomSmoothTau);
+    m_room.meanFreePath = sum / (float)kRoomRays;
+    m_room.missFrac = (float)misses / (float)kRoomRays;
+    classify(m_room.meanFreePath, m_room.missFrac,
+             m_room.cls, m_roomT60Target, m_roomWetTarget);
 }
 
 void RtAcoustics::classify(float mfp, float missFrac,
@@ -251,7 +261,8 @@ std::string RtAcoustics::debugString() const {
 }
 
 // ===========================================================================
-// Headless self-test (--test-acoustics): deterministic CPU box-room tracer.
+// Headless self-test (--test-acoustics): deterministic CPU box-room tracer
+// behind the SAME async submit/harvest contract (one-update latency).
 // ===========================================================================
 namespace {
 
@@ -271,6 +282,10 @@ struct TestWorld {
     std::vector<Aabb> boxes;
     bool wall = true;     // dividing wall present?
     bool shell = true;    // outer room shell present?
+
+    // Async adapter state (mimics the GPU: submit stores, harvest resolves).
+    std::vector<AcousticRay> pendingRays;
+    bool inFlight = false;
 
     void rebuild() {
         boxes.clear();
@@ -313,17 +328,34 @@ float rayAabb(const AcousticRay& r, const Aabb& b) {
     return (t0 > 0.0f) ? t0 : -1.0f;   // origin inside a box: ignore (open space)
 }
 
-bool cpuTrace(void* user, const AcousticRay* rays, int count, float* outHitT) {
-    const TestWorld* w = static_cast<const TestWorld*>(user);
+void cpuTraceNow(const TestWorld& w, const AcousticRay* rays, int count, float* outHitT) {
     for (int i = 0; i < count; ++i) {
         float best = -1.0f;
-        for (const Aabb& b : w->boxes) {
+        for (const Aabb& b : w.boxes) {
             const float t = rayAabb(rays[i], b);
             if (t >= 0.0f && (best < 0.0f || t < best)) best = t;
         }
         outHitT[i] = best;
     }
+}
+
+// Async adapter: submit stores the batch; harvest (next update) traces it
+// against the CURRENT geometry — exactly one update of latency, like the GPU.
+bool cpuSubmit(void* user, const AcousticRay* rays, int count) {
+    TestWorld* w = static_cast<TestWorld*>(user);
+    if (w->inFlight) return false;
+    w->pendingRays.assign(rays, rays + count);
+    w->inFlight = true;
     return true;
+}
+int cpuHarvest(void* user, float* outHitT, int capacity) {
+    TestWorld* w = static_cast<TestWorld*>(user);
+    if (!w->inFlight) return -1;
+    const int n = (int)w->pendingRays.size();
+    if (capacity < n) { w->inFlight = false; return -1; }
+    cpuTraceNow(*w, w->pendingRays.data(), n, outHitT);
+    w->inFlight = false;
+    return n;
 }
 
 // Settle helper: run update() at a fixed step until t seconds have elapsed.
@@ -350,53 +382,67 @@ bool runAcousticsSelfTest() {
         r.ox = -3.0f; r.oy = 1.6f; r.oz = -2.0f;
         r.dx = 1.0f; r.dy = 0.0f; r.dz = 0.0f; r.tMax = 10.0f;
         float t = -2.0f;
-        cpuTrace(&world, &r, 1, &t);
+        cpuTraceNow(world, &r, 1, &t);
         check(t > 2.85f && t < 2.95f, "T1 CPU tracer hits the divider at ~2.9 m");
     }
 
-    // T2: LINE OF SIGHT — listener in the doorway sightline: occlusion ~ 0.
+    // T2: LINE OF SIGHT — listener in the doorway sightline: occlusion ~0 once
+    // the first (async, one-update-latency) batch lands.
     {
+        world.inFlight = false;   // reset adapter (prior instance may have left a batch)
         RtAcoustics rta;
-        rta.setTracer(&cpuTrace, &world);
+        rta.setTracer(&cpuSubmit, &cpuHarvest, &world);
         rta.setListener(-3.0f, 1.6f, 1.4f);          // straight through the door
+        rta.occlusionAt(ex, ey, ez);                  // register the emitter
+        settle(rta, 0.5f);
         const float occ = rta.occlusionAt(ex, ey, ez);
         check(occ <= 0.15f, "T2 line-of-sight occlusion ~0 (through the door)");
     }
 
-    // T3: BEHIND THE WALL — listener behind the solid section: occlusion high.
+    // T3: BEHIND THE WALL — listener behind the solid section: occlusion high
+    // (the newborn slot SNAPS to its first traced value — no slow ramp-in).
     {
+        world.inFlight = false;
         RtAcoustics rta;
-        rta.setTracer(&cpuTrace, &world);
+        rta.setTracer(&cpuSubmit, &cpuHarvest, &world);
         rta.setListener(-3.0f, 1.6f, -3.0f);         // behind solid divider
+        rta.occlusionAt(ex, ey, ez);
+        // Two updates: submit, then harvest+snap. The very next mixer query is
+        // already fully muffled (~33 ms after the first shot).
+        rta.update(1.0f / 60.0f);
+        rta.update(1.0f / 60.0f);
         const float occ = rta.occlusionAt(ex, ey, ez);
-        check(occ >= 0.85f, "T3 behind-the-wall occlusion high (>= 0.85)");
+        check(occ >= 0.85f, "T3 behind-the-wall occlusion high within 2 updates (newborn snap)");
     }
 
     // T4: ~200 ms temporal smoothing — remove the wall mid-flight: the smoothed
     // occlusion must FALL but not snap (a real intermediate value), then settle
     // near 0 after ~1 s. Proves no zipper on door-open transitions.
     {
+        world.inFlight = false;
         RtAcoustics rta;
-        rta.setTracer(&cpuTrace, &world);
+        rta.setTracer(&cpuSubmit, &cpuHarvest, &world);
         rta.setListener(-3.0f, 1.6f, -3.0f);
-        const float occ0 = rta.occlusionAt(ex, ey, ez);   // wall up: ~1
-        settle(rta, 0.3f);                                 // converged on target
+        rta.occlusionAt(ex, ey, ez);
+        settle(rta, 0.4f);                                 // converged on target
+        const float occ0 = rta.occlusionAt(ex, ey, ez);    // wall up: ~1
         world.wall = false; world.rebuild();               // wall vanishes
         rta.occlusionAt(ex, ey, ez);                       // keep the slot warm
-        rta.update(1.0f / 60.0f);                          // one 16 ms step
+        settle(rta, 0.1f);                                 // a few 16 ms steps
         const float occMid = rta.occlusionAt(ex, ey, ez);
         settle(rta, 1.2f);
         const float occEnd = rta.occlusionAt(ex, ey, ez);
         world.wall = true; world.rebuild();
-        check(occ0 >= 0.85f && occMid < occ0 && occMid > 0.25f && occEnd <= 0.10f,
-              "T4 smoothing: high -> intermediate (one step) -> ~0 (settled)");
+        check(occ0 >= 0.85f && occMid < occ0 && occMid > 0.20f && occEnd <= 0.10f,
+              "T4 smoothing: high -> intermediate (~100 ms) -> ~0 (settled)");
     }
 
     // T5: ROOM ESTIMATE — inside the 10x4x10 shell = SMALL room; with the shell
     // removed (no geometry at all) = OUTDOOR. The classes must differ and match.
     {
+        world.inFlight = false;
         RtAcoustics rta;
-        rta.setTracer(&cpuTrace, &world);
+        rta.setTracer(&cpuSubmit, &cpuHarvest, &world);
         rta.setListener(-3.0f, 1.6f, -3.0f);
         settle(rta, 1.5f);                                 // >= 2 room probes
         const RoomEstimate inRoom = rta.room();
@@ -404,7 +450,7 @@ bool runAcousticsSelfTest() {
         TestWorld open;
         open.shell = false; open.wall = false; open.rebuild();
         RtAcoustics rta2;
-        rta2.setTracer(&cpuTrace, &open);
+        rta2.setTracer(&cpuSubmit, &cpuHarvest, &open);
         rta2.setListener(-3.0f, 1.6f, -3.0f);
         settle(rta2, 1.5f);
         const RoomEstimate outdoor = rta2.room();
@@ -421,13 +467,14 @@ bool runAcousticsSelfTest() {
     // bit-identical occlusion + room numbers (fixed ray sets, no RNG).
     {
         auto run = [&](RoomEstimate& rm) {
+            world.inFlight = false;   // reset adapter between instances
             RtAcoustics rta;
-            rta.setTracer(&cpuTrace, &world);
+            rta.setTracer(&cpuSubmit, &cpuHarvest, &world);
             rta.setListener(-3.0f, 1.6f, -3.0f);
-            const float o = rta.occlusionAt(ex, ey, ez);
+            rta.occlusionAt(ex, ey, ez);
             settle(rta, 0.7f);
             rm = rta.room();
-            return o;
+            return rta.occlusionAt(ex, ey, ez);
         };
         RoomEstimate ra, rb;
         const float oa = run(ra), ob = run(rb);
@@ -441,8 +488,9 @@ bool runAcousticsSelfTest() {
     // the emitter keeps "firing". Occlusion must start high, END ~0, and never
     // rise along the way. The printed lines are the snd_rta_debug story.
     {
+        world.inFlight = false;
         RtAcoustics rta;
-        rta.setTracer(&cpuTrace, &world);
+        rta.setTracer(&cpuSubmit, &cpuHarvest, &world);
         const float walkZ[] = { -3.0f, -2.0f, -1.0f, -0.3f, 0.4f, 1.0f, 1.4f };
         float first = -1.0f, last = -1.0f, prev = 2.0f;
         bool monotone = true;
