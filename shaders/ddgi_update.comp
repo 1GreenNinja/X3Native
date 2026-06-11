@@ -1,0 +1,160 @@
+#version 460
+// DDGI probe UPDATE pass — blends the frame's ray results into the octahedral
+// probe atlases with hysteresis (r_ddgi). CLEAN-ROOM, original work, built from
+// the published DDGI algorithm (Majercik, McGuire et al., JCGT 2019 — public
+// paper only) and the standard octahedral-map border conventions.
+//
+// One workgroup per probe; one thread per ATLAS TEXEL of that probe's tile
+// (border included). Two modes (push constant), one shader:
+//   mode 0 = IRRADIANCE: 8x8 tile (6x6 interior + 1px border), RGBA16F.
+//       texel <- cosine-weighted mean of the probe's ray radiances:
+//       E(n)/pi ~= sum(max(0,n.d_i) * L_i) / sum(max(0,n.d_i))
+//       (the same units mesh.frag's irradianceCube uses: diffuse = E * albedo).
+//   mode 1 = VISIBILITY: 16x16 tile (14x14 interior + border), RG16F.
+//       texel <- power-cosine-weighted mean of (rayDist, rayDist^2), distances
+//       clamped to visMaxDist; BACKFACE rays carry negative shortened
+//       distances (|d| used) which collapse the mean toward zero — the
+//       Chebyshev test at sample time then statistically rejects directions
+//       that pass through geometry (the no-leak mechanism).
+//
+// BORDER TEXELS are not copied in a second pass: each border texel maps to its
+// octahedral-wrap source interior texel and accumulates the IDENTICAL sum, so
+// bilinear filtering across tile edges is seamless by construction.
+//
+// Hysteresis: new = mix(frameResult, old, h). h rides the UBO so the host can
+// ramp it 0 -> target over the first frames after (re)activation (instant
+// warm-up instead of a black fade-in).
+
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(std430, set = 0, binding = 0) readonly buffer Rays {
+    vec4 rays[];          // rgb = radiance, w = signed hit distance (<0 = backface)
+} rayBuf;
+
+layout(set = 0, binding = 1, rgba16f) uniform image2D irrAtlas;
+layout(set = 0, binding = 2, rg16f)   uniform image2D visAtlas;
+
+// SAME std140 block as ddgi_rays.comp (one host DdgiUBO, two consumers); the
+// light array is unused here but keeps the layouts byte-identical.
+struct PointLight {
+    vec4 posRange;
+    vec4 colorPad;
+};
+const int kMaxPointLights = 64;
+layout(set = 0, binding = 3) uniform Ddgi {
+    vec4 gridOrigin;      // xyz = grid min corner, w = raysPerProbe
+    vec4 gridSpacing;     // xyz = spacing, w = visMaxDist
+    ivec4 gridCounts;     // xyz = probe counts, w = frame index
+    vec4 rotation0;       // per-frame rotation columns (must match ddgi_rays.comp)
+    vec4 rotation1;
+    vec4 rotation2;
+    vec4 sunDirIntensity; // (ray-pass lane; unused here)
+    vec4 ambientSky;      // (ray-pass lane; unused here)
+    vec4 params;          // x = irradiance hysteresis, y = lightCount, z = bounce gain, w = visibility hysteresis
+    PointLight lights[kMaxPointLights];
+} ub;
+
+layout(push_constant) uniform Push { uint mode; } pc;   // 0 = irradiance, 1 = visibility
+
+const float PI = 3.14159265359;
+
+vec2 signNotZero(vec2 v) { return vec2(v.x >= 0.0 ? 1.0 : -1.0, v.y >= 0.0 ? 1.0 : -1.0); }
+vec3 octDecode(vec2 e) {                          // e in [-1,1]^2 -> unit direction
+    vec3 v = vec3(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    if (v.z < 0.0) v.xy = (1.0 - abs(v.yx)) * signNotZero(v.xy);
+    return normalize(v);
+}
+
+vec3 sphericalFibonacci(float i, float n) {
+    const float PHI = 1.6180339887498949;
+    float phi = 2.0 * PI * fract(i * (PHI - 1.0));
+    float cosTheta = 1.0 - (2.0 * i + 1.0) / n;
+    float sinTheta = sqrt(clamp(1.0 - cosTheta * cosTheta, 0.0, 1.0));
+    return vec3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+}
+
+// Map a tile texel (border included, coords in [0, T+2)) to its source
+// INTERIOR texel via the octahedral wrap rules (edges mirror, corners cross
+// to the opposite interior corner). Interior texels map to themselves.
+ivec2 borderToInterior(ivec2 t, int T) {
+    int x = t.x, y = t.y;
+    bool bx = (x == 0 || x == T + 1);
+    bool by = (y == 0 || y == T + 1);
+    if (bx && by) {                                // corner -> opposite corner
+        x = (x == 0) ? T : 1;
+        y = (y == 0) ? T : 1;
+    } else if (bx) {                               // left/right edge -> mirror v
+        x = (x == 0) ? 1 : T;
+        y = T + 1 - y;
+    } else if (by) {                               // top/bottom edge -> mirror u
+        x = T + 1 - x;
+        y = (y == 0) ? 1 : T;
+    }
+    return ivec2(x, y);
+}
+
+void main() {
+    const bool vis = (pc.mode == 1u);
+    const int T = vis ? 14 : 6;                    // interior texels per tile
+    const int tile = T + 2;
+    ivec2 lt = ivec2(gl_LocalInvocationID.xy);
+    if (lt.x >= tile || lt.y >= tile) return;      // 8x8 tiles use 1/4 of the wg
+
+    const int probe = int(gl_WorkGroupID.x);
+    const int probeCount = ub.gridCounts.x * ub.gridCounts.y * ub.gridCounts.z;
+    if (probe >= probeCount) return;
+
+    // Texel -> direction: border texels evaluate their wrap-source interior
+    // texel's direction, so they accumulate the identical value (seamless).
+    ivec2 src = borderToInterior(lt, T);
+    vec2 uv = (vec2(src) - 1.0 + 0.5) / float(T);  // interior texel center, [0,1]
+    vec3 texelDir = octDecode(uv * 2.0 - 1.0);
+
+    const int raysPerProbe = int(ub.gridOrigin.w);
+    mat3 rot = mat3(ub.rotation0.xyz, ub.rotation1.xyz, ub.rotation2.xyz);
+    const float visMaxDist = ub.gridSpacing.w;
+
+    ivec3 pcoord;
+    pcoord.x = probe % ub.gridCounts.x;
+    pcoord.y = (probe / ub.gridCounts.x) % ub.gridCounts.y;
+    pcoord.z = probe / (ub.gridCounts.x * ub.gridCounts.y);
+    ivec2 tileBase = ivec2(pcoord.x + pcoord.y * ub.gridCounts.x, pcoord.z) * tile;
+    ivec2 texel = tileBase + lt;
+
+    if (!vis) {
+        // ---- IRRADIANCE: cosine-weighted mean of ray radiance. ----
+        vec3 sum = vec3(0.0);
+        float wsum = 0.0;
+        for (int r = 0; r < raysPerProbe; ++r) {
+            vec3 dir = normalize(rot * sphericalFibonacci(float(r), float(raysPerProbe)));
+            float w = max(0.0, dot(texelDir, dir));
+            if (w <= 1e-4) continue;
+            sum += rayBuf.rays[probe * 128 + r].rgb * w;
+            wsum += w;
+        }
+        vec3 result = (wsum > 1e-4) ? sum / wsum : vec3(0.0);
+        vec3 old = imageLoad(irrAtlas, texel).rgb;
+        vec3 blended = mix(result, old, clamp(ub.params.x, 0.0, 0.999));
+        imageStore(irrAtlas, texel, vec4(blended, 1.0));
+    } else {
+        // ---- VISIBILITY: sharpened-cosine-weighted mean distance + distance^2
+        // (Chebyshev moments). Backface rays (negative w) use |d| — already
+        // shortened by the ray pass — pulling the mean toward "occluder right
+        // here", which statistically kills through-wall directions. ----
+        float m1 = 0.0, m2 = 0.0, wsum = 0.0;
+        for (int r = 0; r < raysPerProbe; ++r) {
+            vec3 dir = normalize(rot * sphericalFibonacci(float(r), float(raysPerProbe)));
+            float w = pow(max(0.0, dot(texelDir, dir)), 50.0);
+            if (w <= 1e-6) continue;
+            float d = min(abs(rayBuf.rays[probe * 128 + r].w), visMaxDist);
+            m1 += d * w;
+            m2 += d * d * w;
+            wsum += w;
+        }
+        vec2 result = (wsum > 1e-6) ? vec2(m1, m2) / wsum
+                                    : vec2(visMaxDist, visMaxDist * visMaxDist);
+        vec2 old = imageLoad(visAtlas, texel).rg;
+        vec2 blended = mix(result, old, clamp(ub.params.w, 0.0, 0.999));
+        imageStore(visAtlas, texel, vec4(blended, 0.0, 0.0));
+    }
+}

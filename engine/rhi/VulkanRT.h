@@ -105,6 +105,13 @@ public:
 
     bool ready() const { return m_ready; }
 
+    // When the device enabled VK_KHR_ray_tracing_position_fetch, BLAS builds add
+    // VK_BUILD_ACCELERATION_STRUCTURE_FLAG_ALLOW_DATA_ACCESS_KHR so ray-query
+    // shaders may fetch the committed triangle's vertex positions (DDGI hit
+    // normals). Must be set BEFORE the first ensureBlas (cached BLAS keep the
+    // flags they were built with). No-op cost when unsupported/false.
+    void setAllowDataAccess(bool v) { m_allowDataAccess = v; }
+
     // ---- BLAS: build once per mesh from its vertex+index buffers --------------
     // `vbAddr`/`ibAddr` are the SHADER_DEVICE_ADDRESS of the mesh's vertex/index
     // buffers (the device creates them with the AS-input usage when RT is on).
@@ -135,6 +142,8 @@ public:
         bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
         bgi.type  = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
         bgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+        if (m_allowDataAccess)
+            bgi.flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_DATA_ACCESS_BIT_KHR;
         bgi.mode  = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
         bgi.geometryCount = 1;
         bgi.pGeometries = &geo;
@@ -207,6 +216,8 @@ public:
     // ---- TLAS: one instance per (meshId, transform) ---------------------------
     struct TlasInstance {
         uint32_t meshId;
+        uint32_t customIndex = 0;   // 24-bit instanceCustomIndex: the instance's
+                                    // ObjectData SSBO row (DDGI hit-shading lookup)
         float    model[16];   // column-major 4x4 (the renderer's ObjectData::model)
     };
 
@@ -230,7 +241,7 @@ public:
             for (int r = 0; r < 3; ++r)
                 for (int c = 0; c < 4; ++c)
                     row.transform.matrix[r][c] = in.model[c * 4 + r];
-            row.instanceCustomIndex = 0;
+            row.instanceCustomIndex = in.customIndex & 0xFFFFFFu;
             row.mask = 0xFF;
             row.instanceShaderBindingTableRecordOffset = 0;
             row.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
@@ -435,6 +446,7 @@ private:
     VkFence       m_fence = VK_NULL_HANDLE;
     bool          m_ready = false;
     bool          m_tlasBuilt = false;
+    bool          m_allowDataAccess = false;   // BLAS ALLOW_DATA_ACCESS (position fetch)
     uint32_t      m_lastInstanceCount = 0;
 
     VkPhysicalDeviceAccelerationStructurePropertiesKHR m_asProps{};

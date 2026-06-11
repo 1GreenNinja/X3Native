@@ -66,9 +66,14 @@ layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap;
 // 1.0 and the sampled value), z = 1/screenW, w = 1/screenH (pixel -> UV).
 layout(set = 3, binding = 0) uniform sampler2D ssaoTex;
 layout(set = 3, binding = 1) uniform SsaoControl {
-    vec4 ctrl;   // x=enabled, y=strength, z=1/screenW, w=1/screenH
-    vec4 ibl;    // x=IBL valid(0/1), y=IBL intensity, z=prefilter max mip, w=metal ambient-spec floor strength (r_metalambient)
-    vec4 refl;   // x=reflections active (0/1), y=intensity, z/w=reserved (SSR/RT reflection pass, r_ssr)
+    vec4 ctrl;        // x=enabled, y=strength, z=1/screenW, w=1/screenH
+    vec4 ibl;         // x=IBL valid(0/1), y=IBL intensity, z=prefilter max mip, w=metal ambient-spec floor strength (r_metalambient)
+    vec4 refl;        // x=reflections active (0/1), y=intensity, z/w=reserved (SSR/RT reflection pass, r_ssr)
+    // ---- DDGI probe-grid irradiance (r_ddgi; ray-query hardware only) ----
+    vec4 ddgiCtrl;    // x=active (0/1), y=intensity (warm-up ramped), z=debug mode (0/1/2), w=self-shadow bias scale
+    vec4 ddgiOrigin;  // xyz = probe-grid min corner (world), w = visMaxDist (m)
+    vec4 ddgiSpacing; // xyz = probe spacing (m), w = unused
+    vec4 ddgiCounts;  // xyz = probe counts (as float), w = unused
 } ssao;
 // Screen-traced / ray-traced reflection buffer (set3/binding2, half- or full-res
 // RGBA16F): rgb = reflected radiance from the REFLECTION pass (refl.comp — SSR
@@ -78,6 +83,15 @@ layout(set = 3, binding = 1) uniform SsaoControl {
 // gated by ssao.refl.x — when 0 this texture is never read and the IBL path is
 // byte-for-byte the pre-reflections math.
 layout(set = 3, binding = 2) uniform sampler2D reflTex;
+// DDGI probe atlases (set3 bindings 3/4, r_ddgi). Octahedral-encoded per-probe
+// irradiance (8x8 tiles: 6x6 interior + 1px border, RGBA16F) and mean/mean^2
+// visibility depth (16x16 tiles: 14x14 + border, RG16F), produced by the
+// ddgi_rays/ddgi_update compute passes against the scene TLAS. Sampled ONLY
+// when ssao.ddgiCtrl.x is 1 (a real ray-query-tier frame); on every other
+// path these bindings point at a layout-valid placeholder and are never read
+// — the existing ambient/IBL math is byte-for-byte unchanged.
+layout(set = 3, binding = 3) uniform sampler2D ddgiIrrTex;
+layout(set = 3, binding = 4) uniform sampler2D ddgiVisTex;
 
 // ===========================================================================
 // Image-based lighting (IBL), set 4 — split-sum environment reflections.
@@ -282,19 +296,118 @@ vec3 F_SchlickRoughness(float u, vec3 f0, float rough) {
     return f0 + (max(vec3(1.0 - rough), f0) - f0) * pow(clamp(1.0 - u, 0.0, 1.0), 5.0);
 }
 
+// ===========================================================================
+// DDGI probe-field sample (r_ddgi) — classic Majercik et al. 2019 weighting.
+// Trilinear over the 8 surrounding probes, each weight shaped by:
+//   * a soft BACKFACE term (probes behind the surface contribute little),
+//   * the CHEBYSHEV visibility test against the probe's mean/mean^2 depth
+//     (statistical occlusion — the no-leak part: a probe across a wall sees
+//     a much shorter mean distance in this direction than the fragment's
+//     actual distance, so its weight collapses),
+//   * a self-shadow BIAS (the sample point is nudged along normal + view so
+//     surface-adjacent rays don't read their own wall).
+// Returns rgb = DDGI irradiance (same E units as irradianceCube), a = grid
+// CONFIDENCE in [0,1] (1 well inside the probe volume, fading to 0 at/outside
+// its boundary — the caller lerps from the IBL/flat ambient by this).
+// ===========================================================================
+vec2 ddgiSignNotZero(vec2 v) { return vec2(v.x >= 0.0 ? 1.0 : -1.0, v.y >= 0.0 ? 1.0 : -1.0); }
+vec2 ddgiOctEncode(vec3 v) {
+    v /= (abs(v.x) + abs(v.y) + abs(v.z));
+    vec2 e = v.xy;
+    if (v.z < 0.0) e = (1.0 - abs(e.yx)) * ddgiSignNotZero(e);
+    return e;                                       // [-1,1]^2
+}
+// Probe tile UV inside an atlas: tileU = px + py*countX, tileV = pz; T texels
+// interior + 1px border each side. Matches ddgi_update.comp's layout exactly.
+vec2 ddgiAtlasUV(ivec3 p, vec3 dir, float T) {
+    float tile = T + 2.0;
+    vec3 counts = ssao.ddgiCounts.xyz;
+    vec2 tileBase = vec2(float(p.x) + float(p.y) * counts.x, float(p.z)) * tile;
+    vec2 oct = ddgiOctEncode(dir) * 0.5 + 0.5;
+    vec2 texel = tileBase + 1.0 + oct * T;
+    vec2 atlasSize = vec2(counts.x * counts.y * tile, counts.z * tile);
+    return texel / atlasSize;
+}
+vec4 sampleDdgi(vec3 P, vec3 N, vec3 V) {
+    vec3 origin  = ssao.ddgiOrigin.xyz;
+    vec3 spacing = max(ssao.ddgiSpacing.xyz, vec3(1e-3));
+    vec3 counts  = ssao.ddgiCounts.xyz;
+    float visMaxDist = ssao.ddgiOrigin.w;
+
+    // Self-shadow bias: nudge the sample point off the surface toward the
+    // viewer so probe rays that stopped ON this wall don't occlude it.
+    float minSpacing = min(spacing.x, min(spacing.y, spacing.z));
+    vec3  biasVec = (N * 0.6 + V * 0.4) * (minSpacing * 0.25 * ssao.ddgiCtrl.w);
+    vec3  Pb = P + biasVec;
+
+    vec3 g = (Pb - origin) / spacing;
+    vec3 baseF = floor(g);
+    vec3 alpha = clamp(g - baseF, 0.0, 1.0);
+    ivec3 base = ivec3(baseF);
+    ivec3 maxC = ivec3(counts) - 1;
+
+    // Grid confidence: 1 inside, fades to 0 over the outermost half-cell.
+    vec3 gc = (P - origin) / spacing;
+    vec3 edge = min(gc, counts - 1.0 - gc);        // cells to the nearest face
+    float contain = clamp(min(edge.x, min(edge.y, edge.z)) * 2.0 + 1.0, 0.0, 1.0);
+    if (contain <= 0.0) return vec4(0.0);
+
+    vec3 sumIrr = vec3(0.0);
+    float sumW = 0.0;
+    for (int i = 0; i < 8; ++i) {
+        ivec3 o = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
+        ivec3 pc = clamp(base + o, ivec3(0), maxC);
+        vec3 probePos = origin + vec3(pc) * spacing;
+
+        vec3 toProbe = probePos - Pb;
+        float distToProbe = max(length(toProbe), 1e-4);
+        vec3 dirToProbe = toProbe / distToProbe;
+
+        // Trilinear weight (from the UNclamped cell alpha).
+        vec3 tri = mix(1.0 - alpha, alpha, vec3(o));
+        float w = max(tri.x * tri.y * tri.z, 1e-5);
+
+        // Soft backface (Majercik): smooth, never fully zero.
+        float wn = (dot(dirToProbe, N) + 1.0) * 0.5;
+        w *= wn * wn + 0.2;
+
+        // Chebyshev visibility from the probe's depth moments along the
+        // probe->point direction.
+        vec2 mm = texture(ddgiVisTex, ddgiAtlasUV(pc, -dirToProbe, 14.0)).rg;
+        float mean = mm.x;
+        float r = min(distToProbe, visMaxDist);
+        if (r > mean) {
+            float variance = abs(mm.y - mm.x * mm.x) + 1e-4;
+            float d = r - mean;
+            float cheb = variance / (variance + d * d);
+            w *= max(cheb * cheb * cheb, 0.0);
+        }
+        w = max(w, 1e-6);
+
+        sumIrr += texture(ddgiIrrTex, ddgiAtlasUV(pc, N, 6.0)).rgb * w;
+        sumW += w;
+    }
+    return vec4(sumIrr / max(sumW, 1e-5), contain);
+}
+
 // Split-sum IBL ambient (Karis/Epic). Returns the combined diffuse + specular
 // environment contribution in LINEAR HDR. `perceptualRough` is glTF roughness
 // (NOT alpha). `ao` modulates both lobes (specular gets a milder occlusion).
 // Falls back to the previous flat ambient*Fresnel constant when no env is baked.
+// `ddgi`: rgb = probe-field irradiance (already intensity-scaled), a = grid
+// confidence — REPLACES the ambient DIFFUSE term by confidence when active
+// (specular stays IBL/reflections); a == 0 leaves the math byte-identical.
 vec3 iblAmbient(vec3 N, vec3 V, vec3 albedo, float metallic, float perceptualRough,
-                vec3 F0, float ao, vec3 ambient, float up) {
+                vec3 F0, float ao, vec3 ambient, float up, vec4 ddgi) {
     if (ssao.ibl.x < 0.5) {
         // FALLBACK (no baked environment): the original engine behaviour exactly —
         // diffuse hemispheric lift + the flat ambient*3.4*Fresnel specular constant.
+        // DDGI (when active) replaces the flat DIFFUSE irradiance by confidence.
         float NoV = max(dot(N, V), 1e-4);
         float a   = perceptualRough; a *= a;
         vec3  diff = albedo * (1.0 - metallic);
-        vec3  amb  = ambient * mix(0.85, 1.25, up) * ao * diff;
+        vec3  diffuseIrr = mix(ambient * mix(0.85, 1.25, up), ddgi.rgb, ddgi.a);
+        vec3  amb  = diffuseIrr * ao * diff;
         vec3  Fr   = F0 + (max(vec3(1.0 - a), F0) - F0) * pow(1.0 - NoV, 5.0);
         amb += (ambient * 3.4) * Fr * mix(0.55, 1.1, up) * ao;
         return amb;
@@ -309,7 +422,11 @@ vec3 iblAmbient(vec3 N, vec3 V, vec3 albedo, float metallic, float perceptualRou
     vec3 kD = (vec3(1.0) - kS) * (1.0 - metallic);
 
     // Diffuse IBL: irradiance(N) already carries the PI-weighted hemisphere integral.
+    // DDGI (r_ddgi): the traced probe field REPLACES the env-cube irradiance by
+    // grid confidence — same E units, so the kD/albedo/ao weighting below applies
+    // exactly once either way. Outside the grid (a -> 0) the env cube remains.
     vec3 irradiance = texture(irradianceCube, N).rgb;
+    irradiance = mix(irradiance, ddgi.rgb, ddgi.a);
     vec3 diffuse = irradiance * albedo;
 
     // Specular IBL: prefiltered radiance along the reflection vector at mip=rough,
@@ -441,6 +558,17 @@ void main() {
     }
     int nLights = int(cam.ambientCount.w);
 
+    // ---- DDGI probe-field irradiance (r_ddgi): sampled ONCE per fragment,
+    // shared by both shading paths. Inactive (gate 0) -> exact zero weight and
+    // the atlases are never sampled — the prior ambient math is unchanged. ----
+    vec4 ddgiGI = vec4(0.0);
+    if (ssao.ddgiCtrl.x > 0.5) {
+        vec3 Vg = normalize(cam.camPos.xyz - vWorldPos);
+        ddgiGI = sampleDdgi(vWorldPos, N, Vg);
+        ddgiGI.rgb *= ssao.ddgiCtrl.y;            // intensity (warm-up ramped)
+        ddgiGI.a   *= clamp(ssao.ddgiCtrl.y, 0.0, 1.0);
+    }
+
     vec3 color;
     if (vMrTexIndex == 0u) {
         // ---- DIELECTRIC path (no MR map). Direct sun + point lights as before; the
@@ -458,7 +586,7 @@ void main() {
         const float kDielectricRough = 0.5;   // satin clad/floor default
         vec3 F0d = vec3(0.04);
         color = albedo.rgb * lighting
-              + iblAmbient(N, Vd, albedo.rgb, 0.0, kDielectricRough, F0d, ao, ambient, up);
+              + iblAmbient(N, Vd, albedo.rgb, 0.0, kDielectricRough, F0d, ao, ambient, up, ddgiGI);
     } else {
         // ---- PBR metallic-roughness (Cook-Torrance GGX). glTF MR: B=metallic, G=roughness. ----
         vec3  mr       = texture(textures[nonuniformEXT(vMrTexIndex)], vUV).rgb;
@@ -480,8 +608,15 @@ void main() {
         // from the analytic-sky environment cube, so metals reflect the sky and
         // dielectric floors/glass get real specular env. Replaces the old flat
         // ambient diffuse + ambient*3.4*Fresnel constant (kept as the no-env fallback).
-        Lo += iblAmbient(N, V, albedo.rgb, metallic, pRough, F0, ao, ambient, up);
+        Lo += iblAmbient(N, V, albedo.rgb, metallic, pRough, F0, ao, ambient, up, ddgiGI);
         color = Lo;
+    }
+
+    // ---- DDGI debug views (r_ddgi_debug): 1 = the raw interpolated probe
+    // irradiance field, 2 = the grid confidence weight. Replaces the shaded
+    // color outright (a diagnostic, gated off in normal play). ----
+    if (ssao.ddgiCtrl.z > 0.5) {
+        color = (ssao.ddgiCtrl.z < 1.5) ? ddgiGI.rgb : vec3(ddgiGI.a);
     }
 
     // ---- Emissive: per-object HDR radiance on top (glows even in shadow; feeds bloom). ----
