@@ -5043,6 +5043,20 @@ int main(int argc, char** argv) {
             if (collide) sphys->addBox({ hx, hy, hz }, { bx, by, bz }, 0.0f, x3::phys::Layer::Static);
             return id;
         };
+        // POLISHED-FLOOR material dial (SSR/RT reflections money shot): a 1x1
+        // metallic-roughness map (glTF packing: G=roughness, B=metallic, linear)
+        // applied to the showroom's WALKED floor slabs so they read as the sleek
+        // polished showroom surface they were always meant to be — roughness 0.08
+        // (mirror-sharp, inside the SSR full-strength band) + metallic 0.5 (semi-
+        // metal powder coat: strong F0 without fully killing the white diffuse).
+        // Only entities explicitly polish()-ed change; every other white box keeps
+        // the satin dielectric default.
+        x3::rhi::TextureHandle polishedMrTex{};
+        {
+            const uint8_t mr[4] = { 0, 20, 128, 255 };   // R unused, G=rough 0.08, B=metal 0.50
+            polishedMrTex = device->createTexture(mr, 1, 1, /*srgb*/false);
+        }
+        auto polish = [&](uint32_t id) { sscene.get(id).mrTex = polishedMrTex; };
 
         // ===================================================================
         // STAGE 1 — let the player CLIMB to the 2ND FLOOR (y = floor2Y = 3).
@@ -5062,8 +5076,10 @@ int main(int argc, char** argv) {
         const float slabHY = 0.4f;                            // 0.8 m thick slab; TOP at floor2Y
         const float slabCY = floor2Y - slabHY;
         // Left half x~[29.3,71.2], right half x~[73,114.9]; leave the x~[71.2,73] gap.
-        addWhiteBox((29.3f + 71.2f) * 0.5f, slabCY, r2cz, (71.2f - 29.3f) * 0.5f, slabHY, r2hz);
-        addWhiteBox((73.0f + 114.9f) * 0.5f, slabCY, r2cz, (114.9f - 73.0f) * 0.5f, slabHY, r2hz);
+        // Both halves POLISHED (SSR money shot: the 2nd-floor walk reflects the
+        // building lights + window wall in the floor).
+        polish(addWhiteBox((29.3f + 71.2f) * 0.5f, slabCY, r2cz, (71.2f - 29.3f) * 0.5f, slabHY, r2hz));
+        polish(addWhiteBox((73.0f + 114.9f) * 0.5f, slabCY, r2cz, (114.9f - 73.0f) * 0.5f, slabHY, r2hz));
         // CLIMB stair: approximate the GLB left "Stair" (x~[43.8,53.7]) but lengthen
         // the run so the 12 m rise is a walkable ~40 deg. Runs along +Z from a low
         // edge on the ground (z=stairLowZ @ floorY) up to a high edge that meets the
@@ -5381,8 +5397,8 @@ int main(int argc, char** argv) {
             // Atrium floor pad around the lift shaft (shaftX=cx+9, shaftZ=-100) at Y14.
             const float atX0 = shaftX - 9.0f, atX1 = shaftX + 5.0f;
             const float atZ0 = shaftZ - 9.0f, atZ1 = shaftZ + 5.0f;
-            addWhiteBox((atX0+atX1)*0.5f, atriumFloorY - 0.25f, (atZ0+atZ1)*0.5f,
-                        (atX1-atX0)*0.5f, 0.25f, (atZ1-atZ0)*0.5f);
+            polish(addWhiteBox((atX0+atX1)*0.5f, atriumFloorY - 0.25f, (atZ0+atZ1)*0.5f,
+                        (atX1-atX0)*0.5f, 0.25f, (atZ1-atZ0)*0.5f));   // POLISHED (refl money shot)
             // BRIDGE: a white walkway from the strut head landing (sBL.t*) to the atrium
             // edge, both at atriumFloorY, so the player crosses from the strut to the lift.
             {

@@ -71,6 +71,13 @@ enum class Tag : uint32_t {
 struct Entity {
     x3::rhi::MeshHandle    mesh;            // render mesh (invalid => not drawn)
     x3::rhi::TextureHandle tex;             // invalid => default white (flat color)
+    // Optional METALLIC-ROUGHNESS map (glTF packing: metallic in B, roughness in
+    // G). When valid, Scene::render routes the entity through drawMeshPBR so the
+    // material gets the full Cook-Torrance + IBL/SSR-reflection treatment — used
+    // to dial a procedural surface (e.g. the showroom's polished floors) past the
+    // dielectric satin default. Invalid (default) => drawMeshEmissive, identical
+    // to the old path for every existing entity.
+    x3::rhi::TextureHandle mrTex;
     float                  baseColor[4] = {1, 1, 1, 1}; // tint (multiplies texel)
     // Optional per-entity HDR EMISSIVE term { r, g, b, strength } added on top of
     // the lit result (independent of light). Default {0,0,0,0} == no glow, so
