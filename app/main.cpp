@@ -40,6 +40,7 @@
 #include "intro_coldopen.h"                  // --world intro / default lead-in cold-open (shot-down -> captured)
 #include "npc_dialog.h"                     // rescued-NPC talk/dialog -> companion (the captive girl)
 #include "chat_tree.h"                      // x3.chattree/1 data-driven dialog runner (--test-chattree)
+#include "mission.h"                        // x3.mission/1 data-driven mission runner (--test-mission, g_missiondoc)
 #include "physprops.h"                      // FEATURE_GOALS §1: hanging cubes / joints (ragdoll foundation)
 #include "ragdoll.h"                        // FEATURE_GOALS §2: physics death ragdoll
 #include "editor/editor.h"                  // native Level Editor E1 (brain + self-test)
@@ -636,6 +637,10 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // current room + its doored neighbours); 0 = draw the whole level (e.g. for noclip
     // overview / debugging). Live-tunable from the console.
     console.registerCVar("r_roomcull", "1", "per-room PVS occlusion cull (0 = draw whole level, e.g. for noclip)");
+    // x3.mission/1: when 1, missions/level1.mission.json DRIVES the HUD objective
+    // line (the ObjectiveSystem free-text lane) instead of the hardcoded Level-1
+    // beat list. Default 0 = zero behavior change (the doc is not even loaded).
+    console.registerCVar("g_missiondoc", "0", "drive Level-1 objectives from missions/level1.mission.json (x3.mission/1)");
     // Portal flood-fill depth: how many OPEN-doorway hops the canonlevel cull floods out
     // from the player's room. Higher = see further down a hall through open doors (more
     // rooms drawn); 1 = current room + direct neighbours only (tight). The flood is also
@@ -1473,6 +1478,7 @@ int main(int argc, char** argv) {
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
+         testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
          testThirdPerson = false, testHatchCode = false,
          // --test-hatch: END-TO-END secret-hatch chain (terminal_code fire ->
@@ -1889,6 +1895,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-thirdperson") testThirdPerson = true;
         else if (a == "--test-npctalk") testNpcTalk = true;
         else if (a == "--test-chattree") testChatTree = true;
+        else if (a == "--test-mission") testMission = true;
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-debris") testDebris = true;
         else if (a == "--test-gpuskin") testGpuSkin = true;
@@ -2494,6 +2501,12 @@ int main(int argc, char** argv) {
         x3::logInfo("running x3.chattree/1 dialog-runner self-test (parse all 8 trees + "
                     "the lena walk: gates/fx/follow/1278/banter/flags round-trip)...");
         return x3::game::runChatTreeSelfTest() ? 0 : 1;
+    }
+    if (testMission) {
+        x3::logInfo("running x3.mission/1 mission-runner self-test (doc parse/validate + "
+                    "stage advance via flag/trigger/kill bridges + branch/fail/resume + "
+                    "the Level-1 doc-vs-hardcoded objective EQUIVALENCE walk)...");
+        return x3::game::runMissionSelfTest() ? 0 : 1;
     }
     if (testDestruction) {
         x3::logInfo("running K-T0/T1 destruction (fracture/impact/hit/explosion) self-test...");
@@ -8040,6 +8053,41 @@ int main(int argc, char** argv) {
         }
     }
 
+    // ---- MISSION RUNNER (x3.mission/1, g_missiondoc — default OFF). When the
+    // cvar is 1, missions/level1.mission.json is loaded + validated and the doc
+    // DRIVES the HUD objective line through the ObjectiveSystem free-text lane
+    // (objectives().setText — it wins over the list cursor while non-empty). The
+    // hardcoded beat list still runs underneath, untouched; with the cvar 0 none
+    // of this is even loaded — zero behavior change. Flags/conditions ride the
+    // SAME StoryFlags the chat trees use, so missions and dialog see one world.
+    x3::game::MissionDoc        missionDoc;
+    x3::game::MissionRunner     missionRunner;
+    x3::game::MissionEventBridge missionEvents;
+    bool missionDocActive = false;
+    if (console->getInt("g_missiondoc") != 0) {
+        const std::string mp = x3::game::findMissionFile("level1.mission.json");
+        std::vector<std::string> merr;
+        if (!mp.empty() && x3::game::loadMissionFile(mp, missionDoc, merr) &&
+            x3::game::validateMission(missionDoc, merr)) {
+            missionRunner.ctx().flags    = &chatTrees.flags();
+            missionRunner.ctx().timeline = &x3::game::globalTimeline();
+            missionRunner.ctx().scripts  = scripts.get();
+            missionEvents.bind(&chatTrees.flags());
+            missionRunner.setObjectiveSink([&game](const std::string& t) {
+                game.objectives().setText(t);
+            });
+            // resume() falls back to start() when no position marker is in the
+            // flags (fresh boot); after an F9 flags restore doLoad re-resumes.
+            missionDocActive = missionRunner.resume(missionDoc);
+            x3::logInfo(std::string("[mission] g_missiondoc=1 — `") + missionDoc.id +
+                        "` drives the objective line (stage `" +
+                        missionRunner.currentStageId() + "`)");
+        } else {
+            for (const auto& e : merr) x3::logWarn("[mission] " + e);
+            x3::logWarn("[mission] g_missiondoc=1 but no valid mission doc — staying on the hardcoded beats");
+        }
+    }
+
     // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
     // render path so the BLAS/TLAS build + ray-query AO compute + apply passes are
     // exercised under Vulkan validation. No-op if the device lacks RT support (the
@@ -9082,6 +9130,9 @@ int main(int argc, char** argv) {
         // an old save simply restores with empty narrative state).
         if (chatTrees.flags().loadFile(savePath + ".flags.txt"))
             x3::logInfo("[save] story flags restored from " + savePath + ".flags.txt");
+        // Mission resume (g_missiondoc): the runner's position marker rides the
+        // flags file — land back on the recorded stage (onEnter fx NOT re-fired).
+        if (missionDocActive) missionRunner.resume(missionDoc);
     };
 
     // ---- M9 audio event edge-tracking + footstep cadence -------------------
@@ -9668,6 +9719,10 @@ int main(int argc, char** argv) {
                 // submit sink — via submitTerminalToScripts() (factored above main(),
                 // shared with --test-hatch so the keypad->fire link is the SAME code
                 // the headless chain self-test proves).
+                // Mission flag bridge: the entered code is condition substrate too
+                // ("code.<code>.entered") — mirrored BEFORE submit clears the line.
+                if (missionDocActive)
+                    missionEvents.onEvent("terminal_code", {{"code", term.input()}});
                 bool ok = submitTerminalToScripts(scripts.get(), term);
                 if (ok) { termMode = false; term.setActive(false);
                           x3::logInfo("terminal: code ACCEPTED — trapdoor opening"); }
@@ -9959,6 +10014,15 @@ int main(int argc, char** argv) {
                 for (uint32_t tid : game.lastFiredTriggers())
                     scripts->fire("trigger_enter",
                         {{"zone", std::to_string(tid)}, {"who", "player"}});
+            }
+            // ---- MISSION DOC (g_missiondoc=1): bridge this tick's game state into
+            // mission flags (door/armed/checkpoint/boss beats, trigger zones, kill
+            // counters) and advance the runner — it drives the objective line via
+            // the free-text lane. Default-off: missionDocActive is false unless the
+            // cvar was 1 at boot AND the doc validated. ----
+            if (missionDocActive) {
+                x3::game::pollLevel1MissionFlags(game, missionEvents, chatTrees.flags());
+                missionRunner.tick();
             }
             // ---- CANONLEVEL DOORS: tick the SM_Door_A slide animation. Doors are
             // MANUAL — the player opens/closes one by aiming at the slab (or its button)

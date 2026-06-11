@@ -26,7 +26,9 @@ add_executable(X3Engine WIN32
     trigger.cpp
     rescue.cpp
     npc_dialog.cpp
+    story_ops.cpp
     chat_tree.cpp
+    mission.cpp
     level1_game.cpp
     canon_play.cpp
     intro_coldopen.cpp

@@ -33,6 +33,8 @@
 //                           npc_dialog box grown choice rows).
 
 #include "timeline.h"                       // TimelineState (axes / timeline / fates)
+#include "story_ops.h"                      // SHARED ops: StoryFlags + ChatCond/ChatFx +
+                                            // ChatContext + eval/apply + JSON (mission.h reuses)
 #include "engine/rhi/IRenderDevice.h"       // HUD draw (same dependency as objective.h)
 #include "engine/script/IScriptSystem.h"    // fire effects + EventArgs
 
@@ -46,85 +48,11 @@
 
 namespace x3::game {
 
-// ===========================================================================
-// StoryFlags — the persistent narrative key/value lane (spec §3 "StoryFlags").
-// ===========================================================================
-// String-keyed story flags ("lena.met", "code.1278.known"), per-NPC relationship
-// stages (rel 0..4, only ever raised by fx per spec §5), a string-id inventory
-// ("lena_tunnel_map"), and a seen-set for once-banter. Serializes to a tiny
-// line-based text blob saved ALONGSIDE the binary checkpoint (the checkpoint
-// format stays untouched / version-stable; the flags file is additive).
-class StoryFlags {
-public:
-    // ---- flags ----
-    void set(std::string_view flag)        { m_flags.insert(std::string(flag)); }
-    void clear(std::string_view flag)      { m_flags.erase(std::string(flag)); }
-    bool has(std::string_view flag) const  { return m_flags.count(std::string(flag)) != 0; }
-
-    // ---- per-NPC relationship stage (0 Stranger .. 4 Romance; only raises) ----
-    int  rel(std::string_view npc) const;
-    void raiseRel(std::string_view npc, int stage);   // no-op if stage <= current
-
-    // ---- string-id inventory ----
-    void give(std::string_view item)       { m_items.insert(std::string(item)); }
-    void take(std::string_view item)       { m_items.erase(std::string(item)); }
-    bool hasItem(std::string_view item) const { return m_items.count(std::string(item)) != 0; }
-
-    // ---- once-banter / seen keys ----
-    void markSeen(std::string_view key)    { m_seen.insert(std::string(key)); }
-    bool seen(std::string_view key) const  { return m_seen.count(std::string(key)) != 0; }
-
-    void clearAll() { m_flags.clear(); m_rel.clear(); m_items.clear(); m_seen.clear(); }
-
-    // ---- persistence (text blob; line-based, order-independent) ----
-    std::string serialize() const;
-    bool deserialize(std::string_view text);          // replaces current state
-    bool saveFile(const std::string& path) const;
-    bool loadFile(const std::string& path);           // false + untouched on absence
-
-private:
-    std::unordered_set<std::string>      m_flags;
-    std::unordered_map<std::string, int> m_rel;
-    std::unordered_set<std::string>      m_items;
-    std::unordered_set<std::string>      m_seen;
-};
-
-// ===========================================================================
-// The parsed condition / effect vocabulary (spec §3).
-// ===========================================================================
-
-enum class ChatCondKind : uint32_t {
-    Flag, KarmaGte, KarmaLte, HumanityGte, TrustGte, MercyGte, LoveGte,
-    RedemptionGte, Timeline, GirlSaved, GirlLost, Item, RelGte, Chance, Lua,
-    Any, Not
-};
-
-struct ChatCond {
-    ChatCondKind kind = ChatCondKind::Flag;
-    std::string  s;                       // flag / item / girl / lua-fn / rel-npc
-    int          n = 0;                   // gte/lte threshold, rel stage
-    float        f = 0.0f;                // chance probability
-    std::vector<std::string> names;       // timeline set
-    std::vector<ChatCond>    sub;         // any (OR) / not (1 entry)
-};
-
-enum class ChatFxKind : uint32_t {
-    Axis,        // s = karma|humanity|trust|mercy|love|redemption, n = delta
-    SetFlag, ClearFlag,
-    Fire,        // s = event, args = key/value pairs
-    Give, Take,  // s = item
-    Follow,      // she becomes a Companion (host callback == NpcDialog onComplete)
-    Rel,         // s = npc, n = stage (only raises)
-    Ally,        // TimelineState::onAllyJoined
-    End          // s = host verb ("fight"/"flee"/...) -> x3.fire("dialog_end")
-};
-
-struct ChatFx {
-    ChatFxKind  kind = ChatFxKind::SetFlag;
-    std::string s;
-    int         n = 0;
-    x3::script::EventArgs args;           // fire args (stringified)
-};
+// NOTE: StoryFlags, ChatCondKind/ChatCond, ChatFxKind/ChatFx, ChatContext,
+// evalChatConds(), applyChatFx() and the shared JSON reader moved to
+// story_ops.h so the x3.mission/1 runner (mission.h) shares ONE condition/
+// effect vocabulary with this dialog runner. Same names, same namespace —
+// every existing call site compiles unchanged.
 
 // ===========================================================================
 // The parsed x3.chattree/1 document model.
@@ -197,31 +125,6 @@ bool loadChatTreeFile(const std::string& path, std::vector<ChatNpc>& out,
 // Appends human-readable problems to `errors`; returns true if sound.
 bool validateChatNpc(const ChatNpc& npc, bool fullReachability,
                      std::vector<std::string>& errors);
-
-// ===========================================================================
-// The evaluation context — the REAL systems conditions read / effects write.
-// ===========================================================================
-struct ChatContext {
-    TimelineState*  timeline = nullptr;   // karma/axes/timeline/fates (REQUIRED)
-    StoryFlags*     flags    = nullptr;   // flags/rel/items/seen      (REQUIRED)
-    x3::script::IScriptSystem* scripts = nullptr;   // fire effects (optional)
-    // {"lua": "fn"} escape hatch: host evaluates `fn` via the script system and
-    // returns its truthiness. Unset => the condition fails (and logs once).
-    std::function<bool(const std::string& fn)> luaCond;
-    // {"follow": true}: the host's rescue action (RescueSystem::tryRescue — the
-    // exact NpcDialog::onComplete sink). Unset => effect ignored (logged).
-    std::function<bool()> follow;
-    uint32_t chanceSeed = 0;              // per-save seed for deterministic {"chance"}
-};
-
-// Evaluate one condition list (AND semantics) against the context. `nodeKey`
-// feeds the deterministic chance hash (per-(save,node) — spec §3).
-bool evalChatConds(const std::vector<ChatCond>& conds, const ChatContext& ctx,
-                   std::string_view nodeKey);
-
-// Apply one effect list in order. `npcId` namespaces rel/follow/dialog_end.
-void applyChatFx(const std::vector<ChatFx>& fx, const ChatContext& ctx,
-                 std::string_view npcId);
 
 // ===========================================================================
 // ChatTreeSystem — the live runner (one active conversation, like NpcDialog).
