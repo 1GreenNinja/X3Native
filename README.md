@@ -91,3 +91,18 @@ cmake --build --preset windows-vs2026  # Release x64
 ```
 
 See `BUILD.md` and `docs/13700K_SETUP.md` for full setup (Vulkan SDK, vcpkg, toolchain).
+
+## Repo-safety hooks (install after cloning)
+
+The Git-LFS quota is nearly full and multi-GB model weights have come close to
+entering history. Install the guard hook once per clone (it covers **all**
+worktrees of that clone):
+
+```powershell
+tools\install_hooks.ps1      # or, in git-bash: tools/install_hooks.sh
+```
+
+The pre-commit guard **blocks** staged non-LFS files > 50 MB and *any*
+`*.gguf` / `*.dmp` / `*.pdb` / `MEMORY.DMP`, and **warns** on new > 5 MB
+binaries outside the LFS patterns. Big/re-derivable assets belong in the fleet
+asset store, not git — see `docs/ASSET_DISTRIBUTION.md`.

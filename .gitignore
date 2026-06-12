@@ -48,6 +48,19 @@ ai_action*.gif
 # Tracy captures
 *.tracy
 
+# LLM model weights (~2 GB GGUFs) — NEVER in git/LFS; nearly committed twice in
+# June 2026. Download per assets/models/llm/README.md (branch feat/llm-npc);
+# the game runs modelless without them. Belt + suspenders with the pre-commit
+# guard (tools/hooks/pre-commit), which hard-blocks *.gguf even when forced.
+*.gguf
+assets/models/llm/*
+!assets/models/llm/README.md
+
+# Crash dumps anywhere in the tree (crashdumps/ is ignored below, but dumps
+# also land next to the exe / in repo root). *.pdb is already ignored above.
+*.dmp
+MEMORY.DMP
+
 # Claude Code background sub-agent worktrees — each is a FULL repo checkout
 # (gigabytes of duplicated assets + build dirs). Local-only, never commit.
 # Clean periodically: tools/clean_worktrees.ps1  (see README warning).

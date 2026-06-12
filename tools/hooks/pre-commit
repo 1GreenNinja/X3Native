@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+# X3Native pre-commit guard — keeps the LFS quota (and git history) safe.
+#
+#   BLOCK  any staged *.gguf / *.dmp / *.pdb / MEMORY.DMP, regardless of size
+#          (a 2.1 GB GGUF nearly landed in history twice in June 2026).
+#   BLOCK  any staged file whose STAGED content is > 50 MB and is not an LFS
+#          pointer (i.e. it would enter plain git history forever).
+#   WARN   on new > 5 MB binaries that are not matched by an LFS pattern in
+#          .gitattributes (they bloat plain-git history; consider LFS or the
+#          fleet asset store — see docs/ASSET_DISTRIBUTION.md).
+#
+# Install: tools/install_hooks.sh (git-bash) or tools/install_hooks.ps1.
+# Runs fine under Git for Windows' sh.exe (GUI clients included) — Git for
+# Windows always executes hooks through its bundled POSIX shell, and bash is
+# on its PATH, so the shebang above resolves on every fleet machine.
+#
+# Escape hatch: `git commit --no-verify` skips this hook. Don't, unless you
+# can explain to Tim why a blocked file belongs in history.
+
+set -u
+
+HARD_LIMIT=$((50 * 1024 * 1024)) # 50 MB — block non-LFS staged content
+WARN_LIMIT=$((5 * 1024 * 1024))  #  5 MB — warn on non-LFS binaries
+
+blocked=0
+warned=0
+
+# Does HEAD exist? (initial commit has nothing to compare against)
+if git rev-parse -q --verify HEAD >/dev/null 2>&1; then
+    have_head=1
+else
+    have_head=0
+fi
+
+say() { printf '%s\n' "$*" >&2; }
+
+# NUL-delimited so paths with spaces (e.g. "Fusebox 01.glb") survive.
+while IFS= read -r -d '' f; do
+    base=${f##*/}
+    lower=$(printf '%s' "$base" | tr '[:upper:]' '[:lower:]')
+
+    # ---- 1. Banned extensions: never in this repo, any size --------------
+    case "$lower" in
+        *.gguf|*.dmp|*.pdb|memory.dmp)
+            say ""
+            say "BLOCKED: $f"
+            say "  *.gguf / *.dmp / *.pdb / MEMORY.DMP never belong in this repo."
+            say "  - LLM weights (*.gguf, ~2 GB) are downloaded per assets/models/llm/README.md"
+            say "    (see branch feat/llm-npc); the game runs modelless without them."
+            say "  - Crash dumps / debug symbols are build artifacts, not source."
+            say "  Unstage it:   git restore --staged -- \"$f\""
+            blocked=1
+            continue
+            ;;
+    esac
+
+    # ---- staged blob size (the bytes that would actually enter history) --
+    size=$(git cat-file -s ":$f" 2>/dev/null) || continue
+
+    # Is the path matched by an LFS filter in .gitattributes?
+    attr=$(git check-attr filter -- "$f" | sed 's/.*: filter: //')
+
+    # ---- 2. Hard size limit ----------------------------------------------
+    if [ "$size" -gt "$HARD_LIMIT" ]; then
+        say ""
+        say "BLOCKED: $f ($((size / 1024 / 1024)) MB staged)"
+        if [ "$attr" = "lfs" ]; then
+            say "  The path matches an LFS pattern, but the STAGED content is the full"
+            say "  file, not an LFS pointer — git-lfs is not active in this clone."
+            say "  Fix:   git lfs install && git rm --cached -- \"$f\" && git add -- \"$f\""
+        else
+            say "  Files > 50 MB must not enter plain git history (they can never be"
+            say "  removed without a coordinated history rewrite)."
+            say "  - Belongs in LFS?      git lfs track '<pattern>' && git add .gitattributes"
+            say "    (quota is nearly full — check docs/ASSET_DISTRIBUTION.md first)"
+            say "  - Re-derivable asset?  keep it on the G:\\ share / D:\\Assets library"
+            say "    and regenerate via tools/convert_*.py (see docs/ASSET_DISTRIBUTION.md)."
+            say "  Unstage it:   git restore --staged -- \"$f\""
+        fi
+        blocked=1
+        continue
+    fi
+
+    # ---- 3. Soft warning: new biggish binary outside LFS ------------------
+    # (Properly LFS-staged files are ~130-byte pointers, so they never trip
+    # this; only raw binary content in plain git does.)
+    if [ "$attr" != "lfs" ] && [ "$size" -gt "$WARN_LIMIT" ]; then
+        is_new=1
+        if [ "$have_head" = 1 ] && git cat-file -e "HEAD:$f" 2>/dev/null; then
+            is_new=0
+        fi
+        # binary per git? numstat shows "-<TAB>-" for binary diffs
+        if git diff --cached --numstat -- "$f" | grep -q "^-	-	"; then
+            if [ "$is_new" = 1 ]; then
+                say ""
+                say "WARNING: $f ($((size / 1024 / 1024)) MB) is a new binary not covered"
+                say "  by any LFS pattern in .gitattributes. It will live in plain git"
+                say "  history forever. Consider:  git lfs track '<pattern>'  or keeping it"
+                say "  in the fleet asset store (docs/ASSET_DISTRIBUTION.md)."
+                warned=1
+            fi
+        fi
+    fi
+done < <(git diff --cached --name-only --diff-filter=ACMR -z)
+
+if [ "$blocked" -ne 0 ]; then
+    say ""
+    say "pre-commit guard: commit REJECTED (see above). Nothing was committed."
+    exit 1
+fi
+
+if [ "$warned" -ne 0 ]; then
+    say ""
+    say "pre-commit guard: warnings above — commit allowed, but please double-check."
+fi
+
+exit 0
