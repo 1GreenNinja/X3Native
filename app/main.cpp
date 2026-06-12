@@ -80,6 +80,7 @@
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
 #include "vehparts.h"                      // performance-parts catalog + build composition (--test-vehparts)
 #include "perfshop.h"                      // the drive-in performance shop (--world drive)
+#include "ecology.h"                       // AMBIENT ECOLOGY: grazers/predators/patrols (--test-ecology)
 
 #include <memory>
 #include <string_view>
@@ -1267,7 +1268,8 @@ int main(int argc, char** argv) {
          testFootIk = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
-         testThirdPerson = false, testHatchCode = false;
+         testThirdPerson = false, testHatchCode = false,
+         testEcology = false;
     // --test-loader (EDITOR LevelDoc data-driven loader): author a doc in memory ->
     // save -> LOAD through the real loader -> assert the built world matches; then
     // modify + hot-reload -> assert the delta applied and the create/destroy ledgers
@@ -1751,6 +1753,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-weapons") testWeapons = true;
         else if (a == "--test-vehicle") testVehicle = true;
         else if (a == "--test-vehparts") testVehParts = true;
+        else if (a == "--test-ecology") testEcology = true;
         else if (a == "--screenshot-perfshop") {
             perfshopShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') perfshopShotDir = argv[++i];
@@ -2401,6 +2404,11 @@ int main(int argc, char** argv) {
         x3::logInfo("running PERFORMANCE PARTS (x3.vehparts/1) self-test "
                     "(catalog parse + composition math + REAL Jolt physics deltas + dyno pop thresholds)...");
         return x3::game::vehparts::runVehPartsSelfTest() ? 0 : 1;
+    }
+    if (testEcology) {
+        x3::logInfo("running AMBIENT ECOLOGY self-test "
+                    "(herd cohesion + flee + patrol routes + schedule switch + soft-radius + leak)...");
+        return x3::game::runEcologySelfTest() ? 0 : 1;
     }
     if (testFootIk) {
         x3::logInfo("running foot-IK (two-bone + plant + pelvis) self-test...");
