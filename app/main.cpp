@@ -1555,6 +1555,7 @@ int main(int argc, char** argv) {
     bool        screenshot = false;
     std::string screenshotPath = "G:/X3Native/screenshot.png";
     std::string modelArg;   // --model <path>: GLB to review in --world modeltest
+    bool        barMode = false;   // --bar: dress the modeltest stage as a cantina
     // UI-demo capture (--ui-demo [path.png] / --screenshot-menu): build EFLZ Level 1,
     // pose the gate-standard corridor camera, then draw the GENERAL game-UI MAIN MENU
     // (title + START / QUIT, the START button focused/hot) over the rendered scene and
@@ -1815,6 +1816,7 @@ int main(int argc, char** argv) {
             // GLB to load in --world modeltest (relpath under converted_glb/rigged_glb, or an absolute path).
             if (i + 1 < argc && argv[i + 1][0] != '-') modelArg = argv[++i];
         }
+        else if (a == "--bar") { barMode = true; }
         else if (a == "--shot-cam") {
             // Parse "x,y,z,yaw,pitch" into shotCam[]; enables the override.
             if (i + 1 < argc && argv[i + 1][0] != '-') {
@@ -8091,18 +8093,71 @@ int main(int argc, char** argv) {
         auto flPx = x3::prims::makeCheckerRGBA(128, 16, 120, 122, 128, 96, 98, 104);
         auto floorTex = device->createTexture(flPx.data(), 128, 128, true);
 
-        // Neutral sky + close studio lights (scaled so 1/d^2 doesn't kill them at model size).
+        // Sky: neutral studio, or a darker warm room for the cantina.
         { x3::rhi::IRenderDevice::SkyParams sk{};
           sk.enabled = true; sk.sunDir[0]=0.3f; sk.sunDir[1]=1.0f; sk.sunDir[2]=0.4f;
-          sk.sunIntensity = 1.2f; sk.haze = 0.35f; sk.exposure = 1.0f;
+          if (barMode) { sk.sunIntensity=0.5f; sk.haze=0.5f;  sk.exposure=0.75f; }
+          else         { sk.sunIntensity=1.2f; sk.haze=0.35f; sk.exposure=1.0f;  }
           device->setSkyParams(sk); }
+
+        // ---- Bar dressing (--bar): a cantina counter + back-bar shelves with glowing
+        // bottles + stools, placed BEHIND the model (+Z) relative to the default cam. ----
+        const float S = std::max(radius, 1.0f);
+        const float fy = mn[1];                            // floor top
+        struct Prop { x3::rhi::MeshHandle mesh; x3::rhi::TextureHandle tex; };
+        std::vector<Prop> barProps;
+        std::vector<x3::rhi::TextureHandle> barTextures;
+        struct Bottle { float pos[3]; float emis[4]; };
+        std::vector<Bottle> bottles;
+        x3::rhi::MeshHandle bottleMesh{0};
+        if (barMode) {
+            auto mkbox = [&](float hx,float hy,float hz,float cx,float cy,float cz){
+                x3::prims::PrimMesh m = x3::prims::makeBox(hx,hy,hz,cx,cy,cz,1.0f);
+                return device->createMesh(m.verts.data(),(uint32_t)m.verts.size(),m.index.data(),(uint32_t)m.index.size());
+            };
+            auto woodPx = x3::prims::makeCheckerRGBA(64, 8, 96, 60, 38, 72, 44, 26);
+            auto woodTex = device->createTexture(woodPx.data(), 64, 64, true); barTextures.push_back(woodTex);
+            auto darkPx = x3::prims::makeSolidRGBA(8, 38, 36, 42);
+            auto darkTex = device->createTexture(darkPx.data(), 8, 8, true); barTextures.push_back(darkTex);
+            const float bz = cen[2] - 1.9f*S;              // counter Z (behind model, -Z)
+            const float wz = cen[2] - 3.2f*S;              // back-wall Z
+            barProps.push_back({ mkbox(4.2f*S, 2.3f*S, 0.15f*S, cen[0],         fy+2.30f*S, wz),          darkTex }); // back wall
+            barProps.push_back({ mkbox(2.7f*S, 0.58f*S,0.42f*S, cen[0],         fy+0.58f*S, bz),          woodTex }); // counter body
+            barProps.push_back({ mkbox(2.85f*S,0.05f*S,0.52f*S, cen[0],         fy+1.20f*S, bz),          darkTex }); // counter top
+            barProps.push_back({ mkbox(2.5f*S, 0.05f*S,0.22f*S, cen[0],         fy+1.70f*S, wz-0.25f*S),  woodTex }); // lower shelf
+            barProps.push_back({ mkbox(2.5f*S, 0.05f*S,0.22f*S, cen[0],         fy+2.50f*S, wz-0.25f*S),  woodTex }); // upper shelf
+            for (int s=0;s<3;++s)
+                barProps.push_back({ mkbox(0.22f*S,0.52f*S,0.22f*S, cen[0]+(float)(s-1)*1.6f*S, fy+0.52f*S, cen[2]-1.0f*S), darkTex }); // stools
+            { x3::prims::PrimMesh bm = x3::prims::makeBox(0.07f*S,0.16f*S,0.07f*S, 0,0,0, 1.0f);
+              bottleMesh = device->createMesh(bm.verts.data(),(uint32_t)bm.verts.size(),bm.index.data(),(uint32_t)bm.index.size()); }
+            const float cols[6][3] = {{1.0f,0.55f,0.2f},{0.3f,1.0f,0.5f},{0.3f,0.6f,1.0f},{1.0f,0.3f,0.4f},{0.9f,0.85f,0.3f},{0.7f,0.4f,1.0f}};
+            for (int b=0;b<16;++b) {
+                const float fx = (float)((b*73)%100)/100.0f;   // deterministic spread along the shelf
+                Bottle bo;
+                bo.pos[0] = cen[0] + (fx*2.0f-1.0f)*2.2f*S;
+                bo.pos[1] = fy + ((b%2)?2.62f:1.82f)*S;
+                bo.pos[2] = wz + 0.22f*S;   // bottles on the camera-facing side of the shelf
+                const float* c = cols[b%6];
+                bo.emis[0]=c[0]; bo.emis[1]=c[1]; bo.emis[2]=c[2]; bo.emis[3]=2.2f;
+                bottles.push_back(bo);
+            }
+        }
+
+        // Lights: warm bar practicals + cool key, or neutral studio key/fill/rim.
         { const float D = std::max(radius, 1.0f);
-          const float I = 2.0f * D * D;     // compensate 1/d^2 so lights read at model scale
-          x3::rhi::PointLight pl[3];
-          pl[0].pos[0]=cen[0]+D*1.3f; pl[0].pos[1]=cen[1]+D*1.6f; pl[0].pos[2]=cen[2]+D*1.3f; pl[0].range=D*6.0f; pl[0].color[0]=1.00f*I; pl[0].color[1]=0.97f*I; pl[0].color[2]=0.90f*I;
-          pl[1].pos[0]=cen[0]-D*1.8f; pl[1].pos[1]=cen[1]+D*0.6f; pl[1].pos[2]=cen[2]+D*0.8f; pl[1].range=D*6.0f; pl[1].color[0]=0.55f*I; pl[1].color[1]=0.60f*I; pl[1].color[2]=0.75f*I;
-          pl[2].pos[0]=cen[0]+D*0.5f; pl[2].pos[1]=cen[1]+D*1.4f; pl[2].pos[2]=cen[2]-D*1.8f; pl[2].range=D*6.0f; pl[2].color[0]=0.70f*I; pl[2].color[1]=0.75f*I; pl[2].color[2]=0.90f*I;
-          device->setPointLights(pl, 3); }
+          const float I = (barMode ? 1.5f : 2.0f) * D * D;     // compensate 1/d^2 at model scale
+          x3::rhi::PointLight pl[4]; uint32_t nL = barMode ? 4u : 3u;
+          if (barMode) {
+            pl[0].pos[0]=cen[0]-1.5f*D; pl[0].pos[1]=cen[1]+2.2f*D; pl[0].pos[2]=cen[2]-1.9f*D; pl[0].range=D*8; pl[0].color[0]=1.00f*I; pl[0].color[1]=0.66f*I; pl[0].color[2]=0.36f*I; // warm over counter (-Z)
+            pl[1].pos[0]=cen[0]+1.5f*D; pl[1].pos[1]=cen[1]+2.2f*D; pl[1].pos[2]=cen[2]-1.9f*D; pl[1].range=D*8; pl[1].color[0]=1.00f*I; pl[1].color[1]=0.66f*I; pl[1].color[2]=0.36f*I;
+            pl[2].pos[0]=cen[0]+1.4f*D; pl[2].pos[1]=cen[1]+1.7f*D; pl[2].pos[2]=cen[2]+1.8f*D; pl[2].range=D*8; pl[2].color[0]=0.78f*I; pl[2].color[1]=0.82f*I; pl[2].color[2]=1.00f*I; // cool key on model front (+Z, camera side)
+            pl[3].pos[0]=cen[0]-1.6f*D; pl[3].pos[1]=cen[1]+1.0f*D; pl[3].pos[2]=cen[2]+1.0f*D; pl[3].range=D*8; pl[3].color[0]=0.50f*I; pl[3].color[1]=0.50f*I; pl[3].color[2]=0.60f*I; // fill
+          } else {
+            pl[0].pos[0]=cen[0]+D*1.3f; pl[0].pos[1]=cen[1]+D*1.6f; pl[0].pos[2]=cen[2]+D*1.3f; pl[0].range=D*6.0f; pl[0].color[0]=1.00f*I; pl[0].color[1]=0.97f*I; pl[0].color[2]=0.90f*I;
+            pl[1].pos[0]=cen[0]-D*1.8f; pl[1].pos[1]=cen[1]+D*0.6f; pl[1].pos[2]=cen[2]+D*0.8f; pl[1].range=D*6.0f; pl[1].color[0]=0.55f*I; pl[1].color[1]=0.60f*I; pl[1].color[2]=0.75f*I;
+            pl[2].pos[0]=cen[0]+D*0.5f; pl[2].pos[1]=cen[1]+D*1.4f; pl[2].pos[2]=cen[2]-D*1.8f; pl[2].range=D*6.0f; pl[2].color[0]=0.70f*I; pl[2].color[1]=0.75f*I; pl[2].color[2]=0.90f*I;
+          }
+          device->setPointLights(pl, nL); }
 
         // Small neutral emissive lift so dark/metallic hulls still read (no-IBL workaround).
         const float reviewEmis[4] = { 0.06f, 0.06f, 0.07f, 1.0f };
@@ -8110,6 +8165,11 @@ int main(int argc, char** argv) {
         const float idM[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
         auto drawModel = [&](const x3::rhi::FrameContext& frame) {
             device->drawMesh(frame, floorMesh, floorTex, white, idM);
+            for (const auto& pr : barProps) device->drawMesh(frame, pr.mesh, pr.tex, white, idM);
+            for (const auto& bo : bottles) {
+                const float bmm[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, bo.pos[0],bo.pos[1],bo.pos[2],1 };
+                device->drawMeshEmissive(frame, bottleMesh, x3::rhi::TextureHandle{0}, white, bo.emis, bmm);
+            }
             for (const auto& d : drawables) {
                 float fin[16]; x3::asset::mulMat4(idM, d.nodeTransform, fin);
                 device->drawMeshPBR(frame, x3::rhi::MeshHandle{d.meshId},
@@ -8118,6 +8178,11 @@ int main(int argc, char** argv) {
                                     x3::rhi::TextureHandle{d.mrTexId},
                                     d.baseColorFactor, reviewEmis, fin);
             }
+        };
+        auto destroyBar = [&]() {
+            for (auto& pr : barProps) device->destroyMesh(pr.mesh);
+            for (auto& t : barTextures) device->destroyTexture(t);
+            if (barMode) device->destroyMesh(bottleMesh);
         };
 
         auto computeCam = [&](float ang, float cam[5]) {
@@ -8133,7 +8198,7 @@ int main(int argc, char** argv) {
         };
 
         if (headless) {
-            float cam[5]; computeCam(-0.7f, cam);
+            float cam[5]; computeCam(barMode ? 1.0f : -0.7f, cam);
             if (shotCamOverride) for (int k=0;k<5;++k) cam[k]=shotCam[k];
             const std::string outPath = screenshot ? screenshotPath : std::string("G:/X3Native/captures/modeltest.png");
             const int kFrames = 16;
@@ -8148,14 +8213,14 @@ int main(int argc, char** argv) {
             const bool wrote = device->captureFrame(outPath.c_str());
             if (wrote) x3::logInfo("--world modeltest: wrote " + outPath);
             else       x3::logError("--world modeltest: capture FAILED");
-            device->destroyMesh(floorMesh); device->destroyTexture(floorTex);
+            device->destroyMesh(floorMesh); device->destroyTexture(floorTex); destroyBar();
             loader->unload(model);
             device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate();
             return wrote ? 0 : 1;
         }
 
         x3::logInfo("--world modeltest: orbit showcase — Esc to quit");
-        double prevTime = glfwGetTime(); float ang = -0.7f;
+        double prevTime = glfwGetTime(); float ang = barMode ? 1.0f : -0.7f;
         int lastWd=(int)W, lastHd=(int)H;
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
@@ -8170,7 +8235,7 @@ int main(int argc, char** argv) {
             if (frame.valid) drawModel(frame);
             device->endFrame(frame);
         }
-        device->destroyMesh(floorMesh); device->destroyTexture(floorTex);
+        device->destroyMesh(floorMesh); device->destroyTexture(floorTex); destroyBar();
         loader->unload(model);
         device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate();
         return 0;
