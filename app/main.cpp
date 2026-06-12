@@ -1676,6 +1676,7 @@ int main(int argc, char** argv) {
     // (walk the hills) instead of the default interior Level 1. Anything else (or
     // omitted) keeps Level 1 as the default, unchanged.
     std::string worldMode = "level1";
+    bool        worldExplicit = false;   // --world was passed (vs the default)
     // Optional settle-frame count for --screenshot (default 16 = unchanged
     // behavior). Larger values advance the world (and the characters' skeletal
     // animation) further before the capture, so two shots at different counts show
@@ -1822,7 +1823,7 @@ int main(int argc, char** argv) {
             if (i + 1 < argc) { winH = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
         else if (a == "--world") {
-            if (i + 1 < argc && argv[i + 1][0] != '-') worldMode = argv[++i];
+            if (i + 1 < argc && argv[i + 1][0] != '-') { worldMode = argv[++i]; worldExplicit = true; }
         }
         else if (a == "--stress") {
             if (i + 1 < argc) { stressCount = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
@@ -2546,6 +2547,16 @@ int main(int argc, char** argv) {
 
     x3::logInfo("X3Engine starting...");
     x3::boot::mark("static init + args");
+
+    // --test-boottime gates the CANONICAL world (canonlevel — the data-driven
+    // Floor 1, the game's true level) unless a --world was given explicitly. The
+    // legacy hand-coded tower (--world level1) builds 5x the entity count and has
+    // an honest boot floor of ~3.2 s — gate it explicitly with a budget arg, e.g.
+    // `--test-boottime 4000 --world level1` (see docs/BOOT_TIME.md).
+    if (testBootTime && !worldExplicit) {
+        worldMode = "canonlevel";
+        x3::logInfo("boottime: no --world given — gating the canonical world (canonlevel)");
+    }
 
     // ---- BOOT MANIFEST (docs/BOOT_TIME.md): everything the cell worlds (default
     // Level 1 / elevator / canonlevel / intro) load at build time. Built once,
@@ -8286,6 +8297,7 @@ int main(int argc, char** argv) {
     // crosshair now lives in the screen-space HUD layer (S7), not here. ----
     x3::game::CombatFx combatFx;
     combatFx.init(*device);
+    x3::boot::mark("combat fx init");
     // FX / debris / UI primed — bar nearly full.
     loading.step(x3::game::LoadStep::FxReady, "PRIMING FX");
 

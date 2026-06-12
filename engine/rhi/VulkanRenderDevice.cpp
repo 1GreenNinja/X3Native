@@ -8766,7 +8766,16 @@ private:
     // rebuilds the TLAS with one instance per draw. Returns true if a usable TLAS
     // is ready. Called from endFrame BEFORE the graph records the frame.
     bool buildRtSceneAS() {
-        // Ensure a BLAS for each distinct mesh referenced this frame.
+        // Ensure a BLAS for each distinct mesh referenced this frame — BATCHED
+        // (one submit for the whole set; ~8000 per-mesh one-shot submits used to
+        // cost ~6.6 s on the legacy tower's first frame, docs/BOOT_TIME.md) and
+        // BUDGETED (at most kBlasFrameBudget new BLAS per frame). If the budget
+        // runs out, RT stays on the raster fallback (no TLAS) for a frame or two
+        // more while the remaining BLAS build — a graceful warm-up, not a hitch.
+        constexpr uint32_t kBlasFrameBudget = 4096;
+        uint32_t built = 0;
+        bool     deferred = false;
+        m_rt.beginBlasBatch();
         for (uint32_t mid : m_groupOrder) {
             if (m_rt.hasBlas(mid)) continue;
             auto it = m_meshes.find(mid);
@@ -8778,12 +8787,24 @@ private:
             // characters are simply absent from the TLAS (they don't cast RT AO yet —
             // a documented next tier). This keeps the build cheap + correct.
             if (m.dynamic || m.vbo == VK_NULL_HANDLE) continue;
+            if (built >= kBlasFrameBudget) { deferred = true; break; }
             VkBufferDeviceAddressInfo vi{ VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO }; vi.buffer = m.vbo;
             VkBufferDeviceAddressInfo ii{ VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO }; ii.buffer = m.ibo;
             const VkDeviceAddress vbAddr = vkGetBufferDeviceAddress(m_dev.device, &vi);
             const VkDeviceAddress ibAddr = vkGetBufferDeviceAddress(m_dev.device, &ii);
             ++m_asBuildsThisFrame;   // ZERO-STUTTER spike-log attribution (new BLAS)
-            m_rt.ensureBlas(mid, vbAddr, m.vertexCount, (uint32_t)sizeof(MeshVertex), ibAddr, m.indexCount);
+            if (m_rt.ensureBlas(mid, vbAddr, m.vertexCount, (uint32_t)sizeof(MeshVertex), ibAddr, m.indexCount))
+                ++built;
+        }
+        m_rt.endBlasBatch();
+        if (deferred) {
+            // More BLAS than this frame's budget: raster fallback until complete.
+            char db[128];
+            std::snprintf(db, sizeof(db),
+                "[rt] BLAS warm-up: %u built this frame (budget %u) — raster fallback until complete",
+                built, kBlasFrameBudget);
+            logInfo(db);
+            return false;
         }
 
         // Build the TLAS from this frame's instances (skip dynamic meshes — no BLAS).
@@ -10402,26 +10423,50 @@ private:
     }
 
     // ---- BOOT-TIME upload batching (docs/BOOT_TIME.md) ----------------------
-    // Begin (or continue) the shared batch command buffer. Returns VK_NULL_HANDLE
-    // only if allocation fails (callers then fall back to oneTimeSubmit).
+    // Begin (or continue) the shared batch command buffer — DOUBLE-BUFFERED so a
+    // new batch can record while the previous submit is still executing (the CPU
+    // only blocks if BOTH slots are in flight). Returns VK_NULL_HANDLE only if
+    // allocation fails (callers then fall back to oneTimeSubmit).
     VkCommandBuffer batchCmd() {
-        if (m_batchOpen) return m_batchCmd;
-        waitUploadBatch(true);   // the single cmd buffer may still be in flight
-        if (!m_batchCmd) {
+        if (m_batchOpen) return m_batchCmds[m_batchSlot];
+        const uint32_t s = m_batchSlot;
+        retireBatchSlot(s, /*blocking=*/true);   // this slot may still be in flight
+        if (!m_batchCmds[s]) {
             VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
             ai.commandPool = m_uploadPool;
             ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
             ai.commandBufferCount = 1;
-            if (vkAllocateCommandBuffers(m_dev.device, &ai, &m_batchCmd) != VK_SUCCESS) {
-                m_batchCmd = VK_NULL_HANDLE;
+            if (vkAllocateCommandBuffers(m_dev.device, &ai, &m_batchCmds[s]) != VK_SUCCESS) {
+                m_batchCmds[s] = VK_NULL_HANDLE;
+                return VK_NULL_HANDLE;
+            }
+        }
+        if (!m_batchFences[s]) {
+            VkFenceCreateInfo fi{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+            if (vkCreateFence(m_dev.device, &fi, nullptr, &m_batchFences[s]) != VK_SUCCESS) {
+                m_batchFences[s] = VK_NULL_HANDLE;
                 return VK_NULL_HANDLE;
             }
         }
         VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        if (vkBeginCommandBuffer(m_batchCmd, &bi) != VK_SUCCESS) return VK_NULL_HANDLE;
+        if (vkBeginCommandBuffer(m_batchCmds[s], &bi) != VK_SUCCESS) return VK_NULL_HANDLE;
         m_batchOpen = true;
-        return m_batchCmd;
+        return m_batchCmds[s];
+    }
+
+    // Retire one submitted batch slot: wait its fence (or skip if not signaled and
+    // non-blocking), free its staging buffers, reset its command buffer.
+    void retireBatchSlot(uint32_t s, bool blocking) {
+        if (!m_batchSubmittedSlot[s]) return;
+        if (!blocking &&
+            vkGetFenceStatus(m_dev.device, m_batchFences[s]) == VK_NOT_READY) return;
+        vkWaitForFences(m_dev.device, 1, &m_batchFences[s], VK_TRUE, UINT64_MAX);
+        vkResetFences(m_dev.device, 1, &m_batchFences[s]);
+        vkResetCommandBuffer(m_batchCmds[s], 0);
+        for (auto& st : m_batchInFlightSlot[s]) vmaDestroyBuffer(m_alloc, st.first, st.second);
+        m_batchInFlightSlot[s].clear();
+        m_batchSubmittedSlot[s] = false;
     }
 
     // SUBMIT every recorded batched upload in ONE submit — WITHOUT waiting. The
@@ -10435,6 +10480,7 @@ private:
         std::lock_guard<std::recursive_mutex> lk(m_uploadMu);   // parallel preload safe
         if (!m_batchOpen) return;
         const auto t0 = std::chrono::steady_clock::now();
+        const uint32_t s = m_batchSlot;
         // Visibility for the buffer copies (vertex/index/SSBO reads downstream).
         VkMemoryBarrier2 mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
         mb.srcStageMask  = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
@@ -10443,18 +10489,19 @@ private:
         mb.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
         VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
         di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
-        vkCmdPipelineBarrier2(m_batchCmd, &di);
-        vkEndCommandBuffer(m_batchCmd);
+        vkCmdPipelineBarrier2(m_batchCmds[s], &di);
+        vkEndCommandBuffer(m_batchCmds[s]);
         VkCommandBufferSubmitInfo cmdS{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
-        cmdS.commandBuffer = m_batchCmd;
+        cmdS.commandBuffer = m_batchCmds[s];
         VkSubmitInfo2 submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
         submit.commandBufferInfoCount = 1; submit.pCommandBufferInfos = &cmdS;
-        if (vkQueueSubmit2(m_gfxQueue, 1, &submit, m_uploadFence) == VK_SUCCESS) {
-            m_batchSubmitted = true;
-            m_batchInFlight.swap(m_batchStagings);
+        if (vkQueueSubmit2(m_gfxQueue, 1, &submit, m_batchFences[s]) == VK_SUCCESS) {
+            m_batchSubmittedSlot[s] = true;
+            m_batchInFlightSlot[s].swap(m_batchStagings);
+            m_batchSlot = s ^ 1u;            // record the next batch in the other slot
         } else {
             logError("[rhi] upload batch: submit failed (uploads lost this batch)");
-            for (auto& s : m_batchStagings) vmaDestroyBuffer(m_alloc, s.first, s.second);
+            for (auto& st : m_batchStagings) vmaDestroyBuffer(m_alloc, st.first, st.second);
         }
         m_batchOpen = false;
         m_batchStagings.clear();
@@ -10463,20 +10510,12 @@ private:
             std::chrono::steady_clock::now() - t0).count();
     }
 
-    // Retire a previously submitted batch: wait the fence (blocking=true) or only
-    // if it already signaled, then free the in-flight staging buffers + reset the
-    // command buffer/fence for reuse.
+    // Retire previously submitted batches: wait their fences (blocking=true) or
+    // only those already signaled, freeing staging buffers + resetting cmds.
     void waitUploadBatch(bool blocking = true) {
         std::lock_guard<std::recursive_mutex> lk(m_uploadMu);
-        if (!m_batchSubmitted) return;
-        if (!blocking &&
-            vkGetFenceStatus(m_dev.device, m_uploadFence) == VK_NOT_READY) return;
-        vkWaitForFences(m_dev.device, 1, &m_uploadFence, VK_TRUE, UINT64_MAX);
-        vkResetFences(m_dev.device, 1, &m_uploadFence);
-        vkResetCommandBuffer(m_batchCmd, 0);
-        for (auto& s : m_batchInFlight) vmaDestroyBuffer(m_alloc, s.first, s.second);
-        m_batchInFlight.clear();
-        m_batchSubmitted = false;
+        retireBatchSlot(0, blocking);
+        retireBatchSlot(1, blocking);
     }
 
     // Submit + fully retire (the original blocking semantics). Used by anything
@@ -10511,8 +10550,11 @@ private:
     bool oneTimeSubmit(Fn&& record) {
         std::lock_guard<std::recursive_mutex> lk(m_uploadMu);   // parallel preload safe
         // Ordering safety: any one-shot GPU op (BLAS build, readback, IBL bake…)
-        // may depend on batched uploads — land those first.
-        flushUploadBatch();
+        // may depend on batched uploads — SUBMIT those first (no CPU wait needed:
+        // same-queue submission order + the batch's trailing barrier make the
+        // uploads land before this submit executes; this op's own fence wait
+        // transitively covers them).
+        submitUploadBatch();
         VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
         ai.commandPool = m_uploadPool;
         ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -11420,6 +11462,10 @@ private:
         // mesh.frag set 4 layout (IBL): created in createGraphics, baked into m_meshLayout.
         if (m_iblMeshSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_iblMeshSetLayout, nullptr); m_iblMeshSetLayout = VK_NULL_HANDLE; }
         if (m_uploadFence)   vkDestroyFence(m_dev.device, m_uploadFence, nullptr);
+        for (int s = 0; s < 2; ++s) {   // boot-time upload-batch fences (double-buffered)
+            if (m_batchFences[s]) { vkDestroyFence(m_dev.device, m_batchFences[s], nullptr); m_batchFences[s] = VK_NULL_HANDLE; }
+            m_batchCmds[s] = VK_NULL_HANDLE;   // freed with m_uploadPool
+        }
         if (m_uploadPool)    vkDestroyCommandPool(m_dev.device, m_uploadPool, nullptr);
         m_meshPipeline = VK_NULL_HANDLE; m_meshPipelineNoSsao = VK_NULL_HANDLE;
         m_meshPipelineTransparent = VK_NULL_HANDLE; m_meshLayout = VK_NULL_HANDLE;
@@ -11873,11 +11919,13 @@ private:
     // beginFrame auto-flush a pending batch first, so any GPU op that could read
     // batched data executes strictly after the uploads land.
     bool          m_batchActive = false;            // begin/endUploadBatch window
-    bool          m_batchOpen   = false;            // m_batchCmd has recorded work
-    bool          m_batchSubmitted = false;         // submitted, fence not yet retired
-    VkCommandBuffer m_batchCmd  = VK_NULL_HANDLE;
-    std::vector<std::pair<VkBuffer, VmaAllocation>> m_batchStagings;  // recording
-    std::vector<std::pair<VkBuffer, VmaAllocation>> m_batchInFlight;  // submitted
+    bool          m_batchOpen   = false;            // current slot has recorded work
+    uint32_t      m_batchSlot   = 0;                // recording slot (double-buffered)
+    bool          m_batchSubmittedSlot[2] = { false, false };
+    VkCommandBuffer m_batchCmds[2]  = { VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkFence         m_batchFences[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
+    std::vector<std::pair<VkBuffer, VmaAllocation>> m_batchStagings;        // recording
+    std::vector<std::pair<VkBuffer, VmaAllocation>> m_batchInFlightSlot[2]; // submitted
     uint32_t      m_batchOps    = 0;                // uploads in the current batch
     uint32_t      m_batchFlushes = 0;               // receipts: flushes this batch window
     double        m_batchMs     = 0.0;              // receipts: wall ms spent flushing

@@ -185,6 +185,27 @@ public:
         range.primitiveOffset = 0; range.firstVertex = 0; range.transformOffset = 0;
         const VkAccelerationStructureBuildRangeInfoKHR* pRange = &range;
 
+        // BOOT-TIME batched BLAS builds (docs/BOOT_TIME.md): inside a
+        // beginBlasBatch()/endBlasBatch() window, RECORD the build into the shared
+        // batch command buffer (one submit for the whole set) instead of a
+        // blocking submit+fence PER MESH — ~8000 one-shot submits took ~6.6 s on
+        // the legacy tower's first frame. The scratch buffer stays alive until
+        // the batch flush. Outside a batch the original blocking path is used.
+        if (m_blasBatchWanted) {
+            VkCommandBuffer cmd = blasBatchCmd();
+            if (cmd) {
+                m_pfnCmdBuildAS(cmd, 1, &bgi, &pRange);
+                m_blasBatchScratch.push_back(scratch);
+                VkAccelerationStructureDeviceAddressInfoKHR adi{};
+                adi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+                adi.accelerationStructure = b.handle;
+                b.addr = m_pfnGetASAddr(m_dev, &adi);
+                m_blas.emplace(meshId, b);
+                return true;
+            }
+            // batch cmd alloc failed -> fall through to the blocking path
+        }
+
         const bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
             m_pfnCmdBuildAS(cmd, 1, &bgi, &pRange);
         });
@@ -201,6 +222,33 @@ public:
         b.addr = m_pfnGetASAddr(m_dev, &adi);
         m_blas.emplace(meshId, b);
         return true;
+    }
+
+    // ---- BOOT-TIME batched BLAS builds ------------------------------------
+    // beginBlasBatch(): subsequent ensureBlas calls record into ONE shared
+    // command buffer. endBlasBatch(): submit once + wait the fence + free every
+    // pending scratch. A BLAS recorded in the batch is NOT usable until
+    // endBlasBatch returns (the caller builds the TLAS after the flush).
+    void beginBlasBatch() { if (m_ready) m_blasBatchWanted = true; }
+
+    bool endBlasBatch() {
+        m_blasBatchWanted = false;
+        if (!m_blasBatchOpen) return true;            // nothing recorded
+        vkEndCommandBuffer(m_blasBatchCmd);
+        VkCommandBufferSubmitInfo cs{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+        cs.commandBuffer = m_blasBatchCmd;
+        VkSubmitInfo2 submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+        submit.commandBufferInfoCount = 1; submit.pCommandBufferInfos = &cs;
+        VkResult sr = vkQueueSubmit2(m_queue, 1, &submit, m_fence);
+        if (sr == VK_SUCCESS) {
+            vkWaitForFences(m_dev, 1, &m_fence, VK_TRUE, UINT64_MAX);
+            vkResetFences(m_dev, 1, &m_fence);
+        }
+        m_blasBatchOpen = false;
+        vkResetCommandBuffer(m_blasBatchCmd, 0);
+        for (RtBuffer& s : m_blasBatchScratch) destroyBuffer(s);
+        m_blasBatchScratch.clear();
+        return sr == VK_SUCCESS;
     }
 
     bool hasBlas(uint32_t meshId) const { return m_blas.find(meshId) != m_blas.end(); }
@@ -441,6 +489,29 @@ private:
     VmaAllocator     m_alloc = nullptr;
     VkQueue          m_queue = VK_NULL_HANDLE;
     uint32_t         m_family = 0;
+
+    // Batched BLAS builds (boot-time): lazily allocated shared command buffer.
+    VkCommandBuffer blasBatchCmd() {
+        if (m_blasBatchOpen) return m_blasBatchCmd;
+        if (!m_blasBatchCmd) {
+            VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+            ai.commandPool = m_pool; ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            ai.commandBufferCount = 1;
+            if (vkAllocateCommandBuffers(m_dev, &ai, &m_blasBatchCmd) != VK_SUCCESS) {
+                m_blasBatchCmd = VK_NULL_HANDLE;
+                return VK_NULL_HANDLE;
+            }
+        }
+        VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(m_blasBatchCmd, &bi) != VK_SUCCESS) return VK_NULL_HANDLE;
+        m_blasBatchOpen = true;
+        return m_blasBatchCmd;
+    }
+    bool            m_blasBatchWanted = false;
+    bool            m_blasBatchOpen   = false;
+    VkCommandBuffer m_blasBatchCmd    = VK_NULL_HANDLE;
+    std::vector<RtBuffer> m_blasBatchScratch;
 
     VkCommandPool m_pool  = VK_NULL_HANDLE;
     VkFence       m_fence = VK_NULL_HANDLE;
