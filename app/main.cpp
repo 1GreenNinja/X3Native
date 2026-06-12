@@ -947,6 +947,27 @@ static bool runGpuCullSelfTest() {
     } else check("bypass render", false);
     device->setFrustumCullEnabled(true);
 
+    // TIER 1 (async compute queue) — same predicate, same equivalence, on the
+    // 5090's dedicated compute queue. If the device has no dedicated queue the
+    // path resolves back to 1 (also asserted: never 2 without support).
+    device->setCullPath(2);
+    if (renderFrames(4, 0.0f, 2.0f, 0.0f, 0.0f, 0.0f)) {
+        const RenderStats st = device->stats();
+        const bool tier1 = st.gpuCullPath == 2;
+        check(tier1 ? "tier1: async path active" : "tier1: clamped to tier0 (no dedicated queue)",
+              st.gpuCullPath == 2 || st.gpuCullPath == 1);
+        check("tier1: tested == submitted", st.gpuCullTested == kInstances);
+        check("tier1: drawn + frustumCulled == tested",
+              st.gpuCullDrawn + st.gpuCullFrustum == st.gpuCullTested);
+        check("tier1: GPU drawn == CPU expected", st.gpuCullDrawn == st.gpuCullExpected);
+    } else check("tier1 render", false);
+    if (renderFrames(4, 10.0f, 3.0f, -8.0f, 2.4f, -0.3f)) {
+        const RenderStats st = device->stats();
+        check("tier1 skewed: GPU drawn == CPU expected",
+              st.gpuCullDrawn == st.gpuCullExpected && st.gpuCullDrawn > 0);
+    } else check("tier1 skewed render", false);
+    device->setCullPath(1);
+
     // (d) zero mismatches across every compared frame so far.
     {
         const RenderStats st = device->stats();

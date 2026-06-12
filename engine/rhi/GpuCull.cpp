@@ -168,12 +168,14 @@ static void recordCull(void* ctxRaw, VkCommandBuffer cmd) {
     ctx->self->recordCullBody(cmd, ctx->frame, ctx->useHzb);
 }
 
-void GpuCullSystem::recordCullBody(VkCommandBuffer cmd, const CullFrameInputs& f, bool useHzb) {
+void GpuCullSystem::recordCullBody(VkCommandBuffer cmd, const CullFrameInputs& f, bool useHzb,
+                                   bool gfxQueueBarriers) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                       (useHzb && m_cullPipeHzb) ? m_cullPipeHzb : m_cullPipe);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_cullLayout,
                             0, 1, &f.cullSet, 0, nullptr);
     vkCmdDispatch(cmd, (f.instanceCount + 63u) / 64u, 1, 1);
+    if (!gfxQueueBarriers) return;   // Tier 1: the timeline-semaphore wait covers it
 
     VkBufferMemoryBarrier2 bb[2]{};
     bb[0] = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2, nullptr,
@@ -281,7 +283,7 @@ void GpuCullSystem::addHzbPasses(RenderGraph& graph, const HzbChain& chain) {
 // ===========================================================================
 VkSemaphore GpuCullSystem::recordAsyncCull(VkCommandBuffer computeCmd,
                                            const CullFrameInputs& frame) {
-    recordCullBody(computeCmd, frame, false); // identical dispatch + barriers
+    recordCullBody(computeCmd, frame, false, /*gfxQueueBarriers=*/false);
     return m_asyncDone;                       // device init creates the timeline
 }
 

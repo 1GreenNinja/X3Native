@@ -130,7 +130,13 @@ public:
     // the trampolines are file-local free functions in the .cpp).
     struct PassCtx { GpuCullSystem* self; CullFrameInputs frame; bool useHzb; };
     struct HzbCtx  { GpuCullSystem* self; HzbChain chain; };
-    void recordCullBody(VkCommandBuffer cmd, const CullFrameInputs& f, bool useHzb);
+    // gfxQueueBarriers: on the GRAPHICS queue the compute->DRAW_INDIRECT/
+    // VERTEX_SHADER buffer barriers are emitted inline. On a DEDICATED COMPUTE
+    // queue those dst stages are invalid (unsupported by the queue) — pass false
+    // and let the cross-queue timeline-semaphore wait make the writes visible
+    // (Tier 1: graphics waits at DRAW_INDIRECT|VERTEX_SHADER).
+    void recordCullBody(VkCommandBuffer cmd, const CullFrameInputs& f, bool useHzb,
+                        bool gfxQueueBarriers = true);
 
     VkPipeline       m_hzbPipe   = VK_NULL_HANDLE;   // HzbCtx record reads these
     VkPipelineLayout m_hzbLayout = VK_NULL_HANDLE;

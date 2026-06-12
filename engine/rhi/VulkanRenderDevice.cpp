@@ -274,6 +274,20 @@ public:
         m_gfxQueue = q.value();
         m_gfxFamily = qfi.value();
 
+        // D15 Tier 1: a DEDICATED compute queue (compute && !graphics family),
+        // if the device has one (Turing+/RDNA+ do; 5090 has several). Optional —
+        // absence just pins the GPU cull to the graphics queue (Tier 0).
+        {
+            auto cq  = m_dev.get_queue(vkb::QueueType::compute);
+            auto cqi = m_dev.get_queue_index(vkb::QueueType::compute);
+            if (cq && cqi && cqi.value() != m_gfxFamily) {
+                m_computeQueue  = cq.value();
+                m_computeFamily = cqi.value();
+                logInfo("[cull] dedicated compute queue available (family " +
+                        std::to_string(m_computeFamily) + ") — Tier 1 eligible");
+            }
+        }
+
         logInfo(std::string("[rhi] device ready: ") + phys.name +
                 " (Vulkan 1.3, dynamic-rendering + sync2 + descriptor-indexing)" +
                 (m_headless ? " [HEADLESS: offscreen target, no surface/swapchain]" : ""));
@@ -773,6 +787,7 @@ public:
         // the slot the dispatch reads.)
         m_framePrepared = false;
         m_frameCmdCount = 0; m_frameCmdOpaque = 0;
+        m_asyncCullThisFrame = false;   // re-armed by the graph build (Tier 1)
         if (fr.hudDescPool) vkResetDescriptorPool(m_dev.device, fr.hudDescPool, 0);
         fr.hudVertsUsed = 0;
 
@@ -978,10 +993,51 @@ public:
         // slot (beginFrame waits it before reusing the slot's offscreen image +
         // command buffer). WINDOWED keeps the acquire-wait + renderFinished-signal
         // that the present below consumes.
-        VkSemaphoreSubmitInfo waitS{};
-        waitS.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-        waitS.semaphore = fr.imageAvailable;
-        waitS.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        // ---- D15 TIER 1: async cull on the dedicated compute queue ----------
+        // Record + submit the cull dispatch FIRST (signals the timeline), then
+        // make the graphics submit wait on it at the exact consuming stages
+        // (DRAW_INDIRECT for instanceCount, VERTEX_SHADER for visibleInstance[]).
+        // No barriers inside the compute cmd — the semaphore signal/wait pair is
+        // the cross-queue execution + memory dependency (sync2 semantics).
+        uint64_t cullWaitValue = 0;
+        if (m_asyncCullThisFrame && m_asyncCullReady) {
+            vkResetCommandPool(m_dev.device, fr.cullPool, 0);
+            VkCommandBufferBeginInfo cbi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+            cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vkBeginCommandBuffer(fr.cullCmd, &cbi);
+            m_gpuCull.recordCullBody(fr.cullCmd, m_asyncCullInputs,
+                                     /*useHzb=*/false, /*gfxQueueBarriers=*/false);
+            vkEndCommandBuffer(fr.cullCmd);
+
+            cullWaitValue = ++m_cullTimelineValue;
+            VkSemaphoreSubmitInfo csig{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+            csig.semaphore = m_cullTimeline;
+            csig.value = cullWaitValue;
+            csig.stageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            VkCommandBufferSubmitInfo ccmd{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+            ccmd.commandBuffer = fr.cullCmd;
+            VkSubmitInfo2 csubmit{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+            csubmit.commandBufferInfoCount = 1; csubmit.pCommandBufferInfos = &ccmd;
+            csubmit.signalSemaphoreInfoCount = 1; csubmit.pSignalSemaphoreInfos = &csig;
+            vkQueueSubmit2(m_computeQueue, 1, &csubmit, VK_NULL_HANDLE);
+        }
+
+        VkSemaphoreSubmitInfo waits[2]{};
+        uint32_t waitCount = 0;
+        if (!m_headless) {
+            waits[waitCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+            waits[waitCount].semaphore = fr.imageAvailable;
+            waits[waitCount].stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            ++waitCount;
+        }
+        if (cullWaitValue) {
+            waits[waitCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+            waits[waitCount].semaphore = m_cullTimeline;
+            waits[waitCount].value = cullWaitValue;
+            waits[waitCount].stageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
+                                         VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+            ++waitCount;
+        }
 
         VkSemaphoreSubmitInfo signalS{};
         signalS.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
@@ -994,12 +1050,13 @@ public:
 
         VkSubmitInfo2 submit{};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-        submit.waitSemaphoreInfoCount   = m_headless ? 0u : 1u;
-        submit.pWaitSemaphoreInfos      = m_headless ? nullptr : &waitS;
+        submit.waitSemaphoreInfoCount   = waitCount;
+        submit.pWaitSemaphoreInfos      = waitCount ? waits : nullptr;
         submit.commandBufferInfoCount   = 1;   submit.pCommandBufferInfos = &cmdS;
         submit.signalSemaphoreInfoCount = m_headless ? 0u : 1u;
         submit.pSignalSemaphoreInfos    = m_headless ? nullptr : &signalS;
         vkQueueSubmit2(m_gfxQueue, 1, &submit, fr.inFlight);
+        m_asyncCullThisFrame = false;
 
         // Fix 1: if this frame recorded the capture copy, remember which fence to
         // wait on (this frame's inFlight) so captureFrame() can finalize the PNG.
@@ -1984,6 +2041,11 @@ private:
         bool          cullStatsPending = false; // a frame's cull stats await readback
         uint32_t      cullExpected = 0;       // CPU-evaluated survivors (equiv mode)
         bool          cullExpectedValid = false;
+        // Tier 1: this slot's DEDICATED-COMPUTE-QUEUE command pool/buffer (the
+        // async cull dispatch). Reset on slot reuse (fence-guarded transitively:
+        // compute work <= timeline wait <= graphics work <= inFlight fence).
+        VkCommandPool   cullPool = VK_NULL_HANDLE;
+        VkCommandBuffer cullCmd  = VK_NULL_HANDLE;
     };
 
     void imageBarrier(VkCommandBuffer cmd, VkImage img,
@@ -2081,8 +2143,9 @@ private:
         m_cullPathActive = 0;
         if (m_gpuCullReady && m_cullPathReq != 0) {
             int p = m_cullPathReq;
-            if (p < 0) p = 1;                  // auto: Tier 0 (Tiers 1/2 unlock in later stages)
-            if (p > 1) p = 1;                  // clamp to the tiers brought up so far
+            if (p < 0) p = m_asyncCullReady ? 2 : 1;   // auto: best supported tier
+            if (p > 2) p = m_asyncCullReady ? 2 : 1;   // Tier 2 (meshlets) not wired yet
+            if (p == 2 && !m_asyncCullReady) p = 1;    // no dedicated queue -> Tier 0
             m_cullPathActive = p;
         }
         // The IBL probe bake replays this frame's indirect commands on a one-time
@@ -2094,6 +2157,11 @@ private:
         // last-frame depth (never reduce an unrendered depth image).
         m_hzbActiveThisFrame = (m_cullPathActive >= 1) && m_hzbEnabled &&
                                m_hzbReady && m_depthValid;
+        // HZB + Tier 1 would put the pyramid reduce (which samples the GRAPHICS-
+        // owned depth image) on the compute queue — cross-queue image sharing is
+        // future work. With r_hzb on, the cull runs on the graphics queue (Tier 0
+        // body) so occlusion keeps working; frustum-only Tier 1 stays fully async.
+        if (m_cullPathActive == 2 && m_hzbActiveThisFrame) m_cullPathActive = 1;
         m_frameCullInstances = 0;
 
         // Camera viewProj (right-handed, reverse-Y for Vulkan clip) + the sun's
@@ -3109,7 +3177,15 @@ private:
             ci.params           = cfr.cullParamsBuf;
             ci.instanceCount    = m_frameCullInstances;
             ci.cullSet          = cfr.cullSet;
-            m_gpuCull.addCullPass(m_graph, ci, hzbThisFrame);
+            if (m_cullPathActive == 2) {
+                // TIER 1: the dispatch records into this slot's compute-queue
+                // command buffer in endFrame (submitted BEFORE the graphics
+                // submit, which waits the timeline at DRAW_INDIRECT|VERTEX_SHADER).
+                m_asyncCullThisFrame = true;
+                m_asyncCullInputs = ci;
+            } else {
+                m_gpuCull.addCullPass(m_graph, ci, hzbThisFrame);
+            }
         }
 
         // ---- Pass 1: shadow depth pass --------------------------------------
@@ -8471,6 +8547,32 @@ private:
                 vkUpdateDescriptorSets(m_dev.device, 6, w, 0, nullptr);
             }
         }
+        // ---- Tier 1 (async compute) objects: timeline semaphore + per-frame
+        // command pools on the dedicated compute family. Optional.
+        if (m_computeQueue) {
+            VkSemaphoreTypeCreateInfo tci{ VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO };
+            tci.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+            tci.initialValue = 0;
+            VkSemaphoreCreateInfo sci2{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &tci };
+            bool ok = vkCreateSemaphore(m_dev.device, &sci2, nullptr, &m_cullTimeline) == VK_SUCCESS;
+            for (uint32_t i = 0; ok && i < kFramesInFlight; ++i) {
+                auto& fr = m_frames[i];
+                VkCommandPoolCreateInfo pci2{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+                pci2.queueFamilyIndex = m_computeFamily;
+                ok = vkCreateCommandPool(m_dev.device, &pci2, nullptr, &fr.cullPool) == VK_SUCCESS;
+                if (ok) {
+                    VkCommandBufferAllocateInfo cai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+                    cai.commandPool = fr.cullPool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                    cai.commandBufferCount = 1;
+                    ok = vkAllocateCommandBuffers(m_dev.device, &cai, &fr.cullCmd) == VK_SUCCESS;
+                }
+            }
+            m_asyncCullReady = ok;
+            logInfo(m_asyncCullReady
+                ? "[cull] Tier 1 async-compute path READY (timeline semaphore + compute pools)"
+                : "[cull] Tier 1 setup failed — async path disabled (Tier 0 still available)");
+        }
+
         logInfo(std::string("[cull] D15 GPU cull ready (caps tier ") +
                 std::to_string((int)m_cullCaps.tier) + ", r_cullpath gates the path)");
         return true;
@@ -8591,6 +8693,12 @@ private:
 
     void destroyGpuCull() {
         destroyHzbTargets();
+        if (m_cullTimeline) { vkDestroySemaphore(m_dev.device, m_cullTimeline, nullptr); m_cullTimeline = VK_NULL_HANDLE; }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            auto& fr = m_frames[i];
+            if (fr.cullPool) { vkDestroyCommandPool(m_dev.device, fr.cullPool, nullptr); fr.cullPool = VK_NULL_HANDLE; fr.cullCmd = VK_NULL_HANDLE; }
+        }
+        m_asyncCullReady = false;
         if (m_hzbPool)    { vkDestroyDescriptorPool(m_dev.device, m_hzbPool, nullptr); m_hzbPool = VK_NULL_HANDLE; }
         if (m_cullPool)   { vkDestroyDescriptorPool(m_dev.device, m_cullPool, nullptr); m_cullPool = VK_NULL_HANDLE; }
         if (m_hzbSampler) { vkDestroySampler(m_dev.device, m_hzbSampler, nullptr); m_hzbSampler = VK_NULL_HANDLE; }
@@ -8903,6 +9011,15 @@ private:
                 VkBufferCreateInfo ibci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
                 ibci.size = (VkDeviceSize)kMaxDrawMeshes * sizeof(VkDrawIndexedIndirectCommand);
                 ibci.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                // Tier 1: the dedicated compute queue writes this buffer while the
+                // graphics queue reads it -> CONCURRENT sharing across the two
+                // families (simpler than ownership transfers; revisit if profiled).
+                const uint32_t cullFamilies[2] = { m_gfxFamily, m_computeFamily };
+                if (m_computeQueue) {
+                    ibci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+                    ibci.queueFamilyIndexCount = 2;
+                    ibci.pQueueFamilyIndices = cullFamilies;
+                }
                 VmaAllocationInfo iinfo{};
                 if (vmaCreateBuffer(m_alloc, &ibci, &aci, &fr.indirectBuf, &fr.indirectAlloc, &iinfo) != VK_SUCCESS) {
                     logError("[rhi] indirect buffer create failed"); return false;
@@ -8917,6 +9034,11 @@ private:
                     VkBufferCreateInfo vbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
                     vbci.size = (VkDeviceSize)kMaxDrawsPerFrame * sizeof(uint32_t);
                     vbci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                    if (m_computeQueue) {
+                        vbci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+                        vbci.queueFamilyIndexCount = 2;
+                        vbci.pQueueFamilyIndices = cullFamilies;
+                    }
                     VmaAllocationInfo vinfo{};
                     if (vmaCreateBuffer(m_alloc, &vbci, &aci, &fr.visBuf, &fr.visAlloc, &vinfo) != VK_SUCCESS) {
                         logError("[rhi] visible-instance buffer create failed"); return false;
@@ -8928,6 +9050,11 @@ private:
                     VkBufferCreateInfo cbci2{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
                     cbci2.size = (VkDeviceSize)kMaxDrawsPerFrame * sizeof(CullInstanceGpu);
                     cbci2.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                    if (m_computeQueue) {
+                        cbci2.sharingMode = VK_SHARING_MODE_CONCURRENT;
+                        cbci2.queueFamilyIndexCount = 2;
+                        cbci2.pQueueFamilyIndices = cullFamilies;
+                    }
                     VmaAllocationInfo ciinfo{};
                     if (vmaCreateBuffer(m_alloc, &cbci2, &aci, &fr.cullInstBuf, &fr.cullInstAlloc, &ciinfo) != VK_SUCCESS) {
                         logError("[rhi] cull instance buffer create failed"); return false;
@@ -8939,6 +9066,11 @@ private:
                     VkBufferCreateInfo stbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
                     stbci.size = sizeof(CullStatsGpu);
                     stbci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                    if (m_computeQueue) {
+                        stbci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+                        stbci.queueFamilyIndexCount = 2;
+                        stbci.pQueueFamilyIndices = cullFamilies;
+                    }
                     VmaAllocationCreateInfo staci{};
                     staci.usage = VMA_MEMORY_USAGE_AUTO;
                     staci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
@@ -8952,6 +9084,11 @@ private:
                     VkBufferCreateInfo pbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
                     pbci.size = sizeof(CullParamsGpu);
                     pbci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+                    if (m_computeQueue) {
+                        pbci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+                        pbci.queueFamilyIndexCount = 2;
+                        pbci.pQueueFamilyIndices = cullFamilies;
+                    }
                     VmaAllocationInfo pinfo{};
                     if (vmaCreateBuffer(m_alloc, &pbci, &aci, &fr.cullParamsBuf, &fr.cullParamsAlloc, &pinfo) != VK_SUCCESS) {
                         logError("[rhi] cull params buffer create failed"); return false;
@@ -10657,6 +10794,15 @@ private:
     int                     m_cullPathReq = 0;
     int                     m_cullPathActive = 0;
     uint32_t                m_frameCullInstances = 0;  // rows the cull pass dispatches over
+    // Tier 1 (async compute): the dedicated queue + a timeline semaphore the
+    // graphics submit waits on at DRAW_INDIRECT|VERTEX_SHADER.
+    VkQueue                 m_computeQueue = VK_NULL_HANDLE;
+    uint32_t                m_computeFamily = VK_QUEUE_FAMILY_IGNORED;
+    bool                    m_asyncCullReady = false;
+    VkSemaphore             m_cullTimeline = VK_NULL_HANDLE;
+    uint64_t                m_cullTimelineValue = 0;
+    bool                    m_asyncCullThisFrame = false;
+    CullFrameInputs         m_asyncCullInputs{};
     bool                    m_hzbEnabled = false;     // r_hzb (needs path >= 1)
     bool                    m_hzbActiveThisFrame = false; // resolved per frame
     // HZB depth pyramid (R32_SFLOAT, full mip chain, GENERAL layout forever).
