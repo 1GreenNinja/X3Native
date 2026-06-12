@@ -27,6 +27,7 @@
 #include "scene.h"
 #include "mesh_prims.h"
 #include "asset_root.h"                    // portable assetRoot() (assets-LFS)
+#include "asset_manifest_check.h"          // fleet asset-store manifest boot check (Phase A)
 #include "audio_root.h"                    // portable resolveAudio() (D: mirror / G: packs)
 #include "anim.h"                          // Skinner + --list-clips clip check
 #include "thirdperson.h"                    // FP/3P toggle + Jake avatar + held weapon (--test-thirdperson)
@@ -1768,6 +1769,12 @@ int main(int argc, char** argv) {
         }
         else if (a == "--test-intro") testIntro = true;
     }
+
+    // Fleet asset-store manifest check (Phase A, docs/ASSET_DISTRIBUTION.md):
+    // auto-fetch any manifest asset missing locally (D: cache -> G: share), or
+    // log ONE line telling the dev to run `python tools/asset_store.py fetch
+    // --all`. No-op when assets/manifest.json is absent. Never blocks boot.
+    x3::game::checkAssetManifest();
 
     // Headless self-tests (no window / Vulkan needed)
     if (testJobs) {

@@ -1,10 +1,15 @@
 # Asset Distribution — LFS Quota Escape Plan
 
-> **STATUS: PROPOSAL ONLY (2026-06-12). Nothing in this document has been
-> executed.** The guard hook + .gitattributes/.gitignore hardening shipped with
-> this doc are live; everything below the ledger is a plan that needs Tim's
-> sign-off, and §6 (history rewrite) additionally needs every fleet machine
-> coordinated. Do not action §4–§6 from a worktree lane.
+> **STATUS (2026-06-12): Phase A is IMPLEMENTED** (branch `feat/asset-store`):
+> the content-addressed store is live at `\\p13700\G\X3AssetStore`, all 46
+> files under `assets/rigged_glb/` + `assets/converted_glb/` (845,283,484
+> bytes ≈ 806 MiB) are published + hash-verified in `assets/manifest.json`,
+> `tools/asset_store.py` (publish/fetch/verify/status) is the one tool, the
+> pre-commit guard now BLOCKS new git/LFS assets, and the engine auto-fetches
+> /warns at boot (`app/asset_manifest_check.h`). See §4.5.
+> **Phase B (§4.4 bulk move) and §6 (history rewrite) remain PROPOSED** — §6
+> needs Tim's sign-off and every fleet machine coordinated. Do not action
+> Phase B/§6 from a worktree lane.
 
 ## 1. The problem
 
@@ -76,7 +81,7 @@ themselves.
   **this week** if any Act-2 character/kit work lands. After that, pushes of
   new LFS objects fail fleet-wide.
 
-## 4. PROPOSAL — fleet asset store + content-hash manifest
+## 4. Fleet asset store + content-hash manifest (Phase A: IMPLEMENTED)
 
 ### 4.1 Store
 
@@ -120,9 +125,9 @@ tools can verify integrity the same way.
 
 ### 4.4 Migration path (what moves out, what stays)
 
-Phase A — **stop the bleeding (no history change, safe now):**
-new big assets go to the store + manifest, never to LFS. The pre-commit guard
-warns/blocks accordingly.
+Phase A — **stop the bleeding (no history change, safe now): ✅ IMPLEMENTED
+2026-06-12** — new big assets go to the store + manifest, never to LFS. The
+pre-commit guard blocks accordingly. See §4.5 for what shipped.
 
 Phase B — **move the bulk (working tree only, still no history rewrite):**
 `git rm --cached` + store-publish for `assets/rigged_glb/` (567 MB) and
@@ -136,6 +141,36 @@ possible later.
 weapon SFX (2.1 MB, curated/hand-picked = source of truth), `assets/props/`
 (0.3 MB), and any future small one-off binaries. Fonts and committed PNGs are
 unaffected until §6.
+
+### 4.5 Phase A — AS IMPLEMENTED (2026-06-12, branch `feat/asset-store`)
+
+- **Store (live):** `\\p13700\G\X3AssetStore\objects\<sha256[0:2]>\<sha256>`
+  (immutable, no extensions; `README.md` at the store root documents the
+  layout). Cache tier: `D:\Assets\X3AssetStore`, same layout, auto-populated
+  on fetch, optional per machine.
+- **Published:** all **46** files under `assets/rigged_glb/` (31) +
+  `assets/converted_glb/` (15) — **845,283,484 bytes (806.1 MiB)** — each
+  re-hashed from the store copy after upload. Round-trip proven (local file
+  removed → fetched → SHA-256 identical), `verify` green 46/46.
+- **Manifest:** `assets/manifest.json` (46 entries: repo_path / sha256 /
+  size / source_note + the store tier paths; ~15 KB plain git).
+- **Tool:** `tools/asset_store.py` — `publish` / `fetch [--all|paths]` /
+  `verify` (CI-able, exit 1 on any failure) / `status`. Atomic temp+rename
+  writes, retries on network blips, **never deletes** (a mismatched local
+  file is set aside as `*.pre-fetch.bak`). If the share is unwritable,
+  `publish` falls back to the D: cache tier and says so.
+- **Guard:** `tools/hooks/pre-commit` now **BLOCKS** any NEW staged file
+  under `assets/rigged_glb/`/`assets/converted_glb/` (any size) and any NEW
+  `assets/**` file > 5 MB (LFS-pointer declared size counted), pointing at
+  the publish command. `assets/manifest.json` commits normally. Re-run
+  `tools/install_hooks.sh` on each machine to pick it up.
+- **Boot check:** `app/asset_manifest_check.h` (wired in `app/main.cpp`,
+  no python dependency) — missing manifest assets are auto-fetched from
+  cache→share at startup (size-checked copy), else ONE log line says to run
+  `python tools/asset_store.py fetch --all`. Proven live (deleted GLB
+  restored bit-identically at boot).
+- **NOT done in Phase A (by design):** the 46 files still sit in LFS too —
+  removal from the index is Phase B; quota refund is §6.
 
 ## 5. What this buys
 
