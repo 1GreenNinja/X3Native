@@ -8321,6 +8321,9 @@ int main(int argc, char** argv) {
         const int kSettleFrames = (screenshotSettle > 0) ? screenshotSettle : 16;
         for (int i = 0; i < kSettleFrames; ++i) {
             glfwPollEvents();
+            // Sync the live cvars (incl. r_cullpath/r_hzb seeded by --cullpath/--hzb)
+            // onto the device, exactly as the main loop does each frame.
+            applyRtaoCVars(*console, *device);
             game.tick(dt, scene, *physics, ssEye, ssEye);
             // Tick the Spire mid floors too (independent enemy groups + gated F5
             // victim) so the screenshot/smoketest paths exercise the new content.

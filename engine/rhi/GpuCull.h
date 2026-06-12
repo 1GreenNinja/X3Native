@@ -108,10 +108,15 @@ public:
     // buffer itself.
     struct HzbChain {
         VkImage  pyramid = VK_NULL_HANDLE;
-        uint32_t width = 0, height = 0, mipCount = 0;
+        uint32_t width = 0, height = 0, mipCount = 0;   // width/height = MIP 0 dims
         const VkDescriptorSet* mipSets = nullptr;   // [mipCount]
     };
     void addHzbPasses(RenderGraph& graph, const HzbChain& chain);
+    // The reduce-loop body (entry barrier + one dispatch per mip + per-mip
+    // write->read barriers). Public so the device can record it inside its own
+    // graph pass (which declares the DEPTH image read so the graph derives the
+    // depth layout transition — the pyramid's barriers stay manual/in here).
+    void recordHzbBuild(VkCommandBuffer cmd, const HzbChain& chain);
 
     // ⚠ TIER 1 — UNTESTED, review required. Records the same dispatches into a
     // command buffer for the dedicated compute queue + returns the semaphore the

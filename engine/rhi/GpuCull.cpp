@@ -208,6 +208,55 @@ void GpuCullSystem::addCullPass(RenderGraph& graph, const CullFrameInputs& frame
 // layers (untestable here): each mip flips SHADER_WRITE->SHADER_READ before
 // the next consumes it.
 // ===========================================================================
+void GpuCullSystem::recordHzbBuild(VkCommandBuffer cmd, const HzbChain& c) {
+    // Entry barrier: the PREVIOUS frame's cull dispatch sampled the pyramid;
+    // this frame's reduce writes it. Whole image, GENERAL->GENERAL (the pyramid
+    // lives in GENERAL forever — transitioned once at creation).
+    {
+        VkImageMemoryBarrier2 ib{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+        ib.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        ib.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        ib.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        ib.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        ib.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        ib.image = c.pyramid;
+        ib.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, c.mipCount, 0, 1 };
+        VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        dep.imageMemoryBarrierCount = 1; dep.pImageMemoryBarriers = &ib;
+        vkCmdPipelineBarrier2(cmd, &dep);
+    }
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_hzbPipe);
+    // chain.width/height are the PYRAMID MIP-0 dimensions (depth/2). Each mip
+    // follows the Vulkan rule (max(1, floor(prev/2))) so the push-constant dims
+    // always equal the actual storage-image mip dims.
+    uint32_t w = c.width, h = c.height;
+    for (uint32_t mip = 0; mip < c.mipCount; ++mip) {
+        if (mip > 0) { w = std::max(1u, w / 2u); h = std::max(1u, h / 2u); }
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                m_hzbLayout, 0, 1, &c.mipSets[mip], 0, nullptr);
+        uint32_t push[2] = { w, h };
+        vkCmdPushConstants(cmd, m_hzbLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, push);
+        vkCmdDispatch(cmd, (w + 7u) / 8u, (h + 7u) / 8u, 1);
+
+        // This mip's writes must land before the NEXT mip's reduce samples it
+        // (and before the cull dispatch samples any mip).
+        VkImageMemoryBarrier2 ib{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+        ib.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        ib.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        ib.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        ib.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        ib.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+        ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        ib.image = c.pyramid;
+        ib.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 1 };
+        VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        dep.imageMemoryBarrierCount = 1; dep.pImageMemoryBarriers = &ib;
+        vkCmdPipelineBarrier2(cmd, &dep);
+    }
+}
+
 void GpuCullSystem::addHzbPasses(RenderGraph& graph, const HzbChain& chain) {
     m_hzbCtx = { this, chain };
     RenderPassDesc pass{};
@@ -215,32 +264,7 @@ void GpuCullSystem::addHzbPasses(RenderGraph& graph, const HzbChain& chain) {
     pass.queue = RgQueue::Graphics;
     pass.record = +[](void* ctxRaw, VkCommandBuffer cmd) {
         auto* ctx = (GpuCullSystem::HzbCtx*)ctxRaw;
-        GpuCullSystem* self = ctx->self;
-        const HzbChain& c = ctx->chain;
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, self->m_hzbPipe);
-        uint32_t w = c.width, h = c.height;
-        for (uint32_t mip = 0; mip < c.mipCount; ++mip) {
-            w = std::max(1u, w / 2u); h = std::max(1u, h / 2u);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                    self->m_hzbLayout, 0, 1, &c.mipSets[mip], 0, nullptr);
-            uint32_t push[2] = { w, h };
-            vkCmdPushConstants(cmd, self->m_hzbLayout, VK_SHADER_STAGE_COMPUTE_BIT,
-                               0, 8, push);
-            vkCmdDispatch(cmd, (w + 7u) / 8u, (h + 7u) / 8u, 1);
-
-            VkImageMemoryBarrier2 ib{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
-            ib.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            ib.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
-            ib.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            ib.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-            ib.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
-            ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
-            ib.image = c.pyramid;
-            ib.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 1 };
-            VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
-            dep.imageMemoryBarrierCount = 1; dep.pImageMemoryBarriers = &ib;
-            vkCmdPipelineBarrier2(cmd, &dep);
-        }
+        ctx->self->recordHzbBuild(cmd, ctx->chain);
     };
     pass.recordCtx = &m_hzbCtx;
     graph.addPass(std::move(pass));

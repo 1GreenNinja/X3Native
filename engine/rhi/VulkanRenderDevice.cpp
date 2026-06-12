@@ -296,6 +296,7 @@ public:
         // path (r_cullpath 0) as the only option — rendering is unaffected.
         m_gpuCullReady = createGpuCull();
         if (!m_gpuCullReady) logWarn("[cull] GPU cull unavailable — r_cullpath >= 1 falls back to CPU");
+        else if (!createHzbTargets()) logWarn("[cull] HZB unavailable — r_hzb stays frustum-only");
         if (!createHud()) return false;
         if (!createSky()) return false;           // analytic sky (open-world track, task A)
         // Image-based lighting (IBL): build the env/irradiance/prefilter cubes + BRDF
@@ -2064,10 +2065,14 @@ private:
             if (fr.cullExpectedValid) {
                 m_lastCullExpected = fr.cullExpected;
                 ++m_cullEquivFrames;
-                if (m_lastCullStats.drawn != fr.cullExpected) {
+                // CPU expectation is FRUSTUM-only; with HZB on the GPU's extra
+                // hzbCulled are frustum-survivors, so drawn + hzbCulled must
+                // still equal the CPU count exactly.
+                if (m_lastCullStats.drawn + m_lastCullStats.hzbCulled != fr.cullExpected) {
                     ++m_cullEquivMismatches;
                     logError("[cull] EQUIVALENCE MISMATCH: gpu drawn=" +
-                             std::to_string(m_lastCullStats.drawn) + " cpu expected=" +
+                             std::to_string(m_lastCullStats.drawn) + " (+hzb " +
+                             std::to_string(m_lastCullStats.hzbCulled) + ") cpu expected=" +
                              std::to_string(fr.cullExpected));
                 }
                 fr.cullExpectedValid = false;
@@ -2085,6 +2090,10 @@ private:
         // could bump instanceCount). Fall back to the CPU cull for that one frame
         // so the probe sees real instance counts. Rare (sky change only).
         if (m_cullPathActive >= 1 && m_iblReady && m_iblDirty) m_cullPathActive = 0;
+        // HZB occlusion phase: needs the GPU path, the pyramid, and a VALID
+        // last-frame depth (never reduce an unrendered depth image).
+        m_hzbActiveThisFrame = (m_cullPathActive >= 1) && m_hzbEnabled &&
+                               m_hzbReady && m_depthValid;
         m_frameCullInstances = 0;
 
         // Camera viewProj (right-handed, reverse-Y for Vulkan clip) + the sun's
@@ -2478,7 +2487,8 @@ private:
                 cp.frustum[i][3] = m_frameFrustum.p[i].w;
             }
             std::memcpy(cp.viewProj, &ubo.viewProj, sizeof(cp.viewProj));
-            cp.hzbSize[0] = 0.0f; cp.hzbSize[1] = 0.0f;
+            cp.hzbSize[0] = m_hzbActiveThisFrame ? (float)m_hzbW : 0.0f;
+            cp.hzbSize[1] = m_hzbActiveThisFrame ? (float)m_hzbH : 0.0f;
             cp.instanceCount = row;
             std::memcpy(fr.cullParamsMapped, &cp, sizeof(cp));
             std::memset(fr.cullStatsMapped, 0, sizeof(CullStatsGpu));
@@ -2924,8 +2934,13 @@ private:
         // sampled it), except on the very first use where it is UNDEFINED.
         RgResource rgColor = m_graph.importImage("frame.color", colorTargetImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
-        RgResource rgDepth = m_graph.importImage("scene.depth", m_depthImg,
-            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        // D15 HZB: when the pyramid reduces LAST frame's depth this frame, import
+        // the depth with its preserved post-frame state (UNDEFINED would discard
+        // the contents the reduce is about to read). Otherwise exactly as before.
+        RgResource rgDepth = (m_hzbActiveThisFrame && m_depthValid)
+            ? m_graph.importImage("scene.depth", m_depthImg, m_depthState)
+            : m_graph.importImage("scene.depth", m_depthImg,
+                  ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgShadow = m_graph.importImage("shadow.map", m_shadowImg, m_shadowState);
 
         // HDR pipeline resources: the linear HDR scene target (main pass writes it,
@@ -3062,6 +3077,29 @@ private:
         // manual sync2 buffer barriers inside the record body — the graph tracks
         // images only, per its documented scope.
         if (m_cullPathActive >= 1 && m_frameCullInstances > 0 && m_frameCmdCount > 0) {
+            const bool hzbThisFrame = m_hzbActiveThisFrame;
+            // HZB reduce FIRST (samples last frame's depth into the pyramid), so
+            // the cull dispatch right after it sees fresh occlusion data. The
+            // pass declares the depth read so the graph derives the
+            // (attachment -> DEPTH_READ_ONLY) transition; the pyramid's own
+            // barriers are manual inside recordHzbBuild (mip granularity).
+            if (hzbThisFrame) {
+                m_hzbChain = GpuCullSystem::HzbChain{ m_hzbImg, m_hzbW, m_hzbH,
+                                                      m_hzbMipCount, m_hzbMipSet };
+                RenderPassDesc hp{};
+                hp.name = "hzb-build";
+                hp.queue = RgQueue::Compute;
+                hp.addUse(ResourceUse{
+                    rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+                hp.recordCtx = this;
+                hp.record = [](void* ctx, VkCommandBuffer c){
+                    auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                    self->m_gpuCull.recordHzbBuild(c, self->m_hzbChain);
+                };
+                m_graph.addPass(std::move(hp));
+            }
             auto& cfr = m_frames[m_frameIdx];
             CullFrameInputs ci{};
             ci.instances        = cfr.cullInstBuf;
@@ -3071,7 +3109,7 @@ private:
             ci.params           = cfr.cullParamsBuf;
             ci.instanceCount    = m_frameCullInstances;
             ci.cullSet          = cfr.cullSet;
-            m_gpuCull.addCullPass(m_graph, ci, /*useHzb=*/false);   // HZB lands in stage 2
+            m_gpuCull.addCullPass(m_graph, ci, hzbThisFrame);
         }
 
         // ---- Pass 1: shadow depth pass --------------------------------------
@@ -4097,6 +4135,11 @@ private:
         // first use we never see UNDEFINED again — the WAR barrier protecting last
         // frame's sampling reads is derived from this stored read state.
         m_shadowState = m_graph.stateOf(rgShadow);
+
+        // D15 HZB: persist the depth buffer's post-frame state too (next frame's
+        // pyramid reduce imports it preserved) + mark its contents rendered.
+        m_depthState = m_graph.stateOf(rgDepth);
+        m_depthValid = true;
 
         // GI ping-pong + history: this frame wrote accum[m_giAccumWrite] (now the
         // freshest accumulated GI) + snapshotted depth into prev-depth. Next frame
@@ -6675,6 +6718,8 @@ private:
         writeWaterDescriptors();
         // Particles sample the scene depth (soft fade): rewire on the new depth view.
         writeParticleDescriptors();
+        // HZB pyramid tracks the extent + samples the (new) depth view.
+        if (m_gpuCullReady) createHzbTargets();
         // RT AO (if built): half-res target tracks the extent + the depth view
         // changed, so recreate the target + rewrite all RT-AO descriptors.
         if (m_rtaoBuilt) { createRtaoTargets(); writeRtaoDescriptors(); }
@@ -6786,6 +6831,8 @@ private:
         writeWaterDescriptors();
         // Particles sample the scene depth (soft fade): rewire on the new depth view.
         writeParticleDescriptors();
+        // HZB pyramid tracks the extent + samples the (new) depth view.
+        if (m_gpuCullReady) createHzbTargets();
     }
 
     // ---- HDR scene + bloom render targets ----------------------------------
@@ -8429,7 +8476,122 @@ private:
         return true;
     }
 
+    // ---- D15 stage 2: HZB depth pyramid (extent-tracking) -------------------
+    // Mip 0 = half the render extent; full chain down to 1x1. Image lives in
+    // GENERAL forever (transitioned once here); the per-frame write->read flips
+    // are sync2 barriers inside recordHzbBuild. Rebuilt on resize (depth view
+    // changes); marks last-frame depth invalid so the first post-resize frame
+    // culls frustum-only.
+    bool createHzbTargets() {
+        destroyHzbTargets();
+        if (!m_gpuCullReady) return false;
+        m_hzbW = std::max(1u, m_extent.width  / 2u);
+        m_hzbH = std::max(1u, m_extent.height / 2u);
+        uint32_t mips = 1; { uint32_t w = std::max(m_hzbW, m_hzbH); while (w > 1) { w /= 2; ++mips; } }
+        m_hzbMipCount = std::min(mips, kHzbMaxMips);
+
+        VkImageCreateInfo ici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = VK_FORMAT_R32_SFLOAT;
+        ici.extent = { m_hzbW, m_hzbH, 1 };
+        ici.mipLevels = m_hzbMipCount; ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+        VmaAllocationCreateInfo aci{}; aci.usage = VMA_MEMORY_USAGE_AUTO;
+        if (vmaCreateImage(m_alloc, &ici, &aci, &m_hzbImg, &m_hzbAlloc, nullptr) != VK_SUCCESS) {
+            logError("[cull] hzb pyramid create failed"); return false;
+        }
+        auto makeView = [&](uint32_t baseMip, uint32_t mipCount, VkImageView& out) {
+            VkImageViewCreateInfo vci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+            vci.image = m_hzbImg; vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            vci.format = VK_FORMAT_R32_SFLOAT;
+            vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, baseMip, mipCount, 0, 1 };
+            return vkCreateImageView(m_dev.device, &vci, nullptr, &out) == VK_SUCCESS;
+        };
+        if (!makeView(0, m_hzbMipCount, m_hzbViewAll)) return false;
+        for (uint32_t m = 0; m < m_hzbMipCount; ++m)
+            if (!makeView(m, 1, m_hzbMipView[m])) return false;
+
+        // One-time UNDEFINED -> GENERAL for the whole chain.
+        bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
+            VkImageMemoryBarrier2 ib{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+            ib.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT; ib.srcAccessMask = 0;
+            ib.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            ib.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+            ib.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            ib.image = m_hzbImg;
+            ib.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, m_hzbMipCount, 0, 1 };
+            VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+            dep.imageMemoryBarrierCount = 1; dep.pImageMemoryBarriers = &ib;
+            vkCmdPipelineBarrier2(cmd, &dep);
+        });
+        if (!ok) { logError("[cull] hzb layout init failed"); return false; }
+
+        // Per-mip reduce sets: binding0 = src sampler (depth for mip 0, the
+        // previous pyramid mip otherwise), binding1 = this mip as storage image.
+        if (!m_hzbPool) {
+            VkDescriptorPoolSize sizes[2]{};
+            sizes[0] = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kHzbMaxMips };
+            sizes[1] = { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kHzbMaxMips };
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.maxSets = kHzbMaxMips; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_hzbPool) != VK_SUCCESS)
+                return false;
+        } else {
+            vkResetDescriptorPool(m_dev.device, m_hzbPool, 0);
+        }
+        VkDescriptorSetLayout hdsl = m_gpuCull.hzbSetLayout();
+        for (uint32_t m = 0; m < m_hzbMipCount; ++m) {
+            VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            dsai.descriptorPool = m_hzbPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &hdsl;
+            if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_hzbMipSet[m]) != VK_SUCCESS)
+                return false;
+            VkDescriptorImageInfo src{};
+            src.sampler = m_hzbSampler;
+            if (m == 0) { src.imageView = m_depthView; src.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL; }
+            else        { src.imageView = m_hzbMipView[m - 1]; src.imageLayout = VK_IMAGE_LAYOUT_GENERAL; }
+            VkDescriptorImageInfo dst{ VK_NULL_HANDLE, m_hzbMipView[m], VK_IMAGE_LAYOUT_GENERAL };
+            VkWriteDescriptorSet w[2]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[0].dstSet = m_hzbMipSet[m]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &src;
+            w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[1].dstSet = m_hzbMipSet[m]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+            w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w[1].pImageInfo = &dst;
+            vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+        }
+
+        // Point every frame's cull set (binding 5) at the live pyramid.
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (!m_frames[i].cullSet) continue;
+            VkDescriptorImageInfo iHzb{ m_hzbSampler, m_hzbViewAll, VK_IMAGE_LAYOUT_GENERAL };
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.dstSet = m_frames[i].cullSet; w.dstBinding = 5; w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &iHzb;
+            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        }
+
+        m_depthValid = false;          // depth content is fresh/unrendered
+        m_hzbReady = true;
+        logInfo("[cull] HZB pyramid ready: " + std::to_string(m_hzbW) + "x" +
+                std::to_string(m_hzbH) + " mips=" + std::to_string(m_hzbMipCount));
+        return true;
+    }
+
+    void destroyHzbTargets() {
+        m_hzbReady = false; m_depthValid = false;
+        if (m_hzbViewAll) { vkDestroyImageView(m_dev.device, m_hzbViewAll, nullptr); m_hzbViewAll = VK_NULL_HANDLE; }
+        for (uint32_t m = 0; m < kHzbMaxMips; ++m) {
+            if (m_hzbMipView[m]) { vkDestroyImageView(m_dev.device, m_hzbMipView[m], nullptr); m_hzbMipView[m] = VK_NULL_HANDLE; }
+            m_hzbMipSet[m] = VK_NULL_HANDLE;   // pool reset/destroy reclaims them
+        }
+        if (m_hzbImg) { vmaDestroyImage(m_alloc, m_hzbImg, m_hzbAlloc); m_hzbImg = VK_NULL_HANDLE; m_hzbAlloc = nullptr; }
+        m_hzbMipCount = 0; m_hzbW = m_hzbH = 0;
+    }
+
     void destroyGpuCull() {
+        destroyHzbTargets();
+        if (m_hzbPool)    { vkDestroyDescriptorPool(m_dev.device, m_hzbPool, nullptr); m_hzbPool = VK_NULL_HANDLE; }
         if (m_cullPool)   { vkDestroyDescriptorPool(m_dev.device, m_cullPool, nullptr); m_cullPool = VK_NULL_HANDLE; }
         if (m_hzbSampler) { vkDestroySampler(m_dev.device, m_hzbSampler, nullptr); m_hzbSampler = VK_NULL_HANDLE; }
         m_gpuCull.shutdown(m_dev.device);
@@ -10496,6 +10658,24 @@ private:
     int                     m_cullPathActive = 0;
     uint32_t                m_frameCullInstances = 0;  // rows the cull pass dispatches over
     bool                    m_hzbEnabled = false;     // r_hzb (needs path >= 1)
+    bool                    m_hzbActiveThisFrame = false; // resolved per frame
+    // HZB depth pyramid (R32_SFLOAT, full mip chain, GENERAL layout forever).
+    // Built from LAST frame's depth at the top of this frame's command buffer
+    // (one-frame occlusion latency — disocclusions resolve next frame).
+    static constexpr uint32_t kHzbMaxMips = 16;
+    VkImage                 m_hzbImg = VK_NULL_HANDLE; VmaAllocation m_hzbAlloc = nullptr;
+    VkImageView             m_hzbViewAll = VK_NULL_HANDLE;          // all mips (cull samples)
+    VkImageView             m_hzbMipView[kHzbMaxMips] = {};        // one mip each (reduce dst/src)
+    VkDescriptorSet         m_hzbMipSet[kHzbMaxMips] = {};
+    VkDescriptorPool        m_hzbPool = VK_NULL_HANDLE;
+    uint32_t                m_hzbMipCount = 0;
+    uint32_t                m_hzbW = 0, m_hzbH = 0;                 // mip 0 dims
+    bool                    m_hzbReady = false;
+    // Last frame's depth: tracked post-graph state + "has been rendered once"
+    // (the pyramid must never reduce an UNDEFINED depth image).
+    ResourceState           m_depthState{};
+    bool                    m_depthValid = false;
+    GpuCullSystem::HzbChain m_hzbChain{};   // stable record-ctx storage
     bool                    m_cullEquivCheck = false; // --test-gpucull harness
     // Latest read-back cull counters (frames-in-flight latency) + equivalence.
     CullStatsGpu            m_lastCullStats{};

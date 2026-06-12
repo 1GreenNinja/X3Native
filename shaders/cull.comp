@@ -82,9 +82,13 @@ bool frustumVisible(vec4 s) {
 }
 
 // Two-phase HZB visibility: project the sphere to a screen-space rect, pick the
-// pyramid mip where the rect covers ~one texel neighborhood, compare against the
-// FARTHEST depth there (pyramid is a MAX-reduce of view depth; flip the compare
-// + reduce for reversed-Z — see GpuCull.cpp kReversedZ note).
+// pyramid mip where the rect covers ~one texel, and compare against the FARTHEST
+// depth over the rect's 4 corners (pyramid is a MAX-reduce of [0,1] depth —
+// X3 uses STANDARD Z, verified: GLM_FORCE_DEPTH_ZERO_TO_ONE + plain
+// glm::perspective, near=0 far=1; the reduce + this compare flip under
+// reversed-Z — see GpuCull.cpp). 4 corner taps (not one center tap) so a rect
+// straddling texel boundaries can never miss the farthest occluder texel —
+// conservative: may KEEP a hidden object, never culls a visible one.
 bool hzbVisible(vec4 s) {
     vec4 c = P.viewProj * vec4(s.xyz, 1.0);
     if (c.w <= s.w) return true;            // sphere reaches the near plane: keep
@@ -94,7 +98,11 @@ bool hzbVisible(vec4 s) {
     vec2  mx = clamp(cNdc + rNdc, -1.0, 1.0) * 0.5 + 0.5;
     vec2  sizePx = (mx - mn) * P.hzbSize;
     float mip = ceil(log2(max(max(sizePx.x, sizePx.y), 1.0)));
-    float sceneDepth = textureLod(hzb, (mn + mx) * 0.5, mip).r;
+    float d0 = textureLod(hzb, mn, mip).r;
+    float d1 = textureLod(hzb, vec2(mx.x, mn.y), mip).r;
+    float d2 = textureLod(hzb, vec2(mn.x, mx.y), mip).r;
+    float d3 = textureLod(hzb, mx, mip).r;
+    float sceneDepth = max(max(d0, d1), max(d2, d3));
     float sphereNearestDepth = (c.z - s.w) / c.w; // conservative nearest point
     return sphereNearestDepth <= sceneDepth;      // not fully behind occluders
 }
