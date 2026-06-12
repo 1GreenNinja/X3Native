@@ -81,6 +81,7 @@
 #include "vehparts.h"                      // performance-parts catalog + build composition (--test-vehparts)
 #include "perfshop.h"                      // the drive-in performance shop (--world drive)
 #include "ecology.h"                       // AMBIENT ECOLOGY: grazers/predators/patrols (--test-ecology)
+#include "crowd.h"                         // CROWDS: club dancers + facility civilians (--test-crowd)
 
 #include <memory>
 #include <string_view>
@@ -1269,7 +1270,7 @@ int main(int argc, char** argv) {
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
          testThirdPerson = false, testHatchCode = false,
-         testEcology = false;
+         testEcology = false, testCrowd = false;
     // --test-loader (EDITOR LevelDoc data-driven loader): author a doc in memory ->
     // save -> LOAD through the real loader -> assert the built world matches; then
     // modify + hot-reload -> assert the delta applied and the create/destroy ledgers
@@ -1298,6 +1299,11 @@ int main(int argc, char** argv) {
     // --world valley + headless.
     bool        ecologyShot = false;
     std::string ecologyShotPath = "docs/screenshots/livingworld/ecology_herd_predator.png";
+    // --screenshot-crowd [path]: LIVING-WORLD proof shot #2 — the Club 1127 dance
+    // floor crowd (idle clusters bobbing under the blacklights). Implies
+    // --world club + headless.
+    bool        crowdShot = false;
+    std::string crowdShotPath = "docs/screenshots/livingworld/club_crowd.png";
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1760,9 +1766,14 @@ int main(int argc, char** argv) {
         else if (a == "--test-vehicle") testVehicle = true;
         else if (a == "--test-vehparts") testVehParts = true;
         else if (a == "--test-ecology") testEcology = true;
+        else if (a == "--test-crowd") testCrowd = true;
         else if (a == "--screenshot-ecology") {
             ecologyShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') ecologyShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-crowd") {
+            crowdShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') crowdShotPath = argv[++i];
         }
         else if (a == "--screenshot-perfshop") {
             perfshopShot = true;
@@ -2420,6 +2431,11 @@ int main(int argc, char** argv) {
                     "(herd cohesion + flee + patrol routes + schedule switch + soft-radius + leak)...");
         return x3::game::runEcologySelfTest() ? 0 : 1;
     }
+    if (testCrowd) {
+        x3::logInfo("running CROWDS self-test "
+                    "(idle clusters + wander points + scatter/cower on violence + return after calm)...");
+        return x3::game::runCrowdSelfTest() ? 0 : 1;
+    }
     if (testFootIk) {
         x3::logInfo("running foot-IK (two-bone + plant + pelvis) self-test...");
         return x3::anim::runFootIkSelfTest() ? 0 : 1;
@@ -2556,7 +2572,8 @@ int main(int argc, char** argv) {
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
     if (perfshopShot) worldMode = "drive";   // the shop lives in the drive world
     if (ecologyShot)  worldMode = "valley";  // the ambient ecology rides the valley biome
-    const bool headless = smoketest || screenshot || skyShot || ddgiShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot || perfshopShot || ecologyShot;
+    if (crowdShot)    worldMode = "club";    // the crowd proof lives on the club floor
+    const bool headless = smoketest || screenshot || skyShot || ddgiShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot || perfshopShot || ecologyShot || crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -5585,6 +5602,29 @@ int main(int argc, char** argv) {
         x3::game::Club1127World club;
         club.build(cscene, *device, *cphys, x3::game::riggedGlbRoot());
 
+        // LIVING WORLD: the dance-floor crowd — 14 club-goers in neon-tinted
+        // knots around the floor/bars, bobbing to the beat (CrowdSystem).
+        x3::game::CrowdSystem clubCrowd;
+        {
+            const auto& cs = club.stats();
+            x3::game::CrowdConfig ccfg;
+            ccfg.count   = 14;
+            ccfg.centerX = (cs.roomMinX + cs.roomMaxX) * 0.5f;
+            ccfg.centerZ = (cs.roomMinZ + cs.roomMaxZ) * 0.5f;
+            ccfg.groundY = x3::game::Club1127World::kClubY;
+            ccfg.radius  = std::min(cs.roomMaxX - cs.roomMinX,
+                                    cs.roomMaxZ - cs.roomMinZ) * 0.5f - 1.4f;
+            // Hangout knots: dance-floor center + toward the DJ end + the bars.
+            ccfg.points = { ccfg.centerX,        ccfg.centerZ,
+                            ccfg.centerX,        ccfg.centerZ - 7.0f,
+                            ccfg.centerX,        ccfg.centerZ + 7.0f,
+                            ccfg.centerX - 4.0f, ccfg.centerZ,
+                            ccfg.centerX + 4.0f, ccfg.centerZ - 3.0f };
+            ccfg.dance    = true;     // they sway/bob to the beat
+            ccfg.emissive = 0.35f;    // blacklight-neon glow so they read in the dark
+            clubCrowd.build(ccfg, cscene, *device);
+        }
+
         // Apply the neon/UV point-light set once (the orbiting spot/ring lights are
         // re-pushed each frame by club.update()). The club has NO sky (deep interior).
         const auto& clights = club.pointLights();
@@ -5600,13 +5640,17 @@ int main(int argc, char** argv) {
             // capturing the caves/boss arena from a custom vantage during verify).
             if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
             device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
-            const int kSettle = ddgiForce ? 120 : 24;   // advance enough for character skinning + bloom (+ DDGI convergence with --ddgi)
+            // The CROWD proof needs a longer settle so the dancers desync + drift
+            // into readable knots before the capture.
+            const int kSettle = ddgiForce ? 120 : (crowdShot ? 150 : 24);
             const float dt = 1.0f / 60.0f;
-            const std::string outPath = screenshot ? screenshotPath
-                                                   : std::string("C:/GameDev/X3Native-engine/agent_club.png");
+            const std::string outPath = crowdShot   ? crowdShotPath
+                                      : screenshot  ? screenshotPath
+                                                    : std::string("C:/GameDev/X3Native-engine/agent_club.png");
             for (int i = 0; i < kSettle; ++i) {
                 glfwPollEvents();
                 club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
+                clubCrowd.update(dt, cscene);               // the dance-floor crowd
                 cphys->step(dt);
                 cscene.update(*cphys);
                 // Re-pose each frame (scene.update doesn't move the camera).
@@ -5676,6 +5720,7 @@ int main(int argc, char** argv) {
                 in.lookDX = ddx; in.lookDY = ddy;
                 cplayer.update(in, dt, *cphys);
                 club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
+                clubCrowd.update(dt, cscene);               // the dance-floor crowd
                 cphys->step(dt);
                 cscene.update(*cphys);
                 cplayer.camera(camX, camY, camZ, camYaw, camPitch);
@@ -5697,6 +5742,7 @@ int main(int argc, char** argv) {
                 if (spaceNow) flyYc += spd;
                 if (kd(GLFW_KEY_LEFT_CONTROL)) flyYc -= spd;
                 club.update(dt, cscene, *device, *cphys);   // ORB spin + spotlight orbit + blacklight pulse + idle props
+                clubCrowd.update(dt, cscene);               // the dance-floor crowd
                 cphys->step(dt);
                 cscene.update(*cphys);
                 camX = flyXc; camY = flyYc; camZ = flyZc; camYaw = flyYawC; camPitch = flyPitchC;
@@ -8340,6 +8386,10 @@ int main(int argc, char** argv) {
     bool docReloadRequested = false;           // set by the `level_reload` console cmd
     x3::game::Scene scene;
     x3::game::Level1Game game;
+    // LIVING WORLD: facility civilians (detained workers) — a small crowd that
+    // idles/wanders in the B1 arena hall, scatters + cowers when shots ring out,
+    // and drifts back once it goes quiet. Built only in the legacy Level-1 world.
+    x3::game::CrowdSystem facilityCrowd;
     // B3: the terrain world is now STREAMED around the player via a residency
     // ring (TerrainStreamer) fed by the engine job system. Both are only created
     // in terrain mode; Level 1 is unaffected.
@@ -8500,6 +8550,19 @@ int main(int argc, char** argv) {
         }
     } else if (!terrainWorld) {
         game.build(scene, *device, *physics, x3::game::riggedGlbRoot());
+        // LIVING WORLD: the facility civilians in the arena hall (no physics
+        // bodies; they scatter on gunfire via facilityCrowd.onViolence below).
+        {
+            const x3::game::Level1Layout& lay = game.layout();
+            x3::game::CrowdConfig fcfg;
+            fcfg.count   = 6;
+            fcfg.centerX = lay.arenaCenter.x;
+            fcfg.centerZ = lay.arenaCenter.z;
+            fcfg.groundY = lay.arenaCenter.y;
+            fcfg.radius  = std::max(2.5f, std::min(lay.arenaHalf.x, lay.arenaHalf.z) - 1.2f);
+            fcfg.dance   = false;     // these are frightened workers, not dancers
+            facilityCrowd.build(fcfg, scene, *device);
+        }
         // Audio hookups for Level 1 events (§9, nice-to-have; silent if no device).
         x3::game::Level1Audio la;
         la.sys = audio.get(); la.door = sndDoor; la.pickup = sndPickup;
@@ -10689,6 +10752,9 @@ int main(int argc, char** argv) {
             { const double _pt0 = glfwGetTime();
               game.tick(dt, scene, *physics, camPos, camPos, &player, enemyAttackFx);
               g_perf.tick += glfwGetTime() - _pt0; }
+            // LIVING WORLD: the facility civilians (idle/wander; scatter+cower on
+            // gunfire via onViolence in the fire block; return after calm).
+            if (facilityCrowd.built()) facilityCrowd.update(dt, scene);
             // ---- CANONLEVEL DOORS: tick the SM_Door_A slide animation. Doors are
             // MANUAL — the player opens/closes one by aiming at the slab (or its button)
             // and pressing E (the use block above calls tryUse()->toggle()). There is
@@ -10877,6 +10943,8 @@ int main(int argc, char** argv) {
                                 std::cos(camPitch) * std::sin(camYaw) };
             x3::game::ResolvedFire shot = arsenal.fire(eye, dir, weaponRng);
             const x3::phys::Vec3 muzzle = muzzleFromCamera(camX, camY, camZ, camYaw, camPitch);
+            // LIVING WORLD: gunfire is VIOLENCE — any civilians in earshot scatter.
+            if (facilityCrowd.built()) facilityCrowd.onViolence(eye);
             // Recoil -> camera (transient upward kick; recovered in the camera block).
             weaponRecoilPitch += shot.recoilPitchDeg * (3.14159265f / 180.0f);
 
