@@ -54,7 +54,12 @@ def read_registration_token(config_path: Path) -> str:
 
 
 def http_post(url: str, body: dict, timeout: int = 10) -> dict:
-    """POST JSON, return parsed JSON. Raises on non-2xx with clean error text."""
+    """POST JSON, return parsed JSON.
+
+    Matrix UIAA-aware: HTTP 401 with `flows`/`session` in the body is a UIAA
+    challenge, NOT an error — return the body so the caller can do step 2.
+    Any other 4xx/5xx with `errcode` is a real error; surface cleanly.
+    """
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         url, data=data,
@@ -68,11 +73,15 @@ def http_post(url: str, body: dict, timeout: int = 10) -> dict:
         err_body = e.read().decode("utf-8", errors="replace")
         try:
             err_json = json.loads(err_body)
-            errcode = err_json.get("errcode", "M_UNKNOWN")
-            errmsg = err_json.get("error", err_body)
-            sys.exit(f"FATAL: homeserver rejected ({e.code}): {errcode}: {errmsg}")
         except json.JSONDecodeError:
             sys.exit(f"FATAL: homeserver rejected ({e.code}): {err_body[:300]}")
+        # UIAA challenge: 401 with flows/session and NO errcode -> return as data
+        if e.code == 401 and "flows" in err_json and "errcode" not in err_json:
+            return err_json
+        # Real Matrix error: errcode + error fields present
+        errcode = err_json.get("errcode", "M_UNKNOWN")
+        errmsg = err_json.get("error", json.dumps(err_json)[:300])
+        sys.exit(f"FATAL: homeserver rejected ({e.code}): {errcode}: {errmsg}")
     except urllib.error.URLError as e:
         sys.exit(f"FATAL: cannot reach {url}: {e.reason}")
 
