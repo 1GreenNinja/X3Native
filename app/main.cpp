@@ -1482,6 +1482,10 @@ int main(int argc, char** argv) {
     // identical predicate per frame; asserts statDrawn == expected over a pose
     // sweep + conservation (drawn+culled==tested) + bypass + path-toggle. Additive.
     bool        testGpuCull = false;
+    // --cullpath <n> / --hzb: seed the r_cullpath / r_hzb cvars from the CLI so the
+    // smoketest/screenshot/bench paths exercise the D15 GPU cull (INT_MIN = unset).
+    int         cullPathArg = INT_MIN;
+    int         hzbArg = 0;
     // --test-spiretop (Spire top-floor content): F6/F7 (Act-1 finale) encounter authoring. Additive.
     bool        testSpireTop = false;
     // --test-timeline (EFLZ morality/timeline backbone): infection 4-stage timers + cure
@@ -1836,6 +1840,8 @@ int main(int argc, char** argv) {
         else if (a == "--test-gpuskin") testGpuSkin = true;
         else if (a == "--test-meshlet") testMeshlet = true;
         else if (a == "--test-gpucull") testGpuCull = true;
+        else if (a == "--cullpath" && i + 1 < argc) cullPathArg = std::atoi(argv[++i]);
+        else if (a == "--hzb") hzbArg = 1;
         else if (a == "--test-collapse") testCollapse = true;
         else if (a == "--test-physjoint") testPhysJoint = true;
         else if (a == "--test-nav") testNav = true;
@@ -7938,6 +7944,14 @@ int main(int argc, char** argv) {
     // drawViewmodel so typing e.g. `vm_pitch 10` moves the held gun immediately.
     registerViewmodelCVars(*console);
 
+    // --cullpath <n> / --hzb: seed the D15 GPU-cull cvars from the CLI so every
+    // headless path (smoketest / screenshots / bench) can run with the GPU cull on.
+    if (cullPathArg != INT_MIN) {
+        console->set("r_cullpath", std::to_string(cullPathArg));
+        x3::logInfo("[cull] r_cullpath seeded from CLI: " + std::to_string(cullPathArg));
+    }
+    if (hzbArg) { console->set("r_hzb", "1"); x3::logInfo("[cull] r_hzb seeded from CLI: 1"); }
+
     // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
     // render path so the BLAS/TLAS build + ray-query AO compute + apply passes are
     // exercised under Vulkan validation. No-op if the device lacks RT support (the
@@ -8584,6 +8598,9 @@ int main(int argc, char** argv) {
         const float dt = 1.0f / 60.0f;
         for (int i = 0; i < 30; ++i) {
             glfwPollEvents();
+            // Sync the live cvars (incl. r_cullpath/r_hzb seeded by --cullpath/--hzb)
+            // onto the device, exactly as the main loop does each frame.
+            applyRtaoCVars(*console, *device);
             if (i == 15) { x3::logInfo("smoketest: triggering swapchain recreate"); device->onResize(960, 540); }
             // Drive the Level 1 controller (doors/monsters/pickup/triggers) +
             // physics + scene sync, exactly as the main loop does.
@@ -8741,12 +8758,19 @@ int main(int argc, char** argv) {
         // readback of an earlier frame, see VulkanRenderDevice timestamp notes).
         {
             const x3::rhi::RenderStats st = device->stats();
-            char sb[160];
+            char sb[240];
             std::snprintf(sb, sizeof(sb),
                 "smoketest: stats draws=%u tris=%u objs=%u/%u gpu=%.3f ms (stress=%u cubes)",
                 st.drawCalls, st.triangles, st.objectsDrawn, st.objectsSubmitted,
                 st.gpuFrameMs, stress.count());
             x3::logInfo(sb);
+            if (st.gpuCullPath > 0) {
+                std::snprintf(sb, sizeof(sb),
+                    "smoketest: gpucull path=%d tested=%u drawn=%u frustum=%u hzb=%u",
+                    st.gpuCullPath, st.gpuCullTested, st.gpuCullDrawn,
+                    st.gpuCullFrustum, st.gpuCullHzb);
+                x3::logInfo(sb);
+            }
         }
         x3::logInfo("smoketest: 30 frames + recreate OK");
         audio->shutdown();
