@@ -4,7 +4,21 @@
 **Branch context:** written against `feat/cull-combined` + `main` (d1e8a1b).
 Note: main is stale vs. the June-8 branch tips — rebase check required.
 
-## Verification status — READ THIS FIRST
+> **BRING-UP UPDATE — 2026-06-12, `feat/gpu-cull` (14900K + RTX 5090):**
+> Tiers 0/1 + HZB are LIVE and gated green. See
+> `docs/screenshots/gpucull/RESULTS.md` for the equivalence numbers (Level 1
+> 1192/8568 EXACT on both tiers), the 100k-object bench table, the stills, and
+> the precise Tier-2 remaining-work list. The table below is the ORIGINAL
+> pre-bring-up status, kept for history; current truth:
+>
+> | Piece | Status now |
+> |---|---|
+> | Tier 0 (`r_cullpath 1`) | ✅ ON-GPU GREEN — equivalence exact, 0 VUID Debug, pixel-identical stills |
+> | HZB (`r_hzb 1`) | ✅ ON-GPU GREEN — standard-Z verified, drawn+hzb conservation exact, 0 VUID |
+> | Tier 1 (`r_cullpath 2` / auto) | ✅ ON-GPU GREEN — CONCURRENT buffers + timeline semaphore, validation silent |
+> | Tier 2 (`r_cullpath 3`) | ⚠ NOT WIRED (clamps to Tier 1). Builder still 7/7; task/mesh shaders still the untested originals. |
+
+## Verification status — ORIGINAL (2026-06-09, pre-bring-up)
 
 | Piece | Status |
 |---|---|
@@ -16,8 +30,30 @@ Note: main is stale vs. the June-8 branch tips — rebase check required.
 | Tier 1 async compute | ⚠ **UNTESTED — review required.** Cross-queue semaphore + CONCURRENT-sharing design; must pass validation layers on Turing+ before enabling. |
 | HZB mip-chain barriers | ⚠ **REVIEW REQUIRED** under validation layers (per-mip GENERAL-layout write→read flips). |
 
-Nothing here has executed on a GPU. Shaders validating + C++ linking against the
-real graph removes whole classes of error, not all of them.
+## Tier 2 — precise remaining work (the one tier that resisted)
+
+The meshlet BUILDER is tested (7/7) and `r_cullpath 3` safely clamps to Tier 1.
+Wiring the task/mesh path needs, in order:
+1. Enable `VK_EXT_mesh_shader` (+ feature struct) at device creation, gated
+   like the RT block. CMake: compile `meshlet.task/.mesh` with
+   `--target-env=vulkan1.3 --target-spv=spv1.4` (the RT shader list).
+2. Bake meshlets in `createMesh()` (positions+indices are in hand), upload the
+   3 meshlet buffers + a pos/normal/uv vertex SSBO. ⚠ The in-file `Vertex`
+   struct (`posUVx/nrmUVy/tangent` vec4s) does NOT match the real `MeshVertex`
+   (tightly packed 3+3+2 floats, 32 B) — rewrite to 8-float stride.
+3. `meshlet.mesh` out-block must mirror mesh.vert's FULL 14-location interface
+   (incl. all flat outputs + ObjectData lookup via the visible-instance row);
+   `meshlet.task` needs per-instance plumbing (gl_WorkGroupID.y = compacted
+   instance slot, firstInstance via push constant).
+4. cull.comp (or a CPU pre-pass) must emit `VkDrawMeshTasksIndirectCommandEXT`
+   (12 B stride: groupsX=ceil(meshletCount/32), Y=survivors, Z=1) into a SECOND
+   indirect buffer — the existing 20 B indexed commands don't apply.
+5. Consistency: depth-prepass (EQUAL test) + shadow replay the classic vertex
+   path; per-cluster CONE culling is consistent only if the opaque pipeline
+   backface-culls (verify cullMode) — and per-cluster HZB must stay OFF in the
+   color pass until the prepass uses meshlets too (else EQUAL-test holes).
+6. Acceptance: pixel-diff vs Tier 0 on a still camera (the harness from
+   RESULTS.md works as-is), 0 VUID Debug.
 
 ## What this is
 
