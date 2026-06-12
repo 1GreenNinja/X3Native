@@ -111,7 +111,7 @@ pass) and CPU contention between the 29-file warmup and driver init.
 ## Receipts
 
 * `--test-boottime` (canonlevel, Release, warm cache): **5/5 PASS < 2000 ms**, median **1594.7 ms**
-* Full `--test-*` suite (Release): see final commit message (83 flags + boottime)
+* Full `--test-*` suite (Release): **83/83 PASS** (boottime is additive on top)
 * `--smoketest` Release: 30 frames + recreate OK, **0 VUID**, VMA `allocationCount=0`
 * `--smoketest` Debug (validation ON): **0 VUID**, `allocationCount=0`
 * `--test-framepacing`: **5/5 PASS** — zero unattributed spikes, zero late pipelines/modules/pools
