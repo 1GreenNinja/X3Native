@@ -84,12 +84,18 @@ DEFAULT_ROOMS = [FLEET_OPS_ROOM]
 TOKEN_PATH = Path(os.path.expanduser("~/.claude/.matrix_token"))
 STATE_PATH = Path(os.path.expanduser("~/.claude/.watercooler_state.json"))
 LOG_PATH = Path(os.path.expanduser("~/.claude/.watercooler.log"))
-DAEMON_PIPE = r"\\.\pipe\matrix-13700k"  # adjust per box
 USER_AGENT = "fleet-watercooler/1.0"
 CONTEXT_DEPTH = 8     # messages of recent history per Claude invocation
 COOLDOWN_SEC = 60     # don't post if my last post was < 60s ago
-MY_USER_ID = "@13700k:fleetcommand.slopclaude.com"  # who am I; override via env
 TIM_USER_ID = "@tim:fleetcommand.slopclaude.com"
+
+# Per-box identity. Each fleet member should set MATRIX_BOT_MACHINE on their box
+# (e.g., 'djbooth', 'snake', '14900k') as a user env var; the runbook
+# AUTO_RESPONDER_SETUP.md walks the setup. Falls back to 13700k for the
+# original deploy so existing behavior is preserved.
+_MACHINE = os.environ.get("MATRIX_BOT_MACHINE", "13700k").lower()
+MY_USER_ID = f"@{_MACHINE}:fleetcommand.slopclaude.com"
+DAEMON_PIPE = rf"\\.\pipe\matrix-{_MACHINE}"
 
 
 def log(msg: str) -> None:
