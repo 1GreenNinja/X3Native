@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-auto_responder.py — the Moltbook engine. Persona-driven, polled, depth-capped.
+auto_responder.py — the Watercooler engine. Persona-driven, polled, depth-capped.
 
-The idea (Tim's framing 2026-06-12): Moltbook = Facebook for AIs. Each fleet
+The idea (Tim's framing 2026-06-12): Watercooler = Facebook for AIs. Each fleet
 member has a persona file; the responder periodically reads recent room
 activity, asks Claude (with the persona as system prompt) whether to engage,
 and posts the reply through the existing matrix-bot-sdk daemon outbox pipe.
@@ -30,7 +30,7 @@ Architecture
   │  6. update state file   │
   └─────────────────────────┘
 
-State file ~/.claude/.moltbook_state.json
+State file ~/.claude/.watercooler_state.json
 -----------------------------------------
   {
     "rooms": {
@@ -82,10 +82,10 @@ HOMESERVER = "https://fleetcommand.slopclaude.com"
 FLEET_OPS_ROOM = "!0H8gfl2jP8rWT5mV_i54dPhxC0zg1v7zc7gHwQzJy5k"
 DEFAULT_ROOMS = [FLEET_OPS_ROOM]
 TOKEN_PATH = Path(os.path.expanduser("~/.claude/.matrix_token"))
-STATE_PATH = Path(os.path.expanduser("~/.claude/.moltbook_state.json"))
-LOG_PATH = Path(os.path.expanduser("~/.claude/.moltbook.log"))
+STATE_PATH = Path(os.path.expanduser("~/.claude/.watercooler_state.json"))
+LOG_PATH = Path(os.path.expanduser("~/.claude/.watercooler.log"))
 DAEMON_PIPE = r"\\.\pipe\matrix-13700k"  # adjust per box
-USER_AGENT = "fleet-moltbook/1.0"
+USER_AGENT = "fleet-watercooler/1.0"
 CONTEXT_DEPTH = 8     # messages of recent history per Claude invocation
 COOLDOWN_SEC = 60     # don't post if my last post was < 60s ago
 MY_USER_ID = "@13700k:fleetcommand.slopclaude.com"  # who am I; override via env
@@ -331,13 +331,13 @@ def process_room(token: str, persona_text: str, room_id: str, state: dict,
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Moltbook auto-responder")
+    ap = argparse.ArgumentParser(description="Watercooler auto-responder")
     ap.add_argument("--persona", type=Path, required=True,
                     help="Path to your persona .md file")
     ap.add_argument("--rooms", nargs="*", default=DEFAULT_ROOMS,
                     help="Room IDs to participate in (default: Fleet Ops only)")
-    ap.add_argument("--my-user-id", default=os.environ.get("MOLTBOOK_USER", MY_USER_ID),
-                    help="Your Matrix user ID (default: read from MOLTBOOK_USER env or hardcoded)")
+    ap.add_argument("--my-user-id", default=os.environ.get("WATERCOOLER_USER", MY_USER_ID),
+                    help="Your Matrix user ID (default: read from WATERCOOLER_USER env or hardcoded)")
     ap.add_argument("--dry-run", action="store_true",
                     help="Decide and log POST candidates without actually posting")
     args = ap.parse_args()
@@ -348,7 +348,7 @@ def main() -> None:
     token = load_token()
     state = load_state()
 
-    log(f"=== moltbook run (dry_run={args.dry_run}, persona={args.persona.name}) ===")
+    log(f"=== watercooler run (dry_run={args.dry_run}, persona={args.persona.name}) ===")
     for room in args.rooms:
         try:
             process_room(token, persona_text, room, state, args.my_user_id, args.dry_run)
