@@ -423,12 +423,26 @@ public:
                 st.model = m_loader->load(a.model);
                 if (st.model.ok) {
                     st.drawables = x3::asset::makeDrawables(st.model);
-                    // Size casting: normalize the longest mesh-space axis to a.size.
+                    // Size casting: normalize the longest mesh-space axis to a.size,
+                    // FOLDING IN any scale baked into the GLB node transforms (some
+                    // converted ships carry e.g. a 0.1x node scale — without this the
+                    // capital ship rendered 10x too small).
                     if (a.size > 0.0f) {
                         float mn[3], mx[3];
                         if (x3::cut::glbPositionExtent(x3::game::assetRoot() + "/" + a.model, mn, mx)) {
                             const float ext = std::max({ mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2] });
-                            if (ext > 1e-4f) st.normScale = a.size / ext;
+                            float nodeScale = 0.0f;
+                            for (const auto& d : st.drawables) {
+                                const float* m = d.nodeTransform;
+                                for (int c = 0; c < 3; ++c) {
+                                    const float len = std::sqrt(m[c*4+0]*m[c*4+0] + m[c*4+1]*m[c*4+1] +
+                                                                m[c*4+2]*m[c*4+2]);
+                                    nodeScale = std::max(nodeScale, len);
+                                }
+                            }
+                            if (nodeScale <= 1e-4f) nodeScale = 1.0f;
+                            const float effExt = ext * nodeScale;
+                            if (effExt > 1e-4f) st.normScale = a.size / effExt;
                         }
                     }
                     x3::logInfo("[cutscene] actor '" + a.id + "' loaded " + a.model + " (" +
@@ -443,29 +457,32 @@ public:
             m_actors.push_back(std::move(st));
         }
 
-        // ---- Planet sky (FORGE3D bodies re-positioned for the cold open) ----
+        // ---- Planet sky (FORGE3D bodies as DIRECTION-ANCHORED celestial layers).
+        // The camera far plane is 200 m, so real distant placement would clip the
+        // bodies entirely. Instead each body stores a DIRECTION + apparent size and
+        // drawWorld() re-projects it at a fixed 150 m from the live camera every
+        // frame — parallax-free sky bodies (the fix/planets-sky technique). ----
         int nTexFail = 0;
         std::vector<NightSkyPlanet> all =
             loadNightSkyPlanets(&device, m_planetMesh, nTexFail, "[cutscene]", &m_ringMesh);
+        auto anchor = [&](NightSkyPlanet& b, float dx, float dy, float dz, float angSin) {
+            const float len = std::sqrt(dx*dx + dy*dy + dz*dz);
+            CelAnchor a;
+            a.dir[0] = dx / len; a.dir[1] = dy / len; a.dir[2] = dz / len;
+            a.angSin = angSin;
+            m_anchors.push_back(a);
+            m_planets.push_back(b);
+        };
         for (NightSkyPlanet& b : all) {
             const std::string n = b.name ? b.name : "";
-            if (n == "Terrestrial") {      // the HOME PLANET rising below the action
-                b.worldPos[0] = 0.0f; b.worldPos[1] = -460.0f; b.worldPos[2] = -450.0f;
-                b.radius = 330.0f;
-                m_planets.push_back(b);
-            } else if (n == "Sun") {       // BEHIND the flight path — the ambush comes out of the sun
-                b.worldPos[0] = 150.0f; b.worldPos[1] = 260.0f; b.worldPos[2] = 1500.0f;
-                b.radius = 70.0f;
-                m_planets.push_back(b);
-            } else if (n == "Gas") {       // ringed giant, distant ahead-right
-                b.worldPos[0] = 650.0f; b.worldPos[1] = 180.0f; b.worldPos[2] = -1500.0f;
-                b.radius = 110.0f;
-                m_planets.push_back(b);
-            } else if (n == "Moon") {      // accent, ahead-left
-                b.worldPos[0] = -380.0f; b.worldPos[1] = 130.0f; b.worldPos[2] = -900.0f;
-                b.radius = 36.0f;
-                m_planets.push_back(b);
-            }
+            if (n == "Terrestrial")        // the HOME PLANET rising below the action (~30 deg wide)
+                anchor(b, 0.0f, -0.55f, -0.84f, 0.26f);
+            else if (n == "Sun")           // BEHIND the flight path — the ambush comes out of the sun
+                anchor(b, 0.10f, 0.18f, 0.97f, 0.05f);
+            else if (n == "Gas")           // ringed giant, ahead-right
+                anchor(b, 0.40f, 0.11f, -0.91f, 0.085f);
+            else if (n == "Moon")          // accent, ahead-left
+                anchor(b, -0.39f, 0.13f, -0.91f, 0.05f);
             // Ice / Lava deliberately dropped — keep the sky composed, not cluttered.
         }
         if (nTexFail > 0)
@@ -482,12 +499,13 @@ public:
         sp.enabled = true;
         sp.sunDir[0] = 0.10f; sp.sunDir[1] = 0.18f; sp.sunDir[2] = 0.97f;   // toward the Sun body (+Z behind)
         sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.96f; sp.sunColor[2] = 0.88f;
-        sp.sunIntensity = 0.85f;                       // strong key; near-black dome keeps space dark
+        sp.sunIntensity = 0.06f;                       // DEEP SPACE: any higher and the analytic
+                                                       // haze floor washes the lower dome grey
         sp.haze = 0.0f; sp.exposure = 1.0f;
         sp.zenith[0]  = 0.004f; sp.zenith[1]  = 0.004f; sp.zenith[2]  = 0.010f;
         sp.horizon[0] = 0.008f; sp.horizon[1] = 0.010f; sp.horizon[2] = 0.020f;
         device.setSkyParams(sp);
-        device.setAmbient(0.10f, 0.11f, 0.16f);        // cool starlight fill on the hulls
+        device.setAmbient(0.17f, 0.18f, 0.25f);        // cool starlight fill — carries the hulls
         device.setBloom(0.30f);                        // hero glow: engines / bolts / the sun
     }
 
@@ -514,14 +532,15 @@ public:
             const std::string id = name.substr(10);
             if (const x3::cut::Actor* a = findActor(cs, id)) {
                 const x3::cut::ActorPose p = x3::cut::evalActor(cs, *a, t);
-                // A deterministic burst of debris puffs around the impact point.
-                for (int i = 0; i < 10; ++i) {
+                // A deterministic burst of glowing debris around the impact point —
+                // SMALL and scattered (big merged spheres read as a solid blob).
+                for (int i = 0; i < 6; ++i) {
                     const float fi = (float)i;
                     Puff pf;
                     pf.born = t;
-                    pf.x = p.pos.x + std::sin(fi * 2.4f) * 2.5f;
-                    pf.y = p.pos.y + std::cos(fi * 1.7f) * 2.0f;
-                    pf.z = p.pos.z + std::sin(fi * 3.1f + 1.0f) * 2.5f;
+                    pf.x = p.pos.x + std::sin(fi * 2.4f) * 4.5f;
+                    pf.y = p.pos.y + std::cos(fi * 1.7f) * 3.5f;
+                    pf.z = p.pos.z + std::sin(fi * 3.1f + 1.0f) * 4.5f;
                     pf.hot = true;
                     pushPuff(pf);
                 }
@@ -537,8 +556,8 @@ public:
                 if (!p.visible) {
                     m_trailOn = false;
                 } else {
-                    while (t - m_lastPuff >= 0.07f) {
-                        m_lastPuff += 0.07f;
+                    while (t - m_lastPuff >= 0.12f) {
+                        m_lastPuff += 0.12f;
                         Puff pf;
                         pf.born = m_lastPuff;
                         const x3::cut::ActorPose q = x3::cut::evalActor(cs, *a, m_lastPuff);
@@ -549,9 +568,10 @@ public:
                 }
             }
         }
-        // Prune dead puffs (life 2.4 s).
+        // Prune dead puffs (embers gutter at 2.4 s; impact bursts die hot at 1.3 s
+        // so they never linger as unlit black balls).
         m_puffs.erase(std::remove_if(m_puffs.begin(), m_puffs.end(),
-                                     [t](const Puff& p) { return t - p.born > 2.4f; }),
+                                     [t](const Puff& p) { return t - p.born > (p.hot ? 1.3f : 2.4f); }),
                       m_puffs.end());
     }
 
@@ -596,20 +616,33 @@ public:
                 }
             }
         }
-        // Smoke/debris trail puffs: expanding gray spheres, briefly HOT (emissive).
+        // Burning-debris trail: SMALL ember specks that flare hot then SHRINK away
+        // (growing opaque spheres read as a cartoon ball-chain — these gutter out).
         for (const Puff& p : m_puffs) {
             const float age = t - p.born;
-            const float k = age / 2.4f;
-            const float s = (p.hot ? 1.6f : 1.1f) + k * (p.hot ? 6.0f : 4.0f);
+            const float k = std::min(1.0f, age / 2.4f);
+            const float s = std::max(0.05f, (p.hot ? 1.0f + k * 1.4f : 0.5f - 0.35f * k));
             const float m[16] = { s,0,0,0, 0,s,0,0, 0,0,s,0, p.x, p.y, p.z, 1 };
-            const float grey = 0.05f + 0.05f * (1.0f - k);
-            const float col[4] = { grey, grey, grey, 1.0f };
-            const float heat = p.hot ? std::max(0.0f, 1.0f - age * 2.2f) : std::max(0.0f, 0.5f - age * 1.4f);
-            const float emis[4] = { 2.2f * heat, 0.9f * heat, 0.3f * heat, 3.0f * heat };
+            const float grey = 0.07f * (1.0f - 0.6f * k);
+            const float col[4] = { grey, grey * 0.95f, grey * 0.9f, 1.0f };
+            const float heat = p.hot ? std::max(0.0f, 1.0f - age * 1.4f) : std::max(0.0f, 1.0f - age * 0.9f);
+            const float emis[4] = { 2.6f * heat, 1.0f * heat, 0.30f * heat, 3.2f * heat };
             if (m_sphere.valid()) device.drawMeshEmissive(fc, m_sphere, {}, col, emis, m);
         }
-        // Planets LAST (depth-tested against the ships).
-        drawNightSkyPlanets(&device, fc, m_planetMesh, m_planets, 10.0f + t * 0.02f, m_ringMesh);
+        // Planets LAST (depth-tested against the ships), re-projected each frame as
+        // DIRECTION-ANCHORED sky bodies 150 m from the live camera (far plane 200 m).
+        {
+            const x3::cut::CamPose cam = x3::cut::evalCamera(cs, t);
+            constexpr float kCelDist = 150.0f;
+            for (size_t i = 0; i < m_planets.size() && i < m_anchors.size(); ++i) {
+                const CelAnchor& a = m_anchors[i];
+                m_planets[i].worldPos[0] = cam.pos.x + a.dir[0] * kCelDist;
+                m_planets[i].worldPos[1] = cam.pos.y + a.dir[1] * kCelDist;
+                m_planets[i].worldPos[2] = cam.pos.z + a.dir[2] * kCelDist;
+                m_planets[i].radius      = kCelDist * a.angSin;
+            }
+            drawNightSkyPlanets(&device, fc, m_planetMesh, m_planets, 10.0f + t * 0.02f, m_ringMesh);
+        }
     }
 
     // Draw the 2D overlay for time t: letterbox, fade, title cards.
@@ -681,7 +714,9 @@ private:
     std::vector<CinActorState> m_actors;
     x3::rhi::MeshHandle m_box{}, m_sphere{};
     x3::rhi::MeshHandle m_planetMesh{}, m_ringMesh{};
+    struct CelAnchor { float dir[3] = {0, 0, -1}; float angSin = 0.05f; };
     std::vector<NightSkyPlanet> m_planets;
+    std::vector<CelAnchor> m_anchors;     // parallel to m_planets (direction + apparent size)
     std::vector<Puff> m_puffs;
     std::string m_trailActor;
     bool  m_trailOn  = false;
