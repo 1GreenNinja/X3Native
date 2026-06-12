@@ -144,7 +144,10 @@ void LoadingScreen::step(LoadStep s, const char* label) {
 
 void LoadingScreen::beginFadeOut(bool fast) {
     m_fadeOut = true;
-    m_fadeOutScale = fast ? 3.0f : 1.0f;   // BOOT-TIME: quick hand-off on fast boots
+    // BLACKOUT (post-cold-open wake): the fade-out IS the slow wake into the cell —
+    // ~2.5 s up from black, overriding the fast-boot quick hand-off.
+    if (m_blackout)  m_fadeOutScale = 0.18f;
+    else             m_fadeOutScale = fast ? 3.0f : 1.0f;   // BOOT-TIME: quick hand-off on fast boots
 }
 
 void LoadingScreen::render(x3::rhi::IRenderDevice& device,
@@ -179,6 +182,15 @@ void LoadingScreen::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCon
     const float a = std::clamp(m_fade, 0.0f, 1.0f);
 
     using FontRole = x3::rhi::FontRole;
+
+    // ---- BLACKOUT mode (post-cold-open wake): the overlay is a PURE BLACK field —
+    // no gradient / title / bar / tips — so the cutscene's smash-to-black holds
+    // seamlessly through the cell build, and the fade-out is the slow wake. ----
+    if (m_blackout) {
+        const float black[4] = { 0.0f, 0.0f, 0.0f, a };
+        device.drawHudQuad(frame, 0.0f, 0.0f, w, h, black);
+        return;
+    }
 
     // ---- Full-bleed background (textured quad). drawHudQuad is a flat color, so
     // for the textured background we draw the bg texture via drawMeshless? No — the
