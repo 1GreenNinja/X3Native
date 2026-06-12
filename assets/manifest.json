@@ -165,7 +165,7 @@
       "repo_path": "assets/rigged_glb/Oracle.glb",
       "sha256": "366a8c3cd56a45f135d12dae134b47782d0aac89d97d1d334da8dd8a1a254e4a",
       "size": 12424380,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "source_note": "G:\\GameModels\\rigged_glb; round-trip fetch verified 2026-06-12"
     },
     {
       "repo_path": "assets/rigged_glb/OverLordEnforcer99.glb",

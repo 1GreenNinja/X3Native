@@ -3,6 +3,11 @@
 #
 #   BLOCK  any staged *.gguf / *.dmp / *.pdb / MEMORY.DMP, regardless of size
 #          (a 2.1 GB GGUF nearly landed in history twice in June 2026).
+#   BLOCK  any NEW staged file under assets/rigged_glb/ or assets/converted_glb/
+#          (any size), and any NEW staged asset under assets/ whose effective
+#          size (staged bytes, or the size an LFS pointer declares) is > 5 MB.
+#          Those belong in the fleet asset store, not in git/LFS — Phase A of
+#          docs/ASSET_DISTRIBUTION.md. assets/manifest.json commits normally.
 #   BLOCK  any staged file whose STAGED content is > 50 MB and is not an LFS
 #          pointer (i.e. it would enter plain git history forever).
 #   WARN   on new > 5 MB binaries that are not matched by an LFS pattern in
@@ -59,6 +64,47 @@ while IFS= read -r -d '' f; do
 
     # Is the path matched by an LFS filter in .gitattributes?
     attr=$(git check-attr filter -- "$f" | sed 's/.*: filter: //')
+
+    # Effective size: an LFS-staged file is a ~130-byte pointer whose payload
+    # size is declared inside it — use THAT, so big LFS adds don't sneak by.
+    eff_size=$size
+    if [ "$size" -lt 1024 ]; then
+        if git cat-file -p ":$f" 2>/dev/null | head -1 | grep -q '^version https://git-lfs'; then
+            psize=$(git cat-file -p ":$f" 2>/dev/null | sed -n 's/^size //p' | head -1)
+            case "$psize" in (*[!0-9]*|'') ;; (*) eff_size=$psize ;; esac
+        fi
+    fi
+
+    # Is this path NEW (not present in HEAD)?
+    is_new=1
+    if [ "$have_head" = 1 ] && git cat-file -e "HEAD:$f" 2>/dev/null; then
+        is_new=0
+    fi
+
+    # ---- 1b. Asset-store policy (Phase A, docs/ASSET_DISTRIBUTION.md) -----
+    # NEW assets go to the fleet store + manifest, never to git/LFS:
+    #   - ANY new file under assets/rigged_glb/ or assets/converted_glb/
+    #   - any new file under assets/ with an effective size > 5 MB
+    # assets/manifest.json (the small JSON index) always commits normally.
+    if [ "$is_new" = 1 ] && [ "$f" != "assets/manifest.json" ]; then
+        store_block=0
+        case "$f" in
+            assets/rigged_glb/*|assets/converted_glb/*) store_block=1 ;;
+            assets/*) [ "$eff_size" -gt "$WARN_LIMIT" ] && store_block=1 ;;
+        esac
+        if [ "$store_block" = 1 ]; then
+            say ""
+            say "BLOCKED: $f ($((eff_size / 1024 / 1024)) MB) — new assets do not go into git/LFS."
+            say "  Publish to the asset store instead:"
+            say "      python tools/asset_store.py publish \"$f\""
+            say "  then commit only the manifest change (assets/manifest.json)."
+            say "  Clones restore it with:  python tools/asset_store.py fetch --all"
+            say "  (Why: LFS quota is nearly exhausted — docs/ASSET_DISTRIBUTION.md Phase A.)"
+            say "  Unstage it:   git restore --staged -- \"$f\""
+            blocked=1
+            continue
+        fi
+    fi
 
     # ---- 2. Hard size limit ----------------------------------------------
     if [ "$size" -gt "$HARD_LIMIT" ]; then
