@@ -242,6 +242,7 @@ public:
         if (!m_ready) return false;
         drainRetired(currentFrame);
         const uint32_t slot = m_active ^ 1u;
+        m_lastGrew = false;   // set when this build (re)allocates slot objects
 
         // Pack the VkAccelerationStructureInstanceKHR rows for every instance whose
         // BLAS exists. The transform is the top 3 rows of the column-major model,
@@ -271,6 +272,7 @@ public:
         const VkDeviceSize instBytes =
             (VkDeviceSize)(instCount ? instCount : 1) * sizeof(VkAccelerationStructureInstanceKHR);
         if (m_slotInst[slot].size < instBytes) {
+            m_lastGrew = true;
             retireBuffer(m_slotInst[slot], currentFrame + framesInFlight + 1);
             if (!createInstanceBuffer(instBytes, m_slotInst[slot])) {
                 if (m_logError) m_logError("[rt] TLAS instance buffer alloc failed");
@@ -311,6 +313,7 @@ public:
         // go on the retire list (frames may still be reading them in flight).
         Tlas& t = m_slot[slot];
         if (t.backing.size < sizes.accelerationStructureSize || t.handle == VK_NULL_HANDLE) {
+            m_lastGrew = true;
             if (t.handle || t.backing.buf) {
                 m_retired.push_back({ t.handle, t.backing, currentFrame + framesInFlight + 1 });
                 t.handle = VK_NULL_HANDLE; t.backing = RtBuffer{};
@@ -333,6 +336,7 @@ public:
 
         // Per-slot persistent scratch (reused build-to-build; grow via retire).
         if (m_slotScratch[slot].size < sizes.buildScratchSize) {
+            m_lastGrew = true;
             retireBuffer(m_slotScratch[slot], currentFrame + framesInFlight + 1);
             if (!createScratchBuffer(sizes.buildScratchSize, m_slotScratch[slot])) {
                 if (m_logError) m_logError("[rt] TLAS scratch alloc failed");
@@ -391,6 +395,10 @@ public:
         m_tlasBuilt = m_slotValid[m_active];
     }
     bool tlasPendingFlip() const { return m_pendingFlip; }
+    // True if the LAST recordTlasBuild had to (re)allocate slot objects (a GROW:
+    // first build of a slot or a size increase). One-time allocation cost, not a
+    // wait — instrumented separately from the steady-state mutation cost.
+    bool lastBuildGrew() const { return m_lastGrew; }
 
     bool tlasBuilt() const { return m_tlasBuilt; }
     VkAccelerationStructureKHR tlas() const { return m_slot[m_active].handle; }
@@ -543,6 +551,7 @@ private:
     bool      m_slotValid[2] = { false, false };
     uint32_t  m_active = 0;
     bool      m_pendingFlip = false;
+    bool      m_lastGrew = false;
     // Grown-out slot objects awaiting their last referencing frame's retirement.
     struct RetiredAs { VkAccelerationStructureKHR as; RtBuffer backing; uint64_t retireAtFrame; };
     std::vector<RetiredAs> m_retired;

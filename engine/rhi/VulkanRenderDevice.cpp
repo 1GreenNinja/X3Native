@@ -1151,6 +1151,7 @@ public:
         // TLAS mutation instrumentation (the zero-stutter AS-rebuild proof).
         m_building.tlasBuilds    = m_tlasBuilds;
         m_building.tlasSyncWaits = m_tlasSyncWaits;
+        m_building.tlasGrows     = m_tlasGrows;
         m_building.tlasCpuMs     = m_tlasLastCpuMs;
         m_building.tlasCpuMsMax  = m_tlasMaxCpuMs;
         m_lastStats = m_building;
@@ -3187,11 +3188,16 @@ private:
                     ++self->m_tlasBuilds;
                 // Instrument the WHOLE mutation path (prep + record): the
                 // zero-stutter gate is "no waits > 1 ms" — tlasCpuMsMax proves it.
+                // GROW builds ((re)allocating a slot's backing/instance/scratch —
+                // the first build of each slot + rare size increases) are one-time
+                // ALLOCATION cost, not waits: counted separately (tlasGrows) and
+                // excluded from the steady-state max.
                 const float ms = self->m_tlasPrepCpuMs +
                     std::chrono::duration<float, std::milli>(
                         std::chrono::steady_clock::now() - t0).count();
                 self->m_tlasLastCpuMs = ms;
-                if (ms > self->m_tlasMaxCpuMs) self->m_tlasMaxCpuMs = ms;
+                if (self->m_rt.lastBuildGrew()) ++self->m_tlasGrows;
+                else if (ms > self->m_tlasMaxCpuMs) self->m_tlasMaxCpuMs = ms;
             };
             m_graph.addPass(std::move(tp));
         }
@@ -10966,6 +10972,7 @@ private:
     // ---- TLAS double-buffer instrumentation (zero-stutter AS rebuild) ------
     uint32_t                m_tlasBuilds = 0;       // async builds recorded
     uint32_t                m_tlasSyncWaits = 0;    // CPU-blocking waits (MUST stay 0)
+    uint32_t                m_tlasGrows = 0;        // builds that (re)allocated (one-time)
     float                   m_tlasLastCpuMs = 0.0f; // last mutation-path CPU cost
     float                   m_tlasMaxCpuMs  = 0.0f; // worst since init
     float                   m_tlasPrepCpuMs = 0.0f; // prep segment of this frame's path

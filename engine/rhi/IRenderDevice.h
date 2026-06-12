@@ -141,6 +141,8 @@ struct RenderStats {
     // path increments it), tlasCpuMsMax is the worst CPU cost of the path.
     uint32_t tlasBuilds    = 0;   // async TLAS builds recorded since init
     uint32_t tlasSyncWaits = 0;   // CPU-blocking waits in the mutation path (MUST stay 0)
+    uint32_t tlasGrows     = 0;   // builds that (re)allocated slot objects (one-time
+                                  // allocation cost — excluded from tlasCpuMsMax)
     float    tlasCpuMs     = 0.0f; // CPU ms of the most recent mutation path run
     float    tlasCpuMsMax  = 0.0f; // worst CPU ms since init
 };

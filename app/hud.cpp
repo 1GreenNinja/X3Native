@@ -4,6 +4,8 @@
 // No id Tech / RBDOOM source consulted.
 #include "hud.h"
 
+#include "engine/rhi/Visibility.h"   // unified vis stats block (vis-unify)
+
 #include <cstdio>
 #include <algorithm>
 
@@ -172,7 +174,7 @@ void Hud::drawStats(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
     if (s.gpuFrameMs > 0.0f) std::snprintf(gpuStr, sizeof(gpuStr), "%5.2f ms", s.gpuFrameMs);
     else                     std::snprintf(gpuStr, sizeof(gpuStr), "  n/a  ");
 
-    char lines[9][64];
+    char lines[11][64];
     int lineCount = 6;
     std::snprintf(lines[0], sizeof(lines[0]), "FPS %4.0f", fps);
     std::snprintf(lines[1], sizeof(lines[1]), "CPU %5.2f ms", cpuMs);
@@ -180,15 +182,29 @@ void Hud::drawStats(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
     std::snprintf(lines[3], sizeof(lines[3]), "draws %u", s.drawCalls);
     std::snprintf(lines[4], sizeof(lines[4]), "tris  %u", s.triangles);
     std::snprintf(lines[5], sizeof(lines[5]), "objs  %u/%u", s.objectsDrawn, s.objectsSubmitted);
-    // D15 GPU cull block (only when the GPU path is active): tier + the cull.comp
-    // counters (read back with frames-in-flight latency, like gpuFrameMs).
-    if (s.gpuCullPath > 0) {
-        const char* pathName = (s.gpuCullPath == 2) ? "tier1 async"
-                             : (s.gpuCullPath == 3) ? "tier2 mesh" : "tier0 gfx";
-        std::snprintf(lines[6], sizeof(lines[6]), "cull %s", pathName);
-        std::snprintf(lines[7], sizeof(lines[7]), "tested %u drawn %u", s.gpuCullTested, s.gpuCullDrawn);
-        std::snprintf(lines[8], sizeof(lines[8]), "frustum %u hzb %u", s.gpuCullFrustum, s.gpuCullHzb);
-        lineCount = 9;
+    // ONE unified visibility block (vis-unify): the whole conserving chain
+    // rooms -> frustum -> hzb -> drawn + per-stage times, on EVERY path (the
+    // CPU path derives frustum-culled from submitted-drawn; the GPU path reads
+    // the cull.comp counters back with frames-in-flight latency).
+    {
+        x3::rhi::VisCaps caps;
+        caps.gpuCull = s.gpuCullSupported; caps.asyncCull = s.asyncCullSupported;
+        caps.hzb = s.hzbSupported;
+        const x3::rhi::VisPolicy pol = x3::rhi::resolveVisPolicy(
+            console.getInt("r_vis"), caps,
+            console.getInt("r_roomcull") != 0 ? -1 : 0);
+        const x3::rhi::VisFrameStats v = x3::rhi::assembleVisStats(s, pol.mode);
+        const char* pathName = (v.activePath == 2) ? "tier1 async"
+                             : (v.activePath == 3) ? "tier2 mesh"
+                             : (v.activePath == 1) ? "tier0 gfx" : "cpu";
+        std::snprintf(lines[6],  sizeof(lines[6]),  "vis L%d %s%s", v.mode, pathName,
+                      v.conserves ? "" : " !");
+        std::snprintf(lines[7],  sizeof(lines[7]),  "cand %u rooms %u", v.candidates, v.roomsCulled);
+        std::snprintf(lines[8],  sizeof(lines[8]),  "frustum %u hzb %u", v.frustumCulled, v.hzbCulled);
+        std::snprintf(lines[9],  sizeof(lines[9]),  "drawn %u", v.drawn);
+        std::snprintf(lines[10], sizeof(lines[10]), "pvs %.2f cull %.2f/%.2f", v.pvsMs,
+                      v.cullCpuMs, v.cullGpuMs + v.hzbGpuMs);
+        lineCount = 11;
     }
 
     // Right-aligned panel in the top-right corner so it never collides with the

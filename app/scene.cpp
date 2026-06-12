@@ -107,14 +107,19 @@ uint32_t Scene::drawnCount() const {
 }
 
 void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const {
+    m_lastRoomCulled = 0;
     for (const Entity& e : m_entities) {
         if (!e.visible || !e.mesh.valid())
             continue;
         // Per-room occlusion cull (data-driven level loader): skip entities whose room
         // is not in the current visible set. roomVisible() returns true for kNoRoom and
         // whenever the cull is inactive, so this is a no-op for every existing entity.
-        if (!roomVisible(e.roomId))
+        // Skips are COUNTED (lastRoomCulled) for the unified vis stats block: they are
+        // the "rooms" stage of the conserving rooms -> frustum -> hzb -> drawn chain.
+        if (!roomVisible(e.roomId)) {
+            ++m_lastRoomCulled;
             continue;
+        }
         // Translucent glass entities route through the dedicated transparent pass (real
         // see-through glass), keeping their emissive glow; everything else is opaque. The
         // default emissive {0,0,0,0} makes the opaque path identical to the old drawMesh()
