@@ -1,0 +1,58 @@
+#version 450
+// meshlet.mesh — TIER 2 (UNTESTED — REVIEW REQUIRED, see D15 handoff §Tier 2).
+// One workgroup expands one surviving meshlet (<=64 verts / <=124 tris — the
+// NV-recommended limits that also suit AMD) into rasterizer primitives.
+// Outputs MUST mirror mesh.vert's interface so mesh.frag works unchanged —
+// FLEET: diff the out-block below against mesh.vert before first compile.
+#extension GL_EXT_mesh_shader : require
+#extension GL_EXT_shader_8bit_storage : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int8 : require
+
+layout(local_size_x = 64) in;
+layout(triangles, max_vertices = 64, max_primitives = 124) out;
+
+struct Meshlet {
+    vec4 sphere; vec4 cone;
+    uint vertexOffset; uint triangleOffset;
+    uint vertexCount;  uint triangleCount;
+};
+layout(std430, set = 1, binding = 0) readonly buffer Meshlets  { Meshlet meshlets[]; };
+layout(std430, set = 1, binding = 2) readonly buffer MeshletVerts { uint  mlVertIndex[]; };  // into the mesh's vertex buffer
+layout(std430, set = 1, binding = 3) readonly buffer MeshletTris  { uint8_t mlTri[]; };      // 3 bytes per tri, local indices
+
+struct Vertex { vec4 posUVx; vec4 nrmUVy; vec4 tangent; }; // MATCH ModelLoader layout — verify
+layout(std430, set = 1, binding = 4) readonly buffer Vertices { Vertex verts[]; };
+
+layout(std430, set = 1, binding = 1) readonly buffer ObjectXf {
+    mat4 model; vec4 sphereScale;
+};
+layout(set = 0, binding = 4) uniform CullParams {
+    vec4 frustum[6]; mat4 viewProj; vec2 hzbSize; uint instanceCount; uint _pad0;
+} P;
+
+struct TaskPayload { uint meshletIds[32]; };
+taskPayloadSharedEXT TaskPayload payload;
+
+layout(location = 0) out vec3 vNormalWS[];
+layout(location = 1) out vec2 vUV[];
+layout(location = 2) out vec3 vPosWS[];
+
+void main() {
+    Meshlet m = meshlets[payload.meshletIds[gl_WorkGroupID.x]];
+    SetMeshOutputsEXT(m.vertexCount, m.triangleCount);
+
+    uint t = gl_LocalInvocationIndex;
+    if (t < m.vertexCount) {
+        Vertex v = verts[mlVertIndex[m.vertexOffset + t]];
+        vec4 pWS = model * vec4(v.posUVx.xyz, 1.0);
+        gl_MeshVerticesEXT[t].gl_Position = P.viewProj * pWS;
+        vPosWS[t]    = pWS.xyz;
+        vNormalWS[t] = normalize(mat3(model) * v.nrmUVy.xyz);
+        vUV[t]       = vec2(v.posUVx.w, v.nrmUVy.w);
+    }
+    if (t < m.triangleCount) {
+        uint b = m.triangleOffset + t * 3u;
+        gl_PrimitiveTriangleIndicesEXT[t] =
+            uvec3(uint(mlTri[b]), uint(mlTri[b + 1u]), uint(mlTri[b + 2u]));
+    }
+}

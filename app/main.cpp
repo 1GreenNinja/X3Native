@@ -11,6 +11,7 @@
 #include "engine/core/IJobSystem.h"
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/rhi/FrustumCull.h"          // CPU per-object frustum cull (--test-frustumcull)
+#include "engine/rhi/GpuCull.h"           // D15 GPU culling — meshlet builder self-test (--test-meshlet)
 #include <glm/gtc/matrix_transform.hpp>       // glm::perspective/lookAt/translate/scale (--test-frustumcull)
 #include "engine/asset/IAssetSource.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -1310,6 +1311,11 @@ int main(int argc, char** argv) {
     // headless device, set a known palette, run the compute skinning pass, read back
     // the skinned output, and assert it matches a CPU LBS reference. Additive.
     bool        testGpuSkin = false;
+    // --test-meshlet (D15 Tier-2 CPU meshlet builder): runs runMeshletSelfTest() —
+    // builds meshlets from a generated grid mesh and asserts budgets/locality/sphere
+    // containment/cone tightness/triangle conservation/degenerate input. Pure CPU,
+    // no device needed. Additive.
+    bool        testMeshlet = false;
     // --test-spiretop (Spire top-floor content): F6/F7 (Act-1 finale) encounter authoring. Additive.
     bool        testSpireTop = false;
     // --test-timeline (EFLZ morality/timeline backbone): infection 4-stage timers + cure
@@ -1662,6 +1668,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-debris") testDebris = true;
         else if (a == "--test-gpuskin") testGpuSkin = true;
+        else if (a == "--test-meshlet") testMeshlet = true;
         else if (a == "--test-collapse") testCollapse = true;
         else if (a == "--test-physjoint") testPhysJoint = true;
         else if (a == "--test-nav") testNav = true;
@@ -2265,6 +2272,12 @@ int main(int argc, char** argv) {
         x3::logInfo("running GPU compute-skinning self-test (register skinned mesh -> "
                     "set known palette -> compute skin -> readback -> assert vs CPU LBS)...");
         return runGpuSkinSelfTest() ? 0 : 1;
+    }
+    if (testMeshlet) {
+        x3::logInfo("running D15 Tier-2 meshlet builder self-test "
+                    "(grid mesh -> buildMeshlets -> assert budgets/locality/sphere/"
+                    "cone/triangle-conservation/degenerate-input)...");
+        return x3::rhi::runMeshletSelfTest() ? 0 : 1;
     }
     if (testCollapse) {
         x3::logInfo("running K-T3 structural collapse (support graph) self-test "

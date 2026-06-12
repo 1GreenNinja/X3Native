@@ -1,0 +1,115 @@
+#version 450
+// cull.comp — GPU object culling (D15). One thread per INSTANCE.
+// Tier 0: frustum-only, dispatched on the graphics queue.
+// Tier 1: same shader on the async compute queue (no source change).
+// Occlusion phase: set spec-const USE_HZB=1 and bind the depth pyramid.
+//
+// CONTRACT WITH THE EXISTING DRAW PATH (one VkDrawIndexedIndirectCommand per
+// distinct mesh, instances grouped contiguously, firstInstance = group base):
+//   * The CPU still uploads ALL instances + per-mesh indirect commands each
+//     frame exactly as today, but writes instanceCount = 0 for every command.
+//   * This shader tests each instance's world bounding sphere; survivors are
+//     COMPACTED into visibleInstance[] within their mesh's reserved range
+//     (base = firstInstance, slot via atomicAdd on the command's instanceCount).
+//   * The vertex shader indexes instances through visibleInstance[] instead of
+//     gl_InstanceIndex directly (one indirection added to mesh.vert).
+//   * Empty draws (instanceCount 0) cost ~nothing; the CPU records the same
+//     single multidraw it does today. No drawIndirectCount required => runs on
+//     the 1080 Ti unmodified.
+//
+// CLEAN-ROOM: written from the Vulkan/GLSL specs and the publicly documented
+// two-phase HZB culling approach (SIGGRAPH/GDC talks). No engine source.
+
+layout(local_size_x = 64) in;
+
+// Matches the spec-constant tier wiring in GpuCull.cpp.
+layout(constant_id = 0) const uint USE_HZB = 0u;
+
+struct CullInstance {
+    vec4 sphere;       // xyz = world-space center, w = radius (pre-scaled)
+    uint meshSlot;     // index into draw command buffer
+    uint instanceData; // renderer's instance-SSBO index (what survives to draw)
+    uint flags;        // bit0: ALWAYS_VISIBLE (skinned/weapon — never cull)
+    uint _pad;
+};
+
+layout(std430, set = 0, binding = 0) readonly buffer Instances {
+    CullInstance inst[];
+};
+
+// VkDrawIndexedIndirectCommand layout: indexCount, instanceCount, firstIndex,
+// vertexOffset(int), firstInstance — we only touch instanceCount atomically
+// and read firstInstance as the compaction base.
+layout(std430, set = 0, binding = 1) buffer DrawCmds {
+    uint cmd[];        // stride 5 uints per mesh slot
+};
+
+layout(std430, set = 0, binding = 2) writeonly buffer VisibleInstances {
+    uint visibleInstance[];
+};
+
+layout(std430, set = 0, binding = 3) buffer Stats {
+    uint statTested;
+    uint statDrawn;
+    uint statFrustumCulled;
+    uint statHzbCulled;
+};
+
+layout(set = 0, binding = 4) uniform CullParams {
+    vec4 frustum[6];   // world-space planes, xyz = normal, w = d (normalized)
+    mat4 viewProj;     // for HZB screen-space bounds
+    vec2 hzbSize;      // mip0 dimensions of the pyramid
+    uint instanceCount;
+    uint _pad0;
+} P;
+
+// Depth pyramid (only sampled when USE_HZB=1; bound to a 1x1 dummy otherwise).
+layout(set = 0, binding = 5) uniform sampler2D hzb;
+
+bool frustumVisible(vec4 s) {
+    // Conservative sphere-vs-plane: outside if fully behind any plane.
+    for (int i = 0; i < 6; ++i)
+        if (dot(P.frustum[i].xyz, s.xyz) + P.frustum[i].w < -s.w) return false;
+    return true;
+}
+
+// Two-phase HZB visibility: project the sphere to a screen-space rect, pick the
+// pyramid mip where the rect covers ~one texel neighborhood, compare against the
+// FARTHEST depth there (pyramid is a MAX-reduce of view depth; flip the compare
+// + reduce for reversed-Z — see GpuCull.cpp kReversedZ note).
+bool hzbVisible(vec4 s) {
+    vec4 c = P.viewProj * vec4(s.xyz, 1.0);
+    if (c.w <= s.w) return true;            // sphere reaches the near plane: keep
+    float rNdc = s.w / c.w;                  // conservative NDC radius
+    vec2  cNdc = c.xy / c.w;
+    vec2  mn = clamp(cNdc - rNdc, -1.0, 1.0) * 0.5 + 0.5;
+    vec2  mx = clamp(cNdc + rNdc, -1.0, 1.0) * 0.5 + 0.5;
+    vec2  sizePx = (mx - mn) * P.hzbSize;
+    float mip = ceil(log2(max(max(sizePx.x, sizePx.y), 1.0)));
+    float sceneDepth = textureLod(hzb, (mn + mx) * 0.5, mip).r;
+    float sphereNearestDepth = (c.z - s.w) / c.w; // conservative nearest point
+    return sphereNearestDepth <= sceneDepth;      // not fully behind occluders
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= P.instanceCount) return;
+    CullInstance ci = inst[i];
+    atomicAdd(statTested, 1u);
+
+    bool vis = (ci.flags & 1u) != 0u;            // ALWAYS_VISIBLE bypass
+    if (!vis) {
+        vis = frustumVisible(ci.sphere);
+        if (!vis) { atomicAdd(statFrustumCulled, 1u); }
+        else if (USE_HZB == 1u) {
+            vis = hzbVisible(ci.sphere);
+            if (!vis) atomicAdd(statHzbCulled, 1u);
+        }
+    }
+    if (!vis) return;
+
+    uint base = cmd[ci.meshSlot * 5u + 4u];                  // firstInstance
+    uint slot = atomicAdd(cmd[ci.meshSlot * 5u + 1u], 1u);   // instanceCount++
+    visibleInstance[base + slot] = ci.instanceData;
+    atomicAdd(statDrawn, 1u);
+}
