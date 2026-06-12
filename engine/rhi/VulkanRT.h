@@ -205,17 +205,43 @@ public:
     }
 
     // ---- TLAS: one instance per (meshId, transform) ---------------------------
+    //
+    // DOUBLE-BUFFERED (zero-stutter). The TLAS used to be rebuilt with a
+    // vkDeviceWaitIdle + a synchronous one-time submit (a fence wait) — ~2x a
+    // median frame on every scene mutation, the engine's last declared hitch.
+    // Now there are TWO complete TLAS backings (+ per-slot instance and scratch
+    // buffers). A mutation RECORDS the build into the frame's own command
+    // buffer against the INACTIVE slot — no waits of any kind on the CPU:
+    //
+    //   frame N   : consumers read slot A (descriptors point at A);
+    //               build of slot B is recorded into frame N's command buffer.
+    //               Pre-barrier orders all prior-frame AS reads/builds before
+    //               the build; post-barrier orders the build before future reads.
+    //   frame N+1 : flipTlas() at the frame boundary -> tlas() == B. Per-frame
+    //               descriptor sets re-point lazily AFTER their slot's fence
+    //               wait (so no in-flight set is ever written).
+    //
+    // Slot reuse cadence == kFramesInFlight (ping-pong), so a slot's previous
+    // GPU build/readers have retired (the frame fence) before its host-visible
+    // instance buffer is rewritten. Grown-out backings/scratch are queued on the
+    // retire list and destroyed once their last referencing frame completes —
+    // the same defer-free discipline the renderer uses for buffers/images.
     struct TlasInstance {
         uint32_t meshId;
         float    model[16];   // column-major 4x4 (the renderer's ObjectData::model)
     };
 
-    // Rebuild the TLAS from the given instance list (instances whose mesh has no
-    // BLAS are skipped). Recorded as a one-time submit (static-first v1). The TLAS
-    // device address is then bound by the ray-query pass. Returns true on success;
-    // an empty (zero usable instances) list still produces a valid empty TLAS.
-    bool buildTlas(const std::vector<TlasInstance>& instances) {
+    // Record a rebuild of the INACTIVE TLAS slot into `cmd` (the frame's command
+    // buffer, graphics or compute-capable queue). Instances whose mesh has no
+    // BLAS are skipped; an empty list still builds a valid empty TLAS. NO CPU
+    // waits. After the frame is submitted, call flipTlas() at the next frame
+    // boundary to make the new TLAS current. `currentFrame`/`framesInFlight`
+    // schedule the retire of any grown-out slot objects.
+    bool recordTlasBuild(VkCommandBuffer cmd, const std::vector<TlasInstance>& instances,
+                         uint64_t currentFrame, uint32_t framesInFlight) {
         if (!m_ready) return false;
+        drainRetired(currentFrame);
+        const uint32_t slot = m_active ^ 1u;
 
         // Pack the VkAccelerationStructureInstanceKHR rows for every instance whose
         // BLAS exists. The transform is the top 3 rows of the column-major model,
@@ -238,26 +264,26 @@ public:
             m_instScratch.push_back(row);
         }
         const uint32_t instCount = (uint32_t)m_instScratch.size();
-        m_lastInstanceCount = instCount;
 
-        // Upload the instance rows into a device-address instance buffer. A valid
-        // (even empty) TLAS is built so the descriptor binding is always live.
+        // Upload the rows into THIS SLOT's host-visible instance buffer. The
+        // slot's previous build retired kFramesInFlight frames ago (the frame
+        // fence), so the rewrite can never race the GPU. Grow via retire.
         const VkDeviceSize instBytes =
             (VkDeviceSize)(instCount ? instCount : 1) * sizeof(VkAccelerationStructureInstanceKHR);
-        if (m_instBuf.size < instBytes) {
-            destroyBuffer(m_instBuf);
-            if (!createInstanceBuffer(instBytes, m_instBuf)) {
+        if (m_slotInst[slot].size < instBytes) {
+            retireBuffer(m_slotInst[slot], currentFrame + framesInFlight + 1);
+            if (!createInstanceBuffer(instBytes, m_slotInst[slot])) {
                 if (m_logError) m_logError("[rt] TLAS instance buffer alloc failed");
                 return false;
             }
         }
         if (instCount) {
             void* mapped = nullptr;
-            if (vmaMapMemory(m_alloc, m_instBuf.alloc, &mapped) != VK_SUCCESS) return false;
+            if (vmaMapMemory(m_alloc, m_slotInst[slot].alloc, &mapped) != VK_SUCCESS) return false;
             std::memcpy(mapped, m_instScratch.data(),
                         (size_t)instCount * sizeof(VkAccelerationStructureInstanceKHR));
-            vmaFlushAllocation(m_alloc, m_instBuf.alloc, 0, instBytes);
-            vmaUnmapMemory(m_alloc, m_instBuf.alloc);
+            vmaFlushAllocation(m_alloc, m_slotInst[slot].alloc, 0, instBytes);
+            vmaUnmapMemory(m_alloc, m_slotInst[slot].alloc);
         }
 
         VkAccelerationStructureGeometryKHR geo{};
@@ -266,7 +292,7 @@ public:
         geo.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
         geo.geometry.instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
         geo.geometry.instances.arrayOfPointers = VK_FALSE;
-        geo.geometry.instances.data.deviceAddress = m_instBuf.addr;
+        geo.geometry.instances.data.deviceAddress = m_slotInst[slot].addr;
 
         VkAccelerationStructureBuildGeometryInfoKHR bgi{};
         bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
@@ -281,60 +307,127 @@ public:
         m_pfnGetASBuildSizes(m_dev, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
                              &bgi, &instCount, &sizes);
 
-        // (Re)create the TLAS backing if it must grow. The TLAS handle is recreated
-        // each time the backing changes; for steady same-size rebuilds we reuse it.
-        if (m_tlas.backing.size < sizes.accelerationStructureSize || m_tlas.handle == VK_NULL_HANDLE) {
-            if (m_tlas.handle) { m_pfnDestroyAS(m_dev, m_tlas.handle, nullptr); m_tlas.handle = VK_NULL_HANDLE; }
-            destroyBuffer(m_tlas.backing);
-            if (!createAsBackingBuffer(sizes.accelerationStructureSize, m_tlas.backing)) {
+        // (Re)create this slot's backing if it must grow; the old handle+backing
+        // go on the retire list (frames may still be reading them in flight).
+        Tlas& t = m_slot[slot];
+        if (t.backing.size < sizes.accelerationStructureSize || t.handle == VK_NULL_HANDLE) {
+            if (t.handle || t.backing.buf) {
+                m_retired.push_back({ t.handle, t.backing, currentFrame + framesInFlight + 1 });
+                t.handle = VK_NULL_HANDLE; t.backing = RtBuffer{};
+            }
+            if (!createAsBackingBuffer(sizes.accelerationStructureSize, t.backing)) {
                 if (m_logError) m_logError("[rt] TLAS backing buffer alloc failed");
                 return false;
             }
             VkAccelerationStructureCreateInfoKHR aci{};
             aci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
-            aci.buffer = m_tlas.backing.buf;
+            aci.buffer = t.backing.buf;
             aci.offset = 0;
             aci.size   = sizes.accelerationStructureSize;
             aci.type   = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
-            if (m_pfnCreateAS(m_dev, &aci, nullptr, &m_tlas.handle) != VK_SUCCESS) {
+            if (m_pfnCreateAS(m_dev, &aci, nullptr, &t.handle) != VK_SUCCESS) {
                 if (m_logError) m_logError("[rt] vkCreateAccelerationStructureKHR (TLAS) failed");
                 return false;
             }
         }
 
-        RtBuffer scratch{};
-        if (!createScratchBuffer(sizes.buildScratchSize, scratch)) {
-            if (m_logError) m_logError("[rt] TLAS scratch alloc failed");
-            return false;
+        // Per-slot persistent scratch (reused build-to-build; grow via retire).
+        if (m_slotScratch[slot].size < sizes.buildScratchSize) {
+            retireBuffer(m_slotScratch[slot], currentFrame + framesInFlight + 1);
+            if (!createScratchBuffer(sizes.buildScratchSize, m_slotScratch[slot])) {
+                if (m_logError) m_logError("[rt] TLAS scratch alloc failed");
+                return false;
+            }
         }
 
-        bgi.dstAccelerationStructure = m_tlas.handle;
-        bgi.scratchData.deviceAddress = scratch.addr;
+        // PRE: all prior AS reads (ray-query consumers of earlier frames, on this
+        // queue) and prior builds complete before this build writes the slot.
+        // POST: this build's writes are visible to every later AS read. Global
+        // memory barriers — entirely on the GPU timeline, zero CPU involvement.
+        auto globalBarrier = [&](VkPipelineStageFlags2 ss, VkAccessFlags2 sa,
+                                 VkPipelineStageFlags2 ds, VkAccessFlags2 da) {
+            VkMemoryBarrier2 mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+            mb.srcStageMask = ss; mb.srcAccessMask = sa;
+            mb.dstStageMask = ds; mb.dstAccessMask = da;
+            VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+            dep.memoryBarrierCount = 1; dep.pMemoryBarriers = &mb;
+            vkCmdPipelineBarrier2(cmd, &dep);
+        };
+        globalBarrier(
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+            VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR);
+
+        bgi.dstAccelerationStructure = t.handle;
+        bgi.scratchData.deviceAddress = m_slotScratch[slot].addr;
         VkAccelerationStructureBuildRangeInfoKHR range{};
         range.primitiveCount = instCount;
         range.primitiveOffset = 0; range.firstVertex = 0; range.transformOffset = 0;
         const VkAccelerationStructureBuildRangeInfoKHR* pRange = &range;
+        m_pfnCmdBuildAS(cmd, 1, &bgi, &pRange);
 
-        const bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
-            m_pfnCmdBuildAS(cmd, 1, &bgi, &pRange);
-        });
-        destroyBuffer(scratch);
-        if (!ok) return false;
+        globalBarrier(
+            VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+            VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR);
 
-        m_tlasBuilt = true;
+        m_slotInstCount[slot] = instCount;
+        m_slotValid[slot] = true;
+        m_pendingFlip = true;
+        m_lastInstanceCount = instCount;
         return true;
     }
 
+    // Make the freshly built slot current. Call at the FRAME BOUNDARY after the
+    // build frame was submitted (the device does this in beginFrame); consumers'
+    // per-frame descriptor sets then re-point lazily after their fence wait.
+    void flipTlas() {
+        if (!m_pendingFlip) return;
+        m_active ^= 1u;
+        m_pendingFlip = false;
+        m_tlasBuilt = m_slotValid[m_active];
+    }
+    bool tlasPendingFlip() const { return m_pendingFlip; }
+
     bool tlasBuilt() const { return m_tlasBuilt; }
-    VkAccelerationStructureKHR tlas() const { return m_tlas.handle; }
+    VkAccelerationStructureKHR tlas() const { return m_slot[m_active].handle; }
+    // Instance count of the ACTIVE (consumer-visible) TLAS.
+    uint32_t activeInstanceCount() const { return m_slotInstCount[m_active]; }
     uint32_t lastInstanceCount() const { return m_lastInstanceCount; }
     uint32_t blasCount() const { return (uint32_t)m_blas.size(); }
 
+    // Destroy retired slot objects whose last referencing frame has completed.
+    // Called from recordTlasBuild; the device may also call it per frame.
+    void drainRetired(uint64_t currentFrame) {
+        for (size_t i = 0; i < m_retired.size();) {
+            if (currentFrame >= m_retired[i].retireAtFrame) {
+                if (m_retired[i].as) m_pfnDestroyAS(m_dev, m_retired[i].as, nullptr);
+                destroyBuffer(m_retired[i].backing);
+                m_retired[i] = m_retired.back();
+                m_retired.pop_back();
+            } else { ++i; }
+        }
+    }
+
     void shutdown() {
         if (!m_dev) return;
-        if (m_tlas.handle) { m_pfnDestroyAS(m_dev, m_tlas.handle, nullptr); m_tlas.handle = VK_NULL_HANDLE; }
-        destroyBuffer(m_tlas.backing);
-        destroyBuffer(m_instBuf);
+        for (auto& r : m_retired) {            // caller idled the device first
+            if (r.as) m_pfnDestroyAS(m_dev, r.as, nullptr);
+            destroyBuffer(r.backing);
+        }
+        m_retired.clear();
+        for (uint32_t s = 0; s < 2; ++s) {
+            if (m_slot[s].handle) { m_pfnDestroyAS(m_dev, m_slot[s].handle, nullptr); m_slot[s].handle = VK_NULL_HANDLE; }
+            destroyBuffer(m_slot[s].backing);
+            destroyBuffer(m_slotInst[s]);
+            destroyBuffer(m_slotScratch[s]);
+            m_slotValid[s] = false;
+            m_slotInstCount[s] = 0;
+        }
+        m_active = 0; m_pendingFlip = false;
         for (auto& kv : m_blas) {
             if (kv.second.handle) m_pfnDestroyAS(m_dev, kv.second.handle, nullptr);
             destroyBuffer(kv.second.backing);
@@ -440,8 +533,24 @@ private:
     VkPhysicalDeviceAccelerationStructurePropertiesKHR m_asProps{};
 
     std::unordered_map<uint32_t, Blas> m_blas;   // keyed by mesh id
-    Tlas      m_tlas;
-    RtBuffer  m_instBuf;                          // persistent host-visible instance buffer
+    // Double-buffered TLAS slots (+ per-slot host-visible instance buffer and
+    // persistent build scratch). m_active = the consumer-visible slot; builds
+    // target m_active^1; flipTlas() swaps at the frame boundary.
+    Tlas      m_slot[2];
+    RtBuffer  m_slotInst[2];
+    RtBuffer  m_slotScratch[2];
+    uint32_t  m_slotInstCount[2] = { 0, 0 };
+    bool      m_slotValid[2] = { false, false };
+    uint32_t  m_active = 0;
+    bool      m_pendingFlip = false;
+    // Grown-out slot objects awaiting their last referencing frame's retirement.
+    struct RetiredAs { VkAccelerationStructureKHR as; RtBuffer backing; uint64_t retireAtFrame; };
+    std::vector<RetiredAs> m_retired;
+    void retireBuffer(RtBuffer& b, uint64_t retireAtFrame) {
+        if (!b.buf) return;
+        m_retired.push_back({ VK_NULL_HANDLE, b, retireAtFrame });
+        b = RtBuffer{};
+    }
     std::vector<VkAccelerationStructureInstanceKHR> m_instScratch;
 
     // Resolved KHR entry points (the loader import lib does not export these).

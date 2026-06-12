@@ -115,6 +115,34 @@ struct RenderStats {
     uint32_t gpuCullExpected  = 0;   // CPU-side expected `drawn` for the read-back frame
     uint32_t gpuCullEquivFrames     = 0; // frames compared since enable
     uint32_t gpuCullEquivMismatches = 0; // frames where drawn != expected (MUST stay 0)
+
+    // ---- Unified visibility (r_vis / vis-unify; see Visibility.h) ----------
+    // Caps the orchestrator resolves against (constant after init).
+    bool gpuCullSupported   = false; // cull.comp pipelines live (Tier 0 at least)
+    bool asyncCullSupported = false; // dedicated compute queue (Tier 1)
+    bool hzbSupported       = false; // depth pyramid targets live
+    // Host-injected PVS numbers (setVisHostStats): entities the room/portal PVS
+    // skipped at submission this frame + the flood-fill CPU time. Zero when no
+    // PVS is active (legacy levels / sandbox worlds).
+    uint32_t visRoomsCulled = 0;
+    float    visPvsMs       = 0.0f;
+    // Per-stage times: the device emit/cull walk (CPU) and the cull.comp / HZB
+    // reduce dispatch GPU times (graphics-queue timestamps; 0 on Tier 1 frames —
+    // the async dispatch lives off the graphics timeline by design).
+    float cullCpuMs = 0.0f;
+    float cullGpuMs = 0.0f;
+    float hzbGpuMs  = 0.0f;
+
+    // ---- TLAS mutation instrumentation (zero-stutter: the AS-rebuild hitch) --
+    // The scene-mutation TLAS rebuild is recorded into the frame's command
+    // buffer against the INACTIVE backing (double-buffered) and flipped at the
+    // next frame boundary — no vkDeviceWaitIdle, no fence wait. These counters
+    // prove it: tlasSyncWaits MUST stay 0 (any CPU-blocking wait in the mutation
+    // path increments it), tlasCpuMsMax is the worst CPU cost of the path.
+    uint32_t tlasBuilds    = 0;   // async TLAS builds recorded since init
+    uint32_t tlasSyncWaits = 0;   // CPU-blocking waits in the mutation path (MUST stay 0)
+    float    tlasCpuMs     = 0.0f; // CPU ms of the most recent mutation path run
+    float    tlasCpuMsMax  = 0.0f; // worst CPU ms since init
 };
 
 class IRenderDevice {
@@ -181,6 +209,12 @@ public:
     // GPU statDrawn readback against it (stats().gpuCullEquiv*). Costs a CPU cull
     // walk per frame — test/diagnostic only.
     virtual void setGpuCullEquivalenceCheck(bool enabled) {}
+    // ---- Unified visibility host stats (vis-unify; see Visibility.h) -------
+    // The app-side room/portal PVS runs BEFORE submission, so the device can't
+    // see what it skipped. The host injects the per-frame PVS numbers here so
+    // stats() carries the whole conserving pipeline (rooms -> frustum -> hzb ->
+    // drawn). Call once per frame (before endFrame); sticky until re-set.
+    virtual void setVisHostStats(uint32_t roomsCulled, float pvsMs) {}
 
     // Per-frame
     virtual FrameContext beginFrame() = 0;

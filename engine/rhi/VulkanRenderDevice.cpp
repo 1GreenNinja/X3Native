@@ -594,6 +594,13 @@ public:
         m_cullEquivCheck = enabled;
     }
 
+    // Unified visibility host stats (vis-unify): the app-side room/portal PVS
+    // numbers, injected per frame so stats() carries the whole conserving chain.
+    void setVisHostStats(uint32_t roomsCulled, float pvsMs) override {
+        m_visRoomsCulled = roomsCulled;
+        m_visPvsMs = pvsMs;
+    }
+
     void setBloom(float intensity) override { m_bloomIntensity = intensity; }
 
     // Whole-scene brightness: pre-tonemap exposure multiplier in the composite pass.
@@ -729,6 +736,16 @@ public:
         // completed (fix 2: promoting a mesh to dynamic queues its old vbo here).
         drainPendingFrees();
 
+        // TLAS double-buffer flip (zero-stutter AS rebuild): a build recorded last
+        // frame becomes the consumer-visible TLAS at THIS frame boundary. The
+        // per-ring-slot descriptor re-point happens lazily in endFrame
+        // (syncRtaoTlasBinding) after each slot's own fence wait. Retired
+        // (grown-out) slot objects drain on the same frame counter.
+        if (m_rtSupported && m_rt.ready()) {
+            m_rt.flipTlas();
+            m_rt.drainRetired(m_totalFrames);
+        }
+
         // The fence above retired this ring slot's PREVIOUS submission, so its
         // timestamps (written kFramesInFlight frames ago) are now guaranteed
         // available — read them back without a stall, then recycle the pool.
@@ -745,6 +762,23 @@ public:
             }
             fr.tsPending = false;
         }
+        // Per-stage vis timestamps (gpu-cull / hzb pairs): only read the pairs the
+        // retired frame actually wrote (the passes are conditional), and zero the
+        // published time on frames where a stage did not run so the stats block
+        // never shows a stale per-stage cost.
+        auto readTsPair = [&](uint32_t first, float& outMs) {
+            uint64_t tk[2] = { 0, 0 };
+            VkResult r = vkGetQueryPoolResults(m_dev.device, fr.tsPool, first, 2,
+                sizeof(tk), tk, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
+            if (r == VK_SUCCESS) {
+                uint64_t a = tk[0] & m_tsValidMask, b = tk[1] & m_tsValidMask;
+                if (b >= a) outMs = (float)((b - a) * (double)m_tsPeriodNs * 1e-6);
+            }
+        };
+        if (m_tsSupported && fr.tsCullPending) { readTsPair(2, m_lastCullGpuMs); fr.tsCullPending = false; }
+        else m_lastCullGpuMs = 0.0f;
+        if (m_tsSupported && fr.tsHzbPending)  { readTsPair(4, m_lastHzbGpuMs);  fr.tsHzbPending = false; }
+        else m_lastHzbGpuMs = 0.0f;
 
         // HEADLESS: there is no swapchain to acquire from — the single offscreen
         // color image is the only "backbuffer" and is always available once its
@@ -800,7 +834,7 @@ public:
         // on the command buffer (vs host) keeps the pool's availability state
         // VUID-correct: every query is reset, then written exactly once below.
         if (m_tsSupported && fr.tsPool)
-            vkCmdResetQueryPool(fr.cmd, fr.tsPool, 0, 2);
+            vkCmdResetQueryPool(fr.cmd, fr.tsPool, 0, 6);
 
         // Timestamp the start of the frame at TOP_OF_PIPE; paired with the
         // BOTTOM_OF_PIPE stamp at endFrame this brackets the whole frame (shadow
@@ -958,16 +992,24 @@ public:
 
         // ---- Hardware ray-tracing (RT AO) build, gated + default OFF ----------
         // Only when r_rtao is on AND the device supports RT: lazily build the RT-AO
-        // pipelines/targets, then (re)build the scene BLAS/TLAS from THIS frame's
-        // draw list (still valid here) + fill the compute UBO. The AS builds are
-        // synchronous one-time submits on the graphics queue (separate command pool
-        // + fence) that complete BEFORE the frame command buffer is submitted, so
-        // the TLAS is ready when the ray-query compute pass runs. If anything fails,
-        // m_rtaoActiveThisFrame stays false and the graph adds NO RT passes — the
-        // raster/SSAO path is byte-for-byte unchanged.
+        // pipelines/targets, ensure the BLAS set, and — on a scene MUTATION — arm
+        // the async TLAS rebuild (recorded into THIS frame's command buffer
+        // against the inactive double-buffer slot; flipped at the next frame
+        // boundary). The ray-query pass keeps consuming the ACTIVE TLAS, so a
+        // mutation frame renders normally with last frame's AS — and the path has
+        // ZERO CPU waits (the old waitIdle+fence rebuild was the declared hitch).
+        // BLAS builds for never-seen meshes remain synchronous load-time events.
+        // If anything fails, m_rtaoActiveThisFrame stays false and the graph adds
+        // NO RT passes — the raster/SSAO path is byte-for-byte unchanged.
         m_rtaoActiveThisFrame = false;
-        if (m_rtSupported && m_rtao.enabled) {
-            if (ensureRtaoReady() && buildRtSceneAS() && m_rt.lastInstanceCount() > 0) {
+        m_tlasBuildArm = false;
+        if (m_rtSupported && m_rtao.enabled && ensureRtaoReady()) {
+            const auto tlasT0 = std::chrono::steady_clock::now();
+            prepareRtSceneAS();
+            m_tlasPrepCpuMs = std::chrono::duration<float, std::milli>(
+                std::chrono::steady_clock::now() - tlasT0).count();
+            if (m_rt.tlasBuilt() && m_rt.activeInstanceCount() > 0) {
+                syncRtaoTlasBinding();   // re-point THIS slot's binding 2 post-flip
                 prepareRtaoUbo();
                 m_rtaoActiveThisFrame = true;
             }
@@ -1096,6 +1138,21 @@ public:
         m_building.gpuCullExpected        = m_lastCullExpected;
         m_building.gpuCullEquivFrames     = m_cullEquivFrames;
         m_building.gpuCullEquivMismatches = m_cullEquivMismatches;
+        // Unified visibility block (vis-unify): caps + host-injected PVS numbers
+        // + per-stage times, so one stats() snapshot carries the whole chain.
+        m_building.gpuCullSupported   = m_gpuCullReady;
+        m_building.asyncCullSupported = m_asyncCullReady;
+        m_building.hzbSupported       = m_hzbReady;
+        m_building.visRoomsCulled     = m_visRoomsCulled;
+        m_building.visPvsMs           = m_visPvsMs;
+        m_building.cullCpuMs          = m_lastCullCpuMs;
+        m_building.cullGpuMs          = m_lastCullGpuMs;
+        m_building.hzbGpuMs           = m_lastHzbGpuMs;
+        // TLAS mutation instrumentation (the zero-stutter AS-rebuild proof).
+        m_building.tlasBuilds    = m_tlasBuilds;
+        m_building.tlasSyncWaits = m_tlasSyncWaits;
+        m_building.tlasCpuMs     = m_tlasLastCpuMs;
+        m_building.tlasCpuMsMax  = m_tlasMaxCpuMs;
         m_lastStats = m_building;
     }
 
@@ -2017,12 +2074,17 @@ private:
         VmaAllocation hudVboAlloc = nullptr;
         void*         hudVboMapped = nullptr;
         uint32_t      hudVertsUsed = 0;  // write cursor into the vertex ring
-        // Per-frame GPU timestamp query pool (2 stamps: pass begin + pass end).
+        // Per-frame GPU timestamp query pool (6 stamps: [0,1] frame begin/end,
+        // [2,3] gpu-cull dispatch begin/end, [4,5] hzb reduce begin/end — the
+        // per-stage times for the unified vis stats block; pairs 2/3 and 4/5 are
+        // only written on frames whose pass actually ran, tracked by the flags).
         // Reset + written each beginFrame/endFrame; results are read back when the
         // SAME ring slot comes around again (kFramesInFlight frames later, so the
         // fence has already guaranteed the timestamps are available — no stall).
         VkQueryPool   tsPool = VK_NULL_HANDLE;
         bool          tsPending = false; // a frame's timestamps await readback
+        bool          tsCullPending = false; // cull-pass stamps (slots 2,3) written
+        bool          tsHzbPending  = false; // hzb-reduce stamps (slots 4,5) written
 
         // ---- D15 GPU cull per-frame ring (all persistent-mapped) -----------
         //   cullInstBuf : CullInstanceGpu[kMaxDrawsPerFrame] (CPU-written when on)
@@ -2538,10 +2600,16 @@ private:
             auto it = m_groups.find(mid);
             return it != m_groups.end() && !it->second.empty() && m_drawRecords[it->second[0]].alphaBlend;
         };
+        // Time the emit/cull walk (the CPU side of the visibility pipeline: the
+        // CPU frustum test OR the CullInstanceGpu row writes) for the unified
+        // vis stats block (stats().cullCpuMs).
+        const auto cullCpuT0 = std::chrono::steady_clock::now();
         for (uint32_t mid : m_groupOrder) if (!isBlendGroup(mid)) emitGroup(mid);  // OPAQUE first
         m_frameCmdOpaque = cmdCount;                                               // [0,opaque) | [opaque,count)
         for (uint32_t mid : m_groupOrder) if ( isBlendGroup(mid)) emitGroup(mid);  // BLEND (glass) last
         m_frameCmdCount = cmdCount;
+        m_lastCullCpuMs = std::chrono::duration<float, std::milli>(
+            std::chrono::steady_clock::now() - cullCpuT0).count();
 
         // ---- D15 GPU cull frame finalize ------------------------------------
         if (gpuCull && row > 0) {
@@ -3099,6 +3167,35 @@ private:
                 ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         }
 
+        // ---- Pass 0t: async TLAS rebuild (zero-stutter scene mutation) -------
+        // Builds the INACTIVE TLAS double-buffer slot inside this frame's command
+        // buffer. No graph-tracked images (AS + scratch + instance buffers); the
+        // AS-read/AS-build ordering is two global sync2 memory barriers inside
+        // recordTlasBuild — entirely on the GPU timeline. Consumers keep reading
+        // the ACTIVE slot this frame; the flip lands at the next frame boundary.
+        if (m_tlasBuildArm && m_rtSupported && m_rt.ready()) {
+            RenderPassDesc tp{};
+            tp.name = "tlas-build";
+            tp.queue = RgQueue::Compute;
+            tp.usesDynamicRendering = false;
+            tp.recordCtx = this;
+            tp.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                const auto t0 = std::chrono::steady_clock::now();
+                if (self->m_rt.recordTlasBuild(c, self->m_rtInstScratch,
+                                               self->m_totalFrames, kFramesInFlight))
+                    ++self->m_tlasBuilds;
+                // Instrument the WHOLE mutation path (prep + record): the
+                // zero-stutter gate is "no waits > 1 ms" — tlasCpuMsMax proves it.
+                const float ms = self->m_tlasPrepCpuMs +
+                    std::chrono::duration<float, std::milli>(
+                        std::chrono::steady_clock::now() - t0).count();
+                self->m_tlasLastCpuMs = ms;
+                if (ms > self->m_tlasMaxCpuMs) self->m_tlasMaxCpuMs = ms;
+            };
+            m_graph.addPass(std::move(tp));
+        }
+
         // ---- Pass 0a: GPU compute skinning pre-pass (GPU SKINNING OF MODELS) --
         // Skin every registered+palette-set mesh into its per-frame skinned-output
         // vbo with one vkCmdDispatch per instance, BEFORE the shadow/depth/color
@@ -3164,7 +3261,12 @@ private:
                 hp.recordCtx = this;
                 hp.record = [](void* ctx, VkCommandBuffer c){
                     auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                    auto& f = self->m_frames[self->m_frameIdx];
+                    const bool ts = self->m_tsSupported && f.tsPool;
+                    if (ts) vkCmdWriteTimestamp2(c, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, f.tsPool, 4);
                     self->m_gpuCull.recordHzbBuild(c, self->m_hzbChain);
+                    if (ts) { vkCmdWriteTimestamp2(c, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, f.tsPool, 5);
+                              f.tsHzbPending = true; }
                 };
                 m_graph.addPass(std::move(hp));
             }
@@ -3181,10 +3283,31 @@ private:
                 // TIER 1: the dispatch records into this slot's compute-queue
                 // command buffer in endFrame (submitted BEFORE the graphics
                 // submit, which waits the timeline at DRAW_INDIRECT|VERTEX_SHADER).
+                // Per-stage GPU time stays 0 on these frames by design — the cull
+                // lives OFF the graphics timeline (that is the Tier-1 win).
                 m_asyncCullThisFrame = true;
                 m_asyncCullInputs = ci;
             } else {
-                m_gpuCull.addCullPass(m_graph, ci, hzbThisFrame);
+                // Tier 0 (graphics queue): same pass GpuCullSystem::addCullPass
+                // builds, recorded here so the unified stats block can bracket the
+                // dispatch with the per-stage timestamp pair (slots 2,3).
+                m_tier0CullInputs = ci;
+                m_tier0CullHzb = hzbThisFrame;
+                RenderPassDesc cp{};
+                cp.name = "gpu-cull";
+                cp.queue = RgQueue::Graphics;     // Tier 0: serialized, universal
+                cp.recordCtx = this;
+                cp.record = [](void* ctx, VkCommandBuffer c){
+                    auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                    auto& f = self->m_frames[self->m_frameIdx];
+                    const bool ts = self->m_tsSupported && f.tsPool;
+                    if (ts) vkCmdWriteTimestamp2(c, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, f.tsPool, 2);
+                    self->m_gpuCull.recordCullBody(c, self->m_tier0CullInputs,
+                                                   self->m_tier0CullHzb);
+                    if (ts) { vkCmdWriteTimestamp2(c, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, f.tsPool, 3);
+                              f.tsCullPending = true; }
+                };
+                m_graph.addPass(std::move(cp));
             }
         }
 
@@ -7898,11 +8021,13 @@ private:
             w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[2].dstSet = m_rtaoSet[i]; w[2].dstBinding = 3; w[2].descriptorCount = 1;
             w[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[2].pBufferInfo = &ubo;
             // Always write the depth/AO/UBO bindings; add the TLAS binding only when
-            // a TLAS exists (it's built later this frame, so rewriteRtaoTlas() fills
-            // binding 2 once available — the set is never used before then).
+            // a TLAS exists (the first async build flips in a frame later, and
+            // syncRtaoTlasBinding() fills binding 2 per ring slot once available —
+            // the set is never used before then).
             w[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[3].dstSet = m_rtaoSet[i]; w[3].dstBinding = 2; w[3].descriptorCount = 1;
             w[3].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; w[3].pNext = &asW;
             vkUpdateDescriptorSets(m_dev.device, tlas ? 4u : 3u, w, 0, nullptr);
+            m_rtaoSetTlas[i] = tlas;   // cache what binding 2 points at (flip sync)
 
             VkDescriptorImageInfo aoSampled{ m_rtaoLinearSampler, m_rtaoView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             VkDescriptorImageInfo depthSampled{ m_rtaoDepthSampler, m_depthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
@@ -7915,28 +8040,34 @@ private:
         }
     }
 
-    // Re-write ONLY the TLAS binding (binding 2) into each compute set. Called after
-    // a TLAS rebuild when the TLAS handle changed (a grow); steady same-size
-    // rebuilds keep the same handle so this is skipped.
-    void rewriteRtaoTlas() {
+    // Re-point ONLY the TLAS binding (binding 2) of THIS frame slot's compute
+    // set at the CURRENT active TLAS — the consumer half of the double-buffered
+    // TLAS flip. Lazy + per-slot: each ring slot re-points after ITS OWN fence
+    // wait (beginFrame), so an in-flight frame's descriptor set is never
+    // written (the validation-silence requirement). m_rtaoSetTlas caches what
+    // each set currently points at so steady frames cost nothing.
+    void syncRtaoTlasBinding() {
         VkAccelerationStructureKHR tlas = m_rt.tlas();
-        if (!tlas) return;
-        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
-            VkWriteDescriptorSetAccelerationStructureKHR asW{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
-            asW.accelerationStructureCount = 1; asW.pAccelerationStructures = &tlas;
-            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-            w.dstSet = m_rtaoSet[i]; w.dstBinding = 2; w.descriptorCount = 1;
-            w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; w.pNext = &asW;
-            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
-        }
+        if (!tlas || m_rtaoSetTlas[m_frameIdx] == tlas) return;
+        VkWriteDescriptorSetAccelerationStructureKHR asW{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
+        asW.accelerationStructureCount = 1; asW.pAccelerationStructures = &tlas;
+        VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        w.dstSet = m_rtaoSet[m_frameIdx]; w.dstBinding = 2; w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; w.pNext = &asW;
+        vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        m_rtaoSetTlas[m_frameIdx] = tlas;
     }
 
-    // Build (or refit) the scene acceleration structures for THIS frame from the
+    // Prepare the scene acceleration structures for THIS frame from the
     // per-frame draw list (m_drawRecords, still valid in endFrame after
-    // prepareFrameData). Ensures a BLAS exists for every distinct mesh, then
-    // rebuilds the TLAS with one instance per draw. Returns true if a usable TLAS
-    // is ready. Called from endFrame BEFORE the graph records the frame.
-    bool buildRtSceneAS() {
+    // prepareFrameData). Ensures a BLAS exists for every distinct mesh, then —
+    // when the instance set CHANGED — ARMS an async TLAS rebuild that the graph
+    // records into this frame's command buffer against the INACTIVE slot
+    // (double-buffered; flipped at the next frame boundary). ZERO CPU waits in
+    // this path: no vkDeviceWaitIdle, no fences — the old sync rebuild was the
+    // engine's last declared hitch (~2x a median frame per scene mutation).
+    // Called from endFrame BEFORE the graph records the frame.
+    void prepareRtSceneAS() {
         // Ensure a BLAS for each distinct mesh referenced this frame.
         for (uint32_t mid : m_groupOrder) {
             if (m_rt.hasBlas(mid)) continue;
@@ -7967,34 +8098,24 @@ private:
             m_rtInstScratch.push_back(inst);
         }
 
-        // Decide whether to (re)build the TLAS this frame. Rebuilding into the SAME
-        // backing buffer while a previous frame's RT-AO compute may still be READING
-        // it is a cross-frame WAR hazard. To stay correct + cheap:
-        //   * STATIC-FIRST (default, rebuildTlasEachFrame=false): build only when the
-        //     instance set CHANGES (a cheap signature over mesh ids + transforms). A
-        //     change is rare, so we idle the device before that rare rebuild — no
-        //     in-flight reader can touch the backing. The common static frame does NO
-        //     build (and thus no hazard, no stall).
-        //   * rebuildTlasEachFrame=true (moving geometry): rebuild every frame, idling
-        //     first so the prior frame's compute has retired before the backing is
-        //     overwritten. Correct (if heavier) — for dynamic scenes.
+        // Decide whether a rebuild is needed this frame: when the instance set
+        // CHANGED (a cheap signature over mesh ids + transforms), when no slot has
+        // ever been built, or every frame under rebuildTlasEachFrame (moving
+        // geometry). The rebuild itself is RECORDED into this frame's command
+        // buffer (graph pass "tlas-build") against the INACTIVE double-buffer
+        // slot — sync2 barriers on the GPU timeline replace the old
+        // vkDeviceWaitIdle + fenced one-time submit. Consumers keep reading the
+        // ACTIVE slot this frame; flipTlas() at the next frame boundary makes the
+        // new one current and each ring slot's descriptor re-points lazily after
+        // its own fence wait (syncRtaoTlasBinding). The old slot's backing rides
+        // the retire queue (VulkanRT::m_retired) — the defer-free discipline.
         const uint64_t sig = tlasSignature(m_rtInstScratch);
-        const bool firstBuild = !m_rt.tlasBuilt();
+        const bool neverBuilt = !m_rt.tlasBuilt() && !m_rt.tlasPendingFlip();
         const bool changed    = (sig != m_rtTlasSig);
-        if (!firstBuild && !changed && !m_rtao.rebuildTlasEachFrame)
-            return m_rt.tlas() != VK_NULL_HANDLE;   // unchanged static TLAS: reuse as-is
-
-        // A real (re)build follows: ensure no in-flight GPU work is still reading the
-        // TLAS backing we may overwrite. Cheap because rebuilds are rare (static) —
-        // and necessary for correctness when they do happen.
-        if (!firstBuild) vkDeviceWaitIdle(m_dev.device);
-
-        const VkAccelerationStructureKHR before = m_rt.tlas();
-        if (!m_rt.buildTlas(m_rtInstScratch)) return false;
-        m_rtTlasSig = sig;
-        // If the TLAS handle changed (first build or a grow), re-point the descriptors.
-        if (m_rt.tlas() != before) rewriteRtaoTlas();
-        return m_rt.tlasBuilt() && m_rt.tlas() != VK_NULL_HANDLE;
+        if (neverBuilt || changed || m_rtao.rebuildTlasEachFrame) {
+            m_rtTlasSig = sig;
+            m_tlasBuildArm = true;    // graph adds the tlas-build pass this frame
+        }
     }
 
     // Cheap order-sensitive signature of the TLAS instance set (mesh ids + packed
@@ -8410,11 +8531,12 @@ private:
             vkCreateSemaphore(m_dev.device, &si, nullptr, &fr.imageAvailable);
             vkCreateFence(m_dev.device, &fi, nullptr, &fr.inFlight);
 
-            // 2 timestamps per frame (pass begin + pass end).
+            // 6 timestamps per frame: frame begin/end + per-stage cull/hzb pairs
+            // (the unified vis stats block; see the Frame struct comment).
             if (m_tsSupported) {
                 VkQueryPoolCreateInfo qci{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
                 qci.queryType = VK_QUERY_TYPE_TIMESTAMP;
-                qci.queryCount = 2;
+                qci.queryCount = 6;
                 if (vkCreateQueryPool(m_dev.device, &qci, nullptr, &fr.tsPool) != VK_SUCCESS) {
                     logError("[rhi] timestamp query pool create failed; GPU timing disabled");
                     m_tsSupported = false; // fall back: CPU stats only
@@ -10828,6 +10950,28 @@ private:
     uint32_t                m_lastCullExpected = 0;
     uint32_t                m_cullEquivFrames = 0;
     uint32_t                m_cullEquivMismatches = 0;
+
+    // ---- Unified visibility (vis-unify) ------------------------------------
+    // Host-injected PVS numbers (setVisHostStats) + per-stage times for the
+    // unified stats block. Tier-0 cull pass record ctx (stable storage for the
+    // graph's raw-ptr callback, mirroring GpuCullSystem::PassCtx).
+    uint32_t                m_visRoomsCulled = 0;
+    float                   m_visPvsMs = 0.0f;
+    float                   m_lastCullCpuMs = 0.0f;   // emit/cull walk (CPU)
+    float                   m_lastCullGpuMs = 0.0f;   // cull.comp dispatch (ts 2,3)
+    float                   m_lastHzbGpuMs  = 0.0f;   // pyramid reduce (ts 4,5)
+    CullFrameInputs         m_tier0CullInputs{};
+    bool                    m_tier0CullHzb = false;
+
+    // ---- TLAS double-buffer instrumentation (zero-stutter AS rebuild) ------
+    uint32_t                m_tlasBuilds = 0;       // async builds recorded
+    uint32_t                m_tlasSyncWaits = 0;    // CPU-blocking waits (MUST stay 0)
+    float                   m_tlasLastCpuMs = 0.0f; // last mutation-path CPU cost
+    float                   m_tlasMaxCpuMs  = 0.0f; // worst since init
+    float                   m_tlasPrepCpuMs = 0.0f; // prep segment of this frame's path
+    bool                    m_tlasBuildArm  = false; // graph adds tlas-build this frame
+    // What each ring slot's RT-AO set binding 2 currently points at (flip sync).
+    VkAccelerationStructureKHR m_rtaoSetTlas[kFramesInFlight] = {};
 };
 
 } // namespace
