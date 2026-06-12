@@ -56,6 +56,7 @@ add_executable(X3Engine WIN32
     perfshop.cpp
     ecology.cpp
     crowd.cpp
+    alert.cpp
     fx.cpp
     hud.cpp
     loading_screen.cpp

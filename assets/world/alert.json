@@ -1,0 +1,29 @@
+{
+  "format": "x3.alert/1",
+  "comment": "FACILITY ALERT LEVEL tunables (living-world pillar 3). Mirrors defaultAlertConfig() in app/alert.cpp — a missing/broken file falls back to those defaults. Heat economy: stimuli add heat (with per-stimulus level floors); thresholds[] map heat to levels 1-4 (rise instant); hiding (quiet + unseen) for decayDelay seconds drains heat at decayPerSec[level] until the level steps back down through the downFrac hysteresis band.",
+
+  "heatGunshot": 30.0,
+  "heatCorpse": 60.0,
+  "heatWitness": 50.0,
+  "heatTerminalHack": 40.0,
+  "heatWitnessPerSec": 22.0,
+
+  "thresholds": [25.0, 75.0, 150.0, 240.0],
+  "downFrac": 0.6,
+  "heatMax": 320.0,
+
+  "floorGunshot": 1,
+  "floorHack": 1,
+  "floorCorpse": 2,
+  "floorWitness": 2,
+
+  "gunshotRadius": 40.0,
+  "corpseRadius": 6.0,
+
+  "decayDelay": 4.0,
+  "decayPerSec": [0.0, 5.0, 8.0, 10.0, 12.0],
+
+  "searchSpawns": 2,
+  "killSquadSpawns": 3,
+  "patrolSpeedMul": [1.0, 1.25, 1.6, 1.6, 2.0]
+}

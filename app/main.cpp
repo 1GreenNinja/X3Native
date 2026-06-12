@@ -82,6 +82,7 @@
 #include "perfshop.h"                      // the drive-in performance shop (--world drive)
 #include "ecology.h"                       // AMBIENT ECOLOGY: grazers/predators/patrols (--test-ecology)
 #include "crowd.h"                         // CROWDS: club dancers + facility civilians (--test-crowd)
+#include "alert.h"                         // FACILITY ALERT LEVEL: the wanted system (--test-alert)
 
 #include <memory>
 #include <string_view>
@@ -1270,7 +1271,7 @@ int main(int argc, char** argv) {
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
          testThirdPerson = false, testHatchCode = false,
-         testEcology = false, testCrowd = false;
+         testEcology = false, testCrowd = false, testAlert = false;
     // --test-loader (EDITOR LevelDoc data-driven loader): author a doc in memory ->
     // save -> LOAD through the real loader -> assert the built world matches; then
     // modify + hot-reload -> assert the delta applied and the create/destroy ledgers
@@ -1304,6 +1305,12 @@ int main(int argc, char** argv) {
     // --world club + headless.
     bool        crowdShot = false;
     std::string crowdShotPath = "docs/screenshots/livingworld/club_crowd.png";
+    // --screenshot-alert [path]: LIVING-WORLD proof shot #3 — Level 1 under a
+    // forced ALERT 3 LOCKDOWN (zone doors locked, red-shifted lights, the alert
+    // HUD pips + LOCKDOWN banner + pulsing red frame). Rides the --screenshot
+    // production-HUD corridor path.
+    bool        alertShot = false;
+    std::string alertShotPath = "docs/screenshots/livingworld/alert3_lockdown.png";
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1767,6 +1774,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-vehparts") testVehParts = true;
         else if (a == "--test-ecology") testEcology = true;
         else if (a == "--test-crowd") testCrowd = true;
+        else if (a == "--test-alert") testAlert = true;
         else if (a == "--screenshot-ecology") {
             ecologyShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') ecologyShotPath = argv[++i];
@@ -1774,6 +1782,10 @@ int main(int argc, char** argv) {
         else if (a == "--screenshot-crowd") {
             crowdShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') crowdShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-alert") {
+            alertShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') alertShotPath = argv[++i];
         }
         else if (a == "--screenshot-perfshop") {
             perfshopShot = true;
@@ -2436,6 +2448,11 @@ int main(int argc, char** argv) {
                     "(idle clusters + wander points + scatter/cower on violence + return after calm)...");
         return x3::game::runCrowdSelfTest() ? 0 : 1;
     }
+    if (testAlert) {
+        x3::logInfo("running FACILITY ALERT LEVEL self-test "
+                    "(stimulus->level transitions + decay clocks + lockdown doors + witness-vs-unseen + x3.fire)...");
+        return x3::game::runAlertSelfTest() ? 0 : 1;
+    }
     if (testFootIk) {
         x3::logInfo("running foot-IK (two-bone + plant + pelvis) self-test...");
         return x3::anim::runFootIkSelfTest() ? 0 : 1;
@@ -2573,6 +2590,7 @@ int main(int argc, char** argv) {
     if (perfshopShot) worldMode = "drive";   // the shop lives in the drive world
     if (ecologyShot)  worldMode = "valley";  // the ambient ecology rides the valley biome
     if (crowdShot)    worldMode = "club";    // the crowd proof lives on the club floor
+    if (alertShot) { screenshot = true; screenshotPath = alertShotPath; }   // rides --screenshot
     const bool headless = smoketest || screenshot || skyShot || ddgiShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot || perfshopShot || ecologyShot || crowdShot;
 
     if (!glfwInit()) {
@@ -8390,6 +8408,14 @@ int main(int argc, char** argv) {
     // idles/wanders in the B1 arena hall, scatters + cowers when shots ring out,
     // and drifts back once it goes quiet. Built only in the legacy Level-1 world.
     x3::game::CrowdSystem facilityCrowd;
+    // LIVING WORLD: the FACILITY ALERT LEVEL (the wanted system, pillar 3). The
+    // host feeds it observations (guard positions, LOS, gunshots, bodies, keypad
+    // tampers) and applies its effects (reinforcement spawns, the level-3 door
+    // LOCKDOWN via alertDoorLock, red-shifted lights, the HUD indicator).
+    x3::game::AlertSystem   facilityAlert;
+    x3::game::AlertDoorLock alertDoorLock;
+    bool  facilityAlertOn = false;   // armed only in the legacy Level-1 world
+    float alertHudClock   = 0.0f;    // drives the lockdown HUD pulse
     // B3: the terrain world is now STREAMED around the player via a residency
     // ring (TerrainStreamer) fed by the engine job system. Both are only created
     // in terrain mode; Level 1 is unaffected.
@@ -8563,6 +8589,10 @@ int main(int argc, char** argv) {
             fcfg.dance   = false;     // these are frightened workers, not dancers
             facilityCrowd.build(fcfg, scene, *device);
         }
+        // LIVING WORLD: arm the facility alert level (tunables from
+        // assets/world/alert.json; missing file -> built-in defaults).
+        facilityAlert.configure(x3::game::loadAlertConfig(x3::game::alertJsonPath()));
+        facilityAlertOn = true;
         // Audio hookups for Level 1 events (§9, nice-to-have; silent if no device).
         x3::game::Level1Audio la;
         la.sys = audio.get(); la.door = sndDoor; la.pickup = sndPickup;
@@ -9255,11 +9285,15 @@ int main(int argc, char** argv) {
         // so the corridor walls + doorway + floor recede into the frame. A slight
         // downward pitch puts floor shadows in view; the sun is normalize(0.4,1,0.3)
         // (matches the shadow pass) so the down-corridor look shows cast shadows.
-        const float ssX = shotCamOverride ? shotCam[0] : 8.0f;
-        const float ssY = shotCamOverride ? shotCam[1] : 1.75f;
-        const float ssZ = shotCamOverride ? shotCam[2] : -0.4f;
-        const float ssYaw = shotCamOverride ? shotCam[3] : 0.06f;
-        const float ssPitch = shotCamOverride ? shotCam[4] : -0.16f;
+        // --screenshot-alert: stand just inside the cell end of the B1 spine,
+        // looking down the corridor through (force-opened) Door A at the LOCKED
+        // Door B under the red lockdown lights.
+        const bool alertCam = alertShot && !shotCamOverride;
+        const float ssX = shotCamOverride ? shotCam[0] : (alertCam ? 5.9f : 8.0f);
+        const float ssY = shotCamOverride ? shotCam[1] : (alertCam ? 1.70f : 1.75f);
+        const float ssZ = shotCamOverride ? shotCam[2] : (alertCam ? 0.0f : -0.4f);
+        const float ssYaw = shotCamOverride ? shotCam[3] : (alertCam ? 0.02f : 0.06f);
+        const float ssPitch = shotCamOverride ? shotCam[4] : (alertCam ? -0.06f : -0.16f);
         const float ssFov = 70.0f;
         device->setCamera(ssX, ssY, ssZ, ssYaw, ssPitch, ssFov);
         const x3::phys::Vec3 ssEye{ ssX, ssY, ssZ };
@@ -9293,7 +9327,54 @@ int main(int argc, char** argv) {
         // settle frames). Arm the player so a weapon + ammo show in the arsenal.
         x3::ui::GameHud shotHud;
         arsenal.select(0);   // pistol selected for the capture
-        const int kSettleFrames = (screenshotSettle > 0) ? screenshotSettle : 16;
+        // --screenshot-alert: stage the LEVEL-3 LOCKDOWN for the proof shot —
+        // force the alert, lock the zone doors, and shift every facility light
+        // hard red (the same effects the live loop applies).
+        if (alertShot) {
+            // Open Door A directly (the legacy use-ray vantage no longer connects)
+            // so the corridor reads in the frame, THEN drop the lockdown over the
+            // remaining closed doors. Door A = the registered door nearest the
+            // layout's doorA point (the registry holds more than the spine doors).
+            {
+                const x3::phys::Vec3 da = game.layout().doorA;
+                x3::game::DoorSystem& ds = game.doors();
+                x3::game::Door* best = nullptr; float bestD = 1e9f;
+                for (uint32_t di = 0; di < ds.count(); ++di) {
+                    x3::game::Door& d = ds.at(di);
+                    const float ddx = d.closedPos.x - da.x, ddz = d.closedPos.z - da.z;
+                    const float dd = ddx * ddx + ddz * ddz;
+                    if (dd < bestD) { bestD = dd; best = &d; }
+                }
+                if (best) ds.unlockAndOpen(*best);
+            }
+            facilityAlert.configure(x3::game::loadAlertConfig(x3::game::alertJsonPath()));
+            facilityAlert.debugForceLevel(3);
+            alertDoorLock.update(facilityAlert, game.doors());
+            std::vector<x3::rhi::PointLight> fl = game.lightFixtures();
+            const float rs = facilityAlert.redShift();
+            for (auto& L : fl) {
+                const float lum = (L.color[0] + L.color[1] + L.color[2]) / 3.0f;
+                L.color[0] = L.color[0] * (1.0f - rs) + lum * 1.7f * rs;
+                L.color[1] *= 1.0f - rs * 0.78f;
+                L.color[2] *= 1.0f - rs * 0.82f;
+            }
+            // Alarm strobes down the B1 spine so the red WASH reads in the still
+            // even where the env-art fixtures are sparse (capture lighting only —
+            // the live loop tints the real fixture set instead). Inserted at the
+            // FRONT so the 64-light cap can never truncate them away.
+            for (float ax = 4.0f; ax <= 18.0f; ax += 4.0f) {
+                x3::rhi::PointLight al{};
+                al.pos[0] = ax; al.pos[1] = 3.0f; al.pos[2] = 0.0f;
+                al.range = 9.0f;
+                al.color[0] = 4.2f; al.color[1] = 0.35f; al.color[2] = 0.28f;
+                fl.insert(fl.begin(), al);
+            }
+            x3::logInfo("alert shot: " + std::to_string(fl.size()) + " lights (incl. alarm strobes)");
+            if (fl.size() > 64) fl.resize(64);
+            device->setPointLights(fl.data(), (uint32_t)fl.size());
+        }
+        const int kSettleFrames = (screenshotSettle > 0) ? screenshotSettle
+                                                         : (alertShot ? 110 : 16);
         for (int i = 0; i < kSettleFrames; ++i) {
             glfwPollEvents();
             game.tick(dt, scene, *physics, ssEye, ssEye);
@@ -9391,6 +9472,12 @@ int main(int argc, char** argv) {
                 }
                 shotHud.draw(shotUi, shm, dt);
                 shotUi.end();
+                // --screenshot-alert: the alert indicator + lockdown red frame.
+                if (alertShot) {
+                    x3::game::Hud alertHud;
+                    alertHud.drawAlert(*device, frame, facilityAlert.level(),
+                                       facilityAlert.redShift(), (float)i / 60.0f + 0.26f);
+                }
 
                 // ON-GLASS HOLO-TERMINAL readout for the capture: when the shot camera
                 // is aimed at the cell terminal it shows the LARGE high-contrast boot
@@ -10415,9 +10502,16 @@ int main(int argc, char** argv) {
                     topFloors.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value()) ||
                     subLevels.tryDoorCode(x3::phys::Vec3{ pex, pey, pez }, keypad.value())) {
                     x3::logInfo("keypad: ACCEPTED — door opening");
+                    // LIVING WORLD: a keypad override is a TERMINAL HACK stimulus —
+                    // the security net notices doors being opened by code.
+                    if (facilityAlertOn)
+                        facilityAlert.reportTerminalHack(x3::phys::Vec3{ pex, pey, pez });
                     codeMode = false; keypad.clear();
                 } else {
                     x3::logInfo("keypad: rejected");
+                    // A WRONG code is even more suspicious (a tamper alarm).
+                    if (facilityAlertOn)
+                        facilityAlert.reportTerminalHack(x3::phys::Vec3{ pex, pey, pez });
                     keypad.clear();
                 }
             }
@@ -10696,6 +10790,17 @@ int main(int argc, char** argv) {
             // 16 to the eye) after the flashlight, mirroring the canonlevel feed.
             if (docWorld && docLevel.built())
                 docLevel.selectLights(camX, camY, camZ, fl, 16);
+            // LIVING WORLD: LOCKDOWN red emissive shift — at alert level 3+ every
+            // facility light leans hard into alarm red (the level-3 visual tell).
+            if (facilityAlertOn && facilityAlert.redShift() > 0.0f) {
+                const float rs = facilityAlert.redShift();
+                for (auto& L : fl) {
+                    const float lum = (L.color[0] + L.color[1] + L.color[2]) / 3.0f;
+                    L.color[0] = L.color[0] * (1.0f - rs) + lum * 1.7f * rs;
+                    L.color[1] *= 1.0f - rs * 0.78f;
+                    L.color[2] *= 1.0f - rs * 0.82f;
+                }
+            }
             if (fl.size() > 64) fl.resize(64);
             device->setPointLights(fl.data(), (uint32_t)fl.size());
         }
@@ -10755,6 +10860,56 @@ int main(int argc, char** argv) {
             // LIVING WORLD: the facility civilians (idle/wander; scatter+cower on
             // gunfire via onViolence in the fire block; return after calm).
             if (facilityCrowd.built()) facilityCrowd.update(dt, scene);
+            // LIVING WORLD: the FACILITY ALERT LEVEL — feed observations, apply
+            // effects (reinforcements, lockdown doors). Lights/HUD read it below.
+            if (facilityAlertOn) {
+                // Observers: every live hostile is the facility's eyes and ears.
+                x3::game::Level1Game::EnemyMark marks[32];
+                const uint32_t nObs = game.liveEnemyMarks(marks, 32);
+                x3::phys::Vec3 obs[32];
+                for (uint32_t i = 0; i < nObs; ++i) obs[i] = marks[i].pos;
+                // Player seen: any live guard holding LOS this frame.
+                bool seen = false;
+                auto scanLos = [&](const x3::game::MonsterManager& mm) {
+                    for (uint32_t i = 0; i < mm.count() && !seen; ++i)
+                        if (mm.at(i).alive() && mm.at(i).hasLineOfSight()) seen = true;
+                };
+                scanLos(game.corridorEnemies());
+                scanLos(game.checkpointEnemies());
+                // Bodies: every downed enemy registers a corpse (deduped inside);
+                // a guard patrolling within corpseRadius of one DISCOVERS it.
+                auto scanCorpses = [&](const x3::game::MonsterManager& mm) {
+                    for (uint32_t i = 0; i < mm.count(); ++i)
+                        if (!mm.at(i).alive()) facilityAlert.registerCorpse(mm.at(i).pos());
+                };
+                scanCorpses(game.corridorEnemies());
+                scanCorpses(game.checkpointEnemies());
+                facilityAlert.update(dt, camPos, obs, nObs, seen);
+                // EFFECT: investigate — pop the stimulus position (in worlds with
+                // AmbientEcology patrols this routes them; Level 1's combat guards
+                // already hunt via their own AI, so the pop is the Lua/mission seam).
+                x3::phys::Vec3 invPos;
+                (void)facilityAlert.takeInvestigatePos(invPos);
+                // EFFECT: reinforcement spawns (entering SEARCH / KILL SQUAD).
+                if (const int want = facilityAlert.takeSpawnRequests(); want > 0) {
+                    const x3::game::Level1Layout& alay = game.layout();
+                    for (int k = 0; k < want; ++k) {
+                        x3::game::MonsterSystem::Tuning rt = x3::game::tuningFor(
+                            facilityAlert.level() >= 4 ? x3::game::EnemyType::Illuminated
+                                                       : x3::game::EnemyType::DominionTrooper);
+                        const float ox = ((k % 2) ? 1.6f : -1.6f) * (float)(1 + k / 2);
+                        game.checkpointEnemies().spawn(
+                            scene, *device, *physics, x3::game::riggedGlbRoot(),
+                            x3::phys::Vec3{alay.checkpointCenter.x + ox,
+                                           alay.checkpointCenter.y,
+                                           alay.checkpointCenter.z + 1.0f}, rt);
+                    }
+                    x3::logInfo("alert: " + std::string(x3::game::alertLevelName(facilityAlert.level()))
+                                + " — spawned " + std::to_string(want) + " reinforcement(s)");
+                }
+                // EFFECT: the level-3 zone-door LOCKDOWN (restores its own locks).
+                alertDoorLock.update(facilityAlert, game.doors());
+            }
             // ---- CANONLEVEL DOORS: tick the SM_Door_A slide animation. Doors are
             // MANUAL — the player opens/closes one by aiming at the slab (or its button)
             // and pressing E (the use block above calls tryUse()->toggle()). There is
@@ -10943,8 +11098,11 @@ int main(int argc, char** argv) {
                                 std::cos(camPitch) * std::sin(camYaw) };
             x3::game::ResolvedFire shot = arsenal.fire(eye, dir, weaponRng);
             const x3::phys::Vec3 muzzle = muzzleFromCamera(camX, camY, camZ, camYaw, camPitch);
-            // LIVING WORLD: gunfire is VIOLENCE — any civilians in earshot scatter.
+            // LIVING WORLD: gunfire is VIOLENCE — any civilians in earshot scatter,
+            // and any guard in earshot raises the facility alert (resolved against
+            // the live observers at the next alert update).
             if (facilityCrowd.built()) facilityCrowd.onViolence(eye);
+            if (facilityAlertOn) facilityAlert.reportGunshot(eye);
             // Recoil -> camera (transient upward kick; recovered in the camera block).
             weaponRecoilPitch += shot.recoilPitchDeg * (3.14159265f / 180.0f);
 
@@ -11762,6 +11920,12 @@ int main(int argc, char** argv) {
             // stats panel, and the dev console panel (drawn last so it sits on top).
             hud.drawFps(*device, frame, *console, dt);
             hud.drawStats(*device, frame, *console, dt);
+            // LIVING WORLD: the facility alert indicator (pips + level name,
+            // pulsing red frame in lockdown). Draws nothing at level 0.
+            alertHudClock += dt;
+            if (facilityAlertOn)
+                hud.drawAlert(*device, frame, facilityAlert.level(),
+                              facilityAlert.redShift(), alertHudClock);
             hud.drawConsole(*device, frame, *console, dt);
             // EDITOR (--editor): the HOST submits the editor panels (menu bar /
             // Outliner / Blockout / Status) between begin and end, then endEditorUI

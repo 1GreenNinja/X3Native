@@ -68,6 +68,13 @@ public:
     // "YOU DIED" overlay while dead: a dark vignette + centered red text, plus a
     // small "Respawning..." line. Drawn while the player is in the death state.
     void drawDeathOverlay(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const;
+    // ---- LIVING WORLD: facility alert indicator (pillar 3) -----------------
+    // Subtle top-right indicator: four pips (filled up to the alert level) + the
+    // level name, tinting amber -> red as it climbs; pulses + adds a faint red
+    // screen edge while in LOCKDOWN (redShift > 0). Draws NOTHING at level 0.
+    // `time` drives the lockdown pulse (pass an accumulating seconds clock).
+    void drawAlert(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                   int level, float redShift, float time) const;
 
     // Semi-transparent panel + scrollback + input line. Slides down from the top
     // edge when opening and back up when closing over ~0.18 s (smoothstep). The
