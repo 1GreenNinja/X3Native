@@ -1,0 +1,285 @@
+{
+  "version": 1,
+  "store": {
+    "primary": "\\\\p13700\\G\\X3AssetStore",
+    "cache": "D:\\Assets\\X3AssetStore"
+  },
+  "assets": [
+    {
+      "repo_path": "assets/converted_glb/Characters/Drone.glb",
+      "sha256": "9b3830ebfa8172485fb38ed8fee26ade67c60b43770088f756238f7f3ba1283c",
+      "size": 15302204,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Ceiling_A.glb",
+      "sha256": "97ec6ed484b0236ffbd7c1db4c0cc64cc7d0ddea92b289033eb477fb48eadacc",
+      "size": 20498916,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Console.glb",
+      "sha256": "e70439de2cf90c783a5af2e27f290539f6af0f47748d2adf8509f8b11307f5ec",
+      "size": 21631572,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_DoorFrame_A.glb",
+      "sha256": "e68967b7f9e5f7597dc78a229f9ce195787a56df5d7f26c68bf121e7a8dc3fb9",
+      "size": 3659368,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Door_A.glb",
+      "sha256": "c3908d7c41b5eaed58f334cec26d41dde1530dd40d7ac2127d90b612c7b1f654",
+      "size": 3391620,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Floor_A.glb",
+      "sha256": "6d44e315b8c16cea572da963a5a69de35eea9b5c2cdb11126b2f99426bd7a3ef",
+      "size": 20878376,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Light_A.glb",
+      "sha256": "e063e9fd5dbc09dc5fcd1cdb6b32b9f881f56daf849b93d321a2b84c882fd3cb",
+      "size": 20613736,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Pipes_A.glb",
+      "sha256": "3cb08cd97d50ceb85abf6e425e0f6f29398df254a11ce69cab2c4823ce3bc85e",
+      "size": 20742032,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Wall_A.glb",
+      "sha256": "2af36179401262f2948453f7e7cbc5c80f871cb92e820d07c18c0d318c241dc6",
+      "size": 23566020,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Barrel.glb",
+      "sha256": "2680e947d25b317a3b146936702b15c78a5473be2ebca55b3926bb7155ed22e5",
+      "size": 4427080,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Crate Long.glb",
+      "sha256": "3432c79b8151f1aac5268e8775dca01a1f0449c783299572de91ca3b80700d15",
+      "size": 5281464,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Crate Short.glb",
+      "sha256": "16805b87ff5f717beefdde326c8ee6bb36364aaa01822ddda11992208dce4edc",
+      "size": 5272764,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Fusebox 01.glb",
+      "sha256": "a93e553f855bee80d5d4c64596281aa34aac0806a2d135f282be22cdaefd2743",
+      "size": 21282320,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Pallet.glb",
+      "sha256": "1c229663d4d3f3abc181bdd349ebe387c328300a565cf086da3e9d6801faa635",
+      "size": 3953908,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/converted_glb/ShowRoom_Vol30/Example_01.glb",
+      "sha256": "baf4773eea6c0750125a5928ec61624750332879199c56c3c11de007942f6c9d",
+      "size": 84109696,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/AnnaBodySuit.glb",
+      "sha256": "1dc934ab0161c7848b3e0abfed558f793da1852e2fd9ac0b15e15c872f4f3de2",
+      "size": 16440740,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/AnnaCasual.glb",
+      "sha256": "e965b6bcdc5162ebac7d9334ceb893149d8b398fcfc278b7b442f14f43a1ea3c",
+      "size": 12124244,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/AnnaCasual_anim.glb",
+      "sha256": "b4d54a058c0b4fac09e63fa5671d2df0be9b570784bf767418697d1109d1b09c",
+      "size": 13215620,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/AnnaTactical.glb",
+      "sha256": "ab9dcc33704699d7fc6964c9f8f59e250d5278d9de8dee9919d5c59cc3091e46",
+      "size": 14473096,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/BartenderDanny.glb",
+      "sha256": "0201e519be9ebea94316e15d7f4cc497c297e13e192841649654eb1ad6137c00",
+      "size": 11112312,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/BossBreederQueen.glb",
+      "sha256": "28652df4ff752336d165c89889d71c106ba7202b9a0aed19351d288bf1c622b6",
+      "size": 41145412,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/BossTheSiren.glb",
+      "sha256": "a04486e87f5400a1cbfaeb54a563a239b7728c9243e7232c2e0c8a86537d4d2d",
+      "size": 22803612,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/DroneExportWMotion.glb",
+      "sha256": "5b293a03bd50390392be5448130c00476c98906c6aa849e94fdbcc2a4b82f14c",
+      "size": 21458424,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/DroneOscillating.glb",
+      "sha256": "f08d9e7eea4d61e331c27a083b67f7385a5e1ee493f70f96bf33cff3cdf7d3c5",
+      "size": 21343880,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/GreatWhiteSharkGameReady.glb",
+      "sha256": "a61fd79e16217937b55458cc28284c114142acbf72409703e2231ea24804369e",
+      "size": 5323600,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/Jake_22_actions.glb",
+      "sha256": "936124f3708d3009d43b86942ddb5bad8e15e1874d2ce02ef67155c6c082e7a6",
+      "size": 26458936,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/Oracle.glb",
+      "sha256": "366a8c3cd56a45f135d12dae134b47782d0aac89d97d1d334da8dd8a1a254e4a",
+      "size": 12424380,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/OverLordEnforcer99.glb",
+      "sha256": "c46f08a1d7fefdba63cbd04b93e73c281231d5df38ecf3fe58da63c0a358c1bb",
+      "size": 12087160,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/RexBouncer.glb",
+      "sha256": "9799311ca78d5d931950450ed38a28674d2af8cffda51e33143094db665f58b2",
+      "size": 9231300,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/SalvariPrincess.glb",
+      "sha256": "9e593ec6466f843822321a85b39a823106ab0c5e5c7ff1fa26a92154843b6c38",
+      "size": 21431548,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/SpaceShip.glb",
+      "sha256": "8285f34ec5864d74b97e330b6c77411f5e080034bf575a8f28e6a4ce59d8ac75",
+      "size": 7545756,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/WeaponBFG.glb",
+      "sha256": "6e092d29cba389dcb4067419f1b8e8e055cdfa8bd7d04e4601fbcdbc864141ce",
+      "size": 8795304,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/WeaponEnergyPistol.glb",
+      "sha256": "86a84cff5e6465a325c93661f5d2f15e93ba9027526f7d09b99f705627c5f7dc",
+      "size": 6005976,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/WeaponEnergyPistol2.glb",
+      "sha256": "3aecb4bda6b58e22b2ecb9cfd9157c1c3958ab35f1caef4fe6b5f552e3e16ff6",
+      "size": 8785076,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/WeaponRailgun.glb",
+      "sha256": "0f482056662d5409495748eb77b4bc81cad10c7fd20c1ff591ae5ad9290d21ee",
+      "size": 9234084,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/WeaponRocketLauncher.glb",
+      "sha256": "2825f2d07d0c120dd36eb59cdf93f414a71429872324375e515fcf4d6daec0f5",
+      "size": 10143352,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/WeaponShotGun.glb",
+      "sha256": "1553cb6af35c372a13261d932074e927ac165d89e7870acc976869f853b6ec22",
+      "size": 701472,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/WeaponShotgun2.glb",
+      "sha256": "4c3342bda383d22cd210ca0f83e286157a7684d24e3866df4e4ea5a32cfb3f03",
+      "size": 9117444,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/alien_crawler.glb",
+      "sha256": "2fb0298988eb32daa30daad163e94b44a22baabaef61dcc4eae06d34436690c3",
+      "size": 10573536,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/alien_crawler_anim.glb",
+      "sha256": "5b956edf59afadef18d0729803fb5a95d3f571bda07b87e3fe843b0967a0052f",
+      "size": 11092688,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/chief_martinez.glb",
+      "sha256": "b04828c7d977dacf3e809149db4afecaaad3e9a3124350bcf8853506cc32877e",
+      "size": 56139872,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/chief_martinez_anim.glb",
+      "sha256": "5b0baab5e06aa9c7720d4dee01d01950273e514653087b415b5979876357a717",
+      "size": 64271296,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/marcus_webb.glb",
+      "sha256": "a069cad5607840504ac4887eace8b6e08b811b9055f8d1cc9ba312b358501fd3",
+      "size": 43299432,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/marcus_webb_anim.glb",
+      "sha256": "d90074e7beab5d517d15e030d8b2c2c9c13954ee29569bec7eab671030ce77dc",
+      "size": 49092444,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/sea_hammerhead.glb",
+      "sha256": "2b6ef9b930e84c9476c65b618f143d08f65ebb2d64c98f64bd7a1f25f0c88910",
+      "size": 7740552,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/rigged_glb/sea_manta_ray.glb",
+      "sha256": "b95225123a2f007691aabeaaa70cf9e96f3cb60211e8cbd028944b3946612814",
+      "size": 7059860,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    }
+  ]
+}
