@@ -56,11 +56,32 @@ Tested end-to-end against a local ComfyUI (CPU mode) with the bundled
 `sample_metal_panel.png` (a generated sci-fi floor panel). The same client + a FLUX
 workflow + `COMFY_URL=<5090>` is the production path.
 
-## Gotcha (local ComfyUI on a 1080 Ti)
+## Running ComfyUI locally on a 1080 Ti (FIXED on the 13700K box)
 
-This box's ComfyUI ships PyTorch **cu129**, which has **no CUDA kernels for Pascal
-(GTX 1080 Ti, sm_61)** → GPU runs error `no kernel image is available for execution
-on the device`. Workarounds on a 1080 Ti: run ComfyUI with `--cpu` (slow but works,
-how the sample above was made), or install a Pascal-compatible torch. The **5090
-(Ada, sm_89)** has no such issue — this is only a concern for local 1080 Ti runs.
+Stock PyTorch **2.6+/cu12x** dropped CUDA kernels for **Pascal (GTX 1080 Ti,
+sm_61)** (min capability is now 7.0) → GPU runs error `no kernel image is available
+for execution on the device`. **The fix** — install the last Pascal-supporting
+PyTorch into the ComfyUI venv:
+
+```bash
+G:/ComfyUI/.venv/Scripts/python.exe -m pip install \
+  torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+  --index-url https://download.pytorch.org/whl/cu121
+```
+
+torch 2.5.1+cu121 ships `sm_61`. Verified on the 13700K box (which has **two GTX
+1080 Tis**): after the swap, ComfyUI GPU-generates a 768² SD1.5 image in **~18 s**.
+Start the server:
+
+```bash
+G:/ComfyUI/.venv/Scripts/python.exe G:/ComfyUI/resources/ComfyUI/main.py \
+  --base-directory G:/ComfyUI --port 8188 --listen 127.0.0.1
+# add --listen 0.0.0.0 to accept LAN connections; --cpu to force CPU
+```
+
+(Two GPUs → you can run a 2nd instance on `--port 8189` with `CUDA_VISIBLE_DEVICES=1`
+for parallel gen.) The **5090 (Ada, sm_89)** never had this problem. Note: the
+bundled `dreamshaper_8` is a general SD1.5 model — fine for concepts, but for
+**seamless tileable PBR textures** use a texture model/LoRA or the FLUX workflow on
+the 5090.
 ```
