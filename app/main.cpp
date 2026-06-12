@@ -1554,6 +1554,7 @@ int main(int argc, char** argv) {
     // when omitted: G:\X3Native\screenshot.png.
     bool        screenshot = false;
     std::string screenshotPath = "G:/X3Native/screenshot.png";
+    std::string modelArg;   // --model <path>: GLB to review in --world modeltest
     // UI-demo capture (--ui-demo [path.png] / --screenshot-menu): build EFLZ Level 1,
     // pose the gate-standard corridor camera, then draw the GENERAL game-UI MAIN MENU
     // (title + START / QUIT, the START button focused/hot) over the rendered scene and
@@ -1809,6 +1810,10 @@ int main(int argc, char** argv) {
             // Optional settle-frame count (second positional, if numeric).
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
                 screenshotSettle = (int)std::strtol(argv[++i], nullptr, 10);
+        }
+        else if (a == "--model") {
+            // GLB to load in --world modeltest (relpath under converted_glb/rigged_glb, or an absolute path).
+            if (i + 1 < argc && argv[i + 1][0] != '-') modelArg = argv[++i];
         }
         else if (a == "--shot-cam") {
             // Parse "x,y,z,yaw,pitch" into shotCam[]; enables the override.
@@ -8020,6 +8025,154 @@ int main(int argc, char** argv) {
         device->destroyTexture(creatureTex);
         sphys->shutdown(); device->shutdown();
         if (window) glfwDestroyWindow(window); glfwTerminate();
+        return 0;
+    }
+
+    // ---- Model review stage (--world modeltest [--model <path>]) ----------
+    // A generic, lit turntable for reviewing any forged GLB in-engine (ships,
+    // alien meshes, props): loads the model, auto-frames it from its runtime
+    // bbox, lights it neutrally (+ a small emissive lift so dark/metallic hulls
+    // still read despite the engine's no-IBL metallic path), and orbits +
+    // screenshots. The review harness for the StarForge forge pipeline.
+    if (worldMode == "modeltest") {
+        const std::string modelRel = modelArg.empty() ? std::string("Characters/Drone.glb") : modelArg;
+        x3::logInfo("--world modeltest: loading " + modelRel);
+
+        std::unique_ptr<x3::asset::IAssetSource> assets(x3::asset::createAssetSource());
+        const bool isAbs = (modelRel.size() > 1 && (modelRel[1] == ':' || modelRel[0] == '/'));
+        std::string loadPath = modelRel;
+        if (isAbs) {
+            const size_t sl = modelRel.find_last_of("/\\");
+            const std::string parent = (sl == std::string::npos) ? std::string(".") : modelRel.substr(0, sl);
+            loadPath = (sl == std::string::npos) ? modelRel : modelRel.substr(sl + 1);
+            assets->mountDir(parent, 0);
+        } else {
+            assets->mountDir(x3::game::convertedGlbRoot(), 0);
+            assets->mountDir(x3::game::riggedGlbRoot(), 1);
+        }
+        std::unique_ptr<x3::asset::IModelLoader> loader(x3::asset::createModelLoader(device.get(), assets.get()));
+        x3::asset::Model model = loader->load(loadPath);
+        if (!model.ok) {
+            x3::logError("--world modeltest: failed to load " + loadPath);
+            device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate(); return 1;
+        }
+        std::vector<x3::asset::ModelDrawable> drawables = x3::asset::makeDrawables(model);
+
+        // Runtime world AABB: match each drawable to its primitive (by meshId) and
+        // transform that primitive's bind positions by the drawable's node world matrix.
+        float mn[3] = { 1e18f, 1e18f, 1e18f }, mx[3] = { -1e18f, -1e18f, -1e18f };
+        for (const auto& d : drawables) {
+            const x3::asset::MeshPrimitive* prim = nullptr;
+            for (const auto& p : model.primitives) if (x3::asset::meshIdOf(p) == d.meshId) { prim = &p; break; }
+            if (!prim) continue;
+            const std::vector<float>& bp = prim->basePos;
+            const float* T = d.nodeTransform;
+            for (size_t i = 0; i + 2 < bp.size(); i += 3) {
+                const float x = bp[i], y = bp[i + 1], z = bp[i + 2];
+                const float wx = T[0]*x + T[4]*y + T[8]*z  + T[12];
+                const float wy = T[1]*x + T[5]*y + T[9]*z  + T[13];
+                const float wz = T[2]*x + T[6]*y + T[10]*z + T[14];
+                mn[0] = std::min(mn[0], wx); mx[0] = std::max(mx[0], wx);
+                mn[1] = std::min(mn[1], wy); mx[1] = std::max(mx[1], wy);
+                mn[2] = std::min(mn[2], wz); mx[2] = std::max(mx[2], wz);
+            }
+        }
+        if (mn[0] > mx[0]) { mn[0]=mn[1]=mn[2]=-1.0f; mx[0]=mx[1]=mx[2]=1.0f; }  // fallback
+        const float cen[3] = { (mn[0]+mx[0])*0.5f, (mn[1]+mx[1])*0.5f, (mn[2]+mx[2])*0.5f };
+        const float dx = mx[0]-mn[0], dy = mx[1]-mn[1], dz = mx[2]-mn[2];
+        const float radius = std::max(0.5f, 0.5f * std::sqrt(dx*dx + dy*dy + dz*dz));
+        x3::logInfo("--world modeltest: " + std::to_string(drawables.size()) +
+                    " drawable(s), bbox r=" + std::to_string(radius));
+
+        // Neutral studio stage floor at the model's base.
+        x3::prims::PrimMesh fl = x3::prims::makeBox(radius*3.0f, 0.5f, radius*3.0f, cen[0], mn[1]-0.5f, cen[2], 1.0f);
+        auto floorMesh = device->createMesh(fl.verts.data(), (uint32_t)fl.verts.size(),
+                                            fl.index.data(), (uint32_t)fl.index.size());
+        auto flPx = x3::prims::makeCheckerRGBA(128, 16, 120, 122, 128, 96, 98, 104);
+        auto floorTex = device->createTexture(flPx.data(), 128, 128, true);
+
+        // Neutral sky + close studio lights (scaled so 1/d^2 doesn't kill them at model size).
+        { x3::rhi::IRenderDevice::SkyParams sk{};
+          sk.enabled = true; sk.sunDir[0]=0.3f; sk.sunDir[1]=1.0f; sk.sunDir[2]=0.4f;
+          sk.sunIntensity = 1.2f; sk.haze = 0.35f; sk.exposure = 1.0f;
+          device->setSkyParams(sk); }
+        { const float D = std::max(radius, 1.0f);
+          const float I = 2.0f * D * D;     // compensate 1/d^2 so lights read at model scale
+          x3::rhi::PointLight pl[3];
+          pl[0].pos[0]=cen[0]+D*1.3f; pl[0].pos[1]=cen[1]+D*1.6f; pl[0].pos[2]=cen[2]+D*1.3f; pl[0].range=D*6.0f; pl[0].color[0]=1.00f*I; pl[0].color[1]=0.97f*I; pl[0].color[2]=0.90f*I;
+          pl[1].pos[0]=cen[0]-D*1.8f; pl[1].pos[1]=cen[1]+D*0.6f; pl[1].pos[2]=cen[2]+D*0.8f; pl[1].range=D*6.0f; pl[1].color[0]=0.55f*I; pl[1].color[1]=0.60f*I; pl[1].color[2]=0.75f*I;
+          pl[2].pos[0]=cen[0]+D*0.5f; pl[2].pos[1]=cen[1]+D*1.4f; pl[2].pos[2]=cen[2]-D*1.8f; pl[2].range=D*6.0f; pl[2].color[0]=0.70f*I; pl[2].color[1]=0.75f*I; pl[2].color[2]=0.90f*I;
+          device->setPointLights(pl, 3); }
+
+        // Small neutral emissive lift so dark/metallic hulls still read (no-IBL workaround).
+        const float reviewEmis[4] = { 0.06f, 0.06f, 0.07f, 1.0f };
+        const float white[4] = { 1, 1, 1, 1 };
+        const float idM[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        auto drawModel = [&](const x3::rhi::FrameContext& frame) {
+            device->drawMesh(frame, floorMesh, floorTex, white, idM);
+            for (const auto& d : drawables) {
+                float fin[16]; x3::asset::mulMat4(idM, d.nodeTransform, fin);
+                device->drawMeshPBR(frame, x3::rhi::MeshHandle{d.meshId},
+                                    x3::rhi::TextureHandle{d.baseColorTexId},
+                                    x3::rhi::TextureHandle{d.normalTexId},
+                                    x3::rhi::TextureHandle{d.mrTexId},
+                                    d.baseColorFactor, reviewEmis, fin);
+            }
+        };
+
+        auto computeCam = [&](float ang, float cam[5]) {
+            const float R = radius * 2.6f;
+            const float camX = cen[0] + R * std::cos(ang);
+            const float camZ = cen[2] + R * std::sin(ang);
+            const float camY = cen[1] + radius * 0.6f;
+            const float ddx = cen[0]-camX, ddy = cen[1]-camY, ddz = cen[2]-camZ;
+            const float len = std::sqrt(ddx*ddx+ddy*ddy+ddz*ddz);
+            cam[0]=camX; cam[1]=camY; cam[2]=camZ;
+            cam[3]=std::atan2(ddz, ddx);
+            cam[4]=std::asin(ddy / (len > 1e-3f ? len : 1e-3f));
+        };
+
+        if (headless) {
+            float cam[5]; computeCam(-0.7f, cam);
+            if (shotCamOverride) for (int k=0;k<5;++k) cam[k]=shotCam[k];
+            const std::string outPath = screenshot ? screenshotPath : std::string("G:/X3Native/captures/modeltest.png");
+            const int kFrames = 16;
+            for (int i=0;i<kFrames;++i) {
+                glfwPollEvents();
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+                if (i == kFrames-1) device->armCapture(outPath.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) drawModel(frame);
+                device->endFrame(frame);
+            }
+            const bool wrote = device->captureFrame(outPath.c_str());
+            if (wrote) x3::logInfo("--world modeltest: wrote " + outPath);
+            else       x3::logError("--world modeltest: capture FAILED");
+            device->destroyMesh(floorMesh); device->destroyTexture(floorTex);
+            loader->unload(model);
+            device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate();
+            return wrote ? 0 : 1;
+        }
+
+        x3::logInfo("--world modeltest: orbit showcase — Esc to quit");
+        double prevTime = glfwGetTime(); float ang = -0.7f;
+        int lastWd=(int)W, lastHd=(int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            double now = glfwGetTime(); float fdt=(float)(now-prevTime); prevTime=now;
+            if (fdt>0.1f) fdt=0.1f; ang += fdt*0.4f;
+            float cam[5]; computeCam(ang, cam);
+            int cw, chh; glfwGetFramebufferSize(window, &cw, &chh);
+            if (cw!=lastWd || chh!=lastHd) { lastWd=cw; lastHd=chh; if (cw>0&&chh>0) device->onResize((uint32_t)cw,(uint32_t)chh); }
+            device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) drawModel(frame);
+            device->endFrame(frame);
+        }
+        device->destroyMesh(floorMesh); device->destroyTexture(floorTex);
+        loader->unload(model);
+        device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate();
         return 0;
     }
 
