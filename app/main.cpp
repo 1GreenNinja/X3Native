@@ -1292,6 +1292,12 @@ int main(int argc, char** argv) {
     // <dir>/perfshop_{bay,parts,dyno}.png. Implies --world drive.
     bool        perfshopShot = false;
     std::string perfshopShotDir = "docs/screenshots/perfshop";
+    // --screenshot-ecology [path]: LIVING-WORLD proof shot. Builds the valley
+    // open biome + the ambient ecology, stages the predator-strike moment at the
+    // grazer herd, settles, and captures from a herd vantage. Implies
+    // --world valley + headless.
+    bool        ecologyShot = false;
+    std::string ecologyShotPath = "docs/screenshots/livingworld/ecology_herd_predator.png";
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -1754,6 +1760,10 @@ int main(int argc, char** argv) {
         else if (a == "--test-vehicle") testVehicle = true;
         else if (a == "--test-vehparts") testVehParts = true;
         else if (a == "--test-ecology") testEcology = true;
+        else if (a == "--screenshot-ecology") {
+            ecologyShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') ecologyShotPath = argv[++i];
+        }
         else if (a == "--screenshot-perfshop") {
             perfshopShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') perfshopShotDir = argv[++i];
@@ -2545,7 +2555,8 @@ int main(int argc, char** argv) {
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
     if (perfshopShot) worldMode = "drive";   // the shop lives in the drive world
-    const bool headless = smoketest || screenshot || skyShot || ddgiShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot || perfshopShot;
+    if (ecologyShot)  worldMode = "valley";  // the ambient ecology rides the valley biome
+    const bool headless = smoketest || screenshot || skyShot || ddgiShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot || perfshopShot || ecologyShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -7833,6 +7844,29 @@ int main(int argc, char** argv) {
         x3::game::ValleyWorld valley;
         valley.build(vscene, *device, *vphys, x3::game::riggedGlbRoot());
 
+        // LIVING WORLD: the ambient ecology rides the valley's open biome —
+        // grazer herds + crystal stalkers + Dominion patrol shifts, anchored
+        // around the valley spawn, riding the streamed-terrain height field.
+        x3::game::AmbientEcology vecology;
+        x3::game::TimeOfDay vtod;   // drives the patrol day/night shift schedule
+        {
+            x3::game::EcoConfig ecoCfg =
+                x3::game::loadEcologyConfig(x3::game::ecologyJsonPath());
+            const x3::phys::Vec3 anchor = valley.spawn();
+            for (auto& sp : ecoCfg.species) {
+                sp.regionX += anchor.x; sp.regionZ += anchor.z;
+                for (size_t w = 0; w + 1 < sp.waypoints.size(); w += 2) {
+                    sp.waypoints[w + 0] += anchor.x;
+                    sp.waypoints[w + 1] += anchor.z;
+                }
+            }
+            vecology.setGroundFn([](float x, float z) {
+                return x3::game::terrainHeightAtWorld(x, z);
+            });
+            vecology.build(ecoCfg, vscene, *device);
+            vtod.setDayFraction(0.35f);   // start mid-morning: day patrol on duty
+        }
+
         // Crystal point lights, and the lake water plane.
         const auto& vlights = valley.pointLights();
         device->setPointLights(vlights.data(), (uint32_t)vlights.size());
@@ -7853,11 +7887,35 @@ int main(int argc, char** argv) {
         // ===== Headless screenshot path: pose the showcase camera, settle, grab. =
         if (headless) {
             float cam[5]; valley.showcaseCamera(cam);
+            // The ECOLOGY proof shot frames the grazer herd from a low vantage
+            // and stages the predator strike mid-settle so the capture catches
+            // the kill + the herd scattering (the living-world demo moment).
+            float herdX = 0.0f, herdZ = 0.0f;
+            uint32_t stagedPredator = 0xFFFFFFFFu;
+            if (ecologyShot) {
+                const x3::phys::Vec3 anchor = valley.spawn();
+                herdX = anchor.x + 30.0f; herdZ = anchor.z;   // default-cast herd region
+                const float hy = x3::game::terrainHeightAtWorld(herdX, herdZ);
+                cam[0] = herdX - 9.0f; cam[1] = hy + 4.5f; cam[2] = herdZ + 9.0f;
+                cam[3] = std::atan2(herdZ - cam[2], herdX - cam[0]);   // yaw toward the herd
+                cam[4] = -0.30f;
+                // Park every predator far outside the soft radius (inactive) so
+                // the herd SETTLES during the stream-in; one is staged back in
+                // late to produce the strike right at the capture frame.
+                for (uint32_t k = 0; k < vecology.agentCount(); ++k)
+                    if (vecology.config().species[vecology.agent(k).species].archetype
+                            == x3::game::EcoArchetype::Predator) {
+                        vecology.debugPlaceAgent(k, x3::phys::Vec3{herdX + 800.0f, 0.0f,
+                                                                   herdZ + 800.0f});
+                        if (stagedPredator == 0xFFFFFFFFu) stagedPredator = k;
+                    }
+            }
             if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
-            const int kSettle = 48;   // let the ring stream in + characters skin
+            const int kSettle = ecologyShot ? 180 : 48;   // ring stream-in (+ the staged hunt)
             const float dt = 1.0f / 60.0f;
-            const std::string outPath = screenshot ? screenshotPath
-                                                   : std::string("agent_valley.png");
+            const std::string outPath = ecologyShot ? ecologyShotPath
+                                      : screenshot  ? screenshotPath
+                                                    : std::string("agent_valley.png");
             vstream.setUploadBudget(64);   // fill the visible ring fast for the still
             for (int i = 0; i < kSettle; ++i) {
                 glfwPollEvents();
@@ -7865,6 +7923,14 @@ int main(int argc, char** argv) {
                 const float focusX = (i == 1) ? 32.0f : cam[0];
                 vstream.update(vscene, *device, *vphys, focusX, cam[2]);
                 valley.update(dt, vscene, *vphys, vspawn, nullptr);
+                const x3::phys::Vec3 camPos{cam[0], cam[1], cam[2]};
+                vecology.update(dt, vscene, camPos, vtod.phase());
+                if (ecologyShot && i == 135 && stagedPredator != 0xFFFFFFFFu) {
+                    float cx = herdX, cz = herdZ;
+                    vecology.herdCentroid(0, cx, cz);
+                    vecology.debugPlaceAgent(stagedPredator,
+                                             x3::phys::Vec3{cx + 6.0f, 0.0f, cz});
+                }
                 vphys->step(dt);
                 vscene.update(*vphys);
                 applyWater((float)i * dt);
@@ -7961,6 +8027,8 @@ int main(int argc, char** argv) {
             vstream.update(vscene, *device, *vphys, camX, camZ);
             const x3::phys::Vec3 vp{ camX, camY, camZ };
             valley.update(dt, vscene, *vphys, vp, &vplayer);
+            vtod.advance(dt);
+            vecology.update(dt, vscene, vp, vtod.phase());
             vphys->step(dt);
             vscene.update(*vphys);
             vWaterTime += dt; applyWater(vWaterTime);
