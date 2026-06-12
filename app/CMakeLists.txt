@@ -119,6 +119,8 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/debris.vert
     ${CMAKE_SOURCE_DIR}/shaders/debris.frag
     ${CMAKE_SOURCE_DIR}/shaders/skin.comp
+    ${CMAKE_SOURCE_DIR}/shaders/cull.comp
+    ${CMAKE_SOURCE_DIR}/shaders/hzb_build.comp
     ${CMAKE_SOURCE_DIR}/shaders/rtao_apply.frag
     ${CMAKE_SOURCE_DIR}/shaders/planet.vert
     ${CMAKE_SOURCE_DIR}/shaders/planet_moon.frag

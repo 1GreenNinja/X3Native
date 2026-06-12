@@ -34,6 +34,14 @@ layout(std430, set = 0, binding = 0) readonly buffer Objects {
     ObjectData objects[];
 } objBuf;
 
+// D15 GPU cull: same single indirection as mesh.vert (identity when cull off).
+// REQUIRED here too — when cull.comp compacts survivors, gl_InstanceIndex no
+// longer addresses object rows directly, and this pass replays the SAME indirect
+// commands the color pass consumes.
+layout(std430, set = 0, binding = 2) readonly buffer VisibleIdx {
+    uint idx[];
+} visBuf;
+
 // Camera UBO carries both the camera viewProj and the sun's lightViewProj; the
 // shadow pass only reads lightViewProj. Same struct as mesh.vert/mesh.frag so a
 // single per-frame UBO feeds every stage.
@@ -47,7 +55,7 @@ layout(location = 1) in vec3 inNormal;   // unused; kept so the VBO layout match
 layout(location = 2) in vec2 inUV;       // unused
 
 void main() {
-    ObjectData o = objBuf.objects[gl_InstanceIndex];
+    ObjectData o = objBuf.objects[visBuf.idx[gl_InstanceIndex]];
     vec4 worldPos = o.model * vec4(inPos, 1.0);
     gl_Position = cam.lightViewProj * worldPos;
 }

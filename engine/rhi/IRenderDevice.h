@@ -101,6 +101,20 @@ struct RenderStats {
     uint32_t objectsDrawn     = 0;   // drawMesh() calls that actually drew (== drawCalls)
     float    gpuFrameMs       = 0.0f; // GPU time for the main pass (timestamp queries)
     uint64_t frameCount       = 0;   // total frames presented since init
+
+    // ---- D15 GPU cull (r_cullpath >= 1). Read back with frames-in-flight
+    // latency (the counters describe the frame submitted kFramesInFlight frames
+    // ago — same guarantee as gpuFrameMs). All zero when the GPU cull is off. ----
+    int      gpuCullPath      = 0;   // ACTIVE path this frame (0 CPU, 1 Tier0, 2 Tier1 async, 3 Tier2 mesh)
+    uint32_t gpuCullTested    = 0;   // instances the cull shader evaluated
+    uint32_t gpuCullDrawn     = 0;   // survivors compacted into visibleInstance[]
+    uint32_t gpuCullFrustum   = 0;   // culled by the frustum test
+    uint32_t gpuCullHzb       = 0;   // culled by the HZB occlusion test (r_hzb 1)
+    // Equivalence harness (setGpuCullEquivalenceCheck): per-readback CPU-evaluated
+    // expected survivor count for the SAME frame + cumulative comparison counters.
+    uint32_t gpuCullExpected  = 0;   // CPU-side expected `drawn` for the read-back frame
+    uint32_t gpuCullEquivFrames     = 0; // frames compared since enable
+    uint32_t gpuCullEquivMismatches = 0; // frames where drawn != expected (MUST stay 0)
 };
 
 class IRenderDevice {
@@ -152,6 +166,21 @@ public:
     // frustum test that mirrors the GPU cull.comp (D15 equivalence baseline).
     // Non-pure (no-op default) so headless / other devices are unaffected.
     virtual void setFrustumCullEnabled(bool enabled) {}
+
+    // ---- D15 GPU-driven culling (r_cullpath) -------------------------------
+    // path: -1 = auto (best supported GPU tier), 0 = CPU cull exactly as today,
+    // 1 = Tier 0 (compute cull on the graphics queue), 2 = Tier 1 (async compute
+    // queue), 3 = Tier 2 (mesh-shader meshlets, opt-in). Unsupported requests
+    // clamp DOWN to the best available tier; 0 is always honored. Non-pure
+    // (no-op default) so headless / other devices are unaffected.
+    virtual void setCullPath(int path) {}
+    // HZB occlusion phase on top of the GPU frustum cull (r_hzb; needs path >= 1).
+    virtual void setHzbEnabled(bool enabled) {}
+    // Equivalence harness (--test-gpucull + soak): when on, the CPU evaluates the
+    // IDENTICAL cull predicate per instance each frame and the device compares the
+    // GPU statDrawn readback against it (stats().gpuCullEquiv*). Costs a CPU cull
+    // walk per frame — test/diagnostic only.
+    virtual void setGpuCullEquivalenceCheck(bool enabled) {}
 
     // Per-frame
     virtual FrameContext beginFrame() = 0;

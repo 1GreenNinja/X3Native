@@ -29,6 +29,12 @@ layout(std430, set = 1, binding = 0) readonly buffer Objects {
     ObjectData objects[];
 } objBuf;
 
+// D15 GPU cull: same single indirection as mesh.vert (identity when cull off) —
+// the probe bake replays the same compacted indirect commands.
+layout(std430, set = 1, binding = 2) readonly buffer VisibleIdx {
+    uint idx[];
+} visBuf;
+
 // Per-face view-projection (probe point + 90deg FOV looking down each cube axis).
 layout(push_constant) uniform ProbePush {
     mat4 viewProj;
@@ -52,7 +58,7 @@ layout(location = 10) flat out uint vEmissiveTexIndex;
 layout(location = 11) flat out uint vDetailPacked;     // HDRP micro-detail (_pad4): (uvScale*64<<20)|idx
 
 void main() {
-    ObjectData o = objBuf.objects[gl_InstanceIndex];
+    ObjectData o = objBuf.objects[visBuf.idx[gl_InstanceIndex]];
     vec4 worldPos = o.model * vec4(inPos, 1.0);
     gl_Position = pc.viewProj * worldPos;
     vNormal = mat3(o.model) * inNormal;

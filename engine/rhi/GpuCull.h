@@ -77,20 +77,30 @@ struct CullFrameInputs {
 
 class GpuCullSystem {
 public:
-    // SPIR-V blobs are loaded by the device's existing shader path. hzbMips==0
-    // disables the occlusion phase (frustum-only — the Tier 0 bring-up config).
+    // SPIR-V blobs are loaded by the device's existing shader path. When
+    // `buildHzb` is true BOTH cull pipeline variants (frustum-only + frustum+HZB
+    // spec-const) and the pyramid-reduce pipeline are created, so the HZB phase
+    // can be toggled per frame (r_hzb) without pipeline recreation. reversedZ
+    // selects the reduce direction (X3 uses STANDARD Z: GLM_FORCE_DEPTH_ZERO_TO_ONE
+    // + glm::perspective -> depth grows with distance -> MAX-reduce).
     bool init(VkDevice dev, const CullDeviceCaps& caps,
               const std::vector<uint32_t>& cullSpv,
               const std::vector<uint32_t>& hzbSpv,
-              bool useHzb, bool reversedZ);
+              bool buildHzb, bool reversedZ);
     void shutdown(VkDevice dev);
+
+    // Descriptor-set layouts the DEVICE allocates its per-frame sets from
+    // (bindings exactly as cull.comp / hzb_build.comp declare).
+    VkDescriptorSetLayout cullSetLayout() const { return m_cullDsl; }
+    VkDescriptorSetLayout hzbSetLayout()  const { return m_hzbDsl; }
 
     // TIER 0 path (also the Tier 1 record body): appends one compute pass to
     // the graph. Buffer hazards (compute write -> DRAW_INDIRECT/vertex read,
     // and the previous frame's read -> this frame's CPU write) are emitted as
     // manual sync2 BUFFER barriers inside the record callback — the graph
-    // tracks images only, per its documented scope.
-    void addCullPass(RenderGraph& graph, const CullFrameInputs& frame);
+    // tracks images only, per its documented scope. `useHzb` selects the
+    // frustum-only or frustum+HZB pipeline variant for THIS frame (r_hzb).
+    void addCullPass(RenderGraph& graph, const CullFrameInputs& frame, bool useHzb);
 
     // HZB pyramid passes (one dispatch per mip). The caller owns the pyramid
     // image + per-mip descriptor sets (binding0 = prev mip / depth sampler,
@@ -113,9 +123,9 @@ public:
 
     // Record-callback plumbing (public: RenderGraph uses raw fn ptr + ctx, and
     // the trampolines are file-local free functions in the .cpp).
-    struct PassCtx { GpuCullSystem* self; CullFrameInputs frame; };
+    struct PassCtx { GpuCullSystem* self; CullFrameInputs frame; bool useHzb; };
     struct HzbCtx  { GpuCullSystem* self; HzbChain chain; };
-    void recordCullBody(VkCommandBuffer cmd, const CullFrameInputs& f);
+    void recordCullBody(VkCommandBuffer cmd, const CullFrameInputs& f, bool useHzb);
 
     VkPipeline       m_hzbPipe   = VK_NULL_HANDLE;   // HzbCtx record reads these
     VkPipelineLayout m_hzbLayout = VK_NULL_HANDLE;
@@ -123,12 +133,14 @@ public:
 private:
     CullDeviceCaps   m_caps{};
     VkPipelineLayout m_cullLayout = VK_NULL_HANDLE;
-    VkPipeline       m_cullPipe   = VK_NULL_HANDLE;
+    VkPipeline       m_cullPipe      = VK_NULL_HANDLE;  // frustum-only (USE_HZB=0)
+    VkPipeline       m_cullPipeHzb   = VK_NULL_HANDLE;  // frustum+HZB  (USE_HZB=1)
+    VkDescriptorSetLayout m_cullDsl  = VK_NULL_HANDLE;  // owned; device allocs sets
+    VkDescriptorSetLayout m_hzbDsl   = VK_NULL_HANDLE;
     VkSemaphore      m_asyncDone  = VK_NULL_HANDLE;   // Tier 1 (timeline)
     // stable record-callback ctx storage (RenderGraph uses raw fn ptr + ctx)
     PassCtx m_ctx{};
     HzbCtx  m_hzbCtx{};
-    bool m_useHzb = false;
 };
 
 // ---------------------------------------------------------------------------

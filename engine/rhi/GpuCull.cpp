@@ -97,9 +97,8 @@ static VkPipeline makeComputePipe(VkDevice dev, const std::vector<uint32_t>& spv
 bool GpuCullSystem::init(VkDevice dev, const CullDeviceCaps& caps,
                          const std::vector<uint32_t>& cullSpv,
                          const std::vector<uint32_t>& hzbSpv,
-                         bool useHzb, bool reversedZ) {
+                         bool buildHzb, bool reversedZ) {
     m_caps = caps;
-    m_useHzb = useHzb;
 
     // Descriptor set layout: bindings 0..5 exactly as cull.comp declares.
     VkDescriptorSetLayoutBinding b[6]{};
@@ -109,32 +108,34 @@ bool GpuCullSystem::init(VkDevice dev, const CullDeviceCaps& caps,
     b[5] = { 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
     VkDescriptorSetLayoutCreateInfo dlci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     dlci.bindingCount = 6; dlci.pBindings = b;
-    VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
-    if (vkCreateDescriptorSetLayout(dev, &dlci, nullptr, &dsl) != VK_SUCCESS) return false;
+    if (vkCreateDescriptorSetLayout(dev, &dlci, nullptr, &m_cullDsl) != VK_SUCCESS) return false;
 
     VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-    plci.setLayoutCount = 1; plci.pSetLayouts = &dsl;
+    plci.setLayoutCount = 1; plci.pSetLayouts = &m_cullDsl;
     if (vkCreatePipelineLayout(dev, &plci, nullptr, &m_cullLayout) != VK_SUCCESS) return false;
 
-    m_cullPipe = makeComputePipe(dev, cullSpv, m_cullLayout, useHzb ? 1u : 0u);
+    // BOTH variants up front so r_hzb toggles per frame with no recreation.
+    m_cullPipe = makeComputePipe(dev, cullSpv, m_cullLayout, 0u);
     if (!m_cullPipe) { logError("[cull] cull pipeline creation failed"); return false; }
 
-    if (useHzb) {
+    if (buildHzb) {
+        m_cullPipeHzb = makeComputePipe(dev, cullSpv, m_cullLayout, 1u);
+        if (!m_cullPipeHzb) { logError("[cull] cull+hzb pipeline creation failed"); return false; }
         // HZB layout: sampler src + storage dst + push(dstSize). REDUCE_MAX
         // spec-const: standard-Z keeps the FARTHEST (max) depth; reversed-Z
         // flips to min. Must agree with cull.comp's compare (see hzbVisible).
+        // X3 VERIFIED standard-Z (GLM_FORCE_DEPTH_ZERO_TO_ONE, normal glm::perspective).
         VkDescriptorSetLayoutBinding hb[2]{};
         hb[0] = { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
         hb[1] = { 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr };
         VkDescriptorSetLayoutCreateInfo hlci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
         hlci.bindingCount = 2; hlci.pBindings = hb;
-        VkDescriptorSetLayout hdsl = VK_NULL_HANDLE;
-        vkCreateDescriptorSetLayout(dev, &hlci, nullptr, &hdsl);
+        if (vkCreateDescriptorSetLayout(dev, &hlci, nullptr, &m_hzbDsl) != VK_SUCCESS) return false;
         VkPushConstantRange pcr{ VK_SHADER_STAGE_COMPUTE_BIT, 0, 8 };
         VkPipelineLayoutCreateInfo hplci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-        hplci.setLayoutCount = 1; hplci.pSetLayouts = &hdsl;
+        hplci.setLayoutCount = 1; hplci.pSetLayouts = &m_hzbDsl;
         hplci.pushConstantRangeCount = 1; hplci.pPushConstantRanges = &pcr;
-        vkCreatePipelineLayout(dev, &hplci, nullptr, &m_hzbLayout);
+        if (vkCreatePipelineLayout(dev, &hplci, nullptr, &m_hzbLayout) != VK_SUCCESS) return false;
         m_hzbPipe = makeComputePipe(dev, hzbSpv, m_hzbLayout, reversedZ ? 0u : 1u);
         if (!m_hzbPipe) { logError("[cull] hzb pipeline creation failed"); return false; }
     }
@@ -142,11 +143,18 @@ bool GpuCullSystem::init(VkDevice dev, const CullDeviceCaps& caps,
 }
 
 void GpuCullSystem::shutdown(VkDevice dev) {
-    if (m_cullPipe)   vkDestroyPipeline(dev, m_cullPipe, nullptr);
-    if (m_cullLayout) vkDestroyPipelineLayout(dev, m_cullLayout, nullptr);
-    if (m_hzbPipe)    vkDestroyPipeline(dev, m_hzbPipe, nullptr);
-    if (m_hzbLayout)  vkDestroyPipelineLayout(dev, m_hzbLayout, nullptr);
-    if (m_asyncDone)  vkDestroySemaphore(dev, m_asyncDone, nullptr);
+    if (m_cullPipe)    vkDestroyPipeline(dev, m_cullPipe, nullptr);
+    if (m_cullPipeHzb) vkDestroyPipeline(dev, m_cullPipeHzb, nullptr);
+    if (m_cullLayout)  vkDestroyPipelineLayout(dev, m_cullLayout, nullptr);
+    if (m_cullDsl)     vkDestroyDescriptorSetLayout(dev, m_cullDsl, nullptr);
+    if (m_hzbPipe)     vkDestroyPipeline(dev, m_hzbPipe, nullptr);
+    if (m_hzbLayout)   vkDestroyPipelineLayout(dev, m_hzbLayout, nullptr);
+    if (m_hzbDsl)      vkDestroyDescriptorSetLayout(dev, m_hzbDsl, nullptr);
+    if (m_asyncDone)   vkDestroySemaphore(dev, m_asyncDone, nullptr);
+    m_cullPipe = m_cullPipeHzb = VK_NULL_HANDLE;
+    m_cullLayout = VK_NULL_HANDLE; m_cullDsl = VK_NULL_HANDLE;
+    m_hzbPipe = VK_NULL_HANDLE; m_hzbLayout = VK_NULL_HANDLE; m_hzbDsl = VK_NULL_HANDLE;
+    m_asyncDone = VK_NULL_HANDLE;
 }
 
 // ===========================================================================
@@ -157,11 +165,12 @@ void GpuCullSystem::shutdown(VkDevice dev) {
 // ===========================================================================
 static void recordCull(void* ctxRaw, VkCommandBuffer cmd) {
     auto* ctx = (GpuCullSystem::PassCtx*)ctxRaw;
-    ctx->self->recordCullBody(cmd, ctx->frame);
+    ctx->self->recordCullBody(cmd, ctx->frame, ctx->useHzb);
 }
 
-void GpuCullSystem::recordCullBody(VkCommandBuffer cmd, const CullFrameInputs& f) {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_cullPipe);
+void GpuCullSystem::recordCullBody(VkCommandBuffer cmd, const CullFrameInputs& f, bool useHzb) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                      (useHzb && m_cullPipeHzb) ? m_cullPipeHzb : m_cullPipe);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_cullLayout,
                             0, 1, &f.cullSet, 0, nullptr);
     vkCmdDispatch(cmd, (f.instanceCount + 63u) / 64u, 1, 1);
@@ -181,8 +190,8 @@ void GpuCullSystem::recordCullBody(VkCommandBuffer cmd, const CullFrameInputs& f
     vkCmdPipelineBarrier2(cmd, &dep);
 }
 
-void GpuCullSystem::addCullPass(RenderGraph& graph, const CullFrameInputs& frame) {
-    m_ctx = { this, frame };                  // stable storage for the raw-ptr ctx
+void GpuCullSystem::addCullPass(RenderGraph& graph, const CullFrameInputs& frame, bool useHzb) {
+    m_ctx = { this, frame, useHzb };          // stable storage for the raw-ptr ctx
     RenderPassDesc pass{};
     pass.name = "gpu-cull";
     pass.queue = RgQueue::Graphics;           // Tier 0: serialized, universal
@@ -248,7 +257,7 @@ void GpuCullSystem::addHzbPasses(RenderGraph& graph, const HzbChain& chain) {
 // ===========================================================================
 VkSemaphore GpuCullSystem::recordAsyncCull(VkCommandBuffer computeCmd,
                                            const CullFrameInputs& frame) {
-    recordCullBody(computeCmd, frame);        // identical dispatch + barriers
+    recordCullBody(computeCmd, frame, false); // identical dispatch + barriers
     return m_asyncDone;                       // device init creates the timeline
 }
 

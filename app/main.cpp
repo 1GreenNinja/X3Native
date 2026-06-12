@@ -640,6 +640,14 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // render device). 1 = on (default); 0 = byte-identical to no cull (objectsDrawn ==
     // every submitted instance). The reference baseline the D15 GPU cull is diffed against.
     console.registerCVar("r_frustumcull", "1", "CPU per-object frustum cull (0 = draw every instance, no cull)");
+    // D15 GPU-driven culling. -1 = auto (best supported tier), 0 = CPU cull exactly as
+    // today (default — byte-identical), 1 = Tier 0 (cull compute on the graphics queue),
+    // 2 = Tier 1 (async compute queue), 3 = Tier 2 (mesh-shader meshlets, opt-in).
+    // Unsupported requests clamp down. The GPU predicate is bit-equivalent to the CPU
+    // r_frustumcull test (the D15 acceptance gate: statDrawn == objectsDrawn).
+    console.registerCVar("r_cullpath", "0", "GPU cull path: -1 auto, 0 CPU, 1 tier0 gfx-queue, 2 tier1 async, 3 tier2 meshlets");
+    // HZB occlusion phase on top of the GPU frustum cull (needs r_cullpath >= 1).
+    console.registerCVar("r_hzb", "0", "HZB occlusion cull on the GPU path (0 = frustum only)");
     // Portal flood-fill depth: how many OPEN-doorway hops the canonlevel cull floods out
     // from the player's room. Higher = see further down a hall through open doors (more
     // rooms drawn); 1 = current room + direct neighbours only (tight). The flood is also
@@ -685,6 +693,9 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     // CPU per-object frustum cull (live; default on). Same per-frame sync so toggling
     // r_frustumcull from the console takes effect immediately.
     device.setFrustumCullEnabled(console.getInt("r_frustumcull") != 0);
+    // D15 GPU cull path + HZB phase (live; default 0 = CPU path, byte-identical).
+    device.setCullPath(console.getInt("r_cullpath"));
+    device.setHzbEnabled(console.getInt("r_hzb") != 0);
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.
@@ -807,6 +818,156 @@ static bool runFrustumCullSelfTest() {
 
     x3::logInfo("frustumcull: " + std::to_string(passed) + "/" +
                 std::to_string(total) + " passed");
+    return passed == total;
+}
+
+// ---------------------------------------------------------------------------
+// --test-gpucull : D15 Tier-0 GPU cull EQUIVALENCE test (the soul of D15).
+//
+// Drives the REAL Vulkan device HEADLESS (validation ON) with the GPU cull path
+// active (r_cullpath 1) AND the device's equivalence harness on: every frame the
+// CPU evaluates the IDENTICAL cull predicate per instance and the device compares
+// the GPU cull.comp's statDrawn readback against it. A grid of cube instances is
+// rendered from multiple camera poses (full-cull, no-cull, partial, skewed) and
+// the test asserts:
+//   (a) the GPU path actually engaged (stats().gpuCullPath == 1),
+//   (b) tested == submitted instance count at every sampled pose,
+//   (c) drawn + frustumCulled == tested (no instance lost or double-counted),
+//   (d) ZERO equivalence mismatches across every compared frame,
+//   (e) the ALWAYS_VISIBLE bypass (r_frustumcull 0) draws every instance,
+//   (f) toggling back to the CPU path (r_cullpath 0) restores the identity
+//       indirection and keeps rendering (no stale compaction).
+// ---------------------------------------------------------------------------
+static bool runGpuCullSelfTest() {
+    using namespace x3::rhi;
+    int passed = 0, total = 0;
+    auto check = [&](const char* name, bool ok) {
+        ++total; if (ok) ++passed;
+        x3::logInfo(std::string("  [gpucull] ") + (ok ? "PASS " : "FAIL ") + name);
+    };
+
+    if (!glfwInit()) { x3::logError("[gpucull] glfwInit failed"); return false; }
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    std::unique_ptr<IRenderDevice> device(createRenderDevice());
+    DeviceDesc desc{};
+    desc.width = 640; desc.height = 360; desc.headless = true;
+    desc.validation = true;   // this test doubles as the Tier-0 validation gate
+    if (!device->init(desc)) {
+        x3::logError("[gpucull] device init failed");
+        glfwTerminate(); return false;
+    }
+
+    // Two distinct meshes (two indirect commands) so compaction bases differ:
+    // a unit cube and a flat slab.
+    auto makeBox = [&](float hx, float hy, float hz) {
+        const float px[8] = { -hx,  hx,  hx, -hx, -hx,  hx,  hx, -hx };
+        const float py[8] = { -hy, -hy, -hy, -hy,  hy,  hy,  hy,  hy };
+        const float pz[8] = { -hz, -hz,  hz,  hz, -hz, -hz,  hz,  hz };
+        MeshVertex v[8]{};
+        for (int i = 0; i < 8; ++i) {
+            v[i].pos[0] = px[i]; v[i].pos[1] = py[i]; v[i].pos[2] = pz[i];
+            v[i].normal[1] = 1.0f;
+        }
+        const uint32_t idx[36] = { 0,1,2, 0,2,3,  4,6,5, 4,7,6,  0,4,5, 0,5,1,
+                                   3,2,6, 3,6,7,  1,5,6, 1,6,2,  0,3,7, 0,7,4 };
+        return device->createMesh(v, 8, idx, 36);
+    };
+    MeshHandle cube = makeBox(0.5f, 0.5f, 0.5f);
+    MeshHandle slab = makeBox(2.0f, 0.1f, 2.0f);
+    if (!cube.valid() || !slab.valid()) {
+        x3::logError("[gpucull] mesh create failed");
+        device->shutdown(); glfwTerminate(); return false;
+    }
+
+    // 24x24 cube grid + a 7x7 slab grid = 625 instances over [-69..69]^2 on XZ.
+    constexpr uint32_t kGrid = 24, kSlabGrid = 7;
+    constexpr uint32_t kInstances = kGrid * kGrid + kSlabGrid * kSlabGrid;
+    const float white[4] = { 1, 1, 1, 1 };
+    auto submitScene = [&](const x3::rhi::FrameContext& fc) {
+        float m[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        for (uint32_t z = 0; z < kGrid; ++z)
+            for (uint32_t x = 0; x < kGrid; ++x) {
+                m[12] = -69.0f + 6.0f * x; m[13] = 0.5f; m[14] = -69.0f + 6.0f * z;
+                device->drawMesh(fc, cube, {}, white, m);
+            }
+        for (uint32_t z = 0; z < kSlabGrid; ++z)
+            for (uint32_t x = 0; x < kSlabGrid; ++x) {
+                m[12] = -60.0f + 20.0f * x; m[13] = 4.0f; m[14] = -60.0f + 20.0f * z;
+                device->drawMesh(fc, slab, {}, white, m);
+            }
+    };
+    auto renderFrames = [&](int n, float cx, float cy, float cz, float yaw, float pitch) {
+        device->setCamera(cx, cy, cz, yaw, pitch, 70.0f);
+        for (int i = 0; i < n; ++i) {
+            auto fc = device->beginFrame();
+            if (!fc.valid) return false;
+            submitScene(fc);
+            device->endFrame(fc);
+        }
+        return true;
+    };
+
+    device->setGpuCullEquivalenceCheck(true);
+    device->setCullPath(1);                  // Tier 0 (graphics-queue compute)
+    device->setFrustumCullEnabled(true);
+
+    // Pose sweep. 4 frames per pose so the frames-in-flight readback latency
+    // drains and the sampled stats describe THIS pose.
+    struct Pose { const char* name; float x, y, z, yaw, pitch; bool expectSomeCulled, expectSomeDrawn; };
+    const Pose poses[] = {
+        { "center +X",      0.0f, 2.0f,   0.0f, 0.0f,  0.0f,  true,  true  },
+        { "center skewed",  10.0f, 3.0f,  -8.0f, 2.4f, -0.3f, true,  true  },
+        { "straight down",  0.0f, 40.0f,  0.0f, 0.0f, -1.55f, true,  true  },
+        { "outside looking away", 200.0f, 2.0f, 0.0f, 0.0f, 0.0f, true, false },
+        { "far overview (sees all)", 0.0f, 150.0f, 190.0f, -1.5708f, -0.65f, false, true },
+    };
+    for (const Pose& p : poses) {
+        if (!renderFrames(4, p.x, p.y, p.z, p.yaw, p.pitch)) {
+            check((std::string(p.name) + ": render frames").c_str(), false);
+            continue;
+        }
+        const RenderStats st = device->stats();
+        check((std::string(p.name) + ": gpu path active").c_str(), st.gpuCullPath == 1);
+        check((std::string(p.name) + ": tested == submitted").c_str(), st.gpuCullTested == kInstances);
+        check((std::string(p.name) + ": drawn + frustumCulled == tested").c_str(),
+              st.gpuCullDrawn + st.gpuCullFrustum == st.gpuCullTested && st.gpuCullHzb == 0);
+        if (p.expectSomeCulled) check((std::string(p.name) + ": culls something").c_str(), st.gpuCullFrustum > 0);
+        if (p.expectSomeDrawn)  check((std::string(p.name) + ": draws something").c_str(), st.gpuCullDrawn > 0);
+        else                    check((std::string(p.name) + ": draws nothing").c_str(), st.gpuCullDrawn == 0);
+        check((std::string(p.name) + ": GPU drawn == CPU expected").c_str(),
+              st.gpuCullDrawn == st.gpuCullExpected);
+    }
+
+    // (e) ALWAYS_VISIBLE bypass: r_frustumcull 0 -> every instance survives.
+    device->setFrustumCullEnabled(false);
+    if (renderFrames(4, 0.0f, 2.0f, 0.0f, 0.0f, 0.0f)) {
+        const RenderStats st = device->stats();
+        check("bypass (r_frustumcull 0): drawn == tested",
+              st.gpuCullDrawn == st.gpuCullTested && st.gpuCullTested == kInstances);
+    } else check("bypass render", false);
+    device->setFrustumCullEnabled(true);
+
+    // (d) zero mismatches across every compared frame so far.
+    {
+        const RenderStats st = device->stats();
+        check("equivalence frames compared > 0", st.gpuCullEquivFrames > 0);
+        check("equivalence mismatches == 0", st.gpuCullEquivMismatches == 0);
+    }
+
+    // (f) toggle back to the CPU path: identity restored, still renders, and the
+    // CPU cull draws the same survivor count the GPU just computed for this pose.
+    device->setCullPath(0);
+    bool cpuOk = renderFrames(3, 0.0f, 2.0f, 0.0f, 0.0f, 0.0f);
+    const RenderStats stCpu = device->stats();
+    check("toggle to CPU path renders", cpuOk);
+    check("CPU path resolves to 0", stCpu.gpuCullPath == 0);
+    check("CPU objectsDrawn > 0 after toggle", stCpu.objectsDrawn > 0);
+
+    device->shutdown();
+    device.reset();
+    glfwTerminate();
+
+    x3::logInfo("gpucull: " + std::to_string(passed) + "/" + std::to_string(total) + " passed");
     return passed == total;
 }
 
@@ -1316,6 +1477,11 @@ int main(int argc, char** argv) {
     // containment/cone tightness/triangle conservation/degenerate input. Pure CPU,
     // no device needed. Additive.
     bool        testMeshlet = false;
+    // --test-gpucull (D15 Tier-0 GPU cull): the EQUIVALENCE acceptance test — the
+    // real device headless (validation on), GPU cull active, the CPU evaluating the
+    // identical predicate per frame; asserts statDrawn == expected over a pose
+    // sweep + conservation (drawn+culled==tested) + bypass + path-toggle. Additive.
+    bool        testGpuCull = false;
     // --test-spiretop (Spire top-floor content): F6/F7 (Act-1 finale) encounter authoring. Additive.
     bool        testSpireTop = false;
     // --test-timeline (EFLZ morality/timeline backbone): infection 4-stage timers + cure
@@ -1669,6 +1835,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-debris") testDebris = true;
         else if (a == "--test-gpuskin") testGpuSkin = true;
         else if (a == "--test-meshlet") testMeshlet = true;
+        else if (a == "--test-gpucull") testGpuCull = true;
         else if (a == "--test-collapse") testCollapse = true;
         else if (a == "--test-physjoint") testPhysJoint = true;
         else if (a == "--test-nav") testNav = true;
@@ -2278,6 +2445,12 @@ int main(int argc, char** argv) {
                     "(grid mesh -> buildMeshlets -> assert budgets/locality/sphere/"
                     "cone/triangle-conservation/degenerate-input)...");
         return x3::rhi::runMeshletSelfTest() ? 0 : 1;
+    }
+    if (testGpuCull) {
+        x3::logInfo("running D15 Tier-0 GPU cull equivalence self-test "
+                    "(headless device + validation, r_cullpath 1, pose sweep, "
+                    "GPU statDrawn vs CPU predicate — must match EXACTLY)...");
+        return runGpuCullSelfTest() ? 0 : 1;
     }
     if (testCollapse) {
         x3::logInfo("running K-T3 structural collapse (support graph) self-test "

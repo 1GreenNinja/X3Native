@@ -68,8 +68,16 @@ layout(set = 0, binding = 5) uniform sampler2D hzb;
 
 bool frustumVisible(vec4 s) {
     // Conservative sphere-vs-plane: outside if fully behind any plane.
-    for (int i = 0; i < 6; ++i)
-        if (dot(P.frustum[i].xyz, s.xyz) + P.frustum[i].w < -s.w) return false;
+    // EQUIVALENCE-CRITICAL: written as an explicit `precise` expression with the
+    // SAME association glm::dot uses on the CPU (((x*nx + y*ny) + z*nz) + w) so
+    // the GPU result is bit-identical to FrustumCull.h's sphereInFrustum (no FMA
+    // contraction, no reassociation) — the D15 acceptance gate is exact equality
+    // of statDrawn vs the CPU path's objectsDrawn.
+    for (int i = 0; i < 6; ++i) {
+        vec4 p = P.frustum[i];
+        precise float d = ((s.x * p.x + s.y * p.y) + s.z * p.z) + p.w;
+        if (d < -s.w) return false;
+    }
     return true;
 }
 

@@ -34,6 +34,15 @@ layout(std430, set = 1, binding = 0) readonly buffer Objects {
     ObjectData objects[];
 } objBuf;
 
+// D15 GPU cull: ONE indirection from the draw's instance slot to the object SSBO
+// row. When the GPU cull is OFF the buffer holds the IDENTITY mapping (idx[i]==i,
+// written once at creation) so this is byte-identical to indexing by
+// gl_InstanceIndex directly. When the cull is ON, cull.comp compacts the
+// surviving instances' SSBO rows into [firstInstance, firstInstance+drawn).
+layout(std430, set = 1, binding = 2) readonly buffer VisibleIdx {
+    uint idx[];
+} visBuf;
+
 // Per-frame UBO (set1/binding1). The vertex stage only needs viewProj, but the
 // block layout MUST match the fragment shader's (same buffer): camera viewProj +
 // sun lightViewProj, then the point-light header + array. See mesh.frag / FrameUBO.
@@ -72,7 +81,7 @@ layout(location = 12) flat out vec4 vGlassParams;  // x = refraction, y = roughn
 layout(location = 13) flat out vec4 vGlassTint;    // rgb = tint
 
 void main() {
-    ObjectData o = objBuf.objects[gl_InstanceIndex];
+    ObjectData o = objBuf.objects[visBuf.idx[gl_InstanceIndex]];
     vec4 worldPos = o.model * vec4(inPos, 1.0);
     gl_Position = cam.viewProj * worldPos;
     vNormal = mat3(o.model) * inNormal;
