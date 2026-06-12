@@ -200,7 +200,15 @@ def build_decision_prompt(persona_text: str, context_msgs: list, my_user_id: str
 
 def invoke_claude(prompt: str, dry_run_label: str = "") -> dict | None:
     """Run `claude --print` headlessly with the prompt on stdin. Returns the parsed
-    decision JSON, or None if invocation/parse failed."""
+    decision JSON, or None if invocation/parse failed.
+
+    Explicitly STRIPS ANTHROPIC_API_KEY from the subprocess env so the call
+    always uses the local Claude Code SUBSCRIPTION auth, not API billing —
+    matches Tim's directive 2026-06-12: "let's use the claude accounts we have."
+    """
+    env = os.environ.copy()
+    env.pop("ANTHROPIC_API_KEY", None)
+    env.pop("ANTHROPIC_AUTH_TOKEN", None)
     try:
         proc = subprocess.run(
             ["claude", "--print", "--output-format", "text"],
@@ -209,6 +217,7 @@ def invoke_claude(prompt: str, dry_run_label: str = "") -> dict | None:
             text=True,
             timeout=120,
             encoding="utf-8",
+            env=env,
         )
     except FileNotFoundError:
         log("FATAL: `claude` CLI not on PATH; cannot invoke headless model")
