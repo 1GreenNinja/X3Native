@@ -78,7 +78,9 @@ public:
 
     // Begin the fade-OUT (hand-off to gameplay). After this the overlay fades from
     // full to transparent over kFadeOut seconds; faded() returns true once gone.
-    void beginFadeOut();
+    // `fast` (BOOT-TIME, docs/BOOT_TIME.md): a sub-budget boot barely showed the
+    // bar — fade ~3x quicker so the hand-off doesn't pad the boot.
+    void beginFadeOut(bool fast = false);
     bool fadingOut() const { return m_fadeOut; }
     bool faded() const { return m_fadeOut && m_fade <= 0.0f; }
 
@@ -106,6 +108,7 @@ private:
     // Fade state: m_fade ramps 0->1 (fade-in) then 1->0 (fade-out).
     float  m_fade     = 0.0f;
     bool   m_fadeOut  = false;
+    float  m_fadeOutScale = 1.0f;   // 3.0 on a fast (sub-budget) boot hand-off
 };
 
 // --test-loading: headless self-test. Asserts progress is monotonic 0->1 across

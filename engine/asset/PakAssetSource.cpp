@@ -127,6 +127,33 @@ public:
         return {};
     }
 
+    uint64_t contentStamp(std::string_view virtualPath) const override {
+        std::string vp = normalize(virtualPath);
+        if (vp.empty()) return 0;
+        for (auto& m : m_mounts) {
+            if (m.isDir) {
+                std::error_code ec;
+                fs::path p = fs::path(m.root) / vp;
+                if (fs::exists(p, ec) && !fs::is_directory(p, ec)) {
+                    const auto sz = fs::file_size(p, ec);
+                    if (ec) return 0;
+                    const auto mt = fs::last_write_time(p, ec);
+                    if (ec) return 0;
+                    uint64_t h = 1469598103934665603ull;
+                    auto mix = [&h](uint64_t v) {
+                        for (int i = 0; i < 8; ++i) { h ^= (v >> (i*8)) & 0xFF; h *= 1099511628211ull; }
+                    };
+                    mix((uint64_t)sz);
+                    mix((uint64_t)mt.time_since_epoch().count());
+                    return h ? h : 1;   // 0 is the "unknown" sentinel
+                }
+            } else if (m.index.count(vp)) {
+                return 0;               // pak entry: caller hashes the blob
+            }
+        }
+        return 0;
+    }
+
     bool exists(std::string_view virtualPath) const override {
         std::string vp = normalize(virtualPath);
         if (vp.empty()) return false;

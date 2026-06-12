@@ -23,6 +23,13 @@ struct DeviceDesc {
     // Supersample AA (HEADLESS/screenshot only): render at width*ssaa x height*ssaa and
     // box-downscale to width x height on capture. 1 = off. The live windowed path ignores it.
     uint32_t ssaa        = 1;
+    // BOOT-TIME hook (docs/BOOT_TIME.md): invoked ONCE as soon as the upload path
+    // is live (upload pool + bindless set + VMA — right after the core graphics
+    // objects exist), i.e. several hundred ms BEFORE init() returns. The boot uses
+    // it to kick the async GLB preload so the warmup overlaps the remaining
+    // device init (post stack, SSAO/GI, RT precompile…). May be null.
+    void (*onUploadReady)(void* user) = nullptr;
+    void* onUploadReadyUser           = nullptr;
 };
 
 struct FrameContext {

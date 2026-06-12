@@ -52,6 +52,7 @@
 #include <chrono>      // [boot] per-file GLB load timing
 #include <fstream>
 #include <functional>
+#include <future>         // boot-time parallel model preload
 #include <mutex>          // boot-time texture cache guard
 #include <unordered_map>  // boot-time texture cache
 #include <memory>
@@ -102,6 +103,17 @@ uint64_t fnv1aBytes(const uint8_t* p, size_t n, uint64_t h = 1469598103934665603
     return h;
 }
 
+// ---------------------------------------------------------------------------
+// BOOT-TIME decoded-image cache: prewarmModelDecodesAsync() runs stb decodes on
+// background threads BEFORE the Vulkan device even exists (overlapping the
+// ~1 s driver init), keyed identically to the texture cache. A later real load
+// CONSUMES (moves out) the decoded pixels instead of decoding again. Entries
+// are transient — produced by the prewarm, drained by the boot loads.
+// ---------------------------------------------------------------------------
+struct DecodedImage { std::vector<uint8_t> rgba; int w = 0, h = 0; };
+std::mutex g_decodedMu;
+std::unordered_map<uint64_t, DecodedImage> g_decodedCache;
+
 // Bump the refcount of an already-cached texture handle (used when a cached
 // MODEL instance shares the template's textures). Returns false if the handle
 // is not cache-tracked (should not happen; logged by the caller).
@@ -139,13 +151,22 @@ struct ModelCacheEntry {
 std::mutex g_modelCacheMu;
 std::unordered_map<uint64_t, ModelCacheEntry> g_modelCache;
 
+// Sampled content hash: size + first/middle/last 64 KB. Full-byte FNV over a
+// 30 MB embedded texture costs tens of ms PER IMAGE; sampling is near-free and
+// collisions across distinct art are not a practical concern (64-bit + size).
+uint64_t sampledBytesKey(const uint8_t* bytes, size_t len, uint64_t seed) {
+    uint64_t h = seed ^ ((uint64_t)len * 1099511628211ull);
+    const size_t probe = 65536;
+    if (len <= 3 * probe) return fnv1aBytes(bytes, len, h);
+    h = fnv1aBytes(bytes, probe, h);
+    h = fnv1aBytes(bytes + len / 2, probe, h);
+    h = fnv1aBytes(bytes + (len - probe), probe, h);
+    return h;
+}
+
 uint64_t modelContentKey(const std::string& path, const uint8_t* bytes, size_t len) {
     uint64_t h = fnv1aBytes(reinterpret_cast<const uint8_t*>(path.data()), path.size());
-    h ^= (uint64_t)len * 1099511628211ull;
-    const size_t probe = 65536;
-    h = fnv1aBytes(bytes, len < probe ? len : probe, h);
-    if (len > probe) h = fnv1aBytes(bytes + (len - probe), probe, h);
-    return h;
+    return sampledBytesKey(bytes, len, h);
 }
 
 class GpuUploader {
@@ -337,8 +358,8 @@ void trsToMat4(const float t[3], const float q[4], const float s[3], float* m) {
 // ---------------------------------------------------------------------------
 class ModelLoaderImpl final : public IModelLoader {
 public:
-    ModelLoaderImpl(rhi::IRenderDevice* dev, IAssetSource* assets)
-        : m_dev(dev), m_assets(assets) {}
+    ModelLoaderImpl(rhi::IRenderDevice* dev, IAssetSource* assets, bool prewarm = false)
+        : m_dev(dev), m_assets(assets), m_prewarm(prewarm) {}
 
     Model load(std::string_view virtualPath) override {
         const auto t0 = std::chrono::steady_clock::now();
@@ -354,54 +375,65 @@ public:
             return model;
         }
 
+        // ---- BOOT-TIME model cache: a prior load of this exact file means we can
+        // skip the file read + parse/decode/convert entirely — deep-copy the CPU
+        // template, retain the shared textures, and re-upload only the per-instance
+        // mesh buffers (batched -> cheap). The cache key prefers the source's cheap
+        // contentStamp (size+mtime — no 49 MB re-read on a hit); pak entries fall
+        // back to hashing the blob bytes. Real-device loads only.
+        auto tryCacheHit = [&](uint64_t key) -> Model {
+            std::unique_lock<std::mutex> lk(g_modelCacheMu);
+            auto it = g_modelCache.find(key);
+            if (it == g_modelCache.end()) return Model{};
+            const ModelCacheEntry& e = it->second;
+            Model m = e.templ;                              // deep copy (CPU data)
+            lk.unlock();
+            // Retain each UNIQUE shared texture handle once (matches unload's
+            // once-per-unique-handle free).
+            std::unordered_set<uint64_t> uniq;
+            for (const Material& mat : m.materials)
+                for (uint64_t h : { mat.baseColorTex, mat.normalTex, mat.mrTex,
+                                    mat.emissiveTex, mat.occlusionTex, mat.detailTex })
+                    if (h && uniq.insert(h).second && !retainCachedTexture(h))
+                        warnOnce("[gltf] cached model texture not cache-tracked (refcount skipped)");
+            GpuUploader up(m_dev);
+            for (size_t i = 0; i < m.primitives.size() && i < e.prims.size(); ++i) {
+                up.uploadMesh(e.prims[i].verts.data(), (uint32_t)e.prims[i].verts.size(),
+                              e.prims[i].idx.data(),   (uint32_t)e.prims[i].idx.size(),
+                              m.primitives[i].vertexBuffer, m.primitives[i].indexBuffer);
+            }
+            m.ok = !m.primitives.empty();
+            char tb[320];
+            std::snprintf(tb, sizeof(tb),
+                "[gltf] loaded %s in %.1f ms (CACHED: prims=%zu mats=%zu anims=%zu)",
+                path.c_str(), msSince(t0), m.primitives.size(), m.materials.size(),
+                m.animations.size());
+            logInfo(tb);
+            return m;
+        };
+
+        uint64_t mkey = 0;
+        if (m_dev) {
+            const uint64_t stamp = m_assets->contentStamp(virtualPath);
+            if (stamp) {
+                mkey = fnv1aBytes(reinterpret_cast<const uint8_t*>(path.data()),
+                                  path.size()) ^ stamp;
+                Model hit = tryCacheHit(mkey);
+                if (hit.ok) return hit;                     // NO file read on a hit
+            }
+        }
+
         Blob blob = m_assets->read(virtualPath);
-        const double blobMs = msSince(t0);
         if (!blob.ok || blob.bytes.empty()) {
             logError("[gltf] read failed (missing / empty): " + path);
             return model;
         }
 
-        // ---- BOOT-TIME model cache: a prior load of this exact file means we can
-        // skip the parse/decode/convert entirely — deep-copy the CPU template,
-        // retain the shared textures, and re-upload only the per-instance mesh
-        // buffers (batched -> cheap). Real-device loads only.
-        const uint64_t mkey = m_dev
-            ? modelContentKey(path, blob.bytes.data(), blob.bytes.size()) : 0;
-        if (m_dev) {
-            std::unique_lock<std::mutex> lk(g_modelCacheMu);
-            auto it = g_modelCache.find(mkey);
-            if (it != g_modelCache.end()) {
-                const ModelCacheEntry& e = it->second;
-                const auto tc0 = std::chrono::steady_clock::now();
-                Model m = e.templ;                          // deep copy (CPU data)
-                const double copyMs = msSince(tc0);
-                lk.unlock();
-                // Retain each UNIQUE shared texture handle once (matches unload's
-                // once-per-unique-handle free).
-                std::unordered_set<uint64_t> uniq;
-                for (const Material& mat : m.materials)
-                    for (uint64_t h : { mat.baseColorTex, mat.normalTex, mat.mrTex,
-                                        mat.emissiveTex, mat.occlusionTex, mat.detailTex })
-                        if (h && uniq.insert(h).second && !retainCachedTexture(h))
-                            warnOnce("[gltf] cached model texture not cache-tracked (refcount skipped)");
-                GpuUploader up(m_dev);
-                for (size_t i = 0; i < m.primitives.size() && i < e.prims.size(); ++i) {
-                    up.uploadMesh(e.prims[i].verts.data(), (uint32_t)e.prims[i].verts.size(),
-                                  e.prims[i].idx.data(),   (uint32_t)e.prims[i].idx.size(),
-                                  m.primitives[i].vertexBuffer, m.primitives[i].indexBuffer);
-                }
-                m.ok = !m.primitives.empty();
-                const double ms = std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - t0).count();
-                char tb[320];
-                std::snprintf(tb, sizeof(tb),
-                    "[gltf] loaded %s in %.1f ms (CACHED: prims=%zu mats=%zu anims=%zu; "
-                    "read %.1f copy %.1f)",
-                    path.c_str(), ms, m.primitives.size(), m.materials.size(),
-                    m.animations.size(), blobMs, copyMs);
-                logInfo(tb);
-                return m;
-            }
+        if (m_dev && mkey == 0) {
+            // No cheap stamp (pak entry): key on the blob bytes (sampled).
+            mkey = modelContentKey(path, blob.bytes.data(), blob.bytes.size());
+            Model hit = tryCacheHit(mkey);
+            if (hit.ok) return hit;
         }
 
         cgltf_options opts{};
@@ -431,6 +463,7 @@ public:
         m_capturePrims = m_dev ? &captured : nullptr;
 
         buildMaterials(*data, model, up);
+        if (m_prewarm) return model;   // decode-prewarm: textures cached, done
         buildPrimitives(*data, model, up);
         buildNodes(*data, model);
         buildSkins(*data, model);
@@ -585,8 +618,42 @@ private:
         // BOOT-TIME texture cache: identical encoded bytes (+srgb) -> the SAME GPU
         // texture, refcounted. Kills the repeated stb decode + upload when the same
         // character/weapon GLB is loaded once per spawned instance.
-        const uint64_t key = fnv1aBytes(bytes, len) ^ (srgb ? 0x9E3779B97F4A7C15ull : 0ull);
+        const uint64_t key = sampledBytesKey(bytes, len, 1469598103934665603ull)
+                             ^ (srgb ? 0x9E3779B97F4A7C15ull : 0ull);
+
+        // DECODE-PREWARM mode (no device yet): decode into the transient decoded-
+        // image cache and return a minted placeholder; the real boot load consumes
+        // the pixels below instead of decoding again.
+        if (m_prewarm) {
+            {
+                std::lock_guard<std::mutex> lk(g_decodedMu);
+                if (g_decodedCache.count(key)) return up.defaultWhite();
+            }
+            int w = 0, h = 0, comp = 0;
+            stbi_uc* px = stbi_load_from_memory(bytes, static_cast<int>(len), &w, &h, &comp, 4);
+            if (px) {
+                DecodedImage d;
+                d.rgba.assign(px, px + (size_t)w * h * 4);
+                d.w = w; d.h = h;
+                stbi_image_free(px);
+                std::lock_guard<std::mutex> lk(g_decodedMu);
+                g_decodedCache.emplace(key, std::move(d));
+            }
+            return up.defaultWhite();
+        }
+
         uint64_t handle = up.cachedUpload(key, [&]() -> uint64_t {
+            // Consume a prewarmed decode when one exists (move the pixels out).
+            {
+                std::unique_lock<std::mutex> lk(g_decodedMu);
+                auto it = g_decodedCache.find(key);
+                if (it != g_decodedCache.end()) {
+                    DecodedImage d = std::move(it->second);
+                    g_decodedCache.erase(it);
+                    lk.unlock();
+                    return up.uploadTexture(d.rgba.data(), d.w, d.h, srgb);
+                }
+            }
             int w = 0, h = 0, comp = 0;
             stbi_uc* px = stbi_load_from_memory(bytes, static_cast<int>(len), &w, &h, &comp, 4);
             if (!px) return 0;
@@ -955,6 +1022,7 @@ private:
 
     rhi::IRenderDevice* m_dev = nullptr;
     IAssetSource*       m_assets = nullptr;
+    bool                m_prewarm = false;        // decode-prewarm mode (no device)
     std::unordered_set<std::string> m_warned; // de-dupes per-model warnings
     // BOOT-TIME model cache: when non-null (real-device load in flight),
     // buildPrimitives copies each uploaded prim's verts/indices here.
@@ -965,6 +1033,94 @@ private:
 
 IModelLoader* createModelLoader(rhi::IRenderDevice* dev, IAssetSource* assets) {
     return new ModelLoaderImpl(dev, assets);
+}
+
+// BOOT-TIME parallel model preload (docs/BOOT_TIME.md). Each (root, file) pair
+// gets its own thread: file read + cgltf parse + stb decode run concurrently;
+// the device upload entry points serialize on the device's upload mutex. The
+// throwaway instance is unloaded immediately — the point is the warm process-
+// wide MODEL + TEXTURE caches (textures keep the cache's refs), which turn the
+// gameplay spawns that follow into cheap cache hits.
+void preloadModels(rhi::IRenderDevice* dev,
+                   const std::vector<std::pair<std::string, std::string>>& rootAndFile) {
+    if (!dev || rootAndFile.empty()) return;
+    const auto t0 = std::chrono::steady_clock::now();
+    std::vector<std::future<bool>> jobs;
+    jobs.reserve(rootAndFile.size());
+    for (const auto& rf : rootAndFile) {
+        jobs.push_back(std::async(std::launch::async, [dev, rf]() -> bool {
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            if (!fs::exists(fs::path(rf.first) / rf.second, ec)) return false;  // superset manifest: skip silently
+            std::unique_ptr<IAssetSource> src(createAssetSource());
+            if (!src->mountDir(rf.first, 0)) return false;
+            std::unique_ptr<IModelLoader> loader(createModelLoader(dev, src.get()));
+            Model m = loader->load(rf.second);
+            const bool ok = m.ok;
+            loader->unload(m);    // meshes freed; the caches keep their own refs
+            return ok;
+        }));
+    }
+    uint32_t loaded = 0;
+    for (auto& j : jobs) if (j.get()) ++loaded;
+    const double ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - t0).count();
+    char b[160];
+    std::snprintf(b, sizeof(b),
+        "[gltf] preloadModels: %u/%zu warmed in %.1f ms (parallel)",
+        loaded, rootAndFile.size(), ms);
+    logInfo(b);
+}
+
+// One outstanding async preload / decode-prewarm (boot uses one of each).
+namespace {
+std::future<void> g_preloadFuture;
+std::future<void> g_prewarmFuture;
+}
+
+void prewarmModelDecodesAsync(std::vector<std::pair<std::string, std::string>> rootAndFile) {
+    if (rootAndFile.empty()) return;
+    if (g_prewarmFuture.valid()) g_prewarmFuture.get();
+    g_prewarmFuture = std::async(std::launch::async, [mf = std::move(rootAndFile)]() {
+        const auto t0 = std::chrono::steady_clock::now();
+        std::vector<std::future<void>> jobs;
+        jobs.reserve(mf.size());
+        for (const auto& rf : mf) {
+            jobs.push_back(std::async(std::launch::async, [rf]() {
+                namespace fs = std::filesystem;
+                std::error_code ec;
+                if (!fs::exists(fs::path(rf.first) / rf.second, ec)) return;
+                std::unique_ptr<IAssetSource> src(createAssetSource());
+                if (!src->mountDir(rf.first, 0)) return;
+                ModelLoaderImpl loader(nullptr, src.get(), /*prewarm=*/true);
+                Model m = loader.load(rf.second);
+                loader.unload(m);
+            }));
+        }
+        for (auto& j : jobs) j.get();
+        char b[128];
+        std::snprintf(b, sizeof(b), "[gltf] decode prewarm: %zu file(s) in %.1f ms (parallel, pre-device)",
+            mf.size(), std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - t0).count());
+        logInfo(b);
+    });
+}
+
+void preloadModelsAsync(rhi::IRenderDevice* dev,
+                        std::vector<std::pair<std::string, std::string>> rootAndFile) {
+    if (!dev || rootAndFile.empty()) return;
+    joinModelPreload();   // never two in flight
+    g_preloadFuture = std::async(std::launch::async,
+        [dev, mf = std::move(rootAndFile)]() {
+            // Sequencing: consume the decode prewarm (overlapped with device init).
+            if (g_prewarmFuture.valid()) g_prewarmFuture.get();
+            preloadModels(dev, mf);
+        });
+}
+
+void joinModelPreload() {
+    if (g_preloadFuture.valid()) g_preloadFuture.get();
+    if (g_prewarmFuture.valid()) g_prewarmFuture.get();   // no preload kicked: still settle
 }
 
 void mulMat4(const float a[16], const float b[16], float out[16]) {
