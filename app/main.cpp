@@ -38,6 +38,7 @@
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
 #include "intro_coldopen.h"                  // --world intro / default lead-in cold-open (shot-down -> captured)
+#include "cutscene.h"                        // x3.cutscene/1 data-driven cutscene system (the COLD OPEN film)
 #include "npc_dialog.h"                     // rescued-NPC talk/dialog -> companion (the captive girl)
 #include "physprops.h"                      // FEATURE_GOALS §1: hanging cubes / joints (ragdoll foundation)
 #include "ragdoll.h"                        // FEATURE_GOALS §2: physics death ragdoll
@@ -371,6 +372,432 @@ inline void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::F
             device->drawPlanet(fc, ringMesh, m, kRing, t, 1u, uTime);
         }
     }
+}
+
+// ============================================================================
+// COLD-OPEN CINEMATIC DRIVER (x3.cutscene/1 — app/cutscene.h holds the pure
+// data/eval/player; THIS is the windowed/headless 3D scene that renders it).
+// The film: Jake's ship over the planet, the capital-ship ambush, the shoot-
+// down, smash to black, the title cards — then the host hands off to the cell.
+// ============================================================================
+
+// One loaded cutscene actor: either a GLB (drawables + size-normalization) or a
+// builtin emissive primitive (beam = unit box, glow = unit sphere).
+struct CinActorState {
+    const x3::cut::Actor* def = nullptr;
+    x3::asset::Model model;                              // GLB actors only
+    std::vector<x3::asset::ModelDrawable> drawables;
+    float normScale = 1.0f;
+    bool  builtin   = false;                             // uses the shared box/sphere
+    bool  isBeam    = false;
+};
+
+class CinematicScene {
+public:
+    // Build everything the film needs on `device`: the FORGE3D planet bodies
+    // (re-positioned for the cold-open sky), the ship GLBs, and the builtin FX
+    // prims. Headless-safe (createMesh/createTexture work offscreen too).
+    bool load(x3::rhi::IRenderDevice& device, const x3::cut::Cutscene& cs) {
+        m_src.reset(x3::asset::createAssetSource());
+        m_src->mountDir(x3::game::assetRoot(), 0);
+        m_loader.reset(x3::asset::createModelLoader(&device, m_src.get()));
+
+        // ---- Builtin FX prims (shared unit box + unit sphere) ----
+        {
+            x3::prims::PrimMesh box = x3::prims::makeBox(0.5f, 0.5f, 0.5f, 0, 0, 0);
+            m_box = device.createMesh(box.verts.data(), (uint32_t)box.verts.size(),
+                                      box.index.data(), (uint32_t)box.index.size());
+            x3::prims::PrimMesh sph = x3::prims::makeUVSphere(24, 48);
+            m_sphere = device.createMesh(sph.verts.data(), (uint32_t)sph.verts.size(),
+                                         sph.index.data(), (uint32_t)sph.index.size());
+        }
+
+        // ---- Actors ----
+        for (const x3::cut::Actor& a : cs.actors) {
+            CinActorState st;
+            st.def = &a;
+            if (a.model.rfind("builtin:", 0) == 0) {
+                st.builtin = true;
+                st.isBeam = (a.model == "builtin:beam");
+            } else {
+                st.model = m_loader->load(a.model);
+                if (st.model.ok) {
+                    st.drawables = x3::asset::makeDrawables(st.model);
+                    // Size casting: normalize the longest mesh-space axis to a.size.
+                    if (a.size > 0.0f) {
+                        float mn[3], mx[3];
+                        if (x3::cut::glbPositionExtent(x3::game::assetRoot() + "/" + a.model, mn, mx)) {
+                            const float ext = std::max({ mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2] });
+                            if (ext > 1e-4f) st.normScale = a.size / ext;
+                        }
+                    }
+                    x3::logInfo("[cutscene] actor '" + a.id + "' loaded " + a.model + " (" +
+                                std::to_string(st.drawables.size()) + " drawables, normScale=" +
+                                std::to_string(st.normScale) + ")");
+                } else {
+                    x3::logError("[cutscene] actor '" + a.id + "' FAILED to load " + a.model +
+                                 " — drawn as a builtin glow stand-in");
+                    st.builtin = true;
+                }
+            }
+            m_actors.push_back(std::move(st));
+        }
+
+        // ---- Planet sky (FORGE3D bodies re-positioned for the cold open) ----
+        int nTexFail = 0;
+        std::vector<NightSkyPlanet> all =
+            loadNightSkyPlanets(&device, m_planetMesh, nTexFail, "[cutscene]", &m_ringMesh);
+        for (NightSkyPlanet& b : all) {
+            const std::string n = b.name ? b.name : "";
+            if (n == "Terrestrial") {      // the HOME PLANET rising below the action
+                b.worldPos[0] = 0.0f; b.worldPos[1] = -460.0f; b.worldPos[2] = -450.0f;
+                b.radius = 330.0f;
+                m_planets.push_back(b);
+            } else if (n == "Sun") {       // BEHIND the flight path — the ambush comes out of the sun
+                b.worldPos[0] = 150.0f; b.worldPos[1] = 260.0f; b.worldPos[2] = 1500.0f;
+                b.radius = 70.0f;
+                m_planets.push_back(b);
+            } else if (n == "Gas") {       // ringed giant, distant ahead-right
+                b.worldPos[0] = 650.0f; b.worldPos[1] = 180.0f; b.worldPos[2] = -1500.0f;
+                b.radius = 110.0f;
+                m_planets.push_back(b);
+            } else if (n == "Moon") {      // accent, ahead-left
+                b.worldPos[0] = -380.0f; b.worldPos[1] = 130.0f; b.worldPos[2] = -900.0f;
+                b.radius = 36.0f;
+                m_planets.push_back(b);
+            }
+            // Ice / Lava deliberately dropped — keep the sky composed, not cluttered.
+        }
+        if (nTexFail > 0)
+            x3::logInfo("[cutscene] " + std::to_string(nTexFail) +
+                        " planet texture(s) missing — bodies may render flat (graceful)");
+        return true;
+    }
+
+    // The space look. Mirrors the nightsky recipe but with a REAL key sun from
+    // behind the flight path (the silhouette beats) + a lifted cool fill so the
+    // hulls read. SSAO/GI untouched (mostly-empty depth; harmless).
+    void applyLook(x3::rhi::IRenderDevice& device) {
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.10f; sp.sunDir[1] = 0.18f; sp.sunDir[2] = 0.97f;   // toward the Sun body (+Z behind)
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.96f; sp.sunColor[2] = 0.88f;
+        sp.sunIntensity = 0.85f;                       // strong key; near-black dome keeps space dark
+        sp.haze = 0.0f; sp.exposure = 1.0f;
+        sp.zenith[0]  = 0.004f; sp.zenith[1]  = 0.004f; sp.zenith[2]  = 0.010f;
+        sp.horizon[0] = 0.008f; sp.horizon[1] = 0.010f; sp.horizon[2] = 0.020f;
+        device.setSkyParams(sp);
+        device.setAmbient(0.10f, 0.11f, 0.16f);        // cool starlight fill on the hulls
+        device.setBloom(0.30f);                        // hero glow: engines / bolts / the sun
+    }
+
+    // Restore the device state the cutscene touched to the engine defaults the
+    // cell build expects (sky OFF, default ambient/bloom, no point lights).
+    static void restoreLook(x3::rhi::IRenderDevice& device) {
+        x3::rhi::IRenderDevice::SkyParams sp{};       // enabled = false
+        device.setSkyParams(sp);
+        device.setAmbient(0.42f, 0.44f, 0.50f);       // device default
+        device.setBloom(0.06f);                       // device default (kBloomIntensity)
+        device.setSkyTime(0.0f);
+        device.setPointLights(nullptr, 0);
+    }
+
+    // x3.fire event hook (driver-reserved fx.* names; everything else is host's).
+    void onEvent(const std::string& name, const x3::cut::Cutscene& cs, float t) {
+        if (name.rfind("fx.trail.start:", 0) == 0) {
+            m_trailActor = name.substr(15);
+            m_trailOn = true;
+            m_lastPuff = t;
+        } else if (name.rfind("fx.trail.stop:", 0) == 0) {
+            m_trailOn = false;
+        } else if (name.rfind("fx.impact:", 0) == 0) {
+            const std::string id = name.substr(10);
+            if (const x3::cut::Actor* a = findActor(cs, id)) {
+                const x3::cut::ActorPose p = x3::cut::evalActor(cs, *a, t);
+                // A deterministic burst of debris puffs around the impact point.
+                for (int i = 0; i < 10; ++i) {
+                    const float fi = (float)i;
+                    Puff pf;
+                    pf.born = t;
+                    pf.x = p.pos.x + std::sin(fi * 2.4f) * 2.5f;
+                    pf.y = p.pos.y + std::cos(fi * 1.7f) * 2.0f;
+                    pf.z = p.pos.z + std::sin(fi * 3.1f + 1.0f) * 2.5f;
+                    pf.hot = true;
+                    pushPuff(pf);
+                }
+            }
+        }
+    }
+
+    // Per-frame: advance the smoke/debris trail (gpu-light CPU puffs).
+    void update(const x3::cut::Cutscene& cs, float t) {
+        if (m_trailOn) {
+            if (const x3::cut::Actor* a = findActor(cs, m_trailActor)) {
+                const x3::cut::ActorPose p = x3::cut::evalActor(cs, *a, t);
+                if (!p.visible) {
+                    m_trailOn = false;
+                } else {
+                    while (t - m_lastPuff >= 0.07f) {
+                        m_lastPuff += 0.07f;
+                        Puff pf;
+                        pf.born = m_lastPuff;
+                        const x3::cut::ActorPose q = x3::cut::evalActor(cs, *a, m_lastPuff);
+                        pf.x = q.pos.x; pf.y = q.pos.y; pf.z = q.pos.z;
+                        pf.hot = false;
+                        pushPuff(pf);
+                    }
+                }
+            }
+        }
+        // Prune dead puffs (life 2.4 s).
+        m_puffs.erase(std::remove_if(m_puffs.begin(), m_puffs.end(),
+                                     [t](const Puff& p) { return t - p.born > 2.4f; }),
+                      m_puffs.end());
+    }
+
+    // Reset transient FX (trail/puffs) — used when scrubbing (--cuetime).
+    void resetFx() { m_puffs.clear(); m_trailOn = false; }
+
+    // Draw the 3D world for time t (camera already set by the caller).
+    void drawWorld(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& fc,
+                   const x3::cut::Cutscene& cs, float t) {
+        if (!fc.valid) return;
+        // Actors.
+        for (CinActorState& st : m_actors) {
+            const x3::cut::Actor& a = *st.def;
+            const x3::cut::ActorPose pose = x3::cut::evalActor(cs, a, t);
+            if (!pose.visible) continue;
+            float obj[16];
+            x3::cut::actorMatrix(a, pose, st.normScale, obj);
+            if (st.builtin) {
+                const x3::rhi::MeshHandle mesh = st.isBeam ? m_box : m_sphere;
+                if (mesh.valid())
+                    device.drawMeshEmissive(fc, mesh, {}, a.color, a.emissive, obj);
+            } else {
+                for (const auto& d : st.drawables) {
+                    float fin[16];
+                    x3::asset::mulMat4(obj, d.nodeTransform, fin);
+                    const float* emis = nullptr;
+                    float emBuf[4];
+                    if (a.emissive[3] > 0.0f) { std::copy(a.emissive, a.emissive + 4, emBuf); emis = emBuf; }
+                    else {
+                        emBuf[0] = d.emissiveFactor[0]; emBuf[1] = d.emissiveFactor[1];
+                        emBuf[2] = d.emissiveFactor[2]; emBuf[3] = 1.0f;
+                        emis = emBuf;
+                    }
+                    device.drawMeshPBR(fc, x3::rhi::MeshHandle{ d.meshId },
+                                       x3::rhi::TextureHandle{ d.baseColorTexId },
+                                       x3::rhi::TextureHandle{ d.normalTexId },
+                                       x3::rhi::TextureHandle{ d.mrTexId },
+                                       d.baseColorFactor, emis, fin,
+                                       d.alphaMask, d.alphaBlend,
+                                       x3::rhi::TextureHandle{ d.emissiveTexId },
+                                       x3::rhi::TextureHandle{ d.detailTexId }, d.detailUvScale);
+                }
+            }
+        }
+        // Smoke/debris trail puffs: expanding gray spheres, briefly HOT (emissive).
+        for (const Puff& p : m_puffs) {
+            const float age = t - p.born;
+            const float k = age / 2.4f;
+            const float s = (p.hot ? 1.6f : 1.1f) + k * (p.hot ? 6.0f : 4.0f);
+            const float m[16] = { s,0,0,0, 0,s,0,0, 0,0,s,0, p.x, p.y, p.z, 1 };
+            const float grey = 0.05f + 0.05f * (1.0f - k);
+            const float col[4] = { grey, grey, grey, 1.0f };
+            const float heat = p.hot ? std::max(0.0f, 1.0f - age * 2.2f) : std::max(0.0f, 0.5f - age * 1.4f);
+            const float emis[4] = { 2.2f * heat, 0.9f * heat, 0.3f * heat, 3.0f * heat };
+            if (m_sphere.valid()) device.drawMeshEmissive(fc, m_sphere, {}, col, emis, m);
+        }
+        // Planets LAST (depth-tested against the ships).
+        drawNightSkyPlanets(&device, fc, m_planetMesh, m_planets, 10.0f + t * 0.02f, m_ringMesh);
+    }
+
+    // Draw the 2D overlay for time t: letterbox, fade, title cards.
+    void drawOverlay(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& fc,
+                     const x3::cut::Cutscene& cs, float t) {
+        if (!fc.valid) return;
+        uint32_t W = 0, H = 0;
+        device.hudSize(W, H);
+        const float fw = (float)W, fh = (float)H;
+        // Letterbox bars.
+        const float lb = x3::cut::evalLetterbox(cs, t);
+        if (lb > 0.0f) {
+            const float black[4] = { 0, 0, 0, 1 };
+            device.drawHudQuad(fc, 0, 0, fw, fh * lb, black);
+            device.drawHudQuad(fc, 0, fh * (1.0f - lb), fw, fh * lb, black);
+        }
+        // Full-screen fade.
+        float fade[4];
+        x3::cut::evalFade(cs, t, fade);
+        if (fade[3] > 0.001f) device.drawHudQuad(fc, 0, 0, fw, fh, fade);
+        // Title cards (stacked in file order if simultaneous).
+        int active = 0;
+        for (const x3::cut::TitleCard& tc : cs.titles) {
+            const float a = x3::cut::evalTitleAlpha(tc, t);
+            if (a <= 0.001f) continue;
+            x3::rhi::FontRole role = x3::rhi::FontRole::Title;
+            if (tc.font == "menu") role = x3::rhi::FontRole::Menu;
+            else if (tc.font == "news") role = x3::rhi::FontRole::News;
+            else if (tc.font == "mono") role = x3::rhi::FontRole::Console;
+            const float px = tc.sizeFrac * (fw < fh ? fw : fh);
+            const float adv = device.textAdvance(role, tc.text.c_str(), px);
+            const float col[4] = { tc.color[0], tc.color[1], tc.color[2], a };
+            device.drawHudTextF(fc, role, tc.text.c_str(),
+                                fw * 0.5f - adv * 0.5f,
+                                fh * 0.5f - px * 0.5f + (float)active * px * 1.6f,
+                                px, col);
+            ++active;
+        }
+    }
+
+    // Free everything we created (meshes; loader-owned GPU handles via unload).
+    void destroy(x3::rhi::IRenderDevice& device) {
+        for (CinActorState& st : m_actors)
+            if (!st.builtin && st.model.ok) m_loader->unload(st.model);
+        m_actors.clear();
+        auto kill = [&](x3::rhi::MeshHandle& h) { if (h.valid()) { device.destroyMesh(h); h = {}; } };
+        kill(m_box); kill(m_sphere); kill(m_planetMesh); kill(m_ringMesh);
+        // NightSkyPlanet textures are device-owned createTexture handles; the device
+        // frees them at shutdown — same lifetime stance as the nightsky/showroom paths.
+        m_planets.clear();
+        m_loader.reset();
+        m_src.reset();
+    }
+
+private:
+    struct Puff { float born = 0; float x = 0, y = 0, z = 0; bool hot = false; };
+
+    static const x3::cut::Actor* findActor(const x3::cut::Cutscene& cs, const std::string& id) {
+        for (const auto& a : cs.actors) if (a.id == id) return &a;
+        return nullptr;
+    }
+    void pushPuff(const Puff& p) {
+        if (m_puffs.size() >= 160) m_puffs.erase(m_puffs.begin());
+        m_puffs.push_back(p);
+    }
+
+    std::unique_ptr<x3::asset::IAssetSource> m_src;
+    std::unique_ptr<x3::asset::IModelLoader> m_loader;
+    std::vector<CinActorState> m_actors;
+    x3::rhi::MeshHandle m_box{}, m_sphere{};
+    x3::rhi::MeshHandle m_planetMesh{}, m_ringMesh{};
+    std::vector<NightSkyPlanet> m_planets;
+    std::vector<Puff> m_puffs;
+    std::string m_trailActor;
+    bool  m_trailOn  = false;
+    float m_lastPuff = 0.0f;
+};
+
+// Map the cutscene's named audio cues onto loaded sounds (graceful misses: a
+// missing pack WAV plays silent — same stance as the rest of the slice).
+struct CinAudioMap {
+    x3::audio::IAudioSystem* audio = nullptr;
+    x3::audio::SoundHandle alarm{}, rumble{}, charge{}, bolt{}, boom{};
+    std::string musicPath;
+
+    void init(x3::audio::IAudioSystem* a) {
+        audio = a;
+        if (!audio) return;
+        alarm  = audio->load(x3::game::resolveAudio("Sci-fi Evolution Gift Pack/Alarm.wav"));
+        rumble = audio->load(x3::game::resolveAudio("Free Pack/Explosion 2.wav"));
+        charge = audio->load(x3::game::resolveAudio("weapons/loops/Vefects_Zap_Medium_01.wav"));
+        bolt   = audio->load(x3::game::resolveAudio("weapons/single/Single_Gunshot_Sci-Fi_Gun-66.wav"));
+        boom   = audio->load(x3::game::resolveAudio("Free Pack/Explosion 1.wav"));
+        musicPath = x3::game::resolveAudio("Sci-Fi Music Pack 1/Loops/SMP1_LOOP_Zero8 _1.wav");
+    }
+    void fire(const x3::cut::AudioCue& cue) {
+        if (!audio) return;
+        if (cue.music) {
+            if (cue.sound == "music.stop") audio->stopMusic();
+            else audio->playMusic(musicPath, /*loop=*/true, cue.gain);
+            return;
+        }
+        if (cue.sound == "music.stop")           { audio->stopMusic(); return; }
+        x3::audio::SoundHandle h{};
+        if      (cue.sound == "alarm")           h = alarm;
+        else if (cue.sound == "rumble.capital")  h = rumble;
+        else if (cue.sound == "charge")          h = charge;
+        else if (cue.sound == "bolt")            h = bolt;
+        else if (cue.sound == "explosion")       h = boom;
+        audio->playSound2D(h, cue.gain);
+    }
+};
+
+// Run a cutscene WINDOWED to completion (blocking). Returns false only if the
+// window was closed mid-film (host should quit cleanly). `startAt` scrubs the
+// playhead before the first frame (--cuetime). Restores the device look state
+// it touched before returning, so the world build that follows is unaffected.
+inline bool runCutsceneWindowed(x3::rhi::IRenderDevice& device, GLFWwindow* window,
+                                x3::audio::IAudioSystem* audio,
+                                const x3::cut::Cutscene& cs, float startAt = 0.0f,
+                                const std::function<void(const std::string&)>& hostEvent = {}) {
+    if (!window) return true;   // headless guard (smoketests etc.) — no-op
+    x3::logInfo("[cutscene] playing '" + cs.name + "' (" + std::to_string(cs.duration) +
+                " s) — any key / Esc to skip");
+
+    CinematicScene scene;
+    device.beginUploadBatch();
+    scene.load(device, cs);
+    device.endUploadBatch();
+    scene.applyLook(device);
+
+    CinAudioMap amap;
+    amap.init(audio);
+
+    x3::cut::CutscenePlayer player(cs);
+    player.onAudio([&](const x3::cut::AudioCue& cue) { amap.fire(cue); });
+    player.onEvent([&](const x3::cut::Event& e, bool) {
+        scene.onEvent(e.name, cs, e.t);   // authored time: deterministic FX state incl. scrubs
+        if (hostEvent) hostEvent(e.name); // host hook (StoryFlags: intro_complete etc.)
+        x3::logInfo("[cutscene] x3.fire " + e.name + " @ " + std::to_string(e.t));
+    });
+    if (startAt > 0.0f) player.seek(startAt);
+
+    bool prevAnyKey = true;     // swallow a key still held from before the film
+    double prevTime = glfwGetTime();
+    bool completed = true;
+    while (!glfwWindowShouldClose(window) && !player.done()) {
+        glfwPollEvents();
+        const double now = glfwGetTime();
+        float dt = (float)(now - prevTime);
+        prevTime = now;
+        if (dt > 0.1f) dt = 0.1f;
+        if (dt < 0.0f) dt = 0.0f;
+
+        // Skip on any rising-edge key / mouse press.
+        bool anyKey = false;
+        for (int k : { GLFW_KEY_ESCAPE, GLFW_KEY_SPACE, GLFW_KEY_ENTER, GLFW_KEY_W, GLFW_KEY_A,
+                       GLFW_KEY_S, GLFW_KEY_D, GLFW_KEY_E, GLFW_KEY_F, GLFW_KEY_LEFT_SHIFT,
+                       GLFW_KEY_LEFT_CONTROL, GLFW_KEY_TAB }) {
+            if (glfwGetKey(window, k) == GLFW_PRESS) { anyKey = true; break; }
+        }
+        if (!anyKey && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) anyKey = true;
+        if (anyKey && !prevAnyKey) player.skip();
+        prevAnyKey = anyKey;
+
+        player.tick(dt);
+        const float t = player.time();
+        scene.update(cs, t);
+
+        const x3::cut::CamPose cam = x3::cut::evalCamera(cs, t);
+        device.setCamera(cam.pos.x, cam.pos.y, cam.pos.z, cam.yaw, cam.pitch, cam.fov);
+        device.setSkyTime(10.0f + t * 0.02f);
+
+        auto frame = device.beginFrame();
+        if (frame.valid) {
+            scene.drawWorld(device, frame, cs, t);
+            scene.drawOverlay(device, frame, cs, t);
+        }
+        device.endFrame(frame);
+    }
+    if (!player.done()) completed = false;   // window closed mid-film
+
+    if (audio) audio->stopMusic();
+    scene.destroy(device);
+    CinematicScene::restoreLook(device);
+    x3::logInfo(std::string("[cutscene] '") + cs.name + "' " +
+                (completed ? (player.skipped() ? "skipped" : "complete") : "aborted (window closed)"));
+    return completed;
 }
 
 // ---- SHOWROOM DAY<->NIGHT lighting STATES (one helper, two looks) -----------
@@ -1581,6 +2008,20 @@ int main(int argc, char** argv) {
     // G:\X3Native\nightsky.png.
     bool        nightskyShot = false;
     std::string nightskyShotPath = "G:/X3Native/nightsky.png";
+    // ---- x3.cutscene/1 CLI (docs/design/CUTSCENE_FORMAT.md) ----
+    // --test-cutscene          : headless format/eval/player self-test.
+    // --skipintro              : never play the cold open this run.
+    // --cutscene <file>        : play THAT cutscene at boot regardless of StoryFlags
+    //                            (authoring loop; default = the shipped cold open).
+    // --cuetime <s>            : start the played cutscene scrubbed to s seconds.
+    // --cutscene-shot [path]   : HEADLESS film still — build the cinematic scene,
+    //                            seek to --cuetime, capture one frame, exit. 4x SSAA.
+    bool        testCutscene = false;
+    bool        skipIntro    = false;
+    std::string cutsceneFile;                  // empty = the shipped cold open
+    float       cueTime      = 0.0f;
+    bool        cutsceneShot = false;
+    std::string cutsceneShotPath = "G:/X3Native/cutscene.png";
     // DDGI gate-shot proof (--screenshot-ddgi [outDir]): build a minimal sealed
     // two-room rig (room A holds a point light + an emissive ceiling panel; room B
     // is connected only through a doorway; room C is fully SEALED next to A — the
@@ -1951,6 +2392,21 @@ int main(int argc, char** argv) {
             nightskyShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') nightskyShotPath = argv[++i];
         }
+        // ---- x3.cutscene/1 args: a FRESH if-chain (not chained onto the giant
+        // else-if ladder above — MSVC C1061 nesting limit). Disjoint exact matches,
+        // so re-starting the chain is behavior-identical.
+        if (a == "--test-cutscene") testCutscene = true;
+        else if (a == "--skipintro") skipIntro = true;
+        else if (a == "--cutscene") {
+            if (i + 1 < argc && argv[i + 1][0] != '-') cutsceneFile = argv[++i];
+        }
+        else if (a == "--cuetime") {
+            if (i + 1 < argc) cueTime = (float)std::strtod(argv[++i], nullptr);
+        }
+        else if (a == "--cutscene-shot") {
+            cutsceneShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') cutsceneShotPath = argv[++i];
+        }
         else if (a == "--screenshot-terrain") {
             terrainShot = true;
             // Optional output path arg (next token, if it isn't another flag).
@@ -2114,6 +2570,11 @@ int main(int argc, char** argv) {
     if (testIntro) {
         x3::logInfo("running intro cold-open self-test (flight -> hit -> whiteout -> titlecard -> handoff; skippable)...");
         return x3::intro::runIntroSelfTest() ? 0 : 1;
+    }
+    if (testCutscene) {
+        x3::logInfo("running x3.cutscene/1 self-test (format + splines/cuts + player tick/seek/skip + "
+                    "StoryFlags + the shipped cold open)...");
+        return x3::cut::runCutsceneSelfTest() ? 0 : 1;
     }
     if (testPhase2a) {
         x3::logInfo("running EFLZ Phase 2a (player health + enemies fight back) self-test...");
@@ -2611,7 +3072,7 @@ int main(int argc, char** argv) {
     // render fully offscreen — NO GLFW window, NO surface, NO swapchain, nothing
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
-    const bool headless = smoketest || testFramePacing || screenshot || skyShot || ddgiShot || showroomShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot;
+    const bool headless = smoketest || testFramePacing || screenshot || skyShot || ddgiShot || showroomShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || cutsceneShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -2709,7 +3170,7 @@ int main(int argc, char** argv) {
     desc.width  = W;
     desc.height = H;
     desc.headless = headless;
-    desc.ssaa = (showroomShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot) ? 4u : 1u;   // 4x supersample the showroom / planet / nightsky still (5090 headless: ~16 samples/px, pristine)
+    desc.ssaa = (showroomShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || cutsceneShot) ? 4u : 1u;   // 4x supersample the showroom / planet / nightsky / cutscene still (5090 headless: ~16 samples/px, pristine)
     // Benchmark mode runs with vsync OFF so it measures the true frame ceiling,
     // not the display refresh cap.
     desc.vsync  = !bench;
@@ -3618,6 +4079,66 @@ int main(int argc, char** argv) {
         if (wrote) x3::logInfo("--screenshot-nightsky: wrote " + nightskyShotPath);
         else       x3::logError("--screenshot-nightsky: capture FAILED");
 
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return wrote ? 0 : 1;
+    }
+
+    // ---- Cutscene film still (--cutscene-shot [path.png] --cuetime <s>) ----
+    // HEADLESS: load the cutscene (default = the shipped cold open), build the full
+    // cinematic scene (planets + ships + FX), seek the deterministic player to
+    // --cuetime (events re-fire as seeked so trails/impacts are state-correct),
+    // render + capture ONE supersampled frame, exit. The film-strip pipeline behind
+    // docs/screenshots/coldopen/.
+    if (cutsceneShot) {
+        const std::string csPath = !cutsceneFile.empty()
+            ? cutsceneFile
+            : x3::game::assetRoot() + "/cutscenes/cold_open.cutscene.json";
+        x3::cut::Cutscene cs;
+        std::vector<std::string> errs;
+        if (!x3::cut::loadCutsceneFile(csPath, cs, errs)) {
+            for (const auto& e : errs) x3::logError("--cutscene-shot: " + e);
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        x3::logInfo("--cutscene-shot: '" + cs.name + "' t=" + std::to_string(cueTime) +
+                    " -> " + cutsceneShotPath);
+
+        CinematicScene cin;
+        device->beginUploadBatch();
+        cin.load(*device, cs);
+        device->endUploadBatch();
+        cin.applyLook(*device);
+
+        x3::cut::CutscenePlayer player(cs);
+        player.onEvent([&](const x3::cut::Event& e, bool) { cin.onEvent(e.name, cs, e.t); });
+        player.seek(cueTime);
+        cin.update(cs, cueTime);   // backfill the trail/puff state up to the scrub point
+
+        const float t = player.time();
+        const x3::cut::CamPose cam = x3::cut::evalCamera(cs, t);
+        device->setCamera(cam.pos.x, cam.pos.y, cam.pos.z, cam.yaw, cam.pitch, cam.fov);
+        device->setSkyTime(10.0f + t * 0.02f);
+
+        const int kSettle = 8;   // TAA/auto-exposure settle, like the other stills
+        for (int i = 0; i < kSettle; ++i) {
+            glfwPollEvents();
+            if (i == kSettle - 1) device->armCapture(cutsceneShotPath.c_str());
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                cin.drawWorld(*device, frame, cs, t);
+                cin.drawOverlay(*device, frame, cs, t);
+            }
+            device->endFrame(frame);
+        }
+        const bool wrote = device->captureFrame(cutsceneShotPath.c_str());
+        if (wrote) x3::logInfo("--cutscene-shot: wrote " + cutsceneShotPath);
+        else       x3::logError("--cutscene-shot: capture FAILED");
+
+        cin.destroy(*device);
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
@@ -7934,16 +8455,63 @@ int main(int argc, char** argv) {
                                     (worldMode == "canonlevel") || (worldMode == "intro");
         // --test-boottime skips the cold-open: the intro is CONTENT the player watches
         // (a skippable cinematic), not boot work — the gate measures the machine.
-        if (window && introCellWorld && !testBootTime) {
-            if (!x3::intro::runIntro(*device, window)) {
-                // Window was closed during the intro — exit cleanly (mirrors a window-close quit).
-                physics->shutdown();
-                device->shutdown();
-                if (window) glfwDestroyWindow(window);
-                glfwTerminate();
-                return 0;
+        if (window && introCellWorld && !testBootTime && !skipIntro) {
+            // ONCE PER SAVE: the intro_complete StoryFlag gates replays. An explicit
+            // --cutscene <file> always plays (the authoring loop); intro_play (console)
+            // replays mid-game. The flag is set by the cutscene's endState event, so
+            // a SKIP still latches it (skip fires endState events by contract).
+            x3::cut::StoryFlags storyFlags;
+            storyFlags.load(x3::cut::defaultStoryFlagsPath());
+            const bool seenIntro = storyFlags.has(x3::cut::kFlagIntroComplete);
+            if (!seenIntro || !cutsceneFile.empty()) {
+                const std::string csPath = !cutsceneFile.empty()
+                    ? cutsceneFile
+                    : x3::game::assetRoot() + "/cutscenes/cold_open.cutscene.json";
+                x3::cut::Cutscene coldOpen;
+                std::vector<std::string> csErrs;
+                bool ranFilm = false;
+                if (x3::cut::loadCutsceneFile(csPath, coldOpen, csErrs)) {
+                    const bool completed = runCutsceneWindowed(
+                        *device, window, audio.get(), coldOpen, cueTime,
+                        [&](const std::string& ev) {
+                            if (ev == x3::cut::kFlagIntroComplete) {
+                                storyFlags.set(x3::cut::kFlagIntroComplete);
+                                storyFlags.save(x3::cut::defaultStoryFlagsPath());
+                            }
+                        });
+                    if (!completed) {
+                        // Window closed mid-film — exit cleanly (mirrors a window-close quit).
+                        physics->shutdown();
+                        device->shutdown();
+                        if (window) glfwDestroyWindow(window);
+                        glfwTerminate();
+                        return 0;
+                    }
+                    ranFilm = true;
+                    // SEAMLESS WAKE: the film ends on black ("SIX MONTHS LATER"). Flip the
+                    // loading screen to BLACKOUT so the cell build stays black, then the
+                    // hand-off fade is the slow first-person wake in the cell — control is
+                    // live underneath it, exactly like a normal spawn.
+                    loading.setBlackout(true);
+                } else {
+                    for (const auto& e : csErrs) x3::logError("[cutscene] cold open: " + e);
+                    x3::logError("[cutscene] cold open failed to load — falling back to the legacy 2D intro");
+                }
+                if (!ranFilm) {
+                    // Resilience: the legacy phase-machine intro still tells the story.
+                    if (!x3::intro::runIntro(*device, window)) {
+                        physics->shutdown();
+                        device->shutdown();
+                        if (window) glfwDestroyWindow(window);
+                        glfwTerminate();
+                        return 0;
+                    }
+                }
+                x3::boot::mark("intro cold-open (content)");
+            } else {
+                x3::logInfo("[cutscene] intro_complete StoryFlag set — skipping the cold open "
+                            "(replay with intro_play or --cutscene)");
             }
-            x3::boot::mark("intro cold-open (content)");
         }
     }
 
@@ -9523,6 +10091,16 @@ int main(int argc, char** argv) {
         if (on && !player.god()) player.setGod(true);   // don't take env damage while flying
         console->print(std::string("noclip ") + (on ? "ON  (IDCLIP) — fly with WASD, look up/down to climb" : "OFF"));
     }, "idclip [0|1] - toggle noclip free-flight (no collision)");
+    // ---- intro_play: replay the COLD OPEN cinematic mid-game (x3.cutscene/1).
+    // Deferred via a pending flag — the film runs a blocking frame loop of its own,
+    // so it must start at the TOP of a host frame (never inside one). Control +
+    // camera return to the player on the next frame (the player path re-sets the
+    // camera every frame; the film restores the device look state it touched).
+    bool introPlayRequest = false;
+    console->registerCommand("intro_play", [&introPlayRequest, &console](const std::vector<std::string>&) {
+        introPlayRequest = true;
+        console->print("intro_play - rolling the cold open (any key skips)...");
+    }, "replay the intro cold-open cinematic");
 
     // ---- S7: route keyboard text + editing into the on-screen console. The
     // char callback feeds printable codepoints; the key callback handles the
@@ -9777,6 +10355,25 @@ int main(int argc, char** argv) {
         // No-op on a non-RT GPU; default OFF so the visual build is unchanged.
         applyRtaoCVars(*console, *device);
         glfwPollEvents();
+
+        // ---- intro_play (console): roll the cold-open film NOW, at a frame
+        // boundary. Blocking; the live world is untouched underneath (the film
+        // draws only its own scene) and the loop resumes cleanly after. ----
+        if (introPlayRequest) {
+            introPlayRequest = false;
+            const std::string csPath = !cutsceneFile.empty()
+                ? cutsceneFile
+                : x3::game::assetRoot() + "/cutscenes/cold_open.cutscene.json";
+            x3::cut::Cutscene replayCs;
+            std::vector<std::string> replayErrs;
+            if (x3::cut::loadCutsceneFile(csPath, replayCs, replayErrs)) {
+                if (!runCutsceneWindowed(*device, window, audio.get(), replayCs))
+                    break;   // window closed mid-film -> normal quit path
+                frameCapPrev = glfwGetTime();   // don't count the film against the frame cap
+            } else {
+                for (const auto& e : replayErrs) x3::logError("[cutscene] intro_play: " + e);
+            }
+        }
 
         // ---- S7: console gating. While the console is open, gameplay input is
         // suppressed and the cursor is shown so the user can read/type. The cursor

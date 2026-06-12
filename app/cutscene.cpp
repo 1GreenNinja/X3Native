@@ -859,8 +859,8 @@ bool runCutsceneSelfTest() {
               "rejects duration 0 / missing camera");
         e2.clear();
         std::string unsorted = kSyntheticJson;
-        size_t p = unsorted.find("\"t\": 5.0");
-        unsorted.replace(p, 8, "\"t\": 9.9");   // camera keys now unsorted
+        size_t p = unsorted.find("\"t\": 0.0");          // first camera key
+        unsorted.replace(p, 8, "\"t\": 8.0");            // keys now 8.0, 5.0, 10.0 — unsorted
         check(!parseCutscene(unsorted, bad, e2), "rejects unsorted camera keys");
         e2.clear();
         std::string badFont = kSyntheticJson;
