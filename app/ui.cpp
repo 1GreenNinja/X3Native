@@ -679,6 +679,40 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
                 }
             }
 
+            // --- WORLD-MAP WAYPOINT (MAGENTA). Inside the radar radius it draws as
+            // a small cross at its true spot; beyond it, it CLAMPS to the box edge
+            // as a chevron (three ticks shrinking toward the waypoint direction)
+            // with a "WP NNNm" distance readout under the radar box.
+            if (m.wpValid) {
+                const float mag[4] = { 1.0f, 0.35f, 0.95f, 0.95f };
+                float bx, by;
+                if (toRadar(m.wpX, m.wpZ, bx, by)) {
+                    ui.quad(bx - 5.0f, by - 1.0f, 10.0f, 2.0f, mag);
+                    ui.quad(bx - 1.0f, by - 5.0f, 2.0f, 10.0f, mag);
+                } else {
+                    // Edge-clamp the (rotated) radar-space direction to the box rim.
+                    const float dxp = bx - cxp, dyp = by - cyp;
+                    const float adx = std::fabs(dxp), ady = std::fabs(dyp);
+                    const float k = (half - 4.0f) / std::max(1e-3f, std::max(adx, ady));
+                    const float ex = cxp + dxp * k, ey = cyp + dyp * k;
+                    // Chevron: three ticks stepping in from the rim toward the player.
+                    const float il = std::sqrt(dxp * dxp + dyp * dyp);
+                    const float ux = dxp / std::max(1e-3f, il), uy = dyp / std::max(1e-3f, il);
+                    for (int t = 0; t < 3; ++t) {
+                        const float sz = 5.0f - (float)t * 1.4f;
+                        const float px = ex - ux * (float)t * 3.5f;
+                        const float py = ey - uy * (float)t * 3.5f;
+                        ui.quad(px - sz * 0.5f, py - sz * 0.5f, sz, sz, mag);
+                    }
+                }
+                // Distance readout under the radar box.
+                const float ddx = m.wpX - m.playerX, ddz = m.wpZ - m.playerZ;
+                const int distM = (int)std::sqrt(ddx * ddx + ddz * ddz);
+                char wpTxt[32];
+                std::snprintf(wpTxt, sizeof(wpTxt), "WP %dm", distM);
+                ui.textCentered(wpTxt, cxp, mmy + mmH + 6.0f, 12.0f, mag);
+            }
+
             // --- Player blip (always centered, on top) + a forward "nose" tick.
             const float blip[4] = { 0.2f, 1.0f, 0.35f, 0.95f };
             ui.quad(cxp - 2.0f, cyp - 2.0f, 4.0f, 4.0f, blip);

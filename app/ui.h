@@ -247,6 +247,14 @@ struct HudModel {
     float trapX = 0.0f;
     float trapZ = 0.0f;
 
+    // World-map WAYPOINT (app/world_map.*): drawn on the radar as a magenta
+    // marker, or — when it lies beyond the radar radius — as an EDGE-CLAMPED
+    // chevron with a distance readout under the box. The host feeds the world
+    // XZ while a waypoint is set (wpValid=false leaves the radar unchanged).
+    bool  wpValid = false;
+    float wpX = 0.0f;
+    float wpZ = 0.0f;
+
     int   roomCount = 0;
     float roomCx[kMaxRooms] = {};   // room center X (world)
     float roomCz[kMaxRooms] = {};   // room center Z (world)

@@ -2460,6 +2460,20 @@ private:
         std::memcpy(static_cast<HudVertex*>(fr.hudVboMapped) + first,
                     verts, (size_t)count * sizeof(HudVertex));
         fr.hudVertsUsed += count;
+        // COALESCE with the previous record when it binds the same texture and is
+        // contiguous in the ring (always true within a frame). Ordering is
+        // unchanged (records replay in append order), and a quad-heavy screen
+        // (the world map: grid + icons + markers) stays a handful of records —
+        // each record costs one descriptor from the per-frame pool (kMaxHudDraws),
+        // which a record-per-quad scheme exhausted (text after ~256 quads vanished).
+        if (!m_hudRecords.empty()) {
+            HudRecord& last = m_hudRecords.back();
+            if (last.texFont == texFont && last.userTex == userTex &&
+                last.first + last.count == first) {
+                last.count += count;
+                return;
+            }
+        }
         m_hudRecords.push_back(HudRecord{ first, count, texFont, userTex });
     }
 

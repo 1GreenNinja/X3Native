@@ -1806,6 +1806,7 @@ int main(int argc, char** argv) {
     // (walk the hills) instead of the default interior Level 1. Anything else (or
     // omitted) keeps Level 1 as the default, unchanged.
     std::string worldMode = "level1";
+    bool shotWorldMap = false;   // --screenshot-worldmap (headless map shot sequence)
     // Seamless world streaming tunables (--world streamed; see app/world_stream.*):
     // per-frame stream-work budget (ms) + velocity lookahead (s). Cvar-style CLI
     // overrides: --ws-budget <ms> / --ws-lookahead <s>.
@@ -1842,6 +1843,9 @@ int main(int argc, char** argv) {
         // MSVC's C1061 block-nesting limit — adding to it breaks the build).
         if (a == "--test-worldstream") { testWorldStream = true; continue; }
         if (a == "--test-worldmap")    { testWorldMap    = true; continue; }
+        if (a == "--screenshot-worldmap") {   // headless world-map shot sequence
+            shotWorldMap = true; worldMode = "streamed"; screenshot = true; continue;
+        }
         if (a == "--ws-budget") {   // per-frame world-stream budget, ms (cvar-style tunable)
             if (i + 1 < argc && argv[i + 1][0] != '-') wsBudgetMs = std::strtof(argv[++i], nullptr);
             continue;
@@ -7528,6 +7532,106 @@ int main(int argc, char** argv) {
 
         x3::game::TerrainStreamer wstream;
 
+        // ===== WORLD-MAP SHOT SEQUENCE (--screenshot-worldmap, headless): boot
+        // the streamed world, pre-discover the POI table (the shots show the
+        // explored map), bake the region tiles from the LIVE ledgers + the Spire
+        // floors from the LevelDoc, then capture the map screen at world-overview /
+        // region / room-detail zooms + the floor selector + a waypoint + the
+        // fast-travel confirm. =====
+        if (headless && shotWorldMap) {
+            namespace fs = std::filesystem;
+            const fs::path outDir = "docs/screenshots/worldmap";
+            std::error_code ec; fs::create_directories(outDir, ec);
+
+            x3::game::WorldMapSystem wmap;
+            wmap.init(x3::game::worldMapPoisJsonPath(), x3::game::canonProjectJsonPath());
+            x3::game::StoryFlags wflags;
+            for (const x3::game::MapPoi& pp : wmap.pois().pois) {
+                wflags.set(x3::game::poiFoundFlag(pp.id));
+                if (!pp.region.empty()) wflags.set(x3::game::regionSeenFlag(pp.region));
+            }
+
+            const float sax = wgraph.regions[0].anchor[0], saz = wgraph.regions[0].anchor[2];
+            wstream.init(wscene, *device, *wphys, wjobs.get(), wcfg, sax, saz, /*radius=*/8);
+            wstream.setUploadBudget(64);
+            wsm.buildStartRegions(wscene, *device, *wphys, sax, 0.0f, saz);
+            const float dt = 1.0f / 60.0f;
+            for (int i = 0; i < 240; ++i) {     // settle: terrain ring + neighbors land
+                glfwPollEvents();
+                wstream.update(wscene, *device, *wphys, sax, saz);
+                wsm.update(wscene, *device, *wphys, sax, 0.0f, saz, 0.0f, 0.0f, 0.0f, 50.0, 0.0);
+                wphys->step(dt);
+                wscene.update(*wphys);
+                device->setCamera(sax, 60.0f, saz, 0.0f, -0.5f, 60.0f);
+                auto f = device->beginFrame();
+                if (f.valid) wscene.render(*device, f);
+                device->endFrame(f);
+            }
+            // Bake builder-region tiles from the live ownership ledgers.
+            for (uint32_t ri = 0; ri < wsm.regionCount(); ++ri) {
+                const x3::game::WorldRegionDesc& rd = wsm.desc(ri);
+                if (!rd.levelDoc.empty()) continue;   // the Spire bakes from its LevelDoc
+                if (wsm.state(ri) != x3::game::RegionState::Resident) continue;
+                const float rr = std::min(rd.radius, 1200.0f);
+                wmap.ensureRegionTile(*device, wscene, rd.id, wsm.ownedEntities(ri),
+                                      rd.anchor[0] - rr, rd.anchor[2] - rr,
+                                      rd.anchor[0] + rr, rd.anchor[2] + rr,
+                                      rd.anchor[1] - 80.0f, rd.anchor[1] + 90.0f);
+            }
+            x3::ui::UiContext mui;
+            const int fbw = (int)W, fbh = (int)H;
+            auto mapShot = [&](const char* png, float mcx, float mcz, float mscale, int floor,
+                               bool wp, float wpx, float wpz, const char* confirmPoi) -> bool {
+                wmap.open(sax, 1.7f, saz, (float)fbw, (float)fbh);
+                wmap.camera().jumpTo(mcx, mcz, mscale);
+                if (floor > 0) wmap.selectFloor(floor);
+                if (wp) wmap.setWaypoint(wpx, wpz, floor); else wmap.clearWaypoint();
+                if (confirmPoi) wmap.openConfirm(wmap.pois().indexOf(confirmPoi));
+                const std::string path = (outDir / png).string();
+                for (int i = 0; i < 3; ++i) {   // a couple frames so tile uploads land
+                    glfwPollEvents();
+                    device->setCamera(sax, 60.0f, saz, 0.0f, -0.5f, 60.0f);
+                    if (i == 2) device->armCapture(path.c_str());
+                    auto f = device->beginFrame();
+                    if (f.valid) {
+                        wscene.render(*device, f);
+                        x3::ui::UiInput ui0{};
+                        ui0.mouseX = fbw * 0.5f; ui0.mouseY = fbh * 0.5f;
+                        mui.begin(*device, f, ui0);
+                        x3::game::WorldMapSystem::ScreenInput msi{};
+                        msi.mouseX = ui0.mouseX; msi.mouseY = ui0.mouseY;
+                        msi.playerX = sax; msi.playerY = 0.0f; msi.playerZ = saz;
+                        msi.playerYaw = 0.8f;
+                        msi.locationName = "KETH'ZAR - SEAMLESS WORLD";
+                        wmap.drawScreen(mui, *device, f, msi, wflags, 0.0f);
+                        mui.end();
+                    }
+                    device->endFrame(f);
+                }
+                const bool ok = device->captureFrame(path.c_str());
+                if (ok) x3::logInfo("--screenshot-worldmap: wrote " + path);
+                else    x3::logError("--screenshot-worldmap: capture FAILED: " + path);
+                wmap.closeConfirm();
+                return ok;
+            };
+            bool all = true;
+            all &= mapShot("01_world_overview.png",          110.0f, -460.0f, 0.32f,  0, false, 0, 0, nullptr);
+            all &= mapShot("02_region_city.png",            -200.0f,  425.0f, 0.85f,  0, false, 0, 0, nullptr);
+            all &= mapShot("03_room_detail_spire_f1.png",     22.0f,   10.0f, 11.0f,  1, false, 0, 0, nullptr);
+            all &= mapShot("04_spire_floor_selector_f3.png",  22.0f,   10.0f, 8.0f,   3, false, 0, 0, nullptr);
+            all &= mapShot("05_waypoint_set.png",             22.0f,   18.0f, 6.0f,   1, true, 22.0f, 14.0f, nullptr);
+            all &= mapShot("06_fasttravel_confirm.png",       22.0f,   18.0f, 6.0f,   1, false, 0, 0, "armory");
+            wmap.shutdown(*device);
+            wsm.shutdown(wscene, *device, *wphys);
+            wstream.shutdown(wscene, *device, *wphys);
+            wjobs->shutdown();
+            wphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return all ? 0 : 1;
+        }
+
         // ===== Headless traversal-shot sequence (region boundary before/after). =
         if (headless) {
             namespace fs = std::filesystem;
@@ -7616,6 +7720,22 @@ int main(int argc, char** argv) {
         x3::game::Player wplayer;
         wplayer.spawn(*wphys, sax, sgr[1] + 2.0f, saz);
 
+        // ---- WORLD MAP (M) in the streamed world: POIs + discovery + waypoint +
+        // FAST TRAVEL THROUGH THE STREAMER (teleport; wsm.update's proxy fallback
+        // covers the realize window -- no loading screen, just the blackout fade).
+        // Discovery flags persist to save/worldmap_streamed.flags.
+        x3::game::WorldMapSystem wmap;
+        wmap.init(x3::game::worldMapPoisJsonPath(), x3::game::canonProjectJsonPath());
+        x3::game::StoryFlags wflags;
+        { std::error_code fec; std::filesystem::create_directories("save", fec); }
+        wflags.loadFile("save/worldmap_streamed.flags");
+        x3::ui::UiContext wmapUi;
+        bool wmapOpen = false;
+        bool prevMW = false, prevEnterW = false, prevEscW = false, prevLmbW = false;
+        float wTravelFade = 0.0f;
+        glfwSetScrollCallback(window, scrollCallback);   // wheel -> map zoom
+        g_weaponScroll = 0.0;
+
         glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
         if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
         double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
@@ -7629,7 +7749,20 @@ int main(int argc, char** argv) {
         int lastWw = (int)W, lastHw = (int)H;
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
-            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+            // Esc: close the map first (back out of the confirm prompt, then the
+            // map), only then quit the streamed world.
+            const bool escNowW = glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
+            const bool escEdgeW = escNowW && !prevEscW;
+            prevEscW = escNowW;
+            bool mapEscW = false;
+            if (escEdgeW) {
+                if (wmapOpen && wmap.confirmOpen()) mapEscW = true;
+                else if (wmapOpen) {
+                    wmapOpen = false; wmap.close();
+                    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                    glfwGetCursorPos(window, &lastMX, &lastMY);
+                } else break;
+            }
 
             double now = glfwGetTime();
             float dt = (float)(now - prevTime); prevTime = now;
@@ -7638,8 +7771,32 @@ int main(int argc, char** argv) {
             double mx, my; glfwGetCursorPos(window, &mx, &my);
             float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
             lastMX = mx; lastMY = my;
+            if (wmapOpen) { ddx = 0.0f; ddy = 0.0f; }   // no look-swing under the cursor
 
-            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            // Gameplay keys are captured by the map while it is open (the map does
+            // its own raw W/A/S/D pan reads).
+            auto kd = [&](int k) { return !wmapOpen && glfwGetKey(window, k) == GLFW_PRESS; };
+
+            // M toggles the world map (cursor shown while open; sim input frozen).
+            {
+                const bool mNowW = glfwGetKey(window, GLFW_KEY_M) == GLFW_PRESS;
+                if (mNowW && !prevMW) {
+                    if (wmapOpen) { wmapOpen = false; wmap.close(); }
+                    else {
+                        float ppx, ppy, ppz, pyw, ppt;
+                        wplayer.camera(ppx, ppy, ppz, pyw, ppt);
+                        if (noclipW) { ppx = flyXw; ppy = flyYw; ppz = flyZw; }
+                        int fbw = 0, fbh = 0; glfwGetFramebufferSize(window, &fbw, &fbh);
+                        wmap.open(ppx, ppy - 1.6f, ppz, (float)fbw, (float)fbh);
+                        wmapOpen = true;
+                    }
+                    glfwSetInputMode(window, GLFW_CURSOR,
+                                     wmapOpen ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
+                    glfwGetCursorPos(window, &lastMX, &lastMY);
+                }
+                prevMW = mNowW;
+            }
+
             bool spaceNow = kd(GLFW_KEY_SPACE);
             bool fNow = kd(GLFW_KEY_F);
             if (fNow && !prevFW) {
@@ -7702,10 +7859,92 @@ int main(int argc, char** argv) {
 
             device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
             auto frame = device->beginFrame();
-            if (frame.valid) wscene.render(*device, frame);
+            if (frame.valid) {
+                wscene.render(*device, frame);
+
+                // POI proximity discovery (persisted flags).
+                wmap.discoveryTick(wflags, camX, camY - 1.6f, camZ);
+
+                if (wmapOpen) {
+                    // Bake-or-fetch resident builder-region tiles from the LIVE
+                    // ownership ledgers (the map IS the world).
+                    for (uint32_t ri = 0; ri < wsm.regionCount(); ++ri) {
+                        const x3::game::WorldRegionDesc& rd = wsm.desc(ri);
+                        if (!rd.levelDoc.empty()) continue;
+                        if (wsm.state(ri) != x3::game::RegionState::Resident) continue;
+                        if (wmap.regionTile(rd.id)) continue;
+                        const float rr = std::min(rd.radius, 1200.0f);
+                        wmap.ensureRegionTile(*device, wscene, rd.id, wsm.ownedEntities(ri),
+                                              rd.anchor[0] - rr, rd.anchor[2] - rr,
+                                              rd.anchor[0] + rr, rd.anchor[2] + rr,
+                                              rd.anchor[1] - 80.0f, rd.anchor[1] + 90.0f);
+                    }
+                    double cmx = 0.0, cmy = 0.0; glfwGetCursorPos(window, &cmx, &cmy);
+                    const bool lmbW = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+                    x3::ui::UiInput ui0{};
+                    ui0.mouseX = (float)cmx; ui0.mouseY = (float)cmy;
+                    ui0.mouseDown = lmbW; ui0.mousePressed = lmbW && !prevLmbW;
+                    wmapUi.begin(*device, frame, ui0);
+                    x3::game::WorldMapSystem::ScreenInput msi{};
+                    msi.mouseX = ui0.mouseX; msi.mouseY = ui0.mouseY;
+                    msi.mouseDown = ui0.mouseDown; msi.mousePressed = ui0.mousePressed;
+                    msi.wheel = (float)g_weaponScroll;
+                    msi.keyW = glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS;
+                    msi.keyS = glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS;
+                    msi.keyA = glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS;
+                    msi.keyD = glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS;
+                    const bool entNowW = glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS ||
+                                         glfwGetKey(window, GLFW_KEY_KP_ENTER) == GLFW_PRESS;
+                    msi.enterEdge = entNowW && !prevEnterW;
+                    prevEnterW = entNowW;
+                    msi.escEdge = mapEscW;
+                    msi.playerX = camX; msi.playerY = camY - 1.6f; msi.playerZ = camZ;
+                    msi.playerYaw = camYaw;
+                    msi.locationName = "KETH'ZAR - SEAMLESS WORLD";
+                    wmap.drawScreen(wmapUi, *device, frame, msi, wflags, dt);
+                    wmapUi.end();
+                    prevLmbW = lmbW;
+
+                    // FAST TRAVEL: snap the player; the NEXT wsm.update tick sees
+                    // the new position -- if the region has not realized yet the
+                    // PROXY collision floor engages (soft fallback) and releases
+                    // when the content lands. The blackout fade covers the window.
+                    if (wmap.travelRequested()) {
+                        if (const x3::game::MapPoi* tgt = wmap.travelTarget()) {
+                            float tg[3]; x3::game::placeOnTerrain(tgt->x, tgt->z, tg);
+                            const float ty = (tgt->y != 0.0f ? tgt->y : tg[1]) + 2.0f;
+                            wplayer.setFeetPosition(*wphys, x3::phys::Vec3{ tgt->x, ty, tgt->z });
+                            if (noclipW) { flyXw = tgt->x; flyYw = ty + 1.6f; flyZw = tgt->z; }
+                            prevPX = tgt->x; prevPZ = tgt->z;   // no teleport-spike velocity
+                            wTravelFade = 0.9f;
+                            wmapOpen = false; wmap.close();
+                            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                            glfwGetCursorPos(window, &lastMX, &lastMY);
+                            wflags.saveFile("save/worldmap_streamed.flags");
+                            x3::logInfo("[worldmap] FAST TRAVEL -> " + tgt->name);
+                        }
+                        wmap.clearTravelRequest();
+                    }
+                } else {
+                    prevEnterW = glfwGetKey(window, GLFW_KEY_ENTER) == GLFW_PRESS;
+                    prevLmbW = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+                }
+                g_weaponScroll = 0.0;   // consumed (or discarded) every frame
+
+                // Fast-travel blackout cover.
+                if (wTravelFade > 0.0f) {
+                    wTravelFade -= dt; if (wTravelFade < 0.0f) wTravelFade = 0.0f;
+                    const float fa = std::min(1.0f, wTravelFade / 0.45f);
+                    int fbw = 0, fbh = 0; glfwGetFramebufferSize(window, &fbw, &fbh);
+                    const float blk[4] = { 0.0f, 0.0f, 0.0f, fa };
+                    device->drawHudQuad(frame, 0.0f, 0.0f, (float)fbw, (float)fbh, blk);
+                }
+            }
             device->endFrame(frame);
         }
 
+        wflags.saveFile("save/worldmap_streamed.flags");
+        wmap.shutdown(*device);
         wsm.shutdown(wscene, *device, *wphys);
         wstream.shutdown(wscene, *device, *wphys);
         wjobs->shutdown();
@@ -9518,6 +9757,18 @@ int main(int argc, char** argv) {
         loading.shutdown(*device);
     }
 
+    // ---- INTERACTIVE WORLD MAP (M key) ----------------------------------------
+    // POIs + discovery + waypoint + fast travel + the full-screen map screen
+    // (app/world_map.*). Tiles bake from the canonical LevelDoc floors on first
+    // open. Discovery flags ride chatTrees.flags() (the one StoryFlags world),
+    // so found POIs persist with the story save.
+    x3::game::WorldMapSystem worldMap;
+    worldMap.init(x3::game::worldMapPoisJsonPath(), x3::game::canonProjectJsonPath());
+    x3::ui::UiContext mapUi;            // the map screen's own IMGUI-lite context
+    bool  worldMapOpen = false;
+    bool  prevMapKey = false, prevMapEnter = false;
+    float travelFadeT = 0.0f;           // fast-travel fade-to-black cover (s left)
+
     // ---- Main loop ----
     int lastW = static_cast<int>(W), lastH = static_cast<int>(H);
     float oceanTime = 0.0f;   // --world ocean wave-animation clock (seconds)
@@ -9555,7 +9806,7 @@ int main(int argc, char** argv) {
         // frame and only touch GLFW on a transition.
         const bool consoleOpen = hud.consoleOpen();
         consoleWasOpen = consoleOpen;   // (retained for parity; cursor logic below)
-        const bool wantCursor = consoleOpen || gameUi.showCursor();
+        const bool wantCursor = consoleOpen || gameUi.showCursor() || worldMapOpen;
         if (wantCursor != cursorShown) {
             glfwSetInputMode(window, GLFW_CURSOR,
                              wantCursor ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
@@ -9564,7 +9815,8 @@ int main(int argc, char** argv) {
         // Whether a UI menu (main/pause/settings) is currently up. While a menu is
         // up, gameplay input + the sim are frozen and only the menu reads input.
         const bool uiMenuActive = !gameUi.playing();
-        const bool simFrozen     = gameUi.shouldFreezeSim();
+        // The world map pauses the sim exactly like the menu screens do.
+        const bool simFrozen     = gameUi.shouldFreezeSim() || worldMapOpen;
 
         // Esc (edge-detected): route to the UI controller (toggle pause / back out
         // of settings / resume) UNLESS the console is open or a door-code keypad is
@@ -9572,9 +9824,14 @@ int main(int argc, char** argv) {
         // now an explicit menu choice (or the `quit` console command).
         bool escNow = !consoleOpen && glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS;
         bool uiEscEdge = false;
+        bool mapEscEdge = false;        // routed into the world-map screen (confirm prompt)
         if (escNow && !kpEscPrev) {
             if (codeMode) { codeMode = false; keypad.clear(); }
             else if (termMode) { termMode = false; game.secret().terminal().setActive(false); }
+            else if (worldMapOpen) {
+                if (worldMap.confirmOpen()) mapEscEdge = true;   // back out of the prompt
+                else { worldMapOpen = false; worldMap.close(); } // close the map
+            }
             else          { uiEscEdge = true; }   // hand the Esc edge to the UI below
         }
         kpEscPrev = escNow;
@@ -9591,14 +9848,14 @@ int main(int argc, char** argv) {
         double mx, my; glfwGetCursorPos(window, &mx, &my);
         float ddx = static_cast<float>(mx - lastMX), ddy = static_cast<float>(my - lastMY);
         lastMX = mx; lastMY = my;
-        if (consoleOpen || uiMenuActive || termMode || codeMode) { ddx = 0.0f; ddy = 0.0f; }
+        if (consoleOpen || uiMenuActive || termMode || codeMode || worldMapOpen) { ddx = 0.0f; ddy = 0.0f; }
 
         // Gameplay key reads are gated off while the console, a UI menu, the cell
         // terminal, OR a door-code keypad is active — so ALL gameplay input is
         // redirected to whatever is capturing (it reads keys via rawKey below) and
         // nothing drives movement/use/jump/fire/noclip/weapon-switch while typing.
         auto keyDown = [&](int k) {
-            return !consoleOpen && !uiMenuActive && !termMode && !codeMode &&
+            return !consoleOpen && !uiMenuActive && !termMode && !codeMode && !worldMapOpen &&
                    glfwGetKey(window, k) == GLFW_PRESS;
         };
         // RAW key read (bypasses the capture gates) — used ONLY by the terminal/keypad
@@ -9656,6 +9913,31 @@ int main(int argc, char** argv) {
         }
         prevF1 = f1Now;
         prevF2 = f2Now;
+
+        // ---- M: the INTERACTIVE WORLD MAP (full-screen; pauses the sim). Opens
+        // centered on the player with the player's Spire floor auto-selected;
+        // M again (or Esc) closes. Gated off whenever another surface captures. ----
+        {
+            const bool mNow = !consoleOpen && !termMode && !codeMode &&
+                              !chatTrees.active() && gameUi.playing() &&
+                              rawKey(GLFW_KEY_M);
+            if (mNow && !prevMapKey) {
+                if (worldMapOpen) { worldMapOpen = false; worldMap.close(); }
+                else if (!terrainWorld) {
+                    float mpx, mpy, mpz, mpyaw, mppitch;
+                    player.camera(mpx, mpy, mpz, mpyaw, mppitch);
+                    if (noclip) { mpx = flyX; mpy = flyY; mpz = flyZ; }
+                    int fbw = 0, fbh = 0; glfwGetFramebufferSize(window, &fbw, &fbh);
+                    worldMap.open(mpx, mpy - 1.6f, mpz, (float)fbw, (float)fbh);
+                    worldMapOpen = true;
+                }
+            }
+            prevMapKey = mNow;
+        }
+        // The map consumes the mouse wheel for ZOOM while it is open (weapon
+        // cycling below sees a zeroed delta).
+        float mapWheel = 0.0f;
+        if (worldMapOpen) { mapWheel = (float)g_weaponScroll; g_weaponScroll = 0.0; }
 
         // ---- CHAT-TREE choice input: number keys 1-4 answer the filtered choices
         // while a chat conversation is up (E advances no-choice lines in the use
@@ -10446,7 +10728,7 @@ int main(int argc, char** argv) {
         // A running chat-tree conversation also pauses the combat verbs (no firing
         // through Lena's dialog box) — same capture idea as the terminal/keypad.
         const bool uiCapture = consoleOpen || uiMenuActive || termMode || codeMode ||
-                               chatTrees.active();
+                               chatTrees.active() || worldMapOpen;
         bool meleeNow = !uiCapture && (keyDown(GLFW_KEY_V) ||
             glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS);
         if (meleeNow && !prevMelee && player.isAlive() && !terrainWorld) {
@@ -11162,6 +11444,16 @@ int main(int argc, char** argv) {
                     hm.playerX = rpx; hm.playerZ = rpz; hm.playerYaw = rpyaw;
                     hm.radarValid = true;
 
+                    // WORLD MAP: POI proximity discovery (persists via the story
+                    // flags) + the waypoint -> minimap chevron feed.
+                    if (gameUi.playing() && !worldMapOpen)
+                        worldMap.discoveryTick(chatTrees.flags(), rpx, rpy - 1.6f, rpz);
+                    if (worldMap.waypoint().active) {
+                        hm.wpValid = true;
+                        hm.wpX = worldMap.waypoint().x;
+                        hm.wpZ = worldMap.waypoint().z;
+                    }
+
                     // Live hostile marks (positions + short threat labels). The labels
                     // are static string literals owned by Level1Game, so storing the
                     // const char* in the (frame-scoped) HudModel is safe.
@@ -11277,6 +11569,63 @@ int main(int argc, char** argv) {
             }
             gameUi.update(uin, *device, frame, hm, dt);
 
+            // ---- WORLD MAP SCREEN (M). Drawn over the HUD; the sim is frozen
+            // while open (simFrozen above). Click = waypoint / POI travel;
+            // wheel = cursor-anchored zoom; drag/WASD/arrows = pan; F1..F7 floors. ----
+            if (worldMapOpen) {
+                mapUi.begin(*device, frame, uin);
+                x3::game::WorldMapSystem::ScreenInput msi{};
+                msi.mouseX = uin.mouseX;   msi.mouseY = uin.mouseY;
+                msi.mouseDown = uin.mouseDown; msi.mousePressed = uin.mousePressed;
+                msi.wheel = mapWheel;
+                msi.keyW = rawKey(GLFW_KEY_W) || rawKey(GLFW_KEY_UP);
+                msi.keyS = rawKey(GLFW_KEY_S) || rawKey(GLFW_KEY_DOWN);
+                msi.keyA = rawKey(GLFW_KEY_A) || rawKey(GLFW_KEY_LEFT);
+                msi.keyD = rawKey(GLFW_KEY_D) || rawKey(GLFW_KEY_RIGHT);
+                const bool entNow = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
+                msi.enterEdge = entNow && !prevMapEnter;
+                prevMapEnter = entNow;
+                msi.escEdge = mapEscEdge;
+                float mpx, mpy, mpz, mpyaw, mppitch;
+                player.camera(mpx, mpy, mpz, mpyaw, mppitch);
+                if (noclip) { mpx = flyX; mpy = flyY; mpz = flyZ; mpyaw = flyYaw; }
+                msi.playerX = mpx; msi.playerY = mpy - 1.6f; msi.playerZ = mpz;
+                msi.playerYaw = mpyaw;
+                msi.compCount = hm.allyCount; msi.compX = hm.allyX; msi.compZ = hm.allyZ;
+                msi.objValid = hm.trapValid; msi.objX = hm.trapX; msi.objZ = hm.trapZ;
+                msi.missionBlocksTravel = missionDocActive &&
+                                          missionRunner.currentStageNoFastTravel();
+                msi.locationName = "THE SPIRE - DETENTION LEVEL";
+                worldMap.drawScreen(mapUi, *device, frame, msi, chatTrees.flags(), dt);
+                mapUi.end();
+
+                // FAST TRAVEL: teleport + blackout cover. This world is the fully-
+                // resident Level-1 build (no WorldStreamer on this path; the
+                // streamed world routes the same request through wsm.update, whose
+                // proxy fallback covers the realize window — see --world streamed).
+                if (worldMap.travelRequested()) {
+                    if (const x3::game::MapPoi* tgt = worldMap.travelTarget()) {
+                        player.setFeetPosition(*physics,
+                            x3::phys::Vec3{ tgt->x, tgt->y + 0.3f, tgt->z });
+                        travelFadeT = 0.9f;   // fade-to-black cover (blackout pattern)
+                        worldMapOpen = false; worldMap.close();
+                        x3::logInfo("[worldmap] FAST TRAVEL -> " + tgt->name);
+                    }
+                    worldMap.clearTravelRequest();
+                }
+            } else {
+                prevMapEnter = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
+            }
+            // Fast-travel BLACKOUT cover: hold black just after the teleport, then
+            // fade out (same visual language as the fast-boot blackout).
+            if (travelFadeT > 0.0f) {
+                travelFadeT -= dt; if (travelFadeT < 0.0f) travelFadeT = 0.0f;
+                const float a = std::min(1.0f, travelFadeT / 0.45f);
+                int fbw = 0, fbh = 0; glfwGetFramebufferSize(window, &fbw, &fbh);
+                const float blk[4] = { 0.0f, 0.0f, 0.0f, a };
+                device->drawHudQuad(frame, 0.0f, 0.0f, (float)fbw, (float)fbh, blk);
+            }
+
             // ---- Audio settings -> live audio system. Push every frame from the
             // SettingsModel; the setters are cheap and idempotent (setMusicEnabled
             // early-returns when unchanged, so toggling Music stops/starts the bed
@@ -11374,6 +11723,7 @@ int main(int argc, char** argv) {
     // spawn skinned death ragdolls — tear those Jolt bodies down too before physics.
     nexus.shutdown();
     if (canonPlay.built()) canonPlay.shutdown();   // --world canonlevel enemy ragdolls
+    worldMap.shutdown(*device);                    // baked map-tile textures
     physics->shutdown();
     device->shutdown();
     glfwDestroyWindow(window);

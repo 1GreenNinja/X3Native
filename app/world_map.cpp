@@ -689,6 +689,14 @@ void WorldMapSystem::drawScreen(x3::ui::UiContext& ui, x3::rhi::IRenderDevice& d
             continue;
         }
         drawPoiIcon(ui, p, px, py, hov, m_pulse);
+        // Zoomed out, the MAJOR anchors keep their names visible (the gazetteer
+        // read of the world overview); minor POIs label on hover only.
+        if (!hov && m_cam.scale < 1.0f &&
+            (p.type == "city" || p.type == "base" || p.type == "landmark" ||
+             p.type == "club")) {
+            const float lbl[4] = { 0.62f, 0.80f, 0.92f, 0.85f };
+            ui.textCentered(p.name.c_str(), px, py + 9.0f, 13.0f, lbl);
+        }
     }
 
     // ---- Companions (green dots).
