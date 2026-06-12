@@ -64,6 +64,8 @@ struct MissionStage {
     bool          hasBranch = false;
     MissionBranch branch;                 // used instead of `next` when present
     std::string failTo;                   // stage to jump to on fail ("" => mission FAILED)
+    bool noFastTravel = false;            // optional "no_fasttravel": true — the world
+                                          // map refuses fast travel while this stage runs
 };
 
 struct MissionDoc {
@@ -191,6 +193,11 @@ public:
     const std::string& currentStageId() const { return m_stageId; }
     // The current stage's objective text ("" when not running).
     const std::string& currentObjective() const;
+    // True while the CURRENT stage carries "no_fasttravel": true — the world
+    // map's fast-travel gate polls this (false when not running).
+    bool currentStageNoFastTravel() const {
+        return m_state == State::Running && m_stage && m_stage->noFastTravel;
+    }
 
 private:
     void emitObjective(const std::string& text);

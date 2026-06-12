@@ -44,6 +44,7 @@ add_executable(X3Engine WIN32
     weather.cpp
     world_regions.cpp
     world_stream.cpp
+    world_map.cpp
     city.cpp
     ocean_base.cpp
     save.cpp

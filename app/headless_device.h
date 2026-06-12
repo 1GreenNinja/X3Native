@@ -23,6 +23,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <unordered_map>
 
 namespace x3::game {
 
@@ -40,11 +41,31 @@ public:
     x3::rhi::FrameContext beginFrame() override { return {}; }
     void endFrame(const x3::rhi::FrameContext&) override {}
 
-    x3::rhi::MeshHandle createMesh(const x3::rhi::MeshVertex*, uint32_t,
+    x3::rhi::MeshHandle createMesh(const x3::rhi::MeshVertex* verts, uint32_t vcount,
                                    const uint32_t*, uint32_t) override {
-        return x3::rhi::MeshHandle{ m_next++ };
+        const uint32_t id = m_next++;
+        // Track the CPU local-space AABB (mirrors the real device) so headless
+        // tests of the world-map tile bake see real footprints.
+        if (verts && vcount) {
+            Bounds b;
+            b.bmin[0] = b.bmin[1] = b.bmin[2] =  3.4e38f;
+            b.bmax[0] = b.bmax[1] = b.bmax[2] = -3.4e38f;
+            for (uint32_t i = 0; i < vcount; ++i)
+                for (int a = 0; a < 3; ++a) {
+                    if (verts[i].pos[a] < b.bmin[a]) b.bmin[a] = verts[i].pos[a];
+                    if (verts[i].pos[a] > b.bmax[a]) b.bmax[a] = verts[i].pos[a];
+                }
+            m_bounds[id] = b;
+        }
+        return x3::rhi::MeshHandle{ id };
     }
-    void destroyMesh(x3::rhi::MeshHandle) override {}
+    bool meshBounds(x3::rhi::MeshHandle h, float outMin[3], float outMax[3]) const override {
+        auto it = m_bounds.find(h.id);
+        if (it == m_bounds.end()) return false;
+        for (int a = 0; a < 3; ++a) { outMin[a] = it->second.bmin[a]; outMax[a] = it->second.bmax[a]; }
+        return true;
+    }
+    void destroyMesh(x3::rhi::MeshHandle h) override { m_bounds.erase(h.id); }
     void updateMesh(x3::rhi::MeshHandle, const x3::rhi::MeshVertex*, uint32_t) override {}
 
     x3::rhi::TextureHandle createTexture(const void*, uint32_t, uint32_t, bool) override {
@@ -126,6 +147,11 @@ protected:
     // overrides createMesh/createTexture (e.g. to count them) can preserve the
     // exact incrementing-handle behavior of the base.
     uint32_t m_next = 1;
+
+    // Local-space AABBs tracked per mesh handle (mirrors the real device's
+    // meshBounds so the world-map bake is testable headlessly).
+    struct Bounds { float bmin[3]; float bmax[3]; };
+    std::unordered_map<uint32_t, Bounds> m_bounds;
 };
 
 } // namespace x3::game

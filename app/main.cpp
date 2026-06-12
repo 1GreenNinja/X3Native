@@ -64,6 +64,7 @@
 #include "weather.h"                         // EFLZ Weather (7 states, biome-gated, hazard — --test-weather)
 #include "world_regions.h"                   // EFLZ open-world surrounding regions + 4 mountain ranges (--test-worldregions)
 #include "world_stream.h"                    // SEAMLESS region-graph streaming (--world streamed / --test-worldstream)
+#include "world_map.h"                       // INTERACTIVE WORLD MAP (M key / --test-worldmap)
 #include "city.h"                            // EFLZ open-world metropolis: districts + roads + freeway tunnels (--test-city)
 #include "ocean_base.h"                      // EFLZ open-world ocean + undersea base + submarine combat (--test-oceanbase)
 #include "elevator.h"
@@ -1472,7 +1473,7 @@ int main(int argc, char** argv) {
          testBarrels = false, testGlass = false, testHoloterm = false, testEcs = false, testEcsRender = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
-         testStreaming = false, testWorldStream = false, testAi = false, testDoorCode = false, testElevator = false,
+         testStreaming = false, testWorldStream = false, testWorldMap = false, testAi = false, testDoorCode = false, testElevator = false,
          testElevatorFsm = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
@@ -1840,6 +1841,7 @@ int main(int argc, char** argv) {
         // World-streaming flags handled OUTSIDE the big else-if chain (which sits at
         // MSVC's C1061 block-nesting limit — adding to it breaks the build).
         if (a == "--test-worldstream") { testWorldStream = true; continue; }
+        if (a == "--test-worldmap")    { testWorldMap    = true; continue; }
         if (a == "--ws-budget") {   // per-frame world-stream budget, ms (cvar-style tunable)
             if (i + 1 < argc && argv[i + 1][0] != '-') wsBudgetMs = std::strtof(argv[++i], nullptr);
             continue;
@@ -2333,6 +2335,12 @@ int main(int argc, char** argv) {
         x3::logInfo("running SEAMLESS region-graph world-streaming self-test "
                     "(region residency + ledgers + hysteresis + budget + proxy)...");
         return x3::game::runWorldStreamSelfTest() ? 0 : 1;
+    }
+    if (testWorldMap) {
+        x3::logInfo("running INTERACTIVE WORLD MAP self-test (POI discovery + "
+                    "waypoint + fast-travel gates/streaming + zoom/pan math + "
+                    "floor slices + tile bakes)...");
+        return x3::game::runWorldMapSelfTest() ? 0 : 1;
     }
     if (testAi) {
         x3::logInfo("running D-ai monster combat behaviour state-machine self-test...");

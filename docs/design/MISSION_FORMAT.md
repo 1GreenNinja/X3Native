@@ -66,7 +66,11 @@ the host follow callback. Rewards are just fx: `{"give": "keycard_red"}`,
     "then": "hero_end",
     "else": "coward_end"
   },
-  "fail_to": "retry_stage"               // on fail: jump here; ABSENT = mission FAILED
+  "fail_to": "retry_stage",              // on fail: jump here; ABSENT = mission FAILED
+  "no_fasttravel": true                  // OPTIONAL (default false): while THIS stage is
+                                         // current, the world map refuses fast travel
+                                         // (MissionRunner::currentStageNoFastTravel ->
+                                         // the WorldMapSystem Mission gate)
 }
 ```
 
