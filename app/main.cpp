@@ -8229,6 +8229,9 @@ int main(int argc, char** argv) {
                                     std::sin(bpitch), std::cos(bpitch) * std::sin(byaw) };
         for (uint32_t f = 0; f < benchFrames && !glfwWindowShouldClose(window); ++f) {
             glfwPollEvents();
+            // Sync the live cvars (incl. r_cullpath/r_hzb seeded by --cullpath/--hzb)
+            // onto the device, exactly as the main loop does each frame.
+            applyRtaoCVars(*console, *device);
             double nowT = glfwGetTime();
             double cpuMs = (nowT - prevT) * 1000.0; prevT = nowT;
 
@@ -8270,6 +8273,13 @@ int main(int argc, char** argv) {
             "BENCH cubes=%u draws=%u tris=%u | FPS=%.1f  CPU=%.3f ms  GPU=%.3f ms  (avg over %u frames)",
             stressCount, last.drawCalls, last.triangles, avgFps, avgCpu, avgGpu, measured);
         x3::logInfo(rb);
+        if (last.gpuCullPath > 0) {
+            std::snprintf(rb, sizeof(rb),
+                "BENCH gpucull path=%d tested=%u drawn=%u frustum=%u hzb=%u",
+                last.gpuCullPath, last.gpuCullTested, last.gpuCullDrawn,
+                last.gpuCullFrustum, last.gpuCullHzb);
+            x3::logInfo(rb);
+        }
         if (fxBench) {
             const double gOff = nOff ? sumGpuOff / nOff : 0.0;
             const double gOn  = nOn  ? sumGpuOn  / nOn  : 0.0;
@@ -8440,6 +8450,11 @@ int main(int argc, char** argv) {
                 }
                 shotHud.draw(shotUi, shm, dt);
                 shotUi.end();
+
+                // D15 density demo: with --stress N the capture is the GPU-cull
+                // showcase — force the perf/cull stats panel into the still so the
+                // tested/drawn/frustum/hzb counters are part of the evidence.
+                if (stressCount > 0) hud.drawStats(*device, frame, *console, dt, /*force=*/true);
 
                 // ON-GLASS HOLO-TERMINAL readout for the capture: when the shot camera
                 // is aimed at the cell terminal it shows the LARGE high-contrast boot

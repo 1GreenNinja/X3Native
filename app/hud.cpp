@@ -172,13 +172,24 @@ void Hud::drawStats(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
     if (s.gpuFrameMs > 0.0f) std::snprintf(gpuStr, sizeof(gpuStr), "%5.2f ms", s.gpuFrameMs);
     else                     std::snprintf(gpuStr, sizeof(gpuStr), "  n/a  ");
 
-    char lines[6][64];
+    char lines[9][64];
+    int lineCount = 6;
     std::snprintf(lines[0], sizeof(lines[0]), "FPS %4.0f", fps);
     std::snprintf(lines[1], sizeof(lines[1]), "CPU %5.2f ms", cpuMs);
     std::snprintf(lines[2], sizeof(lines[2]), "GPU %s", gpuStr);
     std::snprintf(lines[3], sizeof(lines[3]), "draws %u", s.drawCalls);
     std::snprintf(lines[4], sizeof(lines[4]), "tris  %u", s.triangles);
     std::snprintf(lines[5], sizeof(lines[5]), "objs  %u/%u", s.objectsDrawn, s.objectsSubmitted);
+    // D15 GPU cull block (only when the GPU path is active): tier + the cull.comp
+    // counters (read back with frames-in-flight latency, like gpuFrameMs).
+    if (s.gpuCullPath > 0) {
+        const char* pathName = (s.gpuCullPath == 2) ? "tier1 async"
+                             : (s.gpuCullPath == 3) ? "tier2 mesh" : "tier0 gfx";
+        std::snprintf(lines[6], sizeof(lines[6]), "cull %s", pathName);
+        std::snprintf(lines[7], sizeof(lines[7]), "tested %u drawn %u", s.gpuCullTested, s.gpuCullDrawn);
+        std::snprintf(lines[8], sizeof(lines[8]), "frustum %u hzb %u", s.gpuCullFrustum, s.gpuCullHzb);
+        lineCount = 9;
+    }
 
     // Right-aligned panel in the top-right corner so it never collides with the
     // top-left FPS meter / objective text.
@@ -189,9 +200,9 @@ void Hud::drawStats(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
     // Widest line drives the panel width (monospace font: glyph*0.? approximated by
     // glyph width == glyph height for this 8x8 atlas scaled square).
     size_t widest = 0;
-    for (auto& l : lines) widest = std::max(widest, std::char_traits<char>::length(l));
+    for (int i = 0; i < lineCount; ++i) widest = std::max(widest, std::char_traits<char>::length(lines[i]));
     const float panelW = widest * glyph + pad * 2.0f;
-    const float panelH = 6 * (glyph * 1.5f) + pad * 2.0f;
+    const float panelH = lineCount * (glyph * 1.5f) + pad * 2.0f;
     const float x0 = (w > 0) ? ((float)w - panelW - 8.0f) : 8.0f;
     const float y0 = 8.0f;
 
@@ -202,10 +213,10 @@ void Hud::drawStats(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
     const float white[4]  = { 0.85f, 1.0f, 0.85f, 1.0f };
     const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.8f };
     float ty = y0 + pad;
-    for (auto& l : lines) {
+    for (int i = 0; i < lineCount; ++i) {
         const float tx = x0 + pad;
-        device.drawHudText(frame, l, tx + 1.0f, ty + 1.0f, glyph, shadow);
-        device.drawHudText(frame, l, tx, ty, glyph, white);
+        device.drawHudText(frame, lines[i], tx + 1.0f, ty + 1.0f, glyph, shadow);
+        device.drawHudText(frame, lines[i], tx, ty, glyph, white);
         ty += glyph + 2.0f;
     }
 }
