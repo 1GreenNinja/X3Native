@@ -4,16 +4,38 @@
 namespace x3::game {
 
 uint32_t Scene::add(const Entity& e) {
-    uint32_t id = (uint32_t)m_entities.size();
-    m_entities.push_back(e);
-    // Parallel generation counter: a fresh slot starts at generation 1 so a handle
-    // minted for it is never the invalid generation 0 (netcode Phase 0, §4.1).
-    m_generation.push_back(1);
-    // Maintain the BodyId -> entity reverse map for rayCast hit resolution.
-    // Skip invalid bodies (purely visual / static-no-collision entities).
-    if (e.body.valid())
-        m_bodyToEntity[e.body.id] = id;
+    uint32_t id;
+    if (!m_freeSlots.empty()) {
+        // World-streaming slot reuse: recycle INTO a released slot instead of growing
+        // the vector (recycle() bumps the generation + fixes the body map), so the
+        // scene's size stays constant across region stream-out/in cycles.
+        id = m_freeSlots.back();
+        m_freeSlots.pop_back();
+        recycle(id, e);
+    } else {
+        id = (uint32_t)m_entities.size();
+        m_entities.push_back(e);
+        // Parallel generation counter: a fresh slot starts at generation 1 so a handle
+        // minted for it is never the invalid generation 0 (netcode Phase 0, §4.1).
+        m_generation.push_back(1);
+        // Maintain the BodyId -> entity reverse map for rayCast hit resolution.
+        // Skip invalid bodies (purely visual / static-no-collision entities).
+        if (e.body.valid())
+            m_bodyToEntity[e.body.id] = id;
+    }
+    if (m_capture) m_capture->push_back(id);
     return id;
+}
+
+void Scene::releaseSlot(uint32_t id) {
+    if (id >= m_entities.size()) return;
+    // Empty the slot via recycle() so the generation bumps (stale handles die) and
+    // the old body unmaps. The empty entity has no mesh/body and is invisible, so a
+    // parked slot costs nothing in update()/render().
+    Entity empty{};
+    empty.visible = false;
+    recycle(id, empty);
+    m_freeSlots.push_back(id);
 }
 
 SceneHandle Scene::handle(uint32_t index) const {

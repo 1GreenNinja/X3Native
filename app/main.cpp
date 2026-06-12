@@ -63,6 +63,7 @@
 #include "tod.h"                             // EFLZ Time-of-Day cycle (sky/sun via SkyParams — --test-tod)
 #include "weather.h"                         // EFLZ Weather (7 states, biome-gated, hazard — --test-weather)
 #include "world_regions.h"                   // EFLZ open-world surrounding regions + 4 mountain ranges (--test-worldregions)
+#include "world_stream.h"                    // SEAMLESS region-graph streaming (--world streamed / --test-worldstream)
 #include "city.h"                            // EFLZ open-world metropolis: districts + roads + freeway tunnels (--test-city)
 #include "ocean_base.h"                      // EFLZ open-world ocean + undersea base + submarine combat (--test-oceanbase)
 #include "elevator.h"
@@ -1471,7 +1472,7 @@ int main(int argc, char** argv) {
          testBarrels = false, testGlass = false, testHoloterm = false, testEcs = false, testEcsRender = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
-         testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
+         testStreaming = false, testWorldStream = false, testAi = false, testDoorCode = false, testElevator = false,
          testElevatorFsm = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
@@ -1804,6 +1805,11 @@ int main(int argc, char** argv) {
     // (walk the hills) instead of the default interior Level 1. Anything else (or
     // omitted) keeps Level 1 as the default, unchanged.
     std::string worldMode = "level1";
+    // Seamless world streaming tunables (--world streamed; see app/world_stream.*):
+    // per-frame stream-work budget (ms) + velocity lookahead (s). Cvar-style CLI
+    // overrides: --ws-budget <ms> / --ws-lookahead <s>.
+    float wsBudgetMs   = 6.0f;
+    float wsLookaheadS = 2.5f;
     // Optional settle-frame count for --screenshot (default 16 = unchanged
     // behavior). Larger values advance the world (and the characters' skeletal
     // animation) further before the capture, so two shots at different counts show
@@ -1831,6 +1837,17 @@ int main(int argc, char** argv) {
     (void)loadedWinSize;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
+        // World-streaming flags handled OUTSIDE the big else-if chain (which sits at
+        // MSVC's C1061 block-nesting limit — adding to it breaks the build).
+        if (a == "--test-worldstream") { testWorldStream = true; continue; }
+        if (a == "--ws-budget") {   // per-frame world-stream budget, ms (cvar-style tunable)
+            if (i + 1 < argc && argv[i + 1][0] != '-') wsBudgetMs = std::strtof(argv[++i], nullptr);
+            continue;
+        }
+        if (a == "--ws-lookahead") { // velocity lookahead, seconds
+            if (i + 1 < argc && argv[i + 1][0] != '-') wsLookaheadS = std::strtof(argv[++i], nullptr);
+            continue;
+        }
         if (a == "--smoketest") smoketest = true;
         else if (a == "--test-rt") { smoketest = true; testRt = true; }
         else if (a == "--test-jobs") testJobs = true;
@@ -2311,6 +2328,11 @@ int main(int argc, char** argv) {
     if (testStreaming) {
         x3::logInfo("running B3 world-streaming self-test (residency ring + async gen)...");
         return x3::game::runStreamingSelfTest() ? 0 : 1;
+    }
+    if (testWorldStream) {
+        x3::logInfo("running SEAMLESS region-graph world-streaming self-test "
+                    "(region residency + ledgers + hysteresis + budget + proxy)...");
+        return x3::game::runWorldStreamSelfTest() ? 0 : 1;
     }
     if (testAi) {
         x3::logInfo("running D-ai monster combat behaviour state-machine self-test...");
@@ -7431,6 +7453,247 @@ int main(int argc, char** argv) {
         cliffs.shutdown(cscene, *device, *cphys);
         cjobs->shutdown();
         cphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
+    // ---- SEAMLESS STREAMED WORLD (--world streamed) -------------------------
+    // The region-graph world: the engine's streamed terrain (B3) provides the
+    // unbounded GROUND; app/world_stream.* streams the AUTHORED regions
+    // (assets/world/regions.json — the canonical Spire floor / city / undersea
+    // base / surface landmarks) in AHEAD of the player and out BEHIND, with the
+    // terrain tick + the region tick sharing ONE per-frame budget umbrella
+    // (--ws-budget <ms>, default 6; the terrain's measured cost is charged
+    // against it first). NO loading screens: boot builds only the regions the
+    // spawn point is inside (the boot cost); neighbors arrive post-interactive.
+    //   * TRAVERSAL SHOTS (headless): `--world streamed --screenshot x` writes a
+    //     3-shot region-boundary sequence (city not-yet-resident -> streamed in
+    //     -> inside the city) into docs/screenshots/streaming/.
+    //   * WALKABLE (windowed): `--world streamed` — WASD walk, mouse look,
+    //     Space jump, LeftShift sprint, F noclip, Esc quit.
+    if (worldMode == "streamed") {
+        x3::logInfo("--world streamed: booting the seamless region-graph world");
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> wphys(x3::phys::createPhysicsWorld());
+        if (!wphys->init()) {
+            x3::logError("--world streamed: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        std::unique_ptr<x3::jobs::IJobSystem> wjobs(x3::jobs::createJobSystem());
+        wjobs->init(0);
+        x3::game::Scene wscene;
+        const x3::game::TerrainConfig& wcfg = x3::game::worldTerrainConfig();
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
+            sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+            sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
+            device->setSkyParams(sp);
+        }
+
+        // The region graph (data) + the residency manager.
+        x3::game::WorldRegionGraph wgraph;
+        {
+            std::vector<std::string> errs;
+            if (!wgraph.load(x3::game::worldRegionsJsonPath(), errs) || wgraph.empty()) {
+                for (const std::string& e : errs) x3::logError("--world streamed: " + e);
+                x3::logError("--world streamed: region graph failed to load — aborting");
+                wjobs->shutdown(); wphys->shutdown(); device->shutdown();
+                if (window) glfwDestroyWindow(window);
+                glfwTerminate();
+                return 1;
+            }
+        }
+        x3::game::WorldStreamer wsm;
+        wsm.init(wgraph, wjobs.get());
+        wsm.setLookahead(wsLookaheadS);
+        x3::logInfo("--world streamed: region graph `" + x3::game::worldRegionsJsonPath() +
+                    "` (" + std::to_string(wgraph.regions.size()) + " regions), budget " +
+                    std::to_string(wsBudgetMs) + " ms/frame, lookahead " +
+                    std::to_string(wsLookaheadS) + " s");
+
+        x3::game::TerrainStreamer wstream;
+
+        // ===== Headless traversal-shot sequence (region boundary before/after). =
+        if (headless) {
+            namespace fs = std::filesystem;
+            const fs::path outDir = "docs/screenshots/streaming";
+            std::error_code ec; fs::create_directories(outDir, ec);
+            const float dt = 1.0f / 60.0f;
+            // Approach the CITY from the west at vehicle speed: at leg A the city
+            // is beyond its unload radius (NOT resident — bare terrain + the
+            // mountain backdrop); by leg B the load radius has tripped and the
+            // city has streamed in; leg C ends inside Scrapyard City.
+            struct ShotLeg { float x, z; int settle; const char* png; };
+            const ShotLeg legs[3] = {
+                { -1700.0f, 500.0f, 120, "01_city_not_resident.png" },
+                { -1040.0f, 500.0f, 150, "02_city_streamed_in.png"  },
+                {  -620.0f, 500.0f, 150, "03_inside_city.png"       },
+            };
+            wstream.init(wscene, *device, *wphys, wjobs.get(), wcfg,
+                         legs[0].x, legs[0].z, /*radius=*/8);
+            wstream.setUploadBudget(64);   // fill the visible ring fast for stills
+            wsm.buildStartRegions(wscene, *device, *wphys, legs[0].x, 0.0f, legs[0].z);
+
+            float cx = legs[0].x, cz = legs[0].z;
+            const float kDriveSpeed = 40.0f;   // m/s — the vehicle-traversal case
+            auto tickFrame = [&](float vx, float vz, const char* arm) {
+                glfwPollEvents();
+                const double t0 = glfwGetTime();
+                wstream.update(wscene, *device, *wphys, cx, cz);
+                const double terrainMs = (glfwGetTime() - t0) * 1000.0;
+                wsm.update(wscene, *device, *wphys, cx, 0.0f, cz, vx, 0.0f, vz,
+                           /*budget*/ 24.0, terrainMs);
+                wphys->step(dt);
+                wscene.update(*wphys);
+                float ground[3]; x3::game::placeOnTerrain(cx, cz, ground);
+                device->setCamera(cx, ground[1] + 32.0f, cz, 0.0f, -0.20f, 60.0f);
+                if (arm) device->armCapture(arm);
+                auto frame = device->beginFrame();
+                if (frame.valid) wscene.render(*device, frame);
+                device->endFrame(frame);
+            };
+            bool allWrote = true;
+            for (const ShotLeg& leg : legs) {
+                // Drive to the leg point (region streaming runs the whole way).
+                for (int guard = 0; guard < 20000; ++guard) {
+                    const float dx = leg.x - cx, dz = leg.z - cz;
+                    const float d = std::sqrt(dx * dx + dz * dz);
+                    if (d < 0.5f) break;
+                    const float ux = dx / d, uz = dz / d;
+                    const float step = std::min(d, kDriveSpeed * dt);
+                    cx += ux * step; cz += uz * step;
+                    tickFrame(ux * kDriveSpeed, uz * kDriveSpeed, nullptr);
+                }
+                // Settle (let terrain + region uploads land), then capture.
+                const std::string outPath = (outDir / leg.png).string();
+                for (int i = 0; i < leg.settle; ++i)
+                    tickFrame(0.0f, 0.0f, i == leg.settle - 1 ? outPath.c_str() : nullptr);
+                const bool wrote = device->captureFrame(outPath.c_str());
+                if (wrote) x3::logInfo("--world streamed: wrote " + outPath);
+                else { x3::logError("--world streamed: capture FAILED: " + outPath); allWrote = false; }
+            }
+            wsm.shutdown(wscene, *device, *wphys);
+            wstream.shutdown(wscene, *device, *wphys);
+            wjobs->shutdown();
+            wphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return allWrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path. Spawn ON the terrain surface at the first
+        // region's anchor (the Spire); the regions the spawn is inside build
+        // synchronously (boot), everything else streams as you move. =====
+        const float sax = wgraph.regions[0].anchor[0], saz = wgraph.regions[0].anchor[2];
+        float sgr[3]; x3::game::placeOnTerrain(sax, saz, sgr);
+        wstream.init(wscene, *device, *wphys, wjobs.get(), wcfg, sax, saz, /*radius=*/8);
+        wsm.buildStartRegions(wscene, *device, *wphys, sax, sgr[1], saz);
+
+        x3::game::Player wplayer;
+        wplayer.spawn(*wphys, sax, sgr[1] + 2.0f, saz);
+
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        bool prevSpaceW = false, prevFW = false, noclipW = false;
+        float flyXw = sax, flyYw = sgr[1] + 1.6f, flyZw = saz, flyYawW = 0.0f, flyPitchW = -0.1f;
+        float prevPX = sax, prevPZ = saz;
+        x3::logInfo("--world streamed: WASD walk, mouse look, Space jump, LeftShift sprint, "
+                    "F noclip, Esc to quit — regions stream around you (watch the log)");
+
+        int lastWw = (int)W, lastHw = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+
+            double now = glfwGetTime();
+            float dt = (float)(now - prevTime); prevTime = now;
+            if (dt > 0.1f) dt = 0.1f;
+
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+
+            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            bool spaceNow = kd(GLFW_KEY_SPACE);
+            bool fNow = kd(GLFW_KEY_F);
+            if (fNow && !prevFW) {
+                noclipW = !noclipW;
+                if (noclipW) { float yy, pp; wplayer.camera(flyXw, flyYw, flyZw, yy, pp); flyYawW = yy; flyPitchW = pp; }
+            }
+            prevFW = fNow;
+
+            float camX, camY, camZ, camYaw, camPitch;
+            if (!noclipW) {
+                x3::game::PlayerInput in;
+                if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+                if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+                if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+                if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+                in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+                in.jumpPressed = spaceNow && !prevSpaceW;
+                in.lookDX = ddx; in.lookDY = ddy;
+                wplayer.update(in, dt, *wphys);
+                wplayer.camera(camX, camY, camZ, camYaw, camPitch);
+            } else {
+                const float sens = 0.0025f;
+                flyYawW += ddx * sens; flyPitchW -= ddy * sens;
+                if (flyPitchW >  1.55f) flyPitchW =  1.55f;
+                if (flyPitchW < -1.55f) flyPitchW = -1.55f;
+                float fxw = std::cos(flyPitchW) * std::cos(flyYawW);
+                float fyw = std::sin(flyPitchW);
+                float fzw = std::cos(flyPitchW) * std::sin(flyYawW);
+                float rl = std::sqrt(fxw*fxw + fzw*fzw); if (rl < 1e-4f) rl = 1e-4f;
+                float rx = -fzw/rl, rz = fxw/rl;
+                float spd = 8.0f * dt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd *= 6.0f;
+                if (kd(GLFW_KEY_W)) { flyXw += fxw*spd; flyYw += fyw*spd; flyZw += fzw*spd; }
+                if (kd(GLFW_KEY_S)) { flyXw -= fxw*spd; flyYw -= fyw*spd; flyZw -= fzw*spd; }
+                if (kd(GLFW_KEY_D)) { flyXw += rx*spd; flyZw += rz*spd; }
+                if (kd(GLFW_KEY_A)) { flyXw -= rx*spd; flyZw -= rz*spd; }
+                if (spaceNow) flyYw += spd;
+                if (kd(GLFW_KEY_LEFT_CONTROL)) flyYw -= spd;
+                camX = flyXw; camY = flyYw; camZ = flyZw; camYaw = flyYawW; camPitch = flyPitchW;
+            }
+            prevSpaceW = spaceNow;
+
+            // ---- ONE budget umbrella: terrain tiles first (measured), then the
+            // region streamer gets whatever is left of --ws-budget this frame.
+            // Player velocity feeds the lookahead so sprint/vehicle speeds pull
+            // regions in earlier. ----
+            const double t0s = glfwGetTime();
+            wstream.update(wscene, *device, *wphys, camX, camZ);
+            const double terrainMs = (glfwGetTime() - t0s) * 1000.0;
+            const float velX = dt > 1e-4f ? (camX - prevPX) / dt : 0.0f;
+            const float velZ = dt > 1e-4f ? (camZ - prevPZ) / dt : 0.0f;
+            prevPX = camX; prevPZ = camZ;
+            wsm.update(wscene, *device, *wphys, camX, camY, camZ, velX, 0.0f, velZ,
+                       (double)wsBudgetMs, terrainMs);
+
+            wphys->step(dt);
+            wscene.update(*wphys);
+
+            int cw, chw; glfwGetFramebufferSize(window, &cw, &chw);
+            if (cw != lastWw || chw != lastHw) { lastWw = cw; lastHw = chw; if (cw>0&&chw>0) device->onResize((uint32_t)cw,(uint32_t)chw); }
+
+            device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) wscene.render(*device, frame);
+            device->endFrame(frame);
+        }
+
+        wsm.shutdown(wscene, *device, *wphys);
+        wstream.shutdown(wscene, *device, *wphys);
+        wjobs->shutdown();
+        wphys->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
