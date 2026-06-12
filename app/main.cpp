@@ -7530,11 +7530,11 @@ int main(int argc, char** argv) {
             // is beyond its unload radius (NOT resident — bare terrain + the
             // mountain backdrop); by leg B the load radius has tripped and the
             // city has streamed in; leg C ends inside Scrapyard City.
-            struct ShotLeg { float x, z; int settle; const char* png; };
+            struct ShotLeg { float x, z, camH, pitch; int settle; const char* png; };
             const ShotLeg legs[3] = {
-                { -1700.0f, 500.0f, 120, "01_city_not_resident.png" },
-                { -1040.0f, 500.0f, 150, "02_city_streamed_in.png"  },
-                {  -620.0f, 500.0f, 150, "03_inside_city.png"       },
+                { -1500.0f, 500.0f, 70.0f, -0.35f, 120, "01_city_not_resident.png" },
+                {  -820.0f, 500.0f, 70.0f, -0.35f, 150, "02_city_streamed_in.png"  },
+                {  -620.0f, 500.0f, 32.0f, -0.20f, 150, "03_inside_city.png"       },
             };
             wstream.init(wscene, *device, *wphys, wjobs.get(), wcfg,
                          legs[0].x, legs[0].z, /*radius=*/8);
@@ -7542,6 +7542,7 @@ int main(int argc, char** argv) {
             wsm.buildStartRegions(wscene, *device, *wphys, legs[0].x, 0.0f, legs[0].z);
 
             float cx = legs[0].x, cz = legs[0].z;
+            float camH = legs[0].camH, camPit = legs[0].pitch;
             const float kDriveSpeed = 40.0f;   // m/s — the vehicle-traversal case
             auto tickFrame = [&](float vx, float vz, const char* arm) {
                 glfwPollEvents();
@@ -7553,14 +7554,21 @@ int main(int argc, char** argv) {
                 wphys->step(dt);
                 wscene.update(*wphys);
                 float ground[3]; x3::game::placeOnTerrain(cx, cz, ground);
-                device->setCamera(cx, ground[1] + 32.0f, cz, 0.0f, -0.20f, 60.0f);
+                device->setCamera(cx, ground[1] + camH, cz, 0.0f, camPit, 60.0f);
                 if (arm) device->armCapture(arm);
                 auto frame = device->beginFrame();
                 if (frame.valid) wscene.render(*device, frame);
                 device->endFrame(frame);
             };
             bool allWrote = true;
+            // Trigger the FULL terrain residency ring at the start point: the
+            // streamer enqueues stream-in on tile-boundary CROSSINGS, so a static
+            // focus only has its synchronous 3x3 (the valley still uses the same
+            // one-frame nudge).
+            cx += wcfg.tileSize; tickFrame(0.0f, 0.0f, nullptr);
+            cx -= wcfg.tileSize; tickFrame(0.0f, 0.0f, nullptr);
             for (const ShotLeg& leg : legs) {
+                camH = leg.camH; camPit = leg.pitch;
                 // Drive to the leg point (region streaming runs the whole way).
                 for (int guard = 0; guard < 20000; ++guard) {
                     const float dx = leg.x - cx, dz = leg.z - cz;

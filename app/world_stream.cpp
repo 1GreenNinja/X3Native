@@ -208,6 +208,12 @@ double WorldStreamer::realize(Region& r, Scene& scene, x3::rhi::IRenderDevice& d
                               x3::phys::IPhysicsWorld& physics) {
     const double t0 = nowMs();
     r.entities.clear();
+    // BATCHED upload window (the fast-boot pattern, replicated minimally on this
+    // lineage): every createMesh/createTexture this builder issues records into
+    // ONE command buffer + ONE submit/fence instead of a blocking submit EACH —
+    // on the real device this is the difference between ~26 ms/mesh and ~free.
+    // No-op on headless devices.
+    device.beginUploadBatch();
     scene.beginEntityCapture(&r.entities);
     if (!r.desc.levelDoc.empty()) {
         CanonFloor floor;
@@ -239,6 +245,7 @@ double WorldStreamer::realize(Region& r, Scene& scene, x3::rhi::IRenderDevice& d
                      r.desc.builder + "`");
     }
     scene.endEntityCapture();
+    device.endUploadBatch();
     captureLedger(r, scene);
     r.state = RegionState::Resident;
     r.evicting = false;

@@ -308,6 +308,7 @@ public:
     }
 
     void shutdown() override {
+        if (m_dev.device) flushUploadBatch();   // land + free any still-batched uploads
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
         shutdownEditorUI();   // editor-only ImGui teardown (no-op if --editor was absent)
         destroyRt();          // RT AO pipelines/targets + AS module (no-op if never built)
@@ -641,6 +642,10 @@ public:
 
     FrameContext beginFrame() override {
         FrameContext fc{};
+        // BOOT-TIME upload batching: any uploads still pending from a batch window
+        // must land before this frame can sample/draw them (identical visibility
+        // semantics to the unbatched path).
+        flushUploadBatch();
         if (m_needsRecreate) {
             if (m_headless) recreateOffscreenTarget(); else recreateSwapchain();
             m_needsRecreate = false;
@@ -8124,6 +8129,22 @@ private:
             vmaDestroyBuffer(m_alloc, staging, stagingAlloc); return false;
         }
 
+        // BOOT-TIME upload batching: while a batch window is active, record the
+        // copy into the shared batch command buffer (one submit for the whole
+        // batch) instead of a blocking per-buffer submit + fence wait. The staging
+        // buffer stays alive until the flush. Semantics are identical: anything
+        // that could consume the data (beginFrame / any one-shot op) flushes first.
+        if (m_batchActive) {
+            VkCommandBuffer cmd = batchCmd();
+            if (cmd) {
+                VkBufferCopy region{ 0, 0, bytes };
+                vkCmdCopyBuffer(cmd, staging, outBuf, 1, &region);
+                m_batchStagings.emplace_back(staging, stagingAlloc);
+                ++m_batchOps;
+                return true;
+            }
+            // batch cmd alloc failed -> fall through to the blocking path
+        }
         bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
             VkBufferCopy region{ 0, 0, bytes };
             vkCmdCopyBuffer(cmd, staging, outBuf, 1, &region);
@@ -8166,7 +8187,7 @@ private:
             vmaDestroyBuffer(m_alloc, staging, stagingAlloc); return false;
         }
 
-        bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
+        auto recordTexUpload = [&, staging](VkCommandBuffer cmd){
             // Per-mip sync2 layout barrier helper.
             auto barrierMip = [&](uint32_t mip, VkImageLayout oldL, VkImageLayout newL,
                                   VkPipelineStageFlags2 ss, VkAccessFlags2 sa,
@@ -8215,8 +8236,27 @@ private:
             barrierMip(mipLevels - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                        VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        });
-        vmaDestroyBuffer(m_alloc, staging, stagingAlloc);
+        };
+        // BOOT-TIME upload batching: record the copy + mip-blit chain into the
+        // shared batch command buffer (one submit per batch) when a batch window is
+        // active; the staging buffer stays alive until the flush. Identical command
+        // stream, just deferred to a single submit.
+        bool ok;
+        if (m_batchActive) {
+            VkCommandBuffer cmd = batchCmd();
+            if (cmd) {
+                recordTexUpload(cmd);
+                m_batchStagings.emplace_back(staging, stagingAlloc);
+                ++m_batchOps;
+                ok = true;
+                staging = VK_NULL_HANDLE; stagingAlloc = nullptr;   // ownership moved to the batch
+            } else {
+                ok = oneTimeSubmit(recordTexUpload);
+            }
+        } else {
+            ok = oneTimeSubmit(recordTexUpload);
+        }
+        if (staging) vmaDestroyBuffer(m_alloc, staging, stagingAlloc);
         if (!ok) { vmaDestroyImage(m_alloc, out.image, out.alloc); out.image = VK_NULL_HANDLE; out.alloc = nullptr; return false; }
 
         VkImageViewCreateInfo vci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
@@ -8249,9 +8289,78 @@ private:
         t = Texture{};
     }
 
+    // ---- BOOT-TIME upload batching (docs/BOOT_TIME.md) ----------------------
+    // Begin (or continue) the shared batch command buffer. Returns VK_NULL_HANDLE
+    // only if allocation fails (callers then fall back to oneTimeSubmit).
+    VkCommandBuffer batchCmd() {
+        if (m_batchOpen) return m_batchCmd;
+        if (!m_batchCmd) {
+            VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+            ai.commandPool = m_uploadPool;
+            ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            ai.commandBufferCount = 1;
+            if (vkAllocateCommandBuffers(m_dev.device, &ai, &m_batchCmd) != VK_SUCCESS) {
+                m_batchCmd = VK_NULL_HANDLE;
+                return VK_NULL_HANDLE;
+            }
+        }
+        VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(m_batchCmd, &bi) != VK_SUCCESS) return VK_NULL_HANDLE;
+        m_batchOpen = true;
+        return m_batchCmd;
+    }
+
+    // Submit every recorded batched upload in ONE submit + ONE fence wait, then
+    // free the kept-alive staging buffers. No-op when nothing is pending.
+    void flushUploadBatch() {
+        if (!m_batchOpen) return;
+        const auto t0 = std::chrono::steady_clock::now();
+        vkEndCommandBuffer(m_batchCmd);
+        VkCommandBufferSubmitInfo cmdS{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+        cmdS.commandBuffer = m_batchCmd;
+        VkSubmitInfo2 submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+        submit.commandBufferInfoCount = 1; submit.pCommandBufferInfos = &cmdS;
+        if (vkQueueSubmit2(m_gfxQueue, 1, &submit, m_uploadFence) == VK_SUCCESS) {
+            vkWaitForFences(m_dev.device, 1, &m_uploadFence, VK_TRUE, UINT64_MAX);
+            vkResetFences(m_dev.device, 1, &m_uploadFence);
+        } else {
+            logError("[rhi] upload batch: submit failed (uploads lost this batch)");
+        }
+        m_batchOpen = false;
+        vkResetCommandBuffer(m_batchCmd, 0);
+        for (auto& s : m_batchStagings) vmaDestroyBuffer(m_alloc, s.first, s.second);
+        m_batchStagings.clear();
+        ++m_batchFlushes;
+        m_batchMs += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0).count();
+    }
+
+    void beginUploadBatch() override {
+        if (m_batchActive) return;       // nestable-safe
+        m_batchActive = true;
+        m_batchOps = 0; m_batchFlushes = 0; m_batchMs = 0.0;
+    }
+
+    void endUploadBatch() override {
+        if (!m_batchActive) return;
+        flushUploadBatch();
+        m_batchActive = false;
+        if (m_batchOps) {
+            char b[160];
+            std::snprintf(b, sizeof(b),
+                "[rhi] upload batch: %u uploads in %u flush(es), %.1f ms total flush wait",
+                m_batchOps, m_batchFlushes, m_batchMs);
+            logInfo(b);
+        }
+    }
+
     // Record + submit a transient command buffer, wait on a one-shot fence.
     template <class Fn>
     bool oneTimeSubmit(Fn&& record) {
+        // Ordering safety: any one-shot GPU op (BLAS build, readback, IBL bake…)
+        // may depend on batched uploads — land those first.
+        flushUploadBatch();
         VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
         ai.commandPool = m_uploadPool;
         ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -9397,6 +9506,20 @@ private:
     // One-time staging upload (transient pool + fence)
     VkCommandPool m_uploadPool = VK_NULL_HANDLE;
     VkFence       m_uploadFence = VK_NULL_HANDLE;
+
+    // ---- BOOT-TIME upload batching (docs/BOOT_TIME.md) ----------------------
+    // While m_batchActive, createDeviceLocalBuffer/createSampledTexture record
+    // into m_batchCmd instead of one blocking oneTimeSubmit each; staging buffers
+    // are kept alive in m_batchStagings until the single flush. oneTimeSubmit and
+    // beginFrame auto-flush a pending batch first, so any GPU op that could read
+    // batched data executes strictly after the uploads land.
+    bool          m_batchActive = false;            // begin/endUploadBatch window
+    bool          m_batchOpen   = false;            // m_batchCmd has recorded work
+    VkCommandBuffer m_batchCmd  = VK_NULL_HANDLE;
+    std::vector<std::pair<VkBuffer, VmaAllocation>> m_batchStagings;
+    uint32_t      m_batchOps    = 0;                // uploads in the current batch
+    uint32_t      m_batchFlushes = 0;               // receipts: flushes this batch window
+    double        m_batchMs     = 0.0;              // receipts: wall ms spent flushing
 
     // ---- Offscreen capture (fix 1: in-frame, acquired-image copy) ----------
     // armCapture() arms a request; endFrame() then records the color-image -> host
