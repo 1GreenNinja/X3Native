@@ -171,6 +171,39 @@ export async function uploadMedia(token: string, file: File): Promise<string> {
   return data.content_uri as string;
 }
 
+export interface RoomMember {
+  userId: string;
+  displayName: string;
+}
+
+/** Joined members of a room, for the member panel. */
+export async function joinedMembers(token: string, roomId: string): Promise<RoomMember[]> {
+  const data = await req<{ joined: Record<string, { display_name?: string }> }>(
+    `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/joined_members`,
+    { token },
+  );
+  return Object.entries(data.joined ?? {}).map(([userId, info]) => ({
+    userId,
+    displayName: info.display_name || userId.split(":")[0].replace(/^@/, ""),
+  }));
+}
+
+/** Presence for a user: "online" | "offline" | "unavailable". */
+export async function getPresence(
+  token: string,
+  userId: string,
+): Promise<{ presence: string; lastActiveAgo?: number }> {
+  try {
+    const data = await req<{ presence: string; last_active_ago?: number }>(
+      `/_matrix/client/v3/presence/${encodeURIComponent(userId)}/status`,
+      { token },
+    );
+    return { presence: data.presence ?? "offline", lastActiveAgo: data.last_active_ago };
+  } catch {
+    return { presence: "offline" };
+  }
+}
+
 /** Read an image File's pixel dimensions for the m.image info block. */
 export function imageDimensions(file: File): Promise<{ w: number; h: number }> {
   return new Promise((resolve) => {

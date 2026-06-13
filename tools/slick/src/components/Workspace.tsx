@@ -3,6 +3,7 @@ import type { Session } from "../client";
 import { store, subscribe, type Room } from "../store";
 import { MessageStream } from "./MessageStream";
 import { Composer } from "./Composer";
+import { MemberPanel } from "./MemberPanel";
 
 function useStore(): number {
   const [v, setV] = useState(store.version);
@@ -20,6 +21,7 @@ function sortedRooms(): { channels: Room[]; dms: Room[] } {
 export function Workspace({ session, onLogout }: { session: Session; onLogout: () => void }) {
   useStore();
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [showMembers, setShowMembers] = useState(false);
   const { channels, dms } = sortedRooms();
   const active = activeId ? store.rooms.get(activeId) : null;
 
@@ -29,7 +31,7 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
   }, [channels.length]);
 
   return (
-    <div class="workspace">
+    <div class={`workspace ${showMembers && active ? "with-members" : ""}`}>
       <aside class="sidebar">
         <header class="ws-header">
           <span class="ws-name">FleetCommand</span>
@@ -68,7 +70,14 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
         {active ? (
           <>
             <header class="room-header">
-              <span class="hash">#</span> {active.name}
+              <span class="room-title"><span class="hash">#</span> {active.name}</span>
+              <button
+                class={`members-toggle ${showMembers ? "on" : ""}`}
+                onClick={() => setShowMembers((s) => !s)}
+                title="Toggle members"
+              >
+                👥
+              </button>
             </header>
             <MessageStream room={active} />
             <Composer session={session} roomId={active.id} roomName={active.name} />
@@ -79,6 +88,8 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
           </div>
         )}
       </main>
+
+      {showMembers && active && <MemberPanel session={session} roomId={active.id} />}
     </div>
   );
 }
