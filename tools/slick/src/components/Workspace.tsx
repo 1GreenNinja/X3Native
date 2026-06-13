@@ -1,6 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import type { Session } from "../client";
 import { store, subscribe, type Room } from "../store";
+import { MessageStream } from "./MessageStream";
 
 function useStore(): number {
   const [v, setV] = useState(store.version);
@@ -68,23 +69,7 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
             <header class="room-header">
               <span class="hash">#</span> {active.name}
             </header>
-            <div class="stream">
-              {active.timeline.slice(-50).map((ev) => (
-                <div key={ev.event_id} class="msg">
-                  <span class="msg-sender">{ev.sender.split(":")[0].slice(1)}</span>
-                  <span class="msg-time">
-                    {new Date(ev.origin_server_ts).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </span>
-                  <div class="msg-body">{ev.content?.body ?? `[${ev.type}]`}</div>
-                </div>
-              ))}
-              {!active.timeline.length && (
-                <div class="stream-empty">No messages in the sync window yet.</div>
-              )}
-            </div>
+            <MessageStream room={active} />
             <div class="composer-stub">
               Composer lands in PR-3 — read-only for now.
             </div>
