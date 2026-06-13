@@ -236,6 +236,13 @@ public:
     // sees the script system). Cleared + refilled each tick().
     const std::vector<uint32_t>& lastFiredTriggers() const { return m_firedTriggers; }
 
+    // ---- LIVING WORLD alert hook (pillar 3) --------------------------------
+    // Mutable door registry so the facility AlertSystem's AlertDoorLock can run
+    // the level-3 LOCKDOWN over the real Level-1 doors (locks closed doors,
+    // restores exactly its own locks on release — see app/alert.h).
+    DoorSystem&       doors()       { return m_doors; }
+    const DoorSystem& doors() const { return m_doors; }
+
     // Monster groups (for the self-test / objective gating + the save bridge).
     BarrelSystem&         barrels()                 { return m_barrels; }   // host wires FX/damage sinks
     // Static ceiling-fixture point lights (env-art Light_A). The host re-issues these

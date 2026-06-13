@@ -3,9 +3,11 @@
 // Clean-room: built only from the public IRenderDevice + IConsole interfaces.
 // No id Tech / RBDOOM source consulted.
 #include "hud.h"
+#include "alert.h"   // alertLevelName (the LIVING-WORLD alert indicator)
 
 #include <cstdio>
 #include <algorithm>
+#include <cmath>
 
 namespace x3::game {
 
@@ -324,6 +326,54 @@ void Hud::drawDeathOverlay(x3::rhi::IRenderDevice& device, const x3::rhi::FrameC
     const float grey[4] = { 0.85f, 0.85f, 0.85f, 1.0f };
     device.drawHudText(frame, sub, sx + 1.0f, sy + 1.0f, subGlyph, shadow);
     device.drawHudText(frame, sub, sx, sy, subGlyph, grey);
+}
+
+void Hud::drawAlert(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                    int level, float redShift, float time) const {
+    if (level <= 0) return;
+    uint32_t w = 0, h = 0;
+    device.hudSize(w, h);
+    if (w == 0 || h == 0) return;
+    if (level > 4) level = 4;
+
+    // Level tint: amber at 1-2, hot red at 3-4 (pulsing in lockdown).
+    float r = 0.95f, g = 0.72f, b = 0.18f;
+    if (level >= 3) { r = 0.95f; g = 0.16f; b = 0.10f; }
+    const float pulse = (redShift > 0.0f)
+                          ? 0.75f + 0.25f * std::sin(time * 6.0f)
+                          : 1.0f;
+
+    // Four pips, top-right, filled up to the level.
+    const float pipW = 16.0f, pipH = 8.0f, gap = 4.0f;
+    const float rowW = 4.0f * pipW + 3.0f * gap;
+    const float x0 = (float)w - rowW - 16.0f;
+    const float y0 = 14.0f;
+    const float plate[4] = { 0.0f, 0.0f, 0.0f, 0.45f };
+    device.drawHudQuad(frame, x0 - 6.0f, y0 - 4.0f, rowW + 12.0f, pipH + 22.0f, plate);
+    for (int k = 0; k < 4; ++k) {
+        const bool on = (k < level);
+        const float c[4] = { on ? r * pulse : 0.25f,
+                             on ? g * pulse : 0.25f,
+                             on ? b * pulse : 0.28f, on ? 0.95f : 0.6f };
+        device.drawHudQuad(frame, x0 + (float)k * (pipW + gap), y0, pipW, pipH, c);
+    }
+    // The level name under the pips, right-aligned.
+    const char* name = alertLevelName(level);
+    const float px = 10.0f;
+    const float nameW = device.textAdvance(x3::rhi::FontRole::HudMono, name, px);
+    const float tc[4] = { r * pulse, g * pulse, b * pulse, 0.95f };
+    device.drawHudText(frame, name, x0 + rowW - nameW, y0 + pipH + 4.0f, px, tc);
+
+    // Lockdown: a faint pulsing red frame at the screen edges.
+    if (redShift > 0.0f) {
+        const float a = (0.10f + 0.10f * std::sin(time * 6.0f)) * redShift;
+        const float edge[4] = { 0.9f, 0.05f, 0.05f, a < 0.0f ? 0.0f : a };
+        const float t = 6.0f;
+        device.drawHudQuad(frame, 0, 0, (float)w, t, edge);
+        device.drawHudQuad(frame, 0, (float)h - t, (float)w, t, edge);
+        device.drawHudQuad(frame, 0, 0, t, (float)h, edge);
+        device.drawHudQuad(frame, (float)w - t, 0, t, (float)h, edge);
+    }
 }
 
 void Hud::drawConsole(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,

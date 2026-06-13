@@ -1,0 +1,81 @@
+{
+  "format": "x3.ecology/1",
+  "comment": "AMBIENT ECOLOGY cast + tunables (living-world pillar 1). Mirrors defaultEcoConfig() in app/ecology.cpp — a missing/broken file falls back to that built-in cast. Regions are world XZ (the valley host offsets them around its spawn). archetype: grazer|predator|patrol; schedule (patrols): always|day|night; waypoints: [[x,z],...] (empty patrol routes generate a square around the region).",
+
+  "activeRadius": 140.0,
+  "despawnRadius": 165.0,
+  "decisionsPerFrame": 16,
+
+  "cohesionRadius": 14.0,
+  "separation": 2.0,
+  "fleeRadius": 16.0,
+  "playerFleeRadius": 9.0,
+  "fleeTime": 3.5,
+  "panicRadius": 22.0,
+  "grazeTimeMin": 2.0,
+  "grazeTimeMax": 6.0,
+
+  "stalkRadius": 45.0,
+  "strikeRadius": 9.0,
+  "killRadius": 1.2,
+  "strikeSpeedMul": 1.6,
+  "feedTime": 6.0,
+  "downRespawnTime": 30.0,
+  "playerAggroRadius": 12.0,
+  "territoryRadius": 60.0,
+
+  "waypointArrive": 1.2,
+  "holdTime": 2.0,
+  "investigateTime": 8.0,
+  "alertSpeedMul": 1.6,
+  "groundY": 0.0,
+
+  "species": [
+    {
+      "name": "Shardhorn Grazer",
+      "archetype": "grazer",
+      "count": 10,
+      "region": [30.0, 0.0],
+      "radius": 45.0,
+      "speed": 1.4,
+      "fastSpeed": 6.0,
+      "scale": 1.0,
+      "color": [0.62, 0.52, 0.38]
+    },
+    {
+      "name": "Crystal Stalker",
+      "archetype": "predator",
+      "count": 2,
+      "region": [55.0, 12.0],
+      "radius": 60.0,
+      "speed": 1.8,
+      "fastSpeed": 6.5,
+      "scale": 1.0,
+      "color": [0.30, 0.22, 0.40]
+    },
+    {
+      "name": "Dominion Patrol (Day)",
+      "archetype": "patrol",
+      "schedule": "day",
+      "count": 3,
+      "region": [-35.0, -20.0],
+      "radius": 22.0,
+      "speed": 1.7,
+      "fastSpeed": 3.6,
+      "scale": 1.0,
+      "color": [0.30, 0.34, 0.40]
+    },
+    {
+      "name": "Dominion Patrol (Night)",
+      "archetype": "patrol",
+      "schedule": "night",
+      "count": 3,
+      "region": [-35.0, -20.0],
+      "radius": 22.0,
+      "speed": 1.7,
+      "fastSpeed": 3.6,
+      "scale": 1.0,
+      "color": [0.34, 0.26, 0.28]
+    }
+  ]
+}
