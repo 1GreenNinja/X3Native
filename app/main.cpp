@@ -156,13 +156,21 @@ x3::phys::Vec3 muzzleFromCamera(float ex, float ey, float ez, float yaw, float p
 // Gas, Lava, Terrestrial, Sun) — the SAME files / slot order / srgb flags the
 // --screenshot-nightsky block has always used — and draw them via drawPlanet().
 // Used by BOTH --screenshot-nightsky and the NIGHT --screenshot-showroom path so
-// the planet recipe isn't duplicated. Positions/radii are defaults the caller may
-// override per-scene (the showroom shifts/scales them to frame over the spire).
+// the planet recipe isn't duplicated.
+//
+// CELESTIAL placement: each body is specified by a WORLD-SPACE sky DIRECTION
+// (azimuth/elevation) + an APPARENT angular diameter — NOT a world position.
+// drawNightSkyPlanets() re-anchors every body on the CAMERA EYE each draw:
+//   pos = eye + dir(az,el) * kNightSkyDist,  radius = dist * tan(diam/2)
+// so the bodies are TRANSLATION-INVARIANT (zero parallax — they never "approach"
+// the building as the player walks) while still rotating correctly with the view,
+// exactly like real celestial bodies. Azimuth 0 = -Z, +90 = +X (engine yaw - 90°).
 struct NightSkyPlanet {
     uint32_t                            typeIndex;   // 0=Moon 1=Ice 2=Gas 3=Lava 4=Terrestrial 8=Sun
     std::vector<x3::rhi::TextureHandle> maps;        // pc.tex[] slot order for the type
-    float                               worldPos[3]; // world position (defaults; caller may move)
-    float                               radius;      // apparent-size scale
+    float                               azimuthDeg;   // world-space sky azimuth (0 = -Z, +90 = +X)
+    float                               elevationDeg; // above the horizon (keep >= ~12 so nothing rides the roofline)
+    float                               angularDiameterDeg; // apparent size (full disc, degrees)
     const char*                         name;        // log label
     // ---- TRANSPARENT glow layers (additive atmosphere / sun corona; alpha ring).
     // Each is OPTIONAL: a valid texture handle enables that layer for this body. The
@@ -174,10 +182,27 @@ struct NightSkyPlanet {
     x3::rhi::TextureHandle              ringTex{};   // Ring radial strip (tex[0]); flat annulus
 };
 
+// Anchor distance for every celestial body: 70% of the 200 m far plane (see the
+// glm::perspective in VulkanRenderDevice). The largest body (gas giant, 9° ->
+// r ~= 11 m, ring out to 2.5r ~= 27.5 m) stays comfortably inside the far plane
+// (worst point ~168 m) and well past all world geometry, so depth-test LESS
+// occludes it behind the spire/terrain at the horizon while it still draws OVER
+// the far-depth sky dome.
+inline constexpr float kNightSkyDist = 140.0f;
+
 // Build the UV-sphere (writes `outMesh`) + load every planet's textures, returning
-// the list of bodies with their default nightsky positions/radii. `nTexFail` is
-// incremented per missing file. The texture cache de-dupes shared maps. `logTag`
-// prefixes the load logs so the calling path is clear.
+// the list of bodies with their default sky layout (azimuth/elevation/angular
+// diameter — see the table below; THE one spot to tune the night sky). `nTexFail`
+// is incremented per missing file. The texture cache de-dupes shared maps.
+// `logTag` prefixes the load logs so the calling path is clear.
+//
+//   body         az(deg)  el(deg)  diam(deg)  role
+//   Sun            +28       16       3.5     low-ish, clear of the terrain silhouette, 50° off the hero
+//   Terrestrial    -22       22       7.0     THE HERO — big, upper-left, moonlit half-phase
+//   Gas (rings)   -147       24       9.0     other side of the sky (125° from the hero)
+//   Moon           -44       30       2.5     small, above-left of the hero
+//   Ice            -85       45       2.0     small, high far-left
+//   Lava           +47       27       1.5     small, upper-right (everything >= ~12° min elevation)
 inline std::vector<NightSkyPlanet> loadNightSkyPlanets(
         x3::rhi::IRenderDevice* device, x3::rhi::MeshHandle& outMesh,
         int& nTexFail, const char* logTag,
@@ -217,7 +242,7 @@ inline std::vector<NightSkyPlanet> loadNightSkyPlanets(
             loadTex(p + "moon_01_detail.png", true),
             loadTex(p + "moon_02_spec.png",   false),
             loadTex(kAtmo + "sunset_yellow_05.png", true),
-        }, { -42.0f, 30.0f, -100.0f }, 15.0f, "Moon" });
+        }, /*az*/ -44.0f, /*el*/ 30.0f, /*diam*/ 2.5f, "Moon" });
     }
     // Ice (type 1): tex[0]=ColorMap(s) [1]=Normal(l) [2]=Height(l) [3]=Detail(l) [4]=Scatter(s)
     {
@@ -228,7 +253,7 @@ inline std::vector<NightSkyPlanet> loadNightSkyPlanets(
             loadTex(p + "ice_01.png",        false),
             loadTex(p + "icedetail_01.png",  false),
             loadTex(kAtmo + "sunset_blue_03.png", true),
-        }, { 86.0f, 34.0f, -130.0f }, 22.0f, "Ice" });
+        }, /*az*/ -85.0f, /*el*/ 45.0f, /*diam*/ 2.0f, "Ice" });
     }
     // Gas (type 2): tex[0]=HeightBands(s) [1]=UVDistortion(l) [2]=Scatter(s)
     {
@@ -237,7 +262,7 @@ inline std::vector<NightSkyPlanet> loadNightSkyPlanets(
             loadTex(p + "planet_gas_03.png",  true),
             loadTex(p + "planet_gas_08.png",  false),
             loadTex(kAtmo + "sunset_yellow_01.png", true),
-        }, { 18.0f, 8.0f, -210.0f }, 42.0f, "Gas" });
+        }, /*az*/ -147.0f, /*el*/ 24.0f, /*diam*/ 9.0f, "Gas" });
     }
     // Lava (type 3): tex[0]=Height(s) [1]=Detail(l) [2]=Magma(l) [3]=Normal(l) [4]=Distortion(s) [5]=Scatter(s)
     {
@@ -250,7 +275,7 @@ inline std::vector<NightSkyPlanet> loadNightSkyPlanets(
             loadTex(ip + "ice_04_normal.png",  false),
             loadTex(lp + "lavadistmap.png",    true),
             loadTex(kAtmo + "sunset_red_04.png", true),
-        }, { -95.0f, -20.0f, -120.0f }, 20.0f, "Lava" });
+        }, /*az*/ 47.0f, /*el*/ 27.0f, /*diam*/ 1.5f, "Lava" });
     }
     // Terrestrial (type 4): tex[0]=Height(s) [1]=LandMask(l) [2]=Normal(l) [3]=Scatter(s)
     //   [4]=Gradient(l) [5]=CloudsTop(s) [6]=CloudsMiddle(s) [7]=CityLight(l)
@@ -268,7 +293,7 @@ inline std::vector<NightSkyPlanet> loadNightSkyPlanets(
             loadTex(p + "lights_01.png",                   false),
             loadTex(p + "lights_01_uv.png",                false),
             loadTex(p + "lights_01_mask.png",              false),
-        }, { 60.0f, -30.0f, -135.0f }, 26.0f, "Terrestrial" });
+        }, /*az*/ -22.0f, /*el*/ 22.0f, /*diam*/ 7.0f, "Terrestrial" });
     }
     // Sun (type 8): tex[0]=SurfaceMap(l) [1]=DistortionMap(l) — emissive, small+bright.
     {
@@ -277,7 +302,7 @@ inline std::vector<NightSkyPlanet> loadNightSkyPlanets(
         bodies.push_back({ 8u, {
             loadTex(sp + "sunsurface_01.png", false),
             loadTex(tp + "storm_02.png",      false),
-        }, { -14.0f, 40.0f, -70.0f }, 11.0f, "Sun" });
+        }, /*az*/ 28.0f, /*el*/ 16.0f, /*diam*/ 3.5f, "Sun" });
     }
 
     // ---- TRANSPARENT glow layers (additive atmosphere + sun corona; alpha ring) ----
@@ -319,21 +344,38 @@ inline std::vector<NightSkyPlanet> loadNightSkyPlanets(
 
 // Draw every planet for the current frame (call AFTER the scene's own draws so the
 // depth buffer occludes correctly). Each body uses its per-type planet pipeline.
+//
+// CELESTIAL anchoring: takes the CAMERA EYE and re-derives each body's world
+// position from its sky direction every draw — pos = eye + dir(az,el)*kNightSkyDist,
+// radius = kNightSkyDist*tan(diam/2) — so the bodies are translation-invariant
+// (zero parallax as the player moves; they read as OUT in the night sky, never
+// encroaching on the building) while still rotating correctly with the view.
+// The atmosphere/corona shells + the ring annulus reuse the SAME derived position,
+// so the companion layers track their parent body through the celestial transform.
 inline void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::FrameContext& fc,
                                 x3::rhi::MeshHandle mesh,
                                 const std::vector<NightSkyPlanet>& planets, float uTime,
+                                float eyeX, float eyeY, float eyeZ,
                                 x3::rhi::MeshHandle ringMesh = {}) {
     if (!fc.valid) return;
     // PlanetType transparent indices (see VulkanRenderDevice PlanetType enum).
     constexpr uint32_t kAtmosphere = 9u, kSunCorona = 10u, kRing = 11u;
+    constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
     for (const NightSkyPlanet& b : planets) {
-        const float r = b.radius;
+        // Sky direction from the body's azimuth/elevation (az 0 = -Z, +90 = +X).
+        const float az = b.azimuthDeg * kDegToRad, el = b.elevationDeg * kDegToRad;
+        const float ce = std::cos(el);
+        const float px = eyeX + std::sin(az) * ce * kNightSkyDist;
+        const float py = eyeY + std::sin(el)      * kNightSkyDist;
+        const float pz = eyeZ - std::cos(az) * ce * kNightSkyDist;
+        // Apparent angular diameter -> world radius at the anchor distance.
+        const float r = kNightSkyDist * std::tan(b.angularDiameterDeg * 0.5f * kDegToRad);
         // OPAQUE body: uniform scale by the apparent radius, translated to world pos.
         const float model[16] = {
             r, 0, 0, 0,
             0, r, 0, 0,
             0, 0, r, 0,
-            b.worldPos[0], b.worldPos[1], b.worldPos[2], 1,
+            px, py, pz, 1,
         };
         device->drawPlanet(fc, mesh, model, b.typeIndex,
                            b.maps.data(), (uint32_t)b.maps.size(), uTime);
@@ -341,16 +383,14 @@ inline void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::F
         // --- ADDITIVE atmosphere shell: same sphere, inflated ~1.06x the body. ---
         if (b.atmoTex.valid()) {
             const float s = r * 1.06f;
-            const float m[16] = { s,0,0,0, 0,s,0,0, 0,0,s,0,
-                                  b.worldPos[0], b.worldPos[1], b.worldPos[2], 1 };
+            const float m[16] = { s,0,0,0, 0,s,0,0, 0,0,s,0, px, py, pz, 1 };
             x3::rhi::TextureHandle t[1] = { b.atmoTex };
             device->drawPlanet(fc, mesh, m, kAtmosphere, t, 1u, uTime);
         }
         // --- ADDITIVE sun corona: same sphere, big shell ~2.2x the Sun, animated. ---
         if (b.coronaTex.valid()) {
             const float s = r * 2.2f;
-            const float m[16] = { s,0,0,0, 0,s,0,0, 0,0,s,0,
-                                  b.worldPos[0], b.worldPos[1], b.worldPos[2], 1 };
+            const float m[16] = { s,0,0,0, 0,s,0,0, 0,0,s,0, px, py, pz, 1 };
             x3::rhi::TextureHandle t[1] = { b.coronaTex };
             device->drawPlanet(fc, mesh, m, kSunCorona, t, 1u, uTime);
         }
@@ -367,7 +407,7 @@ inline void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::F
                  s,      0,      0,     0,
                  0,    s*ct,   s*st,    0,
                  0,   -s*st,   s*ct,    0,
-                 b.worldPos[0], b.worldPos[1], b.worldPos[2], 1,
+                 px, py, pz, 1,
             };
             x3::rhi::TextureHandle t[1] = { b.ringTex };
             device->drawPlanet(fc, ringMesh, m, kRing, t, 1u, uTime);
@@ -3467,9 +3507,9 @@ int main(int argc, char** argv) {
         { x3::rhi::IRenderDevice::GiParams   g{}; g.enabled = false; device->setGiParams(g); }
 
         // --- NIGHT-SKY planets: load the 6 FORGE3D bodies via the SHARED helper (same
-        // files / slot order / srgb as --screenshot-nightsky). They get RE-POSITIONED
-        // below, AFTER the camera is framed, so they hang HIGH ABOVE/BEHIND the spire in
-        // the upper frame (and within the 200 m far plane) — not at the nightsky defaults.
+        // files / slot order / srgb as --screenshot-nightsky). CELESTIAL placement:
+        // each body is a fixed sky DIRECTION (az/el) + angular diameter, anchored on
+        // the camera eye at draw time — no per-scene repositioning needed.
         int nPlanetTexFail = 0;
         x3::rhi::MeshHandle planetMesh{};
         x3::rhi::MeshHandle ringMesh{};
@@ -3504,11 +3544,22 @@ int main(int argc, char** argv) {
         float dist = span * 0.75f + 12.0f;
         if (dist > 175.0f) dist = 175.0f;
         if (dist < 18.0f)  dist = 18.0f;
-        const float camx = cx, camy = cy + ey * 0.12f, camz = bmx[2] + dist;   // in front (+Z face)
+        float camx = cx, camy = cy + ey * 0.12f, camz = bmx[2] + dist;         // in front (+Z face)
         float dx = cx - camx, dy = cy - camy, dz = cz - camz;                  // look toward center
         float len = std::sqrt(dx * dx + dy * dy + dz * dz); if (len < 1e-3f) len = 1e-3f;
         const float pitch = std::asin(dy / len);
         const float yaw   = std::atan2(dz, dx);
+        // X3_SHOWROOM_CAMOFF="dx,dy,dz" TRANSLATES the eye (yaw/pitch unchanged) —
+        // the no-parallax proof for the celestial planets: the foreground shifts,
+        // the sky composition must NOT (the bodies re-anchor on the moved eye).
+        if (const char* off = std::getenv("X3_SHOWROOM_CAMOFF")) {
+            float ox = 0, oy = 0, oz = 0;
+            if (std::sscanf(off, "%f,%f,%f", &ox, &oy, &oz) == 3) {
+                camx += ox; camy += oy; camz += oz;
+                x3::logInfo("--screenshot-showroom: CAMOFF applied (" + std::to_string(ox) + "," +
+                            std::to_string(oy) + "," + std::to_string(oz) + ")");
+            }
+        }
         x3::logInfo("--screenshot-showroom: cam(" + std::to_string(camx) + "," + std::to_string(camy) + "," +
             std::to_string(camz) + ") yaw=" + std::to_string(yaw) + " pitch=" + std::to_string(pitch));
         device->setCamera(camx, camy, camz, yaw, pitch, 72.0f);
@@ -3516,47 +3567,10 @@ int main(int argc, char** argv) {
         // (the default ~45 m camera-following box sits 100+ m short of the building).
         device->setShadowBounds(cx, cy, cz, 150.0f);
 
-        // --- RE-POSITION the planets HIGH ABOVE/BEHIND the spire, in the camera's view
-        // direction (toward -Z, beyond the building) so they sit in the UPPER frame above
-        // the building. Computed in the CAMERA basis: forward = look dir, plus a world-up
-        // lift + a per-body azimuth fan + an "up into the upper third" elevation. Each is
-        // placed at a distance kept WITHIN the 200 m far plane (the planet's NEAR edge must
-        // clear it, so distance + radius < ~195). varied radius: Terrestrial + Gas prominent,
-        // Moon/Ice mid, Sun smaller + bright. None reach the building/forest (all far + high).
-        {
-            const float cp = std::cos(pitch), spn = std::sin(pitch);
-            const float cyw = std::cos(yaw),   syw = std::sin(yaw);
-            const float fwd[3]   = { cp * cyw, spn, cp * syw };          // camera forward (look dir)
-            const float right[3] = { -syw, 0.0f, cyw };                 // camera right (world-up plane)
-            // Per-body placement: distance (m, within far plane), azimuth fan (m, +=right),
-            // and lift (m, world-up) so they ride the upper third of the frame.
-            struct Place { const char* name; float dist; float side; float lift; float radius; };
-            // Distances + lift/side kept so each body's CENTER distance from the camera
-            // (sqrt(dist^2 + lift^2 + side^2)) + its radius stays comfortably < the 200 m
-            // far plane (largest here ~187 m), so nothing clips at the far plane.
-            const Place places[] = {
-                // name           dist   side    lift   radius   (lifts lowered so bodies sit in the
-                { "Terrestrial",  120.0f, -42.0f,  44.0f, 28.0f },   // upper third, fully framed (not cropped)
-                { "Gas",          125.0f,  48.0f,  52.0f, 34.0f },   // prominent giant, upper-right
-                { "Moon",         105.0f,   8.0f,  40.0f, 14.0f },   // mid, high-center
-                { "Ice",          115.0f, -28.0f,  42.0f, 16.0f },   // mid, upper-left of center
-                { "Lava",         128.0f,  32.0f,  38.0f, 15.0f },   // mid, right
-                { "Sun",           98.0f, -16.0f,  48.0f,  9.0f },   // small + bright, high-left
-            };
-            for (NightSkyPlanet& b : planets) {
-                const Place* pl = nullptr;
-                for (const Place& q : places) if (std::strcmp(q.name, b.name) == 0) { pl = &q; break; }
-                if (!pl) continue;
-                b.radius = pl->radius;
-                b.worldPos[0] = camx + fwd[0] * pl->dist + right[0] * pl->side;
-                b.worldPos[1] = camy + fwd[1] * pl->dist + pl->lift;                // world-up lift
-                b.worldPos[2] = camz + fwd[2] * pl->dist + right[2] * pl->side;
-                x3::logInfo(std::string("--screenshot-showroom: planet ") + b.name + " pos(" +
-                    std::to_string(b.worldPos[0]) + "," + std::to_string(b.worldPos[1]) + "," +
-                    std::to_string(b.worldPos[2]) + ") r=" + std::to_string(b.radius) +
-                    " dist=" + std::to_string(pl->dist));
-            }
-        }
+        // (Planet placement is CELESTIAL — fixed world-space sky directions anchored
+        // on the camera eye inside drawNightSkyPlanets — so there is NO per-scene
+        // repositioning here anymore. The bodies hang out in the night sky at their
+        // az/el table defaults, occluded by the spire/terrain via the depth test.)
 
         // Draw the WHOLE scene (all 1150 drawables). The earlier "~480 draws blanks the frame"
         // ceiling was a SYMPTOM of the depth.vert/shadow.vert SSBO-stride bug (garbage depths at
@@ -3580,7 +3594,8 @@ int main(int argc, char** argv) {
                 // transparent glow shells (atmosphere/corona/ring) AFTER the opaque bodies.
                 // NIGHT only — DAY has no planets (the bright sky carries the exterior).
                 if (!gShowroomDay)
-                    drawNightSkyPlanets(device.get(), frame, planetMesh, planets, 10.0f, ringMesh);
+                    drawNightSkyPlanets(device.get(), frame, planetMesh, planets, 10.0f,
+                                        camx, camy, camz, ringMesh);
             }
             device->endFrame(frame);
         }
@@ -3725,7 +3740,7 @@ int main(int argc, char** argv) {
 
         // --- DARK NIGHT sky: near-black zenith, faint horizon, very low sun intensity,
         // no haze. The procedural starfield in sky.frag paints onto the dark dome.
-        const float sunDir[3] = { 0.4f, 0.25f, 0.6f };   // normalized internally
+        const float sunDir[3] = { 0.90f, 0.42f, 0.08f };  // az ~95 el ~25: half/gibbous phase on BOTH sky clusters (normalized internally)
         x3::rhi::IRenderDevice::SkyParams sp{};
         sp.enabled = true;
         sp.sunDir[0] = sunDir[0]; sp.sunDir[1] = sunDir[1]; sp.sunDir[2] = sunDir[2];
@@ -3741,12 +3756,18 @@ int main(int argc, char** argv) {
         { x3::rhi::IRenderDevice::SsaoParams s{}; s.enabled = false; device->setSsaoParams(s); }
         { x3::rhi::IRenderDevice::GiParams   g{}; g.enabled = false; device->setGiParams(g); }
 
-        // --- Camera near origin looking toward the -Z cluster, tilted slightly UP so
-        // the dome + stars + the staggered bodies fill the frame.
+        // --- Camera near origin, aimed at the HERO cluster of the celestial layout
+        // (sun az +28 / terrestrial az -22 / moon az -44 / lava az +47 — az/el table in
+        // loadNightSkyPlanets), tilted up so the bodies ride the upper frame. The
+        // gas giant (az -147) / ice are out of this frame by design (the sky wraps
+        // the full horizon); X3_NIGHTSKY_AZDEG aims the camera at any azimuth
+        // (e.g. -147 for the ringed-gas-giant proof).
         const float camx = 0.0f, camy = 6.0f, camz = 18.0f;
-        const float yaw   = -1.5708f;   // toward -Z (the cluster)
-        const float pitch = 0.22f;      // ~13deg up
-        const float fovDeg = 75.0f;     // wide so all 6 bodies fit
+        float aimAzDeg = 0.0f;
+        if (const char* e = std::getenv("X3_NIGHTSKY_AZDEG")) aimAzDeg = (float)std::atof(e);
+        const float yaw   = (aimAzDeg - 90.0f) * 3.14159265f / 180.0f;  // az 0 = -Z -> yaw = az - 90deg
+        const float pitch = 0.45f;      // ~26deg up (bodies sit at 16..45deg elevation)
+        const float fovDeg = 75.0f;
         device->setCamera(camx, camy, camz, yaw, pitch, fovDeg);
 
         x3::logInfo("--screenshot-nightsky: cam(" + std::to_string(camx) + "," + std::to_string(camy) + "," +
@@ -3762,7 +3783,8 @@ int main(int argc, char** argv) {
             if (i == kSettle - 1) device->armCapture(nightskyShotPath.c_str());
             auto frame = device->beginFrame();
             if (frame.valid) {
-                drawNightSkyPlanets(device.get(), frame, planetMesh, bodies, kUTime, ringMesh);
+                drawNightSkyPlanets(device.get(), frame, planetMesh, bodies, kUTime,
+                                    camx, camy, camz, ringMesh);
             }
             device->endFrame(frame);
         }
@@ -6783,33 +6805,11 @@ int main(int argc, char** argv) {
         // Frame the sun's shadow box on the building so it casts shadows.
         device->setShadowBounds(cx, (bmn[1] + bmx[1]) * 0.5f, cz, 150.0f);
 
-        // Position the night-sky planets HIGH ABOVE the building (camera-basis fan), reusing
-        // the screenshot-showroom placement, but anchored on the player spawn eye + a fixed
-        // look direction (toward +Z / Aria) so they hang in the upper frame from inside.
-        auto placePlanets = [&](float eyex, float eyey, float eyez, float yaw, float pitch) {
-            const float cp = std::cos(pitch), spn = std::sin(pitch);
-            const float cyw = std::cos(yaw),   syw = std::sin(yaw);
-            const float fwd[3]   = { cp * cyw, spn, cp * syw };
-            const float right[3] = { -syw, 0.0f, cyw };
-            struct Place { const char* name; float dist; float side; float lift; float radius; };
-            const Place places[] = {
-                { "Terrestrial",  120.0f, -42.0f,  44.0f, 28.0f },
-                { "Gas",          125.0f,  48.0f,  52.0f, 34.0f },
-                { "Moon",         105.0f,   8.0f,  40.0f, 14.0f },
-                { "Ice",          115.0f, -28.0f,  42.0f, 16.0f },
-                { "Lava",         128.0f,  32.0f,  38.0f, 15.0f },
-                { "Sun",           98.0f, -16.0f,  48.0f,  9.0f },
-            };
-            for (NightSkyPlanet& b : planets) {
-                const Place* pl = nullptr;
-                for (const Place& q : places) if (std::strcmp(q.name, b.name) == 0) { pl = &q; break; }
-                if (!pl) continue;
-                b.radius = pl->radius;
-                b.worldPos[0] = eyex + fwd[0] * pl->dist + right[0] * pl->side;
-                b.worldPos[1] = eyey + fwd[1] * pl->dist + pl->lift;
-                b.worldPos[2] = eyez + fwd[2] * pl->dist + right[2] * pl->side;
-            }
-        };
+        // (Night-sky planet placement is CELESTIAL — fixed world-space sky directions
+        // (az/el table in loadNightSkyPlanets) anchored on the camera eye inside
+        // drawNightSkyPlanets each draw — so the old camera-basis "placePlanets" fan
+        // is GONE. The bodies neither parallax as the player walks nor glue to the
+        // look direction; they wheel past correctly as the view turns, like a sky.)
 
         // Draw the ADDITIVE translucent glass (deck slab + 4 rails + the riding car)
         // each frame, AFTER the opaque scene/env (the BLEND pass is depth-tested over
@@ -6911,7 +6911,6 @@ int main(int argc, char** argv) {
                             cv.tick(dt, /*hubReached*/false, sscene, *sphys, cv.pos());
                     }
                     gelapsed += dt;
-                    if (!gShowroomDay) placePlanets(ex, ey, ez, gyaw, gpitch);
                     device->setCamera(ex, ey, ez, gyaw, gpitch, 80.0f);
                     if (!gShowroomDay) device->setSkyTime(gelapsed);
                     if (outPath) device->armCapture(outPath);
@@ -6924,7 +6923,8 @@ int main(int argc, char** argv) {
                         for (auto& cv : civilians) cv.draw(*device, frame, sscene);
                         drawAdditiveGlass(frame);   // incl. the dark one-way gallery glass
                         if (!gShowroomDay)
-                            drawNightSkyPlanets(device.get(), frame, planetMesh, planets, gelapsed, ringMesh);
+                            drawNightSkyPlanets(device.get(), frame, planetMesh, planets, gelapsed,
+                                                ex, ey, ez, ringMesh);
                     }
                     device->endFrame(frame);
                 };
@@ -7215,7 +7215,6 @@ int main(int argc, char** argv) {
             } else {
                 eyeX = sx; eyeZ = sz; eyeY = sy + 1.6f; yaw = 1.5708f /*+Z*/; pitch = -0.05f;
             }
-            placePlanets(eyeX, eyeY, eyeZ, yaw, pitch);
             // For the ragdoll proof, tint Aria a bright warm hue so the collapsed body
             // reads clearly against the dark moonlit floor (headless capture only).
             if (ragShot) girl.setTint(1.6f, 0.9f, 0.55f, 1.0f);
@@ -7289,7 +7288,8 @@ int main(int argc, char** argv) {
                     // Planets are a NIGHT feature — never drawn in DAY (the starfield in
                     // sky.frag auto-hides on the bright DAY sky).
                     if (!gShowroomDay)
-                        drawNightSkyPlanets(device.get(), frame, planetMesh, planets, elapsed, ringMesh);
+                        drawNightSkyPlanets(device.get(), frame, planetMesh, planets, elapsed,
+                                            eyeX, eyeY, eyeZ, ringMesh);
                 }
                 device->endFrame(frame);
             }
@@ -7545,7 +7545,6 @@ int main(int argc, char** argv) {
             int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
             if (cw != lastWs || ch != lastHs) { lastWs = cw; lastHs = ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
 
-            if (!gShowroomDay) placePlanets(camX, camY, camZ, camYaw, camPitch);
             device->setCamera(camX, camY, camZ, camYaw, camPitch, 72.0f);
             if (!gShowroomDay) device->setSkyTime(elapsed);   // wheeling sky = NIGHT only
             auto frame = device->beginFrame();
@@ -7558,7 +7557,8 @@ int main(int argc, char** argv) {
                 drawAdditiveGlass(frame);   // glass deck + rails + riding car + gallery dark glass (BLEND)
                 // Planets are a NIGHT feature — never drawn in DAY (the bright sky carries it).
                 if (!gShowroomDay)
-                    drawNightSkyPlanets(device.get(), frame, planetMesh, planets, elapsed, ringMesh);
+                    drawNightSkyPlanets(device.get(), frame, planetMesh, planets, elapsed,
+                                        camX, camY, camZ, ringMesh);
 
                 // ---- HUD: "[E] Talk" prompt over Aria, or the dialog box while talking.
                 uint32_t hudW = 0, hudH = 0; device->hudSize(hudW, hudH);
