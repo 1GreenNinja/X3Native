@@ -7,6 +7,7 @@
 #include <GLFW/glfw3native.h>
 
 #include "engine/core/x3_log.h"
+#include "engine/core/x3_boot.h"   // [boot] timeline (boot-to-interactive instrumentation + --test-boottime)
 #include "engine/core/IConsole.h"
 #include "engine/core/IJobSystem.h"
 #include "engine/rhi/IRenderDevice.h"
@@ -98,6 +99,7 @@
 #include <filesystem>
 #include <cstdio>
 #include <thread>     // r_maxfps frame limiter
+#include <future>     // boot-time async audio bring-up (docs/BOOT_TIME.md)
 #include <chrono>
 #include <fstream>    // window-size settings persistence (SET AS DEFAULT)
 
@@ -802,6 +804,10 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("r_fpace_warmup", "60",  "frame-pacing warmup frames excluded from percentiles/spike counting");
     console.registerCVar("r_fpace_spikex", "2.0", "spike threshold: frame > spikex * rolling median");
     console.registerCVar("r_fpace_floor",  "3.0", "spike absolute floor (ms): frame must also exceed median + floor (filters sub-ms OS jitter)");
+    // BOOT-TO-GAMEPLAY budget (docs/BOOT_TIME.md): the --test-boottime gate fails
+    // if process-start -> first interactive frame exceeds this. A cvar so weaker
+    // machines can loosen the threshold without a rebuild.
+    console.registerCVar("boot_budget_ms", "2000", "boot-to-interactive budget (ms) asserted by --test-boottime");
 }
 
 // Read the r_rtao* cvars and push them onto the device (no-op on a non-RT device).
@@ -2256,6 +2262,15 @@ int main(int argc, char** argv) {
     // median + r_fpace_floor), ZERO pipelines/shader modules created after frame
     // 1, ZERO descriptor-pool growth. Prints the CPU+GPU p50/p95/p99/p999/max.
     bool        testFramePacing = false;
+    // --test-boottime [budgetMs] (BOOT-TO-GAMEPLAY gate, docs/BOOT_TIME.md): boot the
+    // REAL windowed interactive path (window + swapchain + full world build), skip the
+    // intro cold-open (content, not boot work), run exactly ONE main-loop frame (the
+    // first interactive frame: world built, menu live, player controllable on START),
+    // print the [boot] phase table, and exit 0 iff total < the budget. The budget
+    // defaults to the boot_budget_ms cvar default (2000 ms) and can be loosened for
+    // weaker machines via the optional CLI arg or `boot_budget_ms` in the console cfg.
+    bool        testBootTime = false;
+    double      bootBudgetMs = 0.0;    // 0 = use the boot_budget_ms cvar (default 2000)
     // Terrain vantage mode (--screenshot-terrain [path.png]): build the tiled
     // procedural terrain world (terrain + sky + sun), pose a camera up on the
     // hills looking toward the sun so the lit rolling terrain + cast shadows +
@@ -2318,6 +2333,7 @@ int main(int argc, char** argv) {
     // (walk the hills) instead of the default interior Level 1. Anything else (or
     // omitted) keeps Level 1 as the default, unchanged.
     std::string worldMode = "level1";
+    bool        worldExplicit = false;   // --world was passed (vs the default)
     // Optional settle-frame count for --screenshot (default 16 = unchanged
     // behavior). Larger values advance the world (and the characters' skeletal
     // animation) further before the capture, so two shots at different counts show
@@ -2358,6 +2374,12 @@ int main(int argc, char** argv) {
         if (a == "--test-rtshadows") { smoketest = true; testRtShadows = true; continue; }
         // Zero-stutter flythrough — handled OUTSIDE the chain (same C1061 reason).
         if (a == "--test-framepacing") { testFramePacing = true; continue; }
+        if (a == "--test-boottime") {
+            testBootTime = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-')
+                bootBudgetMs = std::atof(argv[++i]);
+            continue;
+        }
         if (a == "--nortshadows") { noRtShadows = true; continue; }   // A/B: pin tier 0 (CSM-only)
         if (a == "--screenshot-rtshadows") {
             rtshShot = true;
@@ -2466,7 +2488,7 @@ int main(int argc, char** argv) {
             if (i + 1 < argc) { winH = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
         else if (a == "--world") {
-            if (i + 1 < argc && argv[i + 1][0] != '-') worldMode = argv[++i];
+            if (i + 1 < argc && argv[i + 1][0] != '-') { worldMode = argv[++i]; worldExplicit = true; }
             // `--world fromdoc <path.json>`: an optional second positional token is
             // the LevelDoc to boot (default = the editor's File>Save target).
             if (worldMode == "fromdoc" && i + 1 < argc && argv[i + 1][0] != '-')
@@ -3235,6 +3257,65 @@ int main(int argc, char** argv) {
     }
 
     x3::logInfo("X3Engine starting...");
+    x3::boot::mark("static init + args");
+
+    // --test-boottime gates the CANONICAL world (canonlevel — the data-driven
+    // Floor 1, the game's true level) unless a --world was given explicitly. The
+    // legacy hand-coded tower (--world level1) builds 5x the entity count and has
+    // an honest boot floor of ~3.2 s — gate it explicitly with a budget arg, e.g.
+    // `--test-boottime 4000 --world level1` (see docs/BOOT_TIME.md).
+    if (testBootTime && !worldExplicit) {
+        worldMode = "canonlevel";
+        x3::logInfo("boottime: no --world given — gating the canonical world (canonlevel)");
+    }
+
+    // ---- BOOT MANIFEST (docs/BOOT_TIME.md): everything the cell worlds (default
+    // Level 1 / elevator / canonlevel / intro) load at build time. Built once,
+    // used twice: (1) prewarmModelDecodesAsync RIGHT NOW — pure-CPU stb decodes on
+    // background threads, fully overlapped with the ~1 s Vulkan driver init below;
+    // (2) preloadModelsAsync after the device exists — parallel full loads that
+    // consume those decodes and warm the model/texture caches, so the serial world
+    // build takes cache hits. Missing files are skipped silently (superset).
+    std::vector<std::pair<std::string, std::string>> bootManifest;
+    {
+        const bool legacyCell = (worldMode == "level1") || (worldMode == "elevator");
+        const bool canonCell  = (worldMode == "canonlevel") || (worldMode == "intro");
+        if (legacyCell || canonCell) {
+            const std::string rig = x3::game::riggedGlbRoot();
+            const std::string cvt = x3::game::convertedGlbRoot();
+            // Common to BOTH cell builds (canon Floor 1 + the legacy tower).
+            for (const char* f : { "marcus_webb_anim.glb", "alien_crawler_anim.glb",
+                                   "chief_martinez.glb",
+                                   "AnnaCasual.glb", "AnnaBodySuit.glb", "AnnaTactical.glb",
+                                   "Jake_22_actions.glb",
+                                   "WeaponEnergyPistol.glb", "WeaponEnergyPistol2.glb",
+                                   "WeaponRailgun.glb", "WeaponShotgun2.glb",
+                                   "WeaponBFG.glb", "WeaponRocketLauncher.glb" })
+                bootManifest.emplace_back(rig, f);
+            bootManifest.emplace_back(cvt, "Characters/Drone.glb");
+            bootManifest.emplace_back(cvt, "ModularSciFi_Interior/SM_Door_A.glb");
+            // Legacy tower only (Spire floors + env art + warehouse props).
+            if (legacyCell) {
+                for (const char* f : { "chief_martinez_anim.glb", "Oracle.glb" })
+                    bootManifest.emplace_back(rig, f);
+                for (const char* f : { "ModularSciFi_Interior/SM_DoorFrame_A.glb",
+                                       "ModularSciFi_Interior/SM_Wall_A.glb",
+                                       "ModularSciFi_Interior/SM_Floor_A.glb",
+                                       "ModularSciFi_Interior/SM_Ceiling_A.glb",
+                                       "ModularSciFi_Interior/SM_Light_A.glb",
+                                       "ModularSciFi_Interior/SM_Pipes_A.glb",
+                                       "ModularSciFi_Interior/SM_Console.glb",
+                                       "SciFi_Warehouse_Kit/Barrel.glb",
+                                       "SciFi_Warehouse_Kit/Crate Long.glb",
+                                       "SciFi_Warehouse_Kit/Crate Short.glb",
+                                       "SciFi_Warehouse_Kit/Fusebox 01.glb",
+                                       "SciFi_Warehouse_Kit/Pallet.glb" })
+                    bootManifest.emplace_back(cvt, f);
+            }
+            x3::asset::prewarmModelDecodesAsync(bootManifest);
+            x3::boot::mark("decode prewarm kicked (async)");
+        }
+    }
 
     // HEADLESS / OFFSCREEN routing: the non-interactive verification + screenshot
     // paths (--smoketest, --screenshot, --screenshot-sky, --screenshot-terrain)
@@ -3277,11 +3358,64 @@ int main(int argc, char** argv) {
         x3::logInfo("headless mode: rendering offscreen (no window / no swapchain) at "
                     + std::to_string(W) + "x" + std::to_string(H));
     }
+    x3::boot::mark("glfw init + window");
+
+    // BOOT-TIME: overlap the audio bring-up (miniaudio device + the WAV loads,
+    // ~80-100 ms) with the Vulkan device init below. Launched ONLY for the
+    // windowed worlds that actually reach the shared audio block (the headless
+    // capture paths and the self-contained demo worlds early-return before it and
+    // must not leak a live audio device). Joined at the original audio spot.
+    struct BootAudio {
+        std::unique_ptr<x3::audio::IAudioSystem> audio;
+        x3::audio::SoundHandle gun, door, pickup, death;
+    };
+    auto makeBootAudio = []() -> BootAudio {
+        BootAudio ba;
+        ba.audio.reset(x3::audio::createAudioSystem());
+        ba.audio->init();
+        ba.gun = ba.audio->load(x3::game::resolveAudio(
+            "Sci-Fi_Guns_Game-Of-Weapons/Audio/SFX/Wave/Single_Gunshots/"
+            "Single_Gunshot_Sci-Fi_Gun-01.wav"));
+        ba.door = ba.audio->load(x3::game::resolveAudio(
+            "ModularScifiInterior/Sound/S_ScifiDoor_A.WAV"));
+        ba.pickup = ba.audio->load(x3::game::resolveAudio(
+            "Sci-fi Evolution Gift Pack/Health or Energy Game Recharge 2.wav"));
+        ba.death = ba.audio->load(x3::game::resolveAudio(
+            "Free Pack/Explosion 1.wav"));
+        return ba;
+    };
+    std::future<BootAudio> bootAudioFut;
+    {
+        const bool sharedAudioWorld =
+            (worldMode == "level1") || (worldMode == "elevator") ||
+            (worldMode == "canonlevel") || (worldMode == "intro") ||
+            (worldMode == "terrain") || (worldMode == "ocean");
+        if (!headless && sharedAudioWorld)
+            bootAudioFut = std::async(std::launch::async, makeBootAudio);
+    }
 
     // ---- Render device ----
     std::unique_ptr<x3::rhi::IRenderDevice> device(x3::rhi::createRenderDevice());
 
     x3::rhi::DeviceDesc desc{};
+    // BOOT-TIME: kick the async GLB warmup the moment the device's upload path is
+    // live (mid-init, right after the core graphics objects) so it overlaps the
+    // remaining ~300 ms of device init. Joined before the world build.
+    struct PreloadCtx {
+        x3::rhi::IRenderDevice* dev;
+        const std::vector<std::pair<std::string, std::string>>* manifest;
+    } preloadCtx{ device.get(), &bootManifest };
+    if (!bootManifest.empty()) {
+        desc.onUploadReady = [](void* u) {
+            auto* c = static_cast<PreloadCtx*>(u);
+            // Open the upload-batch window NOW so the preload threads record into
+            // the shared batch (the later world-build beginUploadBatch is a no-op).
+            c->dev->beginUploadBatch();
+            x3::asset::preloadModelsAsync(c->dev, *c->manifest);
+            x3::logInfo("[boot] GLB preload kicked (mid device-init, async)");
+        };
+        desc.onUploadReadyUser = &preloadCtx;
+    }
     desc.nativeWindowHandle = window ? glfwGetWin32Window(window) : nullptr;
     desc.width  = W;
     desc.height = H;
@@ -8438,20 +8572,17 @@ int main(int argc, char** argv) {
     // purchased WAV/music resolved per-machine via resolveAudio() (laptop D: mirror
     // or the other machines' G: packs); nothing is copied into the public repo.
     // Missing files load() to invalid handles -> silent.
-    std::unique_ptr<x3::audio::IAudioSystem> audio(x3::audio::createAudioSystem());
-    audio->init();
+    // Joined from the boot-time async bring-up when it was launched (overlapped
+    // with the Vulkan device init above); built synchronously here otherwise.
     // Concrete asset picks (see docs/ASSET_INVENTORY.md). Pack-relative paths with
     // graceful fallback: a missing/undecodable file -> invalid handle -> the
     // corresponding event is simply silent (logged once at load).
-    const x3::audio::SoundHandle sndGun = audio->load(x3::game::resolveAudio(
-        "Sci-Fi_Guns_Game-Of-Weapons/Audio/SFX/Wave/Single_Gunshots/"
-        "Single_Gunshot_Sci-Fi_Gun-01.wav"));
-    const x3::audio::SoundHandle sndDoor = audio->load(x3::game::resolveAudio(
-        "ModularScifiInterior/Sound/S_ScifiDoor_A.WAV"));
-    const x3::audio::SoundHandle sndPickup = audio->load(x3::game::resolveAudio(
-        "Sci-fi Evolution Gift Pack/Health or Energy Game Recharge 2.wav"));
-    const x3::audio::SoundHandle sndDeath = audio->load(x3::game::resolveAudio(
-        "Free Pack/Explosion 1.wav"));
+    BootAudio bootAudio = bootAudioFut.valid() ? bootAudioFut.get() : makeBootAudio();
+    std::unique_ptr<x3::audio::IAudioSystem> audio(std::move(bootAudio.audio));
+    const x3::audio::SoundHandle sndGun    = bootAudio.gun;
+    const x3::audio::SoundHandle sndDoor   = bootAudio.door;
+    const x3::audio::SoundHandle sndPickup = bootAudio.pickup;
+    const x3::audio::SoundHandle sndDeath  = bootAudio.death;
     // Footsteps reuse the gunshot WAV pitched down + quiet (no dedicated footstep
     // WAV in the inventory). It reads as a soft step; replace with a real footstep
     // SFX later if one is added to the pack.
@@ -8460,6 +8591,8 @@ int main(int argc, char** argv) {
     // built, below). Spaceship-ambience-style sci-fi action loop.
     const std::string kMusicPath = x3::game::resolveAudio(
         "Sci-Fi Music Pack 1/Loops/SMP1_LOOP_Zero8 _1.wav");
+
+    x3::boot::mark("audio init + sfx loads");
 
     // ---- Physics world (M3 / Jolt) ----
     std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
@@ -8478,6 +8611,25 @@ int main(int argc, char** argv) {
     // safe: render() is a no-op without a valid frame, so --smoketest never blocks.
     // The bar is also DRAWN under the headless smoketest (a few frames below) so
     // the 2D draw path is validation-checked. ----
+    x3::boot::mark("physics init");
+    // BOOT-TIME upload batching (docs/BOOT_TIME.md): from here through the end of
+    // the world build, every createMesh/createTexture records into ONE shared
+    // upload command buffer instead of a blocking submit each (~8 ms fixed cost x
+    // ~2000 calls was the 16+ s world-build pole). beginFrame (the loading-screen
+    // frames) and any one-shot GPU op auto-flush, so visibility semantics are
+    // identical. Ended right after the last build-time GLB load below.
+    device->beginUploadBatch();
+
+    // BOOT MANIFEST — parallel GLB preload (docs/BOOT_TIME.md). Everything the
+    // cell worlds (default Level 1 / elevator / canonlevel / intro) load at build
+    // time, warmed CONCURRENTLY into the loader's process-wide model/texture
+    // caches before the serial world build below — which then takes cache hits
+    // instead of doing 25+ serial parse+decode passes (19x marcus_webb on a
+    // default boot). Missing files are skipped silently (superset manifest); the
+    // demo/sandbox worlds skip the warmup entirely (they load their own art).
+    // (The async GLB warmup was kicked MID device-init via desc.onUploadReady and
+    // is joined right before the world build below.)
+
     x3::game::LoadingScreen loading;
     loading.init(*device);
     loading.step(x3::game::LoadStep::DeviceReady, "RENDER DEVICE");
@@ -8498,6 +8650,7 @@ int main(int argc, char** argv) {
     loading.step(x3::game::LoadStep::AudioReady, "LOADING AUDIO");
     loading.step(x3::game::LoadStep::PhysicsReady, "PHYSICS WORLD");
     loadingFrame(kLoadDt);
+    x3::boot::mark("loading frame (pre-build, IBL bake)");
 
     // ---- INTRO COLD-OPEN (prologue lead-in). Before the cell is built, play the scripted
     // cold-open: Jake flies his ship through space, a larger enemy ship shoots him down with an
@@ -8512,7 +8665,9 @@ int main(int argc, char** argv) {
     {
         const bool introCellWorld = (worldMode == "level1") || (worldMode == "elevator") ||
                                     (worldMode == "canonlevel") || (worldMode == "intro");
-        if (window && introCellWorld) {
+        // --test-boottime skips the cold-open: the intro is CONTENT the player watches
+        // (a skippable cinematic), not boot work — the gate measures the machine.
+        if (window && introCellWorld && !testBootTime) {
             if (!x3::intro::runIntro(*device, window)) {
                 // Window was closed during the intro — exit cleanly (mirrors a window-close quit).
                 physics->shutdown();
@@ -8521,6 +8676,7 @@ int main(int argc, char** argv) {
                 glfwTerminate();
                 return 0;
             }
+            x3::boot::mark("intro cold-open (content)");
         }
     }
 
@@ -8657,12 +8813,17 @@ int main(int argc, char** argv) {
         nexus.shutdown();                              // F4.5 Chorus pod ragdolls
         if (canonPlay.built()) canonPlay.shutdown();   // canonlevel enemy ragdolls
     };
+    // Join the async boot-manifest GLB warmup (no-op when none was kicked): the
+    // world build below takes model-cache hits instead of repeating parse/decode.
+    x3::asset::joinModelPreload();
+    x3::boot::mark("GLB preload joined");
     if (canonWorld) {
         // ---- DATA-DRIVEN CANONICAL FLOOR 1 + per-room PVS cull. ----
         canonFloor = x3::game::loadCanonFloor(x3::game::canonProjectJsonPath(), 1);
         if (canonFloor.valid()) {
             x3::game::CanonBuildOpts copts; copts.doors = &canonDoors; copts.lockSecuredRooms = true;
             x3::game::buildCanonFloor(canonFloor, scene, *device, *physics, copts);
+            x3::boot::mark("canon floor geometry+doors");
             // Per-room ceiling lights: the data-driven floor skips the env_art Light_A
             // fixtures the legacy level registers, so without these the rooms only get
             // ambient + the flashlight (the DARK bug). We feed only the player's VISIBLE
@@ -8708,6 +8869,7 @@ int main(int argc, char** argv) {
             // legacy Level1Game uses (MonsterManager / RescueSystem / WeaponSystem). ----
             canonPlay.build(canonFloor, scene, *device, *physics,
                             x3::game::riggedGlbRoot(), x3::game::canonGirlsDialogPath());
+            x3::boot::mark("canon gameplay spawns (GLB enemies)");
             // The re-aimed Level-1 beat flow on REAL canonical room centers: spawn in
             // Jake's Cell, down the wide Main Hall, through Security/Research/Medical/
             // Armory, into the Boss Arena (Martinez), out via the Elevator Lobby.
@@ -8762,6 +8924,7 @@ int main(int argc, char** argv) {
         }
     } else if (!terrainWorld) {
         game.build(scene, *device, *physics, x3::game::riggedGlbRoot());
+        x3::boot::mark("level1 build (graybox+GLBs)");
         // Audio hookups for Level 1 events (§9, nice-to-have; silent if no device).
         x3::game::Level1Audio la;
         la.sys = audio.get(); la.door = sndDoor; la.pickup = sndPickup;
@@ -8828,16 +8991,19 @@ int main(int argc, char** argv) {
             elevator.setFloorLabels(labels);
         }
         elevator.buildVisuals(scene, *device);
+        x3::boot::mark("elevator build");
 
         // Author the F3/F4/F5 mid-floor encounters onto the Spire plates. The
         // per-floor elevator stops above (one per floor) make them reachable.
         midFloors.build(scene, *device, *physics, Lb, midTriggers,
                         x3::game::riggedGlbRoot());
+        x3::boot::mark("spire mid floors (F3-F5)");
 
         // Author the F6/F7 top-floor encounters (the Act-1 finale: F6 strongpoint,
         // F7 the Clone boss + Sarah rescue). Reached via the elevator's top stops.
         topFloors.build(scene, *device, *physics, Lb, topTriggers,
                         x3::game::riggedGlbRoot());
+        x3::boot::mark("spire top floors (F6-F7)");
 
         // Stage the off-elevator Floor 4.5 NEXUS (The Chorus). The connector trigger
         // is added DISABLED inside build() — the encounter is found later on the
@@ -8851,15 +9017,19 @@ int main(int argc, char** argv) {
         // is not armed until the F7-complete gate is satisfied below in the loop).
         subLevels.build(scene, *device, *physics, Lb, subTriggers,
                         x3::game::riggedGlbRoot());
+        x3::boot::mark("nexus + sub-levels");
 
     }
     const x3::game::Level1Layout& L1 = game.layout();
+    x3::boot::mark(canonWorld ? "world build (canon floor + gameplay)"
+                              : "world build (level1 + spire floors)");
 
     // World geometry + canon room spawns are built — push the heavy build steps onto
     // the loading bar and show a frame so the human sees the bar jump.
     loading.step(x3::game::LoadStep::WorldGeometry, "BUILDING WORLD");
     loading.step(x3::game::LoadStep::Spawns, "SPAWNING ACTORS");
     loadingFrame(kLoadDt);
+    x3::boot::mark("loading frame (post-build)");
 
     // ---- Outdoor terrain world setup (--world terrain). Bring up the job system
     // + the camera-centered STREAMER (B3): an UNBOUNDED procedural world where
@@ -8915,6 +9085,7 @@ int main(int argc, char** argv) {
     // crosshair now lives in the screen-space HUD layer (S7), not here. ----
     x3::game::CombatFx combatFx;
     combatFx.init(*device);
+    x3::boot::mark("combat fx init");
     // FX / debris / UI primed — bar nearly full.
     loading.step(x3::game::LoadStep::FxReady, "PRIMING FX");
 
@@ -8995,6 +9166,7 @@ int main(int argc, char** argv) {
     // (missing GLBs fall back to the energy pistol). ====================
     x3::game::Arsenal arsenal;
     arsenal.loadViewmodels(*device, x3::game::riggedGlbRoot());
+    x3::boot::mark("weapon viewmodels (GLBs)");
 
     // ==================== THIRD-PERSON VIEW (FIRST MILESTONE) ====================
     // Load the Jake avatar + the FP/3P toggle. FP is the DEFAULT (eye-cam + weapon
@@ -9004,6 +9176,7 @@ int main(int argc, char** argv) {
     // load this stays unbuilt and FP keeps working. See app/thirdperson.* + F5 below.
     x3::game::ThirdPersonView thirdPerson;
     thirdPerson.build(scene, *device, x3::game::riggedGlbRoot());
+    x3::boot::mark("third-person avatar (GLB)");
     bool prevF1 = false, prevF2 = false;
 
     // ---- PER-WEAPON FIRE SOUNDS (the user's "every gun sounds the same" fix) ----
@@ -9048,6 +9221,12 @@ int main(int argc, char** argv) {
     uint32_t weaponRng = 0xA11CE5u;   // deterministic spread stream
     float    weaponRecoilPitch = 0.0f; // accumulated upward camera kick (rad), decays
     constexpr float kRecoilRecover = 6.0f; // recoil recovery rate (rad/s decay)
+
+    x3::boot::mark("per-weapon fire sfx");
+    // World build + every build-time GLB is done — land all batched uploads in one
+    // submit. (Per-frame paths from here on use the normal unbatched semantics.)
+    device->endUploadBatch();
+    x3::boot::mark("upload batch flush");
 
     // ---- S7: console backend (D6) + screen-space HUD (FPS, console, crosshair).
     std::unique_ptr<x3::con::IConsole> console(x3::con::createConsole());
@@ -10146,6 +10325,9 @@ int main(int argc, char** argv) {
             }
         }
         x3::logInfo("smoketest: 30 frames + recreate OK");
+        // [boot] visibility: log the boot total in --smoketest runs too (headless,
+        // so no swapchain/loading-fade — a lower bound, not the interactive gate).
+        x3::boot::report("smoketest boot (headless, to last frame)");
         audio->shutdown();
         combatFx.shutdown(*device);
         shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
@@ -10191,6 +10373,7 @@ int main(int argc, char** argv) {
         player.spawn(*physics, L1.spawn.x, L1.spawn.y, L1.spawn.z);
     }
 
+    x3::boot::mark("player spawn");
     glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
     if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
@@ -10436,27 +10619,24 @@ int main(int argc, char** argv) {
     // a couple of frames, then fade it OUT with REAL wall-clock dt so the first
     // gameplay (menu) frame doesn't pop in. Driven entirely on the real window
     // frame path (beginFrame/endFrame). Only reached when a window exists.
+    // BOOT-TIME (docs/BOOT_TIME.md): the hand-off no longer runs a DEDICATED
+    // hold+fade frame loop (which used to add ~0.2-0.6 s of pure padding while the
+    // first real frame's one-time work — BLAS/TLAS builds, first scene draw —
+    // STILL waited on the other side). Instead the main loop starts immediately
+    // and draws the completed loading overlay ON TOP, fading it out over the
+    // first live frames — so the heavy first frame happens UNDER the bar and the
+    // menu is interactive the moment it's visible. Fast boots (the bar barely
+    // showed) fade ~3x quicker.
+    bool loadingOverlayLive = true;
     {
+        x3::boot::mark("systems wired (ui/console/spawn)");
         loading.step(x3::game::LoadStep::Done, "READY");
-        // Hold the completed bar briefly so the 100% + final tip read.
-        double lprev = glfwGetTime();
-        for (int i = 0; i < 8 && !glfwWindowShouldClose(window); ++i) {
-            const double now = glfwGetTime();
-            const float ldt = (float)(now - lprev); lprev = now;
-            loadingFrame(ldt > 0.1f ? 0.1f : ldt);
-        }
-        // Fade out (clean hand-off). Bounded so a stalled present can't hang the boot.
-        loading.beginFadeOut();
-        int loadGuard = 0;
-        while (!loading.faded() && loadGuard++ < 240 && !glfwWindowShouldClose(window)) {
-            const double now = glfwGetTime();
-            const float ldt = (float)(now - lprev); lprev = now;
-            loadingFrame(ldt > 0.1f ? 0.1f : ldt);
-        }
-        loading.shutdown(*device);
+        loading.beginFadeOut(x3::boot::sinceStartMs() < 2500.0);
     }
 
     // ---- Main loop ----
+    bool bootReported = false;   // [boot] one-shot: report on the FIRST presented frame
+    int  bootTestExit = 0;       // --test-boottime verdict (0 pass / 1 over budget)
     int lastW = static_cast<int>(W), lastH = static_cast<int>(H);
     float oceanTime = 0.0f;   // --world ocean wave-animation clock (seconds)
     double frameCapPrev = glfwGetTime();   // r_maxfps limiter cursor
@@ -12192,11 +12372,43 @@ int main(int argc, char** argv) {
                 device->endEditorUI();
             }
         }
+        // BOOT hand-off overlay: the completed loading bar fades out OVER the live
+        // game (menu already interactive beneath it) — see the hand-off note above.
+        if (loadingOverlayLive) {
+            loading.render(*device, frame, dt);
+            if (loading.faded()) { loading.shutdown(*device); loadingOverlayLive = false; }
+        }
         device->endFrame(frame);
         g_perf.addFrame((double)dt);   // per-system perf breakdown logged every 120 frames
+
+        // ---- [boot] BOOT-TO-INTERACTIVE: the first main-loop frame has presented —
+        // window up, world fully built, menu live (player controllable on START).
+        // Print the phase table once on every interactive boot; under --test-boottime
+        // additionally assert the budget (boot_budget_ms cvar / CLI arg) and exit.
+        if (!bootReported) {
+            bootReported = true;
+            x3::boot::mark("first interactive frame");
+            const double totalMs = x3::boot::report("boot-to-interactive");
+            if (testBootTime) {
+                const double budget = bootBudgetMs > 0.0
+                    ? bootBudgetMs : (double)console->getFloat("boot_budget_ms");
+                const bool ok = totalMs < budget;
+                char vb[160];
+                std::snprintf(vb, sizeof(vb),
+                    "boottime: %s  boot-to-interactive %.1f ms  (budget %.0f ms, %s)",
+                    ok ? "PASS" : "FAIL", totalMs, budget,
+                    canonWorld ? "canonlevel" : worldMode.c_str());
+                if (ok) x3::logInfo(vb); else x3::logError(vb);
+                bootTestExit = ok ? 0 : 1;
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+            }
+        }
     }
 
     x3::logInfo("shutting down");
+    // BOOT hand-off overlay: if the window closed mid-fade, free its texture now
+    // (else the VMA shutdown leak check would see a live allocation).
+    if (loadingOverlayLive) loading.shutdown(*device);
     // B3: tear the streamer down BEFORE physics/device (it removes its bodies +
     // destroys its meshes), then stop the terrain job system. Both are no-ops
     // when not in terrain mode.
@@ -12218,5 +12430,5 @@ int main(int argc, char** argv) {
     device->shutdown();
     glfwDestroyWindow(window);
     glfwTerminate();
-    return 0;
+    return bootTestExit;
 }

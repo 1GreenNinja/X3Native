@@ -12,6 +12,7 @@
 #include "headless_device.h"
 
 #include <algorithm>
+#include <chrono>     // [boot] build-cost accumulators
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -195,15 +196,28 @@ constexpr float kDoorHalf  = 0.8f;     // doorway opening half-width (1.6 m — 
 constexpr float kLintel    = 2.2f;     // head clearance under a doorway lintel (>= stand 1.8 + margin)
 constexpr float kCeilT     = 0.2f;     // ceiling cap thickness
 
+// [boot] build-cost accumulators (logged once at the end of buildCanonFloor) so the
+// boot receipts show WHERE the canon geometry build spends its time (mesh upload vs
+// Jolt cook vs CPU prim gen).
+struct BuildCost { double meshMs = 0, physMs = 0, primMs = 0; uint32_t boxes = 0; };
+BuildCost g_buildCost;
+double monoMs() {
+    using C = std::chrono::steady_clock;
+    return std::chrono::duration<double, std::milli>(C::now().time_since_epoch()).count();
+}
+
 uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
                 float hx, float hy, float hz, float cx, float cy, float cz,
                 x3::rhi::TextureHandle tex, const float color[4], uint32_t roomId,
                 bool collide = true, bool visible = true) {
+    const double t0 = monoMs();
     x3::prims::PrimMesh geo = x3::prims::makeBox(hx, hy, hz, cx, cy, cz, 0.5f);
+    const double t1 = monoMs();
     Entity e;
     if (visible)
         e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                    geo.index.data(), (uint32_t)geo.index.size());
+    const double t2 = monoMs();
     e.tex = tex;
     for (int i = 0; i < 4; ++i) e.baseColor[i] = color[i];
     for (int i = 0; i < 16; ++i) e.transform[i] = kIdentity[i];
@@ -213,6 +227,11 @@ uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysics
     if (collide)
         e.body = physics.addStaticMesh(geo.cverts.data(), (uint32_t)(geo.cverts.size() / 3),
                                        geo.cindex.data(), (uint32_t)geo.cindex.size());
+    const double t3 = monoMs();
+    g_buildCost.primMs += t1 - t0;
+    g_buildCost.meshMs += t2 - t1;
+    g_buildCost.physMs += t3 - t2;
+    ++g_buildCost.boxes;
     return scene.add(e);
 }
 
@@ -1230,6 +1249,15 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     x3::logInfo("buildCanonFloor: floor " + std::to_string(floor.floorNum) + " built " +
                 std::to_string(scene.size()) + " scene entities for " +
                 std::to_string(nRooms) + " rooms");
+    {
+        char cb[224];
+        std::snprintf(cb, sizeof(cb),
+            "[boot] buildCanonFloor cost: %u boxes — prim gen %.1f ms, mesh upload %.1f ms, "
+            "jolt cook %.1f ms", g_buildCost.boxes, g_buildCost.primMs, g_buildCost.meshMs,
+            g_buildCost.physMs);
+        x3::logInfo(cb);
+        g_buildCost = BuildCost{};
+    }
 }
 
 // =====================================================================================

@@ -39,6 +39,7 @@
 #include "RenderGraph.h"
 #include "VulkanRT.h"          // hardware ray-tracing AS manager (ray-query path)
 #include "../core/x3_log.h"
+#include "../core/x3_boot.h"   // [boot] timeline marks (device-init sub-phases)
 #include "font8x8_basic.h"
 #include "font_robotomono.h"   // embedded Roboto Mono TTF (Apache-2.0) — modern HUD font
 
@@ -82,6 +83,7 @@
 #include <algorithm>
 #include <unordered_map>
 #include <chrono>
+#include <mutex>   // m_uploadMu: parallel boot-time model preload (docs/BOOT_TIME.md)
 
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #define GLM_FORCE_RADIANS
@@ -172,6 +174,7 @@ public:
         auto inst_ret = ib.build();
         if (!inst_ret) { logError(std::string("[rhi] instance: ") + inst_ret.error().message()); return false; }
         m_inst = inst_ret.value();
+        x3::boot::mark("rhi: vk instance");
 
         // ---- Win32 surface ----
         // HEADLESS: skip surface creation entirely. No VK_KHR_surface / swapchain
@@ -278,6 +281,7 @@ public:
                 : "[rhi] RT: not available on this device — SSAO/CSM raster fallback");
         }
 
+        x3::boot::mark("rhi: phys-device select");
         vkb::DeviceBuilder db{ phys };
         auto dev_ret = db.build();
         if (!dev_ret) { logError(std::string("[rhi] device: ") + dev_ret.error().message()); return false; }
@@ -306,6 +310,7 @@ public:
         logInfo(std::string("[rhi] device ready: ") + phys.name +
                 " (Vulkan 1.3, dynamic-rendering + sync2 + descriptor-indexing)" +
                 (m_headless ? " [HEADLESS: offscreen target, no surface/swapchain]" : ""));
+        x3::boot::mark("rhi: instance+device");
 
         // VMA allocator (needed by the swapchain's depth image + graphics buffers)
         VmaAllocatorCreateInfo aci{};
@@ -324,13 +329,19 @@ public:
         else            { if (!createSwapchain(m_width, m_height)) return false; }
         if (!createPerFrame()) return false;
         if (!createShadowImage()) return false;   // before createGraphics (mesh layout needs set 2)
+        x3::boot::mark("rhi: swapchain+frames+shadow");
         if (!createGraphics()) return false;      // builds the shadow depth pipeline at the end
         // D15 GPU cull (r_cullpath). NON-FATAL: a failure logs + leaves the CPU
         // path (r_cullpath 0) as the only option — rendering is unaffected.
         m_gpuCullReady = createGpuCull();
         if (!m_gpuCullReady) logWarn("[cull] GPU cull unavailable — r_cullpath >= 1 falls back to CPU");
         else if (!createHzbTargets()) logWarn("[cull] HZB unavailable — r_hzb stays frustum-only");
+        x3::boot::mark("rhi: core pipelines (createGraphics)");
+        // BOOT-TIME hook: the upload path (pool + bindless + VMA) is live — let the
+        // host kick its async asset warmup overlapped with the rest of this init.
+        if (desc.onUploadReady) desc.onUploadReady(desc.onUploadReadyUser);
         if (!createHud()) return false;
+        x3::boot::mark("rhi: hud (font atlas + pipelines)");
         if (!createSky()) return false;           // analytic sky (open-world track, task A)
         // Image-based lighting (IBL): build the env/irradiance/prefilter cubes + BRDF
         // LUT objects (set 4 of the mesh pipeline). Default ON for ALL scenes; the
@@ -338,6 +349,7 @@ public:
         // this fails, IBL stays inactive and mesh.frag falls back to the flat ambient.
         if (!createIbl()) { logError("[rhi] IBL init failed; falling back to flat ambient"); m_iblReady = false; }
         else              { m_iblDirty = true; }
+        x3::boot::mark("rhi: sky+ibl objects");
         // HDR pipeline + bloom: build the post pipelines (extent-independent) then
         // the HDR scene + bloom-mip targets at the current extent + their sets.
         if (!createPost()) return false;
@@ -383,6 +395,7 @@ public:
         // depth/shadow/color passes (which draw it unchanged). Additive + opt-in:
         // nothing runs unless a mesh is registered + a palette uploaded each frame.
         if (!createSkinning()) return false;
+        x3::boot::mark("rhi: post/ssao/gi/fx pipelines");
 
         // ===================================================================
         // ZERO-STUTTER boot precompile (docs/ZERO_STUTTER.md step 1).
@@ -438,10 +451,12 @@ public:
             logInfo(pbuf);
             (void)msBefore;
         }
+        x3::boot::mark("rhi: RT precompile");
         return true;
     }
 
     void shutdown() override {
+        if (m_dev.device) flushUploadBatch();   // land + free any still-batched uploads
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
         // ZERO-STUTTER: persist the pipeline cache FIRST (device still alive) so
         // the next boot compiles near-zero pipelines from scratch.
@@ -867,6 +882,12 @@ public:
 
     FrameContext beginFrame() override {
         FrameContext fc{};
+        // BOOT-TIME upload batching: SUBMIT any still-recording uploads (queue
+        // order + the trailing barrier give this frame full visibility — no CPU
+        // wait), and opportunistically retire an already-signaled batch fence so
+        // staging buffers don't linger.
+        submitUploadBatch();
+        waitUploadBatch(false);
         // ZERO-STUTTER: from here on, ANY pipeline/module/pool creation outside a
         // declared boundary is LATE (the x3Create* wrappers count + assert it).
         m_firstFrameBegun = true;
@@ -1115,7 +1136,19 @@ public:
         // (its own fence) that completes BEFORE this frame's command buffer runs, so
         // mesh.frag set 4 samples a valid environment. Cheap + rare (only on sky
         // change), so per-frame cost is just the three texture fetches in the shader.
-        if (m_iblReady && m_iblDirty) { m_iblBakedThisFrame = true; regenIblFromSky(); }
+        if (m_iblReady && m_iblDirty) {
+            m_iblBakedThisFrame = true;
+            const bool firstBake = !m_iblBaked;
+            const auto tb0 = std::chrono::steady_clock::now();
+            regenIblFromSky();
+            if (firstBake) {     // boot receipt only; later sky-change rebakes stay quiet
+                char bb[96];
+                std::snprintf(bb, sizeof(bb), "[boot] ibl first bake: %.1f ms (incl. pending upload retire)",
+                              std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - tb0).count());
+                logInfo(bb);
+            }
+        }
 
         // ---- Hardware ray-tracing (RT AO) build, gated + default OFF ----------
         // Only when r_rtao is on AND the device supports RT: lazily build the RT-AO
@@ -1499,6 +1532,10 @@ public:
     MeshHandle createMesh(const MeshVertex* verts, uint32_t vcount,
                           const uint32_t* idx, uint32_t icount) override {
         if (!verts || vcount == 0 || !idx || icount == 0) return {};
+        // Parallel preload safe: staging alloc + memcpy run UNLOCKED (VMA is
+        // internally synchronized) so concurrent loaders overlap their copies;
+        // the shared batch-record happens under the lock inside
+        // createDeviceLocalBuffer, and the registry write locks below.
         Mesh m{};
         const VkDeviceSize vbBytes = (VkDeviceSize)vcount * sizeof(MeshVertex);
         const VkDeviceSize ibBytes = (VkDeviceSize)icount * sizeof(uint32_t);
@@ -1525,12 +1562,14 @@ public:
         m.vertexCount = vcount;
         // Bake the model-space bounding sphere for the CPU frustum cull (r_frustumcull).
         computeLocalSphere(verts, vcount, m.boundsCenter, m.boundsRadius);
+        std::lock_guard<std::recursive_mutex> lk(m_uploadMu);   // registry write
         uint32_t id = m_nextMeshId++;
         m_meshes.emplace(id, m);
         return { id };
     }
 
     void destroyMesh(MeshHandle h) override {
+        std::lock_guard<std::recursive_mutex> lk(m_uploadMu);   // parallel preload safe
         auto it = m_meshes.find(h.id);
         if (it == m_meshes.end()) return;
         // Fix 2: NO vkDeviceWaitIdle. The mesh's buffers may still be referenced by
@@ -1656,8 +1695,13 @@ public:
 
     TextureHandle createTexture(const void* rgba8, uint32_t w, uint32_t h, bool srgb) override {
         if (!rgba8 || w == 0 || h == 0) return {};
+        // Parallel preload safe: the staging alloc + (up to ~67 MB) pixel memcpy in
+        // createSampledTexture run UNLOCKED so concurrent loaders overlap; only the
+        // shared batch-record (inside createSampledTexture) and the bindless/
+        // registry writes below serialize.
         Texture t{};
         if (!createSampledTexture(rgba8, w, h, srgb, t)) return {};
+        std::lock_guard<std::recursive_mutex> lk(m_uploadMu);
         // Grab a stable bindless slot and write it into the bindless array. If the
         // array is full the texture still exists but falls back to white (index 0).
         if (!registerBindless(t)) {
@@ -1670,6 +1714,7 @@ public:
     }
 
     void destroyTexture(TextureHandle h) override {
+        std::lock_guard<std::recursive_mutex> lk(m_uploadMu);   // parallel preload safe
         auto it = m_textures.find(h.id);
         if (it == m_textures.end()) return;
         // Fix 2: NO vkDeviceWaitIdle. The bindless-slot write-back to the default
@@ -9084,7 +9129,16 @@ private:
     // rebuilds the TLAS with one instance per draw. Returns true if a usable TLAS
     // is ready. Called from endFrame BEFORE the graph records the frame.
     bool buildRtSceneAS() {
-        // Ensure a BLAS for each distinct mesh referenced this frame.
+        // Ensure a BLAS for each distinct mesh referenced this frame — BATCHED
+        // (one submit for the whole set; ~8000 per-mesh one-shot submits used to
+        // cost ~6.6 s on the legacy tower's first frame, docs/BOOT_TIME.md) and
+        // BUDGETED (at most kBlasFrameBudget new BLAS per frame). If the budget
+        // runs out, RT stays on the raster fallback (no TLAS) for a frame or two
+        // more while the remaining BLAS build — a graceful warm-up, not a hitch.
+        constexpr uint32_t kBlasFrameBudget = 4096;
+        uint32_t built = 0;
+        bool     deferred = false;
+        m_rt.beginBlasBatch();
         for (uint32_t mid : m_groupOrder) {
             if (m_rt.hasBlas(mid)) continue;
             auto it = m_meshes.find(mid);
@@ -9096,12 +9150,24 @@ private:
             // characters are simply absent from the TLAS (they don't cast RT AO yet —
             // a documented next tier). This keeps the build cheap + correct.
             if (m.dynamic || m.vbo == VK_NULL_HANDLE) continue;
+            if (built >= kBlasFrameBudget) { deferred = true; break; }
             VkBufferDeviceAddressInfo vi{ VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO }; vi.buffer = m.vbo;
             VkBufferDeviceAddressInfo ii{ VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO }; ii.buffer = m.ibo;
             const VkDeviceAddress vbAddr = vkGetBufferDeviceAddress(m_dev.device, &vi);
             const VkDeviceAddress ibAddr = vkGetBufferDeviceAddress(m_dev.device, &ii);
             ++m_asBuildsThisFrame;   // ZERO-STUTTER spike-log attribution (new BLAS)
-            m_rt.ensureBlas(mid, vbAddr, m.vertexCount, (uint32_t)sizeof(MeshVertex), ibAddr, m.indexCount);
+            if (m_rt.ensureBlas(mid, vbAddr, m.vertexCount, (uint32_t)sizeof(MeshVertex), ibAddr, m.indexCount))
+                ++built;
+        }
+        m_rt.endBlasBatch();
+        if (deferred) {
+            // More BLAS than this frame's budget: raster fallback until complete.
+            char db[128];
+            std::snprintf(db, sizeof(db),
+                "[rt] BLAS warm-up: %u built this frame (budget %u) — raster fallback until complete",
+                built, kBlasFrameBudget);
+            logInfo(db);
+            return false;
         }
 
         // Build the TLAS from this frame's instances (skip dynamic meshes — no BLAS).
@@ -10810,6 +10876,23 @@ private:
             vmaDestroyBuffer(m_alloc, staging, stagingAlloc); return false;
         }
 
+        // BOOT-TIME upload batching: while a batch window is active, record the
+        // copy into the shared batch command buffer (one submit for the whole
+        // batch) instead of a blocking per-buffer submit + fence wait. The staging
+        // buffer stays alive until the flush. Semantics are identical: anything
+        // that could consume the data (beginFrame / any one-shot op) flushes first.
+        if (m_batchActive) {
+            std::lock_guard<std::recursive_mutex> lk(m_uploadMu);  // shared batch cmd
+            VkCommandBuffer cmd = batchCmd();
+            if (cmd) {
+                VkBufferCopy region{ 0, 0, bytes };
+                vkCmdCopyBuffer(cmd, staging, outBuf, 1, &region);
+                m_batchStagings.emplace_back(staging, stagingAlloc);
+                ++m_batchOps;
+                return true;
+            }
+            // batch cmd alloc failed -> fall through to the blocking path
+        }
         bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
             VkBufferCopy region{ 0, 0, bytes };
             vkCmdCopyBuffer(cmd, staging, outBuf, 1, &region);
@@ -10852,7 +10935,7 @@ private:
             vmaDestroyBuffer(m_alloc, staging, stagingAlloc); return false;
         }
 
-        bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
+        auto recordTexUpload = [&, staging](VkCommandBuffer cmd){
             // Per-mip sync2 layout barrier helper.
             auto barrierMip = [&](uint32_t mip, VkImageLayout oldL, VkImageLayout newL,
                                   VkPipelineStageFlags2 ss, VkAccessFlags2 sa,
@@ -10901,8 +10984,28 @@ private:
             barrierMip(mipLevels - 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                        VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
-        });
-        vmaDestroyBuffer(m_alloc, staging, stagingAlloc);
+        };
+        // BOOT-TIME upload batching: record the copy + mip-blit chain into the
+        // shared batch command buffer (one submit per batch) when a batch window is
+        // active; the staging buffer stays alive until the flush. Identical command
+        // stream, just deferred to a single submit.
+        bool ok;
+        if (m_batchActive) {
+            std::lock_guard<std::recursive_mutex> lk(m_uploadMu);  // shared batch cmd
+            VkCommandBuffer cmd = batchCmd();
+            if (cmd) {
+                recordTexUpload(cmd);
+                m_batchStagings.emplace_back(staging, stagingAlloc);
+                ++m_batchOps;
+                ok = true;
+                staging = VK_NULL_HANDLE; stagingAlloc = nullptr;   // ownership moved to the batch
+            } else {
+                ok = oneTimeSubmit(recordTexUpload);
+            }
+        } else {
+            ok = oneTimeSubmit(recordTexUpload);
+        }
+        if (staging) vmaDestroyBuffer(m_alloc, staging, stagingAlloc);
         if (!ok) { vmaDestroyImage(m_alloc, out.image, out.alloc); out.image = VK_NULL_HANDLE; out.alloc = nullptr; return false; }
 
         VkImageViewCreateInfo vci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
@@ -10935,9 +11038,139 @@ private:
         t = Texture{};
     }
 
+    // ---- BOOT-TIME upload batching (docs/BOOT_TIME.md) ----------------------
+    // Begin (or continue) the shared batch command buffer — DOUBLE-BUFFERED so a
+    // new batch can record while the previous submit is still executing (the CPU
+    // only blocks if BOTH slots are in flight). Returns VK_NULL_HANDLE only if
+    // allocation fails (callers then fall back to oneTimeSubmit).
+    VkCommandBuffer batchCmd() {
+        if (m_batchOpen) return m_batchCmds[m_batchSlot];
+        const uint32_t s = m_batchSlot;
+        retireBatchSlot(s, /*blocking=*/true);   // this slot may still be in flight
+        if (!m_batchCmds[s]) {
+            VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+            ai.commandPool = m_uploadPool;
+            ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+            ai.commandBufferCount = 1;
+            if (vkAllocateCommandBuffers(m_dev.device, &ai, &m_batchCmds[s]) != VK_SUCCESS) {
+                m_batchCmds[s] = VK_NULL_HANDLE;
+                return VK_NULL_HANDLE;
+            }
+        }
+        if (!m_batchFences[s]) {
+            VkFenceCreateInfo fi{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+            if (vkCreateFence(m_dev.device, &fi, nullptr, &m_batchFences[s]) != VK_SUCCESS) {
+                m_batchFences[s] = VK_NULL_HANDLE;
+                return VK_NULL_HANDLE;
+            }
+        }
+        VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(m_batchCmds[s], &bi) != VK_SUCCESS) return VK_NULL_HANDLE;
+        m_batchOpen = true;
+        return m_batchCmds[s];
+    }
+
+    // Retire one submitted batch slot: wait its fence (or skip if not signaled and
+    // non-blocking), free its staging buffers, reset its command buffer.
+    void retireBatchSlot(uint32_t s, bool blocking) {
+        if (!m_batchSubmittedSlot[s]) return;
+        if (!blocking &&
+            vkGetFenceStatus(m_dev.device, m_batchFences[s]) == VK_NOT_READY) return;
+        vkWaitForFences(m_dev.device, 1, &m_batchFences[s], VK_TRUE, UINT64_MAX);
+        vkResetFences(m_dev.device, 1, &m_batchFences[s]);
+        vkResetCommandBuffer(m_batchCmds[s], 0);
+        for (auto& st : m_batchInFlightSlot[s]) vmaDestroyBuffer(m_alloc, st.first, st.second);
+        m_batchInFlightSlot[s].clear();
+        m_batchSubmittedSlot[s] = false;
+    }
+
+    // SUBMIT every recorded batched upload in ONE submit — WITHOUT waiting. The
+    // graphics queue executes in submission order, so any later frame/one-shot
+    // submission sees the uploads complete on the GPU timeline; a trailing global
+    // TRANSFER -> ALL_COMMANDS barrier makes the writes visible (the texture path
+    // already ends in per-mip barriers). The staging buffers + fence stay pending
+    // until waitUploadBatch() (forced before the fence/cmd are reused; opportunistic
+    // non-blocking retire in beginFrame).
+    void submitUploadBatch() {
+        std::lock_guard<std::recursive_mutex> lk(m_uploadMu);   // parallel preload safe
+        if (!m_batchOpen) return;
+        const auto t0 = std::chrono::steady_clock::now();
+        const uint32_t s = m_batchSlot;
+        // Visibility for the buffer copies (vertex/index/SSBO reads downstream).
+        VkMemoryBarrier2 mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+        mb.srcStageMask  = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+        mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        mb.dstStageMask  = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+        mb.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+        VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
+        vkCmdPipelineBarrier2(m_batchCmds[s], &di);
+        vkEndCommandBuffer(m_batchCmds[s]);
+        VkCommandBufferSubmitInfo cmdS{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+        cmdS.commandBuffer = m_batchCmds[s];
+        VkSubmitInfo2 submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+        submit.commandBufferInfoCount = 1; submit.pCommandBufferInfos = &cmdS;
+        if (vkQueueSubmit2(m_gfxQueue, 1, &submit, m_batchFences[s]) == VK_SUCCESS) {
+            m_batchSubmittedSlot[s] = true;
+            m_batchInFlightSlot[s].swap(m_batchStagings);
+            m_batchSlot = s ^ 1u;            // record the next batch in the other slot
+        } else {
+            logError("[rhi] upload batch: submit failed (uploads lost this batch)");
+            for (auto& st : m_batchStagings) vmaDestroyBuffer(m_alloc, st.first, st.second);
+        }
+        m_batchOpen = false;
+        m_batchStagings.clear();
+        ++m_batchFlushes;
+        m_batchMs += std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - t0).count();
+    }
+
+    // Retire previously submitted batches: wait their fences (blocking=true) or
+    // only those already signaled, freeing staging buffers + resetting cmds.
+    void waitUploadBatch(bool blocking = true) {
+        std::lock_guard<std::recursive_mutex> lk(m_uploadMu);
+        retireBatchSlot(0, blocking);
+        retireBatchSlot(1, blocking);
+    }
+
+    // Submit + fully retire (the original blocking semantics). Used by anything
+    // that reuses the fence/cmd next (oneTimeSubmit) or tears down (shutdown).
+    void flushUploadBatch() {
+        std::lock_guard<std::recursive_mutex> lk(m_uploadMu);
+        submitUploadBatch();
+        waitUploadBatch(true);
+    }
+
+    void beginUploadBatch() override {
+        if (m_batchActive) return;       // nestable-safe
+        m_batchActive = true;
+        m_batchOps = 0; m_batchFlushes = 0; m_batchMs = 0.0;
+    }
+
+    void endUploadBatch() override {
+        if (!m_batchActive) return;
+        submitUploadBatch();    // no CPU wait — the GPU finishes while boot continues
+        m_batchActive = false;
+        if (m_batchOps) {
+            char b[160];
+            std::snprintf(b, sizeof(b),
+                "[rhi] upload batch: %u uploads in %u flush(es), %.1f ms total flush wait",
+                m_batchOps, m_batchFlushes, m_batchMs);
+            logInfo(b);
+        }
+    }
+
     // Record + submit a transient command buffer, wait on a one-shot fence.
     template <class Fn>
     bool oneTimeSubmit(Fn&& record) {
+        std::lock_guard<std::recursive_mutex> lk(m_uploadMu);   // parallel preload safe
+        // Ordering safety: any one-shot GPU op (BLAS build, readback, IBL bake…)
+        // may depend on batched uploads — SUBMIT those first (no CPU wait needed:
+        // same-queue submission order + the batch's trailing barrier make the
+        // uploads land before this submit executes; this op's own fence wait
+        // transitively covers them).
+        submitUploadBatch();
         VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
         ai.commandPool = m_uploadPool;
         ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -11937,6 +12170,10 @@ private:
         // mesh.frag set 4 layout (IBL): created in createGraphics, baked into m_meshLayout.
         if (m_iblMeshSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_iblMeshSetLayout, nullptr); m_iblMeshSetLayout = VK_NULL_HANDLE; }
         if (m_uploadFence)   vkDestroyFence(m_dev.device, m_uploadFence, nullptr);
+        for (int s = 0; s < 2; ++s) {   // boot-time upload-batch fences (double-buffered)
+            if (m_batchFences[s]) { vkDestroyFence(m_dev.device, m_batchFences[s], nullptr); m_batchFences[s] = VK_NULL_HANDLE; }
+            m_batchCmds[s] = VK_NULL_HANDLE;   // freed with m_uploadPool
+        }
         if (m_uploadPool)    vkDestroyCommandPool(m_dev.device, m_uploadPool, nullptr);
         m_meshPipeline = VK_NULL_HANDLE; m_meshPipelineNoSsao = VK_NULL_HANDLE;
         m_meshPipelineTransparent = VK_NULL_HANDLE; m_meshLayout = VK_NULL_HANDLE;
@@ -12382,6 +12619,30 @@ private:
     // One-time staging upload (transient pool + fence)
     VkCommandPool m_uploadPool = VK_NULL_HANDLE;
     VkFence       m_uploadFence = VK_NULL_HANDLE;
+
+    // ---- BOOT-TIME upload batching (docs/BOOT_TIME.md) ----------------------
+    // While m_batchActive, createDeviceLocalBuffer/createSampledTexture record
+    // into m_batchCmd instead of one blocking oneTimeSubmit each; staging buffers
+    // are kept alive in m_batchStagings until the single flush. oneTimeSubmit and
+    // beginFrame auto-flush a pending batch first, so any GPU op that could read
+    // batched data executes strictly after the uploads land.
+    bool          m_batchActive = false;            // begin/endUploadBatch window
+    bool          m_batchOpen   = false;            // current slot has recorded work
+    uint32_t      m_batchSlot   = 0;                // recording slot (double-buffered)
+    bool          m_batchSubmittedSlot[2] = { false, false };
+    VkCommandBuffer m_batchCmds[2]  = { VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkFence         m_batchFences[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
+    std::vector<std::pair<VkBuffer, VmaAllocation>> m_batchStagings;        // recording
+    std::vector<std::pair<VkBuffer, VmaAllocation>> m_batchInFlightSlot[2]; // submitted
+    uint32_t      m_batchOps    = 0;                // uploads in the current batch
+    uint32_t      m_batchFlushes = 0;               // receipts: flushes this batch window
+    double        m_batchMs     = 0.0;              // receipts: wall ms spent flushing
+    // Upload-path guard: createMesh/createTexture/destroyMesh/destroyTexture/
+    // oneTimeSubmit may be called from the BOOT-TIME parallel model-preload
+    // threads (x3::asset::preloadModels). Recursive: createMesh -> oneTimeSubmit
+    // re-enters on the unbatched path. Frame/draw/skinning paths remain main-
+    // thread-only (unchanged contract).
+    std::recursive_mutex m_uploadMu;
 
     // ---- Offscreen capture (fix 1: in-frame, acquired-image copy) ----------
     // armCapture() arms a request; endFrame() then records the color-image -> host
@@ -13064,6 +13325,9 @@ private:
                                         m_totalFrames + kFramesInFlight });
     }
     void drainPendingFrees() {
+        // Parallel-preload safe: the deferred queues are appended by destroyMesh/
+        // destroyTexture, which the boot-time preload threads call via unload().
+        std::lock_guard<std::recursive_mutex> lk(m_uploadMu);
         for (size_t i = 0; i < m_pendingFrees.size();) {
             if (m_totalFrames >= m_pendingFrees[i].retireAtFrame) {
                 vmaDestroyBuffer(m_alloc, m_pendingFrees[i].buf, m_pendingFrees[i].alloc);

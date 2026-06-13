@@ -23,6 +23,13 @@ struct DeviceDesc {
     // Supersample AA (HEADLESS/screenshot only): render at width*ssaa x height*ssaa and
     // box-downscale to width x height on capture. 1 = off. The live windowed path ignores it.
     uint32_t ssaa        = 1;
+    // BOOT-TIME hook (docs/BOOT_TIME.md): invoked ONCE as soon as the upload path
+    // is live (upload pool + bindless set + VMA — right after the core graphics
+    // objects exist), i.e. several hundred ms BEFORE init() returns. The boot uses
+    // it to kick the async GLB preload so the warmup overlaps the remaining
+    // device init (post stack, SSAO/GI, RT precompile…). May be null.
+    void (*onUploadReady)(void* user) = nullptr;
+    void* onUploadReadyUser           = nullptr;
 };
 
 struct FrameContext {
@@ -236,6 +243,18 @@ public:
     // selects the storage format (sRGB for color, UNORM for data/linear).
     virtual TextureHandle createTexture(const void* rgba8, uint32_t w, uint32_t h, bool srgb) = 0;
     virtual void          destroyTexture(TextureHandle) = 0;
+
+    // ---- BOOT-TIME upload batching (docs/BOOT_TIME.md) ----------------------
+    // Between beginUploadBatch()/endUploadBatch(), createMesh/createTexture record
+    // their staging copies into ONE shared command buffer instead of doing a
+    // blocking submit + fence wait EACH (~ms of fixed cost per call — the 16 s
+    // world-build pole was ~2000 tiny submits). The batch is flushed (single
+    // submit + single wait) by endUploadBatch, and AUTOMATICALLY by beginFrame or
+    // by any other one-shot GPU op, so ordering/visibility semantics are identical
+    // to the unbatched path. Nestable-safe: extra calls are no-ops. Default no-op
+    // (headless/null devices keep the plain blocking path).
+    virtual void beginUploadBatch() {}
+    virtual void endUploadBatch() {}
 
     // ---- Terrain material splat (open-world ground) -------------------------
     // Register a set of four already-created tiling DETAIL textures as the GROUND

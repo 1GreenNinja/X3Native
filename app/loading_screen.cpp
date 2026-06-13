@@ -142,8 +142,9 @@ void LoadingScreen::step(LoadStep s, const char* label) {
     setProgress(kStepFrac[i], label);
 }
 
-void LoadingScreen::beginFadeOut() {
+void LoadingScreen::beginFadeOut(bool fast) {
     m_fadeOut = true;
+    m_fadeOutScale = fast ? 3.0f : 1.0f;   // BOOT-TIME: quick hand-off on fast boots
 }
 
 void LoadingScreen::render(x3::rhi::IRenderDevice& device,
@@ -152,7 +153,7 @@ void LoadingScreen::render(x3::rhi::IRenderDevice& device,
 
     // ---- Advance fade (runs headed AND headless so logic is deterministic) ----
     if (m_fadeOut) {
-        m_fade -= dt / kFadeOut;
+        m_fade -= dt * m_fadeOutScale / kFadeOut;
         if (m_fade < 0.0f) m_fade = 0.0f;
     } else {
         m_fade += dt / kFadeIn;

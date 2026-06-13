@@ -9,6 +9,7 @@
 #include <vector>
 #include <string>
 #include <string_view>
+#include <utility>   // std::pair (preloadModels manifest)
 
 // Forward decls so the factory signature can name these opaque types without
 // pulling in their headers (keeps Vulkan / parsing libs out of this boundary).
@@ -170,6 +171,34 @@ uint32_t meshIdOf(const MeshPrimitive& p);
 // are minted as monotonic non-zero fake IDs and no real upload is performed,
 // so the loader can be exercised without a Vulkan device.
 IModelLoader* createModelLoader(rhi::IRenderDevice* dev, IAssetSource* assets);
+
+// BOOT-TIME parallel model preload (docs/BOOT_TIME.md): fully load each
+// (mountRoot, glbFile) pair on its own thread — file read + cgltf parse + stb
+// texture decode run concurrently (the device upload entry points are mutex-
+// guarded for this) — then unload the throwaway instance. The process-wide
+// MODEL + TEXTURE caches stay warm, so the gameplay spawns that follow turn
+// every one of these loads into a cheap cache hit (deep copy + batched mesh
+// re-upload). Missing files are skipped silently (callers may pass a superset
+// manifest). Blocking: returns when every preload has finished. Requires a
+// real device (no-op when dev == nullptr).
+void preloadModels(rhi::IRenderDevice* dev,
+                   const std::vector<std::pair<std::string, std::string>>& rootAndFile);
+
+// Async variant: kicks the same parallel warmup off WITHOUT blocking, so the
+// host can overlap it with the rest of boot (loading-screen frames, IBL bake,
+// physics…). joinModelPreload() blocks until the warmup completes — call it
+// BEFORE the world build that wants the cache hits. Safe to call join with no
+// preload outstanding (no-op). One outstanding async preload at a time.
+void preloadModelsAsync(rhi::IRenderDevice* dev,
+                        std::vector<std::pair<std::string, std::string>> rootAndFile);
+void joinModelPreload();
+
+// Earliest-possible boot overlap: decode the manifest's textures on background
+// threads into a transient decoded-pixel cache — needs NO device, so it can be
+// kicked before Vulkan init even starts (the ~1 s driver window). The async
+// preload above consumes the decoded pixels (skipping stb) and sequences after
+// this automatically.
+void prewarmModelDecodesAsync(std::vector<std::pair<std::string, std::string>> rootAndFile);
 
 // Runs the M2 acceptance tests in-process (synthesizes a cube GLB in memory,
 // checks PBR/material/missing-texture/unload paths, and — when a GLB corpus is
