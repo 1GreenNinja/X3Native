@@ -2191,6 +2191,15 @@ int main(int argc, char** argv) {
     // the building cluster, capture a PBR-shaded PNG. Headless, like --screenshot.
     bool        showroomShot = false;
     std::string showroomShotPath = "G:/X3Native/showroom.png";
+    // HERO CAR showcase (--screenshot-car [outDir]): load the converted hero-car
+    // GLB (assets/converted_glb/Vehicles/CTR.glb — clearcoat paint + emissive
+    // lights), pose it INSIDE the Unity showroom on a polished reflector slab
+    // under emissive light panels (SSR/RT reflections sweep the body), and
+    // capture a TURNTABLE set: 4 day-interior angles + 2 night-interior angles +
+    // 2 night-EXTERIOR angles under the planet sky on wet asphalt. Headless,
+    // 4x SSAA. Writes <outDir>/car_*.png (default docs/screenshots/vehicles).
+    bool        carShot = false;
+    std::string carShotDir = "docs/screenshots/vehicles";
     // FIRST-PERSON showroom proof (--screenshot-showroom-fp [path.png]): run the SAME
     // interactive `--world showroom` setup (walkable floor slab + companion Aria + the
     // wheeling night sky) but render ONE headless frame from the PLAYER SPAWN eye and
@@ -2598,6 +2607,10 @@ int main(int argc, char** argv) {
         else if (a == "--screenshot-showroom") {
             showroomShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') showroomShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-car") {
+            carShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') carShotDir = argv[++i];
         }
         else if (a == "--screenshot-showroom-fp") {
             // Headless first-person proof of the walkable --world showroom. Forces the
@@ -3203,7 +3216,11 @@ int main(int argc, char** argv) {
     if (testVehicle) {
         x3::logInfo("running vehicle framework self-test "
                     "(wheeled accel/steer + buoyancy waterline + flight thrust/lift)...");
-        return x3::phys::runVehicleSelfTest() ? 0 : 1;
+        const bool frameworkOk = x3::phys::runVehicleSelfTest();
+        x3::logInfo("running DRIVE enter/exit self-test "
+                    "(spawn -> E enter -> throttle 4 s -> displacement + wheel contact -> E exit restores control)...");
+        const bool driveOk = x3::game::runDriveEnterExitSelfTest();
+        return (frameworkOk && driveOk) ? 0 : 1;
     }
     if (testFootIk) {
         x3::logInfo("running foot-IK (two-bone + plant + pelvis) self-test...");
@@ -3398,7 +3415,7 @@ int main(int argc, char** argv) {
     // render fully offscreen — NO GLFW window, NO surface, NO swapchain, nothing
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
-    const bool headless = smoketest || testFramePacing || screenshot || skyShot || ddgiShot || showroomShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot;
+    const bool headless = smoketest || testFramePacing || screenshot || skyShot || ddgiShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -3496,7 +3513,7 @@ int main(int argc, char** argv) {
     desc.width  = W;
     desc.height = H;
     desc.headless = headless;
-    desc.ssaa = (showroomShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot) ? 4u : 1u;   // 4x supersample the showroom / planet / nightsky still (5090 headless: ~16 samples/px, pristine)
+    desc.ssaa = (showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot) ? 4u : 1u;   // 4x supersample the showroom / planet / nightsky still (5090 headless: ~16 samples/px, pristine)
     // Benchmark mode runs with vsync OFF so it measures the true frame ceiling,
     // not the display refresh cap.
     desc.vsync  = !bench;
@@ -4264,6 +4281,219 @@ int main(int argc, char** argv) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return wrote ? 0 : 1;
+    }
+
+    // ======================================================================
+    // HERO CAR showcase (--screenshot-car [outDir]) — the NFS beauty pass.
+    //   * INTERIOR: the Unity showroom GLB as surroundings; the car posed on a
+    //     POLISHED reflector slab (the feat/reflections floor material dial)
+    //     under EMISSIVE light panels, so SSR/RT reflections visibly sweep the
+    //     clearcoat paint. DAY (4 turntable angles) + NIGHT (2 angles, lights
+    //     glowing + bloom).
+    //   * EXTERIOR NIGHT: the car alone on a wet-asphalt slab under the FORGE3D
+    //     planet night sky (2 angles, headlights on).
+    // Headless + 4x SSAA; each still settles ~90 frames so TAA history, SSR,
+    // auto-exposure and the IBL probe converge before capture.
+    // ======================================================================
+    if (carShot) {
+        namespace fs = std::filesystem;
+        std::error_code mkec; fs::create_directories(carShotDir, mkec);
+        x3::logInfo("--screenshot-car: writing turntable set to " + carShotDir);
+
+        // --- The showroom surroundings (identity, baked node transforms). ---
+        x3::game::EnvArtSystem showroom;
+        const bool roomOk = showroom.buildFromGlb(*device, x3::game::convertedGlbRoot(),
+                                                  "ShowRoom_Vol30/Example_01.glb");
+        if (!roomOk) x3::logWarn("--screenshot-car: showroom GLB missing — interior shots get the studio slab only");
+
+        // Anchor the car on the showroom's GROUND floor: bounds of the building
+        // cluster (same name filter as --screenshot-showroom), car at the center
+        // of the X span, on the floor (min Y of the named nodes).
+        float bmn[3] = {0,0,0}, bmx[3] = {0,0,0};
+        bool haveRoom = false;
+        if (roomOk) {
+            const std::vector<std::string> kBuild = {
+                "room", "pilar", "plateform", "platform", "stair", "window", "showcase",
+                "table", "chair", "carpet", "tube", "halogen", "cache", "tv_screen" };
+            haveRoom = showroom.namedBounds(kBuild, bmn, bmx) > 0;
+        }
+        // Anchor in the OPEN west bay (the building-center has the round podium +
+        // NPC mannequins; +21 m from the west wall is clean polished hall).
+        float carX = haveRoom ? (bmn[0] + 21.0f) : 0.0f;
+        float carY = haveRoom ? bmn[1] : 0.0f;
+        float carZ = haveRoom ? (bmn[2] + bmx[2]) * 0.5f : 0.0f;
+        if (const char* e = std::getenv("X3_CAR_POS")) {   // manual override: "x,y,z"
+            float px2, py2, pz2;
+            if (std::sscanf(e, "%f,%f,%f", &px2, &py2, &pz2) == 3) { carX = px2; carY = py2; carZ = pz2; }
+        }
+        x3::logInfo("--screenshot-car: car anchor (" + std::to_string(carX) + "," +
+                    std::to_string(carY) + "," + std::to_string(carZ) + ") haveRoom=" +
+                    (haveRoom ? "1" : "0"));
+
+        // --- The hero car (CTR.glb: clearcoat paint + emissive lights). The GLB
+        // sits on y=0 with +Z = nose, so the instance transform is yaw+translate.
+        const float kSlabTop = 0.02f;                  // polished slab top above the floor
+        auto carXform = [&](float yawRad, float ox, float oy, float oz, float out[16]) {
+            const float c = std::cos(yawRad), s = std::sin(yawRad);
+            const float m[16] = { c,0,-s,0,  0,1,0,0,  s,0,c,0,  ox,oy,oz,1 };
+            for (int i = 0; i < 16; ++i) out[i] = m[i];
+        };
+        float carT[16];
+        carXform(0.6f, carX, carY + kSlabTop, carZ, carT);
+        x3::game::EnvArtSystem car;
+        const bool carOk = car.buildFromGlbAt(*device, x3::game::convertedGlbRoot(),
+                                              "Vehicles/CTR.glb", carT);
+        if (!carOk) {
+            x3::logError("--screenshot-car: Vehicles/CTR.glb FAILED to load — aborting");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+
+        // --- Studio dressing: a polished reflector slab (the feat/reflections
+        // floor dial: rough 0.08 / metal 0.5 on a white dielectric) + emissive
+        // panels flanking + above the car (the reflections that sweep the body).
+        x3::rhi::TextureHandle polishedMr{}, asphaltMr{};
+        { const uint8_t mr[4] = { 0,  20, 128, 255 }; polishedMr = device->createTexture(mr, 1, 1, false); }
+        { const uint8_t mr[4] = { 0,  56,  26, 255 }; asphaltMr  = device->createTexture(mr, 1, 1, false); } // wet asphalt: rough .22, metal .10
+        auto makeMesh = [&](const x3::prims::PrimMesh& pm) {
+            return device->createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                      pm.index.data(), (uint32_t)pm.index.size());
+        };
+        x3::rhi::MeshHandle slabMesh  = makeMesh(x3::prims::makeBox(5.5f, 0.01f, 5.5f, 0, 0, 0, 0.25f));
+        x3::rhi::MeshHandle padMesh   = makeMesh(x3::prims::makeBox(60.0f, 0.01f, 60.0f, 0, 0, 0, 0.25f));
+        x3::rhi::MeshHandle stripMesh = makeMesh(x3::prims::makeBox(3.2f, 0.04f, 0.30f, 0, 0, 0, 1.0f));
+        x3::rhi::MeshHandle panelMesh = makeMesh(x3::prims::makeBox(0.05f, 1.1f, 2.6f, 0, 0, 0, 1.0f));
+        const float kWhite[4]   = { 0.97f, 0.97f, 0.98f, 1.0f };
+        const float kAsphalt[4] = { 0.045f, 0.045f, 0.05f, 1.0f };
+        const float kNoEmis[4]  = { 0, 0, 0, 0 };
+        const float kStripEmis[4] = { 1.0f, 0.99f, 0.95f, 6.0f };   // cool-white HDR strips
+        const float kPanelEmisL[4] = { 0.35f, 0.65f, 1.0f, 2.2f };  // cyan panel (left)
+        const float kPanelEmisR[4] = { 1.0f, 0.45f, 0.20f, 2.2f };  // amber panel (right)
+        auto at = [&](float x, float y, float z, float out[16]) {
+            const float m[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1 };
+            for (int i = 0; i < 16; ++i) out[i] = m[i];
+        };
+
+        // Per-still draw: env + car + dressing. `interior` gates the showroom +
+        // studio strips; exterior swaps the slab material for wet asphalt.
+        auto drawScene = [&](const x3::rhi::FrameContext& fr, bool interior) {
+            float m[16];
+            if (interior && roomOk) showroom.draw(*device, fr);
+            car.draw(*device, fr);
+            if (interior) {
+                at(carX, carY + 0.01f, carZ, m);
+                device->drawMeshPBR(fr, slabMesh, x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
+                                    polishedMr, kWhite, kNoEmis, m);
+                // Ceiling light strips (3, across the car) + side emissive panels.
+                for (int i = -1; i <= 1; ++i) {
+                    at(carX, carY + 3.4f, carZ + (float)i * 2.2f, m);
+                    device->drawMeshEmissive(fr, stripMesh, x3::rhi::TextureHandle{}, kWhite, kStripEmis, m);
+                }
+                at(carX - 5.6f, carY + 1.15f, carZ, m);
+                device->drawMeshEmissive(fr, panelMesh, x3::rhi::TextureHandle{}, kWhite, kPanelEmisL, m);
+                at(carX + 5.6f, carY + 1.15f, carZ, m);
+                device->drawMeshEmissive(fr, panelMesh, x3::rhi::TextureHandle{}, kWhite, kPanelEmisR, m);
+            } else {
+                at(carX, carY + 0.01f, carZ, m);
+                device->drawMeshPBR(fr, padMesh, x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
+                                    asphaltMr, kAsphalt, kNoEmis, m);
+            }
+        };
+
+        // --- Pipeline state: SSAO/GI off (the showroom foliage cutout rule),
+        // TAA on (default), SSR + RT reflections ON full-res (the money dial). ---
+        { x3::rhi::IRenderDevice::SsaoParams s{}; s.enabled = false; device->setSsaoParams(s); }
+        { x3::rhi::IRenderDevice::GiParams   g{}; g.enabled = false; device->setGiParams(g); }
+        {
+            x3::rhi::IRenderDevice::ReflectionParams rf{};
+            rf.ssr = true; rf.rtFallback = true; rf.fullRes = true; rf.intensity = 1.0f;
+            device->setReflectionParams(rf);
+            x3::logInfo(std::string("--screenshot-car: reflections ON; rayTracingSupported=") +
+                        (device->rayTracingSupported() ? "YES" : "NO"));
+        }
+        device->setShadowBounds(carX, carY, carZ, 40.0f);
+
+        // Point lights for the car bay (key + fills; pre-multiplied color*intensity).
+        std::vector<x3::rhi::PointLight> bay;
+        auto addLight = [&](float x, float y, float z, float r, float cr, float cg, float cb) {
+            x3::rhi::PointLight pl{}; pl.pos[0]=x; pl.pos[1]=y; pl.pos[2]=z; pl.range=r;
+            pl.color[0]=cr; pl.color[1]=cg; pl.color[2]=cb; bay.push_back(pl);
+        };
+        addLight(carX,        carY + 3.2f, carZ,        14.0f, 6.0f, 5.9f, 5.6f);   // overhead key
+        addLight(carX - 4.4f, carY + 1.6f, carZ + 1.5f, 10.0f, 1.2f, 2.2f, 3.4f);   // cool fill (cyan side)
+        addLight(carX + 4.4f, carY + 1.6f, carZ - 1.5f, 10.0f, 3.4f, 1.6f, 0.7f);   // warm fill (amber side)
+
+        // Night-sky planets for the EXTERIOR stills (the shared nightsky kit).
+        int nPlanetTexFail = 0;
+        x3::rhi::MeshHandle planetMesh{}, ringMesh{};
+        std::vector<NightSkyPlanet> planets =
+            loadNightSkyPlanets(device.get(), planetMesh, nPlanetTexFail, "--screenshot-car", &ringMesh);
+
+        // --- One settled still: pose, settle, capture. ---
+        int shotFails = 0;
+        auto still = [&](const std::string& name, bool interior, bool day,
+                         float camYaw, float camDist, float camHeight, float fov) {
+            applyShowroomTimeOfDay(device.get(), day, &bay);
+            if (!day) device->setSkyTime(10.0f);
+            // Orbit the camera around the car anchor at `camYaw` (0 = looking from +Z).
+            const float cx = carX + std::sin(camYaw) * camDist;
+            const float cz = carZ + std::cos(camYaw) * camDist;
+            const float cy = carY + camHeight;
+            const float lx = carX - cx, ly = (carY + 0.55f) - cy, lz = carZ - cz;
+            const float len = std::max(std::sqrt(lx*lx + ly*ly + lz*lz), 1e-3f);
+            device->setCamera(cx, cy, cz, std::atan2(lz, lx), std::asin(ly / len), fov);
+            const std::string path = carShotDir + "/" + name + ".png";
+            const int kSettle = 90;   // TAA history + SSR + auto-exposure + IBL probe
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                if (i == kSettle - 1) device->armCapture(path.c_str());
+                auto fr = device->beginFrame();
+                if (fr.valid) {
+                    drawScene(fr, interior);
+                    if (!interior && !day)
+                        drawNightSkyPlanets(device.get(), fr, planetMesh, planets, 10.0f, ringMesh);
+                }
+                device->endFrame(fr);
+            }
+            const bool ok = device->captureFrame(path.c_str());
+            if (ok) x3::logInfo("--screenshot-car: wrote " + path);
+            else  { x3::logError("--screenshot-car: capture FAILED " + path); ++shotFails; }
+        };
+
+        // The turntable. Interior DAY (4 angles), interior NIGHT (2), then move
+        // the car to the EXTERIOR pad for the planet-sky night pair.
+        still("car_day_front34",  true, true,  0.65f, 5.0f, 1.25f, 48.0f);
+        still("car_day_rear34",   true, true,  2.60f, 5.2f, 1.35f, 48.0f);
+        still("car_day_profile",  true, true, -1.50f, 5.4f, 1.00f, 48.0f);
+        still("car_day_frontlow", true, true,  0.10f, 4.8f, 0.60f, 52.0f);
+        still("car_night_front34", true, false, 0.80f, 5.0f, 1.15f, 48.0f);
+        still("car_night_rear34",  true, false, 2.45f, 5.2f, 1.05f, 48.0f);
+        // EXTERIOR: re-pose the car on the asphalt pad away from the building.
+        carX += 0.0f; carY = haveRoom ? carY : 0.0f; carZ = haveRoom ? (bmx[2] + 30.0f) : 0.0f;
+        carXform(2.85f, carX, carY + kSlabTop, carZ, carT);
+        car.setInstanceTransform(0, carT);
+        device->setShadowBounds(carX, carY, carZ, 40.0f);
+        // Re-aim the planets around the new pad (high in the back of frame).
+        {
+            int pi = 0;
+            for (NightSkyPlanet& b : planets) {
+                const float az = -1.2f + 0.6f * (float)pi;     // fan behind the car (-Z side)
+                b.worldPos[0] = carX + std::sin(az) * 120.0f;
+                b.worldPos[1] = carY + 45.0f + 6.0f * (float)pi;
+                b.worldPos[2] = carZ - std::cos(az) * 120.0f;
+                b.radius = (pi == 1 || pi == 4) ? 26.0f : 13.0f;
+                ++pi;
+            }
+        }
+        still("car_extnight_front34", false, false, 2.95f, 6.4f, 1.25f, 50.0f);
+        still("car_extnight_rear",    false, false, 0.35f, 7.0f, 0.85f, 48.0f);
+
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return shotFails == 0 ? 0 : 1;
     }
 
     // ---- Planet preview (--screenshot-planet [path.png]) -------------------
@@ -5909,6 +6139,12 @@ int main(int argc, char** argv) {
             const float v0[3] = { 0, 0, -40.0f };
             vphys->setBodyLinearVelocity(plane.airframe(), v0);
         }
+        // HERO-CAR GLB skin: render the real clearcoat-painted car instead of the
+        // graybox (graybox stays the fallback on a clean checkout without LFS).
+        if (isDrive) {
+            const bool sk = car.skin(*device, x3::game::convertedGlbRoot(), "Vehicles/CTR.glb");
+            x3::logInfo(std::string("--world drive: hero-car GLB skin ") + (sk ? "ON (CTR)" : "absent — graybox"));
+        }
         vphys->optimizeBroadphase();
 
         const float dt = 1.0f / 60.0f;
@@ -6016,10 +6252,30 @@ int main(int argc, char** argv) {
         double prevTime = glfwGetTime();
         float camYaw = -1.5708f, camPitch = -0.22f;
         float waveT = 0.0f;
-        if (isDrive) x3::logInfo("--world drive: W/S throttle, A/D steer, Space handbrake, mouse orbits, Esc quit");
+        if (isDrive) x3::logInfo("--world drive: WASD drive, Space handbrake, E exit/enter on foot, mouse orbits, Esc quit");
         else if (isBoat) x3::logInfo("--world boat: W/S motor, A/D steer, mouse orbits, Esc quit");
         else x3::logInfo("--world fly: W/S throttle, A/D yaw, Up/Down pitch, Q/E roll, mouse orbits, Esc quit");
         int lastWd = (int)W, lastHd = (int)H;
+
+        // ---- DRIVE: E enter/exit (the Riftforged car UX) + engine audio. ----
+        // Start AT THE WHEEL (the demo IS the car); E steps out to an on-foot
+        // first-person walker on the terrain, E beside the car takes the wheel
+        // again. The engine loop is a looping voice pitch-mapped to an RPM proxy
+        // (speed + throttle blend) — the placeholder note until the parts system
+        // brings per-exhaust notes (G2b).
+        bool  inCar = true, prevE = false;
+        float footPos[3] = { spawnX + 3.0f, spawnY, spawnZ };
+        float fovNow = 70.0f;
+        std::unique_ptr<x3::audio::IAudioSystem> vaudio(x3::audio::createAudioSystem());
+        vaudio->init();
+        x3::audio::SoundHandle engineSnd{};
+        x3::audio::LoopHandle  engineLoop{};
+        if (isDrive) {
+            engineSnd = vaudio->load(x3::game::resolveAudio("vehicles/engine_loop.wav"));
+            if (engineSnd.valid()) engineLoop = vaudio->startLoop(engineSnd, 0.35f, 0.8f);
+            x3::logInfo(std::string("--world drive: engine audio loop ") +
+                        (engineSnd.valid() ? "ON" : "absent (silent)"));
+        }
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
             if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
@@ -6034,13 +6290,42 @@ int main(int argc, char** argv) {
             lastMX = mx; lastMY = my;
             auto kd = [&](int k){ return glfwGetKey(window, k) == GLFW_PRESS; };
 
+            // ---- DRIVE: E toggles in-car <-> on-foot (edge-triggered). ----
+            if (isDrive) {
+                const bool eNow = kd(GLFW_KEY_E);
+                if (eNow && !prevE) {
+                    float cp[3]; car.chassisPos(cp);
+                    if (inCar) {
+                        // Step out beside the driver's door; engine loop stops.
+                        inCar = false;
+                        footPos[0] = cp[0] + 2.2f; footPos[2] = cp[2];
+                        const x3::game::TerrainConfig& tc = x3::game::worldTerrainConfig();
+                        footPos[1] = x3::game::terrainHeightAt(tc, footPos[0], footPos[2]);
+                        if (engineLoop.valid()) { vaudio->stopLoop(engineLoop); engineLoop = {}; }
+                        x3::logInfo("--world drive: exited the car (E beside it to re-enter)");
+                    } else {
+                        const float ddx = footPos[0]-cp[0], ddz = footPos[2]-cp[2];
+                        if (std::sqrt(ddx*ddx + ddz*ddz) <= 3.5f) {
+                            inCar = true;
+                            if (engineSnd.valid()) engineLoop = vaudio->startLoop(engineSnd, 0.35f, 0.8f);
+                            x3::logInfo("--world drive: took the wheel");
+                        }
+                    }
+                }
+                prevE = eNow;
+            }
+
             x3::phys::VehicleInput in;
             if (isDrive || isBoat) {
-                in.throttle = (kd(GLFW_KEY_W)?1.0f:0.0f) - (kd(GLFW_KEY_S)?1.0f:0.0f);
-                in.steer    = (kd(GLFW_KEY_D)?1.0f:0.0f) - (kd(GLFW_KEY_A)?1.0f:0.0f);
+                const bool driving = !isDrive || inCar;   // on foot -> car idles, parked
+                if (driving) {
+                    in.throttle = (kd(GLFW_KEY_W)?1.0f:0.0f) - (kd(GLFW_KEY_S)?1.0f:0.0f);
+                    in.steer    = (kd(GLFW_KEY_D)?1.0f:0.0f) - (kd(GLFW_KEY_A)?1.0f:0.0f);
+                }
                 if (isDrive) {
-                    if (kd(GLFW_KEY_SPACE)) in.handBrake = 1.0f;
-                    if (in.throttle < 0.0f && car.forwardSpeed() > 0.5f) { in.brake = 1.0f; in.throttle = 0.0f; }
+                    if (!inCar) in.handBrake = 1.0f;      // parking brake while on foot
+                    else if (kd(GLFW_KEY_SPACE)) in.handBrake = 1.0f;
+                    if (inCar && in.throttle < 0.0f && car.forwardSpeed() > 0.5f) { in.brake = 1.0f; in.throttle = 0.0f; }
                 }
             } else { // fly
                 in.throttle = (kd(GLFW_KEY_W)?1.0f:0.0f) - (kd(GLFW_KEY_S)?0.5f:0.0f);
@@ -6066,19 +6351,54 @@ int main(int argc, char** argv) {
                 device->setWaterParams(wp);
             }
 
-            // Orbit/chase camera around the vehicle.
+            // Camera: chase the vehicle (with a slight SPEED-FOV stretch in the
+            // car), or first-person walk when on foot (drive only).
             float vp[3]; vpos(vp);
-            float dist = isFly ? 16.0f : 10.0f, height = isFly ? 4.0f : 3.5f;
-            float cx = vp[0] - std::cos(camPitch)*std::cos(camYaw)*dist;
-            float cy = vp[1] + height - std::sin(camPitch)*dist;
-            float cz = vp[2] - std::cos(camPitch)*std::sin(camYaw)*dist;
+            float cx, cy, cz;
+            float fovTarget = 70.0f;
+            if (isDrive && !inCar) {
+                // On-foot first-person walker on the streamed terrain.
+                const x3::game::TerrainConfig& tc = x3::game::worldTerrainConfig();
+                float wdx = std::cos(camYaw), wdz = std::sin(camYaw);
+                float wrx = -wdz, wrz = wdx;
+                float wspd = (kd(GLFW_KEY_LEFT_SHIFT) ? 9.0f : 4.5f) * fdt;
+                if (kd(GLFW_KEY_W)) { footPos[0]+=wdx*wspd; footPos[2]+=wdz*wspd; }
+                if (kd(GLFW_KEY_S)) { footPos[0]-=wdx*wspd; footPos[2]-=wdz*wspd; }
+                if (kd(GLFW_KEY_D)) { footPos[0]+=wrx*wspd; footPos[2]+=wrz*wspd; }
+                if (kd(GLFW_KEY_A)) { footPos[0]-=wrx*wspd; footPos[2]-=wrz*wspd; }
+                footPos[1] = x3::game::terrainHeightAt(tc, footPos[0], footPos[2]);
+                cx = footPos[0]; cy = footPos[1] + 1.7f; cz = footPos[2];
+                vstream.update(vscene, *device, *vphys, footPos[0], footPos[2]);
+            } else {
+                float dist = isFly ? 16.0f : 10.0f, height = isFly ? 4.0f : 3.5f;
+                cx = vp[0] - std::cos(camPitch)*std::cos(camYaw)*dist;
+                cy = vp[1] + height - std::sin(camPitch)*dist;
+                cz = vp[2] - std::cos(camPitch)*std::sin(camYaw)*dist;
+                if (isDrive) {
+                    // Speed FOV: widen toward +14deg approaching ~120 km/h.
+                    const float sn = std::min(std::fabs(car.forwardSpeed()) / 33.0f, 1.0f);
+                    fovTarget = 70.0f + 14.0f * sn;
+                }
+            }
+            // Smooth the FOV change (dt-scaled, never per-frame — the HARD rule).
+            fovNow += (fovTarget - fovNow) * std::min(fdt * 6.0f, 1.0f);
+            // Engine audio: pitch/volume track the RPM proxy (speed+throttle).
+            if (isDrive && engineLoop.valid()) {
+                const float sn = std::min(std::fabs(car.forwardSpeed()) / 33.0f, 1.0f);
+                const float th = std::fabs(in.throttle);
+                vaudio->setLoopParams(engineLoop, 0.30f + 0.35f*th + 0.15f*sn,
+                                      0.75f + 1.10f*sn + 0.18f*th);
+            }
+            vaudio->setListener(cx, cy, cz, camYaw, camPitch);
             int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
             if (cw != lastWd || ch != lastHd) { lastWd=cw; lastHd=ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
-            device->setCamera(cx, cy, cz, camYaw, camPitch, 70.0f);
+            device->setCamera(cx, cy, cz, camYaw, camPitch, fovNow);
             auto frame = device->beginFrame();
             if (frame.valid) vrender(frame);
             device->endFrame(frame);
         }
+        if (engineLoop.valid()) vaudio->stopLoop(engineLoop);
+        vaudio->shutdown();
         if (isDrive) { car.shutdown(); vstream.shutdown(vscene, *device, *vphys); }
         else if (isBoat) boat.shutdown(); else plane.shutdown();
         vphys->shutdown(); device->shutdown();

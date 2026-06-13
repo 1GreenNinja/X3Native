@@ -5,8 +5,11 @@
 
 #include "vehicle.h"
 
+#include "engine/core/x3_log.h"
+
 #include <cmath>
 #include <cstring>
+#include <string>
 
 namespace x3::game {
 
@@ -84,44 +87,54 @@ void makeUnitCylinderY(uint32_t segments,
 // ===========================================================================
 // DriveDemo
 // ===========================================================================
-bool DriveDemo::build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
-                      float x, float y, float z) {
-    m_device = &device; m_physics = &physics;
+bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y, float z) {
+    m_physics = &physics;
 
     // --- Chassis dynamic body (a box). Layer Dynamic. ---
     m_chassis = physics.addBox(x3::phys::Vec3{m_hx, m_hy, m_hz},
-                               x3::phys::Vec3{x, y, z}, 1500.0f, x3::phys::Layer::Dynamic);
+                               x3::phys::Vec3{x, y, z}, 1300.0f, x3::phys::Layer::Dynamic);
     if (!m_chassis.valid()) return false;
 
-    // --- 4 wheels: front (-Z) steered, rear (+Z) powered + handbrake. ---
+    // --- 4 wheels at the HERO-CAR GLB stations (CTR, after the nose flip to the
+    // engine's -Z forward: fronts z=-1.186, rears z=+1.088, track +-0.677 m).
+    // Front steered, rear powered + handbrake — grippy arcade RWD. ---
     m_wheels.clear();
     struct P { float wx, wz; bool steer, hb; bool powered; };
     P p[4] = {
-        { -m_hx, -m_hz, true,  false, false },   // front-left
-        {  m_hx, -m_hz, true,  false, false },   // front-right
-        { -m_hx,  m_hz, false, true,  true  },   // rear-left  (drive)
-        {  m_hx,  m_hz, false, true,  true  },   // rear-right (drive)
+        { -0.677f, -1.186f, true,  false, false },   // front-left
+        {  0.677f, -1.186f, true,  false, false },   // front-right
+        { -0.723f,  1.088f, false, true,  true  },   // rear-left  (drive; wider track)
+        {  0.723f,  1.088f, false, true,  true  },   // rear-right (drive)
     };
     for (int i = 0; i < 4; ++i) {
         x3::phys::WheelDesc w;
-        // Attach at the chassis BOTTOM so the springs hold the belly above ground.
-        w.position[0] = p[i].wx; w.position[1] = -m_hy; w.position[2] = p[i].wz;
-        w.radius = 0.4f; w.width = 0.3f;
-        w.suspensionMin = 0.10f; w.suspensionMax = 0.35f;
-        w.suspensionFreq = 2.0f; w.suspensionDamp = 0.6f;
+        // Attach high in the wheel well (NOT the box bottom) so the rest pose
+        // matches the GLB arches: wheel center = attach - suspension (~0.30 m).
+        w.position[0] = p[i].wx; w.position[1] = -0.15f; w.position[2] = p[i].wz;
+        w.radius = 0.33f; w.width = 0.24f;
+        w.suspensionMin = 0.15f; w.suspensionMax = 0.42f;
+        w.suspensionFreq = 2.2f; w.suspensionDamp = 0.7f;
         w.steered = p[i].steer; w.handBraked = p[i].hb; w.powered = p[i].powered;
         w.maxSteerAngle = 0.5236f; // ~30deg
+        w.maxBrakeTorque = 2200.0f;
         m_wheels.push_back(w);
     }
     x3::phys::WheeledVehicleDesc vd;
     vd.chassis = m_chassis;
     vd.wheels = m_wheels.data(); vd.wheelCount = (uint32_t)m_wheels.size();
-    vd.maxEngineTorque = 700.0f; vd.maxEngineRPM = 6000.0f;
+    vd.maxEngineTorque = 700.0f; vd.maxEngineRPM = 6500.0f;
     // Wheel rays cast as Dynamic so they stand on the Static terrain (Static-vs-
     // Static doesn't collide in the engine matrix; Dynamic-vs-Static does).
     vd.groundLayer = x3::phys::Layer::Dynamic;
     m_ctl.reset(x3::phys::createWheeledVehicle(physics, vd));
     if (!m_ctl) { physics.removeBody(m_chassis); m_chassis = {}; return false; }
+    return true;
+}
+
+bool DriveDemo::build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
+                      float x, float y, float z) {
+    m_device = &device;
+    if (!buildPhysics(physics, x, y, z)) return false;
 
     // --- Render meshes ---
     std::vector<x3::rhi::MeshVertex> cv; std::vector<uint32_t> ci;
@@ -138,6 +151,90 @@ bool DriveDemo::build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& p
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// HERO-CAR GLB skin. Partition the converted GLB's drawables by node name:
+// Wheel_FL/FR/RL/RR follow the live physics wheel poses; everything else is the
+// sprung body. The GLB is authored nose=+Z, origin on the ground plane; the
+// engine car drives nose=-Z with the physics chassis center ~0.76 m above the
+// ground at rest — both baked into kBodySkin below.
+// ---------------------------------------------------------------------------
+namespace {
+// GLB ground-origin -> physics chassis-center offset + the 180-deg nose flip.
+// (chassis center = wheel attach (-0.15) + rest suspension (~0.28) + wheel
+// radius 0.33 above the ground plane => drop the skin by the sum.)
+constexpr float kBodyDropY = -0.76f;
+const float kBodySkin[16] = { -1,0,0,0,  0,1,0,0,  0,0,-1,0,  0,kBodyDropY,0,1 };
+// Mesh-local wheel axis is +-X (car lateral); the physics wheel pose maps a unit
+// Y-cylinder (axis = axle). Rotate mesh X onto pose Y (Rz +90deg, column-major).
+const float kWheelAxisFix[16] = { 0,1,0,0,  -1,0,0,0,  0,0,1,0,  0,0,0,1 };
+} // namespace
+
+bool DriveDemo::skin(x3::rhi::IRenderDevice& device, std::string_view glbDir,
+                     std::string_view relPath) {
+    m_skinSrc.reset(x3::asset::createAssetSource());
+    if (!m_skinSrc || !m_skinSrc->mountDir(glbDir, 0)) return false;
+    m_skinLoader.reset(x3::asset::createModelLoader(&device, m_skinSrc.get()));
+    m_skinModel = m_skinLoader->load(relPath);
+    if (!m_skinModel.ok) return false;
+
+    std::vector<std::string> names;
+    std::vector<x3::asset::ModelDrawable> all = x3::asset::makeDrawablesNamed(m_skinModel, names);
+    // GLB wheel name -> physics wheel slot. The nose flip maps GLB FL->engine FL
+    // (GLB +X/+Z both negate, so left/right and front/rear BOTH swap = identity).
+    auto slotOf = [](const std::string& nm) -> int {
+        if (nm.find("Wheel_FL") != std::string::npos) return 0;
+        if (nm.find("Wheel_FR") != std::string::npos) return 1;
+        if (nm.find("Wheel_RL") != std::string::npos) return 2;
+        if (nm.find("Wheel_RR") != std::string::npos) return 3;
+        return -1;
+    };
+    m_bodyDraw.clear();
+    for (int s = 0; s < 4; ++s) m_wheelDraw[s].clear();
+    for (size_t i = 0; i < all.size(); ++i) {
+        const int s = (i < names.size()) ? slotOf(names[i]) : -1;
+        if (s < 0) { m_bodyDraw.push_back(all[i]); continue; }
+        // Wheel drawable: bake (axis fix) * (node transform WITHOUT translation —
+        // the physics pose supplies position/steer/spin; keep authored scale).
+        x3::asset::ModelDrawable d = all[i];
+        float noT[16]; std::memcpy(noT, d.nodeTransform, sizeof(noT));
+        noT[12] = noT[13] = noT[14] = 0.0f;
+        float local[16];
+        x3::asset::mulMat4(kWheelAxisFix, noT, local);
+        std::memcpy(d.nodeTransform, local, sizeof(local));
+        m_wheelDraw[s].push_back(d);
+    }
+    m_skinned = !m_bodyDraw.empty();
+    return m_skinned;
+}
+
+void DriveDemo::drawDrawable(const x3::rhi::FrameContext& f,
+                             const x3::asset::ModelDrawable& d, const float world[16]) const {
+    const bool matEmis = d.emissiveTexId != 0 ||
+        d.emissiveFactor[0] > 0.001f || d.emissiveFactor[1] > 0.001f || d.emissiveFactor[2] > 0.001f;
+    float emis[4] = { d.emissiveFactor[0], d.emissiveFactor[1], d.emissiveFactor[2],
+                      matEmis ? 1.0f : 0.0f };
+    m_device->drawMeshPBR(f,
+                          x3::rhi::MeshHandle{ d.meshId },
+                          x3::rhi::TextureHandle{ d.baseColorTexId },
+                          x3::rhi::TextureHandle{ d.normalTexId },
+                          x3::rhi::TextureHandle{ d.mrTexId },
+                          d.baseColorFactor, emis, world,
+                          d.alphaMask, d.alphaBlend,
+                          x3::rhi::TextureHandle{ d.emissiveTexId },
+                          x3::rhi::TextureHandle{ d.detailTexId }, d.detailUvScale,
+                          d.clearcoat, d.clearcoatRough);   // car-paint clearcoat lobe
+}
+
+bool DriveDemo::allWheelsInContact() const {
+    if (!m_ctl) return false;
+    const uint32_t n = m_ctl->wheelCount();
+    for (uint32_t i = 0; i < n; ++i) {
+        x3::phys::WheelState ws;
+        if (!m_ctl->wheelState(i, ws) || !ws.hasContact) return false;
+    }
+    return n > 0;
+}
+
 void DriveDemo::setInput(const x3::phys::VehicleInput& in) { if (m_ctl) m_ctl->setInput(in); }
 void DriveDemo::preStep(float dt)  { if (m_ctl) m_ctl->preStep(dt); }
 void DriveDemo::postStep(float dt) { if (m_ctl) m_ctl->postStep(dt); }
@@ -149,21 +246,45 @@ void DriveDemo::chassisPos(float out[3]) const {
 
 void DriveDemo::render(const x3::rhi::FrameContext& frame) const {
     if (!m_device || !m_ctl) return;
-    const float bodyCol[4]  = { 1.0f, 0.25f, 0.22f, 1.0f };
-    const float wheelCol[4] = { 0.12f, 0.12f, 0.14f, 1.0f };
 
-    // Chassis: pos + rotation from physics, scaled to its half extents (cube is
-    // half-extent 0.5 -> scale = he/0.5 = he*2).
     x3::phys::Vec3 p = m_physics->getBodyPosition(m_chassis);
     float q[4]; m_physics->getBodyRotation(m_chassis, q);
     float pos[3] = { p.x, p.y, p.z };
+
+    if (m_skinned) {
+        // ---- HERO-CAR GLB skin: the body parts ride the sprung chassis (nose
+        // flip + ride-height drop baked in kBodySkin); the wheels ride the LIVE
+        // physics wheel poses (steer + spin + suspension travel). ----
+        float chassisM[16]; composeTRS(pos, q, 1.0f, 1.0f, 1.0f, chassisM);
+        float carM[16];     x3::asset::mulMat4(chassisM, kBodySkin, carM);
+        float fin[16];
+        for (const auto& d : m_bodyDraw) {
+            x3::asset::mulMat4(carM, d.nodeTransform, fin);
+            drawDrawable(frame, d, fin);
+        }
+        for (int s = 0; s < 4; ++s) {
+            x3::phys::WheelState ws;
+            if (!m_ctl->wheelState((uint32_t)s, ws)) continue;
+            // Strip the baked radius/half-width scale -> the pure wheel POSE.
+            float P[16]; std::memcpy(P, ws.worldTransform, sizeof(P));
+            for (int c = 0; c < 3; ++c) {
+                float* col = &P[c * 4];
+                const float len = std::sqrt(col[0]*col[0] + col[1]*col[1] + col[2]*col[2]);
+                if (len > 1e-5f) { col[0] /= len; col[1] /= len; col[2] /= len; }
+            }
+            for (const auto& d : m_wheelDraw[s]) {
+                x3::asset::mulMat4(P, d.nodeTransform, fin);   // nodeTransform = axisFix * authored scale
+                drawDrawable(frame, d, fin);
+            }
+        }
+        return;
+    }
+
+    // ---- Graybox fallback (no GLB): box chassis + cylinder wheels. ----
+    const float bodyCol[4]  = { 1.0f, 0.25f, 0.22f, 1.0f };
+    const float wheelCol[4] = { 0.12f, 0.12f, 0.14f, 1.0f };
     float m[16]; composeTRS(pos, q, m_hx*2.0f, m_hy*2.0f, m_hz*2.0f, m);
     m_device->drawMesh(frame, m_chassisMesh, m_chassisTex, bodyCol, m);
-
-    // Wheels: the controller hands back a world transform that already maps a
-    // unit Y-cylinder (radius 1, half-height 1) to the wheel. Our cylinder mesh is
-    // radius 1, height 1 (half-height 0.5), so the controller's transform (which
-    // bakes radius into x/z and half-width into y) places it correctly.
     const uint32_t n = m_ctl->wheelCount();
     for (uint32_t i = 0; i < n; ++i) {
         x3::phys::WheelState ws;
@@ -181,7 +302,87 @@ void DriveDemo::shutdown() {
         if (m_chassisTex.valid())  m_device->destroyTexture(m_chassisTex);
         if (m_wheelTex.valid())    m_device->destroyTexture(m_wheelTex);
     }
+    // GLB skin: the loader frees the model's GPU handles (meshes/textures).
+    if (m_skinned && m_skinLoader) m_skinLoader->unload(m_skinModel);
+    m_bodyDraw.clear();
+    for (int s = 0; s < 4; ++s) m_wheelDraw[s].clear();
+    m_skinned = false;
+    m_skinLoader.reset();
+    m_skinSrc.reset();
     m_device = nullptr; m_physics = nullptr;
+}
+
+// ===========================================================================
+// Headless DRIVE enter/exit self-test (--test-vehicle, game layer). Physics
+// only — no render device. Mirrors the in-world UX: walk up, E to enter, drive,
+// E to exit (control restored beside the car).
+// ===========================================================================
+bool runDriveEnterExitSelfTest() {
+    int passN = 0, failN = 0;
+    auto check = [&](bool ok, const char* name) {
+        if (ok) { ++passN; x3::logInfo(std::string("[drive-test] PASS ") + name); }
+        else    { ++failN; x3::logError(std::string("[drive-test] FAIL ") + name); }
+    };
+
+    std::unique_ptr<x3::phys::IPhysicsWorld> phys(x3::phys::createPhysicsWorld());
+    if (!phys->init()) { x3::logError("[drive-test] physics init failed"); return false; }
+    {
+        // Flat static slab the wheel rays can stand on.
+        x3::prims::PrimMesh g = x3::prims::makeBox(200.0f, 0.5f, 200.0f, 0.0f, -0.5f, 0.0f, 0.02f);
+        phys->addStaticMesh(g.cverts.data(), (uint32_t)(g.cverts.size() / 3),
+                            g.cindex.data(), (uint32_t)g.cindex.size());
+    }
+    DriveDemo car;
+    check(car.buildPhysics(*phys, 0.0f, 1.2f, 0.0f), "spawn: chassis + wheeled controller built");
+    phys->optimizeBroadphase();
+
+    const float dt = 1.0f / 60.0f;
+    // Player ON FOOT beside the spawn point.
+    float player[3] = { 3.0f, 0.0f, 4.0f };
+    bool inCar = false;
+
+    // Settle onto the suspension.
+    for (int i = 0; i < 90; ++i) {
+        x3::phys::VehicleInput in{};
+        car.setInput(in); car.preStep(dt); phys->step(dt); car.postStep(dt);
+    }
+    check(car.allWheelsInContact(), "settle: all 4 wheels in ground contact");
+
+    // 'E' — proximity enter (the in-world rule: within 3.5 m of the chassis).
+    float c0[3]; car.chassisPos(c0);
+    const float dEnter = std::sqrt((player[0]-c0[0])*(player[0]-c0[0]) +
+                                   (player[2]-c0[2])*(player[2]-c0[2]));
+    if (dEnter <= 5.0f) inCar = true;
+    check(inCar, "enter: player within range takes the wheel");
+
+    // Full throttle for 240 fixed ticks (4 s).
+    for (int i = 0; i < 240; ++i) {
+        x3::phys::VehicleInput in{};
+        in.throttle = 1.0f;
+        car.setInput(in); car.preStep(dt); phys->step(dt); car.postStep(dt);
+    }
+    float c1[3]; car.chassisPos(c1);
+    const float dx = c1[0] - c0[0], dz = c1[2] - c0[2];
+    const float disp = std::sqrt(dx*dx + dz*dz);
+    x3::logInfo("[drive-test] displacement after 4 s full throttle: " + std::to_string(disp) +
+                " m, fwdSpeed=" + std::to_string(car.forwardSpeed()) + " m/s");
+    check(disp > 10.0f, "drive: forward displacement > 10 m");
+    check(dz < -5.0f, "drive: displacement is along -Z (the car's forward)");
+    check(car.forwardSpeed() > 3.0f, "drive: forward speed positive");
+    check(car.allWheelsInContact(), "drive: wheels kept ground contact");
+
+    // 'E' — exit: control restored ON FOOT beside the car.
+    inCar = false;
+    player[0] = c1[0] + 2.5f; player[1] = c1[1]; player[2] = c1[2];
+    const float dExit = std::sqrt((player[0]-c1[0])*(player[0]-c1[0]) +
+                                  (player[2]-c1[2])*(player[2]-c1[2]));
+    check(!inCar && dExit > 2.0f && dExit < 3.0f, "exit: player control restored beside the car");
+
+    car.shutdown();
+    phys->shutdown();
+    x3::logInfo("[drive-test] " + std::to_string(passN) + " passed, " +
+                std::to_string(failN) + " failed");
+    return failN == 0;
 }
 
 // ===========================================================================

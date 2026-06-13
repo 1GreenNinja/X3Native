@@ -16,10 +16,13 @@
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
 #include "engine/physics/IVehicle.h"
+#include "engine/asset/IModelLoader.h"   // hero-car GLB skin (ModelDrawable)
+#include "engine/asset/IAssetSource.h"
 #include "mesh_prims.h"
 
 #include <cstdint>
 #include <memory>
+#include <string_view>
 #include <vector>
 
 namespace x3::game {
@@ -39,11 +42,29 @@ void makeUnitCylinderY(uint32_t segments,
 // ---------------------------------------------------------------------------
 class DriveDemo {
 public:
-    // Spawn the car at (x,y,z). The chassis is a ~1500 kg box; 4 wheels (front
-    // steered, rear powered + handbrake). `groundLayer` = the layer the wheels
-    // raycast against (Static for terrain). Returns false if the controller failed.
+    // Spawn the car at (x,y,z). The chassis is a ~1300 kg box sized to the HERO
+    // CAR GLB (CTR: 1.81 x 1.3 x 4.3 m, wheel stations from the model); 4 wheels
+    // (front steered, rear powered + handbrake). Returns false if the controller
+    // failed. build() = buildPhysics() + the graybox render meshes.
     bool build(x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
                float x, float y, float z);
+
+    // Physics-only build (no render device) — the headless self-test path.
+    bool buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y, float z);
+
+    // HERO-CAR SKIN: load the converted vehicle GLB (clearcoat paint + emissive
+    // lights) and render IT instead of the graybox box+cylinders. The GLB's
+    // Wheel_FL/FR/RL/RR node drawables follow the live physics wheel poses (spin +
+    // steer + suspension); everything else rides the sprung chassis. The GLB is
+    // authored nose = +Z / origin on the ground; the skin bakes the 180-degree yaw
+    // to the engine's -Z forward + the ride-height drop. Returns false (graybox
+    // render kept) if the GLB is missing — drive still works.
+    bool skin(x3::rhi::IRenderDevice& device, std::string_view glbDir,
+              std::string_view relPath);
+    bool skinned() const { return m_skinned; }
+
+    // All four wheels touching ground? (drive self-test assert)
+    bool allWheelsInContact() const;
 
     // Feed driver input + advance one step. Call setInput()+preStep() BEFORE the
     // host's physics->step(), then postStep() AFTER. drive() is a convenience that
@@ -69,14 +90,32 @@ private:
     x3::phys::IPhysicsWorld* m_physics = nullptr;
     std::unique_ptr<x3::phys::IVehicleController> m_ctl;
     x3::phys::BodyId m_chassis;
-    float m_hx = 0.9f, m_hy = 0.4f, m_hz = 1.8f;   // chassis half extents
+    // Chassis half extents — sized to the hero-car GLB footprint (CTR).
+    float m_hx = 0.84f, m_hy = 0.5f, m_hz = 1.95f;
 
     x3::rhi::MeshHandle    m_chassisMesh;
     x3::rhi::MeshHandle    m_wheelMesh;
     x3::rhi::TextureHandle m_chassisTex;
     x3::rhi::TextureHandle m_wheelTex;
     std::vector<x3::phys::WheelDesc> m_wheels;
+
+    // ---- Hero-car GLB skin (optional; graybox fallback when absent) ----
+    bool m_skinned = false;
+    std::unique_ptr<x3::asset::IAssetSource> m_skinSrc;
+    std::unique_ptr<x3::asset::IModelLoader> m_skinLoader;
+    x3::asset::Model m_skinModel;
+    std::vector<x3::asset::ModelDrawable> m_bodyDraw;     // everything but the wheels
+    std::vector<x3::asset::ModelDrawable> m_wheelDraw[4]; // per physics wheel slot
+    void drawDrawable(const x3::rhi::FrameContext& f,
+                      const x3::asset::ModelDrawable& d, const float world[16]) const;
 };
+
+// Headless game-layer DRIVE self-test (--test-vehicle): spawn the car on a flat
+// static slab, ENTER it (player control handed to the car), throttle N fixed
+// ticks, assert FORWARD DISPLACEMENT + all-wheel ground contact, then EXIT and
+// assert player control is restored (on-foot position placed beside the car).
+// Physics-only (no render device); returns true when every check passes.
+bool runDriveEnterExitSelfTest();
 
 // ---------------------------------------------------------------------------
 // BoatDemo — a buoyant hull floating on a flat ocean at `seaLevel`. `isSub` makes

@@ -59,6 +59,11 @@ struct Material {
     uint64_t detailTex    = 0;   // HDRP DetailMap (R=desat albedo, G=nrmY, B=smooth, A=nrmX); 0 = none
     float    detailUvScale = 1.0f;   // detail UV tiling (from the converter's x3Detail extras)
     float    detailNrmScale = 1.0f;
+    // CLEARCOAT lobe (car paint): a second fixed-F0 (0.04) low-roughness specular
+    // layer over the base, from the converter's material.extras["x3Clearcoat"]
+    // {intensity, roughness} — the x3Detail extras pattern. 0 = none (default).
+    float    clearcoat      = 0.0f;
+    float    clearcoatRough = 0.05f;
     bool     doubleSided  = false;
     bool     alphaBlend   = false;
     bool     alphaMask    = false;   // glTF alphaMode==MASK (alpha-cutout)
@@ -144,6 +149,8 @@ struct ModelDrawable {
     uint32_t emissiveTexId = 0;          // -> rhi::TextureHandle{ } (0 == none; emissive map)
     uint32_t detailTexId   = 0;          // -> rhi::TextureHandle{ } (0 == none; HDRP micro-detail map)
     float    detailUvScale = 1.0f;       // detail UV tiling (mesh.frag samples detail at vUV*this)
+    float    clearcoat     = 0.0f;       // clearcoat intensity (car paint); 0 = no clearcoat lobe
+    float    clearcoatRough = 0.05f;     // clearcoat roughness (mirror-ish lacquer)
     float    baseColorFactor[4] = {1, 1, 1, 1};
     float    nodeTransform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; // node world (column-major)
 };
@@ -155,6 +162,13 @@ struct ModelDrawable {
 // Static meshes only — skinning is applied separately. A node-less / single-node
 // model still works (identity nodeTransform). Returns empty for headless models.
 std::vector<ModelDrawable> makeDrawables(const Model& m);
+
+// makeDrawables + the glTF NODE NAME each drawable came from (parallel array,
+// same length/order). Lets callers partition a multi-part model by authored part
+// names (e.g. a vehicle's Wheel_FL/FR/RL/RR vs the body) without re-doing the
+// node-transform walk. Orphaned-mesh fallback drawables get an empty name.
+std::vector<ModelDrawable> makeDrawablesNamed(const Model& m,
+                                              std::vector<std::string>& outNodeNames);
 
 // Column-major 4x4 multiply helper: out = a * b (glTF/glm convention). Exposed so
 // callers can compose objectTransform (a) with a drawable's nodeTransform (b)

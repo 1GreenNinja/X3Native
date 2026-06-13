@@ -714,6 +714,20 @@ private:
                     }
                 }
             }
+            // CLEARCOAT lobe (car paint) via material.extras["x3Clearcoat"] (same
+            // converter-extras pattern as x3Detail): {"intensity":F,"roughness":F}.
+            // glTF has KHR_materials_clearcoat but the converter writes extras so
+            // the whole chain stays on the one proven path.
+            if (cm.extras.data) {
+                const char* cj = std::strstr(cm.extras.data, "\"x3Clearcoat\"");
+                if (cj) {
+                    double ci = 1.0, cr = 0.05;
+                    if (const char* i = std::strstr(cj, "\"intensity\"")) std::sscanf(i, "\"intensity\":%lf", &ci);
+                    if (const char* r = std::strstr(cj, "\"roughness\"")) std::sscanf(r, "\"roughness\":%lf", &cr);
+                    m.clearcoat      = (float)(ci < 0.0 ? 0.0 : (ci > 1.0 ? 1.0 : ci));
+                    m.clearcoatRough = (float)(cr < 0.01 ? 0.01 : (cr > 1.0 ? 1.0 : cr));
+                }
+            }
             m.doubleSided  = cm.double_sided != 0;
             m.alphaBlend   = (cm.alpha_mode == cgltf_alpha_mode_blend);
             m.alphaMask    = (cm.alpha_mode == cgltf_alpha_mode_mask);
@@ -1157,6 +1171,8 @@ bool fillDrawable(const Model& m, const MeshPrimitive& p, const float nodeWorld[
         if ((mat.detailTex & kTagMask) == kTexTag)
             d.detailTexId = static_cast<uint32_t>(mat.detailTex & ~kTagMask);
         d.detailUvScale = mat.detailUvScale;
+        d.clearcoat      = mat.clearcoat;
+        d.clearcoatRough = mat.clearcoatRough;
     }
     for (int i = 0; i < 16; ++i) d.nodeTransform[i] = nodeWorld[i];
     return true;
@@ -1223,6 +1239,61 @@ std::vector<ModelDrawable> makeDrawables(const Model& m) {
             if (nodeMeshes.count(p.meshIndex)) continue;
             ModelDrawable d;
             if (fillDrawable(m, p, ident, d)) out.push_back(d);
+        }
+    }
+    return out;
+}
+
+std::vector<ModelDrawable> makeDrawablesNamed(const Model& m,
+                                              std::vector<std::string>& outNodeNames) {
+    // Same walk as makeDrawables, additionally reporting the glTF NODE NAME each
+    // drawable came from (parallel array). Lets a caller partition a multi-part
+    // model by authored part names (e.g. a vehicle's Wheel_FL/FR/RL/RR vs body)
+    // without duplicating the node-transform composition. The orphaned-mesh safety
+    // net emits an empty name.
+    std::vector<ModelDrawable> out;
+    outNodeNames.clear();
+    if (m.nodes.empty()) {
+        out = makeDrawables(m);
+        outNodeNames.assign(out.size(), std::string());
+        return out;
+    }
+    const size_t n = m.nodes.size();
+    std::vector<std::array<float, 16>> world(n);
+    std::vector<char> state(n, 0);
+    std::function<void(size_t)> computeWorld = [&](size_t i) {
+        if (state[i] == 2) return;
+        const Node& nd = m.nodes[i];
+        if (nd.parent < 0 || nd.parent >= (int)n || state[(size_t)nd.parent] == 1) {
+            std::memcpy(world[i].data(), nd.localTransform, sizeof(float) * 16);
+        } else {
+            state[i] = 1;
+            computeWorld((size_t)nd.parent);
+            mat4Mul(world[(size_t)nd.parent].data(), nd.localTransform, world[i].data());
+        }
+        state[i] = 2;
+    };
+    for (size_t i = 0; i < n; ++i) computeWorld(i);
+    for (size_t i = 0; i < n; ++i) {
+        const Node& nd = m.nodes[i];
+        if (nd.meshIndex < 0) continue;
+        for (const auto& p : m.primitives) {
+            if ((int)p.meshIndex != nd.meshIndex) continue;
+            ModelDrawable d;
+            if (fillDrawable(m, p, world[i].data(), d)) {
+                out.push_back(d);
+                outNodeNames.push_back(nd.name);
+            }
+        }
+    }
+    {
+        std::unordered_set<uint32_t> nodeMeshes;
+        for (const Node& nd : m.nodes) if (nd.meshIndex >= 0) nodeMeshes.insert((uint32_t)nd.meshIndex);
+        const float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+        for (const auto& p : m.primitives) {
+            if (nodeMeshes.count(p.meshIndex)) continue;
+            ModelDrawable d;
+            if (fillDrawable(m, p, ident, d)) { out.push_back(d); outNodeNames.push_back(std::string()); }
         }
     }
     return out;

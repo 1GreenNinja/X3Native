@@ -153,6 +153,12 @@ void EnvArtSystem::addInstanceEmissive(uint32_t a, const float transform[16], co
 
 bool EnvArtSystem::buildFromGlb(x3::rhi::IRenderDevice& device,
                                 std::string_view convertedGlbDir, std::string_view relPath) {
+    return buildFromGlbAt(device, convertedGlbDir, relPath, nullptr);
+}
+
+bool EnvArtSystem::buildFromGlbAt(x3::rhi::IRenderDevice& device,
+                                  std::string_view convertedGlbDir, std::string_view relPath,
+                                  const float transform[16]) {
     m_assets.reset(x3::asset::createAssetSource());
     if (!m_assets->mountDir(convertedGlbDir, 0)) {
         x3::logWarn("[env-art] buildFromGlb mountDir failed: " + std::string(convertedGlbDir));
@@ -162,10 +168,15 @@ bool EnvArtSystem::buildFromGlb(x3::rhi::IRenderDevice& device,
     const uint32_t a = loadAsset(std::string(relPath));   // cgltf loads geometry + materials + embedded textures
     if (a >= m_assetTable.size() || !m_assetTable[a].ok) return false;
     const float I[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
-    addInstance(a, I);    // identity: the GLB's baked node transforms ARE the world placement
+    addInstance(a, transform ? transform : I);   // identity: the GLB's baked node transforms ARE the world placement
     x3::logInfo("[env-art] buildFromGlb: " + std::string(relPath) + " — " +
                 std::to_string(m_assetTable[a].drawables.size()) + " drawables, 1 instance");
     return true;
+}
+
+void EnvArtSystem::setInstanceTransform(uint32_t idx, const float transform[16]) {
+    if (idx >= m_instances.size() || !transform) return;
+    for (int i = 0; i < 16; ++i) m_instances[idx].transform[i] = transform[i];
 }
 
 Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
@@ -524,7 +535,8 @@ uint32_t EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::Frame
                                d.alphaBlend,
                                x3::rhi::TextureHandle{ d.emissiveTexId },
                                x3::rhi::TextureHandle{ d.detailTexId },   // HDRP micro-detail
-                               d.detailUvScale);
+                               d.detailUvScale,
+                               d.clearcoat, d.clearcoatRough);            // car-paint clearcoat lobe
         }
     }
     return drawn;

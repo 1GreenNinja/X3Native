@@ -23,7 +23,15 @@ namespace x3::editor {
 // what x3-level-builder consumes (type maps to its areas[]->entities kinds).
 struct EditorEntity {
     std::string name;
-    std::string type = "prop";          // prop | enemy | item | npc | light | static | model
+    // prop | enemy | item | npc | light | static | model | vehicle
+    //
+    // "vehicle" (the drivable-car hook): `model` = the converted vehicle GLB
+    // (e.g. "Vehicles/CTR.glb"), `tint` = the PAINT color (multiplies the GLB's
+    // clearcoat paint baseColor), pos/yaw = the parked pose. The kind round-trips
+    // through the LevelDoc JSON today; a game loader consuming it spawns a
+    // DriveDemo (app/vehicle.h: buildPhysics + skin) at this pose — exactly what
+    // `--world drive` does in code. Editor-side it renders like any model entity.
+    std::string type = "prop";
     float pos[3]   = { 0, 0, 0 };
     float yaw      = 0.0f;               // radians about +Y
     float scale    = 1.0f;

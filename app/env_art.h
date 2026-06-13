@@ -74,6 +74,17 @@ public:
     bool buildFromGlb(x3::rhi::IRenderDevice& device,
                       std::string_view convertedGlbDir, std::string_view relPath);
 
+    // Same, but place the single instance at `transform` (column-major 4x4)
+    // instead of identity — e.g. the hero car posed on the showroom floor
+    // (--screenshot-car). nullptr = identity (exactly buildFromGlb above).
+    bool buildFromGlbAt(x3::rhi::IRenderDevice& device,
+                        std::string_view convertedGlbDir, std::string_view relPath,
+                        const float transform[16]);
+
+    // Replace instance `idx`'s transform (column-major). For the turntable
+    // capture rig (re-pose the car between stills) — cheap, no reload.
+    void setInstanceTransform(uint32_t idx, const float transform[16]);
+
     // World-space AABB of all placed drawables' origins (engine-space ground truth —
     // for framing a preview camera). outMin/outMax are float[3]. No-op (huge/inverted)
     // if nothing is placed.
