@@ -691,15 +691,21 @@ public:
         // DIRECTION-ANCHORED sky bodies 150 m from the live camera (far plane 200 m).
         {
             const x3::cut::CamPose cam = x3::cut::evalCamera(cs, t);
-            constexpr float kCelDist = 150.0f;
+            // FOLD FIX: fix/planets-sky reworked NightSkyPlanet to carry
+            // azimuth/elevation/angularDiameter (the body is re-anchored on the
+            // camera eye INSIDE drawNightSkyPlanets) — the old worldPos/radius
+            // fields the cold-open set are gone. Convert each CelAnchor direction
+            // to az/el (az 0 = -Z, +90 = +X; matches drawNightSkyPlanets) + an
+            // apparent angular diameter from angSin, then call the eye-anchored API.
+            constexpr float kRadToDeg = 180.0f / 3.14159265358979323846f;
             for (size_t i = 0; i < m_planets.size() && i < m_anchors.size(); ++i) {
                 const CelAnchor& a = m_anchors[i];
-                m_planets[i].worldPos[0] = cam.pos.x + a.dir[0] * kCelDist;
-                m_planets[i].worldPos[1] = cam.pos.y + a.dir[1] * kCelDist;
-                m_planets[i].worldPos[2] = cam.pos.z + a.dir[2] * kCelDist;
-                m_planets[i].radius      = kCelDist * a.angSin;
+                m_planets[i].azimuthDeg         = std::atan2(a.dir[0], -a.dir[2]) * kRadToDeg;
+                m_planets[i].elevationDeg       = std::asin(std::max(-1.0f, std::min(1.0f, a.dir[1]))) * kRadToDeg;
+                m_planets[i].angularDiameterDeg = 2.0f * std::asin(std::max(0.0f, std::min(1.0f, a.angSin))) * kRadToDeg;
             }
-            drawNightSkyPlanets(&device, fc, m_planetMesh, m_planets, 10.0f + t * 0.02f, m_ringMesh);
+            drawNightSkyPlanets(&device, fc, m_planetMesh, m_planets, 10.0f + t * 0.02f,
+                                cam.pos.x, cam.pos.y, cam.pos.z, m_ringMesh);
         }
     }
 
@@ -5049,7 +5055,8 @@ int main(int argc, char** argv) {
                 if (fr.valid) {
                     drawScene(fr, interior);
                     if (!interior && !day)
-                        drawNightSkyPlanets(device.get(), fr, planetMesh, planets, 10.0f, ringMesh);
+                        drawNightSkyPlanets(device.get(), fr, planetMesh, planets, 10.0f,
+                                            cx, cy, cz, ringMesh);   // FOLD FIX: eye-anchored API
                 }
                 device->endFrame(fr);
             }
@@ -5072,14 +5079,20 @@ int main(int argc, char** argv) {
         car.setInstanceTransform(0, carT);
         device->setShadowBounds(carX, carY, carZ, 40.0f);
         // Re-aim the planets around the new pad (high in the back of frame).
+        // FOLD FIX: fix/planets-sky moved NightSkyPlanet to az/el/angularDiameter
+        // (eye-anchored in drawNightSkyPlanets) — convert the old worldPos/radius
+        // fan (planets ~120 m out, 45+ m high, radius 13/26 m) to angles.
         {
+            constexpr float kRadToDeg = 180.0f / 3.14159265358979323846f;
+            constexpr float kDist = 120.0f;
             int pi = 0;
             for (NightSkyPlanet& b : planets) {
                 const float az = -1.2f + 0.6f * (float)pi;     // fan behind the car (-Z side)
-                b.worldPos[0] = carX + std::sin(az) * 120.0f;
-                b.worldPos[1] = carY + 45.0f + 6.0f * (float)pi;
-                b.worldPos[2] = carZ - std::cos(az) * 120.0f;
-                b.radius = (pi == 1 || pi == 4) ? 26.0f : 13.0f;
+                const float height = 45.0f + 6.0f * (float)pi;
+                const float radius = (pi == 1 || pi == 4) ? 26.0f : 13.0f;
+                b.azimuthDeg         = az * kRadToDeg;
+                b.elevationDeg       = std::atan2(height, kDist) * kRadToDeg;
+                b.angularDiameterDeg = 2.0f * std::atan2(radius, kDist) * kRadToDeg;
                 ++pi;
             }
         }

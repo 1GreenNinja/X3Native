@@ -719,8 +719,6 @@ public:
         if (p.taa && !m_post.taa) m_taaHistoryValid = false;
         m_post = p;
     }
-    // Metal ambient-specular floor strength (mesh.frag IBL path; rides ssao ctrl ibl.w).
-    void setMetalAmbient(float s) override { m_metalAmbient = (s >= 0.0f) ? s : 1.0f; }
 
     void setShadowBounds(float cx, float cy, float cz, float halfExtent) override {
         m_shadowOverride  = true;
