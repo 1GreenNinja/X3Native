@@ -258,8 +258,23 @@ public:
                 const bool b = phys.enable_extension_features_if_present(rqf);
                 m_rtSupported = a && b;
             }
+            // VK_KHR_ray_tracing_position_fetch (OPTIONAL on top of ray query):
+            // lets a ray-query shader read the committed triangle's vertex
+            // positions — DDGI's hit-normal source (no SBT / vertex pulls).
+            // Absent (older drivers): DDGI stays off; RT AO/reflections unaffected.
+            if (m_rtSupported) {
+                const std::vector<const char*> pfExts = { "VK_KHR_ray_tracing_position_fetch" };
+                if (phys.enable_extensions_if_present(pfExts)) {
+                    VkPhysicalDeviceRayTracingPositionFetchFeaturesKHR pff{};
+                    pff.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_POSITION_FETCH_FEATURES_KHR;
+                    pff.rayTracingPositionFetch = VK_TRUE;
+                    m_rtPosFetch = phys.enable_extension_features_if_present(pff);
+                }
+            }
             logInfo(m_rtSupported
-                ? "[rhi] RT: ray-query SUPPORTED (VK_KHR_ray_query + acceleration_structure) — RT shadows/reflections/GI available"
+                ? (m_rtPosFetch
+                    ? "[rhi] RT: ray-query SUPPORTED (+ position fetch) — RT AO/reflections/DDGI available"
+                    : "[rhi] RT: ray-query SUPPORTED (no position fetch) — RT AO/reflections available; DDGI off")
                 : "[rhi] RT: not available on this device — SSAO/CSM raster fallback");
         }
 
@@ -371,6 +386,7 @@ public:
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
         shutdownEditorUI();   // editor-only ImGui teardown (no-op if --editor was absent)
         destroyRefl();        // SSR/RT reflections pipelines/targets (no-op if never built)
+        destroyDdgi();        // DDGI probe-grid pipelines/atlases (no-op if never built)
         destroyRt();          // RT AO pipelines/targets + AS module (no-op if never built)
         destroySkinning();
         destroyDebris();
@@ -676,6 +692,30 @@ public:
         // requires m_rtSupported — Pascal-class devices get SSR-only automatically.
         m_refl = p;
         m_refl.intensity = std::max(0.0f, std::min(1.0f, m_refl.intensity));
+    }
+
+    void setDdgiParams(const DdgiParams& p) override {
+        // Cache a snapshot (re-applied each frame, like setRtaoParams). The DDGI
+        // chain is built LAZILY on first activation (a run that never enables
+        // r_ddgi pays zero init cost) and requires ray-query + position-fetch
+        // hardware — on anything else this is a harmless store and the graph
+        // never adds the DDGI passes (raster ambient is byte-for-byte unchanged).
+        m_ddgi = p;
+        m_ddgi.countX = std::max(2, std::min(32, m_ddgi.countX));
+        m_ddgi.countY = std::max(2, std::min(32, m_ddgi.countY));
+        m_ddgi.countZ = std::max(2, std::min(32, m_ddgi.countZ));
+        // Bound total probes so the ray buffer stays sane (<= 12288 * 128 rays).
+        while (m_ddgi.countX * m_ddgi.countY * m_ddgi.countZ > 12288) {
+            if (m_ddgi.countX >= m_ddgi.countZ && m_ddgi.countX > 2)      --m_ddgi.countX;
+            else if (m_ddgi.countZ > 2)                                    --m_ddgi.countZ;
+            else                                                           --m_ddgi.countY;
+        }
+        m_ddgi.raysPerProbe = std::max(16, std::min(128, m_ddgi.raysPerProbe));
+        m_ddgi.hysteresis    = std::max(0.0f, std::min(0.995f, m_ddgi.hysteresis));
+        m_ddgi.hysteresisVis = std::max(0.0f, std::min(0.995f, m_ddgi.hysteresisVis));
+        m_ddgi.intensity  = std::max(0.0f, std::min(4.0f, m_ddgi.intensity));
+        m_ddgi.bounceGain = std::max(0.0f, std::min(0.98f, m_ddgi.bounceGain));
+        m_ddgi.normalBias = std::max(0.0f, std::min(4.0f, m_ddgi.normalBias));
     }
 
     void setGlassDevParams(const GlassDevParams& p) override {
@@ -996,11 +1036,13 @@ public:
         // raster/SSAO path is byte-for-byte unchanged.
         m_rtaoActiveThisFrame = false;
         m_reflRtThisFrame = false;
-        // Reflections' ray-query fallback reuses the SAME BLAS/TLAS this block
-        // builds — one AS, two consumers (RT AO + RT reflections).
+        m_ddgiActiveThisFrame = false;
+        // Reflections' ray-query fallback and DDGI reuse the SAME BLAS/TLAS this
+        // block builds — one AS, three consumers (RT AO + RT reflections + DDGI).
         const bool reflRtWant = m_reflActiveThisFrame && m_refl.rtFallback
                              && (m_reflPipeRt != VK_NULL_HANDLE);
-        if (m_rtSupported && (m_rtao.enabled || reflRtWant)) {
+        const bool ddgiWant = m_ddgiWantThisFrame;   // decided in prepareFrameData
+        if (m_rtSupported && (m_rtao.enabled || reflRtWant || ddgiWant)) {
             const bool coreReady = m_rtao.enabled ? ensureRtaoReady() : ensureRtCore();
             if (coreReady && buildRtSceneAS() && m_rt.lastInstanceCount() > 0) {
                 if (m_rtao.enabled) {
@@ -1008,6 +1050,10 @@ public:
                     m_rtaoActiveThisFrame = true;
                 }
                 if (reflRtWant) m_reflRtThisFrame = true;
+                if (ddgiWant && m_ddgiBuilt) {
+                    prepareDdgiUbo();
+                    m_ddgiActiveThisFrame = true;
+                }
             }
         }
         // Fill the per-frame reflection UBO (matrices captured by prepareFrameData).
@@ -2301,6 +2347,23 @@ private:
             m_reflPrevVP = m_taaHistoryValid ? m_taaPrevVP : unjitteredVP;
         }
 
+        // ---- DDGI: decide activation for THIS frame --------------------------
+        // Decided here (like reflections) because the SSAO control UBO below
+        // carries the mesh.frag gate + grid geometry. Requires ray-query AND
+        // position-fetch hardware; ensureDdgiReady() lazily builds the chain
+        // (and auto-fits the probe volume from this frame's draw records when no
+        // explicit volume was set). endFrame's AS-build gate consults
+        // m_ddgiWantThisFrame; if the TLAS build fails there (no instances) the
+        // graph adds no DDGI passes — mesh.frag then blends the (valid, stale)
+        // atlases for one frame, which is safe (SHADER_READ_ONLY, real views).
+        m_ddgiWantThisFrame = false;
+        if (m_ddgi.enabled && m_rtSupported && m_rtPosFetch && ensureDdgiReady())
+            m_ddgiWantThisFrame = true;
+        else if (!m_ddgi.enabled) {
+            m_ddgiFrameCount = 0;      // toggle off -> full warm-up ramp on re-enable
+            m_ddgiVolumeValid = false; // and a fresh auto-fit (scene may have changed)
+        }
+
         // Stash this frame's UNJITTERED viewProj + camera pose for next frame's
         // reprojection + cut detection (kept current even with TAA off so a later
         // r_taa 1 doesn't compare against an ancient pose).
@@ -2371,6 +2434,20 @@ private:
             // bake approximation inherited from the existing SSAO precedent.)
             sc.refl = glm::vec4(m_reflActiveThisFrame ? 1.0f : 0.0f,
                                 m_refl.intensity, 0.0f, 0.0f);
+            // DDGI lane (r_ddgi): gate + the probe-grid geometry mesh.frag needs
+            // to interpolate the atlases. The intensity RAMPS in over the first
+            // ~16 updates after activation so cold (black) probes never read as
+            // "ambient removed" — by ramp-end the hysteresis ramp (see
+            // prepareDdgiUbo) has fully converged the field.
+            if (m_ddgiWantThisFrame) {
+                const float ramp = std::min(1.0f, (float)m_ddgiFrameCount / 16.0f);
+                sc.ddgiCtrl    = glm::vec4(1.0f, m_ddgi.intensity * ramp,
+                                           (float)m_ddgi.debug, m_ddgi.normalBias);
+                sc.ddgiOrigin  = glm::vec4(m_ddgiOrigin, m_ddgiVisMaxDist);
+                sc.ddgiSpacing = glm::vec4(m_ddgiSpacing, 0.0f);
+                sc.ddgiCounts  = glm::vec4((float)m_ddgiCountX, (float)m_ddgiCountY,
+                                           (float)m_ddgiCountZ, 0.0f);
+            }
             if (m_ssaoCtrlMapped[m_frameIdx])
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
         }
@@ -2583,6 +2660,11 @@ private:
         CullInstanceGpu* cullInst = gpuCull
             ? static_cast<CullInstanceGpu*>(fr.cullInstMapped) : nullptr;
         uint32_t cullExpectedCount = 0;   // CPU-evaluated survivors (equiv harness)
+        // Record each draw record's SSBO row (the grouped write order differs from
+        // the record order): the TLAS instanceCustomIndex carries this row so the
+        // DDGI ray shader can fetch the hit object's albedo/emissive (capacity
+        // persists; assign() is a memset-speed fill, no per-frame heap churn).
+        m_recordSsboRow.assign(m_drawRecords.size(), 0u);
         // Emit one indirect cmd + its SSBO rows for a mesh group. Run in TWO passes so OPAQUE
         // groups are recorded first and BLEND (glass) groups last — the shadow/depth-prepass
         // replay only [0, m_frameCmdOpaque), and the color pass draws the blend tail with the
@@ -2632,6 +2714,7 @@ private:
                         ++cullExpectedCount;
                 }
                 if (dr.texIndex & 0x80000000u) anyCutout = true;
+                m_recordSsboRow[ri] = row;          // DDGI hit-shading lookup row
                 ObjectData& o = objs[row++];
                 std::memcpy(&o.model, dr.model, sizeof(o.model));
                 o.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
@@ -3272,6 +3355,16 @@ private:
         RgResource rgRefl = {};
         if (reflOn) rgRefl = m_graph.importImage("refl.out", m_reflImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        // DDGI probe atlases. PERSISTENT across frames (the probe field IS the
+        // accumulated history), so they are imported with their tracked post-frame
+        // state (the taa.hist pattern) — the graph derives the cross-frame
+        // read/write transition barriers from it.
+        const bool ddgiOn = m_ddgiActiveThisFrame;
+        RgResource rgDdgiIrr = {}, rgDdgiVis = {};
+        if (ddgiOn) {
+            rgDdgiIrr = m_graph.importImage("ddgi.irr", m_ddgiIrrImg, m_ddgiIrrState);
+            rgDdgiVis = m_graph.importImage("ddgi.vis", m_ddgiVisImg, m_ddgiVisState);
+        }
         // Scene-color copy (glass refraction/frost). Imported UNDEFINED each frame —
         // its content is fully (re)written by the copy pass (mip0) + frost passes
         // (mips 1..N) before the glass pass samples it, so there is no cross-frame
@@ -3617,6 +3710,56 @@ private:
             m_graph.addPass(std::move(rp));
         }
 
+        // ---- DDGI probe passes (ddgi_rays.comp + ddgi_update.comp) ----------
+        // BEFORE the main color pass (mesh.frag samples the atlases). The RAY
+        // pass traces N rays/probe against the TLAS built in endFrame (a fenced
+        // pre-frame submit — no graph dependency needed, the rtao pattern) while
+        // SAMPLING the previous frame's atlases (the infinite-bounce feedback);
+        // the UPDATE pass then hysteresis-blends the ray results INTO the
+        // atlases as storage images. The intermediate ray buffer is an SSBO —
+        // its write->read barrier lives inside the update record body (buffers
+        // are not graph resources). Gated on ddgiOn (zero cost / no pass off).
+        if (ddgiOn) {
+            {
+                RenderPassDesc rp{};
+                rp.name = "ddgi-rays";
+                rp.queue = RgQueue::Compute;
+                rp.usesDynamicRendering = false;
+                rp.addUse(ResourceUse{
+                    rgDdgiIrr, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+                rp.addUse(ResourceUse{
+                    rgDdgiVis, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+                rp.recordCtx = this;
+                rp.record = [](void* ctx, VkCommandBuffer c){
+                    static_cast<VulkanRenderDevice*>(ctx)->recordDdgiRaysBody(c); };
+                m_graph.addPass(std::move(rp));
+            }
+            {
+                RenderPassDesc up{};
+                up.name = "ddgi-update";
+                up.queue = RgQueue::Compute;
+                up.usesDynamicRendering = false;
+                up.addUse(ResourceUse{
+                    rgDdgiIrr, VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+                up.addUse(ResourceUse{
+                    rgDdgiVis, VK_IMAGE_LAYOUT_GENERAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+                up.recordCtx = this;
+                up.record = [](void* ctx, VkCommandBuffer c){
+                    static_cast<VulkanRenderDevice*>(ctx)->recordDdgiUpdateBody(c); };
+                m_graph.addPass(std::move(up));
+            }
+        }
+
         // ---- Pass 2: main color pass (sky + meshes) -> LINEAR HDR target ----
         // Renders the lit scene into the R16G16B16A16_SFLOAT HDR target in linear
         // light (no tonemap). The HUD is drawn later, in the composite pass, on the
@@ -3683,6 +3826,21 @@ private:
             if (reflOn) {
                 colorPass.addUse(ResourceUse{
                     rgRefl, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            }
+            // When DDGI ran, mesh.frag interpolates the probe atlases — declare
+            // them so the graph transitions GENERAL -> SHADER_READ_ONLY after
+            // the update pass.
+            if (ddgiOn) {
+                colorPass.addUse(ResourceUse{
+                    rgDdgiIrr, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+                colorPass.addUse(ResourceUse{
+                    rgDdgiVis, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
@@ -4625,6 +4783,15 @@ private:
         if (taaOn) {
             m_taaHistState = m_graph.stateOf(rgTaaHist);
             m_taaHistoryValid = true;
+        }
+
+        // DDGI atlases: persist their post-frame state (SHADER_READ_ONLY after
+        // the main pass sampled them) so next frame's import derives the correct
+        // cross-frame transition. The probe field itself is the history.
+        if (ddgiOn) {
+            m_ddgiIrrState = m_graph.stateOf(rgDdgiIrr);
+            m_ddgiVisState = m_graph.stateOf(rgDdgiVis);
+            ++m_ddgiFrameCount;   // warm-up ramp progress (hysteresis + intensity)
         }
 
         // GI ping-pong + history: this frame wrote accum[m_giAccumWrite] (now the
@@ -7336,6 +7503,12 @@ private:
         writeParticleDescriptors();
         // HZB pyramid tracks the extent + samples the (new) depth view.
         if (m_gpuCullReady) createHzbTargets();
+        // RT AO (if built): the half-res target tracks the extent AND its compute +
+        // apply sets reference the depth view destroyed/recreated above — recreate
+        // + rewrite, exactly like the windowed recreateSwapchain() path. (Missing
+        // this was a live VUID-08114 source: the headless --test-rt mid-run
+        // recreate left the rtao sets on the destroyed depth view.)
+        if (m_rtaoBuilt) { createRtaoTargets(); writeRtaoDescriptors(); }
     }
 
     // ---- HDR scene + bloom render targets ----------------------------------
@@ -8111,7 +8284,7 @@ private:
             const uint32_t nFrames = kFramesInFlight;
             VkDescriptorPoolSize sizes[2]{};
             sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            sizes[0].descriptorCount = nFrames /*ssao depth*/ + nFrames * 2 /*mesh ao + refl*/ + 2 /*blur*/;
+            sizes[0].descriptorCount = nFrames /*ssao depth*/ + nFrames * 4 /*mesh ao + refl + ddgi irr/vis*/ + 2 /*blur*/;
             sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             sizes[1].descriptorCount = nFrames /*ssao ubo*/ + nFrames /*ctrl ubo*/;
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
@@ -8349,8 +8522,17 @@ private:
             VkDescriptorImageInfo dr{ m_ssaoLinearSampler,
                                       m_reflView ? m_reflView : m_ssaoBlurView,
                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            // DDGI atlases (bindings 3/4). Until/unless the DDGI chain is built,
+            // the blurred-AO view is a LAYOUT-VALID placeholder (never sampled —
+            // the ssao.ddgiCtrl.x gate is 0 — but descriptors must be real).
+            VkDescriptorImageInfo dgi{ m_ssaoLinearSampler,
+                                       m_ddgiIrrView ? m_ddgiIrrView : m_ssaoBlurView,
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo dgv{ m_ssaoLinearSampler,
+                                       m_ddgiVisView ? m_ddgiVisView : m_ssaoBlurView,
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             VkDescriptorBufferInfo bi{ m_ssaoCtrlBuf[i], 0, sizeof(SsaoControl) };
-            VkWriteDescriptorSet w[3]{};
+            VkWriteDescriptorSet w[5]{};
             w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w[0].dstSet = m_meshAoSet[i]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
             w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &da;
@@ -8360,7 +8542,13 @@ private:
             w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w[2].dstSet = m_meshAoSet[i]; w[2].dstBinding = 2; w[2].descriptorCount = 1;
             w[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[2].pImageInfo = &dr;
-            vkUpdateDescriptorSets(m_dev.device, 3, w, 0, nullptr);
+            w[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[3].dstSet = m_meshAoSet[i]; w[3].dstBinding = 3; w[3].descriptorCount = 1;
+            w[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[3].pImageInfo = &dgi;
+            w[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[4].dstSet = m_meshAoSet[i]; w[4].dstBinding = 4; w[4].descriptorCount = 1;
+            w[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[4].pImageInfo = &dgv;
+            vkUpdateDescriptorSets(m_dev.device, 5, w, 0, nullptr);
         }
     }
 
@@ -8412,6 +8600,9 @@ private:
                 m_rtSupported = false;   // disable RT entirely; never retry
                 return false;
             }
+            // Position-fetch tier: BLAS builds carry ALLOW_DATA_ACCESS so DDGI's
+            // ray-query shader may read committed-triangle vertex positions.
+            m_rt.setAllowDataAccess(m_rtPosFetch);
         }
         return m_rt.ready();
     }
@@ -8661,6 +8852,12 @@ private:
                 w.dstSet = m_reflSetRt[i]; w.dstBinding = 4;
                 vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
             }
+            // DDGI ray-pass set (binding 0) — may not exist when DDGI was never
+            // enabled (r_ddgi 0 / chain never built).
+            if (m_ddgiRaySet[i]) {
+                w.dstSet = m_ddgiRaySet[i]; w.dstBinding = 0;
+                vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+            }
         }
     }
 
@@ -8692,10 +8889,16 @@ private:
         // Build the TLAS from this frame's instances (skip dynamic meshes — no BLAS).
         m_rtInstScratch.clear();
         m_rtInstScratch.reserve(m_drawRecords.size());
-        for (const DrawRecord& dr : m_drawRecords) {
+        for (uint32_t i = 0; i < (uint32_t)m_drawRecords.size(); ++i) {
+            const DrawRecord& dr = m_drawRecords[i];
             if (!m_rt.hasBlas(dr.meshId)) continue;
             VulkanRT::TlasInstance inst{};
             inst.meshId = dr.meshId;
+            // instanceCustomIndex = the record's SSBO row this frame (filled by
+            // prepareFrameData's grouped write) — the DDGI ray shader's material
+            // lookup. Rows are stable while the draw list is stable; any shift
+            // changes the signature below and triggers a rebuild.
+            inst.customIndex = (i < m_recordSsboRow.size()) ? m_recordSsboRow[i] : 0u;
             std::memcpy(inst.model, dr.model, sizeof(inst.model));
             m_rtInstScratch.push_back(inst);
         }
@@ -8738,6 +8941,7 @@ private:
         mix(inst.size());
         for (const auto& in : inst) {
             mix(in.meshId);
+            mix(in.customIndex);   // SSBO-row shifts must trigger a TLAS rebuild
             for (int k = 0; k < 16; ++k) {
                 uint32_t bits; std::memcpy(&bits, &in.model[k], sizeof(bits));
                 mix(bits);
@@ -9037,6 +9241,431 @@ private:
         m_reflBuilt = false;
         m_reflActiveThisFrame = false;
         m_reflRtThisFrame = false;
+    }
+
+    // ======================================================================
+    // DDGI (r_ddgi) — lazy init / probe-volume fit / targets / descriptors /
+    // per-frame UBO / compute dispatch / teardown. Tier: ray query + position
+    // fetch ONLY (m_rtPosFetch); everything else never touches this.
+    // ======================================================================
+    bool ensureDdgiReady() {
+        if (!ensureRtCore() || !m_rtPosFetch) return false;
+        // The ray pass's MISS shading binds the IBL env cube; without the IBL
+        // chain there is no cube view to bind (rare init failure) — stay off.
+        if (m_iblEnvCubeView == VK_NULL_HANDLE) return false;
+        if (!m_ddgiBuilt) {
+            // mesh set3 bindings 3/4 are rewritten for ALL frames in flight ->
+            // those sets may be referenced by executing frames. One-time hitch.
+            vkDeviceWaitIdle(m_dev.device);
+            if (!createDdgi() || !createDdgiTargets()) {
+                logError("[rhi] DDGI: create failed — r_ddgi disabled");
+                destroyDdgi();
+                m_ddgi.enabled = false;
+                return false;
+            }
+            writeDdgiDescriptors();
+            writeSsaoDescriptors();   // re-point mesh set3 bindings 3/4 at the atlases
+            m_ddgiBuilt = true;
+            logInfo("[rhi] DDGI ready (ray-query probe grid: octahedral irradiance + Chebyshev visibility atlases)");
+        }
+        // Live grid-dimension change (r_ddgi_n*): recreate the atlases + ray buffer.
+        if (m_ddgiCountX != m_ddgi.countX || m_ddgiCountY != m_ddgi.countY ||
+            m_ddgiCountZ != m_ddgi.countZ) {
+            vkDeviceWaitIdle(m_dev.device);
+            if (!createDdgiTargets()) { m_ddgi.enabled = false; return false; }
+            writeDdgiDescriptors();
+            writeSsaoDescriptors();
+            m_ddgiVolumeValid = false;   // spacing depends on counts
+        }
+        if (!m_ddgiVolumeValid) computeDdgiVolume();
+        return m_ddgiRayPipe != VK_NULL_HANDLE && m_ddgiUpPipe != VK_NULL_HANDLE
+            && m_ddgiIrrImg != VK_NULL_HANDLE;
+    }
+
+    // Fit the probe volume: an explicit volume from the params when given,
+    // otherwise an AABB over THIS frame's static draw-record origins + padding
+    // (instance origins approximate the playable volume well for the built
+    // levels; cvar override available for exotic scenes). Sticky once fitted —
+    // probes must be world-stable for the hysteresis to converge.
+    void computeDdgiVolume() {
+        glm::vec3 mn, mx;
+        if (m_ddgi.sizeX > 0.0f && m_ddgi.sizeY > 0.0f && m_ddgi.sizeZ > 0.0f) {
+            mn = glm::vec3(m_ddgi.originX, m_ddgi.originY, m_ddgi.originZ);
+            mx = mn + glm::vec3(m_ddgi.sizeX, m_ddgi.sizeY, m_ddgi.sizeZ);
+        } else {
+            mn = glm::vec3(FLT_MAX); mx = glm::vec3(-FLT_MAX);
+            uint32_t n = 0;
+            for (const DrawRecord& dr : m_drawRecords) {
+                auto it = m_meshes.find(dr.meshId);
+                if (it == m_meshes.end() || it->second.dynamic) continue;
+                const glm::vec3 t(dr.model[12], dr.model[13], dr.model[14]);
+                mn = glm::min(mn, t); mx = glm::max(mx, t);
+                ++n;
+            }
+            if (n == 0) { mn = m_camPos - glm::vec3(20.0f); mx = m_camPos + glm::vec3(20.0f); }
+            mn -= glm::vec3(3.0f, 1.5f, 3.0f);
+            mx += glm::vec3(3.0f, 4.0f, 3.0f);
+            // Clamp pathological extents (a stray skybox-distance instance would
+            // stretch the grid into uselessness): max 240 m per axis around center.
+            const glm::vec3 c = (mn + mx) * 0.5f;
+            const glm::vec3 he = glm::min((mx - mn) * 0.5f, glm::vec3(120.0f));
+            mn = c - he; mx = c + he;
+        }
+        m_ddgiOrigin = mn;
+        m_ddgiSpacing = (mx - mn) / glm::vec3((float)std::max(1, m_ddgiCountX - 1),
+                                              (float)std::max(1, m_ddgiCountY - 1),
+                                              (float)std::max(1, m_ddgiCountZ - 1));
+        m_ddgiSpacing = glm::max(m_ddgiSpacing, glm::vec3(0.25f));
+        m_ddgiVisMaxDist = 1.5f * glm::length(m_ddgiSpacing);
+        m_ddgiVolumeValid = true;
+        m_ddgiFrameCount = 0;   // fresh volume -> full warm-up ramp (fast reconverge)
+        logInfo("[rhi] DDGI probe grid " + std::to_string(m_ddgiCountX) + "x" +
+                std::to_string(m_ddgiCountY) + "x" + std::to_string(m_ddgiCountZ) +
+                " over (" + std::to_string(mn.x) + "," + std::to_string(mn.y) + "," +
+                std::to_string(mn.z) + ")..(" + std::to_string(mx.x) + "," +
+                std::to_string(mx.y) + "," + std::to_string(mx.z) + ") spacing (" +
+                std::to_string(m_ddgiSpacing.x) + "," + std::to_string(m_ddgiSpacing.y) +
+                "," + std::to_string(m_ddgiSpacing.z) + ") m");
+    }
+
+    bool createDdgi() {
+        // LINEAR/CLAMP sampler for the atlas reads (compute feedback + nothing else;
+        // mesh.frag set3 uses m_ssaoLinearSampler like its other bindings).
+        VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        sci.magFilter = VK_FILTER_LINEAR; sci.minFilter = VK_FILTER_LINEAR;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sci.addressModeU = sci.addressModeV = sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(m_dev.device, &sci, nullptr, &m_ddgiSampler) != VK_SUCCESS) return false;
+
+        // ---- RAY set layout: 0=TLAS, 1=object SSBO, 2=ray SSBO, 3=UBO,
+        //      4=prev irradiance, 5=prev visibility, 6=env cube. ----
+        {
+            VkDescriptorSetLayoutBinding b[7]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            b[2].binding = 2; b[2].descriptorCount = 1;
+            b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            b[3].binding = 3; b[3].descriptorCount = 1;
+            b[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            b[4].binding = 4; b[4].descriptorCount = 1;
+            b[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[5].binding = 5; b[5].descriptorCount = 1;
+            b[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[6].binding = 6; b[6].descriptorCount = 1;
+            b[6].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            for (int i = 0; i < 7; ++i) b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 7; ci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_ddgiRaySetLayout) != VK_SUCCESS) return false;
+        }
+        // ---- UPDATE set layout: 0=ray SSBO, 1=irr storage image, 2=vis storage
+        //      image, 3=UBO. ----
+        {
+            VkDescriptorSetLayoutBinding b[4]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            b[2].binding = 2; b[2].descriptorCount = 1;
+            b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            b[3].binding = 3; b[3].descriptorCount = 1;
+            b[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            for (int i = 0; i < 4; ++i) b[i].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 4; ci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_ddgiUpSetLayout) != VK_SUCCESS) return false;
+        }
+        // ---- Pool + per-frame UBOs + sets. ----
+        {
+            const uint32_t nF = kFramesInFlight;
+            VkDescriptorPoolSize sizes[5]{};
+            sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;     sizes[0].descriptorCount = nF * 3;
+            sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;             sizes[1].descriptorCount = nF * 3;
+            sizes[2].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;             sizes[2].descriptorCount = nF * 2;
+            sizes[3].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;              sizes[3].descriptorCount = nF * 2;
+            sizes[4].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; sizes[4].descriptorCount = nF;
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.maxSets = nF * 2; pci.poolSizeCount = 5; pci.pPoolSizes = sizes;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_ddgiPool) != VK_SUCCESS) return false;
+        }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkBufferCreateInfo ub{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            ub.size = sizeof(DdgiUBO); ub.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo info{};
+            if (vmaCreateBuffer(m_alloc, &ub, &aci, &m_ddgiUboBuf[i], &m_ddgiUboAlloc[i], &info) != VK_SUCCESS) return false;
+            m_ddgiUboMapped[i] = info.pMappedData;
+            VkDescriptorSetAllocateInfo a0{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            a0.descriptorPool = m_ddgiPool; a0.descriptorSetCount = 1; a0.pSetLayouts = &m_ddgiRaySetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &a0, &m_ddgiRaySet[i]) != VK_SUCCESS) return false;
+            VkDescriptorSetAllocateInfo a1{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            a1.descriptorPool = m_ddgiPool; a1.descriptorSetCount = 1; a1.pSetLayouts = &m_ddgiUpSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &a1, &m_ddgiUpSet[i]) != VK_SUCCESS) return false;
+        }
+        // ---- Compute pipelines: ddgi_rays + ddgi_update (mode push constant). ----
+        {
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pl.setLayoutCount = 1; pl.pSetLayouts = &m_ddgiRaySetLayout;
+            if (vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_ddgiRayLayout) != VK_SUCCESS) return false;
+            VkShaderModule cs = loadShaderModule("shaders\\ddgi_rays.comp.spv");
+            if (!cs) return false;
+            VkComputePipelineCreateInfo cpci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+            cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
+            cpci.layout = m_ddgiRayLayout;
+            VkResult pr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_ddgiRayPipe);
+            vkDestroyShaderModule(m_dev.device, cs, nullptr);
+            if (pr != VK_SUCCESS) return false;
+        }
+        {
+            VkPushConstantRange pcr{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t) };
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pl.setLayoutCount = 1; pl.pSetLayouts = &m_ddgiUpSetLayout;
+            pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &pcr;
+            if (vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_ddgiUpLayout) != VK_SUCCESS) return false;
+            VkShaderModule cs = loadShaderModule("shaders\\ddgi_update.comp.spv");
+            if (!cs) return false;
+            VkComputePipelineCreateInfo cpci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+            cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
+            cpci.layout = m_ddgiUpLayout;
+            VkResult pr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_ddgiUpPipe);
+            vkDestroyShaderModule(m_dev.device, cs, nullptr);
+            if (pr != VK_SUCCESS) return false;
+        }
+        return true;
+    }
+
+    // (Re)create the octahedral atlases + the per-frame ray buffer for the
+    // CURRENT grid counts. Atlas tile layout: tileU = px + py*countX (a
+    // countX*countY tile row), tileV = pz; irradiance tiles are 8x8 texels
+    // (6x6 interior + border), visibility 16x16 (14x14 + border). Both are
+    // cleared to zero and left SHADER_READ_ONLY (the warm-up hysteresis ramp
+    // fully overwrites them on the first update).
+    bool createDdgiTargets() {
+        destroyDdgiTargets();
+        m_ddgiCountX = m_ddgi.countX; m_ddgiCountY = m_ddgi.countY; m_ddgiCountZ = m_ddgi.countZ;
+        const uint32_t tilesU = (uint32_t)(m_ddgiCountX * m_ddgiCountY);
+        const uint32_t tilesV = (uint32_t)m_ddgiCountZ;
+        const uint32_t probeCount = (uint32_t)(m_ddgiCountX * m_ddgiCountY * m_ddgiCountZ);
+        const VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                                      | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+        if (!createColorTarget(kDdgiIrrFormat, tilesU * 8u, tilesV * 8u, usage,
+                               m_ddgiIrrImg, m_ddgiIrrAlloc, m_ddgiIrrView)) return false;
+        if (!createColorTarget(kDdgiVisFormat, tilesU * 16u, tilesV * 16u, usage,
+                               m_ddgiVisImg, m_ddgiVisAlloc, m_ddgiVisView)) return false;
+
+        // Ray results SSBO: probeCount * 128 (max rays) * vec4, device-local.
+        m_ddgiRayBufSize = (VkDeviceSize)probeCount * 128u * 16u;
+        VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+        bci.size = m_ddgiRayBufSize;
+        bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+        VmaAllocationCreateInfo aci{};
+        aci.usage = VMA_MEMORY_USAGE_AUTO;
+        if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_ddgiRayBuf, &m_ddgiRayAlloc, nullptr) != VK_SUCCESS)
+            return false;
+
+        // Clear both atlases to zero + park them SHADER_READ_ONLY so the very
+        // first ddgi-rays pass (which samples them as "previous frame") reads
+        // defined black and the always-bound mesh set3 descriptors are valid.
+        const bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
+            VkImage imgs[2] = { m_ddgiIrrImg, m_ddgiVisImg };
+            for (int i = 0; i < 2; ++i) {
+                iblBarrierTex2D(cmd, imgs[i], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                                VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+                VkClearColorValue zero{};
+                VkImageSubresourceRange r{ VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+                vkCmdClearColorImage(cmd, imgs[i], VK_IMAGE_LAYOUT_GENERAL, &zero, 1, &r);
+                iblBarrierTex2D(cmd, imgs[i], VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                VK_PIPELINE_STAGE_2_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+            }
+        });
+        if (!ok) { logError("[rhi] DDGI: atlas init transition failed"); return false; }
+        const ResourceState ready{ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                                   VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                                   VK_ACCESS_2_SHADER_SAMPLED_READ_BIT };
+        m_ddgiIrrState = ready;
+        m_ddgiVisState = ready;
+        m_ddgiFrameCount = 0;
+        m_ddgiVolumeValid = false;   // new counts -> refit spacing
+        return true;
+    }
+
+    void destroyDdgiTargets() {
+        if (m_ddgiIrrView) { vkDestroyImageView(m_dev.device, m_ddgiIrrView, nullptr); m_ddgiIrrView = VK_NULL_HANDLE; }
+        if (m_ddgiIrrImg)  { vmaDestroyImage(m_alloc, m_ddgiIrrImg, m_ddgiIrrAlloc); m_ddgiIrrImg = VK_NULL_HANDLE; m_ddgiIrrAlloc = nullptr; }
+        if (m_ddgiVisView) { vkDestroyImageView(m_dev.device, m_ddgiVisView, nullptr); m_ddgiVisView = VK_NULL_HANDLE; }
+        if (m_ddgiVisImg)  { vmaDestroyImage(m_alloc, m_ddgiVisImg, m_ddgiVisAlloc); m_ddgiVisImg = VK_NULL_HANDLE; m_ddgiVisAlloc = nullptr; }
+        if (m_ddgiRayBuf)  { vmaDestroyBuffer(m_alloc, m_ddgiRayBuf, m_ddgiRayAlloc); m_ddgiRayBuf = VK_NULL_HANDLE; m_ddgiRayAlloc = nullptr; }
+        m_ddgiCountX = m_ddgiCountY = m_ddgiCountZ = 0;
+    }
+
+    // (Re)write the per-frame DDGI compute sets. The TLAS binding (ray set,
+    // binding 0) is written when one exists; otherwise rewriteRtaoTlas() fills
+    // it after the first build (the set is never dispatched before then).
+    void writeDdgiDescriptors() {
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkDescriptorBufferInfo objInfo{ m_frames[i].objBuf, 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo rayInfo{ m_ddgiRayBuf, 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo uboInfo{ m_ddgiUboBuf[i], 0, sizeof(DdgiUBO) };
+            VkDescriptorImageInfo irrSampled{ m_ddgiSampler, m_ddgiIrrView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo visSampled{ m_ddgiSampler, m_ddgiVisView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo envSampled{ m_iblCubeSampler, m_iblEnvCubeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo irrStorage{ VK_NULL_HANDLE, m_ddgiIrrView, VK_IMAGE_LAYOUT_GENERAL };
+            VkDescriptorImageInfo visStorage{ VK_NULL_HANDLE, m_ddgiVisView, VK_IMAGE_LAYOUT_GENERAL };
+
+            VkWriteDescriptorSet w[10]{};
+            uint32_t n = 0;
+            auto add = [&](VkDescriptorSet set, uint32_t binding, VkDescriptorType type,
+                           const VkDescriptorImageInfo* ii, const VkDescriptorBufferInfo* bi) {
+                w[n].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                w[n].dstSet = set; w[n].dstBinding = binding; w[n].descriptorCount = 1;
+                w[n].descriptorType = type; w[n].pImageInfo = ii; w[n].pBufferInfo = bi;
+                ++n;
+            };
+            add(m_ddgiRaySet[i], 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &objInfo);
+            add(m_ddgiRaySet[i], 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &rayInfo);
+            add(m_ddgiRaySet[i], 3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &uboInfo);
+            add(m_ddgiRaySet[i], 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &irrSampled, nullptr);
+            add(m_ddgiRaySet[i], 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &visSampled, nullptr);
+            add(m_ddgiRaySet[i], 6, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &envSampled, nullptr);
+            add(m_ddgiUpSet[i], 0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &rayInfo);
+            add(m_ddgiUpSet[i], 1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &irrStorage, nullptr);
+            add(m_ddgiUpSet[i], 2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &visStorage, nullptr);
+            add(m_ddgiUpSet[i], 3, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &uboInfo);
+            vkUpdateDescriptorSets(m_dev.device, n, w, 0, nullptr);
+        }
+        if (m_rt.tlasBuilt()) rewriteRtaoTlas();   // fills ray-set binding 0
+    }
+
+    // Fill the per-frame DDGI UBO: grid geometry, the per-frame random ray
+    // rotation, sun/ambient/lights for hit shading, and the EFFECTIVE
+    // hysteresis — a cumulative-moving-average ramp (h = n/(n+1), capped at
+    // the target) so a fresh/black probe field converges in a handful of
+    // frames instead of fading in over seconds.
+    void prepareDdgiUbo() {
+        DdgiUBO u{};
+        u.gridOrigin  = glm::vec4(m_ddgiOrigin, (float)m_ddgi.raysPerProbe);
+        u.gridSpacing = glm::vec4(m_ddgiSpacing, m_ddgiVisMaxDist);
+        u.gridCounts  = glm::ivec4(m_ddgiCountX, m_ddgiCountY, m_ddgiCountZ, (int)m_ddgiFrameCount);
+
+        // Uniform random rotation (Shoemake quaternion from a deterministic LCG
+        // over the frame counter) — both compute shaders rebuild the SAME ray
+        // directions from it.
+        uint32_t s = m_ddgiFrameCount * 2654435761u + 0x9E3779B9u;
+        auto rnd = [&]() { s = s * 1664525u + 1013904223u; return (float)(s >> 8) / (float)(1u << 24); };
+        const float u1 = rnd(), u2 = rnd(), u3 = rnd();
+        const float sq1 = std::sqrt(1.0f - u1), sq2 = std::sqrt(u1);
+        const float twoPi = 6.28318530718f;
+        glm::quat q(sq2 * std::cos(twoPi * u3),            // w
+                    sq1 * std::sin(twoPi * u2),            // x
+                    sq1 * std::cos(twoPi * u2),            // y
+                    sq2 * std::sin(twoPi * u3));           // z
+        const glm::mat3 R = glm::mat3_cast(glm::normalize(q));
+        u.rotation0 = glm::vec4(R[0], 0.0f);
+        u.rotation1 = glm::vec4(R[1], 0.0f);
+        u.rotation2 = glm::vec4(R[2], 0.0f);
+
+        // Sun: same direction the raster path lights/shadows with; 0.75 matches
+        // mesh.frag's dielectric sun diffuse scale (consistent energy).
+        u.sunDirIntensity = glm::vec4(glm::normalize(glm::vec3(
+            m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2])), 0.75f);
+        u.ambientSky = glm::vec4(m_ambient, (m_iblReady && m_iblBaked) ? 1.0f : 0.0f);
+
+        const float n = (float)m_ddgiFrameCount;
+        const float hystIrr = std::min(m_ddgi.hysteresis,    n / (n + 1.0f));
+        const float hystVis = std::min(m_ddgi.hysteresisVis, n / (n + 1.0f));
+        const uint32_t lc = std::min<uint32_t>((uint32_t)m_pointLights.size(), kMaxPointLights);
+        u.params = glm::vec4(hystIrr, (float)lc, m_ddgi.bounceGain, hystVis);
+        for (uint32_t i = 0; i < lc; ++i) {
+            const PointLight& pl = m_pointLights[i];
+            u.lights[i].posRange = glm::vec4(pl.pos[0], pl.pos[1], pl.pos[2], pl.range);
+            u.lights[i].colorPad = glm::vec4(pl.color[0], pl.color[1], pl.color[2], 0.0f);
+        }
+        if (m_ddgiUboMapped[m_frameIdx])
+            std::memcpy(m_ddgiUboMapped[m_frameIdx], &u, sizeof(u));
+    }
+
+    // Record the DDGI ray dispatch (the graph already parked both atlases
+    // SHADER_READ_ONLY for the feedback sample). The ray buffer is NOT a graph
+    // resource — emit its WAR barrier (last frame's update READ it) here.
+    void recordDdgiRaysBody(VkCommandBuffer c) {
+        if (!m_ddgiRayPipe || !m_ddgiRayBuf) return;
+        VkBufferMemoryBarrier2 pre{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+        pre.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        pre.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        pre.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        pre.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        pre.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        pre.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        pre.buffer = m_ddgiRayBuf; pre.offset = 0; pre.size = VK_WHOLE_SIZE;
+        VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        di.bufferMemoryBarrierCount = 1; di.pBufferMemoryBarriers = &pre;
+        vkCmdPipelineBarrier2(c, &di);
+
+        vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_ddgiRayPipe);
+        vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_ddgiRayLayout,
+                                0, 1, &m_ddgiRaySet[m_frameIdx], 0, nullptr);
+        const uint32_t probeCount = (uint32_t)(m_ddgiCountX * m_ddgiCountY * m_ddgiCountZ);
+        vkCmdDispatch(c, probeCount, 1, 1);   // one workgroup (128 ray threads) per probe
+    }
+
+    // Record the DDGI update dispatches (the graph already transitioned both
+    // atlases to GENERAL). Ray-buffer write -> read barrier first, then one
+    // dispatch per atlas (push-constant mode selects irradiance/visibility).
+    void recordDdgiUpdateBody(VkCommandBuffer c) {
+        if (!m_ddgiUpPipe || !m_ddgiRayBuf) return;
+        VkBufferMemoryBarrier2 pre{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+        pre.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        pre.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        pre.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        pre.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+        pre.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        pre.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        pre.buffer = m_ddgiRayBuf; pre.offset = 0; pre.size = VK_WHOLE_SIZE;
+        VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        di.bufferMemoryBarrierCount = 1; di.pBufferMemoryBarriers = &pre;
+        vkCmdPipelineBarrier2(c, &di);
+
+        vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_ddgiUpPipe);
+        vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_ddgiUpLayout,
+                                0, 1, &m_ddgiUpSet[m_frameIdx], 0, nullptr);
+        const uint32_t probeCount = (uint32_t)(m_ddgiCountX * m_ddgiCountY * m_ddgiCountZ);
+        uint32_t mode = 0;   // irradiance (8x8 tiles)
+        vkCmdPushConstants(c, m_ddgiUpLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(mode), &mode);
+        vkCmdDispatch(c, probeCount, 1, 1);
+        mode = 1;            // visibility (16x16 tiles) — disjoint image, no hazard
+        vkCmdPushConstants(c, m_ddgiUpLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(mode), &mode);
+        vkCmdDispatch(c, probeCount, 1, 1);
+    }
+
+    void destroyDdgi() {
+        if (!m_dev.device) return;
+        destroyDdgiTargets();
+        if (m_ddgiUpPipe)       { vkDestroyPipeline(m_dev.device, m_ddgiUpPipe, nullptr); m_ddgiUpPipe = VK_NULL_HANDLE; }
+        if (m_ddgiRayPipe)      { vkDestroyPipeline(m_dev.device, m_ddgiRayPipe, nullptr); m_ddgiRayPipe = VK_NULL_HANDLE; }
+        if (m_ddgiUpLayout)     { vkDestroyPipelineLayout(m_dev.device, m_ddgiUpLayout, nullptr); m_ddgiUpLayout = VK_NULL_HANDLE; }
+        if (m_ddgiRayLayout)    { vkDestroyPipelineLayout(m_dev.device, m_ddgiRayLayout, nullptr); m_ddgiRayLayout = VK_NULL_HANDLE; }
+        if (m_ddgiPool)         { vkDestroyDescriptorPool(m_dev.device, m_ddgiPool, nullptr); m_ddgiPool = VK_NULL_HANDLE; }
+        if (m_ddgiUpSetLayout)  { vkDestroyDescriptorSetLayout(m_dev.device, m_ddgiUpSetLayout, nullptr); m_ddgiUpSetLayout = VK_NULL_HANDLE; }
+        if (m_ddgiRaySetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_ddgiRaySetLayout, nullptr); m_ddgiRaySetLayout = VK_NULL_HANDLE; }
+        if (m_ddgiSampler)      { vkDestroySampler(m_dev.device, m_ddgiSampler, nullptr); m_ddgiSampler = VK_NULL_HANDLE; }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (m_ddgiUboBuf[i]) { vmaDestroyBuffer(m_alloc, m_ddgiUboBuf[i], m_ddgiUboAlloc[i]); m_ddgiUboBuf[i] = VK_NULL_HANDLE; m_ddgiUboMapped[i] = nullptr; }
+            m_ddgiRaySet[i] = VK_NULL_HANDLE; m_ddgiUpSet[i] = VK_NULL_HANDLE;
+        }
+        m_ddgiBuilt = false;
+        m_ddgiWantThisFrame = false;
+        m_ddgiActiveThisFrame = false;
+        m_ddgiVolumeValid = false;
+        m_ddgiFrameCount = 0;
     }
 
     // Record the auto-exposure reduce/adapt dispatch (single 16x16 workgroup; the
@@ -10171,7 +10800,11 @@ private:
         // built). Created here (only needs the device) so the mesh pipeline
         // layout can include it; the rest is built later in createSsao(). ----
         {
-            VkDescriptorSetLayoutBinding b[3]{};
+            // Bindings 3/4 = the DDGI irradiance + visibility atlases (r_ddgi).
+            // mesh.frag statically references them, so they are part of the
+            // layout on EVERY device; non-DDGI paths point them at the blurred-AO
+            // view as a layout-valid placeholder (never sampled — gate 0).
+            VkDescriptorSetLayoutBinding b[5]{};
             b[0].binding = 0; b[0].descriptorCount = 1;
             b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -10181,8 +10814,14 @@ private:
             b[2].binding = 2; b[2].descriptorCount = 1;
             b[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             b[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            b[3].binding = 3; b[3].descriptorCount = 1;
+            b[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            b[4].binding = 4; b[4].descriptorCount = 1;
+            b[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
             VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-            ci.bindingCount = 3; ci.pBindings = b;
+            ci.bindingCount = 5; ci.pBindings = b;
             if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_meshAoSetLayout) != VK_SUCCESS) {
                 logError("[rhi] mesh ao set layout failed"); return false;
             }
@@ -10943,6 +11582,70 @@ private:
     static_assert(sizeof(ReflUBO) == 64 * 3 + 16 * 5, "ReflUBO std140 layout");
     VkBuffer m_reflUboBuf[kFramesInFlight] = {}; VmaAllocation m_reflUboAlloc[kFramesInFlight] = {}; void* m_reflUboMapped[kFramesInFlight] = {};
 
+    // ======================================================================
+    // DDGI — dynamic diffuse global illumination (r_ddgi; ddgi_rays.comp +
+    // ddgi_update.comp + mesh.frag set3 bindings 3/4).
+    // ----------------------------------------------------------------------
+    // Probe-grid GI (Majercik et al. 2019): per-frame inline-ray-query rays
+    // from every probe against the SHARED scene TLAS, simple per-object hit
+    // shading (instanceCustomIndex -> ObjectData SSBO row), hysteresis-blended
+    // into octahedral irradiance (8x8/probe, RGBA16F) + visibility-depth
+    // (16x16/probe, RG16F) atlases that mesh.frag interpolates with Chebyshev
+    // leak rejection. Tier-gated on ray query + position fetch; built lazily.
+    bool       m_rtPosFetch = false;          // VK_KHR_ray_tracing_position_fetch enabled
+    DdgiParams m_ddgi{};                      // cached tunables (default OFF)
+    bool       m_ddgiBuilt = false;           // pipelines/targets created
+    bool       m_ddgiWantThisFrame = false;   // decided in prepareFrameData (UBO gate)
+    bool       m_ddgiActiveThisFrame = false; // passes in the graph this frame (TLAS ok)
+    uint32_t   m_ddgiFrameCount = 0;          // updates since (re)activation (warm-up ramp)
+    // The fitted/configured probe volume (sticky once activated; refit on toggle
+    // or when the caller passes an explicit volume).
+    glm::vec3  m_ddgiOrigin{ 0.0f };          // grid min corner (world)
+    glm::vec3  m_ddgiSpacing{ 1.0f };         // probe spacing (m)
+    int        m_ddgiCountX = 0, m_ddgiCountY = 0, m_ddgiCountZ = 0; // built atlas dims
+    bool       m_ddgiVolumeValid = false;
+    float      m_ddgiVisMaxDist = 4.0f;       // visibility clamp (1.5 * spacing diagonal)
+    // Octahedral atlases (persistent across frames; graph-imported with tracked
+    // state like taa.hist). Irradiance: 8x8 texels/probe; visibility: 16x16.
+    VkImage    m_ddgiIrrImg = VK_NULL_HANDLE; VmaAllocation m_ddgiIrrAlloc = nullptr; VkImageView m_ddgiIrrView = VK_NULL_HANDLE;
+    VkImage    m_ddgiVisImg = VK_NULL_HANDLE; VmaAllocation m_ddgiVisAlloc = nullptr; VkImageView m_ddgiVisView = VK_NULL_HANDLE;
+    ResourceState m_ddgiIrrState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
+    ResourceState m_ddgiVisState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
+    static constexpr VkFormat kDdgiIrrFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    static constexpr VkFormat kDdgiVisFormat = VK_FORMAT_R16G16_SFLOAT;
+    // Per-frame ray results: probeCount * 128 * vec4 (radiance + signed distance).
+    VkBuffer   m_ddgiRayBuf = VK_NULL_HANDLE; VmaAllocation m_ddgiRayAlloc = nullptr;
+    VkDeviceSize m_ddgiRayBufSize = 0;
+    VkSampler  m_ddgiSampler = VK_NULL_HANDLE;            // LINEAR/CLAMP atlas sampler
+    VkDescriptorSetLayout m_ddgiRaySetLayout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_ddgiUpSetLayout  = VK_NULL_HANDLE;
+    VkPipelineLayout      m_ddgiRayLayout    = VK_NULL_HANDLE;
+    VkPipelineLayout      m_ddgiUpLayout     = VK_NULL_HANDLE;
+    VkPipeline            m_ddgiRayPipe      = VK_NULL_HANDLE;  // ddgi_rays.comp
+    VkPipeline            m_ddgiUpPipe       = VK_NULL_HANDLE;  // ddgi_update.comp
+    VkDescriptorPool      m_ddgiPool         = VK_NULL_HANDLE;
+    VkDescriptorSet       m_ddgiRaySet[kFramesInFlight] = {};
+    VkDescriptorSet       m_ddgiUpSet[kFramesInFlight]  = {};
+    // DDGI compute UBO (std140; matches the Ddgi block in ddgi_rays.comp AND
+    // ddgi_update.comp — one layout, two consumers).
+    struct DdgiUBO {
+        glm::vec4  gridOrigin;       // xyz = grid min corner, w = raysPerProbe
+        glm::vec4  gridSpacing;      // xyz = spacing (m), w = visMaxDist (m)
+        glm::ivec4 gridCounts;       // xyz = probe counts, w = frame index
+        glm::vec4  rotation0;        // per-frame random rotation rows (3x3)
+        glm::vec4  rotation1;
+        glm::vec4  rotation2;
+        glm::vec4  sunDirIntensity;  // xyz = toward sun, w = sun diffuse scale
+        glm::vec4  ambientSky;       // rgb = flat ambient, w = env cube valid
+        glm::vec4  params;           // x = hystIrr, y = lightCount, z = bounceGain, w = hystVis
+        GpuPointLight lights[kMaxPointLights];
+    };
+    static_assert(sizeof(DdgiUBO) == 16 * 9 + kMaxPointLights * 32, "DdgiUBO std140 layout");
+    VkBuffer m_ddgiUboBuf[kFramesInFlight] = {}; VmaAllocation m_ddgiUboAlloc[kFramesInFlight] = {}; void* m_ddgiUboMapped[kFramesInFlight] = {};
+    // SSBO row of each draw record this frame (TLAS instanceCustomIndex source —
+    // the grouped SSBO write order differs from the draw-record order).
+    std::vector<uint32_t> m_recordSsboRow;
+
     // Graphics
     VmaAllocator  m_alloc = nullptr;
     VkPipeline       m_meshPipeline = VK_NULL_HANDLE;        // SSAO path: depth EQUAL, no write
@@ -11434,7 +12137,16 @@ private:
     // intensity, z=prefilter max mip, w=reserved}. The ibl lane lets mesh.frag fall
     // back to the old flat ambient when no environment is baked (other paths/headless
     // failure) without a separate UBO.
-    struct SsaoControl { glm::vec4 ctrl; glm::vec4 ibl; glm::vec4 refl; };
+    // mesh.frag set3/binding1 control block. The ddgi* lanes (r_ddgi) carry the
+    // probe-grid gate + geometry so the fragment stage can interpolate the DDGI
+    // atlases; all zero when inactive (the ambient math is then byte-identical).
+    struct SsaoControl {
+        glm::vec4 ctrl; glm::vec4 ibl; glm::vec4 refl;
+        glm::vec4 ddgiCtrl;     // x = active, y = intensity (ramped), z = debug, w = bias scale
+        glm::vec4 ddgiOrigin;   // xyz = grid min corner, w = visMaxDist
+        glm::vec4 ddgiSpacing;  // xyz = probe spacing
+        glm::vec4 ddgiCounts;   // xyz = probe counts (float)
+    };
     // Half-res AO targets: raw (ssao.frag output) + blurred (ssao_blur output,
     // sampled by mesh.frag). Both R8, recreated with the frame extent.
     VkImage       m_ssaoRawImg  = VK_NULL_HANDLE; VmaAllocation m_ssaoRawAlloc  = nullptr; VkImageView m_ssaoRawView  = VK_NULL_HANDLE;

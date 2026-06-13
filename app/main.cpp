@@ -699,6 +699,19 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("r_rtreflections", "1", "ray-query reflection fallback where SSR misses (RT hardware only; SSR-only otherwise)");
     console.registerCVar("r_reflquality",   "0", "reflection buffer resolution: 0 = half-res (default), 1 = full-res");
     console.registerCVar("r_reflintensity", "1", "reflection blend weight scale [0..1] on the IBL-specular replace");
+    // DDGI — dynamic diffuse global illumination (probe-grid ray-query GI). The
+    // probe field replaces the ambient DIFFUSE term (flat ambient / IBL irradiance)
+    // with traced bounce light; specular stays IBL/reflections. Requires ray-query
+    // + position-fetch hardware (RTX class); everything else silently ignores it.
+    // Probes converge over ~1-2 s; emissive panels + sun changes propagate. Live.
+    console.registerCVar("r_ddgi",           "0",    "DDGI probe-grid GI (ray query + position fetch); 0 = off (flat/IBL ambient, byte-identical)");
+    console.registerCVar("r_ddgi_debug",     "0",    "DDGI debug view: 0 = off, 1 = irradiance field, 2 = grid confidence");
+    console.registerCVar("r_ddgi_rays",      "96",   "DDGI rays per probe per frame (16..128)");
+    console.registerCVar("r_ddgi_intensity", "1.0",  "DDGI applied GI scale on the replaced ambient diffuse");
+    console.registerCVar("r_ddgi_nx",        "24",   "DDGI probe count X (2..32; grid auto-fits the level volume)");
+    console.registerCVar("r_ddgi_ny",        "8",    "DDGI probe count Y (2..32)");
+    console.registerCVar("r_ddgi_nz",        "24",   "DDGI probe count Z (2..32)");
+    console.registerCVar("r_ddgi_hyst",      "0.97", "DDGI irradiance hysteresis (history blend; higher = smoother/slower)");
     // (3rd-person Jake tuning cvars removed 2026-05-27: dialed-in values
     // jake_yoff=1.03 / jake_yawoff_deg=90 / jake_camdist=2.3 / jake_camh=0.37
     // are now baked as member defaults in app/thirdperson.h.)
@@ -772,6 +785,20 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     rf.fullRes    = console.getInt("r_reflquality") != 0;
     rf.intensity  = console.getFloat("r_reflintensity");
     device.setReflectionParams(rf);
+    // DDGI probe-grid GI (live). The device tier-gates on ray-query + position-
+    // fetch hardware; on anything else this is a harmless no-op store.
+    x3::rhi::IRenderDevice::DdgiParams dg{};
+    dg.enabled      = console.getInt("r_ddgi") != 0;
+    dg.debug        = console.getInt("r_ddgi_debug");
+    dg.raysPerProbe = console.getInt("r_ddgi_rays");
+    dg.intensity    = console.getFloat("r_ddgi_intensity");
+    dg.countX       = console.getInt("r_ddgi_nx");
+    dg.countY       = console.getInt("r_ddgi_ny");
+    dg.countZ       = console.getInt("r_ddgi_nz");
+    dg.hysteresis   = console.getFloat("r_ddgi_hyst");
+    if (dg.raysPerProbe <= 0) dg.raysPerProbe = 96;
+    if (dg.hysteresis  <= 0.0f) dg.hysteresis = 0.97f;
+    device.setDdgiParams(dg);
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.
@@ -1521,6 +1548,11 @@ int main(int argc, char** argv) {
     bool        testRt = false;
     bool        testReflections = false;   // --test-reflections: SSR + ray-query refl under validation
     bool        noRefl = false;            // --norefl: reflections off, TAA on (refl A/B isolate)
+    // --test-ddgi (DDGI probe-grid GI): headless smoketest with r_ddgi forced ON so
+    // the BLAS/TLAS build + ddgi_rays/ddgi_update compute + mesh.frag sampling run
+    // under Vulkan validation. No-op on non-RT / no-position-fetch devices.
+    bool        testDdgi = false;
+    bool        ddgiForce = false;         // --ddgi: force r_ddgi 1 (screenshot/showroom A/B)
     // --test-bestiary (bestiary pass): the data-driven enemy roster. Additive flag.
     bool        testBestiary = false;
     // --test-bosses (Act-1 bosses, Wave 1): the 5 mid-boss defs + the multi-pod
@@ -1790,6 +1822,13 @@ int main(int argc, char** argv) {
     // G:\X3Native\nightsky.png.
     bool        nightskyShot = false;
     std::string nightskyShotPath = "G:/X3Native/nightsky.png";
+    // DDGI gate-shot proof (--screenshot-ddgi [outDir]): build a minimal sealed
+    // two-room rig (room A holds a point light + an emissive ceiling panel; room B
+    // is connected only through a doorway; room C is fully SEALED next to A — the
+    // leak canary), render OFF/ON/debug captures headless and exit. Probes converge
+    // over ~120 settle frames before each ON capture.
+    bool        ddgiShot = false;
+    std::string ddgiShotDir = "docs/screenshots/ddgi";
     // Terrain vantage mode (--screenshot-terrain [path.png]): build the tiled
     // procedural terrain world (terrain + sky + sun), pose a camera up on the
     // hills looking toward the sun so the lit rolling terrain + cast shadows +
@@ -1879,6 +1918,15 @@ int main(int argc, char** argv) {
     (void)loadedWinSize;
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
+        // DDGI flags handled OUTSIDE the big else-if chain below (MSVC C1061:
+        // every `else if` nests a block; the chain is at the compiler's limit).
+        if (a == "--test-ddgi") { smoketest = true; testDdgi = true; continue; }
+        if (a == "--ddgi") { ddgiForce = true; continue; }
+        if (a == "--screenshot-ddgi") {
+            ddgiShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') ddgiShotDir = argv[++i];
+            continue;
+        }
         if (a == "--smoketest") smoketest = true;
         else if (a == "--legacypost")  legacyPost = 1;   // A/B: auto-exposure OFF (pre-strike look)
         else if (a == "--legacypost2") legacyPost = 2;   // A/B: + bloom OFF + tonemap passthrough
@@ -2729,7 +2777,7 @@ int main(int argc, char** argv) {
     // render fully offscreen — NO GLFW window, NO surface, NO swapchain, nothing
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
-    const bool headless = smoketest || screenshot || skyShot || showroomShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot;
+    const bool headless = smoketest || screenshot || skyShot || ddgiShot || showroomShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -2816,6 +2864,18 @@ int main(int argc, char** argv) {
     // at defaults, so before/after captures isolate exactly the SSR/RT-reflection
     // contribution (the post stack + TAA stay identical).
     if (noRefl) device->setReflectionParams(x3::rhi::IRenderDevice::ReflectionParams{});
+
+    // --ddgi: A/B switch the other way — force DDGI probe-grid GI ON for any
+    // path (headless showroom/level screenshots included) so before/after
+    // captures isolate exactly the DDGI ambient-diffuse contribution. No-op on
+    // hardware without ray query + position fetch (the device tier gate).
+    if (ddgiForce) {
+        x3::rhi::IRenderDevice::DdgiParams dp{};
+        dp.enabled = true;
+        device->setDdgiParams(dp);
+        x3::logInfo(std::string("--ddgi: DDGI requested; device rayTracingSupported=") +
+                    (device->rayTracingSupported() ? "YES" : "NO"));
+    }
 
     // ---- Level Architect EDITOR overlay init (--editor / --screenshot-editor) ----
     // ImGui initializes ONLY here, ONLY when --editor (windowed) or --screenshot-editor
@@ -2990,6 +3050,154 @@ int main(int argc, char** argv) {
         return wrote ? 0 : 1;
     }
 
+    // ---- DDGI gate-shot proof (--screenshot-ddgi [outDir]) ------------------
+    // THE GATE SHOT for r_ddgi: a sealed two-room rig where room A holds the only
+    // light sources (a warm point light + an emissive ceiling panel) and room B
+    // connects to it ONLY through a doorway. With r_ddgi 0, B is near-black (flat
+    // ambient only); with r_ddgi 1, the probe field carries the bounce through the
+    // doorway and B reads warm — honest traced GI, no screen-space dependence.
+    // Room C sits SEALED beside A (full walls): the leak canary — Chebyshev
+    // visibility weighting must keep it black with DDGI on. Captures:
+    //   ddgi_corridor_off/on.png  — camera in room B (the money A/B)
+    //   ddgi_leak_off/on.png      — camera in sealed room C (must stay dark)
+    //   ddgi_probes_debug.png     — r_ddgi_debug 1 irradiance-field view (room B)
+    // Headless, like --screenshot-sky; exits after the captures.
+    if (ddgiShot) {
+        namespace fs = std::filesystem;
+        std::error_code mkec; fs::create_directories(ddgiShotDir, mkec);
+        x3::logInfo("--screenshot-ddgi: rendering DDGI gate shots to " + ddgiShotDir);
+
+        // ---- Geometry: floor/ceiling shell + room walls from solid boxes (their
+        // outward faces are the room interiors; back-face culling + DDGI backface
+        // handling are both happy with closed slabs). Floor top at y=0. ----
+        std::vector<x3::prims::PrimMesh> parts;
+        parts.push_back(x3::prims::makeBox(9.5f, 0.5f, 8.5f,  0.0f, -0.5f, 3.5f)); // floor slab
+        parts.push_back(x3::prims::makeBox(9.5f, 0.5f, 8.5f,  0.0f,  4.5f, 3.5f)); // ceiling slab
+        // Walls run y -0.15..4.15 (half 2.15) so they OVERLAP the floor +
+        // ceiling slabs — no coplanar seam for the shadow map's PCF bias to
+        // leak a sunlit strip through at the junction.
+        parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 8.5f, -9.0f,  2.0f, 3.5f)); // west shell
+        parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 8.5f,  9.0f,  2.0f, 3.5f)); // east shell
+        parts.push_back(x3::prims::makeBox(9.5f, 2.15f, 0.5f,  0.0f,  2.0f, -4.5f)); // south shell
+        parts.push_back(x3::prims::makeBox(9.5f, 2.15f, 0.5f,  0.0f,  2.0f, 11.5f)); // north shell
+        // A|B divider (x=0) with a 2 m doorway at z in [-1,1], ~3 m tall:
+        parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 1.5f,  0.0f,  2.0f, -2.5f)); // divider south seg
+        parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 1.5f,  0.0f,  2.0f,  2.5f)); // divider north seg
+        parts.push_back(x3::prims::makeBox(0.5f, 0.65f, 1.0f,  0.0f,  3.55f, 0.0f)); // doorway lintel (2.9..4.2)
+        // A|C separator (z=4..5, FULL span — room C is sealed; the leak canary):
+        parts.push_back(x3::prims::makeBox(9.5f, 2.15f, 0.5f,  0.0f,  2.0f,  4.5f));
+        // C | east-void divider (x=0, z 5..11) so C is a closed room:
+        parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 3.0f,  0.0f,  2.0f,  8.0f));
+        // RED accent wall inside room A (color-bleed proof: B's spill reads warm-red):
+        x3::prims::PrimMesh redPanel = x3::prims::makeBox(0.1f, 1.8f, 3.5f, -8.3f, 1.9f, 0.0f);
+
+        std::vector<x3::rhi::MeshHandle> partMesh;
+        for (auto& p : parts)
+            partMesh.push_back(device->createMesh(p.verts.data(), (uint32_t)p.verts.size(),
+                                                  p.index.data(), (uint32_t)p.index.size()));
+        x3::rhi::MeshHandle redMesh = device->createMesh(redPanel.verts.data(), (uint32_t)redPanel.verts.size(),
+                                                         redPanel.index.data(), (uint32_t)redPanel.index.size());
+        // Emissive ceiling panel in room A:
+        x3::prims::PrimMesh panel = x3::prims::makeBox(1.5f, 0.05f, 1.5f, -4.5f, 3.9f, 0.0f);
+        x3::rhi::MeshHandle panelMesh = device->createMesh(panel.verts.data(), (uint32_t)panel.verts.size(),
+                                                           panel.index.data(), (uint32_t)panel.index.size());
+
+        auto greyPx = x3::prims::makeSolidRGBA(4, 200, 200, 200);
+        x3::rhi::TextureHandle greyTex = device->createTexture(greyPx.data(), 4, 4, /*srgb=*/true);
+
+        // Lights: room A only. The point light gives A its direct look; the
+        // emissive panel is the DYNAMIC GI source the probes must pick up.
+        x3::rhi::PointLight pl{};
+        pl.pos[0] = -4.5f; pl.pos[1] = 3.2f; pl.pos[2] = 0.0f; pl.range = 10.0f;
+        pl.color[0] = 3.0f; pl.color[1] = 2.6f; pl.color[2] = 2.0f;
+        device->setPointLights(&pl, 1);
+        device->setAmbient(0.015f, 0.016f, 0.020f);          // near-black base ambient
+        device->setShadowBounds(0.0f, 2.0f, 3.5f, 25.0f);
+        // Sun BELOW the horizon (sky stays disabled): every surface's sun N.L is
+        // <= 0, so the only light in the rig is the room-A point light + the
+        // emissive panel — the purest possible bounce-only A/B (this also avoids
+        // the engine's shadow-bias seam at wall/ceiling junctions muddying the
+        // leak canary; that seam is a raster artifact identical OFF and ON).
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = false;
+            sp.sunDir[0] = 0.0f; sp.sunDir[1] = -1.0f; sp.sunDir[2] = 0.01f;
+            device->setSkyParams(sp);
+        }
+
+        const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        const float white[4] = { 1, 1, 1, 1 };
+        const float red[4]   = { 0.85f, 0.08f, 0.06f, 1.0f };
+        const float panelTint[4] = { 1.0f, 0.9f, 0.7f, 1.0f };
+        const float panelEmissive[4] = { 1.0f, 0.85f, 0.6f, 10.0f };  // HDR glow (GI source)
+
+        auto drawScene = [&](const x3::rhi::FrameContext& f) {
+            for (auto m : partMesh) device->drawMesh(f, m, greyTex, white, identity);
+            device->drawMesh(f, redMesh, greyTex, red, identity);
+            device->drawMeshEmissive(f, panelMesh, greyTex, panelTint, panelEmissive, identity);
+        };
+        float gpuMsAccum = 0.0f; int gpuMsN = 0;
+        auto renderFrames = [&](int n, const std::string& capturePath) -> bool {
+            for (int i = 0; i < n; ++i) {
+                glfwPollEvents();
+                if (!capturePath.empty() && i == n - 1) device->armCapture(capturePath.c_str());
+                auto f = device->beginFrame();
+                if (f.valid) drawScene(f);
+                device->endFrame(f);
+                gpuMsAccum += device->stats().gpuFrameMs; ++gpuMsN;
+            }
+            if (capturePath.empty()) return true;
+            const bool ok = device->captureFrame(capturePath.c_str());
+            x3::logInfo(std::string(ok ? "--screenshot-ddgi: wrote " : "--screenshot-ddgi: FAILED ") + capturePath);
+            return ok;
+        };
+        // Camera poses: room B looking through at the doorway wall; sealed room C.
+        auto camRoomB = [&]() { device->setCamera(7.2f, 1.7f, 3.0f, std::atan2(-3.0f, -7.2f), -0.03f, 72.0f); };
+        auto camRoomC = [&]() { device->setCamera(-4.5f, 1.7f, 9.8f, std::atan2(-4.8f, 0.0f), -0.03f, 72.0f); };
+
+        bool ok = true;
+        // ---- OFF baselines (r_ddgi 0 — the device default). ----
+        camRoomB(); ok &= renderFrames(20, ddgiShotDir + "/ddgi_corridor_off.png");
+        gpuMsAccum = 0.0f; gpuMsN = 0;
+        camRoomB(); ok &= renderFrames(40, "");
+        const float gpuOff = gpuMsAccum / std::max(1, gpuMsN);
+        camRoomC(); ok &= renderFrames(10, ddgiShotDir + "/ddgi_leak_off.png");
+
+        // ---- ON: explicit probe volume over the rig (the auto-fit AABB is
+        // origin-based and this rig bakes its boxes at identity), 20x6x20. ----
+        x3::rhi::IRenderDevice::DdgiParams dp{};
+        dp.enabled = true;
+        dp.countX = 20; dp.countY = 6; dp.countZ = 20;
+        dp.originX = -9.5f; dp.originY = -1.0f; dp.originZ = -5.0f;
+        dp.sizeX = 19.0f; dp.sizeY = 6.0f; dp.sizeZ = 17.0f;
+        dp.raysPerProbe = 128;
+        device->setDdgiParams(dp);
+        camRoomB(); ok &= renderFrames(150, ddgiShotDir + "/ddgi_corridor_on.png");
+        gpuMsAccum = 0.0f; gpuMsN = 0;
+        camRoomB(); ok &= renderFrames(40, "");
+        const float gpuOn = gpuMsAccum / std::max(1, gpuMsN);
+        // Probe-field debug visualization (r_ddgi_debug 1):
+        dp.debug = 1; device->setDdgiParams(dp);
+        camRoomB(); ok &= renderFrames(4, ddgiShotDir + "/ddgi_probes_debug.png");
+        dp.debug = 0; device->setDdgiParams(dp);
+        // The no-leak canary: sealed room C must STAY dark with DDGI on.
+        camRoomC(); ok &= renderFrames(30, ddgiShotDir + "/ddgi_leak_on.png");
+        // DYNAMIC proof: remove the point light mid-run — the probes re-converge
+        // (hysteresis, ~1-2 s) to the EMISSIVE PANEL as the only GI source. The
+        // doorway spill must survive (dimmer, panel-toned) purely from emissive.
+        device->setPointLights(nullptr, 0);
+        camRoomB(); ok &= renderFrames(180, ddgiShotDir + "/ddgi_emissive_only.png");
+
+        x3::logInfo("--screenshot-ddgi: GPU frame avg " + std::to_string(gpuOff) +
+                    " ms (off) vs " + std::to_string(gpuOn) + " ms (on) -> DDGI cost ~" +
+                    std::to_string(gpuOn - gpuOff) + " ms (rays+update, 20x6x20 probes, 128 rays)");
+
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return ok ? 0 : 1;
+    }
+
     // ---- Showroom preview (--screenshot-showroom [path.png]) ---------------
     // Load the baked Unity scene export (the "3D Showroom Level Kit" Example_01),
     // frame the camera on the BUILDING cluster (the surrounding km of decorative
@@ -3113,7 +3321,9 @@ int main(int argc, char** argv) {
         if (const char* e = std::getenv("X3_SHOWROOM_MAXDRAW")) showroomMaxDraw = (uint32_t)std::strtoul(e, nullptr, 10);
         x3::logInfo("--screenshot-showroom: maxDraw=" + std::to_string(showroomMaxDraw));
 
-        const int kSettle = 16;
+        // --ddgi: give the probe field time to converge (hysteresis warm-up ramp
+        // + a few multibounce generations) before the still is captured.
+        const int kSettle = ddgiForce ? 120 : 16;
         for (int i = 0; i < kSettle; ++i) {
             glfwPollEvents();
             if (i == kSettle - 1) device->armCapture(showroomShotPath.c_str());
@@ -5003,7 +5213,7 @@ int main(int argc, char** argv) {
             // capturing the caves/boss arena from a custom vantage during verify).
             if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
             device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 60.0f);
-            const int kSettle = 24;   // advance enough for character skinning + bloom
+            const int kSettle = ddgiForce ? 120 : 24;   // advance enough for character skinning + bloom (+ DDGI convergence with --ddgi)
             const float dt = 1.0f / 60.0f;
             const std::string outPath = screenshot ? screenshotPath
                                                    : std::string("C:/GameDev/X3Native-engine/agent_club.png");
@@ -6783,7 +6993,7 @@ int main(int argc, char** argv) {
                 }
             }
             // Ragdoll shot needs ~45 physics steps to fall + settle; FP shot just settles.
-            const int kSettle = ragShot ? 50 : 24;
+            const int kSettle = ragShot ? 50 : (ddgiForce ? 120 : 24);   // --ddgi: probe-field convergence
             const float dt = 1.0f / 60.0f;
             float elapsed = 10.0f;   // non-zero so the starfield/clouds read animated
             const std::string outPath =
@@ -8157,6 +8367,20 @@ int main(int argc, char** argv) {
         device->setReflectionParams(rf);
         x3::logInfo(std::string("--test-reflections: SSR+RT reflections requested; device rayTracingSupported=") +
                     (device->rayTracingSupported() ? "YES (hybrid SSR+ray-query)" : "NO (SSR-only tier)"));
+    }
+
+    // --test-ddgi: exercise the DDGI probe-grid chain (BLAS/TLAS + ddgi_rays +
+    // ddgi_update compute + mesh.frag atlas sampling) under Vulkan validation in
+    // the headless smoketest render path. On hardware without ray query +
+    // position fetch this degrades to a no-op (the tier gate) — still a valid
+    // pass of the test (the raster ambient path is unchanged by construction).
+    if (testDdgi) {
+        console->set("r_ddgi", "1");
+        x3::rhi::IRenderDevice::DdgiParams dp{};
+        dp.enabled = true;
+        device->setDdgiParams(dp);
+        x3::logInfo(std::string("--test-ddgi: DDGI requested; device rayTracingSupported=") +
+                    (device->rayTracingSupported() ? "YES" : "NO"));
     }
 
     // ---- Stress-test injection (perf instrumentation layer) ----------------

@@ -439,6 +439,41 @@ public:
     // Cached + re-applied each frame, like setRtaoParams. Default no-op.
     virtual void          setReflectionParams(const ReflectionParams&) {}
 
+    // ---- DDGI — dynamic diffuse global illumination (r_ddgi) ----------------
+    // Classic probe-grid DDGI (Majercik et al. 2019, the public paper): an
+    // axis-aligned grid of light probes; a per-frame inline-ray-query compute
+    // pass traces N rays/probe against the SAME scene TLAS RT AO/reflections
+    // use, shades hits simply (per-object albedo/emissive from the draw SSBO,
+    // sun via a shadow ray, point lights, plus the previous frame's probe field
+    // for infinite bounce), and blends the results into octahedral irradiance +
+    // mean/mean^2 visibility-depth atlases with hysteresis. mesh.frag then
+    // REPLACES its ambient DIFFUSE term (flat ambient or IBL irradiance cube)
+    // with an 8-probe trilinear + Chebyshev-visibility-weighted (leak-free)
+    // interpolation of that field, by grid confidence — outside the grid the
+    // existing ambient path remains. Specular is untouched (IBL/reflections).
+    //
+    // TIER-GATED + DEFAULT OFF: requires ray-query hardware AND
+    // VK_KHR_ray_tracing_position_fetch (hit normals). Non-RT devices (Pascal)
+    // ignore this entirely — their ambient path is byte-for-byte unchanged.
+    // Probes converge over ~1-2 s (hysteresis); emissive/sun changes propagate.
+    struct DdgiParams {
+        bool  enabled = false;     // master gate (r_ddgi)
+        int   debug   = 0;         // r_ddgi_debug: 0 off, 1 irradiance field, 2 confidence
+        int   countX = 24, countY = 8, countZ = 24;   // probe grid dimensions
+        // Grid volume (world AABB). sizeX <= 0 -> AUTO-FIT to this frame's
+        // static draw list (instance-origin AABB + padding) at activation.
+        float originX = 0, originY = 0, originZ = 0;
+        float sizeX = -1, sizeY = -1, sizeZ = -1;
+        int   raysPerProbe = 96;   // rays/probe/frame (16..128)
+        float hysteresis    = 0.97f;  // irradiance temporal blend (toward history)
+        float hysteresisVis = 0.98f;  // visibility temporal blend
+        float intensity = 1.0f;    // applied GI scale on the replaced diffuse term
+        float bounceGain = 0.95f;  // recursive probe-field feedback gain (<1: stable)
+        float normalBias = 1.0f;   // self-shadow bias scale (fraction of spacing/4)
+    };
+    // Cached + re-applied each frame, like setRtaoParams. Default no-op.
+    virtual void          setDdgiParams(const DdgiParams&) {}
+
     // ---- Glass DEV overrides (live r_glass_* cvars, spec §2/§3.2) ----------
     // A dev-time SCALE/OVERRIDE applied to EVERY glass fragment this frame so the
     // glass look can be scrubbed live in the console without re-authoring each

@@ -1,0 +1,253 @@
+#version 460
+// DDGI probe RAY pass — inline ray query compute (r_ddgi).
+// CLEAN-ROOM, original work: built from the Vulkan 1.3 spec, the public
+// GLSL_EXT_ray_query / GL_EXT_ray_tracing_position_fetch extension specs
+// (Khronos) and the published DDGI algorithm (Majercik, McGuire et al.,
+// "Dynamic Diffuse Global Illumination with Ray-Traced Irradiance Fields",
+// JCGT 2019 — the public paper, no implementation source consulted).
+//
+// WHAT THIS DOES: one workgroup per probe in an axis-aligned probe grid. Each
+// thread traces ONE spherical-Fibonacci-distributed ray (rotated by a fresh
+// per-frame random rotation so the sphere is fully covered over time) against
+// the scene TLAS. Hits are shaded SIMPLY and HONESTLY:
+//     albedo * (sun N.L * sunVisibility(shadow ray) + point lights N.L*atten)
+//   + emissive
+//   + albedo * irradianceField(hit)            <- the recursive/infinite bounce
+// where albedo/emissive come from the per-object SSBO row addressed by the
+// TLAS instanceCustomIndex (the SAME 160-byte std430 ObjectData rows the
+// raster path uses), the geometric hit normal comes from hardware position
+// fetch (GL_EXT_ray_tracing_position_fetch), and irradianceField() samples the
+// PREVIOUS frame's probe atlases — the classic DDGI multibounce feedback.
+// A miss samples the analytic-sky environment cube (the IBL env, mip 2-ish);
+// backface hits write radiance 0 and a NEGATIVE shortened distance so the
+// update pass can mark "probe sees inside geometry" (the no-leak signal).
+//
+// OUTPUT: rayBuf[probe * maxRays + ray] = vec4(radiance.rgb, signedDistance).
+
+#extension GL_EXT_ray_query : require
+#extension GL_EXT_ray_tracing_position_fetch : require
+
+layout(local_size_x = 128) in;     // threads = rays; raysPerFrame <= 128
+
+// ---- Scene TLAS + the per-frame object SSBO (160B std430 rows, identical to
+// mesh.vert's declaration — DO NOT change the stride). -----------------------
+layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
+
+struct ObjectData {
+    mat4 model;
+    vec4 baseColorFactor;
+    vec4 emissive;        // rgb = linear emissive color, a = strength
+    uint texIndex;
+    uint flags;           // bit0 = TERRAIN, bit1 = GLASS
+    uint terrainPack1;
+    uint terrainPack2;
+    uint normalTexIndex;
+    uint mrTexIndex;
+    uint emissiveTexIndex;
+    uint detailPacked;
+    vec4 glassParams;
+    vec4 glassTint;
+};
+layout(std430, set = 0, binding = 1) readonly buffer Objects {
+    ObjectData objects[];
+} objBuf;
+
+// Per-probe ray results (this pass writes; ddgi_update reads).
+layout(std430, set = 0, binding = 2) writeonly buffer Rays {
+    vec4 rays[];          // rgb = radiance, w = signed hit distance (<0 = backface)
+} rayBuf;
+
+struct PointLight {
+    vec4 posRange;        // xyz = world position, w = range (meters)
+    vec4 colorPad;        // rgb = linear color * intensity
+};
+const int kMaxPointLights = 64;
+
+layout(set = 0, binding = 3) uniform Ddgi {
+    vec4 gridOrigin;      // xyz = min corner of the probe grid, w = raysPerProbe
+    vec4 gridSpacing;     // xyz = probe spacing (m), w = visMaxDist (m)
+    ivec4 gridCounts;     // xyz = probe counts, w = frame index (rotation seed)
+    vec4 rotation0;       // per-frame random rotation matrix rows (3x3)
+    vec4 rotation1;
+    vec4 rotation2;
+    vec4 sunDirIntensity; // xyz = direction TOWARD the sun, w = sun diffuse scale
+    vec4 ambientSky;      // rgb = flat ambient (miss fallback), w = env cube valid (0/1)
+    vec4 params;          // x = irradiance hysteresis (update pass), y = lightCount, z = bounce gain, w = visibility hysteresis
+    PointLight lights[kMaxPointLights];
+} ub;
+
+// Previous-frame probe atlases (the multibounce feedback term).
+layout(set = 0, binding = 4) uniform sampler2D prevIrradiance;  // 8x8 tiles (6x6 interior)
+layout(set = 0, binding = 5) uniform sampler2D prevVisibility;  // 16x16 tiles (14x14 interior) — unused here but bound for layout symmetry
+// Analytic-sky environment cube (IBL env) for ray MISS radiance.
+layout(set = 0, binding = 6) uniform samplerCube envCube;
+
+const float PI = 3.14159265359;
+const vec3  kSunColor = vec3(1.0, 0.97, 0.92);   // matches mesh.frag
+
+// ---------------------------------------------------------------------------
+// Octahedral mapping (shared convention with ddgi_update.comp + mesh.frag).
+// ---------------------------------------------------------------------------
+vec2 signNotZero(vec2 v) { return vec2(v.x >= 0.0 ? 1.0 : -1.0, v.y >= 0.0 ? 1.0 : -1.0); }
+vec2 octEncode(vec3 v) {
+    v /= (abs(v.x) + abs(v.y) + abs(v.z));
+    vec2 e = v.xy;
+    if (v.z < 0.0) e = (1.0 - abs(e.yx)) * signNotZero(e);
+    return e;                                   // [-1,1]^2
+}
+
+// Spherical Fibonacci direction i of n (uniform on the sphere).
+vec3 sphericalFibonacci(float i, float n) {
+    const float PHI = 1.6180339887498949;       // golden ratio
+    float phi = 2.0 * PI * fract(i * (PHI - 1.0));
+    float cosTheta = 1.0 - (2.0 * i + 1.0) / n;
+    float sinTheta = sqrt(clamp(1.0 - cosTheta * cosTheta, 0.0, 1.0));
+    return vec3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+}
+
+// Probe index -> world position. Probe (x,y,z) sits at origin + coord*spacing.
+vec3 probeWorldPos(ivec3 p) {
+    return ub.gridOrigin.xyz + vec3(p) * ub.gridSpacing.xyz;
+}
+
+// Probe linear index -> irradiance-atlas tile UV rect for a direction.
+// Tile layout: tileU = x + y*countX (a countX*countY row), tileV = z.
+vec2 irrAtlasUV(ivec3 p, vec3 dir) {
+    const float T = 6.0;                        // interior texels per tile
+    const float tile = T + 2.0;                 // + 1px border each side
+    vec2 tileBase = vec2(float(p.x + p.y * ub.gridCounts.x), float(p.z)) * tile;
+    vec2 oct = octEncode(dir) * 0.5 + 0.5;      // [0,1]^2
+    vec2 texel = tileBase + 1.0 + oct * T;      // interior with border offset
+    vec2 atlasSize = vec2(float(ub.gridCounts.x * ub.gridCounts.y) * tile,
+                          float(ub.gridCounts.z) * tile);
+    return texel / atlasSize;
+}
+
+// Sample the PREVIOUS frame's irradiance field at a world position + normal —
+// plain trilinear over the 8 surrounding probes with a backface guard (no
+// Chebyshev here: this is the energy feedback term, kept cheap; the leak
+// gating happens at the final mesh.frag sample).
+vec3 sampleIrradianceField(vec3 P, vec3 N) {
+    vec3 g = (P - ub.gridOrigin.xyz) / ub.gridSpacing.xyz;
+    vec3 base = floor(g);
+    vec3 a = clamp(g - base, 0.0, 1.0);
+    ivec3 bi = ivec3(base);
+    vec3 sumIrr = vec3(0.0);
+    float sumW = 0.0;
+    for (int i = 0; i < 8; ++i) {
+        ivec3 o = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);
+        ivec3 pc = clamp(bi + o, ivec3(0), ub.gridCounts.xyz - 1);
+        vec3 tri = mix(1.0 - a, a, vec3(o));
+        float w = tri.x * tri.y * tri.z;
+        vec3 toProbe = probeWorldPos(pc) - P;
+        float d = length(toProbe);
+        // Soft backface: probes behind the surface contribute little.
+        float wn = dot(toProbe / max(d, 1e-4), N) * 0.5 + 0.5;
+        w *= wn * wn + 0.2;
+        sumIrr += texture(prevIrradiance, irrAtlasUV(pc, N)).rgb * w;
+        sumW += w;
+    }
+    return (sumW > 1e-5) ? sumIrr / sumW : vec3(0.0);
+}
+
+void main() {
+    const int raysPerProbe = int(ub.gridOrigin.w);
+    const int ray = int(gl_LocalInvocationID.x);
+    const int probe = int(gl_WorkGroupID.x);
+    const int probeCount = ub.gridCounts.x * ub.gridCounts.y * ub.gridCounts.z;
+    if (probe >= probeCount || ray >= raysPerProbe) return;
+
+    ivec3 pc;
+    pc.x = probe % ub.gridCounts.x;
+    pc.y = (probe / ub.gridCounts.x) % ub.gridCounts.y;
+    pc.z = probe / (ub.gridCounts.x * ub.gridCounts.y);
+    vec3 origin = probeWorldPos(pc);
+
+    mat3 rot = mat3(ub.rotation0.xyz, ub.rotation1.xyz, ub.rotation2.xyz);
+    vec3 dir = normalize(rot * sphericalFibonacci(float(ray), float(raysPerProbe)));
+
+    const float tMax = 1e4;
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, 0xFF, origin, 0.0, dir, tMax);
+    while (rayQueryProceedEXT(rq)) { }
+
+    vec3  radiance = vec3(0.0);
+    float dist = 1e4;                            // miss sentinel (>> visMaxDist)
+
+    if (rayQueryGetIntersectionTypeEXT(rq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+        float t = rayQueryGetIntersectionTEXT(rq, true);
+        dist = t;
+
+        // Geometric world-space normal via hardware position fetch (no SBT, no
+        // vertex pulls): the three object-space triangle vertices, transformed
+        // by the committed instance's objectToWorld.
+        vec3 v[3];
+        rayQueryGetIntersectionTriangleVertexPositionsEXT(rq, true, v);
+        mat4x3 o2w = rayQueryGetIntersectionObjectToWorldEXT(rq, true);
+        vec3 w0 = o2w * vec4(v[0], 1.0);
+        vec3 w1 = o2w * vec4(v[1], 1.0);
+        vec3 w2 = o2w * vec4(v[2], 1.0);
+        vec3 N = normalize(cross(w1 - w0, w2 - w0));
+
+        // BACKFACE: the probe sees the inside of geometry (probe in a wall, or
+        // a ray entering through an open back face). Classic DDGI: radiance 0 +
+        // a NEGATIVE shortened distance — the visibility update collapses the
+        // mean toward ~0 there, so sampling weights kill this probe direction.
+        if (dot(N, dir) > 0.0) {
+            rayBuf.rays[probe * 128 + ray] = vec4(0.0, 0.0, 0.0, -t * 0.2);
+            return;
+        }
+
+        vec3 hitP = origin + dir * t;
+        uint objIdx = uint(rayQueryGetIntersectionInstanceCustomIndexEXT(rq, true));
+        ObjectData od = objBuf.objects[objIdx];
+        vec3 albedo = clamp(od.baseColorFactor.rgb, 0.0, 1.0);
+
+        // ---- Direct sun: N.L gated by ONE shadow ray (honest occlusion). ----
+        vec3 sunDir = normalize(ub.sunDirIntensity.xyz);
+        float ndl = max(dot(N, sunDir), 0.0);
+        if (ndl > 0.0 && ub.sunDirIntensity.w > 0.0) {
+            rayQueryEXT srq;
+            rayQueryInitializeEXT(srq, tlas,
+                gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+                0xFF, hitP + N * 0.02, 0.01, sunDir, 1e4);
+            rayQueryProceedEXT(srq);
+            if (rayQueryGetIntersectionTypeEXT(srq, true) == gl_RayQueryCommittedIntersectionNoneEXT)
+                radiance += albedo * kSunColor * (ub.sunDirIntensity.w * ndl);
+        }
+
+        // ---- Point lights: same windowed attenuation as mesh.frag (unshadowed
+        // there too — consistent units). ----
+        int nLights = int(ub.params.y);
+        for (int i = 0; i < nLights && i < kMaxPointLights; ++i) {
+            vec3 toL = ub.lights[i].posRange.xyz - hitP;
+            float d = length(toL);
+            float range = ub.lights[i].posRange.w;
+            if (d >= range) continue;
+            vec3 L = toL / max(d, 1e-4);
+            float nl = max(dot(N, L), 0.0);
+            if (nl <= 0.0) continue;
+            float tt = d / max(range, 1e-4);
+            float w = clamp(1.0 - tt * tt * tt * tt, 0.0, 1.0);
+            w *= w;
+            float atten = w / (d * d + 1.0);
+            radiance += albedo * ub.lights[i].colorPad.rgb * (nl * atten);
+        }
+
+        // ---- Emissive surfaces ARE the dynamic light sources (panels). ----
+        radiance += od.emissive.rgb * od.emissive.a;
+
+        // ---- Infinite bounce: the hit's diffuse exit radiance from LAST
+        // frame's probe field (energy-conserving: albedo < 1). ----
+        radiance += albedo * sampleIrradianceField(hitP, N) * ub.params.z;
+    } else {
+        // MISS: sky radiance — the prefiltered analytic-sky env cube when an
+        // environment is baked, the flat hemispheric ambient otherwise.
+        radiance = (ub.ambientSky.w > 0.5)
+                 ? textureLod(envCube, dir, 2.0).rgb
+                 : ub.ambientSky.rgb;
+    }
+
+    if (any(isnan(radiance))) radiance = vec3(0.0);
+    rayBuf.rays[probe * 128 + ray] = vec4(radiance, dist);
+}

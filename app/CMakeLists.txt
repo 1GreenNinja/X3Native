@@ -143,7 +143,9 @@ set(SHADER_SRCS
 # extension target; compiled with explicit target flags below. Listed separately
 # so the default glslc invocation (which targets an older SPIR-V) is not used.
 set(SHADER_SRCS_RT
-    ${CMAKE_SOURCE_DIR}/shaders/rtao.comp)
+    ${CMAKE_SOURCE_DIR}/shaders/rtao.comp
+    ${CMAKE_SOURCE_DIR}/shaders/ddgi_rays.comp
+    ${CMAKE_SOURCE_DIR}/shaders/ddgi_update.comp)
 set(SPV_DIR ${CMAKE_BINARY_DIR}/shaders_spv)
 file(MAKE_DIRECTORY ${SPV_DIR})
 set(SPV_FILES "")
