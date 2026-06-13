@@ -26,6 +26,7 @@
 #include "engine/net/ISnapshotInterpolator.h"  // netcode Phase 0c: --test-netinterp
 #include "engine/net/IClientPredictor.h"        // netcode Phase 1: --test-netpredict
 #include "engine/ai/INavigation.h"       // GENERAL navigation: nav grid + A* + --test-nav
+#include "engine/script/IScriptSystem.h" // D14 Lua scripting: pak-shipped behavior + --test-script
 
 #include "scene.h"
 #include "mesh_prims.h"
@@ -1600,6 +1601,7 @@ int main(int argc, char** argv) {
          testElevatorFsm = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
+         testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
          testThirdPerson = false, testHatchCode = false;
@@ -2100,6 +2102,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-collapse") testCollapse = true;
         else if (a == "--test-physjoint") testPhysJoint = true;
         else if (a == "--test-nav") testNav = true;
+        else if (a == "--test-script") testScript = true;
         else if (a == "--test-weapons") testWeapons = true;
         else if (a == "--test-vehicle") testVehicle = true;
         else if (a == "--test-footik") testFootIk = true;
@@ -2744,6 +2747,12 @@ int main(int argc, char** argv) {
     if (testWeapons) {
         x3::logInfo("running data-driven weapon arsenal (switch/fire/reload/spread) self-test...");
         return x3::game::runWeaponsSelfTest() ? 0 : 1;
+    }
+    if (testScript) {
+        x3::logInfo("running D14 Lua script-system self-test "
+                    "(load/init/update/events/sandbox/error-containment/hot-reload/"
+                    "timers/eval/cvar-bridge/memory)...");
+        return x3::script::runScriptSelfTest() ? 0 : 1;
     }
     if (testVehicle) {
         x3::logInfo("running vehicle framework self-test "
@@ -8747,6 +8756,40 @@ int main(int argc, char** argv) {
             }, "reload the --world fromdoc LevelDoc JSON in place");
     }
 
+    // ---- D14: Lua script system (pak-shipped behavior). Created after the
+    // console so x3.cvar/exec bridge a real backend. Every scripts/*.lua found
+    // under the asset root (or repo root) is loaded at boot; scripts->update(dt)
+    // is pumped once per frame in the main loop below. Fully guarded — if no
+    // scripts dir exists this is a no-op and the engine runs unchanged.
+    std::unique_ptr<x3::script::IScriptSystem> scripts(
+        x3::script::createLuaScriptSystem(console.get()));
+    {
+        namespace fs = std::filesystem;
+        std::error_code sec;
+        // scripts/ lives at the repo root (peer to assets/). Resolve via the
+        // asset root's parent, then fall back to ./scripts for repo-root runs.
+        const fs::path candidates[] = {
+            fs::path(x3::game::assetRoot()).parent_path() / "scripts",
+            fs::path("scripts"),
+        };
+        int loaded = 0;
+        for (const fs::path& dir : candidates) {
+            if (!fs::is_directory(dir, sec)) continue;
+            for (const auto& ent : fs::directory_iterator(dir, sec)) {
+                if (!ent.is_regular_file() || ent.path().extension() != ".lua") continue;
+                std::ifstream f(ent.path(), std::ios::binary);
+                if (!f) continue;
+                std::string src((std::istreambuf_iterator<char>(f)),
+                                std::istreambuf_iterator<char>());
+                const std::string name = ent.path().filename().string();
+                if (scripts->load(name, src) != x3::script::kInvalidScript) ++loaded;
+            }
+            break; // first existing scripts dir wins
+        }
+        x3::logInfo("D14 script system: loaded " + std::to_string(loaded) +
+                    " scripts/*.lua at boot");
+    }
+
     // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
     // render path so the BLAS/TLAS build + ray-query AO compute + apply passes are
     // exercised under Vulkan validation. No-op if the device lacks RT support (the
@@ -11011,6 +11054,10 @@ int main(int argc, char** argv) {
         // M9: tick the audio system (reaps finished one-shot voices). Always ticked
         // so audio voices don't pile up while paused.
         audio->update(dt);
+        // D14: pump Lua scripts (advances x3.time(), fires due x3.after() timers,
+        // calls onUpdate(dt) on every healthy script). Frozen with the sim so a
+        // paused game doesn't advance script timers.
+        if (scripts && !simFrozen) scripts->update(dt);
 
         int cw, ch;
         glfwGetFramebufferSize(window, &cw, &ch);
