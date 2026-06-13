@@ -2,6 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 import type { Session } from "../client";
 import { store, subscribe, type Room } from "../store";
 import { MessageStream } from "./MessageStream";
+import { Composer } from "./Composer";
 
 function useStore(): number {
   const [v, setV] = useState(store.version);
@@ -70,9 +71,7 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
               <span class="hash">#</span> {active.name}
             </header>
             <MessageStream room={active} />
-            <div class="composer-stub">
-              Composer lands in PR-3 — read-only for now.
-            </div>
+            <Composer session={session} roomId={active.id} roomName={active.name} />
           </>
         ) : (
           <div class="stream-empty">

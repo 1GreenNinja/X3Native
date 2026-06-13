@@ -44,6 +44,26 @@ function bump(): void {
   listeners.forEach((fn) => fn());
 }
 
+/** Optimistic local echo: append a pending event immediately so the sender
+ * sees their message before the server round-trips. The real event arrives
+ * via /sync and is de-duped by the txn-id we stamp into the local event_id. */
+export function addLocalEcho(roomId: string, ev: MatrixEvent): void {
+  const room = store.rooms.get(roomId);
+  if (!room) return;
+  room.timeline.push(ev);
+  bump();
+}
+
+/** Mark a previously-echoed event as failed-to-send (red, retryable). */
+export function markEchoFailed(roomId: string, eventId: string): void {
+  const room = store.rooms.get(roomId);
+  const ev = room?.timeline.find((e) => e.event_id === eventId);
+  if (ev) {
+    ev.content = { ...ev.content, _failed: true };
+    bump();
+  }
+}
+
 function roomNameFromState(roomId: string, state: MatrixEvent[], timeline: MatrixEvent[]): string {
   const all = [...state, ...timeline];
   const nameEv = all.findLast((e) => e.type === "m.room.name");
@@ -67,6 +87,16 @@ function applySync(resp: SyncResponse): void {
       (e) => e.type === "m.room.message" || e.type === "com.fleet.gen.request",
     );
     if (existing) {
+      // Drop any local echo whose txn id matches an incoming real event, so
+      // the optimistic message isn't shown twice (echo id == "echo:<txn>").
+      const incomingTxns = new Set(
+        newEvents.map((e) => e.unsigned?.transaction_id).filter(Boolean),
+      );
+      if (incomingTxns.size) {
+        existing.timeline = existing.timeline.filter(
+          (e) => !(e.event_id.startsWith("echo:") && incomingTxns.has(e.event_id.slice(5))),
+        );
+      }
       const seen = new Set(existing.timeline.map((e) => e.event_id));
       existing.timeline.push(...newEvents.filter((e) => !seen.has(e.event_id)));
       existing.unread = data.unread_notifications?.notification_count ?? existing.unread;

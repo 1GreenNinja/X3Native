@@ -12,6 +12,7 @@ export interface MatrixEvent {
   origin_server_ts: number;
   content: Record<string, any>;
   state_key?: string;
+  unsigned?: { transaction_id?: string };
 }
 
 export interface SyncRoomData {
@@ -125,13 +126,17 @@ export function saveSince(since: string): void {
 
 let txnCounter = 0;
 
+export function newTxnId(): string {
+  return `slick-${Date.now()}-${txnCounter++}`;
+}
+
 export async function sendMessage(
   token: string,
   roomId: string,
   content: Record<string, any>,
+  txn: string,
   type = "m.room.message",
 ): Promise<string> {
-  const txn = `slick-${Date.now()}-${txnCounter++}`;
   const data = await req<{ event_id: string }>(
     `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/send/${type}/${txn}`,
     { method: "PUT", token, body: content },

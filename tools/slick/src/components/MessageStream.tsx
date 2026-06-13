@@ -34,19 +34,21 @@ function clockTime(ts: number): string {
  * here we show a typed placeholder chip so images are visible-as-present. */
 function EventBody({ ev }: { ev: MatrixEvent }) {
   const c = ev.content ?? {};
+  const stateClass = c._failed ? " failed" : c._pending ? " pending" : "";
+  const suffix = c._failed ? " ⚠ not sent" : "";
   if (ev.type === "com.fleet.gen.request") {
-    return <div class="msg-body gen-chip">⚙️ /gen — {c.prompt ?? "(no prompt)"} <em>(pending)</em></div>;
+    return <div class={`msg-body gen-chip${stateClass}`}>⚙️ /gen — {c.prompt ?? "(no prompt)"} <em>(pending){suffix}</em></div>;
   }
   if (c.msgtype === "m.image") {
-    return <div class="msg-body image-chip">🖼️ {c.body ?? "image"} <em>(inline render in PR-4)</em></div>;
+    return <div class={`msg-body image-chip${stateClass}`}>🖼️ {c.body ?? "image"} <em>(inline render in PR-4){suffix}</em></div>;
   }
   if (c.msgtype === "m.notice") {
-    return <div class="msg-body notice">{c.body}</div>;
+    return <div class={`msg-body notice${stateClass}`}>{c.body}{suffix}</div>;
   }
   if (c.msgtype === "m.emote") {
-    return <div class="msg-body emote"><em>* {senderName(ev.sender)} {c.body}</em></div>;
+    return <div class={`msg-body emote${stateClass}`}><em>* {senderName(ev.sender)} {c.body}</em>{suffix}</div>;
   }
-  return <div class="msg-body">{c.body ?? `[${ev.type}]`}</div>;
+  return <div class={`msg-body${stateClass}`}>{c.body ?? `[${ev.type}]`}{suffix}</div>;
 }
 
 interface Group {
