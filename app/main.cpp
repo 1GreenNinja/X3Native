@@ -712,6 +712,17 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("r_ddgi_ny",        "8",    "DDGI probe count Y (2..32)");
     console.registerCVar("r_ddgi_nz",        "24",   "DDGI probe count Z (2..32)");
     console.registerCVar("r_ddgi_hyst",      "0.97", "DDGI irradiance hysteresis (history blend; higher = smoother/slower)");
+    // RAY-TRACED SOFT SHADOWS (r_rtshadows): per-pixel inline ray-query shadow
+    // rays in the mesh fragment stage, against the same TLAS RT-AO/DDGI use.
+    // Tier 0 = CSM-only (bit-identical pre-RT path), 1 = sun RT (cone-jittered,
+    // contact-hardening penumbra, min()-combined with CSM so skinned characters
+    // keep their raster shadows), 2 = sun + POINT LIGHTS (lamps finally cast;
+    // the first K contributing lights per pixel get a source-jittered shadow
+    // ray each). DEFAULT 2 on ray-query hardware; auto-0 anywhere else. Live.
+    console.registerCVar("r_rtshadows",    "2",    "RT soft shadows: 0 = CSM-only (bit-identical), 1 = sun RT, 2 = sun + point lights (default; auto-0 without ray query)");
+    console.registerCVar("r_rtsun_size",   "0.5",  "RT sun angular radius (degrees) — penumbra width; 0 = hard traced shadow");
+    console.registerCVar("r_rtpoint_max",  "4",    "RT point-light shadow rays per pixel (first K contributing lights; others stay unshadowed)");
+    console.registerCVar("r_rtpoint_size", "0.10", "RT point-light source radius (meters) — penumbra widens with it + occluder distance");
     // (3rd-person Jake tuning cvars removed 2026-05-27: dialed-in values
     // jake_yoff=1.03 / jake_yawoff_deg=90 / jake_camdist=2.3 / jake_camh=0.37
     // are now baked as member defaults in app/thirdperson.h.)
@@ -799,6 +810,15 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     if (dg.raysPerProbe <= 0) dg.raysPerProbe = 96;
     if (dg.hysteresis  <= 0.0f) dg.hysteresis = 0.97f;
     device.setDdgiParams(dg);
+    // RT soft shadows (live). The device tier-gates on ray-query hardware + the
+    // mesh_rt pipeline variants; on anything else this is a harmless store and
+    // the plain (bit-identical) mesh pipelines stay bound.
+    x3::rhi::IRenderDevice::RtShadowParams rs{};
+    rs.tier        = console.getInt("r_rtshadows");
+    rs.sunSizeDeg  = console.getFloat("r_rtsun_size");
+    rs.pointMax    = console.getInt("r_rtpoint_max");
+    rs.pointRadius = console.getFloat("r_rtpoint_size");
+    device.setRtShadowParams(rs);
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.
@@ -1829,6 +1849,17 @@ int main(int argc, char** argv) {
     // over ~120 settle frames before each ON capture.
     bool        ddgiShot = false;
     std::string ddgiShotDir = "docs/screenshots/ddgi";
+    // RT soft-shadow gate-shot proof (--screenshot-rtshadows [outDir]): build a
+    // detention-cell rig (a single ceiling lamp + occluders at two distances from
+    // the wall), capture lamp-shadow OFF/ON A/Bs (tier 0 vs 2), a sun CSM-vs-RT
+    // A/B (contact hardening), and a 3-frame motion burst (TAA sizzle check);
+    // logs the GPU-ms cost delta. Headless; exits after the captures.
+    bool        rtshShot = false;
+    std::string rtshShotDir = "docs/screenshots/rtshadows";
+    // --test-rtshadows: headless smoketest with r_rtshadows forced to tier 2 so
+    // the mesh_rt pipelines + TLAS path run under Vulkan validation.
+    bool        testRtShadows = false;
+    bool        noRtShadows = false;       // --nortshadows: pin r_rtshadows 0 (CSM-only A/B)
     // Terrain vantage mode (--screenshot-terrain [path.png]): build the tiled
     // procedural terrain world (terrain + sky + sun), pose a camera up on the
     // hills looking toward the sun so the lit rolling terrain + cast shadows +
@@ -1925,6 +1956,14 @@ int main(int argc, char** argv) {
         if (a == "--screenshot-ddgi") {
             ddgiShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') ddgiShotDir = argv[++i];
+            continue;
+        }
+        // RT soft-shadow flags — handled OUTSIDE the chain (same C1061 reason).
+        if (a == "--test-rtshadows") { smoketest = true; testRtShadows = true; continue; }
+        if (a == "--nortshadows") { noRtShadows = true; continue; }   // A/B: pin tier 0 (CSM-only)
+        if (a == "--screenshot-rtshadows") {
+            rtshShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') rtshShotDir = argv[++i];
             continue;
         }
         if (a == "--smoketest") smoketest = true;
@@ -3191,6 +3230,211 @@ int main(int argc, char** argv) {
         x3::logInfo("--screenshot-ddgi: GPU frame avg " + std::to_string(gpuOff) +
                     " ms (off) vs " + std::to_string(gpuOn) + " ms (on) -> DDGI cost ~" +
                     std::to_string(gpuOn - gpuOff) + " ms (rays+update, 20x6x20 probes, 128 rays)");
+
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return ok ? 0 : 1;
+    }
+
+    // ---- RT soft-shadow gate shots (--screenshot-rtshadows [outDir]) --------
+    // THE GATE SHOT for r_rtshadows: a detention-cell rig lit by ONE ceiling
+    // lamp (sun parked below the horizon). A bunk sits low near a wall (tight
+    // contact shadow) and a tall pillar stands mid-room (its lamp shadow's
+    // penumbra must WIDEN with distance from its base). Tier 0 = today's path:
+    // the lamp casts NOTHING (attenuation only); tier 2 = the lamp finally
+    // casts. Also: an outdoor plate A/Bs the sun CSM (tier 0) vs RT (tier 1) —
+    // contact hardening at the pole base, soft tip — and a 3-frame motion
+    // burst checks the 1-spp penumbra noise stays TAA-stable. Headless; logs
+    // the GPU-ms delta; exits after the captures.
+    if (rtshShot) {
+        namespace fs = std::filesystem;
+        std::error_code mkec; fs::create_directories(rtshShotDir, mkec);
+        x3::logInfo("--screenshot-rtshadows: rendering RT shadow gate shots to " + rtshShotDir);
+
+        // ---- CELL rig: 8x4x8 m room, floor top at y=0 (the ddgi-rig pattern;
+        // walls overlap the slabs so no coplanar seams). ----
+        std::vector<x3::prims::PrimMesh> parts;
+        parts.push_back(x3::prims::makeBox(4.5f, 0.5f, 4.5f,  0.0f, -0.5f, 0.0f)); // floor slab
+        parts.push_back(x3::prims::makeBox(4.5f, 0.5f, 4.5f,  0.0f,  4.5f, 0.0f)); // ceiling slab
+        parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 4.5f, -4.0f,  2.0f, 0.0f)); // west wall
+        parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 4.5f,  4.0f,  2.0f, 0.0f)); // east wall
+        parts.push_back(x3::prims::makeBox(4.5f, 2.15f, 0.5f,  0.0f,  2.0f, -4.0f)); // south wall
+        parts.push_back(x3::prims::makeBox(4.5f, 2.15f, 0.5f,  0.0f,  2.0f,  4.0f)); // north wall
+        // Occluders: a low bunk near the north wall + a tall pillar mid-room.
+        parts.push_back(x3::prims::makeBox(0.9f, 0.25f, 0.5f, -2.0f, 0.45f, 2.6f)); // bunk (low -> tight shadow)
+        parts.push_back(x3::prims::makeBox(0.22f, 1.5f, 0.22f, 1.2f, 1.5f, 0.6f));  // pillar (tall -> widening penumbra)
+        std::vector<x3::rhi::MeshHandle> partMesh;
+        for (auto& p : parts)
+            partMesh.push_back(device->createMesh(p.verts.data(), (uint32_t)p.verts.size(),
+                                                  p.index.data(), (uint32_t)p.index.size()));
+        // Emissive lamp fixture just ABOVE the light position (outside every
+        // shadow segment — rays stop a clearance short of the source).
+        x3::prims::PrimMesh fixture = x3::prims::makeBox(0.35f, 0.06f, 0.35f, 0.0f, 3.85f, 0.0f);
+        x3::rhi::MeshHandle fixtureMesh = device->createMesh(fixture.verts.data(), (uint32_t)fixture.verts.size(),
+                                                             fixture.index.data(), (uint32_t)fixture.index.size());
+        // ---- SUN plate: open ground + a cube + a tall thin pole. ----
+        x3::prims::PrimMesh ground = x3::prims::makeBox(10.0f, 0.5f, 10.0f, 0.0f, -0.5f, 0.0f);
+        x3::prims::PrimMesh cube   = x3::prims::makeBox(0.5f, 0.5f, 0.5f, -1.5f, 0.5f, 0.5f);
+        x3::prims::PrimMesh pole   = x3::prims::makeBox(0.08f, 2.0f, 0.08f, 1.5f, 2.0f, -0.5f);
+        x3::rhi::MeshHandle groundMesh = device->createMesh(ground.verts.data(), (uint32_t)ground.verts.size(),
+                                                            ground.index.data(), (uint32_t)ground.index.size());
+        x3::rhi::MeshHandle cubeMesh   = device->createMesh(cube.verts.data(), (uint32_t)cube.verts.size(),
+                                                            cube.index.data(), (uint32_t)cube.index.size());
+        x3::rhi::MeshHandle poleMesh   = device->createMesh(pole.verts.data(), (uint32_t)pole.verts.size(),
+                                                            pole.index.data(), (uint32_t)pole.index.size());
+
+        auto greyPx = x3::prims::makeSolidRGBA(4, 195, 195, 195);
+        x3::rhi::TextureHandle greyTex = device->createTexture(greyPx.data(), 4, 4, /*srgb=*/true);
+
+        const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        const float white[4] = { 1, 1, 1, 1 };
+        const float fixtureTint[4]     = { 1.0f, 0.95f, 0.85f, 1.0f };
+        const float fixtureEmissive[4] = { 1.0f, 0.9f, 0.7f, 8.0f };
+
+        auto drawCell = [&](const x3::rhi::FrameContext& f) {
+            for (auto m : partMesh) device->drawMesh(f, m, greyTex, white, identity);
+            device->drawMeshEmissive(f, fixtureMesh, greyTex, fixtureTint, fixtureEmissive, identity);
+        };
+        auto drawSunPlate = [&](const x3::rhi::FrameContext& f) {
+            device->drawMesh(f, groundMesh, greyTex, white, identity);
+            device->drawMesh(f, cubeMesh,   greyTex, white, identity);
+            device->drawMesh(f, poleMesh,   greyTex, white, identity);
+        };
+
+        float gpuMsAccum = 0.0f; int gpuMsN = 0;
+        auto renderFrames = [&](int n, const std::string& capturePath, auto&& draw) -> bool {
+            for (int i = 0; i < n; ++i) {
+                glfwPollEvents();
+                if (!capturePath.empty() && i == n - 1) device->armCapture(capturePath.c_str());
+                auto f = device->beginFrame();
+                if (f.valid) draw(f);
+                device->endFrame(f);
+                gpuMsAccum += device->stats().gpuFrameMs; ++gpuMsN;
+            }
+            if (capturePath.empty()) return true;
+            const bool ok = device->captureFrame(capturePath.c_str());
+            x3::logInfo(std::string(ok ? "--screenshot-rtshadows: wrote " : "--screenshot-rtshadows: FAILED ") + capturePath);
+            return ok;
+        };
+        auto setTier = [&](int tier) {
+            x3::rhi::IRenderDevice::RtShadowParams rp{};
+            rp.tier = tier;
+            device->setRtShadowParams(rp);
+        };
+
+        bool ok = true;
+
+        // ===== 1) LAMP gate shot (cell rig, lamp-only) =====
+        x3::rhi::PointLight pl{};
+        pl.pos[0] = 0.0f; pl.pos[1] = 3.6f; pl.pos[2] = 0.0f; pl.range = 14.0f;
+        pl.color[0] = 3.2f; pl.color[1] = 2.9f; pl.color[2] = 2.4f;
+        device->setPointLights(&pl, 1);
+        device->setAmbient(0.015f, 0.016f, 0.020f);
+        device->setShadowBounds(0.0f, 2.0f, 0.0f, 20.0f);
+        {   // sun below the horizon: the lamp is the only direct light.
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = false;
+            sp.sunDir[0] = 0.0f; sp.sunDir[1] = -1.0f; sp.sunDir[2] = 0.01f;
+            device->setSkyParams(sp);
+        }
+        // Camera: SW corner, looking across the pillar toward the NE walls.
+        device->setCamera(-3.1f, 1.7f, -3.1f, std::atan2(3.7f, 4.3f), -0.10f, 72.0f);
+
+        setTier(0);
+        ok &= renderFrames(30, rtshShotDir + "/lamp_rtshadows_off.png", drawCell);
+        gpuMsAccum = 0.0f; gpuMsN = 0;
+        ok &= renderFrames(40, "", drawCell);
+        const float gpuLampOff = gpuMsAccum / std::max(1, gpuMsN);
+
+        setTier(2);
+        ok &= renderFrames(90, rtshShotDir + "/lamp_rtshadows_on.png", drawCell);   // TAA settles the penumbra
+        gpuMsAccum = 0.0f; gpuMsN = 0;
+        ok &= renderFrames(40, "", drawCell);
+        const float gpuLampOn = gpuMsAccum / std::max(1, gpuMsN);
+
+        // Motion burst (tier 2): 3 consecutive frames while the camera slides —
+        // the 1-spp penumbra must stay TAA-stable (no sizzle/ghost trails).
+        for (int mf = 0; mf < 3; ++mf) {
+            device->setCamera(-3.1f + 0.06f * (float)(mf + 1), 1.7f, -3.1f,
+                              std::atan2(3.7f, 4.3f), -0.10f, 72.0f);
+            ok &= renderFrames(1, rtshShotDir + "/lamp_motion_f" + std::to_string(mf) + ".png", drawCell);
+        }
+
+        // ===== 2) SUN A/B (outdoor plate): CSM (tier 0) vs RT (tier 1) =====
+        // LOW sun (elev ~23 deg) -> the 4 m pole throws a ~9 m shadow, so the
+        // RT penumbra growth (sharp at the base, ~8 cm soft at the tip with the
+        // default 0.5 deg sun) reads against CSM's constant 3x3 PCF blur.
+        device->setPointLights(nullptr, 0);
+        device->setAmbient(0.10f, 0.11f, 0.13f);
+        device->setShadowBounds(0.0f, 0.0f, 0.0f, 30.0f);
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.70f; sp.sunDir[1] = 0.30f; sp.sunDir[2] = 0.15f;
+            device->setSkyParams(sp);
+        }
+        // Camera low over the pole's shadow line, looking down its length.
+        device->setCamera(0.5f, 1.9f, 3.4f, std::atan2(-4.6f, -4.5f), -0.30f, 72.0f);
+
+        setTier(0);
+        ok &= renderFrames(40, rtshShotDir + "/sun_csm.png", drawSunPlate);
+        setTier(1);
+        gpuMsAccum = 0.0f; gpuMsN = 0;
+        ok &= renderFrames(90, rtshShotDir + "/sun_rt.png", drawSunPlate);
+        const float gpuSunOn = gpuMsAccum / std::max(1, gpuMsN);
+
+        // ===== 3) COST plate (no capture): a 24x24 box field + 8 overlapping
+        // lamps + sun — every pixel pays the sun ray AND saturates the K=4
+        // point-ray budget. 60-frame GPU-ms averages per tier (the single-frame
+        // smoketest stat is useless under GPU contention). =====
+        std::vector<x3::rhi::MeshHandle> fieldMesh;
+        {
+            x3::prims::PrimMesh fb = x3::prims::makeBox(0.45f, 0.9f, 0.45f, 0.0f, 0.9f, 0.0f);
+            fieldMesh.push_back(device->createMesh(fb.verts.data(), (uint32_t)fb.verts.size(),
+                                                   fb.index.data(), (uint32_t)fb.index.size()));
+        }
+        std::vector<float> fieldXf;                 // 16 floats per instance (row-major flat)
+        for (int gz = 0; gz < 24; ++gz)
+            for (int gx = 0; gx < 24; ++gx) {
+                const float m[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0,
+                                      -9.2f + 0.8f * (float)gx, 0.0f, -9.2f + 0.8f * (float)gz, 1 };
+                fieldXf.insert(fieldXf.end(), m, m + 16);
+            }
+        x3::rhi::PointLight lamps[8]{};
+        for (int li = 0; li < 8; ++li) {
+            lamps[li].pos[0] = -6.0f + 4.0f * (float)(li % 4);
+            lamps[li].pos[1] = 3.0f;
+            lamps[li].pos[2] = (li < 4) ? -3.0f : 3.0f;
+            lamps[li].range = 16.0f;             // every lamp covers most pixels
+            lamps[li].color[0] = 2.2f; lamps[li].color[1] = 2.0f; lamps[li].color[2] = 1.7f;
+        }
+        device->setPointLights(lamps, 8);
+        auto drawField = [&](const x3::rhi::FrameContext& f) {
+            device->drawMesh(f, groundMesh, greyTex, white, identity);
+            for (size_t mi = 0; mi + 16 <= fieldXf.size(); mi += 16)
+                device->drawMesh(f, fieldMesh[0], greyTex, white, &fieldXf[mi]);
+        };
+        device->setCamera(0.0f, 6.5f, 13.0f, std::atan2(-13.0f, 0.0f), -0.42f, 72.0f);
+        auto costAvg = [&](int tier) -> float {
+            setTier(tier);
+            renderFrames(20, "", drawField);     // settle (pipeline swap, TLAS)
+            gpuMsAccum = 0.0f; gpuMsN = 0;
+            renderFrames(60, "", drawField);
+            return gpuMsAccum / std::max(1, gpuMsN);
+        };
+        const float costT0 = costAvg(0);
+        const float costT1 = costAvg(1);
+        const float costT2 = costAvg(2);
+
+        x3::logInfo("--screenshot-rtshadows: GPU frame avg lamp " + std::to_string(gpuLampOff) +
+                    " ms (tier 0) vs " + std::to_string(gpuLampOn) + " ms (tier 2) -> point-shadow cost ~" +
+                    std::to_string(gpuLampOn - gpuLampOff) + " ms; sun-RT plate avg " +
+                    std::to_string(gpuSunOn) + " ms (full-res, 1 spp)");
+        x3::logInfo("--screenshot-rtshadows: COST plate (576 boxes, 8 lamps, K=4 saturated, 60-frame avg): tier0 " +
+                    std::to_string(costT0) + " ms, tier1 " + std::to_string(costT1) + " ms (+" +
+                    std::to_string(costT1 - costT0) + " sun), tier2 " + std::to_string(costT2) + " ms (+" +
+                    std::to_string(costT2 - costT1) + " points; full-res inline)");
 
         device->shutdown();
         if (window) glfwDestroyWindow(window);
@@ -8340,6 +8584,12 @@ int main(int argc, char** argv) {
         console->set("r_ssr", "0");              // --norefl: reflections off, TAA untouched
         console->set("r_rtreflections", "0");
     }
+    if (noRtShadows) {
+        console->set("r_rtshadows", "0");        // --nortshadows: CSM-only (bit-identical A/B)
+        x3::rhi::IRenderDevice::RtShadowParams rp{};
+        rp.tier = 0;
+        device->setRtShadowParams(rp);
+    }
 
     // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
     // render path so the BLAS/TLAS build + ray-query AO compute + apply passes are
@@ -8380,6 +8630,20 @@ int main(int argc, char** argv) {
         dp.enabled = true;
         device->setDdgiParams(dp);
         x3::logInfo(std::string("--test-ddgi: DDGI requested; device rayTracingSupported=") +
+                    (device->rayTracingSupported() ? "YES" : "NO"));
+    }
+
+    // --test-rtshadows: pin RT soft shadows to tier 2 (sun + point lights) for
+    // the headless smoketest render path so the mesh_rt pipelines + TLAS build
+    // + per-pixel ray queries run under Vulkan validation. On a non-RT device
+    // this degrades to the plain raster pipelines (the tier gate) — still a
+    // valid pass of the test (the path is byte-for-byte unchanged there).
+    if (testRtShadows) {
+        console->set("r_rtshadows", "2");
+        x3::rhi::IRenderDevice::RtShadowParams rp{};
+        rp.tier = 2;
+        device->setRtShadowParams(rp);
+        x3::logInfo(std::string("--test-rtshadows: RT soft shadows requested; device rayTracingSupported=") +
                     (device->rayTracingSupported() ? "YES" : "NO"));
     }
 

@@ -1,5 +1,17 @@
-#version 450
+#version 460
+// (bumped 450 -> 460 for the RT_SHADOWS variant below: GL_EXT_ray_query needs
+// GLSL 4.60. For the plain variant this changes ONLY the OpSource debug line —
+// the generated code is unchanged.)
 #extension GL_EXT_nonuniform_qualifier : require
+#ifdef RT_SHADOWS
+// RAY-TRACED SOFT SHADOWS (r_rtshadows) — compiled ONLY into mesh_rt.frag.spv
+// (-DRT_SHADOWS=1, SPIR-V 1.4, bound only on ray-query devices). The plain
+// mesh.frag.spv build has none of this code, so r_rtshadows 0 / non-RT devices
+// are byte-for-byte the existing pipeline. CLEAN-ROOM: built from the Vulkan
+// 1.3 spec + the public GLSL_EXT_ray_query extension spec (the rtao.comp /
+// refl.comp pattern) and standard soft-shadow cone-sampling math.
+#extension GL_EXT_ray_query : require
+#endif
 
 // GPU-driven mesh fragment shader (Subsystem D + perf-stack E shadows + forward
 // point lights).
@@ -74,6 +86,9 @@ layout(set = 3, binding = 1) uniform SsaoControl {
     vec4 ddgiOrigin;  // xyz = probe-grid min corner (world), w = visMaxDist (m)
     vec4 ddgiSpacing; // xyz = probe spacing (m), w = unused
     vec4 ddgiCounts;  // xyz = probe counts (as float), w = unused
+    // ---- RT soft shadows (r_rtshadows; read ONLY by the RT_SHADOWS variant) ----
+    vec4 rtsh0;       // x = tier (0=off,1=sun,2=sun+points), y = tan(sun angular radius), z = max point shadow rays K, w = point light source radius (m)
+    vec4 rtsh1;       // x = frame seed (per-frame jitter rotation; 0 when TAA is off), yzw = reserved
 } ssao;
 // Screen-traced / ray-traced reflection buffer (set3/binding2, half- or full-res
 // RGBA16F): rgb = reflected radiance from the REFLECTION pass (refl.comp — SSR
@@ -92,6 +107,14 @@ layout(set = 3, binding = 2) uniform sampler2D reflTex;
 // — the existing ambient/IBL math is byte-for-byte unchanged.
 layout(set = 3, binding = 3) uniform sampler2D ddgiIrrTex;
 layout(set = 3, binding = 4) uniform sampler2D ddgiVisTex;
+#ifdef RT_SHADOWS
+// Scene TLAS (set3/binding5 — present in the set LAYOUT only on ray-query
+// devices; the plain mesh.frag never declares it). Same acceleration structure
+// the RT-AO / RT-reflections / DDGI passes trace. Written once the first TLAS
+// build lands; the host binds this pipeline variant only on frames where the
+// TLAS descriptor is valid.
+layout(set = 3, binding = 5) uniform accelerationStructureEXT rtShadowTlas;
+#endif
 
 // ===========================================================================
 // Image-based lighting (IBL), set 4 — split-sum environment reflections.
@@ -240,6 +263,80 @@ vec3 terrainAlbedo(vec3 wpos, vec3 wn, uvec2 pack) {
 
     return albedo;
 }
+
+#ifdef RT_SHADOWS
+// ===========================================================================
+// RAY-TRACED SOFT SHADOWS (r_rtshadows) — per-pixel inline ray queries.
+//   * SUN (tier >= 1): ONE shadow ray per pixel toward the sun, cone-jittered
+//     by the sun's angular radius (rtsh0.y = tan(radius); ~0.5 deg default) —
+//     contact-hardening penumbra. Combined min() with the CSM term so DYNAMIC
+//     (skinned) casters — absent from the static TLAS — keep their raster
+//     shadows.
+//   * POINT LIGHTS (tier >= 2): in the light loop, the first K lights with a
+//     non-negligible contribution at this pixel each get ONE shadow ray toward
+//     a jittered point on the light's spherical source (radius rtsh0.w);
+//     penumbra widens with occluder->receiver distance by construction.
+//     Beyond K (rtsh0.z) or below the contribution floor: unshadowed (the
+//     existing behavior).
+// Per-frame jitter rotation (rtsh1.x seed) turns the 1-spp penumbra noise into
+// temporal samples TAA accumulates away; with TAA off the host pins the seed
+// so the dither is STATIC (no sizzle).
+// DOCUMENTED v1 LIMITS (shared with RT-AO/reflections/DDGI — same TLAS):
+//   * opaque-only rays: alpha-cutout surfaces (foliage/billboards) occlude as
+//     their full quad; * skinned characters don't cast (CSM keeps the sun's).
+// ===========================================================================
+uint rtshWang(uint s) {
+    s = (s ^ 61u) ^ (s >> 16); s *= 9u; s = s ^ (s >> 4); s *= 0x27d4eb2du; s = s ^ (s >> 15);
+    return s;
+}
+float rtshRnd(inout uint st) { st = rtshWang(st); return float(st & 0x00FFFFFFu) / float(0x01000000u); }
+
+// Orthonormal basis around a unit vector (the rtao.comp pattern).
+void rtshBasis(vec3 N, out vec3 T, out vec3 B) {
+    vec3 up = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    T = normalize(cross(up, N));
+    B = cross(N, T);
+}
+
+// Binary visibility: 1 = the segment origin->origin+dir*tMax is unobstructed.
+// Opaque-only + terminate-on-first-hit: one proceed resolves it (rtao pattern).
+float rtshVisibility(vec3 origin, vec3 dir, float tMax) {
+    rayQueryEXT rq;
+    rayQueryInitializeEXT(rq, rtShadowTlas,
+        gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsOpaqueEXT,
+        0xFF, origin, 0.01, dir, tMax);
+    rayQueryProceedEXT(rq);
+    return (rayQueryGetIntersectionTypeEXT(rq, true) == gl_RayQueryCommittedIntersectionNoneEXT)
+        ? 1.0 : 0.0;
+}
+
+// Sun visibility: one cone-jittered ray toward the sun. tanRadius = tan of the
+// sun's angular radius; the jitter disk is perpendicular to the sun direction.
+float rtshSunVisibility(vec3 P, vec3 Ng, vec3 sunDir, inout uint seed) {
+    vec3 T, B; rtshBasis(sunDir, T, B);
+    float r   = sqrt(rtshRnd(seed)) * ssao.rtsh0.y;     // uniform disk * tan(radius)
+    float phi = 6.2831853 * rtshRnd(seed);
+    vec3 dir = normalize(sunDir + (T * cos(phi) + B * sin(phi)) * r);
+    return rtshVisibility(P + Ng * 0.03, dir, 500.0);
+}
+
+// Point-light visibility: one ray toward a jittered point on the light's
+// spherical source. tMax stops SHORT of the source (clearance = max(lightR,
+// 0.12 m)) so a light parked inside its own fixture mesh doesn't self-occlude.
+float rtshPointVisibility(vec3 P, vec3 Ng, vec3 toL, float dist, inout uint seed) {
+    float lr = ssao.rtsh0.w;
+    vec3 L = toL / max(dist, 1e-4);
+    vec3 T, B; rtshBasis(L, T, B);
+    float r   = sqrt(rtshRnd(seed)) * lr;
+    float phi = 6.2831853 * rtshRnd(seed);
+    vec3 origin = P + Ng * 0.03;
+    vec3 seg = (P + toL + (T * cos(phi) + B * sin(phi)) * r) - origin;
+    float len = length(seg);
+    float tMax = len - max(lr, 0.12);
+    if (tMax <= 0.02) return 1.0;                        // too close to the source
+    return rtshVisibility(origin, seg / max(len, 1e-4), tMax);
+}
+#endif
 
 // 3x3 PCF: average 9 hardware-compare taps one texel apart. Returns the lit
 // fraction (1 = fully lit, 0 = fully shadowed). ndl drives a slope-scaled bias
@@ -549,6 +646,24 @@ void main() {
     vec3  kSunDir = normalize(cam.sunDir.xyz);   // per-scene sun direction (Camera UBO)
     float ndl    = max(dot(N, kSunDir), 0.0);
     float shadow = sampleShadow(vWorldPos, ndl);
+#ifdef RT_SHADOWS
+    // RT soft shadows (r_rtshadows): per-pixel seed (per-frame rotated when TAA
+    // is on — rtsh1.x is then a running frame counter; pinned 0 with TAA off so
+    // the dither is static) + the per-pixel point-shadow ray budget. The
+    // geometric normal (NOT the normal-mapped one) offsets ray origins so bump
+    // detail can't push the origin through its own surface.
+    uint rtshSeed = rtshWang(uint(gl_FragCoord.x) * 1973u
+                           + uint(gl_FragCoord.y) * 9277u
+                           + uint(ssao.rtsh1.x)   * 26699u);
+    int  rtshRaysLeft = int(ssao.rtsh0.z);
+    vec3 rtshNg = normalize(vNormal);
+    // SUN (tier >= 1): min() with the CSM term — the traced ray gives the
+    // contact-hardening penumbra from STATIC geometry; the raster map keeps
+    // shadows from skinned characters (absent from the static TLAS). Skip the
+    // ray when the sun term is already dead (backface / fully CSM-shadowed).
+    if (ssao.rtsh0.x >= 0.5 && ndl > 0.0 && shadow > 0.001)
+        shadow = min(shadow, rtshSunVisibility(vWorldPos, rtshNg, kSunDir, rtshSeed));
+#endif
     vec3  ambient = cam.ambientCount.rgb;
     float up = N.y * 0.5 + 0.5;                 // 0 = facing down, 1 = facing up
     float ao = 1.0;
@@ -580,7 +695,21 @@ void main() {
             vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
             float dist = length(toL);
             vec3  L    = toL / max(dist, 0.0001);
+#ifdef RT_SHADOWS
+            // POINT RT shadow (tier >= 2): the first K lights with a real
+            // contribution here each get one source-jittered shadow ray;
+            // negligible / over-budget lights keep the unshadowed behavior.
+            float contrib = max(dot(N, L), 0.0) * pointAtten(dist, cam.lights[i].posRange.w);
+            float vis = 1.0;
+            if (ssao.rtsh0.x >= 1.5 && rtshRaysLeft > 0
+                && contrib * dot(cam.lights[i].colorPad.rgb, vec3(0.299, 0.587, 0.114)) > 0.004) {
+                --rtshRaysLeft;
+                vis = rtshPointVisibility(vWorldPos, rtshNg, toL, dist, rtshSeed);
+            }
+            lighting  += cam.lights[i].colorPad.rgb * (contrib * vis);
+#else
             lighting  += cam.lights[i].colorPad.rgb * (max(dot(N, L), 0.0) * pointAtten(dist, cam.lights[i].posRange.w));
+#endif
         }
         vec3 Vd = normalize(cam.camPos.xyz - vWorldPos);
         const float kDielectricRough = 0.5;   // satin clad/floor default
@@ -602,7 +731,20 @@ void main() {
             vec3  toL  = cam.lights[i].posRange.xyz - vWorldPos;
             float dist = length(toL);
             vec3  L    = toL / max(dist, 0.0001);
+#ifdef RT_SHADOWS
+            // POINT RT shadow (tier >= 2): same first-K-significant policy as
+            // the dielectric loop (one budget shared across both paths).
+            float atten = pointAtten(dist, cam.lights[i].posRange.w);
+            float vis = 1.0;
+            if (ssao.rtsh0.x >= 1.5 && rtshRaysLeft > 0 && dot(N, L) > 0.0
+                && atten * dot(cam.lights[i].colorPad.rgb, vec3(0.299, 0.587, 0.114)) > 0.004) {
+                --rtshRaysLeft;
+                vis = rtshPointVisibility(vWorldPos, rtshNg, toL, dist, rtshSeed);
+            }
+            Lo += brdf(N, V, NoV, L, F0, diff, a) * cam.lights[i].colorPad.rgb * (atten * vis);
+#else
             Lo += brdf(N, V, NoV, L, F0, diff, a) * cam.lights[i].colorPad.rgb * pointAtten(dist, cam.lights[i].posRange.w);
+#endif
         }
         // Image-based lighting: SPLIT-SUM diffuse irradiance + GGX-prefiltered specular
         // from the analytic-sky environment cube, so metals reflect the sky and

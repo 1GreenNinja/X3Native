@@ -189,6 +189,18 @@ add_custom_command(
     COMMENT "glslc refl.comp (SSR + ray-query) -> refl_rt.comp.spv"
     VERBATIM)
 list(APPEND SPV_FILES ${SPV_DIR}/refl.comp.spv ${SPV_DIR}/refl_rt.comp.spv)
+# RT soft shadows (r_rtshadows): mesh.frag builds a SECOND variant with inline
+# ray-query shadow rays (-DRT_SHADOWS=1 -> mesh_rt.frag.spv; bound only on
+# ray-query devices). The plain mesh.frag.spv above stays byte-for-byte the
+# raster path (r_rtshadows 0 / Pascal).
+add_custom_command(
+    OUTPUT ${SPV_DIR}/mesh_rt.frag.spv
+    COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.3 --target-spv=spv1.4 -DRT_SHADOWS=1
+            -fshader-stage=frag ${CMAKE_SOURCE_DIR}/shaders/mesh.frag -o ${SPV_DIR}/mesh_rt.frag.spv
+    DEPENDS ${CMAKE_SOURCE_DIR}/shaders/mesh.frag
+    COMMENT "glslc mesh.frag (ray-query soft shadows) -> mesh_rt.frag.spv"
+    VERBATIM)
+list(APPEND SPV_FILES ${SPV_DIR}/mesh_rt.frag.spv)
 add_custom_target(x3shaders DEPENDS ${SPV_FILES})
 add_dependencies(X3Engine x3shaders)
 
