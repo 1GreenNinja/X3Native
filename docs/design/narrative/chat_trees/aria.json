@@ -73,7 +73,13 @@
         { "line": "I used to think being needed was the same as being safe. You're teaching me they can be the same thing for good reasons.", "if": [ {"rel_gte": ["aria", 3]} ] },
         { "line": "Keisha says you're 'adequate in a firefight.' From her that's a wedding toast.", "if": [ {"girl_saved": "keisha"}, {"rel_gte": ["aria", 2]} ] },
         { "line": "Emily showed me the numbers on what you interrupted. I asked her to never show me again. Then I memorized them anyway.", "if": [ {"girl_saved": "emily"}, {"rel_gte": ["aria", 2]} ] },
-        { "line": "*after the elevator, softly* That music it plays. Someone programmed that to keep people calm on the way down to this. Someone chose the key it's in.", "weight": 1 }
+        { "line": "*after the elevator, softly* That music it plays. Someone programmed that to keep people calm on the way down to this. Someone chose the key it's in.", "weight": 1 },
+        { "line": "*close at your ear, in passing, perfectly clinical* Pulse check. *her fingers rest on your wrist two beats longer than medicine requires* Mm. Elevated. Good. That's mine.", "if": [ {"flag": "aria.romance"} ], "weight": 2 },
+        { "line": "Sleep next to me tonight even if we just sleep. I've gotten greedy about your heartbeat and I refuse to be treated for it.", "if": [ {"flag": "aria.romance"} ] },
+        { "line": "*as you pass, her fingers hook your belt for exactly one stride, then release* Sorry. No. Withdrawn — I'm not sorry.", "if": [ {"flag": "aria.romance"} ] },
+        { "line": "My hands are steady all day, every day. You're the only one alive who knows what it takes to make them shake.", "if": [ {"flag": "aria.romance"} ] },
+        { "line": "For the record: I found two new scars on you last night and kissed both. I keep excellent charts.", "if": [ {"flag": "aria.night"} ] },
+        { "line": "Clinically speaking, you should be getting more rest. Personally speaking, I plan to go on being the reason you don't.", "if": [ {"flag": "aria.night"} ] }
       ]
     },
 
@@ -153,6 +159,81 @@
         { "id": "r2",
           "line": "*the smallest nod; her hands finish the bandage, perfectly steady* Then that's what I am. *beat* For the record, you were kind about it, and I'm not made of glass — I'm made of night shifts. We're fine, Jake. We're better than fine. We're honest.",
           "fx": [ {"set": "aria.romance_declined"} ],
+          "next": "end" }
+      ]
+    },
+
+    "desire": {
+      "_scene": "Slow-burn escalation (heat 4/5). Quiet hold, post patch-up, after the romance is chosen. Gate: aria.romance. Declining costs nothing and the scene re-offers later.",
+      "start": "d0",
+      "nodes": [
+        { "id": "d0",
+          "if": [ {"flag": "aria.romance"}, {"not": {"flag": "aria.desire"}} ],
+          "line": "*the exam ended a minute ago. Her hands haven't acknowledged it — they've moved from your ribs to your collarbone to the line of your jaw, charting territory no chart needs* Resting heart rate: elevated. Pupils: dilated. Breathing: shallow. *a slow smile against your shoulder* That was my diagnosis of me, Jake. You I stopped examining a full minute ago.",
+          "choices": [
+            { "text": "(cover her hand with yours) Then stop counting.", "next": "d1", "fx": [ {"love": 3}, {"set": "aria.desire"} ] },
+            { "text": "And the recommended treatment, doctor?", "next": "d1b", "fx": [ {"love": 3}, {"set": "aria.desire"} ] },
+            { "text": "(gently) Not tonight, Aria.", "next": "d_no" }
+          ] },
+        { "id": "d1",
+          "line": "*she stops. You feel the exact moment it happens — the breath catching, her fingers spreading flat against your chest like she's done measuring and started claiming* I have wanted to be off the clock with you for weeks. *her mouth finds the line of your throat, unhurried, deliberate, devastating* Not here. Not half-listening for the corridor. Find us a door that locks, Jake — and I will spend the entire night not counting anything at all.",
+          "next": "end" },
+        { "id": "d1b",
+          "line": "Treatment. *two fingers walk down your sternum, slow as a pulse check, and her voice leaves the clinic entirely* Bed rest. Skin-to-skin contact, for shock. Prolonged... observation. *her thumb catches your lower lip and lets it go* I'm a very thorough practitioner, and there is nothing clinically defensible about how much I want you. Find me a locked door. I'll bring my whole protocol.",
+          "next": "end" },
+        { "id": "d_no",
+          "line": "*her hands withdraw without hurry and without hurt, the want folded away as neatly as a rolled bandage* Then tonight I keep the watch and you keep the rest. *a kiss pressed to your knuckles, light as gauze* The night shift is patient, Jake. It's the whole job description.",
+          "next": "end" }
+      ]
+    },
+
+    "night": {
+      "_scene": "Private culmination (heat 5/5). Gate: rel 3+, aria.romance, aria.desire, and the host-set loc.private flag (safe rooms / quarters only). Explicit opt-in at the threshold; the decline branch costs nothing and the scene re-offers.",
+      "start": "n0",
+      "nodes": [
+        { "id": "n0",
+          "if": [ {"rel_gte": ["aria", 3]}, {"flag": "aria.romance"}, {"flag": "aria.desire"}, {"flag": "loc.private"}, {"not": {"flag": "aria.night"}} ],
+          "line": "*she throws the bolt herself and stands with her back against the door, watching you — the trauma kit set down, for once, somewhere out of reach* One door. One lock. One night where nothing in this building gets to need me except you. *she's already unpinning her hair* Last consult, Jake: say yes like you mean it, or say nothing and I'll hold your watch instead. Both answers keep you. Only one of them gets you thoroughly examined.",
+          "choices": [
+            { "text": "Yes. All night. Come here.", "next": "n1", "fx": [ {"love": 4} ] },
+            { "text": "(cross the room — make the yes with your hands)", "next": "n1b", "fx": [ {"love": 4} ] },
+            { "text": "Hold my watch. Just be near me tonight.", "next": "n_no" }
+          ] },
+        { "id": "n1",
+          "line": "*she crosses to you instead, unhurried, shedding the day layer by layer — jacket, holster, the elastic from her hair — each set down like instruments at end of shift* I have you memorized injured. Every scar, every stitch, every time I almost lost the count. *her hands slide under your shirt, palms flat, learning you warm and whole for once* Tonight I memorize you the other way. *the kiss starts gentle. It does not stay gentle.*",
+          "next": "n2" },
+        { "id": "n1b",
+          "line": "*you reach her before any answer does and she pulls you the last inch by the collar, her mouth already certain* Yes — *between kisses, breathless, half laughing* — yes, noted, charted, witnessed. *her hands map down your spine and grip like a woman done with restraint* Bed. Now. Doctor's orders.",
+          "next": "n2" },
+        { "id": "n2",
+          "line": "*what follows is slow the way she is slow — deliberate, attentive, merciless in the kindest possible way. She learns every scar with her mouth and names none of them. When you press her down into the bunk she breathes your name like it's the last word left in her vocabulary, and for once in her careful life Aria counts nothing — not odds, not heartbeats, not the hours she's stealing back from this place. There is only your skin and her hands and the long unspooling heat of two people refusing, all night, to be triage.* ...stay. Stay, stay — *you stay.*",
+          "next": "n3" },
+        { "id": "n3",
+          "line": "*after. Her head on your chest, one leg thrown over yours like she's holding pressure on a wound she intends to keep. The night-shift voice, slow and wrecked and happier than you have ever heard it:* Resting heart rate: no longer resting. Prognosis: excellent. *one more kiss pressed over your sternum, right where the count lives* I lost count, Jake. You absolute miracle. I lost count on purpose.",
+          "fx": [ {"set": "aria.night"}, {"love": 10}, {"fire": "romance_consummated", "args": {"npc": "aria"}} ],
+          "next": "end" },
+        { "id": "n_no",
+          "line": "*not a flicker of hurt — she crosses the room, takes your hand, and draws you down onto the bunk anyway, clothed and warm, her back settled against your chest* Then this is tonight's prescription. *she sets your hand over her heart and keeps it there* Near is its own medicine, Jake. Some nights it's the strong stuff.",
+          "next": "end" }
+      ]
+    },
+
+    "afterglow": {
+      "_scene": "Morning after (warm, character-deepening). Gate: aria.night, plays once.",
+      "start": "a0",
+      "nodes": [
+        { "id": "a0",
+          "if": [ {"flag": "aria.night"}, {"not": {"flag": "aria.afterglow"}} ],
+          "line": "*the grey hour. She's awake, propped on one elbow, watching you with morning-soft eyes and zero clinical distance* I did a terrible thing while you slept. *she traces the scar under your ribs — the one she found last night with her mouth* I started a new chart. One patient. Lifetime care plan. *she leans down and kisses you, slow, tasting of sleep and certainty* The night shift's over, Jake. I'm keeping the patient.",
+          "choices": [
+            { "text": "Best chart you've ever kept.", "next": "a1", "fx": [ {"set": "aria.afterglow"}, {"love": 3} ] },
+            { "text": "(pull her back down) Shift's not over yet.", "next": "a1b", "fx": [ {"set": "aria.afterglow"}, {"love": 3} ] }
+          ] },
+        { "id": "a1",
+          "line": "*she settles her chin on your chest, smiling like math that finally balanced* For the record — last night, when you said my name like that? I carry forty-one names out of this place. Yours is the one I get to keep saying. *she's up and dressing then, brisk, the medic again — but she hums while she packs the kit. Aria hums now. That one's yours.*",
+          "next": "end" },
+        { "id": "a1b",
+          "line": "*she laughs — actually laughs, sunrise-bright in a building with no windows — and comes back down to you, hair falling like a drawn curtain* Mm. Chronic case. Resistant to treatment. *the kit stays shut for another hour, and the war upstairs can wait its turn*",
           "next": "end" }
       ]
     },

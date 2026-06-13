@@ -51,6 +51,48 @@ came out of the floor of a locked cell, never on any roster: *the Architect* (Cl
 builder; see STORYLINE_EXPANSIONS d). Fires `dialog_hint {code:1278}` — the Lua side can
 set the objective line exactly like `secret_room.lua` does today.
 
+### romance — the settle-up problem (gate: rel 3 + love ≥ 70, declinable at zero cost)
+Her loyalty arc now opens into a full romance lane, on her terms: she lays her knife down
+like an opening bid and reports the bug in tunnel law — *"the ledger's clean... and I still
+want my hands on you. No trade attached. There's no WORD for that down-tunnel. So you say
+it."* Jake supplies the word; she tests "mine" like testing a rope, full weight. The r1b
+branch (move the knife, take her hands) is wordless — she just doesn't let go for an hour,
+"and Lena has never once held anything she wasn't ready to drop." Declining: she priced the
+branch before she sat down; nothing sours, nothing is lost — "a night where nothing's lost
+is a RICH night."
+
+### desire — pricing his hands (heat 4/5, gate: `lena.romance`)
+She catches herself watching openly — watching is information given away free, so from her
+it's a siren. His hands are the one thing in the building she can't put a number on; one
+finger on his wrist is a confession at full volume. The d1 branch is twelve years of
+never-touching spending itself at once — "You're WARM. Nobody told me you get to just...
+HAVE this." The d1b branch ("Take what's yours, runner") is the theft-kiss with his zipper
+down as "down payment — I've already scouted three" locked doors. Decline: she reroutes
+without drama and leaves the offer open, "first thing I ever put on the table without a
+clock on it."
+
+### night — load-bearing (heat 5/5, gate: rel ≥ 3 + `lena.romance` + `lena.desire` + `loc.private`)
+Three rules at the threshold (never uncounted before; not counting tonight; "if I forget how
+to stop holding on, you don't tell anyone"). She comes apart *quiet* — screaming's spending —
+and the silence is louder than anything in the building; his name said once against his
+throat is "the most expensive word she owns, paid in full." Aftermath: she's drawing on his
+back, and it's a map — *of him* — "best terrain I ever charted. No tolls anywhere on it."
+Marco gets his laugh; the cache line gets its echo: "Worth more than what it cost. You.
+Always." Sets `lena.night`, fires `romance_consummated`. Decline: she drags her bedroll
+flush against his for the first time ever — zero cost.
+
+### afterglow — runners leave before light (gate: `lena.night`, once)
+The whole scene is one fact: runners leave before light, and Lena is still there. New rule,
+free: the route runs two-way now. The a1 branch ends on her leaving her knife inside
+someone else's reach — "down-tunnel, that's the whole wedding." The a1b branch reveals the
+cloth map's new marker by the under-hall: a small star and the word HOME.
+
+### banter (romance-gated additions)
+Six new lines: the empty-palm toll ("Pay it." — just to touch him), the locked-room
+"trade intel" that is not trade intel, sharing heat because it's GOOD, pricing the hours his
+hands aren't on her, the zero-length route ("Stand closer"), and Marco's tags that don't get
+cold anymore.
+
 ### carrier_confront — the mole arc (player-discoverable)
 If she was rescued at `InfectionStage::Critical`, the host silently sets `lena.carrier`.
 Breadcrumbs accumulate (drones don't target her; she knows a door she shouldn't; a flat
@@ -66,4 +108,4 @@ The economy inverts: words spent freely, tolls abolished, "we weren't moving THR
 something, we were moving INSIDE something" — which is also a true statement about the
 biomesh world (expansion e), making her lost-state a lore source players will reload to hear.
 
-## Flags: `lena.met / .interrupted / .asked_tunnels / .asked_her / .told_tunnels / .sq_active / .sq_done / .marco_known / .carrier / .cure_path / .double_agent / .final_choice` · Items: `lena_tunnel_map` · Globals: `code.1278.known`, `mole.suspected`, `mole.weaponized`
+## Flags: `lena.met / .interrupted / .asked_tunnels / .asked_her / .told_tunnels / .sq_active / .sq_done / .marco_known / .carrier / .cure_path / .double_agent / .final_choice / .romance / .romance_declined / .desire / .night / .afterglow` · Items: `lena_tunnel_map` · Globals: `code.1278.known`, `mole.suspected`, `mole.weaponized` · Host flag read: `loc.private`

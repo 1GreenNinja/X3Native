@@ -131,9 +131,12 @@ at every branch) and emits the same `std::vector<DialogLine>` it builds today. Z
 | 3 | Bond | `trust` scene played + axis gate (girl-specific: love/mercy/trust) |
 | 4 | Romance | `romance` scene accepted + timeline permits (Alpha/Omega per canon; Beta locks the F2 girls out because they're bosses) |
 
-Romance is always **opt-in via an explicit choice**, can be declined without losing rel 3,
-and is written aftermath-and-implication, never explicit (NC-17 by menace and intimacy of
-voice, not anatomy).
+Romance is always **opt-in via an explicit choice** and can be declined without losing
+rel 3 (declining never costs anything, at any stage). Heat authoring rules — the 1–5 chili
+ladder, the consent grammar, and the trauma-stays-restrained rule — live in
+`SPICE_GUIDE.md`. Culmination (`night`) scenes gate on `rel >= 3` + the npc's `.romance`
+and `.desire` flags + the host-set `loc.private` flag; the captivity/menace material keeps
+its original restraint regardless.
 
 ## 6. Lua data path (how a tree ships with zero C++)
 

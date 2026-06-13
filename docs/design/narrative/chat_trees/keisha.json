@@ -72,7 +72,13 @@
         { "line": "Aria stitched my shoulder and lectured me the whole time. Didn't have the heart to tell her the lecture's the part that helped.", "if": [ {"girl_saved": "aria"}, {"rel_gte": ["keisha", 2]} ] },
         { "line": "Emily talks like a textbook fell in love with a smoke alarm. I'd die for her. Tell her and I'll deny it.", "if": [ {"girl_saved": "emily"}, {"rel_gte": ["keisha", 2]} ] },
         { "line": "You move like a door-kicker now. Six months ago I'd have made you for a pilot. *beat* You WERE a pilot. Huh. This place really does rebuild people.", "if": [ {"rel_gte": ["keisha", 2]} ] },
-        { "line": "Stay loud, Jake. Quiet's what they make here.", "weight": 1 }
+        { "line": "Stay loud, Jake. Quiet's what they make here.", "weight": 1 },
+        { "line": "*passing close on patrol, low* Eyes front, soldier. *beat* Mine weren't. Just so we're clear about who's winning.", "if": [ {"flag": "keisha.romance"} ], "weight": 2 },
+        { "line": "Sparring tonight. Loser takes orders. *she's already smiling like she's planned for either outcome*", "if": [ {"flag": "keisha.romance"} ] },
+        { "line": "I field-stripped your rifle while you slept. Cleaned mine too. Couples stuff.", "if": [ {"flag": "keisha.romance"} ] },
+        { "line": "*post-firefight, adrenaline-bright, her fist in your collar for exactly one second* Later. Door. Lock. That's the entire briefing.", "if": [ {"flag": "keisha.night"} ] },
+        { "line": "Three hours, Jake. I sleep three straight hours when it's your watch. My body trusted you before my mouth got around to it.", "if": [ {"flag": "keisha.night"} ] },
+        { "line": "Mom's kitchen. Cardamom Sundays. You're in that picture now — by the window, second cup. I put you there myself. Deal with it.", "if": [ {"flag": "keisha.night"} ] }
       ]
     },
 
@@ -166,6 +172,75 @@
         { "id": "r_torres",
           "line": "*quietly, watching Torres relearn how to walk after cryo* You see how it is, right? Two years of 'after this rotation.' The rotation's finally over, Jake. *she bumps your shoulder with hers — gratitude, brotherhood, a door gently closed* You gave me this. Don't think I don't know what it cost the other thing. You're family now. That outranks everything.",
           "fx": [ {"set": "keisha.romance_torres"}, {"karma": 3} ],
+          "next": "end" }
+      ]
+    },
+
+    "desire": {
+      "_scene": "Slow-burn escalation (heat 4/5). A sparring drill that stops pretending. Gate: keisha.romance. Decline costs nothing; the scene re-offers.",
+      "start": "d0",
+      "nodes": [
+        { "id": "d0",
+          "if": [ {"flag": "keisha.romance"}, {"not": {"flag": "keisha.desire"}} ],
+          "line": "*sparring drill, her idea. She's been 'correcting your stance' for ten minutes and her hands stopped pretending to teach two corrections ago* Your guard's high. *she steps in behind you, hips squared to yours, hands sliding from your elbows down to your wrists, her breath at your ear gone deliberately, dangerously slow* And my professionalism is shot, soldier. Has been since you said yes to me. I keep inventing reasons to put my hands on you. *her grip tightens a fraction* Permission to stop needing one.",
+          "choices": [
+            { "text": "(turn in her arms) Permission granted.", "next": "d1", "fx": [ {"love": 3}, {"set": "keisha.desire"} ] },
+            { "text": "About time, Sergeant. I've been losing form on purpose.", "next": "d1b", "fx": [ {"love": 3}, {"set": "keisha.desire"} ] },
+            { "text": "Hold that thought. Not tonight.", "next": "d_no" }
+          ] },
+        { "id": "d1",
+          "line": "*you turn and she's already there — mouth meeting yours like a breach team taking a doorway, one hand fisted in your shirt, nothing tentative anywhere in her* Mm. *she breaks it off an inch, eyes bright, voice gone rough* That's the recon done. The full operation needs a door that locks and a night with no watch rotation. And Jake — *she catches your lower lip with her teeth, slow, a promise armed and ready* — I'm taking point.",
+          "next": "end" },
+        { "id": "d1b",
+          "line": "*the laugh comes out low and dangerous and delighted* Losing form on PURPOSE. Sabotaging my drills for attention. *she spins you by the shoulder and walks you back two steps into the wall, forearm braced beside your head, all of her exactly one inch away and staying there on purpose* Insubordination: logged. Punishment detail to follow — first locked door we find, all night, no rotation. *she pushes off and strolls away, grinning over her shoulder, leaving your heart rate somewhere unprofessional* Stay loud, soldier. That order has PLANS in it now.",
+          "next": "end" },
+        { "id": "d_no",
+          "line": "*she steps back instantly, clean, zero sting — a Marine respects a perimeter the moment it's drawn* Copy that. Holding position. *the grin softens into something steadier* Whenever, Jake. Or never. Having you on my six was already the whole prize. Drill's over — hydrate.",
+          "next": "end" }
+      ]
+    },
+
+    "night": {
+      "_scene": "Private culmination (heat 5/5). Gate: rel 3+, keisha.romance, keisha.desire, host-set loc.private. Explicit opt-in; decline costs nothing and re-offers.",
+      "start": "n0",
+      "nodes": [
+        { "id": "n0",
+          "if": [ {"rel_gte": ["keisha", 3]}, {"flag": "keisha.romance"}, {"flag": "keisha.desire"}, {"flag": "loc.private"}, {"not": {"flag": "keisha.night"}} ],
+          "line": "*she walks the room once — exits, sightlines, habit — then throws the bolt and turns around, and the watch-the-door posture finally, deliberately, completely stands down* Perimeter's set. Watch is cancelled. First night since the table that I am officially off duty — and I'm spending every minute of it on you. *she pulls her shirt off over her head, dog tags swinging bright in the low light, and holds out one hand* Last call to object, soldier. After this I stop being patient about wanting you.",
+          "choices": [
+            { "text": "(take her hand) No objections. Ever.", "next": "n1", "fx": [ {"love": 4} ] },
+            { "text": "Show me what off-duty looks like, Sergeant.", "next": "n1", "fx": [ {"love": 4} ] },
+            { "text": "Tonight just stand down with me. Talk.", "next": "n_no" }
+          ] },
+        { "id": "n1",
+          "line": "*she doesn't pull you to the bunk — she walks you there, hands sure, mouth fierce, every step a controlled demolition of the distance between you* I dreamed about being too late. *the rest of the gear comes off, hers and yours, unceremonious as field-stripping and twice as fast* Every night for months. Too late, too slow, too strapped-down. *she presses you down and follows, weight braced on her forearms, all that lethal grace gone soft exactly nowhere except her eyes* You're not late. You're HERE. So am I — all of me. *and then there is no more cadence and no more drill: there is her strength wrapped around you and your name in her mouth like a rally point, fierce and loud and utterly alive, two soldiers refusing to die quiet in a building built on silence*",
+          "next": "n2" },
+        { "id": "n2",
+          "line": "*after — tangled, sweat-bright, her heartbeat hammering under your ear and slowing by degrees, her hand moving through your hair in slow loops like she's the one finally standing down* ...Hooah. *a low, wrecked laugh* Debrief: worth two floors of monsters and every strap in this building. *she pulls you closer, mouth against your temple, and the last wall comes down at full volume:* The cardamom kitchen, Jake — where I went, on the table, when they almost got my Sunday. Tonight I went somewhere new. It's this. You're the new somewhere. *beat* Repeat that to anyone and I'll deny it under oath.",
+          "fx": [ {"set": "keisha.night"}, {"love": 10}, {"fire": "romance_consummated", "args": {"npc": "keisha"}} ],
+          "next": "end" },
+        { "id": "n_no",
+          "line": "*one nod, no sting — she settles beside you against the wall, shoulder to shoulder, rifle within reach because she's still her* Best watch assignment in the building. *she knocks her knee against yours and leaves it there* Talk, then. Tell me something boring about you. I'm building a file, and the boring pages are my favorites.",
+          "next": "end" }
+      ]
+    },
+
+    "afterglow": {
+      "_scene": "Morning after (warm, character-deepening). Gate: keisha.night, plays once.",
+      "start": "a0",
+      "nodes": [
+        { "id": "a0",
+          "if": [ {"flag": "keisha.night"}, {"not": {"flag": "keisha.afterglow"}} ],
+          "line": "*0600. For the first time since you met her, Keisha Williams has slept past her ninety minutes — sprawled across you, claiming territory, one hand flat over your heart like she's holding a position. She wakes the way she does everything, all at once — then sees where she is, and the all-at-once melts into something nobody else in this building will ever get to see* ...Huh. Three hours. *she stretches against you, lazy as a cat that won a war, voice still gravel* Three straight hours, soldier. No straps. No door-watch. Your doing. *she props up on one elbow and studies you, long and unhurried* New standing orders: that's MY spot, you're MY six, and anything in this building that touches you answers to me personally. *a kiss — slow, certain, signed* Now move out. There's a war on and I want breakfast first.",
+          "choices": [
+            { "text": "Your spot. Permanently.", "next": "a1", "fx": [ {"set": "keisha.afterglow"}, {"love": 3} ] },
+            { "text": "Three hours? You're going soft, Sergeant.", "next": "a1b", "fx": [ {"set": "keisha.afterglow"}, {"love": 3} ] }
+          ] },
+        { "id": "a1",
+          "line": "*she grins like reveille* Permanently. Filed. Witnessed. *she's up and dressing, all crisp efficiency again — except she's humming. Keisha Williams hums now. That one's yours too.*",
+          "next": "end" },
+        { "id": "a1b",
+          "line": "*she throws your own shirt at your head* Soft. SOFT. Say that on the next breach, smartass. *but she's laughing, and she steals one more kiss on the way to her boots — quick, like contraband* Stay loud, Jake. *over her shoulder, wicked:* Last night you were VERY loud. *the door's open before you can answer*",
           "next": "end" }
       ]
     },

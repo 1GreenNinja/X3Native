@@ -3,7 +3,7 @@
   "npc": "lena",
   "display": "LENA",
   "voice": "Lena",
-  "_bio": "Lena — Floor 5 (Drone Manufacturing) captive. The street-smart scavenger: a tunnel-runner from the deep levels who came UP through the alien tubes to steal med supplies and got caught above F5. Not staff, not military — the only captive who chose to be in the building. Few words, total loyalty once earned. Knows the tunnels, the club, and codes she shouldn't. Default carrier-candidate for the mole arc (saved-at-Critical). Loyalty arc, not romance.",
+  "_bio": "Lena — Floor 5 (Drone Manufacturing) captive. The street-smart scavenger: a tunnel-runner from the deep levels who came UP through the alien tubes to steal med supplies and got caught above F5. Not staff, not military — the only captive who chose to be in the building. Few words, total loyalty once earned. Knows the tunnels, the club, and codes she shouldn't. Default carrier-candidate for the mole arc (saved-at-Critical). Loyalty arc that opens — late, expensive, on her terms — into a full romance lane: transactional armor cracking, touch as the one thing she never lets herself buy.",
   "trees": {
 
     "first_meeting": {
@@ -74,7 +74,13 @@
         { "line": "The cells on One have terminals. Old ones. Some of those rooms had locks on the INSIDE once. Think about what that means.", "if": [ {"rel_gte": ["lena", 2]}, {"not": {"flag": "code.1278.known"}} ], "fx_on_play": [ {"fire": "rumor", "args": {"topic": "cell_terminal"}} ] },
         { "line": "*she watches a surveillance drone drift past without targeting you* ...They drift wrong lately. Like they're listening to something further down. *she doesn't elaborate. She doesn't know how to.*", "if": [ {"flag": "lena.carrier"} ], "weight": 1 },
         { "line": "I had a brother. Tunnel took him — flood level, bad map. It's why my maps are good, Jake. Every line on them is paid for.", "if": [ {"rel_gte": ["lena", 3]} ] },
-        { "line": "Most people I guide, I'm counting what they're worth if they don't make it. Stopped counting you somewhere around Floor Three. Don't make me start again.", "if": [ {"rel_gte": ["lena", 3]} ] }
+        { "line": "Most people I guide, I'm counting what they're worth if they don't make it. Stopped counting you somewhere around Floor Three. Don't make me start again.", "if": [ {"rel_gte": ["lena", 3]} ] },
+        { "line": "*she passes you in the corridor and palms something into your hand: nothing. An empty palm. Just the touch.* Toll. Pay it. *she's gone, almost smiling*", "if": [ {"flag": "lena.romance"} ], "weight": 2 },
+        { "line": "Found a room on Three with a door that actually locks. *she says it like trade intel. It is not trade intel.*", "if": [ {"flag": "lena.romance"} ] },
+        { "line": "Down-tunnel you share heat to survive. Up here apparently you share it because it's GOOD. Still adjusting. Keep helping.", "if": [ {"flag": "lena.romance"} ] },
+        { "line": "Stopped pricing your hands. *beat* Started pricing every hour they're not on me. Expensive day so far.", "if": [ {"flag": "lena.night"} ] },
+        { "line": "Drew a route last night. Shortest path between us. *flat* It's zero, Jake. The route is zero. Stand closer.", "if": [ {"flag": "lena.night"} ] },
+        { "line": "Marco's tags don't get cold anymore. Sleep next to a furnace, that's why. *the furnace is you. She will not be saying more words about it.*", "if": [ {"flag": "lena.night"} ] }
       ]
     },
 
@@ -133,6 +139,99 @@
         { "id": "t1c",
           "line": "*a short nod — the right amount of words, which is none* ...Yeah. You'd have made a runner. *it is, from her, approximately a medal of honor*",
           "fx": [ {"rel": ["lena", 3]} ],
+          "next": "end" }
+      ]
+    },
+
+    "romance": {
+      "_scene": "Opt-in declaration, declinable at zero cost. Gate: rel 3 + love >= 70. Tunnel law has no word for wanting without owing — she asks Jake to supply it. Heat 3/5 here; the burn comes later.",
+      "start": "r0",
+      "nodes": [
+        { "id": "r0",
+          "if": [ {"rel_gte": ["lena", 3]}, {"love_gte": 70}, {"not": {"flag": "lena.romance"}}, {"not": {"flag": "lena.romance_declined"}} ],
+          "line": "*she's been quiet a full day — even for her. Then, at the night hold, she sits down across from you, knees almost touching, and lays her knife on the floor between you like an opening bid* Settle-up problem. *she frowns at her own hands* Tunnel law says everything costs and every debt clears. But the ledger's clean, Jake. You don't owe me. I don't owe you. And I still — *the next words cost her more than the code did* — I still want my hands on you. Want yours on me. No trade attached. There's no WORD for that down-tunnel. *she looks up: dark eyes, steady, terrified, certain* So you say it. Whatever it's called up here. Say it and it's yours.",
+          "choices": [
+            { "text": "It's called being mine, Lena. Free. No tolls, ever.", "next": "r1", "fx": [ {"rel": ["lena", 4]}, {"set": "lena.romance"}, {"love": 10}, {"fire": "romance_started", "args": {"npc": "lena"}} ] },
+            { "text": "(move the knife aside and take her hands)", "next": "r1b", "fx": [ {"rel": ["lena", 4]}, {"set": "lena.romance"}, {"love": 10}, {"fire": "romance_started", "args": {"npc": "lena"}} ] },
+            { "text": "Lena — I can't take this. The route stays as it is.", "next": "r2", "fx": [ {"set": "lena.romance_declined"} ] }
+          ] },
+        { "id": "r1",
+          "line": "Mine. *she tries the word like testing a rope — full weight, slowly* ...Doesn't cost anything. Just sits there. Being true. *the smallest, realest smile you will ever see in this building* Stupidest economics I ever heard. *she moves around the knife and fits herself under your arm — deliberate, decided, done* Okay. New map. No tolls anywhere on it. Don't slow down for me. *beat* Slow down for me sometimes.",
+          "next": "end" },
+        { "id": "r1b",
+          "line": "*her hands close around yours, hard — a runner catching a thrown line* ...Yeah. *that's it. That's the whole speech. But she doesn't let go for an hour, and Lena has never once in her life held anything she wasn't ready to drop.*",
+          "next": "end" },
+        { "id": "r2",
+          "line": "*she nods once, picks up the knife, sheathes it — no wound anywhere in the motion; she priced this branch before she sat down* Clean ledger's still the best thing I own. *she settles against the wall beside you, same as every other night, loyal as gravity* Route stays. Best one I ever ran. Nothing's lost, Jake. Down-tunnel, a night where nothing's lost is a RICH night.",
+          "next": "end" }
+      ]
+    },
+
+    "desire": {
+      "_scene": "Slow-burn escalation (heat 4/5). Twelve years of never-touching, spending itself. Gate: lena.romance. Decline costs nothing; her offer has no expiry.",
+      "start": "d0",
+      "nodes": [
+        { "id": "d0",
+          "if": [ {"flag": "lena.romance"}, {"not": {"flag": "lena.desire"}} ],
+          "line": "*resupply stop. She's rewrapping her knife grip — and then she isn't. She's watching your hands strip the rifle, openly, the way she watches nothing, because watching is information given away free* ...Problem. *she sets the knife down* I keep catching myself staring at your hands. Trying to price them. Can't. Only thing in this building I can't put a number on. *she stands, crosses to you, and lays one finger on your wrist — barely a touch; from Lena it's a confession at full volume* Down-tunnel you don't touch what you can't pay for. *her eyes come up* Tell me they're not for sale. Tell me they're already mine and I'll stop rationing.",
+          "choices": [
+            { "text": "(turn your hand over, lace her fingers through) Already yours. Stop rationing.", "next": "d1", "fx": [ {"love": 3}, {"set": "lena.desire"} ] },
+            { "text": "Take what's yours, runner.", "next": "d1b", "fx": [ {"love": 3}, {"set": "lena.desire"} ] },
+            { "text": "Not tonight, Lena.", "next": "d_no" }
+          ] },
+        { "id": "d1",
+          "line": "*her breath goes out of her like a held door released. Then her hands move — over your knuckles, up your forearms, slow and starved, twelve years of never-touching spending itself all at once* Warm. *she sounds almost angry about it* You're WARM. Nobody told me you get to just... HAVE this. *she presses her forehead to your sternum, fingers fisted in your shirt* Find us somewhere with a door, Jake. I want one night where I hold something and nobody takes it.",
+          "next": "end" },
+        { "id": "d1b",
+          "line": "*the look she gives you could strip a wire* Careful. Runners take EVERYTHING that's theirs. *she steps in — quick, certain, a route committed to — and kisses you once, hard, teeth and intent, then steps back with your jacket zip somehow already down, grinning like a successful theft* Down payment. The rest wants a locked door and a long night. *over her shoulder* I've already scouted three.",
+          "next": "end" },
+        { "id": "d_no",
+          "line": "*the finger withdraws, unbothered — a runner reads a closed route and reroutes, no drama* Copy. *she goes back to the knife wrap. Then, not looking up, with almost a smile:* Offer stands. No expiry. First thing I ever put on the table without a clock on it.",
+          "next": "end" }
+      ]
+    },
+
+    "night": {
+      "_scene": "Private culmination (heat 5/5). Gate: rel 3+, lena.romance, lena.desire, host-set loc.private. She sets rules, then abandons them; decline costs nothing and re-offers.",
+      "start": "n0",
+      "nodes": [
+        { "id": "n0",
+          "if": [ {"rel_gte": ["lena", 3]}, {"flag": "lena.romance"}, {"flag": "lena.desire"}, {"flag": "loc.private"}, {"not": {"flag": "lena.night"}} ],
+          "line": "*the safe room. She checks which panel of the door lies — habit — then bolts it and stands a second with her back to you. When she turns around, the armor's already on the floor with her pack; what's left is just Lena: slight, scarred, braver than the whole building* Rules. *she crosses to you and stops close* One: I have never done this without counting what it cost. Two: I'm not counting tonight. Three — *her hands flatten on your chest; her voice drops to almost nothing* — if I forget how to stop holding on, you don't tell anyone. Runner's reputation. *she looks up* Last chance to reroute, Jake. After this, you're load-bearing.",
+          "choices": [
+            { "text": "Hold on, Lena. I'm not going anywhere.", "next": "n1", "fx": [ {"love": 4} ] },
+            { "text": "(tilt her chin up and kiss her — slow, no clock on it)", "next": "n1", "fx": [ {"love": 4} ] },
+            { "text": "Tonight we just hold the room. Sleep next to me.", "next": "n_no" }
+          ] },
+        { "id": "n1",
+          "line": "*she comes apart quiet — of course she does; screaming's spending — but the silence she gives you is louder than anything in the building: her breath catching at every new place your hands learn, her fingers mapping your shoulders like terrain she is claiming for good, her body pulling you in with a strength that's all wiry tunnel-grace and zero apology. She holds on. She forgets how to stop. And somewhere deep in the night she says your name against your throat — once, paid in full, the most expensive word she owns — and after that, nothing in the room costs anything at all.*",
+          "next": "n2" },
+        { "id": "n2",
+          "line": "*after. She's wrapped around you completely — arms, legs, total commitment, a runner's grip on a lifeline — cheek over your heart, one finger moving slow across your back. You realize she's drawing: corridors, junctions, a route.* ...Map of you. *drowsy, unashamed* Best terrain I ever charted. No tolls anywhere on it. The Architect never built anything this good. *her grip tightens once, on purpose: keeping* Marco would laugh himself sick. His sister. Holding on. *and then, barely audible, the entire treasury:* Worth more than what it cost. You. Always.",
+          "fx": [ {"set": "lena.night"}, {"love": 10}, {"fire": "romance_consummated", "args": {"npc": "lena"}} ],
+          "next": "end" },
+        { "id": "n_no",
+          "line": "*a single nod — she banks it like supplies. Then she surprises you anyway: drags her bedroll flush against yours, first time ever* Holding the room. Together. *she settles with her back against your chest and pulls your arm over her like a strap she chose herself* ...This part's free too, huh. *a long exhale — ten years of watchfulness going off-shift at once* Tunnels never had this.",
+          "next": "end" }
+      ]
+    },
+
+    "afterglow": {
+      "_scene": "Morning after (warm, character-deepening). Gate: lena.night, plays once. Runners leave before light. She stays.",
+      "start": "a0",
+      "nodes": [
+        { "id": "a0",
+          "if": [ {"flag": "lena.night"}, {"not": {"flag": "lena.afterglow"}} ],
+          "line": "*first light, or what passes for it down here. Runners leave before light — every story she's ever told you says so. Lena is still there. Awake, chin on your chest, watching you, and she has clearly been there a while* Stayed. *she announces it like a finding from an expedition* Whole night. Didn't check the exits once. *she crawls up and kisses you — unhurried, luxurious, a woman spending from a full account* New rule, and this one's free: the route runs two-way now. You get lost, I come find you. I get lost — *the pause IS the trust* — you come find me. Deal's done. No takebacks. I already drew you on the map.",
+          "choices": [
+            { "text": "Deal. Two-way. Forever.", "next": "a1", "fx": [ {"set": "lena.afterglow"}, {"love": 3} ] },
+            { "text": "You drew me on the map?", "next": "a1b", "fx": [ {"set": "lena.afterglow"}, {"love": 3} ] }
+          ] },
+        { "id": "a1",
+          "line": "Forever. *she taps the word against your sternum like testing rock — solid — then rolls out of the bunk, all business again. But she leaves her knife lying next to your gear while she washes up. Lena. Leaves her knife. Inside someone else's reach. Down-tunnel, that's the whole wedding.*",
+          "next": "end" },
+        { "id": "a1b",
+          "line": "*she produces the cloth map. There, by the under-hall, in her tight little hand: a new marker. A small star, and one word — HOME. She watches you read it, chin up, daring you to make it soft.* Cartography's honest or it's useless. *beat* Don't slow down. *quieter* ...Slow down a little.",
           "next": "end" }
       ]
     },

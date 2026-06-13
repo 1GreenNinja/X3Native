@@ -55,9 +55,38 @@ with full dignity — *"I'm not made of glass — I'm made of night shifts"* —
 (EFLZ_NARRATIVE §3 support-tier); Jake-romance is the Alpha-family lane, which this gate
 respects (Alpha/pre-lock only).
 
+### desire — the off-the-clock scene (heat 4/5, gate: `aria.romance`)
+The exam that stops being an exam: her hands keep charting after medicine is done, and she
+diagnoses *herself* out loud ("Resting heart rate: elevated... That was my diagnosis of me").
+Two accept branches — "stop counting" and "the recommended treatment" — both end on the same
+invitation: *find me a locked door.* Declining ("Not tonight, Aria") costs nothing, sets no
+flag, and the scene re-offers later; her exit line is pure her: "The night shift is patient.
+It's the whole job description."
+
+### night — the culmination (heat 5/5, gate: rel ≥ 3 + `aria.romance` + `aria.desire` + host-set `loc.private`)
+She throws the bolt herself and puts the trauma kit out of reach — the scene's whole thesis
+in one stage direction. Explicit threshold consent ("say yes like you mean it, or say
+nothing and I'll hold your watch instead — both answers keep you"). The scene carries
+through the act in her register — she memorizes him *whole* instead of injured, and the
+counting motif pays off at the peak: she loses count, on purpose, for the first time in her
+careful life. In-scene aftermath (n3) sets `aria.night`, +10 love, fires
+`romance_consummated`. The decline branch (hold my watch) is written as its own small
+intimacy — "Near is its own medicine" — zero cost, re-offers.
+
+### afterglow — the new chart (gate: `aria.night`, once)
+Morning: she's started "a new chart — one patient, lifetime care plan," and the 41 names
+motif closes its loop: *"I carry forty-one names out of this place. Yours is the one I get
+to keep saying."* She hums while packing the kit now. Aria hums now.
+
+### banter (romance-gated additions)
+Six new lines once romanced: the two-beats-too-long pulse check, the belt-hook in passing
+("Withdrawn — I'm not sorry"), greedy-about-your-heartbeat, the steady-hands confession,
+and two remembered-night lines (the kissed scars chart; "I plan to go on being the reason
+you don't" rest).
+
 ### infected_lost — the Siren seed
 If her timer expires, her boss-intro lines invert her caretaking: *"Come here — let me take
 care of you. I was always... so good... at taking care of people."* Hooks the existing
 victim→boss machine; fires `boss_intro` for Lua.
 
-## Flags: `aria.met / .interrupted / .heard_promise / .sq_active / .sq_done / .sq_refused / .romance / .romance_declined` · Item: `aria_manifest`
+## Flags: `aria.met / .interrupted / .heard_promise / .sq_active / .sq_done / .sq_refused / .romance / .romance_declined / .desire / .night / .afterglow` · Item: `aria_manifest` · Host flag read: `loc.private`
