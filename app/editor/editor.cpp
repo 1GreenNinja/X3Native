@@ -166,7 +166,9 @@ std::string LevelDoc::toJson() const {
           << ", \"yaw\": " << num(e.yaw)
           << ", \"scale\": " << num(e.scale)
           << ", \"tint\": " << vec3(e.tint)
-          << ", \"model\": \"" << esc(e.model) << "\" }";
+          << ", \"size\": " << vec3(e.size)
+          << ", \"model\": \"" << esc(e.model) << "\""
+          << ", \"script\": \"" << esc(e.script) << "\" }";
         if (i + 1 < entities.size()) o << ",";
         o << "\n";
     }
@@ -258,7 +260,9 @@ bool LevelDoc::fromJson(const std::string& json) {
                     else if (ek == "yaw")   e.yaw = j.number();
                     else if (ek == "scale") e.scale = j.number();
                     else if (ek == "tint")  j.vec3(e.tint);
+                    else if (ek == "size")  j.vec3(e.size);
                     else if (ek == "model") e.model = j.str();
+                    else if (ek == "script") e.script = j.str();
                     else { /* skip unknown scalar */ j.str(); }
                 }
                 j.eat('}');
