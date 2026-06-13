@@ -13895,6 +13895,16 @@ int main(int argc, char** argv) {
                 scanCorpses(game.corridorEnemies());
                 scanCorpses(game.checkpointEnemies());
                 facilityAlert.update(dt, camPos, obs, nObs, seen);
+                // ---- THE GREAT FOLD stitch: wire the world-map fast-travel gate
+                // to the REAL alert level. Before the fold these lived on separate
+                // branches (world-map's fastTravelGate keyed on the "alert.active"
+                // StoryFlag — a placeholder hook with "no alert system here"; the
+                // facility AlertSystem lived on feat/living-world). Now both are
+                // folded: mirror the live alert level onto that flag so fast travel
+                // is BLOCKED whenever the facility is alerted (level > 0) and frees
+                // up again on de-escalation. (worldMap reads chatTrees.flags().)
+                if (facilityAlert.level() > 0) chatTrees.flags().set("alert.active");
+                else                           chatTrees.flags().clear("alert.active");
                 // EFFECT: investigate — pop the stimulus position (in worlds with
                 // AmbientEcology patrols this routes them; Level 1's combat guards
                 // already hunt via their own AI, so the pop is the Lua/mission seam).
