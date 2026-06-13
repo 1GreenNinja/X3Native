@@ -202,8 +202,17 @@ public:
         float aeMin          = 0.70f;  // r_aemin: adapted-exposure clamp floor
         float aeMax          = 2.20f;  // r_aemax: adapted-exposure clamp ceiling
         float aeKey          = 0.18f;  // r_aekey: target middle-grey key
+        bool  taa            = true;   // r_taa: temporal AA (Halton jitter + history
+                                       // resolve). 0 = jitter fully off + resolve pass
+                                       // skipped -> byte-identical to the pre-TAA path.
+        float taaSharpen     = 0.25f;  // r_taasharpen: post-resolve RCAS-style sharpen
+                                       // amount (0 = off). Only applied when taa is on.
     };
     virtual void setPostFX(const PostFXParams&) {}
+    // Metal ambient-specular floor strength (mesh.frag IBL path): metals in a DARK
+    // baked environment keep an F0-tinted ambient response instead of going black.
+    // 1.0 = default ON, 0.0 = off. Drives the live r_metalambient cvar.
+    virtual void setMetalAmbient(float s) {}
 
     // Per-frame
     virtual FrameContext beginFrame() = 0;
@@ -408,6 +417,27 @@ public:
     // each frame, like setSsaoParams). Calling with enabled=false disables RT AO.
     // No-op on a device without ray tracing. Default no-op (headless / base).
     virtual void          setRtaoParams(const RtaoParams&) {}
+
+    // ---- SSR / ray-traced REFLECTIONS (r_ssr / r_rtreflections) ------------
+    // Hybrid reflections: a half-res (or full-res) compute pass marches each
+    // pixel's reflection ray against the depth buffer and samples LAST frame's
+    // lit scene (the TAA history image) — reflections therefore REQUIRE TAA
+    // (its history is the color source and its accumulation is the temporal
+    // denoiser; with r_taa 0 the whole chain is off and the render is
+    // byte-for-byte unchanged). On ray-query hardware, screen-space misses fall
+    // back to ONE inline ray query into the scene TLAS (rtFallback; auto-
+    // disabled — SSR-only — when rayTracingSupported() is false, e.g. Pascal).
+    // mesh.frag blends the result INTO its split-sum IBL specular by confidence
+    // (replace-where-confident through the same F0/roughness env-BRDF weighting
+    // — energy-conserving, never additive on top of full IBL specular).
+    struct ReflectionParams {
+        bool  ssr        = false;   // master gate (r_ssr; OFF until the app enables it)
+        bool  rtFallback = true;    // ray-query fallback where SSR misses (r_rtreflections)
+        bool  fullRes    = false;   // r_reflquality: false = half-res (default), true = full
+        float intensity  = 1.0f;    // blend-weight scale on the composed reflection [0..1]
+    };
+    // Cached + re-applied each frame, like setRtaoParams. Default no-op.
+    virtual void          setReflectionParams(const ReflectionParams&) {}
 
     // ---- Glass DEV overrides (live r_glass_* cvars, spec §2/§3.2) ----------
     // A dev-time SCALE/OVERRIDE applied to EVERY glass fragment this frame so the

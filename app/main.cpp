@@ -677,6 +677,28 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("r_aemin",          "0.7",  "auto-exposure clamp floor (max darkening of bright scenes)");
     console.registerCVar("r_aemax",          "2.2",  "auto-exposure clamp ceiling (max lift of dark scenes)");
     console.registerCVar("r_aekey",          "0.18", "auto-exposure target middle-grey key");
+    // TAA (temporal anti-aliasing): Halton(2,3) sub-pixel jitter + history resolve
+    // before bloom/tonemap. r_taa 0 turns the jitter fully off and skips the
+    // resolve pass -> byte-identical to the pre-TAA render path (A/B).
+    console.registerCVar("r_taa",        "1",    "temporal AA: 1 = jitter + history resolve (default), 0 = off (byte-identical pre-TAA path)");
+    console.registerCVar("r_taasharpen", "0.25", "post-TAA RCAS-style sharpen amount (0 = off; only applied while r_taa 1)");
+    // Metal ambient-specular floor (mesh.frag IBL path): metals in a DARK baked
+    // environment keep an F0-tinted ambient response instead of rendering black.
+    // 1 = on (default), 0 = off, >1 strengthens. Live (synced in applyRtaoCVars).
+    console.registerCVar("r_metalambient", "1", "metal ambient-specular floor (0 = off; metals keep an F0-tinted ambient in dark environments; live)");
+    // SSR / RT REFLECTIONS (STRIKE 3): a half-res compute pass marches each pixel's
+    // reflection ray against the depth buffer and samples LAST frame's lit scene
+    // (the TAA history image — reflections REQUIRE r_taa 1; with TAA off the whole
+    // chain is off and the render is byte-identical to the pre-reflections build).
+    // On ray-query hardware, screen-space misses fall back to ONE inline ray query
+    // into the scene TLAS (r_rtreflections; non-RT devices are SSR-only
+    // automatically). mesh.frag blends the result INTO its split-sum IBL specular
+    // by confidence + roughness (mirror-sharp below rough 0.25, faded out by 0.6
+    // where the prefiltered env takes over). All live (synced in applyRtaoCVars).
+    console.registerCVar("r_ssr",           "1", "screen-space reflections (needs r_taa 1); 0 = off (IBL-only specular, byte-identical)");
+    console.registerCVar("r_rtreflections", "1", "ray-query reflection fallback where SSR misses (RT hardware only; SSR-only otherwise)");
+    console.registerCVar("r_reflquality",   "0", "reflection buffer resolution: 0 = half-res (default), 1 = full-res");
+    console.registerCVar("r_reflintensity", "1", "reflection blend weight scale [0..1] on the IBL-specular replace");
     // (3rd-person Jake tuning cvars removed 2026-05-27: dialed-in values
     // jake_yoff=1.03 / jake_yawoff_deg=90 / jake_camdist=2.3 / jake_camh=0.37
     // are now baked as member defaults in app/thirdperson.h.)
@@ -733,7 +755,23 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     if (px.aeMin   <= 0.0f) px.aeMin   = 0.7f;
     if (px.aeMax   <  px.aeMin) px.aeMax = px.aeMin;
     if (px.aeKey   <= 0.0f) px.aeKey   = 0.18f;
+    // TAA (live): r_taa gates the jitter + resolve; r_taasharpen [0..1].
+    px.taa        = console.getInt("r_taa") != 0;
+    px.taaSharpen = console.getFloat("r_taasharpen");
+    if (px.taaSharpen < 0.0f) px.taaSharpen = 0.0f;
+    if (px.taaSharpen > 1.0f) px.taaSharpen = 1.0f;
     device.setPostFX(px);
+    // Metal ambient-specular floor (live; default 1.0 = on, 0 = off).
+    device.setMetalAmbient(console.getFloat("r_metalambient"));
+    // SSR / RT reflections (live). The device additionally gates on TAA being
+    // active (the TAA history is the pass's color source) and tier-gates the
+    // ray-query fallback on RT hardware support (Pascal = SSR-only automatically).
+    x3::rhi::IRenderDevice::ReflectionParams rf{};
+    rf.ssr        = console.getInt("r_ssr") != 0;
+    rf.rtFallback = console.getInt("r_rtreflections") != 0;
+    rf.fullRes    = console.getInt("r_reflquality") != 0;
+    rf.intensity  = console.getFloat("r_reflintensity");
+    device.setReflectionParams(rf);
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.
@@ -1481,6 +1519,8 @@ int main(int argc, char** argv) {
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
     bool        testRt = false;
+    bool        testReflections = false;   // --test-reflections: SSR + ray-query refl under validation
+    bool        noRefl = false;            // --norefl: reflections off, TAA on (refl A/B isolate)
     // --test-bestiary (bestiary pass): the data-driven enemy roster. Additive flag.
     bool        testBestiary = false;
     // --test-bosses (Act-1 bosses, Wave 1): the 5 mid-boss defs + the multi-pod
@@ -1668,7 +1708,12 @@ int main(int argc, char** argv) {
     std::string skyShotPath = "G:/X3Native/sky.png";
     // --legacypost A/B: 1 = auto-exposure off (the pre-post-stack look);
     // 2 = also bloom off + tonemap passthrough (raw HDR clamp debugging).
+    // BOTH levels also force TAA off — "legacy" means the pre-strike renderer,
+    // and the bit-identical guarantee predates the TAA jitter.
     int         legacyPost = 0;
+    // --notaa A/B: disable TAA only (jitter fully off + resolve skipped) so
+    // before/after screenshots isolate exactly the TAA contribution.
+    bool        noTaa = false;
     // Showroom preview (--screenshot-showroom [path.png]): load the baked Unity scene
     // export (assets/converted_glb/ShowRoom_Vol30/Example_01.glb), frame the camera on
     // the building cluster, capture a PBR-shaded PNG. Headless, like --screenshot.
@@ -1837,7 +1882,10 @@ int main(int argc, char** argv) {
         if (a == "--smoketest") smoketest = true;
         else if (a == "--legacypost")  legacyPost = 1;   // A/B: auto-exposure OFF (pre-strike look)
         else if (a == "--legacypost2") legacyPost = 2;   // A/B: + bloom OFF + tonemap passthrough
+        else if (a == "--notaa")       noTaa = true;     // A/B: TAA off (jitter + resolve disabled)
+        else if (a == "--norefl")      noRefl = true;    // A/B: reflections off (TAA stays on)
         else if (a == "--test-rt") { smoketest = true; testRt = true; }
+        else if (a == "--test-reflections") { smoketest = true; testReflections = true; }
         else if (a == "--test-jobs") testJobs = true;
         else if (a == "--test-asset") testAsset = true;
         else if (a == "--test-console") testConsole = true;
@@ -2743,15 +2791,31 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // --legacypost: A/B switch — disable the post-stack additions (auto-exposure;
-    // and with --legacypost2 also bloom + ACES->passthrough) so any path, headless
-    // screenshots included, can be compared against the pre-post-stack renderer.
-    if (legacyPost) {
+    // --legacypost: A/B switch — disable the post-stack additions (auto-exposure +
+    // TAA; and with --legacypost2 also bloom + ACES->passthrough) so any path,
+    // headless screenshots included, can be compared against the pre-post-stack
+    // renderer. --notaa: disable ONLY TAA (jitter fully off + resolve skipped) so
+    // before/after captures isolate the TAA contribution. Both also pin the cvars
+    // so the interactive per-frame cvar sync doesn't re-enable the feature.
+    if (legacyPost || noTaa) {
         x3::rhi::IRenderDevice::PostFXParams px{};
-        px.autoExposure = false;                 // legacy = no eye adaptation
-        if (legacyPost > 1) { px.bloomEnabled = false; px.tonemapMode = 0; }
+        if (legacyPost) {
+            px.autoExposure = false;             // legacy = no eye adaptation
+            px.taa = false;                      // legacy = no TAA jitter/resolve
+            if (legacyPost > 1) { px.bloomEnabled = false; px.tonemapMode = 0; }
+        }
+        if (noTaa) px.taa = false;
         device->setPostFX(px);
+        // Reflections ride the TAA history, so TAA-off already disables them in
+        // the device; push an explicit OFF too so the A/B state is unambiguous.
+        device->setReflectionParams(x3::rhi::IRenderDevice::ReflectionParams{});
+        // (The interactive path additionally pins the matching cvars right after
+        // the console exists, so the per-frame cvar sync can't re-enable these.)
     }
+    // --norefl: A/B switch — reflections OFF with TAA (and everything else) left
+    // at defaults, so before/after captures isolate exactly the SSR/RT-reflection
+    // contribution (the post stack + TAA stay identical).
+    if (noRefl) device->setReflectionParams(x3::rhi::IRenderDevice::ReflectionParams{});
 
     // ---- Level Architect EDITOR overlay init (--editor / --screenshot-editor) ----
     // ImGui initializes ONLY here, ONLY when --editor (windowed) or --screenshot-editor
@@ -5298,6 +5362,20 @@ int main(int argc, char** argv) {
             if (collide) sphys->addBox({ hx, hy, hz }, { bx, by, bz }, 0.0f, x3::phys::Layer::Static);
             return id;
         };
+        // POLISHED-FLOOR material dial (SSR/RT reflections money shot): a 1x1
+        // metallic-roughness map (glTF packing: G=roughness, B=metallic, linear)
+        // applied to the showroom's WALKED floor slabs so they read as the sleek
+        // polished showroom surface they were always meant to be — roughness 0.08
+        // (mirror-sharp, inside the SSR full-strength band) + metallic 0.5 (semi-
+        // metal powder coat: strong F0 without fully killing the white diffuse).
+        // Only entities explicitly polish()-ed change; every other white box keeps
+        // the satin dielectric default.
+        x3::rhi::TextureHandle polishedMrTex{};
+        {
+            const uint8_t mr[4] = { 0, 20, 128, 255 };   // R unused, G=rough 0.08, B=metal 0.50
+            polishedMrTex = device->createTexture(mr, 1, 1, /*srgb*/false);
+        }
+        auto polish = [&](uint32_t id) { sscene.get(id).mrTex = polishedMrTex; };
 
         // ===================================================================
         // STAGE 1 — let the player CLIMB to the 2ND FLOOR (y = floor2Y = 3).
@@ -5317,8 +5395,10 @@ int main(int argc, char** argv) {
         const float slabHY = 0.4f;                            // 0.8 m thick slab; TOP at floor2Y
         const float slabCY = floor2Y - slabHY;
         // Left half x~[29.3,71.2], right half x~[73,114.9]; leave the x~[71.2,73] gap.
-        addWhiteBox((29.3f + 71.2f) * 0.5f, slabCY, r2cz, (71.2f - 29.3f) * 0.5f, slabHY, r2hz);
-        addWhiteBox((73.0f + 114.9f) * 0.5f, slabCY, r2cz, (114.9f - 73.0f) * 0.5f, slabHY, r2hz);
+        // Both halves POLISHED (SSR money shot: the 2nd-floor walk reflects the
+        // building lights + window wall in the floor).
+        polish(addWhiteBox((29.3f + 71.2f) * 0.5f, slabCY, r2cz, (71.2f - 29.3f) * 0.5f, slabHY, r2hz));
+        polish(addWhiteBox((73.0f + 114.9f) * 0.5f, slabCY, r2cz, (114.9f - 73.0f) * 0.5f, slabHY, r2hz));
         // CLIMB stair: approximate the GLB left "Stair" (x~[43.8,53.7]) but lengthen
         // the run so the 12 m rise is a walkable ~40 deg. Runs along +Z from a low
         // edge on the ground (z=stairLowZ @ floorY) up to a high edge that meets the
@@ -5636,8 +5716,8 @@ int main(int argc, char** argv) {
             // Atrium floor pad around the lift shaft (shaftX=cx+9, shaftZ=-100) at Y14.
             const float atX0 = shaftX - 9.0f, atX1 = shaftX + 5.0f;
             const float atZ0 = shaftZ - 9.0f, atZ1 = shaftZ + 5.0f;
-            addWhiteBox((atX0+atX1)*0.5f, atriumFloorY - 0.25f, (atZ0+atZ1)*0.5f,
-                        (atX1-atX0)*0.5f, 0.25f, (atZ1-atZ0)*0.5f);
+            polish(addWhiteBox((atX0+atX1)*0.5f, atriumFloorY - 0.25f, (atZ0+atZ1)*0.5f,
+                        (atX1-atX0)*0.5f, 0.25f, (atZ1-atZ0)*0.5f));   // POLISHED (refl money shot)
             // BRIDGE: a white walkway from the strut head landing (sBL.t*) to the atrium
             // edge, both at atriumFloorY, so the player crosses from the strut to the lift.
             {
@@ -8032,6 +8112,25 @@ int main(int argc, char** argv) {
     }
     if (hzbArg) { console->set("r_hzb", "1"); x3::logInfo("[cull] r_hzb seeded from CLI: 1"); }
 
+    // --legacypost / --notaa: pin the matching cvars so the per-frame cvar->device
+    // sync (applyRtaoCVars) keeps the A/B state instead of re-enabling defaults.
+    if (legacyPost) {
+        console->set("r_autoexposure", "0");
+        console->set("r_taa", "0");
+        console->set("r_ssr", "0");              // reflections need TAA; pin OFF explicitly
+        console->set("r_rtreflections", "0");
+        if (legacyPost > 1) { console->set("r_bloom", "0"); console->set("r_tonemap", "0"); }
+    }
+    if (noTaa) {
+        console->set("r_taa", "0");
+        console->set("r_ssr", "0");              // reflections need TAA; pin OFF explicitly
+        console->set("r_rtreflections", "0");
+    }
+    if (noRefl) {
+        console->set("r_ssr", "0");              // --norefl: reflections off, TAA untouched
+        console->set("r_rtreflections", "0");
+    }
+
     // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
     // render path so the BLAS/TLAS build + ray-query AO compute + apply passes are
     // exercised under Vulkan validation. No-op if the device lacks RT support (the
@@ -8043,6 +8142,21 @@ int main(int argc, char** argv) {
         device->setRtaoParams(rp);
         x3::logInfo(std::string("--test-rt: RT AO requested; device rayTracingSupported=") +
                     (device->rayTracingSupported() ? "YES" : "NO"));
+    }
+
+    // --test-reflections: exercise the SSR + ray-query reflection chain under
+    // Vulkan validation in the headless smoketest render path (TAA stays at its
+    // default ON; the depth pre-pass, refl-compute, TLAS build/fallback and the
+    // mesh.frag compose all run). On a non-RT device this degrades to SSR-only
+    // (the tier gate) — still a valid pass of the test.
+    if (testReflections) {
+        console->set("r_ssr", "1");
+        console->set("r_rtreflections", "1");
+        x3::rhi::IRenderDevice::ReflectionParams rf{};
+        rf.ssr = true; rf.rtFallback = true;
+        device->setReflectionParams(rf);
+        x3::logInfo(std::string("--test-reflections: SSR+RT reflections requested; device rayTracingSupported=") +
+                    (device->rayTracingSupported() ? "YES (hybrid SSR+ray-query)" : "NO (SSR-only tier)"));
     }
 
     // ---- Stress-test injection (perf instrumentation layer) ----------------

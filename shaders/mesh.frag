@@ -68,7 +68,16 @@ layout(set = 3, binding = 0) uniform sampler2D ssaoTex;
 layout(set = 3, binding = 1) uniform SsaoControl {
     vec4 ctrl;   // x=enabled, y=strength, z=1/screenW, w=1/screenH
     vec4 ibl;    // x=IBL valid(0/1), y=IBL intensity, z=prefilter max mip, w=metal ambient-spec floor strength (r_metalambient)
+    vec4 refl;   // x=reflections active (0/1), y=intensity, z/w=reserved (SSR/RT reflection pass, r_ssr)
 } ssao;
+// Screen-traced / ray-traced reflection buffer (set3/binding2, half- or full-res
+// RGBA16F): rgb = reflected radiance from the REFLECTION pass (refl.comp — SSR
+// march against the depth buffer sampling LAST frame's lit scene, with an
+// optional ray-query fallback), a = confidence [0,1]. Sampled at the fragment's
+// screen UV (the ssaoTex pattern) and blended into the IBL specular below,
+// gated by ssao.refl.x — when 0 this texture is never read and the IBL path is
+// byte-for-byte the pre-reflections math.
+layout(set = 3, binding = 2) uniform sampler2D reflTex;
 
 // ===========================================================================
 // Image-based lighting (IBL), set 4 — split-sum environment reflections.
@@ -307,6 +316,24 @@ vec3 iblAmbient(vec3 N, vec3 V, vec3 albedo, float metallic, float perceptualRou
     // scaled by the split-sum env BRDF (F0*scale + bias).
     vec3 R = reflect(-V, N);
     vec3 prefiltered = textureLod(prefilterCube, R, perceptualRough * maxMip).rgb;
+
+    // ---- SSR / RT reflections (r_ssr, carried in ssao.refl.x) --------------
+    // Where the reflection pass produced a confident hit, its radiance REPLACES
+    // the prefiltered env radiance — same units (linear HDR incoming radiance
+    // along R), so it rides the IDENTICAL split-sum weighting below (F0*scale +
+    // bias), the metal ambient floor and the Reinhard rolloff. Energy-conserving
+    // by construction: a blend, never an addition on top of full IBL specular.
+    // Roughness gate: the traced ray is MIRROR-sharp, so it only stands in for
+    // the env lobe on polished surfaces — full strength below rough 0.25, faded
+    // out by rough 0.6 where the prefiltered (properly blurred) env takes over.
+    if (ssao.refl.x > 0.5) {
+        vec2 ruv = gl_FragCoord.xy * ssao.ctrl.zw;       // pixel -> [0,1] screen UV
+        vec4 rr  = texture(reflTex, ruv);
+        float rw = clamp(rr.a, 0.0, 1.0) * clamp(ssao.refl.y, 0.0, 1.0)
+                 * (1.0 - smoothstep(0.25, 0.6, perceptualRough));
+        prefiltered = mix(prefiltered, rr.rgb, rw);
+    }
+
     vec2 ab = texture(brdfLUT, vec2(NoV, perceptualRough)).rg;
     vec3 specular = prefiltered * (F0 * ab.x + ab.y);
 

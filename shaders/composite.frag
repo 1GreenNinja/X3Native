@@ -25,6 +25,12 @@ layout(push_constant) uniform Push {
     float exposure;        // exposure BIAS (r_exposure) on top of auto-exposure
     int   tonemapMode;     // 0 = passthrough clamp (debug A/B), 1 = ACES (default)
     int   aeEnabled;       // 1 = multiply in the adapted auto-exposure
+    float sharpen;         // r_taasharpen: post-TAA sharpen amount (0 = OFF: the
+                           // sharpen taps are never sampled -> byte-identical to
+                           // the pre-sharpen composite). Forced 0 when TAA is off.
+    float texelW;          // 1/extent for the sharpen cross taps
+    float texelH;
+    float pad0;
 } pc;
 
 layout(location = 0) in  vec2 vUV;
@@ -40,6 +46,21 @@ vec3 tonemapACES(vec3 x) {
 
 void main() {
     vec3 color = texture(sceneTex, vUV).rgb;
+    // Post-TAA SHARPEN (RCAS-style, original): TAA's temporal accumulation costs
+    // a little micro-contrast; a small unsharp restores it. The 4-neighbor cross
+    // unsharp result is CLAMPED to the local min/max so it never rings or
+    // amplifies HDR fireflies (the RCAS idea: sharpen within the local range).
+    // sharpen == 0.0 takes the branch never -> identical to the pre-TAA composite.
+    if (pc.sharpen > 0.0) {
+        vec3 n = texture(sceneTex, vUV + vec2(0.0, -pc.texelH)).rgb;
+        vec3 s = texture(sceneTex, vUV + vec2(0.0,  pc.texelH)).rgb;
+        vec3 w = texture(sceneTex, vUV + vec2(-pc.texelW, 0.0)).rgb;
+        vec3 e = texture(sceneTex, vUV + vec2( pc.texelW, 0.0)).rgb;
+        vec3 mn = min(color, min(min(n, s), min(w, e)));
+        vec3 mx = max(color, max(max(n, s), max(w, e)));
+        vec3 sharp = color + (color * 4.0 - (n + s + w + e)) * 0.25 * pc.sharpen;
+        color = clamp(sharp, mn, mx);
+    }
     // Additive glow in linear light. Guarded so a DISABLED bloom (r_bloom 0 —
     // the chain didn't run this frame) never samples the untouched mip target.
     if (pc.bloomIntensity > 0.0)

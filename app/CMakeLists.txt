@@ -104,8 +104,11 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/bloom_down.frag
     ${CMAKE_SOURCE_DIR}/shaders/bloom_up.frag
     ${CMAKE_SOURCE_DIR}/shaders/composite.frag
+    ${CMAKE_SOURCE_DIR}/shaders/taa_resolve.frag
     ${CMAKE_SOURCE_DIR}/shaders/autoexposure.comp
     ${CMAKE_SOURCE_DIR}/shaders/depth.vert
+    ${CMAKE_SOURCE_DIR}/shaders/depth_cutout.vert
+    ${CMAKE_SOURCE_DIR}/shaders/depth_cutout.frag
     ${CMAKE_SOURCE_DIR}/shaders/ssao.frag
     ${CMAKE_SOURCE_DIR}/shaders/ssao_blur.frag
     ${CMAKE_SOURCE_DIR}/shaders/ssgi_gather.frag
@@ -167,6 +170,23 @@ foreach(s ${SHADER_SRCS_RT})
         VERBATIM)
     list(APPEND SPV_FILES ${out})
 endforeach()
+# Reflections (refl.comp) builds TWO variants from one source:
+#   refl.comp.spv    — SSR-only (no ray query; runs on any Vulkan 1.3 device)
+#   refl_rt.comp.spv — SSR + inline ray-query fallback (-DREFL_RT=1; RT devices)
+add_custom_command(
+    OUTPUT ${SPV_DIR}/refl.comp.spv
+    COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${CMAKE_SOURCE_DIR}/shaders/refl.comp -o ${SPV_DIR}/refl.comp.spv
+    DEPENDS ${CMAKE_SOURCE_DIR}/shaders/refl.comp
+    COMMENT "glslc refl.comp (SSR)"
+    VERBATIM)
+add_custom_command(
+    OUTPUT ${SPV_DIR}/refl_rt.comp.spv
+    COMMAND ${Vulkan_GLSLC_EXECUTABLE} --target-env=vulkan1.3 --target-spv=spv1.4 -DREFL_RT=1
+            ${CMAKE_SOURCE_DIR}/shaders/refl.comp -o ${SPV_DIR}/refl_rt.comp.spv
+    DEPENDS ${CMAKE_SOURCE_DIR}/shaders/refl.comp
+    COMMENT "glslc refl.comp (SSR + ray-query) -> refl_rt.comp.spv"
+    VERBATIM)
+list(APPEND SPV_FILES ${SPV_DIR}/refl.comp.spv ${SPV_DIR}/refl_rt.comp.spv)
 add_custom_target(x3shaders DEPENDS ${SPV_FILES})
 add_dependencies(X3Engine x3shaders)
 

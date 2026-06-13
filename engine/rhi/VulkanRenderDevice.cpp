@@ -370,6 +370,7 @@ public:
     void shutdown() override {
         if (m_dev.device) vkDeviceWaitIdle(m_dev.device);
         shutdownEditorUI();   // editor-only ImGui teardown (no-op if --editor was absent)
+        destroyRefl();        // SSR/RT reflections pipelines/targets (no-op if never built)
         destroyRt();          // RT AO pipelines/targets + AS module (no-op if never built)
         destroySkinning();
         destroyDebris();
@@ -608,8 +609,14 @@ public:
     // the first adapted frame lands on target instantly (no multi-second crawl).
     void setPostFX(const PostFXParams& p) override {
         if (p.autoExposure && !m_post.autoExposure) m_aeSnap = true;
+        // TAA toggled ON: the history image holds stale (or never-written) data —
+        // invalidate so the first TAA frame is a clean passthrough, not a blend
+        // against garbage. Toggling OFF needs nothing (the passes simply stop).
+        if (p.taa && !m_post.taa) m_taaHistoryValid = false;
         m_post = p;
     }
+    // Metal ambient-specular floor strength (mesh.frag IBL path; rides ssao ctrl ibl.w).
+    void setMetalAmbient(float s) override { m_metalAmbient = (s >= 0.0f) ? s : 1.0f; }
 
     void setShadowBounds(float cx, float cy, float cz, float halfExtent) override {
         m_shadowOverride  = true;
@@ -659,6 +666,16 @@ public:
         // RT device, beginFrame() lazily inits the AS module + RT-AO pipelines.
         m_rtao = p;
         m_rtao.rays = std::max(1, std::min(32, m_rtao.rays));
+    }
+
+    void setReflectionParams(const ReflectionParams& p) override {
+        // Cache a snapshot (re-applied each frame, like setRtaoParams). The chain
+        // is built LAZILY on first activation in prepareFrameData (a run that never
+        // enables r_ssr pays zero init cost) and requires TAA to be active (the TAA
+        // history image is the previous-frame color source). rtFallback additionally
+        // requires m_rtSupported — Pascal-class devices get SSR-only automatically.
+        m_refl = p;
+        m_refl.intensity = std::max(0.0f, std::min(1.0f, m_refl.intensity));
     }
 
     void setGlassDevParams(const GlassDevParams& p) override {
@@ -978,12 +995,23 @@ public:
         // m_rtaoActiveThisFrame stays false and the graph adds NO RT passes — the
         // raster/SSAO path is byte-for-byte unchanged.
         m_rtaoActiveThisFrame = false;
-        if (m_rtSupported && m_rtao.enabled) {
-            if (ensureRtaoReady() && buildRtSceneAS() && m_rt.lastInstanceCount() > 0) {
-                prepareRtaoUbo();
-                m_rtaoActiveThisFrame = true;
+        m_reflRtThisFrame = false;
+        // Reflections' ray-query fallback reuses the SAME BLAS/TLAS this block
+        // builds — one AS, two consumers (RT AO + RT reflections).
+        const bool reflRtWant = m_reflActiveThisFrame && m_refl.rtFallback
+                             && (m_reflPipeRt != VK_NULL_HANDLE);
+        if (m_rtSupported && (m_rtao.enabled || reflRtWant)) {
+            const bool coreReady = m_rtao.enabled ? ensureRtaoReady() : ensureRtCore();
+            if (coreReady && buildRtSceneAS() && m_rt.lastInstanceCount() > 0) {
+                if (m_rtao.enabled) {
+                    prepareRtaoUbo();
+                    m_rtaoActiveThisFrame = true;
+                }
+                if (reflRtWant) m_reflRtThisFrame = true;
             }
         }
+        // Fill the per-frame reflection UBO (matrices captured by prepareFrameData).
+        if (m_reflActiveThisFrame) prepareReflUbo();
 
         const bool wantCapture = (m_captureArmed && m_captureBuf &&
                                   m_captureW == m_extent.width && m_captureH == m_extent.height);
@@ -2185,6 +2213,51 @@ private:
         glm::mat4 view = glm::lookAt(m_camPos, m_camPos + fwd, glm::vec3(0, 1, 0));
         glm::mat4 proj = glm::perspective(glm::radians(m_camFov), aspect, 0.1f, 200.0f);
         proj[1][1] *= -1.0f;
+
+        // ---- TAA: sub-pixel jitter + reprojection matrices --------------------
+        // The UNJITTERED view-proj is captured FIRST (it is what the resolve pass
+        // reprojects history with next frame), then — when TAA is active — a
+        // Halton(2,3) sub-pixel offset is folded into `proj` so EVERY raster pass
+        // downstream (depth pre-pass, main, shadow-receive, water, glass, GI,
+        // SSAO, particles, sky — they all derive from this proj/viewProj) rasters
+        // the same jittered frame consistently. Adding to proj[2][0]/[2][1] (the
+        // z column) yields a CONSTANT NDC shift because w_clip = -z_view: a clean
+        // whole-screen sub-pixel translation. r_taa 0 -> zero jitter, matrices
+        // byte-identical to the pre-TAA build.
+        //
+        // DETERMINISM (documented scheme): the jitter phase is driven purely by a
+        // frame COUNTER (no wall clock), so any fixed-frame-count path — all the
+        // --screenshot*/--test captures render a fixed number of settle frames —
+        // produces bit-identical pixels run over run. Screenshots capture the
+        // CONVERGED frame (settle counts exceed the 8-frame Halton cycle).
+        const bool taaWant = m_post.taa && (m_taaPipe != VK_NULL_HANDLE)
+                          && (m_taaOutImg != VK_NULL_HANDLE) && (m_taaHistImg != VK_NULL_HANDLE);
+        const glm::mat4 unjitteredVP = proj * view;
+        glm::vec2 jit(0.0f);
+        if (taaWant) {
+            // Camera CUT detection: a teleport / hard snap makes last frame's
+            // history a lie — reset instead of smearing it across the new view.
+            if (m_taaPrevCamValid) {
+                const float posDelta = glm::length(m_camPos - m_taaPrevCamPos);
+                const float yawDelta   = std::abs(m_camYaw   - m_taaPrevYaw);
+                const float pitchDelta = std::abs(m_camPitch - m_taaPrevPitch);
+                const float fovDelta   = std::abs(m_camFov   - m_taaPrevFov);
+                if (posDelta > 2.0f || yawDelta > 1.5f || pitchDelta > 1.5f || fovDelta > 0.5f)
+                    m_taaHistoryValid = false;
+            }
+            // Halton(2,3), 8-sample cycle, centered on the pixel: [-0.5, 0.5).
+            auto halton = [](uint32_t i, uint32_t base) {
+                float f = 1.0f, r = 0.0f;
+                while (i > 0) { f /= (float)base; r += f * (float)(i % base); i /= base; }
+                return r;
+            };
+            const uint32_t hi = (m_taaFrameNum % 8u) + 1u;
+            jit = glm::vec2(halton(hi, 2) - 0.5f, halton(hi, 3) - 0.5f);
+            proj[2][0] += jit.x * 2.0f / (float)std::max(1u, m_extent.width);
+            proj[2][1] += jit.y * 2.0f / (float)std::max(1u, m_extent.height);
+            m_taaFrameNum++;
+        }
+
         FrameUBO ubo{};
         ubo.viewProj = proj * view;
         m_lastViewProj = ubo.viewProj;  // cached for the debris instanced draw UBO
@@ -2194,6 +2267,47 @@ private:
         // emitGroup() tests each instance's world bounding sphere against these.
         // Same planes (normalized) + same sphere test as the GPU cull.comp.
         m_frameFrustum = extractFrustumPlanes(ubo.viewProj);
+
+        // TAA resolve UBO (per frame-in-flight): the CURRENT jittered inverse
+        // viewProj (matches the depth buffer being rasterized this frame) + the
+        // PREVIOUS frame's UNJITTERED viewProj (the history was resolved on
+        // unjittered pixel centers). History-valid + blend ride in params0.
+        if (taaWant && m_taaUboMapped[m_frameIdx]) {
+            TaaUBO tu{};
+            tu.invViewProjCur = glm::inverse(ubo.viewProj);
+            tu.viewProjPrev   = m_taaHistoryValid ? m_taaPrevVP : unjitteredVP;
+            tu.params0 = glm::vec4(1.0f / (float)std::max(1u, m_extent.width),
+                                   1.0f / (float)std::max(1u, m_extent.height),
+                                   m_taaHistoryValid ? 1.0f : 0.0f,
+                                   0.9f /* history blend weight */);
+            tu.params1 = glm::vec4(jit.x, jit.y, 0.0f, 0.0f);
+            std::memcpy(m_taaUboMapped[m_frameIdx], &tu, sizeof(TaaUBO));
+        }
+        // ---- SSR/RT reflections: activate for THIS frame --------------------
+        // Decided here (not in buildAndExecuteGraph) because (a) the SSAO control
+        // UBO below carries the mesh.frag enable flag, (b) endFrame's AS-build
+        // gate consults it, and (c) the PREVIOUS frame's unjittered viewProj must
+        // be captured BEFORE the stash just below overwrites it. Reflections
+        // REQUIRE TAA: its history image is the previous-frame color source and
+        // its accumulation is the temporal denoiser. ensureReflReady() builds the
+        // chain lazily (zero cost for runs that never enable r_ssr). When the
+        // history is invalid (first frame / cut / toggle) the pass still runs but
+        // writes confidence 0 (camPos.w gate in refl.comp) -> pure IBL fallback.
+        m_reflActiveThisFrame = false;
+        m_reflHistValid = false;
+        if (m_refl.ssr && taaWant && ensureReflReady()) {
+            m_reflActiveThisFrame = true;
+            m_reflHistValid = m_taaHistoryValid;
+            m_reflPrevVP = m_taaHistoryValid ? m_taaPrevVP : unjitteredVP;
+        }
+
+        // Stash this frame's UNJITTERED viewProj + camera pose for next frame's
+        // reprojection + cut detection (kept current even with TAA off so a later
+        // r_taa 1 doesn't compare against an ancient pose).
+        m_taaPrevVP = unjitteredVP;
+        m_taaPrevCamPos = m_camPos; m_taaPrevYaw = m_camYaw;
+        m_taaPrevPitch = m_camPitch; m_taaPrevFov = m_camFov;
+        m_taaPrevCamValid = true;
 
         // ---- GLASS control UBO (set 4, binding 1): camera world pos + time +
         // screen-space pixel->UV + the live dev-cvar overrides. glass.frag reads it
@@ -2249,6 +2363,14 @@ private:
             // .w = metal ambient-specular floor strength (r_metalambient, default 1).
             const float iblValid = (m_iblReady && m_iblBaked) ? 1.0f : 0.0f;
             sc.ibl = glm::vec4(iblValid, 1.0f, (float)(kIblPrefilterMips - 1), m_metalAmbient);
+            // Reflections lane (mesh.frag set3): x gates the reflTex sample + IBL
+            // blend; y is the live intensity. ONLY set when the refl pass actually
+            // runs this frame, so mesh.frag never reads a stale/unwritten buffer.
+            // (The IBL probe BAKE shares this UBO — like the SSAO lane, the bake's
+            // gl_FragCoord-based UV is meaningless there, an accepted, tiny env-
+            // bake approximation inherited from the existing SSAO precedent.)
+            sc.refl = glm::vec4(m_reflActiveThisFrame ? 1.0f : 0.0f,
+                                m_refl.intensity, 0.0f, 0.0f);
             if (m_ssaoCtrlMapped[m_frameIdx])
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
         }
@@ -2474,6 +2596,7 @@ private:
             const uint32_t baseRow = row;
             const glm::vec3 meshC = mit->second.boundsCenter;
             const float     meshR = mit->second.boundsRadius;
+            bool anyCutout = false;   // any instance with texIndex bit31 (glTF alphaMode MASK)
             for (uint32_t ri : list) {
                 const DrawRecord& dr = m_drawRecords[ri];
                 // CPU per-object frustum cull (r_frustumcull). Skip an instance whose
@@ -2508,6 +2631,7 @@ private:
                         (bypass || sphereInFrustum(m_frameFrustum, ws)))
                         ++cullExpectedCount;
                 }
+                if (dr.texIndex & 0x80000000u) anyCutout = true;
                 ObjectData& o = objs[row++];
                 std::memcpy(&o.model, dr.model, sizeof(o.model));
                 o.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
@@ -2542,6 +2666,9 @@ private:
             c.vertexOffset  = 0;
             c.firstInstance = baseRow;
             m_drawMeshOrder[cmdCount] = mid;
+            // Cutout groups need the alpha-testing depth pre-pass variant when
+            // reflections force the pre-pass on (see recordDepthPrePassBody).
+            m_drawMeshCutout[cmdCount] = anyCutout ? 1u : 0u;
             ++cmdCount;
             m_building.drawCalls += 1;
             m_building.objectsDrawn += drawn;
@@ -2638,10 +2765,39 @@ private:
         VkRect2D scis{ {0,0}, m_extent };
         vkCmdSetViewport(cmd, 0, 1, &vp);
         vkCmdSetScissor(cmd, 0, 1, &scis);
+        // Alpha-CUTOUT groups (foliage / people billboards, texIndex bit31): the
+        // plain pipeline has no fragment stage, so it writes depth for the FULL
+        // quad — the color pass then alpha-discards those texels under EQUAL and
+        // nothing ever fills them (flat clear-color rectangles around trees). The
+        // cutout pipeline (depth_cutout.vert/.frag) replicates mesh.frag's exact
+        // discard. ONLY engaged on reflections frames: SSAO/GI-only pre-passes
+        // keep the historical full-quad depth bit-for-bit (r_ssr 0 + r_taa A/B
+        // md5 guarantees vs the pre-reflections build stay intact; promoting the
+        // cutout fix to SSAO/GI is a separate, deliberate change).
+        const bool cutoutAware = m_reflActiveThisFrame
+                              && (m_depthPreCutoutPipeline != VK_NULL_HANDLE);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_depthPrePipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_shadowLayout,
                                 0, 1, &fr.objSet, 0, nullptr);
+        bool cutoutBound = false;   // which of the two pipelines is currently bound
         for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
+            const bool wantCutout = cutoutAware && (m_drawMeshCutout[i] != 0);
+            if (wantCutout != cutoutBound) {
+                vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    wantCutout ? m_depthPreCutoutPipeline : m_depthPrePipeline);
+                if (wantCutout) {
+                    // set 0 = objSet (layout-compatible with the plain pipeline's
+                    // m_shadowLayout, stays bound), set 1 = bindless textures.
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        m_depthPreCutoutLayout, 0, 1, &fr.objSet, 0, nullptr);
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        m_depthPreCutoutLayout, 1, 1, &m_bindlessSet, 0, nullptr);
+                } else {
+                    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        m_shadowLayout, 0, 1, &fr.objSet, 0, nullptr);
+                }
+                cutoutBound = wantCutout;
+            }
             const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
             VkDeviceSize off = 0;
             VkBuffer vb = mh.drawVbo(m_frameIdx);
@@ -2660,12 +2816,15 @@ private:
     void recordMeshDraws(VkCommandBuffer cmd) {
         if (m_frameCmdCount == 0 || !m_meshPipeline) return;
         auto& fr = m_frames[m_frameIdx];
-        // Pre-pass on (SSAO OR GI) -> the EQUAL/no-write pipeline (the depth pre-pass
-        // already wrote depth). Neither on -> the original LESS/write pipeline (main
-        // pass owns depth, no pre-pass ran). The mesh.frag AO sample is independently
-        // gated by the SSAO control UBO, so the EQUAL pipeline is safe when GI is on
-        // but SSAO is off (no AO is read in that case).
-        const bool prePassOn = m_ssao.enabled || m_gi.enabled;
+        // Pre-pass on (SSAO, GI, OR reflections) -> the EQUAL/no-write pipeline (the
+        // depth pre-pass already wrote depth). None on -> the original LESS/write
+        // pipeline (main pass owns depth, no pre-pass ran). The mesh.frag AO sample is
+        // independently gated by the SSAO control UBO, so the EQUAL pipeline is safe
+        // when GI/reflections are on but SSAO is off (no AO is read in that case).
+        // m_reflActiveThisFrame matches the graph's reflOn exactly (it is cleared in
+        // buildAndExecuteGraph when TAA is off), so this never diverges from the
+        // graph's depth-prepass / LOAD-vs-CLEAR decision.
+        const bool prePassOn = m_ssao.enabled || m_gi.enabled || m_reflActiveThisFrame;
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           prePassOn ? m_meshPipeline : m_meshPipelineNoSsao);
         // set 0 = bindless textures, set 1 = object SSBO + camera UBO, set 2 = shadow
@@ -2804,9 +2963,13 @@ private:
         // ---- Downsample chain ----
         for (uint32_t i = 0; i < kBloomMips; ++i) {
             const bool firstPass = (i == 0);
-            // Source: HDR scene (mip0) or the previous, larger mip.
+            // Source: the post source (TAA output when TAA ran this frame, the
+            // raw HDR scene otherwise — `rgHdr` is already the right resource;
+            // pick the matching pre-written descriptor set) or the previous mip.
             RgResource srcRes = firstPass ? rgHdr : rgMip[i - 1];
-            VkDescriptorSet srcSet = firstPass ? m_setHdr : m_setMip[i - 1];
+            VkDescriptorSet srcSet = firstPass
+                ? (m_taaActiveThisFrame ? m_setTaaOut : m_setHdr)
+                : m_setMip[i - 1];
             // Source resolution (1/texel) for the filter taps.
             VkExtent2D srcExt = firstPass ? m_extent : m_bloomMips[i - 1].extent;
             const VkExtent2D dstExt = m_bloomMips[i].extent;
@@ -3046,9 +3209,23 @@ private:
         // RT ambient occlusion (hardware ray query). Active only when r_rtao is on,
         // the device supports RT, and the TLAS built this frame (set in endFrame).
         const bool rtaoOn = m_rtaoActiveThisFrame;
-        // The camera depth PRE-PASS runs when SSAO, GI, OR RT AO need a complete depth
-        // buffer before the post chain; the main pass then tests EQUAL (no depth write).
-        const bool prePassOn = ssaoOn || giOn || rtaoOn;
+        // TAA: active when enabled (r_taa) and the pipeline + targets exist. The
+        // resolve pass reads the finished HDR scene + depth + history and writes
+        // the TAA output; AE/bloom/composite then read the TAA output instead of
+        // the raw HDR scene. OFF -> zero added passes, raw-HDR wiring unchanged.
+        // (Computed up here — reflections and the depth pre-pass depend on it.)
+        const bool taaOn = m_post.taa && (m_taaPipe != VK_NULL_HANDLE)
+                        && (m_taaOutImg != VK_NULL_HANDLE) && (m_taaHistImg != VK_NULL_HANDLE);
+        m_taaActiveThisFrame = taaOn;
+        // SSR/RT reflections (refl.comp): decided in prepareFrameData; hard-gated
+        // on TAA here too (its history image is the pass's color source) so the
+        // recordMeshDraws pipeline choice stays consistent with this graph.
+        if (!taaOn) m_reflActiveThisFrame = false;
+        const bool reflOn = m_reflActiveThisFrame;
+        // The camera depth PRE-PASS runs when SSAO, GI, RT AO, OR reflections need a
+        // complete depth buffer before the main pass; the main pass then tests EQUAL
+        // (no depth write).
+        const bool prePassOn = ssaoOn || giOn || rtaoOn || reflOn;
         // Water adds a pass after the main mesh pass that samples + depth-tests the
         // scene depth this frame (gated; OFF == no water pass + zero cost).
         const bool waterOn = m_water.enabled;
@@ -3075,9 +3252,12 @@ private:
         // Frost (M4): the blurred-mip chain on the scene copy. Needs the frost
         // downsample pipeline + per-mip descriptor sets (built in createGlassResources).
         const bool glassFrostOn = glassCopyOn && (m_glassFrostPipe != VK_NULL_HANDLE);
+        // (TAA's taaOn + m_taaActiveThisFrame were computed above, before prePassOn,
+        // because the reflections gate + depth pre-pass depend on them.)
         // The scene depth must be STORED (not transient) when water/GI/particles/debris/
-        // glass OR RT AO (its compute + apply passes sample it) read it.
-        const bool storeDepth = waterOn || giOn || particlesOn || debrisDraw || rtaoOn || glassOn;
+        // glass OR RT AO (its compute + apply passes sample it) OR TAA (the resolve
+        // reconstructs world position from it) read it. (reflOn implies taaOn.)
+        const bool storeDepth = waterOn || giOn || particlesOn || debrisDraw || rtaoOn || glassOn || taaOn;
         RgResource rgSsaoRaw  = m_graph.importImage("ssao.raw",  m_ssaoRawImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgSsaoBlur = m_graph.importImage("ssao.blur", m_ssaoBlurImg,
@@ -3086,6 +3266,11 @@ private:
         // Imported UNDEFINED each frame (fully overwritten by the compute pass).
         RgResource rgRtao = {};
         if (rtaoOn) rgRtao = m_graph.importImage("rtao.ao", m_rtaoImg,
+            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        // Reflection storage image (compute writes GENERAL, mesh.frag samples it).
+        // Imported UNDEFINED each frame (fully overwritten by the refl pass).
+        RgResource rgRefl = {};
+        if (reflOn) rgRefl = m_graph.importImage("refl.out", m_reflImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         // Scene-color copy (glass refraction/frost). Imported UNDEFINED each frame —
         // its content is fully (re)written by the copy pass (mip0) + frost passes
@@ -3099,6 +3284,17 @@ private:
         // within a frame so importing UNDEFINED is correct (each is fully written by
         // its producing pass before being read; the cross-frame data lives in the
         // image memory, not the graph's per-frame layout state).
+        // TAA resolve output + persistent history. The output is fully overwritten
+        // by the resolve each frame -> imported UNDEFINED. The HISTORY persists
+        // across frames (its DATA must survive), so it is imported with its tracked
+        // post-frame state (m_taaHistState, like the shadow map) so the graph
+        // derives the cross-frame WAR/transition barriers correctly.
+        RgResource rgTaaOut = {}, rgTaaHist = {};
+        if (taaOn) {
+            rgTaaOut = m_graph.importImage("taa.out", m_taaOutImg,
+                ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+            rgTaaHist = m_graph.importImage("taa.hist", m_taaHistImg, m_taaHistState);
+        }
         RgResource rgGiRaw = {}, rgGiAccumW = {}, rgGiAccumH = {}, rgGiDenoise = {}, rgGiPrevDepth = {};
         if (giOn) {
             const uint32_t writeIdx = m_giAccumWrite, histIdx = writeIdx ^ 1u;
@@ -3389,6 +3585,38 @@ private:
             m_graph.addPass(std::move(rp));
         }
 
+        // ---- SSR/RT REFLECTIONS compute (refl.comp) --------------------------
+        // After the depth pre-pass (complete depth) and BEFORE the main color pass
+        // (which samples the output in mesh.frag): march each pixel's reflection
+        // ray against the depth buffer, sampling LAST frame's lit scene from the
+        // TAA history image (prev-frame color = no same-frame hazards); optional
+        // inline ray-query fallback against the TLAS built in endFrame (no graph
+        // dependency needed for it — same as rtao-compute). Reads depth
+        // (DEPTH_READ_ONLY) + taa.hist (SHADER_READ_ONLY), writes the rgba16f
+        // reflection image (GENERAL). Gated on reflOn (zero cost / no pass off).
+        if (reflOn) {
+            RenderPassDesc rp{};
+            rp.name = "refl-compute";
+            rp.queue = RgQueue::Compute;
+            rp.usesDynamicRendering = false;
+            rp.addUse(ResourceUse{
+                rgRefl, VK_IMAGE_LAYOUT_GENERAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            rp.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            rp.addUse(ResourceUse{
+                rgTaaHist, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            rp.recordCtx = this;
+            rp.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordReflComputeBody(c); };
+            m_graph.addPass(std::move(rp));
+        }
+
         // ---- Pass 2: main color pass (sky + meshes) -> LINEAR HDR target ----
         // Renders the lit scene into the R16G16B16A16_SFLOAT HDR target in linear
         // light (no tonemap). The HUD is drawn later, in the composite pass, on the
@@ -3446,6 +3674,15 @@ private:
             if (ssaoOn) {
                 colorPass.addUse(ResourceUse{
                     rgSsaoBlur, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            }
+            // When reflections ran, mesh.frag samples the reflection buffer —
+            // declare it so the graph transitions it GENERAL -> SHADER_READ_ONLY.
+            if (reflOn) {
+                colorPass.addUse(ResourceUse{
+                    rgRefl, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                     VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
@@ -4027,6 +4264,94 @@ private:
         }
 
         // ================================================================
+        // TAA RESOLVE (temporal anti-aliasing) — after the LAST HDR writer
+        // (particles), BEFORE auto-exposure / bloom / composite, the standard
+        // order: scene -> TAA -> bloom -> AE -> tonemap -> UI. Reads the finished
+        // jittered HDR scene + the scene depth + the persistent history image,
+        // writes the resolved TAA output; a tiny copy pass then refreshes the
+        // history from the output for next frame. Everything downstream (AE,
+        // bloom bright-pass, composite) reads the TAA OUTPUT instead of the raw
+        // HDR scene when TAA is on. Gated: r_taa 0 adds zero passes.
+        // ----------------------------------------------------------------
+        if (taaOn) {
+            m_taaAttach = VkRenderingAttachmentInfo{};
+            m_taaAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_taaAttach.imageView = m_taaOutView;
+            m_taaAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_taaAttach.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;  // fully written
+            m_taaAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            RenderPassDesc tp{};
+            tp.name = "taa-resolve";
+            tp.addUse(ResourceUse{
+                rgTaaOut, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            tp.addUse(ResourceUse{
+                rgHdr, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            tp.addUse(ResourceUse{
+                rgTaaHist, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            tp.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            tp.usesDynamicRendering = true;
+            m_taaRenderInfo = VkRenderingInfo{};
+            m_taaRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_taaRenderInfo.renderArea = { {0,0}, m_extent };
+            m_taaRenderInfo.layerCount = 1;
+            m_taaRenderInfo.colorAttachmentCount = 1;
+            m_taaRenderInfo.pColorAttachments = &m_taaAttach;
+            tp.renderInfo = m_taaRenderInfo;
+            tp.recordCtx = this;
+            tp.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                self->postViewport(c, self->m_extent);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_taaPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_taaLayout,
+                                        0, 1, &self->m_taaSet[self->m_frameIdx], 0, nullptr);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(tp));
+
+            // History refresh: copy the resolved output into the persistent
+            // history image for next frame's reprojection. A full-image copy of
+            // one RGBA16F target — trivial bandwidth, and it keeps every
+            // downstream consumer reading ONE stable image (no per-frame
+            // ping-pong descriptor rewrites).
+            RenderPassDesc hc{};
+            hc.name = "taa-history-copy";
+            hc.addUse(ResourceUse{
+                rgTaaOut, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            hc.addUse(ResourceUse{
+                rgTaaHist, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            hc.recordCtx = this;
+            hc.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                VkImageCopy region{};
+                region.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                region.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+                region.extent = { self->m_extent.width, self->m_extent.height, 1 };
+                vkCmdCopyImage(c, self->m_taaOutImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               self->m_taaHistImg, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               1, &region);
+            };
+            m_graph.addPass(std::move(hc));
+        }
+
+        // The image AE/bloom/composite read: TAA output when on, raw HDR otherwise.
+        const RgResource rgPostSrc = taaOn ? rgTaaOut : rgHdr;
+
+        // ================================================================
         // AUTO-EXPOSURE + BLOOM CHAIN + HDR COMPOSITE (HDR pipeline).
         // ----------------------------------------------------------------
         // Auto-exposure: a single-workgroup compute reduce of the finished HDR
@@ -4057,7 +4382,7 @@ private:
             ae.queue = RgQueue::Compute;
             ae.usesDynamicRendering = false;
             ae.addUse(ResourceUse{
-                rgHdr, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                rgPostSrc, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
             ae.recordCtx = this;
@@ -4076,7 +4401,7 @@ private:
         // forced 0 and its shader guards the mip0 sample, so the untouched mip is
         // never read).
         const bool bloomOn = m_post.bloomEnabled;
-        if (bloomOn) addBloomPasses(rgHdr, rgMip);
+        if (bloomOn) addBloomPasses(rgPostSrc, rgMip);
 
         // Composite: HDR scene + bloom mip0 -> ACES tonemap -> LDR final target.
         // The HUD is recorded here (after tonemap) so it composites on the LDR
@@ -4097,9 +4422,10 @@ private:
                 VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                 VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
-            // READ the HDR scene + bloom mip0 (both sampled in the fragment stage).
+            // READ the post source (TAA output when on, raw HDR scene otherwise)
+            // + bloom mip0 (both sampled in the fragment stage).
             comp.addUse(ResourceUse{
-                rgHdr, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                rgPostSrc, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
             comp.addUse(ResourceUse{
@@ -4122,8 +4448,12 @@ private:
                 vkCmdSetViewport(c, 0, 1, &vp);
                 vkCmdSetScissor(c, 0, 1, &scis);
                 vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_compositePipe);
+                // TAA on: binding 0 samples the TAA RESOLVE output instead of the
+                // raw HDR scene (same layout, alternate pre-written set).
+                VkDescriptorSet compSet = self->m_taaActiveThisFrame
+                    ? self->m_setCompositeTaa : self->m_setComposite;
                 vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_compositeLayout,
-                                        0, 1, &self->m_setComposite, 0, nullptr);
+                                        0, 1, &compSet, 0, nullptr);
                 CompositePush cp{};
                 // Effective bloom strength: r_bloom 0 forces 0 (chain skipped this
                 // frame; the shader's >0 guard never samples the untouched mip);
@@ -4135,6 +4465,13 @@ private:
                 cp.exposure    = self->m_exposure;   // r_exposure (bias when AE on)
                 cp.tonemapMode = self->m_post.tonemapMode;             // r_tonemap
                 cp.aeEnabled   = (self->m_post.autoExposure && self->m_aePipe != VK_NULL_HANDLE) ? 1 : 0;
+                // Post-TAA sharpen (r_taasharpen). FORCED 0 when TAA is off this
+                // frame so the r_taa 0 path samples exactly one center tap —
+                // byte-identical to the pre-TAA composite.
+                cp.sharpen = self->m_taaActiveThisFrame
+                    ? std::max(0.0f, self->m_post.taaSharpen) : 0.0f;
+                cp.texelW  = 1.0f / (float)std::max(1u, self->m_extent.width);
+                cp.texelH  = 1.0f / (float)std::max(1u, self->m_extent.height);
                 vkCmdPushConstants(c, self->m_compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(cp), &cp);
                 vkCmdDraw(c, 3, 1, 0, 0);
@@ -4280,6 +4617,15 @@ private:
         // pyramid reduce imports it preserved) + mark its contents rendered.
         m_depthState = m_graph.stateOf(rgDepth);
         m_depthValid = true;
+
+        // TAA history: persist its post-frame state (TRANSFER_DST after the
+        // history-copy) so next frame's import derives the correct transition,
+        // and mark the history VALID — the copy pass just refreshed it, so the
+        // next resolve may reproject against it.
+        if (taaOn) {
+            m_taaHistState = m_graph.stateOf(rgTaaHist);
+            m_taaHistoryValid = true;
+        }
 
         // GI ping-pong + history: this frame wrote accum[m_giAccumWrite] (now the
         // freshest accumulated GI) + snapshotted depth into prev-depth. Next frame
@@ -6848,6 +7194,13 @@ private:
         // SSAO half-res targets track the extent; the depth view also changed, so
         // rewrite every SSAO descriptor that references depth/AO views.
         createSsaoTargets();
+        // Reflections (if built): the target tracks the extent and the depth + TAA
+        // history views changed — recreate + rewrite BEFORE writeSsaoDescriptors so
+        // mesh set3 binding2 picks up the NEW refl view (not the destroyed one).
+        if (m_reflBuilt) {
+            if (!createReflTargets()) { destroyRefl(); m_refl.ssr = false; }
+            else writeReflDescriptors();
+        }
         writeSsaoDescriptors();
         // GI half-res targets + prev-depth track the extent; the depth/AO/scene
         // views changed, so rebuild + rewrite. History is invalid after a resize.
@@ -6962,6 +7315,16 @@ private:
         writeGlassDescriptors();
         // SSAO half-res targets + depth-referencing descriptors track the extent.
         createSsaoTargets();
+        // Reflections (if built): the target tracks the extent and the depth + TAA
+        // history views were destroyed/recreated above (createOffscreenTarget +
+        // createBloomTargets) — recreate + rewrite BEFORE writeSsaoDescriptors so
+        // mesh set3 binding2 picks up the NEW refl view (not the destroyed one).
+        // (Missing this was a live VUID-08114 source: the headless --smoketest
+        // mid-run recreate left the refl compute set on destroyed views.)
+        if (m_reflBuilt) {
+            if (!createReflTargets()) { destroyRefl(); m_refl.ssr = false; }
+            else writeReflDescriptors();
+        }
         writeSsaoDescriptors();
         // GI half-res targets + prev-depth track the extent; rebuild + rewrite.
         createGiTargets();
@@ -6993,6 +7356,25 @@ private:
                                m_hdrImg, m_hdrAlloc, m_hdrView)) {
             logError("[rhi] HDR scene target create failed"); return false;
         }
+
+        // ---- TAA targets (full-res, HDR format match) -----------------------
+        // OUTPUT: the resolve renders into it, AE/bloom/composite sample it, and
+        // the history-copy reads it (TRANSFER_SRC). HISTORY: persists across
+        // frames; written only by the history-copy (TRANSFER_DST), sampled by the
+        // next frame's resolve. (Re)created with the extent -> history is invalid.
+        if (!createColorTarget(kHdrFormat, W, H,
+                               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT
+                               | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                               m_taaOutImg, m_taaOutAlloc, m_taaOutView)) {
+            logError("[rhi] TAA output target create failed"); return false;
+        }
+        if (!createColorTarget(kHdrFormat, W, H,
+                               VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                               m_taaHistImg, m_taaHistAlloc, m_taaHistView)) {
+            logError("[rhi] TAA history target create failed"); return false;
+        }
+        m_taaHistState = ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
+        m_taaHistoryValid = false;
 
         // Bloom mips: mip0 = half res, each subsequent halves again (min 1px).
         uint32_t mw = W, mh = H;
@@ -7067,6 +7449,12 @@ private:
             m.extent = {};
         }
         destroySceneCopyTarget();
+        if (m_taaOutView)  { vkDestroyImageView(m_dev.device, m_taaOutView, nullptr); m_taaOutView = VK_NULL_HANDLE; }
+        if (m_taaOutImg)   { vmaDestroyImage(m_alloc, m_taaOutImg, m_taaOutAlloc); m_taaOutImg = VK_NULL_HANDLE; m_taaOutAlloc = nullptr; }
+        if (m_taaHistView) { vkDestroyImageView(m_dev.device, m_taaHistView, nullptr); m_taaHistView = VK_NULL_HANDLE; }
+        if (m_taaHistImg)  { vmaDestroyImage(m_alloc, m_taaHistImg, m_taaHistAlloc); m_taaHistImg = VK_NULL_HANDLE; m_taaHistAlloc = nullptr; }
+        m_taaHistState = ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
+        m_taaHistoryValid = false;
         if (m_hdrView) { vkDestroyImageView(m_dev.device, m_hdrView, nullptr); m_hdrView = VK_NULL_HANDLE; }
         if (m_hdrImg)  { vmaDestroyImage(m_alloc, m_hdrImg, m_hdrAlloc); m_hdrImg = VK_NULL_HANDLE; m_hdrAlloc = nullptr; }
     }
@@ -7281,17 +7669,49 @@ private:
         if (vkCreateDescriptorSetLayout(m_dev.device, &sa, nullptr, &m_aeSetLayout) != VK_SUCCESS) {
             logError("[rhi] auto-exposure set layout failed"); return false;
         }
+        // TAA resolve set layout: b0 = current HDR scene, b1 = history, b2 = depth
+        // (all fragment samplers) + b3 = the per-frame TAA UBO (matrices/params).
+        VkDescriptorSetLayoutBinding tb[4]{};
+        for (uint32_t i = 0; i < 3; ++i) {
+            tb[i].binding = i; tb[i].descriptorCount = 1;
+            tb[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            tb[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        }
+        tb[3].binding = 3; tb[3].descriptorCount = 1;
+        tb[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        tb[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo st{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        st.bindingCount = 4; st.pBindings = tb;
+        if (vkCreateDescriptorSetLayout(m_dev.device, &st, nullptr, &m_taaSetLayout) != VK_SUCCESS) {
+            logError("[rhi] TAA set layout failed"); return false;
+        }
+        // NEAREST clamp sampler for reading the depth image as data in the TAA
+        // resolve (same role as the SSAO/water depth samplers; own instance so the
+        // post stack stays self-contained).
+        VkSamplerCreateInfo tds{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        tds.magFilter = VK_FILTER_NEAREST; tds.minFilter = VK_FILTER_NEAREST;
+        tds.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        tds.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        tds.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        tds.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(m_dev.device, &tds, nullptr, &m_taaDepthSampler) != VK_SUCCESS) {
+            logError("[rhi] TAA depth sampler failed"); return false;
+        }
 
-        // Descriptor pool: (HDR set + kBloomMips mip sets) single-sampler sets +
-        // 1 composite set (2 samplers + 1 SSBO) + 1 auto-exposure set (1 sampler +
-        // 1 SSBO). Sized exactly; no UPDATE_AFTER_BIND needed.
-        const uint32_t single = 1 + kBloomMips;     // HDR + each mip
-        VkDescriptorPoolSize ps[2]{
-            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, single + 2 + 1 },
-            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         2 },
+        // Descriptor pool: (HDR set + kBloomMips mip sets + TAA-out set)
+        // single-sampler sets + 2 composite sets (2 samplers + 1 SSBO each: raw-HDR
+        // + TAA variants) + 2 auto-exposure sets (1 sampler + 1 SSBO each) + the
+        // per-frame TAA resolve sets (3 samplers + 1 UBO each). Sized exactly; no
+        // UPDATE_AFTER_BIND needed.
+        const uint32_t single = 1 + kBloomMips + 1;     // HDR + each mip + TAA out
+        VkDescriptorPoolSize ps[3]{
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+              single + 2*2 + 1*2 + 3*kFramesInFlight },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         4 },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight },
         };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        pci.maxSets = single + 2; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
+        pci.maxSets = single + 4 + kFramesInFlight; pci.poolSizeCount = 3; pci.pPoolSizes = ps;
         if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_postPool) != VK_SUCCESS) {
             logError("[rhi] post desc pool failed"); return false;
         }
@@ -7304,11 +7724,15 @@ private:
         if (!alloc1(m_setHdr)) { logError("[rhi] post set alloc (hdr) failed"); return false; }
         for (uint32_t i = 0; i < kBloomMips; ++i)
             if (!alloc1(m_setMip[i])) { logError("[rhi] post set alloc (mip) failed"); return false; }
+        if (!alloc1(m_setTaaOut)) { logError("[rhi] post set alloc (taa-out) failed"); return false; }
         {
             VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
             ai.descriptorPool = m_postPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_postSetLayout2;
             if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_setComposite) != VK_SUCCESS) {
                 logError("[rhi] post set alloc (composite) failed"); return false;
+            }
+            if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_setCompositeTaa) != VK_SUCCESS) {
+                logError("[rhi] post set alloc (composite-taa) failed"); return false;
             }
         }
         {
@@ -7317,6 +7741,30 @@ private:
             if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_aeSet) != VK_SUCCESS) {
                 logError("[rhi] post set alloc (auto-exposure) failed"); return false;
             }
+            if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_aeSetTaa) != VK_SUCCESS) {
+                logError("[rhi] post set alloc (auto-exposure-taa) failed"); return false;
+            }
+        }
+        // Per-frame TAA resolve sets + their host-mapped UBOs (matrices change
+        // every frame; one buffer per frame-in-flight so a write never races the
+        // GPU's read of the previous frame's set).
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            ai.descriptorPool = m_postPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_taaSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_taaSet[i]) != VK_SUCCESS) {
+                logError("[rhi] post set alloc (taa) failed"); return false;
+            }
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = sizeof(TaaUBO); bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                        VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo ainfo{};
+            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_taaUboBuf[i], &m_taaUboAlloc[i], &ainfo) != VK_SUCCESS) {
+                logError("[rhi] TAA UBO alloc failed"); return false;
+            }
+            m_taaUboMapped[i] = ainfo.pMappedData;
         }
 
         // Auto-exposure SSBO: 16 bytes { adapted, avgLog, pad, pad }, persistent
@@ -7389,8 +7837,21 @@ private:
                                       m_compositeLayout, m_format, /*additiveBlend=*/false, m_compositePipe))
             return false;
 
+        // TAA resolve: full-screen pass writing the HDR-format TAA output. All
+        // parameters ride in the per-frame UBO -> no push constants.
+        {
+            VkPipelineLayoutCreateInfo tl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            tl.setLayoutCount = 1; tl.pSetLayouts = &m_taaSetLayout;
+            if (vkCreatePipelineLayout(m_dev.device, &tl, nullptr, &m_taaLayout) != VK_SUCCESS) {
+                logError("[rhi] TAA pipeline layout failed"); return false;
+            }
+            if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\taa_resolve.frag.spv",
+                                          m_taaLayout, kHdrFormat, /*additiveBlend=*/false, m_taaPipe))
+                return false;
+        }
+
         logInfo("[rhi] HDR post pipeline ready (R16G16B16A16_SFLOAT scene + " +
-                std::to_string(kBloomMips) + "-mip bloom + ACES composite)");
+                std::to_string(kBloomMips) + "-mip bloom + TAA resolve + ACES composite)");
         return true;
     }
 
@@ -7475,6 +7936,7 @@ private:
         };
         write1(m_setHdr, m_hdrView);
         for (uint32_t i = 0; i < kBloomMips; ++i) write1(m_setMip[i], m_bloomMips[i].view);
+        write1(m_setTaaOut, m_taaOutView);   // bloom bright-pass source when TAA is on
 
         // Composite set: binding 0 = HDR scene, binding 1 = bloom mip0,
         // binding 2 = auto-exposure SSBO.
@@ -7504,10 +7966,65 @@ private:
         aw[1].dstSet = m_aeSet; aw[1].dstBinding = 1; aw[1].descriptorCount = 1;
         aw[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; aw[1].pBufferInfo = &db;
         vkUpdateDescriptorSets(m_dev.device, 2, aw, 0, nullptr);
+
+        // ---- TAA variants + per-frame resolve sets ---------------------------
+        // Composite-TAA set: binding 0 = the TAA RESOLVE OUTPUT (instead of the
+        // raw HDR scene), binding 1 = bloom mip0, binding 2 = AE SSBO.
+        VkDescriptorImageInfo t0{ m_postSampler, m_taaOutView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkWriteDescriptorSet tw[3]{};
+        tw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        tw[0].dstSet = m_setCompositeTaa; tw[0].dstBinding = 0; tw[0].descriptorCount = 1;
+        tw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; tw[0].pImageInfo = &t0;
+        tw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        tw[1].dstSet = m_setCompositeTaa; tw[1].dstBinding = 1; tw[1].descriptorCount = 1;
+        tw[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; tw[1].pImageInfo = &d1;
+        tw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        tw[2].dstSet = m_setCompositeTaa; tw[2].dstBinding = 2; tw[2].descriptorCount = 1;
+        tw[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; tw[2].pBufferInfo = &db;
+        vkUpdateDescriptorSets(m_dev.device, 3, tw, 0, nullptr);
+
+        // AE-TAA set: meter the TAA output (b0) + the same exposure SSBO (b1).
+        VkWriteDescriptorSet atw[2]{};
+        atw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        atw[0].dstSet = m_aeSetTaa; atw[0].dstBinding = 0; atw[0].descriptorCount = 1;
+        atw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; atw[0].pImageInfo = &t0;
+        atw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        atw[1].dstSet = m_aeSetTaa; atw[1].dstBinding = 1; atw[1].descriptorCount = 1;
+        atw[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; atw[1].pBufferInfo = &db;
+        vkUpdateDescriptorSets(m_dev.device, 2, atw, 0, nullptr);
+
+        // Per-frame TAA resolve sets: b0 = current HDR scene, b1 = history,
+        // b2 = scene depth (sampled as data in DEPTH_READ_ONLY), b3 = that
+        // frame's TAA UBO. Views change on resize -> rewritten here every time.
+        VkDescriptorImageInfo r0{ m_postSampler,     m_hdrView,     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo r1{ m_postSampler,     m_taaHistView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo r2{ m_taaDepthSampler, m_depthView,   VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (!m_taaSet[i] || !m_taaUboBuf[i]) continue;
+            VkDescriptorBufferInfo rb{ m_taaUboBuf[i], 0, VK_WHOLE_SIZE };
+            VkWriteDescriptorSet rw[4]{};
+            for (uint32_t b = 0; b < 3; ++b) {
+                rw[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                rw[b].dstSet = m_taaSet[i]; rw[b].dstBinding = b; rw[b].descriptorCount = 1;
+                rw[b].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            }
+            rw[0].pImageInfo = &r0; rw[1].pImageInfo = &r1; rw[2].pImageInfo = &r2;
+            rw[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            rw[3].dstSet = m_taaSet[i]; rw[3].dstBinding = 3; rw[3].descriptorCount = 1;
+            rw[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; rw[3].pBufferInfo = &rb;
+            vkUpdateDescriptorSets(m_dev.device, 4, rw, 0, nullptr);
+        }
     }
 
     void destroyPost() {
         destroyBloomTargets();
+        if (m_taaPipe)        { vkDestroyPipeline(m_dev.device, m_taaPipe, nullptr); m_taaPipe = VK_NULL_HANDLE; }
+        if (m_taaLayout)      { vkDestroyPipelineLayout(m_dev.device, m_taaLayout, nullptr); m_taaLayout = VK_NULL_HANDLE; }
+        if (m_taaSetLayout)   { vkDestroyDescriptorSetLayout(m_dev.device, m_taaSetLayout, nullptr); m_taaSetLayout = VK_NULL_HANDLE; }
+        if (m_taaDepthSampler){ vkDestroySampler(m_dev.device, m_taaDepthSampler, nullptr); m_taaDepthSampler = VK_NULL_HANDLE; }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (m_taaUboBuf[i]) { vmaDestroyBuffer(m_alloc, m_taaUboBuf[i], m_taaUboAlloc[i]); m_taaUboBuf[i] = VK_NULL_HANDLE; m_taaUboAlloc[i] = nullptr; m_taaUboMapped[i] = nullptr; }
+        }
         if (m_aePipe)         { vkDestroyPipeline(m_dev.device, m_aePipe, nullptr); m_aePipe = VK_NULL_HANDLE; }
         if (m_aeLayout)       { vkDestroyPipelineLayout(m_dev.device, m_aeLayout, nullptr); m_aeLayout = VK_NULL_HANDLE; }
         if (m_aeBuf)          { vmaDestroyBuffer(m_alloc, m_aeBuf, m_aeAlloc); m_aeBuf = VK_NULL_HANDLE; m_aeAlloc = nullptr; }
@@ -7594,7 +8111,7 @@ private:
             const uint32_t nFrames = kFramesInFlight;
             VkDescriptorPoolSize sizes[2]{};
             sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-            sizes[0].descriptorCount = nFrames /*ssao depth*/ + nFrames /*mesh ao*/ + 2 /*blur*/;
+            sizes[0].descriptorCount = nFrames /*ssao depth*/ + nFrames * 2 /*mesh ao + refl*/ + 2 /*blur*/;
             sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             sizes[1].descriptorCount = nFrames /*ssao ubo*/ + nFrames /*ctrl ubo*/;
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
@@ -7730,6 +8247,38 @@ private:
         VkResult pr = vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_depthPrePipeline);
         vkDestroyShaderModule(m_dev.device, vs, nullptr);
         if (pr != VK_SUCCESS) { logError("[rhi] depth pre-pass pipeline create failed"); return false; }
+
+        // ---- ALPHA-CUTOUT variant (depth_cutout.vert/.frag) -----------------
+        // Identical fixed-function state; adds a fragment stage that replicates
+        // mesh.frag's alphaMode==MASK discard so billboard depth matches the color
+        // pass texel-for-texel. Used per-draw for cutout groups on reflections
+        // frames (recordDepthPrePassBody). Set 0 = objSet (same bindings as
+        // depth.vert -> layout-compatible with m_shadowLayout), set 1 = bindless.
+        // NON-FATAL on failure: the plain full-quad pre-pass still works.
+        {
+            VkDescriptorSetLayout cutSets[2] = { m_objSetLayout, m_bindlessLayout };
+            VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            plci.setLayoutCount = 2; plci.pSetLayouts = cutSets;
+            if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_depthPreCutoutLayout) == VK_SUCCESS) {
+                VkShaderModule cvs = loadShaderModule("shaders\\depth_cutout.vert.spv");
+                VkShaderModule cfs = loadShaderModule("shaders\\depth_cutout.frag.spv");
+                if (cvs && cfs) {
+                    VkPipelineShaderStageCreateInfo cstages[2]{};
+                    cstages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                    cstages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   cstages[0].module = cvs; cstages[0].pName = "main";
+                    cstages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                    cstages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; cstages[1].module = cfs; cstages[1].pName = "main";
+                    gpci.stageCount = 2; gpci.pStages = cstages;
+                    gpci.layout = m_depthPreCutoutLayout;
+                    if (vkCreateGraphicsPipelines(m_dev.device, VK_NULL_HANDLE, 1, &gpci, nullptr, &m_depthPreCutoutPipeline) != VK_SUCCESS)
+                        m_depthPreCutoutPipeline = VK_NULL_HANDLE;
+                }
+                if (cvs) vkDestroyShaderModule(m_dev.device, cvs, nullptr);
+                if (cfs) vkDestroyShaderModule(m_dev.device, cfs, nullptr);
+            }
+            if (!m_depthPreCutoutPipeline)
+                logError("[rhi] depth pre-pass CUTOUT pipeline unavailable — billboards keep full-quad depth");
+        }
         return true;
     }
 
@@ -7790,18 +8339,28 @@ private:
             w[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[1].pImageInfo = &dd;
             vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
         }
-        // mesh.frag set3: binding0 = blurred AO (linear), binding1 = per-frame ctrl.
+        // mesh.frag set3: binding0 = blurred AO (linear), binding1 = per-frame ctrl,
+        // binding2 = the SSR/RT reflection buffer (refl.comp output). Before the
+        // reflection chain is built, binding2 points at the blurred-AO view as a
+        // LAYOUT-VALID placeholder (mesh.frag never samples it then — the
+        // ssao.refl.x gate is 0 — but the descriptor must reference a real view).
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
             VkDescriptorImageInfo da{ m_ssaoLinearSampler, m_ssaoBlurView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo dr{ m_ssaoLinearSampler,
+                                      m_reflView ? m_reflView : m_ssaoBlurView,
+                                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             VkDescriptorBufferInfo bi{ m_ssaoCtrlBuf[i], 0, sizeof(SsaoControl) };
-            VkWriteDescriptorSet w[2]{};
+            VkWriteDescriptorSet w[3]{};
             w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w[0].dstSet = m_meshAoSet[i]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
             w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &da;
             w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w[1].dstSet = m_meshAoSet[i]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
             w[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[1].pBufferInfo = &bi;
-            vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+            w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[2].dstSet = m_meshAoSet[i]; w[2].dstBinding = 2; w[2].descriptorCount = 1;
+            w[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[2].pImageInfo = &dr;
+            vkUpdateDescriptorSets(m_dev.device, 3, w, 0, nullptr);
         }
     }
 
@@ -7810,6 +8369,8 @@ private:
         if (m_ssaoBlurPipe)   { vkDestroyPipeline(m_dev.device, m_ssaoBlurPipe, nullptr); m_ssaoBlurPipe = VK_NULL_HANDLE; }
         if (m_ssaoPipe)       { vkDestroyPipeline(m_dev.device, m_ssaoPipe, nullptr); m_ssaoPipe = VK_NULL_HANDLE; }
         if (m_depthPrePipeline){ vkDestroyPipeline(m_dev.device, m_depthPrePipeline, nullptr); m_depthPrePipeline = VK_NULL_HANDLE; }
+        if (m_depthPreCutoutPipeline){ vkDestroyPipeline(m_dev.device, m_depthPreCutoutPipeline, nullptr); m_depthPreCutoutPipeline = VK_NULL_HANDLE; }
+        if (m_depthPreCutoutLayout)  { vkDestroyPipelineLayout(m_dev.device, m_depthPreCutoutLayout, nullptr); m_depthPreCutoutLayout = VK_NULL_HANDLE; }
         if (m_ssaoBlurLayout) { vkDestroyPipelineLayout(m_dev.device, m_ssaoBlurLayout, nullptr); m_ssaoBlurLayout = VK_NULL_HANDLE; }
         if (m_ssaoLayout)     { vkDestroyPipelineLayout(m_dev.device, m_ssaoLayout, nullptr); m_ssaoLayout = VK_NULL_HANDLE; }
         if (m_ssaoPool)       { vkDestroyDescriptorPool(m_dev.device, m_ssaoPool, nullptr); m_ssaoPool = VK_NULL_HANDLE; }
@@ -7838,20 +8399,27 @@ private:
     static void rtLogInfo(const char* m)  { x3::logInfo(m ? m : ""); }
     static void rtLogError(const char* m) { x3::logError(m ? m : ""); }
 
-    // Lazily init the AS module + RT-AO pipelines/targets. Returns true when the RT
-    // chain is ready to use this frame. No-op (returns false) without RT support.
-    bool ensureRtaoReady() {
+    // Lazily init the shared AS module (BLAS/TLAS manager) — used by BOTH the
+    // RT-AO chain and the RT-reflections fallback. Returns true when the module
+    // is ready. No-op (returns false) without RT support.
+    bool ensureRtCore() {
         if (!m_rtSupported) return false;
         if (!m_rtInitTried) {
             m_rtInitTried = true;
             if (!m_rt.init(m_dev.device, m_dev.physical_device, m_alloc, m_gfxQueue,
                            m_gfxFamily, &rtLogInfo, &rtLogError)) {
-                logError("[rhi] RT AO: AS module init failed — staying on raster/SSAO");
+                logError("[rhi] RT: AS module init failed — staying on raster/SSAO");
                 m_rtSupported = false;   // disable RT entirely; never retry
                 return false;
             }
         }
-        if (!m_rt.ready()) return false;
+        return m_rt.ready();
+    }
+
+    // Lazily init the AS module + RT-AO pipelines/targets. Returns true when the RT
+    // chain is ready to use this frame. No-op (returns false) without RT support.
+    bool ensureRtaoReady() {
+        if (!ensureRtCore()) return false;
         if (!m_rtaoBuilt) {
             if (!createRtao()) { logError("[rhi] RT AO: pipeline create failed"); m_rtSupported = false; return false; }
             if (!createRtaoTargets()) { logError("[rhi] RT AO: target create failed"); m_rtSupported = false; return false; }
@@ -8079,9 +8647,20 @@ private:
             VkWriteDescriptorSetAccelerationStructureKHR asW{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
             asW.accelerationStructureCount = 1; asW.pAccelerationStructures = &tlas;
             VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-            w.dstSet = m_rtaoSet[i]; w.dstBinding = 2; w.descriptorCount = 1;
+            w.descriptorCount = 1;
             w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; w.pNext = &asW;
-            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+            // RT-AO compute set (binding 2) — may not exist when only the
+            // reflections fallback is using the AS (r_rtao 0).
+            if (m_rtaoSet[i]) {
+                w.dstSet = m_rtaoSet[i]; w.dstBinding = 2;
+                vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+            }
+            // RT-reflections compute set (binding 4) — may not exist when only
+            // RT AO is using the AS (r_ssr 0 / chain never built).
+            if (m_reflSetRt[i]) {
+                w.dstSet = m_reflSetRt[i]; w.dstBinding = 4;
+                vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+            }
         }
     }
 
@@ -8199,6 +8778,267 @@ private:
         vkCmdDispatch(c, gx, gy, 1);
     }
 
+    // ======================================================================
+    // SSR / RAY-QUERY REFLECTIONS (refl.comp) — lazy init / targets /
+    // descriptors / per-frame UBO / compute dispatch / teardown.
+    // ----------------------------------------------------------------------
+    // Built LAZILY the first time r_ssr activates (TAA on + history targets
+    // exist), so runs that never enable reflections pay zero init cost. The SSR
+    // pipeline (refl.comp.spv) is created on EVERY device; the ray-query variant
+    // (refl_rt.comp.spv, TLAS at binding 4) only on RT devices — Pascal-class
+    // hardware is automatically SSR-only. The first build does a device wait:
+    // the ALWAYS-BOUND mesh set3 (binding 2 = this pass's output) must be
+    // rewritten for all frames in flight.
+    // ======================================================================
+    bool ensureReflReady() {
+        if (!m_reflBuilt) {
+            // mesh set3 binding2 is rewritten below for ALL frames in flight ->
+            // those sets may still be referenced by executing frames. One-time
+            // hitch on first enable only.
+            vkDeviceWaitIdle(m_dev.device);
+            if (!createRefl() || !createReflTargets()) {
+                logError("[rhi] reflections: create failed — r_ssr disabled");
+                destroyRefl();
+                m_refl.ssr = false;
+                return false;
+            }
+            writeReflDescriptors();
+            writeSsaoDescriptors();   // re-point mesh set3 binding2 at the refl buffer
+            m_reflBuilt = true;
+            logInfo(m_reflPipeRt
+                ? "[rhi] reflections ready (SSR depth-march vs prev-frame color + ray-query fallback)"
+                : "[rhi] reflections ready (SSR depth-march vs prev-frame color; no RT fallback)");
+        }
+        // Live r_reflquality switch: recreate the target at the new resolution.
+        if (m_reflFullRes != m_refl.fullRes) {
+            vkDeviceWaitIdle(m_dev.device);
+            if (!createReflTargets()) { m_refl.ssr = false; return false; }
+            writeReflDescriptors();
+            writeSsaoDescriptors();
+        }
+        return m_reflImg != VK_NULL_HANDLE && m_reflPipe != VK_NULL_HANDLE;
+    }
+
+    bool createRefl() {
+        // ---- Set layouts: 0 = depth sampler, 1 = output storage image, 2 = prev
+        // scene (TAA history) sampler, 3 = Refl UBO; the RT variant adds 4 = TLAS.
+        {
+            VkDescriptorSetLayoutBinding b[5]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            b[2].binding = 2; b[2].descriptorCount = 1;
+            b[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            b[3].binding = 3; b[3].descriptorCount = 1;
+            b[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            b[3].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 4; ci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_reflSetLayout) != VK_SUCCESS) return false;
+            if (m_rtSupported) {
+                b[4].binding = 4; b[4].descriptorCount = 1;
+                b[4].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+                b[4].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+                ci.bindingCount = 5;
+                if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_reflSetLayoutRt) != VK_SUCCESS) return false;
+            }
+        }
+        // ---- Pool + per-frame UBOs + sets (SSR always; RT sets on RT devices). ----
+        {
+            const uint32_t nFrames = kFramesInFlight;
+            const uint32_t nVariants = m_rtSupported ? 2u : 1u;
+            VkDescriptorPoolSize sizes[4]{};
+            uint32_t nSizes = 3;
+            sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            sizes[0].descriptorCount = nFrames * nVariants * 2;   // depth + prevScene
+            sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+            sizes[1].descriptorCount = nFrames * nVariants;
+            sizes[2].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            sizes[2].descriptorCount = nFrames * nVariants;
+            if (m_rtSupported) {
+                sizes[3].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+                sizes[3].descriptorCount = nFrames;
+                nSizes = 4;
+            }
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.maxSets = nFrames * nVariants; pci.poolSizeCount = nSizes; pci.pPoolSizes = sizes;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_reflPool) != VK_SUCCESS) return false;
+        }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkBufferCreateInfo ub{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            ub.size = sizeof(ReflUBO); ub.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo info{};
+            if (vmaCreateBuffer(m_alloc, &ub, &aci, &m_reflUboBuf[i], &m_reflUboAlloc[i], &info) != VK_SUCCESS) return false;
+            m_reflUboMapped[i] = info.pMappedData;
+
+            VkDescriptorSetAllocateInfo a0{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            a0.descriptorPool = m_reflPool; a0.descriptorSetCount = 1; a0.pSetLayouts = &m_reflSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &a0, &m_reflSet[i]) != VK_SUCCESS) return false;
+            if (m_rtSupported) {
+                VkDescriptorSetAllocateInfo a1{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+                a1.descriptorPool = m_reflPool; a1.descriptorSetCount = 1; a1.pSetLayouts = &m_reflSetLayoutRt;
+                if (vkAllocateDescriptorSets(m_dev.device, &a1, &m_reflSetRt[i]) != VK_SUCCESS) return false;
+            }
+        }
+        // ---- Compute pipelines: SSR-only (every device) + ray-query (RT only). ----
+        {
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pl.setLayoutCount = 1; pl.pSetLayouts = &m_reflSetLayout;
+            if (vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_reflLayout) != VK_SUCCESS) return false;
+            VkShaderModule cs = loadShaderModule("shaders\\refl.comp.spv");
+            if (!cs) return false;
+            VkComputePipelineCreateInfo cpci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+            cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
+            cpci.layout = m_reflLayout;
+            VkResult pr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_reflPipe);
+            vkDestroyShaderModule(m_dev.device, cs, nullptr);
+            if (pr != VK_SUCCESS) return false;
+        }
+        if (m_rtSupported) {
+            // Non-fatal: an RT-pipeline failure degrades to SSR-only (logged).
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pl.setLayoutCount = 1; pl.pSetLayouts = &m_reflSetLayoutRt;
+            if (vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_reflLayoutRt) == VK_SUCCESS) {
+                VkShaderModule cs = loadShaderModule("shaders\\refl_rt.comp.spv");
+                if (cs) {
+                    VkComputePipelineCreateInfo cpci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+                    cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+                    cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
+                    cpci.layout = m_reflLayoutRt;
+                    if (vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_reflPipeRt) != VK_SUCCESS)
+                        m_reflPipeRt = VK_NULL_HANDLE;
+                    vkDestroyShaderModule(m_dev.device, cs, nullptr);
+                }
+            }
+            if (!m_reflPipeRt)
+                logError("[rhi] reflections: ray-query pipeline unavailable — SSR-only");
+        }
+        return true;
+    }
+
+    // (Re)create the reflection storage target at the current extent and quality
+    // (r_reflquality: half- or full-res). The image is transitioned ONCE to
+    // SHADER_READ_ONLY so the always-bound mesh set3 binding2 is layout-valid even
+    // on frames where the refl pass doesn't run (it is then never sampled — the
+    // ssao.refl.x gate is 0 — but the descriptor must still match the layout).
+    bool createReflTargets() {
+        destroyReflTargets();
+        m_reflFullRes = m_refl.fullRes;
+        const uint32_t div = m_reflFullRes ? 1u : 2u;
+        m_reflExtent = { std::max(1u, m_extent.width / div), std::max(1u, m_extent.height / div) };
+        const VkImageUsageFlags usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        if (!createColorTarget(kReflFormat, m_reflExtent.width, m_reflExtent.height, usage,
+                               m_reflImg, m_reflAlloc, m_reflView)) return false;
+        const bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
+            iblBarrierTex2D(cmd, m_reflImg, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                            VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
+                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+        });
+        if (!ok) { logError("[rhi] reflections: target init transition failed"); return false; }
+        return true;
+    }
+
+    void destroyReflTargets() {
+        if (m_reflView) { vkDestroyImageView(m_dev.device, m_reflView, nullptr); m_reflView = VK_NULL_HANDLE; }
+        if (m_reflImg)  { vmaDestroyImage(m_alloc, m_reflImg, m_reflAlloc); m_reflImg = VK_NULL_HANDLE; m_reflAlloc = nullptr; }
+    }
+
+    // (Re)write the refl compute sets (depth + output + TAA history + UBO; the RT
+    // set also gets the TLAS when one exists). Called after target creation and on
+    // resize (the depth/history/output views all change with the extent).
+    void writeReflDescriptors() {
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkDescriptorImageInfo depthInfo{ m_depthSampler, m_depthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+            VkDescriptorImageInfo outInfo{ VK_NULL_HANDLE, m_reflView, VK_IMAGE_LAYOUT_GENERAL };
+            VkDescriptorImageInfo histInfo{ m_ssaoLinearSampler,
+                                            m_taaHistView ? m_taaHistView : m_reflView,
+                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkDescriptorBufferInfo ubo{ m_reflUboBuf[i], 0, sizeof(ReflUBO) };
+            VkDescriptorSet targets[2] = { m_reflSet[i], m_reflSetRt[i] };
+            for (int s = 0; s < 2; ++s) {
+                if (!targets[s]) continue;
+                VkWriteDescriptorSet w[4]{};
+                w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[0].dstSet = targets[s]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+                w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &depthInfo;
+                w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[1].dstSet = targets[s]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+                w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w[1].pImageInfo = &outInfo;
+                w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[2].dstSet = targets[s]; w[2].dstBinding = 2; w[2].descriptorCount = 1;
+                w[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[2].pImageInfo = &histInfo;
+                w[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; w[3].dstSet = targets[s]; w[3].dstBinding = 3; w[3].descriptorCount = 1;
+                w[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[3].pBufferInfo = &ubo;
+                vkUpdateDescriptorSets(m_dev.device, 4, w, 0, nullptr);
+            }
+        }
+        // The TLAS (RT sets, binding 4) may already exist (e.g. RT AO enabled
+        // first): point the fresh sets at it now; otherwise rewriteRtaoTlas()
+        // fills it after the first build.
+        if (m_rt.tlasBuilt()) rewriteRtaoTlas();
+    }
+
+    // Fill the per-frame reflection UBO. Uses the SAME (jittered) viewProj this
+    // frame's depth was rasterized with (m_lastViewProj, cached by
+    // prepareFrameData) + the previous frame's UNJITTERED viewProj captured there.
+    void prepareReflUbo() {
+        ReflUBO u{};
+        u.invViewProj  = glm::inverse(m_lastViewProj);
+        u.viewProj     = m_lastViewProj;
+        u.prevViewProj = m_reflPrevVP;
+        u.camPos = glm::vec4(m_camPos, m_reflHistValid ? 1.0f : 0.0f);
+        u.sunDir = glm::vec4(glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2])),
+                             (float)(m_rtFrameSeed++));
+        u.ambient = glm::vec4(m_ambient, 0.0f);
+        // March tuning: 48 m reach, 0.5 m base thickness, 24 linear steps with the
+        // shader's mild geometric growth + 5-iteration binary refine.
+        u.params0 = glm::vec4((float)m_reflExtent.width, (float)m_reflExtent.height, 48.0f, 0.5f);
+        u.params1 = glm::vec4(24.0f, 0.0f, 0.0f, 0.0f);
+        if (m_reflUboMapped[m_frameIdx])
+            std::memcpy(m_reflUboMapped[m_frameIdx], &u, sizeof(u));
+    }
+
+    // Record the reflections compute dispatch (the graph already emitted the
+    // output GENERAL + depth READ_ONLY + history READ_ONLY transitions). Binds
+    // the ray-query pipeline when the TLAS was built this frame, else SSR-only.
+    void recordReflComputeBody(VkCommandBuffer c) {
+        const bool rt = m_reflRtThisFrame && (m_reflPipeRt != VK_NULL_HANDLE)
+                     && (m_reflSetRt[m_frameIdx] != VK_NULL_HANDLE);
+        VkPipeline pipe = rt ? m_reflPipeRt : m_reflPipe;
+        if (!pipe) return;
+        vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
+        vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                rt ? m_reflLayoutRt : m_reflLayout, 0, 1,
+                                rt ? &m_reflSetRt[m_frameIdx] : &m_reflSet[m_frameIdx], 0, nullptr);
+        const uint32_t gx = (m_reflExtent.width  + 7) / 8;
+        const uint32_t gy = (m_reflExtent.height + 7) / 8;
+        vkCmdDispatch(c, gx, gy, 1);
+    }
+
+    void destroyRefl() {
+        if (!m_dev.device) return;
+        destroyReflTargets();
+        if (m_reflPipeRt)      { vkDestroyPipeline(m_dev.device, m_reflPipeRt, nullptr); m_reflPipeRt = VK_NULL_HANDLE; }
+        if (m_reflPipe)        { vkDestroyPipeline(m_dev.device, m_reflPipe, nullptr); m_reflPipe = VK_NULL_HANDLE; }
+        if (m_reflLayoutRt)    { vkDestroyPipelineLayout(m_dev.device, m_reflLayoutRt, nullptr); m_reflLayoutRt = VK_NULL_HANDLE; }
+        if (m_reflLayout)      { vkDestroyPipelineLayout(m_dev.device, m_reflLayout, nullptr); m_reflLayout = VK_NULL_HANDLE; }
+        if (m_reflPool)        { vkDestroyDescriptorPool(m_dev.device, m_reflPool, nullptr); m_reflPool = VK_NULL_HANDLE; }
+        if (m_reflSetLayoutRt) { vkDestroyDescriptorSetLayout(m_dev.device, m_reflSetLayoutRt, nullptr); m_reflSetLayoutRt = VK_NULL_HANDLE; }
+        if (m_reflSetLayout)   { vkDestroyDescriptorSetLayout(m_dev.device, m_reflSetLayout, nullptr); m_reflSetLayout = VK_NULL_HANDLE; }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (m_reflUboBuf[i]) { vmaDestroyBuffer(m_alloc, m_reflUboBuf[i], m_reflUboAlloc[i]); m_reflUboBuf[i] = VK_NULL_HANDLE; m_reflUboMapped[i] = nullptr; }
+            m_reflSet[i] = VK_NULL_HANDLE; m_reflSetRt[i] = VK_NULL_HANDLE;
+        }
+        m_reflBuilt = false;
+        m_reflActiveThisFrame = false;
+        m_reflRtThisFrame = false;
+    }
+
     // Record the auto-exposure reduce/adapt dispatch (single 16x16 workgroup; the
     // graph has already transitioned the HDR scene to SHADER_READ_ONLY for the
     // compute sample). The exposure SSBO is NOT a graph resource, so this body
@@ -8221,8 +9061,11 @@ private:
         vkCmdPipelineBarrier2(c, &di);
 
         vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_aePipe);
+        // TAA on: meter the TAA RESOLVE output (what the composite will show)
+        // instead of the raw jittered HDR scene (alternate pre-written set).
+        VkDescriptorSet aeSet = m_taaActiveThisFrame ? m_aeSetTaa : m_aeSet;
         vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_aeLayout,
-                                0, 1, &m_aeSet, 0, nullptr);
+                                0, 1, &aeSet, 0, nullptr);
         vkCmdPushConstants(c, m_aeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                            0, sizeof(AePush), &m_aePush);
         vkCmdDispatch(c, 1, 1, 1);
@@ -9322,19 +10165,24 @@ private:
             logError("[rhi] white default must occupy bindless slot 0"); return false;
         }
 
-        // ---- mesh.frag SSAO set (set 3): AO sampler + SsaoControl UBO. Created
-        // here (only needs the device) so the mesh pipeline layout can include it;
-        // the rest of the SSAO objects are built later in createSsao(). ----
+        // ---- mesh.frag SSAO set (set 3): AO sampler + SsaoControl UBO + the
+        // SSR/RT reflection buffer (binding 2, refl.comp output — bound to the
+        // blurred-AO view as a layout-valid placeholder until the refl chain is
+        // built). Created here (only needs the device) so the mesh pipeline
+        // layout can include it; the rest is built later in createSsao(). ----
         {
-            VkDescriptorSetLayoutBinding b[2]{};
+            VkDescriptorSetLayoutBinding b[3]{};
             b[0].binding = 0; b[0].descriptorCount = 1;
             b[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             b[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
             b[1].binding = 1; b[1].descriptorCount = 1;
             b[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             b[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+            b[2].binding = 2; b[2].descriptorCount = 1;
+            b[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            b[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
             VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-            ci.bindingCount = 2; ci.pBindings = b;
+            ci.bindingCount = 3; ci.pBindings = b;
             if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_meshAoSetLayout) != VK_SUCCESS) {
                 logError("[rhi] mesh ao set layout failed"); return false;
             }
@@ -10047,6 +10895,54 @@ private:
     VkRenderingAttachmentInfo m_rtaoApplyAttach{};
     VkRenderingInfo           m_rtaoApplyRenderInfo{};
 
+    // ======================================================================
+    // SSR / RAY-QUERY REFLECTIONS (r_ssr / r_rtreflections) — refl.comp.
+    // ----------------------------------------------------------------------
+    // A half-res (or full-res, r_reflquality) compute pass after the depth
+    // pre-pass: marches each pixel's reflection ray against the depth buffer and
+    // samples LAST frame's lit scene (the TAA history image), with an optional
+    // inline ray-query fallback into the SAME BLAS/TLAS the RT-AO path builds.
+    // Output rgba16f (radiance + confidence) is sampled by mesh.frag (set 3,
+    // binding 2) and blended into the split-sum IBL specular. Built LAZILY on
+    // first enable; everything gated — off = zero passes, render unchanged.
+    // Cached tunables. DEVICE default = ON (like the PostFXParams TAA default):
+    // headless screenshot/smoketest paths that never push cvars still get the
+    // shipped look. The r_ssr/r_rtreflections cvars + the --norefl/--notaa/
+    // --legacypost pins override it via setReflectionParams. Reflections only
+    // ever ACTIVATE when TAA is on, so every TAA-off path is still bit-identical.
+    ReflectionParams m_refl{ /*ssr=*/true, /*rtFallback=*/true, /*fullRes=*/false, /*intensity=*/1.0f };
+    bool       m_reflBuilt = false;                  // pipelines/targets created
+    bool       m_reflFullRes = false;                // resolution the targets were built at
+    bool       m_reflActiveThisFrame = false;        // refl pass in the graph this frame
+    bool       m_reflRtThisFrame = false;            // ray-query fallback pipeline this frame
+    bool       m_reflHistValid = false;              // TAA history usable as color source
+    glm::mat4  m_reflPrevVP{ 1.0f };                 // prev frame's UNJITTERED viewProj
+    VkImage    m_reflImg = VK_NULL_HANDLE; VmaAllocation m_reflAlloc = nullptr; VkImageView m_reflView = VK_NULL_HANDLE;
+    VkExtent2D m_reflExtent{};
+    static constexpr VkFormat kReflFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
+    VkDescriptorSetLayout m_reflSetLayout   = VK_NULL_HANDLE;  // SSR-only (no TLAS binding)
+    VkDescriptorSetLayout m_reflSetLayoutRt = VK_NULL_HANDLE;  // + TLAS at binding 4 (RT devices)
+    VkPipelineLayout      m_reflLayout      = VK_NULL_HANDLE;
+    VkPipelineLayout      m_reflLayoutRt    = VK_NULL_HANDLE;
+    VkPipeline            m_reflPipe        = VK_NULL_HANDLE;  // refl.comp.spv (SSR-only)
+    VkPipeline            m_reflPipeRt      = VK_NULL_HANDLE;  // refl_rt.comp.spv (+ ray query)
+    VkDescriptorPool      m_reflPool        = VK_NULL_HANDLE;
+    VkDescriptorSet       m_reflSet[kFramesInFlight]   = {};   // SSR set (per frame)
+    VkDescriptorSet       m_reflSetRt[kFramesInFlight] = {};   // RT set (per frame; RT devices)
+    // Refl compute UBO (std140; matches shaders/refl.comp).
+    struct ReflUBO {
+        glm::mat4 invViewProj;   // CURRENT (jittered) clip -> world
+        glm::mat4 viewProj;      // CURRENT (jittered) world -> clip
+        glm::mat4 prevViewProj;  // PREVIOUS frame's UNJITTERED world -> clip
+        glm::vec4 camPos;        // xyz = camera, w = history valid
+        glm::vec4 sunDir;        // xyz = toward sun, w = frame seed
+        glm::vec4 ambient;       // rgb = scene ambient, w = unused
+        glm::vec4 params0;       // x = outW, y = outH, z = max march dist, w = thickness
+        glm::vec4 params1;       // x = march steps, y/z/w = unused
+    };
+    static_assert(sizeof(ReflUBO) == 64 * 3 + 16 * 5, "ReflUBO std140 layout");
+    VkBuffer m_reflUboBuf[kFramesInFlight] = {}; VmaAllocation m_reflUboAlloc[kFramesInFlight] = {}; void* m_reflUboMapped[kFramesInFlight] = {};
+
     // Graphics
     VmaAllocator  m_alloc = nullptr;
     VkPipeline       m_meshPipeline = VK_NULL_HANDLE;        // SSAO path: depth EQUAL, no write
@@ -10171,6 +11067,10 @@ private:
     std::unordered_map<uint32_t, std::vector<uint32_t>> m_groups;
     std::vector<uint32_t>   m_groupOrder;
     uint32_t                m_drawMeshOrder[kMaxDrawMeshes] = {};
+    // Per-indirect-command flag: group contains >=1 alphaMode==MASK (cutout)
+    // instance -> the reflections depth pre-pass uses the alpha-testing pipeline
+    // for it (recordDepthPrePassBody). Parallel to m_drawMeshOrder.
+    uint8_t                 m_drawMeshCutout[kMaxDrawMeshes] = {};
     // Per-frame data preparation (camera/light UBO + SSBO + indirect) is shared by
     // the shadow depth pass AND the main color pass, so it runs once (guarded) and
     // caches the number of indirect commands produced.
@@ -10418,9 +11318,52 @@ private:
     // Push-constant payloads for the post passes (stable storage referenced by the
     // record lambdas; no per-frame heap alloc).
     struct BloomPush { float srcTexel[2]; float threshold, knee, intensity; int firstPass; float pad0, pad1; };
-    struct CompositePush { float bloomIntensity, exposure; int32_t tonemapMode, aeEnabled; };
+    struct CompositePush { float bloomIntensity, exposure; int32_t tonemapMode, aeEnabled;
+                           float sharpen, texelW, texelH, pad0; };
     BloomPush m_bloomDownPush[kBloomMips]{};
     BloomPush m_bloomUpPush[kBloomMips]{};
+
+    // ---- TAA (temporal anti-aliasing) ---------------------------------------
+    // Full-res HDR resolve OUTPUT (render target; AE/bloom/composite sample it;
+    // TRANSFER_SRC for the history refresh) + persistent HISTORY (TRANSFER_DST +
+    // sampled by the next frame's resolve). The history's cross-frame layout is
+    // tracked in m_taaHistState (shadow-map pattern). Jitter phase is a pure
+    // frame counter (deterministic headless captures); the previous UNJITTERED
+    // view-proj + camera pose feed reprojection + camera-cut detection.
+    VkImage       m_taaOutImg   = VK_NULL_HANDLE;
+    VmaAllocation m_taaOutAlloc = nullptr;
+    VkImageView   m_taaOutView  = VK_NULL_HANDLE;
+    VkImage       m_taaHistImg   = VK_NULL_HANDLE;
+    VmaAllocation m_taaHistAlloc = nullptr;
+    VkImageView   m_taaHistView  = VK_NULL_HANDLE;
+    ResourceState m_taaHistState{ VK_IMAGE_LAYOUT_UNDEFINED,
+                                  VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
+    bool          m_taaHistoryValid     = false;  // false -> resolve passes through
+    bool          m_taaActiveThisFrame  = false;  // set per frame in buildAndExecuteGraph
+    uint32_t      m_taaFrameNum         = 0;      // Halton phase (frame counter)
+    glm::mat4     m_taaPrevVP{ 1.0f };            // previous UNJITTERED view-proj
+    glm::vec3     m_taaPrevCamPos{ 0.0f };
+    float         m_taaPrevYaw = 0.0f, m_taaPrevPitch = 0.0f, m_taaPrevFov = 0.0f;
+    bool          m_taaPrevCamValid = false;
+    struct TaaUBO {
+        glm::mat4 invViewProjCur;   // current JITTERED clip -> world
+        glm::mat4 viewProjPrev;     // world -> previous UNJITTERED clip
+        glm::vec4 params0;          // texelW, texelH, historyValid, blend
+        glm::vec4 params1;          // jitterX, jitterY (px, debug), unused
+    };
+    VkDescriptorSetLayout m_taaSetLayout = VK_NULL_HANDLE;  // b0-2 samplers + b3 UBO
+    VkPipelineLayout      m_taaLayout    = VK_NULL_HANDLE;
+    VkPipeline            m_taaPipe      = VK_NULL_HANDLE;
+    VkSampler             m_taaDepthSampler = VK_NULL_HANDLE;  // NEAREST clamp (depth as data)
+    VkDescriptorSet       m_taaSet[kFramesInFlight] = {};      // per-frame resolve inputs
+    VkBuffer              m_taaUboBuf[kFramesInFlight] = {};
+    VmaAllocation         m_taaUboAlloc[kFramesInFlight] = {};
+    void*                 m_taaUboMapped[kFramesInFlight] = {};
+    VkDescriptorSet       m_setTaaOut       = VK_NULL_HANDLE;  // bloom src (TAA output)
+    VkDescriptorSet       m_setCompositeTaa = VK_NULL_HANDLE;  // composite b0 = TAA output
+    VkDescriptorSet       m_aeSetTaa        = VK_NULL_HANDLE;  // AE b0 = TAA output
+    VkRenderingAttachmentInfo m_taaAttach{};                   // stable storage for the graph
+    VkRenderingInfo           m_taaRenderInfo{};
 
     // ---- AUTO-EXPOSURE (eye adaptation) ------------------------------------
     // A single-workgroup compute pass (autoexposure.comp) reduces a fixed 64x64
@@ -10491,7 +11434,7 @@ private:
     // intensity, z=prefilter max mip, w=reserved}. The ibl lane lets mesh.frag fall
     // back to the old flat ambient when no environment is baked (other paths/headless
     // failure) without a separate UBO.
-    struct SsaoControl { glm::vec4 ctrl; glm::vec4 ibl; };
+    struct SsaoControl { glm::vec4 ctrl; glm::vec4 ibl; glm::vec4 refl; };
     // Half-res AO targets: raw (ssao.frag output) + blurred (ssao_blur output,
     // sampled by mesh.frag). Both R8, recreated with the frame extent.
     VkImage       m_ssaoRawImg  = VK_NULL_HANDLE; VmaAllocation m_ssaoRawAlloc  = nullptr; VkImageView m_ssaoRawView  = VK_NULL_HANDLE;
@@ -10499,6 +11442,11 @@ private:
     VkExtent2D    m_ssaoExtent{};                       // half the frame extent
     // Depth pre-pass pipeline (depth.vert; set0 = objSet, reuses m_shadowLayout).
     VkPipeline    m_depthPrePipeline = VK_NULL_HANDLE;
+    // Alpha-cutout depth pre-pass variant (depth_cutout.vert/.frag): fragment-
+    // stage alpha test so billboard depth matches mesh.frag's cutout discard.
+    // Own layout (set0 = objSet, set1 = bindless). Reflections frames only.
+    VkPipeline       m_depthPreCutoutPipeline = VK_NULL_HANDLE;
+    VkPipelineLayout m_depthPreCutoutLayout   = VK_NULL_HANDLE;
     // SSAO + blur pipelines (full-screen-triangle fragment passes).
     VkSampler             m_depthSampler  = VK_NULL_HANDLE;  // NEAREST, sample depth as data
     VkDescriptorSetLayout m_ssaoSetLayout = VK_NULL_HANDLE;  // depth + SsaoUBO (ssao.frag)
