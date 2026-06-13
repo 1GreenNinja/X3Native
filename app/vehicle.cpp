@@ -117,12 +117,23 @@ bool DriveDemo::buildPhysics(x3::phys::IPhysicsWorld& physics, float x, float y,
         w.steered = p[i].steer; w.handBraked = p[i].hb; w.powered = p[i].powered;
         w.maxSteerAngle = 0.5236f; // ~30deg
         w.maxBrakeTorque = 2200.0f;
+        // Sports-car compound baseline (Jolt's default curve is a generic economy
+        // tire — a 700 Nm RWD on it lives in a permanent torque-independent
+        // burnout; see WheelDesc::gripScale). Shop tire tiers multiply this.
+        w.gripScale = 1.7f;
         m_wheels.push_back(w);
     }
     x3::phys::WheeledVehicleDesc vd;
     vd.chassis = m_chassis;
     vd.wheels = m_wheels.data(); vd.wheelCount = (uint32_t)m_wheels.size();
     vd.maxEngineTorque = 700.0f; vd.maxEngineRPM = 6500.0f;
+    // Clutch strong enough that the ENGINE is the bottleneck, not the coupling.
+    // Jolt's clutch is a viscous drag (torque ~ clutchStrength * slip): at the
+    // default 10 the engine pins at redline and the transmitted torque becomes
+    // INDEPENDENT of engine torque — every power upgrade would be masked. 100
+    // keeps the coupling tight so peak-torque changes are felt at the wheels
+    // (verified by --test-vehparts P3/P6 tick ordering).
+    vd.clutchStrength = 100.0f;
     // Wheel rays cast as Dynamic so they stand on the Static terrain (Static-vs-
     // Static doesn't collide in the engine matrix; Dynamic-vs-Static does).
     vd.groundLayer = x3::phys::Layer::Dynamic;
@@ -235,7 +246,30 @@ bool DriveDemo::allWheelsInContact() const {
     return n > 0;
 }
 
-void DriveDemo::setInput(const x3::phys::VehicleInput& in) { if (m_ctl) m_ctl->setInput(in); }
+void DriveDemo::setInput(const x3::phys::VehicleInput& in) {
+    m_lastIn = in;
+    if (!m_ctl) return;
+    // ---- TRACTION CONTROL (game layer). Jolt's tire friction peaks near slip
+    // ratio ~0.06 and falls to a plateau beyond it; a powerful RWD launch lives
+    // deep in that plateau (a torque-INDEPENDENT burnout, with upshifts slip-
+    // blocked at redline). TC trims the gas to hold the drive wheels near peak
+    // slip, which (a) launches harder and (b) makes engine torque the binding
+    // constraint — the reason every power part is FELT. dt-independent: the trim
+    // factor is recomputed from the CURRENT slip each call (no accumulation).
+    x3::phys::VehicleInput eff = in;
+    if (m_tcEnabled && eff.throttle > 0.0f) {
+        float slip = 0.0f;
+        for (uint32_t i = 0; i < m_ctl->wheelCount(); ++i)
+            slip = std::max(slip, m_ctl->longitudinalSlip(i));
+        constexpr float kSlipTarget = 0.10f;   // hold just past the friction peak
+        constexpr float kSlipGain   = 4.0f;    // trim slope per unit excess slip
+        if (slip > kSlipTarget) {
+            const float trim = 1.0f - kSlipGain * (slip - kSlipTarget);
+            eff.throttle *= std::clamp(trim, 0.15f, 1.0f);
+        }
+    }
+    m_ctl->setInput(eff);
+}
 void DriveDemo::preStep(float dt)  { if (m_ctl) m_ctl->preStep(dt); }
 void DriveDemo::postStep(float dt) { if (m_ctl) m_ctl->postStep(dt); }
 

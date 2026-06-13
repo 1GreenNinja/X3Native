@@ -56,6 +56,8 @@ add_executable(X3Engine WIN32
     cliffs.cpp
     terrain.cpp
     vehicle.cpp
+    vehparts.cpp
+    perfshop.cpp
     fx.cpp
     hud.cpp
     loading_screen.cpp

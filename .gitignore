@@ -106,3 +106,6 @@ captures/
 assets/converted_glb/ShowRoom_Vol30/*
 !assets/converted_glb/ShowRoom_Vol30/Example_01.glb
 .staging/
+
+# Performance-shop build save (per-machine player state)
+vehbuild.json

@@ -252,6 +252,16 @@ void main() {
     }
 #endif
 
-    if (any(isnan(outColor))) { outColor = vec3(0.0); outConf = 0.0; }
+    // NaN/INF guard + a radiance CAP. The reflection samples LAST frame's lit
+    // scene (TAA history) which already CONTAINS reflections — a closed feedback
+    // loop. An HDR firefly (e.g. a clearcoat car-paint glint or an emissive
+    // lamp) can gain > 1 per frame through that loop and blow up to INF within a
+    // couple hundred frames (isnan() does NOT catch INF), after which the
+    // auto-exposure reads an infinite average luminance and drives the WHOLE
+    // frame to black (seen headless in --world drive with the hero-car GLB).
+    // Capping the sampled radiance bounds the loop gain; 48 is far above any
+    // legitimate reflected radiance in these scenes.
+    if (any(isnan(outColor)) || any(isinf(outColor))) { outColor = vec3(0.0); outConf = 0.0; }
+    outColor = min(outColor, vec3(48.0));
     imageStore(reflOut, px, vec4(outColor, clamp(outConf, 0.0, 1.0)));
 }

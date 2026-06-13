@@ -87,6 +87,13 @@ struct WheelDesc {
     bool  handBraked    = false;                // does the hand brake lock this wheel?
     float maxSteerAngle = 0.5236f;              // max steer (rad) ~30deg, if steered
     float maxBrakeTorque= 1500.0f;              // brake torque (Nm)
+    // BASELINE tire grip: multiplies Jolt's default longitudinal+lateral friction
+    // curves at build time. The Jolt default is a generic economy tire whose high-
+    // slip plateau is so low that a powerful RWD car lives in a permanent torque-
+    // independent burnout (upshifts slip-blocked, engine pinned at redline) — set
+    // > 1 for a sports-car compound so engine torque actually reaches the road.
+    // A live WheeledTuning gripScale composes ON TOP of this baseline.
+    float gripScale     = 1.0f;
 };
 
 // ---------------------------------------------------------------------------
@@ -156,6 +163,44 @@ struct FlightDesc {
     bool  gravity        = true;
 };
 
+// ---------------------------------------------------------------------------
+// LIVE TUNING for a WHEELED controller (the performance-shop parts system).
+// Applied to an EXISTING controller without tearing the constraint down: the
+// Jolt engine/wheel SETTINGS objects are mutated in place (the simulation reads
+// them every step), and the chassis mass is rescaled (inertia follows). Fields
+// at their "leave" sentinel (noted per field) keep the current value, so a
+// partial tuning is safe.
+// ---------------------------------------------------------------------------
+struct EngineCurvePoint {
+    float rpmFrac    = 0.0f;   // X: engine RPM as a fraction of maxEngineRPM [0,1]
+    float torqueFrac = 1.0f;   // Y: fraction of maxEngineTorque available there
+};
+struct WheeledTuning {
+    static constexpr float kRideHeightLeave = -1000.0f;
+    // Engine. maxEngineTorque <= 0 leaves torque; maxEngineRPM <= 0 leaves redline.
+    float maxEngineTorque = 0.0f;     // peak torque (Nm)
+    float maxEngineRPM    = 0.0f;     // redline (rpm)
+    // Normalized torque CURVE (the camshaft/FI profile). curvePoints == 0 keeps the
+    // current curve. Points must be ascending in rpmFrac. Max 8.
+    EngineCurvePoint curve[8];
+    uint32_t curvePoints  = 0;
+    // Chassis mass (kg). <= 0 leaves mass. Inertia is rescaled proportionally.
+    float massKg          = 0.0f;
+    // Tire grip multiplier applied to BOTH the longitudinal and lateral friction
+    // curves (1 = the Jolt default tire). <= 0 leaves grip.
+    float gripScale       = 0.0f;
+    // Suspension spring (all wheels). <= 0 leaves the respective value.
+    float suspensionFreq  = 0.0f;     // spring frequency (Hz)
+    float suspensionDamp  = 0.0f;     // damping ratio
+    // Ride height delta (m) ADDED to each wheel's authored suspension min/max
+    // lengths (negative lowers the car). 0 leaves; clamped so min stays >= 0.03.
+    // NaN is not supported; use 0 to skip. Sentinel: kRideHeightLeave skips too.
+    float rideHeightDelta = kRideHeightLeave;
+    // Brake torque (Nm, all wheels; hand-braked wheels keep their 2.5x lock factor).
+    // <= 0 leaves brakes.
+    float brakeTorque     = 0.0f;
+};
+
 // Per-wheel render state (for drawing the wheel meshes at the right place). The
 // transform is a column-major 4x4 in WORLD space that maps a unit cylinder
 // aligned with +Y (radius 1, height 1) to the wheel — i.e. it already includes
@@ -208,6 +253,23 @@ public:
     virtual bool wheelState(uint32_t i, WheelState& out) const { (void)i; (void)out; return false; }
     virtual float engineRPM() const { return 0.0f; }
     virtual int   gear() const { return 0; }
+
+    // Longitudinal slip RATIO of wheel i: (wheelSurfaceSpeed - vehicleSpeed) /
+    // max(|vehicleSpeed|, 1). ~0 = rolling in sync, >> 0 = wheelspin (burnout),
+    // < 0 = locked under braking. Used by the game-layer traction control.
+    virtual float longitudinalSlip(uint32_t i) const { (void)i; return 0.0f; }
+
+    // Apply a live performance tuning (see WheeledTuning). Mutates the running
+    // Jolt engine/wheel settings + the chassis mass IN PLACE — no constraint
+    // rebuild, so a parked car can be re-tuned in the shop and immediately driven.
+    // Returns false for non-wheeled controllers (default).
+    virtual bool applyWheeledTuning(const WheeledTuning& t) { (void)t; return false; }
+
+    // Temporary engine torque MULTIPLIER (nitrous). 1 = none. Applied on top of
+    // the tuned maxEngineTorque each pre-step while set; the host owns the tank /
+    // duration logic. No-op for non-wheeled controllers.
+    virtual void setTorqueBoost(float mult) { (void)mult; }
+    virtual float torqueBoost() const { return 1.0f; }
 
     // ---- BUOYANCY-only query ----
     // Fraction of the body currently under the water surface [0,1]. 0 for non-buoyant.

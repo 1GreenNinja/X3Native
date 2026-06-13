@@ -90,6 +90,8 @@
 #include "destruct_demo.h"                 // K-T1 destruction demo (--world destruct)
 #include "ragdoll_demo.h"                  // Physics §2 ragdoll demo (--world ragdoll) + blend check
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
+#include "vehparts.h"                      // performance-parts catalog + build composition (--test-vehparts)
+#include "perfshop.h"                      // the drive-in performance shop (--world drive)
 
 #include <memory>
 #include <string_view>
@@ -1951,7 +1953,8 @@ int main(int argc, char** argv) {
          testStreaming = false, testWorldStream = false, testAi = false, testDoorCode = false, testElevator = false,
          testElevatorFsm = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
-         testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
+         testNav = false, testWeapons = false, testVehicle = false, testVehParts = false,
+         testFootIk = false,
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
@@ -1977,6 +1980,14 @@ int main(int argc, char** argv) {
     // through the REAL loader on the live device, render the room, capture a PNG.
     bool        loaderShot = false;
     std::string loaderShotPath = "build/proof/loader_room.png";
+    // --set <cvar> <value> pairs, applied right after console cvar registration.
+    std::vector<std::pair<std::string, std::string>> cliCVars;
+    // --screenshot-perfshop [dir]: headless PERFORMANCE-SHOP proofs — boot the
+    // drive world, build the shop, set the car on the lift, capture the bay
+    // (car on lift + neon sign), the PARTS terminal, and the DYNO mid-pull into
+    // <dir>/perfshop_{bay,parts,dyno}.png. Implies --world drive.
+    bool        perfshopShot = false;
+    std::string perfshopShotDir = "docs/screenshots/perfshop";
     // --test-rt (hardware ray-tracing RT AO): runs the headless smoketest render
     // path with r_rtao forced ON so the BLAS/TLAS build + ray-query AO compute +
     // apply passes are exercised under Vulkan validation on an RT-capable device.
@@ -2480,6 +2491,10 @@ int main(int argc, char** argv) {
         else if (a == "--test-ai") testAi = true;
         else if (a == "--test-bestiary") testBestiary = true;
         else if (a == "--test-bosses") testBosses = true;
+        // (chain break — restart the if/else-if ladder so MSVC stays under the
+        // C1061 block-nesting limit; flags are exact == matches, all unique, so a
+        // matched arg simply falls through the second ladder without re-matching)
+        if (false) {}
         else if (a == "--test-act2bosses") testAct2Bosses = true;
         else if (a == "--test-spiremid") testSpireMid = true;
         else if (a == "--test-nexus") testNexus = true;
@@ -2522,11 +2537,24 @@ int main(int argc, char** argv) {
         else if (a == "--test-script") testScript = true;
         else if (a == "--test-weapons") testWeapons = true;
         else if (a == "--test-vehicle") testVehicle = true;
+        else if (a == "--test-vehparts") testVehParts = true;
+        else if (a == "--screenshot-perfshop") {
+            perfshopShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') perfshopShotDir = argv[++i];
+        }
+        else if (a == "--set") {
+            // Generic CLI cvar override: --set <cvar> <value> (repeatable).
+            // Applied right after the console registers its cvars — the headless
+            // A/B debugging workhorse (e.g. --set r_rtreflections 0).
+            if (i + 2 < argc) { cliCVars.emplace_back(argv[i+1], argv[i+2]); i += 2; }
+        }
         else if (a == "--test-footik") testFootIk = true;
         else if (a == "--test-ui") testUi = true;
         else if (a == "--test-loading") testLoading = true;
         else if (a == "--test-saveload") testSaveLoad = true;
         else if (a == "--test-dialog") testDialog = true;
+        // (chain break #2 — see the note above)
+        if (false) {}
         else if (a == "--demo-dialog") {
             demoDialog = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') demoDialogPath = argv[++i];
@@ -3222,6 +3250,11 @@ int main(int argc, char** argv) {
         const bool driveOk = x3::game::runDriveEnterExitSelfTest();
         return (frameworkOk && driveOk) ? 0 : 1;
     }
+    if (testVehParts) {
+        x3::logInfo("running PERFORMANCE PARTS (x3.vehparts/1) self-test "
+                    "(catalog parse + composition math + REAL Jolt physics deltas + dyno pop thresholds)...");
+        return x3::game::vehparts::runVehPartsSelfTest() ? 0 : 1;
+    }
     if (testFootIk) {
         x3::logInfo("running foot-IK (two-bone + plant + pelvis) self-test...");
         return x3::anim::runFootIkSelfTest() ? 0 : 1;
@@ -3415,7 +3448,8 @@ int main(int argc, char** argv) {
     // render fully offscreen — NO GLFW window, NO surface, NO swapchain, nothing
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
-    const bool headless = smoketest || testFramePacing || screenshot || skyShot || ddgiShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot;
+    if (perfshopShot) worldMode = "drive";   // the shop lives in the drive world
+    const bool headless = smoketest || testFramePacing || screenshot || skyShot || ddgiShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot || perfshopShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -6145,6 +6179,27 @@ int main(int argc, char** argv) {
             const bool sk = car.skin(*device, x3::game::convertedGlbRoot(), "Vehicles/CTR.glb");
             x3::logInfo(std::string("--world drive: hero-car GLB skin ") + (sk ? "ON (CTR)" : "absent — graybox"));
         }
+
+        // ---- THE PERFORMANCE SHOP ("LATE NIGHT SPEED") — drive in, build your
+        // car. Catalog + persisted VehicleBuild + the LevelDoc-authored garage on
+        // a flat site ahead of spawn. Every install/tune re-tunes the LIVE Jolt
+        // car (drive out and FEEL it); the build persists in vehbuild.json. ----
+        x3::game::vehparts::Catalog partsCat;
+        x3::game::vehparts::VehicleBuild carBuild;
+        x3::game::PerfShop shop;
+        bool shopBuilt = false;
+        if (isDrive) {
+            if (partsCat.loadFile(x3::game::vehparts::defaultCatalogPath())) {
+                if (carBuild.loadFile(x3::game::vehparts::defaultBuildSavePath()))
+                    x3::logInfo("--world drive: VehicleBuild loaded (credits " +
+                                std::to_string(carBuild.credits) + ")");
+                shopBuilt = shop.build(vscene, *device, *vphys, &partsCat, &carBuild,
+                                       spawnX, spawnZ - 64.0f);
+                if (shopBuilt) shop.recompose(&car);   // persisted build felt at boot
+            } else {
+                x3::logError("--world drive: parts catalog missing — shop disabled");
+            }
+        }
         vphys->optimizeBroadphase();
 
         const float dt = 1.0f / 60.0f;
@@ -6163,6 +6218,110 @@ int main(int argc, char** argv) {
             else if (isBoat) boat.render(f);
             else plane.render(f);
         };
+
+        // ===== Headless PERFORMANCE-SHOP proofs (--screenshot-perfshop <dir>). ==
+        // Car posed on the lift, shop mode on: bay (car + neon sign), PARTS
+        // terminal close-up, DYNO mid-pull. Works on the FULL default post stack
+        // (the refl.comp NaN/INF guard + radiance cap bounded the reflection->TAA
+        // history feedback loop that used to drive this world path to black).
+        // NOTE: the PLAIN `--world drive --screenshot` chase shot (sun-facing cam
+        // on the clearcoat car over STREAMED tiles) can still go black
+        // INTERMITTENTLY with the RT reflection fallback on — race-shaped,
+        // pre-existing; --legacypost (or --notaa/--norefl) sidesteps it there.
+        if (perfshopShot) {
+            if (!shopBuilt) {
+                x3::logError("--screenshot-perfshop: shop build failed");
+                car.shutdown(); vstream.shutdown(vscene, *device, *vphys);
+                vphys->shutdown(); device->shutdown();
+                if (window) glfwDestroyWindow(window); glfwTerminate();
+                return 1;
+            }
+            std::error_code psec;
+            std::filesystem::create_directories(perfshopShotDir, psec);
+            // A showy build on the lift: turbo + ECU + exhaust (the dyno has
+            // something to say) — installed directly for the proof pose.
+            carBuild.install("forced_induction", "fi_turbo_small");
+            carBuild.install("ecu", "ecu_flash");
+            carBuild.install("exhaust", "exh_turboback");
+            carBuild.tune = { 1.0f, 1.02f, 0.55f };
+            shop.recompose(&car);
+            // Teleport the car onto the lift pad + settle.
+            float lift[3]; shop.liftCenter(lift);
+            vphys->setBodyPosition(car.chassis(), { lift[0], lift[1] + 0.9f, lift[2] });
+            { const float v0[3] = { 0, 0, 0 }; vphys->setBodyLinearVelocity(car.chassis(), v0); }
+            for (int i = 0; i < 180; ++i) {
+                glfwPollEvents();
+                x3::phys::VehicleInput in{}; in.handBrake = 1.0f;
+                car.setInput(in); car.preStep(dt);
+                float cp[3]; car.chassisPos(cp);
+                vstream.update(vscene, *device, *vphys, cp[0], cp[2]);
+                vphys->step(dt); car.postStep(dt);
+                shop.update(dt, &car, nullptr, {});
+            }
+            shop.setShopMode(true);
+            float sOrg[3]; shop.shopOrigin(sOrg);
+            std::vector<x3::rhi::PointLight> pls;
+            auto takeShot = [&](const float cam[5], const std::string& file) -> bool {
+                const std::string path = perfshopShotDir + "/" + file;
+                for (int i = 0; i < 12; ++i) {
+                    glfwPollEvents();
+                    x3::phys::VehicleInput in{}; in.handBrake = 1.0f;
+                    car.setInput(in); car.preStep(dt); vphys->step(dt); car.postStep(dt);
+                    shop.update(dt, &car, nullptr, {});
+                    pls.clear();
+                    shop.selectLights(cam[0], cam[1], cam[2], pls, 16);
+                    device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
+                    device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 62.0f);
+                    if (i == 11) device->armCapture(path.c_str());
+                    auto frame = device->beginFrame();
+                    if (frame.valid) vrender(frame);
+                    device->endFrame(frame);
+                }
+                const bool ok = device->captureFrame(path.c_str());
+                x3::logInfo(std::string("--screenshot-perfshop: ") + (ok ? "wrote " : "FAILED ") + path);
+                return ok;
+            };
+            bool allOk = true;
+            // SHOT 1 — the bay: on the apron sighting straight through the bay
+            // opening at the car on the lift, sign overhead.
+            {
+                float cpDbg[3]; car.chassisPos(cpDbg);
+                x3::logInfo("--screenshot-perfshop: car at (" + std::to_string(cpDbg[0]) + ", " +
+                            std::to_string(cpDbg[1]) + ", " + std::to_string(cpDbg[2]) + "), lift (" +
+                            std::to_string(lift[0]) + ", " + std::to_string(lift[1]) + ", " +
+                            std::to_string(lift[2]) + ")");
+                const float cx = sOrg[0] + 2.1f, cy = sOrg[1] + 2.6f, cz = sOrg[2] + 14.5f;
+                const float dx = lift[0] - cx, dy = (sOrg[1] + 2.6f) - cy, dz = lift[2] - cz;
+                const float cam[5] = { cx, cy, cz, std::atan2(dz, dx),
+                                       std::atan2(dy, std::sqrt(dx*dx + dz*dz)) };
+                allOk &= takeShot(cam, "perfshop_bay.png");
+            }
+            // SHOT 2 — the PARTS terminal (screen at local (-2.8, 2.3, -6.5),
+            // facing +Z): camera square-on in front of the glass.
+            {
+                const float cam[5] = { sOrg[0] - 2.8f, sOrg[1] + 2.3f, sOrg[2] - 3.3f,
+                                       -1.5708f, 0.0f };   // look down -Z at the glass
+                allOk &= takeShot(cam, "perfshop_parts.png");
+            }
+            // SHOT 3 — the DYNO mid-pull: switch the terminal, run the sweep to
+            // ~55% (curves mid-draw + the RPM needle), capture the glass.
+            {
+                shop.uiTab();                       // PARTS -> DYNO
+                shop.startPull();
+                float t = 0.0f;
+                while (shop.pullRunning() && shop.pullProgress() < 0.55f && t < 6.0f) {
+                    shop.update(dt, &car, nullptr, {}); t += dt;
+                }
+                const float cam[5] = { sOrg[0] - 2.8f, sOrg[1] + 2.3f, sOrg[2] - 3.3f,
+                                       -1.5708f, 0.0f };
+                allOk &= takeShot(cam, "perfshop_dyno.png");
+            }
+            shop.shutdown(vscene, *device, *vphys);
+            car.shutdown(); vstream.shutdown(vscene, *device, *vphys);
+            vphys->shutdown(); device->shutdown();
+            if (window) glfwDestroyWindow(window); glfwTerminate();
+            return allOk ? 0 : 1;
+        }
 
         // ===== Headless capture (--world <mode> --screenshot <path>). ==========
         if (headless) {
@@ -6270,12 +6429,26 @@ int main(int argc, char** argv) {
         vaudio->init();
         x3::audio::SoundHandle engineSnd{};
         x3::audio::LoopHandle  engineLoop{};
+        // ---- Shop audio layers: SC whine + turbo whistle are pitched variants of
+        // the SAME engine loop (the only loop in-repo — exhaust note tiers likewise
+        // ride pitch/timbre offsets on it; see VEHPARTS_FORMAT.md AUDIO). The dyno
+        // LIMIT-POP bang reuses a sci-fi gunshot one-shot at low pitch. ----
+        x3::audio::SoundHandle bangSnd{};
+        x3::audio::LoopHandle  whineLoop{};   // supercharger (throttle-gated)
+        x3::audio::LoopHandle  turboLoop{};   // turbo whistle (spool-gated)
+        float turboSpool = 0.0f, prevSpool = 0.0f;
         if (isDrive) {
             engineSnd = vaudio->load(x3::game::resolveAudio("vehicles/engine_loop.wav"));
             if (engineSnd.valid()) engineLoop = vaudio->startLoop(engineSnd, 0.35f, 0.8f);
+            bangSnd = vaudio->load(x3::game::resolveAudio("weapons/single/Single_Gunshot_Sci-Fi_Gun-30.wav"));
             x3::logInfo(std::string("--world drive: engine audio loop ") +
                         (engineSnd.valid() ? "ON" : "absent (silent)"));
         }
+        // Shop-mode key EDGE states (UI nav + dyno sliders + pull/repair/refill).
+        bool prevUiKey[12] = {};   // up,down,enter,bksp,tab,1,2,3,4,5,6,space(+R,N handled below)
+        bool prevR = false, prevN = false;
+        if (isDrive && shopBuilt)
+            x3::logInfo("--world drive: PERFORMANCE SHOP ahead (follow -Z ~64 m) — stop on the lift");
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
             if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
@@ -6315,6 +6488,45 @@ int main(int argc, char** argv) {
                 prevE = eNow;
             }
 
+            // ---- PERFORMANCE SHOP: lift detection + the terminal UI keys. ----
+            if (isDrive && shopBuilt) {
+                float cp[3]; car.chassisPos(cp);
+                const bool stopped = std::fabs(car.forwardSpeed()) < 0.8f;
+                if (!shop.shopMode() && inCar && stopped && shop.onLiftPad(cp)) {
+                    shop.setShopMode(true);
+                    x3::logInfo("--world drive: car on the lift — SHOP MODE (TAB dyno, W drives out)");
+                }
+                if (shop.shopMode() && !shop.onLiftPad(cp)) {
+                    shop.setShopMode(false);
+                    x3::logInfo("--world drive: left the lift — back on the road");
+                }
+                if (shop.shopMode()) {
+                    const int uiKeys[12] = { GLFW_KEY_UP, GLFW_KEY_DOWN, GLFW_KEY_ENTER,
+                                             GLFW_KEY_BACKSPACE, GLFW_KEY_TAB,
+                                             GLFW_KEY_1, GLFW_KEY_2, GLFW_KEY_3, GLFW_KEY_4,
+                                             GLFW_KEY_5, GLFW_KEY_6, GLFW_KEY_SPACE };
+                    bool now[12];
+                    for (int k = 0; k < 12; ++k) now[k] = kd(uiKeys[k]);
+                    if (now[0] && !prevUiKey[0]) shop.uiUp();
+                    if (now[1] && !prevUiKey[1]) shop.uiDown();
+                    if (now[2] && !prevUiKey[2]) shop.uiSelect();
+                    if (now[3] && !prevUiKey[3]) shop.uiBack();
+                    if (now[4] && !prevUiKey[4]) shop.uiTab();
+                    if (now[5] && !prevUiKey[5]) shop.adjustTune(0, -1);
+                    if (now[6] && !prevUiKey[6]) shop.adjustTune(0, +1);
+                    if (now[7] && !prevUiKey[7]) shop.adjustTune(1, -1);
+                    if (now[8] && !prevUiKey[8]) shop.adjustTune(1, +1);
+                    if (now[9] && !prevUiKey[9]) shop.adjustTune(2, -1);
+                    if (now[10] && !prevUiKey[10]) shop.adjustTune(2, +1);
+                    if (now[11] && !prevUiKey[11]) shop.startPull();
+                    for (int k = 0; k < 12; ++k) prevUiKey[k] = now[k];
+                    const bool rNow = kd(GLFW_KEY_R), nNow = kd(GLFW_KEY_N);
+                    if (rNow && !prevR) shop.repairEngine();
+                    if (nNow && !prevN) shop.refillNitrous();
+                    prevR = rNow; prevN = nNow;
+                }
+            }
+
             x3::phys::VehicleInput in;
             if (isDrive || isBoat) {
                 const bool driving = !isDrive || inCar;   // on foot -> car idles, parked
@@ -6324,8 +6536,18 @@ int main(int argc, char** argv) {
                 }
                 if (isDrive) {
                     if (!inCar) in.handBrake = 1.0f;      // parking brake while on foot
-                    else if (kd(GLFW_KEY_SPACE)) in.handBrake = 1.0f;
+                    // SPACE = handbrake on the road, the DYNO PULL key in the shop.
+                    else if (kd(GLFW_KEY_SPACE) && !(shopBuilt && shop.shopMode())) in.handBrake = 1.0f;
                     if (inCar && in.throttle < 0.0f && car.forwardSpeed() > 0.5f) { in.brake = 1.0f; in.throttle = 0.0f; }
+                    // ---- NITROUS: LEFT SHIFT sprays while the tank lasts. ----
+                    if (shopBuilt && inCar && !shop.shopMode() &&
+                        shop.composed().nitrousMult > 0.0f && carBuild.nitrousRemaining > 0.0f &&
+                        kd(GLFW_KEY_LEFT_SHIFT) && in.throttle > 0.0f) {
+                        car.setTorqueBoost(shop.composed().nitrousMult);
+                        carBuild.nitrousRemaining = std::max(0.0f, carBuild.nitrousRemaining - fdt);
+                    } else {
+                        car.setTorqueBoost(1.0f);
+                    }
                 }
             } else { // fly
                 in.throttle = (kd(GLFW_KEY_W)?1.0f:0.0f) - (kd(GLFW_KEY_S)?0.5f:0.0f);
@@ -6382,23 +6604,78 @@ int main(int argc, char** argv) {
             }
             // Smooth the FOV change (dt-scaled, never per-frame — the HARD rule).
             fovNow += (fovTarget - fovNow) * std::min(fdt * 6.0f, 1.0f);
-            // Engine audio: pitch/volume track the RPM proxy (speed+throttle).
-            if (isDrive && engineLoop.valid()) {
-                const float sn = std::min(std::fabs(car.forwardSpeed()) / 33.0f, 1.0f);
-                const float th = std::fabs(in.throttle);
-                vaudio->setLoopParams(engineLoop, 0.30f + 0.35f*th + 0.15f*sn,
-                                      0.75f + 1.10f*sn + 0.18f*th);
+
+            // ---- Shop per-frame: orbit/dyno/texture + pop bang; persist on change. ----
+            float viewYaw = camYaw, viewPitch = camPitch;
+            if (isDrive && shopBuilt) {
+                shop.update(fdt, &car, vaudio.get(), bangSnd);
+                if (shop.shopMode()) {
+                    float oc[5]; shop.orbitCam(oc);
+                    cx = oc[0]; cy = oc[1]; cz = oc[2];
+                    viewYaw = oc[3]; viewPitch = oc[4];
+                    fovNow = 58.0f;                       // tighter showcase framing
+                }
+                if (shop.consumeNeedSave()) {
+                    if (carBuild.saveFile(x3::game::vehparts::defaultBuildSavePath()))
+                        x3::logInfo("--world drive: VehicleBuild saved");
+                }
             }
-            vaudio->setListener(cx, cy, cz, camYaw, camPitch);
+
+            // Engine audio: pitch tracks the REAL engine RPM (the TC pass made the
+            // rev climb + shifts physical), shaped by the EXHAUST tier's note
+            // (pitch/timbre offsets) — plus the SC whine / turbo whistle layers.
+            if (isDrive && engineLoop.valid()) {
+                const auto& cb = shop.composed();
+                const float rpmFrac = std::clamp(car.engineRPM() / std::max(1000.0f, cb.maxRpm), 0.0f, 1.0f);
+                const float th = std::clamp(in.throttle, 0.0f, 1.0f);
+                const float vol   = (0.30f + 0.28f*th + 0.18f*rpmFrac) * (1.0f + 0.25f*cb.exhaustTimbre);
+                const float pitch = 0.65f + 1.15f*rpmFrac + 0.15f*th + cb.exhaustPitchOffset;
+                vaudio->setLoopParams(engineLoop, vol, pitch);
+                // Supercharger whine: throttle-gated pitched layer.
+                if (cb.scWhine && engineSnd.valid()) {
+                    if (!whineLoop.valid()) whineLoop = vaudio->startLoop(engineSnd, 0.0f, 2.4f);
+                    if (whineLoop.valid())
+                        vaudio->setLoopParams(whineLoop, th * 0.20f, 2.4f + 1.3f * rpmFrac);
+                } else if (whineLoop.valid()) { vaudio->stopLoop(whineLoop); whineLoop = {}; }
+                // Turbo: spool rises at wide throttle (lag from the part data),
+                // whistle rides the spool; lifting off above 55% spool = BLOWOFF.
+                if (cb.turboWhistle && engineSnd.valid()) {
+                    const float lag = std::max(0.25f, cb.turboSpoolS);
+                    if (th > 0.6f) turboSpool = std::min(1.0f, turboSpool + fdt / lag);
+                    else           turboSpool = std::max(0.0f, turboSpool - fdt * 2.5f);
+                    if (prevSpool > 0.55f && th < 0.2f) {
+                        vaudio->playSound2D(engineSnd, 0.45f, 4.2f);   // psshh
+                        turboSpool = 0.0f;
+                    }
+                    prevSpool = turboSpool;
+                    if (!turboLoop.valid()) turboLoop = vaudio->startLoop(engineSnd, 0.0f, 3.0f);
+                    if (turboLoop.valid())
+                        vaudio->setLoopParams(turboLoop, turboSpool * 0.18f, 3.0f + 1.2f * turboSpool);
+                } else if (turboLoop.valid()) { vaudio->stopLoop(turboLoop); turboLoop = {}; }
+            }
+            vaudio->setListener(cx, cy, cz, viewYaw, viewPitch);
             int cw, ch; glfwGetFramebufferSize(window, &cw, &ch);
             if (cw != lastWd || ch != lastHd) { lastWd=cw; lastHd=ch; if (cw>0&&ch>0) device->onResize((uint32_t)cw,(uint32_t)ch); }
-            device->setCamera(cx, cy, cz, camYaw, camPitch, fovNow);
+            // Shop point lights nearest the eye (interior work lights + neon wash).
+            if (isDrive && shopBuilt) {
+                std::vector<x3::rhi::PointLight> pls;
+                shop.selectLights(cx, cy, cz, pls, 16);
+                device->setPointLights(pls.empty() ? nullptr : pls.data(), (uint32_t)pls.size());
+            }
+            device->setCamera(cx, cy, cz, viewYaw, viewPitch, fovNow);
             auto frame = device->beginFrame();
             if (frame.valid) vrender(frame);
             device->endFrame(frame);
         }
         if (engineLoop.valid()) vaudio->stopLoop(engineLoop);
+        if (whineLoop.valid())  vaudio->stopLoop(whineLoop);
+        if (turboLoop.valid())  vaudio->stopLoop(turboLoop);
         vaudio->shutdown();
+        if (isDrive && shopBuilt) {
+            // Persist the build (incl. the nitrous tank level) on the way out.
+            carBuild.saveFile(x3::game::vehparts::defaultBuildSavePath());
+            shop.shutdown(vscene, *device, *vphys);
+        }
         if (isDrive) { car.shutdown(); vstream.shutdown(vscene, *device, *vphys); }
         else if (isBoat) boat.shutdown(); else plane.shutdown();
         vphys->shutdown(); device->shutdown();
@@ -9963,6 +10240,13 @@ int main(int argc, char** argv) {
         x3::logInfo("[llm] no model at " + llmModelPath +
                     " — terminal freeform Q&A falls back to canned SYSTEMS DEGRADED lines"
                     " (see assets/models/llm/README.md)");
+    }
+
+    // --set <cvar> <value> CLI overrides (repeatable) — applied as soon as the
+    // console exists so the per-frame cvar sync starts from the requested state.
+    for (const auto& kv : cliCVars) {
+        console->set(kv.first, kv.second);
+        x3::logInfo("--set " + kv.first + " " + kv.second);
     }
 
     // --legacypost / --notaa: pin the matching cvars so the per-frame cvar->device
