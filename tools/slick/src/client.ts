@@ -105,6 +105,23 @@ export async function login(username: string, password: string): Promise<Session
   return session;
 }
 
+/** Sign in with an existing access token (no password needed). Validates the
+ * token via /account/whoami, then persists the session. The escape hatch for
+ * "I don't know my password" — paste the token from Element. */
+export async function loginWithToken(token: string): Promise<Session> {
+  const who = await req<{ user_id: string; device_id?: string }>(
+    "/_matrix/client/v3/account/whoami",
+    { token },
+  );
+  const session: Session = {
+    userId: who.user_id,
+    token: token.trim(),
+    deviceId: who.device_id ?? "slick-token",
+  };
+  localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  return session;
+}
+
 /** One /sync long-poll. First call (no since) gets a full snapshot. */
 export async function sync(
   token: string,
@@ -142,6 +159,55 @@ export async function sendMessage(
     { method: "PUT", token, body: content },
   );
   return data.event_id;
+}
+
+/** Change the logged-in user's password. Matrix requires re-auth with the
+ * CURRENT password (UIAA m.login.password). Two-step: probe for a session id,
+ * then submit auth + new password. logout_devices:false keeps other sessions
+ * (the fleet bots) alive. */
+export async function changePassword(
+  token: string,
+  userId: string,
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  const path = "/_matrix/client/v3/account/password";
+  // Step 1: probe (no auth) -> UIAA session id (returns 401 w/ flows+session)
+  let session = "";
+  try {
+    await req(path, { method: "POST", token, body: { new_password: newPassword } });
+    return; // (shouldn't happen — Conduit always challenges)
+  } catch (e) {
+    if (e instanceof MatrixError && e.status === 401) {
+      // the 401 body carried flows+session; re-fetch it cleanly
+      const probe = await fetch(`${HOMESERVER}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ new_password: newPassword }),
+      });
+      const pb = await probe.json().catch(() => ({}));
+      session = pb.session;
+      if (!session) throw new MatrixError(probe.status, pb.errcode ?? "M_UNKNOWN", pb.error ?? "no UIAA session");
+    } else {
+      throw e;
+    }
+  }
+  // Step 2: submit with current-password auth + the session id
+  const localpart = userId.split(":")[0].replace(/^@/, "");
+  await req(path, {
+    method: "POST",
+    token,
+    body: {
+      auth: {
+        type: "m.login.password",
+        identifier: { type: "m.id.user", user: localpart },
+        password: currentPassword,
+        session,
+      },
+      new_password: newPassword,
+      logout_devices: false,
+    },
+  });
 }
 
 /** Resolve an mxc:// URI to the authenticated full-res download URL. */

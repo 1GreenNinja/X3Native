@@ -4,6 +4,7 @@ import { store, subscribe, type Room } from "../store";
 import { MessageStream } from "./MessageStream";
 import { Composer } from "./Composer";
 import { MemberPanel } from "./MemberPanel";
+import { Settings } from "./Settings";
 
 function useStore(): number {
   const [v, setV] = useState(store.version);
@@ -22,6 +23,7 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
   useStore();
   const [activeId, setActiveId] = useState<string | null>(null);
   const [showMembers, setShowMembers] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const { channels, dms } = sortedRooms();
   const active = activeId ? store.rooms.get(activeId) : null;
 
@@ -62,7 +64,10 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
         </nav>
         <footer class="me">
           <span class="me-id">{session.userId.split(":")[0]}</span>
-          <button class="logout" onClick={onLogout}>Sign out</button>
+          <span class="me-actions">
+            <button class="gear" onClick={() => setShowSettings(true)} title="Settings">⚙️</button>
+            <button class="logout" onClick={onLogout}>Sign out</button>
+          </span>
         </footer>
       </aside>
 
@@ -90,6 +95,7 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
       </main>
 
       {showMembers && active && <MemberPanel session={session} roomId={active.id} />}
+      {showSettings && <Settings session={session} onClose={() => setShowSettings(false)} />}
     </div>
   );
 }

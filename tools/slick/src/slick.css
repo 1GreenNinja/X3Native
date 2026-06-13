@@ -101,6 +101,14 @@ body::before {
 }
 .login-card button:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
 .login-error { color: var(--red); font-size: 13px; }
+.login-hint { color: var(--text-dim); font-size: 12px; margin-top: -4px; }
+.login-tabs { display: flex; gap: 6px; }
+.login-tabs button {
+  flex: 1; padding: 8px; font-size: 13px; cursor: pointer;
+  background: rgba(8, 12, 18, 0.5); color: var(--muted);
+  border: 1px solid var(--hairline); border-radius: 8px;
+}
+.login-tabs button.on { border-color: var(--cyan); color: var(--cyan); box-shadow: var(--cyan-glow); }
 
 /* ---- workspace ---- */
 .workspace { height: 100%; display: grid; grid-template-columns: 264px 1fr; position: relative; z-index: 1; }
@@ -182,6 +190,9 @@ body::before {
   background: var(--plate);
 }
 .me-id { color: #fff; font-weight: 700; font-size: 14px; }
+.me-actions { display: flex; align-items: center; gap: 6px; }
+.gear { background: none; border: none; font-size: 15px; cursor: pointer; opacity: 0.7; }
+.gear:hover { opacity: 1; }
 .logout {
   background: rgba(8, 12, 18, 0.5);
   border: 1px solid var(--hairline);
@@ -333,6 +344,21 @@ body::before {
 .genpanel-go:disabled { opacity: 0.4; cursor: default; box-shadow: none; }
 .genpanel-foot { font-size: 12px; color: var(--muted); text-align: center; }
 .genpanel-foot code { background: rgba(8, 12, 18, 0.6); border-radius: 4px; padding: 1px 5px; color: var(--cyan); }
+
+/* settings */
+.settings-account { display: flex; flex-direction: column; gap: 6px; padding: 4px 0; }
+.settings-field { display: flex; gap: 10px; font-size: 13px; }
+.settings-field label { width: 64px; color: var(--text-dim); font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+.settings-field span { color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+.settings-h3 { font-size: 14px; color: #fff; margin-top: 4px; }
+.settings-ok { color: var(--green); font-size: 13px; }
+.settings-err { color: var(--red); font-size: 13px; }
+.settings-note {
+  font-size: 12px; color: var(--muted);
+  background: rgba(8, 12, 18, 0.5); border: 1px solid var(--hairline);
+  border-radius: 8px; padding: 10px 12px; line-height: 1.5;
+}
+.settings-note code { background: rgba(63, 208, 224, 0.1); color: var(--cyan); border-radius: 4px; padding: 1px 5px; }
 
 /* echo states handled above (.msg-body.pending/.failed) */
 
