@@ -265,6 +265,15 @@ struct ContactRecord {
 
 class JoltPhysicsWorld final : public IPhysicsWorld {
 public:
+    // BUG-FIX (rare silent abort): destruction without an explicit shutdown()
+    // (several self-tests let the unique_ptr fall off scope) used to tear members
+    // down in reverse declaration order — which destroys the JoltJobBridge
+    // (m_jobs) BEFORE m_engineJobs joins its workers, hitting the same
+    // worker-still-inside-a-bridge-job use-after-free that shutdown() documents
+    // below. Route the destructor through shutdown() (idempotent) so EVERY
+    // teardown joins the workers before the bridge dies.
+    ~JoltPhysicsWorld() override { shutdown(); }
+
     bool init() override {
         ensureJoltGlobals();
 
@@ -330,8 +339,22 @@ public:
         }
         m_contactListener.reset();
         m_system.reset();
-        m_jobs.reset();        // bridge references m_engineJobs -> destroy it first
-        m_engineJobs.reset();  // joins engine worker threads
+        // BUG-FIX (rare silent abort): JOIN the engine workers BEFORE destroying
+        // the JoltJobBridge. A bridge job signals its Jolt barrier from INSIDE
+        // Job::Execute() — i.e. the main thread's PhysicsSystem::Update() can
+        // return while the worker still has `inJob->Release()` left to run (see
+        // JoltJobBridge::QueueJob). If that worker is preempted in this window
+        // and we destroy the bridge first (the old order), the worker's Release
+        // -> mJobSystem->FreeJob(this) is a virtual call THROUGH THE FREED
+        // BRIDGE -> heap use-after-free -> intermittent silent process death
+        // (observed as the rare mid-GLB abort: a background worker faults while
+        // the main thread happens to be in the loader). Joining first guarantees
+        // no worker can still be inside a bridge job when the bridge dies. The
+        // old comment's concern (bridge's raw m_engine pointer dangling) is
+        // moot: nothing calls the bridge between the two teardowns.
+        if (m_engineJobs) m_engineJobs->shutdown();  // joins ALL workers + IO threads
+        m_jobs.reset();        // now no thread can touch the bridge
+        m_engineJobs.reset();
         m_temp.reset();
     }
 
@@ -1416,6 +1439,27 @@ bool runPhysicsSelfTest() {
         w->setBodyUserData(b2, 42ull);
         bool indep = (w->getBodyUserData(b) == tag) && (w->getBodyUserData(b2) == 42ull);
         check(def0 && rt && indep, "T11 setBodyUserData/getBodyUserData round-trip");
+        w->shutdown();
+    }
+
+    // ---- T12: removeBody on an invalid/stale id is a SAFE no-op (spec M3 §73).
+    // Guards the warn path that the teardown-ordering fix must NOT silence: a
+    // genuine stale remove still warns (visible in this test's output) and never
+    // crashes or damages the world. ----
+    {
+        std::unique_ptr<IPhysicsWorld> w(createPhysicsWorld());
+        w->init();
+        w->addBox(Vec3{50,0.5f,50}, Vec3{0,-0.5f,0}, 0.0f, Layer::Static); // ground @ y=0
+        BodyId b = w->addBox(Vec3{0.5f,0.5f,0.5f}, Vec3{0,2,0}, 1.0f, Layer::Dynamic);
+        w->removeBody(b);          // legitimate remove
+        w->removeBody(b);          // STALE remove -> warn-once + no-op (must not crash)
+        w->removeBody(BodyId{});   // invalid id   -> same no-op path
+        // World must remain fully functional after the stale removes.
+        BodyId b2 = w->addBox(Vec3{0.5f,0.5f,0.5f}, Vec3{0,2,0}, 1.0f, Layer::Dynamic);
+        for (int i = 0; i < 120; ++i) w->step(kFixedDt);
+        Vec3 p = w->getBodyPosition(b2);
+        check(b2.valid() && approx(p.y, 0.5f, 0.06f),
+              "T12 stale/invalid removeBody is a no-op; world stays functional");
         w->shutdown();
     }
 

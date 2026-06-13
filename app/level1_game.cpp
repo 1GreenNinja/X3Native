@@ -511,6 +511,14 @@ void Level1Game::shutdown() {
     m_bossAdds.shutdown();
     m_chen.shutdown();
     m_martinez.shutdownRagdoll();
+    // BUG-FIX (teardown ordering): the barrel system owns a DestructibleManager
+    // whose DESTRUCTOR removes its intact barrel bodies. Without this explicit
+    // call that destructor runs during stack unwind AFTER physics->shutdown()
+    // (the Level1Game object outlives the explicit physics teardown in every
+    // host path) and each removeBody hits the already-cleared world -> the
+    // '[phys] removeBody: invalid/stale id' warning. Release the bodies HERE,
+    // while the world is still alive.
+    m_barrels.shutdown();
 }
 
 bool Level1Game::cureChen(Scene& scene, x3::phys::IPhysicsWorld& physics) {
@@ -1247,9 +1255,11 @@ bool runDoorCodeSelfTest() {
         bool opened = g2.tryDoorCode(far2, 1127);   // right code, but out of range
         check(!opened && g2.doorState('C') == DoorState::Closed && g2.doorLocked('C'),
               "K6 right code out of range does NOT open Door C");
+        g2.shutdown();      // release g2's bodies BEFORE its world shuts down
         p2->shutdown();
     }
 
+    game.shutdown();        // release game's bodies BEFORE the world shuts down
     physics->shutdown();
     x3::logInfo(std::string("[doorcode-test] ") + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");

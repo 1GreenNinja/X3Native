@@ -8184,6 +8184,21 @@ int main(int argc, char** argv) {
     // it host-side because spire_top exposes victimCaptive() (not a companion query), and
     // we must not modify spire_top.
     bool sarahSaved = false;
+    // ---- BUG-FIX (teardown ordering): every exit path must release the game-side
+    // physics bodies BEFORE physics->shutdown(). `game`/`nexus`/`canonPlay` are
+    // stack objects declared ABOVE `physics`'s explicit shutdown call sites, so
+    // their destructors (barrel DestructibleManager bodies, in-flight skinned
+    // death-ragdoll Jolt bodies) run during stack unwind AFTER the world is dead —
+    // a use-after-shutdown that at best fires the '[phys] removeBody: invalid/
+    // stale id' warning and at worst touches a destroyed Jolt system. The main
+    // window-loop exit already did this; the headless early-exit paths (bench,
+    // screenshot, ui-demo, smoketest) did NOT. Call this before EVERY
+    // physics->shutdown() that follows game construction.
+    auto shutdownGameSystems = [&]() {
+        game.shutdown();                               // every enemy group + Martinez + barrels
+        nexus.shutdown();                              // F4.5 Chorus pod ragdolls
+        if (canonPlay.built()) canonPlay.shutdown();   // canonlevel enemy ragdolls
+    };
     if (canonWorld) {
         // ---- DATA-DRIVEN CANONICAL FLOOR 1 + per-room PVS cull. ----
         canonFloor = x3::game::loadCanonFloor(x3::game::canonProjectJsonPath(), 1);
@@ -8953,6 +8968,7 @@ int main(int argc, char** argv) {
 
         audio->shutdown();
         combatFx.shutdown(*device);
+        shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -9143,6 +9159,7 @@ int main(int argc, char** argv) {
 
         audio->shutdown();
         combatFx.shutdown(*device);
+        shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -9240,6 +9257,7 @@ int main(int argc, char** argv) {
 
         audio->shutdown();
         combatFx.shutdown(*device);
+        shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -9475,7 +9493,7 @@ int main(int argc, char** argv) {
         x3::logInfo("smoketest: 30 frames + recreate OK");
         audio->shutdown();
         combatFx.shutdown(*device);
-        if (canonPlay.built()) canonPlay.shutdown();   // --world canonlevel enemy ragdolls
+        shutdownGameSystems();   // game bodies/ragdolls out BEFORE the world dies
         physics->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
@@ -11484,11 +11502,7 @@ int main(int argc, char** argv) {
     // fans across EVERY Level1Game enemy group AND the single Martinez boss + Phase-3
     // adds (the bare group calls missed Martinez/bossAdds -> exit crash after a boss
     // kill); a no-op when nothing is ragdolling.
-    game.shutdown();
-    // The off-elevator Nexus (F4.5 Chorus) is a MultiPodBoss whose rigged pods also
-    // spawn skinned death ragdolls — tear those Jolt bodies down too before physics.
-    nexus.shutdown();
-    if (canonPlay.built()) canonPlay.shutdown();   // --world canonlevel enemy ragdolls
+    shutdownGameSystems();   // every enemy group + Martinez + barrels + Nexus/canon ragdolls
     physics->shutdown();
     device->shutdown();
     glfwDestroyWindow(window);

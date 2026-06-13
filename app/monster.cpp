@@ -498,7 +498,7 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
             Entity& me = scene.get(m_entity);
             me.body = x3::phys::BodyId{};         // entity no longer owns a body
         }
-        physics.removeBody(m_body);
+        if (m_body.valid()) physics.removeBody(m_body);
         m_body = x3::phys::BodyId{};
         x3::logInfo("[monster] killed (HP 0) — body removed, death-pop started");
         // TASK#12: try the SKINNED DEATH RAGDOLL — a rigged enemy physically flops
