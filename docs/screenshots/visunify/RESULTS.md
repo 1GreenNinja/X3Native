@@ -90,17 +90,28 @@ submit (~2x a median frame, the ONE declared zero-stutter exemption). Now:
 | rebuilds recorded | 1 per mutation (blocking) | 120/120 (async, in-frame) |
 | grows (one-time allocations) | n/a | 19 (instance-count high-water marks; bounded) |
 
-## Acceptance
+## Acceptance (all measured 2026-06-12)
 
-* `--test-visunify` **32/32** (policy table, conservation across r_vis levels,
-  alias mapping, TLAS mutation zero-wait) — Release AND Debug (validation ON).
-* `--test-gpucull` **40/40** — the CPU/GPU equivalence stays EXACT.
-* Full `--test-*` suite: see the suite verdict in the handoff report.
-* Debug `--smoketest` across `--vis 0/1/2/3`: 0 VUID, `allocationCount=0`.
+* `--test-visunify` **32/32** — Release AND Debug (validation ON, **0 VUID**):
+  policy table, conservation across r_vis levels on a still camera, alias
+  mapping through the real cvar sync, TLAS mutation zero-wait under load
+  (Debug numbers: 120 builds, 0 syncWaits, maxCpuMs 0.16).
+* `--test-gpucull` **40/40** Release + Debug (**0 VUID**) — the CPU/GPU
+  equivalence stays EXACT.
+* Full `--test-*` suite (all 82 flags), Release: **0 failures**.
+* `--smoketest` across `--vis 0/1/2/3`: Release AND Debug all **0 VUID,
+  `allocationCount=0`**, every unified line `[CONSERVED]`. Debug vis 3 on the
+  legacy tower reproduces the D15 HZB split exactly: `hzb 475 -> drawn 717`
+  (717 + 475 == 1192, the CPU reference).
+* Debug `--smoketest --world canonlevel --vis 3`: 0 VUID, conserved
+  (`cand 1042: rooms 960 -> frustum 32 -> hzb 0 -> drawn 50`).
+* Stills across `r_vis 1/2/3` (canonlevel): **BYTE-IDENTICAL PNGs**
+  (md5 `b6510e9575895fe4041ec326afc34906` for all three).
 
 ## Stills
 
 * `canonlevel_vis1.png` / `canonlevel_vis2.png` / `canonlevel_vis3.png` —
-  canonical Floor 1 from the spawn cell, stats overlay showing the unified
-  block (drawn identical across levels).
-* `demo100k_vis3.png` — the 100k-object density demo on the full unified path.
+  canonical Floor 1 from the spawn cell; byte-identical across the three
+  policies (the no-over-cull proof at pixel level).
+* `demo100k_vis3.png` — the 100k-object density demo on the full unified path
+  with the unified stats overlay.
