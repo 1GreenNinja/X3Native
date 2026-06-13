@@ -150,3 +150,40 @@ export function mxcToUrl(mxc: string): string {
   if (!m) return "";
   return `${HOMESERVER}/_matrix/client/v1/media/download/${m[1]}/${m[2]}`;
 }
+
+/** Upload a file at ORIGINAL quality (no client recompression). Returns mxc://. */
+export async function uploadMedia(token: string, file: File): Promise<string> {
+  const resp = await fetch(
+    `${HOMESERVER}/_matrix/media/v3/upload?filename=${encodeURIComponent(file.name)}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": file.type || "application/octet-stream",
+      },
+      body: file,
+    },
+  );
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    throw new MatrixError(resp.status, data.errcode ?? "M_UNKNOWN", data.error ?? `HTTP ${resp.status}`);
+  }
+  return data.content_uri as string;
+}
+
+/** Read an image File's pixel dimensions for the m.image info block. */
+export function imageDimensions(file: File): Promise<{ w: number; h: number }> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      resolve({ w: img.naturalWidth, h: img.naturalHeight });
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => {
+      resolve({ w: 0, h: 0 });
+      URL.revokeObjectURL(url);
+    };
+    img.src = url;
+  });
+}

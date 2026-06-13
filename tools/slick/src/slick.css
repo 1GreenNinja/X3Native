@@ -254,3 +254,67 @@ body {
   cursor: pointer;
 }
 .send-btn:disabled { background: #ddd; color: #999; cursor: default; }
+.composer-actions { display: flex; align-items: center; gap: 8px; }
+.attach-btn {
+  background: none;
+  border: none;
+  font-size: 16px;
+  cursor: pointer;
+  opacity: 0.7;
+}
+.attach-btn:hover { opacity: 1; }
+.composer.drag-over .composer-input {
+  border-color: var(--green);
+  background: #f0fbf6;
+}
+
+/* inline images */
+.inline-image {
+  max-height: 360px;
+  max-width: 100%;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  margin-top: 4px;
+  cursor: zoom-in;
+  display: block;
+}
+
+/* lightbox */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: grid;
+  place-items: center;
+  z-index: 1000;
+  cursor: zoom-out;
+}
+.lightbox-img {
+  max-width: 94vw;
+  max-height: 88vh;
+  border-radius: 4px;
+}
+.lightbox-bar {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 20px;
+  cursor: default;
+}
+.lightbox-name { flex: 1; font-size: 14px; opacity: 0.9; }
+.lightbox-dl { color: #6fb3ff; text-decoration: none; font-size: 14px; }
+.lightbox-dl:hover { text-decoration: underline; }
+.lightbox-close {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  color: #fff;
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+}

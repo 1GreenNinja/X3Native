@@ -3,7 +3,7 @@
 
 import { useRef, useState } from "preact/hooks";
 import type { Session, MatrixEvent } from "../client";
-import { sendMessage, newTxnId } from "../client";
+import { sendMessage, newTxnId, uploadMedia, imageDimensions } from "../client";
 import { addLocalEcho, markEchoFailed } from "../store";
 
 interface Parsed {
@@ -45,7 +45,53 @@ export function Composer({
   roomName: string;
 }) {
   const [value, setValue] = useState("");
+  const [dragOver, setDragOver] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  /** Upload an image at full quality, echo it, then send m.image. */
+  const sendImage = async (file: File) => {
+    if (!file.type.startsWith("image/")) return;
+    const txn = newTxnId();
+    const echoId = `echo:${txn}`;
+    const echo: MatrixEvent = {
+      event_id: echoId,
+      type: "m.room.message",
+      sender: session.userId,
+      origin_server_ts: Date.now(),
+      content: { msgtype: "m.image", body: file.name, _pending: true },
+    };
+    addLocalEcho(roomId, echo);
+    try {
+      const { w, h } = await imageDimensions(file);
+      const mxc = await uploadMedia(session.token, file);
+      const content = {
+        msgtype: "m.image",
+        body: file.name,
+        url: mxc,
+        info: { mimetype: file.type, size: file.size, w, h },
+      };
+      await sendMessage(session.token, roomId, content, txn);
+    } catch {
+      markEchoFailed(roomId, echoId);
+    }
+  };
+
+  const onDrop = (e: DragEvent) => {
+    e.preventDefault();
+    setDragOver(false);
+    for (const f of Array.from(e.dataTransfer?.files ?? [])) sendImage(f);
+  };
+
+  const onPaste = (e: ClipboardEvent) => {
+    const items = e.clipboardData?.items ?? [];
+    for (const it of Array.from(items)) {
+      if (it.kind === "file") {
+        const f = it.getAsFile();
+        if (f) sendImage(f);
+      }
+    }
+  };
 
   const send = async () => {
     const parsed = parseInput(value);
@@ -87,20 +133,40 @@ export function Composer({
   };
 
   return (
-    <div class="composer">
+    <div
+      class={`composer ${dragOver ? "drag-over" : ""}`}
+      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      onDragLeave={() => setDragOver(false)}
+      onDrop={onDrop}
+    >
       <textarea
         ref={taRef}
         class="composer-input"
-        placeholder={`Message #${roomName}`}
+        placeholder={dragOver ? "Drop image to upload at full quality…" : `Message #${roomName}`}
         value={value}
         rows={1}
         onInput={onInput}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
       />
       <div class="composer-hint">
-        <span><b>Enter</b> to send · <b>Shift+Enter</b> newline · <code>/me</code> · <code>/gen &lt;prompt&gt;</code></span>
-        <button class="send-btn" disabled={!value.trim()} onClick={send}>Send</button>
+        <span><b>Enter</b> send · <b>Shift+Enter</b> newline · <code>/me</code> · <code>/gen</code> · drag/paste image</span>
+        <span class="composer-actions">
+          <button class="attach-btn" onClick={() => fileRef.current?.click()} title="Attach image">📎</button>
+          <button class="send-btn" disabled={!value.trim()} onClick={send}>Send</button>
+        </span>
       </div>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const f = (e.target as HTMLInputElement).files?.[0];
+          if (f) sendImage(f);
+          (e.target as HTMLInputElement).value = "";
+        }}
+      />
     </div>
   );
 }

@@ -5,6 +5,7 @@
 import { useEffect, useRef } from "preact/hooks";
 import type { MatrixEvent } from "../client";
 import type { Room } from "../store";
+import { ImageEvent } from "./ImageEvent";
 
 const GROUP_WINDOW_MS = 5 * 60 * 1000;
 
@@ -40,7 +41,10 @@ function EventBody({ ev }: { ev: MatrixEvent }) {
     return <div class={`msg-body gen-chip${stateClass}`}>⚙️ /gen — {c.prompt ?? "(no prompt)"} <em>(pending){suffix}</em></div>;
   }
   if (c.msgtype === "m.image") {
-    return <div class={`msg-body image-chip${stateClass}`}>🖼️ {c.body ?? "image"} <em>(inline render in PR-4){suffix}</em></div>;
+    if (c._pending) {
+      return <div class={`msg-body image-chip${stateClass}`}>🖼️ {c.body ?? "image"} <em>(uploading…){suffix}</em></div>;
+    }
+    return <div class={`msg-body${stateClass}`}><ImageEvent content={c} /></div>;
   }
   if (c.msgtype === "m.notice") {
     return <div class={`msg-body notice${stateClass}`}>{c.body}{suffix}</div>;
