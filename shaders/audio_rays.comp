@@ -1,0 +1,49 @@
+#version 460
+// RT ACOUSTICS — audio occlusion / room-probe rays through the RENDER TLAS.
+// CLEAN-ROOM, original work: built only from the Vulkan 1.3 spec + the public
+// GLSL_EXT_ray_query extension spec (Khronos). No id Tech / RBDOOM source.
+//
+// One thread = one audio ray. The host (RtAcoustics via IRenderDevice::
+// traceAudioRays) batches every active sound emitter's occlusion fan plus the
+// periodic listener room-probe sphere into ONE dispatch (a few hundred rays —
+// trivial next to DDGI's thousands). Each ray traces the SAME scene TLAS the
+// RT AO / reflections / DDGI passes use and writes the CLOSEST hit distance
+// (or -1 on miss) for the CPU to turn into occlusion factors + a mean-free-path
+// room-size estimate. Closest hit (not first-hit-terminate) because the room
+// probe needs the true nearest-wall distance.
+
+#extension GL_EXT_ray_query : require
+
+layout(local_size_x = 64) in;
+
+struct ARay {
+    vec4 o_tmax;   // xyz = origin, w = tMax (meters)
+    vec4 d_pad;    // xyz = direction (normalized by the host), w unused
+};
+
+layout(set = 0, binding = 0) uniform accelerationStructureEXT tlas;
+layout(set = 0, binding = 1, std430) readonly buffer Rays { ARay rays[]; };
+layout(set = 0, binding = 2, std430) writeonly buffer Hits { float hitT[]; };
+
+layout(push_constant) uniform PC { uint rayCount; } pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.rayCount) return;
+
+    vec3  o    = rays[i].o_tmax.xyz;
+    float tmax = rays[i].o_tmax.w;
+    vec3  d    = rays[i].d_pad.xyz;
+
+    rayQueryEXT rq;
+    // Opaque scene; commit the CLOSEST intersection within [tMin, tMax].
+    rayQueryInitializeEXT(rq, tlas, gl_RayFlagsOpaqueEXT, 0xFF, o, 0.01, d, tmax);
+    while (rayQueryProceedEXT(rq)) { }
+
+    if (rayQueryGetIntersectionTypeEXT(rq, true) ==
+        gl_RayQueryCommittedIntersectionTriangleEXT) {
+        hitT[i] = rayQueryGetIntersectionTEXT(rq, true);
+    } else {
+        hitT[i] = -1.0;   // miss within tMax
+    }
+}

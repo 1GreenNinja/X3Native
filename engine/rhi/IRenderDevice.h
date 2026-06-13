@@ -522,6 +522,35 @@ public:
     // Cached + re-applied each frame, like setRtaoParams. Default no-op.
     virtual void          setRtShadowParams(const RtShadowParams&) {}
 
+    // ---- RT ACOUSTICS — audio rays through the render TLAS (snd_rtacoustics) --
+    // ASYNC batched ray queries against the SAME scene TLAS the RT AO /
+    // reflections / DDGI passes use. The audio layer (engine/audio/RtAcoustics)
+    // batches per-emitter occlusion fans + a periodic listener room-probe sphere
+    // into one submit — a few hundred rays. ASYNC because a synchronous fence
+    // wait on the graphics queue would stall behind the in-flight frame's GPU
+    // work (tens of ms on heavy scenes); submit + next-update harvest costs the
+    // game thread ~microseconds and audio tolerates one update of latency.
+    // POD only — no Vulkan types cross the boundary.
+    //
+    // traceAudioRaysSubmit: kick a batch. Returns false when ray tracing is
+    // unsupported, the TLAS is not built yet (the first call ARMS the per-frame
+    // TLAS build; data begins a frame later), a previous batch is still in
+    // flight/unharvested, or count exceeds the internal capacity (1024).
+    //
+    // traceAudioRaysHarvest: poll the last submitted batch. Returns its ray
+    // count and fills outHitT[i] with each ray's CLOSEST hit distance in meters
+    // (< 0 = miss within tMax) once the GPU finished; 0 = still in flight;
+    // -1 = nothing in flight / unsupported / capacity too small (batch dropped).
+    // Defaults: inert no-ops (headless / non-RT devices).
+    struct AudioRay {
+        float ox = 0, oy = 0, oz = 0;  // world-space origin
+        float tMax = 1.0f;             // ray length (meters)
+        float dx = 0, dy = 1, dz = 0;  // direction (normalized by the caller)
+        float pad = 0;                 // std430 vec4-pair alignment
+    };
+    virtual bool          traceAudioRaysSubmit(const AudioRay*, int /*count*/) { return false; }
+    virtual int           traceAudioRaysHarvest(float* /*outHitT*/, int /*capacity*/) { return -1; }
+
     // ---- Glass DEV overrides (live r_glass_* cvars, spec §2/§3.2) ----------
     // A dev-time SCALE/OVERRIDE applied to EVERY glass fragment this frame so the
     // glass look can be scrubbed live in the console without re-authoring each

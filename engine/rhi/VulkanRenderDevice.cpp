@@ -465,6 +465,7 @@ public:
         shutdownEditorUI();   // editor-only ImGui teardown (no-op if --editor was absent)
         destroyRefl();        // SSR/RT reflections pipelines/targets (no-op if never built)
         destroyDdgi();        // DDGI probe-grid pipelines/atlases (no-op if never built)
+        destroyAudioRays();   // RT-acoustics ray batch pipeline/buffers (no-op if never built)
         destroyRt();          // RT AO pipelines/targets + AS module (no-op if never built)
         destroySkinning();
         destroyDebris();
@@ -1170,7 +1171,12 @@ public:
                              && (m_reflPipeRt != VK_NULL_HANDLE);
         const bool ddgiWant = m_ddgiWantThisFrame;   // decided in prepareFrameData
         const bool rtshWant = m_rtShadowsWantThisFrame;
-        if (m_rtSupported && (m_rtao.enabled || reflRtWant || ddgiWant || rtshWant)) {
+        // RT ACOUSTICS: while traceAudioRays() keeps getting called (countdown
+        // re-armed each call), keep the scene TLAS built even with every RT
+        // SCREEN effect off — audio rays are a first-class TLAS consumer.
+        const bool audioWant = m_audioRaysWantFrames > 0;
+        if (m_audioRaysWantFrames > 0) --m_audioRaysWantFrames;
+        if (m_rtSupported && (m_rtao.enabled || reflRtWant || ddgiWant || rtshWant || audioWant)) {
             const bool coreReady = m_rtao.enabled ? ensureRtaoReady() : ensureRtCore();
             if (coreReady && buildRtSceneAS() && m_rt.lastInstanceCount() > 0) {
                 if (m_rtao.enabled) {
@@ -9243,6 +9249,222 @@ private:
         return h;
     }
 
+    // =====================================================================
+    // RT ACOUSTICS — ASYNC batched ray queries against the SAME scene TLAS
+    // the RT screen effects use. Submit records + queues ONE small compute
+    // dispatch (audio_rays.comp) with a fence and returns immediately;
+    // harvest polls the fence next update and copies the hit distances out.
+    // Async on purpose: a synchronous fence wait on the graphics queue would
+    // stall the game thread behind the in-flight frame's GPU work (tens of
+    // ms on heavy scenes); submit+harvest costs ~microseconds and audio
+    // tolerates one update of latency. The first submit ARMS the per-frame
+    // TLAS build (m_audioRaysWantFrames) and returns false until it exists.
+    // =====================================================================
+    bool traceAudioRaysSubmit(const AudioRay* rays, int count) override {
+        if (!m_rtSupported || !rays || count <= 0 ||
+            (uint32_t)count > kAudioRayCapacity)
+            return false;
+        m_audioRaysWantFrames = 300;   // keep the TLAS alive ~5s past the last ask
+        if (m_audioRayInFlight) return false;   // previous batch not harvested yet
+        if (!ensureRtCore() || !m_rt.tlasBuilt() || m_rt.tlas() == VK_NULL_HANDLE)
+            return false;              // TLAS comes up next endFrame — no data yet
+        if (!ensureAudioRays()) return false;
+
+        // (Re)point the TLAS descriptor when the handle changed (first build or
+        // a grow recreated it). Safe: no batch is in flight (checked above), so
+        // the set is never updated while bound to executing work.
+        if (m_audioRayTlasBound != m_rt.tlas()) {
+            VkAccelerationStructureKHR tlas = m_rt.tlas();
+            VkWriteDescriptorSetAccelerationStructureKHR asW{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
+            asW.accelerationStructureCount = 1; asW.pAccelerationStructures = &tlas;
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.pNext = &asW; w.dstSet = m_audioRaySet; w.dstBinding = 0;
+            w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+            m_audioRayTlasBound = tlas;
+        }
+
+        // Upload the ray batch (host-visible, mapped; flush for non-coherent).
+        std::memcpy(m_audioRayInMapped, rays, (size_t)count * sizeof(AudioRay));
+        vmaFlushAllocation(m_alloc, m_audioRayInAlloc, 0, (VkDeviceSize)count * sizeof(AudioRay));
+
+        // Record + submit (NO wait — the fence is polled by harvest).
+        vkResetCommandBuffer(m_audioRayCmd, 0);
+        VkCommandBufferBeginInfo bi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(m_audioRayCmd, &bi);
+        vkCmdBindPipeline(m_audioRayCmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_audioRayPipe);
+        vkCmdBindDescriptorSets(m_audioRayCmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                m_audioRayLayout, 0, 1, &m_audioRaySet, 0, nullptr);
+        const uint32_t n = (uint32_t)count;
+        vkCmdPushConstants(m_audioRayCmd, m_audioRayLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, sizeof(uint32_t), &n);
+        vkCmdDispatch(m_audioRayCmd, (n + 63u) / 64u, 1, 1);
+        // Compute write -> host read of the hit buffer.
+        VkMemoryBarrier2 mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+        mb.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        mb.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        mb.dstStageMask  = VK_PIPELINE_STAGE_2_HOST_BIT;
+        mb.dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+        VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        dep.memoryBarrierCount = 1; dep.pMemoryBarriers = &mb;
+        vkCmdPipelineBarrier2(m_audioRayCmd, &dep);
+        vkEndCommandBuffer(m_audioRayCmd);
+
+        VkCommandBufferSubmitInfo cs{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+        cs.commandBuffer = m_audioRayCmd;
+        VkSubmitInfo2 submit{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+        submit.commandBufferInfoCount = 1; submit.pCommandBufferInfos = &cs;
+        if (vkQueueSubmit2(m_gfxQueue, 1, &submit, m_audioRayFence) != VK_SUCCESS)
+            return false;
+        m_audioRayInFlight = true;
+        m_audioRayInFlightCount = count;
+        return true;
+    }
+
+    int traceAudioRaysHarvest(float* outHitT, int capacity) override {
+        if (!m_audioRayInFlight) return -1;
+        const VkResult fs = vkGetFenceStatus(m_dev.device, m_audioRayFence);
+        if (fs == VK_NOT_READY) return 0;     // still on the GPU — poll again
+        vkResetFences(m_dev.device, 1, &m_audioRayFence);
+        m_audioRayInFlight = false;
+        const int n = m_audioRayInFlightCount;
+        m_audioRayInFlightCount = 0;
+        if (fs != VK_SUCCESS || !outHitT || capacity < n) return -1;  // batch dropped
+        vmaInvalidateAllocation(m_alloc, m_audioRayOutAlloc, 0, (VkDeviceSize)n * sizeof(float));
+        std::memcpy(outHitT, m_audioRayOutMapped, (size_t)n * sizeof(float));
+        return n;
+    }
+
+    // Lazily build the audio-ray batch chain: pipeline (audio_rays.comp) +
+    // descriptor set {0 = TLAS, 1 = ray SSBO in, 2 = hit SSBO out} + the two
+    // persistent host-visible buffers + a transient command buffer + fence.
+    bool ensureAudioRays() {
+        if (m_audioRayBuilt)  return true;
+        if (m_audioRayFailed) return false;   // failed once — don't retry/spam
+        auto fail = [&](const char* what) {
+            logError(std::string("[rta] audio-ray chain create failed: ") + what);
+            m_audioRayFailed = true;
+            destroyAudioRays();
+            return false;
+        };
+        // Set layout.
+        {
+            VkDescriptorSetLayoutBinding b[3]{};
+            b[0].binding = 0; b[0].descriptorCount = 1;
+            b[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            b[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            b[1].binding = 1; b[1].descriptorCount = 1;
+            b[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            b[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            b[2].binding = 2; b[2].descriptorCount = 1;
+            b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            b[2].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+            VkDescriptorSetLayoutCreateInfo ci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+            ci.bindingCount = 3; ci.pBindings = b;
+            if (vkCreateDescriptorSetLayout(m_dev.device, &ci, nullptr, &m_audioRaySetLayout) != VK_SUCCESS)
+                return fail("set layout");
+        }
+        // Pipeline (push constant = ray count).
+        {
+            VkPushConstantRange pcr{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t) };
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pl.setLayoutCount = 1; pl.pSetLayouts = &m_audioRaySetLayout;
+            pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &pcr;
+            if (vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_audioRayLayout) != VK_SUCCESS)
+                return fail("pipeline layout");
+            VkShaderModule cs = loadShaderModule("shaders\\audio_rays.comp.spv");
+            if (!cs) return fail("audio_rays.comp.spv load");
+            VkComputePipelineCreateInfo cpci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+            cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+            cpci.stage.module = cs; cpci.stage.pName = "main";
+            cpci.layout = m_audioRayLayout;
+            VkResult pr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_audioRayPipe);
+            vkDestroyShaderModule(m_dev.device, cs, nullptr);
+            if (pr != VK_SUCCESS) return fail("compute pipeline");
+        }
+        // Buffers: ray batch in (sequential write) + hit distances out (random read).
+        {
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = (VkDeviceSize)kAudioRayCapacity * sizeof(AudioRay);
+            bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo info{};
+            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_audioRayInBuf, &m_audioRayInAlloc, &info) != VK_SUCCESS)
+                return fail("ray-in buffer");
+            m_audioRayInMapped = info.pMappedData;
+            bci.size = (VkDeviceSize)kAudioRayCapacity * sizeof(float);
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_audioRayOutBuf, &m_audioRayOutAlloc, &info) != VK_SUCCESS)
+                return fail("hit-out buffer");
+            m_audioRayOutMapped = info.pMappedData;
+        }
+        // Descriptor pool + set; write the two SSBO bindings now (TLAS is bound
+        // per-call when the handle changes).
+        {
+            VkDescriptorPoolSize sizes[2]{};
+            sizes[0].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR; sizes[0].descriptorCount = 1;
+            sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;             sizes[1].descriptorCount = 2;
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.maxSets = 1; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_audioRayPool) != VK_SUCCESS)
+                return fail("descriptor pool");
+            VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            ai.descriptorPool = m_audioRayPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_audioRaySetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_audioRaySet) != VK_SUCCESS)
+                return fail("descriptor set");
+            VkDescriptorBufferInfo inB{ m_audioRayInBuf, 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo outB{ m_audioRayOutBuf, 0, VK_WHOLE_SIZE };
+            VkWriteDescriptorSet w[2]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[0].dstSet = m_audioRaySet; w[0].dstBinding = 1; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[0].pBufferInfo = &inB;
+            w[1] = w[0]; w[1].dstBinding = 2; w[1].pBufferInfo = &outB;
+            vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+        }
+        // Transient command buffer + fence (own pool: self-contained, like VulkanRT).
+        {
+            VkCommandPoolCreateInfo cpci{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+            cpci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+            cpci.queueFamilyIndex = m_gfxFamily;
+            if (vkCreateCommandPool(m_dev.device, &cpci, nullptr, &m_audioRayCmdPool) != VK_SUCCESS)
+                return fail("command pool");
+            VkCommandBufferAllocateInfo ai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+            ai.commandPool = m_audioRayCmdPool; ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY; ai.commandBufferCount = 1;
+            if (vkAllocateCommandBuffers(m_dev.device, &ai, &m_audioRayCmd) != VK_SUCCESS)
+                return fail("command buffer");
+            VkFenceCreateInfo fci{ VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+            if (vkCreateFence(m_dev.device, &fci, nullptr, &m_audioRayFence) != VK_SUCCESS)
+                return fail("fence");
+        }
+        m_audioRayBuilt = true;
+        logInfo("[rta] audio-ray chain ready (audio rays through the scene TLAS)");
+        return true;
+    }
+
+    void destroyAudioRays() {
+        if (!m_dev.device) return;
+        if (m_audioRayInFlight && m_audioRayFence) {
+            vkWaitForFences(m_dev.device, 1, &m_audioRayFence, VK_TRUE, UINT64_MAX);
+            m_audioRayInFlight = false;
+            m_audioRayInFlightCount = 0;
+        }
+        if (m_audioRayFence)   { vkDestroyFence(m_dev.device, m_audioRayFence, nullptr); m_audioRayFence = VK_NULL_HANDLE; }
+        if (m_audioRayCmdPool) { vkDestroyCommandPool(m_dev.device, m_audioRayCmdPool, nullptr); m_audioRayCmdPool = VK_NULL_HANDLE; m_audioRayCmd = VK_NULL_HANDLE; }
+        if (m_audioRayPool)    { vkDestroyDescriptorPool(m_dev.device, m_audioRayPool, nullptr); m_audioRayPool = VK_NULL_HANDLE; m_audioRaySet = VK_NULL_HANDLE; }
+        if (m_audioRayInBuf)   { vmaDestroyBuffer(m_alloc, m_audioRayInBuf, m_audioRayInAlloc); m_audioRayInBuf = VK_NULL_HANDLE; m_audioRayInAlloc = nullptr; m_audioRayInMapped = nullptr; }
+        if (m_audioRayOutBuf)  { vmaDestroyBuffer(m_alloc, m_audioRayOutBuf, m_audioRayOutAlloc); m_audioRayOutBuf = VK_NULL_HANDLE; m_audioRayOutAlloc = nullptr; m_audioRayOutMapped = nullptr; }
+        if (m_audioRayPipe)      { vkDestroyPipeline(m_dev.device, m_audioRayPipe, nullptr); m_audioRayPipe = VK_NULL_HANDLE; }
+        if (m_audioRayLayout)    { vkDestroyPipelineLayout(m_dev.device, m_audioRayLayout, nullptr); m_audioRayLayout = VK_NULL_HANDLE; }
+        if (m_audioRaySetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_audioRaySetLayout, nullptr); m_audioRaySetLayout = VK_NULL_HANDLE; }
+        m_audioRayTlasBound = VK_NULL_HANDLE;
+        m_audioRayBuilt = false;
+    }
+
     // Fill the per-frame RT-AO compute UBO (invViewProj + camPos + tunables). Uses
     // the SAME viewProj prepareFrameData cached this frame.
     void prepareRtaoUbo() {
@@ -12243,6 +12465,27 @@ private:
     // graph holds pointers into these across execute()).
     VkRenderingAttachmentInfo m_rtaoApplyAttach{};
     VkRenderingInfo           m_rtaoApplyRenderInfo{};
+
+    // ======================================================================
+    // RT ACOUSTICS (traceAudioRays) — batched audio ray queries vs the TLAS.
+    static constexpr uint32_t kAudioRayCapacity = 1024;   // rays per call (hard cap)
+    static_assert(sizeof(AudioRay) == 32, "AudioRay must match audio_rays.comp std430 (two vec4s)");
+    VkDescriptorSetLayout m_audioRaySetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout      m_audioRayLayout    = VK_NULL_HANDLE;
+    VkPipeline            m_audioRayPipe      = VK_NULL_HANDLE;
+    VkDescriptorPool      m_audioRayPool      = VK_NULL_HANDLE;
+    VkDescriptorSet       m_audioRaySet       = VK_NULL_HANDLE;
+    VkBuffer        m_audioRayInBuf  = VK_NULL_HANDLE; VmaAllocation m_audioRayInAlloc  = nullptr; void* m_audioRayInMapped  = nullptr;
+    VkBuffer        m_audioRayOutBuf = VK_NULL_HANDLE; VmaAllocation m_audioRayOutAlloc = nullptr; void* m_audioRayOutMapped = nullptr;
+    VkCommandPool   m_audioRayCmdPool = VK_NULL_HANDLE;
+    VkCommandBuffer m_audioRayCmd     = VK_NULL_HANDLE;
+    VkFence         m_audioRayFence   = VK_NULL_HANDLE;
+    VkAccelerationStructureKHR m_audioRayTlasBound = VK_NULL_HANDLE; // descriptor currency
+    bool m_audioRayBuilt  = false;
+    bool m_audioRayFailed = false;        // one-shot create failure latch (no retry spam)
+    bool m_audioRayInFlight = false;      // a submitted batch awaits harvest
+    int  m_audioRayInFlightCount = 0;     // ray count of the in-flight batch
+    int  m_audioRaysWantFrames = 0;       // >0: keep the scene TLAS built for audio
 
     // ======================================================================
     // SSR / RAY-QUERY REFLECTIONS (r_ssr / r_rtreflections) — refl.comp.
