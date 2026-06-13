@@ -1,0 +1,29 @@
+{
+  "format": "x3.mappois/1",
+  "name": "EFLZ world map POIs v1",
+  "comment": "Points of interest for the interactive world map (app/world_map.*). pos = [x,y,z] world meters at the AUTHORED coordinates (Spire rooms from EscapeLab48_AllFloors_v2.project.json room centers; world anchors from regions.json + world_regions.cpp's landmark gazetteer; Club 1127 at its canon Y=-200 under the Spire). floor = Spire floor (0 = not floor-bound). discover_radius = XZ meters (Y within +-6 m) of proximity that DISCOVERS the POI -> StoryFlag poi.<id>.found (persisted). fast_travel = whether the POI is a fast-travel anchor once discovered. Secrets discover at tight radii and are NOT travel anchors (you found it; you still walk it).",
+  "pois": [
+    { "id": "jakes_cell",      "name": "Jake's Cell (WL-1)",        "type": "cell",     "region": "spire_f1", "pos": [2.0, 0.0, 40.0],       "floor": 1, "discover_radius": 6.0,  "fast_travel": true  },
+    { "id": "main_hall",       "name": "Main Hall",                 "type": "hall",     "region": "spire_f1", "pos": [22.0, 0.0, 44.5],      "floor": 1, "discover_radius": 10.0, "fast_travel": true  },
+    { "id": "door_a",          "name": "Door A - Cell Block Gate",  "type": "door",     "region": "spire_f1", "pos": [6.0, 0.0, 42.5],       "floor": 1, "discover_radius": 5.0,  "fast_travel": false },
+    { "id": "door_b",          "name": "Door B - Checkpoint Gate",  "type": "door",     "region": "spire_f1", "pos": [22.0, 0.0, 30.0],      "floor": 1, "discover_radius": 5.0,  "fast_travel": false },
+    { "id": "security",        "name": "Security Station",          "type": "security", "region": "spire_f1", "pos": [22.0, 0.0, 38.0],      "floor": 1, "discover_radius": 6.0,  "fast_travel": true  },
+    { "id": "armory",          "name": "Armory",                    "type": "armory",   "region": "spire_f1", "pos": [22.0, 0.0, 14.0],      "floor": 1, "discover_radius": 6.0,  "fast_travel": true  },
+    { "id": "hidden_cache",    "name": "Hidden Supply Cache",       "type": "secret",   "region": "spire_f1", "pos": [22.0, 0.0, 7.0],       "floor": 1, "discover_radius": 4.0,  "fast_travel": false },
+    { "id": "boss_arena",      "name": "Boss Arena (Martinez)",     "type": "boss",     "region": "spire_f1", "pos": [22.0, -1.0, -14.5],    "floor": 1, "discover_radius": 8.0,  "fast_travel": true  },
+    { "id": "elevator_f1",     "name": "Elevator Lobby",            "type": "elevator", "region": "spire_f1", "pos": [22.0, 0.0, -25.0],     "floor": 1, "discover_radius": 6.0,  "fast_travel": true  },
+    { "id": "cave_system",     "name": "Cave System",               "type": "secret",   "region": "spire_f1", "pos": [22.0, -178.0, 7.0],    "floor": 1, "discover_radius": 8.0,  "fast_travel": false },
+    { "id": "hidden_sublevel", "name": "Hidden Sub-Level",          "type": "secret",   "region": "spire_f1", "pos": [22.0, -174.0, -24.5],  "floor": 1, "discover_radius": 5.0,  "fast_travel": false },
+    { "id": "club_1127",       "name": "Club 1127 - THE DEEP",      "type": "club",     "region": "spire_f1", "pos": [22.0, -200.0, 10.0],   "floor": 1, "discover_radius": 12.0, "fast_travel": true  },
+    { "id": "spire",           "name": "The Spire",                 "type": "landmark", "region": "spire_f1", "pos": [22.0, 0.0, 10.0],      "floor": 0, "discover_radius": 60.0, "fast_travel": true  },
+    { "id": "crash_site",      "name": "Crash Site",                "type": "landmark", "region": "surface_landmarks", "pos": [0.0, 0.0, 0.0],        "floor": 0, "discover_radius": 40.0,  "fast_travel": true  },
+    { "id": "east_outpost",    "name": "East Outpost",              "type": "landmark", "region": "surface_landmarks", "pos": [800.0, 0.0, 400.0],    "floor": 0, "discover_radius": 50.0,  "fast_travel": true  },
+    { "id": "west_outpost",    "name": "West Outpost",              "type": "landmark", "region": "surface_landmarks", "pos": [-880.0, 0.0, -320.0],  "floor": 0, "discover_radius": 50.0,  "fast_travel": true  },
+    { "id": "city",            "name": "Scrapyard City",            "type": "city",     "region": "city",              "pos": [-200.0, 0.0, 425.0],   "floor": 0, "discover_radius": 120.0, "fast_travel": true  },
+    { "id": "ocean_base",      "name": "Undersea Disc Base",        "type": "base",     "region": "ocean_base",        "pos": [1100.0, -40.0, -1350.0], "floor": 0, "discover_radius": 80.0, "fast_travel": true  },
+    { "id": "northern_range",  "name": "Northern Range",            "type": "landmark", "region": "surface_landmarks", "pos": [0.0, 0.0, 6000.0],     "floor": 0, "discover_radius": 400.0, "fast_travel": false },
+    { "id": "eastern_range",   "name": "Eastern Range (Volcanic)",  "type": "landmark", "region": "surface_landmarks", "pos": [8000.0, 0.0, 0.0],     "floor": 0, "discover_radius": 400.0, "fast_travel": false },
+    { "id": "southern_range",  "name": "Southern Range (Mesas)",    "type": "landmark", "region": "surface_landmarks", "pos": [0.0, 0.0, -7000.0],    "floor": 0, "discover_radius": 400.0, "fast_travel": false },
+    { "id": "western_highlands", "name": "Western Highlands",       "type": "landmark", "region": "surface_landmarks", "pos": [-9000.0, 0.0, 0.0],    "floor": 0, "discover_radius": 400.0, "fast_travel": false }
+  ]
+}

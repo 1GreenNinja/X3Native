@@ -81,6 +81,7 @@
 #include <cstdio>
 #include <cassert>
 #include <algorithm>
+#include <limits>
 #include <unordered_map>
 #include <chrono>
 #include <mutex>   // m_uploadMu: parallel boot-time model preload (docs/BOOT_TIME.md)
@@ -1569,9 +1570,27 @@ public:
         // Bake the model-space bounding sphere for the CPU frustum cull (r_frustumcull).
         computeLocalSphere(verts, vcount, m.boundsCenter, m.boundsRadius);
         std::lock_guard<std::recursive_mutex> lk(m_uploadMu);   // registry write
+        // CPU local-space AABB, computed once from the submitted vertices (the
+        // world-map tile bake reads it back via meshBounds — no GPU readback).
+        m.bmin[0] = m.bmin[1] = m.bmin[2] =  std::numeric_limits<float>::max();
+        m.bmax[0] = m.bmax[1] = m.bmax[2] = -std::numeric_limits<float>::max();
+        for (uint32_t i = 0; i < vcount; ++i) {
+            for (int a = 0; a < 3; ++a) {
+                const float v = verts[i].pos[a];
+                if (v < m.bmin[a]) m.bmin[a] = v;
+                if (v > m.bmax[a]) m.bmax[a] = v;
+            }
+        }
         uint32_t id = m_nextMeshId++;
         m_meshes.emplace(id, m);
         return { id };
+    }
+
+    bool meshBounds(MeshHandle h, float outMin[3], float outMax[3]) const override {
+        auto it = m_meshes.find(h.id);
+        if (it == m_meshes.end() || it->second.vertexCount == 0) return false;
+        for (int a = 0; a < 3; ++a) { outMin[a] = it->second.bmin[a]; outMax[a] = it->second.bmax[a]; }
+        return true;
     }
 
     void destroyMesh(MeshHandle h) override {
@@ -1955,6 +1974,21 @@ public:
         flushHud(verts, 6, /*texFont=*/-1);
     }
 
+    // Textured HUD rectangle sampling an app-created texture (world-map tiles).
+    // Same vertex ring / deferred-record path as drawHudQuad; the record carries
+    // the texture id so recordHudDraws binds it instead of the white texel.
+    void drawHudImage(const FrameContext& fc, TextureHandle tex,
+                      float xPx, float yPx, float wPx, float hPx,
+                      const float rgba[4],
+                      float u0, float v0, float u1, float v1) override {
+        if (!fc.valid || !m_hudPipeline || !tex.valid()) return;
+        const float c[4] = { rgba ? rgba[0] : 1.0f, rgba ? rgba[1] : 1.0f,
+                             rgba ? rgba[2] : 1.0f, rgba ? rgba[3] : 1.0f };
+        HudVertex verts[6];
+        emitQuad(verts, xPx, yPx, wPx, hPx, u0, v0, u1, v1, c);
+        flushHud(verts, 6, /*texFont=*/-1, /*userTex=*/tex.id);
+    }
+
     // Back-compat: render with the DEFAULT mono role (Console/HudMono — embedded
     // Roboto Mono). All existing non-UI callers route here unchanged.
     void drawHudText(const FrameContext& fc, const char* text, float xPx,
@@ -2100,6 +2134,9 @@ private:
         // FrustumCull.h. boundsRadius == 0 means "no bounds" -> never culled.
         glm::vec3 boundsCenter{0.0f};   // model-space sphere center
         float     boundsRadius = 0.0f;  // model-space sphere radius (0 = unbounded)
+        // CPU local-space AABB from createMesh's submitted vertices (meshBounds).
+        float bmin[3] = {0, 0, 0};
+        float bmax[3] = {0, 0, 0};
         // CPU-skinning support (J1, scaled for fix 2): a mesh that has been updated
         // at least once becomes DYNAMIC and holds kFramesInFlight HOST_VISIBLE,
         // persistently-mapped vertex buffers — one per frame-in-flight — instead of
@@ -3197,25 +3234,45 @@ private:
     // role didn't bake). drawHudQuad/drawHudText(F) append these; they are replayed
     // (in order, after the meshes) by recordHudDraws inside the graph's color pass —
     // keeping HUD-on-top ordering identical to the hand-coded path.
-    struct HudRecord { uint32_t first; uint32_t count; int texFont; };
+    struct HudRecord { uint32_t first; uint32_t count; int texFont; uint32_t userTex = 0; };
 
     // Append `count` vertices to this frame's HUD ring and queue a deferred HUD
     // draw record (replayed inside the graph's color pass). No command recording
     // here — the color pass is not open yet (commands are recorded in endFrame).
     // `texFont`: -1 = white texel; otherwise a FontRole index whose atlas to bind.
-    void flushHud(const HudVertex* verts, uint32_t count, int texFont) {
+    void flushHud(const HudVertex* verts, uint32_t count, int texFont, uint32_t userTex = 0) {
         auto& fr = m_frames[m_frameIdx];
         if (!fr.hudVboMapped || fr.hudVertsUsed + count > kMaxHudVerts) return; // ring full
         uint32_t first = fr.hudVertsUsed;
         std::memcpy(static_cast<HudVertex*>(fr.hudVboMapped) + first,
                     verts, (size_t)count * sizeof(HudVertex));
         fr.hudVertsUsed += count;
-        m_hudRecords.push_back(HudRecord{ first, count, texFont });
+        // COALESCE with the previous record when it binds the same texture and is
+        // contiguous in the ring (always true within a frame). Ordering is
+        // unchanged (records replay in append order), and a quad-heavy screen
+        // (the world map: grid + icons + markers) stays a handful of records —
+        // each record costs one descriptor from the per-frame pool (kMaxHudDraws),
+        // which a record-per-quad scheme exhausted (text after ~256 quads vanished).
+        if (!m_hudRecords.empty()) {
+            HudRecord& last = m_hudRecords.back();
+            if (last.texFont == texFont && last.userTex == userTex &&
+                last.first + last.count == first) {
+                last.count += count;
+                return;
+            }
+        }
+        m_hudRecords.push_back(HudRecord{ first, count, texFont, userTex });
     }
 
-    // Resolve a HudRecord's texFont to the Texture to bind: white texel for -1, the
-    // role's baked atlas if ready, else the 8x8 bitmap fallback, else white.
-    const Texture* hudRecordTexture(int texFont) const {
+    // Resolve a HudRecord's texFont to the Texture to bind: a live app texture for
+    // userTex != 0 (drawHudImage — the world-map tile compositor), the white texel
+    // for -1, the role's baked atlas if ready, else the 8x8 bitmap fallback, else white.
+    const Texture* hudRecordTexture(int texFont, uint32_t userTex = 0) const {
+        if (userTex != 0) {
+            auto it = m_textures.find(userTex);
+            if (it != m_textures.end() && it->second.view) return &it->second;
+            return &m_whiteTex;
+        }
         if (texFont < 0) return &m_whiteTex;
         if (texFont < kFontRoleCount && m_fonts[texFont].ready) return &m_fonts[texFont].tex;
         if (m_bitmapFontReady && m_bitmapFontTex.view) return &m_bitmapFontTex;
@@ -3229,7 +3286,7 @@ private:
         auto& fr = m_frames[m_frameIdx];
         if (m_hudRecords.empty() || !m_hudPipeline) return;
         for (const HudRecord& hr : m_hudRecords) {
-            const Texture* tex = hudRecordTexture(hr.texFont);
+            const Texture* tex = hudRecordTexture(hr.texFont, hr.userTex);
 
             VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
             dsai.descriptorPool = fr.hudDescPool;

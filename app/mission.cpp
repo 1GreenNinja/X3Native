@@ -51,6 +51,9 @@ bool parseStage(const JValue& jv, MissionStage& out, std::vector<std::string>& e
     out.objectiveText = jv.find("objective") ? asciiFold(jv.find("objective")->asStr()) : "";
     out.next   = jv.find("next")    ? jv.find("next")->asStr()    : "";
     out.failTo = jv.find("fail_to") ? jv.find("fail_to")->asStr() : "";
+    // Optional per-stage fast-travel lock (the world map's mission gate).
+    if (const JValue* nft = jv.find("no_fasttravel"))
+        out.noFastTravel = (nft->t == JValue::T::Bool) ? nft->b : false;
     ok &= parseStoryFxList(jv.find("on_enter"),    out.onEnter,    errors, sw + ".on_enter");
     ok &= parseStoryFxList(jv.find("on_complete"), out.onComplete, errors, sw + ".on_complete");
     ok &= parseStoryFxList(jv.find("on_fail"),     out.onFail,     errors, sw + ".on_fail");

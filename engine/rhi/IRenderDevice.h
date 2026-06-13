@@ -244,6 +244,16 @@ public:
     virtual TextureHandle createTexture(const void* rgba8, uint32_t w, uint32_t h, bool srgb) = 0;
     virtual void          destroyTexture(TextureHandle) = 0;
 
+    // CPU-side local-space AABB of a mesh, computed once at createMesh from the
+    // submitted vertices (zero per-frame cost; no readback). Returns false if the
+    // handle is unknown or the device does not track bounds (default). The world
+    // map's top-down tile bake reads this to rasterize entity footprints from the
+    // REAL geometry (outMin/outMax are {x,y,z} in the mesh's local space; combine
+    // with the entity transform for the world AABB).
+    virtual bool meshBounds(MeshHandle, float /*outMin*/[3], float /*outMax*/[3]) const {
+        return false;
+    }
+
     // ---- BOOT-TIME upload batching (docs/BOOT_TIME.md) ----------------------
     // Between beginUploadBatch()/endUploadBatch(), createMesh/createTexture record
     // their staging copies into ONE shared command buffer instead of doing a
@@ -898,6 +908,16 @@ public:
     // pixel height; `rgba` tints it.
     virtual void drawHudTextF(const FrameContext&, FontRole role, const char* text,
                               float xPx, float yPx, float px, const float rgba[4]) = 0;
+    // drawHudImage: a textured HUD rectangle sampling an app-created texture
+    // (createTexture) — the world-map tile compositor's primitive. Same pixel
+    // space / blending / ordering as drawHudQuad; `rgba` tints (1,1,1,1 = as-is);
+    // u0..v1 select the sampled sub-rect (defaults = the whole texture). Non-pure
+    // no-op default so the headless stub and non-Vulkan devices are unaffected.
+    virtual void drawHudImage(const FrameContext&, TextureHandle /*tex*/,
+                              float /*xPx*/, float /*yPx*/, float /*wPx*/, float /*hPx*/,
+                              const float /*rgba*/[4],
+                              float /*u0*/ = 0.0f, float /*v0*/ = 0.0f,
+                              float /*u1*/ = 1.0f, float /*v1*/ = 1.0f) {}
     // textAdvance: the TRUE rendered pixel width `text` occupies for `role` at glyph
     // size `px` — sums per-glyph advances (proportional) or N*cell (mono). The UI
     // layer's textWidth() reads this so centering/right-alignment is pixel-exact.

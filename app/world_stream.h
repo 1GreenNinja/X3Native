@@ -151,6 +151,9 @@ public:
     bool     proxyActive(uint32_t i) const { return m_regions[i].proxyActive; }
     // Ledger sizes (entities currently owned by region i; 0 when Unloaded).
     uint32_t ownedEntityCount(uint32_t i) const { return (uint32_t)m_regions[i].entities.size(); }
+    // The region's ownership ledger (scene slots) — read-only. The world map's
+    // tile bake rasterizes these entities' AABB footprints (world_map.*).
+    const std::vector<uint32_t>& ownedEntities(uint32_t i) const { return m_regions[i].entities; }
     // Lifetime resource counters across all regions (leak check: at shutdown
     // created == destroyed).
     uint64_t meshesCreated()   const { return m_meshesCreated; }
