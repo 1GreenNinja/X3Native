@@ -698,6 +698,10 @@ public:
         if (enabled && !m_cullEquivCheck) { m_cullEquivFrames = 0; m_cullEquivMismatches = 0; }
         m_cullEquivCheck = enabled;
     }
+    // vis-unify: host-injected per-frame PVS numbers (room/portal skips + flood ms).
+    void setVisHostStats(uint32_t roomsCulled, float pvsMs) override {
+        m_visRoomsCulled = roomsCulled; m_visPvsMs = pvsMs;
+    }
 
     void setBloom(float intensity) override { m_bloomIntensity = intensity; }
 
@@ -1320,6 +1324,21 @@ public:
         m_building.gpuCullExpected        = m_lastCullExpected;
         m_building.gpuCullEquivFrames     = m_cullEquivFrames;
         m_building.gpuCullEquivMismatches = m_cullEquivMismatches;
+        // ---- vis-unify: device caps + host PVS numbers + per-stage times ----
+        m_building.gpuCullSupported   = m_gpuCullReady;
+        m_building.asyncCullSupported = m_asyncCullReady;
+        m_building.hzbSupported       = m_gpuCullReady && m_hzbReady;
+        m_building.visRoomsCulled     = m_visRoomsCulled;
+        m_building.visPvsMs           = m_visPvsMs;
+        m_building.cullCpuMs          = m_cullCpuMs;
+        m_building.cullGpuMs          = m_cullGpuMs;
+        m_building.hzbGpuMs           = m_hzbGpuMs;
+        // TLAS mutation instrumentation (folded base path: still sync-waits).
+        m_building.tlasBuilds    = m_tlasBuilds;
+        m_building.tlasSyncWaits = m_tlasSyncWaits;
+        m_building.tlasGrows     = m_tlasGrows;
+        m_building.tlasCpuMs     = m_tlasCpuMs;
+        m_building.tlasCpuMsMax  = m_tlasCpuMsMax;
         m_lastStats = m_building;
 
         // ZERO-STUTTER: record this frame in the pacing ring + spike log.
@@ -9285,22 +9304,31 @@ private:
         // A real (re)build follows: ensure no in-flight GPU work is still reading the
         // TLAS backing we may overwrite. Cheap because rebuilds are rare (static) —
         // and necessary for correctness when they do happen.
-        if (!firstBuild) vkDeviceWaitIdle(m_dev.device);
+        // vis-unify instrumentation: this path is the documented scene-mutation hitch
+        // (synchronous vkDeviceWaitIdle; async double-buffer is deferred work).
+        const auto tlasT0 = std::chrono::steady_clock::now();
+        ++m_tlasBuilds;
+        if (!firstBuild) { vkDeviceWaitIdle(m_dev.device); ++m_tlasSyncWaits; }
 
         ++m_asBuildsThisFrame;   // ZERO-STUTTER spike-log attribution (TLAS (re)build)
         const VkAccelerationStructureKHR before = m_rt.tlas();
         if (!m_rt.buildTlas(m_rtInstScratch)) return false;
         m_rtTlasSig = sig;
         // If the TLAS handle changed (first build or a grow), re-point the descriptors.
-        if (m_rt.tlas() != before) {
+        const bool grew = (m_rt.tlas() != before);
+        if (grew) {
+            ++m_tlasGrows;
             // Mesh set3 (r_rtshadows TLAS at binding 5) is ALWAYS BOUND, so its
             // sets may be referenced by pending command buffers — idle before
             // rewriting them on the FIRST build (rebuilds already idled above;
             // the refl chain's first build sets the same precedent).
-            if (firstBuild) vkDeviceWaitIdle(m_dev.device);
+            if (firstBuild) { vkDeviceWaitIdle(m_dev.device); ++m_tlasSyncWaits; }
             rewriteRtaoTlas();
             writeMeshTlasDescriptor();
         }
+        m_tlasCpuMs = std::chrono::duration<float, std::milli>(
+            std::chrono::steady_clock::now() - tlasT0).count();
+        if (!grew && m_tlasCpuMs > m_tlasCpuMsMax) m_tlasCpuMsMax = m_tlasCpuMs;
         return m_rt.tlasBuilt() && m_rt.tlas() != VK_NULL_HANDLE;
     }
 
@@ -13795,6 +13823,18 @@ private:
     uint32_t                m_cullEquivFrames = 0;
     uint32_t                m_cullEquivMismatches = 0;
     float                   m_metalAmbient = 1.0f; // metal ambient-spec floor strength (mesh.frag ibl.w; r_metalambient)
+    // ---- vis-unify: host-injected PVS numbers + per-stage timing -----------
+    uint32_t                m_visRoomsCulled = 0;   // setVisHostStats (this frame's room/portal skips)
+    float                   m_visPvsMs = 0.0f;      // setVisHostStats (flood-fill ms)
+    float                   m_cullCpuMs = 0.0f;     // device emit/cull walk CPU time (0 = not yet measured)
+    float                   m_cullGpuMs = 0.0f;     // cull.comp dispatch GPU time
+    float                   m_hzbGpuMs = 0.0f;      // HZB reduce GPU time
+    // ---- vis-unify: TLAS mutation instrumentation (folded base still sync-waits) --
+    uint32_t                m_tlasBuilds = 0;
+    uint32_t                m_tlasSyncWaits = 0;
+    uint32_t                m_tlasGrows = 0;
+    float                   m_tlasCpuMs = 0.0f;
+    float                   m_tlasCpuMsMax = 0.0f;
 };
 
 } // namespace

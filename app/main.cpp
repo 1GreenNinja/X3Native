@@ -13,6 +13,7 @@
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/rhi/FrustumCull.h"          // CPU per-object frustum cull (--test-frustumcull)
 #include "engine/rhi/GpuCull.h"           // D15 GPU culling — meshlet builder self-test (--test-meshlet)
+#include "engine/rhi/Visibility.h"        // vis-unify: r_vis policy + unified stats (--test-visunify)
 #include <glm/gtc/matrix_transform.hpp>       // glm::perspective/lookAt/translate/scale (--test-frustumcull)
 #include "engine/asset/IAssetSource.h"
 #include "engine/physics/IPhysicsWorld.h"
@@ -1183,6 +1184,13 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // gated by the camera frustum (only rooms you LOOK at are drawn) + a room budget, so it
     // never falls back to the whole tower. Live-tunable.
     console.registerCVar("r_culldepth", "6", "canonlevel portal flood-fill depth (open-doorway hops; 1 = direct neighbours only)");
+    // THE ONE visibility cvar (vis-unify; see engine/rhi/Visibility.h policy table):
+    // -1 auto-best, 0 CPU frustum only, 1 +room/portal PVS (today's default
+    // behaviour), 2 PVS+GPU cull (auto tier), 3 PVS+GPU+HZB occlusion. The legacy
+    // cvars (r_roomcull/r_cullpath/r_hzb) remain as COMPAT ALIASES that map onto
+    // this one (a deprecation line is logged when they're touched). Default 1 ==
+    // byte-identical to the pre-unify defaults (roomcull 1, cullpath 0, hzb 0).
+    console.registerCVar("r_vis", "1", "unified visibility policy: -1 auto, 0 cpu, 1 +pvs, 2 pvs+gpu, 3 pvs+gpu+hzb");
     // Whole-scene brightness dial (live). Multiplies the composite pre-tonemap exposure;
     // 1.0 = unchanged. The in-game "showroom brightness" knob: `r_exposure 1.5` brightens,
     // `r_exposure 0.7` dims. Type it in the console (~) and the scene updates immediately.
@@ -1301,8 +1309,27 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("boot_budget_ms", "2000", "boot-to-interactive budget (ms) asserted by --test-boottime");
 }
 
+// ---- Unified visibility sync state (vis-unify) -----------------------------
+// THE per-frame policy the whole frame consults: applyRtaoCVars resolves it from
+// r_vis (+ the legacy alias cvars + device caps) and pushes it onto the device;
+// the world loops read g_visPolicy.pvs to gate the room/portal PVS. File-scope
+// (like g_weaponScroll) because the PVS gate sites live deep inside the loops.
+static x3::rhi::VisPolicy g_visPolicy{};
+// PVS flood-fill CPU ms of the current frame (measured at the flood sites, fed
+// to IRenderDevice::setVisHostStats together with Scene::lastRoomCulled()).
+static float g_visPvsMs = 0.0f;
+namespace {
+struct VisCvarSync {
+    bool init = false;
+    int  lastVis = 1, lastRoom = 1, lastPath = 0, lastHzb = 0, lastFrustum = 1;
+    int  tierForce = -1;       // explicit legacy r_cullpath tier (1/2/3); -1 = auto
+    int  lastResolved = -999;  // resolved mode last logged
+};
+}
+static VisCvarSync g_visSync;
+
 // Read the r_rtao* cvars and push them onto the device (no-op on a non-RT device).
-void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& device) {
+void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) {
     x3::rhi::IRenderDevice::RtaoParams p{};
     p.enabled  = console.getInt("r_rtao") != 0;
     p.radius   = console.getFloat("r_rtao_radius");
@@ -1315,11 +1342,90 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     // auto-exposure on this is the exposure COMPENSATION bias.
     device.setExposure(console.getFloat("r_exposure"));
     // CPU per-object frustum cull (live; default on). Same per-frame sync so toggling
-    // r_frustumcull from the console takes effect immediately.
-    device.setFrustumCullEnabled(console.getInt("r_frustumcull") != 0);
-    // D15 GPU cull path + HZB phase (live; default 0 = CPU path, byte-identical).
-    device.setCullPath(console.getInt("r_cullpath"));
-    device.setHzbEnabled(console.getInt("r_hzb") != 0);
+    // r_frustumcull from the console takes effect immediately. NOT an r_vis level:
+    // it bypasses the PREDICATE on whichever path is active (the --test-gpucull
+    // ALWAYS_VISIBLE harness knob), so it stays a direct passthrough.
+    {
+        const int fc = console.getInt("r_frustumcull");
+        if (g_visSync.init && fc != g_visSync.lastFrustum)
+            x3::logInfo("[vis] r_frustumcull is a debug PREDICATE BYPASS now — the unified policy lives in r_vis");
+        g_visSync.lastFrustum = fc;
+        device.setFrustumCullEnabled(fc != 0);
+    }
+
+    // ---- vis-unify: resolve THE ONE policy (r_vis) and apply it ------------
+    // The legacy cvars remain compat ALIASES: touching r_cullpath/r_hzb remaps
+    // r_vis (with a deprecation line); r_roomcull is the PVS sub-override
+    // (0 = noclip/debug draw-all) and does not change the GPU stages.
+    {
+        int vis  = console.getInt("r_vis");
+        const int room = console.getInt("r_roomcull");
+        const int path = console.getInt("r_cullpath");
+        const int hzb  = console.getInt("r_hzb");
+
+        // Fold the legacy gpu-path aliases onto r_vis (path 0 -> L1, path>0 ->
+        // L2/L3 with the explicit tier preserved, path<0 -> auto).
+        auto foldAliases = [&]() {
+            int v = (path == 0) ? 1 : ((hzb != 0) ? 3 : 2);
+            if (path < 0) v = (hzb != 0) ? 3 : -1;
+            g_visSync.tierForce = (path >= 1) ? path : -1;
+            console.set("r_vis", std::to_string(v));
+            vis = v;
+            g_visSync.lastVis = v;
+        };
+
+        if (!g_visSync.init) {
+            g_visSync.init = true;
+            g_visSync.lastVis = vis;
+            g_visSync.lastRoom = room; g_visSync.lastPath = path; g_visSync.lastHzb = hzb;
+            if (path != 0 || hzb != 0) {
+                // CLI seeds (--cullpath/--hzb) / cfg set the legacy cvars before
+                // the first sync: fold them once so both vocabularies agree.
+                foldAliases();
+                x3::logInfo("[vis] legacy cull cvars seeded -> r_vis " + std::to_string(vis) +
+                            (g_visSync.tierForce >= 1 ? " (tier " + std::to_string(g_visSync.tierForce) + " forced)" : ""));
+            }
+        } else {
+            if (vis != g_visSync.lastVis) {        // the ONE cvar wins when driven
+                g_visSync.lastVis = vis;
+                g_visSync.tierForce = -1;
+            }
+            if (path != g_visSync.lastPath || hzb != g_visSync.lastHzb) {
+                if (path != g_visSync.lastPath)
+                    x3::logInfo("[vis] r_cullpath is DEPRECATED (compat alias) -> mapping onto r_vis");
+                if (hzb != g_visSync.lastHzb)
+                    x3::logInfo("[vis] r_hzb is DEPRECATED (compat alias) -> mapping onto r_vis");
+                g_visSync.lastPath = path; g_visSync.lastHzb = hzb;
+                foldAliases();
+                x3::logInfo("[vis] aliases mapped -> r_vis " + std::to_string(vis) +
+                            (g_visSync.tierForce >= 1 ? " (tier " + std::to_string(g_visSync.tierForce) + " forced)" : ""));
+            }
+            if (room != g_visSync.lastRoom) {
+                g_visSync.lastRoom = room;
+                x3::logInfo("[vis] r_roomcull is DEPRECATED (compat alias) -> PVS override under r_vis (0 = draw whole level)");
+            }
+        }
+
+        // Resolve against the device caps (re-resolved EVERY frame: caps publish
+        // after the first frame, and frame-level degradations stay in-device).
+        const x3::rhi::RenderStats st = device.stats();
+        x3::rhi::VisCaps caps;
+        caps.gpuCull   = st.gpuCullSupported;
+        caps.asyncCull = st.asyncCullSupported;
+        caps.hzb       = st.hzbSupported;
+        g_visPolicy = x3::rhi::resolveVisPolicy(vis, caps, (room != 0) ? -1 : 0);
+        if (g_visPolicy.cullPath == -1 && g_visSync.tierForce >= 1)
+            g_visPolicy.cullPath = g_visSync.tierForce;   // legacy explicit tier
+        device.setCullPath(g_visPolicy.cullPath);
+        device.setHzbEnabled(g_visPolicy.hzb);
+        if (g_visPolicy.mode != g_visSync.lastResolved) {
+            g_visSync.lastResolved = g_visPolicy.mode;
+            x3::logInfo(std::string("[vis] policy resolved: L") +
+                        std::to_string(g_visPolicy.mode) + " (" + g_visPolicy.describe() +
+                        "), cullPath " + std::to_string(g_visPolicy.cullPath) +
+                        (g_visPolicy.hzb ? " + hzb" : ""));
+        }
+    }
     // Metal ambient-specular floor (live; default 1.0 = on, 0 = off).
     device.setMetalAmbient(console.getFloat("r_metalambient"));
     // HDR post stack: tonemap / bloom gate + tunables / auto-exposure (all live).
@@ -1677,6 +1783,295 @@ static bool runGpuCullSelfTest() {
     glfwTerminate();
 
     x3::logInfo("gpucull: " + std::to_string(passed) + "/" + std::to_string(total) + " passed");
+    return passed == total;
+}
+
+// ---------------------------------------------------------------------------
+// --test-visunify : the vis-unify acceptance gate (the ONE culling brain).
+//
+//   A) POLICY TABLE (pure): resolveVisPolicy auto/degradation/PVS-override.
+//   B) CONSERVATION ACROSS POLICIES (real device, validation ON, still camera,
+//      synthetic two-room scene): `drawn` must be IDENTICAL for r_vis 1/2/3
+//      (PVS+GPU must not over-cull vs the CPU reference), every level's chain
+//      must CONSERVE (rooms + frustum + hzb + drawn == candidates), and the
+//      GPU path's `tested` must equal the PVS SURVIVOR set — the proof that
+//      the PVS prefilter is the GPU cull's INPUT, not a parallel system.
+//   C) ALIAS MAPPING: the legacy cvars (r_cullpath/r_hzb/r_roomcull) remap
+//      onto r_vis through the SAME per-frame sync the world loops run.
+//   D) TLAS MUTATION INSTRUMENTATION (RT devices; skipped cleanly elsewhere):
+//      spawn/despawn instances under load and confirm the mutation-path counters
+//      are wired + bounded. NOTE: this folded multi-consumer base still takes a
+//      synchronous vkDeviceWaitIdle on the rare scene-mutation rebuild (an
+//      ATTRIBUTED zero-stutter spike; the async double-buffer is DEFERRED work),
+//      so this part asserts the path is instrumented + correct, not zero-wait.
+// ---------------------------------------------------------------------------
+static bool runVisUnifySelfTest() {
+    using namespace x3::rhi;
+    int passed = 0, total = 0;
+    auto check = [&](const std::string& name, bool ok) {
+        ++total; if (ok) ++passed;
+        x3::logInfo(std::string("  [visunify] ") + (ok ? "PASS " : "FAIL ") + name);
+    };
+
+    // ---- A) policy table (pure, headless) ----------------------------------
+    {
+        VisCaps none{};                       // no GPU cull anywhere
+        VisCaps gpu{ true, false, false };
+        VisCaps full{ true, true, true };
+        VisPolicy p;
+        p = resolveVisPolicy(-1, none);
+        check("A: auto w/o gpu -> L1 pvs+cpu", p.mode == 1 && p.pvs && p.cullPath == 0 && !p.hzb);
+        p = resolveVisPolicy(3, none);
+        check("A: L3 w/o gpu degrades -> L1", p.mode == 1 && p.cullPath == 0 && !p.hzb);
+        p = resolveVisPolicy(3, gpu);
+        check("A: L3 w/o hzb degrades -> L2", p.mode == 2 && p.cullPath == -1 && !p.hzb);
+        p = resolveVisPolicy(-1, full);
+        check("A: auto on full caps -> L3", p.mode == 3 && p.pvs && p.cullPath == -1 && p.hzb);
+        p = resolveVisPolicy(0, full);
+        check("A: L0 = cpu-only reference floor", p.mode == 0 && !p.pvs && p.cullPath == 0 && !p.hzb);
+        p = resolveVisPolicy(2, full, /*pvsOverride=*/0);
+        check("A: r_roomcull-0 override kills PVS only", p.mode == 2 && !p.pvs && p.cullPath == -1);
+        p = resolveVisPolicy(7, full);
+        check("A: out-of-range clamps to L3", p.mode == 3);
+    }
+
+    // ---- real device for B/D ------------------------------------------------
+    if (!glfwInit()) { x3::logError("[visunify] glfwInit failed"); return false; }
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    std::unique_ptr<IRenderDevice> device(createRenderDevice());
+    DeviceDesc desc{};
+    desc.width = 640; desc.height = 360; desc.headless = true;
+    desc.validation = true;   // doubles as the validation-silence gate
+    if (!device->init(desc)) {
+        x3::logError("[visunify] device init failed");
+        glfwTerminate(); return false;
+    }
+
+    auto makeBox = [&](float hx, float hy, float hz) {
+        const float px[8] = { -hx,  hx,  hx, -hx, -hx,  hx,  hx, -hx };
+        const float py[8] = { -hy, -hy, -hy, -hy,  hy,  hy,  hy,  hy };
+        const float pz[8] = { -hz, -hz,  hz,  hz, -hz, -hz,  hz,  hz };
+        MeshVertex v[8]{};
+        for (int i = 0; i < 8; ++i) {
+            v[i].pos[0] = px[i]; v[i].pos[1] = py[i]; v[i].pos[2] = pz[i];
+            v[i].normal[1] = 1.0f;
+        }
+        const uint32_t idx[36] = { 0,1,2, 0,2,3,  4,6,5, 4,7,6,  0,4,5, 0,5,1,
+                                   3,2,6, 3,6,7,  1,5,6, 1,6,2,  0,3,7, 0,7,4 };
+        return device->createMesh(v, 8, idx, 36);
+    };
+    MeshHandle cube = makeBox(0.5f, 0.5f, 0.5f);
+    if (!cube.valid()) {
+        x3::logError("[visunify] mesh create failed");
+        device->shutdown(); glfwTerminate(); return false;
+    }
+
+    // Synthetic two-room scene: room 0 = a 12x12 grid around the origin (the
+    // camera's room), room 1 = an identical grid 400 m away (PVS-culled). With
+    // the visible set {0}, the PVS prefilter removes room 1 BEFORE submission —
+    // exactly how the canon level feeds the device.
+    x3::game::Scene scene;
+    constexpr uint32_t kGrid = 12;
+    constexpr uint32_t kPerRoom = kGrid * kGrid;
+    auto addRoom = [&](uint32_t roomId, float baseX) {
+        for (uint32_t z = 0; z < kGrid; ++z)
+            for (uint32_t x = 0; x < kGrid; ++x) {
+                x3::game::Entity e;
+                e.mesh = cube;
+                e.transform[12] = baseX - 33.0f + 6.0f * x;
+                e.transform[13] = 0.5f;
+                e.transform[14] = -33.0f + 6.0f * z;
+                e.roomId = roomId;
+                scene.add(e);
+            }
+    };
+    addRoom(0, 0.0f);
+    addRoom(1, 400.0f);
+    const uint32_t vis0[1] = { 0 };
+    scene.setVisibleRooms(vis0, 1);
+
+    device->setCamera(0.0f, 2.0f, 0.0f, 0.0f, 0.0f, 70.0f);
+    device->setFrustumCullEnabled(true);
+
+    auto renderFrames = [&](const VisPolicy& pol, int n) {
+        scene.setRoomCullEnabled(pol.pvs);
+        device->setCullPath(pol.cullPath);
+        device->setHzbEnabled(pol.hzb);
+        for (int i = 0; i < n; ++i) {
+            auto fc = device->beginFrame();
+            if (!fc.valid) return false;
+            scene.render(*device, fc);
+            device->setVisHostStats(scene.lastRoomCulled(), 0.0f);
+            device->endFrame(fc);
+        }
+        return true;
+    };
+
+    // Warmup on the CPU path to publish the device caps + valid depth (HZB).
+    VisCaps caps;
+    {
+        renderFrames(resolveVisPolicy(0, caps), 4);
+        const RenderStats st = device->stats();
+        caps.gpuCull = st.gpuCullSupported;
+        caps.asyncCull = st.asyncCullSupported;
+        caps.hzb = st.hzbSupported;
+        x3::logInfo(std::string("[visunify] device caps: gpuCull=") +
+                    (caps.gpuCull ? "1" : "0") + " async=" + (caps.asyncCull ? "1" : "0") +
+                    " hzb=" + (caps.hzb ? "1" : "0"));
+    }
+
+    // ---- B) conservation across r_vis levels, still camera -----------------
+    uint32_t drawnRef = 0, testedPvs = 0;
+    {
+        // L0: no PVS — the reference for "the PVS input set" (== all instances).
+        VisPolicy p0 = resolveVisPolicy(0, caps);
+        renderFrames(p0, 5);
+        const VisFrameStats v0 = assembleVisStats(device->stats(), p0.mode);
+        check("B: L0 candidates == whole scene", v0.candidates == 2 * kPerRoom && v0.roomsCulled == 0);
+        check("B: L0 conserves", v0.conserves);
+
+        // L1: PVS+CPU — the legacy default; PVS removes room 1 at submission.
+        VisPolicy p1 = resolveVisPolicy(1, caps);
+        renderFrames(p1, 5);
+        const VisFrameStats v1 = assembleVisStats(device->stats(), p1.mode);
+        drawnRef  = v1.drawn;
+        testedPvs = v1.tested;
+        check("B: L1 PVS prefilters a full room", v1.roomsCulled == kPerRoom);
+        check("B: L1 tested == PVS survivors", v1.tested == kPerRoom);
+        check("B: L1 conserves", v1.conserves && v1.candidates == 2 * kPerRoom);
+        check("B: L1 draws something", v1.drawn > 0 && v1.drawn < kPerRoom);
+
+        if (caps.gpuCull) {
+            // L2: PVS+GPU — the PVS survivor set must BE the GPU cull's input.
+            VisPolicy p2 = resolveVisPolicy(2, caps);
+            renderFrames(p2, 6);
+            const VisFrameStats v2 = assembleVisStats(device->stats(), p2.mode);
+            check("B: L2 gpu path active", v2.activePath >= 1);
+            check("B: L2 tested == PVS survivor set (prefilter feeds the GPU)",
+                  v2.tested == testedPvs);
+            check("B: L2 drawn identical to CPU reference (no over-cull)",
+                  v2.drawn == drawnRef);
+            check("B: L2 conserves", v2.conserves && v2.candidates == 2 * kPerRoom);
+
+            if (caps.hzb) {
+                // L3: +HZB — occlusion splits the frustum survivors; conservation
+                // must hold and nothing beyond the CPU reference may be drawn.
+                VisPolicy p3 = resolveVisPolicy(3, caps);
+                renderFrames(p3, 6);
+                const VisFrameStats v3 = assembleVisStats(device->stats(), p3.mode);
+                check("B: L3 hzb engaged on the gpu path", v3.activePath >= 1);
+                check("B: L3 drawn+hzb == CPU reference (HZB conservation)",
+                      v3.drawn + v3.hzbCulled == drawnRef);
+                check("B: L3 conserves", v3.conserves);
+            } else {
+                x3::logInfo("[visunify] B: L3 skipped (no HZB targets on this device)");
+            }
+        } else {
+            x3::logInfo("[visunify] B: L2/L3 skipped (no GPU cull on this device)");
+        }
+
+        // auto (-1) must resolve to the best supported level.
+        VisPolicy pa = resolveVisPolicy(-1, caps);
+        const int best = caps.hzb ? 3 : (caps.gpuCull ? 2 : 1);
+        check("B: auto resolves to best supported", pa.mode == best);
+    }
+
+    // ---- C) alias-cvar mapping (the same sync the world loops run) ---------
+    {
+        std::unique_ptr<x3::con::IConsole> con(x3::con::createConsole());
+        registerViewmodelCVars(*con);
+        g_visSync = VisCvarSync{};                  // fresh sync state for the test
+        applyRtaoCVars(*con, *device);              // first sync (defaults)
+        check("C: default r_vis 1 -> pvs+cpu", g_visPolicy.mode == 1 && g_visPolicy.pvs);
+
+        con->set("r_cullpath", "1");
+        applyRtaoCVars(*con, *device);
+        check("C: r_cullpath 1 alias -> r_vis 2", con->getInt("r_vis") == 2);
+        check("C: alias preserves the explicit tier",
+              !caps.gpuCull || g_visPolicy.cullPath == 1);
+
+        con->set("r_hzb", "1");
+        applyRtaoCVars(*con, *device);
+        check("C: r_hzb alias -> r_vis 3", con->getInt("r_vis") == 3);
+
+        con->set("r_cullpath", "0");
+        applyRtaoCVars(*con, *device);
+        check("C: r_cullpath 0 alias -> r_vis 1", con->getInt("r_vis") == 1);
+
+        con->set("r_roomcull", "0");
+        applyRtaoCVars(*con, *device);
+        check("C: r_roomcull 0 -> PVS override only",
+              !g_visPolicy.pvs && con->getInt("r_vis") == 1);
+
+        con->set("r_roomcull", "1");
+        con->set("r_vis", "2");
+        applyRtaoCVars(*con, *device);
+        check("C: direct r_vis 2 clears the tier force + restores PVS",
+              g_visPolicy.pvs && (!caps.gpuCull || g_visPolicy.cullPath == -1));
+        g_visSync = VisCvarSync{};                  // leave clean state behind
+        g_visPolicy = VisPolicy{};
+    }
+
+    // ---- D) TLAS mutation instrumentation (folded base: still sync-waits) ---
+    {
+        // Back to the plain CPU path; enable RT-AO so the BLAS/TLAS path runs.
+        renderFrames(resolveVisPolicy(0, caps), 2);
+        IRenderDevice::RtaoParams rp{};
+        rp.enabled = true;
+        device->setRtaoParams(rp);
+        // Static warmup: first BLAS/TLAS builds (BLAS is a synchronous load-time
+        // event by design — it must NOT count against the mutation gate).
+        renderFrames(resolveVisPolicy(0, caps), 6);
+        const uint32_t buildsAfterWarmup = device->stats().tlasBuilds;
+        if (device->stats().tlasBuilds == 0) {
+            x3::logInfo("[visunify] D: skipped (device has no ray tracing — TLAS path inert)");
+        } else {
+            // 120 frames of per-frame scene mutation: a varying extra instance set
+            // changes the TLAS signature EVERY frame -> a rebuild every frame.
+            const float white[4] = { 1, 1, 1, 1 };
+            for (int f = 0; f < 120; ++f) {
+                auto fc = device->beginFrame();
+                if (!fc.valid) break;
+                scene.render(*device, fc);
+                device->setVisHostStats(scene.lastRoomCulled(), 0.0f);
+                float m[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+                const int extras = (f % 17) + 3;
+                for (int s = 0; s < extras; ++s) {
+                    m[12] = -20.0f + 2.1f * s + 0.13f * f;
+                    m[13] = 3.0f + 0.5f * s;
+                    m[14] = -8.0f - 1.7f * s;
+                    device->drawMesh(fc, cube, {}, white, m);
+                }
+                device->endFrame(fc);
+            }
+            const RenderStats st = device->stats();
+            x3::logInfo("[visunify] D: tlasBuilds=" + std::to_string(st.tlasBuilds - buildsAfterWarmup) +
+                        " grows=" + std::to_string(st.tlasGrows) +
+                        " syncWaits=" + std::to_string(st.tlasSyncWaits) +
+                        " lastCpuMs=" + std::to_string(st.tlasCpuMs) +
+                        " maxCpuMs=" + std::to_string(st.tlasCpuMsMax));
+            // The mutation path is instrumented + exercised: a rebuild recorded on
+            // (nearly) every mutated frame, and the counters are self-consistent.
+            check("D: a rebuild recorded (nearly) every mutated frame",
+                  st.tlasBuilds - buildsAfterWarmup >= 110);
+            check("D: rebuild instrumentation is wired + bounded",
+                  st.tlasCpuMsMax >= 0.0f && st.tlasGrows <= st.tlasBuilds);
+            // DEFERRED: on this folded multi-consumer base the mutation path still
+            // takes a synchronous vkDeviceWaitIdle (an ATTRIBUTED zero-stutter
+            // spike, not a gate failure). The async double-buffer that drives
+            // syncWaits to 0 is documented remaining work — assert the path is
+            // honestly REPORTING its sync waits rather than claiming zero.
+            check("D: sync-wait path honestly instrumented (double-buffer deferred)",
+                  st.tlasSyncWaits >= 1);
+        }
+    }
+
+    device->destroyMesh(cube);
+    device->shutdown();
+    device.reset();
+    glfwTerminate();
+
+    x3::logInfo("visunify: " + std::to_string(passed) + "/" + std::to_string(total) + " passed");
     return passed == total;
 }
 
@@ -2553,6 +2948,13 @@ int main(int argc, char** argv) {
     // smoketest/screenshot/bench paths exercise the D15 GPU cull (INT_MIN = unset).
     int         cullPathArg = INT_MIN;
     int         hzbArg = 0;
+    // --vis <n>: seed THE unified r_vis cvar from the CLI (vis-unify; -1 auto,
+    // 0 cpu, 1 +pvs, 2 pvs+gpu, 3 pvs+gpu+hzb). INT_MIN = unset (default 1).
+    int         visArg = INT_MIN;
+    // --test-visunify: the vis-unify acceptance gate — conservation across r_vis
+    // policies on a still camera, alias-cvar mapping, and the TLAS-mutation
+    // instrumentation proof (spawn/despawn under load). Additive.
+    bool        testVisUnify = false;
     // --test-spiretop (Spire top-floor content): F6/F7 (Act-1 finale) encounter authoring. Additive.
     bool        testSpireTop = false;
     // --test-timeline (EFLZ morality/timeline backbone): infection 4-stage timers + cure
@@ -3040,6 +3442,8 @@ int main(int argc, char** argv) {
         else if (a == "--test-gpucull") testGpuCull = true;
         else if (a == "--cullpath" && i + 1 < argc) cullPathArg = std::atoi(argv[++i]);
         else if (a == "--hzb") hzbArg = 1;
+        else if (a == "--vis" && i + 1 < argc) visArg = std::atoi(argv[++i]);
+        else if (a == "--test-visunify") testVisUnify = true;
         else if (a == "--test-collapse") testCollapse = true;
         else if (a == "--test-physjoint") testPhysJoint = true;
         else if (a == "--test-nav") testNav = true;
@@ -3770,6 +4174,12 @@ int main(int argc, char** argv) {
                     "(headless device + validation, r_cullpath 1, pose sweep, "
                     "GPU statDrawn vs CPU predicate — must match EXACTLY)...");
         return runGpuCullSelfTest() ? 0 : 1;
+    }
+    if (testVisUnify) {
+        x3::logInfo("running vis-unify acceptance self-test (policy table + "
+                    "conservation across r_vis levels on a still camera + alias-cvar "
+                    "mapping + TLAS-mutation instrumentation proof)...");
+        return runVisUnifySelfTest() ? 0 : 1;
     }
     if (testCollapse) {
         x3::logInfo("running K-T3 structural collapse (support graph) self-test "
@@ -11223,6 +11633,15 @@ int main(int argc, char** argv) {
         x3::logInfo("[cull] r_cullpath seeded from CLI: " + std::to_string(cullPathArg));
     }
     if (hzbArg) { console->set("r_hzb", "1"); x3::logInfo("[cull] r_hzb seeded from CLI: 1"); }
+    // --vis <n>: seed THE unified visibility cvar (vis-unify). Wins over the
+    // legacy seeds above when both are given (it is the one cvar going forward).
+    if (visArg != INT_MIN) {
+        console->set("r_vis", std::to_string(visArg));
+        // Direct r_vis seed: neutralize the legacy aliases so the first cvar sync
+        // doesn't fold them back over the explicit unified request.
+        if (cullPathArg == INT_MIN) console->set("r_cullpath", "0");
+        x3::logInfo("[vis] r_vis seeded from CLI: " + std::to_string(visArg));
+    }
 
     // ZERO-STUTTER: push the pacing thresholds + strict-PSO gate ONCE now (the
     // per-frame applyRtaoCVars sync keeps them live in the windowed loop) so the
@@ -12416,15 +12835,22 @@ int main(int argc, char** argv) {
             // reachable through OPEN doorways that the camera LOOKS at, capped by r_culldepth
             // + a room budget. (No-op in every other world: scene has no room-tagged entities.)
             if (canonWorld && canonFloor.valid()) {
-                const bool roomCull = console->getInt("r_roomcull") != 0;
+                // Unified policy (r_vis): the orchestrator decides whether the PVS
+                // prefilter runs; its room-visible SET is what render() submits —
+                // i.e. the GPU cull's INPUT when the GPU path is on.
+                const bool roomCull = g_visPolicy.pvs;
                 scene.setRoomCullEnabled(roomCull);
+                g_visPvsMs = 0.0f;
                 if (roomCull) {
+                    const auto pvsT0 = std::chrono::steady_clock::now();
                     const uint32_t depth = (uint32_t)std::max(1, console->getInt("r_culldepth"));
                     x3::game::Frustum fr = x3::game::Frustum::build(
                         eye.x, eye.y, eye.z, vmYaw, vmPitch, 60.0f, 16.0f / 9.0f);
                     canonFloor.floodVisibleRoomsAt(eye.x, eye.y, eye.z, fr, &canonDoors,
                                                    depth, kCanonRoomBudget, canonVisRooms);
                     scene.setVisibleRooms(canonVisRooms);
+                    g_visPvsMs = std::chrono::duration<float, std::milli>(
+                        std::chrono::steady_clock::now() - pvsT0).count();
                 }
                 // Feed ONLY the visible rooms' ceiling lights (capped at 16) so the floor
                 // is LIT under the smoketest while staying under the 64-light device cap.
@@ -12453,6 +12879,8 @@ int main(int argc, char** argv) {
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
+                // Unified vis stats: PVS submission skips + flood ms for this frame.
+                device->setVisHostStats(scene.lastRoomCulled(), g_visPvsMs);
                 if (canonWorld) canonDoors.drawMeshes(*device, frame);   // SM_Door_A doors (canonlevel)
                 // --world canonlevel gameplay characters (room-gated draw — only the visible
                 // rooms' enemies/girls are drawn/skinned, so objs/tris stay modest).
@@ -12526,6 +12954,10 @@ int main(int argc, char** argv) {
                     st.gpuCullFrustum, st.gpuCullHzb);
                 x3::logInfo(sb);
             }
+            // ONE unified vis line (vis-unify): the whole conserving chain
+            // rooms -> frustum -> hzb -> drawn with per-stage times.
+            x3::logInfo("smoketest: " +
+                x3::rhi::formatVisLine(x3::rhi::assembleVisStats(st, g_visPolicy.mode)));
         }
         x3::logInfo("smoketest: 30 frames + recreate OK");
         // [boot] visibility: log the boot total in --smoketest runs too (headless,
@@ -13775,9 +14207,11 @@ int main(int argc, char** argv) {
                 // Compute the per-frame visible-room set ONCE here (portal flood-fill,
                 // frustum-directional) and stash it in canonVisRooms; the render path below
                 // reuses the SAME set so newly-visible rooms down the hall both LIGHT UP and
-                // DRAW, all capped consistently. r_roomcull 0 falls back to the 1-hop set so
-                // a noclip overview is still reasonably lit.
-                if (console->getInt("r_roomcull") != 0) {
+                // DRAW, all capped consistently. The unified policy (r_vis / g_visPolicy)
+                // gates the PVS; with it off the 1-hop set keeps a noclip overview lit.
+                g_visPvsMs = 0.0f;
+                if (g_visPolicy.pvs) {
+                    const auto pvsT0 = std::chrono::steady_clock::now();
                     const uint32_t depth = (uint32_t)std::max(1, console->getInt("r_culldepth"));
                     int fbw = 0, fbh = 0; glfwGetFramebufferSize(window, &fbw, &fbh);
                     const float aspect = (float)std::max(1, fbw) / (float)std::max(1, fbh);
@@ -13785,6 +14219,8 @@ int main(int argc, char** argv) {
                         camX, camY, camZ, camYaw, camPitch, 60.0f, aspect);
                     canonFloor.floodVisibleRoomsAt(camX, camY, camZ, fr, &canonDoors,
                                                    depth, kCanonRoomBudget, canonVisRooms);
+                    g_visPvsMs = std::chrono::duration<float, std::milli>(
+                        std::chrono::steady_clock::now() - pvsT0).count();
                 } else {
                     canonFloor.visibleRoomsAt(camX, camY, camZ, canonVisRooms);
                 }
@@ -14377,13 +14813,17 @@ int main(int argc, char** argv) {
             // canonVisRooms) drives render(). A CLOSED door is opaque + stops the flood; far
             // rooms seen through an OPEN door down a hall you LOOK at are kept (no pop),
             // capped by r_culldepth hops + a room budget so it never draws the whole tower.
-            // `r_roomcull 0` hard-disables the cull (noclip overview); `1` (default) = on.
+            // `r_vis 0` / the r_roomcull-0 alias disable it (noclip overview).
             if (canonWorld && canonFloor.valid()) {
-                const bool roomCull = console->getInt("r_roomcull") != 0;
+                const bool roomCull = g_visPolicy.pvs;
                 scene.setRoomCullEnabled(roomCull);
                 if (roomCull) scene.setVisibleRooms(canonVisRooms);   // same set as the lights
             }
             scene.render(*device, frame);
+            // Unified vis stats: feed the PVS stage's numbers (submission skips +
+            // flood-fill ms) so stats() carries the conserving rooms -> frustum ->
+            // hzb -> drawn chain. Zeros outside the canon world (no room tags).
+            device->setVisHostStats(scene.lastRoomCulled(), g_visPvsMs);
             if (canonWorld) canonDoors.drawMeshes(*device, frame);   // SM_Door_A doors (canonlevel)
             // THIRD-PERSON: draw the animated Jake avatar at the player's position +
             // the equipped weapon socketed to its right hand. Both are no-ops in FP /

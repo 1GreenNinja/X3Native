@@ -229,6 +229,10 @@ public:
     // Count how many of this scene's entities would be DRAWN under the current cull
     // state (visible + valid mesh + roomVisible). Diagnostics / the self-test proof.
     uint32_t drawnCount() const;
+    // How many drawable entities the LAST render() skipped because their room was
+    // not visible (the PVS prefilter). Feeds IRenderDevice::setVisHostStats so the
+    // unified vis stats block conserves: rooms + frustum + hzb + drawn == candidates.
+    uint32_t lastRoomCulled() const { return m_lastRoomCulled; }
 
     std::vector<Entity>&       entities()       { return m_entities; }
     const std::vector<Entity>& entities() const { return m_entities; }
@@ -241,6 +245,8 @@ private:
     std::unordered_set<uint32_t> m_visibleRooms;
     bool m_roomCullEnabled = true;
     bool m_roomCullActive  = false;
+    // PVS skip count of the last render() (mutable: render() is const). Stats only.
+    mutable uint32_t m_lastRoomCulled = 0;
     // World-streaming support: optional add() capture sink + the released-slot
     // free-list add() reuses (see beginEntityCapture / releaseSlot above).
     std::vector<uint32_t>* m_capture = nullptr;
