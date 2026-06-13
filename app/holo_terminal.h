@@ -47,6 +47,24 @@ public:
     void setLines(std::vector<std::string> lines) { m_lines = std::move(lines); m_texDirty = true; }
     void addLine(const std::string& s) { m_lines.push_back(s); m_texDirty = true; }
     const std::vector<std::string>& lines() const { return m_lines; }
+    // ---- Streaming readout (LLM freeform answers stream onto the glass). ----
+    // Rewrite the LAST readout line in place (the host appends streamed tokens
+    // to it as they arrive; the glass re-bakes on the host's throttle).
+    void setLastLine(const std::string& s) {
+        if (m_lines.empty()) m_lines.push_back(s); else m_lines.back() = s;
+        m_texDirty = true;
+    }
+    // Keep at most `maxBody` body rows (line 0, the header TITLE, is always
+    // kept). Old scrollback rows fall off the top, like a real terminal.
+    void trimBody(size_t maxBody) {
+        if (m_lines.size() <= 1 + maxBody) return;
+        m_lines.erase(m_lines.begin() + 1,
+                      m_lines.begin() + (std::ptrdiff_t)(m_lines.size() - maxBody));
+        m_texDirty = true;
+    }
+    // Drop the typed input WITHOUT submitting (the freeform path consumes the
+    // text itself and echoes it as a readout line instead).
+    void clearInput() { if (!m_input.empty()) { m_input.clear(); m_texDirty = true; } }
 
     // ---- Interaction / input mode. ----
     bool active() const { return m_active; }
@@ -114,7 +132,7 @@ private:
     SubmitFn       m_submit;
     float          m_textColor[4] = { 0.85f, 0.97f, 1.0f, 1.0f };  // bright cyan-white, high contrast
     std::vector<uint32_t> m_decor;        // bezel / arm / trace entity ids (visual only)
-    static constexpr size_t kMaxInput = 32;
+    static constexpr size_t kMaxInput = 72;   // freeform questions need room (was 32)
 };
 
 // Headless self-test (--test-holoterm): boot readout is present (not blank), typing

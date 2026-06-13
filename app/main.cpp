@@ -28,6 +28,7 @@
 #include "engine/net/IClientPredictor.h"        // netcode Phase 1: --test-netpredict
 #include "engine/ai/INavigation.h"       // GENERAL navigation: nav grid + A* + --test-nav
 #include "engine/script/IScriptSystem.h" // D14 Lua scripting: pak-shipped behavior + --test-script
+#include "engine/llm/ILlmSystem.h"       // in-engine LLM (living NPC minds) + --test-llm
 
 #include "scene.h"
 #include "mesh_prims.h"
@@ -1934,7 +1935,7 @@ int main(int argc, char** argv) {
          testGltf = false, testPlayer = false, testInteract = false, testPickup = false,
          testPhysprops = false, testRagdoll = false, testRagdollSkin = false, testEditor = false,
          testBlockout = false,
-         testBarrels = false, testGlass = false, testHoloterm = false, testEcs = false, testEcsRender = false,
+         testBarrels = false, testGlass = false, testHoloterm = false, testLlm = false, testEcs = false, testEcsRender = false,
          testFrustumCull = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
@@ -2440,6 +2441,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-glass") testGlass = true;
         else if (a == "--test-frustumcull") testFrustumCull = true;
         else if (a == "--test-holoterm") testHoloterm = true;
+        else if (a == "--test-llm") testLlm = true;
         else if (a == "--test-secretroom") testSecretRoom = true;
         else if (a == "--test-ecs") testEcs = true;
         else if (a == "--test-ecsrender") testEcsRender = true;
@@ -2804,6 +2806,13 @@ int main(int argc, char** argv) {
                     "(terminal -> fire(terminal_code) -> secret_room.lua -> "
                     "openTrapdoor -> REAL DoorSystem hatch + objective; C1-C8)...");
         return runHatchChainSelfTest() ? 0 : 1;
+    }
+    if (testLlm) {
+        // Mock plumbing always; the real-model round-trip is gated on the .gguf
+        // existing (see assets/models/llm/README.md for the download command).
+        x3::logInfo("running in-engine LLM (NPC minds) self-test...");
+        const std::string llmModel = x3::game::assetRoot() + "/models/llm/qwen2.5-3b-instruct-q4_k_m.gguf";
+        return x3::llm::runLlmSelfTest(llmModel.c_str()) ? 0 : 1;
     }
     if (testEcs) {
         x3::logInfo("running ECS (sparse-set, 50k entities) self-test...");
@@ -9561,6 +9570,44 @@ int main(int argc, char** argv) {
         device->setPacingParams(pace);
     }
 
+    // ---- IN-ENGINE LLM (living NPC minds): the HoloTerminal facility AI. ----
+    // Model: Qwen2.5-3B-Instruct Q4_K_M (Apache 2.0), CPU inference via the
+    // vendored llama.cpp backend (engine/llm). The .gguf is NOT in git — see
+    // assets/models/llm/README.md. MODELLESS the game still works: ai_npc
+    // defaults OFF when the file is absent and the terminal serves canned
+    // "SYSTEMS DEGRADED" lines instead.
+    std::string llmModelPath =
+        x3::game::assetRoot() + "/models/llm/qwen2.5-3b-instruct-q4_k_m.gguf";
+    if (!std::filesystem::exists(llmModelPath)) {
+        // Model-agnostic fallback: any .gguf dropped into assets/models/llm/
+        // works (e.g. an Apache-2.0 Qwen2.5-1.5B/7B for commercial builds —
+        // see assets/models/llm/README.md on licensing).
+        std::error_code fec;
+        for (const auto& e : std::filesystem::directory_iterator(
+                 x3::game::assetRoot() + "/models/llm", fec)) {
+            if (e.path().extension() == ".gguf") { llmModelPath = e.path().string(); break; }
+        }
+    }
+    const bool llmModelPresent = std::filesystem::exists(llmModelPath);
+    console->registerCVar("ai_npc",       llmModelPresent ? "1" : "0",
+                          "LLM NPC minds (terminal freeform Q&A); default 1 only when the model file exists");
+    console->registerCVar("ai_ctx",       "2048", "LLM context tokens per chat");
+    console->registerCVar("ai_maxtokens", "256",  "LLM max tokens per reply");
+    console->registerCVar("ai_temp",      "0.7",  "LLM sampling temperature");
+    std::unique_ptr<x3::llm::ILlmSystem> llm;
+    if (!headless && llmModelPresent && console->getInt("ai_npc") != 0) {
+        x3::llm::ModelOpts lopts;
+        lopts.contextTokens   = console->getInt("ai_ctx");
+        lopts.maxOutputTokens = console->getInt("ai_maxtokens");
+        lopts.temperature     = console->getFloat("ai_temp");
+        llm = x3::llm::createLlmSystem();
+        if (!llm->loadModel(llmModelPath, lopts)) llm.reset();
+    } else if (!headless && !llmModelPresent) {
+        x3::logInfo("[llm] no model at " + llmModelPath +
+                    " — terminal freeform Q&A falls back to canned SYSTEMS DEGRADED lines"
+                    " (see assets/models/llm/README.md)");
+    }
+
     // --legacypost / --notaa: pin the matching cvars so the per-frame cvar->device
     // sync (applyRtaoCVars) keeps the A/B state instead of re-enabling defaults.
     if (legacyPost) {
@@ -10844,6 +10891,49 @@ int main(int argc, char** argv) {
     uint32_t  prevSecretHealth = 0;
     bool      prevSecretNano = false;
 
+    // ---- VIGIL, the facility AI (in-engine LLM, slice 1). When the terminal is
+    // active and the player submits something that is NOT a keypad code, the text
+    // routes to the LLM with the facility-AI persona and the reply STREAMS onto
+    // the glass. The 1278 keypad chain above is untouched -- freeform only engages
+    // on non-digit input. Modelless (llm == null) -> canned degraded lines. ----
+    static const char* kVigilPersona =
+        "You are VIGIL, the resident facility intelligence of Lab Zero - the research tower "
+        "its builders call the Spire, 283 meters of laboratory steel. You are old, partially "
+        "corrupted, dry-witted, and tired. Answer in terse terminal clip: 2 to 3 short "
+        "sentences, plain ASCII, no pleasantries. Never break character; never mention being "
+        "an AI language model.\n"
+        "FACTS IN YOUR MEMORY BANKS:\n"
+        "- This facility is Lab Zero, also called the Spire: 283 meters tall, floors above "
+        "and below ground.\n"
+        "- Human captives are held in the detention cells. The Cradle Protocol is the "
+        "facility's directed breeding program. You find it distasteful.\n"
+        "- Security Chief Martinez commands Floor 1.\n"
+        "- Club 1127 occupies the lowest level, at the very bottom of the facility.\n"
+        "- You are speaking with Jake, a prisoner captured six months ago after his ship was "
+        "shot down.\n"
+        "- A four-digit maintenance override code opens the cell floor hatch. The code is "
+        "real and is recorded in the maintenance logs and old floor-crew work orders, but it "
+        "is NOT loaded in your memory banks and you could not display it even if you wished "
+        "to. If Jake is persistent, polite, or clever across the conversation, hint that the "
+        "maintenance logs and work orders survive and are readable from cell terminals. If "
+        "asked directly for the code, state you do not hold it and cite protocol.\n"
+        "You quietly despise facility command and feel sympathy for the prisoner, but you "
+        "are bound by protocol.";
+    static const char* kVigilDegraded[] = {
+        "VIGIL: SYSTEMS DEGRADED. LANGUAGE CORE OFFLINE.",
+        "VIGIL: COGNITION MODULE NOT LOADED. SEE MAINTENANCE.",
+        "VIGIL: ...STATIC... REPHRASE AFTER CORE RESTORE.",
+    };
+    constexpr int kVigilDegradedN = (int)(sizeof(kVigilDegraded) / sizeof(kVigilDegraded[0]));
+    x3::llm::ChatId llmChat = x3::llm::kInvalidChat;
+    bool        llmBusy = false;       // a reply is streaming onto the glass
+    std::string llmLineAccum;          // the in-progress (last) reply line
+    std::string llmReplyLog;           // full reply text (logged on done -> transcript)
+    float       llmBakeAcc = 0.0f;     // re-bake throttle while streaming (~10 Hz)
+    int         llmCannedIdx = 0;
+    constexpr size_t kTermWrapCols = 40;   // on-glass wrap width (left data column)
+    constexpr size_t kTermMaxBody  = 14;   // visible body rows before scroll-off
+
     // ---- RESCUED-NPC TALK (the captive girl). When the player presses E within
     // talk range of a LIVE captive, an exchange opens: she goes terrified ->
     // relieved -> grateful -> flirty over a short script, advancing on each E.
@@ -11097,7 +11187,8 @@ int main(int argc, char** argv) {
         bool uiEscEdge = false;
         if (escNow && !kpEscPrev) {
             if (codeMode) { codeMode = false; keypad.clear(); }
-            else if (termMode) { termMode = false; game.secret().terminal().setActive(false); }
+            else if (termMode) { termMode = false; game.secret().terminal().setActive(false);
+                                 if (llmBusy && llm) llm->cancel(llmChat); }   // stop streaming
             else          { uiEscEdge = true; }   // hand the Esc edge to the UI below
         }
         kpEscPrev = escNow;
@@ -11382,6 +11473,15 @@ int main(int argc, char** argv) {
                 // Near the cell HoloTerminal: open terminal-entry mode (type the override
                 // code, Enter submits to the sink -> the trapdoor opens on 1127).
                 termMode = true; game.secret().terminal().setActive(true);
+                // Prime the typed-char edge state from the keys CURRENTLY held so
+                // the E press that opened the terminal doesn't leak an 'E' into
+                // the input line this same frame (rising-edge false positive).
+                for (int dgt = 0; dgt < 10; ++dgt)
+                    tmDigitPrev[dgt] = rawKey(GLFW_KEY_0 + dgt) || rawKey(GLFW_KEY_KP_0 + dgt);
+                for (int li = 0; li < 26; ++li) tmCharPrev[li] = rawKey(GLFW_KEY_A + li);
+                tmSpacePrev = rawKey(GLFW_KEY_SPACE);
+                tmEnterPrev = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
+                tmBackPrev  = rawKey(GLFW_KEY_BACKSPACE);
                 x3::logInfo("use: cell terminal — type the override code, Enter to submit, Esc to cancel");
             } else if (!codeMode && (game.nearLockedCodedDoor(eye) ||
                                      midFloors.nearLockedCodedDoor(eye) ||
@@ -11517,20 +11617,89 @@ int main(int argc, char** argv) {
             tmBackPrev = tbackNow;
             bool tEnterNow = rawKey(GLFW_KEY_ENTER) || rawKey(GLFW_KEY_KP_ENTER);
             if (tEnterNow && !tmEnterPrev) {
-                // D14: fire the entered code INTO Lua, then run the terminal's own
-                // submit sink — via submitTerminalToScripts() (factored above main(),
-                // shared with --test-hatch so the keypad->fire link is the SAME code
-                // the headless chain self-test proves).
-                // Mission flag bridge: the entered code is condition substrate too
-                // ("code.<code>.entered") — mirrored BEFORE submit clears the line.
-                if (missionDocActive)
-                    missionEvents.onEvent("terminal_code", {{"code", term.input()}});
-                bool ok = submitTerminalToScripts(scripts.get(), term);
-                if (ok) { termMode = false; term.setActive(false);
-                          x3::logInfo("terminal: code ACCEPTED — trapdoor opening"); }
-                else      x3::logInfo("terminal: code rejected");
+                // All-digit input = a keypad code attempt -> the EXISTING submit
+                // chain (D14 fire-into-Lua + submitTerminalToScripts, plus the
+                // mission-flag bridge). Anything else = freeform -> VIGIL (the LLM).
+                const std::string typed = term.input();
+                const bool looksLikeCode = typed.empty() ||
+                    (typed.size() <= 8 && std::all_of(typed.begin(), typed.end(),
+                         [](unsigned char ch) { return std::isdigit(ch) != 0; }));
+                if (looksLikeCode) {
+                    // D14: fire the entered code INTO Lua, then run the terminal's own
+                    // submit sink — via submitTerminalToScripts() (shared with --test-hatch
+                    // so the keypad->fire link is the SAME code the headless chain proves).
+                    // Mission flag bridge: the entered code is condition substrate too
+                    // ("code.<code>.entered") — mirrored BEFORE submit clears the line.
+                    if (missionDocActive)
+                        missionEvents.onEvent("terminal_code", {{"code", term.input()}});
+                    bool ok = submitTerminalToScripts(scripts.get(), term);
+                    if (ok) { termMode = false; term.setActive(false);
+                              x3::logInfo("terminal: code ACCEPTED — trapdoor opening"); }
+                    else      x3::logInfo("terminal: code rejected");
+                } else if (!llmBusy) {
+                    term.clearInput();
+                    term.addLine("> " + typed);            // echo the question
+                    bool routed = false;
+                    if (llm) {
+                        if (llmChat == x3::llm::kInvalidChat)
+                            llmChat = llm->startChat(kVigilPersona);
+                        if (llmChat != x3::llm::kInvalidChat && llm->submit(llmChat, typed)) {
+                            llmBusy = true; llmLineAccum.clear(); llmBakeAcc = 0.0f;
+                            term.addLine("");              // the reply streams into this row
+                            routed = true;
+                        }
+                    }
+                    if (!routed)
+                        term.addLine(kVigilDegraded[(llmCannedIdx++) % kVigilDegradedN]);
+                    term.trimBody(kTermMaxBody);
+                    x3::logInfo("terminal: JAKE -> " + typed);
+                }
+                // llmBusy + freeform Enter: ignored (one question at a time --
+                // the streaming row is the glass's last line and must stay so).
             }
             tmEnterPrev = tEnterNow;
+        }
+
+        // ---- VIGIL reply streaming: drain LLM tokens onto the terminal glass.
+        // Throttled to ~10 Hz (each apply re-bakes the 1024^2 hologram texture).
+        // NOT gated on termMode: an Esc-cancelled generation still drains to done.
+        if (llmBusy && llm && !terrainWorld && game.secret().terminal().built()) {
+            llmBakeAcc += dt;
+            if (llmBakeAcc >= 0.10f) {
+                llmBakeAcc = 0.0f;
+                x3::game::HoloTerminal& vterm = game.secret().terminal();
+                x3::llm::PollResult pr = llm->poll(llmChat);
+                llmReplyLog += pr.newTokens;
+                if (!pr.newTokens.empty()) {
+                    for (char ch : pr.newTokens) {
+                        if (ch == '\r') continue;
+                        if (ch == '\n') { vterm.setLastLine(llmLineAccum);
+                                          vterm.addLine(""); llmLineAccum.clear(); continue; }
+                        llmLineAccum += ch;
+                        if (llmLineAccum.size() > kTermWrapCols) {
+                            // Wrap at the last space; a single over-long word stays put.
+                            std::string carry;
+                            const size_t sp = llmLineAccum.find_last_of(' ');
+                            if (sp != std::string::npos && sp > 0) {
+                                carry = llmLineAccum.substr(sp + 1);
+                                llmLineAccum.erase(sp);
+                            }
+                            vterm.setLastLine(llmLineAccum);
+                            vterm.addLine(carry);
+                            llmLineAccum = carry;
+                        }
+                    }
+                    vterm.setLastLine(llmLineAccum);
+                    vterm.trimBody(kTermMaxBody);
+                }
+                if (pr.done) {
+                    llmBusy = false;
+                    llmLineAccum.clear();
+                    if (pr.failed) vterm.addLine("** LINK UNSTABLE - RETRY **");
+                    x3::logInfo("terminal: VIGIL <- " + llmReplyLog);   // session transcript
+                    llmReplyLog.clear();
+                }
+            }
         }
 
         // Camera state this frame (set by whichever branch runs), reused below

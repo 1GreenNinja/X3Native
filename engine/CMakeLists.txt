@@ -23,7 +23,36 @@ add_library(x3engine STATIC
     net/SnapshotInterpolator.cpp
     net/ClientPredictor.cpp
     script/LuaScriptSystem.cpp
+    llm/MockLlmSystem.cpp
+    llm/LlamaLlmSystem.cpp
+    llm/LlmSelfTest.cpp
 )
+
+# ---- In-engine LLM backend: llama.cpp, VENDORED via FetchContent pinned to a
+# release tag (no vcpkg port exists for it). CPU backend ONLY for v1
+# (GGML_VULKAN OFF) so the inference stack can never interact with the engine's
+# Vulkan device/validation; the host CPU runs a 3B Q4 at conversational speed.
+# Built STATIC and linked PRIVATE below — llama/ggml types are quarantined
+# inside LlamaLlmSystem.cpp (engine/llm/ILlmSystem.h stays llama-free, the same
+# discipline as IRenderDevice/IConsole).
+include(FetchContent)
+set(BUILD_SHARED_LIBS    OFF CACHE BOOL "" FORCE)   # static llama/ggml
+set(LLAMA_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_TOOLS    OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
+set(LLAMA_BUILD_COMMON   OFF CACHE BOOL "" FORCE)   # core libllama only (ChatML is hand-rolled)
+set(LLAMA_CURL           OFF CACHE BOOL "" FORCE)   # no network dep in the engine
+set(GGML_VULKAN          OFF CACHE BOOL "" FORCE)   # v1 = CPU inference only
+FetchContent_Declare(llama_cpp
+    GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
+    GIT_TAG        b9590
+    GIT_SHALLOW    TRUE)
+FetchContent_MakeAvailable(llama_cpp)
+# llama.cpp targets C++17; the repo-global CMAKE_CXX_STANDARD 20 leaks into the
+# subproject and breaks MSVC (u8"..." literals become char8_t in C++20 —
+# llama-chat.cpp C2664/C2088). Pin the vendored target back to its native 17.
+set_target_properties(llama PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
 
 # Header-only model-loader deps (M2): cgltf (glTF/GLB parse) + stb (image decode)
 find_path(CGLTF_INCLUDE_DIRS "cgltf.h")
@@ -74,6 +103,9 @@ target_link_libraries(x3engine
         # engine/script/IScriptSystem.h (it stays scripting-API-free).
         sol2::sol2
         ${LUA_LIBRARIES}
+        # llama.cpp core (static, FetchContent-pinned). PRIVATE: llama/ggml types
+        # never leak past engine/llm/LlamaLlmSystem.cpp.
+        llama
 )
 
 target_compile_features(x3engine PUBLIC cxx_std_20)

@@ -439,6 +439,12 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
             const float w = textWidthPx(lines[li], bpx);
             if (w > zoneW && w > 1.0f) bpx *= zoneW / w;
         }
+        if (!inputLine.empty()) {
+            // The input renders at bpx*1.18 below — keep IT inside the zone too
+            // (freeform questions are much longer than a 4-digit code).
+            const float w = textWidthPx(inputLine, bpx * 1.18f);
+            if (w > zoneW && w > 1.0f) bpx *= zoneW / w;
+        }
         if (bpx < P(0.018f)) bpx = P(0.018f);
         const float rowH = bpx * 1.30f;
         float ty = P(0.205f);                           // below the header strip
