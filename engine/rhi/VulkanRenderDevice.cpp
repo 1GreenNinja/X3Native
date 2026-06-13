@@ -89,9 +89,50 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
+#include "FrustumCull.h"   // CPU per-object frustum cull (r_frustumcull, D15 baseline)
+#include "GpuCull.h"       // D15 GPU-driven culling (r_cullpath: Tier 0/1/2 + HZB)
+
 namespace x3::rhi {
 
 namespace {
+
+// Compute a model-space bounding sphere from a vertex list for the CPU frustum cull:
+// AABB center, then the radius is the max vertex distance from that center (a tight
+// conservative sphere). Empty/null -> zero radius (treated as unbounded -> never culled).
+inline void computeLocalSphere(const MeshVertex* verts, uint32_t vcount,
+                               glm::vec3& outCenter, float& outRadius) {
+    outCenter = glm::vec3(0.0f);
+    outRadius = 0.0f;
+    if (!verts || vcount == 0) return;
+    glm::vec3 lo(verts[0].pos[0], verts[0].pos[1], verts[0].pos[2]);
+    glm::vec3 hi = lo;
+    for (uint32_t i = 1; i < vcount; ++i) {
+        const glm::vec3 p(verts[i].pos[0], verts[i].pos[1], verts[i].pos[2]);
+        lo = glm::min(lo, p);
+        hi = glm::max(hi, p);
+    }
+    outCenter = 0.5f * (lo + hi);
+    float r2 = 0.0f;
+    for (uint32_t i = 0; i < vcount; ++i) {
+        const glm::vec3 p(verts[i].pos[0], verts[i].pos[1], verts[i].pos[2]);
+        r2 = std::max(r2, glm::dot(p - outCenter, p - outCenter));
+    }
+    outRadius = std::sqrt(r2);
+}
+
+// Transform a model-space bounding sphere to world space by an instance model matrix:
+// center -> (model * center); radius -> radius * (max scale axis), so non-uniform
+// scale stays conservative (the largest axis bounds the whole sphere). Returns the
+// CullSphere (xyz = world center, w = world radius) the GPU-equivalent test consumes.
+inline CullSphere worldSphere(const glm::mat4& model, const glm::vec3& cLocal, float rLocal) {
+    const glm::vec3 cWorld = glm::vec3(model * glm::vec4(cLocal, 1.0f));
+    // Column lengths of the upper-left 3x3 = per-axis scale (incl. shear contribution).
+    const float sx = glm::length(glm::vec3(model[0]));
+    const float sy = glm::length(glm::vec3(model[1]));
+    const float sz = glm::length(glm::vec3(model[2]));
+    const float maxScale = std::max(sx, std::max(sy, sz));
+    return CullSphere(cWorld, rLocal * maxScale);
+}
 
 constexpr uint32_t kFramesInFlight = 2;
 // Glass frost (M4): number of progressively-downsampled blur levels of the scene
@@ -233,6 +274,20 @@ public:
         m_gfxQueue = q.value();
         m_gfxFamily = qfi.value();
 
+        // D15 Tier 1: a DEDICATED compute queue (compute && !graphics family),
+        // if the device has one (Turing+/RDNA+ do; 5090 has several). Optional —
+        // absence just pins the GPU cull to the graphics queue (Tier 0).
+        {
+            auto cq  = m_dev.get_queue(vkb::QueueType::compute);
+            auto cqi = m_dev.get_queue_index(vkb::QueueType::compute);
+            if (cq && cqi && cqi.value() != m_gfxFamily) {
+                m_computeQueue  = cq.value();
+                m_computeFamily = cqi.value();
+                logInfo("[cull] dedicated compute queue available (family " +
+                        std::to_string(m_computeFamily) + ") — Tier 1 eligible");
+            }
+        }
+
         logInfo(std::string("[rhi] device ready: ") + phys.name +
                 " (Vulkan 1.3, dynamic-rendering + sync2 + descriptor-indexing)" +
                 (m_headless ? " [HEADLESS: offscreen target, no surface/swapchain]" : ""));
@@ -251,6 +306,11 @@ public:
         if (!createPerFrame()) return false;
         if (!createShadowImage()) return false;   // before createGraphics (mesh layout needs set 2)
         if (!createGraphics()) return false;      // builds the shadow depth pipeline at the end
+        // D15 GPU cull (r_cullpath). NON-FATAL: a failure logs + leaves the CPU
+        // path (r_cullpath 0) as the only option — rendering is unaffected.
+        m_gpuCullReady = createGpuCull();
+        if (!m_gpuCullReady) logWarn("[cull] GPU cull unavailable — r_cullpath >= 1 falls back to CPU");
+        else if (!createHzbTargets()) logWarn("[cull] HZB unavailable — r_hzb stays frustum-only");
         if (!createHud()) return false;
         if (!createSky()) return false;           // analytic sky (open-world track, task A)
         // Image-based lighting (IBL): build the env/irradiance/prefilter cubes + BRDF
@@ -322,6 +382,7 @@ public:
         destroyIbl();
         destroySky();
         destroyHud();
+        destroyGpuCull();
         destroyGraphics();
         destroyPerFrame();
         if (m_headless) destroyOffscreenTarget();
@@ -521,6 +582,18 @@ public:
 
     void setAmbient(float r, float g, float b) override { m_ambient = glm::vec3(r, g, b); }
 
+    // CPU per-object frustum cull toggle (r_frustumcull). Default ON. When OFF the
+    // draw path is byte-identical to before this feature (objectsDrawn == list.size()).
+    void setFrustumCullEnabled(bool enabled) override { m_frustumCull = enabled; }
+
+    // D15 GPU cull host requests (resolved per frame in prepareFrameData).
+    void setCullPath(int path) override { m_cullPathReq = path; }
+    void setHzbEnabled(bool enabled) override { m_hzbEnabled = enabled; }
+    void setGpuCullEquivalenceCheck(bool enabled) override {
+        if (enabled && !m_cullEquivCheck) { m_cullEquivFrames = 0; m_cullEquivMismatches = 0; }
+        m_cullEquivCheck = enabled;
+    }
+
     void setBloom(float intensity) override { m_bloomIntensity = intensity; }
 
     // Whole-scene brightness: pre-tonemap exposure multiplier in the composite pass.
@@ -714,6 +787,7 @@ public:
         // the slot the dispatch reads.)
         m_framePrepared = false;
         m_frameCmdCount = 0; m_frameCmdOpaque = 0;
+        m_asyncCullThisFrame = false;   // re-armed by the graph build (Tier 1)
         if (fr.hudDescPool) vkResetDescriptorPool(m_dev.device, fr.hudDescPool, 0);
         fr.hudVertsUsed = 0;
 
@@ -919,10 +993,51 @@ public:
         // slot (beginFrame waits it before reusing the slot's offscreen image +
         // command buffer). WINDOWED keeps the acquire-wait + renderFinished-signal
         // that the present below consumes.
-        VkSemaphoreSubmitInfo waitS{};
-        waitS.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-        waitS.semaphore = fr.imageAvailable;
-        waitS.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        // ---- D15 TIER 1: async cull on the dedicated compute queue ----------
+        // Record + submit the cull dispatch FIRST (signals the timeline), then
+        // make the graphics submit wait on it at the exact consuming stages
+        // (DRAW_INDIRECT for instanceCount, VERTEX_SHADER for visibleInstance[]).
+        // No barriers inside the compute cmd — the semaphore signal/wait pair is
+        // the cross-queue execution + memory dependency (sync2 semantics).
+        uint64_t cullWaitValue = 0;
+        if (m_asyncCullThisFrame && m_asyncCullReady) {
+            vkResetCommandPool(m_dev.device, fr.cullPool, 0);
+            VkCommandBufferBeginInfo cbi{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+            cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+            vkBeginCommandBuffer(fr.cullCmd, &cbi);
+            m_gpuCull.recordCullBody(fr.cullCmd, m_asyncCullInputs,
+                                     /*useHzb=*/false, /*gfxQueueBarriers=*/false);
+            vkEndCommandBuffer(fr.cullCmd);
+
+            cullWaitValue = ++m_cullTimelineValue;
+            VkSemaphoreSubmitInfo csig{ VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO };
+            csig.semaphore = m_cullTimeline;
+            csig.value = cullWaitValue;
+            csig.stageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            VkCommandBufferSubmitInfo ccmd{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+            ccmd.commandBuffer = fr.cullCmd;
+            VkSubmitInfo2 csubmit{ VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+            csubmit.commandBufferInfoCount = 1; csubmit.pCommandBufferInfos = &ccmd;
+            csubmit.signalSemaphoreInfoCount = 1; csubmit.pSignalSemaphoreInfos = &csig;
+            vkQueueSubmit2(m_computeQueue, 1, &csubmit, VK_NULL_HANDLE);
+        }
+
+        VkSemaphoreSubmitInfo waits[2]{};
+        uint32_t waitCount = 0;
+        if (!m_headless) {
+            waits[waitCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+            waits[waitCount].semaphore = fr.imageAvailable;
+            waits[waitCount].stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+            ++waitCount;
+        }
+        if (cullWaitValue) {
+            waits[waitCount].sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+            waits[waitCount].semaphore = m_cullTimeline;
+            waits[waitCount].value = cullWaitValue;
+            waits[waitCount].stageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
+                                         VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT;
+            ++waitCount;
+        }
 
         VkSemaphoreSubmitInfo signalS{};
         signalS.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
@@ -935,12 +1050,13 @@ public:
 
         VkSubmitInfo2 submit{};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
-        submit.waitSemaphoreInfoCount   = m_headless ? 0u : 1u;
-        submit.pWaitSemaphoreInfos      = m_headless ? nullptr : &waitS;
+        submit.waitSemaphoreInfoCount   = waitCount;
+        submit.pWaitSemaphoreInfos      = waitCount ? waits : nullptr;
         submit.commandBufferInfoCount   = 1;   submit.pCommandBufferInfos = &cmdS;
         submit.signalSemaphoreInfoCount = m_headless ? 0u : 1u;
         submit.pSignalSemaphoreInfos    = m_headless ? nullptr : &signalS;
         vkQueueSubmit2(m_gfxQueue, 1, &submit, fr.inFlight);
+        m_asyncCullThisFrame = false;
 
         // Fix 1: if this frame recorded the capture copy, remember which fence to
         // wait on (this frame's inFlight) so captureFrame() can finalize the PNG.
@@ -971,6 +1087,15 @@ public:
         // Snapshot this frame's counters + the latest GPU time for stats().
         m_building.gpuFrameMs = m_lastGpuMs;
         m_building.frameCount = m_totalFrames;
+        // D15 GPU cull counters (read back with frames-in-flight latency).
+        m_building.gpuCullPath    = m_cullPathActive;
+        m_building.gpuCullTested  = m_lastCullStats.tested;
+        m_building.gpuCullDrawn   = m_lastCullStats.drawn;
+        m_building.gpuCullFrustum = m_lastCullStats.frustumCulled;
+        m_building.gpuCullHzb     = m_lastCullStats.hzbCulled;
+        m_building.gpuCullExpected        = m_lastCullExpected;
+        m_building.gpuCullEquivFrames     = m_cullEquivFrames;
+        m_building.gpuCullEquivMismatches = m_cullEquivMismatches;
         m_lastStats = m_building;
     }
 
@@ -1171,6 +1296,8 @@ public:
         }
         m.indexCount = icount;
         m.vertexCount = vcount;
+        // Bake the model-space bounding sphere for the CPU frustum cull (r_frustumcull).
+        computeLocalSphere(verts, vcount, m.boundsCenter, m.boundsRadius);
         uint32_t id = m_nextMeshId++;
         m_meshes.emplace(id, m);
         return { id };
@@ -1236,6 +1363,9 @@ public:
         Mesh& m = it->second;
         if (vcount != m.vertexCount) return;  // count must match the original mesh
         const VkDeviceSize bytes = (VkDeviceSize)vcount * sizeof(MeshVertex);
+        // Keep the frustum-cull bounds in sync with the new pose (cheap; skinned
+        // meshes are typically marked ALWAYS_VISIBLE so this is mostly belt-and-braces).
+        computeLocalSphere(verts, vcount, m.boundsCenter, m.boundsRadius);
 
         if (!m.dynamic) {
             // Promote: allocate kFramesInFlight HOST_VISIBLE mapped vbos and seed
@@ -1672,6 +1802,13 @@ private:
         VkBuffer ibo = VK_NULL_HANDLE; VmaAllocation iboAlloc = nullptr;
         uint32_t indexCount = 0;
         uint32_t vertexCount = 0;       // vertices the vbo was sized for
+        // Local-space bounding sphere (model space), computed from the mesh's
+        // vertices at create/update time. Used by the CPU per-object frustum cull
+        // (r_frustumcull): transformed to world space per draw instance via the
+        // instance model matrix (center * model; radius * maxScale). See
+        // FrustumCull.h. boundsRadius == 0 means "no bounds" -> never culled.
+        glm::vec3 boundsCenter{0.0f};   // model-space sphere center
+        float     boundsRadius = 0.0f;  // model-space sphere radius (0 = unbounded)
         // CPU-skinning support (J1, scaled for fix 2): a mesh that has been updated
         // at least once becomes DYNAMIC and holds kFramesInFlight HOST_VISIBLE,
         // persistently-mapped vertex buffers — one per frame-in-flight — instead of
@@ -1822,6 +1959,10 @@ private:
         uint32_t emissiveTexIndex = 0; // 0 = none (emissive bindless idx)
         uint32_t detailPacked = 0;     // HDRP micro-detail: (uvScale*64 << 20) | bindlessIdx; 0 = none
         bool     alphaBlend = false;   // glTF BLEND -> blend batch (CPU partition)
+        // ALWAYS_VISIBLE for the CPU frustum cull (r_frustumcull): when true this
+        // instance is NEVER culled (sky / fullscreen / unbounded items). Mirrors
+        // cull.comp's flags bit0. CPU-only — NOT uploaded to the object SSBO.
+        bool     noCull = false;
         // GLASS material (only filled by drawMeshGlass; zeroed for opaque draws).
         float    glassParams[4]; // x = refraction, y = roughness, z = specular, w unused
         float    glassTint[4];   // rgb = tint, a unused
@@ -1882,6 +2023,29 @@ private:
         // fence has already guaranteed the timestamps are available — no stall).
         VkQueryPool   tsPool = VK_NULL_HANDLE;
         bool          tsPending = false; // a frame's timestamps await readback
+
+        // ---- D15 GPU cull per-frame ring (all persistent-mapped) -----------
+        //   cullInstBuf : CullInstanceGpu[kMaxDrawsPerFrame] (CPU-written when on)
+        //   visBuf      : uint32[kMaxDrawsPerFrame] visible-instance indirection.
+        //                 IDENTITY-filled at creation; cull.comp compacts into it
+        //                 when the GPU path is on (visDirty tracks the scribble so
+        //                 a path toggle back to CPU restores identity once).
+        //   cullStatsBuf: CullStatsGpu, GPU-written, read back on slot reuse.
+        //   cullParamsBuf: CullParamsGpu UBO (planes/viewProj/hzb/instanceCount).
+        VkBuffer      cullInstBuf = VK_NULL_HANDLE;  VmaAllocation cullInstAlloc = nullptr;  void* cullInstMapped = nullptr;
+        VkBuffer      visBuf = VK_NULL_HANDLE;       VmaAllocation visAlloc = nullptr;       void* visMapped = nullptr;
+        VkBuffer      cullStatsBuf = VK_NULL_HANDLE; VmaAllocation cullStatsAlloc = nullptr; void* cullStatsMapped = nullptr;
+        VkBuffer      cullParamsBuf = VK_NULL_HANDLE; VmaAllocation cullParamsAlloc = nullptr; void* cullParamsMapped = nullptr;
+        VkDescriptorSet cullSet = VK_NULL_HANDLE;    // cull.comp bindings 0..5
+        bool          visDirty = false;       // GPU compaction scribbled visBuf
+        bool          cullStatsPending = false; // a frame's cull stats await readback
+        uint32_t      cullExpected = 0;       // CPU-evaluated survivors (equiv mode)
+        bool          cullExpectedValid = false;
+        // Tier 1: this slot's DEDICATED-COMPUTE-QUEUE command pool/buffer (the
+        // async cull dispatch). Reset on slot reuse (fence-guarded transitively:
+        // compute work <= timeline wait <= graphics work <= inFlight fence).
+        VkCommandPool   cullPool = VK_NULL_HANDLE;
+        VkCommandBuffer cullCmd  = VK_NULL_HANDLE;
     };
 
     void imageBarrier(VkCommandBuffer cmd, VkImage img,
@@ -1954,6 +2118,52 @@ private:
         auto& fr = m_frames[m_frameIdx];
         if (!fr.objMapped || !fr.indirectMapped || !fr.camMapped) return;
 
+        // ---- D15 GPU cull: read back the counters this ring slot produced
+        // kFramesInFlight frames ago (the inFlight fence waited in beginFrame
+        // guarantees the compute finished), then resolve THIS frame's path. ----
+        if (fr.cullStatsPending && fr.cullStatsMapped) {
+            std::memcpy(&m_lastCullStats, fr.cullStatsMapped, sizeof(CullStatsGpu));
+            fr.cullStatsPending = false;
+            if (fr.cullExpectedValid) {
+                m_lastCullExpected = fr.cullExpected;
+                ++m_cullEquivFrames;
+                // CPU expectation is FRUSTUM-only; with HZB on the GPU's extra
+                // hzbCulled are frustum-survivors, so drawn + hzbCulled must
+                // still equal the CPU count exactly.
+                if (m_lastCullStats.drawn + m_lastCullStats.hzbCulled != fr.cullExpected) {
+                    ++m_cullEquivMismatches;
+                    logError("[cull] EQUIVALENCE MISMATCH: gpu drawn=" +
+                             std::to_string(m_lastCullStats.drawn) + " (+hzb " +
+                             std::to_string(m_lastCullStats.hzbCulled) + ") cpu expected=" +
+                             std::to_string(fr.cullExpected));
+                }
+                fr.cullExpectedValid = false;
+            }
+        }
+        m_cullPathActive = 0;
+        if (m_gpuCullReady && m_cullPathReq != 0) {
+            int p = m_cullPathReq;
+            if (p < 0) p = m_asyncCullReady ? 2 : 1;   // auto: best supported tier
+            if (p > 2) p = m_asyncCullReady ? 2 : 1;   // Tier 2 (meshlets) not wired yet
+            if (p == 2 && !m_asyncCullReady) p = 1;    // no dedicated queue -> Tier 0
+            m_cullPathActive = p;
+        }
+        // The IBL probe bake replays this frame's indirect commands on a one-time
+        // submit BEFORE the frame's command buffer (so before the cull dispatch
+        // could bump instanceCount). Fall back to the CPU cull for that one frame
+        // so the probe sees real instance counts. Rare (sky change only).
+        if (m_cullPathActive >= 1 && m_iblReady && m_iblDirty) m_cullPathActive = 0;
+        // HZB occlusion phase: needs the GPU path, the pyramid, and a VALID
+        // last-frame depth (never reduce an unrendered depth image).
+        m_hzbActiveThisFrame = (m_cullPathActive >= 1) && m_hzbEnabled &&
+                               m_hzbReady && m_depthValid;
+        // HZB + Tier 1 would put the pyramid reduce (which samples the GRAPHICS-
+        // owned depth image) on the compute queue — cross-queue image sharing is
+        // future work. With r_hzb on, the cull runs on the graphics queue (Tier 0
+        // body) so occlusion keeps working; frustum-only Tier 1 stays fully async.
+        if (m_cullPathActive == 2 && m_hzbActiveThisFrame) m_cullPathActive = 1;
+        m_frameCullInstances = 0;
+
         // Camera viewProj (right-handed, reverse-Y for Vulkan clip) + the sun's
         // ortho lightViewProj, written together into the per-frame camera UBO.
         const float aspect = (float)m_extent.width / (float)std::max(1u, m_extent.height);
@@ -1966,6 +2176,12 @@ private:
         FrameUBO ubo{};
         ubo.viewProj = proj * view;
         m_lastViewProj = ubo.viewProj;  // cached for the debris instanced draw UBO
+
+        // CPU per-object frustum cull (r_frustumcull): extract the 6 normalized
+        // world-space planes from THIS frame's camera viewProj (Gribb-Hartmann).
+        // emitGroup() tests each instance's world bounding sphere against these.
+        // Same planes (normalized) + same sphere test as the GPU cull.comp.
+        m_frameFrustum = extractFrustumPlanes(ubo.viewProj);
 
         // ---- GLASS control UBO (set 4, binding 1): camera world pos + time +
         // screen-space pixel->UV + the live dev-cvar overrides. glass.frag reads it
@@ -2225,6 +2441,13 @@ private:
             static_cast<VkDrawIndexedIndirectCommand*>(fr.indirectMapped);
         uint32_t row = 0, cmdCount = 0;
         m_frameGlassCount = 0;
+        // D15 GPU cull path: the CPU writes EVERY instance (no CPU skip) plus one
+        // CullInstanceGpu per row; the indirect commands go out with
+        // instanceCount = 0 and cull.comp bumps/compacts on the GPU.
+        const bool gpuCull = (m_cullPathActive >= 1) && fr.cullInstMapped;
+        CullInstanceGpu* cullInst = gpuCull
+            ? static_cast<CullInstanceGpu*>(fr.cullInstMapped) : nullptr;
+        uint32_t cullExpectedCount = 0;   // CPU-evaluated survivors (equiv harness)
         // Emit one indirect cmd + its SSBO rows for a mesh group. Run in TWO passes so OPAQUE
         // groups are recorded first and BLEND (glass) groups last — the shadow/depth-prepass
         // replay only [0, m_frameCmdOpaque), and the color pass draws the blend tail with the
@@ -2236,8 +2459,42 @@ private:
             if (list.empty()) return;
             if (cmdCount >= kMaxDrawMeshes) return;
             const uint32_t baseRow = row;
+            const glm::vec3 meshC = mit->second.boundsCenter;
+            const float     meshR = mit->second.boundsRadius;
             for (uint32_t ri : list) {
                 const DrawRecord& dr = m_drawRecords[ri];
+                // CPU per-object frustum cull (r_frustumcull). Skip an instance whose
+                // world bounding sphere is fully outside the frustum. ALWAYS_VISIBLE
+                // (dr.noCull) and unbounded meshes (meshR == 0) are never culled.
+                // Same normalized planes + same conservative sphere test as cull.comp,
+                // so the GPU statDrawn matches this objectsDrawn exactly.
+                if (!gpuCull) {
+                    if (m_frustumCull && !dr.noCull && meshR > 0.0f) {
+                        const glm::mat4 model = glm::make_mat4(dr.model);
+                        const CullSphere ws = worldSphere(model, meshC, meshR);
+                        if (!sphereInFrustum(m_frameFrustum, ws)) continue;  // culled
+                    }
+                } else {
+                    // GPU path: emit the cull-shader input for this row. The bypass
+                    // condition is EXACTLY the complement of the CPU test's gate, so
+                    // both paths keep the same survivor set (D15 equivalence).
+                    const bool bypass = !m_frustumCull || dr.noCull || meshR <= 0.0f;
+                    CullSphere ws(0.0f, 0.0f, 0.0f, 0.0f);
+                    if (!bypass) {
+                        const glm::mat4 model = glm::make_mat4(dr.model);
+                        ws = worldSphere(model, meshC, meshR);
+                    }
+                    CullInstanceGpu& cg = cullInst[row];
+                    cg.sphere[0] = ws.x; cg.sphere[1] = ws.y;
+                    cg.sphere[2] = ws.z; cg.sphere[3] = ws.w;
+                    cg.meshSlot = cmdCount;     // this group's indirect command
+                    cg.instanceData = row;      // SSBO row the survivor maps back to
+                    cg.flags = bypass ? 1u : 0u;
+                    cg._pad = 0u;
+                    if (m_cullEquivCheck &&
+                        (bypass || sphereInFrustum(m_frameFrustum, ws)))
+                        ++cullExpectedCount;
+                }
                 ObjectData& o = objs[row++];
                 std::memcpy(&o.model, dr.model, sizeof(o.model));
                 o.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
@@ -2259,17 +2516,23 @@ private:
                                           dr.glassTint[2], dr.glassTint[3]);
                 if (dr.flags & kFlagGlass) ++m_frameGlassCount;
             }
+            // Survivors actually written this group (== list.size() when cull is off).
+            const uint32_t drawn = row - baseRow;
+            // Whole group culled away -> emit NO indirect command (and no draw call),
+            // exactly as an empty group is skipped above. Nothing references baseRow.
+            if (drawn == 0) return;
             VkDrawIndexedIndirectCommand& c = cmds[cmdCount];
             c.indexCount    = mit->second.indexCount;
-            c.instanceCount = (uint32_t)list.size();
+            // GPU path: 0 — cull.comp atomically bumps it per survivor.
+            c.instanceCount = gpuCull ? 0u : drawn;
             c.firstIndex    = 0;
             c.vertexOffset  = 0;
             c.firstInstance = baseRow;
             m_drawMeshOrder[cmdCount] = mid;
             ++cmdCount;
             m_building.drawCalls += 1;
-            m_building.objectsDrawn += (uint32_t)list.size();
-            m_building.triangles += (mit->second.indexCount / 3) * (uint32_t)list.size();
+            m_building.objectsDrawn += drawn;
+            m_building.triangles += (mit->second.indexCount / 3) * drawn;
         };
         auto isBlendGroup = [&](uint32_t mid) {
             auto it = m_groups.find(mid);
@@ -2279,6 +2542,38 @@ private:
         m_frameCmdOpaque = cmdCount;                                               // [0,opaque) | [opaque,count)
         for (uint32_t mid : m_groupOrder) if ( isBlendGroup(mid)) emitGroup(mid);  // BLEND (glass) last
         m_frameCmdCount = cmdCount;
+
+        // ---- D15 GPU cull frame finalize ------------------------------------
+        if (gpuCull && row > 0) {
+            // Params UBO: the SAME normalized planes the CPU test uses + this
+            // frame's viewProj (HZB projection; hzbSize stays 0 until stage 2).
+            CullParamsGpu cp{};
+            for (int i = 0; i < 6; ++i) {
+                cp.frustum[i][0] = m_frameFrustum.p[i].x;
+                cp.frustum[i][1] = m_frameFrustum.p[i].y;
+                cp.frustum[i][2] = m_frameFrustum.p[i].z;
+                cp.frustum[i][3] = m_frameFrustum.p[i].w;
+            }
+            std::memcpy(cp.viewProj, &ubo.viewProj, sizeof(cp.viewProj));
+            cp.hzbSize[0] = m_hzbActiveThisFrame ? (float)m_hzbW : 0.0f;
+            cp.hzbSize[1] = m_hzbActiveThisFrame ? (float)m_hzbH : 0.0f;
+            cp.instanceCount = row;
+            std::memcpy(fr.cullParamsMapped, &cp, sizeof(cp));
+            std::memset(fr.cullStatsMapped, 0, sizeof(CullStatsGpu));
+            fr.cullStatsPending = true;
+            fr.visDirty = true;               // compute will scribble visBuf
+            if (m_cullEquivCheck) { fr.cullExpected = cullExpectedCount; fr.cullExpectedValid = true; }
+            m_frameCullInstances = row;
+        } else {
+            m_cullPathActive = 0;             // nothing to cull -> graph adds no pass
+            if (fr.visDirty && fr.visMapped) {
+                // Path toggled back to CPU: restore the identity mapping once so
+                // gl_InstanceIndex addresses object rows directly again.
+                uint32_t* ids = static_cast<uint32_t*>(fr.visMapped);
+                for (uint32_t k = 0; k < kMaxDrawsPerFrame; ++k) ids[k] = k;
+                fr.visDirty = false;
+            }
+        }
     }
 
     // ---- Directional shadow depth pass (perf-stack E) ----------------------
@@ -2707,8 +3002,13 @@ private:
         // sampled it), except on the very first use where it is UNDEFINED.
         RgResource rgColor = m_graph.importImage("frame.color", colorTargetImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
-        RgResource rgDepth = m_graph.importImage("scene.depth", m_depthImg,
-            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        // D15 HZB: when the pyramid reduces LAST frame's depth this frame, import
+        // the depth with its preserved post-frame state (UNDEFINED would discard
+        // the contents the reduce is about to read). Otherwise exactly as before.
+        RgResource rgDepth = (m_hzbActiveThisFrame && m_depthValid)
+            ? m_graph.importImage("scene.depth", m_depthImg, m_depthState)
+            : m_graph.importImage("scene.depth", m_depthImg,
+                  ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgShadow = m_graph.importImage("shadow.map", m_shadowImg, m_shadowState);
 
         // HDR pipeline resources: the linear HDR scene target (main pass writes it,
@@ -2835,6 +3135,57 @@ private:
             dc.record = [](void* ctx, VkCommandBuffer c){
                 static_cast<VulkanRenderDevice*>(ctx)->recordDebrisComputeBody(c); };
             m_graph.addPass(std::move(dc));
+        }
+
+        // ---- Pass 0c: D15 GPU object cull (r_cullpath >= 1) ------------------
+        // One compute dispatch over this frame's CullInstanceGpu rows: zero-init'd
+        // indirect instanceCounts are bumped + survivors compacted into visBuf
+        // BEFORE the first consumer (the shadow pass) replays the indirect draws.
+        // Buffer hazards (compute write -> DRAW_INDIRECT / VERTEX_SHADER read) are
+        // manual sync2 buffer barriers inside the record body — the graph tracks
+        // images only, per its documented scope.
+        if (m_cullPathActive >= 1 && m_frameCullInstances > 0 && m_frameCmdCount > 0) {
+            const bool hzbThisFrame = m_hzbActiveThisFrame;
+            // HZB reduce FIRST (samples last frame's depth into the pyramid), so
+            // the cull dispatch right after it sees fresh occlusion data. The
+            // pass declares the depth read so the graph derives the
+            // (attachment -> DEPTH_READ_ONLY) transition; the pyramid's own
+            // barriers are manual inside recordHzbBuild (mip granularity).
+            if (hzbThisFrame) {
+                m_hzbChain = GpuCullSystem::HzbChain{ m_hzbImg, m_hzbW, m_hzbH,
+                                                      m_hzbMipCount, m_hzbMipSet };
+                RenderPassDesc hp{};
+                hp.name = "hzb-build";
+                hp.queue = RgQueue::Compute;
+                hp.addUse(ResourceUse{
+                    rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+                hp.recordCtx = this;
+                hp.record = [](void* ctx, VkCommandBuffer c){
+                    auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                    self->m_gpuCull.recordHzbBuild(c, self->m_hzbChain);
+                };
+                m_graph.addPass(std::move(hp));
+            }
+            auto& cfr = m_frames[m_frameIdx];
+            CullFrameInputs ci{};
+            ci.instances        = cfr.cullInstBuf;
+            ci.drawCmds         = cfr.indirectBuf;
+            ci.visibleInstances = cfr.visBuf;
+            ci.stats            = cfr.cullStatsBuf;
+            ci.params           = cfr.cullParamsBuf;
+            ci.instanceCount    = m_frameCullInstances;
+            ci.cullSet          = cfr.cullSet;
+            if (m_cullPathActive == 2) {
+                // TIER 1: the dispatch records into this slot's compute-queue
+                // command buffer in endFrame (submitted BEFORE the graphics
+                // submit, which waits the timeline at DRAW_INDIRECT|VERTEX_SHADER).
+                m_asyncCullThisFrame = true;
+                m_asyncCullInputs = ci;
+            } else {
+                m_gpuCull.addCullPass(m_graph, ci, hzbThisFrame);
+            }
         }
 
         // ---- Pass 1: shadow depth pass --------------------------------------
@@ -3860,6 +4211,11 @@ private:
         // first use we never see UNDEFINED again — the WAR barrier protecting last
         // frame's sampling reads is derived from this stored read state.
         m_shadowState = m_graph.stateOf(rgShadow);
+
+        // D15 HZB: persist the depth buffer's post-frame state too (next frame's
+        // pyramid reduce imports it preserved) + mark its contents rendered.
+        m_depthState = m_graph.stateOf(rgDepth);
+        m_depthValid = true;
 
         // GI ping-pong + history: this frame wrote accum[m_giAccumWrite] (now the
         // freshest accumulated GI) + snapshotted depth into prev-depth. Next frame
@@ -6438,6 +6794,8 @@ private:
         writeWaterDescriptors();
         // Particles sample the scene depth (soft fade): rewire on the new depth view.
         writeParticleDescriptors();
+        // HZB pyramid tracks the extent + samples the (new) depth view.
+        if (m_gpuCullReady) createHzbTargets();
         // RT AO (if built): half-res target tracks the extent + the depth view
         // changed, so recreate the target + rewrite all RT-AO descriptors.
         if (m_rtaoBuilt) { createRtaoTargets(); writeRtaoDescriptors(); }
@@ -6549,6 +6907,8 @@ private:
         writeWaterDescriptors();
         // Particles sample the scene depth (soft fade): rewire on the new depth view.
         writeParticleDescriptors();
+        // HZB pyramid tracks the extent + samples the (new) depth view.
+        if (m_gpuCullReady) createHzbTargets();
     }
 
     // ---- HDR scene + bloom render targets ----------------------------------
@@ -8101,6 +8461,259 @@ private:
         return m;
     }
 
+    // Raw SPIR-V words off disk (GpuCullSystem creates its own modules).
+    std::vector<uint32_t> loadSpvWords(const std::string& relPath) {
+        std::string full = exeDir() + "\\" + relPath;
+        std::ifstream f(full, std::ios::binary | std::ios::ate);
+        if (!f) { logError(std::string("[rhi] shader not found: ") + full); return {}; }
+        size_t sz = (size_t)f.tellg(); f.seekg(0);
+        std::vector<uint32_t> words((sz + 3) / 4, 0u);
+        f.read(reinterpret_cast<char*>(words.data()), sz);
+        return words;
+    }
+
+    // ---- D15 GPU-driven culling bring-up -----------------------------------
+    // Caps detect + cull/HZB pipelines + the per-frame cull descriptor sets
+    // (bindings 0..5 of cull.comp). Non-fatal: on any failure m_gpuCullReady
+    // stays false and r_cullpath >= 1 silently falls back to the CPU path.
+    bool createGpuCull() {
+        m_cullCaps = detectCullCaps(m_dev.physical_device, -1);
+
+        std::vector<uint32_t> cullSpv = loadSpvWords("shaders\\cull.comp.spv");
+        std::vector<uint32_t> hzbSpv  = loadSpvWords("shaders\\hzb_build.comp.spv");
+        if (cullSpv.empty() || hzbSpv.empty()) return false;
+        if (!m_gpuCull.init(m_dev.device, m_cullCaps, cullSpv, hzbSpv,
+                            /*buildHzb=*/true, /*reversedZ=*/false)) // X3 = STANDARD Z (verified)
+            return false;
+
+        // HZB pyramid sampler (also bound as the harmless dummy when HZB is off):
+        // NEAREST + clamp + nearest-mip with the full LOD range, as the cull's
+        // textureLod(level) expects.
+        {
+            VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+            sci.magFilter = VK_FILTER_NEAREST; sci.minFilter = VK_FILTER_NEAREST;
+            sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+            sci.addressModeU = sci.addressModeV = sci.addressModeW =
+                VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            sci.maxLod = VK_LOD_CLAMP_NONE;
+            if (vkCreateSampler(m_dev.device, &sci, nullptr, &m_hzbSampler) != VK_SUCCESS)
+                return false;
+        }
+
+        // Per-frame cull descriptor sets.
+        {
+            VkDescriptorPoolSize sizes[3]{};
+            sizes[0] = { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4 * kFramesInFlight };
+            sizes[1] = { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, kFramesInFlight };
+            sizes[2] = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kFramesInFlight };
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.maxSets = kFramesInFlight; pci.poolSizeCount = 3; pci.pPoolSizes = sizes;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_cullPool) != VK_SUCCESS)
+                return false;
+
+            VkDescriptorSetLayout dsl = m_gpuCull.cullSetLayout();
+            for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+                auto& fr = m_frames[i];
+                VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+                dsai.descriptorPool = m_cullPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &dsl;
+                if (vkAllocateDescriptorSets(m_dev.device, &dsai, &fr.cullSet) != VK_SUCCESS)
+                    return false;
+                VkDescriptorBufferInfo bInst { fr.cullInstBuf,  0, VK_WHOLE_SIZE };
+                VkDescriptorBufferInfo bCmds { fr.indirectBuf,  0, VK_WHOLE_SIZE };
+                VkDescriptorBufferInfo bVis  { fr.visBuf,       0, VK_WHOLE_SIZE };
+                VkDescriptorBufferInfo bStat { fr.cullStatsBuf, 0, VK_WHOLE_SIZE };
+                VkDescriptorBufferInfo bPar  { fr.cullParamsBuf,0, sizeof(CullParamsGpu) };
+                // Binding 5: the HZB pyramid once it exists; until then the 1x1
+                // white default (never sampled with USE_HZB=0 — just keeps the
+                // descriptor valid).
+                VkDescriptorImageInfo iHzb{ m_hzbSampler, m_whiteTex.view,
+                                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+                VkWriteDescriptorSet w[6]{};
+                auto wb = [&](uint32_t bind, VkDescriptorType t, const VkDescriptorBufferInfo* bi) {
+                    w[bind].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                    w[bind].dstSet = fr.cullSet; w[bind].dstBinding = bind;
+                    w[bind].descriptorCount = 1; w[bind].descriptorType = t;
+                    w[bind].pBufferInfo = bi;
+                };
+                wb(0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &bInst);
+                wb(1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &bCmds);
+                wb(2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &bVis);
+                wb(3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &bStat);
+                wb(4, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &bPar);
+                w[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                w[5].dstSet = fr.cullSet; w[5].dstBinding = 5; w[5].descriptorCount = 1;
+                w[5].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+                w[5].pImageInfo = &iHzb;
+                vkUpdateDescriptorSets(m_dev.device, 6, w, 0, nullptr);
+            }
+        }
+        // ---- Tier 1 (async compute) objects: timeline semaphore + per-frame
+        // command pools on the dedicated compute family. Optional.
+        if (m_computeQueue) {
+            VkSemaphoreTypeCreateInfo tci{ VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO };
+            tci.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
+            tci.initialValue = 0;
+            VkSemaphoreCreateInfo sci2{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO, &tci };
+            bool ok = vkCreateSemaphore(m_dev.device, &sci2, nullptr, &m_cullTimeline) == VK_SUCCESS;
+            for (uint32_t i = 0; ok && i < kFramesInFlight; ++i) {
+                auto& fr = m_frames[i];
+                VkCommandPoolCreateInfo pci2{ VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+                pci2.queueFamilyIndex = m_computeFamily;
+                ok = vkCreateCommandPool(m_dev.device, &pci2, nullptr, &fr.cullPool) == VK_SUCCESS;
+                if (ok) {
+                    VkCommandBufferAllocateInfo cai{ VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+                    cai.commandPool = fr.cullPool; cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+                    cai.commandBufferCount = 1;
+                    ok = vkAllocateCommandBuffers(m_dev.device, &cai, &fr.cullCmd) == VK_SUCCESS;
+                }
+            }
+            m_asyncCullReady = ok;
+            logInfo(m_asyncCullReady
+                ? "[cull] Tier 1 async-compute path READY (timeline semaphore + compute pools)"
+                : "[cull] Tier 1 setup failed — async path disabled (Tier 0 still available)");
+        }
+
+        logInfo(std::string("[cull] D15 GPU cull ready (caps tier ") +
+                std::to_string((int)m_cullCaps.tier) + ", r_cullpath gates the path)");
+        return true;
+    }
+
+    // ---- D15 stage 2: HZB depth pyramid (extent-tracking) -------------------
+    // Mip 0 = half the render extent; full chain down to 1x1. Image lives in
+    // GENERAL forever (transitioned once here); the per-frame write->read flips
+    // are sync2 barriers inside recordHzbBuild. Rebuilt on resize (depth view
+    // changes); marks last-frame depth invalid so the first post-resize frame
+    // culls frustum-only.
+    bool createHzbTargets() {
+        destroyHzbTargets();
+        if (!m_gpuCullReady) return false;
+        m_hzbW = std::max(1u, m_extent.width  / 2u);
+        m_hzbH = std::max(1u, m_extent.height / 2u);
+        uint32_t mips = 1; { uint32_t w = std::max(m_hzbW, m_hzbH); while (w > 1) { w /= 2; ++mips; } }
+        m_hzbMipCount = std::min(mips, kHzbMaxMips);
+
+        VkImageCreateInfo ici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = VK_FORMAT_R32_SFLOAT;
+        ici.extent = { m_hzbW, m_hzbH, 1 };
+        ici.mipLevels = m_hzbMipCount; ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+        VmaAllocationCreateInfo aci{}; aci.usage = VMA_MEMORY_USAGE_AUTO;
+        if (vmaCreateImage(m_alloc, &ici, &aci, &m_hzbImg, &m_hzbAlloc, nullptr) != VK_SUCCESS) {
+            logError("[cull] hzb pyramid create failed"); return false;
+        }
+        auto makeView = [&](uint32_t baseMip, uint32_t mipCount, VkImageView& out) {
+            VkImageViewCreateInfo vci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+            vci.image = m_hzbImg; vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+            vci.format = VK_FORMAT_R32_SFLOAT;
+            vci.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, baseMip, mipCount, 0, 1 };
+            return vkCreateImageView(m_dev.device, &vci, nullptr, &out) == VK_SUCCESS;
+        };
+        if (!makeView(0, m_hzbMipCount, m_hzbViewAll)) return false;
+        for (uint32_t m = 0; m < m_hzbMipCount; ++m)
+            if (!makeView(m, 1, m_hzbMipView[m])) return false;
+
+        // One-time UNDEFINED -> GENERAL for the whole chain.
+        bool ok = oneTimeSubmit([&](VkCommandBuffer cmd){
+            VkImageMemoryBarrier2 ib{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+            ib.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT; ib.srcAccessMask = 0;
+            ib.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+            ib.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+            ib.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            ib.image = m_hzbImg;
+            ib.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, m_hzbMipCount, 0, 1 };
+            VkDependencyInfo dep{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+            dep.imageMemoryBarrierCount = 1; dep.pImageMemoryBarriers = &ib;
+            vkCmdPipelineBarrier2(cmd, &dep);
+        });
+        if (!ok) { logError("[cull] hzb layout init failed"); return false; }
+
+        // Per-mip reduce sets: binding0 = src sampler (depth for mip 0, the
+        // previous pyramid mip otherwise), binding1 = this mip as storage image.
+        if (!m_hzbPool) {
+            VkDescriptorPoolSize sizes[2]{};
+            sizes[0] = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kHzbMaxMips };
+            sizes[1] = { VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, kHzbMaxMips };
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.maxSets = kHzbMaxMips; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
+            if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_hzbPool) != VK_SUCCESS)
+                return false;
+        } else {
+            vkResetDescriptorPool(m_dev.device, m_hzbPool, 0);
+        }
+        VkDescriptorSetLayout hdsl = m_gpuCull.hzbSetLayout();
+        for (uint32_t m = 0; m < m_hzbMipCount; ++m) {
+            VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            dsai.descriptorPool = m_hzbPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &hdsl;
+            if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_hzbMipSet[m]) != VK_SUCCESS)
+                return false;
+            VkDescriptorImageInfo src{};
+            src.sampler = m_hzbSampler;
+            if (m == 0) { src.imageView = m_depthView; src.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL; }
+            else        { src.imageView = m_hzbMipView[m - 1]; src.imageLayout = VK_IMAGE_LAYOUT_GENERAL; }
+            VkDescriptorImageInfo dst{ VK_NULL_HANDLE, m_hzbMipView[m], VK_IMAGE_LAYOUT_GENERAL };
+            VkWriteDescriptorSet w[2]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[0].dstSet = m_hzbMipSet[m]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &src;
+            w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[1].dstSet = m_hzbMipSet[m]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+            w[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; w[1].pImageInfo = &dst;
+            vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+        }
+
+        // Point every frame's cull set (binding 5) at the live pyramid.
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (!m_frames[i].cullSet) continue;
+            VkDescriptorImageInfo iHzb{ m_hzbSampler, m_hzbViewAll, VK_IMAGE_LAYOUT_GENERAL };
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.dstSet = m_frames[i].cullSet; w.dstBinding = 5; w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &iHzb;
+            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        }
+
+        m_depthValid = false;          // depth content is fresh/unrendered
+        m_hzbReady = true;
+        logInfo("[cull] HZB pyramid ready: " + std::to_string(m_hzbW) + "x" +
+                std::to_string(m_hzbH) + " mips=" + std::to_string(m_hzbMipCount));
+        return true;
+    }
+
+    void destroyHzbTargets() {
+        m_hzbReady = false; m_depthValid = false;
+        if (m_hzbViewAll) { vkDestroyImageView(m_dev.device, m_hzbViewAll, nullptr); m_hzbViewAll = VK_NULL_HANDLE; }
+        for (uint32_t m = 0; m < kHzbMaxMips; ++m) {
+            if (m_hzbMipView[m]) { vkDestroyImageView(m_dev.device, m_hzbMipView[m], nullptr); m_hzbMipView[m] = VK_NULL_HANDLE; }
+            m_hzbMipSet[m] = VK_NULL_HANDLE;   // pool reset/destroy reclaims them
+        }
+        if (m_hzbImg) { vmaDestroyImage(m_alloc, m_hzbImg, m_hzbAlloc); m_hzbImg = VK_NULL_HANDLE; m_hzbAlloc = nullptr; }
+        m_hzbMipCount = 0; m_hzbW = m_hzbH = 0;
+    }
+
+    void destroyGpuCull() {
+        destroyHzbTargets();
+        if (m_cullTimeline) { vkDestroySemaphore(m_dev.device, m_cullTimeline, nullptr); m_cullTimeline = VK_NULL_HANDLE; }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            auto& fr = m_frames[i];
+            if (fr.cullPool) { vkDestroyCommandPool(m_dev.device, fr.cullPool, nullptr); fr.cullPool = VK_NULL_HANDLE; fr.cullCmd = VK_NULL_HANDLE; }
+        }
+        m_asyncCullReady = false;
+        if (m_hzbPool)    { vkDestroyDescriptorPool(m_dev.device, m_hzbPool, nullptr); m_hzbPool = VK_NULL_HANDLE; }
+        if (m_cullPool)   { vkDestroyDescriptorPool(m_dev.device, m_cullPool, nullptr); m_cullPool = VK_NULL_HANDLE; }
+        if (m_hzbSampler) { vkDestroySampler(m_dev.device, m_hzbSampler, nullptr); m_hzbSampler = VK_NULL_HANDLE; }
+        m_gpuCull.shutdown(m_dev.device);
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            auto& fr = m_frames[i];
+            if (fr.cullInstBuf)   { vmaDestroyBuffer(m_alloc, fr.cullInstBuf, fr.cullInstAlloc); fr.cullInstBuf = VK_NULL_HANDLE; fr.cullInstAlloc = nullptr; fr.cullInstMapped = nullptr; }
+            if (fr.visBuf)        { vmaDestroyBuffer(m_alloc, fr.visBuf, fr.visAlloc); fr.visBuf = VK_NULL_HANDLE; fr.visAlloc = nullptr; fr.visMapped = nullptr; }
+            if (fr.cullStatsBuf)  { vmaDestroyBuffer(m_alloc, fr.cullStatsBuf, fr.cullStatsAlloc); fr.cullStatsBuf = VK_NULL_HANDLE; fr.cullStatsAlloc = nullptr; fr.cullStatsMapped = nullptr; }
+            if (fr.cullParamsBuf) { vmaDestroyBuffer(m_alloc, fr.cullParamsBuf, fr.cullParamsAlloc); fr.cullParamsBuf = VK_NULL_HANDLE; fr.cullParamsAlloc = nullptr; fr.cullParamsMapped = nullptr; }
+            fr.cullSet = VK_NULL_HANDLE;
+        }
+        m_gpuCullReady = false;
+    }
+
     // One-time staging copy into a fresh DEVICE_LOCAL buffer (transient cmd + fence).
     bool createDeviceLocalBuffer(const void* data, VkDeviceSize bytes,
                                  VkBufferUsageFlags usage,
@@ -8336,7 +8949,7 @@ private:
         // one set per frame pointing at that frame's persistent-mapped rings.
         // ====================================================================
         {
-            VkDescriptorSetLayoutBinding binds[2]{};
+            VkDescriptorSetLayoutBinding binds[3]{};
             binds[0].binding = 0; binds[0].descriptorCount = 1;
             binds[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             binds[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
@@ -8345,14 +8958,20 @@ private:
             // VERTEX: camera viewProj (mesh.vert) + lightViewProj (shadow.vert).
             // FRAGMENT: lightViewProj for the per-pixel shadow projection (mesh.frag).
             binds[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+            // D15 GPU cull: binding 2 = the visible-instance indirection SSBO
+            // (identity when the cull is off; cull.comp's compaction when on).
+            // All four objects[] vertex shaders read it.
+            binds[2].binding = 2; binds[2].descriptorCount = 1;
+            binds[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            binds[2].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
             VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-            slci.bindingCount = 2; slci.pBindings = binds;
+            slci.bindingCount = 3; slci.pBindings = binds;
             if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_objSetLayout) != VK_SUCCESS) {
                 logError("[rhi] object set layout failed"); return false;
             }
 
             VkDescriptorPoolSize sizes[2]{};
-            sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; sizes[0].descriptorCount = kFramesInFlight;
+            sizes[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; sizes[0].descriptorCount = 2 * kFramesInFlight;
             sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; sizes[1].descriptorCount = kFramesInFlight;
             VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
             pci.maxSets = kFramesInFlight; pci.poolSizeCount = 2; pci.pPoolSizes = sizes;
@@ -8387,17 +9006,99 @@ private:
 
                 // Indirect-command buffer (one VkDrawIndexedIndirectCommand per
                 // distinct mesh; capped at kMaxTextures meshes which is plenty).
+                // STORAGE usage added for D15: cull.comp atomically bumps each
+                // command's instanceCount in place (binding 1).
                 VkBufferCreateInfo ibci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
                 ibci.size = (VkDeviceSize)kMaxDrawMeshes * sizeof(VkDrawIndexedIndirectCommand);
-                ibci.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+                ibci.usage = VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                // Tier 1: the dedicated compute queue writes this buffer while the
+                // graphics queue reads it -> CONCURRENT sharing across the two
+                // families (simpler than ownership transfers; revisit if profiled).
+                const uint32_t cullFamilies[2] = { m_gfxFamily, m_computeFamily };
+                if (m_computeQueue) {
+                    ibci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+                    ibci.queueFamilyIndexCount = 2;
+                    ibci.pQueueFamilyIndices = cullFamilies;
+                }
                 VmaAllocationInfo iinfo{};
                 if (vmaCreateBuffer(m_alloc, &ibci, &aci, &fr.indirectBuf, &fr.indirectAlloc, &iinfo) != VK_SUCCESS) {
                     logError("[rhi] indirect buffer create failed"); return false;
                 }
                 fr.indirectMapped = iinfo.pMappedData;
 
+                // ---- D15 GPU cull per-frame ring ---------------------------
+                // visible-instance indirection (vertex shaders read binding 2;
+                // cull.comp writes binding 2 of the CULL set). Identity-filled so
+                // the CPU path is byte-identical to pre-D15 behavior.
+                {
+                    VkBufferCreateInfo vbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+                    vbci.size = (VkDeviceSize)kMaxDrawsPerFrame * sizeof(uint32_t);
+                    vbci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                    if (m_computeQueue) {
+                        vbci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+                        vbci.queueFamilyIndexCount = 2;
+                        vbci.pQueueFamilyIndices = cullFamilies;
+                    }
+                    VmaAllocationInfo vinfo{};
+                    if (vmaCreateBuffer(m_alloc, &vbci, &aci, &fr.visBuf, &fr.visAlloc, &vinfo) != VK_SUCCESS) {
+                        logError("[rhi] visible-instance buffer create failed"); return false;
+                    }
+                    fr.visMapped = vinfo.pMappedData;
+                    uint32_t* ids = static_cast<uint32_t*>(fr.visMapped);
+                    for (uint32_t k = 0; k < kMaxDrawsPerFrame; ++k) ids[k] = k;
+
+                    VkBufferCreateInfo cbci2{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+                    cbci2.size = (VkDeviceSize)kMaxDrawsPerFrame * sizeof(CullInstanceGpu);
+                    cbci2.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                    if (m_computeQueue) {
+                        cbci2.sharingMode = VK_SHARING_MODE_CONCURRENT;
+                        cbci2.queueFamilyIndexCount = 2;
+                        cbci2.pQueueFamilyIndices = cullFamilies;
+                    }
+                    VmaAllocationInfo ciinfo{};
+                    if (vmaCreateBuffer(m_alloc, &cbci2, &aci, &fr.cullInstBuf, &fr.cullInstAlloc, &ciinfo) != VK_SUCCESS) {
+                        logError("[rhi] cull instance buffer create failed"); return false;
+                    }
+                    fr.cullInstMapped = ciinfo.pMappedData;
+
+                    // Stats: GPU-written, host-READ on slot reuse -> RANDOM access
+                    // (cached) memory so the readback isn't a WC-memory read.
+                    VkBufferCreateInfo stbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+                    stbci.size = sizeof(CullStatsGpu);
+                    stbci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+                    if (m_computeQueue) {
+                        stbci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+                        stbci.queueFamilyIndexCount = 2;
+                        stbci.pQueueFamilyIndices = cullFamilies;
+                    }
+                    VmaAllocationCreateInfo staci{};
+                    staci.usage = VMA_MEMORY_USAGE_AUTO;
+                    staci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+                    VmaAllocationInfo stinfo{};
+                    if (vmaCreateBuffer(m_alloc, &stbci, &staci, &fr.cullStatsBuf, &fr.cullStatsAlloc, &stinfo) != VK_SUCCESS) {
+                        logError("[rhi] cull stats buffer create failed"); return false;
+                    }
+                    fr.cullStatsMapped = stinfo.pMappedData;
+                    std::memset(fr.cullStatsMapped, 0, sizeof(CullStatsGpu));
+
+                    VkBufferCreateInfo pbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+                    pbci.size = sizeof(CullParamsGpu);
+                    pbci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+                    if (m_computeQueue) {
+                        pbci.sharingMode = VK_SHARING_MODE_CONCURRENT;
+                        pbci.queueFamilyIndexCount = 2;
+                        pbci.pQueueFamilyIndices = cullFamilies;
+                    }
+                    VmaAllocationInfo pinfo{};
+                    if (vmaCreateBuffer(m_alloc, &pbci, &aci, &fr.cullParamsBuf, &fr.cullParamsAlloc, &pinfo) != VK_SUCCESS) {
+                        logError("[rhi] cull params buffer create failed"); return false;
+                    }
+                    fr.cullParamsMapped = pinfo.pMappedData;
+                }
+
                 // Allocate + write the set-1 descriptor (points at this frame's
-                // SSBO + camera UBO; written once, buffers are persistent-mapped).
+                // SSBO + camera UBO + visible-index SSBO; written once, buffers
+                // are persistent-mapped).
                 VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
                 dsai.descriptorPool = m_objPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &m_objSetLayout;
                 if (vkAllocateDescriptorSets(m_dev.device, &dsai, &fr.objSet) != VK_SUCCESS) {
@@ -8405,14 +9106,18 @@ private:
                 }
                 VkDescriptorBufferInfo sbi{ fr.objBuf, 0, VK_WHOLE_SIZE };
                 VkDescriptorBufferInfo cbi{ fr.camBuf, 0, sizeof(FrameUBO) };
-                VkWriteDescriptorSet writes[2]{};
+                VkDescriptorBufferInfo vbi{ fr.visBuf, 0, VK_WHOLE_SIZE };
+                VkWriteDescriptorSet writes[3]{};
                 writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 writes[0].dstSet = fr.objSet; writes[0].dstBinding = 0; writes[0].descriptorCount = 1;
                 writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[0].pBufferInfo = &sbi;
                 writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 writes[1].dstSet = fr.objSet; writes[1].dstBinding = 1; writes[1].descriptorCount = 1;
                 writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; writes[1].pBufferInfo = &cbi;
-                vkUpdateDescriptorSets(m_dev.device, 2, writes, 0, nullptr);
+                writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[2].dstSet = fr.objSet; writes[2].dstBinding = 2; writes[2].descriptorCount = 1;
+                writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[2].pBufferInfo = &vbi;
+                vkUpdateDescriptorSets(m_dev.device, 3, writes, 0, nullptr);
             }
         }
 
@@ -10069,6 +10774,60 @@ private:
     // override via setBloom() (the showroom raises it for the glowing-spire hero look).
     float                   m_bloomIntensity = kBloomIntensity;
     float                   m_exposure = 1.0f;   // whole-scene brightness (composite pre-tonemap)
+    // CPU per-object frustum cull (r_frustumcull). Default ON. m_frameFrustum is the
+    // 6 normalized world-space planes for the frame being prepared (filled from the
+    // camera viewProj in prepareFrameData, consumed by emitGroup).
+    bool                    m_frustumCull = true;
+    FrustumPlanes           m_frameFrustum{};
+
+    // ---- D15 GPU-driven culling (r_cullpath) -------------------------------
+    // m_cullPathReq is the host request (-1 auto / 0 CPU / 1 Tier0 / 2 Tier1 /
+    // 3 Tier2); m_cullPathActive is the per-frame RESOLVED path (clamped to what
+    // the device + bring-up stage support), latched once in prepareFrameData and
+    // consumed by emitGroup + the graph build so a mid-frame cvar change can
+    // never tear the frame. Default 0: byte-identical to pre-D15 behavior.
+    GpuCullSystem           m_gpuCull;
+    CullDeviceCaps          m_cullCaps{};
+    bool                    m_gpuCullReady = false;   // pipelines + sets built
+    VkDescriptorPool        m_cullPool = VK_NULL_HANDLE;
+    VkSampler               m_hzbSampler = VK_NULL_HANDLE;  // NEAREST, clamp, all mips
+    int                     m_cullPathReq = 0;
+    int                     m_cullPathActive = 0;
+    uint32_t                m_frameCullInstances = 0;  // rows the cull pass dispatches over
+    // Tier 1 (async compute): the dedicated queue + a timeline semaphore the
+    // graphics submit waits on at DRAW_INDIRECT|VERTEX_SHADER.
+    VkQueue                 m_computeQueue = VK_NULL_HANDLE;
+    uint32_t                m_computeFamily = VK_QUEUE_FAMILY_IGNORED;
+    bool                    m_asyncCullReady = false;
+    VkSemaphore             m_cullTimeline = VK_NULL_HANDLE;
+    uint64_t                m_cullTimelineValue = 0;
+    bool                    m_asyncCullThisFrame = false;
+    CullFrameInputs         m_asyncCullInputs{};
+    bool                    m_hzbEnabled = false;     // r_hzb (needs path >= 1)
+    bool                    m_hzbActiveThisFrame = false; // resolved per frame
+    // HZB depth pyramid (R32_SFLOAT, full mip chain, GENERAL layout forever).
+    // Built from LAST frame's depth at the top of this frame's command buffer
+    // (one-frame occlusion latency — disocclusions resolve next frame).
+    static constexpr uint32_t kHzbMaxMips = 16;
+    VkImage                 m_hzbImg = VK_NULL_HANDLE; VmaAllocation m_hzbAlloc = nullptr;
+    VkImageView             m_hzbViewAll = VK_NULL_HANDLE;          // all mips (cull samples)
+    VkImageView             m_hzbMipView[kHzbMaxMips] = {};        // one mip each (reduce dst/src)
+    VkDescriptorSet         m_hzbMipSet[kHzbMaxMips] = {};
+    VkDescriptorPool        m_hzbPool = VK_NULL_HANDLE;
+    uint32_t                m_hzbMipCount = 0;
+    uint32_t                m_hzbW = 0, m_hzbH = 0;                 // mip 0 dims
+    bool                    m_hzbReady = false;
+    // Last frame's depth: tracked post-graph state + "has been rendered once"
+    // (the pyramid must never reduce an UNDEFINED depth image).
+    ResourceState           m_depthState{};
+    bool                    m_depthValid = false;
+    GpuCullSystem::HzbChain m_hzbChain{};   // stable record-ctx storage
+    bool                    m_cullEquivCheck = false; // --test-gpucull harness
+    // Latest read-back cull counters (frames-in-flight latency) + equivalence.
+    CullStatsGpu            m_lastCullStats{};
+    uint32_t                m_lastCullExpected = 0;
+    uint32_t                m_cullEquivFrames = 0;
+    uint32_t                m_cullEquivMismatches = 0;
 };
 
 } // namespace

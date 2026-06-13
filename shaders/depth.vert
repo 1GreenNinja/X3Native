@@ -41,6 +41,14 @@ layout(std430, set = 0, binding = 0) readonly buffer Objects {
     ObjectData objects[];
 } objBuf;
 
+// D15 GPU cull: same single indirection as mesh.vert (identity when cull off).
+// REQUIRED here too — when cull.comp compacts survivors, gl_InstanceIndex no
+// longer addresses object rows directly, and this pass replays the SAME indirect
+// commands the color pass consumes.
+layout(std430, set = 0, binding = 2) readonly buffer VisibleIdx {
+    uint idx[];
+} visBuf;
+
 // Same per-frame Camera UBO the mesh/shadow stages read (set 0, binding 1 here
 // because the pre-pass binds the object set as set 0, like the shadow pass).
 layout(set = 0, binding = 1) uniform Camera {
@@ -53,7 +61,7 @@ layout(location = 1) in vec3 inNormal;   // unused; kept so the VBO layout match
 layout(location = 2) in vec2 inUV;       // unused
 
 void main() {
-    ObjectData o = objBuf.objects[gl_InstanceIndex];
+    ObjectData o = objBuf.objects[visBuf.idx[gl_InstanceIndex]];
     // Group the multiply EXACTLY as mesh.vert (worldPos first, then viewProj) so the
     // floating-point depth is bit-invariant with the color pass and survives EQUAL.
     vec4 worldPos = o.model * vec4(inPos, 1.0);

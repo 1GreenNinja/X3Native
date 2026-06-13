@@ -5,6 +5,7 @@ add_library(x3engine STATIC
     ecs/Ecs.cpp
     rhi/VulkanRenderDevice.cpp
     rhi/RenderGraph.cpp
+    rhi/GpuCull.cpp
     rhi/vma_impl.cpp
     asset/PakAssetSource.cpp
     physics/JoltPhysicsWorld.cpp
