@@ -220,9 +220,21 @@ public:
     ObjectiveSystem&       objectives()       { return m_objectives; }
     const ObjectiveSystem& objectives() const { return m_objectives; }
 
+    // The level's DoorSystem (doors A-E + the secret-room floor hatch all live
+    // here). Exposed so host-side Lua bindings can drive doors/hatch by index.
+    DoorSystem&       doors()       { return m_doors; }
+    const DoorSystem& doors() const { return m_doors; }
+
     // Door access by the spec letter (A=0..E=4) for the self-test / HUD.
     DoorState doorState(char letter) const;
     bool      doorLocked(char letter) const;
+
+    // Trigger volume event ids (L1Trigger) that fired during the MOST RECENT tick().
+    // Empty on a tick where no trigger entered. The host reads this after tick() to
+    // forward trigger entries into the Lua script system (fire "trigger_enter") so
+    // pak script DATA can react to zone entry — engine/ stays pure (Level1Game never
+    // sees the script system). Cleared + refilled each tick().
+    const std::vector<uint32_t>& lastFiredTriggers() const { return m_firedTriggers; }
 
     // Monster groups (for the self-test / objective gating + the save bridge).
     BarrelSystem&         barrels()                 { return m_barrels; }   // host wires FX/damage sinks
@@ -378,6 +390,7 @@ private:
     MonsterManager m_bossAdds;     // Phase 3 summoned Guard adds (Phase 2b)
     ObjectiveSystem m_objectives;
     TriggerSystem  m_triggers;
+    std::vector<uint32_t> m_firedTriggers;  // ids fired this tick (host -> Lua trigger_enter)
     RescueSystem   m_rescue;       // F2 victims (Aria/Keisha/Emily) — spec §5
     SecretRoom     m_secretRoom;   // code-locked trapdoor -> secret room (cell HoloTerminal)
     MonsterManager m_chen;         // F2 Medical Bay boss: Dr. Chen (Wave-2; gated on the F2 hub)

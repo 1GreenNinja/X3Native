@@ -35,6 +35,13 @@ public:
     // this is the first entry, in which case it points at index 0).
     void add(const std::string& label);
 
+    // GTA-style free-text objective override (Lua x3.setObjective(text)). Sets a
+    // single visible line that takes precedence over the list-driven currentLabel()
+    // until cleared (empty text restores the list cursor). Lets pak script DATA set
+    // the under-minimap objective without touching the ordered beat list.
+    void setText(const std::string& text) { m_override = text; }
+    const std::string& overrideText() const { return m_override; }
+
     // Advance the cursor to the next objective. No-op once past the end. Returns
     // the new current index (kNoObjective when the list is finished).
     uint32_t advance();
@@ -75,6 +82,7 @@ private:
     std::vector<std::string> m_labels;
     uint32_t                 m_current = kNoObjective;
     bool                     m_started = false;  // a non-empty list was set()
+    std::string              m_override;         // free-text override (setText); wins when non-empty
 };
 
 // Headless self-test (folded into --test-level1, but standalone-callable). Drives

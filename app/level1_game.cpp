@@ -677,7 +677,8 @@ void Level1Game::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     m_secretRoom.tick(dt, scene, playerPos);
 
     // ---- Triggers (per-frame point test on the player position) ----
-    for (uint32_t id : m_triggers.update(playerPos)) {
+    m_firedTriggers = m_triggers.update(playerPos);  // expose to the host for Lua trigger_enter
+    for (uint32_t id : m_firedTriggers) {
         switch ((L1Trigger)id) {
             case L1Trigger::Strength:
                 // Beat 1: hide the "equipment" prop (strength discovery).

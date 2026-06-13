@@ -54,7 +54,46 @@ constexpr const char* kSafeLibs[] = { "math", "string", "table" };
 
 std::string statusName(std::string_view name) { return std::string(name); }
 
+// ---- sol <-> ScriptValue marshaling (kept here so the header stays sol-free) --
+// The native-function boundary speaks ScriptValue; these two helpers are the
+// ONLY place sol types meet it. Lua nil/bool/number/string map 1:1; anything
+// else (tables, functions) is passed through as its tostring() so a binding at
+// least sees a stable string instead of throwing.
+ScriptValue solToValue(const sol::object& o, sol::state_view L) {
+    switch (o.get_type()) {
+        case sol::type::nil:     return ScriptValue{};
+        case sol::type::boolean: return ScriptValue(o.as<bool>());
+        case sol::type::number:  return ScriptValue(o.as<double>());
+        case sol::type::string:  return ScriptValue(o.as<std::string>());
+        default:                 return ScriptValue(L["tostring"](o).get<std::string>());
+    }
+}
+
+sol::object valueToSol(const ScriptValue& v, sol::state_view L) {
+    switch (v.type) {
+        case ScriptValue::Type::Bool:   return sol::make_object(L, v.b);
+        case ScriptValue::Type::Number: return sol::make_object(L, v.n);
+        case ScriptValue::Type::String: return sol::make_object(L, v.s);
+        case ScriptValue::Type::Nil:
+        default:                        return sol::make_object(L, sol::nil);
+    }
+}
+
 } // namespace
+
+std::string ScriptValue::asString() const {
+    switch (type) {
+        case Type::Bool:   return b ? "true" : "false";
+        case Type::Number: {
+            // Integers print without a trailing ".0" (door/zone ids read cleanly).
+            if (n == (double)(long long)n) return std::to_string((long long)n);
+            return std::to_string(n);
+        }
+        case Type::String: return s;
+        case Type::Nil:
+        default:           return "";
+    }
+}
 
 class LuaScriptSystem final : public IScriptSystem {
 public:
@@ -151,8 +190,7 @@ public:
             if (s.loaded && !s.failed) callHook(s, "onEvent", ev, t);
     }
 
-    void registerFunction(std::string_view name,
-                          std::function<void(const std::vector<std::string>&)> fn) override {
+    void registerFunction(std::string_view name, NativeFn fn) override {
         hostFns_[std::string(name)] = std::move(fn);
         // Already-loaded scripts see it too: refresh each env's x3 table entry.
         for (Slot& s : slots_) installHostFn(s, std::string(name));
@@ -239,10 +277,13 @@ private:
         sol::table api = s.env["x3"];
         if (!api.valid()) return;
         auto& fn = hostFns_[name];
-        api.set_function(name, [&fn](sol::variadic_args va) {
-            std::vector<std::string> args;
-            for (auto v : va) args.push_back(v.get<sol::object>().as<std::string>());
-            fn(args);
+        api.set_function(name, [&fn](sol::variadic_args va, sol::this_state ts) -> sol::object {
+            sol::state_view L(ts);
+            std::vector<ScriptValue> args;
+            args.reserve(va.size());
+            for (auto v : va) args.push_back(solToValue(v.get<sol::object>(), L));
+            ScriptValue r = fn(args);
+            return valueToSol(r, L);     // Nil-typed result surfaces to Lua as nil
         });
     }
 
@@ -330,7 +371,7 @@ private:
     con::IConsole* console_ = nullptr;
     std::vector<Slot> slots_;
     std::vector<Timer> timers_;
-    std::unordered_map<std::string, std::function<void(const std::vector<std::string>&)>> hostFns_;
+    std::unordered_map<std::string, NativeFn> hostFns_;
     double time_ = 0.0;
     ScriptId nextId_ = 1;
 };
@@ -434,7 +475,48 @@ bool runScriptSelfTest() {
     sys->eval(t, "x3.fire('ping', { from = 'timer' })");
     check(sys->eval(a, "last") == "timer",              "events: script-to-script fire");
 
-    // 12) memory metric is sane and unload reclaims
+    // 12) registerFunction round-trip: C++ sees typed args, Lua sees the return.
+    //     Register a native fn that records what it was called with and returns a
+    //     computed value, then call it from Lua and assert BOTH directions.
+    {
+        std::vector<ScriptValue> seen;
+        sys->registerFunction("hostAdd", [&seen](const std::vector<ScriptValue>& a) -> ScriptValue {
+            seen = a;                                  // capture args C++ received
+            double sum = 0.0;
+            for (const auto& v : a) sum += v.asNumber();
+            return ScriptValue(sum);                   // hand a number back to Lua
+        });
+        // One call with two numbers: C++ must see the typed args, AND the numeric
+        // result must arrive back in Lua (compared in-Lua so 5.4's "42.0" float
+        // formatting is irrelevant). `okRet` is captured INSIDE the same eval so the
+        // `seen` snapshot below reflects exactly this call's args.
+        check(sys->eval(a, "okRet = (x3.hostAdd(2, 40) == 42); return okRet") == "true",
+                                                        "registerFunction: Lua receives the return value");
+        check(seen.size() == 2 &&
+              seen[0].type == ScriptValue::Type::Number && seen[0].asInt() == 2 &&
+              seen[1].type == ScriptValue::Type::Number && seen[1].asInt() == 40,
+                                                        "registerFunction: C++ saw the typed args");
+        // Mixed types + a string return, and a Nil (void-style) binding => nil in Lua.
+        sys->registerFunction("hostEcho", [](const std::vector<ScriptValue>& a) -> ScriptValue {
+            return a.empty() ? ScriptValue() : ScriptValue(a[0].asString() + "!");
+        });
+        check(sys->eval(a, "x3.hostEcho('ok')") == "ok!",
+                                                        "registerFunction: string in/out marshals");
+        sys->registerFunction("hostVoid", [](const std::vector<ScriptValue>&) -> ScriptValue {
+            return ScriptValue();                      // void-style => nil
+        });
+        check(sys->eval(a, "x3.hostVoid(1) == nil and 'nil' or 'val'") == "nil",
+                                                        "registerFunction: Nil result -> Lua nil");
+        // A function registered AFTER a script loaded is still visible to it.
+        bool late = false;
+        sys->registerFunction("hostLate", [&late](const std::vector<ScriptValue>&) -> ScriptValue {
+            late = true; return ScriptValue(true);
+        });
+        sys->eval(a, "x3.hostLate()");
+        check(late,                                     "registerFunction: late registration reaches loaded scripts");
+    }
+
+    // 13) memory metric is sane and unload reclaims
     size_t memBefore = sys->memoryUsedBytes();
     check(memBefore > 1024,                             "memory: metric reports usage");
     sys->unload(b);
