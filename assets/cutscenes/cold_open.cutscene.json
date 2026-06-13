@@ -1,0 +1,197 @@
+{
+  "format": "x3.cutscene/1",
+  "name": "cold_open",
+  "duration": 67.5,
+  "skippable": true,
+  "skipTo": 52.5,
+
+  "camera": {
+    "keys": [
+      { "t": 0.0,  "pos": [0, 5, 18],       "look": [0, 1, -40],      "fov": 58 },
+      { "t": 6.0,  "pos": [4, 6, -60],      "look": [3, 2, -110],     "fov": 55 },
+      { "t": 12.0, "pos": [8, 6, -150],     "look": [6, 3, -200],     "fov": 52 },
+
+      { "t": 12.0, "pos": [-16, 4, -170],   "look": [6, 2, -170],     "fov": 48, "cut": true },
+      { "t": 24.0, "pos": [-14, 5, -340],   "look": [10, 3, -340],    "fov": 48 },
+
+      { "t": 24.0, "pos": [22, 8, -385],    "look": [10, 3, -340],    "fov": 45, "cut": true },
+      { "t": 36.0, "pos": [16, 6, -540],    "look": [8, 2, -505],     "fov": 40 },
+
+      { "t": 36.0, "pos": [0, -8, -580],    "look": [10, 22, -430],   "fov": 50, "cut": true },
+      { "t": 45.0, "pos": [-4, -6, -700],   "look": [6, 12, -520],    "fov": 52 },
+
+      { "t": 45.0, "pos": [24, 10, -600],   "look": [4, 0, -640],     "fov": 55, "cut": true },
+      { "t": 47.2, "pos": [20, 7, -625],    "look": [2, -2, -662],    "fov": 58 },
+      { "t": 49.8, "pos": [8, -2, -650],    "look": [-6, -22, -700],  "fov": 64 },
+      { "t": 52.5, "pos": [-2, -28, -690],  "look": [-25, -90, -760], "fov": 70 }
+    ],
+    "shakes": [
+      { "t": 36.0, "dur": 0.4, "amp": 0.06, "freq": 7.0 },
+      { "t": 47.2, "dur": 1.1, "amp": 0.35, "freq": 13.0 },
+      { "t": 49.7, "dur": 1.0, "amp": 0.30, "freq": 11.0 }
+    ]
+  },
+
+  "actors": [
+    {
+      "id": "jake_ship",
+      "model": "rigged_glb/JakeFighterShip.glb",
+      "size": 9.0,
+      "rotOffsetDeg": [0, 0, 0],
+      "hideAt": 52.7,
+      "keys": [
+        { "t": 0.0,  "pos": [0, 0, 0],        "rotDeg": [0, 0, 0],       "scale": 1.0 },
+        { "t": 12.0, "pos": [6, 2, -170],     "rotDeg": [0, 0, -4],      "scale": 1.0 },
+        { "t": 24.0, "pos": [10, 3, -340],    "rotDeg": [0, 0, 3],       "scale": 1.0 },
+        { "t": 36.0, "pos": [8, 2, -505],     "rotDeg": [0, 0, -2],      "scale": 1.0 },
+        { "t": 45.0, "pos": [4, 0, -630],     "rotDeg": [0, 0, 0],       "scale": 1.0 },
+        { "t": 47.2, "pos": [2, -2, -660],    "rotDeg": [0, -5, 20],     "scale": 1.0 },
+        { "t": 49.5, "pos": [-6, -22, -700],  "rotDeg": [-15, -25, 90],  "scale": 1.0 },
+        { "t": 52.5, "pos": [-25, -90, -760], "rotDeg": [-30, -55, 200], "scale": 1.0 }
+      ]
+    },
+    {
+      "id": "capital_ship",
+      "model": "rigged_glb/SpaceShip4.glb",
+      "size": 200.0,
+      "rotOffsetDeg": [0, 0, 0],
+      "showAt": 28.0,
+      "hideAt": 52.7,
+      "keys": [
+        { "t": 28.0, "pos": [20, 45, 180],  "rotDeg": [30, 4, 0], "scale": 1.0 },
+        { "t": 38.0, "pos": [14, 26, -360], "rotDeg": [28, 4, 0], "scale": 1.0 },
+        { "t": 45.0, "pos": [8, 18, -510],  "rotDeg": [24, 3, 0], "scale": 1.0 },
+        { "t": 52.5, "pos": [2, 12, -575],  "rotDeg": [22, 3, 0], "scale": 1.0 }
+      ]
+    },
+    {
+      "id": "engine_glow",
+      "model": "builtin:glow",
+      "color": [0.4, 0.7, 1.0, 1.0],
+      "emissive": [1.2, 2.2, 4.0, 1.2],
+      "hideAt": 47.2,
+      "keys": [
+        { "t": 0.0,  "pos": [0, 1.5, 3.5],     "scale": 0.3 },
+        { "t": 12.0, "pos": [6, 3.5, -166.5],  "scale": 0.3 },
+        { "t": 24.0, "pos": [10, 4.5, -336.5], "scale": 0.3 },
+        { "t": 36.0, "pos": [8, 3.5, -501.5],  "scale": 0.3 },
+        { "t": 45.0, "pos": [4, 1.5, -626.5],  "scale": 0.3 },
+        { "t": 47.2, "pos": [2, -0.5, -656.5], "scale": 0.3 }
+      ]
+    },
+    {
+      "id": "charge_glow",
+      "model": "builtin:glow",
+      "color": [1.0, 0.35, 0.2, 1.0],
+      "emissive": [6.0, 1.4, 0.7, 6.0],
+      "showAt": 43.0,
+      "hideAt": 47.3,
+      "keys": [
+        { "t": 43.0, "pos": [7, 13, -448], "scale": 1.5 },
+        { "t": 45.0, "pos": [6, 13, -495], "scale": 4.0 },
+        { "t": 47.3, "pos": [5, 12, -520], "scale": 5.5 }
+      ]
+    },
+    {
+      "id": "bolt1",
+      "model": "builtin:beam",
+      "stretch": [0.5, 0.5, 45.0],
+      "color": [1.0, 0.4, 0.25, 1.0],
+      "emissive": [7.0, 1.8, 0.8, 7.0],
+      "showAt": 45.5,
+      "hideAt": 46.1,
+      "keys": [
+        { "t": 45.5, "pos": [6, 12, -510], "rotDeg": [-2, -4, 0], "scale": 1.0 },
+        { "t": 46.1, "pos": [0, -4, -705], "rotDeg": [-2, -4, 0], "scale": 1.0 }
+      ]
+    },
+    {
+      "id": "bolt2",
+      "model": "builtin:beam",
+      "stretch": [0.6, 0.6, 45.0],
+      "color": [1.0, 0.4, 0.25, 1.0],
+      "emissive": [7.0, 1.8, 0.8, 7.0],
+      "showAt": 46.9,
+      "hideAt": 47.3,
+      "keys": [
+        { "t": 46.9, "pos": [5, 12, -540], "rotDeg": [1, -5, 0], "scale": 1.0 },
+        { "t": 47.3, "pos": [2, -2, -662], "rotDeg": [1, -5, 0], "scale": 1.0 }
+      ]
+    },
+    {
+      "id": "bolt3",
+      "model": "builtin:beam",
+      "stretch": [0.6, 0.6, 45.0],
+      "color": [1.0, 0.4, 0.25, 1.0],
+      "emissive": [7.0, 1.8, 0.8, 7.0],
+      "showAt": 49.5,
+      "hideAt": 49.95,
+      "keys": [
+        { "t": 49.5,  "pos": [4, 13, -555], "rotDeg": [-4, -9, 0], "scale": 1.0 },
+        { "t": 49.95, "pos": [-5, -20, -698], "rotDeg": [-4, -9, 0], "scale": 1.0 }
+      ]
+    },
+    {
+      "id": "impact1",
+      "model": "builtin:glow",
+      "color": [1.0, 0.6, 0.3, 1.0],
+      "emissive": [8.0, 4.0, 1.6, 9.0],
+      "showAt": 47.2,
+      "hideAt": 48.4,
+      "keys": [
+        { "t": 47.2, "pos": [2, -2, -660],  "scale": 1.0 },
+        { "t": 47.5, "pos": [2, -3, -664],  "scale": 7.0 },
+        { "t": 48.4, "pos": [1, -6, -672],  "scale": 2.0 }
+      ]
+    },
+    {
+      "id": "impact2",
+      "model": "builtin:glow",
+      "color": [1.0, 0.6, 0.3, 1.0],
+      "emissive": [8.0, 4.0, 1.6, 9.0],
+      "showAt": 49.7,
+      "hideAt": 50.8,
+      "keys": [
+        { "t": 49.7, "pos": [-5, -20, -698], "scale": 1.0 },
+        { "t": 50.0, "pos": [-6, -23, -702], "scale": 8.0 },
+        { "t": 50.8, "pos": [-9, -32, -712], "scale": 2.5 }
+      ]
+    }
+  ],
+
+  "audio": [
+    { "t": 0.5,  "sound": "music.space",    "gain": 0.55, "music": true },
+    { "t": 30.0, "sound": "rumble.capital", "gain": 0.7 },
+    { "t": 36.2, "sound": "alarm",          "gain": 0.9 },
+    { "t": 43.0, "sound": "charge",         "gain": 0.8 },
+    { "t": 45.5, "sound": "bolt",           "gain": 0.9 },
+    { "t": 47.2, "sound": "explosion",      "gain": 1.0 },
+    { "t": 49.5, "sound": "bolt",           "gain": 0.9 },
+    { "t": 49.8, "sound": "explosion",      "gain": 1.0 },
+    { "t": 52.6, "sound": "music.stop",     "gain": 1.0 }
+  ],
+
+  "fades": [
+    { "t": 0.0,  "dur": 2.5,  "from": 1.0,  "to": 0.0, "color": [0, 0, 0] },
+    { "t": 47.2, "dur": 0.15, "from": 0.5,  "to": 0.0, "color": [1, 1, 1] },
+    { "t": 49.8, "dur": 0.18, "from": 0.55, "to": 0.0, "color": [1, 1, 1] },
+    { "t": 52.5, "dur": 0.35, "from": 0.0,  "to": 1.0, "color": [0, 0, 0] }
+  ],
+
+  "letterbox": { "inAt": 0.0, "inDur": 1.2, "outAt": 52.5, "outDur": 0.5, "frac": 0.11 },
+
+  "titles": [
+    { "t": 54.0, "dur": 6.0, "text": "ESCAPE FROM LAB ZERO", "font": "title",
+      "sizeFrac": 0.082, "fadeIn": 1.2, "fadeOut": 1.2, "color": [0.92, 0.95, 1.0] },
+    { "t": 61.0, "dur": 5.0, "text": "SIX MONTHS LATER", "font": "title",
+      "sizeFrac": 0.04, "fadeIn": 1.0, "fadeOut": 1.2, "color": [0.78, 0.82, 0.9] }
+  ],
+
+  "events": [
+    { "t": 36.2, "name": "fx.alarm" },
+    { "t": 47.2, "name": "fx.impact:jake_ship" },
+    { "t": 47.3, "name": "fx.trail.start:jake_ship" },
+    { "t": 49.8, "name": "fx.impact:jake_ship" },
+    { "t": 67.0, "name": "intro_complete", "endState": true }
+  ]
+}

@@ -91,11 +91,16 @@ void main() {
     vec3 hazeTint = clamp(kHorizon * 1.12, 0.0, 1.0);   // glow band follows the per-scene horizon color (cool + bright, not grey)
     col = mix(col, hazeTint, horizonBand * (0.35 + 0.45 * haze));
 
-    // ---- Stars: additive, above the horizon only, gated hard to DARK skies. ----
-    if (up > 0.0) {
+    // ---- Stars: additive, gated hard to DARK skies. Above the horizon always;
+    // BELOW it only when there is no aerosol haze (haze == 0 reads as DEEP SPACE —
+    // a space scene looking "down" sees stars, not a ground plane). Hazy ground
+    // scenes are unchanged (the below-horizon weight is 0 once haze >= 0.5). ----
+    {
         float skyLum = dot(col, vec3(0.299, 0.587, 0.114));
         float night  = pow(clamp(1.0 - skyLum, 0.0, 1.0), 4.0);   // only very dark skies
-        col += starField(dir, sky.params.z) * (1.5 * night) * smoothstep(0.0, 0.12, up);
+        float aboveW = smoothstep(0.0, 0.12, up);
+        float spaceW = clamp(1.0 - haze * 2.0, 0.0, 1.0);
+        col += starField(dir, sky.params.z) * (1.5 * night) * max(aboveW, spaceW);
     }
 
     // ---- Sun disk + glow, placed at the directional sun. ----
@@ -115,10 +120,15 @@ void main() {
     col += sunRGB * disk * (4.0 * sunI);
 
     // ---- Below-horizon: ease into a muted ground tint so down-views aren't black.
+    // The earth tone follows the AEROSOL HAZE: hazy daylight keeps the original
+    // muted ground (byte-for-byte at haze >= 0.5); haze 0 == DEEP SPACE, where the
+    // "ground" hemisphere falls to the per-scene horizon floor (near-black) so
+    // space scenes don't render a grey dirt plane under the stars.
     if (up < 0.0) {
+        float groundW = clamp(haze * 2.0, 0.0, 1.0);   // 0 in deep space -> NO ground blend
         vec3 ground = vec3(0.16, 0.15, 0.13);
         float belowT = clamp(-up * 4.0, 0.0, 1.0);
-        col = mix(col, ground, belowT);
+        col = mix(col, ground, belowT * groundW);      // haze>=0.5: original ground exactly
     }
 
     // Exposure applied here; LINEAR HDR output (tonemap moved to composite.frag,

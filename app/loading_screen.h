@@ -81,6 +81,13 @@ public:
     // `fast` (BOOT-TIME, docs/BOOT_TIME.md): a sub-budget boot barely showed the
     // bar — fade ~3x quicker so the hand-off doesn't pad the boot.
     void beginFadeOut(bool fast = false);
+
+    // BLACKOUT mode (post-cold-open wake, docs/design/CUTSCENE_FORMAT.md): draw a
+    // PURE BLACK field instead of the themed screen, so the cutscene's smash-to-
+    // black holds seamlessly through the cell build; beginFadeOut() then becomes a
+    // slow (~2.5 s) wake up from black with control already live underneath.
+    void setBlackout(bool on) { m_blackout = on; }
+    bool blackout() const { return m_blackout; }
     bool fadingOut() const { return m_fadeOut; }
     bool faded() const { return m_fadeOut && m_fade <= 0.0f; }
 
@@ -109,6 +116,7 @@ private:
     float  m_fade     = 0.0f;
     bool   m_fadeOut  = false;
     float  m_fadeOutScale = 1.0f;   // 3.0 on a fast (sub-budget) boot hand-off
+    bool   m_blackout = false;      // post-cold-open: pure-black overlay + slow wake fade
 };
 
 // --test-loading: headless self-test. Asserts progress is monotonic 0->1 across
