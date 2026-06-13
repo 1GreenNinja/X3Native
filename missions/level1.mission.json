@@ -1,0 +1,44 @@
+{
+  "format": "x3.mission/1",
+  "id": "level1",
+  "title": "ESCAPE FROM LAB ZERO - Floor 1: Detention",
+  "start": "escape_cell",
+  "stages": [
+    {
+      "id": "escape_cell",
+      "objective": "Escape the detention cell",
+      "on_enter": [ { "set": "l1.mission.begun" } ],
+      "advance_when": [ { "flag": "l1.doorA.open" } ],
+      "next": "arm_up"
+    },
+    {
+      "id": "arm_up",
+      "objective": "Fight to the armory and arm yourself",
+      "advance_when": [ { "flag": "l1.armed" } ],
+      "next": "checkpoint"
+    },
+    {
+      "id": "checkpoint",
+      "objective": "Clear the security checkpoint",
+      "advance_when": [ { "flag": "l1.checkpoint.clear" } ],
+      "next": "boss"
+    },
+    {
+      "id": "boss",
+      "objective": "Defeat Chief Martinez",
+      "advance_when": [ { "flag": "l1.martinez.dead" } ],
+      "on_complete": [ { "fire": "mission_beat", "args": { "mission": "level1", "beat": "martinez_down" } } ],
+      "next": "elevator"
+    },
+    {
+      "id": "elevator",
+      "objective": "Take the elevator to Floor 2",
+      "advance_when": [ { "flag": "trigger.3" } ],
+      "on_complete": [
+        { "set": "l1.win.recorded" },
+        { "fire": "mission_complete", "args": { "mission": "level1" } }
+      ],
+      "next": "end"
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+{
+  "format": "x3.chattree/1",
+  "npc": "club_patrons",
+  "display": "CLUB 1127 PATRONS",
+  "_bio": "Two fixtures of the bottom bar. HOLLOW PETE — ex-guard who escaped the F4 surgery queue half-finished; the walking Humanity-meter warning. NADIA 'STATIC' — tunnel-runner and map-broker; Lena's old colleague; has heard the Leviathan through the seafloor. Both seed Act 2 + hidden areas through barstool truth.",
+  "npcs": {
+
+    "hollow_pete": {
+      "display": "HOLLOW PETE",
+      "voice": "Pete",
+      "trees": {
+        "hub": {
+          "start": "hp0",
+          "nodes": [
+            { "id": "hp0",
+              "if": [ {"not": {"flag": "pete.met"}} ],
+              "else": "hp_loop",
+              "line": "*he sits where the mirror ball's light never quite reaches, and when he lifts his glass, the left hand whirs — a guard-issue cyberarm with the serial filed off* New face. Old eyes, though. You've been upstairs recently. *he taps his own temple, where skin gives way to a socket that was meant to take more* They got as far as the arm and the eye-port before I rabbited off the table. Floor Four. The chairs. *he drinks* Pete. Used to be Officer Pellerin. 'Hollow' is the joke down here, on account of they emptied out a third of me before I changed my mind.",
+              "choices": [
+                { "text": "You escaped the augmentation bay? Nobody escapes mid-procedure.", "next": "hp1" },
+                { "text": "Does it hurt? The unfinished parts.", "next": "hp1b", "fx": [ {"karma": 1} ] },
+                { "text": "You were a guard. You held doors for that program.", "next": "hp1c" }
+              ],
+              "fx": [ {"set": "pete.met"} ] },
+            { "id": "hp1",
+              "line": "Nobody VOLUNTEERS off the table. Different thing. *the cyberarm flexes; he watches it like a stranger's dog* They sell it to staff as an upgrade program. Performance bonus. Sign here. And every signature, you feel a little less of — *he snaps the metal fingers, hunting the word* — the part that says no. That's the real procedure, friend. The chrome's just the receipt. Fourth chair in, I heard a man two stations over ask the surgeons what his wife's name was. ASKING them. Like they'd taken custody of it. I pulled the lines out of my own arm and I ran.",
+              "fx": [ {"set": "pete.warning_given"}, {"fire": "rumor", "args": {"topic": "humanity_cost"}} ],
+              "next": "hp2" },
+            { "id": "hp1b",
+              "line": "*the question lands somewhere unguarded; he answers it straight* The arm doesn't. The arm's fine — the arm is EXCELLENT, that's the obscenity of it. What hurts is the port. *he touches the empty socket at his temple, gently, like a grave* It wants its other half. Some nights I can feel the thing they were going to plug into me, calling from the parts locker on Four. Inventory item. Has my name on the tag. *he drinks* You ever been homesick for something that would've erased you? Don't answer. Stay whole, friend. Whatever they offer.",
+              "fx": [ {"set": "pete.warning_given"}, {"fire": "rumor", "args": {"topic": "humanity_cost"}} ],
+              "next": "hp2" },
+            { "id": "hp1c",
+              "line": "Held 'em. Locked 'em. Logged 'em. *no flinch; he's done this math in front of strangers before* You want me to say I didn't know. Everybody down here has a 'didn't know.' Mine's this: I knew the wards were wrong the way you know a storm's coming in your knee. A weather feeling. And I re-upped twice anyway, because the pay was real and the weather wasn't my post. *he turns the glass* Marty Martinez signs the transfer orders up top. Decent man. WORSE than me, maybe — he's got the same knee and a better view. *he looks at you straight* So no, friend. No absolution at this end of the bar. Just inventory.",
+              "fx": [ {"set": "pete.martinez_known"}, {"fire": "rumor", "args": {"topic": "martinez_blind"}} ],
+              "next": "hp2" },
+            { "id": "hp2",
+              "line": "Free advice, since you're clearly headed back up into it: Four runs on consent theater. Chairs don't grab you — they ASK. Every time. Polite as a maitre d'. *the metal hand closes slow* The trick they don't advertise: the asking never stops feeling good to say yes to. First one's free, friend. After that you're negotiating with your own missing pieces. *he raises the glass an inch — a toast to whatever you've still got that says no*",
+              "fx": [ {"fire": "rumor", "args": {"topic": "augment_warning"}} ],
+              "next": "end" },
+            { "id": "hp_loop",
+              "line": "*the same seat. The same shadow. The arm whirs a greeting before he does.* Still whole, friend? *he checks you over like a man counting his own change* ...Still whole. Good. Some of us drink to that down here. It's a shorter list than you'd think.",
+              "choices": [
+                { "text": "Tell me about Floor Four again. Details this time — layout, the queue.", "next": "hp_intel", "if": [ {"flag": "pete.warning_given"} ] },
+                { "text": "Stay whole, Pete.", "next": "end" }
+              ] },
+            { "id": "hp_intel",
+              "line": "*he draws on the bar with a wet finger: a square, a square, a dome* Augmentation bay, six chairs. Brain-upload room past it — four thousand and change in the racks, friend, AWAKE in there for all anybody knows. And the queue board. *the finger stops* When I rabbited, the next name on the board after mine had a designation, not a name. Seven-something. Seven-ALPHA. *he looks up* They had your chair warm before you ever woke up, friend. Whatever you are, you were SCHEDULED. *he wipes the drawing away* No charge for that one. Some things a man shouldn't have to buy.",
+              "fx": [ {"set": "pete.queue_reveal"}, {"fire": "rumor", "args": {"topic": "jake_scheduled"}} ],
+              "next": "end" }
+          ]
+        }
+      }
+    },
+
+    "static": {
+      "display": "STATIC",
+      "voice": "Static",
+      "trees": {
+        "hub": {
+          "start": "st0",
+          "nodes": [
+            { "id": "st0",
+              "if": [ {"not": {"flag": "static.met"}} ],
+              "else": "st_loop",
+              "line": "*she's got a whole booth to herself and a disassembled radio spread across it like an autopsy. She doesn't look up.* You walk heavy for a runner. *a dial clicks* Not a runner. Upstairs muscle, down the long way. *now she looks up — young face, cave-pale, eyes that triangulate* Static. I move maps, money, and messages, fastest courier on three levels now that the little ghost's off the board. *beat* Lena. You'd know her as Lena. Word came down a breeder drone bagged her over on Five, so if you're here to sell her gear, the booth is about to get LOUD.",
+              "choices": [
+                { "text": "Lena's alive. She runs with me now. She says she's holding her own marker.", "next": "st1", "if": [ {"girl_saved": "lena"} ], "fx": [ {"karma": 2} ] },
+                { "text": "I'm not selling anything. I need maps. Deep ones.", "next": "st2" },
+                { "text": "What happened on Five wasn't me. What's a marker?", "next": "st1b" }
+              ],
+              "fx": [ {"set": "static.met"} ] },
+            { "id": "st1",
+              "line": "*every dial on the table stops mattering* Alive. *she rebuilds her face in about a second and a half, but you saw it* Holding her own marker — yeah, that's her, that's the ghost. Tunnel law: a runner's marker is her debts and her word, and whoever holds it speaks for her if she can't. She's telling me she vouches for you SO hard she'd pay your tolls herself. *Static sweeps the radio parts aside; the booth is suddenly open to you* Sit. Friends of the ghost drink on my tab and lie to me about how bad Five was. Sit.",
+              "fx": [ {"set": "static.vouched"}, {"fire": "rumor", "args": {"topic": "tunnel_network"}} ],
+              "next": "st_menu" },
+            { "id": "st1b",
+              "line": "A marker's a runner's whole self in ledger form — debts, word, and who collects if the tunnel takes her. *she studies you, recalibrating* You ask like a man who pays debts. Fine. Booth's neutral ground. But if you're ever up on Five and a quiet woman with a knife in her left boot is still breathing in that drone shop — you move heaven, you hear me? The ghost trained under me. The good lines on her maps are MINE.",
+              "next": "st_menu" },
+            { "id": "st2",
+              "line": "Deep maps. *she laughs once, static-crackle* Everybody wants deep maps since the hum changed. Sit down, upstairs. We'll talk inventory.",
+              "next": "st_menu" },
+            { "id": "st_menu",
+              "line": "*she lays three map tubes on the table like a card dealer* What I've got, what they cost: the FLOOD LEVEL — water route, undersea-grade, you'll want a reason. The CAVE LINES — singing-rock country, the crystals that hum back, runner markings the whole way. And the one I don't sell so much as CONFESS — the seafloor line. *her hand rests on the third tube without opening it* Pick, or ask.",
+              "choices": [
+                { "text": "The seafloor line. Confess.", "next": "st_leviathan" },
+                { "text": "The cave lines — the singing rock.", "next": "st_caves" },
+                { "text": "The flood level. What's down there?", "next": "st_flood", "if": [ {"flag": "lena.marco_known"} ], "fx": [] },
+                { "text": "The flood level.", "next": "st_flood_b", "if": [ {"not": {"flag": "lena.marco_known"}} ] },
+                { "text": "Another time.", "next": "end" }
+              ] },
+            { "id": "st_leviathan",
+              "line": "*she opens the tube. The map inside is half chart, half seismograph — depth lines annotated in a shaking hand.* Eight months back I ran a cable job out past the drowned base — the one the lab pretends it never built. Three hundred meters of black water over me. And something SANG, upstairs. Not the rock-hum. A voice. Big as weather. It passed over the trench and every fish-light for a kilometer went dark out of RESPECT. *she taps the seismograph scrawl* I clocked the body length off my own sonar before I shut it down so it wouldn't hear me listening. You want the number? You don't want the number. *she rolls the map and holds it out anyway* Take it. I don't run wet routes anymore, and somebody who walks heavy should know what the bottom of the bottom sounds like. It's ALIVE down there, upstairs. The whole dark is alive.",
+              "fx": [ {"give": "seafloor_chart"}, {"set": "rumor.leviathan"}, {"fire": "rumor", "args": {"topic": "leviathan"}} ],
+              "next": "st_menu" },
+            { "id": "st_caves",
+              "line": "Singing-rock country — the caves off the big tubes, west and down. The crystals there hum back at you, and here's the part the lab's geologists would sell their clearances for: they hum back DIFFERENT depending on who's asking. Runner superstition says they're not rocks at all, they're... mail. Left by whoever the tunnels belonged to, waiting for the right reader. *she marks your map — actual marks, actual gift* The deep crews used to leave the crystals offerings. Rations, dog tags. Laugh if you want. The crews that left offerings came BACK, upstairs. All of them. Run those odds.",
+              "fx": [ {"set": "rumor.crystals"}, {"fire": "rumor", "args": {"topic": "salvari_crystals"}} ],
+              "next": "st_menu" },
+            { "id": "st_flood",
+              "line": "*she goes still, the way runners do at a wrong sound* You know about the flood level. The ghost told you. *a long exhale through her nose* Then I'll say the part she can't: Marco's marker is down there, under the water with him, and SOMEBODY has to swim it home someday or the ledger never closes. Runner law. She knows it. She can't do it. *Static slides the flood map across, no price* When you're strong enough for black water, take her with you. Don't let her say no. The ledger's eating her, upstairs — has been for two years.",
+              "fx": [ {"give": "flood_map"}, {"set": "static.marco_quest"}, {"fire": "quest_started", "args": {"quest": "marco_marker"}} ],
+              "next": "st_menu" },
+            { "id": "st_flood_b",
+              "line": "Drowned service level under the maze line. Old pumps lost the argument decades back. Good salvage, bad memories — runners died down there, one of them mine to mourn. *she taps the tube but doesn't open it* This one needs trust I don't have in you yet, upstairs. Bring me proof you take care of your people, and we'll talk about the water.",
+              "next": "st_menu" },
+            { "id": "st_loop",
+              "line": "*the booth, the radio guts, the eyes that triangulate* Upstairs. *that's hello* Tubes are on the table. Hum's been wrong all week — two ticks fast, like something turning over in its sleep. Buy a map or bring me news, but don't just STAND there being heavy.",
+              "next": "st_menu" }
+          ]
+        }
+      }
+    }
+  }
+}

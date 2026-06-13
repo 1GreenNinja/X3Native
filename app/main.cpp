@@ -45,6 +45,8 @@
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
 #include "intro_coldopen.h"                  // --world intro / default lead-in cold-open (shot-down -> captured)
 #include "npc_dialog.h"                     // rescued-NPC talk/dialog -> companion (the captive girl)
+#include "chat_tree.h"                      // x3.chattree/1 data-driven dialog runner (--test-chattree)
+#include "mission.h"                        // x3.mission/1 data-driven mission runner (--test-mission, g_missiondoc)
 #include "physprops.h"                      // FEATURE_GOALS §1: hanging cubes / joints (ragdoll foundation)
 #include "ragdoll.h"                        // FEATURE_GOALS §2: physics death ragdoll
 #include "editor/editor.h"                  // native Level Editor E1 (brain + self-test)
@@ -67,6 +69,7 @@
 #include "tod.h"                             // EFLZ Time-of-Day cycle (sky/sun via SkyParams — --test-tod)
 #include "weather.h"                         // EFLZ Weather (7 states, biome-gated, hazard — --test-weather)
 #include "world_regions.h"                   // EFLZ open-world surrounding regions + 4 mountain ranges (--test-worldregions)
+#include "world_stream.h"                    // SEAMLESS region-graph streaming (--world streamed / --test-worldstream)
 #include "city.h"                            // EFLZ open-world metropolis: districts + roads + freeway tunnels (--test-city)
 #include "ocean_base.h"                      // EFLZ open-world ocean + undersea base + submarine combat (--test-oceanbase)
 #include "elevator.h"
@@ -694,6 +697,10 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("r_cullpath", "0", "GPU cull path: -1 auto, 0 CPU, 1 tier0 gfx-queue, 2 tier1 async, 3 tier2 meshlets");
     // HZB occlusion phase on top of the GPU frustum cull (needs r_cullpath >= 1).
     console.registerCVar("r_hzb", "0", "HZB occlusion cull on the GPU path (0 = frustum only)");
+    // x3.mission/1: when 1, missions/level1.mission.json DRIVES the HUD objective
+    // line (the ObjectiveSystem free-text lane) instead of the hardcoded Level-1
+    // beat list. Default 0 = zero behavior change (the doc is not even loaded).
+    console.registerCVar("g_missiondoc", "0", "drive Level-1 objectives from missions/level1.mission.json (x3.mission/1)");
     // Portal flood-fill depth: how many OPEN-doorway hops the canonlevel cull floods out
     // from the player's room. Higher = see further down a hall through open doors (more
     // rooms drawn); 1 = current room + direct neighbours only (tight). The flood is also
@@ -1931,12 +1938,14 @@ int main(int argc, char** argv) {
          testFrustumCull = false,
          testCombat = false, testAudio = false, testLevel1 = false, testJobs = false,
          testPhase2a = false, testPhase2b = false, testAnim = false, testTerrain = false,
-         testStreaming = false, testAi = false, testDoorCode = false, testElevator = false,
+         testStreaming = false, testWorldStream = false, testAi = false, testDoorCode = false, testElevator = false,
          testElevatorFsm = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testFootIk = false,
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
+         testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
+         testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
          testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
          testThirdPerson = false, testHatchCode = false,
          // --test-hatch: END-TO-END secret-hatch chain (terminal_code fire ->
@@ -2143,6 +2152,11 @@ int main(int argc, char** argv) {
     // G:/X3Native/captures/ui_menu.png.
     bool        uiDemo = false;
     std::string uiDemoPath = "G:/X3Native/captures/ui_menu.png";
+    // Chat-tree dialog capture (--screenshot-dialog [path.png]): the --screenshot
+    // path with the camera posed at the F5 captive (Lena) and her first_meeting
+    // chat tree OPEN, so the choice UI can be judged headlessly. Additive.
+    bool        dialogShot = false;
+    std::string dialogShotPath = "docs/screenshots/dialog/lena_dialog.png";
     // Which UI screen the --ui-demo capture shows: "main" (default), "pause", or
     // "settings". Lets one flag document all three menu screens.
     std::string uiDemoScreen = "main";
@@ -2334,6 +2348,11 @@ int main(int argc, char** argv) {
     // omitted) keeps Level 1 as the default, unchanged.
     std::string worldMode = "level1";
     bool        worldExplicit = false;   // --world was passed (vs the default)
+    // Seamless world streaming tunables (--world streamed; see app/world_stream.*):
+    // per-frame stream-work budget (ms) + velocity lookahead (s). Cvar-style CLI
+    // overrides: --ws-budget <ms> / --ws-lookahead <s>.
+    float wsBudgetMs   = 6.0f;
+    float wsLookaheadS = 2.5f;
     // Optional settle-frame count for --screenshot (default 16 = unchanged
     // behavior). Larger values advance the world (and the characters' skeletal
     // animation) further before the capture, so two shots at different counts show
@@ -2384,6 +2403,17 @@ int main(int argc, char** argv) {
         if (a == "--screenshot-rtshadows") {
             rtshShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') rtshShotDir = argv[++i];
+            continue;
+        }
+        // World-streaming flags handled OUTSIDE the big else-if chain (which sits at
+        // MSVC's C1061 block-nesting limit — adding to it breaks the build).
+        if (a == "--test-worldstream") { testWorldStream = true; continue; }
+        if (a == "--ws-budget") {   // per-frame world-stream budget, ms (cvar-style tunable)
+            if (i + 1 < argc && argv[i + 1][0] != '-') wsBudgetMs = std::strtof(argv[++i], nullptr);
+            continue;
+        }
+        if (a == "--ws-lookahead") { // velocity lookahead, seconds
+            if (i + 1 < argc && argv[i + 1][0] != '-') wsLookaheadS = std::strtof(argv[++i], nullptr);
             continue;
         }
         if (a == "--smoketest") smoketest = true;
@@ -2456,6 +2486,8 @@ int main(int argc, char** argv) {
         else if (a == "--test-rescue") testRescue = true;
         else if (a == "--test-thirdperson") testThirdPerson = true;
         else if (a == "--test-npctalk") testNpcTalk = true;
+        else if (a == "--test-chattree") testChatTree = true;
+        else if (a == "--test-mission") testMission = true;
         else if (a == "--test-destruction") testDestruction = true;
         else if (a == "--test-debris") testDebris = true;
         else if (a == "--test-gpuskin") testGpuSkin = true;
@@ -2512,6 +2544,11 @@ int main(int argc, char** argv) {
         else if (a == "--screenshot-loader") {
             loaderShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') loaderShotPath = argv[++i];
+        }
+        else if (a == "--screenshot-dialog") {
+            screenshot = true; dialogShot = true;
+            screenshotPath = dialogShotPath;
+            if (i + 1 < argc && argv[i + 1][0] != '-') { dialogShotPath = argv[++i]; screenshotPath = dialogShotPath; }
         }
         else if (a == "--screenshot") {
             screenshot = true;
@@ -2893,6 +2930,11 @@ int main(int argc, char** argv) {
         x3::logInfo("running B3 world-streaming self-test (residency ring + async gen)...");
         return x3::game::runStreamingSelfTest() ? 0 : 1;
     }
+    if (testWorldStream) {
+        x3::logInfo("running SEAMLESS region-graph world-streaming self-test "
+                    "(region residency + ledgers + hysteresis + budget + proxy)...");
+        return x3::game::runWorldStreamSelfTest() ? 0 : 1;
+    }
     if (testAi) {
         x3::logInfo("running D-ai monster combat behaviour state-machine self-test...");
         return x3::game::runAiSelfTest() ? 0 : 1;
@@ -3077,6 +3119,17 @@ int main(int argc, char** argv) {
     if (testNpcTalk) {
         x3::logInfo("running rescued-NPC talk/dialog -> companion self-test (T1-T7)...");
         return x3::game::runNpcTalkSelfTest() ? 0 : 1;
+    }
+    if (testChatTree) {
+        x3::logInfo("running x3.chattree/1 dialog-runner self-test (parse all 8 trees + "
+                    "the lena walk: gates/fx/follow/1278/banter/flags round-trip)...");
+        return x3::game::runChatTreeSelfTest() ? 0 : 1;
+    }
+    if (testMission) {
+        x3::logInfo("running x3.mission/1 mission-runner self-test (doc parse/validate + "
+                    "stage advance via flag/trigger/kill bridges + branch/fail/resume + "
+                    "the Level-1 doc-vs-hardcoded objective EQUIVALENCE walk)...");
+        return x3::game::runMissionSelfTest() ? 0 : 1;
     }
     if (testDestruction) {
         x3::logInfo("running K-T0/T1 destruction (fracture/impact/hit/explosion) self-test...");
@@ -8562,6 +8615,255 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // ---- SEAMLESS STREAMED WORLD (--world streamed) -------------------------
+    // The region-graph world: the engine's streamed terrain (B3) provides the
+    // unbounded GROUND; app/world_stream.* streams the AUTHORED regions
+    // (assets/world/regions.json — the canonical Spire floor / city / undersea
+    // base / surface landmarks) in AHEAD of the player and out BEHIND, with the
+    // terrain tick + the region tick sharing ONE per-frame budget umbrella
+    // (--ws-budget <ms>, default 6; the terrain's measured cost is charged
+    // against it first). NO loading screens: boot builds only the regions the
+    // spawn point is inside (the boot cost); neighbors arrive post-interactive.
+    //   * TRAVERSAL SHOTS (headless): `--world streamed --screenshot x` writes a
+    //     3-shot region-boundary sequence (city not-yet-resident -> streamed in
+    //     -> inside the city) into docs/screenshots/streaming/.
+    //   * WALKABLE (windowed): `--world streamed` — WASD walk, mouse look,
+    //     Space jump, LeftShift sprint, F noclip, Esc quit.
+    if (worldMode == "streamed") {
+        x3::logInfo("--world streamed: booting the seamless region-graph world");
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> wphys(x3::phys::createPhysicsWorld());
+        if (!wphys->init()) {
+            x3::logError("--world streamed: physics init failed");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        std::unique_ptr<x3::jobs::IJobSystem> wjobs(x3::jobs::createJobSystem());
+        wjobs->init(0);
+        x3::game::Scene wscene;
+        const x3::game::TerrainConfig& wcfg = x3::game::worldTerrainConfig();
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = true;
+            sp.sunDir[0] = 0.4f; sp.sunDir[1] = 1.0f; sp.sunDir[2] = 0.3f;
+            sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.97f; sp.sunColor[2] = 0.92f;
+            sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
+            device->setSkyParams(sp);
+        }
+
+        // The region graph (data) + the residency manager.
+        x3::game::WorldRegionGraph wgraph;
+        {
+            std::vector<std::string> errs;
+            if (!wgraph.load(x3::game::worldRegionsJsonPath(), errs) || wgraph.empty()) {
+                for (const std::string& e : errs) x3::logError("--world streamed: " + e);
+                x3::logError("--world streamed: region graph failed to load — aborting");
+                wjobs->shutdown(); wphys->shutdown(); device->shutdown();
+                if (window) glfwDestroyWindow(window);
+                glfwTerminate();
+                return 1;
+            }
+        }
+        x3::game::WorldStreamer wsm;
+        wsm.init(wgraph, wjobs.get());
+        wsm.setLookahead(wsLookaheadS);
+        x3::logInfo("--world streamed: region graph `" + x3::game::worldRegionsJsonPath() +
+                    "` (" + std::to_string(wgraph.regions.size()) + " regions), budget " +
+                    std::to_string(wsBudgetMs) + " ms/frame, lookahead " +
+                    std::to_string(wsLookaheadS) + " s");
+
+        x3::game::TerrainStreamer wstream;
+
+        // ===== Headless traversal-shot sequence (region boundary before/after). =
+        if (headless) {
+            namespace fs = std::filesystem;
+            const fs::path outDir = "docs/screenshots/streaming";
+            std::error_code ec; fs::create_directories(outDir, ec);
+            const float dt = 1.0f / 60.0f;
+            // Approach the CITY from the west at vehicle speed: at leg A the city
+            // is beyond its unload radius (NOT resident — bare terrain + the
+            // mountain backdrop); by leg B the load radius has tripped and the
+            // city has streamed in; leg C ends inside Scrapyard City.
+            struct ShotLeg { float x, z, camH, pitch; int settle; const char* png; };
+            const ShotLeg legs[3] = {
+                { -1500.0f, 500.0f, 70.0f, -0.35f, 120, "01_city_not_resident.png" },
+                {  -820.0f, 500.0f, 70.0f, -0.35f, 150, "02_city_streamed_in.png"  },
+                {  -620.0f, 500.0f, 32.0f, -0.20f, 150, "03_inside_city.png"       },
+            };
+            wstream.init(wscene, *device, *wphys, wjobs.get(), wcfg,
+                         legs[0].x, legs[0].z, /*radius=*/8);
+            wstream.setUploadBudget(64);   // fill the visible ring fast for stills
+            wsm.buildStartRegions(wscene, *device, *wphys, legs[0].x, 0.0f, legs[0].z);
+
+            float cx = legs[0].x, cz = legs[0].z;
+            float camH = legs[0].camH, camPit = legs[0].pitch;
+            const float kDriveSpeed = 40.0f;   // m/s — the vehicle-traversal case
+            auto tickFrame = [&](float vx, float vz, const char* arm) {
+                glfwPollEvents();
+                const double t0 = glfwGetTime();
+                wstream.update(wscene, *device, *wphys, cx, cz);
+                const double terrainMs = (glfwGetTime() - t0) * 1000.0;
+                wsm.update(wscene, *device, *wphys, cx, 0.0f, cz, vx, 0.0f, vz,
+                           /*budget*/ 24.0, terrainMs);
+                wphys->step(dt);
+                wscene.update(*wphys);
+                float ground[3]; x3::game::placeOnTerrain(cx, cz, ground);
+                device->setCamera(cx, ground[1] + camH, cz, 0.0f, camPit, 60.0f);
+                if (arm) device->armCapture(arm);
+                auto frame = device->beginFrame();
+                if (frame.valid) wscene.render(*device, frame);
+                device->endFrame(frame);
+            };
+            bool allWrote = true;
+            // Trigger the FULL terrain residency ring at the start point: the
+            // streamer enqueues stream-in on tile-boundary CROSSINGS, so a static
+            // focus only has its synchronous 3x3 (the valley still uses the same
+            // one-frame nudge).
+            cx += wcfg.tileSize; tickFrame(0.0f, 0.0f, nullptr);
+            cx -= wcfg.tileSize; tickFrame(0.0f, 0.0f, nullptr);
+            for (const ShotLeg& leg : legs) {
+                camH = leg.camH; camPit = leg.pitch;
+                // Drive to the leg point (region streaming runs the whole way).
+                for (int guard = 0; guard < 20000; ++guard) {
+                    const float dx = leg.x - cx, dz = leg.z - cz;
+                    const float d = std::sqrt(dx * dx + dz * dz);
+                    if (d < 0.5f) break;
+                    const float ux = dx / d, uz = dz / d;
+                    const float step = std::min(d, kDriveSpeed * dt);
+                    cx += ux * step; cz += uz * step;
+                    tickFrame(ux * kDriveSpeed, uz * kDriveSpeed, nullptr);
+                }
+                // Settle (let terrain + region uploads land), then capture.
+                const std::string outPath = (outDir / leg.png).string();
+                for (int i = 0; i < leg.settle; ++i)
+                    tickFrame(0.0f, 0.0f, i == leg.settle - 1 ? outPath.c_str() : nullptr);
+                const bool wrote = device->captureFrame(outPath.c_str());
+                if (wrote) x3::logInfo("--world streamed: wrote " + outPath);
+                else { x3::logError("--world streamed: capture FAILED: " + outPath); allWrote = false; }
+            }
+            wsm.shutdown(wscene, *device, *wphys);
+            wstream.shutdown(wscene, *device, *wphys);
+            wjobs->shutdown();
+            wphys->shutdown();
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return allWrote ? 0 : 1;
+        }
+
+        // ===== Walkable windowed path. Spawn ON the terrain surface at the first
+        // region's anchor (the Spire); the regions the spawn is inside build
+        // synchronously (boot), everything else streams as you move. =====
+        const float sax = wgraph.regions[0].anchor[0], saz = wgraph.regions[0].anchor[2];
+        float sgr[3]; x3::game::placeOnTerrain(sax, saz, sgr);
+        wstream.init(wscene, *device, *wphys, wjobs.get(), wcfg, sax, saz, /*radius=*/8);
+        wsm.buildStartRegions(wscene, *device, *wphys, sax, sgr[1], saz);
+
+        x3::game::Player wplayer;
+        wplayer.spawn(*wphys, sax, sgr[1] + 2.0f, saz);
+
+        glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+        double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
+        double prevTime = glfwGetTime();
+        bool prevSpaceW = false, prevFW = false, noclipW = false;
+        float flyXw = sax, flyYw = sgr[1] + 1.6f, flyZw = saz, flyYawW = 0.0f, flyPitchW = -0.1f;
+        float prevPX = sax, prevPZ = saz;
+        x3::logInfo("--world streamed: WASD walk, mouse look, Space jump, LeftShift sprint, "
+                    "F noclip, Esc to quit — regions stream around you (watch the log)");
+
+        int lastWw = (int)W, lastHw = (int)H;
+        while (!glfwWindowShouldClose(window)) {
+            glfwPollEvents();
+            if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
+
+            double now = glfwGetTime();
+            float dt = (float)(now - prevTime); prevTime = now;
+            if (dt > 0.1f) dt = 0.1f;
+
+            double mx, my; glfwGetCursorPos(window, &mx, &my);
+            float ddx = (float)(mx - lastMX), ddy = (float)(my - lastMY);
+            lastMX = mx; lastMY = my;
+
+            auto kd = [&](int k) { return glfwGetKey(window, k) == GLFW_PRESS; };
+            bool spaceNow = kd(GLFW_KEY_SPACE);
+            bool fNow = kd(GLFW_KEY_F);
+            if (fNow && !prevFW) {
+                noclipW = !noclipW;
+                if (noclipW) { float yy, pp; wplayer.camera(flyXw, flyYw, flyZw, yy, pp); flyYawW = yy; flyPitchW = pp; }
+            }
+            prevFW = fNow;
+
+            float camX, camY, camZ, camYaw, camPitch;
+            if (!noclipW) {
+                x3::game::PlayerInput in;
+                if (kd(GLFW_KEY_W)) in.moveFwd    += 1.0f;
+                if (kd(GLFW_KEY_S)) in.moveFwd    -= 1.0f;
+                if (kd(GLFW_KEY_D)) in.moveStrafe += 1.0f;
+                if (kd(GLFW_KEY_A)) in.moveStrafe -= 1.0f;
+                in.sprint      = kd(GLFW_KEY_LEFT_SHIFT);
+                in.jumpPressed = spaceNow && !prevSpaceW;
+                in.lookDX = ddx; in.lookDY = ddy;
+                wplayer.update(in, dt, *wphys);
+                wplayer.camera(camX, camY, camZ, camYaw, camPitch);
+            } else {
+                const float sens = 0.0025f;
+                flyYawW += ddx * sens; flyPitchW -= ddy * sens;
+                if (flyPitchW >  1.55f) flyPitchW =  1.55f;
+                if (flyPitchW < -1.55f) flyPitchW = -1.55f;
+                float fxw = std::cos(flyPitchW) * std::cos(flyYawW);
+                float fyw = std::sin(flyPitchW);
+                float fzw = std::cos(flyPitchW) * std::sin(flyYawW);
+                float rl = std::sqrt(fxw*fxw + fzw*fzw); if (rl < 1e-4f) rl = 1e-4f;
+                float rx = -fzw/rl, rz = fxw/rl;
+                float spd = 8.0f * dt; if (kd(GLFW_KEY_LEFT_SHIFT)) spd *= 6.0f;
+                if (kd(GLFW_KEY_W)) { flyXw += fxw*spd; flyYw += fyw*spd; flyZw += fzw*spd; }
+                if (kd(GLFW_KEY_S)) { flyXw -= fxw*spd; flyYw -= fyw*spd; flyZw -= fzw*spd; }
+                if (kd(GLFW_KEY_D)) { flyXw += rx*spd; flyZw += rz*spd; }
+                if (kd(GLFW_KEY_A)) { flyXw -= rx*spd; flyZw -= rz*spd; }
+                if (spaceNow) flyYw += spd;
+                if (kd(GLFW_KEY_LEFT_CONTROL)) flyYw -= spd;
+                camX = flyXw; camY = flyYw; camZ = flyZw; camYaw = flyYawW; camPitch = flyPitchW;
+            }
+            prevSpaceW = spaceNow;
+
+            // ---- ONE budget umbrella: terrain tiles first (measured), then the
+            // region streamer gets whatever is left of --ws-budget this frame.
+            // Player velocity feeds the lookahead so sprint/vehicle speeds pull
+            // regions in earlier. ----
+            const double t0s = glfwGetTime();
+            wstream.update(wscene, *device, *wphys, camX, camZ);
+            const double terrainMs = (glfwGetTime() - t0s) * 1000.0;
+            const float velX = dt > 1e-4f ? (camX - prevPX) / dt : 0.0f;
+            const float velZ = dt > 1e-4f ? (camZ - prevPZ) / dt : 0.0f;
+            prevPX = camX; prevPZ = camZ;
+            wsm.update(wscene, *device, *wphys, camX, camY, camZ, velX, 0.0f, velZ,
+                       (double)wsBudgetMs, terrainMs);
+
+            wphys->step(dt);
+            wscene.update(*wphys);
+
+            int cw, chw; glfwGetFramebufferSize(window, &cw, &chw);
+            if (cw != lastWw || chw != lastHw) { lastWw = cw; lastHw = chw; if (cw>0&&chw>0) device->onResize((uint32_t)cw,(uint32_t)chw); }
+
+            device->setCamera(camX, camY, camZ, camYaw, camPitch, 60.0f);
+            auto frame = device->beginFrame();
+            if (frame.valid) wscene.render(*device, frame);
+            device->endFrame(frame);
+        }
+
+        wsm.shutdown(wscene, *device, *wphys);
+        wstream.shutdown(wscene, *device, *wphys);
+        wjobs->shutdown();
+        wphys->shutdown();
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
+    }
+
     // ---- Asset source (stub until D5) ----
     std::unique_ptr<x3::asset::IAssetSource> assets(x3::asset::createAssetSource());
     assets->mountPak("base.x3pak", 0);  // stub: logs not-implemented for now
@@ -9310,6 +9612,65 @@ int main(int argc, char** argv) {
     // the SAME bindings the live game wires; see the function above main()).
     registerGameBindings(*scripts, game);
 
+    // ---- CHAT-TREE dialog runner (x3.chattree/1, --test-chattree). Loads the
+    // narrative pack (docs/design/narrative/chat_trees) and binds the runner to
+    // the REAL systems: the global TimelineState for karma/axes conditions+fx,
+    // the D14 script system for x3.fire effects, and (when the pak shipped an
+    // eflz_dialog.lua) the {"lua": fn} condition escape hatch via eval. The
+    // follow hook is per-conversation (set where the talk target is known). ----
+    x3::game::ChatTreeSystem chatTrees;
+    chatTrees.loadDefault();
+    chatTrees.ctx().timeline = &x3::game::globalTimeline();
+    chatTrees.ctx().scripts  = scripts.get();
+    {
+        // {"lua": "fn"} conditions evaluate inside the dialog script's sandbox
+        // (eval auto-prepends `return`); absent script -> conditions fail safe.
+        x3::script::ScriptId dlgScript = x3::script::kInvalidScript;
+        for (x3::script::ScriptId id : scripts->loadedScripts())
+            if (scripts->status(id).name == "eflz_dialog.lua") { dlgScript = id; break; }
+        if (dlgScript != x3::script::kInvalidScript) {
+            x3::script::IScriptSystem* sp = scripts.get();
+            chatTrees.ctx().luaCond = [sp, dlgScript](const std::string& fn) {
+                return sp->eval(dlgScript, fn + "()") == "true";
+            };
+        }
+    }
+
+    // ---- MISSION RUNNER (x3.mission/1, g_missiondoc — default OFF). When the
+    // cvar is 1, missions/level1.mission.json is loaded + validated and the doc
+    // DRIVES the HUD objective line through the ObjectiveSystem free-text lane
+    // (objectives().setText — it wins over the list cursor while non-empty). The
+    // hardcoded beat list still runs underneath, untouched; with the cvar 0 none
+    // of this is even loaded — zero behavior change. Flags/conditions ride the
+    // SAME StoryFlags the chat trees use, so missions and dialog see one world.
+    x3::game::MissionDoc        missionDoc;
+    x3::game::MissionRunner     missionRunner;
+    x3::game::MissionEventBridge missionEvents;
+    bool missionDocActive = false;
+    if (console->getInt("g_missiondoc") != 0) {
+        const std::string mp = x3::game::findMissionFile("level1.mission.json");
+        std::vector<std::string> merr;
+        if (!mp.empty() && x3::game::loadMissionFile(mp, missionDoc, merr) &&
+            x3::game::validateMission(missionDoc, merr)) {
+            missionRunner.ctx().flags    = &chatTrees.flags();
+            missionRunner.ctx().timeline = &x3::game::globalTimeline();
+            missionRunner.ctx().scripts  = scripts.get();
+            missionEvents.bind(&chatTrees.flags());
+            missionRunner.setObjectiveSink([&game](const std::string& t) {
+                game.objectives().setText(t);
+            });
+            // resume() falls back to start() when no position marker is in the
+            // flags (fresh boot); after an F9 flags restore doLoad re-resumes.
+            missionDocActive = missionRunner.resume(missionDoc);
+            x3::logInfo(std::string("[mission] g_missiondoc=1 — `") + missionDoc.id +
+                        "` drives the objective line (stage `" +
+                        missionRunner.currentStageId() + "`)");
+        } else {
+            for (const auto& e : merr) x3::logWarn("[mission] " + e);
+            x3::logWarn("[mission] g_missiondoc=1 but no valid mission doc — staying on the hardcoded beats");
+        }
+    }
+
     // --test-rt: force hardware RT ambient occlusion ON for the headless smoketest
     // render path so the BLAS/TLAS build + ray-query AO compute + apply passes are
     // exercised under Vulkan validation. No-op if the device lacks RT support (the
@@ -9692,11 +10053,26 @@ int main(int argc, char** argv) {
         // so the corridor walls + doorway + floor recede into the frame. A slight
         // downward pitch puts floor shadows in view; the sun is normalize(0.4,1,0.3)
         // (matches the shadow pass) so the down-corridor look shows cast shadows.
-        const float ssX = shotCamOverride ? shotCam[0] : 8.0f;
-        const float ssY = shotCamOverride ? shotCam[1] : 1.75f;
-        const float ssZ = shotCamOverride ? shotCam[2] : -0.4f;
-        const float ssYaw = shotCamOverride ? shotCam[3] : 0.06f;
-        const float ssPitch = shotCamOverride ? shotCam[4] : -0.16f;
+        float ssX = shotCamOverride ? shotCam[0] : 8.0f;
+        float ssY = shotCamOverride ? shotCam[1] : 1.75f;
+        float ssZ = shotCamOverride ? shotCam[2] : -0.4f;
+        float ssYaw = shotCamOverride ? shotCam[3] : 0.06f;
+        float ssPitch = shotCamOverride ? shotCam[4] : -0.16f;
+        // --screenshot-dialog: pose AT the F5 captive (Lena) and OPEN her chat
+        // tree so the choice UI is in frame (drawn in the loop below).
+        if (dialogShot) {
+            std::error_code dse;
+            std::filesystem::create_directories(
+                std::filesystem::path(screenshotPath).parent_path(), dse);
+            if (midFloors.victim()) {
+                const x3::phys::Vec3 vp = midFloors.victim()->pos();
+                ssX = vp.x - 2.4f; ssY = vp.y + 1.55f; ssZ = vp.z;
+                ssYaw = 0.0f; ssPitch = -0.05f;          // facing +X toward her
+            }
+            chatTrees.flags().set("lena.interrupted");   // the richer 3-choice fm0
+            if (!chatTrees.start("lena", "first_meeting"))
+                x3::logWarn("--screenshot-dialog: lena first_meeting failed to start");
+        }
         const float ssFov = 70.0f;
         device->setCamera(ssX, ssY, ssZ, ssYaw, ssPitch, ssFov);
         const x3::phys::Vec3 ssEye{ ssX, ssY, ssZ };
@@ -9836,6 +10212,9 @@ int main(int argc, char** argv) {
                 // showcase — force the perf/cull stats panel into the still so the
                 // tested/drawn/frustum/hzb counters are part of the evidence.
                 if (stressCount > 0) hud.drawStats(*device, frame, *console, dt, /*force=*/true);
+
+                // Chat-tree dialog UI over the vantage (--screenshot-dialog).
+                if (dialogShot) x3::game::drawChatTreeUi(*device, frame, chatTrees);
 
                 // ON-GLASS HOLO-TERMINAL readout for the capture: when the shot camera
                 // is aimed at the cell terminal it shows the LARGE high-contrast boot
@@ -10477,6 +10856,21 @@ int main(int argc, char** argv) {
     x3::game::NpcDialog npcDialog;
     float     npcBarkTimer = 0.0f;   // >0 while her companion one-liner is shown
     std::string npcBarkText;
+    bool      chatNumPrev[4] = {};   // chat-tree choice keys 1-4 edge state
+    // CHAT-TREE talk target: the F5 captive 'Lena' (spire_mid) — the first NPC whose
+    // dialog runs the data-driven x3.chattree runner instead of the shared 5-line
+    // script. Captive in reach -> her first_meeting tree; Companion -> banter pool.
+    auto chatTalkTarget = [&](const x3::phys::Vec3& at, float reach,
+                              std::string& whoOut, x3::phys::Vec3& posOut,
+                              bool& captiveOut) -> bool {
+        const x3::game::RescueVictim* v = midFloors.victim();
+        if (!v || v->expired() || !chatTrees.hasNpc(v->name())) return false;
+        const x3::phys::Vec3 vp = v->pos();
+        const float dx = at.x - vp.x, dz = at.z - vp.z;
+        if (dx * dx + dz * dz > reach * reach) return false;
+        whoOut = v->name(); posOut = vp; captiveOut = v->captive();
+        return true;
+    };
     // Find the nearest LIVE captive within `reach` of `at` (XZ). Returns true + its
     // name/world-pos. Shared by the E dispatch and the prompt/box draw so both see
     // exactly the same target. (Companions/expired victims are skipped.)
@@ -10516,6 +10910,10 @@ int main(int argc, char** argv) {
                                                             midFloors, topFloors, curFloor);
         if (x3::save::saveCheckpoint(savePath, st))
             x3::logInfo("[save] quick-saved checkpoint -> " + savePath);
+        // Story flags + per-NPC rel ride ALONGSIDE the binary checkpoint (their own
+        // additive text file — the checkpoint format/version stays untouched).
+        if (chatTrees.flags().saveFile(savePath + ".flags.txt"))
+            x3::logInfo("[save] story flags -> " + savePath + ".flags.txt");
     };
     // Perform a load: read + validate, then apply to the live game (and re-position
     // the elevator to the recorded floor). Fails gracefully (logged) on a bad file.
@@ -10533,6 +10931,13 @@ int main(int argc, char** argv) {
         // world matches the restored "current floor".
         if (elevator.built() && (int)loadedFloor < elevator.stopCount())
             elevator.callTo((int)loadedFloor);
+        // Story flags + rel (additive file next to the checkpoint; absence is fine —
+        // an old save simply restores with empty narrative state).
+        if (chatTrees.flags().loadFile(savePath + ".flags.txt"))
+            x3::logInfo("[save] story flags restored from " + savePath + ".flags.txt");
+        // Mission resume (g_missiondoc): the runner's position marker rides the
+        // flags file — land back on the recorded stage (onEnter fx NOT re-fired).
+        if (missionDocActive) missionRunner.resume(missionDoc);
     };
 
     // ---- M9 audio event edge-tracking + footstep cadence -------------------
@@ -10775,10 +11180,37 @@ int main(int argc, char** argv) {
         prevF1 = f1Now;
         prevF2 = f2Now;
 
+        // ---- CHAT-TREE choice input: number keys 1-4 answer the filtered choices
+        // while a chat conversation is up (E advances no-choice lines in the use
+        // dispatch below). Edge-detected; consumes the keys (weapon switch is
+        // suppressed while talking — same capture idea as the terminal). ----
+        if (chatTrees.active() && !terrainWorld) {
+            const uint32_t nch = (uint32_t)chatTrees.choices().size();
+            for (int ci = 0; ci < 4; ++ci) {
+                const bool dn = keyDown(GLFW_KEY_1 + ci) || keyDown(GLFW_KEY_KP_1 + ci);
+                if (dn && !chatNumPrev[ci] && (uint32_t)ci < nch) {
+                    const bool still = chatTrees.choose((uint32_t)ci);
+                    if (still) {
+                        x3::logInfo("chat: [" + chatTrees.currentSpeaker() + "] " +
+                                    chatTrees.currentLine());
+                    } else if (chatTrees.followFired()) {
+                        npcBarkText  = x3::game::companionBark("Lena");
+                        npcBarkTimer = 4.0f;
+                        x3::logInfo("chat: " + std::string("Lena") +
+                                    " joined as a companion (chat tree)");
+                    }
+                }
+                chatNumPrev[ci] = dn;
+            }
+        } else {
+            chatNumPrev[0] = chatNumPrev[1] = chatNumPrev[2] = chatNumPrev[3] = false;
+        }
+
         // ---- WEAPONS: number keys 1..N switch the selected weapon; R reloads.
         // Suppressed while a keypad OR the cell terminal is active (those number/letter
-        // keys are being typed as a code, not used to switch weapons).
-        if (!codeMode && !termMode && !terrainWorld) {
+        // keys are being typed as a code, not used to switch weapons), and while a
+        // chat-tree conversation is capturing 1-4 as dialog choices.
+        if (!codeMode && !termMode && !terrainWorld && !chatTrees.active()) {
             const int n = arsenal.count() < 9 ? arsenal.count() : 9;
             for (int wi = 0; wi < n; ++wi) {
                 bool down = keyDown(GLFW_KEY_1 + wi);
@@ -10813,14 +11245,63 @@ int main(int argc, char** argv) {
             x3::phys::Vec3 dir{ std::cos(pitch) * std::cos(yaw),
                                 std::sin(pitch),
                                 std::cos(pitch) * std::sin(yaw) };
+            // CHAT-TREE TALK (x3.chattree/1) takes priority over EVERYTHING: Lena,
+            // the F5 scavenger, runs her DATA dialog (lena.json) instead of the
+            // shared 5-line script. E starts first_meeting on the captive /
+            // advances no-choice lines (1-4 answer choices, handled per-frame
+            // above); re-talking the companion pulls a banter-pool bark. The
+            // {"follow"} effect routes through the SAME midFloors.onRescue sink
+            // the bare E-rescue used.
+            std::string chatWho; x3::phys::Vec3 chatPos{}; bool chatCaptive = false;
+            const bool chatInRange =
+                chatTalkTarget(eye, x3::game::kTalkReach, chatWho, chatPos, chatCaptive);
+            const bool chatHandled = chatTrees.active() || chatInRange;
+            if (chatHandled) {
+                if (chatTrees.active()) {
+                    if (chatTrees.choices().empty()) {
+                        const bool still = chatTrees.advance();
+                        if (still) {
+                            x3::logInfo("chat: [" + chatTrees.currentSpeaker() + "] " +
+                                        chatTrees.currentLine());
+                        } else if (chatTrees.followFired()) {
+                            npcBarkText  = x3::game::companionBark(chatWho.empty() ? "Lena" : chatWho);
+                            npcBarkTimer = 4.0f;
+                            x3::logInfo("chat: " + (chatWho.empty() ? std::string("Lena") : chatWho) +
+                                        " rescued via her chat tree — now a companion");
+                        }
+                    }   // choices up: E waits for a 1-4 answer
+                } else if (chatCaptive) {
+                    // The follow sink — evaluated when her tree's {"follow"} fx fires
+                    // (a later E), so it re-resolves the victim position at call time.
+                    chatTrees.ctx().follow = [&midFloors]() {
+                        const x3::game::RescueVictim* v = midFloors.victim();
+                        return v ? midFloors.onRescue(v->pos()) : false;
+                    };
+                    if (chatTrees.start(chatWho, "first_meeting"))
+                        x3::logInfo("chat: [" + chatTrees.currentSpeaker() + "] " +
+                                    chatTrees.currentLine());
+                } else {
+                    // Companion re-talk: a banter-pool bark (weighted, rotated, gated).
+                    const float roll = (float)(std::rand() % 1000) / 1000.0f;
+                    const std::string b = chatTrees.pickBanter(chatWho, roll);
+                    if (!b.empty()) {
+                        npcBarkText  = b;
+                        npcBarkTimer = 5.0f;
+                        x3::logInfo("chat banter: [" + chatWho + "] " + b);
+                    }
+                }
+            }
             // RESCUED-NPC TALK takes priority over the bare door/rescue handlers so
             // the captive girl always gets her exchange. If a live captive is in talk
             // range, this E starts/advances the dialog; completing it performs the
             // actual rescue (so she becomes a following companion) + queues her bark.
             std::string talkWho; x3::phys::Vec3 talkPos{};
-            const bool talkInRange = nearestLiveCaptive(eye, x3::game::kTalkReach, talkWho, talkPos);
+            const bool talkInRange = !chatHandled &&
+                nearestLiveCaptive(eye, x3::game::kTalkReach, talkWho, talkPos);
             const bool talkHandled = npcDialog.active() || talkInRange;
-            if (talkHandled) {
+            if (chatHandled) {
+                // consumed by the chat-tree branch above (keeps the else-chain shut)
+            } else if (talkHandled) {
                 const std::string barkName = talkWho.empty() ? npcDialog.partner() : talkWho;
                 const bool rescued = npcDialog.interact(
                     talkInRange, talkWho, talkPos,
@@ -10937,6 +11418,18 @@ int main(int argc, char** argv) {
                 if (nearestLiveCaptive(peye, x3::game::kTalkReach, w, cp)) npcDialog.setAnchor(cp);
                 else                                                       npcDialog.cancel();
             }
+            // Chat-tree conversation: cancel the moment the player wanders out of
+            // talk range (a small grace over the start reach so a head-bob doesn't
+            // drop the box mid-line). Matches NpcDialog's never-strand rule.
+            if (chatTrees.active()) {
+                float pex, pey, pez, pyaw, ppitch;
+                player.camera(pex, pey, pez, pyaw, ppitch);
+                if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
+                const x3::phys::Vec3 peye{ pex, pey, pez };
+                std::string w; x3::phys::Vec3 cp{}; bool cap = false;
+                if (!chatTalkTarget(peye, x3::game::kTalkReach + 0.5f, w, cp, cap))
+                    chatTrees.cancel();
+            }
             if (npcBarkTimer > 0.0f) npcBarkTimer -= dt;
         }
 
@@ -11028,6 +11521,10 @@ int main(int argc, char** argv) {
                 // submit sink — via submitTerminalToScripts() (factored above main(),
                 // shared with --test-hatch so the keypad->fire link is the SAME code
                 // the headless chain self-test proves).
+                // Mission flag bridge: the entered code is condition substrate too
+                // ("code.<code>.entered") — mirrored BEFORE submit clears the line.
+                if (missionDocActive)
+                    missionEvents.onEvent("terminal_code", {{"code", term.input()}});
                 bool ok = submitTerminalToScripts(scripts.get(), term);
                 if (ok) { termMode = false; term.setActive(false);
                           x3::logInfo("terminal: code ACCEPTED — trapdoor opening"); }
@@ -11338,6 +11835,15 @@ int main(int argc, char** argv) {
                     scripts->fire("trigger_enter",
                         {{"zone", std::to_string(tid)}, {"who", "player"}});
             }
+            // ---- MISSION DOC (g_missiondoc=1): bridge this tick's game state into
+            // mission flags (door/armed/checkpoint/boss beats, trigger zones, kill
+            // counters) and advance the runner — it drives the objective line via
+            // the free-text lane. Default-off: missionDocActive is false unless the
+            // cvar was 1 at boot AND the doc validated. ----
+            if (missionDocActive) {
+                x3::game::pollLevel1MissionFlags(game, missionEvents, chatTrees.flags());
+                missionRunner.tick();
+            }
             // ---- CANONLEVEL DOORS: tick the SM_Door_A slide animation. Doors are
             // MANUAL — the player opens/closes one by aiming at the slab (or its button)
             // and pressing E (the use block above calls tryUse()->toggle()). There is
@@ -11478,7 +11984,10 @@ int main(int argc, char** argv) {
         // While the console, a UI menu, the cell terminal, or a keypad is capturing
         // input, gameplay verbs (melee / fire) must NOT trigger — no shooting through
         // the pause menu, no punching while typing the override code.
-        const bool uiCapture = consoleOpen || uiMenuActive || termMode || codeMode;
+        // A running chat-tree conversation also pauses the combat verbs (no firing
+        // through Lena's dialog box) — same capture idea as the terminal/keypad.
+        const bool uiCapture = consoleOpen || uiMenuActive || termMode || codeMode ||
+                               chatTrees.active();
         bool meleeNow = !uiCapture && (keyDown(GLFW_KEY_V) ||
             glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS);
         if (meleeNow && !prevMelee && player.isAlive() && !terrainWorld) {
@@ -12005,6 +12514,29 @@ int main(int argc, char** argv) {
                     if (noclip) { pex = flyX; pey = flyY; pez = flyZ; }
                     const x3::phys::Vec3 peye{ pex, pey, pez };
                     uint32_t hudW = 0, hudH = 0; device->hudSize(hudW, hudH);
+
+                    // CHAT-TREE dialog box (Lena) — the data-driven runner's UI: NPC
+                    // line on top, up to 4 numbered choices below, GTA-subtitle look.
+                    if (chatTrees.active()) {
+                        x3::game::drawChatTreeUi(*device, frame, chatTrees);
+                    } else {
+                        // "[E] Talk" floats over the chat-capable NPC too (captive OR
+                        // companion re-talk), same worldToScreen pattern as below.
+                        std::string cw; x3::phys::Vec3 cp{}; bool ccap = false;
+                        if (chatTalkTarget(peye, x3::game::kTalkReach, cw, cp, ccap)) {
+                            float sx = 0.0f, sy = 0.0f;
+                            if (device->worldToScreen(cp.x, cp.y + 1.85f, cp.z, sx, sy)) {
+                                const float ddx = cp.x - pex, ddz = cp.z - pez;
+                                float a = 1.0f - (std::sqrt(ddx*ddx + ddz*ddz) - 2.0f);
+                                if (a > 1.0f) a = 1.0f; if (a < 0.0f) a = 0.0f;
+                                a = 0.35f + 0.65f * a;
+                                const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f * a };
+                                const float col[4]    = { 1.0f, 0.72f, 0.84f, a };
+                                device->drawHudText(frame, "[E] Talk", sx - 40.0f + 1.5f, sy + 1.5f, 18.0f, shadow);
+                                device->drawHudText(frame, "[E] Talk", sx - 40.0f, sy, 18.0f, col);
+                            }
+                        }
+                    }
 
                     if (npcDialog.active()) {
                         // The exchange box: a translucent panel near the screen bottom

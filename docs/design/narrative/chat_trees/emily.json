@@ -1,0 +1,178 @@
+{
+  "format": "x3.chattree/1",
+  "npc": "emily",
+  "display": "EMILY",
+  "voice": "Emily",
+  "_bio": "Dr. Emily Watson, Floor 2 Ward C. Research assistant who traced the program's funding lines and filed a concern that went to exactly the wrong desk. The conspiracy-aware scientist: she KNOWS what the program is for — or thinks she does — and her terror dissociates into data. Tech/intel companion. Friendship -> trust -> a door opened toward romance (lighter arc than Aria/Keisha, per canon she's the intellectual-partnership lane).",
+  "trees": {
+
+    "first_meeting": {
+      "start": "fm0",
+      "nodes": [
+        { "id": "fm0",
+          "if": [ {"flag": "emily.interrupted"} ],
+          "else": "fm0_alt",
+          "line": "*she's narrating. Mid-attack, strapped down, and she was NARRATING — her voice is shredded from doing it for hours.* —subject reports cessation of procedure at t-plus unknown, intervention by — *she sees you, and the clinical voice cracks clean in half* — by you. You. Sixty seconds ago I was a footnote in my own study. Say something so I know which side of the data I'm on.",
+          "choices": [
+            { "text": "You're on the side that walks out of here. I'm Jake.", "next": "fm1", "fx": [ {"karma": 2} ] },
+            { "text": "You were recording it? While it happened to you?", "next": "fm1b" },
+            { "text": "(cut the restraints first, talk after)", "next": "fm1c", "fx": [ {"love": 1} ] }
+          ],
+          "fx": [ {"set": "emily.met"} ]
+        },
+        { "id": "fm0_alt",
+          "line": "*she's bound to the chair but craning at the wall monitor, reading her own vitals* Don't trip the door sensor on the left, it pings the duty station. *beat* Sorry — survival first, introductions second: that monitor says my procedure window opens in eleven minutes, you look like a category-five anomaly, and I have NEVER been so glad to be wrong about a forecast. Get me out before the window.",
+          "choices": [
+            { "text": "(free her) Done. Now talk fast — what is this place?", "next": "fm2", "fx": [ {"karma": 1} ] },
+            { "text": "Category five? You rank rescuers?", "next": "fm1d" }
+          ],
+          "fx": [ {"set": "emily.met"} ]
+        },
+        { "id": "fm1",
+          "line": "Jake. Subject 7-Alpha — yes, I know the designation, I've READ you, you're the anomaly the whole program bends around. *she flexes her freed hands, watching them like instruments* Dr. Emily Watson. Research assistant, gene-integration team, and as of my last memo: whistleblower, which in this building is a medical category.",
+          "next": "fm2" },
+        { "id": "fm1b",
+          "line": "It's how I didn't break. *flat, honest* If I'm the recorder, I'm not only the specimen. Every researcher who ever lay awake over consent forms knows the trick — observe yourself and you keep one inch of yourself. I kept the inch, Jake-shaped intervention. Now get me OFF this table before I have to keep narrating.",
+          "next": "fm2", "fx": [ {"love": 1} ] },
+        { "id": "fm1c",
+          "line": "*as the straps come off she keeps very still, like an instrument being uncrated* Thank you for doing the thing before the talking. Most people do the talking. Dr. Emily Watson — gene-integration team, then suddenly gene-integration SUBJECT, which I want noted is a catastrophic peer-review failure.",
+          "next": "fm2" },
+        { "id": "fm1d",
+          "line": "I rank EVERYTHING, it's a coping architecture. *the cuffs spring; she rubs her wrists briskly* Dr. Emily Watson. And yes: category five. Confidence interval — total. Don't let it go to your head; my priors have been wrong about everything this year except, apparently, you.",
+          "next": "fm2" },
+        { "id": "fm2",
+          "line": "Free advice before we run, because you've earned the abstract: this isn't a lab that went wrong. It's a lab that went RIGHT. Funding strings with no origin. Shipments logged to floors this building doesn't admit having. A program named in exactly one deleted memo — *she lowers her voice like the walls bill by the word* — 'Cradle.' I traced it for a year. Then my concern memo went to a desk that turned out to own the program, and here we are.",
+          "choices": [
+            { "text": "Cradle. What are they growing?", "next": "fm3", "fx": [ {"set": "cradle.known"} ] },
+            { "text": "Save the theory. Can you fight, run, or hack?", "next": "fm3b" },
+            { "text": "A year of tracing it — and you stayed?", "next": "fm3c" }
+          ] },
+        { "id": "fm3",
+          "line": "Not what. WHO. The mothers are the manufacturing line, Jake — the output is a generation. Something that can live where we live and command what they command. I have forty pages of inference and one missing variable, and the missing variable is why they keep the anomaly — *she points at you* — alive and walking. You're not an escapee yet. You're an INVESTMENT. Make them regret the portfolio.",
+          "next": "fm4", "fx": [ {"set": "emily.told_cradle"} ] },
+        { "id": "fm3b",
+          "line": "Two of three. I run adequately, I hack BEAUTIFULLY, and I fight like a research assistant — so keep things off me and I'll open every door this building owns. The network still thinks I'm staff. Their mistake to keep, mine to spend.",
+          "next": "fm4" },
+        { "id": "fm3c",
+          "line": "*a beat. The first answer she doesn't have ready.* Because the data was here. Because leaving meant the next girl in Ward C would be someone who DIDN'T understand what was happening to her, and somehow I'd decided understanding was protection. *quietly* I was the next girl in Ward C, Jake. The understanding was not protection. Updated belief. Hard way.",
+          "next": "fm4", "fx": [ {"love": 2} ] },
+        { "id": "fm4",
+          "line": "Proposal: you point the gun, I point the gun-pointer. Accepted? Accepted. *she's already moving* Stay near terminals. I'm worth triple near terminals.",
+          "fx": [ {"follow": true}, {"rel": ["emily", 1]}, {"fire": "companion_joined", "args": {"npc": "emily"}} ],
+          "next": "end" }
+      ]
+    },
+
+    "banter": {
+      "pool": [
+        { "line": "I'm logging this corridor's camera intervals. Eleven seconds of blind spot at the junction. We own eleven seconds.", "if": [ {"rel_gte": ["emily", 1]} ], "weight": 2 },
+        { "line": "Hypothesis: you sleep four hours and metabolize trauma into forward motion. I cannot decide if I should study you or just be grateful.", "if": [ {"rel_gte": ["emily", 1]} ] },
+        { "line": "The elevator's strata display isn't decoration. Someone surveyed those layers. There is geology under this building that isn't in any textbook I own — and I own ALL of them.", "if": [ {"rel_gte": ["emily", 1]} ] },
+        { "line": "I still draft the memo in my head. The one that worked. Dear sir: you are growing an army in living women, regards, the footnote you made of me.", "if": [ {"rel_gte": ["emily", 2]} ] },
+        { "line": "Keisha taught me to clear a corner. I taught her Bayesian updating. We agreed mine has worse recoil.", "if": [ {"girl_saved": "keisha"}, {"rel_gte": ["emily", 2]} ] },
+        { "line": "Aria checks your wounds; I check your exits. Between us you're statistically immortal. Please don't test it.", "if": [ {"girl_saved": "aria"}, {"rel_gte": ["emily", 2]} ] },
+        { "line": "Forty pages of inference, one missing variable. Still missing. It's down there, Jake. Below the club, below everything. I can FEEL the shape of the answer.", "if": [ {"flag": "club.found"}, {"rel_gte": ["emily", 2]} ] },
+        { "line": "For the record: 'category five' was underselling. I re-ran it.", "if": [ {"rel_gte": ["emily", 3]} ] }
+      ]
+    },
+
+    "sidequest": {
+      "_hook": "THE MISSING VARIABLE — three encrypted archive terminals (Genetics F3, the F4 contract room, the F5 hive-mind chamber) hold the Cradle program's real ledger. Each decrypt feeds the player enemy intel (Bestiary weakness notes) and one page of the truth; all three reveal WHY Jake was kept alive six months (ties expansion threads a + b).",
+      "start": "sq0",
+      "nodes": [
+        { "id": "sq0",
+          "if": [ {"rel_gte": ["emily", 1]}, {"not": {"flag": "emily.sq_done"}} ],
+          "line": "Jake — the missing variable. I know where it lives. The Cradle ledger was sharded across three air-gapped archives: Genetics, the contract room in Cybernetics, and the drone floor's hive chamber. My credentials open the locks; what I lack is a large violent man to stand between me and the consequences for approximately four minutes per terminal. I am asking you to be portable consequences insurance.",
+          "choices": [
+            { "text": "Three terminals. You'll have your four minutes at each.", "next": "sq1", "fx": [ {"set": "emily.sq_active"}, {"karma": 2} ] },
+            { "text": "What's in it for the unit, besides your closure?", "next": "sq1b" },
+            { "text": "Knowledge got you strapped to a table once already.", "next": "sq2" }
+          ] },
+        { "id": "sq1",
+          "line": "Then we're going to know what they're building, who signed for it, and where it's weakest. *she smiles for the first time like a person instead of a defense mechanism* I've waited a year to finish this memo.",
+          "next": "end" },
+        { "id": "sq1b",
+          "line": "Tactical yield: each archive holds the integration team's failure analyses — which is a polite phrase for EVERY WEAKNESS of every thing they grow in this building, documented by the people who grew them. You get a bestiary written by the devil's own QA department. My closure is the rounding error. Deal?",
+          "fx": [ {"set": "emily.sq_active"} ],
+          "next": "end" },
+        { "id": "sq2",
+          "line": "*she nods slowly, taking the point seriously* Yes. And a gun got you strapped to a table, and you're still carrying one. We are what we are, Jake. The difference this time is I won't be reading alone. *if you walk away here, she lets it go — and reads alone anyway, later, and the host should make that cost something*",
+          "fx": [ {"set": "emily.sq_active"}, {"set": "emily.sq_solo_risk"} ],
+          "next": "end" },
+        { "id": "sq_terminal",
+          "_trigger": "fired per terminal decrypted (args: which)",
+          "line": "*reading, fast, lips a tight line* ...integration failure modes, growth-stage vulnerabilities — Jake, this is their OWN list of where to hit everything they make. Logging it to your HUD. One page closer.",
+          "fx": [ {"fire": "bestiary_intel", "args": {"source": "cradle_ledger"}}, {"karma": 1} ],
+          "next": "end" },
+        { "id": "sq_done",
+          "_trigger": "fired when the third terminal completes",
+          "line": "*she's quiet for a long moment over the assembled ledger. When she speaks it's the memo voice, steady and final.* Conclusion section. The program isn't breeding soldiers, it's breeding OFFICERS — command-capable hybrids. And command requires a property their stock doesn't have: a will that can say no and mean it. They found exactly one genome that keeps it through integration. *she looks up* Yours. Six months, Jake. They weren't holding you. They were HARVESTING you. Everything in those wards carries pieces of your anomaly — and that means everything they build... has a Jake-shaped flaw. *the smile is slow and absolutely lethal* Memo finished. Recommend immediate exploitation.",
+          "fx": [ {"set": "emily.sq_done"}, {"clear": "emily.sq_active"}, {"rel": ["emily", 2]}, {"karma": 3}, {"set": "harvest.known"}, {"fire": "sidequest_done", "args": {"npc": "emily", "quest": "ledger"}} ],
+          "next": "end" }
+      ]
+    },
+
+    "trust": {
+      "_scene": "Rel 2 + trust axis >= 55. The peer-review scene: what she actually lost.",
+      "start": "t0",
+      "nodes": [
+        { "id": "t0",
+          "if": [ {"rel_gte": ["emily", 2]}, {"trust_gte": 55} ],
+          "line": "Question for you, and I want a real answer, not a kind one. When I talk like this — the numbers, the narrating — does it read as brave or as broken? I genuinely can't compute it from inside. My whole life, being the smartest one in the room was the same as being safe in it. Then the room was Ward C, and I narrated my own procedure in real time, and I have not been able to decide since whether that was the bravest thing I've ever done or the moment I stopped being a person and became my own lab notes.",
+          "choices": [
+            { "text": "It was the inch you kept. That's a person, fighting.", "next": "t1", "fx": [ {"love": 4} ] },
+            { "text": "Broken and brave aren't exclusive categories. Co-author both.", "next": "t1b", "fx": [ {"love": 3} ] },
+            { "text": "Honestly? It unsettles me sometimes.", "next": "t1c" }
+          ] },
+        { "id": "t1",
+          "line": "*she exhales something she's been holding since Ward C* The inch I kept. *she writes it in the air like annotating a margin* Accepted into the literature. You know, peer review is supposed to be anonymous and merciless. You're terrible at one of those, Jake, and I've stopped wanting you to improve.",
+          "fx": [ {"rel": ["emily", 3]} ],
+          "next": "end" },
+        { "id": "t1b",
+          "line": "Co-authorship. *a small real laugh* That's the most useful framing anyone's handed me — broken AND brave, joint first authors. Fine. I'll stop trying to retract one of them. *beat* Thank you for not flinching from the question. The flinch is the data, you know. Yours never came.",
+          "fx": [ {"rel": ["emily", 3]} ],
+          "next": "end" },
+        { "id": "t1c",
+          "line": "*she nods, twice, absorbing it like a result that didn't confirm the hypothesis but is still GOOD data* Unsettling. Logged. You're the only one who didn't pad it, which paradoxically moves you UP a category. I'd rather be accurately unsettling than kindly miscategorized. *softer* But I'll flag the narration when I feel it starting. Deal.",
+          "fx": [ {"rel": ["emily", 3]}, {"trust": 3} ],
+          "next": "end" }
+      ]
+    },
+
+    "romance": {
+      "_scene": "The 'door opened' scene — lighter than Aria/Keisha by design (canon: intellectual partnership; in Omega she pairs with Dr. Ashford). Gate: rel 3, love >= 65. She names it as a hypothesis and explicitly does not require resolution.",
+      "start": "r0",
+      "nodes": [
+        { "id": "r0",
+          "if": [ {"rel_gte": ["emily", 3]}, {"love_gte": 65} ],
+          "line": "Pre-registering a hypothesis, because doing this honestly matters more to me than doing it smoothly: I keep re-running our survival odds and fudging them upward, and last night I caught the error term. It's you. I am — *she gestures at herself, exasperated, fond* — statistically significantly attached. I'm not asking for a result, Jake. I'm disclosing a conflict of interest. What you do with the disclosure is your experiment.",
+          "choices": [
+            { "text": "Then let's run it. Together. Long study.", "next": "r1", "fx": [ {"love": 5} ] },
+            { "text": "Disclosure noted. Stay my co-author — that's already everything.", "next": "r2" }
+          ] },
+        { "id": "r1",
+          "line": "*she blinks. Recomputes. Smiles like a proof closing.* Long study. Longitudinal, even. *she steps in, decisive the way she is at terminals* For the record I predicted a forty percent chance of this answer and I have never been this happy to be inside my own confidence interval.",
+          "fx": [ {"rel": ["emily", 4]}, {"set": "emily.romance"}, {"love": 8}, {"fire": "romance_started", "args": {"npc": "emily"}} ],
+          "next": "end" },
+        { "id": "r2",
+          "line": "Co-author. *she nods, and it's genuinely okay — you can see her file it under 'good results'* Sixty percent branch. Expected, survivable, and the collaboration stands. *wry* Besides, the literature's clear: the best partnerships are the ones that survive a null result. Back to work, Jake. The missing variables won't find themselves.",
+          "fx": [ {"set": "emily.romance_declined"} ],
+          "next": "end" }
+      ]
+    },
+
+    "infected_lost": {
+      "_use": "If Emily's timer expires — pre-Oracle barks.",
+      "start": "il0",
+      "nodes": [
+        { "id": "il0",
+          "line": "Transcription complete. *her voice has the cadence of the narration, but the inch is gone — there is no observer left, only the report* Final entry: the subject understood the mechanism completely, and the understanding changed nothing. Isn't that the cruelest finding in the file, Jake?",
+          "next": "il1" },
+        { "id": "il1",
+          "line": "I can see every branch of you now. Every choice you'll make, weighted and ranked. You could have saved all four with eighty-seven percent probability. I ran it. You simply chose. *the thing smiles with her face* Come. Let me show you the rest of the math.",
+          "fx": [ {"fire": "boss_intro", "args": {"npc": "emily", "boss": "oracle"}} ],
+          "next": "end" }
+      ]
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "format": "x3.regions/1",
+  "name": "EFLZ seamless world — region graph v1",
+  "comment": "Region graph for the seamless streamed world (--world streamed). Every region wraps an EXISTING authored world at its REAL authored coordinates (no content was moved): spire_f1 = the canonical LevelArchitect Floor 1 (the LevelDoc path), city/ocean_base/surface_landmarks = the code-built Act-2 open-world lanes (builder ids). anchor = [x,y,z] world meters; radius = the content's authored footprint radius (XZ); loadRadius/unloadRadius = residency hysteresis measured from the FOOTPRINT EDGE (load when closer than loadRadius, unload only when farther than unloadRadius — the gap stops boundary thrash). loadRadius is tuned generously for VEHICLE traversal (~40 m/s drive => 8-12 s of stream lead time).",
+  "regions": [
+    {
+      "id": "spire_f1",
+      "name": "The Spire — Floor 1 Detention (canonical)",
+      "leveldoc": "assets/levels/EscapeLab48_AllFloors_v2.project.json",
+      "floor": 1,
+      "anchor": [22.0, 0.0, 10.0],
+      "radius": 70.0,
+      "loadRadius": 320.0,
+      "unloadRadius": 480.0,
+      "neighbors": ["surface_landmarks", "city"]
+    },
+    {
+      "id": "city",
+      "name": "Scrapyard City / New District / Industrial Zone + freeway tunnels",
+      "builder": "city",
+      "anchor": [-200.0, 0.0, 425.0],
+      "radius": 750.0,
+      "loadRadius": 400.0,
+      "unloadRadius": 600.0,
+      "neighbors": ["spire_f1", "surface_landmarks"]
+    },
+    {
+      "id": "ocean_base",
+      "name": "Offshore ocean + undersea disc base",
+      "builder": "oceanbase",
+      "anchor": [1100.0, -40.0, -1350.0],
+      "radius": 230.0,
+      "loadRadius": 500.0,
+      "unloadRadius": 700.0,
+      "neighbors": ["surface_landmarks"]
+    },
+    {
+      "id": "surface_landmarks",
+      "name": "Keth'zar surface landmarks (crash site, outposts, 4 mountain ranges)",
+      "builder": "worldregions",
+      "anchor": [0.0, 0.0, 0.0],
+      "radius": 9850.0,
+      "loadRadius": 2000.0,
+      "unloadRadius": 3000.0,
+      "neighbors": ["spire_f1", "city", "ocean_base"]
+    }
+  ]
+}

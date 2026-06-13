@@ -1,0 +1,76 @@
+{
+  "format": "x3.chattree/1",
+  "npc": "vesper",
+  "display": "VESPER",
+  "voice": "Vesper",
+  "_bio": "VESPER — Club 1127's bartender, info-broker, and de facto governor. Ageless, amused, precise; has poured at the bottom of the world 'since before the lab had a number.' The canon 'fixer NPC' (MASTER_GAME_PLAN secrets). She trades in rumors — the rumor system that seeds Act 2, the hidden areas, the 1127/1278 code lore, and the Quartermaster thread. She never lies; she prices.",
+  "trees": {
+
+    "hub": {
+      "_use": "Re-enterable. First entry plays v0; subsequent entries land on v_loop.",
+      "start": "v0",
+      "nodes": [
+        { "id": "v0",
+          "if": [ {"not": {"flag": "vesper.met"}} ],
+          "else": "v_loop",
+          "line": "*the music is louder than the war upstairs and older than your sentence here. Behind fifty feet of bar, a woman polishes a glass that is already clean, watching you cross the floor like she's been expecting you since Tuesday.* Two hundred meters of rock between here and the nearest restraint, honey. House rule number one: it stays that way. *she sets the glass down* You found the number, you rode the music down, so you're either staff gone sideways or the gentleman making all that noise on the upper floors. The drinks are real either way. Vesper. I pour, I listen, I remember. Mostly I remember.",
+          "choices": [
+            { "text": "Jake. The noise was me. What IS this place?", "next": "v1" },
+            { "text": "A bar. At the bottom of a breeding facility. Explain.", "next": "v1" },
+            { "text": "You knew I was coming?", "next": "v1b" }
+          ],
+          "fx": [ {"set": "vesper.met"}, {"set": "club.found"}, {"fire": "rumor", "args": {"topic": "club_found"}} ] },
+        { "id": "v1",
+          "line": "It's the oldest honest room on this rock. *she pours something amber without asking; it's correct* The crews that bored the deep levels needed somewhere the cameras weren't, and the man who drew the plans understood that better than anyone — so he drew one room the building would never admit to. Eleven twenty-seven. The number on his door, once. *she taps the bar twice* The lab grew over us like coral over a wreck, honey. We were here first. That's not nostalgia, that's LEVERAGE, and it's why my lights stay on.",
+          "next": "v2" },
+        { "id": "v1b",
+          "line": "Word travels down faster than people do. The freight pipes sing, the runners talk, and the elevator plays a different tune when somebody interesting is aboard. *a smile with history in it* Also you're bleeding on my floor in a pattern that says 'fought up two levels for strangers.' That buys you the good bottle. Sit.",
+          "next": "v2" },
+        { "id": "v2",
+          "line": "House rules, then the menu. Rules: no shooting, no recruiting my staff, and what's said at the bar stays in the rock. Menu: drinks, which are cheap — and what I remember, which is not. Rumors run on barter here. Bring me what you hear up there, I'll trade you what I hear down here. *she spreads her hands: an honest casino* What'll it be tonight?",
+          "next": "v_menu" },
+        { "id": "v_loop",
+          "line": "*the glass is already moving when you clear the door* The noise upstairs gets louder every time you visit, honey. I take that as a good sign for exactly one of us. Menu's the same: drinks, memory, and the floor if you just need to stand somewhere the building can't see you.",
+          "next": "v_menu" },
+        { "id": "v_menu",
+          "line": "*she waits. Vesper never rushes a buyer.*",
+          "choices": [
+            { "text": "Tell me about the Architect.", "next": "r_architect", "if": [ {"any": [ {"flag": "rumor.architect"}, {"flag": "lena.told_tunnels"} ]} ] },
+            { "text": "The codes. 1127. 1278. They're connected.", "next": "r_codes", "if": [ {"flag": "code.1278.known"} ] },
+            { "text": "What's below this room?", "next": "r_below" },
+            { "text": "What's ABOVE the surface? Nobody's seen the sky in months.", "next": "r_surface" },
+            { "text": "A big ship shot me down six months ago. Who flies something that size?", "next": "r_quartermaster", "if": [ {"flag": "harvest.known"} ] },
+            { "text": "The barcode man walked off the floor. He said you'd know what that's worth.", "next": "r_reyes", "if": [ {"flag": "reyes.fled"}, {"not": {"flag": "vesper.reyes_paid"}} ] },
+            { "text": "Just the drink tonight.", "next": "v_drink" }
+          ] },
+        { "id": "r_architect",
+          "line": "*she doesn't polish anything for this one. Full attention is her tell.* The man who drew the deep plans. First-generation — came down with the boring crews and never went back up, because he'd seen what the bore broke INTO and decided the only sane place to live was next to it, with good speakers. *she nods at the room* He built my club, the under-halls, the doors that look like furniture. Half the secrets in this building are just his commute. And before you ask, honey: alive or dead, the answer's the same — nobody's seen him since the night he sealed a room under Detention and gave me the number to remember. *she lets that sit* I remember ALL my numbers.",
+          "fx": [ {"set": "rumor.architect_full"}, {"fire": "rumor", "args": {"topic": "architect_full"}} ],
+          "next": "v_menu" },
+        { "id": "r_codes",
+          "line": "Eleven twenty-seven was his door. Twelve seventy-eight was his ROOM — Detention block, back when those cells had locks on the inside and the people in them got paid. *she leans in, and the music seems to lean away politely* He numbered his hiding places after his addresses, honey, because a man who builds in secret his whole life needs SOMETHING that still says he existed. The club. The cell. And if you believe the runners — one more, further down than either, with his real work in it. *she straightens* That rumor I'll sell when you've earned the floor it's on.",
+          "fx": [ {"set": "code.1127.known"}, {"set": "rumor.third_room"}, {"fire": "rumor", "args": {"topic": "codes_lore"}} ],
+          "next": "v_menu" },
+        { "id": "r_below",
+          "line": "Below me is the reason the music never stops. *she says it lightly. It is not light.* The strata the elevator shows you — crystal, magma, and the layer the survey crews stopped naming out loud. The bore crews heard it first: a hum, under the rock, steady as a sleeping thing's breathing. The Architect tuned this whole room a quarter-tone off that hum, honey. The speakers aren't decoration. They're a LULLABY, pointed DOWN. *she pours herself half of something, which the regulars will tell you happens twice a year* Now ask me why a breeding program builds on top of a heartbeat. Or don't. I only sell the question; the answer costs more than you've got tonight.",
+          "fx": [ {"set": "rumor.substrate_hum"}, {"fire": "rumor", "args": {"topic": "substrate"}} ],
+          "next": "v_menu" },
+        { "id": "r_surface",
+          "line": "Months? Honey, run a longer tab. Nobody who drinks here has seen Earth's sky in YEARS, and there's a reason the staff contracts up top auto-renew. *she slides a coaster at you; on the back, someone long ago sketched two suns over a purple horizon* A driller drew that in '52 after a vent climb, then drank himself quiet about it. Two suns. Count them yourself someday. The lab tells the upstairs people they're in the Nevada desert, and the funny thing is — *the smile goes thin* — desert's the only part that's true.",
+          "fx": [ {"set": "rumor.not_earth"}, {"fire": "rumor", "args": {"topic": "not_earth"}} ],
+          "next": "v_menu" },
+        { "id": "r_quartermaster",
+          "line": "*for the first time, Vesper looks at the door before she answers. File that away: something makes HER check the door.* The big hulls belong to the grey freight line — Dominion bottoms, crewed by nobody you can bribe. But the TARGETING, honey... targeting needs somebody who knows human transponders, human flight lanes, human distress calls. The line's human broker calls himself the Quartermaster. Sells the program its groceries: fuel, parts... acquisitions. *she picks up the clean glass and polishes it anyway — Vesper's only nervous habit* He's drunk at my bar twice. Tipped well. Smelled like cold metal and good cologne, and I comped him both times because some customers you want OWING you nothing. If a ship of yours came down six months back — his ledger has the entry. And his ledger comes down the freight pipe twice a year. *beat* Next run's soon, honey. Ask me again when the pipe sings.",
+          "fx": [ {"set": "quartermaster.known"}, {"fire": "rumor", "args": {"topic": "quartermaster"}}, {"fire": "quest_started", "args": {"quest": "quartermaster_ledger"}} ],
+          "next": "v_menu" },
+        { "id": "r_reyes",
+          "line": "*she stops mid-pour. Sets the bottle down. Does the arithmetic behind her eyes that she usually hides.* The barcode man. Walked. Off the floor. *a slow exhale* Honey, do you know how long I've carried his tab on the books as 'uncollectable'? Men like Felix don't walk — they CALCULATE, forever, until the building falls on them mid-decimal. *she pours you the good bottle, the actual good bottle, from under the bar* You're changing the arithmetic down here. That's worth knowing about you. First rumor's on the house tonight — pick anything on the menu.",
+          "fx": [ {"set": "vesper.reyes_paid"}, {"karma": 1} ],
+          "next": "v_menu" },
+        { "id": "v_drink",
+          "line": "Smartest order in the house. *she pours, and for one song's length nobody in the world is breeding anything, hunting anything, or counting down to anything* The Architect used to say a room like this isn't an escape from the war, honey. It's the EXHIBIT. The thing you point at when somebody asks what the war was about. *she leaves you the bottle* Go win the argument.",
+          "next": "end" }
+      ]
+    }
+  }
+}

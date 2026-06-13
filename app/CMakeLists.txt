@@ -27,6 +27,9 @@ add_executable(X3Engine WIN32
     trigger.cpp
     rescue.cpp
     npc_dialog.cpp
+    story_ops.cpp
+    chat_tree.cpp
+    mission.cpp
     level1_game.cpp
     canon_play.cpp
     intro_coldopen.cpp
@@ -41,6 +44,7 @@ add_executable(X3Engine WIN32
     tod.cpp
     weather.cpp
     world_regions.cpp
+    world_stream.cpp
     city.cpp
     ocean_base.cpp
     save.cpp

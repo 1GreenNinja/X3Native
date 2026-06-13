@@ -1,0 +1,178 @@
+{
+  "format": "x3.chattree/1",
+  "npc": "lena",
+  "display": "LENA",
+  "voice": "Lena",
+  "_bio": "Lena — Floor 5 (Drone Manufacturing) captive. The street-smart scavenger: a tunnel-runner from the deep levels who came UP through the alien tubes to steal med supplies and got caught above F5. Not staff, not military — the only captive who chose to be in the building. Few words, total loyalty once earned. Knows the tunnels, the club, and codes she shouldn't. Default carrier-candidate for the mole arc (saved-at-Critical). Loyalty arc, not romance.",
+  "trees": {
+
+    "first_meeting": {
+      "start": "fm0",
+      "nodes": [
+        { "id": "fm0",
+          "if": [ {"flag": "lena.interrupted"} ],
+          "else": "fm0_alt",
+          "line": "*she doesn't scream. She's watching the dead thing with a scavenger's eyes — checking it's dead the way you check a wire's not live.* ...Huh. *then, to you, hoarse:* Knife. Left ankle. They never check the left ankle.",
+          "choices": [
+            { "text": "(cut her loose with her own knife)", "next": "fm1", "fx": [ {"karma": 1} ] },
+            { "text": "You're taking this well.", "next": "fm1b" },
+            { "text": "Who are you? You're not staff.", "next": "fm1c" }
+          ],
+          "fx": [ {"set": "lena.met"} ]
+        },
+        { "id": "fm0_alt",
+          "line": "*she's already free of one cuff — there's a bent filament of drone wire in her fingers* Took you long enough. Whole floor heard you coming. *she goes still, reassessing* ...You're not security sweep. You're the noise from downstairs. The one they keep paging about.",
+          "choices": [
+            { "text": "I'm the noise. Want out?", "next": "fm1", "fx": [ {"karma": 1} ] },
+            { "text": "You almost picked that cuff yourself.", "next": "fm1d" }
+          ],
+          "fx": [ {"set": "lena.met"} ]
+        },
+        { "id": "fm1",
+          "line": "Lena. *that's it. That's the introduction.* I run the deep tubes. Came up for med stock — antibiotics move like currency down there — and a breeder drone tagged me two floors short of home. *she retrieves her knife, checks the edge, sheathes it* Stupid. I knew their sweep pattern changed. Went anyway.",
+          "next": "fm2" },
+        { "id": "fm1b",
+          "line": "Screaming's spending. *she works her wrists* You scream when someone's close enough to come. Nobody comes to Five. *beat — the look she gives you is the closest she gets to surprise* Almost nobody. Lena. I run the deep tubes.",
+          "next": "fm2" },
+        { "id": "fm1c",
+          "line": "Staff. *the word comes out like spoiled food* No. Staff is who I steal from. Lena. Tunnel-runner. There's a whole world under this building's basement, and I'm the best courier in it. Or was, before the drone.",
+          "next": "fm2" },
+        { "id": "fm1d",
+          "line": "Almost. *she flexes the wire and flicks it away* Drone filament. Good for cuffs, bad for the strap rig they were about to move me to. So your timing's the only reason I'm being polite. Lena. Deep-tube runner. You want the toll-free version of this building? Stick with me.",
+          "next": "fm2" },
+        { "id": "fm2",
+          "line": "Trade. You got me off the rig, so you get one answer free. After that, everything costs — that's tunnel law. *she waits. The question IS the test.*",
+          "choices": [
+            { "text": "What's under this building?", "next": "fm3", "fx": [ {"set": "lena.asked_tunnels"} ] },
+            { "text": "How do I get to Floor 7 fast?", "next": "fm3b" },
+            { "text": "Are you okay? That's my question.", "next": "fm3c", "fx": [ {"karma": 2}, {"love": 3} ] }
+          ] },
+        { "id": "fm3",
+          "line": "*a slow blink — right question* Everything. Tubes, big as freeway bores, smooth like something MELTED them. Old. Older than the lab — the lab plugged INTO them, not the other way around. There's caves with singing rock, a flooded level, and at the very bottom there's a door with a number on it and music behind it. *she shrugs* I don't ask the bottom questions. Bottom questions cost the most.",
+          "fx": [ {"set": "lena.told_tunnels"}, {"fire": "rumor", "args": {"topic": "alien_tunnels"}} ],
+          "next": "fm4" },
+        { "id": "fm3b",
+          "line": "Elevator's watched, stairs are gassed past Six. But the freight shaft behind the recharge depot runs express if you know which panel lies. *she taps her temple* I know every panel that lies in this building. That's answer one. Going UP with you costs nothing — I'm headed that way regardless. Out is up. Out is always up.",
+          "next": "fm4" },
+        { "id": "fm3c",
+          "line": "*long pause. The question costs HER something to answer, which makes it expensive, which means you spent your free one on her.* ...No. *she says it plainly, once, and puts it away* But I will be. Down-tunnel we don't waste breath on the gap between those two. *she squares her pack straps* You spent your free question on a runner you just met. That buys you more than you know.",
+          "fx": [ {"set": "lena.asked_her"} ],
+          "next": "fm4" },
+        { "id": "fm4",
+          "line": "Deal stands: you're the gun, I'm the map. Don't slow down for me. I was born not slowing down.",
+          "fx": [ {"follow": true}, {"rel": ["lena", 1]}, {"fire": "companion_joined", "args": {"npc": "lena"}} ],
+          "next": "end" }
+      ]
+    },
+
+    "banter": {
+      "pool": [
+        { "line": "Camera. *she's pointing before you see it* Eleven o'clock, dead lens. Somebody shot it out years ago. Friend of mine, probably.", "if": [ {"rel_gte": ["lena", 1]} ], "weight": 2 },
+        { "line": "Vents in this place run warm-cold-warm. The cold runs go DOWN. File that.", "if": [ {"rel_gte": ["lena", 1]} ] },
+        { "line": "Static says hello, by the way. You'll meet her if you ever find the bottom door. Tell her I'm holding my own marker.", "if": [ {"rel_gte": ["lena", 1]}, {"not": {"flag": "club.found"}} ] },
+        { "line": "You went back for the club door, huh. Knew you were a bottom-questions type the day you spent your free one on me.", "if": [ {"flag": "club.found"}, {"rel_gte": ["lena", 2]} ] },
+        { "line": "The cells on One have terminals. Old ones. Some of those rooms had locks on the INSIDE once. Think about what that means.", "if": [ {"rel_gte": ["lena", 2]}, {"not": {"flag": "code.1278.known"}} ], "fx_on_play": [ {"fire": "rumor", "args": {"topic": "cell_terminal"}} ] },
+        { "line": "*she watches a surveillance drone drift past without targeting you* ...They drift wrong lately. Like they're listening to something further down. *she doesn't elaborate. She doesn't know how to.*", "if": [ {"flag": "lena.carrier"} ], "weight": 1 },
+        { "line": "I had a brother. Tunnel took him — flood level, bad map. It's why my maps are good, Jake. Every line on them is paid for.", "if": [ {"rel_gte": ["lena", 3]} ] },
+        { "line": "Most people I guide, I'm counting what they're worth if they don't make it. Stopped counting you somewhere around Floor Three. Don't make me start again.", "if": [ {"rel_gte": ["lena", 3]} ] }
+      ]
+    },
+
+    "sidequest": {
+      "_hook": "THE CACHE — her stash sits in the F1 under-hall (the hidden yellow route, HIDDEN_AREAS_AND_BIOMESH.md): meds, a dead friend's tags, and a hand-drawn tunnel map. Leads the player to the under-hall / bookshelf-elevator architecture and seeds the 1278 terminal-code discovery. Reward: the tunnel map item + the under-route revealed.",
+      "start": "sq0",
+      "nodes": [
+        { "id": "sq0",
+          "if": [ {"rel_gte": ["lena", 1]}, {"not": {"flag": "lena.sq_done"}} ],
+          "line": "Toll-free tip, one time only, because you keep not dying: I've got a cache under Floor One. Under-hall — there's a hall under the hall; staff never knew, that's the POINT. Antibiotics, a charge cell, and... personal stock. Drone tagged me before I could clear it. *beat* I'd rather it feeds us than feeds dust. And I'd rather you saw the under-hall from me than found it the hard way. Some of those doors only pretend to be furniture.",
+          "choices": [
+            { "text": "Show me the hall under the hall.", "next": "sq1", "fx": [ {"set": "lena.sq_active"} ] },
+            { "text": "Personal stock?", "next": "sq1b" },
+            { "text": "Doors that pretend to be furniture?", "next": "sq1c" }
+          ] },
+        { "id": "sq1",
+          "line": "Armory's got a floor that lies. Stair under it. Three ways out of that under-hall, and only one of them was built by the people who think they own this building. *she's already plotting the route on the back of a ration wrapper* Move quiet on the stairs. The monitoring post up top is glass — they see motion, not faces. Faces cost extra.",
+          "next": "end" },
+        { "id": "sq1b",
+          "line": "*flat* Tags. Marco's. My brother — the flood level kept him, but I dove for the tags. They live in the cache because carrying them up here felt like bringing him somewhere worse. *she looks at you, daring you to make it soft* Now you know what's in the box. Help me get the box.",
+          "fx": [ {"set": "lena.sq_active"}, {"set": "lena.marco_known"}, {"love": 2} ],
+          "next": "end" },
+        { "id": "sq1c",
+          "line": "Bookshelf on the under-route. Looks like staff clutter. It's a box that goes DOWN — one room, one cable, old as the tubes. I never rode it; it wants a signal I don't carry. *she taps her own forearm, unconsciously* Something under the skin. The barricaded ones in the bio-lab might know. They built half that floor's lies.",
+          "fx": [ {"set": "lena.sq_active"}, {"fire": "rumor", "args": {"topic": "bookshelf_elevator"}} ],
+          "next": "end" },
+        { "id": "sq_done",
+          "_trigger": "fired when the cache is recovered in the under-hall",
+          "line": "*she splits the meds without being asked — half to Aria's kit if Aria lives, half to her pack. The tags she holds for one breath, then loops over her neck, done deciding.* Marco rides along. He'd have liked you — you don't slow down. *she hands you the cloth map, the real treasure: every tube, every liar panel, every depth marked in her tight little hand* Map's yours. I'm your map now anyway. That's the whole cache, Jake. That's everything I own. *beat* Worth more than what it cost. First time I've ever said that.",
+          "fx": [ {"set": "lena.sq_done"}, {"clear": "lena.sq_active"}, {"rel": ["lena", 2]}, {"karma": 4}, {"give": "lena_tunnel_map"}, {"fire": "sidequest_done", "args": {"npc": "lena", "quest": "cache"}} ],
+          "next": "end" }
+      ]
+    },
+
+    "trust": {
+      "_scene": "Rel 2 + mercy axis >= 55 (she watches how you treat the helpless ones — surrendering guards, panicked scientists; that's HER axis). The code scene: she pays her debt in the only currency she has.",
+      "start": "t0",
+      "nodes": [
+        { "id": "t0",
+          "if": [ {"rel_gte": ["lena", 2]}, {"mercy_gte": 55} ],
+          "line": "Settle up time. Tunnel law: debts compound, and I don't like owing. So here's the most expensive thing I carry. *she crouches, draws four digits in the dust, then wipes them with her palm almost immediately* One-two-seven-eight. There's a terminal in one of the old cells on Detention that takes it. I watched a man come OUT of the floor of a locked cell once, Jake. Out of the FLOOR. He walked to the elevator like he owned the dark, and he was never on any roster I ever traded for.",
+          "choices": [
+            { "text": "Who was he?", "next": "t1" },
+            { "text": "Why give me this now?", "next": "t1b" },
+            { "text": "(just memorize it) Twelve seventy-eight.", "next": "t1c" }
+          ],
+          "fx": [ {"set": "code.1278.known"}, {"fire": "dialog_hint", "args": {"code": "1278", "source": "lena"}} ] },
+        { "id": "t1",
+          "line": "Bottom question. *but she answers it, which tells you what you've become to her* Down-tunnel they call him the Architect. Built things before the lab was the lab. Static says he built the bottom door too — the one with the music. I say nobody builds a nightclub at the bottom of the world unless they're planning to stay. *she stands* That's all I know and half of what I guess. Spend it well.",
+          "fx": [ {"rel": ["lena", 3]}, {"fire": "rumor", "args": {"topic": "architect"}} ],
+          "next": "end" },
+        { "id": "t1b",
+          "line": "Because you keep choosing the expensive thing. The guards that quit — you let them quit. The lab coats under the desks — you stepped past. Down-tunnel we count that. *she shrugs, embarrassed by her own arithmetic* Ledger says you're good for it. Ledger's never wrong. People are wrong. Ledgers, no.",
+          "fx": [ {"rel": ["lena", 3]} ],
+          "next": "end" },
+        { "id": "t1c",
+          "line": "*a short nod — the right amount of words, which is none* ...Yeah. You'd have made a runner. *it is, from her, approximately a medal of honor*",
+          "fx": [ {"rel": ["lena", 3]} ],
+          "next": "end" }
+      ]
+    },
+
+    "carrier_confront": {
+      "_scene": "THE MOLE ARC (player-discoverable; see STORYLINE_EXPANSIONS c). Gate: lena.carrier (set silently if she was rescued at InfectionStage::Critical) + the player has seen 2+ breadcrumb events (drones not targeting her, a door she shouldn't know, sleep-talking in a flat second voice). Triggered by the PLAYER choosing to confront. She does not know.",
+      "start": "c0",
+      "nodes": [
+        { "id": "c0",
+          "if": [ {"flag": "lena.carrier"}, {"flag": "mole.suspected"} ],
+          "line": "*you lay it out: the drones, the door codes, the voice in her sleep. She listens the way she checks a wire — utterly still. Then she pulls her knife, reverses it, and offers you the grip.* Then there's something in me that didn't get interrupted. *her voice doesn't shake. That costs her everything you can't see.* I told you screaming's spending, Jake. So I'm not going to scream. I'm going to ask you what the map says we do, because I can't read this one. First map I can't read.",
+          "choices": [
+            { "text": "We cure it. Whatever it takes — the synthesis lab, the Salvari, all of it.", "next": "c1", "fx": [ {"mercy": 5}, {"karma": 5}, {"set": "lena.cure_path"} ] },
+            { "text": "You stay with us. Watched. We use what it hears against them.", "next": "c2", "fx": [ {"set": "lena.double_agent"}, {"karma": 1} ] },
+            { "text": "(take the knife) You know what you'd do in my place.", "next": "c3" }
+          ] },
+        { "id": "c1",
+          "line": "*she looks at the refused knife for a long moment, then sheathes it* ...Cure. *the word comes out foreign — she's never once budgeted for rescue, only for exits* Okay. New map. *quieter, the only crack she allows:* Marco would say I finally guided somebody worth the toll. Don't prove him wrong, Jake. I just put everything I own on you. Again.",
+          "fx": [ {"rel": ["lena", 3]}, {"fire": "quest_started", "args": {"quest": "lena_cure"}} ],
+          "next": "end" },
+        { "id": "c2",
+          "line": "A tapped wire. *she turns the idea over; tunnel pragmatism wins over fear, barely* Runners carry packages without reading them all the time. Fine. I carry this one BACK at them. *she sets her own conditions, flat and absolute:* You watch me when I sleep. Aria checks me at every hold. And if my hands ever start a map I don't remember drawing — *she taps the knife* — the toll's already agreed. Say it back to me so I know you heard.",
+          "fx": [ {"set": "mole.weaponized"}, {"fire": "quest_started", "args": {"quest": "lena_double"}} ],
+          "next": "end" },
+        { "id": "c3",
+          "line": "*she doesn't flinch. She closes your fingers around the grip properly — a professional correcting an amateur's hold, one last lesson.* Edge out. Wrist firm. *and then, the only time she ever says this many words this softly:* Down-tunnel we don't waste breath on goodbyes either. You were the best route I ever ran, Jake. Make it clean and make it COUNT — both or neither. *what you do next is on you. The game should make you live with either.*",
+          "fx": [ {"set": "lena.final_choice"}, {"fire": "mole_endgame", "args": {"npc": "lena"}} ],
+          "next": "end" }
+      ]
+    },
+
+    "infected_lost": {
+      "_use": "If Lena is never saved / the carrier strand completes untreated.",
+      "start": "il0",
+      "nodes": [
+        { "id": "il0",
+          "line": "*the voice is hers but the economy is gone — it spends words like they're free now, and that's how you know* Jake. Jake, Jake. The maps were always wrong, did you know? Every tunnel I ever ran was a vein. We weren't moving THROUGH something, we were moving INSIDE something. And it's awake now, and it knows every route I know. *a smile she never wore* No tolls anymore. Everything's free down here. Come down. Come DOWN.",
+          "fx": [ {"fire": "boss_intro", "args": {"npc": "lena", "boss": "carrier"}} ],
+          "next": "end" }
+      ]
+    }
+  }
+}

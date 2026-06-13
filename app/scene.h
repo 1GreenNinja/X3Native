@@ -155,6 +155,26 @@ public:
     // Current generation of a slot (diagnostics / tests). 0 if out of range.
     uint32_t generationOf(uint32_t index) const;
 
+    // ---- World-streaming support (region ownership ledgers, app/world_stream.*) ----
+    // ENTITY CAPTURE: while a capture vector is installed, every add() also appends
+    // the new entity's id into it. The world streamer brackets a region BUILDER call
+    // with begin/end so the region's ownership ledger records exactly the entities
+    // that builder created — without touching any builder's code. Nested captures are
+    // not supported (the second begin overwrites the first). Pass nullptr to disable.
+    void beginEntityCapture(std::vector<uint32_t>* out) { m_capture = out; }
+    void endEntityCapture() { m_capture = nullptr; }
+
+    // SLOT RELEASE + REUSE: releaseSlot() empties slot `id` (no mesh/body/draw; the
+    // generation is bumped via recycle() so stale handles die) and parks it on an
+    // internal free-list; the NEXT add() pops a freed slot and recycles INTO it
+    // instead of growing the entity vector. This is what keeps Scene::size() (and the
+    // per-entity allocation footprint) CONSTANT across region stream-out/in cycles.
+    // Purely additive: until the first releaseSlot() the free-list is empty and add()
+    // appends exactly as before. The caller must own the slot (region ledger) and
+    // must already have destroyed the slot's GPU/physics resources.
+    void releaseSlot(uint32_t id);
+    uint32_t freeSlotCount() const { return (uint32_t)m_freeSlots.size(); }
+
     // Resolve a physics BodyId (e.g. from a rayCast hit) back to the entity id
     // that owns it. Returns kNoLink if no entity has that body. The map is
     // maintained by add(); bodies with id 0 (invalid) are skipped.
@@ -221,6 +241,10 @@ private:
     std::unordered_set<uint32_t> m_visibleRooms;
     bool m_roomCullEnabled = true;
     bool m_roomCullActive  = false;
+    // World-streaming support: optional add() capture sink + the released-slot
+    // free-list add() reuses (see beginEntityCapture / releaseSlot above).
+    std::vector<uint32_t>* m_capture = nullptr;
+    std::vector<uint32_t>  m_freeSlots;
     // Per-slot generation counter, parallel to m_entities (1:1 by index). A fresh
     // slot starts at generation 1 (so a minted handle is never the invalid gen 0);
     // recycle() bumps it. Additive — untouched by the legacy uint32_t-id path.
