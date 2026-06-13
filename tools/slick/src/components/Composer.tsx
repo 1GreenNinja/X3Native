@@ -5,6 +5,8 @@ import { useRef, useState } from "preact/hooks";
 import type { Session, MatrixEvent } from "../client";
 import { sendMessage, newTxnId, uploadMedia, imageDimensions } from "../client";
 import { addLocalEcho, markEchoFailed } from "../store";
+import { sendGen, GEN_DEFAULTS } from "../gen";
+import { GenPanel } from "./GenPanel";
 
 interface Parsed {
   type: string;
@@ -19,15 +21,8 @@ function parseInput(raw: string): Parsed | null {
   if (text.startsWith("/me ")) {
     return { type: "m.room.message", content: { msgtype: "m.emote", body: text.slice(4) } };
   }
-  if (text === "/gen" || text.startsWith("/gen ")) {
-    const prompt = text.slice(4).trim();
-    if (!prompt) return null;
-    // Structured event the StarForge bridge watches for (spec §4.3)
-    return {
-      type: "com.fleet.gen.request",
-      content: { prompt, params: { pipeline: "flux-hunyuan", count: 1 } },
-    };
-  }
+  // /gen is handled out-of-band (it routes through sendGen with the
+  // fleet.gen contract); parseInput returns null for it — see send().
   if (text.startsWith("/shrug")) {
     const rest = text.slice(6).trim();
     return { type: "m.room.message", content: { msgtype: "m.text", body: `${rest} ¯\\_(ツ)_/¯`.trim() } };
@@ -46,6 +41,7 @@ export function Composer({
 }) {
   const [value, setValue] = useState("");
   const [dragOver, setDragOver] = useState(false);
+  const [genOpen, setGenOpen] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -94,6 +90,15 @@ export function Composer({
   };
 
   const send = async () => {
+    const text = value.trim();
+    // /gen <prompt> routes through the fleet.gen contract (quick path; the
+    // ⚙️ panel is the full cockpit with mode/size/steps/target controls)
+    if (text === "/gen" || text.startsWith("/gen ")) {
+      const prompt = text.slice(4).trim();
+      setValue("");
+      if (prompt) sendGen(session, roomId, { ...GEN_DEFAULTS, prompt });
+      return;
+    }
     const parsed = parseInput(value);
     if (!parsed) return;
     setValue("");
@@ -152,6 +157,7 @@ export function Composer({
       <div class="composer-hint">
         <span><b>Enter</b> send · <b>Shift+Enter</b> newline · <code>/me</code> · <code>/gen</code> · drag/paste image</span>
         <span class="composer-actions">
+          <button class="attach-btn" onClick={() => setGenOpen(true)} title="Generate (ComfyUI)">⚙️</button>
           <button class="attach-btn" onClick={() => fileRef.current?.click()} title="Attach image">📎</button>
           <button class="send-btn" disabled={!value.trim()} onClick={send}>Send</button>
         </span>
@@ -167,6 +173,7 @@ export function Composer({
           (e.target as HTMLInputElement).value = "";
         }}
       />
+      {genOpen && <GenPanel session={session} roomId={roomId} onClose={() => setGenOpen(false)} />}
     </div>
   );
 }

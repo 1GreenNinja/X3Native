@@ -37,8 +37,18 @@ function EventBody({ ev }: { ev: MatrixEvent }) {
   const c = ev.content ?? {};
   const stateClass = c._failed ? " failed" : c._pending ? " pending" : "";
   const suffix = c._failed ? " ⚠ not sent" : "";
-  if (ev.type === "com.fleet.gen.request") {
-    return <div class={`msg-body gen-chip${stateClass}`}>⚙️ /gen — {c.prompt ?? "(no prompt)"} <em>(pending){suffix}</em></div>;
+  // fleet.gen request (StarForge's contract): a normal m.room.message carrying
+  // structured gen fields. Render as a cockpit chip showing the job spec.
+  const gen = c["fleet.gen"];
+  if (gen) {
+    const tgt = gen.target && gen.target !== "any" ? ` → ${gen.target}` : "";
+    const status = c._failed ? " ⚠ not sent" : c._pending ? " (queued…)" : " (dispatched)";
+    return (
+      <div class={`msg-body gen-chip${stateClass}`}>
+        ⚙️ <b>/gen</b> {gen.mode === "mesh" ? "🧊" : "🖼️"} {gen.prompt}
+        <em> · {gen.size}px · {gen.steps} steps{tgt}{status}</em>
+      </div>
+    );
   }
   if (c.msgtype === "m.image") {
     if (c._pending) {

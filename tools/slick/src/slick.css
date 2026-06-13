@@ -266,6 +266,60 @@ body {
 }
 .gen-chip em, .image-chip em { color: var(--muted); font-size: 12px; }
 
+/* gen panel (ComfyUI cockpit) */
+.genpanel-backdrop {
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: grid; place-items: center;
+  z-index: 900;
+}
+.genpanel {
+  background: #fff;
+  border-radius: 12px;
+  width: 460px;
+  max-width: 92vw;
+  padding: 20px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.genpanel-head {
+  display: flex; align-items: center; justify-content: space-between;
+  font-weight: 900; font-size: 17px;
+}
+.genpanel-x { background: none; border: none; font-size: 16px; cursor: pointer; color: var(--muted); }
+.genpanel-prompt {
+  border: 1px solid #868686; border-radius: 8px;
+  padding: 10px 12px; font-family: inherit; font-size: 15px; resize: vertical;
+}
+.genpanel-row { display: flex; align-items: center; gap: 12px; }
+.genpanel-row > label { width: 56px; font-size: 13px; font-weight: 700; color: var(--muted); }
+.genpanel-row select {
+  flex: 1; padding: 7px 10px; border: 1px solid #868686; border-radius: 6px; font-size: 14px;
+}
+.genpanel-row input[type="range"] { flex: 1; }
+.genpanel-steps { width: 28px; text-align: right; font-variant-numeric: tabular-nums; }
+.seg { display: flex; gap: 6px; flex: 1; flex-wrap: wrap; }
+.seg button {
+  flex: 1; min-width: 56px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  background: #fff; border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+.seg button.on { background: var(--aubergine); color: #fff; border-color: var(--aubergine); }
+.genpanel-warn {
+  background: #fff6e0; border: 1px solid #ecd9a0; border-radius: 6px;
+  padding: 8px 10px; font-size: 12px; color: #7a5b00;
+}
+.genpanel-go {
+  background: var(--green); color: #fff; border: none; border-radius: 8px;
+  padding: 11px; font-size: 15px; font-weight: 800; cursor: pointer;
+}
+.genpanel-go:disabled { background: #ddd; color: #999; cursor: default; }
+.genpanel-foot { font-size: 12px; color: var(--muted); text-align: center; }
+.genpanel-foot code { background: #f0f0f0; border-radius: 3px; padding: 1px 4px; }
+
 /* echo states */
 .msg-body.pending { opacity: 0.55; }
 .msg-body.failed { color: #e01e5a; }
