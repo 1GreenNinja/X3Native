@@ -19,12 +19,13 @@ Every quality Unity pack on `G:\Assets` ships a demo/showcase the artist arrange
 - **Axis fix:** Unity is Y-up **left-handed**, X3Native is Y-up **right-handed** (`docs/CONVENTIONS.md`: +X right, +Y up, −Z forward); 1 unit = 1 m. Negate Z on positions + fix rotation handedness consistently (verify against a known landmark in the demo).
 - Emit a **placement manifest** (JSON / `.x3lvl`): `[{ glb, pos[3], rotQuat[4], scale[3] }]` — the designer's exact city.
 
-### 2 — Convert FBX → GLB **with textures** (the realism unlock)
-Use the repo tool `tools/convert_fbx_glb.py` (headless Blender, `export_format='GLB'`, `export_yup=True`) into the dir the engine mounts — `convertedGlbRoot()` in `app/asset_root.h` (i.e. `assets/converted_glb/<Pack>/`).
-- Ensure the **texture maps export into the GLB** (glTF PBR: baseColorTexture, normalTexture, metallicRoughnessTexture, occlusionTexture, **emissiveTexture + emissiveFactor**). A bare mesh export = grey; bring the maps.
-- Unity channel-PACKS Metallic+AO+Smoothness (ORM / MRAO / `_MaskMap`) into one texture. glTF wants metallic in **B**, roughness in **G**, occlusion separate; **Smoothness = 1 − Roughness**. Repack the channels in the Blender step (don't plug the packed map in raw).
-- Flip the Normal **G** channel if it reads inverted (Unity vs glTF convention).
-- After conversion, no GLB should have a default/empty material.
+### 2 — Convert FBX → GLB **with textures** (the realism unlock) — use `tools/convert_unity_pack.py`
+THE cracked pipeline (2026-05-30; works on ASCII packs Blender rejects). Output to `convertedGlbRoot()` (`app/asset_root.h`) = `assets/converted_glb/<Pack>/`.
+- **Don't import via Blender if the pack ships ASCII FBX** (header `; FBX 7.4.0`): Blender hard-errors *"ASCII FBX files are not supported"*. (Also: the MS-Store Blender `blender.exe` is ACL-denied — only `blender-launcher.exe` runs, and it DETACHES, so any Blender script must write a `.done`/`.log` marker to be observable, e.g. `tools/convert_pack_glb.py`.)
+- **Use `C:\GameDev\tools\FBX2glTF.exe`** (Autodesk FBX SDK; reads ASCII; normal exe w/ stdout): `FBX2glTF -b -i <in.fbx> -o <out.glb>` → geometry + NAMED material slots. But Unity strips texture paths from the FBX → this alone is GREY.
+- **Resolve textures from Unity**: each `Meshes/Materials/*.mat` lists slots with texture GUIDs (`_MainTex`=albedo, `_BumpMap`=normal, `_MetallicGlossMap`=metallic(R)+smoothness(A), `_OcclusionMap`=AO, `_EmissionMap`=emissive); each `Textures/<file>.png.meta` holds that file's GUID. Build GUID→file from all `.meta`, resolve per-material, **repack `_MetallicGlossMap` (Unity R=metallic/A=smoothness → glTF metallicRoughness B=metallic / G=roughness=1−smoothness)**, `.tif`→png, inject per material-name. `tools/convert_unity_pack.py <packAssetsDir> <fbx|all> <outDir>` does all of this.
+- Deps: Python + `pip install Pillow numpy pygltflib`. **pygltflib 1.16.5 can't pack images into bufferViews** → it embeds as DATAURI (base64 in the JSON chunk; cgltf reads it). **SIZE CAVEAT**: shared 4K atlases embedded PER-MESH balloon GLBs (a mesh using ~4 atlases ≈ 100+ MB). `MAX_TEX` caps atlas dims (default 512). Production: prefer **shared external textures** (one atlas copy via `.gltf`) or convert only the meshes the scene uses.
+- **PBR shading is REQUIRED to see the maps**: `shaders/mesh.frag` shades baseColor+emissive ONLY by default — normal/metallic/roughness need the PBR pass (slice 1 = `drawMeshPBR` plumbing, commit `bb169c9`; slice 2 = `mesh.frag` normal-map + GGX). Without it, converted modules render textured-but-flat.
 
 ### 3 — CityArt OVERLAY (`app/city_art.*`, mirror `app/env_art.{h,cpp}`)
 The graybox (`city.cpp` / `world_regions.cpp` / `level1.cpp`) stays as **collision + per-piece fallback**; the art is a *visual overlay drawn on top* (exactly how `env_art` drapes the ModularSciFi kit over Level 1).

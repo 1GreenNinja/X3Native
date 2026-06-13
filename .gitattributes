@@ -7,3 +7,15 @@
 # Curated sci-fi weapon SFX (per-weapon fire sounds) committed under assets/audio/.
 *.wav  filter=lfs diff=lfs merge=lfs -text
 *.WAV  filter=lfs diff=lfs merge=lfs -text
+
+# Asset-dir textures + fonts (2026-06-12 asset-guard audit). Applies to NEW or
+# MODIFIED files only — the ~87 MB of already-committed PNGs and ~27 MB of fonts
+# stay in plain git history until the coordinated migration in
+# docs/ASSET_DISTRIBUTION.md (no retroactive churn, no history rewrite).
+# Scoped to assets/ so small repo-root/docs/tools reference images stay plain git.
+assets/**/*.png  filter=lfs diff=lfs merge=lfs -text
+assets/**/*.tga  filter=lfs diff=lfs merge=lfs -text
+assets/**/*.hdr  filter=lfs diff=lfs merge=lfs -text
+assets/**/*.exr  filter=lfs diff=lfs merge=lfs -text
+assets/**/*.ttf  filter=lfs diff=lfs merge=lfs -text
+assets/**/*.otf  filter=lfs diff=lfs merge=lfs -text

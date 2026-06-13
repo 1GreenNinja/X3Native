@@ -334,11 +334,22 @@ bool Skinner::enableGpuSkinning(x3::rhi::IRenderDevice& device,
             mv.uv[0] = p.baseUv[v*2+0]; mv.uv[1] = p.baseUv[v*2+1];
         }
         if (device.registerSkinnedMesh(x3::rhi::MeshHandle{ meshId }, bind.data(),
-                                       (uint32_t)vcount, p.jointIdx.data(), p.jointWt.data()))
+                                       (uint32_t)vcount, p.jointIdx.data(), p.jointWt.data())) {
             any = true;
+            m_gpuMeshIds.push_back(meshId);   // remember so we can unregister on despawn
+        }
     }
     m_gpuSkin = any;
     return any;
+}
+
+// Hand every registered skinned mesh back to the device (free its skinning buffers +
+// descriptor sets). Used when the model is despawned. Idempotent.
+void Skinner::disableGpuSkinning(x3::rhi::IRenderDevice& device) {
+    for (uint32_t meshId : m_gpuMeshIds)
+        device.unregisterSkinnedMesh(x3::rhi::MeshHandle{ meshId });
+    m_gpuMeshIds.clear();
+    m_gpuSkin = false;
 }
 
 float Skinner::clipDuration(uint32_t clip) const {
@@ -349,11 +360,18 @@ std::string_view Skinner::clipName(uint32_t clip) const {
 }
 
 int Skinner::findClip(std::initializer_list<const char*> keys) const {
+    // For each key (in caller priority order) an EXACT (case-insensitive) clip-name
+    // match wins over a mere substring match. Without this, a key like "walking"
+    // resolves to the FIRST clip that merely CONTAINS it — e.g. Jake's
+    // "Leftstrafewalking" (a sideways step that LEANS the body) instead of the plain
+    // "Walking" clip — which made the 3P avatar lean off at a \ angle the instant he
+    // moved. (Same collision class that a56d1b0 fixed for idle-vs-Rifleaimingidle.)
     for (const char* key : keys) {
         std::string k = toLower(key);
-        for (uint32_t c = 0; c < (uint32_t)m_clipNames.size(); ++c) {
-            if (toLower(m_clipNames[c]).find(k) != std::string::npos) return (int)c;
-        }
+        for (uint32_t c = 0; c < (uint32_t)m_clipNames.size(); ++c)
+            if (toLower(m_clipNames[c]) == k) return (int)c;                          // exact name
+        for (uint32_t c = 0; c < (uint32_t)m_clipNames.size(); ++c)
+            if (toLower(m_clipNames[c]).find(k) != std::string::npos) return (int)c;  // substring
     }
     return -1;
 }
@@ -482,6 +500,40 @@ uint32_t Skinner::currentGlobals(const x3::asset::Model& model, uint32_t clip,
     outGlobals.assign((size_t)m_nodeCount * 16, 0.0f);
     computeGlobals(model, clip, t, outGlobals);
     return m_nodeCount;
+}
+
+// ===========================================================================
+// Named-bone world-transform readback (third-person held-weapon SOCKET).
+// ===========================================================================
+int Skinner::resolveNodeByName(const x3::asset::Model& model, std::string_view name) const {
+    if (!m_valid || name.empty() || m_nodeCount == 0) return -1;
+    std::string want = toLower(name);
+    int best = -1;
+    for (uint32_t n = 0; n < m_nodeCount; ++n) {
+        std::string have = toLower(model.nodes[n].name);
+        if (have.empty()) continue;
+        if (have == want) return (int)n;                       // exact match wins
+        if (best < 0 && (have.find(want) != std::string::npos ||
+                         want.find(have) != std::string::npos))
+            best = (int)n;                                     // remember a substring match
+    }
+    return best;
+}
+
+bool Skinner::boneGlobal(uint32_t nodeIndex, float out[16]) const {
+    if (!m_valid || nodeIndex >= m_nodeCount || !out) return false;
+    // m_globalScratch holds the per-node MODEL-SPACE globals from the most recent
+    // apply()/applyLocomotion()/applyRagdollBlend() (same pose lastPalette() built).
+    if (m_globalScratch.size() != (size_t)m_nodeCount * 16) return false;
+    std::memcpy(out, &m_globalScratch[(size_t)nodeIndex * 16], 16 * sizeof(float));
+    return true;
+}
+
+bool Skinner::boneGlobalByName(const x3::asset::Model& model, std::string_view name,
+                               float out[16]) const {
+    int n = resolveNodeByName(model, name);
+    if (n < 0) return false;
+    return boneGlobal((uint32_t)n, out);
 }
 
 // ===========================================================================
@@ -667,20 +719,39 @@ void Skinner::setLocomotion01(float speed01) {
 }
 
 void Skinner::triggerClip(int clip, float fadeSec, bool loop) {
-    m_xfadeDur  = (fadeSec > 1e-3f) ? fadeSec : 1e-3f;
-    m_xfadeTime = 0.0f;
-    if (clip < 0 || (uint32_t)clip >= m_clipDurations.size()) {
+    // IDEMPOTENCY (freeze fix): callers commonly call this EVERY FRAME (e.g. the 3P
+    // avatar requests the fire clip while fireHeld and cancels (clip<0) otherwise).
+    // A naive implementation that reset m_xfadeTime on every call would re-seed the
+    // ramp to 0 each frame, so a crossfade could never finish ramping (m_xfadeW
+    // pinned), permanently FREEZING the pose on the crossfade target. So a repeated
+    // request for the SAME state must be a true no-op — only an ACTUAL state change
+    // (re)seeds the ramp timer.
+    const bool wantCancel = (clip < 0 || (uint32_t)clip >= m_clipDurations.size());
+    if (wantCancel) {
         // Cancel: ramp back out to the locomotion blend (crossfaded, not snapped).
-        if (m_xfadeActive) { m_xfadeOut = true; }
+        // Already inactive, or already ramping out -> nothing to do (don't reset the
+        // ramp clock, or the fade-out would stall forever).
+        if (m_xfadeActive && !m_xfadeOut) {
+            m_xfadeOut  = true;
+            m_xfadeTime = 0.0f;     // seed the ramp-OUT once, on the transition only
+            m_xfadeDur  = (fadeSec > 1e-3f) ? fadeSec : 1e-3f;
+        }
         return;
     }
+    // Already crossfading IN to this exact clip with the same loop mode: no-op (let
+    // the in-progress ramp keep advancing rather than restarting it every frame).
+    if (m_xfadeActive && !m_xfadeOut && m_xfadeClip == clip && m_xfadeLoop == loop)
+        return;
+    // New target (or re-targeting after a cancel): (re)seed the ramp-IN.
+    m_xfadeDur    = (fadeSec > 1e-3f) ? fadeSec : 1e-3f;
+    m_xfadeTime   = 0.0f;
     m_xfadeActive = true;
     m_xfadeClip   = clip;
     m_xfadeLoop   = loop;
     m_xfadeClipT  = 0.0f;
     m_xfadeOut    = false;
     // m_xfadeW stays where it is (it ramps up smoothly from the current value), so
-    // re-triggering mid-fade does not pop.
+    // re-triggering after a different clip does not pop.
 }
 
 // Sample every node's local pose from a clip into flat caller arrays. Reused, not
@@ -845,6 +916,12 @@ bool Skinner::advanceBlend(const x3::asset::Model& model, float dt) {
     if (m_xfadeActive) {
         m_xfadeClipT += dt;
         const float xdur = m_clipDurations[(size_t)m_xfadeClip];
+        // Keep a LOOPING crossfade-target cursor bounded: over minutes of sustained
+        // play (e.g. fire held in 3P) an unwrapped accumulator loses float precision
+        // and eventually quantizes to a single sampled phase ("stops animating").
+        // Non-loop targets are intentionally left to run out (the ramp-out fires).
+        if (m_xfadeLoop && xdur > 1e-4f && m_xfadeClipT >= xdur)
+            m_xfadeClipT = std::fmod(m_xfadeClipT, xdur);
         // Decide ramp direction.
         if (!m_xfadeOut && !m_xfadeLoop && xdur > 1e-4f &&
             m_xfadeClipT >= xdur - m_xfadeDur) {

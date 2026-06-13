@@ -89,11 +89,17 @@ public:
     // ---- Stance (crouch / crawl) ------------------------------------------
     // Stand (full eye height + full move speed), Crouch (C, ducked eye + half
     // speed), Prone (Left-Ctrl, crawling eye + a slow crawl). Lowers the camera
-    // (eye height) and scales the planar move speed; the physics capsule is NOT
-    // resized in v1 (visual duck + slow-down only — no low-gap clearance change).
+    // (eye height) AND shrinks the physics capsule (Stand 1.8 m -> Crouch 1.2 m ->
+    // Prone 0.7 m) so a ducked player actually fits low gaps. The feet stay anchored
+    // (the capsule shrinks/grows upward — no pop). UN-crouching is GUARDED: if a ceiling
+    // is too low for the taller capsule the request is refused and we stay crouched
+    // (no clip/crash). Idempotent: requesting the current stance is a no-op. Needs the
+    // physics world to resize the CharacterVirtual.
     enum class Stance : uint32_t { Stand = 0, Crouch = 1, Prone = 2 };
-    void   setStance(Stance s);
+    void   setStance(Stance s, x3::phys::IPhysicsWorld& physics);
     Stance stance() const { return m_stance; }
+    // Capsule total height (m) for a stance — exposed for tests / debug.
+    static float stanceHeight(Stance s);
 
     // ---- Health / damage / death (Phase 2a, spec §6.6) --------------------
     // Current + max HP, and alive state.

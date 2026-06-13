@@ -104,6 +104,36 @@ bool DoorSystem::toggle(Door& d) const {
     return false;
 }
 
+bool DoorSystem::tryDoorCode(const x3::phys::Vec3& eye, int code, float range) {
+    const float r2 = range * range;
+    int best = -1; float bestD2 = r2;
+    for (uint32_t i = 0; i < (uint32_t)m_doors.size(); ++i) {
+        const Door& d = m_doors[i];
+        if (!d.locked || d.code == 0) continue;       // only locked, coded doors
+        const float dx = eye.x - d.closedPos.x, dz = eye.z - d.closedPos.z;
+        const float d2 = dx * dx + dz * dz;
+        if (d2 <= bestD2) { bestD2 = d2; best = (int)i; }
+    }
+    if (best < 0) return false;
+    Door& d = m_doors[(uint32_t)best];
+    if (d.code != code) return false;                 // wrong code: stays locked
+    unlock(d);                                         // clears locked (incl. the keycard gate)
+    return startOpening(d);
+}
+
+Door* DoorSystem::nearestLockedDoor(const x3::phys::Vec3& eye, float range) {
+    const float r2 = range * range;
+    int best = -1; float bestD2 = r2;
+    for (uint32_t i = 0; i < (uint32_t)m_doors.size(); ++i) {
+        const Door& d = m_doors[i];
+        if (!d.locked) continue;
+        const float dx = eye.x - d.closedPos.x, dz = eye.z - d.closedPos.z;
+        const float d2 = dx * dx + dz * dz;
+        if (d2 <= bestD2) { bestD2 = d2; best = (int)i; }
+    }
+    return best < 0 ? nullptr : &m_doors[(uint32_t)best];
+}
+
 void DoorSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics) {
     if (dt <= 0.0f) return;
     for (Door& d : m_doors) {
@@ -385,6 +415,8 @@ uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
     d.state     = DoorState::Closed;
     d.locked    = spec.locked;
     d.code      = spec.code;
+    d.keycard   = spec.keycard;
+    d.requireBoth = spec.requireBoth;
     d.axis      = (uint32_t)spec.axis;
     d.halfWidth = spec.halfWidth;
     d.height    = spec.height;

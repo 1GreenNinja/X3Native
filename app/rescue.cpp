@@ -11,8 +11,10 @@
 #include "engine/core/x3_log.h"
 
 #include <cmath>
+#include <cstring>   // std::memcpy (ragdoll bone bind-pose copies)
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace x3::game {
 
@@ -44,6 +46,28 @@ float headingToFace(float dirX, float dirZ) {
     return std::atan2(-dirX, -dirZ);
 }
 
+// Inverse of a column-major affine 4x4 that is rotation * UNIFORM scale + translation
+// (the gameplay draw matrix: composeTRS with a yaw basis + uniform scale). Identical
+// to monster.cpp's invertAffineUniform — used by the collapse ragdoll to map bone
+// world transforms into skin space. Returns false (out=identity) on a degenerate
+// (near-zero scale) matrix.
+bool invertAffineUniform(const float m[16], float out[16]) {
+    for (int i = 0; i < 16; ++i) out[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+    const float s2 = m[0]*m[0] + m[1]*m[1] + m[2]*m[2];
+    if (s2 < 1e-12f) return false;
+    const float invS2 = 1.0f / s2;   // invA = R^T / s = (col^T) / s^2
+    out[0] = m[0]*invS2; out[1] = m[4]*invS2; out[2] = m[8]*invS2;
+    out[4] = m[1]*invS2; out[5] = m[5]*invS2; out[6] = m[9]*invS2;
+    out[8] = m[2]*invS2; out[9] = m[6]*invS2; out[10]= m[10]*invS2;
+    out[3] = out[7] = out[11] = 0.0f;
+    const float tx = m[12], ty = m[13], tz = m[14];
+    out[12] = -(out[0]*tx + out[4]*ty + out[8]*tz);
+    out[13] = -(out[1]*tx + out[5]*ty + out[9]*tz);
+    out[14] = -(out[2]*tx + out[6]*ty + out[10]*tz);
+    out[15] = 1.0f;
+    return true;
+}
+
 } // namespace
 
 // ===========================================================================
@@ -68,6 +92,7 @@ void RescueVictim::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // path as MonsterSystem::buildMonsterTuned). The rigged humanoids are Y-up, so
     // no Z->Y stand-up. On any failure a procedural box stands in. ----
     const std::string file = std::string(liveModel);
+    m_device = &device;   // cached so tick() can re-upload CPU-skinned vertices
     m_assets.reset(x3::asset::createAssetSource());
     bool mounted = m_assets->mountDir(std::string(modelDir), 0);
     if (mounted) {
@@ -86,6 +111,51 @@ void RescueVictim::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_modelScale = kVictimScale;
         x3::logInfo("[rescue] " + m_name + ": loaded " + file + " — " +
                     std::to_string(m_drawables.size()) + " primitive(s)");
+
+        // ---- BUG #48: bind the skeletal-animation runtime so the girl breathes/
+        // idles (and a companion walks) instead of freezing at bind/T-pose. Mirrors
+        // MonsterSystem::buildMonsterTuned exactly: bind(), resolve idle/walk/run by
+        // fuzzy name, drive the 1D locomotion blend by planar speed when a walk/run
+        // set exists (else degrade to the single Idle clip). Per-girl PHASE OFFSET so
+        // the three captives don't breathe in lockstep. Skip when the model isn't
+        // skinnable (no skin/clips) -> static draw, no regression. ----
+        if (m_model.ok && m_skinner.bind(m_model)) {
+            // GPU compute-skin when the device supports it (crowd-scalable); CPU LBS
+            // fallback otherwise (headless / non-compute) — transparent to tick().
+            const bool gpuSkin = m_skinner.enableGpuSkinning(device, m_model);
+            m_idleClip = m_skinner.findClip({ "idle", "stand", "breath", "loop" });
+            m_walkClip = m_skinner.findClip({ "walk" });
+            m_runClip  = m_skinner.findClip({ "run", "sprint", "jog" });
+            if (m_walkClip < 0) m_walkClip = m_skinner.findClip({ "move", "jog", "run" });
+            if (m_idleClip < 0) m_idleClip = 0;   // fall back to the first clip
+            m_animActive   = (m_idleClip >= 0);
+            m_useLocoBlend = m_animActive && (m_walkClip >= 0 || m_runClip >= 0);
+            if (m_useLocoBlend)
+                m_skinner.setLocomotionClips(m_idleClip, m_walkClip, m_runClip, 0.2f, 2.0f);
+            // Per-girl phase offset (seconds) so the captives idle out of sync. Spread
+            // them across ~0.8 s by the victim index (Aria 0, Keisha .27, Emily .53).
+            m_phaseOffset = 0.27f * (float)(uint32_t)id;
+            m_animTime    = m_phaseOffset;
+            // Pose the bind-pose mesh into the idle pose up front so the FIRST rendered
+            // frame already shows the animated pose (not bind/T-pose) — the #48 fix.
+            if (m_animActive && m_device) {
+                if (m_useLocoBlend) {
+                    m_skinner.setLocomotionSpeed(0.0f);                       // start idle
+                    m_skinner.applyLocomotion(m_model, *m_device, m_phaseOffset);
+                } else {
+                    m_skinner.apply(m_model, *m_device, (uint32_t)m_idleClip, m_animTime);
+                }
+            }
+            x3::logInfo("[rescue] " + m_name + " is animated (" +
+                        (gpuSkin ? "GPU" : "CPU") + " skin) — idle=" +
+                        std::to_string(m_idleClip) + " walk=" + std::to_string(m_walkClip) +
+                        " run=" + std::to_string(m_runClip) + " locoBlend=" +
+                        (m_useLocoBlend ? "1" : "0") + " phaseOff=" +
+                        std::to_string(m_phaseOffset));
+        } else {
+            x3::logInfo("[rescue] " + m_name + ": " + file +
+                        " not skinnable (no skin/clips) — static draw");
+        }
     } else {
         // Fallback box so the victim still exists + is rescuable headlessly.
         m_usingReal  = false;
@@ -143,15 +213,186 @@ void RescueVictim::bakeTransform(Scene& scene) {
                m_modelScale, m_pos);
 }
 
+void RescueVictim::driveAnim(float dt, float planarSpeed) {
+    if (!m_animActive || !m_device) return;
+    if (m_useLocoBlend) {
+        // 1D Idle/Walk/Run blend driven by planar speed (stationary captive -> idle).
+        m_skinner.setLocomotionSpeed(planarSpeed);
+        m_skinner.applyLocomotion(m_model, *m_device, dt);
+    } else {
+        // Single-clip path (rig has only Idle, or no distinct walk/run). Play Walk
+        // when one exists + moving; else play Idle, pumped faster while moving so an
+        // Idle-only rig reads as advancing instead of dead-static. Mirrors monster.cpp.
+        const bool hasWalk = (m_walkClip >= 0);
+        const bool moving  = planarSpeed > 0.25f;
+        const int  clip    = (hasWalk && moving) ? m_walkClip : m_idleClip;
+        const float rate   = (!hasWalk && moving)
+            ? (1.0f + (planarSpeed < 4.0f ? planarSpeed : 4.0f) * 0.35f)
+            : 1.0f;
+        m_animTime += dt * rate;
+        m_skinner.apply(m_model, *m_device, (uint32_t)clip, m_animTime);
+    }
+}
+
+// ===========================================================================
+// PHYSICS RAGDOLL (collapse). SAME machinery as MonsterSystem::spawnDeathRagdoll:
+// build a Jolt humanoid ragdoll from the canonical rig, placed/yawed/scaled to
+// match Aria, seeded from her CURRENT animated bone globals (seamless flop start),
+// added to the SHARED physics world. tick() then reads the bones back and drives
+// the skin via applyExternalGlobals. No-op unless the model is skinnable. Idempotent.
+// ===========================================================================
+void RescueVictim::ragdoll(Scene& scene, x3::phys::IPhysicsWorld& physics) {
+    if (m_ragdolled || m_deathRagdoll) return;          // already collapsed (idempotent)
+    if (!m_animActive || !m_skinner.valid() || m_skinner.nodeCount() == 0) {
+        x3::logInfo("[rescue] " + m_name + ": ragdoll() skipped — model not skinnable");
+        return;                                          // unrigged -> stays standing (no regression)
+    }
+
+    // Remove her STANDING collision box (Layer::Enemy, mass 0) so it can't fight the
+    // falling ragdoll bodies (also Layer::Enemy) — mirrors the monster dropping its
+    // body at the kill. CRITICALLY also DROP the entity's body LINK: otherwise
+    // Scene::update() keeps reading the (now-removed) body and corrupts the frozen
+    // collapse transform, teleporting the skinned mesh away. The entity transform is
+    // left frozen at the collapse-time bake; the skin palette carries the world placement.
+    if (m_entity != kNoLink && m_entity < scene.size()) {
+        Entity& me = scene.get(m_entity);
+        me.body = x3::phys::BodyId{};   // freeze: Scene::update() now skips this entity
+    }
+    if (m_body.valid()) { physics.removeBody(m_body); m_body = x3::phys::BodyId{}; }
+
+    // ---- The FROZEN draw transform the mesh renders through at collapse:
+    //   final = model * fixup * skinGlobal,  model = T(m_pos) * R(yaw+pi) * S(scale).
+    // Build `model` the SAME way bakeTransform()'s facing bake does (the +pi VISUAL
+    // flip — the rigged GLBs face +Z), fold in m_modelFixup (identity here), and
+    // capture inv(model*fixup) once. Ragdoll bone world transforms map through this
+    // inverse into skin space so the rigid delta composes under the unchanged draw. --
+    const float ry = m_yaw + 3.14159265358979323846f;
+    const float c = std::cos(ry), s = std::sin(ry);
+    const float scale = m_modelScale;
+    float model[16];
+    composeTRS(model,
+               x3::phys::Vec3{ c, 0.0f, -s },
+               x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
+               x3::phys::Vec3{ s, 0.0f, c },
+               scale, m_pos);
+    float drawXform[16];
+    x3::asset::mulMat4(model, m_modelFixup, drawXform);   // model * fixup (skin->world)
+    if (!invertAffineUniform(drawXform, m_deathModelInv)) {
+        x3::logWarn("[rescue] " + m_name + ": ragdoll() degenerate draw matrix — skipped");
+        return;
+    }
+
+    // ---- Canonical humanoid rig in WORLD space, matching Aria: the rig is authored
+    // with the PELVIS at originY and the legs hanging below (shins reach ~0.58 m down).
+    // m_pos is Aria's FEET on the floor, so lift the placement by the pelvis height so
+    // the rig spawns standing on the floor (feet at m_pos) and topples ONTO it — rather
+    // than spawning half-buried in the floor slab. (mirrors monster.cpp's grounded rig). -
+    constexpr float kRigPelvisH = 0.9f;   // pelvis height above the feet in the canonical rig
+    x3::phys::makeHumanoidRagdollBones(/*originY*/0.0f, m_ragdollBones);
+    const uint32_t bn = (uint32_t)m_ragdollBones.size();
+    if (bn == 0) { m_ragdollBones.clear(); return; }
+
+    const x3::phys::Vec3 footPos{ m_pos.x, m_pos.y + kRigPelvisH * scale, m_pos.z };
+    float place[16];
+    composeTRS(place,
+               x3::phys::Vec3{ c, 0.0f, -s },
+               x3::phys::Vec3{ 0.0f, 1.0f, 0.0f },
+               x3::phys::Vec3{ s, 0.0f, c },
+               scale, footPos);
+    for (uint32_t b = 0; b < bn; ++b) {
+        float placed[16];
+        x3::asset::mulMat4(place, m_ragdollBones[b].bindWorld, placed);
+        std::memcpy(m_ragdollBones[b].bindWorld, placed, 16 * sizeof(float));
+        m_ragdollBones[b].halfHeight *= scale;
+        m_ragdollBones[b].radius     *= scale;
+    }
+
+    m_deathRagdoll.reset(x3::phys::createRagdoll(physics, m_ragdollBones.data(), bn));
+    if (!m_deathRagdoll) { m_ragdollBones.clear(); return; }   // bail -> stays standing
+
+    // Snap to the placed bind pose + add to the world (active).
+    {
+        std::vector<float> bind((size_t)bn * 16);
+        for (uint32_t b = 0; b < bn; ++b)
+            std::memcpy(&bind[b*16], m_ragdollBones[b].bindWorld, 16 * sizeof(float));
+        m_deathRagdoll->addToWorld(/*activate*/true);
+        m_deathRagdoll->setPoseWorld(bind.data());
+    }
+
+    // ---- Seed the rigid bone->skin driver from Aria's CURRENT animated pose so the
+    // collapse starts seamlessly from where the idle/loco left off (no pop). Capture
+    // the Skinner's current global bone transforms and bind RagdollSkin from THEM. The
+    // pose clip is the one driveAnim() last played (idle, or the loco set at idle). ----
+    {
+        const int poseClip = (m_idleClip >= 0) ? m_idleClip
+                           : (m_walkClip >= 0) ? m_walkClip : 0;
+        std::vector<float> curGlobals;
+        const uint32_t ng = m_skinner.currentGlobals(m_model, (uint32_t)poseClip,
+                                                      m_animTime, curGlobals);
+        if (ng == m_skinner.nodeCount() && ng > 0)
+            m_ragdollSkin.bindFromGlobals(m_model, curGlobals.data(), ng);
+        else
+            m_ragdollSkin.bind(m_model);   // fall back to the static bind pose
+    }
+
+    // Capture the ragdoll's INITIAL bone world transforms (post setPose) -> model-local
+    // for the RagdollSkin part frames, then map every skin node to its nearest bone.
+    m_ragWorldScratch.assign((size_t)bn * 16, 0.0f);
+    m_ragPartInit.assign((size_t)bn * 16, 0.0f);
+    m_deathRagdoll->getBoneWorldTransforms(m_ragWorldScratch.data());
+    for (uint32_t b = 0; b < bn; ++b)
+        x3::asset::mulMat4(m_deathModelInv, &m_ragWorldScratch[b*16], &m_ragPartInit[b*16]);
+    m_ragdollSkin.mapToParts(m_ragPartInit.data(), bn);
+    m_ragPartCur.assign((size_t)bn * 16, 0.0f);
+
+    // Collapse impulse: a forward + downward shove so she folds/sprawls to the floor
+    // (she's not "killed" by a hit here, so just topple her over).
+    const float fx = std::sin(m_yaw), fz = std::cos(m_yaw);
+    m_deathRagdoll->applyImpulseAll(x3::phys::Vec3{ fx * 2.5f, -0.5f, fz * 2.5f });
+
+    m_ragdolled = true;
+    x3::logInfo("[rescue] " + m_name + ": COLLAPSED into a physics ragdoll (" +
+                std::to_string(bn) + " bones)");
+}
+
+// Per-frame while ragdolled: read the ragdoll bone WORLD transforms, map to skin
+// space, run the rigid bone->skin attach, feed the result to applyExternalGlobals so
+// the GPU-skinned mesh flops with the bodies. Mirrors MonsterSystem::driveSkinFromRagdoll.
+void RescueVictim::driveSkinFromRagdoll() {
+    if (!m_ragdolled || !m_deathRagdoll || !m_device) return;
+    const uint32_t bn = m_deathRagdoll->boneCount();
+    if (bn == 0) return;
+    if (m_ragWorldScratch.size() != (size_t)bn * 16) m_ragWorldScratch.assign((size_t)bn*16, 0.0f);
+    if (m_ragPartCur.size()      != (size_t)bn * 16) m_ragPartCur.assign((size_t)bn*16, 0.0f);
+
+    m_deathRagdoll->getBoneWorldTransforms(m_ragWorldScratch.data());
+    for (uint32_t b = 0; b < bn; ++b)
+        x3::asset::mulMat4(m_deathModelInv, &m_ragWorldScratch[b*16], &m_ragPartCur[b*16]);
+
+    const uint32_t nc = m_ragdollSkin.computeNodeGlobals(m_ragPartCur.data(), bn, m_ragNodeGlobals);
+    if (nc == 0) return;
+    m_skinner.applyExternalGlobals(m_model, *m_device, m_ragNodeGlobals.data(), nc);
+}
+
 bool RescueVictim::tick(float dt, bool hubReached, Scene& scene,
                         x3::phys::IPhysicsWorld& physics,
                         const x3::phys::Vec3& playerPos) {
     if (m_state == VictimState::Expired) return false;
 
+    // ---- RAGDOLLED: she's collapsed — the host already stepped the shared physics
+    // world this frame, so just read the bone transforms OUT and flop the skin to
+    // match (replaces the animation clip + follow/face logic). The entity transform is
+    // FROZEN at the collapse pose (the skin globals carry the world placement now). --
+    if (m_ragdolled) {
+        driveSkinFromRagdoll();
+        return false;
+    }
+
     // ---- Companion: light follow AI (mirror the monster chase movement). Hold a
     // standoff so it trails the player rather than crowding it; snap-catch up if
     // left way behind (e.g. after an elevator ride). ----
     if (m_state == VictimState::Companion) {
+        const x3::phys::Vec3 prevPos = m_pos;   // for the locomotion-speed measure
         const float dx = playerPos.x - m_pos.x, dz = playerPos.z - m_pos.z;
         const float horiz = std::sqrt(dx * dx + dz * dz);
         if (horiz > kCompanionTeleport) {
@@ -168,8 +409,24 @@ bool RescueVictim::tick(float dt, bool hubReached, Scene& scene,
         }
         if (m_body.valid()) physics.setBodyPosition(m_body, m_pos);
         bakeTransform(scene);
+        // BUG #48: drive the walk/idle blend from this frame's planar movement (a
+        // teleport-snap is ignored — it's not real locomotion) so a following
+        // companion visibly walks and a held one idles.
+        const float ddx = m_pos.x - prevPos.x, ddz = m_pos.z - prevPos.z;
+        float planarSpeed = (dt > 1e-5f) ? std::sqrt(ddx*ddx + ddz*ddz) / dt : 0.0f;
+        if (planarSpeed > kCompanionTeleport) planarSpeed = 0.0f;   // ignore snap jumps
+        driveAnim(dt, planarSpeed);
         return false;
     }
+
+    // ---- Captive: breathe/idle EVERY frame (BUG #48), whether or not the hub
+    // timer is running, so a held captive isn't a frozen mannequin. Stationary ->
+    // speed 0 -> the Idle clip (or locomotion blend collapsed to idle). Bake the
+    // transform too (mirrors the Companion path) so the captive gets the 180deg
+    // facing-FLIP — without it she keeps the identity-basis init transform from
+    // build() and renders facing the wrong way (back to the player). ----
+    bakeTransform(scene);
+    driveAnim(dt, 0.0f);
 
     // ---- Captive: run the countdown once the hub is reached. ----
     if (!hubReached) return false;
@@ -477,6 +734,32 @@ bool runRescueSelfTest() {
         const bool keishaExpired = rescue.victim(1).expired();     // restored expired
         rcheck(std::abs(emilyBefore - emilyAfter) < 1e-3f && ariaCompanion && keishaExpired,
                "R5 deserialize restores lifecycle + timers");
+    }
+
+    // ---- R8 (BUG #48): a girl with a skinnable model must actually ANIMATE —
+    // her joint palette must DIFFER between two clip times (a frozen bind-pose
+    // mannequin would yield an identical palette). If NO victim's model is
+    // skinnable on this checkout (asset variance), the assert is vacuously skipped
+    // (still PASS) — the per-frame drive is wired regardless (proven green above). -
+    {
+        const RescueVictim* animed = nullptr;
+        for (uint32_t i = 0; i < rescue.victimCount(); ++i)
+            if (rescue.victim(i).animActive()) { animed = &rescue.victim(i); break; }
+        if (animed) {
+            std::vector<float> pa, pb;
+            const uint32_t ja = animed->skinner().computePalette(animed->model(), 0, 0.00f, pa);
+            const uint32_t jb = animed->skinner().computePalette(animed->model(), 0, 0.50f, pb);
+            bool differs = (ja > 0 && ja == jb && pa.size() == pb.size());
+            if (differs) {
+                bool any = false;
+                for (size_t k = 0; k < pa.size(); ++k)
+                    if (std::abs(pa[k] - pb[k]) > 1e-4f) { any = true; break; }
+                differs = any;
+            }
+            rcheck(differs, "R8 animated victim's joint palette changes over time (not frozen)");
+        } else {
+            rcheck(true, "R8 (no skinnable victim model on this checkout — drive still wired)");
+        }
     }
 
     physics->shutdown();

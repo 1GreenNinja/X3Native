@@ -18,6 +18,10 @@ struct ObjectData {
     uint flags;           // bit0 = TERRAIN splat, bit1 = GLASS (was _pad0/terrainFlag)
     uint terrainPack1;    // grass<<16 | rock detail bindless indices (was _pad1)
     uint terrainPack2;    // snow<<16  | sand detail bindless indices (was _pad2)
+    uint normalTexIndex;  // 0 = none (PBR normal-map bindless idx) — used in mesh.frag (slice 2)
+    uint mrTexIndex;      // 0 = none (metallic-roughness bindless idx)
+    uint emissiveTexIndex; // 0 = none (emissive bindless idx; was _pad3)
+    uint detailPacked;    // HDRP micro-detail (_pad4): (uvScale*64<<20)|idx; 0 = none
     vec4 glassParams;     // GLASS only: x = refraction, y = roughness, z = specular
     vec4 glassTint;       // GLASS only: rgb = tint color
 };
@@ -43,6 +47,7 @@ layout(set = 1, binding = 1) uniform Camera {
     mat4 lightViewProj;
     vec4 ambientCount;
     PointLight lights[kMaxPointLights];
+    vec4 camPos;          // xyz = camera world position (PBR view vector)
 } cam;
 
 layout(location = 0) in vec3 inPos;
@@ -58,9 +63,13 @@ layout(location = 5) flat out vec4 vEmissive;   // rgb = color, a = strength
 // Per-object flags forwarded to the fragment stage (TERRAIN splat / GLASS).
 layout(location = 6) flat out uint vFlags;
 layout(location = 7) flat out uvec2 vTerrainPack; // x = grass<<16|rock, y = snow<<16|sand
+layout(location = 8) flat out uint vNormalTexIndex; // 0 = none (PBR normal map)
+layout(location = 9) flat out uint vMrTexIndex;     // 0 = none (metallic-roughness)
+layout(location = 10) flat out uint vEmissiveTexIndex; // 0 = none (emissive map)
+layout(location = 11) flat out uint vDetailPacked;     // HDRP micro-detail (_pad4): (uvScale*64<<20)|idx
 // GLASS material forwarded to glass.frag (M2-M4): refraction/roughness/specular + tint.
-layout(location = 8) flat out vec4 vGlassParams;  // x = refraction, y = roughness, z = specular
-layout(location = 9) flat out vec4 vGlassTint;    // rgb = tint
+layout(location = 12) flat out vec4 vGlassParams;  // x = refraction, y = roughness, z = specular
+layout(location = 13) flat out vec4 vGlassTint;    // rgb = tint
 
 void main() {
     ObjectData o = objBuf.objects[gl_InstanceIndex];
@@ -74,6 +83,10 @@ void main() {
     vEmissive = o.emissive;
     vFlags = o.flags;
     vTerrainPack = uvec2(o.terrainPack1, o.terrainPack2);
+    vNormalTexIndex = o.normalTexIndex;
+    vMrTexIndex = o.mrTexIndex;
+    vEmissiveTexIndex = o.emissiveTexIndex;
+    vDetailPacked = o.detailPacked;   // HDRP micro-detail map (packed idx + uvScale)
     vGlassParams = o.glassParams;
     vGlassTint = o.glassTint;
 }

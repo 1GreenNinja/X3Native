@@ -108,6 +108,218 @@ inline PrimMesh makeBox(float hx, float hy, float hz,
     return m;
 }
 
+// A walkable RAMP wedge: a sloped top surface rising from y=0 at the LOW edge to
+// y=`rise` at the HIGH edge, over a horizontal run `run`, `halfW` wide. Built in
+// LOCAL space centered on the run axis at (cx,cy,cz) where cy is the LOW floor:
+//   - `axis`==1 (run along +Z): low edge at z=cz, high edge at z=cz+run (slope up
+//     toward +Z). Width spans x in [cx-halfW, cx+halfW].
+//   - `axis`==0 (run along +X): low edge at x=cx, high edge at x=cx+run.
+// `dir` flips the climb direction (+1 climbs toward +axis, -1 toward -axis). The
+// solid fills from the floor (cy) up to the sloped top, so a character walks UP it.
+// Produces render (with up-facing normal on the ramp top) + collision geometry.
+inline PrimMesh makeRamp(float cx, float cy, float cz,
+                         float halfW, float run, float rise,
+                         uint32_t axis, float dir,
+                         float uvScale = 1.0f) {
+    PrimMesh m;
+    auto quad = [&](float ax,float ay,float az, float bx,float by,float bz,
+                    float ccx,float ccy,float ccz, float dx,float dy,float dz,
+                    float nx,float ny,float nz, float u, float v) {
+        uint32_t base = (uint32_t)m.verts.size();
+        m.verts.push_back({{ax,ay,az},{nx,ny,nz},{0,0}});
+        m.verts.push_back({{bx,by,bz},{nx,ny,nz},{u,0}});
+        m.verts.push_back({{ccx,ccy,ccz},{nx,ny,nz},{u,v}});
+        m.verts.push_back({{dx,dy,dz},{nx,ny,nz},{0,v}});
+        m.index.insert(m.index.end(), {base, base+1, base+2, base, base+2, base+3});
+    };
+    // 6 corner points of the wedge. Run axis local coordinate `s` in [0,run]*dir.
+    const float s0 = 0.0f, s1 = run * dir;
+    auto P = [&](float w, float s, float yy, float& ox, float& oy, float& oz) {
+        oy = cy + yy;
+        if (axis == 1) { ox = cx + w; oz = cz + s; }
+        else           { ox = cx + s; oz = cz + w; }
+    };
+    // Low edge (s0): floor only. High edge (s1): floor up to rise. Top is sloped.
+    float LL[3], LR[3], HLb[3], HRb[3], HLt[3], HRt[3];
+    P(-halfW, s0, 0,    LL[0],LL[1],LL[2]);
+    P( halfW, s0, 0,    LR[0],LR[1],LR[2]);
+    P(-halfW, s1, 0,    HLb[0],HLb[1],HLb[2]);
+    P( halfW, s1, 0,    HRb[0],HRb[1],HRb[2]);
+    P(-halfW, s1, rise, HLt[0],HLt[1],HLt[2]);
+    P( halfW, s1, rise, HRt[0],HRt[1],HRt[2]);
+    const float su = run * uvScale, sv = halfW * 2 * uvScale;
+    // Sloped TOP: low edge (LL,LR) up to high-top (HLt,HRt). Up-ish normal.
+    quad(LL[0],LL[1],LL[2], LR[0],LR[1],LR[2], HRt[0],HRt[1],HRt[2], HLt[0],HLt[1],HLt[2], 0,1,0, su, sv);
+    // HIGH vertical face (riser at the top end). Normal along +run.
+    {
+        const float nz = (axis==1) ? dir : 0.0f, nx = (axis==1) ? 0.0f : dir;
+        quad(HLb[0],HLb[1],HLb[2], HRb[0],HRb[1],HRb[2], HRt[0],HRt[1],HRt[2], HLt[0],HLt[1],HLt[2], nx,0,nz, sv, rise*uvScale);
+    }
+    // Two side triangles (walls of the wedge). Emit as degenerate quads (tri).
+    {
+        // Left side (w=-halfW): LL, HLb, HLt.
+        uint32_t base = (uint32_t)m.verts.size();
+        m.verts.push_back({{LL[0],LL[1],LL[2]},{-1,0,0},{0,0}});
+        m.verts.push_back({{HLb[0],HLb[1],HLb[2]},{-1,0,0},{1,0}});
+        m.verts.push_back({{HLt[0],HLt[1],HLt[2]},{-1,0,0},{1,1}});
+        m.index.insert(m.index.end(), {base, base+1, base+2});
+        // Right side (w=+halfW): LR, HRt, HRb.
+        base = (uint32_t)m.verts.size();
+        m.verts.push_back({{LR[0],LR[1],LR[2]},{1,0,0},{0,0}});
+        m.verts.push_back({{HRt[0],HRt[1],HRt[2]},{1,0,0},{1,1}});
+        m.verts.push_back({{HRb[0],HRb[1],HRb[2]},{1,0,0},{1,0}});
+        m.index.insert(m.index.end(), {base, base+1, base+2});
+    }
+    // Collision: reuse render positions + indices.
+    m.cverts.reserve(m.verts.size() * 3);
+    for (const auto& vtx : m.verts) {
+        m.cverts.push_back(vtx.pos[0]); m.cverts.push_back(vtx.pos[1]); m.cverts.push_back(vtx.pos[2]);
+    }
+    m.cindex = m.index;
+    return m;
+}
+
+// A CANTED "/" STRUT BLADE: a sheared rectangular prism whose cross-section is
+// constant (halfW along the TANGENTIAL axis, halfT along the RADIAL axis) but
+// whose center SLIDES from (baseX,baseY,baseZ) to (topX,topY,topZ) as it rises —
+// giving the inward-leaning "/" cant of the showroom's tripod legs. The blade is
+// oriented by the RADIAL-OUT unit vector (rox,roz): thickness (halfT) runs along
+// it, width (halfW) along the perpendicular (tangential) axis (-roz,rox). Produces
+// render (per-face normals/UVs) + collision geometry. Eight corners: a bottom quad
+// at baseY around (baseX,baseZ) and a top quad at topY around (topX,topZ); the
+// four slanted side faces connect them, so the whole prism leans.
+//
+// If `hollow` is true, the +radial (outward) face is OMITTED from BOTH render and
+// collision (so a doorway can be set into that face and the player can step into
+// the hollow interior) — used for the stair-bearing strut.
+inline PrimMesh makeCantedStrut(float baseX, float baseY, float baseZ,
+                                float topX,  float topY,  float topZ,
+                                float halfW, float halfT,
+                                float rox, float roz,
+                                float uvScale = 0.5f, bool hollow = false) {
+    PrimMesh m;
+    // Tangential unit (perpendicular to radial-out, in XZ): rotate radial 90 deg.
+    const float tx = -roz, tz = rox;
+    // Eight corners. b* = bottom (baseY), t* = top (topY). Index by (radial sign,
+    // tangential sign): name as [r][w] with r in {-1=in,+1=out}, w in {-1,+1}.
+    auto corner = [&](float ccx, float ccz, float yy, float rs, float ws,
+                      float& ox, float& oy, float& oz) {
+        ox = ccx + rox * halfT * rs + tx * halfW * ws;
+        oz = ccz + roz * halfT * rs + tz * halfW * ws;
+        oy = yy;
+    };
+    float Bmm[3], Bmp[3], Bpm[3], Bpp[3];   // bottom: [r-][w-],[r-][w+],[r+][w-],[r+][w+]
+    float Tmm[3], Tmp[3], Tpm[3], Tpp[3];   // top
+    corner(baseX, baseZ, baseY, -1, -1, Bmm[0], Bmm[1], Bmm[2]);
+    corner(baseX, baseZ, baseY, -1, +1, Bmp[0], Bmp[1], Bmp[2]);
+    corner(baseX, baseZ, baseY, +1, -1, Bpm[0], Bpm[1], Bpm[2]);
+    corner(baseX, baseZ, baseY, +1, +1, Bpp[0], Bpp[1], Bpp[2]);
+    corner(topX,  topZ,  topY,  -1, -1, Tmm[0], Tmm[1], Tmm[2]);
+    corner(topX,  topZ,  topY,  -1, +1, Tmp[0], Tmp[1], Tmp[2]);
+    corner(topX,  topZ,  topY,  +1, -1, Tpm[0], Tpm[1], Tpm[2]);
+    corner(topX,  topZ,  topY,  +1, +1, Tpp[0], Tpp[1], Tpp[2]);
+    auto quad = [&](const float* a, const float* b, const float* c, const float* d,
+                    float nx, float ny, float nz, float u, float v) {
+        uint32_t base = (uint32_t)m.verts.size();
+        m.verts.push_back({{a[0],a[1],a[2]},{nx,ny,nz},{0,0}});
+        m.verts.push_back({{b[0],b[1],b[2]},{nx,ny,nz},{u,0}});
+        m.verts.push_back({{c[0],c[1],c[2]},{nx,ny,nz},{u,v}});
+        m.verts.push_back({{d[0],d[1],d[2]},{nx,ny,nz},{0,v}});
+        m.index.insert(m.index.end(), {base, base+1, base+2, base, base+2, base+3});
+    };
+    const float hgt = topY - baseY;
+    const float su = halfW*2*uvScale, sv = hgt*uvScale, swT = halfT*2*uvScale;
+    // OUTWARD (+radial) face: Bpm,Bpp,Tpp,Tpm. Omitted when hollow.
+    if (!hollow) quad(Bpm, Bpp, Tpp, Tpm,  rox,0,roz,  su, sv);
+    // INWARD (-radial) face: Bmp,Bmm,Tmm,Tmp.
+    quad(Bmp, Bmm, Tmm, Tmp,  -rox,0,-roz,  su, sv);
+    // +tangential face: Bpp,Bmp,Tmp,Tpp.
+    quad(Bpp, Bmp, Tmp, Tpp,  tx,0,tz,  swT, sv);
+    // -tangential face: Bmm,Bpm,Tpm,Tmm.
+    quad(Bmm, Bpm, Tpm, Tmm,  -tx,0,-tz,  swT, sv);
+    // TOP cap (+Y): Tmm,Tpm,Tpp,Tmp.
+    quad(Tmm, Tpm, Tpp, Tmp,  0,1,0,  swT, su);
+    // BOTTOM cap (-Y): Bmm,Bmp,Bpp,Bpm.
+    quad(Bmm, Bmp, Bpp, Bpm,  0,-1,0,  swT, su);
+    // Collision: reuse render positions + indices (a closed-enough hull; the hollow
+    // case drops only the outward wall so the doorway/interior is reachable).
+    m.cverts.reserve(m.verts.size() * 3);
+    for (const auto& vtx : m.verts) {
+        m.cverts.push_back(vtx.pos[0]); m.cverts.push_back(vtx.pos[1]); m.cverts.push_back(vtx.pos[2]);
+    }
+    m.cindex = m.index;
+    return m;
+}
+
+// A UNIT UV-SPHERE (radius 1, centered at origin) for procedural planet bodies.
+// Authored in OBJECT space so pos == normal == the object-space direction the
+// planet triplanar samplers need; UV is a standard lat-long parameterisation
+// (u = longitude [0,1], v = latitude pole->pole [0,1]). Winding is CCW front-face
+// to match the device's VK_FRONT_FACE_COUNTER_CLOCKWISE. Render geometry only
+// (a sky-hung planet needs no collision); cverts/cindex are left empty.
+inline PrimMesh makeUVSphere(uint32_t stacks = 64, uint32_t slices = 128) {
+    PrimMesh m;
+    for (uint32_t i = 0; i <= stacks; ++i) {
+        float v   = (float)i / (float)stacks;        // 0..1 pole->pole
+        float phi = v * 3.14159265f;                 // latitude
+        for (uint32_t j = 0; j <= slices; ++j) {
+            float u  = (float)j / (float)slices;     // 0..1 longitude
+            float th = u * 6.2831853f;
+            float x = sinf(phi) * cosf(th);
+            float y = cosf(phi);
+            float z = sinf(phi) * sinf(th);
+            m.verts.push_back({{x, y, z}, {x, y, z}, {u, v}}); // unit sphere: pos==normal
+        }
+    }
+    const uint32_t cols = slices + 1;
+    for (uint32_t i = 0; i < stacks; ++i)
+        for (uint32_t j = 0; j < slices; ++j) {
+            uint32_t a = i * cols + j, b = a + cols;
+            // OUTWARD-facing winding for VK_FRONT_FACE_COUNTER_CLOCKWISE: with this
+            // lat-long vertex order (a = top-left, a+1 = top-right, b = bottom-left,
+            // b+1 = bottom-right) the CCW-from-outside order is a, a+1, b / a+1, b+1, b.
+            m.index.insert(m.index.end(), { a, a + 1, b, a + 1, b + 1, b });
+        }
+    return m;
+}
+
+// A flat ANNULUS (planetary ring disc) on the XZ plane, authored in OBJECT space
+// centered at the origin with normal +Y. `innerR`/`outerR` are OBJECT-space radii;
+// `segments` controls the angular tessellation (one quad ring of `segments` cells).
+//
+// IMPORTANT — matches planet_ring.frag's object-space math: that frag derives the
+// radial strip lookup from `length(vObjPos)` against HARDCODED radii (inner = 1.3,
+// outer = 2.5) and treats the planet surface radius as 1.0. planet.vert passes the
+// object-space position straight through as vObjPos, so this mesh must be authored
+// with object-space radii in that SAME range (pass innerR ~1.3, outerR ~2.5). The
+// model matrix then translates/tilts/scales the whole ring uniformly in the world
+// (a uniform scale keeps length(vObjPos) proportional, so the strip still maps).
+// UVs: u = radial t (0 at inner edge, 1 at outer), v = angle [0,1] (cosmetic — the
+// ring frag uses object-space radius, not UV). Double-sided is handled by the
+// pipeline (cull NONE); winding here is CCW from +Y. Render geometry only.
+inline PrimMesh makeRing(float innerR, float outerR, uint32_t segments = 128) {
+    PrimMesh m;
+    segments = std::max(8u, segments);
+    const float kTwoPi = 6.2831853f;
+    for (uint32_t j = 0; j <= segments; ++j) {
+        float u  = (float)j / (float)segments;     // angle param [0,1]
+        float th = u * kTwoPi;
+        float cx = cosf(th), sz = sinf(th);
+        // Inner ring vertex (radial t = 0), then outer (radial t = 1).
+        m.verts.push_back({{ innerR * cx, 0.0f, innerR * sz }, { 0.0f, 1.0f, 0.0f }, { 0.0f, u }});
+        m.verts.push_back({{ outerR * cx, 0.0f, outerR * sz }, { 0.0f, 1.0f, 0.0f }, { 1.0f, u }});
+    }
+    for (uint32_t j = 0; j < segments; ++j) {
+        uint32_t a = j * 2;          // inner @ j
+        uint32_t b = a + 1;          // outer @ j
+        uint32_t c = a + 2;          // inner @ j+1
+        uint32_t d = a + 3;          // outer @ j+1
+        // CCW from +Y: (inner_j, inner_j1, outer_j) / (inner_j1, outer_j1, outer_j).
+        m.index.insert(m.index.end(), { a, c, b, c, d, b });
+    }
+    return m;
+}
+
 // Procedural NxN checker texture (RGBA8). Two contrasting colors per cell:
 // a light tint and a darker base. Defaults match the S1 blue-grey scheme.
 inline std::vector<uint8_t> makeCheckerRGBA(uint32_t n, uint32_t cell,
@@ -289,6 +501,47 @@ inline std::vector<uint8_t> makeSciFiPanelRGBA(uint32_t n, uint32_t panels,
     return px;
 }
 
+// CLEAN WHITE PANEL — a SMOOTH, near-WHITE / light-grey architectural surface that
+// matches the sleek Unity ShowRoom interior (smooth powder-coated panels, NOT a
+// busy sci-fi grid). Deliberately FLAT: a uniform light face with at most a
+// WHISPER-FINE, low-contrast seam line at the panel pitch (a 1-px hairline only a
+// hair darker than the face — no heavy grout, no bevels, no bolts, no grid read),
+// plus a barely-there low-frequency shading so it isn't a dead flat fill. Use this
+// for additive architectural cladding (floors/ring/struts/stairs/atrium/parapet)
+// that must sit flush with the imported white GLB walls. `tint3` multiplies the
+// base (pass detail::kNoTint to keep the default off-white). `panels` sets how many
+// panel divisions span the tile (the seam pitch); the seam is intentionally faint.
+inline std::vector<uint8_t> makeCleanPanelRGBA(uint32_t n, uint32_t panels = 4,
+                                               const float tint3[3] = detail::kNoTint,
+                                               bool seams = true) {
+    using namespace detail;
+    std::vector<uint8_t> px((size_t)n * n * 4);
+    panels = std::max(1u, panels);
+    const uint32_t pitch = std::max(1u, n / panels);          // panel pitch (px)
+    // Smooth near-white powder-coat face (light grey-white, faint cool cast).
+    const int faceR = 226, faceG = 228, faceB = 233;
+    for (uint32_t y = 0; y < n; ++y) {
+        for (uint32_t x = 0; x < n; ++x) {
+            uint8_t* p = &px[((size_t)y * n + x) * 4];
+            // Barely-there low-frequency shading (very large-scale, tiny amplitude) so
+            // the panel reads as a real surface, not a dead flat fill. +-3 levels only.
+            const float nlo = (hash01(x / 48, y / 48, std::max(1u, n / 48), 11u) - 0.5f);
+            const int shade = (int)(nlo * 6.0f);
+            int r = faceR, g = faceG, b = faceB;
+            if (seams) {
+                // Whisper-fine seam: a single 1-px hairline at each panel edge, only a
+                // hair (~12 levels) darker than the face -> low contrast, no grout read.
+                const uint32_t lx = x % pitch, ly = y % pitch;
+                const bool seamX = (lx == 0) || (lx == pitch - 1);
+                const bool seamY = (ly == 0) || (ly == pitch - 1);
+                if (seamX || seamY) { r -= 12; g -= 12; b -= 13; }
+            }
+            putTinted(p, r, g, b, tint3, shade);
+        }
+    }
+    return px;
+}
+
 // FLOORS — an unmistakable top-down walkable DECK. Big square floor PLATES (a small
 // `tiles`x`tiles` grid: default 2 → large plates, a clearly different/larger scale
 // than the wall panels) separated by DEEP recessed seams (an obvious cross/grid of
@@ -417,6 +670,97 @@ inline std::vector<uint8_t> makeCeilingPanelRGBA(uint32_t n, uint32_t coffers,
         }
     }
     return px;
+}
+
+// ============================================================================
+// LEVEL ARCHITECT — blockout (greybox) grid material + origin-centered brushes.
+// ============================================================================
+
+// BLOCKOUT GRID — a CLEAN, TASTEFUL UE5-style prototyping grid (NOT the garish
+// high-contrast grout grid that was removed from the showroom). A light warm-grey
+// base with VERY faint 1 m MINOR lines and a slightly stronger (but still subtle)
+// 5 m MAJOR line, so the surface reads as a quiet scale reference rather than a
+// busy checker. Authored so ONE texel-cell == ONE world metre when the brush UVs
+// use uvScale = 1.0 (makeBox emits hx*2 u-tiles per face, i.e. 1 tile == 1 m).
+//
+// SEAMLESS: the texture spans EXACTLY `meters` world metres (default 10) at a whole
+// pixel pitch (n / meters) and the major lines sit at metre 0 and metre 5 — both
+// INSIDE the 10 m span — so when the UVs wrap every 10 m the major lines tile with
+// no seam (the metre-0 line is shared by the wrap). Pick n a multiple of `meters`
+// (1000 / 10 = 100 px per metre) so every metre boundary lands on an exact pixel.
+//
+// Created ONCE per editor session via createTexture(px, n, n, /*srgb*/true) and
+// shared by every brush. Low-contrast on purpose: lines are only a few levels off
+// the base so the greybox never fights the geometry for attention.
+inline std::vector<uint8_t> makeBlockoutGridRGBA(uint32_t n = 1000, uint32_t meters = 10) {
+    meters = std::max(1u, meters);
+    const uint32_t pitch = std::max(1u, n / meters);   // px per world metre
+    // Light warm-grey base (a hair warm so it doesn't read clinical blue).
+    const int baseR = 176, baseG = 174, baseB = 170;
+    // Line widths in px (thin; scaled off the metre pitch so big tiles stay crisp).
+    const uint32_t minorW = std::max(1u, pitch / 64);
+    const uint32_t majorW = std::max(2u, pitch / 28);
+    std::vector<uint8_t> px((size_t)n * n * 4);
+    for (uint32_t y = 0; y < n; ++y) {
+        for (uint32_t x = 0; x < n; ++x) {
+            uint8_t* p = &px[((size_t)y * n + x) * 4];
+            int r = baseR, g = baseG, b = baseB;
+            // Distance (in px) to the NEAREST metre boundary along each axis, wrapping
+            // at the metre pitch so the test is seamless across the tile edge.
+            const uint32_t lx = x % pitch, ly = y % pitch;
+            const uint32_t dx = std::min(lx, pitch - lx);
+            const uint32_t dy = std::min(ly, pitch - ly);
+            const uint32_t edge = std::min(dx, dy);
+            // Which metre index this pixel sits in (0..meters-1) on each axis — used to
+            // promote the line to a MAJOR line at every 5th metre boundary.
+            const uint32_t mxIdx = (x / pitch) % meters;
+            const uint32_t myIdx = (y / pitch) % meters;
+            const bool majorX = (dx <= majorW) && (mxIdx % 5u == 0u);
+            const bool majorY = (dy <= majorW) && (myIdx % 5u == 0u);
+            if (majorX || majorY) {                 // stronger 5 m line (still subtle)
+                r -= 38; g -= 38; b -= 36;
+            } else if (edge <= minorW) {             // faint 1 m line
+                r -= 16; g -= 16; b -= 15;
+            }
+            p[0] = (uint8_t)std::max(0, r);
+            p[1] = (uint8_t)std::max(0, g);
+            p[2] = (uint8_t)std::max(0, b);
+            p[3] = 255;
+        }
+    }
+    return px;
+}
+
+// Blockout brush primitive types (P2 CORE = Box + Ramp; Cylinder/Stairs DEFERRED).
+enum class BrushType : uint32_t { Box = 0, Ramp = 1 };
+
+// Build an ORIGIN-CENTERED brush mesh of `type` with full extents `size` (x,y,z
+// in metres). Origin-centered (NOT world-baked like makeBox's cx/cy/cz) so the
+// brush's position + yaw live in its TRANSFORM — move/resize is a transform/body
+// update, never a per-move mesh regen. Produces render + collision geometry.
+//   Box  : a box centered at origin, half-extents = size*0.5. UVs at uvScale 1.0
+//          so one grid texel-cell == one world metre.
+//   Ramp : a wedge whose footprint is size.x (width) by size.z (run) and whose top
+//          rises by size.y over that run, RE-CENTERED to the origin (makeRamp builds
+//          from a low corner, so we shift it back by half the run / half the rise so
+//          the brush pivot is its centroid-ish origin, matching Box).
+inline PrimMesh buildBrushMesh(BrushType type, const float size[3]) {
+    const float hx = std::max(0.05f, size[0]) * 0.5f;
+    const float hy = std::max(0.05f, size[1]) * 0.5f;
+    const float hz = std::max(0.05f, size[2]) * 0.5f;
+    if (type == BrushType::Ramp) {
+        // makeRamp builds a wedge from a LOW corner (floor at cy, low edge at cz,
+        // climbing toward +Z). Recenter so the wedge's bounding box is centered on
+        // the origin: shift -run/2 in Z and -rise/2 in Y, width already spans +-halfW.
+        const float run  = std::max(0.05f, size[2]);
+        const float rise = std::max(0.05f, size[1]);
+        const float halfW = hx;
+        PrimMesh m = makeRamp(/*cx*/0.0f, /*cy*/ -rise * 0.5f, /*cz*/ -run * 0.5f,
+                              halfW, run, rise, /*axis*/1u, /*dir*/ +1.0f, /*uvScale*/1.0f);
+        return m;
+    }
+    // Box (default).
+    return makeBox(hx, hy, hz, 0.0f, 0.0f, 0.0f, /*uvScale*/1.0f);
 }
 
 } // namespace x3::prims

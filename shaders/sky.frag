@@ -27,10 +27,38 @@ layout(set = 0, binding = 0) uniform SkyUBO {
     vec4 sunDir;        // xyz = normalized direction TOWARD the sun (matches lighting)
     vec4 sunColor;      // rgb = sun color (matches the directional light), a = intensity
     vec4 params;        // x = turbidity/haze amount, y = exposure, z/w = reserved
+    vec4 zenith;        // rgb = overhead sky color (linear); per-scene
+    vec4 horizon;       // rgb = horizon glow color (linear); per-scene
 } sky;
 
 layout(location = 0) in vec2 vNdc;
 layout(location = 0) out vec4 outColor;
+
+// ---- Procedural starfield. Additive + gated to dark skies, so it is INVISIBLE by
+// day (Level1) and only blooms on a night sky. Rotates around Y by sky.params.z
+// (seconds) for the slow "wheeling celestial sphere" once a scene advances time.
+float starHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123); }
+vec3 starField(vec3 dir, float t) {
+    float c = cos(t * 0.02), s = sin(t * 0.02);              // slow celestial rotation
+    vec3 d = vec3(c * dir.x + s * dir.z, dir.y, -s * dir.x + c * dir.z);
+    vec2 uv = vec2(atan(d.z, d.x) * 0.1591549 + 0.5,
+                   asin(clamp(d.y, -1.0, 1.0)) * 0.3183099 + 0.5);   // lat-long
+    vec3 acc = vec3(0.0);
+    for (int o = 0; o < 2; ++o) {                            // two density layers
+        float dens = (o == 0) ? 260.0 : 150.0;
+        vec2 g = uv * dens;
+        vec2 cell = floor(g);
+        float h = starHash(cell + float(o) * 19.7);
+        float present = step(0.955, h);                      // denser starfield (~4.5% of cells)
+        vec2 f = fract(g) - 0.5;
+        float pt = present * smoothstep(0.16, 0.0, length(f));
+        float tw = 0.6 + 0.4 * sin(t * 2.0 + h * 31.4);      // twinkle
+        float bright = (0.35 + 0.65 * starHash(cell + 7.1)) * tw;
+        vec3 tint = mix(vec3(0.8, 0.85, 1.0), vec3(1.0, 0.9, 0.8), starHash(cell + 2.3));
+        acc += pt * bright * tint * ((o == 0) ? 1.0 : 0.6);
+    }
+    return acc;
+}
 
 void main() {
     // Reconstruct the world-space view ray for this pixel. Unproject a near and a
@@ -51,8 +79,8 @@ void main() {
 
     // ---- Sky gradient (zenith -> horizon). Linear-ish colors; ACES at the end. ----
     // Deep blue overhead; pale, faintly warm haze at the horizon.
-    const vec3 kZenith  = vec3(0.10, 0.28, 0.66);   // overhead blue
-    const vec3 kHorizon = vec3(0.62, 0.74, 0.92);   // pale horizon haze
+    vec3 kZenith  = sky.zenith.rgb;    // overhead sky color (per-scene; default deep blue)
+    vec3 kHorizon = sky.horizon.rgb;   // horizon glow color (per-scene; default pale blue)
     // Bias the blend toward the horizon (pow < 1 lifts the band) so the gradient
     // doesn't read as a flat 50/50 split.
     float grad = pow(t, 0.55);
@@ -60,8 +88,15 @@ void main() {
 
     // ---- Extra horizon haze: lift + desaturate the lowest strip of sky. ----
     float horizonBand = pow(1.0 - t, 8.0);
-    vec3 hazeTint = vec3(0.78, 0.82, 0.88);
+    vec3 hazeTint = clamp(kHorizon * 1.12, 0.0, 1.0);   // glow band follows the per-scene horizon color (cool + bright, not grey)
     col = mix(col, hazeTint, horizonBand * (0.35 + 0.45 * haze));
+
+    // ---- Stars: additive, above the horizon only, gated hard to DARK skies. ----
+    if (up > 0.0) {
+        float skyLum = dot(col, vec3(0.299, 0.587, 0.114));
+        float night  = pow(clamp(1.0 - skyLum, 0.0, 1.0), 4.0);   // only very dark skies
+        col += starField(dir, sky.params.z) * (1.5 * night) * smoothstep(0.0, 0.12, up);
+    }
 
     // ---- Sun disk + glow, placed at the directional sun. ----
     float cosAngle = clamp(dot(dir, sunDir), -1.0, 1.0);

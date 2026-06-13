@@ -67,8 +67,14 @@ layout(location = 4) in vec3 vWorldPos;
 layout(location = 5) flat in vec4 vEmissive;     // rgb = color, a = strength
 layout(location = 6) flat in uint vFlags;        // bit0 = TERRAIN, bit1 = GLASS
 layout(location = 7) flat in uvec2 vTerrainPack; // unused for glass
-layout(location = 8) flat in vec4 vGlassParams;  // x = refraction, y = roughness, z = specular
-layout(location = 9) flat in vec4 vGlassTint;    // rgb = tint
+// Locations 8-11 carry the PBR map indices (mesh.frag consumes them; glass ignores).
+// Glass material rides at 12/13 to match the merged mesh.vert output interface.
+layout(location = 8)  flat in uint vNormalTexIndex;   // (unused by glass)
+layout(location = 9)  flat in uint vMrTexIndex;       // (unused by glass)
+layout(location = 10) flat in uint vEmissiveTexIndex; // (unused by glass)
+layout(location = 11) flat in uint vDetailPacked;     // (unused by glass)
+layout(location = 12) flat in vec4 vGlassParams;  // x = refraction, y = roughness, z = specular
+layout(location = 13) flat in vec4 vGlassTint;    // rgb = tint
 
 layout(location = 0) out vec4 outColor;
 

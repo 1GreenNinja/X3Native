@@ -34,6 +34,7 @@ find_package(glfw3 CONFIG REQUIRED)                       # vcpkg
 find_package(miniz CONFIG REQUIRED)                       # vcpkg
 find_package(glm CONFIG REQUIRED)                         # vcpkg
 find_package(Jolt CONFIG REQUIRED)                        # vcpkg (joltphysics, MIT)
+find_package(imgui CONFIG REQUIRED)                       # vcpkg (Dear ImGui, docking + glfw/vulkan backends) — EDITOR-ONLY
 
 # ---- Engine + app ----
 add_subdirectory(engine)

@@ -30,6 +30,14 @@ struct SoundHandle {
     bool valid() const { return id != 0; }
 };
 
+// Opaque handle to a live LOOPING voice (startLoop/stopLoop). id==0 = invalid/none
+// (e.g. headless/silent mode, or an unstarted loop). Stopping an invalid handle is
+// a safe no-op, so a caller can keep a single LoopHandle (0 = "no loop running").
+struct LoopHandle {
+    uint32_t id = 0;
+    bool valid() const { return id != 0; }
+};
+
 class IAudioSystem {
 public:
     virtual ~IAudioSystem() = default;
@@ -68,6 +76,40 @@ public:
 
     // Stop the music track (if any).
     virtual void stopMusic() = 0;
+
+    // ---- Live volume controls (Settings menu) -----------------------------
+    // Set the music bed's volume in [0,1]. Applied immediately to the playing
+    // music voice (and remembered for any music started later). Silent/no-music
+    // -> harmlessly stored. setMusicEnabled(true) resumes at THIS volume.
+    virtual void setMusicVolume(float vol) = 0;
+
+    // Enable/disable the music bed live. false stops/silences the current bed
+    // (the track + its loop position are forgotten); true (re)starts the last
+    // music track at the current music volume. No-op if no track was ever set.
+    virtual void setMusicEnabled(bool enabled) = 0;
+
+    // Master SFX volume in [0,1]: scales ALL playSound2D/playSound3D output. The
+    // scale is applied INTERNALLY in one place (every voice's volume is multiplied
+    // by this), so call sites need not change. Applied to NEW voices going forward.
+    virtual void setMasterSfxVolume(float vol) = 0;
+
+    // ---- Sustained LOOP voices (held-fire weapons) ------------------------
+    // Start a 2D LOOPING voice of `sound` (e.g. a held auto-fire whine) and return a
+    // LoopHandle to control/stop it. The voice loops until stopLoop() is called. vol
+    // is scaled by the master SFX volume (same one-place multiply as one-shots), so
+    // the audio settings slider quiets it too. Invalid handle / silent / no-device ->
+    // returns an invalid LoopHandle (graceful no-op). 2D is intentional: the loop is
+    // the player's OWN weapon (no spatialization needed). Pure-virtual so every
+    // backend implements it (mirrors how the volume setters were added).
+    virtual LoopHandle startLoop(SoundHandle sound, float vol = 1.0f, float pitch = 1.0f) = 0;
+
+    // Stop + free a loop voice started by startLoop(). Stopping an invalid/already-
+    // stopped handle is a safe no-op (double-stop is fine). Silent/no-device -> no-op.
+    virtual void stopLoop(LoopHandle loop) = 0;
+
+    // Update a live loop voice's volume/pitch (vol is master-SFX-scaled, like
+    // startLoop). Default no-op so backends may opt out; invalid handle -> no-op.
+    virtual void setLoopParams(LoopHandle /*loop*/, float /*vol*/, float /*pitch*/) {}
 
     // Per-frame tick: advances any internal bookkeeping (voice cleanup). Cheap.
     virtual void update(float dt) = 0;

@@ -48,6 +48,19 @@ ai_action*.gif
 # Tracy captures
 *.tracy
 
+# LLM model weights (~2 GB GGUFs) — NEVER in git/LFS; nearly committed twice in
+# June 2026. Download per assets/models/llm/README.md (branch feat/llm-npc);
+# the game runs modelless without them. Belt + suspenders with the pre-commit
+# guard (tools/hooks/pre-commit), which hard-blocks *.gguf even when forced.
+*.gguf
+assets/models/llm/*
+!assets/models/llm/README.md
+
+# Crash dumps anywhere in the tree (crashdumps/ is ignored below, but dumps
+# also land next to the exe / in repo root). *.pdb is already ignored above.
+*.dmp
+MEMORY.DMP
+
 # Claude Code background sub-agent worktrees — each is a FULL repo checkout
 # (gigabytes of duplicated assets + build dirs). Local-only, never commit.
 # Clean periodically: tools/clean_worktrees.ps1  (see README warning).
@@ -73,3 +86,22 @@ run.pid
 # Loose scratch screenshots in repo root (keep curated ones in docs/screenshots/)
 /*.png
 /*.gif
+
+# Runtime / scratch artifacts
+imgui.ini
+b1log.txt
+*terminal log*.txt
+*.done
+tools/__pycache__/
+assets/fonts/*.zip
+
+# Render-proof captures — regenerable via --screenshot-* (don't bloat history)
+captures/
+
+# ShowRoom_Vol30: commit ONLY the assembled, re-skinned Example_01.glb (the scene the
+# game loads). The other ~79 raw kit pieces + the .orig/.hdrp backups are large and
+# REGENERABLE from the Unity kit via the committed converter
+# (python tools/convert_unity_pack.py repack-glb <kit> Example_01.orig.glb Example_01.glb),
+# so they stay out of LFS (the kit is the source of truth).
+assets/converted_glb/ShowRoom_Vol30/*
+!assets/converted_glb/ShowRoom_Vol30/Example_01.glb

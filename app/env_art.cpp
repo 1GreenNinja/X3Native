@@ -118,9 +118,15 @@ uint32_t EnvArtSystem::loadAsset(const std::string& relPath) {
         a.drawables = x3::asset::makeDrawables(a.model);
         a.ok = !a.drawables.empty();
     }
-    if (a.ok)
-        x3::logInfo("[env-art] loaded " + relPath + " — " +
-                    std::to_string(a.drawables.size()) + " drawable prim(s)");
+    if (a.ok) {
+        uint32_t nTex = 0, nMr = 0, nNrm = 0;
+        for (const auto& d : a.drawables) { if (d.baseColorTexId) ++nTex; if (d.mrTexId) ++nMr; if (d.normalTexId) ++nNrm; }
+        float f0 = a.model.materials.empty() ? -1.0f : a.model.materials[0].baseColor[0];
+        x3::logInfo("[env-art] loaded " + relPath + " — " + std::to_string(a.drawables.size()) +
+                    " drawables; baseColorTex=" + std::to_string(nTex) + " mr=" + std::to_string(nMr) +
+                    " normal=" + std::to_string(nNrm) + "; materials=" + std::to_string(a.model.materials.size()) +
+                    " mat0.baseColor.r=" + std::to_string(f0));
+    }
     else
         x3::logWarn("[env-art] FAILED to load " + relPath + " (graybox fallback kept)");
 
@@ -143,6 +149,23 @@ void EnvArtSystem::addInstanceEmissive(uint32_t a, const float transform[16], co
     for (int i=0;i<16;++i) e.transform[i]=transform[i];
     if (emissive) for (int i=0;i<4;++i) e.emissive[i]=emissive[i];
     m_instances.push_back(e);
+}
+
+bool EnvArtSystem::buildFromGlb(x3::rhi::IRenderDevice& device,
+                                std::string_view convertedGlbDir, std::string_view relPath) {
+    m_assets.reset(x3::asset::createAssetSource());
+    if (!m_assets->mountDir(convertedGlbDir, 0)) {
+        x3::logWarn("[env-art] buildFromGlb mountDir failed: " + std::string(convertedGlbDir));
+        return false;
+    }
+    m_loader.reset(x3::asset::createModelLoader(&device, m_assets.get()));
+    const uint32_t a = loadAsset(std::string(relPath));   // cgltf loads geometry + materials + embedded textures
+    if (a >= m_assetTable.size() || !m_assetTable[a].ok) return false;
+    const float I[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    addInstance(a, I);    // identity: the GLB's baked node transforms ARE the world placement
+    x3::logInfo("[env-art] buildFromGlb: " + std::string(relPath) + " — " +
+                std::to_string(m_assetTable[a].drawables.size()) + " drawables, 1 instance");
+    return true;
 }
 
 Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
@@ -399,21 +422,112 @@ Level1ArtMask EnvArtSystem::build(x3::rhi::IRenderDevice& device,
     return mask;
 }
 
-void EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame) const {
+void EnvArtSystem::worldBounds(float outMin[3], float outMax[3]) const {
+    float mn[3] = { 1e30f, 1e30f, 1e30f }, mx[3] = { -1e30f, -1e30f, -1e30f };
+    for (const EnvInstance& inst : m_instances) {
+        if (inst.asset >= m_assetTable.size()) continue;
+        for (const auto& d : m_assetTable[inst.asset].drawables) {
+            float fin[16]; x3::asset::mulMat4(inst.transform, d.nodeTransform, fin);
+            const float w[3] = { fin[12], fin[13], fin[14] };
+            for (int i = 0; i < 3; ++i) { mn[i] = std::min(mn[i], w[i]); mx[i] = std::max(mx[i], w[i]); }
+        }
+    }
+    for (int i = 0; i < 3; ++i) { outMin[i] = mn[i]; outMax[i] = mx[i]; }
+}
+
+uint32_t EnvArtSystem::namedBounds(const std::vector<std::string>& subs,
+                                   float outMin[3], float outMax[3]) const {
+    float mn[3] = { 1e30f, 1e30f, 1e30f }, mx[3] = { -1e30f, -1e30f, -1e30f };
+    uint32_t hits = 0;
+    for (const EnvAsset& a : m_assetTable) {
+        if (!a.ok || a.model.nodes.empty()) continue;
+        const std::vector<x3::asset::Node>& nodes = a.model.nodes;
+        const int N = (int)nodes.size();
+        // World matrix per node (mirror makeDrawables: world = parentWorld * local).
+        // Iterative ancestor-chain resolve (no recursion lib); the depth cap guards cycles.
+        std::vector<float> world((size_t)N * 16, 0.0f);
+        std::vector<char>  done(N, 0);
+        for (int i = 0; i < N; ++i) {
+            if (done[i]) continue;
+            int chain[512]; int depth = 0; int cur = i;
+            while (cur >= 0 && cur < N && !done[cur] && depth < 512) {
+                chain[depth++] = cur; cur = nodes[cur].parent;
+            }
+            for (int j = depth - 1; j >= 0; --j) {
+                const int ni = chain[j];
+                const int p  = nodes[ni].parent;
+                if (p >= 0 && p < N && done[p])
+                    x3::asset::mulMat4(&world[(size_t)p * 16], nodes[ni].localTransform, &world[(size_t)ni * 16]);
+                else
+                    for (int k = 0; k < 16; ++k) world[(size_t)ni * 16 + k] = nodes[ni].localTransform[k];
+                done[ni] = 1;
+            }
+        }
+        // Filter mesh nodes whose (lowercased) name contains any requested substring.
+        for (int i = 0; i < N; ++i) {
+            if (nodes[i].meshIndex < 0) continue;
+            std::string ln = nodes[i].name;
+            for (char& c : ln) if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+            bool hit = false;
+            for (const std::string& s : subs) if (ln.find(s) != std::string::npos) { hit = true; break; }
+            if (!hit) continue;
+            ++hits;
+            const float* w = &world[(size_t)i * 16];
+            for (int k = 0; k < 3; ++k) { const float v = w[12 + k]; if (v < mn[k]) mn[k] = v; if (v > mx[k]) mx[k] = v; }
+        }
+        // Nothing matched? Dump a sample of mesh-node names so the caller can see the
+        // real naming convention and correct the filter substrings.
+        if (hits == 0) {
+            int shown = 0;
+            for (int i = 0; i < N && shown < 18; ++i)
+                if (nodes[i].meshIndex >= 0 && !nodes[i].name.empty()) {
+                    x3::logInfo("[env-art] node name sample: " + nodes[i].name); ++shown;
+                }
+        }
+    }
+    for (int k = 0; k < 3; ++k) { outMin[k] = mn[k]; outMax[k] = mx[k]; }
+    return hits;
+}
+
+uint32_t EnvArtSystem::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                            uint32_t maxDrawables, const float* cullMin, const float* cullMax) const {
+    uint32_t drawn = 0;
     for (const EnvInstance& inst : m_instances) {
         const EnvAsset& a = m_assetTable[inst.asset];
         for (const auto& d : a.drawables) {
             float fin[16];
             x3::asset::mulMat4(inst.transform, d.nodeTransform, fin);
-            // HDR pipeline: emissive instances (Light_A fixtures) glow + feed bloom.
-            device.drawMeshEmissive(frame,
-                                    x3::rhi::MeshHandle{ d.meshId },
-                                    x3::rhi::TextureHandle{ d.baseColorTexId },
-                                    d.baseColorFactor,
-                                    inst.emissive,
-                                    fin);
+            // AABB cull by world origin: frames a region of a large baked scene (the
+            // building) and bounds the per-frame draw count under the renderer budget.
+            if (cullMin && cullMax &&
+                (fin[12] < cullMin[0] || fin[13] < cullMin[1] || fin[14] < cullMin[2] ||
+                 fin[12] > cullMax[0] || fin[13] > cullMax[1] || fin[14] > cullMax[2])) continue;
+            if (drawn >= maxDrawables) return drawn;
+            ++drawn;
+            // Emissive: the GLB MATERIAL emissive (HDR-scaled factor, gated by the emissive
+            // map in the shader -> glowing edge strips) takes priority; otherwise the per-
+            // INSTANCE emissive (Level1 Light_A fixtures). Both feed the HDR bloom chain.
+            const bool matEmis = d.emissiveTexId != 0 ||
+                d.emissiveFactor[0] > 0.001f || d.emissiveFactor[1] > 0.001f || d.emissiveFactor[2] > 0.001f;
+            float emis[4];
+            if (matEmis) { emis[0]=d.emissiveFactor[0]; emis[1]=d.emissiveFactor[1]; emis[2]=d.emissiveFactor[2]; emis[3]=1.0f; }
+            else         { emis[0]=inst.emissive[0]; emis[1]=inst.emissive[1]; emis[2]=inst.emissive[2]; emis[3]=inst.emissive[3]; }
+            device.drawMeshPBR(frame,
+                               x3::rhi::MeshHandle{ d.meshId },
+                               x3::rhi::TextureHandle{ d.baseColorTexId },
+                               x3::rhi::TextureHandle{ d.normalTexId },
+                               x3::rhi::TextureHandle{ d.mrTexId },
+                               d.baseColorFactor,
+                               emis,
+                               fin,
+                               d.alphaMask,
+                               d.alphaBlend,
+                               x3::rhi::TextureHandle{ d.emissiveTexId },
+                               x3::rhi::TextureHandle{ d.detailTexId },   // HDRP micro-detail
+                               d.detailUvScale);
         }
     }
+    return drawn;
 }
 
 uint32_t EnvArtSystem::assetsLoaded() const {

@@ -55,8 +55,13 @@ struct Material {
     uint64_t mrTex        = 0;   // metallic-roughness
     uint64_t emissiveTex  = 0;
     uint64_t occlusionTex = 0;
+    uint64_t detailTex    = 0;   // HDRP DetailMap (R=desat albedo, G=nrmY, B=smooth, A=nrmX); 0 = none
+    float    detailUvScale = 1.0f;   // detail UV tiling (from the converter's x3Detail extras)
+    float    detailNrmScale = 1.0f;
     bool     doubleSided  = false;
     bool     alphaBlend   = false;
+    bool     alphaMask    = false;   // glTF alphaMode==MASK (alpha-cutout)
+    float    alphaCutoff  = 0.5f;
 };
 
 // Node hierarchy. glTF convention is kept (right-handed, +Y up, -Z forward,
@@ -130,6 +135,14 @@ public:
 struct ModelDrawable {
     uint32_t meshId        = 0;          // -> rhi::MeshHandle{ meshId }
     uint32_t baseColorTexId = 0;         // -> rhi::TextureHandle{ } (0 == default white)
+    uint32_t normalTexId   = 0;          // -> rhi::TextureHandle{ } (0 == none; PBR normal map)
+    uint32_t mrTexId       = 0;          // -> rhi::TextureHandle{ } (0 == none; metallic-roughness)
+    bool     alphaMask     = false;      // glTF alphaMode==MASK: fragment is alpha-cutout (foliage/people)
+    bool     alphaBlend    = false;      // glTF alphaMode==BLEND: translucent (glass) -> blend pass
+    float    emissiveFactor[3] = {0, 0, 0};  // HDR-scaled emissive color (glowing edge strips etc.)
+    uint32_t emissiveTexId = 0;          // -> rhi::TextureHandle{ } (0 == none; emissive map)
+    uint32_t detailTexId   = 0;          // -> rhi::TextureHandle{ } (0 == none; HDRP micro-detail map)
+    float    detailUvScale = 1.0f;       // detail UV tiling (mesh.frag samples detail at vUV*this)
     float    baseColorFactor[4] = {1, 1, 1, 1};
     float    nodeTransform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1}; // node world (column-major)
 };
