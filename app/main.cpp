@@ -663,6 +663,20 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // environment keep an F0-tinted ambient response instead of rendering black.
     // 1 = on (default), 0 = off, >1 strengthens. Live (synced in applyRtaoCVars).
     console.registerCVar("r_metalambient", "1", "metal ambient-specular floor (0 = off; metals keep an F0-tinted ambient in dark environments; live)");
+    // ---- HDR POST STACK (tonemap / bloom / auto-exposure) — all live ----------
+    // Defaults preserve the shipped look: ACES tonemap, scene-tuned bloom, gentle
+    // auto-exposure. A/B the legacy pre-AE renderer with: r_autoexposure 0 (the
+    // legacy path: ACES + scene bloom + manual r_exposure, exactly as before this
+    // strike). r_tonemap 0 is a raw passthrough clamp for tonemap debugging.
+    console.registerCVar("r_tonemap",        "1",    "tonemap operator: 1 = ACES filmic (default), 0 = passthrough clamp (debug A/B)");
+    console.registerCVar("r_bloom",          "1",    "bloom on/off (0 skips the whole downsample/upsample chain)");
+    console.registerCVar("r_bloomintensity", "-1",   "bloom strength override; <0 = keep the scene-tuned value (default)");
+    console.registerCVar("r_bloomthreshold", "1.10", "bloom bright-pass threshold (linear luminance; soft knee)");
+    console.registerCVar("r_autoexposure",   "1",    "auto-exposure (eye adaptation): scene log-luminance drives exposure; r_exposure becomes a bias");
+    console.registerCVar("r_aespeed",        "1.5",  "auto-exposure adaptation speed (1/s; higher = faster eye)");
+    console.registerCVar("r_aemin",          "0.7",  "auto-exposure clamp floor (max darkening of bright scenes)");
+    console.registerCVar("r_aemax",          "2.2",  "auto-exposure clamp ceiling (max lift of dark scenes)");
+    console.registerCVar("r_aekey",          "0.18", "auto-exposure target middle-grey key");
     // (3rd-person Jake tuning cvars removed 2026-05-27: dialed-in values
     // jake_yoff=1.03 / jake_yawoff_deg=90 / jake_camdist=2.3 / jake_camh=0.37
     // are now baked as member defaults in app/thirdperson.h.)
@@ -693,7 +707,8 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     if (p.radius <= 0.0f) p.radius = 1.2f;
     device.setRtaoParams(p);
     // Whole-scene brightness dial (live; default 1.0 = unchanged). Piggybacks the
-    // per-frame cvar->device sync so `r_exposure` takes effect immediately.
+    // per-frame cvar->device sync so `r_exposure` takes effect immediately. With
+    // auto-exposure on this is the exposure COMPENSATION bias.
     device.setExposure(console.getFloat("r_exposure"));
     // CPU per-object frustum cull (live; default on). Same per-frame sync so toggling
     // r_frustumcull from the console takes effect immediately.
@@ -703,6 +718,22 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     device.setHzbEnabled(console.getInt("r_hzb") != 0);
     // Metal ambient-specular floor (live; default 1.0 = on, 0 = off).
     device.setMetalAmbient(console.getFloat("r_metalambient"));
+    // HDR post stack: tonemap / bloom gate + tunables / auto-exposure (all live).
+    x3::rhi::IRenderDevice::PostFXParams px{};
+    px.tonemapMode    = console.getInt("r_tonemap");
+    px.bloomEnabled   = console.getInt("r_bloom") != 0;
+    px.bloomIntensity = console.getFloat("r_bloomintensity");
+    px.bloomThreshold = console.getFloat("r_bloomthreshold");
+    px.autoExposure   = console.getInt("r_autoexposure") != 0;
+    px.aeSpeed        = console.getFloat("r_aespeed");
+    px.aeMin          = console.getFloat("r_aemin");
+    px.aeMax          = console.getFloat("r_aemax");
+    px.aeKey          = console.getFloat("r_aekey");
+    if (px.aeSpeed <= 0.0f) px.aeSpeed = 1.5f;
+    if (px.aeMin   <= 0.0f) px.aeMin   = 0.7f;
+    if (px.aeMax   <  px.aeMin) px.aeMax = px.aeMin;
+    if (px.aeKey   <= 0.0f) px.aeKey   = 0.18f;
+    device.setPostFX(px);
 }
 
 // Read the current cvar values, converting the angle cvars degrees->radians.
@@ -1635,6 +1666,9 @@ int main(int argc, char** argv) {
     // open-world sky. Default path when omitted: G:\X3Native\sky.png.
     bool        skyShot = false;
     std::string skyShotPath = "G:/X3Native/sky.png";
+    // --legacypost A/B: 1 = auto-exposure off (the pre-post-stack look);
+    // 2 = also bloom off + tonemap passthrough (raw HDR clamp debugging).
+    int         legacyPost = 0;
     // Showroom preview (--screenshot-showroom [path.png]): load the baked Unity scene
     // export (assets/converted_glb/ShowRoom_Vol30/Example_01.glb), frame the camera on
     // the building cluster, capture a PBR-shaded PNG. Headless, like --screenshot.
@@ -1801,6 +1835,8 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         std::string_view a(argv[i]);
         if (a == "--smoketest") smoketest = true;
+        else if (a == "--legacypost")  legacyPost = 1;   // A/B: auto-exposure OFF (pre-strike look)
+        else if (a == "--legacypost2") legacyPost = 2;   // A/B: + bloom OFF + tonemap passthrough
         else if (a == "--test-rt") { smoketest = true; testRt = true; }
         else if (a == "--test-jobs") testJobs = true;
         else if (a == "--test-asset") testAsset = true;
@@ -2705,6 +2741,16 @@ int main(int argc, char** argv) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
+    }
+
+    // --legacypost: A/B switch — disable the post-stack additions (auto-exposure;
+    // and with --legacypost2 also bloom + ACES->passthrough) so any path, headless
+    // screenshots included, can be compared against the pre-post-stack renderer.
+    if (legacyPost) {
+        x3::rhi::IRenderDevice::PostFXParams px{};
+        px.autoExposure = false;                 // legacy = no eye adaptation
+        if (legacyPost > 1) { px.bloomEnabled = false; px.tonemapMode = 0; }
+        device->setPostFX(px);
     }
 
     // ---- Level Architect EDITOR overlay init (--editor / --screenshot-editor) ----

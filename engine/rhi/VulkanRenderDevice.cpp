@@ -597,10 +597,19 @@ public:
     void setBloom(float intensity) override { m_bloomIntensity = intensity; }
 
     // Whole-scene brightness: pre-tonemap exposure multiplier in the composite pass.
+    // With auto-exposure ON this is the compensation BIAS on the adapted value.
     void setExposure(float e) override { m_exposure = (e > 0.0f) ? e : 1.0f; }
 
     // Metal ambient-specular floor strength (mesh.frag IBL path; rides ssao ctrl ibl.w).
     void setMetalAmbient(float s) override { m_metalAmbient = (s >= 0.0f) ? s : 1.0f; }
+
+    // HDR post-stack settings (r_tonemap / r_bloom* / r_autoexposure / r_ae*),
+    // synced per frame by the app. Toggling AE on re-arms the adaptation snap so
+    // the first adapted frame lands on target instantly (no multi-second crawl).
+    void setPostFX(const PostFXParams& p) override {
+        if (p.autoExposure && !m_post.autoExposure) m_aeSnap = true;
+        m_post = p;
+    }
 
     void setShadowBounds(float cx, float cy, float cz, float halfExtent) override {
         m_shadowOverride  = true;
@@ -2805,7 +2814,9 @@ private:
             BloomPush& pc = m_bloomDownPush[i];
             pc.srcTexel[0] = 1.0f / (float)std::max(1u, srcExt.width);
             pc.srcTexel[1] = 1.0f / (float)std::max(1u, srcExt.height);
-            pc.threshold = kBloomThreshold; pc.knee = kBloomKnee;
+            pc.threshold = (m_post.bloomThreshold > 0.0f) ? m_post.bloomThreshold
+                                                          : kBloomThreshold;   // r_bloomthreshold (live)
+            pc.knee = kBloomKnee;
             pc.intensity = 1.0f; pc.firstPass = firstPass ? 1 : 0;
 
             m_bloomAttach[i] = VkRenderingAttachmentInfo{};
@@ -4016,15 +4027,56 @@ private:
         }
 
         // ================================================================
-        // BLOOM CHAIN + HDR COMPOSITE (HDR pipeline).
+        // AUTO-EXPOSURE + BLOOM CHAIN + HDR COMPOSITE (HDR pipeline).
         // ----------------------------------------------------------------
-        // Downsample: pass 0 bright-passes the HDR scene into mip0 (Karis-average
-        // 13-tap), passes 1..N-1 progressively downsample mip[i-1] -> mip[i].
-        // Upsample: from the smallest mip back up, each step tent-filters mip[i+1]
-        // and ADDITIVELY blends it onto mip[i] (pipeline ONE,ONE blend). Result:
-        // mip0 holds the full accumulated bloom. The graph derives every
-        // COLOR_ATTACHMENT <-> SHADER_READ_ONLY transition between the mips.
-        addBloomPasses(rgHdr, rgMip);
+        // Auto-exposure: a single-workgroup compute reduce of the finished HDR
+        // scene -> adapted exposure SSBO (read by the composite). Runs before the
+        // bloom chain (both only READ the HDR target; order between them is
+        // irrelevant, but AE must precede the composite). The SSBO is not a graph
+        // resource (buffers are not graph-tracked, documented model); the record
+        // body emits its own pre/post barriers on it. r_autoexposure-gated.
+        const bool aeOn = m_post.autoExposure && (m_aePipe != VK_NULL_HANDLE);
+        if (aeOn) {
+            // Adaptation dt from a steady clock (renderer-owned so every caller —
+            // interactive or headless — gets correct eye-adaptation pacing).
+            const double tNow = std::chrono::duration<double>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            float aeDt = (m_aePrevTime >= 0.0) ? (float)(tNow - m_aePrevTime) : 0.0f;
+            m_aePrevTime = tNow;
+            if (aeDt < 0.0f)  aeDt = 0.0f;
+            if (aeDt > 0.1f)  aeDt = 0.1f;   // stall guard: never adapt a huge step
+            // Determinism: SNAP on the first frame / AE re-enable, and on EVERY
+            // headless frame so --screenshot* captures are bit-reproducible.
+            const bool snap = m_aeSnap || m_headless;
+            m_aeSnap = false;
+            m_aePush = AePush{ aeDt, m_post.aeSpeed, m_post.aeMin, m_post.aeMax,
+                               m_post.aeKey, snap ? 1 : 0, 0.0f, 0.0f };
+
+            RenderPassDesc ae{};
+            ae.name = "auto-exposure";
+            ae.queue = RgQueue::Compute;
+            ae.usesDynamicRendering = false;
+            ae.addUse(ResourceUse{
+                rgHdr, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            ae.recordCtx = this;
+            ae.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordAutoExposureBody(c); };
+            m_graph.addPass(std::move(ae));
+        }
+
+        // Bloom: downsample pass 0 bright-passes the HDR scene into mip0
+        // (Karis-average 13-tap), passes 1..N-1 progressively downsample
+        // mip[i-1] -> mip[i]. Upsample: from the smallest mip back up, each step
+        // tent-filters mip[i+1] and ADDITIVELY blends it onto mip[i] (pipeline
+        // ONE,ONE blend). Result: mip0 holds the full accumulated bloom. The graph
+        // derives every COLOR_ATTACHMENT <-> SHADER_READ_ONLY transition between
+        // the mips. r_bloom 0 skips the WHOLE chain (the composite's intensity is
+        // forced 0 and its shader guards the mip0 sample, so the untouched mip is
+        // never read).
+        const bool bloomOn = m_post.bloomEnabled;
+        if (bloomOn) addBloomPasses(rgHdr, rgMip);
 
         // Composite: HDR scene + bloom mip0 -> ACES tonemap -> LDR final target.
         // The HUD is recorded here (after tonemap) so it composites on the LDR
@@ -4073,8 +4125,16 @@ private:
                 vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_compositeLayout,
                                         0, 1, &self->m_setComposite, 0, nullptr);
                 CompositePush cp{};
-                cp.bloomIntensity = self->m_bloomIntensity;
-                cp.exposure = self->m_exposure;   // live whole-scene brightness (r_exposure)
+                // Effective bloom strength: r_bloom 0 forces 0 (chain skipped this
+                // frame; the shader's >0 guard never samples the untouched mip);
+                // r_bloomintensity >= 0 overrides the scene-tuned setBloom() value.
+                cp.bloomIntensity = self->m_post.bloomEnabled
+                    ? ((self->m_post.bloomIntensity >= 0.0f) ? self->m_post.bloomIntensity
+                                                             : self->m_bloomIntensity)
+                    : 0.0f;
+                cp.exposure    = self->m_exposure;   // r_exposure (bias when AE on)
+                cp.tonemapMode = self->m_post.tonemapMode;             // r_tonemap
+                cp.aeEnabled   = (self->m_post.autoExposure && self->m_aePipe != VK_NULL_HANDLE) ? 1 : 0;
                 vkCmdPushConstants(c, self->m_compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(cp), &cp);
                 vkCmdDraw(c, 3, 1, 0, 0);
@@ -7190,26 +7250,48 @@ private:
         if (vkCreateDescriptorSetLayout(m_dev.device, &s1, nullptr, &m_postSetLayout1) != VK_SUCCESS) {
             logError("[rhi] post set layout (1) failed"); return false;
         }
-        // Descriptor set layout: 2 combined image samplers (composite: HDR + bloom).
-        VkDescriptorSetLayoutBinding b2[2]{};
+        // Descriptor set layout: 2 combined image samplers (composite: HDR + bloom)
+        // + the auto-exposure SSBO (binding 2, fragment-read).
+        VkDescriptorSetLayoutBinding b2[3]{};
         b2[0].binding = 0; b2[0].descriptorCount = 1;
         b2[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         b2[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         b2[1].binding = 1; b2[1].descriptorCount = 1;
         b2[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         b2[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        b2[2].binding = 2; b2[2].descriptorCount = 1;
+        b2[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        b2[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo s2{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-        s2.bindingCount = 2; s2.pBindings = b2;
+        s2.bindingCount = 3; s2.pBindings = b2;
         if (vkCreateDescriptorSetLayout(m_dev.device, &s2, nullptr, &m_postSetLayout2) != VK_SUCCESS) {
             logError("[rhi] post set layout (2) failed"); return false;
         }
+        // Auto-exposure set layout: b0 = HDR scene sampler, b1 = exposure SSBO
+        // (both compute-stage; the reduce/adapt runs in autoexposure.comp).
+        VkDescriptorSetLayoutBinding ab[2]{};
+        ab[0].binding = 0; ab[0].descriptorCount = 1;
+        ab[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        ab[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        ab[1].binding = 1; ab[1].descriptorCount = 1;
+        ab[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        ab[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        VkDescriptorSetLayoutCreateInfo sa{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        sa.bindingCount = 2; sa.pBindings = ab;
+        if (vkCreateDescriptorSetLayout(m_dev.device, &sa, nullptr, &m_aeSetLayout) != VK_SUCCESS) {
+            logError("[rhi] auto-exposure set layout failed"); return false;
+        }
 
         // Descriptor pool: (HDR set + kBloomMips mip sets) single-sampler sets +
-        // 1 composite set (2 samplers). Sized exactly; no UPDATE_AFTER_BIND needed.
+        // 1 composite set (2 samplers + 1 SSBO) + 1 auto-exposure set (1 sampler +
+        // 1 SSBO). Sized exactly; no UPDATE_AFTER_BIND needed.
         const uint32_t single = 1 + kBloomMips;     // HDR + each mip
-        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, single + 2 };
+        VkDescriptorPoolSize ps[2]{
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, single + 2 + 1 },
+            { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         2 },
+        };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        pci.maxSets = single + 1; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
+        pci.maxSets = single + 2; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
         if (vkCreateDescriptorPool(m_dev.device, &pci, nullptr, &m_postPool) != VK_SUCCESS) {
             logError("[rhi] post desc pool failed"); return false;
         }
@@ -7228,6 +7310,53 @@ private:
             if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_setComposite) != VK_SUCCESS) {
                 logError("[rhi] post set alloc (composite) failed"); return false;
             }
+        }
+        {
+            VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            ai.descriptorPool = m_postPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_aeSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_aeSet) != VK_SUCCESS) {
+                logError("[rhi] post set alloc (auto-exposure) failed"); return false;
+            }
+        }
+
+        // Auto-exposure SSBO: 16 bytes { adapted, avgLog, pad, pad }, persistent
+        // across frames (the temporal adaptation state). Host-mapped so the initial
+        // neutral value (exposure 1.0) is written without a staging submit; the GPU
+        // then owns it (compute writes, composite reads). Tiny + once-per-frame —
+        // host-visible memory is irrelevant to performance here.
+        {
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = 16; bci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                        VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo info{};
+            if (vmaCreateBuffer(m_alloc, &bci, &aci, &m_aeBuf, &m_aeAlloc, &info) != VK_SUCCESS) {
+                logError("[rhi] auto-exposure buffer create failed"); return false;
+            }
+            float init[4] = { 1.0f, 0.0f, 0.0f, 0.0f };   // neutral exposure
+            std::memcpy(info.pMappedData, init, sizeof(init));
+        }
+
+        // Auto-exposure compute pipeline (autoexposure.comp).
+        {
+            VkPushConstantRange pcr{ VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(AePush) };
+            VkPipelineLayoutCreateInfo pl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            pl.setLayoutCount = 1; pl.pSetLayouts = &m_aeSetLayout;
+            pl.pushConstantRangeCount = 1; pl.pPushConstantRanges = &pcr;
+            if (vkCreatePipelineLayout(m_dev.device, &pl, nullptr, &m_aeLayout) != VK_SUCCESS) {
+                logError("[rhi] auto-exposure pipeline layout failed"); return false;
+            }
+            VkShaderModule cs = loadShaderModule("shaders\\autoexposure.comp.spv");
+            if (!cs) { logError("[rhi] autoexposure.comp.spv load failed"); return false; }
+            VkComputePipelineCreateInfo cpci{ VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO };
+            cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            cpci.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT; cpci.stage.module = cs; cpci.stage.pName = "main";
+            cpci.layout = m_aeLayout;
+            VkResult pr = vkCreateComputePipelines(m_dev.device, VK_NULL_HANDLE, 1, &cpci, nullptr, &m_aePipe);
+            vkDestroyShaderModule(m_dev.device, cs, nullptr);
+            if (pr != VK_SUCCESS) { logError("[rhi] auto-exposure pipeline create failed"); return false; }
         }
 
         // Pipeline layouts (push constants for tunables).
@@ -7347,21 +7476,42 @@ private:
         write1(m_setHdr, m_hdrView);
         for (uint32_t i = 0; i < kBloomMips; ++i) write1(m_setMip[i], m_bloomMips[i].view);
 
-        // Composite set: binding 0 = HDR scene, binding 1 = bloom mip0.
+        // Composite set: binding 0 = HDR scene, binding 1 = bloom mip0,
+        // binding 2 = auto-exposure SSBO.
         VkDescriptorImageInfo d0{ m_postSampler, m_hdrView,           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         VkDescriptorImageInfo d1{ m_postSampler, m_bloomMips[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkWriteDescriptorSet cw[2]{};
+        VkDescriptorBufferInfo db{ m_aeBuf, 0, VK_WHOLE_SIZE };
+        VkWriteDescriptorSet cw[3]{};
         cw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         cw[0].dstSet = m_setComposite; cw[0].dstBinding = 0; cw[0].descriptorCount = 1;
         cw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; cw[0].pImageInfo = &d0;
         cw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         cw[1].dstSet = m_setComposite; cw[1].dstBinding = 1; cw[1].descriptorCount = 1;
         cw[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; cw[1].pImageInfo = &d1;
-        vkUpdateDescriptorSets(m_dev.device, 2, cw, 0, nullptr);
+        cw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        cw[2].dstSet = m_setComposite; cw[2].dstBinding = 2; cw[2].descriptorCount = 1;
+        cw[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; cw[2].pBufferInfo = &db;
+        vkUpdateDescriptorSets(m_dev.device, 3, cw, 0, nullptr);
+
+        // Auto-exposure set: b0 = HDR scene (sampled by the compute reduce; the
+        // view changes on resize, hence rewritten here), b1 = the exposure SSBO.
+        VkDescriptorImageInfo a0{ m_postSampler, m_hdrView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkWriteDescriptorSet aw[2]{};
+        aw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        aw[0].dstSet = m_aeSet; aw[0].dstBinding = 0; aw[0].descriptorCount = 1;
+        aw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; aw[0].pImageInfo = &a0;
+        aw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        aw[1].dstSet = m_aeSet; aw[1].dstBinding = 1; aw[1].descriptorCount = 1;
+        aw[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; aw[1].pBufferInfo = &db;
+        vkUpdateDescriptorSets(m_dev.device, 2, aw, 0, nullptr);
     }
 
     void destroyPost() {
         destroyBloomTargets();
+        if (m_aePipe)         { vkDestroyPipeline(m_dev.device, m_aePipe, nullptr); m_aePipe = VK_NULL_HANDLE; }
+        if (m_aeLayout)       { vkDestroyPipelineLayout(m_dev.device, m_aeLayout, nullptr); m_aeLayout = VK_NULL_HANDLE; }
+        if (m_aeBuf)          { vmaDestroyBuffer(m_alloc, m_aeBuf, m_aeAlloc); m_aeBuf = VK_NULL_HANDLE; m_aeAlloc = nullptr; }
+        if (m_aeSetLayout)    { vkDestroyDescriptorSetLayout(m_dev.device, m_aeSetLayout, nullptr); m_aeSetLayout = VK_NULL_HANDLE; }
         if (m_compositePipe)  { vkDestroyPipeline(m_dev.device, m_compositePipe, nullptr); m_compositePipe = VK_NULL_HANDLE; }
         if (m_bloomUpPipe)    { vkDestroyPipeline(m_dev.device, m_bloomUpPipe, nullptr); m_bloomUpPipe = VK_NULL_HANDLE; }
         if (m_bloomDownPipe)  { vkDestroyPipeline(m_dev.device, m_bloomDownPipe, nullptr); m_bloomDownPipe = VK_NULL_HANDLE; }
@@ -8047,6 +8197,44 @@ private:
         const uint32_t gx = (m_rtaoExtent.width  + 7) / 8;
         const uint32_t gy = (m_rtaoExtent.height + 7) / 8;
         vkCmdDispatch(c, gx, gy, 1);
+    }
+
+    // Record the auto-exposure reduce/adapt dispatch (single 16x16 workgroup; the
+    // graph has already transitioned the HDR scene to SHADER_READ_ONLY for the
+    // compute sample). The exposure SSBO is NOT a graph resource, so this body
+    // owns its hazards: a PRE barrier orders the dispatch after the previous
+    // frame's composite fragment read (and any prior compute access — same
+    // submission queue), and a POST barrier makes the new adapted value visible
+    // to this frame's composite fragment read.
+    void recordAutoExposureBody(VkCommandBuffer c) {
+        if (!m_aePipe || !m_aeBuf) return;
+        VkBufferMemoryBarrier2 pre{ VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
+        pre.srcStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        pre.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        pre.dstStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        pre.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        pre.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        pre.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        pre.buffer = m_aeBuf; pre.offset = 0; pre.size = VK_WHOLE_SIZE;
+        VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        di.bufferMemoryBarrierCount = 1; di.pBufferMemoryBarriers = &pre;
+        vkCmdPipelineBarrier2(c, &di);
+
+        vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_aePipe);
+        vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_COMPUTE, m_aeLayout,
+                                0, 1, &m_aeSet, 0, nullptr);
+        vkCmdPushConstants(c, m_aeLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                           0, sizeof(AePush), &m_aePush);
+        vkCmdDispatch(c, 1, 1, 1);
+
+        VkBufferMemoryBarrier2 post = pre;
+        post.srcStageMask  = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        post.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+        post.dstStageMask  = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+        post.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
+        VkDependencyInfo dp{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        dp.bufferMemoryBarrierCount = 1; dp.pBufferMemoryBarriers = &post;
+        vkCmdPipelineBarrier2(c, &dp);
     }
 
     void destroyRt() {
@@ -10230,9 +10418,30 @@ private:
     // Push-constant payloads for the post passes (stable storage referenced by the
     // record lambdas; no per-frame heap alloc).
     struct BloomPush { float srcTexel[2]; float threshold, knee, intensity; int firstPass; float pad0, pad1; };
-    struct CompositePush { float bloomIntensity, exposure, pad0, pad1; };
+    struct CompositePush { float bloomIntensity, exposure; int32_t tonemapMode, aeEnabled; };
     BloomPush m_bloomDownPush[kBloomMips]{};
     BloomPush m_bloomUpPush[kBloomMips]{};
+
+    // ---- AUTO-EXPOSURE (eye adaptation) ------------------------------------
+    // A single-workgroup compute pass (autoexposure.comp) reduces a fixed 64x64
+    // log-luminance sample grid over the HDR scene to an average, maps it to a
+    // target exposure (key/avg, clamped), and temporally adapts a persistent
+    // 16-byte SSBO value the composite multiplies in (exposure = adapted *
+    // r_exposure bias). Buffers are not graph-tracked (documented model), so the
+    // record body emits its own tiny SSBO barriers. Determinism: the adaptation
+    // SNAPS to the target on the first frame, whenever AE is toggled on, and on
+    // EVERY headless frame (reproducible --screenshot*/--test captures).
+    VkDescriptorSetLayout m_aeSetLayout = VK_NULL_HANDLE;  // b0 = HDR sampler, b1 = SSBO (compute)
+    VkDescriptorSet       m_aeSet       = VK_NULL_HANDLE;
+    VkPipelineLayout      m_aeLayout    = VK_NULL_HANDLE;
+    VkPipeline            m_aePipe      = VK_NULL_HANDLE;
+    VkBuffer              m_aeBuf       = VK_NULL_HANDLE;  // { adapted, avgLog, pad, pad }
+    VmaAllocation         m_aeAlloc     = nullptr;
+    bool                  m_aeSnap      = true;            // snap-to-target on next AE frame
+    double                m_aePrevTime  = -1.0;            // steady_clock seconds (dt source)
+    struct AePush { float dt, speed, minExp, maxExp, key; int32_t snap; float pad0, pad1; };
+    AePush                m_aePush{};
+    PostFXParams          m_post{};                        // live r_* post-stack settings
     // Stable per-pass record context for the bloom down/up passes. The graph's
     // record path is a raw function pointer + void* ctx (no std::function, no
     // per-frame heap alloc); each pass's per-mip parameters (which descriptor set
