@@ -1165,6 +1165,12 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // render device). 1 = on (default); 0 = byte-identical to no cull (objectsDrawn ==
     // every submitted instance). The reference baseline the D15 GPU cull is diffed against.
     console.registerCVar("r_frustumcull", "1", "CPU per-object frustum cull (0 = draw every instance, no cull)");
+    // Gap 6 — point-light shadows (rasterized, atlas). Tiered quality, default OFF
+    // (no visual change vs today). Step 1 registers these so they're readable; the
+    // atlas/sampling wiring lands in later steps.
+    console.registerCVar("r_pointshadows",        "0",   "Point-light shadow tier: 0 off, 1 atlas-low, 2 atlas-high, 3 cube-array ultra");
+    console.registerCVar("r_pointshadow_lights",  "8",   "Max shadow-casting point lights per frame");
+    console.registerCVar("r_pointshadow_res",     "512", "Point-shadow tile/face resolution");
     // D15 GPU-driven culling. -1 = auto (best supported tier), 0 = CPU cull exactly as
     // today (default — byte-identical), 1 = Tier 0 (cull compute on the graphics queue),
     // 2 = Tier 1 (async compute queue), 3 = Tier 2 (mesh-shader meshlets, opt-in).

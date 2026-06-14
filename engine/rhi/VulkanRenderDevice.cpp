@@ -2318,6 +2318,10 @@ private:
     // single ~80 m cascade over a ~60 m level (4x the area of 1024 for one extra
     // mip of crispness; still cheap on the A2000/1080 Ti).
     static constexpr uint32_t kShadowDim = 2048;
+    // Gap 6 — point-light shadow atlas dimension. One D32 atlas packs the budgeted
+    // omni casters' 6 cube faces as 3x2 tile blocks. 4096 fits ~tier-2 (1024 faces)
+    // / many tier-1 (512 faces) blocks. Step 1: created + cleared, never sampled yet.
+    static constexpr uint32_t kPointShadowAtlasDim = 4096;
     // The sun's ortho half-extent (meters) centered on the camera, and the depth
     // range along the sun direction. Sized to cover the level's working set; the
     // box follows the camera so the visible area is always shadowed.
@@ -3191,9 +3195,9 @@ private:
         // the IBL objects exist (they're cleared to neutral at init + rebaked on sky
         // change); mesh.frag gates the IBL math on the SSAO-ctrl ibl.x valid flag, so
         // an un-baked / failed env safely falls back to the flat ambient term.
-        VkDescriptorSet sets[5] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx], m_iblMeshSet };
+        VkDescriptorSet sets[6] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx], m_iblMeshSet, m_pointShadowSet };
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshLayout,
-                                0, 5, sets, 0, nullptr);
+                                0, 6, sets, 0, nullptr);
         for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
             const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
             VkDeviceSize off = 0;
@@ -5843,7 +5847,7 @@ private:
         VkDependencyInfo ddi{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO }; ddi.imageMemoryBarrierCount = 1; ddi.pImageMemoryBarriers = &db;
         vkCmdPipelineBarrier2(cmd, &ddi);
 
-        VkDescriptorSet sets[5] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx], m_iblMeshSet };
+        VkDescriptorSet sets[6] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx], m_iblMeshSet, m_pointShadowSet };
         for (int f = 0; f < 6; ++f) {
             glm::vec3 fwd, right, up; iblFaceBasis(f, fwd, right, up);
             glm::mat4 view = glm::lookAt(m_iblProbePos, m_iblProbePos + fwd, up);
@@ -5866,7 +5870,7 @@ private:
             VkViewport vpp{ 0,0,(float)kIblEnvSize,(float)kIblEnvSize,0,1 }; VkRect2D sc{ {0,0},{kIblEnvSize,kIblEnvSize} };
             vkCmdSetViewport(cmd, 0, 1, &vpp); vkCmdSetScissor(cmd, 0, 1, &sc);
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshProbePipe);
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshProbeLayout, 0, 5, sets, 0, nullptr);
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshProbeLayout, 0, 6, sets, 0, nullptr);
             vkCmdPushConstants(cmd, m_meshProbeLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &vp);
             for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
                 const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
@@ -6428,10 +6432,10 @@ private:
         postViewport(cmd, m_extent);
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_glassPipeline);
         // The 4 shared mesh sets + the glass-only set 4 (scene-copy + GlassControl).
-        VkDescriptorSet sets[5] = { m_bindlessSet, fr.objSet, m_shadowSet,
-                                    m_meshAoSet[m_frameIdx], m_glassSet[m_frameIdx] };
+        VkDescriptorSet sets[6] = { m_bindlessSet, fr.objSet, m_shadowSet,
+                                    m_meshAoSet[m_frameIdx], m_glassSet[m_frameIdx], m_pointShadowSet };
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_glassLayout,
-                                0, 5, sets, 0, nullptr);
+                                0, 6, sets, 0, nullptr);
         for (uint32_t i = 0; i < m_frameCmdCount; ++i) {
             const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
             VkDeviceSize off = 0;
@@ -11869,9 +11873,11 @@ private:
         // camera UBO, set 2 = the shadow map (perf-stack E), set 3 = the SSAO AO
         // texture + control UBO, set 4 = IBL (irradiance + prefilter cubes + BRDF
         // LUT). NO push constants (per-object data is in the SSBO).
-        VkDescriptorSetLayout setLayouts[5] = { m_bindlessLayout, m_objSetLayout, m_shadowSetLayout, m_meshAoSetLayout, m_iblMeshSetLayout };
+        // set 5 = the point-shadow atlas (Gap 6) — appended LAST so sets 0-4 are
+        // unchanged. Bound but not sampled in Step 1 (mesh.frag does not declare it yet).
+        VkDescriptorSetLayout setLayouts[6] = { m_bindlessLayout, m_objSetLayout, m_shadowSetLayout, m_meshAoSetLayout, m_iblMeshSetLayout, m_pointShadowSetLayout };
         VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-        plci.setLayoutCount = 5; plci.pSetLayouts = setLayouts;
+        plci.setLayoutCount = 6; plci.pSetLayouts = setLayouts;
         if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_meshLayout) != VK_SUCCESS) {
             logError("[rhi] pipeline layout failed"); return false;
         }
@@ -11919,7 +11925,7 @@ private:
                 VkPushConstantRange pcr{}; pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
                 pcr.offset = 0; pcr.size = sizeof(glm::mat4);
                 VkPipelineLayoutCreateInfo plp{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-                plp.setLayoutCount = 5; plp.pSetLayouts = setLayouts;       // same 5 sets as the mesh pass
+                plp.setLayoutCount = 6; plp.pSetLayouts = setLayouts;       // same 6 sets as the mesh pass
                 plp.pushConstantRangeCount = 1; plp.pPushConstantRanges = &pcr;
                 if (vkCreatePipelineLayout(m_dev.device, &plp, nullptr, &m_meshProbeLayout) == VK_SUCCESS) {
                     VkPipelineShaderStageCreateInfo pst[2] = { stages[0], stages[1] };
@@ -12142,11 +12148,11 @@ private:
         // pipeline stays NULL and the glass pass is skipped — opaque is never affected.
         {
             // Glass pipeline layout: the 4 shared mesh sets + the glass-only set 4.
-            VkDescriptorSetLayout glassSets[5] = {
+            VkDescriptorSetLayout glassSets[6] = {
                 m_bindlessLayout, m_objSetLayout, m_shadowSetLayout,
-                m_meshAoSetLayout, m_glassSetLayout };
+                m_meshAoSetLayout, m_glassSetLayout, m_pointShadowSetLayout };
             VkPipelineLayoutCreateInfo gplci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-            gplci.setLayoutCount = 5; gplci.pSetLayouts = glassSets;
+            gplci.setLayoutCount = 6; gplci.pSetLayouts = glassSets;
             if (vkCreatePipelineLayout(m_dev.device, &gplci, nullptr, &m_glassLayout) != VK_SUCCESS) {
                 m_glassLayout = VK_NULL_HANDLE;
                 logError("[rhi] glass pipeline layout failed — glass pass disabled (opaque unaffected)");
@@ -12206,6 +12212,9 @@ private:
 
         // Now that m_objSetLayout exists, build the depth-only shadow pipeline.
         if (!createShadowPipeline()) return false;
+        // Gap 6: the upload pool/fence are live now, so transition the point-shadow
+        // atlas to its sampled layout (makes set 5 bindable; nothing samples it yet).
+        if (!transitionPointShadowAtlasInitial()) return false;
         return true;
     }
 
@@ -12286,6 +12295,118 @@ private:
         w.dstSet = m_shadowSet; w.dstBinding = 0; w.descriptorCount = 1;
         w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &dii;
         vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+
+        // ---- Gap 6, Step 1: point-light shadow atlas (set 5) -------------------
+        // Mirror of the sun-shadow block above: one D32 atlas (depth-attachment +
+        // sampled), a compare sampler, and a single-binding set 5. Created + cleared
+        // here so set 5 is bindable from the first draw; nothing samples it yet.
+        if (!createPointShadowAtlas()) return false;
+        return true;
+    }
+
+    // Gap 6 — point-light shadow atlas resources (set 5, binding 0). Parallels
+    // createShadowImage()'s sun block; created in the same call so init ordering is
+    // identical. Step 1 only: the atlas is allocated, transitioned to a sampled
+    // layout, and wired into set 5 — it is never written or sampled until later steps.
+    bool createPointShadowAtlas() {
+        VkImageCreateInfo ici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = m_shadowFormat;                          // D32_SFLOAT, same as sun
+        ici.extent = { kPointShadowAtlasDim, kPointShadowAtlasDim, 1 };
+        ici.mipLevels = 1; ici.arrayLayers = 1;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VmaAllocationCreateInfo aci{};
+        aci.usage = VMA_MEMORY_USAGE_AUTO;
+        aci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        if (x3vmaCreateImage(&ici, &aci, &m_pointShadowAtlas, &m_pointShadowAlloc, nullptr) != VK_SUCCESS) {
+            logError("[rhi] point-shadow atlas create failed"); return false;
+        }
+        VkImageViewCreateInfo vci{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        vci.image = m_pointShadowAtlas; vci.viewType = VK_IMAGE_VIEW_TYPE_2D; vci.format = m_shadowFormat;
+        vci.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+        if (vkCreateImageView(m_dev.device, &vci, nullptr, &m_pointShadowView) != VK_SUCCESS) {
+            logError("[rhi] point-shadow atlas view create failed"); return false;
+        }
+
+        // Compare-enabled sampler: identical to the sun-shadow sampler (hardware PCF,
+        // LESS_OR_EQUAL, clamp-to-border white = lit outside).
+        VkSamplerCreateInfo sci{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        sci.magFilter = VK_FILTER_LINEAR; sci.minFilter = VK_FILTER_LINEAR;
+        sci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sci.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+        sci.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+        sci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+        sci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE; // outside == lit
+        sci.compareEnable = VK_TRUE;
+        sci.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        sci.maxLod = 0.0f;
+        if (vkCreateSampler(m_dev.device, &sci, nullptr, &m_pointShadowSampler) != VK_SUCCESS) {
+            logError("[rhi] point-shadow sampler create failed"); return false;
+        }
+
+        // Set-5 layout: a single combined-image-sampler (sampler2DShadow) in frag.
+        VkDescriptorSetLayoutBinding b{};
+        b.binding = 0; b.descriptorCount = 1;
+        b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        slci.bindingCount = 1; slci.pBindings = &b;
+        if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_pointShadowSetLayout) != VK_SUCCESS) {
+            logError("[rhi] point-shadow set layout failed"); return false;
+        }
+        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
+        VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+        pci.maxSets = 1; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
+        if (x3CreateDescriptorPool(&pci, nullptr, &m_pointShadowDescPool) != VK_SUCCESS) {
+            logError("[rhi] point-shadow desc pool failed"); return false;
+        }
+        VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+        dsai.descriptorPool = m_pointShadowDescPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &m_pointShadowSetLayout;
+        if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_pointShadowSet) != VK_SUCCESS) {
+            logError("[rhi] point-shadow set alloc failed"); return false;
+        }
+
+        // Write set 5 to point at the atlas. Sampled layout is DEPTH_READ_ONLY_OPTIMAL
+        // (the atlas is transitioned to it once in transitionPointShadowAtlasInitial(),
+        // which runs after the upload pool exists). Matches how the sun set is written.
+        VkDescriptorImageInfo dii{};
+        dii.sampler = m_pointShadowSampler;
+        dii.imageView = m_pointShadowView;
+        dii.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+        VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+        w.dstSet = m_pointShadowSet; w.dstBinding = 0; w.descriptorCount = 1;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &dii;
+        vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        return true;
+    }
+
+    // Gap 6 — one-time UNDEFINED -> DEPTH_READ_ONLY_OPTIMAL transition for the point
+    // atlas so binding set 5 for sampling is VUID-clean even though nothing samples it
+    // yet (same intent as the IBL initial-layout transition). Split out from
+    // createPointShadowAtlas() because oneTimeSubmit needs the upload pool/fence, which
+    // are created at the start of createGraphics() — AFTER createShadowImage() runs.
+    // Contents stay undefined; later steps render real depth before any shader read.
+    bool transitionPointShadowAtlasInitial() {
+        bool tr = oneTimeSubmit([&](VkCommandBuffer cmd){
+            VkImageMemoryBarrier2 ib{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+            ib.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT; ib.srcAccessMask = 0;
+            ib.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT; ib.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+            ib.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; ib.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+            ib.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            ib.image = m_pointShadowAtlas;
+            ib.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+            VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+            di.imageMemoryBarrierCount = 1; di.pImageMemoryBarriers = &ib;
+            vkCmdPipelineBarrier2(cmd, &di);
+        });
+        if (!tr) { logError("[rhi] point-shadow atlas initial layout transition failed"); return false; }
+        // Reflect the post-transition layout so a future graph import starts correct.
+        m_pointShadowState = ResourceState{ VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                                            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT };
         return true;
     }
 
@@ -12442,6 +12563,13 @@ private:
         if (m_shadowSampler)   { vkDestroySampler(m_dev.device, m_shadowSampler, nullptr); m_shadowSampler = VK_NULL_HANDLE; }
         if (m_shadowView)      { vkDestroyImageView(m_dev.device, m_shadowView, nullptr); m_shadowView = VK_NULL_HANDLE; }
         if (m_shadowImg)       { vmaDestroyImage(m_alloc, m_shadowImg, m_shadowAlloc); m_shadowImg = VK_NULL_HANDLE; m_shadowAlloc = nullptr; }
+
+        // Gap 6 — point-shadow atlas resources (set 5).
+        if (m_pointShadowDescPool)  { vkDestroyDescriptorPool(m_dev.device, m_pointShadowDescPool, nullptr); m_pointShadowDescPool = VK_NULL_HANDLE; }
+        if (m_pointShadowSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_pointShadowSetLayout, nullptr); m_pointShadowSetLayout = VK_NULL_HANDLE; }
+        if (m_pointShadowSampler)   { vkDestroySampler(m_dev.device, m_pointShadowSampler, nullptr); m_pointShadowSampler = VK_NULL_HANDLE; }
+        if (m_pointShadowView)      { vkDestroyImageView(m_dev.device, m_pointShadowView, nullptr); m_pointShadowView = VK_NULL_HANDLE; }
+        if (m_pointShadowAtlas)     { vmaDestroyImage(m_alloc, m_pointShadowAtlas, m_pointShadowAlloc); m_pointShadowAtlas = VK_NULL_HANDLE; m_pointShadowAlloc = nullptr; }
 
         if (m_meshPipeline)  vkDestroyPipeline(m_dev.device, m_meshPipeline, nullptr);
         if (m_meshPipelineNoSsao) vkDestroyPipeline(m_dev.device, m_meshPipelineNoSsao, nullptr);
@@ -13534,6 +13662,18 @@ private:
     VkDescriptorSetLayout m_shadowSetLayout = VK_NULL_HANDLE;  // set2: sampler2DShadow
     VkDescriptorPool      m_shadowDescPool = VK_NULL_HANDLE;
     VkDescriptorSet       m_shadowSet      = VK_NULL_HANDLE;   // points at the map
+
+    // Gap 6 — point-light shadow atlas (set 5, binding 0). Mirrors the sun-shadow
+    // resources above: one D32 atlas, a compare sampler, and a single-binding
+    // descriptor set. Step 1 creates + clears it (never sampled yet); selection,
+    // the atlas depth pass, and mesh.frag sampling land in later steps.
+    VkImage               m_pointShadowAtlas     = VK_NULL_HANDLE;
+    VmaAllocation         m_pointShadowAlloc     = nullptr;
+    VkImageView           m_pointShadowView      = VK_NULL_HANDLE;
+    VkSampler             m_pointShadowSampler   = VK_NULL_HANDLE;   // compare-enabled
+    VkDescriptorSetLayout m_pointShadowSetLayout = VK_NULL_HANDLE;   // set5: sampler2DShadow (atlas)
+    VkDescriptorPool      m_pointShadowDescPool  = VK_NULL_HANDLE;
+    VkDescriptorSet       m_pointShadowSet       = VK_NULL_HANDLE;   // points at the atlas
     glm::mat4             m_lightViewProj{ 1.0f };  // computed each frame
     bool                  m_shadowOverride = false;        // setShadowBounds: fixed shadow box
     glm::vec3             m_shadowCenter{ 0.0f };
@@ -13551,6 +13691,11 @@ private:
     RenderGraph           m_graph;
     ResourceState         m_shadowState{ VK_IMAGE_LAYOUT_UNDEFINED,
                                          VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
+    // Gap 6 — point-shadow atlas state. After createShadowImage transitions it once
+    // to DEPTH_READ_ONLY (so set 5 is bindable from the first draw), it sits in that
+    // layout. The atlas depth pass (Step 3) will import it via the graph like the sun.
+    ResourceState         m_pointShadowState{ VK_IMAGE_LAYOUT_UNDEFINED,
+                                              VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
     // Deferred HUD draws (appended by drawHudQuad/drawHudText, replayed inside the
     // graph's color pass). Capacity persists across frames.
     std::vector<HudRecord> m_hudRecords;
