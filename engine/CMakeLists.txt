@@ -6,6 +6,9 @@ add_library(x3engine STATIC
     ecs/Ecs.cpp
     rhi/VulkanRenderDevice.cpp
     rhi/vk/vk_stb_impl.cpp
+    rhi/vk/vk_resources.cpp
+    rhi/vk/vk_pipelines.cpp
+    rhi/vk/vk_passes.cpp
     rhi/RenderGraph.cpp
     rhi/GpuCull.cpp
     rhi/vma_impl.cpp
