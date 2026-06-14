@@ -1,0 +1,303 @@
+{
+  "format": "x3.mission/1",
+  "id": "act2_the_quiet_channel",
+  "title": "The Quiet Channel",
+  "start": "o0",
+  "act": 2,
+  "level": [
+    11,
+    12
+  ],
+  "location": "Salvari Camp and the cave galleries — wherever the squad makes camp",
+  "summary": "A companion you saved at the last second carries something the program never finished. Not a traitor — a compromised channel. She offers you her knife, grip-first, and asks you to read the map she can't trust herself to read.",
+  "give": [
+    {
+      "flag": "mole.suspected"
+    },
+    {
+      "any": [
+        {
+          "flag": "lena.carrier"
+        },
+        {
+          "flag": "aria.carrier"
+        },
+        {
+          "flag": "keisha.carrier"
+        },
+        {
+          "flag": "emily.carrier"
+        }
+      ]
+    }
+  ],
+  "_hooks": "The Carrier/mole arc as a mission (STORYLINE_EXPANSIONS (c)). It DRIVES THE EXISTING lena.json `carrier_confront` tree (node c0) and reads its REAL outcome flags — lena.cure_path / mole.weaponized / lena.final_choice — rather than inventing new ones (no duplicate tree authored). give-gated on mole.suspected (set by act2_the_root_remembers' whisper) + a <girl>.carrier flag (set silently by the host when a girl was rescued at InfectionStage::Critical — the existing timeline.h [0,90,60,30,0] stage model, NO new infection state). Three priced resolutions: cure (needs salvari.cure_known from act2_refugee_haven), double-agent (mole.weaponized → STORYLINE_EXPANSIONS (f3) final-whisper), knife (irreversible, with a last spare-at-the-edge off-ramp routing back to the cure path). The whole arc is MISSABLE — never-noticed routes to o_buried (a player learns the truth only in an ending slide). Generic over which girl carries (lena default; aria/keisha/emily.carrier accepted at the offer gate, each driving her own infected_lost pool).",
+  "_voice": "Per the pack and SPICE_GUIDE: menace stays restrained. She offers the knife grip-first; the cost surfaces gently. No resolution is free, and declining to act is itself a (costed) choice. The objective text quotes her own conditions back, never narrates harm.",
+  "stages": [
+    {
+      "id": "o0",
+      "objective": "The drones drift wrong around her. A door opens she was never taught. Decide whether to say what you've noticed.",
+      "advance_when": [
+        {
+          "flag": "carrier.confront_chosen"
+        }
+      ],
+      "fail_when": [
+        {
+          "flag": "carrier.left_buried"
+        }
+      ],
+      "on_fail": [
+        {
+          "set": "carrier.buried"
+        }
+      ],
+      "fail_to": "o_buried",
+      "next": "o1"
+    },
+    {
+      "id": "o1",
+      "objective": "Confront her. Camp, quiet, no one else in earshot.",
+      "on_enter": [
+        {
+          "fire": "dialog_open",
+          "args": {
+            "npc": "lena",
+            "tree": "carrier_confront",
+            "node": "c0"
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "any": [
+            {
+              "flag": "lena.cure_path"
+            },
+            {
+              "flag": "mole.weaponized"
+            },
+            {
+              "flag": "lena.final_choice"
+            }
+          ]
+        }
+      ],
+      "next": "o1_b__r2"
+    },
+    {
+      "id": "o_cure",
+      "objective": "There's a way to purge a dormant strand — Salvari cure tech, the synthesis lab. Get it, and defend her while it runs.",
+      "on_enter": [
+        {
+          "fire": "objective_banner",
+          "args": {
+            "text": "It takes time. Time is when the hive tries to take her back."
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "act2.purge_complete"
+        }
+      ],
+      "on_complete": [
+        {
+          "mercy": 6
+        },
+        {
+          "redemption": 4
+        },
+        {
+          "karma": 6
+        },
+        {
+          "clear": "lena.carrier"
+        },
+        {
+          "set": "carrier.cured"
+        },
+        {
+          "rel": [
+            "lena",
+            3
+          ]
+        }
+      ],
+      "next": "o_done"
+    },
+    {
+      "id": "o_cure_blocked",
+      "objective": "You don't have the cure yet. Ally with the Salvari first; she'll hold until you do.",
+      "on_enter": [
+        {
+          "fire": "objective_banner",
+          "args": {
+            "text": "She'll wait. She's good at waiting; that's part of the problem."
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "salvari.cure_known"
+        }
+      ],
+      "next": "o_cure_gate__r1"
+    },
+    {
+      "id": "o_weaponize",
+      "objective": "Keep the tapped wire and feed it lies. It works — and the strand advances every time you use it. She set the toll herself; honor it.",
+      "on_enter": [
+        {
+          "fire": "objective_banner",
+          "args": {
+            "text": "You watch her sleep. Aria checks her at every hold. Those were her conditions, not yours."
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "act2.false_ambush_turned"
+        }
+      ],
+      "on_complete": [
+        {
+          "set": "carrier.weaponized"
+        },
+        {
+          "karma": -3
+        },
+        {
+          "trust": -2
+        }
+      ],
+      "next": "o_done"
+    },
+    {
+      "id": "o_knife",
+      "objective": "She offered it. On camera, in your hand, irreversible. Nobody will make you. She won't even flinch.",
+      "advance_when": [
+        {
+          "any": [
+            {
+              "flag": "carrier.killed"
+            },
+            {
+              "flag": "carrier.spared_at_edge"
+            }
+          ]
+        }
+      ],
+      "on_complete": [
+        {
+          "karma": -8
+        },
+        {
+          "mercy": -6
+        },
+        {
+          "set": "carrier.killed"
+        },
+        {
+          "set": "lena.lost_confirmed"
+        },
+        {
+          "fire": "companion_lost",
+          "args": {
+            "npc": "lena",
+            "cause": "knife"
+          }
+        }
+      ],
+      "branch": {
+        "if": [
+          {
+            "flag": "carrier.spared_at_edge"
+          }
+        ],
+        "then": "o_knife_bfx__r5",
+        "else": "o_done"
+      }
+    },
+    {
+      "id": "o_buried",
+      "objective": "You say nothing. The ambushes keep feeling unlucky. Some things you only learn at the very end, if at all.",
+      "on_complete": [
+        {
+          "set": "carrier.buried"
+        }
+      ],
+      "next": "end"
+    },
+    {
+      "id": "o_done",
+      "objective": "The channel is closed, one way or another. What it cost is yours to carry.",
+      "next": "end"
+    },
+    {
+      "id": "o_cure_gate__r1",
+      "advance_when": [],
+      "branch": {
+        "if": [
+          {
+            "flag": "salvari.cure_known"
+          }
+        ],
+        "then": "o_cure",
+        "else": "o_cure_blocked"
+      }
+    },
+    {
+      "id": "o1_b__r2",
+      "advance_when": [],
+      "branch": {
+        "if": [
+          {
+            "flag": "lena.cure_path"
+          }
+        ],
+        "then": "o_cure_gate__r1",
+        "else": "o1_b__r3"
+      }
+    },
+    {
+      "id": "o1_b__r3",
+      "advance_when": [],
+      "branch": {
+        "if": [
+          {
+            "flag": "mole.weaponized"
+          }
+        ],
+        "then": "o_weaponize",
+        "else": "o1_b__r4"
+      }
+    },
+    {
+      "id": "o1_b__r4",
+      "advance_when": [],
+      "branch": {
+        "if": [
+          {
+            "flag": "lena.final_choice"
+          }
+        ],
+        "then": "o_knife",
+        "else": "o_buried"
+      }
+    },
+    {
+      "id": "o_knife_bfx__r5",
+      "on_enter": [
+        {
+          "mercy": 4
+        },
+        {
+          "set": "lena.cure_path"
+        }
+      ],
+      "advance_when": [],
+      "next": "o_cure_blocked"
+    }
+  ]
+}

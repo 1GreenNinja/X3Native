@@ -1,0 +1,212 @@
+{
+  "format": "x3.mission/1",
+  "id": "act2_many_hands",
+  "title": "Many Hands",
+  "start": "o0",
+  "act": 2,
+  "level": 18,
+  "location": "Underground Resistance HQ — a multi-species holdout beneath the ruined city",
+  "summary": "Salvari aren't the only ones the Overlord tried to file away. A resistance is forming underground from a dozen species who agree on exactly one thing. Make them agree on a second.",
+  "give": [
+    {
+      "flag": "salvari.allied"
+    },
+    {
+      "flag": "act2.heart_done"
+    }
+  ],
+  "_hooks": "Canon L18 Underground Resistance — the multi-species alliance / companion-arc beat. give-gated on salvari.allied + act2.heart_done (so it lands after the player has proven themselves to the Salvari and seen the Biomesh truth). Reuses the Nordic Steward as the player's in (mentor tree, m_resistance node). The dispute resolution branches on karma (unity vs strong-arm) and grants alliances via the existing onAllyJoined (ally:true). act2.alliance_formed gates the Storm Runner climax and the late-game ending math (ally count scales L100). Chains into act2_storm_runner.",
+  "_voice": "Grief politics done with restraint. 'Nobody here agrees on whose loss counts most' is the whole tragedy. The unity path costs nothing; the strong-arm path works but is quietly poisoned (trust down).",
+  "stages": [
+    {
+      "id": "o0",
+      "objective": "Reach the resistance HQ. The Nordic Steward vouches for you; that gets you in the door, not the room.",
+      "on_enter": [
+        {
+          "fire": "dialog_open",
+          "args": {
+            "npc": "nordic_steward",
+            "tree": "mentor",
+            "node": "m_resistance"
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "act2.resistance_met"
+        }
+      ],
+      "next": "o1"
+    },
+    {
+      "id": "o1",
+      "objective": "Three factions, three grievances. Hear them all before you pick a fight for them.",
+      "advance_when": [
+        {
+          "flag": "evidence.faction_brief.3"
+        }
+      ],
+      "on_complete": [
+        {
+          "set": "act2.factions_heard"
+        }
+      ],
+      "next": "o2"
+    },
+    {
+      "id": "o2",
+      "objective": "They'll only unite behind someone who's bled for more than one of them. Settle the dispute that's keeping them apart.",
+      "on_enter": [
+        {
+          "fire": "objective_banner",
+          "args": {
+            "text": "Everyone here lost a world. Nobody here agrees on whose loss counts most."
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "act2.dispute_settled"
+        }
+      ],
+      "next": "o2_b__r1"
+    },
+    {
+      "id": "o3_unity",
+      "objective": "You give them a reason instead of an order. Three species stand up at once.",
+      "on_complete": [
+        {
+          "ally": true
+        },
+        {
+          "ally": true
+        },
+        {
+          "redemption": 3
+        }
+      ],
+      "next": "o4"
+    },
+    {
+      "id": "o3_strongarm",
+      "objective": "You make them an offer they're too scared to refuse. They follow. They don't love you for it.",
+      "on_complete": [
+        {
+          "ally": true
+        },
+        {
+          "trust": -3
+        },
+        {
+          "karma": -2
+        }
+      ],
+      "next": "o4"
+    },
+    {
+      "id": "o3",
+      "objective": "The alliance forms, ragged but real.",
+      "on_complete": [
+        {
+          "ally": true
+        }
+      ],
+      "next": "o4"
+    },
+    {
+      "id": "o4",
+      "objective": "An Overlord push hits the HQ while the ink's still wet. Hold the line together.",
+      "on_enter": [
+        {
+          "fire": "objective_banner",
+          "args": {
+            "text": "First fight as one. Make it count, or the alliance dies in its cradle."
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "kill.any.12"
+        }
+      ],
+      "fail_when": [
+        {
+          "flag": "act2.hq_overrun"
+        }
+      ],
+      "on_fail": [
+        {
+          "karma": -4
+        },
+        {
+          "trust": -5
+        }
+      ],
+      "fail_to": "o4",
+      "on_complete": [
+        {
+          "karma": 5
+        }
+      ],
+      "next": "o_done"
+    },
+    {
+      "id": "o_done",
+      "objective": "The HQ holds. For the first time, the war has a 'we' in it that isn't just you and the people you carried out of a basement.",
+      "on_complete": [
+        {
+          "set": "act2.alliance_formed"
+        },
+        {
+          "fire": "hub_register",
+          "args": {
+            "id": "resistance_hq"
+          }
+        },
+        {
+          "fire": "mission_start",
+          "args": {
+            "id": "act2_storm_runner"
+          }
+        }
+      ],
+      "next": "end"
+    },
+    {
+      "id": "o2_bfx__r2",
+      "on_enter": [
+        {
+          "trust": 4
+        }
+      ],
+      "advance_when": [],
+      "next": "o3_unity"
+    },
+    {
+      "id": "o2_b__r1",
+      "advance_when": [],
+      "branch": {
+        "if": [
+          {
+            "karma_gte": 20
+          }
+        ],
+        "then": "o2_bfx__r2",
+        "else": "o2_b__r3"
+      }
+    },
+    {
+      "id": "o2_b__r3",
+      "advance_when": [],
+      "branch": {
+        "if": [
+          {
+            "karma_lte": -20
+          }
+        ],
+        "then": "o3_strongarm",
+        "else": "o3"
+      }
+    }
+  ]
+}

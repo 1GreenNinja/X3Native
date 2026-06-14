@@ -1,0 +1,190 @@
+{
+  "format": "x3.mission/1",
+  "id": "act2_quartermasters_ledger",
+  "title": "The Quartermaster's Ledger",
+  "start": "o0",
+  "act": 2,
+  "level": [
+    11,
+    19
+  ],
+  "location": "Club 1127 (Y=-200) and the freight pipeline up to the Spaceport",
+  "summary": "A big ship shot you down six months ago. Big ships don't dogfight — they collect. Vesper knows whose ledger flagged you for collection, and the ledger rides the freight pipe twice a year. The next run is soon.",
+  "give": [
+    {
+      "flag": "harvest.known"
+    },
+    {
+      "flag": "club.found"
+    }
+  ],
+  "_hooks": "The Quartermaster heist (STORYLINE_EXPANSIONS (a)). give-gated on harvest.known (Emily's reveal) + club.found (Vesper). Vesper opens the thread via a NEW act2_quartermaster tree appended to her file (authored in chat_trees/club1127_vesper_act2.json). The ledger item + harvest.predated reveal seed Act-4 Human Collaborators and the high-karma 'collaborator trials' ending overlay (f1 LANTERNS) — registered into the evidence package alongside Aria's manifest + Reyes's batch records. Uses the engine's existing descent-tube/freight-line space (per the expansion doc). The Quartermaster himself surfaces in person at the Spaceport — see act2_storm_runner.",
+  "_voice": "He is never a boss in Act 2 — 'a ledger, a cologne, an empty barstool.' The horror is bureaucratic: you were a purchase order. Vesper prices the rumor; she never lies.",
+  "stages": [
+    {
+      "id": "o0",
+      "objective": "Buy the thread from Vesper. Bring her something she doesn't already know.",
+      "on_enter": [
+        {
+          "fire": "dialog_open",
+          "args": {
+            "npc": "vesper",
+            "tree": "act2_quartermaster",
+            "node": "q0"
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "quartermaster.known"
+        }
+      ],
+      "next": "o1"
+    },
+    {
+      "id": "o1",
+      "objective": "The ledger physically rides the freight pipe. Find where the next run loads.",
+      "on_enter": [
+        {
+          "fire": "map_ping",
+          "args": {
+            "id": "freight_loading"
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "act2.freight_found"
+        }
+      ],
+      "on_complete": [
+        {
+          "set": "quartermaster.ledger_run"
+        }
+      ],
+      "next": "o2"
+    },
+    {
+      "id": "o2",
+      "objective": "Get aboard the freight line without tripping the manifest check. Loud or quiet — both have a bill.",
+      "advance_when": [
+        {
+          "flag": "act2.aboard_freight"
+        }
+      ],
+      "fail_when": [
+        {
+          "flag": "act2.manifest_alarm"
+        }
+      ],
+      "on_fail": [
+        {
+          "karma": -1
+        },
+        {
+          "set": "act2.freight_hot"
+        }
+      ],
+      "fail_to": "o3_hot",
+      "branch": {
+        "if": [
+          {
+            "karma_gte": 10
+          }
+        ],
+        "then": "o3",
+        "else": "o3"
+      }
+    },
+    {
+      "id": "o3",
+      "objective": "Find the ledger. It's a physical book, because the man who keeps it doesn't trust networks any more than you do.",
+      "advance_when": [
+        {
+          "flag": "evidence.ledger_pages.1"
+        }
+      ],
+      "on_complete": [
+        {
+          "give": "quartermaster_ledger"
+        },
+        {
+          "set": "act2.ledger_taken"
+        }
+      ],
+      "next": "o4"
+    },
+    {
+      "id": "o3_hot",
+      "objective": "The line's awake now. Fight to the ledger and out before the run seals.",
+      "on_enter": [
+        {
+          "fire": "objective_banner",
+          "args": {
+            "text": "Quiet was the cheaper option. This is the other one."
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "evidence.ledger_pages.1"
+        }
+      ],
+      "on_complete": [
+        {
+          "give": "quartermaster_ledger"
+        },
+        {
+          "set": "act2.ledger_taken"
+        },
+        {
+          "karma": 2
+        }
+      ],
+      "next": "o4"
+    },
+    {
+      "id": "o4",
+      "objective": "Read what the ledger says about you. The entry is dated. Check when.",
+      "on_enter": [
+        {
+          "fire": "cutscene",
+          "args": {
+            "id": "ledger_predated"
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "act2.ledger_read"
+        }
+      ],
+      "on_complete": [
+        {
+          "set": "harvest.predated"
+        }
+      ],
+      "next": "o_done"
+    },
+    {
+      "id": "o_done",
+      "objective": "The order was cut before your flight plan was filed. He didn't find your ship. He found your bloodwork. Keep the book — it's evidence now.",
+      "on_complete": [
+        {
+          "karma": 4
+        },
+        {
+          "set": "quartermaster.ledger_held"
+        },
+        {
+          "fire": "evidence_register",
+          "args": {
+            "id": "quartermaster_ledger",
+            "package": "collaborator_trials"
+          }
+        }
+      ],
+      "next": "end"
+    }
+  ]
+}

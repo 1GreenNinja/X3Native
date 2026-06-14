@@ -1,0 +1,214 @@
+{
+  "format": "x3.mission/1",
+  "id": "act2_refugee_haven",
+  "title": "Refugee Haven",
+  "start": "o0",
+  "act": 2,
+  "level": 11,
+  "location": "Salvari Camp — a hidden cave settlement of bioluminescent crystal",
+  "summary": "The last of a genocided species shelters in a cave that sings. Earn their alliance, learn the cure, and meet the steward who will teach you to fight a war you didn't start.",
+  "give": [
+    {
+      "flag": "salvari.allied"
+    }
+  ],
+  "_hooks": "Wraps act2-desert's L11 Salvari Camp + the nordic-mentor branch (Nordic Steward at the upgrade station) into the alliance quest. K'thara recruited here (ally:true) is the canon Salvari leader / Beta-romance option; first_contact tree authored in chat_trees/kthara.json. salvari.cure_known is the cure thread the Carrier arc (act2_the_quiet_channel) reads. Registers the camp as a re-enterable hub (like Club 1127). A low-karma player must earn trust first (o2_wary) — a non-blocking detour.",
+  "_voice": "K'thara is grief carried with dignity, never self-pity. The Steward is dry, practical, second-species outsider wisdom (\"You fight like a man who only just learned he's allowed to.\").",
+  "stages": [
+    {
+      "id": "o0",
+      "objective": "Enter the camp. Let them see your hands before your weapons.",
+      "on_enter": [
+        {
+          "fire": "dialog_open",
+          "args": {
+            "npc": "kthara",
+            "tree": "first_contact",
+            "node": "fc1"
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "kthara.met"
+        }
+      ],
+      "on_complete": [
+        {
+          "set": "salvari.met"
+        }
+      ],
+      "next": "o1"
+    },
+    {
+      "id": "o1",
+      "objective": "Hear K'thara out. Thirty survivors from thirty billion is not a number you argue with.",
+      "advance_when": [
+        {
+          "flag": "kthara.briefed"
+        }
+      ],
+      "on_complete": [
+        {
+          "set": "cradle.known"
+        }
+      ],
+      "branch": {
+        "if": [
+          {
+            "karma_lte": -20
+          }
+        ],
+        "then": "o2_wary",
+        "else": "o2"
+      }
+    },
+    {
+      "id": "o2",
+      "objective": "The Nordic Steward at the upgrade station offers to teach. Accept the lesson, or take only the gear.",
+      "on_enter": [
+        {
+          "fire": "dialog_open",
+          "args": {
+            "npc": "nordic_steward",
+            "tree": "mentor",
+            "node": "m0"
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "any": [
+            {
+              "flag": "steward.mentored"
+            },
+            {
+              "flag": "steward.gear_only"
+            }
+          ]
+        }
+      ],
+      "on_complete": [
+        {
+          "give": "alien_upgrade"
+        }
+      ],
+      "branch": {
+        "if": [
+          {
+            "flag": "steward.mentored"
+          }
+        ],
+        "then": "o2_bfx__r1",
+        "else": "o3"
+      }
+    },
+    {
+      "id": "o2_wary",
+      "objective": "They don't trust you. Prove the camp is safe in your hands before they open anything.",
+      "on_enter": [
+        {
+          "fire": "objective_banner",
+          "args": {
+            "text": "Stand the perimeter watch. Let an Overlord probe come and go without firing first."
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "salvari.trust_earned"
+        }
+      ],
+      "on_complete": [
+        {
+          "trust": 5
+        },
+        {
+          "karma": 2
+        }
+      ],
+      "next": "o2"
+    },
+    {
+      "id": "o3",
+      "objective": "K'thara offers to join you — and offers the cure synthesis. Decide what the alliance is built on.",
+      "on_enter": [
+        {
+          "fire": "dialog_open",
+          "args": {
+            "npc": "kthara",
+            "tree": "first_contact",
+            "node": "fc_offer"
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "kthara.decided"
+        }
+      ],
+      "on_complete": [
+        {
+          "set": "salvari.cure_known"
+        }
+      ],
+      "branch": {
+        "if": [
+          {
+            "flag": "kthara.joined"
+          }
+        ],
+        "then": "o3_bfx__r2",
+        "else": "o_done"
+      }
+    },
+    {
+      "id": "o_done",
+      "objective": "Refuge, for now. The war is still out there, but you have a door that closes and people behind it.",
+      "on_complete": [
+        {
+          "karma": 5
+        },
+        {
+          "set": "salvari.haven"
+        },
+        {
+          "fire": "hub_register",
+          "args": {
+            "id": "salvari_camp"
+          }
+        }
+      ],
+      "next": "end"
+    },
+    {
+      "id": "o2_bfx__r1",
+      "on_enter": [
+        {
+          "give": "alien_upgrade"
+        },
+        {
+          "trust": 3
+        }
+      ],
+      "advance_when": [],
+      "next": "o3"
+    },
+    {
+      "id": "o3_bfx__r2",
+      "on_enter": [
+        {
+          "ally": true
+        },
+        {
+          "set": "salvari.cure_known"
+        },
+        {
+          "give": "salvari_cure_kit"
+        }
+      ],
+      "advance_when": [],
+      "next": "o_done"
+    }
+  ]
+}

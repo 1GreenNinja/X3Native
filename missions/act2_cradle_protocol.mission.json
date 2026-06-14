@@ -1,0 +1,183 @@
+{
+  "format": "x3.mission/1",
+  "id": "act2_cradle_protocol",
+  "title": "The Cradle Protocol",
+  "start": "o0",
+  "act": 2,
+  "level": 12,
+  "location": "The Salvari Archives, reached through the Advanced Cave System",
+  "summary": "The Salvari kept records the lab never knew existed. In the Archives, the word Emily and Reyes both whispered finally has a definition. The program isn't breeding soldiers. It's breeding officers — and the womb is the only machine that can build one.",
+  "give": [
+    {
+      "flag": "cradle.known"
+    },
+    {
+      "flag": "act2.heart_done"
+    }
+  ],
+  "_hooks": "The Cradle Protocol thread (STORYLINE_EXPANSIONS (b)) as a knowledge mission in the canon Salvari Archives (L12 region). give-gated on cradle.known (set by Emily/Reyes in the existing pack, or by act2_refugee_haven) + act2.heart_done. PURE DEEPENING — it adds no new world-state beyond knowledge flags; it gives the caste map, the Clone-as-final-assembly reveal, and the 65-Myr orchard one spine. Optional corroboration branches reward the player who did act2_batch_records (item:batch_records) and act2_quartermasters_ledger (harvest.known): the threads literally cross-check. Sets up Act-3's husk-world and Act-4's 'invasion is a harvest crew on schedule.'",
+  "_voice": "The horror has cold industrial logic — 'the program literally mines autonomy' — which makes it worse, not lurid. Per the Cradle thread, the violation stays where Tim's docs put it (forced breeding as the ultimate violation of autonomy) and is NEVER depicted; it is explained, with grief, by the records. No explicitness. The trauma dial does not move.",
+  "stages": [
+    {
+      "id": "o0",
+      "objective": "Reach the Salvari Archives. K'thara warns you the truth in there is the kind you don't get to un-know.",
+      "on_enter": [
+        {
+          "fire": "dialog_open",
+          "args": {
+            "npc": "kthara",
+            "tree": "first_contact",
+            "node": "fc_archives"
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "act2.archives_reached"
+        }
+      ],
+      "next": "o1"
+    },
+    {
+      "id": "o1",
+      "objective": "Cross-reference the Archives against what you carry out of the lab. The caste map starts to line up.",
+      "advance_when": [
+        {
+          "flag": "evidence.cradle_record.3"
+        }
+      ],
+      "on_complete": [
+        {
+          "set": "act2.castes_understood"
+        }
+      ],
+      "branch": {
+        "if": [
+          {
+            "item": "batch_records"
+          }
+        ],
+        "then": "o1_bfx__r1",
+        "else": "o2"
+      }
+    },
+    {
+      "id": "o2_corroborated",
+      "objective": "Reyes's batch records and the Archives agree to the day. The vat tiers are trash; the carried tiers are the product. The womb is the bioreactor that builds the command lobe.",
+      "on_complete": [
+        {
+          "set": "cradle.core_seen"
+        }
+      ],
+      "next": "o3"
+    },
+    {
+      "id": "o2",
+      "objective": "The pattern is undeniable even without the paperwork. Human gestation is the missing manufacturing step the vats can't replace.",
+      "on_complete": [
+        {
+          "set": "cradle.core_seen"
+        }
+      ],
+      "next": "o3"
+    },
+    {
+      "id": "o3",
+      "objective": "The Archive's deepest record is the one that explains the Clone. The program's final assembly step needs an anomaly-bearing father. It already had one in inventory.",
+      "on_enter": [
+        {
+          "fire": "cutscene",
+          "args": {
+            "id": "the_first_officer"
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "act2.officer_understood"
+        }
+      ],
+      "branch": {
+        "if": [
+          {
+            "flag": "harvest.known"
+          }
+        ],
+        "then": "o3_bfx__r2",
+        "else": "o4"
+      }
+    },
+    {
+      "id": "o4_harvest",
+      "objective": "You already knew they harvested you for six months. Now you know what they were building from it: the first true Officer, grown with your will surgically absent. Stopping the Clone on Floor 7 wasn't just saving Sarah. It was aborting the enemy's end-state.",
+      "on_complete": [
+        {
+          "redemption": 4
+        },
+        {
+          "set": "act2.cradle_full"
+        }
+      ],
+      "next": "o5"
+    },
+    {
+      "id": "o4",
+      "objective": "The Clone is the program's final assembly step, not its cruelty. Whatever happened on Floor 7 mattered more than you knew.",
+      "on_complete": [
+        {
+          "set": "act2.cradle_full"
+        }
+      ],
+      "next": "o5"
+    },
+    {
+      "id": "o5",
+      "objective": "The last record is the oldest. The Overlord has run Cradle-class programs since before mammals. Earth is a long-cycle cradle world. The dinosaur-killer wasn't an attack. It was a planting.",
+      "on_enter": [
+        {
+          "fire": "cutscene",
+          "args": {
+            "id": "the_orchard"
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "act2.orchard_seen"
+        }
+      ],
+      "on_complete": [
+        {
+          "set": "act2.cradle_protocol_done"
+        },
+        {
+          "set": "biomesh.lore"
+        },
+        {
+          "karma": 3
+        }
+      ],
+      "next": "end"
+    },
+    {
+      "id": "o1_bfx__r1",
+      "on_enter": [
+        {
+          "set": "act2.cradle_corroborated"
+        }
+      ],
+      "advance_when": [],
+      "next": "o2_corroborated"
+    },
+    {
+      "id": "o3_bfx__r2",
+      "on_enter": [
+        {
+          "set": "act2.clone_origin_known"
+        }
+      ],
+      "advance_when": [],
+      "next": "o4_harvest"
+    }
+  ]
+}

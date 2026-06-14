@@ -1,0 +1,243 @@
+{
+  "format": "x3.mission/1",
+  "id": "act2_storm_runner",
+  "title": "Storm Runner",
+  "start": "o0",
+  "act": 2,
+  "level": [
+    19,
+    20
+  ],
+  "location": "Spaceport Approach and the Spaceport — the way off Keth'zar",
+  "summary": "There's a ship called the Storm Runner on the Spaceport apron, and there's a Garrison Commander who'd rather burn it than let it leave. Take the ship. Take the war with you. And if a well-dressed man with cold-metal cologne is on that apron — that's your call.",
+  "give": [
+    {
+      "flag": "act2.alliance_formed"
+    }
+  ],
+  "_hooks": "Act-2 climax — canon L19 Spaceport Approach (Defense Commander mini-boss, vehicle combat) + L20 The Spaceport / 'Escape From Kethzar Prime' (Garrison Commander boss; capture the Storm Runner; ship choice affects Act 3). give-gated on act2.alliance_formed (act2_many_hands) so the ally count earned across Act 2 literally crews the ship. Optional o2_qm pays off the Quartermaster heist (act2_quartermasters_ledger): if the ledger is held, he appears in person for the spare/kill confrontation the expansion (a) promised (sparing → quartermaster.witness, the Act-4 trial prosecutor's witness). act_transition fire hands off to Act 3. The Defense/Garrison Commanders are staged via spawn_boss for the engine's existing boss machine.",
+  "_voice": "Momentum and cost. The launch line ('whoever isn't, you carry differently') keeps the loss restrained and personal. The Quartermaster confrontation is the only place his civilian menace gets a face — and even then he is bargained with, not boss-fought.",
+  "stages": [
+    {
+      "id": "o0",
+      "objective": "Break the Spaceport approach. Vehicle combat — the Defense Commander has the outer perimeter.",
+      "on_enter": [
+        {
+          "fire": "map_ping",
+          "args": {
+            "id": "spaceport"
+          }
+        },
+        {
+          "fire": "grant_vehicle",
+          "args": {
+            "id": "salvari_skiff"
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "act2.defense_commander_down"
+        }
+      ],
+      "on_complete": [
+        {
+          "karma": 3
+        }
+      ],
+      "next": "o1"
+    },
+    {
+      "id": "o1",
+      "objective": "Reach the apron. The Storm Runner is fueled at the far end — under the Garrison's guns.",
+      "advance_when": [
+        {
+          "flag": "act2.apron_reached"
+        }
+      ],
+      "branch": {
+        "if": [
+          {
+            "flag": "quartermaster.ledger_held"
+          }
+        ],
+        "then": "o2_qm",
+        "else": "o2"
+      }
+    },
+    {
+      "id": "o2_qm",
+      "objective": "The Quartermaster is here in person, brokering the Garrison's resupply. He recognizes you. He has nowhere to run, and he knows it.",
+      "on_enter": [
+        {
+          "fire": "dialog_open",
+          "args": {
+            "npc": "quartermaster",
+            "tree": "confront",
+            "node": "qc0"
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "quartermaster.confronted"
+        }
+      ],
+      "next": "o2_qm_b__r1"
+    },
+    {
+      "id": "o2",
+      "objective": "Fuel and crew the Storm Runner while the alliance holds the apron.",
+      "on_enter": [
+        {
+          "fire": "objective_banner",
+          "args": {
+            "text": "Every ally you brought is a gun on that line. Use them."
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "stormrunner.fueled"
+        },
+        {
+          "flag": "stormrunner.crew"
+        }
+      ],
+      "on_complete": [
+        {
+          "set": "stormrunner.fueled"
+        }
+      ],
+      "next": "o3"
+    },
+    {
+      "id": "o3",
+      "objective": "The Garrison Commander makes a stand on the loading ramp. He won't let the ship leave whole. Prove him wrong.",
+      "on_enter": [
+        {
+          "fire": "spawn_boss",
+          "args": {
+            "id": "garrison_commander",
+            "arena": "spaceport_ramp"
+          }
+        },
+        {
+          "fire": "objective_banner",
+          "args": {
+            "text": "Last door off this world. He's standing in it."
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "garrison_commander.down"
+        }
+      ],
+      "fail_when": [
+        {
+          "flag": "stormrunner.crippled"
+        }
+      ],
+      "on_fail": [
+        {
+          "karma": -3
+        },
+        {
+          "set": "act2.rough_launch"
+        }
+      ],
+      "fail_to": "o4",
+      "on_complete": [
+        {
+          "karma": 5
+        }
+      ],
+      "next": "o4"
+    },
+    {
+      "id": "o4",
+      "objective": "Get the Storm Runner off the ground. Whoever's still standing comes with you. Whoever isn't, you carry differently.",
+      "on_enter": [
+        {
+          "fire": "cutscene",
+          "args": {
+            "id": "stormrunner_launch"
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "stormrunner.launched"
+        }
+      ],
+      "on_complete": [
+        {
+          "set": "stormrunner.launched"
+        },
+        {
+          "set": "act2.complete"
+        },
+        {
+          "karma": 4
+        },
+        {
+          "fire": "act_transition",
+          "args": {
+            "to": 3
+          }
+        }
+      ],
+      "next": "end"
+    },
+    {
+      "id": "o2_qm_bfx__r2",
+      "on_enter": [
+        {
+          "mercy": 4
+        },
+        {
+          "set": "quartermaster.witness"
+        }
+      ],
+      "advance_when": [],
+      "next": "o2"
+    },
+    {
+      "id": "o2_qm_b__r1",
+      "advance_when": [],
+      "branch": {
+        "if": [
+          {
+            "flag": "quartermaster.spared"
+          }
+        ],
+        "then": "o2_qm_bfx__r2",
+        "else": "o2_qm_b__r3"
+      }
+    },
+    {
+      "id": "o2_qm_bfx__r4",
+      "on_enter": [
+        {
+          "karma": -3
+        }
+      ],
+      "advance_when": [],
+      "next": "o2"
+    },
+    {
+      "id": "o2_qm_b__r3",
+      "advance_when": [],
+      "branch": {
+        "if": [
+          {
+            "flag": "quartermaster.killed"
+          }
+        ],
+        "then": "o2_qm_bfx__r4",
+        "else": "o2"
+      }
+    }
+  ]
+}

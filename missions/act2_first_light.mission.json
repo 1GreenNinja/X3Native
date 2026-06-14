@@ -1,0 +1,187 @@
+{
+  "format": "x3.mission/1",
+  "id": "act2_first_light",
+  "title": "First Light",
+  "start": "o0",
+  "act": 2,
+  "level": 8,
+  "location": "Surface Emergence — the lab-exit tunnel and the Emergence Point",
+  "summary": "Fight clear of the collapsing facility and stand, for the first time in six months, under an open sky that isn't Earth's.",
+  "_hooks": "Opens Act 2 directly off act2_world's L8 (the lab-exit gauntlet + the Emergence-Point awe beat + the allied companion markers Sarah/Aria/Keisha/Emily). The two-suns reveal sets cradle.core_seen (Biomesh/Cradle thread (b)+(e): the player is now ON the seeded world, the recontextualization can begin). Branches read the F2 triage outcome (girl_saved/girl_lost) so a clean Alpha/Omega run gets the warm gather and a Beta run gets the grief beat — neither blocks the spine. Chains into act2_mourners_debt (L10).",
+  "_voice": "Awe, not exposition. The reveal does the talking; the objective text stays terse and physical (\"Don't stop moving.\").",
+  "stages": [
+    {
+      "id": "o0",
+      "objective": "Push through the service tunnel to the surface. Don't stop moving.",
+      "on_enter": [
+        {
+          "fire": "objective_banner",
+          "args": {
+            "text": "Get out."
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "kill.any.5"
+        }
+      ],
+      "fail_when": [
+        {
+          "lua": "player_dead"
+        }
+      ],
+      "on_fail": [
+        {
+          "karma": 0
+        }
+      ],
+      "fail_to": "o0",
+      "on_complete": [
+        {
+          "set": "act2.surfaced"
+        }
+      ],
+      "next": "o1"
+    },
+    {
+      "id": "o1",
+      "objective": "Reach the Emergence Point.",
+      "on_enter": [
+        {
+          "fire": "map_ping",
+          "args": {
+            "id": "emergence_point"
+          }
+        }
+      ],
+      "advance_when": [
+        {
+          "flag": "act2.emergence_reached"
+        }
+      ],
+      "on_complete": [
+        {
+          "fire": "cutscene",
+          "args": {
+            "id": "two_suns_reveal"
+          }
+        },
+        {
+          "set": "cradle.core_seen"
+        }
+      ],
+      "next": "o2"
+    },
+    {
+      "id": "o2",
+      "objective": "Take stock. Whoever made it out is standing with you now.",
+      "advance_when": [
+        {
+          "lua": "companions_gathered"
+        }
+      ],
+      "next": "o2_b__r1"
+    },
+    {
+      "id": "o3_full",
+      "objective": "Everyone you reached is here. Mark the route into the crystal desert.",
+      "on_complete": [
+        {
+          "trust": 3
+        },
+        {
+          "fire": "dialog_open",
+          "args": {
+            "npc": "aria",
+            "tree": "banter"
+          }
+        }
+      ],
+      "next": "o4"
+    },
+    {
+      "id": "o3_grief",
+      "objective": "Someone isn't here. The desert won't wait for the count.",
+      "on_complete": [
+        {
+          "fire": "dialog_open",
+          "args": {
+            "npc": "vesper",
+            "tree": "act2_grief",
+            "node": "g0"
+          }
+        }
+      ],
+      "next": "o4"
+    },
+    {
+      "id": "o3",
+      "objective": "Mark the route into the crystal desert.",
+      "next": "o4"
+    },
+    {
+      "id": "o4",
+      "objective": "Cross the Emergence Point's edge into the Crystalline Desert.",
+      "advance_when": [
+        {
+          "flag": "act2.entered_desert"
+        }
+      ],
+      "on_complete": [
+        {
+          "karma": 2
+        },
+        {
+          "fire": "mission_start",
+          "args": {
+            "id": "act2_mourners_debt"
+          }
+        }
+      ],
+      "next": "end"
+    },
+    {
+      "id": "o2_b__r1",
+      "advance_when": [],
+      "branch": {
+        "if": [
+          {
+            "girl_saved": "aria"
+          },
+          {
+            "girl_saved": "keisha"
+          },
+          {
+            "girl_saved": "emily"
+          }
+        ],
+        "then": "o3_full",
+        "else": "o2_b__r2"
+      }
+    },
+    {
+      "id": "o2_b__r2",
+      "advance_when": [],
+      "branch": {
+        "if": [
+          {
+            "any": [
+              {
+                "girl_lost": "aria"
+              },
+              {
+                "girl_lost": "keisha"
+              },
+              {
+                "girl_lost": "emily"
+              }
+            ]
+          }
+        ],
+        "then": "o3_grief",
+        "else": "o3"
+      }
+    }
+  ]
+}
