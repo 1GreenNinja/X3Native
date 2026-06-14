@@ -31,7 +31,7 @@ namespace x3::apphost {
 std::vector<NightSkyPlanet> loadNightSkyPlanets(
         x3::rhi::IRenderDevice* device, x3::rhi::MeshHandle& outMesh,
         int& nTexFail, const char* logTag,
-        x3::rhi::MeshHandle* outRingMesh = nullptr) {
+        x3::rhi::MeshHandle* outRingMesh) {
     const std::string kPlanets = "C:/Users/Tim/X3/Assets/FORGE3D/Planets/";
     const std::string kAtmo    = kPlanets + "Atmosphere/";
     const std::string kMisc    = kPlanets + "Misc/Textures/";
@@ -181,7 +181,7 @@ void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::FrameCon
                                 x3::rhi::MeshHandle mesh,
                                 const std::vector<NightSkyPlanet>& planets, float uTime,
                                 float eyeX, float eyeY, float eyeZ,
-                                x3::rhi::MeshHandle ringMesh = {}) {
+                                x3::rhi::MeshHandle ringMesh) {
     if (!fc.valid) return;
     // PlanetType transparent indices (see VulkanRenderDevice PlanetType enum).
     constexpr uint32_t kAtmosphere = 9u, kSunCorona = 10u, kRing = 11u;
@@ -246,8 +246,8 @@ void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::FrameCon
 // it touched before returning, so the world build that follows is unaffected.
 bool runCutsceneWindowed(x3::rhi::IRenderDevice& device, GLFWwindow* window,
                                 x3::audio::IAudioSystem* audio,
-                                const x3::cut::Cutscene& cs, float startAt = 0.0f,
-                                const std::function<void(const std::string&)>& hostEvent = {}) {
+                                const x3::cut::Cutscene& cs, float startAt,
+                                const std::function<void(const std::string&)>& hostEvent) {
     if (!window) return true;   // headless guard (smoketests etc.) — no-op
     x3::logInfo("[cutscene] playing '" + cs.name + "' (" + std::to_string(cs.duration) +
                 " s) — any key / Esc to skip");
