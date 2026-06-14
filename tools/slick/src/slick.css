@@ -76,6 +76,10 @@ body::before {
   color: transparent;
   text-shadow: var(--cyan-glow);
 }
+.login-tagline {
+  color: var(--cyan); font-size: 15px; font-weight: 600; letter-spacing: 0.5px;
+  margin-top: -6px;
+}
 .login-sub { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
 .login-card input {
   padding: 12px 13px;

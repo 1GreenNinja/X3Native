@@ -32,6 +32,7 @@ export function Login({ onLogin }: { onLogin: (s: Session) => void }) {
     <div class="login-page">
       <form class="login-card" onSubmit={submit}>
         <h1>Slick</h1>
+        <p class="login-tagline">Tired of the slog? Give it the slip.</p>
         <p class="login-sub">FleetCommand — {HOMESERVER.replace("https://", "")}</p>
 
         <div class="login-tabs">
