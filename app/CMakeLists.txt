@@ -1,6 +1,7 @@
 add_executable(X3Engine WIN32
     main.cpp
     bindings.cpp
+    self_tests.cpp
     scene.cpp
     level.cpp
     level1.cpp
