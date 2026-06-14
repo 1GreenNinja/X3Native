@@ -1,0 +1,48 @@
+{
+  "format": "x3.mission/1",
+  "id": "act2_the_siren_call",
+  "title": "The Siren's Call",
+  "act": 2,
+  "level": 14,
+  "location": "Research Station — a swamp-bound outpost where a failed cure was tried",
+  "summary": "Something in the drowned station sings in a voice you almost recognize. If you couldn't reach Aria on the medical floor, this is what the program made of her.",
+  "give": [ {"girl_lost": "aria"} ],
+  "start": "o0",
+  "objectives": [
+    { "id": "o0",
+      "text": "Search the research station. The recordings here are about a cure that didn't take.",
+      "on_enter": [ {"fire": "map_ping", "args": {"id": "research_station"}} ],
+      "complete_when": [ {"counter": ["evidence.research_log", 2]} ],
+      "fx": [ {"set": "act2.research_logs"} ],
+      "next": "o1" },
+    { "id": "o1",
+      "text": "Follow the sound. Don't let it follow you first.",
+      "on_enter": [ {"fire": "objective_banner", "args": {"text": "The lure pulls at the part of you that wanted to save everyone."}} ],
+      "complete_when": [ {"flag": "act2.siren_found"} ],
+      "next": "o2" },
+    { "id": "o2",
+      "text": "Face the Siren. There is a person somewhere under the sound. Decide whether to look for her.",
+      "on_enter": [
+        {"fire": "spawn_boss", "args": {"id": "the_siren", "model": "BossTheSiren.glb", "arena": "research_station_atrium"}},
+        {"fire": "dialog_open", "args": {"npc": "aria", "tree": "infected_lost", "node": "il0"}}
+      ],
+      "complete_when": [ {"any": [ {"flag": "siren.released"}, {"flag": "siren.killed"}]} ],
+      "branch": [
+        { "if": [ {"flag": "siren.released"} ],
+          "fx": [ {"mercy": 6}, {"redemption": 4}, {"set": "aria.laid_to_rest"} ],
+          "next": "o_done_mercy" }
+      ],
+      "fx": [ {"karma": -1} ],
+      "next": "o_done" },
+    { "id": "o_done_mercy",
+      "text": "You gave her the ending the lab refused her. It costs you nothing the world can measure and everything you can.",
+      "fx": [ {"set": "act2.siren_done"} ],
+      "next": "end" },
+    { "id": "o_done",
+      "text": "It stops singing. You leave before the silence can tell you whose it was.",
+      "fx": [ {"set": "act2.siren_done"}, {"set": "aria.lost_confirmed"} ],
+      "next": "end" }
+  ],
+  "_hooks": "The Beta-path payoff of the F2 triage: if Aria was LOST on the medical floor, the program's transform (The Siren, canon L14 ambush — act2-roster ships BossTheSiren.glb + the TheSiren boss def) surfaces here as a mission. give:{girl_lost:aria} means the mission is OFFERED only on a run that lost her, so an Alpha/Omega player never sees it. The 'release' path (mercy/redemption) reuses her infected_lost tree from the existing pack and lays the named victim->boss motif to rest. Feeds the dark/redemption ending overlays (STORYLINE_EXPANSIONS (f)).",
+  "_voice": "Restraint is the whole point. The horror is recognition, not gore — 'a voice you almost recognize.' The mercy path is offered, never forced, and the loss is never described in detail. The trauma dial does not move."
+}

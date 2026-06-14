@@ -1,0 +1,64 @@
+{
+  "format": "x3.mission/1",
+  "id": "act2_the_root_remembers",
+  "title": "The Root Remembers",
+  "act": 2,
+  "level": 12,
+  "location": "Advanced Cave System — the ancient ruins and the Crystal Heart chamber",
+  "summary": "The ruins predating the Overlord aren't ruins. Deep under the desert, the crystal teaches a thing the survey crews stopped saying out loud — and a companion says it in a voice that isn't quite hers.",
+  "give": [ {"flag": "salvari.haven"} ],
+  "start": "o0",
+  "objectives": [
+    { "id": "o0",
+      "text": "Descend into the cave system. The crystals hum differently the deeper you go.",
+      "on_enter": [ {"fire": "map_ping", "args": {"id": "crystal_heart"}} ],
+      "complete_when": [ {"counter": ["crystals_scanned", 3]} ],
+      "next": "o1" },
+    { "id": "o1",
+      "text": "Read the ruin walls. They aren't masonry.",
+      "on_enter": [ {"fire": "cutscene", "args": {"id": "anatomy_not_architecture"}} ],
+      "complete_when": [ {"flag": "act2.ruin_read"} ],
+      "fx": [ {"set": "biomesh.lore"} ],
+      "next": "o2" },
+    { "id": "o2",
+      "text": "Reach the Crystal Heart chamber. It needs both halves of you: strength to open it, a hacker to listen.",
+      "complete_when": [ {"flag": "act2.heart_opened"} ],
+      "branch": [
+        { "if": [ {"girl_saved": "sarah"} ], "fx": [ {"set": "act2.sarah_listened"} ], "next": "o3" }
+      ],
+      "next": "o3" },
+    { "id": "o3",
+      "text": "The Heart will give you the substrate-scan — but only if a companion stands in the resonance with you. Watch who answers it.",
+      "on_enter": [ {"fire": "dialog_open", "args": {"npc": "kthara", "tree": "first_contact", "node": "fc_heart"}} ],
+      "complete_when": [ {"flag": "act2.heart_attuned"} ],
+      "fx": [ {"give": "biomesh_scanner"}, {"set": "biomesh.scan"} ],
+      "branch": [
+        { "if": [ {"any": [ {"flag": "lena.carrier"}, {"flag": "aria.carrier"}, {"flag": "keisha.carrier"}, {"flag": "emily.carrier"}]} ], "next": "o4_whisper" }
+      ],
+      "next": "o5" },
+    { "id": "o4_whisper",
+      "text": "One of them stands too still in the resonance. The crystal answers her in a register you've heard before — on a floor you'd rather forget.",
+      "on_enter": [ {"fire": "carrier_whisper", "args": {"npc": "lena", "volume": "low"}} ],
+      "complete_when": [ {"flag": "act2.whisper_heard"} ],
+      "fx": [ {"set": "mole.suspected"} ],
+      "next": "o5" },
+    { "id": "o5",
+      "text": "The Memory Hunter stirs in the deep gallery, baited by the Heart. Survive it — or starve it of what it wants.",
+      "on_enter": [
+        {"fire": "spawn_boss", "args": {"id": "memory_hunter", "arena": "crystal_heart_gallery"}},
+        {"fire": "objective_banner", "args": {"text": "It hunts grief. Give it none."}}
+      ],
+      "complete_when": [ {"flag": "memory_hunter.routed"} ],
+      "fx": [ {"karma": 4}, {"redemption": 2} ],
+      "next": "o_done" },
+    { "id": "o_done",
+      "text": "You leave knowing the world is bigger than the lab — and worse. The scan reads markings now. Someone left them for whoever came next.",
+      "fx": [
+        {"set": "act2.heart_done"},
+        {"set": "architect.markings_readable"}
+      ],
+      "next": "end" }
+  ],
+  "_hooks": "Wraps act2-caves' L12 Crystal Heart into the Biomesh-thread reveal (STORYLINE_EXPANSIONS (e)): the ruins are anatomy, the crystals are memory nodes of the dead root, the bio-mesh substrate-scan (HIDDEN_AREAS) is earned here and its markings are the Architect's (thread (d)). The Memory Hunter (canon L12 boss, recurs L23-25) is staged but its defeat is framed as 'routed/starved' (psychological-warfare boss). The optional o4_whisper is the Carrier arc's reveal #1 (whisper at resonance) — fires the matching companion's carrier tree at whisper volume and sets mole.suspected, the flag act2_mourners_debt's Mantis branch and act2_the_quiet_channel both key on. Generic over which girl is the carrier (lena.carrier default, but any).",
+  "_voice": "The chamber teaches by geometry, not lecture. The whisper is the only horror beat here and it stays restrained — one line, flat second register, no description of what it means. The player decides what they heard."
+}

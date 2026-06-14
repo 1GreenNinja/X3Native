@@ -1,0 +1,47 @@
+{
+  "format": "x3.mission/1",
+  "id": "act2_queens_territory",
+  "title": "Queen's Territory",
+  "act": 2,
+  "level": 16,
+  "location": "Ruined Metropolis — Outskirts of a fallen alien city",
+  "summary": "The scavengers in the dead city answer to something that holds ground like a soldier and thinks like a tactician. If Keisha didn't make it off the medical floor, this is who kept her promise the only way the program left her.",
+  "give": [ {"girl_lost": "keisha"} ],
+  "start": "o0",
+  "objectives": [
+    { "id": "o0",
+      "text": "Move through the ruined outskirts. Her territory has a perimeter and the perimeter has rules.",
+      "on_enter": [ {"fire": "map_ping", "args": {"id": "breeder_queen_territory"}} ],
+      "complete_when": [ {"flag": "act2.queen_perimeter"} ],
+      "next": "o1" },
+    { "id": "o1",
+      "text": "She summons before she swings. Break her adds or break her line of sight.",
+      "on_enter": [ {"fire": "objective_banner", "args": {"text": "She fights like she's still guarding a door. She is. It's just not yours anymore."}} ],
+      "complete_when": [ {"counter": ["kills.queen_adds", 4]} ],
+      "next": "o2" },
+    { "id": "o2",
+      "text": "Confront the Breeder Queen. There's a security specialist's discipline in how she holds the room. Find out if there's anything else left.",
+      "on_enter": [
+        {"fire": "spawn_boss", "args": {"id": "breeder_queen", "model": "BossBreederQueen.glb", "arena": "metropolis_plaza"}},
+        {"fire": "dialog_open", "args": {"npc": "keisha", "tree": "infected_lost", "node": "il0"}}
+      ],
+      "complete_when": [ {"any": [ {"flag": "queen.released"}, {"flag": "queen.killed"}]} ],
+      "branch": [
+        { "if": [ {"flag": "queen.released"} ],
+          "fx": [ {"mercy": 6}, {"redemption": 4}, {"set": "keisha.laid_to_rest"} ],
+          "next": "o_done_mercy" }
+      ],
+      "fx": [ {"karma": -1} ],
+      "next": "o_done" },
+    { "id": "o_done_mercy",
+      "text": "She stops guarding the door at last. You hope, somewhere, someone learned to be loud.",
+      "fx": [ {"set": "act2.queen_done"} ],
+      "next": "end" },
+    { "id": "o_done",
+      "text": "The plaza goes quiet. The scavengers scatter without their captain. You don't look back at the model number on the wall.",
+      "fx": [ {"set": "act2.queen_done"}, {"set": "keisha.lost_confirmed"} ],
+      "next": "end" }
+  ],
+  "_hooks": "Beta-path sibling of act2_the_siren_call: the Breeder Queen (transformed Keisha, canon L16 territory — act2-roster ships BossBreederQueen.glb + the BreederQueen boss def with phase-3 summons). give:{girl_lost:keisha} gates the OFFER, so only a Beta run sees it. Keisha's character (a promise-keeper, 'guard the door') is honored even in her lost-state line; the release path reuses her infected_lost tree. Both Beta-boss missions feed STORYLINE_EXPANSIONS (f3) Hollow Crown / Chen's-Redemption overlays.",
+  "_voice": "Keisha's whole self is in 'she fights like she's still guarding a door.' The horror is the persistence of who she was, bent to the program's use. No gore, no spectacle of her body — the menace is tactical and the grief is quiet."
+}
