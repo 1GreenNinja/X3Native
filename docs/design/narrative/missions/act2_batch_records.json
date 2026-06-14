@@ -1,0 +1,59 @@
+{
+  "format": "x3.mission/1",
+  "id": "act2_batch_records",
+  "title": "Batch Records",
+  "act": 2,
+  "level": 11,
+  "location": "Club 1127 (Y=-200) — the empty barstool at the end of the bar",
+  "summary": "Dr. Reyes ran, the way Reyes does. He resurfaced at the bottom of the world with a guilt-gift he can't bring himself to hand over sober: the gestation-cohort batch records. Get them. They name names, and one of the names is his.",
+  "give": [ {"flag": "reyes.fled"}, {"flag": "club.found"}, {"not": {"flag": "vesper.reyes_paid"}} ],
+  "start": "o0",
+  "objectives": [
+    { "id": "o0",
+      "text": "Vesper says the barcode man walked off the floor and onto her tab. Find Reyes at the club.",
+      "on_enter": [ {"fire": "dialog_open", "args": {"npc": "vesper", "tree": "act2_reyes", "node": "vr0"}} ],
+      "complete_when": [ {"flag": "act2.reyes_located"} ],
+      "fx": [ {"set": "vesper.reyes_paid"} ],
+      "next": "o1" },
+    { "id": "o1",
+      "text": "Talk to Reyes. He'll rationalize for an hour if you let him. Decide how much rope to give a man hanging himself.",
+      "on_enter": [ {"fire": "dialog_open", "args": {"npc": "reyes", "tree": "club_hideout", "node": "rh0"}} ],
+      "complete_when": [ {"flag": "act2.reyes_talked"} ],
+      "branch": [
+        { "if": [ {"flag": "reyes.will_testify"} ], "next": "o2_witness" },
+        { "if": [ {"karma_lte": -10} ], "next": "o2_extort" }
+      ],
+      "next": "o2" },
+    { "id": "o2_witness",
+      "text": "He doesn't want money or mercy. He wants to be useful for once. Let him give you the records as testimony, not payment.",
+      "fx": [
+        {"give": "batch_records"},
+        {"set": "reyes.testified"},
+        {"redemption": 3},
+        {"karma": 4}
+      ],
+      "next": "o_done" },
+    { "id": "o2_extort",
+      "text": "He's terrified and you're not in a forgiving mood. Take the records the ugly way.",
+      "fx": [
+        {"give": "batch_records"},
+        {"set": "reyes.coerced"},
+        {"karma": -2},
+        {"mercy": -2}
+      ],
+      "next": "o_done" },
+    { "id": "o2",
+      "text": "Make the trade. The records for whatever he thinks buys him peace.",
+      "fx": [ {"give": "batch_records"}, {"set": "reyes.dealt"} ],
+      "next": "o_done" },
+    { "id": "o_done",
+      "text": "The batch records are yours. Every cohort, every date, every authorizing signature. Including one that reads 'F. Reyes, reluctantly.'",
+      "fx": [
+        {"set": "act2.batch_records_held"},
+        {"fire": "evidence_register", "args": {"id": "batch_records", "package": "collaborator_trials"}}
+      ],
+      "next": "end" }
+  ],
+  "_hooks": "Club 1127 hub side-quest paying off the Reyes thread from the existing pack (dr_reyes.json's FLEE outcome: reyes.fled + the club_door rumor). give-gated on reyes.fled + club.found. The batch records are the THIRD piece of the collaborator-trials evidence package (with Aria's manifest + the Quartermaster's ledger) — together they power STORYLINE_EXPANSIONS (f1) LANTERNS (Martinez prosecuting, 'First name Felix. Middle name reluctantly.'). The witness path (reyes.will_testify, set in his existing tree) is the redemption route; the extort path is the dark route. Needs a NEW act2_reyes node-set on Vesper + a club_hideout tree on Reyes (chat_trees/act2_reyes_club.json).",
+  "_voice": "Reyes is 'rationalization mid-collapse' (his bio). The mercy here is letting a coward be briefly brave. The records' signature line is the whole tragedy of the collaborator arc in five words."
+}

@@ -1,0 +1,59 @@
+{
+  "format": "x3.mission/1",
+  "id": "act2_first_light",
+  "title": "First Light",
+  "act": 2,
+  "level": 8,
+  "location": "Surface Emergence — the lab-exit tunnel and the Emergence Point",
+  "summary": "Fight clear of the collapsing facility and stand, for the first time in six months, under an open sky that isn't Earth's.",
+  "start": "o0",
+  "objectives": [
+    { "id": "o0",
+      "text": "Push through the service tunnel to the surface. Don't stop moving.",
+      "on_enter": [ {"fire": "objective_banner", "args": {"text": "Get out."}} ],
+      "complete_when": [ {"counter": ["kills.any", 5]} ],
+      "fx": [ {"set": "act2.surfaced"} ],
+      "next": "o1",
+      "fail": {
+        "when": [ {"lua": "player_dead"} ],
+        "fx": [ {"karma": 0} ],
+        "next": "retry",
+        "retryable": true
+      } },
+    { "id": "o1",
+      "text": "Reach the Emergence Point.",
+      "on_enter": [ {"fire": "map_ping", "args": {"id": "emergence_point"}} ],
+      "complete_when": [ {"flag": "act2.emergence_reached"} ],
+      "fx": [
+        {"fire": "cutscene", "args": {"id": "two_suns_reveal"}},
+        {"set": "cradle.core_seen"}
+      ],
+      "next": "o2" },
+    { "id": "o2",
+      "text": "Take stock. Whoever made it out is standing with you now.",
+      "complete_when": [ {"lua": "companions_gathered"} ],
+      "branch": [
+        { "if": [ {"girl_saved": "aria"}, {"girl_saved": "keisha"}, {"girl_saved": "emily"} ], "next": "o3_full" },
+        { "if": [ {"any": [ {"girl_lost": "aria"}, {"girl_lost": "keisha"}, {"girl_lost": "emily"} ]} ], "next": "o3_grief" }
+      ],
+      "next": "o3" },
+    { "id": "o3_full",
+      "text": "Everyone you reached is here. Mark the route into the crystal desert.",
+      "fx": [ {"trust": 3}, {"fire": "dialog_open", "args": {"npc": "aria", "tree": "banter"}} ],
+      "next": "o4" },
+    { "id": "o3_grief",
+      "text": "Someone isn't here. The desert won't wait for the count.",
+      "fx": [ {"fire": "dialog_open", "args": {"npc": "vesper", "tree": "act2_grief", "node": "g0"}} ],
+      "next": "o4" },
+    { "id": "o3",
+      "text": "Mark the route into the crystal desert.",
+      "next": "o4" },
+    { "id": "o4",
+      "text": "Cross the Emergence Point's edge into the Crystalline Desert.",
+      "complete_when": [ {"flag": "act2.entered_desert"} ],
+      "fx": [ {"karma": 2}, {"fire": "mission_start", "args": {"id": "act2_mourners_debt"}} ],
+      "next": "end" }
+  ],
+  "_hooks": "Opens Act 2 directly off act2_world's L8 (the lab-exit gauntlet + the Emergence-Point awe beat + the allied companion markers Sarah/Aria/Keisha/Emily). The two-suns reveal sets cradle.core_seen (Biomesh/Cradle thread (b)+(e): the player is now ON the seeded world, the recontextualization can begin). Branches read the F2 triage outcome (girl_saved/girl_lost) so a clean Alpha/Omega run gets the warm gather and a Beta run gets the grief beat — neither blocks the spine. Chains into act2_mourners_debt (L10).",
+  "_voice": "Awe, not exposition. The reveal does the talking; the objective text stays terse and physical (\"Don't stop moving.\")."
+}

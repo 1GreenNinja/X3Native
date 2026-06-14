@@ -1,0 +1,85 @@
+# Chat tree — VESPER (`vesper`)
+
+> ADDITIVE Act-2 trees for VESPER (merged into the existing club1127_vesper.json by npc id — same loader slot, additional trees, no overwrite of `hub`). These are the mission-driven scenes the Act-2 Content Offensive needs: the Quartermaster heist opener, the Architect third-room sale, the Reyes-at-the-club locate, and a brief surface-grief beat. Voice discipline identical to the base file: she never lies, she prices; the music is louder than the war upstairs.
+
+## Tree: `act2_quartermaster`
+*Fired from act2_quartermasters_ledger o0. Opens the heist thread.*
+
+_start:_ `q0`
+
+**`q0` — VESPER:**
+  - _gate:_ `harvest.known` (else → `q_notready`)
+  - "*she pours the good bottle before you ask, which is how you know the question's expensive* So you finally learned what the big ship was for. Big ships don't dogfight, honey. They collect. And somebody has to tell a grey freight hull which human transponder is worth the fuel — because they can't read your skies, but their broker can. *she lets it land* The man you want sells this program its groceries. Fuel. Parts. Acquisitions. You were an acquisition."
+    - **>** "Give me a name." → `q1`
+    - **>** "A broker. Human." → `q1`
+
+**`q1` — VESPER:**
+  - "No names at the bar — house rule, and a kindness to you, because a name you can shout is a name that gets you sold back. Call him the Quartermaster. What matters isn't who he is. It's that his ledger is paper, not network — a careful man's vanity — and paper has to RIDE the freight pipe to do its job. Twice a year. *she taps the bar twice, the way she does* The next run is soon."
+  - _fx:_ set `quartermaster.known`, fire `rumor`
+  - → `q2`
+
+**`q2` — VESPER:**
+  - "Get on the pipe, get the book, get off before the manifest check learns your face. Bring it back and I'll read you the part that'll keep you up nights. *the smile goes thin* The entry with your name on it. And the date next to it. Look at the date, honey. That's the whole story, right there in a column."
+  - → `end`
+
+**`q_notready` — VESPER:**
+  - "*she slides you the drink and not the conversation* You're asking about the big ship and you don't yet know what it came for. Go learn that first — the woman who did your numbers can tell you. Come back when 'harvest' means something to you. I don't sell the ending before you've read the middle."
+  - → `end`
+
+## Tree: `act2_architect`
+*Fired from act2_the_third_room o0. Sells the third-room location once earned.*
+
+_start:_ `a0`
+
+**`a0` — VESPER:**
+  - _gate:_ `rumor.third_room`, `biomesh.scan` (else → `a_notready`)
+  - "*she doesn't polish anything for this one. Full attention is her tell.* You've got the scan now. Then you've already seen his hand on the rock and didn't know whose it was. The Architect. First-generation, came down with the boring crews, never went back up — because he saw what the bore broke into and decided the only sane place to live was next to it, with good speakers. *she nods at the room* This club is his commute. The cell on Detention was his address. And there's one more, further down than either."
+    - **>** "The third room. Where." → `a1`
+    - **>** "What's down there that he wanted close?" → `a1b`
+
+**`a1` — VESPER:**
+  - "The substrate boundary. Four hundred down, past where the Illuminated won't go because their heads stop working that deep. His listening station. *she pours herself half of something, which the regulars will tell you happens twice a year* I'll tell you the way because you earned the floor it's on. But understand what you'll find, honey: he wasn't hiding FROM the thing below. He was keeping it ASLEEP. The speakers up here are a lullaby. His are the cradle."
+  - _fx:_ set `architect.third_room_known`, fire `rumor`
+  - → `end`
+
+**`a1b` — VESPER:**
+  - "His real work. Drawings nobody upstairs was ever meant to see, of a thing that's been asleep since before your species had a spine. He spent a whole life teaching the rock's hum to whoever came next, in case he wasn't around to keep it down. *a beat* He wasn't. You're whoever came next. Go read what he left you."
+  - _fx:_ set `architect.third_room_known`, fire `rumor`
+  - → `end`
+
+**`a_notready` — VESPER:**
+  - "*she shakes her head, not unkindly* That rumor I sell when you've earned the floor it's on — and you haven't, not yet. Come back with the scan that reads his markings and we'll talk. Until then, the drink's still real."
+  - → `end`
+
+## Tree: `act2_reyes`
+*Fired from act2_batch_records o0. Vesper points you to the fled collaborator drinking on her tab.*
+
+_start:_ `vr0`
+
+**`vr0` — VESPER:**
+  - _gate:_ `reyes.fled` (else → `vr_none`)
+  - "*she tips her head toward the dark end of the bar* The barcode man. Walked off your floor and right onto my tab three nights running. Drinks like a man trying to dissolve a signature. *she sets a glass down in front of an empty stool that won't be empty long* He's been working up the nerve to give you something and losing it at the bottom of every glass. Be gentle or be quick. He'll break either way; only one of those breaks is useful to you."
+  - _fx:_ set `act2.reyes_located`
+    - **>** "What's he carrying?" → `vr1`
+    - **>** "Why do you care how I handle him?" → `vr1b`
+
+**`vr1` — VESPER:**
+  - "Records. The cohort batches — every date, every authorizing name. The kind of paper that turns 'we didn't know' into a list of people who signed. *she wipes the bar* His name's on it too, honey. That's why he can't hand it over sober. You don't confess and survive the confession in the same breath. Buy him the breath."
+  - → `end`
+
+**`vr1b` — VESPER:**
+  - "*a look with history in it* Because I've poured for a lot of cowards down here, and exactly two of them ever did one brave thing, and both times somebody gave them room to. I'm out of room — the war's almost down the stairs. You've got room. Spend it or don't; the drinks are real either way. *she's already moving to the next customer.*"
+  - → `end`
+
+**`vr_none` — VESPER:**
+  - "*she shrugs* Nobody by that description on my floor tonight, honey. If your barcode man ran, he didn't run HERE. Try the people you left him with."
+  - → `end`
+
+## Tree: `act2_grief`
+*Fired from act2_first_light o3_grief — a brief surface-grief beat when a F2 woman was lost.*
+
+_start:_ `g0`
+
+**`g0` — VESPER:**
+  - "*the music down here followed you up the freight pipe, somehow, or you brought it — a bar tune under an alien sky* I poured for the ones who didn't make it out, too, honey. Long before you. I remember all of them, that's the job. *she's not here; you're hearing her the way you hear a song you can't stop* When you have a minute the war can't have, say her name out loud somewhere with sky. The rock can't hear it down where I am. Up there it might."
+  - → `end`

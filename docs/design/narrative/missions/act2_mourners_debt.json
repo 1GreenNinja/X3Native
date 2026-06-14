@@ -1,0 +1,82 @@
+{
+  "format": "x3.mission/1",
+  "id": "act2_mourners_debt",
+  "title": "The Mourner's Debt",
+  "act": 2,
+  "level": 10,
+  "location": "Crystalline Desert Depths — the crystal-cave approach",
+  "summary": "An injured Salvari near a hidden cave mouth needs help the desert won't give freely. A Reptilian patrol hunts the approach, and something older is watching the bargain.",
+  "give": [ {"flag": "act2.surfaced"} ],
+  "start": "o0",
+  "objectives": [
+    { "id": "o0",
+      "text": "Cross the desert depths toward the singing-crystal cave mouth.",
+      "on_enter": [ {"fire": "map_ping", "args": {"id": "crystal_cave_mouth"}} ],
+      "complete_when": [ {"flag": "act2.found_salvari_wounded"} ],
+      "next": "o1" },
+    { "id": "o1",
+      "text": "Drive off the Reptilian patrol before it reaches the wounded Salvari.",
+      "on_enter": [ {"fire": "objective_banner", "args": {"text": "Two Reptilian Troopers and a Grey spotter. The Salvari can't run."}} ],
+      "complete_when": [ {"counter": ["kills.reptilian_patrol", 3]} ],
+      "fx": [ {"karma": 3} ],
+      "next": "o2",
+      "fail": {
+        "when": [ {"flag": "salvari.wounded_dead"} ],
+        "fx": [ {"karma": -2}, {"set": "salvari.first_blood"} ],
+        "next": "o_fail_grief",
+        "retryable": false
+      } },
+    { "id": "o2",
+      "text": "Help the wounded Salvari. They keep trying to give you something instead of taking help.",
+      "complete_when": [ {"flag": "act2.salvari_wounded_stable"} ],
+      "fx": [
+        {"mercy": 3},
+        {"set": "salvari.met"},
+        {"set": "salvari.owe_debt"},
+        {"fire": "dialog_open", "args": {"npc": "kthara", "tree": "first_contact", "node": "fc0"}}
+      ],
+      "branch": [
+        { "if": [ {"flag": "mole.suspected"} ], "next": "o3_mantis" }
+      ],
+      "next": "o3" },
+    { "id": "o3_mantis",
+      "text": "A third party arrives — a lone Mantis Arbiter, drawn by the suspicion you carry. Hear its terms, or refuse them.",
+      "on_enter": [ {"fire": "dialog_open", "args": {"npc": "mantis_arbiter", "tree": "wildcard", "node": "w0"}} ],
+      "complete_when": [ {"any": [ {"flag": "mantis.bargain"}, {"flag": "mantis.refused"}]} ],
+      "next": "o3" },
+    { "id": "o3",
+      "text": "Escort the Salvari down toward their camp.",
+      "complete_when": [ {"flag": "act2.escorted_to_cavemouth"} ],
+      "branch": [
+        { "if": [ {"flag": "warlord.dead"} ], "next": "o_done" },
+        { "if": [ {"flag": "warlord.spared"} ], "next": "o_done" }
+      ],
+      "next": "o4_warlord" },
+    { "id": "o4_warlord",
+      "text": "The cave mouth is held. A Saurian Warlord bars the only way down.",
+      "on_enter": [
+        {"fire": "spawn_boss", "args": {"id": "saurian_warlord", "arena": "L10WarlordArena"}},
+        {"fire": "objective_banner", "args": {"text": "The Warlord won't let refugees pass. Neither will it let you."}}
+      ],
+      "complete_when": [ {"any": [ {"flag": "warlord.dead"}, {"flag": "warlord.spared"}]} ],
+      "branch": [
+        { "if": [ {"flag": "warlord.spared"} ], "fx": [ {"mercy": 5}, {"karma": 2} ], "next": "o_done" }
+      ],
+      "fx": [ {"karma": 4} ],
+      "next": "o_done" },
+    { "id": "o_done",
+      "text": "The way down is open. The Salvari will tell their camp who opened it.",
+      "fx": [
+        {"set": "salvari.allied"},
+        {"trust": 4},
+        {"fire": "mission_start", "args": {"id": "act2_refugee_haven"}}
+      ],
+      "next": "end" },
+    { "id": "o_fail_grief",
+      "text": "The Salvari is gone. The desert keeps its debts either way.",
+      "fx": [ {"set": "salvari.met"}, {"fire": "dialog_open", "args": {"npc": "kthara", "tree": "first_contact", "node": "fc_grief"}} ],
+      "next": "o3" }
+  ],
+  "_hooks": "Wraps act2-desert's L10 content into a quest: the injured-Salvari side-quest hook, the Reptilian-Trooper+Grey-Tasked patrol (grey-patrol branch), the Saurian Warlord gated arena (warlord branch), and the Mantis Arbiter wildcard (mantis-ambush branch, gated by mole.suspected so it ONLY appears for a player carrying the Carrier-arc suspicion — making the ambush feel earned, per STORYLINE_EXPANSIONS (c)). Sets warlord.dead/spared and salvari.allied which act2_refugee_haven (L11) reads. First on-screen K'thara line fires here.",
+  "_voice": "The Salvari grammar of grief: they try to GIVE before they receive (the mourner's debt). Warlord can be spared (mercy line) — the canon spare-or-kill choice carried into Act 2."
+}
