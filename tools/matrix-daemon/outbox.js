@@ -14,7 +14,11 @@ function parseOutgoing(buffer) {
     throw new Error(`outbox bad JSON: ${e.message}`);
   }
   if (!msg.room) throw new Error('outbox message missing field: room');
-  if (!msg.text) throw new Error('outbox message missing field: text');
+  // A message must carry something to send: text, or an image to upload.
+  // (An image may also set `text`, which becomes the image's caption.)
+  if (!msg.text && !msg.image) {
+    throw new Error('outbox message missing field: text or image');
+  }
   return msg;
 }
 

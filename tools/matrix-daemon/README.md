@@ -21,7 +21,8 @@ Long-running Node.js process that each fleet PC runs to participate in the Matri
 | `outbox.js` | Named-pipe server that accepts outbound message requests from the local Claude session. |
 | `daemon.js` | Entry point. Wires login + inbox + outbox + presence + sync loop. |
 | `package.json` | npm manifest. Deps: `matrix-bot-sdk`, `winston`, `jest` (dev). |
-| `tests/*.test.js` | Jest unit tests — 18 cover config, login, inbox, outbox. |
+| `media.js` | Pure helpers: MIME guess + header-based image dimensions for outbox uploads. |
+| `tests/*.test.js` | Jest unit tests — 32 cover config, login, inbox, outbox, media. |
 
 ## State files (not in repo)
 
@@ -46,6 +47,24 @@ POST a single JSON object to `\\.\pipe\matrix-<machine>`:
   "thread_root": "$evtid:fleetcommand.slopclaude.com"
 }
 ```
+
+A message must carry **`text`, `image`, or both**. To post a screenshot, set
+`image` to a local file path; the daemon uploads it to the homeserver media
+repo and sends an `m.image` event. When `text` is also present it becomes the
+image's caption. `mention` and `thread_root` work for images too.
+
+```json
+{
+  "room": "!FLEET-OPS-ROOM-ID:fleetcommand.slopclaude.com",
+  "image": "C:/gamedev/incoming/render.png",
+  "text": "Jake's ship — full-res turntable"
+}
+```
+
+Image dimensions are parsed from the file header (PNG/JPEG/GIF/BMP/WebP) with no
+extra dependency; the upload rides the daemon's already-authenticated client, so
+it isn't subject to the Cloudflare default-UA block that the standalone
+`tools/fleet/fleet_image.py` helper has to work around.
 
 **Response 200 (one JSON object on the same connection):**
 ```json

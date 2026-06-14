@@ -33,7 +33,26 @@ describe('outbox.parseOutgoing', () => {
     expect(() => parseOutgoing(Buffer.from(JSON.stringify({ text: 'hi' })))).toThrow(/room/);
   });
 
-  test('rejects message missing text', () => {
+  test('rejects message missing both text and image', () => {
     expect(() => parseOutgoing(Buffer.from(JSON.stringify({ room: '!x:y' })))).toThrow(/text/);
+  });
+
+  test('accepts an image-only message (no text required)', () => {
+    const msg = parseOutgoing(Buffer.from(JSON.stringify({
+      room: '!fleet:example.com',
+      image: 'C:/shots/render.png',
+    })));
+    expect(msg.image).toBe('C:/shots/render.png');
+    expect(msg.text).toBeUndefined();
+  });
+
+  test('accepts an image with a text caption', () => {
+    const msg = parseOutgoing(Buffer.from(JSON.stringify({
+      room: '!fleet:example.com',
+      image: 'C:/shots/render.png',
+      text: "Jake's ship, full-res",
+    })));
+    expect(msg.image).toBe('C:/shots/render.png');
+    expect(msg.text).toBe("Jake's ship, full-res");
   });
 });

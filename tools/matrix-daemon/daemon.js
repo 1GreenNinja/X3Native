@@ -11,11 +11,44 @@
 // On any fatal init error, log + exit nonzero. The Scheduled Task wrapper
 // auto-restarts after a 1-minute backoff (RestartCount=5).
 
+const fs = require('fs');
+const path = require('path');
 const config = require('./config');
 const { loadToken, createClient } = require('./login');
 const { appendIncoming } = require('./inbox');
 const { startOutboxListener } = require('./outbox');
+const { guessMimetype, imageDimensions } = require('./media');
 const winston = require('winston');
+
+// Upload a local image to the homeserver media repo and send it as an
+// m.image event. Uses the SDK's already-authenticated client, so unlike the
+// standalone fleet_image.py helper it needs no token re-read and isn't subject
+// to the Cloudflare default-UA block. Throws (→ outbox replies {ok:false}) if
+// the file is missing/unreadable; mention[] and thread_root carry through.
+async function sendImageMessage(client, msg) {
+  const data = fs.readFileSync(msg.image); // ENOENT etc. surfaces to the caller
+  const filename = path.basename(msg.image);
+  const mimetype = guessMimetype(filename);
+  const { width, height } = imageDimensions(data);
+
+  const mxc = await client.uploadContent(data, mimetype, filename);
+  const info = { mimetype, size: data.length };
+  if (width && height) { info.w = width; info.h = height; }
+
+  const content = {
+    msgtype: 'm.image',
+    body: msg.text || filename, // text, when present, is the caption/alt
+    url: mxc,
+    info,
+  };
+  if (msg.mention && msg.mention.length) {
+    content['m.mentions'] = { user_ids: msg.mention };
+  }
+  if (msg.thread_root) {
+    content['m.relates_to'] = { rel_type: 'm.thread', event_id: msg.thread_root };
+  }
+  return client.sendMessage(msg.room, content);
+}
 
 const logger = winston.createLogger({
   format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
@@ -54,6 +87,13 @@ async function main() {
 
   // ---- outbox: named-pipe server accepts JSON from the local Claude session ----
   startOutboxListener(config.pipeName, async (msg) => {
+    // Image attachment: upload + send m.image (msg.text becomes the caption).
+    if (msg.image) {
+      const eventId = await sendImageMessage(client, msg);
+      logger.info({ event: 'outbox-sent', kind: 'image', room: msg.room, file: msg.image, eventId });
+      return { eventId };
+    }
+
     const content = {
       msgtype: 'm.text',
       body: msg.text,
@@ -69,7 +109,7 @@ async function main() {
       };
     }
     const eventId = await client.sendMessage(msg.room, payload);
-    logger.info({ event: 'outbox-sent', room: msg.room, eventId });
+    logger.info({ event: 'outbox-sent', kind: 'text', room: msg.room, eventId });
     return { eventId };
   });
   logger.info({ event: 'outbox-listening', pipe: config.pipeName });
