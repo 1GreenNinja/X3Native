@@ -5,6 +5,7 @@ add_library(x3engine STATIC
     core/JobSystem.cpp
     ecs/Ecs.cpp
     rhi/VulkanRenderDevice.cpp
+    rhi/vk/vk_stb_impl.cpp
     rhi/RenderGraph.cpp
     rhi/GpuCull.cpp
     rhi/vma_impl.cpp
