@@ -739,100 +739,15 @@ struct PerfTimers {
 PerfTimers g_perf;
 
 // ---------------------------------------------------------------------------
-// SpeakingMonster — the HOST adapter that wires the dialog system's speaking
-// state onto a SKINNED NPC (X3_WORLD_BLUEPRINT §3, requirement 4). It implements
-// x3::dialog::ISpeakingNpc and drives an x3::anim::Skinner READ-ONLY: on
-// beginSpeaking it starts a "talk"/idle clip + records the subtitle; each frame
-// while speaking it advances a head-bob (a small extra time scrub layered over
-// the idle clip so the character reads as "talking"); on endSpeaking it returns
-// to rest. It owns its OWN Skinner bound to the NPC's Model so it never mutates
-// the MonsterSystem (read-only use of anim). Lip-sync is not required — a talk
-// pose / bob is the spec'd behaviour.
-//
-// Headless-safe: with a non-skinnable / absent model it still tracks the speaking
-// lifecycle (begin/tick/end) so the demo + wiring are observable without a device.
-class SpeakingMonster final : public x3::dialog::ISpeakingNpc {
-public:
-    // Bind to a loaded skinned Model (e.g. chief_martinez_anim.glb). The model must
-    // outlive this adapter (the demo owns it). Picks a talk/idle clip by name.
-    bool bind(const x3::asset::Model& model) {
-        m_model = &model;
-        m_skinnable = m_skinner.bind(model);
-        if (m_skinnable) {
-            // Prefer a "talk"/"idle" clip for the speaking pose; fall back to clip 0.
-            m_talkClip = m_skinner.findClip({ "talk", "idle" });
-            if (m_talkClip < 0 && m_skinner.clipCount() > 0) m_talkClip = 0;
-        }
-        return m_skinnable;
-    }
-
-    bool skinnable()  const { return m_skinnable; }
-    bool speaking()   const { return m_speaking; }
-    int  beginCount() const { return m_begins; }
-    int  endCount()   const { return m_ends; }
-    const std::string& subtitle() const { return m_subtitle; }
-    // Max per-component change of the joint palette observed between consecutive
-    // ticks while speaking — proves the talk-bob actually animated the skeleton.
-    float maxPaletteDelta() const { return m_maxDelta; }
-
-    void beginSpeaking(std::string_view line, x3::dialog::VoiceId voice,
-                       float estDurationSec) override {
-        (void)voice;
-        ++m_begins;
-        m_speaking = true;
-        m_subtitle.assign(line);
-        m_animTime = 0.0f;
-        m_estDur   = estDurationSec > 0.0f ? estDurationSec : 1.0f;
-        m_havePrev = false;
-        // Show the subtitle on the console (the HUD path would call
-        // IRenderDevice::drawHudText with this string each frame).
-        x3::logInfo(std::string("[dialog] ") + std::string(line));
-    }
-
-    void tickSpeaking(float dt, float phase01) override {
-        if (!m_speaking) return;
-        // Talk bob: advance the clip time, modulated by a small sinusoid so the
-        // head visibly bobs across the line (peaks mid-line, settles at the end).
-        const float bob = 1.0f + 0.6f * std::sin(phase01 * 6.2831853f);
-        m_animTime += dt * bob;
-        if (m_skinnable && m_model && m_talkClip >= 0) {
-            // READ-ONLY anim use: compute the palette at the talk-clip time WITHOUT a
-            // device (the demo is headless). A real windowed host would instead call
-            // m_skinner.apply(model, device, talkClip, time) to skin + draw.
-            m_skinner.computePalette(*m_model, (uint32_t)m_talkClip, m_animTime, m_curPal);
-            if (m_havePrev && m_prevPal.size() == m_curPal.size()) {
-                float d = 0.0f;
-                for (size_t i = 0; i < m_curPal.size(); ++i)
-                    d = std::max(d, std::fabs(m_curPal[i] - m_prevPal[i]));
-                m_maxDelta = std::max(m_maxDelta, d);
-            }
-            m_prevPal = m_curPal;
-            m_havePrev = true;
-        }
-    }
-
-    void endSpeaking() override {
-        ++m_ends;
-        m_speaking = false;
-        m_subtitle.clear();
-    }
-
-private:
-    const x3::asset::Model* m_model = nullptr;
-    x3::anim::Skinner       m_skinner;
-    bool   m_skinnable = false;
-    int    m_talkClip  = -1;
-    bool   m_speaking  = false;
-    int    m_begins    = 0;
-    int    m_ends      = 0;
-    float  m_animTime  = 0.0f;
-    float  m_estDur    = 1.0f;
-    std::string m_subtitle;
-    std::vector<float> m_curPal, m_prevPal;
-    bool   m_havePrev  = false;
-    float  m_maxDelta  = 0.0f;
-};
+// SpeakingMonster — the HOST dialog->skinned-NPC adapter — moved VERBATIM to
+// app/speaking_monster.h (#28 monolith split). Declared in x3::apphost; the
+// `using` below keeps the --demo-dialog dispatch AND the --world host call
+// sites in main() unqualified so the bodies are byte-identical.
+// ---------------------------------------------------------------------------
 } // namespace
+#include "speaking_monster.h"
+using x3::apphost::SpeakingMonster;
+#include "test_registry.h"   // x3::apphost::TestFlags + dispatchTests (#28 split)
 
 // ===========================================================================
 // D14 SCRIPT BOOT + GAME BINDINGS — moved VERBATIM to app/bindings.{h,cpp}
@@ -1745,648 +1660,115 @@ int main(int argc, char** argv) {
     // --all`. No-op when assets/manifest.json is absent. Never blocks boot.
     x3::game::checkAssetManifest();
 
-    // Headless self-tests (no window / Vulkan needed)
-    if (testJobs) {
-        x3::logInfo("running job system (Subsystem A) self-test...");
-        return x3::jobs::runJobSystemSelfTest() ? 0 : 1;
-    }
-    if (testAsset) {
-        x3::logInfo("running asset (D5) self-test...");
-        return x3::asset::runAssetSelfTest() ? 0 : 1;
-    }
-    if (testConsole) {
-        x3::logInfo("running console (D6) self-test...");
-        return x3::con::runConsoleSelfTest() ? 0 : 1;
-    }
-    if (testPhysics) {
-        x3::logInfo("running physics (M3) self-test...");
-        return x3::phys::runPhysicsSelfTest() ? 0 : 1;
-    }
-    if (testPhysJoint) {
-        x3::logInfo("running Physics §1 suspended/constrained-body (--test-physjoint) self-test...");
-        return x3::phys::runPhysJointSelfTest() ? 0 : 1;
-    }
-    if (testRagdoll) {
-        x3::logInfo("running Physics §2 ragdoll+blend (--test-ragdoll) self-test...");
-        // Engine-side: the Jolt ragdoll fall/settle/chain-hold + blend-math check.
-        bool engineOk = x3::phys::runRagdollSelfTest();
-        // App-side: drive the REAL anim::Skinner ragdoll-blend across weight 0->1
-        // over a synthetic skinned model and assert the palette interpolates
-        // monotonically (the §2 skin-follows-ragdoll acceptance, end to end).
-        int bPass = 0, bTotal = 0;
-        bool blendOk = x3::game::runRagdollBlendCheck(bPass, bTotal);
-        x3::logInfo("ragdoll-blend: " + std::to_string(bPass) + "/" +
-                    std::to_string(bTotal) + " passed");
-        // App-side physics-death ragdoll (this session's app/ragdoll.cpp path).
-        bool deathOk = x3::game::runRagdollSelfTest();
-        return (engineOk && blendOk && deathOk) ? 0 : 1;
-    }
-    if (testGltf) {
-        x3::logInfo("running glTF/GLB model loader (M2) self-test...");
-        return x3::asset::runModelLoaderSelfTest() ? 0 : 1;
-    }
-    if (testPlayer) {
-        x3::logInfo("running player/character-controller (S3) self-test...");
-        return x3::game::runPlayerSelfTest() ? 0 : 1;
-    }
-    if (testInteract) {
-        x3::logInfo("running button->door interaction (S4) self-test...");
-        return x3::game::runInteractSelfTest() ? 0 : 1;
-    }
-    if (testPhysprops) {
-        x3::logInfo("running physics-props (hanging cubes / joints) self-test...");
-        return x3::game::runPhysPropsSelfTest() ? 0 : 1;
-    }
-    if (testRagdollSkin) {
-        x3::logInfo("running ragdoll-skin (rigid bone attach) self-test...");
-        return x3::game::runRagdollSkinSelfTest() ? 0 : 1;
-    }
-    if (testEditor) {
-        x3::logInfo("running Level Editor E1 (JSON/pick/gizmo) self-test...");
-        return x3::editor::runEditorSelfTest() ? 0 : 1;
-    }
-    if (testBlockout) {
-        x3::logInfo("running Level Architect BLOCKOUT (brushes[] JSON / snap / mesh) self-test...");
-        return x3::editor::runBlockoutSelfTest() ? 0 : 1;
-    }
-    if (testLoader) {
-        x3::logInfo("running LevelDoc data-driven loader (save->load->hot-reload) self-test...");
-        return x3::game::runLevelDocLoaderSelfTest() ? 0 : 1;
-    }
-    if (testBarrels) {
-        x3::logInfo("running explosive-barrels self-test...");
-        return x3::game::runBarrelSelfTest() ? 0 : 1;
-    }
-    if (testGlass) {
-        x3::logInfo("running translucent-glass material (M1 see-through) self-test...");
-        return x3::game::runGlassSelfTest() ? 0 : 1;
-    }
-    if (testFrustumCull) {
-        x3::logInfo("running CPU per-object frustum-cull (D15 baseline) self-test...");
-        return runFrustumCullSelfTest() ? 0 : 1;
-    }
-    if (testHoloterm) {
-        x3::logInfo("running holo-terminal (text + input) self-test...");
-        return x3::game::runHoloTerminalSelfTest() ? 0 : 1;
-    }
-    if (testSecretRoom) {
-        x3::logInfo("running secret-room (code-locked trapdoor) self-test...");
-        return x3::game::runSecretRoomSelfTest() ? 0 : 1;
-    }
-    if (testHatch) {
-        x3::logInfo("running END-TO-END secret-hatch chain self-test "
-                    "(terminal -> fire(terminal_code) -> secret_room.lua -> "
-                    "openTrapdoor -> REAL DoorSystem hatch + objective; C1-C8)...");
-        return runHatchChainSelfTest() ? 0 : 1;
-    }
-    if (testLlm) {
-        // Mock plumbing always; the real-model round-trip is gated on the .gguf
-        // existing (see assets/models/llm/README.md for the download command).
-        x3::logInfo("running in-engine LLM (NPC minds) self-test...");
-        const std::string llmModel = x3::game::assetRoot() + "/models/llm/qwen2.5-3b-instruct-q4_k_m.gguf";
-        return x3::llm::runLlmSelfTest(llmModel.c_str()) ? 0 : 1;
-    }
-    if (testEcs) {
-        x3::logInfo("running ECS (sparse-set, 50k entities) self-test...");
-        return x3::ecs::runEcsSelfTest() ? 0 : 1;
-    }
-    if (testEcsRender) {
-        x3::logInfo("running ECS->GPU render-feed self-test...");
-        return x3::game::runEcsRenderSelfTest() ? 0 : 1;
-    }
-    if (testPickup) {
-        x3::logInfo("running weapon pickup + arming (S5) self-test...");
-        return x3::game::runPickupSelfTest() ? 0 : 1;
-    }
-    if (testCombat) {
-        x3::logInfo("running shoot-monster combat (S6) self-test...");
-        return x3::game::runCombatSelfTest() ? 0 : 1;
-    }
-    if (testDeathRagdoll) {
-        x3::logInfo("running skinned death-ragdoll (TASK#12) self-test...");
-        return x3::game::runDeathRagdollSelfTest() ? 0 : 1;
-    }
-    if (testAudio) {
-        x3::logInfo("running audio (M9) self-test...");
-        return x3::audio::runAudioSelfTest() ? 0 : 1;
-    }
-    if (testAcoustics) {
-        x3::logInfo("running RT-acoustics self-test (occlusion rays + room estimate)...");
-        return x3::audio::runAcousticsSelfTest() ? 0 : 1;
-    }
-    if (testLevel1) {
-        x3::logInfo("running EFLZ Level 1 (Awakening) self-test (T1-T6)...");
-        return x3::game::runLevel1SelfTest() ? 0 : 1;
-    }
-    if (testCanonLevel) {
-        x3::logInfo("running EFLZ data-driven canonical-level self-test (C1-C8)...");
-        return x3::game::runCanonLevelSelfTest() ? 0 : 1;
-    }
-    if (testCanonPlay) {
-        x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");
-        return x3::game::runCanonPlaySelfTest() ? 0 : 1;
-    }
-    if (testIntro) {
-        x3::logInfo("running intro cold-open self-test (flight -> hit -> whiteout -> titlecard -> handoff; skippable)...");
-        return x3::intro::runIntroSelfTest() ? 0 : 1;
-    }
-    if (testCutscene) {
-        x3::logInfo("running x3.cutscene/1 self-test (format + splines/cuts + player tick/seek/skip + "
-                    "StoryFlags + the shipped cold open)...");
-        return x3::cut::runCutsceneSelfTest() ? 0 : 1;
-    }
-    if (testPhase2a) {
-        x3::logInfo("running EFLZ Phase 2a (player health + enemies fight back) self-test...");
-        return x3::game::runPhase2aSelfTest() ? 0 : 1;
-    }
-    if (testPhase2b) {
-        x3::logInfo("running EFLZ Phase 2b (super-strength melee + Martinez boss phases) self-test...");
-        return x3::game::runPhase2bSelfTest() ? 0 : 1;
-    }
-    if (testAnim) {
-        x3::logInfo("running J1 skeletal animation + CPU skinning self-test...");
-        return x3::anim::runAnimSelfTest() ? 0 : 1;
-    }
-    if (testLocomotion) {
-        x3::logInfo("running T1 locomotion-blend (idle/walk/run + crossfade) self-test...");
-        return x3::anim::runLocomotionSelfTest(testLocomotionPath) ? 0 : 1;
-    }
-    if (listClips) {
-        // Asset-pipeline check for the retargeted multi-clip character GLBs:
-        // load the GLB headless, list its clips, and confirm Walk sampled at
-        // t=0 vs t=0.5 changes the joint palette (proves a real, distinct clip).
-        if (listClipsPath.empty()) {
-            x3::logError("--list-clips: need a GLB path");
-            return 1;
-        }
-        namespace fs = std::filesystem;
-        fs::path p(listClipsPath);
-        if (!fs::exists(p)) { x3::logError("--list-clips: no such file: " + listClipsPath); return 1; }
-        std::unique_ptr<x3::asset::IAssetSource> src(x3::asset::createAssetSource());
-        src->mountDir(p.parent_path().string(), 0);
-        std::unique_ptr<x3::asset::IModelLoader> loader(
-            x3::asset::createModelLoader(nullptr, src.get()));   // headless
-        x3::asset::Model model = loader->load(p.filename().string());
-        if (!model.ok) { x3::logError("--list-clips: load failed"); return 1; }
-        x3::logInfo("--list-clips: " + listClipsPath + " has " +
-                    std::to_string(model.animations.size()) + " animation clip(s):");
-        for (size_t c = 0; c < model.animations.size(); ++c)
-            x3::logInfo("  clip[" + std::to_string(c) + "] = \"" +
-                        model.animations[c].name + "\"  (" +
-                        std::to_string(model.animations[c].duration) + "s)");
-        x3::anim::Skinner sk;
-        bool bound = sk.bind(model);
-        if (!bound) { x3::logError("--list-clips: model not skinnable"); loader->unload(model); return 1; }
-        int idle = sk.findClip({ "idle" });
-        int walk = sk.findClip({ "walk" });
-        int run  = sk.findClip({ "run" });
-        x3::logInfo("--list-clips: findClip idle=" + std::to_string(idle) +
-                    " walk=" + std::to_string(walk) + " run=" + std::to_string(run));
-        bool ok = sk.clipCount() > 1 && walk >= 0 && run >= 0;
-        // Confirm Walk is a live clip: palette differs between t=0 and t=0.5,
-        // and (when an idle clip exists) Walk@0 differs from Idle@0.
-        if (walk >= 0) {
-            std::vector<float> w0, w5, i0;
-            sk.computePalette(model, (uint32_t)walk, 0.0f, w0);
-            sk.computePalette(model, (uint32_t)walk, 0.5f, w5);
-            float dWalk = 0.0f;
-            for (size_t i = 0; i < w0.size() && i < w5.size(); ++i)
-                dWalk = std::max(dWalk, std::fabs(w0[i] - w5[i]));
-            x3::logInfo("--list-clips: Walk palette max-delta t0->t0.5 = " + std::to_string(dWalk));
-            ok = ok && dWalk > 1e-3f;
-            if (idle >= 0) {
-                sk.computePalette(model, (uint32_t)idle, 0.0f, i0);
-                float dVsIdle = 0.0f;
-                for (size_t i = 0; i < w0.size() && i < i0.size(); ++i)
-                    dVsIdle = std::max(dVsIdle, std::fabs(w0[i] - i0[i]));
-                x3::logInfo("--list-clips: Walk@0 vs Idle@0 max-delta = " + std::to_string(dVsIdle));
-                ok = ok && dVsIdle > 1e-3f;
-            }
-        }
-        loader->unload(model);
-        x3::logInfo(std::string("--list-clips: ") + (ok ? "PASS (>1 clip, Walk+Run present, Walk animates)"
-                                                        : "FAIL"));
-        return ok ? 0 : 1;
-    }
-    if (testTerrain) {
-        x3::logInfo("running B2 tiled terrain world self-test (settle + LOD)...");
-        return x3::game::runTerrainSelfTest() ? 0 : 1;
-    }
-    if (testTerrainPlace) {
-        x3::logInfo("running terrain placement API self-test (height/normal/place)...");
-        return x3::game::runTerrainPlaceSelfTest() ? 0 : 1;
-    }
-    if (testStreaming) {
-        x3::logInfo("running B3 world-streaming self-test (residency ring + async gen)...");
-        return x3::game::runStreamingSelfTest() ? 0 : 1;
-    }
-    if (testWorldStream) {
-        x3::logInfo("running SEAMLESS region-graph world-streaming self-test "
-                    "(region residency + ledgers + hysteresis + budget + proxy)...");
-        return x3::game::runWorldStreamSelfTest() ? 0 : 1;
-    }
-    if (testWorldMap) {
-        x3::logInfo("running INTERACTIVE WORLD MAP self-test (POI discovery + "
-                    "waypoint + fast-travel gates/streaming + zoom/pan math + "
-                    "floor slices + tile bakes)...");
-        return x3::game::runWorldMapSelfTest() ? 0 : 1;
-    }
-    if (testAi) {
-        x3::logInfo("running D-ai monster combat behaviour state-machine self-test...");
-        return x3::game::runAiSelfTest() ? 0 : 1;
-    }
-    if (testBestiary) {
-        x3::logInfo("running data-driven enemy bestiary roster self-test...");
-        return x3::game::runBestiarySelfTest() ? 0 : 1;
-    }
-    if (testBosses) {
-        x3::logInfo("running EFLZ Act-1 mid-boss roster + machine-extension "
-                    "(multi-pod + scripted pre-fight hook) self-test...");
-        return x3::game::runBossesSelfTest() ? 0 : 1;
-    }
-    if (testAct2Bosses) {
-        x3::logInfo("running EFLZ Act-2 roster (5 alien-planet-surface enemies + "
-                    "4 single-body bosses on the existing phase machine) self-test...");
-        return x3::game::runAct2BossesSelfTest() ? 0 : 1;
-    }
-    if (testSpireMid) {
-        x3::logInfo("running EFLZ Spire mid-floor (F3 Labs / F4 Offices / F5 Synth bay) "
-                    "encounter-content self-test...");
-        return x3::game::runSpireMidSelfTest() ? 0 : 1;
-    }
-    if (testNexus) {
-        x3::logInfo("running EFLZ Floor 4.5 Nexus Chamber / The Chorus "
-                    "(off-elevator multi-pod boss) self-test...");
-        return x3::game::runNexusSelfTest() ? 0 : 1;
-    }
-    if (testSpireTop) {
-        x3::logInfo("running EFLZ Spire top-floor (F6 Alien Technology Lab / F7 Executive "
-                    "Laboratory Act-1 finale) encounter-content self-test...");
-        return x3::game::runSpireTopSelfTest() ? 0 : 1;
-    }
-    if (testTimeline) {
-        x3::logInfo("running EFLZ morality/timeline backbone (infection 4-stage timers + "
-                    "cure rates, Omega/Alpha/Beta/Gamma selector, morality axes, 12-ending "
-                    "eligibility) self-test...");
-        return x3::game::runTimelineSelfTest() ? 0 : 1;
-    }
-    if (testDroneHack) {
-        x3::logInfo("running EFLZ F5 Drone Manufacturing — Sarah's master hack "
-                    "(strip Swarm AI HP + flip the drone army) self-test...");
-        return x3::game::runDroneHackSelfTest() ? 0 : 1;
-    }
-    if (testSubLevels) {
-        x3::logInfo("running EFLZ hidden Floor-7 sub-levels (Waste Disposal / Cryo Storage "
-                    "[Frozen Collective] / Enhanced Interrogation -> Dr. Chen Return Mission) "
-                    "self-test...");
-        return x3::game::runSubLevelsSelfTest() ? 0 : 1;
-    }
-    if (testTod) {
-        x3::logInfo("running EFLZ Time-of-Day cycle (4-phase dawn/day/dusk/night driving "
-                    "sky/sun dir+color+intensity+haze+ambient via SkyParams; deterministic) "
-                    "self-test...");
-        return x3::game::runTodSelfTest() ? 0 : 1;
-    }
-    if (testWeather) {
-        x3::logInfo("running EFLZ Weather (7 states clear/cloudy/rain/storm/fog/sandstorm/snow; "
-                    "smooth timed transitions; biome-gated; hazard flag for HazardZone) "
-                    "self-test...");
-        return x3::game::runWeatherSelfTest() ? 0 : 1;
-    }
-    if (testAct2) {
-        x3::logInfo("running EFLZ Act-2 open-world surface (L8 Surface Emergence "
-                    "+ L9 Crystalline Desert Edge: alien terrain/sky host, lab-exit "
-                    "gauntlet, Emergence-Point companions, crystal desert + hazard zone) "
-                    "self-test...");
-        return x3::game::runAct2WorldSelfTest() ? 0 : 1;
-    }
-    if (testAct2Desert) {
-        x3::logInfo("running EFLZ Act-2 desert depths (L10 Crystalline Desert Depths: "
-                    "first-contact allied Salvari + injured-Salvari side-quest, hidden "
-                    "crystal-cave camp entrance, light Overlord patrol; + L11 Salvari Camp "
-                    "'Refugee Haven': cave settlement, survivors incl. K'thara, upgrade "
-                    "station + cultural-exchange beat; reachable L9->L10->L11) self-test...");
-        return x3::game::runAct2DesertSelfTest() ? 0 : 1;
-    }
-    if (testAct2Caves) {
-        x3::logInfo("running EFLZ Act-2 mid biomes (L12 Advanced Cave System + Crystal "
-                    "Heart dual-gated interactable + Memory Hunter abyss boss; L13 Toxic "
-                    "Swamplands Edge + poison hazard [inert at load]; L14 Research Station "
-                    "+ timeline-gated Siren ambush; L15 Tree Cities + trading post) "
-                    "self-test...");
-        return x3::game::runAct2CavesSelfTest() ? 0 : 1;
-    }
-    if (testWorldRegions) {
-        x3::logInfo("running EFLZ open-world surface regions (crash site + outposts + "
-                    "4 mountain ranges) self-test...");
-        return x3::game::runWorldRegionsSelfTest() ? 0 : 1;
-    }
-    if (testCity) {
-        x3::logInfo("running EFLZ open-world metropolis (Scrapyard / New District / Industrial "
-                    "+ road grid + 4 freeway tunnels) self-test...");
-        return x3::game::runCitySelfTest() ? 0 : 1;
-    }
-    if (testOceanBase) {
-        x3::logInfo("running EFLZ open-world ocean + undersea base + submarine combat self-test...");
-        return x3::game::runOceanBaseSelfTest() ? 0 : 1;
-    }
-    if (testDoorCode) {
-        x3::logInfo("running door-code keypad (locked coded door) self-test (K1-K6)...");
-        return x3::game::runDoorCodeSelfTest() ? 0 : 1;
-    }
-    if (testHatchCode) {
-        // Showroom HIDDEN-HATCH keypad smoke (H1-H4). Drives the SAME KeypadEntry state
-        // machine + the SAME submit comparison (value() == kShowroomHatchCode) the
-        // --world showroom hatch uses, headlessly: a wrong code is rejected (buffer
-        // cleared, hatch stays shut), the correct code (with a typo + backspace fixup)
-        // is accepted and "opens" the hatch. Pure logic — no Vulkan/GLFW needed.
-        x3::logInfo("running showroom hidden-hatch keypad smoke (H1-H4)...");
-        bool ok = true;
-        x3::game::KeypadEntry kp;
-        bool hatchOpen = false;
-        auto submit = [&](){
-            if (kp.value() == kShowroomHatchCode) { hatchOpen = true; kp.clear(); return true; }
-            kp.clear(); return false;  // wrong -> clear, stay shut (mirrors DENIED)
-        };
-        // H1: a WRONG code is rejected and the hatch stays shut.
-        for (int d : {1,2,3,4}) kp.pushDigit(d);
-        bool h1 = (!submit() && !hatchOpen);
-        ok = ok && h1; x3::logInfo(std::string("  H1 wrong-code rejected: ") + (h1?"PASS":"FAIL"));
-        // H2: digits append + Backspace fixes a typo so the buffer == the code.
-        const int code = kShowroomHatchCode;                 // 4-digit (2742)
-        kp.clear();
-        kp.pushDigit((code/1000)%10);
-        kp.pushDigit((code/100)%10);
-        kp.pushDigit(9);            // deliberate typo
-        kp.backspace();             // ...corrected
-        kp.pushDigit((code/10)%10);
-        kp.pushDigit(code%10);
-        bool h2 = (kp.value() == code);
-        ok = ok && h2; x3::logInfo(std::string("  H2 digit/backspace -> code: ") + (h2?"PASS":"FAIL"));
-        // H3: submitting the CORRECT code opens the hatch + clears the buffer.
-        bool h3 = (submit() && hatchOpen && kp.empty());
-        ok = ok && h3; x3::logInfo(std::string("  H3 correct-code opens hatch: ") + (h3?"PASS":"FAIL"));
-        // H4: the code is NOT the Spire/Club 1127 secret (guards against re-keying drift).
-        bool h4 = (kShowroomHatchCode != 1127);
-        ok = ok && h4; x3::logInfo(std::string("  H4 code != 1127 (Spire secret): ") + (h4?"PASS":"FAIL"));
-        x3::logInfo(std::string("hatch-keypad smoke: ") + (ok?"ALL PASS":"FAILED"));
-        return ok ? 0 : 1;
-    }
-    if (testElevator) {
-        x3::logInfo("running advanced elevator (call/travel/carry) self-test (E1-E6)...");
-        return x3::game::runElevatorSelfTest() ? 0 : 1;
-    }
-    if (testElevatorFsm) {
-        x3::logInfo("running souped-up strata/disco elevator FSM self-test "
-                    "(10-state FSM + strata + 1127 disco -> Club 1127)...");
-        return x3::game::runElevatorFsmSelfTest() ? 0 : 1;
-    }
-    if (testNet) {
-        x3::logInfo("running netcode (Subsystem N, Phase 0) self-test "
-                    "(loopback round-trip + generation-stale reject + fixed-step determinism)...");
-        return x3::net::runNetworkSelfTest() ? 0 : 1;
-    }
-    if (testNetSync) {
-        x3::logInfo("running netcode (Subsystem N, Phase 0b) client/server "
-                    "input->snapshot routing self-test "
-                    "(command send -> server apply+sim -> snapshot -> client mirror)...");
-        return x3::net::runNetSyncSelfTest() ? 0 : 1;
-    }
-    if (testNetInterp) {
-        x3::logInfo("running netcode (Subsystem N, Phase 0c) client snapshot "
-                    "interpolation + jitter-buffer self-test "
-                    "(jittered snapshots -> bracketed lerp/slerp -> smooth render)...");
-        return x3::net::runNetInterpSelfTest() ? 0 : 1;
-    }
-    if (testNetPredict) {
-        x3::logInfo("running netcode (Subsystem N, Phase 1) client prediction + "
-                    "server reconciliation self-test "
-                    "(predict immediately -> lagged authority+ack -> rollback/resim)...");
-        return x3::net::runNetPredictSelfTest() ? 0 : 1;
-    }
-    if (testRescue) {
-        x3::logInfo("running F2 rescue (victim/companion/transform) self-test (R0-R5)...");
-        return x3::game::runRescueSelfTest() ? 0 : 1;
-    }
-    if (testThirdPerson) {
-        x3::logInfo("running third-person view (Jake avatar + follow cam + held weapon) self-test (TP1-TP9)...");
-        return x3::game::runThirdPersonSelfTest() ? 0 : 1;
-    }
-    if (testNpcTalk) {
-        x3::logInfo("running rescued-NPC talk/dialog -> companion self-test (T1-T7)...");
-        return x3::game::runNpcTalkSelfTest() ? 0 : 1;
-    }
-    if (testChatTree) {
-        x3::logInfo("running x3.chattree/1 dialog-runner self-test (parse all 8 trees + "
-                    "the lena walk: gates/fx/follow/1278/banter/flags round-trip)...");
-        return x3::game::runChatTreeSelfTest() ? 0 : 1;
-    }
-    if (testMission) {
-        x3::logInfo("running x3.mission/1 mission-runner self-test (doc parse/validate + "
-                    "stage advance via flag/trigger/kill bridges + branch/fail/resume + "
-                    "the Level-1 doc-vs-hardcoded objective EQUIVALENCE walk)...");
-        return x3::game::runMissionSelfTest() ? 0 : 1;
-    }
-    if (testDestruction) {
-        x3::logInfo("running K-T0/T1 destruction (fracture/impact/hit/explosion) self-test...");
-        return x3::phys::runDestructionSelfTest() ? 0 : 1;
-    }
-    if (testDebris) {
-        x3::logInfo("running K-T2 GPU-compute persistent debris world self-test "
-                    "(spawn burst -> compute integrate -> fall/settle/sleep -> lifetime free)...");
-        return runDebrisSelfTest() ? 0 : 1;
-    }
-    if (testGpuSkin) {
-        x3::logInfo("running GPU compute-skinning self-test (register skinned mesh -> "
-                    "set known palette -> compute skin -> readback -> assert vs CPU LBS)...");
-        return runGpuSkinSelfTest() ? 0 : 1;
-    }
-    if (testMeshlet) {
-        x3::logInfo("running D15 Tier-2 meshlet builder self-test "
-                    "(grid mesh -> buildMeshlets -> assert budgets/locality/sphere/"
-                    "cone/triangle-conservation/degenerate-input)...");
-        return x3::rhi::runMeshletSelfTest() ? 0 : 1;
-    }
-    if (testGpuCull) {
-        x3::logInfo("running D15 Tier-0 GPU cull equivalence self-test "
-                    "(headless device + validation, r_cullpath 1, pose sweep, "
-                    "GPU statDrawn vs CPU predicate — must match EXACTLY)...");
-        return runGpuCullSelfTest() ? 0 : 1;
-    }
-    if (testCollapse) {
-        x3::logInfo("running K-T3 structural collapse (support graph) self-test "
-                    "(destroy a support -> unsupported sub-graph falls, anchored stays, "
-                    "rubble settles, GPU debris fires)...");
-        return x3::phys::runCollapseSelfTest() ? 0 : 1;
-    }
-    if (testNav) {
-        x3::logInfo("running GENERAL navigation (nav grid + A* + path-follow) self-test...");
-        return x3::ai::runNavSelfTest() ? 0 : 1;
-    }
-    if (testWeapons) {
-        x3::logInfo("running data-driven weapon arsenal (switch/fire/reload/spread) self-test...");
-        return x3::game::runWeaponsSelfTest() ? 0 : 1;
-    }
-    if (testScript) {
-        x3::logInfo("running D14 Lua script-system self-test "
-                    "(load/init/update/events/sandbox/error-containment/hot-reload/"
-                    "timers/eval/cvar-bridge/memory)...");
-        return x3::script::runScriptSelfTest() ? 0 : 1;
-    }
-    if (testVehicle) {
-        x3::logInfo("running vehicle framework self-test "
-                    "(wheeled accel/steer + buoyancy waterline + flight thrust/lift)...");
-        const bool frameworkOk = x3::phys::runVehicleSelfTest();
-        x3::logInfo("running DRIVE enter/exit self-test "
-                    "(spawn -> E enter -> throttle 4 s -> displacement + wheel contact -> E exit restores control)...");
-        const bool driveOk = x3::game::runDriveEnterExitSelfTest();
-        return (frameworkOk && driveOk) ? 0 : 1;
-    }
-    if (testVehParts) {
-        x3::logInfo("running PERFORMANCE PARTS (x3.vehparts/1) self-test "
-                    "(catalog parse + composition math + REAL Jolt physics deltas + dyno pop thresholds)...");
-        return x3::game::vehparts::runVehPartsSelfTest() ? 0 : 1;
-    }
-    if (testEcology) {
-        x3::logInfo("running AMBIENT ECOLOGY self-test "
-                    "(herd cohesion + flee + patrol routes + schedule switch + soft-radius + leak)...");
-        return x3::game::runEcologySelfTest() ? 0 : 1;
-    }
-    if (testCrowd) {
-        x3::logInfo("running CROWDS self-test "
-                    "(idle clusters + wander points + scatter/cower on violence + return after calm)...");
-        return x3::game::runCrowdSelfTest() ? 0 : 1;
-    }
-    if (testAlert) {
-        x3::logInfo("running FACILITY ALERT LEVEL self-test "
-                    "(stimulus->level transitions + decay clocks + lockdown doors + witness-vs-unseen + x3.fire)...");
-        return x3::game::runAlertSelfTest() ? 0 : 1;
-    }
-    if (testFootIk) {
-        x3::logInfo("running foot-IK (two-bone + plant + pelvis) self-test...");
-        return x3::anim::runFootIkSelfTest() ? 0 : 1;
-    }
-    if (testUi) {
-        x3::logInfo("running GENERAL game-UI self-test "
-                    "(button hit-test + Menu<->Playing<->Paused transitions + settings cvar wiring)...");
-        return x3::ui::runUiSelfTest() ? 0 : 1;
-    }
-    if (testLoading) {
-        x3::logInfo("running EFLZ loading-screen self-test "
-                    "(monotonic progress 0->1 + tip rotation + fade-in/out)...");
-        return x3::game::runLoadingSelfTest() ? 0 : 1;
-    }
-    if (testSaveLoad) {
-        x3::logInfo("running GENERAL versioned checkpoint save/load self-test "
-                    "(round-trip field-by-field + magic/version/checksum/truncation reject)...");
-        return x3::save::runSaveLoadSelfTest() ? 0 : 1;
-    }
-    if (testDialog) {
-        x3::logInfo("running AI-dialog + TTS self-test "
-                    "(offline tree advance + branches; stub AI provider used/fallback; "
-                    "stub TTS drives NPC speaking state; no network; leak-clean)...");
-        return x3::dialog::runDialogSelfTest() ? 0 : 1;
-    }
-    if (demoDialog) {
-        // Headless, fully offline demo: drive the sample Sarah conversation onto a
-        // REAL skinned NPC (chief_martinez_anim.glb) via the SpeakingMonster adapter
-        // + an offline stub TTS hook. Proves requirement 4 end-to-end against the
-        // actual anim Skinner (read-only) without a window / device / network.
-        namespace fs = std::filesystem;
-        std::string glb = demoDialogPath.empty()
-            ? (x3::game::riggedGlbRoot() + "/chief_martinez_anim.glb")
-            : demoDialogPath;
-        x3::logInfo("--demo-dialog: NPC model = " + glb);
-
-        // Load the skinned model headlessly (loader pattern from --list-clips).
-        x3::asset::Model model;
-        std::unique_ptr<x3::asset::IAssetSource> src;
-        std::unique_ptr<x3::asset::IModelLoader> loader;
-        bool haveModel = false;
-        if (fs::exists(glb)) {
-            fs::path p(glb);
-            src.reset(x3::asset::createAssetSource());
-            src->mountDir(p.parent_path().string(), 0);
-            loader.reset(x3::asset::createModelLoader(nullptr, src.get())); // headless
-            model = loader->load(p.filename().string());
-            haveModel = model.ok;
-        }
-        if (!haveModel) {
-            x3::logInfo("--demo-dialog: model absent/failed (clean checkout) — running "
-                        "subtitle-only (the conversation + speaking lifecycle still run).");
-        }
-
-        SpeakingMonster npc;
-        if (haveModel) {
-            bool sk = npc.bind(model);
-            x3::logInfo(std::string("--demo-dialog: NPC skinnable = ") + (sk ? "yes" : "no"));
-        }
-
-        // Offline stub TTS: deterministic clip duration from the line length; NO
-        // file I/O, NO network. (Tim's real voice vendor drops in here as the hook.)
-        auto stubTts = [](const std::string& line, x3::dialog::VoiceId v) {
-            x3::dialog::AudioClip c;
-            c.path = std::string("stub://voice/") + x3::dialog::voiceName(v);
-            c.durationSec = 0.6f + 0.012f * (float)line.size();
-            return c;
-        };
-
-        std::unique_ptr<x3::dialog::IDialogSystem> d(x3::dialog::createDialogSystem());
-        d->setTtsProvider(stubTts);
-        d->setSpeakingNpc(&npc);
-        // No AI provider set -> the authored tree is used (offline baseline). Mode
-        // stays Tree; the demo shows the guaranteed path.
-        x3::dialog::Tree tree = x3::dialog::sampleSarahTree();
-
-        if (!d->start(tree)) { x3::logError("--demo-dialog: tree failed to start"); return 1; }
-
-        // Drive the conversation: tick each line to completion, print the choices,
-        // auto-pick choice 0 (deterministic), until the conversation ends.
-        int safety = 0;
-        while (d->active() && safety++ < 64) {
-            // Tick the current line to completion (the speaking state runs here).
-            int t = 0;
-            while (d->speaking() && t++ < 4000) { d->update(0.02f); }
-            const auto& ch = d->choices();
-            if (ch.empty()) {
-                // Terminal node: the line finished, conversation will end on the next
-                // active() check (the system ended it inside the final exitSpeaking()).
-                break;
-            }
-            x3::logInfo("  [choices]");
-            for (size_t k = 0; k < ch.size(); ++k)
-                x3::logInfo("    " + std::to_string(k) + ") " + ch[k].text);
-            d->choose(0);   // auto-advance down the first branch
-        }
-
-        bool ok = npc.beginCount() >= 1 && npc.beginCount() == npc.endCount() && !d->active();
-        x3::logInfo("--demo-dialog: lines spoken = " + std::to_string(npc.beginCount()) +
-                    ", speaking enter==exit = " + (npc.beginCount() == npc.endCount() ? "yes" : "NO") +
-                    ", conversation ended = " + (!d->active() ? "yes" : "NO"));
-        if (haveModel && npc.skinnable()) {
-            // The talk-bob must have actually moved the skeleton while speaking.
-            bool moved = npc.maxPaletteDelta() > 1e-4f;
-            x3::logInfo("--demo-dialog: talk-bob palette max-delta = " +
-                        std::to_string(npc.maxPaletteDelta()) + (moved ? " (animated)" : " (STATIC!)"));
-            ok = ok && moved;
-        }
-        if (loader && haveModel) loader->unload(model);
-        x3::logInfo(std::string("--demo-dialog: ") + (ok ? "PASS" : "FAIL"));
-        return ok ? 0 : 1;
-    }
-    if (testValley) {
-        x3::logInfo("running Crystal Valleys (Act 2, L15) self-test "
-                    "(terrain placement + crash/K'thara on surface + Dominion + water)...");
-        return x3::game::runValleySelfTest() ? 0 : 1;
-    }
-    if (testCliffs) {
-        x3::logInfo("running Salvari cliffs finale self-test (pad/sea/placement/streaming)...");
-        return x3::game::runCliffsSelfTest() ? 0 : 1;
-    }
-    if (testClub) {
-        x3::logInfo("running Club 1127 (\"THE DEEP\") self-test "
-                    "(build at Y=-200; assert DJ booth/ORB/bars/stair/PA/blacklights/TVs/footprint; leak-clean)...");
-        return x3::game::runClubSelfTest() ? 0 : 1;
+    // ---- HEADLESS --test-*/--demo-*/--list-clips DISPATCH ----------------------
+    // The long `if (testX) return runX()?0:1;` ladder was moved VERBATIM to
+    // app/test_registry.cpp (#28 monolith split). Populate the flag struct from
+    // the locals above (1:1 names) and dispatch; a non-negative result is this
+    // program's exit code, -1 means "no test flag set" so boot continues.
+    {
+        x3::apphost::TestFlags _tf;
+        _tf.testJobs = testJobs;
+        _tf.testAsset = testAsset;
+        _tf.testConsole = testConsole;
+        _tf.testPhysics = testPhysics;
+        _tf.testPhysJoint = testPhysJoint;
+        _tf.testRagdoll = testRagdoll;
+        _tf.testGltf = testGltf;
+        _tf.testPlayer = testPlayer;
+        _tf.testInteract = testInteract;
+        _tf.testPhysprops = testPhysprops;
+        _tf.testRagdollSkin = testRagdollSkin;
+        _tf.testEditor = testEditor;
+        _tf.testBlockout = testBlockout;
+        _tf.testLoader = testLoader;
+        _tf.testBarrels = testBarrels;
+        _tf.testGlass = testGlass;
+        _tf.testFrustumCull = testFrustumCull;
+        _tf.testHoloterm = testHoloterm;
+        _tf.testSecretRoom = testSecretRoom;
+        _tf.testHatch = testHatch;
+        _tf.testLlm = testLlm;
+        _tf.testEcs = testEcs;
+        _tf.testEcsRender = testEcsRender;
+        _tf.testPickup = testPickup;
+        _tf.testCombat = testCombat;
+        _tf.testDeathRagdoll = testDeathRagdoll;
+        _tf.testAudio = testAudio;
+        _tf.testAcoustics = testAcoustics;
+        _tf.testLevel1 = testLevel1;
+        _tf.testCanonLevel = testCanonLevel;
+        _tf.testCanonPlay = testCanonPlay;
+        _tf.testIntro = testIntro;
+        _tf.testCutscene = testCutscene;
+        _tf.testPhase2a = testPhase2a;
+        _tf.testPhase2b = testPhase2b;
+        _tf.testAnim = testAnim;
+        _tf.testLocomotion = testLocomotion;
+        _tf.listClips = listClips;
+        _tf.testTerrain = testTerrain;
+        _tf.testTerrainPlace = testTerrainPlace;
+        _tf.testStreaming = testStreaming;
+        _tf.testWorldStream = testWorldStream;
+        _tf.testWorldMap = testWorldMap;
+        _tf.testAi = testAi;
+        _tf.testBestiary = testBestiary;
+        _tf.testBosses = testBosses;
+        _tf.testAct2Bosses = testAct2Bosses;
+        _tf.testSpireMid = testSpireMid;
+        _tf.testNexus = testNexus;
+        _tf.testSpireTop = testSpireTop;
+        _tf.testTimeline = testTimeline;
+        _tf.testDroneHack = testDroneHack;
+        _tf.testSubLevels = testSubLevels;
+        _tf.testTod = testTod;
+        _tf.testWeather = testWeather;
+        _tf.testAct2 = testAct2;
+        _tf.testAct2Desert = testAct2Desert;
+        _tf.testAct2Caves = testAct2Caves;
+        _tf.testWorldRegions = testWorldRegions;
+        _tf.testCity = testCity;
+        _tf.testOceanBase = testOceanBase;
+        _tf.testDoorCode = testDoorCode;
+        _tf.testHatchCode = testHatchCode;
+        _tf.testElevator = testElevator;
+        _tf.testElevatorFsm = testElevatorFsm;
+        _tf.testNet = testNet;
+        _tf.testNetSync = testNetSync;
+        _tf.testNetInterp = testNetInterp;
+        _tf.testNetPredict = testNetPredict;
+        _tf.testRescue = testRescue;
+        _tf.testThirdPerson = testThirdPerson;
+        _tf.testNpcTalk = testNpcTalk;
+        _tf.testChatTree = testChatTree;
+        _tf.testMission = testMission;
+        _tf.testDestruction = testDestruction;
+        _tf.testDebris = testDebris;
+        _tf.testGpuSkin = testGpuSkin;
+        _tf.testMeshlet = testMeshlet;
+        _tf.testGpuCull = testGpuCull;
+        _tf.testCollapse = testCollapse;
+        _tf.testNav = testNav;
+        _tf.testWeapons = testWeapons;
+        _tf.testScript = testScript;
+        _tf.testVehicle = testVehicle;
+        _tf.testVehParts = testVehParts;
+        _tf.testEcology = testEcology;
+        _tf.testCrowd = testCrowd;
+        _tf.testAlert = testAlert;
+        _tf.testFootIk = testFootIk;
+        _tf.testUi = testUi;
+        _tf.testLoading = testLoading;
+        _tf.testSaveLoad = testSaveLoad;
+        _tf.testDialog = testDialog;
+        _tf.demoDialog = demoDialog;
+        _tf.testValley = testValley;
+        _tf.testCliffs = testCliffs;
+        _tf.testClub = testClub;
+        _tf.testLocomotionPath = testLocomotionPath;
+        _tf.listClipsPath = listClipsPath;
+        _tf.demoDialogPath = demoDialogPath;
+        int _rc = x3::apphost::dispatchTests(_tf);
+        if (_rc >= 0) return _rc;
     }
 
     x3::logInfo("X3Engine starting...");

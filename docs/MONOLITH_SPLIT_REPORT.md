@@ -163,3 +163,86 @@ than risk.
    share the `g_weaponScroll`/`g_perf` file-scope globals with `main()`'s body, so
    those globals must move to a shared TU first. Lower value, higher coupling than
    groups 1–3; left for a follow-up.
+
+---
+
+# Part 2 — `main()` core split (branch `refactor/split-main-core`)
+
+**Branch:** `refactor/split-main-core` (off `refactor/monolith-split` @ `9879bf8`)
+**Final commit:** `e1ac1b3`
+**Author:** Opus 4.8 (1M ctx), 2026-06-13. Tackles deferred item #1 above.
+
+This branch starts the **HARD HALF** the runbook deferred: decomposing the
+~12,760-line `main()` body. It does the **highest-value, lowest-risk** slice
+first — the headless `--test-*` dispatch ladder — as a behavior-PRESERVING (not
+verbatim) refactor, exactly as item #1 recommended (introduce a context struct,
+convert handlers to read it, gate on the receipts).
+
+## Key structural finding
+
+`main()` is NOT cleanly separable into ~100 handlers over a shared context: the
+flag parser, the `--world` hosts, the headless/screenshot routing, and the
+interactive render loop all interleave and share **hundreds** of `main()` locals
+(device, scene, camera, console, screenshot/HUD state, …). One region, however,
+**is** clean: the headless **`--test-*` / `--demo-dialog` / `--list-clips`
+dispatch ladder** runs BEFORE any device/world is built and reads ONLY the flag
+bools (+ 3 path strings), returning an exit code. That lifted out cleanly. The
+`--world` hosts and the render loop remain coupled to the live-state locals and a
+safe split of them needs the full `HostContext` thread-through (deferred below) —
+per the hard constraint that a smaller green result beats a regression.
+
+## What shipped
+
+| File | Before | After | Notes |
+|---|---:|---:|---|
+| `app/main.cpp` | 13,620 | **13,002** | −618 net (ladder + `SpeakingMonster` moved out, dispatch glue added) |
+| `app/test_registry.{h,cpp}` | — | 69 + 774 | `TestFlags` struct + `dispatchTests()` — the whole headless ladder |
+| `app/speaking_monster.h` | — | 119 | `SpeakingMonster` dialog→skinned-NPC adapter (verbatim; now shared) |
+
+- **`TestFlags`** mirrors main()'s flag locals 1:1 (same names), so populating it
+  in main() is a plain assignment list; the handler bodies are byte-identical.
+- **`dispatchTests()`** returns 0/1 if a flag matched, or **-1** = "no test set,
+  continue boot". The **C1061 chain-breaks are preserved**: the ladder was
+  already a sequence of independent returning `if`s (not one giant else-if), and
+  that structure is unchanged — there is no risk of re-tripping the nesting limit.
+- **`SpeakingMonster`** was inline in main.cpp's anon namespace AND used by the
+  `--world` hosts; it moved VERBATIM to a header in `x3::apphost` so the
+  `--demo-dialog` handler (now in test_registry.cpp) and the in-`main()` hosts
+  share one definition. main()'s call sites stay unqualified via `using`.
+
+## Acceptance receipts — baseline vs. after (`e1ac1b3`)
+
+| Gate | Baseline (`9879bf8`/`e443f27`) | After (`e1ac1b3`) |
+|---|---|---|
+| Release build | GREEN | **GREEN** |
+| Debug build | GREEN | **GREEN** |
+| `--test-*` suite (99 simple) | 99/99 | **99/99** |
+| + `--demo-dialog` + `--list-clips` | PASS / PASS (101 total) | **PASS / PASS (101/101)** |
+| `--smoketest` (Release) VUID | 0 | **0** |
+| `--smoketest` (Release) allocationCount | 0 | **0** |
+| md5 `default.png` | `975928473D86CF884F4FED5C06E92D1F` | **identical** |
+
+Notes:
+- `default.png` is the **stable anchor**. The first cold run after the rebuild
+  produced a different hash (`597675ac…`) then **reconverged to the exact
+  baseline `975928473d…` on 3 consecutive runs** — the documented RT/temporal
+  (TLAS build / accumulation) cold-flake, NOT a regression (the refactor only
+  moved unreachable pre-boot headless code; it cannot affect the render path).
+- Debug `--smoketest` crash in `vk phys-device select` is **pre-existing** (see
+  Part 1); Debug was gated via the headless tests that exercise the new
+  `dispatchTests()` path without GPU device init (`--test-cutscene`, `--test-hatch`,
+  `--test-mission`, `--test-chattree`, `--demo-dialog`, … all exit 0).
+- Touched **only** `app/` — `git diff` shows zero `engine/` changes (kept
+  conflict-free with the parallel `VulkanRenderDevice.cpp` split).
+
+## Still deferred (the genuinely coupled core)
+
+The `--world` host dispatch and the interactive render loop. A safe split needs a
+real `HostContext` holding the live device/scene/camera/console/screenshot state
+and a thread-through of every host + the loop — a large behavior-preserving but
+non-verbatim transform whose only proof is the same gate, done host-by-host with
+a build after each. It is the right next step on this branch but was out of scope
+for a single green increment; the test-ladder extraction proves the pattern
+(struct-of-state + dispatch returning a sentinel) that the host split should
+follow. `kShowroomHatchCode` and `SpeakingMonster` are now header-shared, which
+removes two of the coupling points a future host split would hit.
