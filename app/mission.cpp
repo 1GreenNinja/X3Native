@@ -8,6 +8,7 @@
 #include "engine/core/x3_log.h"
 #include "engine/physics/IPhysicsWorld.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -662,6 +663,44 @@ bool runMissionSelfTest() {
         for (const auto& e : errs) x3::logWarn("[mission-test] " + e);
         check(ok && l1doc.id == "level1" && l1doc.stages.size() == 5,
               "level1: missions/level1.mission.json loads + validates (5 stages)");
+    }
+
+    // ---- M: EVERY missions/*.mission.json parses + validates from disk. ------
+    // The authored Act-2 content (reconciled to the real schema) rides this gate:
+    // each doc must load + validate against the SAME loader/validator above, or
+    // --test-mission fails. Closed contract — an unknown op is a loader error.
+    {
+        namespace fs = std::filesystem;
+        const std::string anchor = findMissionFile("level1.mission.json");
+        int swept = 0, swOk = 0;
+        if (!anchor.empty()) {
+            std::error_code ec;
+            const fs::path dir = fs::path(anchor).parent_path();
+            std::vector<fs::path> files;
+            for (auto& de : fs::directory_iterator(dir, ec)) {
+                const fs::path& p = de.path();
+                if (p.extension() == ".json" &&
+                    p.filename().string().size() > 13 &&  // "*.mission.json"
+                    p.filename().string().find(".mission.json") != std::string::npos)
+                    files.push_back(p);
+            }
+            std::sort(files.begin(), files.end());
+            for (const fs::path& p : files) {
+                ++swept;
+                MissionDoc d;
+                std::vector<std::string> errs;
+                const bool ok = loadMissionFile(p.string(), d, errs) &&
+                                validateMission(d, errs);
+                if (ok) ++swOk;
+                else {
+                    x3::logWarn("[mission-test] " + p.filename().string() + " FAILED:");
+                    for (const auto& e : errs) x3::logWarn("[mission-test]   " + e);
+                }
+            }
+        }
+        check(swept > 0 && swept == swOk,
+              ("sweep: every missions/*.mission.json loads + validates (" +
+               std::to_string(swOk) + "/" + std::to_string(swept) + ")").c_str());
     }
 
     // =========================================================================
