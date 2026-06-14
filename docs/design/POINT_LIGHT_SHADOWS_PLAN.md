@@ -13,28 +13,40 @@ tracing. **Half the fleet has none:** GTX 980 / 980Ti (Maxwell) and 1080 Ti
 local fixtures cast shadows on every non-RT GPU. The two paths are mutually
 exclusive at runtime (RT where available, raster otherwise) and never overlap.
 
-## Storage: budgeted cube-face atlas
+## Storage: gated quality tiers (`r_pointshadows`)
 
-- **One depth atlas** `m_pointShadowAtlas`: 4096×4096 `D32_SFLOAT` (~64 MB).
-  Cheap enough for a 4 GB GTX 980. Hardware-compare sampler (`sampler2DShadow`),
-  new descriptor **set=5, binding=0** (sun shadow stays on set=2, untouched).
-- **Omni via 6 cube faces packed as tiles.** Each shadow-casting light claims a
-  3×2 block of 512² tiles. 4096²/512² = 64 tiles ⇒ up to ~10 lit casters/frame.
-- **Per-frame budget.** CPU picks the `N` nearest/brightest shadow-casting point
-  lights (`r_pointshadow_lights`, default 8); only those get atlas blocks. Lights
-  beyond the budget render unshadowed (today's behavior) — graceful, no popping
-  cliff. Tile resolution is `r_pointshadow_res` (default 512).
+Quality is a setting, not a fixed approach — each box runs the tier its GPU can
+afford, the same way `r_rtshadows`/`r_cullpath` tier. The two storage backends
+share one sampling entry point (`samplePointShadow`) selected by a spec constant
+(`POINT_SHADOW_MODE`), so each tier is its own compiled pipeline variant — no
+runtime branch in the hot path.
 
-Cube-face atlas chosen over dual-paraboloid: no seam distortion, simpler correct
-sampling, and the VRAM math is already trivial at this tile size.
+| `r_pointshadows` | Backend | Res / faces | Lights | VRAM | Target |
+|---|---|---|---|---|---|
+| **0** | off (raster) | — | — | 0 | any (RT path via `r_rtshadows 2` is independent) |
+| **1** Low | budgeted atlas | 512² faces | N=8 nearest | ~64 MB | GTX 980 (4 GB), min-spec |
+| **2** High | budgeted atlas | 1024² faces | N=16 | ~256 MB | 980Ti / 1080 Ti |
+| **3** Ultra | **per-light cube-map array** | 1024²+ | all 64 | ~1.6 GB | 5090 / high-VRAM |
+
+- **Atlas (tiers 1–2):** one `D32_SFLOAT` atlas, omni via 6 cube faces packed as
+  a 3×2 tile block per caster; CPU budgets the `N` nearest/brightest casters,
+  the rest render unshadowed (graceful, no popping cliff). Hardware-compare
+  sampler, descriptor **set=5, binding=0**.
+- **Cube array (tier 3 — highest quality):** a `samplerCubeArray` depth target,
+  one cube per light, no budget, full directional precision (no atlas projection
+  seams). Same set=5 binding slot, different descriptor type + pipeline variant.
+- **Default tier** is auto-selected from a VRAM/arch probe (à la `detectCullCaps`)
+  and always overridable by the cvar. Sun shadow (set=2) is untouched at every
+  tier. Override knobs: `r_pointshadow_res`, `r_pointshadow_lights`.
 
 ## GPU data
 
 - Extend `GpuPointLight` (`VulkanRenderDevice.cpp:2199`) with a shadow handle —
-  `int shadowSlot` (-1 = unshadowed) packed into the unused `.a`/`_pad` lanes so
-  `FrameUBO` size/std140 layout is preserved where possible (verify offsets).
-- Per-frame shadow table (small SSBO/UBO): for each budgeted slot, the atlas tile
-  origin + the 6 face view-proj matrices (90° FOV, near=0.05, far=light.range).
+  `int shadowSlot` (-1 = unshadowed): an atlas-block index in tiers 1–2, a
+  cube-array layer in tier 3. Pack into the unused `.a`/`_pad` lanes so the
+  `FrameUBO` std140 layout is preserved where possible (verify offsets).
+- Per-frame shadow table (small SSBO/UBO): per slot, the 6 face view-proj
+  matrices (90° FOV, near=0.05, far=light.range) + (atlas tiers) the tile origin.
 
 ## Build order (each step independently verifiable)
 
@@ -50,16 +62,21 @@ sampling, and the VRAM math is already trivial at this tile size.
    (`:3802`): for each slot × 6 faces, set the tile viewport, draw scene depth.
    Front-face cull + depth bias like the sun pass. Gate: RenderDoc shows the
    atlas populated; still not sampled.
-4. **Sample in `mesh.frag`.** `samplePointShadow(i, fragPos, lightPos)`:
-   dir = fragPos−lightPos → dominant axis → face → tile UV → 3×3 PCF compare.
-   Multiply the visibility into both point-light loops (`:698` dielectric,
-   `:734` PBR). Gate: **the acceptance test** — a fixture scene (point light +
-   occluder + floor) shows a correct, stable shadow with `r_pointshadows 1`,
-   and is byte-identical to today with `r_pointshadows 0`.
-5. **Validate + tune.** Headless screenshot proof (shadow on/off), 0-VUID Debug
-   smoketest, full `--test-*` suite green. Perf note on the 1080 Ti at 120 Hz
-   (8.3 ms budget) before asking for promotion. i5000 confirms the 980/Maxwell
-   floor.
+4. **Sample in `mesh.frag` (atlas, tiers 1–2).** `samplePointShadow(i, fragPos,
+   lightPos)` behind spec const `POINT_SHADOW_MODE=0`: dir = fragPos−lightPos →
+   dominant axis → face → tile UV → 3×3 PCF compare. Multiply visibility into
+   both point-light loops (`:698` dielectric, `:734` PBR). Gate: **the
+   acceptance test** — a fixture scene (point light + occluder + floor) shows a
+   correct, stable shadow with `r_pointshadows 1`, and is byte-identical to today
+   with `r_pointshadows 0`.
+5. **Validate atlas + tune.** Headless screenshot proof (shadow on/off), 0-VUID
+   Debug smoketest, full `--test-*` suite green. Perf note on the 1080 Ti at
+   120 Hz (8.3 ms budget). i5000 confirms the 980/Maxwell floor at tier 1.
+6. **Ultra tier (cube-map array, tier 3).** Add the `samplerCubeArray` target +
+   `POINT_SHADOW_MODE=1` pipeline variant: one cube/light, no budget, render 6
+   faces per light into its layer, sample by direction (no atlas projection).
+   Gate: pixel-identical-or-better vs tier 2 on a still camera; runs within frame
+   budget on a high-VRAM box (5090). Tier 1/2 unaffected (separate variant).
 
 ## Files to touch
 
