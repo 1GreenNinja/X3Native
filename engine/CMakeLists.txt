@@ -8,7 +8,10 @@ add_library(x3engine STATIC
     rhi/vk/vk_stb_impl.cpp
     rhi/vk/vk_resources.cpp
     rhi/vk/vk_pipelines.cpp
+    rhi/vk/vk_targets.cpp
+    rhi/vk/vk_gi_rt.cpp
     rhi/vk/vk_passes.cpp
+    rhi/vk/vk_graph.cpp
     rhi/RenderGraph.cpp
     rhi/GpuCull.cpp
     rhi/vma_impl.cpp
