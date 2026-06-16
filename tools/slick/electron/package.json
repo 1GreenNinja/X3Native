@@ -1,0 +1,32 @@
+{
+  "name": "slick-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Slick — the fleet's chat client, as a Windows app (Electron, like Slack itself)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "net.x3designs.slick",
+    "productName": "Slick",
+    "directories": { "output": "release" },
+    "files": ["main.js", "preload.js", "icon.ico", "../dist/**/*"],
+    "win": {
+      "target": ["nsis", "portable"],
+      "icon": "icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Slick"
+    }
+  }
+}
