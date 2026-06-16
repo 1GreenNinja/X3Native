@@ -1,3 +1,5 @@
 node_modules/
 dist/
 *.local
+electron/release/
+electron/node_modules/
