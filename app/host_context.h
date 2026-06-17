@@ -19,6 +19,11 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
+#include <utility>
+#include <future>
+
+#include "boot_audio.h"   // BootAudio (the boot-time async audio future the default host joins)
 
 struct GLFWwindow;
 namespace x3 { namespace rhi { class IRenderDevice; } }
@@ -94,6 +99,38 @@ struct HostContext {
     bool        captureFootIk = false;  std::string captureFootIkPath;
     std::string cutsceneFile;           // --cutscene <file>
     float       cueTime = 0.0f;         // --cuetime <s>
+
+    // ---- Default-host (interactive render loop) extra prelude state (Phase C) ----
+    bool        descVsync = true;       // DeviceDesc.vsync (smoketest UBO mirror)
+    // --set <cvar> <value> pairs applied after console cvar registration.
+    std::vector<std::pair<std::string, std::string>> cliCVars;
+    // Boot-time async audio future (launched in main(); joined in the default host).
+    // Non-owning pointer to main()'s local future.
+    std::future<BootAudio>* bootAudioFut = nullptr;
+
+    // ---- More default-host flags (consulted by the render loop / world build) ----
+    bool        smoketest = false;
+    bool        testBootTime = false;
+    bool        testFramePacing = false;
+    bool        testRt = false;
+    bool        testReflections = false;
+    bool        testDdgi = false;
+    bool        testRtShadows = false;
+    bool        noRtShadows = false;
+    int         legacyPost = 0;
+    bool        noTaa = false;
+    bool        noRefl = false;
+    bool        skipIntro = false;
+    bool        editorMode = false;
+    bool        fxDemo = false;
+    bool        uiDemo = false;              std::string uiDemoPath; std::string uiDemoScreen;
+    bool        dialogShot = false;
+    bool        alertShot = false;
+    bool        captureSpire = false;        std::string captureSpireDir;
+    std::string docWorldPath;
+    int         cullPathArg = 0x80000000;   // INT_MIN sentinel = unset
+    int         hzbArg = 0;
+    double      bootBudgetMs = 0.0;
 };
 
 }} // namespace x3::apphost
