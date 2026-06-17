@@ -533,9 +533,15 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
             const float center[3] = { m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z };
             m_deathFx(center, m_type == MonsterType::Drone);
         }
+        // Enemy-SFX: a DEATH vocalization at the kill moment (host -> creature-death).
+        emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyDeath,
+            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f });
     } else {
         x3::logInfo("[monster] hit for " + std::to_string(shotDmg) +
                     " — HP now " + std::to_string(m_hp));
+        // Enemy-SFX: a TAKE-HIT grunt when it survives the shot (host -> creature-pain).
+        emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyHit,
+            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f });
     }
     return r;
 }
@@ -587,9 +593,15 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
             const float center[3] = { m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z };
             m_deathFx(center, m_type == MonsterType::Drone);
         }
+        // Enemy-SFX: death vocalization (same as the shot kill path).
+        emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyDeath,
+            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f });
     } else {
         x3::logInfo("[monster] melee hit for " + std::to_string(dmg) +
                     " — HP now " + std::to_string(m_hp));
+        // Enemy-SFX: take-hit grunt on a surviving melee hit.
+        emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyHit,
+            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f });
     }
     return dead;
 }
@@ -1078,6 +1090,35 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // self-hits THIS enemy's own box at distance ~0 and would block ALL movement.
     // Start the probe just BEYOND our own half-extent along the move dir (the same
     // technique the ranged LOS check uses) so it only sees real walls/props. ----
+    // ---- Inter-enemy SEPARATION (anti-crowding): push away from nearby allies so a
+    // squad SPREADS rather than stacking on the player's tile. Computed from the same
+    // ally query the Regroup logic uses (no extra physics queries). The separation
+    // vector is blended into the state's desired move dir BEFORE normalization, so it
+    // nudges spacing without overriding the state's intent (advance/strafe/retreat).
+    // Inert when no ally query is wired (single-monster tests) or no ally is close. --
+    if (wantMove && allies && m_dmg >= 0) {
+        x3::phys::Vec3 buf[8];
+        uint32_t n = allies(m_pos, m_entity, kAiSeparationRadius, buf, 8u);
+        float sx = 0.0f, sz = 0.0f;
+        for (uint32_t i = 0; i < n; ++i) {
+            float ax = m_pos.x - buf[i].x, az = m_pos.z - buf[i].z;
+            float d2 = ax*ax + az*az;
+            if (d2 < 1e-4f) {   // exactly co-located: shove along a deterministic jitter
+                ax = (rng01(m_rng) - 0.5f); az = (rng01(m_rng) - 0.5f); d2 = ax*ax + az*az + 1e-4f;
+            }
+            const float d = std::sqrt(d2);
+            // Inverse-distance falloff (closer allies push harder), unit-direction away.
+            const float w = (kAiSeparationRadius - d) / kAiSeparationRadius;  // 0..1
+            if (w > 0.0f) { sx += (ax / d) * w; sz += (az / d) * w; }
+        }
+        const float sl = std::sqrt(sx*sx + sz*sz);
+        if (sl > 1e-4f) {
+            // Blend the (unit) separation push into the move dir at a capped weight.
+            mx += (sx / sl) * kAiSeparationWeight;
+            mz += (sz / sl) * kAiSeparationWeight;
+        }
+    }
+
     if (wantMove && chaseSpeed > 0.0f && m_body.valid()) {
         float ml = std::sqrt(mx * mx + mz * mz);
         if (ml > 1e-4f) { mx /= ml; mz /= ml; }
@@ -1111,6 +1152,24 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // physics body — see the setBodyRotation call after the transform bake). ----
     m_yaw = slewAngle(m_yaw, m_yawTarget, kAiTurnRate, dt);
 
+    // ---- Enemy-SFX (vocalization): an engaged enemy TAUNTS/HARASSES audibly on a
+    // jittered cadence so it isn't silent at range (the playtest "enemies make NO
+    // sounds" fix, harass half). Only while alive + has-LOS + actively engaged (not
+    // Idle/Search), so a give-up enemy goes quiet. The host maps EnemyTaunt onto a
+    // creature vocal. allied/inert enemies (m_dmg==0) don't taunt. --
+    if (m_dmg > 0 && m_hasLos &&
+        m_ai != AiState::Idle && m_ai != AiState::Search) {
+        m_tauntTimer -= dt;
+        if (m_tauntTimer <= 0.0f) {
+            m_tauntTimer = kAiTauntPeriod + kAiTauntJitter * (2.0f * rng01(m_rng) - 1.0f);
+            emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyTaunt,
+                x3::phys::Vec3{ m_pos.x, m_pos.y + 0.3f, m_pos.z }, 0.8f });
+        }
+    } else {
+        // Not engaged: hold a short delay so re-engaging doesn't instantly bark.
+        m_tauntTimer = 0.8f;
+    }
+
     // ---- Attack (Phase 2a, spec §6.5). Guard/Boss = melee within attackRange;
     // Drone = ranged hitscan toward the player within attackRange. Both gate on a
     // per-attack cooldown and a short wind-up telegraph so the hit reads/feels fair
@@ -1126,7 +1185,20 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
     // and cannot attack (the clarity beat) — it just stands vulnerable. Inert for
     // every non-flashing monster (m_flashTimer is 0).
     const bool mayAttack = (m_ranged || m_meleePermit) && m_flashTimer <= 0.0f;
-    if (target && target->isAlive() && m_dmg > 0 && horiz <= m_attackRange && mayAttack) {
+    // CORRECTNESS (LOS fix): an attack may only begin/land if the enemy has CLEAR
+    // LINE OF SIGHT to the player (m_hasLos is set by the decision-cadence rayCast
+    // against Layer::Static, which the floor/ceiling slabs are — so a floor between
+    // the enemy and the player makes it false) AND the player is within a sane
+    // VERTICAL band of the enemy's body center. Previously the gate keyed only on the
+    // PLANAR distance `horiz`, so a melee enemy a floor ABOVE the player (horiz~0,
+    // ~3 m up) landed hits THROUGH the floor; and the melee `landed` path did no LOS
+    // test at all (only the ranged path did). This closes both: no LOS or too much
+    // vertical separation => no wind-up, no hit. The ranged path keeps its own
+    // muzzle->player wall ray as a second, finer check at the moment of the shot.
+    const float vsep = std::fabs(playerPos.y - m_pos.y);
+    const bool attackClear = m_hasLos && vsep <= kAttackMaxVertical;
+    if (target && target->isAlive() && m_dmg > 0 && horiz <= m_attackRange &&
+        mayAttack && attackClear) {
         if (!m_winding && m_atkTimer <= 0.0f) {
             // Begin a new attack: start the wind-up; the hit lands when it elapses.
             m_winding     = true;
@@ -1137,6 +1209,11 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                 x3::phys::Vec3 from{ m_pos.x, m_pos.y + 0.3f, m_pos.z };
                 fx(from, tp);
             }
+            // Enemy-SFX: a swing/shot vocalization at the wind-up start (the host maps
+            // it onto a melee-bite / plasma-charge sound). Fired once per attack (the
+            // wind-up gate), at the enemy muzzle, so attacks are AUDIBLE.
+            emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyAttack,
+                x3::phys::Vec3{ m_pos.x, m_pos.y + 0.3f, m_pos.z }, 1.0f });
         }
         if (m_winding) {
             m_windupTimer -= dt;
