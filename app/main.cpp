@@ -4444,7 +4444,12 @@ int main(int argc, char** argv) {
     // Live projectile bolts (plasma): host-owned; advanced + impact-resolved each
     // frame. Bounded by gameplay (a handful in flight); a plain vector is fine.
     struct LiveProjectile { x3::phys::Vec3 pos, vel; int damage; float traveled, range;
-                            x3::game::WeaponFxKind impactKind = x3::game::WeaponFxKind::Default; };
+                            x3::game::WeaponFxKind impactKind = x3::game::WeaponFxKind::Default;
+                            // canon-aliens Adaptive Hide: carry the firing WeaponDef's DamageType
+                            // (Kinetic / Energy / Explosive / ...) along the bolt so the on-impact
+                            // dispatch passes it to MonsterManager::fire — closes the projectile
+                            // half of the resist-rhythm loop (plasma bolts read as Energy, etc).
+                            x3::DamageType type = x3::DamageType::Kinetic; };
     std::vector<LiveProjectile> projectiles;
     uint32_t weaponRng = 0xA11CE5u;   // deterministic spread stream
     float    weaponRecoilPitch = 0.0f; // accumulated upward camera kick (rad), decays
@@ -6269,7 +6274,7 @@ int main(int argc, char** argv) {
             if (!shot.projectiles.empty()) {
                 // ---- Projectile weapon (plasma): spawn a travelling bolt. ----
                 const auto& pj = shot.projectiles[0];
-                projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pj.damage, 0.0f, pj.range, impactKind });
+                projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pj.damage, 0.0f, pj.range, impactKind, pj.type });
                 combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);
                 audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 0.9f);
                 x3::logInfo("fire: " + arsenal.current().name + " bolt launched");
@@ -6349,26 +6354,28 @@ int main(int argc, char** argv) {
                 bool consumed = false;
                 x3::phys::RayHit eh = physics->rayCast(b.pos, ndir, stepLen, x3::phys::Layer::Enemy);
                 if (eh.hit) {
-                    // PER-WEAPON damage: the bolt carries its WeaponDef projectile damage.
-                    x3::game::FireResult r = game.onFire(b.pos, ndir, scene, *physics, b.damage);
+                    // PER-WEAPON damage + DamageType: the bolt carries its WeaponDef projectile
+                    // damage AND its canon-aliens DamageType all the way to the impact dispatch
+                    // (so plasma bolts hit as Energy, future rockets as Explosive, etc).
+                    x3::game::FireResult r = game.onFire(b.pos, ndir, scene, *physics, b.damage, b.type);
                     if (!r.hitMonster && canonWorld && canonPlay.built()) {   // canon enemies/boss/girls
-                        x3::game::FireResult rc = canonPlay.onFire(b.pos, ndir, scene, *physics, b.damage);
+                        x3::game::FireResult rc = canonPlay.onFire(b.pos, ndir, scene, *physics, b.damage, b.type);
                         if (rc.hitMonster) r = rc;
                     }
                     if (!r.hitMonster) {   // try the F3/F4/F5 enemies for this bolt
-                        x3::game::FireResult rm = midFloors.onFire(b.pos, ndir, scene, *physics, b.damage);
+                        x3::game::FireResult rm = midFloors.onFire(b.pos, ndir, scene, *physics, b.damage, b.type);
                         if (rm.hitMonster) r = rm;
                     }
                     if (!r.hitMonster) {   // then the F6/F7 enemies + the Clone boss
-                        x3::game::FireResult rt = topFloors.onFire(b.pos, ndir, scene, *physics, b.damage);
+                        x3::game::FireResult rt = topFloors.onFire(b.pos, ndir, scene, *physics, b.damage, b.type);
                         if (rt.hitMonster) r = rt;
                     }
                     if (!r.hitMonster) {   // then the Floor 4.5 Chorus pods (if armed)
-                        x3::game::FireResult rn = nexus.onFire(b.pos, ndir, scene, *physics, b.damage);
+                        x3::game::FireResult rn = nexus.onFire(b.pos, ndir, scene, *physics, b.damage, b.type);
                         if (rn.hitMonster) r = rn;
                     }
                     if (!r.hitMonster) {   // then the hidden sub-level enemies + Frozen Collective
-                        x3::game::FireResult rs = subLevels.onFire(b.pos, ndir, scene, *physics, b.damage);
+                        x3::game::FireResult rs = subLevels.onFire(b.pos, ndir, scene, *physics, b.damage, b.type);
                         if (rs.hitMonster) r = rs;
                     }
                     combatFx.addTracer(b.pos, eh.point);
