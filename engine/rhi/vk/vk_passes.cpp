@@ -254,6 +254,10 @@ bool VulkanRenderDevice::buildRtSceneAS() {
                 ++built;
         }
         m_rt.endBlasBatch();
+        // PERF (measured, 33 skinned chars, RT GPU): cold = ~30 ms for 33 full BLAS
+        // BUILDS (one-time warm-up, attributed to the batched-AS boundary); steady
+        // state = ~2.0-2.6 ms for 33 REFITS incl. the fence wait (~60-75 us/char) —
+        // ~12-15x cheaper than rebuilding, which is the whole point of MODE_UPDATE.
         if (deferred) {
             // More BLAS than this frame's budget: raster fallback until complete.
             char db[128];
