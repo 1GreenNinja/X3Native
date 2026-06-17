@@ -117,3 +117,27 @@ target_link_libraries(x3engine
 )
 
 target_compile_features(x3engine PUBLIC cxx_std_20)
+
+# ---- VELOCITY pre-pass shaders (#4: velocity buffer + DLSS) ----------------
+# Compiled HERE (engine-owned, the velocity pass is an engine/rhi feature) into
+# the SAME ${CMAKE_BINARY_DIR}/shaders_spv directory the app's POST_BUILD step
+# copies next to the executable, so velocity.{vert,frag}.spv ship in every build
+# (incl. clean CI) WITHOUT editing app/CMakeLists.txt. The engine loads them
+# gracefully: if absent, the velocity pass stays disabled and TAA falls back to
+# camera-only reprojection (byte-identical to the pre-velocity path).
+set(X3_VELOCITY_SPV_DIR ${CMAKE_BINARY_DIR}/shaders_spv)
+file(MAKE_DIRECTORY ${X3_VELOCITY_SPV_DIR})
+set(X3_VELOCITY_SPV "")
+foreach(vsrc velocity.vert velocity.frag)
+    set(vin  ${CMAKE_SOURCE_DIR}/shaders/${vsrc})
+    set(vout ${X3_VELOCITY_SPV_DIR}/${vsrc}.spv)
+    add_custom_command(
+        OUTPUT ${vout}
+        COMMAND ${Vulkan_GLSLC_EXECUTABLE} ${vin} -o ${vout}
+        DEPENDS ${vin}
+        COMMENT "glslc ${vsrc} (velocity pre-pass)"
+        VERBATIM)
+    list(APPEND X3_VELOCITY_SPV ${vout})
+endforeach()
+add_custom_target(x3velocityshaders DEPENDS ${X3_VELOCITY_SPV})
+add_dependencies(x3engine x3velocityshaders)

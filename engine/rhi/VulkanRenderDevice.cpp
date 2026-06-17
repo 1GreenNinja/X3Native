@@ -232,6 +232,10 @@ bool VulkanRenderDevice::init(const DeviceDesc& desc) {
         if (!createPost()) return false;
         if (!createBloomTargets()) return false;
         writePostDescriptors();
+        // Velocity pre-pass (#4): per-object screen-space motion vectors -> TAA.
+        // After createBloomTargets (velocity target exists) + createGraphics (obj
+        // buffers exist). Graceful: a missing velocity.spv leaves it disabled.
+        createVelocityResources();
         // Glass set-4 resources (scene-copy sampler + per-frame control UBO + sets).
         // After createBloomTargets so the scene-copy view exists. Non-fatal: a
         // failure leaves the glass sets null and the glass pass falls back gracefully.
@@ -351,6 +355,7 @@ void VulkanRenderDevice::shutdown() {
         destroyGi();
         destroySsao();
         destroyGlassResources();
+        destroyVelocityResources();   // #4: before destroyGraphics frees m_objPool
         destroyPost();
         destroyIbl();
         destroySky();
@@ -579,6 +584,11 @@ void VulkanRenderDevice::setPostFX(const PostFXParams& p) {
         m_post = p;
     }
 
+bool VulkanRenderDevice::velocityEnabled() const { return m_post.velocity; }
+bool VulkanRenderDevice::velocityAvailable() const {
+        return m_velPipe != VK_NULL_HANDLE && m_velImg != VK_NULL_HANDLE;
+    }
+
 void VulkanRenderDevice::setShadowBounds(float cx, float cy, float cz, float halfExtent) {
         m_shadowOverride  = true;
         m_shadowCenter    = glm::vec3(cx, cy, cz);
@@ -667,6 +677,17 @@ void VulkanRenderDevice::setRtShadowParams(const RtShadowParams& p) {
         m_rtShadows.pointMax    = std::max(0, std::min(16, m_rtShadows.pointMax));
         m_rtShadows.pointRadius = std::max(0.0f, std::min(1.0f, m_rtShadows.pointRadius));
     }
+
+void VulkanRenderDevice::setSkinnedRtEnabled(bool enabled) {
+        // r_skinnedrt: toggle whether visible skinned characters are added to the
+        // RT scene TLAS (so RT shadows/reflections/DDGI/acoustics see them). When
+        // OFF, buildRtSceneAS skips the skinned-BLAS pass entirely and the static
+        // RT path is byte-identical to the pre-feature behavior. Harmless store on a
+        // non-RT GPU (the whole RT block is gated by m_rtSupported regardless).
+        m_skinnedRtEnabled = enabled;
+}
+bool VulkanRenderDevice::skinnedRtEnabled() const { return m_skinnedRtEnabled; }
+uint32_t VulkanRenderDevice::skinnedRtInstanceCount() const { return m_skinnedRtInstances; }
 
 void VulkanRenderDevice::setGlassDevParams(const GlassDevParams& p) {
         // Cache a snapshot of the live r_glass_* dev overrides; the glass control
@@ -1090,6 +1111,14 @@ VulkanRenderDevice::FramePacing VulkanRenderDevice::framePacing() const {
         p.cpuP999 = pct(cpu, 0.999); p.cpuMax = cpu.back();
         p.gpuP50 = pct(gpu, 0.50); p.gpuP95 = pct(gpu, 0.95); p.gpuP99 = pct(gpu, 0.99);
         p.gpuP999 = pct(gpu, 0.999); p.gpuMax = gpu.back();
+        // TLAS double-buffer receipts (#5 PART 1): the ring should drive the
+        // device-wait-per-build ratio to ~0 (boot does ONE wait; steady-state
+        // skinned-RT rebuilds add none). tlasWaitsPerKBuild = 1000*waits/builds.
+        p.tlasBuilds    = m_rt.tlasBuilds();
+        p.tlasSyncWaits = m_rt.tlasSyncWaits();
+        p.tlasCpuMs     = m_rt.tlasCpuMs();
+        p.tlasWaitsPerKBuild = p.tlasBuilds
+            ? (uint32_t)((1000ull * p.tlasSyncWaits) / p.tlasBuilds) : 0u;
         return p;
     }
 

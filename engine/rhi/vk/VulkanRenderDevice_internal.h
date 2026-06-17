@@ -172,6 +172,8 @@ public:
     // synced per frame by the app. Toggling AE on re-arms the adaptation snap so
     // the first adapted frame lands on target instantly (no multi-second crawl).
     void setPostFX(const PostFXParams& p) override;
+    bool velocityEnabled() const override;
+    bool velocityAvailable() const override;
 
     void setShadowBounds(float cx, float cy, float cz, float halfExtent) override;
 
@@ -200,6 +202,10 @@ public:
     void setDdgiParams(const DdgiParams& p) override;
 
     void setRtShadowParams(const RtShadowParams& p) override;
+
+    void setSkinnedRtEnabled(bool enabled) override;
+    bool skinnedRtEnabled() const override;
+    uint32_t skinnedRtInstanceCount() const override;   // skinned chars in the TLAS this frame
 
     void setGlassDevParams(const GlassDevParams& p) override;
 
@@ -440,6 +446,15 @@ private:
         // single static device-local vbo.
         VkBuffer drawVbo(uint32_t frameIdx) const {
             return dynamic ? dynVbo[frameIdx] : vbo;
+        }
+        // PREVIOUS-frame vertex buffer for the velocity pass (#4). Skinned meshes
+        // keep the prior frame's deformed verts in the previous ring slot; static
+        // meshes reuse vbo so the previous == current position (no skinning term,
+        // only model/camera motion contributes). frames is kFramesInFlight.
+        VkBuffer prevVbo(uint32_t frameIdx, uint32_t frames) const {
+            if (!dynamic) return vbo;
+            uint32_t prev = (frameIdx + frames - 1u) % frames;
+            return dynVbo[prev] ? dynVbo[prev] : dynVbo[frameIdx];
         }
     };
     struct Texture {
@@ -1190,6 +1205,18 @@ private:
     // Reuses m_shadowLayout (set0 = objSet); renders to m_depthFormat, no color.
     bool createDepthPrePipeline();
 
+    // ---- Velocity pre-pass (#4) ---------------------------------------------
+    // Build the velocity pipeline (velocity.vert/.frag -> RG16F MV target) and
+    // its per-frame descriptor sets + UBO/prev-model buffers. Graceful: returns
+    // true even if the velocity .spv is missing (the pass just stays disabled).
+    bool createVelocityResources();
+    void destroyVelocityResources();
+    // Record the velocity pre-pass: re-rasterize the opaque draws (depth EQUAL),
+    // binding dynVbo[frameIdx] as current + dynVbo[prevSlot] (or the static VBO)
+    // as previous, writing the screen-space motion vector. Mirrors
+    // recordDepthPrePassBody's draw loop.
+    void recordVelocityPassBody(VkCommandBuffer cmd);
+
     // Create (or recreate) the half-res SSAO raw + blurred R8 targets at the
     // current frame extent. Called after createBloomTargets() at init + on resize.
     bool createSsaoTargets();
@@ -1201,11 +1228,14 @@ private:
     void writeSsaoDescriptors();
 
     // Write the scene TLAS into mesh set3 binding5 for ALL frames in flight
-    // (the r_rtshadows ray origin). Callers must guarantee the sets are not in
-    // use by a pending command buffer (first TLAS build + handle-grow rebuilds
-    // idle the device; init/resize paths are idle by construction). No-op
-    // without RT support / before the first TLAS exists.
-    void writeMeshTlasDescriptor();
+    // (the r_rtshadows ray origin). DOUBLE-BUFFER (#5): `slot` selects which
+    // frame-in-flight descriptor set to re-point. The per-frame rebuild path passes
+    // the CURRENT frame slot ONLY (safe: beginFrame waited that slot's inFlight
+    // fence, so it is not referenced by pending work — no device wait needed). The
+    // boot/resize/first-build paths pass kAllFrameSlots to rewrite every slot (idle
+    // by construction). No-op without RT support / before the first TLAS exists.
+    static constexpr uint32_t kAllFrameSlots = 0xFFFFFFFFu;
+    void writeMeshTlasDescriptor(uint32_t slot = kAllFrameSlots);
 
     void destroySsao();
 
@@ -1252,10 +1282,12 @@ private:
     // at build + whenever targets/TLAS are recreated.
     void writeRtaoDescriptors();
 
-    // Re-write ONLY the TLAS binding (binding 2) into each compute set. Called after
-    // a TLAS rebuild when the TLAS handle changed (a grow); steady same-size
-    // rebuilds keep the same handle so this is skipped.
-    void rewriteRtaoTlas();
+    // Re-point the TLAS binding into the RTAO / refl-RT / DDGI-ray compute sets.
+    // DOUBLE-BUFFER (#5): `slot` selects which frame-in-flight set(s) to rewrite —
+    // the per-frame ring rebuild passes the CURRENT slot only (no device wait), the
+    // boot/resize paths pass kAllFrameSlots. With the TLAS ring the handle changes
+    // on every build, so this runs each rebuild (re-pointing to the fresh slot).
+    void rewriteRtaoTlas(uint32_t slot = kAllFrameSlots);
 
     // Build (or refit) the scene acceleration structures for THIS frame from the
     // per-frame draw list (m_drawRecords, still valid in endFrame after
@@ -1648,6 +1680,18 @@ private:
     // SSAO/SSGI path is byte-for-byte unchanged.
     VulkanRT          m_rt;                                  // AS manager (ray-query)
     bool              m_rtInitTried = false;                 // lazy one-time module init
+    // ---- SKINNED-CHARACTER TLAS REFIT (#3, r_skinnedrt) ------------------
+    // When ON (default) AND m_rtSupported, buildRtSceneAS builds/refits a per-frame
+    // BLAS for each visible skinned character and adds it to the multi-consumer
+    // TLAS (RT shadows + reflections + DDGI + RT acoustics all then see monsters).
+    // OFF (or non-RT GPU) -> skinned chars stay raster-only; static RT path is
+    // byte-identical to the pre-feature behavior. Set via setSkinnedRtEnabled
+    // (the r_skinnedrt cvar; CLI string wiring lives in app/ — engine exposes the
+    // toggle + introspection so the feature is self-gating + testable here).
+    bool              m_skinnedRtEnabled = true;             // r_skinnedrt (default ON)
+    bool              m_skinnedRtThisFrame = false;          // a skinned BLAS was (re)built this frame
+    uint32_t          m_skinnedRtInstances = 0;              // skinned chars added to the TLAS this frame
+    bool              m_skinnedRtLogged = false;             // one-shot 0->N edge log latch
     RtaoParams        m_rtao{};                              // cached tunables (default OFF)
     bool              m_rtaoBuilt = false;                   // RT-AO pipelines created
     uint32_t          m_rtFrameSeed = 0;                     // per-frame noise seed
@@ -2281,6 +2325,55 @@ private:
     VkRenderingAttachmentInfo m_taaAttach{};                   // stable storage for the graph
     VkRenderingInfo           m_taaRenderInfo{};
 
+    // ---- PER-OBJECT VELOCITY BUFFER (#4: velocity buffer + DLSS input) -------
+    // An RG16F screen-space motion-vector target written by a velocity pre-pass
+    // (velocity.vert/.frag) that re-rasterizes the opaque geometry right after
+    // the depth pre-pass (depth EQUAL). Each pixel stores (prevUV - curUV) with
+    // jitter removed, so the TAA resolve reprojects DYNAMIC + SKINNED motion
+    // directly (drone, monsters) instead of relying on the neighborhood clamp.
+    // It is also the required input for DLSS (PART 2 seam). Created alongside the
+    // TAA targets; gated by m_post.velocity (r_velocity) AND the pipeline/target
+    // existing — graceful: if velocity.*.spv is absent (not yet registered in the
+    // app shader list) the pass is never built and TAA falls back to camera-only
+    // reprojection, byte-identical to the pre-velocity path.
+    VkImage       m_velImg   = VK_NULL_HANDLE;
+    VmaAllocation m_velAlloc = nullptr;
+    VkImageView   m_velView  = VK_NULL_HANDLE;
+    static constexpr VkFormat kVelocityFormat = VK_FORMAT_R16G16_SFLOAT;
+    VkPipelineLayout m_velLayout  = VK_NULL_HANDLE;  // set0 = objSet+velUBO (shadow-style + b4)
+    VkPipeline       m_velPipe    = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_velSetLayout = VK_NULL_HANDLE;  // objSet b0..b3 + velUBO b4
+    VkDescriptorPool m_velPool = VK_NULL_HANDLE;           // dedicated (own the velocity sets)
+    VkDescriptorSet  m_velSet[kFramesInFlight] = {};        // per-frame obj/prev/vis/cam/velUBO
+    // Velocity UBO: unjittered cur/prev viewProj + the two frames' jitter (NDC).
+    struct VelUBO {
+        glm::mat4 viewProjCurUnjit;
+        glm::mat4 viewProjPrevUnjit;
+        glm::vec4 jitter;   // xy = cur jitter (NDC), zw = prev jitter (NDC)
+    };
+    VkBuffer      m_velUboBuf[kFramesInFlight]    = {};
+    VmaAllocation m_velUboAlloc[kFramesInFlight]  = {};
+    void*         m_velUboMapped[kFramesInFlight] = {};
+    // Previous-frame per-object model matrices (one mat4 per object SSBO row),
+    // double-buffered so the velocity vertex shader reads last frame's transforms
+    // while this frame writes the current ones. Indexed identically to objBuf.
+    VkBuffer      m_prevModelBuf[kFramesInFlight]   = {};
+    VmaAllocation m_prevModelAlloc[kFramesInFlight] = {};
+    void*         m_prevModelMapped[kFramesInFlight]= {};
+    bool          m_velActiveThisFrame = false;   // set per frame in buildAndExecuteGraph
+    glm::vec2     m_velPrevJitterNdc{ 0.0f };      // previous frame's jitter (NDC) for the UBO
+    // CPU-side per-row model history for the velocity prev-model SSBO. Row order
+    // is the grouped emit order (stable for a static scene -> a row maps to the
+    // same object across frames); on a topology change a few rows get a one-frame
+    // stale MV, which the TAA neighborhood clamp contains. Filled in prepareFrameData.
+    std::vector<glm::mat4> m_velPrevModels;        // models from the previous frame
+    std::vector<glm::mat4> m_velCurModels;         // scratch: this frame's models
+    ResourceState m_velState{ VK_IMAGE_LAYOUT_UNDEFINED,
+                              VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
+    VkRenderingAttachmentInfo m_velAttach{};       // stable storage for the graph
+    VkRenderingAttachmentInfo m_velDepthAttach{};  // read-only depth (EQUAL test)
+    VkRenderingInfo           m_velRenderInfo{};
+
     // ---- AUTO-EXPOSURE (eye adaptation) ------------------------------------
     // A single-workgroup compute pass (autoexposure.comp) reduces a fixed 64x64
     // log-luminance sample grid over the HDR scene to an average, maps it to a
@@ -2824,6 +2917,7 @@ private:
     std::chrono::steady_clock::time_point m_paceLast{};
     uint32_t m_spikeCount = 0;       // all post-warmup spikes (logged)
     uint32_t m_spikeCleanCount = 0;  // spikes with NO attributed cause (the gate)
+    bool     m_tlasDbReceiptLogged = false;  // one-shot TLAS double-buffer proof line (#5)
 
     bool m_vsync = true;
     bool m_needsRecreate = false;

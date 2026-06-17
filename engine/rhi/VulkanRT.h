@@ -36,6 +36,7 @@
 
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -251,15 +252,158 @@ public:
         return sr == VK_SUCCESS;
     }
 
-    bool hasBlas(uint32_t meshId) const { return m_blas.find(meshId) != m_blas.end(); }
+    bool hasBlas(uint32_t meshId) const {
+        return m_blas.find(meshId) != m_blas.end()
+            || m_skinnedBlas.find(meshId) != m_skinnedBlas.end();
+    }
+    bool hasSkinnedBlas(uint32_t meshId) const { return m_skinnedBlas.find(meshId) != m_skinnedBlas.end(); }
+    uint32_t skinnedBlasCount() const { return (uint32_t)m_skinnedBlas.size(); }
 
     void destroyBlas(uint32_t meshId) {
         auto it = m_blas.find(meshId);
-        if (it == m_blas.end()) return;
+        if (it != m_blas.end()) {
+            if (it->second.handle) m_pfnDestroyAS(m_dev, it->second.handle, nullptr);
+            destroyBuffer(it->second.backing);
+            m_blas.erase(it);
+        }
+        destroySkinnedBlas(meshId);
+    }
+
+    void destroySkinnedBlas(uint32_t meshId) {
+        auto it = m_skinnedBlas.find(meshId);
+        if (it == m_skinnedBlas.end()) return;
         if (it->second.handle) m_pfnDestroyAS(m_dev, it->second.handle, nullptr);
         destroyBuffer(it->second.backing);
-        m_blas.erase(it);
+        destroyBuffer(it->second.scratch);
+        m_skinnedBlas.erase(it);
     }
+
+    // ---- SKINNED BLAS: per-frame build/refit from a compute-skinned VBO -------
+    // Skinned characters change their vertex positions every frame (the compute
+    // skinning pass writes m.dynVbo[slot]). Unlike the static ensureBlas (cached
+    // once), this BLAS is built ALLOW_UPDATE + PREFER_FAST_BUILD so subsequent
+    // frames can REFIT it (mode=UPDATE) in place — far cheaper than a full
+    // rebuild — when only vertex positions move (topology is fixed). The first
+    // call for a mesh does a full build; later calls refit. The scratch buffer is
+    // kept resident with the BLAS (sized to max(build,update) scratch) so a refit
+    // costs ZERO allocation. Records into the active BLAS batch command buffer
+    // (one submit for the whole skinned set alongside the static warm-up), so it
+    // adds no extra device submit/stall beyond the existing batched-AS boundary.
+    //   vbAddr : device address of THIS frame's skinned output vbo (positions are
+    //            the first 3 floats of each MeshVertex row, stride = sizeof row).
+    //   ibAddr : the mesh's (static, shared) index buffer.
+    // Returns true if the BLAS exists + is (re)built this batch. Requires an open
+    // beginBlasBatch()/endBlasBatch() window (the caller opens one).
+    bool ensureSkinnedBlas(uint32_t meshId, VkDeviceAddress vbAddr, uint32_t vertexCount,
+                           uint32_t vertexStride, VkDeviceAddress ibAddr, uint32_t indexCount) {
+        if (!m_ready) return false;
+        if (!vbAddr || !ibAddr || vertexCount == 0 || indexCount < 3) return false;
+        VkCommandBuffer cmd = blasBatchCmd();
+        if (!cmd) return false;   // skinned BLAS only build inside a batch window
+
+        const uint32_t triCount = indexCount / 3;
+        auto existing = m_skinnedBlas.find(meshId);
+        const bool haveExisting = (existing != m_skinnedBlas.end());
+        // A refit (UPDATE) is only valid if the geometry topology is unchanged
+        // (same tri count) AND we have a prior build to update from.
+        const bool refit = haveExisting && existing->second.triCount == triCount
+                                        && existing->second.handle != VK_NULL_HANDLE;
+
+        VkAccelerationStructureGeometryKHR geo{};
+        geo.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+        geo.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+        geo.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+        geo.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+        geo.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+        geo.geometry.triangles.vertexData.deviceAddress = vbAddr;
+        geo.geometry.triangles.vertexStride = vertexStride;
+        geo.geometry.triangles.maxVertex = vertexCount - 1;
+        geo.geometry.triangles.indexType = VK_INDEX_TYPE_UINT32;
+        geo.geometry.triangles.indexData.deviceAddress = ibAddr;
+        geo.geometry.triangles.transformData.deviceAddress = 0;
+
+        VkAccelerationStructureBuildGeometryInfoKHR bgi{};
+        bgi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+        bgi.type  = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        // PREFER_FAST_BUILD + ALLOW_UPDATE: skinned geometry is rebuilt/refit every
+        // frame, so cheap builds beat the static path's PREFER_FAST_TRACE.
+        bgi.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR
+                  | VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+        if (m_allowDataAccess)
+            bgi.flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_DATA_ACCESS_BIT_KHR;
+        bgi.geometryCount = 1;
+        bgi.pGeometries = &geo;
+
+        if (refit) {
+            SkinnedBlas& b = existing->second;
+            bgi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+            bgi.srcAccelerationStructure = b.handle;
+            bgi.dstAccelerationStructure = b.handle;
+            bgi.scratchData.deviceAddress = b.scratch.addr;
+            VkAccelerationStructureBuildRangeInfoKHR range{};
+            range.primitiveCount = triCount;
+            const VkAccelerationStructureBuildRangeInfoKHR* pRange = &range;
+            m_pfnCmdBuildAS(cmd, 1, &bgi, &pRange);
+            // UPDATE writes the SAME backing the previous build read; serialize
+            // refits within this batch (each reads then writes the AS storage).
+            blasBatchAsBarrier(cmd);
+            ++m_skinnedRefits;
+            return true;
+        }
+
+        // Full build (first time for this mesh, or tri count changed): (re)create
+        // the backing + a resident scratch sized for the larger of build/update.
+        bgi.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        VkAccelerationStructureBuildSizesInfoKHR sizes{};
+        sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+        m_pfnGetASBuildSizes(m_dev, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+                             &bgi, &triCount, &sizes);
+        VkDeviceSize scratchNeed = sizes.buildScratchSize;
+        if (sizes.updateScratchSize > scratchNeed) scratchNeed = sizes.updateScratchSize;
+
+        if (haveExisting) destroySkinnedBlas(meshId);   // topology changed: rebuild fresh
+
+        SkinnedBlas b{};
+        b.triCount = triCount;
+        if (!createAsBackingBuffer(sizes.accelerationStructureSize, b.backing)) {
+            if (m_logError) m_logError("[rt] skinned BLAS backing alloc failed");
+            return false;
+        }
+        if (!createScratchBuffer(scratchNeed, b.scratch)) {
+            destroyBuffer(b.backing);
+            if (m_logError) m_logError("[rt] skinned BLAS scratch alloc failed");
+            return false;
+        }
+        VkAccelerationStructureCreateInfoKHR aci{};
+        aci.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+        aci.buffer = b.backing.buf; aci.offset = 0;
+        aci.size = sizes.accelerationStructureSize;
+        aci.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        if (m_pfnCreateAS(m_dev, &aci, nullptr, &b.handle) != VK_SUCCESS) {
+            destroyBuffer(b.backing); destroyBuffer(b.scratch);
+            if (m_logError) m_logError("[rt] vkCreateAccelerationStructureKHR (skinned BLAS) failed");
+            return false;
+        }
+        bgi.dstAccelerationStructure = b.handle;
+        bgi.scratchData.deviceAddress = b.scratch.addr;
+        VkAccelerationStructureBuildRangeInfoKHR range{};
+        range.primitiveCount = triCount;
+        const VkAccelerationStructureBuildRangeInfoKHR* pRange = &range;
+        m_pfnCmdBuildAS(cmd, 1, &bgi, &pRange);
+        blasBatchAsBarrier(cmd);
+        VkAccelerationStructureDeviceAddressInfoKHR adi{};
+        adi.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+        adi.accelerationStructure = b.handle;
+        b.addr = m_pfnGetASAddr(m_dev, &adi);
+        m_skinnedBlas.emplace(meshId, b);
+        ++m_skinnedBuilds;
+        return true;
+    }
+
+    // Per-frame skinned-AS work counters (perf telemetry; reset by the caller).
+    uint32_t skinnedBuilds() const { return m_skinnedBuilds; }
+    uint32_t skinnedRefits() const { return m_skinnedRefits; }
+    void     resetSkinnedCounters() { m_skinnedBuilds = 0; m_skinnedRefits = 0; }
 
     // ---- TLAS: one instance per (meshId, transform) ---------------------------
     struct TlasInstance {
@@ -273,8 +417,25 @@ public:
     // BLAS are skipped). Recorded as a one-time submit (static-first v1). The TLAS
     // device address is then bound by the ray-query pass. Returns true on success;
     // an empty (zero usable instances) list still produces a valid empty TLAS.
+    //
+    // DOUBLE-BUFFER (#5 PART 1): the TLAS is backed by a RING of kTlasSlots
+    // independent backings + handles, ping-ponged on every build. Frame N+1's build
+    // writes a DIFFERENT slot than the one frame N's in-flight consumers (RTAO,
+    // reflections, DDGI, rt-shadows, rt-acoustics) are still reading, so the build
+    // no longer creates a cross-frame WAR hazard on the TLAS backing — the caller
+    // can therefore drop the per-frame vkDeviceWaitIdle it used as the hazard guard.
+    // The consumer descriptors re-point to tlas() (the freshly-built slot's handle)
+    // each rebuild. With kFramesInFlight=2 in flight, two slots suffice (slot A is
+    // reused only after the frame that read it has retired via its inFlight fence);
+    // we keep kTlasSlots one larger as headroom against a rebuild on consecutive
+    // frames that both stay in flight.
     bool buildTlas(const std::vector<TlasInstance>& instances) {
         if (!m_ready) return false;
+        const auto cpuT0 = std::chrono::steady_clock::now();
+        // Advance the ring to the next slot BEFORE building so this build never
+        // targets the slot the just-bound previous TLAS occupies.
+        m_tlasSlot = (m_tlasSlot + 1u) % kTlasSlots;
+        Tlas& m_tlas = m_tlasRing[m_tlasSlot];
 
         // Pack the VkAccelerationStructureInstanceKHR rows for every instance whose
         // BLAS exists. The transform is the top 3 rows of the column-major model,
@@ -282,8 +443,14 @@ public:
         m_instScratch.clear();
         m_instScratch.reserve(instances.size());
         for (const TlasInstance& in : instances) {
+            VkDeviceAddress blasAddr = 0;
             auto it = m_blas.find(in.meshId);
-            if (it == m_blas.end()) continue;
+            if (it != m_blas.end()) blasAddr = it->second.addr;
+            else {
+                auto sk = m_skinnedBlas.find(in.meshId);
+                if (sk != m_skinnedBlas.end()) blasAddr = sk->second.addr;
+            }
+            if (!blasAddr) continue;
             VkAccelerationStructureInstanceKHR row{};
             // column-major model[c*4+r]; row-major transform[r][c] = model[c*4+r].
             for (int r = 0; r < 3; ++r)
@@ -293,7 +460,7 @@ public:
             row.mask = 0xFF;
             row.instanceShaderBindingTableRecordOffset = 0;
             row.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-            row.accelerationStructureReference = it->second.addr;
+            row.accelerationStructureReference = blasAddr;
             m_instScratch.push_back(row);
         }
         const uint32_t instCount = (uint32_t)m_instScratch.size();
@@ -381,24 +548,51 @@ public:
         if (!ok) return false;
 
         m_tlasBuilt = true;
+        ++m_tlasBuilds;
+        m_tlasCpuMs = (float)std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - cpuT0).count();
         return true;
     }
 
     bool tlasBuilt() const { return m_tlasBuilt; }
-    VkAccelerationStructureKHR tlas() const { return m_tlas.handle; }
+    // Current (most-recently-built) TLAS handle — what every consumer descriptor
+    // re-points to each rebuild. With the ring, this changes value on every build.
+    VkAccelerationStructureKHR tlas() const { return m_tlasRing[m_tlasSlot].handle; }
     uint32_t lastInstanceCount() const { return m_lastInstanceCount; }
     uint32_t blasCount() const { return (uint32_t)m_blas.size(); }
 
+    // ---- DOUBLE-BUFFER instrumentation (#5 PART 1) ------------------------
+    // tlasBuilds   : total TLAS (re)builds since reset (per-frame in skinned-RT).
+    // tlasSyncWaits: device-level waits the rebuild path paid to guard the backing
+    //                — the metric we drive to ZERO with the ring (caller increments
+    //                it on any vkDeviceWaitIdle it still issues around a build).
+    // tlasCpuMs    : CPU wall time of the most recent buildTlas (record+submit+own
+    //                fence wait), EXCLUDING any caller-side device wait.
+    uint32_t tlasBuilds()    const { return m_tlasBuilds; }
+    uint32_t tlasSyncWaits() const { return m_tlasSyncWaits; }
+    float    tlasCpuMs()     const { return m_tlasCpuMs; }
+    void     addTlasSyncWait() { ++m_tlasSyncWaits; }
+    void     resetTlasCounters() { m_tlasBuilds = 0; m_tlasSyncWaits = 0; m_tlasCpuMs = 0.0f; }
+    static constexpr uint32_t tlasSlots() { return kTlasSlots; }
+
     void shutdown() {
         if (!m_dev) return;
-        if (m_tlas.handle) { m_pfnDestroyAS(m_dev, m_tlas.handle, nullptr); m_tlas.handle = VK_NULL_HANDLE; }
-        destroyBuffer(m_tlas.backing);
+        for (Tlas& t : m_tlasRing) {
+            if (t.handle) { m_pfnDestroyAS(m_dev, t.handle, nullptr); t.handle = VK_NULL_HANDLE; }
+            destroyBuffer(t.backing);
+        }
         destroyBuffer(m_instBuf);
         for (auto& kv : m_blas) {
             if (kv.second.handle) m_pfnDestroyAS(m_dev, kv.second.handle, nullptr);
             destroyBuffer(kv.second.backing);
         }
         m_blas.clear();
+        for (auto& kv : m_skinnedBlas) {
+            if (kv.second.handle) m_pfnDestroyAS(m_dev, kv.second.handle, nullptr);
+            destroyBuffer(kv.second.backing);
+            destroyBuffer(kv.second.scratch);
+        }
+        m_skinnedBlas.clear();
         if (m_fence) { vkDestroyFence(m_dev, m_fence, nullptr); m_fence = VK_NULL_HANDLE; }
         if (m_pool)  { vkDestroyCommandPool(m_dev, m_pool, nullptr); m_pool = VK_NULL_HANDLE; }
         m_ready = false; m_tlasBuilt = false;
@@ -407,6 +601,31 @@ public:
 private:
     struct Blas { VkAccelerationStructureKHR handle = VK_NULL_HANDLE; RtBuffer backing; VkDeviceAddress addr = 0; };
     struct Tlas { VkAccelerationStructureKHR handle = VK_NULL_HANDLE; RtBuffer backing; };
+    // A skinned BLAS keeps its scratch RESIDENT (sized for max(build,update)) so a
+    // per-frame refit costs zero allocation. triCount detects topology changes
+    // (which force a full rebuild rather than an invalid UPDATE).
+    struct SkinnedBlas {
+        VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
+        RtBuffer backing; RtBuffer scratch;
+        VkDeviceAddress addr = 0; uint32_t triCount = 0;
+    };
+
+    // Barrier between consecutive AS builds/refits recorded into the SAME batch
+    // command buffer: a skinned UPDATE reads + writes its AS storage, and the TLAS
+    // build later reads every BLAS storage — serialize on ACCELERATION_STRUCTURE
+    // build read/write so one refit doesn't race the next (they share scratch only
+    // per-mesh, but the spec requires AS-build ordering be made explicit).
+    void blasBatchAsBarrier(VkCommandBuffer cmd) {
+        VkMemoryBarrier2 mb{ VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+        mb.srcStageMask  = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        mb.srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        mb.dstStageMask  = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
+        mb.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR
+                         | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
+        VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+        di.memoryBarrierCount = 1; di.pMemoryBarriers = &mb;
+        vkCmdPipelineBarrier2(cmd, &di);
+    }
 
     VkDeviceAddress bufferAddress(VkBuffer b) const {
         VkBufferDeviceAddressInfo i{ VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
@@ -522,8 +741,19 @@ private:
 
     VkPhysicalDeviceAccelerationStructurePropertiesKHR m_asProps{};
 
-    std::unordered_map<uint32_t, Blas> m_blas;   // keyed by mesh id
-    Tlas      m_tlas;
+    std::unordered_map<uint32_t, Blas> m_blas;   // keyed by mesh id (static, cached)
+    std::unordered_map<uint32_t, SkinnedBlas> m_skinnedBlas; // per-frame refit BLAS
+    uint32_t  m_skinnedBuilds = 0;   // skinned BLAS full builds this batch (telemetry)
+    uint32_t  m_skinnedRefits = 0;   // skinned BLAS refits this batch (telemetry)
+    // DOUBLE-BUFFER TLAS ring (#5 PART 1): kTlasSlots independent backings/handles
+    // ping-ponged per build so a build never overwrites a slot still being read by
+    // an in-flight consumer. kFramesInFlight=2 needs 2; +1 headroom = 3.
+    static constexpr uint32_t kTlasSlots = 3;
+    Tlas      m_tlasRing[kTlasSlots];
+    uint32_t  m_tlasSlot = kTlasSlots - 1u;   // first build advances to slot 0
+    uint32_t  m_tlasBuilds    = 0;            // TLAS (re)builds since reset (telemetry)
+    uint32_t  m_tlasSyncWaits = 0;            // device waits the rebuild path paid (-> 0)
+    float     m_tlasCpuMs     = 0.0f;         // CPU ms of the most recent buildTlas
     RtBuffer  m_instBuf;                          // persistent host-visible instance buffer
     std::vector<VkAccelerationStructureInstanceKHR> m_instScratch;
 

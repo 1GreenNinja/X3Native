@@ -263,6 +263,19 @@ bool VulkanRenderDevice::createBloomTargets() {
         m_taaHistState = ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
         m_taaHistoryValid = false;
 
+        // ---- VELOCITY target (#4: per-object screen-space motion vectors) ----
+        // RG16F, full-res. Written by the velocity pre-pass (COLOR_ATTACHMENT),
+        // sampled by the TAA resolve (SAMPLED). (Re)created with the extent. Failure
+        // is NON-FATAL: the velocity pass simply won't be built and TAA falls back
+        // to camera-only reprojection (byte-identical to the pre-velocity path).
+        if (!createColorTarget(kVelocityFormat, W, H,
+                               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                               m_velImg, m_velAlloc, m_velView)) {
+            logError("[rhi] velocity target create failed — TAA stays camera-only");
+            m_velImg = VK_NULL_HANDLE; m_velAlloc = nullptr; m_velView = VK_NULL_HANDLE;
+        }
+        m_velState = ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
+
         // Bloom mips: mip0 = half res, each subsequent halves again (min 1px).
         uint32_t mw = W, mh = H;
         for (uint32_t i = 0; i < kBloomMips; ++i) {
@@ -339,6 +352,9 @@ void VulkanRenderDevice::destroyBloomTargets() {
         if (m_taaHistImg)  { vmaDestroyImage(m_alloc, m_taaHistImg, m_taaHistAlloc); m_taaHistImg = VK_NULL_HANDLE; m_taaHistAlloc = nullptr; }
         m_taaHistState = ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
         m_taaHistoryValid = false;
+        if (m_velView) { vkDestroyImageView(m_dev.device, m_velView, nullptr); m_velView = VK_NULL_HANDLE; }
+        if (m_velImg)  { vmaDestroyImage(m_alloc, m_velImg, m_velAlloc); m_velImg = VK_NULL_HANDLE; m_velAlloc = nullptr; }
+        m_velState = ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
         if (m_hdrView) { vkDestroyImageView(m_dev.device, m_hdrView, nullptr); m_hdrView = VK_NULL_HANDLE; }
         if (m_hdrImg)  { vmaDestroyImage(m_alloc, m_hdrImg, m_hdrAlloc); m_hdrImg = VK_NULL_HANDLE; m_hdrAlloc = nullptr; }
     }
@@ -535,8 +551,11 @@ bool VulkanRenderDevice::createPost() {
             logError("[rhi] auto-exposure set layout failed"); return false;
         }
         // TAA resolve set layout: b0 = current HDR scene, b1 = history, b2 = depth
-        // (all fragment samplers) + b3 = the per-frame TAA UBO (matrices/params).
-        VkDescriptorSetLayoutBinding tb[4]{};
+        // (all fragment samplers) + b3 = the per-frame TAA UBO (matrices/params)
+        // + b4 = per-object velocity (RG16F MV, #4). When velocity is off / absent
+        // b4 is written with the depth view as a harmless placeholder and the
+        // shader ignores it (params1.z gate), so the binding is always valid.
+        VkDescriptorSetLayoutBinding tb[5]{};
         for (uint32_t i = 0; i < 3; ++i) {
             tb[i].binding = i; tb[i].descriptorCount = 1;
             tb[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -545,8 +564,11 @@ bool VulkanRenderDevice::createPost() {
         tb[3].binding = 3; tb[3].descriptorCount = 1;
         tb[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         tb[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        tb[4].binding = 4; tb[4].descriptorCount = 1;
+        tb[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        tb[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo st{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-        st.bindingCount = 4; st.pBindings = tb;
+        st.bindingCount = 5; st.pBindings = tb;
         if (vkCreateDescriptorSetLayout(m_dev.device, &st, nullptr, &m_taaSetLayout) != VK_SUCCESS) {
             logError("[rhi] TAA set layout failed"); return false;
         }
@@ -566,12 +588,12 @@ bool VulkanRenderDevice::createPost() {
         // Descriptor pool: (HDR set + kBloomMips mip sets + TAA-out set)
         // single-sampler sets + 2 composite sets (2 samplers + 1 SSBO each: raw-HDR
         // + TAA variants) + 2 auto-exposure sets (1 sampler + 1 SSBO each) + the
-        // per-frame TAA resolve sets (3 samplers + 1 UBO each). Sized exactly; no
-        // UPDATE_AFTER_BIND needed.
+        // per-frame TAA resolve sets (4 samplers + 1 UBO each: scene/hist/depth +
+        // the #4 velocity sampler at b4). Sized exactly; no UPDATE_AFTER_BIND.
         const uint32_t single = 1 + kBloomMips + 1;     // HDR + each mip + TAA out
         VkDescriptorPoolSize ps[3]{
             { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-              single + 2*2 + 1*2 + 3*kFramesInFlight },
+              single + 2*2 + 1*2 + 4*kFramesInFlight },
             { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         4 },
             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight },
         };
@@ -857,10 +879,16 @@ void VulkanRenderDevice::writePostDescriptors() {
         VkDescriptorImageInfo r0{ m_postSampler,     m_hdrView,     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         VkDescriptorImageInfo r1{ m_postSampler,     m_taaHistView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         VkDescriptorImageInfo r2{ m_taaDepthSampler, m_depthView,   VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+        // b4 velocity: real RG16F MV view when present, else the HDR view as a
+        // harmless placeholder so the binding is always valid (shader ignores it
+        // unless params1.z says velocity is valid). m_postSampler is LINEAR clamp.
+        VkDescriptorImageInfo r4{ m_postSampler,
+                                  m_velView ? m_velView : m_hdrView,
+                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
             if (!m_taaSet[i] || !m_taaUboBuf[i]) continue;
             VkDescriptorBufferInfo rb{ m_taaUboBuf[i], 0, VK_WHOLE_SIZE };
-            VkWriteDescriptorSet rw[4]{};
+            VkWriteDescriptorSet rw[5]{};
             for (uint32_t b = 0; b < 3; ++b) {
                 rw[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                 rw[b].dstSet = m_taaSet[i]; rw[b].dstBinding = b; rw[b].descriptorCount = 1;
@@ -870,7 +898,10 @@ void VulkanRenderDevice::writePostDescriptors() {
             rw[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             rw[3].dstSet = m_taaSet[i]; rw[3].dstBinding = 3; rw[3].descriptorCount = 1;
             rw[3].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; rw[3].pBufferInfo = &rb;
-            vkUpdateDescriptorSets(m_dev.device, 4, rw, 0, nullptr);
+            rw[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            rw[4].dstSet = m_taaSet[i]; rw[4].dstBinding = 4; rw[4].descriptorCount = 1;
+            rw[4].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; rw[4].pImageInfo = &r4;
+            vkUpdateDescriptorSets(m_dev.device, 5, rw, 0, nullptr);
         }
     }
 
