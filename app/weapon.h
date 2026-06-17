@@ -255,6 +255,16 @@ struct WeaponDef {
     // instead of a per-round one-shot whose reverb tails stack into a long roar.
     // When false the host plays fireSfx as a per-shot one-shot (unchanged).
     bool        fireSfxLoop  = false;
+    // Per-weapon IMPACT sound (played 3D at the hit point when a shot strikes a hard
+    // surface — energy weapons get an energy splat, ballistics a bullet impact). Same
+    // resolveAudio() resolution + graceful-miss semantics as fireSfx. Empty -> the host
+    // plays no dedicated impact sound (the visual impact FX still spawns). Cached once
+    // per distinct WAV at init alongside the fire sounds.
+    std::string impactSfx    = "";
+    // Per-weapon RELOAD sound (played once, non-positional, on the rising edge of a
+    // reload). Empty -> no reload sound. Plumbed as data so designers can wire a click/
+    // whir per weapon when reload WAVs are available (none ship today -> silent).
+    std::string reloadSfx    = "";
 };
 
 // One travelling projectile spawned by a Projectile-kind weapon. Pure data the

@@ -67,6 +67,14 @@ constexpr float kTracerTime      = 0.12f;
 constexpr float kTracerThickness = 0.035f;
 // Max concurrent tracers (pool). Excess shots overwrite the oldest slot.
 constexpr int   kMaxTracers      = 8;
+// Lightning bolt ARC PROPAGATION speed (m/s): the jagged bolt visibly extends from
+// the muzzle toward the hit point at this rate rather than snapping full-length the
+// instant the (hitscan) beam fires. Director note: the old instant/over-fast read
+// was reduced ~39% — this is the tuned, slower travel (0.61x of the prior feel).
+// Tuned so a ~28 m max-range beam still completes well within the tracer lifetime
+// (kTracerTime): at 300 m/s a 28 m beam fully connects in ~0.093 s (< 0.12 s life),
+// so the tip is still visibly travelling yet always reaches the hit point.
+constexpr float kLightningBoltSpeed = 300.0f;
 
 // ---- Muzzle flash tuning ----
 // How long (seconds) the muzzle flash quad stays visible.
@@ -162,6 +170,7 @@ private:
         x3::phys::Vec3 from{};
         x3::phys::Vec3 to{};
         float          life = 0.0f;  // remaining seconds; <= 0 means free slot
+        float          age  = 0.0f;  // seconds since spawn (Lightning bolt propagation)
         WeaponFxKind   kind = WeaponFxKind::Default;  // Lightning -> jagged bolt
     };
 

@@ -295,21 +295,22 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.name        = "pistol";
         w.kind        = FireKind::Hitscan;
         w.automatic   = false;
-        w.damage      = 15;
+        w.damage      = 16;       // +1: a clean 4-shot kill on 60-HP trash
         w.type        = x3::DamageType::Kinetic;
-        w.fireRate    = 3.0f;
+        w.fireRate    = 4.5f;     // snappier semi-auto (was a sluggish 3/s)
         w.pellets     = 1;
-        w.spreadDeg   = 0.5f;     // near-perfect; tiny hipfire jitter
-        w.recoilDeg   = 1.2f;
-        w.range       = 50.0f;
+        w.spreadDeg   = 0.35f;    // tighter — the sidearm is a precision tool
+        w.recoilDeg   = 0.9f;     // a touch less kick so the snappier rate stays controllable
+        w.range       = 55.0f;
         w.magSize     = 12;
-        w.reserveAmmo = 60;
-        w.reloadTime  = 1.5f;
+        w.reserveAmmo = 72;
+        w.reloadTime  = 1.3f;     // quick sidearm reload
         w.viewmodelGlb = "WeaponEnergyPistol2.glb";  // real energy_pistol.obj (PBR-textured)
         w.vmScale     = 0.18f;                        // proven pistol read (~0.33 m held)
         w.muzzleFx    = "muzzle_pistol";
         w.impactFx    = "impact_bullet";
         w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-01.wav";   // punchy single shot
+        w.impactSfx   = "weapons/impact/Bullet_Impact_14.wav";               // ballistic impact tick
         r.push_back(w);
     }
 
@@ -322,20 +323,21 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.name        = "smg";
         w.kind        = FireKind::Hitscan;
         w.automatic   = true;
-        w.damage      = 12;
+        w.damage      = 11;       // slightly trimmed per-round (rate carries the DPS)
         w.type        = x3::DamageType::Kinetic;
-        w.fireRate    = 11.0f;    // ~660 rpm
+        w.fireRate    = 12.0f;    // ~720 rpm — crisp full-auto
         w.pellets     = 1;
-        w.spreadDeg   = 1.8f;     // a touch of bloom (auto)
-        w.recoilDeg   = 0.5f;     // low recoil per shot
+        w.spreadDeg   = 2.2f;     // a bit more bloom so it isn't a laser at range (auto)
+        w.recoilDeg   = 0.45f;    // low, controllable kick per shot
         w.range       = 60.0f;
-        w.magSize     = 40;
-        w.reserveAmmo = 200;
-        w.reloadTime  = 2.0f;
+        w.magSize     = 45;
+        w.reserveAmmo = 225;
+        w.reloadTime  = 1.9f;
         w.viewmodelGlb = "WeaponRailgun.glb";  // railgun reads as a rifle for the auto SMG
         w.vmScale     = 0.24f;                 // longarm (~0.46 m held)
         w.muzzleFx    = "muzzle_smg";
         w.impactFx    = "impact_bullet";
+        w.impactSfx   = "weapons/impact/Bullet_Impact_14.wav";   // ballistic impact tick
         // Task #21 FIX B (stoppable loop voice): autos play ONE sustained looping WAV
         // started on the rising edge of held fire and stopped the instant the trigger
         // releases (or on switch/empty/death/menu) — see the fire block in main.cpp.
@@ -353,21 +355,22 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.name        = "shotgun";
         w.kind        = FireKind::Hitscan;
         w.automatic   = false;
-        w.damage      = 20;       // PER pellet
+        w.damage      = 14;       // PER pellet x10 = 140 point-blank (close-range deleter, falloff via range)
         w.type        = x3::DamageType::Kinetic;
-        w.fireRate    = 1.0f;
-        w.pellets     = 8;
-        w.spreadDeg   = 7.0f;     // wide cone
-        w.recoilDeg   = 4.0f;     // big kick
-        w.range       = 15.0f;
+        w.fireRate    = 1.2f;     // a touch faster pump
+        w.pellets     = 10;       // denser pattern (was 8) so the spread reads as a wall of pellets
+        w.spreadDeg   = 6.0f;     // slightly tighter cone -> more pellets connect at usable range
+        w.recoilDeg   = 4.5f;     // big satisfying kick
+        w.range       = 18.0f;
         w.magSize     = 8;
-        w.reserveAmmo = 32;
-        w.reloadTime  = 2.5f;
+        w.reserveAmmo = 40;
+        w.reloadTime  = 2.3f;
         w.viewmodelGlb = "WeaponShotgun2.glb";  // real shotgun.obj (PBR-textured; long barrel -> small scale)
         w.vmScale     = 0.11f;                   // longest source model (4.4 m) -> ~0.48 m held
         w.muzzleFx    = "muzzle_shotgun";
         w.impactFx    = "impact_bullet";
         w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-57.wav";   // heavy single boom
+        w.impactSfx   = "weapons/impact/Bullet_Impact_21.wav";               // heavier impact thump
         r.push_back(w);
     }
 
@@ -381,21 +384,22 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.automatic   = false;
         w.damage      = 35;
         w.type        = x3::DamageType::Energy;
-        w.fireRate    = 2.0f;
+        w.fireRate    = 2.2f;
         w.pellets     = 1;
-        w.spreadDeg   = 0.3f;
-        w.recoilDeg   = 1.5f;
+        w.spreadDeg   = 0.25f;    // tight — an aimed energy bolt
+        w.recoilDeg   = 1.3f;
         w.range       = 80.0f;
         w.magSize     = 20;
         w.reserveAmmo = 80;
-        w.reloadTime  = 2.2f;
-        w.projSpeed   = 45.0f;    // m/s bolt
+        w.reloadTime  = 2.1f;
+        w.projSpeed   = 55.0f;    // m/s bolt — a hair faster so it leads less at range
         w.viewmodelGlb = "WeaponBFG.glb";  // bfg.obj energy-cannon look for the plasma bolt
         w.vmScale     = 0.24f;             // bulky energy weapon (~0.42 m held)
         w.muzzleFx    = "muzzle_plasma";
         w.impactFx    = "impact_plasma";
         // Sci-fi energy single (a distinct, higher-tech single shot).
         w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-30.wav";
+        w.impactSfx   = "weapons/impact/Laser_Impact_Light_6.wav";   // energy splat on impact
         r.push_back(w);
     }
 
@@ -420,22 +424,23 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.name        = "chaingun";
         w.kind        = FireKind::Hitscan;
         w.automatic   = true;
-        w.damage      = 14;
+        w.damage      = 13;
         w.type        = x3::DamageType::Kinetic;
-        w.fireRate    = 14.0f;        // ~840 rpm at full spin
+        w.fireRate    = 15.0f;        // ~900 rpm at full spin
         w.pellets     = 1;
-        w.spreadDeg   = 2.5f;         // some bloom (heavy auto)
-        w.recoilDeg   = 0.4f;         // low per-shot kick, but it adds up fast
+        w.spreadDeg   = 3.0f;         // heavy auto bloom — area suppression, not a sniper
+        w.recoilDeg   = 0.35f;        // low per-shot kick, but it adds up fast
         w.range       = 70.0f;
         w.magSize     = 100;          // large belt
         w.reserveAmmo = 400;          // large reserve
         w.reloadTime  = 3.0f;         // slow to reload the belt
-        w.spinUpTime     = 0.6f;      // 0.6 s of fire to reach full RoF
-        w.spinUpStartFrac= 0.4f;      // starts at 40% of fireRate (cold barrel)
+        w.spinUpTime     = 0.7f;      // 0.7 s of fire to reach full RoF (heavier wind-up read)
+        w.spinUpStartFrac= 0.35f;     // starts at 35% of fireRate (cold barrel)
         w.viewmodelGlb = "WeaponRocketLauncher.glb";  // heaviest model -> the chaingun read
         w.vmScale     = 0.26f;                        // heavy weapon (~0.49 m held)
         w.muzzleFx    = "muzzle_chaingun";
         w.impactFx    = "impact_bullet";
+        w.impactSfx   = "weapons/impact/Bullet_Impact_14.wav";   // ballistic impact tick
         // Task #21 FIX B (stoppable loop voice): the chaingun's continuous minigun whine
         // is ONE looping WAV the host starts on the rising edge of held fire and stops the
         // instant fire is released (or on switch/empty/death/menu). The old per-round
@@ -458,16 +463,16 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.automatic   = true;         // full-auto bolt stream
         w.damage      = 40;           // direct-hit damage
         w.type        = x3::DamageType::Energy;
-        w.fireRate    = 4.0f;         // medium RoF
+        w.fireRate    = 4.5f;         // medium-fast RoF (bolt stream)
         w.pellets     = 1;
-        w.spreadDeg   = 0.6f;
-        w.recoilDeg   = 0.8f;
+        w.spreadDeg   = 0.5f;
+        w.recoilDeg   = 0.7f;
         w.range       = 90.0f;
         w.magSize     = 30;
         w.reserveAmmo = 120;
         w.reloadTime  = 2.2f;
-        w.projSpeed   = 60.0f;        // faster bolt than the plasma pistol
-        w.splashRadius= 2.0f;         // small AoE on impact
+        w.projSpeed   = 72.0f;        // faster, flatter bolt than the plasma pistol
+        w.splashRadius= 2.2f;         // small AoE on impact
         w.splashDamage= 15;           // splash damage at the center
         w.viewmodelGlb = "WeaponBFG.glb";  // bfg.obj energy-cannon look (shared with plasma)
         w.vmScale     = 0.24f;             // bulky energy weapon (~0.42 m held)
@@ -475,6 +480,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.impactFx    = "impact_plasma";
         // Bigger energy single than the plasma pistol (largest single = fuller bolt).
         w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-66.wav";
+        w.impactSfx   = "weapons/impact/Laser_Impact_Light_6.wav";   // energy splat on impact
         r.push_back(w);
     }
 
@@ -490,23 +496,24 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.name        = "lightning";
         w.kind        = FireKind::Hitscan;   // instant-hit beam = hitscan path
         w.automatic   = true;                // held = continuous beam
-        w.damage      = 10;                  // per beam tick / per chained target
+        w.damage      = 11;                  // per beam tick / per chained target (slight bump)
         w.type        = x3::DamageType::Energy;
-        w.fireRate    = 16.0f;               // "continuous" — many ticks/s
+        w.fireRate    = 15.0f;               // "continuous" — many ticks/s
         w.pellets     = 1;                   // 1 primary; chains add rays
         w.spreadDeg   = 0.0f;                // a beam is dead-accurate
-        w.recoilDeg   = 0.15f;               // almost none (steady beam)
-        w.range       = 28.0f;               // SHORT range
+        w.recoilDeg   = 0.12f;               // almost none (steady beam)
+        w.range       = 30.0f;               // SHORT range (slightly extended)
         w.magSize     = 80;                  // a "cell" of charge
         w.reserveAmmo = 240;
         w.reloadTime  = 2.4f;
         w.beam        = true;                // render as a solid beam (host hint)
         w.chainTargets= 2;                   // primary + 2 chains = 3 targets
-        w.falloffStart= 14.0f;               // half-range: damage falls off past 14 m
+        w.falloffStart= 15.0f;               // half-range: damage falls off past 15 m
         w.viewmodelGlb = "WeaponRailgun.glb"; // railgun rifle for the precision beam
         w.vmScale     = 0.24f;                // longarm (~0.46 m held)
         w.muzzleFx    = "muzzle_lightning";
         w.impactFx    = "impact_lightning";
+        w.impactSfx   = "weapons/impact/Laser_Impact_Light_6.wav";   // electric splat on impact
         // Continuous electric ZAP (Vefects Zap pack) — looped while the beam is held so
         // it reads as a sustained lightning crackle (not a generic gun loop).
         w.fireSfx     = "weapons/loops/Vefects_Zap_Medium_01.wav";
@@ -1031,12 +1038,12 @@ bool runWeaponsSelfTest() {
         bool kinds = haveFour && named &&
                      a.def(ip).kind == FireKind::Hitscan &&
                      a.def(is).kind == FireKind::Hitscan && a.def(is).automatic &&
-                     a.def(ig).kind == FireKind::Hitscan && a.def(ig).pellets == 8 &&
+                     a.def(ig).kind == FireKind::Hitscan && a.def(ig).pellets == 10 &&
                      a.def(il).kind == FireKind::Projectile && a.def(il).projSpeed > 0.0f;
-        // Pistol matches the design-doc numbers (15 dmg / 3 per s / mag 12 / 50 m).
+        // Pistol matches the tuned numbers (polish pass: 16 dmg / 4.5 per s / mag 12 / 55 m).
         bool pistolStats = named &&
-                     a.def(ip).damage == 15 && a.def(ip).fireRate == 3.0f &&
-                     a.def(ip).magSize == 12 && a.def(ip).range == 50.0f;
+                     a.def(ip).damage == 16 && a.def(ip).fireRate == 4.5f &&
+                     a.def(ip).magSize == 12 && a.def(ip).range == 55.0f;
         wcheck(haveFour && named && kinds && pistolStats,
                "W0 roster: pistol/smg/shotgun/plasma present with doc-sourced stats");
     }
@@ -1134,29 +1141,29 @@ bool runWeaponsSelfTest() {
         a.tick(1.0f);
         bool stillReloadingMid = a.isReloading() && a.currentState().ammoInMag == 0;
         wcheck(stillReloadingMid, "W4c mid-reload: mag not yet refilled");
-        a.tick(2.0f);         // total 3.0 s > 2.5 s reload
+        a.tick(2.0f);         // total 3.0 s > 2.3 s reload
         bool refilled = !a.isReloading() && a.currentState().ammoInMag == 8 &&
-                        a.currentState().reserve == 24;   // 32 - 8 = 24
+                        a.currentState().reserve == 32;   // reserve 40 - 8 = 32
         wcheck(refilled, "W4d reload complete: mag full, reserve drained by 8");
     }
 
     // ---- W5: shotgun emits N pellets per shot --------------------------------
     {
         Arsenal a;
-        a.select(2);          // shotgun: pellets 8
+        a.select(2);          // shotgun: pellets 10
         a.tick(1.0f);
         ResolvedFire f = a.fire(eye, fwd, rng);
-        bool eightRays = f.fired && (int)f.rays.size() == 8 && f.projectiles.empty();
+        bool nRays = f.fired && (int)f.rays.size() == 10 && f.projectiles.empty();
         // Every pellet ray carries the per-pellet damage + the weapon range.
-        bool perPelletDmg = eightRays;
+        bool perPelletDmg = nRays;
         for (const auto& ray : f.rays)
-            if (ray.damage != 20 || ray.range != 15.0f) perPelletDmg = false;
+            if (ray.damage != 14 || ray.range != 18.0f) perPelletDmg = false;
         // Spread actually scatters the rays (not all identical to the input dir).
         bool scattered = false;
         for (const auto& ray : f.rays)
             if (std::fabs(ray.dir.x - 1.0f) > 1e-4f || std::fabs(ray.dir.y) > 1e-4f) scattered = true;
-        wcheck(eightRays && perPelletDmg && scattered,
-               "W5 shotgun: 8 spread pellets, each 20 dmg @ 15 m");
+        wcheck(nRays && perPelletDmg && scattered,
+               "W5 shotgun: 10 spread pellets, each 14 dmg @ 18 m");
     }
 
     // ---- W6: hitscan AND projectile both resolve into the right payload ------
@@ -1166,7 +1173,7 @@ bool runWeaponsSelfTest() {
         a.select(0); a.tick(1.0f);
         ResolvedFire h = a.fire(eye, fwd, rng);
         bool hitscanOK = h.fired && (int)h.rays.size() == 1 && h.projectiles.empty() &&
-                         h.rays[0].damage == 15;
+                         h.rays[0].damage == 16;
         // Projectile (plasma): one projectile spawned at the eye with vel = dir*speed.
         a.select(3); a.tick(1.0f);
         ResolvedFire p = a.fire(eye, fwd, rng);
@@ -1174,7 +1181,7 @@ bool runWeaponsSelfTest() {
         if (projOK) {
             const ProjectileSpawn& pj = p.projectiles[0];
             float vlen = std::sqrt(pj.vel.x*pj.vel.x + pj.vel.y*pj.vel.y + pj.vel.z*pj.vel.z);
-            projOK = pj.damage == 35 && std::fabs(vlen - 45.0f) < 0.5f &&
+            projOK = pj.damage == 35 && std::fabs(vlen - 55.0f) < 0.5f &&
                      std::fabs(pj.pos.x - eye.x) < 1e-4f;   // spawns at the muzzle/eye
         }
         // Recoil is reported and non-zero for both.
