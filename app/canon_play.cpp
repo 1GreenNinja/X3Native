@@ -516,13 +516,17 @@ void CanonPlay::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
 }
 
 FireResult CanonPlay::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                             Scene& scene, x3::phys::IPhysicsWorld& physics, int damage) {
+                             Scene& scene, x3::phys::IPhysicsWorld& physics, int damage,
+                             x3::DamageType type) {
     if (!m_built || !m_weapon.hasWeapon()) return FireResult{};
     // Fire against each group; the first that reports a real monster hit took the shot
     // (the nearest body). Keep a geometry-hit result for the tracer end if nothing hit.
+    // canon-aliens Adaptive Hide: `type` flows from the player's weapon all the way to
+    // each MonsterManager::fire so any boss in any group with adaptiveHideResist > 0
+    // reacts to the player's loadout (currently the SaurianWarlord row).
     FireResult best;
     auto tryGroup = [&](MonsterManager& mm) -> bool {
-        FireResult r = mm.fire(eye, dir, scene, physics, damage);
+        FireResult r = mm.fire(eye, dir, scene, physics, damage, type);
         if (r.hitMonster) { best = r; return true; }
         if (r.hit && !best.hit) best = r;
         return false;
@@ -532,7 +536,7 @@ FireResult CanonPlay::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& di
     if (tryGroup(m_attackers)) return best;
     if (tryGroup(m_rescue.bosses())) return best;
     if (m_martinezSpawned) {
-        FireResult r = m_martinez.fire(eye, dir, scene, physics, damage);
+        FireResult r = m_martinez.fire(eye, dir, scene, physics, damage, type);
         if (r.hitMonster) return r;
         if (r.hit && !best.hit) best = r;
     }

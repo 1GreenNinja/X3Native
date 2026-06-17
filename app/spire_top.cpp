@@ -330,23 +330,23 @@ bool SpireTopFloors::onRescue(const x3::phys::Vec3& playerPos, float range) {
 
 FireResult SpireTopFloors::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                                   Scene& scene, x3::phys::IPhysicsWorld& physics,
-                                  int damage) {
+                                  int damage, x3::DamageType type) {
     FireResult r;
     for (uint32_t i = 0; i < (uint32_t)SpireTopFloor::Count; ++i) {
-        FireResult ri = m_enemies[i].fire(eye, dir, scene, physics, damage);
+        FireResult ri = m_enemies[i].fire(eye, dir, scene, physics, damage, type);
         if (ri.hitMonster) return ri;          // a live enemy took it — done
         if (!r.hit && ri.hit) r = ri;          // remember the nearest geometry hit
     }
     // The F6 Alien Overseer boss.
-    FireResult rovr = m_overseer.fire(eye, dir, scene, physics, damage);
+    FireResult rovr = m_overseer.fire(eye, dir, scene, physics, damage, type);
     if (rovr.hitMonster) return rovr;
     if (!r.hit && rovr.hit) r = rovr;
     // The F7 Clone boss.
-    FireResult rboss = m_boss.fire(eye, dir, scene, physics, damage);
+    FireResult rboss = m_boss.fire(eye, dir, scene, physics, damage, type);
     if (rboss.hitMonster) return rboss;
     if (!r.hit && rboss.hit) r = rboss;
     // The transformed mini-boss, if any.
-    FireResult rb = m_victimBoss.fire(eye, dir, scene, physics, damage);
+    FireResult rb = m_victimBoss.fire(eye, dir, scene, physics, damage, type);
     if (rb.hitMonster) return rb;
     if (!r.hit && rb.hit) r = rb;
     return r;

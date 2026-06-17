@@ -159,9 +159,14 @@ public:
     bool onInteract(uint32_t interactId);
 
     // Fire one shot against the L10 Overlord patrol (the allied Salvari are NOT valid
-    // targets, so they are excluded). Returns the result for FX/HUD.
+    // targets, so they are excluded). Returns the result for FX/HUD. `damage` is the
+    // firing weapon's per-shot damage; `type` is the canon-aliens DamageType tag
+    // (Kinetic/Energy/...) that bosses with adaptiveHideResist > 0 react to. Both
+    // defaulted so existing callers keep working (kDamagePerShot + Kinetic).
     FireResult onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                      Scene& scene, x3::phys::IPhysicsWorld& physics);
+                      Scene& scene, x3::phys::IPhysicsWorld& physics,
+                      int damage = kDamagePerShot,
+                      x3::DamageType type = x3::DamageType::Kinetic);
 
     // Draw the L10 patrol + the allied Salvari contacts/survivors (the crystal /
     // cave / upgrade-station props are plain Scene entities drawn by scene.render()).

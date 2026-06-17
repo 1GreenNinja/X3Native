@@ -48,6 +48,7 @@
 #include "monster.h"
 #include "level1_game.h"
 #include "canon_play.h"
+#include "canon_aliens.h"                    // EFLZ canon-alien roster (Mantis/Grey/Reptilian/Nordic) — --test-canonaliens
 #include "intro_coldopen.h"
 #include "cutscene.h"
 #include "npc_dialog.h"
@@ -384,10 +385,22 @@ int dispatchTests(const TestFlags& tf) {
                     "(multi-pod + scripted pre-fight hook) self-test...");
         return x3::game::runBossesSelfTest() ? 0 : 1;
     }
+    if (tf.testAdaptiveHide) {
+        x3::logInfo("running canon-aliens Adaptive-Hide rhythm self-test "
+                    "(type-keyed resist + 8 s window; Warlord-tuned)...");
+        return x3::game::runAdaptiveHideSelfTest() ? 0 : 1;
+    }
     if (tf.testAct2Bosses) {
         x3::logInfo("running EFLZ Act-2 roster (5 alien-planet-surface enemies + "
                     "4 single-body bosses on the existing phase machine) self-test...");
         return x3::game::runAct2BossesSelfTest() ? 0 : 1;
+    }
+    if (tf.testCanonAliens) {
+        x3::logInfo("running EFLZ canon-alien roster (Mantis/Grey/Reptilian/Nordic — "
+                    "the 'most reported' species ported into MonsterSystem::Tuning rows: "
+                    "Saurian Soldier/Warlord, Grey Tasked, Nordic Steward, Mantis Arbiter) "
+                    "self-test...");
+        return x3::game::runCanonAliensSelfTest() ? 0 : 1;
     }
     if (tf.testSpireMid) {
         x3::logInfo("running EFLZ Spire mid-floor (F3 Labs / F4 Offices / F5 Synth bay) "

@@ -231,6 +231,11 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
     m_memoryFlashTime     = tuning.memoryFlashTime;
     m_memoryFlashDamageMul = tuning.memoryFlashDamageMul;
     m_flashTimer          = 0.0f;
+    // ---- Adaptive Hide (canon-aliens). Inert unless adaptiveHideResist > 0. ----
+    m_adaptiveHideResist      = tuning.adaptiveHideResist;
+    m_adaptiveHideDurationSec = tuning.adaptiveHideDurationSec;
+    m_adaptiveHideType        = x3::DamageType::None;
+    m_adaptiveHideTimer       = 0.0f;
 
     // ---- Act-2 gimmicks (Wave 2). Inert by default. Data tags read by act2_world. ----
     m_copyFeintPhase      = tuning.copyFeintPhase;
@@ -433,7 +438,7 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
 // ---------------------------------------------------------------------------
 FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                                Scene& scene, x3::phys::IPhysicsWorld& physics,
-                               int damage) {
+                               int damage, x3::DamageType type) {
     FireResult r;
     r.hpAfter = m_hp;
 
@@ -475,9 +480,25 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
     r.hitMonster = true;
     const bool headshot = (hit.point.y - m_pos.y) > m_hitCenterOff + m_hitHalfY * 0.5f;
     const int  baseDmg  = headshot ? damage * 3 : damage;
-    const int shotDmg = (int)(baseDmg * incomingDamageMul() + 0.5f);
+    // ADAPTIVE HIDE (canon-aliens; opt-in via Tuning::adaptiveHideResist). When a
+    // matched type lands inside the current resist window, scale damage by
+    // (1 - resist). Stacks multiplicatively with memoryFlashDamageMul (see §3.1
+    // of docs/canon-aliens-adaptive-hide.md). Inert when m_adaptiveHideResist == 0.
+    float resistMul = 1.0f;
+    if (m_adaptiveHideResist > 0.0f &&
+        m_adaptiveHideTimer  > 0.0f &&
+        type == m_adaptiveHideType) {
+        resistMul = 1.0f - m_adaptiveHideResist;
+    }
+    const int shotDmg = (int)(baseDmg * incomingDamageMul() * resistMul + 0.5f);
     if (headshot) x3::logInfo("[monster] HEADSHOT! 3x damage");
     bool dead = applyDamage(&m_hp, shotDmg);
+    // Latch the new type + reset the resist window AFTER applying damage. Only
+    // bookkeep when the row has opted in (avoids touching state for normal rows).
+    if (m_adaptiveHideResist > 0.0f) {
+        m_adaptiveHideType  = type;
+        m_adaptiveHideTimer = m_adaptiveHideDurationSec;
+    }
     m_flash = kHitFlashTime;
     r.hpAfter = m_hp;
     // D-ai: remember recent damage so the state machine can flinch/retreat.
@@ -526,11 +547,24 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
 // The knockback impulse is applied by the caller (it owns the direction).
 // ---------------------------------------------------------------------------
 bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
-                                    x3::phys::IPhysicsWorld& physics) {
+                                    x3::phys::IPhysicsWorld& physics,
+                                    x3::DamageType type) {
     if (!m_alive) return false;
+    // ADAPTIVE HIDE (canon-aliens; same rule as fire()): when a matched type lands
+    // inside the current resist window, scale by (1 - resist). Then latch + reset.
+    float resistMul = 1.0f;
+    if (m_adaptiveHideResist > 0.0f &&
+        m_adaptiveHideTimer  > 0.0f &&
+        type == m_adaptiveHideType) {
+        resistMul = 1.0f - m_adaptiveHideResist;
+    }
     // Act-1 boss gimmick (FE#7): memory-flash amplifies incoming melee too (1x else).
-    const int dmg = (int)(damage * incomingDamageMul() + 0.5f);
+    const int dmg = (int)(damage * incomingDamageMul() * resistMul + 0.5f);
     bool dead = applyDamage(&m_hp, dmg);
+    if (m_adaptiveHideResist > 0.0f) {
+        m_adaptiveHideType  = type;
+        m_adaptiveHideTimer = m_adaptiveHideDurationSec;
+    }
     m_flash = kHitFlashTime;
     // D-ai: heavy melee is a strong flinch trigger.
     m_dmgMemory   = kAiDamageMemory;
@@ -674,6 +708,8 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
 
     // Act-1 boss gimmick (FE#7): tick down the memory-flash vulnerability window.
     if (m_flashTimer > 0.0f) { m_flashTimer -= dt; if (m_flashTimer < 0.0f) m_flashTimer = 0.0f; }
+    // Adaptive-Hide (canon-aliens): tick down the type-resist window.
+    if (m_adaptiveHideTimer > 0.0f) { m_adaptiveHideTimer -= dt; if (m_adaptiveHideTimer < 0.0f) m_adaptiveHideTimer = 0.0f; }
 
     // Decay hit-flash.
     if (m_flash > 0.0f) {
@@ -1659,7 +1695,7 @@ void MonsterManager::drawAll(x3::rhi::IRenderDevice& device,
 
 FireResult MonsterManager::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                                 Scene& scene, x3::phys::IPhysicsWorld& physics,
-                                int damage) {
+                                int damage, x3::DamageType type) {
     // Each MonsterSystem::fire() casts an Enemy-layer ray that returns the NEAREST
     // enemy body, but only applies damage if that body is its own. So the first
     // monster whose fire() reports a real monster hit is the one the ray actually
@@ -1668,7 +1704,7 @@ FireResult MonsterManager::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3&
     // keep the best non-monster result (a wall/miss tracer end) for FX.
     FireResult best;
     for (auto& m : m_monsters) {
-        FireResult r = m->fire(eye, dir, scene, physics, damage);
+        FireResult r = m->fire(eye, dir, scene, physics, damage, type);
         if (r.hitMonster) return r;       // the nearest monster took the shot
         if (r.hit && !best.hit) best = r; // remember a geometry hit for the tracer
     }
@@ -2942,10 +2978,10 @@ void MultiPodBoss::drawAll(x3::rhi::IRenderDevice& device, const x3::rhi::FrameC
 
 FireResult MultiPodBoss::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                               Scene& scene, x3::phys::IPhysicsWorld& physics,
-                              int damage) {
+                              int damage, x3::DamageType type) {
     FireResult best;
     for (auto& p : m_pods) {
-        FireResult r = p->fire(eye, dir, scene, physics, damage);
+        FireResult r = p->fire(eye, dir, scene, physics, damage, type);
         if (r.hitMonster) return r;   // a pod took the shot; at most one per call
         if (r.hit && !best.hit) best = r;  // remember a wall hit for the tracer
     }
@@ -4178,6 +4214,110 @@ bool runAct2BossesSelfTest() {
     x3::logInfo(std::string("[act2bosses-test] ") + std::to_string(a2_pass) + " passed, " +
                 std::to_string(a2_fail) + " failed");
     return a2_fail == 0;
+}
+
+// ===========================================================================
+// --test-adaptive-hide: canon-aliens Adaptive-Hide rhythm. One MonsterSystem
+// tuned with adaptiveHideResist=0.6 + window 8s; the test walks the spec's
+// case table (full first hit -> reduced same-type repeat -> full type-rotation
+// -> window expires -> full again -> reduced again) and a final opt-out
+// regression. No window/Vulkan. Mirrors runBossesSelfTest.
+// ===========================================================================
+bool runAdaptiveHideSelfTest() {
+    int ah_pass = 0, ah_fail = 0;
+    auto ahcheck = [&](bool cond, const char* label) {
+        if (cond) { ++ah_pass; x3::logInfo(std::string("[adaptivehide-test] PASS ") + label); }
+        else      { ++ah_fail; x3::logError(std::string("[adaptivehide-test] FAIL ") + label); }
+    };
+
+    HeadlessDevice device;
+    std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+    physics->init(); boGround(*physics, 80.0f);
+
+    // ---- Build a Boss-type monster with Adaptive Hide opted-in. HP is generous so
+    // the long fire sequence never accidentally kills it. damage=0 so the monster
+    // doesn't try to attack the (absent) player. ----
+    MonsterSystem::Tuning t;
+    t.type                    = MonsterType::Boss;
+    t.hp                      = 1000;
+    t.damage                  = 0;
+    t.adaptiveHideResist      = 0.6f;
+    t.adaptiveHideDurationSec = 8.0f;
+
+    Scene scene;
+    MonsterSystem m;
+    m.buildMonsterTuned(scene, device, *physics, riggedGlbRoot(),
+                        x3::phys::Vec3{ 0.0f, 0.4f, 0.0f }, t);
+
+    const int baseDmg = 10;
+    auto hit = [&](x3::DamageType ty) {
+        const int before = m.hp();
+        m.takeMeleeDamage(baseDmg, scene, *physics, ty);
+        return before - m.hp();
+    };
+
+    // T1 — first hit (Kinetic, no prior type): expect FULL damage (10).
+    {
+        const int delta = hit(x3::DamageType::Kinetic);
+        ahcheck(delta == 10, "T1 first hit (fresh window) applies FULL damage (10)");
+    }
+    // T2 — same type immediate: expect REDUCED (10 * (1 - 0.6) = 4).
+    {
+        const int delta = hit(x3::DamageType::Kinetic);
+        ahcheck(delta == 4 && m.adaptiveHideType() == x3::DamageType::Kinetic,
+                "T2 same-type immediate applies REDUCED damage (4) and re-latches");
+    }
+    // T3 — DIFFERENT type immediate: expect FULL (10), latches the new type.
+    {
+        const int delta = hit(x3::DamageType::Energy);
+        ahcheck(delta == 10 && m.adaptiveHideType() == x3::DamageType::Energy,
+                "T3 different-type immediate applies FULL damage (10) and latches Energy");
+    }
+    // T4 — drive the world forward 9 s; the timer must expire (>= durationSec).
+    {
+        for (int i = 0; i < 90; ++i)
+            m.update(0.1f, scene, *physics, x3::phys::Vec3{ 0.0f, 0.0f, 0.0f });
+        ahcheck(m.adaptiveHideTimer() == 0.0f,
+                "T4 update(~9s) expires the resist window (timer == 0)");
+    }
+    // T5 — same type as the latched (Energy), but AFTER expiry: expect FULL.
+    {
+        const int delta = hit(x3::DamageType::Energy);
+        ahcheck(delta == 10,
+                "T5 same-as-latched type AFTER window expired applies FULL damage (10)");
+    }
+    // T6 — immediate same-type after T5: expect REDUCED again (window re-opened).
+    {
+        const int delta = hit(x3::DamageType::Energy);
+        ahcheck(delta == 4,
+                "T6 same-type immediate after T5 applies REDUCED damage (4) again");
+    }
+    // T7 — OPT-OUT regression. A Tuning with adaptiveHideResist=0 takes FULL on every
+    // hit no matter how fast you spam (existing rows must be totally untouched).
+    {
+        MonsterSystem::Tuning t0 = t;
+        t0.adaptiveHideResist = 0.0f;
+        Scene s0;
+        MonsterSystem m0;
+        m0.buildMonsterTuned(s0, device, *physics, riggedGlbRoot(),
+                             x3::phys::Vec3{ 8.0f, 0.4f, 0.0f }, t0);
+        const int before = m0.hp();
+        m0.takeMeleeDamage(baseDmg, s0, *physics, x3::DamageType::Kinetic);
+        m0.takeMeleeDamage(baseDmg, s0, *physics, x3::DamageType::Kinetic);
+        m0.takeMeleeDamage(baseDmg, s0, *physics, x3::DamageType::Kinetic);
+        const int delta = before - m0.hp();
+        ahcheck(delta == 30,
+                "T7 opt-out (resist=0) takes FULL damage on every same-type repeat (3x10=30)");
+    }
+
+    physics->shutdown();
+
+    const int total = ah_pass + ah_fail;
+    x3::logInfo(std::string("adaptivehide: ") + std::to_string(ah_pass) + "/" +
+                std::to_string(total) + " passed");
+    x3::logInfo(std::string("[adaptivehide-test] ") + std::to_string(ah_pass) + " passed, " +
+                std::to_string(ah_fail) + " failed");
+    return ah_fail == 0;
 }
 
 } // namespace x3::game

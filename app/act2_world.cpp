@@ -325,9 +325,10 @@ void Act2World::onTrigger(uint32_t triggerId) {
 }
 
 FireResult Act2World::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                             Scene& scene, x3::phys::IPhysicsWorld& physics) {
+                             Scene& scene, x3::phys::IPhysicsWorld& physics,
+                             int damage, x3::DamageType type) {
     // Only the hostile L8 gauntlet is a valid target (allied companions/fauna excluded).
-    return m_l8Enemies.fire(eye, dir, scene, physics);
+    return m_l8Enemies.fire(eye, dir, scene, physics, damage, type);
 }
 
 void Act2World::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,

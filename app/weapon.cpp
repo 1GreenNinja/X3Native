@@ -296,6 +296,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.kind        = FireKind::Hitscan;
         w.automatic   = false;
         w.damage      = 15;
+        w.type        = x3::DamageType::Kinetic;
         w.fireRate    = 3.0f;
         w.pellets     = 1;
         w.spreadDeg   = 0.5f;     // near-perfect; tiny hipfire jitter
@@ -322,6 +323,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.kind        = FireKind::Hitscan;
         w.automatic   = true;
         w.damage      = 12;
+        w.type        = x3::DamageType::Kinetic;
         w.fireRate    = 11.0f;    // ~660 rpm
         w.pellets     = 1;
         w.spreadDeg   = 1.8f;     // a touch of bloom (auto)
@@ -352,6 +354,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.kind        = FireKind::Hitscan;
         w.automatic   = false;
         w.damage      = 20;       // PER pellet
+        w.type        = x3::DamageType::Kinetic;
         w.fireRate    = 1.0f;
         w.pellets     = 8;
         w.spreadDeg   = 7.0f;     // wide cone
@@ -377,6 +380,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.kind        = FireKind::Projectile;
         w.automatic   = false;
         w.damage      = 35;
+        w.type        = x3::DamageType::Energy;
         w.fireRate    = 2.0f;
         w.pellets     = 1;
         w.spreadDeg   = 0.3f;
@@ -417,6 +421,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.kind        = FireKind::Hitscan;
         w.automatic   = true;
         w.damage      = 14;
+        w.type        = x3::DamageType::Kinetic;
         w.fireRate    = 14.0f;        // ~840 rpm at full spin
         w.pellets     = 1;
         w.spreadDeg   = 2.5f;         // some bloom (heavy auto)
@@ -452,6 +457,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.kind        = FireKind::Projectile;
         w.automatic   = true;         // full-auto bolt stream
         w.damage      = 40;           // direct-hit damage
+        w.type        = x3::DamageType::Energy;
         w.fireRate    = 4.0f;         // medium RoF
         w.pellets     = 1;
         w.spreadDeg   = 0.6f;
@@ -485,6 +491,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.kind        = FireKind::Hitscan;   // instant-hit beam = hitscan path
         w.automatic   = true;                // held = continuous beam
         w.damage      = 10;                  // per beam tick / per chained target
+        w.type        = x3::DamageType::Energy;
         w.fireRate    = 16.0f;               // "continuous" — many ticks/s
         w.pellets     = 1;                   // 1 primary; chains add rays
         w.spreadDeg   = 0.0f;                // a beam is dead-accurate
@@ -504,6 +511,42 @@ std::vector<WeaponDef> makeDefaultRoster() {
         // it reads as a sustained lightning crackle (not a generic gun loop).
         w.fireSfx     = "weapons/loops/Vefects_Zap_Medium_01.wav";
         w.fireSfxLoop = true;   // continuous beam: loopable
+        r.push_back(w);
+    }
+
+    // ---- 8) Rocket Launcher — the first EXPLOSIVE-type weapon. -------------
+    // Heavy projectile with a large impact radius. The canon-aliens DamageType
+    // table needs an Explosive entry; until a future grenade/cryo row is added,
+    // the rocket is the only weapon that stamps Explosive on every shot. Bosses
+    // that opt into adaptiveHideResist against Explosive (none today) would
+    // resist after the first hit + force the player to rotate. Tuning: 80 direct
+    // + 60 splash @ 4 m, mag 4 / reserve 16, slow projectile so the bolt reads.
+    // At 0.8/s sustained DPS is ~64 direct + ~48 splash; a 400-HP boss is still
+    // ~3 rockets (no one-shot), holding the W11 power-ladder invariant.
+    {
+        WeaponDef w;
+        w.name        = "rocket";
+        w.kind        = FireKind::Projectile;
+        w.automatic   = false;
+        w.damage      = 80;                   // direct-hit damage
+        w.type        = x3::DamageType::Explosive;
+        w.fireRate    = 0.8f;                 // slow heavy weapon
+        w.pellets     = 1;
+        w.spreadDeg   = 0.4f;
+        w.recoilDeg   = 5.0f;                 // big kick
+        w.range       = 100.0f;
+        w.magSize     = 4;                    // small tube
+        w.reserveAmmo = 16;
+        w.reloadTime  = 3.5f;
+        w.projSpeed   = 30.0f;                // slow rocket — readable bolt
+        w.splashRadius= 4.0f;                 // large AoE
+        w.splashDamage= 60;                   // significant splash
+        w.viewmodelGlb = "WeaponRocketLauncher.glb"; // dedicated launcher mesh
+        w.vmScale     = 0.26f;                // heavy weapon
+        w.muzzleFx    = "muzzle_rocket";
+        w.impactFx    = "impact_explosion";
+        // Heavy boom on launch (one-shot).
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-57.wav";
         r.push_back(w);
     }
 
@@ -668,6 +711,7 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
             ray.beam         = d.beam;
             ray.chain        = false;
             ray.falloffStart = d.falloffStart;
+            ray.type         = d.type;          // canon-aliens Adaptive-Hide tag
             out.rays.push_back(ray);
         }
         // Lightning Gun chain: extra rays the host resolves against NEARBY enemies
@@ -682,6 +726,7 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
             ray.beam         = d.beam;
             ray.chain        = true;
             ray.falloffStart = d.falloffStart;
+            ray.type         = d.type;          // chain rays inherit the firing weapon's type
             out.rays.push_back(ray);
         }
     } else { // Projectile
@@ -693,6 +738,7 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
         pj.range  = d.range;
         pj.splashRadius = d.splashRadius;   // Plasma Rifle: small AoE on impact
         pj.splashDamage = d.splashDamage;
+        pj.type         = d.type;            // canon-aliens Adaptive-Hide tag
         out.projectiles.push_back(pj);
     }
     return out;
@@ -1256,6 +1302,56 @@ bool runWeaponsSelfTest() {
         bool noOneShot = cg.damage < 200 && prShot < 200 && lg.damage < 200;
         wcheck(abovePistol && noOneShot,
                "W11 power ladder: all 3 > pistol DPS, none one-shots a 200-HP boss");
+    }
+
+    // ---- W12 canon-aliens Adaptive-Hide tag: per-weapon DamageType is set per spec
+    // (Kinetic for ballistic-feel guns, Energy for plasma/lightning) AND survives the
+    // Arsenal::fire() resolve into HitscanRay::type / ProjectileSpawn::type (the data
+    // path the host walks to ultimately pass type to MonsterManager::fire). ----
+    {
+        Arsenal a;
+        // The 7 named weapons and their expected canon types.
+        struct ExpectedType { const char* name; x3::DamageType type; };
+        const ExpectedType expect[] = {
+            { "pistol",       x3::DamageType::Kinetic },
+            { "smg",          x3::DamageType::Kinetic },
+            { "shotgun",      x3::DamageType::Kinetic },
+            { "plasma",       x3::DamageType::Energy  },
+            { "chaingun",     x3::DamageType::Kinetic },
+            { "plasma_rifle", x3::DamageType::Energy  },
+            { "lightning",    x3::DamageType::Energy  },
+            { "rocket",       x3::DamageType::Explosive },
+        };
+        bool allDefsOk = true;
+        for (const ExpectedType& e : expect) {
+            const int i = a.indexOf(e.name);
+            if (i < 0 || a.def(i).type != e.type) { allDefsOk = false; break; }
+        }
+        wcheck(allDefsOk,
+               "W12a per-weapon DamageType matches the canon-aliens table (Kinetic/Energy split)");
+
+        // Resolve: switching to each weapon + firing one shot stamps the same type
+        // onto every HitscanRay (incl. shotgun pellets + lightning chain rays) /
+        // ProjectileSpawn the Arsenal returns.
+        uint32_t rng2 = 0xC0FFEEu;
+        bool allResolveOk = true;
+        for (const ExpectedType& e : expect) {
+            const int i = a.indexOf(e.name);
+            if (i < 0) { allResolveOk = false; break; }
+            a.select(i);
+            // select() sets cooldown == 1/fireRate so a switch can't fire faster than
+            // the new weapon's rate. Advance past it so the shot lands in the test.
+            a.tick(10.0f);
+            ResolvedFire shot = a.fire(eye, fwd, rng2);
+            if (!shot.fired) { allResolveOk = false; break; }
+            for (const HitscanRay& r : shot.rays)
+                if (r.type != e.type) { allResolveOk = false; break; }
+            for (const ProjectileSpawn& p : shot.projectiles)
+                if (p.type != e.type) { allResolveOk = false; break; }
+            if (!allResolveOk) break;
+        }
+        wcheck(allResolveOk,
+               "W12b Arsenal::fire() stamps WeaponDef::type onto every HitscanRay + ProjectileSpawn");
     }
 
     x3::logInfo(std::string("[weapons-test] ") + std::to_string(w_pass) + " passed, " +

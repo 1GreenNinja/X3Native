@@ -141,9 +141,12 @@ bool SpireNexus::onInteract(const x3::phys::Vec3& playerPos, Scene& scene,
 
 FireResult SpireNexus::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                               Scene& scene, x3::phys::IPhysicsWorld& physics,
-                              int damage) {
+                              int damage, x3::DamageType type) {
     if (!m_built || !m_armed) return FireResult{};   // no Chorus to hit before discovery
-    return m_chorus.fire(eye, dir, scene, physics, damage);
+    // canon-aliens Adaptive Hide: forwards type to each Chorus pod's fire (no-op for
+    // pods with adaptiveHideResist=0, which is the current Chorus tuning; opens the
+    // door for a future Chorus-tier boss that opts in to react to player loadout).
+    return m_chorus.fire(eye, dir, scene, physics, damage, type);
 }
 
 void SpireNexus::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
