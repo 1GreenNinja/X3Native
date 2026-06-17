@@ -246,3 +246,83 @@ for a single green increment; the test-ladder extraction proves the pattern
 (struct-of-state + dispatch returning a sentinel) that the host split should
 follow. `kShowroomHatchCode` and `SpeakingMonster` are now header-shared, which
 removes two of the coupling points a future host split would hit.
+
+---
+
+# Part 3 — THE DEEP CORE SPLIT (branch `refactor/split-main-deep`)
+
+**Branch:** `refactor/split-main-deep` (off `origin/refactor/monolith-split`)
+**Final pushed commit:** `6be1901`
+**Author:** Opus 4.8 (1M ctx), 2026-06-16. Finishes the deferred deep core above.
+
+This branch FINISHES the monolith split: it threads a real `HostContext` and
+lifts the `--world` host dispatch, the headless capture handlers, the interactive
+render loop, AND the CLI parse out of `main()`. `main.cpp` stops being a monolith.
+
+## HostContext design (`app/host_context.h`)
+
+A near-1:1 mirror of `main()`'s shared live-state locals so populating it stays a
+plain assignment list (same pattern as `TestFlags`): non-owning `device`/`window`
+pointers, `worldMode`/`headless`, the headless dims `W`/`H`, the screenshot +
+capture flags/paths, `shotCam`/`shotCamOverride`, stress/bench, the `--world
+streamed` tuning, the A/B switches, the boot-time async-audio future pointer, the
+`--set` cvar list, and the default-host boot flags. Each extracted body binds the
+state out of the context by its **original main()-local names** via a short alias
+prelude, so the moved code is byte-identical (the only other edit is
+`device.get()` -> `device`, since the hosts take a raw `IRenderDevice*`).
+
+## Per-phase extraction (commit / before→after main.cpp)
+
+| Phase | What moved | New TU(s) | commit | main.cpp |
+|---|---|---|---|---:|
+| A | the 9 self-contained `--world` hosts (destruct/physjoint/ragdoll/drive\|boat\|fly/club/showroom/valley/cliffs/streamed) behind `dispatchWorldHost` | `app/host_context.h`, `app/world_hosts.h`, `app/world_hosts/*.cpp`, `app/showroom_tod.h`, `app/input_globals.h` | `a98989d` | 13,002 → **8,773** |
+| B | the 14 headless screenshot/capture handlers behind `dispatchScreenshotHosts` (incl. the sole `gif.h` TU + a file-local stb_image) | `app/screenshot_hosts.{h,cpp}` | `c0995e4` | 8,773 → **6,750** |
+| C | the DEFAULT HOST — the interactive render loop + cell/terrain/canon/fromdoc world build, audio/physics/loading bring-up, intro cold-open, smoketest/screenshot/bench paths — behind `runDefaultHost` (+ the host-only anon helpers; `boot_audio.h`/`settings_io.h` shared) | `app/app_run.{h,cpp}`, `app/boot_audio.h`, `app/settings_io.h` | `ce8e618` | 6,750 → **1,529** |
+| D | the flag declarations + arg-parse loop behind `CliOptions`/`parseCli` | `app/cli.{h,cpp}` | `6be1901` | 1,529 → **683** |
+
+`main()` is now the runbook's thin entry: **parse (cli) → dispatch (screenshot
+hosts, then world hosts) → run (default host)**.
+
+### Coupling points lifted to shared headers (one definition, two+ TUs)
+`applyShowroomTimeOfDay`/`showroomDayDefault` (`showroom_tod.h`), `g_weaponScroll`/
+`scrollCallback` (`input_globals.h`), `BootAudio`/`makeBootAudio` (`boot_audio.h`),
+the settings cfg I/O (`settings_io.h`), `kShowroomHatchCode` (moved with the
+showroom host). `main()` keeps every call site unqualified via using-declarations.
+
+## Acceptance receipts — baseline vs. after (`6be1901`)
+
+Baseline captured off this worktree (`C:\GameDev\device_split_baseline.txt`
+basins). Gate run after **every** phase (build + smoketest + receipts + the 97
+test-flag ladder).
+
+| Gate | Baseline | After (`6be1901`) |
+|---|---|---|
+| Release build | GREEN | **GREEN** |
+| Debug build | GREEN | **GREEN** (both configs) |
+| `--test-*` ladder (+ `--demo-dialog`) | 97 / 0 | **97 / 0** |
+| `--smoketest` VUID | 0 | **0** |
+| `--smoketest` allocationCount | 0 | **0** |
+| `default.png` | basin {975928.., 1C5B7D.., 597675.., 2EF570..} | **975928.. / 1C5B7D..** (in-basin) |
+| `legacypost` | {1F452D9D.., FD42B9..} | **1F452D9D.. / FD42B9..** (in-basin) |
+| `norefl` | {82DB9CBF.. (dom), CAB77D3A..} | **82DB9CBF.. / CAB77D3A..** (in-basin) |
+| `notaa` | {549A9D75.., 545EE1BF..} | **549A9D75..** (in-basin) |
+
+Extra functional proofs (all exit 0): the 9 world-host proofs
+(`--screenshot-destruct`, `--screenshot-showroom-fp`, `--world ragdoll/physjoint
+--screenshot`, `--screenshot-perfshop`), the screenshot handlers
+(`--screenshot-sky/-terrain/-nightsky/-editor`), the `--capture-ai` GIF path,
+`--smoketest --world canonlevel/terrain`, `--bench N M`, and arg-parse paths
+(`--shot-cam`, `--set`). Touched **only** `app/` (zero `engine/` changes — kept
+conflict-free with the parallel skinned-TLAS work).
+
+## Final app file sizes + the one remaining large TU
+
+`main.cpp` **683**, `cli.{h,cpp}` 523+398, `screenshot_hosts.cpp` 2,175,
+`world_hosts/host_showroom.cpp` 2,106 (both under ~2,500), the other 8 hosts
+107–624. **`app/app_run.cpp` is 5,387 lines** — the interactive render loop is now
+an isolated, focused TU but still one big function. Splitting it further means
+decomposing the render-loop's single giant scope (hundreds of locals) into
+sub-steps — the same fine-grained coupling problem, a separate higher-risk pass
+that is NOT required to de-monolith `main.cpp`. **Deferred** as the only item over
+the ~2,500-line target; it is self-contained and gate-anchored, so a follow-up can
+carve it (per-frame update / world-build / headless-paths) behind the same gate.
