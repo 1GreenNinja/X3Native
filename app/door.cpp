@@ -67,13 +67,13 @@ uint32_t DoorSystem::add(const Door& d) {
 
 Door* DoorSystem::findByEntity(uint32_t entityId) {
     for (Door& d : m_doors)
-        if (d.entity == entityId) return &d;
+        if (d.entity == entityId || d.entity2 == entityId) return &d;
     return nullptr;
 }
 
 const Door* DoorSystem::findByEntity(uint32_t entityId) const {
     for (const Door& d : m_doors)
-        if (d.entity == entityId) return &d;
+        if (d.entity == entityId || d.entity2 == entityId) return &d;
     return nullptr;
 }
 
@@ -164,6 +164,23 @@ void DoorSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics
             e.transform[13] = p.y;
             e.transform[14] = p.z;
             e.transform[15] = 1.0f;
+        }
+        // SECOND PANEL (two-panel floor hatch): slide it the opposite way on the
+        // SAME cursor so the two halves part from / close to the centre together.
+        if (d.body2.valid()) {
+            x3::phys::Vec3 p2{
+                d.closedPos2.x + (d.openPos2.x - d.closedPos2.x) * u,
+                d.closedPos2.y + (d.openPos2.y - d.closedPos2.y) * u,
+                d.closedPos2.z + (d.openPos2.z - d.closedPos2.z) * u,
+            };
+            physics.setBodyPosition(d.body2, p2);
+            if (d.entity2 != kNoLink && d.entity2 < scene.size()) {
+                Entity& e2 = scene.get(d.entity2);
+                e2.transform[12] = p2.x;
+                e2.transform[13] = p2.y;
+                e2.transform[14] = p2.z;
+                e2.transform[15] = 1.0f;
+            }
         }
     }
 }
@@ -347,6 +364,85 @@ uint32_t buildDoorAndButton(Scene& scene, DoorSystem& doors,
 }
 
 // ---------------------------------------------------------------------------
+// Two-panel flush floor hatch (blast-door / iris). See door.h.
+// ---------------------------------------------------------------------------
+uint32_t buildFloorHatch(Scene& scene, DoorSystem& doors,
+                         x3::rhi::IRenderDevice& device,
+                         x3::phys::IPhysicsWorld& physics,
+                         const DoorSpec& spec) {
+    const float hw = spec.halfWidth;          // half the SQUARE opening (covers full Z)
+    const float ht = spec.thickness * 0.5f;   // panel Y half-thickness
+    const float c  = spec.doorwayCenter.x;    // opening centre X
+    const float cy = spec.doorwayCenter.y;    // floor top Y (panels sit flush BELOW this)
+    const float cz = spec.doorwayCenter.z;    // opening centre Z
+
+    // Each panel covers half the opening in X (half-extent hw*0.5) and the full
+    // depth in Z (half-extent hw). Top FLUSH with the floor: panel centre at
+    // cy - ht (so the top surface is at cy, matching the surrounding floor slab).
+    const float panelHalfX = hw * 0.5f;
+    const x3::phys::Vec3 panelHalf{ panelHalfX, ht, hw };
+    const float panelY = cy - ht;
+
+    // Closed: panel 1 fills the -X half (centre at c - panelHalfX), panel 2 the +X
+    // half (centre at c + panelHalfX) — together they cover [c-hw, c+hw] flush.
+    const x3::phys::Vec3 closed1{ c - panelHalfX, panelY, cz };
+    const x3::phys::Vec3 closed2{ c + panelHalfX, panelY, cz };
+    // Open: each panel slides OUTWARD by the full opening width (2*hw) so each
+    // clears its half and the whole [c-hw, c+hw] X span is open — drop-through.
+    const x3::phys::Vec3 open1{ closed1.x - 2.0f * hw, panelY, cz };
+    const x3::phys::Vec3 open2{ closed2.x + 2.0f * hw, panelY, cz };
+
+    // Panel material: the cell floor texture/tint when supplied (flush + textured),
+    // else the steel `tint`. Use a per-panel render mesh authored centred at the
+    // body origin so the Entity transform drives its slide.
+    const bool useFloor = spec.floorTex.valid();
+    const float* col = useFloor ? spec.floorTint : spec.tint;
+
+    auto buildPanel = [&](const x3::phys::Vec3& closed) -> uint32_t {
+        x3::prims::PrimMesh geo = x3::prims::makeBox(panelHalf.x, panelHalf.y, panelHalf.z, 0, 0, 0, 1.0f);
+        Entity e;
+        e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                   geo.index.data(), (uint32_t)geo.index.size());
+        if (useFloor) e.tex = spec.floorTex;
+        e.baseColor[0]=col[0]; e.baseColor[1]=col[1]; e.baseColor[2]=col[2]; e.baseColor[3]=col[3];
+        e.tag = (uint32_t)Tag::Door;
+        e.visible = true;                       // the flush panels ARE the visual (no GLB)
+        e.body = physics.addBox(panelHalf, closed, 0.0f, x3::phys::Layer::Static);
+        e.transform[12]=closed.x; e.transform[13]=closed.y; e.transform[14]=closed.z;
+        return scene.add(e);
+    };
+
+    const uint32_t ent1 = buildPanel(closed1);
+    const uint32_t ent2 = buildPanel(closed2);
+
+    Door d;
+    d.entity     = ent1;
+    d.body       = scene.get(ent1).body;
+    d.closedPos  = closed1;
+    d.openPos    = open1;
+    d.entity2    = ent2;
+    d.body2      = scene.get(ent2).body;
+    d.closedPos2 = closed2;
+    d.openPos2   = open2;
+    d.duration   = spec.duration;
+    d.state      = DoorState::Closed;
+    d.locked     = spec.locked;
+    d.code       = spec.code;
+    d.keycard    = spec.keycard;
+    d.requireBoth = spec.requireBoth;
+    d.axis       = (uint32_t)spec.axis;
+    d.halfWidth  = spec.halfWidth;
+    d.height     = spec.height;
+    d.floorHatch = true;
+    const uint32_t doorIdx = doors.add(d);
+
+    x3::logInfo("buildFloorHatch: two-panel hatch idx " + std::to_string(doorIdx) +
+                " entities " + std::to_string(ent1) + "+" + std::to_string(ent2) +
+                (spec.locked ? " [LOCKED]" : "") + " (flush, parts from centre)");
+    return doorIdx;
+}
+
+// ---------------------------------------------------------------------------
 // Generalized door (+ optional button) at an arbitrary doorway (Level 1).
 // ---------------------------------------------------------------------------
 uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
@@ -359,12 +455,10 @@ uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
     // Half-extents + slide direction.
     x3::phys::Vec3 half, closedPos, openPos;
     if (spec.floorHatch) {
-        // FLOOR HATCH: a flat slab lying in the XZ plane (thin in Y), filling a
-        // square opening at floor level (doorwayCenter.y). It slides ASIDE along +X
-        // by its full width so the opening clears — you pass DOWN through it.
-        half      = x3::phys::Vec3{ hw, ht, hw };
-        closedPos = x3::phys::Vec3{ spec.doorwayCenter.x, spec.doorwayCenter.y + ht, spec.doorwayCenter.z };
-        openPos   = x3::phys::Vec3{ closedPos.x + 2.0f * hw, closedPos.y, closedPos.z };
+        // FLOOR HATCH (two-panel blast-door / iris): handled below in its own
+        // builder so it can lay TWO flush, floor-textured panels that part from the
+        // centre. buildFloorHatch() returns the door index directly.
+        return buildFloorHatch(scene, doors, device, physics, spec);
     } else if (spec.axis == DoorAxis::AlongX) {
         // Wall plane is Z = const: door is wide in X (the run), thin in Z. Slides UP.
         half      = x3::phys::Vec3{ hw, hh, ht };

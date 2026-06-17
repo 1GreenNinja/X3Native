@@ -81,6 +81,16 @@ struct Door {
                                          // graybox box (the vertical SM_Door GLB is
                                          // not drawn over it). Open => you can pass
                                          // DOWN through the floor opening.
+    // ---- TWO-PANEL FLOOR HATCH (blast-door / iris). A flush floor-textured hatch
+    // built as two panels that part from the CENTRE: panel 1 is the primary `body`
+    // (slides -X), panel 2 is `body2` (slides +X). Both panels' collision must move
+    // so the opening clears and the player DROPS THROUGH. body2 is invalid (default)
+    // for an ordinary single-slab door. closedPos2/openPos2 drive panel 2's slide,
+    // animated by the SAME `t` cursor as panel 1.
+    x3::phys::BodyId  body2;             // second panel's physics box (invalid if 1-panel)
+    uint32_t          entity2  = kNoLink;// second panel's Scene entity
+    x3::phys::Vec3    closedPos2{};      // panel 2 closed body-centre
+    x3::phys::Vec3    openPos2{};        // panel 2 open body-centre
 };
 
 // Registry of doors in a level. Kept in the game layer (not the Scene) so the
@@ -204,8 +214,16 @@ struct DoorSpec {
     // Floor HATCH ("the door on the floor"): a horizontal slab lying flat in the
     // floor that slides ASIDE to open (you pass DOWN through the opening). When set,
     // `halfWidth` is the half-size of the SQUARE opening, `thickness` the slab's Y
-    // thinness, `height` is ignored, and the slab keeps its graybox box (no GLB).
+    // thinness, `height` is ignored. The hatch is built FLUSH with the floor as TWO
+    // panels that part from the centre (blast-door / iris) — panel 1 slides -X, panel
+    // 2 slides +X — each textured to match the surrounding floor (floorTex/floorTint).
     bool           floorHatch = false;
+    // Cell-floor MATERIAL for the flush hatch panels (so they read as floor, not a
+    // grey block). When floorTex is valid the two panels use it (+ floorTint); else
+    // they fall back to the steel `tint`. Top of the panels sits flush at
+    // doorwayCenter.y (matching the surrounding floor slab top).
+    x3::rhi::TextureHandle floorTex;                          // invalid => use `tint`
+    float          floorTint[4] = { 1.0f, 1.0f, 1.0f, 1.0f };  // floor texel tint
 };
 
 // Build a generalized door (+ optional linked button) per `spec`, registering
@@ -217,6 +235,19 @@ uint32_t buildLevelDoor(Scene& scene, DoorSystem& doors,
                         x3::rhi::IRenderDevice& device,
                         x3::phys::IPhysicsWorld& physics,
                         const DoorSpec& spec);
+
+// Build a TWO-PANEL flush floor hatch (blast-door / iris) per `spec` (which must
+// have floorHatch=true). Lays two floor-textured panels FLUSH with the floor
+// (tops at spec.doorwayCenter.y) that part from the centre — panel 1 slides -X,
+// panel 2 slides +X — each panel covering half the square opening. Both panels'
+// static collision bodies slide aside as the hatch opens, so when Open the
+// opening is physically clear and the player DROPS THROUGH. Registers a single
+// Door (panel 1 = body, panel 2 = body2) and returns its index in `doors`.
+// Called by buildLevelDoor() when spec.floorHatch is set.
+uint32_t buildFloorHatch(Scene& scene, DoorSystem& doors,
+                         x3::rhi::IRenderDevice& device,
+                         x3::phys::IPhysicsWorld& physics,
+                         const DoorSpec& spec);
 
 // Headless self-test (--test-interact). Builds a minimal room + door + button +
 // a body, asserts T1-T4, logs PASS/FAIL T#, returns true iff all pass. No

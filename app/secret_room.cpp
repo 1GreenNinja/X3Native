@@ -112,12 +112,20 @@ void SecretRoom::build(Scene& scene, x3::rhi::IRenderDevice& device,
         h.doorwayCenter = hatchCenter;
         h.floorHatch    = true;
         h.halfWidth     = kCellHatchHalf;
-        h.thickness     = 0.2f;
+        h.thickness     = 0.1f;        // thin flush panel (matches the 0.1 floor slab top)
         h.duration      = 1.2f;
         h.withButton    = false;       // opened by the terminal code, not a wall button
         h.locked        = true;        // ONLY the override code opens it
         h.code          = 1278;        // the override code (matches kSecretRoomCode; 1127 is taken)
-        h.tint[0]=0.30f; h.tint[1]=0.34f; h.tint[2]=0.40f; h.tint[3]=1.0f;  // dark steel hatch
+        h.tint[0]=0.30f; h.tint[1]=0.34f; h.tint[2]=0.40f; h.tint[3]=1.0f;  // steel fallback
+        // FLUSH + FLOOR-TEXTURED: generate the SAME cell-floor grate texture + B1 tint
+        // the level uses (level1.cpp makeFloorGrateRGBA, kTexN=512, B1 cool-blue tint)
+        // so the two parting panels read as the cell floor, not a grey block.
+        constexpr uint32_t kHatchTexN = 512;
+        auto floorPx = x3::prims::makeFloorGrateRGBA(kHatchTexN, /*tiles*/2,
+                                                     x3::prims::detail::kNoTint, /*hazard*/false);
+        h.floorTex = device.createTexture(floorPx.data(), kHatchTexN, kHatchTexN, true);
+        h.floorTint[0]=0.55f; h.floorTint[1]=0.60f; h.floorTint[2]=0.75f; h.floorTint[3]=1.0f; // B1 tint
         m_hatchIdx = buildLevelDoor(scene, doors, device, physics, h);
     }
 
@@ -446,6 +454,51 @@ bool runSecretRoomSelfTest() {
         bool reachedRoom = y < cellCenter.y - 3.0f && y > secret.roomFloorY() - 0.5f;
         check(open && reachedRoom,
               "S6 body dropped through the open hatch reaches the secret-room floor");
+    }
+
+    // ---- S8: TWO-PANEL hatch — the hatch is built from two flush panels that PART
+    // from the centre, and the collision CLEARS on Open (the drop-through blocker).
+    // Proven in a FRESH world: (a) the door carries a valid second panel body, (b)
+    // a body rests ON the closed two-panel hatch, and (c) once open BOTH panels have
+    // slid outward (centres parted) and the same body now drops through. ----
+    {
+        std::unique_ptr<x3::phys::IPhysicsWorld> p8(x3::phys::createPhysicsWorld());
+        p8->init();
+        HeadlessDevice dev8;
+        Scene s8;
+        DoorSystem d8;
+        SecretRoom sec8;
+        sec8.build(s8, dev8, *p8, d8, x3::phys::Vec3{0,0,0}, "");
+        const Door& h0 = d8.at(sec8.hatchDoorIndex());
+        const bool twoPanel = h0.body2.valid();
+        // Closed-state panel centres (the two halves meet at the opening centre).
+        const float c1x0 = p8->getBodyPosition(h0.body).x;
+        const float c2x0 = p8->getBodyPosition(h0.body2).x;
+
+        // (b) A body dropped on the CLOSED hatch rests on top (collision holds).
+        const x3::phys::Vec3 dropPos{ kCellHatchCx, 1.0f, kCellHatchCz };
+        x3::phys::BodyId held = p8->addBox(x3::phys::Vec3{0.2f,0.2f,0.2f}, dropPos, 2.0f,
+                                           x3::phys::Layer::Dynamic);
+        for (int i = 0; i < 90; ++i) { d8.update(kFixedDt, s8, *p8); p8->step(kFixedDt); }
+        const float yHeld = p8->getBodyPosition(held).y;
+        const bool heldUp = yHeld > -1.0f;          // still up on the closed hatch
+
+        // (c) Open the hatch: BOTH panels slide OUTWARD (centres part), collision clears.
+        d8.unlockAndOpen(d8.at(sec8.hatchDoorIndex()));
+        for (int i = 0; i < 120; ++i) { d8.update(kFixedDt, s8, *p8); p8->step(kFixedDt); }
+        const Door& h1 = d8.at(sec8.hatchDoorIndex());
+        const float c1x1 = p8->getBodyPosition(h1.body).x;
+        const float c2x1 = p8->getBodyPosition(h1.body2).x;
+        const bool parted = (c1x1 < c1x0 - 0.5f) && (c2x1 > c2x0 + 0.5f);  // panels moved apart
+        const bool opened = h1.state == DoorState::Open;
+        // The previously-held body now falls through the cleared opening.
+        x3::phys::BodyId drop = p8->addBox(x3::phys::Vec3{0.2f,0.2f,0.2f}, dropPos, 2.0f,
+                                           x3::phys::Layer::Dynamic);
+        for (int i = 0; i < 180; ++i) { d8.update(kFixedDt, s8, *p8); p8->step(kFixedDt); }
+        const bool dropped = p8->getBodyPosition(drop).y < -1.0f;
+        check(twoPanel && heldUp && opened && parted && dropped,
+              "S8 two-panel hatch: holds when closed, panels part + collision clears (drop-through) when open");
+        p8->shutdown();
     }
 
     physics->shutdown();
