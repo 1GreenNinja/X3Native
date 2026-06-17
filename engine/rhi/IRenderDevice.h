@@ -122,6 +122,39 @@ struct RenderStats {
     uint32_t gpuCullExpected  = 0;   // CPU-side expected `drawn` for the read-back frame
     uint32_t gpuCullEquivFrames     = 0; // frames compared since enable
     uint32_t gpuCullEquivMismatches = 0; // frames where drawn != expected (MUST stay 0)
+
+    // ---- Unified visibility (r_vis / vis-unify; see Visibility.h) ----------
+    // Caps the orchestrator resolves against (constant after init).
+    bool gpuCullSupported   = false; // cull.comp pipelines live (Tier 0 at least)
+    bool asyncCullSupported = false; // dedicated compute queue (Tier 1)
+    bool hzbSupported       = false; // depth pyramid targets live
+    // Host-injected PVS numbers (setVisHostStats): entities the room/portal PVS
+    // skipped at submission this frame + the flood-fill CPU time. Zero when no
+    // PVS is active (legacy levels / sandbox worlds).
+    uint32_t visRoomsCulled = 0;
+    float    visPvsMs       = 0.0f;
+    // Per-stage times: the device emit/cull walk (CPU) and the cull.comp / HZB
+    // reduce dispatch GPU times (graphics-queue timestamps; 0 on Tier 1 frames —
+    // the async dispatch lives off the graphics timeline by design).
+    float cullCpuMs = 0.0f;
+    float cullGpuMs = 0.0f;
+    float hzbGpuMs  = 0.0f;
+
+    // ---- TLAS mutation instrumentation (vis-unify --test-visunify part-D) ---
+    // RE-HOMED reconciliation: the empire RT stack ALREADY shipped the TLAS
+    // double-buffer (VulkanRT m_tlasRing), so the per-frame scene-mutation
+    // vkDeviceWaitIdle is GONE — only the ONE boot-time first-build wait remains.
+    // These mirror the shipped VulkanRT counters so --test-visunify can assert the
+    // REAL zero steady-state sync-waits (32/32) instead of the old "report" path.
+    // tlasBuilds = real (re)builds since init; tlasSyncWaits = CPU-blocking idles
+    // the mutation path paid (settles at 1 = boot); tlasCpuMs = CPU ms of the most
+    // recent buildTlas. (tlasGrows/tlasCpuMsMax are not tracked by the shipped
+    // double-buffer and stay 0 here — kept for HUD/diag layout stability.)
+    uint32_t tlasBuilds    = 0;   // real TLAS (re)builds since init
+    uint32_t tlasSyncWaits = 0;   // CPU-blocking idles in the mutation path (-> 1, boot)
+    uint32_t tlasGrows     = 0;   // (unused on the double-buffer base; always 0)
+    float    tlasCpuMs     = 0.0f; // CPU ms of the most recent mutation path run
+    float    tlasCpuMsMax  = 0.0f; // (unused on the double-buffer base; always 0)
 };
 
 class IRenderDevice {
@@ -190,6 +223,13 @@ public:
     // GPU statDrawn readback against it (stats().gpuCullEquiv*). Costs a CPU cull
     // walk per frame — test/diagnostic only.
     virtual void setGpuCullEquivalenceCheck(bool enabled) {}
+
+    // ---- Unified visibility host stats (vis-unify; see Visibility.h) -------
+    // The app-side room/portal PVS runs BEFORE submission, so the device can't
+    // see what it skipped. The host injects the per-frame PVS numbers here so
+    // stats() carries the whole conserving pipeline (rooms -> frustum -> hzb ->
+    // drawn). Call once per frame (before endFrame); sticky until re-set.
+    virtual void setVisHostStats(uint32_t roomsCulled, float pvsMs) {}
 
     // Metal ambient-specular floor strength (mesh.frag IBL path): metals in a DARK
     // baked environment keep an F0-tinted ambient response instead of going black.

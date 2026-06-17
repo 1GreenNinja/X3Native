@@ -152,10 +152,18 @@ struct CliOptions {
     // identical predicate per frame; asserts statDrawn == expected over a pose
     // sweep + conservation (drawn+culled==tested) + bypass + path-toggle. Additive.
     bool        testGpuCull = false;
+    // --test-visunify (vis-unify acceptance gate): the ONE culling brain — policy
+    // table + conservation across r_vis levels on a still camera + alias-cvar
+    // mapping + the TLAS-mutation ZERO-sync-wait proof (double-buffer base). Additive.
+    bool        testVisUnify = false;
     // --cullpath <n> / --hzb: seed the r_cullpath / r_hzb cvars from the CLI so the
     // smoketest/screenshot/bench paths exercise the D15 GPU cull (INT_MIN = unset).
     int         cullPathArg = INT_MIN;
     int         hzbArg = 0;
+    // --vis <n>: seed THE unified r_vis cvar from the CLI (vis-unify; -1 auto, 0 cpu,
+    // 1 +pvs, 2 pvs+gpu, 3 pvs+gpu+hzb). INT_MIN = unset (default 1). Wins over the
+    // legacy --cullpath/--hzb seeds when both are given.
+    int         visArg = INT_MIN;
     // --test-spiretop (Spire top-floor content): F6/F7 (Act-1 finale) encounter authoring. Additive.
     bool        testSpireTop = false;
     // --test-timeline (EFLZ morality/timeline backbone): infection 4-stage timers + cure

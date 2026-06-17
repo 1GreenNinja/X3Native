@@ -9,8 +9,10 @@
 #include <GLFW/glfw3.h>
 
 #include "engine/core/x3_log.h"
+#include "engine/core/IConsole.h"            // --test-visunify part C: cvar alias mapping
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/rhi/FrustumCull.h"
+#include "engine/rhi/Visibility.h"           // --test-visunify: r_vis policy + unified stats
 #include <glm/gtc/matrix_transform.hpp>
 
 #include "engine/physics/IPhysicsWorld.h"
@@ -23,6 +25,7 @@
 #include "headless_device.h"
 
 #include "self_tests.h"
+#include "app_run.h"                          // --test-visunify part C: vis test hooks
 #include "bindings.h"
 
 #include <memory>
@@ -31,6 +34,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <chrono>
 
 namespace x3::apphost {
 
@@ -280,6 +284,299 @@ bool runGpuCullSelfTest() {
     glfwTerminate();
 
     x3::logInfo("gpucull: " + std::to_string(passed) + "/" + std::to_string(total) + " passed");
+    return passed == total;
+}
+
+// ---------------------------------------------------------------------------
+// --test-visunify : the vis-unify acceptance gate (the ONE culling brain).
+//
+//   A) POLICY TABLE (pure): resolveVisPolicy auto/degradation/PVS-override.
+//   B) CONSERVATION ACROSS POLICIES (real device, validation ON, still camera,
+//      synthetic two-room scene): `drawn` must be IDENTICAL for r_vis 1/2/3
+//      (PVS+GPU must not over-cull vs the CPU reference), every level's chain
+//      must CONSERVE (rooms + frustum + hzb + drawn == candidates), and the
+//      GPU path's `tested` must equal the PVS SURVIVOR set — the proof that
+//      the PVS prefilter is the GPU cull's INPUT, not a parallel system.
+//   C) ALIAS MAPPING: the legacy cvars (r_cullpath/r_hzb/r_roomcull) remap
+//      onto r_vis through the SAME per-frame sync the world loops run.
+//   D) TLAS MUTATION INSTRUMENTATION (RT devices; skipped cleanly elsewhere):
+//      spawn/despawn instances under load and confirm the mutation path is
+//      ZERO-stutter. RE-HOMED reconciliation: the empire RT stack already
+//      shipped the TLAS double-buffer (VulkanRT m_tlasRing), so the per-frame
+//      scene-mutation vkDeviceWaitIdle is GONE — this part now ASSERTS the real
+//      zero steady-state sync-waits (only the boot first-build wait remains)
+//      instead of the old "report sync-waits" path. That is the 31/32 -> 32/32.
+// ---------------------------------------------------------------------------
+bool runVisUnifySelfTest() {
+    using namespace x3::rhi;
+    int passed = 0, total = 0;
+    auto check = [&](const std::string& name, bool ok) {
+        ++total; if (ok) ++passed;
+        x3::logInfo(std::string("  [visunify] ") + (ok ? "PASS " : "FAIL ") + name);
+    };
+
+    // ---- A) policy table (pure, headless) ----------------------------------
+    {
+        VisCaps none{};                       // no GPU cull anywhere
+        VisCaps gpu{ true, false, false };
+        VisCaps full{ true, true, true };
+        VisPolicy p;
+        p = resolveVisPolicy(-1, none);
+        check("A: auto w/o gpu -> L1 pvs+cpu", p.mode == 1 && p.pvs && p.cullPath == 0 && !p.hzb);
+        p = resolveVisPolicy(3, none);
+        check("A: L3 w/o gpu degrades -> L1", p.mode == 1 && p.cullPath == 0 && !p.hzb);
+        p = resolveVisPolicy(3, gpu);
+        check("A: L3 w/o hzb degrades -> L2", p.mode == 2 && p.cullPath == -1 && !p.hzb);
+        p = resolveVisPolicy(-1, full);
+        check("A: auto on full caps -> L3", p.mode == 3 && p.pvs && p.cullPath == -1 && p.hzb);
+        p = resolveVisPolicy(0, full);
+        check("A: L0 = cpu-only reference floor", p.mode == 0 && !p.pvs && p.cullPath == 0 && !p.hzb);
+        p = resolveVisPolicy(2, full, /*pvsOverride=*/0);
+        check("A: r_roomcull-0 override kills PVS only", p.mode == 2 && !p.pvs && p.cullPath == -1);
+        p = resolveVisPolicy(7, full);
+        check("A: out-of-range clamps to L3", p.mode == 3);
+    }
+
+    // ---- real device for B/C/D ---------------------------------------------
+    if (!glfwInit()) { x3::logError("[visunify] glfwInit failed"); return false; }
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    std::unique_ptr<IRenderDevice> device(createRenderDevice());
+    DeviceDesc desc{};
+    desc.width = 640; desc.height = 360; desc.headless = true;
+    desc.validation = true;   // doubles as the validation-silence gate
+    if (!device->init(desc)) {
+        x3::logError("[visunify] device init failed");
+        glfwTerminate(); return false;
+    }
+
+    auto makeBox = [&](float hx, float hy, float hz) {
+        const float px[8] = { -hx,  hx,  hx, -hx, -hx,  hx,  hx, -hx };
+        const float py[8] = { -hy, -hy, -hy, -hy,  hy,  hy,  hy,  hy };
+        const float pz[8] = { -hz, -hz,  hz,  hz, -hz, -hz,  hz,  hz };
+        MeshVertex v[8]{};
+        for (int i = 0; i < 8; ++i) {
+            v[i].pos[0] = px[i]; v[i].pos[1] = py[i]; v[i].pos[2] = pz[i];
+            v[i].normal[1] = 1.0f;
+        }
+        const uint32_t idx[36] = { 0,1,2, 0,2,3,  4,6,5, 4,7,6,  0,4,5, 0,5,1,
+                                   3,2,6, 3,6,7,  1,5,6, 1,6,2,  0,3,7, 0,7,4 };
+        return device->createMesh(v, 8, idx, 36);
+    };
+    MeshHandle cube = makeBox(0.5f, 0.5f, 0.5f);
+    if (!cube.valid()) {
+        x3::logError("[visunify] mesh create failed");
+        device->shutdown(); glfwTerminate(); return false;
+    }
+
+    // Synthetic two-room scene: room 0 = a 12x12 grid around the origin (the
+    // camera's room), room 1 = an identical grid 400 m away (PVS-culled). With
+    // the visible set {0}, the PVS prefilter removes room 1 BEFORE submission —
+    // exactly how the canon level feeds the device.
+    x3::game::Scene scene;
+    constexpr uint32_t kGrid = 12;
+    constexpr uint32_t kPerRoom = kGrid * kGrid;
+    auto addRoom = [&](uint32_t roomId, float baseX) {
+        for (uint32_t z = 0; z < kGrid; ++z)
+            for (uint32_t x = 0; x < kGrid; ++x) {
+                x3::game::Entity e;
+                e.mesh = cube;
+                e.transform[12] = baseX - 33.0f + 6.0f * x;
+                e.transform[13] = 0.5f;
+                e.transform[14] = -33.0f + 6.0f * z;
+                e.roomId = roomId;
+                scene.add(e);
+            }
+    };
+    addRoom(0, 0.0f);
+    addRoom(1, 400.0f);
+    const uint32_t vis0[1] = { 0 };
+    scene.setVisibleRooms(vis0, 1);
+
+    device->setCamera(0.0f, 2.0f, 0.0f, 0.0f, 0.0f, 70.0f);
+    device->setFrustumCullEnabled(true);
+
+    auto renderFrames = [&](const VisPolicy& pol, int n) {
+        scene.setRoomCullEnabled(pol.pvs);
+        device->setCullPath(pol.cullPath);
+        device->setHzbEnabled(pol.hzb);
+        for (int i = 0; i < n; ++i) {
+            auto fc = device->beginFrame();
+            if (!fc.valid) return false;
+            scene.render(*device, fc);
+            device->setVisHostStats(scene.lastRoomCulled(), 0.0f);
+            device->endFrame(fc);
+        }
+        return true;
+    };
+
+    // Warmup on the CPU path to publish the device caps + valid depth (HZB).
+    VisCaps caps;
+    {
+        renderFrames(resolveVisPolicy(0, caps), 4);
+        const RenderStats st = device->stats();
+        caps.gpuCull = st.gpuCullSupported;
+        caps.asyncCull = st.asyncCullSupported;
+        caps.hzb = st.hzbSupported;
+        x3::logInfo(std::string("[visunify] device caps: gpuCull=") +
+                    (caps.gpuCull ? "1" : "0") + " async=" + (caps.asyncCull ? "1" : "0") +
+                    " hzb=" + (caps.hzb ? "1" : "0"));
+    }
+
+    // ---- B) conservation across r_vis levels, still camera -----------------
+    uint32_t drawnRef = 0, testedPvs = 0;
+    {
+        // L0: no PVS — the reference for "the PVS input set" (== all instances).
+        VisPolicy p0 = resolveVisPolicy(0, caps);
+        renderFrames(p0, 5);
+        const VisFrameStats v0 = assembleVisStats(device->stats(), p0.mode);
+        check("B: L0 candidates == whole scene", v0.candidates == 2 * kPerRoom && v0.roomsCulled == 0);
+        check("B: L0 conserves", v0.conserves);
+
+        // L1: PVS+CPU — the legacy default; PVS removes room 1 at submission.
+        VisPolicy p1 = resolveVisPolicy(1, caps);
+        renderFrames(p1, 5);
+        const VisFrameStats v1 = assembleVisStats(device->stats(), p1.mode);
+        drawnRef  = v1.drawn;
+        testedPvs = v1.tested;
+        check("B: L1 PVS prefilters a full room", v1.roomsCulled == kPerRoom);
+        check("B: L1 tested == PVS survivors", v1.tested == kPerRoom);
+        check("B: L1 conserves", v1.conserves && v1.candidates == 2 * kPerRoom);
+        check("B: L1 draws something", v1.drawn > 0 && v1.drawn < kPerRoom);
+
+        if (caps.gpuCull) {
+            // L2: PVS+GPU — the PVS survivor set must BE the GPU cull's input.
+            VisPolicy p2 = resolveVisPolicy(2, caps);
+            renderFrames(p2, 6);
+            const VisFrameStats v2 = assembleVisStats(device->stats(), p2.mode);
+            check("B: L2 gpu path active", v2.activePath >= 1);
+            check("B: L2 tested == PVS survivor set (prefilter feeds the GPU)",
+                  v2.tested == testedPvs);
+            check("B: L2 drawn identical to CPU reference (no over-cull)",
+                  v2.drawn == drawnRef);
+            check("B: L2 conserves", v2.conserves && v2.candidates == 2 * kPerRoom);
+
+            if (caps.hzb) {
+                // L3: +HZB — occlusion splits the frustum survivors; conservation
+                // must hold and nothing beyond the CPU reference may be drawn.
+                VisPolicy p3 = resolveVisPolicy(3, caps);
+                renderFrames(p3, 6);
+                const VisFrameStats v3 = assembleVisStats(device->stats(), p3.mode);
+                check("B: L3 hzb engaged on the gpu path", v3.activePath >= 1);
+                check("B: L3 drawn+hzb == CPU reference (HZB conservation)",
+                      v3.drawn + v3.hzbCulled == drawnRef);
+                check("B: L3 conserves", v3.conserves);
+            } else {
+                x3::logInfo("[visunify] B: L3 skipped (no HZB targets on this device)");
+            }
+        } else {
+            x3::logInfo("[visunify] B: L2/L3 skipped (no GPU cull on this device)");
+        }
+
+        // auto (-1) must resolve to the best supported level.
+        VisPolicy pa = resolveVisPolicy(-1, caps);
+        const int best = caps.hzb ? 3 : (caps.gpuCull ? 2 : 1);
+        check("B: auto resolves to best supported", pa.mode == best);
+    }
+
+    // ---- C) alias-cvar mapping (the same sync the world loops run) ---------
+    {
+        std::unique_ptr<x3::con::IConsole> con(x3::con::createConsole());
+        registerViewmodelCVarsForTest(*con);
+        resetVisSyncForTest();                       // fresh sync state for the test
+        applyRtaoCVarsForTest(*con, *device);        // first sync (defaults)
+        check("C: default r_vis 1 -> pvs+cpu", visPolicyForTest().mode == 1 && visPolicyForTest().pvs);
+
+        con->set("r_cullpath", "1");
+        applyRtaoCVarsForTest(*con, *device);
+        check("C: r_cullpath 1 alias -> r_vis 2", con->getInt("r_vis") == 2);
+        check("C: alias preserves the explicit tier",
+              !caps.gpuCull || visPolicyForTest().cullPath == 1);
+
+        con->set("r_hzb", "1");
+        applyRtaoCVarsForTest(*con, *device);
+        check("C: r_hzb alias -> r_vis 3", con->getInt("r_vis") == 3);
+
+        con->set("r_cullpath", "0");
+        applyRtaoCVarsForTest(*con, *device);
+        check("C: r_cullpath 0 alias -> r_vis 1", con->getInt("r_vis") == 1);
+
+        con->set("r_roomcull", "0");
+        applyRtaoCVarsForTest(*con, *device);
+        check("C: r_roomcull 0 -> PVS override only",
+              !visPolicyForTest().pvs && con->getInt("r_vis") == 1);
+
+        con->set("r_roomcull", "1");
+        con->set("r_vis", "2");
+        applyRtaoCVarsForTest(*con, *device);
+        check("C: direct r_vis 2 clears the tier force + restores PVS",
+              visPolicyForTest().pvs && (!caps.gpuCull || visPolicyForTest().cullPath == -1));
+        resetVisSyncForTest();                       // leave clean state behind
+    }
+
+    // ---- D) TLAS mutation ZERO-sync-wait proof (double-buffer base) ---------
+    {
+        // Back to the plain CPU path; enable RT-AO so the BLAS/TLAS path runs.
+        renderFrames(resolveVisPolicy(0, caps), 2);
+        IRenderDevice::RtaoParams rp{};
+        rp.enabled = true;
+        device->setRtaoParams(rp);
+        // Static warmup: first BLAS/TLAS builds (BLAS is a synchronous load-time
+        // event by design — it must NOT count against the mutation gate). After
+        // warmup the ONLY sync-wait paid is the boot first-build (so syncWaits<=1).
+        renderFrames(resolveVisPolicy(0, caps), 6);
+        const uint32_t buildsAfterWarmup = device->stats().tlasBuilds;
+        const uint32_t syncWaitsAfterWarmup = device->stats().tlasSyncWaits;
+        if (device->stats().tlasBuilds == 0) {
+            x3::logInfo("[visunify] D: skipped (device has no ray tracing — TLAS path inert)");
+        } else {
+            // 120 frames of per-frame scene mutation: a varying extra instance set
+            // changes the TLAS signature EVERY frame -> a rebuild every frame.
+            const float white[4] = { 1, 1, 1, 1 };
+            for (int f = 0; f < 120; ++f) {
+                auto fc = device->beginFrame();
+                if (!fc.valid) break;
+                scene.render(*device, fc);
+                device->setVisHostStats(scene.lastRoomCulled(), 0.0f);
+                float m[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+                const int extras = (f % 17) + 3;
+                for (int s = 0; s < extras; ++s) {
+                    m[12] = -20.0f + 2.1f * s + 0.13f * f;
+                    m[13] = 3.0f + 0.5f * s;
+                    m[14] = -8.0f - 1.7f * s;
+                    device->drawMesh(fc, cube, {}, white, m);
+                }
+                device->endFrame(fc);
+            }
+            const RenderStats st = device->stats();
+            const uint32_t builds = st.tlasBuilds - buildsAfterWarmup;
+            const uint32_t mutationWaits = st.tlasSyncWaits - syncWaitsAfterWarmup;
+            x3::logInfo("[visunify] D: tlasBuilds(mutation)=" + std::to_string(builds) +
+                        " syncWaits(mutation)=" + std::to_string(mutationWaits) +
+                        " totalBuilds=" + std::to_string(st.tlasBuilds) +
+                        " totalSyncWaits=" + std::to_string(st.tlasSyncWaits) +
+                        " lastCpuMs=" + std::to_string(st.tlasCpuMs));
+            // The mutation path is instrumented + exercised: a rebuild recorded on
+            // (nearly) every mutated frame, and the counters are self-consistent.
+            check("D: a rebuild recorded (nearly) every mutated frame", builds >= 110);
+            check("D: rebuild instrumentation is wired + bounded",
+                  st.tlasCpuMs >= 0.0f && st.tlasBuilds >= builds);
+            // RECONCILED 32/32 (the double-buffer shipped on THIS base): the old
+            // vis-unify deferred this to "report sync-waits" (it was 31/32 with a
+            // per-frame vkDeviceWaitIdle); the empire RT stack landed the TLAS
+            // double-buffer, so the per-frame scene-mutation rebuild now pays ZERO
+            // device waits — assert the REAL zero.
+            check("D: ZERO steady-state sync-waits (TLAS double-buffer)", mutationWaits == 0);
+            check("D: boot first-build wait is the only wait the path ever paid",
+                  st.tlasSyncWaits <= 1);
+        }
+    }
+
+    device->destroyMesh(cube);
+    device->shutdown();
+    device.reset();
+    glfwTerminate();
+
+    x3::logInfo("visunify: " + std::to_string(passed) + "/" + std::to_string(total) + " passed");
     return passed == total;
 }
 

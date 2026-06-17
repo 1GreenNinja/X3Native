@@ -121,6 +121,7 @@ using x3::apphost::runFrustumCullSelfTest;
 using x3::apphost::runDebrisSelfTest;
 using x3::apphost::runGpuSkinSelfTest;
 using x3::apphost::runGpuCullSelfTest;
+using x3::apphost::runVisUnifySelfTest;
 using x3::apphost::runHatchChainSelfTest;
 
 int dispatchTests(const TestFlags& tf) {
@@ -591,6 +592,12 @@ int dispatchTests(const TestFlags& tf) {
                     "(headless device + validation, r_cullpath 1, pose sweep, "
                     "GPU statDrawn vs CPU predicate — must match EXACTLY)...");
         return runGpuCullSelfTest() ? 0 : 1;
+    }
+    if (tf.testVisUnify) {
+        x3::logInfo("running vis-unify acceptance self-test (policy table + "
+                    "conservation across r_vis levels on a still camera + alias-cvar "
+                    "mapping + TLAS-mutation ZERO-sync-wait proof on the double-buffer)...");
+        return runVisUnifySelfTest() ? 0 : 1;
     }
     if (tf.testCollapse) {
         x3::logInfo("running K-T3 structural collapse (support graph) self-test "

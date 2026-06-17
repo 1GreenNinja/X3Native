@@ -8,6 +8,7 @@
 //
 //   runFrustumCullSelfTest  --test-frustumcull (CPU frustum math; no GPU)
 //   runGpuCullSelfTest      --test-gpucull     (headless device, GPU cull equiv)
+//   runVisUnifySelfTest     --test-visunify    (headless device, vis policy + TLAS)
 //   runDebrisSelfTest       --test-debris      (headless device, GPU debris)
 //   runGpuSkinSelfTest      --test-gpuskin     (headless device, compute skin)
 //   runHatchChainSelfTest   --test-hatch       (real world + Lua + bindings)
@@ -17,6 +18,7 @@ namespace x3::apphost {
 
 bool runFrustumCullSelfTest();
 bool runGpuCullSelfTest();
+bool runVisUnifySelfTest();
 bool runDebrisSelfTest();
 bool runGpuSkinSelfTest();
 bool runHatchChainSelfTest();

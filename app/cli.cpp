@@ -135,8 +135,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-gpuskin") o.testGpuSkin = true;
         else if (a == "--test-meshlet") o.testMeshlet = true;
         else if (a == "--test-gpucull") o.testGpuCull = true;
+        else if (a == "--test-visunify") o.testVisUnify = true;
         else if (a == "--cullpath" && i + 1 < argc) o.cullPathArg = std::atoi(argv[++i]);
         else if (a == "--hzb") o.hzbArg = 1;
+        else if (a == "--vis" && i + 1 < argc) o.visArg = std::atoi(argv[++i]);
         else if (a == "--test-collapse") o.testCollapse = true;
         else if (a == "--test-physjoint") o.testPhysJoint = true;
         else if (a == "--test-nav") o.testNav = true;

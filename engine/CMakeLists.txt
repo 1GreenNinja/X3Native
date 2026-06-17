@@ -14,6 +14,7 @@ add_library(x3engine STATIC
     rhi/vk/vk_graph.cpp
     rhi/RenderGraph.cpp
     rhi/GpuCull.cpp
+    rhi/Visibility.cpp
     rhi/vma_impl.cpp
     asset/PakAssetSource.cpp
     physics/JoltPhysicsWorld.cpp

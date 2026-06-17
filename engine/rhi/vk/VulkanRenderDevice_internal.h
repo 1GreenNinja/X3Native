@@ -207,6 +207,11 @@ public:
     bool skinnedRtEnabled() const override;
     uint32_t skinnedRtInstanceCount() const override;   // skinned chars in the TLAS this frame
 
+    // vis-unify: host-injected per-frame PVS numbers (room/portal skips + flood ms).
+    void setVisHostStats(uint32_t roomsCulled, float pvsMs) override {
+        m_visRoomsCulled = roomsCulled; m_visPvsMs = pvsMs;
+    }
+
     void setGlassDevParams(const GlassDevParams& p) override;
 
     bool worldToScreen(float wx, float wy, float wz, float& sx, float& sy) const override;
@@ -3002,6 +3007,12 @@ private:
     uint32_t                m_cullEquivFrames = 0;
     uint32_t                m_cullEquivMismatches = 0;
     float                   m_metalAmbient = 1.0f; // metal ambient-spec floor strength (mesh.frag ibl.w; r_metalambient)
+    // ---- vis-unify: host-injected PVS numbers + per-stage timing -----------
+    uint32_t                m_visRoomsCulled = 0;   // setVisHostStats (this frame's room/portal skips)
+    float                   m_visPvsMs = 0.0f;      // setVisHostStats (flood-fill ms)
+    float                   m_cullCpuMs = 0.0f;     // device emit/cull walk CPU time (0 = not measured on this base)
+    float                   m_cullGpuMs = 0.0f;     // cull.comp dispatch GPU time (0 = not measured)
+    float                   m_hzbGpuMs = 0.0f;      // HZB reduce GPU time (0 = not measured)
 };
 
 } // namespace x3::rhi

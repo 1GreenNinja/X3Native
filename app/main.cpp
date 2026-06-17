@@ -330,6 +330,7 @@ int main(int argc, char** argv) {
         _tf.testGpuSkin = o.testGpuSkin;
         _tf.testMeshlet = o.testMeshlet;
         _tf.testGpuCull = o.testGpuCull;
+        _tf.testVisUnify = o.testVisUnify;
         _tf.testCollapse = o.testCollapse;
         _tf.testNav = o.testNav;
         _tf.testWeapons = o.testWeapons;
@@ -678,6 +679,7 @@ int main(int argc, char** argv) {
     _hc.docWorldPath    = o.docWorldPath;
     _hc.cullPathArg     = o.cullPathArg;
     _hc.hzbArg          = o.hzbArg;
+    _hc.visArg          = o.visArg;
     _hc.bootBudgetMs    = o.bootBudgetMs;
     return x3::apphost::runDefaultHost(_hc);
     }   // close the host-dispatch block (its _hc reaches the default host)

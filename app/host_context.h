@@ -130,6 +130,7 @@ struct HostContext {
     std::string docWorldPath;
     int         cullPathArg = 0x80000000;   // INT_MIN sentinel = unset
     int         hzbArg = 0;
+    int         visArg = 0x80000000;        // --vis <n> seed (vis-unify); INT_MIN = unset
     double      bootBudgetMs = 0.0;
 };
 

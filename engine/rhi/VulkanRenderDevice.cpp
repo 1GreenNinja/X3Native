@@ -1078,6 +1078,24 @@ void VulkanRenderDevice::endFrame(const FrameContext& fc) {
         m_building.gpuCullExpected        = m_lastCullExpected;
         m_building.gpuCullEquivFrames     = m_cullEquivFrames;
         m_building.gpuCullEquivMismatches = m_cullEquivMismatches;
+        // ---- vis-unify: device caps + host PVS numbers + per-stage times ----
+        m_building.gpuCullSupported   = m_gpuCullReady;
+        m_building.asyncCullSupported = m_asyncCullReady;
+        m_building.hzbSupported       = m_gpuCullReady && m_hzbReady;
+        m_building.visRoomsCulled     = m_visRoomsCulled;
+        m_building.visPvsMs           = m_visPvsMs;
+        m_building.cullCpuMs          = m_cullCpuMs;
+        m_building.cullGpuMs          = m_cullGpuMs;
+        m_building.hzbGpuMs           = m_hzbGpuMs;
+        // TLAS mutation instrumentation: RE-HOMED onto the SHIPPED double-buffer
+        // counters (VulkanRT m_tlasRing). The per-frame scene-mutation
+        // vkDeviceWaitIdle is GONE — tlasSyncWaits settles at 1 (the boot first
+        // build), so --test-visunify part-D asserts ZERO steady-state sync-waits.
+        m_building.tlasBuilds    = m_rt.tlasBuilds();
+        m_building.tlasSyncWaits = m_rt.tlasSyncWaits();
+        m_building.tlasGrows     = 0;                 // not tracked by the double-buffer
+        m_building.tlasCpuMs     = m_rt.tlasCpuMs();
+        m_building.tlasCpuMsMax  = 0.0f;              // not tracked by the double-buffer
         m_lastStats = m_building;
 
         // ZERO-STUTTER: record this frame in the pacing ring + spike log.
