@@ -165,9 +165,14 @@ public:
     void onTrigger(uint32_t triggerId);
 
     // Fire one shot against the L8 enemy gauntlet (allied companions/fauna are NOT
-    // valid targets, so they are excluded). Returns the result for FX/HUD.
+    // valid targets, so they are excluded). Returns the result for FX/HUD. `damage` is
+    // the firing weapon's per-shot damage; `type` is the canon-aliens DamageType tag
+    // (Kinetic/Energy/...) that bosses with adaptiveHideResist > 0 react to. Both
+    // defaulted so existing callers keep working.
     FireResult onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                      Scene& scene, x3::phys::IPhysicsWorld& physics);
+                      Scene& scene, x3::phys::IPhysicsWorld& physics,
+                      int damage = kDamagePerShot,
+                      x3::DamageType type = x3::DamageType::Kinetic);
 
     // Draw the L8 enemies + the allied companion/fauna markers (the crystal props
     // are plain Scene entities drawn by the host's scene.render()).
