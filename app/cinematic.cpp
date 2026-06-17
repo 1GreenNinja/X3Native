@@ -250,7 +250,7 @@ bool runCutsceneWindowed(x3::rhi::IRenderDevice& device, GLFWwindow* window,
                                 const std::function<void(const std::string&)>& hostEvent) {
     if (!window) return true;   // headless guard (smoketests etc.) — no-op
     x3::logInfo("[cutscene] playing '" + cs.name + "' (" + std::to_string(cs.duration) +
-                " s) — any key / Esc to skip");
+                " s) — press K to skip");
 
     CinematicScene scene;
     device.beginUploadBatch();
@@ -281,16 +281,10 @@ bool runCutsceneWindowed(x3::rhi::IRenderDevice& device, GLFWwindow* window,
         if (dt > 0.1f) dt = 0.1f;
         if (dt < 0.0f) dt = 0.0f;
 
-        // Skip on any rising-edge key / mouse press.
-        bool anyKey = false;
-        for (int k : { GLFW_KEY_ESCAPE, GLFW_KEY_SPACE, GLFW_KEY_ENTER, GLFW_KEY_W, GLFW_KEY_A,
-                       GLFW_KEY_S, GLFW_KEY_D, GLFW_KEY_E, GLFW_KEY_F, GLFW_KEY_LEFT_SHIFT,
-                       GLFW_KEY_LEFT_CONTROL, GLFW_KEY_TAB }) {
-            if (glfwGetKey(window, k) == GLFW_PRESS) { anyKey = true; break; }
-        }
-        if (!anyKey && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS) anyKey = true;
-        if (anyKey && !prevAnyKey) player.skip();
-        prevAnyKey = anyKey;
+        // Skip ONLY on a rising-edge K press (Tim) — movement/look/mouse no longer skip the film.
+        const bool skipKey = (glfwGetKey(window, GLFW_KEY_K) == GLFW_PRESS);
+        if (skipKey && !prevAnyKey) player.skip();
+        prevAnyKey = skipKey;
 
         player.tick(dt);
         const float t = player.time();
