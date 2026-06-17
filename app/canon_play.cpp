@@ -376,8 +376,19 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
         mt.ranged         = false;
         mt.tint[0] = 1.0f; mt.tint[1] = 0.55f; mt.tint[2] = 0.55f; mt.tint[3] = 1.0f; // reddish boss
         mt.modelScale     = 1.35f;   // boss reads taller than a guard
-        // Prefer the rigged + animated chief_martinez set (the bestiary boss model).
-        mt.modelFile        = "chief_martinez.glb";
+        // ANIMATION FIX: prefer the MULTI-CLIP animated rig (chief_martinez_anim.glb,
+        // which carries Idle/Walk/Run/Jump) so the boss actually animates in-game;
+        // fall back to the Idle-only base GLB only if the _anim artifact is absent in
+        // this checkout. (The hall/cell enemies already route through defRigged() which
+        // does this; the boss was hard-pinned to the non-anim base GLB -> never moved
+        // its limbs.) The Skinner discovers the loco clips by name once loaded.
+        {
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            const fs::path animPath = fs::path(riggedGlbRoot()) / "chief_martinez_anim.glb";
+            mt.modelFile = fs::exists(animPath, ec) ? "chief_martinez_anim.glb"
+                                                    : "chief_martinez.glb";
+        }
         mt.modelDirOverride = riggedGlbRoot();
         mt.standUpZtoY      = false;
         m_martinez.buildMonsterTuned(scene, device, physics, m_modelDir,

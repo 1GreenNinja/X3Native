@@ -218,6 +218,18 @@ constexpr float kOrbitRetarget = 1.8f;   // seconds before flipping orbit direct
 // the model turns its back to the player (authored +Z forward). VISUAL TUNING.
 constexpr float kFaceSign      = -1.0f;
 
+// Max VERTICAL separation (m) between an attacker's body center and the player at
+// which ANY attack (melee or ranged) may land. The combat attack gate previously
+// keyed only on the PLANAR (x,z) distance `horiz`, so an enemy a full floor ABOVE
+// the player (planar distance ~0, but several metres up, with a Static floor slab
+// between them) would "attack through the floor". A melee/ranged hit must also be
+// within this vertical band AND have clear line-of-sight (rayCast vs Layer::Static,
+// which the floor/ceiling slabs are) — see the attack block in update(). 2.5 m
+// comfortably covers a tall boss + a crouch/jump but rejects a one-floor (~3 m+)
+// vertical stack. Floors are LOS-blocked anyway; this is the cheap belt-and-braces
+// bound so even a doorway sightline up a ramp can't be exploited as a free hit.
+constexpr float kAttackMaxVertical  = 2.5f;
+
 // ===========================================================================
 // GENERAL COMBAT BALANCE PARAMS (playtest-fix). Named, reusable across games —
 // these are the single source of truth for "how hard does a squad hit, and how
@@ -309,10 +321,27 @@ constexpr float kAiRegroupHold     = 1.2f;   // min seconds to stay regrouping
 // Turn rate (rad/s): the heading slews toward its target instead of snapping, so
 // turns read as a body rotation (and states don't visually jitter).
 constexpr float kAiTurnRate        = 7.0f;
+// ---- Inter-enemy SEPARATION (anti-crowding, playtest-fix) --------------------
+// Boids-style separation so a squad SPREADS OUT instead of piling onto the player's
+// tile (the playtest "enemies crowd the player / pile up" bug — the dogpile cap
+// limited who ATTACKS but not who STACKS). Each moving enemy is pushed away from
+// nearby allies within kAiSeparationRadius; the push is blended into its desired
+// move direction at kAiSeparationWeight strength (capped so it nudges, never
+// overrides, the state's intent). Behavioural tuning — the self-tests assert state
+// + facing, not exact spacing, so this is safe.
+constexpr float kAiSeparationRadius = 2.2f;  // allies closer than this push us apart (m)
+constexpr float kAiSeparationWeight = 0.9f;  // how hard separation steers vs the state dir
 // Per-instance decision cadence + jitter so enemies don't all switch in lockstep.
 constexpr float kAiDecisionPeriod  = 0.30f;  // re-evaluate state every ~0.3 s
 constexpr float kAiDecisionJitter  = 0.15f;  // +/- randomization on the cadence (s)
 constexpr float kAiStateMinTime    = 0.45f;  // min dwell before a non-forced switch
+
+// Enemy-SFX taunt cadence: an engaged (has-LOS) live enemy emits an idle/harass
+// TAUNT vocalization roughly every kAiTauntPeriod seconds (+/- kAiTauntJitter), so
+// the enemies HARASS audibly at range instead of being silent. Tuning — safe to
+// retune; spaced wide so a squad isn't a wall of noise.
+constexpr float kAiTauntPeriod     = 3.5f;   // mean seconds between taunts
+constexpr float kAiTauntJitter     = 1.5f;   // +/- randomization on the cadence (s)
 
 // GENERAL navigation cadence: when a nav grid is attached, rebuild the A* path to
 // the move target every this-many seconds (NOT every frame — pathfinding is cheap
@@ -924,6 +953,10 @@ private:
     // enemies (no per-frame heap alloc; a tiny LCG advanced in the hot path).
     uint32_t m_rng          = 0x9E3779B9u;
     bool     m_aiInit       = false;         // seeded the RNG / decision timer yet
+    // Enemy-SFX (vocalization): countdown to the next idle/harass TAUNT cue while the
+    // enemy is alive + engaged (has LOS). Reseeded to a jittered interval each taunt so
+    // a squad doesn't vocalize in lockstep. <=0 fires a taunt (see update()).
+    float    m_tauntTimer   = 0.0f;
 
     // ---- GENERAL navigation (optional, off by default) --------------------
     // Borrowed shared nav grid (nullptr => straight-line, original behaviour).

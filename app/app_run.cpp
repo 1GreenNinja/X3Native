@@ -136,6 +136,37 @@
 #include <utility>
 
 namespace {
+
+// Enemy-SFX (enemy-SFX pass): build the SHARED cue sink that gives enemies a VOICE.
+// Maps every GameCue kind onto a 3D sound: footstep, bullet/melee impact, and the
+// new EnemyTaunt / EnemyAttack / EnemyHit / EnemyDeath creature vocalizations. Used
+// by BOTH the legacy Level 1 (game) AND --world canonlevel (canonPlay), which were
+// previously silent for the canon enemies (canonPlay had no cue sink wired at all —
+// the playtest "enemies make NO sounds" bug). Any invalid sound handle plays silent.
+x3::game::GameCueFn makeEnemyCueSink(x3::audio::IAudioSystem* asys,
+                                     x3::audio::SoundHandle step,
+                                     x3::audio::SoundHandle gun,
+                                     x3::audio::SoundHandle taunt,
+                                     x3::audio::SoundHandle attack,
+                                     x3::audio::SoundHandle hit,
+                                     x3::audio::SoundHandle death) {
+    return [asys, step, gun, taunt, attack, hit, death](const x3::game::GameCue& c) {
+        if (!asys) return;
+        auto play = [asys, &c](x3::audio::SoundHandle h, float vol, float pitch) {
+            if (h.valid()) asys->playSound3D(h, c.pos.x, c.pos.y, c.pos.z, vol, pitch);
+        };
+        switch (c.kind) {
+            case x3::game::CueKind::Footstep:     play(step,   0.12f * c.intensity, 0.55f); break;
+            case x3::game::CueKind::BulletImpact:
+            case x3::game::CueKind::MeleeImpact:  play(gun,    0.5f  * c.intensity, 0.7f);  break;
+            case x3::game::CueKind::EnemyTaunt:   play(taunt,  0.55f * c.intensity, 1.0f);  break;
+            case x3::game::CueKind::EnemyAttack:  play(attack, 0.7f  * c.intensity, 1.0f);  break;
+            case x3::game::CueKind::EnemyHit:     play(hit,    0.8f  * c.intensity, 1.0f);  break;
+            case x3::game::CueKind::EnemyDeath:   play(death,  0.95f * c.intensity, 1.0f);  break;
+        }
+    };
+}
+
 using x3::apphost::NightSkyPlanet;
 using x3::apphost::kNightSkyDist;
 using x3::apphost::loadNightSkyPlanets;
@@ -818,6 +849,13 @@ int runDefaultHost(HostContext& hc) {
     const x3::audio::SoundHandle sndDoor   = bootAudio.door;
     const x3::audio::SoundHandle sndPickup = bootAudio.pickup;
     const x3::audio::SoundHandle sndDeath  = bootAudio.death;
+    // Enemy creature vocalizations (enemy-SFX pass). Used by the shared enemy cue
+    // sink (legacy Level 1 AND --world canonlevel) so enemies taunt / grunt / die
+    // audibly. Invalid (absent WAV) handles play silent — graceful on a clean machine.
+    const x3::audio::SoundHandle sndEnemyTaunt  = bootAudio.enemyTaunt;
+    const x3::audio::SoundHandle sndEnemyAttack = bootAudio.enemyAttack;
+    const x3::audio::SoundHandle sndEnemyHit    = bootAudio.enemyHit;
+    const x3::audio::SoundHandle sndEnemyDeath  = bootAudio.enemyDeath;
     // Footsteps reuse the gunshot WAV pitched down + quiet (no dedicated footstep
     // WAV in the inventory). It reads as a soft step; replace with a real footstep
     // SFX later if one is added to the pack.
@@ -1165,6 +1203,13 @@ int runDefaultHost(HostContext& hc) {
             // legacy Level1Game uses (MonsterManager / RescueSystem / WeaponSystem). ----
             canonPlay.build(canonFloor, scene, *device, *physics,
                             x3::game::riggedGlbRoot(), x3::game::canonGirlsDialogPath());
+            // Enemy-SFX: wire the shared enemy cue sink so the canon-level enemies have
+            // a VOICE (footsteps, attack swings, take-hit grunts, death, idle taunts) +
+            // their impacts land audibly. canonPlay had NO cue sink before — its enemies
+            // were silent (the playtest "enemies make NO sounds" bug for --world canonlevel).
+            canonPlay.setCueSink(makeEnemyCueSink(audio.get(), sndStep, sndGun,
+                                                  sndEnemyTaunt, sndEnemyAttack,
+                                                  sndEnemyHit, sndEnemyDeath));
             x3::boot::mark("canon gameplay spawns (GLB enemies)");
             // The re-aimed Level-1 beat flow on REAL canonical room centers: spawn in
             // Jake's Cell, down the wide Main Hall, through Security/Research/Medical/
@@ -1249,23 +1294,9 @@ int runDefaultHost(HostContext& hc) {
         // impacts use the gunshot transient. The trigger points live in monster.cpp;
         // here the host maps them onto whatever sounds it has. Intensity -> volume.
         {
-            x3::audio::IAudioSystem* asys = audio.get();
-            game.setCueSink([asys, sndStep, sndGun](const x3::game::GameCue& c) {
-                if (!asys) return;
-                switch (c.kind) {
-                    case x3::game::CueKind::Footstep:
-                        if (sndStep.valid())
-                            asys->playSound3D(sndStep, c.pos.x, c.pos.y, c.pos.z,
-                                              0.12f * c.intensity, 0.55f);
-                        break;
-                    case x3::game::CueKind::BulletImpact:
-                    case x3::game::CueKind::MeleeImpact:
-                        if (sndGun.valid())
-                            asys->playSound3D(sndGun, c.pos.x, c.pos.y, c.pos.z,
-                                              0.5f * c.intensity, 0.7f);
-                        break;
-                }
-            });
+            game.setCueSink(makeEnemyCueSink(audio.get(), sndStep, sndGun,
+                                             sndEnemyTaunt, sndEnemyAttack,
+                                             sndEnemyHit, sndEnemyDeath));
         }
 
         // Spire elevator: one stop per floor (B1..F7), 5 m apart, so a ride lands on
