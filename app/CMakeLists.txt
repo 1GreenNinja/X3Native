@@ -4,6 +4,8 @@ add_executable(X3Engine WIN32
     self_tests.cpp
     test_registry.cpp
     cinematic.cpp
+    # #28 deep monolith split — CLI parse (arg loop -> CliOptions)
+    cli.cpp
     # #28 deep monolith split — default host (interactive render loop)
     app_run.cpp
     # #28 deep monolith split — headless screenshot/capture handlers
