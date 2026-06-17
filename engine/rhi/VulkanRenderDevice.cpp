@@ -1101,6 +1101,14 @@ VulkanRenderDevice::FramePacing VulkanRenderDevice::framePacing() const {
         p.cpuP999 = pct(cpu, 0.999); p.cpuMax = cpu.back();
         p.gpuP50 = pct(gpu, 0.50); p.gpuP95 = pct(gpu, 0.95); p.gpuP99 = pct(gpu, 0.99);
         p.gpuP999 = pct(gpu, 0.999); p.gpuMax = gpu.back();
+        // TLAS double-buffer receipts (#5 PART 1): the ring should drive the
+        // device-wait-per-build ratio to ~0 (boot does ONE wait; steady-state
+        // skinned-RT rebuilds add none). tlasWaitsPerKBuild = 1000*waits/builds.
+        p.tlasBuilds    = m_rt.tlasBuilds();
+        p.tlasSyncWaits = m_rt.tlasSyncWaits();
+        p.tlasCpuMs     = m_rt.tlasCpuMs();
+        p.tlasWaitsPerKBuild = p.tlasBuilds
+            ? (uint32_t)((1000ull * p.tlasSyncWaits) / p.tlasBuilds) : 0u;
         return p;
     }
 

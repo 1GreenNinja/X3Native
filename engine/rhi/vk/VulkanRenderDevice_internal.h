@@ -1205,11 +1205,14 @@ private:
     void writeSsaoDescriptors();
 
     // Write the scene TLAS into mesh set3 binding5 for ALL frames in flight
-    // (the r_rtshadows ray origin). Callers must guarantee the sets are not in
-    // use by a pending command buffer (first TLAS build + handle-grow rebuilds
-    // idle the device; init/resize paths are idle by construction). No-op
-    // without RT support / before the first TLAS exists.
-    void writeMeshTlasDescriptor();
+    // (the r_rtshadows ray origin). DOUBLE-BUFFER (#5): `slot` selects which
+    // frame-in-flight descriptor set to re-point. The per-frame rebuild path passes
+    // the CURRENT frame slot ONLY (safe: beginFrame waited that slot's inFlight
+    // fence, so it is not referenced by pending work — no device wait needed). The
+    // boot/resize/first-build paths pass kAllFrameSlots to rewrite every slot (idle
+    // by construction). No-op without RT support / before the first TLAS exists.
+    static constexpr uint32_t kAllFrameSlots = 0xFFFFFFFFu;
+    void writeMeshTlasDescriptor(uint32_t slot = kAllFrameSlots);
 
     void destroySsao();
 
@@ -1256,10 +1259,12 @@ private:
     // at build + whenever targets/TLAS are recreated.
     void writeRtaoDescriptors();
 
-    // Re-write ONLY the TLAS binding (binding 2) into each compute set. Called after
-    // a TLAS rebuild when the TLAS handle changed (a grow); steady same-size
-    // rebuilds keep the same handle so this is skipped.
-    void rewriteRtaoTlas();
+    // Re-point the TLAS binding into the RTAO / refl-RT / DDGI-ray compute sets.
+    // DOUBLE-BUFFER (#5): `slot` selects which frame-in-flight set(s) to rewrite —
+    // the per-frame ring rebuild passes the CURRENT slot only (no device wait), the
+    // boot/resize paths pass kAllFrameSlots. With the TLAS ring the handle changes
+    // on every build, so this runs each rebuild (re-pointing to the fresh slot).
+    void rewriteRtaoTlas(uint32_t slot = kAllFrameSlots);
 
     // Build (or refit) the scene acceleration structures for THIS frame from the
     // per-frame draw list (m_drawRecords, still valid in endFrame after
@@ -2840,6 +2845,7 @@ private:
     std::chrono::steady_clock::time_point m_paceLast{};
     uint32_t m_spikeCount = 0;       // all post-warmup spikes (logged)
     uint32_t m_spikeCleanCount = 0;  // spikes with NO attributed cause (the gate)
+    bool     m_tlasDbReceiptLogged = false;  // one-shot TLAS double-buffer proof line (#5)
 
     bool m_vsync = true;
     bool m_needsRecreate = false;

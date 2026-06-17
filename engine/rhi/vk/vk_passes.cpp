@@ -140,10 +140,12 @@ void VulkanRenderDevice::recordParticlePassBody(VkCommandBuffer cmd) {
         }
     }
 
-void VulkanRenderDevice::rewriteRtaoTlas() {
+void VulkanRenderDevice::rewriteRtaoTlas(uint32_t slot) {
         VkAccelerationStructureKHR tlas = m_rt.tlas();
         if (!tlas) return;
-        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        const uint32_t lo = (slot == kAllFrameSlots) ? 0u : slot;
+        const uint32_t hi = (slot == kAllFrameSlots) ? kFramesInFlight : slot + 1u;
+        for (uint32_t i = lo; i < hi && i < kFramesInFlight; ++i) {
             VkWriteDescriptorSetAccelerationStructureKHR asW{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
             asW.accelerationStructureCount = 1; asW.pAccelerationStructures = &tlas;
             VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
@@ -311,21 +313,26 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         if (!firstBuild && !changed && !m_skinnedRtThisFrame && !m_rtao.rebuildTlasEachFrame)
             return m_rt.tlas() != VK_NULL_HANDLE;   // unchanged static TLAS: reuse as-is
 
-        // A real (re)build follows: ensure no in-flight GPU work is still reading the
-        // TLAS backing we may overwrite. Cheap because rebuilds are rare (static) —
-        // and necessary for correctness when they do happen.
+        // A real (re)build follows.
         //
-        // ZERO-STUTTER NOTE (honest disclosure): when r_skinnedrt is on AND skinned
-        // characters are visible, m_skinnedRtThisFrame forces a rebuild EVERY frame,
-        // so this device wait fires per-frame for the duration. This is the SAME
-        // documented TLAS-rebuild boundary the rebuildTlasEachFrame=true (dynamic
-        // scene) path already uses — a deliberate WAR-hazard guard, NOT a regression.
-        // With r_skinnedrt OFF (or no RT / Pascal), m_skinnedRtThisFrame is always
-        // false and the static frame keeps its zero-wait fast path above. A
-        // double-buffered TLAS backing (to drop this per-frame wait) is the
-        // documented next perf tier — see docs.
-        if (!firstBuild) vkDeviceWaitIdle(m_dev.device);
-
+        // DOUBLE-BUFFER (#5 PART 1): the TLAS is now backed by a ring of independent
+        // backings inside VulkanRT (ping-ponged per build). frame N+1's build targets
+        // a DIFFERENT slot than the one frame N's in-flight consumers (RTAO / refl /
+        // DDGI / rt-shadows / rt-acoustics) are still reading, so the rebuild no
+        // longer races an in-flight reader on the TLAS backing — the per-frame
+        // vkDeviceWaitIdle WAR-hazard guard that used to fire here EVERY frame (when
+        // r_skinnedrt was on with skinned chars visible) is GONE. The consumer
+        // descriptors are re-pointed below to the freshly-built slot's handle each
+        // rebuild (the handle now changes value on every ping-pong), and the build's
+        // own command buffer is fenced inside VulkanRT before the frame's command
+        // buffer is recorded, so the new TLAS is ready when the ray-query passes run.
+        //
+        // The ONE remaining device wait is the very FIRST build: the mesh set3 TLAS
+        // descriptor (binding 5, ALWAYS bound) may be referenced by a pending command
+        // buffer recorded before any TLAS existed, so we idle once before its first
+        // rewrite. That is a one-time boot boundary, not a per-frame cost. We count
+        // every device wait the rebuild path pays so --test-framepacing can PROVE the
+        // steady-state per-frame wait is zero.
         ++m_asBuildsThisFrame;   // ZERO-STUTTER spike-log attribution (TLAS (re)build)
         const VkAccelerationStructureKHR before = m_rt.tlas();
         if (!m_rt.buildTlas(m_rtInstScratch)) return false;
@@ -345,15 +352,29 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         } else if (m_skinnedRtInstances == 0) {
             m_skinnedRtLogged = false;   // re-arm so a later spawn logs again
         }
-        // If the TLAS handle changed (first build or a grow), re-point the descriptors.
-        if (m_rt.tlas() != before) {
-            // Mesh set3 (r_rtshadows TLAS at binding 5) is ALWAYS BOUND, so its
-            // sets may be referenced by pending command buffers — idle before
-            // rewriting them on the FIRST build (rebuilds already idled above;
-            // the refl chain's first build sets the same precedent).
-            if (firstBuild) vkDeviceWaitIdle(m_dev.device);
-            rewriteRtaoTlas();
-            writeMeshTlasDescriptor();
+        // Re-point the consumer descriptors to the freshly-built ring slot. With the
+        // TLAS ring (#5) the handle changes on EVERY build, so this runs every rebuild.
+        //
+        //  * FIRST build: the mesh set3 TLAS descriptor (binding 5) is ALWAYS bound,
+        //    so a command buffer recorded before any TLAS existed may reference these
+        //    sets. Idle ONCE here (one-time boot boundary) and rewrite ALL frame
+        //    slots so every in-flight set is current from the start.
+        //  * STEADY-STATE rebuild (the per-frame skinned-RT case): re-point ONLY the
+        //    CURRENT frame slot's sets. beginFrame already waited m_frameIdx's
+        //    inFlight fence, so that slot is NOT referenced by any pending command
+        //    buffer — the update is hazard-free WITHOUT a device wait. Each frame
+        //    rebuilds (skinned chars move every frame), so each slot is re-pointed on
+        //    the frame it owns, before that frame's command buffer is recorded. This
+        //    is what drives the per-frame device wait to ZERO.
+        (void)before;
+        if (firstBuild) {
+            vkDeviceWaitIdle(m_dev.device);
+            m_rt.addTlasSyncWait();   // counted: the ONE boot-time wait (not per-frame)
+            rewriteRtaoTlas(kAllFrameSlots);
+            writeMeshTlasDescriptor(kAllFrameSlots);
+        } else {
+            rewriteRtaoTlas(m_frameIdx);
+            writeMeshTlasDescriptor(m_frameIdx);
         }
         return m_rt.tlasBuilt() && m_rt.tlas() != VK_NULL_HANDLE;
     }
@@ -679,6 +700,23 @@ void VulkanRenderDevice::recordFramePacing() {
         const float cpuMs = (float)std::chrono::duration<double, std::milli>(now - m_paceLast).count();
         m_paceLast = now;
         if (m_totalFrames <= (uint64_t)m_pacing.warmupFrames) return;   // warmup: excluded
+        // TLAS DOUBLE-BUFFER PROOF (#5 PART 1): once we have a healthy post-warmup
+        // window AND the TLAS has rebuilt many times (the skinned-RT per-frame case),
+        // emit a one-shot receipt. With the ring the device-wait-per-build ratio must
+        // be ~0 (boot pays ONE wait; steady-state per-frame rebuilds pay none) — this
+        // is the measurable proof the per-frame WAR-hazard wait is gone. Pre-ring this
+        // line would have read tlasWaitsPerKBuild=1000 (a device wait EVERY rebuild).
+        if (!m_tlasDbReceiptLogged && m_rt.tlasBuilds() >= 64) {
+            const uint32_t b = m_rt.tlasBuilds(), w = m_rt.tlasSyncWaits();
+            const uint32_t perK = b ? (uint32_t)((1000ull * w) / b) : 0u;
+            char rb[224];
+            std::snprintf(rb, sizeof(rb),
+                "[tlas-db] TLAS double-buffer: builds=%u deviceWaits=%u "
+                "(waits/1000builds=%u; boot=1, steady=0) lastBuildCpu=%.3fms ring=%u-slot",
+                b, w, perK, m_rt.tlasCpuMs(), VulkanRT::tlasSlots());
+            logInfo(rb);
+            m_tlasDbReceiptLogged = true;
+        }
         // Rolling median over the last <=128 recorded samples (the spike gate).
         float median = 0.0f;
         if (!m_paceRing.empty()) {

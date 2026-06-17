@@ -336,11 +336,14 @@ void VulkanRenderDevice::writeSsaoDescriptors() {
         writeMeshTlasDescriptor();
     }
 
-void VulkanRenderDevice::writeMeshTlasDescriptor() {
+void VulkanRenderDevice::writeMeshTlasDescriptor(uint32_t slot) {
         if (!m_rtSupported) return;
         VkAccelerationStructureKHR tlas = m_rt.tlas();
         if (!tlas || !m_meshAoSet[0]) return;
-        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+        const uint32_t lo = (slot == kAllFrameSlots) ? 0u : slot;
+        const uint32_t hi = (slot == kAllFrameSlots) ? kFramesInFlight : slot + 1u;
+        for (uint32_t i = lo; i < hi && i < kFramesInFlight; ++i) {
+            if (!m_meshAoSet[i]) continue;
             VkWriteDescriptorSetAccelerationStructureKHR asW{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR };
             asW.accelerationStructureCount = 1; asW.pAccelerationStructures = &tlas;
             VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };

@@ -36,6 +36,7 @@
 
 #include <vulkan/vulkan.h>
 #include <vk_mem_alloc.h>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -416,8 +417,25 @@ public:
     // BLAS are skipped). Recorded as a one-time submit (static-first v1). The TLAS
     // device address is then bound by the ray-query pass. Returns true on success;
     // an empty (zero usable instances) list still produces a valid empty TLAS.
+    //
+    // DOUBLE-BUFFER (#5 PART 1): the TLAS is backed by a RING of kTlasSlots
+    // independent backings + handles, ping-ponged on every build. Frame N+1's build
+    // writes a DIFFERENT slot than the one frame N's in-flight consumers (RTAO,
+    // reflections, DDGI, rt-shadows, rt-acoustics) are still reading, so the build
+    // no longer creates a cross-frame WAR hazard on the TLAS backing — the caller
+    // can therefore drop the per-frame vkDeviceWaitIdle it used as the hazard guard.
+    // The consumer descriptors re-point to tlas() (the freshly-built slot's handle)
+    // each rebuild. With kFramesInFlight=2 in flight, two slots suffice (slot A is
+    // reused only after the frame that read it has retired via its inFlight fence);
+    // we keep kTlasSlots one larger as headroom against a rebuild on consecutive
+    // frames that both stay in flight.
     bool buildTlas(const std::vector<TlasInstance>& instances) {
         if (!m_ready) return false;
+        const auto cpuT0 = std::chrono::steady_clock::now();
+        // Advance the ring to the next slot BEFORE building so this build never
+        // targets the slot the just-bound previous TLAS occupies.
+        m_tlasSlot = (m_tlasSlot + 1u) % kTlasSlots;
+        Tlas& m_tlas = m_tlasRing[m_tlasSlot];
 
         // Pack the VkAccelerationStructureInstanceKHR rows for every instance whose
         // BLAS exists. The transform is the top 3 rows of the column-major model,
@@ -530,18 +548,39 @@ public:
         if (!ok) return false;
 
         m_tlasBuilt = true;
+        ++m_tlasBuilds;
+        m_tlasCpuMs = (float)std::chrono::duration<double, std::milli>(
+                          std::chrono::steady_clock::now() - cpuT0).count();
         return true;
     }
 
     bool tlasBuilt() const { return m_tlasBuilt; }
-    VkAccelerationStructureKHR tlas() const { return m_tlas.handle; }
+    // Current (most-recently-built) TLAS handle — what every consumer descriptor
+    // re-points to each rebuild. With the ring, this changes value on every build.
+    VkAccelerationStructureKHR tlas() const { return m_tlasRing[m_tlasSlot].handle; }
     uint32_t lastInstanceCount() const { return m_lastInstanceCount; }
     uint32_t blasCount() const { return (uint32_t)m_blas.size(); }
 
+    // ---- DOUBLE-BUFFER instrumentation (#5 PART 1) ------------------------
+    // tlasBuilds   : total TLAS (re)builds since reset (per-frame in skinned-RT).
+    // tlasSyncWaits: device-level waits the rebuild path paid to guard the backing
+    //                — the metric we drive to ZERO with the ring (caller increments
+    //                it on any vkDeviceWaitIdle it still issues around a build).
+    // tlasCpuMs    : CPU wall time of the most recent buildTlas (record+submit+own
+    //                fence wait), EXCLUDING any caller-side device wait.
+    uint32_t tlasBuilds()    const { return m_tlasBuilds; }
+    uint32_t tlasSyncWaits() const { return m_tlasSyncWaits; }
+    float    tlasCpuMs()     const { return m_tlasCpuMs; }
+    void     addTlasSyncWait() { ++m_tlasSyncWaits; }
+    void     resetTlasCounters() { m_tlasBuilds = 0; m_tlasSyncWaits = 0; m_tlasCpuMs = 0.0f; }
+    static constexpr uint32_t tlasSlots() { return kTlasSlots; }
+
     void shutdown() {
         if (!m_dev) return;
-        if (m_tlas.handle) { m_pfnDestroyAS(m_dev, m_tlas.handle, nullptr); m_tlas.handle = VK_NULL_HANDLE; }
-        destroyBuffer(m_tlas.backing);
+        for (Tlas& t : m_tlasRing) {
+            if (t.handle) { m_pfnDestroyAS(m_dev, t.handle, nullptr); t.handle = VK_NULL_HANDLE; }
+            destroyBuffer(t.backing);
+        }
         destroyBuffer(m_instBuf);
         for (auto& kv : m_blas) {
             if (kv.second.handle) m_pfnDestroyAS(m_dev, kv.second.handle, nullptr);
@@ -706,7 +745,15 @@ private:
     std::unordered_map<uint32_t, SkinnedBlas> m_skinnedBlas; // per-frame refit BLAS
     uint32_t  m_skinnedBuilds = 0;   // skinned BLAS full builds this batch (telemetry)
     uint32_t  m_skinnedRefits = 0;   // skinned BLAS refits this batch (telemetry)
-    Tlas      m_tlas;
+    // DOUBLE-BUFFER TLAS ring (#5 PART 1): kTlasSlots independent backings/handles
+    // ping-ponged per build so a build never overwrites a slot still being read by
+    // an in-flight consumer. kFramesInFlight=2 needs 2; +1 headroom = 3.
+    static constexpr uint32_t kTlasSlots = 3;
+    Tlas      m_tlasRing[kTlasSlots];
+    uint32_t  m_tlasSlot = kTlasSlots - 1u;   // first build advances to slot 0
+    uint32_t  m_tlasBuilds    = 0;            // TLAS (re)builds since reset (telemetry)
+    uint32_t  m_tlasSyncWaits = 0;            // device waits the rebuild path paid (-> 0)
+    float     m_tlasCpuMs     = 0.0f;         // CPU ms of the most recent buildTlas
     RtBuffer  m_instBuf;                          // persistent host-visible instance buffer
     std::vector<VkAccelerationStructureInstanceKHR> m_instScratch;
 

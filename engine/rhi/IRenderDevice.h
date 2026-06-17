@@ -976,6 +976,14 @@ public:
         uint32_t psoTotal    = 0;      // pipelines created since init (boot precompile count)
         float    psoBootMs   = 0;      // wall-clock ms spent in pipeline creation
         uint64_t cacheLoaded = 0;      // VkPipelineCache bytes loaded from disk at boot
+        // ---- TLAS DOUBLE-BUFFER receipts (#5 PART 1) -----------------------
+        // The proof the ring removed the per-frame WAR-hazard device wait. With a
+        // double-buffered TLAS, the steady-state per-frame device wait around the
+        // TLAS rebuild must be ZERO even with skinned-RT on + skinned chars visible.
+        uint32_t tlasBuilds       = 0; // total TLAS (re)builds since init
+        uint32_t tlasSyncWaits    = 0; // device waits the TLAS rebuild path paid (boot=1)
+        uint32_t tlasWaitsPerKBuild = 0; // 1000*syncWaits/builds — drives to 0 (was ~1000)
+        float    tlasCpuMs        = 0; // CPU ms of the most recent buildTlas (no device wait)
     };
     virtual FramePacing framePacing() const { return {}; }
 
