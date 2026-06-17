@@ -1320,6 +1320,19 @@ void VulkanRenderDevice::prepareFrameData() {
         // viewProj (matches the depth buffer being rasterized this frame) + the
         // PREVIOUS frame's UNJITTERED viewProj (the history was resolved on
         // unjittered pixel centers). History-valid + blend ride in params0.
+        // VELOCITY (#4): WANT this frame? Same gates the graph re-checks (velOn),
+        // computed here so the prev-model SSBO fill below + the velocity UBO + the
+        // TaaUBO velocityValid lane all agree within this frame. The depth pre-pass
+        // requirement (prePassOn) is mirrored by the SSAO/GI/refl/rtao enables; we
+        // approximate it here with the same predicates prepareFrameData can see.
+        // buildAndExecuteGraph makes the final authoritative decision.
+        const bool prePassWant = m_ssao.enabled || m_gi.enabled
+                               || m_rtaoActiveThisFrame || m_reflActiveThisFrame
+                               || (m_rtao.enabled && m_rtSupported);
+        const bool velWant = taaWant && prePassWant && m_post.velocity
+                          && (m_velPipe != VK_NULL_HANDLE) && (m_velImg != VK_NULL_HANDLE);
+        m_velActiveThisFrame = velWant;
+
         if (taaWant && m_taaUboMapped[m_frameIdx]) {
             TaaUBO tu{};
             tu.invViewProjCur = glm::inverse(ubo.viewProj);
@@ -1328,8 +1341,27 @@ void VulkanRenderDevice::prepareFrameData() {
                                    1.0f / (float)std::max(1u, m_extent.height),
                                    m_taaHistoryValid ? 1.0f : 0.0f,
                                    0.9f /* history blend weight */);
-            tu.params1 = glm::vec4(jit.x, jit.y, 0.0f, 0.0f);
+            // params1.z = velocityValid: use the per-object MV reprojection only
+            // when the velocity pass ran AND history is valid. Otherwise the
+            // resolve takes the camera-only fallback (pre-velocity behavior).
+            const float velValid = (velWant && m_taaHistoryValid) ? 1.0f : 0.0f;
+            tu.params1 = glm::vec4(jit.x, jit.y, velValid, 0.0f);
             std::memcpy(m_taaUboMapped[m_frameIdx], &tu, sizeof(TaaUBO));
+        }
+
+        // Velocity UBO: UNJITTERED current + previous viewProj (the MV endpoints)
+        // + the two frames' jitter in NDC (subtracted defensively in the shader;
+        // zero against unjittered matrices). NDC jitter = pixel-jitter * 2 / extent.
+        if (velWant && m_velUboMapped[m_frameIdx]) {
+            const glm::vec2 curJitNdc(jit.x * 2.0f / (float)std::max(1u, m_extent.width),
+                                      jit.y * 2.0f / (float)std::max(1u, m_extent.height));
+            VelUBO vu{};
+            vu.viewProjCurUnjit  = unjitteredVP;
+            vu.viewProjPrevUnjit = m_taaHistoryValid ? m_taaPrevVP : unjitteredVP;
+            vu.jitter = glm::vec4(curJitNdc.x, curJitNdc.y,
+                                  m_velPrevJitterNdc.x, m_velPrevJitterNdc.y);
+            std::memcpy(m_velUboMapped[m_frameIdx], &vu, sizeof(VelUBO));
+            m_velPrevJitterNdc = curJitNdc;   // for next frame's prev-jitter lane
         }
         // ---- SSR/RT reflections: activate for THIS frame --------------------
         // Decided here (not in buildAndExecuteGraph) because (a) the SSAO control
@@ -1742,8 +1774,21 @@ void VulkanRenderDevice::prepareFrameData() {
                 }
                 if (dr.texIndex & 0x80000000u) anyCutout = true;
                 m_recordSsboRow[ri] = row;          // DDGI hit-shading lookup row
+                const uint32_t velRow = row;        // capture before the post-increment
                 ObjectData& o = objs[row++];
                 std::memcpy(&o.model, dr.model, sizeof(o.model));
+                // VELOCITY (#4): record this row's prev-frame model (from last
+                // frame's history, by row) into the prev-model SSBO the velocity
+                // pass reads, and stash the current model for next frame's history.
+                // velActive gates the work so non-velocity frames pay nothing.
+                if (m_velActiveThisFrame && m_prevModelMapped[m_frameIdx]) {
+                    const glm::mat4 curM = glm::make_mat4(dr.model);
+                    glm::mat4 prevM = (velRow < m_velPrevModels.size())
+                                    ? m_velPrevModels[velRow] : curM;
+                    static_cast<glm::mat4*>(m_prevModelMapped[m_frameIdx])[velRow] = prevM;
+                    if (velRow >= m_velCurModels.size()) m_velCurModels.resize(velRow + 1);
+                    m_velCurModels[velRow] = curM;
+                }
                 o.baseColorFactor = glm::vec4(dr.factor[0], dr.factor[1], dr.factor[2], dr.factor[3]);
                 o.emissive = glm::vec4(dr.emissive[0], dr.emissive[1], dr.emissive[2], dr.emissive[3]);
                 o.texIndex = dr.texIndex;
@@ -1792,6 +1837,13 @@ void VulkanRenderDevice::prepareFrameData() {
         m_frameCmdOpaque = cmdCount;                                               // [0,opaque) | [opaque,count)
         for (uint32_t mid : m_groupOrder) if ( isBlendGroup(mid)) emitGroup(mid);  // BLEND (glass) last
         m_frameCmdCount = cmdCount;
+
+        // VELOCITY (#4): rotate this frame's per-row models into the history used
+        // by next frame's prev-model SSBO fill. `row` is the total rows written.
+        if (m_velActiveThisFrame) {
+            m_velCurModels.resize(row);
+            m_velPrevModels.swap(m_velCurModels);   // prev <- cur (cur kept as scratch)
+        }
 
         // ---- D15 GPU cull frame finalize ------------------------------------
         if (gpuCull && row > 0) {

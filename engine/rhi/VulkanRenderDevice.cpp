@@ -232,6 +232,10 @@ bool VulkanRenderDevice::init(const DeviceDesc& desc) {
         if (!createPost()) return false;
         if (!createBloomTargets()) return false;
         writePostDescriptors();
+        // Velocity pre-pass (#4): per-object screen-space motion vectors -> TAA.
+        // After createBloomTargets (velocity target exists) + createGraphics (obj
+        // buffers exist). Graceful: a missing velocity.spv leaves it disabled.
+        createVelocityResources();
         // Glass set-4 resources (scene-copy sampler + per-frame control UBO + sets).
         // After createBloomTargets so the scene-copy view exists. Non-fatal: a
         // failure leaves the glass sets null and the glass pass falls back gracefully.
@@ -351,6 +355,7 @@ void VulkanRenderDevice::shutdown() {
         destroyGi();
         destroySsao();
         destroyGlassResources();
+        destroyVelocityResources();   // #4: before destroyGraphics frees m_objPool
         destroyPost();
         destroyIbl();
         destroySky();
@@ -577,6 +582,11 @@ void VulkanRenderDevice::setPostFX(const PostFXParams& p) {
         // against garbage. Toggling OFF needs nothing (the passes simply stop).
         if (p.taa && !m_post.taa) m_taaHistoryValid = false;
         m_post = p;
+    }
+
+bool VulkanRenderDevice::velocityEnabled() const { return m_post.velocity; }
+bool VulkanRenderDevice::velocityAvailable() const {
+        return m_velPipe != VK_NULL_HANDLE && m_velImg != VK_NULL_HANDLE;
     }
 
 void VulkanRenderDevice::setShadowBounds(float cx, float cy, float cz, float halfExtent) {

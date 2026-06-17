@@ -214,8 +214,27 @@ public:
                                        // skipped -> byte-identical to the pre-TAA path.
         float taaSharpen     = 0.25f;  // r_taasharpen: post-resolve RCAS-style sharpen
                                        // amount (0 = off). Only applied when taa is on.
+        bool  velocity       = false;  // r_velocity: per-object screen-space motion
+                                       // vectors feed the TAA reprojection (fixes
+                                       // fast dynamic/skinned ghosting; also the
+                                       // DLSS input). DEFAULT OFF so the A/B
+                                       // determinism basins (default/notaa/
+                                       // legacypost/norefl screenshots) are
+                                       // byte-identical to the pre-velocity build;
+                                       // set r_velocity 1 to enable. 0 -> TAA uses
+                                       // camera-only reprojection (pre-velocity
+                                       // behavior). No-op when taa is off or
+                                       // velocity.spv is absent (graceful fallback).
     };
     virtual void setPostFX(const PostFXParams&) {}
+
+    // Introspection for the app cvar layer (the r_velocity string-binding lives in
+    // app/main.cpp; the engine exposes the live value + availability so the cvar
+    // can read them back). See docs/VELOCITY_DLSS_REPORT.md for the ~5-line app
+    // follow-up that wires the "r_velocity"/"--velocity" string. Base defaults
+    // match the OFF default; the Vulkan device overrides with live state.
+    virtual bool velocityEnabled() const { return false; }
+    virtual bool velocityAvailable() const { return false; }  // pipeline+target exist
 
     // Per-frame
     virtual FrameContext beginFrame() = 0;

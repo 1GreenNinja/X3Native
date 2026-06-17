@@ -294,6 +294,19 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
         // glass OR RT AO (its compute + apply passes sample it) OR TAA (the resolve
         // reconstructs world position from it) read it. (reflOn implies taaOn.)
         const bool storeDepth = waterOn || giOn || particlesOn || debrisDraw || rtaoOn || glassOn || taaOn;
+        // VELOCITY pre-pass (#4): per-object motion vectors for the TAA resolve.
+        // Requires TAA (only consumer), the depth pre-pass (EQUAL needs the depth
+        // buffer pre-populated), the velocity pipeline + target (graceful: absent
+        // .spv => disabled), and r_velocity. When OFF, TAA reprojects camera-only,
+        // byte-identical to the pre-velocity path (the b4 sampler is ignored via
+        // the params1.z gate). The pass writes m_velImg between the depth pre-pass
+        // and the TAA resolve.
+        const bool velOn = taaOn && prePassOn && m_post.velocity
+                        && (m_velPipe != VK_NULL_HANDLE) && (m_velImg != VK_NULL_HANDLE);
+        m_velActiveThisFrame = velOn;
+        RgResource rgVel = {};
+        if (velOn) rgVel = m_graph.importImage("scene.velocity", m_velImg,
+            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgSsaoRaw  = m_graph.importImage("ssao.raw",  m_ssaoRawImg,
             ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgSsaoBlur = m_graph.importImage("ssao.blur", m_ssaoBlurImg,
@@ -513,6 +526,51 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                 dpre.record = [](void* ctx, VkCommandBuffer c){
                     static_cast<VulkanRenderDevice*>(ctx)->recordDepthPrePassBody(c); };
                 m_graph.addPass(std::move(dpre));
+            }
+            // Pass: VELOCITY pre-pass (#4) -> m_velImg (RG16F). Re-rasterizes the
+            // opaque draws with depth-test EQUAL (read-only depth) and writes the
+            // per-object screen-space motion vector. Runs right after the depth
+            // pre-pass populated the depth buffer; the TAA resolve samples it.
+            if (velOn) {
+                m_velAttach = VkRenderingAttachmentInfo{};
+                m_velAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                m_velAttach.imageView = m_velView;
+                m_velAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                m_velAttach.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;   // gaps (sky) = zero MV
+                m_velAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                m_velAttach.clearValue.color = { {0.0f, 0.0f, 0.0f, 0.0f} };
+
+                RenderPassDesc vpass{};
+                vpass.name = "velocity-prepass";
+                vpass.addUse(ResourceUse{
+                    rgVel, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+                // Depth read-only (EQUAL test): EARLY/LATE fragment-test read.
+                vpass.addUse(ResourceUse{
+                    rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                    VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+                    VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+                vpass.usesDynamicRendering = true;
+                m_velDepthAttach = VkRenderingAttachmentInfo{};
+                m_velDepthAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+                m_velDepthAttach.imageView = m_depthView;
+                m_velDepthAttach.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+                m_velDepthAttach.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;     // keep prepass depth
+                m_velDepthAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;  // preserved for later passes
+                m_velRenderInfo = VkRenderingInfo{};
+                m_velRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+                m_velRenderInfo.renderArea = { {0,0}, m_extent };
+                m_velRenderInfo.layerCount = 1;
+                m_velRenderInfo.colorAttachmentCount = 1;
+                m_velRenderInfo.pColorAttachments = &m_velAttach;
+                m_velRenderInfo.pDepthAttachment = &m_velDepthAttach;
+                vpass.renderInfo = m_velRenderInfo;
+                vpass.recordCtx = this;
+                vpass.record = [](void* ctx, VkCommandBuffer c){
+                    static_cast<VulkanRenderDevice*>(ctx)->recordVelocityPassBody(c); };
+                m_graph.addPass(std::move(vpass));
             }
           if (ssaoOn) {
             // Pass: SSAO (read depth as DEPTH_READ_ONLY, write raw AO) -> half-res.

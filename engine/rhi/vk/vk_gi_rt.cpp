@@ -237,6 +237,223 @@ bool VulkanRenderDevice::createDepthPrePipeline() {
         return true;
     }
 
+bool VulkanRenderDevice::createVelocityResources() {
+        // PER-OBJECT VELOCITY PRE-PASS (#4). Builds the velocity pipeline
+        // (velocity.vert/.frag), its descriptor set layout (set0: obj b0, cam b1,
+        // vis b2, prev-model b3, vel-UBO b4), the per-frame sets, the per-frame
+        // velocity UBO + prev-model SSBO rings. ALL of this is graceful: a missing
+        // .spv (not yet registered in the app shader list) or any failure leaves
+        // m_velPipe == VK_NULL_HANDLE and the velocity pass is never built — TAA
+        // then runs camera-only reprojection, byte-identical to the pre-velocity
+        // path. The velocity TARGET itself is created in createBloomTargets.
+        VkShaderModule vs = loadShaderModule("shaders\\velocity.vert.spv");
+        VkShaderModule fs = loadShaderModule("shaders\\velocity.frag.spv");
+        if (!vs || !fs) {
+            if (vs) vkDestroyShaderModule(m_dev.device, vs, nullptr);
+            if (fs) vkDestroyShaderModule(m_dev.device, fs, nullptr);
+            logError("[rhi] velocity .spv not found — per-object MVs disabled, TAA stays camera-only "
+                     "(register shaders/velocity.vert + velocity.frag in app/CMakeLists.txt SHADER_SRCS to enable)");
+            return true;  // non-fatal
+        }
+
+        // ---- Descriptor set layout (5 bindings) -----------------------------
+        VkDescriptorSetLayoutBinding b[5]{};
+        b[0].binding = 0; b[0].descriptorCount = 1;  // objects[] SSBO
+        b[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        b[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        b[1].binding = 1; b[1].descriptorCount = 1;  // camera UBO (jittered viewProj)
+        b[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        b[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        b[2].binding = 2; b[2].descriptorCount = 1;  // visible-index SSBO
+        b[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        b[2].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        b[3].binding = 3; b[3].descriptorCount = 1;  // prev-model SSBO
+        b[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        b[3].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        b[4].binding = 4; b[4].descriptorCount = 1;  // velocity UBO (unjittered VPs + jitter)
+        b[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        b[4].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        slci.bindingCount = 5; slci.pBindings = b;
+        if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_velSetLayout) != VK_SUCCESS) {
+            vkDestroyShaderModule(m_dev.device, vs, nullptr); vkDestroyShaderModule(m_dev.device, fs, nullptr);
+            logError("[rhi] velocity set layout failed — per-object MVs disabled"); return true;
+        }
+        VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        plci.setLayoutCount = 1; plci.pSetLayouts = &m_velSetLayout;
+        if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_velLayout) != VK_SUCCESS) {
+            vkDestroyShaderModule(m_dev.device, vs, nullptr); vkDestroyShaderModule(m_dev.device, fs, nullptr);
+            logError("[rhi] velocity pipeline layout failed — per-object MVs disabled"); return true;
+        }
+
+        // ---- Pipeline -------------------------------------------------------
+        VkPipelineShaderStageCreateInfo stages[2]{};
+        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;   stages[0].module = vs; stages[0].pName = "main";
+        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT; stages[1].module = fs; stages[1].pName = "main";
+
+        // Two vertex bindings: 0 = current verts (pos/normal/uv), 1 = previous
+        // verts (only pos consumed, at location 3). For static meshes both bind
+        // the SAME buffer so prevPos == curPos (no skinning term).
+        VkVertexInputBindingDescription binds[2]{
+            { 0, sizeof(MeshVertex), VK_VERTEX_INPUT_RATE_VERTEX },
+            { 1, sizeof(MeshVertex), VK_VERTEX_INPUT_RATE_VERTEX },
+        };
+        VkVertexInputAttributeDescription attrs[4]{
+            { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, pos)    },
+            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, normal) },
+            { 2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(MeshVertex, uv)     },
+            { 3, 1, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, pos)    }, // prev pos
+        };
+        VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+        vin.vertexBindingDescriptionCount = 2; vin.pVertexBindingDescriptions = binds;
+        vin.vertexAttributeDescriptionCount = 4; vin.pVertexAttributeDescriptions = attrs;
+        VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        vp.viewportCount = 1; vp.scissorCount = 1;
+        // SAME cull/winding as the depth pre-pass so fragments line up under EQUAL.
+        VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_BACK_BIT;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+        VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        // Depth test EQUAL against the populated depth pre-pass buffer, NO write.
+        VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        dss.depthTestEnable = VK_TRUE; dss.depthWriteEnable = VK_FALSE;
+        dss.depthCompareOp = VK_COMPARE_OP_EQUAL;
+        VkPipelineColorBlendAttachmentState cba{};
+        cba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;  // RG16F
+        VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        cb.attachmentCount = 1; cb.pAttachments = &cba;
+        VkDynamicState dyn[2]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+        VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+        prci.colorAttachmentCount = 1;
+        prci.pColorAttachmentFormats = &kVelocityFormat;
+        prci.depthAttachmentFormat = m_depthFormat;
+        VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        gpci.pNext = &prci; gpci.stageCount = 2; gpci.pStages = stages;
+        gpci.pVertexInputState = &vin; gpci.pInputAssemblyState = &ia;
+        gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
+        gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
+        gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_velLayout;
+        VkResult pr = x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_velPipe);
+        vkDestroyShaderModule(m_dev.device, vs, nullptr);
+        vkDestroyShaderModule(m_dev.device, fs, nullptr);
+        if (pr != VK_SUCCESS) {
+            m_velPipe = VK_NULL_HANDLE;
+            logError("[rhi] velocity pipeline create failed — per-object MVs disabled"); return true;
+        }
+
+        // ---- Per-frame buffers (vel UBO + prev-model SSBO) ------------------
+        const VkDeviceSize prevModelBytes = (VkDeviceSize)kMaxDrawsPerFrame * sizeof(glm::mat4);
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = sizeof(VelUBO); bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo ainfo{};
+            if (x3vmaCreateBuffer(&bci, &aci, &m_velUboBuf[i], &m_velUboAlloc[i], &ainfo) != VK_SUCCESS) {
+                logError("[rhi] velocity UBO alloc failed — per-object MVs disabled");
+                destroyVelocityResources(); return true;
+            }
+            m_velUboMapped[i] = ainfo.pMappedData;
+
+            VkBufferCreateInfo pbci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            pbci.size = prevModelBytes; pbci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+            VmaAllocationInfo pinfo{};
+            if (x3vmaCreateBuffer(&pbci, &aci, &m_prevModelBuf[i], &m_prevModelAlloc[i], &pinfo) != VK_SUCCESS) {
+                logError("[rhi] velocity prev-model SSBO alloc failed — per-object MVs disabled");
+                destroyVelocityResources(); return true;
+            }
+            m_prevModelMapped[i] = pinfo.pMappedData;
+        }
+
+        // ---- Dedicated descriptor pool (own the velocity sets) -------------
+        {
+            VkDescriptorPoolSize ps[2]{};
+            ps[0].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; ps[0].descriptorCount = 3 * kFramesInFlight; // obj+vis+prev
+            ps[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; ps[1].descriptorCount = 2 * kFramesInFlight; // cam+velUBO
+            VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+            pci.maxSets = kFramesInFlight; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
+            if (x3CreateDescriptorPool(&pci, nullptr, &m_velPool) != VK_SUCCESS) {
+                logError("[rhi] velocity descriptor pool failed — per-object MVs disabled");
+                destroyVelocityResources(); return true;
+            }
+        }
+        // ---- Per-frame descriptor sets ------------------------------------
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            dsai.descriptorPool = m_velPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &m_velSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_velSet[i]) != VK_SUCCESS) {
+                logError("[rhi] velocity descriptor set alloc failed — per-object MVs disabled");
+                destroyVelocityResources(); return true;
+            }
+            auto& fr = m_frames[i];
+            VkDescriptorBufferInfo obj{ fr.objBuf,       0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo cam{ fr.camBuf,       0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo vis{ fr.visBuf,       0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo prv{ m_prevModelBuf[i], 0, VK_WHOLE_SIZE };
+            VkDescriptorBufferInfo vub{ m_velUboBuf[i],  0, VK_WHOLE_SIZE };
+            VkWriteDescriptorSet w[5]{};
+            for (int k = 0; k < 5; ++k) {
+                w[k].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                w[k].dstSet = m_velSet[i]; w[k].dstBinding = (uint32_t)k; w[k].descriptorCount = 1;
+            }
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[0].pBufferInfo = &obj;
+            w[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[1].pBufferInfo = &cam;
+            w[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[2].pBufferInfo = &vis;
+            w[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; w[3].pBufferInfo = &prv;
+            w[4].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[4].pBufferInfo = &vub;
+            vkUpdateDescriptorSets(m_dev.device, 5, w, 0, nullptr);
+        }
+
+        logInfo("[rhi] velocity pre-pass ready (RG16F per-object motion vectors -> TAA)");
+        return true;
+    }
+
+void VulkanRenderDevice::destroyVelocityResources() {
+        if (m_velPipe)      { vkDestroyPipeline(m_dev.device, m_velPipe, nullptr); m_velPipe = VK_NULL_HANDLE; }
+        if (m_velLayout)    { vkDestroyPipelineLayout(m_dev.device, m_velLayout, nullptr); m_velLayout = VK_NULL_HANDLE; }
+        if (m_velSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_velSetLayout, nullptr); m_velSetLayout = VK_NULL_HANDLE; }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            m_velSet[i] = VK_NULL_HANDLE;  // freed with m_velPool
+            if (m_velUboBuf[i])    { vmaDestroyBuffer(m_alloc, m_velUboBuf[i], m_velUboAlloc[i]); m_velUboBuf[i] = VK_NULL_HANDLE; m_velUboAlloc[i] = nullptr; m_velUboMapped[i] = nullptr; }
+            if (m_prevModelBuf[i]) { vmaDestroyBuffer(m_alloc, m_prevModelBuf[i], m_prevModelAlloc[i]); m_prevModelBuf[i] = VK_NULL_HANDLE; m_prevModelAlloc[i] = nullptr; m_prevModelMapped[i] = nullptr; }
+        }
+        if (m_velPool) { vkDestroyDescriptorPool(m_dev.device, m_velPool, nullptr); m_velPool = VK_NULL_HANDLE; }
+    }
+
+void VulkanRenderDevice::recordVelocityPassBody(VkCommandBuffer cmd) {
+        // Re-rasterize the OPAQUE draws (same indirect commands as the depth
+        // pre-pass) writing screen-space motion vectors. Depth EQUAL keeps exactly
+        // the depth-prepass fragments. Mirrors recordDepthPrePassBody's loop, but
+        // binds a SECOND vertex stream (previous-frame verts) for skinned motion.
+        if (!m_velPipe || m_frameCmdCount == 0) return;
+        auto& fr = m_frames[m_frameIdx];
+        VkViewport vp{ 0.0f, 0.0f, (float)m_extent.width, (float)m_extent.height, 0.0f, 1.0f };
+        VkRect2D scis{ {0,0}, m_extent };
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &scis);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_velPipe);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_velLayout,
+                                0, 1, &m_velSet[m_frameIdx], 0, nullptr);
+        for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
+            const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
+            VkBuffer vbs[2] = { mh.drawVbo(m_frameIdx), mh.prevVbo(m_frameIdx, kFramesInFlight) };
+            VkDeviceSize offs[2] = { 0, 0 };
+            vkCmdBindVertexBuffers(cmd, 0, 2, vbs, offs);
+            vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
+            vkCmdDrawIndexedIndirect(cmd, fr.indirectBuf,
+                (VkDeviceSize)i * sizeof(VkDrawIndexedIndirectCommand), 1,
+                sizeof(VkDrawIndexedIndirectCommand));
+        }
+    }
+
 bool VulkanRenderDevice::createSsaoTargets() {
         destroySsaoTargets();
         m_ssaoExtent = { std::max(1u, m_extent.width / 2), std::max(1u, m_extent.height / 2) };

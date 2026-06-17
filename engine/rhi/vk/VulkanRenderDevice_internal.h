@@ -172,6 +172,8 @@ public:
     // synced per frame by the app. Toggling AE on re-arms the adaptation snap so
     // the first adapted frame lands on target instantly (no multi-second crawl).
     void setPostFX(const PostFXParams& p) override;
+    bool velocityEnabled() const override;
+    bool velocityAvailable() const override;
 
     void setShadowBounds(float cx, float cy, float cz, float halfExtent) override;
 
@@ -444,6 +446,15 @@ private:
         // single static device-local vbo.
         VkBuffer drawVbo(uint32_t frameIdx) const {
             return dynamic ? dynVbo[frameIdx] : vbo;
+        }
+        // PREVIOUS-frame vertex buffer for the velocity pass (#4). Skinned meshes
+        // keep the prior frame's deformed verts in the previous ring slot; static
+        // meshes reuse vbo so the previous == current position (no skinning term,
+        // only model/camera motion contributes). frames is kFramesInFlight.
+        VkBuffer prevVbo(uint32_t frameIdx, uint32_t frames) const {
+            if (!dynamic) return vbo;
+            uint32_t prev = (frameIdx + frames - 1u) % frames;
+            return dynVbo[prev] ? dynVbo[prev] : dynVbo[frameIdx];
         }
     };
     struct Texture {
@@ -1193,6 +1204,18 @@ private:
     // buffer from the camera's POV before lighting so SSAO has a full depth image.
     // Reuses m_shadowLayout (set0 = objSet); renders to m_depthFormat, no color.
     bool createDepthPrePipeline();
+
+    // ---- Velocity pre-pass (#4) ---------------------------------------------
+    // Build the velocity pipeline (velocity.vert/.frag -> RG16F MV target) and
+    // its per-frame descriptor sets + UBO/prev-model buffers. Graceful: returns
+    // true even if the velocity .spv is missing (the pass just stays disabled).
+    bool createVelocityResources();
+    void destroyVelocityResources();
+    // Record the velocity pre-pass: re-rasterize the opaque draws (depth EQUAL),
+    // binding dynVbo[frameIdx] as current + dynVbo[prevSlot] (or the static VBO)
+    // as previous, writing the screen-space motion vector. Mirrors
+    // recordDepthPrePassBody's draw loop.
+    void recordVelocityPassBody(VkCommandBuffer cmd);
 
     // Create (or recreate) the half-res SSAO raw + blurred R8 targets at the
     // current frame extent. Called after createBloomTargets() at init + on resize.
@@ -2301,6 +2324,55 @@ private:
     VkDescriptorSet       m_aeSetTaa        = VK_NULL_HANDLE;  // AE b0 = TAA output
     VkRenderingAttachmentInfo m_taaAttach{};                   // stable storage for the graph
     VkRenderingInfo           m_taaRenderInfo{};
+
+    // ---- PER-OBJECT VELOCITY BUFFER (#4: velocity buffer + DLSS input) -------
+    // An RG16F screen-space motion-vector target written by a velocity pre-pass
+    // (velocity.vert/.frag) that re-rasterizes the opaque geometry right after
+    // the depth pre-pass (depth EQUAL). Each pixel stores (prevUV - curUV) with
+    // jitter removed, so the TAA resolve reprojects DYNAMIC + SKINNED motion
+    // directly (drone, monsters) instead of relying on the neighborhood clamp.
+    // It is also the required input for DLSS (PART 2 seam). Created alongside the
+    // TAA targets; gated by m_post.velocity (r_velocity) AND the pipeline/target
+    // existing — graceful: if velocity.*.spv is absent (not yet registered in the
+    // app shader list) the pass is never built and TAA falls back to camera-only
+    // reprojection, byte-identical to the pre-velocity path.
+    VkImage       m_velImg   = VK_NULL_HANDLE;
+    VmaAllocation m_velAlloc = nullptr;
+    VkImageView   m_velView  = VK_NULL_HANDLE;
+    static constexpr VkFormat kVelocityFormat = VK_FORMAT_R16G16_SFLOAT;
+    VkPipelineLayout m_velLayout  = VK_NULL_HANDLE;  // set0 = objSet+velUBO (shadow-style + b4)
+    VkPipeline       m_velPipe    = VK_NULL_HANDLE;
+    VkDescriptorSetLayout m_velSetLayout = VK_NULL_HANDLE;  // objSet b0..b3 + velUBO b4
+    VkDescriptorPool m_velPool = VK_NULL_HANDLE;           // dedicated (own the velocity sets)
+    VkDescriptorSet  m_velSet[kFramesInFlight] = {};        // per-frame obj/prev/vis/cam/velUBO
+    // Velocity UBO: unjittered cur/prev viewProj + the two frames' jitter (NDC).
+    struct VelUBO {
+        glm::mat4 viewProjCurUnjit;
+        glm::mat4 viewProjPrevUnjit;
+        glm::vec4 jitter;   // xy = cur jitter (NDC), zw = prev jitter (NDC)
+    };
+    VkBuffer      m_velUboBuf[kFramesInFlight]    = {};
+    VmaAllocation m_velUboAlloc[kFramesInFlight]  = {};
+    void*         m_velUboMapped[kFramesInFlight] = {};
+    // Previous-frame per-object model matrices (one mat4 per object SSBO row),
+    // double-buffered so the velocity vertex shader reads last frame's transforms
+    // while this frame writes the current ones. Indexed identically to objBuf.
+    VkBuffer      m_prevModelBuf[kFramesInFlight]   = {};
+    VmaAllocation m_prevModelAlloc[kFramesInFlight] = {};
+    void*         m_prevModelMapped[kFramesInFlight]= {};
+    bool          m_velActiveThisFrame = false;   // set per frame in buildAndExecuteGraph
+    glm::vec2     m_velPrevJitterNdc{ 0.0f };      // previous frame's jitter (NDC) for the UBO
+    // CPU-side per-row model history for the velocity prev-model SSBO. Row order
+    // is the grouped emit order (stable for a static scene -> a row maps to the
+    // same object across frames); on a topology change a few rows get a one-frame
+    // stale MV, which the TAA neighborhood clamp contains. Filled in prepareFrameData.
+    std::vector<glm::mat4> m_velPrevModels;        // models from the previous frame
+    std::vector<glm::mat4> m_velCurModels;         // scratch: this frame's models
+    ResourceState m_velState{ VK_IMAGE_LAYOUT_UNDEFINED,
+                              VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
+    VkRenderingAttachmentInfo m_velAttach{};       // stable storage for the graph
+    VkRenderingAttachmentInfo m_velDepthAttach{};  // read-only depth (EQUAL test)
+    VkRenderingInfo           m_velRenderInfo{};
 
     // ---- AUTO-EXPOSURE (eye adaptation) ------------------------------------
     // A single-workgroup compute pass (autoexposure.comp) reduces a fixed 64x64
