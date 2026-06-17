@@ -4,6 +4,17 @@ add_executable(X3Engine WIN32
     self_tests.cpp
     test_registry.cpp
     cinematic.cpp
+    # #28 deep monolith split — extracted self-contained --world hosts
+    world_hosts/world_hosts.cpp
+    world_hosts/host_destruct.cpp
+    world_hosts/host_physjoint.cpp
+    world_hosts/host_ragdoll.cpp
+    world_hosts/host_drive.cpp
+    world_hosts/host_club.cpp
+    world_hosts/host_showroom.cpp
+    world_hosts/host_valley.cpp
+    world_hosts/host_cliffs.cpp
+    world_hosts/host_streamed.cpp
     scene.cpp
     level.cpp
     level1.cpp

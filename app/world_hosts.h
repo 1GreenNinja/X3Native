@@ -1,0 +1,36 @@
+#pragma once
+// ============================================================================
+// world_hosts — registry of the self-contained `--world` host bodies extracted
+// out of main() (#28 deep monolith split).
+//
+// Each host was an inline block in main() of the form:
+//     if (worldMode == "X") { ... return 0; }
+// where the body builds its own scene/physics, runs either a headless capture or
+// a windowed walk loop, tears down the device + window + glfw, and returns the
+// program exit code. Lifted VERBATIM into app/world_hosts/<name>.cpp behind this
+// registry; the only edits are reaching shared state via the HostContext.
+//
+// dispatchWorldHost() checks worldMode and runs the matching host; it returns:
+//   >= 0 : a matched host ran — this is the program exit code, return it.
+//   -1   : no discrete host matched — main() continues into the default host
+//          (the shared interactive render loop / cell+terrain+canon+fromdoc).
+// ============================================================================
+
+namespace x3 { namespace apphost {
+
+struct HostContext;
+
+int hostDestruct (HostContext& hc);   // --world destruct  (+ --screenshot-destruct)
+int hostPhysJoint(HostContext& hc);   // --world physjoint
+int hostRagdoll  (HostContext& hc);   // --world ragdoll
+int hostDrive    (HostContext& hc);   // --world drive | boat | fly (+ perfshop)
+int hostClub     (HostContext& hc);   // --world club      (+ crowd proof)
+int hostShowroom (HostContext& hc);   // --world showroom  (+ showroom-* proofs)
+int hostValley   (HostContext& hc);   // --world valley    (+ ecology proof)
+int hostCliffs   (HostContext& hc);   // --world cliffs
+int hostStreamed (HostContext& hc);   // --world streamed
+
+// Returns the exit code if a discrete host matched worldMode, else -1.
+int dispatchWorldHost(HostContext& hc);
+
+}} // namespace x3::apphost
