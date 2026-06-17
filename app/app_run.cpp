@@ -1293,6 +1293,26 @@ int runDefaultHost(HostContext& hc) {
         // stops, so the Phase-0 283 m re-scale auto-applies.
         elevator.enableFsm(true);
         elevator.setAudio(audio.get());
+        // PROPER ELEVATOR AUDIO: door open/close (the modular-scifi door WAV, reused
+        // from sndDoor), an arrival/floor-pass chime (the recharge bling), a looped
+        // motor/cable hum pitched by cab speed (Deep Processor Mech Drone), keypad
+        // clicks (a UI button) and a wrong-code/alarm buzzer. Every load is graceful:
+        // a missing WAV -> invalid handle -> that one cue is silent (never a crash).
+        {
+            x3::game::ElevatorSounds es;
+            es.doorOpen  = sndDoor;          // already loaded at boot (S_ScifiDoor_A)
+            es.doorClose = sndDoor;
+            es.ding      = audio->load(x3::game::resolveAudio(
+                "Sci-fi Evolution Gift Pack/Energy Bling.wav"));
+            if (!es.ding.valid()) es.ding = sndPickup;   // fallback: recharge chime
+            es.motor     = audio->load(x3::game::resolveAudio(
+                "Sci-fi Evolution Gift Pack/Deep Processor Mech Drone.wav"));
+            es.keyClick  = audio->load(x3::game::resolveAudio(
+                "Sci-fi Evolution Gift Pack/Ceramic Menu Button.wav"));
+            es.buzz      = audio->load(x3::game::resolveAudio(
+                "Sci-fi Evolution Gift Pack/Negative Analog Computer Tone 2.wav"));
+            elevator.setSounds(es);
+        }
         elevator.setClubStopY(x3::game::ElevatorSystem::kDefaultClubFloorY + cabHY);
         {
             static const char* kFloorLabels[] =
@@ -4102,6 +4122,22 @@ int runDefaultHost(HostContext& hc) {
                                   x3::logInfo(flashlight ? "flashlight ON" : "flashlight OFF"); }
             prevL = lNow;
             std::vector<x3::rhi::PointLight> fl = game.lightFixtures();
+            // ELEVATOR INTERIOR LIGHTING: the cab's ceiling fill + (in disco mode) the
+            // 4 colored spots. Without this the car interior was unlit and disco never
+            // rendered. Only added when the player is near/in the cab so they don't eat
+            // the 64-light budget elsewhere; the disco cue animates their color in
+            // elevator.update().
+            if (elevator.built() && !elevator.pointLights().empty()) {
+                const x3::phys::Vec3 cc = elevator.cabCenter();
+                const float lex = camX - cc.x, lez = camZ - cc.z, ley = camY - cc.y;
+                if (lex*lex + lez*lez < 100.0f && std::fabs(ley) < 12.0f) {
+                    for (const auto& pl : elevator.pointLights()) {
+                        // Skip fully-dark disco spots (color all 0 until disco mode).
+                        if (pl.color[0] + pl.color[1] + pl.color[2] > 0.001f)
+                            fl.push_back(pl);
+                    }
+                }
+            }
             if (flashlight) {
                 const float fX = std::cos(camPitch) * std::cos(camYaw);
                 const float fY = std::sin(camPitch);
@@ -4992,12 +5028,27 @@ int runDefaultHost(HostContext& hc) {
                         device->drawHudText(frame, label, sx - xoff + 1.5f, sy + 1.5f, 18.0f, shadow);
                         device->drawHudText(frame, label, sx - xoff, sy, 18.0f, col);
                     };
-                    // Elevator: within ~4 m of the cab.
+                    // Elevator: within ~4 m of the cab. Show a STATUS-AWARE prompt so the
+                    // player understands the lift — current floor + what E will do (call
+                    // to the next floor when idle, or "moving to F<x>" while travelling).
                     if (elevator.built()) {
                         const x3::phys::Vec3 cc = elevator.cabCenter();
                         const float ex = pex - cc.x, ez = pez - cc.z;
-                        if (ex*ex + ez*ez < 16.0f)
-                            floatPrompt(x3::phys::Vec3{ cc.x, cc.y + 1.6f, cc.z }, "[E] Call Elevator", 84.0f);
+                        if (ex*ex + ez*ez < 16.0f) {
+                            std::string ep;
+                            const int cur = elevator.currentStop();
+                            const int tgt = elevator.targetStop();
+                            if (elevator.moving()) {
+                                ep = "Elevator -> " + elevator.floorLabel(tgt) +
+                                     "  (" + elevator.stateName() + ")";
+                            } else {
+                                const int next = (cur + 1) % std::max(1, elevator.stopCount());
+                                ep = "Floor " + elevator.floorLabel(cur) +
+                                     "   [E] Go to " + elevator.floorLabel(next);
+                            }
+                            floatPrompt(x3::phys::Vec3{ cc.x, cc.y + 1.6f, cc.z },
+                                        ep.c_str(), (float)ep.size() * 4.4f);
+                        }
                     }
                     // Cell HoloTerminal: within ~3 m of its anchor.
                     if (game.secret().terminal().built()) {
