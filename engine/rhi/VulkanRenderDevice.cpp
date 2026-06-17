@@ -668,6 +668,17 @@ void VulkanRenderDevice::setRtShadowParams(const RtShadowParams& p) {
         m_rtShadows.pointRadius = std::max(0.0f, std::min(1.0f, m_rtShadows.pointRadius));
     }
 
+void VulkanRenderDevice::setSkinnedRtEnabled(bool enabled) {
+        // r_skinnedrt: toggle whether visible skinned characters are added to the
+        // RT scene TLAS (so RT shadows/reflections/DDGI/acoustics see them). When
+        // OFF, buildRtSceneAS skips the skinned-BLAS pass entirely and the static
+        // RT path is byte-identical to the pre-feature behavior. Harmless store on a
+        // non-RT GPU (the whole RT block is gated by m_rtSupported regardless).
+        m_skinnedRtEnabled = enabled;
+}
+bool VulkanRenderDevice::skinnedRtEnabled() const { return m_skinnedRtEnabled; }
+uint32_t VulkanRenderDevice::skinnedRtInstanceCount() const { return m_skinnedRtInstances; }
+
 void VulkanRenderDevice::setGlassDevParams(const GlassDevParams& p) {
         // Cache a snapshot of the live r_glass_* dev overrides; the glass control
         // UBO picks them up in prepareFrameData each frame.

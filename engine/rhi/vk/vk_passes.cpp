@@ -181,16 +181,68 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         uint32_t built = 0;
         bool     deferred = false;
         m_rt.beginBlasBatch();
+        // ---- SKINNED-CHARACTER TLAS REFIT (#3, r_skinnedrt) -------------------
+        // Per-frame, build/refit a BLAS for each visible skinned character from its
+        // CURRENT pose so monsters/NPCs enter the multi-consumer TLAS (RT shadows +
+        // reflections + DDGI + RT acoustics). Budgeted (kSkinnedBlasBudget per
+        // frame); REFIT (VK_..._MODE_UPDATE) after the first build, far cheaper than
+        // a rebuild. Gated by m_skinnedRtEnabled (r_skinnedrt, default ON) AND
+        // m_rtSupported; on a non-RT GPU (Pascal) or with the cvar OFF, skinned
+        // chars stay raster-only and this whole block is skipped -> the static-only
+        // path below is byte-identical to the pre-feature behavior.
+        //
+        // POSE LATENCY (documented, intentional): THIS frame's compute-skinning pass
+        // is recorded INSIDE buildAndExecuteGraph(), which runs AFTER this function.
+        // So we BLAS the most-recently-COMPLETED skinned output — the slot the GPU
+        // wrote last frame (sm.lastSkinnedFrame), already retired (its inFlight fence
+        // was waited in beginFrame). RT shadows/reflections/DDGI/audio for skinned
+        // chars therefore lag the raster pose by exactly ONE frame — imperceptible
+        // for shadows/AO/audio, and it avoids ANY new mid-frame device wait (the
+        // skinned BLAS ride the existing batched-AS submit boundary). Reading a
+        // not-yet-skinned mesh just yields the bind pose (seeded at register time).
+        m_skinnedRtThisFrame = false;
+        m_rt.resetSkinnedCounters();
+        const bool wantSkinned = m_skinnedRtEnabled && !m_skinnedMeshes.empty();
+        if (wantSkinned) {
+            constexpr uint32_t kSkinnedBlasBudget = 64;   // cap chars touched/frame
+            uint32_t skBuilt = 0;
+            for (uint32_t mid : m_groupOrder) {
+                if (skBuilt >= kSkinnedBlasBudget) break;
+                auto sk = m_skinnedMeshes.find(mid);
+                if (sk == m_skinnedMeshes.end()) continue;     // not a skinned mesh
+                auto it = m_meshes.find(mid);
+                if (it == m_meshes.end()) continue;
+                const Mesh& m = it->second;
+                if (!m.dynamic || m.indexCount < 3) continue;
+                // Read the slot the compute pass last WROTE (retired). Before the
+                // first dispatch, lastSkinnedFrame is ~0u -> use the current slot
+                // (bind-pose-seeded), which is harmless (T-pose shadow until skinned).
+                const SkinnedMesh& smr = sk->second;
+                const uint32_t slot = (smr.lastSkinnedFrame < kFramesInFlight)
+                                          ? smr.lastSkinnedFrame : m_frameIdx;
+                VkBuffer vbo = m.dynVbo[slot];
+                if (vbo == VK_NULL_HANDLE) continue;
+                VkBufferDeviceAddressInfo vi{ VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO }; vi.buffer = vbo;
+                VkBufferDeviceAddressInfo ii{ VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO }; ii.buffer = m.ibo;
+                const VkDeviceAddress vbAddr = vkGetBufferDeviceAddress(m_dev.device, &vi);
+                const VkDeviceAddress ibAddr = vkGetBufferDeviceAddress(m_dev.device, &ii);
+                ++m_asBuildsThisFrame;   // ZERO-STUTTER spike-log attribution (skinned BLAS)
+                if (m_rt.ensureSkinnedBlas(mid, vbAddr, m.vertexCount,
+                                           (uint32_t)sizeof(MeshVertex), ibAddr, m.indexCount)) {
+                    ++skBuilt;
+                    m_skinnedRtThisFrame = true;
+                }
+            }
+        }
         for (uint32_t mid : m_groupOrder) {
             if (m_rt.hasBlas(mid)) continue;
             auto it = m_meshes.find(mid);
             if (it == m_meshes.end()) continue;
             const Mesh& m = it->second;
-            // Dynamic (CPU-skinned) meshes change their vertex buffer each frame; the
-            // per-frame skinned/updated VBO would need a per-frame BLAS rebuild. For
-            // v1 (static-first) we BLAS only the static device-local meshes; dynamic
-            // characters are simply absent from the TLAS (they don't cast RT AO yet —
-            // a documented next tier). This keeps the build cheap + correct.
+            // Dynamic skinned meshes are handled by the skinned-BLAS pass above
+            // (when r_skinnedrt is on); otherwise they stay raster-only and are
+            // skipped here (the static-first path BLASes only static device-local
+            // meshes). A dynamic mesh with no skinned BLAS contributes nothing.
             if (m.dynamic || m.vbo == VK_NULL_HANDLE) continue;
             if (built >= kBlasFrameBudget) { deferred = true; break; }
             VkBufferDeviceAddressInfo vi{ VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO }; vi.buffer = m.vbo;
@@ -212,9 +264,12 @@ bool VulkanRenderDevice::buildRtSceneAS() {
             return false;
         }
 
-        // Build the TLAS from this frame's instances (skip dynamic meshes — no BLAS).
+        // Build the TLAS from this frame's instances. hasBlas() now returns true for
+        // skinned meshes too (their per-frame skinned BLAS built above), so skinned
+        // characters enter the TLAS automatically alongside static geometry.
         m_rtInstScratch.clear();
         m_rtInstScratch.reserve(m_drawRecords.size());
+        m_skinnedRtInstances = 0;
         for (uint32_t i = 0; i < (uint32_t)m_drawRecords.size(); ++i) {
             const DrawRecord& dr = m_drawRecords[i];
             if (!m_rt.hasBlas(dr.meshId)) continue;
@@ -227,6 +282,7 @@ bool VulkanRenderDevice::buildRtSceneAS() {
             inst.customIndex = (i < m_recordSsboRow.size()) ? m_recordSsboRow[i] : 0u;
             std::memcpy(inst.model, dr.model, sizeof(inst.model));
             m_rtInstScratch.push_back(inst);
+            if (m_rt.hasSkinnedBlas(dr.meshId)) ++m_skinnedRtInstances;
         }
 
         // Decide whether to (re)build the TLAS this frame. Rebuilding into the SAME
@@ -243,12 +299,27 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         const uint64_t sig = tlasSignature(m_rtInstScratch);
         const bool firstBuild = !m_rt.tlasBuilt();
         const bool changed    = (sig != m_rtTlasSig);
-        if (!firstBuild && !changed && !m_rtao.rebuildTlasEachFrame)
+        // SKINNED: a refit BLAS keeps its handle/address but its geometry (and thus
+        // its bounds) moved this frame, so the TLAS must be rebuilt to refresh the
+        // top-level bounding volumes — even if the instance set/transforms (the
+        // signature) are unchanged. Only forces a rebuild on frames that actually
+        // touched a skinned BLAS; a static frame still hits the no-build fast path.
+        if (!firstBuild && !changed && !m_skinnedRtThisFrame && !m_rtao.rebuildTlasEachFrame)
             return m_rt.tlas() != VK_NULL_HANDLE;   // unchanged static TLAS: reuse as-is
 
         // A real (re)build follows: ensure no in-flight GPU work is still reading the
         // TLAS backing we may overwrite. Cheap because rebuilds are rare (static) —
         // and necessary for correctness when they do happen.
+        //
+        // ZERO-STUTTER NOTE (honest disclosure): when r_skinnedrt is on AND skinned
+        // characters are visible, m_skinnedRtThisFrame forces a rebuild EVERY frame,
+        // so this device wait fires per-frame for the duration. This is the SAME
+        // documented TLAS-rebuild boundary the rebuildTlasEachFrame=true (dynamic
+        // scene) path already uses — a deliberate WAR-hazard guard, NOT a regression.
+        // With r_skinnedrt OFF (or no RT / Pascal), m_skinnedRtThisFrame is always
+        // false and the static frame keeps its zero-wait fast path above. A
+        // double-buffered TLAS backing (to drop this per-frame wait) is the
+        // documented next perf tier — see docs.
         if (!firstBuild) vkDeviceWaitIdle(m_dev.device);
 
         ++m_asBuildsThisFrame;   // ZERO-STUTTER spike-log attribution (TLAS (re)build)

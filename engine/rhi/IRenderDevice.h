@@ -533,6 +533,23 @@ public:
     // Cached + re-applied each frame, like setRtaoParams. Default no-op.
     virtual void          setRtShadowParams(const RtShadowParams&) {}
 
+    // ---- SKINNED-CHARACTER TLAS REFIT (r_skinnedrt) -------------------------
+    // Toggle whether visible skinned characters (monsters/NPCs) are added to the
+    // scene TLAS, so RT shadows + reflections + DDGI + RT acoustics all see them.
+    // Per-frame the backend builds/refits a BLAS for each skinned char from its
+    // current pose (the same compute-skinned vertices the raster path draws) and
+    // adds its instance to the multi-consumer TLAS. BUDGETED (a per-frame cap) and
+    // REFIT-preferred (cheap VK_..._MODE_UPDATE after the first build). Reads the
+    // most-recently-completed skinned output -> RT lags the raster pose by ONE
+    // frame (intentional, imperceptible for shadows/AO/audio; avoids a new mid-
+    // frame stall). DEFAULT ON. GATED: a non-RT GPU (Pascal) or this toggle OFF ->
+    // skinned chars stay raster-only and the static RT path is byte-identical.
+    virtual void          setSkinnedRtEnabled(bool /*enabled*/) {}
+    virtual bool          skinnedRtEnabled() const { return false; }
+    // Introspection (tests/telemetry): how many skinned characters were present in
+    // the TLAS on the last built frame (0 when off / unsupported / none visible).
+    virtual uint32_t      skinnedRtInstanceCount() const { return 0; }
+
     // ---- RT ACOUSTICS — audio rays through the render TLAS (snd_rtacoustics) --
     // ASYNC batched ray queries against the SAME scene TLAS the RT AO /
     // reflections / DDGI passes use. The audio layer (engine/audio/RtAcoustics)

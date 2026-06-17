@@ -201,6 +201,10 @@ public:
 
     void setRtShadowParams(const RtShadowParams& p) override;
 
+    void setSkinnedRtEnabled(bool enabled) override;
+    bool skinnedRtEnabled() const override;
+    uint32_t skinnedRtInstanceCount() const override;   // skinned chars in the TLAS this frame
+
     void setGlassDevParams(const GlassDevParams& p) override;
 
     bool worldToScreen(float wx, float wy, float wz, float& sx, float& sy) const override;
@@ -1648,6 +1652,17 @@ private:
     // SSAO/SSGI path is byte-for-byte unchanged.
     VulkanRT          m_rt;                                  // AS manager (ray-query)
     bool              m_rtInitTried = false;                 // lazy one-time module init
+    // ---- SKINNED-CHARACTER TLAS REFIT (#3, r_skinnedrt) ------------------
+    // When ON (default) AND m_rtSupported, buildRtSceneAS builds/refits a per-frame
+    // BLAS for each visible skinned character and adds it to the multi-consumer
+    // TLAS (RT shadows + reflections + DDGI + RT acoustics all then see monsters).
+    // OFF (or non-RT GPU) -> skinned chars stay raster-only; static RT path is
+    // byte-identical to the pre-feature behavior. Set via setSkinnedRtEnabled
+    // (the r_skinnedrt cvar; CLI string wiring lives in app/ — engine exposes the
+    // toggle + introspection so the feature is self-gating + testable here).
+    bool              m_skinnedRtEnabled = true;             // r_skinnedrt (default ON)
+    bool              m_skinnedRtThisFrame = false;          // a skinned BLAS was (re)built this frame
+    uint32_t          m_skinnedRtInstances = 0;              // skinned chars added to the TLAS this frame
     RtaoParams        m_rtao{};                              // cached tunables (default OFF)
     bool              m_rtaoBuilt = false;                   // RT-AO pipelines created
     uint32_t          m_rtFrameSeed = 0;                     // per-frame noise seed

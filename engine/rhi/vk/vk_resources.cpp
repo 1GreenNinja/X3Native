@@ -129,6 +129,12 @@ void VulkanRenderDevice::updateMesh(MeshHandle h, const MeshVertex* verts, uint3
             for (uint32_t i = 0; i < kFramesInFlight; ++i) {
                 VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
                 bci.size = bytes; bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+                // CPU-skinned (updateMesh) dynamic vbos are also a per-frame BLAS
+                // build input for r_skinnedrt when RT is supported (same rationale +
+                // raster-identity guarantee as the GPU-skinning output above).
+                if (m_rtSupported)
+                    bci.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+                               | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
                 VmaAllocationCreateInfo vaci{};
                 vaci.usage = VMA_MEMORY_USAGE_AUTO;
                 vaci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
@@ -696,9 +702,18 @@ bool VulkanRenderDevice::promoteMeshForSkinning(Mesh& m, const MeshVertex* bindV
             // Seed from the bind pose via a staging copy so a draw before the first
             // dispatch (or a pass that reads a not-yet-dispatched slot) shows valid
             // geometry rather than garbage.
-            if (!createDeviceLocalBuffer(bindVerts, bytes,
+            // The skinned OUTPUT vbo is also the per-frame BLAS build input for the
+            // skinned-TLAS feature (r_skinnedrt): when RT is supported, add the
+            // device-address + AS-build-input usage so VulkanRT::ensureSkinnedBlas
+            // can read it. These flags don't change raster binding (still a vertex
+            // buffer) -> raster output byte-identical; only added when RT is on.
+            VkBufferUsageFlags outUsage =
                     VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT
-                    | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,   // readbackSkinnedMesh copies from it (test path)
+                    | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;   // readbackSkinnedMesh copies from it (test path)
+            if (m_rtSupported)
+                outUsage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT
+                          | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+            if (!createDeviceLocalBuffer(bindVerts, bytes, outUsage,
                     made[i], madeA[i])) {
                 for (uint32_t k = 0; k < i; ++k) vmaDestroyBuffer(m_alloc, made[k], madeA[k]);
                 logError("[rhi] skin: output vbo alloc failed"); return false;
