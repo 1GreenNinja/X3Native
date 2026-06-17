@@ -115,21 +115,40 @@ MonsterSystem::Tuning nordicStewardTuning() {
     return t;
 }
 
-// MANTIS ARBITER — insectoid stealth assassin (wildcard). Built on the Verthani
-// strafe-heavy melee, sped up to assassin tier. (Veil stealth + Mind-Spike
-// armor-pierce = engine extensions.)
+// MANTIS ARBITER — insectoid stealth assassin (wildcard mini-boss). Built on
+// the Verthani strafe-heavy melee, sped up to assassin tier, with a 3-phase
+// rage escalation (each transition the carapace bruises darker, speed + damage
+// climb, and a brief memory-flash vulnerability window opens). The canon
+// "send-off" log line on death is hooked via the existing BossPhase machine —
+// runs as the Phase3->dead transition. (Veil stealth + Mind-Spike armor-pierce
+// = engine extensions still pending.)
 MonsterSystem::Tuning mantisArbiterTuning() {
     MonsterSystem::Tuning t = tuningFor(EnemyType::Verthani);
-    t.hp             = 100;
-    t.type           = MonsterType::Guard;
+    t.hp             = 220;                                  // mini-boss tier (~Warlord/2.5)
+    t.type           = MonsterType::Boss;                    // promoted from Guard for the phase machine
     t.ranged         = false;
     t.damage         = combat::kMeleeDamageDefault;          // 8 — psychic spike (TODO: pierce)
     t.attackRange    = combat::kMeleeRange;
     t.attackCooldown = combat::kMeleeCooldownMin;            // 1.0 — fast strikes
-    t.chaseSpeed     = kChaseSpeed * 1.50f;                  // very fast
+    t.chaseSpeed     = kChaseSpeed * 1.50f;                  // very fast base
     t.aiStrafeBias   = 0.90f;                                // extreme flanker
     t.modelScale     = 1.05f;                                // 6–7 ft canon
-    t.tint[0] = 0.45f; t.tint[1] = 0.62f; t.tint[2] = 0.30f; t.tint[3] = 1.0f; // mantis green
+    t.tint[0] = 0.45f; t.tint[1] = 0.62f; t.tint[2] = 0.30f; t.tint[3] = 1.0f; // mantis green base
+    // ---- Phase machine: rage escalation. ----
+    t.phase2Frac      = 0.66f;
+    t.phase3Frac      = 0.33f;
+    t.phase2SpeedMul  = 1.40f;                               // faster
+    t.phase3SpeedMul  = 1.70f;                               // desperate-fast
+    t.phase2DamageMul = 1.30f;                               // harder strikes
+    t.phase3DamageMul = 1.60f;                               // berserker
+    t.phase2ScaleMul  = 1.00f;                               // no growth — keep silhouette
+    t.phase3ScaleMul  = 1.00f;
+    // Carapace bruises darker as phases escalate (subtle red push — angrier insect).
+    // phaseTintMul defaults to {1,1,1}; tinted per-phase in the host's onPhase hook.
+    // Memory-flash: a brief 0.8 s amplified-vulnerability window per phase
+    // transition — the canon "she's open" beat the player rotates types into.
+    t.memoryFlashTime      = 0.8f;
+    t.memoryFlashDamageMul = 1.35f;
     return t;
 }
 
@@ -258,6 +277,23 @@ bool runCanonAliensSelfTest() {
               d.tuning.chaseSpeed > kChaseSpeed &&
               d.tuning.aiStrafeBias > 0.8f,
               "T6 Mantis Arbiter: hostile, fast (chase > default), aggressive strafe (>0.8)");
+    }
+    // ---- T6b: Mantis Arbiter is now a Boss with the rage-phase machine + a
+    // memory-flash vulnerability window per phase (canon-aliens c8 polish). ----
+    {
+        const auto& d = canonAlienDef(CanonAlien::MantisArbiter);
+        const bool isBoss   = d.tuning.type == MonsterType::Boss;
+        const bool hpUp     = d.tuning.hp >= 200;                                 // mini-boss tier
+        const bool phases   = d.tuning.phase2Frac > d.tuning.phase3Frac &&
+                              d.tuning.phase3Frac > 0.0f && d.tuning.phase2Frac < 1.0f;
+        const bool escalate = d.tuning.phase3SpeedMul  > d.tuning.phase2SpeedMul &&
+                              d.tuning.phase3DamageMul > d.tuning.phase2DamageMul &&
+                              d.tuning.phase2SpeedMul  > 1.0f &&
+                              d.tuning.phase2DamageMul > 1.0f;
+        const bool flash    = d.tuning.memoryFlashTime > 0.0f &&
+                              d.tuning.memoryFlashDamageMul > 1.0f;
+        check(isBoss && hpUp && phases && escalate && flash,
+              "T6b Mantis Arbiter mini-boss: Boss + HP>=200 + rage phase machine (escalating) + memory-flash window");
     }
     // ---- T7: rows are DISTINCT. ----
     {
