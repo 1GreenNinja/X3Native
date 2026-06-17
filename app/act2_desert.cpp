@@ -387,9 +387,15 @@ bool Act2Desert::onInteract(uint32_t interactId) {
 }
 
 FireResult Act2Desert::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                              Scene& scene, x3::phys::IPhysicsWorld& physics) {
+                              Scene& scene, x3::phys::IPhysicsWorld& physics,
+                              int damage, x3::DamageType type) {
     // Only the hostile Overlord patrol is a valid target (allied Salvari excluded).
-    return m_patrol.fire(eye, dir, scene, physics);
+    // canon-aliens Adaptive Hide: thread `type` through so when the canon-aliens
+    // chain merges (act2-desert-warlord adds the SaurianWarlord on top of this row),
+    // the boss's resist machine reacts to the player's loadout. The follow-up canon
+    // chain's act2_desert.onFire will add m_warlord.fire + m_mantisAmbush.fire calls
+    // and forward `damage` + `type` to each.
+    return m_patrol.fire(eye, dir, scene, physics, damage, type);
 }
 
 void Act2Desert::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,

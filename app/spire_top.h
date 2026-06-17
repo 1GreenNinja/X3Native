@@ -145,7 +145,8 @@ public:
     // (the host owns the WeaponSystem::hasWeapon() gate).
     FireResult onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                       Scene& scene, x3::phys::IPhysicsWorld& physics,
-                      int damage = kDamagePerShot);
+                      int damage = kDamagePerShot,
+                      x3::DamageType type = x3::DamageType::Kinetic);
 
     // Draw all top-floor enemies + the F7 boss + Sarah (host calls in its draw block).
     void draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,

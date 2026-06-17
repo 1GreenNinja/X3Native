@@ -97,11 +97,21 @@ struct CliOptions {
     // --test-bosses (Act-1 bosses, Wave 1): the 5 mid-boss defs + the multi-pod
     // machine + the scripted pre-fight hook + the Martinez regression guard. Additive.
     bool        testBosses = false;
+    // --test-adaptive-hide (canon-aliens engine ext.): the type-keyed rotate-damage
+    // rhythm on a Boss-type monster — full first hit, reduced same-type repeat,
+    // type-rotation re-opens, window expires, opt-out (resist==0) is dead-code.
+    bool        testAdaptiveHide = false;
     // --test-act2bosses (Act-2 roster, Wave 2): the 5 alien-planet-surface enemy
     // defs + 4 single-body bosses (Memory Hunter / Siren / Breeder Queen / Garrison
     // Commander) + the Wave-2 Tuning tags (startAllied / copyFeintPhase /
     // escapeTimerSeconds) + the Act-1 + Martinez regression guard. Additive.
     bool        testAct2Bosses = false;
+    // --test-canonaliens (canon-alien roster — the four "most reported" species:
+    // Mantis/Grey/Reptilian/Nordic, per the Davis-Puthoff visualisation). Builds
+    // each of the 5 Tuning rows (SaurianSoldier/Warlord, GreyTasked, NordicSteward,
+    // MantisArbiter) on a HeadlessDevice + Jolt world; asserts the roster is
+    // complete + ordered, each row builds, and per-species stat invariants hold.
+    bool        testCanonAliens = false;
     // --test-ui (UI pass): general game-UI layer (menus + HUD). Additive flag.
     bool        testUi = false;
     // --test-loading (loading-screen pass, Task #49): asserts progress is monotonic
