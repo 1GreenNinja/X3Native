@@ -511,6 +511,42 @@ std::vector<WeaponDef> makeDefaultRoster() {
         r.push_back(w);
     }
 
+    // ---- 8) Rocket Launcher — the first EXPLOSIVE-type weapon. -------------
+    // Heavy projectile with a large impact radius. The canon-aliens DamageType
+    // table needs an Explosive entry; until a future grenade/cryo row is added,
+    // the rocket is the only weapon that stamps Explosive on every shot. Bosses
+    // that opt into adaptiveHideResist against Explosive (none today) would
+    // resist after the first hit + force the player to rotate. Tuning: 80 direct
+    // + 60 splash @ 4 m, mag 4 / reserve 16, slow projectile so the bolt reads.
+    // At 0.8/s sustained DPS is ~64 direct + ~48 splash; a 400-HP boss is still
+    // ~3 rockets (no one-shot), holding the W11 power-ladder invariant.
+    {
+        WeaponDef w;
+        w.name        = "rocket";
+        w.kind        = FireKind::Projectile;
+        w.automatic   = false;
+        w.damage      = 80;                   // direct-hit damage
+        w.type        = x3::DamageType::Explosive;
+        w.fireRate    = 0.8f;                 // slow heavy weapon
+        w.pellets     = 1;
+        w.spreadDeg   = 0.4f;
+        w.recoilDeg   = 5.0f;                 // big kick
+        w.range       = 100.0f;
+        w.magSize     = 4;                    // small tube
+        w.reserveAmmo = 16;
+        w.reloadTime  = 3.5f;
+        w.projSpeed   = 30.0f;                // slow rocket — readable bolt
+        w.splashRadius= 4.0f;                 // large AoE
+        w.splashDamage= 60;                   // significant splash
+        w.viewmodelGlb = "WeaponRocketLauncher.glb"; // dedicated launcher mesh
+        w.vmScale     = 0.26f;                // heavy weapon
+        w.muzzleFx    = "muzzle_rocket";
+        w.impactFx    = "impact_explosion";
+        // Heavy boom on launch (one-shot).
+        w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-57.wav";
+        r.push_back(w);
+    }
+
     return r;
 }
 
@@ -1238,6 +1274,7 @@ bool runWeaponsSelfTest() {
             { "chaingun",     x3::DamageType::Kinetic },
             { "plasma_rifle", x3::DamageType::Energy  },
             { "lightning",    x3::DamageType::Energy  },
+            { "rocket",       x3::DamageType::Explosive },
         };
         bool allDefsOk = true;
         for (const ExpectedType& e : expect) {
