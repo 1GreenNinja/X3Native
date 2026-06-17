@@ -8399,8 +8399,10 @@ int main(int argc, char** argv) {
             // a SKIP still latches it (skip fires endState events by contract).
             x3::cut::StoryFlags storyFlags;
             storyFlags.load(x3::cut::defaultStoryFlagsPath());
-            const bool seenIntro = storyFlags.has(x3::cut::kFlagIntroComplete);
-            if (!seenIntro || !cutsceneFile.empty()) {
+            // Cold open plays EVERY launch (Tim) — no longer gated by the once-per-save
+            // intro_complete flag. --skipintro still bypasses it; --cutscene still overrides.
+            const bool playIntro = true;
+            if (playIntro) {
                 const std::string csPath = !cutsceneFile.empty()
                     ? cutsceneFile
                     : x3::game::assetRoot() + "/cutscenes/cold_open.cutscene.json";
