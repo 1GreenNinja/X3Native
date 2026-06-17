@@ -2904,10 +2904,10 @@ void MultiPodBoss::drawAll(x3::rhi::IRenderDevice& device, const x3::rhi::FrameC
 
 FireResult MultiPodBoss::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                               Scene& scene, x3::phys::IPhysicsWorld& physics,
-                              int damage) {
+                              int damage, x3::DamageType type) {
     FireResult best;
     for (auto& p : m_pods) {
-        FireResult r = p->fire(eye, dir, scene, physics, damage);
+        FireResult r = p->fire(eye, dir, scene, physics, damage, type);
         if (r.hitMonster) return r;   // a pod took the shot; at most one per call
         if (r.hit && !best.hit) best = r;  // remember a wall hit for the tracer
     }

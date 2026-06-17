@@ -1215,9 +1215,13 @@ public:
     // Fire one shot across all pods (the first live pod the ray hits takes damage).
     // A pod that DIES this way counts as KILLED (not spared). Returns the result.
     // `damage` is the firing weapon's per-shot damage (defaults to kDamagePerShot).
+    // `type` is the canon-aliens DamageType — forwarded into each pod's fire so a
+    // future Chorus-tier boss that opts into adaptiveHideResist reacts to the
+    // player's loadout (current Chorus row has resist=0 so this is a no-op for them).
     FireResult fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                     Scene& scene, x3::phys::IPhysicsWorld& physics,
-                    int damage = kDamagePerShot);
+                    int damage = kDamagePerShot,
+                    x3::DamageType type = x3::DamageType::Kinetic);
 
     // ---- Outcome counts (the morality quest) ------------------------------
     uint32_t killedCount() const;            // pods downed by lethal damage
