@@ -34,9 +34,24 @@
 #include <string>
 #include <vector>
 
+#include "engine/audio/IAudioSystem.h"   // SoundHandle / LoopHandle (small POD)
+
 namespace x3::audio { class IAudioSystem; }
 
 namespace x3::game {
+
+// One-shot + loop sound handles the elevator plays. All optional: an invalid
+// (id==0) handle simply makes that cue silent (the audio backend no-ops on it),
+// so a host that has no WAV for, say, the ding, still works. The motor hum is a
+// SUSTAINED loop voice (startLoop/stopLoop) whose pitch tracks the cab speed.
+struct ElevatorSounds {
+    x3::audio::SoundHandle doorOpen;   // doors retracting
+    x3::audio::SoundHandle doorClose;  // doors sealing (often the same WAV)
+    x3::audio::SoundHandle ding;       // arrival / floor-pass chime
+    x3::audio::SoundHandle motor;      // looped motor/cable hum (pitched by speed)
+    x3::audio::SoundHandle keyClick;   // keypad digit press
+    x3::audio::SoundHandle buzz;       // wrong-code / emergency buzzer
+};
 
 // ---------------------------------------------------------------------------
 // The 10-state machine (ported 1:1 from x3-elevator.js STATE{}). The CORE lift
@@ -146,8 +161,23 @@ public:
     // no-ops — exactly the "stub the calls" path the task allows. May be null.
     void setAudio(x3::audio::IAudioSystem* audio) { m_audio = audio; }
 
+    // Wire the concrete elevator SFX (host resolves real WAVs from the asset packs
+    // and passes them here). Any invalid handle leaves that cue silent. The motor
+    // hum is started as a looping voice the first time the cab moves and pitched by
+    // speed; it is stopped on arrival. Safe to call before or after build().
+    void setSounds(const ElevatorSounds& s) { m_snd = s; }
+
+    // The cab's current world center — where the host should treat the elevator as
+    // the 3D sound emitter (door/ding/motor are spatialized to this point).
+    // (cabCenter() already returns it; this name documents the audio intent.)
+
     // Floor labels for the directory OLED (optional; defaults to "S0..Sn").
     void setFloorLabels(const std::vector<std::string>& labels) { m_floorLabels = labels; }
+    // Human label for a stop index ("F3", "B1", ...); falls back to "S<idx>" when no
+    // labels were set or the index is out of range. Used for the in-world HUD prompt.
+    std::string floorLabel(int stopIndex) const;
+    // The cab's CURRENT nearest/arrived stop (vs targetStop(), where it's headed).
+    int currentStop() const { return m_curStop; }
 
     // Set the Club-1127 descent target (cab-center world Y). The 1127 keypad code
     // makes the cab travel here. Default = kDefaultClubFloorY + cab half-height.
@@ -187,7 +217,8 @@ private:
     void  syncBodyAndTransform(Scene& scene, x3::phys::IPhysicsWorld& physics);
     float fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics);
     float legacyUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics);
-    void  updateMotorAudio(float dt);     // procedural-audio hook
+    void  updateMotorAudio(float dt);     // motor-hum loop pitch/start/stop
+    void  playOneShot(x3::audio::SoundHandle s, float vol, float pitch); // 3D @ cab
     void  layoutVisuals(Scene& scene);    // reposition child entities at the cab
     void  applyDiscoCue(float dt, float t); // disco light/strata/glass cue
 
@@ -231,9 +262,16 @@ private:
     uint32_t m_eGlass = kNoLink, m_eStrata = kNoLink, m_eMirror = kNoLink;
     uint32_t m_eOledL = kNoLink, m_eOledR = kNoLink, m_eTerm = kNoLink;
     uint32_t m_eDiscoBall = kNoLink, m_eCeil = kNoLink;
+    // Twin sliding door panels (front +X wall) that part along Z with m_doorPct, an
+    // indicator strip above the doors that tints by state, and a floor numeral plate.
+    uint32_t m_eDoorL = kNoLink, m_eDoorR = kNoLink, m_eIndicator = kNoLink;
     // Per-frame audio bookkeeping.
     float  m_motorHz = 40.0f;
     int    m_lastDingStop = -1;
+    ElevatorSounds        m_snd{};            // host-wired SFX (any may be invalid)
+    x3::audio::LoopHandle m_motorLoop{};      // live motor-hum voice (0 == none)
+    bool   m_doorWasOpening = false;          // edge-detect for the door SFX
+    bool   m_doorWasClosing = false;
 
     // Sentinel for "club stop not set yet".
     static constexpr float kUninit = -1.0e30f;

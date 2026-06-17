@@ -560,58 +560,9 @@ x3::prims::PrimMesh makeRoundedPanel(float hw, float hh, float corner) {
     return m;
 }
 
-// A thin ROUNDED-RECTANGLE RIM (a closed glass bevel ring) framing the panel: an
-// outer rounded contour at (hw+t, hh+t) and an inner one at (hw, hh), triangulated
-// as a quad strip between the two so it reads as a continuous polished glass edge
-// with ROUNDED CORNERS — NOT a thick neon rectangle with square corner blocks. The
-// rim is double-sided (both faces) so it catches light from the player side. UVs are
-// flat (whole rim shares the texture's bright top — unused; the rim is untextured
-// glass tinted by baseColor + a soft emissive sheen).
-x3::prims::PrimMesh makeRoundedRim(float hw, float hh, float corner, float thickness) {
-    x3::prims::PrimMesh m;
-    const int seg = 6;                              // arc segments per corner (smooth)
-    const float rIn  = std::min(corner, std::min(hw, hh) * 0.9f);
-    const float rOut = rIn + thickness;
-    struct C { float cx, cy, a0; } corners[4] = {
-        {  hw - rIn,  hh - rIn, 0.0f             },  // top-right
-        { -hw + rIn,  hh - rIn, 3.14159265f*0.5f },  // top-left
-        { -hw + rIn, -hh + rIn, 3.14159265f      },  // bottom-left
-        {  hw - rIn, -hh + rIn, 3.14159265f*1.5f },  // bottom-right
-    };
-    std::vector<float> inX, inY, outX, outY;        // matched inner/outer contours
-    for (int cc = 0; cc < 4; ++cc) {
-        for (int s = 0; s <= seg; ++s) {
-            const float a = corners[cc].a0 + (3.14159265f * 0.5f) * ((float)s / (float)seg);
-            const float ca = std::cos(a), sa = std::sin(a);
-            inX.push_back(corners[cc].cx + ca * rIn);  inY.push_back(corners[cc].cy + sa * rIn);
-            outX.push_back(corners[cc].cx + ca * rOut); outY.push_back(corners[cc].cy + sa * rOut);
-        }
-    }
-    const uint32_t rn2 = (uint32_t)inX.size();
-    const float zf =  0.0f;     // front face plane (local +Z normal)
-    auto V = [&](float x, float y, float z, float nz){
-        m.verts.push_back({{x, y, z}, {0.0f, 0.0f, nz}, {0.5f, 0.04f}});
-    };
-    // Front strip (normal +Z): inner[i], outer[i] pairs.
-    const uint32_t fbase = (uint32_t)m.verts.size();
-    for (uint32_t i = 0; i < rn2; ++i) { V(inX[i], inY[i], zf, 1.0f); V(outX[i], outY[i], zf, 1.0f); }
-    for (uint32_t i = 0; i < rn2; ++i) {
-        const uint32_t i0 = fbase + i*2, i1 = fbase + ((i+1)%rn2)*2;
-        // CCW (faces +Z): (in_i, out_i, out_{i+1}) + (in_i, out_{i+1}, in_{i+1})
-        m.index.push_back(i0);   m.index.push_back(i0+1); m.index.push_back(i1+1);
-        m.index.push_back(i0);   m.index.push_back(i1+1); m.index.push_back(i1);
-    }
-    // Back strip (normal -Z, reversed winding) so the rim is visible from both sides.
-    const uint32_t bbase = (uint32_t)m.verts.size();
-    const float zb = -0.012f;   // slight depth so the rim has a little glassy thickness
-    for (uint32_t i = 0; i < rn2; ++i) { V(inX[i], inY[i], zb, -1.0f); V(outX[i], outY[i], zb, -1.0f); }
-    for (uint32_t i = 0; i < rn2; ++i) {
-        const uint32_t i0 = bbase + i*2, i1 = bbase + ((i+1)%rn2)*2;
-        m.index.push_back(i0);   m.index.push_back(i1+1); m.index.push_back(i0+1);
-        m.index.push_back(i0);   m.index.push_back(i1);   m.index.push_back(i1+1);
-    }
-    return m;
-}
+// (The old FLAT makeRoundedRim ribbon — a quad strip between two coplanar contours,
+// which read as a SQUARE-section frame — was replaced by the ROUND-section pipe
+// x3::prims::makeRoundedRectTube, swept along the same rounded-rect path. See build().)
 } // namespace
 
 void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
@@ -698,36 +649,42 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_texDirty = false;
     }
 
-    // ---- SHINY GLASS RIM (replaces the old kindergarten frame: a thick solid-cyan
-    // rectangle outline + opaque WHITE SQUARE corner blocks). A real glass plate's
-    // edge catches light SUBTLY — so this is a thin TRANSLUCENT ROUNDED-CORNER bevel
-    // ring that follows the panel's rounded silhouette, with a soft cyan glass tint +
-    // a GENTLE emissive sheen (low strength, NOT a neon outline). Two concentric rims
-    // give the polished-edge read: an inner near-clear glass bevel hugging the glass,
-    // and a slightly larger, dimmer outer halo so the edge glows faintly into the dark
-    // like light caught on a real plate. NO opaque white square corners. ----
+    // ---- ROUND-SECTION GLASS TRIM (replaces the old FLAT rim ribbon — which read as
+    // a SQUARE-section frame — with a real ROUNDED/CYLINDRICAL pipe). A circular
+    // cross-section is swept along the panel's rounded-rect contour (makeRoundedRectTube)
+    // so the trim is an actual round tube of glass with rounded corners. Two concentric
+    // pipes give the polished-edge read: an inner clear-glass bead hugging the screen,
+    // and a slightly larger, dimmer outer pipe glowing faintly into the dark. The whole
+    // trim runs through the engine's REAL see-through glass pass (asGlass). ----
     {
         const float corner = std::min(hw, hh) * 0.30f;     // match the panel's rounding
-        // Inner bevel: hugs the glass edge, faint cyan glass tint, low translucent alpha
-        // + a soft sheen so it reads as a polished lit edge (not a solid bright line).
-        x3::prims::PrimMesh innerRim = makeRoundedRim(hw + 0.006f, hh + 0.006f, corner, 0.022f);
-        m_decor.push_back(addMesh(innerRim, -0.004f,
-                                  0.55f, 0.85f, 1.0f, 0.32f,    // translucent cyan-white glass
-                                  0.18f, 0.55f, 0.85f, 0.9f,    // GENTLE sheen (was 2.6-3.0 neon)
-                                  /*asGlass=*/true));           // REAL see-through glass bevel
-        // Outer halo: a hair larger + dimmer, sitting just behind, so the rim fades
-        // softly into the surround like a glass edge catching ambient light.
-        x3::prims::PrimMesh outerRim = makeRoundedRim(hw + 0.028f, hh + 0.028f, corner + 0.020f, 0.020f);
-        m_decor.push_back(addMesh(outerRim, +0.006f,
-                                  0.10f, 0.28f, 0.45f, 0.18f,   // very translucent dark-cyan glass
+        // Inner glass bead: a slim round pipe hugging the screen edge, faint cyan glass
+        // tint + soft sheen so it reads as a polished lit round edge (not a flat line).
+        x3::prims::PrimMesh innerRim =
+            x3::prims::makeRoundedRectTube(hw + 0.010f, hh + 0.010f, corner, /*tubeR*/0.016f,
+                                           /*pathSeg*/6, /*tubeSeg*/14);
+        m_decor.push_back(addMesh(innerRim, 0.0f,
+                                  0.55f, 0.85f, 1.0f, 0.34f,    // translucent cyan-white glass
+                                  0.18f, 0.55f, 0.85f, 0.9f,    // GENTLE sheen (not a neon outline)
+                                  /*asGlass=*/true));           // REAL see-through glass pipe
+        // Outer pipe: a hair larger + dimmer, fatter round section, so the trim fades
+        // softly into the surround like a glass tube catching ambient light.
+        x3::prims::PrimMesh outerRim =
+            x3::prims::makeRoundedRectTube(hw + 0.034f, hh + 0.034f, corner + 0.020f, /*tubeR*/0.022f,
+                                           /*pathSeg*/6, /*tubeSeg*/14);
+        m_decor.push_back(addMesh(outerRim, 0.0f,
+                                  0.10f, 0.28f, 0.45f, 0.20f,   // very translucent dark-cyan glass
                                   0.06f, 0.22f, 0.38f, 0.55f,   // dim outer glow
-                                  /*asGlass=*/true));           // REAL see-through glass halo
-        // Faint dark backplate BEHIND the glass so the rim + line-art read against it
-        // (kept — it's a subtle backer, not a frame). Rounded silhouette to match.
+                                  /*asGlass=*/true));           // REAL see-through glass pipe
+        // Faint backer BEHIND the glass so the rim + line-art have a touch of contrast
+        // WITHOUT reading as an opaque slab (that was bug #1: an OPAQUE dark backplate
+        // filled the silhouette, so the see-through glass screen looked solid). Make it
+        // REAL low-opacity glass too, so the cell behind still shows through the screen.
         x3::prims::PrimMesh backPanel = makeRoundedPanel(hw + 0.03f, hh + 0.03f, corner + 0.02f);
         m_decor.push_back(addMesh(backPanel, +0.024f,
-                                  0.02f, 0.05f, 0.10f, 1.0f,
-                                  0.03f, 0.12f, 0.22f, 0.30f));
+                                  0.02f, 0.05f, 0.10f, 0.18f,   // barely-there dark-blue tint
+                                  0.03f, 0.12f, 0.22f, 0.30f,
+                                  /*asGlass=*/true));           // see-through, NOT an opaque slab
     }
 
     // ---- Glass ARM from the ceiling down to the top of the screen, carrying
