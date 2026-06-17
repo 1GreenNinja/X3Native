@@ -326,6 +326,21 @@ bool VulkanRenderDevice::buildRtSceneAS() {
         const VkAccelerationStructureKHR before = m_rt.tlas();
         if (!m_rt.buildTlas(m_rtInstScratch)) return false;
         m_rtTlasSig = sig;
+        // SKINNED-RT telemetry/proof (one-shot edge log): the first frame any skinned
+        // character actually enters the TLAS, report how many + the BLAS build/refit
+        // split (the cheap-refit budget at work). Proof the feature is live without
+        // log spam (logs once per 0->N transition).
+        if (m_skinnedRtInstances > 0 && !m_skinnedRtLogged) {
+            char sb[160];
+            std::snprintf(sb, sizeof(sb),
+                "[rt] skinned-TLAS: %u skinned char(s) now in the scene TLAS "
+                "(this frame: %u BLAS build, %u refit) -> shadows/refl/DDGI/audio see them",
+                m_skinnedRtInstances, m_rt.skinnedBuilds(), m_rt.skinnedRefits());
+            logInfo(sb);
+            m_skinnedRtLogged = true;
+        } else if (m_skinnedRtInstances == 0) {
+            m_skinnedRtLogged = false;   // re-arm so a later spawn logs again
+        }
         // If the TLAS handle changed (first build or a grow), re-point the descriptors.
         if (m_rt.tlas() != before) {
             // Mesh set3 (r_rtshadows TLAS at binding 5) is ALWAYS BOUND, so its

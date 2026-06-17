@@ -1663,6 +1663,7 @@ private:
     bool              m_skinnedRtEnabled = true;             // r_skinnedrt (default ON)
     bool              m_skinnedRtThisFrame = false;          // a skinned BLAS was (re)built this frame
     uint32_t          m_skinnedRtInstances = 0;              // skinned chars added to the TLAS this frame
+    bool              m_skinnedRtLogged = false;             // one-shot 0->N edge log latch
     RtaoParams        m_rtao{};                              // cached tunables (default OFF)
     bool              m_rtaoBuilt = false;                   // RT-AO pipelines created
     uint32_t          m_rtFrameSeed = 0;                     // per-frame noise seed
