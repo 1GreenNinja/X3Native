@@ -331,6 +331,13 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // this one (a deprecation line is logged when they're touched). Default 1 ==
     // byte-identical to the pre-unify defaults (roomcull 1, cullpath 0, hzb 0).
     console.registerCVar("r_vis", "1", "unified visibility policy: -1 auto, 0 cpu, 1 +pvs, 2 pvs+gpu, 3 pvs+gpu+hzb");
+    // Per-object motion vectors for TAA reprojection / DLSS input (deferred cvar #4).
+    // Default 0 so the determinism basins stay byte-identical to the pre-velocity
+    // build; --velocity / `r_velocity 1` enables. No-op when TAA is off / unsupported.
+    console.registerCVar("r_velocity", "0", "per-object motion vectors for TAA/DLSS (0 = camera-only reproj, byte-identical)");
+    // Skinned-character TLAS refit toggle (deferred cvar #3): visible monsters/NPCs
+    // enter the scene TLAS so RT shadows/refl/DDGI/acoustics see them. Default 1 (on).
+    console.registerCVar("r_skinnedrt", "1", "add visible skinned characters to the RT scene TLAS (0 = static-only TLAS)");
     // Whole-scene brightness dial (live). Multiplies the composite pre-tonemap exposure;
     // 1.0 = unchanged. The in-game "showroom brightness" knob: `r_exposure 1.5` brightens,
     // `r_exposure 0.7` dims. Type it in the console (~) and the scene updates immediately.
@@ -566,6 +573,8 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
                         (g_visPolicy.hzb ? " + hzb" : ""));
         }
     }
+    // Deferred cvar #3: skinned-character TLAS refit (r_skinnedrt, default on).
+    device.setSkinnedRtEnabled(console.getInt("r_skinnedrt") != 0);
     // Metal ambient-specular floor (live; default 1.0 = on, 0 = off).
     device.setMetalAmbient(console.getFloat("r_metalambient"));
     // HDR post stack: tonemap / bloom gate + tunables / auto-exposure (all live).
@@ -588,6 +597,10 @@ void applyRtaoCVars(x3::con::IConsole& console, x3::rhi::IRenderDevice& device) 
     px.taaSharpen = console.getFloat("r_taasharpen");
     if (px.taaSharpen < 0.0f) px.taaSharpen = 0.0f;
     if (px.taaSharpen > 1.0f) px.taaSharpen = 1.0f;
+    // Deferred cvar #4: per-object motion vectors for TAA reprojection / DLSS
+    // (r_velocity, default 0 = byte-identical camera-only reproj). The device
+    // gates on TAA being active + velocity.spv present (graceful fallback).
+    px.velocity   = console.getInt("r_velocity") != 0;
     device.setPostFX(px);
     // Metal ambient-specular floor (live; default 1.0 = on, 0 = off).
     device.setMetalAmbient(console.getFloat("r_metalambient"));

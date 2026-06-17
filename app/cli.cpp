@@ -139,6 +139,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--cullpath" && i + 1 < argc) o.cullPathArg = std::atoi(argv[++i]);
         else if (a == "--hzb") o.hzbArg = 1;
         else if (a == "--vis" && i + 1 < argc) o.visArg = std::atoi(argv[++i]);
+        // --velocity: seed r_velocity 1 (per-object motion vectors for TAA/DLSS;
+        // default off so the determinism basins stay byte-identical). Equivalent to
+        // `--set r_velocity 1`; provided as a first-class flag (deferred cvar #4).
+        else if (a == "--velocity") o.cliCVars.emplace_back("r_velocity", "1");
         else if (a == "--test-collapse") o.testCollapse = true;
         else if (a == "--test-physjoint") o.testPhysJoint = true;
         else if (a == "--test-nav") o.testNav = true;
