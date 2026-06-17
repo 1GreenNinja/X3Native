@@ -75,6 +75,25 @@ struct HostContext {
     bool        shotWorldMap  = false;      // --screenshot-worldmap (headless map shot sequence)
     float       wsBudgetMs    = 6.0f;       // --ws-budget   streaming upload budget (ms/frame)
     float       wsLookaheadS  = 2.5f;       // --ws-lookahead prefetch horizon (s)
+
+    // ---- Headless SCREENSHOT/CAPTURE handlers (Phase B) — flags + paths the
+    // pre-host capture handlers consult (dispatchScreenshotHosts) ----
+    bool        editorShot = false;     std::string editorShotPath;
+    bool        loaderShot = false;     std::string loaderShotPath;
+    bool        skyShot = false;        std::string skyShotPath;
+    bool        ddgiShot = false;       std::string ddgiShotDir;
+    bool        rtshShot = false;       std::string rtshShotDir;
+    bool        showroomShot = false;   std::string showroomShotPath;
+    bool        planetShot = false;     std::string planetShotPath;
+    bool        nightskyShot = false;   std::string nightskyShotPath;
+    bool        cutsceneShot = false;   std::string cutsceneShotPath;
+    bool        terrainShot = false;    std::string terrainShotPath;
+    bool        oceanShot = false;      std::string oceanShotPath;
+    bool        captureAi = false;      std::string captureAiDir;
+    bool        captureWalk = false;    std::string captureWalkPath;
+    bool        captureFootIk = false;  std::string captureFootIkPath;
+    std::string cutsceneFile;           // --cutscene <file>
+    float       cueTime = 0.0f;         // --cuetime <s>
 };
 
 }} // namespace x3::apphost

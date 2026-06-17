@@ -4,6 +4,8 @@ add_executable(X3Engine WIN32
     self_tests.cpp
     test_registry.cpp
     cinematic.cpp
+    # #28 deep monolith split — headless screenshot/capture handlers
+    screenshot_hosts.cpp
     # #28 deep monolith split — extracted self-contained --world hosts
     world_hosts/world_hosts.cpp
     world_hosts/host_destruct.cpp
