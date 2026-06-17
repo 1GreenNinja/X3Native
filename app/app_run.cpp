@@ -1501,6 +1501,11 @@ int runDefaultHost(HostContext& hc) {
     // back to the shared sndGun. Headless / no-device: load() + play are graceful
     // no-ops, so this stays silent without crashing.
     std::unordered_map<std::string, x3::audio::SoundHandle> fireSfxByName;
+    // Per-weapon IMPACT sound cache (parallel to the fire cache): the WAV played 3D at
+    // the hit point when a shot strikes a surface. Deduped by WAV path; a weapon with
+    // no impactSfx (or a missing WAV) maps to an invalid handle -> the host plays no
+    // dedicated impact sound (the visual impact FX still spawns). Built once at init.
+    std::unordered_map<std::string, x3::audio::SoundHandle> impactSfxByName;
     {
         std::unordered_map<std::string, x3::audio::SoundHandle> byPath; // dedupe by WAV
         for (int wi = 0; wi < arsenal.count(); ++wi) {
@@ -1518,6 +1523,20 @@ int runDefaultHost(HostContext& hc) {
                 }
             }
             fireSfxByName[wd.name] = h;
+            // Impact sound (independent dedupe set; invalid handle if none/missing).
+            x3::audio::SoundHandle ih{};
+            if (!wd.impactSfx.empty()) {
+                auto it = byPath.find(wd.impactSfx);
+                if (it != byPath.end()) {
+                    ih = it->second;
+                } else {
+                    x3::audio::SoundHandle loaded =
+                        audio->load(x3::game::resolveAudio(wd.impactSfx));
+                    ih = loaded;                         // invalid stays invalid (silent)
+                    byPath.emplace(wd.impactSfx, ih);
+                }
+            }
+            impactSfxByName[wd.name] = ih;
         }
     }
     // Resolve the current weapon's fire sound (fallback: the shared gunshot).
@@ -1525,11 +1544,18 @@ int runDefaultHost(HostContext& hc) {
         auto it = fireSfxByName.find(arsenal.current().name);
         return (it != fireSfxByName.end() && it->second.valid()) ? it->second : sndGun;
     };
+    // Resolve the current weapon's impact sound (invalid handle if the weapon has
+    // none -> the caller skips the 3D play and only spawns the visual impact FX).
+    auto currentImpactSfx = [&]() -> x3::audio::SoundHandle {
+        auto it = impactSfxByName.find(arsenal.current().name);
+        return (it != impactSfxByName.end()) ? it->second : x3::audio::SoundHandle{};
+    };
 
     // Live projectile bolts (plasma): host-owned; advanced + impact-resolved each
     // frame. Bounded by gameplay (a handful in flight); a plain vector is fine.
     struct LiveProjectile { x3::phys::Vec3 pos, vel; int damage; float traveled, range;
-                            x3::game::WeaponFxKind impactKind = x3::game::WeaponFxKind::Default; };
+                            x3::game::WeaponFxKind impactKind = x3::game::WeaponFxKind::Default;
+                            x3::audio::SoundHandle impactSnd{}; };  // per-bolt impact SFX (weapon may have switched mid-flight)
     std::vector<LiveProjectile> projectiles;
     uint32_t weaponRng = 0xA11CE5u;   // deterministic spread stream
     float    weaponRecoilPitch = 0.0f; // accumulated upward camera kick (rad), decays
@@ -4495,7 +4521,18 @@ int runDefaultHost(HostContext& hc) {
                                 std::sin(camPitch),
                                 std::cos(camPitch) * std::sin(camYaw) };
             x3::game::ResolvedFire shot = arsenal.fire(eye, dir, weaponRng);
-            const x3::phys::Vec3 muzzle = muzzleFromCamera(camX, camY, camZ, camYaw, camPitch);
+            // Muzzle origin = the held viewmodel's barrel tip. The default origin sits
+            // BELOW the eye line (down 0.30) so ballistic tracers visibly leave the gun.
+            // LIGHTNING (director note) must emanate from the gun TIP, not from below
+            // it: the railgun beam reads wrong starting under the barrel. Use a
+            // tip-accurate origin for the beam — pushed further forward to the emitter
+            // and raised onto the barrel line (almost no downward drop).
+            const bool isLightningWeapon =
+                (x3::game::fxKindFromId(arsenal.current().muzzleFx) == x3::game::WeaponFxKind::Lightning);
+            const x3::phys::Vec3 muzzle = isLightningWeapon
+                ? muzzleFromCamera(camX, camY, camZ, camYaw, camPitch,
+                                   /*fwd*/1.6f, /*right*/0.20f, /*down*/0.06f)   // gun TIP
+                : muzzleFromCamera(camX, camY, camZ, camYaw, camPitch);
             // LIVING WORLD: gunfire is VIOLENCE — any civilians in earshot scatter,
             // and any guard in earshot raises the facility alert (resolved against
             // the live observers at the next alert update).
@@ -4518,7 +4555,7 @@ int runDefaultHost(HostContext& hc) {
             if (!shot.projectiles.empty()) {
                 // ---- Projectile weapon (plasma): spawn a travelling bolt. ----
                 const auto& pj = shot.projectiles[0];
-                projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pj.damage, 0.0f, pj.range, impactKind });
+                projectiles.push_back(LiveProjectile{ muzzle, pj.vel, pj.damage, 0.0f, pj.range, impactKind, currentImpactSfx() });
                 combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);
                 if (!usesFireLoop)
                     audio->playSound3D(fireSnd, muzzle.x, muzzle.y, muzzle.z, 0.85f, 0.9f);
@@ -4531,6 +4568,11 @@ int runDefaultHost(HostContext& hc) {
                 // OWN damage instead of a single shared constant.
                 bool anyKill = false, anyHit = false; int lastHp = 0;
                 combatFx.spawnMuzzleFlash(muzzle, dir, muzzleKind);   // per-weapon flash (hitscan)
+                // Per-weapon IMPACT sound: play ONCE per volley (not per pellet — a
+                // shotgun's 10 pellets / a beam's chained rays shouldn't stack 10 voices)
+                // at the first surface hit. Invalid handle (weapon has no impactSfx) -> skip.
+                const x3::audio::SoundHandle impactSnd = currentImpactSfx();
+                bool impactSndPlayed = false;
                 for (const auto& ray : shot.rays) {
                     const int wdmg = ray.damage;          // this pellet/ray's damage
                     x3::game::FireResult r = game.onFire(eye, ray.dir, scene, *physics, wdmg);
@@ -4569,7 +4611,14 @@ int runDefaultHost(HostContext& hc) {
                     else {
                         x3::phys::RayHit wallHit =
                             physics->rayCast(eye, ray.dir, x3::game::kFireMaxDist, x3::phys::Layer::Static);
-                        if (wallHit.hit) combatFx.spawnImpact(wallHit.point, wallHit.normal, impactKind);
+                        if (wallHit.hit) {
+                            combatFx.spawnImpact(wallHit.point, wallHit.normal, impactKind);
+                            if (impactSnd.valid() && !impactSndPlayed) {
+                                audio->playSound3D(impactSnd, wallHit.point.x, wallHit.point.y,
+                                                   wallHit.point.z, 0.6f, 1.0f);
+                                impactSndPlayed = true;   // one impact voice per volley
+                            }
+                        }
                     }
                     if (r.killed)
                         audio->playSound3D(sndDeath, r.endPoint.x, r.endPoint.y, r.endPoint.z, 1.0f, 1.0f);
@@ -4653,7 +4702,10 @@ int runDefaultHost(HostContext& hc) {
                     consumed = true;
                 } else {
                     x3::phys::RayHit sh = physics->rayCast(b.pos, ndir, stepLen, x3::phys::Layer::Static);
-                    if (sh.hit) { combatFx.spawnImpact(sh.point, sh.normal, b.impactKind); combatFx.addTracer(b.pos, sh.point); consumed = true; }
+                    if (sh.hit) { combatFx.spawnImpact(sh.point, sh.normal, b.impactKind); combatFx.addTracer(b.pos, sh.point);
+                        if (b.impactSnd.valid())
+                            audio->playSound3D(b.impactSnd, sh.point.x, sh.point.y, sh.point.z, 0.6f, 1.0f);
+                        consumed = true; }
                 }
                 if (!consumed) {
                     b.pos = x3::phys::Vec3{ b.pos.x + b.vel.x*dt, b.pos.y + b.vel.y*dt, b.pos.z + b.vel.z*dt };
