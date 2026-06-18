@@ -6,7 +6,6 @@ import {
   type Session,
   type SyncResponse,
   sync,
-  loadSince,
   saveSince,
 } from "./client";
 
@@ -118,11 +117,15 @@ function applySync(resp: SyncResponse): void {
 
 let abort: AbortController | null = null;
 
-/** The forever sync loop. Call once after login; cancels on logout. */
+/** The forever sync loop. Call once after login; cancels on logout.
+ * ALWAYS starts with a full snapshot (since=null) so the complete room list
+ * populates the sidebar — a persisted `since` would give an incremental sync
+ * that only returns rooms with new activity, leaving the sidebar empty on
+ * reload. We use next_batch for incremental polling only AFTER the snapshot. */
 export async function startSyncLoop(session: Session): Promise<void> {
   abort?.abort();
   abort = new AbortController();
-  let since = loadSince();
+  let since: string | null = null; // force a full initial sync, ignore stale token
   for (;;) {
     if (abort.signal.aborted) return;
     try {
