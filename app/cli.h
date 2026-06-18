@@ -262,6 +262,10 @@ struct CliOptions {
     // interactive windows. No window / Vulkan. Additive — distinct from --test-intro
     // (the LEGACY cold-open phase-machine test).
     bool        testIntroOrch = false;
+    // --test-introbranch (Phase 4 BRANCH WIRING): the app_run branch-selection
+    // contract — intro.outcome flag round-trip, the --intro-force dev override,
+    // the per-save seed thread, and the canon default. No window / Vulkan.
+    bool        testIntroBranch = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
@@ -418,6 +422,10 @@ struct CliOptions {
     //                            seek to --cuetime, capture one frame, exit. 4x SSAA.
     bool        testCutscene = false;
     bool        skipIntro    = false;
+    // --intro-force <shot_down|escaped> : DEV override for the interactive intro's
+    // outcome (QA/tests). -1 = none (roll the skill-biased {chance}); 0 = force the
+    // canon SHOT_DOWN cell start; 1 = force the ESCAPED surface-landing start.
+    int         introForce   = -1;
     std::string cutsceneFile;                  // empty = the shipped cold open
     float       cueTime      = 0.0f;
     bool        cutsceneShot = false;

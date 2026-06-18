@@ -284,6 +284,7 @@ int main(int argc, char** argv) {
         _tf.testCanonPlay = o.testCanonPlay;
         _tf.testIntro = o.testIntro;
         _tf.testIntroOrch = o.testIntroOrch;
+        _tf.testIntroBranch = o.testIntroBranch;
         _tf.testCutscene = o.testCutscene;
         _tf.testPhase2a = o.testPhase2a;
         _tf.testPhase2b = o.testPhase2b;
@@ -678,6 +679,7 @@ int main(int argc, char** argv) {
     _hc.noTaa           = o.noTaa;
     _hc.noRefl          = o.noRefl;
     _hc.skipIntro       = o.skipIntro;
+    _hc.introForce      = o.introForce;        // DEV --intro-force outcome override
     _hc.editorMode      = o.editorMode;
     _hc.fxDemo          = o.fxDemo;
     _hc.uiDemo          = o.uiDemo;            _hc.uiDemoPath = o.uiDemoPath; _hc.uiDemoScreen = o.uiDemoScreen;

@@ -406,6 +406,15 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         }
         else if (a == "--test-intro") o.testIntro = true;
         else if (a == "--test-introorch") o.testIntroOrch = true;
+        else if (a == "--test-introbranch") o.testIntroBranch = true;
+        else if (a == "--intro-force") {
+            // DEV: force the interactive-intro outcome branch.
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                const std::string v = argv[++i];
+                if      (v == "escaped"   || v == "escape") o.introForce = 1;
+                else if (v == "shot_down" || v == "shotdown" || v == "cell") o.introForce = 0;
+            }
+        }
     }
 }
 

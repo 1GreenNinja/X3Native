@@ -288,6 +288,12 @@ int dispatchTests(const TestFlags& tf) {
                     "write + input-cleared/deterministic headless interactive windows)...");
         return x3::intro::runIntroOrchestratorSelfTest() ? 0 : 1;
     }
+    if (tf.testIntroBranch) {
+        x3::logInfo("running Phase 4 INTRO BRANCH-WIRING self-test (intro.outcome flag "
+                    "round-trip + --intro-force dev override + per-save seed thread + "
+                    "canon default — the app_run cell-vs-surface selection contract)...");
+        return x3::intro::runIntroBranchSelfTest() ? 0 : 1;
+    }
     if (tf.testPhase2a) {
         x3::logInfo("running EFLZ Phase 2a (player health + enemies fight back) self-test...");
         return x3::game::runPhase2aSelfTest() ? 0 : 1;

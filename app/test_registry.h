@@ -39,6 +39,7 @@ struct TestFlags {
     bool testAudio = false, testAcoustics = false, testLevel1 = false, testCanonLevel = false;
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;
     bool testIntroOrch = false;   // --test-introorch (Phase 3 Intro Orchestrator core)
+    bool testIntroBranch = false; // --test-introbranch (Phase 4 app_run branch wiring)
     bool testPhase2b = false, testAnim = false, testLocomotion = false;
     bool listClips = false;
     bool testTerrain = false, testTerrainPlace = false, testStreaming = false;
