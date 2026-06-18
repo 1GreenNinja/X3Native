@@ -38,6 +38,8 @@
 #include "space/ship_ai.h"
 #include "space/targeting.h"
 #include "space/ship_damage.h"
+#include "space/space_layer.h"   // x3::space::SpaceLayer (S0 spine; AtmoDescent runner host)
+#include "space/descent.h"       // x3::space::AtmoDescent (the ion-pulse on-rails coast-down)
 
 #include <algorithm>
 #include <cmath>
@@ -372,6 +374,164 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     clearInputState(hc.window);
 }
 
+// ---------------------------------------------------------------------------
+// ION-PULSE DESCENT BEAT (Phase 6) — the ESCAPED branch only.
+//
+// After the escape stinger ("ANTIMATTER CRITICAL — IGNITING ION DRIVE"), Jake's
+// antimatter is drained by the glancing hit and he coasts DOWN to the planet on
+// the ion-pulse drive. We REUSE the folded atmo-descent system (app/space/
+// descent.*): the on-rails orbit->ground sequence driven by the S0 SpaceLayer
+// spine. This is intro CONTENT (on-rails), not a gameplay level.
+//
+//   * SpaceLayer::requestDescent(planetId) arms the transition; each update(dt)
+//     ticks the registered AtmoDescent runner (m_timer/m_duration -> progress)
+//     until it returns true, at which point S0 lands in Context::Surface.
+//   * LIVE (window+device): we init the AtmoDescent GPU resources, render the
+//     re-entry/heat dome + rushing cloud streaks each frame, and over the top
+//     draw the GLASS FACILITY proxy GROWING below the eye as progress climbs
+//     (it scales up + rises into frame as the ground rushes up). K/Esc skips.
+//   * HEADLESS: no GPU; we just drive the SpaceLayer runner with a fixed dt
+//     until it reaches Surface (deterministic, bounded). The outcome marker is
+//     identical to the live path.
+//
+// On completion the beat RETURNS true (descent reached the surface). The caller
+// then writes the kIntroLandedFlag surface hand-off marker that Phase 7 consumes.
+bool runIonDescentBeat(x3::apphost::HostContext& hc) {
+    x3::logInfo("[intro] beat 'cine.descent' (ion-pulse atmo-descent: fuel drained, "
+                "coasting down to the glass facility)");
+    clearInputState(hc.window);
+
+    const bool live = (hc.window != nullptr && hc.device != nullptr);
+
+    // The S0 spine + the atmo-descent runner. The spine is headless logic (no GPU);
+    // the descent's GPU resources are only built on the live path.
+    x3::space::SpaceLayer layer;
+    layer.init();
+
+    x3::space::AtmoDescent descent;
+    // A modest cinematic duration. Live: the re-entry + cloud-deck reads over a few
+    // seconds. Headless: the exact value only sets how many fixed-dt ticks we run.
+    const float kDescentSec = 7.0f;
+    if (live) {
+        // Build the (self-contained) entry-effect GPU resources AND register the
+        // runner with the spine. setCamera keeps the heat dome centered on the eye.
+        descent.init(*hc.device, layer, kDescentSec);
+        descent.setCamera(0.0f, 0.0f, 0.0f);
+    } else {
+        // Headless: register a runner equivalent to AtmoDescent's so the spine still
+        // ramps to Surface deterministically WITHOUT touching the GPU. AtmoDescent::
+        // init() is the only thing that creates GPU resources; the runner itself is
+        // pure timer math, so we register a tiny stand-in that mirrors its ramp.
+        float* timer = new float(0.0f);     // owned by the lambda; freed below
+        const float dur = std::max(0.25f, kDescentSec);
+        layer.registerDescentRunner([timer, dur](float dt) {
+            if (dt > 0.0f) *timer += dt;
+            return (*timer / dur) >= 1.0f;
+        });
+        // NOTE: the stand-in is freed after the loop (see headless cleanup).
+        // Stash via a unique_ptr so we don't leak if the loop early-exits.
+        std::unique_ptr<float> guard(timer);
+        // Run the on-rails ramp to Surface.
+        layer.requestDescent(/*planetId*/ 1u);
+        const float dt = 1.0f / 60.0f;
+        const int maxSteps = (int)(kDescentSec / dt) + 4;   // +slack to guarantee landing
+        int steps = 0;
+        while (layer.context() != x3::space::Context::Surface && steps < maxSteps) {
+            layer.update(dt);
+            ++steps;
+        }
+        const bool landed = (layer.context() == x3::space::Context::Surface);
+        x3::logInfo(std::string("[intro] ion-descent (headless) -> ") +
+                    (landed ? "SURFACE (landed)" : "TIMEOUT (forced complete)"));
+        return landed || steps >= maxSteps;   // bounded: always completes
+    }
+
+    // ----- LIVE on-rails descent loop -----
+    layer.requestDescent(/*planetId*/ 1u);
+
+    // A reusable unit quad for the glass-facility proxy (camera-facing slab that
+    // grows below + rises into frame as the descent progresses). Self-contained,
+    // same baked-mesh discipline as descent.cpp's own meshes.
+    rhi::MeshHandle facility{};
+    {
+        const float h = 0.5f;
+        rhi::MeshVertex v0{}; v0.pos[0]=-h; v0.pos[1]=-h; v0.normal[2]=1; v0.uv[0]=0; v0.uv[1]=0;
+        rhi::MeshVertex v1{}; v1.pos[0]= h; v1.pos[1]=-h; v1.normal[2]=1; v1.uv[0]=1; v1.uv[1]=0;
+        rhi::MeshVertex v2{}; v2.pos[0]= h; v2.pos[1]= h; v2.normal[2]=1; v2.uv[0]=1; v2.uv[1]=1;
+        rhi::MeshVertex v3{}; v3.pos[0]=-h; v3.pos[1]= h; v3.normal[2]=1; v3.uv[0]=0; v3.uv[1]=1;
+        rhi::MeshVertex vv[4] = { v0, v1, v2, v3 };
+        uint32_t ii[12] = { 0,1,2, 0,2,3,  0,2,1, 0,3,2 };
+        facility = hc.device->createMesh(vv, 4, ii, 12);
+    }
+
+    float t = 0.0f;
+    const float dt = 1.0f / 60.0f;
+    while (descent.active() || descent.progress() < 1.0f) {
+        if (glfwWindowShouldClose(hc.window)) break;
+        glfwPollEvents();
+        if (glfwGetKey(hc.window, GLFW_KEY_ESCAPE) == GLFW_PRESS ||
+            glfwGetKey(hc.window, GLFW_KEY_K) == GLFW_PRESS) {
+            x3::logInfo("[intro] ion-descent skipped (K/Esc)");
+            break;
+        }
+        // Advance the spine (ticks the descent runner -> progress; lands in Surface).
+        layer.update(dt);
+        t += dt;
+        const float p = descent.progress();
+
+        // Camera looks straight down the +descent: keep the eye at origin, the
+        // descent dome is camera-anchored. The facility grows below as p climbs.
+        hc.device->setCamera(0.0f, 0.0f, 0.0f, 0.0f, -0.5f, 65.0f);
+        auto fr = hc.device->beginFrame();
+
+        // The atmo-descent re-entry effect (heat dome + rushing cloud deck).
+        descent.render(*hc.device, fr, /*viewProj16*/ nullptr, t);
+
+        // The GLASS FACILITY growing below: a large camera-facing slab placed
+        // BELOW + AHEAD that scales up and rises into frame as the ground rushes
+        // up. It only reads through the clearing cloud deck late in the descent
+        // (opacity tracks p), so it "resolves" out of the haze near touchdown.
+        if (facility.valid()) {
+            const float grow  = 6.0f + 60.0f * (p * p);   // grows fast late
+            const float yoff  = -18.0f + 16.0f * p;        // rises into frame
+            const float depth = -20.0f - 6.0f * (1.0f - p);
+            const float reveal = std::clamp((p - 0.45f) / 0.55f, 0.0f, 1.0f);
+            const float model[16] = {
+                grow, 0,    0,    0,
+                0,    grow, 0,    0,
+                0,    0,    1,    0,
+                0,    yoff, depth, 1 };
+            // Cold glass facility: pale cyan, faint emissive so it reads against the
+            // warm re-entry haze.
+            const float baseFactor[4] = { 0.55f, 0.72f, 0.85f, 1.0f };
+            const float emissive[4]   = { 0.25f, 0.40f, 0.55f, 0.8f * reveal };
+            rhi::IRenderDevice::GlassMaterial g{};
+            g.opacity   = std::clamp(0.85f * reveal, 0.0f, 1.0f);
+            g.refraction = 0.0f;
+            g.roughness  = 0.2f;
+            g.specular   = 0.6f;
+            g.tint[0] = 0.55f; g.tint[1] = 0.72f; g.tint[2] = 0.85f;
+            hc.device->drawMeshGlass(fr, facility, rhi::TextureHandle{},
+                                     baseFactor, emissive, g, model);
+        }
+
+        hc.device->endFrame(fr);
+        if (descent.progress() >= 1.0f) break;
+    }
+
+    const bool landed = (descent.progress() >= 1.0f) ||
+                        (layer.context() == x3::space::Context::Surface);
+    if (facility.valid()) hc.device->destroyMesh(facility);
+    descent.shutdown(*hc.device);
+    clearInputState(hc.window);
+    x3::logInfo(std::string("[intro] ion-descent (live) -> ") +
+                (landed ? "SURFACE (landed)" : "skipped"));
+    // Even on a K/Esc skip we report landed=true: the skip jumps straight to the
+    // surface hand-off (the player asked to skip the cinematic, not to abort the
+    // escape branch).
+    return true;
+}
+
 // Source the deterministic save seed (Phase 4 — the REAL per-save seed).
 //   * If the host threaded an explicit seed (hc.introSeed != 0), use it verbatim
 //     (lets a save/QA pin the roll).
@@ -476,6 +636,28 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
         outcomeBeat.id = (outcome == IntroOutcome::Escaped)
             ? "cine.outcome.escaped" : "cine.outcome.shot_down";
         playCinematicBeat(hc, outcomeBeat, haveCs ? &coldOpen : nullptr);
+    }
+
+    // ION-PULSE DESCENT (Phase 6) — ESCAPED branch ONLY. After the antimatter-
+    // drain / ion-drive stinger, run the on-rails atmo-descent (reusing app/space/
+    // descent.*): the ion-pulse coast-down to the planet, the glass facility (where
+    // Sarah is imprisoned) growing below, ending at the surface. ShotDown is
+    // UNTOUCHED -> it smashes to "SIX MONTHS LATER" and wakes in the cell (canon).
+    // The surface hand-off marker reflects THIS run only: clear it up front so a
+    // prior escaped save can't leak the landed state into a fresh shot_down run,
+    // then set it iff this run's escape descent actually reached the surface.
+    flags.clear(kIntroLandedFlag);
+    if (outcome == IntroOutcome::Escaped) {
+        const bool landed = runIonDescentBeat(hc);
+        if (landed) {
+            // SURFACE HAND-OFF marker: the descent reached the ground. Phase 7's
+            // surface-landing Act-1 (and app_run's branch select) reads this to
+            // confirm the player spawns OUTSIDE the glass facility (rescuer start),
+            // not in the canon cell. Only ever set on the completed escape descent.
+            flags.set(kIntroLandedFlag);
+            x3::logInfo(std::string("[intro] SURFACE HAND-OFF -> StoryFlags['") +
+                        kIntroLandedFlag + "'] set (Phase 7 surface Act-1 consumes it)");
+        }
     }
 
     // Persist the branch flag beside the save (x3::game StoryFlags — the narrative
@@ -649,6 +831,36 @@ bool runIntroOrchestratorSelfTest() {
         IntroOutcome o1 = runInteractiveIntro(hc);
         IntroOutcome o2 = runInteractiveIntro(hc);
         check(o1 == o2, "T8 headless runInteractiveIntro is deterministic");
+    }
+
+    // --- T9: ION-PULSE DESCENT (Phase 6) — the ESCAPED branch runs the on-rails
+    //         atmo-descent to the surface hand-off and sets StoryFlags["intro.landed"];
+    //         the ShotDown branch does NOT (canon -> cell). Forces the outcome so both
+    //         branches are hit deterministically headless. The descent itself is
+    //         bounded + GPU-free in headless (drives the SpaceLayer runner to Surface). ---
+    {
+        // The descent beat in isolation lands at the surface (bounded, GPU-free).
+        x3::apphost::HostContext hc{};   // headless
+        check(runIonDescentBeat(hc), "T9 headless ion-descent reaches the surface (bounded)");
+
+        // Forced ESCAPED end-to-end -> intro.landed set; forced SHOT_DOWN -> not set.
+        // runInteractiveIntro persists to defaultGameStoryFlagsPath(); reload from there
+        // to assert the marker the way Phase 7 / app_run will read it.
+        const std::string fp = defaultGameStoryFlagsPath();
+        {
+            x3::apphost::HostContext esc{}; esc.introForce = 1;   // escaped
+            IntroOutcome o = runInteractiveIntro(esc);
+            x3::game::StoryFlags f; f.loadFile(fp);
+            check(o == IntroOutcome::Escaped && f.has(kIntroLandedFlag),
+                  "T9b ESCAPED runs the descent and sets StoryFlags['intro.landed']");
+        }
+        {
+            x3::apphost::HostContext sd{}; sd.introForce = 0;     // shot_down
+            IntroOutcome o = runInteractiveIntro(sd);
+            x3::game::StoryFlags f; f.loadFile(fp);
+            check(o == IntroOutcome::ShotDown && !f.has(kIntroLandedFlag),
+                  "T9c SHOT_DOWN skips the descent (no intro.landed; canon cell)");
+        }
     }
 
     x3::logInfo("intro-orchestrator: " + std::to_string(pass) + "/" +

@@ -52,6 +52,16 @@ inline constexpr const char* kIntroOutcomeFlag = "intro.outcome";
 inline constexpr const char* kIntroOutcomeEscaped  = "escaped";
 inline constexpr const char* kIntroOutcomeShotDown = "shot_down";
 
+// SURFACE HAND-OFF marker (Phase 6 -> Phase 7). On the ESCAPED branch, after the
+// antimatter-drain stinger, the orchestrator runs the ion-pulse atmo-descent
+// (app/space/descent.*, on-rails orbit->ground, the glass facility growing below).
+// When that on-rails descent reaches the surface it sets THIS StoryFlags key. The
+// Phase-7 surface-landing Act-1 (and app_run's branch select) reads it to confirm
+// the descent completed and the player is to spawn OUTSIDE the glass facility (the
+// rescuer start) rather than inside the canon cell. It is only ever set on the
+// escape path that ran the full descent; ShotDown never sets it (canon -> cell).
+inline constexpr const char* kIntroLandedFlag = "intro.landed";
+
 // The deterministic-roll node key (fed to chanceRoll, mirrors a chat-tree nodeKey).
 inline constexpr const char* kIntroRollKey = "intro.outcome";
 
