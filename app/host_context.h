@@ -27,6 +27,7 @@
 
 struct GLFWwindow;
 namespace x3 { namespace rhi { class IRenderDevice; } }
+namespace x3 { namespace audio { class IAudioSystem; } }
 
 namespace x3 { namespace apphost {
 
@@ -34,6 +35,11 @@ struct HostContext {
     // ---- Live objects (non-owning; main() owns them) ----
     x3::rhi::IRenderDevice* device = nullptr;   // the live render device
     GLFWwindow*             window = nullptr;   // null in headless mode
+    // The live audio system (non-owning; app_run owns the unique_ptr). Threaded so
+    // the Intro Orchestrator's cinematic beats get music/SFX (Phase 5 audio restore):
+    // P4 passed nullptr audio to the beats and the intro went SILENT. null = silent
+    // (headless / no audio device) — every cue plays graceful-silent then.
+    x3::audio::IAudioSystem* audio = nullptr;
 
     // ---- Mode / routing ----
     std::string worldMode = "level1";

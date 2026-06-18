@@ -846,6 +846,10 @@ int runDefaultHost(HostContext& hc) {
     // corresponding event is simply silent (logged once at load).
     BootAudio bootAudio = bootAudioFut.valid() ? bootAudioFut.get() : makeBootAudio();
     std::unique_ptr<x3::audio::IAudioSystem> audio(std::move(bootAudio.audio));
+    // Thread the live audio system into the HostContext so the Intro Orchestrator's
+    // cinematic beats get music/SFX again (Phase 5 audio restore — P4 passed nullptr
+    // and the intro went silent). Non-owning; `audio` outlives the orchestrator call.
+    hc.audio = audio.get();
     const x3::audio::SoundHandle sndGun    = bootAudio.gun;
     const x3::audio::SoundHandle sndDoor   = bootAudio.door;
     const x3::audio::SoundHandle sndPickup = bootAudio.pickup;

@@ -27,6 +27,7 @@
 #include "engine/core/x3_log.h"
 #include "engine/rhi/IRenderDevice.h"
 #include "engine/physics/IPhysicsWorld.h"
+#include "engine/audio/IAudioSystem.h"   // hc.audio threaded to the cinematic beats (Phase 5)
 
 #include "host_context.h"
 #include "story_ops.h"        // x3::game::StoryFlags + x3::game::chanceRoll
@@ -66,6 +67,19 @@ constexpr SkillWeights kSkillWeights{ 0.30f, 0.25f, 0.20f, 0.15f, 0.10f };
 inline float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
 } // namespace
 
+// ---------------------------------------------------------------------------
+// OUTCOME STINGER spans (Phase 5) — the two endings authored in the cold-open
+// timeline (assets/cutscenes/cold_open.cutscene.json). The cine.outcome beat plays
+// ONE of these, selected by the rolled IntroOutcome:
+//   * SHOT_DOWN [36..66]: the killing salvo -> smash-to-black -> "ESCAPE FROM LAB
+//     ZERO" + "SIX MONTHS LATER" (canon: wake in the cell).
+//   * ESCAPED   [66..80]: Jake slips the kill-box, a glancing hit drains the
+//     antimatter, the ion-pulse drive ignites -> "ANTIMATTER CRITICAL — IGNITING
+//     ION DRIVE" -> hands off to the Phase-6 atmo descent.
+// (Tunable here in lock-step with the JSON span boundaries.)
+inline constexpr float kOutcomeShotDownSpan[2] = { 36.0f, 66.0f };
+inline constexpr float kOutcomeEscapedSpan[2]  = { 66.0f, 80.0f };
+
 std::vector<Beat> defaultIntroBeats() {
     // The cold-open cutscene is 67.5 s (assets/cutscenes/cold_open.cutscene.json).
     // We carve named cinematic spans around two interactive windows. Phase 5 will
@@ -92,10 +106,13 @@ std::vector<Beat> defaultIntroBeats() {
     Beat b5; b5.kind = BeatKind::InteractiveWindow; b5.id = "play.dogfight";
     b5.enemyCount = 4; b5.timeoutSec = 20.0f; b5.isClimax = true; beats.push_back(b5);
 
-    // 6) Cinematic — the outcome stinger span (the orchestrator picks escape vs
-    //    shot-down framing after the roll; both live in the cold-open tail).
+    // 6) Cinematic — the outcome stinger. The span here is the DEFAULT (shot-down)
+    //    framing; runInteractiveIntro OVERRIDES clipStart/clipEnd per the rolled
+    //    IntroOutcome (shot-down vs escape stinger — see kOutcome*Span below) after
+    //    the climax, so this beat reads as whichever ending the roll produced.
     Beat b6; b6.kind = BeatKind::CutsceneClip; b6.id = "cine.outcome";
-    b6.clipStart = 36.0f; b6.clipEnd = 67.5f; beats.push_back(b6);
+    b6.clipStart = kOutcomeShotDownSpan[0]; b6.clipEnd = kOutcomeShotDownSpan[1];
+    beats.push_back(b6);
 
     return beats;
 }
@@ -183,13 +200,19 @@ void clearInputState(GLFWwindow* window) {
 // a deterministic no-op (the cutscene player is exercised by --test-cutscene).
 void playCinematicBeat(x3::apphost::HostContext& hc, const Beat& beat,
                        const x3::cut::Cutscene* cs) {
-    x3::logInfo("[intro] beat '" + beat.id + "' (cinematic " +
-                std::to_string(beat.clipStart) + ".." + std::to_string(beat.clipEnd) + " s)");
+    x3::logInfo("[intro] beat '" + beat.id + "' (cinematic clip [" +
+                std::to_string(beat.clipStart) + ".." + std::to_string(beat.clipEnd) + "] s)" +
+                (hc.audio ? " [audio]" : " [silent]"));
     if (hc.window && hc.device && cs) {
         clearInputState(hc.window);
-        // runCutsceneWindowed plays from startAt to the cutscene end / skip. We
-        // seek to the span start; span-end gating is a Phase-5 clip-split concern.
-        x3::apphost::runCutsceneWindowed(*hc.device, hc.window, nullptr, *cs, beat.clipStart);
+        // CLIP-SPLIT (Phase 5): play ONLY this beat's span [clipStart, clipEnd) then
+        // return to the orchestrator (the interactive windows occupy the gaps). AUDIO
+        // RESTORE (Phase 5): pass hc.audio (P4 passed nullptr -> silent intro); the
+        // music bed carries across clip beats (runCutsceneWindowed only stops music on
+        // the final/clipless run). hostEvent is left default — the orchestrator owns
+        // the StoryFlags/branch, not the cutscene's intro_complete endState.
+        x3::apphost::runCutsceneWindowed(*hc.device, hc.window, hc.audio, *cs,
+                                         beat.clipStart, /*hostEvent*/ {}, beat.clipEnd);
         clearInputState(hc.window);
     }
 }
@@ -384,11 +407,19 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
             x3::logWarn("[intro] cold-open cutscene failed to load — cinematic beats skipped");
     }
 
-    const std::vector<Beat> beats = defaultIntroBeats();
+    std::vector<Beat> beats = defaultIntroBeats();
     SkillMetrics metrics{};
     metrics.finalHullFrac = 1.0f;   // assume intact until the climax measures it
 
+    // Play every beat UP TO the outcome stinger (flight, reveal, dodge, charge,
+    // dogfight). The cine.outcome beat is deferred: its span depends on the rolled
+    // outcome, which depends on the climax metrics accumulated here — so we roll
+    // FIRST, then play the matching stinger (below).
+    Beat outcomeBeat{}; bool haveOutcomeBeat = false;
     for (const Beat& beat : beats) {
+        if (beat.kind == BeatKind::CutsceneClip && beat.id == "cine.outcome") {
+            outcomeBeat = beat; haveOutcomeBeat = true; continue;
+        }
         if (beat.kind == BeatKind::CutsceneClip)
             playCinematicBeat(hc, beat, haveCs ? &coldOpen : nullptr);
         else
@@ -433,6 +464,19 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
                 std::to_string(metrics.shotsFired) + ")");
     x3::logInfo(std::string("[intro] outcome = ") +
                 (outcome == IntroOutcome::Escaped ? "ESCAPED" : "SHOT_DOWN"));
+
+    // OUTCOME STINGER (Phase 5): now that the roll is known, play the matching
+    // cinematic ending span. SHOT_DOWN -> the kill + "SIX MONTHS LATER" (canon);
+    // ESCAPED -> slip the kill-box + antimatter drain + ion drive (hand-off to P6).
+    if (haveOutcomeBeat) {
+        const float* span = (outcome == IntroOutcome::Escaped)
+            ? kOutcomeEscapedSpan : kOutcomeShotDownSpan;
+        outcomeBeat.clipStart = span[0];
+        outcomeBeat.clipEnd   = span[1];
+        outcomeBeat.id = (outcome == IntroOutcome::Escaped)
+            ? "cine.outcome.escaped" : "cine.outcome.shot_down";
+        playCinematicBeat(hc, outcomeBeat, haveCs ? &coldOpen : nullptr);
+    }
 
     // Persist the branch flag beside the save (x3::game StoryFlags — the narrative
     // lane app_run.cpp branches on). Saved so a later read (or restart) is stable.
