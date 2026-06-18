@@ -247,10 +247,16 @@ void drawNightSkyPlanets(x3::rhi::IRenderDevice* device, const x3::rhi::FrameCon
 bool runCutsceneWindowed(x3::rhi::IRenderDevice& device, GLFWwindow* window,
                                 x3::audio::IAudioSystem* audio,
                                 const x3::cut::Cutscene& cs, float startAt,
-                                const std::function<void(const std::string&)>& hostEvent) {
+                                const std::function<void(const std::string&)>& hostEvent,
+                                float stopAt) {
     if (!window) return true;   // headless guard (smoketests etc.) — no-op
-    x3::logInfo("[cutscene] playing '" + cs.name + "' (" + std::to_string(cs.duration) +
-                " s) — press K to skip");
+    // CLIP-SPLIT: a positive in-range stopAt bounds this run to a span [startAt, stopAt).
+    const bool   clipped  = (stopAt > 0.0f && stopAt < cs.duration);
+    const float  clipEndT = clipped ? stopAt : cs.duration;
+    x3::logInfo("[cutscene] playing '" + cs.name + "' " +
+                (clipped ? ("clip [" + std::to_string(startAt) + ".." + std::to_string(stopAt) + "] s")
+                         : ("(" + std::to_string(cs.duration) + " s)")) +
+                " — press K to skip");
 
     CinematicScene scene;
     device.beginUploadBatch();
@@ -273,7 +279,11 @@ bool runCutsceneWindowed(x3::rhi::IRenderDevice& device, GLFWwindow* window,
     bool prevAnyKey = true;     // swallow a key still held from before the film
     double prevTime = glfwGetTime();
     bool completed = true;
-    while (!glfwWindowShouldClose(window) && !player.done()) {
+    // A clip is "done" at the clip end; the whole film is done at duration.
+    auto reachedEnd = [&]() {
+        return clipped ? (player.time() >= clipEndT) : player.done();
+    };
+    while (!glfwWindowShouldClose(window) && !reachedEnd()) {
         glfwPollEvents();
         const double now = glfwGetTime();
         float dt = (float)(now - prevTime);
@@ -282,8 +292,11 @@ bool runCutsceneWindowed(x3::rhi::IRenderDevice& device, GLFWwindow* window,
         if (dt < 0.0f) dt = 0.0f;
 
         // Skip ONLY on a rising-edge K press (Tim) — movement/look/mouse no longer skip the film.
+        // In a CLIP, K jumps to the clip end (seek-only, audio cues NOT re-fired) so a
+        // skipped clip still hands off cleanly to the next beat; the un-clipped film uses
+        // the authored skipTarget.
         const bool skipKey = (glfwGetKey(window, GLFW_KEY_K) == GLFW_PRESS);
-        if (skipKey && !prevAnyKey) player.skip();
+        if (skipKey && !prevAnyKey) { if (clipped) player.seek(clipEndT); else player.skip(); }
         prevAnyKey = skipKey;
 
         player.tick(dt);
@@ -301,9 +314,14 @@ bool runCutsceneWindowed(x3::rhi::IRenderDevice& device, GLFWwindow* window,
         }
         device.endFrame(frame);
     }
-    if (!player.done()) completed = false;   // window closed mid-film
+    if (!reachedEnd()) completed = false;   // window closed mid-clip/film
 
-    if (audio) audio->stopMusic();
+    // Stop music only when the WHOLE film ends (or the window closed): a clip beat
+    // returns control to the orchestrator mid-timeline, so the looped music bed must
+    // carry across the interactive gap into the next clip (the director wants a
+    // continuous score, not silence between beats). The music.stop cue at the tail
+    // (and the next playMusic on re-entry) handles the start/stop within the timeline.
+    if (audio && (!clipped || !completed)) audio->stopMusic();
     scene.destroy(device);
     CinematicScene::restoreLook(device);
     x3::logInfo(std::string("[cutscene] '") + cs.name + "' " +

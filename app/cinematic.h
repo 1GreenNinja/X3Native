@@ -314,14 +314,16 @@ public:
             if (st.builtin) {
                 const x3::rhi::MeshHandle mesh = st.isBeam ? m_box : m_sphere;
                 if (mesh.valid())
-                    device.drawMeshEmissive(fc, mesh, {}, a.color, a.emissive, obj);
+                    device.drawMeshEmissive(fc, mesh, {}, a.color, pose.emissive, obj);
             } else {
                 for (const auto& d : st.drawables) {
                     float fin[16];
                     x3::asset::mulMat4(obj, d.nodeTransform, fin);
                     const float* emis = nullptr;
                     float emBuf[4];
-                    if (a.emissive[3] > 0.0f) { std::copy(a.emissive, a.emissive + 4, emBuf); emis = emBuf; }
+                    // Time-evaluated emissive (the blob->detailed reveal ramp); when an
+                    // actor has no ramp this equals the static a.emissive (legacy).
+                    if (pose.emissive[3] > 0.0f) { std::copy(pose.emissive, pose.emissive + 4, emBuf); emis = emBuf; }
                     else {
                         emBuf[0] = d.emissiveFactor[0]; emBuf[1] = d.emissiveFactor[1];
                         emBuf[2] = d.emissiveFactor[2]; emBuf[3] = 1.0f;
@@ -487,9 +489,17 @@ struct CinAudioMap {
 };
 
 // Run a cutscene WINDOWED to completion (blocking) — see cinematic.cpp.
+//
+// CLIP-SPLIT (Phase 5): play only the span [startAt, stopAt) of the timeline, then
+// return — this is how the Intro Orchestrator carves the single cold-open timeline
+// into named clip BEATS (cine.flight / cine.reveal / cine.charge / cine.outcome)
+// with interactive windows occupying the gaps. stopAt <= 0 (or > duration) plays to
+// the end as before (the passive-film path is unchanged). K still skips: a skip in
+// a clip jumps to the clip end (the span's skip target) rather than the whole film.
 bool runCutsceneWindowed(x3::rhi::IRenderDevice& device, GLFWwindow* window,
                          x3::audio::IAudioSystem* audio,
                          const x3::cut::Cutscene& cs, float startAt = 0.0f,
-                         const std::function<void(const std::string&)>& hostEvent = {});
+                         const std::function<void(const std::string&)>& hostEvent = {},
+                         float stopAt = 0.0f);
 
 } // namespace x3::apphost

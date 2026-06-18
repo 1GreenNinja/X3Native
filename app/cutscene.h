@@ -56,6 +56,14 @@ struct Actor {
     float color[4]    = {1, 1, 1, 1};
     float emissive[4] = {0, 0, 0, 0};   // {r,g,b,strength}; strength>0 overrides model emissive
     float showAt = 0.0f, hideAt = -1.0f;   // hideAt < 0 => duration
+    // ---- BLOB->DETAILED REVEAL ramp (Phase 5). Optional time-ramp of the actor's
+    // emissive from `emissiveFrom` -> `emissive` over [emissiveRampAt, +Dur]. When
+    // emissiveRampDur <= 0 the actor uses the static `emissive` at all times (legacy).
+    // This lets the capital ship's self-illum "resolve" as it emerges so the detail
+    // reads in, instead of popping from a flat blob (paired with a scale/distance ramp).
+    float emissiveFrom[4]  = {0, 0, 0, 0};
+    float emissiveRampAt   = 0.0f;
+    float emissiveRampDur  = 0.0f;   // <= 0 => no ramp (static emissive)
     std::vector<ActorKey> keys;   // >= 1, t ascending
 };
 
@@ -141,6 +149,7 @@ struct ActorPose {
     Vec3  rotDeg{};
     float scale = 1.0f;
     bool  visible = false;
+    float emissive[4] = {0, 0, 0, 0};   // time-evaluated emissive (the ramp, or the static a.emissive)
 };
 ActorPose evalActor(const Cutscene& cs, const Actor& a, float t);
 
