@@ -1,34 +1,45 @@
 {
   "format": "x3.cutscene/1",
   "name": "cold_open",
-  "duration": 67.5,
+  "duration": 80.0,
   "skippable": true,
   "skipTo": 52.5,
+
+  "comment": "PHASE 5 CLIP-SPLIT. The Intro Orchestrator (app/intro_orchestrator.cpp defaultIntroBeats) carves this single timeline into NAMED CLIP BEATS, with bounded interactive space-combat windows occupying the GAPS between them: cine.flight [0..20] -> play.dodge -> cine.reveal [20..30] -> cine.charge [30..36] -> play.dogfight (climax) -> cine.outcome. The outcome beat is OUTCOME-SELECTED: SHOT_DOWN plays [36..66] (the kill -> smash-to-black -> ESCAPE FROM LAB ZERO + SIX MONTHS LATER); ESCAPED plays [66..80] (you slip the kill-box, a glancing hit drains the antimatter, the ion-pulse drive ignites -> hands off to the Phase-6 atmo descent). Every authored span reads as a self-contained beat (camera framing, FX, titles). The capital ship resolves blob->detailed via a scale/distance ramp + an emissive ramp (emissiveFrom -> emissive) so it emerges as a lit, menacing hull instead of popping from a flat blob.",
 
   "camera": {
     "keys": [
       { "t": 0.0,  "pos": [0, 5, 18],       "look": [0, 1, -40],      "fov": 58 },
       { "t": 6.0,  "pos": [4, 6, -60],      "look": [3, 2, -110],     "fov": 55 },
       { "t": 12.0, "pos": [8, 6, -150],     "look": [6, 3, -200],     "fov": 52 },
+      { "t": 20.0, "pos": [10, 6, -250],    "look": [8, 3, -300],     "fov": 50 },
 
-      { "t": 12.0, "pos": [-16, 4, -170],   "look": [6, 2, -170],     "fov": 48, "cut": true },
-      { "t": 24.0, "pos": [-14, 5, -340],   "look": [10, 3, -340],    "fov": 48 },
+      { "t": 20.0, "pos": [-10, 10, -180],  "look": [20, 38, -560],   "fov": 46, "cut": true },
+      { "t": 26.0, "pos": [-8, 12, -230],   "look": [19, 36, -420],   "fov": 44 },
+      { "t": 30.0, "pos": [-4, 14, -250],   "look": [18, 33, -320],   "fov": 46 },
 
-      { "t": 24.0, "pos": [22, 8, -385],    "look": [10, 3, -340],    "fov": 45, "cut": true },
-      { "t": 36.0, "pos": [16, 6, -540],    "look": [8, 2, -505],     "fov": 40 },
+      { "t": 30.0, "pos": [22, 8, -385],    "look": [10, 12, -340],   "fov": 45, "cut": true },
+      { "t": 36.0, "pos": [16, 6, -480],    "look": [8, 12, -445],    "fov": 42 },
 
-      { "t": 36.0, "pos": [0, -8, -580],    "look": [10, 22, -430],   "fov": 50, "cut": true },
+      { "t": 36.0, "pos": [0, -8, -560],    "look": [10, 22, -430],   "fov": 50, "cut": true },
       { "t": 45.0, "pos": [-4, -6, -700],   "look": [6, 12, -520],    "fov": 52 },
 
       { "t": 45.0, "pos": [24, 10, -600],   "look": [4, 0, -640],     "fov": 55, "cut": true },
       { "t": 47.2, "pos": [20, 7, -625],    "look": [2, -2, -662],    "fov": 58 },
       { "t": 49.8, "pos": [8, -2, -650],    "look": [-6, -22, -700],  "fov": 64 },
-      { "t": 52.5, "pos": [-2, -28, -690],  "look": [-25, -90, -760], "fov": 70 }
+      { "t": 52.5, "pos": [-2, -28, -690],  "look": [-25, -90, -760], "fov": 70 },
+
+      { "t": 66.0, "pos": [14, 4, -560],    "look": [2, 2, -620],     "fov": 56, "cut": true },
+      { "t": 70.0, "pos": [10, 2, -640],    "look": [-2, 0, -700],    "fov": 54 },
+      { "t": 74.0, "pos": [4, -2, -720],    "look": [-6, -8, -800],   "fov": 52 },
+      { "t": 80.0, "pos": [-2, -10, -820],  "look": [-10, -30, -920], "fov": 50 }
     ],
     "shakes": [
       { "t": 36.0, "dur": 0.4, "amp": 0.06, "freq": 7.0 },
       { "t": 47.2, "dur": 1.1, "amp": 0.35, "freq": 13.0 },
-      { "t": 49.7, "dur": 1.0, "amp": 0.30, "freq": 11.0 }
+      { "t": 49.7, "dur": 1.0, "amp": 0.30, "freq": 11.0 },
+      { "t": 67.5, "dur": 0.8, "amp": 0.22, "freq": 10.0 },
+      { "t": 72.0, "dur": 1.4, "amp": 0.16, "freq": 6.0 }
     ]
   },
 
@@ -51,17 +62,56 @@
       ]
     },
     {
+      "id": "jake_ship_escape",
+      "model": "rigged_glb/JakeFighterShip.glb",
+      "size": 9.0,
+      "rotOffsetDeg": [0, 0, 0],
+      "comment": "ESCAPE-PATH double of Jake's fighter (its own actor so the shoot-down choreography above stays untouched). Visible only in the cine.outcome ESCAPED span [66..80]: he levels out of the kill-box, takes a glancing hit, then noses down as the ion drive ignites and he coasts toward the planet (hand-off to the Phase-6 atmo descent).",
+      "showAt": 66.0,
+      "hideAt": 80.0,
+      "keys": [
+        { "t": 66.0, "pos": [2, 2, -620],     "rotDeg": [0, 0, 12],      "scale": 1.0 },
+        { "t": 70.0, "pos": [-2, 0, -700],    "rotDeg": [-4, -6, -8],    "scale": 1.0 },
+        { "t": 74.0, "pos": [-6, -8, -800],   "rotDeg": [-14, -10, 4],   "scale": 1.0 },
+        { "t": 80.0, "pos": [-10, -30, -920], "rotDeg": [-28, -14, 0],   "scale": 1.0 }
+      ]
+    },
+    {
       "id": "capital_ship",
       "model": "rigged_glb/SpaceShip4.glb",
       "size": 200.0,
       "rotOffsetDeg": [0, 0, 0],
-      "showAt": 28.0,
+      "comment": "BLOB->DETAILED REVEAL (Phase 5). SpaceShip4.glb has a single PBR material with NO emissive, so under the deep-space look (sun 0.06 / ambient 0.17) the 200m hull rendered as a featureless black blob. The reveal beat (cine.reveal [20..30]) now (1) brings the ship in from a DISTANT SPECK and looms it to ~200m via the position/scale ramp, and (2) RAMPS the self-illum from near-black (emissiveFrom) up to the cool [0.14,0.16,0.22] target across 20..29s (emissiveRampAt/Dur) so the textured detail RESOLVES as it emerges instead of popping. emissive[3]>0 routes through the actor-level emissive branch in CinematicScene::drawWorld; evalActor now time-evaluates it.",
+      "emissive": [0.14, 0.16, 0.22, 1.0],
+      "emissiveFrom": [0.01, 0.01, 0.02, 1.0],
+      "emissiveRampAt": 20.0,
+      "emissiveRampDur": 9.0,
+      "showAt": 20.0,
       "hideAt": 52.7,
+      "comment-keys": "REVEAL approach: the ship emerges from DOWN-RANGE (-Z, high) where the reveal camera (cut at t=20, look ~[16,30..34,-120..-200]) is pointed, growing from a distant speck (scale 0.16) to looming 200m (scale 1.0) by t=30, then continues onto the original ambush trajectory (t>=38 keys match the legacy path so the shoot-down framing is unchanged).",
       "keys": [
-        { "t": 28.0, "pos": [20, 45, 180],  "rotDeg": [30, 4, 0], "scale": 1.0 },
+        { "t": 20.0, "pos": [22, 40, -720], "rotDeg": [30, 4, 0], "scale": 0.20 },
+        { "t": 24.0, "pos": [20, 37, -540], "rotDeg": [30, 4, 0], "scale": 0.48 },
+        { "t": 28.0, "pos": [18, 34, -390], "rotDeg": [30, 4, 0], "scale": 0.84 },
+        { "t": 30.0, "pos": [18, 32, -320], "rotDeg": [30, 4, 0], "scale": 1.0 },
         { "t": 38.0, "pos": [14, 26, -360], "rotDeg": [28, 4, 0], "scale": 1.0 },
         { "t": 45.0, "pos": [8, 18, -510],  "rotDeg": [24, 3, 0], "scale": 1.0 },
         { "t": 52.5, "pos": [2, 12, -575],  "rotDeg": [22, 3, 0], "scale": 1.0 }
+      ]
+    },
+    {
+      "id": "capital_ship_escape",
+      "model": "rigged_glb/SpaceShip4.glb",
+      "size": 200.0,
+      "rotOffsetDeg": [0, 0, 0],
+      "comment": "ESCAPE-PATH capital ship: crippled + RECEDING behind Jake as he slips the kill-box (its own actor so the shoot-down framing stays untouched). Visible only in [66..80]; it falls away up-and-back while Jake dives for the planet.",
+      "emissive": [0.10, 0.06, 0.04, 1.0],
+      "showAt": 66.0,
+      "hideAt": 80.0,
+      "keys": [
+        { "t": 66.0, "pos": [10, 30, -300], "rotDeg": [18, 10, 6],  "scale": 1.0 },
+        { "t": 74.0, "pos": [34, 70, 60],   "rotDeg": [16, 18, 10], "scale": 1.0 },
+        { "t": 80.0, "pos": [60, 120, 360], "rotDeg": [14, 26, 14], "scale": 1.0 }
       ]
     },
     {
@@ -156,42 +206,82 @@
         { "t": 50.0, "pos": [-6, -23, -702], "scale": 8.0 },
         { "t": 50.8, "pos": [-9, -32, -712], "scale": 2.5 }
       ]
+    },
+    {
+      "id": "escape_graze",
+      "model": "builtin:glow",
+      "color": [1.0, 0.5, 0.3, 1.0],
+      "emissive": [6.0, 2.6, 1.0, 7.0],
+      "comment": "ESCAPE stinger: the GLANCING HIT that clips Jake's hull and drains the antimatter (sets up the Phase-6 ion-pulse coast-down).",
+      "showAt": 67.4,
+      "hideAt": 68.6,
+      "keys": [
+        { "t": 67.4, "pos": [-1, 0, -680], "scale": 1.0 },
+        { "t": 67.7, "pos": [-2, -1, -690], "scale": 5.0 },
+        { "t": 68.6, "pos": [-3, -3, -705], "scale": 1.5 }
+      ]
+    },
+    {
+      "id": "ion_drive",
+      "model": "builtin:glow",
+      "color": [0.5, 0.8, 1.0, 1.0],
+      "emissive": [1.2, 3.0, 5.5, 5.5],
+      "comment": "ESCAPE stinger: the ION-PULSE DRIVE igniting behind Jake's fighter as he commits to the atmospheric coast-down (the cool counterpart to the warm engine_glow; hands off to Phase 6).",
+      "showAt": 70.0,
+      "hideAt": 80.0,
+      "keys": [
+        { "t": 70.0, "pos": [0, 1, -695], "scale": 0.6 },
+        { "t": 74.0, "pos": [-4, -7, -795], "scale": 2.4 },
+        { "t": 80.0, "pos": [-8, -29, -915], "scale": 3.6 }
+      ]
     }
   ],
 
   "audio": [
     { "t": 0.5,  "sound": "music.space",    "gain": 0.55, "music": true },
-    { "t": 30.0, "sound": "rumble.capital", "gain": 0.7 },
-    { "t": 36.2, "sound": "alarm",          "gain": 0.9 },
+    { "t": 22.0, "sound": "rumble.capital", "gain": 0.7 },
+    { "t": 30.2, "sound": "alarm",          "gain": 0.9 },
+    { "t": 36.2, "sound": "alarm",          "gain": 0.7 },
     { "t": 43.0, "sound": "charge",         "gain": 0.8 },
     { "t": 45.5, "sound": "bolt",           "gain": 0.9 },
     { "t": 47.2, "sound": "explosion",      "gain": 1.0 },
     { "t": 49.5, "sound": "bolt",           "gain": 0.9 },
     { "t": 49.8, "sound": "explosion",      "gain": 1.0 },
-    { "t": 52.6, "sound": "music.stop",     "gain": 1.0 }
+    { "t": 52.6, "sound": "music.stop",     "gain": 1.0 },
+    { "t": 66.2, "sound": "music.space",    "gain": 0.5,  "music": true },
+    { "t": 67.4, "sound": "bolt",           "gain": 0.8 },
+    { "t": 67.6, "sound": "explosion",      "gain": 0.7 },
+    { "t": 70.0, "sound": "charge",         "gain": 0.7 },
+    { "t": 79.6, "sound": "music.stop",     "gain": 1.0 }
   ],
 
   "fades": [
     { "t": 0.0,  "dur": 2.5,  "from": 1.0,  "to": 0.0, "color": [0, 0, 0] },
     { "t": 47.2, "dur": 0.15, "from": 0.5,  "to": 0.0, "color": [1, 1, 1] },
     { "t": 49.8, "dur": 0.18, "from": 0.55, "to": 0.0, "color": [1, 1, 1] },
-    { "t": 52.5, "dur": 0.35, "from": 0.0,  "to": 1.0, "color": [0, 0, 0] }
+    { "t": 52.5, "dur": 0.35, "from": 0.0,  "to": 1.0, "color": [0, 0, 0] },
+    { "t": 66.0, "dur": 0.6,  "from": 1.0,  "to": 0.0, "color": [0, 0, 0] },
+    { "t": 67.4, "dur": 0.1,  "from": 0.35, "to": 0.0, "color": [1, 1, 1] },
+    { "t": 79.5, "dur": 0.5,  "from": 0.0,  "to": 1.0, "color": [0, 0, 0] }
   ],
 
-  "letterbox": { "inAt": 0.0, "inDur": 1.2, "outAt": 52.5, "outDur": 0.5, "frac": 0.11 },
+  "letterbox": { "inAt": 0.0, "inDur": 1.2, "outAt": 79.5, "outDur": 0.5, "frac": 0.11 },
 
   "titles": [
     { "t": 54.0, "dur": 6.0, "text": "ESCAPE FROM LAB ZERO", "font": "title",
       "sizeFrac": 0.082, "fadeIn": 1.2, "fadeOut": 1.2, "color": [0.92, 0.95, 1.0] },
     { "t": 61.0, "dur": 5.0, "text": "SIX MONTHS LATER", "font": "title",
-      "sizeFrac": 0.04, "fadeIn": 1.0, "fadeOut": 1.2, "color": [0.78, 0.82, 0.9] }
+      "sizeFrac": 0.04, "fadeIn": 1.0, "fadeOut": 1.2, "color": [0.78, 0.82, 0.9] },
+    { "t": 71.0, "dur": 6.0, "text": "ANTIMATTER CRITICAL  -  IGNITING ION DRIVE", "font": "mono",
+      "sizeFrac": 0.03, "fadeIn": 0.8, "fadeOut": 1.4, "color": [0.6, 0.85, 1.0] }
   ],
 
   "events": [
-    { "t": 36.2, "name": "fx.alarm" },
+    { "t": 30.2, "name": "fx.alarm" },
     { "t": 47.2, "name": "fx.impact:jake_ship" },
     { "t": 47.3, "name": "fx.trail.start:jake_ship" },
     { "t": 49.8, "name": "fx.impact:jake_ship" },
-    { "t": 67.0, "name": "intro_complete", "endState": true }
+    { "t": 67.5, "name": "fx.impact:jake_ship_escape" },
+    { "t": 79.9, "name": "intro_complete", "endState": true }
   ]
 }
