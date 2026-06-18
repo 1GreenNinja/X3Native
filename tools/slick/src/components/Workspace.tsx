@@ -136,6 +136,7 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
                   <div class="section-head">
                     <button class="section-toggle" onClick={() => setOpenCh((v) => !v)}>
                       <span class="caret">{openCh ? "▾" : "▸"}</span> Channels
+                      {uncategorized.length > 0 && <span class="sec-count">{uncategorized.length}</span>}
                     </button>
                     <span>
                       <button class="section-add" title="New section" onClick={() => setAddingSection(true)}>📁</button>
@@ -172,6 +173,7 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
                 <div class="section-head">
                   <button class="section-toggle" onClick={() => setOpenDm((v) => !v)}>
                     <span class="caret">{openDm ? "▾" : "▸"}</span> Direct messages
+                    {dms.length > 0 && <span class="sec-count">{dms.length}</span>}
                   </button>
                 </div>
                 {openDm && dms.map((r) => (

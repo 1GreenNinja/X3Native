@@ -11,12 +11,13 @@ export interface Theme {
   motion: boolean;    // message entrance + UI micro-animations
   splash: boolean;    // ctOS boot handshake on launch
   shine: boolean;     // glossy specular highlight + sheen on glass panels
+  classic?: boolean;  // 2017-Slack light mode (aubergine sidebar + white pane)
 }
 
 const FX = { grid: true, scanlines: true, glow: true, motion: true, splash: true, shine: true };
 
 export const THEME_PRESETS: Record<string, Theme> = {
-  // the shipped gunmetal + cyan
+  // the gunmetal + cyan cyber look (default)
   "Fleet Cyan":     { accent: "#3fd0e0", glass: 0.62, ...FX },
   // Deus Ex black-and-gold cyber-renaissance
   "Augmented Gold": { accent: "#d9a441", glass: 0.55, ...FX },
