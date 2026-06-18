@@ -137,6 +137,12 @@ struct ChatContext {
     uint32_t chanceSeed = 0;              // per-save seed for deterministic {"chance"}
 };
 
+// Deterministic per-(save,node) hash -> [0,1) for {"chance"} (chat-tree spec §3).
+// FNV-1a over (seed, nodeKey). EXPOSED so other deterministic branch points (e.g.
+// the interactive-intro outcome roll, app/intro_orchestrator.cpp) reuse the SAME
+// save-seeded roll the dialog/mission {chance} op uses — no second RNG.
+float chanceRoll(uint32_t seed, std::string_view nodeKey);
+
 // Evaluate one condition list (AND semantics) against the context. `nodeKey`
 // feeds the deterministic chance hash (per-(save,node) — spec §3).
 bool evalChatConds(const std::vector<ChatCond>& conds, const ChatContext& ctx,

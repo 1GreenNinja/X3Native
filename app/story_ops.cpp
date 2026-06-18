@@ -376,14 +376,16 @@ bool parseStoryFxList(const JValue* jv, std::vector<ChatFx>& out,
 // Condition evaluation
 // ===========================================================================
 
-namespace {
-
-// Deterministic per-(save,node) hash -> [0,1) for {"chance"} (spec §3).
+// Deterministic per-(save,node) hash -> [0,1) for {"chance"} (spec §3). External
+// linkage in x3::game (declared in story_ops.h) so other deterministic branch
+// points (intro_orchestrator) share the exact same roll.
 float chanceRoll(uint32_t seed, std::string_view nodeKey) {
     uint32_t h = 2166136261u ^ seed;            // FNV-1a over seed + key
     for (char c : nodeKey) { h ^= (uint8_t)c; h *= 16777619u; }
     return (float)(h % 100000u) / 100000.0f;
 }
+
+namespace {
 
 // girl name -> TimelineState Woman (the F2 three). Others (lena/sarah/...) fall
 // back to the `<girl>.rescued` story flag (the spec's own glossary key) — the
