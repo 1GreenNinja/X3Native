@@ -2,7 +2,7 @@ import { useEffect, useState } from "preact/hooks";
 import { type Session, createChannel } from "../client";
 import { store, subscribe, startSyncLoop, type Room } from "../store";
 import {
-  type CatConfig, loadCats, saveCats, addSection, removeSection, assignRoom, toggleCollapsed,
+  type CatConfig, loadCats, saveCats, addSection, removeSection, assignRoom, toggleCollapsed, toggleStar,
 } from "../categories";
 import { MessageStream } from "./MessageStream";
 import { Composer } from "./Composer";
@@ -38,12 +38,16 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
   const setCats = (c: CatConfig) => { setCatsState(c); saveCats(c); };
   const { channels, dms } = sortedRooms();
 
-  // channels not assigned to any (existing) custom section show under "Channels"
-  const inSection = (sec: string) => channels.filter((r) => cats.assign[r.id] === sec);
+  // Starred channels pin to the top section and drop out of their normal group
+  const isStarred = (id: string) => cats.starred.includes(id);
+  const starredChannels = channels.filter((r) => isStarred(r.id));
+  const inSection = (sec: string) => channels.filter((r) => !isStarred(r.id) && cats.assign[r.id] === sec);
   const uncategorized = channels.filter((r) => {
+    if (isStarred(r.id)) return false;
     const a = cats.assign[r.id];
     return !a || !cats.sections.includes(a);
   });
+  const [openStar, setOpenStar] = useState(true);
 
   const createRoom = async () => {
     const name = newName.trim();
@@ -78,8 +82,12 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
                 onClick={() => setActiveId(r.id)}
                 onDragStart={() => setDragId(r.id)}
                 onDragEnd={() => setDragId(null)}>
-                <span class="hash">#</span> {r.name}
+                <span class="hash">#</span> <span class="room-name">{r.name}</span>
                 {r.unread > 0 && <span class="badge">{r.unread}</span>}
+                <button class={`star ${isStarred(r.id) ? "on" : ""}`} title="Star"
+                  onClick={(e) => { e.stopPropagation(); setCats(toggleStar(cats, r.id)); }}>
+                  {isStarred(r.id) ? "★" : "☆"}
+                </button>
               </a>
             );
             const dropProps = (section: string | null) => ({
@@ -93,6 +101,18 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
             });
             return (
               <>
+                {/* Starred — pinned channels at the very top (Slack) */}
+                {starredChannels.length > 0 && (
+                  <>
+                    <div class="section-head">
+                      <button class="section-toggle" onClick={() => setOpenStar((v) => !v)}>
+                        <span class="caret">{openStar ? "▾" : "▸"}</span> ★ Starred
+                      </button>
+                    </div>
+                    {openStar && starredChannels.map(channelRow)}
+                  </>
+                )}
+
                 {/* custom project sections */}
                 {cats.sections.map((sec) => {
                   const open = !cats.collapsed[sec];

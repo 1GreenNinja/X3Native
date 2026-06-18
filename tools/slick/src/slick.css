@@ -257,6 +257,16 @@ html.fx-shine .sidebar::after {
 }
 .room-row[draggable] { cursor: pointer; }
 .room-row[draggable]:active { opacity: 0.6; }
+.room-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* star toggle — hidden until row hover (or always if starred), Slack-style */
+.star {
+  background: none; border: none; cursor: pointer; font-size: 14px; line-height: 1;
+  color: var(--text-dim); padding: 0 2px; opacity: 0; transition: opacity 100ms, color 100ms;
+  margin-left: 4px;
+}
+.room-row:hover .star { opacity: 0.8; }
+.star:hover { color: var(--amber); }
+.star.on { opacity: 1; color: var(--amber); text-shadow: 0 0 6px rgba(255,182,55,0.5); }
 
 /* show an empty-state hint under a header when a section has no rooms */
 .section-empty {

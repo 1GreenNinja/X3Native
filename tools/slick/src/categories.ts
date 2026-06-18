@@ -6,6 +6,7 @@ export interface CatConfig {
   sections: string[];                 // ordered custom section names
   assign: Record<string, string>;     // roomId -> section name
   collapsed: Record<string, boolean>; // section name -> collapsed?
+  starred: string[];                  // roomIds pinned to the Starred section
 }
 
 const KEY = "slick.categories";
@@ -13,9 +14,17 @@ const KEY = "slick.categories";
 export function loadCats(): CatConfig {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return { sections: [], assign: {}, collapsed: {}, ...JSON.parse(raw) };
+    if (raw) return { sections: [], assign: {}, collapsed: {}, starred: [], ...JSON.parse(raw) };
   } catch { /* fall through */ }
-  return { sections: [], assign: {}, collapsed: {} };
+  return { sections: [], assign: {}, collapsed: {}, starred: [] };
+}
+
+/** Toggle a room's Starred pin. Starred rooms surface in the top section. */
+export function toggleStar(c: CatConfig, roomId: string): CatConfig {
+  const starred = c.starred.includes(roomId)
+    ? c.starred.filter((id) => id !== roomId)
+    : [...c.starred, roomId];
+  return { ...c, starred };
 }
 
 export function saveCats(c: CatConfig): void {
