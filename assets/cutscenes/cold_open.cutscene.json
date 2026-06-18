@@ -55,6 +55,8 @@
       "model": "rigged_glb/SpaceShip4.glb",
       "size": 200.0,
       "rotOffsetDeg": [0, 0, 0],
+      "comment": "SpaceShip4.glb has a single PBR material with NO emissive, so under the deep-space look (sun 0.06 / ambient 0.17) the 200m hull rendered as a featureless black blob. A low cool self-illum (emissive[3]>0 routes through the actor-level emissive branch in CinematicScene::drawWorld) lifts the textured hull out of pure black so the detail reads as a lit, menacing capital ship — without washing it into a glowing slab. This is also the Phase-5 blob->detailed reveal hook.",
+      "emissive": [0.14, 0.16, 0.22, 1.0],
       "showAt": 28.0,
       "hideAt": 52.7,
       "keys": [
