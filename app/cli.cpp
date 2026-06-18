@@ -405,6 +405,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             if (i + 1 < argc && argv[i + 1][0] != '-') o.testLocomotionPath = argv[++i];
         }
         else if (a == "--test-intro") o.testIntro = true;
+        else if (a == "--test-introorch") o.testIntroOrch = true;
     }
 }
 

@@ -283,6 +283,7 @@ int main(int argc, char** argv) {
         _tf.testCanonLevel = o.testCanonLevel;
         _tf.testCanonPlay = o.testCanonPlay;
         _tf.testIntro = o.testIntro;
+        _tf.testIntroOrch = o.testIntroOrch;
         _tf.testCutscene = o.testCutscene;
         _tf.testPhase2a = o.testPhase2a;
         _tf.testPhase2b = o.testPhase2b;

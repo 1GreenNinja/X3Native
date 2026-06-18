@@ -255,6 +255,13 @@ struct CliOptions {
     // pulse -> white-out crash -> "6 MONTHS LATER" -> handoff to the cell) advances in order and
     // is skippable. No window / Vulkan. Additive — does not affect the existing gate.
     bool        testIntro = false;
+    // --test-introorch (Phase 3 INTRO ORCHESTRATOR): the interactive branching
+    // cold-open's beat state machine + skill->p->deterministic-outcome core. Asserts
+    // beat sequencing, the skill->p mapping bounds, the deterministic chanceRoll gate,
+    // the StoryFlags["intro.outcome"] write, and input-cleared/deterministic headless
+    // interactive windows. No window / Vulkan. Additive — distinct from --test-intro
+    // (the LEGACY cold-open phase-machine test).
+    bool        testIntroOrch = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;

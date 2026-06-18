@@ -33,6 +33,8 @@ add_executable(X3Engine WIN32
     space/lod.cpp
     space/decloak_vfx.cpp
     space/space_env.cpp
+    # Phase 3 — interactive branching cold-open: the Intro Orchestrator.
+    intro_orchestrator.cpp
     scene.cpp
     level.cpp
     level1.cpp

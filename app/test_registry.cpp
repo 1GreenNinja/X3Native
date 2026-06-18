@@ -50,6 +50,7 @@
 #include "canon_play.h"
 #include "canon_aliens.h"                    // EFLZ canon-alien roster (Mantis/Grey/Reptilian/Nordic) — --test-canonaliens
 #include "intro_coldopen.h"
+#include "intro_orchestrator.h"   // x3::intro::runIntroOrchestratorSelfTest (--test-introorch)
 #include "cutscene.h"
 #include "npc_dialog.h"
 #include "chat_tree.h"
@@ -280,6 +281,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running x3.cutscene/1 self-test (format + splines/cuts + player tick/seek/skip + "
                     "StoryFlags + the shipped cold open)...");
         return x3::cut::runCutsceneSelfTest() ? 0 : 1;
+    }
+    if (tf.testIntroOrch) {
+        x3::logInfo("running Phase 3 INTRO ORCHESTRATOR self-test (beat sequencing + skill->p "
+                    "mapping bounds + deterministic chanceRoll outcome + StoryFlags['intro.outcome'] "
+                    "write + input-cleared/deterministic headless interactive windows)...");
+        return x3::intro::runIntroOrchestratorSelfTest() ? 0 : 1;
     }
     if (tf.testPhase2a) {
         x3::logInfo("running EFLZ Phase 2a (player health + enemies fight back) self-test...");
