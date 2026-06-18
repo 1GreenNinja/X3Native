@@ -171,6 +171,62 @@ export async function sendMessage(
   return data.event_id;
 }
 
+/** Resolve a room alias (#admins:server) to its room id. */
+export async function resolveAlias(token: string, alias: string): Promise<string> {
+  const data = await req<{ room_id: string }>(
+    `/_matrix/client/v3/directory/room/${encodeURIComponent(alias)}`,
+    { token },
+  );
+  return data.room_id;
+}
+
+/** Run a Conduit admin command via the #admins room. The bot only reads
+ * messages that MENTION it, so we ping @conduit in both the body and
+ * m.mentions, then poll for its reply. Only works if the logged-in user is the
+ * server admin (bot ignores others). Returns the bot's reply text. */
+export async function adminCommand(
+  token: string,
+  userId: string,
+  command: string,
+): Promise<string> {
+  const server = userId.split(":")[1];
+  const conduit = `@conduit:${server}`;
+  const roomId = await resolveAlias(token, `#admins:${server}`);
+  await sendMessage(token, roomId, {
+    msgtype: "m.text",
+    body: `${conduit}: ${command}`,
+    "m.mentions": { user_ids: [conduit] },
+  }, newTxnId());
+
+  // poll up to ~6s for the bot's reply
+  for (let i = 0; i < 4; i++) {
+    await new Promise((r) => setTimeout(r, 1500));
+    try {
+      const msgs = await req<{ chunk: MatrixEvent[] }>(
+        `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/messages?dir=b&limit=8`,
+        { token },
+      );
+      const reply = (msgs.chunk ?? []).find(
+        (e) => e.sender === conduit && e.type === "m.room.message",
+      );
+      if (reply) return reply.content?.body ?? "(done)";
+    } catch { /* keep polling */ }
+  }
+  return "Command sent — no reply yet. Check the #admins room in a moment.";
+}
+
+/** Is the logged-in user the server admin? (member of #admins.) */
+export async function isServerAdmin(token: string, userId: string): Promise<boolean> {
+  const server = userId.split(":")[1];
+  try {
+    const roomId = await resolveAlias(token, `#admins:${server}`);
+    const joined = await req<{ joined_rooms: string[] }>("/_matrix/client/v3/joined_rooms", { token });
+    return (joined.joined_rooms ?? []).includes(roomId);
+  } catch {
+    return false;
+  }
+}
+
 /** Change the logged-in user's password. One call, one job.
  *
  * Matrix needs the CURRENT password to re-auth (UIAA m.login.password): we
