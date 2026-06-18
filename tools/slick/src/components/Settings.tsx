@@ -114,13 +114,24 @@ function AppearanceTab() {
         <span class="set-val">{Math.round(t.glass * 100)}%</span>
       </div>
 
-      <div class="genpanel-row">
-        <label>Grid</label>
-        <button class={`toggle ${t.grid ? "on" : ""}`} onClick={() => apply({ ...t, grid: !t.grid })}>
-          {t.grid ? "On" : "Off"}
-        </button>
-      </div>
-      <div class="settings-note">Lower glass = more see-through panels. Changes apply live and persist.</div>
+      <h3 class="settings-h3">Effects</h3>
+      {([
+        ["grid", "Plating grid"],
+        ["scanlines", "CRT scanlines"],
+        ["glow", "Hover glow"],
+        ["motion", "Message motion"],
+        ["splash", "Boot splash"],
+      ] as [keyof Theme, string][]).map(([key, label]) => (
+        <div class="genpanel-row" key={key}>
+          <label>{label}</label>
+          <button class={`toggle ${t[key] ? "on" : ""}`}
+            onClick={() => apply({ ...t, [key]: !t[key] })}>
+            {t[key] ? "On" : "Off"}
+          </button>
+        </div>
+      ))}
+      <div class="settings-note">Lower glass = more see-through. All effects apply live and persist;
+        boot splash shows on next launch.</div>
     </>
   );
 }

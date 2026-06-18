@@ -51,6 +51,45 @@ body::before {
   z-index: 0;
 }
 
+/* ===================== ctOS FX (toggleable in Appearance) ===================== */
+/* 1. scanlines + subtle CRT flicker overlay */
+html.fx-scanlines body::after {
+  content: ""; position: fixed; inset: 0; z-index: 50; pointer-events: none;
+  background: repeating-linear-gradient(0deg, rgba(0,0,0,0.10) 0px, rgba(0,0,0,0.10) 1px, transparent 2px, transparent 3px);
+  mix-blend-mode: overlay;
+  animation: crt-flicker 5s steps(60) infinite;
+}
+@keyframes crt-flicker { 0%,97%{opacity:0.55;} 98%{opacity:0.4;} 99%{opacity:0.7;} 100%{opacity:0.55;} }
+
+/* 2. message-row hover edge glow */
+html.fx-glow .msg-group:hover {
+  background: linear-gradient(90deg, rgba(63,208,224,0.10), transparent 60%);
+  box-shadow: inset 2px 0 0 var(--cyan);
+}
+
+/* 3. message entrance + send micro-motion */
+html.fx-motion .msg-group { animation: msg-in 240ms ease-out; }
+@keyframes msg-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+html.fx-motion .send-btn:active { transform: scale(0.94); }
+html.fx-motion .room-row { transition: background 120ms, border-color 120ms; }
+
+/* 4. boot splash — ctOS handshake */
+.boot {
+  position: fixed; inset: 0; z-index: 2000; background: var(--bg-0);
+  display: grid; place-items: center; animation: boot-out 400ms ease-in 1100ms forwards;
+}
+.boot-inner { text-align: center; font-family: "Consolas", monospace; }
+.boot-logo {
+  font-size: 40px; font-weight: 800; letter-spacing: 4px;
+  background: linear-gradient(90deg, #fff, var(--cyan)); -webkit-background-clip: text;
+  background-clip: text; color: transparent; text-shadow: var(--cyan-glow);
+}
+.boot-line { color: var(--cyan); font-size: 13px; margin-top: 14px; letter-spacing: 1px; }
+.boot-bar { width: 240px; height: 3px; margin: 14px auto 0; background: rgba(63,208,224,0.15); border-radius: 2px; overflow: hidden; }
+.boot-bar i { display: block; height: 100%; width: 0; background: var(--cyan); box-shadow: var(--cyan-glow); animation: boot-fill 1000ms ease-out forwards; }
+@keyframes boot-fill { to { width: 100%; } }
+@keyframes boot-out { to { opacity: 0; visibility: hidden; } }
+
 /* ---- login ---- */
 .login-page { height: 100%; display: grid; place-items: center; position: relative; z-index: 1; }
 .login-card {

@@ -5,18 +5,24 @@
 export interface Theme {
   accent: string;   // hex, drives --cyan (links, buttons, glows, active rail)
   glass: number;    // 0..1 panel opacity (lower = more see-through)
-  grid: boolean;    // show the faint plating grid behind everything
+  grid: boolean;    // faint plating grid behind everything
+  scanlines: boolean; // ctOS CRT scanline + flicker overlay
+  glow: boolean;      // message-row hover edge glow
+  motion: boolean;    // message entrance + UI micro-animations
+  splash: boolean;    // ctOS boot handshake on launch
 }
+
+const FX = { grid: true, scanlines: true, glow: true, motion: true, splash: true };
 
 export const THEME_PRESETS: Record<string, Theme> = {
   // the shipped gunmetal + cyan
-  "Fleet Cyan":   { accent: "#3fd0e0", glass: 0.62, grid: true },
+  "Fleet Cyan":     { accent: "#3fd0e0", glass: 0.62, ...FX },
   // Deus Ex black-and-gold cyber-renaissance
-  "Augmented Gold": { accent: "#d9a441", glass: 0.55, grid: true },
+  "Augmented Gold": { accent: "#d9a441", glass: 0.55, ...FX },
   // Watch_Dogs / ctOS green terminal
-  "ctOS Green":   { accent: "#46e08a", glass: 0.58, grid: true },
+  "ctOS Green":     { accent: "#46e08a", glass: 0.58, ...FX },
   // Cyberpunk hot magenta
-  "Night City":   { accent: "#ff3d7f", glass: 0.5,  grid: true },
+  "Night City":     { accent: "#ff3d7f", glass: 0.5,  ...FX },
 };
 
 const THEME_KEY = "slick.theme";
@@ -51,6 +57,11 @@ export function applyTheme(t: Theme): void {
   root.setProperty("--glass-light", `rgba(40, 50, 68, ${Math.max(0, t.glass - 0.12)})`);
   // plating grid on/off
   root.setProperty("--grid-alpha", t.grid ? "0.035" : "0");
+  // FX toggles ride as classes on <html> so CSS can gate them
+  const cl = document.documentElement.classList;
+  cl.toggle("fx-scanlines", t.scanlines);
+  cl.toggle("fx-glow", t.glow);
+  cl.toggle("fx-motion", t.motion);
 }
 
 export function setTheme(t: Theme): void {
