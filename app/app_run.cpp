@@ -971,10 +971,21 @@ int runDefaultHost(HostContext& hc) {
             }
 
             if (outcome == x3::intro::IntroOutcome::Escaped) {
-                // ESCAPE PATH (Phase 7 builds the real surface-landing Act-1). For now
-                // log + fall through to the cell so the branch is exercised end-to-end
-                // without P7. The cell is still the canon framing under the stub.
-                x3::logInfo("[intro] ESCAPED -> surface start (stub; Phase 7)");
+                // ESCAPE PATH (Phase 7): the REAL surface-landing Act-1. The ion-pulse
+                // descent (Phase 6) set StoryFlags["intro.landed"]; instead of waking
+                // Jake a prisoner in the canon cell, hand off to the surface-start host
+                // (app/world_hosts/host_surface_start.cpp) — Jake lands OUTSIDE the huge
+                // glass facility where Sarah is held, FREE + ARMED, a rescuer (the exact
+                // inverse of the cell start). The host owns its own scene/physics and the
+                // FULL host teardown (device + window + glfw) per the world-host contract,
+                // so we shut down THIS default host's physics first (the device/window are
+                // torn down by the host) and return its exit code directly — we do NOT
+                // fall through into the cell build below.
+                x3::logInfo("[intro] ESCAPED -> surface-landing Act-1 (host_surface_start)");
+                loading.shutdown(*device);
+                physics->shutdown();
+                hc.worldMode = "surface";
+                return x3::apphost::dispatchWorldHost(hc);
             }
 
             // SEAMLESS WAKE (canon cell): the intro ends on black ("SIX MONTHS LATER").

@@ -23,6 +23,8 @@ add_executable(X3Engine WIN32
     world_hosts/host_streamed.cpp
     # Phase 2 — space-combat stack folded from feat/cockpit-vattalus
     world_hosts/host_space.cpp
+    # Phase 7 — ESCAPED-branch Act-1 surface-landing start (--world surface)
+    world_hosts/host_surface_start.cpp
     space_pilot.cpp
     space/ship_ai.cpp
     space/targeting.cpp

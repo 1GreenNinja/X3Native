@@ -51,6 +51,7 @@
 #include "canon_aliens.h"                    // EFLZ canon-alien roster (Mantis/Grey/Reptilian/Nordic) — --test-canonaliens
 #include "intro_coldopen.h"
 #include "intro_orchestrator.h"   // x3::intro::runIntroOrchestratorSelfTest (--test-introorch)
+#include "world_hosts.h"          // x3::apphost::runSurfaceStartSelfTest (--test-surfacestart)
 #include "cutscene.h"
 #include "npc_dialog.h"
 #include "chat_tree.h"
@@ -293,6 +294,12 @@ int dispatchTests(const TestFlags& tf) {
                     "round-trip + --intro-force dev override + per-save seed thread + "
                     "canon default — the app_run cell-vs-surface selection contract)...");
         return x3::intro::runIntroBranchSelfTest() ? 0 : 1;
+    }
+    if (tf.testSurfaceStart) {
+        x3::logInfo("running Phase 7 SURFACE-START self-test (ESCAPED-branch Act-1: "
+                    "cell-vs-surface selection + the surface scene standing up — glass "
+                    "facility, player outside + armed, Sarah rescue target, objectives)...");
+        return x3::apphost::runSurfaceStartSelfTest() ? 0 : 1;
     }
     if (tf.testPhase2a) {
         x3::logInfo("running EFLZ Phase 2a (player health + enemies fight back) self-test...");

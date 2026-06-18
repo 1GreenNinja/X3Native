@@ -266,6 +266,10 @@ struct CliOptions {
     // contract — intro.outcome flag round-trip, the --intro-force dev override,
     // the per-save seed thread, and the canon default. No window / Vulkan.
     bool        testIntroBranch = false;
+    // --test-surfacestart (Phase 7): the ESCAPED-branch surface-landing Act-1 — the
+    // cell-vs-surface branch selection + the surface scene standing up headlessly
+    // (glass facility, player outside + armed, Sarah rescue target). No window/Vulkan.
+    bool        testSurfaceStart = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
