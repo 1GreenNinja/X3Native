@@ -93,6 +93,11 @@
 #include "ecology.h"
 #include "crowd.h"
 #include "alert.h"
+#include "space_pilot.h"          // x3::game::runSpaceSelfTest (--test-space)
+#include "space/ship_ai.h"        // x3::space::runShipAiSelfTest (--test-ship-ai)
+#include "space/targeting.h"      // x3::space::TargetingSystem (--test-targeting)
+#include "space/ship_damage.h"    // x3::space::runShipDamageSelfTest (--test-ship-damage)
+#include "space/eva.h"            // x3::space::runEvaSelfTest (--test-eva)
 
 #include "test_registry.h"
 #include "self_tests.h"          // x3::apphost run*SelfTest device-driven helpers
@@ -786,6 +791,176 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running Club 1127 (\"THE DEEP\") self-test "
                     "(build at Y=-200; assert DJ booth/ORB/bars/stair/PA/blacklights/TVs/footprint; leak-clean)...");
         return x3::game::runClubSelfTest() ? 0 : 1;
+    }
+    // ---- Space-combat stack (folded from feat/cockpit-vattalus) -----------
+    if (tf.testSpace) {
+        x3::logInfo("running space-pilot (Act-3 6DOF) --test-space self-test...");
+        return x3::game::runSpaceSelfTest() ? 0 : 1;
+    }
+    if (tf.testEva) {
+        x3::logInfo("running EVA spacewalk (Act-3 S12 zero-G) --test-eva self-test...");
+        return x3::space::runEvaSelfTest() ? 0 : 1;
+    }
+    if (tf.testShipAi) {
+        x3::logInfo("running S8 enemy ship-AI (dogfight) self-test...");
+        return x3::space::runShipAiSelfTest() ? 0 : 1;
+    }
+    // --test-targeting: S9 targeting / radar / lock-on self-test. Headless.
+    // Lifted VERBATIM from the pre-split main() inline block.
+    if (tf.testTargeting) {
+        x3::logInfo("running S9 targeting / radar / lock-on self-test...");
+        int pass = 0, total = 0;
+        auto check = [&](bool c, const char* name) {
+            ++total;
+            if (c) { ++pass; x3::logInfo(std::string("  [ok] ") + name); }
+            else   {          x3::logError(std::string("  [FAIL] ") + name); }
+        };
+
+        using x3::space::TargetingSystem;
+        using x3::space::Contact;
+        using x3::space::LeadSolution;
+
+        // A deterministic scene: two hostiles (ids 10, 20) ahead along +X at
+        // different ranges, one friendly (id 5) ahead, one hostile (id 30)
+        // behind. Hostile 10 sits dead on the +X boresight; 20 is off-axis.
+        Contact cs[4]{};
+        cs[0] = { 10u, { 100.0f,   0.0f,   0.0f }, { 0.0f, 0.0f, 0.0f }, true  }; // on-axis, near
+        cs[1] = { 20u, { 200.0f,  40.0f,   0.0f }, { 0.0f, 0.0f, 0.0f }, true  }; // off-axis, far
+        cs[2] = {  5u, { 120.0f,   0.0f,   0.0f }, { 0.0f, 0.0f, 0.0f }, false }; // friendly, on-axis
+        cs[3] = { 30u, { -80.0f,   0.0f,   0.0f }, { 0.0f, 0.0f, 0.0f }, true  }; // behind
+
+        // T1: setContacts + no lock initially.
+        {
+            TargetingSystem ts;
+            ts.setContacts(cs, 4);
+            check(ts.contactCount() == 4u, "T1 setContacts stores all contacts");
+            check(!ts.hasLock(), "T1b no lock before any lock request");
+        }
+
+        // T2: lockNearest picks the in-cone hostile, skipping the closer friendly.
+        {
+            TargetingSystem ts;
+            ts.setContacts(cs, 4);
+            const float from[3] = { 0.0f, 0.0f, 0.0f };
+            const float fwd[3]  = { 1.0f, 0.0f, 0.0f };
+            ts.lockNearest(from, fwd);
+            check(ts.hasLock() && ts.lockedId() == 10u,
+                  "T2 lockNearest locks the on-axis hostile (id 10), not the friendly");
+        }
+
+        // T3: cycleTarget advances through HOSTILES only, skipping the friendly.
+        {
+            TargetingSystem ts;
+            ts.setContacts(cs, 4);
+            ts.cycleTarget(+1); // first hostile in list order: id 10
+            check(ts.hasLock() && ts.lockedId() == 10u, "T3 cycle +1 -> first hostile id 10");
+            ts.cycleTarget(+1); // next hostile: id 20 (skips friendly id 5)
+            check(ts.lockedId() == 20u, "T3b cycle +1 -> next hostile id 20 (skips friendly)");
+            ts.cycleTarget(+1); // next hostile: id 30 (wraps past friendly)
+            check(ts.lockedId() == 30u, "T3c cycle +1 -> hostile id 30");
+            ts.cycleTarget(+1); // wraps back to id 10
+            check(ts.lockedId() == 10u, "T3d cycle +1 wraps back to id 10");
+            ts.cycleTarget(-1); // back to id 30
+            check(ts.lockedId() == 30u, "T3e cycle -1 wraps to id 30");
+        }
+
+        // T4: computeLead returns a VALID intercept for a crossing mover.
+        {
+            TargetingSystem ts;
+            // Single hostile crossing in +Z at 30 m/s, 100 m straight ahead.
+            Contact mover{ 99u, { 100.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 30.0f }, true };
+            ts.setContacts(&mover, 1);
+            ts.cycleTarget(+1);
+            const float shooter[3] = { 0.0f, 0.0f, 0.0f };
+            LeadSolution s = ts.computeLead(shooter, 300.0f); // fast projectile
+            // Lead must be AHEAD of the target in its direction of travel (+Z>0)
+            // and within physical bounds of a real intercept.
+            check(s.valid && s.aimPoint[2] > 0.5f && s.distance > 99.0f,
+                  "T4 computeLead: valid lead point ahead of crossing target");
+            // Sanity: the aim point's flight time matches projectile travel.
+            float dz = s.aimPoint[2];
+            float flightT = s.distance / 300.0f;
+            check(std::fabs(dz - 30.0f * flightT) < 1.0f,
+                  "T4b lead point is consistent with intercept time");
+        }
+
+        // T5: computeLead INVALID when the projectile is too slow to catch a
+        // target receding faster than the projectile flies.
+        {
+            TargetingSystem ts;
+            Contact fleeing{ 88u, { 100.0f, 0.0f, 0.0f }, { 50.0f, 0.0f, 0.0f }, true };
+            ts.setContacts(&fleeing, 1);
+            ts.cycleTarget(+1);
+            const float shooter[3] = { 0.0f, 0.0f, 0.0f };
+            LeadSolution s = ts.computeLead(shooter, 10.0f); // slower than the target
+            check(!s.valid, "T5 computeLead invalid: projectile too slow to intercept");
+        }
+
+        // T6: computeLead invalid with no lock.
+        {
+            TargetingSystem ts;
+            ts.setContacts(cs, 4);
+            const float shooter[3] = { 0.0f, 0.0f, 0.0f };
+            LeadSolution s = ts.computeLead(shooter, 300.0f);
+            check(!s.valid, "T6 computeLead invalid without a lock");
+        }
+
+        // T7: radarBlips projects within range, drops out-of-range, flags locked.
+        {
+            TargetingSystem ts;
+            ts.setContacts(cs, 4);
+            ts.cycleTarget(+1); // lock id 10 (on +X boresight)
+            const float pPos[3] = { 0.0f, 0.0f, 0.0f };
+            const float pFwd[3] = { 1.0f, 0.0f, 0.0f }; // facing +X -> radar up
+            TargetingSystem::Blip blips[8]{};
+            // Range 150: includes id 10 (100), friendly 5 (120), behind 30 (80);
+            // excludes id 20 (planar 200).
+            uint32_t nb = ts.radarBlips(blips, 8, pPos, pFwd, 150.0f);
+            check(nb == 3u, "T7 radarBlips range-gates out the far contact (3 of 4)");
+            // Find id 10's blip: facing +X, a +X target projects to +Y (up),
+            // near +1 (range 100 / 150 ~= 0.67), x near 0.
+            bool okLockedBlip = false;
+            for (uint32_t i = 0; i < nb; ++i) {
+                if (blips[i].id == 10u) {
+                    okLockedBlip = blips[i].locked &&
+                                   blips[i].hostile &&
+                                   blips[i].radarXY[1] > 0.5f &&
+                                   std::fabs(blips[i].radarXY[0]) < 0.05f;
+                }
+            }
+            check(okLockedBlip, "T7b locked on-axis hostile projects to radar up, flagged locked");
+            // The contact behind (id 30) projects to -Y (down).
+            bool behindDown = false;
+            for (uint32_t i = 0; i < nb; ++i)
+                if (blips[i].id == 30u && blips[i].radarXY[1] < -0.3f) behindDown = true;
+            check(behindDown, "T7c contact behind the player projects to radar down");
+        }
+
+        // T8: clearLock + lock auto-drops when the locked contact disappears.
+        {
+            TargetingSystem ts;
+            ts.setContacts(cs, 4);
+            ts.cycleTarget(+1);
+            check(ts.hasLock(), "T8 lock acquired");
+            ts.clearLock();
+            check(!ts.hasLock(), "T8b clearLock releases the lock");
+            // Re-lock, then feed a list WITHOUT the locked id -> auto-clear.
+            ts.cycleTarget(+1);
+            check(ts.hasLock() && ts.lockedId() == 10u, "T8c re-locked id 10");
+            Contact gone[1] = { { 20u, { 200.0f, 40.0f, 0.0f }, { 0,0,0 }, true } };
+            ts.setContacts(gone, 1);
+            check(!ts.hasLock(), "T8d lock auto-drops when locked contact leaves the feed");
+        }
+
+        x3::logInfo("targeting: " + std::to_string(pass) + "/" + std::to_string(total) + " passed");
+        std::printf("targeting: %d/%d passed\n", pass, total);
+        std::fflush(stdout);
+        return (pass == total) ? 0 : 1;
+    }
+    // --test-ship-damage: S10 ship damage model self-test.
+    if (tf.testShipDamage) {
+        x3::logInfo("running S10 ship-damage model self-test...");
+        return x3::space::runShipDamageSelfTest() ? 0 : 1;
     }
 
     return -1;   // no test flag matched — main() continues normal boot

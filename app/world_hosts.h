@@ -29,6 +29,7 @@ int hostShowroom (HostContext& hc);   // --world showroom  (+ showroom-* proofs)
 int hostValley   (HostContext& hc);   // --world valley    (+ ecology proof)
 int hostCliffs   (HostContext& hc);   // --world cliffs
 int hostStreamed (HostContext& hc);   // --world streamed
+int hostSpace    (HostContext& hc);   // --world space     (Act-3 6DOF space pilot)
 
 // Returns the exit code if a discrete host matched worldMode, else -1.
 int dispatchWorldHost(HostContext& hc);

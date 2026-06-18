@@ -191,6 +191,11 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-valley") o.testValley = true;
         else if (a == "--test-cliffs") o.testCliffs = true;
         else if (a == "--test-club") o.testClub = true;
+        else if (a == "--test-space") o.testSpace = true;
+        else if (a == "--test-eva") o.testEva = true;
+        else if (a == "--test-ship-ai") o.testShipAi = true;
+        else if (a == "--test-targeting") o.testTargeting = true;
+        else if (a == "--test-ship-damage") o.testShipDamage = true;
         else if (a == "--width") {
             if (i + 1 < argc) { o.winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }

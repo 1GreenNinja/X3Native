@@ -351,6 +351,11 @@ int main(int argc, char** argv) {
         _tf.testValley = o.testValley;
         _tf.testCliffs = o.testCliffs;
         _tf.testClub = o.testClub;
+        _tf.testSpace = o.testSpace;
+        _tf.testEva = o.testEva;
+        _tf.testShipAi = o.testShipAi;
+        _tf.testTargeting = o.testTargeting;
+        _tf.testShipDamage = o.testShipDamage;
         _tf.testLocomotionPath = o.testLocomotionPath;
         _tf.listClipsPath = o.listClipsPath;
         _tf.demoDialogPath = o.demoDialogPath;

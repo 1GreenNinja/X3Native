@@ -134,6 +134,14 @@ struct CliOptions {
     std::string demoDialogPath;
     // --test-valley (Crystal Valleys Act-2 L15) + --test-cliffs (Salvari cliffs finale).
     bool        testValley = false, testCliffs = false;
+    // Space-combat stack (folded from feat/cockpit-vattalus): the Act-3 6DOF
+    // space pilot (--test-space; energy-gated lasers + shield/hull two-pool +
+    // 6DOF inertia), enemy ship-AI dogfight FSM (--test-ship-ai), targeting/
+    // radar/lock-on (--test-targeting), the ship-damage model (--test-ship-damage),
+    // and EVA zero-G spacewalk (--test-eva). All headless / deterministic. The
+    // playable showcase is `--world space`. Additive flags.
+    bool        testSpace = false, testShipAi = false, testTargeting = false;
+    bool        testShipDamage = false, testEva = false;
     // --test-secretroom (code-locked trapdoor -> secret room): the cell HoloTerminal
     // override code opens a floor-hatch to a stocked secret room below. Additive flag.
     bool        testSecretRoom = false;

@@ -21,6 +21,18 @@ add_executable(X3Engine WIN32
     world_hosts/host_valley.cpp
     world_hosts/host_cliffs.cpp
     world_hosts/host_streamed.cpp
+    # Phase 2 — space-combat stack folded from feat/cockpit-vattalus
+    world_hosts/host_space.cpp
+    space_pilot.cpp
+    space/ship_ai.cpp
+    space/targeting.cpp
+    space/ship_damage.cpp
+    space/space_layer.cpp
+    space/descent.cpp
+    space/eva.cpp
+    space/lod.cpp
+    space/decloak_vfx.cpp
+    space/space_env.cpp
     scene.cpp
     level.cpp
     level1.cpp

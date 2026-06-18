@@ -58,6 +58,12 @@ struct TestFlags {
     bool testEcology = false, testCrowd = false, testAlert = false, testFootIk = false;
     bool testUi = false, testLoading = false, testSaveLoad = false, testDialog = false;
     bool demoDialog = false, testValley = false, testCliffs = false, testClub = false;
+    // Space-combat stack (folded from feat/cockpit-vattalus): the Act-3 6DOF
+    // space pilot (--test-space) + enemy ship-AI (--test-ship-ai) + targeting/
+    // radar/lock (--test-targeting) + ship-damage model (--test-ship-damage) +
+    // EVA zero-G spacewalk (--test-eva). All headless / deterministic.
+    bool testSpace = false, testShipAi = false, testTargeting = false;
+    bool testShipDamage = false, testEva = false;
 
     // --- path/string args used by a few handlers ---
     std::string testLocomotionPath;

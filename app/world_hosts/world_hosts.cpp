@@ -19,6 +19,7 @@ int dispatchWorldHost(HostContext& hc) {
     if (hc.worldMode == "valley")                       return hostValley(hc);
     if (hc.worldMode == "cliffs")                       return hostCliffs(hc);
     if (hc.worldMode == "streamed")                     return hostStreamed(hc);
+    if (hc.worldMode == "space")                        return hostSpace(hc);
     return -1;
 }
 
