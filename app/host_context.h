@@ -121,6 +121,15 @@ struct HostContext {
     bool        noTaa = false;
     bool        noRefl = false;
     bool        skipIntro = false;
+    // ---- Interactive intro (Phase 4 branch wiring) ----
+    // Per-save deterministic seed for the intro outcome roll. 0 = derive from the
+    // persisted StoryFlags content (a fresh save vs a continued one rolls stably).
+    // Threaded so the chance roll is reproducible per save, not a fixed default.
+    uint32_t    introSeed = 0;
+    // DEV outcome override (QA/tests): -1 = none (roll normally), 0 = force
+    // shot_down (canon cell), 1 = force escaped (surface stub). Set via the
+    // `--intro-force shot_down|escaped` CLI flag / `intro_force` cvar.
+    int         introForce = -1;
     bool        editorMode = false;
     bool        fxDemo = false;
     bool        uiDemo = false;              std::string uiDemoPath; std::string uiDemoScreen;

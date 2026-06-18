@@ -120,6 +120,17 @@ IntroOutcome rollOutcome(uint32_t seed, float skillScore01);
 // Write the outcome to StoryFlags under kIntroOutcomeFlag (escaped|shot_down).
 void writeOutcomeFlag(x3::game::StoryFlags& flags, IntroOutcome outcome);
 
+// Read the outcome back from StoryFlags (mirror of writeOutcomeFlag). Returns
+// the encoded outcome; defaults to ShotDown (canon) when neither key is present
+// (so a missing/cleared flag is the safe canon path). app_run.cpp (Phase 4) uses
+// this to select the Act-1 build.
+IntroOutcome readOutcomeFlag(const x3::game::StoryFlags& flags);
+
+// The persistent file the interactive intro writes the outcome to (the x3::game
+// StoryFlags narrative lane app_run reads). Distinct from the cut::StoryFlags
+// intro_complete file. Honors LOCALAPPDATA like the cutscene flags path.
+std::string defaultGameStoryFlagsPath();
+
 // ---------------------------------------------------------------------------
 // The entry point (spec §3). Runs the beat sequence (cinematic clips blocking via
 // CutscenePlayer, interactive windows handing control to the combat stack with
@@ -137,5 +148,14 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc);
 // StoryFlags["intro.outcome"] write per outcome; and input/state cleared on the
 // cinematic<->interactive hand-off. Returns true iff all sub-checks pass.
 bool runIntroOrchestratorSelfTest();
+
+// --test-introbranch self-test (Phase 4, headless, deterministic, no window):
+// asserts the branch-selection logic app_run.cpp drives — forcing the outcome to
+// escaped writes/reads intro.outcome=escaped (the surface-stub path); forcing
+// shot_down writes/reads intro.outcome=shot_down (the canon cell); a default
+// (no force) headless run is deterministic per seed and round-trips through the
+// persisted StoryFlags; and the seed thread is honored (different seeds can roll
+// differently; the same seed+force is stable). Returns true iff all sub-checks pass.
+bool runIntroBranchSelfTest();
 
 } // namespace x3::intro
