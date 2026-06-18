@@ -1,5 +1,5 @@
 import { useEffect, useState } from "preact/hooks";
-import type { Session } from "../client";
+import { type Session, createChannel } from "../client";
 import { store, subscribe, startSyncLoop, type Room } from "../store";
 import { MessageStream } from "./MessageStream";
 import { Composer } from "./Composer";
@@ -24,7 +24,22 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
   const [activeId, setActiveId] = useState<string | null>(null);
   const [showMembers, setShowMembers] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [openCh, setOpenCh] = useState(true);
+  const [openDm, setOpenDm] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState("");
   const { channels, dms } = sortedRooms();
+
+  const createRoom = async () => {
+    const name = newName.trim();
+    if (!name) { setCreating(false); return; }
+    setCreating(false); setNewName("");
+    try {
+      const id = await createChannel(session.token, name);
+      startSyncLoop(session);      // refresh so the new room appears in the tree
+      setTimeout(() => setActiveId(id), 1200);
+    } catch { /* surfaced via sync */ }
+  };
   const active = activeId ? store.rooms.get(activeId) : null;
 
   // Auto-select the first channel once sync lands
@@ -40,31 +55,49 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
           <span class={`sync-dot sync-${store.syncState}`} title={store.syncState} />
         </header>
         <nav>
-          <div class="section-label">Channels</div>
-          {channels.map((r) => (
-            <a
-              key={r.id}
+          <div class="section-head">
+            <button class="section-toggle" onClick={() => setOpenCh((v) => !v)}>
+              <span class="caret">{openCh ? "▾" : "▸"}</span> Channels
+            </button>
+            <button class="section-add" title="Create channel" onClick={() => setCreating(true)}>＋</button>
+          </div>
+          {creating && (
+            <div class="create-row">
+              <span class="hash">#</span>
+              <input
+                class="create-input" placeholder="new-channel-name" value={newName} autofocus
+                onInput={(e) => setNewName((e.target as HTMLInputElement).value)}
+                onKeyDown={(e) => { if (e.key === "Enter") createRoom(); if (e.key === "Escape") { setCreating(false); setNewName(""); } }}
+                onBlur={() => { if (!newName.trim()) setCreating(false); }}
+              />
+            </div>
+          )}
+          {openCh && channels.map((r) => (
+            <a key={r.id}
               class={`room-row ${r.id === activeId ? "active" : ""} ${r.unread ? "unread" : ""}`}
-              onClick={() => setActiveId(r.id)}
-            >
+              onClick={() => setActiveId(r.id)}>
               <span class="hash">#</span> {r.name}
               {r.unread > 0 && <span class="badge">{r.unread}</span>}
             </a>
           ))}
-          {channels.length === 0 && (
+          {openCh && channels.length === 0 && !creating && (
             <div class="section-empty">{store.syncState === "live" ? "No channels yet" : "Syncing…"}</div>
           )}
-          <div class="section-label">Direct messages</div>
-          {dms.map((r) => (
-            <a
-              key={r.id}
-              class={`room-row ${r.id === activeId ? "active" : ""}`}
-              onClick={() => setActiveId(r.id)}
-            >
+
+          <div class="section-head">
+            <button class="section-toggle" onClick={() => setOpenDm((v) => !v)}>
+              <span class="caret">{openDm ? "▾" : "▸"}</span> Direct messages
+            </button>
+          </div>
+          {openDm && dms.map((r) => (
+            <a key={r.id}
+              class={`room-row ${r.id === activeId ? "active" : ""} ${r.unread ? "unread" : ""}`}
+              onClick={() => setActiveId(r.id)}>
               <span class="presence-dot" /> {r.name}
+              {r.unread > 0 && <span class="badge">{r.unread}</span>}
             </a>
           ))}
-          {dms.length === 0 && (
+          {openDm && dms.length === 0 && (
             <div class="section-empty">{store.syncState === "live" ? "No DMs yet" : "Syncing…"}</div>
           )}
         </nav>

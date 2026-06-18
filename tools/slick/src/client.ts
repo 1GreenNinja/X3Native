@@ -171,6 +171,21 @@ export async function sendMessage(
   return data.event_id;
 }
 
+/** Create a channel (named room). Returns its room id. Private/invite-only by
+ * default — fleet rooms aren't public. The next /sync picks it up in the tree. */
+export async function createChannel(token: string, name: string): Promise<string> {
+  const data = await req<{ room_id: string }>("/_matrix/client/v3/createRoom", {
+    method: "POST",
+    token,
+    body: {
+      name,
+      preset: "private_chat",
+      visibility: "private",
+    },
+  });
+  return data.room_id;
+}
+
 /** Resolve a room alias (#admins:server) to its room id. */
 export async function resolveAlias(token: string, alias: string): Promise<string> {
   const data = await req<{ room_id: string }>(

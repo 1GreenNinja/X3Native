@@ -156,6 +156,32 @@ body::before {
   cursor: default;       /* it's a header, not a button — no text-caret */
   user-select: none;
 }
+/* collapsible section header (Slack tree) */
+.section-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 12px 4px 8px;
+}
+.section-toggle {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-dim); font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 1px;
+  display: flex; align-items: center; gap: 5px; padding: 2px 4px;
+}
+.section-toggle:hover { color: var(--text); }
+.caret { font-size: 9px; transition: transform 120ms; display: inline-block; }
+.section-add {
+  background: none; border: none; cursor: pointer;
+  color: var(--text-dim); font-size: 17px; line-height: 1; padding: 0 4px;
+  border-radius: 5px;
+}
+.section-add:hover { color: var(--cyan); background: var(--glass-light); text-shadow: var(--cyan-glow); }
+.create-row { display: flex; align-items: center; gap: 6px; padding: 2px 16px; }
+.create-input {
+  flex: 1; background: rgba(8,12,18,0.6); border: 1px solid var(--cyan);
+  border-radius: 5px; color: var(--text); padding: 4px 8px; font-size: 14px; outline: none;
+  box-shadow: var(--cyan-glow);
+}
+
 /* show an empty-state hint under a header when a section has no rooms */
 .section-empty {
   padding: 2px 16px 6px;
