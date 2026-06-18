@@ -82,7 +82,7 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
         {active ? (
           <>
             <header class="room-header">
-              <span class="room-title"><span class="hash">#</span> {active.name}</span>
+              <span class="room-title"><span class="hash">{active.isDm ? "@" : "#"}</span> {active.name}</span>
               <button
                 class={`members-toggle ${showMembers ? "on" : ""}`}
                 onClick={() => setShowMembers((s) => !s)}

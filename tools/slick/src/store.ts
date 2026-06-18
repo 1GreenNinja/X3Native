@@ -7,12 +7,14 @@ import {
   type SyncResponse,
   sync,
   saveSince,
+  joinedMembers,
 } from "./client";
 
 export interface Room {
   id: string;
   name: string;
   isDm: boolean;
+  needsName?: boolean;  // DM whose name still needs an API member lookup
   timeline: MatrixEvent[];
   unread: number;
 }
@@ -63,31 +65,37 @@ export function markEchoFailed(roomId: string, eventId: string): void {
   }
 }
 
-function roomNameFromState(roomId: string, state: MatrixEvent[], timeline: MatrixEvent[]): string {
+/** A real, human room name from m.room.name / canonical_alias, or "" if none. */
+function explicitName(state: MatrixEvent[], timeline: MatrixEvent[]): string {
   const all = [...state, ...timeline];
   const nameEv = all.findLast((e) => e.type === "m.room.name");
-  if (nameEv?.content?.name) return nameEv.content.name;
+  if (nameEv?.content?.name) return nameEv.content.name as string;
   const aliasEv = all.findLast((e) => e.type === "m.room.canonical_alias");
   if (aliasEv?.content?.alias) return (aliasEv.content.alias as string).split(":")[0].slice(1);
-  return roomId.slice(1, 12);
+  return "";
 }
 
-function isDmFromState(state: MatrixEvent[], timeline: MatrixEvent[]): boolean {
-  // Heuristic good enough for the fleet: a room with no m.room.name state is a DM.
-  return ![...state, ...timeline].some((e) => e.type === "m.room.name" && e.content?.name);
+/** For a DM, the OTHER person's display name (not me) from m.room.member events. */
+function otherMemberName(events: MatrixEvent[], myUserId: string): string {
+  const members = events.filter((e) => e.type === "m.room.member" && e.state_key && e.state_key !== myUserId);
+  const joined = members.find((e) => e.content?.membership === "join") ?? members[0];
+  if (!joined) return "";
+  return (joined.content?.displayname as string) || joined.state_key!.split(":")[0].replace(/^@/, "");
 }
 
-function applySync(resp: SyncResponse): void {
+function applySync(resp: SyncResponse, myUserId: string): void {
   const joined = resp.rooms?.join ?? {};
   for (const [roomId, data] of Object.entries(joined)) {
     const existing = store.rooms.get(roomId);
     const stateEvents = data.state?.events ?? [];
+    const allState = [...stateEvents, ...(data.timeline?.events ?? [])];
     const newEvents = (data.timeline?.events ?? []).filter(
       (e) => e.type === "m.room.message" || e.type === "com.fleet.gen.request",
     );
+    const named = explicitName(stateEvents, data.timeline?.events ?? []);
+    const isDm = !named;
+
     if (existing) {
-      // Drop any local echo whose txn id matches an incoming real event, so
-      // the optimistic message isn't shown twice (echo id == "echo:<txn>").
       const incomingTxns = new Set(
         newEvents.map((e) => e.unsigned?.transaction_id).filter(Boolean),
       );
@@ -99,20 +107,36 @@ function applySync(resp: SyncResponse): void {
       const seen = new Set(existing.timeline.map((e) => e.event_id));
       existing.timeline.push(...newEvents.filter((e) => !seen.has(e.event_id)));
       existing.unread = data.unread_notifications?.notification_count ?? existing.unread;
-      if (stateEvents.length) {
-        existing.name = roomNameFromState(roomId, stateEvents, existing.timeline);
+      if (named) existing.name = named;
+      else {
+        const dm = otherMemberName(allState, myUserId);
+        if (dm) { existing.name = dm; existing.needsName = false; }
       }
     } else {
-      store.rooms.set(roomId, {
-        id: roomId,
-        name: roomNameFromState(roomId, stateEvents, data.timeline?.events ?? []),
-        isDm: isDmFromState(stateEvents, data.timeline?.events ?? []),
-        timeline: newEvents,
-        unread: data.unread_notifications?.notification_count ?? 0,
-      });
+      let name = named;
+      let needsName = false;
+      if (!name) {
+        name = otherMemberName(allState, myUserId);
+        if (!name) { name = "Direct message"; needsName = true; } // resolved via API below
+      }
+      store.rooms.set(roomId, { id: roomId, name, isDm, needsName, timeline: newEvents, unread: data.unread_notifications?.notification_count ?? 0 });
     }
   }
   bump();
+}
+
+/** For DM rooms we couldn't name from sync state, fetch joined_members and
+ * name them after the other party. One-shot, after the initial sync. */
+async function resolveDmNames(token: string, myUserId: string): Promise<void> {
+  const pending = [...store.rooms.values()].filter((r) => r.needsName);
+  for (const room of pending) {
+    try {
+      const members = await joinedMembers(token, room.id);
+      const other = members.find((m) => m.userId !== myUserId) ?? members[0];
+      if (other) { room.name = other.displayName; room.needsName = false; }
+    } catch { /* leave as-is */ }
+  }
+  if (pending.length) bump();
 }
 
 let abort: AbortController | null = null;
@@ -129,14 +153,16 @@ export async function startSyncLoop(session: Session): Promise<void> {
   for (;;) {
     if (abort.signal.aborted) return;
     try {
+      const firstSync = since === null;
       const resp = await sync(session.token, since, abort.signal);
       since = resp.next_batch;
       saveSince(since);
-      applySync(resp);
+      applySync(resp, session.userId);
       if (store.syncState !== "live") {
         store.syncState = "live";
         bump();
       }
+      if (firstSync) resolveDmNames(session.token, session.userId); // name DMs after the other party
     } catch (e: any) {
       if (abort.signal.aborted) return;
       store.syncState = "error";
