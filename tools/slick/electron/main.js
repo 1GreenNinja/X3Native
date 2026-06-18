@@ -47,6 +47,24 @@ function createWindow() {
     }
     return { action: "allow" };
   });
+
+  // Keyboard accelerators (the menu is hidden, so wire these by hand):
+  //   Ctrl+R / F5            → reload (pull the latest deployed build)
+  //   Ctrl+Shift+R           → hard reload (ignore cache)
+  //   F12 / Ctrl+Shift+I     → toggle devtools
+  win.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    const ctrl = input.control || input.meta;
+    const key = (input.key || "").toLowerCase();
+    if ((ctrl && key === "r") || key === "f5") {
+      if (ctrl && input.shift) win.webContents.reloadIgnoringCache();
+      else win.webContents.reload();
+      event.preventDefault();
+    } else if (key === "f12" || (ctrl && input.shift && key === "i")) {
+      win.webContents.toggleDevTools();
+      event.preventDefault();
+    }
+  });
 }
 
 app.whenReady().then(() => {

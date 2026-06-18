@@ -280,7 +280,10 @@ export async function changePassword(
 export function mxcToUrl(mxc: string): string {
   const m = /^mxc:\/\/([^/]+)\/(.+)$/.exec(mxc);
   if (!m) return "";
-  const base = `${HOMESERVER}/_matrix/media/v3/download/${m[1]}/${m[2]}`;
+  // Conduit 0.10.12 serves downloads ONLY on the authenticated client/v1
+  // endpoint (legacy /media/v3/download 404s); token in the query string so
+  // <img> tags (which can't send headers) load it.
+  const base = `${HOMESERVER}/_matrix/client/v1/media/download/${m[1]}/${m[2]}`;
   return _authToken ? `${base}?access_token=${encodeURIComponent(_authToken)}` : base;
 }
 
