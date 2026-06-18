@@ -44,6 +44,7 @@
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
 #include "intro_coldopen.h"                  // --world intro / default lead-in cold-open (shot-down -> captured)
+#include "intro_orchestrator.h"              // Phase 3/4: runInteractiveIntro + IntroOutcome (branches the game start)
 #include "cutscene.h"                        // x3.cutscene/1 data-driven cutscene system (the COLD OPEN film)
 #include "npc_dialog.h"                     // rescued-NPC talk/dialog -> companion (the captive girl)
 #include "chat_tree.h"                      // x3.chattree/1 data-driven dialog runner (--test-chattree)
@@ -845,6 +846,10 @@ int runDefaultHost(HostContext& hc) {
     // corresponding event is simply silent (logged once at load).
     BootAudio bootAudio = bootAudioFut.valid() ? bootAudioFut.get() : makeBootAudio();
     std::unique_ptr<x3::audio::IAudioSystem> audio(std::move(bootAudio.audio));
+    // Thread the live audio system into the HostContext so the Intro Orchestrator's
+    // cinematic beats get music/SFX again (Phase 5 audio restore — P4 passed nullptr
+    // and the intro went silent). Non-owning; `audio` outlives the orchestrator call.
+    hc.audio = audio.get();
     const x3::audio::SoundHandle sndGun    = bootAudio.gun;
     const x3::audio::SoundHandle sndDoor   = bootAudio.door;
     const x3::audio::SoundHandle sndPickup = bootAudio.pickup;
@@ -941,64 +946,55 @@ int runDefaultHost(HostContext& hc) {
         // --test-boottime skips the cold-open: the intro is CONTENT the player watches
         // (a skippable cinematic), not boot work — the gate measures the machine.
         if (window && introCellWorld && !testBootTime && !skipIntro) {
-            // ONCE PER SAVE: the intro_complete StoryFlag gates replays. An explicit
-            // --cutscene <file> always plays (the authoring loop); intro_play (console)
-            // replays mid-game. The flag is set by the cutscene's endState event, so
-            // a SKIP still latches it (skip fires endState events by contract).
-            x3::cut::StoryFlags storyFlags;
-            storyFlags.load(x3::cut::defaultStoryFlagsPath());
-            // Cold open plays EVERY launch (Tim) — no longer gated by the once-per-save
-            // intro_complete flag. --skipintro still bypasses it; --cutscene still overrides.
-            const bool playIntro = true;
-            if (playIntro) {
-                const std::string csPath = !cutsceneFile.empty()
-                    ? cutsceneFile
-                    : x3::game::assetRoot() + "/cutscenes/cold_open.cutscene.json";
-                x3::cut::Cutscene coldOpen;
-                std::vector<std::string> csErrs;
-                bool ranFilm = false;
-                if (x3::cut::loadCutsceneFile(csPath, coldOpen, csErrs)) {
-                    const bool completed = runCutsceneWindowed(
-                        *device, window, audio.get(), coldOpen, cueTime,
-                        [&](const std::string& ev) {
-                            if (ev == x3::cut::kFlagIntroComplete) {
-                                storyFlags.set(x3::cut::kFlagIntroComplete);
-                                storyFlags.save(x3::cut::defaultStoryFlagsPath());
-                            }
-                        });
-                    if (!completed) {
-                        // Window closed mid-film — exit cleanly (mirrors a window-close quit).
-                        physics->shutdown();
-                        device->shutdown();
-                        if (window) glfwDestroyWindow(window);
-                        glfwTerminate();
-                        return 0;
-                    }
-                    ranFilm = true;
-                    // SEAMLESS WAKE: the film ends on black ("SIX MONTHS LATER"). Flip the
-                    // loading screen to BLACKOUT so the cell build stays black, then the
-                    // hand-off fade is the slow first-person wake in the cell — control is
-                    // live underneath it, exactly like a normal spawn.
-                    loading.setBlackout(true);
-                } else {
-                    for (const auto& e : csErrs) x3::logError("[cutscene] cold open: " + e);
-                    x3::logError("[cutscene] cold open failed to load — falling back to the legacy 2D intro");
-                }
-                if (!ranFilm) {
-                    // Resilience: the legacy phase-machine intro still tells the story.
-                    if (!x3::intro::runIntro(*device, window)) {
-                        physics->shutdown();
-                        device->shutdown();
-                        if (window) glfwDestroyWindow(window);
-                        glfwTerminate();
-                        return 0;
-                    }
-                }
-                x3::boot::mark("intro cold-open (content)");
-            } else {
-                x3::logInfo("[cutscene] intro_complete StoryFlag set — skipping the cold open "
-                            "(replay with intro_play or --cutscene)");
+            // ---- PHASE 4: INTERACTIVE BRANCHING INTRO. The orchestrator (app/
+            // intro_orchestrator.*) OWNS the prologue now: it plays the cinematic
+            // beats (via the cutscene player) interleaved with bounded interactive
+            // space-combat windows, accumulates a skill score, rolls the skill-biased
+            // {chance}, writes StoryFlags["intro.outcome"], and RETURNS the branch.
+            // We then select the Act-1 build on that outcome:
+            //   * shot_down (canon, ~93%) -> fall through to the EXISTING cell start
+            //     (level1_game / canon Floor-1), exactly as before.
+            //   * escaped (skill-earned)  -> the surface-landing rescuer start. Phase 7
+            //     builds the real one; for THIS phase it's a STUB that logs + falls
+            //     through to the cell, so the branch is wired + testable now.
+            // (--skipintro bypasses this whole block -> the canon cell, unchanged.)
+            const x3::intro::IntroOutcome outcome = x3::intro::runInteractiveIntro(hc);
+
+            // The interactive intro can be aborted by closing the window mid-beat
+            // (a window-close quit). Honor that the same way the old film did.
+            if (window && glfwWindowShouldClose(window)) {
+                physics->shutdown();
+                device->shutdown();
+                if (window) glfwDestroyWindow(window);
+                glfwTerminate();
+                return 0;
             }
+
+            if (outcome == x3::intro::IntroOutcome::Escaped) {
+                // ESCAPE PATH (Phase 7): the REAL surface-landing Act-1. The ion-pulse
+                // descent (Phase 6) set StoryFlags["intro.landed"]; instead of waking
+                // Jake a prisoner in the canon cell, hand off to the surface-start host
+                // (app/world_hosts/host_surface_start.cpp) — Jake lands OUTSIDE the huge
+                // glass facility where Sarah is held, FREE + ARMED, a rescuer (the exact
+                // inverse of the cell start). The host owns its own scene/physics and the
+                // FULL host teardown (device + window + glfw) per the world-host contract,
+                // so we shut down THIS default host's physics first (the device/window are
+                // torn down by the host) and return its exit code directly — we do NOT
+                // fall through into the cell build below.
+                x3::logInfo("[intro] ESCAPED -> surface-landing Act-1 (host_surface_start)");
+                loading.shutdown(*device);
+                physics->shutdown();
+                hc.worldMode = "surface";
+                return x3::apphost::dispatchWorldHost(hc);
+            }
+
+            // SEAMLESS WAKE (canon cell): the intro ends on black ("SIX MONTHS LATER").
+            // Flip the loading screen to BLACKOUT so the cell build stays black, then
+            // the hand-off fade is the slow first-person wake in the cell — control is
+            // live underneath it, exactly like a normal spawn. (The stub escape path
+            // also lands in the cell, so this applies to both for now.)
+            loading.setBlackout(true);
+            x3::boot::mark("intro cold-open (content)");
         }
     }
 

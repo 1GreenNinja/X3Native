@@ -29,8 +29,17 @@ int hostShowroom (HostContext& hc);   // --world showroom  (+ showroom-* proofs)
 int hostValley   (HostContext& hc);   // --world valley    (+ ecology proof)
 int hostCliffs   (HostContext& hc);   // --world cliffs
 int hostStreamed (HostContext& hc);   // --world streamed
+int hostSpace    (HostContext& hc);   // --world space     (Act-3 6DOF space pilot)
+int hostSurfaceStart(HostContext& hc);// --world surface   (Phase 7 ESCAPED-branch Act-1 landing)
 
 // Returns the exit code if a discrete host matched worldMode, else -1.
 int dispatchWorldHost(HostContext& hc);
+
+// --test-surfacestart (Phase 7): headless self-test of the ESCAPED-branch surface
+// start — the cell-vs-surface branch selection (escaped -> surface, shot_down ->
+// cell) AND the surface scene standing up headlessly (glass facility wall, player
+// outside + armed, Sarah staged as a rescue target, the rescuer objective list).
+// No window / Vulkan. Returns true iff all sub-checks pass.
+bool runSurfaceStartSelfTest();
 
 }} // namespace x3::apphost

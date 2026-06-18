@@ -38,6 +38,9 @@ struct TestFlags {
     bool testEcsRender = false, testPickup = false, testCombat = false, testDeathRagdoll = false;
     bool testAudio = false, testAcoustics = false, testLevel1 = false, testCanonLevel = false;
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;
+    bool testIntroOrch = false;   // --test-introorch (Phase 3 Intro Orchestrator core)
+    bool testIntroBranch = false; // --test-introbranch (Phase 4 app_run branch wiring)
+    bool testSurfaceStart = false;// --test-surfacestart (Phase 7 ESCAPED-branch surface Act-1)
     bool testPhase2b = false, testAnim = false, testLocomotion = false;
     bool listClips = false;
     bool testTerrain = false, testTerrainPlace = false, testStreaming = false;
@@ -58,6 +61,12 @@ struct TestFlags {
     bool testEcology = false, testCrowd = false, testAlert = false, testFootIk = false;
     bool testUi = false, testLoading = false, testSaveLoad = false, testDialog = false;
     bool demoDialog = false, testValley = false, testCliffs = false, testClub = false;
+    // Space-combat stack (folded from feat/cockpit-vattalus): the Act-3 6DOF
+    // space pilot (--test-space) + enemy ship-AI (--test-ship-ai) + targeting/
+    // radar/lock (--test-targeting) + ship-damage model (--test-ship-damage) +
+    // EVA zero-G spacewalk (--test-eva). All headless / deterministic.
+    bool testSpace = false, testShipAi = false, testTargeting = false;
+    bool testShipDamage = false, testEva = false;
 
     // --- path/string args used by a few handlers ---
     std::string testLocomotionPath;

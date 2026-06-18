@@ -134,6 +134,14 @@ struct CliOptions {
     std::string demoDialogPath;
     // --test-valley (Crystal Valleys Act-2 L15) + --test-cliffs (Salvari cliffs finale).
     bool        testValley = false, testCliffs = false;
+    // Space-combat stack (folded from feat/cockpit-vattalus): the Act-3 6DOF
+    // space pilot (--test-space; energy-gated lasers + shield/hull two-pool +
+    // 6DOF inertia), enemy ship-AI dogfight FSM (--test-ship-ai), targeting/
+    // radar/lock-on (--test-targeting), the ship-damage model (--test-ship-damage),
+    // and EVA zero-G spacewalk (--test-eva). All headless / deterministic. The
+    // playable showcase is `--world space`. Additive flags.
+    bool        testSpace = false, testShipAi = false, testTargeting = false;
+    bool        testShipDamage = false, testEva = false;
     // --test-secretroom (code-locked trapdoor -> secret room): the cell HoloTerminal
     // override code opens a floor-hatch to a stocked secret room below. Additive flag.
     bool        testSecretRoom = false;
@@ -247,6 +255,21 @@ struct CliOptions {
     // pulse -> white-out crash -> "6 MONTHS LATER" -> handoff to the cell) advances in order and
     // is skippable. No window / Vulkan. Additive — does not affect the existing gate.
     bool        testIntro = false;
+    // --test-introorch (Phase 3 INTRO ORCHESTRATOR): the interactive branching
+    // cold-open's beat state machine + skill->p->deterministic-outcome core. Asserts
+    // beat sequencing, the skill->p mapping bounds, the deterministic chanceRoll gate,
+    // the StoryFlags["intro.outcome"] write, and input-cleared/deterministic headless
+    // interactive windows. No window / Vulkan. Additive — distinct from --test-intro
+    // (the LEGACY cold-open phase-machine test).
+    bool        testIntroOrch = false;
+    // --test-introbranch (Phase 4 BRANCH WIRING): the app_run branch-selection
+    // contract — intro.outcome flag round-trip, the --intro-force dev override,
+    // the per-save seed thread, and the canon default. No window / Vulkan.
+    bool        testIntroBranch = false;
+    // --test-surfacestart (Phase 7): the ESCAPED-branch surface-landing Act-1 — the
+    // cell-vs-surface branch selection + the surface scene standing up headlessly
+    // (glass facility, player outside + armed, Sarah rescue target). No window/Vulkan.
+    bool        testSurfaceStart = false;
     // Stress test: add N procedural cubes to the scene at startup (--stress N).
     // Default 0 = OFF; Level 1 is unaffected unless requested.
     uint32_t stressCount = 0;
@@ -403,6 +426,10 @@ struct CliOptions {
     //                            seek to --cuetime, capture one frame, exit. 4x SSAA.
     bool        testCutscene = false;
     bool        skipIntro    = false;
+    // --intro-force <shot_down|escaped> : DEV override for the interactive intro's
+    // outcome (QA/tests). -1 = none (roll the skill-biased {chance}); 0 = force the
+    // canon SHOT_DOWN cell start; 1 = force the ESCAPED surface-landing start.
+    int         introForce   = -1;
     std::string cutsceneFile;                  // empty = the shipped cold open
     float       cueTime      = 0.0f;
     bool        cutsceneShot = false;

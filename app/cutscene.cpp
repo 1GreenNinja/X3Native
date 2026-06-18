@@ -236,6 +236,11 @@ bool parseCutscene(std::string_view jsonText, Cutscene& out, std::vector<std::st
             ac.stretch      = jv3(&a, "stretch", {1, 1, 1});
             jfn(&a, "color",    ac.color, 4);
             jfn(&a, "emissive", ac.emissive, 4);
+            // Blob->detailed emissive ramp (Phase 5; all optional, legacy-safe).
+            std::copy(ac.emissive, ac.emissive + 4, ac.emissiveFrom);   // default: no ramp (from == to)
+            jfn(&a, "emissiveFrom", ac.emissiveFrom, 4);
+            ac.emissiveRampAt  = jf(&a, "emissiveRampAt", 0.0f);
+            ac.emissiveRampDur = jf(&a, "emissiveRampDur", 0.0f);
             ac.showAt = jf(&a, "showAt", 0.0f);
             ac.hideAt = jf(&a, "hideAt", -1.0f);
             if (const JValue* keys = a.find("keys"); keys && keys->t == JValue::T::Arr) {
@@ -494,8 +499,20 @@ CamPose evalCamera(const Cutscene& cs, float t) {
     return out;
 }
 
+// Time-evaluate the actor emissive (the blob->detailed reveal ramp, or the static
+// emissive). Lerps emissiveFrom -> emissive over [emissiveRampAt, +Dur], holding the
+// endpoints outside the window. With emissiveRampDur <= 0 this is just a.emissive
+// (legacy: every actor without a ramp keeps its static self-illum at all times).
+static void evalActorEmissive(const Actor& a, float t, float out[4]) {
+    if (a.emissiveRampDur <= 1e-5f) { std::copy(a.emissive, a.emissive + 4, out); return; }
+    float u = (t - a.emissiveRampAt) / a.emissiveRampDur;
+    u = u < 0.0f ? 0.0f : (u > 1.0f ? 1.0f : u);
+    for (int c = 0; c < 4; ++c) out[c] = lerpf(a.emissiveFrom[c], a.emissive[c], u);
+}
+
 ActorPose evalActor(const Cutscene& cs, const Actor& a, float t) {
     ActorPose out;
+    evalActorEmissive(a, t, out.emissive);
     if (a.keys.empty()) return out;
     const float hide = a.hideAt < 0.0f ? cs.duration : a.hideAt;
     out.visible = (t >= a.showAt && t <= hide);
@@ -933,6 +950,22 @@ bool runCutsceneSelfTest() {
         Actor plain; plain.stretch = {1, 1, 1};
         actorMatrix(plain, ident, 3.0f, m);
         check(nearf(m[0], 6.0f) && nearf(m[5], 6.0f) && nearf(m[10], 6.0f), "actorMatrix scale*norm compose");
+
+        // ---- BLOB->DETAILED emissive ramp (Phase 5): emissiveFrom -> emissive over
+        //      [emissiveRampAt, +Dur], holding endpoints outside the window; no ramp
+        //      => static emissive at all times. ----
+        Actor staticEm; staticEm.keys.push_back({});
+        staticEm.emissive[0] = 0.5f; staticEm.emissive[3] = 1.0f;   // no ramp set
+        check(nearf(evalActor(cs, staticEm, 0.0f).emissive[0], 0.5f) &&
+              nearf(evalActor(cs, staticEm, 99.0f).emissive[0], 0.5f),
+              "no-ramp actor keeps static emissive at all t");
+        Actor ramp; ramp.keys.push_back({});
+        ramp.emissiveFrom[0] = 0.0f;  ramp.emissiveFrom[3] = 1.0f;
+        ramp.emissive[0]     = 1.0f;  ramp.emissive[3]     = 1.0f;
+        ramp.emissiveRampAt  = 10.0f; ramp.emissiveRampDur = 10.0f;
+        check(nearf(evalActor(cs, ramp, 5.0f).emissive[0], 0.0f),  "emissive ramp holds 'from' before window");
+        check(nearf(evalActor(cs, ramp, 15.0f).emissive[0], 0.5f), "emissive ramp lerps mid-window");
+        check(nearf(evalActor(cs, ramp, 25.0f).emissive[0], 1.0f), "emissive ramp holds 'to' after window");
     }
 
     // ---- 5) Overlay eval: fades, letterbox, title alpha ----

@@ -1,0 +1,377 @@
+// S8 enemy ship AI — see app/space/ship_ai.h.
+//
+// CLEAN-ROOM, original work. Dense-array manager shaped after X3's own
+// MonsterManager (app/monster.h). No RBDOOM / id Tech / Doom / Quake source.
+
+#include "ship_ai.h"
+
+#include "engine/core/x3_log.h"
+
+#include <cmath>
+#include <string>
+
+namespace x3::space {
+
+// ===========================================================================
+// Local vec3 helpers (kept private to this TU).
+// ===========================================================================
+namespace {
+
+inline float dot3(const float a[3], const float b[3]) {
+    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2];
+}
+inline float len3(const float v[3]) { return std::sqrt(dot3(v, v)); }
+
+inline void sub3(const float a[3], const float b[3], float out[3]) {
+    out[0] = a[0]-b[0]; out[1] = a[1]-b[1]; out[2] = a[2]-b[2];
+}
+
+// Normalize v in place; returns the original length. Leaves a unit +X if the
+// input is ~zero (a safe, deterministic default heading).
+inline float normalize3(float v[3]) {
+    const float n = len3(v);
+    if (n > 1e-6f) { v[0]/=n; v[1]/=n; v[2]/=n; }
+    else           { v[0]=1.0f; v[1]=0.0f; v[2]=0.0f; }
+    return n;
+}
+
+inline float clampf(float v, float lo, float hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+} // namespace
+
+const char* shipAIStateName(ShipAIState s) {
+    switch (s) {
+        case ShipAIState::Patrol: return "Patrol";
+        case ShipAIState::Engage: return "Engage";
+        case ShipAIState::Evade:  return "Evade";
+        case ShipAIState::Strafe: return "Strafe";
+    }
+    return "?";
+}
+
+// ===========================================================================
+// EnemyShipManager
+// ===========================================================================
+
+void EnemyShipManager::init(uint32_t count) {
+    ships_.clear();
+    ships_.reserve(count);
+    fireEvents_.clear();
+    fireEvents_.reserve(count);
+}
+
+void EnemyShipManager::spawn(const float pos[3]) {
+    EnemyShip s{};
+    s.pos[0] = pos[0]; s.pos[1] = pos[1]; s.pos[2] = pos[2];
+    s.vel[0] = s.vel[1] = s.vel[2] = 0.0f;
+    // Initial forward points "inward" (toward the origin), so a ship spawned out
+    // on a sphere faces roughly toward the action; the AI re-steers immediately.
+    s.fwd[0] = -pos[0]; s.fwd[1] = -pos[1]; s.fwd[2] = -pos[2];
+    normalize3(s.fwd);
+    s.hull = shipai::kDefaultHull;
+    s.maxHull = shipai::kDefaultHull;
+    s.state = ShipAIState::Patrol;
+    s.fireCooldown = 0.0f;
+    ships_.push_back(s);
+}
+
+uint32_t EnemyShipManager::count() const { return (uint32_t)ships_.size(); }
+uint32_t EnemyShipManager::aliveCount() const { return (uint32_t)ships_.size(); }
+
+const EnemyShip& EnemyShipManager::ship(uint32_t i) const { return ships_[i]; }
+
+void EnemyShipManager::damageShip(uint32_t i, int amount) {
+    if (amount <= 0 || i >= ships_.size()) return;
+    EnemyShip& s = ships_[i];
+    s.hull -= amount;
+    if (s.hull <= 0) {
+        s.hull = 0;
+        // Swap-remove: keep the live array packed (MonsterManager pattern).
+        ships_[i] = ships_.back();
+        ships_.pop_back();
+    }
+}
+
+void EnemyShipManager::update(float dt, const float playerPos[3], const float playerVel[3]) {
+    fireEvents_.clear();
+    if (dt <= 0.0f) return;
+    for (uint32_t i = 0; i < (uint32_t)ships_.size(); ++i)
+        tickShip(i, dt, playerPos, playerVel);
+}
+
+void EnemyShipManager::tickShip(uint32_t i, float dt,
+                                const float playerPos[3], const float playerVel[3]) {
+    EnemyShip& s = ships_[i];
+
+    if (s.fireCooldown > 0.0f) {
+        s.fireCooldown -= dt;
+        if (s.fireCooldown < 0.0f) s.fireCooldown = 0.0f;
+    }
+
+    // ---- Geometry vs. the player target ------------------------------------
+    float toPlayer[3];
+    sub3(playerPos, s.pos, toPlayer);
+    const float dist = len3(toPlayer);
+    float dirToPlayer[3] = { toPlayer[0], toPlayer[1], toPlayer[2] };
+    normalize3(dirToPlayer);
+
+    // Forward alignment toward the player (cos of the angle between fwd & dir).
+    const float aim = dot3(s.fwd, dirToPlayer);
+    const bool  inRange  = dist <= shipai::kFireRange;
+    const bool  inDetect = dist <= shipai::kDetectRange;
+    const bool  inCone   = aim >= shipai::kFireConeCos;
+    const bool  behind   = aim < 0.0f;   // player is behind the ship -> overshoot
+    const float hullFrac = s.maxHull > 0 ? (float)s.hull / (float)s.maxHull : 0.0f;
+    const bool  lowHull  = hullFrac <= shipai::kEvadeHullFrac;
+
+    // ---- State decision ----------------------------------------------------
+    if (!inDetect) {
+        s.state = ShipAIState::Patrol;
+    } else if (lowHull) {
+        s.state = ShipAIState::Evade;          // peel off + reset the pass
+    } else if (inRange && inCone) {
+        s.state = ShipAIState::Strafe;         // lined up -> attack
+    } else if (inRange && behind) {
+        s.state = ShipAIState::Evade;          // overshot the target, swing around
+    } else {
+        s.state = ShipAIState::Engage;         // close + line up
+    }
+
+    // ---- Desired steering direction per state ------------------------------
+    float desired[3] = { s.fwd[0], s.fwd[1], s.fwd[2] };  // default: hold heading
+    switch (s.state) {
+        case ShipAIState::Patrol:
+            // Drift: keep the current heading, no steering toward a target.
+            break;
+        case ShipAIState::Engage:
+        case ShipAIState::Strafe: {
+            // Lead the moving target: aim at where the player WILL be, approximated
+            // by extrapolating its position by (dist / closing-ish speed) seconds.
+            // A fixed lead time scaled by distance keeps it simple + deterministic.
+            const float leadTime = clampf(dist / shipai::kMaxSpeed, 0.0f, 3.0f)
+                                   * shipai::kLeadFactor;
+            float aimPoint[3] = {
+                playerPos[0] + playerVel[0] * leadTime,
+                playerPos[1] + playerVel[1] * leadTime,
+                playerPos[2] + playerVel[2] * leadTime,
+            };
+            sub3(aimPoint, s.pos, desired);
+            normalize3(desired);
+            break;
+        }
+        case ShipAIState::Evade: {
+            // Peel AWAY from the player (steer along the reverse of the approach),
+            // with a lateral component so it arcs out instead of braking dead.
+            desired[0] = -dirToPlayer[0] + s.fwd[1];
+            desired[1] = -dirToPlayer[1] + s.fwd[2];
+            desired[2] = -dirToPlayer[2] + s.fwd[0];
+            normalize3(desired);
+            break;
+        }
+    }
+
+    // ---- Steer velocity toward `desired`, integrate, clamp -----------------
+    for (int k = 0; k < 3; ++k)
+        s.vel[k] += desired[k] * shipai::kAccel * dt;
+
+    // Speed cap.
+    const float spd = len3(s.vel);
+    if (spd > shipai::kMaxSpeed) {
+        const float sc = shipai::kMaxSpeed / spd;
+        s.vel[0] *= sc; s.vel[1] *= sc; s.vel[2] *= sc;
+    }
+
+    // Heading follows the velocity when moving (so fwd / firing cone track the
+    // ship's actual travel); otherwise it slews toward the desired direction.
+    float headRef[3] = { s.vel[0], s.vel[1], s.vel[2] };
+    if (len3(headRef) > 1e-3f) {
+        normalize3(headRef);
+        s.fwd[0] = headRef[0]; s.fwd[1] = headRef[1]; s.fwd[2] = headRef[2];
+    } else {
+        s.fwd[0] = desired[0]; s.fwd[1] = desired[1]; s.fwd[2] = desired[2];
+    }
+
+    // Integrate position.
+    for (int k = 0; k < 3; ++k) s.pos[k] += s.vel[k] * dt;
+
+    // ---- Fire (Strafe only, cooldown-gated, re-check cone after steering) --
+    if (s.state == ShipAIState::Strafe && s.fireCooldown <= 0.0f) {
+        // Re-evaluate the aim with the post-steer heading + position.
+        float td[3]; sub3(playerPos, s.pos, td); normalize3(td);
+        if (dot3(s.fwd, td) >= shipai::kFireConeCos && len3(td) >= 0.0f) {
+            s.fireCooldown = shipai::kFireCooldown;
+            ShipFireEvent ev{};
+            ev.shooter = i;
+            // Muzzle a little ahead of the ship along its forward.
+            ev.from[0] = s.pos[0] + s.fwd[0] * 3.0f;
+            ev.from[1] = s.pos[1] + s.fwd[1] * 3.0f;
+            ev.from[2] = s.pos[2] + s.fwd[2] * 3.0f;
+            ev.to[0] = s.pos[0] + s.fwd[0] * shipai::kLaserRange;
+            ev.to[1] = s.pos[1] + s.fwd[1] * shipai::kLaserRange;
+            ev.to[2] = s.pos[2] + s.fwd[2] * shipai::kLaserRange;
+            fireEvents_.push_back(ev);
+        }
+    }
+}
+
+// ===========================================================================
+// --test-ship-ai self-test (>=7 sub-checks, headless, pure logic)
+// ===========================================================================
+namespace {
+
+int g_pass = 0, g_fail = 0;
+void check(bool cond, const char* name) {
+    if (cond) { ++g_pass; x3::logInfo(std::string("[shipai-test] PASS ") + name); }
+    else      { ++g_fail; x3::logError(std::string("[shipai-test] FAIL ") + name); }
+}
+
+// Find the index of the (single) live ship, or -1.
+int firstShip(const EnemyShipManager& m) { return m.count() > 0 ? 0 : -1; }
+
+} // namespace
+
+bool runShipAiSelfTest() {
+    g_pass = g_fail = 0;
+    const float dt = 1.0f / 60.0f;
+
+    // T1 — init + spawn populates the live array. ---------------------------
+    {
+        EnemyShipManager m;
+        m.init(8);
+        check(m.count() == 0 && m.aliveCount() == 0, "T1a init -> empty");
+        const float p0[3] = { 100.0f, 0.0f, 0.0f };
+        const float p1[3] = { 0.0f, 40.0f, 80.0f };
+        m.spawn(p0); m.spawn(p1);
+        check(m.count() == 2 && m.aliveCount() == 2, "T1b spawn x2 -> count 2");
+    }
+
+    // T2 — player in detect range flips Patrol -> Engage. -------------------
+    {
+        EnemyShipManager m; m.init(4);
+        const float sp[3] = { 200.0f, 0.0f, 0.0f };  // within kDetectRange (600)
+        m.spawn(sp);
+        const float pp[3] = { 0.0f, 0.0f, 0.0f };
+        const float pv[3] = { 0.0f, 0.0f, 0.0f };
+        // Before update the ship is Patrol.
+        bool startedPatrol = m.ship(0).state == ShipAIState::Patrol;
+        m.update(dt, pp, pv);
+        const ShipAIState st = m.ship(0).state;
+        bool engaged = st == ShipAIState::Engage || st == ShipAIState::Strafe;
+        check(startedPatrol && engaged, "T2 in-range -> leaves Patrol (Engage/Strafe)");
+    }
+
+    // T3 — an engaging ship steers toward the player (distance decreases). --
+    {
+        EnemyShipManager m; m.init(4);
+        const float sp[3] = { 400.0f, 0.0f, 0.0f };   // in detect, out of fire range
+        m.spawn(sp);
+        const float pp[3] = { 0.0f, 0.0f, 0.0f };
+        const float pv[3] = { 0.0f, 0.0f, 0.0f };
+        auto distNow = [&]() {
+            const auto& s = m.ship(0);
+            float d[3] = { s.pos[0]-pp[0], s.pos[1]-pp[1], s.pos[2]-pp[2] };
+            return std::sqrt(d[0]*d[0]+d[1]*d[1]+d[2]*d[2]);
+        };
+        const float d0 = distNow();
+        for (int i = 0; i < 120; ++i) m.update(dt, pp, pv);
+        const float d1 = distNow();
+        check(d1 < d0 - 5.0f, "T3 Engage closes distance");
+    }
+
+    // T4 — out-of-range ship stays Patrol. ----------------------------------
+    {
+        EnemyShipManager m; m.init(4);
+        const float sp[3] = { 5000.0f, 0.0f, 0.0f };  // way past kDetectRange
+        m.spawn(sp);
+        const float pp[3] = { 0.0f, 0.0f, 0.0f };
+        const float pv[3] = { 0.0f, 0.0f, 0.0f };
+        for (int i = 0; i < 30; ++i) m.update(dt, pp, pv);
+        check(m.ship(0).state == ShipAIState::Patrol, "T4 out-of-range stays Patrol");
+    }
+
+    // T5 — a lined-up ship in fire range fires (a fire event is produced). --
+    {
+        EnemyShipManager m; m.init(4);
+        const float sp[3] = { 100.0f, 0.0f, 0.0f };   // inside kFireRange (300)
+        m.spawn(sp);
+        const float pp[3] = { 0.0f, 0.0f, 0.0f };
+        const float pv[3] = { 0.0f, 0.0f, 0.0f };
+        // Run enough ticks for the ship to line up its cone and fire at least once.
+        bool fired = false;
+        for (int i = 0; i < 240 && !fired; ++i) {
+            m.update(dt, pp, pv);
+            if (!m.fireEvents().empty()) fired = true;
+        }
+        check(fired, "T5 lined-up in-range ship fires (fire event produced)");
+    }
+
+    // T6 — fire cooldown gates firing (no second shot before cooldown). -----
+    {
+        EnemyShipManager m; m.init(4);
+        const float sp[3] = { 80.0f, 0.0f, 0.0f };
+        m.spawn(sp);
+        const float pp[3] = { 0.0f, 0.0f, 0.0f };
+        const float pv[3] = { 0.0f, 0.0f, 0.0f };
+        // Advance to the first shot.
+        int shotTick = -1;
+        for (int i = 0; i < 240; ++i) {
+            m.update(dt, pp, pv);
+            if (!m.fireEvents().empty()) { shotTick = i; break; }
+        }
+        bool gotFirst = shotTick >= 0;
+        // The very next tick must NOT fire (cooldown just started).
+        m.update(dt, pp, pv);
+        bool gatedNext = m.fireEvents().empty();
+        // After the full cooldown elapses, it may fire again.
+        bool firedAgain = false;
+        const int cdTicks = (int)(shipai::kFireCooldown / dt) + 2;
+        for (int i = 0; i < cdTicks; ++i) {
+            m.update(dt, pp, pv);
+            if (!m.fireEvents().empty()) { firedAgain = true; break; }
+        }
+        check(gotFirst && gatedNext && firedAgain,
+              "T6 fire cooldown gates the next shot then re-fires");
+    }
+
+    // T7 — damageShip to 0 removes the ship from aliveCount(). ---------------
+    {
+        EnemyShipManager m; m.init(4);
+        const float a[3] = { 100.0f, 0.0f, 0.0f };
+        const float b[3] = { -100.0f, 0.0f, 0.0f };
+        m.spawn(a); m.spawn(b);
+        const int idx = firstShip(m);
+        const int maxHull = m.ship(idx).maxHull;
+        bool two = m.aliveCount() == 2;
+        m.damageShip(idx, maxHull / 2);            // partial — survives
+        bool survived = m.aliveCount() == 2 && m.ship(idx).hull > 0;
+        m.damageShip(idx, maxHull);                // lethal — removed
+        bool one = m.aliveCount() == 1 && m.count() == 1;
+        check(two && survived && one, "T7 damageShip to 0 removes from aliveCount");
+    }
+
+    // T8 — speed stays clamped to kMaxSpeed. --------------------------------
+    {
+        EnemyShipManager m; m.init(4);
+        const float sp[3] = { 500.0f, 0.0f, 0.0f };
+        m.spawn(sp);
+        const float pp[3] = { 0.0f, 0.0f, 0.0f };
+        const float pv[3] = { 0.0f, 0.0f, 0.0f };
+        float maxObserved = 0.0f;
+        for (int i = 0; i < 600; ++i) {
+            m.update(dt, pp, pv);
+            const auto& s = m.ship(0);
+            const float v = std::sqrt(s.vel[0]*s.vel[0]+s.vel[1]*s.vel[1]+s.vel[2]*s.vel[2]);
+            if (v > maxObserved) maxObserved = v;
+        }
+        check(maxObserved <= shipai::kMaxSpeed + 0.5f && maxObserved > 1.0f,
+              "T8 speed clamped to kMaxSpeed");
+    }
+
+    x3::logInfo(std::string("[shipai-test] ") + std::to_string(g_pass) + " passed, " +
+                std::to_string(g_fail) + " failed");
+    return g_fail == 0;
+}
+
+} // namespace x3::space

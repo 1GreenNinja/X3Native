@@ -283,6 +283,9 @@ int main(int argc, char** argv) {
         _tf.testCanonLevel = o.testCanonLevel;
         _tf.testCanonPlay = o.testCanonPlay;
         _tf.testIntro = o.testIntro;
+        _tf.testIntroOrch = o.testIntroOrch;
+        _tf.testIntroBranch = o.testIntroBranch;
+        _tf.testSurfaceStart = o.testSurfaceStart;
         _tf.testCutscene = o.testCutscene;
         _tf.testPhase2a = o.testPhase2a;
         _tf.testPhase2b = o.testPhase2b;
@@ -351,6 +354,11 @@ int main(int argc, char** argv) {
         _tf.testValley = o.testValley;
         _tf.testCliffs = o.testCliffs;
         _tf.testClub = o.testClub;
+        _tf.testSpace = o.testSpace;
+        _tf.testEva = o.testEva;
+        _tf.testShipAi = o.testShipAi;
+        _tf.testTargeting = o.testTargeting;
+        _tf.testShipDamage = o.testShipDamage;
         _tf.testLocomotionPath = o.testLocomotionPath;
         _tf.listClipsPath = o.listClipsPath;
         _tf.demoDialogPath = o.demoDialogPath;
@@ -672,6 +680,7 @@ int main(int argc, char** argv) {
     _hc.noTaa           = o.noTaa;
     _hc.noRefl          = o.noRefl;
     _hc.skipIntro       = o.skipIntro;
+    _hc.introForce      = o.introForce;        // DEV --intro-force outcome override
     _hc.editorMode      = o.editorMode;
     _hc.fxDemo          = o.fxDemo;
     _hc.uiDemo          = o.uiDemo;            _hc.uiDemoPath = o.uiDemoPath; _hc.uiDemoScreen = o.uiDemoScreen;

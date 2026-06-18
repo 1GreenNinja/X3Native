@@ -191,6 +191,11 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-valley") o.testValley = true;
         else if (a == "--test-cliffs") o.testCliffs = true;
         else if (a == "--test-club") o.testClub = true;
+        else if (a == "--test-space") o.testSpace = true;
+        else if (a == "--test-eva") o.testEva = true;
+        else if (a == "--test-ship-ai") o.testShipAi = true;
+        else if (a == "--test-targeting") o.testTargeting = true;
+        else if (a == "--test-ship-damage") o.testShipDamage = true;
         else if (a == "--width") {
             if (i + 1 < argc) { o.winW = (uint32_t)std::strtoul(argv[++i], nullptr, 10); }
         }
@@ -400,6 +405,17 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             if (i + 1 < argc && argv[i + 1][0] != '-') o.testLocomotionPath = argv[++i];
         }
         else if (a == "--test-intro") o.testIntro = true;
+        else if (a == "--test-introorch") o.testIntroOrch = true;
+        else if (a == "--test-introbranch") o.testIntroBranch = true;
+        else if (a == "--test-surfacestart") o.testSurfaceStart = true;
+        else if (a == "--intro-force") {
+            // DEV: force the interactive-intro outcome branch.
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                const std::string v = argv[++i];
+                if      (v == "escaped"   || v == "escape") o.introForce = 1;
+                else if (v == "shot_down" || v == "shotdown" || v == "cell") o.introForce = 0;
+            }
+        }
     }
 }
 
