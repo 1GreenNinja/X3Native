@@ -69,10 +69,18 @@ export interface Session {
 const SESSION_KEY = "slick.session";
 const SINCE_KEY = "slick.since";
 
+// Module-level token cache so mxcToUrl() can append ?access_token= for <img>
+// tags (which can't send Authorization headers). Set on every login path.
+let _authToken = "";
+function rememberToken(t: string): void { _authToken = t; }
+
 export function loadSession(): Session | null {
   try {
     const raw = localStorage.getItem(SESSION_KEY);
-    return raw ? (JSON.parse(raw) as Session) : null;
+    if (!raw) return null;
+    const s = JSON.parse(raw) as Session;
+    if (s?.token) rememberToken(s.token);
+    return s;
   } catch {
     return null;
   }
@@ -101,6 +109,7 @@ export async function login(username: string, password: string): Promise<Session
     token: data.access_token,
     deviceId: data.device_id,
   };
+  rememberToken(session.token);
   localStorage.setItem(SESSION_KEY, JSON.stringify(session));
   return session;
 }
@@ -118,6 +127,7 @@ export async function loginWithToken(token: string): Promise<Session> {
     token: token.trim(),
     deviceId: who.device_id ?? "slick-token",
   };
+  rememberToken(session.token);
   localStorage.setItem(SESSION_KEY, JSON.stringify(session));
   return session;
 }
@@ -161,75 +171,76 @@ export async function sendMessage(
   return data.event_id;
 }
 
-/** Change the logged-in user's password. Matrix requires re-auth with the
- * CURRENT password (UIAA m.login.password). Two-step: probe for a session id,
- * then submit auth + new password. logout_devices:false keeps other sessions
- * (the fleet bots) alive. */
+/** Change the logged-in user's password. One call, one job.
+ *
+ * Matrix needs the CURRENT password to re-auth (UIAA m.login.password): we
+ * probe once to get the UIAA session id, then submit current + new together.
+ * logout_devices:false keeps the fleet bots' sessions alive. Returns a fresh
+ * token for THIS device so the live session keeps working after the change. */
 export async function changePassword(
   token: string,
   userId: string,
   currentPassword: string,
   newPassword: string,
 ): Promise<void> {
-  const path = "/_matrix/client/v3/account/password";
-  // Step 1: probe (no auth) -> UIAA session id (returns 401 w/ flows+session)
-  let session = "";
-  try {
-    await req(path, { method: "POST", token, body: { new_password: newPassword } });
-    return; // (shouldn't happen — Conduit always challenges)
-  } catch (e) {
-    if (e instanceof MatrixError && e.status === 401) {
-      // the 401 body carried flows+session; re-fetch it cleanly
-      const probe = await fetch(`${HOMESERVER}${path}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ new_password: newPassword }),
-      });
-      const pb = await probe.json().catch(() => ({}));
-      session = pb.session;
-      if (!session) throw new MatrixError(probe.status, pb.errcode ?? "M_UNKNOWN", pb.error ?? "no UIAA session");
-    } else {
-      throw e;
-    }
-  }
-  // Step 2: submit with current-password auth + the session id
+  const path = `${HOMESERVER}/_matrix/client/v3/account/password`;
   const localpart = userId.split(":")[0].replace(/^@/, "");
-  await req(path, {
-    method: "POST",
-    token,
-    body: {
-      auth: {
-        type: "m.login.password",
-        identifier: { type: "m.id.user", user: localpart },
-        password: currentPassword,
-        session,
-      },
-      new_password: newPassword,
-      logout_devices: false,
-    },
+  const post = (body: unknown) =>
+    fetch(path, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify(body),
+    });
+
+  // Step 1 — probe to get the UIAA session (Conduit answers 401 + {session})
+  const probe = await post({ new_password: newPassword, logout_devices: false });
+  if (probe.ok) return; // server accepted with no challenge (rare)
+  const pb = await probe.json().catch(() => ({}));
+  const session: string | undefined = pb.session;
+  if (!session) {
+    throw new MatrixError(probe.status, pb.errcode ?? "M_UNKNOWN", pb.error ?? `HTTP ${probe.status}`);
+  }
+
+  // Step 2 — submit current-password auth + the new password
+  const resp = await post({
+    auth: { type: "m.login.password", identifier: { type: "m.id.user", user: localpart }, password: currentPassword, session },
+    new_password: newPassword,
+    logout_devices: false,
   });
+  if (!resp.ok) {
+    const eb = await resp.json().catch(() => ({}));
+    // Friendlier message for the most common failure
+    if (resp.status === 401 || eb.errcode === "M_FORBIDDEN") {
+      throw new MatrixError(resp.status, "M_FORBIDDEN", "Current password is incorrect.");
+    }
+    throw new MatrixError(resp.status, eb.errcode ?? "M_UNKNOWN", eb.error ?? `HTTP ${resp.status}`);
+  }
 }
 
-/** Resolve an mxc:// URI to the authenticated full-res download URL. */
+/** Resolve an mxc:// URI to a full-res download URL an <img> tag can load.
+ * The token goes in the query string because <img> can't send a Bearer
+ * header. Uses the legacy /media/v3/download endpoint (Conduit 0.10.12 serves
+ * originals there; DJBOOTH killed the thumbnail substitution server-side). */
 export function mxcToUrl(mxc: string): string {
   const m = /^mxc:\/\/([^/]+)\/(.+)$/.exec(mxc);
   if (!m) return "";
-  return `${HOMESERVER}/_matrix/client/v1/media/download/${m[1]}/${m[2]}`;
+  const base = `${HOMESERVER}/_matrix/media/v3/download/${m[1]}/${m[2]}`;
+  return _authToken ? `${base}?access_token=${encodeURIComponent(_authToken)}` : base;
 }
 
-/** Upload a file at ORIGINAL quality (no client recompression). Returns mxc://. */
+/** Upload a file at ORIGINAL quality (no client recompression). Returns mxc://.
+ * Auth via ?access_token= query param, NOT a Bearer header: Slick runs
+ * cross-origin (slick.* -> fleetcommand.*) and the media endpoint drops the
+ * Authorization header in that case (M_MISSING_TOKEN). The query param survives. */
 export async function uploadMedia(token: string, file: File): Promise<string> {
-  const resp = await fetch(
-    `${HOMESERVER}/_matrix/media/v3/upload?filename=${encodeURIComponent(file.name)}`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": file.type || "application/octet-stream",
-      },
-      body: file,
-    },
-  );
+  const url =
+    `${HOMESERVER}/_matrix/media/v3/upload` +
+    `?filename=${encodeURIComponent(file.name)}&access_token=${encodeURIComponent(token)}`;
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
     throw new MatrixError(resp.status, data.errcode ?? "M_UNKNOWN", data.error ?? `HTTP ${resp.status}`);
