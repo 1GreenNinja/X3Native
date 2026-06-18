@@ -4,15 +4,16 @@
 
 export interface Theme {
   accent: string;   // hex, drives --cyan (links, buttons, glows, active rail)
-  glass: number;    // 0..1 panel opacity (lower = more see-through)
+  glass: number;    // 0..1 FROST level — drives backdrop blur (0=clear, 1=heavy frost)
   grid: boolean;    // faint plating grid behind everything
   scanlines: boolean; // ctOS CRT scanline + flicker overlay
   glow: boolean;      // message-row hover edge glow
   motion: boolean;    // message entrance + UI micro-animations
   splash: boolean;    // ctOS boot handshake on launch
+  shine: boolean;     // glossy specular highlight + sheen on glass panels
 }
 
-const FX = { grid: true, scanlines: true, glow: true, motion: true, splash: true };
+const FX = { grid: true, scanlines: true, glow: true, motion: true, splash: true, shine: true };
 
 export const THEME_PRESETS: Record<string, Theme> = {
   // the shipped gunmetal + cyan
@@ -52,9 +53,14 @@ export function applyTheme(t: Theme): void {
   root.setProperty("--cyan-glow", `0 0 12px rgba(${r}, ${g}, ${b}, 0.45)`);
   // a dimmer companion for gradients/buttons
   root.setProperty("--cyan-dim", `rgb(${Math.round(r * 0.62)}, ${Math.round(g * 0.62)}, ${Math.round(b * 0.62)})`);
-  // glass opacity drives the frosted panels
-  root.setProperty("--glass", `rgba(26, 33, 46, ${t.glass})`);
-  root.setProperty("--glass-light", `rgba(40, 50, 68, ${Math.max(0, t.glass - 0.12)})`);
+  // FROST: the slider now drives the backdrop blur (0 = clear glass, 1 = heavy
+  // frost). Panel tint opacity stays at a fixed glassy value so panels read as
+  // glass regardless of frost. More frost also = slightly more tint.
+  const blurPx = Math.round(t.glass * 30);
+  root.setProperty("--glass-blur", `${blurPx}px`);
+  const tint = 0.34 + t.glass * 0.30;            // 0.34 clear → 0.64 frosted
+  root.setProperty("--glass", `rgba(26, 33, 46, ${tint.toFixed(2)})`);
+  root.setProperty("--glass-light", `rgba(40, 50, 68, ${Math.max(0, tint - 0.12).toFixed(2)})`);
   // plating grid on/off
   root.setProperty("--grid-alpha", t.grid ? "0.035" : "0");
   // FX toggles ride as classes on <html> so CSS can gate them
@@ -62,6 +68,7 @@ export function applyTheme(t: Theme): void {
   cl.toggle("fx-scanlines", t.scanlines);
   cl.toggle("fx-glow", t.glow);
   cl.toggle("fx-motion", t.motion);
+  cl.toggle("fx-shine", t.shine);
 }
 
 export function setTheme(t: Theme): void {

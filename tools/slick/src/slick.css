@@ -11,6 +11,7 @@
   --plate-raised: linear-gradient(180deg, #232c3d 0%, #1a212e 100%);
   --glass: rgba(26, 33, 46, 0.62);
   --glass-light: rgba(40, 50, 68, 0.5);
+  --glass-blur: 18px;
   --hairline: rgba(140, 170, 210, 0.14);
   --hairline-bright: rgba(150, 200, 255, 0.3);
 
@@ -28,7 +29,7 @@
   --text-dim: #6b7789;
 }
 
-html, body, #app { height: 100%; }
+html, body, #app { height: 100%; overflow: hidden; }  /* page never scrolls; panes scroll internally (Slack 2017) */
 body {
   font-family: -apple-system, "Segoe UI", "Helvetica Neue", sans-serif;
   font-size: 15px;
@@ -94,8 +95,8 @@ html.fx-motion .room-row { transition: background 120ms, border-color 120ms; }
 .login-page { height: 100%; display: grid; place-items: center; position: relative; z-index: 1; }
 .login-card {
   background: var(--glass);
-  backdrop-filter: blur(18px) saturate(140%);
-  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(var(--glass-blur, 18px)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--glass-blur, 18px)) saturate(140%);
   border: 1px solid var(--hairline-bright);
   padding: 40px;
   border-radius: 16px;
@@ -154,13 +155,41 @@ html.fx-motion .room-row { transition: background 120ms, border-color 120ms; }
 .login-tabs button.on { border-color: var(--cyan); color: var(--cyan); box-shadow: var(--cyan-glow); }
 
 /* ---- workspace ---- */
-.workspace { height: 100%; display: grid; grid-template-columns: 264px 1fr; position: relative; z-index: 1; }
+.workspace { height: 100%; display: grid; grid-template-columns: 264px 1fr; position: relative; z-index: 1; overflow: hidden; }
 .workspace.with-members { grid-template-columns: 264px 1fr 248px; }
+/* Slack-2017 scroll model: grid panes are height-bounded and scroll their OWN
+ * content. min-height:0 lets flex/grid children actually shrink so the inner
+ * overflow:auto kicks in instead of growing the page. The sidebar list and the
+ * message stream scroll independently; the channel tree never scrolls away. */
+.workspace > * { min-height: 0; }
+.room-view { min-height: 0; }
+.stream { min-height: 0; }
+
+/* ===== SHINE — glossy specular on glass panels (html.fx-shine) ===== */
+html.fx-shine .sidebar,
+html.fx-shine .member-panel,
+html.fx-shine .ws-header,
+html.fx-shine .room-header,
+html.fx-shine .member-header,
+html.fx-shine .genpanel,
+html.fx-shine .login-card {
+  background-image: linear-gradient(135deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0.03) 16%, transparent 38%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.20), 0 2px 12px rgba(0,0,0,0.3);
+}
+/* a slow drifting glare across the sidebar so the glass reads as lit */
+html.fx-shine .sidebar::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(115deg, transparent 30%, rgba(255,255,255,0.05) 48%, transparent 66%);
+  background-size: 300% 100%;
+  animation: sheen 9s ease-in-out infinite;
+}
+.sidebar { position: relative; }
+@keyframes sheen { 0%,100% { background-position: 120% 0; } 50% { background-position: -20% 0; } }
 
 .sidebar {
   background: var(--glass);
-  backdrop-filter: blur(20px) saturate(130%);
-  -webkit-backdrop-filter: blur(20px) saturate(130%);
+  backdrop-filter: blur(var(--glass-blur, 18px)) saturate(130%);
+  -webkit-backdrop-filter: blur(var(--glass-blur, 18px)) saturate(130%);
   border-right: 1px solid var(--hairline);
   display: flex;
   flex-direction: column;
@@ -372,8 +401,8 @@ html.fx-motion .room-row { transition: background 120ms, border-color 120ms; }
 }
 .genpanel {
   background: var(--glass);
-  backdrop-filter: blur(24px) saturate(140%);
-  -webkit-backdrop-filter: blur(24px) saturate(140%);
+  backdrop-filter: blur(var(--glass-blur, 18px)) saturate(140%);
+  -webkit-backdrop-filter: blur(var(--glass-blur, 18px)) saturate(140%);
   border: 1px solid var(--hairline-bright);
   border-radius: 16px;
   width: 470px;
@@ -570,7 +599,7 @@ input[type="color"] { width: 44px; height: 30px; border: 1px solid var(--hairlin
 .lightbox-img { max-width: 94vw; max-height: 88vh; border-radius: 6px; box-shadow: 0 0 60px rgba(63, 208, 224, 0.2); }
 .lightbox-bar {
   position: fixed; bottom: 0; left: 0; right: 0;
-  background: var(--glass); backdrop-filter: blur(16px);
+  background: var(--glass); backdrop-filter: blur(var(--glass-blur, 16px));
   color: var(--text); display: flex; align-items: center; gap: 16px;
   padding: 13px 20px; cursor: default; border-top: 1px solid var(--hairline);
 }
@@ -583,8 +612,8 @@ input[type="color"] { width: 44px; height: 30px; border: 1px solid var(--hairlin
 .member-panel {
   border-left: 1px solid var(--hairline);
   background: var(--glass);
-  backdrop-filter: blur(20px) saturate(130%);
-  -webkit-backdrop-filter: blur(20px) saturate(130%);
+  backdrop-filter: blur(var(--glass-blur, 18px)) saturate(130%);
+  -webkit-backdrop-filter: blur(var(--glass-blur, 18px)) saturate(130%);
   display: flex; flex-direction: column; overflow-y: auto;
 }
 .member-header { padding: 14px 16px; border-bottom: 1px solid var(--hairline); font-weight: 800; font-size: 15px; color: #fff; background: var(--plate-raised); }

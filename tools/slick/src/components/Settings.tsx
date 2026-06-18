@@ -108,7 +108,7 @@ function AppearanceTab() {
       </div>
 
       <div class="genpanel-row">
-        <label>Glass</label>
+        <label>Frost</label>
         <input type="range" min={0} max={100} value={Math.round(t.glass * 100)}
           onInput={(e) => apply({ ...t, glass: Number((e.target as HTMLInputElement).value) / 100 })} />
         <span class="set-val">{Math.round(t.glass * 100)}%</span>
