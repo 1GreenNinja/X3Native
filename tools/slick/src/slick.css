@@ -153,6 +153,17 @@ body::before {
   text-transform: uppercase;
   letter-spacing: 1px;
   color: var(--text-dim);
+  cursor: default;       /* it's a header, not a button — no text-caret */
+  user-select: none;
+}
+/* show an empty-state hint under a header when a section has no rooms */
+.section-empty {
+  padding: 2px 16px 6px;
+  font-size: 13px;
+  color: var(--text-dim);
+  font-style: italic;
+  cursor: default;
+  user-select: none;
 }
 .room-row {
   display: flex;

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "preact/hooks";
 import type { Session } from "../client";
-import { store, subscribe, type Room } from "../store";
+import { store, subscribe, startSyncLoop, type Room } from "../store";
 import { MessageStream } from "./MessageStream";
 import { Composer } from "./Composer";
 import { MemberPanel } from "./MemberPanel";
@@ -51,6 +51,9 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
               {r.unread > 0 && <span class="badge">{r.unread}</span>}
             </a>
           ))}
+          {channels.length === 0 && (
+            <div class="section-empty">{store.syncState === "live" ? "No channels yet" : "Syncing…"}</div>
+          )}
           <div class="section-label">Direct messages</div>
           {dms.map((r) => (
             <a
@@ -61,10 +64,14 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
               <span class="presence-dot" /> {r.name}
             </a>
           ))}
+          {dms.length === 0 && (
+            <div class="section-empty">{store.syncState === "live" ? "No DMs yet" : "Syncing…"}</div>
+          )}
         </nav>
         <footer class="me">
           <span class="me-id">{session.userId.split(":")[0]}</span>
           <span class="me-actions">
+            <button class="gear" onClick={() => startSyncLoop(session)} title="Refresh">🔄</button>
             <button class="gear" onClick={() => setShowSettings(true)} title="Settings">⚙️</button>
             <button class="logout" onClick={onLogout}>Sign out</button>
           </span>
