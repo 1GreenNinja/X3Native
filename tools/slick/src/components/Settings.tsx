@@ -116,6 +116,7 @@ function AppearanceTab() {
 
       <h3 class="settings-h3">Effects</h3>
       {([
+        ["shine", "Shine / gloss"],
         ["grid", "Plating grid"],
         ["scanlines", "CRT scanlines"],
         ["glow", "Hover glow"],

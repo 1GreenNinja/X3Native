@@ -249,6 +249,14 @@ html.fx-shine .sidebar::after {
   border-radius: 5px; color: var(--text); padding: 4px 8px; font-size: 14px; outline: none;
   box-shadow: var(--cyan-glow);
 }
+/* custom category sections + drag-drop */
+.cat-section { border-radius: 6px; transition: background 120ms, box-shadow 120ms; }
+.cat-section.drop-hot {
+  background: rgba(63,208,224,0.08);
+  box-shadow: inset 0 0 0 1px var(--cyan), var(--cyan-glow);
+}
+.room-row[draggable] { cursor: pointer; }
+.room-row[draggable]:active { opacity: 0.6; }
 
 /* show an empty-state hint under a header when a section has no rooms */
 .section-empty {

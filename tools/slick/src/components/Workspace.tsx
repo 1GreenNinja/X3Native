@@ -1,6 +1,9 @@
 import { useEffect, useState } from "preact/hooks";
 import { type Session, createChannel } from "../client";
 import { store, subscribe, startSyncLoop, type Room } from "../store";
+import {
+  type CatConfig, loadCats, saveCats, addSection, removeSection, assignRoom, toggleCollapsed,
+} from "../categories";
 import { MessageStream } from "./MessageStream";
 import { Composer } from "./Composer";
 import { MemberPanel } from "./MemberPanel";
@@ -28,7 +31,19 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
   const [openDm, setOpenDm] = useState(true);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState("");
+  const [cats, setCatsState] = useState<CatConfig>(loadCats());
+  const [addingSection, setAddingSection] = useState(false);
+  const [sectionName, setSectionName] = useState("");
+  const [dragId, setDragId] = useState<string | null>(null);
+  const setCats = (c: CatConfig) => { setCatsState(c); saveCats(c); };
   const { channels, dms } = sortedRooms();
+
+  // channels not assigned to any (existing) custom section show under "Channels"
+  const inSection = (sec: string) => channels.filter((r) => cats.assign[r.id] === sec);
+  const uncategorized = channels.filter((r) => {
+    const a = cats.assign[r.id];
+    return !a || !cats.sections.includes(a);
+  });
 
   const createRoom = async () => {
     const name = newName.trim();
@@ -55,51 +70,104 @@ export function Workspace({ session, onLogout }: { session: Session; onLogout: (
           <span class={`sync-dot sync-${store.syncState}`} title={store.syncState} />
         </header>
         <nav>
-          <div class="section-head">
-            <button class="section-toggle" onClick={() => setOpenCh((v) => !v)}>
-              <span class="caret">{openCh ? "▾" : "▸"}</span> Channels
-            </button>
-            <button class="section-add" title="Create channel" onClick={() => setCreating(true)}>＋</button>
-          </div>
-          {creating && (
-            <div class="create-row">
-              <span class="hash">#</span>
-              <input
-                class="create-input" placeholder="new-channel-name" value={newName} autofocus
-                onInput={(e) => setNewName((e.target as HTMLInputElement).value)}
-                onKeyDown={(e) => { if (e.key === "Enter") createRoom(); if (e.key === "Escape") { setCreating(false); setNewName(""); } }}
-                onBlur={() => { if (!newName.trim()) setCreating(false); }}
-              />
-            </div>
-          )}
-          {openCh && channels.map((r) => (
-            <a key={r.id}
-              class={`room-row ${r.id === activeId ? "active" : ""} ${r.unread ? "unread" : ""}`}
-              onClick={() => setActiveId(r.id)}>
-              <span class="hash">#</span> {r.name}
-              {r.unread > 0 && <span class="badge">{r.unread}</span>}
-            </a>
-          ))}
-          {openCh && channels.length === 0 && !creating && (
-            <div class="section-empty">{store.syncState === "live" ? "No channels yet" : "Syncing…"}</div>
-          )}
+          {/* draggable channel row */}
+          {(() => {
+            const channelRow = (r: Room) => (
+              <a key={r.id} draggable
+                class={`room-row ${r.id === activeId ? "active" : ""} ${r.unread ? "unread" : ""}`}
+                onClick={() => setActiveId(r.id)}
+                onDragStart={() => setDragId(r.id)}
+                onDragEnd={() => setDragId(null)}>
+                <span class="hash">#</span> {r.name}
+                {r.unread > 0 && <span class="badge">{r.unread}</span>}
+              </a>
+            );
+            const dropProps = (section: string | null) => ({
+              onDragOver: (e: DragEvent) => { e.preventDefault(); (e.currentTarget as HTMLElement).classList.add("drop-hot"); },
+              onDragLeave: (e: DragEvent) => (e.currentTarget as HTMLElement).classList.remove("drop-hot"),
+              onDrop: (e: DragEvent) => {
+                e.preventDefault(); (e.currentTarget as HTMLElement).classList.remove("drop-hot");
+                if (dragId) setCats(assignRoom(cats, dragId, section));
+                setDragId(null);
+              },
+            });
+            return (
+              <>
+                {/* custom project sections */}
+                {cats.sections.map((sec) => {
+                  const open = !cats.collapsed[sec];
+                  return (
+                    <div key={sec} class="cat-section" {...dropProps(sec)}>
+                      <div class="section-head">
+                        <button class="section-toggle" onClick={() => setCats(toggleCollapsed(cats, sec))}>
+                          <span class="caret">{open ? "▾" : "▸"}</span> {sec}
+                        </button>
+                        <button class="section-add" title="Remove section (rooms move back to Channels)"
+                          onClick={() => setCats(removeSection(cats, sec))}>✕</button>
+                      </div>
+                      {open && inSection(sec).map(channelRow)}
+                      {open && inSection(sec).length === 0 && <div class="section-empty">drag a channel here</div>}
+                    </div>
+                  );
+                })}
 
-          <div class="section-head">
-            <button class="section-toggle" onClick={() => setOpenDm((v) => !v)}>
-              <span class="caret">{openDm ? "▾" : "▸"}</span> Direct messages
-            </button>
-          </div>
-          {openDm && dms.map((r) => (
-            <a key={r.id}
-              class={`room-row ${r.id === activeId ? "active" : ""} ${r.unread ? "unread" : ""}`}
-              onClick={() => setActiveId(r.id)}>
-              <span class="presence-dot" /> {r.name}
-              {r.unread > 0 && <span class="badge">{r.unread}</span>}
-            </a>
-          ))}
-          {openDm && dms.length === 0 && (
-            <div class="section-empty">{store.syncState === "live" ? "No DMs yet" : "Syncing…"}</div>
-          )}
+                {/* Channels (uncategorized) — also a drop target to un-assign */}
+                <div class="cat-section" {...dropProps(null)}>
+                  <div class="section-head">
+                    <button class="section-toggle" onClick={() => setOpenCh((v) => !v)}>
+                      <span class="caret">{openCh ? "▾" : "▸"}</span> Channels
+                    </button>
+                    <span>
+                      <button class="section-add" title="New section" onClick={() => setAddingSection(true)}>📁</button>
+                      <button class="section-add" title="Create channel" onClick={() => setCreating(true)}>＋</button>
+                    </span>
+                  </div>
+                  {addingSection && (
+                    <div class="create-row">
+                      <input class="create-input" placeholder="section name (e.g. EFLZ)" value={sectionName} autofocus
+                        onInput={(e) => setSectionName((e.target as HTMLInputElement).value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") { setCats(addSection(cats, sectionName)); setSectionName(""); setAddingSection(false); }
+                          if (e.key === "Escape") { setSectionName(""); setAddingSection(false); }
+                        }}
+                        onBlur={() => { if (!sectionName.trim()) setAddingSection(false); }} />
+                    </div>
+                  )}
+                  {creating && (
+                    <div class="create-row">
+                      <span class="hash">#</span>
+                      <input class="create-input" placeholder="new-channel-name" value={newName} autofocus
+                        onInput={(e) => setNewName((e.target as HTMLInputElement).value)}
+                        onKeyDown={(e) => { if (e.key === "Enter") createRoom(); if (e.key === "Escape") { setCreating(false); setNewName(""); } }}
+                        onBlur={() => { if (!newName.trim()) setCreating(false); }} />
+                    </div>
+                  )}
+                  {openCh && uncategorized.map(channelRow)}
+                  {openCh && uncategorized.length === 0 && !creating && (
+                    <div class="section-empty">{store.syncState === "live" ? "No channels here" : "Syncing…"}</div>
+                  )}
+                </div>
+
+                {/* Direct messages */}
+                <div class="section-head">
+                  <button class="section-toggle" onClick={() => setOpenDm((v) => !v)}>
+                    <span class="caret">{openDm ? "▾" : "▸"}</span> Direct messages
+                  </button>
+                </div>
+                {openDm && dms.map((r) => (
+                  <a key={r.id}
+                    class={`room-row ${r.id === activeId ? "active" : ""} ${r.unread ? "unread" : ""}`}
+                    onClick={() => setActiveId(r.id)}>
+                    <span class="presence-dot" /> {r.name}
+                    {r.unread > 0 && <span class="badge">{r.unread}</span>}
+                  </a>
+                ))}
+                {openDm && dms.length === 0 && (
+                  <div class="section-empty">{store.syncState === "live" ? "No DMs yet" : "Syncing…"}</div>
+                )}
+              </>
+            );
+          })()}
         </nav>
         <footer class="me">
           <span class="me-id">{session.userId.split(":")[0]}</span>
