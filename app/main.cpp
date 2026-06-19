@@ -2816,6 +2816,12 @@ int main(int argc, char** argv) {
     // logs the GPU-ms cost delta. Headless; exits after the captures.
     bool        rtshShot = false;
     std::string rtshShotDir = "docs/screenshots/rtshadows";
+    // RASTER point-shadow gate-shot proof (--screenshot-pointshadow [outDir], Gap 6):
+    // the SAME cell rig as --screenshot-rtshadows (floor + bunk + pillar occluders +
+    // one ceiling lamp), but toggling r_pointshadows (raster atlas) instead of RT.
+    // Captures lamp-shadow OFF (tier 0) vs ON (tier 1) and exits. Works on non-RT GPUs.
+    bool        pshadowShot = false;
+    std::string pshadowShotDir = "C:/gamedev/incoming/gap6";
     // --test-rtshadows: headless smoketest with r_rtshadows forced to tier 2 so
     // the mesh_rt pipelines + TLAS path run under Vulkan validation.
     bool        testRtShadows = false;
@@ -2954,6 +2960,11 @@ int main(int argc, char** argv) {
         if (a == "--screenshot-rtshadows") {
             rtshShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') rtshShotDir = argv[++i];
+            continue;
+        }
+        if (a == "--screenshot-pointshadow") {   // Gap 6 raster point-shadow A/B
+            pshadowShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') pshadowShotDir = argv[++i];
             continue;
         }
         // World-streaming flags handled OUTSIDE the big else-if chain (which sits at
@@ -4033,7 +4044,7 @@ int main(int argc, char** argv) {
     if (ecologyShot)  worldMode = "valley";  // the ambient ecology rides the valley biome
     if (crowdShot)    worldMode = "club";    // the crowd proof lives on the club floor
     if (alertShot) { screenshot = true; screenshotPath = alertShotPath; }   // rides --screenshot
-    const bool headless = smoketest || testFramePacing || screenshot || skyShot || ddgiShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || cutsceneShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot || perfshopShot || ecologyShot || crowdShot;
+    const bool headless = smoketest || testFramePacing || screenshot || skyShot || ddgiShot || pshadowShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || cutsceneShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot || perfshopShot || ecologyShot || crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -4767,6 +4778,94 @@ int main(int argc, char** argv) {
                     std::to_string(costT0) + " ms, tier1 " + std::to_string(costT1) + " ms (+" +
                     std::to_string(costT1 - costT0) + " sun), tier2 " + std::to_string(costT2) + " ms (+" +
                     std::to_string(costT2 - costT1) + " points; full-res inline)");
+
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return ok ? 0 : 1;
+    }
+
+    // ---- RASTER point-shadow A/B (--screenshot-pointshadow [outDir], Gap 6) -
+    // The SAME cell rig as --screenshot-rtshadows (floor + a low bunk + a tall
+    // pillar + one ceiling lamp), but toggling r_pointshadows (the raster atlas)
+    // instead of RT. Captures lamp-shadow OFF (tier 0) vs ON (tier 1). Runs on any
+    // GPU (no ray tracing). Self-contained: builds, captures two PNGs, exits.
+    if (pshadowShot) {
+        namespace fs = std::filesystem;
+        std::error_code mkec; fs::create_directories(pshadowShotDir, mkec);
+        x3::logInfo("--screenshot-pointshadow: rendering raster point-shadow A/B to " + pshadowShotDir);
+
+        std::vector<x3::prims::PrimMesh> parts;
+        parts.push_back(x3::prims::makeBox(4.5f, 0.5f, 4.5f,  0.0f, -0.5f, 0.0f)); // floor slab (top y=0)
+        parts.push_back(x3::prims::makeBox(4.5f, 0.5f, 4.5f,  0.0f,  4.5f, 0.0f)); // ceiling slab
+        parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 4.5f, -4.0f,  2.0f, 0.0f)); // west wall
+        parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 4.5f,  4.0f,  2.0f, 0.0f)); // east wall
+        parts.push_back(x3::prims::makeBox(4.5f, 2.15f, 0.5f,  0.0f,  2.0f, -4.0f)); // south wall
+        parts.push_back(x3::prims::makeBox(4.5f, 2.15f, 0.5f,  0.0f,  2.0f,  4.0f)); // north wall
+        // Occluders: a low bunk + a tall pillar — each casts a lamp shadow on the floor.
+        parts.push_back(x3::prims::makeBox(0.9f, 0.25f, 0.5f, -2.0f, 0.45f, 2.6f)); // bunk
+        parts.push_back(x3::prims::makeBox(0.22f, 1.5f, 0.22f, 1.2f, 1.5f, 0.6f));  // pillar
+        std::vector<x3::rhi::MeshHandle> partMesh;
+        for (auto& p : parts)
+            partMesh.push_back(device->createMesh(p.verts.data(), (uint32_t)p.verts.size(),
+                                                  p.index.data(), (uint32_t)p.index.size()));
+        // Emissive lamp fixture just above the light position.
+        x3::prims::PrimMesh fixture = x3::prims::makeBox(0.35f, 0.06f, 0.35f, 0.0f, 3.85f, 0.0f);
+        x3::rhi::MeshHandle fixtureMesh = device->createMesh(fixture.verts.data(), (uint32_t)fixture.verts.size(),
+                                                             fixture.index.data(), (uint32_t)fixture.index.size());
+        auto greyPx = x3::prims::makeSolidRGBA(4, 195, 195, 195);
+        x3::rhi::TextureHandle greyTex = device->createTexture(greyPx.data(), 4, 4, /*srgb=*/true);
+
+        const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        const float white[4] = { 1, 1, 1, 1 };
+        const float fixtureTint[4]     = { 1.0f, 0.95f, 0.85f, 1.0f };
+        const float fixtureEmissive[4] = { 1.0f, 0.9f, 0.7f, 8.0f };
+        auto drawCell = [&](const x3::rhi::FrameContext& f) {
+            for (auto m : partMesh) device->drawMesh(f, m, greyTex, white, identity);
+            device->drawMeshEmissive(f, fixtureMesh, greyTex, fixtureTint, fixtureEmissive, identity);
+        };
+        auto renderFrames = [&](int n, const std::string& capturePath) -> bool {
+            for (int i = 0; i < n; ++i) {
+                glfwPollEvents();
+                if (!capturePath.empty() && i == n - 1) device->armCapture(capturePath.c_str());
+                auto f = device->beginFrame();
+                if (f.valid) drawCell(f);
+                device->endFrame(f);
+            }
+            if (capturePath.empty()) return true;
+            const bool ok = device->captureFrame(capturePath.c_str());
+            x3::logInfo(std::string(ok ? "--screenshot-pointshadow: wrote " : "--screenshot-pointshadow: FAILED ") + capturePath);
+            return ok;
+        };
+        // Drive the raster point-shadow tier directly (no console round-trip needed).
+        auto setPS = [&](int tier) {
+            x3::rhi::IRenderDevice::PointShadowParams pp{};
+            pp.tier = tier; pp.maxLights = 8; pp.faceRes = 512;
+            device->setPointShadowParams(pp);
+        };
+
+        // One ceiling lamp; sun below the horizon so the lamp is the only direct light.
+        x3::rhi::PointLight pl{};
+        pl.pos[0] = 0.0f; pl.pos[1] = 3.6f; pl.pos[2] = 0.0f; pl.range = 14.0f;
+        pl.color[0] = 3.2f; pl.color[1] = 2.9f; pl.color[2] = 2.4f;
+        device->setPointLights(&pl, 1);
+        device->setAmbient(0.015f, 0.016f, 0.020f);
+        device->setShadowBounds(0.0f, 2.0f, 0.0f, 20.0f);
+        {
+            x3::rhi::IRenderDevice::SkyParams sp{};
+            sp.enabled = false;
+            sp.sunDir[0] = 0.0f; sp.sunDir[1] = -1.0f; sp.sunDir[2] = 0.01f;
+            device->setSkyParams(sp);
+        }
+        // Camera: SW corner, looking across the pillar/bunk toward the NE walls + floor.
+        device->setCamera(-3.1f, 1.7f, -3.1f, std::atan2(3.7f, 4.3f), -0.10f, 72.0f);
+
+        bool ok = true;
+        setPS(0);
+        ok &= renderFrames(20, pshadowShotDir + "/lamp_pointshadow_off.png");
+        setPS(1);
+        ok &= renderFrames(20, pshadowShotDir + "/lamp_pointshadow_on.png");
+        x3::logInfo("--screenshot-pointshadow: A/B done (off=tier0, on=tier1)");
 
         device->shutdown();
         if (window) glfwDestroyWindow(window);

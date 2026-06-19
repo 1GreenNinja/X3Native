@@ -70,6 +70,23 @@ layout(set = 1, binding = 1) uniform Camera {
 // texture(...) returns the PCF-filtered "fragment is lit" fraction in [0,1].
 layout(set = 2, binding = 0) uniform sampler2DShadow shadowMap;
 
+// ---- Gap 6 RASTER point-light shadows (set 5) ----
+// binding 0 = the 4096^2 D32 cube-face atlas (hardware-compare sampler2DShadow),
+// binding 1 = the per-frame shadow table: for each budgeted caster, the 6 cube-
+// face view-proj matrices + the atlas tile rect + the light world position.
+// Sampled by samplePointShadow when ssao.pshadow0.x > 0; otherwise never touched.
+layout(set = 5, binding = 0) uniform sampler2DShadow pointShadowAtlas;
+struct PointShadowSlot {
+    mat4 faceVP[6];   // 90deg FOV, near..range, +X-X+Y-Y+Z-Z
+    vec4 tileRect;    // xy = block origin UV, zw = per-face tile size UV
+    vec4 lightPos;    // xyz = light world pos, w = range
+};
+const int kMaxPointShadowSlots = 16;
+layout(set = 5, binding = 1) uniform PointShadowTable {
+    vec4 header;      // x = active slot count, y = atlas dim (px), zw reserved
+    PointShadowSlot slots[kMaxPointShadowSlots];
+} pst;
+
 // Screen-space ambient occlusion (set3): the blurred half-res AO texture (R8,
 // 1 = unoccluded, 0 = occluded), sampled at the fragment's screen UV. AO darkens
 // ONLY the ambient/indirect term (NOT the direct sun or point lights) so corners,
@@ -89,6 +106,8 @@ layout(set = 3, binding = 1) uniform SsaoControl {
     // ---- RT soft shadows (r_rtshadows; read ONLY by the RT_SHADOWS variant) ----
     vec4 rtsh0;       // x = tier (0=off,1=sun,2=sun+points), y = tan(sun angular radius), z = max point shadow rays K, w = point light source radius (m)
     vec4 rtsh1;       // x = frame seed (per-frame jitter rotation; 0 when TAA is off), yzw = reserved
+    // ---- Gap 6 RASTER point-light shadows (r_pointshadows) ----
+    vec4 pshadow0;    // x = tier (0=off, 1/2 = atlas), y = atlas dim (px), zw reserved
 } ssao;
 // Screen-traced / ray-traced reflection buffer (set3/binding2, half- or full-res
 // RGBA16F): rgb = reflected radiance from the REFLECTION pass (refl.comp — SSR
@@ -366,6 +385,57 @@ float sampleShadow(vec3 worldPos, float ndl) {
     for (int y = -1; y <= 1; ++y)
         for (int x = -1; x <= 1; ++x)
             lit += texture(shadowMap, vec3(uv + vec2(x, y) * texel, refDepth));
+    return lit / 9.0;
+}
+
+// ---- Gap 6: raster point-light shadow sample (atlas tiers 1-2) ----
+// Picks the cube face from the dominant axis of (fragPos - lightPos), projects the
+// fragment with that face's view-proj, maps into the slot's atlas tile, and does a
+// 3x3 hardware-PCF compare. Returns the lit fraction [0,1] (1 = lit). slot < 0 or
+// tier 0 -> 1.0 (unshadowed). The atlas clears to far depth, so tiles never rendered
+// (out-of-budget casters) read as fully lit too.
+float samplePointShadow(int slot, vec3 fragPos, vec3 lightPos) {
+    if (ssao.pshadow0.x < 0.5) return 1.0;                  // tier 0
+    if (slot < 0 || slot >= int(pst.header.x)) return 1.0;  // unshadowed / over budget
+
+    vec3 dir = fragPos - lightPos;
+    vec3 a = abs(dir);
+    // Dominant axis -> face index (matches computePointFaceViewProj's +X-X+Y-Y+Z-Z).
+    int face;
+    if (a.x >= a.y && a.x >= a.z)      face = (dir.x >= 0.0) ? 0 : 1;
+    else if (a.y >= a.z)               face = (dir.y >= 0.0) ? 2 : 3;
+    else                               face = (dir.z >= 0.0) ? 4 : 5;
+
+    vec4 lc = pst.slots[slot].faceVP[face] * vec4(fragPos, 1.0);
+    if (lc.w <= 0.0) return 1.0;                            // behind the face
+    vec3 proj = lc.xyz / lc.w;
+    vec2 faceUV = proj.xy * 0.5 + 0.5;                      // clip [-1,1] -> [0,1]
+    float curDepth = proj.z;                               // already [0,1]
+    if (faceUV.x < 0.0 || faceUV.x > 1.0 || faceUV.y < 0.0 || faceUV.y > 1.0 || curDepth > 1.0)
+        return 1.0;
+
+    // Map the per-face UV into this slot's atlas tile. tileRect = (blockOriginUV.xy,
+    // faceTileSizeUV.zw); the face's 3x2 cell offset is (col=face%3, row=face/3).
+    vec4 tr = pst.slots[slot].tileRect;
+    float col = float(face - 3 * (face / 3));               // face % 3
+    float row = float(face / 3);                            // 0 or 1
+    vec2 atlasUV = tr.xy + (vec2(col, row) + faceUV) * tr.zw;
+
+    // Small constant depth bias (the rasterizer's slope bias does the rest).
+    float refDepth = curDepth - 0.0015;
+
+    float atlasDim = max(ssao.pshadow0.y, 1.0);
+    vec2 texel = vec2(1.0 / atlasDim);
+    // Clamp the 3x3 footprint to this face tile so a tap never bleeds into the
+    // neighbouring face's depths at the tile seam.
+    vec2 tileMin = tr.xy + vec2(col, row) * tr.zw + texel;
+    vec2 tileMax = tr.xy + (vec2(col, row) + 1.0) * tr.zw - texel;
+    float lit = 0.0;
+    for (int y = -1; y <= 1; ++y)
+        for (int x = -1; x <= 1; ++x) {
+            vec2 uv = clamp(atlasUV + vec2(x, y) * texel, tileMin, tileMax);
+            lit += texture(pointShadowAtlas, vec3(uv, refDepth));
+        }
     return lit / 9.0;
 }
 
@@ -712,7 +782,9 @@ void main() {
             }
             lighting  += cam.lights[i].colorPad.rgb * (contrib * vis);
 #else
-            lighting  += cam.lights[i].colorPad.rgb * (max(dot(N, L), 0.0) * pointAtten(dist, cam.lights[i].posRange.w));
+            // Gap 6 raster point-shadow: .a carries the atlas slot (-1 = unshadowed).
+            float psVis = samplePointShadow(int(cam.lights[i].colorPad.a), vWorldPos, cam.lights[i].posRange.xyz);
+            lighting  += cam.lights[i].colorPad.rgb * (max(dot(N, L), 0.0) * pointAtten(dist, cam.lights[i].posRange.w) * psVis);
 #endif
         }
         vec3 Vd = normalize(cam.camPos.xyz - vWorldPos);
@@ -747,7 +819,9 @@ void main() {
             }
             Lo += brdf(N, V, NoV, L, F0, diff, a) * cam.lights[i].colorPad.rgb * (atten * vis);
 #else
-            Lo += brdf(N, V, NoV, L, F0, diff, a) * cam.lights[i].colorPad.rgb * pointAtten(dist, cam.lights[i].posRange.w);
+            // Gap 6 raster point-shadow: .a carries the atlas slot (-1 = unshadowed).
+            float psVis = samplePointShadow(int(cam.lights[i].colorPad.a), vWorldPos, cam.lights[i].posRange.xyz);
+            Lo += brdf(N, V, NoV, L, F0, diff, a) * cam.lights[i].colorPad.rgb * (pointAtten(dist, cam.lights[i].posRange.w) * psVis);
 #endif
         }
         // Image-based lighting: SPLIT-SUM diffuse irradiance + GGX-prefiltered specular
