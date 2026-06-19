@@ -43,6 +43,7 @@
 #include "monster.h"
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
+#include "cell_dressing.h"                   // --world canonlevel opening-space polish (set-dressing + motivated lights)
 #include "intro_coldopen.h"                  // --world intro / default lead-in cold-open (shot-down -> captured)
 #include "intro_orchestrator.h"              // Phase 3/4: runInteractiveIntro + IntroOutcome (branches the game start)
 #include "cutscene.h"                        // x3.cutscene/1 data-driven cutscene system (the COLD OPEN film)
@@ -1047,6 +1048,7 @@ int runDefaultHost(HostContext& hc) {
     x3::game::CanonFloor canonFloor;           // parsed+resolved Floor 1 (canonWorld only)
     std::vector<uint32_t> canonVisRooms;       // per-frame PVS scratch (canonWorld only)
     std::vector<x3::game::CanonLight> canonLights; // per-room ceiling lights (canonWorld only)
+    x3::game::CellDressing canonDressing;      // opening-space set-dressing + motivated lights (canonWorld only)
     x3::game::DoorSystem  canonDoors;          // SM_Door_A GLB doors at the cut doorways
     // ---- Keycard / keypad door gating (canonWorld). keycardMask = bitmask of held
     // keycard ids; the Security keycard is a glowing pickup in the Research Lab. ----
@@ -1159,6 +1161,12 @@ int runDefaultHost(HostContext& hc) {
             // ambient + the flashlight (the DARK bug). We feed only the player's VISIBLE
             // rooms' lights each frame (below) so the active count stays under the cap.
             canonLights = x3::game::buildCanonLights(canonFloor);
+            // OPENING-SPACE POLISH: dense set-dressing + motivated lighting over the canon
+            // detention cell + Main Hall mouth (the first space the player sees). Purely
+            // visual props (ModularSciFi + Warehouse kits) + extra PointLights (a flickering
+            // cell tube, a red alarm wash, cyan terminal glow). Graybox stays the collision
+            // truth; missing GLBs simply aren't drawn (the level never breaks).
+            canonDressing.build(*device, x3::game::convertedGlbRoot(), canonFloor);
             x3::logInfo("--world canonlevel: built canonical Floor 1 (" +
                         std::to_string(canonFloor.rooms.size()) + " rooms, " +
                         std::to_string(scene.size()) + " entities, " +
@@ -2202,6 +2210,22 @@ int runDefaultHost(HostContext& hc) {
         float ssZ = shotCamOverride ? shotCam[2] : (alertCam ? 0.0f : -0.4f);
         float ssYaw = shotCamOverride ? shotCam[3] : (alertCam ? 0.02f : 0.06f);
         float ssPitch = shotCamOverride ? shotCam[4] : (alertCam ? -0.06f : -0.16f);
+        // --world canonlevel default vantage: stand INSIDE Jake's Cell looking toward the
+        // +X doorway/hall so the dressed opening space (bunk, terminal, pipes, debris, the
+        // flickering tube) fills the frame. Overridden by --shot-cam for the other angles.
+        if (canonWorld && canonFloor.valid() && !shotCamOverride && !alertShot) {
+            uint32_t jc = canonFloor.roomAt(2.0f, 0.0f, 40.0f);
+            if (jc == x3::game::kNoRoom) jc = 0;
+            const x3::game::CanonRoom& C = canonFloor.rooms[jc];
+            // Stand in the +X/+Z corner and look diagonally back across the cell toward the
+            // -X/-Z corner so the hero shot frames the bunk, the wall terminal, the overhead
+            // pipes + the flickering tube together (the dressed opening space at a glance).
+            ssX = C.x1() - 1.2f;
+            ssY = C.y0() + 1.65f;          // eye height above the cell floor
+            ssZ = C.z1() - 1.2f;
+            ssYaw = 3.6f;                  // look toward the -X/-Z corner
+            ssPitch = -0.05f;
+        }
         // --screenshot-dialog: pose AT the F5 captive (Lena) and OPEN her chat
         // tree so the choice UI is in frame (drawn in the loop below).
         if (dialogShot) {
@@ -2332,6 +2356,33 @@ int runDefaultHost(HostContext& hc) {
                 combatFx.spawnImpact(fxBurst, x3::phys::Vec3{ -fxLook.x, -fxLook.y + 0.2f, -fxLook.z });
             }
             if (fxDemo) combatFx.update(dt);
+            // --world canonlevel SCREENSHOT lighting + cull: feed the player's visible
+            // rooms' ceiling lights PLUS the opening-space dressing's motivated lights
+            // (flickering tube / red alarm / cyan terminal), and set the visible-room
+            // set so render() draws the cell + its doored neighbours. Without this the
+            // capture path fed only the (empty) legacy fixtures — the cell read flat.
+            if (canonWorld && canonFloor.valid()) {
+                canonPlay.tick(dt, scene, *physics, ssEye, nullptr, x3::game::AttackFxFn{});
+                canonDressing.tick(dt);
+                x3::game::Frustum fr = x3::game::Frustum::build(
+                    ssEye.x, ssEye.y, ssEye.z, ssYaw, ssPitch, ssFov, 16.0f / 9.0f);
+                canonFloor.floodVisibleRoomsAt(ssEye.x, ssEye.y, ssEye.z, fr, &canonDoors,
+                                               6, kCanonRoomBudget, canonVisRooms);
+                scene.setRoomCullEnabled(true);
+                scene.setVisibleRooms(canonVisRooms);
+                std::vector<x3::rhi::PointLight> cl;
+                // Dressing lights FIRST (inserted ahead so the cap never truncates the
+                // motivated key lights), then the room ceiling lights fill in.
+                for (const auto& dl : canonDressing.lights()) {
+                    bool vis = false;
+                    for (uint32_t v : canonVisRooms) if (v == dl.room) { vis = true; break; }
+                    if (vis) cl.push_back(dl.light);
+                }
+                x3::game::selectVisibleCanonLights(canonLights, canonVisRooms,
+                                                   ssEye.x, ssEye.y, ssEye.z, cl, 16);
+                if (cl.size() > 64) cl.resize(64);
+                device->setPointLights(cl.data(), (uint32_t)cl.size());
+            }
             // Fix 1: arm the capture just before the FINAL settle frame so the copy
             // is recorded inside that frame's live command buffer (reads the
             // freshly-rendered, properly-acquired image — validation-clean). The
@@ -2340,6 +2391,13 @@ int runDefaultHost(HostContext& hc) {
             auto frame = device->beginFrame();
             if (frame.valid) {
                 scene.render(*device, frame);
+                // --world canonlevel: the opening-space dressing props + doors + gameplay
+                // characters (room-gated by the visible set above).
+                if (canonWorld && canonFloor.valid()) {
+                    canonDressing.draw(*device, frame);
+                    canonDoors.drawMeshes(*device, frame);
+                    if (canonPlay.built()) canonPlay.draw(*device, frame, scene);
+                }
                 game.drawDoors(*device, frame);   // real SM_Door_A slabs (box hidden)
                 game.drawWorldExtras(*device, frame, scene);
                 midFloors.drawDoors(*device, frame);          // F3/F4/F5 keypad door slabs
@@ -2862,8 +2920,15 @@ int runDefaultHost(HostContext& hc) {
                 // Feed ONLY the visible rooms' ceiling lights (capped at 16) so the floor
                 // is LIT under the smoketest while staying under the 64-light device cap.
                 std::vector<x3::rhi::PointLight> cl;
+                canonDressing.tick(dt);
+                for (const auto& dl : canonDressing.lights()) {
+                    bool vis = false;
+                    for (uint32_t v : canonVisRooms) if (v == dl.room) { vis = true; break; }
+                    if (vis) cl.push_back(dl.light);
+                }
                 uint32_t nLit = x3::game::selectVisibleCanonLights(
                     canonLights, canonVisRooms, eye.x, eye.y, eye.z, cl, 16);
+                if (cl.size() > 64) cl.resize(64);
                 device->setPointLights(cl.data(), (uint32_t)cl.size());
                 if (i == 0)
                     x3::logInfo("smoketest --world canonlevel: " + std::to_string(nLit) +
@@ -2889,6 +2954,7 @@ int runDefaultHost(HostContext& hc) {
                 // Unified vis stats: PVS submission skips + flood ms for this frame.
                 device->setVisHostStats(scene.lastRoomCulled(), g_visPvsMs);
                 if (canonWorld) canonDoors.drawMeshes(*device, frame);   // SM_Door_A doors (canonlevel)
+                if (canonWorld && canonFloor.valid()) canonDressing.draw(*device, frame); // opening-space props
                 // --world canonlevel gameplay characters (room-gated draw — only the visible
                 // rooms' enemies/girls are drawn/skinned, so objs/tris stay modest).
                 if (canonWorld && canonPlay.built()) canonPlay.draw(*device, frame, scene);
@@ -4247,6 +4313,14 @@ int runDefaultHost(HostContext& hc) {
                 } else {
                     canonFloor.visibleRoomsAt(camX, camY, camZ, canonVisRooms);
                 }
+                // OPENING-SPACE motivated lights (flickering cell tube / red alarm / cyan
+                // terminal) for the visible dressed rooms — inserted at the FRONT so the cap
+                // never drops these key lights, then the room ceiling lights fill in.
+                for (const auto& dl : canonDressing.lights()) {
+                    bool vis = false;
+                    for (uint32_t v : canonVisRooms) if (v == dl.room) { vis = true; break; }
+                    if (vis) fl.insert(fl.begin(), dl.light);
+                }
                 // Cap lights at 16 closest-to-eye over the SAME visible-room set.
                 x3::game::selectVisibleCanonLights(canonLights, canonVisRooms,
                                                    camX, camY, camZ, fl, 16);
@@ -4443,6 +4517,7 @@ int runDefaultHost(HostContext& hc) {
                 }
                 const double _pt0 = glfwGetTime();
                 canonPlay.tick(dt, scene, *physics, camPos, &player, enemyAttackFx);
+                canonDressing.tick(dt);   // advance the flickering cell-tube phase
                 g_perf.tick += glfwGetTime() - _pt0;
             }
             // ---- SECRET ROOM payoff: game.tick() ticks the cell terminal + the room's
@@ -4889,6 +4964,10 @@ int runDefaultHost(HostContext& hc) {
                 const bool heldArmed = game.armed() || (canonWorld && canonPlay.armed());
                 thirdPerson.drawHeldWeapon(*device, frame, scene, arsenal, heldArmed);
             }
+            // --world canonlevel OPENING-SPACE dressing: the bunk / terminal / pipes / debris
+            // props over the cell + hall mouth (room-gated via the visible set already set on
+            // the scene). Drawn before the characters so they sit in the dressed space.
+            if (canonWorld && canonFloor.valid()) canonDressing.draw(*device, frame);
             // --world canonlevel gameplay: the sidearm pickup + animated enemies + Martinez
             // + the rescue girls, ROOM-GATED (only the visible rooms' characters are drawn/
             // skinned, so the cull's perf payoff is preserved with the characters in).
