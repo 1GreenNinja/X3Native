@@ -1383,6 +1383,16 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     rs.pointMax    = console.getInt("r_rtpoint_max");
     rs.pointRadius = console.getFloat("r_rtpoint_size");
     device.setRtShadowParams(rs);
+    // Rasterized point-light shadows (Gap 6, live). tier 0 = off (byte-identical
+    // to today); 1/2 budget the N nearest casters into the cube-face atlas. The
+    // device clamps the face res to what the 4096^2 atlas can pack.
+    x3::rhi::IRenderDevice::PointShadowParams ps{};
+    ps.tier      = console.getInt("r_pointshadows");
+    ps.maxLights = console.getInt("r_pointshadow_lights");
+    ps.faceRes   = console.getInt("r_pointshadow_res");
+    if (ps.maxLights <= 0) ps.maxLights = 8;
+    if (ps.faceRes   <= 0) ps.faceRes   = 512;
+    device.setPointShadowParams(ps);
     // ZERO-STUTTER frame-pacing thresholds + the strict-PSO audit gate (live).
     x3::rhi::IRenderDevice::PacingParams pace{};
     pace.warmupFrames = console.getInt("r_fpace_warmup");

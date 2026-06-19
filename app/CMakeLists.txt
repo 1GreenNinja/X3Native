@@ -102,6 +102,7 @@ set(SHADER_SRCS
     ${CMAKE_SOURCE_DIR}/shaders/mesh.frag
     ${CMAKE_SOURCE_DIR}/shaders/glass.frag
     ${CMAKE_SOURCE_DIR}/shaders/shadow.vert
+    ${CMAKE_SOURCE_DIR}/shaders/point_shadow.vert
     ${CMAKE_SOURCE_DIR}/shaders/sky.vert
     ${CMAKE_SOURCE_DIR}/shaders/sky.frag
     ${CMAKE_SOURCE_DIR}/shaders/water.vert

@@ -533,6 +533,19 @@ public:
     // Cached + re-applied each frame, like setRtaoParams. Default no-op.
     virtual void          setRtShadowParams(const RtShadowParams&) {}
 
+    // ---- RASTERIZED POINT-LIGHT SHADOWS (Gap 6, r_pointshadows) -------------
+    // Budgeted cube-face atlas (tiers 1-2). The device ranks the point lights
+    // each frame (nearest * brightest), assigns the top `maxLights` an atlas
+    // tile block, renders their 6 faces, and the mesh fragment shader PCF-
+    // compares against the atlas. tier 0 = off (byte-identical to today).
+    struct PointShadowParams {
+        int tier      = 0;     // r_pointshadows (0 off, 1 atlas-low, 2 atlas-high)
+        int maxLights = 8;     // r_pointshadow_lights: shadow-casting budget / frame
+        int faceRes   = 512;   // r_pointshadow_res: per-cube-face tile resolution
+    };
+    // Cached + re-applied each frame, like setRtShadowParams. Default no-op.
+    virtual void          setPointShadowParams(const PointShadowParams&) {}
+
     // ---- RT ACOUSTICS — audio rays through the render TLAS (snd_rtacoustics) --
     // ASYNC batched ray queries against the SAME scene TLAS the RT AO /
     // reflections / DDGI passes use. The audio layer (engine/audio/RtAcoustics)

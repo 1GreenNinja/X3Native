@@ -817,6 +817,18 @@ public:
         m_rtShadows.pointRadius = std::max(0.0f, std::min(1.0f, m_rtShadows.pointRadius));
     }
 
+    void setPointShadowParams(const PointShadowParams& p) override {
+        // Cache the live r_pointshadows* tunables (re-applied each frame in
+        // endFrame's selection). tier 0 = off (byte-identical to today). Tier 3
+        // (cube-array) is not implemented yet, so clamp to the atlas tiers (0-2).
+        m_pointShadow = p;
+        m_pointShadow.tier      = std::max(0, std::min(2, m_pointShadow.tier));
+        m_pointShadow.maxLights = std::max(0, std::min((int)kMaxPointShadowSlots, m_pointShadow.maxLights));
+        // Face res must tile the atlas as a 3x2 block; clamp to a sane range. The
+        // exact per-frame clamp (so >=1 block fits) happens in the selection.
+        m_pointShadow.faceRes   = std::max(128, std::min(2048, m_pointShadow.faceRes));
+    }
+
     void setGlassDevParams(const GlassDevParams& p) override {
         // Cache a snapshot of the live r_glass_* dev overrides; the glass control
         // UBO picks them up in prepareFrameData each frame.
@@ -1030,6 +1042,45 @@ public:
         glm::mat4 proj = glm::ortho(-ortho, ortho, -ortho, ortho, 0.0f, 2.0f * dHalf);
         proj[1][1] *= -1.0f;
         return proj * view;
+    }
+
+    // Gap 6 — the 6 cube-face view-proj matrices for one omni point light. 90 deg
+    // FOV perspective, near=0.05, far=range, looking down the 6 standard cube axes
+    // (+X -X +Y -Y +Z -Z). Vulkan [0,1] Z + reverse-Y clip, exactly like the sun's
+    // proj. The matching `samplePointShadow` in mesh.frag picks the face by the
+    // dominant axis of (fragPos - lightPos) and projects with that face's matrix.
+    static void computePointFaceViewProj(const glm::vec3& pos, float range, glm::mat4 out[6]) {
+        const float farP = std::max(range, 0.1f);
+        glm::mat4 proj = glm::perspective(glm::radians(90.0f), 1.0f, 0.05f, farP);
+        proj[1][1] *= -1.0f;   // reverse-Y clip (matches the rest of the pipeline)
+        // Standard cube-map face basis (right-handed world). The up vectors follow
+        // the GL/Vulkan cube convention so each face's UV is consistent.
+        const glm::vec3 dirs[6] = {
+            glm::vec3( 1, 0, 0), glm::vec3(-1, 0, 0),
+            glm::vec3( 0, 1, 0), glm::vec3( 0,-1, 0),
+            glm::vec3( 0, 0, 1), glm::vec3( 0, 0,-1),
+        };
+        const glm::vec3 ups[6] = {
+            glm::vec3(0,-1, 0), glm::vec3(0,-1, 0),
+            glm::vec3(0, 0, 1), glm::vec3(0, 0,-1),
+            glm::vec3(0,-1, 0), glm::vec3(0,-1, 0),
+        };
+        for (int f = 0; f < 6; ++f)
+            out[f] = proj * glm::lookAt(pos, pos + dirs[f], ups[f]);
+    }
+    // Atlas tile rect (in [0,1] UV) for slot `slot`, face `face`, at face res `fr`.
+    // Each slot is a 3x2 block of fr-sized face tiles; blocks tile the atlas L->R,
+    // top->bottom. Returns the block origin UV + the per-face tile size UV; the
+    // face's offset inside the block (col=face%3, row=face/3) is applied by the
+    // sampler. `slotsPerRow` is how many 3-wide blocks fit across the atlas.
+    static glm::vec4 pointShadowTileRect(uint32_t slot, uint32_t fr, uint32_t slotsPerRow) {
+        const float atlas = (float)kPointShadowAtlasDim;
+        const uint32_t br = slot / std::max(1u, slotsPerRow);   // block row
+        const uint32_t bc = slot % std::max(1u, slotsPerRow);   // block col
+        const float ox = (float)(bc * 3u * fr) / atlas;
+        const float oy = (float)(br * 2u * fr) / atlas;
+        const float ts = (float)fr / atlas;                     // one face tile size
+        return glm::vec4(ox, oy, ts, ts);
     }
 
     // Record the BODY of the main color pass into `cmd` (the graph has already
@@ -2198,7 +2249,10 @@ private:
     // std140 packs each as two vec4s: (pos.xyz, range) + (color.rgb, _pad) = 32 B.
     struct GpuPointLight {
         glm::vec4 posRange;     // xyz = world pos, w = range (meters)
-        glm::vec4 colorPad;     // rgb = linear color * intensity, a = unused
+        glm::vec4 colorPad;     // rgb = linear color * intensity, a = shadowSlot
+                                //   (Gap 6: -1.0 unshadowed, else atlas slot index
+                                //    as a float; the unused .a lane carries it with
+                                //    NO change to the std140 size).
     };
     static_assert(sizeof(GpuPointLight) == 32, "GpuPointLight must be two vec4 (std140)");
 
@@ -2322,6 +2376,11 @@ private:
     // omni casters' 6 cube faces as 3x2 tile blocks. 4096 fits ~tier-2 (1024 faces)
     // / many tier-1 (512 faces) blocks. Step 1: created + cleared, never sampled yet.
     static constexpr uint32_t kPointShadowAtlasDim = 4096;
+    // Max point-shadow caster SLOTS the atlas + shadow table support. The CPU
+    // budget (r_pointshadow_lights) is additionally clamped to how many 3x2 face
+    // blocks actually fit the atlas at the chosen face resolution. 16 covers the
+    // tier-2 high target; the per-frame shadow-table UBO is sized for this max.
+    static constexpr uint32_t kMaxPointShadowSlots = 16;
     // The sun's ortho half-extent (meters) centered on the camera, and the depth
     // range along the sun direction. Sized to cover the level's working set; the
     // box follows the camera so the visible area is always shadowed.
@@ -2435,6 +2494,78 @@ private:
         const HudVertex br{ { x1, y1 }, { u1, v1 }, { c[0], c[1], c[2], c[3] } };
         out[0] = tl; out[1] = bl; out[2] = br;   // CCW: tl->bl->br
         out[3] = tl; out[4] = br; out[5] = tr;   //      tl->br->tr
+    }
+
+    // Gap 6 Step 2 — rank casters, assign atlas slots, fill the shadow table.
+    // `ubo` already has the light rows (shadowSlot defaulted to -1). On return the
+    // budgeted casters' rows carry their slot index and m_pointShadowTableMapped
+    // holds this frame's face matrices + tile rects. tier 0 -> no casters.
+    // (Defined here, after FrameUBO is declared, so it can take FrameUBO&.)
+    void selectAndUploadPointShadows(FrameUBO& ubo, uint32_t lc) {
+        m_pointShadowSlotCount = 0;
+        // Always publish a valid (possibly empty) table so the descriptor read is
+        // defined even when shadows are off.
+        PointShadowTable* tbl = m_pointShadowTableMapped[m_frameIdx]
+            ? reinterpret_cast<PointShadowTable*>(m_pointShadowTableMapped[m_frameIdx]) : nullptr;
+
+        const bool on = (m_pointShadow.tier > 0) && (m_pointShadow.maxLights > 0) && lc > 0;
+        if (!on) {
+            if (tbl) { tbl->header = glm::vec4(0.0f, (float)kPointShadowAtlasDim, 0, 0); }
+            return;
+        }
+
+        // Clamp the face res so at least one 3x2 block fits the atlas, and compute
+        // how many blocks tile across/down -> the hard slot cap for this res.
+        uint32_t faceRes = (uint32_t)m_pointShadow.faceRes;
+        faceRes = std::min(faceRes, kPointShadowAtlasDim / 3u);   // 3 wide must fit
+        faceRes = std::max(faceRes, 64u);
+        const uint32_t slotsPerRow = kPointShadowAtlasDim / (3u * faceRes);
+        const uint32_t slotsPerCol = kPointShadowAtlasDim / (2u * faceRes);
+        const uint32_t atlasCap = std::min(kMaxPointShadowSlots, slotsPerRow * slotsPerCol);
+        const uint32_t budget = std::min<uint32_t>((uint32_t)m_pointShadow.maxLights, atlasCap);
+        m_pointShadowFaceRes = faceRes;
+        if (budget == 0) { if (tbl) tbl->header = glm::vec4(0.0f, (float)kPointShadowAtlasDim, 0, 0); return; }
+
+        // Score every active light: nearest (to camera) * brightest. Cheap luma for
+        // brightness; 1/(1+dist^2) for proximity so close lights win.
+        struct Cand { float score; uint32_t idx; };
+        Cand cands[kMaxPointLights];
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < lc; ++i) {
+            const glm::vec3 p(ubo.lights[i].posRange.x, ubo.lights[i].posRange.y, ubo.lights[i].posRange.z);
+            const glm::vec3 c(ubo.lights[i].colorPad.r, ubo.lights[i].colorPad.g, ubo.lights[i].colorPad.b);
+            const float luma = glm::dot(c, glm::vec3(0.299f, 0.587f, 0.114f));
+            if (luma <= 0.0f) continue;
+            const float d2 = glm::dot(p - m_camPos, p - m_camPos);
+            cands[n].score = luma / (1.0f + d2);
+            cands[n].idx = i;
+            ++n;
+        }
+        // Partial selection of the top `budget` by score (small n -> simple sort).
+        std::sort(cands, cands + n, [](const Cand& a, const Cand& b){ return a.score > b.score; });
+        const uint32_t take = std::min(budget, n);
+
+        for (uint32_t s = 0; s < take; ++s) {
+            const uint32_t li = cands[s].idx;
+            const glm::vec3 pos(ubo.lights[li].posRange.x, ubo.lights[li].posRange.y, ubo.lights[li].posRange.z);
+            const float range = ubo.lights[li].posRange.w;
+            // Tag the light row with its atlas slot (read by mesh.frag).
+            ubo.lights[li].colorPad.a = (float)s;
+            m_pointShadowLightIdx[s] = (int)li;
+            if (tbl) {
+                computePointFaceViewProj(pos, range, tbl->slots[s].faceVP);
+                tbl->slots[s].tileRect = pointShadowTileRect(s, faceRes, slotsPerRow);
+                tbl->slots[s].lightPos = glm::vec4(pos, range);
+            }
+        }
+        m_pointShadowSlotCount = take;
+        if (tbl) tbl->header = glm::vec4((float)take, (float)kPointShadowAtlasDim, (float)faceRes, 0.0f);
+
+        // Log line: caster count this frame (throttled so it doesn't spam).
+        if (m_pointShadowLogThrottle++ % 120u == 0)
+            logInfo("[rhi] pointshadow casters: " + std::to_string(take) + "/"
+                    + std::to_string(lc) + " (tier " + std::to_string(m_pointShadow.tier)
+                    + ", face " + std::to_string(faceRes) + ")");
     }
 
     // ---- GPU-driven per-frame data prep (Subsystem D + shadows E) ----------
@@ -2721,6 +2852,11 @@ private:
                 sc.rtsh1 = glm::vec4(taaWant ? (float)(m_rtshFrameSeed++ & 16383u) : 0.0f,
                                      0.0f, 0.0f, 0.0f);
             }
+            // Gap 6 raster point-shadow gate. Only the TIER is needed here (the active
+            // slot count + face res live in the per-frame shadow-table header, written
+            // later by selectAndUploadPointShadows). tier 0 -> mesh.frag never samples
+            // set 5, byte-identical to today.
+            sc.pshadow0 = glm::vec4((float)m_pointShadow.tier, (float)kPointShadowAtlasDim, 0.0f, 0.0f);
             if (m_ssaoCtrlMapped[m_frameIdx])
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
         }
@@ -2788,11 +2924,21 @@ private:
         for (uint32_t i = 0; i < lc; ++i) {
             const PointLight& s = m_pointLights[i];
             ubo.lights[i].posRange = glm::vec4(s.pos[0], s.pos[1], s.pos[2], s.range);
-            ubo.lights[i].colorPad = glm::vec4(s.color[0], s.color[1], s.color[2], 0.0f);
+            // .a = shadowSlot, default -1 (unshadowed). Selection below overwrites
+            // it for the budgeted casters.
+            ubo.lights[i].colorPad = glm::vec4(s.color[0], s.color[1], s.color[2], -1.0f);
         }
         ubo.camPos = glm::vec4(m_camPos, 0.0f);   // PBR view vector (mesh.frag)
         // Per-scene sun direction for lighting + shadows (same source as the sky disk).
         ubo.sunDir = glm::vec4(glm::normalize(glm::vec3(m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2])), 0.0f);
+
+        // ---- Gap 6 Step 2: point-shadow caster SELECTION + table upload --------
+        // Rank the active point lights by a nearest*brightest score, take the top
+        // budget, assign each an atlas tile block, compute its 6 face matrices, and
+        // upload the per-frame shadow table. Lights beyond budget keep shadowSlot=-1
+        // (unshadowed — today's behavior). tier 0 -> 0 casters (no change at all).
+        selectAndUploadPointShadows(ubo, lc);
+
         std::memcpy(fr.camMapped, &ubo, sizeof(FrameUBO));
 
         // Analytic sky UBO (open-world track, task A): the camera's INVERSE viewProj
@@ -3109,6 +3255,53 @@ private:
         }
     }
 
+    // Gap 6 Step 3 — record the point-shadow ATLAS depth pass. For each budgeted
+    // caster slot x 6 cube faces: set the viewport to that face's atlas tile, push
+    // the face's view-proj, and replay the SAME indirect opaque draws as the sun
+    // shadow pass. Front-face cull + depth bias come from the pipeline. The whole
+    // atlas is cleared once by the graph's LOAD_OP_CLEAR; tiles outside the budget
+    // stay at the cleared far depth (== fully lit when sampled).
+    void recordPointShadowPassBody(VkCommandBuffer cmd) {
+        if (!m_pointShadowPipeline || m_pointShadowSlotCount == 0 || m_frameCmdCount == 0) return;
+        auto& fr = m_frames[m_frameIdx];
+        const PointShadowTable* tbl = m_pointShadowTableMapped[m_frameIdx]
+            ? reinterpret_cast<const PointShadowTable*>(m_pointShadowTableMapped[m_frameIdx]) : nullptr;
+        if (!tbl) return;
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pointShadowPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pointShadowPipeLayout,
+                                0, 1, &fr.objSet, 0, nullptr);
+
+        const float atlas = (float)kPointShadowAtlasDim;
+        const float fr_px = (float)m_pointShadowFaceRes;
+        for (uint32_t s = 0; s < m_pointShadowSlotCount; ++s) {
+            const glm::vec4 rect = tbl->slots[s].tileRect;   // block origin UV + face tile size UV
+            const float bx = rect.x * atlas, by = rect.y * atlas;   // block origin px
+            for (uint32_t f = 0; f < 6; ++f) {
+                const uint32_t col = f % 3u, row = f / 3u;          // 3x2 block layout
+                const float ox = bx + (float)col * fr_px;
+                const float oy = by + (float)row * fr_px;
+                VkViewport vp{ ox, oy, fr_px, fr_px, 0.0f, 1.0f };
+                VkRect2D   sc{ { (int32_t)ox, (int32_t)oy }, { (uint32_t)fr_px, (uint32_t)fr_px } };
+                vkCmdSetViewport(cmd, 0, 1, &vp);
+                vkCmdSetScissor(cmd, 0, 1, &sc);
+                PointShadowPush pc{}; pc.faceVP = tbl->slots[s].faceVP[f];
+                vkCmdPushConstants(cmd, m_pointShadowPipeLayout, VK_SHADER_STAGE_VERTEX_BIT,
+                                   0, sizeof(PointShadowPush), &pc);
+                for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
+                    const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
+                    VkDeviceSize off = 0;
+                    VkBuffer vb = mh.drawVbo(m_frameIdx);
+                    vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &off);
+                    vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
+                    vkCmdDrawIndexedIndirect(cmd, fr.indirectBuf,
+                        (VkDeviceSize)i * sizeof(VkDrawIndexedIndirectCommand), 1,
+                        sizeof(VkDrawIndexedIndirectCommand));
+                }
+            }
+        }
+    }
+
     // ---- SSAO depth pre-pass body ------------------------------------------
     // Record the camera depth-only pre-pass into the (already-open) depth pass:
     // bind the depth pre-pass pipeline (depth.vert, set0 = objSet) and replay the
@@ -3195,7 +3388,7 @@ private:
         // the IBL objects exist (they're cleared to neutral at init + rebaked on sky
         // change); mesh.frag gates the IBL math on the SSAO-ctrl ibl.x valid flag, so
         // an un-baked / failed env safely falls back to the flat ambient term.
-        VkDescriptorSet sets[6] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx], m_iblMeshSet, m_pointShadowSet };
+        VkDescriptorSet sets[6] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx], m_iblMeshSet, m_pointShadowSet[m_frameIdx] };
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_meshLayout,
                                 0, 6, sets, 0, nullptr);
         for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
@@ -3572,6 +3765,12 @@ private:
             : m_graph.importImage("scene.depth", m_depthImg,
                   ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
         RgResource rgShadow = m_graph.importImage("shadow.map", m_shadowImg, m_shadowState);
+        // Gap 6 — the point-shadow atlas. Persists DEPTH_READ_ONLY across frames (like
+        // the sun map). Only used as a render target this frame when there are casters
+        // AND the tier is on; otherwise it stays sampled (mesh.frag reads 0 slots).
+        const bool pointShadowOn = (m_pointShadow.tier > 0) && (m_pointShadowSlotCount > 0)
+                                && (m_pointShadowPipeline != VK_NULL_HANDLE);
+        RgResource rgPointShadow = m_graph.importImage("pointshadow.atlas", m_pointShadowAtlas, m_pointShadowState);
 
         // HDR pipeline resources: the linear HDR scene target (main pass writes it,
         // bloom + composite read it) and the bloom mip chain. All imported UNDEFINED
@@ -3822,6 +4021,43 @@ private:
             shadowPass.record = [](void* ctx, VkCommandBuffer c){
                 static_cast<VulkanRenderDevice*>(ctx)->recordShadowPassBody(c); };
             m_graph.addPass(std::move(shadowPass));
+        }
+
+        // ---- Pass 1b: point-shadow ATLAS depth pass (Gap 6) -----------------
+        // Mirrors the sun shadow pass: render scene depth into the budgeted casters'
+        // atlas tiles. Only added when there are casters this frame; otherwise the
+        // atlas stays in its sampled layout untouched (mesh.frag reads 0 slots, so
+        // its absence is byte-identical to today). LOAD_OP_CLEAR resets the whole
+        // atlas so unused tiles read as far (lit).
+        if (pointShadowOn) {
+            m_pointShadowDepthAttach = VkRenderingAttachmentInfo{};
+            m_pointShadowDepthAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_pointShadowDepthAttach.imageView = m_pointShadowView;
+            m_pointShadowDepthAttach.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            m_pointShadowDepthAttach.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            m_pointShadowDepthAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;  // sampled in main pass
+            m_pointShadowDepthAttach.clearValue.depthStencil = { 1.0f, 0 };
+
+            RenderPassDesc psPass{};
+            psPass.name = "pointshadow-depth";
+            psPass.addUse(ResourceUse{
+                rgPointShadow, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/true });
+            psPass.usesDynamicRendering = true;
+            m_pointShadowRenderInfo = VkRenderingInfo{};
+            m_pointShadowRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            // Render area spans the whole atlas; per-face viewports clip each draw.
+            m_pointShadowRenderInfo.renderArea = { {0,0}, { kPointShadowAtlasDim, kPointShadowAtlasDim } };
+            m_pointShadowRenderInfo.layerCount = 1;
+            m_pointShadowRenderInfo.colorAttachmentCount = 0;
+            m_pointShadowRenderInfo.pDepthAttachment = &m_pointShadowDepthAttach;
+            psPass.renderInfo = m_pointShadowRenderInfo;
+            psPass.recordCtx = this;
+            psPass.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordPointShadowPassBody(c); };
+            m_graph.addPass(std::move(psPass));
         }
 
         // ---- Depth pre-pass + SSAO chain ------------------------------------
@@ -4113,6 +4349,14 @@ private:
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            // Gap 6 — mesh.frag samples the point-shadow atlas (set 5). Declare it READ
+            // so the graph derives the DEPTH_ATTACHMENT(write, pass 1b) -> DEPTH_READ_ONLY
+            // transition (or keeps the persisted READ_ONLY state when no caster pass ran).
+            colorPass.addUse(ResourceUse{
+                rgPointShadow, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
             // When SSAO is on, mesh.frag samples the blurred AO texture — declare it
             // so the graph transitions it COLOR_ATTACHMENT -> SHADER_READ_ONLY.
             if (ssaoOn) {
@@ -4292,6 +4536,13 @@ private:
             // the graph keeps it in DEPTH_READ_ONLY through this pass.
             glassPass.addUse(ResourceUse{
                 rgShadow, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            // Gap 6 — glass also binds set 5 (the atlas); declare the READ so it stays
+            // in DEPTH_READ_ONLY through this pass (matches the sun-map use above).
+            glassPass.addUse(ResourceUse{
+                rgPointShadow, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
@@ -5071,6 +5322,9 @@ private:
         // first use we never see UNDEFINED again — the WAR barrier protecting last
         // frame's sampling reads is derived from this stored read state.
         m_shadowState = m_graph.stateOf(rgShadow);
+        // Gap 6 — persist the atlas post-frame state (DEPTH_READ_ONLY after the main
+        // pass sampled it) so next frame's import + WAR barrier are derived correctly.
+        m_pointShadowState = m_graph.stateOf(rgPointShadow);
 
         // D15 HZB: persist the depth buffer's post-frame state too (next frame's
         // pyramid reduce imports it preserved) + mark its contents rendered.
@@ -5847,7 +6101,7 @@ private:
         VkDependencyInfo ddi{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO }; ddi.imageMemoryBarrierCount = 1; ddi.pImageMemoryBarriers = &db;
         vkCmdPipelineBarrier2(cmd, &ddi);
 
-        VkDescriptorSet sets[6] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx], m_iblMeshSet, m_pointShadowSet };
+        VkDescriptorSet sets[6] = { m_bindlessSet, fr.objSet, m_shadowSet, m_meshAoSet[m_frameIdx], m_iblMeshSet, m_pointShadowSet[m_frameIdx] };
         for (int f = 0; f < 6; ++f) {
             glm::vec3 fwd, right, up; iblFaceBasis(f, fwd, right, up);
             glm::mat4 view = glm::lookAt(m_iblProbePos, m_iblProbePos + fwd, up);
@@ -6433,7 +6687,7 @@ private:
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_glassPipeline);
         // The 4 shared mesh sets + the glass-only set 4 (scene-copy + GlassControl).
         VkDescriptorSet sets[6] = { m_bindlessSet, fr.objSet, m_shadowSet,
-                                    m_meshAoSet[m_frameIdx], m_glassSet[m_frameIdx], m_pointShadowSet };
+                                    m_meshAoSet[m_frameIdx], m_glassSet[m_frameIdx], m_pointShadowSet[m_frameIdx] };
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_glassLayout,
                                 0, 6, sets, 0, nullptr);
         for (uint32_t i = 0; i < m_frameCmdCount; ++i) {
@@ -12212,6 +12466,8 @@ private:
 
         // Now that m_objSetLayout exists, build the depth-only shadow pipeline.
         if (!createShadowPipeline()) return false;
+        // Gap 6: the depth-only point-shadow atlas pipeline (push-constant face VP).
+        if (!createPointShadowPipeline()) return false;
         // Gap 6: the upload pool/fence are live now, so transition the point-shadow
         // atlas to its sampled layout (makes set 5 bindable; nothing samples it yet).
         if (!transitionPointShadowAtlasInitial()) return false;
@@ -12347,39 +12603,72 @@ private:
             logError("[rhi] point-shadow sampler create failed"); return false;
         }
 
-        // Set-5 layout: a single combined-image-sampler (sampler2DShadow) in frag.
-        VkDescriptorSetLayoutBinding b{};
-        b.binding = 0; b.descriptorCount = 1;
-        b.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        b.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        // Set-5 layout: binding 0 = the atlas sampler2DShadow, binding 1 = the
+        // per-frame shadow-table UBO (face matrices + tile rects). Both fragment-
+        // stage (mesh.frag samplePointShadow reads them).
+        VkDescriptorSetLayoutBinding bs[2]{};
+        bs[0].binding = 0; bs[0].descriptorCount = 1;
+        bs[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bs[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bs[1].binding = 1; bs[1].descriptorCount = 1;
+        bs[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        bs[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-        slci.bindingCount = 1; slci.pBindings = &b;
+        slci.bindingCount = 2; slci.pBindings = bs;
         if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_pointShadowSetLayout) != VK_SUCCESS) {
             logError("[rhi] point-shadow set layout failed"); return false;
         }
-        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
+        // One set per frame in flight (binding 1 is rewritten/refilled per frame).
+        VkDescriptorPoolSize ps[2]{
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kFramesInFlight },
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight },
+        };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        pci.maxSets = 1; pci.poolSizeCount = 1; pci.pPoolSizes = &ps;
+        pci.maxSets = kFramesInFlight; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
         if (x3CreateDescriptorPool(&pci, nullptr, &m_pointShadowDescPool) != VK_SUCCESS) {
             logError("[rhi] point-shadow desc pool failed"); return false;
         }
-        VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-        dsai.descriptorPool = m_pointShadowDescPool; dsai.descriptorSetCount = 1; dsai.pSetLayouts = &m_pointShadowSetLayout;
-        if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_pointShadowSet) != VK_SUCCESS) {
-            logError("[rhi] point-shadow set alloc failed"); return false;
-        }
 
-        // Write set 5 to point at the atlas. Sampled layout is DEPTH_READ_ONLY_OPTIMAL
-        // (the atlas is transitioned to it once in transitionPointShadowAtlasInitial(),
-        // which runs after the upload pool exists). Matches how the sun set is written.
-        VkDescriptorImageInfo dii{};
-        dii.sampler = m_pointShadowSampler;
-        dii.imageView = m_pointShadowView;
-        dii.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
-        VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-        w.dstSet = m_pointShadowSet; w.dstBinding = 0; w.descriptorCount = 1;
-        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &dii;
-        vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        // Per-frame shadow-table UBO (host-visible, persistently mapped) + the set.
+        for (uint32_t f = 0; f < kFramesInFlight; ++f) {
+            VkBufferCreateInfo cb{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            cb.size = sizeof(PointShadowTable); cb.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationCreateInfo aci2{};
+            aci2.usage = VMA_MEMORY_USAGE_AUTO;
+            aci2.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+                       | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo cinfo{};
+            if (x3vmaCreateBuffer(&cb, &aci2, &m_pointShadowTableBuf[f],
+                                  &m_pointShadowTableAlloc[f], &cinfo) != VK_SUCCESS) {
+                logError("[rhi] point-shadow table buffer failed"); return false;
+            }
+            m_pointShadowTableMapped[f] = cinfo.pMappedData;
+            // Zero it so an unwritten table reads "0 active slots" (no sampling).
+            std::memset(m_pointShadowTableMapped[f], 0, sizeof(PointShadowTable));
+
+            VkDescriptorSetAllocateInfo dsai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            dsai.descriptorPool = m_pointShadowDescPool; dsai.descriptorSetCount = 1;
+            dsai.pSetLayouts = &m_pointShadowSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &dsai, &m_pointShadowSet[f]) != VK_SUCCESS) {
+                logError("[rhi] point-shadow set alloc failed"); return false;
+            }
+            // binding 0 = the atlas (DEPTH_READ_ONLY_OPTIMAL, transitioned later),
+            // binding 1 = this frame's table UBO. Both written once at init; only the
+            // UBO CONTENTS change per frame (the descriptor stays valid).
+            VkDescriptorImageInfo dii{};
+            dii.sampler = m_pointShadowSampler;
+            dii.imageView = m_pointShadowView;
+            dii.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+            VkDescriptorBufferInfo bi{ m_pointShadowTableBuf[f], 0, sizeof(PointShadowTable) };
+            VkWriteDescriptorSet w[2]{};
+            w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[0].dstSet = m_pointShadowSet[f]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
+            w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &dii;
+            w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[1].dstSet = m_pointShadowSet[f]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
+            w[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[1].pBufferInfo = &bi;
+            vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+        }
         return true;
     }
 
@@ -12491,6 +12780,84 @@ private:
         return true;
     }
 
+    // Gap 6 — depth-only pipeline for the point-shadow ATLAS pass (point_shadow.vert).
+    // Identical state to the sun shadow pipeline (front-face cull + depth bias, LESS,
+    // no color), but the transform arrives via a push constant (one face per draw)
+    // and the viewport is set per face to the tile rect. set 0 = the object SSBO.
+    bool createPointShadowPipeline() {
+        VkShaderModule vs = loadShaderModule("shaders\\point_shadow.vert.spv");
+        if (!vs) return false;
+
+        VkPipelineShaderStageCreateInfo stage{};
+        stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        stage.stage = VK_SHADER_STAGE_VERTEX_BIT; stage.module = vs; stage.pName = "main";
+
+        VkVertexInputBindingDescription bind{ 0, sizeof(MeshVertex), VK_VERTEX_INPUT_RATE_VERTEX };
+        VkVertexInputAttributeDescription attrs[3]{
+            { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, pos)    },
+            { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(MeshVertex, normal) },
+            { 2, 0, VK_FORMAT_R32G32_SFLOAT,    offsetof(MeshVertex, uv)     },
+        };
+        VkPipelineVertexInputStateCreateInfo vin{ VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+        vin.vertexBindingDescriptionCount = 1; vin.pVertexBindingDescriptions = &bind;
+        vin.vertexAttributeDescriptionCount = 3; vin.pVertexAttributeDescriptions = attrs;
+
+        VkPipelineInputAssemblyStateCreateInfo ia{ VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkPipelineViewportStateCreateInfo vp{ VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+        vp.viewportCount = 1; vp.scissorCount = 1;
+
+        VkPipelineRasterizationStateCreateInfo rs{ VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+        rs.polygonMode = VK_POLYGON_MODE_FILL; rs.cullMode = VK_CULL_MODE_FRONT_BIT;
+        rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE; rs.lineWidth = 1.0f;
+        rs.depthBiasEnable = VK_TRUE;
+        rs.depthBiasConstantFactor = 1.25f;
+        rs.depthBiasSlopeFactor = 1.75f;
+
+        VkPipelineMultisampleStateCreateInfo ms{ VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+        ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        VkPipelineDepthStencilStateCreateInfo dss{ VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+        dss.depthTestEnable = VK_TRUE; dss.depthWriteEnable = VK_TRUE;
+        dss.depthCompareOp = VK_COMPARE_OP_LESS;
+
+        VkPipelineColorBlendStateCreateInfo cb{ VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+        cb.attachmentCount = 0; cb.pAttachments = nullptr;
+
+        VkDynamicState dyn[2]{ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+        VkPipelineDynamicStateCreateInfo ds{ VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+        ds.dynamicStateCount = 2; ds.pDynamicStates = dyn;
+
+        // set 0 = object SSBO (point_shadow.vert reads model + visible index), plus a
+        // single mat4 push constant for the per-face view-proj.
+        VkPushConstantRange pcr{ VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(PointShadowPush) };
+        VkPipelineLayoutCreateInfo plci{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        plci.setLayoutCount = 1; plci.pSetLayouts = &m_objSetLayout;
+        plci.pushConstantRangeCount = 1; plci.pPushConstantRanges = &pcr;
+        if (vkCreatePipelineLayout(m_dev.device, &plci, nullptr, &m_pointShadowPipeLayout) != VK_SUCCESS) {
+            logError("[rhi] point-shadow pipeline layout failed"); vkDestroyShaderModule(m_dev.device, vs, nullptr); return false;
+        }
+
+        VkPipelineRenderingCreateInfo prci{ VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
+        prci.colorAttachmentCount = 0;
+        prci.depthAttachmentFormat = m_shadowFormat;
+
+        VkGraphicsPipelineCreateInfo gpci{ VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+        gpci.pNext = &prci;
+        gpci.stageCount = 1; gpci.pStages = &stage;
+        gpci.pVertexInputState = &vin; gpci.pInputAssemblyState = &ia;
+        gpci.pViewportState = &vp; gpci.pRasterizationState = &rs;
+        gpci.pMultisampleState = &ms; gpci.pDepthStencilState = &dss;
+        gpci.pColorBlendState = &cb; gpci.pDynamicState = &ds; gpci.layout = m_pointShadowPipeLayout;
+        VkResult pr = x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_pointShadowPipeline);
+        vkDestroyShaderModule(m_dev.device, vs, nullptr);
+        if (pr != VK_SUCCESS) { logError("[rhi] point-shadow pipeline create failed"); return false; }
+
+        logInfo("[rhi] point-shadow atlas pipeline ready (4096^2 D32 atlas, depth-only, push-constant face VP)");
+        return true;
+    }
+
     // Write one bindless array slot to point at `tex` (combined image+sampler).
     // update-after-bind means this is legal even while the set is bound: it only
     // rewrites the descriptor the NEXT frame reads (createTexture happens at load /
@@ -12565,6 +12932,15 @@ private:
         if (m_shadowImg)       { vmaDestroyImage(m_alloc, m_shadowImg, m_shadowAlloc); m_shadowImg = VK_NULL_HANDLE; m_shadowAlloc = nullptr; }
 
         // Gap 6 — point-shadow atlas resources (set 5).
+        if (m_pointShadowPipeline)   { vkDestroyPipeline(m_dev.device, m_pointShadowPipeline, nullptr); m_pointShadowPipeline = VK_NULL_HANDLE; }
+        if (m_pointShadowPipeLayout) { vkDestroyPipelineLayout(m_dev.device, m_pointShadowPipeLayout, nullptr); m_pointShadowPipeLayout = VK_NULL_HANDLE; }
+        for (uint32_t f = 0; f < kFramesInFlight; ++f) {
+            if (m_pointShadowTableBuf[f]) {
+                vmaDestroyBuffer(m_alloc, m_pointShadowTableBuf[f], m_pointShadowTableAlloc[f]);
+                m_pointShadowTableBuf[f] = VK_NULL_HANDLE; m_pointShadowTableAlloc[f] = nullptr;
+                m_pointShadowTableMapped[f] = nullptr;
+            }
+        }
         if (m_pointShadowDescPool)  { vkDestroyDescriptorPool(m_dev.device, m_pointShadowDescPool, nullptr); m_pointShadowDescPool = VK_NULL_HANDLE; }
         if (m_pointShadowSetLayout) { vkDestroyDescriptorSetLayout(m_dev.device, m_pointShadowSetLayout, nullptr); m_pointShadowSetLayout = VK_NULL_HANDLE; }
         if (m_pointShadowSampler)   { vkDestroySampler(m_dev.device, m_pointShadowSampler, nullptr); m_pointShadowSampler = VK_NULL_HANDLE; }
@@ -13339,6 +13715,8 @@ private:
         // all zero when inactive (the plain variant never references them).
         glm::vec4 rtsh0;        // x = tier, y = tan(sun angular radius), z = point ray budget K, w = light source radius (m)
         glm::vec4 rtsh1;        // x = frame seed (0 when TAA is off -> static dither)
+        // Gap 6 raster point-shadow lane: read by mesh.frag samplePointShadow.
+        glm::vec4 pshadow0;     // x = tier (0 off), y = atlas dim (px), z = active slot count, w reserved
     };
     // Half-res AO targets: raw (ssao.frag output) + blurred (ssao_blur output,
     // sampled by mesh.frag). Both R8, recreated with the frame extent.
@@ -13671,9 +14049,38 @@ private:
     VmaAllocation         m_pointShadowAlloc     = nullptr;
     VkImageView           m_pointShadowView      = VK_NULL_HANDLE;
     VkSampler             m_pointShadowSampler   = VK_NULL_HANDLE;   // compare-enabled
-    VkDescriptorSetLayout m_pointShadowSetLayout = VK_NULL_HANDLE;   // set5: sampler2DShadow (atlas)
+    VkDescriptorSetLayout m_pointShadowSetLayout = VK_NULL_HANDLE;   // set5: b0 sampler2DShadow (atlas), b1 shadow-table UBO
     VkDescriptorPool      m_pointShadowDescPool  = VK_NULL_HANDLE;
-    VkDescriptorSet       m_pointShadowSet       = VK_NULL_HANDLE;   // points at the atlas
+    // Per-frame set 5: binding 0 = the (shared) atlas, binding 1 = THIS frame's
+    // shadow table. Per-frame so the table UBO can be rewritten without touching a
+    // descriptor an in-flight frame still reads.
+    VkDescriptorSet       m_pointShadowSet[kFramesInFlight] = {};
+    // Gap 6 — per-slot shadow table (set 5, binding 1): for each budgeted caster,
+    // the 6 cube-face view-proj matrices + the atlas tile rect (origin/size in
+    // [0,1] UV) + the light world position. std140: mat4[6] then two vec4s.
+    struct PointShadowSlot {
+        glm::mat4 faceVP[6];   // 6 * 64 = 384 B (90deg FOV, near..range, +X-X+Y-Y+Z-Z)
+        glm::vec4 tileRect;    // xy = block origin UV, zw = per-FACE tile size UV
+        glm::vec4 lightPos;    // xyz = light world pos, w = range (atlas-depth remap)
+    };
+    struct PointShadowTable {
+        glm::vec4       header;   // x = active slot count, y = atlas dim (px), zw reserved
+        PointShadowSlot slots[kMaxPointShadowSlots];
+    };
+    VkBuffer      m_pointShadowTableBuf[kFramesInFlight]    = {};
+    VmaAllocation m_pointShadowTableAlloc[kFramesInFlight]  = {};
+    void*         m_pointShadowTableMapped[kFramesInFlight] = {};
+    // Cached r_pointshadows* tunables (setPointShadowParams), applied each frame.
+    IRenderDevice::PointShadowParams m_pointShadow{};
+    // This frame's selection result (filled in endFrame, consumed by the depth pass).
+    uint32_t      m_pointShadowSlotCount = 0;            // budgeted casters this frame
+    uint32_t      m_pointShadowFaceRes   = 512;          // clamped face res this frame
+    uint32_t      m_pointShadowLogThrottle = 0;          // throttles the caster-count log
+    int           m_pointShadowLightIdx[kMaxPointShadowSlots] = {}; // slot -> m_pointLights index
+    // Depth pass push constant: one face's view-proj (the per-face draw transform).
+    struct PointShadowPush { glm::mat4 faceVP; };
+    VkPipeline       m_pointShadowPipeline = VK_NULL_HANDLE;   // depth-only (point_shadow.vert)
+    VkPipelineLayout m_pointShadowPipeLayout = VK_NULL_HANDLE; // set0 objSet + push constant
     glm::mat4             m_lightViewProj{ 1.0f };  // computed each frame
     bool                  m_shadowOverride = false;        // setShadowBounds: fixed shadow box
     glm::vec3             m_shadowCenter{ 0.0f };
@@ -13703,6 +14110,9 @@ private:
     // reference (must outlive execute(); the graph holds pointers into these).
     VkRenderingInfo           m_shadowRenderInfo{};
     VkRenderingAttachmentInfo m_shadowDepthAttach{};
+    // Gap 6 — stable storage for the point-shadow atlas pass (mirrors the sun's).
+    VkRenderingInfo           m_pointShadowRenderInfo{};
+    VkRenderingAttachmentInfo m_pointShadowDepthAttach{};
     VkRenderingInfo           m_mainRenderInfo{};
     VkRenderingAttachmentInfo m_mainDepthAttach{};
 
