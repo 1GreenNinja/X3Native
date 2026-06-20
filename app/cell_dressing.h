@@ -76,6 +76,28 @@ private:
         float    emissive[4]   = {0,0,0,0};   // rgb linear, w = strength (per-instance glow)
         float    tint[4]       = {1,1,1,1};   // per-instance baseColor MULTIPLIER (darken/tint)
     };
+    // ATMOSPHERE: a procedural (non-GLB) mesh drawn either emissive or as a soft
+    // translucent volume. Used for the volumetric light SHAFTS (glass cones from the
+    // cell tube / door) and the drifting DUST MOTES caught in the light. These need
+    // no asset; their geometry is built once at build() time into m_proc.
+    struct ProcDraw {
+        uint32_t meshIdx = 0;                 // index into m_procMeshes
+        float    transform[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+        float    color[4]   = {1,1,1,1};      // baseColor factor (rgb, a = blend opacity for glass)
+        float    emissive[4]= {0,0,0,0};      // rgb linear glow, w = strength
+        bool     glass = false;               // true -> drawMeshGlass (soft volumetric shaft)
+    };
+    // A drifting dust mote: a tiny emissive instance whose transform is rebuilt each
+    // tick() from a slow upward+lateral drift inside a light pool (so specks float in
+    // the beam). Cheap: a handful, all sharing one small mesh.
+    struct Mote {
+        uint32_t draw;                        // index into m_proc (the ProcDraw it animates)
+        float    ox, oy, oz;                  // pool origin (light pos)
+        float    rx, rz;                      // lateral radius of the drift volume
+        float    phase, rate;                 // drift phase / speed
+        float    riseY, span;                 // vertical rise span (loops)
+        float    size;                        // mote scale
+    };
 
     // Load (cached) a converted GLB by relative path; returns the asset index (always
     // valid — a failed load yields ok=false that draws nothing).
@@ -93,11 +115,23 @@ private:
     void addLight(uint32_t room, float x, float y, float z, float range,
                   float r, float g, float b);
 
+    // ---- ATMOSPHERE builders (procedural; no GLB) -------------------------------
+    // Register a procedural mesh (built from x3::prims) on the device; returns its
+    // index into m_procMeshes. Cached not needed (a handful of distinct shapes).
+    uint32_t addProcMesh(x3::rhi::IRenderDevice& device, const struct ProcGeo& g);
+    // Seed N drifting dust motes inside a light pool centered at (x,y,z).
+    void addDustMotes(uint32_t moteMesh, int n, float x, float y, float z,
+                      float rx, float rz, float riseY, float span,
+                      float r, float g, float b, float glow);
+
     std::unique_ptr<x3::asset::IAssetSource> m_assets;
     std::unique_ptr<x3::asset::IModelLoader> m_loader;
     std::vector<Asset>                       m_assetTable;
     std::vector<std::string>                 m_assetPaths;
     std::vector<Instance>                    m_instances;
+    std::vector<x3::rhi::MeshHandle>         m_procMeshes; // procedural atmosphere meshes
+    std::vector<ProcDraw>                    m_proc;        // shafts + motes
+    std::vector<Mote>                        m_motes;       // animated motes (index into m_proc)
     std::vector<DressLight>                  m_lights;
     // Indices into m_lights of the lights whose intensity is flicker-driven, with their
     // base color (so tick() can modulate them) + a per-light phase/rate.
