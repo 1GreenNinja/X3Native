@@ -1210,6 +1210,15 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // resolve pass -> byte-identical to the pre-TAA render path (A/B).
     console.registerCVar("r_taa",        "1",    "temporal AA: 1 = jitter + history resolve (default), 0 = off (byte-identical pre-TAA path)");
     console.registerCVar("r_taasharpen", "0.25", "post-TAA RCAS-style sharpen amount (0 = off; only applied while r_taa 1)");
+    // Lens flare + anamorphic streak (Abrams/Star-Trek-Fleet-Command cinematic look):
+    // procedural ghosts/halo + a blue horizontal streak + an occlusion-tested SUN
+    // flare, generated after bloom and composited BEFORE tonemap (ACES rolls it off).
+    // Restrained defaults; the intensity cvar can push it for the intro. r_lensflare 0
+    // skips the whole pass -> byte-identical to the no-flare build.
+    console.registerCVar("r_lensflare",           "1",   "lens flare + anamorphic streak: 1 = on (default), 0 = off (byte-identical no-flare path)");
+    console.registerCVar("r_lensflare_intensity", "0.5", "lens flare overall gain (restrained; push for the intro)");
+    console.registerCVar("r_lensflare_streak",    "0.6", "anamorphic horizontal streak strength (the blue light-streak)");
+    console.registerCVar("r_lensflare_ghosts",    "5",   "lens-ghost chain count (1..8)");
     // Metal ambient-specular floor (mesh.frag IBL path): metals in a DARK baked
     // environment keep an F0-tinted ambient response instead of rendering black.
     // 1 = on (default), 0 = off, >1 strengthens. Live (synced in applyRtaoCVars).
@@ -1340,6 +1349,11 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     // TAA (live): r_taa gates the jitter + resolve; r_taasharpen [0..1].
     px.taa        = console.getInt("r_taa") != 0;
     px.taaSharpen = console.getFloat("r_taasharpen");
+    // Lens flare (live): r_lensflare gates the whole pass; the rest tune it.
+    px.lensFlare          = console.getInt("r_lensflare") != 0;
+    px.lensFlareIntensity = console.getFloat("r_lensflare_intensity");
+    px.lensFlareStreak    = console.getFloat("r_lensflare_streak");
+    px.lensFlareGhosts    = console.getInt("r_lensflare_ghosts");
     if (px.taaSharpen < 0.0f) px.taaSharpen = 0.0f;
     if (px.taaSharpen > 1.0f) px.taaSharpen = 1.0f;
     device.setPostFX(px);

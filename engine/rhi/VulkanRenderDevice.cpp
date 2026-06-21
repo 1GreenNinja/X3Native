@@ -3579,6 +3579,11 @@ private:
         for (uint32_t i = 0; i < kBloomMips; ++i)
             rgMip[i] = m_graph.importImage("bloom.mip", m_bloomMips[i].img,
                 ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        // Lens-flare buffer (half-res HDR). Imported UNDEFINED each frame (fully
+        // overwritten by the lens pass when it runs; never read when the pass is
+        // skipped). The composite reads it only when the flare is active this frame.
+        RgResource rgLens = m_graph.importImage("lens.flare", m_lensImg,
+            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
 
         // SSAO images (half-res). Imported UNDEFINED each frame (fully overwritten
         // by their producing pass). Only used when SSAO is enabled this frame.
@@ -4858,6 +4863,95 @@ private:
         const bool bloomOn = m_post.bloomEnabled;
         if (bloomOn) addBloomPasses(rgPostSrc, rgMip);
 
+        // ---- LENS FLARE + ANAMORPHIC STREAK -------------------------------
+        // Generated AFTER bloom (reuses the bright-pass mip0) and BEFORE composite
+        // (added into linear HDR before tonemap). Gated on r_lensflare AND bloom
+        // (the bright-pass is the input). When OFF, the pass is skipped and the
+        // composite's lensIntensity is forced 0 (its shader guards the sample) ->
+        // byte-identical to the no-flare build. Deterministic: no time jitter.
+        const bool lensOn = m_post.lensFlare && bloomOn && (m_lensPipe != VK_NULL_HANDLE);
+        m_lensActiveThisFrame = lensOn;
+        if (lensOn) {
+            // Project the sun (directional; SkyParams.sunDir is TOWARD the sun) to
+            // screen UV + clip depth. A far point along sunDir from the camera.
+            LensUBO lu{};
+            lu.intensity      = std::max(0.0f, m_post.lensFlareIntensity);
+            lu.streak         = std::max(0.0f, m_post.lensFlareStreak);
+            lu.ghosts         = (float)std::clamp(m_post.lensFlareGhosts, 0, 8);
+            lu.aspect         = (float)m_extent.width / (float)std::max(1u, m_extent.height);
+            lu.streakTint[0]  = 0.30f; lu.streakTint[1] = 0.55f; lu.streakTint[2] = 1.0f; // cool blue
+            lu.ghostDispersal = 0.30f;
+            lu.haloWidth      = 0.45f;
+            lu.chroma         = 0.012f;
+            lu.sunSize        = 0.10f;
+            lu.maxRadiance    = 4.0f;   // energy clamp (white-out guard)
+            lu.sunValid       = 0.0f;
+            lu.sunScreen[0]   = 0.5f; lu.sunScreen[1] = 0.5f;
+            lu.sunDepth       = 1.0f;
+            if (m_sky.enabled) {
+                const glm::vec3 sd = glm::normalize(glm::vec3(
+                    m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2]));
+                const glm::vec3 sunPt = m_camPos + sd * 1.0e6f;   // ~at infinity
+                const glm::vec4 clip = m_lastViewProj * glm::vec4(sunPt, 1.0f);
+                if (clip.w > 1e-4f) {
+                    const float nx = clip.x / clip.w;
+                    const float ny = clip.y / clip.w;
+                    const float nz = clip.z / clip.w;          // [0..1] Vulkan depth
+                    // UV: clip [-1,1] -> [0,1]. The clip is reverse-Y for Vulkan, so
+                    // the framebuffer Y is (ny*0.5+0.5) directly (matches sky/HUD).
+                    const float ux = nx * 0.5f + 0.5f;
+                    const float uy = ny * 0.5f + 0.5f;
+                    // On-screen (with a small margin so an edge sun still streaks).
+                    if (ux > -0.2f && ux < 1.2f && uy > -0.2f && uy < 1.2f) {
+                        lu.sunScreen[0] = ux; lu.sunScreen[1] = uy;
+                        lu.sunDepth = std::clamp(nz, 0.0f, 1.0f);
+                        lu.sunValid = 1.0f;
+                    }
+                }
+            }
+            std::memcpy(m_lensUboMapped[m_frameIdx], &lu, sizeof(LensUBO));
+
+            m_lensAttach = VkRenderingAttachmentInfo{};
+            m_lensAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_lensAttach.imageView = m_lensView;
+            m_lensAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_lensAttach.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;   // fully written
+            m_lensAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            m_lensRenderInfo = VkRenderingInfo{};
+            m_lensRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_lensRenderInfo.renderArea = { {0,0}, m_lensExtent };
+            m_lensRenderInfo.layerCount = 1;
+            m_lensRenderInfo.colorAttachmentCount = 1;
+            m_lensRenderInfo.pColorAttachments = &m_lensAttach;
+
+            RenderPassDesc lf{};
+            lf.name = "lens-flare";
+            lf.addUse(ResourceUse{
+                rgLens, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            lf.addUse(ResourceUse{
+                rgMip[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            lf.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            lf.usesDynamicRendering = true;
+            lf.renderInfo = m_lensRenderInfo;
+            lf.recordCtx = this;
+            lf.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                self->postViewport(c, self->m_lensExtent);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_lensPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_lensLayout,
+                                        0, 1, &self->m_lensSet[self->m_frameIdx], 0, nullptr);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(lf));
+        }
+
         // Composite: HDR scene + bloom mip0 -> ACES tonemap -> LDR final target.
         // The HUD is recorded here (after tonemap) so it composites on the LDR
         // image. The pass writes the swapchain/offscreen color (rgColor).
@@ -4887,6 +4981,13 @@ private:
                 rgMip[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            // Lens-flare buffer: only declared as a read when the flare ran this
+            // frame (otherwise the image is UNDEFINED + the shader never samples it).
+            if (lensOn)
+                comp.addUse(ResourceUse{
+                    rgLens, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
             comp.usesDynamicRendering = true;
             m_compositeRenderInfo = VkRenderingInfo{};
             m_compositeRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
@@ -4927,6 +5028,12 @@ private:
                     ? std::max(0.0f, self->m_post.taaSharpen) : 0.0f;
                 cp.texelW  = 1.0f / (float)std::max(1u, self->m_extent.width);
                 cp.texelH  = 1.0f / (float)std::max(1u, self->m_extent.height);
+                // Lens flare: forced 0 when the pass didn't run this frame (the
+                // shader's >0 guard then never samples the untouched buffer ->
+                // byte-identical to the no-flare composite). The flare radiance was
+                // already gain-scaled in lens_flare.frag, so this is a 0/1 enable
+                // (the generated buffer carries the user intensity).
+                cp.lensIntensity = self->m_lensActiveThisFrame ? 1.0f : 0.0f;
                 vkCmdPushConstants(c, self->m_compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(cp), &cp);
                 vkCmdDraw(c, 3, 1, 0, 0);
@@ -7871,6 +7978,20 @@ private:
             }
         }
 
+        // Lens-flare buffer: HALF-RES (matches bloom mip0) HDR. COLOR_ATTACHMENT
+        // (the lens pass renders into it) + SAMPLED (the composite reads it). The
+        // flare is generated at half res (cheap; it's all soft glow) and the
+        // composite up-samples it with the post sampler.
+        {
+            const uint32_t lw = std::max(1u, W / 2), lh = std::max(1u, H / 2);
+            m_lensExtent = { lw, lh };
+            if (!createColorTarget(kHdrFormat, lw, lh,
+                                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                   m_lensImg, m_lensAlloc, m_lensView)) {
+                logError("[rhi] lens-flare target create failed"); return false;
+            }
+        }
+
         // ---- Scene-color COPY target (glass refraction/frost, spec §3.1) -----
         // A mip-chained HDR image: mip0 (full-res) receives a vkCmdCopyImage of the
         // opaque HDR scene; mips 1..N are progressively blurred (M4 frost). Usage:
@@ -7937,6 +8058,9 @@ private:
         if (m_taaHistImg)  { vmaDestroyImage(m_alloc, m_taaHistImg, m_taaHistAlloc); m_taaHistImg = VK_NULL_HANDLE; m_taaHistAlloc = nullptr; }
         m_taaHistState = ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 };
         m_taaHistoryValid = false;
+        if (m_lensView) { vkDestroyImageView(m_dev.device, m_lensView, nullptr); m_lensView = VK_NULL_HANDLE; }
+        if (m_lensImg)  { vmaDestroyImage(m_alloc, m_lensImg, m_lensAlloc); m_lensImg = VK_NULL_HANDLE; m_lensAlloc = nullptr; }
+        m_lensExtent = {};
         if (m_hdrView) { vkDestroyImageView(m_dev.device, m_hdrView, nullptr); m_hdrView = VK_NULL_HANDLE; }
         if (m_hdrImg)  { vmaDestroyImage(m_alloc, m_hdrImg, m_hdrAlloc); m_hdrImg = VK_NULL_HANDLE; m_hdrAlloc = nullptr; }
     }
@@ -8121,8 +8245,9 @@ private:
             logError("[rhi] post set layout (1) failed"); return false;
         }
         // Descriptor set layout: 2 combined image samplers (composite: HDR + bloom)
-        // + the auto-exposure SSBO (binding 2, fragment-read).
-        VkDescriptorSetLayoutBinding b2[3]{};
+        // + the auto-exposure SSBO (binding 2, fragment-read) + the lens-flare
+        // buffer (binding 3, fragment sampler).
+        VkDescriptorSetLayoutBinding b2[4]{};
         b2[0].binding = 0; b2[0].descriptorCount = 1;
         b2[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         b2[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -8132,8 +8257,11 @@ private:
         b2[2].binding = 2; b2[2].descriptorCount = 1;
         b2[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         b2[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        b2[3].binding = 3; b2[3].descriptorCount = 1;
+        b2[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b2[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo s2{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-        s2.bindingCount = 3; s2.pBindings = b2;
+        s2.bindingCount = 4; s2.pBindings = b2;
         if (vkCreateDescriptorSetLayout(m_dev.device, &s2, nullptr, &m_postSetLayout2) != VK_SUCCESS) {
             logError("[rhi] post set layout (2) failed"); return false;
         }
@@ -8180,6 +8308,35 @@ private:
             logError("[rhi] TAA depth sampler failed"); return false;
         }
 
+        // Lens-flare set layout: b0 = bloom mip0 sampler (bright source), b1 = depth
+        // sampler (sun occlusion), b2 = the per-frame LensUBO (sun pos + tunables).
+        VkDescriptorSetLayoutBinding lb[3]{};
+        lb[0].binding = 0; lb[0].descriptorCount = 1;
+        lb[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        lb[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        lb[1].binding = 1; lb[1].descriptorCount = 1;
+        lb[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        lb[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        lb[2].binding = 2; lb[2].descriptorCount = 1;
+        lb[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        lb[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo sl{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        sl.bindingCount = 3; sl.pBindings = lb;
+        if (vkCreateDescriptorSetLayout(m_dev.device, &sl, nullptr, &m_lensSetLayout) != VK_SUCCESS) {
+            logError("[rhi] lens-flare set layout failed"); return false;
+        }
+        // NEAREST clamp sampler for reading depth as data in the lens sun-occlusion
+        // test (same role as the TAA/SSAO depth samplers).
+        VkSamplerCreateInfo lds{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+        lds.magFilter = VK_FILTER_NEAREST; lds.minFilter = VK_FILTER_NEAREST;
+        lds.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        lds.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        lds.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        lds.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        if (vkCreateSampler(m_dev.device, &lds, nullptr, &m_lensDepthSampler) != VK_SUCCESS) {
+            logError("[rhi] lens depth sampler failed"); return false;
+        }
+
         // Descriptor pool: (HDR set + kBloomMips mip sets + TAA-out set)
         // single-sampler sets + 2 composite sets (2 samplers + 1 SSBO each: raw-HDR
         // + TAA variants) + 2 auto-exposure sets (1 sampler + 1 SSBO each) + the
@@ -8187,13 +8344,17 @@ private:
         // UPDATE_AFTER_BIND needed.
         const uint32_t single = 1 + kBloomMips + 1;     // HDR + each mip + TAA out
         VkDescriptorPoolSize ps[3]{
+            // single-sampler sets + composite (now 3 samplers each: HDR + bloom +
+            // lens) x2 variants + 2 AE samplers + 3 TAA samplers/frame + 2 lens
+            // samplers (mip0 + depth) per lens set (one set per frame in flight).
             { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-              single + 2*2 + 1*2 + 3*kFramesInFlight },
+              single + 3*2 + 1*2 + 3*kFramesInFlight + 2*kFramesInFlight },
             { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         4 },
-            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight },
+            // TAA UBO/frame + composite AE SSBO already counted; lens UBO/frame here.
+            { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight + kFramesInFlight },
         };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        pci.maxSets = single + 4 + kFramesInFlight; pci.poolSizeCount = 3; pci.pPoolSizes = ps;
+        pci.maxSets = single + 4 + kFramesInFlight + kFramesInFlight; pci.poolSizeCount = 3; pci.pPoolSizes = ps;
         if (x3CreateDescriptorPool(&pci, nullptr, &m_postPool) != VK_SUCCESS) {
             logError("[rhi] post desc pool failed"); return false;
         }
@@ -8247,6 +8408,29 @@ private:
                 logError("[rhi] TAA UBO alloc failed"); return false;
             }
             m_taaUboMapped[i] = ainfo.pMappedData;
+        }
+
+        // Lens-flare sets + per-frame LensUBO: the sun screen pos + tunables change
+        // every frame, so one set + one buffer PER FRAME in flight — a CPU write
+        // never races the GPU read of the previous frame's set. The mip0 + depth
+        // samplers are identical across frames (written once in writePostDescriptors).
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            ai.descriptorPool = m_postPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_lensSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_lensSet[i]) != VK_SUCCESS) {
+                logError("[rhi] post set alloc (lens) failed"); return false;
+            }
+            VkBufferCreateInfo bci{ VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO };
+            bci.size = sizeof(LensUBO); bci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+            VmaAllocationCreateInfo aci{};
+            aci.usage = VMA_MEMORY_USAGE_AUTO;
+            aci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                        VMA_ALLOCATION_CREATE_MAPPED_BIT;
+            VmaAllocationInfo ainfo{};
+            if (x3vmaCreateBuffer(&bci, &aci, &m_lensUboBuf[i], &m_lensUboAlloc[i], &ainfo) != VK_SUCCESS) {
+                logError("[rhi] lens UBO alloc failed"); return false;
+            }
+            m_lensUboMapped[i] = ainfo.pMappedData;
         }
 
         // Auto-exposure SSBO: 16 bytes { adapted, avgLog, pad, pad }, persistent
@@ -8318,6 +8502,20 @@ private:
         if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\composite.frag.spv",
                                       m_compositeLayout, m_format, /*additiveBlend=*/false, m_compositePipe))
             return false;
+
+        // Lens flare: full-screen pass into the HDR half-res lens buffer. All
+        // parameters ride in the LensUBO -> no push constants. Opaque write (the
+        // composite scales + adds it; this pass fully overwrites the buffer).
+        {
+            VkPipelineLayoutCreateInfo ll{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+            ll.setLayoutCount = 1; ll.pSetLayouts = &m_lensSetLayout;
+            if (vkCreatePipelineLayout(m_dev.device, &ll, nullptr, &m_lensLayout) != VK_SUCCESS) {
+                logError("[rhi] lens-flare pipeline layout failed"); return false;
+            }
+            if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\lens_flare.frag.spv",
+                                          m_lensLayout, kHdrFormat, /*additiveBlend=*/false, m_lensPipe))
+                return false;
+        }
 
         // TAA resolve: full-screen pass writing the HDR-format TAA output. All
         // parameters ride in the per-frame UBO -> no push constants.
@@ -8421,11 +8619,12 @@ private:
         write1(m_setTaaOut, m_taaOutView);   // bloom bright-pass source when TAA is on
 
         // Composite set: binding 0 = HDR scene, binding 1 = bloom mip0,
-        // binding 2 = auto-exposure SSBO.
+        // binding 2 = auto-exposure SSBO, binding 3 = lens-flare buffer.
         VkDescriptorImageInfo d0{ m_postSampler, m_hdrView,           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         VkDescriptorImageInfo d1{ m_postSampler, m_bloomMips[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         VkDescriptorBufferInfo db{ m_aeBuf, 0, VK_WHOLE_SIZE };
-        VkWriteDescriptorSet cw[3]{};
+        VkDescriptorImageInfo d3{ m_postSampler, m_lensView,          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkWriteDescriptorSet cw[4]{};
         cw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         cw[0].dstSet = m_setComposite; cw[0].dstBinding = 0; cw[0].descriptorCount = 1;
         cw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; cw[0].pImageInfo = &d0;
@@ -8435,7 +8634,10 @@ private:
         cw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         cw[2].dstSet = m_setComposite; cw[2].dstBinding = 2; cw[2].descriptorCount = 1;
         cw[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; cw[2].pBufferInfo = &db;
-        vkUpdateDescriptorSets(m_dev.device, 3, cw, 0, nullptr);
+        cw[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        cw[3].dstSet = m_setComposite; cw[3].dstBinding = 3; cw[3].descriptorCount = 1;
+        cw[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; cw[3].pImageInfo = &d3;
+        vkUpdateDescriptorSets(m_dev.device, 4, cw, 0, nullptr);
 
         // Auto-exposure set: b0 = HDR scene (sampled by the compute reduce; the
         // view changes on resize, hence rewritten here), b1 = the exposure SSBO.
@@ -8453,7 +8655,7 @@ private:
         // Composite-TAA set: binding 0 = the TAA RESOLVE OUTPUT (instead of the
         // raw HDR scene), binding 1 = bloom mip0, binding 2 = AE SSBO.
         VkDescriptorImageInfo t0{ m_postSampler, m_taaOutView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkWriteDescriptorSet tw[3]{};
+        VkWriteDescriptorSet tw[4]{};
         tw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         tw[0].dstSet = m_setCompositeTaa; tw[0].dstBinding = 0; tw[0].descriptorCount = 1;
         tw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; tw[0].pImageInfo = &t0;
@@ -8463,7 +8665,31 @@ private:
         tw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         tw[2].dstSet = m_setCompositeTaa; tw[2].dstBinding = 2; tw[2].descriptorCount = 1;
         tw[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; tw[2].pBufferInfo = &db;
-        vkUpdateDescriptorSets(m_dev.device, 3, tw, 0, nullptr);
+        tw[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        tw[3].dstSet = m_setCompositeTaa; tw[3].dstBinding = 3; tw[3].descriptorCount = 1;
+        tw[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; tw[3].pImageInfo = &d3;
+        vkUpdateDescriptorSets(m_dev.device, 4, tw, 0, nullptr);
+
+        // ---- Lens-flare sets (one per frame in flight) -----------------------
+        // b0 = bloom mip0 (bright source), b1 = depth (sun occlusion), b2 = the
+        // per-frame LensUBO. The image bindings are identical across frames; the
+        // UBO is the per-frame buffer so a CPU write never races the GPU read.
+        VkDescriptorImageInfo lm0{ m_postSampler,      m_bloomMips[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo ldp{ m_lensDepthSampler, m_depthView,         VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            VkDescriptorBufferInfo lub{ m_lensUboBuf[i], 0, sizeof(LensUBO) };
+            VkWriteDescriptorSet lw[3]{};
+            lw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            lw[0].dstSet = m_lensSet[i]; lw[0].dstBinding = 0; lw[0].descriptorCount = 1;
+            lw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; lw[0].pImageInfo = &lm0;
+            lw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            lw[1].dstSet = m_lensSet[i]; lw[1].dstBinding = 1; lw[1].descriptorCount = 1;
+            lw[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; lw[1].pImageInfo = &ldp;
+            lw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            lw[2].dstSet = m_lensSet[i]; lw[2].dstBinding = 2; lw[2].descriptorCount = 1;
+            lw[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; lw[2].pBufferInfo = &lub;
+            vkUpdateDescriptorSets(m_dev.device, 3, lw, 0, nullptr);
+        }
 
         // AE-TAA set: meter the TAA output (b0) + the same exposure SSBO (b1).
         VkWriteDescriptorSet atw[2]{};
@@ -8500,6 +8726,14 @@ private:
 
     void destroyPost() {
         destroyBloomTargets();
+        // Lens flare (images are torn down by destroyBloomTargets; pipeline/UBOs here).
+        if (m_lensPipe)       { vkDestroyPipeline(m_dev.device, m_lensPipe, nullptr); m_lensPipe = VK_NULL_HANDLE; }
+        if (m_lensLayout)     { vkDestroyPipelineLayout(m_dev.device, m_lensLayout, nullptr); m_lensLayout = VK_NULL_HANDLE; }
+        if (m_lensSetLayout)  { vkDestroyDescriptorSetLayout(m_dev.device, m_lensSetLayout, nullptr); m_lensSetLayout = VK_NULL_HANDLE; }
+        if (m_lensDepthSampler){ vkDestroySampler(m_dev.device, m_lensDepthSampler, nullptr); m_lensDepthSampler = VK_NULL_HANDLE; }
+        for (uint32_t i = 0; i < kFramesInFlight; ++i) {
+            if (m_lensUboBuf[i]) { vmaDestroyBuffer(m_alloc, m_lensUboBuf[i], m_lensUboAlloc[i]); m_lensUboBuf[i] = VK_NULL_HANDLE; m_lensUboAlloc[i] = nullptr; m_lensUboMapped[i] = nullptr; }
+        }
         if (m_taaPipe)        { vkDestroyPipeline(m_dev.device, m_taaPipe, nullptr); m_taaPipe = VK_NULL_HANDLE; }
         if (m_taaLayout)      { vkDestroyPipelineLayout(m_dev.device, m_taaLayout, nullptr); m_taaLayout = VK_NULL_HANDLE; }
         if (m_taaSetLayout)   { vkDestroyDescriptorSetLayout(m_dev.device, m_taaSetLayout, nullptr); m_taaSetLayout = VK_NULL_HANDLE; }
@@ -13052,6 +13286,47 @@ private:
     BloomMip      m_bloomMips[kBloomMips];
     VkSampler     m_postSampler = VK_NULL_HANDLE;   // CLAMP linear sampler (post passes)
 
+    // ---- Lens flare + anamorphic streak (Abrams/SFC cinematic look) ---------
+    // A HALF-RES HDR buffer (same extent as bloom mip0) the lens-flare pass writes
+    // (ghosts + halo + anamorphic streak + occlusion-tested sun flare), generated
+    // AFTER bloom (reusing mip0's bright-pass) and ADDED into the linear scene by
+    // the composite BEFORE tonemap (ACES rolls the radiance off -> no white-out).
+    // Recreated with the bloom targets (tracks the extent; allocationCount stays 0).
+    VkImage       m_lensImg   = VK_NULL_HANDLE;
+    VmaAllocation m_lensAlloc = nullptr;
+    VkImageView   m_lensView  = VK_NULL_HANDLE;
+    VkExtent2D    m_lensExtent{};
+    // Lens-flare pipeline: set0 = { bloom mip0 sampler, depth sampler, LensUBO }.
+    VkDescriptorSetLayout m_lensSetLayout = VK_NULL_HANDLE;
+    VkPipelineLayout      m_lensLayout    = VK_NULL_HANDLE;
+    VkPipeline            m_lensPipe      = VK_NULL_HANDLE;
+    VkDescriptorSet       m_lensSet[kFramesInFlight] = {};    // mip0 + depth + UBO[frame]
+    VkSampler             m_lensDepthSampler = VK_NULL_HANDLE; // NEAREST clamp (depth as data)
+    // Per-frame LensUBO (sun screen pos/occlusion + tunables); one per frame in
+    // flight so a CPU write never races the GPU read of the previous frame.
+    VkBuffer      m_lensUboBuf[kFramesInFlight]    = {};
+    VmaAllocation m_lensUboAlloc[kFramesInFlight]  = {};
+    void*         m_lensUboMapped[kFramesInFlight] = {};
+    // LensUBO layout MUST match shaders/lens_flare.frag (std140).
+    struct LensUBO {
+        float sunScreen[2];   // sun UV [0..1]
+        float sunValid;       // 1 = on-screen
+        float sunDepth;       // sun clip depth [0..1]
+        float intensity;      // r_lensflare_intensity
+        float streak;         // r_lensflare_streak
+        float ghosts;         // r_lensflare_ghosts (as float)
+        float aspect;         // viewport w/h
+        float streakTint[3];  // cool-blue anamorphic tint
+        float ghostDispersal; // ghost-chain spacing
+        float haloWidth;      // halo ring radius
+        float chroma;         // chromatic-aberration magnitude
+        float sunSize;        // sun flare angular size
+        float maxRadiance;    // energy clamp (white-out guard) -> 64 bytes, std140-clean
+    };
+    VkRenderingAttachmentInfo m_lensAttach{};
+    VkRenderingInfo           m_lensRenderInfo{};
+    bool m_lensActiveThisFrame = false;   // set per frame (drives the composite guard)
+
     // Post (HDR/bloom/composite) pipelines + layouts.
     VkDescriptorSetLayout m_postSetLayout1 = VK_NULL_HANDLE; // 1 sampler (down/up)
     VkDescriptorSetLayout m_postSetLayout2 = VK_NULL_HANDLE; // 2 samplers (composite)
@@ -13083,7 +13358,7 @@ private:
     // record lambdas; no per-frame heap alloc).
     struct BloomPush { float srcTexel[2]; float threshold, knee, intensity; int firstPass; float pad0, pad1; };
     struct CompositePush { float bloomIntensity, exposure; int32_t tonemapMode, aeEnabled;
-                           float sharpen, texelW, texelH, pad0; };
+                           float sharpen, texelW, texelH, lensIntensity; };
     BloomPush m_bloomDownPush[kBloomMips]{};
     BloomPush m_bloomUpPush[kBloomMips]{};
 
