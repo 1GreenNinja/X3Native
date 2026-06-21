@@ -81,10 +81,10 @@ void main() {
         // Mirror UVs that walk off-screen back in (ghosts can land past center).
         guv = clamp(guv, vec2(0.0), vec2(1.0));
         vec3 g = sampleChroma(guv, u.chroma);
-        float w = radialFalloff(guv, 2.0);
+        float w = radialFalloff(guv, 3.0);   // tighter optical falloff -> less wash
         // Later ghosts are dimmer (the reflection loses energy each bounce).
         float bounce = 1.0 - float(i) / float(max(ng, 1));
-        flare += g * w * bounce;
+        flare += g * w * bounce * 0.7;        // restrain the ghost-chain energy
     }
 
     // ---- 2. HALO --------------------------------------------------------
@@ -96,7 +96,7 @@ void main() {
     haloDir.x /= max(u.aspect, 1e-3);
     vec2 huv = clamp(vUV + haloDir, vec2(0.0), vec2(1.0));
     float haloW = radialFalloff(huv, 4.0);
-    flare += sampleChroma(huv, u.chroma * 1.5) * haloW * 0.5;
+    flare += sampleChroma(huv, u.chroma * 1.5) * haloW * 0.35;
 
     // ---- 3. ANAMORPHIC STREAK (the signature) ---------------------------
     // A wide separable HORIZONTAL gaussian smear of the bright-pass — the blue
@@ -151,9 +151,10 @@ void main() {
             d.x *= u.aspect;
             float dist = length(d);
 
-            // Bright core disc + soft glow.
-            float core = exp(-dist * dist / (u.sunSize * u.sunSize * 0.04));
-            float glow = exp(-dist / (u.sunSize * 0.6)) * 0.5;
+            // Bright core disc + soft glow (kept tight so the sun reads as a
+            // crisp disc with a halo, not a frame-filling wash).
+            float core = exp(-dist * dist / (u.sunSize * u.sunSize * 0.02));
+            float glow = exp(-dist / (u.sunSize * 0.45)) * 0.35;
 
             // A strong HORIZONTAL streak anchored at the sun (the blue ray).
             float horiz = exp(-(d.y * d.y) / (u.sunSize * u.sunSize * 0.0008));

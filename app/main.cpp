@@ -4146,6 +4146,28 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // Headless stills run BEFORE the console exists, so the per-frame cvar->device
+    // sync never fires for them. Apply the post/lens-flare `--set` overrides to the
+    // device's PostFX HERE so the A/B proofs (flare on/off, md5) work in any
+    // screenshot path (showroom, cutscene, exterior, ...). Live (windowed) runs
+    // re-apply these every frame from the console; this is just the still baseline.
+    if (headless && !cliCVars.empty()) {
+        x3::rhi::IRenderDevice::PostFXParams px{};   // engine defaults (flare on)
+        for (const auto& kv : cliCVars) {
+            const std::string& k = kv.first; const std::string& v = kv.second;
+            if      (k == "r_lensflare")           px.lensFlare          = std::atoi(v.c_str()) != 0;
+            else if (k == "r_lensflare_intensity") px.lensFlareIntensity = (float)std::atof(v.c_str());
+            else if (k == "r_lensflare_streak")    px.lensFlareStreak    = (float)std::atof(v.c_str());
+            else if (k == "r_lensflare_ghosts")    px.lensFlareGhosts    = std::atoi(v.c_str());
+            else if (k == "r_bloom")               px.bloomEnabled       = std::atoi(v.c_str()) != 0;
+            else if (k == "r_bloomintensity")      px.bloomIntensity     = (float)std::atof(v.c_str());
+            else if (k == "r_bloomthreshold")      px.bloomThreshold     = (float)std::atof(v.c_str());
+            else if (k == "r_tonemap")             px.tonemapMode        = std::atoi(v.c_str());
+            else if (k == "r_taa")                 px.taa                = std::atoi(v.c_str()) != 0;
+        }
+        device->setPostFX(px);
+    }
+
     // --legacypost: A/B switch — disable the post-stack additions (auto-exposure +
     // TAA; and with --legacypost2 also bloom + ACES->passthrough) so any path,
     // headless screenshots included, can be compared against the pre-post-stack
@@ -5335,6 +5357,9 @@ int main(int argc, char** argv) {
         cin.load(*device, cs);
         device->endUploadBatch();
         cin.applyLook(*device);
+        // (Lens-flare/post `--set` overrides were applied to the device PostFX right
+        // after device init — see the headless cliCVars block — so this still path
+        // honors r_lensflare on/off for the A/B proof + md5 without re-applying.)
 
         x3::cut::CutscenePlayer player(cs);
         player.onEvent([&](const x3::cut::Event& e, bool) { cin.onEvent(e.name, cs, e.t); });
