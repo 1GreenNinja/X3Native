@@ -35,12 +35,12 @@ Usage:
 
 ASCII-only logs. Shares the FBX2glTF + pygltflib path with convert_car_glb.py.
 """
-import sys, os, subprocess, tempfile, struct, argparse, io
+import sys, os, subprocess, tempfile, argparse, io, base64
 
 import numpy as np
 from PIL import Image
 from pygltflib import GLTF2, Material, PbrMetallicRoughness, Texture, Image as GLTFImage, \
-    TextureInfo, NormalMaterialTexture, BufferView, Buffer
+    TextureInfo, NormalMaterialTexture
 
 FBX2GLTF = r"C:\GameDev\tools\FBX2glTF.exe"
 
@@ -76,29 +76,38 @@ def load_rgba(path):
     return Image.open(path).convert("RGBA")
 
 
-def repack_metallic_smoothness(ms_path):
-    """Unity MetallicSmoothness (metal=R, smoothness=A) -> glTF MR PNG (rough=G, metal=B)."""
+def repack_metallic_smoothness(ms_path, max_metal=1.0, min_rough=0.0):
+    """Unity MetallicSmoothness (metal=R, smoothness=A) -> glTF MR PNG (rough=G, metal=B).
+    `max_metal` caps metalness (0..1) so a pure-metal hull still takes DIFFUSE light
+    in dark space (a fully-metallic hull only shows reflections -> reads black against
+    a starfield). `min_rough` floors roughness so the clearcoat reads as a clean gloss
+    rather than a mirror."""
     im = load_rgba(ms_path)
-    a = np.asarray(im, dtype=np.uint8)
-    metal = a[..., 0]
+    a = np.asarray(im, dtype=np.float32)
+    metal = np.minimum(a[..., 0], max_metal * 255.0)
     smooth = a[..., 3]
-    rough = 255 - smooth
+    rough = np.maximum(255.0 - smooth, min_rough * 255.0)
     out = np.zeros_like(a)
     out[..., 0] = 0          # R unused
     out[..., 1] = rough      # G = roughness (glTF)
     out[..., 2] = metal      # B = metallic (glTF)
     out[..., 3] = 255
-    return Image.fromarray(out, "RGBA")
+    return Image.fromarray(out.astype(np.uint8), "RGBA")
 
 
 def tint_emission(em_path, rgb):
-    """Multiply the emission map by a warm tint so windows glow the right color."""
+    """RECOLOR the emission map to a warm window glow. The pack's Emission map is
+    cyan-dominant; a plain multiply still reads green. Instead take per-pixel
+    luminance as the window MASK and paint it the target warm tint, so the lit
+    windows blaze warm against cold space (the Kelvin-Trek look)."""
     im = load_rgba(em_path)
     a = np.asarray(im, dtype=np.float32)
+    lum = 0.2126 * a[..., 0] + 0.7152 * a[..., 1] + 0.0722 * a[..., 2]   # 0..255 window mask
+    out = np.zeros_like(a)
     for c in range(3):
-        a[..., c] *= rgb[c]
-    a = np.clip(a, 0, 255).astype(np.uint8)
-    return Image.fromarray(a, "RGBA")
+        out[..., c] = np.clip(lum * rgb[c], 0, 255)
+    out[..., 3] = 255
+    return Image.fromarray(out.astype(np.uint8), "RGBA")
 
 
 def main():
@@ -112,6 +121,9 @@ def main():
     ap.add_argument("--emis-strength", type=float, default=6.0)
     ap.add_argument("--clearcoat", default="0.8,0.06")
     ap.add_argument("--no-clearcoat", action="store_true")
+    ap.add_argument("--max-metal", type=float, default=1.0,
+                    help="cap hull metalness so it takes diffuse light in dark space")
+    ap.add_argument("--min-rough", type=float, default=0.0)
     args = ap.parse_args()
 
     emis_rgb = [float(x) for x in args.emis_rgb.split(",")][:3]
@@ -127,7 +139,10 @@ def main():
             sys.exit(1)
         raw = tmp + ".glb"
     g = GLTF2().load(raw)
-    g.convert_buffers(None)  # ensure data buffers are inline bytes we can extend
+    # NOTE: do NOT touch the geometry buffer. Textures are added as base64
+    # data-URI images so accessor bufferViews stay byte-identical to FBX2glTF's
+    # output (an earlier append-to-buffer approach corrupted vertex/UV accessors
+    # -> NaN). cgltf (the engine loader) decodes data-URI PNGs natively.
 
     # ---- collect + prepare the texture images -----------------------------
     bc_path  = find_tex(args.texdir, args.family, args.color, "White", "Grey", "Silver")
@@ -142,28 +157,15 @@ def main():
     images = []   # (PIL.Image, name)
     if bc_path:  images.append((load_rgba(bc_path),                      "baseColor", "srgb"))
     if nrm_path: images.append((load_rgba(nrm_path),                     "normal",    "data"))
-    if ms_path:  images.append((repack_metallic_smoothness(ms_path),     "metalRough","data"))
+    if ms_path:  images.append((repack_metallic_smoothness(ms_path, args.max_metal, args.min_rough), "metalRough","data"))
     if em_path:  images.append((tint_emission(em_path, emis_rgb),        "emissive",  "srgb"))
 
-    # ---- append the PNGs into the GLB's single binary buffer --------------
-    blob = g.binary_blob() or b""
-    blob = bytearray(blob)
-    # pad to 4
-    while len(blob) % 4:
-        blob.append(0)
-
+    # ---- add the PNGs as base64 data-URI images (geometry buffer untouched) ---
     idx_of = {}
     for im, role, _ in images:
         data = png_bytes(im)
-        off = len(blob)
-        bv = BufferView()
-        bv.buffer = 0
-        bv.byteOffset = off
-        bv.byteLength = len(data)
-        g.bufferViews.append(bv)
-        bv_index = len(g.bufferViews) - 1
         gi = GLTFImage()
-        gi.bufferView = bv_index
+        gi.uri = "data:image/png;base64," + base64.b64encode(data).decode("ascii")
         gi.mimeType = "image/png"
         gi.name = f"{args.family}_{role}.png"
         g.images.append(gi)
@@ -172,16 +174,6 @@ def main():
         t.source = img_index
         g.textures.append(t)
         idx_of[role] = len(g.textures) - 1
-        blob += data
-        while len(blob) % 4:
-            blob.append(0)
-
-    # rewrite the single buffer
-    if not g.buffers:
-        g.buffers.append(Buffer())
-    g.buffers[0].byteLength = len(blob)
-    g.buffers[0].uri = None
-    g.set_binary_blob(bytes(blob))
 
     # ---- wire the material(s) --------------------------------------------
     cc = None if args.no_clearcoat else [float(x) for x in args.clearcoat.split(",")][:2]

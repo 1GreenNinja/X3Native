@@ -2701,6 +2701,23 @@ int main(int argc, char** argv) {
     // 4x SSAA. Writes <outDir>/car_*.png (default docs/screenshots/vehicles).
     bool        carShot = false;
     std::string carShotDir = "docs/screenshots/vehicles";
+    // INTRO HERO A3 — SPACE STATION beauty beat (--screenshot-station [outDir]): load the
+    // converted clean-geometric station GLB (assets/converted_glb/IntroHero/
+    // SpaceStation_Cylindrical.glb — clearcoat hull + warm EMISSIVE WINDOW arrays) and
+    // hang it against the cold-open planet sky, lit by a warm key sun so the chrome hull
+    // reads + the windows GLOW and bloom against cold space. Captures a couple of beauty
+    // angles (3/4 hero + a profile with the home planet behind). Headless, 4x SSAA.
+    // Writes <outDir>/station_*.png (default docs/screenshots/introassets).
+    bool        stationShot = false;
+    std::string stationShotDir = "docs/screenshots/introassets";
+    // INTRO HERO A4 — COCKPIT / SHIP-INTERIOR beauty beat (--screenshot-cockpit [outDir]):
+    // COMPOSED (no GLB exists for a glassy cockpit interior in the pack) from primitives +
+    // the engine glass material + holo-display panels + backlit accent strips — the bright
+    // "Apple-Store bridge" look Jake sits in during the 45s flight. Translucent layered
+    // glass canopy over a starfield/planet, glowing holo readouts + warm panel emissives,
+    // clearcoat console surfaces. Headless, 4x SSAA. Writes <outDir>/cockpit_*.png.
+    bool        cockpitShot = false;
+    std::string cockpitShotDir = "docs/screenshots/introassets";
     // FIRST-PERSON showroom proof (--screenshot-showroom-fp [path.png]): run the SAME
     // interactive `--world showroom` setup (walkable floor slab + companion Aria + the
     // wheeling night sky) but render ONE headless frame from the PLAYER SPAWN eye and
@@ -3163,6 +3180,14 @@ int main(int argc, char** argv) {
         else if (a == "--screenshot-car") {
             carShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') carShotDir = argv[++i];
+        }
+        else if (a == "--screenshot-station") {
+            stationShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') stationShotDir = argv[++i];
+        }
+        else if (a == "--screenshot-cockpit") {
+            cockpitShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') cockpitShotDir = argv[++i];
         }
         else if (a == "--screenshot-showroom-fp") {
             // Headless first-person proof of the walkable --world showroom. Forces the
@@ -4017,7 +4042,7 @@ int main(int argc, char** argv) {
     if (ecologyShot)  worldMode = "valley";  // the ambient ecology rides the valley biome
     if (crowdShot)    worldMode = "club";    // the crowd proof lives on the club floor
     if (alertShot) { screenshot = true; screenshotPath = alertShotPath; }   // rides --screenshot
-    const bool headless = smoketest || testFramePacing || screenshot || skyShot || ddgiShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || cutsceneShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot || perfshopShot || ecologyShot || crowdShot;
+    const bool headless = smoketest || testFramePacing || screenshot || skyShot || ddgiShot || showroomShot || carShot || stationShot || cockpitShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || cutsceneShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot || perfshopShot || ecologyShot || crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -4115,7 +4140,7 @@ int main(int argc, char** argv) {
     desc.width  = W;
     desc.height = H;
     desc.headless = headless;
-    desc.ssaa = (showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || cutsceneShot) ? 4u : 1u;   // 4x supersample the showroom / planet / nightsky still (5090 headless: ~16 samples/px, pristine)
+    desc.ssaa = (showroomShot || carShot || stationShot || cockpitShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || cutsceneShot) ? 4u : 1u;   // 4x supersample the showroom / planet / nightsky / station / cockpit still (5090 headless: ~16 samples/px, pristine)
     // Benchmark mode runs with vsync OFF so it measures the true frame ceiling,
     // not the display refresh cap.
     desc.vsync  = !bench;
@@ -5098,6 +5123,333 @@ int main(int argc, char** argv) {
         }
         still("car_extnight_front34", false, false, 2.95f, 6.4f, 1.25f, 50.0f);
         still("car_extnight_rear",    false, false, 0.35f, 7.0f, 0.85f, 48.0f);
+
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return shotFails == 0 ? 0 : 1;
+    }
+
+    // ---- INTRO HERO A3: SPACE STATION beauty beat (--screenshot-station) -----
+    // Load the converted clean-geometric station GLB (clearcoat hull + warm
+    // EMISSIVE WINDOW arrays), hang it against the cold-open planet sky lit by a
+    // warm key sun so the chrome reads + the windows GLOW/bloom against cold
+    // space, and capture a couple of scale-establishing beauty angles. Built on
+    // the SAME nightsky kit + EnvArtSystem path as the car/showroom shots.
+    if (stationShot) {
+        namespace fs = std::filesystem;
+        std::error_code mkec; fs::create_directories(stationShotDir, mkec);
+        x3::logInfo("--screenshot-station: writing station beauty beats to " + stationShotDir);
+
+        // The station GLB at the origin (its baked node transforms are the model;
+        // identity instance). It is ~110 m across, so the camera frames it from a
+        // distance with the planet below.
+        // Scale the ~130 m station down to ~36 m so the whole silhouette frames
+        // comfortably INSIDE the 200 m camera far plane (a 130 m model viewed from
+        // the distance needed to frame it would clip against the far plane).
+        const float kStationScale = 0.28f;
+        const float stXform[16] = {
+            kStationScale,0,0,0, 0,kStationScale,0,0, 0,0,kStationScale,0, 0,0,0,1 };
+        x3::game::EnvArtSystem station;
+        const bool stOk = station.buildFromGlbAt(*device, x3::game::convertedGlbRoot(),
+                                                 "IntroHero/SpaceStation_Cylindrical.glb", stXform);
+        if (!stOk) {
+            x3::logError("--screenshot-station: station GLB FAILED to load "
+                         "(run: python tools/asset_store.py fetch --all) — aborting");
+            device->shutdown();
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return 1;
+        }
+        // worldBounds() sums NODE ORIGINS, not mesh extents — for a single-node GLB
+        // baked at the origin it collapses to ~0. The Cylindrical_Example20 mesh is
+        // ~130 m across (measured), so anchor at the origin with a known extent.
+        float smn[3], smx[3];
+        station.worldBounds(smn, smx);
+        const float scx = (smn[0] + smx[0]) * 0.5f;
+        const float scy = (smn[1] + smx[1]) * 0.5f;
+        const float scz = (smn[2] + smx[2]) * 0.5f;
+        float sExt = std::max({ smx[0]-smn[0], smx[1]-smn[1], smx[2]-smn[2] });
+        if (sExt < 1.0f) sExt = 132.0f * kStationScale;   // node-origin bounds collapsed -> known mesh extent * scale
+        if (const char* e = std::getenv("X3_STATION_EXT")) { float v; if (std::sscanf(e, "%f", &v) == 1 && v > 0) sExt = v; }
+        x3::logInfo("--screenshot-station: station center (" + std::to_string(scx) + "," +
+                    std::to_string(scy) + "," + std::to_string(scz) + ") ext=" + std::to_string(sExt));
+
+        // The cold-open SPACE look: deep-near-black sky, a warm low key sun glinting
+        // off the hull, gentle cool ambient fill. Bloom up so the windows blaze.
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.55f; sp.sunDir[1] = 0.42f; sp.sunDir[2] = 0.72f;
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.96f; sp.sunColor[2] = 0.90f;
+        sp.sunIntensity = 4.5f;                         // strong warm key glints + lights the chrome hull
+        sp.haze = 0.0f; sp.exposure = 1.0f;
+        sp.zenith[0]  = 0.010f; sp.zenith[1]  = 0.013f; sp.zenith[2]  = 0.028f;
+        sp.horizon[0] = 0.024f; sp.horizon[1] = 0.030f; sp.horizon[2] = 0.052f;
+        device->setSkyParams(sp);
+        device->setAmbient(0.85f, 0.90f, 1.05f);        // bright cool starlight IBL fill carries the metal hull
+        device->setBloom(0.36f);                        // hero glow on the warm windows
+        { x3::rhi::IRenderDevice::SsaoParams s{}; s.enabled = false; device->setSsaoParams(s); }
+        { x3::rhi::IRenderDevice::GiParams   g{}; g.enabled = false; device->setGiParams(g); }
+        {
+            x3::rhi::IRenderDevice::ReflectionParams rf{};
+            rf.ssr = true; rf.rtFallback = true; rf.fullRes = true; rf.intensity = 1.0f;
+            device->setReflectionParams(rf);
+        }
+        device->setShadowBounds(scx, scy, scz, sExt * 1.5f);
+
+        // A couple of point fills so the shaded side of the hull isn't dead black.
+        std::vector<x3::rhi::PointLight> fills;
+        {
+            x3::rhi::PointLight a{}; a.pos[0]=scx - sExt*1.2f; a.pos[1]=scy+sExt*0.8f; a.pos[2]=scz+sExt*1.2f;
+            a.range = sExt*6.0f; a.color[0]=2.4f; a.color[1]=3.2f; a.color[2]=4.6f; fills.push_back(a);  // cool rim
+            x3::rhi::PointLight b{}; b.pos[0]=scx + sExt*1.1f; b.pos[1]=scy+sExt*0.5f; b.pos[2]=scz - sExt*1.1f;
+            b.range = sExt*6.0f; b.color[0]=5.2f; b.color[1]=3.4f; b.color[2]=1.8f; fills.push_back(b);  // warm bounce
+            device->setPointLights(fills.data(), (uint32_t)fills.size());
+        }
+
+        // Planet sky (the shared nightsky kit) — the home planet hangs below/behind.
+        int nPlanetTexFail = 0;
+        x3::rhi::MeshHandle planetMesh{}, ringMesh{};
+        std::vector<NightSkyPlanet> planets =
+            loadNightSkyPlanets(device.get(), planetMesh, nPlanetTexFail, "--screenshot-station", &ringMesh);
+        // Re-aim the HERO planet (Terrestrial) BIG + low-behind the station so the
+        // beauty shot reads as a station hanging over a planet-sky (warm window glow
+        // against the cold planet). Drop the Sun lower so it doesn't blow the frame.
+        for (NightSkyPlanet& b : planets) {
+            const std::string n = b.name ? b.name : "";
+            if (n == "Terrestrial") { b.azimuthDeg = 30.0f; b.elevationDeg = -6.0f; b.angularDiameterDeg = 60.0f; }
+            else if (n == "Gas")    { b.azimuthDeg = 150.0f; b.elevationDeg = 18.0f; b.angularDiameterDeg = 16.0f; }
+            else if (n == "Sun")    { b.azimuthDeg = -120.0f; b.elevationDeg = 22.0f; b.angularDiameterDeg = 3.0f; }
+        }
+
+        int shotFails = 0;
+        auto still = [&](const std::string& name, float camYaw, float camDist,
+                         float camHeight, float fov) {
+            const float ex = scx + std::sin(camYaw) * camDist;
+            const float ez = scz + std::cos(camYaw) * camDist;
+            const float ey = scy + camHeight;
+            const float lx = scx - ex, ly = scy - ey, lz = scz - ez;
+            const float len = std::max(std::sqrt(lx*lx + ly*ly + lz*lz), 1e-3f);
+            device->setCamera(ex, ey, ez, std::atan2(lz, lx), std::asin(ly / len), fov);
+            device->setSkyTime(10.0f);
+            const std::string path = stationShotDir + "/" + name + ".png";
+            const int kSettle = 90;   // TAA + SSR + auto-exposure + IBL settle
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                if (i == kSettle - 1) device->armCapture(path.c_str());
+                auto fr = device->beginFrame();
+                if (fr.valid) {
+                    station.draw(*device, fr);
+                    drawNightSkyPlanets(device.get(), fr, planetMesh, planets, 10.0f, ex, ey, ez, ringMesh);
+                }
+                device->endFrame(fr);
+            }
+            const bool ok = device->captureFrame(path.c_str());
+            if (ok) x3::logInfo("--screenshot-station: wrote " + path);
+            else  { x3::logError("--screenshot-station: capture FAILED " + path); ++shotFails; }
+        };
+        // Two beauty angles: a 3/4 hero (windows toward the warm key) + a profile.
+        // Pull WAY back (the station is ~130 m) so the whole silhouette frames with
+        // the planet beyond and the windows blaze against cold space.
+        still("station_hero34", 0.85f, sExt * 2.6f, sExt * 0.55f, 38.0f);
+        still("station_profile", 2.30f, sExt * 2.9f, sExt * 0.18f, 36.0f);
+
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return shotFails == 0 ? 0 : 1;
+    }
+
+    // ---- INTRO HERO A4: COCKPIT / SHIP INTERIOR beauty beat (--screenshot-cockpit)
+    // COMPOSED (no glassy-cockpit GLB in the pack) from primitives + the engine
+    // glass material + holo displays + backlit panels — the bright "Apple-Store
+    // bridge" Jake sits in during the 45s flight. A translucent layered glass
+    // canopy over the planet/starfield, glowing holo readouts on glass, warm +
+    // cool accent emissives, clearcoat console surfaces. Shares the cold-open
+    // space look so it reads as the SAME world as the station.
+    if (cockpitShot) {
+        namespace fs = std::filesystem;
+        std::error_code mkec; fs::create_directories(cockpitShotDir, mkec);
+        x3::logInfo("--screenshot-cockpit: writing cockpit interior beat to " + cockpitShotDir);
+
+        auto makeMesh = [&](const x3::prims::PrimMesh& pm) {
+            return device->createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                      pm.index.data(), (uint32_t)pm.index.size());
+        };
+        // Geometry kit (origin-centered boxes; placed via `at`).
+        x3::rhi::MeshHandle floorMesh   = makeMesh(x3::prims::makeBox(2.6f, 0.06f, 2.4f, 0,0,0, 1.0f));
+        x3::rhi::MeshHandle dashMesh    = makeMesh(x3::prims::makeBox(2.4f, 0.18f, 0.55f, 0,0,0, 1.0f)); // console deck
+        x3::rhi::MeshHandle consoleMesh = makeMesh(x3::prims::makeBox(2.4f, 0.7f, 0.30f, 0,0,0, 1.0f));  // console face
+        x3::rhi::MeshHandle pillarMesh  = makeMesh(x3::prims::makeBox(0.10f, 1.5f, 0.10f, 0,0,0, 1.0f)); // canopy frame post
+        x3::rhi::MeshHandle ribMesh     = makeMesh(x3::prims::makeBox(0.08f, 0.08f, 2.4f, 0,0,0, 1.0f)); // ceiling rib
+        x3::rhi::MeshHandle stripMesh   = makeMesh(x3::prims::makeBox(2.2f, 0.03f, 0.05f, 0,0,0, 1.0f)); // accent strip
+        x3::rhi::MeshHandle canopyMesh  = makeMesh(x3::prims::makeBox(2.6f, 1.5f, 0.04f, 0,0,0, 1.0f));  // glass canopy pane
+        x3::rhi::MeshHandle holoMesh    = makeMesh(x3::prims::makeBox(0.55f, 0.34f, 0.015f, 0,0,0, 1.0f)); // holo display
+        x3::rhi::MeshHandle seatMesh    = makeMesh(x3::prims::makeBox(0.5f, 0.5f, 0.5f, 0,0,0, 1.0f));   // pilot seat block
+        x3::rhi::MeshHandle wpanelMesh  = makeMesh(x3::prims::makeBox(0.06f, 0.5f, 0.45f, 0,0,0, 1.0f)); // small backlit side panel
+
+        // Polished/dark dielectric MR maps (rough,metal in glTF G,B channels).
+        x3::rhi::TextureHandle glossMr{}, matteMr{};
+        { const uint8_t mr[4] = { 0, 18, 60, 255 };  glossMr = device->createTexture(mr, 1, 1, false); } // rough .07 metal .24
+        { const uint8_t mr[4] = { 0, 110, 10, 255 }; matteMr = device->createTexture(mr, 1, 1, false); } // rough .43 metal .04
+
+        const float kHull[4]    = { 0.86f, 0.88f, 0.92f, 1.0f };   // bright off-white bridge hull
+        const float kConsole[4] = { 0.10f, 0.11f, 0.13f, 1.0f };   // dark console base
+        const float kSeat[4]    = { 0.05f, 0.06f, 0.08f, 1.0f };
+        const float kNoEmis[4]  = { 0, 0, 0, 0 };
+        const float kStripCool[4]  = { 0.35f, 0.7f, 1.0f, 3.0f };  // cyan accent strips (HDR)
+        const float kStripWarm[4]  = { 1.0f, 0.7f, 0.35f, 2.6f };  // amber accent strips
+        const float kHoloEmis[4]   = { 0.5f, 1.5f, 2.0f, 3.4f };   // cyan holo glow
+        const float kHoloEmisAmb[4]= { 1.8f, 1.0f, 0.45f, 3.2f };  // amber holo glow
+        const float kPanelEmis[4]  = { 0.55f, 0.85f, 1.25f, 1.1f };// backlit panel wash (DIM — framing only)
+
+        auto at = [&](float x, float y, float z, float out[16]) {
+            const float m[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1 };
+            for (int i = 0; i < 16; ++i) out[i] = m[i];
+        };
+        // yaw+translate (for the angled side consoles + canopy posts).
+        auto atYaw = [&](float yaw, float x, float y, float z, float out[16]) {
+            const float c = std::cos(yaw), s = std::sin(yaw);
+            const float m[16] = { c,0,-s,0, 0,1,0,0, s,0,c,0, x,y,z,1 };
+            for (int i = 0; i < 16; ++i) out[i] = m[i];
+        };
+
+        // Translucent layered glass (the canopy + the holo glass).
+        x3::rhi::IRenderDevice::GlassMaterial canopyGlass{};
+        canopyGlass.opacity = 0.14f; canopyGlass.roughness = 0.0f; canopyGlass.specular = 0.9f;
+        canopyGlass.tint[0] = 0.7f; canopyGlass.tint[1] = 0.85f; canopyGlass.tint[2] = 1.0f;
+        x3::rhi::IRenderDevice::GlassMaterial holoGlass{};
+        holoGlass.opacity = 0.30f; holoGlass.roughness = 0.02f; holoGlass.specular = 0.8f;
+        holoGlass.tint[0] = 0.5f; holoGlass.tint[1] = 0.9f; holoGlass.tint[2] = 1.0f;
+
+        // The interior look: the SAME cold-open space sky, with a brighter interior
+        // ambient so the bridge reads CLEAN + bright under the post stack.
+        x3::rhi::IRenderDevice::SkyParams sp{};
+        sp.enabled = true;
+        sp.sunDir[0] = 0.20f; sp.sunDir[1] = 0.25f; sp.sunDir[2] = 0.95f;
+        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.96f; sp.sunColor[2] = 0.90f;
+        sp.sunIntensity = 0.20f;
+        sp.haze = 0.0f; sp.exposure = 1.0f;
+        sp.zenith[0]  = 0.006f; sp.zenith[1]  = 0.007f; sp.zenith[2]  = 0.016f;
+        sp.horizon[0] = 0.012f; sp.horizon[1] = 0.014f; sp.horizon[2] = 0.028f;
+        device->setSkyParams(sp);
+        device->setAmbient(0.34f, 0.36f, 0.42f);        // bright clean interior fill
+        device->setBloom(0.30f);
+        { x3::rhi::IRenderDevice::SsaoParams s{}; s.enabled = false; device->setSsaoParams(s); }
+        { x3::rhi::IRenderDevice::GiParams   g{}; g.enabled = false; device->setGiParams(g); }
+        {
+            x3::rhi::IRenderDevice::ReflectionParams rf{};
+            rf.ssr = true; rf.rtFallback = true; rf.fullRes = true; rf.intensity = 1.0f;
+            device->setReflectionParams(rf);
+        }
+        device->setShadowBounds(0, 1.0f, 0, 8.0f);
+        // Interior point lights: a soft overhead key + cyan/amber console washes.
+        {
+            std::vector<x3::rhi::PointLight> pls;
+            auto add=[&](float x,float y,float z,float r,float cr,float cg,float cb){
+                x3::rhi::PointLight p{}; p.pos[0]=x;p.pos[1]=y;p.pos[2]=z;p.range=r;
+                p.color[0]=cr;p.color[1]=cg;p.color[2]=cb; pls.push_back(p); };
+            add(0.0f, 2.0f,  0.2f, 6.0f, 3.4f, 3.6f, 4.0f);   // overhead key (cool white)
+            add(-1.6f,0.9f, -1.0f, 4.0f, 0.6f, 1.6f, 2.6f);   // cyan left console wash
+            add( 1.6f,0.9f, -1.0f, 4.0f, 2.6f, 1.5f, 0.7f);   // amber right console wash
+            device->setPointLights(pls.data(), (uint32_t)pls.size());
+        }
+
+        // Planet sky seen THROUGH the canopy (the bridge is over a planet).
+        int nPlanetTexFail = 0;
+        x3::rhi::MeshHandle planetMesh{}, ringMesh{};
+        std::vector<NightSkyPlanet> planets =
+            loadNightSkyPlanets(device.get(), planetMesh, nPlanetTexFail, "--screenshot-cockpit", &ringMesh);
+        // Hang the HOME PLANET dead ahead through the canopy (azimuth 0 = -Z forward),
+        // big + low, with the warm sun off to one side — the view Jake flies toward.
+        for (NightSkyPlanet& b : planets) {
+            const std::string n = b.name ? b.name : "";
+            if (n == "Terrestrial") { b.azimuthDeg = 4.0f;  b.elevationDeg = 2.0f; b.angularDiameterDeg = 46.0f; }
+            else if (n == "Gas")    { b.azimuthDeg = -28.0f; b.elevationDeg = 12.0f; b.angularDiameterDeg = 12.0f; }
+            else if (n == "Sun")    { b.azimuthDeg = 24.0f; b.elevationDeg = 16.0f; b.angularDiameterDeg = 2.5f; }
+        }
+
+        // Draw the whole interior for one frame. OPAQUE first, then GLASS last.
+        auto drawScene = [&](const x3::rhi::FrameContext& fr, float ex, float ey, float ez) {
+            float m[16];
+            // Planet sky FIRST (far depth), framed beyond the canopy.
+            drawNightSkyPlanets(device.get(), fr, planetMesh, planets, 10.0f, ex, ey, ez, ringMesh);
+            // Floor (dark polished — reflects the panels/holos without blowing out) + pilot seat.
+            const float kFloor[4] = { 0.07f, 0.08f, 0.10f, 1.0f };
+            at(0.0f, 0.0f, 0.0f, m); device->drawMeshPBR(fr, floorMesh, {}, {}, glossMr, kFloor, kNoEmis, m,
+                                                          false, false, {}, {}, 1.0f, 0.6f, 0.05f);
+            at(0.0f, 0.45f, 1.1f, m); device->drawMeshPBR(fr, seatMesh, {}, {}, matteMr, kSeat, kNoEmis, m);
+            // Console deck + face (clearcoat gloss), curving around the pilot.
+            for (int s = -1; s <= 1; ++s) {
+                const float yaw = (float)s * 0.5f;
+                atYaw(yaw, (float)s * 1.4f, 0.85f, -1.2f, m);
+                device->drawMeshPBR(fr, consoleMesh, {}, {}, glossMr, kConsole, kNoEmis, m,
+                                    false, false, {}, {}, 1.0f, 0.7f, 0.06f);   // clearcoat console
+                atYaw(yaw, (float)s * 1.4f, 1.18f, -1.05f, m);
+                device->drawMeshPBR(fr, dashMesh, {}, {}, glossMr, kConsole, kNoEmis, m,
+                                    false, false, {}, {}, 1.0f, 0.7f, 0.06f);
+            }
+            // Backlit accent strips along the dash lip (cool) + ceiling (warm).
+            for (int s = -1; s <= 1; ++s) {
+                atYaw((float)s * 0.5f, (float)s * 1.4f, 1.28f, -0.85f, m);
+                device->drawMeshEmissive(fr, stripMesh, {}, kHull, kStripCool, m);
+            }
+            at(0.0f, 2.05f, -0.4f, m); device->drawMeshEmissive(fr, stripMesh, {}, kHull, kStripWarm, m);
+            at(0.0f, 2.05f,  0.6f, m); device->drawMeshEmissive(fr, stripMesh, {}, kHull, kStripCool, m);
+            // Ceiling ribs + canopy frame posts (bright hull).
+            for (int i = -1; i <= 1; ++i) {
+                at((float)i * 0.9f, 2.1f, 0.0f, m);
+                device->drawMeshPBR(fr, ribMesh, {}, {}, glossMr, kHull, kNoEmis, m);
+            }
+            for (int s = -1; s <= 1; s += 2) {
+                at((float)s * 1.25f, 1.3f, -1.55f, m);
+                device->drawMeshPBR(fr, pillarMesh, {}, {}, glossMr, kHull, kNoEmis, m);
+            }
+            // Backlit SIDE wall panels (small dim wash) flanking the seat — framing,
+            // not a blow-out. A row of slim panels down each curved side wall.
+            for (int k = 0; k < 3; ++k) {
+                const float pz = -0.4f + (float)k * 0.7f;
+                at(-2.0f, 1.25f, pz, m); device->drawMeshEmissive(fr, wpanelMesh, {}, kHull, kPanelEmis, m);
+                at( 2.0f, 1.25f, pz, m); device->drawMeshEmissive(fr, wpanelMesh, {}, kHull, kPanelEmis, m);
+            }
+            // Holo displays standing UP over the console deck (emissive glass:
+            // text-on-glass look), tilted toward the pilot.
+            atYaw(-0.5f, -1.3f, 1.55f, -1.05f, m);
+            device->drawMeshGlass(fr, holoMesh, {}, kHull, kHoloEmis, holoGlass, m);
+            atYaw(0.0f, 0.0f, 1.62f, -1.15f, m);
+            device->drawMeshGlass(fr, holoMesh, {}, kHull, kHoloEmis, holoGlass, m);
+            atYaw(0.5f, 1.3f, 1.55f, -1.05f, m);
+            device->drawMeshGlass(fr, holoMesh, {}, kHull, kHoloEmisAmb, holoGlass, m);
+            // The big translucent canopy LAST (glass over the planet/starfield).
+            at(0.0f, 1.35f, -1.7f, m);
+            device->drawMeshGlass(fr, canopyMesh, {}, kHull, kNoEmis, canopyGlass, m);
+        };
+
+        int shotFails = 0;
+        auto still = [&](const std::string& name, float ex, float ey, float ez,
+                         float lookX, float lookY, float lookZ, float fov) {
+            const float lx = lookX - ex, ly = lookY - ey, lz = lookZ - ez;
+            const float len = std::max(std::sqrt(lx*lx + ly*ly + lz*lz), 1e-3f);
+            device->setCamera(ex, ey, ez, std::atan2(lz, lx), std::asin(ly / len), fov);
+            device->setSkyTime(10.0f);
+            const std::string path = cockpitShotDir + "/" + name + ".png";
+            const int kSettle = 90;
+            for (int i = 0; i < kSettle; ++i) {
+                glfwPollEvents();
+                if (i == kSettle - 1) device->armCapture(path.c_str());
+                auto fr = device->beginFrame();
+                if (fr.valid) drawScene(fr, ex, ey, ez);
+                device->endFrame(fr);
+            }
+            const bool ok = device->captureFrame(path.c_str());
+            if (ok) x3::logInfo("--screenshot-cockpit: wrote " + path);
+            else  { x3::logError("--screenshot-cockpit: capture FAILED " + path); ++shotFails; }
+        };
+        // Pilot POV: eye just above + behind the seat, looking FORWARD through the
+        // canopy at the planet (console + holos in the lower third). Over-the-shoulder
+        // wide: a 3/4 from the front-right showing the whole bridge + canopy + planet.
+        still("cockpit_pov", 0.0f, 1.55f, 0.7f, 0.0f, 1.25f, -2.4f, 64.0f);
+        still("cockpit_wide", 2.3f, 1.95f, 2.2f, -0.2f, 1.05f, -1.2f, 56.0f);
 
         device->shutdown();
         if (window) glfwDestroyWindow(window);
