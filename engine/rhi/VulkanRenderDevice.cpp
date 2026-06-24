@@ -85,6 +85,7 @@
 #include <unordered_map>
 #include <chrono>
 #include <mutex>   // m_uploadMu: parallel boot-time model preload (docs/BOOT_TIME.md)
+#include <atomic>  // m_validationErrors: 0-VUID gate counter for headless self-tests
 
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
 #define GLM_FORCE_RADIANS
@@ -143,6 +144,30 @@ constexpr uint32_t kFramesInFlight = 2;
 // image). The glass shader samples the deepest level for the frosted look.
 constexpr uint32_t kGlassFrostLevels = 3;
 
+// ---- Validation-error counting debug callback ------------------------------
+// vk-bootstrap's use_default_debug_messenger() only PRINTS; the headless
+// self-tests (--test-gpucull, --test-pointshadows, ...) need to PROGRAMMATICALLY
+// assert "0 VUIDs". This callback mirrors the default's logging behavior AND
+// increments a per-device error counter (passed as pUserData) on ERROR-severity
+// messages — that counter is what validationErrorCount() returns and the tests
+// gate on. Installed via InstanceBuilder::set_debug_callback when validation is on.
+static VKAPI_ATTR VkBool32 VKAPI_CALL x3VkDebugCallback(
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity,
+    VkDebugUtilsMessageTypeFlagsEXT /*types*/,
+    const VkDebugUtilsMessengerCallbackDataEXT* data,
+    void* pUserData) {
+    const char* msg = (data && data->pMessage) ? data->pMessage : "(null)";
+    if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+        if (pUserData) reinterpret_cast<std::atomic<uint32_t>*>(pUserData)->fetch_add(1);
+        x3::logError(std::string("[vk-validation] ") + msg);
+    } else if (severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
+        x3::logWarn(std::string("[vk-validation] ") + msg);
+    } else {
+        // info/verbose: keep quiet to avoid log spam (matches prior signal-to-noise).
+    }
+    return VK_FALSE;
+}
+
 class VulkanRenderDevice final : public IRenderDevice {
 public:
     bool init(const DeviceDesc& desc) override {
@@ -159,7 +184,14 @@ public:
           .set_engine_name("X3Native")
           .require_api_version(1, 3, 0)
           .request_validation_layers(desc.validation)
-          .use_default_debug_messenger();
+          // Custom callback (not use_default_debug_messenger): same logging, but
+          // it ALSO counts ERROR-severity messages into m_validationErrors so the
+          // headless self-tests can assert the 0-VUID gate programmatically.
+          .set_debug_callback(&x3VkDebugCallback)
+          .set_debug_callback_user_data_pointer(&m_validationErrors)
+          .set_debug_messenger_severity(
+              VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT |
+              VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT);
         // Fix 6 (b): standing best-practices validation guard. Wired but OFF BY
         // DEFAULT — best-practices emits a flood of benign perf/style warnings that
         // would break the smoketest's "0 VUID" gate. Define X3_VK_BEST_PRACTICES
@@ -1371,6 +1403,9 @@ public:
         m_building.gpuCullExpected        = m_lastCullExpected;
         m_building.gpuCullEquivFrames     = m_cullEquivFrames;
         m_building.gpuCullEquivMismatches = m_cullEquivMismatches;
+        // Gap 6: budgeted point-shadow casters rendered this frame (cube-face pass
+        // + set-5 atlas sampling exercised iff > 0). --test-pointshadows asserts > 0.
+        m_building.pointShadowCasters     = m_pointShadowSlotCount;
         m_lastStats = m_building;
 
         // ZERO-STUTTER: record this frame in the pacing ring + spike log.
@@ -1378,6 +1413,10 @@ public:
     }
 
     RenderStats stats() const override { return m_lastStats; }
+
+    uint32_t validationErrorCount() const override {
+        return m_validationErrors.load();
+    }
 
     // ---- ZERO-STUTTER telemetry snapshot (r_frametelemetry / --test-framepacing).
     // Percentiles over the post-warmup ring; the late-creation counters are the
@@ -14237,6 +14276,9 @@ private:
     float    m_tsPeriodNs  = 0.0f;       // nanoseconds per timestamp tick
     uint64_t m_tsValidMask = 0;          // mask of meaningful timestamp bits
     float    m_lastGpuMs   = 0.0f;       // most recent GPU pass time (ms)
+    // 0-VUID gate: ERROR-severity validation messages since init (debug callback
+    // bumps it via the user-data pointer). Read by validationErrorCount().
+    std::atomic<uint32_t> m_validationErrors{0};
     // Counters being accumulated for the in-flight frame (reset each beginFrame),
     // and the snapshot of the last completed frame (returned by stats()).
     RenderStats m_building{};            // accumulates during the current frame

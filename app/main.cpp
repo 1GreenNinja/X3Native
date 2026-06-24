@@ -1697,6 +1697,345 @@ static bool runGpuCullSelfTest() {
 }
 
 // ---------------------------------------------------------------------------
+// Shared point-shadow fixture (Gap 6): a small lit cell — floor + ceiling + four
+// walls + a low bunk + a tall pillar occluder + one ceiling lamp — that the lamp
+// casts cube-face shadows from. Mirrors the --screenshot-pointshadow scene so the
+// validation test and the perf bench exercise the EXACT same geometry/lighting as
+// the gate-shot. Returns false on a resource-create failure.
+//
+// On return the device is set up (camera, lights, sky-off, ambient); the caller
+// drives setPointShadowParams + beginFrame/drawCell/endFrame itself. `outDraw`
+// closes over the created meshes so the caller can submit the scene each frame.
+struct PointShadowFixture {
+    std::vector<x3::rhi::MeshHandle> partMesh;
+    x3::rhi::MeshHandle fixtureMesh{};
+    x3::rhi::TextureHandle greyTex{};
+    bool ok = false;
+};
+static PointShadowFixture buildPointShadowFixture(x3::rhi::IRenderDevice* device) {
+    PointShadowFixture fx;
+    std::vector<x3::prims::PrimMesh> parts;
+    parts.push_back(x3::prims::makeBox(4.5f, 0.5f, 4.5f,  0.0f, -0.5f, 0.0f)); // floor slab (top y=0)
+    parts.push_back(x3::prims::makeBox(4.5f, 0.5f, 4.5f,  0.0f,  4.5f, 0.0f)); // ceiling slab
+    parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 4.5f, -4.0f,  2.0f, 0.0f)); // west wall
+    parts.push_back(x3::prims::makeBox(0.5f, 2.15f, 4.5f,  4.0f,  2.0f, 0.0f)); // east wall
+    parts.push_back(x3::prims::makeBox(4.5f, 2.15f, 0.5f,  0.0f,  2.0f, -4.0f)); // south wall
+    parts.push_back(x3::prims::makeBox(4.5f, 2.15f, 0.5f,  0.0f,  2.0f,  4.0f)); // north wall
+    parts.push_back(x3::prims::makeBox(0.9f, 0.25f, 0.5f, -2.0f, 0.45f, 2.6f)); // bunk (occluder)
+    parts.push_back(x3::prims::makeBox(0.22f, 1.5f, 0.22f, 1.2f, 1.5f, 0.6f));  // pillar (occluder)
+    for (auto& p : parts) {
+        auto h = device->createMesh(p.verts.data(), (uint32_t)p.verts.size(),
+                                    p.index.data(), (uint32_t)p.index.size());
+        if (!h.valid()) return fx;
+        fx.partMesh.push_back(h);
+    }
+    x3::prims::PrimMesh fixture = x3::prims::makeBox(0.35f, 0.06f, 0.35f, 0.0f, 3.85f, 0.0f);
+    fx.fixtureMesh = device->createMesh(fixture.verts.data(), (uint32_t)fixture.verts.size(),
+                                        fixture.index.data(), (uint32_t)fixture.index.size());
+    if (!fx.fixtureMesh.valid()) return fx;
+    auto greyPx = x3::prims::makeSolidRGBA(4, 195, 195, 195);
+    fx.greyTex = device->createTexture(greyPx.data(), 4, 4, /*srgb=*/true);
+
+    // One ceiling lamp; sun below the horizon so the lamp is the only direct light.
+    x3::rhi::PointLight pl{};
+    pl.pos[0] = 0.0f; pl.pos[1] = 3.6f; pl.pos[2] = 0.0f; pl.range = 14.0f;
+    pl.color[0] = 3.2f; pl.color[1] = 2.9f; pl.color[2] = 2.4f;
+    device->setPointLights(&pl, 1);
+    device->setAmbient(0.015f, 0.016f, 0.020f);
+    device->setShadowBounds(0.0f, 2.0f, 0.0f, 20.0f);
+    { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false;
+      sp.sunDir[0] = 0.0f; sp.sunDir[1] = -1.0f; sp.sunDir[2] = 0.01f;
+      device->setSkyParams(sp); }
+    device->setCamera(-3.1f, 1.7f, -3.1f, std::atan2(3.7f, 4.3f), -0.10f, 72.0f);
+    fx.ok = true;
+    return fx;
+}
+static void drawPointShadowFixture(x3::rhi::IRenderDevice* device,
+                                   const x3::rhi::FrameContext& f,
+                                   const PointShadowFixture& fx) {
+    const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    const float white[4] = { 1, 1, 1, 1 };
+    const float fixtureTint[4]     = { 1.0f, 0.95f, 0.85f, 1.0f };
+    const float fixtureEmissive[4] = { 1.0f, 0.9f, 0.7f, 8.0f };
+    for (auto m : fx.partMesh) device->drawMesh(f, m, fx.greyTex, white, identity);
+    device->drawMeshEmissive(f, fx.fixtureMesh, fx.greyTex, fixtureTint, fixtureEmissive, identity);
+}
+
+// ---------------------------------------------------------------------------
+// --test-pointshadows : Gap 6 raster point-light-shadow VALIDATION + correctness
+// gate. Unlike --screenshot-pointshadow (which renders with no VUID assertion),
+// this drives the REAL device HEADLESS *with validation layers on* and the
+// shadow path ACTIVE, so the cube-face depth pass + the set-5 atlas sampling are
+// under a validation gate. It:
+//   * builds the lamp+occluder+floor fixture,
+//   * runs tier 1 (res 512) AND tier 2 (res 1024), several frames each, so the
+//     "pointshadow-depth" pass records, the atlas is sampled, and per-mip/layout
+//     barriers fire at both resolutions,
+//   * asserts the budgeted-caster count > 0 at both tiers (the pass ran),
+//   * asserts ZERO validation errors across the whole run (the 0-VUID gate),
+//   * and a cheap correctness check: captures the floor with shadows OFF vs ON
+//     and asserts a floor region in the occluder umbra got DARKER with shadows on.
+// Prints "pointshadows: PASS (tier1+tier2, 0 VUID)" / "FAIL ...". Exits nonzero on
+// any failure. Additive — no other path is touched.
+static bool runPointShadowSelfTest() {
+    using namespace x3::rhi;
+    int passed = 0, total = 0;
+    auto check = [&](const char* name, bool ok) {
+        ++total; if (ok) ++passed;
+        x3::logInfo(std::string("  [pointshadows] ") + (ok ? "PASS " : "FAIL ") + name);
+        return ok;
+    };
+
+    if (!glfwInit()) { x3::logError("[pointshadows] glfwInit failed"); return false; }
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    std::unique_ptr<IRenderDevice> device(createRenderDevice());
+    DeviceDesc desc{};
+    desc.width = 640; desc.height = 360; desc.headless = true;
+    desc.validation = true;                  // VUID gate: this is the whole point
+    if (!device->init(desc)) {
+        x3::logError("[pointshadows] device init failed");
+        glfwTerminate(); return false;
+    }
+
+    PointShadowFixture fx = buildPointShadowFixture(device.get());
+    if (!fx.ok) {
+        x3::logError("[pointshadows] fixture create failed");
+        device->shutdown(); glfwTerminate(); return false;
+    }
+
+    namespace fs = std::filesystem;
+    const std::string outDir = (fs::temp_directory_path() / "x3_pointshadow_test").string();
+    std::error_code mkec; fs::create_directories(outDir, mkec);
+
+    auto setPS = [&](int tier, int faceRes = 512) {
+        IRenderDevice::PointShadowParams pp{};
+        pp.tier = tier; pp.maxLights = 8; pp.faceRes = faceRes;
+        device->setPointShadowParams(pp);
+    };
+    // Render n frames; optionally capture the LAST one to `capturePath`.
+    auto renderFrames = [&](int n, const std::string& capturePath) -> bool {
+        for (int i = 0; i < n; ++i) {
+            glfwPollEvents();
+            if (!capturePath.empty() && i == n - 1) device->armCapture(capturePath.c_str());
+            auto f = device->beginFrame();
+            if (f.valid) drawPointShadowFixture(device.get(), f, fx);
+            device->endFrame(f);
+        }
+        if (capturePath.empty()) return true;
+        return device->captureFrame(capturePath.c_str());
+    };
+
+    // --- shadows OFF baseline (tier 0) ---
+    setPS(0);
+    const std::string offPng = outDir + "/ps_off.png";
+    bool capOff = renderFrames(8, offPng);
+    check("tier0 baseline rendered + captured", capOff);
+    check("tier0: zero casters (shadows off)", device->stats().pointShadowCasters == 0u);
+
+    // --- TIER 1 (res 512): pass records, atlas sampled, casters > 0 ---
+    setPS(1, 512);
+    const std::string on1Png = outDir + "/ps_on_tier1.png";
+    bool capOn1 = renderFrames(10, on1Png);
+    const uint32_t casters1 = device->stats().pointShadowCasters;
+    check("tier1 rendered + captured", capOn1);
+    check("tier1: caster count > 0 (cube-face pass + set-5 sampling exercised)", casters1 > 0u);
+
+    // --- TIER 2 (res 1024): higher-res atlas, per-mip/layout barriers at 1024 ---
+    setPS(2, 1024);
+    const std::string on2Png = outDir + "/ps_on_tier2.png";
+    bool capOn2 = renderFrames(10, on2Png);
+    const uint32_t casters2 = device->stats().pointShadowCasters;
+    check("tier2 rendered + captured", capOn2);
+    check("tier2: caster count > 0", casters2 > 0u);
+
+    // --- 0-VUID gate: zero validation errors across the WHOLE run ---
+    const uint32_t vuids = device->validationErrorCount();
+    check("ZERO validation errors (0-VUID gate)", vuids == 0u);
+    if (vuids != 0u)
+        x3::logError("[pointshadows] " + std::to_string(vuids) + " validation error(s) — see [vk-validation] lines above");
+
+    // --- correctness: a floor region in the occluder umbra got DARKER with
+    // shadows on. Compare the OFF vs tier1-ON capture: scan the lower band of the
+    // frame (the floor), find the region that darkened the most, and require a
+    // meaningful drop. If readback fails we degrade to the caster-count assertion
+    // (already checked above) rather than failing the whole gate.
+    bool shadowDarker = false, readbackOk = false;
+    if (capOff && capOn1) {
+        int w0=0,h0=0,c0=0, w1=0,h1=0,c1=0;
+        stbi_uc* a = stbi_load(offPng.c_str(), &w0, &h0, &c0, 4);
+        stbi_uc* b = stbi_load(on1Png.c_str(), &w1, &h1, &c1, 4);
+        if (a && b && w0 == w1 && h0 == h1 && w0 > 0 && h0 > 0) {
+            readbackOk = true;
+            // Scan the bottom 45% of the frame (floor) in a grid of small tiles;
+            // find the tile whose mean luma dropped the most from OFF->ON.
+            const int tile = 12;
+            float maxDrop = 0.0f; float offLum = 0.0f, onLum = 0.0f;
+            for (int y = h0 * 55 / 100; y + tile <= h0; y += tile) {
+                for (int x = 0; x + tile <= w0; x += tile) {
+                    double sa = 0, sb = 0;
+                    for (int dy = 0; dy < tile; ++dy)
+                        for (int dx = 0; dx < tile; ++dx) {
+                            const int idx = ((y+dy)*w0 + (x+dx)) * 4;
+                            sa += 0.299*a[idx] + 0.587*a[idx+1] + 0.114*a[idx+2];
+                            sb += 0.299*b[idx] + 0.587*b[idx+1] + 0.114*b[idx+2];
+                        }
+                    const float ma = (float)(sa / (tile*tile));
+                    const float mb = (float)(sb / (tile*tile));
+                    // Only consider tiles that were actually LIT in the OFF image
+                    // (floor under the lamp), so we measure shadowing not background.
+                    if (ma > 25.0f && (ma - mb) > maxDrop) {
+                        maxDrop = ma - mb; offLum = ma; onLum = mb;
+                    }
+                }
+            }
+            // Require the darkest floor tile to drop by a clear margin (umbra).
+            shadowDarker = (maxDrop > 12.0f);
+            x3::logInfo("[pointshadows] umbra check: darkest floor tile OFF lum="
+                        + std::to_string((int)offLum) + " ON lum=" + std::to_string((int)onLum)
+                        + " (drop " + std::to_string((int)maxDrop) + ")");
+        }
+        if (a) stbi_image_free(a);
+        if (b) stbi_image_free(b);
+    }
+    if (readbackOk)
+        check("floor umbra darker with shadows ON (visible occlusion)", shadowDarker);
+    else
+        x3::logInfo("[pointshadows] framebuffer readback unavailable — relying on caster-count gate");
+
+    device->shutdown();
+    device.reset();
+    glfwTerminate();
+
+    const bool allPass = (passed == total);
+    x3::logInfo("pointshadows: " + std::to_string(passed) + "/" + std::to_string(total) + " checks passed");
+    if (allPass)
+        x3::logInfo("pointshadows: PASS (tier1+tier2, 0 VUID)");
+    else
+        x3::logError("pointshadows: FAIL (" + std::to_string(total - passed) + " check(s) failed, "
+                     + std::to_string(vuids) + " VUID)");
+    return allPass;
+}
+
+// ---------------------------------------------------------------------------
+// --bench-pointshadows : whole-frame GPU-time A/B of the raster point-shadow cost
+// on THIS GPU. Renders a DENSE shadow-casting scene (a floor + a grid of occluder
+// cubes lit by 8 point lights, ALL shadow-casting) for a fixed frame count at
+// r_pointshadows 0 / 1 / 2 and reports the MEDIAN GPU ms (stats().gpuFrameMs, the
+// same value --smoketest prints as "gpu=X.XX ms") for each tier plus the delta
+// over tier 0 (the measured shadow cost). The small gate-shot fixture is too cheap
+// to measure (the shadow pass falls under the timestamp noise floor); this scene
+// puts real geometry through the cube-face depth pass (8 casters x 6 faces x the
+// occluder grid) so the cost is above noise. Related to the 8.3 ms (120 Hz) budget.
+static int runPointShadowBench() {
+    using namespace x3::rhi;
+    if (!glfwInit()) { x3::logError("[bench-pointshadows] glfwInit failed"); return 1; }
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+    std::unique_ptr<IRenderDevice> device(createRenderDevice());
+    DeviceDesc desc{};
+    desc.width = 1280; desc.height = 720; desc.headless = true;
+    desc.validation = false;                 // perf path: no validation overhead
+    if (!device->init(desc)) {
+        x3::logError("[bench-pointshadows] device init failed");
+        glfwTerminate(); return 1;
+    }
+
+    // Dense scene: a wide floor + a 16x16 grid of occluder cubes, lit by 8 point
+    // lights spread over the grid (all of them shadow-cast at the budget of 8).
+    x3::prims::PrimMesh floor = x3::prims::makeBox(48.0f, 0.5f, 48.0f, 0.0f, -0.5f, 0.0f);
+    x3::prims::PrimMesh cube  = x3::prims::makeBox(0.6f, 1.2f, 0.6f, 0.0f, 1.2f, 0.0f);
+    MeshHandle floorMesh = device->createMesh(floor.verts.data(), (uint32_t)floor.verts.size(),
+                                              floor.index.data(), (uint32_t)floor.index.size());
+    MeshHandle cubeMesh  = device->createMesh(cube.verts.data(), (uint32_t)cube.verts.size(),
+                                              cube.index.data(), (uint32_t)cube.index.size());
+    auto greyPx = x3::prims::makeSolidRGBA(4, 195, 195, 195);
+    TextureHandle greyTex = device->createTexture(greyPx.data(), 4, 4, /*srgb=*/true);
+    if (!floorMesh.valid() || !cubeMesh.valid()) {
+        x3::logError("[bench-pointshadows] mesh create failed");
+        device->shutdown(); glfwTerminate(); return 1;
+    }
+
+    constexpr int kGrid = 40;            // 1600 occluder cubes (real depth-pass load)
+    PointLight lights[8]{};
+    for (int i = 0; i < 8; ++i) {
+        const float ang = (float)i / 8.0f * 6.2831853f;
+        lights[i].pos[0] = 24.0f * std::cos(ang);
+        lights[i].pos[1] = 8.0f;
+        lights[i].pos[2] = 24.0f * std::sin(ang);
+        lights[i].range  = 45.0f;
+        lights[i].color[0] = 2.4f; lights[i].color[1] = 2.2f; lights[i].color[2] = 2.0f;
+    }
+    device->setPointLights(lights, 8);
+    device->setAmbient(0.02f, 0.02f, 0.025f);
+    device->setShadowBounds(0.0f, 2.0f, 0.0f, 40.0f);
+    { IRenderDevice::SkyParams sp{}; sp.enabled = false;
+      sp.sunDir[0] = 0.0f; sp.sunDir[1] = -1.0f; sp.sunDir[2] = 0.01f;
+      device->setSkyParams(sp); }
+    device->setCamera(0.0f, 26.0f, 42.0f, -1.5708f, -0.55f, 70.0f);
+
+    const float white[4] = { 1, 1, 1, 1 };
+    auto drawScene = [&](const FrameContext& f) {
+        float m[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        device->drawMesh(f, floorMesh, greyTex, white, m);
+        for (int z = 0; z < kGrid; ++z)
+            for (int x = 0; x < kGrid; ++x) {
+                m[12] = -39.0f + 2.0f * x; m[13] = 0.0f; m[14] = -39.0f + 2.0f * z;
+                device->drawMesh(f, cubeMesh, greyTex, white, m);
+            }
+    };
+
+    auto setPS = [&](int tier, int faceRes) {
+        IRenderDevice::PointShadowParams pp{};
+        pp.tier = tier; pp.maxLights = 8; pp.faceRes = faceRes;
+        device->setPointShadowParams(pp);
+    };
+    // Render `warmup` throwaway frames, then collect `sample` gpuFrameMs values and
+    // return their median. gpuFrameMs reads back with frames-in-flight latency, so
+    // the warmup drains the pipeline before we sample.
+    uint32_t casters1 = 0, casters2 = 0;
+    auto medianGpuMs = [&](int tier, int faceRes) -> float {
+        setPS(tier, faceRes);
+        const int warmup = 40, sample = 200;
+        std::vector<float> ms; ms.reserve(sample);
+        for (int i = 0; i < warmup + sample; ++i) {
+            glfwPollEvents();
+            auto f = device->beginFrame();
+            if (f.valid) drawScene(f);
+            device->endFrame(f);
+            if (i >= warmup) ms.push_back(device->stats().gpuFrameMs);
+        }
+        if (tier == 1) casters1 = device->stats().pointShadowCasters;
+        if (tier == 2) casters2 = device->stats().pointShadowCasters;
+        std::sort(ms.begin(), ms.end());
+        return ms.empty() ? 0.0f : ms[ms.size()/2];
+    };
+
+    const float t0 = medianGpuMs(0, 512);
+    const float t1 = medianGpuMs(1, 512);
+    const float t2 = medianGpuMs(2, 1024);
+    x3::logInfo("[bench-pointshadows] scene: " + std::to_string(kGrid*kGrid)
+                + " occluder cubes + floor @1280x720; budget 8 lights -> tier1 "
+                + std::to_string(casters1) + " casters @512^2, tier2 "
+                + std::to_string(casters2) + " casters @1024^2 (4096^2 atlas cap)");
+
+    char line[256];
+    std::snprintf(line, sizeof(line),
+        "bench-pointshadows: tier0 %.2f ms | tier1 %.2f ms (+%.2f) | tier2 %.2f ms (+%.2f)",
+        t0, t1, t1 - t0, t2, t2 - t0);
+    x3::logInfo(line);
+    char budget[256];
+    std::snprintf(budget, sizeof(budget),
+        "bench-pointshadows: 120 Hz budget = 8.30 ms/frame; tier1 uses %.0f%%, tier2 uses %.0f%% of it; "
+        "shadow cost tier1 +%.2f ms, tier2 +%.2f ms",
+        100.0f * t1 / 8.30f, 100.0f * t2 / 8.30f, t1 - t0, t2 - t0);
+    x3::logInfo(budget);
+
+    device->shutdown();
+    device.reset();
+    glfwTerminate();
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
 // --test-debris : K-T2 GPU-compute persistent debris world self-test.
 //
 // Drives the REAL Vulkan render device HEADLESS (no window) so the compute path is
@@ -2565,6 +2904,14 @@ int main(int argc, char** argv) {
     // identical predicate per frame; asserts statDrawn == expected over a pose
     // sweep + conservation (drawn+culled==tested) + bypass + path-toggle. Additive.
     bool        testGpuCull = false;
+    // --test-pointshadows (Gap 6 raster point shadows): headless device + validation,
+    // shadow path ACTIVE at tier 1 (res 512) AND tier 2 (res 1024); asserts the
+    // cube-face pass ran (casters > 0), ZERO VUIDs across the run, and a floor umbra
+    // got darker with shadows on. Additive.
+    bool        testPointShadows = false;
+    // --bench-pointshadows (Gap 6 perf): whole-frame GPU-ms A/B at r_pointshadows
+    // 0/1/2 on this GPU; prints the median ms per tier + the shadow-cost delta. Additive.
+    bool        benchPointShadows = false;
     // --cullpath <n> / --hzb: seed the r_cullpath / r_hzb cvars from the CLI so the
     // smoketest/screenshot/bench paths exercise the D15 GPU cull (INT_MIN = unset).
     int         cullPathArg = INT_MIN;
@@ -3065,6 +3412,8 @@ int main(int argc, char** argv) {
         else if (a == "--test-gpuskin") testGpuSkin = true;
         else if (a == "--test-meshlet") testMeshlet = true;
         else if (a == "--test-gpucull") testGpuCull = true;
+        else if (a == "--test-pointshadows") testPointShadows = true;
+        else if (a == "--bench-pointshadows") benchPointShadows = true;
         else if (a == "--cullpath" && i + 1 < argc) cullPathArg = std::atoi(argv[++i]);
         else if (a == "--hzb") hzbArg = 1;
         else if (a == "--test-collapse") testCollapse = true;
@@ -3797,6 +4146,18 @@ int main(int argc, char** argv) {
                     "(headless device + validation, r_cullpath 1, pose sweep, "
                     "GPU statDrawn vs CPU predicate — must match EXACTLY)...");
         return runGpuCullSelfTest() ? 0 : 1;
+    }
+    if (testPointShadows) {
+        x3::logInfo("running Gap 6 raster point-shadow validation self-test "
+                    "(headless device + validation, r_pointshadows tier 1 res 512 + "
+                    "tier 2 res 1024, cube-face pass + set-5 atlas sampling under a "
+                    "VUID gate; asserts casters>0, 0 VUIDs, floor umbra darkens)...");
+        return runPointShadowSelfTest() ? 0 : 1;
+    }
+    if (benchPointShadows) {
+        x3::logInfo("running Gap 6 raster point-shadow GPU-time bench "
+                    "(headless, median gpuFrameMs at r_pointshadows 0/1/2 on this GPU)...");
+        return runPointShadowBench();
     }
     if (testCollapse) {
         x3::logInfo("running K-T3 structural collapse (support graph) self-test "

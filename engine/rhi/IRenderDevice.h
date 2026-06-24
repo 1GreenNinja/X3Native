@@ -122,6 +122,13 @@ struct RenderStats {
     uint32_t gpuCullExpected  = 0;   // CPU-side expected `drawn` for the read-back frame
     uint32_t gpuCullEquivFrames     = 0; // frames compared since enable
     uint32_t gpuCullEquivMismatches = 0; // frames where drawn != expected (MUST stay 0)
+
+    // ---- Gap 6 raster point-light shadows (r_pointshadows). Budgeted casters
+    // that got an atlas tile block + had their 6 cube faces rendered this frame
+    // (0 when r_pointshadows 0 or no light qualifies). The --test-pointshadows
+    // gate asserts this is > 0 so the cube-face pass + set-5 sampling are
+    // actually exercised under the validation layers. ----
+    uint32_t pointShadowCasters = 0; // budgeted shadow-casting point lights this frame
 };
 
 class IRenderDevice {
@@ -1008,6 +1015,14 @@ public:
     // row pitch so colors + dimensions are correct. No Vulkan types cross here.
     virtual void armCapture(const char* path) = 0;
     virtual bool captureFrame(const char* path) = 0;
+
+    // ---- Validation-error gate (headless self-tests) -----------------------
+    // Cumulative count of Vulkan validation-layer messages at ERROR severity
+    // observed since device init (a VUID violation bumps this). 0 across a run
+    // is the "0-VUID" gate the headless tests assert. Counts only when the
+    // device was created with DeviceDesc::validation; always 0 otherwise.
+    // Non-pure (default 0) so non-Vulkan / stub devices are unaffected.
+    virtual uint32_t validationErrorCount() const { return 0; }
 
     // Capability query
     virtual bool supportsDescriptorIndexing() const = 0;
