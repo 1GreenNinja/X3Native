@@ -102,6 +102,90 @@
       "source_note": "RCC v4 car roster #25; FBX2glTF + convert_car_glb.py (clearcoat+scale-normalize); 2026-06-24"
     },
     {
+      "repo_path": "assets/converted_glb/Vehicles/Cyber01.glb",
+      "sha256": "d0632c3991fe61206dceda529c9d7c63c5acdf66b25e744a3f57e2be5216ac7c",
+      "size": 284092,
+      "source_note": "Modular Cyber Racing Cars; convert_cyber_car.py (body+4-wheel FBX merge, clearcoat, scale-norm); car roster #25; 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Cyber02.glb",
+      "sha256": "d74b6af4c6217fa59d6db3e4547596f31d2ab97bc7533328c0e09a0881f7ac2f",
+      "size": 474520,
+      "source_note": "Modular Cyber Racing Cars; convert_cyber_car.py (body+4-wheel FBX merge, clearcoat, scale-norm); car roster #25; 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Cyber03.glb",
+      "sha256": "059214781d4eb2375d18fcb61d2b3c50762978f4c33b0e6ea64535f89e5e601e",
+      "size": 353544,
+      "source_note": "Modular Cyber Racing Cars; convert_cyber_car.py (body+4-wheel FBX merge, clearcoat, scale-norm); car roster #25; 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Cyber04.glb",
+      "sha256": "9b6743450e9dfce346690b1ecc83b9aa4d5ac19e20a8065153c017028e1b5ad5",
+      "size": 443296,
+      "source_note": "Modular Cyber Racing Cars; convert_cyber_car.py (body+4-wheel FBX merge, clearcoat, scale-norm); car roster #25; 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Cyber05.glb",
+      "sha256": "5e1920d372ac2e02964877990f8f8a96fcf008a93f1d02abfca4cf9b2fbdff0d",
+      "size": 419344,
+      "source_note": "Modular Cyber Racing Cars; convert_cyber_car.py (body+4-wheel FBX merge, clearcoat, scale-norm); car roster #25; 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Cyber06.glb",
+      "sha256": "84b9bfff174e43a1edd8e767f770fec777b997d09b02bee59834e33d9f948254",
+      "size": 338616,
+      "source_note": "Modular Cyber Racing Cars; convert_cyber_car.py (body+4-wheel FBX merge, clearcoat, scale-norm); car roster #25; 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Cyber07.glb",
+      "sha256": "12441f8df2d1fafcea1ee1f63243db69cb01cc2036733275b87c161329c5b992",
+      "size": 530892,
+      "source_note": "Modular Cyber Racing Cars; convert_cyber_car.py (body+4-wheel FBX merge, clearcoat, scale-norm); car roster #25; 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Cyber08.glb",
+      "sha256": "87c769faa7a438ef4c9c725d493f48f1c3297618fa907f96ff03c098efca5a38",
+      "size": 426308,
+      "source_note": "Modular Cyber Racing Cars; convert_cyber_car.py (body+4-wheel FBX merge, clearcoat, scale-norm); car roster #25; 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Cyber10.glb",
+      "sha256": "54951ccfcb34b3428e1f816953e4332cd9279227de9cd0e86cf5a2d029fc6b11",
+      "size": 428272,
+      "source_note": "Modular Cyber Racing Cars; convert_cyber_car.py (body+4-wheel FBX merge, clearcoat, scale-norm); car roster #25; 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Cyber11.glb",
+      "sha256": "426f9412ad33a29acdb47721657012faafa0d12025f4c1e3efe97281a8c0b8c6",
+      "size": 477140,
+      "source_note": "Modular Cyber Racing Cars; convert_cyber_car.py (body+4-wheel FBX merge, clearcoat, scale-norm); car roster #25; 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Cyber12.glb",
+      "sha256": "adf976d2e4d36ee7c1dc3f864876a7f5fc1eeb3ffd6f529c20fd060f750f714b",
+      "size": 481636,
+      "source_note": "Modular Cyber Racing Cars; convert_cyber_car.py (body+4-wheel FBX merge, clearcoat, scale-norm); car roster #25; 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Cyber13.glb",
+      "sha256": "4c3632e8eb6c7a7968e769ae7107dc42efe34a16bbef56edd5bb35612eff78d4",
+      "size": 512084,
+      "source_note": "Modular Cyber Racing Cars; convert_cyber_car.py (body+4-wheel FBX merge, clearcoat, scale-norm); car roster #25; 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Cyber14.glb",
+      "sha256": "01172fb84f348dff234e2d331819ac868dd84cd9f7d7ed7350214348340264d2",
+      "size": 449312,
+      "source_note": "Modular Cyber Racing Cars; convert_cyber_car.py (body+4-wheel FBX merge, clearcoat, scale-norm); car roster #25; 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Cyber15.glb",
+      "sha256": "744cfa950e790941718d9d02f8a088b35bd6040068412b7219555ec137780a72",
+      "size": 416560,
+      "source_note": "Modular Cyber Racing Cars; convert_cyber_car.py (body+4-wheel FBX merge, clearcoat, scale-norm); car roster #25; 2026-06-24"
+    },
+    {
       "repo_path": "assets/converted_glb/Vehicles/E30.glb",
       "sha256": "bbca9b1be0f6fa42481141d2c5c1a130b52332ec65c61f11e63532c001c00243",
       "size": 12133468,

@@ -2707,6 +2707,11 @@ int main(int argc, char** argv) {
     // (relative to convertedGlbRoot()). Override with `--car Vehicles/<Name>.glb`
     // to beauty-shoot any roster car; default = the hero CTR.
     std::string carShotGlb = "Vehicles/CTR.glb";
+    // ROSTER LINEUP (--screenshot-roster [outDir] / --world carshow): load EVERY
+    // roster.json car, line them up in rows on the polished showroom floor under
+    // the studio lights, and capture wide beauty passes of the whole fleet.
+    bool        rosterShot = false;
+    std::string rosterShotDir = "docs/screenshots/roster";
     // FIRST-PERSON showroom proof (--screenshot-showroom-fp [path.png]): run the SAME
     // interactive `--world showroom` setup (walkable floor slab + companion Aria + the
     // wheeling night sky) but render ONE headless frame from the PLAYER SPAWN eye and
@@ -3170,6 +3175,13 @@ int main(int argc, char** argv) {
         else if (a == "--screenshot-car") {
             carShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') carShotDir = argv[++i];
+        }
+        else if (a == "--car") {            // which roster GLB the hero shot poses
+            if (i + 1 < argc && argv[i + 1][0] != '-') carShotGlb = argv[++i];
+        }
+        else if (a == "--screenshot-roster") {
+            rosterShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') rosterShotDir = argv[++i];
         }
         else if (a == "--screenshot-showroom-fp") {
             // Headless first-person proof of the walkable --world showroom. Forces the
@@ -4026,10 +4038,11 @@ int main(int argc, char** argv) {
     // shown on screen. Everything a human actually watches (no-arg game,
     // --world terrain, --bench) keeps a real window + swapchain exactly as before.
     if (perfshopShot) worldMode = "drive";   // the shop lives in the drive world
+    if (worldMode == "carshow") rosterShot = true;   // --world carshow = the roster lineup beauty pass
     if (ecologyShot)  worldMode = "valley";  // the ambient ecology rides the valley biome
     if (crowdShot)    worldMode = "club";    // the crowd proof lives on the club floor
     if (alertShot) { screenshot = true; screenshotPath = alertShotPath; }   // rides --screenshot
-    const bool headless = smoketest || testFramePacing || screenshot || skyShot || ddgiShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || cutsceneShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot || perfshopShot || ecologyShot || crowdShot;
+    const bool headless = smoketest || testFramePacing || screenshot || skyShot || ddgiShot || showroomShot || carShot || rosterShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || cutsceneShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot || perfshopShot || ecologyShot || crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -4127,7 +4140,7 @@ int main(int argc, char** argv) {
     desc.width  = W;
     desc.height = H;
     desc.headless = headless;
-    desc.ssaa = (showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || cutsceneShot) ? 4u : 1u;   // 4x supersample the showroom / planet / nightsky still (5090 headless: ~16 samples/px, pristine)
+    desc.ssaa = (showroomShot || carShot || rosterShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || cutsceneShot) ? 4u : 1u;   // 4x supersample the showroom / planet / nightsky still (5090 headless: ~16 samples/px, pristine)
     // Benchmark mode runs with vsync OFF so it measures the true frame ceiling,
     // not the display refresh cap.
     desc.vsync  = !bench;
@@ -4956,9 +4969,9 @@ int main(int argc, char** argv) {
         carXform(0.6f, carX, carY + kSlabTop, carZ, carT);
         x3::game::EnvArtSystem car;
         const bool carOk = car.buildFromGlbAt(*device, x3::game::convertedGlbRoot(),
-                                              "Vehicles/CTR.glb", carT);
+                                              carShotGlb, carT);
         if (!carOk) {
-            x3::logError("--screenshot-car: Vehicles/CTR.glb FAILED to load — aborting");
+            x3::logError("--screenshot-car: " + carShotGlb + " FAILED to load — aborting");
             device->shutdown();
             if (window) glfwDestroyWindow(window);
             glfwTerminate();
@@ -5115,6 +5128,140 @@ int main(int argc, char** argv) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return shotFails == 0 ? 0 : 1;
+    }
+
+    // ======================================================================
+    // ROSTER LINEUP (--screenshot-roster [outDir] / --world carshow) — the
+    // whole drivable fleet lined up on the polished showroom floor for a beauty
+    // pass. Loads every roster.json car as a static EnvArtSystem instance in a
+    // grid (rows of 6), under the same studio reflector slab + emissive panels
+    // as the hero shot, and captures a few wide angles. Headless + 4x SSAA.
+    // ======================================================================
+    if (rosterShot) {
+        namespace fs = std::filesystem;
+        std::error_code mkec; fs::create_directories(rosterShotDir, mkec);
+
+        x3::game::roster::Roster ros;
+        if (!ros.loadFile(x3::game::roster::defaultRosterPath()) || ros.cars().empty()) {
+            x3::logError("--screenshot-roster: roster.json failed to load — aborting");
+            device->shutdown(); if (window) glfwDestroyWindow(window); glfwTerminate();
+            return 1;
+        }
+        x3::logInfo("--screenshot-roster: lining up " + std::to_string(ros.size()) +
+                    " cars -> " + rosterShotDir);
+
+        // Grid layout: rows of N, spaced by lane/row pitch. Cars authored nose=+Z.
+        const int   kPerRow = 6;
+        const float kLane   = 4.2f;   // metres between cars across a row
+        const float kRow    = 7.0f;   // metres between rows (front-to-back)
+        const int   rows    = ((int)ros.size() + kPerRow - 1) / kPerRow;
+        const float gridW   = (kPerRow - 1) * kLane;
+        const float gridD   = (rows - 1)   * kRow;
+
+        std::vector<std::unique_ptr<x3::game::EnvArtSystem>> fleet;
+        fleet.reserve(ros.size());
+        int loaded = 0, idx = 0;
+        for (const auto& c : ros.cars()) {
+            const int r = idx / kPerRow, col = idx % kPerRow;
+            const float x = -gridW * 0.5f + col * kLane;
+            const float z = -gridD * 0.5f + r   * kRow;
+            // Yaw cars in alternating rows to face the camera lane; nose +Z.
+            const float yaw = 0.0f;
+            const float cyaw = std::cos(yaw), syaw = std::sin(yaw);
+            const float T[16] = { cyaw,0,-syaw,0,  0,1,0,0,  syaw,0,cyaw,0,  x,0.02f,z,1 };
+            auto sys = std::make_unique<x3::game::EnvArtSystem>();
+            if (sys->buildFromGlbAt(*device, x3::game::convertedGlbRoot(), c.glb, T)) {
+                fleet.push_back(std::move(sys));
+                ++loaded;
+            } else {
+                x3::logWarn("--screenshot-roster: skip (GLB absent) " + c.glb);
+            }
+            ++idx;
+        }
+        x3::logInfo("--screenshot-roster: " + std::to_string(loaded) + "/" +
+                    std::to_string(ros.size()) + " cars loaded");
+
+        // Studio floor (big polished reflector) + emissive ceiling strips.
+        x3::rhi::TextureHandle polishedMr{};
+        { const uint8_t mr[4] = { 0, 20, 128, 255 }; polishedMr = device->createTexture(mr, 1, 1, false); }
+        auto makeMesh = [&](const x3::prims::PrimMesh& pm) {
+            return device->createMesh(pm.verts.data(), (uint32_t)pm.verts.size(),
+                                      pm.index.data(), (uint32_t)pm.index.size());
+        };
+        x3::rhi::MeshHandle floorMesh = makeMesh(x3::prims::makeBox(gridW + 16.0f, 0.01f, gridD + 16.0f, 0, 0, 0, 0.25f));
+        x3::rhi::MeshHandle stripMesh = makeMesh(x3::prims::makeBox(gridW + 10.0f, 0.05f, 0.35f, 0, 0, 0, 1.0f));
+        const float kWhite[4]   = { 0.97f, 0.97f, 0.98f, 1.0f };
+        const float kNoEmis[4]  = { 0, 0, 0, 0 };
+        const float kStripEmis[4] = { 1.0f, 0.99f, 0.95f, 3.0f };
+        auto at = [&](float x, float y, float z, float out[16]) {
+            const float m[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, x,y,z,1 };
+            for (int i = 0; i < 16; ++i) out[i] = m[i];
+        };
+
+        auto drawFleet = [&](const x3::rhi::FrameContext& fr) {
+            float m[16];
+            at(0, 0.01f, 0, m);
+            device->drawMeshPBR(fr, floorMesh, x3::rhi::TextureHandle{}, x3::rhi::TextureHandle{},
+                                polishedMr, kWhite, kNoEmis, m);
+            for (int r = 0; r < rows; ++r) {
+                const float z = -gridD * 0.5f + r * kRow;
+                at(0, 5.5f, z, m);
+                device->drawMeshEmissive(fr, stripMesh, x3::rhi::TextureHandle{}, kWhite, kStripEmis, m);
+            }
+            for (auto& f : fleet) f->draw(*device, fr);
+        };
+
+        device->setShadowBounds(0, 0, 0, std::max(gridW, gridD) + 20.0f);
+        { x3::rhi::IRenderDevice::SsaoParams s{}; s.enabled = false; device->setSsaoParams(s); }
+        { x3::rhi::IRenderDevice::GiParams   g{}; g.enabled = false; device->setGiParams(g); }
+        { x3::rhi::IRenderDevice::ReflectionParams rf{}; rf.ssr = true; rf.rtFallback = true;
+          rf.fullRes = true; rf.intensity = 1.0f; device->setReflectionParams(rf); }
+        // Per-car overhead key lights — NIGHT showroom (dark sky so the fleet pops;
+        // full-intensity interior lights, no day x0.3 dimming). Same recipe as the
+        // hero --screenshot-car bay (range ~12, pre-multiplied colour*intensity).
+        std::vector<x3::rhi::PointLight> keys;
+        keys.reserve(ros.size());
+        for (int li = 0; li < (int)ros.size(); ++li) {
+            const int r = li / kPerRow, col = li % kPerRow;
+            const float x = -gridW * 0.5f + col * kLane;
+            const float z = -gridD * 0.5f + r   * kRow;
+            x3::rhi::PointLight pl{}; pl.pos[0]=x; pl.pos[1]=2.3f; pl.pos[2]=z; pl.range=9.5f;
+            pl.color[0]=16.0f; pl.color[1]=15.6f; pl.color[2]=14.8f; keys.push_back(pl);
+        }
+
+        auto shot = [&](const std::string& name, float cx, float cy, float cz,
+                        float tx, float ty, float tz, float fov) {
+            // NIGHT showroom (dark sky so the lit fleet pops + starfield backdrop);
+            // set the full-intensity per-car key lights AFTER the recipe so each
+            // car's clearcoat is directly lit and reads in colour.
+            applyShowroomTimeOfDay(device.get(), /*day=*/false, nullptr);
+            device->setSkyTime(10.0f);
+            device->setPointLights(keys.data(), (uint32_t)keys.size());
+            device->setAmbient(0.22f, 0.23f, 0.27f);   // lift the dark-night fill so paint reads
+            const float lx = tx - cx, ly = ty - cy, lz = tz - cz;
+            const float len = std::max(std::sqrt(lx*lx + ly*ly + lz*lz), 1e-3f);
+            device->setCamera(cx, cy, cz, std::atan2(lz, lx), std::asin(ly / len), fov);
+            const std::string path = rosterShotDir + "/" + name + ".png";
+            for (int i = 0; i < 90; ++i) {
+                glfwPollEvents();
+                if (i == 89) device->armCapture(path.c_str());
+                auto fr = device->beginFrame();
+                drawFleet(fr);
+                device->endFrame(fr);
+            }
+            if (device->captureFrame(path.c_str())) x3::logInfo("--screenshot-roster: wrote " + path);
+            else x3::logError("--screenshot-roster: capture FAILED " + path);
+        };
+
+        const float diag = std::sqrt(gridW*gridW + gridD*gridD);
+        shot("roster_hero",  gridW*0.55f, 6.0f, gridD*0.5f + 13.0f,  0, 0.6f, 0, 46.0f);
+        shot("roster_front", 0.0f,        4.2f, gridD*0.5f + 13.0f,  0, 0.7f, 0, 50.0f);
+        shot("roster_top",   0.0f,    diag + 10.0f, 0.1f,  0, 0.0f, 0, 52.0f);
+
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return 0;
     }
 
     // ---- Planet preview (--screenshot-planet [path.png]) -------------------
