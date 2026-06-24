@@ -34,6 +34,19 @@
 
   "actors": [
     {
+      "id": "home_station",
+      "model": "converted_glb/IntroHero/SpaceStation_Cylindrical.glb",
+      "size": 140.0,
+      "rotOffsetDeg": [0, 18, 0],
+      "emissive": [1.0, 0.82, 0.5, 9.0],
+      "hideAt": 22.0,
+      "keys": [
+        { "t": 0.0,  "pos": [-46, 18, -110], "rotDeg": [0, 0, 0],   "scale": 1.0 },
+        { "t": 12.0, "pos": [-46, 18, -110], "rotDeg": [0, 8, 0],   "scale": 1.0 },
+        { "t": 22.0, "pos": [-46, 18, -110], "rotDeg": [0, 14, 0],  "scale": 1.0 }
+      ]
+    },
+    {
       "id": "jake_ship",
       "model": "rigged_glb/JakeFighterShip.glb",
       "size": 9.0,
