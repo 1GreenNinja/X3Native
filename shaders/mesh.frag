@@ -81,11 +81,25 @@ struct PointShadowSlot {
     vec4 tileRect;    // xy = block origin UV, zw = per-face tile size UV
     vec4 lightPos;    // xyz = light world pos, w = range
 };
-const int kMaxPointShadowSlots = 16;
+// Must match VulkanRenderDevice::kMaxPointShadowSlots (== kMaxPointLights). Tier-3
+// (cube-array) addresses one slot per light (slot == light index), so the table is
+// sized to the full point-light cap; atlas tiers only ever fill <=16 of these.
+const int kMaxPointShadowSlots = 64;
 layout(set = 5, binding = 1) uniform PointShadowTable {
-    vec4 header;      // x = active slot count, y = atlas dim (px), zw reserved
+    vec4 header;      // x = active slot count, y = atlas/cube res (px), z = res, w = tier
     PointShadowSlot slots[kMaxPointShadowSlots];
 } pst;
+
+// ---- Gap 6 tier-3 ULTRA: depth cube-map ARRAY (set 5, binding 2) ----
+// One depth cube per shadow-casting light (no atlas projection, no tile seams,
+// best quality). Selected by the POINT_SHADOW_MODE spec constant: the host
+// compiles TWO mesh pipeline variants from this ONE shader — mode 0 (atlas,
+// tiers 1-2) and mode 1 (cube-array, tier 3). The unused binding is declared in
+// both variants (the set 5 LAYOUT is shared) but only sampled in its own mode,
+// so the atlas-tier variant never touches the cube array and vice-versa.
+//   POINT_SHADOW_MODE: 0 = atlas (default), 1 = cube-array (tier 3)
+layout(constant_id = 0) const int POINT_SHADOW_MODE = 0;
+layout(set = 5, binding = 2) uniform samplerCubeArrayShadow pointShadowCube;
 
 // Screen-space ambient occlusion (set3): the blurred half-res AO texture (R8,
 // 1 = unoccluded, 0 = occluded), sampled at the fragment's screen UV. AO darkens
@@ -107,7 +121,7 @@ layout(set = 3, binding = 1) uniform SsaoControl {
     vec4 rtsh0;       // x = tier (0=off,1=sun,2=sun+points), y = tan(sun angular radius), z = max point shadow rays K, w = point light source radius (m)
     vec4 rtsh1;       // x = frame seed (per-frame jitter rotation; 0 when TAA is off), yzw = reserved
     // ---- Gap 6 RASTER point-light shadows (r_pointshadows) ----
-    vec4 pshadow0;    // x = tier (0=off, 1/2 = atlas), y = atlas dim (px), zw reserved
+    vec4 pshadow0;    // x = tier (0=off, 1/2 = atlas, 3 = cube-array), y = atlas dim (px), zw reserved
 } ssao;
 // Screen-traced / ray-traced reflection buffer (set3/binding2, half- or full-res
 // RGBA16F): rgb = reflected radiance from the REFLECTION pass (refl.comp — SSR
@@ -405,6 +419,34 @@ float samplePointShadow(int slot, vec3 fragPos, vec3 lightPos) {
     if (a.x >= a.y && a.x >= a.z)      face = (dir.x >= 0.0) ? 0 : 1;
     else if (a.y >= a.z)               face = (dir.y >= 0.0) ? 2 : 3;
     else                               face = (dir.z >= 0.0) ? 4 : 5;
+
+    // ---- Tier 3 (POINT_SHADOW_MODE == 1): depth cube-map ARRAY -----------------
+    // The depth pass rendered this light's 6 faces into cube-array layer `slot`
+    // with the SAME computePointFaceViewProj matrices. We pick the dominant face
+    // ONLY to obtain a matching reference depth (the face's perspective z); the
+    // hardware does the actual face selection from the sample DIRECTION, so there
+    // is no atlas tile math and no inter-face seam. samplerCubeArrayShadow does
+    // the depth compare; we 3x3-PCF by perturbing the sample direction.
+    if (POINT_SHADOW_MODE == 1) {
+        vec4 lcC = pst.slots[slot].faceVP[face] * vec4(fragPos, 1.0);
+        if (lcC.w <= 0.0) return 1.0;
+        float refDepthC = (lcC.z / lcC.w) - 0.0015;        // [0,1] persp z, biased
+        if (refDepthC > 1.0) return 1.0;
+        // Build a tangent frame around the sample direction so the PCF taps spread
+        // across the cube surface regardless of which face `dir` lands on.
+        vec3 nd = normalize(dir);
+        vec3 up = (abs(nd.y) < 0.999) ? vec3(0,1,0) : vec3(1,0,0);
+        vec3 t  = normalize(cross(up, nd));
+        vec3 b  = cross(nd, t);
+        const float k = 0.012;                              // angular PCF radius
+        float litC = 0.0;
+        for (int y = -1; y <= 1; ++y)
+            for (int x = -1; x <= 1; ++x) {
+                vec3 sd = normalize(nd + (float(x) * t + float(y) * b) * k);
+                litC += texture(pointShadowCube, vec4(sd, float(slot)), refDepthC);
+            }
+        return litC / 9.0;
+    }
 
     vec4 lc = pst.slots[slot].faceVP[face] * vec4(fragPos, 1.0);
     if (lc.w <= 0.0) return 1.0;                            // behind the face

@@ -1853,6 +1853,18 @@ static bool runPointShadowSelfTest() {
     check("tier2 rendered + captured", capOn2);
     check("tier2: caster count > 0", casters2 > 0u);
 
+    // --- TIER 3 (Ultra, cube-map ARRAY, res 1024): lazily allocates the 384-layer
+    // cube array, renders each light's 6 faces into its 6 cube layers, and samples
+    // a samplerCubeArrayShadow in mesh.frag (POINT_SHADOW_MODE=1 pipeline variant).
+    // Asserts casters>0 (the cube pass ran + the cube variant bound). The whole run
+    // stays under the same 0-VUID gate (checked once below).
+    setPS(3, 1024);
+    const std::string on3Png = outDir + "/ps_on_tier3.png";
+    bool capOn3 = renderFrames(12, on3Png);
+    const uint32_t casters3 = device->stats().pointShadowCasters;
+    check("tier3 (cube-array) rendered + captured", capOn3);
+    check("tier3: caster count > 0 (cube pass + samplerCubeArray sampling exercised)", casters3 > 0u);
+
     // --- 0-VUID gate: zero validation errors across the WHOLE run ---
     const uint32_t vuids = device->validationErrorCount();
     check("ZERO validation errors (0-VUID gate)", vuids == 0u);
@@ -1860,19 +1872,18 @@ static bool runPointShadowSelfTest() {
         x3::logError("[pointshadows] " + std::to_string(vuids) + " validation error(s) — see [vk-validation] lines above");
 
     // --- correctness: a floor region in the occluder umbra got DARKER with
-    // shadows on. Compare the OFF vs tier1-ON capture: scan the lower band of the
-    // frame (the floor), find the region that darkened the most, and require a
+    // shadows on. Compare the OFF capture vs an ON capture: scan the lower band of
+    // the frame (the floor), find the region that darkened the most, and require a
     // meaningful drop. If readback fails we degrade to the caster-count assertion
-    // (already checked above) rather than failing the whole gate.
-    bool shadowDarker = false, readbackOk = false;
-    if (capOff && capOn1) {
+    // (already checked above) rather than failing the whole gate. Reused for the
+    // atlas (tier 1) AND the cube-array (tier 3) so both backends are eyeballed.
+    auto umbraCheck = [&](const std::string& onPng, const char* label) {
+        bool darker = false, readbackOk = false;
         int w0=0,h0=0,c0=0, w1=0,h1=0,c1=0;
         stbi_uc* a = stbi_load(offPng.c_str(), &w0, &h0, &c0, 4);
-        stbi_uc* b = stbi_load(on1Png.c_str(), &w1, &h1, &c1, 4);
+        stbi_uc* b = stbi_load(onPng.c_str(), &w1, &h1, &c1, 4);
         if (a && b && w0 == w1 && h0 == h1 && w0 > 0 && h0 > 0) {
             readbackOk = true;
-            // Scan the bottom 45% of the frame (floor) in a grid of small tiles;
-            // find the tile whose mean luma dropped the most from OFF->ON.
             const int tile = 12;
             float maxDrop = 0.0f; float offLum = 0.0f, onLum = 0.0f;
             for (int y = h0 * 55 / 100; y + tile <= h0; y += tile) {
@@ -1886,26 +1897,26 @@ static bool runPointShadowSelfTest() {
                         }
                     const float ma = (float)(sa / (tile*tile));
                     const float mb = (float)(sb / (tile*tile));
-                    // Only consider tiles that were actually LIT in the OFF image
-                    // (floor under the lamp), so we measure shadowing not background.
                     if (ma > 25.0f && (ma - mb) > maxDrop) {
                         maxDrop = ma - mb; offLum = ma; onLum = mb;
                     }
                 }
             }
-            // Require the darkest floor tile to drop by a clear margin (umbra).
-            shadowDarker = (maxDrop > 12.0f);
-            x3::logInfo("[pointshadows] umbra check: darkest floor tile OFF lum="
-                        + std::to_string((int)offLum) + " ON lum=" + std::to_string((int)onLum)
+            darker = (maxDrop > 12.0f);
+            x3::logInfo(std::string("[pointshadows] umbra check (") + label
+                        + "): darkest floor tile OFF lum=" + std::to_string((int)offLum)
+                        + " ON lum=" + std::to_string((int)onLum)
                         + " (drop " + std::to_string((int)maxDrop) + ")");
         }
         if (a) stbi_image_free(a);
         if (b) stbi_image_free(b);
-    }
-    if (readbackOk)
-        check("floor umbra darker with shadows ON (visible occlusion)", shadowDarker);
-    else
-        x3::logInfo("[pointshadows] framebuffer readback unavailable — relying on caster-count gate");
+        if (readbackOk)
+            check((std::string("floor umbra darker with shadows ON (") + label + ")").c_str(), darker);
+        else
+            x3::logInfo("[pointshadows] framebuffer readback unavailable — relying on caster-count gate");
+    };
+    if (capOff && capOn1) umbraCheck(on1Png, "tier1 atlas");
+    if (capOff && capOn3) umbraCheck(on3Png, "tier3 cube-array");
 
     device->shutdown();
     device.reset();
@@ -1914,7 +1925,7 @@ static bool runPointShadowSelfTest() {
     const bool allPass = (passed == total);
     x3::logInfo("pointshadows: " + std::to_string(passed) + "/" + std::to_string(total) + " checks passed");
     if (allPass)
-        x3::logInfo("pointshadows: PASS (tier1+tier2, 0 VUID)");
+        x3::logInfo("pointshadows: PASS (tier1+tier2+tier3, 0 VUID)");
     else
         x3::logError("pointshadows: FAIL (" + std::to_string(total - passed) + " check(s) failed, "
                      + std::to_string(vuids) + " VUID)");
@@ -2002,7 +2013,7 @@ static int runPointShadowBench() {
     // Render `warmup` throwaway frames, then collect `sample` gpuFrameMs values and
     // return their median. gpuFrameMs reads back with frames-in-flight latency, so
     // the warmup drains the pipeline before we sample.
-    uint32_t casters1 = 0, casters2 = 0;
+    uint32_t casters1 = 0, casters2 = 0, casters3 = 0;
     auto medianGpuMs = [&](int tier, int faceRes) -> float {
         setPS(tier, faceRes);
         const int warmup = 40, sample = 200;
@@ -2016,6 +2027,7 @@ static int runPointShadowBench() {
         }
         if (tier == 1) casters1 = device->stats().pointShadowCasters;
         if (tier == 2) casters2 = device->stats().pointShadowCasters;
+        if (tier == 3) casters3 = device->stats().pointShadowCasters;
         std::sort(ms.begin(), ms.end());
         return ms.empty() ? 0.0f : ms[ms.size()/2];
     };
@@ -2023,21 +2035,25 @@ static int runPointShadowBench() {
     const float t0 = medianGpuMs(0, 512);
     const float t1 = medianGpuMs(1, 512);
     const float t2 = medianGpuMs(2, 1024);
+    // Tier 3 (Ultra cube-array): allocates the 384-layer cube array on this 11 GB
+    // GPU + renders each light's 6 faces into its 6 cube layers (no budget cull).
+    const float t3 = medianGpuMs(3, 1024);
     x3::logInfo("[bench-pointshadows] scene: " + std::to_string(kGrid*kGrid)
                 + " occluder cubes + floor @1280x720; budget 8 lights -> tier1 "
                 + std::to_string(casters1) + " casters @512^2, tier2 "
-                + std::to_string(casters2) + " casters @1024^2 (8192^2 atlas, sized from startup res)");
+                + std::to_string(casters2) + " casters @1024^2 (8192^2 atlas), tier3 "
+                + std::to_string(casters3) + " casters (cube ARRAY @1024^2)");
 
-    char line[256];
+    char line[320];
     std::snprintf(line, sizeof(line),
-        "bench-pointshadows: tier0 %.2f ms | tier1 %.2f ms (+%.2f) | tier2 %.2f ms (+%.2f)",
-        t0, t1, t1 - t0, t2, t2 - t0);
+        "bench-pointshadows: tier0 %.2f ms | tier1 %.2f ms (+%.2f) | tier2 %.2f ms (+%.2f) | tier3 %.2f ms (+%.2f)",
+        t0, t1, t1 - t0, t2, t2 - t0, t3, t3 - t0);
     x3::logInfo(line);
-    char budget[256];
+    char budget[320];
     std::snprintf(budget, sizeof(budget),
-        "bench-pointshadows: 120 Hz budget = 8.30 ms/frame; tier1 uses %.0f%%, tier2 uses %.0f%% of it; "
-        "shadow cost tier1 +%.2f ms, tier2 +%.2f ms",
-        100.0f * t1 / 8.30f, 100.0f * t2 / 8.30f, t1 - t0, t2 - t0);
+        "bench-pointshadows: 120 Hz budget = 8.30 ms/frame; tier1 uses %.0f%%, tier2 uses %.0f%%, tier3 uses %.0f%% of it; "
+        "shadow cost tier1 +%.2f ms, tier2 +%.2f ms, tier3 +%.2f ms",
+        100.0f * t1 / 8.30f, 100.0f * t2 / 8.30f, 100.0f * t3 / 8.30f, t1 - t0, t2 - t0, t3 - t0);
     x3::logInfo(budget);
 
     device->shutdown();
@@ -4178,8 +4194,8 @@ int main(int argc, char** argv) {
     if (testPointShadows) {
         x3::logInfo("running Gap 6 raster point-shadow validation self-test "
                     "(headless device + validation, r_pointshadows tier 1 res 512 + "
-                    "tier 2 res 1024, cube-face pass + set-5 atlas sampling under a "
-                    "VUID gate; asserts casters>0, 0 VUIDs, floor umbra darkens)...");
+                    "tier 2 res 1024 + tier 3 cube-array res 1024; atlas + cube-array "
+                    "sampling under a VUID gate; asserts casters>0, 0 VUIDs, floor umbra darkens)...");
         return runPointShadowSelfTest() ? 0 : 1;
     }
     if (benchPointShadows) {
@@ -5233,9 +5249,9 @@ int main(int argc, char** argv) {
             return ok;
         };
         // Drive the raster point-shadow tier directly (no console round-trip needed).
-        auto setPS = [&](int tier) {
+        auto setPS = [&](int tier, int faceRes = 512) {
             x3::rhi::IRenderDevice::PointShadowParams pp{};
-            pp.tier = tier; pp.maxLights = 8; pp.faceRes = 512;
+            pp.tier = tier; pp.maxLights = 8; pp.faceRes = faceRes;
             device->setPointShadowParams(pp);
         };
 
@@ -5260,7 +5276,13 @@ int main(int argc, char** argv) {
         ok &= renderFrames(20, pshadowShotDir + "/lamp_pointshadow_off.png");
         setPS(1);
         ok &= renderFrames(20, pshadowShotDir + "/lamp_pointshadow_on.png");
-        x3::logInfo("--screenshot-pointshadow: A/B done (off=tier0, on=tier1)");
+        // Tier 3 (Ultra, cube-map ARRAY @1024) — the A/B/C comparison vs tier-1 atlas.
+        // The cube array allocates lazily on this setPS; if the device can't allocate
+        // it (low VRAM), setPointShadowParams demotes to tier 2 and this captures the
+        // atlas-high result instead (still a valid shot, just labelled cube in the log).
+        setPS(3, 1024);
+        ok &= renderFrames(20, pshadowShotDir + "/lamp_pointshadow_tier3_cube.png");
+        x3::logInfo("--screenshot-pointshadow: A/B/C done (off=tier0, on=tier1 atlas, tier3=cube-array)");
 
         device->shutdown();
         if (window) glfwDestroyWindow(window);

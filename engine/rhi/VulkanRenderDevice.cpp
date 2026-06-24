@@ -258,6 +258,13 @@ public:
         VkPhysicalDeviceFeatures f10{};
         f10.drawIndirectFirstInstance = VK_TRUE;
         f10.samplerAnisotropy = VK_TRUE;   // anisotropic filtering so grazing surfaces aren't blurry
+        // Gap 6 tier-3 (Ultra): the depth cube-map ARRAY shadow target needs a
+        // CUBE_ARRAY image view + samplerCubeArrayShadow in mesh.frag. Both require
+        // the imageCubeArray core feature (supported on Pascal/1080 Ti and newer).
+        // The cube array itself is only ALLOCATED when tier 3 is selected, but the
+        // feature is enabled unconditionally so the tier-3 pipeline variant + view
+        // are always legal to create where the GPU supports it.
+        f10.imageCubeArray = VK_TRUE;
 
         vkb::PhysicalDeviceSelector sel{ m_inst };
         sel.set_minimum_version(1,3)
@@ -856,14 +863,23 @@ public:
 
     void setPointShadowParams(const PointShadowParams& p) override {
         // Cache the live r_pointshadows* tunables (re-applied each frame in
-        // endFrame's selection). tier 0 = off (byte-identical to today). Tier 3
-        // (cube-array) is not implemented yet, so clamp to the atlas tiers (0-2).
+        // endFrame's selection). tier 0 = off (byte-identical to today); 1/2 = atlas;
+        // 3 = cube-array Ultra (the cube array is lazily allocated the first time
+        // tier 3 is selected — see ensurePointShadowCubeArray). tier 3 falls back to
+        // the atlas path if the device couldn't allocate the cube array.
         m_pointShadow = p;
-        m_pointShadow.tier      = std::max(0, std::min(2, m_pointShadow.tier));
+        m_pointShadow.tier      = std::max(0, std::min(3, m_pointShadow.tier));
         m_pointShadow.maxLights = std::max(0, std::min((int)kMaxPointShadowSlots, m_pointShadow.maxLights));
         // Face res must tile the atlas as a 3x2 block; clamp to a sane range. The
         // exact per-frame clamp (so >=1 block fits) happens in the selection.
         m_pointShadow.faceRes   = std::max(128, std::min(2048, m_pointShadow.faceRes));
+        // Tier 3 only: lazily allocate the depth cube-map ARRAY the first time it is
+        // requested (so tier-1/2 boxes never pay its ~1.6 GB). On allocation failure
+        // the tier is demoted to 2 (atlas) so the engine stays functional + VUID-clean.
+        if (m_pointShadow.tier == 3 && m_dev.device != VK_NULL_HANDLE) {
+            if (!ensurePointShadowCubeArray())
+                m_pointShadow.tier = 2;   // graceful fallback to atlas-high
+        }
     }
 
     void setGlassDevParams(const GlassDevParams& p) override {
@@ -2424,11 +2440,18 @@ private:
     // 512-face / 8-light -> 4096 (no tier-1 change), 1024-face / ~10-light -> 8192.
     // 4096 is the floor + the default so tier 1 is unchanged.
     static constexpr uint32_t kPointShadowAtlasDimDefault = 4096;
-    // Max point-shadow caster SLOTS the atlas + shadow table support. The CPU
-    // budget (r_pointshadow_lights) is additionally clamped to how many 3x2 face
-    // blocks actually fit the atlas at the chosen face resolution. 16 covers the
-    // tier-2 high target; the per-frame shadow-table UBO is sized for this max.
-    static constexpr uint32_t kMaxPointShadowSlots = 16;
+    // Max point-shadow caster SLOTS the shadow table supports. The CPU budget
+    // (r_pointshadow_lights) is additionally clamped per-tier: atlas tiers 1-2 to
+    // how many 3x2 face blocks fit the atlas (typically <=16, the historical cap),
+    // and tier 3 (cube-array Ultra) to all kMaxPointLights. The shadow table holds
+    // one slot per caster (its 6 face matrices), so it is sized to the tier-3 max.
+    // Bumping 16 -> 64 only enlarges the per-frame table UBO (~26 KB, well inside
+    // maxUniformBufferRange); atlas tiers still FILL at most their atlas capacity,
+    // so tier 1/2 selection + rendering is byte-for-byte unchanged.
+    static constexpr uint32_t kMaxPointShadowSlots = kMaxPointLights;   // 64 (tier-3 Ultra)
+    // Atlas-tier caster cap (the 3x2-block packing the 4096/8192 atlas supports).
+    // Tiers 1-2 never exceed this; tier 3's cube array is the path for "many lights".
+    static constexpr uint32_t kMaxPointShadowAtlasSlots = 16;
     // The sun's ortho half-extent (meters) centered on the camera, and the depth
     // range along the sun direction. Sized to cover the level's working set; the
     // box follows the camera so the visible area is always shadowed.
@@ -2562,6 +2585,34 @@ private:
             return;
         }
 
+        // ---- Tier 3 (Ultra, cube-map array): NO budget cull ---------------------
+        // Every active light casts; its cube == its light index (slot == light idx).
+        // No nearest/brightest ranking, no atlas tile rect (the cube path samples by
+        // direction). Up to kMaxPointLights (=64) cubes / layers. Requires the cube
+        // array to be ready (else setPointShadowParams already demoted to tier 2).
+        if (m_pointShadow.tier == 3 && m_pointShadowCubeReady) {
+            const uint32_t take = std::min(lc, kMaxPointLights);
+            for (uint32_t i = 0; i < take; ++i) {
+                const glm::vec3 pos(ubo.lights[i].posRange.x, ubo.lights[i].posRange.y, ubo.lights[i].posRange.z);
+                const float range = ubo.lights[i].posRange.w;
+                ubo.lights[i].colorPad.a = (float)i;          // slot == light index == cube
+                m_pointShadowLightIdx[i] = (int)i;
+                if (tbl) {
+                    computePointFaceViewProj(pos, range, tbl->slots[i].faceVP);
+                    tbl->slots[i].tileRect = glm::vec4(0.0f);  // unused at tier 3
+                    tbl->slots[i].lightPos = glm::vec4(pos, range);
+                }
+            }
+            m_pointShadowFaceRes = m_pointShadowCubeRes;
+            m_pointShadowSlotCount = take;
+            if (tbl) tbl->header = glm::vec4((float)take, (float)m_pointShadowCubeRes, (float)m_pointShadowCubeRes, 3.0f);
+            if (m_pointShadowLogThrottle++ % 120u == 0)
+                logInfo("[rhi] pointshadow casters: " + std::to_string(take) + "/"
+                        + std::to_string(lc) + " (tier 3 CUBE-ARRAY, face "
+                        + std::to_string(m_pointShadowCubeRes) + ")");
+            return;
+        }
+
         // Clamp the face res so at least one 3x2 block fits the ACTUAL atlas, and
         // compute how many blocks tile across/down -> the hard slot cap for this
         // res. If a RUNTIME tier/res raise exceeds what the init-time atlas can
@@ -2571,7 +2622,7 @@ private:
         faceRes = std::max(faceRes, 64u);
         const uint32_t slotsPerRow = m_pointShadowAtlasDim / (3u * faceRes);
         const uint32_t slotsPerCol = m_pointShadowAtlasDim / (2u * faceRes);
-        const uint32_t atlasCap = std::min(kMaxPointShadowSlots, slotsPerRow * slotsPerCol);
+        const uint32_t atlasCap = std::min(kMaxPointShadowAtlasSlots, slotsPerRow * slotsPerCol);
         const uint32_t budget = std::min<uint32_t>((uint32_t)m_pointShadow.maxLights, atlasCap);
         m_pointShadowFaceRes = faceRes;
         if (budget == 0) { if (tbl) tbl->header = glm::vec4(0.0f, (float)m_pointShadowAtlasDim, 0, 0); return; }
@@ -3352,6 +3403,108 @@ private:
         }
     }
 
+    // Gap 6 tier-3 (Ultra) — record the depth cube-map ARRAY pass. For each active
+    // caster (slot) and each of its 6 cube faces, open a dynamic-rendering scope on
+    // that (light,face) LAYER view (single-layer 2D depth attachment, full-res
+    // viewport, LOAD_OP_CLEAR=far) and replay the scene depth with that face's 90deg
+    // view-proj pushed as a constant. No atlas tiling -> no seams. Same front-face
+    // cull + depth bias as the atlas/sun passes (the pipeline is identical). The
+    // graph already barriered the whole cube to DEPTH_ATTACHMENT_OPTIMAL; the body
+    // begins/ends its own rendering (usesDynamicRendering=false on the pass).
+    void recordPointShadowCubePassBody(VkCommandBuffer cmd) {
+        if (!m_pointShadowPipeline || m_pointShadowSlotCount == 0 || m_frameCmdCount == 0) return;
+        if (!m_pointShadowCubeReady || m_pointShadowCube == VK_NULL_HANDLE) return;
+        auto& fr = m_frames[m_frameIdx];
+        const PointShadowTable* tbl = m_pointShadowTableMapped[m_frameIdx]
+            ? reinterpret_cast<const PointShadowTable*>(m_pointShadowTableMapped[m_frameIdx]) : nullptr;
+        if (!tbl) return;
+
+        const uint32_t layers = 6u * kMaxPointLights;
+        // Entry barrier: whole cube array DEPTH_READ_ONLY (its persisted/last state)
+        // -> DEPTH_ATTACHMENT_OPTIMAL for the depth render. Covers ALL 384 layers
+        // (the graph's single-layer barrier can't, which is why this pass is manual).
+        {
+            VkImageMemoryBarrier2 ib{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+            ib.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            ib.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+            ib.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+            ib.dstAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+            ib.oldLayout = m_pointShadowCubeState.layout;   // DEPTH_READ_ONLY (or UNDEFINED on first)
+            ib.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            ib.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            ib.image = m_pointShadowCube;
+            ib.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, layers };
+            VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+            di.imageMemoryBarrierCount = 1; di.pImageMemoryBarriers = &ib;
+            vkCmdPipelineBarrier2(cmd, &di);
+        }
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pointShadowPipeline);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pointShadowPipeLayout,
+                                0, 1, &fr.objSet, 0, nullptr);
+
+        const float res = (float)m_pointShadowCubeRes;
+        VkViewport vp{ 0.0f, 0.0f, res, res, 0.0f, 1.0f };
+        VkRect2D   sc{ {0,0}, { m_pointShadowCubeRes, m_pointShadowCubeRes } };
+        vkCmdSetViewport(cmd, 0, 1, &vp);
+        vkCmdSetScissor(cmd, 0, 1, &sc);
+
+        for (uint32_t s = 0; s < m_pointShadowSlotCount; ++s) {
+            const uint32_t lightIdx = (uint32_t)m_pointShadowLightIdx[s];   // cube == light index
+            for (uint32_t f = 0; f < 6; ++f) {
+                const uint32_t layer = lightIdx * 6u + f;
+                VkRenderingAttachmentInfo da{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+                da.imageView = m_pointShadowCubeLayerView[layer];
+                da.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+                da.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;          // far = lit
+                da.storeOp = VK_ATTACHMENT_STORE_OP_STORE;        // sampled in main pass
+                da.clearValue.depthStencil = { 1.0f, 0 };
+                VkRenderingInfo ri{ VK_STRUCTURE_TYPE_RENDERING_INFO };
+                ri.renderArea = { {0,0}, { m_pointShadowCubeRes, m_pointShadowCubeRes } };
+                ri.layerCount = 1; ri.colorAttachmentCount = 0; ri.pDepthAttachment = &da;
+                vkCmdBeginRendering(cmd, &ri);
+
+                PointShadowPush pc{}; pc.faceVP = tbl->slots[s].faceVP[f];
+                vkCmdPushConstants(cmd, m_pointShadowPipeLayout, VK_SHADER_STAGE_VERTEX_BIT,
+                                   0, sizeof(PointShadowPush), &pc);
+                for (uint32_t i = 0; i < m_frameCmdOpaque; ++i) {
+                    const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
+                    VkDeviceSize off = 0;
+                    VkBuffer vb = mh.drawVbo(m_frameIdx);
+                    vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &off);
+                    vkCmdBindIndexBuffer(cmd, mh.ibo, 0, VK_INDEX_TYPE_UINT32);
+                    vkCmdDrawIndexedIndirect(cmd, fr.indirectBuf,
+                        (VkDeviceSize)i * sizeof(VkDrawIndexedIndirectCommand), 1,
+                        sizeof(VkDrawIndexedIndirectCommand));
+                }
+                vkCmdEndRendering(cmd);
+            }
+        }
+
+        // Exit barrier: whole cube array DEPTH_ATTACHMENT_OPTIMAL -> DEPTH_READ_ONLY
+        // so the main color pass samples it (mesh.frag samplerCubeArrayShadow). Covers
+        // all 384 layers; this is what leaves the cube in its persisted READ_ONLY
+        // state for the next frame's entry barrier + the main pass this frame.
+        {
+            VkImageMemoryBarrier2 ib{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+            ib.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+            ib.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+            ib.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+            ib.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+            ib.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+            ib.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+            ib.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            ib.image = m_pointShadowCube;
+            ib.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, layers };
+            VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+            di.imageMemoryBarrierCount = 1; di.pImageMemoryBarriers = &ib;
+            vkCmdPipelineBarrier2(cmd, &di);
+        }
+        m_pointShadowCubeState = ResourceState{ VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                                                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT };
+    }
+
     // ---- SSAO depth pre-pass body ------------------------------------------
     // Record the camera depth-only pre-pass into the (already-open) depth pass:
     // bind the depth pre-pass pipeline (depth.vert, set0 = objSet) and replay the
@@ -3429,9 +3582,19 @@ private:
         // where endFrame confirmed the TLAS + its set3 descriptor are live.
         // Inactive/tier-0/non-RT frames bind the EXACT pre-existing pipelines.
         const bool rtsh = m_rtShadowsActiveThisFrame;
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          prePassOn ? (rtsh ? m_meshPipelineRt       : m_meshPipeline)
-                                    : (rtsh ? m_meshPipelineNoSsaoRt : m_meshPipelineNoSsao));
+        // Tier 3 (Ultra): bind the cube-array (POINT_SHADOW_MODE=1) mesh variant when
+        // tier 3 is active this frame, the cube is ready, and there are casters. Same
+        // m_meshLayout + descriptor sets; only samplePointShadow's branch differs.
+        // Takes precedence over the atlas-mode pipelines; RT shadows are a separate,
+        // mutually-exclusive path (raster point shadows aren't active on RT frames).
+        const bool cubeOn = (m_pointShadow.tier == 3) && m_pointShadowCubeReady
+                         && (m_pointShadowSlotCount > 0)
+                         && m_meshPipelineCube && m_meshPipelineNoSsaoCube && !rtsh;
+        VkPipeline meshPipe;
+        if (cubeOn) meshPipe = prePassOn ? m_meshPipelineCube : m_meshPipelineNoSsaoCube;
+        else        meshPipe = prePassOn ? (rtsh ? m_meshPipelineRt       : m_meshPipeline)
+                                         : (rtsh ? m_meshPipelineNoSsaoRt : m_meshPipelineNoSsao);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, meshPipe);
         // set 0 = bindless textures, set 1 = object SSBO + camera UBO, set 2 = shadow
         // map, set 3 = the SSAO AO texture + control UBO (this frame's set), set 4 =
         // IBL (irradiance + prefilter cubes + BRDF LUT). set 4 is always bound when
@@ -3457,9 +3620,10 @@ private:
         // NO depth-write, cull NONE), same color attachment + descriptor sets, drawn AFTER
         // opaque so glass composites over the established opaque depth. v1: unsorted.
         if (m_meshPipelineTransparent && m_frameCmdCount > m_frameCmdOpaque) {
-            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                              (rtsh && m_meshPipelineTransparentRt) ? m_meshPipelineTransparentRt
-                                                                    : m_meshPipelineTransparent);
+            VkPipeline tPipe = m_meshPipelineTransparent;
+            if (cubeOn && m_meshPipelineTransparentCube) tPipe = m_meshPipelineTransparentCube;
+            else if (rtsh && m_meshPipelineTransparentRt) tPipe = m_meshPipelineTransparentRt;
+            vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, tPipe);
             for (uint32_t i = m_frameCmdOpaque; i < m_frameCmdCount; ++i) {
                 const Mesh& mh = m_meshes[m_drawMeshOrder[i]];
                 VkDeviceSize off = 0;
@@ -3820,7 +3984,13 @@ private:
         // AND the tier is on; otherwise it stays sampled (mesh.frag reads 0 slots).
         const bool pointShadowOn = (m_pointShadow.tier > 0) && (m_pointShadowSlotCount > 0)
                                 && (m_pointShadowPipeline != VK_NULL_HANDLE);
+        // Tier 3 (cube-array Ultra) routes the depth pass into the cube array instead
+        // of the atlas. Active only when the cube array is allocated + ready.
+        const bool pointShadowCubeOn = pointShadowOn && (m_pointShadow.tier == 3)
+                                    && m_pointShadowCubeReady && (m_pointShadowCube != VK_NULL_HANDLE);
         RgResource rgPointShadow = m_graph.importImage("pointshadow.atlas", m_pointShadowAtlas, m_pointShadowState);
+        // Tier-3 cube array is NOT graph-managed (its 384 layers exceed the graph's
+        // single-layer barrier range); recordPointShadowCubePassBody owns its barriers.
 
         // HDR pipeline resources: the linear HDR scene target (main pass writes it,
         // bloom + composite read it) and the bloom mip chain. All imported UNDEFINED
@@ -4079,7 +4249,25 @@ private:
         // atlas stays in its sampled layout untouched (mesh.frag reads 0 slots, so
         // its absence is byte-identical to today). LOAD_OP_CLEAR resets the whole
         // atlas so unused tiles read as far (lit).
-        if (pointShadowOn) {
+        if (pointShadowCubeOn) {
+            // ---- Tier 3 (Ultra): depth cube-map ARRAY pass --------------------
+            // The cube array has 384 LAYERS; the render graph's per-barrier
+            // subresource range is hardcoded to a single layer (1 mip, 1 layer), so a
+            // graph-managed write-use would only transition layer 0. Instead this pass
+            // declares NO graph resource and does ALL its barriers MANUALLY in the
+            // body (whole-image READ_ONLY->DEPTH_ATTACHMENT before, ->READ_ONLY after,
+            // all 384 layers). usesDynamicRendering=false: the body opens its own
+            // per-(light,face) layer rendering. The main pass then samples the cube in
+            // DEPTH_READ_ONLY (left by this pass's trailing barrier) — no graph use
+            // needed, so the single-layer graph barrier limitation never applies.
+            RenderPassDesc psPass{};
+            psPass.name = "pointshadow-cube-depth";
+            psPass.usesDynamicRendering = false;
+            psPass.recordCtx = this;
+            psPass.record = [](void* ctx, VkCommandBuffer c){
+                static_cast<VulkanRenderDevice*>(ctx)->recordPointShadowCubePassBody(c); };
+            m_graph.addPass(std::move(psPass));
+        } else if (pointShadowOn) {
             m_pointShadowDepthAttach = VkRenderingAttachmentInfo{};
             m_pointShadowDepthAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
             m_pointShadowDepthAttach.imageView = m_pointShadowView;
@@ -4407,6 +4595,9 @@ private:
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                 VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            // Tier 3 (Ultra): the cube array is left in DEPTH_READ_ONLY by the cube
+            // pass's own trailing barrier (not graph-managed), so the main pass samples
+            // it directly — no graph read-use needed here.
             // When SSAO is on, mesh.frag samples the blurred AO texture — declare it
             // so the graph transitions it COLOR_ATTACHMENT -> SHADER_READ_ONLY.
             if (ssaoOn) {
@@ -5375,6 +5566,8 @@ private:
         // Gap 6 — persist the atlas post-frame state (DEPTH_READ_ONLY after the main
         // pass sampled it) so next frame's import + WAR barrier are derived correctly.
         m_pointShadowState = m_graph.stateOf(rgPointShadow);
+        // Tier 3 (Ultra): the cube array is self-managed (its body transitions it back
+        // to DEPTH_READ_ONLY each frame); m_pointShadowCubeState stays READ_ONLY.
 
         // D15 HZB: persist the depth buffer's post-frame state too (next frame's
         // pyramid reduce imports it preserved) + mark its contents rendered.
@@ -12267,6 +12460,58 @@ private:
             gpci.pColorBlendState = &cb; gpci.pDepthStencilState = &dssNo; gpci.pRasterizationState = &rs;  // restore
         }
 
+        // ---- Gap 6 tier-3 (Ultra) cube-array variants -------------------------
+        // The SAME mesh.vert/mesh.frag + the SAME m_meshLayout, but with the
+        // POINT_SHADOW_MODE specialization constant set to 1 so samplePointShadow
+        // takes the depth-cube-ARRAY branch (set 5 binding 2) instead of the atlas
+        // (binding 0). Three variants mirror the opaque/no-ssao/transparent fixed
+        // state. Bound at draw time only when tier 3 is active + the cube is ready;
+        // every other path binds the existing (mode-0) pipelines, byte-for-byte.
+        // NON-FATAL: on failure the handles stay NULL and the draw-time gate falls
+        // back to the atlas pipelines (tier-3 selection also demotes to tier 2).
+        {
+            const uint32_t kCubeMode = 1u;
+            VkSpecializationMapEntry sme{ /*constantID=*/0, /*offset=*/0, sizeof(uint32_t) };
+            VkSpecializationInfo specCube{};
+            specCube.mapEntryCount = 1; specCube.pMapEntries = &sme;
+            specCube.dataSize = sizeof(uint32_t); specCube.pData = &kCubeMode;
+            VkPipelineShaderStageCreateInfo cubeStages[2] = { stages[0], stages[1] };
+            cubeStages[1].pSpecializationInfo = &specCube;   // fragment stage only
+            gpci.pStages = cubeStages;
+            // Opaque EQUAL/no-write (depth pre-pass on):
+            gpci.pDepthStencilState = &dss;
+            if (x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_meshPipelineCube) != VK_SUCCESS)
+                m_meshPipelineCube = VK_NULL_HANDLE;
+            // Opaque LESS/write (no pre-pass):
+            gpci.pDepthStencilState = &dssNo;
+            if (x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_meshPipelineNoSsaoCube) != VK_SUCCESS)
+                m_meshPipelineNoSsaoCube = VK_NULL_HANDLE;
+            // Transparent (glass/blend) variant — same state the opaque transparent used:
+            {
+                VkPipelineColorBlendAttachmentState cbaT = cba;
+                cbaT.blendEnable = VK_TRUE;
+                cbaT.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+                cbaT.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+                cbaT.colorBlendOp = VK_BLEND_OP_ADD;
+                cbaT.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+                cbaT.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+                cbaT.alphaBlendOp = VK_BLEND_OP_ADD;
+                VkPipelineColorBlendStateCreateInfo cbT = cb; cbT.pAttachments = &cbaT;
+                VkPipelineDepthStencilStateCreateInfo dssT = dss;
+                dssT.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+                VkPipelineRasterizationStateCreateInfo rsT = rs; rsT.cullMode = VK_CULL_MODE_NONE;
+                gpci.pColorBlendState = &cbT; gpci.pDepthStencilState = &dssT; gpci.pRasterizationState = &rsT;
+                if (x3CreateGraphicsPipelines(1, &gpci, nullptr, &m_meshPipelineTransparentCube) != VK_SUCCESS)
+                    m_meshPipelineTransparentCube = VK_NULL_HANDLE;
+                gpci.pColorBlendState = &cb; gpci.pDepthStencilState = &dssNo; gpci.pRasterizationState = &rs;  // restore
+            }
+            gpci.pStages = stages;   // restore (no spec const) for the blocks below
+            if (m_meshPipelineCube && m_meshPipelineNoSsaoCube)
+                logInfo("[rhi] tier-3 cube-array mesh pipelines ready (POINT_SHADOW_MODE=1 spec variant)");
+            else
+                logError("[rhi] tier-3 cube-array pipeline create failed — r_pointshadows 3 falls back to atlas");
+        }
+
         // ---- RT soft-shadow variants (r_rtshadows; ray-query devices only) ----
         // The SAME three mesh pipelines with mesh_rt.frag.spv (inline ray-query
         // shadow rays; TLAS at set3/binding5, which the layout above carries on
@@ -12625,7 +12870,7 @@ private:
         const uint32_t maxDim = props.limits.maxImageDimension2D;   // typically 16384
         const uint32_t faceRes  = std::max(64u, m_pointShadowStartupFaceRes);
         const uint32_t maxLights = std::min<uint32_t>(
-            std::max(1u, m_pointShadowStartupMaxLights), kMaxPointShadowSlots);
+            std::max(1u, m_pointShadowStartupMaxLights), kMaxPointShadowAtlasSlots);
         // Smallest square that packs `maxLights` 3x2 blocks at `faceRes`: grow a
         // power-of-two dim until floor(dim/(3*fr)) * floor(dim/(2*fr)) >= maxLights.
         uint32_t dim = kPointShadowAtlasDimDefault;                  // 4096 floor/default
@@ -12683,29 +12928,62 @@ private:
         }
 
         // Set-5 layout: binding 0 = the atlas sampler2DShadow, binding 1 = the
-        // per-frame shadow-table UBO (face matrices + tile rects). Both fragment-
-        // stage (mesh.frag samplePointShadow reads them).
-        VkDescriptorSetLayoutBinding bs[2]{};
+        // per-frame shadow-table UBO (face matrices + tile rects), binding 2 = the
+        // tier-3 depth cube-map ARRAY (samplerCubeArrayShadow). All fragment-stage.
+        // Binding 2 is part of the SHARED layout so both pipeline variants (atlas
+        // POINT_SHADOW_MODE=0 and cube POINT_SHADOW_MODE=1) bind the same set 5; the
+        // atlas variant never samples it, but it must point at a valid view (the
+        // placeholder, until a real tier-3 array is allocated) to be VUID-clean.
+        VkDescriptorSetLayoutBinding bs[3]{};
         bs[0].binding = 0; bs[0].descriptorCount = 1;
         bs[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         bs[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         bs[1].binding = 1; bs[1].descriptorCount = 1;
         bs[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         bs[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        bs[2].binding = 2; bs[2].descriptorCount = 1;
+        bs[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        bs[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo slci{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-        slci.bindingCount = 2; slci.pBindings = bs;
+        slci.bindingCount = 3; slci.pBindings = bs;
         if (vkCreateDescriptorSetLayout(m_dev.device, &slci, nullptr, &m_pointShadowSetLayout) != VK_SUCCESS) {
             logError("[rhi] point-shadow set layout failed"); return false;
         }
         // One set per frame in flight (binding 1 is rewritten/refilled per frame).
         VkDescriptorPoolSize ps[2]{
-            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, kFramesInFlight },
+            { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2u * kFramesInFlight },  // b0 atlas + b2 cube
             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight },
         };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
         pci.maxSets = kFramesInFlight; pci.poolSizeCount = 2; pci.pPoolSizes = ps;
         if (x3CreateDescriptorPool(&pci, nullptr, &m_pointShadowDescPool) != VK_SUCCESS) {
             logError("[rhi] point-shadow desc pool failed"); return false;
+        }
+
+        // Tier-3 placeholder: a 1x1, 6-layer (one cube) D32 CUBE_ARRAY image so set-5
+        // binding 2 is a VALID samplerCubeArrayShadow before any real tier-3
+        // allocation. Sampled-only (never rendered); its contents are irrelevant —
+        // the atlas-tier pipeline variant declares pointShadowCube but never samples
+        // it. transitionPointShadowAtlasInitial() moves it to a sampled layout.
+        {
+            VkImageCreateInfo pic{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+            pic.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+            pic.imageType = VK_IMAGE_TYPE_2D; pic.format = m_shadowFormat;
+            pic.extent = { 1, 1, 1 }; pic.mipLevels = 1; pic.arrayLayers = 6;
+            pic.samples = VK_SAMPLE_COUNT_1_BIT; pic.tiling = VK_IMAGE_TILING_OPTIMAL;
+            pic.usage = VK_IMAGE_USAGE_SAMPLED_BIT; pic.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            VmaAllocationCreateInfo pac{}; pac.usage = VMA_MEMORY_USAGE_AUTO;
+            if (x3vmaCreateImage(&pic, &pac, &m_pointShadowCubePlaceholder,
+                                 &m_pointShadowCubePlaceholderAlloc, nullptr) != VK_SUCCESS) {
+                logError("[rhi] point-shadow cube placeholder create failed"); return false;
+            }
+            VkImageViewCreateInfo pcv{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+            pcv.image = m_pointShadowCubePlaceholder; pcv.viewType = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY;
+            pcv.format = m_shadowFormat;
+            pcv.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 6 };
+            if (vkCreateImageView(m_dev.device, &pcv, nullptr, &m_pointShadowCubePlaceholderView) != VK_SUCCESS) {
+                logError("[rhi] point-shadow cube placeholder view failed"); return false;
+            }
         }
 
         // Per-frame shadow-table UBO (host-visible, persistently mapped) + the set.
@@ -12739,14 +13017,22 @@ private:
             dii.imageView = m_pointShadowView;
             dii.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
             VkDescriptorBufferInfo bi{ m_pointShadowTableBuf[f], 0, sizeof(PointShadowTable) };
-            VkWriteDescriptorSet w[2]{};
+            // binding 2 = the tier-3 cube array; until allocated, the placeholder.
+            VkDescriptorImageInfo dic{};
+            dic.sampler = m_pointShadowSampler;             // same compare sampler
+            dic.imageView = m_pointShadowCubePlaceholderView;
+            dic.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+            VkWriteDescriptorSet w[3]{};
             w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w[0].dstSet = m_pointShadowSet[f]; w[0].dstBinding = 0; w[0].descriptorCount = 1;
             w[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[0].pImageInfo = &dii;
             w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             w[1].dstSet = m_pointShadowSet[f]; w[1].dstBinding = 1; w[1].descriptorCount = 1;
             w[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; w[1].pBufferInfo = &bi;
-            vkUpdateDescriptorSets(m_dev.device, 2, w, 0, nullptr);
+            w[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w[2].dstSet = m_pointShadowSet[f]; w[2].dstBinding = 2; w[2].descriptorCount = 1;
+            w[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w[2].pImageInfo = &dic;
+            vkUpdateDescriptorSets(m_dev.device, 3, w, 0, nullptr);
         }
         return true;
     }
@@ -12759,15 +13045,22 @@ private:
     // Contents stay undefined; later steps render real depth before any shader read.
     bool transitionPointShadowAtlasInitial() {
         bool tr = oneTimeSubmit([&](VkCommandBuffer cmd){
-            VkImageMemoryBarrier2 ib{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
-            ib.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT; ib.srcAccessMask = 0;
-            ib.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT; ib.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-            ib.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; ib.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
-            ib.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            ib.image = m_pointShadowAtlas;
-            ib.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+            // Transition BOTH the atlas (1 layer) and the tier-3 cube placeholder
+            // (6 layers) to the sampled depth-read layout in one submit.
+            VkImageMemoryBarrier2 ib[2]{};
+            for (int k = 0; k < 2; ++k) {
+                ib[k].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+                ib[k].srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT; ib[k].srcAccessMask = 0;
+                ib[k].dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT; ib[k].dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                ib[k].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; ib[k].newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+                ib[k].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; ib[k].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            }
+            ib[0].image = m_pointShadowAtlas;
+            ib[0].subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1 };
+            ib[1].image = m_pointShadowCubePlaceholder;
+            ib[1].subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 6 };
             VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
-            di.imageMemoryBarrierCount = 1; di.pImageMemoryBarriers = &ib;
+            di.imageMemoryBarrierCount = 2; di.pImageMemoryBarriers = ib;
             vkCmdPipelineBarrier2(cmd, &di);
         });
         if (!tr) { logError("[rhi] point-shadow atlas initial layout transition failed"); return false; }
@@ -12775,6 +13068,99 @@ private:
         m_pointShadowState = ResourceState{ VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
                                             VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                                             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT };
+        return true;
+    }
+
+    // Gap 6 tier-3 (Ultra) — LAZILY allocate the depth cube-map ARRAY the first time
+    // tier 3 is selected. One D32 cube per light: 6*kMaxPointLights (=384) layers at
+    // m_pointShadowCubeRes (default 1024). On an 11 GB 1080 Ti: 64*6*1024^2*4B ~=
+    // 1.6 GB. Creates: the image, a CUBE_ARRAY sampled view (set-5 binding 2), and
+    // one single-layer 2D depth-attachment view per (light,face) for the layered
+    // render pass. Transitions to the sampled depth-read layout, then rewrites
+    // binding 2 of every frame's set to point at the real array. Idempotent.
+    // Returns false on any failure (the caller demotes tier 3 -> 2).
+    bool ensurePointShadowCubeArray() {
+        if (m_pointShadowCubeReady) return true;
+        // Face res: prefer the live r_pointshadow_res, else the tier-3 default 1024.
+        uint32_t res = (m_pointShadow.faceRes > 0) ? (uint32_t)m_pointShadow.faceRes
+                                                   : kPointShadowCubeResDefault;
+        res = std::max(256u, std::min(2048u, res));
+        m_pointShadowCubeRes = res;
+        const uint32_t layers = 6u * kMaxPointLights;   // 384
+
+        VkImageCreateInfo ici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+        ici.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
+        ici.imageType = VK_IMAGE_TYPE_2D;
+        ici.format = m_shadowFormat;                    // D32_SFLOAT (same as atlas/sun)
+        ici.extent = { res, res, 1 };
+        ici.mipLevels = 1; ici.arrayLayers = layers;
+        ici.samples = VK_SAMPLE_COUNT_1_BIT;
+        ici.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VmaAllocationCreateInfo aci{};
+        aci.usage = VMA_MEMORY_USAGE_AUTO;
+        aci.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        if (x3vmaCreateImage(&ici, &aci, &m_pointShadowCube, &m_pointShadowCubeAlloc, nullptr) != VK_SUCCESS) {
+            logError("[rhi] tier-3 point-shadow cube array create FAILED (demoting to atlas tier 2)");
+            return false;
+        }
+        const double gib = (double)res * (double)res * 4.0 * (double)layers / (1024.0*1024.0*1024.0);
+        // CUBE_ARRAY sampled view (the mesh.frag samplerCubeArrayShadow at b2).
+        VkImageViewCreateInfo cv{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+        cv.image = m_pointShadowCube; cv.viewType = VK_IMAGE_VIEW_TYPE_CUBE_ARRAY; cv.format = m_shadowFormat;
+        cv.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, layers };
+        if (vkCreateImageView(m_dev.device, &cv, nullptr, &m_pointShadowCubeView) != VK_SUCCESS) {
+            logError("[rhi] tier-3 cube-array view create failed"); return false;
+        }
+        // One single-layer 2D depth-attachment view per layer (the layered render
+        // pass renders each (light,face) into its own layer via a per-layer view).
+        for (uint32_t l = 0; l < layers; ++l) {
+            VkImageViewCreateInfo lv{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+            lv.image = m_pointShadowCube; lv.viewType = VK_IMAGE_VIEW_TYPE_2D; lv.format = m_shadowFormat;
+            lv.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, l, 1 };
+            if (vkCreateImageView(m_dev.device, &lv, nullptr, &m_pointShadowCubeLayerView[l]) != VK_SUCCESS) {
+                logError("[rhi] tier-3 cube-array layer view create failed"); return false;
+            }
+        }
+        // Initial UNDEFINED -> DEPTH_READ_ONLY transition (all layers) so the first
+        // graph import + the descriptor read are VUID-clean before any depth render.
+        bool tr = oneTimeSubmit([&](VkCommandBuffer cmd){
+            VkImageMemoryBarrier2 ib{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+            ib.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT; ib.srcAccessMask = 0;
+            ib.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT; ib.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+            ib.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED; ib.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+            ib.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            ib.image = m_pointShadowCube;
+            ib.subresourceRange = { VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, layers };
+            VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+            di.imageMemoryBarrierCount = 1; di.pImageMemoryBarriers = &ib;
+            vkCmdPipelineBarrier2(cmd, &di);
+        });
+        if (!tr) { logError("[rhi] tier-3 cube-array initial transition failed"); return false; }
+        m_pointShadowCubeState = ResourceState{ VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                                                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                                                VK_ACCESS_2_SHADER_SAMPLED_READ_BIT };
+        // Repoint set-5 binding 2 (all frames) at the REAL cube array. Safe: this is
+        // only called from setPointShadowParams (between frames); no in-flight frame
+        // is sampling the cube yet (tier just became 3 this call).
+        vkDeviceWaitIdle(m_dev.device);
+        for (uint32_t f = 0; f < kFramesInFlight; ++f) {
+            VkDescriptorImageInfo dic{};
+            dic.sampler = m_pointShadowSampler;
+            dic.imageView = m_pointShadowCubeView;
+            dic.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
+            VkWriteDescriptorSet w{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+            w.dstSet = m_pointShadowSet[f]; w.dstBinding = 2; w.descriptorCount = 1;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; w.pImageInfo = &dic;
+            vkUpdateDescriptorSets(m_dev.device, 1, &w, 0, nullptr);
+        }
+        m_pointShadowCubeReady = true;
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+            "[rhi] tier-3 point-shadow cube ARRAY ready: %u layers (%u cubes) @%u^2 D32 = %.2f GiB VRAM",
+            layers, kMaxPointLights, res, gib);
+        logInfo(buf);
         return true;
     }
 
@@ -13026,6 +13412,14 @@ private:
         if (m_pointShadowSampler)   { vkDestroySampler(m_dev.device, m_pointShadowSampler, nullptr); m_pointShadowSampler = VK_NULL_HANDLE; }
         if (m_pointShadowView)      { vkDestroyImageView(m_dev.device, m_pointShadowView, nullptr); m_pointShadowView = VK_NULL_HANDLE; }
         if (m_pointShadowAtlas)     { vmaDestroyImage(m_alloc, m_pointShadowAtlas, m_pointShadowAlloc); m_pointShadowAtlas = VK_NULL_HANDLE; m_pointShadowAlloc = nullptr; }
+        // Gap 6 tier-3 (Ultra) cube array + placeholder + per-layer views.
+        for (uint32_t l = 0; l < 6u * kMaxPointLights; ++l)
+            if (m_pointShadowCubeLayerView[l]) { vkDestroyImageView(m_dev.device, m_pointShadowCubeLayerView[l], nullptr); m_pointShadowCubeLayerView[l] = VK_NULL_HANDLE; }
+        if (m_pointShadowCubeView)  { vkDestroyImageView(m_dev.device, m_pointShadowCubeView, nullptr); m_pointShadowCubeView = VK_NULL_HANDLE; }
+        if (m_pointShadowCube)      { vmaDestroyImage(m_alloc, m_pointShadowCube, m_pointShadowCubeAlloc); m_pointShadowCube = VK_NULL_HANDLE; m_pointShadowCubeAlloc = nullptr; }
+        if (m_pointShadowCubePlaceholderView) { vkDestroyImageView(m_dev.device, m_pointShadowCubePlaceholderView, nullptr); m_pointShadowCubePlaceholderView = VK_NULL_HANDLE; }
+        if (m_pointShadowCubePlaceholder)     { vmaDestroyImage(m_alloc, m_pointShadowCubePlaceholder, m_pointShadowCubePlaceholderAlloc); m_pointShadowCubePlaceholder = VK_NULL_HANDLE; m_pointShadowCubePlaceholderAlloc = nullptr; }
+        m_pointShadowCubeReady = false;
 
         if (m_meshPipeline)  vkDestroyPipeline(m_dev.device, m_meshPipeline, nullptr);
         if (m_meshPipelineNoSsao) vkDestroyPipeline(m_dev.device, m_meshPipelineNoSsao, nullptr);
@@ -13037,6 +13431,12 @@ private:
         if (m_meshPipelineTransparentRt) vkDestroyPipeline(m_dev.device, m_meshPipelineTransparentRt, nullptr);
         m_meshPipelineRt = VK_NULL_HANDLE; m_meshPipelineNoSsaoRt = VK_NULL_HANDLE;
         m_meshPipelineTransparentRt = VK_NULL_HANDLE;
+        // Gap 6 tier-3 cube-array mesh variants.
+        if (m_meshPipelineCube)            vkDestroyPipeline(m_dev.device, m_meshPipelineCube, nullptr);
+        if (m_meshPipelineNoSsaoCube)      vkDestroyPipeline(m_dev.device, m_meshPipelineNoSsaoCube, nullptr);
+        if (m_meshPipelineTransparentCube) vkDestroyPipeline(m_dev.device, m_meshPipelineTransparentCube, nullptr);
+        m_meshPipelineCube = VK_NULL_HANDLE; m_meshPipelineNoSsaoCube = VK_NULL_HANDLE;
+        m_meshPipelineTransparentCube = VK_NULL_HANDLE;
         for (uint32_t pt = 0; pt < (uint32_t)PT_Count; ++pt) {
             if (m_planetPipelines[pt]) { vkDestroyPipeline(m_dev.device, m_planetPipelines[pt], nullptr); m_planetPipelines[pt] = VK_NULL_HANDLE; }
         }
@@ -14169,6 +14569,37 @@ private:
     struct PointShadowPush { glm::mat4 faceVP; };
     VkPipeline       m_pointShadowPipeline = VK_NULL_HANDLE;   // depth-only (point_shadow.vert)
     VkPipelineLayout m_pointShadowPipeLayout = VK_NULL_HANDLE; // set0 objSet + push constant
+
+    // ---- Gap 6 tier-3 ULTRA: depth cube-map ARRAY (set 5, binding 2) ----
+    // One depth cube per shadow-casting light: a D32 CUBE_ARRAY image with
+    // 6*kMaxPointLights (=384) layers at m_pointShadowCubeRes. Allocated LAZILY the
+    // first time tier 3 is selected (ensurePointShadowCubeArray) so tier-1/2 boxes
+    // (incl. the 4 GB GTX 980) never pay its ~1.6 GB. set 5 binding 2 is part of the
+    // SHARED layout; until the real array exists it points at a tiny 1-cube
+    // placeholder so the descriptor is always valid (VUID-clean) even though the
+    // atlas-tier pipeline variant never samples it.
+    static constexpr uint32_t kPointShadowCubeResDefault = 1024;   // tier-3 face res
+    VkImage       m_pointShadowCube       = VK_NULL_HANDLE;   // 384-layer D32 cube array
+    VmaAllocation m_pointShadowCubeAlloc  = nullptr;
+    VkImageView   m_pointShadowCubeView   = VK_NULL_HANDLE;   // CUBE_ARRAY sampled view
+    // Per-(light,face) single-layer 2D RT view for the layered depth pass: one view
+    // per cube-array layer (6 faces * 64 lights = 384). Each is a depth attachment.
+    VkImageView   m_pointShadowCubeLayerView[6 * kMaxPointLights] = {};
+    uint32_t      m_pointShadowCubeRes    = kPointShadowCubeResDefault;
+    ResourceState m_pointShadowCubeState{};                  // tracked graph state
+    bool          m_pointShadowCubeReady  = false;           // real array allocated
+    // 1-cube (6-layer) D32 placeholder so set-5 binding 2 is valid before/without
+    // a real tier-3 allocation. Created once at init alongside the atlas.
+    VkImage       m_pointShadowCubePlaceholder      = VK_NULL_HANDLE;
+    VmaAllocation m_pointShadowCubePlaceholderAlloc = nullptr;
+    VkImageView   m_pointShadowCubePlaceholderView  = VK_NULL_HANDLE;
+    // Tier-3 mesh pipeline variants (spec const POINT_SHADOW_MODE=1). Same fixed
+    // state as the atlas variants; only the spec constant differs (so samplePointShadow
+    // takes the cube-array branch). Created in createMeshPipeline; bound at draw time
+    // only when tier 3 is active + the cube array is ready.
+    VkPipeline       m_meshPipelineCube            = VK_NULL_HANDLE; // EQUAL/no-write (pre-pass on)
+    VkPipeline       m_meshPipelineNoSsaoCube      = VK_NULL_HANDLE; // LESS/write (no pre-pass)
+    VkPipeline       m_meshPipelineTransparentCube = VK_NULL_HANDLE; // glass/blend variant
     glm::mat4             m_lightViewProj{ 1.0f };  // computed each frame
     bool                  m_shadowOverride = false;        // setShadowBounds: fixed shadow box
     glm::vec3             m_shadowCenter{ 0.0f };

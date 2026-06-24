@@ -102,9 +102,22 @@ runtime branch in the hot path.
   (real umbra readback: floor luma 35→15). Bench: `tier0 1.08 ms | tier1 1.38 ms
   (+0.30) | tier2 1.05 ms`; tier-1 cost **+0.30 ms**, well inside the 8.3 ms
   (120 Hz) budget. Full `--test-*` suite green.
-- **Open before promotion:** (1) scale atlas dim per tier (4096²→8192² for tier 2)
-  so tier 2 isn't capped at 2 casters; (2) tier 3 cube-array (Ultra) unbuilt;
-  (3) i5000 / GTX 980 (4 GB) floor-check of tier 1; (4) soft PCF is a later polish.
+- **Step 6 DONE** (tier-3 Ultra, cube-map array) — `r_pointshadows 3` renders one
+  D32 depth cube per light into a `VK_IMAGE_VIEW_TYPE_CUBE_ARRAY` (6·64 = 384
+  layers @1024², ~1.5 GiB, allocated LAZILY only when tier 3 is selected so tier-1/2
+  boxes never pay it). Shared `samplePointShadow()` selects the backend via the
+  `POINT_SHADOW_MODE` spec constant (0 = atlas, 1 = cube-array → two compiled mesh
+  pipeline variants); the cube path samples a `samplerCubeArrayShadow` by direction
+  (no atlas tile math, no seams). `--test-pointshadows` 11/11 incl. tier 3, **0 VUID**
+  (tier-3 floor umbra drop **37** vs the atlas tier-1 drop 19 — deeper, cleaner).
+  Bench (1080 Ti, 8 casters × 6 faces × 1600 occluders @1024²): `tier0 1.00 | tier1
+  1.50 (+0.50) | tier2 1.45 (+0.45) | tier3 3.02 ms (+2.02)` — tier 3 at 36 % of the
+  8.3 ms (120 Hz) budget. The cube array is NOT graph-managed (the render graph's
+  per-barrier subresource range is single-layer; the cube pass owns its own whole-
+  image 384-layer barriers). A/B/C shots in `C:/gamedev/incoming/gap6/`.
+- **Open before promotion:** (1) i5000 / GTX 980 (4 GB) floor-check of tier 1;
+  (2) soft PCF is a later polish; (3) tier-3 perf scales with caster count × face
+  res — a per-light importance/res budget is a future optimization.
 
 ## Out of scope (follow-ups)
 
