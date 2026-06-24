@@ -30,6 +30,17 @@ struct DeviceDesc {
     // device init (post stack, SSAO/GI, RT precompile…). May be null.
     void (*onUploadReady)(void* user) = nullptr;
     void* onUploadReadyUser           = nullptr;
+    // STARTUP point-shadow sizing (Gap 6). The point-shadow atlas is allocated
+    // ONCE at init() and its dimension is derived from the startup cvars so a box
+    // launched at a high tier gets an atlas big enough to pack a useful caster
+    // count. Capacity = (atlasDim/faceRes)^2/6 casters; the dim is sized so
+    // pointShadowMaxLights blocks fit at pointShadowFaceRes, rounded up to a power
+    // of two and clamped to the device's maxImageDimension2D. Default (512/8) ->
+    // 4096^2 (no change for tier 1). A 1024-face / ~10-light startup -> 8192^2.
+    // Runtime setPointShadowParams may raise tier/res beyond this allocation; the
+    // per-frame budget-clamp then degrades gracefully (fewer casters, no VUID).
+    uint32_t pointShadowFaceRes   = 512;   // r_pointshadow_res at launch
+    uint32_t pointShadowMaxLights = 8;     // r_pointshadow_lights at launch
 };
 
 struct FrameContext {

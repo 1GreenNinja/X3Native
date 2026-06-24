@@ -177,6 +177,11 @@ public:
         m_ssaa  = (m_headless && desc.ssaa > 1) ? desc.ssaa : 1;
         m_outW  = desc.width; m_outH = desc.height;
         m_width = desc.width * m_ssaa; m_height = desc.height * m_ssaa;
+        // Gap 6 — startup point-shadow sizing. The atlas is allocated once below
+        // (createShadowImage -> createPointShadowAtlas); its dimension is derived
+        // from these launch cvars so a high-tier box gets a usefully large atlas.
+        m_pointShadowStartupFaceRes   = desc.pointShadowFaceRes   ? desc.pointShadowFaceRes   : 512u;
+        m_pointShadowStartupMaxLights = desc.pointShadowMaxLights ? desc.pointShadowMaxLights : 8u;
 
         // ---- Instance ----
         vkb::InstanceBuilder ib;
@@ -1105,8 +1110,8 @@ public:
     // top->bottom. Returns the block origin UV + the per-face tile size UV; the
     // face's offset inside the block (col=face%3, row=face/3) is applied by the
     // sampler. `slotsPerRow` is how many 3-wide blocks fit across the atlas.
-    static glm::vec4 pointShadowTileRect(uint32_t slot, uint32_t fr, uint32_t slotsPerRow) {
-        const float atlas = (float)kPointShadowAtlasDim;
+    static glm::vec4 pointShadowTileRect(uint32_t slot, uint32_t fr, uint32_t slotsPerRow, uint32_t atlasDim) {
+        const float atlas = (float)atlasDim;
         const uint32_t br = slot / std::max(1u, slotsPerRow);   // block row
         const uint32_t bc = slot % std::max(1u, slotsPerRow);   // block col
         const float ox = (float)(bc * 3u * fr) / atlas;
@@ -2412,9 +2417,13 @@ private:
     // mip of crispness; still cheap on the A2000/1080 Ti).
     static constexpr uint32_t kShadowDim = 2048;
     // Gap 6 — point-light shadow atlas dimension. One D32 atlas packs the budgeted
-    // omni casters' 6 cube faces as 3x2 tile blocks. 4096 fits ~tier-2 (1024 faces)
-    // / many tier-1 (512 faces) blocks. Step 1: created + cleared, never sampled yet.
-    static constexpr uint32_t kPointShadowAtlasDim = 4096;
+    // omni casters' 6 cube faces as 3x2 tile blocks. Atlas capacity =
+    // (atlasDim/faceRes)^2/6 casters, so the dim MUST scale with the startup face
+    // res or high-res tiers starve. The runtime dim m_pointShadowAtlasDim is derived
+    // at init from the startup cvars (see computePointShadowAtlasDim): default
+    // 512-face / 8-light -> 4096 (no tier-1 change), 1024-face / ~10-light -> 8192.
+    // 4096 is the floor + the default so tier 1 is unchanged.
+    static constexpr uint32_t kPointShadowAtlasDimDefault = 4096;
     // Max point-shadow caster SLOTS the atlas + shadow table support. The CPU
     // budget (r_pointshadow_lights) is additionally clamped to how many 3x2 face
     // blocks actually fit the atlas at the chosen face resolution. 16 covers the
@@ -2549,21 +2558,23 @@ private:
 
         const bool on = (m_pointShadow.tier > 0) && (m_pointShadow.maxLights > 0) && lc > 0;
         if (!on) {
-            if (tbl) { tbl->header = glm::vec4(0.0f, (float)kPointShadowAtlasDim, 0, 0); }
+            if (tbl) { tbl->header = glm::vec4(0.0f, (float)m_pointShadowAtlasDim, 0, 0); }
             return;
         }
 
-        // Clamp the face res so at least one 3x2 block fits the atlas, and compute
-        // how many blocks tile across/down -> the hard slot cap for this res.
+        // Clamp the face res so at least one 3x2 block fits the ACTUAL atlas, and
+        // compute how many blocks tile across/down -> the hard slot cap for this
+        // res. If a RUNTIME tier/res raise exceeds what the init-time atlas can
+        // pack, this clamp degrades gracefully (fewer casters, no VUID/crash).
         uint32_t faceRes = (uint32_t)m_pointShadow.faceRes;
-        faceRes = std::min(faceRes, kPointShadowAtlasDim / 3u);   // 3 wide must fit
+        faceRes = std::min(faceRes, m_pointShadowAtlasDim / 3u);   // 3 wide must fit
         faceRes = std::max(faceRes, 64u);
-        const uint32_t slotsPerRow = kPointShadowAtlasDim / (3u * faceRes);
-        const uint32_t slotsPerCol = kPointShadowAtlasDim / (2u * faceRes);
+        const uint32_t slotsPerRow = m_pointShadowAtlasDim / (3u * faceRes);
+        const uint32_t slotsPerCol = m_pointShadowAtlasDim / (2u * faceRes);
         const uint32_t atlasCap = std::min(kMaxPointShadowSlots, slotsPerRow * slotsPerCol);
         const uint32_t budget = std::min<uint32_t>((uint32_t)m_pointShadow.maxLights, atlasCap);
         m_pointShadowFaceRes = faceRes;
-        if (budget == 0) { if (tbl) tbl->header = glm::vec4(0.0f, (float)kPointShadowAtlasDim, 0, 0); return; }
+        if (budget == 0) { if (tbl) tbl->header = glm::vec4(0.0f, (float)m_pointShadowAtlasDim, 0, 0); return; }
 
         // Score every active light: nearest (to camera) * brightest. Cheap luma for
         // brightness; 1/(1+dist^2) for proximity so close lights win.
@@ -2593,12 +2604,12 @@ private:
             m_pointShadowLightIdx[s] = (int)li;
             if (tbl) {
                 computePointFaceViewProj(pos, range, tbl->slots[s].faceVP);
-                tbl->slots[s].tileRect = pointShadowTileRect(s, faceRes, slotsPerRow);
+                tbl->slots[s].tileRect = pointShadowTileRect(s, faceRes, slotsPerRow, m_pointShadowAtlasDim);
                 tbl->slots[s].lightPos = glm::vec4(pos, range);
             }
         }
         m_pointShadowSlotCount = take;
-        if (tbl) tbl->header = glm::vec4((float)take, (float)kPointShadowAtlasDim, (float)faceRes, 0.0f);
+        if (tbl) tbl->header = glm::vec4((float)take, (float)m_pointShadowAtlasDim, (float)faceRes, 0.0f);
 
         // Log line: caster count this frame (throttled so it doesn't spam).
         if (m_pointShadowLogThrottle++ % 120u == 0)
@@ -2895,7 +2906,7 @@ private:
             // slot count + face res live in the per-frame shadow-table header, written
             // later by selectAndUploadPointShadows). tier 0 -> mesh.frag never samples
             // set 5, byte-identical to today.
-            sc.pshadow0 = glm::vec4((float)m_pointShadow.tier, (float)kPointShadowAtlasDim, 0.0f, 0.0f);
+            sc.pshadow0 = glm::vec4((float)m_pointShadow.tier, (float)m_pointShadowAtlasDim, 0.0f, 0.0f);
             if (m_ssaoCtrlMapped[m_frameIdx])
                 std::memcpy(m_ssaoCtrlMapped[m_frameIdx], &sc, sizeof(SsaoControl));
         }
@@ -3311,7 +3322,7 @@ private:
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pointShadowPipeLayout,
                                 0, 1, &fr.objSet, 0, nullptr);
 
-        const float atlas = (float)kPointShadowAtlasDim;
+        const float atlas = (float)m_pointShadowAtlasDim;
         const float fr_px = (float)m_pointShadowFaceRes;
         for (uint32_t s = 0; s < m_pointShadowSlotCount; ++s) {
             const glm::vec4 rect = tbl->slots[s].tileRect;   // block origin UV + face tile size UV
@@ -4088,7 +4099,7 @@ private:
             m_pointShadowRenderInfo = VkRenderingInfo{};
             m_pointShadowRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
             // Render area spans the whole atlas; per-face viewports clip each draw.
-            m_pointShadowRenderInfo.renderArea = { {0,0}, { kPointShadowAtlasDim, kPointShadowAtlasDim } };
+            m_pointShadowRenderInfo.renderArea = { {0,0}, { m_pointShadowAtlasDim, m_pointShadowAtlasDim } };
             m_pointShadowRenderInfo.layerCount = 1;
             m_pointShadowRenderInfo.colorAttachmentCount = 0;
             m_pointShadowRenderInfo.pDepthAttachment = &m_pointShadowDepthAttach;
@@ -12604,10 +12615,39 @@ private:
     // identical. Step 1 only: the atlas is allocated, transitioned to a sampled
     // layout, and wired into set 5 — it is never written or sampled until later steps.
     bool createPointShadowAtlas() {
+        // Derive the atlas dimension from the startup point-shadow cvars: size it so
+        // the requested caster budget fits as 3x2 face blocks at the startup face
+        // res, round up to a power of two, floor at 4096 (so the default 512/8 case
+        // is unchanged), and clamp to the device's maxImageDimension2D. Capacity =
+        // (atlasDim/faceRes)^2/6 casters.
+        VkPhysicalDeviceProperties props{};
+        vkGetPhysicalDeviceProperties(m_dev.physical_device, &props);
+        const uint32_t maxDim = props.limits.maxImageDimension2D;   // typically 16384
+        const uint32_t faceRes  = std::max(64u, m_pointShadowStartupFaceRes);
+        const uint32_t maxLights = std::min<uint32_t>(
+            std::max(1u, m_pointShadowStartupMaxLights), kMaxPointShadowSlots);
+        // Smallest square that packs `maxLights` 3x2 blocks at `faceRes`: grow a
+        // power-of-two dim until floor(dim/(3*fr)) * floor(dim/(2*fr)) >= maxLights.
+        uint32_t dim = kPointShadowAtlasDimDefault;                  // 4096 floor/default
+        while (dim < maxDim) {
+            const uint32_t cap = (dim / (3u * faceRes)) * (dim / (2u * faceRes));
+            if (cap >= maxLights) break;
+            dim <<= 1;
+        }
+        dim = std::min(dim, maxDim);
+        m_pointShadowAtlasDim = dim;
+        // VRAM honesty: D32 = 4 bytes/texel. Log the chosen dim + approx MB + the
+        // caster capacity at the startup face res.
+        const uint32_t startCap = (dim / (3u * faceRes)) * (dim / (2u * faceRes));
+        const double mb = (double)dim * (double)dim * 4.0 / (1024.0 * 1024.0);
+        logInfo("[rhi] point-shadow atlas: " + std::to_string(dim) + "^2 D32 ("
+                + std::to_string((int)(mb + 0.5)) + " MB), cap " + std::to_string(startCap)
+                + " casters @" + std::to_string(faceRes) + "^2 faces");
+
         VkImageCreateInfo ici{ VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
         ici.imageType = VK_IMAGE_TYPE_2D;
         ici.format = m_shadowFormat;                          // D32_SFLOAT, same as sun
-        ici.extent = { kPointShadowAtlasDim, kPointShadowAtlasDim, 1 };
+        ici.extent = { m_pointShadowAtlasDim, m_pointShadowAtlasDim, 1 };
         ici.mipLevels = 1; ici.arrayLayers = 1;
         ici.samples = VK_SAMPLE_COUNT_1_BIT;
         ici.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -12893,7 +12933,8 @@ private:
         vkDestroyShaderModule(m_dev.device, vs, nullptr);
         if (pr != VK_SUCCESS) { logError("[rhi] point-shadow pipeline create failed"); return false; }
 
-        logInfo("[rhi] point-shadow atlas pipeline ready (4096^2 D32 atlas, depth-only, push-constant face VP)");
+        logInfo("[rhi] point-shadow atlas pipeline ready (" + std::to_string(m_pointShadowAtlasDim)
+                + "^2 D32 atlas, depth-only, push-constant face VP)");
         return true;
     }
 
@@ -14111,6 +14152,14 @@ private:
     void*         m_pointShadowTableMapped[kFramesInFlight] = {};
     // Cached r_pointshadows* tunables (setPointShadowParams), applied each frame.
     IRenderDevice::PointShadowParams m_pointShadow{};
+    // Runtime point-shadow atlas dimension (px). Derived ONCE at init from the
+    // startup cvars (DeviceDesc.pointShadowFaceRes/MaxLights) and clamped to the
+    // device's maxImageDimension2D. Used everywhere the atlas size is needed —
+    // never assume a 4096 literal. Defaults to the 4096 floor.
+    uint32_t m_pointShadowAtlasDim = kPointShadowAtlasDimDefault;
+    // Startup point-shadow cvars captured in init(); used ONCE to size the atlas.
+    uint32_t m_pointShadowStartupFaceRes   = 512;
+    uint32_t m_pointShadowStartupMaxLights = 8;
     // This frame's selection result (filled in endFrame, consumed by the depth pass).
     uint32_t      m_pointShadowSlotCount = 0;            // budgeted casters this frame
     uint32_t      m_pointShadowFaceRes   = 512;          // clamped face res this frame

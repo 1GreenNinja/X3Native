@@ -1792,6 +1792,11 @@ static bool runPointShadowSelfTest() {
     DeviceDesc desc{};
     desc.width = 640; desc.height = 360; desc.headless = true;
     desc.validation = true;                  // VUID gate: this is the whole point
+    // Gap 6 — size the atlas for the highest tier this test drives (tier 2 / 1024^2
+    // faces) so the 8192^2 atlas path runs under validation (0-VUID gate) and tier 2
+    // can pack a useful caster count, not the 2 a 4096^2 atlas allows at 1024 faces.
+    desc.pointShadowFaceRes   = 1024;
+    desc.pointShadowMaxLights = 8;
     if (!device->init(desc)) {
         x3::logError("[pointshadows] device init failed");
         glfwTerminate(); return false;
@@ -1934,6 +1939,12 @@ static int runPointShadowBench() {
     DeviceDesc desc{};
     desc.width = 1280; desc.height = 720; desc.headless = true;
     desc.validation = false;                 // perf path: no validation overhead
+    // Gap 6 — size the atlas for the HIGHEST tier this bench drives (tier 2 / 1024^2
+    // faces, ~8 lights) so tier 2 isn't starved to 2 casters by a 4096^2 atlas. With
+    // 1024^2 faces + 8 lights this yields an 8192^2 atlas (~256 MB D32). Tier 1 below
+    // still runs at 512^2 faces; its caster budget is unaffected (it fits in either).
+    desc.pointShadowFaceRes   = 1024;
+    desc.pointShadowMaxLights = 8;
     if (!device->init(desc)) {
         x3::logError("[bench-pointshadows] device init failed");
         glfwTerminate(); return 1;
@@ -2015,7 +2026,7 @@ static int runPointShadowBench() {
     x3::logInfo("[bench-pointshadows] scene: " + std::to_string(kGrid*kGrid)
                 + " occluder cubes + floor @1280x720; budget 8 lights -> tier1 "
                 + std::to_string(casters1) + " casters @512^2, tier2 "
-                + std::to_string(casters2) + " casters @1024^2 (4096^2 atlas cap)");
+                + std::to_string(casters2) + " casters @1024^2 (8192^2 atlas, sized from startup res)");
 
     char line[256];
     std::snprintf(line, sizeof(line),
@@ -3169,6 +3180,12 @@ int main(int argc, char** argv) {
     // Captures lamp-shadow OFF (tier 0) vs ON (tier 1) and exits. Works on non-RT GPUs.
     bool        pshadowShot = false;
     std::string pshadowShotDir = "C:/gamedev/incoming/gap6";
+    // Gap 6 — STARTUP point-shadow atlas sizing (the atlas is allocated once at
+    // device init from these, before the console exists). --pointshadow-res /
+    // --pointshadow-lights override the launch values so a box can boot straight
+    // into the tier-2 1024^2 atlas (8192^2). Default 512/8 -> 4096^2 (tier 1).
+    uint32_t    pshadowStartRes    = 512;
+    uint32_t    pshadowStartLights = 8;
     // --test-rtshadows: headless smoketest with r_rtshadows forced to tier 2 so
     // the mesh_rt pipelines + TLAS path run under Vulkan validation.
     bool        testRtShadows = false;
@@ -3312,6 +3329,17 @@ int main(int argc, char** argv) {
         if (a == "--screenshot-pointshadow") {   // Gap 6 raster point-shadow A/B
             pshadowShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') pshadowShotDir = argv[++i];
+            continue;
+        }
+        // Gap 6 — STARTUP point-shadow atlas sizing (handled OUTSIDE the C1061
+        // chain). These set the atlas dimension at device init: launching at
+        // --pointshadow-res 1024 yields an 8192^2 atlas (tier-2 capacity).
+        if (a == "--pointshadow-res") {
+            if (i + 1 < argc && argv[i + 1][0] != '-') pshadowStartRes = (uint32_t)std::atoi(argv[++i]);
+            continue;
+        }
+        if (a == "--pointshadow-lights") {
+            if (i + 1 < argc && argv[i + 1][0] != '-') pshadowStartLights = (uint32_t)std::atoi(argv[++i]);
             continue;
         }
         // World-streaming flags handled OUTSIDE the big else-if chain (which sits at
@@ -4503,6 +4531,12 @@ int main(int argc, char** argv) {
     desc.width  = W;
     desc.height = H;
     desc.headless = headless;
+    // Gap 6 — STARTUP point-shadow atlas sizing. The atlas is allocated once at
+    // init() and sized from the launch values so a box booted at a high tier
+    // (--pointshadow-res 1024) gets an 8192^2 atlas that fits a useful caster
+    // count, not the 2 a 4096^2 atlas packs at 1024^2 faces. Default 512/8 -> 4096.
+    desc.pointShadowFaceRes   = pshadowStartRes;
+    desc.pointShadowMaxLights = pshadowStartLights;
     desc.ssaa = (showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || cutsceneShot) ? 4u : 1u;   // 4x supersample the showroom / planet / nightsky still (5090 headless: ~16 samples/px, pristine)
     // Benchmark mode runs with vsync OFF so it measures the true frame ceiling,
     // not the display refresh cap.
