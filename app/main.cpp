@@ -1210,6 +1210,15 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // resolve pass -> byte-identical to the pre-TAA render path (A/B).
     console.registerCVar("r_taa",        "1",    "temporal AA: 1 = jitter + history resolve (default), 0 = off (byte-identical pre-TAA path)");
     console.registerCVar("r_taasharpen", "0.25", "post-TAA RCAS-style sharpen amount (0 = off; only applied while r_taa 1)");
+    // VOLUMETRIC GOD-RAYS / light shafts (screen-space radial scatter). Shafts are
+    // computed from the HDR scene + depth (occluder-masked toward the sun) and
+    // added into the HDR scene BEFORE ACES. r_godrays 0 -> the pass is skipped and
+    // the composite add is forced off -> byte-identical to the pre-godrays path.
+    console.registerCVar("r_godrays",         "1",    "volumetric god-rays / light shafts (screen-space radial scatter): 0 = off (byte-identical base)");
+    console.registerCVar("r_godrays_intensity","0.55", "god-rays overall shaft strength (<=0 = effect off)");
+    console.registerCVar("r_godrays_density", "0.6",  "god-rays march step-length scale toward the sun (~0.4..1.0)");
+    console.registerCVar("r_godrays_decay",   "0.96", "god-rays per-step attenuation (~0.92..0.99; higher = longer shafts)");
+    console.registerCVar("r_godrays_weight",  "0.35", "god-rays per-sample contribution weight");
     // Metal ambient-specular floor (mesh.frag IBL path): metals in a DARK baked
     // environment keep an F0-tinted ambient response instead of rendering black.
     // 1 = on (default), 0 = off, >1 strengthens. Live (synced in applyRtaoCVars).
@@ -1342,6 +1351,12 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     px.taaSharpen = console.getFloat("r_taasharpen");
     if (px.taaSharpen < 0.0f) px.taaSharpen = 0.0f;
     if (px.taaSharpen > 1.0f) px.taaSharpen = 1.0f;
+    // God-rays (live): r_godrays gates the shaft pass + composite add.
+    px.godrays          = console.getInt("r_godrays") != 0;
+    px.godraysIntensity = console.getFloat("r_godrays_intensity");
+    px.godraysDensity   = console.getFloat("r_godrays_density");
+    px.godraysDecay     = console.getFloat("r_godrays_decay");
+    px.godraysWeight    = console.getFloat("r_godrays_weight");
     device.setPostFX(px);
     // Metal ambient-specular floor (live; default 1.0 = on, 0 = off).
     device.setMetalAmbient(console.getFloat("r_metalambient"));
@@ -2687,6 +2702,10 @@ int main(int argc, char** argv) {
     // --notaa A/B: disable TAA only (jitter fully off + resolve skipped) so
     // before/after screenshots isolate exactly the TAA contribution.
     bool        noTaa = false;
+    // --nogodrays A/B: disable volumetric god-rays only (the shaft pass is skipped
+    // and the composite add forced off) so before/after captures isolate exactly
+    // the god-rays contribution AND the off path is byte-identical to the base.
+    bool        noGodrays = false;
     // Showroom preview (--screenshot-showroom [path.png]): load the baked Unity scene
     // export (assets/converted_glb/ShowRoom_Vol30/Example_01.glb), frame the camera on
     // the building cluster, capture a PBR-shaded PNG. Headless, like --screenshot.
@@ -2959,6 +2978,7 @@ int main(int argc, char** argv) {
         else if (a == "--legacypost")  legacyPost = 1;   // A/B: auto-exposure OFF (pre-strike look)
         else if (a == "--legacypost2") legacyPost = 2;   // A/B: + bloom OFF + tonemap passthrough
         else if (a == "--notaa")       noTaa = true;     // A/B: TAA off (jitter + resolve disabled)
+        else if (a == "--nogodrays")   noGodrays = true; // A/B: god-rays off (byte-identical base)
         else if (a == "--norefl")      noRefl = true;    // A/B: reflections off (TAA stays on)
         else if (a == "--test-rt") { smoketest = true; testRt = true; }
         else if (a == "--test-reflections") { smoketest = true; testReflections = true; }
@@ -4138,7 +4158,7 @@ int main(int argc, char** argv) {
     // renderer. --notaa: disable ONLY TAA (jitter fully off + resolve skipped) so
     // before/after captures isolate the TAA contribution. Both also pin the cvars
     // so the interactive per-frame cvar sync doesn't re-enable the feature.
-    if (legacyPost || noTaa) {
+    if (legacyPost || noTaa || noGodrays) {
         x3::rhi::IRenderDevice::PostFXParams px{};
         if (legacyPost) {
             px.autoExposure = false;             // legacy = no eye adaptation
@@ -4146,6 +4166,7 @@ int main(int argc, char** argv) {
             if (legacyPost > 1) { px.bloomEnabled = false; px.tonemapMode = 0; }
         }
         if (noTaa) px.taa = false;
+        if (noGodrays) px.godrays = false;       // A/B: god-rays off (byte-identical base)
         device->setPostFX(px);
         // Reflections ride the TAA history, so TAA-off already disables them in
         // the device; push an explicit OFF too so the A/B state is unambiguous.
@@ -11295,6 +11316,7 @@ int main(int argc, char** argv) {
         console->set("r_ssr", "0");              // reflections need TAA; pin OFF explicitly
         console->set("r_rtreflections", "0");
     }
+    if (noGodrays) console->set("r_godrays", "0"); // pin so the per-frame sync keeps god-rays off
     if (noRefl) {
         console->set("r_ssr", "0");              // --norefl: reflections off, TAA untouched
         console->set("r_rtreflections", "0");

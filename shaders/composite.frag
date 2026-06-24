@@ -19,6 +19,11 @@ layout(set = 0, binding = 2) readonly buffer ExposureBuf {
     float avgLog;    // average log2 scene luminance (debug)
     float pad0, pad1;
 } ae;
+// Volumetric god-rays / light-shaft buffer (godrays.frag output, half-res, HDR).
+// ADDED into the scene color BELOW, in linear light, BEFORE exposure + tonemap.
+// Only sampled when godraysIntensity > 0 (r_godrays 0 -> never touched -> the
+// composite is byte-identical to the pre-godrays build).
+layout(set = 0, binding = 3) uniform sampler2D godraysTex;
 
 layout(push_constant) uniform Push {
     float bloomIntensity;  // additive bloom strength (<= 0 = off; chain skipped)
@@ -30,7 +35,8 @@ layout(push_constant) uniform Push {
                            // the pre-sharpen composite). Forced 0 when TAA is off.
     float texelW;          // 1/extent for the sharpen cross taps
     float texelH;
-    float pad0;
+    float godraysIntensity;// r_godrays: god-ray shaft add strength (<=0 = OFF; the
+                           // shaft texture is never sampled -> byte-identical base).
 } pc;
 
 layout(location = 0) in  vec2 vUV;
@@ -65,6 +71,11 @@ void main() {
     // the chain didn't run this frame) never samples the untouched mip target.
     if (pc.bloomIntensity > 0.0)
         color += texture(bloomTex, vUV).rgb * pc.bloomIntensity;
+    // Additive god-rays / light shafts in linear light, BEFORE exposure+tonemap.
+    // Guarded so a DISABLED effect (r_godrays 0) never samples the shaft target
+    // -> the composited result is byte-identical to the pre-godrays build.
+    if (pc.godraysIntensity > 0.0)
+        color += texture(godraysTex, vUV).rgb * pc.godraysIntensity;
     // Exposure: auto-adaptation (when enabled) x the r_exposure bias.
     float exposure = pc.exposure * ((pc.aeEnabled != 0) ? ae.adapted : 1.0);
     color *= exposure;

@@ -214,6 +214,16 @@ public:
                                        // skipped -> byte-identical to the pre-TAA path.
         float taaSharpen     = 0.25f;  // r_taasharpen: post-resolve RCAS-style sharpen
                                        // amount (0 = off). Only applied when taa is on.
+        // VOLUMETRIC GOD-RAYS / light shafts (screen-space radial scatter). The
+        // shaft buffer is computed from the HDR scene + depth, clamped, and added
+        // into the HDR scene BEFORE ACES (composite). godrays 0 -> the shaft pass
+        // is skipped AND the composite's add is forced off -> byte-identical base.
+        bool  godrays         = true;  // r_godrays: master on/off
+        float godraysIntensity= 0.55f; // overall shaft strength (tasteful default;
+                                       // <=0 forces the whole effect off / base A/B)
+        float godraysDensity  = 0.6f;  // r_godrays_density: march step-length scale
+        float godraysDecay    = 0.96f; // r_godrays_decay:   per-step attenuation
+        float godraysWeight   = 0.35f; // r_godrays_weight:  per-sample contribution
     };
     virtual void setPostFX(const PostFXParams&) {}
 
