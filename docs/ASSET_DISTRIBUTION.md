@@ -1,7 +1,15 @@
 # Asset Distribution — LFS Quota Escape Plan
 
+> **STATUS (2026-06-24): D: is now PRIMARY.** The authoritative, read-first,
+> publish-target content-addressed store is the **local NVMe**
+> `D:\Assets\X3AssetStore` (all 46 objects mirrored there, 806 MiB). The
+> off-box `\\p13700\G\X3AssetStore` share is retained as a **backup mirror**
+> (kept intact, not deleted). The `store` block in `assets/manifest.json` is
+> the single source of truth (mirrored in `tools/asset_store.py` and
+> `app/asset_manifest_check.h` defaults). Builds no longer require the network.
+>
 > **STATUS (2026-06-12): Phase A is IMPLEMENTED** (branch `feat/asset-store`):
-> the content-addressed store is live at `\\p13700\G\X3AssetStore`, all 46
+> the content-addressed store was first stood up at `\\p13700\G\X3AssetStore`, all 46
 > files under `assets/rigged_glb/` + `assets/converted_glb/` (845,283,484
 > bytes ≈ 806 MiB) are published + hash-verified in `assets/manifest.json`,
 > `tools/asset_store.py` (publish/fetch/verify/status) is the one tool, the
@@ -85,14 +93,16 @@ themselves.
 
 ### 4.1 Store
 
-Two tiers, both already existing infrastructure:
+Two tiers (as of 2026-06-24, the local NVMe is the authoritative primary):
 
-- **Primary:** the `\\p13700\G\` share (`G:\GameModels\`, `G:\Assets\`) —
-  already the de-facto source of truth per `docs/ASSET_INVENTORY.md`.
-  New layout: `G:\X3AssetStore\objects\<sha256[0:2]>\<sha256>` (content-
-  addressed, immutable) + human-browsable mirrors stay where they are.
-- **Cache/secondary:** `D:\Assets\x3store\` on machines with the 2TB NVMe
-  (the asset-library drive), so builds don't hit the network twice.
+- **Primary (authoritative, read-first, publish target):** the local NVMe
+  `D:\Assets\X3AssetStore\objects\<sha256[0:2]>\<sha256>` (content-addressed,
+  immutable). All 46 objects live here; builds never need the network.
+- **Backup mirror (off-box):** the `\\p13700\G\X3AssetStore` share, same
+  layout, kept intact as a redundant copy. Re-mirror with
+  `robocopy "D:\Assets\X3AssetStore" "\\p13700\G\X3AssetStore" /E` after
+  publishing new objects. The human-browsable `G:\GameModels\` / `G:\Assets\`
+  mirrors stay where they are (`docs/ASSET_INVENTORY.md`).
 
 ### 4.2 Manifest — `assets/manifest.json` (committed, tiny)
 
@@ -144,10 +154,11 @@ unaffected until §6.
 
 ### 4.5 Phase A — AS IMPLEMENTED (2026-06-12, branch `feat/asset-store`)
 
-- **Store (live):** `\\p13700\G\X3AssetStore\objects\<sha256[0:2]>\<sha256>`
-  (immutable, no extensions; `README.md` at the store root documents the
-  layout). Cache tier: `D:\Assets\X3AssetStore`, same layout, auto-populated
-  on fetch, optional per machine.
+- **Store (live):** `D:\Assets\X3AssetStore\objects\<sha256[0:2]>\<sha256>`
+  is now the PRIMARY tier (immutable, no extensions; authoritative + read-first
+  + publish target). The off-box `\\p13700\G\X3AssetStore` mirror (same layout)
+  is retained as the backup. (Historically G: was primary and D: the cache;
+  flipped 2026-06-24.)
 - **Published:** all **46** files under `assets/rigged_glb/` (31) +
   `assets/converted_glb/` (15) — **845,283,484 bytes (806.1 MiB)** — each
   re-hashed from the store copy after upload. Round-trip proven (local file

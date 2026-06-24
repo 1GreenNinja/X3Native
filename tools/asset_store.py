@@ -15,8 +15,8 @@ Subcommands
         entry. Adding an asset = run this + commit the manifest diff.
     fetch [--all | <repo-paths...>]
         For manifest entries missing locally or hash-mismatched, copy the
-        object from the store (D: cache first if it already has the object,
-        else the G: primary; primary fetches also populate the cache).
+        object from the store (the local D: store is the primary/authoritative
+        source; the off-box \\\\p13700\\G\\X3AssetStore mirror is the backup).
         A mismatched local file is moved aside to *.pre-fetch.bak, never deleted.
     verify
         CI-able. Every manifest entry must (a) exist in a reachable store tier
@@ -47,7 +47,9 @@ MANIFEST_PATH = REPO_ROOT / "assets" / "manifest.json"
 
 # Store tiers. The manifest's "store" block (if present) provides the defaults;
 # env vars X3_ASSET_STORE / X3_ASSET_CACHE override both.
-DEFAULT_PRIMARY = r"\\p13700\G\X3AssetStore"
+# The local D: store is now PRIMARY (authoritative, read-first, publish target).
+# The off-box \\p13700\G\X3AssetStore mirror is kept as a backup, not a default.
+DEFAULT_PRIMARY = r"D:\Assets\X3AssetStore"
 DEFAULT_CACHE = r"D:\Assets\X3AssetStore"
 
 # Directories whose contents are managed by the store (used by `status` to
