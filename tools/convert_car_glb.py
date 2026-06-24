@@ -15,10 +15,13 @@ resolution can't apply. Instead:
        * drops Collider nodes/meshes (physics proxies must never render).
 
 Usage:
-  python tools/convert_car_glb.py <src.fbx|src.glb> <dst.glb> [paintR,paintG,paintB]
+  python tools/convert_car_glb.py <src.fbx|src.glb> <dst.glb> [paintR,paintG,paintB] [--len METRES]
     src   : an FBX (FBX2glTF is invoked first) or an already-converted GLB
     dst   : the engine-ready GLB
     paint : optional linear paint color override (default: deep race red)
+    --len : normalize the car so its LONGEST horizontal axis ~= METRES (default
+            4.3 m, a real ~1:1 car). Fixes packs that import 1.5x oversized (E30)
+            or in cm. Applied as a uniform scale on the root node(s).
 
 Material override table keys match by SUBSTRING of the material name
 (lowercased), so "CTR_Body" matches "body", "E30_Chrome" matches "chrome", etc.
@@ -55,10 +58,30 @@ def overrides(paint):
         ("light_indicator", dict(bc=(0.45, 0.12, 0.0, 1.0), metal=0.0, rough=0.3)),
         ("light_reverse",   dict(bc=(0.6, 0.6, 0.6, 1.0), metal=0.0, rough=0.3)),
         ("lights_fog",      dict(bc=(0.8, 0.8, 0.75, 1.0), metal=0.0, rough=0.2)),
+        # ---- emissive light rules (also match the RCC "Lights_*" naming, not
+        #      just "light_*"); ordered BEFORE paint so they never fall through ----
+        ("lights_headlight",dict(bc=(0.9, 0.92, 1.0, 1.0), metal=0.0, rough=0.10,
+                                  emissive=(1.0, 0.98, 0.92, 5.0))),
+        ("lowbeam",         dict(bc=(0.9, 0.92, 1.0, 1.0), metal=0.0, rough=0.10,
+                                  emissive=(1.0, 0.98, 0.92, 4.0))),
+        ("highbeam",        dict(bc=(0.9, 0.92, 1.0, 1.0), metal=0.0, rough=0.10,
+                                  emissive=(1.0, 0.98, 0.92, 5.0))),
+        ("lights_brake",    dict(bc=(0.5, 0.01, 0.01, 1.0), metal=0.0, rough=0.15,
+                                  emissive=(1.0, 0.02, 0.02, 4.0))),
+        ("brakelights",     dict(bc=(0.5, 0.01, 0.01, 1.0), metal=0.0, rough=0.15,
+                                  emissive=(1.0, 0.02, 0.02, 4.0))),
         # ---- the PAINT (clearcoat) group ----
         ("body",            dict(bc=(*paint, 1.0), metal=0.80, rough=0.40,
                                   clearcoat=(1.0, 0.05))),
         ("hood",            dict(bc=(*paint, 1.0), metal=0.80, rough=0.40,
+                                  clearcoat=(1.0, 0.05))),
+        # F1 / open-wheel + some packs name the painted shell "chassis"/"color_1".
+        ("chassis",         dict(bc=(*paint, 1.0), metal=0.70, rough=0.42,
+                                  clearcoat=(1.0, 0.06))),
+        ("color_1",         dict(bc=(*paint, 1.0), metal=0.70, rough=0.42,
+                                  clearcoat=(1.0, 0.06))),
+        ("carbonfiber",     dict(bc=(0.02, 0.02, 0.025, 1.0), metal=0.3, rough=0.35)),
+        ("paint",           dict(bc=(*paint, 1.0), metal=0.80, rough=0.40,
                                   clearcoat=(1.0, 0.05))),
         # ---- glass: smoked mirror (opaque near-black metal => env reflections;
         #      the shell has no interior, BLEND would show through to backfaces) ----
@@ -87,13 +110,65 @@ def overrides(paint):
         ("plate",           dict(bc=(0.7, 0.7, 0.72, 1.0), metal=0.0, rough=0.4)),
     ]
 
+def world_bbox(g):
+    """World-space AABB over all mesh primitives, composing node TRS down the
+    scene graph (accessor min/max are local; we must apply node transforms)."""
+    import numpy as np
+    # child -> parent map (none = root)
+    parent = {}
+    for i, n in enumerate(g.nodes):
+        for c in (n.children or []):
+            parent[c] = i
+    def local_mat(n):
+        import numpy as np
+        if n.matrix:
+            return np.array(n.matrix, dtype=float).reshape(4, 4).T
+        T = np.eye(4)
+        if n.translation: T[:3, 3] = n.translation
+        S = np.diag([*(n.scale or [1, 1, 1]), 1.0])
+        R = np.eye(4)
+        if n.rotation:
+            x, y, z, w = n.rotation
+            R[:3, :3] = np.array([
+                [1-2*(y*y+z*z),   2*(x*y-z*w),   2*(x*z+y*w)],
+                [2*(x*y+z*w),   1-2*(x*x+z*z),   2*(y*z-x*w)],
+                [2*(x*z-y*w),     2*(y*z+x*w), 1-2*(x*x+y*y)]])
+        return T @ R @ S
+    def world_mat(i):
+        m = local_mat(g.nodes[i])
+        p = parent.get(i)
+        while p is not None:
+            m = local_mat(g.nodes[p]) @ m
+            p = parent.get(p)
+        return m
+    mn = np.array([1e30] * 3); mx = np.array([-1e30] * 3)
+    for i, n in enumerate(g.nodes):
+        if n.mesh is None:
+            continue
+        wm = world_mat(i)
+        acc0 = g.meshes[n.mesh].primitives[0].attributes.POSITION
+        for prim in g.meshes[n.mesh].primitives:
+            a = g.accessors[prim.attributes.POSITION]
+            if not (a.min and a.max):
+                continue
+            for cx in (a.min[0], a.max[0]):
+                for cy in (a.min[1], a.max[1]):
+                    for cz in (a.min[2], a.max[2]):
+                        p = wm @ np.array([cx, cy, cz, 1.0])
+                        mn = np.minimum(mn, p[:3]); mx = np.maximum(mx, p[:3])
+    return mn, mx
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__); sys.exit(1)
-    src, dst = sys.argv[1], sys.argv[2]
+    args = [a for a in sys.argv[1:]]
+    target_len = 4.3
+    if "--len" in args:
+        k = args.index("--len"); target_len = float(args[k + 1]); del args[k:k + 2]
+    src, dst = args[0], args[1]
     paint = PAINT_DEFAULT
-    if len(sys.argv) > 3:
-        paint = tuple(float(x) for x in sys.argv[3].split(","))[:3]
+    if len(args) > 2:
+        paint = tuple(float(x) for x in args[2].split(","))[:3]
 
     # 1) FBX -> raw GLB if needed.
     raw = src
@@ -153,6 +228,40 @@ def main():
         if n.mesh is not None and "collider" in (n.name or "").lower():
             n.mesh = None; stripped += 1
     log(f"clearcoat materials: {ccCount}, collider nodes stripped: {stripped}")
+
+    # 3) SCALE NORMALIZE to ~1:1. Measure the world bbox; if the longest
+    #    horizontal axis is off the target, apply a uniform scale on the ROOT
+    #    nodes (scene roots = nodes with no parent). Also drops the car onto y=0.
+    try:
+        import numpy as np
+        mn, mx = world_bbox(g)
+        dims = mx - mn
+        longest = float(max(dims[0], dims[2]))   # horizontal length (X or Z)
+        if longest > 0.01:
+            scl = target_len / longest
+            # only correct meaningful deviations (>5%)
+            if abs(scl - 1.0) > 0.05:
+                children = set()
+                for n in g.nodes:
+                    for c in (n.children or []):
+                        children.add(c)
+                roots = [i for i in range(len(g.nodes)) if i not in children]
+                for ri in roots:
+                    n = g.nodes[ri]
+                    if n.matrix:
+                        m = np.array(n.matrix, dtype=float).reshape(4, 4).T
+                        m[:3, :] *= scl
+                        n.matrix = list(m.T.flatten())
+                    else:
+                        s = n.scale or [1, 1, 1]
+                        n.scale = [s[0] * scl, s[1] * scl, s[2] * scl]
+                        if n.translation:
+                            n.translation = [t * scl for t in n.translation]
+                log(f"scale-normalized: longest {longest:.2f} m -> {target_len:.2f} m (x{scl:.3f})")
+            else:
+                log(f"scale OK: longest {longest:.2f} m (no change)")
+    except Exception as e:
+        log("scale-normalize skipped:", e)
 
     os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
     g.save(dst)

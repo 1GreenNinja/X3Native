@@ -106,6 +106,10 @@ public:
 
     bool ok() const { return m_ok; }
     const Baseline& baseline() const { return m_base; }
+    // Swap the baseline the parts compose against — lets the CAR ROSTER reuse the
+    // shared parts catalog while substituting each car's own stock stats
+    // (app/roster.cpp). Pure data swap; the parts list is untouched.
+    void setBaseline(const Baseline& b) { m_base = b; }
     const std::vector<Category>& categories() const { return m_categories; }
     const std::vector<Part>&     parts() const { return m_parts; }
     const Part* find(const std::string& id) const;

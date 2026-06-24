@@ -60,6 +60,7 @@ add_executable(X3Engine WIN32
     vehicle.cpp
     vehparts.cpp
     perfshop.cpp
+    roster.cpp
     ecology.cpp
     crowd.cpp
     alert.cpp

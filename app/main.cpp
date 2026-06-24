@@ -94,6 +94,7 @@
 #include "vehicle.h"                       // vehicle demo worlds (--world drive/boat/fly)
 #include "vehparts.h"                      // performance-parts catalog + build composition (--test-vehparts)
 #include "perfshop.h"                      // the drive-in performance shop (--world drive)
+#include "roster.h"                        // 36-car drivable roster (x3.vehicle/1) + --test-roster + --world carshow
 #include "ecology.h"                       // AMBIENT ECOLOGY: grazers/predators/patrols (--test-ecology)
 #include "crowd.h"                         // CROWDS: club dancers + facility civilians (--test-crowd)
 #include "alert.h"                         // FACILITY ALERT LEVEL: the wanted system (--test-alert)
@@ -2426,6 +2427,7 @@ int main(int argc, char** argv) {
          testElevatorFsm = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
          testNav = false, testWeapons = false, testVehicle = false, testVehParts = false,
+         testRoster = false,
          testFootIk = false,
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
@@ -2701,6 +2703,10 @@ int main(int argc, char** argv) {
     // 4x SSAA. Writes <outDir>/car_*.png (default docs/screenshots/vehicles).
     bool        carShot = false;
     std::string carShotDir = "docs/screenshots/vehicles";
+    // ROSTER hero shot: which converted GLB the --screenshot-car turntable poses
+    // (relative to convertedGlbRoot()). Override with `--car Vehicles/<Name>.glb`
+    // to beauty-shoot any roster car; default = the hero CTR.
+    std::string carShotGlb = "Vehicles/CTR.glb";
     // FIRST-PERSON showroom proof (--screenshot-showroom-fp [path.png]): run the SAME
     // interactive `--world showroom` setup (walkable floor slab + companion Aria + the
     // wheeling night sky) but render ONE headless frame from the PLAYER SPAWN eye and
@@ -3047,6 +3053,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-weapons") testWeapons = true;
         else if (a == "--test-vehicle") testVehicle = true;
         else if (a == "--test-vehparts") testVehParts = true;
+        else if (a == "--test-roster") testRoster = true;
         else if (a == "--test-ecology") testEcology = true;
         else if (a == "--test-crowd") testCrowd = true;
         else if (a == "--test-alert") testAlert = true;
@@ -3804,6 +3811,11 @@ int main(int argc, char** argv) {
         x3::logInfo("running PERFORMANCE PARTS (x3.vehparts/1) self-test "
                     "(catalog parse + composition math + REAL Jolt physics deltas + dyno pop thresholds)...");
         return x3::game::vehparts::runVehPartsSelfTest() ? 0 : 1;
+    }
+    if (testRoster) {
+        x3::logInfo("running CAR ROSTER (x3.vehicle/1) self-test "
+                    "(roster.json parse + per-car stat sanity + parts-system compat + GLB/wheel resolve + spawn table)...");
+        return x3::game::roster::runRosterSelfTest() ? 0 : 1;
     }
     if (testEcology) {
         x3::logInfo("running AMBIENT ECOLOGY self-test "

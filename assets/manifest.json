@@ -96,6 +96,66 @@
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
     },
     {
+      "repo_path": "assets/converted_glb/Vehicles/Coupe.glb",
+      "sha256": "1e3ec0c23a3227d88c7f9fa1ab5aabc4837e60f8f575456d8b2ccce9a048efc3",
+      "size": 1396364,
+      "source_note": "RCC v4 car roster #25; FBX2glTF + convert_car_glb.py (clearcoat+scale-normalize); 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/E30.glb",
+      "sha256": "bbca9b1be0f6fa42481141d2c5c1a130b52332ec65c61f11e63532c001c00243",
+      "size": 12133468,
+      "source_note": "RCC v4 car roster #25; FBX2glTF + convert_car_glb.py (clearcoat+scale-normalize); 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/E46.glb",
+      "sha256": "e14c87c27b0fbdaf0f962340fc846fa102accdf93cac797d97d061bf010544c4",
+      "size": 5828152,
+      "source_note": "RCC v4 car roster #25; FBX2glTF + convert_car_glb.py (clearcoat+scale-normalize); 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/F1.glb",
+      "sha256": "cd00d497c27658d0b1b770f0470919254e62110c002374f374979f12bd5c9c8a",
+      "size": 403628,
+      "source_note": "RCC v4 car roster #25; FBX2glTF + convert_car_glb.py (clearcoat+scale-normalize); 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Jeep.glb",
+      "sha256": "38e07e3a4646bae5def99273c78d9737b2565804d237f0784653adcd465260c3",
+      "size": 2650860,
+      "source_note": "RCC v4 car roster #25; FBX2glTF + convert_car_glb.py (clearcoat+scale-normalize); 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/M3E36.glb",
+      "sha256": "0432bf7439d1779474182526373d4ebe0c75665d4ae225922c0d94d2f110ea75",
+      "size": 1893296,
+      "source_note": "RCC v4 car roster #25; FBX2glTF + convert_car_glb.py (clearcoat+scale-normalize); 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Muscle.glb",
+      "sha256": "ac81e40b958f3c918cfd1cb94254bcd073aef48aa1cb6394cea656dd82cca7ad",
+      "size": 2783368,
+      "source_note": "RCC v4 car roster #25; FBX2glTF + convert_car_glb.py (clearcoat+scale-normalize); 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Pickup.glb",
+      "sha256": "249593cc40147b73758e85bbc6e694ff1865eb19a362143bad5850cb98336ee2",
+      "size": 1046276,
+      "source_note": "RCC v4 car roster #25; FBX2glTF + convert_car_glb.py (clearcoat+scale-normalize); 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Skyline.glb",
+      "sha256": "36195772596d3d4625474dfddef5bc550e90f1522fcc5e1a7a867f78305252fa",
+      "size": 2102496,
+      "source_note": "RCC v4 car roster #25; FBX2glTF + convert_car_glb.py (clearcoat+scale-normalize); 2026-06-24"
+    },
+    {
+      "repo_path": "assets/converted_glb/Vehicles/Truck.glb",
+      "sha256": "8b6de5581f2d2fea125485b6108da4396b63c4bedb59b34869723ae70387d5a5",
+      "size": 1696196,
+      "source_note": "RCC v4 car roster #25; FBX2glTF + convert_car_glb.py (clearcoat+scale-normalize); 2026-06-24"
+    },
+    {
       "repo_path": "assets/rigged_glb/AnnaBodySuit.glb",
       "sha256": "1dc934ab0161c7848b3e0abfed558f793da1852e2fd9ac0b15e15c872f4f3de2",
       "size": 16440740,
