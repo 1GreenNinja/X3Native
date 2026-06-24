@@ -123,6 +123,12 @@ private:
     void addDustMotes(uint32_t moteMesh, int n, float x, float y, float z,
                       float rx, float rz, float riseY, float span,
                       float r, float g, float b, float glow);
+    // ROUND 3 — a soft contact-shadow / AO blob lying flat on the floor under a prop, so
+    // the prop grounds in the space instead of floating. `discMesh` is the shadow disc
+    // (makeShadowDisc); (x,z) is the floor-plane center, `y` the floor height, `radX/radZ`
+    // the blob radii (m), `darkness` the center opacity (0..1, fades to 0 at the rim).
+    void addShadowBlob(uint32_t discMesh, float x, float y, float z,
+                       float radX, float radZ, float darkness);
 
     std::unique_ptr<x3::asset::IAssetSource> m_assets;
     std::unique_ptr<x3::asset::IModelLoader> m_loader;
@@ -137,6 +143,7 @@ private:
     // base color (so tick() can modulate them) + a per-light phase/rate.
     struct Flicker { uint32_t idx; float baseR, baseG, baseB; float phase, rate, depth; };
     std::vector<Flicker>                     m_flickers;
+    uint32_t m_shadowDisc = 0;   // ROUND 3 contact-shadow disc mesh (index into m_procMeshes)
     bool m_built = false;
 };
 

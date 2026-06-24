@@ -36,7 +36,14 @@ const char* kRelPallet     = "SciFi_Warehouse_Kit/Pallet.glb";
 const char* kRelFusebox    = "SciFi_Warehouse_Kit/Fusebox 01.glb";
 // ROUND 2 wall + detail kit (real PBR wall panels + industrial wall detail). SM_Wall_A
 // is a normal-mapped paneled metal wall section; the rest are the warehouse detail set.
+// ROUND 3 — wall VARIETY: SM_Wall_A's base-color UVs map a near-FLAT plain-panel region,
+// so a wall tiled only with A reads as a uniform light-grey slab in the hero corner.
+// SM_Wall_B / SM_Wall_C share A's exact slab AABB (face at local X=0, 3 m wide along Z,
+// 4.4 m tall) but carry richer paneled relief + greebles, so we mix them across faces so
+// every wall has real detail instead of one flat tone. Drop-in (same kWallAabb).
 const char* kRelWall       = "ModularSciFi_Interior/SM_Wall_A.glb";
+const char* kRelWallB      = "ModularSciFi_Interior/SM_Wall_B.glb";   // heavier paneling/greebles
+const char* kRelWallC      = "ModularSciFi_Interior/SM_Wall_C.glb";   // ribbed/detailed variant
 const char* kRelDoor       = "ModularSciFi_Interior/SM_Door_A.glb";
 const char* kRelDoorFrame  = "ModularSciFi_Interior/SM_DoorFrame_A.glb";
 const char* kRelDuctVent   = "SciFi_Warehouse_Kit/Duct Vent.glb";
@@ -84,6 +91,32 @@ ProcGeo makeMoteQuad() {
     auto push=[&](float x,float y,float u,float v){ x3::rhi::MeshVertex mv{}; mv.pos[0]=x; mv.pos[1]=y; mv.pos[2]=0; mv.normal[2]=1; mv.uv[0]=u; mv.uv[1]=v; g.verts.push_back(mv); };
     push(-0.5f,-0.5f,0,0); push(0.5f,-0.5f,1,0); push(0.5f,0.5f,1,1); push(-0.5f,0.5f,0,1);
     g.idx = {0,1,2, 0,2,3, 0,2,1, 0,3,2};   // double-sided
+    return g;
+}
+
+// ROUND 3 — a flat ground-plane DISC (in the XZ plane, +Y up) used as a soft contact /
+// ambient-occlusion shadow blob UNDER props so they sit in the space instead of floating.
+// A center vertex (dark, opaque-ish) fans out to a ring (fully transparent) so the disc
+// fades to nothing at its edge — i.e. a radial soft shadow. Drawn through the glass pass
+// with a near-black tint + low center opacity (vertex alpha rides the baseColor.a). Unit
+// radius; scaled per blob. Normal points +Y so it lies on the floor.
+ProcGeo makeShadowDisc(int seg = 24) {
+    ProcGeo g;
+    auto push=[&](float x,float z,float a){
+        x3::rhi::MeshVertex mv{}; mv.pos[0]=x; mv.pos[1]=0; mv.pos[2]=z;
+        mv.normal[1]=1.0f; mv.uv[0]=0.5f; mv.uv[1]=a;   // stash alpha hint in uv.y (unused by glass)
+        g.verts.push_back(mv);
+    };
+    push(0.0f, 0.0f, 1.0f);                       // center (vertex 0)
+    for (int i = 0; i <= seg; ++i) {
+        float t = (float)i / (float)seg * 2.0f * kPi;
+        push(std::cos(t), std::sin(t), 0.0f);     // ring (transparent edge)
+    }
+    for (int i = 1; i <= seg; ++i) {
+        g.idx.push_back(0); g.idx.push_back(i); g.idx.push_back(i + 1);
+        // double-sided so it reads from below too (harmless, cheap)
+        g.idx.push_back(0); g.idx.push_back(i + 1); g.idx.push_back(i);
+    }
     return g;
 }
 
@@ -165,6 +198,21 @@ void CellDressing::addDustMotes(uint32_t moteMesh, int n, float x, float y, floa
     }
 }
 
+void CellDressing::addShadowBlob(uint32_t discMesh, float x, float y, float z,
+                                 float radX, float radZ, float darkness) {
+    ProcDraw d; d.meshIdx = discMesh; d.glass = true;
+    // Near-black tint, center opacity = darkness (the disc fans to a transparent rim).
+    d.color[0] = 0.02f; d.color[1] = 0.02f; d.color[2] = 0.03f; d.color[3] = darkness;
+    d.emissive[0] = d.emissive[1] = d.emissive[2] = 0.0f; d.emissive[3] = 0.0f;
+    // Lie the unit disc flat on the floor (its verts are already in XZ), scale to the blob
+    // radii, lift a hair off the floor to avoid z-fighting with the floor plane.
+    d.transform[0]=radX; d.transform[1]=0;    d.transform[2]=0;    d.transform[3]=0;
+    d.transform[4]=0;    d.transform[5]=1.0f; d.transform[6]=0;    d.transform[7]=0;
+    d.transform[8]=0;    d.transform[9]=0;    d.transform[10]=radZ;d.transform[11]=0;
+    d.transform[12]=x;   d.transform[13]=y + 0.012f; d.transform[14]=z; d.transform[15]=1;
+    m_proc.push_back(d);
+}
+
 bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view convertedGlbDir,
                          const CanonFloor& floor) {
     if (!floor.valid()) return false;
@@ -200,6 +248,9 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
     const uint32_t aFuse    = load(kRelFusebox);
     // ROUND 2 — real PBR wall panels + industrial wall detail + the cell door.
     const uint32_t aWall    = load(kRelWall);
+    // ROUND 3 — richer paneled wall variants (drop-in, same slab AABB as SM_Wall_A).
+    const uint32_t aWallB   = load(kRelWallB);
+    const uint32_t aWallC   = load(kRelWallC);
     const uint32_t aDoorFr  = load(kRelDoorFrame);
     (void)kRelDoor;   // SM_Door_A's sliding slab is owned by canonDoors; frame only here.
     const uint32_t aVent    = load(kRelDuctVent);
@@ -211,10 +262,14 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
     const uint32_t aHLight  = load(kRelHangLight);
     const uint32_t aBin     = load(kRelBin);
 
+    // ROUND 3 — the soft contact-shadow disc, built once + reused for every grounding blob
+    // (created up front so the prop blocks below can ground themselves as they're placed).
+    m_shadowDisc = addProcMesh(device, makeShadowDisc());
+
     // Consistent industrial palette tints so the warehouse-kit props read as one cohesive
     // dressed space (the raw GLBs vary from near-white to grey, which looks scattered).
-    const float tCrate[4]  = { 0.52f, 0.48f, 0.42f, 1.0f };  // weathered crate (warm grey)
-    const float tBunk[4]   = { 0.44f, 0.46f, 0.55f, 1.0f };  // cot mattress (cool blue-grey)
+    const float tCrate[4]  = { 0.66f, 0.60f, 0.52f, 1.0f };  // weathered crate (warm grey, lifted R3)
+    const float tBunk[4]   = { 0.58f, 0.60f, 0.70f, 1.0f };  // cot mattress (cool blue-grey, lifted R3)
     const float tBarrel[4] = { 0.46f, 0.34f, 0.25f, 1.0f };  // rusted drum (warm brown)
     const float tPallet[4] = { 0.48f, 0.38f, 0.26f, 1.0f };  // wood pallet
     // Wall/detail palette: keep the PBR wall near its real albedo but desaturate +
@@ -224,7 +279,7 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
     const float tWall[4]   = { 0.34f, 0.35f, 0.40f, 1.0f };  // worn painted metal (kept dark so
                                                              // the normal-map relief + tone read
                                                              // instead of blowing to flat white)
-    const float tWallWarm[4]= { 0.40f, 0.35f, 0.30f, 1.0f }; // warmer grime patch (variation)
+    const float tWallWarm[4]= { 0.36f, 0.35f, 0.34f, 1.0f }; // subtle warm grime (R3: less flat-tan)
     const float tDark[4]   = { 0.20f, 0.21f, 0.24f, 1.0f };  // dark gunmetal detail
     const float tRust[4]   = { 0.34f, 0.22f, 0.16f, 1.0f };  // rusted duct/grate
     const float tRed[4]    = { 0.55f, 0.07f, 0.06f, 1.0f };  // painted red (extinguisher)
@@ -245,34 +300,47 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // inner face sits ~0.10 m inside the room. Pull the PBR panel face IN PAST that
         // (~0.14 m) so it occludes the flat-blue graybox instead of z-fighting behind it.
         const float inset   = 0.14f;
-        // Wall on the -X plane (x=x0): face points +X. SM_Wall_A face is the +X side of
+        // ROUND 3: alternate the three paneled variants per segment so no wall reads as a
+        // single uniform tone. picWall(i) returns B / C / A on a rotating index so every
+        // run shows distinct relief; the hero -X wall LEADS with the richest B/C pieces.
+        // B/C carry real relief; A's UVs map a flatter plain-panel region. Weight the
+        // sequence toward B/C so no large visible wall lands a flat A slab; A appears once
+        // per cycle only (a calmer pilaster between the detailed pieces).
+        const uint32_t wallSeq[4] = { aWallB, aWallC, aWallB, aWallC };
+        auto picWall = [&](int i) { return wallSeq[((i % 4) + 4) % 4]; };
+        (void)aWall;   // A still loaded (the +X stub uses C); kept for variety if needed
+        // Wall on the -X plane (x=x0): face points +X. SM_Wall face is the +X side of
         // its slab (slab spans X -1.43..0). At yaw 0 the slab's face plane is at local X=0
         // pointing +X; anchor that face (X=0) at x0+inset and seat the base at the floor.
-        auto tileWallX = [&](float xPlane, float yaw, const float tint[4]) {
+        auto tileWallX = [&](float xPlane, float yaw, const float tint[4], int seed) {
+            int i = seed;
             for (float z = z0; z < z1 - 0.05f; z += panelW) {
-                float seg = std::min(panelW, z1 - z);
-                (void)seg;
-                place(aWall, yaw, wScale, 0.0f, kWallAabb.miny, kWallAabb.minz,
+                place(picWall(i++), yaw, wScale, 0.0f, kWallAabb.miny, kWallAabb.minz,
                       xPlane, fY, z, nullptr, tint);
             }
         };
         // Wall on a Z plane (z=zPlane): rotate the panel 90° so its face points ±X->±Z.
-        auto tileWallZ = [&](float zPlane, float yaw, float xStart, float xEnd, const float tint[4]) {
+        auto tileWallZ = [&](float zPlane, float yaw, float xStart, float xEnd,
+                             const float tint[4], int seed) {
+            int i = seed;
             for (float x = xStart; x < xEnd - 0.05f; x += panelW) {
-                place(aWall, yaw, wScale, 0.0f, kWallAabb.miny, kWallAabb.minz,
+                place(picWall(i++), yaw, wScale, 0.0f, kWallAabb.miny, kWallAabb.minz,
                       x, fY, zPlane, nullptr, tint);
             }
         };
-        // -X wall: panel face +X (yaw 0 keeps the slab's +X face toward the room).
-        tileWallX(x0 + inset, 0.0f, tWall);
+        // -X HERO wall: panel face +X (yaw 0 keeps the slab's +X face toward the room).
+        // seed=0 -> starts on SM_Wall_B (the heavy-panel piece) so the hero corner reads
+        // as built relief, not a flat plain panel.
+        tileWallX(x0 + inset, 0.0f, tWall, 0);
         // +Z wall (z=z1): face -Z (into room). Rotate yaw=+pi/2 so the slab face points -Z.
-        tileWallZ(z1 - inset, kPi * 0.5f, x0, x1, tWallWarm);
-        // -Z wall (z=z0): face +Z (into room). yaw=-pi/2.
-        tileWallZ(z0 + inset, -kPi * 0.5f, x0, x1, tWall);
+        tileWallZ(z1 - inset, kPi * 0.5f, x0, x1, tWallWarm, 1);
+        // -Z wall (z=z0): face +Z (into room). yaw=-pi/2. Seed offset so the back wall does
+        // not line up its seams/relief with the side walls.
+        tileWallZ(z0 + inset, -kPi * 0.5f, x0, x1, tWall, 2);
         // +X wall: only dress the segments NOT covered by the doorway (door at z≈ccz).
         // Two short stubs flanking the ~2.4 m opening keep the door wall built without
         // slabbing the threshold.
-        place(aWall, kPi, wScale, 0.0f, kWallAabb.miny, kWallAabb.minz,
+        place(aWallC, kPi, wScale, 0.0f, kWallAabb.miny, kWallAabb.minz,
               x1 - inset, fY, z0, nullptr, tWall);
     }
 
@@ -366,9 +434,24 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         addLight(bt.jakeCell, bunkX + 0.8f, fY + 0.95f, bunkZ - 0.2f, 3.2f, 3.6f, 2.8f, 1.8f);
         addLight(bt.jakeCell, bunkX + 0.8f, fY + 0.95f, bunkZ + 1.4f, 3.2f, 3.2f, 2.5f, 1.6f);
         addLight(bt.jakeCell, bunkX + 0.6f, fY + 0.7f, bunkZ + 2.2f, 2.6f, 2.4f, 2.0f, 1.4f); // footlocker
+        // ROUND 3 — DEAD-CORNER KEY: the hero camera (in the +X/+Z corner) looks down on the
+        // bunk's room-FACING (+X/+Z) sides, which the overhead fills above can't reach — so
+        // R2 left them as black blobs. Add a key OUT IN FRONT of the bunk (toward the camera,
+        // higher) that rakes those exposed faces, plus a tighter warm kicker on the cot side
+        // so the corner READS with pools-and-shadow, not a flat blob.
+        // The hero camera (in the +X/+Z corner) sees the bunk's +X / +Z (room-facing) sides.
+        // Push the key OUT toward the camera (higher +X, slightly +Z) so it rakes exactly
+        // those faces; a low front fill lifts the cot/footlocker fronts so they READ.
+        addLight(bt.jakeCell, bunkX + 2.0f, fY + 1.5f, bunkZ + 1.2f, 5.5f, 6.0f, 4.9f, 3.4f); // corner key
+        addLight(bt.jakeCell, bunkX + 1.6f, fY + 0.65f, bunkZ + 0.4f, 4.0f, 4.4f, 3.6f, 2.5f); // low front fill
+        addLight(bt.jakeCell, bunkX + 1.5f, fY + 0.55f, bunkZ + 2.1f, 3.4f, 3.8f, 3.1f, 2.1f); // footlocker kicker
         // A LOW, gentle floor fill so foreground props never read as pure-black blobs
         // (kept dim so it lifts the shadows without flattening the contrast).
         addLight(bt.jakeCell, ccx + 0.5f, fY + 0.5f, ccz + 0.5f, 5.0f, 0.9f, 0.85f, 0.75f);
+        // ROUND 3 — GROUND THE BUNK: soft contact-shadow blobs under the pallet base + the
+        // footlocker so they sit on the floor instead of floating. (m_shadowDisc set below.)
+        addShadowBlob(m_shadowDisc, bunkX, fY, bunkZ, 1.15f, 1.85f, 0.55f);          // bunk base
+        addShadowBlob(m_shadowDisc, bunkX + 0.15f, fY, bunkZ + 2.1f, 0.55f, 0.55f, 0.5f); // footlocker
     }
 
     // WALL TERMINAL (the cell's control panel) on the -Z wall, with a cyan glow + a cyan
@@ -396,6 +479,7 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         place(aBin, 0.0f, 0.95f, cx(kBinAabb), kBinAabb.miny, cz(kBinAabb),
               fx, fY + 0.02f, fz, nullptr, tSteel);
         addLight(bt.jakeCell, fx + 0.3f, fY + 1.4f, fz - 0.2f, 2.8f, 1.6f, 1.5f, 1.3f);
+        addShadowBlob(m_shadowDisc, fx, fY, fz, 0.5f, 0.5f, 0.5f);   // ground the basin
     }
 
     // PIPES running along the ceiling (two parallel runs along Z, near the -X wall) — the
@@ -439,6 +523,10 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
               dx - 0.9f, fY + 0.56f, dz - 0.2f, nullptr, tCrate);   // stacked on the one below
         place(aCrateL, 1.3f, 1.0f, cx(kCrateLAabb), kCrateLAabb.miny, cz(kCrateLAabb),
               dx - 0.4f, fY + 0.02f, dz - 1.3f, nullptr, tCrate);   // a third crate, angled
+        // Ground the debris cluster so it sits in the corner instead of floating.
+        addShadowBlob(m_shadowDisc, dx, fY, dz, 0.55f, 0.55f, 0.5f);            // barrel
+        addShadowBlob(m_shadowDisc, dx - 0.9f, fY, dz - 0.2f, 0.75f, 0.75f, 0.5f); // crate stack
+        addShadowBlob(m_shadowDisc, dx - 0.4f, fY, dz - 1.3f, 0.8f, 0.7f, 0.45f);  // angled crate
     }
 
     // EXIT SIGN over the doorway (the warehouse exit sign has a green-emissive face).
