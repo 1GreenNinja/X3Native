@@ -21,12 +21,20 @@ share one sampling entry point (`samplePointShadow`) selected by a spec constant
 (`POINT_SHADOW_MODE`), so each tier is its own compiled pipeline variant — no
 runtime branch in the hot path.
 
-| `r_pointshadows` | Backend | Res / faces | Lights | VRAM | Target |
+| `r_pointshadows` | Backend | Atlas / faces | Lights | VRAM | Target |
 |---|---|---|---|---|---|
 | **0** | off (raster) | — | — | 0 | any (RT path via `r_rtshadows 2` is independent) |
-| **1** Low | budgeted atlas | 512² faces | N=8 nearest | ~64 MB | GTX 980 (4 GB), min-spec |
-| **2** High | budgeted atlas | 1024² faces | N=16 | ~256 MB | 980Ti / 1080 Ti |
+| **1** Low | atlas **4096²** / 512² faces | N=8 | ~64 MB | GTX 980 (4 GB), min-spec |
+| **2** High | atlas **8192²** / 1024² faces | N≈10 | ~256 MB | 980Ti / 1080 Ti |
 | **3** Ultra | **per-light cube-map array** | 1024²+ | all 64 | ~1.6 GB | 5090 / high-VRAM |
+
+> **Atlas capacity is `(atlasDim/faceDim)² ÷ 6` casters** — so the atlas dim MUST
+> scale with the tier's face res, or high-res tiers starve. Step-5 bench proved
+> this: a 4096² atlas at 1024² faces fits only **2** casters (16 tiles ÷ 6), not
+> the N=16 first drafted here. Tier 1 (4096²/512²) correctly fits the N=8 budget.
+> Tier 2 needs the **8192²** atlas (currently the atlas is hardcoded 4096² — the
+> one open follow-up before tier 2 is real). The "many lights at high res" case
+> is what tier 3's cube-array exists for; don't chase it with an ever-bigger atlas.
 
 - **Atlas (tiers 1–2):** one `D32_SFLOAT` atlas, omni via 6 cube faces packed as
   a 3×2 tile block per caster; CPU budgets the `N` nearest/brightest casters,
@@ -85,6 +93,18 @@ runtime branch in the hot path.
 - `shaders/point_shadow.vert` (new) — depth-only, per-face matrix push constant.
 - `shaders/mesh.frag` — `samplePointShadow()` + the two loop multiplies.
 - `app/main.cpp` — register `r_pointshadows*` cvars; HUD caster count.
+
+## Status (verified on GTX 1080 Ti, no RT)
+
+- **Steps 1–4 DONE** — tier-1 atlas path renders correct hard-edged omni shadows
+  (`256511d`, `527842a`, `6ea7856`). Byte-identical when `r_pointshadows 0`.
+- **Step 5 DONE** (`83dda12`) — `--test-pointshadows` 8/8, **0 VUID** at tier 1+2
+  (real umbra readback: floor luma 35→15). Bench: `tier0 1.08 ms | tier1 1.38 ms
+  (+0.30) | tier2 1.05 ms`; tier-1 cost **+0.30 ms**, well inside the 8.3 ms
+  (120 Hz) budget. Full `--test-*` suite green.
+- **Open before promotion:** (1) scale atlas dim per tier (4096²→8192² for tier 2)
+  so tier 2 isn't capped at 2 casters; (2) tier 3 cube-array (Ultra) unbuilt;
+  (3) i5000 / GTX 980 (4 GB) floor-check of tier 1; (4) soft PCF is a later polish.
 
 ## Out of scope (follow-ups)
 
