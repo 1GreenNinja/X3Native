@@ -253,9 +253,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/chief_martinez_anim.glb",
-      "sha256": "5b0baab5e06aa9c7720d4dee01d01950273e514653087b415b5979876357a717",
-      "size": 64271296,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "b093656f0357bf090056f2c373351f13361d98f47f61db80c5a8677a0b85532e",
+      "size": 64272400,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack; + procedural Attack clip via tools/bake_attack_clip.py 2026-06-24"
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb.glb",
@@ -265,9 +265,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/marcus_webb_anim.glb",
-      "sha256": "d90074e7beab5d517d15e030d8b2c2c9c13954ee29569bec7eab671030ce77dc",
-      "size": 49092444,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "d43f4e2e638f8501eb8c083ec2914aec37a6b7c51688169e6473645a1db781b4",
+      "size": 49093548,
+      "source_note": "fleet share G:\\GameModels / Unity-pack repack; + procedural Attack clip via tools/bake_attack_clip.py 2026-06-24"
     },
     {
       "repo_path": "assets/rigged_glb/sea_hammerhead.glb",
