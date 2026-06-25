@@ -1067,7 +1067,7 @@ bool runUiSelfTest() {
         {
             // Defaults the model ships with.
             check(ctl.settings().musicOn == true,  "U22 musicOn defaults true");
-            check(std::abs(ctl.settings().musicVol - 0.25f) < 1e-4f, "U23 musicVol default ~0.25");
+            check(std::abs(ctl.settings().musicVol - 0.0f) < 1e-4f, "U23 musicVol default 0 (muted on boot)");
             check(std::abs(ctl.settings().sfxVol   - 1.0f)  < 1e-4f, "U24 sfxVol default ~1.0");
 
             // The audio group is pushed DOWN by an extra gap*1.5 (the separator added
