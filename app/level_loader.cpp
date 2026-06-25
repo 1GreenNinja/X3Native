@@ -22,6 +22,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <map>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -1489,6 +1490,75 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             x3::logInfo("buildCanonFloor: locked " + std::to_string(nSec) +
                         " secured-room doors + placed a realistic high-poly keypad at each "
                         "(Security=card|1701, Medical=2480, Armory=card+8896)");
+        }
+    }
+
+    // ---- EXTERIOR SEAL + BASIC STRUCTURAL PASS (whole-building only). The stacked floors
+    // leave a VERTICAL VOID band between each floor's ceiling and the next floor's deck
+    // (e.g. F1 ceiling y=5 -> F2 deck y=6.6) — interiors are sealed (every room has its own
+    // floor/ceiling/walls), but from OUTSIDE the tower the floors read as floating plates.
+    // Wrap a thin EXTERIOR SKIRT around each floor band's XZ perimeter, tall enough to close
+    // the gap up to the next band, so the building reads as one continuous solid shell. Only
+    // touches the OUTER perimeter (interiors untouched => no interior artifacts), and is built
+    // only when the scene spans multiple Y bands (the building; a single floor is a no-op). ----
+    {
+        // Group rooms into floor bands by their floor elevation (snap to ~10 m bins, the
+        // canonical inter-floor spacing). Skip the deep cave/sub-level (y<-50).
+        struct Band { float floorY = 1e9f, ceilY = -1e9f, x0 = 1e9f, x1 = -1e9f, z0 = 1e9f, z1 = -1e9f;
+                      bool any = false; uint32_t rep = kNoRoom; };
+        std::map<int, Band> bands;
+        float yMin = 1e9f, yMax = -1e9f;
+        for (uint32_t ri = 0; ri < (uint32_t)floor.rooms.size(); ++ri) {
+            const CanonRoom& r = floor.rooms[ri];
+            if (r.cy < -50.0f) continue;                 // deep zone: own descent tube, no skirt
+            const int bin = (int)std::lround(r.cy / 10.0f);    // ~per-FLOOR bin (10 m canon spacing)
+            Band& b = bands[bin];
+            b.any = true;
+            if (b.rep == kNoRoom) b.rep = ri;            // a representative room for cull-tagging
+            b.floorY = std::min(b.floorY, r.y0());
+            b.ceilY  = std::max(b.ceilY,  r.y1());
+            b.x0 = std::min(b.x0, r.x0()); b.x1 = std::max(b.x1, r.x1());
+            b.z0 = std::min(b.z0, r.z0()); b.z1 = std::max(b.z1, r.z1());
+            yMin = std::min(yMin, r.y0()); yMax = std::max(yMax, r.y1());
+        }
+        // Only run for the WHOLE BUILDING (a real multi-floor Y span). A single floor
+        // (canonlevel) spans <15 m and is left untouched — no skirts, C5 stays valid.
+        if (bands.size() >= 2 && (yMax - yMin) > 15.0f) {
+            const float skirtTint[4] = { 0.30f, 0.33f, 0.40f, 1.0f };   // dark structural skin
+            // Make a flat surface texture handle reuse the wall texture.
+            uint32_t sealed = 0;
+            auto it = bands.begin();
+            for (; it != bands.end(); ++it) {
+                Band& b = it->second;
+                if (!b.any) continue;
+                // The skirt for this band spans from this band's ceiling up to the NEXT band's
+                // floor (the void). The last band gets a short parapet cap instead.
+                auto nx = std::next(it);
+                float topY = (nx != bands.end() && nx->second.any) ? nx->second.floorY : (b.ceilY + 0.6f);
+                float botY = b.ceilY;
+                if (topY - botY <= 0.05f) continue;       // bands already touch — no void
+                const float midY = (botY + topY) * 0.5f;
+                const float hY   = (topY - botY) * 0.5f;
+                // Four perimeter skirt walls (thin, just OUTSIDE this band's footprint so they
+                // never coincide with a room's outer wall plane => no z-fighting). Always-visible
+                // exterior skin (kNoRoom). Render-only (collision is the rooms' own walls).
+                const float t = kWallT * 0.5f, e = 0.04f;
+                auto skirt = [&](float hx, float hy, float hz, float cx, float cy, float cz) {
+                    uint32_t id = addBox(scene, device, physics, hx, hy, hz, cx, cy, cz,
+                                         wallTexA, skirtTint, kNoRoom, /*collide*/false, wallVis);
+                    if (id < scene.size()) scene.get(id).roomId = kNoRoom;
+                };
+                const float midX = (b.x0 + b.x1) * 0.5f, midZ = (b.z0 + b.z1) * 0.5f;
+                const float hxSpan = (b.x1 - b.x0) * 0.5f + e, hzSpan = (b.z1 - b.z0) * 0.5f + e;
+                skirt(hxSpan, hY, t, midX, midY, b.z0 - e - t);   // -Z face
+                skirt(hxSpan, hY, t, midX, midY, b.z1 + e + t);   // +Z face
+                skirt(t, hY, hzSpan, b.x0 - e - t, midY, midZ);   // -X face
+                skirt(t, hY, hzSpan, b.x1 + e + t, midY, midZ);   // +X face
+                sealed += 4;
+            }
+            x3::logInfo("buildCanonFloor: exterior structural pass sealed " +
+                        std::to_string(bands.size()) + " floor bands with " +
+                        std::to_string(sealed) + " skirt panels (no inter-floor gaps)");
         }
     }
 
