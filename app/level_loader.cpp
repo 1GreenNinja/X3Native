@@ -675,6 +675,17 @@ CanonFloor loadCanonFloor(std::string_view jsonPath, int floorNum) {
         if (const JValue* v = rv.find("w")) r.w = (float)v->asNum();
         if (const JValue* v = rv.find("h")) r.h = (float)v->asNum();
         if (const JValue* v = rv.find("d")) r.d = (float)v->asNum();
+        // MIN STANDABLE HEIGHT. Some LevelArchitect rooms are authored as thin PLATFORM
+        // plates (h≈0.3-0.5 m) — the F4.5 spire tiers (Whisper Gallery .. Apex Arena), the
+        // F7 Rooftop/Helipad. As built they'd be un-enterable slits. Lift any sub-2 m room
+        // to a walkable 4 m headroom, keeping its FLOOR at the authored plate level (cy
+        // raised by half the added height) so the plate's elevation in the spiral is
+        // preserved. (Tall rooms — the atria — keep their authored height.)
+        if (r.h < 2.0f) {
+            const float floorY = r.cy - r.h * 0.5f;   // authored plate top sits at the floor
+            r.h  = 4.0f;
+            r.cy = floorY + r.h * 0.5f;               // floor stays at floorY, ceiling at +4
+        }
         floor.rooms.push_back(std::move(r));
     }
 
@@ -741,6 +752,51 @@ CanonFloor loadCanonFloor(std::string_view jsonPath, int floorNum) {
                 x3::logInfo("loadCanonFloor: linked isolated room '" + iso.name +
                             "' -> '" + floor.rooms[best].name + "' via vertical descent tube");
             }
+        }
+    }
+
+    // ---- HIDDEN F4.5 SPIRE CLIMB. The LevelArchitect "Nexus Chamber / spire at level 4.5"
+    // is authored INSIDE Floor 4 as a stack of platform plates floating ABOVE the main wing
+    // (Nexus Chamber Access at y≈30, then Entry Platform + Tier 1..5 / Apex Arena ascending
+    // to y≈53) — a hidden vertical climb. In the JSON only Tier4<->Tier5 is doored, so the
+    // plates would float disconnected. Chain the whole spire cluster into ONE navigable
+    // ascent: gather every spire room (by name), sort by floor elevation, and link each to
+    // the next-higher with a CrossLevel tube (the builder drops a real vertical shaft). The
+    // base is wired to the "Nexus Chamber Access" room so the climb is reachable from the
+    // Floor-4 wing. Idempotent: a pair already doored in the JSON is skipped. ----
+    {
+        std::vector<uint32_t> spire;
+        for (uint32_t i = 0; i < nRooms; ++i) {
+            const std::string& n = floor.rooms[i].name;
+            if (n.find("F4.5") != std::string::npos || n.find("Tier ") != std::string::npos ||
+                n.find("Apex") != std::string::npos || n.find("Nexus Chamber Access") != std::string::npos)
+                spire.push_back(i);
+        }
+        if (spire.size() >= 2) {
+            std::sort(spire.begin(), spire.end(),
+                      [&](uint32_t a, uint32_t b) { return floor.rooms[a].y0() < floor.rooms[b].y0(); });
+            auto alreadyDoored = [&](uint32_t a, uint32_t b) {
+                for (const CanonDoorway& dw : floor.doorways)
+                    if ((dw.a == a && dw.b == b) || (dw.a == b && dw.b == a)) return true;
+                return false;
+            };
+            uint32_t links = 0;
+            for (size_t s = 1; s < spire.size(); ++s) {
+                const uint32_t lo = spire[s - 1], hi = spire[s];
+                if (alreadyDoored(lo, hi)) continue;
+                CanonDoorway dw; dw.a = hi; dw.b = lo;          // a = upper plate
+                dw.kind = DoorwayKind::CrossLevel;
+                dw.cx = floor.rooms[hi].cx;                     // tube at the upper plate XZ
+                dw.cz = floor.rooms[hi].cz;
+                dw.cy = floor.rooms[hi].y0();
+                dw.axis = 0;
+                floor.doorways.push_back(dw);
+                ++links;
+            }
+            if (links)
+                x3::logInfo("loadCanonFloor: wired the HIDDEN F4.5 spire climb (" +
+                            std::to_string(spire.size()) + " plates, " + std::to_string(links) +
+                            " vertical links Nexus Access -> Apex Arena)");
         }
     }
 
@@ -2044,6 +2100,37 @@ bool runCanonBuildingSelfTest() {
         }
         check(b.doorways.size() == perFloorDoors + 6,
               "B7 fused doorways == sum(per-floor) + 6 shafts (no loss/dup)");
+    }
+
+    // ---- B8: the HIDDEN F4.5 SPIRE level is present + CONNECTED. The Nexus/spire plates
+    //          (Nexus Chamber Access .. Tier 5 / Apex Arena) climb from y≈30 to y≈53, and
+    //          the Apex Arena is reachable from the Nexus Access room through the synthesized
+    //          spire climb (a path exists in the door graph). Proves the hidden intermediate
+    //          level loaded and is navigable, not a floating stub. ----
+    {
+        const uint32_t access = b.roomByName("Nexus Chamber Access");
+        const uint32_t apex   = b.roomByName("Apex Arena");
+        bool present = access != kNoRoom && apex != kNoRoom;
+        // The spire climbs above the F4 wing.
+        bool climbs = present && b.rooms[apex].cy > b.rooms[access].cy + 15.0f;
+        // BFS the door graph from access; assert apex is reachable (cluster connected).
+        bool reach = false;
+        if (present) {
+            std::vector<uint8_t> seen(b.rooms.size(), 0);
+            std::vector<uint32_t> stk{ access }; seen[access] = 1;
+            // adjacency from doorways
+            while (!stk.empty()) {
+                uint32_t cur = stk.back(); stk.pop_back();
+                if (cur == apex) { reach = true; break; }
+                for (const CanonDoorway& dw : b.doorways) {
+                    uint32_t nb = kNoRoom;
+                    if (dw.a == cur) nb = dw.b; else if (dw.b == cur) nb = dw.a;
+                    if (nb != kNoRoom && nb < seen.size() && !seen[nb]) { seen[nb] = 1; stk.push_back(nb); }
+                }
+            }
+        }
+        check(present && climbs && reach,
+              "B8 hidden F4.5 spire loaded + Apex Arena reachable from Nexus Access (climbs >15 m)");
     }
 
     x3::logInfo("--test-building: " + std::to_string(g_pass) + " passed, " +
