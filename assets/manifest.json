@@ -229,9 +229,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/WeaponShotgun2.glb",
-      "sha256": "4c3342bda383d22cd210ca0f83e286157a7684d24e3866df4e4ea5a32cfb3f03",
-      "size": 9117444,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "cb3c289a907f4a9b9323b794e20b0699237b366361eeceb9bfb8153dbe719175",
+      "size": 9117916,
+      "source_note": "weapon-variety reskin: shotgun steel+brass"
     },
     {
       "repo_path": "assets/rigged_glb/alien_crawler.glb",
