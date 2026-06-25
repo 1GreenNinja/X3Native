@@ -588,9 +588,16 @@ FireResult MonsterSystem::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& 
             const float center[3] = { m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z };
             m_deathFx(center, m_type == MonsterType::Drone);
         }
+        // Enemy-SFX (playtest "enemies make NO sounds" fix): DEATH vocalization at the
+        // kill moment — host maps EnemyDeath onto a creature-death WAV.
+        emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyDeath,
+            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f });
     } else {
         x3::logInfo("[monster] hit for " + std::to_string(shotDmg) +
                     " — HP now " + std::to_string(m_hp));
+        // Enemy-SFX: TAKE-HIT grunt when it survives the shot (host -> creature-pain).
+        emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyHit,
+            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f });
     }
     return r;
 }
@@ -629,9 +636,15 @@ bool MonsterSystem::takeMeleeDamage(int damage, Scene& scene,
             const float center[3] = { m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z };
             m_deathFx(center, m_type == MonsterType::Drone);
         }
+        // Enemy-SFX: death vocalization (same as the shot kill path).
+        emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyDeath,
+            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f });
     } else {
         x3::logInfo("[monster] melee hit for " + std::to_string(dmg) +
                     " — HP now " + std::to_string(m_hp));
+        // Enemy-SFX: take-hit grunt on a surviving melee hit.
+        emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyHit,
+            x3::phys::Vec3{ m_pos.x, m_pos.y + m_hitCenterOff, m_pos.z }, 1.0f });
     }
     return dead;
 }
@@ -1177,6 +1190,11 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                 x3::phys::Vec3 from{ m_pos.x, m_pos.y + 0.3f, m_pos.z };
                 fx(from, tp);
             }
+            // Enemy-SFX (playtest "enemies make NO sounds" fix): a swing/shot
+            // vocalization at the wind-up START (host maps EnemyAttack onto a
+            // melee-bite / plasma-charge WAV). Fired once per attack, at the muzzle.
+            emitCueOrLog(m_cueSink, GameCue{ CueKind::EnemyAttack,
+                x3::phys::Vec3{ m_pos.x, m_pos.y + 0.3f, m_pos.z }, 1.0f });
         }
         if (m_winding) {
             m_windupTimer -= dt;
