@@ -781,6 +781,13 @@ private:
     // to the legacy idle/move switch via the Skinner's graceful blend collapse.
     int                      m_runClip  = -1;
     int                      m_jumpClip = -1;
+    // ATTACK clip (playtest "attack animation unsolved" fix): a swing/melee/bite clip
+    // resolved from the *_anim.glb. -1 if the rig has none. While m_winding the anim
+    // drive plays THIS (one-shot, scaled across the wind-up) instead of idle, so an
+    // attacking enemy visibly swings. Baked into the soldier rigs by
+    // tools/bake_attack_clip.py (no attack clip shipped originally).
+    int                      m_attackClip = -1;
+    float                    m_attackAnimT = 0.0f;     // elapsed time inside the attack clip
     bool                     m_useLocoBlend = false;  // a real idle(+walk/+run) set drives the blend
     float                    m_animTime = 0.0f;
     bool                     m_animActive = false;   // a usable clip was found

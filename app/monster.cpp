@@ -297,6 +297,10 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
         m_walkClip = m_skinner.findClip({ "walk" });
         m_runClip  = m_skinner.findClip({ "run", "sprint", "jog" });
         m_jumpClip = m_skinner.findClip({ "jump", "leap" });
+        // ATTACK clip (playtest fix): a melee/swing clip the anim drive plays during
+        // the wind-up. -1 if absent. Baked into the soldier rigs by
+        // tools/bake_attack_clip.py.
+        m_attackClip = m_skinner.findClip({ "attack", "melee", "swing", "bite", "punch" });
         if (m_walkClip < 0) m_walkClip = m_skinner.findClip({ "move", "jog", "run" });
         if (m_idleClip < 0) m_idleClip = 0;   // fall back to the first clip
         m_animActive = (m_idleClip >= 0);
@@ -1184,6 +1188,7 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             // Begin a new attack: start the wind-up; the hit lands when it elapses.
             m_winding     = true;
             m_windupTimer = m_attackWindup;
+            m_attackAnimT = 0.0f;   // restart the attack clip from its first frame
             // Telegraph FX up front (a beam toward the player) so the attack reads.
             if (fx) {
                 x3::phys::Vec3 tp = target->damageTargetPos();
@@ -1300,7 +1305,20 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         const float ddx = m_pos.x - prevPos.x, ddz = m_pos.z - prevPos.z;
         const float planarSpeed = (dt > 1e-5f)
             ? std::sqrt(ddx*ddx + ddz*ddz) / dt : 0.0f;
-        if (m_useLocoBlend) {
+        // ---- ATTACK ANIMATION (playtest "attack anim unsolved" fix). While the enemy
+        // is winding up / striking (m_winding) and the rig HAS an attack clip, play it
+        // one-shot over the wind-up instead of idle/locomotion — so an attacking enemy
+        // visibly SWINGS. m_attackAnimT advances each frame (reset to 0 at wind-up
+        // start) and is clamped just below the clip end so it holds the strike pose if
+        // the wind-up outlasts the clip (no loop-back mid-swing). Falls through to the
+        // locomotion drive below when not winding or the rig has no attack clip. --
+        if (m_winding && m_attackClip >= 0) {
+            m_attackAnimT += dt;
+            const float dur = m_skinner.clipDuration((uint32_t)m_attackClip);
+            const float t = (dur > 1e-3f) ? std::min(m_attackAnimT, dur - 1e-3f)
+                                          : m_attackAnimT;
+            m_skinner.apply(m_model, *m_device, (uint32_t)m_attackClip, t);
+        } else if (m_useLocoBlend) {
             m_skinner.setLocomotionSpeed(planarSpeed);
             m_skinner.applyLocomotion(m_model, *m_device, dt);
 
