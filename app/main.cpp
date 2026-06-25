@@ -2878,9 +2878,20 @@ int main(int argc, char** argv) {
     bool        captureSpire    = false;
     std::string captureSpireDir = "captures/spire";
     // World selector (--world terrain): launch the playable OUTDOOR terrain world
-    // (walk the hills) instead of the default interior Level 1. Anything else (or
-    // omitted) keeps Level 1 as the default, unchanged.
-    std::string worldMode = "level1";
+    // (walk the hills) instead of the default interior level. Anything else (or
+    // omitted) keeps the canonical Floor 1 as the default.
+    //
+    // DEFAULT = "canonlevel": the player now boots into the OWNER'S CANONICAL
+    // LevelArchitect facility (the 53-room Floor 1 from
+    // assets/levels/EscapeLab48_AllFloors_v2.project.json, built data-driven via
+    // level_loader.* with real human-scale 3D room volumes, the WIDE central Main
+    // Hall (w=44), cells on BOTH sides, and the per-room portal-PVS cull). This
+    // REPLACES the old hand-coded narrow/flat `level1.cpp` tower as the boot layout
+    // — that legacy build is still reachable explicitly via `--world level1` (and
+    // the --screenshot* / spire capture paths that pass it), so nothing else changes.
+    // `--world intro` plays the cold-open prologue then hands off to this SAME canon
+    // Floor-1 cell start.
+    std::string worldMode = "canonlevel";
     bool        worldExplicit = false;   // --world was passed (vs the default)
     bool shotWorldMap = false;   // --screenshot-worldmap (headless map shot sequence)
     // Seamless world streaming tunables (--world streamed; see app/world_stream.*):
