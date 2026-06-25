@@ -130,6 +130,11 @@ public:
     // Enemy death: a burst of debris chunks (alpha, gravity) + a lingering smoke
     // puff so the kill reads on screen.
     void spawnDeath(const x3::phys::Vec3& pos);
+    // EXPLOSION fireball (playtest "barrels look like red boxes" fix): a bright
+    // ADDITIVE orange/yellow fireball burst + dark smoke at `center`, sized by
+    // `radius`. Hot additive cores feed bloom so a shot barrel reads as a violent
+    // fireball, not just scattered red chunks. Used by the barrel FX sink.
+    void spawnExplosion(const x3::phys::Vec3& center, float radius);
     // Lingering smoke puff (alpha, slow rise) — used by death + as a generic cue.
     void spawnSmoke(const x3::phys::Vec3& pos);
     // Drop a scorch decal directly (bullet-hole / impact mark) at a hit point+normal.

@@ -106,7 +106,10 @@ void BarrelSystem::update(float dt) {
 void BarrelSystem::render(const x3::rhi::FrameContext& frame) const {
     if (!m_device) return;
     const float intact[4] = { 0.85f, 0.50f, 0.18f, 1.0f };   // rusty orange tint
-    const float debris[4] = { 0.55f, 0.32f, 0.12f, 1.0f };   // scorched
+    // Scorched charred-METAL debris (playtest "barrels look like red boxes" fix):
+    // its OWN warm orange-brown tint, deliberately decoupled from the global red
+    // gore gibTint so blasted barrel chunks read as burnt steel, not gore-red boxes.
+    const float debris[4] = { 0.46f, 0.27f, 0.11f, 1.0f };   // scorched charred steel
 
     if (!m_barrelDrawables.empty()) {
         // INTACT barrels render as the real round Barrel.glb at each barrel's base;

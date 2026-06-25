@@ -314,6 +314,71 @@ void CombatFx::spawnDeath(const x3::phys::Vec3& pos) {
     spawnSmoke(pos);
 }
 
+// ---------------------------------------------------------------------------
+// spawnExplosion: a bright ADDITIVE orange/yellow fireball + dark smoke at
+// `center`, sized by `radius` (playtest "barrels look like red boxes" fix).
+// Hot additive cores (HDR r/g/b > 1) feed the bloom chain so a shot barrel
+// reads as a violent fireball instead of just scattered red chunks.
+// ---------------------------------------------------------------------------
+void CombatFx::spawnExplosion(const x3::phys::Vec3& center, float radius) {
+    const float r = (radius > 0.2f) ? radius : 0.2f;
+    // (1) Fireball CORE: a dense ball of hot additive orange/yellow puffs that flash
+    // bright then shrink — the bloom-feeding heart of the blast.
+    const int nCore = 26;
+    for (int i = 0; i < nCore; ++i) {
+        Particle p;
+        p.pos = x3::phys::Vec3{ center.x + frandSym() * r * 0.4f,
+                                center.y + frandSym() * r * 0.4f,
+                                center.z + frandSym() * r * 0.4f };
+        const float speed = (2.0f + frand() * 5.0f) * r;
+        p.vel = x3::phys::Vec3{ frandSym() * speed,
+                                frand() * speed * 0.7f + 0.8f,
+                                frandSym() * speed };
+        p.life = p.maxLife = 0.25f + frand() * 0.30f;
+        p.size0 = (0.18f + frand() * 0.18f) * r;   // big hot puff
+        p.size1 = 0.03f * r;                        // collapse to a spark
+        // HDR additive orange->yellow core (intensity > 1 feeds bloom).
+        p.r = 5.0f; p.g = 2.2f + frand() * 1.0f; p.b = 0.45f;
+        p.a0 = 1.0f;
+        p.gravity = -0.2f; p.drag = 2.2f; p.additive = true;
+        spawnParticle(p);
+    }
+    // (2) Outward EMBER spray: fast hot additive specks flung past the core radius.
+    const int nEmber = 18;
+    for (int i = 0; i < nEmber; ++i) {
+        Particle p;
+        p.pos = center;
+        const float speed = (5.0f + frand() * 8.0f) * r;
+        p.vel = x3::phys::Vec3{ frandSym() * speed,
+                                frand() * speed + 1.0f,
+                                frandSym() * speed };
+        p.life = p.maxLife = 0.3f + frand() * 0.4f;
+        p.size0 = 0.05f * r; p.size1 = 0.012f * r;
+        p.r = 4.5f; p.g = 1.4f; p.b = 0.30f;        // hot orange ember
+        p.a0 = 1.0f;
+        p.gravity = 0.8f; p.drag = 1.4f; p.additive = true;
+        spawnParticle(p);
+    }
+    // (3) Dark rolling SMOKE so the fireball leaves a believable plume.
+    const int nSmoke = 10;
+    for (int i = 0; i < nSmoke; ++i) {
+        Particle p;
+        p.pos = x3::phys::Vec3{ center.x + frandSym() * r * 0.5f,
+                                center.y + frandSym() * r * 0.3f,
+                                center.z + frandSym() * r * 0.5f };
+        p.vel = x3::phys::Vec3{ frandSym() * 0.8f, 0.8f + frand() * 1.0f, frandSym() * 0.8f };
+        p.life = p.maxLife = 1.0f + frand() * 1.2f;
+        p.size0 = 0.25f * r; p.size1 = 1.0f * r;    // grows + dissipates
+        p.r = 0.10f; p.g = 0.09f; p.b = 0.08f;      // sooty dark smoke
+        p.a0 = 0.5f;
+        p.gravity = -0.18f; p.drag = 1.0f; p.additive = false;
+        spawnParticle(p);
+    }
+    // A scorch decal under the blast (up-facing) so the ground reads burned.
+    addDecal(x3::phys::Vec3{ center.x, center.y - r * 0.8f, center.z },
+             x3::phys::Vec3{ 0.0f, 1.0f, 0.0f });
+}
+
 void CombatFx::spawnSmoke(const x3::phys::Vec3& pos) {
     const int n = 6;
     for (int i = 0; i < n; ++i) {

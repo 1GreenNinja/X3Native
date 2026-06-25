@@ -11109,10 +11109,10 @@ int main(int argc, char** argv) {
     // barrel reads as a violent fireball (on top of its own scattering debris chunks).
     game.barrels().setFxSink([&combatFx](const float c[3], float radius) {
         const x3::phys::Vec3 ctr{ c[0], c[1], c[2] };
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f });
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.7f, 0.5f, 0.0f });
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ -0.7f, 0.5f, 0.0f });
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 0.5f, 0.7f });
+        // Playtest "barrels look like red boxes" fix: a bright ADDITIVE orange
+        // fireball (Explosion style) so a shot barrel reads as a violent blast,
+        // not just scattered red chunks. Sized by the blast radius.
+        combatFx.spawnExplosion(ctr, radius);
     });
 
     // ---- GIBS: monsters EXPLODE into chunks + blood when they die. -----------
