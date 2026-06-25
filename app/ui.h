@@ -281,7 +281,7 @@ struct SettingsModel {
 
     // ---- Audio (applied LIVE to the audio system by the host) -------------
     bool  musicOn  = true;         // "Music ON/OFF" -> setMusicEnabled
-    float musicVol = 0.25f;        // "Music Volume" [0,1] -> setMusicVolume (matches the launch bed)
+    float musicVol = 0.0f;         // "Music Volume" [0,1] -> setMusicVolume (playtest: MUTED by default; raise via slider)
     float sfxVol   = 1.0f;         // "SFX Volume"   [0,1] -> setMasterSfxVolume
 };
 

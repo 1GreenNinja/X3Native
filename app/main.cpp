@@ -4085,6 +4085,9 @@ int main(int argc, char** argv) {
     struct BootAudio {
         std::unique_ptr<x3::audio::IAudioSystem> audio;
         x3::audio::SoundHandle gun, door, pickup, death;
+        // Enemy VOCALIZATIONS (playtest "enemies make NO sounds" fix): creature
+        // attack/hit/death WAVs the cue sink maps onto EnemyAttack/Hit/Death.
+        x3::audio::SoundHandle enemyAttack, enemyHit, enemyDeath;
     };
     auto makeBootAudio = []() -> BootAudio {
         BootAudio ba;
@@ -4099,6 +4102,13 @@ int main(int argc, char** argv) {
             "Sci-fi Evolution Gift Pack/Health or Energy Game Recharge 2.wav"));
         ba.death = ba.audio->load(x3::game::resolveAudio(
             "Free Pack/Explosion 1.wav"));
+        // Enemy vocalizations (graceful miss -> silent if a pack WAV is absent).
+        ba.enemyAttack = ba.audio->load(x3::game::resolveAudio(
+            "Free Pack/Monster Bite.wav"));
+        ba.enemyHit = ba.audio->load(x3::game::resolveAudio(
+            "Sci-fi Evolution Gift Pack/Alien Game Tech Hit.wav"));
+        ba.enemyDeath = ba.audio->load(x3::game::resolveAudio(
+            "Free Pack/Bloody punch.wav"));
         return ba;
     };
     std::future<BootAudio> bootAudioFut;
@@ -10506,6 +10516,10 @@ int main(int argc, char** argv) {
     const x3::audio::SoundHandle sndDoor   = bootAudio.door;
     const x3::audio::SoundHandle sndPickup = bootAudio.pickup;
     const x3::audio::SoundHandle sndDeath  = bootAudio.death;
+    // Enemy vocalizations (playtest fix): creature attack/hit/death cues.
+    const x3::audio::SoundHandle sndEnemyAttack = bootAudio.enemyAttack;
+    const x3::audio::SoundHandle sndEnemyHit    = bootAudio.enemyHit;
+    const x3::audio::SoundHandle sndEnemyDeath  = bootAudio.enemyDeath;
     // Footsteps reuse the gunshot WAV pitched down + quiet (no dedicated footstep
     // WAV in the inventory). It reads as a soft step; replace with a real footstep
     // SFX later if one is added to the pack.
@@ -10943,7 +10957,8 @@ int main(int argc, char** argv) {
         // here the host maps them onto whatever sounds it has. Intensity -> volume.
         {
             x3::audio::IAudioSystem* asys = audio.get();
-            game.setCueSink([asys, sndStep, sndGun](const x3::game::GameCue& c) {
+            game.setCueSink([asys, sndStep, sndGun, sndEnemyAttack, sndEnemyHit,
+                             sndEnemyDeath](const x3::game::GameCue& c) {
                 if (!asys) return;
                 switch (c.kind) {
                     case x3::game::CueKind::Footstep:
@@ -10956,6 +10971,30 @@ int main(int argc, char** argv) {
                         if (sndGun.valid())
                             asys->playSound3D(sndGun, c.pos.x, c.pos.y, c.pos.z,
                                               0.5f * c.intensity, 0.7f);
+                        break;
+                    // ---- Enemy VOCALIZATIONS (playtest "enemies make NO sounds" fix).
+                    // EnemyTaunt reuses the attack growl (lower volume) so an engaged
+                    // enemy isn't silent at range. Each maps to a creature WAV; missing
+                    // pack WAV -> the handle is invalid -> silent (graceful).
+                    case x3::game::CueKind::EnemyTaunt:
+                        if (sndEnemyAttack.valid())
+                            asys->playSound3D(sndEnemyAttack, c.pos.x, c.pos.y, c.pos.z,
+                                              0.35f * c.intensity, 0.8f);
+                        break;
+                    case x3::game::CueKind::EnemyAttack:
+                        if (sndEnemyAttack.valid())
+                            asys->playSound3D(sndEnemyAttack, c.pos.x, c.pos.y, c.pos.z,
+                                              0.7f * c.intensity, 1.0f);
+                        break;
+                    case x3::game::CueKind::EnemyHit:
+                        if (sndEnemyHit.valid())
+                            asys->playSound3D(sndEnemyHit, c.pos.x, c.pos.y, c.pos.z,
+                                              0.6f * c.intensity, 1.0f);
+                        break;
+                    case x3::game::CueKind::EnemyDeath:
+                        if (sndEnemyDeath.valid())
+                            asys->playSound3D(sndEnemyDeath, c.pos.x, c.pos.y, c.pos.z,
+                                              0.9f * c.intensity, 1.0f);
                         break;
                 }
             });
@@ -11099,10 +11138,10 @@ int main(int argc, char** argv) {
     // barrel reads as a violent fireball (on top of its own scattering debris chunks).
     game.barrels().setFxSink([&combatFx](const float c[3], float radius) {
         const x3::phys::Vec3 ctr{ c[0], c[1], c[2] };
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f });
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.7f, 0.5f, 0.0f });
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ -0.7f, 0.5f, 0.0f });
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 0.5f, 0.7f });
+        // Playtest "barrels look like red boxes" fix: a bright ADDITIVE orange
+        // fireball (Explosion style) so a shot barrel reads as a violent blast,
+        // not just scattered red chunks. Sized by the blast radius.
+        combatFx.spawnExplosion(ctr, radius);
     });
 
     // ---- GIBS: monsters EXPLODE into chunks + blood when they die. -----------
@@ -12313,7 +12352,7 @@ int main(int argc, char** argv) {
             x3::logInfo("smoketest: r_frustumcull 0 (X3_NOFRUSTUMCULL) — CPU frustum cull DISABLED");
         }
         audio->setListener(vmX, vmY, vmZ, vmYaw, vmPitch);
-        audio->playMusic(kMusicPath, /*loop*/true, /*vol*/0.25f);
+        audio->playMusic(kMusicPath, /*loop*/true, /*vol*/0.0f);   // playtest: muted by default
         const x3::phys::Vec3 eye{ vmX, vmY, vmZ };
         const float dt = 1.0f / 60.0f;
         for (int i = 0; i < 30; ++i) {
@@ -12853,10 +12892,12 @@ int main(int argc, char** argv) {
     bool  prevCamValid = false;
 
     // ---- Audio settings (persisted): seed the live music/SFX state from the cfg
-    // (defaults: music on, music vol 0.25 to match the launch bed, SFX 1.0), apply
-    // it to the audio system, THEN start the bed so it honors the saved volume/on. ----
+    // (playtest fix: DEFAULT music vol 0 -> MUTED on boot; SFX stays 1.0). Still
+    // fully adjustable: readAudioSettings() below overrides from the saved cfg, and
+    // the in-game Music Volume slider / setMusicVolume() raise it live. Applied to
+    // the audio system, THEN the bed starts so it honors the saved volume/on. ----
     bool  s_musicOn  = true;
-    float s_musicVol = 0.25f;
+    float s_musicVol = 0.0f;     // muted by default (was 0.25) — raise via the slider/cfg
     float s_sfxVol   = 1.0f;
     readAudioSettings(s_musicOn, s_musicVol, s_sfxVol);
     audio->setMasterSfxVolume(s_sfxVol);
@@ -14662,12 +14703,25 @@ int main(int argc, char** argv) {
                         if (ex*ex + ez*ez < 16.0f)
                             floatPrompt(x3::phys::Vec3{ cc.x, cc.y + 1.6f, cc.z }, "[E] Call Elevator", 84.0f);
                     }
-                    // Cell HoloTerminal: within ~3 m of its anchor.
+                    // Cell HoloTerminal: within ~3 m of its anchor. Playtest fix:
+                    // render as a subtle BOTTOM-CENTER HUD hint (not a world-space
+                    // float over the panel) and DROP the "(code 1278)" spoiler — the
+                    // player should discover the code, not have it handed to them.
                     if (game.secret().terminal().built()) {
                         const x3::phys::Vec3 a = game.secret().terminal().anchor();
                         const float dx = pex - a.x, dz = pez - a.z;
-                        if (dx*dx + dz*dz < 9.0f)
-                            floatPrompt(x3::phys::Vec3{ a.x, a.y + 0.55f, a.z }, "[E] Use Terminal (code 1278)", 110.0f);
+                        if (dx*dx + dz*dz < 9.0f) {
+                            uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                            const char* hint = "[E] Use Terminal";
+                            const float hsz = 18.0f;
+                            const float adv = device->textAdvance(x3::rhi::FontRole::Menu, hint, hsz);
+                            const float hx = ((hw > 0) ? hw * 0.5f : 640.0f) - adv * 0.5f;
+                            const float hy = (hh > 0) ? hh * 0.88f : 520.0f;   // bottom-center
+                            const float col[4]    = { 0.66f, 0.92f, 1.0f, 0.85f };
+                            const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
+                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, hint, hx + 1.5f, hy + 1.5f, hsz, shadow);
+                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, hint, hx, hy, hsz, col);
+                        }
                     }
                 }
                 // ---- RESCUED-NPC TALK: floating "[E] Talk" prompt + the dialog box.

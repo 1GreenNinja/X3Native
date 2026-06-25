@@ -29,6 +29,13 @@ enum class CueKind : uint32_t {
     Footstep    = 0,   // a locomotion phase crossing (foot plant) — pos = the foot/body
     BulletImpact= 1,   // a shot connected with an enemy/surface — pos = the hit point
     MeleeImpact = 2,   // a melee blow landed — pos = the hit point
+    // ---- Enemy VOCALIZATIONS (enemy-SFX pass). Emitted by MonsterSystem so the host
+    // can give enemies a voice (the playtest "enemies make NO sounds" fix). All new
+    // kinds APPEND here (stable values); a host that doesn't map them is unaffected.
+    EnemyTaunt  = 3,   // periodic idle/harass vocalization (alive, engaged) — pos = enemy
+    EnemyAttack = 4,   // an attack swing/shot STARTS (the wind-up) — pos = enemy muzzle
+    EnemyHit    = 5,   // the enemy TOOK damage (shot/melee) — pos = enemy body
+    EnemyDeath  = 6,   // the enemy was KILLED (HP -> 0) — pos = enemy body
 };
 
 // One emitted cue. Pure data: what + where (+ a 0..1 intensity the host may map

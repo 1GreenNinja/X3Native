@@ -484,14 +484,19 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.name        = "lightning";
         w.kind        = FireKind::Hitscan;   // instant-hit beam = hitscan path
         w.automatic   = true;                // held = continuous beam
-        w.damage      = 10;                  // per beam tick / per chained target
-        w.fireRate    = 16.0f;               // "continuous" — many ticks/s
+        // Playtest tune: the beam fired too FAST and drained its cell too quickly.
+        // Halve the tick rate (16 -> 8/s: still a continuous crackle, not a strobe)
+        // and bump per-tick damage 10 -> 14 so single-target DPS stays ~similar
+        // (~112 vs ~160) while feeling controllable. Triple the charge pool
+        // (mag 80 -> 200, reserve 240 -> 600) so it no longer empties in ~5 s.
+        w.damage      = 14;                  // per beam tick / per chained target (was 10)
+        w.fireRate    = 8.0f;                // continuous but controllable (was 16)
         w.pellets     = 1;                   // 1 primary; chains add rays
         w.spreadDeg   = 0.0f;                // a beam is dead-accurate
         w.recoilDeg   = 0.15f;               // almost none (steady beam)
         w.range       = 28.0f;               // SHORT range
-        w.magSize     = 80;                  // a "cell" of charge
-        w.reserveAmmo = 240;
+        w.magSize     = 200;                 // a deeper "cell" of charge (was 80)
+        w.reserveAmmo = 600;                 // (was 240) — drains far slower
         w.reloadTime  = 2.4f;
         w.beam        = true;                // render as a solid beam (host hint)
         w.chainTargets= 2;                   // primary + 2 chains = 3 targets

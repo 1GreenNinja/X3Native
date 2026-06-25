@@ -130,6 +130,11 @@ public:
     // Enemy death: a burst of debris chunks (alpha, gravity) + a lingering smoke
     // puff so the kill reads on screen.
     void spawnDeath(const x3::phys::Vec3& pos);
+    // EXPLOSION fireball (playtest "barrels look like red boxes" fix): a bright
+    // ADDITIVE orange/yellow fireball burst + dark smoke at `center`, sized by
+    // `radius`. Hot additive cores feed bloom so a shot barrel reads as a violent
+    // fireball, not just scattered red chunks. Used by the barrel FX sink.
+    void spawnExplosion(const x3::phys::Vec3& center, float radius);
     // Lingering smoke puff (alpha, slow rise) — used by death + as a generic cue.
     void spawnSmoke(const x3::phys::Vec3& pos);
     // Drop a scorch decal directly (bullet-hole / impact mark) at a hit point+normal.
@@ -170,6 +175,18 @@ private:
     void drawBeam(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                   const x3::phys::Vec3& a, const x3::phys::Vec3& b,
                   float thickness, const float color[4]) const;
+
+    // Draw a tracer as a thin CAMERA-FACING ribbon (billboard quad) from a->b
+    // (playtest "chaingun fires a square rod" fix). The quad's WIDTH axis is
+    // perpendicular to BOTH the segment direction and the eye->segment view
+    // direction, so it always faces the camera and reads as a flat bright streak
+    // rather than drawBeam's world-fixed square cross-section box. `width` is the
+    // full ribbon width; the depth axis is collapsed flat. Falls back to a thin
+    // beam when the segment points straight at the eye (degenerate width axis).
+    void drawTracerBillboard(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                             const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                             const x3::phys::Vec3& eye, float width,
+                             const float color[4]) const;
 
     // Draw a JAGGED lightning bolt a->b: subdivide into segments with random
     // perpendicular offsets (re-rolled per call so it crackles), each drawn via
