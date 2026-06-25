@@ -4,6 +4,7 @@
 // IPhysicsWorld interfaces and the mesh_prims box builder only. The JSON is the
 // owner's own LevelArchitect export. No purchased C#/id Tech engine source consulted.
 #include "level_loader.h"
+#include "keypad.h"        // realistic high-poly access keypad at locked secured-room doors
 #include "mesh_prims.h"
 #include "asset_root.h"
 
@@ -1455,11 +1456,34 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
                     const uint32_t ent = opts.doors->at(di).entity;
                     if (ent != kNoLink && ent < scene.size())
                         scene.get(ent).roomId = kNoRoom; // always-visible (seen from the approach side)
+
+                    // ---- REALISTIC KEYPAD beside the locked door (Tim's ask). A high-poly
+                    // wall access terminal mounted ~0.9 m to the side of the opening on the
+                    // APPROACH-side wall, at eye-reachable height, facing the corridor. Red
+                    // screen = locked. (The existing door-code state machine drives the
+                    // actual unlock; this is the realistic physical anchor for it.) ----
+                    const float kpY = dw.cy + 1.40f;         // reachable mount height
+                    const float kpOff = kDoorHalf + 0.55f;   // step to the side of the opening
+                    if (dw.axis == 0) {                       // door on an X-plane wall (thin in X) — keypad on +Z/-Z side
+                        const float wallX = (o.cx > r.cx) ? r.x1() : r.x0();
+                        // Face the approach room (`other` side): normal points away from the secured room.
+                        const KeypadFacing face = (o.cx > r.cx) ? KeypadFacing::PlusX : KeypadFacing::MinusX;
+                        const float nx = (o.cx > r.cx) ? +0.06f : -0.06f;   // stand proud toward the approach
+                        buildKeypad(scene, device, wallX + nx, kpY, dw.cz + kpOff, face,
+                                    KeypadStatus::Locked, kNoRoom);
+                    } else {                                  // door on a Z-plane wall (thin in Z)
+                        const float wallZ = (o.cz > r.cz) ? r.z1() : r.z0();
+                        const KeypadFacing face = (o.cz > r.cz) ? KeypadFacing::PlusZ : KeypadFacing::MinusZ;
+                        const float nz = (o.cz > r.cz) ? +0.06f : -0.06f;
+                        buildKeypad(scene, device, dw.cx + kpOff, kpY, wallZ + nz, face,
+                                    KeypadStatus::Locked, kNoRoom);
+                    }
                     ++nSec;
                 }
             }
             x3::logInfo("buildCanonFloor: locked " + std::to_string(nSec) +
-                        " secured-room doors (Security=card|1701, Medical=2480, Armory=card+8896)");
+                        " secured-room doors + placed a realistic high-poly keypad at each "
+                        "(Security=card|1701, Medical=2480, Armory=card+8896)");
         }
     }
 

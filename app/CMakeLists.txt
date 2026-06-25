@@ -7,6 +7,7 @@ add_executable(X3Engine WIN32
     leveldoc_world.cpp
     player.cpp
     door.cpp
+    keypad.cpp
     physprops.cpp
     ragdoll.cpp
     barrels.cpp

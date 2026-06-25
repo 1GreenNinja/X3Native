@@ -45,6 +45,7 @@
 #include "monster.h"
 #include "level1_game.h"
 #include "canon_play.h"                     // --world canonlevel gameplay (sidearm + animated enemies + Martinez + girls)
+#include "keypad.h"                         // realistic high-poly access keypad (--test-keypad)
 #include "intro_coldopen.h"                  // --world intro / default lead-in cold-open (shot-down -> captured)
 #include "cutscene.h"                        // x3.cutscene/1 data-driven cutscene system (the COLD OPEN film)
 #include "npc_dialog.h"                     // rescued-NPC talk/dialog -> companion (the captive girl)
@@ -2431,7 +2432,7 @@ int main(int argc, char** argv) {
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
-         testDeathRagdoll = false, testCanonLevel = false, testBuilding = false, testCanonPlay = false,
+         testDeathRagdoll = false, testCanonLevel = false, testBuilding = false, testKeypad = false, testCanonPlay = false,
          testThirdPerson = false, testHatchCode = false,
          // --test-hatch: END-TO-END secret-hatch chain (terminal_code fire ->
          // boot-loaded secret_room.lua -> registerGameBindings openTrapdoor ->
@@ -3002,6 +3003,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-level1") testLevel1 = true;
         else if (a == "--test-canonlevel") testCanonLevel = true;
         else if (a == "--test-building") testBuilding = true;
+        else if (a == "--test-keypad") testKeypad = true;
         else if (a == "--test-canonplay") testCanonPlay = true;
         else if (a == "--test-phase2a") testPhase2a = true;
         else if (a == "--test-phase2b") testPhase2b = true;
@@ -3455,6 +3457,10 @@ int main(int argc, char** argv) {
     if (testBuilding) {
         x3::logInfo("running EFLZ whole-building (7-floor) loader self-test (B1-B7)...");
         return x3::game::runCanonBuildingSelfTest() ? 0 : 1;
+    }
+    if (testKeypad) {
+        x3::logInfo("running realistic keypad geometry self-test (KP1-KP6)...");
+        return x3::game::runKeypadSelfTest() ? 0 : 1;
     }
     if (testCanonPlay) {
         x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");
