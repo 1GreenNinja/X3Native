@@ -2431,7 +2431,7 @@ int main(int argc, char** argv) {
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
-         testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
+         testDeathRagdoll = false, testCanonLevel = false, testBuilding = false, testCanonPlay = false,
          testThirdPerson = false, testHatchCode = false,
          // --test-hatch: END-TO-END secret-hatch chain (terminal_code fire ->
          // boot-loaded secret_room.lua -> registerGameBindings openTrapdoor ->
@@ -3001,6 +3001,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-acoustics") testAcoustics = true;
         else if (a == "--test-level1") testLevel1 = true;
         else if (a == "--test-canonlevel") testCanonLevel = true;
+        else if (a == "--test-building") testBuilding = true;
         else if (a == "--test-canonplay") testCanonPlay = true;
         else if (a == "--test-phase2a") testPhase2a = true;
         else if (a == "--test-phase2b") testPhase2b = true;
@@ -3450,6 +3451,10 @@ int main(int argc, char** argv) {
     if (testCanonLevel) {
         x3::logInfo("running EFLZ data-driven canonical-level self-test (C1-C8)...");
         return x3::game::runCanonLevelSelfTest() ? 0 : 1;
+    }
+    if (testBuilding) {
+        x3::logInfo("running EFLZ whole-building (7-floor) loader self-test (B1-B7)...");
+        return x3::game::runCanonBuildingSelfTest() ? 0 : 1;
     }
     if (testCanonPlay) {
         x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");
@@ -10789,8 +10794,14 @@ int main(int argc, char** argv) {
     x3::asset::joinModelPreload();
     x3::boot::mark("GLB preload joined");
     if (canonWorld) {
-        // ---- DATA-DRIVEN CANONICAL FLOOR 1 + per-room PVS cull. ----
-        canonFloor = x3::game::loadCanonFloor(x3::game::canonProjectJsonPath(), 1);
+        // ---- DATA-DRIVEN CANONICAL FACILITY + per-room PVS cull. Load the WHOLE BUILDING
+        // (all 7 stacked floors fused into one CanonFloor, connected by the synthesized
+        // elevator shaft) so the player can ride/climb the tower; Floor 1's rooms come
+        // FIRST (ids 0..52) so every name-based hook (beats, keycard, gameplay spawns)
+        // still resolves to the detention level. --world canonfloor1 keeps the old
+        // single-floor build for A/B + the geometry self-test. ----
+        std::vector<uint32_t> canonFloorBase;
+        canonFloor = x3::game::loadCanonBuilding(x3::game::canonProjectJsonPath(), 7, &canonFloorBase);
         if (canonFloor.valid()) {
             x3::game::CanonBuildOpts copts; copts.doors = &canonDoors; copts.lockSecuredRooms = true;
             x3::game::buildCanonFloor(canonFloor, scene, *device, *physics, copts);
@@ -10800,10 +10811,11 @@ int main(int argc, char** argv) {
             // ambient + the flashlight (the DARK bug). We feed only the player's VISIBLE
             // rooms' lights each frame (below) so the active count stays under the cap.
             canonLights = x3::game::buildCanonLights(canonFloor);
-            x3::logInfo("--world canonlevel: built canonical Floor 1 (" +
+            x3::logInfo("--world canonlevel: built CANONICAL FACILITY (" +
+                        std::to_string(canonFloorBase.size()) + " floors, " +
                         std::to_string(canonFloor.rooms.size()) + " rooms, " +
                         std::to_string(scene.size()) + " entities, " +
-                        std::to_string(canonLights.size()) + " room lights); per-room PVS cull ACTIVE");
+                        std::to_string(canonLights.size()) + " room lights); elevator shaft connects the floors; per-room PVS cull ACTIVE");
             // (Secured-room doors — Security / Medical / Armory — are built + locked INSIDE
             // buildCanonFloor via copts.lockSecuredRooms above: those rooms reach the hall
             // through open gap-bridges, so a slab has to be placed there before it can be locked.)
