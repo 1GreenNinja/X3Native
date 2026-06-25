@@ -159,8 +159,11 @@ bool ElevatorShowcase::build(Scene& scene, x3::rhi::IRenderDevice& device,
 
     // ---- Interior + accent point lights (host pushes these each frame) ----
     m_lights.clear();
-    { x3::rhi::PointLight ceil; ceil.color[0]=0.85f; ceil.color[1]=0.80f; ceil.color[2]=0.70f; ceil.range=10.0f; m_lights.push_back(ceil); } // warm key
-    { x3::rhi::PointLight holo; holo.color[0]=0.10f; holo.color[1]=0.55f; holo.color[2]=0.80f; holo.range=6.0f;  m_lights.push_back(holo); }  // holo cyan glow
+    // Warm KEY light — intensity baked into the color magnitude (PointLight.color =
+    // linear RGB * intensity). Bright enough to lift the dark-glass cab interior so
+    // the smoked walls read rich (not black) + the accent strips/holo pop against it.
+    { x3::rhi::PointLight ceil; ceil.color[0]=3.4f; ceil.color[1]=3.0f; ceil.color[2]=2.4f; ceil.range=8.0f; m_lights.push_back(ceil); } // warm key
+    { x3::rhi::PointLight holo; holo.color[0]=0.6f; holo.color[1]=2.2f; holo.color[2]=3.2f; holo.range=5.0f;  m_lights.push_back(holo); }  // holo cyan glow
     // 4 disco spots (off until 1127); placed in layoutCab().
     for (int i = 0; i < 4; ++i) { x3::rhi::PointLight l; l.color[0]=l.color[1]=l.color[2]=0.0f; l.range=7.0f; m_lights.push_back(l); }
 
@@ -600,9 +603,14 @@ void ElevatorShowcase::showcaseCamera(int variant, float out[5]) const {
         out[0] = m_shaftX - 0.4f; out[1] = floorY + 1.3f; out[2] = m_shaftZ + 0.3f;
         out[3] = 0.6f; out[4] = -0.65f;
     } else {
-        // Interior beauty: in the cab, facing the holo panel + dark glass + screen.
-        out[0] = m_shaftX - 0.7f; out[1] = floorY + 1.55f; out[2] = m_shaftZ + 0.9f;
-        out[3] = -0.55f; out[4] = -0.08f;
+        // Interior beauty: stand in a back corner of the cab looking across the dark-
+        // glass interior toward the +X holo wall + accent strips (eye height, slight
+        // downward so the glass floor + strata read at the bottom of frame).
+        out[0] = m_shaftX - m_cabHX + 0.35f;
+        out[1] = floorY + 1.60f;
+        out[2] = m_shaftZ - m_cabHZ + 0.35f;
+        out[3] = 0.55f;          // yaw toward +X / +Z (the holo + screen corner)
+        out[4] = -0.12f;
     }
 }
 
