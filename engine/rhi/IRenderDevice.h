@@ -230,9 +230,11 @@ public:
         // r_lensflare 0 skips the whole pass -> the composite guards the sample so
         // the render is byte-identical to the no-flare build.
         bool  lensFlare          = true;   // r_lensflare: on/off
-        float lensFlareIntensity = 0.5f;   // r_lensflare_intensity: restrained default
-        float lensFlareStreak    = 0.6f;   // r_lensflare_streak: anamorphic streak strength
-        int   lensFlareGhosts    = 5;      // r_lensflare_ghosts: ghost-chain count (1..8)
+        // COMPOSITE-INTRO TUNING: restrained so the flare composes WITH god-rays as a
+        // tasteful accent in the emissive-dense cold open (0.5 sprayed ghosts -> parody).
+        float lensFlareIntensity = 0.18f;  // r_lensflare_intensity: restrained cinematic default
+        float lensFlareStreak    = 0.3f;   // r_lensflare_streak: anamorphic streak strength
+        int   lensFlareGhosts    = 3;      // r_lensflare_ghosts: ghost-chain count (1..8)
     };
     virtual void setPostFX(const PostFXParams&) {}
 

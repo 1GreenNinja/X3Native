@@ -1224,10 +1224,15 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     // flare, generated after bloom and composited BEFORE tonemap (ACES rolls it off).
     // Restrained defaults; the intensity cvar can push it for the intro. r_lensflare 0
     // skips the whole pass -> byte-identical to the no-flare build.
-    console.registerCVar("r_lensflare",           "1",   "lens flare + anamorphic streak: 1 = on (default), 0 = off (byte-identical no-flare path)");
-    console.registerCVar("r_lensflare_intensity", "0.5", "lens flare overall gain (restrained; push for the intro)");
-    console.registerCVar("r_lensflare_streak",    "0.6", "anamorphic horizontal streak strength (the blue light-streak)");
-    console.registerCVar("r_lensflare_ghosts",    "5",   "lens-ghost chain count (1..8)");
+    console.registerCVar("r_lensflare",           "1",    "lens flare + anamorphic streak: 1 = on (default), 0 = off (byte-identical no-flare path)");
+    // COMPOSITE-INTRO TUNING: the cold open is DENSE with emissives (station windows,
+    // engine/charge glows, bolts) and the flare keys off the whole bloom bright-pass,
+    // so the lens-branch's isolated 0.5 default sprayed ghosts/streaks everywhere
+    // (parody). Dialed to a restrained gain that composes WITH god-rays as a tasteful
+    // Abrams accent instead of overwhelming the frame; push per-shot for a lone sun.
+    console.registerCVar("r_lensflare_intensity", "0.18", "lens flare overall gain (restrained cinematic default; push for a lone-sun beat)");
+    console.registerCVar("r_lensflare_streak",    "0.3",  "anamorphic horizontal streak strength (the blue light-streak)");
+    console.registerCVar("r_lensflare_ghosts",    "3",    "lens-ghost chain count (1..8)");
     // Metal ambient-specular floor (mesh.frag IBL path): metals in a DARK baked
     // environment keep an F0-tinted ambient response instead of rendering black.
     // 1 = on (default), 0 = off, >1 strengthens. Live (synced in applyRtaoCVars).
