@@ -1275,10 +1275,15 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
                      kShaftHoleHalf, kShaftHoleHalf);
 
         // 4 walls with doorway gaps where the resolver produced them.
-        buildWallZWithGaps(ri, r.x0(), r.z0(), r.z1(), floorY, h, gapXneg[ri], wTex, tint);   // -X wall (runs in Z)
-        buildWallZWithGaps(ri, r.x1(), r.z0(), r.z1(), floorY, h, gapXpos[ri], wTex, tint);   // +X wall
-        buildWallXWithGaps(ri, r.z0(), r.x0(), r.x1(), floorY, h, gapZneg[ri], wTex, tint);   // -Z wall (runs in X)
-        buildWallXWithGaps(ri, r.z1(), r.x0(), r.x1(), floorY, h, gapZpos[ri], wTex, tint);   // +Z wall
+        // Apply the coplanar-wall DEDUP (kills z-fighting at shared room boundaries): a
+        // face flagged in skipFace is fully covered by the doored neighbour's wall on the
+        // SAME plane, so the neighbour (the "owner") builds it for both rooms — this room
+        // skips it (no coincident opaque box, no flicker; the owner still renders + collides
+        // from both sides because it's in this room's PVS).
+        if (!skipFace[ri * 4 + 0]) buildWallZWithGaps(ri, r.x0(), r.z0(), r.z1(), floorY, h, gapXneg[ri], wTex, tint);   // -X wall (runs in Z)
+        if (!skipFace[ri * 4 + 1]) buildWallZWithGaps(ri, r.x1(), r.z0(), r.z1(), floorY, h, gapXpos[ri], wTex, tint);   // +X wall
+        if (!skipFace[ri * 4 + 2]) buildWallXWithGaps(ri, r.z0(), r.x0(), r.x1(), floorY, h, gapZneg[ri], wTex, tint);   // -Z wall (runs in X)
+        if (!skipFace[ri * 4 + 3]) buildWallXWithGaps(ri, r.z1(), r.x0(), r.x1(), floorY, h, gapZpos[ri], wTex, tint);   // +Z wall
     }
 
     // ---- THRESHOLD RAMPS at doored/adjacent/overlap openings with a FLOOR-HEIGHT
