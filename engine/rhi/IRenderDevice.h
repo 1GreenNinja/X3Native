@@ -224,6 +224,15 @@ public:
         float godraysDensity  = 0.6f;  // r_godrays_density: march step-length scale
         float godraysDecay    = 0.96f; // r_godrays_decay:   per-step attenuation
         float godraysWeight   = 0.35f; // r_godrays_weight:  per-sample contribution
+        // ---- Lens flare + anamorphic streak (Abrams/SFC cinematic look) ----
+        // Generated after bloom (reusing the bright-pass mip0) and composited into
+        // the linear HDR scene BEFORE tonemap (ACES rolls the added radiance off).
+        // r_lensflare 0 skips the whole pass -> the composite guards the sample so
+        // the render is byte-identical to the no-flare build.
+        bool  lensFlare          = true;   // r_lensflare: on/off
+        float lensFlareIntensity = 0.5f;   // r_lensflare_intensity: restrained default
+        float lensFlareStreak    = 0.6f;   // r_lensflare_streak: anamorphic streak strength
+        int   lensFlareGhosts    = 5;      // r_lensflare_ghosts: ghost-chain count (1..8)
     };
     virtual void setPostFX(const PostFXParams&) {}
 

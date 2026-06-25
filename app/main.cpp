@@ -1219,6 +1219,15 @@ void registerViewmodelCVars(x3::con::IConsole& console) {
     console.registerCVar("r_godrays_density", "0.6",  "god-rays march step-length scale toward the sun (~0.4..1.0)");
     console.registerCVar("r_godrays_decay",   "0.96", "god-rays per-step attenuation (~0.92..0.99; higher = longer shafts)");
     console.registerCVar("r_godrays_weight",  "0.35", "god-rays per-sample contribution weight");
+    // Lens flare + anamorphic streak (Abrams/Star-Trek-Fleet-Command cinematic look):
+    // procedural ghosts/halo + a blue horizontal streak + an occlusion-tested SUN
+    // flare, generated after bloom and composited BEFORE tonemap (ACES rolls it off).
+    // Restrained defaults; the intensity cvar can push it for the intro. r_lensflare 0
+    // skips the whole pass -> byte-identical to the no-flare build.
+    console.registerCVar("r_lensflare",           "1",   "lens flare + anamorphic streak: 1 = on (default), 0 = off (byte-identical no-flare path)");
+    console.registerCVar("r_lensflare_intensity", "0.5", "lens flare overall gain (restrained; push for the intro)");
+    console.registerCVar("r_lensflare_streak",    "0.6", "anamorphic horizontal streak strength (the blue light-streak)");
+    console.registerCVar("r_lensflare_ghosts",    "5",   "lens-ghost chain count (1..8)");
     // Metal ambient-specular floor (mesh.frag IBL path): metals in a DARK baked
     // environment keep an F0-tinted ambient response instead of rendering black.
     // 1 = on (default), 0 = off, >1 strengthens. Live (synced in applyRtaoCVars).
@@ -1349,6 +1358,11 @@ void applyRtaoCVars(const x3::con::IConsole& console, x3::rhi::IRenderDevice& de
     // TAA (live): r_taa gates the jitter + resolve; r_taasharpen [0..1].
     px.taa        = console.getInt("r_taa") != 0;
     px.taaSharpen = console.getFloat("r_taasharpen");
+    // Lens flare (live): r_lensflare gates the whole pass; the rest tune it.
+    px.lensFlare          = console.getInt("r_lensflare") != 0;
+    px.lensFlareIntensity = console.getFloat("r_lensflare_intensity");
+    px.lensFlareStreak    = console.getFloat("r_lensflare_streak");
+    px.lensFlareGhosts    = console.getInt("r_lensflare_ghosts");
     if (px.taaSharpen < 0.0f) px.taaSharpen = 0.0f;
     if (px.taaSharpen > 1.0f) px.taaSharpen = 1.0f;
     // God-rays (live): r_godrays gates the shaft pass + composite add.
@@ -2706,6 +2720,10 @@ int main(int argc, char** argv) {
     // and the composite add forced off) so before/after captures isolate exactly
     // the god-rays contribution AND the off path is byte-identical to the base.
     bool        noGodrays = false;
+    // --nolensflare A/B: disable lens flare + anamorphic streak only (the lens pass
+    // is skipped and the composite add forced off) so before/after captures isolate
+    // exactly the flare contribution AND the off path is byte-identical to the base.
+    bool        noLensflare = false;
     // Showroom preview (--screenshot-showroom [path.png]): load the baked Unity scene
     // export (assets/converted_glb/ShowRoom_Vol30/Example_01.glb), frame the camera on
     // the building cluster, capture a PBR-shaded PNG. Headless, like --screenshot.
@@ -2996,6 +3014,7 @@ int main(int argc, char** argv) {
         else if (a == "--legacypost2") legacyPost = 2;   // A/B: + bloom OFF + tonemap passthrough
         else if (a == "--notaa")       noTaa = true;     // A/B: TAA off (jitter + resolve disabled)
         else if (a == "--nogodrays")   noGodrays = true; // A/B: god-rays off (byte-identical base)
+        else if (a == "--nolensflare") noLensflare = true; // A/B: lens-flare off (byte-identical base)
         else if (a == "--norefl")      noRefl = true;    // A/B: reflections off (TAA stays on)
         else if (a == "--test-rt") { smoketest = true; testRt = true; }
         else if (a == "--test-reflections") { smoketest = true; testReflections = true; }
@@ -4177,27 +4196,57 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // --legacypost: A/B switch — disable the post-stack additions (auto-exposure +
-    // TAA; and with --legacypost2 also bloom + ACES->passthrough) so any path,
-    // headless screenshots included, can be compared against the pre-post-stack
-    // renderer. --notaa: disable ONLY TAA (jitter fully off + resolve skipped) so
-    // before/after captures isolate the TAA contribution. Both also pin the cvars
-    // so the interactive per-frame cvar sync doesn't re-enable the feature.
-    if (legacyPost || noTaa || noGodrays) {
-        x3::rhi::IRenderDevice::PostFXParams px{};
+    // Headless stills run BEFORE the console exists, so the per-frame cvar->device
+    // sync never fires for them. Apply the post `--set` overrides + A/B flags to the
+    // device's PostFX HERE so the proofs (flare/god-rays on/off, md5) work in any
+    // screenshot path (showroom, cutscene, exterior, ...). Live (windowed) runs
+    // re-apply these every frame from the console; this is just the still baseline.
+    // Build the headless PostFX baseline ONCE from engine defaults + any `--set`
+    // cvar overrides + the A/B flags (--legacypost / --notaa / --nogodrays /
+    // --nolensflare). Composite-intro effects (lens-flare + god-rays) BOTH live in
+    // the same struct, so they're applied together here — the cvar overrides honor
+    // both effects' families and the flags force each off independently. Setting
+    // once (instead of two fighting blocks) means `--set r_lensflare=0 --nogodrays`
+    // turns BOTH off without one re-enabling the other.
+    if (headless && (!cliCVars.empty() || legacyPost || noTaa || noGodrays || noLensflare)) {
+        x3::rhi::IRenderDevice::PostFXParams px{};   // engine defaults (both effects on)
+        for (const auto& kv : cliCVars) {
+            const std::string& k = kv.first; const std::string& v = kv.second;
+            if      (k == "r_lensflare")           px.lensFlare          = std::atoi(v.c_str()) != 0;
+            else if (k == "r_lensflare_intensity") px.lensFlareIntensity = (float)std::atof(v.c_str());
+            else if (k == "r_lensflare_streak")    px.lensFlareStreak    = (float)std::atof(v.c_str());
+            else if (k == "r_lensflare_ghosts")    px.lensFlareGhosts    = std::atoi(v.c_str());
+            else if (k == "r_godrays")             px.godrays            = std::atoi(v.c_str()) != 0;
+            else if (k == "r_godrays_intensity")   px.godraysIntensity   = (float)std::atof(v.c_str());
+            else if (k == "r_godrays_density")     px.godraysDensity     = (float)std::atof(v.c_str());
+            else if (k == "r_godrays_decay")       px.godraysDecay       = (float)std::atof(v.c_str());
+            else if (k == "r_godrays_weight")      px.godraysWeight      = (float)std::atof(v.c_str());
+            else if (k == "r_bloom")               px.bloomEnabled       = std::atoi(v.c_str()) != 0;
+            else if (k == "r_bloomintensity")      px.bloomIntensity     = (float)std::atof(v.c_str());
+            else if (k == "r_bloomthreshold")      px.bloomThreshold     = (float)std::atof(v.c_str());
+            else if (k == "r_tonemap")             px.tonemapMode        = std::atoi(v.c_str());
+            else if (k == "r_taa")                 px.taa                = std::atoi(v.c_str()) != 0;
+        }
+        // A/B flags last so they always win over a `--set` that left the effect on.
+        // --legacypost: disable post-stack additions (auto-exposure + TAA; with
+        // --legacypost2 also bloom + ACES->passthrough). --notaa: TAA only off.
+        // --nogodrays / --nolensflare: the named effect off (byte-identical base).
         if (legacyPost) {
             px.autoExposure = false;             // legacy = no eye adaptation
             px.taa = false;                      // legacy = no TAA jitter/resolve
             if (legacyPost > 1) { px.bloomEnabled = false; px.tonemapMode = 0; }
         }
-        if (noTaa) px.taa = false;
-        if (noGodrays) px.godrays = false;       // A/B: god-rays off (byte-identical base)
+        if (noTaa)       px.taa       = false;
+        if (noGodrays)   px.godrays   = false;   // A/B: god-rays off (byte-identical base)
+        if (noLensflare) px.lensFlare = false;   // A/B: lens-flare off (byte-identical base)
         device->setPostFX(px);
-        // Reflections ride the TAA history, so TAA-off already disables them in
-        // the device; push an explicit OFF too so the A/B state is unambiguous.
-        device->setReflectionParams(x3::rhi::IRenderDevice::ReflectionParams{});
-        // (The interactive path additionally pins the matching cvars right after
-        // the console exists, so the per-frame cvar sync can't re-enable these.)
+        if (legacyPost || noTaa) {
+            // Reflections ride the TAA history, so TAA-off already disables them in
+            // the device; push an explicit OFF too so the A/B state is unambiguous.
+            device->setReflectionParams(x3::rhi::IRenderDevice::ReflectionParams{});
+            // (The interactive path additionally pins the matching cvars right after
+            // the console exists, so the per-frame cvar sync can't re-enable these.)
+        }
     }
     // --norefl: A/B switch — reflections OFF with TAA (and everything else) left
     // at defaults, so before/after captures isolate exactly the SSR/RT-reflection
@@ -5694,6 +5743,9 @@ int main(int argc, char** argv) {
         cin.load(*device, cs);
         device->endUploadBatch();
         cin.applyLook(*device);
+        // (Lens-flare/post `--set` overrides were applied to the device PostFX right
+        // after device init — see the headless cliCVars block — so this still path
+        // honors r_lensflare on/off for the A/B proof + md5 without re-applying.)
 
         x3::cut::CutscenePlayer player(cs);
         player.onEvent([&](const x3::cut::Event& e, bool) { cin.onEvent(e.name, cs, e.t); });
