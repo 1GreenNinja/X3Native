@@ -171,6 +171,18 @@ private:
                   const x3::phys::Vec3& a, const x3::phys::Vec3& b,
                   float thickness, const float color[4]) const;
 
+    // Draw a tracer as a thin CAMERA-FACING ribbon (billboard quad) from a->b
+    // (playtest "chaingun fires a square rod" fix). The quad's WIDTH axis is
+    // perpendicular to BOTH the segment direction and the eye->segment view
+    // direction, so it always faces the camera and reads as a flat bright streak
+    // rather than drawBeam's world-fixed square cross-section box. `width` is the
+    // full ribbon width; the depth axis is collapsed flat. Falls back to a thin
+    // beam when the segment points straight at the eye (degenerate width axis).
+    void drawTracerBillboard(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                             const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                             const x3::phys::Vec3& eye, float width,
+                             const float color[4]) const;
+
     // Draw a JAGGED lightning bolt a->b: subdivide into segments with random
     // perpendicular offsets (re-rolled per call so it crackles), each drawn via
     // drawBeam. The last vertex lands exactly on `b` (the hit point).

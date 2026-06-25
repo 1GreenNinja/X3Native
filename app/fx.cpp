@@ -475,6 +475,47 @@ void CombatFx::drawBeam(x3::rhi::IRenderDevice& device, const x3::rhi::FrameCont
 }
 
 // ---------------------------------------------------------------------------
+// drawTracerBillboard: a thin CAMERA-FACING ribbon a->b (playtest "chaingun
+// fires a square rod" fix). The width axis = normalize(cross(dir, view)) so the
+// flat side always faces the eye; the depth axis is collapsed to a sliver so it
+// reads as a streak, not a box. Degenerate (segment ~parallel to the view) ->
+// thin beam fallback so a head-on tracer still draws.
+// ---------------------------------------------------------------------------
+void CombatFx::drawTracerBillboard(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                                   const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                                   const x3::phys::Vec3& eye, float width,
+                                   const float color[4]) const {
+    if (!m_box.valid()) return;
+    x3::phys::Vec3 seg{ b.x - a.x, b.y - a.y, b.z - a.z };
+    float len = std::sqrt(seg.x * seg.x + seg.y * seg.y + seg.z * seg.z);
+    if (len < 1e-5f) return;
+    x3::phys::Vec3 dir = normalize(seg);
+
+    // View direction from the eye to the segment midpoint.
+    x3::phys::Vec3 mid{ (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f, (a.z + b.z) * 0.5f };
+    x3::phys::Vec3 view{ mid.x - eye.x, mid.y - eye.y, mid.z - eye.z };
+    float vl = std::sqrt(view.x * view.x + view.y * view.y + view.z * view.z);
+    if (vl < 1e-5f) { drawBeam(device, frame, a, b, width * 0.5f, color); return; }
+    view = x3::phys::Vec3{ view.x / vl, view.y / vl, view.z / vl };
+
+    // Ribbon WIDTH axis = perpendicular to both the segment and the view dir. When
+    // the segment points nearly along the view (head-on), this cross product is
+    // tiny -> a thin beam reads fine there, so fall back.
+    x3::phys::Vec3 w = cross(dir, view);
+    float wl = std::sqrt(w.x * w.x + w.y * w.y + w.z * w.z);
+    if (wl < 1e-3f) { drawBeam(device, frame, a, b, width * 0.5f, color); return; }
+    w = x3::phys::Vec3{ w.x / wl, w.y / wl, w.z / wl };
+    // Thin axis = face normal toward the eye (so the flat quad faces the camera).
+    x3::phys::Vec3 nrm = cross(w, dir);
+
+    // Unit box (half-extent 0.5): WIDTH across `w`, a sliver of depth along `nrm`,
+    // full `len` along the segment. width is the full ribbon width.
+    float model[16];
+    composeTRS3(model, w, nrm, dir, width, width * 0.06f, len, mid);
+    device.drawMesh(frame, m_box, x3::rhi::TextureHandle{}, color, model);
+}
+
+// ---------------------------------------------------------------------------
 // drawLightningBolt: a jagged a->b arc. Subdivide into kBoltSegs segments,
 // offset each interior vertex perpendicular to the path by a random amount
 // (re-rolled every call so the bolt crackles), draw each segment as a thin
@@ -518,7 +559,7 @@ void CombatFx::drawLightningBolt(x3::rhi::IRenderDevice& device, const x3::rhi::
 void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
                     float eyeX, float eyeY, float eyeZ, float yaw, float pitch) const {
     if (!m_box.valid()) return;
-    (void)eyeX; (void)eyeY; (void)eyeZ;  // no longer needed without the crosshair
+    const x3::phys::Vec3 eyePos{ eyeX, eyeY, eyeZ };  // camera-facing tracer ribbons
 
     // Bright FX colors (baseColorFactor multiplies the default white texel).
     const float tracerColor[4]    = { 1.0f, 0.95f, 0.4f, 1.0f }; // hot yellow
@@ -541,9 +582,11 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
             float thick = kTracerThickness * (0.45f + 0.35f * k);
             drawLightningBolt(device, frame, t.from, t.to, thick, boltColor);
         } else {
-            // Slightly taper the beam as it fades so it reads as a fast streak.
-            float thick = kTracerThickness * (0.5f + 0.5f * k);
-            drawBeam(device, frame, t.from, t.to, thick, tracerColor);
+            // Camera-facing ribbon (playtest "square rod" fix): a thin flat streak
+            // that always faces the eye instead of drawBeam's world-fixed square
+            // cross-section box. Taper the width as it fades for a fast-streak feel.
+            float width = kTracerThickness * (0.5f + 0.5f * k);
+            drawTracerBillboard(device, frame, t.from, t.to, eyePos, width, tracerColor);
         }
     }
 
