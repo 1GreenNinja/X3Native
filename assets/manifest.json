@@ -193,9 +193,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/WeaponBFG.glb",
-      "sha256": "6e092d29cba389dcb4067419f1b8e8e055cdfa8bd7d04e4601fbcdbc864141ce",
-      "size": 8795304,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "ce556294d6f41f802f0ed77a355238ceea7a3b6eac09c09aef462f21a0d0b0d9",
+      "size": 8795776,
+      "source_note": "weapon-variety reskin: plasma sleek-white+green glow (shared plasma/plasma_rifle)"
     },
     {
       "repo_path": "assets/rigged_glb/WeaponEnergyPistol.glb",
