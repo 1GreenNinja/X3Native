@@ -211,9 +211,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/WeaponRailgun.glb",
-      "sha256": "0f482056662d5409495748eb77b4bc81cad10c7fd20c1ff591ae5ad9290d21ee",
-      "size": 9234084,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "70fa04dbccfdb587aa01e04e48b836c811f69d8e9b3233f87b0e6f8cb3da1364",
+      "size": 9235156,
+      "source_note": "weapon-variety reskin: lightning dark+electric-blue (shared smg/lightning)"
     },
     {
       "repo_path": "assets/rigged_glb/WeaponRocketLauncher.glb",
