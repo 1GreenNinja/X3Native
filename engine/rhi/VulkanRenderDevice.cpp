@@ -3579,6 +3579,10 @@ private:
         for (uint32_t i = 0; i < kBloomMips; ++i)
             rgMip[i] = m_graph.importImage("bloom.mip", m_bloomMips[i].img,
                 ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+        // God-rays half-res shaft buffer (the godrays pass writes it, the composite
+        // reads it). UNDEFINED import: fully overwritten by its producing pass.
+        RgResource rgGodrays = m_graph.importImage("scene.godrays", m_godraysImg,
+            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
 
         // SSAO images (half-res). Imported UNDEFINED each frame (fully overwritten
         // by their producing pass). Only used when SSAO is enabled this frame.
@@ -4858,6 +4862,99 @@ private:
         const bool bloomOn = m_post.bloomEnabled;
         if (bloomOn) addBloomPasses(rgPostSrc, rgMip);
 
+        // ================================================================
+        // VOLUMETRIC GOD-RAYS / LIGHT SHAFTS (screen-space radial scatter).
+        // ----------------------------------------------------------------
+        // A half-res full-screen pass marches each pixel toward the sun's SCREEN
+        // position, accumulating occluder-masked brightness from the HDR scene +
+        // depth (godrays.frag) -> a shaft buffer the composite ADDS before ACES.
+        // Gated on r_godrays AND the effect intensity > 0 AND the pipeline existing.
+        // The sun is projected with THIS frame's view-proj (worldToScreen); if it's
+        // behind the camera or far off-frame, sunOnScreen=0 and the shader early-outs
+        // to black (the additive compose then contributes nothing). r_godrays 0 skips
+        // this pass entirely AND forces the composite add off -> byte-identical base.
+        const bool godraysOn = m_post.godrays && (m_godraysPipe != VK_NULL_HANDLE)
+                            && (m_godraysImg != VK_NULL_HANDLE) && (m_post.godraysIntensity > 0.0f);
+        if (godraysOn) {
+            // Project the sun (m_sky.sunDir is the direction TOWARD the sun) to a
+            // far world point, then to screen UV via the cached view-proj. Mirrors
+            // worldToScreen()'s clip math but yields UV in [0,1] + an on-screen flag.
+            const glm::vec3 sd = glm::normalize(glm::vec3(
+                m_sky.sunDir[0], m_sky.sunDir[1], m_sky.sunDir[2]));
+            const glm::vec3 sunWorld = m_camPos + sd * 1.0e6f;  // sun "at infinity"
+            const glm::vec4 clip = m_lastViewProj * glm::vec4(sunWorld, 1.0f);
+            int sunOnScreen = 0;
+            float su = 0.5f, sv = 0.5f;
+            if (clip.w > 1e-4f) {
+                const float nx = clip.x / clip.w, ny = clip.y / clip.w;
+                su = nx * 0.5f + 0.5f;
+                sv = ny * 0.5f + 0.5f;
+                // Accept a margin past the frame so shafts from a just-off-screen sun
+                // still rake across the image (classic radial-scatter behavior).
+                if (nx > -1.6f && nx < 1.6f && ny > -1.6f && ny < 1.6f) sunOnScreen = 1;
+            }
+            m_godraysPush = GodraysPush{};
+            m_godraysPush.sunUV[0]   = su;
+            m_godraysPush.sunUV[1]   = sv;
+            m_godraysPush.density    = (m_post.godraysDensity > 0.0f) ? m_post.godraysDensity : 0.6f;
+            m_godraysPush.decay      = (m_post.godraysDecay > 0.0f)   ? m_post.godraysDecay   : 0.96f;
+            m_godraysPush.weight     = (m_post.godraysWeight > 0.0f)  ? m_post.godraysWeight  : 0.35f;
+            m_godraysPush.exposure   = 1.0f;     // overall scale rides in the composite add
+            m_godraysPush.threshold  = 1.10f;    // bright-pass knee (linear) for the occluder
+            m_godraysPush.numSamples = 48;       // deterministic march length
+            m_godraysPush.sunOnScreen= sunOnScreen;
+
+            m_godraysAttach = VkRenderingAttachmentInfo{};
+            m_godraysAttach.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            m_godraysAttach.imageView = m_godraysView;
+            m_godraysAttach.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            m_godraysAttach.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE; // fully overwritten
+            m_godraysAttach.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+
+            RenderPassDesc gr{};
+            gr.name = "god-rays";
+            // WRITE the half-res shaft buffer.
+            gr.addUse(ResourceUse{
+                rgGodrays, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/true });
+            // READ the finished HDR scene (occluder/brightness source).
+            gr.addUse(ResourceUse{
+                rgHdr, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            // READ the scene depth (occlusion gate); DEPTH_READ_ONLY as data.
+            gr.addUse(ResourceUse{
+                rgDepth, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_DEPTH_BIT, /*isWrite=*/false });
+            gr.usesDynamicRendering = true;
+            m_godraysRenderInfo = VkRenderingInfo{};
+            m_godraysRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+            m_godraysRenderInfo.renderArea = { {0,0}, m_godraysExtent };
+            m_godraysRenderInfo.layerCount = 1;
+            m_godraysRenderInfo.colorAttachmentCount = 1;
+            m_godraysRenderInfo.pColorAttachments = &m_godraysAttach;
+            gr.renderInfo = m_godraysRenderInfo;
+            gr.recordCtx = this;
+            gr.record = [](void* ctx, VkCommandBuffer c){
+                auto* self = static_cast<VulkanRenderDevice*>(ctx);
+                VkViewport vp{ 0.0f, 0.0f, (float)self->m_godraysExtent.width,
+                               (float)self->m_godraysExtent.height, 0.0f, 1.0f };
+                VkRect2D scis{ {0,0}, self->m_godraysExtent };
+                vkCmdSetViewport(c, 0, 1, &vp);
+                vkCmdSetScissor(c, 0, 1, &scis);
+                vkCmdBindPipeline(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_godraysPipe);
+                vkCmdBindDescriptorSets(c, VK_PIPELINE_BIND_POINT_GRAPHICS, self->m_godraysLayout,
+                                        0, 1, &self->m_setGodrays, 0, nullptr);
+                vkCmdPushConstants(c, self->m_godraysLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
+                                   0, sizeof(GodraysPush), &self->m_godraysPush);
+                vkCmdDraw(c, 3, 1, 0, 0);
+            };
+            m_graph.addPass(std::move(gr));
+        }
+
         // Composite: HDR scene + bloom mip0 -> ACES tonemap -> LDR final target.
         // The HUD is recorded here (after tonemap) so it composites on the LDR
         // image. The pass writes the swapchain/offscreen color (rgColor).
@@ -4885,6 +4982,15 @@ private:
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
             comp.addUse(ResourceUse{
                 rgMip[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            // READ the god-rays shaft buffer (binding 3). Declared UNCONDITIONALLY
+            // (same pattern as bloom mip0 above): the graph transitions it to
+            // SHADER_READ_ONLY so the bound descriptor's layout matches even when
+            // god-rays is off this frame; the composite shader's godraysIntensity>0
+            // guard then never actually samples it (byte-identical base A/B).
+            comp.addUse(ResourceUse{
+                rgGodrays, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
             comp.usesDynamicRendering = true;
@@ -4927,6 +5033,12 @@ private:
                     ? std::max(0.0f, self->m_post.taaSharpen) : 0.0f;
                 cp.texelW  = 1.0f / (float)std::max(1u, self->m_extent.width);
                 cp.texelH  = 1.0f / (float)std::max(1u, self->m_extent.height);
+                // God-rays additive strength: forced 0 unless the shaft pass ran this
+                // frame (r_godrays + intensity>0). The shader's >0 guard then never
+                // samples the shaft target -> r_godrays 0 is byte-identical to base.
+                cp.godraysIntensity = (self->m_post.godrays && self->m_godraysPipe != VK_NULL_HANDLE
+                                       && self->m_post.godraysIntensity > 0.0f)
+                    ? self->m_post.godraysIntensity : 0.0f;
                 vkCmdPushConstants(c, self->m_compositeLayout, VK_SHADER_STAGE_FRAGMENT_BIT,
                                    0, sizeof(cp), &cp);
                 vkCmdDraw(c, 3, 1, 0, 0);
@@ -7871,6 +7983,20 @@ private:
             }
         }
 
+        // ---- God-rays shaft buffer (half-res, HDR) ---------------------------
+        // Half resolution: the radial scatter is low-frequency, so half-res is
+        // cheap and reads fine (bilinear-upsampled in the composite). COLOR_ATTACH
+        // (the godrays pass renders it) + SAMPLED (the composite reads it).
+        {
+            const uint32_t gw = std::max(1u, W / 2), gh = std::max(1u, H / 2);
+            m_godraysExtent = { gw, gh };
+            if (!createColorTarget(kHdrFormat, gw, gh,
+                                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                                   m_godraysImg, m_godraysAlloc, m_godraysView)) {
+                logError("[rhi] god-rays target create failed"); return false;
+            }
+        }
+
         // ---- Scene-color COPY target (glass refraction/frost, spec §3.1) -----
         // A mip-chained HDR image: mip0 (full-res) receives a vkCmdCopyImage of the
         // opaque HDR scene; mips 1..N are progressively blurred (M4 frost). Usage:
@@ -7931,6 +8057,9 @@ private:
             m.extent = {};
         }
         destroySceneCopyTarget();
+        if (m_godraysView) { vkDestroyImageView(m_dev.device, m_godraysView, nullptr); m_godraysView = VK_NULL_HANDLE; }
+        if (m_godraysImg)  { vmaDestroyImage(m_alloc, m_godraysImg, m_godraysAlloc); m_godraysImg = VK_NULL_HANDLE; m_godraysAlloc = nullptr; }
+        m_godraysExtent = {};
         if (m_taaOutView)  { vkDestroyImageView(m_dev.device, m_taaOutView, nullptr); m_taaOutView = VK_NULL_HANDLE; }
         if (m_taaOutImg)   { vmaDestroyImage(m_alloc, m_taaOutImg, m_taaOutAlloc); m_taaOutImg = VK_NULL_HANDLE; m_taaOutAlloc = nullptr; }
         if (m_taaHistView) { vkDestroyImageView(m_dev.device, m_taaHistView, nullptr); m_taaHistView = VK_NULL_HANDLE; }
@@ -8121,8 +8250,11 @@ private:
             logError("[rhi] post set layout (1) failed"); return false;
         }
         // Descriptor set layout: 2 combined image samplers (composite: HDR + bloom)
-        // + the auto-exposure SSBO (binding 2, fragment-read).
-        VkDescriptorSetLayoutBinding b2[3]{};
+        // + the auto-exposure SSBO (binding 2, fragment-read) + the god-rays shaft
+        // buffer (binding 3, fragment-read). The shaft sampler is always BOUND (a
+        // valid view, even when godrays is off) so the layout is satisfied; the
+        // shader only SAMPLES it when godraysIntensity > 0 (base A/B holds).
+        VkDescriptorSetLayoutBinding b2[4]{};
         b2[0].binding = 0; b2[0].descriptorCount = 1;
         b2[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         b2[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -8132,10 +8264,27 @@ private:
         b2[2].binding = 2; b2[2].descriptorCount = 1;
         b2[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         b2[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        b2[3].binding = 3; b2[3].descriptorCount = 1;
+        b2[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        b2[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         VkDescriptorSetLayoutCreateInfo s2{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
-        s2.bindingCount = 3; s2.pBindings = b2;
+        s2.bindingCount = 4; s2.pBindings = b2;
         if (vkCreateDescriptorSetLayout(m_dev.device, &s2, nullptr, &m_postSetLayout2) != VK_SUCCESS) {
             logError("[rhi] post set layout (2) failed"); return false;
+        }
+        // God-rays set layout: b0 = HDR scene (LINEAR sampler), b1 = scene depth
+        // (NEAREST clamp, sampled as data). Both fragment-stage (godrays.frag).
+        VkDescriptorSetLayoutBinding gb[2]{};
+        gb[0].binding = 0; gb[0].descriptorCount = 1;
+        gb[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        gb[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        gb[1].binding = 1; gb[1].descriptorCount = 1;
+        gb[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        gb[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo sg{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+        sg.bindingCount = 2; sg.pBindings = gb;
+        if (vkCreateDescriptorSetLayout(m_dev.device, &sg, nullptr, &m_godraysSetLayout) != VK_SUCCESS) {
+            logError("[rhi] god-rays set layout failed"); return false;
         }
         // Auto-exposure set layout: b0 = HDR scene sampler, b1 = exposure SSBO
         // (both compute-stage; the reduce/adapt runs in autoexposure.comp).
@@ -8179,6 +8328,10 @@ private:
         if (vkCreateSampler(m_dev.device, &tds, nullptr, &m_taaDepthSampler) != VK_SUCCESS) {
             logError("[rhi] TAA depth sampler failed"); return false;
         }
+        // God-rays depth sampler: NEAREST clamp (depth read as data in godrays.frag).
+        if (vkCreateSampler(m_dev.device, &tds, nullptr, &m_godraysDepthSampler) != VK_SUCCESS) {
+            logError("[rhi] god-rays depth sampler failed"); return false;
+        }
 
         // Descriptor pool: (HDR set + kBloomMips mip sets + TAA-out set)
         // single-sampler sets + 2 composite sets (2 samplers + 1 SSBO each: raw-HDR
@@ -8186,14 +8339,17 @@ private:
         // per-frame TAA resolve sets (3 samplers + 1 UBO each). Sized exactly; no
         // UPDATE_AFTER_BIND needed.
         const uint32_t single = 1 + kBloomMips + 1;     // HDR + each mip + TAA out
+        // Combined-image-samplers: single-sampler sets + 2 composite sets (now 3
+        // samplers each: HDR + bloom + god-rays) + 2 AE sets (1 each) + per-frame
+        // TAA resolve sets (3 each) + 1 god-rays set (2: scene + depth).
         VkDescriptorPoolSize ps[3]{
             { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-              single + 2*2 + 1*2 + 3*kFramesInFlight },
+              single + 2*3 + 1*2 + 3*kFramesInFlight + 2 },
             { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         4 },
             { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,         kFramesInFlight },
         };
         VkDescriptorPoolCreateInfo pci{ VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-        pci.maxSets = single + 4 + kFramesInFlight; pci.poolSizeCount = 3; pci.pPoolSizes = ps;
+        pci.maxSets = single + 4 + kFramesInFlight + 1; pci.poolSizeCount = 3; pci.pPoolSizes = ps;
         if (x3CreateDescriptorPool(&pci, nullptr, &m_postPool) != VK_SUCCESS) {
             logError("[rhi] post desc pool failed"); return false;
         }
@@ -8215,6 +8371,13 @@ private:
             }
             if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_setCompositeTaa) != VK_SUCCESS) {
                 logError("[rhi] post set alloc (composite-taa) failed"); return false;
+            }
+        }
+        {
+            VkDescriptorSetAllocateInfo ai{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+            ai.descriptorPool = m_postPool; ai.descriptorSetCount = 1; ai.pSetLayouts = &m_godraysSetLayout;
+            if (vkAllocateDescriptorSets(m_dev.device, &ai, &m_setGodrays) != VK_SUCCESS) {
+                logError("[rhi] post set alloc (god-rays) failed"); return false;
             }
         }
         {
@@ -8304,6 +8467,14 @@ private:
         if (vkCreatePipelineLayout(m_dev.device, &cl, nullptr, &m_compositeLayout) != VK_SUCCESS) {
             logError("[rhi] composite pipeline layout failed"); return false;
         }
+        // God-rays pipeline layout (scene + depth set + GodraysPush).
+        VkPushConstantRange pcGr{ VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(GodraysPush) };
+        VkPipelineLayoutCreateInfo gl{ VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+        gl.setLayoutCount = 1; gl.pSetLayouts = &m_godraysSetLayout;
+        gl.pushConstantRangeCount = 1; gl.pPushConstantRanges = &pcGr;
+        if (vkCreatePipelineLayout(m_dev.device, &gl, nullptr, &m_godraysLayout) != VK_SUCCESS) {
+            logError("[rhi] god-rays pipeline layout failed"); return false;
+        }
 
         // Build the three full-screen-triangle pipelines.
         if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\bloom_down.frag.spv",
@@ -8317,6 +8488,12 @@ private:
         // Composite writes the LDR final target (m_format).
         if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\composite.frag.spv",
                                       m_compositeLayout, m_format, /*additiveBlend=*/false, m_compositePipe))
+            return false;
+        // God-rays: full-screen pass writing the HDR-format half-res shaft buffer
+        // (opaque write; the composite reads + adds it). kHdrFormat so the shaft
+        // radiance stays linear-HDR before the additive compose.
+        if (!createFullscreenPipeline("shaders\\fullscreen.vert.spv", "shaders\\godrays.frag.spv",
+                                      m_godraysLayout, kHdrFormat, /*additiveBlend=*/false, m_godraysPipe))
             return false;
 
         // TAA resolve: full-screen pass writing the HDR-format TAA output. All
@@ -8421,11 +8598,12 @@ private:
         write1(m_setTaaOut, m_taaOutView);   // bloom bright-pass source when TAA is on
 
         // Composite set: binding 0 = HDR scene, binding 1 = bloom mip0,
-        // binding 2 = auto-exposure SSBO.
+        // binding 2 = auto-exposure SSBO, binding 3 = god-rays shaft buffer.
         VkDescriptorImageInfo d0{ m_postSampler, m_hdrView,           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         VkDescriptorImageInfo d1{ m_postSampler, m_bloomMips[0].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo d3{ m_postSampler, m_godraysView,       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         VkDescriptorBufferInfo db{ m_aeBuf, 0, VK_WHOLE_SIZE };
-        VkWriteDescriptorSet cw[3]{};
+        VkWriteDescriptorSet cw[4]{};
         cw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         cw[0].dstSet = m_setComposite; cw[0].dstBinding = 0; cw[0].descriptorCount = 1;
         cw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; cw[0].pImageInfo = &d0;
@@ -8435,7 +8613,22 @@ private:
         cw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         cw[2].dstSet = m_setComposite; cw[2].dstBinding = 2; cw[2].descriptorCount = 1;
         cw[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; cw[2].pBufferInfo = &db;
-        vkUpdateDescriptorSets(m_dev.device, 3, cw, 0, nullptr);
+        cw[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        cw[3].dstSet = m_setComposite; cw[3].dstBinding = 3; cw[3].descriptorCount = 1;
+        cw[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; cw[3].pImageInfo = &d3;
+        vkUpdateDescriptorSets(m_dev.device, 4, cw, 0, nullptr);
+
+        // God-rays set: b0 = HDR scene (LINEAR), b1 = scene depth (NEAREST).
+        VkDescriptorImageInfo g0{ m_postSampler,        m_hdrView,   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo g1{ m_godraysDepthSampler, m_depthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL };
+        VkWriteDescriptorSet gw[2]{};
+        gw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        gw[0].dstSet = m_setGodrays; gw[0].dstBinding = 0; gw[0].descriptorCount = 1;
+        gw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; gw[0].pImageInfo = &g0;
+        gw[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        gw[1].dstSet = m_setGodrays; gw[1].dstBinding = 1; gw[1].descriptorCount = 1;
+        gw[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; gw[1].pImageInfo = &g1;
+        vkUpdateDescriptorSets(m_dev.device, 2, gw, 0, nullptr);
 
         // Auto-exposure set: b0 = HDR scene (sampled by the compute reduce; the
         // view changes on resize, hence rewritten here), b1 = the exposure SSBO.
@@ -8453,7 +8646,7 @@ private:
         // Composite-TAA set: binding 0 = the TAA RESOLVE OUTPUT (instead of the
         // raw HDR scene), binding 1 = bloom mip0, binding 2 = AE SSBO.
         VkDescriptorImageInfo t0{ m_postSampler, m_taaOutView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        VkWriteDescriptorSet tw[3]{};
+        VkWriteDescriptorSet tw[4]{};
         tw[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         tw[0].dstSet = m_setCompositeTaa; tw[0].dstBinding = 0; tw[0].descriptorCount = 1;
         tw[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; tw[0].pImageInfo = &t0;
@@ -8463,7 +8656,10 @@ private:
         tw[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         tw[2].dstSet = m_setCompositeTaa; tw[2].dstBinding = 2; tw[2].descriptorCount = 1;
         tw[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; tw[2].pBufferInfo = &db;
-        vkUpdateDescriptorSets(m_dev.device, 3, tw, 0, nullptr);
+        tw[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        tw[3].dstSet = m_setCompositeTaa; tw[3].dstBinding = 3; tw[3].descriptorCount = 1;
+        tw[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; tw[3].pImageInfo = &d3;
+        vkUpdateDescriptorSets(m_dev.device, 4, tw, 0, nullptr);
 
         // AE-TAA set: meter the TAA output (b0) + the same exposure SSBO (b1).
         VkWriteDescriptorSet atw[2]{};
@@ -8511,6 +8707,10 @@ private:
         if (m_aeLayout)       { vkDestroyPipelineLayout(m_dev.device, m_aeLayout, nullptr); m_aeLayout = VK_NULL_HANDLE; }
         if (m_aeBuf)          { vmaDestroyBuffer(m_alloc, m_aeBuf, m_aeAlloc); m_aeBuf = VK_NULL_HANDLE; m_aeAlloc = nullptr; }
         if (m_aeSetLayout)    { vkDestroyDescriptorSetLayout(m_dev.device, m_aeSetLayout, nullptr); m_aeSetLayout = VK_NULL_HANDLE; }
+        if (m_godraysPipe)    { vkDestroyPipeline(m_dev.device, m_godraysPipe, nullptr); m_godraysPipe = VK_NULL_HANDLE; }
+        if (m_godraysLayout)  { vkDestroyPipelineLayout(m_dev.device, m_godraysLayout, nullptr); m_godraysLayout = VK_NULL_HANDLE; }
+        if (m_godraysSetLayout){ vkDestroyDescriptorSetLayout(m_dev.device, m_godraysSetLayout, nullptr); m_godraysSetLayout = VK_NULL_HANDLE; }
+        if (m_godraysDepthSampler){ vkDestroySampler(m_dev.device, m_godraysDepthSampler, nullptr); m_godraysDepthSampler = VK_NULL_HANDLE; }
         if (m_compositePipe)  { vkDestroyPipeline(m_dev.device, m_compositePipe, nullptr); m_compositePipe = VK_NULL_HANDLE; }
         if (m_bloomUpPipe)    { vkDestroyPipeline(m_dev.device, m_bloomUpPipe, nullptr); m_bloomUpPipe = VK_NULL_HANDLE; }
         if (m_bloomDownPipe)  { vkDestroyPipeline(m_dev.device, m_bloomDownPipe, nullptr); m_bloomDownPipe = VK_NULL_HANDLE; }
@@ -13061,6 +13261,28 @@ private:
     VkPipeline            m_bloomUpPipe    = VK_NULL_HANDLE;
     VkPipeline            m_compositePipe  = VK_NULL_HANDLE;
 
+    // ---- VOLUMETRIC GOD-RAYS (screen-space radial scatter, godrays.frag) ------
+    // A half-res HDR shaft buffer computed from the HDR scene + depth (occluder-
+    // masked toward the sun), then ADDED into the HDR scene in composite.frag
+    // BEFORE ACES. Its own 2-sampler set layout (scene + depth) + push-const
+    // pipeline. Created/destroyed alongside the bloom targets; the target view is
+    // written into both composite sets (binding 3). r_godrays 0 skips the pass and
+    // forces the composite add off -> byte-identical to the pre-godrays render.
+    VkDescriptorSetLayout m_godraysSetLayout = VK_NULL_HANDLE; // scene + depth samplers
+    VkPipelineLayout      m_godraysLayout    = VK_NULL_HANDLE; // set0=2 samplers + push
+    VkPipeline            m_godraysPipe      = VK_NULL_HANDLE;
+    VkDescriptorSet       m_setGodrays       = VK_NULL_HANDLE; // scene(b0) + depth(b1)
+    VkImage       m_godraysImg   = VK_NULL_HANDLE;             // half-res shaft buffer
+    VmaAllocation m_godraysAlloc = nullptr;
+    VkImageView   m_godraysView  = VK_NULL_HANDLE;
+    VkExtent2D    m_godraysExtent{};
+    VkSampler     m_godraysDepthSampler = VK_NULL_HANDLE;      // NEAREST clamp for depth-as-data
+    VkRenderingAttachmentInfo m_godraysAttach{};
+    VkRenderingInfo           m_godraysRenderInfo{};
+    struct GodraysPush { float sunUV[2]; float density, decay, weight, exposure, threshold;
+                         int32_t numSamples, sunOnScreen; float pad0, pad1, pad2; };
+    GodraysPush m_godraysPush{};
+
     // Descriptor pool + pre-written sets for the post passes. One "1-sampler" set
     // per distinct sampled source (HDR scene + each bloom mip) used by the down/up
     // passes, plus one "2-sampler" composite set. Written once at create time.
@@ -13083,7 +13305,7 @@ private:
     // record lambdas; no per-frame heap alloc).
     struct BloomPush { float srcTexel[2]; float threshold, knee, intensity; int firstPass; float pad0, pad1; };
     struct CompositePush { float bloomIntensity, exposure; int32_t tonemapMode, aeEnabled;
-                           float sharpen, texelW, texelH, pad0; };
+                           float sharpen, texelW, texelH, godraysIntensity; };
     BloomPush m_bloomDownPush[kBloomMips]{};
     BloomPush m_bloomUpPush[kBloomMips]{};
 
