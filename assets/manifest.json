@@ -217,9 +217,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/WeaponRocketLauncher.glb",
-      "sha256": "2825f2d07d0c120dd36eb59cdf93f414a71429872324375e515fcf4d6daec0f5",
-      "size": 10143352,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "82c2194c0a00fa546c95793733fcda5b7e7574873a831e53b8677753de783d6f",
+      "size": 10144416,
+      "source_note": "weapon-variety reskin: chaingun industrial steel+orange-hot"
     },
     {
       "repo_path": "assets/rigged_glb/WeaponShotGun.glb",
