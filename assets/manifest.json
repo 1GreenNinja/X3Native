@@ -205,9 +205,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/WeaponEnergyPistol2.glb",
-      "sha256": "3aecb4bda6b58e22b2ecb9cfd9157c1c3958ab35f1caef4fe6b5f552e3e16ff6",
-      "size": 8785076,
-      "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+      "sha256": "f9a64a661cb537476bbe96c9610e80bdba5c6ec57f88a6a3db507d7057f44c46",
+      "size": 8785544,
+      "source_note": "weapon-variety reskin: pistol gunmetal+blue"
     },
     {
       "repo_path": "assets/rigged_glb/WeaponRailgun.glb",
