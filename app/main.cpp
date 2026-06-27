@@ -2434,6 +2434,7 @@ int main(int argc, char** argv) {
          testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
          testDeathRagdoll = false, testCanonLevel = false, testBuilding = false, testKeypad = false, testCanonPlay = false,
+         testUpperFloors = false,
          testThirdPerson = false, testHatchCode = false,
          // --test-hatch: END-TO-END secret-hatch chain (terminal_code fire ->
          // boot-loaded secret_room.lua -> registerGameBindings openTrapdoor ->
@@ -3011,6 +3012,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-building") testBuilding = true;
         else if (a == "--test-keypad") testKeypad = true;
         else if (a == "--test-canonplay") testCanonPlay = true;
+        else if (a == "--test-upperfloors") testUpperFloors = true;
         else if (a == "--test-phase2a") testPhase2a = true;
         else if (a == "--test-phase2b") testPhase2b = true;
         else if (a == "--test-anim") testAnim = true;
@@ -3476,6 +3478,10 @@ int main(int argc, char** argv) {
     if (testCanonPlay) {
         x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");
         return x3::game::runCanonPlaySelfTest() ? 0 : 1;
+    }
+    if (testUpperFloors) {
+        x3::logInfo("running EFLZ canon UPPER-FLOOR content self-test (U1-U9, floors 2-7 + F4.5 spire)...");
+        return x3::game::runUpperFloorsSelfTest() ? 0 : 1;
     }
     if (testIntro) {
         x3::logInfo("running intro cold-open self-test (flight -> hit -> whiteout -> titlecard -> handoff; skippable)...");
