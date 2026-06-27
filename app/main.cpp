@@ -2435,6 +2435,7 @@ int main(int argc, char** argv) {
          testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
          testDeathRagdoll = false, testCanonLevel = false, testBuilding = false, testKeypad = false, testCanonPlay = false,
+         testUpperFloors = false,
          testThirdPerson = false, testHatchCode = false,
          // --test-hatch: END-TO-END secret-hatch chain (terminal_code fire ->
          // boot-loaded secret_room.lua -> registerGameBindings openTrapdoor ->
@@ -2805,6 +2806,12 @@ int main(int argc, char** argv) {
     // over ~120 settle frames before each ON capture.
     bool        ddgiShot = false;
     std::string ddgiShotDir = "docs/screenshots/ddgi";
+    // Upper-floor CONTENT proof (--screenshot-upperfloors [outDir]): build the WHOLE
+    // canon building + CanonPlay (the real floors 2-7 + F4.5 spire content), pose the
+    // camera at a few populated upper rooms (an enemy/item room, a captive ward, the
+    // spire apex encounter) and capture. Headless; exits after the captures.
+    bool        upperShot = false;
+    std::string upperShotDir = "docs/screenshots/upper_floors";
     // RT soft-shadow gate-shot proof (--screenshot-rtshadows [outDir]): build a
     // detention-cell rig (a single ceiling lamp + occluders at two distances from
     // the wall), capture lamp-shadow OFF/ON A/Bs (tier 0 vs 2), a sun CSM-vs-RT
@@ -2947,6 +2954,11 @@ int main(int argc, char** argv) {
             if (i + 1 < argc && argv[i + 1][0] != '-') ddgiShotDir = argv[++i];
             continue;
         }
+        if (a == "--screenshot-upperfloors") {
+            upperShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') upperShotDir = argv[++i];
+            continue;
+        }
         // RT soft-shadow flags — handled OUTSIDE the chain (same C1061 reason).
         if (a == "--test-rtshadows") { smoketest = true; testRtShadows = true; continue; }
         // Zero-stutter flythrough — handled OUTSIDE the chain (same C1061 reason).
@@ -3016,6 +3028,7 @@ int main(int argc, char** argv) {
         else if (a == "--test-building") testBuilding = true;
         else if (a == "--test-keypad") testKeypad = true;
         else if (a == "--test-canonplay") testCanonPlay = true;
+        else if (a == "--test-upperfloors") testUpperFloors = true;
         else if (a == "--test-phase2a") testPhase2a = true;
         else if (a == "--test-phase2b") testPhase2b = true;
         else if (a == "--test-anim") testAnim = true;
@@ -3482,6 +3495,10 @@ int main(int argc, char** argv) {
     if (testCanonPlay) {
         x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");
         return x3::game::runCanonPlaySelfTest() ? 0 : 1;
+    }
+    if (testUpperFloors) {
+        x3::logInfo("running EFLZ canon UPPER-FLOOR content self-test (U1-U9, floors 2-7 + F4.5 spire)...");
+        return x3::game::runUpperFloorsSelfTest() ? 0 : 1;
     }
     if (testIntro) {
         x3::logInfo("running intro cold-open self-test (flight -> hit -> whiteout -> titlecard -> handoff; skippable)...");
@@ -4067,7 +4084,7 @@ int main(int argc, char** argv) {
     if (ecologyShot)  worldMode = "valley";  // the ambient ecology rides the valley biome
     if (crowdShot)    worldMode = "club";    // the crowd proof lives on the club floor
     if (alertShot) { screenshot = true; screenshotPath = alertShotPath; }   // rides --screenshot
-    const bool headless = smoketest || testFramePacing || screenshot || skyShot || ddgiShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || cutsceneShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot || perfshopShot || ecologyShot || crowdShot;
+    const bool headless = smoketest || testFramePacing || screenshot || skyShot || ddgiShot || upperShot || showroomShot || carShot || showroomFpShot || showroomRagdollShot || showroomDeckShot || showroomElevShot || showroomStairShot || showroomFloor2Shot || showroomDoorShot || showroomStrutsShot || showroomGalleryShot || showroomCivShot || planetShot || nightskyShot || cutsceneShot || terrainShot || oceanShot || captureAi || captureWalk || destructShot || captureFootIk || uiDemo || captureSpire || editorShot || loaderShot || perfshopShot || ecologyShot || crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -4607,6 +4624,104 @@ int main(int argc, char** argv) {
                     " ms (off) vs " + std::to_string(gpuOn) + " ms (on) -> DDGI cost ~" +
                     std::to_string(gpuOn - gpuOff) + " ms (rays+update, 20x6x20 probes, 128 rays)");
 
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return ok ? 0 : 1;
+    }
+
+    // ---- Upper-floor CONTENT proof shots (--screenshot-upperfloors [outDir]) ----
+    // Build the WHOLE canon building (loadCanonBuilding) + CanonPlay's full content
+    // (floors 2-7 + the F4.5 spire), then pose the camera at a few POPULATED upper
+    // rooms and capture: an enemy/item room, a captive ward, and the spire apex boss
+    // encounter. Proves the floors are designed, populated spaces. Headless; exits after.
+    if (upperShot) {
+        namespace fs = std::filesystem;
+        std::error_code mkec; fs::create_directories(upperShotDir, mkec);
+        x3::logInfo("--screenshot-upperfloors: building canon building + content, capturing to " + upperShotDir);
+
+        std::unique_ptr<x3::phys::IPhysicsWorld> uphys(x3::phys::createPhysicsWorld());
+        uphys->init();
+        x3::game::Scene uscene;
+        x3::game::CanonFloor ufloor = x3::game::loadCanonBuilding(x3::game::canonProjectJsonPath(), 7);
+        bool ok = true;
+        if (!ufloor.valid()) {
+            x3::logError("--screenshot-upperfloors: canonical JSON absent — cannot capture");
+            ok = false;
+        } else {
+            x3::game::buildCanonFloor(ufloor, uscene, *device, *uphys);
+            x3::game::CanonPlay uplay;
+            uplay.build(ufloor, uscene, *device, *uphys,
+                        x3::game::riggedGlbRoot(), x3::game::canonGirlsDialogPath());
+
+            // Bright-enough lighting for a content read (per-shot point lights at the room).
+            device->setAmbient(0.34f, 0.34f, 0.38f);
+            { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false;
+              sp.sunDir[0]=0.2f; sp.sunDir[1]=-1.0f; sp.sunDir[2]=0.1f; device->setSkyParams(sp); }
+
+            auto frame = [&]() { return device->beginFrame(); };
+            // Pose a 3/4 vantage from the room's near-low corner, looking at the content
+            // standing near the room center (enemies/items sit ~0.4-1.0 m off the floor).
+            auto litShot = [&](const char* roomName, float /*backOff*/, float /*height*/, float /*pitch*/,
+                               const std::string& outPath) -> bool {
+                const uint32_t r = ufloor.roomByName(roomName);
+                if (r == x3::game::kNoRoom) { x3::logError(std::string("  room absent: ") + roomName); return false; }
+                const x3::game::CanonRoom& R = ufloor.rooms[r];
+                // Three point lights across the room for an even, readable interior.
+                x3::rhi::PointLight pl{};
+                pl.pos[0]=R.cx; pl.pos[1]=R.y0()+std::min(3.0f, R.h*0.6f); pl.pos[2]=R.cz;
+                pl.range=std::max(R.w,R.d)+10.0f; pl.color[0]=4.0f; pl.color[1]=3.8f; pl.color[2]=3.4f;
+                x3::rhi::PointLight l0=pl, l1=pl, l2=pl;
+                l1.pos[0]=R.cx - R.w*0.30f; l2.pos[0]=R.cx + R.w*0.30f;
+                x3::rhi::PointLight lights[3] = { l0, l1, l2 };
+                device->setPointLights(lights, 3);
+                // Eye: INSIDE the room near a back corner (inset from the walls so we never
+                // look at an exterior face), ~1.7 m off the floor, aimed diagonally across to
+                // the content cluster near the room center (content sits ~0.9 m off the floor).
+                const float ex = R.cx - R.w*0.38f;
+                const float ey = R.y0() + 1.7f;
+                const float ez = R.cz - R.d*0.38f;
+                const float aimX = R.cx + R.w*0.12f, aimY = R.y0() + 0.9f, aimZ = R.cz + R.d*0.18f;
+                const float dx = aimX-ex, dy = aimY-ey, dz = aimZ-ez;
+                // Device yaw convention (matches the --screenshot-ddgi camRoomB poses):
+                // yaw = atan2(lookDz, lookDx) for the look direction (dx,dz).
+                const float yaw = std::atan2(dz, dx);
+                const float horiz = std::sqrt(dx*dx + dz*dz);
+                const float pitch = std::atan2(dy, std::max(0.01f, horiz));
+                device->setCamera(ex, ey, ez, yaw, pitch, 70.0f);
+                // Feed the whole floor visible (no cull) so content draws in the shot.
+                std::vector<uint32_t> vis; vis.reserve(ufloor.rooms.size());
+                for (uint32_t i=0;i<(uint32_t)ufloor.rooms.size();++i) vis.push_back(i);
+                uscene.setVisibleRooms(vis.data(), (uint32_t)vis.size());
+                const int kSettle = 6;
+                for (int i=0;i<kSettle;++i) {
+                    glfwPollEvents();
+                    if (i==kSettle-1) device->armCapture(outPath.c_str());
+                    auto f = frame();
+                    if (f.valid) {
+                        uscene.render(*device, f);
+                        uplay.draw(*device, f, uscene);
+                    }
+                    device->endFrame(f);
+                }
+                const bool wrote = device->captureFrame(outPath.c_str());
+                x3::logInfo(std::string(wrote ? "  wrote " : "  FAILED ") + outPath +
+                            " (room '" + R.name + "')");
+                return wrote;
+            };
+
+            // 1) F2 Operating Theater B — enemies + a medkit in a real room.
+            ok &= litShot("Operating Theater B", 1.5f, 1.7f, -0.04f, upperShotDir + "/f2_operating_theater.png");
+            // 2) F2 Ward C: Aria — a captive in her cell with her attacker.
+            ok &= litShot("Ward C: Aria", 1.5f, 1.7f, -0.04f, upperShotDir + "/f2_captive_ward.png");
+            // 3) F5 Drone Bay Beta — heavy combat drones + the weapons locker floor.
+            ok &= litShot("Drone Bay Beta", 1.5f, 1.7f, -0.03f, upperShotDir + "/f5_drone_bay.png");
+            // 4) F4.5 SPIRE Apex Arena — the climactic Chorus mini-boss encounter + reward.
+            ok &= litShot("Tier 5: Apex Arena", 2.0f, 1.7f, -0.02f, upperShotDir + "/spire_apex_encounter.png");
+
+            uplay.shutdown();
+        }
+        uphys->shutdown();
         device->shutdown();
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
