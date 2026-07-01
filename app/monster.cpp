@@ -31,6 +31,14 @@ namespace {
 constexpr float kRealModelScale = 0.5f;
 constexpr float kBoxModelScale  = 1.0f;
 
+// Target STANDING height (meters) a rigged humanoid enemy is fit to. The player
+// avatar fits to 1.7 m (thirdperson.cpp); enemies read a touch taller (1.8 m) so a
+// guard/soldier looms slightly over the player. The per-enemy defRigged()/Tuning
+// modelScale then MULTIPLIES this fitted base (1.0 = a baseline 1.8 m soldier,
+// 1.15 = a tall elite, etc.) instead of being an absolute uniform scale on the
+// (much-larger-than-1.8 m authored) GLB — the playtest "enemies are 2x too big" fix.
+constexpr float kRiggedTargetHeight = 1.8f;
+
 // Collision box half-extents (meters) for the Enemy-layer body. Sized to a rough
 // crawler footprint: ~1.0 m wide/deep, ~0.8 m tall. Used for BOTH the real GLB
 // (the model is drawn over this volume) and the fallback box (which also renders
@@ -294,6 +302,10 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
         m_walkClip = m_skinner.findClip({ "walk" });
         m_runClip  = m_skinner.findClip({ "run", "sprint", "jog" });
         m_jumpClip = m_skinner.findClip({ "jump", "leap" });
+        // ATTACK clip (playtest fix): a melee/swing clip the anim drive plays during
+        // the wind-up. -1 if absent. Baked into the soldier rigs by
+        // tools/bake_attack_clip.py.
+        m_attackClip = m_skinner.findClip({ "attack", "melee", "swing", "bite", "punch" });
         if (m_walkClip < 0) m_walkClip = m_skinner.findClip({ "move", "jog", "run" });
         if (m_idleClip < 0) m_idleClip = 0;   // fall back to the first clip
         m_animActive = (m_idleClip >= 0);
@@ -326,6 +338,62 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
                 m_skinner.apply(m_model, *m_device, (uint32_t)m_idleClip, 0.0f);
             }
         }
+
+        // ---- SKELETON-FIT scale (playtest "enemies 2x too big" fix). The purchased
+        // humanoid rigs (marcus_webb / chief_martinez) are authored MUCH larger than
+        // our 1.8 m world target, so the legacy absolute modelScale (1.0/1.15/...) read
+        // ~2x. Measure the bind/idle skeleton's toe->head extent the SAME way the 3P
+        // player avatar does (thirdperson.cpp:191) and derive a fitted base scale =
+        // kRiggedTargetHeight / H. The per-enemy Tuning.modelScale then MULTIPLIES this
+        // (1.0 = baseline 1.8 m soldier, 1.15 = tall elite). Guarded on a valid skeleton
+        // with a sane measured height; box / non-skeletal models keep kRealModelScale.
+        if (m_skinner.valid() && m_skinner.nodeCount() > 0) {
+            // Prefer named toe/head bones (mixamo + common exporter variants); fall
+            // back to scanning ALL posed node Y translations for the min/max extent so
+            // an arbitrarily-named rig still fits. boneGlobal reads the pose just applied.
+            float minY = 1e30f, maxY = -1e30f;
+            auto tryNamed = [&](const char* a, const char* b, float& lo, float& hi) -> bool {
+                int na = m_skinner.resolveNodeByName(m_model, a);
+                int nb = m_skinner.resolveNodeByName(m_model, b);
+                float ma[16], mb[16];
+                if (na >= 0 && nb >= 0 &&
+                    m_skinner.boneGlobal((uint32_t)na, ma) &&
+                    m_skinner.boneGlobal((uint32_t)nb, mb)) {
+                    lo = std::min(ma[13], mb[13]);
+                    hi = std::max(ma[13], mb[13]);
+                    return true;
+                }
+                return false;
+            };
+            float lo = 0.0f, hi = 0.0f;
+            bool named = tryNamed("mixamorigLeftToeBase", "mixamorigHead", lo, hi)
+                      || tryNamed("LeftToeBase", "Head", lo, hi)
+                      || tryNamed("toe", "head", lo, hi)
+                      || tryNamed("foot", "head", lo, hi);
+            if (named) { minY = lo; maxY = hi; }
+            else {
+                // Scan every posed bone's world-space Y for the overall vertical extent.
+                float bm[16];
+                for (uint32_t n = 0; n < m_skinner.nodeCount(); ++n) {
+                    if (m_skinner.boneGlobal(n, bm)) {
+                        if (bm[13] < minY) minY = bm[13];
+                        if (bm[13] > maxY) maxY = bm[13];
+                    }
+                }
+            }
+            const float H = maxY - minY;
+            // Named toe->head measures ~the full body; a min/max bone scan misses the
+            // skull cap so the head bone sits a bit below the crown — bump the scanned
+            // extent ~15% to approximate true standing height. Sanity-gate H.
+            const float Hfit = named ? H : H * 1.15f;
+            if (Hfit > 0.2f && Hfit < 100.0f) {
+                m_fittedScale = kRiggedTargetHeight / Hfit;
+                x3::logInfo("[monster] " + std::string(modelFile) +
+                            " skeleton-fit: H=" + std::to_string(Hfit) +
+                            "m -> base scale=" + std::to_string(m_fittedScale) +
+                            (named ? " (named toe/head)" : " (bone-scan)"));
+            }
+        }
     }
 
     // ---- Model-local fixup: the converted character GLBs are Z-up (lying flat),
@@ -345,9 +413,15 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
 
     if (!m_drawables.empty()) {
         m_usingReal  = true;
-        m_modelScale = kRealModelScale;
+        // SKELETON-FIT (playtest "enemies 2x too big" fix): a valid rigged humanoid
+        // uses its fitted base scale (kRiggedTargetHeight / measured height); the
+        // box/non-skeletal models keep the legacy kRealModelScale. The per-enemy
+        // Tuning.modelScale below then MULTIPLIES whichever base applies.
+        m_modelScale = (m_fittedScale > 0.0f) ? m_fittedScale : kRealModelScale;
         x3::logInfo("[monster] loaded " + modelFile + " — " +
-                    std::to_string(m_drawables.size()) + " drawable primitive(s)");
+                    std::to_string(m_drawables.size()) + " drawable primitive(s)" +
+                    (m_fittedScale > 0.0f ? "  [skeleton-fit base scale]"
+                                          : "  [legacy box-base scale]"));
     } else {
         // ---- Fallback: a procedural box monster so the slice still works. ----
         m_usingReal  = false;
@@ -370,9 +444,15 @@ void MonsterSystem::buildMonsterTuned(Scene& scene, x3::rhi::IRenderDevice& devi
         m_drawables.push_back(d);
     }
 
-    // Per-instance model-scale override (Tuning.modelScale >= 0): lets a boss read
-    // bigger than a basic enemy while reusing the same crawler GLB.
-    if (tuning.modelScale > 0.0f) m_modelScale = tuning.modelScale;
+    // Per-instance model-scale (Tuning.modelScale >= 0). For a SKELETON-FITTED rigged
+    // humanoid this is a MULTIPLIER on the fitted base (1.0 = baseline ~1.8 m soldier,
+    // 1.15 = tall elite) — the defRigged() values become relative sizing, not absolute
+    // uniform scale on the oversized GLB (the "enemies 2x too big" fix). For box /
+    // non-skeletal models it remains the absolute scale (legacy behaviour preserved).
+    if (tuning.modelScale > 0.0f) {
+        if (m_fittedScale > 0.0f) m_modelScale = m_fittedScale * tuning.modelScale;
+        else                      m_modelScale = tuning.modelScale;
+    }
 
     // ---- Enemy-layer collision body for the shoot raycast. mass 0 -> Static
     // motion type but keeps the Enemy ObjectLayer, so it stays put under gravity
@@ -1203,6 +1283,7 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             // Begin a new attack: start the wind-up; the hit lands when it elapses.
             m_winding     = true;
             m_windupTimer = m_attackWindup;
+            m_attackAnimT = 0.0f;   // restart the attack clip from its first frame
             // Telegraph FX up front (a beam toward the player) so the attack reads.
             if (fx) {
                 x3::phys::Vec3 tp = target->damageTargetPos();
@@ -1319,7 +1400,20 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         const float ddx = m_pos.x - prevPos.x, ddz = m_pos.z - prevPos.z;
         const float planarSpeed = (dt > 1e-5f)
             ? std::sqrt(ddx*ddx + ddz*ddz) / dt : 0.0f;
-        if (m_useLocoBlend) {
+        // ---- ATTACK ANIMATION (playtest "attack anim unsolved" fix). While the enemy
+        // is winding up / striking (m_winding) and the rig HAS an attack clip, play it
+        // one-shot over the wind-up instead of idle/locomotion — so an attacking enemy
+        // visibly SWINGS. m_attackAnimT advances each frame (reset to 0 at wind-up
+        // start) and is clamped just below the clip end so it holds the strike pose if
+        // the wind-up outlasts the clip (no loop-back mid-swing). Falls through to the
+        // locomotion drive below when not winding or the rig has no attack clip. --
+        if (m_winding && m_attackClip >= 0) {
+            m_attackAnimT += dt;
+            const float dur = m_skinner.clipDuration((uint32_t)m_attackClip);
+            const float t = (dur > 1e-3f) ? std::min(m_attackAnimT, dur - 1e-3f)
+                                          : m_attackAnimT;
+            m_skinner.apply(m_model, *m_device, (uint32_t)m_attackClip, t);
+        } else if (m_useLocoBlend) {
             m_skinner.setLocomotionSpeed(planarSpeed);
             m_skinner.applyLocomotion(m_model, *m_device, dt);
 

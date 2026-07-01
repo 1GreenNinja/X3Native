@@ -1461,10 +1461,10 @@ int runDefaultHost(HostContext& hc) {
     // barrel reads as a violent fireball (on top of its own scattering debris chunks).
     game.barrels().setFxSink([&combatFx](const float c[3], float radius) {
         const x3::phys::Vec3 ctr{ c[0], c[1], c[2] };
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 1.0f, 0.0f });
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.7f, 0.5f, 0.0f });
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ -0.7f, 0.5f, 0.0f });
-        combatFx.spawnImpact(ctr, x3::phys::Vec3{ 0.0f, 0.5f, 0.7f });
+        // Playtest "barrels look like red boxes" fix: a bright ADDITIVE orange
+        // fireball (Explosion style) so a shot barrel reads as a violent blast,
+        // not just scattered red chunks. Sized by the blast radius.
+        combatFx.spawnExplosion(ctr, radius);
     });
 
     // ---- GIBS: monsters EXPLODE into chunks + blood when they die. -----------
@@ -2765,7 +2765,7 @@ int runDefaultHost(HostContext& hc) {
             x3::logInfo("smoketest: r_frustumcull 0 (X3_NOFRUSTUMCULL) — CPU frustum cull DISABLED");
         }
         audio->setListener(vmX, vmY, vmZ, vmYaw, vmPitch);
-        audio->playMusic(kMusicPath, /*loop*/true, /*vol*/0.25f);
+        audio->playMusic(kMusicPath, /*loop*/true, /*vol*/0.0f);   // playtest: muted by default
         const x3::phys::Vec3 eye{ vmX, vmY, vmZ };
         const float dt = 1.0f / 60.0f;
         for (int i = 0; i < 30; ++i) {
@@ -5222,12 +5222,25 @@ int runDefaultHost(HostContext& hc) {
                                         ep.c_str(), (float)ep.size() * 4.4f);
                         }
                     }
-                    // Cell HoloTerminal: within ~3 m of its anchor.
+                    // Cell HoloTerminal: within ~3 m of its anchor. Playtest fix:
+                    // render as a subtle BOTTOM-CENTER HUD hint (not a world-space
+                    // float over the panel) and DROP the "(code 1278)" spoiler — the
+                    // player should discover the code, not have it handed to them.
                     if (game.secret().terminal().built()) {
                         const x3::phys::Vec3 a = game.secret().terminal().anchor();
                         const float dx = pex - a.x, dz = pez - a.z;
-                        if (dx*dx + dz*dz < 9.0f)
-                            floatPrompt(x3::phys::Vec3{ a.x, a.y + 0.55f, a.z }, "[E] Use Terminal (code 1278)", 110.0f);
+                        if (dx*dx + dz*dz < 9.0f) {
+                            uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
+                            const char* hint = "[E] Use Terminal";
+                            const float hsz = 18.0f;
+                            const float adv = device->textAdvance(x3::rhi::FontRole::Menu, hint, hsz);
+                            const float hx = ((hw > 0) ? hw * 0.5f : 640.0f) - adv * 0.5f;
+                            const float hy = (hh > 0) ? hh * 0.88f : 520.0f;   // bottom-center
+                            const float col[4]    = { 0.66f, 0.92f, 1.0f, 0.85f };
+                            const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.70f };
+                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, hint, hx + 1.5f, hy + 1.5f, hsz, shadow);
+                            device->drawHudTextF(frame, x3::rhi::FontRole::Menu, hint, hx, hy, hsz, col);
+                        }
                     }
                 }
                 // ---- RESCUED-NPC TALK: floating "[E] Talk" prompt + the dialog box.

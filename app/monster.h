@@ -831,6 +831,13 @@ private:
     // to the legacy idle/move switch via the Skinner's graceful blend collapse.
     int                      m_runClip  = -1;
     int                      m_jumpClip = -1;
+    // ATTACK clip (playtest "attack animation unsolved" fix): a swing/melee/bite clip
+    // resolved from the *_anim.glb. -1 if the rig has none. While m_winding the anim
+    // drive plays THIS (one-shot, scaled across the wind-up) instead of idle, so an
+    // attacking enemy visibly swings. Baked into the soldier rigs by
+    // tools/bake_attack_clip.py (no attack clip shipped originally).
+    int                      m_attackClip = -1;
+    float                    m_attackAnimT = 0.0f;     // elapsed time inside the attack clip
     bool                     m_useLocoBlend = false;  // a real idle(+walk/+run) set drives the blend
     float                    m_animTime = 0.0f;
     bool                     m_animActive = false;   // a usable clip was found
@@ -847,6 +854,12 @@ private:
     uint32_t         m_entity = kNoLink;      // index into the Scene
     x3::phys::BodyId m_body;                  // Enemy-layer collision box
     float            m_modelScale = 1.0f;     // uniform scale applied to the model
+    // Skeleton-FITTED base scale (rigged humanoid enemies): kRiggedTargetHeight /
+    // measured toe->head height, computed once after the skinner binds + poses. The
+    // per-enemy Tuning.modelScale MULTIPLIES this so 1.0 = a ~1.8 m soldier (the
+    // "enemies 2x too big" playtest fix). <0 => no valid skeleton (box / non-skeletal
+    // models) -> fall back to the legacy kRealModelScale * tuning path.
+    float            m_fittedScale = -1.0f;
     float            m_hitHalfY   = 0.95f;    // Enemy hitbox half-height (scaled); top half = head zone
     float            m_hitHalfXZ  = 0.5f;     // Enemy hitbox half-width (scaled); chase probe clears this
     float            m_hitCenterOff = 0.0f;   // box center offset above m_pos (feet-origin ground enemies raise it)
