@@ -55,6 +55,7 @@ add_executable(X3Engine WIN32
     editor/editor_keybinds.cpp
     editor/editor_host.cpp
     elevator.cpp
+    elevator_showcase.cpp
     weapon.cpp
     monster.cpp
     anim.cpp

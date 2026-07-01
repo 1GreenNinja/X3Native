@@ -123,6 +123,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-hatch") o.testHatch = true;
         else if (a == "--test-elevator") o.testElevator = true;
         else if (a == "--test-elevatorfsm") o.testElevatorFsm = true;
+        else if (a == "--test-elevator-showcase") o.testElevatorShowcase = true;
         else if (a == "--test-net") o.testNet = true;
         else if (a == "--test-netsync") o.testNetSync = true;
         else if (a == "--test-netinterp") o.testNetInterp = true;

@@ -51,7 +51,7 @@ struct TestFlags {
     bool testSpireTop = false, testTimeline = false, testDroneHack = false, testSubLevels = false;
     bool testTod = false, testWeather = false, testAct2 = false, testAct2Desert = false;
     bool testAct2Caves = false, testWorldRegions = false, testCity = false, testOceanBase = false;
-    bool testDoorCode = false, testHatchCode = false, testElevator = false, testElevatorFsm = false;
+    bool testDoorCode = false, testHatchCode = false, testElevator = false, testElevatorFsm = false, testElevatorShowcase = false;
     bool testNet = false, testNetSync = false, testNetInterp = false, testNetPredict = false;
     bool testRescue = false, testThirdPerson = false, testNpcTalk = false, testChatTree = false;
     bool testMission = false, testDestruction = false, testDebris = false, testGpuSkin = false;

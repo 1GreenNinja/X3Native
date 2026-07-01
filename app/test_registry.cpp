@@ -84,6 +84,7 @@
 #include "city.h"
 #include "ocean_base.h"
 #include "elevator.h"
+#include "elevator_showcase.h"   // runElevatorShowcaseSelfTest (--test-elevator-showcase)
 #include "club1127.h"
 #include "valley.h"
 #include "cliffs.h"
@@ -558,6 +559,11 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running souped-up strata/disco elevator FSM self-test "
                     "(10-state FSM + strata + 1127 disco -> Club 1127)...");
         return x3::game::runElevatorFsmSelfTest() ? 0 : 1;
+    }
+    if (tf.testElevatorShowcase) {
+        x3::logInfo("running CENTERPIECE elevator showcase self-test "
+                    "(THICK dark-glass cab + holo panel + per-floor doors + strata + 1127 club descent)...");
+        return x3::game::runElevatorShowcaseSelfTest() ? 0 : 1;
     }
     if (tf.testNet) {
         x3::logInfo("running netcode (Subsystem N, Phase 0) self-test "

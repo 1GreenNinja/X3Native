@@ -321,6 +321,7 @@ int main(int argc, char** argv) {
         _tf.testHatchCode = o.testHatchCode;
         _tf.testElevator = o.testElevator;
         _tf.testElevatorFsm = o.testElevatorFsm;
+        _tf.testElevatorShowcase = o.testElevatorShowcase;
         _tf.testNet = o.testNet;
         _tf.testNetSync = o.testNetSync;
         _tf.testNetInterp = o.testNetInterp;
