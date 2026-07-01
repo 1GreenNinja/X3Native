@@ -3591,9 +3591,9 @@ int runDefaultHost(HostContext& hc) {
     bool  prevCamValid = false;
 
     // ---- Audio settings (persisted): seed the live music/SFX state from the cfg
-    // (playtest fix: DEFAULT music vol 0 -> MUTED on boot; SFX stays 1.0). Still
-    // fully adjustable: readAudioSettings() below overrides from the saved cfg, and
-    // the in-game Music Volume slider / setMusicVolume() raise it live. Applied to
+    // (playtest fix: DEFAULT music vol 0 -> MUTED on boot per Tim; SFX stays 1.0).
+    // Still fully adjustable: readAudioSettings() below overrides from the saved cfg,
+    // and the in-game Music Volume slider / setMusicVolume() raise it live. Applied to
     // the audio system, THEN the bed starts so it honors the saved volume/on. ----
     bool  s_musicOn  = true;
     float s_musicVol = 0.0f;     // muted by default (was 0.25) -- raise via the slider/cfg
