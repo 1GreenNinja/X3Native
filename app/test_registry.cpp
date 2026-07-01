@@ -43,6 +43,7 @@
 #include "thirdperson.h"
 #include "level1.h"
 #include "level_loader.h"
+#include "keypad.h"   // runKeypadSelfTest (--test-keypad)
 #include "leveldoc_world.h"
 #include "player.h"
 #include "monster.h"
@@ -270,6 +271,14 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testCanonLevel) {
         x3::logInfo("running EFLZ data-driven canonical-level self-test (C1-C8)...");
         return x3::game::runCanonLevelSelfTest() ? 0 : 1;
+    }
+    if (tf.testBuilding) {
+        x3::logInfo("running EFLZ whole-building (7-floor) loader self-test (B1-B7)...");
+        return x3::game::runCanonBuildingSelfTest() ? 0 : 1;
+    }
+    if (tf.testKeypad) {
+        x3::logInfo("running realistic keypad geometry self-test (KP1-KP6)...");
+        return x3::game::runKeypadSelfTest() ? 0 : 1;
     }
     if (tf.testCanonPlay) {
         x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");

@@ -1150,8 +1150,13 @@ int runDefaultHost(HostContext& hc) {
     x3::asset::joinModelPreload();
     x3::boot::mark("GLB preload joined");
     if (canonWorld) {
-        // ---- DATA-DRIVEN CANONICAL FLOOR 1 + per-room PVS cull. ----
-        canonFloor = x3::game::loadCanonFloor(x3::game::canonProjectJsonPath(), 1);
+        // ---- DATA-DRIVEN CANONICAL FACILITY + per-room PVS cull. Load the WHOLE BUILDING
+        // (all 7 stacked floors fused into one CanonFloor, connected by the synthesized
+        // elevator shaft) so the player can ride/climb the tower; Floor 1's rooms come
+        // FIRST (ids 0..52) so every name-based hook (beats, keycard, gameplay spawns)
+        // still resolves to the detention level. ----
+        std::vector<uint32_t> canonFloorBase;
+        canonFloor = x3::game::loadCanonBuilding(x3::game::canonProjectJsonPath(), 7, &canonFloorBase);
         if (canonFloor.valid()) {
             x3::game::CanonBuildOpts copts; copts.doors = &canonDoors; copts.lockSecuredRooms = true;
             x3::game::buildCanonFloor(canonFloor, scene, *device, *physics, copts);
@@ -1167,10 +1172,11 @@ int runDefaultHost(HostContext& hc) {
             // cell tube, a red alarm wash, cyan terminal glow). Graybox stays the collision
             // truth; missing GLBs simply aren't drawn (the level never breaks).
             canonDressing.build(*device, x3::game::convertedGlbRoot(), canonFloor);
-            x3::logInfo("--world canonlevel: built canonical Floor 1 (" +
+            x3::logInfo("--world canonlevel: built CANONICAL FACILITY (" +
+                        std::to_string(canonFloorBase.size()) + " floors, " +
                         std::to_string(canonFloor.rooms.size()) + " rooms, " +
                         std::to_string(scene.size()) + " entities, " +
-                        std::to_string(canonLights.size()) + " room lights); per-room PVS cull ACTIVE");
+                        std::to_string(canonLights.size()) + " room lights); elevator shaft connects the floors; per-room PVS cull ACTIVE");
             // (Secured-room doors — Security / Medical / Armory — are built + locked INSIDE
             // buildCanonFloor via copts.lockSecuredRooms above: those rooms reach the hall
             // through open gap-bridges, so a slab has to be placed there before it can be locked.)

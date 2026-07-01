@@ -87,6 +87,8 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-acoustics") o.testAcoustics = true;
         else if (a == "--test-level1") o.testLevel1 = true;
         else if (a == "--test-canonlevel") o.testCanonLevel = true;
+        else if (a == "--test-building") o.testBuilding = true;
+        else if (a == "--test-keypad") o.testKeypad = true;
         else if (a == "--test-canonplay") o.testCanonPlay = true;
         else if (a == "--test-phase2a") o.testPhase2a = true;
         else if (a == "--test-phase2b") o.testPhase2b = true;

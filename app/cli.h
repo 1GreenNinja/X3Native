@@ -34,7 +34,7 @@ struct CliOptions {
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
          testChatTree = false,   // --test-chattree: x3.chattree/1 parse/validate + the lena walk
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
-         testDeathRagdoll = false, testCanonLevel = false, testCanonPlay = false,
+         testDeathRagdoll = false, testCanonLevel = false, testBuilding = false, testKeypad = false, testCanonPlay = false,
          testThirdPerson = false, testHatchCode = false,
          // --test-hatch: END-TO-END secret-hatch chain (terminal_code fire ->
          // boot-loaded secret_room.lua -> registerGameBindings openTrapdoor ->
@@ -526,9 +526,18 @@ struct CliOptions {
     bool        captureSpire    = false;
     std::string captureSpireDir = "captures/spire";
     // World selector (--world terrain): launch the playable OUTDOOR terrain world
-    // (walk the hills) instead of the default interior Level 1. Anything else (or
-    // omitted) keeps Level 1 as the default, unchanged.
-    std::string worldMode = "level1";
+    // (walk the hills) instead of the default interior level.
+    //
+    // DEFAULT = "canonlevel": the player boots into the OWNER'S CANONICAL
+    // LevelArchitect facility (the 53-room Floor 1 from
+    // assets/levels/EscapeLab48_AllFloors_v2.project.json, built data-driven via
+    // level_loader.* with real human-scale room volumes + the WIDE central Main Hall,
+    // cells on BOTH sides, the whole 7-floor building fused via loadCanonBuilding,
+    // and per-room portal-PVS cull). This REPLACES the old hand-coded level1.cpp tower
+    // as the boot layout — that legacy build is still reachable via `--world level1`
+    // (and the --screenshot* / spire capture paths). The R2/R3 opening polish is
+    // applied to THIS canon detention cell via canonDressing.build().
+    std::string worldMode = "canonlevel";
     bool        worldExplicit = false;   // --world was passed (vs the default)
     bool shotWorldMap = false;   // --screenshot-worldmap (headless map shot sequence)
     // Seamless world streaming tunables (--world streamed; see app/world_stream.*):

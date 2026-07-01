@@ -4,6 +4,7 @@
 // IPhysicsWorld interfaces and the mesh_prims box builder only. The JSON is the
 // owner's own LevelArchitect export. No purchased C#/id Tech engine source consulted.
 #include "level_loader.h"
+#include "keypad.h"        // realistic high-poly access keypad at locked secured-room doors
 #include "mesh_prims.h"
 #include "asset_root.h"
 
@@ -21,6 +22,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <map>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -233,6 +235,39 @@ uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysics
     g_buildCost.physMs += t3 - t2;
     ++g_buildCost.boxes;
     return scene.add(e);
+}
+
+// A horizontal slab (floor or ceiling) centered at (cx,cy,cz) with full extents
+// (w x slabT x d), optionally with a rectangular VERTICAL HOLE (the elevator-shaft
+// footprint) cut out of it. When holeHalf>0 the slab is emitted as 4 rim boxes around
+// the hole (so a shaft can pass through cleanly with no slab capping it) instead of one
+// box; otherwise it is a single box. Each piece carries `roomId`/`tex`/`color`/`visible`.
+// The hole is centered at (holeX,holeZ) with half-extents holeHX/holeHZ in XZ.
+void slabWithHole(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p,
+                  float w, float slabT, float depth, float cx, float cy, float cz,
+                  x3::rhi::TextureHandle tex, const float color[4], uint32_t roomId,
+                  bool visible, bool hasHole, float holeX, float holeZ,
+                  float holeHX, float holeHZ) {
+    const float hw = w * 0.5f, hd = depth * 0.5f, ht = slabT * 0.5f;
+    if (!hasHole) {
+        addBox(s, d, p, hw, ht, hd, cx, cy, cz, tex, color, roomId, true, visible);
+        return;
+    }
+    // Slab spans x in [x0,x1], z in [z0,z1]; hole spans [hx0,hx1] x [hz0,hz1] (clamped to
+    // the slab). Emit the 4 rim strips: -X, +X (full Z), then -Z, +Z (only the middle X
+    // band between the X rims) so the pieces tile the slab minus the hole with no overlap.
+    const float x0 = cx - hw, x1 = cx + hw, z0 = cz - hd, z1 = cz + hd;
+    const float hx0 = std::max(x0, holeX - holeHX), hx1 = std::min(x1, holeX + holeHX);
+    const float hz0 = std::max(z0, holeZ - holeHZ), hz1 = std::min(z1, holeZ + holeHZ);
+    auto strip = [&](float ax0, float ax1, float az0, float az1) {
+        if (ax1 - ax0 < 0.02f || az1 - az0 < 0.02f) return;
+        addBox(s, d, p, (ax1 - ax0) * 0.5f, ht, (az1 - az0) * 0.5f,
+               (ax0 + ax1) * 0.5f, cy, (az0 + az1) * 0.5f, tex, color, roomId, true, visible);
+    };
+    strip(x0,  hx0, z0, z1);    // -X rim (full depth)
+    strip(hx1, x1,  z0, z1);    // +X rim (full depth)
+    strip(hx0, hx1, z0,  hz0);  // -Z rim (middle X band)
+    strip(hx0, hx1, hz1, z1);   // +Z rim (middle X band)
 }
 
 // A wall running along X (plane z=const), spanning x in [x0,x1], rising floorY..floorY+h.
@@ -642,6 +677,17 @@ CanonFloor loadCanonFloor(std::string_view jsonPath, int floorNum) {
         if (const JValue* v = rv.find("w")) r.w = (float)v->asNum();
         if (const JValue* v = rv.find("h")) r.h = (float)v->asNum();
         if (const JValue* v = rv.find("d")) r.d = (float)v->asNum();
+        // MIN STANDABLE HEIGHT. Some LevelArchitect rooms are authored as thin PLATFORM
+        // plates (h≈0.3-0.5 m) — the F4.5 spire tiers (Whisper Gallery .. Apex Arena), the
+        // F7 Rooftop/Helipad. As built they'd be un-enterable slits. Lift any sub-2 m room
+        // to a walkable 4 m headroom, keeping its FLOOR at the authored plate level (cy
+        // raised by half the added height) so the plate's elevation in the spiral is
+        // preserved. (Tall rooms — the atria — keep their authored height.)
+        if (r.h < 2.0f) {
+            const float floorY = r.cy - r.h * 0.5f;   // authored plate top sits at the floor
+            r.h  = 4.0f;
+            r.cy = floorY + r.h * 0.5f;               // floor stays at floorY, ceiling at +4
+        }
         floor.rooms.push_back(std::move(r));
     }
 
@@ -711,6 +757,51 @@ CanonFloor loadCanonFloor(std::string_view jsonPath, int floorNum) {
         }
     }
 
+    // ---- HIDDEN F4.5 SPIRE CLIMB. The LevelArchitect "Nexus Chamber / spire at level 4.5"
+    // is authored INSIDE Floor 4 as a stack of platform plates floating ABOVE the main wing
+    // (Nexus Chamber Access at y≈30, then Entry Platform + Tier 1..5 / Apex Arena ascending
+    // to y≈53) — a hidden vertical climb. In the JSON only Tier4<->Tier5 is doored, so the
+    // plates would float disconnected. Chain the whole spire cluster into ONE navigable
+    // ascent: gather every spire room (by name), sort by floor elevation, and link each to
+    // the next-higher with a CrossLevel tube (the builder drops a real vertical shaft). The
+    // base is wired to the "Nexus Chamber Access" room so the climb is reachable from the
+    // Floor-4 wing. Idempotent: a pair already doored in the JSON is skipped. ----
+    {
+        std::vector<uint32_t> spire;
+        for (uint32_t i = 0; i < nRooms; ++i) {
+            const std::string& n = floor.rooms[i].name;
+            if (n.find("F4.5") != std::string::npos || n.find("Tier ") != std::string::npos ||
+                n.find("Apex") != std::string::npos || n.find("Nexus Chamber Access") != std::string::npos)
+                spire.push_back(i);
+        }
+        if (spire.size() >= 2) {
+            std::sort(spire.begin(), spire.end(),
+                      [&](uint32_t a, uint32_t b) { return floor.rooms[a].y0() < floor.rooms[b].y0(); });
+            auto alreadyDoored = [&](uint32_t a, uint32_t b) {
+                for (const CanonDoorway& dw : floor.doorways)
+                    if ((dw.a == a && dw.b == b) || (dw.a == b && dw.b == a)) return true;
+                return false;
+            };
+            uint32_t links = 0;
+            for (size_t s = 1; s < spire.size(); ++s) {
+                const uint32_t lo = spire[s - 1], hi = spire[s];
+                if (alreadyDoored(lo, hi)) continue;
+                CanonDoorway dw; dw.a = hi; dw.b = lo;          // a = upper plate
+                dw.kind = DoorwayKind::CrossLevel;
+                dw.cx = floor.rooms[hi].cx;                     // tube at the upper plate XZ
+                dw.cz = floor.rooms[hi].cz;
+                dw.cy = floor.rooms[hi].y0();
+                dw.axis = 0;
+                floor.doorways.push_back(dw);
+                ++links;
+            }
+            if (links)
+                x3::logInfo("loadCanonFloor: wired the HIDDEN F4.5 spire climb (" +
+                            std::to_string(spire.size()) + " plates, " + std::to_string(links) +
+                            " vertical links Nexus Access -> Apex Arena)");
+        }
+    }
+
     // ---- PORTAL PVS: for each room, the set of room ids reachable through a doorway
     // (itself + every directly-doored neighbour). This is the visibility set the cull
     // uses (current room + rooms you can see through a doorway from it). ----
@@ -730,6 +821,101 @@ CanonFloor loadCanonFloor(std::string_view jsonPath, int floorNum) {
                 std::to_string(nRooms) + " rooms, " + std::to_string(floor.doorways.size()) +
                 " doorways");
     return floor;
+}
+
+CanonFloor loadCanonBuilding(std::string_view jsonPath, int maxFloor,
+                             std::vector<uint32_t>* floorBase) {
+    CanonFloor combined;
+    combined.floorNum = 1;                 // the building's ground floor
+    combined.name     = "Escape Lab 48 — Full Facility";
+    if (floorBase) floorBase->clear();
+
+    // Per-floor: load it standalone (parse + per-floor doorway resolve + isolated-room
+    // links), then APPEND its rooms with a global id offset and remap its doorways into
+    // the combined index space. Record each floor's Elevator-Lobby global id so we can
+    // synthesize the shaft afterwards.
+    struct LobbyRef { int floorNum; uint32_t roomId; float cy; };
+    std::vector<LobbyRef> lobbies;
+
+    for (int fn = 1; fn <= maxFloor; ++fn) {
+        CanonFloor fl = loadCanonFloor(jsonPath, fn);
+        if (!fl.valid()) continue;          // floor absent / unparsed — skip cleanly
+        const uint32_t base = (uint32_t)combined.rooms.size();
+        if (floorBase) floorBase->push_back(base);
+
+        // Append rooms (ids shift by `base`).
+        for (CanonRoom& r : fl.rooms) combined.rooms.push_back(std::move(r));
+
+        // Append this floor's doorways, remapped into the combined index space. These are
+        // the floor's OWN (intra-floor) doorways already resolved by loadCanonFloor.
+        for (CanonDoorway dw : fl.doorways) {
+            dw.a += base; dw.b += base;
+            dw.doorIndex = kNoLink;         // re-wired by buildCanonFloor on the combined floor
+            combined.doorways.push_back(dw);
+        }
+
+        // Find this floor's elevator lobby for the inter-floor shaft.
+        for (uint32_t i = base; i < (uint32_t)combined.rooms.size(); ++i) {
+            const CanonRoom& r = combined.rooms[i];
+            if (r.type.find("Elevator Lobby") != std::string::npos ||
+                r.name.find("Elevator Lobby") != std::string::npos) {
+                lobbies.push_back({ fn, i, r.cy });
+                break;
+            }
+        }
+    }
+
+    if (combined.rooms.empty()) return combined;   // valid()==false — caller falls back
+
+    // Mark how many doorways came from the floors themselves (the rest are synthesized).
+    combined.jsonDoorCount = (uint32_t)combined.doorways.size();
+
+    // ---- INTER-FLOOR ELEVATOR SHAFT. The lobbies all stack at the same XZ column, so a
+    // CrossLevel doorway between consecutive lobbies makes the builder drop a real vertical
+    // shaft tube linking the two floors (a navigable connection: stairs/elevator-shaft).
+    // The PVS then links the two lobby rooms so visibility flows up/down the shaft. ----
+    std::sort(lobbies.begin(), lobbies.end(),
+              [](const LobbyRef& a, const LobbyRef& b) { return a.cy < b.cy; });
+    uint32_t shaftLinks = 0;
+    for (size_t i = 1; i < lobbies.size(); ++i) {
+        const LobbyRef& lo = lobbies[i - 1];   // lower lobby
+        const LobbyRef& hi = lobbies[i];       // upper lobby
+        const CanonRoom& rLo = combined.rooms[lo.roomId];
+        CanonDoorway dw;
+        dw.a = hi.roomId;                      // a = upper (top of the descent tube)
+        dw.b = lo.roomId;                      // b = lower
+        dw.kind = DoorwayKind::CrossLevel;
+        dw.cx = rLo.cx;                        // shaft at the (shared) lobby XZ column
+        dw.cz = rLo.cz;
+        dw.cy = combined.rooms[hi.roomId].y0();// top of the tube = upper lobby floor
+        dw.axis = 0;
+        dw.doorIndex = kNoLink;                // open passage (CrossLevel never gets a slab)
+        combined.doorways.push_back(dw);
+        ++shaftLinks;
+        x3::logInfo("loadCanonBuilding: elevator shaft links F" + std::to_string(lo.floorNum) +
+                    " <-> F" + std::to_string(hi.floorNum) + " (lobby column x=" +
+                    std::to_string((int)rLo.cx) + " z=" + std::to_string((int)rLo.cz) + ")");
+    }
+
+    // ---- Rebuild the combined PVS over the fused door graph (self + every doored
+    // neighbour, including the new shaft links). ----
+    const uint32_t nRooms = (uint32_t)combined.rooms.size();
+    combined.pvs.assign(nRooms, {});
+    for (uint32_t i = 0; i < nRooms; ++i) combined.pvs[i].push_back(i);
+    for (const CanonDoorway& dw : combined.doorways) {
+        if (dw.a < nRooms) combined.pvs[dw.a].push_back(dw.b);
+        if (dw.b < nRooms) combined.pvs[dw.b].push_back(dw.a);
+    }
+    for (auto& v : combined.pvs) {
+        std::sort(v.begin(), v.end());
+        v.erase(std::unique(v.begin(), v.end()), v.end());
+    }
+
+    x3::logInfo("loadCanonBuilding: fused " + std::to_string(floorBase ? floorBase->size() : 0) +
+                " floors -> " + std::to_string(nRooms) + " rooms, " +
+                std::to_string(combined.doorways.size()) + " doorways (" +
+                std::to_string(shaftLinks) + " inter-floor shaft links)");
+    return combined;
 }
 
 std::string canonProjectJsonPath() {
@@ -1041,6 +1227,33 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         for (uint32_t i = 0; i < nRooms * 4; ++i) skipFace[i] = wantSkip[i] && !ownFace[i];
     }
 
+    // ---- ELEVATOR-SHAFT HOLES. A CrossLevel doorway whose two rooms are BOTH near-surface
+    // (the stacked floor lobbies, not the deep cave/sub-level at y<-50) is a vertical shaft:
+    // the LOWER room needs a hole in its CEILING and the UPPER room a hole in its FLOOR so
+    // the shaft tube passes through cleanly (no slab capping the passage). Collect per-room
+    // hole footprints (XZ center + half-extents == the 3 m tube, kShaftHoleHalf). Holes for
+    // the deep descent tubes are NOT cut (those rooms have no floor between them — the cave
+    // is open below; the existing tube already reaches it). ----
+    constexpr float kShaftHoleHalf = 1.55f;   // slightly wider than the 1.5 m tube wall inset
+    struct ShaftHole { bool has=false; float x=0, z=0; };
+    std::vector<ShaftHole> ceilHole(nRooms), floorHole(nRooms);
+    for (const CanonDoorway& dw : floor.doorways) {
+        if (dw.kind != DoorwayKind::CrossLevel) continue;
+        if (dw.a >= nRooms || dw.b >= nRooms) continue;
+        const CanonRoom& a = floor.rooms[dw.a];   // upper (resolver convention: a = upper)
+        const CanonRoom& b = floor.rooms[dw.b];   // lower
+        // Only the inter-floor lobby shafts (both rooms above the deep zone). The deep
+        // cave/sub-level (y very negative) keeps the open descent tube without slab holes.
+        if (std::min(a.cy, b.cy) < -50.0f) continue;
+        const CanonRoom& upper = (a.cy >= b.cy) ? a : b;
+        const CanonRoom& lower = (a.cy >= b.cy) ? b : a;
+        const uint32_t upperId = (a.cy >= b.cy) ? dw.a : dw.b;
+        const uint32_t lowerId = (a.cy >= b.cy) ? dw.b : dw.a;
+        floorHole[upperId] = { true, dw.cx, dw.cz };   // hole in UPPER room's floor
+        ceilHole[lowerId]  = { true, dw.cx, dw.cz };   // hole in LOWER room's ceiling
+        (void)upper; (void)lower;
+    }
+
     // ---- Build each room shell. ----
     for (uint32_t ri = 0; ri < nRooms; ++ri) {
         const CanonRoom& r = floor.rooms[ri];
@@ -1049,18 +1262,29 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         float tint[4]; tintFor(r.type, tint);
         const x3::rhi::TextureHandle wTex = wallVariants[ri % 3];
 
-        // Floor slab (top flush with floorY).
-        addBox(scene, device, physics, r.w * 0.5f, 0.05f, r.d * 0.5f,
-               r.cx, floorY - 0.05f, r.cz, floorTex, tint, ri, true, floorVis);
-        // Ceiling lid (collision-only, invisible — GLB ceiling drapes over).
-        addBox(scene, device, physics, r.w * 0.5f, kCeilT * 0.5f, r.d * 0.5f,
-               r.cx, r.y1() + kCeilT * 0.5f, r.cz, ceilTex, ceilWhite, ri, true, /*visible*/false);
+        // Floor slab (top flush with floorY) — split around a shaft hole if one passes
+        // up through this room's floor (the upper lobby of an elevator shaft).
+        slabWithHole(scene, device, physics, r.w, 0.10f, r.d,
+                     r.cx, floorY - 0.05f, r.cz, floorTex, tint, ri, floorVis,
+                     floorHole[ri].has, floorHole[ri].x, floorHole[ri].z,
+                     kShaftHoleHalf, kShaftHoleHalf);
+        // Ceiling lid (collision-only, invisible — GLB ceiling drapes over) — split around
+        // a shaft hole if one rises out of this room's ceiling (the lower lobby).
+        slabWithHole(scene, device, physics, r.w, kCeilT, r.d,
+                     r.cx, r.y1() + kCeilT * 0.5f, r.cz, ceilTex, ceilWhite, ri, /*visible*/false,
+                     ceilHole[ri].has, ceilHole[ri].x, ceilHole[ri].z,
+                     kShaftHoleHalf, kShaftHoleHalf);
 
         // 4 walls with doorway gaps where the resolver produced them.
-        buildWallZWithGaps(ri, r.x0(), r.z0(), r.z1(), floorY, h, gapXneg[ri], wTex, tint);   // -X wall (runs in Z)
-        buildWallZWithGaps(ri, r.x1(), r.z0(), r.z1(), floorY, h, gapXpos[ri], wTex, tint);   // +X wall
-        buildWallXWithGaps(ri, r.z0(), r.x0(), r.x1(), floorY, h, gapZneg[ri], wTex, tint);   // -Z wall (runs in X)
-        buildWallXWithGaps(ri, r.z1(), r.x0(), r.x1(), floorY, h, gapZpos[ri], wTex, tint);   // +Z wall
+        // Apply the coplanar-wall DEDUP (kills z-fighting at shared room boundaries): a
+        // face flagged in skipFace is fully covered by the doored neighbour's wall on the
+        // SAME plane, so the neighbour (the "owner") builds it for both rooms — this room
+        // skips it (no coincident opaque box, no flicker; the owner still renders + collides
+        // from both sides because it's in this room's PVS).
+        if (!skipFace[ri * 4 + 0]) buildWallZWithGaps(ri, r.x0(), r.z0(), r.z1(), floorY, h, gapXneg[ri], wTex, tint);   // -X wall (runs in Z)
+        if (!skipFace[ri * 4 + 1]) buildWallZWithGaps(ri, r.x1(), r.z0(), r.z1(), floorY, h, gapXpos[ri], wTex, tint);   // +X wall
+        if (!skipFace[ri * 4 + 2]) buildWallXWithGaps(ri, r.z0(), r.x0(), r.x1(), floorY, h, gapZneg[ri], wTex, tint);   // -Z wall (runs in X)
+        if (!skipFace[ri * 4 + 3]) buildWallXWithGaps(ri, r.z1(), r.x0(), r.x1(), floorY, h, gapZpos[ri], wTex, tint);   // +Z wall
     }
 
     // ---- THRESHOLD RAMPS at doored/adjacent/overlap openings with a FLOOR-HEIGHT
@@ -1238,11 +1462,103 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
                     const uint32_t ent = opts.doors->at(di).entity;
                     if (ent != kNoLink && ent < scene.size())
                         scene.get(ent).roomId = kNoRoom; // always-visible (seen from the approach side)
+
+                    // ---- REALISTIC KEYPAD beside the locked door (Tim's ask). A high-poly
+                    // wall access terminal mounted ~0.9 m to the side of the opening on the
+                    // APPROACH-side wall, at eye-reachable height, facing the corridor. Red
+                    // screen = locked. (The existing door-code state machine drives the
+                    // actual unlock; this is the realistic physical anchor for it.) ----
+                    const float kpY = dw.cy + 1.40f;         // reachable mount height
+                    const float kpOff = kDoorHalf + 0.55f;   // step to the side of the opening
+                    if (dw.axis == 0) {                       // door on an X-plane wall (thin in X) — keypad on +Z/-Z side
+                        const float wallX = (o.cx > r.cx) ? r.x1() : r.x0();
+                        // Face the approach room (`other` side): normal points away from the secured room.
+                        const KeypadFacing face = (o.cx > r.cx) ? KeypadFacing::PlusX : KeypadFacing::MinusX;
+                        const float nx = (o.cx > r.cx) ? +0.06f : -0.06f;   // stand proud toward the approach
+                        buildKeypad(scene, device, wallX + nx, kpY, dw.cz + kpOff, face,
+                                    KeypadStatus::Locked, kNoRoom);
+                    } else {                                  // door on a Z-plane wall (thin in Z)
+                        const float wallZ = (o.cz > r.cz) ? r.z1() : r.z0();
+                        const KeypadFacing face = (o.cz > r.cz) ? KeypadFacing::PlusZ : KeypadFacing::MinusZ;
+                        const float nz = (o.cz > r.cz) ? +0.06f : -0.06f;
+                        buildKeypad(scene, device, dw.cx + kpOff, kpY, wallZ + nz, face,
+                                    KeypadStatus::Locked, kNoRoom);
+                    }
                     ++nSec;
                 }
             }
             x3::logInfo("buildCanonFloor: locked " + std::to_string(nSec) +
-                        " secured-room doors (Security=card|1701, Medical=2480, Armory=card+8896)");
+                        " secured-room doors + placed a realistic high-poly keypad at each "
+                        "(Security=card|1701, Medical=2480, Armory=card+8896)");
+        }
+    }
+
+    // ---- EXTERIOR SEAL + BASIC STRUCTURAL PASS (whole-building only). The stacked floors
+    // leave a VERTICAL VOID band between each floor's ceiling and the next floor's deck
+    // (e.g. F1 ceiling y=5 -> F2 deck y=6.6) — interiors are sealed (every room has its own
+    // floor/ceiling/walls), but from OUTSIDE the tower the floors read as floating plates.
+    // Wrap a thin EXTERIOR SKIRT around each floor band's XZ perimeter, tall enough to close
+    // the gap up to the next band, so the building reads as one continuous solid shell. Only
+    // touches the OUTER perimeter (interiors untouched => no interior artifacts), and is built
+    // only when the scene spans multiple Y bands (the building; a single floor is a no-op). ----
+    {
+        // Group rooms into floor bands by their floor elevation (snap to ~10 m bins, the
+        // canonical inter-floor spacing). Skip the deep cave/sub-level (y<-50).
+        struct Band { float floorY = 1e9f, ceilY = -1e9f, x0 = 1e9f, x1 = -1e9f, z0 = 1e9f, z1 = -1e9f;
+                      bool any = false; uint32_t rep = kNoRoom; };
+        std::map<int, Band> bands;
+        float yMin = 1e9f, yMax = -1e9f;
+        for (uint32_t ri = 0; ri < (uint32_t)floor.rooms.size(); ++ri) {
+            const CanonRoom& r = floor.rooms[ri];
+            if (r.cy < -50.0f) continue;                 // deep zone: own descent tube, no skirt
+            const int bin = (int)std::lround(r.cy / 10.0f);    // ~per-FLOOR bin (10 m canon spacing)
+            Band& b = bands[bin];
+            b.any = true;
+            if (b.rep == kNoRoom) b.rep = ri;            // a representative room for cull-tagging
+            b.floorY = std::min(b.floorY, r.y0());
+            b.ceilY  = std::max(b.ceilY,  r.y1());
+            b.x0 = std::min(b.x0, r.x0()); b.x1 = std::max(b.x1, r.x1());
+            b.z0 = std::min(b.z0, r.z0()); b.z1 = std::max(b.z1, r.z1());
+            yMin = std::min(yMin, r.y0()); yMax = std::max(yMax, r.y1());
+        }
+        // Only run for the WHOLE BUILDING (a real multi-floor Y span). A single floor
+        // (canonlevel) spans <15 m and is left untouched — no skirts, C5 stays valid.
+        if (bands.size() >= 2 && (yMax - yMin) > 15.0f) {
+            const float skirtTint[4] = { 0.30f, 0.33f, 0.40f, 1.0f };   // dark structural skin
+            // Make a flat surface texture handle reuse the wall texture.
+            uint32_t sealed = 0;
+            auto it = bands.begin();
+            for (; it != bands.end(); ++it) {
+                Band& b = it->second;
+                if (!b.any) continue;
+                // The skirt for this band spans from this band's ceiling up to the NEXT band's
+                // floor (the void). The last band gets a short parapet cap instead.
+                auto nx = std::next(it);
+                float topY = (nx != bands.end() && nx->second.any) ? nx->second.floorY : (b.ceilY + 0.6f);
+                float botY = b.ceilY;
+                if (topY - botY <= 0.05f) continue;       // bands already touch — no void
+                const float midY = (botY + topY) * 0.5f;
+                const float hY   = (topY - botY) * 0.5f;
+                // Four perimeter skirt walls (thin, just OUTSIDE this band's footprint so they
+                // never coincide with a room's outer wall plane => no z-fighting). Always-visible
+                // exterior skin (kNoRoom). Render-only (collision is the rooms' own walls).
+                const float t = kWallT * 0.5f, e = 0.04f;
+                auto skirt = [&](float hx, float hy, float hz, float cx, float cy, float cz) {
+                    uint32_t id = addBox(scene, device, physics, hx, hy, hz, cx, cy, cz,
+                                         wallTexA, skirtTint, kNoRoom, /*collide*/false, wallVis);
+                    if (id < scene.size()) scene.get(id).roomId = kNoRoom;
+                };
+                const float midX = (b.x0 + b.x1) * 0.5f, midZ = (b.z0 + b.z1) * 0.5f;
+                const float hxSpan = (b.x1 - b.x0) * 0.5f + e, hzSpan = (b.z1 - b.z0) * 0.5f + e;
+                skirt(hxSpan, hY, t, midX, midY, b.z0 - e - t);   // -Z face
+                skirt(hxSpan, hY, t, midX, midY, b.z1 + e + t);   // +Z face
+                skirt(t, hY, hzSpan, b.x0 - e - t, midY, midZ);   // -X face
+                skirt(t, hY, hzSpan, b.x1 + e + t, midY, midZ);   // +X face
+                sealed += 4;
+            }
+            x3::logInfo("buildCanonFloor: exterior structural pass sealed " +
+                        std::to_string(bands.size()) + " floor bands with " +
+                        std::to_string(sealed) + " skirt panels (no inter-floor gaps)");
         }
     }
 
@@ -1779,6 +2095,144 @@ bool runCanonLevelSelfTest() {
 
     physics->shutdown();
     x3::logInfo("--test-canonlevel: " + std::to_string(g_pass) + " passed, " +
+                std::to_string(g_fail) + " failed");
+    return g_fail == 0;
+}
+
+bool runCanonBuildingSelfTest() {
+    g_pass = g_fail = 0;
+    x3::logInfo("running WHOLE-BUILDING (7-floor) canonical loader self-test (B1-B7)...");
+
+    std::vector<uint32_t> base;
+    CanonFloor b = loadCanonBuilding(canonProjectJsonPath(), 7, &base);
+    if (!b.valid()) {
+        x3::logInfo("  SKIP canonical JSON not present on this machine; legacy build is the fallback");
+        x3::logInfo("--test-building: SKIPPED (no JSON) — treating as PASS");
+        return true;
+    }
+
+    // ---- B1: all 7 floors fuse into one CanonFloor with 124 rooms. ----
+    check(base.size() == 7, "B1a all 7 floors loaded");
+    check(b.rooms.size() == 124, "B1b building fuses to 124 rooms");
+
+    // ---- B2: Floor 1's rooms stay FIRST (ids 0..52) so every name hook resolves to the
+    //          detention level (Jake's Cell at id < 53). ----
+    {
+        const uint32_t jake = b.roomByName("Jake");
+        check(base.size() >= 1 && base[0] == 0, "B2a Floor 1 is the first room block (base 0)");
+        check(jake != kNoRoom && jake < 53, "B2b Jake's Cell resolves into Floor 1's block (id<53)");
+    }
+
+    // ---- B3: every room id is unique + in range; no NaN extents. ----
+    {
+        bool sane = true;
+        for (const CanonRoom& r : b.rooms)
+            if (!(r.w > 0 && r.h > 0 && r.d > 0)) { sane = false; break; }
+        check(sane, "B3 every fused room has positive finite extents");
+    }
+
+    // ---- B4: 6 inter-floor elevator shafts synthesized (CrossLevel between stacked
+    //          lobbies) — one per adjacent floor pair. ----
+    {
+        // Find all CrossLevel doorways whose BOTH endpoints are elevator lobbies above the
+        // deep zone (the 6 shaft links; the deep cave/sub-level CrossLevels don't qualify).
+        uint32_t shafts = 0;
+        for (const CanonDoorway& dw : b.doorways) {
+            if (dw.kind != DoorwayKind::CrossLevel) continue;
+            if (dw.a >= b.rooms.size() || dw.b >= b.rooms.size()) continue;
+            const CanonRoom& ra = b.rooms[dw.a];
+            const CanonRoom& rb = b.rooms[dw.b];
+            const bool lobA = ra.type.find("Elevator Lobby") != std::string::npos ||
+                              ra.name.find("Elevator Lobby") != std::string::npos;
+            const bool lobB = rb.type.find("Elevator Lobby") != std::string::npos ||
+                              rb.name.find("Elevator Lobby") != std::string::npos;
+            if (lobA && lobB && std::min(ra.cy, rb.cy) > -50.0f) ++shafts;
+        }
+        check(shafts == 6, "B4 6 inter-floor elevator shafts connect the 7 stacked lobbies");
+    }
+
+    // ---- B5: the combined PVS links each shaft (each lobby sees the lobby above/below
+    //          through the shaft, so visibility flows vertically). ----
+    {
+        bool linked = true; uint32_t checked = 0;
+        for (const CanonDoorway& dw : b.doorways) {
+            if (dw.kind != DoorwayKind::CrossLevel) continue;
+            if (dw.a >= b.pvs.size() || dw.b >= b.pvs.size()) continue;
+            const CanonRoom& ra = b.rooms[dw.a];
+            if (ra.type.find("Elevator Lobby") == std::string::npos &&
+                ra.name.find("Elevator Lobby") == std::string::npos) continue;
+            const auto& pa = b.pvs[dw.a];
+            if (std::find(pa.begin(), pa.end(), dw.b) == pa.end()) linked = false;
+            ++checked;
+        }
+        check(linked && checked >= 6, "B5 PVS links each elevator shaft (vertical visibility)");
+    }
+
+    // ---- B6: floors are stacked (each floor's lobby is meaningfully ABOVE the one below)
+    //          — proves cohesive vertical stacking, not co-planar overlap. ----
+    {
+        std::vector<float> lobbyY;
+        for (uint32_t fi = 0; fi < base.size(); ++fi) {
+            const uint32_t lo = base[fi];
+            const uint32_t hi = (fi + 1 < base.size()) ? base[fi + 1] : (uint32_t)b.rooms.size();
+            for (uint32_t i = lo; i < hi; ++i) {
+                const CanonRoom& r = b.rooms[i];
+                if ((r.type.find("Elevator Lobby") != std::string::npos ||
+                     r.name.find("Elevator Lobby") != std::string::npos) && r.cy > -50.0f) {
+                    lobbyY.push_back(r.cy); break;
+                }
+            }
+        }
+        bool ascending = lobbyY.size() >= 7;
+        for (size_t i = 1; i < lobbyY.size(); ++i)
+            if (lobbyY[i] <= lobbyY[i - 1] + 3.0f) ascending = false;
+        check(ascending, "B6 the 7 floor lobbies stack vertically (each >3 m above the last)");
+    }
+
+    // ---- B7: doorway count is the sum of per-floor doorways + the 6 shafts (no loss /
+    //          no duplication in the fuse). ----
+    {
+        uint32_t perFloorDoors = 0;
+        for (uint32_t fn = 1; fn <= 7; ++fn) {
+            CanonFloor f = loadCanonFloor(canonProjectJsonPath(), fn);
+            if (f.valid()) perFloorDoors += (uint32_t)f.doorways.size();
+        }
+        check(b.doorways.size() == perFloorDoors + 6,
+              "B7 fused doorways == sum(per-floor) + 6 shafts (no loss/dup)");
+    }
+
+    // ---- B8: the HIDDEN F4.5 SPIRE level is present + CONNECTED. The Nexus/spire plates
+    //          (Nexus Chamber Access .. Tier 5 / Apex Arena) climb from y≈30 to y≈53, and
+    //          the Apex Arena is reachable from the Nexus Access room through the synthesized
+    //          spire climb (a path exists in the door graph). Proves the hidden intermediate
+    //          level loaded and is navigable, not a floating stub. ----
+    {
+        const uint32_t access = b.roomByName("Nexus Chamber Access");
+        const uint32_t apex   = b.roomByName("Apex Arena");
+        bool present = access != kNoRoom && apex != kNoRoom;
+        // The spire climbs above the F4 wing.
+        bool climbs = present && b.rooms[apex].cy > b.rooms[access].cy + 15.0f;
+        // BFS the door graph from access; assert apex is reachable (cluster connected).
+        bool reach = false;
+        if (present) {
+            std::vector<uint8_t> seen(b.rooms.size(), 0);
+            std::vector<uint32_t> stk{ access }; seen[access] = 1;
+            // adjacency from doorways
+            while (!stk.empty()) {
+                uint32_t cur = stk.back(); stk.pop_back();
+                if (cur == apex) { reach = true; break; }
+                for (const CanonDoorway& dw : b.doorways) {
+                    uint32_t nb = kNoRoom;
+                    if (dw.a == cur) nb = dw.b; else if (dw.b == cur) nb = dw.a;
+                    if (nb != kNoRoom && nb < seen.size() && !seen[nb]) { seen[nb] = 1; stk.push_back(nb); }
+                }
+            }
+        }
+        check(present && climbs && reach,
+              "B8 hidden F4.5 spire loaded + Apex Arena reachable from Nexus Access (climbs >15 m)");
+    }
+
+    x3::logInfo("--test-building: " + std::to_string(g_pass) + " passed, " +
                 std::to_string(g_fail) + " failed");
     return g_fail == 0;
 }

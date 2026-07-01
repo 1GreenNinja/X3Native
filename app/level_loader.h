@@ -191,6 +191,25 @@ CanonBeats canonBeats(const CanonFloor& floor);
 // with valid()==false (rooms empty) so the caller can fall back to the legacy build.
 CanonFloor loadCanonFloor(std::string_view jsonPath, int floorNum);
 
+// ---- WHOLE-BUILDING LOADER (all 7 floors stacked cohesively) -----------------------
+// Parse + resolve EVERY floor present in the v2 project JSON (1..maxFloor, default 7)
+// and FUSE them into ONE combined CanonFloor: each floor's rooms are concatenated (room
+// ids stay globally unique), every floor's own doorways are remapped into the combined
+// index space, and the inter-floor ELEVATOR SHAFT is synthesized — a CrossLevel doorway
+// links each floor's "Elevator Lobby" to the lobby on the floor above (the lobbies all
+// stack at the same XZ column, x=22 z=-26, so the resolver drops a real vertical shaft
+// tube there). The combined floor's PVS is rebuilt over the fused door graph, so the
+// portal flood-fill, per-room lights, and the room cull all work across the whole tower
+// with NO host changes. floorNum is left 1 (the building's ground floor). On total
+// failure (JSON missing) returns valid()==false so the caller falls back to the legacy
+// build, exactly like loadCanonFloor.
+//
+// `floorBase[i]` (if non-null, sized >= the number of loaded floors) receives the global
+// room-id of the FIRST room of floor (i+1), so callers can map a global room id back to a
+// floor number (diagnostics + the elevator stop list). It may be null.
+CanonFloor loadCanonBuilding(std::string_view jsonPath, int maxFloor = 7,
+                             std::vector<uint32_t>* floorBase = nullptr);
+
 // ---- PER-ROOM CEILING LIGHTING --------------------------------------------------------
 // One warm-white ceiling point-light tagged with the room it belongs to. The canonlevel
 // builder (level1.cpp env_art path) does NOT register the env_art Light_A fixtures, so the
@@ -262,5 +281,13 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
 // (cull proof), and the isolated/cross-level rooms are linked. Logs PASS/FAIL C#,
 // returns true iff all pass. No window/Vulkan.
 bool runCanonLevelSelfTest();
+
+// Headless self-test (--test-building). Loads the WHOLE building via loadCanonBuilding
+// and asserts: all 7 floors fuse (124 rooms), Floor 1's rooms stay FIRST (ids 0..52, so
+// name hooks resolve to the detention level), the 6 inter-floor elevator shafts are
+// synthesized as CrossLevel doorways between the stacked lobbies, the combined PVS links
+// each shaft (lobby visibility flows up/down), and every room id is unique + in range. No
+// window/Vulkan. Logs PASS/FAIL B#, returns true iff all pass.
+bool runCanonBuildingSelfTest();
 
 } // namespace x3::game
