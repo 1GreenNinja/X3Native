@@ -45,7 +45,10 @@ public:
     // Build the star/nebula dome mesh + bake its texture, and create the shared
     // unit-sphere planet mesh + default planet material, through the device.
     // Idempotent: a second init() WITHOUT a shutdown() in between is a no-op.
-    void init(rhi::IRenderDevice&);
+    // `domeRadius` (m) sizes the camera-anchored backdrop sphere: it writes depth,
+    // so it must enclose all scene geometry. Default 50 m suits close showcases;
+    // deep scenes (far capitals / large far planes) pass a large radius.
+    void init(rhi::IRenderDevice&, float domeRadius = 50.0f);
 
     // Draw the backdrop + the sun sprite + each registered planet for this
     // frame. `viewProj16` is the column-major view*proj (accepted for parity /
@@ -100,6 +103,7 @@ private:
 
     bool  m_initialized = false;
     bool  m_sunSet      = false;
+    float m_domeRadius  = 50.0f;   // backdrop sphere radius (set in init)
     float m_sunDir[3]   = { 0.0f, 0.4f, 1.0f };   // toward the sun (normalized)
     float m_sunColor[3] = { 1.0f, 0.95f, 0.85f };
     float m_sunIntensity = 1.0f;

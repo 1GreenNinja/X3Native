@@ -286,12 +286,16 @@ std::vector<uint8_t> bakeSunGlow(uint32_t n) {
 } // namespace
 
 // ---------------------------------------------------------------------------
-void SpaceEnv::init(rhi::IRenderDevice& dev) {
+void SpaceEnv::init(rhi::IRenderDevice& dev, float domeRadius) {
     if (m_initialized) return;
 
-    // Dome: radius 50 m, re-centered on the camera each frame (so it's at
-    // infinity for the player) — same sizing logic as sky_stars.
-    Mesh dome = buildDome(50.0f, 32);
+    // Dome: an inside-out sphere re-centered on the camera each frame (so it reads
+    // at infinity). The dome writes depth, so its radius must ENCLOSE all scene
+    // geometry — anything beyond the dome is occluded by it. Default 50 m suits the
+    // close-range showcase; deep scenes (the intro capital at ~280 m + the far plane
+    // at ~12 km) pass a large radius so nothing pops out behind the backdrop.
+    m_domeRadius = (domeRadius > 1.0f) ? domeRadius : 50.0f;
+    Mesh dome = buildDome(m_domeRadius, 32);
     m_domeMesh = dev.createMesh(dome.verts.data(), (uint32_t)dome.verts.size(),
                                 dome.index.data(), (uint32_t)dome.index.size());
     std::vector<uint8_t> domePx = bakeNebulaStars(1024, 512);
@@ -409,12 +413,16 @@ void SpaceEnv::render(rhi::IRenderDevice& dev, const rhi::FrameContext& fr,
     // a fixed sky position. The radial-glow texture tints the limb; the strong
     // emissive term pushes the whole disc into the HDR bloom chain.
     if (m_sunSet) {
-        const float dist = 38.0f;                 // inside the dome (radius 50)
+        // Keep the sun just inside the dome and scale its size with distance so its
+        // angular size (and thus the god-ray/flare source) is stable across radii.
+        const float dist = m_domeRadius * 0.76f;  // inside the dome
         float cx = m_camX + m_sunDir[0] * dist;
         float cy = m_camY + m_sunDir[1] * dist;
         float cz = m_camZ + m_sunDir[2] * dist;
         const float pulse = 0.9f + 0.1f * std::sin(timeSec * 1.3f);
-        const float s = 5.0f * pulse;             // sun radius (m)
+        // Ratio chosen so the DEFAULT dome (50 m -> dist 38) yields the historical
+        // 5 m sun radius exactly (byte-identical showcase); scales for large domes.
+        const float s = (5.0f / 38.0f) * dist * pulse;
         float m[16] = {
             s, 0, 0, 0,
             0, s, 0, 0,

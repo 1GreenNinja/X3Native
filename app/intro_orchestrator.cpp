@@ -40,13 +40,17 @@
 #include "space/ship_damage.h"
 #include "space/space_layer.h"   // x3::space::SpaceLayer (S0 spine; AtmoDescent runner host)
 #include "space/descent.h"       // x3::space::AtmoDescent (the ion-pulse on-rails coast-down)
+#include "space/decloak_vfx.h"   // P1-T2: capital-ship decloak shimmer for the reveal beat
+#include "space/space_env.h"     // P1-T2: planet limb + sun sprite + starfield backdrop
 #include "mesh_prims.h"          // P0-1: procedural ship/capital meshes for the LIVE dogfight render
+#include "fx.h"                  // P1-T4: CombatFx (venting smoke + subsystem explosions + detonation)
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -199,6 +203,81 @@ void clearInputState(GLFWwindow* window) {
     //  re-polling here is sufficient to drop any carried-over state.)
 }
 
+// ---------------------------------------------------------------------------
+// T5 GRADE — one consistent space look across every beat. Applied to the device
+// before the deep-space beats render. Tuned so the black keeps the stars from
+// blowing out (bloom knee high, auto-exposure ceiling modest) while the capital's
+// hot running lights + weapon FX still bloom. Read-only device config; no sim.
+// ---------------------------------------------------------------------------
+void applySpaceGrade(x3::rhi::IRenderDevice& dev, const float sunDir[3]) {
+    x3::rhi::IRenderDevice::PostFXParams px{};
+    // Exposure: cap the adaptation so a near-black field doesn't crank exposure and
+    // wash the starfield to grey; keep a low floor so the hot lights read.
+    px.autoExposure   = true;
+    px.aeMin          = 0.55f;
+    px.aeMax          = 1.35f;   // modest ceiling: stars stay pin-sharp, not milky
+    px.aeKey          = 0.14f;   // darker middle-grey target for space
+    // Bloom: raise the bright-pass knee so only genuinely hot pixels (running
+    // lights, tracers, sun, explosions) bloom — the dim starfield does not.
+    px.bloomEnabled   = true;
+    px.bloomIntensity = 0.40f;
+    px.bloomThreshold = 1.35f;
+    // Cinematic accents off the sun (T2 reveal leans on these; kept tasteful so the
+    // dogfight isn't a flare parody). God-rays rake the capital superstructure.
+    px.godrays          = true;
+    px.godraysIntensity = 0.60f;
+    px.godraysDensity   = 0.65f;
+    px.godraysDecay     = 0.97f;
+    px.godraysWeight    = 0.35f;
+    px.lensFlare          = true;
+    px.lensFlareIntensity = 0.20f;
+    px.lensFlareStreak    = 0.35f;
+    px.lensFlareGhosts    = 3;
+    dev.setPostFX(px);
+    (void)sunDir;  // sun direction is carried by SpaceEnv::setSun (drives the shafts)
+}
+
+// ---------------------------------------------------------------------------
+// T3 COMBAT FEEL — read-only cinematic camera feel layered over the sim camera:
+//   * HIT SHAKE — a decaying trauma impulse on taking/dealing a hit. Small,
+//     snappy (trauma^2 falloff), NOT nauseating.
+//   * BOOST FOV KICK — the FOV widens smoothly while boosting so speed reads.
+//   * COCKPIT SWAY — a permanent tiny bob so even a steady frame feels "flown".
+// Deterministic: all motion is driven by the sim STEP COUNTER (never wall clock),
+// so a fixed-frame capture reproduces byte-for-byte. NEVER mutates sim state.
+// ---------------------------------------------------------------------------
+struct CameraFeel {
+    float shake   = 0.0f;   // current trauma 0..1
+    float fovKick = 0.0f;   // current additive FOV (deg), smoothed toward target
+
+    void addTrauma(float amt) { shake = std::min(1.0f, shake + amt); }
+
+    void tick(float dt, bool boosting) {
+        shake = std::max(0.0f, shake - dt * 1.7f);          // ~0.6 s full->zero
+        const float target = boosting ? 9.0f : 0.0f;        // +9 deg FOV on boost
+        const float k = std::min(1.0f, dt * 6.0f);
+        fovKick += (target - fovKick) * k;
+    }
+
+    // Fold the shake/sway into the pose and return the kicked FOV. `step` drives
+    // deterministic pseudo-noise (decorrelated sinusoids — not random).
+    void apply(int step, float baseFov,
+               float& cy, float& cyaw, float& cpit, float& outFov) const {
+        const float s = shake * shake;                      // snappy falloff
+        const float t = (float)step;
+        const float nYaw = std::sin(t*0.90f)      * 0.6f + std::sin(t*2.30f)     * 0.4f;
+        const float nPit = std::sin(t*1.10f+1.7f) * 0.6f + std::sin(t*2.90f)     * 0.4f;
+        const float nPos = std::sin(t*1.70f+0.5f);
+        const float kAng = 0.030f;                          // ~1.7 deg max angular shake
+        const float kPos = 0.22f;                           // metres max positional shake
+        cyaw += s * kAng * nYaw;
+        cpit += s * kAng * nPit;
+        cy   += s * kPos * nPos;
+        cpit += std::sin(t*0.13f) * 0.004f;                 // permanent cockpit bob
+        outFov = baseFov + fovKick;
+    }
+};
+
 // Play one cinematic clip span (blocking, K-skip). With a window this drives the
 // real CutscenePlayer via runCutsceneWindowed seeked to clipStart; headless it is
 // a deterministic no-op (the cutscene player is exercised by --test-cutscene).
@@ -219,6 +298,145 @@ void playCinematicBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                          beat.clipStart, /*hostEvent*/ {}, beat.clipEnd);
         clearInputState(hc.window);
     }
+}
+
+// ---------------------------------------------------------------------------
+// T2 — THE ONE-CONTINUOUS-SHOT OPENING (the cine.reveal beat).
+//
+// A single unbroken camera move: the eye DRIFTS past a planet limb, the enemy
+// capital DECLOAKS (shimmer -> resolve) with lens flare off the sun and god-rays
+// raking through its superstructure, then the camera SWEEPS DOWN into the pilot's
+// cockpit seat and settles looking down the +X boresight at the capital — the
+// same pose the interactive dogfight opens on, so control hands off with no cut.
+//
+// LIVE only (needs a window+device). HEADLESS is a no-op: the deterministic brain
+// (skill/roll/branch) is untouched, so --test-introorch / --test-introbranch are
+// unaffected. Read-only staging: no sim state, no metrics. K/Esc skips.
+// ---------------------------------------------------------------------------
+void runCinematicRevealBeat(x3::apphost::HostContext& hc) {
+    x3::logInfo("[intro] beat 'cine.reveal' (one-shot decloak reveal -> cockpit hand-off)");
+    if (!hc.window || !hc.device) return;   // headless: no-op (brain unaffected)
+    clearInputState(hc.window);
+    auto* device = hc.device;
+
+    // Deep-space render kit (mirrors the dogfight beat): analytic sky OFF, SSAO +
+    // SSGI OFF (Pascal raster-fallback paints empty space black), deep far plane,
+    // the shared space grade (exposure/bloom + god-rays + lens flare accents).
+    { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
+    { x3::rhi::IRenderDevice::SsaoParams ap{}; ap.enabled = false; device->setSsaoParams(ap); }
+    { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; device->setGiParams(gp); }
+    device->setCameraClip(0.1f, 12000.0f);
+    const float sunDir[3] = { -0.35f, 0.30f, -0.88f };
+    applySpaceGrade(*device, sunDir);
+    {
+        x3::rhi::PointLight pl[3]{};
+        pl[0].pos[0] = 180.0f; pl[0].pos[1] = 120.0f; pl[0].pos[2] = 120.0f; pl[0].range = 900.0f;
+        pl[0].color[0] = 60.0f; pl[0].color[1] = 56.0f; pl[0].color[2] = 48.0f;
+        pl[1].pos[0] =  40.0f; pl[1].pos[1] =  60.0f; pl[1].pos[2] =  20.0f; pl[1].range = 500.0f;
+        pl[1].color[0] = 15.0f; pl[1].color[1] = 18.0f; pl[1].color[2] = 24.0f;
+        pl[2].pos[0] = 300.0f; pl[2].pos[1] = -40.0f; pl[2].pos[2] = -60.0f; pl[2].range = 700.0f;
+        pl[2].color[0] = 10.0f; pl[2].color[1] =  7.0f; pl[2].color[2] =  5.0f;
+        device->setPointLights(pl, 3);
+    }
+
+    // Backdrop: starfield dome + a bright sun (drives the god-ray shafts + flare) +
+    // a big planet whose LIMB the camera drifts past in the opening.
+    x3::space::SpaceEnv env;
+    env.init(*device, 11000.0f);   // deep dome: enclose the capital (280 m) inside the far plane
+    { const float sc[3] = { 1.6f, 1.4f, 1.15f }; env.setSun(sunDir, sc, 3.2f); }
+    const float planetPos[3] = { -70.0f, -40.0f, 180.0f };
+    const float planetAlbedo[3] = { 0.32f, 0.42f, 0.60f };
+    env.addPlanet(planetPos, 150.0f, planetAlbedo);
+
+    // The capital hull (unit box scaled HUGE per-draw) + the decloak shimmer shell.
+    x3::prims::PrimMesh cbm = x3::prims::makeBox(1.0f, 0.5f, 0.6f, 0, 0, 0, 0.25f);
+    auto capMesh = device->createMesh(cbm.verts.data(), (uint32_t)cbm.verts.size(),
+                                      cbm.index.data(), (uint32_t)cbm.index.size());
+    auto cTexD = x3::prims::makeCheckerRGBA(64, 4, 90, 100, 120, 40, 45, 60);
+    auto capTex = device->createTexture(cTexD.data(), 64, 64, true);
+    x3::space::DecloakVfx decloak;
+    decloak.init(*device);
+
+    const float capPos[3] = { 280.0f, 0.0f, 0.0f };
+    const float capScale[3] = { 90.0f, 22.0f, 30.0f };
+    const float capModel[16] = {
+        capScale[0], 0, 0, 0,
+        0, capScale[1], 0, 0,
+        0, 0, capScale[2], 0,
+        capPos[0], capPos[1], capPos[2], 1 };
+
+    const float dt  = 1.0f / 60.0f;
+    const float dur = 8.0f;                 // one continuous ~8 s move
+    const int   nSteps = (int)(dur / dt);
+    auto smooth = [](float a){ a = std::clamp(a, 0.0f, 1.0f); return a*a*(3.0f-2.0f*a); };
+    auto lerp   = [](float a, float b, float t){ return a + (b - a) * t; };
+
+    for (int step = 0; step < nSteps; ++step) {
+        if (glfwWindowShouldClose(hc.window)) break;
+        glfwPollEvents();
+        if (glfwGetKey(hc.window, GLFW_KEY_ESCAPE) == GLFW_PRESS ||
+            glfwGetKey(hc.window, GLFW_KEY_K) == GLFW_PRESS) {
+            x3::logInfo("[intro] cine.reveal skipped (K/Esc)");
+            break;
+        }
+        const float u = (float)step / (float)std::max(1, nSteps - 1);   // 0..1 timeline
+        const float tNow = (float)step * dt;
+
+        // DECLOAK ramps over [0.10, 0.62] of the shot: cloaked -> shimmering -> solid,
+        // resolving before the cockpit sweep so the ship reads fully as we sit down.
+        const float decloakProg = smooth((u - 0.10f) / 0.52f);
+
+        // ONE continuous camera path (three eased phases, no cut):
+        //  A) drift past the planet limb, wide, capital small + cloaked.
+        //  B) push in on the decloaking capital (god-rays rake the superstructure).
+        //  C) sweep DOWN into the cockpit seat (origin) looking +X at the capital.
+        float ex, ey, ez, lookX, lookY, lookZ;
+        if (u < 0.55f) {
+            const float a = smooth(u / 0.55f);                 // drift + push-in
+            ex = lerp(-40.0f, 60.0f, a);
+            ey = lerp( 55.0f, 26.0f, a);
+            ez = lerp(150.0f, 70.0f, a);
+            lookX = lerp(120.0f, capPos[0], a);
+            lookY = lerp(-10.0f, capPos[1], a);
+            lookZ = lerp(  40.0f, capPos[2], a);
+        } else {
+            const float a = smooth((u - 0.55f) / 0.45f);       // sweep into the seat
+            ex = lerp( 60.0f, 0.0f, a);
+            ey = lerp( 26.0f, 1.2f, a);
+            ez = lerp( 70.0f, 0.0f, a);
+            // Ease the look from the capital toward the boresight the dogfight opens
+            // on (dead ahead +X at the capital) so the hand-off pose matches.
+            lookX = lerp(capPos[0], 280.0f, a);
+            lookY = lerp(capPos[1],   0.0f, a);
+            lookZ = lerp(capPos[2],   0.0f, a);
+        }
+        const float dx = lookX - ex, dy = lookY - ey, dz = lookZ - ez;
+        const float dl = std::max(std::sqrt(dx*dx + dy*dy + dz*dz), 1e-3f);
+        const float yaw = std::atan2(dz, dx);
+        const float pitch = std::asin(std::clamp(dy / dl, -1.0f, 1.0f));
+        device->setCamera(ex, ey, ez, yaw, pitch, 55.0f);
+        env.setCamera(ex, ey, ez);
+
+        auto fr = device->beginFrame();
+        if (fr.valid) {
+            env.render(*device, fr, /*viewProj16*/ nullptr, tNow);
+            // The capital resolves out of the dark as it decloaks: base + emissive
+            // running lights scale up with revealAlpha (host-side fade under the shell).
+            const float rev = x3::space::DecloakVfx::revealAlpha(decloakProg);
+            const float base[4] = { 0.55f * rev, 0.60f * rev, 0.80f * rev, 1.0f };
+            const float emis[4] = { 0.9f * rev, 1.0f * rev, 1.25f * rev, 1.0f };
+            device->drawMeshEmissive(fr, capMesh, capTex, base, emis, capModel);
+            // The decloak shimmer overlay hugging the hull (fades out as it resolves).
+            decloak.render(*device, fr, /*viewProj16*/ nullptr, capModel, tNow, decloakProg);
+        }
+        device->endFrame(fr);
+    }
+
+    decloak.shutdown(*device);
+    env.shutdown(*device);
+    device->destroyMesh(capMesh);
+    device->destroyTexture(capTex);
+    clearInputState(hc.window);
 }
 
 // Run one bounded interactive combat window and accumulate metrics into `m`. The
@@ -274,6 +492,14 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
     // ALL rendering is READ-ONLY over the deterministic sim state below.
     x3::rhi::MeshHandle shipMesh{}, capitalMesh{};
     x3::rhi::TextureHandle shipTex{}, capitalTex{};
+    // T3/T4 live-only render aux (headless never allocates these). CombatFx carries
+    // ~256 KB of scratch, so it is heap-owned. CameraFeel is a tiny read-only pose
+    // modifier. SpaceEnv gives the sun sprite/planet/starfield the god-rays + lens
+    // flare key off. NONE of these touch the deterministic sim below.
+    std::unique_ptr<x3::game::CombatFx> fxOwned;
+    std::unique_ptr<x3::space::SpaceEnv> envOwned;
+    CameraFeel feel;
+    const float kSunDir[3] = { -0.35f, 0.30f, -0.88f };   // toward the sun (behind+left of capital)
     if (live) {
         { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; hc.device->setSkyParams(sp); }
         { x3::rhi::IRenderDevice::SsaoParams ap{}; ap.enabled = false; hc.device->setSsaoParams(ap); }
@@ -283,6 +509,18 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         // sit close); standard-Z precision at this near/far is fine for a scene whose
         // depth-writing geometry has no coincident surfaces.
         hc.device->setCameraClip(0.1f, 12000.0f);
+        // T5: one consistent space grade (exposure/bloom + god-rays/lens-flare accents).
+        applySpaceGrade(*hc.device, kSunDir);
+        // T2/T5 backdrop: starfield dome + a distant sun (drives the god-ray shafts +
+        // lens flare) + a planet limb the fight reads against.
+        envOwned = std::make_unique<x3::space::SpaceEnv>();
+        envOwned->init(*hc.device, 11000.0f);   // deep dome (capital at +X 280 inside far plane)
+        { const float sc[3] = { 1.5f, 1.35f, 1.1f }; envOwned->setSun(kSunDir, sc, 3.0f); }
+        { const float ppos[3] = { 120.0f, -180.0f, 620.0f }; const float alb[3] = { 0.35f, 0.45f, 0.62f };
+          envOwned->addPlanet(ppos, 260.0f, alb); }
+        // T4: combat FX pool (venting smoke, subsystem blasts, the final detonation).
+        fxOwned = std::make_unique<x3::game::CombatFx>();
+        fxOwned->init(*hc.device);
         // Key/fill/rim near the capital (at +X ~280) so the fight reads against dark space.
         x3::rhi::PointLight pl[3]{};
         pl[0].pos[0] = 180.0f; pl[0].pos[1] = 120.0f; pl[0].pos[2] = 120.0f; pl[0].range = 900.0f;
@@ -373,6 +611,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             const float d2 = dx*dx + dy*dy + dz*dz;
             if (d2 < 30.0f * 30.0f) {
                 pilot.takeDamage(x3::space::shipai::kLaserDamage);
+                if (live) feel.addTrauma(0.5f);         // T3: a solid jolt on being hit
             } else {
                 ++localSalvosDodged;
             }
@@ -413,9 +652,24 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                 x3::space::ShipDamage::applyDamage(capital, 60,
                     (x3::space::Subsystem)subIdx);
                 ++localShotsHit;
+                if (live) feel.addTrauma(0.14f);        // T3: light kick on landing a hit
                 if (x3::space::ShipDamage::subsystemDown(capital,
-                        (x3::space::Subsystem)subIdx) && subIdx == localSubsDestroyed)
+                        (x3::space::Subsystem)subIdx) && subIdx == localSubsDestroyed) {
+                    // T4: a subsystem just DROPPED — stage a local blast + venting
+                    // plume at a distinct point on the capital hull. Deterministic
+                    // offset per subsystem index so the venting reads as spatially
+                    // spread across the superstructure. Live/visual only.
+                    if (live && fxOwned) {
+                        const int k = localSubsDestroyed;
+                        const x3::phys::Vec3 vent{ 280.0f - 38.0f + 22.0f * (float)k,
+                                                   8.0f * std::sin((float)k * 1.9f),
+                                                   12.0f * std::cos((float)k * 1.3f) };
+                        fxOwned->spawnExplosion(vent, 6.0f + 1.5f * (float)k);
+                        fxOwned->spawnSmoke(vent);
+                        feel.addTrauma(0.35f);           // felt through the cockpit
+                    }
                     ++localSubsDestroyed;
+                }
             }
             // A miss simply burns a shot (lower accuracy -> slower cripple -> the
             // roll is likelier to land on SHOT_DOWN). No target damage.
@@ -425,17 +679,36 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         // Crippled == all subsystems down (the escape-enabling objective).
         if (!crippled && localSubsDestroyed >= kMaxSubsystems) {
             crippled = true; crippleTime = tNow;
+            // T4: the last subsystem dropped -> the BIG final detonation. A large
+            // fireball at the capital core + a hard cockpit jolt. Visual only.
+            if (live && fxOwned) {
+                const x3::phys::Vec3 core{ 280.0f, 0.0f, 0.0f };
+                fxOwned->spawnExplosion(core, 42.0f);
+                fxOwned->spawnSmoke(core);
+                feel.addTrauma(1.0f);
+            }
         }
 
         // ---- Live render (3P chase of the pilot; reuses host_space art
         //      conventions). Headless skips drawing entirely. READ-ONLY over sim
         //      state — never mutates the deterministic brain above. ----
         if (live) {
+            // T3: advance the read-only camera-feel (decay shake, ease the FOV kick)
+            // and the T4 FX pool, then fold the shake/sway into the sim camera pose.
+            const bool boosting = in.sprint;
+            feel.tick(dt, boosting);
+            if (fxOwned) fxOwned->update(dt);
             float cx, cy, cz, cyaw, cpit;
             pilot.camera(cx, cy, cz, cyaw, cpit);
-            hc.device->setCamera(cx, cy, cz, cyaw, cpit, 65.0f);
+            float fov = 65.0f;
+            feel.apply(step, 65.0f, cy, cyaw, cpit, fov);
+            hc.device->setCamera(cx, cy, cz, cyaw, cpit, fov);
+            if (envOwned) envOwned->setCamera(cx, cy, cz);
             auto frame = hc.device->beginFrame();
             if (frame.valid) {
+                // T2/T5 backdrop first (starfield dome + sun sprite + planet limb) so
+                // the ships + FX composite over it and the god-rays have a sun to rake.
+                if (envOwned) envOwned->render(*hc.device, frame, /*viewProj16*/ nullptr, tNow);
                 // Player ship (only in 3P; a 1P chase cam would clip its own hull).
                 if (pilot.isThirdPerson()) {
                     const x3::phys::Vec3 pp2 = pilot.pos();
@@ -457,10 +730,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     const float tint[4] = { 1.15f, 0.55f, 0.5f, 1.0f };   // hostile red
                     hc.device->drawMesh(frame, shipMesh, shipTex, tint, m);
                 }
-                // The HUGE capital objective at the priority-contact position. Scaled
-                // huge (~90 m long) so it dominates the frame; emissive-ish tint reads
-                // as running lights against the dark. Damage/subsystem climax (P1) will
-                // dress this further; here it makes the objective unmistakably present.
+                // The HUGE capital objective at the priority-contact position (~90 m).
+                // T4: emissive running lights that FLICKER hotter as subsystems fall
+                // (an overloading, venting hull) so the climax reads on the ship itself,
+                // not just the FX. drawMeshEmissive carries the glow into the bloom chain.
                 {
                     const float capPos[3] = { 280.0f, 0.0f, 0.0f };
                     const float sx = 90.0f, sy = 22.0f, sz = 30.0f;
@@ -469,12 +742,19 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                         0,  sy, 0,  0,
                         0,  0,  sz, 0,
                         capPos[0], capPos[1], capPos[2], 1 };
-                    // Darken once each subsystem falls (visual feedback on the climax).
                     const float dmg = (float)localSubsDestroyed / (float)kMaxSubsystems;
-                    const float tint[4] = { 0.55f - 0.25f*dmg, 0.60f - 0.20f*dmg,
-                                            0.80f - 0.20f*dmg, 1.0f };
-                    hc.device->drawMesh(frame, capitalMesh, capitalTex, tint, m);
+                    const float base[4] = { 0.55f - 0.22f*dmg, 0.60f - 0.18f*dmg,
+                                            0.80f - 0.18f*dmg, 1.0f };
+                    // Deterministic flicker (step-driven) ramps with damage: cool at
+                    // full health, hot orange sputter as it's crippled.
+                    const float flick = 0.5f + 0.5f * std::sin((float)step * 0.7f)
+                                                    * std::sin((float)step * 0.23f);
+                    const float glow = dmg * (0.4f + 0.6f * flick);
+                    const float emis[4] = { 1.6f * glow, 0.7f * glow, 0.2f * glow, 1.0f };
+                    hc.device->drawMeshEmissive(frame, capitalMesh, capitalTex, base, emis, m);
                 }
+                // T4: combat FX (venting plumes, subsystem blasts, final detonation).
+                if (fxOwned) fxOwned->submit(*hc.device, frame);
             }
             hc.device->endFrame(frame);
         }
@@ -501,6 +781,8 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
 
     // Release the LIVE dogfight render resources (headless never created them).
     if (live) {
+        if (fxOwned)  fxOwned->shutdown(*hc.device);
+        if (envOwned) envOwned->shutdown(*hc.device);
         if (shipMesh.valid())    hc.device->destroyMesh(shipMesh);
         if (capitalMesh.valid()) hc.device->destroyMesh(capitalMesh);
         if (shipTex.valid())     hc.device->destroyTexture(shipTex);
@@ -702,13 +984,16 @@ int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir
     }
     auto capital = x3::space::ShipDamage::makeCapital(400, 2000, 120);
 
-    // Deep-space render kit (mirrors runInteractiveBeat / host_space).
+    // Deep-space render kit (mirrors runInteractiveBeat / host_space) + the P1
+    // additions: the space grade (T5), the SpaceEnv backdrop (planet limb + sun for
+    // god-rays/flare, T2/T5), the decloak shell (T2) and the CombatFx pool (T4).
     { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
     { x3::rhi::IRenderDevice::SsaoParams ap{}; ap.enabled = false; device->setSsaoParams(ap); }
     { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; device->setGiParams(gp); }
     device->setCameraClip(0.1f, 12000.0f);         // T1: deep-space far plane (capital at +X 280)
-    device->setBloom(0.35f);                       // hero glow on the emissive windows
     device->setFrustumCullEnabled(false);          // robust against nested-AABB culling for the still
+    const float sunDir[3] = { -0.35f, 0.30f, -0.88f };
+    applySpaceGrade(*device, sunDir);              // T5: one consistent space look
     {
         x3::rhi::PointLight pl[3]{};
         pl[0].pos[0] = 180.0f; pl[0].pos[1] = 120.0f; pl[0].pos[2] = 120.0f; pl[0].range = 900.0f;
@@ -730,79 +1015,179 @@ int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir
     auto cTexD = x3::prims::makeCheckerRGBA(64, 4, 90, 100, 120, 40, 45, 60);
     auto capitalTex = device->createTexture(cTexD.data(), 64, 64, true);
 
+    x3::space::SpaceEnv env;
+    env.init(*device, 11000.0f);   // deep dome: enclose the capital (280 m) inside the far plane
+    { const float sc[3] = { 1.6f, 1.4f, 1.15f }; env.setSun(sunDir, sc, 3.2f); }
+    { const float ppos[3] = { -70.0f, -40.0f, 180.0f }; const float alb[3] = { 0.32f, 0.42f, 0.60f };
+      env.addPlanet(ppos, 150.0f, alb); }
+    x3::space::DecloakVfx decloak;
+    decloak.init(*device);
+    auto fxOwned = std::make_unique<x3::game::CombatFx>();
+    x3::game::CombatFx& fx = *fxOwned;
+    fx.init(*device);
+
     const float capPos[3] = { 280.0f, 0.0f, 0.0f };
+    const float capModel[16] = { 90.f,0,0,0, 0,22.f,0,0, 0,0,30.f,0, capPos[0],capPos[1],capPos[2],1 };
     const float dt = 1.0f / 60.0f;
 
-    auto drawScene = [&](const x3::rhi::FrameContext& fr, int subsDestroyed) {
-        // Pilot ship (3P by default).
-        const x3::phys::Vec3 pp = pilot.pos();
-        const x3::phys::Vec3 pf = pilot.forward();
-        const x3::phys::Vec3 pu = pilot.up();
-        const x3::phys::Vec3 pr = pilot.right();
-        const float pm[16] = { pf.x,pf.y,pf.z,0, pu.x,pu.y,pu.z,0, pr.x,pr.y,pr.z,0, pp.x,pp.y,pp.z,1 };
-        const float ptint[4] = { 0.75f, 0.85f, 1.05f, 1.0f };
-        device->drawMesh(fr, shipMesh, shipTex, ptint, pm);
-        // Enemy wing.
-        for (uint32_t i = 0; i < enemies.count(); ++i) {
-            const auto& e = enemies.ship(i);
-            float fx = e.fwd[0], fz = e.fwd[2];
-            const float fl = std::sqrt(fx*fx+fz*fz); if (fl>1e-3f){fx/=fl;fz/=fl;} else {fx=1;fz=0;}
-            const float S = 1.6f;
-            const float m[16] = { fx*S,0,fz*S,0, 0,S,0,0, -fz*S,0,fx*S,0, e.pos[0],e.pos[1],e.pos[2],1 };
-            const float etint[4] = { 1.2f, 0.55f, 0.5f, 1.0f };
-            device->drawMesh(fr, shipMesh, shipTex, etint, m);
+    // subsDestroyed drives the capital dressing; revealA (<1) draws the decloak shell
+    // + fades the hull; when revealA>=1 the ship is solid (no shell).
+    auto drawScene = [&](const x3::rhi::FrameContext& fr, int subsDestroyed,
+                         float revealA, float tSec) {
+        env.render(*device, fr, /*viewProj16*/ nullptr, tSec);
+        // Pilot ship + enemy wing are omitted on the pure-reveal frame (revealA<1):
+        // the reveal is capital-only. On the dogfight/climax frames they draw.
+        if (revealA >= 1.0f) {
+            const x3::phys::Vec3 pp = pilot.pos();
+            const x3::phys::Vec3 pf = pilot.forward();
+            const x3::phys::Vec3 pu = pilot.up();
+            const x3::phys::Vec3 pr = pilot.right();
+            const float pm[16] = { pf.x,pf.y,pf.z,0, pu.x,pu.y,pu.z,0, pr.x,pr.y,pr.z,0, pp.x,pp.y,pp.z,1 };
+            const float ptint[4] = { 0.75f, 0.85f, 1.05f, 1.0f };
+            device->drawMesh(fr, shipMesh, shipTex, ptint, pm);
+            for (uint32_t i = 0; i < enemies.count(); ++i) {
+                const auto& e = enemies.ship(i);
+                float fxd = e.fwd[0], fz = e.fwd[2];
+                const float fl = std::sqrt(fxd*fxd+fz*fz); if (fl>1e-3f){fxd/=fl;fz/=fl;} else {fxd=1;fz=0;}
+                const float S = 1.6f;
+                const float m[16] = { fxd*S,0,fz*S,0, 0,S,0,0, -fz*S,0,fxd*S,0, e.pos[0],e.pos[1],e.pos[2],1 };
+                const float etint[4] = { 1.2f, 0.55f, 0.5f, 1.0f };
+                device->drawMesh(fr, shipMesh, shipTex, etint, m);
+            }
         }
-        // HUGE capital (darkens as subsystems fall).
-        const float sx=90.f, sy=22.f, sz=30.f;
-        const float m[16] = { sx,0,0,0, 0,sy,0,0, 0,0,sz,0, capPos[0],capPos[1],capPos[2],1 };
+        // Capital: emissive running lights hotter as it's crippled; on the reveal
+        // frame the hull + lights fade in with revealA and the shimmer shell overlays.
         const float dmg = (float)subsDestroyed / (float)kMaxSubsystems;
-        const float ctint[4] = { 0.55f-0.25f*dmg, 0.60f-0.20f*dmg, 0.80f-0.20f*dmg, 1.0f };
-        device->drawMesh(fr, capitalMesh, capitalTex, ctint, m);
+        const float rv = std::clamp(revealA, 0.0f, 1.0f);
+        const float base[4] = { (0.55f-0.22f*dmg)*rv, (0.60f-0.18f*dmg)*rv, (0.80f-0.18f*dmg)*rv, 1.0f };
+        const float glow = std::max(dmg, (1.0f - rv));   // crippled glow OR decloak resolve glow
+        const float emis[4] = { (1.6f*dmg + 0.9f*(1.0f-rv)) , (0.7f*dmg + 1.0f*(1.0f-rv)),
+                                (0.2f*dmg + 1.25f*(1.0f-rv)), 1.0f };
+        (void)glow;
+        device->drawMeshEmissive(fr, capitalMesh, capitalTex, base, emis, capModel);
+        if (revealA < 1.0f) {
+            const float prog = std::clamp(revealA, 0.0f, 1.0f);   // reuse revealA as decloak progress
+            decloak.render(*device, fr, nullptr, capModel, tSec, prog);
+        }
+        fx.submit(*device, fr);
     };
 
-    // A cinematic 3/4 chase: eye behind + above the pilot, looking toward the
-    // capital (+X) so the fighter reads in the foreground and the capital fills
-    // the background. atan2(dz,dx)=0 -> +X forward; slight downward pitch.
-    auto framePilot = [&](int subsDestroyed) {
+    // Cinematic 3/4 chase framing (dogfight/climax): eye behind + above the pilot,
+    // looking toward the capital. `tiltPit`/`tiltYaw` inject a shake tilt for the
+    // shake still (T3); the live path animates the decaying version.
+    auto framePilot = [&](float tiltYaw, float tiltPit, float fov) {
         const x3::phys::Vec3 pp = pilot.pos();
         const float ex = pp.x - 34.0f, ey = pp.y + 12.0f, ez = pp.z + 16.0f;
         const float lx = pp.x + 60.0f - ex, ly = pp.y - ey, lz = pp.z - ez;
         const float len = std::max(std::sqrt(lx*lx+ly*ly+lz*lz), 1e-3f);
-        device->setCamera(ex, ey, ez, std::atan2(lz, lx), std::asin(ly/len), 60.0f);
+        device->setCamera(ex, ey, ez, std::atan2(lz, lx) + tiltYaw,
+                          std::asin(ly/len) + tiltPit, fov);
+        env.setCamera(ex, ey, ez);
+    };
+    // Reveal framing: wide 3/4 on the capital with the planet limb in shot.
+    auto frameReveal = [&]() {
+        const float ex = 70.0f, ey = 34.0f, ez = 96.0f;
+        const float lx = capPos[0]-ex, ly = capPos[1]-ey, lz = capPos[2]-ez;
+        const float len = std::max(std::sqrt(lx*lx+ly*ly+lz*lz), 1e-3f);
+        device->setCamera(ex, ey, ez, std::atan2(lz, lx), std::asin(ly/len), 52.0f);
+        env.setCamera(ex, ey, ez);
+    };
+    // God-rays framing: put the sun BEHIND the capital superstructure so the shafts
+    // rake through it. Eye on the far side, looking back toward the sun through the hull.
+    auto frameGodrays = [&]() {
+        const float ex = capPos[0] + 130.0f, ey = 30.0f, ez = 150.0f;
+        const float lx = capPos[0]-ex, ly = capPos[1]+4.0f-ey, lz = capPos[2]-ez;
+        const float len = std::max(std::sqrt(lx*lx+ly*ly+lz*lz), 1e-3f);
+        device->setCamera(ex, ey, ez, std::atan2(lz, lx), std::asin(ly/len), 50.0f);
+        env.setCamera(ex, ey, ez);
     };
 
     int shotFails = 0;
-    auto capture = [&](const std::string& name, int subsDestroyed) {
+    // One capture = a settle loop (TAA/exposure/bloom converge) with an optional
+    // per-frame hook to spawn/advance FX so venting/detonation are live at the shot.
+    auto capture = [&](const std::string& name, int subsDestroyed, float revealA,
+                       const std::function<void(int)>& setCam,
+                       const std::function<void(int)>& perFrame) {
         const std::string path = outDir + "/" + name + ".png";
-        const int kSettle = 48;                    // TAA + auto-exposure + bloom settle
+        const int kSettle = 48;
         for (int i = 0; i < kSettle; ++i) {
-            framePilot(subsDestroyed);
+            if (perFrame) perFrame(i);
+            fx.update(dt);
+            setCam(i);
             if (i == kSettle - 1) device->armCapture(path.c_str());
             auto fr = device->beginFrame();
-            if (fr.valid) drawScene(fr, subsDestroyed);
+            if (fr.valid) drawScene(fr, subsDestroyed, revealA, (float)i * dt);
             device->endFrame(fr);
         }
         if (device->captureFrame(path.c_str())) x3::logInfo("--screenshot-dogfight: wrote " + path);
         else { x3::logError("--screenshot-dogfight: capture FAILED " + path); ++shotFails; }
     };
 
-    // Fly the synthetic pilot up the engagement until the capital (at +X 280) sits
-    // inside the 200 m camera far plane, so the beauty frame shows the fighter in
-    // the foreground WITH the capital looming behind. (In the live dogfight the same
-    // approach brings the capital into view as the player closes the distance.)
+    auto noHook = std::function<void(int)>{};
+
+    // (a) DECLOAK REVEAL — capital mid-decloak (progress ~0.45): shimmer shell over
+    // a half-resolved hull, lens flare off the sun, planet limb in shot.
+    capture("01_decloak_reveal", /*subs*/0, /*revealA=decloakProg*/0.45f,
+            [&](int){ frameReveal(); }, noHook);
+
+    // (b) GOD-RAYS THROUGH THE SUPERSTRUCTURE — fully resolved capital, sun behind it.
+    capture("02_godrays_superstructure", /*subs*/0, /*revealA*/1.0f,
+            [&](int){ frameGodrays(); }, noHook);
+
+    // Fly the synthetic pilot up the engagement so the fighter reads in the
+    // foreground with the capital looming (mirrors the live approach).
     x3::game::PlayerInput in{}; in.moveFwd = 1.0f;
     for (int s = 0; s < 1200 && pilot.pos().x < 150.0f; ++s) { pilot.update(in, dt, *phys);
         const x3::phys::Vec3 pp = pilot.pos(); const float ppos[3] = { pp.x, pp.y, pp.z };
         const x3::phys::Vec3 pv = pilot.velocity(); const float pvel[3] = { pv.x, pv.y, pv.z };
         enemies.update(dt, ppos, pvel); }
-    capture("02_dogfight_capital_fx", /*subsDestroyed*/ 1);
 
-    // Cripple the capital's subsystems for the CLIMAX frame (hull sphere hit model
-    // is exercised live; here we drive the damage model straight for the still).
+    // (c) MID-DOGFIGHT WITH SHAKE — a held trauma tilt (camera rolled off-axis) so
+    // the shake reads in the frame (the HUD tilt Tim asked for). Deterministic.
+    {
+        const float trauma = 0.85f;
+        const float s = trauma * trauma;
+        const float tiltYaw = s * 0.030f * 0.85f;
+        const float tiltPit = s * 0.030f * -0.6f;
+        capture("03_dogfight_shake", /*subs*/1, /*revealA*/1.0f,
+                [&](int){ framePilot(tiltYaw, tiltPit, 65.0f + 9.0f); }, noHook);   // +9 FOV boost kick
+    }
+
+    // (d) SUBSYSTEM VENTING — a couple of subsystems down, venting plumes + local
+    // blasts live on the hull. Spawn a plume every few frames so it's active at shot.
+    x3::space::ShipDamage::applyDamage(capital, 100000, (x3::space::Subsystem)0);
+    x3::space::ShipDamage::applyDamage(capital, 100000, (x3::space::Subsystem)1);
+    capture("04_subsystem_venting", /*subs*/2, /*revealA*/1.0f,
+            [&](int){ framePilot(0.0f, 0.0f, 65.0f); },
+            [&](int i){
+                if (i % 6 == 0) {
+                    const int k = (i / 6) % 2;
+                    const x3::phys::Vec3 vent{ 280.0f - 20.0f + 40.0f * (float)k,
+                                               6.0f * std::sin((float)i), 10.0f };
+                    fx.spawnSmoke(vent);
+                    if (i % 12 == 0) fx.spawnExplosion(vent, 7.0f);
+                }
+            });
+
+    // (e) FINAL DETONATION — cripple all subsystems, one big fireball at the core.
     for (int sub = 0; sub < kMaxSubsystems; ++sub)
         x3::space::ShipDamage::applyDamage(capital, 100000, (x3::space::Subsystem)sub);
-    capture("03_subsystem_climax", /*subsDestroyed*/ kMaxSubsystems);
+    {
+        bool blown = false;
+        capture("05_final_detonation", /*subs*/kMaxSubsystems, /*revealA*/1.0f,
+                [&](int){ framePilot(0.0f, 0.0f, 65.0f); },
+                [&](int i){
+                    if (!blown) { const x3::phys::Vec3 core{280.f,0.f,0.f};
+                        fx.spawnExplosion(core, 42.0f); fx.spawnSmoke(core); blown = true; }
+                    if (i % 5 == 0) { const x3::phys::Vec3 c{280.f + 12.f*std::sin((float)i),
+                        8.f*std::cos((float)i), 6.f*std::sin((float)i*0.7f)};
+                        fx.spawnExplosion(c, 10.0f); }
+                });
+    }
 
+    fx.shutdown(*device);
+    decloak.shutdown(*device);
+    env.shutdown(*device);
     device->destroyMesh(shipMesh); device->destroyMesh(capitalMesh);
     device->destroyTexture(shipTex); device->destroyTexture(capitalTex);
     phys->shutdown();
@@ -859,10 +1244,19 @@ IntroOutcome runInteractiveIntro(x3::apphost::HostContext& hc) {
         if (beat.kind == BeatKind::CutsceneClip && beat.id == "cine.outcome") {
             outcomeBeat = beat; haveOutcomeBeat = true; continue;
         }
-        if (beat.kind == BeatKind::CutsceneClip)
-            playCinematicBeat(hc, beat, haveCs ? &coldOpen : nullptr);
-        else
+        if (beat.kind == BeatKind::CutsceneClip) {
+            // T2: the reveal beat is the bespoke one-continuous-shot decloak opening
+            // (camera drifts past the planet limb, the capital decloaks with god-rays
+            // + lens flare, then sweeps into the cockpit seat). Live only; headless
+            // no-op so the deterministic brain is unaffected. Other cine beats still
+            // play their authored cutscene span.
+            if (beat.id == "cine.reveal")
+                runCinematicRevealBeat(hc);
+            else
+                playCinematicBeat(hc, beat, haveCs ? &coldOpen : nullptr);
+        } else {
             runInteractiveBeat(hc, beat, metrics);
+        }
     }
 
     // Load the persisted narrative flags (the lane app_run branches on) so the
