@@ -67,26 +67,39 @@ vec3 starField(vec3 dir, float t) {
 float nbHash(vec2 p) { return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453123); }
 float nbNoise(vec2 p) {
     vec2 i = floor(p), f = fract(p);
-    vec2 u = f * f * (3.0 - 2.0 * f);
+    // Quintic (smootherstep) interpolant — no visible linear ramps at cell edges.
+    vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
     return mix(mix(nbHash(i),                 nbHash(i + vec2(1, 0)), u.x),
                mix(nbHash(i + vec2(0, 1)),    nbHash(i + vec2(1, 1)), u.x), u.y);
 }
 float nbFbm(vec2 p) {
+    // Rotate the domain ~37 deg every octave so the value-noise LATTICE never
+    // lines up across octaves — kills the axis-aligned "rectangular patch"
+    // artifact that a plain scale-by-2 fbm produces at low frequency.
+    const mat2 R = mat2(0.80, 0.60, -0.60, 0.80);
     float a = 0.5, acc = 0.0;
-    for (int i = 0; i < 5; ++i) { acc += a * nbNoise(p); p = p * 2.13 + 17.7; a *= 0.5; }
+    for (int i = 0; i < 6; ++i) { acc += a * nbNoise(p); p = R * p * 2.03 + 19.3; a *= 0.5; }
     return acc;
 }
 vec3 nebulaField(vec3 dir) {
     vec2 uv = vec2(atan(dir.z, dir.x) * 0.1591549 + 0.5,
                    asin(clamp(dir.y, -1.0, 1.0)) * 0.3183099 + 0.5);
-    // Ridged detail riding a broad mask so the clouds come in PATCHES with clear
-    // dark sky between them (not a uniform wash).
-    float mask1 = smoothstep(0.45, 0.75, nbFbm(uv * 3.1 + 11.0));
-    float mask2 = smoothstep(0.48, 0.80, nbFbm(uv * 2.6 + 47.0));
-    float d1 = pow(nbFbm(uv * 9.0 + 3.0), 2.0);
-    float d2 = pow(nbFbm(uv * 8.0 + 71.0), 2.0);
-    vec3 teal = vec3(0.05, 0.30, 0.30) * (mask1 * (0.35 + 1.3 * d1));
-    vec3 rose = vec3(0.34, 0.07, 0.13) * (mask2 * (0.30 + 1.2 * d2));
+    // Domain-warp the lookup so cloud EDGES billow (fluid, not lattice-shaped).
+    vec2 w = vec2(nbFbm(uv * 3.0 + 5.0), nbFbm(uv * 3.0 + 61.0));
+    vec2 quv = uv + 0.35 * (w - 0.5);
+    // Two broad WARPED masks place a TEAL field and a ROSE field in different
+    // regions of the sky; higher-freq detail fbm adds filamentary structure.
+    // Wide smootherstep windows = soft feathered edges (patchy, not a wash, and
+    // no hard rectangles).
+    // HIGH thresholds -> the clouds occupy only the upper tail of the fbm, so most
+    // of the sky stays DARK (stars read through) and the nebula comes in distinct
+    // PATCHES — teal on one flank, rose on another (lab.jpg), not a full wash.
+    float m1 = smoothstep(0.56, 0.92, nbFbm(quv * 2.2 + 11.0));
+    float m2 = smoothstep(0.58, 0.94, nbFbm(quv * 1.8 + 47.0));
+    float d1 = pow(nbFbm(quv * 6.0 +  3.0), 1.7);
+    float d2 = pow(nbFbm(quv * 5.2 + 71.0), 1.7);
+    vec3 teal = vec3(0.11, 0.44, 0.48) * (m1 * (0.30 + 1.4 * d1));   // brighter — no longer buried under rose
+    vec3 rose = vec3(0.34, 0.10, 0.17) * (m2 * (0.28 + 1.3 * d2));
     return teal + rose;
 }
 

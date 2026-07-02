@@ -178,7 +178,7 @@ int hostSurfaceStart(HostContext& hc) {
         sp.exposure = 1.0f;
         sp.zenith[0]  = 0.006f; sp.zenith[1]  = 0.011f; sp.zenith[2]  = 0.026f;  // near-black blue overhead
         sp.horizon[0] = 0.020f; sp.horizon[1] = 0.033f; sp.horizon[2] = 0.062f;  // faint cool horizon glow
-        sp.nebula = 1.25f;   // ALIEN NIGHT (lab.jpg): teal + rose nebula clouds behind the stars
+        sp.nebula = 0.85f;   // ALIEN NIGHT (lab.jpg): teal + rose nebula PATCHES behind the stars (dark sky dominant)
         device->setSkyParams(sp);
     }
     // A cool ambient FILL so the SHADOWED faces of the white concrete read as
@@ -747,7 +747,7 @@ int hostSurfaceStart(HostContext& hc) {
         moonMaps[1] = loadAbs(p + "Moon/Textures/moon_02_normal.png", false);  // normal
         moonMaps[2] = loadAbs(p + "Moon/Textures/moon_01_detail.png", true);   // detail
         moonMaps[3] = loadAbs(p + "Moon/Textures/moon_02_spec.png",   false);  // spec
-        moonMaps[4] = loadAbs(p + "Atmosphere/sunset_yellow_05.png",  true);   // scatter
+        moonMaps[4] = loadAbs(p + "Atmosphere/sunset_blue_01.png",    true);   // scatter LUT — BRIGHT cool blue-white (lab.jpg's silver moons); _05 was too dark
         moonOk = moonMaps[0].valid();
         if (moonOk) {
             x3::prims::PrimMesh sm = x3::prims::makeUVSphere(48, 96);
@@ -759,9 +759,23 @@ int hostSurfaceStart(HostContext& hc) {
     }
     // Sky-direction + apparent-size table for the two moons (normalized below).
     struct MoonBody { float dir[3]; float diamDeg; };
+    // Placed UPPER-LEFT + forward + high (lab.jpg framing) — and, crucially, angled
+    // so each moon's direction has a POSITIVE dot with the scene sunDir
+    // (-0.40,0.60,0.70): that puts the terminator across the visible disc so they
+    // read as a lit CRESCENT/half rather than a flat full disc. Kept below the
+    // ~35 deg frame ceiling (pitch 0.30 + half-fov) so both stay in shot.
+    // Bright COOL gibbous pair, upper-left + upper-center in clear sky. Directions
+    // chosen so dot(sunDir,dir) is negative (~-0.2): most of each disc is lit
+    // (bright, reads as a moon) with a slim terminator on one edge (the phase),
+    // rather than a dim half-lit ball. High enough to clear the tower, inside the
+    // frame ceiling.
+    // In the OPEN upper-right sky (the tower + ridge fill the left/centre of the
+    // hero framing, so the right is the clean expanse). dot(sunDir,dir) ~ -0.35
+    // -> a bright ~68%-lit disc with a slim terminator on the lower-left edge (the
+    // phase reads), rather than a dull half-ball.
     MoonBody moons[2] = {
-        { { 0.12f, 0.44f, -0.88f }, 7.0f },   // the LARGE crescent, upper-left of the tower
-        { { 0.27f, 0.55f, -0.78f }, 3.0f },   // the small companion, above-right of it
+        { { 0.28f, 0.50f, -0.80f }, 8.5f },   // the LARGE moon, open upper-right
+        { { 0.46f, 0.60f, -0.66f }, 4.4f },   // the small companion, up + right of it
     };
     for (auto& mb : moons) {
         const float l = std::sqrt(mb.dir[0]*mb.dir[0] + mb.dir[1]*mb.dir[1] + mb.dir[2]*mb.dir[2]);
@@ -898,32 +912,56 @@ int hostSurfaceStart(HostContext& hc) {
         float cam[5] = { 13.0f, 2.0f, 40.0f, -3.14159265f*0.5f - 0.10f, 0.30f };
         if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
         const std::string outPath = screenshot ? screenshotPath : std::string("w_surface.png");
-        const int kFrames = 40;
-        for (int i = 0; i < kFrames; ++i) {
-            glfwPollEvents();
-            phys->step(dt);
-            rescue.tick(dt, scene, *phys, player.feet());   // hub NOT reached -> no timers
-            scene.update(*phys);
-            device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 70.0f);
-            if (i == kFrames - 1) device->armCapture(outPath.c_str());
-            auto frame = device->beginFrame();
-            if (frame.valid) {
-                // NOTE: no view-anchored weapon in the capture — at 0.6 m from
-                // the lens it blacks out a corner of the architecture shot.
-                scene.render(*device, frame);
-                rescue.draw(*device, frame, scene);
-                drawShip(frame);
+        // Derive the NEON-VARIANT path: "<stem>_neon.<ext>" (default hero_final ->
+        // hero_final_neon). Tim picks between primary (Lab2 clean crown) and neon
+        // (lab.jpg's cyan parapet strip).
+        auto neonVariantPath = [](const std::string& p) {
+            const size_t dot = p.find_last_of('.');
+            return (dot == std::string::npos) ? p + "_neon"
+                                              : p.substr(0, dot) + "_neon" + p.substr(dot);
+        };
+        // Render kFrames from the fixed vantage (so temporal effects settle),
+        // arming the capture on the final frame, then write it to disk. Moons are
+        // drawn camera-anchored; the view-anchored weapon is omitted (at 0.6 m it
+        // blacks out a corner of the architecture shot).
+        auto renderAndCapture = [&](const std::string& path) -> bool {
+            const int kFrames = 40;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                phys->step(dt);
+                rescue.tick(dt, scene, *phys, player.feet());   // hub NOT reached -> no timers
+                scene.update(*phys);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 70.0f);
+                if (i == kFrames - 1) device->armCapture(path.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    scene.render(*device, frame);
+                    rescue.draw(*device, frame, scene);
+                    drawShip(frame);
+                    drawMoons(frame, cam[0], cam[1], cam[2]);   // TWO crescent moons in the sky
+                }
+                device->endFrame(frame);
             }
-            device->endFrame(frame);
-        }
-        const bool wrote = device->captureFrame(outPath.c_str());
+            return device->captureFrame(path.c_str());
+        };
+        auto setNeon = [&](bool on) { for (uint32_t id : neonIds) scene.get(id).visible = on; };
+
+        // PRIMARY hero — Lab2's clean white crown (neon parapet OFF).
+        setNeon(false);
+        const bool wrote = renderAndCapture(outPath);
+        // NEON VARIANT — lab.jpg's cyan parapet ring ON (second labeled shot).
+        setNeon(true);
+        const std::string neonPath = neonVariantPath(outPath);
+        const bool wroteNeon = renderAndCapture(neonPath);
+        setNeon(false);
         if (wrote) {
             const x3::rhi::RenderStats st = device->stats();
-            char rb[320];
+            char rb[380];
             std::snprintf(rb, sizeof(rb),
-                "--world surface: wrote %s | entities=%u draws=%u tris=%u ship=%s armed=%s sarah=%s",
-                outPath.c_str(), scene.size(), st.drawCalls, st.triangles,
-                shipModel.ok ? "REAL" : "box", pistolModel.ok ? "yes" : "no",
+                "--world surface: wrote %s (+neon %s:%s) | entities=%u draws=%u tris=%u ship=%s moons=%s sarah=%s",
+                outPath.c_str(), neonPath.c_str(), wroteNeon ? "ok" : "FAIL",
+                scene.size(), st.drawCalls, st.triangles,
+                shipModel.ok ? "REAL" : "box", moonOk ? "x2" : "none",
                 rescue.victimCount() > 0 ? "staged" : "none");
             x3::logInfo(rb);
         } else x3::logError("--world surface: capture FAILED");
