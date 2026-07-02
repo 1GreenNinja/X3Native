@@ -698,12 +698,12 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
         const float armBackZ = +0.06f;                              // BEHIND the glass (into the wall, away from player)
         // Slim glass spar (faint blue, slight emissive sheen) — not a fat gray bar.
         m_decor.push_back(addBox(0.035f, armH, 0.035f, 0, armMidY, armBackZ,
-                                 0.10f,0.20f,0.30f, 1.0f,  0.12f,0.35f,0.55f, 0.6f));
+                                 0.10f,0.20f,0.30f, 1.0f,  0.12f,0.35f,0.55f, 0.22f)); // stand: near-dark (Bible: body is NOT a lamp)
         // Fiber-optic trace (cyan) + copper trace (amber) threaded inside the glass.
         m_decor.push_back(addBox(0.007f, armH, 0.007f, -0.014f, armMidY, armBackZ - 0.002f,
-                                 0,0,0,1,  0.2f,0.9f,1.0f, 2.8f));   // cyan fiber
+                                 0,0,0,1,  0.2f,0.9f,1.0f, 1.5f));   // cyan fiber (restrained)
         m_decor.push_back(addBox(0.007f, armH, 0.007f,  0.014f, armMidY, armBackZ - 0.002f,
-                                 0,0,0,1,  1.0f,0.55f,0.2f, 2.2f));  // copper trace
+                                 0,0,0,1,  1.0f,0.55f,0.2f, 1.2f));  // copper trace (restrained)
     }
 
     // ---- The HOLOGRAM screen: a rounded-corner glass quad, dark base color so the
@@ -722,21 +722,25 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     // emissive glow carry the projected-display read. baseColor stays full-albedo so
     // the bright cyan line-art survives the lit term; glass.opacity is the see-through
     // dial (mid so the printed HUD still reads strongly against what's behind).
-    e.baseColor[0] = 1.0f; e.baseColor[1] = 1.0f; e.baseColor[2] = 1.0f; e.baseColor[3] = 1.0f;
+    // Albedo pulled DOWN from full white (Art Bible / Tim's live playtest: the panel
+    // verified BY EYE as a solid cyan bloom-blob — white albedo × bright cyan texture
+    // × lit term × glass frost × emissive, summed then amplified by night auto-
+    // exposure past readability). 0.55 keeps the printed line-art crisp under the lit
+    // term without the flood.
+    e.baseColor[0] = 0.55f; e.baseColor[1] = 0.55f; e.baseColor[2] = 0.55f; e.baseColor[3] = 1.0f;
     e.transparent = true;
-    // Tasteful tinted, lightly-frosted, emissive display glass (spec §2 preset). With
-    // M2-M4 live: the cell behind bends a touch through it (refraction), the surface
-    // catches a cool-blue fresnel sheen + glints (M3) and reads slightly milky (M4
-    // frost). Mid opacity keeps the printed holo UI dominant while the glass character
-    // shows. Tuned against the M2-M4 shader, not the M1 fake-translucency hack.
-    e.glass.opacity    = 0.55f;          // mid — UI reads, glass still see-through
+    // RESTRAINED display glass (Art Bible: "emissives are light sources, not
+    // stickers"; Signal-cyan is an ACCENT). More see-through than the old preset
+    // (Tim: "not transparent enough"), less frost (frost was milking the whole plate
+    // toward a slab), less specular sheen.
+    e.glass.opacity    = 0.38f;          // the room genuinely shows through the glass
     e.glass.tint[0]    = 0.78f; e.glass.tint[1] = 0.90f; e.glass.tint[2] = 1.0f; // cool-blue tint
-    e.glass.roughness  = 0.14f;          // lightly frosted display glass (M4)
+    e.glass.roughness  = 0.08f;          // barely frosted — clarity over milk
     e.glass.refraction = 0.025f;         // gentle bend of the cell behind (M2)
-    e.glass.specular   = 0.55f;          // fresnel sheen + glints (M3)
-    // Moderate emissive: gives the glass a hologram glow / bloom WITHOUT flooding out
-    // the textured line-art (which rides the full-albedo lit term). Pulsed in update().
-    m_emBase[0] = 0.10f; m_emBase[1] = 0.34f; m_emBase[2] = 0.52f; m_emBase[3] = 0.45f;
+    e.glass.specular   = 0.40f;          // fresnel sheen without the hot glints
+    // RESTRAINED emissive: a readable hologram glow that feeds bloom gently. The UI
+    // text must be READABLE on the glass at night exposure — that is the acceptance.
+    m_emBase[0] = 0.10f; m_emBase[1] = 0.34f; m_emBase[2] = 0.52f; m_emBase[3] = 0.30f;
     e.emissive[0]=m_emBase[0]; e.emissive[1]=m_emBase[1]; e.emissive[2]=m_emBase[2]; e.emissive[3]=m_emBase[3];
     e.tag = (uint32_t)Tag::Prop;
     e.transform[0]=cs;  e.transform[2]=-sn;
@@ -873,7 +877,7 @@ void HoloTerminal::update(float dt) {
         const float t = std::fmod(m_clock * 0.45f, 1.0f);      // 0..1 sweep phase
         const float band = 0.5f - 0.5f * std::cos(t * 6.2831853f); // smooth 0->1->0
         Entity& scan = m_scene->get(m_scanEntity);
-        scan.emissive[3] = 0.20f + 0.55f * band;               // gentle additive sweep
+        scan.emissive[3] = 0.12f + 0.30f * band;               // restrained sweep (Bible: accent, not strobe)
     }
 }
 

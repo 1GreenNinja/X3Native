@@ -462,9 +462,11 @@ bool CellDressing::build(x3::rhi::IRenderDevice& device, std::string_view conver
         // Modest screen-glow emissive (not a wash) so the panel reads as a lit terminal,
         // not a blown-out white slab. Console faces -Z by default; on the -Z wall we want
         // the SCREEN facing +Z (into the room) -> yaw = +pi, anchored at its +Z (back) face.
-        // Brighter screen content so the terminal reads as an ACTIVE panel with display
-        // glow (HDR -> bloom), not a dim slab. The console body stays dark gunmetal.
-        const float emCyan[4]   = { 0.18f, 0.95f, 1.25f, 2.6f };
+        // Screen glow RESTRAINED (Art Bible / Tim's live playtest: at night auto-
+        // exposure the 2.6-strength screen bloomed to a cyan blob). 1.4 reads as an
+        // active display that still shows content; the cyan accent LIGHT below does
+        // the room-pooling (a light source, not a sticker). Body stays dark gunmetal.
+        const float emCyan[4]   = { 0.18f, 0.95f, 1.25f, 1.4f };
         const float darkMetal[4] = { 0.18f, 0.21f, 0.28f, 1.0f };  // painted gunmetal panel
         place(aConsole, kPi, 1.0f, cx(kConsAabb), kConsAabb.miny, kConsAabb.maxz,
               tx, fY + 0.0f, tz, emCyan, darkMetal);

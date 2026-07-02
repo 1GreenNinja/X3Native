@@ -292,6 +292,54 @@
       "sha256": "b95225123a2f007691aabeaaa70cf9e96f3cb60211e8cbd028944b3946612814",
       "size": 7059860,
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/textures/facility/ceil_tiles_bc.png",
+      "sha256": "b5cdb597978faddd7d3aac375ce9be29acc2d6b9df5183e2896ade3e9829e37b",
+      "size": 6992496,
+      "source_note": ""
+    },
+    {
+      "repo_path": "assets/textures/facility/ceil_tiles_orm.png",
+      "sha256": "5f4b393d8e2220560428a3d9dd585dba274195c8bb930ba60f2e1d7205610bc9",
+      "size": 858394,
+      "source_note": ""
+    },
+    {
+      "repo_path": "assets/textures/facility/floor_tiles_bc.png",
+      "sha256": "aeef9272f4c3b1c083c3bcedf3abe6b3db3f08b20911e977f8b093c690ffa4bf",
+      "size": 5666767,
+      "source_note": ""
+    },
+    {
+      "repo_path": "assets/textures/facility/floor_tiles_orm.png",
+      "sha256": "c262ebff3824487fa92ec5624c52c10aacfc9066bd983b6d0d714a0ad10fd864",
+      "size": 3358971,
+      "source_note": ""
+    },
+    {
+      "repo_path": "assets/textures/facility/floor_tiles_orm_polished.png",
+      "sha256": "ff932dcaea8401a2494efbd5adffba20bf16dfc16bece664c766809734d7269f",
+      "size": 2410463,
+      "source_note": ""
+    },
+    {
+      "repo_path": "assets/textures/facility/wall_concrete_a.png",
+      "sha256": "5118d67abd63f2c774fd9d5c5cc0c6943f6c26de8852f7b67dbd1dd3ec37dc95",
+      "size": 7412824,
+      "source_note": ""
+    },
+    {
+      "repo_path": "assets/textures/facility/wall_concrete_b.png",
+      "sha256": "02973f7db56a9ae661997fb027cb93de488414b136ed3173ce7b0a706f988ca5",
+      "size": 7517580,
+      "source_note": ""
+    },
+    {
+      "repo_path": "assets/textures/facility/wall_mr_matte.png",
+      "sha256": "54526d033a58411c0847bc0d36248e5937b666cbf041f564c0f5bfd0a1b6700a",
+      "size": 184,
+      "source_note": ""
     }
   ]
 }

@@ -16,6 +16,17 @@
 #include <chrono>     // [boot] build-cost accumulators
 #include <cmath>
 #include <cstdint>
+
+// stb_image (FILE-LOCAL copy — the cinematic.cpp/screenshot_hosts.cpp precedent: the
+// engine's ModelLoader.cpp hosts its own file-local implementation, so this TU takes a
+// STATIC private copy with no symbol clash) for the facility PBR texture set: the
+// texture offensive replaces the 512px procedural checker panels with real scanned
+// surfaces (assets/textures/facility, published via the asset store; boot auto-fetch
+// covers fresh clones).
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#include <stb_image.h>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -208,6 +219,26 @@ double monoMs() {
     return std::chrono::duration<double, std::milli>(C::now().time_since_epoch()).count();
 }
 
+// ---- CANON PBR MATERIAL COMPANIONS (texture offensive) --------------------------------
+// Optional metallic-roughness companion per base texture: addBox looks the base tex up
+// and routes the entity through the PBR path (Entity::mrTex -> Scene::render's
+// drawMeshPBR w/ Cook-Torrance + IBL/SSR) when a companion is registered. Registered
+// once per build by buildCanonFloor (walls -> matte concrete MR, floors -> the tile ORM,
+// hallway floors -> the POLISHED ORM so sconce pools streak down the hall). Tiny linear
+// table; reset at each build.
+struct CanonMrPair { x3::rhi::TextureHandle tex, mr; };
+static CanonMrPair g_canonMr[8];
+static int         g_canonMrN = 0;
+static void registerCanonMr(x3::rhi::TextureHandle tex, x3::rhi::TextureHandle mr) {
+    if (!tex.valid() || !mr.valid() || g_canonMrN >= 8) return;
+    g_canonMr[g_canonMrN++] = { tex, mr };
+}
+static x3::rhi::TextureHandle canonMrFor(x3::rhi::TextureHandle tex) {
+    for (int i = 0; i < g_canonMrN; ++i)
+        if (g_canonMr[i].tex.id == tex.id) return g_canonMr[i].mr;
+    return {};
+}
+
 uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysicsWorld& physics,
                 float hx, float hy, float hz, float cx, float cy, float cz,
                 x3::rhi::TextureHandle tex, const float color[4], uint32_t roomId,
@@ -221,6 +252,7 @@ uint32_t addBox(Scene& scene, x3::rhi::IRenderDevice& device, x3::phys::IPhysics
                                    geo.index.data(), (uint32_t)geo.index.size());
     const double t2 = monoMs();
     e.tex = tex;
+    e.mrTex = canonMrFor(tex);   // PBR companion (texture offensive); invalid = legacy path
     for (int i = 0; i < 4; ++i) e.baseColor[i] = color[i];
     for (int i = 0; i < 16; ++i) e.transform[i] = kIdentity[i];
     e.tag = (uint32_t)Tag::Static;
@@ -340,6 +372,7 @@ void doorwayRamp(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p
         e.mesh = d.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                               geo.index.data(), (uint32_t)geo.index.size());
     e.tex = tex;
+    e.mrTex = canonMrFor(tex);   // PBR companion (texture offensive); invalid = legacy path
     for (int i = 0; i < 4; ++i) e.baseColor[i] = color[i];
     for (int i = 0; i < 16; ++i) e.transform[i] = kIdentity[i];
     e.tag = (uint32_t)Tag::Static;
@@ -953,42 +986,81 @@ std::vector<CanonLight> buildCanonLights(const CanonFloor& floor) {
     std::vector<CanonLight> lights;
     if (!floor.valid()) return lights;
 
-    // Warm-white emitter, premultiplied by intensity (linear; mesh.frag accumulates
-    // additively then tonemaps). Matches env_art.cpp's kIntensity 3.2 warm tungsten.
-    constexpr float kIntensity = 3.2f;
-    const float colR = 1.00f * kIntensity;
-    const float colG = 0.86f * kIntensity;
-    const float colB = 0.62f * kIntensity;
+    // ---- ZONE MOOD LIGHTING (the Art Bible: one motivated key, one accent color,
+    // real darkness between). Every room type gets a color STORY instead of one flat
+    // warm-white everywhere: cells hold a cool captive blue, the armory runs task
+    // amber ("here you become dangerous"), the boss arena is blooded, elevators carry
+    // the signal-cyan of the machine spine — and HALLWAYS trade the even grid for a
+    // warm sconce POOL RHYTHM along the long axis with genuine darkness between pools
+    // (the cathedral rhythm; the polished hall floor streaks each pool via SSR).
+    struct Mood { float r, g, b, intensity; };
+    auto moodFor = [](const CanonRoom& rm) -> Mood {
+        const std::string& t = rm.type;
+        auto has = [&](const char* s) { return t.find(s) != std::string::npos; };
+        // Intensities HALVED vs first pass: the real bone-concrete albedo (~0.8)
+        // reflects ~4x the old dark procedural panels, so the same light values
+        // flooded the room white (Bible violation — no darkness between). These are
+        // tuned for POOLS with shadow gaps under night auto-exposure.
+        if (has("Cell"))                        return { 0.72f, 0.80f, 1.00f, 1.2f };  // cool captive blue
+        if (has("Boss"))                        return { 1.00f, 0.46f, 0.36f, 1.5f };  // blood amber-red
+        if (has("Hallway"))                     return { 1.00f, 0.80f, 0.56f, 1.7f };  // warm sconce pools
+        if (has("Medical"))                     return { 0.86f, 1.00f, 0.96f, 1.5f };  // clinical white-cyan
+        if (has("Armory") || has("Security"))   return { 1.00f, 0.74f, 0.42f, 1.5f };  // task amber
+        if (has("Cave") || has("Undergroun"))   return { 0.95f, 0.72f, 0.50f, 1.0f };  // dim service warm
+        if (has("Elevator") || has("Stair"))    return { 0.74f, 0.86f, 1.00f, 1.4f };  // signal cyan-white
+        return { 1.00f, 0.86f, 0.62f, 1.35f };                                         // warm neutral
+    };
 
+    uint32_t nPools = 0;
     for (uint32_t ri = 0; ri < (uint32_t)floor.rooms.size(); ++ri) {
         const CanonRoom& r = floor.rooms[ri];
+        const Mood m = moodFor(r);
         // Emit just below the ceiling so the ceiling lid doesn't occlude the pool.
         const float lightY = r.y1() - 0.25f;
-        // Range covers the room height + a margin so the floor of a tall room is lit.
-        const float range  = std::max(8.0f, r.h + 4.0f);
-        // Wide / deep rooms (boss arena, main hall) get a small grid so the whole floor
-        // reads evenly lit; small cells get a single center light. Cap the grid so we
-        // never mint a huge number of lights for one room (cheap + cap-friendly).
-        const int nx = std::min(3, std::max(1, (int)std::ceil(r.w / 8.0f)));
-        const int nz = std::min(3, std::max(1, (int)std::ceil(r.d / 8.0f)));
-        for (int iz = 0; iz < nz; ++iz) {
-            for (int ix = 0; ix < nx; ++ix) {
-                // Evenly space the grid across the room interior (centered).
-                const float fx = (nx == 1) ? 0.0f : ((ix + 0.5f) / nx - 0.5f);
-                const float fz = (nz == 1) ? 0.0f : ((iz + 0.5f) / nz - 0.5f);
-                CanonLight cl;
-                cl.room = ri;
-                cl.light.pos[0] = r.cx + fx * r.w * 0.8f;
-                cl.light.pos[1] = lightY;
-                cl.light.pos[2] = r.cz + fz * r.d * 0.8f;
-                cl.light.range  = range;
-                cl.light.color[0] = colR; cl.light.color[1] = colG; cl.light.color[2] = colB;
-                lights.push_back(cl);
+
+        auto emit = [&](float x, float z, float range) {
+            CanonLight cl;
+            cl.room = ri;
+            cl.light.pos[0] = x; cl.light.pos[1] = lightY; cl.light.pos[2] = z;
+            cl.light.range  = range;
+            cl.light.color[0] = m.r * m.intensity;
+            cl.light.color[1] = m.g * m.intensity;
+            cl.light.color[2] = m.b * m.intensity;
+            lights.push_back(cl);
+        };
+
+        const bool isHall = r.type.find("Hallway") != std::string::npos;
+        if (isHall && std::max(r.w, r.d) > 10.0f) {
+            // The pool rhythm: a warm pool every ~6 m down the long axis, ranges
+            // TIGHTENED so shadow lives between pools instead of one flat wash.
+            const bool  alongX = r.w >= r.d;
+            const float len    = alongX ? r.w : r.d;
+            const int   n      = std::max(2, (int)std::floor(len / 6.0f));
+            const float range  = std::max(5.0f, r.h + 1.5f);
+            for (int i = 0; i < n; ++i) {
+                const float f = (i + 0.5f) / (float)n - 0.5f;
+                emit(r.cx + (alongX ? f * len * 0.92f : 0.0f),
+                     r.cz + (alongX ? 0.0f : f * len * 0.92f), range);
+                ++nPools;
             }
+            continue;
+        }
+
+        // Non-hall rooms: a single center pool (small rooms) or a 2-pt spread (only
+        // genuinely large rooms >12m). Range TIGHTENED to the room so light falls off
+        // into shadow at the walls — a pool, not a flood (Bible: real darkness between).
+        const float range = std::min(std::max(r.w, r.d) * 0.75f, r.h + 3.0f);
+        if (std::max(r.w, r.d) > 12.0f) {
+            const bool ax = r.w >= r.d; const float len = ax ? r.w : r.d;
+            emit(r.cx + (ax ? -0.22f*len : 0), r.cz + (ax ? 0 : -0.22f*len), range);
+            emit(r.cx + (ax ?  0.22f*len : 0), r.cz + (ax ? 0 :  0.22f*len), range);
+        } else {
+            emit(r.cx, r.cz, range);
         }
     }
     x3::logInfo("buildCanonLights: minted " + std::to_string(lights.size()) +
-                " warm-white ceiling lights for " + std::to_string(floor.rooms.size()) +
+                " ZONE-MOOD ceiling lights (" + std::to_string(nPools) +
+                " hall sconce-pools) for " + std::to_string(floor.rooms.size()) +
                 " rooms (fed per-room visible subset, capped at 16/frame)");
     return lights;
 }
@@ -1040,37 +1112,88 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
     const bool wallVis  = !opts.artMaskWalls;
     const bool floorVis = !opts.artMaskFloors;
 
-    // Shared procedural sci-fi textures (mirror level1.cpp's surfaces).
+    // ---- REAL PBR SURFACES (the texture offensive / Art Bible pass) --------------------
+    // Bone board-formed concrete walls (ScansFactory/Leartes Subway set) + worn facility
+    // floor tiles (Leartes Office Corridor, with its real ORM), loaded from
+    // assets/textures/facility (published via the asset store; boot auto-fetch covers
+    // fresh clones). Every file falls back PER-TEXTURE to the legacy 512px procedural
+    // panel so a clone that hasn't fetched still boots. Hallway floors get a POLISHED
+    // variant of the same tiles (roughness *0.35) so the warm sconce pools streak down
+    // the wide hall via SSR — the Bible's "polished center walk-strip" read. addBox
+    // routes any registered base texture through Entity::mrTex -> drawMeshPBR.
     constexpr uint32_t kTexN = 512;
+    g_canonMrN = 0;   // fresh MR registry per build (hot-reload safe)
+    namespace fs = std::filesystem;
+    const fs::path texRoot = fs::path(x3::game::assetRoot()) / "textures" / "facility";
+    auto loadTexFile = [&](const char* name, bool srgb) -> x3::rhi::TextureHandle {
+        const fs::path p = texRoot / name;
+        int w = 0, h = 0, c = 0;
+        stbi_uc* px = stbi_load(p.string().c_str(), &w, &h, &c, 4);
+        if (!px) return {};
+        x3::rhi::TextureHandle t = device.createTexture(px, (uint32_t)w, (uint32_t)h, srgb);
+        stbi_image_free(px);
+        return t;
+    };
+    const auto fileWallA    = loadTexFile("wall_concrete_a.png", true);
+    const auto fileWallB    = loadTexFile("wall_concrete_b.png", true);
+    const auto fileWallMr   = loadTexFile("wall_mr_matte.png", false);           // linear
+    const auto fileFloor    = loadTexFile("floor_tiles_bc.png", true);
+    const auto fileFloorMr  = loadTexFile("floor_tiles_orm.png", false);         // linear
+    const auto fileHallFlr  = loadTexFile("floor_tiles_bc.png", true);           // distinct handle
+    const auto fileHallMr   = loadTexFile("floor_tiles_orm_polished.png", false);// linear
+
+    // Fallback procedurals (kept verbatim; also still variant 3's tech-panel accent).
     auto floorPx = x3::prims::makeFloorGrateRGBA(kTexN, 2, x3::prims::detail::kNoTint, false);
-    x3::rhi::TextureHandle floorTex = device.createTexture(floorPx.data(), kTexN, kTexN, true);
+    x3::rhi::TextureHandle procFloor = device.createTexture(floorPx.data(), kTexN, kTexN, true);
     auto wallPxA = x3::prims::makeSciFiPanelRGBA(kTexN, 2, x3::prims::detail::kNoTint,
                                                  60, 170, 200, 0.16f, x3::prims::WallVariant::Plain);
-    x3::rhi::TextureHandle wallTexA = device.createTexture(wallPxA.data(), kTexN, kTexN, true);
+    x3::rhi::TextureHandle procWallA = device.createTexture(wallPxA.data(), kTexN, kTexN, true);
     auto wallPxB = x3::prims::makeSciFiPanelRGBA(kTexN, 2, x3::prims::detail::kNoTint,
                                                  60, 170, 200, 0.0f, x3::prims::WallVariant::Conduit);
-    x3::rhi::TextureHandle wallTexB = device.createTexture(wallPxB.data(), kTexN, kTexN, true);
-    auto wallPxC = x3::prims::makeSciFiPanelRGBA(kTexN, 2, x3::prims::detail::kNoTint,
-                                                 60, 170, 200, 0.0f, x3::prims::WallVariant::Vent);
-    x3::rhi::TextureHandle wallTexC = device.createTexture(wallPxC.data(), kTexN, kTexN, true);
-    const x3::rhi::TextureHandle wallVariants[3] = { wallTexA, wallTexB, wallTexC };
+    x3::rhi::TextureHandle procWallB = device.createTexture(wallPxB.data(), kTexN, kTexN, true);
+
+    const x3::rhi::TextureHandle floorTex     = fileFloor.valid()   ? fileFloor   : procFloor;
+    const x3::rhi::TextureHandle hallFloorTex = fileHallFlr.valid() ? fileHallFlr : floorTex;
+    // Wall variants: two real concretes + the procedural conduit TECH panel as the
+    // every-third accent (breaks tiling monotony AND keeps the sci-fi flavor band).
+    const x3::rhi::TextureHandle wallVariants[3] = {
+        fileWallA.valid() ? fileWallA : procWallA,
+        fileWallB.valid() ? fileWallB : (fileWallA.valid() ? fileWallA : procWallA),
+        procWallB,
+    };
+    // Primary wall texture, referenced by the gap-bridge / descent-tube / shaft
+    // builders further down (their pre-offensive name).
+    const x3::rhi::TextureHandle wallTexA = wallVariants[0];
+    if (fileWallMr.valid())  { registerCanonMr(fileWallA, fileWallMr);
+                               registerCanonMr(fileWallB, fileWallMr); }
+    if (fileFloorMr.valid())   registerCanonMr(fileFloor, fileFloorMr);
+    if (fileHallMr.valid())    registerCanonMr(fileHallFlr, fileHallMr);
+    x3::logInfo(std::string("[canon-tex] facility PBR set: walls ") +
+                (fileWallA.valid() ? "REAL" : "procedural-fallback") + ", floors " +
+                (fileFloor.valid() ? "REAL(+ORM)" : "procedural-fallback") + ", hall " +
+                (fileHallMr.valid() ? "POLISHED" : "standard"));
+
     auto ceilPx = x3::prims::makeCeilingPanelRGBA(kTexN, 3, x3::prims::detail::kNoTint, true);
     x3::rhi::TextureHandle ceilTex = device.createTexture(ceilPx.data(), kTexN, kTexN, true);
     const float ceilWhite[4] = { 1, 1, 1, 1 };
 
-    // Per-room-type tints so the graybox reads as distinct wings.
+    // Subtle per-wing tint identity (~8% saturation). The real albedo carries the look
+    // now — the old heavy graybox dyes would stain the concrete (a 0.5 tint reads as
+    // painted plastic under PBR). Wings keep a whisper of color story per the Bible:
+    // cells cool, armory warm, boss blooded — at tint strengths the eye reads as
+    // LIGHTING, not paint.
     auto tintFor = [](const std::string& type, float out[4]) {
         out[3] = 1.0f;
-        if (type.find("Cell") != std::string::npos || type == "Jake Cell") { out[0]=0.50f; out[1]=0.55f; out[2]=0.68f; }
-        else if (type.find("Boss") != std::string::npos)                   { out[0]=0.70f; out[1]=0.35f; out[2]=0.32f; }
-        else if (type.find("Hallway") != std::string::npos)                { out[0]=0.58f; out[1]=0.62f; out[2]=0.74f; }
-        else if (type.find("Medical") != std::string::npos)                { out[0]=0.62f; out[1]=0.78f; out[2]=0.76f; }
-        else if (type.find("Armory") != std::string::npos)                 { out[0]=0.66f; out[1]=0.56f; out[2]=0.34f; }
+        if (type.find("Cell") != std::string::npos || type == "Jake Cell") { out[0]=0.88f; out[1]=0.92f; out[2]=1.00f; }
+        else if (type.find("Boss") != std::string::npos)                   { out[0]=1.00f; out[1]=0.84f; out[2]=0.82f; }
+        else if (type.find("Hallway") != std::string::npos)                { out[0]=1.00f; out[1]=1.00f; out[2]=1.00f; }
+        else if (type.find("Medical") != std::string::npos)                { out[0]=0.90f; out[1]=1.00f; out[2]=0.97f; }
+        else if (type.find("Armory") != std::string::npos)                 { out[0]=1.00f; out[1]=0.93f; out[2]=0.82f; }
         else if (type.find("Cave") != std::string::npos ||
-                 type.find("Undergroun") != std::string::npos)             { out[0]=0.42f; out[1]=0.46f; out[2]=0.40f; }
+                 type.find("Undergroun") != std::string::npos)             { out[0]=0.88f; out[1]=0.92f; out[2]=0.86f; }
         else if (type.find("Elevator") != std::string::npos ||
-                 type.find("Stair") != std::string::npos)                  { out[0]=0.40f; out[1]=0.42f; out[2]=0.50f; }
-        else                                                               { out[0]=0.60f; out[1]=0.64f; out[2]=0.72f; }
+                 type.find("Stair") != std::string::npos)                  { out[0]=0.88f; out[1]=0.91f; out[2]=1.00f; }
+        else                                                               { out[0]=0.96f; out[1]=0.97f; out[2]=1.00f; }
     };
 
     const uint32_t nRooms = (uint32_t)floor.rooms.size();
@@ -1264,8 +1387,13 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
 
         // Floor slab (top flush with floorY) — split around a shaft hole if one passes
         // up through this room's floor (the upper lobby of an elevator shaft).
+        // Hallways walk on the POLISHED tile variant (same albedo, roughness *0.35)
+        // so the warm sconce pools streak down the hall floor via SSR (the Bible's
+        // walk-strip); every other room keeps the standard worn tiles.
+        const bool isHall = r.type.find("Hallway") != std::string::npos;
         slabWithHole(scene, device, physics, r.w, 0.10f, r.d,
-                     r.cx, floorY - 0.05f, r.cz, floorTex, tint, ri, floorVis,
+                     r.cx, floorY - 0.05f, r.cz, isHall ? hallFloorTex : floorTex,
+                     tint, ri, floorVis,
                      floorHole[ri].has, floorHole[ri].x, floorHole[ri].z,
                      kShaftHoleHalf, kShaftHoleHalf);
         // Ceiling lid (collision-only, invisible — GLB ceiling drapes over) — split around
