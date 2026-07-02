@@ -245,9 +245,15 @@ vec3 terrainAlbedo(vec3 wpos, vec3 wn, uvec2 pack) {
     // Start as grass everywhere, then layer sand low, snow high, rock on slope.
     vec3 albedo = grass;
 
-    // Sand/dirt shoreline band: strongest right at/below sea level, fading out by
-    // kSandTop so it meets the ocean cleanly at the waterline.
-    float sandBand = 1.0 - smoothstep(kSeaLevel - 2.0, kSandTop, hN);
+    // Sand/dirt SHORELINE band: a narrow beach hugging the waterline (rises into
+    // sand just under sea level, fades back to grass by kSandTop). Deliberately NOT
+    // "everything below sandTop" — otherwise the DEFAULT terrain world's rolling
+    // valleys (which sit at 0..21 m, right under the old sand ceiling) read as a
+    // tan DESERT. As a band it stays a clean ocean beach in --world ocean while the
+    // dry terrain's low ground is GRASS (deep sub-sea-level dips read grass too, but
+    // in ocean mode they're underwater, so it's invisible there).
+    float sandBand = smoothstep(kSeaLevel - 4.0, kSeaLevel - 1.0, hN) *
+                     (1.0 - smoothstep(kSeaLevel + 1.0, kSandTop - 2.0, hN));
     albedo = mix(albedo, sand, clamp(sandBand, 0.0, 1.0));
 
     // Snow cap on the high ground.

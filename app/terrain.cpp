@@ -149,11 +149,15 @@ inline float smoothstep01(float a, float b, float x) {
 namespace topo {
 
 constexpr float kHillFrac = 0.10f;   // hills amplitude as a fraction of heightScale
-constexpr float kMtnFrac  = 0.86f;   // mountains amplitude (sum < 1 => margin)
+constexpr float kMtnFrac  = 0.92f;   // mountains amplitude (sum < 1 => margin)
 
 // Mountain bowl: mask ~0 inside kBowlInner, ramps to 1 by kBowlOuter (m from origin).
-constexpr float kBowlInner = 480.0f;
-constexpr float kBowlOuter = 1700.0f;
+// Pulled in (420..1250 m) so the ranges rise SOONER + reach FULL amplitude within a
+// walkable/streamable distance — tall (150..200 m, snow-capped) peaks read as real
+// mountains on the horizon instead of gentle far hills, while the playable center
+// (pads + freeway, all r<~130) stays masked flat.
+constexpr float kBowlInner = 420.0f;
+constexpr float kBowlOuter = 1250.0f;
 
 // ---- Authored FLAT PADS (buildable, dead-level). {cx, cz, radius, feather, y}.
 struct Pad { float cx, cz, r, feather, y; };

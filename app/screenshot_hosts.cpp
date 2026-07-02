@@ -1298,13 +1298,14 @@ int dispatchScreenshotHosts(HostContext& hc) {
         // (destroyMesh + removeBody) both run inside validated frames, proving the
         // async upload + teardown barriers are validation-clean. The camera trails
         // the swept focus so the final capture is a lit terrain vista.
-        std::unique_ptr<x3::jobs::IJobSystem> tjobs(x3::jobs::createJobSystem());
-        tjobs->init(0);
         std::unique_ptr<x3::phys::IPhysicsWorld> tphys(x3::phys::createPhysicsWorld());
         tphys->init();
         x3::game::Scene tscene;
         x3::game::TerrainStreamer streamer;
-        x3::game::TerrainConfig tcfg;   // 32 m tiles; unbounded (streamed)
+        // CANONICAL world config: REAL topography (ridged-fBm mountains + rolling
+        // hills + the flat tower/city pads + the graded freeway carve), not the
+        // legacy gentle-hills field. So this vista shows what --world terrain does.
+        const x3::game::TerrainConfig tcfg = x3::game::worldTerrainConfig();
 
         // Turn ON the analytic sky with the SAME sun the shadow pass + mesh.frag
         // use (normalize(0.4,1,0.3)) so the disk sits where the world is lit from.
@@ -1315,65 +1316,91 @@ int dispatchScreenshotHosts(HostContext& hc) {
         sp.sunIntensity = 1.0f; sp.haze = 0.5f; sp.exposure = 1.0f;
         device->setSkyParams(sp);
 
-        // Start the focus well away from the origin (proves unbounded coords) and
-        // bring up the ring there.
-        float fx = -90.0f, fz = -120.0f;
-        streamer.init(tscene, *device, *tphys, tjobs.get(), tcfg, fx, fz, /*radius=*/8);
-
-        const float sunYaw   = std::atan2(0.3f, 0.4f);  // toward the sun in XZ
-        const float camPitch = -0.16f;                  // ~9deg down: hills + shadows + sky
+        // A big residency ring (radius 22 tiles = 704 m) so the MOUNTAINS ringing
+        // the playable bowl are meshed + visible on the horizon, not just the
+        // under-camera valley. Synchronous gen (jobs=nullptr) + a high upload
+        // budget so a stationary focus fills the whole ring in a couple of frames.
+        streamer.setUploadBudget(16384);
+        const int kRadius = 30;   // 960 m ring: reaches the mountain band (r>~800 m)
+        streamer.init(tscene, *device, *tphys, /*jobs*/nullptr,
+                      tcfg, 0.0f, 0.0f, kRadius);
 
         const float dt = 1.0f / 60.0f;
-        // Render a measured window of frames; report the averaged GPU-pass time
-        // (vsync-independent). Sweep the focus +X so tiles stream in/out during the
-        // validated loop. The capture is armed on the final frame.
-        const int kFrames = 140, kWarmup = 40;
-        double sumGpuMs = 0.0; int measured = 0;
-        for (int i = 0; i < kFrames; ++i) {
-            glfwPollEvents();
-            // Sweep the streaming focus across tile boundaries (in/out churn).
-            fx += 4.0f;   // ~4 m/frame => crosses a 32 m tile every ~8 frames
-            tphys->step(dt);
-            streamer.update(tscene, *device, *tphys, fx, fz);
 
-            // Camera trails the focus, elevated + looking down-across toward the sun.
-            const float surfY = streamer.heightAt(fx, fz);
-            const float camY  = surfY + 18.0f;
-            device->setCamera(fx, camY, fz, sunYaw, camPitch, 70.0f);
+        // Derive a sibling path "<base>_<suffix>.png" from terrainShotPath.
+        auto sibling = [&](const char* suffix) -> std::string {
+            std::string p = terrainShotPath;
+            const size_t dot = p.find_last_of('.');
+            const std::string stem = (dot == std::string::npos) ? p : p.substr(0, dot);
+            const std::string ext  = (dot == std::string::npos) ? std::string(".png") : p.substr(dot);
+            return stem + "_" + suffix + ext;
+        };
 
-            if (i == kFrames - 1) device->armCapture(terrainShotPath.c_str());
+        // One posed capture: park the streaming focus at (fx,fz), settle the ring
+        // (synchronous gen drains over a few frames), pose the camera, write a PNG.
+        int shotsOk = 0, shotsTot = 0;
+        auto capture = [&](float fx, float fz, float cx, float cy, float cz,
+                           float yaw, float pitch, const char* suffix) {
+            ++shotsTot;
+            // Re-home + settle: several frames so the whole ring streams in.
+            for (int i = 0; i < 24; ++i) {
+                glfwPollEvents();
+                tphys->step(dt);
+                streamer.update(tscene, *device, *tphys, fx, fz);
+            }
+            const std::string path = sibling(suffix);
+            device->setCamera(cx, cy, cz, yaw, pitch, 72.0f);
+            device->armCapture(path.c_str());
             auto frame = device->beginFrame();
             if (frame.valid) tscene.render(*device, frame);
             device->endFrame(frame);
-            const x3::rhi::RenderStats s = device->stats();
-            if (i >= kWarmup) { sumGpuMs += s.gpuFrameMs; ++measured; }
-        }
-        const bool wrote = device->captureFrame(terrainShotPath.c_str());
-        if (wrote) {
+            const bool wrote = device->captureFrame(path.c_str());
             const x3::rhi::RenderStats st = device->stats();
-            const double avgGpu = measured ? sumGpuMs / measured : 0.0;
-            const double gpuFps = (avgGpu > 1e-6) ? (1000.0 / avgGpu) : 0.0;
-            char rb[256];
+            char rb[300];
             std::snprintf(rb, sizeof(rb),
-                "--screenshot-terrain: wrote %s | resident=%u (max %u) created=%llu destroyed=%llu "
-                "draws=%u tris=%u | GPU=%.3f ms (~%.0f fps GPU-bound)",
-                terrainShotPath.c_str(), streamer.residentCount(),
-                streamer.maxResidentForRadius(),
-                (unsigned long long)streamer.tilesCreated(),
-                (unsigned long long)streamer.tilesDestroyed(),
-                st.drawCalls, st.triangles, avgGpu, gpuFps);
-            x3::logInfo(rb);
-        } else x3::logError("--screenshot-terrain: capture FAILED");
+                "--screenshot-terrain: %s %s | focus(%.0f,%.0f) cam(%.0f,%.0f,%.0f) "
+                "resident=%u draws=%u tris=%u",
+                wrote ? "wrote" : "FAILED", path.c_str(), fx, fz, cx, cy, cz,
+                streamer.residentCount(), st.drawCalls, st.triangles);
+            if (wrote) { ++shotsOk; x3::logInfo(rb); } else x3::logError(rb);
+        };
 
-        // Tear down the streamer (destroys resident meshes + bodies) before the
-        // device/physics, then stop the job system.
+        auto H = [&](float x, float z){ return streamer.heightAt(x, z); };
+
+        // (1) MOUNTAIN VISTA — push the focus OUT into the eastern range so the big
+        // ridged peaks (r ~ 1000..1700 m, masked in by the radial bowl) are resident,
+        // and stand back in the rising foothills looking up-slope into them.
+        capture(1250.0f, 0.0f,
+                700.0f, H(700.0f, 0.0f) + 26.0f, 0.0f,
+                0.0f, 0.07f, "vista");
+
+        // (2) VALLEY + FREEWAY (the money shot) — camera above the graded corridor
+        // looking NW ALONG the freeway toward the Scrapyard City pad, so the flat
+        // cut/fill ribbon threads between the higher ground on either side.
+        {
+            const float cx = 130.0f, cz = 90.0f;
+            const float tx = -500.0f, tz = 700.0f;            // city pad (route end)
+            const float yaw = std::atan2(tz - cz, tx - cx);   // face down the route
+            capture(-120.0f, 380.0f,
+                    cx, H(cx, cz) + 34.0f, cz,
+                    yaw, -0.13f, "freeway");
+        }
+
+        // (3) TOWER PAD + MOUNTAINS BEHIND — from beyond the flat tower pad looking
+        // back across the dead-level origin site to the ranges rising past it. (The
+        // tower structure itself lives in the surface world; here the FLAT PAD +
+        // mountain horizon that the hero shot composites onto are what we verify.)
+        capture(0.0f, 0.0f,
+                150.0f, H(150.0f, 150.0f) + 30.0f, 150.0f,
+                std::atan2(-150.0f, -150.0f), -0.06f, "tower_pad");
+
+        // Tear down the streamer (destroys resident meshes + bodies) before device.
         streamer.shutdown(tscene, *device, *tphys);
-        tjobs->shutdown();
         tphys->shutdown();
         device->shutdown();
         glfwDestroyWindow(window);
         glfwTerminate();
-        return wrote ? 0 : 1;
+        return shotsOk == shotsTot ? 0 : 1;
     }
 
     // ---- Ocean vantage mode (--screenshot-ocean [path.png]) ----------------
