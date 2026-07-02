@@ -248,6 +248,24 @@ private:
     Tracer m_tracers[kMaxTracers];
     int    m_nextTracer = 0;        // round-robin write cursor into the pool
 
+    // ---- Electric arc-tendril pool (lightning IMPACT violence) -------------
+    // Short-lived mini zigzag arcs that crawl/whip off a lightning hit point (Tim:
+    // impacts must be sharp electric streaks + arc tendrils, NOT white puffballs).
+    // Each is drawn as a tiny re-rolled zigzag via drawLightningBolt so it crackles.
+    struct Arc {
+        x3::phys::Vec3 base{};   // hit point
+        x3::phys::Vec3 dir{};    // tendril direction (unit) * length baked into tip
+        float          len  = 0.6f;
+        float          life = 0.0f;   // remaining seconds (<=0 == free)
+        float          maxLife = kArcLife;
+        uint32_t       seed = 0;
+    };
+    Arc  m_arcs[kMaxArcs];
+    int  m_nextArc = 0;
+    // Spawn a ring of arc tendrils whipping off a lightning hit (called by
+    // spawnImpact for the Lightning kind).
+    void spawnArcs(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal);
+
     x3::phys::Vec3 m_muzzlePos{};
     float          m_muzzleFlash = 0.0f;  // remaining seconds
 

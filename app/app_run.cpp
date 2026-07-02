@@ -2438,8 +2438,7 @@ int runDefaultHost(HostContext& hc) {
                 x3::phys::RayHit shh = physics->rayCast(ssEye, fxLook, 24.0f, x3::phys::Layer::Static);
                 const x3::phys::Vec3 shotHit = shh.hit ? shh.point
                     : x3::phys::Vec3{ ssX + fxLook.x * 12.0f, ssY + fxLook.y * 12.0f, ssZ + fxLook.z * 12.0f };
-                combatFx.addTracer(shotMuz, shotHit, shotKind);
-                combatFx.spawnMuzzleFlash(shotMuz, fxDir, shotKind);
+                combatFx.addTracer(shotMuz, shotHit, shotKind);   // (also lights the muzzle FX)
                 combatFx.spawnImpact(shotHit, x3::phys::Vec3{ -fxLook.x, -fxLook.y + 0.2f, -fxLook.z },
                                      x3::game::fxKindFromId(arsenal.current().impactFx));
             }
