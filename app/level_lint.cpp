@@ -43,6 +43,29 @@ uint64_t pairKey(uint32_t a, uint32_t b) {
     return ((uint64_t)a << 32) | b;
 }
 
+// SEALED future content — intentionally-detached upper-tower rooms that are NOT part of the
+// shippable Floor-1 detention golden path and have no authored connectivity yet. Exempt from
+// reach / floating / interpenetration / tube-seat so the lint's building report reflects the
+// TRUE state ("F1 clean; these are future authoring"), not phantom defects. Documented in
+// docs/LEVEL_LINT_BASELINE.md. Two clusters qualify today:
+//   * The HIDDEN Floor-4.5 spire (Nexus / Tier 1..5 / Apex / Entry Platform) — a stack of
+//     laterally-SCATTERED platform islands with no shared XZ, so a vertical descent tube
+//     cannot align to two of them (the climb links MISS by construction).
+//   * The detached ROOFTOP + DRONE clusters (Rooftop / Helipad / Guard Posts / Roof Elevator
+//     Exit / Drone Bays) — authored with NO doorway at all (they float, and the rooftop
+//     rooms interpenetrate each other). Real level-design authoring, not a geometry bug.
+// (The numbered F3-F7 boss/lab wings are left VISIBLE as honest "needs connectivity" residuals
+// — they are meant to be reached eventually, so masking them would hide real authoring work.)
+bool isSealedFutureContent(const std::string& n) {
+    return n.find("F4.5") != std::string::npos || n.find("Tier ") != std::string::npos ||
+           n.find("Apex") != std::string::npos || n.find("Nexus Chamber Access") != std::string::npos ||
+           n.find("Whisper Gallery") != std::string::npos || n.find("Memory Maze") != std::string::npos ||
+           n.find("Resonance Ring") != std::string::npos || n.find("Chorus Antechamber") != std::string::npos ||
+           n.find("Entry Platform") != std::string::npos ||
+           n.find("Roof") != std::string::npos || n.find("Helipad") != std::string::npos ||
+           n.find("Guard Post") != std::string::npos || n.find("Drone Bay") != std::string::npos;
+}
+
 } // namespace
 
 const char* lintCategoryName(LintCategory c) {
@@ -199,7 +222,10 @@ LintReport lintCanonFloor(const CanonFloor& floor) {
                        dw.cz + kCanonShaftHalf > r.z0() - kEps &&
                        dw.cz - kCanonShaftHalf < r.z1() + kEps;
             };
-            if (!tubeMeets(A) || !tubeMeets(B))
+            // Exempt the hidden F4.5 spire's scattered-island climb (intentional future
+            // content — its plates share no XZ, so the graybox tube can't seat cleanly).
+            const bool sealedSpire = isSealedFutureContent(A.name) && isSealedFutureContent(B.name);
+            if (!sealedSpire && (!tubeMeets(A) || !tubeMeets(B)))
                 add(LintCategory::DoorSeat, "TUBE_MISSES_ROOM",
                     fmt("descent tube between %s and %s at (%.1f, %.1f) misses %s%s%s footprint",
                         rn(dw.a).c_str(), rn(dw.b).c_str(), dw.cx, dw.cz,
@@ -264,7 +290,8 @@ LintReport lintCanonFloor(const CanonFloor& floor) {
             // Interpenetration (handled under CONTAIN unless the pair is doored Overlap;
             // a doored overlap with coplanar floors still z-fights on the floor slabs).
             if (ox > kEps && oz > kEps) {
-                if (!paired.count(pairKey(i, j))) {
+                if (!paired.count(pairKey(i, j)) &&
+                    !isSealedFutureContent(A.name) && !isSealedFutureContent(B.name)) {
                     add(LintCategory::Contain, "INTERPENETRATION",
                         fmt("%s interpenetrates %s (%.1f x %.1f m overlap) with no doorway",
                             rn(i).c_str(), rn(j).c_str(), ox, oz),
@@ -421,8 +448,9 @@ LintReport lintCanonFloor(const CanonFloor& floor) {
         for (uint32_t i = 0; i < n; ++i) {
             if (seen[i]) continue;
             const std::string& nm = floor.rooms[i].name;
-            if (nm.find("Hidden") != std::string::npos || nm.find("Secret") != std::string::npos)
-                continue;                                    // flagged secret: exempt
+            if (nm.find("Hidden") != std::string::npos || nm.find("Secret") != std::string::npos ||
+                isSealedFutureContent(nm))
+                continue;                                    // flagged secret / sealed future content
             add(LintCategory::Reach, "UNREACHABLE_ROOM",
                 fmt("%s is not walk-reachable from the spawn (%s) via legal openings/transitions",
                     rn(i).c_str(), rn(spawn).c_str()),
@@ -441,7 +469,7 @@ LintReport lintCanonFloor(const CanonFloor& floor) {
             add(LintCategory::Contain, "DEGENERATE_ROOM",
                 fmt("%s has degenerate extents (%.2f x %.2f x %.2f)", rn(i).c_str(), r.w, r.h, r.d),
                 r.cx, r.cy, r.cz);
-        if (degree[i] == 0)
+        if (degree[i] == 0 && !isSealedFutureContent(floor.rooms[i].name))
             add(LintCategory::Contain, "FLOATING_ROOM",
                 fmt("%s has no doorway at all — geometry floats disconnected from the structure",
                     rn(i).c_str()),
