@@ -30,7 +30,10 @@ import numpy as np
 import pygltflib
 from pygltflib import GLTF2, TextureInfo, Texture, Sampler, Image as GImage
 
-FBX2GLTF = r"C:\GameDev\tools\FBX2glTF.exe"
+FBX2GLTF = next((p for p in (os.environ.get("FBX2GLTF", ""),
+                             r"C:\GameDev\tools\FBX2glTF.exe",
+                             r"D:\GameDev\tools\FBX2glTF.exe") if p and os.path.exists(p)),
+                r"C:\GameDev\tools\FBX2glTF.exe")
 _GUID = re.compile(r"guid:\s*([0-9a-fA-F]{32})")
 MAX_TEX = 1024  # cap atlas dimension. Per-mesh FBX conversion embeds atlases per-file so
                 # 4K balloons the GLB; the assembled-scene re-skin (repack-glb) DEDUPS shared
