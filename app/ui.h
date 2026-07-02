@@ -206,6 +206,12 @@ struct HudModel {
     int   ammoInMag    = 0;
     int   ammoReserve  = 0;
     bool  reloading    = false;
+    // CHARGE weapon (Lightning Gun): when isCharge is true the weapon block shows a
+    // "CHARGE" readout + blue bar instead of "MAG / RESERVE". chargeCur is the live
+    // charge, chargeCap the stacking ceiling (bar = chargeCur/chargeCap).
+    bool  isCharge     = false;
+    int   chargeCur    = 0;
+    int   chargeCap    = 0;
     const char* objective = "";  // current objective text (may be empty)
     int   enemiesRemaining = -1; // live enemy count under the objective; <0 = hide
     float damageFlash  = 0.0f;   // [0,1] red hit flash strength

@@ -160,6 +160,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-nav") o.testNav = true;
         else if (a == "--test-script") o.testScript = true;
         else if (a == "--test-weapons") o.testWeapons = true;
+        else if (a == "--test-lightning-charge") o.testLightningCharge = true;
         else if (a == "--test-vehicle") o.testVehicle = true;
         else if (a == "--test-vehparts") o.testVehParts = true;
         else if (a == "--test-ecology") o.testEcology = true;
@@ -251,6 +252,9 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             // Optional settle-frame count (second positional, if numeric).
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
                 o.screenshotSettle = (int)std::strtol(argv[++i], nullptr, 10);
+        }
+        else if (a == "--shot-weapon") {
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.shotWeapon = argv[++i];
         }
         else if (a == "--shot-cam") {
             // Parse "x,y,z,yaw,pitch" into shotCam[]; enables the override.

@@ -108,6 +108,47 @@ inline PrimMesh makeBox(float hx, float hy, float hz,
     return m;
 }
 
+// A faceted CRYSTAL / energy cell: a 6-sided prism band in y=[-midH,+midH] capped
+// by pointed apexes at +/-(midH+tipH) — a hex bipyramid with a straight midsection,
+// the pointed-crystal language of Tim's Lab2 reference. Per-face FLAT normals so it
+// reads as sharp facets under emissive/glass shading. Render-only (no collision).
+inline PrimMesh makeCrystal(float r, float midH, float tipH) {
+    PrimMesh m;
+    const int N = 6;
+    const float kPiL = 3.14159265f;
+    auto pushTri = [&](float ax,float ay,float az, float bx,float by,float bz,
+                       float cx,float cy,float cz) {
+        // Flat normal, auto-oriented OUTWARD (away from the crystal's Y axis center).
+        float ux=bx-ax, uy=by-ay, uz=bz-az, vx=cx-ax, vy=cy-ay, vz=cz-az;
+        float nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+        float cxm=(ax+bx+cx)/3.0f, cym=(ay+by+cy)/3.0f, czm=(az+bz+cz)/3.0f;
+        // Outward reference: from the axis point at the tri's height to the centroid.
+        if (nx*cxm + nz*czm + ny*(cym) < 0.0f) { // pointing inward -> swap b,c
+            std::swap(bx,cx); std::swap(by,cy); std::swap(bz,cz);
+            nx=-nx; ny=-ny; nz=-nz;
+        }
+        float l=std::sqrt(nx*nx+ny*ny+nz*nz); if(l<1e-6f)l=1.0f; nx/=l;ny/=l;nz/=l;
+        uint32_t base=(uint32_t)m.verts.size();
+        m.verts.push_back({{ax,ay,az},{nx,ny,nz},{0,0}});
+        m.verts.push_back({{bx,by,bz},{nx,ny,nz},{1,0}});
+        m.verts.push_back({{cx,cy,cz},{nx,ny,nz},{0.5f,1}});
+        m.index.insert(m.index.end(), {base, base+1, base+2});
+    };
+    float rx[6], rz[6];
+    for (int i=0;i<N;++i){ float a=(float)i*(kPiL/3.0f); rx[i]=std::cos(a)*r; rz[i]=std::sin(a)*r; }
+    const float topY=midH+tipH, botY=-(midH+tipH);
+    for (int i=0;i<N;++i){
+        int j=(i+1)%N;
+        // side quad (top ring i,j ; bottom ring j,i)
+        pushTri(rx[i],midH,rz[i],  rx[j],midH,rz[j],  rx[j],-midH,rz[j]);
+        pushTri(rx[i],midH,rz[i],  rx[j],-midH,rz[j], rx[i],-midH,rz[i]);
+        // top facet to apex, bottom facet to apex
+        pushTri(0,topY,0, rx[i],midH,rz[i],  rx[j],midH,rz[j]);
+        pushTri(0,botY,0, rx[i],-midH,rz[i], rx[j],-midH,rz[j]);
+    }
+    return m;
+}
+
 // A walkable RAMP wedge: a sloped top surface rising from y=0 at the LOW edge to
 // y=`rise` at the HIGH edge, over a horizontal run `run`, `halfW` wide. Built in
 // LOCAL space centered on the run axis at (cx,cy,cz) where cy is the LOW floor:

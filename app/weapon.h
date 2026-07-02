@@ -224,6 +224,18 @@ struct WeaponDef {
     bool        beam           = false; // true: continuous instant beam (lightning)
     int         chainTargets   = 0;     // extra chain rays beyond the primary (0=single)
     float       falloffStart   = 0.0f;  // m at which damage begins falling off (0=none)
+    // ---- CHARGE weapon (Lightning Gun redesign — Tim spec) ------------------
+    // A charge weapon has NO magazine and NO reload. Holding fire drains a
+    // continuous CHARGE pool at chargeDrainPerSec (units/second) while the beam is
+    // held; it can fire as long as charge > 0 (IDKFA bypasses the drain entirely).
+    // Battery pickups add charge, STACKING past chargeMax up to chargeCap. When
+    // usesCharge is true the magSize/reserveAmmo/reloadTime fields are ignored for
+    // this weapon (canFire/fire/reload/tick special-case it). Default off, so every
+    // existing ammo weapon is byte-identical.
+    bool        usesCharge        = false; // true: charge pool instead of mag/reload
+    float       chargeMax         = 100.0f; // base full charge (Tim: "100 base charge")
+    float       chargeCap         = 300.0f; // hard ceiling for battery stacking
+    float       chargeDrainPerSec = 10.0f;  // continuous drain while the beam is held
     // Viewmodel: the GLB filename (in the rigged-GLB dir) + the convention-correct
     // viewmodel pose offsets (degrees / meters about the camera basis — same basis
     // the existing pistol viewmodel uses; see WeaponSystem::drawViewmodel + §3 of
@@ -236,6 +248,14 @@ struct WeaponDef {
     float       vmRight      = kVmDefRight;
     float       vmDown       = kVmDefDown;
     float       vmScale      = 0.18f;   // model scale for the held viewmodel
+    // Viewmodel render mode. The legacy path multiplies the diffuse texture by a big
+    // HDR brightness boost to fight dark interiors — which CRUSHES a detailed gunmetal
+    // diffuse into a high-contrast black/white "dazzle" (Tim's pistol complaint). When
+    // vmLitPBR is true the viewmodel is drawn LIT via drawMeshPBR (real baseColor +
+    // normal + metallic-roughness maps) at its natural albedo plus a modest emissive
+    // FILL for dark-interior visibility — so it reads as actual lit gunmetal, not a
+    // blown-out camo splotch. Default false keeps every existing weapon byte-identical.
+    bool        vmLitPBR     = false;
     // FX preset hints (string keys the host maps onto CombatFx muzzle/impact). Kept
     // as data so designers can retune which preset a weapon uses; the host reads them.
     // The host maps these onto a WeaponFxKind (see app/fx.h fxKindFromId) so each gun
@@ -343,6 +363,11 @@ public:
         // fireRate), 1 = fully spun up (full fireRate). Climbs while firing, decays
         // when idle. Stays 0/unused for weapons with spinUpTime <= 0.
         float spinUp      = 0.0f;
+        // CHARGE weapons only (usesCharge): current charge in [0, chargeCap]. Seeded
+        // to chargeMax at construction, drained continuously while the beam is held,
+        // refilled (stacking past chargeMax to chargeCap) by battery pickups. Unused
+        // (stays 0) for ammo weapons.
+        float charge      = 0.0f;
     };
 
     // Construct with a roster (defaults to makeDefaultRoster()). Each weapon starts
@@ -391,6 +416,19 @@ public:
     // ignores an empty mag (the fire-rate cooldown still applies). Console cheat.
     void setInfiniteAmmo(bool b) { m_infiniteAmmo = b; }
     bool infiniteAmmo() const { return m_infiniteAmmo; }
+
+    // ---- CHARGE weapon (Lightning Gun) --------------------------------------
+    // Host sets this each frame: true while the fire button is HELD for the current
+    // (charge) weapon. tick() bleeds the current charge weapon's charge at its
+    // chargeDrainPerSec while held (IDKFA bypasses). No-op for ammo weapons.
+    void setBeamHeld(bool b) { m_beamHeld = b; }
+    // Battery pickup grant: add `amount` charge to the (first) charge weapon,
+    // stacking past chargeMax up to chargeCap. Returns the amount actually added
+    // (0 if there is no charge weapon or it's already capped).
+    float grantCharge(float amount);
+    // Index of the first usesCharge weapon (-1 if none) — for battery-pickup wiring
+    // + the HUD charge readout.
+    int   chargeWeaponIndex() const;
 
     // Advance the per-weapon timers by dt: decay the current weapon's fire cooldown
     // and, if reloading, the reload timer (completing the reload — moving rounds
@@ -451,6 +489,7 @@ private:
     std::vector<WeaponState> m_state;
     int                      m_sel = 0;
     bool                     m_infiniteAmmo = false;   // IDKFA infinite-ammo flag
+    bool                     m_beamHeld     = false;   // CHARGE weapon: fire held this frame
 
     // One loaded viewmodel per roster slot (drawables + scale). `fallbackIndex` is
     // the slot it actually draws (its own load, or the pistol fallback).
@@ -473,5 +512,12 @@ private:
 // splash bolt, Lightning Gun chaining beam, and the ladder power ordering.
 // Logs PASS/FAIL W#, returns true iff all pass.
 bool runWeaponsSelfTest();
+
+// Headless self-test (--test-lightning-charge). Exercises the Lightning Gun CHARGE
+// model with NO window/Vulkan: base charge seeded to chargeMax, continuous drain
+// math (~chargeDrainPerSec while beam held), IDKFA never depletes, battery grant
+// stacks past chargeMax to chargeCap, and canFire gates on charge (no mag/reload).
+// Logs PASS/FAIL LC#, returns true iff all pass.
+bool runLightningChargeSelfTest();
 
 } // namespace x3::game

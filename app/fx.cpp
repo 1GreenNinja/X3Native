@@ -45,8 +45,10 @@ void CombatFx::init(x3::rhi::IRenderDevice& device) {
     m_box = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                               geo.index.data(), (uint32_t)geo.index.size());
     for (auto& t : m_tracers) t.life = 0.0f;
+    for (auto& a : m_arcs) a.life = 0.0f;
     m_muzzleFlash = 0.0f;
     m_nextTracer = 0;
+    m_nextArc = 0;
 }
 
 void CombatFx::shutdown(x3::rhi::IRenderDevice& device) {
@@ -198,8 +200,8 @@ ImpactStyle impactStyleFor(WeaponFxKind k) {
     switch (k) {
         case WeaponFxKind::Plasma:    // blue energy splash, no metal dust
             return { 0.7f, 2.2f, 6.0f, 16, 1.25f, false };
-        case WeaponFxKind::Lightning: // white-cyan crackle, no dust
-            return { 3.0f, 5.5f, 6.5f, 18, 0.8f,  false };
+        case WeaponFxKind::Lightning: // electric: few tiny fast sparks (arcs carry it)
+            return { 3.0f, 5.5f, 6.5f, 6, 0.4f,  false };
         case WeaponFxKind::Shotgun:   // wide hot spark spray + dust
             return { 4.5f, 2.6f, 0.8f, 20, 1.2f,  true  };
         case WeaponFxKind::Chaingun:  // busy hot sparks + dust
@@ -257,8 +259,107 @@ void CombatFx::spawnImpact(const x3::phys::Vec3& pos, const x3::phys::Vec3& norm
             spawnParticle(p);
         }
     }
+    // LIGHTNING impact = electric VIOLENCE, not white puffballs (Tim): a tight
+    // blue-white flash + a whipping ring of short crackling arc tendrils crawling
+    // off the hit (drawn in draw() as re-rolled mini zigzags). The round sparks are
+    // already cut to a few tiny fast specks above.
+    if (kind == WeaponFxKind::Lightning) {
+        Particle f;                       // one tight blue-white flash core
+        f.pos = pos;
+        f.life = f.maxLife = 0.08f;
+        f.size0 = 0.30f; f.size1 = 0.05f;
+        f.r = 2.2f; f.g = 3.0f; f.b = 4.5f; f.a0 = 1.0f;
+        f.gravity = 0.0f; f.drag = 0.0f; f.additive = true;
+        spawnParticle(f);
+        spawnArcs(pos, nrm);
+    }
     // Persistent scorch mark on the surface.
     addDecal(pos, nrm);
+}
+
+// ---------------------------------------------------------------------------
+// spawnArcs: whip a ring of short electric tendrils off a lightning hit point.
+// Each is a tiny re-rolled zigzag (drawLightningBolt) leaning off the surface in
+// a random hemisphere direction — sharp electric streaks, not round puffballs.
+// ---------------------------------------------------------------------------
+void CombatFx::spawnArcs(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal) {
+    x3::phys::Vec3 nrm = normalize(normal);
+    x3::phys::Vec3 ref = (std::fabs(nrm.y) < 0.99f) ? x3::phys::Vec3{ 0, 1, 0 }
+                                                    : x3::phys::Vec3{ 1, 0, 0 };
+    x3::phys::Vec3 u = normalize(cross(ref, nrm));
+    x3::phys::Vec3 v = cross(nrm, u);
+    const int n = 6 + (int)(frand() * 4.0f);   // 6-9 tendrils
+    for (int i = 0; i < n; ++i) {
+        Arc& a = m_arcs[m_nextArc];
+        m_nextArc = (m_nextArc + 1) % kMaxArcs;
+        const float az = frand() * 6.2831853f;
+        const float el = 0.15f + frand() * 0.85f;          // lean out from the surface
+        x3::phys::Vec3 d{ nrm.x * el + (u.x * std::cos(az) + v.x * std::sin(az)),
+                          nrm.y * el + (u.y * std::cos(az) + v.y * std::sin(az)),
+                          nrm.z * el + (u.z * std::cos(az) + v.z * std::sin(az)) };
+        a.base = pos;
+        a.dir  = normalize(d);
+        a.len  = 0.35f + frand() * 0.65f;
+        a.life = a.maxLife = kArcLife * (0.6f + frand() * 0.7f);
+        a.seed = m_rng ^ (uint32_t)(i * 2654435761u);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// boltFx: make a travelling PROJECTILE visible in flight (plasma/rocket bolts
+// were invisible — only the on-hit tracer showed). Called once per frame per
+// live projectile: drops a hot additive CORE billboard at the bolt position + a
+// dimmer TRAIL speck just behind it (along -vel). 60 fps of overlapping cores
+// reads as a continuous glowing bolt with a fading tail. Rocket additionally
+// puffs a little alpha smoke so the exhaust lingers.
+// ---------------------------------------------------------------------------
+void CombatFx::boltFx(const x3::phys::Vec3& pos, const x3::phys::Vec3& vel, WeaponFxKind kind) {
+    x3::phys::Vec3 v = normalize(vel);
+    // Per-kind bolt tint (linear HDR -> feeds the additive bloom chain) + size.
+    float cr, cg, cb, coreSize;
+    switch (kind) {
+        case WeaponFxKind::Plasma:    cr = 0.5f; cg = 1.9f; cb = 6.0f; coreSize = 0.16f; break; // blue-cyan
+        case WeaponFxKind::Rocket:    cr = 6.0f; cg = 2.2f; cb = 0.5f; coreSize = 0.20f; break; // orange fire
+        case WeaponFxKind::Lightning: cr = 2.0f; cg = 3.0f; cb = 4.0f; coreSize = 0.12f; break; // white-blue
+        default:                      cr = 5.0f; cg = 3.4f; cb = 1.0f; coreSize = 0.13f; break; // hot yellow
+    }
+    // Hot core at the bolt position (near-static: it just marks where the bolt is
+    // THIS frame; a short life so a despawned bolt's cores fade instantly).
+    {
+        Particle p;
+        p.pos = pos;
+        p.vel = x3::phys::Vec3{ 0, 0, 0 };
+        p.life = p.maxLife = 0.06f;
+        p.size0 = coreSize; p.size1 = coreSize * 0.7f;
+        p.r = cr; p.g = cg; p.b = cb; p.a0 = 1.0f;
+        p.gravity = 0.0f; p.drag = 0.0f; p.additive = true;
+        spawnParticle(p);
+    }
+    // Trail speck a little behind (fading tail).
+    {
+        Particle p;
+        p.pos = x3::phys::Vec3{ pos.x - v.x * coreSize * 2.0f,
+                                pos.y - v.y * coreSize * 2.0f,
+                                pos.z - v.z * coreSize * 2.0f };
+        p.vel = x3::phys::Vec3{ 0, 0, 0 };
+        p.life = p.maxLife = 0.12f;
+        p.size0 = coreSize * 0.7f; p.size1 = coreSize * 0.15f;
+        p.r = cr * 0.6f; p.g = cg * 0.6f; p.b = cb * 0.6f; p.a0 = 0.8f;
+        p.gravity = 0.0f; p.drag = 0.0f; p.additive = true;
+        spawnParticle(p);
+    }
+    // Rocket: an alpha smoke puff so the exhaust trail lingers behind the warhead.
+    if (kind == WeaponFxKind::Rocket) {
+        Particle p;
+        p.pos = x3::phys::Vec3{ pos.x - v.x * 0.3f, pos.y - v.y * 0.3f, pos.z - v.z * 0.3f };
+        p.vel = x3::phys::Vec3{ frandSym() * 0.3f, 0.2f + frand() * 0.3f, frandSym() * 0.3f };
+        p.life = p.maxLife = 0.7f + frand() * 0.4f;
+        p.size0 = 0.12f; p.size1 = 0.5f;      // grows + dissipates
+        p.r = 0.16f; p.g = 0.15f; p.b = 0.14f; // sooty grey exhaust
+        p.a0 = 0.45f;
+        p.gravity = -0.1f; p.drag = 1.2f; p.additive = false;
+        spawnParticle(p);
+    }
 }
 
 void CombatFx::spawnBlood(const x3::phys::Vec3& pos, const x3::phys::Vec3& dir) {
@@ -446,6 +547,9 @@ void CombatFx::update(float dt) {
         m_muzzleFlash -= dt;
         if (m_muzzleFlash < 0.0f) m_muzzleFlash = 0.0f;
     }
+    for (auto& a : m_arcs) {
+        if (a.life > 0.0f) { a.life -= dt; if (a.life < 0.0f) a.life = 0.0f; }
+    }
 
     // Particle integration. World gravity is -Y 9.81 (CONVENTIONS §1).
     const float kG = 9.81f;
@@ -598,39 +702,142 @@ void CombatFx::drawTracerBillboard(x3::rhi::IRenderDevice& device, const x3::rhi
 }
 
 // ---------------------------------------------------------------------------
-// drawLightningBolt: a jagged a->b arc. Subdivide into kBoltSegs segments,
-// offset each interior vertex perpendicular to the path by a random amount
-// (re-rolled every call so the bolt crackles), draw each segment as a thin
-// drawBeam. The final vertex lands exactly on `b` (the hit point) so the bolt
-// still terminates where the ray hit.
+// drawBoltSegment: one straight zigzag segment a->b as a camera-facing GLOW
+// ribbon (wide, dim blue) + a thinner white-hot CORE ribbon inside it, both via
+// drawMeshEmissive so the HDR emissive term drives the bloom halo (bright white
+// core, tight blue-white glow — Tim spec). The ribbon WIDTH axis is perpendicular
+// to both the segment and the eye->segment view dir so the flat side faces the
+// camera (never a square rod, even when the bolt points near the eye).
 // ---------------------------------------------------------------------------
-void CombatFx::drawLightningBolt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
-                                 const x3::phys::Vec3& a, const x3::phys::Vec3& b,
-                                 float thickness, const float color[4]) const {
+void CombatFx::drawBoltSegment(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                               const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                               const x3::phys::Vec3& eye,
+                               float coreThick, float brightness) const {
     if (!m_box.valid()) return;
     x3::phys::Vec3 seg{ b.x - a.x, b.y - a.y, b.z - a.z };
     float len = std::sqrt(seg.x * seg.x + seg.y * seg.y + seg.z * seg.z);
-    if (len < 1e-4f) { drawBeam(device, frame, a, b, thickness, color); return; }
+    if (len < 1e-5f) return;
+    x3::phys::Vec3 dir = normalize(seg);
+    x3::phys::Vec3 mid{ (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f, (a.z + b.z) * 0.5f };
+    x3::phys::Vec3 view{ mid.x - eye.x, mid.y - eye.y, mid.z - eye.z };
+    float vl = std::sqrt(view.x * view.x + view.y * view.y + view.z * view.z);
+    if (vl < 1e-5f) view = dir; else view = x3::phys::Vec3{ view.x / vl, view.y / vl, view.z / vl };
+    // Ribbon width axis (perp to segment + view). Head-on -> pick any perp.
+    x3::phys::Vec3 w = cross(dir, view);
+    float wl = std::sqrt(w.x * w.x + w.y * w.y + w.z * w.z);
+    if (wl < 1e-3f) {
+        x3::phys::Vec3 ref = (std::fabs(dir.y) < 0.99f) ? x3::phys::Vec3{ 0, 1, 0 }
+                                                        : x3::phys::Vec3{ 1, 0, 0 };
+        w = normalize(cross(ref, dir));
+    } else {
+        w = x3::phys::Vec3{ w.x / wl, w.y / wl, w.z / wl };
+    }
+    x3::phys::Vec3 nrm = cross(w, dir);   // depth axis (kept thin)
+
+    const float blackBase[4] = { 0.0f, 0.0f, 0.0f, 1.0f };  // pure emissive read
+    // GLOW ribbon: wide soft blue halo (HDR emissive so bloom smears it).
+    {
+        float model[16];
+        float gw = kLightningGlowThick;
+        composeTRS3(model, w, nrm, dir, gw, gw * 0.35f, len, mid);
+        const float emis[4] = { 0.12f, 0.45f, 1.0f, 2.4f * brightness };  // blue-electric
+        device.drawMeshEmissive(frame, m_box, x3::rhi::TextureHandle{}, blackBase, emis, model);
+    }
+    // CORE ribbon: thin white-hot line (blue-white, very bright -> blooms to white).
+    {
+        float model[16];
+        composeTRS3(model, w, nrm, dir, coreThick, coreThick * 0.5f, len, mid);
+        const float emis[4] = { 1.8f, 2.4f, 3.4f, 3.4f * brightness };    // white-blue core
+        device.drawMeshEmissive(frame, m_box, x3::rhi::TextureHandle{}, blackBase, emis, model);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// drawLightningBolt: a HARD-ANGLE ZIGZAG bolt a->b (Tim spec). Split into
+// straight runs (~kLightningSegLen each) whose interior vertices are kicked
+// perpendicular by an alternating-azimuth offset sized to a random 15-45 deg
+// kink, then hang 1-2 short thinner/dimmer BRANCH forks off random kink points.
+// The pattern is DETERMINISTIC from `seed` (the caller buckets t.age by
+// kLightningRerollPeriod), so the bolt holds a shape ~65 ms then JUMPS — a
+// living crackling zigzag, not a per-frame strobe. Endpoints land exactly on
+// a (muzzle) and b (hit point).
+// ---------------------------------------------------------------------------
+void CombatFx::drawLightningBolt(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& frame,
+                                 const x3::phys::Vec3& a, const x3::phys::Vec3& b,
+                                 const x3::phys::Vec3& eye,
+                                 float coreThick, uint32_t seed, float brightness) const {
+    if (!m_box.valid()) return;
+    x3::phys::Vec3 seg{ b.x - a.x, b.y - a.y, b.z - a.z };
+    float len = std::sqrt(seg.x * seg.x + seg.y * seg.y + seg.z * seg.z);
+    if (len < 1e-4f) { drawBoltSegment(device, frame, a, b, eye, coreThick, brightness); return; }
     x3::phys::Vec3 dir = normalize(seg);
     x3::phys::Vec3 ref = (std::fabs(dir.y) < 0.99f) ? x3::phys::Vec3{ 0, 1, 0 }
                                                     : x3::phys::Vec3{ 1, 0, 0 };
-    x3::phys::Vec3 u = normalize(cross(ref, dir));   // perp basis for the jitter
+    x3::phys::Vec3 u = normalize(cross(ref, dir));   // perpendicular kink basis
     x3::phys::Vec3 v = cross(dir, u);
-    const int   kBoltSegs = 8;
-    const float jit = std::min(0.45f, len * 0.07f);  // perpendicular offset amplitude
-    auto rnd = []() { return (float)std::rand() / (float)RAND_MAX * 2.0f - 1.0f; }; // [-1,1]
-    x3::phys::Vec3 prev = a;
-    for (int i = 1; i <= kBoltSegs; ++i) {
-        float t = (float)i / (float)kBoltSegs;
-        x3::phys::Vec3 pt{ a.x + seg.x * t, a.y + seg.y * t, a.z + seg.z * t };
-        if (i < kBoltSegs) {        // interior vertex: jitter perpendicular (endpoints fixed)
-            float ox = rnd() * jit, oy = rnd() * jit;
-            pt.x += u.x * ox + v.x * oy;
-            pt.y += u.y * ox + v.y * oy;
-            pt.z += u.z * ox + v.z * oy;
+
+    // Deterministic per-bucket PRNG (xorshift32) — the crackling "re-roll".
+    uint32_t s = seed * 2654435761u + 0x9E3779B9u; if (s == 0u) s = 1u;
+    auto rnd01 = [&s]() -> float {
+        s ^= s << 13; s ^= s >> 17; s ^= s << 5;
+        return (float)(s & 0x00FFFFFFu) / (float)0x01000000u;
+    };
+    const float kPi = 3.14159265f;
+
+    // Number of straight runs: ~1 per kLightningSegLen, clamped so a long beam
+    // stays a legible zigzag (not noise) and a short one still kinks a few times.
+    int n = (int)(len / kLightningSegLen + 0.5f);
+    if (n < 3)  n = 3;
+    if (n > 20) n = 20;
+    const float segStep = len / (float)n;
+
+    // Build the zigzag vertices. Endpoints fixed; interior vertices kicked perp.
+    constexpr int kMaxV = 21;   // n<=20 -> n+1 vertices
+    x3::phys::Vec3 pts[kMaxV + 1];
+    pts[0] = a;
+    pts[n] = b;
+    for (int i = 1; i < n; ++i) {
+        float t = (float)i / (float)n;
+        x3::phys::Vec3 base{ a.x + seg.x * t, a.y + seg.y * t, a.z + seg.z * t };
+        // Alternating azimuth (i&1 flips ~180 deg) + jitter + slow drift -> a sharp
+        // back-and-forth zigzag that also twists in 3D instead of staying planar.
+        float azi = ((i & 1) ? kPi : 0.0f) + (rnd01() * 2.0f - 1.0f) * 0.7f + (float)i * 0.6f;
+        float kinkDeg = 15.0f + rnd01() * 30.0f;           // 15..45 deg hard kink
+        float r = segStep * std::tan(kinkDeg * kPi / 180.0f) * 0.5f;
+        float ox = std::cos(azi) * r, oy = std::sin(azi) * r;
+        pts[i] = x3::phys::Vec3{ base.x + u.x * ox + v.x * oy,
+                                 base.y + u.y * ox + v.y * oy,
+                                 base.z + u.z * ox + v.z * oy };
+    }
+    // Draw the main zigzag.
+    for (int i = 1; i <= n; ++i)
+        drawBoltSegment(device, frame, pts[i - 1], pts[i], eye, coreThick, brightness);
+
+    // 1-2 short BRANCH forks off random interior kink points (thinner + dimmer).
+    int nForks = (rnd01() < 0.55f) ? 2 : 1;
+    for (int f = 0; f < nForks && n > 2; ++f) {
+        int ki = 1 + (int)(rnd01() * (float)(n - 1));
+        if (ki >= n) ki = n - 1;
+        x3::phys::Vec3 fp = pts[ki];
+        // Fork heads off mostly perpendicular to the main path (a real branch).
+        float fa = rnd01() * 2.0f * kPi;
+        x3::phys::Vec3 fdir = normalize(x3::phys::Vec3{
+            u.x * std::cos(fa) + v.x * std::sin(fa) + dir.x * 0.25f,
+            u.y * std::cos(fa) + v.y * std::sin(fa) + dir.y * 0.25f,
+            u.z * std::cos(fa) + v.z * std::sin(fa) + dir.z * 0.25f });
+        int fsegs = 2 + (int)(rnd01() * 2.0f);             // 2-3 short segments
+        float fstep = segStep * (0.45f + rnd01() * 0.5f);
+        x3::phys::Vec3 prev = fp;
+        for (int j = 0; j < fsegs; ++j) {
+            float ka = rnd01() * 2.0f * kPi;
+            float kr = fstep * 0.4f;
+            x3::phys::Vec3 nxt{
+                prev.x + fdir.x * fstep + (u.x * std::cos(ka) + v.x * std::sin(ka)) * kr,
+                prev.y + fdir.y * fstep + (u.y * std::cos(ka) + v.y * std::sin(ka)) * kr,
+                prev.z + fdir.z * fstep + (u.z * std::cos(ka) + v.z * std::sin(ka)) * kr };
+            drawBoltSegment(device, frame, prev, nxt, eye, coreThick * 0.55f, brightness * 0.6f);
+            prev = nxt;
         }
-        drawBeam(device, frame, prev, pt, thickness, color);
-        prev = pt;
     }
 }
 
@@ -659,12 +866,10 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
         if (t.life <= 0.0f) continue;
         float k = (kTracerTime > 0.0f) ? (t.life / kTracerTime) : 1.0f; // 1->0
         if (t.kind == WeaponFxKind::Lightning) {
-            // Jagged white-cyan bolt (re-randomized each frame -> crackle). The bolt
+            // HARD-ANGLE ZIGZAG bolt (Tim spec): bright white-blue core + tight blue
+            // glow, sharp 15-45 deg kinks + branch forks, re-rolled ~15x/s. The bolt
             // PROPAGATES: its leading tip extends from the muzzle toward the hit point
-            // at kLightningBoltSpeed (m/s) over the tracer's age, so it visibly travels
-            // out rather than snapping full-length instantly (director: ~39% slower).
-            const float boltColor[4] = { 0.62f, 0.95f, 1.0f, 1.0f };
-            float thick = kTracerThickness * (0.45f + 0.35f * k);
+            // at kLightningBoltSpeed (m/s) over the tracer's age, so it visibly travels.
             x3::phys::Vec3 seg{ t.to.x - t.from.x, t.to.y - t.from.y, t.to.z - t.from.z };
             float fullLen = std::sqrt(seg.x * seg.x + seg.y * seg.y + seg.z * seg.z);
             float reach   = kLightningBoltSpeed * t.age;          // how far the tip has travelled
@@ -672,7 +877,15 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
             x3::phys::Vec3 tip{ t.from.x + seg.x * frac,
                                 t.from.y + seg.y * frac,
                                 t.from.z + seg.z * frac };
-            drawLightningBolt(device, frame, t.from, tip, thick, boltColor);
+            // Re-roll the kink pattern every kLightningRerollPeriod (living crackle),
+            // salted per-tracer (from-position hash) so simultaneous bolts differ.
+            uint32_t bucket = (uint32_t)(t.age / kLightningRerollPeriod);
+            uint32_t salt   = (uint32_t)(t.from.x * 73.1f) * 2246822519u
+                            ^ (uint32_t)(t.from.y * 91.7f) * 3266489917u
+                            ^ (uint32_t)(t.from.z * 53.3f) * 668265263u;
+            float coreThick = kLightningCoreThick * (0.85f + 0.25f * k);
+            float brightness = 0.75f + 0.35f * k;   // stays bright while held (new tracer each tick)
+            drawLightningBolt(device, frame, t.from, tip, eyePos, coreThick, bucket ^ salt, brightness);
         } else {
             // Camera-facing ribbon (playtest "square rod" fix): a thin flat streak
             // that always faces the eye instead of drawBeam's world-fixed square
@@ -680,6 +893,21 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
             float width = kTracerThickness * (0.5f + 0.5f * k);
             drawTracerBillboard(device, frame, t.from, t.to, eyePos, width, tracerColor);
         }
+    }
+
+    // ---- Electric arc tendrils (lightning impact violence). ----
+    // Each live arc is a short re-rolled zigzag whipping off the hit point, fading
+    // + retracting as it dies. Fast re-roll (~33/s) so they crackle violently.
+    for (const auto& a : m_arcs) {
+        if (a.life <= 0.0f) continue;
+        const float k = (a.maxLife > 0.0f) ? (a.life / a.maxLife) : 0.0f;   // 1 -> 0
+        const float reach = a.len * (0.55f + 0.45f * k);                    // retract as it dies
+        x3::phys::Vec3 tip{ a.base.x + a.dir.x * reach,
+                            a.base.y + a.dir.y * reach,
+                            a.base.z + a.dir.z * reach };
+        const uint32_t bucket = (uint32_t)((a.maxLife - a.life) / 0.03f);   // ~33 re-rolls/s
+        drawLightningBolt(device, frame, a.base, tip, eyePos,
+                          kLightningCoreThick * 0.5f, a.seed ^ bucket, 0.85f * k);
     }
 
     // ---- Muzzle flash: a brief bright box at the muzzle. ----

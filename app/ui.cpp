@@ -526,27 +526,55 @@ void GameHud::draw(UiContext& ui, const HudModel& m, float dt) {
     // ---- Weapon + ammo (bottom-right) --------------------------------------
     if (m.weapon && m.weapon[0]) {
         const float px = 18.0f;
-        // Ammo line: "MAG / RESERVE" big, weapon name above it.
-        char ammoBuf[48];
-        if (m.reloading) std::snprintf(ammoBuf, sizeof(ammoBuf), "RELOADING...");
-        else             std::snprintf(ammoBuf, sizeof(ammoBuf), "%d / %d", m.ammoInMag, m.ammoReserve);
         const float ammoPx = 30.0f;
-        // Ammo readout -> mono HUD font (steady-width digits); width query MATCHES role.
-        const float ammoW  = UiContext::textWidth(UiContext::FontRole::HudMono, ammoBuf, ammoPx);
-        const float ax = w - ammoW - px;
         const float ay = h - ammoPx - 22.0f;
-        // Low-ammo pulse (mag empty-ish): tint amber/red and pulse alpha.
-        float col[4] = { 0.95f, 0.97f, 0.92f, 1.0f };
-        if (!m.reloading && m.ammoInMag == 0) {
-            const float pulse = 0.5f + 0.5f * std::sin(m_t * 8.0f);
-            col[0] = 1.0f; col[1] = 0.3f; col[2] = 0.25f; col[3] = 0.6f + 0.4f * pulse;
+        if (m.isCharge) {
+            // CHARGE weapon (Lightning): big charge number + a blue-electric bar
+            // (fills to the stacking cap) instead of "MAG / RESERVE". Pulses red at
+            // near-empty so the player feels the beam running dry.
+            char chBuf[48];
+            std::snprintf(chBuf, sizeof(chBuf), "%d", m.chargeCur);
+            const int cap = (m.chargeCap > 0) ? m.chargeCap : 1;
+            const float frac = (float)m.chargeCur / (float)cap;
+            const float chW = UiContext::textWidth(UiContext::FontRole::HudMono, chBuf, ammoPx);
+            const float ax = w - chW - px;
+            const bool low = m.chargeCur <= (cap / 10);
+            float col[4] = { 0.55f, 0.85f, 1.0f, 1.0f };   // blue-electric
+            if (low) { const float pulse = 0.5f + 0.5f * std::sin(m_t * 8.0f);
+                       col[0] = 1.0f; col[1] = 0.35f; col[2] = 0.3f; col[3] = 0.6f + 0.4f * pulse; }
+            ui.text(chBuf, ax, ay, ammoPx, col, UiContext::FontRole::HudMono);
+            // Blue charge bar under the number.
+            const float barW = 150.0f, barH = 8.0f;
+            float fill[4] = { 0.3f, 0.7f, 1.0f, 0.95f };
+            if (low) { fill[0] = 1.0f; fill[1] = 0.4f; fill[2] = 0.3f; }
+            ui.bar(w - barW - px, ay + ammoPx + 4.0f, barW, barH, frac, fill);
+            // "CHARGE" label above the number.
+            const float labPx = 14.0f;
+            const char* lab = "CHARGE";
+            const float labW = UiContext::textWidth(UiContext::FontRole::Menu, lab, labPx);
+            ui.text(lab, w - labW - px, ay - labPx - 6.0f, labPx, kColTextDim,
+                    UiContext::FontRole::Menu);
+        } else {
+            // Ammo line: "MAG / RESERVE" big, weapon name above it.
+            char ammoBuf[48];
+            if (m.reloading) std::snprintf(ammoBuf, sizeof(ammoBuf), "RELOADING...");
+            else             std::snprintf(ammoBuf, sizeof(ammoBuf), "%d / %d", m.ammoInMag, m.ammoReserve);
+            // Ammo readout -> mono HUD font (steady-width digits); width query MATCHES role.
+            const float ammoW  = UiContext::textWidth(UiContext::FontRole::HudMono, ammoBuf, ammoPx);
+            const float ax = w - ammoW - px;
+            // Low-ammo pulse (mag empty-ish): tint amber/red and pulse alpha.
+            float col[4] = { 0.95f, 0.97f, 0.92f, 1.0f };
+            if (!m.reloading && m.ammoInMag == 0) {
+                const float pulse = 0.5f + 0.5f * std::sin(m_t * 8.0f);
+                col[0] = 1.0f; col[1] = 0.3f; col[2] = 0.25f; col[3] = 0.6f + 0.4f * pulse;
+            }
+            ui.text(ammoBuf, ax, ay, ammoPx, col, UiContext::FontRole::HudMono);
         }
-        ui.text(ammoBuf, ax, ay, ammoPx, col, UiContext::FontRole::HudMono);
-        // Weapon name above, right-aligned to the ammo line (Menu/Space Grotesk).
+        // Weapon name above, right-aligned (Menu/Space Grotesk).
         const float namePx = 16.0f;
         const float nameW = UiContext::textWidth(UiContext::FontRole::Menu, m.weapon, namePx);
-        ui.text(m.weapon, w - nameW - px, ay - namePx - 6.0f, namePx, kColTextDim,
-                UiContext::FontRole::Menu);
+        ui.text(m.weapon, w - nameW - px, ay - namePx - 6.0f - (m.isCharge ? 18.0f : 0.0f), namePx,
+                kColTextDim, UiContext::FontRole::Menu);
     }
 
     // ---- Objective: drawn GTA/Cyberpunk-style UNDER THE MINIMAP (see below, after

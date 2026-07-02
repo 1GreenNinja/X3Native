@@ -28,7 +28,7 @@ struct CliOptions {
          testStreaming = false, testWorldStream = false, testWorldMap = false, testAi = false, testDoorCode = false, testElevator = false,
          testElevatorFsm = false, testElevatorShowcase = false,
          testTerrainPlace = false, testNet = false, testRescue = false, testDestruction = false,
-         testNav = false, testWeapons = false, testVehicle = false, testVehParts = false,
+         testNav = false, testWeapons = false, testLightningCharge = false, testVehicle = false, testVehParts = false,
          testFootIk = false,
          testScript = false,
          testNetSync = false, testNetInterp = false, testNetPredict = false, testNpcTalk = false,
@@ -300,6 +300,9 @@ struct CliOptions {
     // when omitted: G:\X3Native\screenshot.png.
     bool        screenshot = false;
     std::string screenshotPath = "G:/X3Native/screenshot.png";
+    // --shot-weapon <name>: select this arsenal weapon for the --screenshot capture
+    // (draws its FP viewmodel + its firing FX under --fx-demo). Empty -> pistol.
+    std::string shotWeapon;
     // Level Architect EDITOR mode (--editor): boot the live canon world with the Dear
     // ImGui (docking) editor overlay enabled. With no --editor flag ImGui never
     // initializes (zero cost — byte-for-byte the shipping game). Phase 0 draws only a

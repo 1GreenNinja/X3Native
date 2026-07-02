@@ -680,6 +680,10 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running data-driven weapon arsenal (switch/fire/reload/spread) self-test...");
         return x3::game::runWeaponsSelfTest() ? 0 : 1;
     }
+    if (tf.testLightningCharge) {
+        x3::logInfo("running lightning-gun CHARGE model self-test...");
+        return x3::game::runLightningChargeSelfTest() ? 0 : 1;
+    }
     if (tf.testScript) {
         x3::logInfo("running D14 Lua script-system self-test "
                     "(load/init/update/events/sandbox/error-containment/hot-reload/"
