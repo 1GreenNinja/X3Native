@@ -5639,7 +5639,16 @@ int runDefaultHost(HostContext& hc) {
                         const float dx = pex - a.x, dz = pez - a.z;
                         if (dx*dx + dz*dz < 9.0f) {
                             uint32_t hw = 0, hh = 0; device->hudSize(hw, hh);
-                            const char* hint = "[E] Use Terminal";
+                            // The code stays a SPOILER until the player EARNS it from
+                            // Lena's chat tree (t0 teach node sets code.1278.known).
+                            // Learning it in dialog surfaces it here — the terminal
+                            // "picks up" the flag, tying the rescue beat (6) to the
+                            // hatch puzzle (3): talk Lena -> learn 1278 -> open hatch.
+                            const bool codeKnown = chatTrees.flags().has("code.1278.known");
+                            const std::string hintStr = codeKnown
+                                ? "[E] Use Terminal  (override code 1278)"
+                                : "[E] Use Terminal";
+                            const char* hint = hintStr.c_str();
                             const float hsz = 18.0f;
                             const float adv = device->textAdvance(x3::rhi::FontRole::Menu, hint, hsz);
                             const float hx = ((hw > 0) ? hw * 0.5f : 640.0f) - adv * 0.5f;
