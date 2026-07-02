@@ -137,6 +137,15 @@ enum class AiState : uint32_t {
 // Human-readable AI state name (for logs / the --test-ai transition trace).
 const char* aiStateName(AiState s);
 
+// --verbose-ai (P1 monster-perception bug hunt, TEMP diagnostic): when enabled,
+// every live monster logs one line per second — entity id / state / distance to
+// player / LOS hit-or-miss / (on a miss) what the LOS ray actually hit, so a
+// self-intersecting ray (hitting the monster's OWN body) is visible in the log
+// instead of silently reading as "a wall blocked it". Off by default (no log
+// spam in normal play). See MonsterSystem::update (monster.cpp).
+void setAiVerbose(bool v);
+bool aiVerbose();
+
 // Boss phase (Phase 2b, spec §8 + EFLZ_DESIGN.md Chief Martinez). A Boss-type
 // monster advances through phases as its HP drops past tuned thresholds. Each
 // phase scales speed/damage and re-tints/re-scales the model, plus fires a
@@ -315,6 +324,10 @@ constexpr float kAiSearchTime      = 4.0f;   // seconds to search before giving 
 constexpr float kAiSearchSweepFreq = 2.2f;   // heading sweep rate while searching (rad/s)
 constexpr float kAiSearchSweepAmp  = 1.0f;   // heading sweep amplitude (rad)
 constexpr float kAiLastKnownReach  = 1.5f;   // "arrived" at last-known within this (m)
+// Hearing (P1 monster-perception fix): default earshot radius for a gunshot noise
+// stimulus reaching a monster (mirrors AlertConfig::gunshotRadius, alert.h, so a
+// creature and a facility guard notice a shot at roughly the same distance).
+constexpr float kAiHearGunshotRadius = 40.0f;
 // Regroup: if an ally is within this radius and the enemy is pressured, fall back
 // toward the ally to re-form, then re-engage. 0 allies in range -> no regroup.
 constexpr float kAiRegroupRadius   = 12.0f;  // look for allies within this (m)
@@ -682,6 +695,23 @@ public:
     // Player position last seen with LOS (the Search target). Valid once LOS held.
     x3::phys::Vec3 lastKnownPlayerPos() const { return m_lastKnown; }
     bool    hasLineOfSight() const { return m_hasLos; }
+    // True while this monster is investigating a HEARD noise (gunshot/alert
+    // stimulus) rather than a real sighting. Diagnostics / --test-monsterperception.
+    bool    isInvestigatingNoise() const { return m_heardNoiseTimer > 0.0f; }
+    // Real (post-skeleton-fit-scale) Enemy-hitbox half-width. Diagnostics: this is
+    // exactly what the LOS ray skip distance must clear — see the P1 fix's
+    // comments in update() and --test-monsterperception.
+    float   hitHalfXZ() const { return m_hitHalfXZ; }
+
+    // Hearing (P1 monster-perception fix): a noise (gunshot, etc.) occurred at
+    // `pos`. If this monster is alive, not already actively engaging the player
+    // (no current LOS / not mid-attack), and within `radius` of `pos`, it starts
+    // investigating: Search toward `pos` for kAiSearchTime seconds even though it
+    // never actually SAW the player there. A monster already tracking the real
+    // player via LOS ignores the noise (it's already doing better than investigate).
+    // No-op if dead/unbuilt or out of earshot. See MonsterManager::hearNoise for
+    // the multi-monster fan-out (wired to AlertSystem::reportGunshot's callers).
+    void hearNoise(const x3::phys::Vec3& pos, float radius);
 
     // Draw all monster primitives at its current transform, tinted toward red by
     // the active hit-flash. No-op once dead / hidden. The monster Entity carries an
@@ -985,6 +1015,15 @@ private:
     bool    m_everSawPlayer = false;         // seen the player at least once
     x3::phys::Vec3 m_lastKnown{};            // last position the player was seen at
     float   m_searchTimer   = 0.0f;          // seconds-left searching before Idle
+    // TEMP diagnostic cadence (P1 monster-perception bug hunt): once-per-second
+    // state/LOS trace, gated behind g_aiVerbose (--verbose-ai). See monster.cpp.
+    float   m_diagTimer     = 0.0f;
+    // Hearing (P1 fix): a gunshot/noise stimulus heard within earshot but out of
+    // LOS pulls the monster into Search toward the noise, even though it never
+    // actually SAW the player there. Separate from m_everSawPlayer so a "search a
+    // noise" investigation doesn't get conflated with a real last-known sighting
+    // for logging/diagnostics, but drives the exact same Search behaviour.
+    float   m_heardNoiseTimer = 0.0f;        // >0 => currently investigating a noise
     float   m_searchSweep   = 0.0f;          // search heading-sweep oscillator phase
     float   m_regroupTimer  = 0.0f;          // min-dwell timer while regrouping
     x3::phys::Vec3 m_rallyPoint{};           // ally position to fall back toward
@@ -1044,6 +1083,12 @@ public:
 
     // Number of monsters still alive (not dead). Used for objective/door gating.
     uint32_t aliveCount() const;
+
+    // Hearing (P1 monster-perception fix): fan a noise stimulus (gunshot, etc.)
+    // out to every monster in this manager — see MonsterSystem::hearNoise. Wire
+    // this alongside AlertSystem::reportGunshot at every gunfire site so monsters
+    // that hear a shot out of LOS investigate instead of standing deaf.
+    void hearNoise(const x3::phys::Vec3& pos, float radius);
 
     // Remove any live death-ragdoll bodies across ALL monsters (idempotent). Call
     // BEFORE the physics world is shut down if a monster could be mid-flop on quit,

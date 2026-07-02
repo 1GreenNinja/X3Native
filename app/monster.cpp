@@ -125,7 +125,13 @@ float rng01(uint32_t& s) {
     return (float)(s >> 8) * (1.0f / 16777216.0f);
 }
 
+// --verbose-ai TEMP diagnostic toggle (see monster.h setAiVerbose/aiVerbose).
+bool g_aiVerbose = false;
+
 } // namespace
+
+void setAiVerbose(bool v) { g_aiVerbose = v; }
+bool aiVerbose() { return g_aiVerbose; }
 
 const char* aiStateName(AiState s) {
     switch (s) {
@@ -731,6 +737,31 @@ int MonsterSystem::effectiveDamage() const {
 }
 
 // ---------------------------------------------------------------------------
+// Hearing (P1 monster-perception fix): a noise stimulus (gunshot, etc.) pulls an
+// unaware monster into investigating even without LOS. See monster.h for the
+// contract; the decision-cadence "no LOS" branch (update(), above) turns
+// m_heardNoiseTimer > 0 into a Search toward m_lastKnown (set here to the noise
+// position), exactly mirroring the "just lost LOS -> Search last-known" path.
+// ---------------------------------------------------------------------------
+void MonsterSystem::hearNoise(const x3::phys::Vec3& pos, float radius) {
+    if (!m_alive || m_entity == kNoLink) return;
+    const float dx = pos.x - m_pos.x, dz = pos.z - m_pos.z;
+    const float d2 = dx * dx + dz * dz;
+    if (d2 > radius * radius) return;   // out of earshot
+    // Already actively tracking the REAL player (has LOS this decision, or mid
+    // engage) -> the noise adds nothing; don't let it downgrade a live sighting.
+    if (m_hasLos || m_ai == AiState::Advance || m_ai == AiState::Attack ||
+        m_ai == AiState::Strafe) {
+        return;
+    }
+    m_lastKnown       = pos;
+    m_heardNoiseTimer = kAiSearchTime;
+    x3::logInfo("[ai] entity " + std::to_string(m_entity) +
+                " heard a noise " + std::to_string(std::sqrt(d2)) +
+                "m away -> investigating");
+}
+
+// ---------------------------------------------------------------------------
 // Per-frame: decay hit-flash; run the death pop; else face + chase the player.
 // ---------------------------------------------------------------------------
 void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
@@ -882,6 +913,11 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         m_dmgMemory -= dt;
         if (m_dmgMemory <= 0.0f) { m_dmgMemory = 0.0f; m_dmgWindowHp = 0; }
     }
+    // Heard-noise investigation window decays like m_searchTimer (hearNoise()).
+    if (m_heardNoiseTimer > 0.0f) {
+        m_heardNoiseTimer -= dt;
+        if (m_heardNoiseTimer < 0.0f) m_heardNoiseTimer = 0.0f;
+    }
     m_stateTime += dt;
 
     // ---- Periodic decision: re-evaluate the behaviour state on a jittered cadence
@@ -896,6 +932,23 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         // LOS: ray from our center toward the player's eye; clear if no Static wall
         // blocks it before the player. Skip past our own collision box first (the
         // Static mask also matches Enemy bodies, so a center-origin ray self-hits).
+        //
+        // ROOT-CAUSE FIX (P1 "monsters never perceive the player"): this used to
+        // skip a FIXED kMonsterHalf.x+0.15 (0.65 m) regardless of the monster's
+        // actual hitbox. The skeleton-fit scale fix (719310b) + per-species
+        // Tuning.modelScale (many >1.08, e.g. chief_martinez @1.30-1.45, "tall
+        // elite"/"8ft predecessor"/"12ft frame") made the REAL hitbox half-width
+        // m_hitHalfXZ exceed that fixed skip for any large-scale enemy. The ray
+        // origin then landed INSIDE the monster's own (now bigger) Enemy-layer
+        // box, so physics.rayCast immediately re-hit the monster's OWN body (the
+        // Static mask matches Enemy) and `los` read false forever — permanent
+        // blindness for exactly the big/tall creatures this bug report is about.
+        // The movement wall-probe below (kAiTurnRate section) was already fixed
+        // this same way after an earlier "froze melee enemies at spawn range"
+        // regression; this brings LOS in line with that fix, using the same
+        // corner-safe skip (m_hitHalfXZ * sqrt2 + margin) PLUS an explicit
+        // self-hit discard (matching realHit()'s ignore-self below) as a second,
+        // independent guard against ever reading our own body as "a wall".
         bool los = true;
         if (target) {
             const x3::phys::Vec3 from0{ m_pos.x, m_pos.y + 0.3f, m_pos.z };
@@ -904,14 +957,32 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             float dl = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
             if (dl < 1e-4f) dl = 1e-4f;
             const x3::phys::Vec3 nd{ d.x/dl, d.y/dl, d.z/dl };
-            const float skip = kMonsterHalf.x + 0.15f;
+            const float skip = m_hitHalfXZ * 1.4142f + 0.20f;   // past our box CORNER + margin
             const x3::phys::Vec3 from{ from0.x + nd.x*skip, from0.y + nd.y*skip,
                                        from0.z + nd.z*skip };
             float losLen = dl - skip; if (losLen < 0.0f) losLen = 0.0f;
             x3::phys::RayHit wall = (losLen > 1e-3f)
                 ? physics.rayCast(from, nd, losLen, x3::phys::Layer::Static)
                 : x3::phys::RayHit{};
-            los = !wall.hit;
+            const bool selfHit = wall.hit && m_body.valid() && wall.body.id == m_body.id;
+            los = !wall.hit || selfHit;   // a self-hit is NOT a real wall
+            if (g_aiVerbose) {
+                m_diagTimer -= kAiDecisionPeriod;   // decision cadence advances this
+                if (m_diagTimer <= 0.0f) {
+                    m_diagTimer = 1.0f;
+                    x3::logInfo("[ai-diag] entity " + std::to_string(m_entity) +
+                        " state=" + aiStateName(m_ai) +
+                        " d=" + std::to_string(dl) + "m" +
+                        " los=" + (los ? "1" : "0") +
+                        " hitHalfXZ=" + std::to_string(m_hitHalfXZ) +
+                        (wall.hit
+                            ? (" wallHit body=" + std::to_string(wall.body.id) +
+                               " selfBody=" + std::to_string(m_body.id) +
+                               (selfHit ? " [SELF-HIT discarded]" : " [real wall]") +
+                               " dist=" + std::to_string(wall.distance))
+                            : std::string(" wallHit=none")));
+                }
+            }
         } else {
             los = false;   // no target -> nothing to see -> Search/Idle
         }
@@ -976,13 +1047,26 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
             }
         } else {
             // No LOS. If we ever saw the player, Search the last-known spot for a
-            // while, then give up to Idle. Never saw them -> Idle.
+            // while, then give up to Idle. Never saw them -> Idle. HEARING (P1 fix):
+            // a heard-but-unseen noise (hearNoise(), m_heardNoiseTimer > 0) drives the
+            // exact same Search-toward-m_lastKnown behaviour, even though the player
+            // was never actually SEEN there — this is the "investigate a gunshot"
+            // beat wired to the alert-stimuli system (AlertSystem::reportGunshot).
+            const bool heardNoise = (m_heardNoiseTimer > 0.0f);
             if (m_everSawPlayer && m_searchTimer > 0.0f) {
                 want = AiState::Search;
             } else if (m_everSawPlayer && m_ai != AiState::Search && m_ai != AiState::Idle) {
                 // Just lost LOS: begin a fresh Search.
                 want = AiState::Search;
                 m_searchTimer = kAiSearchTime;
+            } else if (heardNoise && m_ai != AiState::Search) {
+                // Investigate the noise (not a real sighting, so m_everSawPlayer stays
+                // whatever it was; m_lastKnown was set to the NOISE position by
+                // hearNoise()).
+                want = AiState::Search;
+                m_searchTimer = kAiSearchTime;
+            } else if (heardNoise) {
+                want = AiState::Search;   // still investigating; keep searching
             } else if (m_searchTimer <= 0.0f) {
                 want = AiState::Idle;
             }
@@ -1328,8 +1412,14 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                     float dl = std::sqrt(d.x*d.x + d.y*d.y + d.z*d.z);
                     if (dl < 1e-4f) dl = 1e-4f;
                     x3::phys::Vec3 nd{ d.x/dl, d.y/dl, d.z/dl };
-                    // Clear our own collision box before testing for walls.
-                    const float skip = kMonsterHalf.x + 0.15f;
+                    // Clear our own collision box before testing for walls. ROOT-CAUSE
+                    // FIX (same class of bug as the decision-LOS check above): the old
+                    // fixed kMonsterHalf.x+0.15 skip no longer clears a skeleton-fit
+                    // SCALED hitbox for large-scale enemies, so a self-hit read as "a
+                    // wall" and every ranged shot from a big enemy silently "missed"
+                    // even while correctly in Attack state. Use the real scaled
+                    // half-extent (corner-safe) + explicitly discard a self-hit.
+                    const float skip = m_hitHalfXZ * 1.4142f + 0.20f;
                     x3::phys::Vec3 from{ muzzle.x + nd.x * skip,
                                          muzzle.y + nd.y * skip,
                                          muzzle.z + nd.z * skip };
@@ -1337,7 +1427,8 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
                     x3::phys::RayHit wall = (losLen > 1e-3f)
                         ? physics.rayCast(from, nd, losLen, x3::phys::Layer::Static)
                         : x3::phys::RayHit{};
-                    landed = !wall.hit;
+                    const bool selfHit2 = wall.hit && m_body.valid() && wall.body.id == m_body.id;
+                    landed = !wall.hit || selfHit2;
                     if (fx) {
                         // Tracer from the muzzle to the impact (player) or the wall.
                         x3::phys::Vec3 end = wall.hit ? wall.point : tp;
@@ -1798,6 +1889,10 @@ uint32_t MonsterManager::aliveCount() const {
     for (const auto& m : m_monsters)
         if (m->alive()) ++n;
     return n;
+}
+
+void MonsterManager::hearNoise(const x3::phys::Vec3& pos, float radius) {
+    for (auto& m : m_monsters) m->hearNoise(pos, radius);
 }
 
 void MonsterManager::shutdown() {
