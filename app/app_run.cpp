@@ -3508,19 +3508,28 @@ int runDefaultHost(HostContext& hc) {
     float     npcBarkTimer = 0.0f;   // >0 while her companion one-liner is shown
     std::string npcBarkText;
     bool      chatNumPrev[4] = {};   // chat-tree choice keys 1-4 edge state
-    // CHAT-TREE talk target: the F5 captive 'Lena' (spire_mid) — the first NPC whose
-    // dialog runs the data-driven x3.chattree runner instead of the shared 5-line
-    // script. Captive in reach -> her first_meeting tree; Companion -> banter pool.
+    // CHAT-TREE talk target: any rescue NPC whose name resolves to a loaded authored
+    // tree runs the data-driven x3.chattree runner instead of the shared 5-line NpcDialog
+    // script. Covers the F5 captive 'Lena' (spire_mid) AND the canonlevel girls
+    // (canonPlay's Aria/Keisha/Emily) — each has a chat_trees/*.json. Captive in reach ->
+    // her first_meeting tree; Companion -> banter pool. Nearest match within reach wins.
     auto chatTalkTarget = [&](const x3::phys::Vec3& at, float reach,
                               std::string& whoOut, x3::phys::Vec3& posOut,
                               bool& captiveOut) -> bool {
-        const x3::game::RescueVictim* v = midFloors.victim();
-        if (!v || v->expired() || !chatTrees.hasNpc(v->name())) return false;
-        const x3::phys::Vec3 vp = v->pos();
-        const float dx = at.x - vp.x, dz = at.z - vp.z;
-        if (dx * dx + dz * dz > reach * reach) return false;
-        whoOut = v->name(); posOut = vp; captiveOut = v->captive();
-        return true;
+        float best = reach * reach; bool found = false;
+        auto consider = [&](const x3::game::RescueVictim* v) {
+            if (!v || v->expired() || !chatTrees.hasNpc(v->name())) return;
+            const x3::phys::Vec3 vp = v->pos();
+            const float dx = at.x - vp.x, dz = at.z - vp.z;
+            const float d2 = dx * dx + dz * dz;
+            if (d2 <= best) { best = d2; whoOut = v->name(); posOut = vp;
+                              captiveOut = v->captive(); found = true; }
+        };
+        consider(midFloors.victim());                       // Lena (spire mid F5)
+        const x3::game::RescueSystem& rs =                  // Aria/Keisha/Emily (or legacy)
+            (canonWorld && canonPlay.built()) ? canonPlay.rescue() : game.rescue();
+        for (uint32_t i = 0; i < rs.victimCount(); ++i) consider(&rs.victim(i));
+        return found;
     };
     // Find the nearest LIVE captive within `reach` of `at` (XZ). Returns true + its
     // name/world-pos. Shared by the E dispatch and the prompt/box draw so both see
@@ -4034,10 +4043,19 @@ int runDefaultHost(HostContext& hc) {
                     }   // choices up: E waits for a 1-4 answer
                 } else if (chatCaptive) {
                     // The follow sink — evaluated when her tree's {"follow"} fx fires
-                    // (a later E), so it re-resolves the victim position at call time.
-                    chatTrees.ctx().follow = [&midFloors]() {
-                        const x3::game::RescueVictim* v = midFloors.victim();
-                        return v ? midFloors.onRescue(v->pos()) : false;
+                    // (a later E). Route to the system that owns THIS captive: Lena is
+                    // the spire-mid victim (onRescue); the canonlevel girls live in
+                    // canonPlay's RescueSystem (tryRescue). Passing the captive's own pos
+                    // guarantees the range check, mirroring the original Lena sink.
+                    const x3::phys::Vec3 followPos = chatPos;
+                    const std::string    followWho = chatWho;   // the captive being talked to
+                    chatTrees.ctx().follow = [&, followPos, followWho]() -> bool {
+                        const x3::game::RescueVictim* mv = midFloors.victim();
+                        if (mv && !mv->expired() && mv->name() == followWho)
+                            return midFloors.onRescue(mv->pos());   // Lena (spire mid)
+                        x3::game::RescueSystem& rs =                 // Aria/Keisha/Emily (or legacy)
+                            (canonWorld && canonPlay.built()) ? canonPlay.rescue() : game.rescue();
+                        return rs.tryRescue(followPos);
                     };
                     if (chatTrees.start(chatWho, "first_meeting"))
                         x3::logInfo("chat: [" + chatTrees.currentSpeaker() + "] " +
