@@ -16,11 +16,12 @@ the 3B carries.
 
 ```sh
 curl -L -o assets/models/llm/qwen2.5-7b-instruct-q4_k_m.gguf \
-  "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/qwen2.5-7b-instruct-q4_k_m.gguf"
+  "https://huggingface.co/bartowski/Qwen2.5-7B-Instruct-GGUF/resolve/main/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
 ```
 
-(Any Qwen2.5-7B-Instruct Q4 GGUF mirror works — e.g.
-`bartowski/Qwen2.5-7B-Instruct-GGUF`.)
+(The `bartowski` single-file quant is used above — the official
+`Qwen/Qwen2.5-7B-Instruct-GGUF` Q4_K_M is split into two shards that must be
+merged with `llama-gguf-split`. Both derive from the Apache-2.0 7B.)
 
 ### 3B — CPU-ok, **NON-commercial license**
 
