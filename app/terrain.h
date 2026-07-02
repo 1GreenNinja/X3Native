@@ -65,6 +65,18 @@ struct TerrainConfig {
     float    noiseFreq     = 0.0042f; // base noise frequency (cycles / meter)
     uint32_t octaves       = 5;       // fBm octaves (detail layers)
     uint32_t seed          = 1337u;   // deterministic generation seed
+
+    // WORLD TOPOGRAPHY (Phase-1 real terrain). When false the sampler returns the
+    // legacy gentle-rolling-hills field (fBm * heightScale, shaped) — the fixed-
+    // grid + streaming SELF-TESTS keep this OFF so their [0,heightScale] + variation
+    // invariants are byte-for-byte unchanged. When true (the CANONICAL world only,
+    // via worldTerrainConfig()) the field composes real MOUNTAIN RANGES + rolling
+    // hills + authored FLAT PADS (the facility tower site + the Scrapyard City
+    // footprint) + a graded FREEWAY corridor (cut through hills / fill across dips).
+    // Everything stays bounded to [0, heightScale] so the height invariant is
+    // universal; collision, placement, normals + streaming all flow from the same
+    // pure sampler, so no other system needs to know topography is on.
+    bool     worldTopography = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -101,6 +113,33 @@ void terrainNormalAtWorld(float x, float z, float outNormal[3]);
 // canonical surface at (x,z) — the anchor a building/Spire base snaps to. The
 // caller adds their own footprint/pivot offset on top (this stays minimal).
 void placeOnTerrain(float x, float z, float outPos[3]);
+
+// ---------------------------------------------------------------------------
+// WORLD TOPOGRAPHY QUERY API (canonical world only). The authored FLAT PADS +
+// the FREEWAY route are the data behind terrainHeightAt's flat-pad + cut/fill
+// carve; they are exposed here so (a) the freeway ribbon builder can lay asphalt
+// + lane lines + guardrails exactly along the graded corridor, (b) hosts can
+// spawn ON the road / drop a building onto a pad, and (c) --test-terrain can
+// assert the flat-pad + grade-limit invariants. All PURE (no GPU/physics).
+// ---------------------------------------------------------------------------
+
+// Authored flat pads (buildable, dead-level sites the mountains/hills avoid).
+uint32_t worldFlatPadCount();
+// Fill center (cx,cz), radius r, and level height y of pad i.
+void     worldFlatPad(uint32_t i, float& cx, float& cz, float& r, float& y);
+
+// Freeway route (polyline of waypoints from the facility area to the city pad).
+uint32_t worldFreewayPointCount();
+// Waypoint i: world XZ + the baked, grade-limited centerline deck elevation.
+void     worldFreewayPoint(uint32_t i, float& x, float& z, float& elev);
+// Road deck half-width (m) — lanes span [-halfWidth, +halfWidth] of the center.
+float    worldFreewayHalfWidth();
+// Total centerline arc length (m).
+float    worldFreewayLength();
+// Sample the centerline at arc fraction s in [0,1]: outCenter = {x, deckY, z},
+// outTangent = unit XZ heading. Returns false iff there is no route. Used by the
+// ribbon builder (mesh sweep) + the grade self-test (dDeckY/ds <= max grade).
+bool     worldFreewaySampleArc(float s, float outCenter[3], float outTangent[2]);
 
 // The LOD level a tile is currently meshed at. 0 = full density (also used for
 // collision), 1 = half, 2 = quarter. Increasing = coarser/cheaper.

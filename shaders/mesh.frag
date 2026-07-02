@@ -169,16 +169,17 @@ const vec3 kSunColor = vec3(1.0, 0.97, 0.92);          // slightly warm white su
 // default heightScale (55 m). The sand band sits at the shoreline so it meets the
 // ocean cleanly; grass is low+flat; rock is steep slope; snow caps high peaks.
 // ---------------------------------------------------------------------------
-// NOTE these are calibrated to the actual streamed-world field (heightScale 55 m;
-// sampled height ~6..50 m, avg ~31 m; the fBm hills are GENTLE — slope normal.y
-// is almost never below ~0.85, so the rock thresholds sit high on purpose so the
-// steeper hillsides actually read as rock instead of rock never appearing).
+// NOTE recalibrated for the PHASE-1 WORLD TOPOGRAPHY field (worldTerrainConfig
+// heightScale 210 m: rolling valleys ~0..30 m, mountain slopes climbing to ~180 m
+// peaks). Grass fills the low valleys, rock takes the steep mountain flanks
+// (slope-keyed), snow caps the high peaks. The sand band still meets the ocean
+// cleanly at the shoreline for --world ocean / lake shores.
 const float kSeaLevel    = 14.0;   // world Y of the ocean surface (matches host)
 const float kSandTop     = 18.0;   // sand fades out a few m above sea level
-const float kSnowBottom  = 36.0;   // snow begins on the high ground
-const float kSnowFull    = 47.0;   // fully snow by here
-const float kSlopeRockLo = 0.90;   // normal.y at/below this -> full rock (steep)
-const float kSlopeRockHi = 0.965;  // normal.y at/above this -> no rock (flat)
+const float kSnowBottom  = 135.0;  // snow begins high on the mountain flanks
+const float kSnowFull    = 190.0;  // fully snow-capped peaks by here
+const float kSlopeRockLo = 0.86;   // normal.y at/below this -> full rock (steep)
+const float kSlopeRockHi = 0.955;  // normal.y at/above this -> no rock (flat)
 const float kDetailScale = 0.18;   // world-space detail tiling (cycles / meter)
 const float kMacroScale  = 0.012;  // large-scale tint variation frequency
 

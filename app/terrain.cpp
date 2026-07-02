@@ -96,6 +96,170 @@ float fbm(float x, float z, float freq, uint32_t octaves, uint32_t seed) {
 }
 
 // ---------------------------------------------------------------------------
+// RIDGED multifractal fBm — the standard mountain-noise variant: each octave is
+// folded as 1-|2v-1| (a sharp crease at the lattice midline) and weighted by the
+// previous octave, so sums accumulate as jagged RIDGES + steep valleys instead
+// of the round hills plain fBm makes. Returns [0,1). Clean-room (the public
+// ridged-fBm construction, Musgrave / Texturing & Modeling).
+// ---------------------------------------------------------------------------
+float ridgedFbm(float x, float z, float freq, uint32_t octaves, uint32_t seed) {
+    float amp = 0.5f, sum = 0.0f, norm = 0.0f, f = freq, prev = 1.0f;
+    for (uint32_t o = 0; o < octaves; ++o) {
+        float v = valueNoise(x * f + (float)o * 11.7f,
+                             z * f + (float)o * 23.3f, seed + o * 131u);
+        float r = 1.0f - std::fabs(2.0f * v - 1.0f);   // ridge crease
+        r = r * r;                                     // sharpen
+        sum  += amp * r * prev;                        // weight by last octave
+        prev  = r;
+        norm += amp;
+        amp  *= 0.5f;
+        f    *= 2.15f;
+    }
+    return (norm > 0.0f) ? (sum / norm) : 0.0f;
+}
+inline float smoothstep01(float a, float b, float x) {
+    if (b <= a) return x >= b ? 1.0f : 0.0f;
+    float t = (x - a) / (b - a);
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+// ===========================================================================
+// WORLD TOPOGRAPHY (canonical world only; cfg.worldTopography == true).
+//
+// The single spine terrainHeightAt() composes, in ABSOLUTE meters and always
+// bounded to [0, heightScale]:
+//   (1) rolling HILLS       — the legacy gentle fBm, low amplitude (kHillFrac).
+//   (2) MOUNTAIN RANGES     — ridged fBm masked by a RADIAL bowl (low at the
+//       playable center, rising to big peaks toward the horizon) + a low-freq
+//       directional modulation so the ranges vary (N/E/S/W ridges + passes),
+//       amplitude kMtnFrac. Center stays walkable; peaks ring the world.
+//   (3) FLAT PADS           — the authored buildable sites (the facility tower
+//       pad at the origin + the Scrapyard City footprint) are blended DEAD LEVEL
+//       so the tower/city sit on flat ground with terrain rising beyond.
+//   (4) FREEWAY carve       — the graded road corridor CUTS through high ground
+//       and FILLS across dips: within the deck it is exactly the (grade-limited)
+//       centerline elevation; across the shoulder it ramps to the natural
+//       surface (cut slope where terrain is higher, embankment where lower).
+//
+// All coordinates are the world XZ frame (origin ~ the facility/spawn). The
+// pad/route constants describe the CANONICAL world; the small self-test cfgs
+// leave worldTopography OFF so they see only the legacy hills.
+// ===========================================================================
+namespace topo {
+
+constexpr float kHillFrac = 0.10f;   // hills amplitude as a fraction of heightScale
+constexpr float kMtnFrac  = 0.86f;   // mountains amplitude (sum < 1 => margin)
+
+// Mountain bowl: mask ~0 inside kBowlInner, ramps to 1 by kBowlOuter (m from origin).
+constexpr float kBowlInner = 480.0f;
+constexpr float kBowlOuter = 1700.0f;
+
+// ---- Authored FLAT PADS (buildable, dead-level). {cx, cz, radius, feather, y}.
+struct Pad { float cx, cz, r, feather, y; };
+constexpr Pad kPads[] = {
+    // Facility tower + landing apron + landed ship: flat at Y=0 around the origin.
+    {    0.0f,   0.0f, 130.0f, 120.0f,  0.0f },
+    // Scrapyard City footprint (blueprint's road-grid + freeway district),
+    // toward the −X/+Z ranges; the freeway's far end lands here at deck level.
+    { -500.0f, 700.0f, 230.0f, 170.0f, 16.0f },
+};
+constexpr uint32_t kPadCount = (uint32_t)(sizeof(kPads) / sizeof(kPads[0]));
+
+// ---- FREEWAY route: waypoints {x, z} + baked centerline deck elevation (m).
+// The deck heights are grade-limited BY CONSTRUCTION (every |dElev|/segLen well
+// under kMaxGrade) and meet the pads at both ends (0 at the tower, 16 at the
+// city) so the road ties into flat ground cleanly. --test-terrain re-verifies.
+struct WayPt { float x, z, elev; };
+constexpr WayPt kRoute[] = {
+    {   24.0f,   10.0f,  0.0f },
+    {   70.0f,  150.0f,  4.0f },
+    {   10.0f,  320.0f,  9.0f },
+    { -150.0f,  470.0f,  8.0f },
+    { -330.0f,  600.0f, 13.0f },
+    { -500.0f,  700.0f, 16.0f },
+};
+constexpr uint32_t kRouteCount = (uint32_t)(sizeof(kRoute) / sizeof(kRoute[0]));
+constexpr float kRoadHalfWidth = 7.0f;    // 14 m deck (~4 lanes)
+constexpr float kShoulder      = 12.0f;   // cut/fill blend band beyond the deck
+constexpr float kMaxGrade      = 0.06f;   // 6% — the design grade limit
+
+// Mountains + hills ONLY (no pads/freeway): the "natural" surface, absolute m.
+float naturalHeight(const TerrainConfig& cfg, float x, float z) {
+    const float hillAmp = cfg.heightScale * kHillFrac;
+    const float mtnAmp  = cfg.heightScale * kMtnFrac;
+
+    // (1) rolling hills — the legacy shaped fBm, low amplitude.
+    float hb = fbm(x, z, cfg.noiseFreq, cfg.octaves, cfg.seed);
+    hb = hb * hb * (3.0f - 2.0f * hb);
+    float hills = hillAmp * hb;
+
+    // (2) mountains — ridged fBm * radial bowl * directional modulation.
+    const float r = std::sqrt(x * x + z * z);
+    float bowl = smoothstep01(kBowlInner, kBowlOuter, r);
+    // Directional variation: raise some bearings into RANGES, drop others to
+    // PASSES (so the freeway can thread a low saddle), low-frequency + centered.
+    float dirn = fbm(x, z, 0.00072f, 3, cfg.seed ^ 0x9e3779b9u);   // [0,1]
+    float dir  = 0.45f + 0.75f * dirn;                             // 0.45..1.20
+    float ridge = ridgedFbm(x, z, 0.00160f, 5, cfg.seed ^ 0x85ebca6bu);
+    float mtn = mtnAmp * ridge * bowl * dir;
+
+    float h = hills + mtn;
+    return h;
+}
+
+// ---- Freeway geometry. Nearest point on the route polyline to (x,z): fills the
+// perpendicular distance, the interpolated deck elevation there, and (optionally)
+// the arc length to that point. Also the pure arc-sampler for the ribbon/tests.
+struct RoadHit { float dist; float elev; };
+RoadHit nearestRoad(float x, float z) {
+    RoadHit best{ 1e30f, 0.0f };
+    for (uint32_t i = 0; i + 1 < kRouteCount; ++i) {
+        const WayPt& a = kRoute[i];
+        const WayPt& b = kRoute[i + 1];
+        const float ex = b.x - a.x, ez = b.z - a.z;
+        const float len2 = ex * ex + ez * ez;
+        float u = (len2 > 1e-6f) ? ((x - a.x) * ex + (z - a.z) * ez) / len2 : 0.0f;
+        u = u < 0.0f ? 0.0f : (u > 1.0f ? 1.0f : u);
+        const float px = a.x + u * ex, pz = a.z + u * ez;
+        const float dx = x - px, dz = z - pz;
+        const float d = std::sqrt(dx * dx + dz * dz);
+        if (d < best.dist) { best.dist = d; best.elev = a.elev + u * (b.elev - a.elev); }
+    }
+    return best;
+}
+
+// Compose the full topography: natural surface, flatten pads, carve the freeway.
+float compose(const TerrainConfig& cfg, float x, float z) {
+    float h = naturalHeight(cfg, x, z);
+
+    // (3) FLAT PADS — blend to dead level inside the radius, feathered out.
+    for (uint32_t i = 0; i < kPadCount; ++i) {
+        const Pad& p = kPads[i];
+        const float dx = x - p.cx, dz = z - p.cz;
+        const float d = std::sqrt(dx * dx + dz * dz);
+        // w = 1 inside r, 0 beyond r+feather.
+        const float w = 1.0f - smoothstep01(p.r, p.r + p.feather, d);
+        h = h + (p.y - h) * w;
+    }
+
+    // (4) FREEWAY carve — deck exactly at the graded centerline; shoulder ramps
+    // from the deck up/down to the natural (already pad-adjusted) surface.
+    const RoadHit rh = nearestRoad(x, z);
+    if (rh.dist < kRoadHalfWidth + kShoulder) {
+        const float blend = smoothstep01(kRoadHalfWidth, kRoadHalfWidth + kShoulder, rh.dist);
+        h = rh.elev + (h - rh.elev) * blend;   // deck at blend=0, natural at blend=1
+    }
+
+    // Bounded to [0, heightScale] so the universal height invariant holds.
+    if (h < 0.0f) h = 0.0f;
+    if (h > cfg.heightScale) h = cfg.heightScale;
+    return h;
+}
+
+} // namespace topo
+
+// ---------------------------------------------------------------------------
 // One vertex of the terrain surface at world (wx,wz): height + analytic-ish
 // normal via central differences of the height field. Pure (config only) so it
 // runs on a worker thread.
@@ -289,6 +453,10 @@ TerrainLod lodForDist(const TerrainConfig& cfg, float dist) {
 // power curve scaled to [0, heightScale]. Pure function of the config + (x,z).
 // ---------------------------------------------------------------------------
 float terrainHeightAt(const TerrainConfig& cfg, float worldX, float worldZ) {
+    if (cfg.worldTopography)
+        return topo::compose(cfg, worldX, worldZ);
+    // Legacy gentle-rolling-hills field (the self-test worlds + any cfg that
+    // hasn't opted into real topography). Unchanged: [0, heightScale], varied.
     float h = fbm(worldX, worldZ, cfg.noiseFreq, cfg.octaves, cfg.seed);
     h = h * h * (3.0f - 2.0f * h);
     return h * cfg.heightScale;
@@ -302,8 +470,64 @@ float terrainHeightAt(const TerrainConfig& cfg, float worldX, float worldZ) {
 // query and the rendered/streamed surface always agree.
 // ---------------------------------------------------------------------------
 const TerrainConfig& worldTerrainConfig() {
-    static const TerrainConfig kWorld{};   // defaults = the streamed world's config
+    static const TerrainConfig kWorld = [] {
+        TerrainConfig c{};             // engine defaults (32 m tiles, seed 1337, …)
+        c.worldTopography = true;      // REAL mountains + hills + pads + freeway
+        c.heightScale     = 210.0f;    // envelope: peaks ~180 m, hills ~21 m
+        return c;
+    }();
     return kWorld;
+}
+
+// ---------------------------------------------------------------------------
+// World topography query API (see terrain.h). Thin, pure accessors over the
+// authored pad + freeway constants in namespace topo above.
+// ---------------------------------------------------------------------------
+uint32_t worldFlatPadCount() { return topo::kPadCount; }
+void worldFlatPad(uint32_t i, float& cx, float& cz, float& r, float& y) {
+    const topo::Pad& p = topo::kPads[i < topo::kPadCount ? i : 0];
+    cx = p.cx; cz = p.cz; r = p.r; y = p.y;
+}
+uint32_t worldFreewayPointCount() { return topo::kRouteCount; }
+void worldFreewayPoint(uint32_t i, float& x, float& z, float& elev) {
+    const topo::WayPt& w = topo::kRoute[i < topo::kRouteCount ? i : 0];
+    x = w.x; z = w.z; elev = w.elev;
+}
+float worldFreewayHalfWidth() { return topo::kRoadHalfWidth; }
+
+float worldFreewayLength() {
+    float len = 0.0f;
+    for (uint32_t i = 0; i + 1 < topo::kRouteCount; ++i) {
+        const float dx = topo::kRoute[i + 1].x - topo::kRoute[i].x;
+        const float dz = topo::kRoute[i + 1].z - topo::kRoute[i].z;
+        len += std::sqrt(dx * dx + dz * dz);
+    }
+    return len;
+}
+
+bool worldFreewaySampleArc(float s, float outCenter[3], float outTangent[2]) {
+    if (topo::kRouteCount < 2) return false;
+    s = s < 0.0f ? 0.0f : (s > 1.0f ? 1.0f : s);
+    const float target = s * worldFreewayLength();
+    float acc = 0.0f;
+    for (uint32_t i = 0; i + 1 < topo::kRouteCount; ++i) {
+        const topo::WayPt& a = topo::kRoute[i];
+        const topo::WayPt& b = topo::kRoute[i + 1];
+        const float dx = b.x - a.x, dz = b.z - a.z;
+        const float segLen = std::sqrt(dx * dx + dz * dz);
+        if (acc + segLen >= target || i + 2 == topo::kRouteCount) {
+            const float u = segLen > 1e-6f ? (target - acc) / segLen : 0.0f;
+            const float uu = u < 0.0f ? 0.0f : (u > 1.0f ? 1.0f : u);
+            outCenter[0] = a.x + uu * dx;
+            outCenter[1] = a.elev + uu * (b.elev - a.elev);
+            outCenter[2] = a.z + uu * dz;
+            const float inv = 1.0f / std::max(1e-6f, segLen);
+            outTangent[0] = dx * inv; outTangent[1] = dz * inv;
+            return true;
+        }
+        acc += segLen;
+    }
+    return false;
 }
 
 float terrainHeightAtWorld(float x, float z) {
@@ -933,6 +1157,149 @@ bool runTerrainSelfTest() {
         const bool savesTris = activeTris < terrain.activeTriangleCount() + 1;
         check(ordered && applied && savesTris,
               "T3 LOD coarsens with distance (near=Full, far=Quarter)");
+    }
+
+    // ======================= WORLD TOPOGRAPHY (Phase 1) ======================
+    // These exercise the CANONICAL world config (worldTerrainConfig — mountains +
+    // hills + flat pads + the graded freeway), which the legacy T1..T3 cfg above
+    // deliberately does NOT enable.
+    const TerrainConfig& W = worldTerrainConfig();
+
+    // ---- T4: heightfield sampling is DETERMINISTIC (bit-exact on re-sample) ---
+    {
+        bool exact = true;
+        const float pts[][2] = { {0,0},{123,-77},{900,300},{-500,700},{-333,512},{1600,-1200} };
+        for (auto& p : pts) {
+            const float a = terrainHeightAt(W, p[0], p[1]);
+            const float b = terrainHeightAt(W, p[0], p[1]);
+            if (a != b) exact = false;
+        }
+        check(exact, "T4 heightfield sampling deterministic (bit-exact re-sample)");
+    }
+
+    // ---- T5: FLAT PADS hold — every point inside a pad radius is DEAD LEVEL ----
+    {
+        bool flat = true, risesBeyond = false; float worstErr = 0.0f;
+        for (uint32_t i = 0; i < worldFlatPadCount(); ++i) {
+            float cx, cz, r, y; worldFlatPad(i, cx, cz, r, y);
+            for (int a = 0; a < 24; ++a) {
+                const float ang = (float)a / 24.0f * 6.2831853f;
+                for (float rr = 0.0f; rr <= r * 0.9f; rr += r * 0.3f) {
+                    const float x = cx + std::cos(ang) * rr, z = cz + std::sin(ang) * rr;
+                    const float e = std::fabs(terrainHeightAt(W, x, z) - y);
+                    worstErr = std::max(worstErr, e);
+                    if (e > 0.02f) flat = false;
+                }
+            }
+            // Somewhere well beyond the pad the ground must differ (pad is a
+            // clearing IN the terrain, not the whole world going flat).
+            if (std::fabs(terrainHeightAt(W, cx + r + 400.0f, cz) - y) > 1.0f) risesBeyond = true;
+        }
+        if (!flat) x3::logError("[terrain-test] flat-pad worst err=" + std::to_string(worstErr));
+        check(flat && risesBeyond, "T5 authored flat pads are dead-level (tower + city sites)");
+    }
+
+    // ---- T6: FREEWAY centerline respects the ~6% grade limit end-to-end -------
+    {
+        bool gradeOk = true; float worstGrade = 0.0f;
+        const int N = 400;
+        float prev[3]; float prevT[2];
+        worldFreewaySampleArc(0.0f, prev, prevT);
+        for (int i = 1; i <= N; ++i) {
+            float c[3], t[2];
+            worldFreewaySampleArc((float)i / (float)N, c, t);
+            const float dxz = std::sqrt((c[0]-prev[0])*(c[0]-prev[0]) + (c[2]-prev[2])*(c[2]-prev[2]));
+            if (dxz > 1e-4f) {
+                const float grade = std::fabs(c[1] - prev[1]) / dxz;
+                worstGrade = std::max(worstGrade, grade);
+                if (grade > topo::kMaxGrade + 0.005f) gradeOk = false;
+            }
+            prev[0]=c[0]; prev[1]=c[1]; prev[2]=c[2];
+        }
+        x3::logInfo("[terrain-test] freeway worst grade = " +
+                    std::to_string(worstGrade * 100.0f) + "% (limit " +
+                    std::to_string(topo::kMaxGrade * 100.0f) + "%), length " +
+                    std::to_string((int)worldFreewayLength()) + " m");
+        check(gradeOk, "T6 freeway grade within the 6% design limit end-to-end");
+    }
+
+    // ---- T7: FREEWAY carve — the deck is FLAT across its width (cut/fill), and
+    //          the corridor actually reshapes the natural ground (cut or fill). --
+    {
+        bool deckFlat = true, movedEarth = false; float worstCross = 0.0f;
+        const float hw = worldFreewayHalfWidth();
+        for (int i = 1; i < 10; ++i) {
+            float c[3], tg[2];
+            worldFreewaySampleArc((float)i / 10.0f, c, tg);
+            const float px = -tg[1], pz = tg[0];        // perpendicular (unit)
+            // Deck must sit at the centerline elevation across the full width.
+            for (float o = -hw; o <= hw; o += hw * 0.5f) {
+                const float e = std::fabs(terrainHeightAt(W, c[0]+px*o, c[2]+pz*o) - c[1]);
+                worstCross = std::max(worstCross, e);
+                if (e > 0.30f) deckFlat = false;
+            }
+            // Natural ground well off the corridor differs from the deck => the
+            // carve cut a hill or filled a dip here.
+            const float far = terrainHeightAt(W, c[0]+px*(hw+topo::kShoulder+45.0f),
+                                                  c[2]+pz*(hw+topo::kShoulder+45.0f));
+            if (std::fabs(far - c[1]) > 0.75f) movedEarth = true;
+        }
+        if (!deckFlat) x3::logError("[terrain-test] deck cross worst=" + std::to_string(worstCross));
+        check(deckFlat && movedEarth, "T7 freeway deck flat across width; corridor cuts/fills terrain");
+    }
+
+    // ---- T8/T9: physics collision built from the topography MATCHES the rendered
+    //      surface (raycast Y == sampler Y), and tile residency creates/destroys
+    //      bodies+meshes with NO LEAK (allocation stability). ------------------
+    {
+        HeadlessDevice wdev;
+        std::unique_ptr<x3::phys::IPhysicsWorld> wphys(x3::phys::createPhysicsWorld());
+        wphys->init();
+        Scene wscene;
+        TerrainStreamer wstream;
+        const float fX = 900.0f, fZ = 300.0f;          // varied (mountain) terrain
+        wstream.setUploadBudget(512);
+        wstream.init(wscene, wdev, *wphys, /*jobs=*/nullptr, W, fX, fZ, /*radius=*/2);
+        for (int i = 0; i < 8; ++i) wstream.update(wscene, wdev, *wphys, fX, fZ);
+        wphys->optimizeBroadphase();
+        wphys->step(1.0f / 60.0f);
+
+        // Collision == render: raycast straight down onto the streamed collision
+        // at integer-meter (grid-vertex) points and compare to the sampler.
+        int hits = 0, matched = 0; float worst = 0.0f;
+        for (int dz = -24; dz <= 24; dz += 8)
+            for (int dx = -24; dx <= 24; dx += 8) {
+                const float x = fX + (float)dx, z = fZ + (float)dz;
+                const float expected = terrainHeightAtWorld(x, z);
+                x3::phys::RayHit hit = wphys->rayCast(
+                    x3::phys::Vec3{ x, W.heightScale + 60.0f, z },
+                    x3::phys::Vec3{ 0.0f, -1.0f, 0.0f }, W.heightScale + 200.0f,
+                    x3::phys::Layer::Static);
+                if (hit.hit) {
+                    ++hits;
+                    const float e = std::fabs(hit.point.y - expected);
+                    worst = std::max(worst, e);
+                    if (e < 0.35f) ++matched;
+                }
+            }
+        x3::logInfo("[terrain-test] collision-vs-render: " + std::to_string(matched) + "/" +
+                    std::to_string(hits) + " within 0.35 m (worst " + std::to_string(worst) +
+                    " m), resident=" + std::to_string(wstream.residentCount()));
+        check(hits >= 40 && matched == hits,
+              "T8 physics collision height matches rendered surface (raycast == sampler)");
+
+        // Residency lifecycle: teardown destroys everything it created (no leak).
+        const uint64_t mc = wdev.meshesCreated, md0 = wdev.meshesDestroyed;
+        wstream.shutdown(wscene, wdev, *wphys);
+        const bool tileBal = wstream.tilesCreated() == wstream.tilesDestroyed();
+        const bool meshBal = wdev.meshesCreated == wdev.meshesDestroyed;
+        x3::logInfo("[terrain-test] residency: tiles c/d=" +
+                    std::to_string(wstream.tilesCreated()) + "/" + std::to_string(wstream.tilesDestroyed()) +
+                    " meshes c/d=" + std::to_string(wdev.meshesCreated) + "/" +
+                    std::to_string(wdev.meshesDestroyed) + " (created " + std::to_string(mc) +
+                    ", destroyed-at-start " + std::to_string(md0) + ")");
+        check(tileBal && meshBal, "T9 topography tile residency creates/destroys bodies+meshes (no leak)");
+        wphys->shutdown();
     }
 
     physics->shutdown();
