@@ -154,34 +154,43 @@ int hostSurfaceStart(HostContext& hc) {
         return 1;
     }
 
-    // ---- Sky + lighting: mid-morning desert sun placed to RAKE across the front
-    //      facade (strong +X component) so the inset window reveals and spandrel
-    //      steps cast readable contact-shadow lines and the white concrete models.
-    //      Moderate haze gives the distant mesas atmospheric depth; the analytic
-    //      sky is what the black glass bands reflect (IBL prefiltered cube).
+    // ---- NIGHT sky + moonlight (matches the reference Lab2.jpg: a bright,
+    //      moonlit WHITE-CONCRETE tower rim-lit against a DARK STARRY sky, with
+    //      dark reflective glass bands and glowing crystals pooling colour on the
+    //      dark rock). The mesh directional sun is a FIXED-magnitude near-white
+    //      (mesh.frag kSunColor) — so we keep the SKY's own sun DISK dark
+    //      (sunIntensity 0): nothing burns a moon into frame, only the building
+    //      is lit, exactly like the reference. Dark zenith/horizon + near-zero
+    //      haze trip the sky shader's night gate, so the starfield blooms in.
     {
         x3::rhi::IRenderDevice::SkyParams sp{};
         sp.enabled = true;
-        sp.sunDir[0] = 0.70f; sp.sunDir[1] = 0.80f; sp.sunDir[2] = 0.42f;   // high + raking from the right
-        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.95f; sp.sunColor[2] = 0.86f;
-        sp.sunIntensity = 1.35f; sp.haze = 0.55f; sp.exposure = 1.0f;
+        // Moonlight rakes from upper-LEFT-FRONT so the +Z facade + the -X flank
+        // catch a cool kicker and the inset reveals/spandrels cast contact lines.
+        sp.sunDir[0] = -0.40f; sp.sunDir[1] = 0.60f; sp.sunDir[2] = 0.70f;
+        sp.sunColor[0] = 0.72f; sp.sunColor[1] = 0.82f; sp.sunColor[2] = 1.0f;  // cool moon (sky disk only)
+        sp.sunIntensity = 0.0f;    // no visible moon disk/glow — clean, dark sky
+        sp.haze = 0.03f;           // near-zero -> deep night; the starfield shows
+        sp.exposure = 1.0f;
+        sp.zenith[0]  = 0.006f; sp.zenith[1]  = 0.011f; sp.zenith[2]  = 0.026f;  // near-black blue overhead
+        sp.horizon[0] = 0.020f; sp.horizon[1] = 0.033f; sp.horizon[2] = 0.062f;  // faint cool horizon glow
         device->setSkyParams(sp);
     }
+    // A cool ambient FILL so the SHADOWED faces of the white concrete read as
+    // deep silver rather than black (the night-sky IBL is nearly black on its own).
+    device->setAmbient(0.090f, 0.110f, 0.155f);
+    // Pin exposure (auto-exposure OFF): a mostly-dark night frame would otherwise
+    // let eye-adaptation crank the gain and milk out the black sky. A fixed,
+    // slightly hot exposure keeps the moonlit concrete bright and the sky inky.
     {
-        // Fill point lights: a warm lobby interior so Sarah + the lobby read
-        // through the entrance glazing against the daylight, and a soft warm
-        // bounce near the landed ship. The black window bands stay UNLIT — in
-        // daylight they read as dark reflective glass, and NOTHING lights the
-        // 4.5 monster section (it has no windows at all — the quiet tell).
-        x3::rhi::PointLight pl[2];
-        pl[0].pos[0] = 0.0f; pl[0].pos[1] = 3.2f; pl[0].pos[2] = kFacilityZ - 6.0f;
-        pl[0].range = 55.0f;
-        pl[0].color[0] = 10.0f; pl[0].color[1] = 8.0f; pl[0].color[2] = 5.5f;  // warm lobby glow
-        pl[1].pos[0] = 9.0f; pl[1].pos[1] = 4.0f; pl[1].pos[2] = 10.0f;
-        pl[1].range = 35.0f;
-        pl[1].color[0] = 5.0f; pl[1].color[1] = 4.2f; pl[1].color[2] = 3.4f;   // sun bounce on the ship
-        device->setPointLights(pl, 2);
+        x3::rhi::IRenderDevice::PostFXParams fx{};
+        fx.autoExposure = false;
+        device->setPostFX(fx);
+        device->setExposure(1.55f);
+        device->setBloom(0.85f);   // gentle bloom on lit windows + crystals (not a white glare)
     }
+    // NOTE: all the scene POINT LIGHTS (warm lit windows, the crystal glow pool,
+    // the ship bounce) are set together AFTER the crystals are built, below.
 
     x3::game::Scene scene;
 
@@ -452,6 +461,121 @@ int hostSurfaceStart(HostContext& hc) {
         collideBox(0.0f, kTowerH * 0.5f, backZ + wallT, kFacilityHalfW, kTowerH * 0.5f, wallT);
         collideBox(-kFacilityHalfW + wallT, kTowerH * 0.5f, fcz, wallT, kTowerH * 0.5f, kFacilityHalfD);
         collideBox( kFacilityHalfW - wallT, kTowerH * 0.5f, fcz, wallT, kTowerH * 0.5f, kFacilityHalfD);
+    }
+
+    // ---- NIGHT DRESSING (reference Lab2.jpg): a few WARM LIT WINDOW cells so the
+    //      tower reads INHABITED (most bands stay dark glass), a rooftop antenna
+    //      mast cluster, and — the hero foreground — a DARK ROCK outcrop with a
+    //      cluster of GLOWING pink/cyan CRYSTALS pooling colour on the rock + the
+    //      tower base. -----------------------------------------------------------
+    auto rockTex = loadSurfaceTex(device, "rock_dark.png", true, 34, 34, 40);
+    {
+        // WARM LIT WINDOWS: emissive panels flush in a handful of front-face
+        // window cells (a few lit floors sell habitation; the rest read as dark
+        // reflective glass). Placed just inside the facade plane, in the window
+        // openings between the concrete piers.
+        auto litWin = [&](float cx, float cy, float hx, float hy) {
+            x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, 0.05f, cx, cy, kFacilityZ - 0.08f, 1.0f);
+            auto mh = device->createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                         m.index.data(), (uint32_t)m.index.size());
+            x3::game::Entity e{}; e.mesh = mh;
+            e.baseColor[0] = 0.32f; e.baseColor[1] = 0.22f; e.baseColor[2] = 0.12f;
+            e.emissive[0] = 1.0f; e.emissive[1] = 0.66f; e.emissive[2] = 0.34f; e.emissive[3] = 2.6f;
+            e.tag = (uint32_t)x3::game::Tag::Static;
+            scene.add(e);
+        };
+        auto glassGlow = [&](int f) { return bandBaseY(f) + kSpandrelH + (kStoryH - kSpandrelH) * 0.5f; };
+        litWin( 5.2f, glassGlow(2), 0.85f, 1.05f);   // band 2, right
+        litWin( 9.4f, glassGlow(2), 0.85f, 1.05f);
+        litWin(-6.0f, glassGlow(3), 0.85f, 1.05f);   // band 3, left
+        litWin(-2.8f, glassGlow(5), 0.85f, 1.05f);   // band 5 (above the 4.5 expanse)
+        litWin( 4.6f, glassGlow(5), 0.85f, 1.05f);
+
+        // ROOFTOP ANTENNA MAST cluster (back-right of the crown, like the ref).
+        for (int k = 0; k < 4; ++k) {
+            const float mx = 5.0f + k * 2.4f;
+            const float mh = 3.0f + (k % 2 ? 5.5f : 2.5f);
+            slab(mx, kTowerH + 0.44f + mh * 0.5f, backZ + 2.5f, 0.10f, mh * 0.5f, 0.10f,
+                 apronTex, mrApron, 1.0f);
+        }
+        slab(6.0f, kTowerH + 1.2f, backZ + 4.5f, 1.4f, 0.12f, 0.5f, apronTex, mrApron, 0.6f); // roof plant box
+
+        // ---- THE GLOWING CRYSTALS on a dark rock outcrop (hero foreground, left
+        //      of the approach walkway). Each shard = a leaning, translucent
+        //      emissive glass prism; a pink/cyan mix pools onto the rock. --------
+        const float kCX = -9.5f, kCZ = 2.0f;   // cluster center (HERO foreground-left, close to cam)
+        // Dark rock outcrop the crystals erupt from.
+        slab(kCX, 0.6f, kCZ, 5.5f, 0.9f, 4.8f, rockTex, mrGround, 0.5f, 0.55f, 0.55f, 0.62f);
+        collideBox(kCX, 0.6f, kCZ, 5.5f, 0.9f, 4.8f);
+        slab(kCX + 4.0f, 0.35f, kCZ + 2.6f, 2.2f, 0.55f, 1.8f, rockTex, mrGround, 0.6f, 0.5f, 0.5f, 0.58f);
+        slab(kCX - 3.4f, 0.30f, kCZ - 1.8f, 1.8f, 0.45f, 1.5f, rockTex, mrGround, 0.6f, 0.5f, 0.5f, 0.58f);
+
+        auto crystal = [&](float dx, float dz, float radius, float height,
+                           float leanX, float leanZ, float r, float g, float b) {
+            // Faceted pointed shard baked at origin (base y=0 -> apex y=height),
+            // then leaned + placed on the rock.
+            x3::prims::PrimMesh m = x3::prims::makeCrystal(radius, height, 6);
+            auto mh = device->createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                         m.index.data(), (uint32_t)m.index.size());
+            const float cx = std::cos(leanX), sx = std::sin(leanX);
+            const float cz = std::cos(leanZ), sz = std::sin(leanZ);
+            // R = Rz * Rx  (column-major), then translate to (kCX+dx, ~1.2, kCZ+dz).
+            x3::game::Entity e{};
+            e.mesh = mh;
+            e.transform[0] = cz;        e.transform[1] = sz;        e.transform[2]  = 0.0f;
+            e.transform[4] = -sz * cx;  e.transform[5] = cz * cx;   e.transform[6]  = sx;
+            e.transform[8] = sz * sx;   e.transform[9] = -cz * sx;  e.transform[10] = cx;
+            e.transform[12] = kCX + dx; e.transform[13] = 1.15f;    e.transform[14] = kCZ + dz;
+            e.transform[15] = 1.0f;
+            e.transparent = true;
+            e.glass.opacity   = 0.62f;
+            e.glass.roughness = 0.06f;
+            e.glass.refraction= 0.04f;
+            e.glass.specular  = 1.0f;
+            e.glass.tint[0] = r * 0.8f; e.glass.tint[1] = g * 0.8f; e.glass.tint[2] = b * 0.8f;
+            e.baseColor[0] = r; e.baseColor[1] = g; e.baseColor[2] = b; e.baseColor[3] = e.glass.opacity;
+            // Emissive kept MODEST so the CYAN/PINK reads as colour instead of
+            // blowing to a white core; the point lights carry the pooled glow.
+            e.emissive[0] = r; e.emissive[1] = g; e.emissive[2] = b; e.emissive[3] = 1.25f;
+            e.tag = (uint32_t)x3::game::Tag::Static;
+            scene.add(e);
+        };
+        // Bigger, faceted-looking cluster (large hero shards up front, like the ref).
+        crystal(-0.6f, 0.4f, 0.85f, 9.5f,  0.04f, -0.09f, 0.42f, 0.78f, 1.00f);  // TALL cyan hero
+        crystal( 1.6f, 1.0f, 0.60f, 6.8f,  0.07f,  0.13f, 0.48f, 0.72f, 1.00f);  // cyan
+        crystal(-2.2f, 1.2f, 0.55f, 5.6f, -0.13f, -0.05f, 0.80f, 0.42f, 0.95f);  // violet
+        crystal( 0.6f,-1.2f, 0.50f, 4.6f,  0.11f,  0.22f, 1.00f, 0.40f, 0.72f);  // PINK hero
+        crystal(-3.0f,-0.4f, 0.44f, 3.8f, -0.20f,  0.07f, 0.95f, 0.45f, 0.90f);  // violet-pink
+        crystal( 3.0f,-0.6f, 0.40f, 3.2f,  0.17f, -0.15f, 0.45f, 0.85f, 1.00f);  // cyan low
+        crystal(-0.4f, 2.0f, 0.36f, 2.6f,  0.05f, -0.22f, 1.00f, 0.48f, 0.80f);  // pink low
+        crystal( 2.2f, 1.8f, 0.32f, 2.2f,  0.09f,  0.10f, 0.55f, 0.55f, 1.00f);  // blue accent
+
+        // ---- ALL POINT LIGHTS (max 64): the crystal glow POOL (cyan + pink) on
+        //      the rock/tower base, a warm lobby interior bleeding through the
+        //      entrance glazing, warm bleed behind the lit-window bands, and a
+        //      soft moon bounce near the ship. -----------------------------------
+        x3::rhi::PointLight pl[8];
+        int n = 0;
+        // Crystal pool — the signature pink/cyan light on dark rock (kept from
+        // blowing white so the COLOUR pools instead of a flat glare).
+        pl[n].pos[0] = kCX - 0.3f; pl[n].pos[1] = 2.6f; pl[n].pos[2] = kCZ + 0.2f;
+        pl[n].range = 24.0f; pl[n].color[0] = 0.9f; pl[n].color[1] = 3.8f; pl[n].color[2] = 6.0f; ++n; // cyan
+        pl[n].pos[0] = kCX + 1.0f; pl[n].pos[1] = 1.4f; pl[n].pos[2] = kCZ - 0.8f;
+        pl[n].range = 16.0f; pl[n].color[0] = 6.0f; pl[n].color[1] = 1.6f; pl[n].color[2] = 4.2f; ++n;  // magenta
+        pl[n].pos[0] = kCX; pl[n].pos[1] = 4.5f; pl[n].pos[2] = kCZ;
+        pl[n].range = 28.0f; pl[n].color[0] = 2.2f; pl[n].color[1] = 3.0f; pl[n].color[2] = 4.6f; ++n;  // cool lift
+        // Warm lobby interior (bleeds through the entrance glazing).
+        pl[n].pos[0] = 0.0f; pl[n].pos[1] = 3.0f; pl[n].pos[2] = kFacilityZ - 6.0f;
+        pl[n].range = 40.0f; pl[n].color[0] = 8.0f; pl[n].color[1] = 5.8f; pl[n].color[2] = 3.2f; ++n;  // warm
+        // Warm bleed just inside the lit-window bands (soft glow on the reveals).
+        pl[n].pos[0] = 6.5f; pl[n].pos[1] = glassGlow(2); pl[n].pos[2] = kFacilityZ - 1.2f;
+        pl[n].range = 12.0f; pl[n].color[0] = 5.0f; pl[n].color[1] = 3.2f; pl[n].color[2] = 1.6f; ++n;
+        pl[n].pos[0] = 0.5f; pl[n].pos[1] = glassGlow(5); pl[n].pos[2] = kFacilityZ - 1.2f;
+        pl[n].range = 12.0f; pl[n].color[0] = 5.0f; pl[n].color[1] = 3.2f; pl[n].color[2] = 1.6f; ++n;
+        // Soft cool moon bounce near the landed ship (keeps it from going black).
+        pl[n].pos[0] = 9.0f; pl[n].pos[1] = 3.5f; pl[n].pos[2] = 10.0f;
+        pl[n].range = 22.0f; pl[n].color[0] = 2.2f; pl[n].color[1] = 2.6f; pl[n].color[2] = 3.4f; ++n;
+        device->setPointLights(pl, (uint32_t)n);
     }
 
     {
