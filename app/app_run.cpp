@@ -75,6 +75,9 @@
 #include "world_regions.h"                   // EFLZ open-world surrounding regions + 4 mountain ranges (--test-worldregions)
 #include "world_stream.h"                    // SEAMLESS region-graph streaming (--world streamed / --test-worldstream)
 #include "world_map.h"                       // INTERACTIVE WORLD MAP (M key / --test-worldmap)
+#include "input_capture.h"                   // InputCaptureManager: single owner of GLFW_CURSOR +
+                                              // single source of truth for "what holds input capture"
+                                              // (P0 fix/input-capture-lockup; --test-inputcapture)
 #include "city.h"                            // EFLZ open-world metropolis: districts + roads + freeway tunnels (--test-city)
 #include "ocean_base.h"                      // EFLZ open-world ocean + undersea base + submarine combat (--test-oceanbase)
 #include "elevator.h"
@@ -3139,7 +3142,14 @@ int runDefaultHost(HostContext& hc) {
     }
 
     x3::boot::mark("player spawn");
-    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+    // InputCaptureManager owns every gameplay glfwSetInputMode(GLFW_CURSOR, ...)
+    // call from here on (P0 fix/input-capture-lockup) -- init now so it can be
+    // used immediately; the actual cursor-mode call happens on the first
+    // acquire() below (the main-menu "menu" tag, ~30 lines down), which is
+    // the same NORMAL state this DISABLED call used to be immediately
+    // overwritten by, so there is no observable behavior change at boot.
+    x3::game::InputCaptureManager inputCapture;
+    inputCapture.init(window);
     if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     double lastMX, lastMY; glfwGetCursorPos(window, &lastMX, &lastMY);
     double prevTime = glfwGetTime();
@@ -3441,10 +3451,17 @@ int runDefaultHost(HostContext& hc) {
                         terrainWorld ? "open-world demo" : "Level 1 - Awakening");
     }
     // Cursor is shown in any menu OR while the console is open; hidden only while
-    // actively playing with the console closed. Tracked so we only call GLFW on a
-    // transition. Start in the menu => cursor visible.
-    bool cursorShown = true;
-    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+    // actively playing with the console closed. The registry (not a local bool)
+    // now owns this decision -- see the "input-capture registry sync" block at
+    // the end of the loop. Start in the menu => cursor visible.
+    inputCapture.acquire("menu", /*showCursor*/ true);
+    // Previous-frame values for the seven capturers, diffed once per frame (at
+    // the end of the loop, after everything below has had its chance to open/
+    // close this frame) to acquire()/release() the matching registry tag on a
+    // transition. `prevMenuCap` starts true to match the acquire() just above.
+    bool prevConsoleCap = false, prevMenuCap = true, prevWorldMapCap = false,
+         prevTermCap = false, prevCodeCap = false, prevDialogCap = false,
+         prevNpcDialogCap = false;
     bool prevUiEsc = false;   // rising-edge for routing Esc into the UI controller
     // Rising-edge trackers for the UI controller's input snapshot (menu mouse +
     // keyboard nav). Kept across frames so click/nav register on the press edge.
@@ -3536,7 +3553,16 @@ int runDefaultHost(HostContext& hc) {
             x3::cut::Cutscene replayCs;
             std::vector<std::string> replayErrs;
             if (x3::cut::loadCutsceneFile(csPath, replayCs, replayErrs)) {
-                if (!runCutsceneWindowed(*device, window, audio.get(), replayCs))
+                // Bracket the blocking replay with the "cutscene" tag so the
+                // registry/watchdog know a capture is legitimately held across
+                // this call (it doesn't touch GLFW cursor mode itself -- see
+                // cinematic.cpp -- but acquiring here means an overlapping
+                // capture attempt during the film is a visible forced-transfer
+                // in the log instead of two systems silently fighting).
+                inputCapture.acquire("cutscene", /*showCursor*/ false);
+                const bool ok = runCutsceneWindowed(*device, window, audio.get(), replayCs);
+                inputCapture.release("cutscene");
+                if (!ok)
                     break;   // window closed mid-film -> normal quit path
                 frameCapPrev = glfwGetTime();   // don't count the film against the frame cap
             } else {
@@ -3547,21 +3573,25 @@ int runDefaultHost(HostContext& hc) {
         // ---- S7: console gating. While the console is open, gameplay input is
         // suppressed and the cursor is shown so the user can read/type. The cursor
         // is ALSO shown by any UI menu (main/pause/settings); the UiController is
-        // the master for menu cursor state. Recompute the desired cursor each
-        // frame and only touch GLFW on a transition.
+        // the master for menu cursor state. The actual GLFW_CURSOR call now lives
+        // entirely inside InputCaptureManager (see the "input-capture registry
+        // sync" block at the end of the loop) -- this frame just reads the
+        // registry's CURRENT owner (as of the end of the previous frame) into
+        // `anyCapture`, the single flag every gating check below uses.
         const bool consoleOpen = hud.consoleOpen();
         consoleWasOpen = consoleOpen;   // (retained for parity; cursor logic below)
-        const bool wantCursor = consoleOpen || gameUi.showCursor() || worldMapOpen;
-        if (wantCursor != cursorShown) {
-            glfwSetInputMode(window, GLFW_CURSOR,
-                             wantCursor ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_DISABLED);
-            cursorShown = wantCursor;
-        }
         // Whether a UI menu (main/pause/settings) is currently up. While a menu is
         // up, gameplay input + the sim are frozen and only the menu reads input.
         const bool uiMenuActive = !gameUi.playing();
         // The world map pauses the sim exactly like the menu screens do.
         const bool simFrozen     = gameUi.shouldFreezeSim() || worldMapOpen;
+        // Single source of truth for "something is capturing input right now"
+        // (P0 fix/input-capture-lockup): replaces the old hand-maintained,
+        // already-drifted ad-hoc OR-lists that used to appear at each gating
+        // site below (mouse-look freeze / movement gate / melee-fire gate each
+        // listed a DIFFERENT subset of consoleOpen/uiMenuActive/termMode/
+        // codeMode/worldMapOpen/chatTrees.active()/npcDialog.active()).
+        const bool anyCapture = inputCapture.hasOwner();
 
         // Esc (edge-detected): route to the UI controller (toggle pause / back out
         // of settings / resume) UNLESS the console is open or a door-code keypad is
@@ -3578,7 +3608,28 @@ int runDefaultHost(HostContext& hc) {
                 if (worldMap.confirmOpen()) mapEscEdge = true;   // back out of the prompt
                 else { worldMapOpen = false; worldMap.close(); } // close the map
             }
+            // P0 fix/input-capture-lockup (audit gap): the chat-tree dialog and
+            // the rescued-NPC dialog used to be MISSING from this chain entirely
+            // -- Esc during either fell straight through to `uiEscEdge = true`
+            // (popping the pause menu on TOP of a still-active conversation,
+            // with no way to close the conversation itself except walking out
+            // of talk range). Both now cancel on Esc, same as every other
+            // capturer here.
+            else if (chatTrees.active()) { chatTrees.cancel(); }
+            else if (npcDialog.active())  { npcDialog.cancel(); }
             else          { uiEscEdge = true; }   // hand the Esc edge to the UI below
+
+            // ESC FAILSAFE (P0 fix/input-capture-lockup, requirement #3):
+            // unconditionally force-release the capture registry on EVERY Esc
+            // edge, regardless of which branch above fired (or none did). This
+            // is deliberately NOT opt-in per subsystem -- no future capturer,
+            // and no bug in one of the branches above, can "eat" Esc and
+            // prevent the release. If a menu/prompt legitimately needs capture
+            // back (e.g. this Esc just opened the pause menu), the end-of-frame
+            // registry sync a few hundred lines down re-acquires it later this
+            // SAME frame, before anything is presented -- so this is a true
+            // safety net, not a fight with legitimate state.
+            inputCapture.forceRelease("esc-failsafe");
         }
         kpEscPrev = escNow;
         (void)prevUiEsc;
@@ -3589,20 +3640,27 @@ int runDefaultHost(HostContext& hc) {
         float dt = static_cast<float>(nowT - prevTime); prevTime = nowT;
         if (dt > 0.1f) dt = 0.1f; // clamp huge hitches (e.g. after a stall)
 
-        // Mouse delta this frame. Frozen (zeroed) while the console is open OR a UI
-        // menu is up, so the view does not swing under a visible cursor.
+        // Mouse delta this frame. Frozen (zeroed) while ANYTHING holds input
+        // capture (console / UI menu / world map / terminal / keypad / chat-tree
+        // dialog / rescued-NPC dialog), so the view does not swing under a
+        // visible cursor OR while the player is supposed to be frozen talking/
+        // typing. `anyCapture` (P0 fix/input-capture-lockup) replaces the old
+        // hand-listed OR of 5 flags here, which was already missing
+        // chatTrees.active()/npcDialog.active() (the camera could swing freely
+        // mid-conversation) -- one of the confirmed audit gaps.
         double mx, my; glfwGetCursorPos(window, &mx, &my);
         float ddx = static_cast<float>(mx - lastMX), ddy = static_cast<float>(my - lastMY);
         lastMX = mx; lastMY = my;
-        if (consoleOpen || uiMenuActive || termMode || codeMode || worldMapOpen) { ddx = 0.0f; ddy = 0.0f; }
+        if (anyCapture) { ddx = 0.0f; ddy = 0.0f; }
 
-        // Gameplay key reads are gated off while the console, a UI menu, the cell
-        // terminal, OR a door-code keypad is active — so ALL gameplay input is
-        // redirected to whatever is capturing (it reads keys via rawKey below) and
-        // nothing drives movement/use/jump/fire/noclip/weapon-switch while typing.
+        // Gameplay key reads are gated off while ANYTHING holds input capture --
+        // so ALL gameplay input is redirected to whatever is capturing (it reads
+        // keys via rawKey below) and nothing drives movement/use/jump/fire/
+        // noclip/weapon-switch while typing/talking. Same `anyCapture` single
+        // source of truth as the mouse-look freeze above (was a second,
+        // independently-drifting OR-list before this fix).
         auto keyDown = [&](int k) {
-            return !consoleOpen && !uiMenuActive && !termMode && !codeMode && !worldMapOpen &&
-                   glfwGetKey(window, k) == GLFW_PRESS;
+            return !anyCapture && glfwGetKey(window, k) == GLFW_PRESS;
         };
         // RAW key read (bypasses the capture gates) — used ONLY by the terminal/keypad
         // input capture so they still receive keystrokes while they are active.
@@ -3664,8 +3722,12 @@ int runDefaultHost(HostContext& hc) {
         // centered on the player with the player's Spire floor auto-selected;
         // M again (or Esc) closes. Gated off whenever another surface captures. ----
         {
-            const bool mNow = !consoleOpen && !termMode && !codeMode &&
-                              !chatTrees.active() && gameUi.playing() &&
+            // Gated off whenever another surface captures (anyCapture), EXCEPT
+            // the world map itself may still fire M to close (it's the current
+            // owner) -- otherwise M could never toggle the map back off once
+            // opening it grabbed capture.
+            const bool mapIsOwner = inputCapture.ownedBy("worldmap");
+            const bool mNow = (!anyCapture || mapIsOwner) && gameUi.playing() &&
                               rawKey(GLFW_KEY_M);
             if (mNow && !prevMapKey) {
                 if (worldMapOpen) { worldMapOpen = false; worldMap.close(); }
@@ -4712,14 +4774,15 @@ int runDefaultHost(HostContext& hc) {
         // short forward arc, and brute-forces a closed door you punch. Works whether
         // or not armed (the pistol is the separate LMB verb). Gated by the
         // MeleeSystem's own cooldown; only while alive. ----
-        // While the console, a UI menu, the cell terminal, or a keypad is capturing
-        // input, gameplay verbs (melee / fire) must NOT trigger — no shooting through
-        // the pause menu, no punching while typing the override code.
-        // A running chat-tree conversation also pauses the combat verbs (no firing
-        // through Lena's dialog box) — same capture idea as the terminal/keypad.
-        const bool uiCapture = consoleOpen || uiMenuActive || termMode || codeMode ||
-                               chatTrees.active() || worldMapOpen;
-        bool meleeNow = !uiCapture && (keyDown(GLFW_KEY_V) ||
+        // While ANYTHING holds input capture, gameplay verbs (melee / fire) must
+        // NOT trigger — no shooting through the pause menu, no punching while
+        // typing the override code, no firing through a dialog box. `anyCapture`
+        // (P0 fix/input-capture-lockup) replaces the old `uiCapture` OR-list,
+        // which was a THIRD independently-hand-maintained subset of the same
+        // seven flags (and the only one of the three that happened to include
+        // chatTrees.active() at all -- it never included npcDialog.active(),
+        // another confirmed audit gap now closed by using one shared flag).
+        bool meleeNow = !anyCapture && (keyDown(GLFW_KEY_V) ||
             glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_MIDDLE) == GLFW_PRESS);
         if (meleeNow && !prevMelee && player.isAlive() && !terrainWorld) {
             x3::phys::Vec3 eye{ camX, camY, camZ };
@@ -4755,7 +4818,7 @@ int runDefaultHost(HostContext& hc) {
         // projectiles are spawned into a host-owned list advanced below. Automatic
         // weapons fire while held; others fire on the LMB rising edge. ----
         (void)fireCooldown; (void)kFireCooldown;   // (legacy cooldown — arsenal owns timing now)
-        bool fireHeld = !uiCapture && !simFrozen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        bool fireHeld = !anyCapture && !simFrozen && glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
         bool wantFire = arsenal.current().automatic ? fireHeld : (fireHeld && !prevFire);
         // In --world canonlevel the legacy `game` is unbuilt; the canon sidearm gates firing.
         const bool playerArmed = game.armed() || (canonWorld && canonPlay.armed());
@@ -5823,6 +5886,57 @@ int runDefaultHost(HostContext& hc) {
         }
         device->endFrame(frame);
         g_perf.addFrame((double)dt);   // per-system perf breakdown logged every 120 frames
+
+        // ---- Input-capture registry sync (P0 fix/input-capture-lockup) -------
+        // Once per frame, AFTER every capturer above has had its chance to open
+        // or close this frame: diff each capturer's own local "am I active" flag
+        // against last frame's value and acquire()/release() the matching
+        // registry tag on a transition. This is the ONLY place that talks to
+        // InputCaptureManager for these seven tags -- one choke point instead of
+        // N hand-placed call sites scattered through a 5000-line loop, so a
+        // transition can never be missed by forgetting to wire up a new one.
+        // (worldMapOpen/termMode/codeMode already only change at a handful of
+        // explicit sites above; consoleOpen/uiMenuActive/chatTrees.active()/
+        // npcDialog.active() change deep inside the console callback / UI state
+        // machine / dialog runners, so diffing here is simpler AND safer than
+        // hunting down every internal call site.)
+        {
+            auto sync = [&](bool nowActive, bool& prevActive, const char* tag, bool showCursor) {
+                if (nowActive && !prevActive)      inputCapture.acquire(tag, showCursor);
+                else if (!nowActive && prevActive) inputCapture.release(tag);
+                prevActive = nowActive;
+            };
+            sync(consoleOpen,        prevConsoleCap,   "console",    true);
+            sync(uiMenuActive,       prevMenuCap,       "menu",       true);
+            sync(worldMapOpen,       prevWorldMapCap,   "worldmap",   true);
+            sync(termMode,           prevTermCap,       "terminal",  false);
+            sync(codeMode,           prevCodeCap,       "keypad",    false);
+            sync(chatTrees.active(), prevDialogCap,     "dialog",    false);
+            sync(npcDialog.active(),prevNpcDialogCap,   "npc_dialog",false);
+
+            // WATCHDOG (P0 fix/input-capture-lockup, requirement #4): once per
+            // frame, confirm the current owner (if any) is STILL a legitimately
+            // active capturer -- not just "was active when it acquired", but
+            // "is still active/in-range/alive right now". Catches the class of
+            // bug the audit specifically went looking for (an NPC despawning
+            // mid-dialog, a terminal torn down mid-entry) for every tag,
+            // including ones added after this fix that forget their own
+            // teardown path. Auto-releases + logs a single greppable line.
+            inputCapture.watchdogTick([&](const std::string& tag) -> bool {
+                if (tag == "console")     return consoleOpen;
+                if (tag == "menu")        return uiMenuActive;
+                if (tag == "worldmap")    return worldMapOpen;
+                if (tag == "terminal")    return termMode && game.secret().terminal().active();
+                if (tag == "keypad")      return codeMode;
+                if (tag == "dialog")      return chatTrees.active();
+                if (tag == "npc_dialog")  return npcDialog.active();
+                if (tag == "cutscene")    return true;   // bracketed acquire/release around a
+                                                          // blocking call; if the watchdog ever
+                                                          // observes it, the blocking call already
+                                                          // returned without releasing -> orphaned.
+                return false;   // unknown tag -> orphaned, reclaim
+            });
+        }
 
         // ---- [boot] BOOT-TO-INTERACTIVE: the first main-loop frame has presented —
         // window up, world fully built, menu live (player controllable on START).
