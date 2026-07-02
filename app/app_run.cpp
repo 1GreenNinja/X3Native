@@ -1610,6 +1610,9 @@ int runDefaultHost(HostContext& hc) {
     // (missing GLBs fall back to the energy pistol). ====================
     x3::game::Arsenal arsenal;
     arsenal.loadViewmodels(*device, x3::game::riggedGlbRoot());
+    // Battery cells (canonlevel) grant Lightning-Gun charge (stacks to the 300 cap).
+    if (canonWorld && canonPlay.built())
+        canonPlay.setChargeSink([&arsenal](int amt) { arsenal.grantCharge((float)amt); });
     x3::boot::mark("weapon viewmodels (GLBs)");
 
     // ==================== THIRD-PERSON VIEW (FIRST MILESTONE) ====================
