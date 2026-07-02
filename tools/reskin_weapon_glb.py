@@ -1,3 +1,9 @@
+# DEPRECATED (2026-07) -- DO NOT USE for weapon skins.
+# This only TINTS a (shared) atlas via baseColorFactor + fake emissive; that is
+# exactly what produced the "camo/pale slab" weapons. Weapons now carry their OWN
+# per-weapon PBR maps -- use tools/rebind_weapon_textures.py, not this. Kept only
+# as a generic factor-editor for non-weapon assets.
+#
 # Re-skin a weapon viewmodel GLB IN PLACE by editing its PBR material factors.
 #
 # ASSET-ONLY: changes only the Principled-BSDF-equivalent glTF material factors

@@ -1,10 +1,16 @@
 # Headless Blender OBJ -> GLB converter for the X3Native weapon viewmodels.
 #
 # Usage:
-#   blender --background --python convert_obj_glb.py -- <src.obj> <dst.glb> <texdir> [donefile]
+#   blender --background --python convert_obj_glb.py -- <src.obj> <dst.glb> [texdir] [donefile]
+#
+# ROOT-CAUSE NOTE (2026-07): passing ONE shared <texdir> for every weapon is what
+# skinned four of the five arsenal weapons with a foreign atlas (the "camo/pale
+# slab" bug). Each Rodin weapon ships its OWN texture set NEXT TO its .obj, so
+# <texdir> now DEFAULTS to the OBJ's own directory -- convert each weapon from its
+# own folder and it gets its own maps. Only override <texdir> deliberately.
 #
 # Imports one Wavefront OBJ into an empty scene, REPLACES its material with a
-# Principled BSDF wired to the shared weapon PBR texture set found in <texdir>:
+# Principled BSDF wired to that weapon's OWN PBR texture set found in <texdir>:
 #     BaseColor  <- texture_diffuse.png
 #     Normal     <- texture_normal.png   (Non-Color -> Normal Map node)
 #     Metallic   <- texture_metallic.png (Non-Color, R channel)
@@ -23,11 +29,13 @@ def log(*a):
     print("[obj2glb]", *a)
 
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
-if len(argv) < 3:
-    log("ERR: need <src.obj> <dst.glb> <texdir> [donefile]")
+if len(argv) < 2:
+    log("ERR: need <src.obj> <dst.glb> [texdir] [donefile]")
     sys.exit(1)
 
-src, dst, texdir = argv[0], argv[1], argv[2]
+src, dst = argv[0], argv[1]
+# Default texdir = the OBJ's OWN directory (each weapon carries its own maps).
+texdir = argv[2] if len(argv) > 2 else os.path.dirname(os.path.abspath(src))
 donefile = argv[3] if len(argv) > 3 else None
 
 def write_done(token, msg=""):

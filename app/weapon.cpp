@@ -307,7 +307,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.reloadTime  = 1.3f;     // quick sidearm reload
         w.viewmodelGlb = "WeaponEnergyPistol2.glb";  // real energy_pistol.obj (PBR-textured)
         w.vmScale     = 0.18f;                        // proven pistol read (~0.33 m held)
-        w.vmLitPBR    = true;                         // lit gunmetal (no albedo-crush dazzle)
+        w.vmLitPBR    = false;                        // restored albedo (blue-accent energy skin) — draw its real texture
         w.muzzleFx    = "muzzle_pistol";
         w.impactFx    = "impact_bullet";
         w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-01.wav";   // punchy single shot
@@ -928,7 +928,7 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
     // dark interiors instead of a microscopic silhouette. d.vmScale stays the per-weapon
     // RELATIVE tuning; kVmScaleBoost is the global "hold it up bigger" multiplier.
     constexpr float kVmScaleBoost = 2.0f;   // Tim: 2x scale is CORRECT, NOT too big — keep it.
-    constexpr float kVmBright     = 2.6f;   // lit (the real issue is the GLB TEXTURE being wrong, not size/brightness)
+    constexpr float kVmBright     = 1.4f;   // modest lift; textures are now the CORRECT per-weapon baked albedo (2.6x blew them out)
     composeTRS(model, bx, by, bz, d.vmScale * kVmScaleBoost, pos);
     for (const auto& dr : vm.drawables) {
         float fin[16];
@@ -979,7 +979,7 @@ void Arsenal::drawCurrentAt(x3::rhi::IRenderDevice& device,
     // Same brightness boost the FP viewmodel uses so the held gun reads lit in dark
     // interiors. The caller owns the full world placement (hand-bone * grip * scale),
     // so unlike drawCurrentViewmodel this does NO camera-relative posing.
-    constexpr float kVmBright = 2.6f;
+    constexpr float kVmBright = 1.4f;
     for (const auto& dr : vm.drawables) {
         // STRIP the node-transform's authored WORLD TRANSLATION (cols 12..14): these
         // weapon GLBs bake an FP-viewmodel placement offset into the root node, which

@@ -205,9 +205,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/WeaponBFG.glb",
-      "sha256": "ce556294d6f41f802f0ed77a355238ceea7a3b6eac09c09aef462f21a0d0b0d9",
-      "size": 8795776,
-      "source_note": "weapon-variety reskin: plasma sleek-white+green glow (shared plasma/plasma_rifle)"
+      "sha256": "ab74b10e8ce1de09ea385567aa56b70212d911fdda39d4e3217cbd279b5b48e6",
+      "size": 7289060,
+      "source_note": "weapon texture restoration: per-weapon PBR rebind (feat/weapon-textures)"
     },
     {
       "repo_path": "assets/rigged_glb/WeaponEnergyPistol.glb",
@@ -217,21 +217,21 @@
     },
     {
       "repo_path": "assets/rigged_glb/WeaponEnergyPistol2.glb",
-      "sha256": "f9a64a661cb537476bbe96c9610e80bdba5c6ec57f88a6a3db507d7057f44c46",
-      "size": 8785544,
-      "source_note": "weapon-variety reskin: pistol gunmetal+blue"
+      "sha256": "28a84e3d74f4122b9c4f1138e8b50e0860206d2780fed5796bfe37b08bf84fad",
+      "size": 6865880,
+      "source_note": "weapon texture restoration: per-weapon PBR rebind (feat/weapon-textures)"
     },
     {
       "repo_path": "assets/rigged_glb/WeaponRailgun.glb",
-      "sha256": "70fa04dbccfdb587aa01e04e48b836c811f69d8e9b3233f87b0e6f8cb3da1364",
-      "size": 9235156,
-      "source_note": "weapon-variety reskin: lightning dark+electric-blue (shared smg/lightning)"
+      "sha256": "493dd1d7ff867fd1a115cceaa148788feb9ce24c28a266ab20da3c0a519fc178",
+      "size": 6389304,
+      "source_note": "weapon texture restoration: per-weapon PBR rebind (feat/weapon-textures)"
     },
     {
       "repo_path": "assets/rigged_glb/WeaponRocketLauncher.glb",
-      "sha256": "82c2194c0a00fa546c95793733fcda5b7e7574873a831e53b8677753de783d6f",
-      "size": 10144416,
-      "source_note": "weapon-variety reskin: chaingun industrial steel+orange-hot"
+      "sha256": "ce100f3651cc6f75c20082dbb99600350d9bfd2e28f116057dec6d21d9d05b2d",
+      "size": 8664256,
+      "source_note": "weapon texture restoration: per-weapon PBR rebind (feat/weapon-textures)"
     },
     {
       "repo_path": "assets/rigged_glb/WeaponShotGun.glb",
@@ -241,9 +241,9 @@
     },
     {
       "repo_path": "assets/rigged_glb/WeaponShotgun2.glb",
-      "sha256": "cb3c289a907f4a9b9323b794e20b0699237b366361eeceb9bfb8153dbe719175",
-      "size": 9117916,
-      "source_note": "weapon-variety reskin: shotgun steel+brass"
+      "sha256": "712c8e3f3de8290fc9beb30530ab323a69c623c3a780d6ffeac816ae8fd5bc16",
+      "size": 9788072,
+      "source_note": "weapon texture restoration: per-weapon PBR rebind (feat/weapon-textures)"
     },
     {
       "repo_path": "assets/rigged_glb/alien_crawler.glb",
