@@ -1736,6 +1736,21 @@ int runDefaultHost(HostContext& hc) {
     // Vulkan device — no renderer entanglement.
     console->registerCVar("ai_gpu", "1",
                           "LLM GPU inference (CUDA, all layers offloaded); auto-falls back to CPU if unavailable");
+    console->registerCVar("ai_ctx",       "2048", "LLM context tokens per chat");
+    console->registerCVar("ai_maxtokens", "256",  "LLM max tokens per reply");
+    console->registerCVar("ai_temp",      "0.7",  "LLM sampling temperature");
+    console->registerCVar("ai_threads",   "0",    "CPU inference threads (0=auto: half the cores, cap 16). Lower it to protect frame pacing on the CPU-fallback path; ignored on the GPU path.");
+    console->registerCVar("ai_fpace_gen", "0",    "framepacing gate: drive continuous VIGIL generation during the flythrough (frame-impact benchmark)");
+
+    // --set <cvar> <value> CLI overrides (repeatable) — applied HERE, before the
+    // LLM loads, so ai_gpu / ai_threads / ai_ctx / ai_temp take effect for model
+    // selection and load (and the per-frame cvar sync starts from the requested
+    // state). Every cvar is registered by this point except ai_npc (below).
+    for (const auto& kv : cliCVars) {
+        console->set(kv.first, kv.second);
+        x3::logInfo("--set " + kv.first + " " + kv.second);
+    }
+
     const bool aiGpu = console->getInt("ai_gpu") != 0;
 
     // MODEL SELECTION RULE: scan assets/models/llm for *.gguf and pick by size —
@@ -1765,15 +1780,20 @@ int runDefaultHost(HostContext& hc) {
     const bool llmModelPresent = std::filesystem::exists(llmModelPath);
     console->registerCVar("ai_npc",       llmModelPresent ? "1" : "0",
                           "LLM NPC minds (terminal freeform Q&A); default 1 only when the model file exists");
-    console->registerCVar("ai_ctx",       "2048", "LLM context tokens per chat");
-    console->registerCVar("ai_maxtokens", "256",  "LLM max tokens per reply");
-    console->registerCVar("ai_temp",      "0.7",  "LLM sampling temperature");
+    // ai_npc registers after model selection (its default reflects presence), so
+    // re-apply any --set ai_npc override that ran before it existed.
+    for (const auto& kv : cliCVars) if (kv.first == "ai_npc") console->set(kv.first, kv.second);
     std::unique_ptr<x3::llm::ILlmSystem> llm;
-    if (!headless && llmModelPresent && console->getInt("ai_npc") != 0) {
+    // Load in interactive mode, OR in the framepacing gate ONLY when the
+    // ai_fpace_gen frame-impact benchmark is requested (--set applied above, so
+    // this reflects the CLI). Normal framepacing CI stays model-free and fast.
+    const bool fpaceGenRun = testFramePacing && console->getInt("ai_fpace_gen") != 0;
+    if ((!headless || fpaceGenRun) && llmModelPresent && console->getInt("ai_npc") != 0) {
         x3::llm::ModelOpts lopts;
         lopts.contextTokens   = console->getInt("ai_ctx");
         lopts.maxOutputTokens = console->getInt("ai_maxtokens");
         lopts.temperature     = console->getFloat("ai_temp");
+        lopts.threads         = console->getInt("ai_threads");   // 0 = auto
         lopts.gpuLayers       = aiGpu ? 99 : 0;   // 99 = all layers on the GPU
         x3::logInfo("[llm] selected model " + llmModelPath +
                     (aiGpu ? " (ai_gpu=1, GPU-preferred)" : " (ai_gpu=0, CPU)"));
@@ -1785,12 +1805,7 @@ int runDefaultHost(HostContext& hc) {
                     " (see assets/models/llm/README.md)");
     }
 
-    // --set <cvar> <value> CLI overrides (repeatable) — applied as soon as the
-    // console exists so the per-frame cvar sync starts from the requested state.
-    for (const auto& kv : cliCVars) {
-        console->set(kv.first, kv.second);
-        x3::logInfo("--set " + kv.first + " " + kv.second);
-    }
+    // (--set CLI overrides were applied above, before the LLM loaded.)
 
     // --legacypost / --notaa: pin the matching cvars so the per-frame cvar->device
     // sync (applyRtaoCVars) keeps the A/B state instead of re-enabling defaults.
@@ -2715,8 +2730,30 @@ int runDefaultHost(HostContext& hc) {
         const float pcz = (L1.spawn.z + L1.armoryCenter.z) * 0.5f;
         const float prx = std::fabs(L1.armoryCenter.x - L1.spawn.x) * 0.5f + 4.0f;
         const float prz = std::fabs(L1.armoryCenter.z - L1.spawn.z) * 0.5f + 4.0f;
-        const int   kFlyFrames = 600;
+        // Normal gate = 600 frames. When benchmarking VIGIL generation
+        // (ai_fpace_gen=1) run longer so real token DECODE (not just prompt eval)
+        // overlaps the flythrough — the flythrough is unthrottled (~1 ms/frame),
+        // shorter than a cold model's first-token latency otherwise.
+        const bool  fpaceGenWanted = (llm && console->getInt("ai_fpace_gen") != 0);
+        const int   kFlyFrames = fpaceGenWanted ? 6000 : 600;
         const float dt = 1.0f / 60.0f;
+
+        // ZERO-STUTTER-UNDER-GENERATION benchmark (ai_fpace_gen=1): keep VIGIL
+        // generating continuously for the whole flythrough so the frame p99 below
+        // reflects real inference contention. Inference is on its own thread; the
+        // frame thread only drains tokens with poll() (a cheap string append).
+        // Run the gate twice (ai_fpace_gen 0 then 1) and compare the two p99s.
+        x3::llm::ChatId fpaceChat = x3::llm::kInvalidChat;
+        long long fpaceTokens = 0;
+        const bool fpaceGen = fpaceGenWanted;
+        if (fpaceGen) {
+            fpaceChat = llm->startChat(
+                "You are VIGIL, the facility intelligence of Lab Zero. Answer the "
+                "prisoner tersely, in character.");
+            llm->submit(fpaceChat, "Describe every floor of this facility in exhaustive detail.");
+            x3::logInfo("framepacing: ai_fpace_gen=1 — VIGIL generating during flythrough "
+                        "(backend " + std::string(llm->backendName()) + ")");
+        }
         int passed = 0, total = 0;
         auto check = [&](const char* name, bool ok) {
             ++total; if (ok) ++passed;
@@ -2724,6 +2761,15 @@ int runDefaultHost(HostContext& hc) {
         };
         for (int i = 0; i < kFlyFrames; ++i) {
             glfwPollEvents();
+            // Drain VIGIL tokens on the frame thread (cheap) and keep it busy:
+            // when a reply finishes, immediately queue another so generation
+            // spans the entire flythrough.
+            if (fpaceGen) {
+                x3::llm::PollResult pr = llm->poll(fpaceChat);
+                fpaceTokens += pr.newTokenCount;
+                if (pr.done)
+                    llm->submit(fpaceChat, "Continue in more detail, room by room.");
+            }
             const float t   = (float)i / (float)kFlyFrames;
             const float ang = t * 2.0f * 6.2831853f;            // two laps
             const float ex  = pcx + prx * std::cos(ang);
@@ -2753,6 +2799,11 @@ int runDefaultHost(HostContext& hc) {
                 hud.drawFps(*device, frame, *console, dt);
             }
             device->endFrame(frame);
+        }
+        if (fpaceGen) {
+            llm->endChat(fpaceChat);
+            x3::logInfo("framepacing: VIGIL generated " + std::to_string(fpaceTokens) +
+                        " tokens during the 600-frame flythrough");
         }
         // ---- The receipts + the gate -----------------------------------
         const x3::rhi::IRenderDevice::FramePacing fp = device->framePacing();
