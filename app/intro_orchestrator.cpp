@@ -278,6 +278,54 @@ struct CameraFeel {
     }
 };
 
+// ---------------------------------------------------------------------------
+// T6 — DRESS THE PROCEDURAL CAPITAL so it reads as a SHIP, not a box (no GLB in
+// this baseline). A layered hull (main slab + keel + dorsal spine + aft command
+// tower + forward prow + engine pods) plus EMISSIVE running-light strips + hot
+// engine glow that bloom into the HDR chain. `unitCube` is a makeBox(1,1,1) mesh
+// so per-draw scale == world half-extent. Emissive running lights ramp cool cyan
+// (healthy) -> hot orange (crippled); `flick` sputters them when the ship is hit;
+// `reveal` (0..1) fades the whole hull in during the decloak. Read-only draw.
+// ---------------------------------------------------------------------------
+void drawDressedCapital(x3::rhi::IRenderDevice& dev, const x3::rhi::FrameContext& fr,
+                        x3::rhi::MeshHandle unitCube, x3::rhi::TextureHandle hullTex,
+                        const float center[3], float damage01, float flick, float reveal) {
+    const float rv = std::clamp(reveal, 0.0f, 1.0f);
+    auto box = [&](float hxw, float hyw, float hzw, float ox, float oy, float oz,
+                   const float base[4], const float emis[4]) {
+        const float m[16] = { hxw,0,0,0, 0,hyw,0,0, 0,0,hzw,0,
+                              center[0]+ox, center[1]+oy, center[2]+oz, 1 };
+        const float b[4] = { base[0]*rv, base[1]*rv, base[2]*rv, 1.0f };
+        const float e[4] = { emis[0]*rv, emis[1]*rv, emis[2]*rv, 1.0f };
+        dev.drawMeshEmissive(fr, unitCube, hullTex, b, e, m);
+    };
+    const float dark[4] = { 0.16f, 0.18f, 0.22f, 1.0f };   // hull plating
+    const float mid[4]  = { 0.22f, 0.24f, 0.28f, 1.0f };   // greeble panels
+    const float noE[4]  = { 0, 0, 0, 0 };
+    const float d = std::clamp(damage01, 0.0f, 1.0f);
+    // Running-light strip HDR level + cool->hot color ramp; crippled hull self-glow.
+    // Kept restrained so close framings bloom tastefully instead of blowing out.
+    const float lg  = 1.5f + 1.6f * flick;
+    const float strip[4] = { lg * (0.4f + 1.6f*d), lg * (0.9f - 0.5f*d), lg * (1.3f - 1.0f*d), 1.0f };
+    const float hullGlow[4] = { 1.1f*d*flick, 0.4f*d*flick, 0.12f*d*flick, 1.0f };
+    const float eng[4] = { 0.25f*lg, 0.45f*lg, 0.95f*lg, 1.0f };   // hot blue drive
+
+    box(90, 10, 16,   0,   0,   0,   dark, hullGlow);      // main hull slab
+    box(78,  5, 10,   0, -12,   0,   dark, noE);           // keel
+    box(40,  6,  6, -10,  11,   0,   mid,  noE);           // dorsal spine (aft-biased)
+    box(16, 16, 10, -60,  16,   0,   mid,  hullGlow);      // aft command tower
+    box(26,  5,  8,  78,   0,   0,   dark, noE);           // forward prow
+    box(18,  8,  6, -70,  -2,  18,   mid,  noE);           // starboard pod
+    box(18,  8,  6, -70,  -2, -18,   mid,  noE);           // port pod
+    box( 3,  7,  5, -92,   0,  10,   dark, eng);           // engine glow (stbd)
+    box( 3,  7,  5, -92,   0, -10,   dark, eng);           // engine glow (port)
+    // Running-light strips along both flanks (thin -> bloom to bright lines).
+    box(85, 0.5f, 0.5f, 0,  7,  16.5f, dark, strip);
+    box(85, 0.5f, 0.5f, 0,  7, -16.5f, dark, strip);
+    box(85, 0.5f, 0.5f, 0, -9,  10.5f, dark, strip);
+    box(85, 0.5f, 0.5f, 0, -9, -10.5f, dark, strip);
+}
+
 // Play one cinematic clip span (blocking, K-skip). With a window this drives the
 // real CutscenePlayer via runCutsceneWindowed seeked to clipStart; headless it is
 // a deterministic no-op (the cutscene player is exercised by --test-cutscene).
@@ -348,8 +396,9 @@ void runCinematicRevealBeat(x3::apphost::HostContext& hc) {
     const float planetAlbedo[3] = { 0.32f, 0.42f, 0.60f };
     env.addPlanet(planetPos, 150.0f, planetAlbedo);
 
-    // The capital hull (unit box scaled HUGE per-draw) + the decloak shimmer shell.
-    x3::prims::PrimMesh cbm = x3::prims::makeBox(1.0f, 0.5f, 0.6f, 0, 0, 0, 0.25f);
+    // The capital hull greeble mesh (unit CUBE: per-draw scale == world half-extent)
+    // + the decloak shimmer shell.
+    x3::prims::PrimMesh cbm = x3::prims::makeBox(1.0f, 1.0f, 1.0f, 0, 0, 0, 0.25f);
     auto capMesh = device->createMesh(cbm.verts.data(), (uint32_t)cbm.verts.size(),
                                       cbm.index.data(), (uint32_t)cbm.index.size());
     auto cTexD = x3::prims::makeCheckerRGBA(64, 4, 90, 100, 120, 40, 45, 60);
@@ -420,12 +469,12 @@ void runCinematicRevealBeat(x3::apphost::HostContext& hc) {
         auto fr = device->beginFrame();
         if (fr.valid) {
             env.render(*device, fr, /*viewProj16*/ nullptr, tNow);
-            // The capital resolves out of the dark as it decloaks: base + emissive
-            // running lights scale up with revealAlpha (host-side fade under the shell).
+            // The dressed capital resolves out of the dark as it decloaks: the whole
+            // layered hull + running lights fade in with revealAlpha under the shell.
             const float rev = x3::space::DecloakVfx::revealAlpha(decloakProg);
-            const float base[4] = { 0.55f * rev, 0.60f * rev, 0.80f * rev, 1.0f };
-            const float emis[4] = { 0.9f * rev, 1.0f * rev, 1.25f * rev, 1.0f };
-            device->drawMeshEmissive(fr, capMesh, capTex, base, emis, capModel);
+            const float flick = 0.6f + 0.4f * std::sin((float)step * 0.5f);
+            drawDressedCapital(*device, fr, capMesh, capTex, capPos,
+                               /*damage01*/0.0f, flick, /*reveal*/rev);
             // The decloak shimmer overlay hugging the hull (fades out as it resolves).
             decloak.render(*device, fr, /*viewProj16*/ nullptr, capModel, tNow, decloakProg);
         }
@@ -536,7 +585,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                                          sbm.index.data(), (uint32_t)sbm.index.size());
         auto sTex = x3::prims::makeCheckerRGBA(64, 8, 180, 190, 210, 60, 70, 90);
         shipTex = hc.device->createTexture(sTex.data(), 64, 64, true);
-        x3::prims::PrimMesh cbm = x3::prims::makeBox(1.0f, 0.5f, 0.6f, 0, 0, 0, 0.25f); // unit; scaled HUGE per-draw
+        x3::prims::PrimMesh cbm = x3::prims::makeBox(1.0f, 1.0f, 1.0f, 0, 0, 0, 0.25f); // unit CUBE (drawDressedCapital scales per-box)
         capitalMesh = hc.device->createMesh(cbm.verts.data(), (uint32_t)cbm.verts.size(),
                                             cbm.index.data(), (uint32_t)cbm.index.size());
         auto cTex = x3::prims::makeCheckerRGBA(64, 4, 90, 100, 120, 40, 45, 60);
@@ -730,28 +779,17 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
                     const float tint[4] = { 1.15f, 0.55f, 0.5f, 1.0f };   // hostile red
                     hc.device->drawMesh(frame, shipMesh, shipTex, tint, m);
                 }
-                // The HUGE capital objective at the priority-contact position (~90 m).
-                // T4: emissive running lights that FLICKER hotter as subsystems fall
-                // (an overloading, venting hull) so the climax reads on the ship itself,
-                // not just the FX. drawMeshEmissive carries the glow into the bloom chain.
+                // T6: the DRESSED capital objective (layered hull + running-light
+                // strips), reading as a ship not a box. T4: the running lights flicker
+                // hotter (cool cyan -> hot orange) as subsystems fall so the climax
+                // reads on the ship itself, not just the FX.
                 {
                     const float capPos[3] = { 280.0f, 0.0f, 0.0f };
-                    const float sx = 90.0f, sy = 22.0f, sz = 30.0f;
-                    const float m[16] = {
-                        sx, 0,  0,  0,
-                        0,  sy, 0,  0,
-                        0,  0,  sz, 0,
-                        capPos[0], capPos[1], capPos[2], 1 };
                     const float dmg = (float)localSubsDestroyed / (float)kMaxSubsystems;
-                    const float base[4] = { 0.55f - 0.22f*dmg, 0.60f - 0.18f*dmg,
-                                            0.80f - 0.18f*dmg, 1.0f };
-                    // Deterministic flicker (step-driven) ramps with damage: cool at
-                    // full health, hot orange sputter as it's crippled.
                     const float flick = 0.5f + 0.5f * std::sin((float)step * 0.7f)
                                                     * std::sin((float)step * 0.23f);
-                    const float glow = dmg * (0.4f + 0.6f * flick);
-                    const float emis[4] = { 1.6f * glow, 0.7f * glow, 0.2f * glow, 1.0f };
-                    hc.device->drawMeshEmissive(frame, capitalMesh, capitalTex, base, emis, m);
+                    drawDressedCapital(*hc.device, frame, capitalMesh, capitalTex, capPos,
+                                       dmg, flick, /*reveal*/1.0f);
                 }
                 // T4: combat FX (venting plumes, subsystem blasts, final detonation).
                 if (fxOwned) fxOwned->submit(*hc.device, frame);
@@ -1009,7 +1047,7 @@ int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir
                                        sbm.index.data(), (uint32_t)sbm.index.size());
     auto sTexD = x3::prims::makeCheckerRGBA(64, 8, 180, 190, 210, 60, 70, 90);
     auto shipTex = device->createTexture(sTexD.data(), 64, 64, true);
-    x3::prims::PrimMesh cbm = x3::prims::makeBox(1.0f, 0.5f, 0.6f, 0, 0, 0, 0.25f);
+    x3::prims::PrimMesh cbm = x3::prims::makeBox(1.0f, 1.0f, 1.0f, 0, 0, 0, 0.25f); // unit CUBE (drawDressedCapital)
     auto capitalMesh = device->createMesh(cbm.verts.data(), (uint32_t)cbm.verts.size(),
                                           cbm.index.data(), (uint32_t)cbm.index.size());
     auto cTexD = x3::prims::makeCheckerRGBA(64, 4, 90, 100, 120, 40, 45, 60);
@@ -1055,19 +1093,15 @@ int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir
                 device->drawMesh(fr, shipMesh, shipTex, etint, m);
             }
         }
-        // Capital: emissive running lights hotter as it's crippled; on the reveal
-        // frame the hull + lights fade in with revealA and the shimmer shell overlays.
+        // T6 dressed capital: reads as a ship (layered hull + running lights). On the
+        // reveal frame (revealA<1) the whole hull fades in and the shimmer shell
+        // overlays; on the dogfight/climax frames revealA=1 and damage drives the glow.
         const float dmg = (float)subsDestroyed / (float)kMaxSubsystems;
         const float rv = std::clamp(revealA, 0.0f, 1.0f);
-        const float base[4] = { (0.55f-0.22f*dmg)*rv, (0.60f-0.18f*dmg)*rv, (0.80f-0.18f*dmg)*rv, 1.0f };
-        const float glow = std::max(dmg, (1.0f - rv));   // crippled glow OR decloak resolve glow
-        const float emis[4] = { (1.6f*dmg + 0.9f*(1.0f-rv)) , (0.7f*dmg + 1.0f*(1.0f-rv)),
-                                (0.2f*dmg + 1.25f*(1.0f-rv)), 1.0f };
-        (void)glow;
-        device->drawMeshEmissive(fr, capitalMesh, capitalTex, base, emis, capModel);
+        const float flick = 0.55f + 0.35f * std::sin(tSec * 33.0f);
+        drawDressedCapital(*device, fr, capitalMesh, capitalTex, capPos, dmg, flick, rv);
         if (revealA < 1.0f) {
-            const float prog = std::clamp(revealA, 0.0f, 1.0f);   // reuse revealA as decloak progress
-            decloak.render(*device, fr, nullptr, capModel, tSec, prog);
+            decloak.render(*device, fr, nullptr, capModel, tSec, rv);   // rv == decloak progress
         }
         fx.submit(*device, fr);
     };
@@ -1077,8 +1111,11 @@ int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir
     // shake still (T3); the live path animates the decaying version.
     auto framePilot = [&](float tiltYaw, float tiltPit, float fov) {
         const x3::phys::Vec3 pp = pilot.pos();
-        const float ex = pp.x - 34.0f, ey = pp.y + 12.0f, ez = pp.z + 16.0f;
-        const float lx = pp.x + 60.0f - ex, ly = pp.y - ey, lz = pp.z - ez;
+        // Pulled back + up + to the flank so the fighter reads in the foreground and
+        // the WHOLE capital (at +X 280) sits in the background 3/4 view (not a
+        // blown-out close-up). Look toward a point between the fighter and capital.
+        const float ex = pp.x - 55.0f, ey = pp.y + 24.0f, ez = pp.z + 46.0f;
+        const float lx = 235.0f - ex, ly = 2.0f - ey, lz = 0.0f - ez;
         const float len = std::max(std::sqrt(lx*lx+ly*ly+lz*lz), 1e-3f);
         device->setCamera(ex, ey, ez, std::atan2(lz, lx) + tiltYaw,
                           std::asin(ly/len) + tiltPit, fov);
