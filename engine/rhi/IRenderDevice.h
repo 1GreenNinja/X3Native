@@ -455,6 +455,11 @@ public:
         float exposure      = 1.0f;
         float zenith[3]     = { 0.10f, 0.28f, 0.66f }; // overhead sky color (linear); per-scene (default = old global)
         float horizon[3]    = { 0.62f, 0.74f, 0.92f }; // horizon glow color (linear); per-scene (default = old global)
+        // Alien-night NEBULA strength (0 = off, DEFAULT — byte-identical skies for
+        // every existing scene; 1 = full teal+rose procedural nebula clouds, gated
+        // in sky.frag to dark skies exactly like the starfield). Flows to the sky
+        // UBO's previously-reserved params.w. Used by the surface-landing world.
+        float nebula        = 0.0f;
     };
     // Set the active sky parameters for subsequent frames (cached + re-applied
     // each frame, like setPointLights). Calling with enabled=false disables it.

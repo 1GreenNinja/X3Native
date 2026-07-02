@@ -77,44 +77,42 @@ namespace x3 { namespace apphost {
 namespace {
 constexpr float kGroundY      = 0.0f;
 constexpr float kFacilityZ    = -46.0f;   // front facade plane (outer concrete face)
-constexpr float kFacilityHalfW= 14.5f;    // 29 m wide  (X) — vs ~71.5 m tall: ~2.5:1, reads TOWER
-constexpr float kFacilityHalfD= 11.0f;    // 22 m deep  (Z)
+// MASSING = lab.jpg (Tim's 2026-07-01 synthesis: "style of Lab2, as massive as
+// lab.jpg"): a WIDE monolithic slab — 60 m x 34 m footprint — under the
+// unchanged 71.5 m height canon. Facade LANGUAGE stays Lab2 (white concrete
+// dominant, dark banded windows inset with thin mullions).
+constexpr float kFacilityHalfW= 30.0f;    // 60 m wide  (X) — the lab.jpg monolith presence
+constexpr float kFacilityHalfD= 17.0f;    // 34 m deep  (Z)
 constexpr float kBreachHalfW  = 2.4f;     // entry portal half-width
 constexpr float kEntryReach   = 6.0f;     // distance to the entry that triggers the hand-off
 constexpr float kApproachZ    = -24.0f;   // crossing this advances "approach" objective
 
-// ---- THE WHITE-CONCRETE TOWER (Tim's v2 spec, 2026-07-01 — replaces the all-
-// glass v1). The facility exterior is WHITE/OFF-WHITE CONCRETE — clean, massive,
-// architectural — with a band of BLACK reflective glass windows INSET into the
-// concrete on each visible floor (recessed ~0.45 m: real reveal depth + contact
-// shadow lines) and THICK concrete spandrels between bands. SEVEN visible window
-// bands, but the building is ~43 m TALLER than 7 stories should imply, because
-// hidden sections add mass — above all LEVEL 4.5, a ~23.5 m (≈77 ft) MONSTER
-// blank-concrete expanse between window bands 4 and 5 (minimal blanked vent
-// slots only). Two smaller hidden slabs (above bands 2 and 6) add the rest. The
-// observant player reads: band, band, band, band, ENORMOUS blank wall, band,
-// band, band — and knows something big is hidden. The elevator's holo floor
-// panel does NOT list 4.5 — the secret is found, not shown.
-constexpr float kPlinthH   = 1.2f;    // solid base plinth under the lobby glazing
-constexpr float kLobbyH    = 6.0f;    // band 1: double-height entrance lobby
-constexpr float kStoryH    = 4.5f;    // bands 2..7 pitch (spandrel + glass)
-constexpr float kSpandrelH = 1.8f;    // THICK concrete band between floors
-constexpr int   kStories   = 7;       // VISIBLE window bands (band 1 = the lobby)
-constexpr float kMonsterH  = 23.5f;   // LEVEL 4.5 — the monster hidden section (70-80 ft)
-constexpr float kGapSmall  = 4.5f;    // smaller hidden slabs above bands 2 and 6
-constexpr float kCrownH    = 6.0f;    // crown / parapet above band 7
-constexpr float kReveal    = 0.45f;   // window glass inset depth into the concrete
-constexpr float kPortalH   = 4.5f;    // entrance portal opening height
-// Hidden concrete inserted BELOW 1-indexed floor f (f=1 is the lobby band).
-inline float hiddenBelow(int f) {
-    return (f > 2 ? kGapSmall : 0.0f) + (f > 4 ? kMonsterH : 0.0f) + (f > 6 ? kGapSmall : 0.0f);
-}
-// Band base Y for floor f: the bottom of its spandrel (glass starts kSpandrelH up).
-inline float bandBaseY(int f) {
-    return (f <= 1) ? 0.0f : kLobbyH + (f - 2) * kStoryH + hiddenBelow(f);
-}
-// Total height: lobby + six 4.5 m bands + the hidden slabs + the crown = 71.5 m.
-constexpr float kTowerH = kLobbyH + (kStories - 1) * kStoryH + 2.0f * kGapSmall + kMonsterH + kCrownH;
+// ---- THE FACILITY TOWER (Tim's UNIFORM spec, 2026-07-02 — supersedes the v2
+// "white concrete + monster blank expanse" read). The facade is the Lab2 GRID:
+// rows of LARGE DARK reflective-glass panes filling ~90% of each floor height,
+// divided by THIN pale mullions, with SLIM pale spandrel lines between floors —
+// a DARK glass building with a fine pale skeleton (NOT a white wall with window
+// slots). Crucially the rhythm is UNIFORM top to bottom: the identical dark-band
+// / slim-spandrel floor repeats at the same pitch across the ENTIRE ~71.5 m
+// height. The hidden mass (the tower is far taller than its interior floor count)
+// is clad in FAKE window bands — identical to real floors from outside, nothing
+// behind them. The ONLY exterior tell is that you can COUNT more bands than there
+// are interior storeys; no blank expanse, no anomaly. The elevator holo panel
+// does NOT list the hidden floors — the secret is found by counting, not shown.
+constexpr float kPlinthH   = 0.6f;    // slim FLUSH concrete sill under the ground-entry glazing
+constexpr float kLobbyH    = 6.0f;    // band 1: taller DARK recessed ground-entry level
+constexpr float kStoryH    = 4.5f;    // UNIFORM floor pitch (spandrel + glass) for EVERY band
+constexpr float kSpandrelH = 0.45f;   // SLIM pale spandrel LINE (~10% of floor); dark glass fills the other ~90% (Lab2 grid)
+constexpr int   kStories   = 15;      // VISIBLE window bands (band 1 = the ground entry) — uniform, top to bottom
+constexpr int   kInteriorFloors = 7;  // canon INTERIOR floor count; kStories > this IS the secret (fake bands over hidden mass)
+constexpr float kCrownH    = 2.5f;    // thin parapet / roof-plant band above the top band
+constexpr float kReveal    = 0.12f;   // SHALLOW glass inset — dark glass reads as a broad reflective FIELD; the thin pale spandrels/mullions sit proud of it
+constexpr float kPortalH   = 3.0f;    // ground-entry door opening height
+// Uniform rhythm: every band sits exactly kStoryH above the previous (no hidden
+// offsets — the hidden mass is just more identical bands).
+inline float bandBaseY(int f) { return (f <= 1) ? 0.0f : kLobbyH + (f - 2) * kStoryH; }
+// Total height canon (~71.5 m monolith): lobby + (kStories-1) uniform bands + crown.
+constexpr float kTowerH = kLobbyH + (kStories - 1) * kStoryH + kCrownH;
 
 // Load an RGBA8 texture from <assetRoot>/textures/surface/<rel> (converted from
 // the D:\Assets packs — see the commit that added assets/textures/surface/).
@@ -154,34 +152,44 @@ int hostSurfaceStart(HostContext& hc) {
         return 1;
     }
 
-    // ---- Sky + lighting: mid-morning desert sun placed to RAKE across the front
-    //      facade (strong +X component) so the inset window reveals and spandrel
-    //      steps cast readable contact-shadow lines and the white concrete models.
-    //      Moderate haze gives the distant mesas atmospheric depth; the analytic
-    //      sky is what the black glass bands reflect (IBL prefiltered cube).
+    // ---- NIGHT sky + moonlight (matches the reference Lab2.jpg: a bright,
+    //      moonlit WHITE-CONCRETE tower rim-lit against a DARK STARRY sky, with
+    //      dark reflective glass bands and glowing crystals pooling colour on the
+    //      dark rock). The mesh directional sun is a FIXED-magnitude near-white
+    //      (mesh.frag kSunColor) — so we keep the SKY's own sun DISK dark
+    //      (sunIntensity 0): nothing burns a moon into frame, only the building
+    //      is lit, exactly like the reference. Dark zenith/horizon + near-zero
+    //      haze trip the sky shader's night gate, so the starfield blooms in.
     {
         x3::rhi::IRenderDevice::SkyParams sp{};
         sp.enabled = true;
-        sp.sunDir[0] = 0.70f; sp.sunDir[1] = 0.80f; sp.sunDir[2] = 0.42f;   // high + raking from the right
-        sp.sunColor[0] = 1.0f; sp.sunColor[1] = 0.95f; sp.sunColor[2] = 0.86f;
-        sp.sunIntensity = 1.35f; sp.haze = 0.55f; sp.exposure = 1.0f;
+        // Moonlight rakes from upper-LEFT-FRONT so the +Z facade + the -X flank
+        // catch a cool kicker and the inset reveals/spandrels cast contact lines.
+        sp.sunDir[0] = -0.40f; sp.sunDir[1] = 0.60f; sp.sunDir[2] = 0.70f;
+        sp.sunColor[0] = 0.72f; sp.sunColor[1] = 0.82f; sp.sunColor[2] = 1.0f;  // cool moon (sky disk only)
+        sp.sunIntensity = 0.0f;    // no visible moon disk/glow — clean, dark sky
+        sp.haze = 0.03f;           // near-zero -> deep night; the starfield shows
+        sp.exposure = 1.0f;
+        sp.zenith[0]  = 0.006f; sp.zenith[1]  = 0.011f; sp.zenith[2]  = 0.026f;  // near-black blue overhead
+        sp.horizon[0] = 0.020f; sp.horizon[1] = 0.033f; sp.horizon[2] = 0.062f;  // faint cool horizon glow
+        sp.nebula = 0.85f;   // ALIEN NIGHT (lab.jpg): teal + rose nebula PATCHES behind the stars (dark sky dominant)
         device->setSkyParams(sp);
     }
+    // A cool ambient FILL so the SHADOWED faces of the white concrete read as
+    // deep silver rather than black (the night-sky IBL is nearly black on its own).
+    device->setAmbient(0.090f, 0.110f, 0.155f);
+    // Pin exposure (auto-exposure OFF): a mostly-dark night frame would otherwise
+    // let eye-adaptation crank the gain and milk out the black sky. A fixed,
+    // slightly hot exposure keeps the moonlit concrete bright and the sky inky.
     {
-        // Fill point lights: a warm lobby interior so Sarah + the lobby read
-        // through the entrance glazing against the daylight, and a soft warm
-        // bounce near the landed ship. The black window bands stay UNLIT — in
-        // daylight they read as dark reflective glass, and NOTHING lights the
-        // 4.5 monster section (it has no windows at all — the quiet tell).
-        x3::rhi::PointLight pl[2];
-        pl[0].pos[0] = 0.0f; pl[0].pos[1] = 3.2f; pl[0].pos[2] = kFacilityZ - 6.0f;
-        pl[0].range = 55.0f;
-        pl[0].color[0] = 10.0f; pl[0].color[1] = 8.0f; pl[0].color[2] = 5.5f;  // warm lobby glow
-        pl[1].pos[0] = 9.0f; pl[1].pos[1] = 4.0f; pl[1].pos[2] = 10.0f;
-        pl[1].range = 35.0f;
-        pl[1].color[0] = 5.0f; pl[1].color[1] = 4.2f; pl[1].color[2] = 3.4f;   // sun bounce on the ship
-        device->setPointLights(pl, 2);
+        x3::rhi::IRenderDevice::PostFXParams fx{};
+        fx.autoExposure = false;
+        device->setPostFX(fx);
+        device->setExposure(1.55f);
+        device->setBloom(0.85f);   // gentle bloom on lit windows + crystals (not a white glare)
     }
+    // NOTE: all the scene POINT LIGHTS (warm lit windows, the crystal glow pool,
+    // the ship bounce) are set together AFTER the crystals are built, below.
 
     x3::game::Scene scene;
 
@@ -203,11 +211,11 @@ int hostSurfaceStart(HostContext& hc) {
     auto mrConcrete = solidMR(228, 0);     // matte white concrete
     auto mrApron    = solidMR(198, 0);     // smoother poured concrete
     auto mrGround   = solidMR(242, 0);     // dusty scrub
-    auto mrGlass    = solidMR(20, 245);    // BLACK GLASS: near-mirror; metallic path
-                                           // makes the dark albedo the F0 -> the
-                                           // bands become tinted sky mirrors (IBL/SSR)
-    auto mrVent     = solidMR(130, 210);   // dark louver metal (4.5's blanked vents)
-    auto blackGlassTexD = x3::prims::makeSolidRGBA(8, 44, 52, 64);   // F0 of the mirror
+    auto mrGlass    = solidMR(44, 250);    // DARK GLASS: metallic + a touch of roughness so
+                                           // the moons/nebula/crystal-glow smear across the
+                                           // panels as a soft sheen -> reads as GLASS, not a black slot
+    auto mrVent     = solidMR(130, 210);   // dark louver metal (the crown roof-plant screen)
+    auto blackGlassTexD = x3::prims::makeSolidRGBA(8, 40, 50, 66);   // dark blue glass F0 (reflective field, subtle sheen)
     auto blackGlassTex  = device->createTexture(blackGlassTexD.data(), 8, 8, true);
     auto ventTexD = x3::prims::makeSolidRGBA(8, 26, 28, 31);
     auto ventTex  = device->createTexture(ventTexD.data(), 8, 8, true);
@@ -234,8 +242,10 @@ int hostSurfaceStart(HostContext& hc) {
     //      low perimeter barriers, and distant mesa relief in the haze — so the
     //      tower stands in a PLACE, not a void (the v1 failure). ---------------
     {
-        // Scrub-desert ground (visual + the collision floor).
-        slab(0.0f, -0.5f, 0.0f, 260.0f, 0.5f, 260.0f, groundTex, mrGround, 0.085f);
+        // Scrub-desert ground (visual + the collision floor) — tinted DOWN so the
+        // night terrain reads as dark alien rock-plain (lab.jpg), not moonlit lawn.
+        slab(0.0f, -0.5f, 0.0f, 260.0f, 0.5f, 260.0f, groundTex, mrGround, 0.085f,
+             0.42f, 0.42f, 0.52f);
         collideBox(0.0f, -0.5f, 0.0f, 260.0f, 0.5f, 260.0f);
         // Concrete apron: entrance walkway from the facade out toward the landing.
         slab(0.0f, 0.045f, kFacilityZ + 15.0f, 9.0f, 0.045f, 15.5f, apronTex, mrApron, 0.16f);
@@ -255,16 +265,16 @@ int hostSurfaceStart(HostContext& hc) {
         slab( -60.0f,  5.0f,  225.0f, 90.0f,  5.0f, 40.0f, mesaTex, mrGround, 0.02f);
     }
 
-    // ---- THE WHITE-CONCRETE TOWER exterior (Tim's v2 spec — constants above).
-    //      White concrete facade (real PBR albedo) with BLACK reflective glass
-    //      window bands RECESSED kReveal into the wall between THICK concrete
-    //      spandrels; concrete window piers punch each band into windows; stepped
-    //      corner columns; a crown/parapet; and the LEVEL 4.5 monster blank
-    //      expanse between bands 4 and 5 (louver vents only). The black glass is
-    //      an opaque near-mirror PBR material (dark albedo as F0 -> it reflects
-    //      the SKY); only the ground-floor lobby glazing is real translucent
-    //      glass so Sarah reads through the entrance. Collision = full-height
-    //      static boxes per face (front split around the entry portal).
+    // ---- THE FACILITY TOWER exterior (Tim's UNIFORM Lab2-grid spec — constants
+    //      above). A DARK reflective-glass building with a fine PALE skeleton: every
+    //      floor is a broad recessed dark-glass field (~90% of the floor) divided by
+    //      THIN pale mullions, with a slim pale spandrel line between floors and slim
+    //      pale corner margins. The rhythm is IDENTICAL top to bottom — real floors
+    //      and fake bands over the hidden mass are indistinguishable from outside.
+    //      The dark glass is an opaque near-mirror PBR material (dark blue albedo as
+    //      F0 -> it reflects the sky/moons/crystal glow); only the ground-entry
+    //      glazing is real translucent glass so Sarah reads through the entrance.
+    //      Collision = full-height static boxes per face (front split around the door).
     const float fcz   = kFacilityZ - kFacilityHalfD;   // tower footprint center Z
     const float wallT = 0.5f;                          // wall half-thickness (1 m walls)
     const float backZ = kFacilityZ - 2.0f * kFacilityHalfD;
@@ -278,11 +288,12 @@ int hostSurfaceStart(HostContext& hc) {
             auto tx = device->createTexture(td.data(), 8, 8, true);
             x3::game::Entity e{}; e.mesh = mh; e.tex = tx;
             e.transparent = true;
-            e.glass.opacity   = 0.55f;
+            e.glass.opacity   = 0.62f;
             e.glass.refraction= 0.02f;
             e.glass.roughness = 0.04f;
             e.glass.specular  = 1.0f;
-            e.glass.tint[0] = 0.10f; e.glass.tint[1] = 0.13f; e.glass.tint[2] = 0.16f;
+            // DARK entry glazing (the recessed ground level reads as shadow).
+            e.glass.tint[0] = 0.045f; e.glass.tint[1] = 0.06f; e.glass.tint[2] = 0.075f;
             e.baseColor[3] = e.glass.opacity;
             e.tag = (uint32_t)x3::game::Tag::Static;
             scene.add(e);
@@ -312,75 +323,61 @@ int hostSurfaceStart(HostContext& hc) {
                 default: slab(cx, cy, cz, hx, hy, hz, concreteTex, mrConcrete, 0.24f); break;
                 }
             };
-            const float cornerW = 1.6f;                 // concrete margin at each end
+            const float cornerW = 1.1f;                 // slim concrete margin at each end (glass runs wider; the proud corner columns carry the white frame)
             const float runHalf = spanHalf - cornerW;   // the glass run half-length
             const float sL = spanCenter - (spanHalf - cornerW * 0.5f);
             const float sR = spanCenter + (spanHalf - cornerW * 0.5f);
 
-            // BASE PLINTH: smooth concrete, slightly PROUD — grounds the tower.
-            if (isFront) {
-                const float sideW = (spanHalf - kBreachHalfW) * 0.5f;
-                place(spanCenter - (kBreachHalfW + sideW), sideW, 0.0f, kPlinthH, -0.15f, wallT, 3);
-                place(spanCenter + (kBreachHalfW + sideW), sideW, 0.0f, kPlinthH, -0.15f, wallT, 3);
-            } else {
-                place(spanCenter, spanHalf, 0.0f, kPlinthH, -0.15f, wallT, 3);
-            }
+            // ONE UNIFORM Lab2 FLOOR: a slim pale spandrel line at the bottom, then
+            // a broad RECESSED DARK-GLASS field filling the other ~90% of the floor,
+            // divided by THIN pale mullions, with slim pale corner margins. Identical
+            // at every band — real floor or fake band over hidden mass, indistinguishable.
+            auto darkFloor = [&](float y0, float y1) {
+                const float gg0 = y0 + kSpandrelH, gg1 = y1;
+                place(spanCenter, spanHalf, y0, gg0, 0.0f, wallT, 0);        // slim pale spandrel line
+                place(spanCenter, runHalf, gg0, gg1, kReveal, 0.10f, 1);     // broad dark-glass field
+                const int nWin = std::max(1, (int)std::floor((runHalf * 2.0f) / 2.6f));
+                for (int p = 1; p < nWin; ++p) {                            // thin pale mullions (~0.18 m)
+                    const float s = spanCenter - runHalf + (runHalf * 2.0f) * p / nWin;
+                    place(s, 0.09f, gg0, gg1, kReveal * 0.5f, 0.06f, 3);
+                }
+                place(sL, cornerW * 0.5f, y0, y1, 0.0f, wallT, 0);          // corner margins
+                place(sR, cornerW * 0.5f, y0, y1, 0.0f, wallT, 0);
+            };
 
-            // BAND 1 — the double-height LOBBY: recessed translucent glazing
-            // (split around the entrance portal on the front) + concrete piers.
+            // BASE SILL: a slim FLUSH concrete sill grounding the dark entry (no
+            // proud bright band — the old proud plinth read as scaffolding).
+            place(spanCenter, spanHalf, 0.0f, kPlinthH, 0.0f, wallT, 0);
+
+            // BAND 1 — the GROUND ENTRY: a clean, DARK recessed glazed level (taller
+            // floor), the entrance doors on the front. No ornate frames, no bright
+            // piers — just deep-set dark glazing + slim corner margins (Lab2's clean base).
             {
                 const float g0 = kPlinthH, g1 = kLobbyH;
+                const float entryInset = 0.90f;   // deep-set -> the ground level reads in shadow
                 if (isFront) {
                     const float sideW = (runHalf - kBreachHalfW) * 0.5f;
-                    place(spanCenter - (kBreachHalfW + sideW), sideW, g0, g1, kReveal, 0.08f, 2);
-                    place(spanCenter + (kBreachHalfW + sideW), sideW, g0, g1, kReveal, 0.08f, 2);
-                    place(spanCenter, kBreachHalfW, kPortalH, g1, kReveal, 0.08f, 2);   // lintel glass
+                    place(spanCenter - (kBreachHalfW + sideW), sideW, g0, g1, entryInset, 0.08f, 2);
+                    place(spanCenter + (kBreachHalfW + sideW), sideW, g0, g1, entryInset, 0.08f, 2);
+                    place(spanCenter, kBreachHalfW, kPortalH, g1, entryInset, 0.08f, 2);   // transom glass over the door
                 } else {
-                    place(spanCenter, runHalf, g0, g1, kReveal, 0.08f, 2);
+                    place(spanCenter, runHalf, g0, g1, entryInset, 0.08f, 2);
                 }
                 place(sL, cornerW * 0.5f, 0.0f, g1, 0.0f, wallT, 0);   // corner margins
                 place(sR, cornerW * 0.5f, 0.0f, g1, 0.0f, wallT, 0);
-                // Lobby piers (~3.6 m module), skipping the portal lane in front.
-                const int nMod = std::max(1, (int)std::floor((runHalf * 2.0f) / 3.6f));
-                for (int p = 1; p < nMod; ++p) {
-                    const float s = spanCenter - runHalf + (runHalf * 2.0f) * p / nMod;
-                    if (isFront && std::fabs(s - spanCenter) < kBreachHalfW + 0.6f) continue;
-                    place(s, 0.30f, g0, g1, 0.0f, wallT, 0);
-                }
             }
 
-            // BANDS 2..7: THICK concrete spandrel/fill, then the RECESSED black
-            // glass band punched into windows by concrete piers. The fill between
-            // band 4's glass top and band 5's base is the LEVEL 4.5 MONSTER
-            // expanse (kSpandrelH + kMonsterH of blank concrete) — broken only by
-            // three slim dark louver strips (the blanked vents).
-            float prevTop = kLobbyH;
-            for (int f = 2; f <= kStories; ++f) {
-                const float b0 = bandBaseY(f);
-                const float g0 = b0 + kSpandrelH, g1 = b0 + kStoryH;
-                place(spanCenter, spanHalf, prevTop, g0, 0.0f, wallT, 0);   // concrete fill
-                if (f == 5) {
-                    // 4.5's louver vents sit low in the expanse, slightly proud.
-                    for (int v = 0; v < 3; ++v) {
-                        const float vy = prevTop + 6.0f + v * 6.2f;
-                        place(spanCenter, runHalf * 0.70f, vy, vy + 0.5f, -0.06f, 0.10f, 4);
-                    }
-                }
-                place(spanCenter, runHalf, g0, g1, kReveal, 0.10f, 1);      // black glass band
-                const int nWin = std::max(1, (int)std::floor((runHalf * 2.0f) / 3.2f));
-                for (int p = 1; p < nWin; ++p) {                            // window piers
-                    const float s = spanCenter - runHalf + (runHalf * 2.0f) * p / nWin;
-                    place(s, 0.28f, g0, g1, 0.0f, wallT, 0);
-                }
-                place(sL, cornerW * 0.5f, g0, g1, 0.0f, wallT, 0);          // corner margins
-                place(sR, cornerW * 0.5f, g0, g1, 0.0f, wallT, 0);
-                prevTop = g1;
-            }
+            // BANDS 2..kStories: the UNIFORM Lab2 grid, IDENTICAL at every floor all
+            // the way up. Bands above the interior floor count are fake (nothing
+            // behind them) but read exactly like real floors from outside — the ONLY
+            // tell is that you can COUNT more bands than there are interior storeys.
+            for (int f = 2; f <= kStories; ++f) darkFloor(bandBaseY(f), bandBaseY(f) + kStoryH);
 
-            // CROWN: blank concrete to the parapet + a dark mechanical louver
-            // band near the top (reads as the roof-plant screen).
-            place(spanCenter, spanHalf, prevTop, kTowerH, 0.0f, wallT, 0);
-            place(spanCenter, runHalf * 0.82f, kTowerH - 3.2f, kTowerH - 2.4f, -0.06f, 0.10f, 4);
+            // CROWN: a thin pale parapet band + a dark mechanical louver line
+            // (the roof-plant screen), above the top band.
+            const float crownY0 = bandBaseY(kStories) + kStoryH;
+            place(spanCenter, spanHalf, crownY0, kTowerH, 0.0f, wallT, 0);
+            place(spanCenter, runHalf * 0.82f, kTowerH - 1.4f, kTowerH - 0.9f, -0.06f, 0.10f, 4);
         };
 
         // FRONT (player-facing, outward +Z), BACK (outward -Z), LEFT, RIGHT.
@@ -407,40 +404,23 @@ int hostSurfaceStart(HostContext& hc) {
         slab(0.0f, 0.05f, fcz, kFacilityHalfW, 0.1f, kFacilityHalfD, apronTex, mrApron, 0.16f);
         collideBox(0.0f, 0.05f, fcz, kFacilityHalfW, 0.1f, kFacilityHalfD);
 
-        // ---- ORNATE ENTRANCE PORTAL (echoes the elevator-portal design
-        //      language): two nested concrete frames stepping OUT of the facade
-        //      + a thin cool emissive reveal line inside the inner frame.
+        // ---- CLEAN ENTRANCE DOORS (Lab2's simple recessed doors): two dark door
+        //      leaves set into the recessed ground-entry glazing, with a SLIM pale
+        //      frame only slightly proud. No ornate stepped frames, no glow lines —
+        //      a clean dark base (the old ornate portal read as scaffolding).
         {
-            // A frame member: outer face `proud` metres out of the facade,
-            // embedded 0.25 m back into the wall.
-            auto frameBox = [&](float cx, float cy, float hw, float hh, float proud) {
-                const float hz = (proud + 0.25f) * 0.5f;
-                slab(cx, cy, kFacilityZ + proud - hz, hw, hh, hz, apronTex, mrApron, 0.3f);
+            // Dark door leaves (glass-look, set at the recessed glazing depth).
+            auto doorLeaf = [&](float cx, float hw) {
+                slab(cx, kPortalH * 0.5f, kFacilityZ - 0.85f, hw, kPortalH * 0.5f, 0.06f,
+                     blackGlassTex, mrGlass, 1.0f, 0.55f, 0.60f, 0.68f);
             };
-            // Outer frame: jambs + header (proud 0.55, members 0.55 thick).
-            const float oOpen = kBreachHalfW + 0.75f, oTop = kPortalH + 1.1f, oT = 0.55f;
-            frameBox(-(oOpen + oT * 0.5f), oTop * 0.5f, oT * 0.5f, oTop * 0.5f, 0.55f);
-            frameBox( (oOpen + oT * 0.5f), oTop * 0.5f, oT * 0.5f, oTop * 0.5f, 0.55f);
-            frameBox(0.0f, oTop + oT * 0.5f, oOpen + oT, oT * 0.5f, 0.55f);
-            // Inner frame: tighter, less proud.
-            const float iOpen = kBreachHalfW + 0.28f, iTop = kPortalH + 0.5f, iT = 0.40f;
-            frameBox(-(iOpen + iT * 0.5f), iTop * 0.5f, iT * 0.5f, iTop * 0.5f, 0.30f);
-            frameBox( (iOpen + iT * 0.5f), iTop * 0.5f, iT * 0.5f, iTop * 0.5f, 0.30f);
-            frameBox(0.0f, iTop + iT * 0.5f, iOpen + iT, iT * 0.5f, 0.30f);
-            // Emissive reveal line tracing the inner opening (the portal glow).
-            auto glowLine = [&](float cx, float cy, float hw, float hh) {
-                x3::prims::PrimMesh m = x3::prims::makeBox(hw, hh, 0.05f, cx, cy, kFacilityZ + 0.12f, 1.0f);
-                auto mh = device->createMesh(m.verts.data(), (uint32_t)m.verts.size(),
-                                             m.index.data(), (uint32_t)m.index.size());
-                x3::game::Entity e{}; e.mesh = mh;
-                e.baseColor[0] = 0.5f; e.baseColor[1] = 0.85f; e.baseColor[2] = 1.0f;
-                e.emissive[0] = 0.45f; e.emissive[1] = 0.85f; e.emissive[2] = 1.2f; e.emissive[3] = 2.2f;
-                e.tag = (uint32_t)x3::game::Tag::Static;
-                scene.add(e);
-            };
-            glowLine(-(kBreachHalfW + 0.10f), kPortalH * 0.5f, 0.05f, kPortalH * 0.5f);
-            glowLine( (kBreachHalfW + 0.10f), kPortalH * 0.5f, 0.05f, kPortalH * 0.5f);
-            glowLine(0.0f, kPortalH + 0.10f, kBreachHalfW + 0.22f, 0.05f);
+            doorLeaf(-kBreachHalfW * 0.5f, kBreachHalfW * 0.5f - 0.04f);
+            doorLeaf( kBreachHalfW * 0.5f, kBreachHalfW * 0.5f - 0.04f);
+            // Slim pale frame: two jambs + a lintel, only slightly proud.
+            const float jT = 0.13f;
+            slab(-(kBreachHalfW + jT), (kPortalH + jT) * 0.5f, kFacilityZ - 0.28f, jT, (kPortalH + jT) * 0.5f, 0.16f, apronTex, mrApron, 0.4f);
+            slab( (kBreachHalfW + jT), (kPortalH + jT) * 0.5f, kFacilityZ - 0.28f, jT, (kPortalH + jT) * 0.5f, 0.16f, apronTex, mrApron, 0.4f);
+            slab(0.0f, kPortalH + jT, kFacilityZ - 0.28f, kBreachHalfW + jT * 2.0f, jT, 0.16f, apronTex, mrApron, 0.4f);
         }
 
         // ---- COLLISION truth: full-height boxes per face; the front is split
@@ -454,13 +434,229 @@ int hostSurfaceStart(HostContext& hc) {
         collideBox( kFacilityHalfW - wallT, kTowerH * 0.5f, fcz, wallT, kTowerH * 0.5f, kFacilityHalfD);
     }
 
+    // ---- NIGHT DRESSING (reference Lab2.jpg): a few WARM LIT WINDOW cells so the
+    //      tower reads INHABITED (most bands stay dark glass), a rooftop antenna
+    //      mast cluster, and — the hero foreground — a DARK ROCK outcrop with a
+    //      cluster of GLOWING pink/cyan CRYSTALS pooling colour on the rock + the
+    //      tower base. -----------------------------------------------------------
+    auto rockTex = loadSurfaceTex(device, "rock_dark.png", true, 34, 34, 40);
+    std::vector<uint32_t> neonIds;   // the hidden NEON-VARIANT strip entities
+    {
+        // WARM LIT WINDOWS: emissive panels flush in a handful of front-face
+        // window cells (a few lit floors sell habitation; the rest read as dark
+        // reflective glass). Placed just inside the facade plane, in the window
+        // openings between the concrete piers.
+        auto litWin = [&](float cx, float cy, float hx, float hy) {
+            x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, 0.05f, cx, cy, kFacilityZ - 0.08f, 1.0f);
+            auto mh = device->createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                         m.index.data(), (uint32_t)m.index.size());
+            x3::game::Entity e{}; e.mesh = mh;
+            e.baseColor[0] = 0.32f; e.baseColor[1] = 0.22f; e.baseColor[2] = 0.12f;
+            e.emissive[0] = 1.0f; e.emissive[1] = 0.66f; e.emissive[2] = 0.34f; e.emissive[3] = 2.6f;
+            e.tag = (uint32_t)x3::game::Tag::Static;
+            scene.add(e);
+        };
+        auto glassGlow = [&](int f) { return bandBaseY(f) + kSpandrelH + (kStoryH - kSpandrelH) * 0.5f; };
+        // Scattered lit panes across the UNIFORM grid (a few lit floors sell
+        // habitation; the rest read as dark reflective glass).
+        litWin(  9.8f, glassGlow(2),  1.05f, 1.05f);
+        litWin( 17.2f, glassGlow(3),  1.05f, 1.05f);
+        litWin(-13.5f, glassGlow(4),  1.05f, 1.05f);
+        litWin(-22.0f, glassGlow(6),  1.05f, 1.05f);
+        litWin( -6.2f, glassGlow(8),  1.05f, 1.05f);
+        litWin( 12.4f, glassGlow(9),  1.05f, 1.05f);
+        litWin( 23.0f, glassGlow(11), 1.05f, 1.05f);
+        litWin(-16.0f, glassGlow(13), 1.05f, 1.05f);
+
+        // ROOFTOP ANTENNA MAST cluster (back-right of the crown, Lab2's dish/mast
+        // silhouette) + roof plant boxes.
+        for (int k = 0; k < 6; ++k) {
+            const float mx = 9.0f + k * 2.6f;
+            const float mh = 3.0f + ((k % 3) * 2.1f);
+            slab(mx, kTowerH + 0.44f + mh * 0.5f, backZ + 3.0f, 0.10f, mh * 0.5f, 0.10f,
+                 apronTex, mrApron, 1.0f);
+        }
+        slab(12.0f, kTowerH + 1.2f, backZ + 5.5f, 2.2f, 0.55f, 1.2f, apronTex, mrApron, 0.6f); // roof plant
+        slab(-14.0f, kTowerH + 1.0f, backZ + 6.0f, 1.6f, 0.40f, 1.0f, apronTex, mrApron, 0.6f);
+
+        // PARAPET RAILING (Lab2 silhouette): a thin top rail + sparse posts
+        // tracing the roof edge, just inside the coping, on all four sides.
+        {
+            const float railY = kTowerH + 0.44f + 1.0f;   // rail 1 m above the cap
+            const float rx = kFacilityHalfW + 0.30f, rz0 = kFacilityZ - 0.30f, rz1 = backZ + 0.30f;
+            const float rcz = (rz0 + rz1) * 0.5f, rhz = (rz0 - rz1) * 0.5f;
+            slab(0.0f, railY, rz0, rx, 0.030f, 0.030f, apronTex, mrApron, 1.0f);   // front rail
+            slab(0.0f, railY, rz1, rx, 0.030f, 0.030f, apronTex, mrApron, 1.0f);   // back rail
+            slab(-rx, railY, rcz, 0.030f, 0.030f, rhz, apronTex, mrApron, 1.0f);   // side rails
+            slab( rx, railY, rcz, 0.030f, 0.030f, rhz, apronTex, mrApron, 1.0f);
+            for (int p = -5; p <= 5; ++p) {                                        // posts (front + back)
+                slab(p * (rx / 5.5f), railY - 0.5f, rz0, 0.028f, 0.5f, 0.028f, apronTex, mrApron, 1.0f);
+                slab(p * (rx / 5.5f), railY - 0.5f, rz1, 0.028f, 0.5f, 0.028f, apronTex, mrApron, 1.0f);
+            }
+        }
+
+        // ---- CYAN NEON PARAPET STRIP (lab.jpg's signature) — built HIDDEN.
+        //      Tim named Lab2 as the facade style, so the PRIMARY hero renders
+        //      without it; the headless path captures a SECOND "<name>_neon.png"
+        //      variant with these visible so Tim picks. Four emissive strips
+        //      trace the coping edge and MEET at the corners (a continuous ring).
+        {
+            auto neonStrip = [&](float cx, float cz, float hx, float hz) {
+                const float y = kTowerH + 0.50f;   // riding the coping's top edge
+                x3::prims::PrimMesh m = x3::prims::makeBox(hx, 0.06f, hz, cx, y, cz, 1.0f);
+                auto mh = device->createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                             m.index.data(), (uint32_t)m.index.size());
+                x3::game::Entity e{}; e.mesh = mh;
+                e.baseColor[0] = 0.10f; e.baseColor[1] = 0.55f; e.baseColor[2] = 0.50f;
+                e.emissive[0] = 0.25f; e.emissive[1] = 1.0f; e.emissive[2] = 0.92f; e.emissive[3] = 4.2f;
+                e.visible = false;   // the NEON VARIANT toggle
+                e.tag = (uint32_t)x3::game::Tag::Static;
+                neonIds.push_back(scene.add(e));
+            };
+            const float nx = kFacilityHalfW + 0.62f, nz0 = kFacilityZ + 0.62f, nz1 = backZ - 0.62f;
+            const float ncz = (nz0 + nz1) * 0.5f, nhz = (nz0 - nz1) * 0.5f;
+            neonStrip(0.0f, nz0, nx + 0.07f, 0.07f);          // front edge
+            neonStrip(0.0f, nz1, nx + 0.07f, 0.07f);          // back edge
+            neonStrip(-nx, ncz, 0.07f, nhz);                  // left edge
+            neonStrip( nx, ncz, 0.07f, nhz);                  // right edge
+        }
+
+        // ---- THE DARK JAGGED ROCK RIDGE + GLOWING CRYSTAL CLUSTERS (lab.jpg's
+        //      world): a broken ridge of leaning dark rock slabs crossing the
+        //      foreground, with pink/cyan crystal clusters scattered ALONG it and
+        //      more clusters at the building's base — the ground-level light. ----
+        // A leaning rock slab: box rotated yaw (about Y) then roll (about Z).
+        auto rockSlab = [&](float px, float py, float pz, float hx, float hy, float hz,
+                            float yawA, float rollA, float shade) {
+            x3::prims::PrimMesh m = x3::prims::makeBox(hx, hy, hz, 0, 0, 0, 0.5f);
+            auto mh = device->createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                         m.index.data(), (uint32_t)m.index.size());
+            const float cy = std::cos(yawA), sy = std::sin(yawA);
+            const float cr = std::cos(rollA), sr = std::sin(rollA);
+            x3::game::Entity e{}; e.mesh = mh; e.tex = rockTex; e.mrTex = mrGround;
+            // M = Ry(yaw) * Rz(roll), column-major.
+            e.transform[0] = cy*cr;  e.transform[1] = sr;  e.transform[2]  = -sy*cr;
+            e.transform[4] = -cy*sr; e.transform[5] = cr;  e.transform[6]  = sy*sr;
+            e.transform[8] = sy;     e.transform[9] = 0;   e.transform[10] = cy;
+            e.transform[12] = px;    e.transform[13] = py; e.transform[14] = pz;
+            e.transform[15] = 1.0f;
+            e.baseColor[0] = shade; e.baseColor[1] = shade; e.baseColor[2] = shade * 1.14f;
+            e.tag = (uint32_t)x3::game::Tag::Static;
+            scene.add(e);
+        };
+        // A faceted glowing shard at an ABSOLUTE spot.
+        auto crystal = [&](float px, float py, float pz, float radius, float height,
+                           float leanX, float leanZ, float r, float g, float b) {
+            x3::prims::PrimMesh m = x3::prims::makeCrystal(radius, height, 6);
+            auto mh = device->createMesh(m.verts.data(), (uint32_t)m.verts.size(),
+                                         m.index.data(), (uint32_t)m.index.size());
+            const float cx = std::cos(leanX), sx = std::sin(leanX);
+            const float cz = std::cos(leanZ), sz = std::sin(leanZ);
+            x3::game::Entity e{};
+            e.mesh = mh;
+            e.transform[0] = cz;        e.transform[1] = sz;        e.transform[2]  = 0.0f;
+            e.transform[4] = -sz * cx;  e.transform[5] = cz * cx;   e.transform[6]  = sx;
+            e.transform[8] = sz * sx;   e.transform[9] = -cz * sx;  e.transform[10] = cx;
+            e.transform[12] = px;       e.transform[13] = py;       e.transform[14] = pz;
+            e.transform[15] = 1.0f;
+            e.transparent = true;
+            e.glass.opacity   = 0.62f;
+            e.glass.roughness = 0.06f;
+            e.glass.refraction= 0.04f;
+            e.glass.specular  = 1.0f;
+            e.glass.tint[0] = r * 0.8f; e.glass.tint[1] = g * 0.8f; e.glass.tint[2] = b * 0.8f;
+            e.baseColor[0] = r; e.baseColor[1] = g; e.baseColor[2] = b; e.baseColor[3] = e.glass.opacity;
+            // Emissive MODEST so cyan/pink reads as colour, not a white core.
+            e.emissive[0] = r; e.emissive[1] = g; e.emissive[2] = b; e.emissive[3] = 1.25f;
+            e.tag = (uint32_t)x3::game::Tag::Static;
+            scene.add(e);
+        };
+        // A CLUSTER: 5-6 shards of mixed size/colour erupting around (px, pz) at
+        // ground height topY, overall scale s. Deterministic per-call layout.
+        auto clusterAt = [&](float px, float pz, float topY, float s, int seed) {
+            struct Sh { float dx, dz, rad, h, lx, lz; float col[3]; };
+            static const Sh kSh[6] = {
+                { -0.30f,  0.20f, 0.34f, 2.6f,  0.05f, -0.10f, {0.42f, 0.78f, 1.00f} },  // cyan hero
+                {  0.75f,  0.55f, 0.24f, 1.7f,  0.09f,  0.14f, {1.00f, 0.40f, 0.72f} },  // pink
+                { -0.95f,  0.60f, 0.20f, 1.3f, -0.14f, -0.05f, {0.80f, 0.42f, 0.95f} },  // violet
+                {  0.30f, -0.70f, 0.18f, 1.0f,  0.12f,  0.20f, {0.48f, 0.72f, 1.00f} },  // cyan
+                { -1.30f, -0.35f, 0.15f, 0.8f, -0.20f,  0.08f, {0.95f, 0.45f, 0.90f} },  // violet-pink
+                {  1.25f, -0.25f, 0.13f, 0.6f,  0.16f, -0.15f, {1.00f, 0.48f, 0.80f} },  // pink low
+            };
+            for (int i = 0; i < 6; ++i) {
+                const Sh& c = kSh[(i + seed) % 6];
+                const float flip = (seed % 2) ? -1.0f : 1.0f;
+                crystal(px + c.dx * s * flip, topY, pz + c.dz * s,
+                        c.rad * s, c.h * s, c.lx * flip, c.lz,
+                        c.col[0], c.col[1], c.col[2]);
+            }
+        };
+
+        // THE RIDGE: jagged leaning slabs crossing the foreground between the
+        // camera line and the approach (walkable OVER via a low collision apron).
+        rockSlab(-29.5f, 0.20f, -15.6f, 24.0f, 0.9f, 8.5f, -0.56f,  0.00f, 0.50f);  // ridge apron
+        collideBox(-29.5f, 0.35f, -15.6f, 22.0f, 0.9f, 8.0f);
+        rockSlab(-42.0f, 1.10f, -23.5f, 5.2f, 2.0f, 2.4f, -0.42f,  0.14f, 0.42f);
+        rockSlab(-35.5f, 0.90f, -19.6f, 4.4f, 1.6f, 2.1f, -0.70f, -0.10f, 0.47f);
+        rockSlab(-28.6f, 1.25f, -15.2f, 5.6f, 2.3f, 2.6f, -0.52f,  0.09f, 0.44f);
+        rockSlab(-21.4f, 0.80f, -11.0f, 4.0f, 1.4f, 2.0f, -0.66f, -0.13f, 0.50f);
+        rockSlab(-15.0f, 0.55f,  -7.2f, 3.2f, 1.0f, 1.7f, -0.44f,  0.11f, 0.46f);
+        rockSlab(-47.5f, 0.60f, -27.0f, 3.6f, 1.1f, 1.9f, -0.60f, -0.08f, 0.42f);
+        // Low scattered boulders trailing off the ridge ends.
+        rockSlab(-10.0f, 0.30f,  -4.6f, 1.6f, 0.55f, 1.1f, -0.30f, 0.18f, 0.48f);
+        rockSlab(-51.0f, 0.35f, -30.0f, 2.0f, 0.6f, 1.3f, -0.75f, -0.15f, 0.44f);
+
+        // CRYSTAL CLUSTERS along the ridge crest (multiple sizes)...
+        clusterAt(-41.5f, -23.0f, 2.55f, 2.03f, 0);   // ~1.5x scale (bigger crystal presence)
+        clusterAt(-28.8f, -14.8f, 3.05f, 2.63f, 1);   // the hero cluster, mid-frame
+        clusterAt(-20.8f, -10.6f, 1.85f, 1.58f, 2);
+        clusterAt(-14.6f,  -6.8f, 1.25f, 1.05f, 3);
+        // ...and AT THE BUILDING'S BASE (the reference scatters them against the
+        // dark recessed entry level).
+        clusterAt(-18.0f, -44.3f, 0.0f, 1.28f, 4);
+        clusterAt(  6.5f, -44.6f, 0.0f, 0.98f, 5);
+        clusterAt( 21.0f, -44.1f, 0.0f, 1.43f, 1);
+
+        // ---- ALL POINT LIGHTS: one pooled glow per crystal cluster (alternating
+        //      cyan/magenta), the warm lobby + lit-window bleeds, and a soft cool
+        //      bounce on the landed ship. ---------------------------------------
+        x3::rhi::PointLight pl[16];
+        int n = 0;
+        auto glow = [&](float px, float py, float pz, float range, bool cyan, float k) {
+            pl[n].pos[0] = px; pl[n].pos[1] = py; pl[n].pos[2] = pz; pl[n].range = range;
+            if (cyan) { pl[n].color[0] = 0.9f * k; pl[n].color[1] = 3.8f * k; pl[n].color[2] = 6.0f * k; }
+            else      { pl[n].color[0] = 6.0f * k; pl[n].color[1] = 1.6f * k; pl[n].color[2] = 4.2f * k; }
+            ++n;
+        };
+        glow(-41.5f, 4.6f, -23.0f, 18.0f, true,  1.0f);   // ridge clusters
+        glow(-28.8f, 5.6f, -14.8f, 24.0f, true,  1.2f);   // hero
+        glow(-27.6f, 3.6f, -15.6f, 14.0f, false, 0.9f);   // hero's magenta half
+        glow(-20.8f, 3.4f, -10.6f, 14.0f, false, 0.8f);
+        glow(-14.6f, 2.4f,  -6.8f, 11.0f, true,  0.7f);
+        glow(-18.0f, 2.0f, -44.0f, 13.0f, true,  0.8f);   // building-base clusters
+        glow(  6.5f, 1.6f, -44.2f, 11.0f, false, 0.7f);
+        glow( 21.0f, 2.2f, -43.8f, 13.0f, true,  0.8f);
+        // Warm lobby interior (bleeds through the recessed entry glazing).
+        pl[n].pos[0] = 0.0f; pl[n].pos[1] = 3.0f; pl[n].pos[2] = kFacilityZ - 6.0f;
+        pl[n].range = 40.0f; pl[n].color[0] = 8.0f; pl[n].color[1] = 5.8f; pl[n].color[2] = 3.2f; ++n;
+        // Warm bleed just inside two lit-window bands.
+        pl[n].pos[0] = 13.0f; pl[n].pos[1] = glassGlow(3); pl[n].pos[2] = kFacilityZ - 1.2f;
+        pl[n].range = 12.0f; pl[n].color[0] = 5.0f; pl[n].color[1] = 3.2f; pl[n].color[2] = 1.6f; ++n;
+        pl[n].pos[0] = -14.0f; pl[n].pos[1] = glassGlow(4); pl[n].pos[2] = kFacilityZ - 1.2f;
+        pl[n].range = 12.0f; pl[n].color[0] = 5.0f; pl[n].color[1] = 3.2f; pl[n].color[2] = 1.6f; ++n;
+        // Soft cool moon bounce near the landed ship.
+        pl[n].pos[0] = 9.0f; pl[n].pos[1] = 3.5f; pl[n].pos[2] = 10.0f;
+        pl[n].range = 22.0f; pl[n].color[0] = 2.2f; pl[n].color[1] = 2.6f; pl[n].color[2] = 3.4f; ++n;
+        device->setPointLights(pl, (uint32_t)n);
+    }
+
     {
         char tb[256];
         std::snprintf(tb, sizeof(tb),
-            "--world surface: WHITE-CONCRETE TOWER built — %d window bands, LEVEL 4.5 "
-            "monster section %.1f m between bands 4 and 5 (+2 x %.1f m hidden slabs) "
-            "= %.1f m total on a %.0f m x %.0f m footprint",
-            kStories, kMonsterH, kGapSmall, kTowerH,
+            "--world surface: FACILITY TOWER built — %d UNIFORM dark-glass window bands "
+            "(vs %d interior floors: %d fake bands over hidden mass) = %.1f m total on "
+            "a %.0f m x %.0f m footprint",
+            kStories, kInteriorFloors, kStories - kInteriorFloors, kTowerH,
             kFacilityHalfW * 2.0f, kFacilityHalfD * 2.0f);
         x3::logInfo(tb);
     }
@@ -486,6 +682,74 @@ int hostSurfaceStart(HostContext& hc) {
     auto shipBoxTex = device->createTexture(sbTexD.data(), 64, 64, true);
     // Ship placement: behind-right of the spawn, settled on the ground, nose -Z.
     const float kShipX = 9.0f, kShipY = 0.0f, kShipZ = 6.0f, kShipScale = 2.2f;
+
+    // ---- TWO CRESCENT MOONS (lab.jpg's alien sky): the FORGE3D Moon body drawn
+    //      twice via drawPlanet — one large, one small, upper-left of the hero
+    //      framing. CELESTIAL anchoring (the fix/planets-sky technique): each is
+    //      re-anchored on the CAMERA EYE every draw (pos = eye + dir * 140 m) so
+    //      they never parallax as the player walks. The scene's raking moonlight
+    //      sun direction lights them into CRESCENT phase. Missing textures are
+    //      graceful (moons simply not drawn).
+    x3::rhi::MeshHandle moonMesh{};
+    x3::rhi::TextureHandle moonMaps[5];
+    bool moonOk = false;
+    {
+        const std::string p = "C:/Users/Tim/X3/Assets/FORGE3D/Planets/";
+        auto loadAbs = [&](const std::string& path, bool srgb) {
+            int w = 0, h = 0, c = 0;
+            stbi_uc* px = stbi_load(path.c_str(), &w, &h, &c, 4);
+            x3::rhi::TextureHandle t{};
+            if (px) { t = device->createTexture(px, (uint32_t)w, (uint32_t)h, srgb); stbi_image_free(px); }
+            return t;
+        };
+        moonMaps[0] = loadAbs(p + "Moon/Textures/moon_02.png",        true);   // albedo
+        moonMaps[1] = loadAbs(p + "Moon/Textures/moon_02_normal.png", false);  // normal
+        moonMaps[2] = loadAbs(p + "Moon/Textures/moon_01_detail.png", true);   // detail
+        moonMaps[3] = loadAbs(p + "Moon/Textures/moon_02_spec.png",   false);  // spec
+        moonMaps[4] = loadAbs(p + "Atmosphere/sunset_blue_01.png",    true);   // scatter LUT — BRIGHT cool blue-white (lab.jpg's silver moons); _05 was too dark
+        moonOk = moonMaps[0].valid();
+        if (moonOk) {
+            x3::prims::PrimMesh sm = x3::prims::makeUVSphere(48, 96);
+            moonMesh = device->createMesh(sm.verts.data(), (uint32_t)sm.verts.size(),
+                                          sm.index.data(), (uint32_t)sm.index.size());
+        }
+        x3::logInfo(std::string("--world surface: crescent moons ") +
+                    (moonOk ? "LOADED (FORGE3D Moon x2)" : "SKIPPED (textures missing)"));
+    }
+    // Sky-direction + apparent-size table for the two moons (normalized below).
+    struct MoonBody { float dir[3]; float diamDeg; };
+    // Placed UPPER-LEFT + forward + high (lab.jpg framing) — and, crucially, angled
+    // so each moon's direction has a POSITIVE dot with the scene sunDir
+    // (-0.40,0.60,0.70): that puts the terminator across the visible disc so they
+    // read as a lit CRESCENT/half rather than a flat full disc. Kept below the
+    // ~35 deg frame ceiling (pitch 0.30 + half-fov) so both stay in shot.
+    // Bright COOL gibbous pair, upper-left + upper-center in clear sky. Directions
+    // chosen so dot(sunDir,dir) is negative (~-0.2): most of each disc is lit
+    // (bright, reads as a moon) with a slim terminator on one edge (the phase),
+    // rather than a dim half-lit ball. High enough to clear the tower, inside the
+    // frame ceiling.
+    // In the OPEN upper-right sky (the tower + ridge fill the left/centre of the
+    // hero framing, so the right is the clean expanse). dot(sunDir,dir) ~ -0.35
+    // -> a bright ~68%-lit disc with a slim terminator on the lower-left edge (the
+    // phase reads), rather than a dull half-ball.
+    MoonBody moons[2] = {
+        { { 0.28f, 0.50f, -0.80f }, 8.5f },   // the LARGE moon, open upper-right
+        { { 0.46f, 0.60f, -0.66f }, 4.4f },   // the small companion, up + right of it
+    };
+    for (auto& mb : moons) {
+        const float l = std::sqrt(mb.dir[0]*mb.dir[0] + mb.dir[1]*mb.dir[1] + mb.dir[2]*mb.dir[2]);
+        mb.dir[0] /= l; mb.dir[1] /= l; mb.dir[2] /= l;
+    }
+    constexpr float kMoonDist = 140.0f;   // inside the 200 m far plane, past all geometry
+    auto drawMoons = [&](const x3::rhi::FrameContext& frame, float ex, float ey, float ez) {
+        if (!moonOk) return;
+        for (const auto& mb : moons) {
+            const float r = kMoonDist * std::tan(mb.diamDeg * 0.5f * 3.14159265f / 180.0f);
+            float m[16] = { r,0,0,0, 0,r,0,0, 0,0,r,0,
+                            ex + mb.dir[0]*kMoonDist, ey + mb.dir[1]*kMoonDist, ez + mb.dir[2]*kMoonDist, 1 };
+            device->drawPlanet(frame, moonMesh, m, 0u /*Moon*/, moonMaps, 5u, 0.0f);
+        }
+    };
 
     // ---- SARAH (the rescue target) behind the glass. Reuses the RESCUE system
     //      (app/rescue.h): one Captive figure, framed facing the breach. The boss
@@ -579,6 +843,7 @@ int hostSurfaceStart(HostContext& hc) {
         scene.render(*device, frame);   // terrain + concrete tower + portal + Sarah's prop entity
         rescue.draw(*device, frame, scene);   // Sarah's GLB over her Prop entity
         drawShip(frame);
+        drawMoons(frame, cx, cy, cz);   // the two crescent moons (camera-anchored)
         drawWeapon(frame, cx, cy, cz, yaw, pitch);
     };
 
@@ -601,37 +866,61 @@ int hostSurfaceStart(HostContext& hc) {
     if (headless) {
         device->setFrustumCullEnabled(false);
         // Vantage: the LANDING VIEW — near player-eye height on the approach,
-        // pitched UP so the full white-concrete tower reads against the sky
-        // (all 7 window bands + the monster 4.5 blank expanse; ship at right).
+        // pitched UP so the full dark-glass tower reads against the sky (the whole
+        // uniform grid of window bands, top to bottom; ship at right).
         float cam[5] = { 13.0f, 2.0f, 40.0f, -3.14159265f*0.5f - 0.10f, 0.30f };
         if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
         const std::string outPath = screenshot ? screenshotPath : std::string("w_surface.png");
-        const int kFrames = 40;
-        for (int i = 0; i < kFrames; ++i) {
-            glfwPollEvents();
-            phys->step(dt);
-            rescue.tick(dt, scene, *phys, player.feet());   // hub NOT reached -> no timers
-            scene.update(*phys);
-            device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 70.0f);
-            if (i == kFrames - 1) device->armCapture(outPath.c_str());
-            auto frame = device->beginFrame();
-            if (frame.valid) {
-                // NOTE: no view-anchored weapon in the capture — at 0.6 m from
-                // the lens it blacks out a corner of the architecture shot.
-                scene.render(*device, frame);
-                rescue.draw(*device, frame, scene);
-                drawShip(frame);
+        // Derive the NEON-VARIANT path: "<stem>_neon.<ext>" (default hero_final ->
+        // hero_final_neon). Tim picks between primary (Lab2 clean crown) and neon
+        // (lab.jpg's cyan parapet strip).
+        auto neonVariantPath = [](const std::string& p) {
+            const size_t dot = p.find_last_of('.');
+            return (dot == std::string::npos) ? p + "_neon"
+                                              : p.substr(0, dot) + "_neon" + p.substr(dot);
+        };
+        // Render kFrames from the fixed vantage (so temporal effects settle),
+        // arming the capture on the final frame, then write it to disk. Moons are
+        // drawn camera-anchored; the view-anchored weapon is omitted (at 0.6 m it
+        // blacks out a corner of the architecture shot).
+        auto renderAndCapture = [&](const std::string& path) -> bool {
+            const int kFrames = 40;
+            for (int i = 0; i < kFrames; ++i) {
+                glfwPollEvents();
+                phys->step(dt);
+                rescue.tick(dt, scene, *phys, player.feet());   // hub NOT reached -> no timers
+                scene.update(*phys);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 70.0f);
+                if (i == kFrames - 1) device->armCapture(path.c_str());
+                auto frame = device->beginFrame();
+                if (frame.valid) {
+                    scene.render(*device, frame);
+                    rescue.draw(*device, frame, scene);
+                    drawShip(frame);
+                    drawMoons(frame, cam[0], cam[1], cam[2]);   // TWO crescent moons in the sky
+                }
+                device->endFrame(frame);
             }
-            device->endFrame(frame);
-        }
-        const bool wrote = device->captureFrame(outPath.c_str());
+            return device->captureFrame(path.c_str());
+        };
+        auto setNeon = [&](bool on) { for (uint32_t id : neonIds) scene.get(id).visible = on; };
+
+        // PRIMARY hero — Lab2's clean white crown (neon parapet OFF).
+        setNeon(false);
+        const bool wrote = renderAndCapture(outPath);
+        // NEON VARIANT — lab.jpg's cyan parapet ring ON (second labeled shot).
+        setNeon(true);
+        const std::string neonPath = neonVariantPath(outPath);
+        const bool wroteNeon = renderAndCapture(neonPath);
+        setNeon(false);
         if (wrote) {
             const x3::rhi::RenderStats st = device->stats();
-            char rb[320];
+            char rb[380];
             std::snprintf(rb, sizeof(rb),
-                "--world surface: wrote %s | entities=%u draws=%u tris=%u ship=%s armed=%s sarah=%s",
-                outPath.c_str(), scene.size(), st.drawCalls, st.triangles,
-                shipModel.ok ? "REAL" : "box", pistolModel.ok ? "yes" : "no",
+                "--world surface: wrote %s (+neon %s:%s) | entities=%u draws=%u tris=%u ship=%s moons=%s sarah=%s",
+                outPath.c_str(), neonPath.c_str(), wroteNeon ? "ok" : "FAIL",
+                scene.size(), st.drawCalls, st.triangles,
+                shipModel.ok ? "REAL" : "box", moonOk ? "x2" : "none",
                 rescue.victimCount() > 0 ? "staged" : "none");
             x3::logInfo(rb);
         } else x3::logError("--world surface: capture FAILED");
@@ -784,17 +1073,15 @@ bool runSurfaceStartSelfTest() {
                 if (scene.get(i).transparent) ++glassCount;
             check(glassCount >= 1, "S6 facility has a translucent GLASS wall (glass pass)");
 
-            // THE WHITE-CONCRETE TOWER canon (v2 spec): 7 visible window bands,
-            // but the tower carries 40+ m of HIDDEN mass — above all LEVEL 4.5,
-            // a 21-24 m (70-80 ft) monster blank section between bands 4 and 5.
-            // The height mismatch IS the storytelling: 7 stories should read
-            // ~28 m of floors; the tower is 70-78 m tall.
-            check(kStories == 7 &&
-                  kMonsterH >= 21.0f && kMonsterH <= 24.0f &&
+            // THE FACILITY TOWER canon (UNIFORM spec): the facade is a REGULAR grid
+            // of dark-glass bands at one pitch, top to bottom — MORE visible bands
+            // than there are interior floors (fake bands over the hidden mass). The
+            // band count exceeding the floor count IS the only tell; ~71 m monolith.
+            check(kStories > kInteriorFloors &&
                   kTowerH >= 70.0f && kTowerH <= 78.0f &&
-                  kTowerH - kStories * 4.0f >= 40.0f &&
-                  bandBaseY(5) - (bandBaseY(4) + kStoryH) == kMonsterH,
-                  "S6b tower is FAR taller than its 7 bands (monster Level 4.5 between 4 and 5)");
+                  std::fabs((bandBaseY(3) - bandBaseY(2)) - kStoryH) < 1e-3f &&
+                  std::fabs((bandBaseY(kStories) - bandBaseY(kStories - 1)) - kStoryH) < 1e-3f,
+                  "S6b tower is a UNIFORM grid: more bands than interior floors, regular kStoryH pitch, ~71 m");
 
             // Player OUTSIDE + armed framing (controller stands up + faces -Z).
             x3::game::Player player;

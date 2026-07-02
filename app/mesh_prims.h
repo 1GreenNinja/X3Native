@@ -149,6 +149,50 @@ inline PrimMesh makeCrystal(float r, float midH, float tipH) {
     return m;
 }
 
+// A faceted CRYSTAL shard: an N-sided prism rooted at y=0 that rises to a
+// SHOULDER ring, then tapers to a single sharp APEX — a pointed gem (used by the
+// surface-landing world's glowing crystal cluster). Per-facet FLAT normals so the
+// faces catch light crisply. Radius `r`, total `height`, `sides` facets. Render
+// geometry only (visual prop; no collision). Built centered on the Y axis at the
+// origin — position/lean it via the entity transform.
+inline PrimMesh makeCrystal(float r, float height, int sides = 6) {
+    PrimMesh m;
+    if (sides < 3) sides = 3;
+    const float shoulderY = height * 0.68f;   // shaft top / where the point begins
+    const float baseY      = 0.0f;
+    const float baseR      = r * 0.82f;        // slightly narrower at the root
+    // Emit one flat-shaded triangle with an outward normal (away from the Y axis).
+    auto tri = [&](float ax,float ay,float az, float bx,float by,float bz,
+                   float cx,float cy,float cz) {
+        float ux=bx-ax, uy=by-ay, uz=bz-az;
+        float vx=cx-ax, vy=cy-ay, vz=cz-az;
+        float nx=uy*vz-uz*vy, ny=uz*vx-ux*vz, nz=ux*vy-uy*vx;
+        float len=std::sqrt(nx*nx+ny*ny+nz*nz); if(len<1e-6f) len=1.0f;
+        nx/=len; ny/=len; nz/=len;
+        float mx=(ax+bx+cx)/3.0f, mz=(az+bz+cz)/3.0f;   // facet center (xz = outward ref)
+        if (nx*mx + nz*mz < 0.0f) { nx=-nx; ny=-ny; nz=-nz;
+            std::swap(bx,cx); std::swap(by,cy); std::swap(bz,cz); }
+        uint32_t base=(uint32_t)m.verts.size();
+        m.verts.push_back({{ax,ay,az},{nx,ny,nz},{0,0}});
+        m.verts.push_back({{bx,by,bz},{nx,ny,nz},{1,0}});
+        m.verts.push_back({{cx,cy,cz},{nx,ny,nz},{0.5f,1}});
+        m.index.insert(m.index.end(), {base, base+1, base+2});
+    };
+    const float TWO_PI = 6.2831853f;
+    for (int i = 0; i < sides; ++i) {
+        float a0 = TWO_PI * i / sides, a1 = TWO_PI * (i + 1) / sides;
+        float c0=std::cos(a0), s0=std::sin(a0), c1=std::cos(a1), s1=std::sin(a1);
+        // Shaft quad (base ring -> shoulder ring) as two triangles.
+        float bx0=baseR*c0, bz0=baseR*s0, bx1=baseR*c1, bz1=baseR*s1;
+        float sx0=r*c0,     sz0=r*s0,     sx1=r*c1,     sz1=r*s1;
+        tri(bx0,baseY,bz0,  bx1,baseY,bz1,  sx1,shoulderY,sz1);
+        tri(bx0,baseY,bz0,  sx1,shoulderY,sz1,  sx0,shoulderY,sz0);
+        // Point facet (shoulder ring -> apex).
+        tri(sx0,shoulderY,sz0,  sx1,shoulderY,sz1,  0.0f,height,0.0f);
+    }
+    return m;
+}
+
 // A walkable RAMP wedge: a sloped top surface rising from y=0 at the LOW edge to
 // y=`rise` at the HIGH edge, over a horizontal run `run`, `halfW` wide. Built in
 // LOCAL space centered on the run axis at (cx,cy,cz) where cy is the LOW floor:
