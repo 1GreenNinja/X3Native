@@ -1079,6 +1079,8 @@ int runDefaultHost(HostContext& hc) {
     float    canonKeycardX     = 0.0f, canonKeycardZ = 0.0f;
     bool     canonKeycardTaken = false;
     x3::game::CanonPlay   canonPlay;           // canon Floor-1 gameplay (canonWorld only): sidearm + animated enemies + Martinez + 3 girls
+    x3::game::HoloTerminal canonHolo;          // HERO holographic terminal in the canon Jake's cell (canonWorld only)
+    bool                  canonHoloBuilt = false;
     bool                  canonMedicalActive = false;  // latch: the medical-bay rescue clock was started (player reached the wards)
     // --world fromdoc: the LevelDoc-built world + its hot-reload state (docWorld only).
     x3::game::LevelDocWorld docLevel;
@@ -1274,6 +1276,69 @@ int runDefaultHost(HostContext& hc) {
                             " -> Research " + rc(bt.research) + " -> Medical " + rc(bt.medical) +
                             " -> Armory " + rc(bt.armory) + " -> Boss Arena " + rc(bt.bossArena) +
                             " -> Elevator Lobby " + rc(bt.elevatorLobby));
+            }
+
+            // ---- THE AMBIENT DROP (zone-mood unlock). The device-default ambient
+            // (~0.42) is ambient-DOMINATED: it washes the new bone-concrete walls flat
+            // white so the motivated point lights (cool cells / amber armory / warm
+            // sconce pools) can't carve "darkness between" (Art Bible: real darkness).
+            // Drop it to a low cool VOID fill for the canonical detention level ONLY so
+            // the sconce pools + moody cells read; the motivated fixtures carry
+            // navigability (that was the whole sconce design). Scoped to `canonlevel`
+            // (NOT the shared device default) so no other world regresses — the intro
+            // cold-open keeps its own look. ----
+            if (worldMode == "canonlevel")
+                device->setAmbient(0.12f, 0.125f, 0.15f);   // cool near-black void fill
+
+            // ---- THE HERO TERMINAL (Tim: the first object the player studies). Jake
+            // wakes in his cell facing a live holographic terminal (VIGIL's console).
+            // The canon floor is data-driven and never built the secret-room terminal
+            // (that lived only in the legacy Level-1 build), so the shipping default
+            // world had NO hero terminal. Build it here on the cell wall + a soft BLUE
+            // motivated point light that pools the terminal's glow into the cell corner
+            // (and lights its own glass so the on-glass blue text reads at the dropped
+            // ambient — the glass BODY is scene-lit, see glass.frag). Room-tagged so the
+            // PVS cull includes it with the cell. ----
+            {
+                x3::game::CanonBeats btH = x3::game::canonBeats(canonFloor);
+                if (btH.jakeCell != x3::game::kNoRoom) {
+                    const x3::game::CanonRoom& jc = canonFloor.rooms[btH.jakeCell];
+                    // Mount on the -Z wall, offset from center (clear of the dressing's
+                    // wall console at cx+0.7), eye height. The panel's readable face is
+                    // double-sided; yaw=pi seats it flush to -Z facing the room (+Z).
+                    const float tX = jc.cx - 0.9f;
+                    const float tY = jc.y0() + 1.45f;
+                    const float tZ = jc.z0() + 0.16f;
+                    const uint32_t entBefore = scene.size();
+                    canonHolo.build(scene, *device, x3::phys::Vec3{ tX, tY, tZ },
+                                    /*yaw*/3.14159265f, /*w*/0.85f, /*h*/1.05f,
+                                    jc.y1() - 0.2f);
+                    canonHoloBuilt = canonHolo.built();
+                    // Room-tag the terminal's render entities so the flood-fill cull
+                    // (and the per-room light feed) include them with Jake's Cell.
+                    for (uint32_t e = entBefore; e < scene.size(); ++e)
+                        scene.get(e).roomId = btH.jakeCell;
+                    // VIGIL's boot readout (the console lines the player studies).
+                    canonHolo.setLines({
+                        "LAB ZERO // DETENTION CONSOLE  --  CELL 07",
+                        "VIGIL ONLINE.  SUBJECT: JAKE.",
+                        "STATUS: AUGMENTED.  RESTRAINTS: FAILING.",
+                        "CRADLE PROTOCOL: ACTIVE.",
+                        "",
+                        "ASK ME SOMETHING, JAKE.",
+                    });
+                    // Soft BLUE motivated point light: pools into the cell corner AND
+                    // lights the terminal glass (in FRONT of the panel, +Z into room).
+                    x3::game::CanonLight tl;
+                    tl.room = btH.jakeCell;
+                    tl.light.pos[0] = tX; tl.light.pos[1] = tY; tl.light.pos[2] = tZ + 0.55f;
+                    tl.light.range  = 3.4f;
+                    tl.light.color[0] = 0.32f; tl.light.color[1] = 0.66f; tl.light.color[2] = 1.55f; // blue, premultiplied
+                    canonLights.push_back(tl);
+                    x3::logInfo("--world canonlevel: HERO holo-terminal built in Jake's Cell (" +
+                                std::to_string((int)tX) + "," + std::to_string((int)tY) + "," +
+                                std::to_string((int)tZ) + ") + soft blue pool light");
+                }
             }
         } else {
             // JSON absent on this machine -> fall back to the legacy tower build so the
@@ -2457,6 +2522,7 @@ int runDefaultHost(HostContext& hc) {
             if (canonWorld && canonFloor.valid()) {
                 canonPlay.tick(dt, scene, *physics, ssEye, nullptr, x3::game::AttackFxFn{});
                 canonDressing.tick(dt);
+                if (canonHoloBuilt) canonHolo.update(dt);   // bake VIGIL readout + subtle shimmer
                 x3::game::Frustum fr = x3::game::Frustum::build(
                     ssEye.x, ssEye.y, ssEye.z, ssYaw, ssPitch, ssFov, 16.0f / 9.0f);
                 canonFloor.floodVisibleRoomsAt(ssEye.x, ssEye.y, ssEye.z, fr, &canonDoors,
@@ -4708,6 +4774,7 @@ int runDefaultHost(HostContext& hc) {
                 const double _pt0 = glfwGetTime();
                 canonPlay.tick(dt, scene, *physics, camPos, &player, enemyAttackFx);
                 canonDressing.tick(dt);   // advance the flickering cell-tube phase
+                if (canonHoloBuilt) canonHolo.update(dt);   // hero terminal: shimmer + readout bake
                 g_perf.tick += glfwGetTime() - _pt0;
             }
             // ---- SECRET ROOM payoff: game.tick() ticks the cell terminal + the room's
