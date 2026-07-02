@@ -315,6 +315,35 @@ bool VulkanRenderDevice::createBloomTargets() {
                 logError("[rhi] lens-flare target create failed"); return false;
             }
         }
+        // One-time UNDEFINED -> SHADER_READ_ONLY transition of the god-rays + lens
+        // buffers. The composite's set has bindings 3/4 ALWAYS bound + statically
+        // sampled (behind the shader's intensity>0 guard), so validation requires
+        // those images in SHADER_READ_ONLY at EVERY composite draw. On a frame where
+        // the producing pass is SKIPPED (effect off, or a headless path that never
+        // syncs PostFX), there is no graph writer + the graph does not barrier a
+        // read-only import from UNDEFINED — leaving the image UNDEFINED and tripping
+        // VUID-vkCmdDraw-None-09600. Seeding SHADER_READ_ONLY here (same trick the IBL
+        // targets use to be first-frame bindable) makes the skipped-pass path valid;
+        // when the pass DOES run, its UNDEFINED->COLOR_ATTACHMENT graph barrier is a
+        // legal discard and the composite read returns it to SHADER_READ_ONLY.
+        oneTimeSubmit([&](VkCommandBuffer cmd){
+            auto seedRead = [&](VkImage img){
+                VkImageMemoryBarrier2 b{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
+                b.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT; b.srcAccessMask = 0;
+                b.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+                b.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+                b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+                b.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED; b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                b.image = img;
+                b.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+                VkDependencyInfo di{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+                di.imageMemoryBarrierCount = 1; di.pImageMemoryBarriers = &b;
+                vkCmdPipelineBarrier2(cmd, &di);
+            };
+            seedRead(m_godraysImg);
+            seedRead(m_lensImg);
+        });
 
         // ---- Scene-color COPY target (glass refraction/frost, spec §3.1) -----
         // A mip-chained HDR image: mip0 (full-res) receives a vkCmdCopyImage of the

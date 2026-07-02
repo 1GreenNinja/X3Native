@@ -235,15 +235,22 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
         for (uint32_t i = 0; i < kBloomMips; ++i)
             rgMip[i] = m_graph.importImage("bloom.mip", m_bloomMips[i].img,
                 ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
-        // God-rays half-res shaft buffer (the godrays pass writes it, the composite
-        // reads it). UNDEFINED import: fully overwritten by its producing pass.
+        // God-rays half-res shaft buffer + lens-flare buffer. Imported in
+        // SHADER_READ_ONLY (NOT UNDEFINED): both are seeded to SHADER_READ_ONLY at
+        // creation (see createBloomTargets) and the composite ALWAYS binds+samples
+        // them (bindings 3/4). On a frame where the producing pass is skipped the
+        // graph must leave them in SHADER_READ_ONLY for the composite draw; importing
+        // them as UNDEFINED made the graph drop the read-side barrier and left the
+        // real image UNDEFINED (VUID-vkCmdDraw-None-09600). Importing them as
+        // SHADER_READ_ONLY makes the graph's model match the seeded reality: a skipped
+        // pass keeps SHADER_READ_ONLY; a running pass barriers SHADER_READ->COLOR to
+        // write, then the composite read barriers it back.
         RgResource rgGodrays = m_graph.importImage("scene.godrays", m_godraysImg,
-            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
-        // Lens-flare buffer (half-res HDR). Imported UNDEFINED each frame (fully
-        // overwritten by the lens pass when it runs; never read when the pass is
-        // skipped). The composite reads it only when the flare is active this frame.
+            ResourceState{ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT });
         RgResource rgLens = m_graph.importImage("lens.flare", m_lensImg,
-            ResourceState{ VK_IMAGE_LAYOUT_UNDEFINED, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0 });
+            ResourceState{ VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                           VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT });
 
         // SSAO images (half-res). Imported UNDEFINED each frame (fully overwritten
         // by their producing pass). Only used when SSAO is enabled this frame.
@@ -1801,14 +1808,18 @@ void VulkanRenderDevice::buildAndExecuteGraph(VkCommandBuffer cmd, uint32_t imag
                 rgGodrays, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                 VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                 VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
-            // Lens-flare buffer (binding 4): only declared as a read when the flare
-            // ran this frame (otherwise the image is UNDEFINED + the shader's
-            // lensIntensity>0 guard never samples it).
-            if (lensOn)
-                comp.addUse(ResourceUse{
-                    rgLens, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                    VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
+            // Lens-flare buffer (binding 4): declared UNCONDITIONALLY (same as the
+            // god-rays buffer above). Binding 4 is ALWAYS bound in the composite set,
+            // and validation treats a statically-referenced sampler as accessed even
+            // behind the shader's lensIntensity>0 dynamic guard — so the image MUST be
+            // in SHADER_READ_ONLY at the draw. Declaring the read every frame makes the
+            // graph transition it (UNDEFINED->SHADER_READ when the lens pass was
+            // skipped), which fixes VUID-vkCmdDraw-None-09600; the guard still prevents
+            // sampling the untouched buffer, so the off path stays byte-identical.
+            comp.addUse(ResourceUse{
+                rgLens, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                VK_IMAGE_ASPECT_COLOR_BIT, /*isWrite=*/false });
             comp.usesDynamicRendering = true;
             m_compositeRenderInfo = VkRenderingInfo{};
             m_compositeRenderInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
