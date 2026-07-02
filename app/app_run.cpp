@@ -2618,9 +2618,16 @@ int runDefaultHost(HostContext& hc) {
                                                              x3::phys::Layer::Static);
                     if (svwh.hit) {
                         const float dx = svwh.point.x - ssX, dy = svwh.point.y - ssY, dz = svwh.point.z - ssZ;
-                        float wd = std::sqrt(dx * dx + dy * dy + dz * dz) - 0.35f;
-                        if (wd < 0.12f) wd = 0.12f;
-                        if (wd < ssFwdC) ssFwdC = wd;
+                        // v002 regression fix: match the live-loop guard — ignore floor/
+                        // ceiling grazes (hit more below/above than ahead) and clamp the
+                        // pull so the gun stays anchored near its resting corner offset.
+                        const float horiz = std::sqrt(dx * dx + dz * dz);
+                        if (horiz > std::abs(dy)) {
+                            float wd = std::sqrt(dx * dx + dy * dy + dz * dz) - 0.35f;
+                            const float ssFwdAnchor = vmFwdBase * 0.6f;
+                            if (wd < ssFwdAnchor) wd = ssFwdAnchor;
+                            if (wd < ssFwdC) ssFwdC = wd;
+                        }
                     }
                     arsenal.drawCurrentViewmodel(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch,
                         0.0f, 0.0f, 0.0f, ssFwdC - vmFwdBase, 0.0f, 0.0f);
@@ -5458,9 +5465,21 @@ int runDefaultHost(HostContext& hc) {
                                                             x3::phys::Layer::Static);
                     if (vwh.hit) {
                         const float dx = vwh.point.x - camX, dy = vwh.point.y - camY, dz = vwh.point.z - camZ;
-                        float wallDist = std::sqrt(dx * dx + dy * dy + dz * dz) - 0.35f;
-                        if (wallDist < 0.12f) wallDist = 0.12f;   // never behind the eye
-                        if (wallDist < vmFwdC) vmFwdC = wallDist;
+                        // REGRESSION FIX (Tim v002): only guard against a wall that is
+                        // genuinely AHEAD. When walking you often look slightly down, so
+                        // the look-ray grazes the FLOOR within ~1m — the old guard then
+                        // yanked the gun to the eye and it "floated" mid-screen during
+                        // normal movement. Ignore hits that are more below/above than
+                        // ahead (floor/ceiling grazes), and CLAMP the pull so the gun
+                        // stays ANCHORED near its resting hip/corner offset — never all
+                        // the way in — so it reads the same jammed on a wall or in the open.
+                        const float horiz = std::sqrt(dx * dx + dz * dz);
+                        if (horiz > std::abs(dy)) {
+                            float wallDist = std::sqrt(dx * dx + dy * dy + dz * dz) - 0.35f;
+                            const float vmFwdAnchor = vmPose.fwd * 0.6f;  // resting fwd 1.0m -> keep >= 0.6m
+                            if (wallDist < vmFwdAnchor) wallDist = vmFwdAnchor;  // stay anchored
+                            if (wallDist < vmFwdC) vmFwdC = wallDist;
+                        }
                     }
                 }
                 if (!thirdPerson.viewmodelVisible()) {
