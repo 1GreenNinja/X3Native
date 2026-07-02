@@ -602,13 +602,34 @@ bool runGoldenPathSelfTest() {
             allOk = false;
             break;
         }
-        // Waypoints: for each hop the doorway center, then the hop room's center.
+        // Log the resolved room route so a stuck leg is diagnosable.
+        {
+            std::string r;
+            for (size_t k = 0; k < path.size(); ++k) { if (k) r += " -> "; r += floor.rooms[path[k]].name; }
+            x3::logInfo(fmt("  route %-14s => %-14s : %s", chain[leg - 1].name, chain[leg].name, r.c_str()));
+        }
+        // Waypoints per hop: steer to the doorway centre, then STEP THROUGH the threshold
+        // (a point ~2 m into the target room toward its centre) before heading to the room
+        // centre — so a doorway that isn't on the straight line to the centre doesn't wall
+        // the naive steering. Collision stays on the whole time; this is not a teleport.
         struct Wp { float x, z; const char* what; };
         std::vector<Wp> wps;
         for (size_t hi = 1; hi < path.size(); ++hi) {
-            const CanonDoorway* dw = doorwayBetween(floor, path[hi - 1], path[hi]);
-            if (dw) wps.push_back({ dw->cx, dw->cz, "doorway" });
             const CanonRoom& r = floor.rooms[path[hi]];
+            const CanonDoorway* dw = doorwayBetween(floor, path[hi - 1], path[hi]);
+            if (dw) {
+                wps.push_back({ dw->cx, dw->cz, "doorway" });
+                // Step straight through the opening along the doorway NORMAL (perpendicular
+                // to the host wall), toward the target room — the correct line through a cut
+                // opening. axis 0 = wall plane X=const (normal X); axis 1 = normal Z.
+                if (dw->axis == 0) {
+                    const float s = (r.cx >= dw->cx) ? 1.0f : -1.0f;
+                    wps.push_back({ dw->cx + s * 2.0f, dw->cz, "threshold" });
+                } else {
+                    const float s = (r.cz >= dw->cz) ? 1.0f : -1.0f;
+                    wps.push_back({ dw->cx, dw->cz + s * 2.0f, "threshold" });
+                }
+            }
             wps.push_back({ r.cx, r.cz, "room center" });
         }
         bool legOk = true;
