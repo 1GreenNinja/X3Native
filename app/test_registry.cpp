@@ -280,6 +280,9 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testGoldenPath) {
         return x3::game::runGoldenPathSelfTest() ? 0 : 1;
     }
+    if (tf.testDoorScan) {
+        return x3::game::runDoorFrameScanSelfTest() ? 0 : 1;
+    }
     if (tf.testCanonPlay) {
         x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");
         return x3::game::runCanonPlaySelfTest() ? 0 : 1;

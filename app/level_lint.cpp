@@ -669,4 +669,103 @@ bool runGoldenPathSelfTest() {
     return allOk;
 }
 
+// =====================================================================================
+// --test-doorscan: PLACED-ENTITY door/frame scan (the lint's blind spot). The data-level
+// door-seat check (CHECK 1) reasons over CanonDoorway records; it cannot see a door/frame
+// ENTITY that the builder actually dropped into the Scene. This pass builds the world with
+// doors, then scans every Tag::Door entity and asserts it is SEATED in a real wall opening:
+// its XZ lies on a wall plane of one of the two rooms the nearest doorway joins (Adjacent),
+// or inside the interpenetration of an Overlap pair (a cut-through passage), or it is an
+// elevator-shaft portal (CrossLevel — intentionally free-standing in the shaft). A door
+// entity standing in open floor with void behind it (on no wall, in no overlap) is a
+// violator — exactly the free-standing ornate frames the playtest hit.
+// =====================================================================================
+namespace {
+
+bool onWallPlane(const CanonRoom& r, float x, float z, float tol) {
+    const bool onX = (std::fabs(x - r.x0()) < tol || std::fabs(x - r.x1()) < tol) &&
+                     z > r.z0() - tol && z < r.z1() + tol;
+    const bool onZ = (std::fabs(z - r.z0()) < tol || std::fabs(z - r.z1()) < tol) &&
+                     x > r.x0() - tol && x < r.x1() + tol;
+    return onX || onZ;
+}
+bool insideRoomXZ(const CanonRoom& r, float x, float z, float tol) {
+    return x > r.x0() - tol && x < r.x1() + tol && z > r.z0() - tol && z < r.z1() + tol;
+}
+
+// Scan one built floor's door entities; append violators to `viol` (msg + pos). Returns the
+// number of door entities scanned.
+uint32_t scanDoorEntities(CanonFloor& floor, const char* label,
+                          std::vector<std::string>& viol) {
+    HeadlessRenderDevice device;
+    std::unique_ptr<x3::phys::IPhysicsWorld> physics(x3::phys::createPhysicsWorld());
+    physics->init();
+    Scene scene;
+    DoorSystem doors;
+    CanonBuildOpts opts; opts.doors = &doors;
+    buildCanonFloor(floor, scene, device, *physics, opts);
+    const uint32_t n = (uint32_t)floor.rooms.size();
+    const float seatTol = kCanonWallT + 0.30f;   // door box straddles the wall plane
+    uint32_t scanned = 0;
+    for (uint32_t i = 0; i < scene.size(); ++i) {
+        const Entity& e = scene.get(i);
+        if (e.tag != (uint32_t)Tag::Door) continue;
+        ++scanned;
+        const float x = e.transform[12], y = e.transform[13], z = e.transform[14];
+        // Nearest doorway (by XZ) tells us which pair + kind this door belongs to.
+        const CanonDoorway* best = nullptr; float bestD = 1e30f;
+        for (const CanonDoorway& dw : floor.doorways) {
+            const float dx = dw.cx - x, dz = dw.cz - z;
+            const float d = dx * dx + dz * dz;
+            if (d < bestD) { bestD = d; best = &dw; }
+        }
+        if (!best) continue;
+        const bool crossLevel = best->kind == DoorwayKind::CrossLevel;
+        if (crossLevel) continue;                       // elevator-shaft portal: intentional
+        bool seated = false;
+        if (best->a < n && best->b < n) {
+            const CanonRoom& A = floor.rooms[best->a];
+            const CanonRoom& B = floor.rooms[best->b];
+            if (best->kind == DoorwayKind::Overlap)
+                seated = insideRoomXZ(A, x, z, seatTol) && insideRoomXZ(B, x, z, seatTol);
+            else
+                seated = onWallPlane(A, x, z, seatTol) || onWallPlane(B, x, z, seatTol);
+        }
+        if (!seated) {
+            char b[256];
+            std::snprintf(b, sizeof(b),
+                "%s: door entity %u at (%.1f, %.1f, %.1f) is not seated in a wall opening "
+                "(nearest doorway %s kind=%d)", label, i, x, y, z,
+                (best->a < n ? floor.rooms[best->a].name.c_str() : "?"), (int)best->kind);
+            viol.push_back(b);
+        }
+    }
+    physics->shutdown();
+    return scanned;
+}
+
+} // namespace
+
+bool runDoorFrameScanSelfTest() {
+    x3::logInfo("running PLACED-ENTITY door/frame scan (lint blind spot: door entities not "
+                "seated in a wall opening)...");
+    CanonFloor f1 = loadCanonFloor(canonProjectJsonPath(), 1);
+    if (!f1.valid()) {
+        x3::logInfo("--test-doorscan: SKIPPED (canonical JSON not on this machine) — PASS");
+        return true;
+    }
+    std::vector<std::string> viol;
+    uint32_t s1 = scanDoorEntities(f1, "Floor 1", viol);
+    CanonFloor bld = loadCanonBuilding(canonProjectJsonPath(), 7);
+    uint32_t sb = scanDoorEntities(bld, "Building", viol);
+    x3::logInfo(fmt("[doorscan] scanned %u door entities (F1) + %u (building); %zu violators",
+                    s1, sb, viol.size()));
+    for (const std::string& v : viol) x3::logInfo("[doorscan]   " + v);
+    const bool ok = viol.empty();
+    x3::logInfo(std::string("--test-doorscan: ") +
+                (ok ? "PASS (every door entity seated in a wall opening / flagged intentional)"
+                    : "FAIL — free-standing door/frame entities found"));
+    return ok;
+}
+
 } // namespace x3::game

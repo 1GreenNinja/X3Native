@@ -38,6 +38,7 @@ struct TestFlags {
     bool testEcsRender = false, testPickup = false, testCombat = false, testDeathRagdoll = false;
     bool testAudio = false, testAcoustics = false, testLevel1 = false, testCanonLevel = false;
     bool testLevelLint = false, testGoldenPath = false;  // x3-level-authoring Gate A + Gate C
+    bool testDoorScan = false;                            // x3-level-authoring entity door/frame scan
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;
     bool testIntroOrch = false;   // --test-introorch (Phase 3 Intro Orchestrator core)
     bool testIntroBranch = false; // --test-introbranch (Phase 4 app_run branch wiring)

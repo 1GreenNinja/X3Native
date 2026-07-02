@@ -36,6 +36,7 @@ struct CliOptions {
          testMission = false,    // --test-mission: x3.mission/1 docs + runner + the Level-1 equivalence walk
          testDeathRagdoll = false, testCanonLevel = false, testBuilding = false, testKeypad = false, testCanonPlay = false,
          testLevelLint = false, testGoldenPath = false,   // x3-level-authoring Gate A + Gate C
+         testDoorScan = false,                             // x3-level-authoring entity door/frame scan
          testThirdPerson = false, testHatchCode = false,
          // --test-hatch: END-TO-END secret-hatch chain (terminal_code fire ->
          // boot-loaded secret_room.lua -> registerGameBindings openTrapdoor ->

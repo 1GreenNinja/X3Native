@@ -90,6 +90,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-building") o.testBuilding = true;
         else if (a == "--test-levellint") o.testLevelLint = true;
         else if (a == "--test-goldenpath") o.testGoldenPath = true;
+        else if (a == "--test-doorscan") o.testDoorScan = true;
         else if (a == "--test-keypad") o.testKeypad = true;
         else if (a == "--test-canonplay") o.testCanonPlay = true;
         else if (a == "--test-phase2a") o.testPhase2a = true;
