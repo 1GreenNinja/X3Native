@@ -102,12 +102,12 @@ constexpr float kApproachZ    = -24.0f;   // crossing this advances "approach" o
 constexpr float kPlinthH   = 1.2f;    // solid base plinth under the lobby glazing
 constexpr float kLobbyH    = 6.0f;    // band 1: double-height entrance lobby
 constexpr float kStoryH    = 4.5f;    // bands 2..7 pitch (spandrel + glass)
-constexpr float kSpandrelH = 1.8f;    // THICK concrete band between floors
+constexpr float kSpandrelH = 0.7f;    // THIN white concrete spandrel LINE (~16% of floor); dark glass fills the other ~84%
 constexpr int   kStories   = 7;       // VISIBLE window bands (band 1 = the lobby)
 constexpr float kMonsterH  = 23.5f;   // LEVEL 4.5 — the monster hidden section (70-80 ft)
 constexpr float kGapSmall  = 4.5f;    // smaller hidden slabs above bands 2 and 6
 constexpr float kCrownH    = 6.0f;    // crown / parapet above band 7
-constexpr float kReveal    = 0.45f;   // window glass inset depth into the concrete
+constexpr float kReveal    = 0.12f;   // SHALLOW glass inset — dark glass reads as a broad reflective FIELD, not a deep slot; the thin white spandrels/mullions sit proud of it
 constexpr float kPortalH   = 4.5f;    // entrance portal opening height
 // Hidden concrete inserted BELOW 1-indexed floor f (f=1 is the lobby band).
 inline float hiddenBelow(int f) {
@@ -217,11 +217,11 @@ int hostSurfaceStart(HostContext& hc) {
     auto mrConcrete = solidMR(228, 0);     // matte white concrete
     auto mrApron    = solidMR(198, 0);     // smoother poured concrete
     auto mrGround   = solidMR(242, 0);     // dusty scrub
-    auto mrGlass    = solidMR(20, 245);    // BLACK GLASS: near-mirror; metallic path
-                                           // makes the dark albedo the F0 -> the
-                                           // bands become tinted sky mirrors (IBL/SSR)
+    auto mrGlass    = solidMR(44, 250);    // DARK GLASS: metallic + a touch of roughness so
+                                           // the moons/nebula/crystal-glow smear across the
+                                           // panels as a soft sheen -> reads as GLASS, not a black slot
     auto mrVent     = solidMR(130, 210);   // dark louver metal (4.5's blanked vents)
-    auto blackGlassTexD = x3::prims::makeSolidRGBA(8, 44, 52, 64);   // F0 of the mirror
+    auto blackGlassTexD = x3::prims::makeSolidRGBA(8, 40, 50, 66);   // dark blue glass F0 (reflective field, subtle sheen)
     auto blackGlassTex  = device->createTexture(blackGlassTexD.data(), 8, 8, true);
     auto ventTexD = x3::prims::makeSolidRGBA(8, 26, 28, 31);
     auto ventTex  = device->createTexture(ventTexD.data(), 8, 8, true);
@@ -329,7 +329,7 @@ int hostSurfaceStart(HostContext& hc) {
                 default: slab(cx, cy, cz, hx, hy, hz, concreteTex, mrConcrete, 0.24f); break;
                 }
             };
-            const float cornerW = 1.6f;                 // concrete margin at each end
+            const float cornerW = 1.1f;                 // slim concrete margin at each end (glass runs wider; the proud corner columns carry the white frame)
             const float runHalf = spanHalf - cornerW;   // the glass run half-length
             const float sL = spanCenter - (spanHalf - cornerW * 0.5f);
             const float sR = spanCenter + (spanHalf - cornerW * 0.5f);
@@ -349,7 +349,7 @@ int hostSurfaceStart(HostContext& hc) {
             // the front) + slim piers set at half the recess.
             {
                 const float g0 = kPlinthH, g1 = kLobbyH;
-                const float entryInset = kReveal * 2.1f;   // ~0.95 m — a real shadow gap
+                const float entryInset = 0.95f;   // keep the lobby DEEP-set + dark (decoupled from the now-shallow band reveal)
                 if (isFront) {
                     const float sideW = (runHalf - kBreachHalfW) * 0.5f;
                     place(spanCenter - (kBreachHalfW + sideW), sideW, g0, g1, entryInset, 0.08f, 2);
@@ -648,15 +648,15 @@ int hostSurfaceStart(HostContext& hc) {
         rockSlab(-51.0f, 0.35f, -30.0f, 2.0f, 0.6f, 1.3f, -0.75f, -0.15f, 0.44f);
 
         // CRYSTAL CLUSTERS along the ridge crest (multiple sizes)...
-        clusterAt(-41.5f, -23.0f, 2.55f, 1.35f, 0);
-        clusterAt(-28.8f, -14.8f, 3.05f, 1.75f, 1);   // the hero cluster, mid-frame
-        clusterAt(-20.8f, -10.6f, 1.85f, 1.05f, 2);
-        clusterAt(-14.6f,  -6.8f, 1.25f, 0.70f, 3);
+        clusterAt(-41.5f, -23.0f, 2.55f, 2.03f, 0);   // ~1.5x scale (bigger crystal presence)
+        clusterAt(-28.8f, -14.8f, 3.05f, 2.63f, 1);   // the hero cluster, mid-frame
+        clusterAt(-20.8f, -10.6f, 1.85f, 1.58f, 2);
+        clusterAt(-14.6f,  -6.8f, 1.25f, 1.05f, 3);
         // ...and AT THE BUILDING'S BASE (the reference scatters them against the
         // dark recessed entry level).
-        clusterAt(-18.0f, -44.3f, 0.0f, 0.85f, 4);
-        clusterAt(  6.5f, -44.6f, 0.0f, 0.65f, 5);
-        clusterAt( 21.0f, -44.1f, 0.0f, 0.95f, 1);
+        clusterAt(-18.0f, -44.3f, 0.0f, 1.28f, 4);
+        clusterAt(  6.5f, -44.6f, 0.0f, 0.98f, 5);
+        clusterAt( 21.0f, -44.1f, 0.0f, 1.43f, 1);
 
         // ---- ALL POINT LIGHTS: one pooled glow per crystal cluster (alternating
         //      cyan/magenta), the warm lobby + lit-window bleeds, and a soft cool
