@@ -413,22 +413,32 @@ std::vector<uint8_t> makeDetailRGBA(uint32_t n, uint32_t seed,
     };
 
     std::vector<uint8_t> px((size_t)n * n * 4);
-    const uint32_t periodLo = 8, periodHi = 16;   // two octave wrap periods
+    // Multi-octave tileable fBm (wrap periods all divide n so the tile is seamless):
+    // coarse blotches + mid grain + fine grit => a natural, non-repetitive surface
+    // that holds up close AND doesn't visibly tile at distance. A low-freq HUE jitter
+    // shifts patches warm/cool so a big grass/rock field isn't one flat swatch.
+    const uint32_t periods[4] = { 4, 8, 16, 32 };
+    const float    amps[4]    = { 0.5f, 0.28f, 0.15f, 0.07f };
     for (uint32_t y = 0; y < n; ++y) {
         for (uint32_t x = 0; x < n; ++x) {
             const float fx = (float)x / (float)n;
             const float fy = (float)y / (float)n;
-            // Two tileable octaves (low + high frequency) summed, centred at 0.
-            float nlo = vnoiseTile(fx * periodLo, fy * periodLo, periodLo, seed);
-            float nhi = vnoiseTile(fx * periodHi, fy * periodHi, periodHi, seed + 7u);
-            float nval = (nlo * 0.65f + nhi * 0.35f) - 0.5f;   // [-0.5,0.5]
+            float nval = 0.0f, hue = 0.0f;
+            for (int o = 0; o < 4; ++o) {
+                const uint32_t P = periods[o];
+                nval += amps[o] * vnoiseTile(fx * P, fy * P, P, seed + (uint32_t)o * 13u);
+            }
+            nval -= 0.535f;                                  // recentre ~[-0.5,0.5]
+            hue = vnoiseTile(fx * 4.0f, fy * 4.0f, 4u, seed + 91u) - 0.5f;  // patch tint
             uint8_t* p = &px[((size_t)y * n + x) * 4];
             auto clampB = [](int v) -> uint8_t {
                 return (uint8_t)(v < 0 ? 0 : (v > 255 ? 255 : v));
             };
-            p[0] = clampB(baseR + (int)(nval * 2.0f * (float)varR));
-            p[1] = clampB(baseG + (int)(nval * 2.0f * (float)varG));
-            p[2] = clampB(baseB + (int)(nval * 2.0f * (float)varB));
+            // Grain around the base, plus a gentle warm/cool patch shift (R up / B down
+            // when hue>0) so large areas breathe instead of reading as a flat fill.
+            p[0] = clampB(baseR + (int)(nval * 2.0f * (float)varR + hue * 14.0f));
+            p[1] = clampB(baseG + (int)(nval * 2.0f * (float)varG + hue *  4.0f));
+            p[2] = clampB(baseB + (int)(nval * 2.0f * (float)varB - hue * 12.0f));
             p[3] = 255;
         }
     }
@@ -443,11 +453,14 @@ std::vector<uint8_t> makeDetailRGBA(uint32_t n, uint32_t seed,
 // If the device can't bind them (e.g. headless), the marker may be invalid and
 // terrain falls back to a flat tint — still correct, just not splatted.
 x3::rhi::TextureHandle makeGroundTexture(x3::rhi::IRenderDevice& device) {
-    const uint32_t kN = 64;
-    auto grassPx = makeDetailRGBA(kN, 1001u,  78, 116,  56,  18, 22, 16); // green
-    auto rockPx  = makeDetailRGBA(kN, 2002u, 104, 100,  92,  26, 24, 22); // grey-brown
-    auto snowPx  = makeDetailRGBA(kN, 3003u, 222, 226, 235,  16, 14, 12); // bright white-blue
-    auto sandPx  = makeDetailRGBA(kN, 4004u, 178, 158, 118,  20, 18, 14); // tan
+    const uint32_t kN = 256;   // 256^2 detail tiles — richer grain, still tiny VRAM
+    // Deeper, less-saturated bases read as real ground (the old grass was a flat
+    // fluorescent green); wider per-channel variation gives lush/dry breakup that
+    // the shader's macro patchwork rides on top of.
+    auto grassPx = makeDetailRGBA(kN, 1001u,  64, 104,  48,  26, 30, 22); // meadow green
+    auto rockPx  = makeDetailRGBA(kN, 2002u, 112, 106,  96,  34, 32, 30); // grey-brown scree
+    auto snowPx  = makeDetailRGBA(kN, 3003u, 224, 230, 240,  18, 16, 14); // bright white-blue
+    auto sandPx  = makeDetailRGBA(kN, 4004u, 184, 160, 116,  26, 22, 18); // tan
     auto grass = device.createTexture(grassPx.data(), kN, kN, /*srgb=*/true);
     auto rock  = device.createTexture(rockPx.data(),  kN, kN, /*srgb=*/true);
     auto snow  = device.createTexture(snowPx.data(),  kN, kN, /*srgb=*/true);

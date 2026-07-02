@@ -218,13 +218,44 @@ vec3 triplanar(uint idx, vec3 wpos, vec3 wn) {
     return cx * an.x + cy * an.y + cz * an.z;
 }
 
-// Procedural height+slope splat. Returns the blended terrain albedo in linear-ish
-// sRGB (the detail textures are stored sRGB so the array already linearises them).
-vec3 terrainAlbedo(vec3 wpos, vec3 wn, uvec2 pack) {
+// Multi-octave value-noise fBm on world XZ + its analytic-ish GRADIENT (central
+// differences of the same field). The gradient drives the procedural DETAIL
+// NORMAL so the ground catches raking sun as micro-relief (clods, scree, ripples)
+// instead of reading like flat painted felt — the single biggest AAA-ground lever.
+float tfbm(vec2 p) {
+    float s = 0.0, a = 0.5, f = 1.0;
+    for (int i = 0; i < 4; ++i) { s += a * tnoise(p * f); f *= 2.0; a *= 0.5; }
+    return s;
+}
+vec2 tfbmGrad(vec2 p, float e) {
+    float hx = tfbm(p + vec2(e, 0.0)) - tfbm(p - vec2(e, 0.0));
+    float hz = tfbm(p + vec2(0.0, e)) - tfbm(p - vec2(0.0, e));
+    return vec2(hx, hz) / (2.0 * e);
+}
+
+// Cardinal BIOME weights from the compass bearing of world XZ about the origin.
+// Convention (matches the vista host: +X = the "eastern range"): +Z=North(snow),
+// +X=East(volcanic), -Z=South(sandstone-mesa), -X=West(crystal-highland). Only
+// two adjacent biomes are ever non-zero, so diagonals cross-fade cleanly.
+// x=N, y=E, z=S, w=W. Caller scales by a radial gate so the playable bowl stays
+// natural and the biome story lives on the horizon ranges.
+vec4 biomeWeights(vec2 xz) {
+    vec2 d = normalize(xz + vec2(1e-5));
+    vec4 w = vec4(max(d.y, 0.0), max(d.x, 0.0), max(-d.y, 0.0), max(-d.x, 0.0));
+    return w / max(w.x + w.y + w.z + w.w, 1e-4);
+}
+
+// Full terrain surface shade: height+slope splat of grass/rock/snow/sand, then the
+// four biome identities layered onto the mountain ranges (snow / volcanic-basalt+
+// ember / sandstone-strata / crystal-highland glow), a procedural detail normal
+// folded into wn (inout), and an emissive term (ember + crystal spectrum). Returns
+// linear-ish sRGB albedo. All other meshes never enter here.
+vec3 terrainShade(vec3 wpos, inout vec3 wn, uvec2 pack, out vec3 emissive) {
     uint grassIdx = pack.x >> 16;
     uint rockIdx  = pack.x & 0xFFFFu;
     uint snowIdx  = pack.y >> 16;
     uint sandIdx  = pack.y & 0xFFFFu;
+    emissive = vec3(0.0);
 
     float h     = wpos.y;
     float slope = clamp(wn.y, 0.0, 1.0);     // 1 = flat ground, 0 = vertical
@@ -241,36 +272,109 @@ vec3 terrainAlbedo(vec3 wpos, vec3 wn, uvec2 pack) {
     // Rock uses triplanar so cliffs aren't stretched.
     vec3 rock  = triplanar(rockIdx, wpos, wn);
 
+    // ==== BIOME identity (horizon ranges) ================================
+    // Radial gate: 0 in the playable bowl, 1 out on the ranges — biome colour
+    // only asserts on the far mountains so the tower/city ground stays natural.
+    float r        = length(wpos.xz);
+    float biomeAmt = smoothstep(520.0, 1350.0, r);
+    vec4  bw       = biomeWeights(wpos.xz) * biomeAmt;
+    // Range height factor: biome rock treatment strengthens up the flanks.
+    float highF    = smoothstep(60.0, 170.0, hN);
+
+    // Tint the ROCK per biome (basalt / sandstone / crystal-grey), and carry a
+    // per-biome grass/snow bias so each compass reads distinct on the skyline.
+    // Sandstone gets a horizontal STRATA banding; volcanic + crystal add glow.
+    vec3  rockTint = vec3(1.0);
+    float snowBias = 0.0;   // + lowers the snow line (whiter peaks)
+    float grassMul = 1.0;   // barren biomes suppress the green
+
+    // N — SNOW: cool white peaks, snow line pulled down, faint blue rock.
+    rockTint = mix(rockTint, vec3(0.86, 0.90, 1.02), bw.x);
+    snowBias += bw.x * 45.0;
+    grassMul  = mix(grassMul, 0.85, bw.x);
+
+    // E — VOLCANIC: dark basalt, red-black, ember glow in the mid crevices.
+    rockTint = mix(rockTint, vec3(0.34, 0.26, 0.24), bw.y);
+    grassMul  = mix(grassMul, 0.25, bw.y);
+    {
+        // Ember veins: bright where the basalt is mid-slope + a noise mask, so it
+        // reads as cracks of lava rather than a uniform wash. Casts (emissive).
+        float vein = smoothstep(0.55, 0.95, tnoise(wpos.xz * 0.05 + 3.1));
+        float band = highF * (1.0 - snowBias * 0.0);
+        emissive += vec3(1.6, 0.35, 0.05) * vein * band * bw.y * 1.4;
+    }
+
+    // S — SANDSTONE MESA: warm layered rock, sandy flanks, no snow.
+    rockTint = mix(rockTint, vec3(1.28, 1.02, 0.68), bw.z);
+    snowBias -= bw.z * 120.0;   // push snow off the mesas entirely
+    {
+        // Horizontal strata: modulate rock brightness by a sine of height so the
+        // sandstone reads as stacked sediment layers.
+        float strata = 0.82 + 0.30 * sin(hN * 0.14 + n * 1.5);
+        rockTint *= mix(1.0, strata, bw.z);
+    }
+
+    // W — CRYSTAL HIGHLAND: mossy rock + crystal-spectrum glow accents up high.
+    rockTint = mix(rockTint, vec3(0.66, 0.74, 0.82), bw.w);
+    {
+        // Crystal clusters: sparse high-slope glints cycling pink->cyan->blue.
+        float cl   = smoothstep(0.72, 0.98, tnoise(wpos.xz * 0.08 + 11.0));
+        float hue  = tnoise(wpos.xz * 0.02 + 5.0);
+        vec3  spec = mix(vec3(1.1, 0.25, 0.9), vec3(0.15, 0.8, 1.3), hue); // pink->cyan
+        emissive += spec * cl * highF * bw.w * 1.2;
+    }
+    rock *= rockTint;
+
     // ---- Height bands (smoothstep transitions, never hard) ----
     // Start as grass everywhere, then layer sand low, snow high, rock on slope.
-    vec3 albedo = grass;
+    vec3 albedo = grass * grassMul;
 
     // Sand/dirt SHORELINE band: a narrow beach hugging the waterline (rises into
-    // sand just under sea level, fades back to grass by kSandTop). Deliberately NOT
-    // "everything below sandTop" — otherwise the DEFAULT terrain world's rolling
-    // valleys (which sit at 0..21 m, right under the old sand ceiling) read as a
-    // tan DESERT. As a band it stays a clean ocean beach in --world ocean while the
-    // dry terrain's low ground is GRASS (deep sub-sea-level dips read grass too, but
-    // in ocean mode they're underwater, so it's invisible there).
+    // sand just under sea level, fades back to grass by kSandTop).
     float sandBand = smoothstep(kSeaLevel - 4.0, kSeaLevel - 1.0, hN) *
                      (1.0 - smoothstep(kSeaLevel + 1.0, kSandTop - 2.0, hN));
+    // Sandstone biome also lays sand up the lower flanks (mesa apron).
+    sandBand = max(sandBand, bw.z * (1.0 - highF) * smoothstep(20.0, 60.0, hN));
     albedo = mix(albedo, sand, clamp(sandBand, 0.0, 1.0));
 
-    // Snow cap on the high ground.
-    float snowBand = smoothstep(kSnowBottom, kSnowFull, hN);
+    // Snow cap on the high ground (biome-biased snow line).
+    float snowBand = smoothstep(kSnowBottom - snowBias, kSnowFull - snowBias, hN);
     albedo = mix(albedo, snow, clamp(snowBand, 0.0, 1.0));
 
-    // ---- Slope rock: overrides whatever band where the surface is steep. The
-    // thresholds are high (see note above) because this terrain's hillsides are
-    // gentle; rock fades in below kSlopeRockHi and is full by kSlopeRockLo. ----
+    // ---- Slope rock: overrides whatever band where the surface is steep. ----
     float rockBand = 1.0 - smoothstep(kSlopeRockLo, kSlopeRockHi, slope);
-    // Wobble the rock edge with noise so it isn't a clean contour line.
     rockBand = clamp(rockBand + n * 0.18, 0.0, 1.0);
+    // Barren biomes (volcanic/sandstone) show more bare rock even on gentler slopes.
+    rockBand = clamp(rockBand + (bw.y + bw.z) * highF * 0.5, 0.0, 1.0);
     albedo = mix(albedo, rock, rockBand);
 
     // Subtle macro tint variation so large flat areas aren't a flat colour.
-    float macro = tnoise(wpos.xz * (kMacroScale * 0.5));
-    albedo *= mix(0.88, 1.10, macro);
+    float macro = tfbm(wpos.xz * (kMacroScale * 0.5));
+    albedo *= mix(0.80, 1.18, macro);
+    // Larger DRY/LUSH patchwork so valley grass isn't one flat green — meadows
+    // breathe from deep green to dry olive, with occasional bare-dirt clearings.
+    float lush = tnoise(wpos.xz * 0.0033 + 17.0);
+    float grassW = clamp(1.0 - rockBand - snowBand - sandBand, 0.0, 1.0);
+    albedo *= mix(vec3(0.80, 0.92, 0.66), vec3(1.10, 1.06, 0.94), lush); // olive<->lush
+    float dirt = smoothstep(0.62, 0.90, tnoise(wpos.xz * 0.011 + 41.0)) * grassW;
+    albedo = mix(albedo, albedo * vec3(1.18, 0.92, 0.66), dirt * 0.6);   // dirt clearings
+
+    // ==== PROCEDURAL DETAIL NORMAL — fold micro-relief into wn so raking sun
+    // sculpts the surface. Strength scales with material (rock/scree strongest,
+    // grass medium, snow subtle) so cliffs read craggy and snowfields stay soft.
+    // Two octaves: coarse clods + fine grit. The bump gradient tilts the (near-up)
+    // terrain normal in world XZ — no vertex tangents needed. ----
+    // Distance fade: the fine (high-freq) octave aliases into shimmer bands at
+    // grazing distance, so drop it out with range while keeping the coarse relief.
+    float camDist = length(wpos - cam.camPos.xyz);
+    float fine    = 1.0 - smoothstep(120.0, 420.0, camDist);
+    vec2  g1 = tfbmGrad(wpos.xz * 0.35, 0.5);
+    vec2  g2 = tfbmGrad(wpos.xz * 1.6,  0.25);
+    float rough = mix(0.35, 1.0, rockBand);          // rock rougher than grass
+    rough = mix(rough, 0.28, clamp(snowBand, 0.0, 1.0));
+    vec2  bumpG = (g1 * 1.0 + g2 * (0.5 * fine)) * rough;
+    vec3  dN = vec3(-bumpG.x, 0.0, -bumpG.y) * 1.4;
+    wn = normalize(wn + dN);
 
     return albedo;
 }
@@ -630,8 +734,11 @@ void main() {
     const bool alphaCutout = (vTexIndex & 0x80000000u) != 0u;  // bit31 = MASK (cutout)
     const bool alphaBlend  = (vTexIndex & 0x40000000u) != 0u;  // bit30 = BLEND (glass)
     vec4 albedo;
+    vec3 terrainEmis = vec3(0.0);
     if ((vFlags & FLAG_TERRAIN) != 0u) {
-        albedo = vec4(terrainAlbedo(vWorldPos, N, vTerrainPack), 1.0) * vFactor;
+        // Splat + biome + fold a procedural detail normal into N (raking-sun relief)
+        // + collect the biome emissive (volcanic ember / crystal glow).
+        albedo = vec4(terrainShade(vWorldPos, N, vTerrainPack, terrainEmis), 1.0) * vFactor;
     } else {
         albedo = texture(textures[nonuniformEXT(baseIdx)], vUV) * vFactor;
     }
@@ -848,6 +955,7 @@ void main() {
     vec3 emis = vEmissive.rgb;
     if (vEmissiveTexIndex > 0u) emis *= texture(textures[nonuniformEXT(vEmissiveTexIndex)], vUV).rgb;  // emissive map gates WHERE it glows (edge strips)
     color += emis * vEmissive.a;
+    color += terrainEmis;   // biome ground glow (volcanic ember veins / crystal spectrum)
     // BLEND (glass): Unity glass mats often have baseColorFactor.a=0 -> invisible under straight
     // alpha-over. Floor the opacity + add a fresnel grazing term so glass reads as a translucent,
     // reflective pane. Gated on vFactor.a<0.99 so a=1 BLEND overlays (screens) stay solid.
