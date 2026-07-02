@@ -1405,7 +1405,15 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         const float topY = std::min(a.y0(), b.y0());      // floor of the higher room
         const float botY = std::max(a.y0(), b.y0());      // floor of the LOWER (deeper) room
         const float yLo = std::min(topY, botY), yHi = std::max(topY, botY);
-        const float th = (yHi - yLo) + 1.0f;
+        // A DEEP isolated-room tube (cave/sub-level, no floor hole cut here — the room's
+        // slab stays solid) must NOT protrude above the upper room's floor, or its 1 m lip
+        // fences off the upper room's centre and walls the player out (the golden-path
+        // block: the Cave tube stood a 1 m ring around the Hidden Supply Cache centre, the
+        // Sub-Level tube around the Elevator Lobby centre). Cap its TOP flush with the upper
+        // floor so the shaft is entirely sub-floor latent geometry and the room surface is
+        // fully walkable. Near-surface elevator shafts (holes cut) keep the +1 m lip.
+        const bool deepTube = std::min(a.cy, b.cy) < -50.0f;
+        const float th = (yHi - yLo) + (deepTube ? 0.0f : 1.0f);
         const float tx = dw.cx, tz = dw.cz;
         const float thx = kCanonShaftHalf, thz = kCanonShaftHalf;  // 3 m square tube
         // 4 thin walls of the tube (open top/bottom).
