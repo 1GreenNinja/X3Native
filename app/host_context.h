@@ -99,6 +99,7 @@ struct HostContext {
     bool        planetShot = false;     std::string planetShotPath;
     bool        nightskyShot = false;   std::string nightskyShotPath;
     bool        cutsceneShot = false;   std::string cutsceneShotPath;
+    bool        introCombatShot = false; std::string introCombatShotPath;
     bool        terrainShot = false;    std::string terrainShotPath;
     bool        oceanShot = false;      std::string oceanShotPath;
     bool        captureAi = false;      std::string captureAiDir;
