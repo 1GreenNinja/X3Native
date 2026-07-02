@@ -319,6 +319,12 @@ int dispatchTests(const TestFlags& tf) {
                     "canon default — the app_run cell-vs-surface selection contract)...");
         return x3::intro::runIntroBranchSelfTest() ? 0 : 1;
     }
+    if (tf.testIntroCombat) {
+        x3::logInfo("running Job B INTRO COMBAT self-test (interactive space-combat segment: "
+                    "bounded/deterministic headless combat metrics + win/loss -> skill -> "
+                    "outcome -> cell/surface hand-off chain)...");
+        return x3::intro::runIntroCombatSelfTest() ? 0 : 1;
+    }
     if (tf.testSurfaceStart) {
         x3::logInfo("running Phase 7 SURFACE-START self-test (ESCAPED-branch Act-1: "
                     "cell-vs-surface selection + the surface scene standing up — glass "

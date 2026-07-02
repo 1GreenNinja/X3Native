@@ -18,6 +18,7 @@
 #include "screenshot_hosts.h"
 #include "showroom_tod.h"
 #include "cinematic.h"
+#include "intro_orchestrator.h"   // x3::intro::runIntroCombatShots (--screenshot-introcombat)
 #include "scene.h"
 #include "mesh_prims.h"
 #include "env_art.h"
@@ -86,6 +87,7 @@ int dispatchScreenshotHosts(HostContext& hc) {
     const bool planetShot = hc.planetShot;        const std::string& planetShotPath = hc.planetShotPath;
     const bool nightskyShot = hc.nightskyShot;    const std::string& nightskyShotPath = hc.nightskyShotPath;
     const bool cutsceneShot = hc.cutsceneShot;    const std::string& cutsceneShotPath = hc.cutsceneShotPath;
+    const bool introCombatShot = hc.introCombatShot; const std::string& introCombatShotPath = hc.introCombatShotPath;
     const bool terrainShot = hc.terrainShot;      const std::string& terrainShotPath = hc.terrainShotPath;
     const bool oceanShot = hc.oceanShot;          const std::string& oceanShotPath = hc.oceanShotPath;
     const bool captureAi = hc.captureAi;          const std::string& captureAiDir = hc.captureAiDir;
@@ -1263,6 +1265,20 @@ int dispatchScreenshotHosts(HostContext& hc) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
         return wrote ? 0 : 1;
+    }
+
+    // ---- Interactive space-combat proof stills (--screenshot-introcombat [base]) ----
+    // Job B visual verification: build the LIVE combat scene (capital + fighters +
+    // bolts + HUD) and capture <base>_takecontrol.png (the hand-over) + <base>_fight
+    // .png (the dogfight) via the shared LiveCombatView::drawScene.
+    if (introCombatShot) {
+        x3::logInfo("--screenshot-introcombat: capturing interactive-combat proof stills -> " +
+                    introCombatShotPath + "_{takecontrol,fight}.png");
+        const bool ok = x3::intro::runIntroCombatShots(*device, window, introCombatShotPath);
+        device->shutdown();
+        if (window) glfwDestroyWindow(window);
+        glfwTerminate();
+        return ok ? 0 : 1;
     }
 
     // ---- Terrain vantage mode (--screenshot-terrain [path.png]) ------------

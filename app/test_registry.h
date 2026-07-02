@@ -41,6 +41,7 @@ struct TestFlags {
     bool testCanonPlay = false, testIntro = false, testCutscene = false, testPhase2a = false;
     bool testIntroOrch = false;   // --test-introorch (Phase 3 Intro Orchestrator core)
     bool testIntroBranch = false; // --test-introbranch (Phase 4 app_run branch wiring)
+    bool testIntroCombat = false; // --test-introcombat (Job B interactive combat segment)
     bool testSurfaceStart = false;// --test-surfacestart (Phase 7 ESCAPED-branch surface Act-1)
     bool testPhase2b = false, testAnim = false, testLocomotion = false;
     bool listClips = false;

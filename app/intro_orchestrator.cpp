@@ -35,6 +35,9 @@
 #include "cinematic.h"        // runCutsceneWindowed (public cinematic driver)
 #include "asset_root.h"
 #include "space_pilot.h"
+#include "fx.h"                   // x3::game::CombatFx — bolt/tracer/impact/explosion FX (live windows)
+#include "mesh_prims.h"           // x3::prims — box/sphere fallback meshes for the live scene
+#include "engine/asset/IModelLoader.h"   // x3::asset model load + makeDrawables + mulMat4 (live ship draw)
 #include "space/ship_ai.h"
 #include "space/targeting.h"
 #include "space/ship_damage.h"
@@ -219,6 +222,380 @@ void playCinematicBeat(x3::apphost::HostContext& hc, const Beat& beat,
     }
 }
 
+// ---------------------------------------------------------------------------
+// LIVE COMBAT SCENE (Job B) — the drawable + FX side of an interactive window.
+//
+// The interactive windows used to run the sim but render a BLANK frame (begin/
+// endFrame with nothing between) — so the player saw a black void and there was
+// "no option to take control". This owns the GPU resources + draw primitives so
+// the window actually renders: the menacing capital, the enemy fighters, Jake's
+// fighter (3P), the bolts (CombatFx tracers), and the HUD. Headless windows never
+// touch this (the deterministic sim path is unchanged).
+// ---------------------------------------------------------------------------
+
+// Build a ship model matrix from a pilot-style basis (forward/up/right) at `scale`.
+inline void shipMatrix(const x3::phys::Vec3& f, const x3::phys::Vec3& u,
+                       const x3::phys::Vec3& r, const x3::phys::Vec3& p,
+                       float scale, float out[16]) {
+    out[0]=f.x*scale; out[1]=f.y*scale; out[2]=f.z*scale; out[3]=0;
+    out[4]=u.x*scale; out[5]=u.y*scale; out[6]=u.z*scale; out[7]=0;
+    out[8]=r.x*scale; out[9]=r.y*scale; out[10]=r.z*scale; out[11]=0;
+    out[12]=p.x; out[13]=p.y; out[14]=p.z; out[15]=1;
+}
+inline x3::phys::Vec3 vnorm(const x3::phys::Vec3& v) {
+    const float l = std::sqrt(v.x*v.x + v.y*v.y + v.z*v.z);
+    return (l > 1e-5f) ? x3::phys::Vec3{ v.x/l, v.y/l, v.z/l } : x3::phys::Vec3{ 1, 0, 0 };
+}
+inline x3::phys::Vec3 vcross(const x3::phys::Vec3& a, const x3::phys::Vec3& b) {
+    return { a.y*b.z - a.z*b.y, a.z*b.x - a.x*b.z, a.x*b.y - a.y*b.x };
+}
+
+// The enemy capital ship placement + its destructible "engine block" weak points
+// (world space; the capital faces -X toward the player, who spawns at origin and
+// closes along +X). Four blocks mirror x3::space::Subsystem (Engines/Turrets/
+// ShieldGen/Sensors). Shooting a lit block damages that subsystem; all down ==
+// crippled == the escape-enabling objective.
+struct CapitalRig {
+    float pos[3]   = { 288.0f, 48.0f, 0.0f };   // hull world position (looms ahead + above)
+    float scale    = 22.0f;                     // model-matrix scale for SpaceShip4.glb
+    float turret[3]= { 258.0f, 72.0f, 0.0f };   // main-gun muzzle (telegraphed return fire)
+    static constexpr int kWeak = kMaxSubsystems;
+    float weak[kWeak][3] = {
+        { 226.0f, 32.0f, -40.0f }, { 226.0f, 32.0f,  40.0f },
+        { 234.0f, 60.0f, -24.0f }, { 234.0f, 60.0f,  24.0f },
+    };
+};
+
+struct LiveCombatView {
+    std::unique_ptr<x3::asset::IAssetSource> src;
+    std::unique_ptr<x3::asset::IModelLoader> loader;
+    x3::asset::Model playerModel, capitalModel;
+    std::vector<x3::asset::ModelDrawable> playerDraw, capitalDraw;
+    bool playerOk = false, capitalOk = false;
+    x3::rhi::MeshHandle boxMesh{}, sphereMesh{};
+    x3::rhi::TextureHandle boxTex{};
+    std::unique_ptr<x3::game::CombatFx> fx;
+    double lastMX = 0.0, lastMY = 0.0;
+    bool   mouseBase = false;
+    GLFWwindow* win = nullptr;
+
+    bool init(x3::rhi::IRenderDevice& dev, GLFWwindow* window) {
+        win = window;
+        // Capture the cursor for relative mouse-look (banked flight aim).
+        if (win) glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        src.reset(x3::asset::createAssetSource());
+        src->mountDir(x3::game::assetRoot(), 0);
+        loader.reset(x3::asset::createModelLoader(&dev, src.get()));
+        playerModel = loader->load("rigged_glb/JakeFighterShip.glb");
+        if (playerModel.ok) { playerDraw = x3::asset::makeDrawables(playerModel); playerOk = true; }
+        capitalModel = loader->load("rigged_glb/SpaceShip4.glb");
+        if (capitalModel.ok) { capitalDraw = x3::asset::makeDrawables(capitalModel); capitalOk = true; }
+
+        x3::prims::PrimMesh bx = x3::prims::makeBox(1.6f, 0.5f, 1.0f, 0, 0, 0, 0.5f);
+        boxMesh = dev.createMesh(bx.verts.data(), (uint32_t)bx.verts.size(),
+                                 bx.index.data(), (uint32_t)bx.index.size());
+        auto tex = x3::prims::makeCheckerRGBA(64, 8, 150, 160, 185, 50, 58, 74);
+        boxTex = dev.createTexture(tex.data(), 64, 64, true);
+        x3::prims::PrimMesh sp = x3::prims::makeUVSphere(18, 32);
+        sphereMesh = dev.createMesh(sp.verts.data(), (uint32_t)sp.verts.size(),
+                                    sp.index.data(), (uint32_t)sp.index.size());
+
+        fx = std::make_unique<x3::game::CombatFx>();
+        fx->init(dev);
+
+        // Deep-space look with a RAKING key sun (same menace treatment as the cold-open
+        // relight) so the hulls read as dark masses with a bright rim + stars behind.
+        x3::rhi::IRenderDevice::SkyParams s{};
+        s.enabled = true;
+        // Key from the PLAYER's upper side (-X, +Y) so the capital's camera-facing hull
+        // (it faces -X, toward the player) is lit + sculpted — a readable menacing mass,
+        // not a black silhouette. (The shader sun is full-strength; sunIntensity only
+        // affects the sky disc, kept off.)
+        s.sunDir[0] = -0.42f; s.sunDir[1] = 0.54f; s.sunDir[2] = 0.48f;
+        s.sunColor[0] = 1.0f; s.sunColor[1] = 0.95f; s.sunColor[2] = 0.86f;
+        s.sunIntensity = 0.0f;
+        s.haze = 0.0f; s.exposure = 1.0f;
+        s.zenith[0]  = 0.004f; s.zenith[1]  = 0.004f; s.zenith[2]  = 0.010f;
+        s.horizon[0] = 0.008f; s.horizon[1] = 0.010f; s.horizon[2] = 0.020f;
+        dev.setSkyParams(s);
+        dev.setAmbient(0.10f, 0.11f, 0.15f);
+        dev.setBloom(0.34f);
+        return true;
+    }
+
+    // Mouse-look + WASD/QE input for the pilot (banked flight). Baselines the cursor
+    // on the first live frame so no look delta jumps across the hand-off.
+    void input(x3::game::PlayerInput& in, float& rollAxis, bool& fire) {
+        auto kd = [&](int k){ return glfwGetKey(win, k) == GLFW_PRESS; };
+        in.moveFwd    = (kd(GLFW_KEY_W)?1.f:0.f) + (kd(GLFW_KEY_S)?-1.f:0.f);
+        in.moveStrafe = (kd(GLFW_KEY_D)?1.f:0.f) + (kd(GLFW_KEY_A)?-1.f:0.f);
+        in.sprint     = kd(GLFW_KEY_LEFT_SHIFT);
+        rollAxis      = (kd(GLFW_KEY_Q)?-1.f:0.f) + (kd(GLFW_KEY_E)?1.f:0.f);
+        double mx, my; glfwGetCursorPos(win, &mx, &my);
+        if (!mouseBase) { lastMX = mx; lastMY = my; mouseBase = true; }
+        in.lookDX = (float)(mx - lastMX);
+        in.lookDY = (float)(my - lastMY);
+        lastMX = mx; lastMY = my;
+        fire = glfwGetMouseButton(win, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+    }
+
+    // Key/rim/fill point lights around the capital (+ a fill that follows the player),
+    // refreshed each frame (setPointLights replaces the whole array).
+    void updateLights(x3::rhi::IRenderDevice& dev, const CapitalRig& cap, const x3::phys::Vec3& p) {
+        x3::rhi::PointLight L[4]{};
+        // Warm key above the capital (bright enough that the dark hull READS as a mass).
+        L[0].pos[0]=cap.pos[0]+40; L[0].pos[1]=cap.pos[1]+90; L[0].pos[2]=cap.pos[2]-30;
+        L[0].range=1100; L[0].color[0]=55; L[0].color[1]=44; L[0].color[2]=30;
+        // Cool rim from behind/left.
+        L[1].pos[0]=cap.pos[0]-30; L[1].pos[1]=cap.pos[1]+10; L[1].pos[2]=cap.pos[2]+120;
+        L[1].range=1000; L[1].color[0]=14; L[1].color[1]=20; L[1].color[2]=34;
+        // Red engine wash near the weak blocks.
+        L[2].pos[0]=cap.weak[0][0]; L[2].pos[1]=cap.weak[0][1]-6; L[2].pos[2]=0;
+        L[2].range=260; L[2].color[0]=26; L[2].color[1]=2; L[2].color[2]=1;
+        // Player-follow fill so Jake's fighter reads.
+        L[3].pos[0]=p.x-6; L[3].pos[1]=p.y+8; L[3].pos[2]=p.z;
+        L[3].range=120; L[3].color[0]=5; L[3].color[1]=6; L[3].color[2]=9;
+        dev.setPointLights(L, 4);
+    }
+
+    void drawModel(x3::rhi::IRenderDevice& dev, const x3::rhi::FrameContext& fc,
+                   const std::vector<x3::asset::ModelDrawable>& draws, bool ok,
+                   const float model[16], const float tint[4]) {
+        if (ok && !draws.empty()) {
+            for (const auto& d : draws) {
+                float fin[16]; x3::asset::mulMat4(model, d.nodeTransform, fin);
+                const float bc[4] = { d.baseColorFactor[0]*tint[0], d.baseColorFactor[1]*tint[1],
+                                      d.baseColorFactor[2]*tint[2], d.baseColorFactor[3] };
+                dev.drawMesh(fc, x3::rhi::MeshHandle{ d.meshId },
+                             x3::rhi::TextureHandle{ d.baseColorTexId }, bc, fin);
+            }
+        } else {
+            dev.drawMesh(fc, boxMesh, boxTex, tint, model);
+        }
+    }
+
+    void drawGlow(x3::rhi::IRenderDevice& dev, const x3::rhi::FrameContext& fc,
+                  const float p[3], float scale, const float color[4], const float emis[4]) {
+        const float m[16] = { scale,0,0,0, 0,scale,0,0, 0,0,scale,0, p[0],p[1],p[2],1 };
+        dev.drawMeshEmissive(fc, sphereMesh, {}, color, emis, m);
+    }
+
+    // ---- Rich weapon-impact FX (Job B): a flash CORE + a radiating SPARK BURST +
+    //      a scorch, instead of a flat circle sprite. Reference feel: the arc/spark
+    //      streak work on feat/weapons-overhaul (drawMeshEmissive primitives). Hits
+    //      are logged with a birth time and aged/drawn each frame. ----
+    struct Hit { float p[3]; float seed; float born; bool big; };
+    std::vector<Hit> hits;
+    float clock = 0.0f;   // view-local FX time (advanced in drawScene by dt)
+
+    void addHit(const x3::phys::Vec3& p, bool big) {
+        hits.push_back({ {p.x,p.y,p.z}, (float)(hits.size()%17)*0.61803f, clock, big });
+        if (hits.size() > 64) hits.erase(hits.begin());
+    }
+    void drawHits(x3::rhi::IRenderDevice& dev, const x3::rhi::FrameContext& fc) {
+        for (const Hit& h : hits) {
+            const float life = h.big ? 0.60f : 0.34f;
+            const float age = clock - h.born;
+            if (age < 0.0f || age > life) continue;
+            const float k = age / life;              // 0..1
+            const float fade = 1.0f - k;
+            // Flash core — a brief white-hot pop that shrinks fast (kept tight so it
+            // reads as a hit flash, not a lingering sun).
+            {
+                const float core = (h.big ? 1.3f : 0.8f) * (0.35f + 0.65f*fade);
+                const float c[4] = { 1.0f, 0.9f, 0.62f, 1.0f };
+                const float e[4] = { (h.big?10.f:6.5f)*fade, (h.big?6.f:3.5f)*fade,
+                                     (h.big?2.0f:1.2f)*fade, (h.big?10.f:6.5f)*fade };
+                drawGlow(dev, fc, h.p, core, c, e);
+            }
+            // Radiating SPARK BURST — emissive specks flung outward over the life (the
+            // "streaks", vs a single circle). More + bigger for the big (capital) hits.
+            const int n = h.big ? 14 : 8;
+            for (int s = 0; s < n; ++s) {
+                const float a = (float)s * 2.39996f + h.seed * 6.2831f;
+                const float b = (float)s * 1.61f + h.seed * 3.1f;
+                const x3::phys::Vec3 d = vnorm({ std::cos(a)*std::cos(b), std::sin(b), std::sin(a)*std::cos(b) });
+                const float reach = (h.big ? 26.0f : 13.0f) * k;
+                const float sp[3] = { h.p[0]+d.x*reach, h.p[1]+d.y*reach, h.p[2]+d.z*reach };
+                const float sc = (h.big ? 1.1f : 0.7f) * fade;
+                const float c[4] = { 1.0f, 0.6f, 0.2f, 1.0f };
+                const float e[4] = { 9.0f*fade, 3.2f*fade, 0.6f*fade, 9.0f*fade };
+                drawGlow(dev, fc, sp, sc, c, e);
+            }
+        }
+    }
+
+    // Draw the full interactive combat frame: menacing capital + running lights +
+    // weak-point targets, enemy fighters, Jake's fighter (3P), the capital telegraph,
+    // the FX (bolts/impacts), and the HUD. Shared by the live window loop AND the
+    // --screenshot-introcombat proof host. `dt` advances the FX only.
+    void drawScene(x3::rhi::IRenderDevice& dev, const x3::rhi::FrameContext& frame,
+                   const CapitalRig& cap, x3::game::SpacePilotController& pilot,
+                   x3::space::EnemyShipManager& enemies, const x3::space::ShipDamageModel& capital,
+                   const Beat& beat, int subsDestroyed, float tNow,
+                   bool capCharging, float capChargeStart, bool showTakeControl,
+                   float dt, float cx, float cy, float cz, float cyaw, float cpit) {
+        clock += dt;   // advance view-local FX time (impact bursts, ember trail)
+        const x3::phys::Vec3 pp = pilot.pos();
+        // Capital hull — dark tint => a menacing DARK MASS (faces -X toward player).
+        {
+            float m[16];
+            shipMatrix({-1,0,0}, {0,1,0}, {0,0,-1},
+                       x3::phys::Vec3{cap.pos[0],cap.pos[1],cap.pos[2]}, cap.scale, m);
+            const float dark[4] = { 0.52f, 0.55f, 0.64f, 1.0f };
+            drawModel(dev, frame, capitalDraw, capitalOk, m, dark);
+        }
+        // Capital red running lights + warm engine glow (HDR emissive => blooms). Kept
+        // SMALL so they read as lights on the hull, not free-floating suns.
+        {
+            const float redc[4]={1.0f,0.10f,0.08f,1.0f}, rede[4]={3.0f,0.3f,0.2f,3.0f};
+            const float b0[3]={cap.pos[0]-64,cap.pos[1]+4,cap.pos[2]-96};
+            const float b1[3]={cap.pos[0]-64,cap.pos[1]+4,cap.pos[2]+96};
+            drawGlow(dev,frame,b0,1.1f,redc,rede);
+            drawGlow(dev,frame,b1,1.1f,redc,rede);
+            const float engc[4]={1.0f,0.5f,0.2f,1.0f}, enge[4]={3.0f,1.2f,0.5f,3.2f};
+            const float eg[3]={cap.pos[0]+60,cap.pos[1]-2,cap.pos[2]};
+            drawGlow(dev,frame,eg,2.4f,engc,enge);
+        }
+        // Engine-block WEAK POINTS: a small pulsing orange target if alive, dim if down
+        // (the HUD bracket does the heavy lifting; this just marks the block on the hull).
+        const float pulse = 0.65f + 0.35f * std::sin(tNow * 6.0f);
+        for (int i = 0; i < CapitalRig::kWeak; ++i) {
+            const bool down = x3::space::ShipDamage::subsystemDown(capital,(x3::space::Subsystem)i);
+            float c[4], e[4], sc;
+            if (down) { c[0]=0.30f;c[1]=0.12f;c[2]=0.08f;c[3]=1;
+                        e[0]=0.25f;e[1]=0.07f;e[2]=0.04f;e[3]=0.5f; sc=1.1f; }
+            else      { c[0]=1.0f;c[1]=0.50f;c[2]=0.12f;c[3]=1;
+                        e[0]=2.6f*pulse;e[1]=0.9f*pulse;e[2]=0.2f*pulse;e[3]=2.8f*pulse; sc=2.0f; }
+            drawGlow(dev,frame,cap.weak[i],sc,c,e);
+        }
+        // Enemy fighters (red-tinted) + a small red running light.
+        for (uint32_t i = 0; i < enemies.count(); ++i) {
+            const auto& e = enemies.ship(i);
+            const x3::phys::Vec3 ef = vnorm({e.fwd[0],e.fwd[1],e.fwd[2]});
+            const x3::phys::Vec3 er = vnorm(vcross(ef, {0,1,0}));
+            const x3::phys::Vec3 eu = vcross(er, ef);
+            float m[16]; shipMatrix(ef, eu, er, x3::phys::Vec3{e.pos[0],e.pos[1],e.pos[2]}, 1.4f, m);
+            const float rt[4] = { 1.2f, 0.5f, 0.45f, 1.0f };
+            drawModel(dev, frame, playerDraw, playerOk, m, rt);
+            const float ep[3]={e.pos[0],e.pos[1]+1.6f,e.pos[2]};
+            const float ec[4]={1,0.15f,0.1f,1}, ee[4]={2.0f,0.25f,0.15f,2.0f};
+            drawGlow(dev,frame,ep,0.45f,ec,ee);
+        }
+        // Player fighter (3P) — keep its character (cyan engines from its own GLB).
+        {
+            const x3::phys::Vec3 f=pilot.forward(), u=pilot.up(), r=pilot.right();
+            float m[16]; shipMatrix(f, u, r, pp, 1.6f, m);
+            const float pt[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+            drawModel(dev, frame, playerDraw, playerOk, m, pt);
+        }
+        // ESCALATING DAMAGE STATE: as Jake's hull drops, a growing ember->smoke trail
+        // streams off the ship (extends the spiral-down ember trail into a live tell).
+        {
+            const float hfrac = pilot.maxHull()>0 ? (float)pilot.hull()/(float)pilot.maxHull() : 0.f;
+            if (hfrac < 0.72f) {
+                const x3::phys::Vec3 bwd = pilot.forward();  // trail streams BEHIND (-forward)
+                const int puffs = 2 + (int)((0.72f - hfrac) / 0.72f * 8.0f);
+                for (int i = 0; i < puffs; ++i) {
+                    const float t = (float)i;
+                    const float d = 5.0f + t * 2.6f;   // start well behind the hull (no camera blob)
+                    const float sp[3] = { pp.x - bwd.x*d + std::sin(clock*3.0f + t)*0.7f,
+                                          pp.y - bwd.y*d + 0.5f,
+                                          pp.z - bwd.z*d + std::cos(clock*2.3f + t)*0.7f };
+                    const float heat = std::max(0.0f, 1.0f - t * 0.22f);   // hot near hull -> cool smoke
+                    const float col[4] = { 0.13f, 0.12f, 0.11f, 1.0f };
+                    const float e[4]   = { 1.8f*heat, 0.6f*heat, 0.12f*heat, 1.8f*heat };
+                    drawGlow(dev, frame, sp, 0.35f + t*0.13f, col, e);
+                }
+            }
+        }
+        // Capital main-gun TELEGRAPH: a growing red charge glow at the turret (the tell).
+        if (capCharging) {
+            const float k = std::min(1.0f, (tNow - capChargeStart) / 0.7f);
+            const float cc[4]={1.0f,0.25f,0.10f,1.0f}, ce[4]={5.0f*k,0.9f*k,0.3f*k,5.0f*k};
+            drawGlow(dev, frame, cap.turret, 1.2f + 3.0f * k, cc, ce);
+        }
+        // Bolts / muzzle flashes (tracers via CombatFx) + the rich impact bursts.
+        fx->update(dt);
+        fx->draw(dev, frame, cx, cy, cz, cyaw, cpit);
+        fx->submit(dev, frame);
+        drawHits(dev, frame);
+
+        // ---- HUD overlay ----
+        uint32_t W=0,H=0; dev.hudSize(W,H);
+        const float fw=(float)W, fh=(float)H;
+        using FR = x3::rhi::FontRole;
+        auto box = [&](float x,float y,float w,float h,float t,const float col[4]){
+            dev.drawHudQuad(frame,x,y,w,t,col); dev.drawHudQuad(frame,x,y+h-t,w,t,col);
+            dev.drawHudQuad(frame,x,y,t,h,col); dev.drawHudQuad(frame,x+w-t,y,t,h,col);
+        };
+        const float rc[4]={0.55f,0.9f,1.0f,0.9f};
+        dev.drawHudQuad(frame, fw*0.5f-11, fh*0.5f-1.5f, 22, 3, rc);
+        dev.drawHudQuad(frame, fw*0.5f-1.5f, fh*0.5f-11, 3, 22, rc);
+        const float hf = pilot.maxHull()>0 ? (float)pilot.hull()/(float)pilot.maxHull() : 0.f;
+        const float sf = pilot.maxShield()>0 ? (float)pilot.shield()/(float)pilot.maxShield() : 0.f;
+        const float bg[4]={0.08f,0.09f,0.12f,0.72f};
+        const float lbl[4]={0.75f,0.82f,0.92f,0.95f};
+        dev.drawHudQuad(frame, 40, fh-72, 320, 16, bg);
+        const float hullc[4]={ 1.0f-0.7f*hf, 0.25f+0.6f*hf, 0.20f, 0.95f };
+        dev.drawHudQuad(frame, 40, fh-72, 320*std::max(0.f,hf), 16, hullc);
+        dev.drawHudQuad(frame, 40, fh-50, 320, 9, bg);
+        const float shc[4]={0.30f,0.62f,1.0f,0.92f};
+        dev.drawHudQuad(frame, 40, fh-50, 320*std::max(0.f,sf), 9, shc);
+        dev.drawHudTextF(frame, FR::Console, "HULL", 40, fh-96, 18, lbl);
+        char obj[96];
+        if (beat.isClimax) std::snprintf(obj,sizeof(obj),"DESTROY THE ENGINE BLOCKS    %d / %d",
+                                         subsDestroyed, kMaxSubsystems);
+        else               std::snprintf(obj,sizeof(obj),"EVADE THE CAPITAL SALVO");
+        const float oc[4]={1.0f,0.84f,0.38f,0.95f};
+        const float oadv=dev.textAdvance(FR::Menu,obj,26);
+        dev.drawHudTextF(frame, FR::Menu, obj, fw*0.5f-oadv*0.5f, 40, 26, oc);
+        if (beat.isClimax) {
+            const float chf = x3::space::ShipDamage::hullFrac(capital);
+            dev.drawHudQuad(frame, fw*0.5f-200, 80, 400, 8, bg);
+            const float capc[4]={0.9f,0.22f,0.2f,0.9f};
+            dev.drawHudQuad(frame, fw*0.5f-200, 80, 400*std::max(0.f,chf), 8, capc);
+        }
+        for (int i = 0; i < CapitalRig::kWeak; ++i) {
+            if (x3::space::ShipDamage::subsystemDown(capital,(x3::space::Subsystem)i)) continue;
+            float sx=0,sy=0;
+            if (dev.worldToScreen(cap.weak[i][0],cap.weak[i][1],cap.weak[i][2],sx,sy)) {
+                const float wc[4]={1.0f,0.55f,0.15f,0.9f};
+                box(sx-18, sy-18, 36, 36, 3, wc);
+            }
+        }
+        if (showTakeControl && tNow < 2.6f) {
+            const float a = tNow < 2.0f ? 1.0f : std::max(0.f,(2.6f-tNow)/0.6f);
+            const char* t1 = "TAKE CONTROL";
+            const float t1adv = dev.textAdvance(FR::Title, t1, 64);
+            const float tc[4]={1.0f,0.9f,0.5f,a};
+            dev.drawHudTextF(frame, FR::Title, t1, fw*0.5f-t1adv*0.5f, fh*0.30f, 64, tc);
+            const char* t2 = "W/S THROTTLE    MOUSE AIM    A/D STRAFE    Q/E ROLL    LMB FIRE";
+            const float t2adv = dev.textAdvance(FR::Menu, t2, 22);
+            const float tc2[4]={0.8f,0.9f,1.0f,a};
+            dev.drawHudTextF(frame, FR::Menu, t2, fw*0.5f-t2adv*0.5f, fh*0.30f+82, 22, tc2);
+        }
+    }
+
+    void shutdown(x3::rhi::IRenderDevice& dev) {
+        if (win) glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        if (fx) { fx->shutdown(dev); fx.reset(); }
+        if (boxMesh.valid())    dev.destroyMesh(boxMesh);
+        if (sphereMesh.valid()) dev.destroyMesh(sphereMesh);
+        if (boxTex.valid())     dev.destroyTexture(boxTex);
+        if (playerOk)  loader->unload(playerModel);
+        if (capitalOk) loader->unload(capitalModel);
+        loader.reset(); src.reset();
+        // Restore the engine defaults the follow-on scene expects (matches
+        // CinematicScene::restoreLook so the hand-off scene is not left in space-look).
+        x3::rhi::IRenderDevice::SkyParams off{};   // enabled = false
+        dev.setSkyParams(off);
+        dev.setAmbient(0.42f, 0.44f, 0.50f);
+        dev.setBloom(0.06f);
+        dev.setPointLights(nullptr, 0);
+    }
+};
+
 // Run one bounded interactive combat window and accumulate metrics into `m`. The
 // climax window's metrics drive the outcome roll. With a window this hands control
 // to the live combat stack; headless it advances deterministically (fixed-dt sim,
@@ -262,6 +639,19 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
 
     const bool live = (hc.window != nullptr && hc.device != nullptr);
 
+    // ---- LIVE combat scene (Job B). Headless keeps the deterministic sim + a blank
+    //      no-op render; live builds the drawable scene + reads real mouse/keys. ----
+    CapitalRig cap;
+    LiveCombatView view;
+    if (live) view.init(*hc.device, hc.window);
+    // Capital main-gun (telegraphed) return-fire state (live only).
+    float capFireTimer = 0.0f, capChargeStart = 0.0f;
+    bool  capCharging = false;
+    x3::phys::Vec3 capLock{};
+    float shakeT = 0.0f;   // decaying camera-shake on player hits (live feel)
+    // "TAKE CONTROL" banner: shown at the top of the FIRST interactive window (dodge).
+    const bool showTakeControl = (beat.id == "play.dodge");
+
     for (int step = 0; step < maxSteps; ++step) {
         const float tNow = (float)step * dt;
 
@@ -271,14 +661,10 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         float rollAxis = 0.0f;
         bool fire = false;
         if (live) {
+            glfwPollEvents();
             if (glfwWindowShouldClose(hc.window)) break;
             if (glfwGetKey(hc.window, GLFW_KEY_ESCAPE) == GLFW_PRESS) break;
-            auto kd = [&](int k){ return glfwGetKey(hc.window, k) == GLFW_PRESS; };
-            in.moveFwd    = (kd(GLFW_KEY_W)?1.f:0.f) + (kd(GLFW_KEY_S)?-1.f:0.f);
-            in.moveStrafe = (kd(GLFW_KEY_D)?1.f:0.f) + (kd(GLFW_KEY_A)?-1.f:0.f);
-            in.sprint     = kd(GLFW_KEY_LEFT_SHIFT);
-            rollAxis      = (kd(GLFW_KEY_Q)?-1.f:0.f) + (kd(GLFW_KEY_E)?1.f:0.f);
-            fire = glfwGetMouseButton(hc.window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+            view.input(in, rollAxis, fire);   // WASD + Q/E roll + relative mouse-look aim
         } else {
             in.moveFwd = 1.0f;                  // close the distance
             fire = (step % 12) == 0;            // a measured firing cadence
@@ -302,15 +688,44 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             const float d2 = dx*dx + dy*dy + dz*dz;
             if (d2 < 30.0f * 30.0f) {
                 pilot.takeDamage(x3::space::shipai::kLaserDamage);
+                if (live) { view.addHit({ppos[0]-2,ppos[1]+1,ppos[2]}, /*big*/false); shakeT = std::max(shakeT, 0.20f); }
             } else {
                 ++localSalvosDodged;
+            }
+        }
+
+        // ---- Capital main-gun TELEGRAPHED return fire (LIVE only; headless keeps the
+        //      enemy-only salvo model so its metrics stay deterministic). The gun locks
+        //      the player's position, CHARGES for 0.7 s (a growing red glow — the tell),
+        //      then fires a heavy bolt at the LOCKED point. Move during the charge to
+        //      dodge; standing still is a hit. Passive play (no dodge) eats enough bolts
+        //      to be shot down, which is the intended default outcome. ----
+        if (live) {
+            constexpr float kCapInterval = 2.0f, kCapCharge = 0.7f;
+            constexpr int   kCapBolt = 155;      // heavy: ~10 clean hits > shield+hull
+            capFireTimer += dt;
+            if (!capCharging && capFireTimer >= kCapInterval) {
+                capCharging = true; capChargeStart = tNow; capLock = pp;
+            }
+            if (capCharging && (tNow - capChargeStart) >= kCapCharge) {
+                x3::phys::Vec3 tp{ cap.turret[0], cap.turret[1], cap.turret[2] };
+                view.fx->addTracer(tp, capLock, x3::game::WeaponFxKind::Plasma);
+                view.fx->spawnExplosion({ capLock.x, capLock.y, capLock.z }, 6.0f);
+                ++localSalvosFaced;
+                const float dx = capLock.x - pp.x, dy = capLock.y - pp.y, dz = capLock.z - pp.z;
+                if (dx*dx + dy*dy + dz*dz < 24.0f * 24.0f) {
+                    pilot.takeDamage(kCapBolt);
+                    view.addHit({pp.x-1.5f, pp.y+1.0f, pp.z}, /*big*/true);   // heavy hit: flash + big spark burst
+                    shakeT = std::max(shakeT, 0.35f);
+                } else ++localSalvosDodged;
+                capCharging = false; capFireTimer = 0.0f;
             }
         }
 
         // ---- Targeting feed: the capital ship is the priority hostile contact. ----
         x3::space::Contact contacts[8]{};
         uint32_t nc = 0;
-        contacts[nc++] = { 1000u, { 280.0f, 0.0f, 0.0f }, { 0,0,0 }, true }; // capital
+        contacts[nc++] = { 1000u, { cap.pos[0], cap.pos[1], cap.pos[2] }, { 0,0,0 }, true }; // capital
         for (uint32_t i = 0; i < enemies.count() && nc < 8; ++i) {
             const auto& e = enemies.ship(i);
             contacts[nc++] = { 1u + i, { e.pos[0], e.pos[1], e.pos[2] },
@@ -318,20 +733,68 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         }
         targeting.setContacts(contacts, nc);
 
-        // ---- Player fire -> resolve onto the capital's subsystems. ----
+        // ---- Player fire. LIVE: a real forward RAYCAST with generous aim assist
+        //      against the lit engine blocks + enemy fighters (Plasma tracer + impact
+        //      FX). HEADLESS: the original deterministic "competent pilot" hit routing
+        //      (kept byte-for-byte so --test-* metrics are reproducible). ----
         if (fire && pilot.fireLaser(dt)) {
             ++localShotsFired;
-            // Deterministic "competent" hit model: when crippling is still
-            // possible, route a hit to a subsystem (shields down first), counting
-            // a hit. (Live aim quality will replace this with a real raycast in a
-            // later phase; the metric semantics stay the same.)
-            const int subIdx = std::min(localSubsDestroyed, kMaxSubsystems - 1);
-            x3::space::ShipDamage::applyDamage(capital, 60,
-                (x3::space::Subsystem)subIdx);
-            ++localShotsHit;
-            if (x3::space::ShipDamage::subsystemDown(capital,
-                    (x3::space::Subsystem)subIdx) && subIdx == localSubsDestroyed)
-                ++localSubsDestroyed;
+            if (live) {
+                const x3::phys::Vec3 o = pilot.pos();
+                const x3::phys::Vec3 f = pilot.forward();
+                // Closest-approach of the aim ray to a target center; only in FRONT (t>0).
+                auto rayDist = [&](const float w[3], float& tOut)->float {
+                    const float tox=w[0]-o.x, toy=w[1]-o.y, toz=w[2]-o.z;
+                    const float t = tox*f.x + toy*f.y + toz*f.z; tOut=t;
+                    if (t <= 0.0f) return 1e9f;
+                    const float cx=o.x+f.x*t, cy=o.y+f.y*t, cz=o.z+f.z*t;
+                    const float dx=w[0]-cx, dy=w[1]-cy, dz=w[2]-cz;
+                    return std::sqrt(dx*dx+dy*dy+dz*dz);
+                };
+                int hitSub = -1, hitEnemy = -1; float bestT = 1e9f;
+                for (int i = 0; i < CapitalRig::kWeak; ++i) {
+                    if (x3::space::ShipDamage::subsystemDown(capital, (x3::space::Subsystem)i)) continue;
+                    float t; if (rayDist(cap.weak[i], t) < 26.0f && t < bestT) { bestT=t; hitSub=i; hitEnemy=-1; }
+                }
+                for (uint32_t i = 0; i < enemies.count(); ++i) {
+                    float t; if (rayDist(enemies.ship(i).pos, t) < 20.0f && t < bestT) { bestT=t; hitEnemy=(int)i; hitSub=-1; }
+                }
+                const x3::phys::Vec3 mz{ o.x+f.x*3.0f, o.y+f.y*3.0f, o.z+f.z*3.0f };
+                if (hitSub >= 0) {
+                    const x3::phys::Vec3 hp{ cap.weak[hitSub][0], cap.weak[hitSub][1], cap.weak[hitSub][2] };
+                    x3::space::ShipDamage::applyDamage(capital, 75, (x3::space::Subsystem)hitSub);
+                    view.fx->addTracer(mz, hp, x3::game::WeaponFxKind::Plasma);
+                    const bool killed = x3::space::ShipDamage::subsystemDown(capital, (x3::space::Subsystem)hitSub);
+                    view.addHit(hp, /*big*/killed);           // flash + spark burst (not a circle)
+                    if (killed) view.fx->spawnExplosion({hp.x,hp.y,hp.z}, 16.0f);  // + debris/smoke
+                    ++localShotsHit;
+                } else if (hitEnemy >= 0) {
+                    const auto& e = enemies.ship((uint32_t)hitEnemy);
+                    const x3::phys::Vec3 hp{ e.pos[0], e.pos[1], e.pos[2] };
+                    view.fx->addTracer(mz, hp, x3::game::WeaponFxKind::Plasma);
+                    view.addHit(hp, /*big*/false);
+                    enemies.damageShip((uint32_t)hitEnemy, 35);
+                    ++localShotsHit;
+                } else {
+                    const x3::phys::Vec3 miss{ o.x+f.x*520.0f, o.y+f.y*520.0f, o.z+f.z*520.0f };
+                    view.fx->addTracer(mz, miss, x3::game::WeaponFxKind::Plasma);
+                }
+                view.fx->spawnMuzzleFlash({mz.x,mz.y,mz.z}, {f.x,f.y,f.z});
+                // Recount downed subsystems from the live damage model.
+                int down = 0;
+                for (int i = 0; i < kMaxSubsystems; ++i)
+                    if (x3::space::ShipDamage::subsystemDown(capital, (x3::space::Subsystem)i)) ++down;
+                localSubsDestroyed = down;
+            } else {
+                // Deterministic "competent" hit model (headless): route a hit to the
+                // next live subsystem (shields down first), counting a hit.
+                const int subIdx = std::min(localSubsDestroyed, kMaxSubsystems - 1);
+                x3::space::ShipDamage::applyDamage(capital, 60, (x3::space::Subsystem)subIdx);
+                ++localShotsHit;
+                if (x3::space::ShipDamage::subsystemDown(capital,
+                        (x3::space::Subsystem)subIdx) && subIdx == localSubsDestroyed)
+                    ++localSubsDestroyed;
+            }
         }
         x3::space::ShipDamage::tick(capital, dt);
 
@@ -340,13 +803,26 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
             crippled = true; crippleTime = tNow;
         }
 
-        // ---- Live render (3P chase of the pilot; minimal, reuses host_space art
-        //      conventions). Headless skips drawing entirely. ----
+        // ---- Live render: the full interactive combat scene + HUD (3P chase). This is
+        //      the fix for "no option to take control" — the window used to draw NOTHING.
+        //      Headless skips drawing entirely (deterministic sim only). ----
         if (live) {
+            view.updateLights(*hc.device, cap, pp);
             float cx, cy, cz, cyaw, cpit;
             pilot.camera(cx, cy, cz, cyaw, cpit);
+            // Decaying camera shake on recent player hits (impact feel).
+            if (shakeT > 0.0f) {
+                const float mag = 0.9f * shakeT;
+                const float j = tNow * 97.0f;
+                cx += std::sin(j*1.7f) * mag; cy += std::sin(j*2.3f) * mag; cz += std::cos(j*1.9f) * mag;
+                shakeT = std::max(0.0f, shakeT - dt);
+            }
             hc.device->setCamera(cx, cy, cz, cyaw, cpit, 65.0f);
             auto frame = hc.device->beginFrame();
+            if (frame.valid)
+                view.drawScene(*hc.device, frame, cap, pilot, enemies, capital, beat,
+                               localSubsDestroyed, tNow, capCharging, capChargeStart,
+                               showTakeControl, dt, cx, cy, cz, cyaw, cpit);
             hc.device->endFrame(frame);
         }
 
@@ -370,6 +846,7 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         m.windowDurationSec = std::max(beat.timeoutSec, 1.0f);
     }
 
+    if (live) view.shutdown(*hc.device);
     phys->shutdown();
     clearInputState(hc.window);
 }
@@ -970,6 +1447,183 @@ bool runIntroBranchSelfTest() {
     std::printf("intro-branch: %d/%d passed\n", pass, total);
     std::fflush(stdout);
     return pass == total;
+}
+
+// ===========================================================================
+// --test-introcombat self-test (Job B: the interactive combat segment).
+// Headless, deterministic, no window/Vulkan. Verifies the combat -> skill ->
+// outcome -> branch -> hand-off chain a WIN and a LOSS each drive.
+// ===========================================================================
+bool runIntroCombatSelfTest() {
+    int pass = 0, total = 0;
+    auto check = [&](bool c, const char* name) {
+        ++total;
+        if (c) { ++pass; x3::logInfo(std::string("  [ok] ") + name); }
+        else   {          x3::logError(std::string("  [FAIL] ") + name); }
+    };
+
+    // --- C1: the headless interactive climax window runs bounded + deterministic and
+    //         produces valid metrics (the sim the live window renders on top of). ---
+    {
+        x3::apphost::HostContext hc{};   // headless
+        SkillMetrics a{}; a.finalHullFrac = 1.0f;
+        Beat dog; dog.kind = BeatKind::InteractiveWindow; dog.id = "play.dogfight";
+        dog.enemyCount = 4; dog.timeoutSec = 20.0f; dog.isClimax = true;
+        runInteractiveBeat(hc, dog, a);
+        SkillMetrics b{}; b.finalHullFrac = 1.0f;
+        runInteractiveBeat(hc, dog, b);
+        const bool det = a.shotsFired==b.shotsFired && a.subsystemsDestroyed==b.subsystemsDestroyed &&
+                         a.salvosFaced==b.salvosFaced && a.salvosDodged==b.salvosDodged;
+        check(det, "C1 headless combat window is deterministic (bounded, no leak/carry)");
+        check(a.shotsFired > 0 && skillScore(a) >= 0.0f && skillScore(a) <= 1.0f,
+              "C1b combat window yields bounded metrics + skill in [0,1]");
+    }
+
+    // --- C2: a WIN-quality run (cripple all blocks, full hull, evade + accurate) maps
+    //         to the escape CEILING and a reachable Escaped outcome. ---
+    {
+        SkillMetrics win{};
+        win.subsystemsDestroyed = kMaxSubsystems; win.finalHullFrac = 1.0f;
+        win.salvosFaced = 8; win.salvosDodged = 8; win.shotsFired = 20; win.shotsHit = 18;
+        win.windowDurationSec = 20.0f; win.timeToCrippleSec = 9.0f;
+        const float sw = skillScore(win);
+        check(sw > 0.85f, "C2 win-quality metrics -> high skill (>0.85)");
+        check(outcomeProbability(sw) > 0.34f && outcomeProbability(sw) <= kCeilP,
+              "C2b high skill -> escape probability near the ceiling (>0.34, <=0.40)");
+        bool escReachable = false;
+        for (uint32_t s = 1; s <= 500 && !escReachable; ++s)
+            if (rollOutcome(s, sw) == IntroOutcome::Escaped) escReachable = true;
+        check(escReachable, "C2c a WIN can ESCAPE (Escaped outcome reachable at win skill)");
+    }
+
+    // --- C3: a LOSS-quality run (no blocks down, hull gone) maps to the FLOOR and a
+    //         reachable ShotDown outcome. ---
+    {
+        SkillMetrics lose{}; lose.finalHullFrac = 0.0f;   // took the beating, downed nothing
+        const float sl = skillScore(lose);
+        check(sl < 1e-4f, "C3 loss-quality metrics -> skill ~ 0");
+        check(std::fabs(outcomeProbability(sl) - kFloorP) < 1e-6f,
+              "C3b zero skill -> escape probability at the floor (0.07)");
+        bool sdReachable = false;
+        for (uint32_t s = 1; s <= 50 && !sdReachable; ++s)
+            if (rollOutcome(s, sl) == IntroOutcome::ShotDown) sdReachable = true;
+        check(sdReachable, "C3c a LOSS gets SHOT DOWN (ShotDown outcome reachable at loss skill)");
+    }
+
+    // --- C4: forced end-to-end WIN and LOSS route + hand off correctly, round-tripping
+    //         through the persisted StoryFlags exactly as app_run reads them. ---
+    {
+        const std::string fp = defaultGameStoryFlagsPath();
+        {
+            x3::apphost::HostContext esc{}; esc.introForce = 1;   // WIN -> escaped
+            const IntroOutcome o = runInteractiveIntro(esc);
+            x3::game::StoryFlags f; f.loadFile(fp);
+            check(o == IntroOutcome::Escaped && readOutcomeFlag(f) == IntroOutcome::Escaped &&
+                  f.has(kIntroLandedFlag),
+                  "C4 WIN -> intro.outcome=escaped + intro.landed set (surface start hand-off)");
+        }
+        {
+            x3::apphost::HostContext sd{}; sd.introForce = 0;     // LOSS -> shot_down
+            const IntroOutcome o = runInteractiveIntro(sd);
+            x3::game::StoryFlags f; f.loadFile(fp);
+            check(o == IntroOutcome::ShotDown && readOutcomeFlag(f) == IntroOutcome::ShotDown &&
+                  !f.has(kIntroLandedFlag),
+                  "C4b LOSS -> intro.outcome=shot_down + no intro.landed (canon cell hand-off)");
+        }
+    }
+
+    x3::logInfo("intro-combat: " + std::to_string(pass) + "/" +
+                std::to_string(total) + " passed");
+    std::printf("intro-combat: %d/%d passed\n", pass, total);
+    std::fflush(stdout);
+    return pass == total;
+}
+
+// ===========================================================================
+// --screenshot-introcombat proof host (Job B visual verification). Builds the live
+// combat scene and captures two stills via the shared LiveCombatView::drawScene.
+// ===========================================================================
+bool runIntroCombatShots(x3::rhi::IRenderDevice& device, GLFWwindow* window,
+                         const std::string& basePath) {
+    std::unique_ptr<x3::phys::IPhysicsWorld> phys(x3::phys::createPhysicsWorld());
+    if (!phys->init()) return false;
+
+    LiveCombatView view; view.init(device, window);
+    CapitalRig cap;
+
+    // Pilot posed mid-approach so the capital LOOMS ahead + above and Jake's fighter
+    // reads in 3P chase (the coordinator's hand-over composition).
+    x3::game::SpacePilotController pilot;
+    pilot.spawn(*phys, 150.0f, 10.0f, 26.0f);
+    // Fly forward + pitch UP a touch so the 3P camera frames the capital looming above.
+    for (int i = 0; i < 40; ++i) {
+        x3::game::PlayerInput in{}; in.moveFwd = 1.0f;
+        if (i < 16) in.lookDY = -1.4f;   // gentle nose-up toward the capital
+        pilot.update(in, 1.0f/60.0f, *phys);
+    }
+
+    x3::space::EnemyShipManager enemies; enemies.init(4);
+    for (int i = 0; i < 4; ++i) {
+        const float ang = (float)i * 1.3f;
+        const float p[3] = { 235.0f + 22.0f*(float)i, 12.0f + 14.0f*std::sin(ang), 22.0f*std::cos(ang) };
+        enemies.spawn(p);
+    }
+    { const float pp0[3] = { pilot.pos().x, pilot.pos().y, pilot.pos().z };
+      const float pv0[3] = { 0, 0, 0 };
+      enemies.update(1.0f/60.0f, pp0, pv0); }
+
+    bool okAll = true;
+    auto capture = [&](const std::string& path, const Beat& beat, bool takeControl,
+                       int destroy, bool telegraph, bool bolts, int hurt) -> bool {
+        auto capital = x3::space::ShipDamage::makeCapital(400, 2000, 120);
+        for (int d = 0; d < destroy && d < kMaxSubsystems; ++d)
+            for (int g = 0; g < 8 && !x3::space::ShipDamage::subsystemDown(capital,(x3::space::Subsystem)d); ++g)
+                x3::space::ShipDamage::applyDamage(capital, 120, (x3::space::Subsystem)d);
+        if (hurt > 0) pilot.takeDamage(hurt);   // battered hull => the ember/smoke trail shows
+
+        const float tNow = 1.0f;
+        const bool capCharging = telegraph;
+        const float chargeStart = telegraph ? (tNow - 0.5f) : 0.0f;
+        float cx,cy,cz,cyaw,cpit; pilot.camera(cx,cy,cz,cyaw,cpit);
+        device.setCamera(cx,cy,cz,cyaw,cpit,65.0f);
+
+        const int settle = 8;
+        for (int i = 0; i < settle; ++i) {
+            glfwPollEvents();
+            view.updateLights(device, cap, pilot.pos());
+            if (bolts) {
+                // Fresh bolts + impact bursts each frame so the CAPTURE frame shows them.
+                const x3::phys::Vec3 o = pilot.pos(), f = pilot.forward();
+                const x3::phys::Vec3 mz{ o.x+f.x*3.f, o.y+f.y*3.f, o.z+f.z*3.f };
+                const x3::phys::Vec3 wp{ cap.weak[3][0], cap.weak[3][1], cap.weak[3][2] };
+                view.fx->addTracer(mz, wp, x3::game::WeaponFxKind::Plasma);
+                const x3::phys::Vec3 tp{ cap.turret[0], cap.turret[1], cap.turret[2] };
+                view.fx->addTracer(tp, { o.x-14, o.y+8, o.z-10 }, x3::game::WeaponFxKind::Plasma);
+                if (i == settle-3) { view.addHit(wp, /*big*/true);                        // player hit bursting on the weak block
+                                     view.addHit({o.x+f.x*9, o.y+f.y*9+3, o.z+f.z*9}, /*big*/false); }  // capital bolt sparking off Jake's bow
+            }
+            if (i == settle-1) device.armCapture(path.c_str());
+            auto fr = device.beginFrame();
+            if (fr.valid)
+                view.drawScene(device, fr, cap, pilot, enemies, capital, beat,
+                               destroy, tNow, capCharging, chargeStart, takeControl,
+                               1.0f/60.0f, cx,cy,cz,cyaw,cpit);
+            device.endFrame(fr);
+        }
+        const bool wrote = device.captureFrame(path.c_str());
+        if (wrote) x3::logInfo("--screenshot-introcombat: wrote " + path);
+        else       x3::logError("--screenshot-introcombat: capture FAILED " + path);
+        return wrote;
+    };
+
+    Beat dodge; dodge.kind = BeatKind::InteractiveWindow; dodge.id = "play.dodge"; dodge.isClimax = false;
+    Beat dog;   dog.kind   = BeatKind::InteractiveWindow; dog.id   = "play.dogfight"; dog.isClimax = true;
+    okAll &= capture(basePath + "_takecontrol.png", dodge, /*takeControl*/true,  /*destroy*/0, /*telegraph*/true,  /*bolts*/false, /*hurt*/0);
+    okAll &= capture(basePath + "_fight.png",       dog,   /*takeControl*/false, /*destroy*/2, /*telegraph*/true,  /*bolts*/true,  /*hurt*/1050);
+
+    view.shutdown(device);
+    phys->shutdown();
+    return okAll;
 }
 
 } // namespace x3::intro

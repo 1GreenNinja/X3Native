@@ -282,6 +282,10 @@ struct CliOptions {
     // contract — intro.outcome flag round-trip, the --intro-force dev override,
     // the per-save seed thread, and the canon default. No window / Vulkan.
     bool        testIntroBranch = false;
+    // --test-introcombat (Job B): the interactive space-combat segment — the headless
+    // combat window's bounded/deterministic metrics + the win/loss -> skill -> outcome
+    // -> branch -> cell/surface hand-off chain. No window/Vulkan.
+    bool        testIntroCombat = false;
     // --test-surfacestart (Phase 7): the ESCAPED-branch surface-landing Act-1 — the
     // cell-vs-surface branch selection + the surface scene standing up headlessly
     // (glass facility, player outside + armed, Sarah rescue target). No window/Vulkan.
@@ -453,6 +457,10 @@ struct CliOptions {
     float       cueTime      = 0.0f;
     bool        cutsceneShot = false;
     std::string cutsceneShotPath = "G:/X3Native/cutscene.png";
+    // --screenshot-introcombat [basePath] : capture two Job B proof stills of the
+    // interactive space-combat scene (<base>_takecontrol.png + <base>_fight.png).
+    bool        introCombatShot = false;
+    std::string introCombatShotPath = "docs/screenshots/introcombat/introcombat";
     // DDGI gate-shot proof (--screenshot-ddgi [outDir]): build a minimal sealed
     // two-room rig (room A holds a point light + an emissive ceiling panel; room B
     // is connected only through a doorway; room C is fully SEALED next to A — the

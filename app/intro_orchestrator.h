@@ -168,4 +168,26 @@ bool runIntroOrchestratorSelfTest();
 // differently; the same seed+force is stable). Returns true iff all sub-checks pass.
 bool runIntroBranchSelfTest();
 
+// --test-introcombat self-test (Job B, headless, deterministic, no window/Vulkan):
+// exercises the INTERACTIVE space-combat segment end to end at the logic level —
+// the headless combat window produces bounded, deterministic skill metrics; a
+// WIN-quality metric set maps to the escape ceiling and a reachable Escaped roll,
+// a LOSS-quality set maps to the floor and a reachable ShotDown roll; and the two
+// forced end-to-end branches route + hand off correctly (Escaped sets intro.landed
+// -> surface start; ShotDown leaves it clear -> canon cell), round-tripping through
+// the persisted StoryFlags. Returns true iff all sub-checks pass.
+bool runIntroCombatSelfTest();
+
+} // namespace x3::intro
+
+// Forward decls for the screenshot proof host (Job B visual verification).
+struct GLFWwindow;
+namespace x3 { namespace rhi { class IRenderDevice; } }
+namespace x3::intro {
+// --screenshot-introcombat: capture two proof stills of the LIVE interactive combat
+// scene to `<basePath>_takecontrol.png` (the hand-over moment: capital overhead, the
+// prompt) and `<basePath>_fight.png` (the dogfight: bolts in flight, engine blocks
+// down, telegraphed return fire, HUD). Returns true iff both captures wrote.
+bool runIntroCombatShots(x3::rhi::IRenderDevice& device, GLFWwindow* window,
+                         const std::string& basePath);
 } // namespace x3::intro

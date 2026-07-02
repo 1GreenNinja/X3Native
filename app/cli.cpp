@@ -380,6 +380,10 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             o.cutsceneShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.cutsceneShotPath = argv[++i];
         }
+        else if (a == "--screenshot-introcombat") {
+            o.introCombatShot = true;
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.introCombatShotPath = argv[++i];
+        }
         else if (a == "--screenshot-terrain") {
             o.terrainShot = true;
             // Optional output path arg (next token, if it isn't another flag).
@@ -424,6 +428,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-intro") o.testIntro = true;
         else if (a == "--test-introorch") o.testIntroOrch = true;
         else if (a == "--test-introbranch") o.testIntroBranch = true;
+        else if (a == "--test-introcombat") o.testIntroCombat = true;
         else if (a == "--test-surfacestart") o.testSurfaceStart = true;
         else if (a == "--intro-force") {
             // DEV: force the interactive-intro outcome branch.
