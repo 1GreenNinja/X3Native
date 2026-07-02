@@ -192,11 +192,12 @@ struct JParser {
 // its room id so Scene::render can cull per room.
 // =====================================================================================
 constexpr float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-constexpr float kWallT     = 0.2f;     // wall thickness
-constexpr float kDoorHalf  = 0.8f;     // doorway opening half-width (1.6 m — widened so the
-                                       // CharacterVirtual + margin clears it comfortably)
-constexpr float kLintel    = 2.2f;     // head clearance under a doorway lintel (>= stand 1.8 + margin)
-constexpr float kCeilT     = 0.2f;     // ceiling cap thickness
+// Sourced from the SHARED builder constants (level_loader.h) so the level lint reads the
+// exact same dimensions the geometry is generated from. Do not diverge these values.
+constexpr float kWallT     = kCanonWallT;   // wall thickness
+constexpr float kDoorHalf  = kCanonDoorHalf;// doorway opening half-width (1.6 m clear)
+constexpr float kLintel    = kCanonLintel;  // head clearance under a doorway lintel
+constexpr float kCeilT     = kCanonCeilT;   // ceiling cap thickness
 
 // [boot] build-cost accumulators (logged once at the end of buildCanonFloor) so the
 // boot receipts show WHERE the canon geometry build spends its time (mesh upload vs
@@ -324,7 +325,7 @@ void doorwayRamp(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p
     if (rise <= 0.02f) return;                       // flat: no ramp needed
     // Run keeps the slope ≤ ~35° (tan 35° ≈ 0.70); never shorter than the wall so
     // the ramp top reaches under the lintel/door, never longer than ~6 m.
-    float run = std::max(rise / 0.70f, kWallT + 0.6f);
+    float run = std::max(rise / kCanonRampSlope, kWallT + 0.6f);
     if (run > 6.0f) run = 6.0f;
     // The wedge occupies the run length on the LOWER room's side of the plane: its LOW
     // edge is `run` back from the plane (at the lower floor yLo) and its HIGH edge is at
@@ -588,11 +589,17 @@ namespace {
 
 // Classify a door pair (mirrors tools/connectivity_audit.py so the histogram matches).
 DoorwayKind classify(const CanonRoom& a, const CanonRoom& b, float& outCx, float& outCz, uint32_t& outAxis) {
-    constexpr float TOL = 0.8f;       // edge-touch tolerance
+    constexpr float TOL = 0.8f;       // overlap / interpenetration tolerance
     constexpr float MINSPAN = 1.0f;   // minimum shared span to cut a doorway
+    // Adjacency demands the facing walls be essentially FLUSH (LAW 2): a wider air gap is
+    // NOT an adjacency (the door would hang in the void) — it falls through to a gap-bridge
+    // that physically closes the seam. 0.25 m absorbs float noise / authored-flush rooms.
+    constexpr float ADJ_TOL = 0.25f;
 
-    if (std::fabs(a.cy - b.cy) > 3.0f) {
-        // Big vertical delta: cross-level (stairs/descent tube). Opening at the shared XZ.
+    // Big vertical transition = the ELEVATOR / shaft vocabulary (LAW 3): a >3 m center
+    // delta OR a >2.5 m FLOOR delta (e.g. Elevator Lobby -> Elevator Shaft) is a vertical
+    // link (descent tube / elevator), never a walkable ramp. Opening at the shared XZ.
+    if (std::fabs(a.cy - b.cy) > 3.0f || std::fabs(a.y0() - b.y0()) > 2.5f) {
         outCx = (a.cx + b.cx) * 0.5f;
         outCz = (a.cz + b.cz) * 0.5f;
         outAxis = 0;
@@ -610,27 +617,36 @@ DoorwayKind classify(const CanonRoom& a, const CanonRoom& b, float& outCx, float
         outAxis = (ox < oz) ? 0u : 1u;
         return DoorwayKind::Overlap;
     }
-    // Adjacent-X: walls share an X plane (a.x1≈b.x0 or b.x1≈a.x0), with a Z overlap span.
-    if (oz > MINSPAN && (std::fabs(ax1 - bx0) <= TOL || std::fabs(bx1 - ax0) <= TOL)) {
-        outCx = std::fabs(ax1 - bx0) <= TOL ? (ax1 + bx0) * 0.5f : (bx1 + ax0) * 0.5f;
+    // Adjacent-X: walls are FLUSH on an X plane (a.x1≈b.x0 or b.x1≈a.x0), with a Z overlap span.
+    if (oz > MINSPAN && (std::fabs(ax1 - bx0) <= ADJ_TOL || std::fabs(bx1 - ax0) <= ADJ_TOL)) {
+        outCx = std::fabs(ax1 - bx0) <= ADJ_TOL ? (ax1 + bx0) * 0.5f : (bx1 + ax0) * 0.5f;
         outCz = (std::max(az0, bz0) + std::min(az1, bz1)) * 0.5f;
         outAxis = 0;   // wall plane is X=const, door thin in X
         return DoorwayKind::AdjacentX;
     }
-    // Adjacent-Z: walls share a Z plane, with an X overlap span.
-    if (ox > MINSPAN && (std::fabs(az1 - bz0) <= TOL || std::fabs(bz1 - az0) <= TOL)) {
+    // Adjacent-Z: walls are FLUSH on a Z plane, with an X overlap span.
+    if (ox > MINSPAN && (std::fabs(az1 - bz0) <= ADJ_TOL || std::fabs(bz1 - az0) <= ADJ_TOL)) {
         outCx = (std::max(ax0, bx0) + std::min(ax1, bx1)) * 0.5f;
-        outCz = std::fabs(az1 - bz0) <= TOL ? (az1 + bz0) * 0.5f : (bz1 + az0) * 0.5f;
+        outCz = std::fabs(az1 - bz0) <= ADJ_TOL ? (az1 + bz0) * 0.5f : (bz1 + az0) * 0.5f;
         outAxis = 1;   // wall plane is Z=const, door thin in Z
         return DoorwayKind::AdjacentZ;
     }
-    // Otherwise a GAP: bridge it with a short connecting corridor. Opening center is the
-    // midpoint of the two room centers; the bridge axis is the larger separation axis.
+    // Otherwise a GAP: bridge it with a short connecting corridor (this physically CLOSES
+    // the seam). The bridge RUNS along the larger-separation axis; the CROSS-axis opening
+    // must sit inside BOTH rooms' facing-wall spans, so its coordinate is the midpoint of
+    // the cross-span OVERLAP (NOT the center-to-center midpoint, which can miss the wall).
     const float sepX = std::max(ax0, bx0) - std::min(ax1, bx1);
     const float sepZ = std::max(az0, bz0) - std::min(az1, bz1);
-    outCx = (a.cx + b.cx) * 0.5f;
-    outCz = (a.cz + b.cz) * 0.5f;
     outAxis = (sepX > sepZ) ? 0u : 1u;   // gap is wider in X => corridor runs in X
+    if (outAxis == 0) {                  // runs along X; cross axis = Z
+        outCx = (a.cx + b.cx) * 0.5f;
+        const float zlo = std::max(az0, bz0), zhi = std::min(az1, bz1);
+        outCz = (zhi > zlo) ? (zlo + zhi) * 0.5f : (a.cz + b.cz) * 0.5f;
+    } else {                             // runs along Z; cross axis = X
+        outCz = (a.cz + b.cz) * 0.5f;
+        const float xlo = std::max(ax0, bx0), xhi = std::min(ax1, bx1);
+        outCx = (xhi > xlo) ? (xlo + xhi) * 0.5f : (a.cx + b.cx) * 0.5f;
+    }
     return DoorwayKind::GapBridge;
 }
 
@@ -1343,6 +1359,16 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             wallX(scene, device, physics, xlo, xhi, zc + kDoorHalf + kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
             addBox(scene, device, physics, (xhi - xlo) * 0.5f, kCeilT * 0.5f, kDoorHalf + kWallT,
                    (xlo + xhi) * 0.5f, floorY + h + kCeilT * 0.5f, zc, ceilTex, ceilWhite, dw.a, true, false);
+            // The deck sits at the HIGHER floor; ramp the LOWER room's mouth up to it so the
+            // player isn't dropped onto a bare ledge (LAW 3 height-transition vocabulary).
+            if (std::fabs(a.y0() - b.y0()) > 0.05f) {
+                const CanonRoom& lo = (a.y0() <= b.y0()) ? a : b;
+                const CanonRoom& hi = (a.y0() <= b.y0()) ? b : a;
+                const uint32_t loId = (a.y0() <= b.y0()) ? dw.a : dw.b;
+                const float mouthX = (lo.cx < hi.cx) ? lo.x1() : lo.x0();
+                const float sideSign = (lo.cx < mouthX) ? -1.0f : +1.0f;
+                doorwayRamp(scene, device, physics, mouthX, zc, lo.y0(), floorY, 0, sideSign, floorTex, rampTint, loId, floorVis);
+            }
         } else {
             // Gap is along Z.
             float zlo, zhi;
@@ -1355,6 +1381,14 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             wallZ(scene, device, physics, zlo, zhi, xc + kDoorHalf + kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
             addBox(scene, device, physics, kDoorHalf + kWallT, kCeilT * 0.5f, (zhi - zlo) * 0.5f,
                    xc, floorY + h + kCeilT * 0.5f, (zlo + zhi) * 0.5f, ceilTex, ceilWhite, dw.a, true, false);
+            if (std::fabs(a.y0() - b.y0()) > 0.05f) {
+                const CanonRoom& lo = (a.y0() <= b.y0()) ? a : b;
+                const CanonRoom& hi = (a.y0() <= b.y0()) ? b : a;
+                const uint32_t loId = (a.y0() <= b.y0()) ? dw.a : dw.b;
+                const float mouthZ = (lo.cz < hi.cz) ? lo.z1() : lo.z0();
+                const float sideSign = (lo.cz < mouthZ) ? -1.0f : +1.0f;
+                doorwayRamp(scene, device, physics, xc, mouthZ, lo.y0(), floorY, 1, sideSign, floorTex, rampTint, loId, floorVis);
+            }
         }
     }
 
@@ -1373,7 +1407,7 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         const float yLo = std::min(topY, botY), yHi = std::max(topY, botY);
         const float th = (yHi - yLo) + 1.0f;
         const float tx = dw.cx, tz = dw.cz;
-        const float thx = 1.5f, thz = 1.5f;               // 3 m square tube
+        const float thx = kCanonShaftHalf, thz = kCanonShaftHalf;  // 3 m square tube
         // 4 thin walls of the tube (open top/bottom).
         addBox(scene, device, physics, thx, th * 0.5f, kWallT * 0.5f, tx, yLo + th * 0.5f, tz - thz, wallTexA, tubeTint, dw.a, true, wallVis);
         addBox(scene, device, physics, thx, th * 0.5f, kWallT * 0.5f, tx, yLo + th * 0.5f, tz + thz, wallTexA, tubeTint, dw.a, true, wallVis);
@@ -1634,13 +1668,17 @@ bool runCanonLevelSelfTest() {
         x3::logInfo("    doorway kinds: adjX=" + std::to_string(adjX) + " adjZ=" + std::to_string(adjZ) +
                     " bridge=" + std::to_string(bridge) + " overlap=" + std::to_string(overlap) +
                     " cross=" + std::to_string(cross) + " none=" + std::to_string(none));
-        // The audit reports ~50 adjacent (doorway OK), ~59 gaps, 2 overlap, 2 cross-level.
-        bool adjacentOk = (adjX + adjZ) >= 45 && (adjX + adjZ) <= 55;
-        bool gapsOk     = bridge >= 50 && bridge <= 65;
-        bool crossOk    = cross == 2;            // Cave System + Hidden Sub-Level
+        // Resolver histogram after the seam/height repair (x3-level-authoring doctrine):
+        // ~45 adjacent (FLUSH walls only), ~63 gap-bridges (0.5 m air-gap seams are now
+        // bridged shut rather than doored across a void), 2 overlap, 3 cross-level = the
+        // Cave System + Hidden Sub-Level descent tubes + the Elevator Lobby->Shaft vertical
+        // link (a >2.5 m floor drop = the elevator vocabulary, not an impossible ramp).
+        bool adjacentOk = (adjX + adjZ) >= 42 && (adjX + adjZ) <= 55;
+        bool gapsOk     = bridge >= 55 && bridge <= 68;
+        bool crossOk    = cross == 3;            // Cave + Hidden Sub-Level + Elevator shaft
         bool noneZero   = none == 0;             // every door resolved to SOMETHING
         check(adjacentOk && gapsOk && crossOk && noneZero,
-              "C3 doorway resolver: ~50 adjacent, ~59 gap-bridges, 2 cross-level, 0 unresolved");
+              "C3 doorway resolver: ~45 adjacent (flush), ~63 gap-bridges, 3 cross-level, 0 unresolved");
     }
 
     // ---- C4: the 2 isolated/deep rooms (Cave System / Hidden Sub-Level) are linked. ----
@@ -1898,36 +1936,35 @@ bool runCanonLevelSelfTest() {
             f2.floodVisibleRoomsAt(H.cx, H.cy, H.cz, none, &doors2, 6, 999, closedSet);
             behindHidden = closedSet.size() < openSet.size();
 
-            // (c) TARGETED "room behind a closed door": find a LEAF room whose ONLY doorway
-            //     is a DOORED one (every edge incident to it has a slab). Such a room is a
-            //     guaranteed single-door cut — with that door OPEN it floods into the set,
-            //     with it CLOSED there is no other way in, so it drops out. This is the
-            //     literal pop-behaviour Tim wants: a closed door hides the room behind it.
-            std::vector<int> totalDeg(n, 0), doorlessDeg(n, 0);
-            for (const CanonDoorway& dw : f2.doorways) {
-                if (dw.a < n) { ++totalDeg[dw.a]; if (dw.doorIndex == kNoLink) ++doorlessDeg[dw.a]; }
-                if (dw.b < n) { ++totalDeg[dw.b]; if (dw.doorIndex == kNoLink) ++doorlessDeg[dw.b]; }
-            }
-            for (const CanonDoorway& dw : f2.doorways) {
-                if (dw.doorIndex == kNoLink) continue;            // need a real door to close
-                // Pick the endpoint that is a single-DOORED-entry leaf (1 doorway, doored,
-                // and not the hall itself) and is reachable when doors are open.
-                uint32_t probe = kNoRoom;
-                if ((int)dw.a != hall && totalDeg[dw.a] == 1 && doorlessDeg[dw.a] == 0) probe = dw.a;
-                else if ((int)dw.b != hall && totalDeg[dw.b] == 1 && doorlessDeg[dw.b] == 0) probe = dw.b;
-                if (probe == kNoRoom) continue;
+            // (c) TARGETED "room behind a closed door": find a room whose EVERY entrance is a
+            //     DOOR (no doorless gap-bridge / cross-level backdoor). With its doors OPEN it
+            //     floods into the set; close every door incident to it and it MUST drop out (a
+            //     closed door is opaque, and it has no other way in). This is the literal
+            //     pop-behaviour Tim wants. Iterating candidate ROOMS (not a degree-1 leaf edge)
+            //     keeps it robust to which openings the resolver leaves doored vs open.
+            std::vector<int> doorlessDeg(n, 0), dooredDeg(n, 0);
+            for (const CanonDoorway& dw : f2.doorways)
+                for (uint32_t e : { dw.a, dw.b }) {
+                    if (e >= n) continue;
+                    if (dw.doorIndex == kNoLink) ++doorlessDeg[e]; else ++dooredDeg[e];
+                }
+            for (uint32_t probe = 0; probe < n && !doorBehindAssert; ++probe) {
+                if ((int)probe == hall) continue;
+                if (doorlessDeg[probe] != 0 || dooredDeg[probe] == 0) continue;   // must be door-only entry
                 setAllDoors(DoorState::Open, 1.0f);
                 std::vector<uint32_t> withOpen;
                 f2.floodVisibleRoomsAt(H.cx, H.cy, H.cz, none, &doors2, 6, 999, withOpen);
                 if (!inSet(withOpen, probe)) continue;            // not visible even when open
-                doors2.at(dw.doorIndex).state = DoorState::Closed; doors2.at(dw.doorIndex).t = 0.0f;
+                for (const CanonDoorway& dw : f2.doorways)        // close every door into `probe`
+                    if ((dw.a == probe || dw.b == probe) && dw.doorIndex != kNoLink) {
+                        doors2.at(dw.doorIndex).state = DoorState::Closed; doors2.at(dw.doorIndex).t = 0.0f;
+                    }
                 std::vector<uint32_t> withClosed;
                 f2.floodVisibleRoomsAt(H.cx, H.cy, H.cz, none, &doors2, 6, 999, withClosed);
-                if (!inSet(withClosed, probe)) {                  // closing the door hid it
+                if (!inSet(withClosed, probe)) {                  // closing its doors hid it
                     doorBehindAssert = true;
                     hiddenName = f2.rooms[probe].name;
-                    closedVia  = f2.rooms[dw.a].name + "<->" + f2.rooms[dw.b].name;
-                    break;
+                    closedVia  = "all doors of " + f2.rooms[probe].name;
                 }
             }
         }
@@ -2028,7 +2065,7 @@ bool runCanonLevelSelfTest() {
             const CanonRoom& lower = (ra.y0() <= rb.y0()) ? ra : rb;
             const CanonRoom& upper = (ra.y0() <= rb.y0()) ? rb : ra;
             // Spawn BEYOND the ramp base on flat lower floor, then walk straight at the plane.
-            float rampRun = std::min(std::max((yHi - yLo) / 0.70f, kWallT + 0.6f), 6.0f);
+            float rampRun = std::min(std::max((yHi - yLo) / kCanonRampSlope, kWallT + 0.6f), 6.0f);
             float backoff = rampRun + 1.0f;
             x3::phys::Vec3 start; x3::phys::Vec3 vel;
             if (dw.axis == 1) {
@@ -2042,14 +2079,21 @@ bool runCanonLevelSelfTest() {
             }
             x3::phys::BodyId chr = pw->createCharacter(0.35f, 1.8f, start);   // STANDING capsule
             for (int i = 0; i < 30; ++i)  { pw->moveCharacter(chr, x3::phys::Vec3{0,0,0}, 1.0f/60.0f); pw->step(1.0f/60.0f); }
-            for (int i = 0; i < 600; ++i) { pw->moveCharacter(chr, vel, 1.0f/60.0f); pw->step(1.0f/60.0f); }
-            x3::phys::Vec3 end = pw->getBodyPosition(chr);
-            // Success: climbed to the UPPER floor (within 0.3 m) AND ended inside the UPPER
-            // room's XZ footprint (so it really crossed the threshold into the next room).
-            bool climbed = std::fabs(end.y - yHi) < 0.3f;
-            bool inUpper = end.x >= upper.x0() - 0.4f && end.x <= upper.x1() + 0.4f &&
-                           end.z >= upper.z0() - 0.4f && end.z <= upper.z1() + 0.4f;
-            walked = climbed && inUpper;
+            // Success = at ANY point the char stands on the UPPER floor INSIDE the upper room's
+            // XZ footprint (climbed the ramp + crossed the open opening). Checking ARRIVAL, not
+            // the end pose, keeps this robust when the upper room is a small cell with a far
+            // opening (a fixed-length walk would stride straight through and overshoot into the
+            // next room — a false negative that says nothing about walkability).
+            bool climbed = false, inUpper = false;
+            x3::phys::Vec3 end = start;
+            for (int i = 0; i < 600 && !walked; ++i) {
+                pw->moveCharacter(chr, vel, 1.0f/60.0f); pw->step(1.0f/60.0f);
+                end = pw->getBodyPosition(chr);
+                climbed = std::fabs(end.y - yHi) < 0.3f;
+                inUpper = end.x >= upper.x0() - 0.4f && end.x <= upper.x1() + 0.4f &&
+                          end.z >= upper.z0() - 0.4f && end.z <= upper.z1() + 0.4f;
+                if (climbed && inUpper) walked = true;
+            }
             x3::logInfo("    C13 doored step=" + std::to_string(pickStep) + " m (axis " + std::to_string(dw.axis) +
                         "): standing char start=(" + std::to_string(start.x) + "," + std::to_string(start.y) + "," + std::to_string(start.z) +
                         ") end=(" + std::to_string(end.x) + "," + std::to_string(end.y) + "," + std::to_string(end.z) +
