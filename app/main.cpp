@@ -451,7 +451,7 @@ int main(int argc, char** argv) {
     if (o.ecologyShot)  o.worldMode = "valley";  // the ambient ecology rides the valley biome
     if (o.crowdShot)    o.worldMode = "club";    // the crowd proof lives on the club floor
     if (o.alertShot) { o.screenshot = true; o.screenshotPath = o.alertShotPath; }   // rides --screenshot
-    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.introCombatShot || o.terrainShot || o.oceanShot || o.captureAi || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
+    const bool headless = o.smoketest || o.testFramePacing || o.screenshot || o.skyShot || o.ddgiShot || o.showroomShot || o.carShot || o.showroomFpShot || o.showroomRagdollShot || o.showroomDeckShot || o.showroomElevShot || o.showroomStairShot || o.showroomFloor2Shot || o.showroomDoorShot || o.showroomStrutsShot || o.showroomGalleryShot || o.showroomCivShot || o.planetShot || o.nightskyShot || o.cutsceneShot || o.introCombatShot || o.terrainShot || o.oceanShot || o.captureAi || o.captureWalk || o.destructShot || o.captureFootIk || o.uiDemo || o.captureSpire || o.editorShot || o.loaderShot || o.holotermShot || o.perfshopShot || o.ecologyShot || o.crowdShot;
 
     if (!glfwInit()) {
         x3::logError("glfwInit failed");
@@ -640,6 +640,8 @@ int main(int argc, char** argv) {
         _hc.cutsceneFile     = o.cutsceneFile;
         _hc.editorShot       = o.editorShot;       _hc.editorShotPath   = o.editorShotPath;
         _hc.loaderShot       = o.loaderShot;       _hc.loaderShotPath   = o.loaderShotPath;
+        _hc.holotermShot     = o.holotermShot;     _hc.holotermShotPath = o.holotermShotPath;
+        _hc.holotermVariant  = o.holotermVariant;
         _hc.skyShot          = o.skyShot;          _hc.skyShotPath      = o.skyShotPath;
         _hc.ddgiShot         = o.ddgiShot;         _hc.ddgiShotDir      = o.ddgiShotDir;
         _hc.rtshShot         = o.rtshShot;         _hc.rtshShotDir      = o.rtshShotDir;

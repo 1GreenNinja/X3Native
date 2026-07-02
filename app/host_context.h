@@ -93,6 +93,8 @@ struct HostContext {
     // pre-host capture handlers consult (dispatchScreenshotHosts) ----
     bool        editorShot = false;     std::string editorShotPath;
     bool        loaderShot = false;     std::string loaderShotPath;
+    bool        holotermShot = false;   std::string holotermShotPath;  // --screenshot-holoterm: HERO cell terminal
+    std::string holotermVariant;        // "", "keypad", "elevator", "placard" (which HoloPanel skin to show)
     bool        skyShot = false;        std::string skyShotPath;
     bool        ddgiShot = false;       std::string ddgiShotDir;
     bool        rtshShot = false;       std::string rtshShotDir;

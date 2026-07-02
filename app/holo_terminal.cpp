@@ -19,6 +19,8 @@
 #include <stb_truetype.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <cmath>
 #include <cstdint>
 #include <string>
@@ -463,10 +465,28 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
         if (bpx < P(0.018f)) bpx = P(0.018f);
         const float rowH = bpx * 1.30f;
         float ty = P(0.205f);                           // below the header strip
+        // STATUS-COLOR console (Tim's redesign): each readout line glows in a status
+        // color like a real console — GREEN for OK/online/secure, ORANGE for
+        // warnings/alerts/failing, BLUE for everything else. Keyword-driven per line.
+        auto statusColor = [](const std::string& s, float& r, float& g, float& b) {
+            std::string U; U.reserve(s.size());
+            for (char ch : s) U += (char)std::toupper((unsigned char)ch);
+            auto has = [&](const char* kw){ return U.find(kw) != std::string::npos; };
+            if (has("FAIL") || has("WARN") || has("ALERT") || has("CRIT") || has("DANGER") ||
+                has("BREACH") || has("AUGMENT") || has("REJECT") || has("UNSTABLE") || has("LOCK")) {
+                r = 1.65f; g = 0.72f; b = 0.14f;            // ORANGE (warning / alert)
+            } else if (has(" OK") || has("ONLINE") || has("SECURE") || has("READY") ||
+                       has("NOMINAL") || has("ACTIVE") || has("GRANT") || has("ACCEPT") ||
+                       has("STABLE") || has("CLEAR")) {
+                r = 0.24f; g = 1.55f; b = 0.52f;            // GREEN (ok / status good)
+            } else {
+                r = 0.30f; g = 0.66f; b = 1.70f;            // BLUE (default data)
+            }
+        };
         for (size_t li = 1; li < lines.size(); ++li) {
-            // first data row a touch brighter (the "SUBJECT" line), rest steady cyan.
-            const float aRow = (li == 1) ? HOT : 0.92f;
-            drawTextGlass(c, lines[li], lx0b, ty, bpx, CY_R*1.15f, CY_G, CY_B, aRow);
+            const float aRow = (li == 1) ? HOT : 0.94f;
+            float rr, gg, bb; statusColor(lines[li], rr, gg, bb);
+            drawTextGlass(c, lines[li], lx0b, ty, bpx, rr, gg, bb, aRow);
             ty += rowH;
         }
         // --- LIVE INPUT LINE in amber, just below the last data row. ---
@@ -578,6 +598,46 @@ x3::prims::PrimMesh makeRoundedPanel(float hw, float hh, float corner) {
 // (The old FLAT makeRoundedRim ribbon — a quad strip between two coplanar contours,
 // which read as a SQUARE-section frame — was replaced by the ROUND-section pipe
 // x3::prims::makeRoundedRectTube, swept along the same rounded-rect path. See build().)
+
+// A straight ROUND PIPE along the Y axis (the ceiling support strut + collars): a
+// capped cylinder of radius `r`, from y=-halfH to y=+halfH, centered on origin.
+// Smooth side normals; flat end caps. Used for the metallic ceiling-mount pipe.
+x3::prims::PrimMesh makeCylinderY(float r, float halfH, uint32_t seg = 20) {
+    x3::prims::PrimMesh m;
+    seg = std::max(6u, seg);
+    const float kTwoPi = 6.2831853f;
+    const uint32_t ring = seg + 1;
+    // Side wall: two rings (bottom, top) swept around.
+    for (uint32_t j = 0; j <= seg; ++j) {
+        const float a = kTwoPi * ((float)j / (float)seg);
+        const float ca = std::cos(a), sa = std::sin(a);
+        const float u = (float)j / (float)seg;
+        m.verts.push_back({ { ca*r, -halfH, sa*r }, { ca, 0.0f, sa }, { u, 0.0f } });
+        m.verts.push_back({ { ca*r,  halfH, sa*r }, { ca, 0.0f, sa }, { u, 1.0f } });
+    }
+    for (uint32_t j = 0; j < seg; ++j) {
+        const uint32_t b0 = j*2, t0 = j*2+1, b1 = (j+1)*2, t1 = (j+1)*2+1;
+        m.index.insert(m.index.end(), { b0, b1, t0, t0, b1, t1 });
+    }
+    // End caps (top + bottom fans).
+    auto cap = [&](float y, float ny) {
+        const uint32_t c = (uint32_t)m.verts.size();
+        m.verts.push_back({ {0.0f, y, 0.0f}, {0.0f, ny, 0.0f}, {0.5f, 0.5f} });
+        const uint32_t start = (uint32_t)m.verts.size();
+        for (uint32_t j = 0; j <= seg; ++j) {
+            const float a = kTwoPi * ((float)j / (float)seg);
+            m.verts.push_back({ { std::cos(a)*r, y, std::sin(a)*r }, {0.0f, ny, 0.0f}, {0,0} });
+        }
+        for (uint32_t j = 0; j < seg; ++j) {
+            if (ny > 0.0f) m.index.insert(m.index.end(), { c, start+j, start+j+1 });
+            else           m.index.insert(m.index.end(), { c, start+j+1, start+j });
+        }
+    };
+    cap( halfH,  1.0f);
+    cap(-halfH, -1.0f);
+    (void)ring;
+    return m;
+}
 } // namespace
 
 void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
@@ -634,6 +694,37 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
         return scene.add(e);
     };
 
+    // SHINY CHROME metallic-roughness map (glTF packing: G = roughness, B = metallic).
+    // metallic 1.0 (B=255), low roughness (~0.13 -> G=33) so the pipe frame + ceiling
+    // strut read as polished steel catching sharp point-light highlights + reflections.
+    auto chromeMR = x3::prims::makeSolidRGBA(4, 0, 33, 255);
+    x3::rhi::TextureHandle chromeTex = device.createTexture(chromeMR.data(), 4, 4, /*srgb*/false);
+    // GLOSSY BLACK-GLASS metallic-roughness map for the screen PANE: metallic 0
+    // (dielectric, B=0), low roughness (~0.10 -> G=26) so the near-black pane reads as
+    // POLISHED BLACK GLASS — a Cook-Torrance fresnel rim + a crisp specular highlight
+    // off the pool light + subtle reflections — WITHOUT a separate glass slab occluding
+    // the emissive text (which glows on top). This is the "black glass slab" read that
+    // survives any render path (no scene-copy dependency).
+    auto glossMR = x3::prims::makeSolidRGBA(4, 0, 26, 0);
+    x3::rhi::TextureHandle glossTex = device.createTexture(glossMR.data(), 4, 4, /*srgb*/false);
+
+    // Add a METALLIC round-pipe part (mrTex -> Cook-Torrance PBR path) at a LOCAL
+    // offset (ox,oy,oz) from pos, yaw-rotated into world. baseColor = brushed-steel
+    // albedo; the mrTex makes it metallic + polished. Optional faint emissive rim.
+    auto addMetal = [&](const x3::prims::PrimMesh& geo, float ox, float oy, float oz,
+                        float r = 0.78f, float g = 0.80f, float b = 0.85f) {
+        Entity e;
+        e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                   geo.index.data(), (uint32_t)geo.index.size());
+        e.mrTex = chromeTex;                          // -> drawMeshPBR (metallic + reflections)
+        e.baseColor[0]=r; e.baseColor[1]=g; e.baseColor[2]=b; e.baseColor[3]=1.0f;
+        e.tag = (uint32_t)Tag::Prop;
+        const float wx = cs*ox + sn*oz, wz = -sn*ox + cs*oz;
+        e.transform[0]=cs; e.transform[2]=-sn; e.transform[8]=sn; e.transform[10]=cs;
+        e.transform[12]=pos.x+wx; e.transform[13]=pos.y+oy; e.transform[14]=pos.z+wz;
+        return scene.add(e);
+    };
+
     const float hw = width * 0.5f, hh = height * 0.5f;
 
     // Seed the boot readout BEFORE baking the texture so the static lines are
@@ -664,98 +755,63 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
         m_texDirty = false;
     }
 
-    // ---- ROUND-SECTION GLASS TRIM (replaces the old FLAT rim ribbon — which read as
-    // a SQUARE-section frame — with a real ROUNDED/CYLINDRICAL pipe). A circular
-    // cross-section is swept along the panel's rounded-rect contour (makeRoundedRectTube)
-    // so the trim is an actual round tube of glass with rounded corners. Two concentric
-    // pipes give the polished-edge read: an inner clear-glass bead hugging the screen,
-    // and a slightly larger, dimmer outer pipe glowing faintly into the dark. The whole
-    // trim runs through the engine's REAL see-through glass pass (asGlass). ----
+    // ---- SHINY METALLIC ROUND-PIPE FRAME (Tim's redesign): a polished chrome/steel
+    // round pipe (torus-section tube) bent into a rounded-rectangle PICTURE FRAME that
+    // wraps the entire outer edge of the black-glass screen. High metallic + low
+    // roughness (chromeTex) so it catches the point-light highlight + reflections and
+    // reads as real steel tube holding the glass. A hair larger than the screen so it
+    // sits proud of the glass edge like a bezel pipe. ----
+    const float frameCorner = std::min(hw, hh) * 0.30f;
     {
-        const float corner = std::min(hw, hh) * 0.30f;     // match the panel's rounding
-        // Inner glass bead: a slim round pipe hugging the screen edge, faint cyan glass
-        // tint + soft sheen so it reads as a polished lit round edge (not a flat line).
-        x3::prims::PrimMesh innerRim =
-            x3::prims::makeRoundedRectTube(hw + 0.010f, hh + 0.010f, corner, /*tubeR*/0.016f,
-                                           /*pathSeg*/6, /*tubeSeg*/14);
-        m_decor.push_back(addMesh(innerRim, 0.0f,
-                                  0.55f, 0.85f, 1.0f, 0.34f,    // translucent cyan-white glass
-                                  0.18f, 0.55f, 0.85f, 0.9f,    // GENTLE sheen (not a neon outline)
-                                  /*asGlass=*/true));           // REAL see-through glass pipe
-        // Outer pipe: a hair larger + dimmer, fatter round section, so the trim fades
-        // softly into the surround like a glass tube catching ambient light.
-        x3::prims::PrimMesh outerRim =
-            x3::prims::makeRoundedRectTube(hw + 0.034f, hh + 0.034f, corner + 0.020f, /*tubeR*/0.022f,
-                                           /*pathSeg*/6, /*tubeSeg*/14);
-        m_decor.push_back(addMesh(outerRim, 0.0f,
-                                  0.10f, 0.28f, 0.45f, 0.20f,   // very translucent dark-cyan glass
-                                  0.06f, 0.22f, 0.38f, 0.55f,   // dim outer glow
-                                  /*asGlass=*/true));           // REAL see-through glass pipe
-        // Faint backer BEHIND the glass so the rim + line-art have a touch of contrast
-        // WITHOUT reading as an opaque slab (that was bug #1: an OPAQUE dark backplate
-        // filled the silhouette, so the see-through glass screen looked solid). Make it
-        // REAL low-opacity glass too, so the cell behind still shows through the screen.
-        x3::prims::PrimMesh backPanel = makeRoundedPanel(hw + 0.03f, hh + 0.03f, corner + 0.02f);
-        m_decor.push_back(addMesh(backPanel, +0.024f,
-                                  0.02f, 0.05f, 0.10f, 0.18f,   // barely-there dark-blue tint
-                                  0.03f, 0.12f, 0.22f, 0.30f,
-                                  /*asGlass=*/true));           // see-through, NOT an opaque slab
+        x3::prims::PrimMesh frame =
+            x3::prims::makeRoundedRectTube(hw + 0.030f, hh + 0.030f, frameCorner + 0.02f,
+                                           /*tubeR*/0.028f, /*pathSeg*/8, /*tubeSeg*/18);
+        m_decor.push_back(addMetal(frame, 0.0f, 0.0f, 0.0f, 0.80f, 0.82f, 0.86f));
     }
 
-    // ---- Glass ARM from the ceiling down to the top of the screen, carrying
-    // emissive traces (fiber-optic cyan + copper amber) visible inside the glass. ----
+    // ---- A SINGLE SUPPORT PIPE to the CEILING (Tim: the terminal HANGS from it, not
+    // floating). One matching metallic round pipe rises from the TOP-CENTER of the
+    // frame straight up to the ceiling, with a COLLAR/JOINT where it meets the frame
+    // and where it meets the ceiling — so it reads as physically holding the weight. ----
     const float ceil = (ceilingY > 0.0f) ? ceilingY : pos.y + 1.7f;
-    const float armTopY = ceil;
-    const float armBotY = pos.y + hh + 0.05f;
-    const float armH = (armTopY - armBotY) * 0.5f;
-    if (armH > 0.05f) {
-        const float armMidY = (armTopY + armBotY) * 0.5f - pos.y;  // local oy
-        const float armBackZ = +0.06f;                              // BEHIND the glass (into the wall, away from player)
-        // Slim glass spar (faint blue, slight emissive sheen) — not a fat gray bar.
-        m_decor.push_back(addBox(0.035f, armH, 0.035f, 0, armMidY, armBackZ,
-                                 0.10f,0.20f,0.30f, 1.0f,  0.12f,0.35f,0.55f, 0.22f)); // stand: near-dark (Bible: body is NOT a lamp)
-        // Fiber-optic trace (cyan) + copper trace (amber) threaded inside the glass.
-        m_decor.push_back(addBox(0.007f, armH, 0.007f, -0.014f, armMidY, armBackZ - 0.002f,
-                                 0,0,0,1,  0.2f,0.9f,1.0f, 1.5f));   // cyan fiber (restrained)
-        m_decor.push_back(addBox(0.007f, armH, 0.007f,  0.014f, armMidY, armBackZ - 0.002f,
-                                 0,0,0,1,  1.0f,0.55f,0.2f, 1.2f));  // copper trace (restrained)
+    const float frameTopY   = pos.y + hh + 0.030f;   // world Y of the frame's top edge
+    const float strutBotY   = frameTopY;
+    const float strutTopY   = ceil;
+    const float strutH      = strutTopY - strutBotY;
+    if (strutH > 0.05f) {
+        const float strutR    = 0.026f;
+        const float strutMidY = (strutTopY + strutBotY) * 0.5f - pos.y;   // local oy
+        // The support pipe (vertical chrome cylinder), top-center, in the panel plane.
+        x3::prims::PrimMesh strut = makeCylinderY(strutR, strutH * 0.5f, 20);
+        m_decor.push_back(addMetal(strut, 0.0f, strutMidY, 0.0f, 0.80f, 0.82f, 0.86f));
+        // COLLAR where the strut meets the FRAME (a short fatter ring/cylinder joint).
+        x3::prims::PrimMesh collarLo = makeCylinderY(strutR + 0.016f, 0.028f, 20);
+        m_decor.push_back(addMetal(collarLo, 0.0f, (frameTopY - pos.y) + 0.028f, 0.0f,
+                                   0.72f, 0.74f, 0.78f));
+        // COLLAR / ceiling mount plate where the strut meets the CEILING.
+        x3::prims::PrimMesh collarHi = makeCylinderY(strutR + 0.026f, 0.022f, 20);
+        m_decor.push_back(addMetal(collarHi, 0.0f, (ceil - pos.y) - 0.022f, 0.0f,
+                                   0.72f, 0.74f, 0.78f));
     }
 
-    // ---- The HOLOGRAM screen: a rounded-corner glass quad, dark base color so the
-    // EMISSIVE hologram texture + glow carry the look (reads as projected translucent
-    // UI, not a solid slab). The texture supplies scanlines/grid/header/vignette +
-    // rounded-corner fade; emissive makes it glow + feed bloom. update() pulses the
-    // emissive strength + scrolls a scanline overlay for the live shimmer. ----
-    x3::prims::PrimMesh geo = makeRoundedPanel(hw, hh, std::min(hw, hh) * 0.30f);
+    // ---- (1) THE TEXT-BACKING PANE — an OPAQUE near-black rounded quad whose EMISSIVE
+    // is driven by the baked hologram UI texture (drawMeshPBR emissive-map path). The
+    // pane itself reads BLACK; the console TEXT + line-art glow as pure self-lit ink in
+    // STATUS COLORS (blue headers / green OK / orange alerts — baked per-line into the
+    // texture) so they read crisp + high-contrast. This sits a hair BEHIND the black
+    // glass slab, so you read the glowing text THROUGH the dark glass. ----
+    x3::prims::PrimMesh geo = makeRoundedPanel(hw, hh, frameCorner);
     Entity e;
     e.mesh = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                                geo.index.data(), (uint32_t)geo.index.size());
-    e.tex = m_holoTex;                                  // procedural hologram UI
-    // REAL translucent GLASS (engine glass pass) — replaces the old "fake by leaving
-    // it opaque + carrying the look in the emissive" hack. The plate is now actually
-    // see-through: the cell behind subtly shows through while the holo UI texture +
-    // emissive glow carry the projected-display read. baseColor stays full-albedo so
-    // the bright cyan line-art survives the lit term; glass.opacity is the see-through
-    // dial (mid so the printed HUD still reads strongly against what's behind).
-    // Albedo pulled DOWN from full white (Art Bible / Tim's live playtest: the panel
-    // verified BY EYE as a solid cyan bloom-blob — white albedo × bright cyan texture
-    // × lit term × glass frost × emissive, summed then amplified by night auto-
-    // exposure past readability). 0.55 keeps the printed line-art crisp under the lit
-    // term without the flood.
-    e.baseColor[0] = 0.55f; e.baseColor[1] = 0.55f; e.baseColor[2] = 0.55f; e.baseColor[3] = 1.0f;
-    e.transparent = true;
-    // RESTRAINED display glass (Art Bible: "emissives are light sources, not
-    // stickers"; Signal-cyan is an ACCENT). More see-through than the old preset
-    // (Tim: "not transparent enough"), less frost (frost was milking the whole plate
-    // toward a slab), less specular sheen.
-    e.glass.opacity    = 0.38f;          // the room genuinely shows through the glass
-    e.glass.tint[0]    = 0.78f; e.glass.tint[1] = 0.90f; e.glass.tint[2] = 1.0f; // cool-blue tint
-    e.glass.roughness  = 0.08f;          // barely frosted — clarity over milk
-    e.glass.refraction = 0.025f;         // gentle bend of the cell behind (M2)
-    e.glass.specular   = 0.40f;          // fresnel sheen without the hot glints
-    // RESTRAINED emissive: a readable hologram glow that feeds bloom gently. The UI
-    // text must be READABLE on the glass at night exposure — that is the acceptance.
-    m_emBase[0] = 0.05f; m_emBase[1] = 0.22f; m_emBase[2] = 0.55f; m_emBase[3] = 0.28f; // BLUE base glow — restrained so the dark pane stays dark + high-contrast
+    e.tex          = m_holoTex;   // near-black albedo
+    e.emissiveTex  = m_holoTex;   // EMISSIVE map: the glowing multi-color text/HUD gate
+    e.mrTex        = glossTex;    // GLOSSY BLACK GLASS: dielectric fresnel + specular highlight
+    e.baseColor[0] = 0.03f; e.baseColor[1] = 0.035f; e.baseColor[2] = 0.05f; e.baseColor[3] = 1.0f;
+    // Neutral-WHITE emissive multiplier so the texel's own STATUS COLORS survive
+    // (green/orange are not tinted away); .a is the glow strength (bloom source), lifted
+    // to punch THROUGH the dark glass slab in front. update() pulses .a for live shimmer.
+    m_emBase[0] = 1.00f; m_emBase[1] = 1.00f; m_emBase[2] = 1.00f; m_emBase[3] = 2.30f;
     e.emissive[0]=m_emBase[0]; e.emissive[1]=m_emBase[1]; e.emissive[2]=m_emBase[2]; e.emissive[3]=m_emBase[3];
     e.tag = (uint32_t)Tag::Prop;
     e.transform[0]=cs;  e.transform[2]=-sn;
@@ -763,33 +819,35 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     e.transform[12]=pos.x; e.transform[13]=pos.y; e.transform[14]=pos.z;
     m_entity = scene.add(e);
 
-    // ---- A second, slightly-in-front SCANLINE overlay quad: a thin bright cyan
-    // emissive sheet whose emissive STRENGTH is animated in update() to scroll a
-    // shimmer band down the glass (the moving "projector refresh" line). Same rounded
-    // shape, nudged toward the viewer so it composites over the base. ----
-    x3::prims::PrimMesh sgeo = makeRoundedPanel(hw*0.98f, hh*0.98f, std::min(hw, hh) * 0.28f);
+    // ---- (2) THE BLACK GLASS SLAB (Tim's redesign): a full-size rounded translucent
+    // NEAR-BLACK glass plate mounted a hair IN FRONT of the text pane. It is the screen
+    // SURFACE — dark glass you read the glowing text through, with a fresnel sheen + the
+    // shader's animated M3 GLINT sweep, and the room faintly visible in its reflection.
+    // Near-black tint keeps it reading as BLACK glass; low opacity + high emissive text
+    // behind means the status text still punches through. ----
+    x3::prims::PrimMesh sgeo = makeRoundedPanel(hw, hh, frameCorner);
     Entity se;
     se.mesh = device.createMesh(sgeo.verts.data(), (uint32_t)sgeo.verts.size(),
                                 sgeo.index.data(), (uint32_t)sgeo.index.size());
-    se.tex = m_holoTex;
-    se.baseColor[0]=0.0f; se.baseColor[1]=0.0f; se.baseColor[2]=0.0f; se.baseColor[3]=1.0f;
-    se.emissive[0]=0.3f; se.emissive[1]=0.9f; se.emissive[2]=1.0f; se.emissive[3]=0.0f;  // pulsed in update()
-    // Glass too: drawn in the SAME transparent pass as the base plate (both
-    // depth-write OFF) so the in-front sweep quad composites OVER the glass panel
-    // instead of occluding it. Low opacity -> a faint additive-looking shimmer band;
-    // its near-black albedo means it contributes essentially only its emissive sweep.
+    se.baseColor[0]=0.03f; se.baseColor[1]=0.035f; se.baseColor[2]=0.05f; se.baseColor[3]=1.0f;
+    se.emissive[0]=0.05f; se.emissive[1]=0.08f; se.emissive[2]=0.13f; se.emissive[3]=0.04f;  // faint sheen, pulsed in update()
     se.transparent = true;
-    se.glass.opacity    = 0.22f;
-    se.glass.tint[0]    = 0.30f; se.glass.tint[1] = 0.90f; se.glass.tint[2] = 1.0f;
-    se.glass.roughness  = 0.15f;
-    se.glass.refraction = 0.0f;
-    se.glass.specular   = 0.4f;
+    se.glass.opacity    = 0.10f;         // low opacity: the glowing text punches THROUGH; the near-black tint keeps it reading as a black-glass surface
+    se.glass.tint[0]    = 0.55f; se.glass.tint[1] = 0.62f; se.glass.tint[2] = 0.75f; // cool smoked tint (TEST: lighter so text survives)
+    se.glass.roughness  = 0.05f;         // clear, barely frosted (clarity over milk)
+    se.glass.refraction = 0.014f;        // gentle bend of the cell behind (M2)
+    se.glass.specular   = 0.10f;         // fresnel sheen + the animated M3 glint sweep (kept OFF-BLOB so text stays readable)
     se.tag = (uint32_t)Tag::Prop;
-    const float foZ = 0.014f;                            // toward the viewer (front face +Z local)
-    const float fwx = cs*0.0f + sn*foZ, fwz = -sn*0.0f + cs*foZ;
+    // Nudge the glass toward the viewer along the panel normal (+Z world) so it
+    // composites OVER the text pane.
+    const float foZ = 0.014f;
     se.transform[0]=cs; se.transform[2]=-sn; se.transform[8]=sn; se.transform[10]=cs;
-    se.transform[12]=pos.x+fwx; se.transform[13]=pos.y; se.transform[14]=pos.z+fwz;
-    m_scanEntity = scene.add(se);
+    se.transform[12]=pos.x; se.transform[13]=pos.y; se.transform[14]=pos.z + foZ;
+    // The GLOSSY PANE itself now carries the black-glass read (dielectric fresnel +
+    // specular via glossTex), so the separate front slab is OFF by default — its
+    // screen-space refraction path blacks out the text where the scene-copy is
+    // unpopulated. Opt-in (HOLO_GLASS_SLAB) for in-engine scenes that DO populate it.
+    if (std::getenv("HOLO_GLASS_SLAB")) m_scanEntity = scene.add(se);
 
     // (Boot readout seeded above, before the texture bake, so the on-glass text is
     // rasterized into the first hologram frame.)
@@ -852,8 +910,14 @@ void HoloTerminal::regenTexture() {
     x3::rhi::TextureHandle old = m_holoTex;
     m_holoTex = fresh;
     if (m_scene) {
-        if (m_entity     != kNoLink && m_entity     < m_scene->size()) m_scene->get(m_entity).tex     = m_holoTex;
-        if (m_scanEntity != kNoLink && m_scanEntity < m_scene->size()) m_scene->get(m_scanEntity).tex = m_holoTex;
+        // The dark screen pane samples the baked UI as BOTH its albedo AND its
+        // emissive map — re-point both at the fresh handle. The outer glass plate
+        // carries no UI texture (it's clear glass), so it's left untouched.
+        if (m_entity != kNoLink && m_entity < m_scene->size()) {
+            Entity& pane = m_scene->get(m_entity);
+            pane.tex         = m_holoTex;
+            pane.emissiveTex = m_holoTex;
+        }
     }
     if (old.valid()) m_device->destroyTexture(old);
     m_texDirty = false;
@@ -892,7 +956,7 @@ void HoloTerminal::update(float dt) {
         const float t = std::fmod(m_clock * 0.45f, 1.0f);      // 0..1 sweep phase
         const float band = 0.5f - 0.5f * std::cos(t * 6.2831853f); // smooth 0->1->0
         Entity& scan = m_scene->get(m_scanEntity);
-        scan.emissive[3] = 0.05f + 0.14f * band;               // SUBTLE shimmer glint (dialed down — Tim: subtle across the rounded glass)
+        scan.emissive[3] = 0.06f + 0.08f * band;               // SUBTLE cool sheen pulse on the clear glass (the M3 fresnel glint carries the sweep)
     }
 }
 

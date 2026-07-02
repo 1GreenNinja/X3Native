@@ -30,6 +30,7 @@
 #include "level_loader.h"
 #include "editor/editor_host.h"
 #include "asset_root.h"
+#include "holo_terminal.h"   // --screenshot-holoterm: HERO cell terminal proof
 
 #include <memory>
 #include <string>
@@ -37,6 +38,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 #include <filesystem>
 
@@ -239,6 +241,104 @@ int dispatchScreenshotHosts(HostContext& hc) {
         glfwTerminate();
         x3::logInfo(ok ? "--screenshot-loader: wrote " + loaderShotPath
                        : "--screenshot-loader: capture FAILED");
+        return ok ? 0 : 1;
+    }
+
+    // ---- HERO HOLO-TERMINAL proof (--screenshot-holoterm [variant] [path.png]) --
+    // Tim: "I never got to see a CLEAN DARK GLASS HOLO TERMINAL." This builds a
+    // small DARK detention cell (concrete shell + low cool ambient), mounts the
+    // canon HoloTerminal (or a HoloPanel variant) on the back wall, seeds VIGIL's
+    // readout, poses Jake's eye ~1.6 m in front, settles a few frames so the glass
+    // shimmer + bloom register, and captures a PNG. Self-contained (no game/physics
+    // gameplay stack) so the render can be iterated fast, exactly like --screenshot-sky.
+    if (hc.holotermShot) {
+        const std::string& outPath = hc.holotermShotPath;
+        const std::string& variant = hc.holotermVariant;
+        x3::logInfo("--screenshot-holoterm: HERO cell terminal proof (variant='" +
+                    (variant.empty() ? std::string("terminal") : variant) + "') -> " + outPath);
+        {
+            std::error_code ec;
+            std::filesystem::path outp(outPath);
+            if (outp.has_parent_path()) std::filesystem::create_directories(outp.parent_path(), ec);
+        }
+
+        x3::game::Scene cellScene;
+
+        // ---- The DARK CELL shell: floor (top at y=0), ceiling at y=2.6, a back
+        // wall at z=-1.7 the terminal mounts on, + two side walls to catch the blue
+        // pool light. Bone-concrete grey, deliberately unlit-dark so the terminal's
+        // own glow is the hero. Boxes are added straight as Scene entities. ----
+        auto concretePx = x3::prims::makeSolidRGBA(4, 96, 98, 104);
+        x3::rhi::TextureHandle concreteTex =
+            device->createTexture(concretePx.data(), 4, 4, /*srgb=*/true);
+        auto addShell = [&](const x3::prims::PrimMesh& geo, float r, float g, float b) {
+            x3::game::Entity e;
+            e.mesh = device->createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
+                                        geo.index.data(), (uint32_t)geo.index.size());
+            e.tex = concreteTex;
+            e.baseColor[0]=r; e.baseColor[1]=g; e.baseColor[2]=b; e.baseColor[3]=1.0f;
+            e.tag = (uint32_t)x3::game::Tag::Static;
+            cellScene.add(e);
+        };
+        addShell(x3::prims::makeBox(2.0f, 0.1f, 2.0f, 0.0f, -0.1f, -0.6f), 0.55f, 0.56f, 0.60f); // floor
+        addShell(x3::prims::makeBox(2.0f, 0.1f, 2.0f, 0.0f,  2.7f, -0.6f), 0.50f, 0.51f, 0.55f); // ceiling
+        addShell(x3::prims::makeBox(2.0f, 1.4f, 0.1f, 0.0f,  1.3f, -1.7f), 0.62f, 0.63f, 0.67f); // back wall (-Z)
+        addShell(x3::prims::makeBox(0.1f, 1.4f, 2.0f,-2.0f,  1.3f, -0.6f), 0.52f, 0.53f, 0.57f); // left wall
+        addShell(x3::prims::makeBox(0.1f, 1.4f, 2.0f, 2.0f,  1.3f, -0.6f), 0.52f, 0.53f, 0.57f); // right wall
+
+        // ---- The HERO terminal on the back wall, facing +Z into the cell (yaw=pi,
+        // double-sided readable face). Seed VIGIL's boot readout. ----
+        const x3::phys::Vec3 termPos{ 0.0f, 1.45f, -1.40f };  // clear of the back-wall face (z=-1.6)
+        x3::game::HoloTerminal term;
+        term.build(cellScene, *device, termPos, /*yaw*/0.0f,
+                   /*w*/0.85f, /*h*/1.05f, /*ceilingY*/2.4f);
+        if (!std::getenv("HOLO_NOSETLINES")) term.setLines({
+            "LAB ZERO // DETENTION CONSOLE  --  CELL 07",
+            "VIGIL ONLINE.  SUBJECT: JAKE.",
+            "STATUS: AUGMENTED.  RESTRAINTS: FAILING.",
+            "CRADLE PROTOCOL: ACTIVE.",
+            "",
+            "ASK ME SOMETHING, JAKE.",
+        });
+
+        // ---- Lighting: low cool VOID ambient (matches the canon detention drop) +
+        // a soft BLUE motivated point light pooling in front of the terminal so its
+        // glass body is scene-lit (the on-glass blue text reads) and a pool spills
+        // into the cell corner. ----
+        device->setAmbient(0.12f, 0.125f, 0.15f);
+        std::vector<x3::rhi::PointLight> pls;
+        x3::rhi::PointLight pl{};
+        pl.pos[0] = termPos.x; pl.pos[1] = termPos.y; pl.pos[2] = termPos.z + 0.55f;
+        pl.range  = 3.4f;
+        pl.color[0] = 0.32f; pl.color[1] = 0.66f; pl.color[2] = 1.55f;  // blue (premultiplied)
+        pls.push_back(pl);
+        device->setPointLights(pls.data(), (uint32_t)pls.size());
+
+        // ---- Jake's eye: ~1.6 m in front of the terminal, eye height 1.5 m,
+        // looking straight down -Z (yaw=-pi/2 => forward (0,0,-1)) with a hair of
+        // downward pitch so the panel sits centered. FOV 55 for a natural read. ----
+        device->setCamera(0.0f, 1.5f, 0.05f, -1.5707963f, -0.04f, 55.0f);
+
+        bool ok = false;
+        const int kFrames = 16;   // settle bloom/shimmer; terminal.update drives the sweep
+        for (int f = 0; f < kFrames; ++f) {
+            const bool last = (f == kFrames - 1);
+            term.update(1.0f / 60.0f);   // advance shimmer + bake any dirty readout
+            glfwPollEvents();
+            if (last) device->armCapture(outPath.c_str());
+            auto frame = device->beginFrame();
+            if (frame.valid) {
+                cellScene.render(*device, frame);
+                device->endFrame(frame);
+            }
+            if (last) ok = device->captureFrame(outPath.c_str());
+        }
+
+        device->shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        x3::logInfo(ok ? "--screenshot-holoterm: wrote " + outPath
+                       : "--screenshot-holoterm: capture FAILED");
         return ok ? 0 : 1;
     }
 

@@ -78,6 +78,14 @@ struct Entity {
     // dielectric satin default. Invalid (default) => drawMeshEmissive, identical
     // to the old path for every existing entity.
     x3::rhi::TextureHandle mrTex;
+    // Optional EMISSIVE map (glTF emissive-texture slot). When valid, Scene::render
+    // routes the entity through drawMeshPBR with this as the emissive texture: the
+    // per-object `emissive` term is MODULATED by this texel (emis = emissive.rgb *
+    // emissive.a * texel), so the glow appears only WHERE the map is bright. Used by
+    // the holo-terminal / HoloPanel to print crisp GLOWING text + line-art onto a
+    // near-black screen pane (the baked hologram UI becomes pure self-lit glow).
+    // Invalid (default) => no emissive map, identical to the old path.
+    x3::rhi::TextureHandle emissiveTex;
     float                  baseColor[4] = {1, 1, 1, 1}; // tint (multiplies texel)
     // Optional per-entity HDR EMISSIVE term { r, g, b, strength } added on top of
     // the lit result (independent of light). Default {0,0,0,0} == no glow, so

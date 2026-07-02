@@ -242,6 +242,18 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             o.loaderShot = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') o.loaderShotPath = argv[++i];
         }
+        else if (a == "--screenshot-holoterm") {
+            o.holotermShot = true;
+            // Optional variant keyword (keypad|elevator|placard|terminal), then optional path.
+            if (i + 1 < argc && argv[i + 1][0] != '-') {
+                std::string nxt = argv[i + 1];
+                if (nxt == "keypad" || nxt == "elevator" || nxt == "placard" || nxt == "terminal") {
+                    o.holotermVariant = (nxt == "terminal") ? std::string() : nxt;
+                    ++i;
+                }
+            }
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.holotermShotPath = argv[++i];
+        }
         else if (a == "--screenshot-dialog") {
             o.screenshot = true; o.dialogShot = true;
             o.screenshotPath = o.dialogShotPath;

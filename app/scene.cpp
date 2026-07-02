@@ -149,6 +149,13 @@ void Scene::render(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext& 
         // boxes set a non-zero emissive so they glow + feed the bloom chain.
         if (e.transparent) {
             device.drawMeshGlass(frame, e.mesh, e.tex, e.baseColor, e.emissive, e.glass, e.transform);
+        } else if (e.emissiveTex.valid()) {
+            // Entity carries an EMISSIVE map (holo-terminal / HoloPanel screen pane):
+            // route through drawMeshPBR so the per-object emissive is gated by the map
+            // (glowing text/line-art on a near-black pane). No normal/MR maps.
+            device.drawMeshPBR(frame, e.mesh, e.tex, x3::rhi::TextureHandle{}, e.mrTex,
+                               e.baseColor, e.emissive, e.transform,
+                               /*alphaMask*/false, /*alphaBlend*/false, e.emissiveTex);
         } else if (e.mrTex.valid()) {
             // Entity carries a metallic-roughness map: full PBR path (Cook-Torrance
             // + IBL/SSR reflections). No normal map (geometry normal is used).

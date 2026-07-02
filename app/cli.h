@@ -63,6 +63,12 @@ struct CliOptions {
     // through the REAL loader on the live device, render the room, capture a PNG.
     bool        loaderShot = false;
     std::string loaderShotPath = "build/proof/loader_room.png";
+    // --screenshot-holoterm [variant] [path.png]: headless HERO holo-terminal proof —
+    // build a dark cell + the HoloPanel-driven terminal, pose Jake's view, capture a PNG.
+    // Optional first non-flag arg = variant skin: keypad|elevator|placard (default terminal).
+    bool        holotermShot = false;
+    std::string holotermShotPath = "docs/screenshots/holo_platform/holoterm_hero.png";
+    std::string holotermVariant;
     // --set <cvar> <value> pairs, applied right after console cvar registration.
     std::vector<std::pair<std::string, std::string>> cliCVars;
     // --screenshot-perfshop [dir]: headless PERFORMANCE-SHOP proofs — boot the
