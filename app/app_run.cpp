@@ -3902,6 +3902,14 @@ int runDefaultHost(HostContext& hc) {
                                       ssZ + fxLook.z * 12.0f };
                 combatFx.spawnMuzzleFlash(mz, fxLook, mk);
                 combatFx.addTracer(mz, hitP, mk);
+                // IMPACT at the hit point, keyed to the weapon's OWN impact preset — for
+                // Lightning this is the crackling arc-tendril ring (8e9f7d5). NOTE: that
+                // commit spawned the bolt from muzzleFromCamera(1.6, 0.20, 0.06) — the
+                // hardcoded lightning muzzle CRUTCH that 346f5e7 deleted on purpose. The
+                // origin here stays weaponMuzzle() (the measured per-weapon barrel tip);
+                // only the impact call is taken from 8e9f7d5.
+                combatFx.spawnImpact(hitP, x3::phys::Vec3{ -fxLook.x, -fxLook.y + 0.2f, -fxLook.z },
+                                     x3::game::fxKindFromId(arsenal.current().impactFx));
                 combatFx.update(dt);
             }
             if (fxDemo) combatFx.update(dt);

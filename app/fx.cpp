@@ -45,8 +45,10 @@ void CombatFx::init(x3::rhi::IRenderDevice& device) {
     m_box = device.createMesh(geo.verts.data(), (uint32_t)geo.verts.size(),
                               geo.index.data(), (uint32_t)geo.index.size());
     for (auto& t : m_tracers) t.life = 0.0f;
+    for (auto& a : m_arcs) a.life = 0.0f;
     m_muzzleFlash = 0.0f;
     m_nextTracer = 0;
+    m_nextArc = 0;
 }
 
 void CombatFx::shutdown(x3::rhi::IRenderDevice& device) {
@@ -198,8 +200,8 @@ ImpactStyle impactStyleFor(WeaponFxKind k) {
     switch (k) {
         case WeaponFxKind::Plasma:    // blue energy splash, no metal dust
             return { 0.7f, 2.2f, 6.0f, 16, 1.25f, false };
-        case WeaponFxKind::Lightning: // white-cyan crackle, no dust
-            return { 3.0f, 5.5f, 6.5f, 18, 0.8f,  false };
+        case WeaponFxKind::Lightning: // electric: few tiny fast sparks (arcs carry it)
+            return { 3.0f, 5.5f, 6.5f, 6, 0.4f,  false };
         case WeaponFxKind::Shotgun:   // wide hot spark spray + dust
             return { 4.5f, 2.6f, 0.8f, 20, 1.2f,  true  };
         case WeaponFxKind::Chaingun:  // busy hot sparks + dust
@@ -257,8 +259,50 @@ void CombatFx::spawnImpact(const x3::phys::Vec3& pos, const x3::phys::Vec3& norm
             spawnParticle(p);
         }
     }
+    // LIGHTNING impact = electric VIOLENCE, not white puffballs (Tim): a tight
+    // blue-white flash + a whipping ring of short crackling arc tendrils crawling
+    // off the hit (drawn in draw() as re-rolled mini zigzags). The round sparks are
+    // already cut to a few tiny fast specks above.
+    if (kind == WeaponFxKind::Lightning) {
+        Particle f;                       // one tight blue-white flash core
+        f.pos = pos;
+        f.life = f.maxLife = 0.08f;
+        f.size0 = 0.30f; f.size1 = 0.05f;
+        f.r = 2.2f; f.g = 3.0f; f.b = 4.5f; f.a0 = 1.0f;
+        f.gravity = 0.0f; f.drag = 0.0f; f.additive = true;
+        spawnParticle(f);
+        spawnArcs(pos, nrm);
+    }
     // Persistent scorch mark on the surface.
     addDecal(pos, nrm);
+}
+
+// ---------------------------------------------------------------------------
+// spawnArcs: whip a ring of short electric tendrils off a lightning hit point.
+// Each is a tiny re-rolled zigzag (drawLightningBolt) leaning off the surface in
+// a random hemisphere direction — sharp electric streaks, not round puffballs.
+// ---------------------------------------------------------------------------
+void CombatFx::spawnArcs(const x3::phys::Vec3& pos, const x3::phys::Vec3& normal) {
+    x3::phys::Vec3 nrm = normalize(normal);
+    x3::phys::Vec3 ref = (std::fabs(nrm.y) < 0.99f) ? x3::phys::Vec3{ 0, 1, 0 }
+                                                    : x3::phys::Vec3{ 1, 0, 0 };
+    x3::phys::Vec3 u = normalize(cross(ref, nrm));
+    x3::phys::Vec3 v = cross(nrm, u);
+    const int n = 6 + (int)(frand() * 4.0f);   // 6-9 tendrils
+    for (int i = 0; i < n; ++i) {
+        Arc& a = m_arcs[m_nextArc];
+        m_nextArc = (m_nextArc + 1) % kMaxArcs;
+        const float az = frand() * 6.2831853f;
+        const float el = 0.15f + frand() * 0.85f;          // lean out from the surface
+        x3::phys::Vec3 d{ nrm.x * el + (u.x * std::cos(az) + v.x * std::sin(az)),
+                          nrm.y * el + (u.y * std::cos(az) + v.y * std::sin(az)),
+                          nrm.z * el + (u.z * std::cos(az) + v.z * std::sin(az)) };
+        a.base = pos;
+        a.dir  = normalize(d);
+        a.len  = 0.35f + frand() * 0.65f;
+        a.life = a.maxLife = kArcLife * (0.6f + frand() * 0.7f);
+        a.seed = m_rng ^ (uint32_t)(i * 2654435761u);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -502,6 +546,9 @@ void CombatFx::update(float dt) {
     if (m_muzzleFlash > 0.0f) {
         m_muzzleFlash -= dt;
         if (m_muzzleFlash < 0.0f) m_muzzleFlash = 0.0f;
+    }
+    for (auto& a : m_arcs) {
+        if (a.life > 0.0f) { a.life -= dt; if (a.life < 0.0f) a.life = 0.0f; }
     }
 
     // Particle integration. World gravity is -Y 9.81 (CONVENTIONS §1).
@@ -846,6 +893,21 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
             float width = kTracerThickness * (0.5f + 0.5f * k);
             drawTracerBillboard(device, frame, t.from, t.to, eyePos, width, tracerColor);
         }
+    }
+
+    // ---- Electric arc tendrils (lightning impact violence). ----
+    // Each live arc is a short re-rolled zigzag whipping off the hit point, fading
+    // + retracting as it dies. Fast re-roll (~33/s) so they crackle violently.
+    for (const auto& a : m_arcs) {
+        if (a.life <= 0.0f) continue;
+        const float k = (a.maxLife > 0.0f) ? (a.life / a.maxLife) : 0.0f;   // 1 -> 0
+        const float reach = a.len * (0.55f + 0.45f * k);                    // retract as it dies
+        x3::phys::Vec3 tip{ a.base.x + a.dir.x * reach,
+                            a.base.y + a.dir.y * reach,
+                            a.base.z + a.dir.z * reach };
+        const uint32_t bucket = (uint32_t)((a.maxLife - a.life) / 0.03f);   // ~33 re-rolls/s
+        drawLightningBolt(device, frame, a.base, tip, eyePos,
+                          kLightningCoreThick * 0.5f, a.seed ^ bucket, 0.85f * k);
     }
 
     // ---- Muzzle flash: a brief bright box at the muzzle. ----
