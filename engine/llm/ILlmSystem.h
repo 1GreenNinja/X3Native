@@ -30,6 +30,9 @@ struct ModelOpts {
     int   maxOutputTokens = 256;    // ai_maxtokens — per-reply generation cap
     float temperature     = 0.7f;   // ai_temp
     int   threads         = 0;      // inference threads; 0 = hardware_concurrency-2
+    int   gpuLayers       = 0;      // ai_gpu — layers offloaded to the GPU (99 = all);
+                                    // 0 = CPU. Auto-falls back to CPU (one log line)
+                                    // if the build has no GPU backend compiled in.
     std::uint32_t seed    = 0;      // sampler seed; 0 = nondeterministic
 };
 

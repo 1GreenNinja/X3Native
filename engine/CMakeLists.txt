@@ -52,7 +52,25 @@ set(LLAMA_BUILD_TOOLS    OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_SERVER   OFF CACHE BOOL "" FORCE)
 set(LLAMA_BUILD_COMMON   OFF CACHE BOOL "" FORCE)   # core libllama only (ChatML is hand-rolled)
 set(LLAMA_CURL           OFF CACHE BOOL "" FORCE)   # no network dep in the engine
-set(GGML_VULKAN          OFF CACHE BOOL "" FORCE)   # v1 = CPU inference only
+set(GGML_VULKAN          OFF CACHE BOOL "" FORCE)   # never touch the engine's Vulkan
+# ---- GPU inference backend: CUDA on the RTX 5090. CUDA is a SEPARATE API from
+# the engine's Vulkan (no renderer entanglement — GGML_VULKAN stays OFF). It is
+# enabled ONLY when the CUDA toolkit (nvcc) is present at configure time; when it
+# is absent the CPU backend builds unchanged and the exact same code runs on the
+# GPU the moment the toolkit is installed + CMake is re-configured. The runtime
+# cvar `ai_gpu` selects the path; the backend auto-falls back to CPU (one log
+# line) if the compiled build has no GPU offload. Requires CUDA Toolkit >= 12.8
+# for Blackwell/sm_120 (RTX 5090); the driver here already exposes CUDA 13.3.
+include(CheckLanguage)
+check_language(CUDA)
+if(CMAKE_CUDA_COMPILER)
+    enable_language(CUDA)
+    set(GGML_CUDA        ON  CACHE BOOL "" FORCE)   # GPU inference (RTX 5090)
+    message(STATUS "[x3-llm] CUDA toolkit found (${CMAKE_CUDA_COMPILER}) -> GPU inference ENABLED (GGML_CUDA=ON, all layers offloaded via ai_gpu)")
+else()
+    set(GGML_CUDA        OFF CACHE BOOL "" FORCE)   # CPU-only build (toolkit absent)
+    message(STATUS "[x3-llm] CUDA toolkit NOT found -> CPU inference backend only. Install the CUDA Toolkit >= 12.8 (nvcc) and re-run cmake to enable GPU (GGML_CUDA). ai_gpu will auto-fall back to CPU until then.")
+endif()
 FetchContent_Declare(llama_cpp
     GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
     GIT_TAG        b9590

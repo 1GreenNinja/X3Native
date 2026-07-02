@@ -6,6 +6,9 @@
 // PART B (gated on the real .gguf existing): load Qwen2.5-3B-Instruct Q4_K_M,
 // run ONE real prompt through the facility-AI persona, assert a non-empty
 // reply that mentions the facility, log tokens/sec, unload clean.
+// PART C (also gated on the .gguf): ai_gpu 0/1 parity — the SAME prompt through
+// the CPU path and the GPU path both produce a non-empty in-persona reply
+// (GPU auto-falls back to CPU on a non-CUDA build, so both still pass).
 // The suite is green with AND without the model present.
 #include "engine/llm/ILlmSystem.h"
 #include "engine/core/x3_log.h"
@@ -204,6 +207,49 @@ void testRealModel(const std::string& path) {
     check(!sys->modelLoaded(), "R9 unload clean");
 }
 
+// PART C — ai_gpu 0/1 parity: the SAME prompt through the CPU path (gpuLayers=0)
+// and the GPU path (gpuLayers=99) must BOTH produce a non-empty, in-persona
+// reply. On a box without a CUDA build the GPU request auto-falls back to CPU,
+// so both cases still pass (and log which backend actually ran); on a CUDA build
+// this exercises the real GPU offload path end to end.
+void testGpuCpuParity(const std::string& path) {
+    x3::logInfo("[llm-test] PART C — ai_gpu 0/1 parity (same prompt, both paths in-persona)");
+    const char* persona =
+        "You are the facility intelligence of Lab Zero, a 283-meter research "
+        "spire. Answer the prisoner's questions tersely, in character. Always "
+        "name the facility (Lab Zero, the Spire) when asked about it.";
+    const char* prompt = "What is this facility?";
+    for (int gpu = 0; gpu <= 1; ++gpu) {
+        const char* tag = gpu ? "ai_gpu=1" : "ai_gpu=0";
+        auto sys = createLlmSystem();
+        ModelOpts opts;
+        opts.contextTokens   = 2048;
+        opts.maxOutputTokens = 96;
+        opts.temperature     = 0.0f;      // greedy: deterministic per path
+        opts.seed            = 42;
+        opts.gpuLayers       = gpu ? 99 : 0;
+        const bool loaded = sys->loadModel(path, opts);
+        check(loaded, gpu ? "C1 model loads (ai_gpu=1)" : "C1 model loads (ai_gpu=0)");
+        if (!loaded) continue;
+        x3::logInfo(std::string("  [llm-test] ") + tag + " backend: " + sys->backendName());
+        ChatId chat = sys->startChat(persona);
+        check(chat != kInvalidChat, gpu ? "C2 startChat (ai_gpu=1)" : "C2 startChat (ai_gpu=0)");
+        check(sys->submit(chat, prompt), gpu ? "C3 submit (ai_gpu=1)" : "C3 submit (ai_gpu=0)");
+        DrainResult d = drain(*sys, chat, 120000);
+        check(d.done && !d.text.empty(),
+              gpu ? "C4 non-empty reply (ai_gpu=1)" : "C4 non-empty reply (ai_gpu=0)");
+        std::string low = d.text;
+        std::transform(low.begin(), low.end(), low.begin(),
+                       [](unsigned char ch) { return (char)std::tolower(ch); });
+        const bool inPersona = low.find("lab zero") != std::string::npos ||
+                               low.find("spire")    != std::string::npos ||
+                               low.find("facility") != std::string::npos;
+        check(inPersona, gpu ? "C5 reply in-persona (ai_gpu=1)" : "C5 reply in-persona (ai_gpu=0)");
+        x3::logInfo(std::string("  [llm-test] ") + tag + " reply: " + d.text);
+        sys->unload();
+    }
+}
+
 } // namespace
 
 bool runLlmSelfTest(const char* modelPath) {
@@ -214,6 +260,7 @@ bool runLlmSelfTest(const char* modelPath) {
     std::error_code ec;
     if (modelPath && std::filesystem::exists(modelPath, ec)) {
         testRealModel(modelPath);
+        testGpuCpuParity(modelPath);
     } else {
         x3::logInfo(std::string("[llm-test] PART B skipped — no model at ") +
                     (modelPath ? modelPath : "(null)") +

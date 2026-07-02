@@ -1730,17 +1730,37 @@ int runDefaultHost(HostContext& hc) {
     // assets/models/llm/README.md. MODELLESS the game still works: ai_npc
     // defaults OFF when the file is absent and the terminal serves canned
     // "SYSTEMS DEGRADED" lines instead.
-    std::string llmModelPath =
-        x3::game::assetRoot() + "/models/llm/qwen2.5-3b-instruct-q4_k_m.gguf";
-    if (!std::filesystem::exists(llmModelPath)) {
-        // Model-agnostic fallback: any .gguf dropped into assets/models/llm/
-        // works (e.g. an Apache-2.0 Qwen2.5-1.5B/7B for commercial builds —
-        // see assets/models/llm/README.md on licensing).
+    // ai_gpu: 1 = CUDA (offload all layers to the RTX 5090), 0 = CPU. Default 1
+    // — the backend auto-falls back to CPU (one log line) if the build has no GPU
+    // backend, so 1 is safe on any box. CUDA is a separate API from the engine's
+    // Vulkan device — no renderer entanglement.
+    console->registerCVar("ai_gpu", "1",
+                          "LLM GPU inference (CUDA, all layers offloaded); auto-falls back to CPU if unavailable");
+    const bool aiGpu = console->getInt("ai_gpu") != 0;
+
+    // MODEL SELECTION RULE: scan assets/models/llm for *.gguf and pick by size —
+    // the LARGEST GGUF when ai_gpu=1 (the 7B is far smarter and fits in VRAM at
+    // GPU speed), the SMALLEST when on CPU (the 3B stays conversational at ~17
+    // tok/s; a 7B on CPU would crawl). Falls back to the pinned 3B filename if
+    // the scan finds nothing. Any Apache-2.0 GGUF dropped in works commercially
+    // (see assets/models/llm/README.md on licensing).
+    const std::string llmDir = x3::game::assetRoot() + "/models/llm";
+    std::string llmModelPath;
+    {
         std::error_code fec;
-        for (const auto& e : std::filesystem::directory_iterator(
-                 x3::game::assetRoot() + "/models/llm", fec)) {
-            if (e.path().extension() == ".gguf") { llmModelPath = e.path().string(); break; }
+        std::uintmax_t bestSize = aiGpu ? 0u : static_cast<std::uintmax_t>(-1);
+        for (const auto& e : std::filesystem::directory_iterator(llmDir, fec)) {
+            if (e.path().extension() != ".gguf") continue;
+            std::error_code sec;
+            const std::uintmax_t sz = std::filesystem::file_size(e.path(), sec);
+            if (sec) continue;
+            if ((aiGpu && sz > bestSize) || (!aiGpu && sz < bestSize)) {
+                bestSize      = sz;
+                llmModelPath  = e.path().string();
+            }
         }
+        if (llmModelPath.empty())
+            llmModelPath = llmDir + "/qwen2.5-3b-instruct-q4_k_m.gguf";
     }
     const bool llmModelPresent = std::filesystem::exists(llmModelPath);
     console->registerCVar("ai_npc",       llmModelPresent ? "1" : "0",
@@ -1754,6 +1774,9 @@ int runDefaultHost(HostContext& hc) {
         lopts.contextTokens   = console->getInt("ai_ctx");
         lopts.maxOutputTokens = console->getInt("ai_maxtokens");
         lopts.temperature     = console->getFloat("ai_temp");
+        lopts.gpuLayers       = aiGpu ? 99 : 0;   // 99 = all layers on the GPU
+        x3::logInfo("[llm] selected model " + llmModelPath +
+                    (aiGpu ? " (ai_gpu=1, GPU-preferred)" : " (ai_gpu=0, CPU)"));
         llm = x3::llm::createLlmSystem();
         if (!llm->loadModel(llmModelPath, lopts)) llm.reset();
     } else if (!headless && !llmModelPresent) {
