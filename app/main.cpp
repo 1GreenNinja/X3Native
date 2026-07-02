@@ -283,6 +283,7 @@ int main(int argc, char** argv) {
         _tf.testCanonLevel = o.testCanonLevel;
         _tf.testBuilding = o.testBuilding;
         _tf.testKeypad = o.testKeypad;
+        _tf.testStrata = o.testStrata;
         _tf.testCanonPlay = o.testCanonPlay;
         _tf.testIntro = o.testIntro;
         _tf.testIntroOrch = o.testIntroOrch;

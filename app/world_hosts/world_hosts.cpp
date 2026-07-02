@@ -21,6 +21,7 @@ int dispatchWorldHost(HostContext& hc) {
     if (hc.worldMode == "streamed")                     return hostStreamed(hc);
     if (hc.worldMode == "space")                        return hostSpace(hc);
     if (hc.worldMode == "surface")                      return hostSurfaceStart(hc);
+    if (hc.worldMode == "strata")                       return hostStrata(hc);
     return -1;
 }
 

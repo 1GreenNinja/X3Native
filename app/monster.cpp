@@ -1208,14 +1208,25 @@ void MonsterSystem::update(float dt, Scene& scene, x3::phys::IPhysicsWorld& phys
         // self-hits at ~0 and would block ALL movement. skip past the box half-width
         // (m_hitHalfXZ, set in build()) + a margin, and probe at a mid-body height
         // (the box spans m_pos.y - skirt .. + so feet-Y is inside it).
-        const float skip  = m_hitHalfXZ + 0.10f;        // clear our own (wider) box first
+        // Clear our own (now skeleton-fit-SCALED) box before probing. The box's
+        // square footprint reaches m_hitHalfXZ*sqrt2 at its CORNER, and the fitted
+        // scale can grow the box well past the old fixed margin — a too-tight skip
+        // left the probe origin inside our own body, which (Enemy matches the Static
+        // mask) self-hit at ~0 and blocked ALL movement (the skeleton-fit regression
+        // that froze melee enemies at spawn range). Clear the full diagonal + margin,
+        // AND explicitly discard a self-hit on m_body so the fix holds at any scale.
+        const float skip  = m_hitHalfXZ * 1.4142f + 0.20f; // past the box CORNER + margin
         const float probe = step + 0.10f;               // look this far past the box
         const x3::phys::Vec3 mdir{ mx, 0.0f, mz };
         const float probeY = m_pos.y + m_hitCenterOff;  // mid-body (where a wall blocks)
         const x3::phys::Vec3 from{ m_pos.x + mx * skip, probeY, m_pos.z + mz * skip };
+        auto realHit = [&](x3::phys::Layer mask) -> bool {
+            x3::phys::RayHit h = physics.rayCast(from, mdir, probe, mask);
+            return h.hit && !(h.body.id == m_body.id);   // ignore self
+        };
         const bool blocked =
-            physics.rayCast(from, mdir, probe, x3::phys::Layer::Static).hit ||
-            physics.rayCast(from, mdir, probe, x3::phys::Layer::Dynamic).hit;
+            realHit(x3::phys::Layer::Static) ||
+            realHit(x3::phys::Layer::Dynamic);
         if (blocked) {
             m_strafeDir = -m_strafeDir;   // try a new line next frames
             m_wander   += 1.7f;
@@ -1477,7 +1488,16 @@ void MonsterSystem::spawnDeathRagdoll(x3::phys::IPhysicsWorld& physics,
     // the rigid delta composes correctly under the unchanged draw. --
     const float ry = m_yaw + 3.14159265358979323846f;
     const float c = std::cos(ry), s = std::sin(ry);
-    const float scale = m_modelScale * m_phaseScaleMul;
+    // RAGDOLL scale: makeHumanoidRagdollBones authors a CANONICAL ~human rig (pelvis
+    // origin, ~1.2 m tall) at scale 1 — it is NOT the visual GLB. The skeleton-fit
+    // model scale (m_fittedScale = 1.8/measuredGLBheight, ~1.3 for the humanoids)
+    // normalizes an arbitrary GLB and must NOT be folded into the canonical rig:
+    // doing so blew the capsules up ~2.6x vs the validated 0.5 legacy scale, sank the
+    // feet through the floor, and the solver shoved the whole rig UP so the top bone
+    // failed to drop under gravity (the deathragdoll D2 regression). Use the proven
+    // legacy ragdoll scale for fitted humanoids; box/unfitted models keep m_modelScale.
+    const float ragScaleBase = (m_fittedScale > 0.0f) ? kRealModelScale : m_modelScale;
+    const float scale = ragScaleBase * m_phaseScaleMul;
     float model[16];
     composeTRS(model,
                x3::phys::Vec3{ c, 0.0f, -s },

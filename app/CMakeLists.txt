@@ -25,6 +25,8 @@ add_executable(X3Engine WIN32
     world_hosts/host_space.cpp
     # Phase 7 — ESCAPED-branch Act-1 surface-landing start (--world surface)
     world_hosts/host_surface_start.cpp
+    # feat/strata-descent — STRATA geological descent to Club 1127 (--world strata)
+    world_hosts/host_strata.cpp
     space_pilot.cpp
     space/ship_ai.cpp
     space/targeting.cpp
@@ -93,6 +95,7 @@ add_executable(X3Engine WIN32
     dialog.cpp
     env_art.cpp
     club1127.cpp
+    strata.cpp
     cues.cpp
     valley.cpp
     cliffs.cpp

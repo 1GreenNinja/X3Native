@@ -44,6 +44,7 @@
 #include "level1.h"
 #include "level_loader.h"
 #include "keypad.h"   // runKeypadSelfTest (--test-keypad)
+#include "strata.h"   // runStrataSelfTest (--test-strata)
 #include "leveldoc_world.h"
 #include "player.h"
 #include "monster.h"
@@ -279,6 +280,10 @@ int dispatchTests(const TestFlags& tf) {
     if (tf.testKeypad) {
         x3::logInfo("running realistic keypad geometry self-test (KP1-KP6)...");
         return x3::game::runKeypadSelfTest() ? 0 : 1;
+    }
+    if (tf.testStrata) {
+        x3::logInfo("running STRATA descent self-test (facility base Y=0 -> Club 1127 Y=-200)...");
+        return x3::game::runStrataSelfTest() ? 0 : 1;
     }
     if (tf.testCanonPlay) {
         x3::logInfo("running EFLZ canon Floor-1 gameplay self-test (P1-P9)...");

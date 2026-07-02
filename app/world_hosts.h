@@ -31,6 +31,7 @@ int hostCliffs   (HostContext& hc);   // --world cliffs
 int hostStreamed (HostContext& hc);   // --world streamed
 int hostSpace    (HostContext& hc);   // --world space     (Act-3 6DOF space pilot)
 int hostSurfaceStart(HostContext& hc);// --world surface   (Phase 7 ESCAPED-branch Act-1 landing)
+int hostStrata   (HostContext& hc);   // --world strata    (STRATA geological descent to Club 1127)
 
 // Returns the exit code if a discrete host matched worldMode, else -1.
 int dispatchWorldHost(HostContext& hc);
