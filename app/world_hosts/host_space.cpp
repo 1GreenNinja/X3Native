@@ -49,6 +49,9 @@ int hostSpace(HostContext& hc) {
           device->setSsaoParams(ap); }
         { x3::rhi::IRenderDevice::GiParams gp{}; gp.enabled = false;
           device->setGiParams(gp); }
+        // T1: deep-space far plane so distant fleet/celestial geometry doesn't pop
+        // in late (default 200 m is an interior-scale plane). Near stays 0.1.
+        device->setCameraClip(0.1f, 12000.0f);
         // Sun = the directional sun baked into mesh.frag at +Y-ish; layer on a
         // few BRIGHT point lights NEAR the fleet so the ships read (the analytic
         // sky is OFF -> no atmospheric tint; light only comes from these point

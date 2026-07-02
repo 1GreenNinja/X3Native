@@ -556,6 +556,12 @@ void VulkanRenderDevice::setCamera(float x, float y, float z, float yaw, float p
         m_camYaw = yaw; m_camPitch = pitch; m_camFov = fovDeg;
     }
 
+void VulkanRenderDevice::setCameraClip(float nearPlane, float farPlane) {
+        // Guard against degenerate values; keep near strictly < far and both positive.
+        if (nearPlane > 0.0f) m_camNear = nearPlane;
+        if (farPlane > m_camNear) m_camFar = farPlane;
+    }
+
 void VulkanRenderDevice::setAmbient(float r, float g, float b) { m_ambient = glm::vec3(r, g, b); }
 
 void VulkanRenderDevice::setFrustumCullEnabled(bool enabled) { m_frustumCull = enabled; }

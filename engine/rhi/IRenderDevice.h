@@ -175,6 +175,15 @@ public:
     // forward = (cos(pitch)*cos(yaw), sin(pitch), cos(pitch)*sin(yaw)).
     virtual void setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) = 0;
 
+    // PER-WORLD camera clip planes (metres). The default (near=0.1, far=200) matches
+    // the historical hardcoded projection, so any world that never calls this renders
+    // byte-identically to before. Space/deep-field worlds push the far plane out to
+    // ~10000 so distant capitals/planets don't pop into view late. The engine uses
+    // STANDARD (non-reversed) Z; with a large far plane, depth precision degrades at
+    // the NEAR end — keep the near plane as large as the closest geometry allows.
+    // Non-pure (no-op default) so headless / other devices are unaffected.
+    virtual void setCameraClip(float nearPlane, float farPlane) { (void)nearPlane; (void)farPlane; }
+
     // Scene ambient (hemispheric floor lift in mesh.frag, also the crude IBL term for
     // PBR meshes). Default is a small cool constant; raise it for bright daylit/outdoor
     // scenes (e.g. the showroom) so metal/glass surfaces aren't black. Non-pure (no-op

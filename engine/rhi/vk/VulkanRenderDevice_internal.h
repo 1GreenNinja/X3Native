@@ -147,6 +147,7 @@ public:
     void setVsync(bool enabled) override;
 
     void setCamera(float x, float y, float z, float yaw, float pitch, float fovDeg) override;
+    void setCameraClip(float nearPlane, float farPlane) override;
 
     void setAmbient(float r, float g, float b) override;
 
@@ -2997,6 +2998,9 @@ private:
     float m_camYaw = -1.5708f;   // look toward -Z
     float m_camPitch = -0.30f;   // slightly down
     float m_camFov = 60.0f;
+    // Per-world clip planes; defaults reproduce the historical hardcoded 0.1/200 proj.
+    float m_camNear = 0.1f;
+    float m_camFar  = 200.0f;
 
     // ---- Forward point lights (interior fill) -----------------------------
     // CPU-side cache set by setPointLights(); re-uploaded into each frame's UBO.

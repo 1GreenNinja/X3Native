@@ -278,6 +278,11 @@ void runInteractiveBeat(x3::apphost::HostContext& hc, const Beat& beat,
         { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; hc.device->setSkyParams(sp); }
         { x3::rhi::IRenderDevice::SsaoParams ap{}; ap.enabled = false; hc.device->setSsaoParams(ap); }
         { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; hc.device->setGiParams(gp); }
+        // T1: deep-space far plane so the capital at +X 280 (and any celestial layer)
+        // never pops into view late. Near stays at 0.1 (the cockpit/foreground ships
+        // sit close); standard-Z precision at this near/far is fine for a scene whose
+        // depth-writing geometry has no coincident surfaces.
+        hc.device->setCameraClip(0.1f, 12000.0f);
         // Key/fill/rim near the capital (at +X ~280) so the fight reads against dark space.
         x3::rhi::PointLight pl[3]{};
         pl[0].pos[0] = 180.0f; pl[0].pos[1] = 120.0f; pl[0].pos[2] = 120.0f; pl[0].range = 900.0f;
@@ -701,6 +706,7 @@ int captureIntroDogfight(x3::apphost::HostContext& hc, const std::string& outDir
     { x3::rhi::IRenderDevice::SkyParams sp{}; sp.enabled = false; device->setSkyParams(sp); }
     { x3::rhi::IRenderDevice::SsaoParams ap{}; ap.enabled = false; device->setSsaoParams(ap); }
     { x3::rhi::IRenderDevice::GiParams   gp{}; gp.enabled = false; device->setGiParams(gp); }
+    device->setCameraClip(0.1f, 12000.0f);         // T1: deep-space far plane (capital at +X 280)
     device->setBloom(0.35f);                       // hero glow on the emissive windows
     device->setFrustumCullEnabled(false);          // robust against nested-AABB culling for the still
     {
