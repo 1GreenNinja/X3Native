@@ -192,11 +192,12 @@ struct JParser {
 // its room id so Scene::render can cull per room.
 // =====================================================================================
 constexpr float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-constexpr float kWallT     = 0.2f;     // wall thickness
-constexpr float kDoorHalf  = 0.8f;     // doorway opening half-width (1.6 m — widened so the
-                                       // CharacterVirtual + margin clears it comfortably)
-constexpr float kLintel    = 2.2f;     // head clearance under a doorway lintel (>= stand 1.8 + margin)
-constexpr float kCeilT     = 0.2f;     // ceiling cap thickness
+// Sourced from the SHARED builder constants (level_loader.h) so the level lint reads the
+// exact same dimensions the geometry is generated from. Do not diverge these values.
+constexpr float kWallT     = kCanonWallT;   // wall thickness
+constexpr float kDoorHalf  = kCanonDoorHalf;// doorway opening half-width (1.6 m clear)
+constexpr float kLintel    = kCanonLintel;  // head clearance under a doorway lintel
+constexpr float kCeilT     = kCanonCeilT;   // ceiling cap thickness
 
 // [boot] build-cost accumulators (logged once at the end of buildCanonFloor) so the
 // boot receipts show WHERE the canon geometry build spends its time (mesh upload vs
@@ -324,7 +325,7 @@ void doorwayRamp(Scene& s, x3::rhi::IRenderDevice& d, x3::phys::IPhysicsWorld& p
     if (rise <= 0.02f) return;                       // flat: no ramp needed
     // Run keeps the slope ≤ ~35° (tan 35° ≈ 0.70); never shorter than the wall so
     // the ramp top reaches under the lintel/door, never longer than ~6 m.
-    float run = std::max(rise / 0.70f, kWallT + 0.6f);
+    float run = std::max(rise / kCanonRampSlope, kWallT + 0.6f);
     if (run > 6.0f) run = 6.0f;
     // The wedge occupies the run length on the LOWER room's side of the plane: its LOW
     // edge is `run` back from the plane (at the lower floor yLo) and its HIGH edge is at
@@ -1373,7 +1374,7 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
         const float yLo = std::min(topY, botY), yHi = std::max(topY, botY);
         const float th = (yHi - yLo) + 1.0f;
         const float tx = dw.cx, tz = dw.cz;
-        const float thx = 1.5f, thz = 1.5f;               // 3 m square tube
+        const float thx = kCanonShaftHalf, thz = kCanonShaftHalf;  // 3 m square tube
         // 4 thin walls of the tube (open top/bottom).
         addBox(scene, device, physics, thx, th * 0.5f, kWallT * 0.5f, tx, yLo + th * 0.5f, tz - thz, wallTexA, tubeTint, dw.a, true, wallVis);
         addBox(scene, device, physics, thx, th * 0.5f, kWallT * 0.5f, tx, yLo + th * 0.5f, tz + thz, wallTexA, tubeTint, dw.a, true, wallVis);
@@ -2028,7 +2029,7 @@ bool runCanonLevelSelfTest() {
             const CanonRoom& lower = (ra.y0() <= rb.y0()) ? ra : rb;
             const CanonRoom& upper = (ra.y0() <= rb.y0()) ? rb : ra;
             // Spawn BEYOND the ramp base on flat lower floor, then walk straight at the plane.
-            float rampRun = std::min(std::max((yHi - yLo) / 0.70f, kWallT + 0.6f), 6.0f);
+            float rampRun = std::min(std::max((yHi - yLo) / kCanonRampSlope, kWallT + 0.6f), 6.0f);
             float backoff = rampRun + 1.0f;
             x3::phys::Vec3 start; x3::phys::Vec3 vel;
             if (dw.axis == 1) {

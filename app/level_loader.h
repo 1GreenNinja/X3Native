@@ -40,6 +40,18 @@
 
 namespace x3::game {
 
+// ---- SHARED BUILDER CONSTANTS ---------------------------------------------------------
+// The geometry the canonical builder (buildCanonFloor in level_loader.cpp) emits is driven
+// by these dimensions. The level LINT (app/level_lint.cpp, Gate A of the x3-level-authoring
+// doctrine) reads the SAME constants so every violation it reports corresponds 1:1 to the
+// generated geometry. Keep the builder and the lint in lockstep by sourcing both from here.
+constexpr float kCanonWallT     = 0.2f;    // wall thickness (m)
+constexpr float kCanonDoorHalf  = 0.8f;    // doorway opening half-width (1.6 m clear)
+constexpr float kCanonLintel    = 2.2f;    // head clearance under a doorway lintel (>= 1.8 + margin)
+constexpr float kCanonCeilT     = 0.2f;    // ceiling cap thickness (m)
+constexpr float kCanonShaftHalf = 1.5f;    // cross-level descent-tube half-width (3 m square)
+constexpr float kCanonRampSlope = 0.70f;   // threshold-ramp rise/run the builder targets (tan ~35 deg)
+
 // One parsed room (a node in the floor graph). Coordinates are world meters, engine
 // convention. center = (x,y,z) is the room CENTER; (w,h,d) are FULL extents. The
 // FLOOR of the room is at y = center.y - h/2 (a room with center.y=0, h=4 sits with
