@@ -589,11 +589,17 @@ namespace {
 
 // Classify a door pair (mirrors tools/connectivity_audit.py so the histogram matches).
 DoorwayKind classify(const CanonRoom& a, const CanonRoom& b, float& outCx, float& outCz, uint32_t& outAxis) {
-    constexpr float TOL = 0.8f;       // edge-touch tolerance
+    constexpr float TOL = 0.8f;       // overlap / interpenetration tolerance
     constexpr float MINSPAN = 1.0f;   // minimum shared span to cut a doorway
+    // Adjacency demands the facing walls be essentially FLUSH (LAW 2): a wider air gap is
+    // NOT an adjacency (the door would hang in the void) — it falls through to a gap-bridge
+    // that physically closes the seam. 0.25 m absorbs float noise / authored-flush rooms.
+    constexpr float ADJ_TOL = 0.25f;
 
-    if (std::fabs(a.cy - b.cy) > 3.0f) {
-        // Big vertical delta: cross-level (stairs/descent tube). Opening at the shared XZ.
+    // Big vertical transition = the ELEVATOR / shaft vocabulary (LAW 3): a >3 m center
+    // delta OR a >2.5 m FLOOR delta (e.g. Elevator Lobby -> Elevator Shaft) is a vertical
+    // link (descent tube / elevator), never a walkable ramp. Opening at the shared XZ.
+    if (std::fabs(a.cy - b.cy) > 3.0f || std::fabs(a.y0() - b.y0()) > 2.5f) {
         outCx = (a.cx + b.cx) * 0.5f;
         outCz = (a.cz + b.cz) * 0.5f;
         outAxis = 0;
@@ -611,27 +617,36 @@ DoorwayKind classify(const CanonRoom& a, const CanonRoom& b, float& outCx, float
         outAxis = (ox < oz) ? 0u : 1u;
         return DoorwayKind::Overlap;
     }
-    // Adjacent-X: walls share an X plane (a.x1≈b.x0 or b.x1≈a.x0), with a Z overlap span.
-    if (oz > MINSPAN && (std::fabs(ax1 - bx0) <= TOL || std::fabs(bx1 - ax0) <= TOL)) {
-        outCx = std::fabs(ax1 - bx0) <= TOL ? (ax1 + bx0) * 0.5f : (bx1 + ax0) * 0.5f;
+    // Adjacent-X: walls are FLUSH on an X plane (a.x1≈b.x0 or b.x1≈a.x0), with a Z overlap span.
+    if (oz > MINSPAN && (std::fabs(ax1 - bx0) <= ADJ_TOL || std::fabs(bx1 - ax0) <= ADJ_TOL)) {
+        outCx = std::fabs(ax1 - bx0) <= ADJ_TOL ? (ax1 + bx0) * 0.5f : (bx1 + ax0) * 0.5f;
         outCz = (std::max(az0, bz0) + std::min(az1, bz1)) * 0.5f;
         outAxis = 0;   // wall plane is X=const, door thin in X
         return DoorwayKind::AdjacentX;
     }
-    // Adjacent-Z: walls share a Z plane, with an X overlap span.
-    if (ox > MINSPAN && (std::fabs(az1 - bz0) <= TOL || std::fabs(bz1 - az0) <= TOL)) {
+    // Adjacent-Z: walls are FLUSH on a Z plane, with an X overlap span.
+    if (ox > MINSPAN && (std::fabs(az1 - bz0) <= ADJ_TOL || std::fabs(bz1 - az0) <= ADJ_TOL)) {
         outCx = (std::max(ax0, bx0) + std::min(ax1, bx1)) * 0.5f;
-        outCz = std::fabs(az1 - bz0) <= TOL ? (az1 + bz0) * 0.5f : (bz1 + az0) * 0.5f;
+        outCz = std::fabs(az1 - bz0) <= ADJ_TOL ? (az1 + bz0) * 0.5f : (bz1 + az0) * 0.5f;
         outAxis = 1;   // wall plane is Z=const, door thin in Z
         return DoorwayKind::AdjacentZ;
     }
-    // Otherwise a GAP: bridge it with a short connecting corridor. Opening center is the
-    // midpoint of the two room centers; the bridge axis is the larger separation axis.
+    // Otherwise a GAP: bridge it with a short connecting corridor (this physically CLOSES
+    // the seam). The bridge RUNS along the larger-separation axis; the CROSS-axis opening
+    // must sit inside BOTH rooms' facing-wall spans, so its coordinate is the midpoint of
+    // the cross-span OVERLAP (NOT the center-to-center midpoint, which can miss the wall).
     const float sepX = std::max(ax0, bx0) - std::min(ax1, bx1);
     const float sepZ = std::max(az0, bz0) - std::min(az1, bz1);
-    outCx = (a.cx + b.cx) * 0.5f;
-    outCz = (a.cz + b.cz) * 0.5f;
     outAxis = (sepX > sepZ) ? 0u : 1u;   // gap is wider in X => corridor runs in X
+    if (outAxis == 0) {                  // runs along X; cross axis = Z
+        outCx = (a.cx + b.cx) * 0.5f;
+        const float zlo = std::max(az0, bz0), zhi = std::min(az1, bz1);
+        outCz = (zhi > zlo) ? (zlo + zhi) * 0.5f : (a.cz + b.cz) * 0.5f;
+    } else {                             // runs along Z; cross axis = X
+        outCz = (a.cz + b.cz) * 0.5f;
+        const float xlo = std::max(ax0, bx0), xhi = std::min(ax1, bx1);
+        outCx = (xhi > xlo) ? (xlo + xhi) * 0.5f : (a.cx + b.cx) * 0.5f;
+    }
     return DoorwayKind::GapBridge;
 }
 
