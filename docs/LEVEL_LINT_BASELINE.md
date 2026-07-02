@@ -72,6 +72,52 @@ level architecture. Every count below corresponds 1:1 to geometry the canonical 
   Exit, Rooftop, Helipad, Guard Post A/B) have **no doorway at all** — geometry detached
   from the structure.
 
+## AFTER — repair results (same build, category fixes in the loader/resolver)
+
+| World | door-seat | seam | height | reach | contain | TOTAL | vs baseline |
+|-------|----------:|-----:|-------:|------:|--------:|------:|------------:|
+| **Floor 1** | 2 | 3 | 0 | 0 | 0 | **5** | 91 → 5 (−95%) |
+| **Whole building** | 15 | 12 | 0 | 26 | 11 | **64** | 184 → 64 (−65%) |
+
+Per-category deltas (Floor 1 → building):
+- **height**: 61→0 / 82→0. Ramp slope 0.70→0.55 (≤30°); gap-bridge mouths now
+  ramped up to the deck. (Elevator Lobby↔Shaft's impossible ramp became CrossLevel.)
+- **door-seat**: 23→2 / 44→15. Gap-bridge mouths seated on the wall-span overlap;
+  0.5 m void adjacencies bridged; elevator shaft = vertical link.
+- **seam**: 7→3 / 16→12. 0.5 m GAP_SEAM voids closed by bridging.
+- **reach**: 0 / 31→26. Ramped gap-bridges reconnected 5 formerly-ledged rooms.
+
+### Remaining residuals (documented, not yet fixed)
+- **Floor 1 (5):** 2 BRIDGE_MOUTH_OFF_WALL at corner pairs whose facing-span overlap
+  is narrower than a 1.6 m door (unfittable without wider rooms — data); 2
+  DOUBLED_FLOOR (small overlap-corner z-fight, West/East Cell Hall ↔ Bottom Hall);
+  1 DOUBLED_WALL (Boss Approach ↔ Boss Arena — adjacent rooms with differing floor
+  AND ceiling heights, which the coplanar-wall dedup can't collapse).
+- **Building (64):** the F1 residuals + upper-floor authoring defects on F2–F7:
+  DOUBLED_WALL at height-delta corridor↔room boundaries, 7 TUBE_MISSES_ROOM in the
+  hidden F4.5 spire vertical links, 26 UNREACHABLE (rooftop/drone/boss wings hung
+  off illegal bridges or floating), 11 CONTAIN (4 INTERPENETRATION + 7 FLOATING_ROOM
+  with no doorway at all). These are data/authoring fixes on floors off the Floor-1
+  golden path; scoped as follow-up.
+
+## GATE B — visual review (screenshots read by the author, docs/screenshots/architecture/)
+`mainhall_entrance_seam` 7/10, `westcellhall_doored_ramps` 8/10,
+`service_gapbridge_mouths` 7.5/10, `boss_approach_arena` 7.5/10. No sky/void through
+seams, no floating slabs, doors seated in wall openings, floors continuous. Canon
+lighting is dim (per-room lights only for the visible set) but geometry is legible.
+
+## GATE C — golden-path trace (`--test-goldenpath`)
+Completes 5/7 beats with collision on, no noclip: Jake's Cell → Main Hall → Security
+→ Research → Medical → Armory. Blocked at Armory → Boss Arena on the Boss
+Approach/Boss Arena boundary (the DOUBLED_WALL residual above). The reachability
+flood (lint reach=0 on F1) confirms the rooms are graph-connected; the physical block
+is that one height-delta shared wall, not a disconnection.
+
+## Suite + smoketest
+`--test-canonlevel` 16/16, `--test-building` 10/10, `--test-canonplay` 9/9.
+Release `--smoketest`: exit 0, 30 frames + swapchain recreate OK, 0 VUID,
+VMA `allocationCount=0`.
+
 ## Known lint blind spot (live-playtest finding, 2026-07-01)
 Tim hit freestanding **ornate door/portal FRAMES** (elevator-portal design language:
 white+black hex-cutout, magenta/yellow accents) standing mid-floor with open void behind
