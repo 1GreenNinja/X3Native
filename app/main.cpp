@@ -343,6 +343,7 @@ int main(int argc, char** argv) {
         _tf.testCollapse = o.testCollapse;
         _tf.testNav = o.testNav;
         _tf.testWeapons = o.testWeapons;
+        _tf.testLightningCharge = o.testLightningCharge;
         _tf.testScript = o.testScript;
         _tf.testVehicle = o.testVehicle;
         _tf.testVehParts = o.testVehParts;

@@ -508,9 +508,16 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.spreadDeg   = 0.0f;                // a beam is dead-accurate
         w.recoilDeg   = 0.15f;               // almost none (steady beam)
         w.range       = 28.0f;               // SHORT range
-        w.magSize     = 200;                 // a deeper "cell" of charge (was 80)
-        w.reserveAmmo = 600;                 // (was 240) — drains far slower
-        w.reloadTime  = 2.4f;
+        // CHARGE model (Tim spec): no magazine, no reload. 100 base charge, drains
+        // ~10/sec while the beam is held (~10 s of continuous fire), stacks to 300
+        // via battery pickups. magSize/reserveAmmo/reloadTime are IGNORED (usesCharge).
+        w.usesCharge  = true;
+        w.chargeMax   = 100.0f;              // base full charge
+        w.chargeCap   = 300.0f;              // battery-stacking ceiling
+        w.chargeDrainPerSec = 10.0f;         // continuous drain while held
+        w.magSize     = 200;                 // (inert under usesCharge — kept for safety)
+        w.reserveAmmo = 600;                 // (inert under usesCharge)
+        w.reloadTime  = 2.4f;                // (inert under usesCharge)
         w.beam        = true;                // render as a solid beam (host hint)
         w.chainTargets= 2;                   // primary + 2 chains = 3 targets
         w.falloffStart= 15.0f;               // half-range: damage falls off past 15 m
@@ -618,6 +625,7 @@ Arsenal::Arsenal(std::vector<WeaponDef> roster) : m_defs(std::move(roster)) {
         m_state[i].cooldown  = 0.0f;
         m_state[i].reloadTimer = 0.0f;
         m_state[i].spinUp      = 0.0f;               // cold barrel
+        m_state[i].charge      = m_defs[i].usesCharge ? m_defs[i].chargeMax : 0.0f;
     }
     if (m_defs.empty()) m_sel = -1; else m_sel = 0;
 }
@@ -677,8 +685,14 @@ bool Arsenal::selectByName(const std::string& name) {
 bool Arsenal::canFire() const {
     if (m_sel < 0) return false;
     const WeaponState& s = m_state[(size_t)m_sel];
-    if (s.reloadTimer > 0.0f) return false;   // mid-reload: can't fire
+    const WeaponDef&   d = m_defs[(size_t)m_sel];
     if (s.cooldown    > 0.0f) return false;   // fire-rate gate
+    if (d.usesCharge) {
+        // CHARGE weapon (Lightning): no mag / no reload — fire while charge remains
+        // (IDKFA bypasses). The continuous drain happens in tick() while beam held.
+        return m_infiniteAmmo || s.charge > 0.0f;
+    }
+    if (s.reloadTimer > 0.0f) return false;   // mid-reload: can't fire
     if (s.ammoInMag  <= 0 && !m_infiniteAmmo) return false;   // empty mag (IDKFA bypasses)
     return true;
 }
@@ -706,7 +720,9 @@ ResolvedFire Arsenal::fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
     }
 
     // Consume a round, arm the fire-rate cooldown (from the effective rate), recoil.
-    if (!m_infiniteAmmo) s.ammoInMag -= 1;   // IDKFA: never deplete
+    // CHARGE weapons (Lightning) do NOT consume a mag round — their charge pool is
+    // drained continuously in tick() while the beam is held (see setBeamHeld).
+    if (!m_infiniteAmmo && !d.usesCharge) s.ammoInMag -= 1;   // IDKFA: never deplete
     s.cooldown   = (effRate > 0.0f) ? (1.0f / effRate) : 0.0f;
     out.fired    = true;
     out.recoilPitchDeg = d.recoilDeg;
@@ -760,6 +776,7 @@ bool Arsenal::reload() {
     if (m_sel < 0) return false;
     const WeaponDef& d = m_defs[(size_t)m_sel];
     WeaponState&     s = m_state[(size_t)m_sel];
+    if (d.usesCharge)                return false; // CHARGE weapons never reload
     if (s.reloadTimer > 0.0f)        return false; // already reloading
     if (s.ammoInMag   >= d.magSize)  return false; // mag already full
     if (s.reserve     <= 0)          return false; // no spare ammo
@@ -768,8 +785,37 @@ bool Arsenal::reload() {
     return true;
 }
 
+int Arsenal::chargeWeaponIndex() const {
+    for (size_t i = 0; i < m_defs.size(); ++i)
+        if (m_defs[i].usesCharge) return (int)i;
+    return -1;
+}
+
+float Arsenal::grantCharge(float amount) {
+    if (amount <= 0.0f) return 0.0f;
+    const int idx = chargeWeaponIndex();
+    if (idx < 0) return 0.0f;
+    WeaponState&     s = m_state[(size_t)idx];
+    const WeaponDef& d = m_defs[(size_t)idx];
+    const float before = s.charge;
+    s.charge += amount;
+    if (s.charge > d.chargeCap) s.charge = d.chargeCap;   // stack to the cap
+    return s.charge - before;
+}
+
 void Arsenal::tick(float dt) {
     if (dt <= 0.0f) return;
+    // CHARGE drain (Lightning): while the beam is HELD on the current charge weapon,
+    // bleed its charge continuously at chargeDrainPerSec — independent of the
+    // fire-rate ticks so the drain reads as a smooth ~N/sec. IDKFA never depletes.
+    if (m_beamHeld && m_sel >= 0) {
+        const WeaponDef& cd = m_defs[(size_t)m_sel];
+        if (cd.usesCharge && !m_infiniteAmmo) {
+            WeaponState& cs = m_state[(size_t)m_sel];
+            cs.charge -= cd.chargeDrainPerSec * dt;
+            if (cs.charge < 0.0f) cs.charge = 0.0f;
+        }
+    }
     for (size_t i = 0; i < m_state.size(); ++i) {
         WeaponState& s = m_state[i];
         if (s.cooldown > 0.0f) { s.cooldown -= dt; if (s.cooldown < 0.0f) s.cooldown = 0.0f; }
@@ -1369,6 +1415,131 @@ bool runWeaponsSelfTest() {
     x3::logInfo(std::string("[weapons-test] ") + std::to_string(w_pass) + " passed, " +
                 std::to_string(w_fail) + " failed");
     return w_fail == 0;
+}
+
+// ===========================================================================
+// Headless self-test (--test-lightning-charge). Exercises the Lightning Gun
+// CHARGE model (Tim spec): base charge, continuous drain while beam held, IDKFA
+// never depletes, battery grant stacks to chargeCap, no mag/reload. NO Vulkan.
+// ===========================================================================
+namespace {
+int lc_pass = 0, lc_fail = 0;
+void lccheck(bool cond, const char* name) {
+    if (cond) { ++lc_pass; x3::logInfo(std::string("[lightning-charge-test] PASS ") + name); }
+    else      { ++lc_fail; x3::logError(std::string("[lightning-charge-test] FAIL ") + name); }
+}
+inline bool nearf(float a, float b, float eps = 0.01f) { return std::fabs(a - b) <= eps; }
+} // namespace
+
+bool runLightningChargeSelfTest() {
+    lc_pass = lc_fail = 0;
+    const x3::phys::Vec3 eye{ 0, 1.7f, 0 };
+    const x3::phys::Vec3 fwd{ 1, 0, 0 };
+    uint32_t rng = 0xBEEF01u;
+
+    // ---- LC0: lightning is a charge weapon with the spec'd numbers ------------
+    {
+        Arsenal a;
+        int iz = a.indexOf("lightning");
+        bool ok = iz >= 0 &&
+                  a.def(iz).usesCharge &&
+                  nearf(a.def(iz).chargeMax, 100.0f) &&
+                  nearf(a.def(iz).chargeCap, 300.0f) &&
+                  a.def(iz).chargeDrainPerSec >= 8.0f && a.def(iz).chargeDrainPerSec <= 12.0f &&
+                  a.chargeWeaponIndex() == iz &&
+                  nearf(a.state(iz).charge, 100.0f);   // seeded to base at construction
+        lccheck(ok, "LC0 lightning uses charge: 100 base / 300 cap / ~10/s drain / seeded full");
+    }
+
+    // ---- LC1: continuous drain ~chargeDrainPerSec while the beam is HELD ------
+    {
+        Arsenal a;
+        a.selectByName("lightning");
+        a.setBeamHeld(true);
+        a.tick(1.0f);                         // 1 s held -> ~10 drained
+        bool afterOne = nearf(a.currentState().charge, 90.0f, 0.2f);
+        a.tick(4.0f);                         // +4 s -> ~40 more (50 total)
+        bool afterFive = nearf(a.currentState().charge, 50.0f, 0.5f);
+        a.setBeamHeld(false);
+        a.tick(2.0f);                         // released: NO drain while idle
+        bool holdsWhenReleased = nearf(a.currentState().charge, 50.0f, 0.5f);
+        lccheck(afterOne && afterFive && holdsWhenReleased,
+                "LC1 charge drains ~10/s while held, holds steady when released");
+    }
+
+    // ---- LC2: drains to 0 then fire is gated (canFire false, no reload) -------
+    {
+        Arsenal a;
+        a.selectByName("lightning");
+        a.setBeamHeld(true);
+        a.tick(20.0f);                        // 20 s held drains well past 100 -> 0
+        bool emptied = nearf(a.currentState().charge, 0.0f);
+        bool gated   = !a.canFire();          // empty charge -> cannot fire
+        bool noReload = !a.reload();          // charge weapons never reload
+        lccheck(emptied && gated && noReload,
+                "LC2 empty charge gates fire; charge weapon never reloads");
+    }
+
+    // ---- LC3: IDKFA never depletes charge + always canFire -------------------
+    {
+        Arsenal a;
+        a.selectByName("lightning");
+        a.setInfiniteAmmo(true);
+        a.setBeamHeld(true);
+        a.tick(30.0f);                        // 30 s held under IDKFA
+        bool undrained = nearf(a.currentState().charge, 100.0f);
+        a.tick(1.0f);                         // clear any residual cooldown
+        bool canStill = a.canFire();
+        lccheck(undrained && canStill, "LC3 IDKFA: charge never depletes, always canFire");
+    }
+
+    // ---- LC4: battery grant STACKS past base up to the cap -------------------
+    {
+        Arsenal a;
+        a.selectByName("lightning");
+        // Drain to 40 first so there's headroom.
+        a.setBeamHeld(true); a.tick(6.0f); a.setBeamHeld(false);   // ~40 left
+        float g1 = a.grantCharge(150.0f);     // 40 -> 190
+        bool got1 = nearf(g1, 150.0f, 0.5f) && nearf(a.currentState().charge, 190.0f, 0.5f);
+        float g2 = a.grantCharge(200.0f);     // 190 -> cap 300 (adds 110)
+        bool capped = nearf(a.currentState().charge, 300.0f) && nearf(g2, 110.0f, 0.5f);
+        float g3 = a.grantCharge(50.0f);      // already at cap -> 0 added
+        bool atCap = nearf(g3, 0.0f) && nearf(a.currentState().charge, 300.0f);
+        lccheck(got1 && capped && atCap, "LC4 battery grant stacks past 100 to the 300 cap");
+    }
+
+    // ---- LC5: firing consumes NO mag round (charge is the resource) ----------
+    {
+        Arsenal a;
+        int iz = a.selectByName("lightning") ? a.indexOf("lightning") : -1;
+        a.tick(1.0f);                         // clear the select cooldown
+        int magBefore = a.currentState().ammoInMag;
+        ResolvedFire f = a.fire(eye, fwd, rng);
+        bool firedNoMagUse = f.fired && a.currentState().ammoInMag == magBefore && iz >= 0;
+        lccheck(firedNoMagUse, "LC5 lightning fire does not consume a magazine round");
+    }
+
+    // ---- LC6: held beam eventually drains to empty and stops firing ----------
+    {
+        Arsenal a;
+        a.selectByName("lightning");
+        a.setBeamHeld(true);
+        a.tick(1.0f);
+        int fired = 0;
+        bool stoppedWhenEmpty = false;
+        for (int i = 0; i < 400; ++i) {       // ~50 s of held fire at 0.125 s steps
+            ResolvedFire f = a.fire(eye, fwd, rng);
+            if (f.fired) ++fired;
+            a.tick(0.125f);
+            if (a.currentState().charge <= 0.0f) { stoppedWhenEmpty = !a.canFire(); break; }
+        }
+        lccheck(fired > 0 && stoppedWhenEmpty,
+                "LC6 held beam fires, drains to empty, then gates off");
+    }
+
+    x3::logInfo(std::string("[lightning-charge-test] ") + std::to_string(lc_pass) + " passed, " +
+                std::to_string(lc_fail) + " failed");
+    return lc_fail == 0;
 }
 
 } // namespace x3::game
