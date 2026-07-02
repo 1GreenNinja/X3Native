@@ -170,14 +170,19 @@ constexpr uint32_t kPadCount = (uint32_t)(sizeof(kPads) / sizeof(kPads[0]));
 // The deck heights are grade-limited BY CONSTRUCTION (every |dElev|/segLen well
 // under kMaxGrade) and meet the pads at both ends (0 at the tower, 16 at the
 // city) so the road ties into flat ground cleanly. --test-terrain re-verifies.
+// The raw elevations are authored so a waypoint that lies inside a PAD's
+// influence already sits at that pad's level (0 at the tower, 16 at the city):
+// there the pad-adjust pull is a no-op, so the deck ties into the flat site dead-
+// level (T5) with NO grade spike at the feather (T6). The whole 0->16 climb lives
+// in the pad-FREE corridor (WP1..WP4), spread so every segment is well under 6%.
 struct WayPt { float x, z, elev; };
 constexpr WayPt kRoute[] = {
-    {   24.0f,   10.0f,  0.0f },
-    {   70.0f,  150.0f,  4.0f },
-    {   10.0f,  320.0f,  9.0f },
-    { -150.0f,  470.0f,  8.0f },
-    { -330.0f,  600.0f, 13.0f },
-    { -500.0f,  700.0f, 16.0f },
+    {   24.0f,   10.0f,  0.0f },   // tower pad (dead level, y=0)
+    {   70.0f,  150.0f,  0.0f },   // still inside tower-pad influence -> hold 0
+    {   10.0f,  320.0f,  5.0f },   // clear of the pad: begin the graded climb
+    { -150.0f,  470.0f, 11.0f },   // free corridor
+    { -330.0f,  600.0f, 16.0f },   // entering city-pad influence -> at city level
+    { -500.0f,  700.0f, 16.0f },   // Scrapyard City pad (dead level, y=16)
 };
 constexpr uint32_t kRouteCount = (uint32_t)(sizeof(kRoute) / sizeof(kRoute[0]));
 constexpr float kRoadHalfWidth = 7.0f;    // 14 m deck (~4 lanes)
@@ -208,12 +213,29 @@ float naturalHeight(const TerrainConfig& cfg, float x, float z) {
     return h;
 }
 
+// Pad blend at (x,z): pull a value y toward each pad's level by the pad weight
+// (w = 1 inside r, feathered to 0 by r+feather). Same construction the terrain
+// pad-flatten uses, so pads win identically for the ground AND the road deck.
+float padAdjust(float y, float x, float z) {
+    for (uint32_t i = 0; i < kPadCount; ++i) {
+        const Pad& p = kPads[i];
+        const float dx = x - p.cx, dz = z - p.cz;
+        const float d = std::sqrt(dx * dx + dz * dz);
+        const float w = 1.0f - smoothstep01(p.r, p.r + p.feather, d);
+        y = y + (p.y - y) * w;
+    }
+    return y;
+}
+
 // ---- Freeway geometry. Nearest point on the route polyline to (x,z): fills the
-// perpendicular distance, the interpolated deck elevation there, and (optionally)
-// the arc length to that point. Also the pure arc-sampler for the ribbon/tests.
-struct RoadHit { float dist; float elev; };
+// perpendicular distance, the PAD-ADJUSTED deck elevation there, and the nearest
+// centerline point. The deck elevation is pad-adjusted at the CENTERLINE point so
+// where the road threads a flat pad (tower/city) it ties in at pad level (dead
+// level) instead of ramping through the buildable site. Also the pure arc-sampler
+// for the ribbon/tests. Deck elevation is a property of the centerline position.
+struct RoadHit { float dist; float elev; float px, pz; };
 RoadHit nearestRoad(float x, float z) {
-    RoadHit best{ 1e30f, 0.0f };
+    RoadHit best{ 1e30f, 0.0f, 0.0f, 0.0f };
     for (uint32_t i = 0; i + 1 < kRouteCount; ++i) {
         const WayPt& a = kRoute[i];
         const WayPt& b = kRoute[i + 1];
@@ -224,7 +246,11 @@ RoadHit nearestRoad(float x, float z) {
         const float px = a.x + u * ex, pz = a.z + u * ez;
         const float dx = x - px, dz = z - pz;
         const float d = std::sqrt(dx * dx + dz * dz);
-        if (d < best.dist) { best.dist = d; best.elev = a.elev + u * (b.elev - a.elev); }
+        if (d < best.dist) {
+            best.dist = d;
+            best.elev = padAdjust(a.elev + u * (b.elev - a.elev), px, pz);
+            best.px = px; best.pz = pz;
+        }
     }
     return best;
 }
@@ -234,14 +260,7 @@ float compose(const TerrainConfig& cfg, float x, float z) {
     float h = naturalHeight(cfg, x, z);
 
     // (3) FLAT PADS — blend to dead level inside the radius, feathered out.
-    for (uint32_t i = 0; i < kPadCount; ++i) {
-        const Pad& p = kPads[i];
-        const float dx = x - p.cx, dz = z - p.cz;
-        const float d = std::sqrt(dx * dx + dz * dz);
-        // w = 1 inside r, 0 beyond r+feather.
-        const float w = 1.0f - smoothstep01(p.r, p.r + p.feather, d);
-        h = h + (p.y - h) * w;
-    }
+    h = padAdjust(h, x, z);
 
     // (4) FREEWAY carve — deck exactly at the graded centerline; shoulder ramps
     // from the deck up/down to the natural (already pad-adjusted) surface.
@@ -519,8 +538,12 @@ bool worldFreewaySampleArc(float s, float outCenter[3], float outTangent[2]) {
             const float u = segLen > 1e-6f ? (target - acc) / segLen : 0.0f;
             const float uu = u < 0.0f ? 0.0f : (u > 1.0f ? 1.0f : u);
             outCenter[0] = a.x + uu * dx;
-            outCenter[1] = a.elev + uu * (b.elev - a.elev);
             outCenter[2] = a.z + uu * dz;
+            // Pad-adjusted deck: where the route threads a flat pad it ties in at
+            // pad level (matches compose()'s carve), so the deck stays dead-level
+            // inside the tower/city sites instead of ramping through them.
+            outCenter[1] = topo::padAdjust(a.elev + uu * (b.elev - a.elev),
+                                           outCenter[0], outCenter[2]);
             const float inv = 1.0f / std::max(1e-6f, segLen);
             outTangent[0] = dx * inv; outTangent[1] = dz * inv;
             return true;
