@@ -871,6 +871,23 @@ int runDefaultHost(HostContext& hc) {
     // built, below). Spaceship-ambience-style sci-fi action loop.
     const std::string kMusicPath = x3::game::resolveAudio(
         "Sci-Fi Music Pack 1/Loops/SMP1_LOOP_Zero8 _1.wav");
+    // CAB DISCO MUSIC (the 1127 descent): a darker cyberpunk track that takes over
+    // the MUSIC bus while the elevator is in disco mode, restoring the ambient bed
+    // when disco ends. ROUTED THROUGH the music-volume setting (playMusic at
+    // s_musicVol + the live Music Volume slider / setMusicVolume) -- so with the
+    // default music vol 0 the cab stays quiet, and the disco comes alive the
+    // moment the player raises the volume. Never hardcoded outside that control.
+    // Two candidate pack layouts (flat G:-style, nested D:/Assets-style); a miss
+    // resolves to a nonexistent path and playMusic simply stays silent (graceful).
+    std::string kDiscoMusicPath = x3::game::resolveAudio(
+        "Free - Sci-Fi and Cyberpunk Music Pack/03 Descent.wav");
+    {
+        std::error_code mec;
+        if (!std::filesystem::exists(kDiscoMusicPath, mec))
+            kDiscoMusicPath = x3::game::resolveAudio(
+                "Free - Sci-Fi and Cyberpunk Music Pack/"
+                "Free - Sci-Fi and Cyberpunk Music Pack/03 Descent.wav");
+    }
 
     x3::boot::mark("audio init + sfx loads");
 
@@ -3375,6 +3392,7 @@ int runDefaultHost(HostContext& hc) {
     // the audio system, THEN the bed starts so it honors the saved volume/on. ----
     bool  s_musicOn  = true;
     float s_musicVol = 0.0f;     // muted by default (was 0.25) -- raise via the slider/cfg
+    bool  s_prevDisco = false;   // elevator disco-mode edge (cab music swap, below)
     float s_sfxVol   = 1.0f;
     readAudioSettings(s_musicOn, s_musicVol, s_sfxVol);
     audio->setMasterSfxVolume(s_sfxVol);
@@ -4619,6 +4637,18 @@ int runDefaultHost(HostContext& hc) {
             // story beats; idempotent (each fires once).
             if (liveStrataBuilt)
                 for (uint32_t tid : liveStrataTriggers.update(camPos)) liveStrata.onTrigger(tid);
+            // CAB DISCO MUSIC: on the disco-mode edge swap the MUSIC bus between the
+            // ambient bed and the 1127 descent track. Always at s_musicVol (default 0
+            // -> silent until the player raises the Music Volume slider); the live
+            // slider's setMusicVolume keeps applying to whichever track is playing.
+            if (elevator.built() && elevator.disco() != s_prevDisco) {
+                s_prevDisco = elevator.disco();
+                audio->playMusic(s_prevDisco ? kDiscoMusicPath : kMusicPath,
+                                 /*loop*/true, s_musicVol);
+                x3::logInfo(std::string("[elevator] cab music -> ") +
+                            (s_prevDisco ? "1127 DISCO DESCENT track" : "ambient bed") +
+                            " (music bus, vol honors the Music Volume setting)");
+            }
             // Floor 4.5 Nexus / The Chorus: dispatch its connector (which discovers +
             // arms the Chorus) then tick the multi-pod boss (inert until armed).
             for (uint32_t tid : nexusTriggers.update(camPos)) nexus.onTrigger(tid);

@@ -221,13 +221,53 @@ void ElevatorShowcase::buildShaft(Scene& scene, x3::rhi::IRenderDevice& device,
     const float frontZ = m_shaftZ + inHZ + 0.02f;   // door plane (just outside the shaft front)
     m_shaftDoorL.clear(); m_shaftDoorR.clear(); m_shaftDoorY.clear();
 
+    m_seam.clear(); m_crest.clear(); m_doorPanelL.clear(); m_doorPanelR.clear();
     for (int f = 0; f < (int)m_floors.size(); ++f) {
         const float cy = m_floors[f].centerY + m_cabHY + doorH;   // doorway vertical center
 
-        // Chamfered portal frame (THICK jambs).
+        // ==== ORNATE PORTAL (Tim: futuristic THICK ORNATE, not a square box) ====
+        // A deep, LAYERED stepped casing projecting from the wall plane: outer
+        // dark-steel surround -> mid brushed band -> the inner chamfered frame.
+        // Inset accent light strips trace the casing contours between the layers;
+        // a glowing floor-indicator CREST rides above the doors. The frame alone
+        // says this machine matters.
+        // Outer surround (widest, least proud).
+        { ElevPrim p; p.mesh = doorFrame(doorHalfW + 0.42f, doorH + 0.34f, 0.20f, 0.10f,
+                                         m_shaftX, cy + 0.05f, frontZ + 0.03f, 0.030f);
+          addSolid(scene, device, physics, p, kDarkSteel, kNoEm, false, (uint32_t)Tag::Static); }
+        // Mid casing band (steps forward of the surround).
+        { ElevPrim p; p.mesh = doorFrame(doorHalfW + 0.24f, doorH + 0.18f, 0.14f, 0.15f,
+                                         m_shaftX, cy + 0.03f, frontZ + 0.06f, 0.030f);
+          addSolid(scene, device, physics, p, kBrushedSteel, kNoEm, false, (uint32_t)Tag::Static); }
+        // Inner chamfered portal frame (THICK jambs -- the original premium frame).
         { ElevPrim p; p.mesh = doorFrame(doorHalfW + 0.06f, doorH, 0.22f, 0.16f,
                                          m_shaftX, cy, frontZ, 0.035f);
           addSolid(scene, device, physics, p, kBrushedSteel, kNoEm, true, (uint32_t)Tag::Static); }
+        // INSET ACCENT LIGHT STRIPS tracing the casing contours (cool cyan):
+        // one vertical strip in each jamb step + a header strip across the top.
+        {
+            const float sz = frontZ + 0.065f;
+            float em[4] = { 0.20f, 0.75f, 1.0f, 1.8f };
+            { ElevPrim p; p.mesh = beveledBox(0.015f, doorH + 0.06f, 0.015f,
+                                              m_shaftX - (doorHalfW + 0.16f), cy + 0.02f, sz, 0.005f);
+              addDecor(scene, device, p, kDarkSteel, em, (uint32_t)Tag::Prop); }
+            { ElevPrim p; p.mesh = beveledBox(0.015f, doorH + 0.06f, 0.015f,
+                                              m_shaftX + (doorHalfW + 0.16f), cy + 0.02f, sz, 0.005f);
+              addDecor(scene, device, p, kDarkSteel, em, (uint32_t)Tag::Prop); }
+            { ElevPrim p; p.mesh = beveledBox(doorHalfW + 0.20f, 0.015f, 0.015f,
+                                              m_shaftX, cy + doorH + 0.14f, sz, 0.005f);
+              addDecor(scene, device, p, kDarkSteel, em, (uint32_t)Tag::Prop); }
+        }
+        // FLOOR-INDICATOR CREST above the doors: a brushed plate + the emissive
+        // indicator bar (hall lantern -- tracks the live cab; see update()).
+        { ElevPrim p; p.mesh = beveledBox(0.34f, 0.10f, 0.05f,
+                                          m_shaftX, cy + doorH + 0.42f, frontZ + 0.08f, 0.018f);
+          addSolid(scene, device, physics, p, kBrushedSteel, kNoEm, false, (uint32_t)Tag::Static); }
+        { ElevPrim p; p.mesh = beveledBox(0.26f, 0.035f, 0.02f,
+                                          m_shaftX, cy + doorH + 0.42f, frontZ + 0.135f, 0.008f);
+          float em[4] = { 0.12f, 0.35f, 0.55f, 0.8f };   // idle: dim cool
+          uint32_t id = addDecor(scene, device, p, kDarkSteel, em, (uint32_t)Tag::Prop);
+          m_crest.push_back(id); }
 
         // 2 THICK sliding door leaves (heavy slabs, beveled), meeting at center.
         const float leafHW = doorHalfW * 0.5f - 0.01f;
@@ -242,9 +282,27 @@ void ElevatorShowcase::buildShaft(Scene& scene, x3::rhi::IRenderDevice& device,
           uint32_t id = addSolid(scene, device, physics, p, kDoorMetal, kNoEm, false, (uint32_t)Tag::Door);
           m_shaftDoorR.push_back(id); m_stats.shaftDoors++; }
         m_shaftDoorY.push_back(cy);
-        // A glowing seam strip down the door meeting line (premium accent).
+        // ETCHED DOOR PANELING: 2 recessed inset panels per leaf (darker, beveled)
+        // so the doors read detailed slabs, not flat plates. They RIDE the leaves
+        // (repositioned with them in animateDoors).
+        {
+            const float pHW = leafHW * 0.36f, pHH = (doorH - 0.05f) * 0.38f;
+            float pcol[4] = { 0.24f, 0.26f, 0.30f, 1.0f };   // recessed panel (darker)
+            for (int k = 0; k < 2; ++k) {
+                const float py = cy + (k == 0 ? 0.45f : -0.45f) * (doorH - 0.05f);
+                { ElevPrim p; p.mesh = beveledBox(pHW, pHH * 0.5f, 0.015f,
+                                                  m_shaftX - leafHW, py, dz + leafHD + 0.004f, 0.006f);
+                  m_doorPanelL.push_back(addDecor(scene, device, p, pcol, kNoEm, (uint32_t)Tag::Prop)); }
+                { ElevPrim p; p.mesh = beveledBox(pHW, pHH * 0.5f, 0.015f,
+                                                  m_shaftX + leafHW, py, dz + leafHD + 0.004f, 0.006f);
+                  m_doorPanelR.push_back(addDecor(scene, device, p, pcol, kNoEm, (uint32_t)Tag::Prop)); }
+            }
+        }
+        // The glowing seam strip down the door meeting line -- PULSES while the
+        // cab is arriving at this floor (see update()).
         { ElevPrim p; p.mesh = beveledBox(0.012f, doorH - 0.1f, 0.012f, m_shaftX, cy, dz + leafHD + 0.005f, 0.004f);
-          addDecor(scene, device, p, kBrushedSteel, kAccentEm, (uint32_t)Tag::Prop); }
+          uint32_t id = addDecor(scene, device, p, kBrushedSteel, kAccentEm, (uint32_t)Tag::Prop);
+          m_seam.push_back(id); }
 
         // --- Realistic CALL PANEL keypad beside the door (+X jamb) ---
         const float panelX = m_shaftX + doorHalfW + 0.34f;
@@ -500,37 +558,51 @@ void ElevatorShowcase::animateDoors(Scene& scene) {
     const float W = 1.55f;
     const float slide = openF * (W * 0.5f);     // leaves retract by up to half-width
 
-    // Cab inner doors.
+    // Cab inner doors. AUTHORED at cab-LOCAL offsets (x already includes the leaf
+    // center) -- the transform is the PARENT ORIGIN + the slide delta, exactly like
+    // layoutCab's place(). (Fixes the long-standing double-offset that left the
+    // door leaves rendering displaced out of the doorway.)
     const x3::phys::Vec3 c = m_elev.cabCenter();
     const float iy = c.y + m_cabHY + 2.35f;
-    const float cdHW = W * 0.5f - 0.02f;
     if (m_eCabDoorL != kNoLink && m_eCabDoorL < scene.size()) {
         Entity& e = scene.get(m_eCabDoorL);
-        e.transform[12] = c.x - cdHW - slide; e.transform[13] = iy - 2.35f + 1.95f + 0.05f; e.transform[14] = c.z + (W - 0.06f);
+        e.transform[12] = c.x - slide; e.transform[13] = iy; e.transform[14] = c.z;
     }
     if (m_eCabDoorR != kNoLink && m_eCabDoorR < scene.size()) {
         Entity& e = scene.get(m_eCabDoorR);
-        e.transform[12] = c.x + cdHW + slide; e.transform[13] = iy - 2.35f + 1.95f + 0.05f; e.transform[14] = c.z + (W - 0.06f);
+        e.transform[12] = c.x + slide; e.transform[13] = iy; e.transform[14] = c.z;
     }
 
     // Per-floor shaft doors: only the floor the cab is AT opens; the rest stay shut.
+    // AUTHORED at their world-space CLOSED pose -- the transform is the slide DELTA
+    // only (same fix as the cab doors above).
     int atFloor = currentFloorIndex();
     bool stopped = (m_elev.state() == ElevState::DoorsOpen || m_elev.state() == ElevState::Idle ||
                     m_elev.state() == ElevState::DoorsOpening);
     const float doorHalfW = m_cabHX - 0.05f;
-    const float leafHW = doorHalfW * 0.5f - 0.01f;
     for (int f = 0; f < (int)m_shaftDoorL.size(); ++f) {
         float of = (stopped && f == atFloor) ? openF : 0.0f;
         float sl = of * (doorHalfW * 0.5f);
-        float cy = m_shaftDoorY[f];
-        float dz = m_shaftZ + m_cabHZ + 0.55f + 0.02f + 0.10f;
         if (m_shaftDoorL[f] < scene.size()) {
             Entity& e = scene.get(m_shaftDoorL[f]);
-            e.transform[12] = m_shaftX - leafHW - sl; e.transform[13] = cy; e.transform[14] = dz;
+            e.transform[12] = -sl; e.transform[13] = 0.0f; e.transform[14] = 0.0f;
         }
         if (m_shaftDoorR[f] < scene.size()) {
             Entity& e = scene.get(m_shaftDoorR[f]);
-            e.transform[12] = m_shaftX + leafHW + sl; e.transform[13] = cy; e.transform[14] = dz;
+            e.transform[12] = +sl; e.transform[13] = 0.0f; e.transform[14] = 0.0f;
+        }
+        // The etched inset panels RIDE their leaves (2 per leaf: upper/lower) --
+        // authored at their closed pose too, so the same slide delta applies.
+        for (int k = 0; k < 2; ++k) {
+            const size_t pi = (size_t)f * 2 + k;
+            if (pi < m_doorPanelL.size() && m_doorPanelL[pi] < scene.size()) {
+                Entity& e = scene.get(m_doorPanelL[pi]);
+                e.transform[12] = -sl; e.transform[13] = 0.0f; e.transform[14] = 0.0f;
+            }
+            if (pi < m_doorPanelR.size() && m_doorPanelR[pi] < scene.size()) {
+                Entity& e = scene.get(m_doorPanelR[pi]);
+                e.transform[12] = +sl; e.transform[13] = 0.0f; e.transform[14] = 0.0f;
+            }
         }
     }
 }
@@ -560,6 +632,36 @@ float ElevatorShowcase::update(float dt, Scene& scene, x3::rhi::IRenderDevice& d
     if (m_eVent != kNoLink && m_eVent < scene.size()) {
         Entity& e = scene.get(m_eVent);
         e.emissive[3] = 0.25f + 0.05f * std::sin(m_time * 9.0f);
+    }
+    // ORNATE PORTAL live furniture: the CREST above each floor's doors is a hall
+    // lantern -- the floor the cab is nearest glows; bright green-cyan with the
+    // doors open there, pulsing amber while the cab is travelling toward it, dim
+    // cool everywhere else. The door SEAM pulses while the cab is arriving.
+    {
+        const int atF = currentFloorIndex();
+        const bool moving = m_elev.moving();
+        const bool openHere = (m_elev.state() == ElevState::DoorsOpen ||
+                               m_elev.state() == ElevState::Idle ||
+                               m_elev.state() == ElevState::DoorsOpening);
+        const float pulseT = 0.55f + 0.45f * std::sin(m_time * 6.0f);
+        for (int f = 0; f < (int)m_crest.size(); ++f) {
+            if (m_crest[f] == kNoLink || m_crest[f] >= scene.size()) continue;
+            Entity& e = scene.get(m_crest[f]);
+            if (f == atF && openHere) {          // cab HERE, doors open: bright arrival
+                e.emissive[0] = 0.15f; e.emissive[1] = 0.95f; e.emissive[2] = 0.65f; e.emissive[3] = 2.4f;
+            } else if (f == atF && moving) {     // cab passing/arriving: amber pulse
+                e.emissive[0] = 0.95f; e.emissive[1] = 0.55f; e.emissive[2] = 0.10f; e.emissive[3] = 1.2f + 1.4f * pulseT;
+            } else {                             // idle: dim cool standby
+                e.emissive[0] = 0.12f; e.emissive[1] = 0.35f; e.emissive[2] = 0.55f; e.emissive[3] = 0.8f;
+            }
+        }
+        for (int f = 0; f < (int)m_seam.size(); ++f) {
+            if (m_seam[f] == kNoLink || m_seam[f] >= scene.size()) continue;
+            Entity& e = scene.get(m_seam[f]);
+            if (f == atF && moving)      e.emissive[3] = 1.0f + 2.0f * pulseT;   // arriving: pulse
+            else if (f == atF)           e.emissive[3] = 1.6f;                   // present: steady
+            else                         e.emissive[3] = 0.6f;                   // idle: dim
+        }
     }
     // Accent strips brighten subtly while moving (the lift "comes alive").
     float pulse = m_elev.moving() ? (0.7f + 0.3f * std::sin(m_time * 5.0f)) : 1.0f;
@@ -595,9 +697,16 @@ void ElevatorShowcase::showcaseCamera(int variant, float out[5]) const {
     const x3::phys::Vec3 c = m_elev.cabCenter();
     const float floorY = c.y + m_cabHY;
     if (variant == 1) {
-        // Exterior shaft: stand in the lobby looking at the doors.
-        out[0] = m_shaftX; out[1] = floorY + 1.6f; out[2] = m_shaftZ + m_cabHZ + 2.6f;
-        out[3] = -1.5708f; out[4] = 0.05f;
+        // Exterior APPROACH: stand in the LOBBY (fixed floor, not the moving cab)
+        // far enough back that the whole ORNATE PORTAL reads -- the layered stepped
+        // casing, the contour accent strips, the paneled doors, and the glowing
+        // floor-indicator CREST above them.
+        const int lobby = (m_clubStop == 0 && (int)m_floors.size() > 1) ? 1 : 0;
+        const float lobbyY = m_floors[lobby].centerY + m_cabHY;
+        out[0] = m_shaftX + 0.9f;                       // slight off-axis (depth reads)
+        out[1] = lobbyY + 1.7f;
+        out[2] = m_shaftZ + m_cabHZ + 7.6f;
+        out[3] = -1.5708f - 0.08f; out[4] = 0.18f;      // pitched up to the crest
     } else if (variant == 2) {
         // Strata descent: inside, looking down through the glass floor.
         out[0] = m_shaftX - 0.4f; out[1] = floorY + 1.3f; out[2] = m_shaftZ + 0.3f;

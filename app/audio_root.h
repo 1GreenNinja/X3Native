@@ -38,6 +38,7 @@ namespace detail {
 inline const std::vector<std::string>& audioRoots() {
     static const std::vector<std::string> roots = {
         "D:/GameDevAssets",
+        "D:/Assets",   // local 2TB pack library (Unity packs, nested <pack>/<pack>/ layout)
         "G:/Unity_Projects/EscapeFromLabZero/Assets",
         "G:/Unity_Projects/EscapeLab48/Escape Lab 48/Assets",
     };

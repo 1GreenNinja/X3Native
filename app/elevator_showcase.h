@@ -176,6 +176,14 @@ private:
     // Per-floor exterior sliding door leaves (2 per floor) for door animation.
     std::vector<uint32_t> m_shaftDoorL, m_shaftDoorR;
     std::vector<float>    m_shaftDoorY;        // each floor's door center Y (cab-center)
+    // --- ORNATE PORTAL (Tim: "futuristic THICK ORNATE, not a square box") ---
+    // Per-floor animated portal furniture: the glowing door SEAM (pulses while the
+    // cab is arriving), the floor-indicator CREST bar above the doors (hall
+    // lantern: tracks the live cab, goes bright on arrival), and the recessed
+    // door-leaf inset panels (2 per leaf; ride the leaves in animateDoors).
+    std::vector<uint32_t> m_seam;              // door meeting-line seam strip
+    std::vector<uint32_t> m_crest;             // crest indicator bar (emissive)
+    std::vector<uint32_t> m_doorPanelL, m_doorPanelR;   // 2 ids per floor per leaf
 
     float m_time = 0.0f;
     float m_entScroll = 0.0f;
