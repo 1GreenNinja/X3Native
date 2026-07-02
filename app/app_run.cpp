@@ -3455,13 +3455,6 @@ int runDefaultHost(HostContext& hc) {
     // now owns this decision -- see the "input-capture registry sync" block at
     // the end of the loop. Start in the menu => cursor visible.
     inputCapture.acquire("menu", /*showCursor*/ true);
-    // Previous-frame values for the seven capturers, diffed once per frame (at
-    // the end of the loop, after everything below has had its chance to open/
-    // close this frame) to acquire()/release() the matching registry tag on a
-    // transition. `prevMenuCap` starts true to match the acquire() just above.
-    bool prevConsoleCap = false, prevMenuCap = true, prevWorldMapCap = false,
-         prevTermCap = false, prevCodeCap = false, prevDialogCap = false,
-         prevNpcDialogCap = false;
     bool prevUiEsc = false;   // rising-edge for routing Esc into the UI controller
     // Rising-edge trackers for the UI controller's input snapshot (menu mouse +
     // keyboard nav). Kept across frames so click/nav register on the press edge.
@@ -5889,30 +5882,48 @@ int runDefaultHost(HostContext& hc) {
 
         // ---- Input-capture registry sync (P0 fix/input-capture-lockup) -------
         // Once per frame, AFTER every capturer above has had its chance to open
-        // or close this frame: diff each capturer's own local "am I active" flag
-        // against last frame's value and acquire()/release() the matching
-        // registry tag on a transition. This is the ONLY place that talks to
-        // InputCaptureManager for these seven tags -- one choke point instead of
-        // N hand-placed call sites scattered through a 5000-line loop, so a
-        // transition can never be missed by forgetting to wire up a new one.
-        // (worldMapOpen/termMode/codeMode already only change at a handful of
-        // explicit sites above; consoleOpen/uiMenuActive/chatTrees.active()/
-        // npcDialog.active() change deep inside the console callback / UI state
-        // machine / dialog runners, so diffing here is simpler AND safer than
-        // hunting down every internal call site.)
+        // or close this frame: RECONCILE the registry against the live capturer
+        // states. The seven capturers are checked in a fixed priority order
+        // (console first -- it always draws on top and consumes Esc first --
+        // then modal typing surfaces, then the map/dialogs, then the menu as
+        // the fallback) and the highest-priority ACTIVE one is (re-)acquired;
+        // if none is active, any frame-synced owner is released. This is the
+        // ONLY place that talks to InputCaptureManager for these seven tags --
+        // one choke point instead of N hand-placed call sites scattered through
+        // a 5000-line loop, so a transition can never be missed.
+        //
+        // Reconcile (declarative "who SHOULD own capture right now"), not a
+        // transition diff, deliberately: a diff would go blind after the Esc
+        // failsafe force-release whenever the capturer legitimately stays open
+        // (e.g. Esc backing out of the world map's travel-confirm prompt, or
+        // out of Settings to Pause -- no bool transition, so a diff would
+        // never re-acquire and gameplay keys would go live under an open UI).
+        // Reconcile re-affirms the still-active owner every frame; a same-tag
+        // re-acquire is a documented no-op, so the steady state costs nothing
+        // and logs nothing.
         {
-            auto sync = [&](bool nowActive, bool& prevActive, const char* tag, bool showCursor) {
-                if (nowActive && !prevActive)      inputCapture.acquire(tag, showCursor);
-                else if (!nowActive && prevActive) inputCapture.release(tag);
-                prevActive = nowActive;
+            struct CapSlot { bool active; const char* tag; bool cursor; };
+            const CapSlot slots[] = {
+                { hud.consoleOpen(),   "console",    true  },
+                { codeMode,            "keypad",     false },
+                { termMode,            "terminal",   false },
+                { worldMapOpen,        "worldmap",   true  },
+                { chatTrees.active(),  "dialog",     false },
+                { npcDialog.active(),  "npc_dialog", false },
+                { !gameUi.playing(),   "menu",       true  },
             };
-            sync(consoleOpen,        prevConsoleCap,   "console",    true);
-            sync(uiMenuActive,       prevMenuCap,       "menu",       true);
-            sync(worldMapOpen,       prevWorldMapCap,   "worldmap",   true);
-            sync(termMode,           prevTermCap,       "terminal",  false);
-            sync(codeMode,           prevCodeCap,       "keypad",    false);
-            sync(chatTrees.active(), prevDialogCap,     "dialog",    false);
-            sync(npcDialog.active(),prevNpcDialogCap,   "npc_dialog",false);
+            const CapSlot* want = nullptr;
+            for (const CapSlot& s : slots) if (s.active) { want = &s; break; }
+            if (want) {
+                inputCapture.acquire(want->tag, want->cursor);
+            } else if (inputCapture.hasOwner()) {
+                // No capturer active: release IF the owner is one of ours. A
+                // tag this block doesn't manage (e.g. "cutscene", bracketed
+                // around its own blocking call) is left for its own release /
+                // the watchdog -- reconcile must not clobber what it doesn't own.
+                for (const CapSlot& s : slots)
+                    if (inputCapture.ownedBy(s.tag)) { inputCapture.release(s.tag); break; }
+            }
 
             // WATCHDOG (P0 fix/input-capture-lockup, requirement #4): once per
             // frame, confirm the current owner (if any) is STILL a legitimately
@@ -5923,8 +5934,8 @@ int runDefaultHost(HostContext& hc) {
             // including ones added after this fix that forget their own
             // teardown path. Auto-releases + logs a single greppable line.
             inputCapture.watchdogTick([&](const std::string& tag) -> bool {
-                if (tag == "console")     return consoleOpen;
-                if (tag == "menu")        return uiMenuActive;
+                if (tag == "console")     return hud.consoleOpen();
+                if (tag == "menu")        return !gameUi.playing();
                 if (tag == "worldmap")    return worldMapOpen;
                 if (tag == "terminal")    return termMode && game.secret().terminal().active();
                 if (tag == "keypad")      return codeMode;

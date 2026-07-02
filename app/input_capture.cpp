@@ -25,9 +25,15 @@ bool InputCaptureManager::acquire(const std::string& tag, bool showCursor) {
         return true;
     }
     if (!m_owner.empty()) {
-        // FORCED TRANSFER (see header: overlap policy). Loud on purpose — an
-        // overlap should always be visible in the log, never silent.
-        x3::logWarn("[input] " + m_owner + " force-released (overlap: " + tag + " acquiring)");
+        // FORCED TRANSFER (see header: overlap policy). Always visible in the
+        // log, never silent — but INFO, not WARN: with the host's end-of-frame
+        // priority reconcile a transfer is also the NORMAL path for stacked
+        // surfaces (opening the console over the pause menu hands capture
+        // menu -> console and back), not only an anomaly.
+        x3::logInfo("[input] capture handoff: " + m_owner + " -> " + tag);
+        m_owner = tag;
+        applyCursorMode(showCursor);
+        return true;
     }
     m_owner = tag;
     applyCursorMode(showCursor);

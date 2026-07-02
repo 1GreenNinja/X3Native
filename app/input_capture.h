@@ -52,13 +52,15 @@ public:
     // documented here because the task requires the policy to be explicit):
     // acquiring while a DIFFERENT tag already holds capture is a FORCED
     // TRANSFER — the incoming acquire always wins. The previous owner is
-    // released first (logged as a warning-level transfer), then the new
-    // owner is applied (logged normally). A silent no-op/rejection was
-    // rejected as a policy: that is exactly how the old ad-hoc-flag system
-    // could wedge — a second capturer's request would just vanish, and the
-    // FIRST owner (possibly already stale/orphaned) would keep the game
-    // captured with no recourse. A forced transfer + a loud log line means
-    // an overlap is always visible in the log and never silently invisible.
+    // dropped and the handoff logged ("capture handoff: X -> Y", one
+    // greppable line). A silent no-op/rejection was rejected as a policy:
+    // that is exactly how the old ad-hoc-flag system could wedge — a second
+    // capturer's request would just vanish, and the FIRST owner (possibly
+    // already stale/orphaned) would keep the game captured with no recourse.
+    // A forced transfer + a log line means an overlap is always visible in
+    // the log, never silently invisible. (It is also the NORMAL path for
+    // stacked surfaces under the host's end-of-frame priority reconcile —
+    // e.g. opening the console over the pause menu — hence INFO, not WARN.)
     // (Same-tag re-acquire, e.g. a capturer re-affirming every frame, is a
     // cheap no-op — no log spam, just makes sure the cursor mode matches.)
     bool acquire(const std::string& tag, bool showCursor);
