@@ -53,6 +53,7 @@ struct HostContext {
     bool        screenshot       = false;
     std::string screenshotPath;
     int         screenshotSettle = 16;
+    std::string shotWeapon;                 // --shot-weapon: arsenal weapon for the capture
     bool        shotCamOverride  = false;
     float       shotCam[5]       = { 8.0f, 1.75f, -0.4f, 0.06f, -0.16f };
 

@@ -616,6 +616,7 @@ int main(int argc, char** argv) {
         _hc.screenshot       = o.screenshot;
         _hc.screenshotPath   = o.screenshotPath;
         _hc.screenshotSettle = o.screenshotSettle;
+        _hc.shotWeapon       = o.shotWeapon;
         _hc.shotCamOverride  = o.shotCamOverride;
         for (int _k = 0; _k < 5; ++_k) _hc.shotCam[_k] = o.shotCam[_k];
         _hc.stressCount      = o.stressCount;

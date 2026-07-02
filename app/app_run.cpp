@@ -772,6 +772,7 @@ int runDefaultHost(HostContext& hc) {
     const int screenshotSettle = hc.screenshotSettle;
     const bool shotCamOverride = hc.shotCamOverride;
     const float* shotCam = hc.shotCam;
+    const std::string& shotWeapon = hc.shotWeapon;   // --shot-weapon for the capture
     const uint32_t stressCount = hc.stressCount;
     const bool bench = hc.bench;
     const uint32_t benchFrames = hc.benchFrames;
@@ -1544,12 +1545,30 @@ int runDefaultHost(HostContext& hc) {
         // dusty. Flyers/drones burst a touch more + faster (they pop in the air). The
         // burst seed varies by position so two kills don't fling identically. GPU-
         // simulated chunks are cheap (one compute pass + one instanced draw, below).
-        x3::game::DeathFxFn deathFx = [&combatFx, dev](const float pos[3], bool flying) {
+        x3::phys::IPhysicsWorld* phys = physics.get();
+        x3::game::DeathFxFn deathFx = [&combatFx, dev, phys](const float pos[3], bool flying) {
             const x3::phys::Vec3 ctr{ pos[0], pos[1], pos[2] };
             const uint32_t chunks = flying ? 20u : 16u;
             const float    kick   = flying ? 8.5f : 7.0f;   // m/s outward spread
             const uint32_t seed   = 0x91B0u ^ (uint32_t)(ctr.x * 131.0f)
                                             ^ ((uint32_t)(ctr.z * 977.0f) << 8);
+            // FLOATING DEBRIS FIX (Tim: white fragments hung motionless mid-air):
+            // the GPU debris sim only knows ONE global ground plane (was hard-wired
+            // to y=0), so on any floor NOT at y=0 (sub-levels below 0 / elevated
+            // Spire floors above 0) chunks settled on that phantom plane and froze in
+            // the air. Reconfigure the settle plane per-burst to the REAL floor under
+            // the kill (raycast down); fresh chunks then land + rest on the true floor.
+            float groundY = ctr.y - 1.0f;   // fallback: ~a body's height below center
+            if (phys) {
+                x3::phys::RayHit fh = phys->rayCast(x3::phys::Vec3{ ctr.x, ctr.y + 0.2f, ctr.z },
+                                                    x3::phys::Vec3{ 0.0f, -1.0f, 0.0f },
+                                                    8.0f, x3::phys::Layer::Static);
+                if (fh.hit) groundY = fh.point.y;
+            }
+            x3::rhi::IRenderDevice::GpuDebrisParams gp{};
+            gp.groundY = groundY; gp.restitution = 0.25f; gp.friction = 0.5f;
+            gp.linearDamping = 0.35f; gp.sleepFrames = 14;
+            dev->gpuDebrisConfig(gp);
             const float bp[3] = { pos[0], pos[1], pos[2] };
             dev->gpuDebrisSpawnBurst(bp, chunks, kick, /*lifetime*/4.5f,
                                      /*halfExtent*/0.07f, seed);
@@ -2330,7 +2349,8 @@ int runDefaultHost(HostContext& hc) {
         // Production HUD for the capture (its own pulse clock; persists across the
         // settle frames). Arm the player so a weapon + ammo show in the arsenal.
         x3::ui::GameHud shotHud;
-        arsenal.select(0);   // pistol selected for the capture
+        arsenal.select(0);   // pistol selected for the capture (default)
+        if (!shotWeapon.empty()) arsenal.selectByName(shotWeapon);   // --shot-weapon override
         // --screenshot-alert: stage the LEVEL-3 LOCKDOWN for the proof shot —
         // force the alert, lock the zone doors, and shift every facility light
         // hard red (the same effects the live loop applies).
@@ -2408,9 +2428,20 @@ int runDefaultHost(HostContext& hc) {
             // entirely so only the PERSISTENT scorch decal on the surface remains
             // visible (the decal-on-surface shot). One flag, two honest captures.
             if (fxDemo && kSettleFrames <= 30 && i >= kSettleFrames - 3) {
-                combatFx.spawnMuzzleFlash(fxBurst, fxDir);
-                // Sparks spray back toward the camera (normal = -look) so they read.
-                combatFx.spawnImpact(fxBurst, x3::phys::Vec3{ -fxLook.x, -fxLook.y + 0.2f, -fxLook.z });
+                // Fire the SELECTED weapon's tracer/beam from the muzzle to the wall
+                // ahead so the capture shows THAT weapon's shot FX (lightning -> the
+                // sharp zigzag beam; plasma/rocket -> a glowing bolt on the way out).
+                const x3::game::WeaponFxKind shotKind =
+                    x3::game::fxKindFromId(arsenal.current().muzzleFx);
+                const x3::phys::Vec3 shotMuz =
+                    muzzleFromCamera(ssX, ssY, ssZ, ssYaw, ssPitch, 1.6f, 0.20f, 0.06f);
+                x3::phys::RayHit shh = physics->rayCast(ssEye, fxLook, 24.0f, x3::phys::Layer::Static);
+                const x3::phys::Vec3 shotHit = shh.hit ? shh.point
+                    : x3::phys::Vec3{ ssX + fxLook.x * 12.0f, ssY + fxLook.y * 12.0f, ssZ + fxLook.z * 12.0f };
+                combatFx.addTracer(shotMuz, shotHit, shotKind);
+                combatFx.spawnMuzzleFlash(shotMuz, fxDir, shotKind);
+                combatFx.spawnImpact(shotHit, x3::phys::Vec3{ -fxLook.x, -fxLook.y + 0.2f, -fxLook.z },
+                                     x3::game::fxKindFromId(arsenal.current().impactFx));
             }
             if (fxDemo) combatFx.update(dt);
             // --world canonlevel SCREENSHOT lighting + cull: feed the player's visible
@@ -2468,6 +2499,23 @@ int runDefaultHost(HostContext& hc) {
                     combatFx.draw(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch);
                     combatFx.submit(*device, frame);
                 }
+                // FP VIEWMODEL in the capture (Tim pistol verification): draw the held
+                // weapon with the SAME clip guard the live loop uses (pull toward the
+                // eye when a wall is close ahead), so the still shows the real held gun.
+                if (arsenal.viewmodelsLoaded()) {
+                    const float vmFwdBase = arsenal.current().vmFwd;
+                    float ssFwdC = vmFwdBase;
+                    x3::phys::RayHit svwh = physics->rayCast(ssEye, fxLook, ssFwdC + 0.6f,
+                                                             x3::phys::Layer::Static);
+                    if (svwh.hit) {
+                        const float dx = svwh.point.x - ssX, dy = svwh.point.y - ssY, dz = svwh.point.z - ssZ;
+                        float wd = std::sqrt(dx * dx + dy * dy + dz * dz) - 0.35f;
+                        if (wd < 0.12f) wd = 0.12f;
+                        if (wd < ssFwdC) ssFwdC = wd;
+                    }
+                    arsenal.drawCurrentViewmodel(*device, frame, ssX, ssY, ssZ, ssYaw, ssPitch,
+                        0.0f, 0.0f, 0.0f, ssFwdC - vmFwdBase, 0.0f, 0.0f);
+                }
                 // GENERAL production HUD over the Level 1 vantage: HP bar, current
                 // weapon + ammo (from the arsenal), the live objective line,
                 // crosshair, and the minimap stub — so the screenshot shows the
@@ -2482,6 +2530,11 @@ int runDefaultHost(HostContext& hc) {
                 const x3::game::Arsenal::WeaponState& shotWs = arsenal.currentState();
                 shm.weapon = shotWd.name.c_str();
                 shm.ammoInMag = shotWs.ammoInMag; shm.ammoReserve = shotWs.reserve;
+                if (shotWd.usesCharge) {   // Lightning: CHARGE readout in the capture HUD
+                    shm.isCharge = true;
+                    shm.chargeCur = (int)(shotWs.charge + 0.5f);
+                    shm.chargeCap = (int)(shotWd.chargeCap + 0.5f);
+                }
                 // Feed the minimap RADAR + nameplates from the (capture) camera pose so
                 // the still shows the real radar: room outlines, any live enemy/ally
                 // blips, and head-anchored nameplates over on-screen hostiles.
@@ -5191,6 +5244,26 @@ int runDefaultHost(HostContext& hc) {
                 // THIRD-PERSON: hide the FP weapon viewmodel ENTIRELY (the gun is shown
                 // in the avatar's hand instead — drawn after scene.render below).
                 // viewmodelVisible() is true in FP / unbuilt, so FP behaviour is unchanged.
+                // VIEWMODEL-CLIP GUARD (Tim: the gun's rear buries in nearby props/
+                // walls). No dedicated viewmodel depth pass here, so instead PULL the
+                // whole viewmodel toward the eye when a wall is close ahead: raycast
+                // along the look dir; if the hit is nearer than the gun's forward
+                // offset, clamp the offset so the muzzle stays in front of the wall.
+                float vmFwdC = vmPose.fwd;
+                {
+                    x3::phys::Vec3 vmEye{ camX, camY, camZ };
+                    x3::phys::Vec3 vmFdir{ std::cos(camPitch) * std::cos(camYaw),
+                                           std::sin(camPitch),
+                                           std::cos(camPitch) * std::sin(camYaw) };
+                    x3::phys::RayHit vwh = physics->rayCast(vmEye, vmFdir, vmPose.fwd + 0.6f,
+                                                            x3::phys::Layer::Static);
+                    if (vwh.hit) {
+                        const float dx = vwh.point.x - camX, dy = vwh.point.y - camY, dz = vwh.point.z - camZ;
+                        float wallDist = std::sqrt(dx * dx + dy * dy + dz * dz) - 0.35f;
+                        if (wallDist < 0.12f) wallDist = 0.12f;   // never behind the eye
+                        if (wallDist < vmFwdC) vmFwdC = wallDist;
+                    }
+                }
                 if (!thirdPerson.viewmodelVisible()) {
                     // 3P: no FP viewmodel this frame.
                 } else if (arsenal.viewmodelsLoaded() && vmArmed) {
@@ -5202,20 +5275,20 @@ int runDefaultHost(HostContext& hc) {
                         vmPose.yawRad   - x3::game::kVmDefYawDeg   * kDegToRad,
                         vmPose.pitchRad - x3::game::kVmDefPitchDeg * kDegToRad,
                         vmPose.rollRad  - x3::game::kVmDefRollDeg  * kDegToRad,
-                        vmPose.fwd   - x3::game::kVmDefFwd,
+                        vmFwdC       - x3::game::kVmDefFwd,
                         vmPose.right - x3::game::kVmDefRight,
                         vmPose.down  - x3::game::kVmDefDown);
                 } else if (canonWorld && canonPlay.built()) {
                     // Fallback in canonlevel: the canon sidearm's pickup viewmodel.
                     canonPlay.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,
                                             vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
-                                            vmPose.fwd, vmPose.right, vmPose.down);
+                                            vmFwdC, vmPose.right, vmPose.down);
                 } else {
                     // Fallback: arsenal viewmodels didn't load -> the original pickup
                     // viewmodel (unchanged behavior).
                     game.drawViewmodel(*device, frame, camX, camY, camZ, camYaw, camPitch,
                                        vmPose.yawRad, vmPose.pitchRad, vmPose.rollRad,
-                                       vmPose.fwd, vmPose.right, vmPose.down);
+                                       vmFwdC, vmPose.right, vmPose.down);
                 }
             }
             // FX: active tracers + muzzle flash (world-space).

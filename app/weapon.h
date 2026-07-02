@@ -248,6 +248,14 @@ struct WeaponDef {
     float       vmRight      = kVmDefRight;
     float       vmDown       = kVmDefDown;
     float       vmScale      = 0.18f;   // model scale for the held viewmodel
+    // Viewmodel render mode. The legacy path multiplies the diffuse texture by a big
+    // HDR brightness boost to fight dark interiors — which CRUSHES a detailed gunmetal
+    // diffuse into a high-contrast black/white "dazzle" (Tim's pistol complaint). When
+    // vmLitPBR is true the viewmodel is drawn LIT via drawMeshPBR (real baseColor +
+    // normal + metallic-roughness maps) at its natural albedo plus a modest emissive
+    // FILL for dark-interior visibility — so it reads as actual lit gunmetal, not a
+    // blown-out camo splotch. Default false keeps every existing weapon byte-identical.
+    bool        vmLitPBR     = false;
     // FX preset hints (string keys the host maps onto CombatFx muzzle/impact). Kept
     // as data so designers can retune which preset a weapon uses; the host reads them.
     // The host maps these onto a WeaponFxKind (see app/fx.h fxKindFromId) so each gun

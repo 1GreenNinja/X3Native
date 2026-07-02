@@ -294,6 +294,9 @@ struct CliOptions {
     // when omitted: G:\X3Native\screenshot.png.
     bool        screenshot = false;
     std::string screenshotPath = "G:/X3Native/screenshot.png";
+    // --shot-weapon <name>: select this arsenal weapon for the --screenshot capture
+    // (draws its FP viewmodel + its firing FX under --fx-demo). Empty -> pistol.
+    std::string shotWeapon;
     // Level Architect EDITOR mode (--editor): boot the live canon world with the Dear
     // ImGui (docking) editor overlay enabled. With no --editor flag ImGui never
     // initializes (zero cost — byte-for-byte the shipping game). Phase 0 draws only a

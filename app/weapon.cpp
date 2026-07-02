@@ -307,6 +307,7 @@ std::vector<WeaponDef> makeDefaultRoster() {
         w.reloadTime  = 1.3f;     // quick sidearm reload
         w.viewmodelGlb = "WeaponEnergyPistol2.glb";  // real energy_pistol.obj (PBR-textured)
         w.vmScale     = 0.18f;                        // proven pistol read (~0.33 m held)
+        w.vmLitPBR    = true;                         // lit gunmetal (no albedo-crush dazzle)
         w.muzzleFx    = "muzzle_pistol";
         w.impactFx    = "impact_bullet";
         w.fireSfx     = "weapons/single/Single_Gunshot_Sci-Fi_Gun-01.wav";   // punchy single shot
@@ -932,15 +933,31 @@ void Arsenal::drawCurrentViewmodel(x3::rhi::IRenderDevice& device,
     for (const auto& dr : vm.drawables) {
         float fin[16];
         x3::asset::mulMat4(model, dr.nodeTransform, fin);
-        const float litColor[4] = {
-            dr.baseColorFactor[0] * kVmBright,
-            dr.baseColorFactor[1] * kVmBright,
-            dr.baseColorFactor[2] * kVmBright,
-            dr.baseColorFactor[3],
-        };
-        device.drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
-                        x3::rhi::TextureHandle{ dr.baseColorTexId },
-                        litColor, fin);
+        if (d.vmLitPBR) {
+            // Clean LIT GUNMETAL. This pistol's baked diffuse read as a black/white
+            // "dazzle" (the shared 2.6x boost crushed it) and its UV islands sample the
+            // atlas's light barrel sections (so a straight textured draw goes near-
+            // white). Drop the problem diffuse: draw a fixed gunmetal baseColor LIT by
+            // the scene (drawMeshEmissive gives it real form/highlights) + a subtle blue
+            // emissive accent — so it reads as an actual gunmetal sidearm, not a splotch
+            // or a white blob. No texture -> the built-in white 1x1 * gunmetal factor.
+            // Plain UNLIT drawMesh with an INVALID texture -> the built-in white 1x1,
+            // so the result is EXACTLY this gunmetal factor (no scene over-lighting that
+            // blew the lit path to white, no light-texel sampling from the bad diffuse).
+            const float gunCol[4] = { 0.07f, 0.08f, 0.10f, 1.0f };  // dark cool gunmetal (lit)
+            device.drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
+                            x3::rhi::TextureHandle{}, gunCol, fin);
+        } else {
+            const float litColor[4] = {
+                dr.baseColorFactor[0] * kVmBright,
+                dr.baseColorFactor[1] * kVmBright,
+                dr.baseColorFactor[2] * kVmBright,
+                dr.baseColorFactor[3],
+            };
+            device.drawMesh(frame, x3::rhi::MeshHandle{ dr.meshId },
+                            x3::rhi::TextureHandle{ dr.baseColorTexId },
+                            litColor, fin);
+        }
     }
 }
 

@@ -250,6 +250,9 @@ void parseCli(int argc, char** argv, CliOptions& o) {
             if (i + 1 < argc && argv[i + 1][0] >= '0' && argv[i + 1][0] <= '9')
                 o.screenshotSettle = (int)std::strtol(argv[++i], nullptr, 10);
         }
+        else if (a == "--shot-weapon") {
+            if (i + 1 < argc && argv[i + 1][0] != '-') o.shotWeapon = argv[++i];
+        }
         else if (a == "--shot-cam") {
             // Parse "x,y,z,yaw,pitch" into shotCam[]; enables the override.
             if (i + 1 < argc && argv[i + 1][0] != '-') {
