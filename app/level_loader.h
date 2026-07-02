@@ -50,7 +50,7 @@ constexpr float kCanonDoorHalf  = 0.8f;    // doorway opening half-width (1.6 m 
 constexpr float kCanonLintel    = 2.2f;    // head clearance under a doorway lintel (>= 1.8 + margin)
 constexpr float kCanonCeilT     = 0.2f;    // ceiling cap thickness (m)
 constexpr float kCanonShaftHalf = 1.5f;    // cross-level descent-tube half-width (3 m square)
-constexpr float kCanonRampSlope = 0.70f;   // threshold-ramp rise/run the builder targets (tan ~35 deg)
+constexpr float kCanonRampSlope = 0.55f;   // threshold-ramp rise/run the builder targets (~28.8 deg, under the LAW-3 30 deg cap)
 
 // One parsed room (a node in the floor graph). Coordinates are world meters, engine
 // convention. center = (x,y,z) is the room CENTER; (w,h,d) are FULL extents. The

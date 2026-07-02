@@ -1344,6 +1344,16 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             wallX(scene, device, physics, xlo, xhi, zc + kDoorHalf + kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
             addBox(scene, device, physics, (xhi - xlo) * 0.5f, kCeilT * 0.5f, kDoorHalf + kWallT,
                    (xlo + xhi) * 0.5f, floorY + h + kCeilT * 0.5f, zc, ceilTex, ceilWhite, dw.a, true, false);
+            // The deck sits at the HIGHER floor; ramp the LOWER room's mouth up to it so the
+            // player isn't dropped onto a bare ledge (LAW 3 height-transition vocabulary).
+            if (std::fabs(a.y0() - b.y0()) > 0.05f) {
+                const CanonRoom& lo = (a.y0() <= b.y0()) ? a : b;
+                const CanonRoom& hi = (a.y0() <= b.y0()) ? b : a;
+                const uint32_t loId = (a.y0() <= b.y0()) ? dw.a : dw.b;
+                const float mouthX = (lo.cx < hi.cx) ? lo.x1() : lo.x0();
+                const float sideSign = (lo.cx < mouthX) ? -1.0f : +1.0f;
+                doorwayRamp(scene, device, physics, mouthX, zc, lo.y0(), floorY, 0, sideSign, floorTex, rampTint, loId, floorVis);
+            }
         } else {
             // Gap is along Z.
             float zlo, zhi;
@@ -1356,6 +1366,14 @@ void buildCanonFloor(CanonFloor& floor, Scene& scene,
             wallZ(scene, device, physics, zlo, zhi, xc + kDoorHalf + kWallT * 0.5f, floorY, h, wallTexA, bridgeTint, dw.a, wallVis);
             addBox(scene, device, physics, kDoorHalf + kWallT, kCeilT * 0.5f, (zhi - zlo) * 0.5f,
                    xc, floorY + h + kCeilT * 0.5f, (zlo + zhi) * 0.5f, ceilTex, ceilWhite, dw.a, true, false);
+            if (std::fabs(a.y0() - b.y0()) > 0.05f) {
+                const CanonRoom& lo = (a.y0() <= b.y0()) ? a : b;
+                const CanonRoom& hi = (a.y0() <= b.y0()) ? b : a;
+                const uint32_t loId = (a.y0() <= b.y0()) ? dw.a : dw.b;
+                const float mouthZ = (lo.cz < hi.cz) ? lo.z1() : lo.z0();
+                const float sideSign = (lo.cz < mouthZ) ? -1.0f : +1.0f;
+                doorwayRamp(scene, device, physics, xc, mouthZ, lo.y0(), floorY, 1, sideSign, floorTex, rampTint, loId, floorVis);
+            }
         }
     }
 

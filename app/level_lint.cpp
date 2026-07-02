@@ -381,11 +381,26 @@ LintReport lintCanonFloor(const CanonFloor& floor) {
                     dw.cx, dw.cy, dw.cz);
         }
         else if (dw.kind == DoorwayKind::GapBridge) {
-            add(LintCategory::Height, "HEIGHT_NO_TRANSITION",
-                fmt("gap-bridge between %s and %s spans a %.2f m floor delta with no "
-                    "step/stairs/ramp (bare ledge at the lower mouth)",
-                    rn(dw.a).c_str(), rn(dw.b).c_str(), delta),
-                dw.cx, dw.cy, dw.cz);
+            // The builder ramps the LOWER room's bridge mouth up to the deck (which sits at
+            // the higher floor). Model that same ramp: run = clamp(rise/slope, wall+0.6, 6).
+            float run = std::max(delta / kCanonRampSlope, kCanonWallT + 0.6f);
+            if (run > 6.0f) run = 6.0f;
+            const float slope = delta / run;
+            if (slope > kMaxRampTan + 0.01f)
+                add(LintCategory::Height, "RAMP_TOO_STEEP",
+                    fmt("gap-bridge mouth ramp between %s and %s: %.2f m rise over %.2f m run = "
+                        "%.0f deg (law: <= 30 deg)",
+                        rn(dw.a).c_str(), rn(dw.b).c_str(), delta, run,
+                        std::atan(slope) * 57.2958f),
+                    dw.cx, dw.cy, dw.cz);
+            const CanonRoom& lower = (A.y0() <= B.y0()) ? A : B;
+            const float lowerExtent = (dw.axis == 0) ? lower.w : lower.d;
+            if (run > lowerExtent - 0.2f)
+                add(LintCategory::Height, "RAMP_DOESNT_FIT",
+                    fmt("gap-bridge mouth ramp between %s and %s needs a %.1f m run but the lower "
+                        "room is only %.1f m deep on that axis",
+                        rn(dw.a).c_str(), rn(dw.b).c_str(), run, lowerExtent),
+                    dw.cx, dw.cy, dw.cz);
         }
         // CrossLevel = elevator/hatch/shaft vocabulary: legal by definition.
     }
@@ -402,11 +417,10 @@ LintReport lintCanonFloor(const CanonFloor& floor) {
         std::vector<std::vector<uint32_t>> adj(n);
         for (const CanonDoorway& dw : floor.doorways) {
             if (dw.a >= n || dw.b >= n) continue;
-            const float delta = std::fabs(floor.rooms[dw.a].y0() - floor.rooms[dw.b].y0());
-            bool walkable = true;
-            if (dw.kind == DoorwayKind::GapBridge && delta > kMaxLegalStep)
-                walkable = false;                            // bare ledge — not legally walkable
-            if (walkable) { adj[dw.a].push_back(dw.b); adj[dw.b].push_back(dw.a); }
+            // Every doorway kind now carries a legal transition (adjacency/overlap/gap-bridge
+            // all get a threshold ramp for any floor delta; cross-level = the elevator spine),
+            // so each is walk-traversable for the reachability flood.
+            adj[dw.a].push_back(dw.b); adj[dw.b].push_back(dw.a);
         }
         std::vector<char> seen(n, 0);
         std::vector<uint32_t> stack{ spawn };
