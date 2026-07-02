@@ -295,6 +295,29 @@ uint32_t CanonPlay::tagRoom(Scene& scene, const MonsterSystem& m, uint32_t room)
     return room;
 }
 
+void CanonPlay::addBattery(Scene& scene, x3::rhi::IRenderDevice& device,
+                           const x3::phys::Vec3& pos, uint32_t room) {
+    if (!m_crystalMesh.valid()) return;
+    (void)device;
+    Entity e;
+    e.mesh = m_crystalMesh;                                   // shared faceted crystal
+    e.baseColor[0]=0.30f; e.baseColor[1]=0.85f; e.baseColor[2]=0.80f; e.baseColor[3]=1.0f;
+    e.emissive[0]=0.25f; e.emissive[1]=1.10f; e.emissive[2]=0.75f; e.emissive[3]=3.4f; // glow within
+    e.transparent = true;                                     // translucent crystal (glass pass)
+    e.glass.opacity=0.55f; e.glass.refraction=0.05f; e.glass.roughness=0.05f; e.glass.specular=0.85f;
+    e.glass.tint[0]=0.45f; e.glass.tint[1]=1.0f; e.glass.tint[2]=0.85f;   // blue-green tint
+    e.tag = (uint32_t)Tag::Prop;
+    e.roomId = room;
+    e.visible = true;
+    for (int i=0;i<16;++i) e.transform[i] = (i%5==0) ? 1.0f : 0.0f;   // identity
+    e.transform[12]=pos.x; e.transform[13]=pos.y; e.transform[14]=pos.z;
+    Battery b;
+    b.pos = pos;
+    b.entity = scene.add(e);
+    b.phase = (float)m_batteries.size() * 1.37f;              // desync spin/bob
+    m_batteries.push_back(b);
+}
+
 void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDevice& device,
                       x3::phys::IPhysicsWorld& physics, std::string_view modelDir,
                       std::string_view girlsDialogPath, bool deferUpperFloors) {
@@ -329,6 +352,30 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
         const uint32_t pe = m_weapon.pickupEntity();
         if (pe != kNoLink && pe < scene.size()) scene.get(pe).roomId = bt.jakeCell;
         m_pickupRoom = bt.jakeCell;
+    }
+
+    // ---- LIGHTNING BATTERY CELLS: floating, spinning, TRANSLUCENT faceted energy
+    // crystals (green/blue, glowing from within — the Lab2 crystal language) that grant
+    // Lightning-Gun charge. Placed through the facility so the beam stays fed; each is
+    // room-tagged so the flood-fill cull + lights include it. ----
+    {
+        x3::prims::PrimMesh cg = x3::prims::makeCrystal(0.10f, 0.10f, 0.17f);
+        m_crystalMesh = device.createMesh(cg.verts.data(), (uint32_t)cg.verts.size(),
+                                          cg.index.data(), (uint32_t)cg.index.size());
+        auto place = [&](uint32_t room, float dx, float dz) {
+            if (room == kNoRoom) return;
+            const CanonRoom& R = floor.rooms[room];
+            addBattery(scene, device,
+                       x3::phys::Vec3{ R.cx + dx, roomFloorY(room, 1.1f), R.cz + dz }, room);
+        };
+        place(bt.mainHall, -8.0f, -2.0f);
+        place(bt.mainHall,  9.0f,  2.0f);
+        place(bt.security,  0.0f,  0.0f);
+        place(bt.research,  0.0f,  0.0f);
+        place(bt.armory,    0.0f,  0.0f);
+        place(bt.bossArena, 0.0f, -3.0f);
+        x3::logInfo("[canonplay] placed " + std::to_string(m_batteries.size()) +
+                    " lightning battery cells");
     }
 
     // ---- ANIMATED enemy squad down the MAIN HALL (the GPU-skinned rigged set via the
@@ -689,6 +736,28 @@ void CanonPlay::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
     if (!m_built) return;
     // Sidearm pickup: arm the player when they walk into it (mirrors level1).
     m_weapon.update(dt, scene, eye);
+    // Lightning battery cells: spin + bob, then collect on proximity -> grant charge + hide.
+    m_batteryAnimT += dt;
+    for (Battery& b : m_batteries) {
+        if (b.collected || b.entity == kNoLink || b.entity >= scene.size()) continue;
+        Entity& e = scene.get(b.entity);
+        const float t = m_batteryAnimT + b.phase;
+        const float bob = 0.12f * std::sin(t * 1.6f);
+        const float yaw = t * 1.1f;
+        const float c = std::cos(yaw), s = std::sin(yaw);
+        e.transform[0]=c; e.transform[1]=0; e.transform[2]=-s; e.transform[3]=0;
+        e.transform[4]=0; e.transform[5]=1; e.transform[6]=0;  e.transform[7]=0;
+        e.transform[8]=s; e.transform[9]=0; e.transform[10]=c; e.transform[11]=0;
+        e.transform[12]=b.pos.x; e.transform[13]=b.pos.y+bob; e.transform[14]=b.pos.z; e.transform[15]=1;
+        const float dx=eye.x-b.pos.x, dz=eye.z-b.pos.z, dy=eye.y-b.pos.y;
+        if (dx*dx+dz*dz <= kPickupRadius*kPickupRadius && std::fabs(dy) <= 2.0f) {
+            b.collected = true;
+            e.visible = false;
+            if (m_chargeSink) m_chargeSink(kBatteryCharge);
+            x3::logInfo("[canonplay] battery cell collected (+" +
+                        std::to_string(kBatteryCharge) + " lightning charge)");
+        }
+    }
     // Enemy groups attack the player on cooldown (they chase + animate). The Martinez boss
     // runs its phase machine via the single-monster update.
     m_mainHall.update(dt, scene, physics, eye, player, attackFx);
