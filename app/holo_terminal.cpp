@@ -277,24 +277,32 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
                                       const std::string& inputLine) {
     const float fn = (float)n;
 
-    // ---- 1) GLASS BASE (under the line-art): deep-blue gradient + scanlines +
-    // grid + vignette, EXACTLY as before so it still reads as a hologram. ----
+    // ---- 1) DARK INSET SCREEN PANE (Tim's ask): a near-black, high-contrast field
+    // floating inside the rounded glass, with a CLEAR bezel MARGIN so the cell shows
+    // through the glass at the edges. The blue line-art + readout text bloom over this
+    // dark field so they read perfectly. (Was a uniform mid-blue glass slab, which made
+    // the whole panel read as a solid tinted plate — no dark screen, no see-through.) ----
+    const float paneM = 0.055f;                             // fractional bezel margin
     Canvas c(n);
     for (uint32_t y = 0; y < n; ++y) {
         for (uint32_t x = 0; x < n; ++x) {
             const float u = (x + 0.5f) / fn, v = (y + 0.5f) / fn;
-            float br = 0.05f, bg = 0.16f, bb = 0.34f;
-            const float grad = 1.0f - v * 0.55f;            // brighter toward the top
-            br *= grad; bg *= grad; bb *= grad;
-            const float scan = 0.78f + 0.22f * ((y % 4u) < 2u ? 1.0f : 0.55f);
-            br *= scan; bg *= scan; bb *= scan;
-            if ((x % 28u) < 1u || (y % 28u) < 1u) { bg += 0.10f; bb += 0.16f; } // data-grid
-            const float cx = (u - 0.5f), cy = (v - 0.5f);
-            const float rad = std::sqrt(cx*cx + cy*cy) * 1.42f;
-            const float vig = 1.0f - 0.45f * rad * rad;
-            br *= vig; bg *= vig; bb *= vig;
             const size_t i = (size_t)y * n + x;
-            c.r[i] = br; c.g[i] = bg; c.b[i] = bb;
+            const bool inPane = (u > paneM && u < 1.0f - paneM &&
+                                 v > paneM && v < 1.0f - paneM);
+            if (inPane) {
+                // Near-black screen field (barely-blue) + a faint scanline/grid so it
+                // reads as a LIVE display surface, not a dead hole — but kept DARK so the
+                // glowing blue text pops at high contrast.
+                float br = 0.012f, bg = 0.024f, bb = 0.050f;
+                const float scan = 0.85f + 0.15f * ((y % 4u) < 2u ? 1.0f : 0.5f);
+                br *= scan; bg *= scan; bb *= scan;
+                if ((x % 28u) < 1u || (y % 28u) < 1u) { bg += 0.012f; bb += 0.022f; } // faint grid
+                c.r[i] = br; c.g[i] = bg; c.b[i] = bb;
+            } else {
+                // MARGIN / bezel: near-transparent (the glass shows the room behind it).
+                c.r[i] = 0.004f; c.g[i] = 0.009f; c.b[i] = 0.017f;
+            }
         }
     }
 
@@ -303,10 +311,17 @@ std::vector<uint8_t> makeHologramRGBA(uint32_t n,
     // Strokes are pushed HOT (cyan well above the glass base) so the printed HUD
     // survives the flat additive emissive flood + reads under scene lighting. ----
     auto P = [&](float f){ return f * fn; };                // fraction -> pixels
-    const float CY_R = 0.55f, CY_G = 1.30f, CY_B = 1.45f;   // hot cyan stroke (HDR-ish)
-    const float WT_R = 1.30f, WT_G = 1.55f, WT_B = 1.65f;   // hot cyan-white
+    // GLOWING BLUE palette (Tim: "text color BLUE, not cyan"). Blue = high blue channel,
+    // low-mid green, low red — pushed HDR so the strokes bloom softly over the dark pane.
+    const float CY_R = 0.26f, CY_G = 0.56f, CY_B = 1.60f;   // glowing blue stroke (HDR)
+    const float WT_R = 0.60f, WT_G = 0.92f, WT_B = 1.75f;   // bright blue-white
     const float th  = std::max(1.4f, fn / 512.0f);          // base stroke thickness
     const float thh = th * 1.5f;                            // heavier strokes
+
+    // Inset PANE BORDER — a thin blue rule at the dark-screen edge so the recessed field
+    // reads as an inset within the rounded glass bezel (drawn under the HUD line-art).
+    rectFrame(c, P(paneM), P(paneM), P(1.0f - paneM), P(1.0f - paneM),
+              CY_R, CY_G, CY_B, 0.55f, th);
 
     // Whole-UI bracket frame with a chamfered top-right corner.
     bracketFrame(c, P(0.045f), P(0.05f), P(0.955f), P(0.95f),
@@ -740,7 +755,7 @@ void HoloTerminal::build(Scene& scene, x3::rhi::IRenderDevice& device,
     e.glass.specular   = 0.40f;          // fresnel sheen without the hot glints
     // RESTRAINED emissive: a readable hologram glow that feeds bloom gently. The UI
     // text must be READABLE on the glass at night exposure — that is the acceptance.
-    m_emBase[0] = 0.10f; m_emBase[1] = 0.34f; m_emBase[2] = 0.52f; m_emBase[3] = 0.30f;
+    m_emBase[0] = 0.05f; m_emBase[1] = 0.22f; m_emBase[2] = 0.55f; m_emBase[3] = 0.28f; // BLUE base glow — restrained so the dark pane stays dark + high-contrast
     e.emissive[0]=m_emBase[0]; e.emissive[1]=m_emBase[1]; e.emissive[2]=m_emBase[2]; e.emissive[3]=m_emBase[3];
     e.tag = (uint32_t)Tag::Prop;
     e.transform[0]=cs;  e.transform[2]=-sn;
@@ -877,7 +892,7 @@ void HoloTerminal::update(float dt) {
         const float t = std::fmod(m_clock * 0.45f, 1.0f);      // 0..1 sweep phase
         const float band = 0.5f - 0.5f * std::cos(t * 6.2831853f); // smooth 0->1->0
         Entity& scan = m_scene->get(m_scanEntity);
-        scan.emissive[3] = 0.12f + 0.30f * band;               // restrained sweep (Bible: accent, not strobe)
+        scan.emissive[3] = 0.05f + 0.14f * band;               // SUBTLE shimmer glint (dialed down — Tim: subtle across the rounded glass)
     }
 }
 
