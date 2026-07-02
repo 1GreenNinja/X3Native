@@ -138,6 +138,7 @@ void parseCli(int argc, char** argv, CliOptions& o) {
         else if (a == "--test-thirdperson") o.testThirdPerson = true;
         else if (a == "--test-npctalk") o.testNpcTalk = true;
         else if (a == "--test-chattree") o.testChatTree = true;
+        else if (a == "--test-inputcapture") o.testInputCapture = true;
         else if (a == "--test-mission") o.testMission = true;
         else if (a == "--test-destruction") o.testDestruction = true;
         else if (a == "--test-debris") o.testDebris = true;

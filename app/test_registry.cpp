@@ -69,6 +69,7 @@
 #include "glass_test.h"
 #include "holo_terminal.h"
 #include "secret_room.h"
+#include "input_capture.h"        // x3::game::runInputCaptureSelfTest (--test-inputcapture)
 #include "headless_device.h"
 #include "ecs_render.h"
 #include "spire_mid.h"
@@ -614,6 +615,12 @@ int dispatchTests(const TestFlags& tf) {
         x3::logInfo("running x3.chattree/1 dialog-runner self-test (parse all 8 trees + "
                     "the lena walk: gates/fx/follow/1278/banter/flags round-trip)...");
         return x3::game::runChatTreeSelfTest() ? 0 : 1;
+    }
+    if (tf.testInputCapture) {
+        x3::logInfo("running InputCaptureManager self-test (P0 fix/input-capture-lockup: "
+                    "acquire/release per tag, overlap forced-transfer, despawn-mid-dialog "
+                    "stale-release safety, ESC force-release, watchdog reclaim)...");
+        return x3::game::runInputCaptureSelfTest() ? 0 : 1;
     }
     if (tf.testMission) {
         x3::logInfo("running x3.mission/1 mission-runner self-test (doc parse/validate + "
