@@ -102,7 +102,14 @@ constexpr float kApproachZ    = -24.0f;   // crossing this advances "approach" o
 constexpr float kPlinthH   = 0.6f;    // slim FLUSH concrete sill under the ground-entry glazing
 constexpr float kLobbyH    = 6.0f;    // band 1: taller DARK recessed ground-entry level
 constexpr float kStoryH    = 4.5f;    // UNIFORM floor pitch (spandrel + glass) for EVERY band
-constexpr float kSpandrelH = 0.45f;   // SLIM pale spandrel LINE (~10% of floor); dark glass fills the other ~90% (Lab2 grid)
+constexpr float kSpandrelH = 1.35f;   // SUBSTANTIAL pale concrete SPANDREL BAND (lab.jpg: ~30% of floor, 1/4-1/3);
+                                      // dark glass fills the other ~70% (still glass-dominant, but the white bands
+                                      // now read as STRUCTURE — a strong horizontal striped-monolith rhythm, not pinstripes)
+// ---- WHITE-not-brown: the shared mesh sun (mesh.frag kSunColor = 1.0,0.97,0.92) is
+// slightly WARM, so a neutral concrete albedo renders tan/brown at night. Counter it
+// with a COOL-WHITE albedo tint on the concrete skeleton only (sun*tint reads bone-white,
+// slightly cool — matching Lab2's silver-white skeleton). Ground/rock/mesa keep their own tints.
+constexpr float kConcreteTintR = 0.98f, kConcreteTintG = 1.06f, kConcreteTintB = 1.20f;
 constexpr int   kStories   = 15;      // VISIBLE window bands (band 1 = the ground entry) — uniform, top to bottom
 constexpr int   kInteriorFloors = 7;  // canon INTERIOR floor count; kStories > this IS the secret (fake bands over hidden mass)
 constexpr float kCrownH    = 2.5f;    // thin parapet / roof-plant band above the top band
@@ -257,12 +264,15 @@ int hostSurfaceStart(HostContext& hc) {
                 collideBox(s * 7.6f, 0.45f, bz, 0.42f, 0.45f, 2.6f);
             }
         }
-        // Distant mesa relief (visual only) — silhouettes for the haze to eat.
-        slab(-165.0f,  8.0f, -235.0f, 95.0f,  8.0f, 38.0f, mesaTex, mrGround, 0.018f);
-        slab( 150.0f, 11.0f, -270.0f, 110.0f, 11.0f, 46.0f, mesaTex, mrGround, 0.016f);
-        slab(-245.0f,  6.0f,  -50.0f, 55.0f,  6.0f, 30.0f, mesaTex, mrGround, 0.02f);
-        slab( 235.0f,  8.5f, -120.0f, 70.0f,  8.5f, 34.0f, mesaTex, mrGround, 0.018f);
-        slab( -60.0f,  5.0f,  225.0f, 90.0f,  5.0f, 40.0f, mesaTex, mrGround, 0.02f);
+        // Distant mesa relief (visual only) — DARK cool silhouettes for the night
+        // haze to eat (untinted they render warm-tan under the warm sun and read as
+        // odd bright blocks at the frame edge; tint them to deep alien-rock shadow).
+        const float mR = 0.30f, mG = 0.30f, mB = 0.40f;
+        slab(-165.0f,  8.0f, -235.0f, 95.0f,  8.0f, 38.0f, mesaTex, mrGround, 0.018f, mR, mG, mB);
+        slab( 150.0f, 11.0f, -270.0f, 110.0f, 11.0f, 46.0f, mesaTex, mrGround, 0.016f, mR, mG, mB);
+        slab(-245.0f,  6.0f,  -50.0f, 55.0f,  6.0f, 30.0f, mesaTex, mrGround, 0.02f,  mR, mG, mB);
+        slab( 235.0f,  8.5f, -120.0f, 70.0f,  8.5f, 34.0f, mesaTex, mrGround, 0.018f, mR, mG, mB);
+        slab( -60.0f,  5.0f,  225.0f, 90.0f,  5.0f, 40.0f, mesaTex, mrGround, 0.02f,  mR, mG, mB);
     }
 
     // ---- THE FACILITY TOWER exterior (Tim's UNIFORM Lab2-grid spec — constants
@@ -318,9 +328,13 @@ int hostSurfaceStart(HostContext& hc) {
                 switch (mat) {
                 case 1:  slab(cx, cy, cz, hx, hy, hz, blackGlassTex, mrGlass, 1.0f); break;
                 case 2:  lobbyGlass(cx, cy, cz, hx, hy, hz); break;
-                case 3:  slab(cx, cy, cz, hx, hy, hz, apronTex, mrApron, 0.22f); break;
+                // mullions: thin pale STRUCTURE — cool-white like the spandrels/corners.
+                case 3:  slab(cx, cy, cz, hx, hy, hz, apronTex, mrApron, 0.22f,
+                              kConcreteTintR, kConcreteTintG, kConcreteTintB); break;
                 case 4:  slab(cx, cy, cz, hx, hy, hz, ventTex, mrVent, 0.8f); break;
-                default: slab(cx, cy, cz, hx, hy, hz, concreteTex, mrConcrete, 0.24f); break;
+                // spandrel bands + corner margins: the WHITE concrete skeleton (cool-white tint).
+                default: slab(cx, cy, cz, hx, hy, hz, concreteTex, mrConcrete, 0.24f,
+                              kConcreteTintR, kConcreteTintG, kConcreteTintB); break;
                 }
             };
             const float cornerW = 1.1f;                 // slim concrete margin at each end (glass runs wider; the proud corner columns carry the white frame)
@@ -393,12 +407,13 @@ int hostSurfaceStart(HostContext& hc) {
                 const float ccx = sx * (kFacilityHalfW - 0.9f);
                 const float ccz = (sz ? backZ + 0.9f : kFacilityZ - 0.9f);
                 slab(ccx, kTowerH * 0.5f, ccz, 1.2f, kTowerH * 0.5f, 1.2f,
-                     concreteTex, mrConcrete, 0.24f);
+                     concreteTex, mrConcrete, 0.24f,
+                     kConcreteTintR, kConcreteTintG, kConcreteTintB);
             }
 
         // PARAPET CAP: a smooth-concrete coping slab overhanging the crown.
         slab(0.0f, kTowerH + 0.22f, fcz, kFacilityHalfW + 0.55f, 0.22f, kFacilityHalfD + 0.55f,
-             apronTex, mrApron, 0.2f);
+             apronTex, mrApron, 0.2f, kConcreteTintR, kConcreteTintG, kConcreteTintB);
         collideBox(0.0f, kTowerH + 0.22f, fcz, kFacilityHalfW + 0.55f, 0.22f, kFacilityHalfD + 0.55f);
         // Interior lobby floor slab.
         slab(0.0f, 0.05f, fcz, kFacilityHalfW, 0.1f, kFacilityHalfD, apronTex, mrApron, 0.16f);
@@ -732,9 +747,13 @@ int hostSurfaceStart(HostContext& hc) {
     // hero framing, so the right is the clean expanse). dot(sunDir,dir) ~ -0.35
     // -> a bright ~68%-lit disc with a slim terminator on the lower-left edge (the
     // phase reads), rather than a dull half-ball.
+    // For the 3/4 hero the tower + front face fill the centre/right, so the clean
+    // sky is UPPER-LEFT (lab.jpg's moons ride over the end face). Dirs chosen up +
+    // slightly-left of the camera forward (+0.49X,-0.86Z), with dot(sunDir,dir)
+    // negative (~-0.2) so each disc is a bright gibbous with a slim terminator (phase).
     MoonBody moons[2] = {
-        { { 0.28f, 0.50f, -0.80f }, 8.5f },   // the LARGE moon, open upper-right
-        { { 0.46f, 0.60f, -0.66f }, 4.4f },   // the small companion, up + right of it
+        { {  0.02f, 0.50f, -0.86f }, 8.5f },   // the LARGE moon, upper-left over the corner
+        { {  0.18f, 0.57f, -0.80f }, 4.4f },   // the small companion, up-right of it (both in frame)
     };
     for (auto& mb : moons) {
         const float l = std::sqrt(mb.dir[0]*mb.dir[0] + mb.dir[1]*mb.dir[1] + mb.dir[2]*mb.dir[2]);
@@ -865,10 +884,13 @@ int hostSurfaceStart(HostContext& hc) {
     // ===== Headless capture path (--world surface --screenshot <p>). =========
     if (headless) {
         device->setFrustumCullEnabled(false);
-        // Vantage: the LANDING VIEW — near player-eye height on the approach,
-        // pitched UP so the full dark-glass tower reads against the sky (the whole
-        // uniform grid of window bands, top to bottom; ship at right).
-        float cam[5] = { 13.0f, 2.0f, 40.0f, -3.14159265f*0.5f - 0.10f, 0.30f };
+        // Vantage: the ARCHITECTURAL 3/4 HERO (Tim's note 3 + lab.jpg composition) —
+        // camera set out to the -X/+Z (front-LEFT) so BOTH the long FRONT face (+Z,
+        // receding right) and the end LEFT face (-X, foreshortened left) read, the near
+        // FRONT-LEFT corner column left-of-centre and crisp, at a slight LOW angle so
+        // the ~71 m mass looms. Crystals fall in the foreground-left; the two moons ride
+        // upper-left. This 3/4 is also the true test that the uniform facade wraps the corner.
+        float cam[5] = { -50.0f, 6.5f, 14.0f, -1.04f, 0.22f };
         if (shotCamOverride) for (int k = 0; k < 5; ++k) cam[k] = shotCam[k];
         const std::string outPath = screenshot ? screenshotPath : std::string("w_surface.png");
         // Derive the NEON-VARIANT path: "<stem>_neon.<ext>" (default hero_final ->
@@ -890,7 +912,7 @@ int hostSurfaceStart(HostContext& hc) {
                 phys->step(dt);
                 rescue.tick(dt, scene, *phys, player.feet());   // hub NOT reached -> no timers
                 scene.update(*phys);
-                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 70.0f);
+                device->setCamera(cam[0], cam[1], cam[2], cam[3], cam[4], 74.0f);
                 if (i == kFrames - 1) device->armCapture(path.c_str());
                 auto frame = device->beginFrame();
                 if (frame.valid) {
@@ -1082,6 +1104,13 @@ bool runSurfaceStartSelfTest() {
                   std::fabs((bandBaseY(3) - bandBaseY(2)) - kStoryH) < 1e-3f &&
                   std::fabs((bandBaseY(kStories) - bandBaseY(kStories - 1)) - kStoryH) < 1e-3f,
                   "S6b tower is a UNIFORM grid: more bands than interior floors, regular kStoryH pitch, ~71 m");
+
+            // S6c SUBSTANTIAL spandrel bands (Tim's note 1 / lab.jpg): the pale concrete
+            // band between glass rows is a real structural slab (~1/4-1/3 of the floor),
+            // NOT a pinstripe — yet glass still dominates each floor. Floor pitch unchanged.
+            check(kSpandrelH >= 1.1f && kSpandrelH <= kStoryH * 0.34f &&
+                  (kStoryH - kSpandrelH) > kSpandrelH,
+                  "S6c spandrel bands are SUBSTANTIAL (~1/4-1/3 of floor) yet glass-dominant");
 
             // Player OUTSIDE + armed framing (controller stands up + faces -Z).
             x3::game::Player player;
