@@ -86,15 +86,20 @@ void CombatFx::addTracer(const x3::phys::Vec3& from, const x3::phys::Vec3& to, W
     t.from = from;
     t.to   = to;
     t.life = kTracerTime;
+    t.age  = 0.0f;        // Lightning bolt grows from the muzzle over time
     t.kind = kind;
     m_nextTracer = (m_nextTracer + 1) % kMaxTracers;
 
     m_muzzlePos   = from;
-    m_muzzleFlash = kMuzzleFlashTime;
+    // LIGHTNING has NO muzzle flash (director note): the box flash + the bright soft
+    // flash sprite read as an ugly bright blob in front of the beam. The jagged bolt
+    // IS the read; suppress the flash entirely for the beam weapon. Other weapons
+    // light the brief box flash as before.
+    m_muzzleFlash = (kind == WeaponFxKind::Lightning) ? 0.0f : kMuzzleFlashTime;
 
     // Bias the muzzle spark cone forward along the shot direction (to - from).
     x3::phys::Vec3 dir{ to.x - from.x, to.y - from.y, to.z - from.z };
-    spawnMuzzleFlash(from, dir);
+    spawnMuzzleFlash(from, dir, kind);
 }
 
 // ---------------------------------------------------------------------------
@@ -143,14 +148,21 @@ void CombatFx::spawnMuzzleFlash(const x3::phys::Vec3& pos, const x3::phys::Vec3&
                                 WeaponFxKind kind) {
     x3::phys::Vec3 d = normalize(dir);
     const MuzzleStyle st = muzzleStyleFor(kind);
+    const bool isLightning = (kind == WeaponFxKind::Lightning);
+    // LIGHTNING (director note): the bolt "travels too fast" — slow the visible
+    // effect by ~39% (x0.61). The only per-frame "motion" the eye reads at the
+    // muzzle is the spark cone leaving the tip, so scale its launch speed by 0.61
+    // for the beam weapon (other weapons unchanged).
+    const float kLightningFxSpeed = 0.61f;
+    const float speedScale = isLightning ? kLightningFxSpeed : 1.0f;
     // A few hot, fast, short-lived additive sparks shooting out of the barrel.
     for (int i = 0; i < st.sparkCount; ++i) {
         Particle p;
         p.pos = pos;
-        const float speed = (5.0f + frand() * 7.0f) * st.speedMul;
-        p.vel = x3::phys::Vec3{ d.x * speed + frandSym() * st.coneJitter,
-                                d.y * speed + frandSym() * st.coneJitter,
-                                d.z * speed + frandSym() * st.coneJitter };
+        const float speed = (5.0f + frand() * 7.0f) * st.speedMul * speedScale;
+        p.vel = x3::phys::Vec3{ d.x * speed + frandSym() * st.coneJitter * speedScale,
+                                d.y * speed + frandSym() * st.coneJitter * speedScale,
+                                d.z * speed + frandSym() * st.coneJitter * speedScale };
         p.life = p.maxLife = 0.06f + frand() * 0.06f;
         p.size0 = (0.10f + frand() * 0.05f) * st.sizeMul;
         p.size1 = 0.02f * st.sizeMul;
@@ -159,14 +171,18 @@ void CombatFx::spawnMuzzleFlash(const x3::phys::Vec3& pos, const x3::phys::Vec3&
         p.gravity = 0.0f; p.drag = 6.0f; p.additive = true;
         spawnParticle(p);
     }
-    // One bright soft flash sprite at the muzzle.
-    Particle flash;
-    flash.pos = pos;
-    flash.life = flash.maxLife = 0.05f;
-    flash.size0 = st.flashSize; flash.size1 = st.flashSize * 0.36f;
-    flash.r = st.flashR; flash.g = st.flashG; flash.b = st.flashB;
-    flash.a0 = 1.0f; flash.additive = true;
-    spawnParticle(flash);
+    // One bright soft flash sprite at the muzzle. LIGHTNING SKIPS THIS — the bright
+    // soft blob in front of the beam was the "big bright flash blob" the director
+    // wants gone; the jagged bolt is the read by itself.
+    if (!isLightning) {
+        Particle flash;
+        flash.pos = pos;
+        flash.life = flash.maxLife = 0.05f;
+        flash.size0 = st.flashSize; flash.size1 = st.flashSize * 0.36f;
+        flash.r = st.flashR; flash.g = st.flashG; flash.b = st.flashB;
+        flash.a0 = 1.0f; flash.additive = true;
+        spawnParticle(flash);
+    }
 }
 
 // Per-kind impact tuning: spark tint + count, and whether the dust puff is the grey
@@ -422,6 +438,7 @@ void CombatFx::update(float dt) {
     for (auto& t : m_tracers) {
         if (t.life > 0.0f) {
             t.life -= dt;
+            t.age  += dt;   // drives the Lightning bolt's propagation reach
             if (t.life < 0.0f) t.life = 0.0f;
         }
     }
@@ -642,10 +659,20 @@ void CombatFx::draw(x3::rhi::IRenderDevice& device, const x3::rhi::FrameContext&
         if (t.life <= 0.0f) continue;
         float k = (kTracerTime > 0.0f) ? (t.life / kTracerTime) : 1.0f; // 1->0
         if (t.kind == WeaponFxKind::Lightning) {
-            // Jagged white-cyan bolt (re-randomized each frame -> crackle).
+            // Jagged white-cyan bolt (re-randomized each frame -> crackle). The bolt
+            // PROPAGATES: its leading tip extends from the muzzle toward the hit point
+            // at kLightningBoltSpeed (m/s) over the tracer's age, so it visibly travels
+            // out rather than snapping full-length instantly (director: ~39% slower).
             const float boltColor[4] = { 0.62f, 0.95f, 1.0f, 1.0f };
             float thick = kTracerThickness * (0.45f + 0.35f * k);
-            drawLightningBolt(device, frame, t.from, t.to, thick, boltColor);
+            x3::phys::Vec3 seg{ t.to.x - t.from.x, t.to.y - t.from.y, t.to.z - t.from.z };
+            float fullLen = std::sqrt(seg.x * seg.x + seg.y * seg.y + seg.z * seg.z);
+            float reach   = kLightningBoltSpeed * t.age;          // how far the tip has travelled
+            float frac    = (fullLen > 1e-4f) ? std::min(1.0f, reach / fullLen) : 1.0f;
+            x3::phys::Vec3 tip{ t.from.x + seg.x * frac,
+                                t.from.y + seg.y * frac,
+                                t.from.z + seg.z * frac };
+            drawLightningBolt(device, frame, t.from, tip, thick, boltColor);
         } else {
             // Camera-facing ribbon (playtest "square rod" fix): a thin flat streak
             // that always faces the eye instead of drawBeam's world-fixed square

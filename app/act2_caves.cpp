@@ -527,20 +527,21 @@ void Act2Caves::onTrigger(uint32_t triggerId) {
 }
 
 FireResult Act2Caves::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                             Scene& scene, x3::phys::IPhysicsWorld& physics) {
+                             Scene& scene, x3::phys::IPhysicsWorld& physics,
+                             int damage, x3::DamageType type) {
     // Try each hostile group in turn; first hit wins. Allies + Tree-City props
     // are NOT registered as targets here (allies live in m_l12Allies, plain
     // Scene props are not in any monster manager).
-    FireResult r = m_l12Enemies.fire(eye, dir, scene, physics);
+    FireResult r = m_l12Enemies.fire(eye, dir, scene, physics, damage, type);
     if (r.hit) return r;
-    r = m_l12Boss.fire(eye, dir, scene, physics);
+    r = m_l12Boss.fire(eye, dir, scene, physics, damage, type);
     if (r.hit) return r;
-    r = m_l13Enemies.fire(eye, dir, scene, physics);
+    r = m_l13Enemies.fire(eye, dir, scene, physics, damage, type);
     if (r.hit) return r;
-    r = m_l14Enemies.fire(eye, dir, scene, physics);
+    r = m_l14Enemies.fire(eye, dir, scene, physics, damage, type);
     if (r.hit) return r;
     if (m_l14Siren.count() > 0) {
-        r = m_l14Siren.fire(eye, dir, scene, physics);
+        r = m_l14Siren.fire(eye, dir, scene, physics, damage, type);
         if (r.hit) return r;
     }
     return r;  // last (miss) result

@@ -376,8 +376,19 @@ void CanonPlay::build(const CanonFloor& floor, Scene& scene, x3::rhi::IRenderDev
         mt.ranged         = false;
         mt.tint[0] = 1.0f; mt.tint[1] = 0.55f; mt.tint[2] = 0.55f; mt.tint[3] = 1.0f; // reddish boss
         mt.modelScale     = 1.35f;   // boss reads taller than a guard
-        // Prefer the rigged + animated chief_martinez set (the bestiary boss model).
-        mt.modelFile        = "chief_martinez.glb";
+        // ANIMATION FIX: prefer the MULTI-CLIP animated rig (chief_martinez_anim.glb,
+        // which carries Idle/Walk/Run/Jump) so the boss actually animates in-game;
+        // fall back to the Idle-only base GLB only if the _anim artifact is absent in
+        // this checkout. (The hall/cell enemies already route through defRigged() which
+        // does this; the boss was hard-pinned to the non-anim base GLB -> never moved
+        // its limbs.) The Skinner discovers the loco clips by name once loaded.
+        {
+            namespace fs = std::filesystem;
+            std::error_code ec;
+            const fs::path animPath = fs::path(riggedGlbRoot()) / "chief_martinez_anim.glb";
+            mt.modelFile = fs::exists(animPath, ec) ? "chief_martinez_anim.glb"
+                                                    : "chief_martinez.glb";
+        }
         mt.modelDirOverride = riggedGlbRoot();
         mt.standUpZtoY      = false;
         m_martinez.buildMonsterTuned(scene, device, physics, m_modelDir,
@@ -516,13 +527,17 @@ void CanonPlay::tick(float dt, Scene& scene, x3::phys::IPhysicsWorld& physics,
 }
 
 FireResult CanonPlay::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                             Scene& scene, x3::phys::IPhysicsWorld& physics, int damage) {
+                             Scene& scene, x3::phys::IPhysicsWorld& physics, int damage,
+                             x3::DamageType type) {
     if (!m_built || !m_weapon.hasWeapon()) return FireResult{};
     // Fire against each group; the first that reports a real monster hit took the shot
     // (the nearest body). Keep a geometry-hit result for the tracer end if nothing hit.
+    // canon-aliens Adaptive Hide: `type` flows from the player's weapon all the way to
+    // each MonsterManager::fire so any boss in any group with adaptiveHideResist > 0
+    // reacts to the player's loadout (currently the SaurianWarlord row).
     FireResult best;
     auto tryGroup = [&](MonsterManager& mm) -> bool {
-        FireResult r = mm.fire(eye, dir, scene, physics, damage);
+        FireResult r = mm.fire(eye, dir, scene, physics, damage, type);
         if (r.hitMonster) { best = r; return true; }
         if (r.hit && !best.hit) best = r;
         return false;
@@ -532,7 +547,7 @@ FireResult CanonPlay::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& di
     if (tryGroup(m_attackers)) return best;
     if (tryGroup(m_rescue.bosses())) return best;
     if (m_martinezSpawned) {
-        FireResult r = m_martinez.fire(eye, dir, scene, physics, damage);
+        FireResult r = m_martinez.fire(eye, dir, scene, physics, damage, type);
         if (r.hitMonster) return r;
         if (r.hit && !best.hit) best = r;
     }

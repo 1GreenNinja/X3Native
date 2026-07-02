@@ -92,10 +92,12 @@ inline int checkAssetManifest() {
     }
 
     // Store tiers (same defaults as tools/asset_store.py; manifest overrides).
+    // PRIMARY is now the local D: store (authoritative, read-first, publish
+    // target). The off-box \\p13700\G\X3AssetStore mirror is the backup.
     size_t storeBlk = text.find("\"store\"");
     std::string primary = jsonStrAfter(text, "primary", storeBlk == std::string::npos ? 0 : storeBlk, text.size());
     std::string cache   = jsonStrAfter(text, "cache",   storeBlk == std::string::npos ? 0 : storeBlk, text.size());
-    if (primary.empty()) primary = "\\\\p13700\\G\\X3AssetStore";
+    if (primary.empty()) primary = "D:\\Assets\\X3AssetStore";
     if (cache.empty())   cache   = "D:\\Assets\\X3AssetStore";
 
     int missing = 0, fetched = 0, total = 0;

@@ -216,9 +216,13 @@ public:
 
     // Fire one shot across every level's hostile groups (the first live hit
     // takes it). Allied SalvariAlly markers + Tree-City interact props are
-    // NOT valid targets. Returns the result for FX/HUD.
+    // NOT valid targets. Returns the result for FX/HUD. `damage` is the firing weapon's
+    // per-shot damage; `type` is the canon-aliens DamageType tag (Kinetic/Energy/...)
+    // that bosses with adaptiveHideResist > 0 react to. Both defaulted.
     FireResult onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
-                      Scene& scene, x3::phys::IPhysicsWorld& physics);
+                      Scene& scene, x3::phys::IPhysicsWorld& physics,
+                      int damage = kDamagePerShot,
+                      x3::DamageType type = x3::DamageType::Kinetic);
 
     // Draw every level's enemy/ally groups. (Plain Scene props — Crystal Heart,
     // Tree-City platforms, trading-post pillar — are drawn by the host's

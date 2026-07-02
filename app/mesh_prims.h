@@ -320,6 +320,88 @@ inline PrimMesh makeRing(float innerR, float outerR, uint32_t segments = 128) {
     return m;
 }
 
+// A ROUNDED-RECTANGLE TUBE: a closed pipe with a CIRCULAR cross-section of radius
+// `tubeR` swept along a rounded-rectangle PATH in the XY plane (z = 0 centerline),
+// so it reads as a real round-section trim/frame around a panel — NOT a flat ribbon
+// with a square cross-section. The path runs CCW around a rounded rect whose corner
+// centers sit at (+/-(hw-corner), +/-(hh-corner)); the swept circle gives the round
+// profile. `pathSeg` = arc segments per rounded corner of the path; `tubeSeg` = ring
+// segments around the circular cross-section. Authored in OBJECT space centered at
+// origin, normals point radially outward from the path centerline (so it lights like
+// a real polished pipe). Winding is CCW front-face for VK. Render geometry only.
+inline PrimMesh makeRoundedRectTube(float hw, float hh, float corner, float tubeR,
+                                    uint32_t pathSeg = 6, uint32_t tubeSeg = 12) {
+    PrimMesh m;
+    pathSeg = std::max(1u, pathSeg);
+    tubeSeg = std::max(3u, tubeSeg);
+    const float kPi = 3.14159265f, kHalfPi = kPi * 0.5f, kTwoPi = 6.2831853f;
+    const float r = std::min(corner, std::min(hw, hh) * 0.95f);
+
+    // ---- 1) Build the CENTERLINE path (CCW) + its in-plane tangent at each point.
+    // Four straight edges joined by four quarter-arc corners. Each path point stores
+    // its position (px,py) and the unit tangent (tx,ty) so we can frame a circle
+    // perpendicular to the path there.
+    struct PP { float px, py, tx, ty; };
+    std::vector<PP> path;
+    auto addArc = [&](float cx, float cy, float a0) {
+        // Quarter arc CCW from a0 to a0+pi/2 around (cx,cy) at radius r. Skip the
+        // first sample on all but the first corner so we don't duplicate the joint.
+        for (uint32_t s = 0; s <= pathSeg; ++s) {
+            const float a = a0 + kHalfPi * ((float)s / (float)pathSeg);
+            const float ca = std::cos(a), sa = std::sin(a);
+            // tangent of a CCW circle = (-sin, cos)
+            path.push_back({ cx + ca * r, cy + sa * r, -sa, ca });
+        }
+    };
+    // Corner centers + arc start angles, ordered so the path is continuous CCW:
+    // bottom-right corner (arc -90deg->0), top-right (0->90), top-left (90->180),
+    // bottom-left (180->270). Straight edges fall naturally between consecutive arcs.
+    addArc(  hw - r, -(hh - r), -kHalfPi );  // bottom-right
+    addArc(  hw - r,   hh - r,   0.0f    );  // top-right
+    addArc(-(hw - r),  hh - r,   kHalfPi );  // top-left
+    addArc(-(hw - r), -(hh - r), kPi     );  // bottom-left
+
+    const uint32_t P = (uint32_t)path.size();   // closed loop: vertex P wraps to 0
+
+    // ---- 2) Sweep a circle of radius tubeR around each path point. The circle lies
+    // in the plane spanned by the path NORMAL (in-XY, perpendicular to tangent) and
+    // the Z axis (out of the panel), so the tube bulges both sideways and in depth.
+    for (uint32_t i = 0; i < P; ++i) {
+        const PP& p = path[i];
+        // In-plane normal (perpendicular to tangent, pointing outward from the rect).
+        const float nx = p.ty, ny = -p.tx;       // rotate tangent -90deg -> outward
+        for (uint32_t j = 0; j <= tubeSeg; ++j) {
+            const float a = kTwoPi * ((float)j / (float)tubeSeg);
+            const float ca = std::cos(a), sa = std::sin(a);
+            // Offset = cos along the in-plane outward normal, sin along world Z.
+            const float ox = nx * (ca * tubeR);
+            const float oy = ny * (ca * tubeR);
+            const float oz = sa * tubeR;
+            const float vx = p.px + ox, vy = p.py + oy, vz = oz;
+            // Normal = radial direction from the centerline to the surface point.
+            const float len = std::sqrt(ox*ox + oy*oy + oz*oz);
+            const float inv = (len > 1e-6f) ? 1.0f / len : 0.0f;
+            const float u = (float)i / (float)P;
+            const float v = (float)j / (float)tubeSeg;
+            m.verts.push_back({ {vx, vy, vz}, {ox*inv, oy*inv, oz*inv}, {u, v} });
+        }
+    }
+    // ---- 3) Index the quad strips between consecutive cross-sections (wrapping the
+    // last ring back to the first so the tube is a closed loop).
+    const uint32_t ring = tubeSeg + 1;            // verts per cross-section
+    for (uint32_t i = 0; i < P; ++i) {
+        const uint32_t i0 = i * ring;
+        const uint32_t i1 = ((i + 1) % P) * ring;
+        for (uint32_t j = 0; j < tubeSeg; ++j) {
+            const uint32_t a = i0 + j, b = i0 + j + 1;
+            const uint32_t c = i1 + j, d = i1 + j + 1;
+            // CCW from outside: (a, c, b) / (b, c, d).
+            m.index.insert(m.index.end(), { a, c, b, b, c, d });
+        }
+    }
+    return m;
+}
+
 // Procedural NxN checker texture (RGBA8). Two contrasting colors per cell:
 // a light tint and a darker base. Defaults match the S1 blue-grey scheme.
 inline std::vector<uint8_t> makeCheckerRGBA(uint32_t n, uint32_t cell,

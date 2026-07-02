@@ -752,7 +752,7 @@ bool Level1Game::onRescue(const x3::phys::Vec3& playerPos, float range) {
 
 FireResult Level1Game::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                               Scene& scene, x3::phys::IPhysicsWorld& physics,
-                              int damage) {
+                              int damage, x3::DamageType type) {
     FireResult r;
     if (!m_weapon.hasWeapon()) return r;   // gate: only effective when armed
     // Explosive barrels: a shot that hits a barrel detonates it (independent of
@@ -763,14 +763,17 @@ FireResult Level1Game::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& d
         m_barrels.onShot(e3, d3);
     }
     // Fire across all three monster groups; the first live monster hit takes it.
-    r = m_corridor.fire(eye, dir, scene, physics, damage);
+    // PER-WEAPON canon-aliens DamageType is threaded through here so any boss in any
+    // group with `adaptiveHideResist > 0` (currently the SaurianWarlord row) reacts to
+    // the player's actual loadout choice.
+    r = m_corridor.fire(eye, dir, scene, physics, damage, type);
     if (!r.hitMonster) {
-        FireResult r2 = m_checkpoint.fire(eye, dir, scene, physics, damage);
+        FireResult r2 = m_checkpoint.fire(eye, dir, scene, physics, damage, type);
         if (r2.hitMonster) r = r2;
         else if (!r.hit && r2.hit) r = r2;
     }
     if (!r.hitMonster && m_martinezSpawned && m_martinez.alive()) {
-        FireResult r3 = m_martinez.fire(eye, dir, scene, physics, damage);
+        FireResult r3 = m_martinez.fire(eye, dir, scene, physics, damage, type);
         if (r3.hitMonster) r = r3;
         else if (!r.hit && r3.hit) r = r3;
     }
@@ -778,13 +781,13 @@ FireResult Level1Game::onFire(const x3::phys::Vec3& eye, const x3::phys::Vec3& d
     // to GUNFIRE — onFire never included them (only melee did), so they could never
     // die and the area never cleared. Include them in the gun-damage chain.
     if (!r.hitMonster && m_bossAdds.count() > 0) {
-        FireResult ra = m_bossAdds.fire(eye, dir, scene, physics, damage);
+        FireResult ra = m_bossAdds.fire(eye, dir, scene, physics, damage, type);
         if (ra.hitMonster) r = ra;
         else if (!r.hit && ra.hit) r = ra;
     }
     // F2 Medical Bay boss (Dr. Chen), if placed.
     if (!r.hitMonster && m_chenSpawned) {
-        FireResult r4 = m_chen.fire(eye, dir, scene, physics, damage);
+        FireResult r4 = m_chen.fire(eye, dir, scene, physics, damage, type);
         if (r4.hitMonster) r = r4;
         else if (!r.hit && r4.hit) r = r4;
     }

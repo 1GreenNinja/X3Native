@@ -43,6 +43,12 @@ const std::array<StrataLayer, 9>& ElevatorSystem::strata() { return kStrata; }
 static constexpr const char* kDiscoCode = "1127";
 static constexpr float kDiscoSlow = 0.25f;   // 1/4-speed glide (CFG.DISCO_SLOW)
 
+// Play a one-shot at the cab center (spatialized) if the handle + audio resolve.
+void ElevatorSystem::playOneShot(x3::audio::SoundHandle s, float vol, float pitch) {
+    if (!m_audio || !s.valid()) return;
+    m_audio->playSound3D(s, m_pos.x, m_pos.y + m_halfY + 1.2f, m_pos.z, vol, pitch);
+}
+
 const char* ElevatorSystem::stateName(ElevState s) {
     switch (s) {
         case ElevState::Idle:          return "IDLE";
@@ -221,6 +227,13 @@ void ElevatorSystem::enableFsm(bool on) {
 
 void ElevatorSystem::setClubStopY(float centerY) { m_clubStopY = centerY; }
 
+std::string ElevatorSystem::floorLabel(int stopIndex) const {
+    if (stopIndex >= 0 && stopIndex < (int)m_floorLabels.size() &&
+        !m_floorLabels[stopIndex].empty())
+        return m_floorLabels[stopIndex];
+    return "S" + std::to_string(stopIndex);
+}
+
 void ElevatorSystem::startTravelTo(int stopIndex) {
     m_target = std::clamp(stopIndex, 0, (int)m_stopsY.size() - 1);
     // Begin by closing the doors (DOORS_CLOSING -> ACCELERATING when shut). If the
@@ -242,6 +255,7 @@ void ElevatorSystem::emergencyStop() {
     m_state = ElevState::EmergencyStop;
     m_stateTime = 0.0f;
     m_fsmSpeed = 0.0f;
+    playOneShot(m_snd.buzz, 0.9f, 0.7f);   // alarm klaxon
     x3::logInfo("[elevator] EMERGENCY STOP");
 }
 
@@ -271,6 +285,10 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             break;
 
         case ElevState::DoorsClosing:
+            if (!m_doorWasClosing) {              // state-entry edge: doors begin to seal
+                playOneShot(m_snd.doorClose, 0.7f, 1.0f);
+                m_doorWasClosing = true;
+            }
             m_doorPct = std::max(0.0f, m_doorPct - dt / m_tune.doorSpeed);
             if (m_doorPct <= 0.0f) {
                 m_doorPct = 0.0f;
@@ -312,7 +330,7 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             m_fsmSpeed = 0.0f;
             m_curStop = m_target;
             m_discoSlow = false;
-            if (m_audio) { /* ding hook */ }
+            playOneShot(m_snd.ding, 0.85f, 1.0f);   // arrival chime
             m_lastDingStop = m_curStop;
             m_state = ElevState::DoorsOpening;
             m_stateTime = 0.0f;
@@ -321,6 +339,10 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
             break;
 
         case ElevState::DoorsOpening:
+            if (!m_doorWasOpening) {              // state-entry edge: doors begin to retract
+                playOneShot(m_snd.doorOpen, 0.7f, 1.0f);
+                m_doorWasOpening = true;
+            }
             m_doorPct = std::min(1.0f, m_doorPct + dt / m_tune.doorSpeed);
             if (m_doorPct >= 1.0f) {
                 m_doorPct = 1.0f;
@@ -367,9 +389,15 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
         }
         if (near != m_lastDingStop && nd < 1.5f) {
             m_lastDingStop = near;
-            if (m_audio) { /* ding hook (sample one-shot if a WAV resolves) */ }
+            // Quieter, higher-pitched blip as a floor slides past (vs the arrival ding).
+            playOneShot(m_snd.ding, 0.25f, 1.5f);
         }
     }
+
+    // Door SFX state-entry edges reset once we leave that door state, so the next
+    // open/close fires its one-shot again.
+    if (m_state != ElevState::DoorsClosing) m_doorWasClosing = false;
+    if (m_state != ElevState::DoorsOpening) m_doorWasOpening = false;
 
     updateMotorAudio(dt);
 
@@ -384,14 +412,32 @@ float ElevatorSystem::fsmUpdate(float dt, Scene& scene, x3::phys::IPhysicsWorld&
 }
 
 void ElevatorSystem::updateMotorAudio(float dt) {
-    // Procedural motor-hum frequency sweep 40 -> 120 Hz with speed (CFG.MOTOR_*).
-    // The sample-based audio backend can't drive an oscillator, so we only TRACK
-    // the target frequency (so the geo-survey/HUD can read it + a future tonal SFX
-    // can use it); no audible call is made unless a WAV is wired. This is the
-    // "stub the calls" path the task allows.
+    // Motor/cable hum: a SUSTAINED loop voice whose pitch + volume track cab speed.
+    // The frequency sweep 40 -> 120 Hz (CFG.MOTOR_*) maps onto a playback-rate (and
+    // hence pitch) ramp on the looped WAV, so the hum audibly winds up under load and
+    // settles at rest. Started lazily the first time the cab moves; stopped when it
+    // comes to rest so an idle car is quiet.
     const float ratio = std::clamp(m_fsmSpeed / std::max(0.001f, m_tune.maxSpeed), 0.0f, 1.0f);
     const float targetHz = m_tune.motorIdleHz + ratio * (m_tune.motorMoveHz - m_tune.motorIdleHz);
     m_motorHz += (targetHz - m_motorHz) * std::min(1.0f, dt * 5.0f);
+
+    if (!m_audio || !m_snd.motor.valid()) return;
+
+    const bool wantHum = m_fsmSpeed > 0.05f;   // only while the cab is actually moving
+    // Pitch the hum from the tracked frequency (idle Hz -> rate 0.6, full -> 1.4).
+    const float rate = 0.6f + (m_motorHz - m_tune.motorIdleHz) /
+                       std::max(1.0f, m_tune.motorMoveHz - m_tune.motorIdleHz) * 0.8f;
+    const float vol  = 0.18f + 0.42f * ratio;  // louder under load
+
+    if (wantHum) {
+        if (!m_motorLoop.valid())
+            m_motorLoop = m_audio->startLoop(m_snd.motor, vol, std::max(0.25f, rate));
+        else
+            m_audio->setLoopParams(m_motorLoop, vol, std::max(0.25f, rate));
+    } else if (m_motorLoop.valid()) {
+        m_audio->stopLoop(m_motorLoop);
+        m_motorLoop = x3::audio::LoopHandle{};
+    }
 }
 
 // ===========================================================================
@@ -401,7 +447,7 @@ bool ElevatorSystem::keypadDigit(int digit) {
     if (!m_fsm) return false;
     if (digit < 0 || digit > 9) return false;
     m_codeBuf += (char)('0' + digit);
-    if (m_audio) { /* key-click hook */ }
+    playOneShot(m_snd.keyClick, 0.5f, 1.0f + 0.04f * (float)digit);   // key-click blip
 
     if (m_codeBuf.size() >= 4) {
         const bool ok = (m_codeBuf.substr(m_codeBuf.size() - 4) == kDiscoCode);
@@ -410,6 +456,7 @@ bool ElevatorSystem::keypadDigit(int digit) {
             m_disco = !m_disco;
             if (m_disco) {
                 m_discoTime = 0.0f;
+                playOneShot(m_snd.ding, 1.0f, 1.25f);   // bright "access granted" chime
                 x3::logInfo("[elevator] DISCO MODE activated — code 1127 accepted; "
                             "descending to Club 1127 at Y=" + std::to_string(m_clubStopY));
                 // Descend to the Club 1127 stop. Make sure the club stop is among
@@ -434,7 +481,7 @@ bool ElevatorSystem::keypadDigit(int digit) {
             }
             return ok;
         } else {
-            if (m_audio) { /* buzz hook */ }
+            playOneShot(m_snd.buzz, 0.6f, 0.8f);   // wrong-code buzzer
             x3::logInfo("[elevator] keypad: wrong code");
         }
     }
@@ -509,6 +556,22 @@ void ElevatorSystem::buildVisuals(Scene& scene, x3::rhi::IRenderDevice& device) 
       const float em[4] = {0.40f, 0.60f, 0.80f, 1.0f};
       m_eCeil = addKit(scene, device, carW*0.30f, 0.03f, 0.15f, c, em); }
 
+    // Twin sliding DOOR panels on the front (+X) wall — two tall brushed-metal
+    // slabs that part along Z as m_doorPct rises. Half-width per panel = a quarter
+    // of the car so the pair closes flush at the center. A faint emissive seam reads
+    // in the dark. Animated in layoutVisuals() from m_doorPct.
+    { const float c[4] = {0.34f, 0.36f, 0.40f, 1.0f};
+      const float em[4] = {0.05f, 0.08f, 0.10f, 0.4f};
+      m_eDoorL = addKit(scene, device, 0.06f, carH*0.42f, carD*0.24f, c, em);
+      m_eDoorR = addKit(scene, device, 0.06f, carH*0.42f, carD*0.24f, c, em); }
+
+    // Floor INDICATOR strip above the doors: an emissive bar that the host/layout
+    // tints green when the doors are open (safe to step out) and amber while
+    // travelling. Gives the rider an at-a-glance status cue.
+    { const float c[4] = {0.05f, 0.06f, 0.06f, 1.0f};
+      const float em[4] = {0.0f, 0.9f, 0.3f, 1.4f};
+      m_eIndicator = addKit(scene, device, 0.04f, 0.10f, carD*0.30f, c, em); }
+
     // Point lights: [0] = ceiling interior fill, [1..4] = disco spots (off until
     // disco mode). The host pushes these via setPointLights; the disco cue animates
     // them in update().
@@ -557,6 +620,28 @@ void ElevatorSystem::layoutVisuals(Scene& scene) {
     place(m_eTerm,       carW * 0.5f - 0.18f,   -0.30f,          carD * 0.25f);
     place(m_eDiscoBall,  0.0f,                   carH * 0.5f - 0.5f, 0.0f);
     place(m_eCeil,       0.0f,                   carH * 0.5f - 0.1f, 0.0f);
+
+    // Sliding doors on the +X wall: closed (doorPct=0) the two panels meet at z=0;
+    // open (doorPct=1) they retract to +/- a quarter-depth. Each panel is a quarter
+    // wide, so the slide distance is carD*0.25.
+    {
+        const float slide = m_doorPct * carD * 0.25f;
+        const float doorX = carW * 0.5f - 0.06f;
+        const float doorY = -0.4f;     // doors sit slightly below car mid (head clearance)
+        place(m_eDoorL, doorX, doorY, -carD * 0.25f * 0.5f - slide);
+        place(m_eDoorR, doorX, doorY,  carD * 0.25f * 0.5f + slide);
+    }
+    // Indicator strip above the doors.
+    place(m_eIndicator, carW * 0.5f - 0.04f, carH * 0.42f, 0.0f);
+    // Tint the indicator: green when doors fully open, amber while moving/closing.
+    if (m_eIndicator != kNoLink && m_eIndicator < scene.size()) {
+        Entity& e = scene.get(m_eIndicator);
+        const bool open = (m_state == ElevState::DoorsOpen) || (m_doorPct > 0.95f &&
+                          m_state == ElevState::Idle);
+        if (open) { e.emissive[0] = 0.0f; e.emissive[1] = 0.9f; e.emissive[2] = 0.3f; }
+        else      { e.emissive[0] = 1.0f; e.emissive[1] = 0.55f; e.emissive[2] = 0.0f; }
+        e.emissive[3] = 1.4f;
+    }
 
     // Position the point lights at the cab interior (ceiling), spots ringed.
     if (!m_lights.empty()) {

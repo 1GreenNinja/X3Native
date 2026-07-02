@@ -59,6 +59,7 @@
 #include "engine/asset/IModelLoader.h"
 #include "engine/asset/IAssetSource.h"
 #include "engine/ai/INavigation.h"   // GENERAL navigation: route around walls (optional)
+#include "engine/core/x3_damage.h"   // DamageType (Adaptive Hide: rotate-damage-type rhythm)
 
 #include <cstdint>
 #include <functional>
@@ -218,6 +219,18 @@ constexpr float kOrbitRetarget = 1.8f;   // seconds before flipping orbit direct
 // the model turns its back to the player (authored +Z forward). VISUAL TUNING.
 constexpr float kFaceSign      = -1.0f;
 
+// Max VERTICAL separation (m) between an attacker's body center and the player at
+// which ANY attack (melee or ranged) may land. The combat attack gate previously
+// keyed only on the PLANAR (x,z) distance `horiz`, so an enemy a full floor ABOVE
+// the player (planar distance ~0, but several metres up, with a Static floor slab
+// between them) would "attack through the floor". A melee/ranged hit must also be
+// within this vertical band AND have clear line-of-sight (rayCast vs Layer::Static,
+// which the floor/ceiling slabs are) — see the attack block in update(). 2.5 m
+// comfortably covers a tall boss + a crouch/jump but rejects a one-floor (~3 m+)
+// vertical stack. Floors are LOS-blocked anyway; this is the cheap belt-and-braces
+// bound so even a doorway sightline up a ramp can't be exploited as a free hit.
+constexpr float kAttackMaxVertical  = 2.5f;
+
 // ===========================================================================
 // GENERAL COMBAT BALANCE PARAMS (playtest-fix). Named, reusable across games —
 // these are the single source of truth for "how hard does a squad hit, and how
@@ -309,10 +322,27 @@ constexpr float kAiRegroupHold     = 1.2f;   // min seconds to stay regrouping
 // Turn rate (rad/s): the heading slews toward its target instead of snapping, so
 // turns read as a body rotation (and states don't visually jitter).
 constexpr float kAiTurnRate        = 7.0f;
+// ---- Inter-enemy SEPARATION (anti-crowding, playtest-fix) --------------------
+// Boids-style separation so a squad SPREADS OUT instead of piling onto the player's
+// tile (the playtest "enemies crowd the player / pile up" bug — the dogpile cap
+// limited who ATTACKS but not who STACKS). Each moving enemy is pushed away from
+// nearby allies within kAiSeparationRadius; the push is blended into its desired
+// move direction at kAiSeparationWeight strength (capped so it nudges, never
+// overrides, the state's intent). Behavioural tuning — the self-tests assert state
+// + facing, not exact spacing, so this is safe.
+constexpr float kAiSeparationRadius = 2.2f;  // allies closer than this push us apart (m)
+constexpr float kAiSeparationWeight = 0.9f;  // how hard separation steers vs the state dir
 // Per-instance decision cadence + jitter so enemies don't all switch in lockstep.
 constexpr float kAiDecisionPeriod  = 0.30f;  // re-evaluate state every ~0.3 s
 constexpr float kAiDecisionJitter  = 0.15f;  // +/- randomization on the cadence (s)
 constexpr float kAiStateMinTime    = 0.45f;  // min dwell before a non-forced switch
+
+// Enemy-SFX taunt cadence: an engaged (has-LOS) live enemy emits an idle/harass
+// TAUNT vocalization roughly every kAiTauntPeriod seconds (+/- kAiTauntJitter), so
+// the enemies HARASS audibly at range instead of being silent. Tuning — safe to
+// retune; spaced wide so a squad isn't a wall of noise.
+constexpr float kAiTauntPeriod     = 3.5f;   // mean seconds between taunts
+constexpr float kAiTauntJitter     = 1.5f;   // +/- randomization on the cadence (s)
 
 // GENERAL navigation cadence: when a nav grid is attached, rebuild the A* path to
 // the move target every this-many seconds (NOT every frame — pathfinding is cheap
@@ -470,6 +500,17 @@ public:
         // it to drive a HUD timer + the level-exit trigger ("escape or die"); the
         // boss machine just carries the value. 0 (default) => no escape timer.
         float escapeTimerSeconds   = 0.0f;
+
+        // ---- Adaptive Hide (canon-aliens SaurianWarlord). Boss-style "rotate
+        // damage type" rhythm: after taking damage of type T, gain `adaptiveHideResist`
+        // reduction on ALL further damage of type T for `adaptiveHideDurationSec`
+        // seconds, then re-evaluate. INERT by default (resist == 0 leaves every
+        // existing row unchanged); only rows that opt in get the behaviour.
+        // Stacks multiplicatively with memoryFlashDamageMul (a matched type during a
+        // flash window: 1.5 * 0.4 = 0.6, still reduced but less harshly — exactly
+        // the design intent that rotating during a flash multiplies the bonus).
+        float adaptiveHideResist      = 0.0f;   // 0..1; e.g. 0.6 == 60% reduction
+        float adaptiveHideDurationSec = 8.0f;   // window length; unused when resist == 0
     };
 
     // Build the monster: load alien_crawler.glb from `modelDir` via a fresh
@@ -499,7 +540,8 @@ public:
     // for legacy/test paths); a HEADSHOT (hit in the upper hitbox) deals 3x.
     FireResult fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                     Scene& scene, x3::phys::IPhysicsWorld& physics,
-                    int damage = kDamagePerShot);
+                    int damage = kDamagePerShot,
+                    x3::DamageType type = x3::DamageType::Kinetic);
 
     // Advance one frame: decay the hit-flash timer and, if chaseSpeed > 0 and the
     // monster is alive, move it relative to `playerPos` (chase for melee, hold a
@@ -540,7 +582,8 @@ public:
     // remove body + death-pop), exactly as a lethal shot does. Returns the killed
     // flag. No-op (returns false) when already dead. The knockback impulse is the
     // caller's job (it owns the physics body + direction).
-    bool takeMeleeDamage(int damage, Scene& scene, x3::phys::IPhysicsWorld& physics);
+    bool takeMeleeDamage(int damage, Scene& scene, x3::phys::IPhysicsWorld& physics,
+                         x3::DamageType type = x3::DamageType::Melee);
 
     // Enemy archetype + attack params (read for the HUD / self-test / tuning).
     MonsterType type() const { return m_type; }
@@ -607,6 +650,13 @@ public:
     // flash, else 1). fire()/takeMeleeDamage() apply this automatically; exposed so
     // the host/self-test can observe the amplified-vulnerability beat.
     float incomingDamageMul() const { return inMemoryFlash() ? m_memoryFlashDamageMul : 1.0f; }
+
+    // Adaptive-Hide queries (HUD colour-tint, self-test introspection). m_adaptiveHideType
+    // is the LAST damage type seen; m_adaptiveHideTimer is the seconds left in the resist
+    // window (0 == window expired / never opened / row not opted-in).
+    x3::DamageType adaptiveHideType()   const { return m_adaptiveHideType; }
+    float          adaptiveHideTimer()  const { return m_adaptiveHideTimer; }
+    float          adaptiveHideResist() const { return m_adaptiveHideResist; }
 
     // ---- Act-2 boss tags (Wave 2) -----------------------------------------
     // Memory Hunter (Act-2 L12): which phase runs the copy/feint gimmick (0 = none).
@@ -868,6 +918,12 @@ private:
     float m_memoryFlashTime     = 0.0f;   // FE#7: flash duration per phase transition (s)
     float m_memoryFlashDamageMul = 1.0f;  // FE#7: incoming-damage mul while flashing
     float m_flashTimer          = 0.0f;   // >0 while in a memory-flash window (s)
+
+    // ---- Adaptive Hide (canon-aliens SaurianWarlord; opt-in via Tuning). ------
+    float          m_adaptiveHideResist      = 0.0f;                  // copied from Tuning
+    float          m_adaptiveHideDurationSec = 8.0f;                  // copied from Tuning
+    x3::DamageType m_adaptiveHideType        = x3::DamageType::None;  // last incoming type
+    float          m_adaptiveHideTimer       = 0.0f;                  // s remaining in current resist window
     // Act-2 boss tags carried as DATA (read by the floor module / HUD / self-test).
     uint32_t m_copyFeintPhase   = 0;      // Memory Hunter: which boss phase runs copy/feint
     float    m_escapeTimer      = 0.0f;   // Garrison Commander: P3 orbital-strike countdown (s)
@@ -937,6 +993,10 @@ private:
     // enemies (no per-frame heap alloc; a tiny LCG advanced in the hot path).
     uint32_t m_rng          = 0x9E3779B9u;
     bool     m_aiInit       = false;         // seeded the RNG / decision timer yet
+    // Enemy-SFX (vocalization): countdown to the next idle/harass TAUNT cue while the
+    // enemy is alive + engaged (has LOS). Reseeded to a jittered interval each taunt so
+    // a squad doesn't vocalize in lockstep. <=0 fires a taunt (see update()).
+    float    m_tauntTimer   = 0.0f;
 
     // ---- GENERAL navigation (optional, off by default) --------------------
     // Borrowed shared nav grid (nullptr => straight-line, original behaviour).
@@ -1015,7 +1075,8 @@ public:
     // firing weapon's per-shot damage (defaults to kDamagePerShot).
     FireResult fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                     Scene& scene, x3::phys::IPhysicsWorld& physics,
-                    int damage = kDamagePerShot);
+                    int damage = kDamagePerShot,
+                    x3::DamageType type = x3::DamageType::Kinetic);
 
 private:
     std::vector<std::unique_ptr<MonsterSystem>> m_monsters;
@@ -1230,9 +1291,13 @@ public:
     // Fire one shot across all pods (the first live pod the ray hits takes damage).
     // A pod that DIES this way counts as KILLED (not spared). Returns the result.
     // `damage` is the firing weapon's per-shot damage (defaults to kDamagePerShot).
+    // `type` is the canon-aliens DamageType — forwarded into each pod's fire so a
+    // future Chorus-tier boss that opts into adaptiveHideResist reacts to the
+    // player's loadout (current Chorus row has resist=0 so this is a no-op for them).
     FireResult fire(const x3::phys::Vec3& eye, const x3::phys::Vec3& dir,
                     Scene& scene, x3::phys::IPhysicsWorld& physics,
-                    int damage = kDamagePerShot);
+                    int damage = kDamagePerShot,
+                    x3::DamageType type = x3::DamageType::Kinetic);
 
     // ---- Outcome counts (the morality quest) ------------------------------
     uint32_t killedCount() const;            // pods downed by lethal damage
@@ -1302,6 +1367,14 @@ struct ScriptedFightHook {
 // Logs PASS/FAIL T#, prints "bosses: X/Y passed", returns true iff all pass. No
 // window / Vulkan. Lives in monster.cpp. Mirrors the other self-tests.
 bool runBossesSelfTest();
+
+// Adaptive Hide self-test (--test-adaptive-hide). Builds one MonsterSystem with a
+// Tuning that opts into Adaptive Hide (resist 0.6, window 8 s) and walks through
+// the rhythm specified in docs/canon-aliens-adaptive-hide.md §3: full damage on
+// first hit, reduced on a same-type repeat, full on a type-rotation, timer expiry
+// re-opens the window, opt-out (resist == 0) is dead-code (regression). Headless
+// (no Vulkan / window), logs PASS/FAIL, prints "adaptivehide: X/Y passed".
+bool runAdaptiveHideSelfTest();
 
 // ===========================================================================
 // ACT-2 ENEMY + BOSS ROSTER (Wave 2). Alien-planet surface (Keth'zar Prime,

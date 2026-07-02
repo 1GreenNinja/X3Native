@@ -1,7 +1,7 @@
 {
   "version": 1,
   "store": {
-    "primary": "\\\\p13700\\G\\X3AssetStore",
+    "primary": "D:\\Assets\\X3AssetStore",
     "cache": "D:\\Assets\\X3AssetStore"
   },
   "assets": [
@@ -58,6 +58,18 @@
       "sha256": "2af36179401262f2948453f7e7cbc5c80f871cb92e820d07c18c0d318c241dc6",
       "size": 23566020,
       "source_note": "fleet share G:\\GameModels / Unity-pack repack via tools/convert_unity_pack.py; published Phase A 2026-06-12"
+    },
+    {
+      "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Wall_B.glb",
+      "sha256": "a61334183f75518e85ef22e35d5e990661a1e564bd39c15c3d68b4aba4ee06f5",
+      "size": 16904376,
+      "source_note": "ROUND 3 cell wall variety (SM_Wall_B/C paneled relief); from G:/GameModels ModularSciFi_Interior"
+    },
+    {
+      "repo_path": "assets/converted_glb/ModularSciFi_Interior/SM_Wall_C.glb",
+      "sha256": "26df59d5fd5d3768a7572226244ec968bb9d3be29052c0392167b0118b326268",
+      "size": 16877424,
+      "source_note": "ROUND 3 cell wall variety (SM_Wall_B/C paneled relief); from G:/GameModels ModularSciFi_Interior"
     },
     {
       "repo_path": "assets/converted_glb/SciFi_Warehouse_Kit/Barrel.glb",

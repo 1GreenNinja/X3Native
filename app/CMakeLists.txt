@@ -1,5 +1,44 @@
 add_executable(X3Engine WIN32
     main.cpp
+    bindings.cpp
+    self_tests.cpp
+    test_registry.cpp
+    cinematic.cpp
+    # #28 deep monolith split — CLI parse (arg loop -> CliOptions)
+    cli.cpp
+    # #28 deep monolith split — default host (interactive render loop)
+    app_run.cpp
+    # #28 deep monolith split — headless screenshot/capture handlers
+    screenshot_hosts.cpp
+    # #28 deep monolith split — extracted self-contained --world hosts
+    world_hosts/world_hosts.cpp
+    world_hosts/host_destruct.cpp
+    world_hosts/host_physjoint.cpp
+    world_hosts/host_ragdoll.cpp
+    world_hosts/host_drive.cpp
+    world_hosts/host_club.cpp
+    world_hosts/host_elevator.cpp
+    world_hosts/host_strata.cpp
+    world_hosts/host_showroom.cpp
+    world_hosts/host_valley.cpp
+    world_hosts/host_cliffs.cpp
+    world_hosts/host_streamed.cpp
+    # Phase 2 — space-combat stack folded from feat/cockpit-vattalus
+    world_hosts/host_space.cpp
+    # Phase 7 — ESCAPED-branch Act-1 surface-landing start (--world surface)
+    world_hosts/host_surface_start.cpp
+    space_pilot.cpp
+    space/ship_ai.cpp
+    space/targeting.cpp
+    space/ship_damage.cpp
+    space/space_layer.cpp
+    space/descent.cpp
+    space/eva.cpp
+    space/lod.cpp
+    space/decloak_vfx.cpp
+    space/space_env.cpp
+    # Phase 3 — interactive branching cold-open: the Intro Orchestrator.
+    intro_orchestrator.cpp
     scene.cpp
     level.cpp
     level1.cpp
@@ -34,6 +73,7 @@ add_executable(X3Engine WIN32
     mission.cpp
     level1_game.cpp
     canon_play.cpp
+    cell_dressing.cpp
     intro_coldopen.cpp
     cutscene.cpp
     spire_mid.cpp
@@ -69,6 +109,7 @@ add_executable(X3Engine WIN32
     fx.cpp
     hud.cpp
     loading_screen.cpp
+    canon_aliens.cpp
     ui.cpp)
 
 target_link_libraries(X3Engine PRIVATE x3engine glfw)

@@ -1,0 +1,60 @@
+#pragma once
+// ============================================================================
+// Settings persistence (#28 deep split). The window-size + audio key=value cfg
+// helpers were file-scope in main.cpp; readWindowSize is used by main()'s
+// prelude (windowed default size) AND the rest by the default host
+// (app/app_run.cpp). Moved VERBATIM here so both TUs share one definition.
+// ============================================================================
+
+#include <string>
+#include <fstream>
+#include <cstdlib>
+#include <cstdint>
+
+namespace x3 { namespace apphost {
+
+inline std::string x3SettingsPath() {
+    const char* base = std::getenv("LOCALAPPDATA");
+    return std::string(base && *base ? base : ".") + "\\x3native_settings.cfg";
+}
+inline bool readWindowSize(uint32_t& w, uint32_t& h) {
+    std::ifstream f(x3SettingsPath());
+    if (!f) return false;
+    bool found = false; std::string line;
+    while (std::getline(f, line)) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string k = line.substr(0, eq);
+        const uint32_t v = (uint32_t)std::strtoul(line.c_str() + eq + 1, nullptr, 10);
+        if (k == "width"  && v >= 320) { w = v; found = true; }
+        else if (k == "height" && v >= 240) { h = v; found = true; }
+    }
+    return found;
+}
+// Audio settings live in the same key=value cfg. Each is optional; defaults are
+// kept when a key is missing/garbled. musicVol/sfxVol are stored as plain floats.
+inline void readAudioSettings(bool& musicOn, float& musicVol, float& sfxVol) {
+    std::ifstream f(x3SettingsPath());
+    if (!f) return;
+    std::string line;
+    while (std::getline(f, line)) {
+        const auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string k = line.substr(0, eq);
+        const char* vs = line.c_str() + eq + 1;
+        if      (k == "musicOn")  musicOn  = (std::strtol(vs, nullptr, 10) != 0);
+        else if (k == "musicVol") musicVol = (float)std::strtod(vs, nullptr);
+        else if (k == "sfxVol")   sfxVol   = (float)std::strtod(vs, nullptr);
+    }
+    auto clamp01 = [](float& v) { if (v < 0.0f) v = 0.0f; if (v > 1.0f) v = 1.0f; };
+    clamp01(musicVol); clamp01(sfxVol);
+}
+// Write ALL persisted settings (window size + audio) in one shot.
+inline void writeSettings(uint32_t w, uint32_t h, bool musicOn, float musicVol, float sfxVol) {
+    std::ofstream f(x3SettingsPath());
+    if (f) f << "width=" << w << "\nheight=" << h << "\n"
+             << "musicOn=" << (musicOn ? 1 : 0) << "\n"
+             << "musicVol=" << musicVol << "\nsfxVol=" << sfxVol << "\n";
+}
+
+}} // namespace x3::apphost

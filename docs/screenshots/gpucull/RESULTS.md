@@ -80,3 +80,56 @@ Notes / known limits:
   future work).
 * A sky-change frame (IBL probe rebake) falls back to the CPU cull for that one
   frame (the probe bake replays the indirect commands before the cull runs).
+
+## Tier 2 (mesh-shader meshlets) — DEFERRED (#5 PART 2), with the exact remaining steps
+
+Render-chain item #5 PART 1 (TLAS double-buffer) shipped green. PART 2
+(Tier 2 meshlets) was scoped as secondary / safe-partial and is **deferred**:
+fully wiring it is multi-system surgery (device-create extension + feature
+chain, a brand-new mesh-shader graphics pipeline, per-mesh meshlet buffer
+upload, `vkCmdDrawMeshTasksEXT` recording, and an equivalence harness) that
+cannot be behavior-verified without exercising the mesh-shader path on GPU —
+which directly risks the two gates this work must hold EXACT: `--test-gpucull`
+40/40 survivor-set equivalence and the byte-identical screenshot basin. Per the
+#5 directive ("IF this proves deep/risky, ship PART 1 green + push, and defer
+PART 2 — do NOT jeopardize the double-buffer"), Tier 2 stays unwired.
+
+What IS already in place (no work needed):
+* `shaders/meshlet.task` + `shaders/meshlet.mesh` — task (per-meshlet frustum +
+  backface-cone + optional HZB cull, 32 meshlets/workgroup, payload emit) and
+  mesh shaders exist and compile to SPIR-V.
+* `buildMeshlets()` CPU builder + `runMeshletSelfTest()` — GREEN (7/7), invariants
+  hold (<=64 verts / <=124 tris per meshlet, vertex-locality clustering).
+* `detectCullCaps()` truthfully reports `hasMeshShader` from the device's
+  `VkPhysicalDeviceMeshShaderFeaturesEXT` (mesh+task), and `r_cullpath 2/3` force
+  logic already routes to Tier 0 with a warning when mesh shaders are absent.
+
+The EXACT remaining 6 steps (each gated behind `r_cullpath`, equivalence-checked):
+1. **Enable the extension at device creation.** Add `VK_EXT_mesh_shader` (+ its
+   `VkPhysicalDeviceMeshShaderFeaturesEXT { meshShader, taskShader }` in the
+   feature pNext chain) to the vk-bootstrap device builder in
+   `engine/rhi/VulkanRenderDevice.cpp`, conditional on `detectCullCaps().hasMeshShader`
+   so non-capable GPUs (Pascal) are byte-identical. Flip `supportsMeshShaders()`
+   to report the stored cap. RISK: device-create change — re-verify the basin.
+2. **Per-mesh meshlet bake + upload.** On mesh register (when `r_cullpath`>=2 &
+   capable), run `buildMeshlets()` and upload the `Meshlet[]` (sphere+cone+offsets),
+   `vertexIndices[]`, `triangles[]` to device-local SSBOs keyed by mesh id; store a
+   per-mesh `(meshletBase, meshletCount)`. Skip + Tier-0-fallback for un-baked meshes.
+3. **Mesh-shader pipeline.** Build a graphics pipeline with stages
+   TASK(meshlet.task)+MESH(meshlet.mesh)+FRAG(mesh.frag), reusing the existing mesh
+   pass's render-pass/dynamic-rendering formats, descriptor set 0 (CullParams+HZB),
+   set 1 (Meshlets+ObjectXf). MUST match `mesh.frag`'s input interface exactly
+   (the documented "interface match vs mesh.frag outstanding").
+4. **Record path.** In the Tier-2 branch of the draw recording, for each visible
+   object bind set1 (its meshlet SSBOs + ObjectXf), push `meshletBase/Count` +
+   `cameraPosWS`, and `vkCmdDrawMeshTasksEXT(ceil(count/32),1,1)` instead of the
+   indirect raster draw. Lift the `if (p>2) p = ... ` clamp in `vk_passes.cpp:1235`.
+5. **Equivalence harness.** Extend `--test-gpucull` with a Tier-2 lane: the
+   per-meshlet survivor set, aggregated to a per-object visible/not-visible
+   decision, must match the Tier-0 object survivor set EXACTLY (the meshlet cull is
+   strictly finer — an object is visible iff >=1 of its meshlets survives). Gate at
+   40/40 + the new lane.
+6. **Basin re-confirm.** Render the default/norefl/notaa stills with `r_cullpath 3`
+   and confirm the byte-identical basin (meshlet cull must not change the image —
+   it only changes WHICH primitives are submitted, not the final pixels for a still
+   camera). A new disjoint basin = a real regression.
