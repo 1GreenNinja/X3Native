@@ -236,7 +236,20 @@ int dispatchTests(const TestFlags& tf) {
         // Mock plumbing always; the real-model round-trip is gated on the .gguf
         // existing (see assets/models/llm/README.md for the download command).
         x3::logInfo("running in-engine LLM (NPC minds) self-test...");
-        const std::string llmModel = x3::game::assetRoot() + "/models/llm/qwen2.5-3b-instruct-q4_k_m.gguf";
+        // Exercise the LARGEST GGUF present (so a downloaded 7B is benchmarked
+        // through the GPU path); fall back to the pinned 3B filename otherwise.
+        const std::string llmDir = x3::game::assetRoot() + "/models/llm";
+        std::string llmModel = llmDir + "/qwen2.5-3b-instruct-q4_k_m.gguf";
+        {
+            std::error_code fec;
+            std::uintmax_t best = 0;
+            for (const auto& e : std::filesystem::directory_iterator(llmDir, fec)) {
+                if (e.path().extension() != ".gguf") continue;
+                std::error_code sec;
+                const std::uintmax_t sz = std::filesystem::file_size(e.path(), sec);
+                if (!sec && sz > best) { best = sz; llmModel = e.path().string(); }
+            }
+        }
         return x3::llm::runLlmSelfTest(llmModel.c_str()) ? 0 : 1;
     }
     if (tf.testEcs) {
