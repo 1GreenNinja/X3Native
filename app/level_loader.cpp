@@ -1668,13 +1668,17 @@ bool runCanonLevelSelfTest() {
         x3::logInfo("    doorway kinds: adjX=" + std::to_string(adjX) + " adjZ=" + std::to_string(adjZ) +
                     " bridge=" + std::to_string(bridge) + " overlap=" + std::to_string(overlap) +
                     " cross=" + std::to_string(cross) + " none=" + std::to_string(none));
-        // The audit reports ~50 adjacent (doorway OK), ~59 gaps, 2 overlap, 2 cross-level.
-        bool adjacentOk = (adjX + adjZ) >= 45 && (adjX + adjZ) <= 55;
-        bool gapsOk     = bridge >= 50 && bridge <= 65;
-        bool crossOk    = cross == 2;            // Cave System + Hidden Sub-Level
+        // Resolver histogram after the seam/height repair (x3-level-authoring doctrine):
+        // ~45 adjacent (FLUSH walls only), ~63 gap-bridges (0.5 m air-gap seams are now
+        // bridged shut rather than doored across a void), 2 overlap, 3 cross-level = the
+        // Cave System + Hidden Sub-Level descent tubes + the Elevator Lobby->Shaft vertical
+        // link (a >2.5 m floor drop = the elevator vocabulary, not an impossible ramp).
+        bool adjacentOk = (adjX + adjZ) >= 42 && (adjX + adjZ) <= 55;
+        bool gapsOk     = bridge >= 55 && bridge <= 68;
+        bool crossOk    = cross == 3;            // Cave + Hidden Sub-Level + Elevator shaft
         bool noneZero   = none == 0;             // every door resolved to SOMETHING
         check(adjacentOk && gapsOk && crossOk && noneZero,
-              "C3 doorway resolver: ~50 adjacent, ~59 gap-bridges, 2 cross-level, 0 unresolved");
+              "C3 doorway resolver: ~45 adjacent (flush), ~63 gap-bridges, 3 cross-level, 0 unresolved");
     }
 
     // ---- C4: the 2 isolated/deep rooms (Cave System / Hidden Sub-Level) are linked. ----
@@ -1932,36 +1936,35 @@ bool runCanonLevelSelfTest() {
             f2.floodVisibleRoomsAt(H.cx, H.cy, H.cz, none, &doors2, 6, 999, closedSet);
             behindHidden = closedSet.size() < openSet.size();
 
-            // (c) TARGETED "room behind a closed door": find a LEAF room whose ONLY doorway
-            //     is a DOORED one (every edge incident to it has a slab). Such a room is a
-            //     guaranteed single-door cut — with that door OPEN it floods into the set,
-            //     with it CLOSED there is no other way in, so it drops out. This is the
-            //     literal pop-behaviour Tim wants: a closed door hides the room behind it.
-            std::vector<int> totalDeg(n, 0), doorlessDeg(n, 0);
-            for (const CanonDoorway& dw : f2.doorways) {
-                if (dw.a < n) { ++totalDeg[dw.a]; if (dw.doorIndex == kNoLink) ++doorlessDeg[dw.a]; }
-                if (dw.b < n) { ++totalDeg[dw.b]; if (dw.doorIndex == kNoLink) ++doorlessDeg[dw.b]; }
-            }
-            for (const CanonDoorway& dw : f2.doorways) {
-                if (dw.doorIndex == kNoLink) continue;            // need a real door to close
-                // Pick the endpoint that is a single-DOORED-entry leaf (1 doorway, doored,
-                // and not the hall itself) and is reachable when doors are open.
-                uint32_t probe = kNoRoom;
-                if ((int)dw.a != hall && totalDeg[dw.a] == 1 && doorlessDeg[dw.a] == 0) probe = dw.a;
-                else if ((int)dw.b != hall && totalDeg[dw.b] == 1 && doorlessDeg[dw.b] == 0) probe = dw.b;
-                if (probe == kNoRoom) continue;
+            // (c) TARGETED "room behind a closed door": find a room whose EVERY entrance is a
+            //     DOOR (no doorless gap-bridge / cross-level backdoor). With its doors OPEN it
+            //     floods into the set; close every door incident to it and it MUST drop out (a
+            //     closed door is opaque, and it has no other way in). This is the literal
+            //     pop-behaviour Tim wants. Iterating candidate ROOMS (not a degree-1 leaf edge)
+            //     keeps it robust to which openings the resolver leaves doored vs open.
+            std::vector<int> doorlessDeg(n, 0), dooredDeg(n, 0);
+            for (const CanonDoorway& dw : f2.doorways)
+                for (uint32_t e : { dw.a, dw.b }) {
+                    if (e >= n) continue;
+                    if (dw.doorIndex == kNoLink) ++doorlessDeg[e]; else ++dooredDeg[e];
+                }
+            for (uint32_t probe = 0; probe < n && !doorBehindAssert; ++probe) {
+                if ((int)probe == hall) continue;
+                if (doorlessDeg[probe] != 0 || dooredDeg[probe] == 0) continue;   // must be door-only entry
                 setAllDoors(DoorState::Open, 1.0f);
                 std::vector<uint32_t> withOpen;
                 f2.floodVisibleRoomsAt(H.cx, H.cy, H.cz, none, &doors2, 6, 999, withOpen);
                 if (!inSet(withOpen, probe)) continue;            // not visible even when open
-                doors2.at(dw.doorIndex).state = DoorState::Closed; doors2.at(dw.doorIndex).t = 0.0f;
+                for (const CanonDoorway& dw : f2.doorways)        // close every door into `probe`
+                    if ((dw.a == probe || dw.b == probe) && dw.doorIndex != kNoLink) {
+                        doors2.at(dw.doorIndex).state = DoorState::Closed; doors2.at(dw.doorIndex).t = 0.0f;
+                    }
                 std::vector<uint32_t> withClosed;
                 f2.floodVisibleRoomsAt(H.cx, H.cy, H.cz, none, &doors2, 6, 999, withClosed);
-                if (!inSet(withClosed, probe)) {                  // closing the door hid it
+                if (!inSet(withClosed, probe)) {                  // closing its doors hid it
                     doorBehindAssert = true;
                     hiddenName = f2.rooms[probe].name;
-                    closedVia  = f2.rooms[dw.a].name + "<->" + f2.rooms[dw.b].name;
-                    break;
+                    closedVia  = "all doors of " + f2.rooms[probe].name;
                 }
             }
         }
@@ -2076,14 +2079,21 @@ bool runCanonLevelSelfTest() {
             }
             x3::phys::BodyId chr = pw->createCharacter(0.35f, 1.8f, start);   // STANDING capsule
             for (int i = 0; i < 30; ++i)  { pw->moveCharacter(chr, x3::phys::Vec3{0,0,0}, 1.0f/60.0f); pw->step(1.0f/60.0f); }
-            for (int i = 0; i < 600; ++i) { pw->moveCharacter(chr, vel, 1.0f/60.0f); pw->step(1.0f/60.0f); }
-            x3::phys::Vec3 end = pw->getBodyPosition(chr);
-            // Success: climbed to the UPPER floor (within 0.3 m) AND ended inside the UPPER
-            // room's XZ footprint (so it really crossed the threshold into the next room).
-            bool climbed = std::fabs(end.y - yHi) < 0.3f;
-            bool inUpper = end.x >= upper.x0() - 0.4f && end.x <= upper.x1() + 0.4f &&
-                           end.z >= upper.z0() - 0.4f && end.z <= upper.z1() + 0.4f;
-            walked = climbed && inUpper;
+            // Success = at ANY point the char stands on the UPPER floor INSIDE the upper room's
+            // XZ footprint (climbed the ramp + crossed the open opening). Checking ARRIVAL, not
+            // the end pose, keeps this robust when the upper room is a small cell with a far
+            // opening (a fixed-length walk would stride straight through and overshoot into the
+            // next room — a false negative that says nothing about walkability).
+            bool climbed = false, inUpper = false;
+            x3::phys::Vec3 end = start;
+            for (int i = 0; i < 600 && !walked; ++i) {
+                pw->moveCharacter(chr, vel, 1.0f/60.0f); pw->step(1.0f/60.0f);
+                end = pw->getBodyPosition(chr);
+                climbed = std::fabs(end.y - yHi) < 0.3f;
+                inUpper = end.x >= upper.x0() - 0.4f && end.x <= upper.x1() + 0.4f &&
+                          end.z >= upper.z0() - 0.4f && end.z <= upper.z1() + 0.4f;
+                if (climbed && inUpper) walked = true;
+            }
             x3::logInfo("    C13 doored step=" + std::to_string(pickStep) + " m (axis " + std::to_string(dw.axis) +
                         "): standing char start=(" + std::to_string(start.x) + "," + std::to_string(start.y) + "," + std::to_string(start.z) +
                         ") end=(" + std::to_string(end.x) + "," + std::to_string(end.y) + "," + std::to_string(end.z) +
